@@ -110,7 +110,11 @@ Notes on the cells:
 - **Role:** **both** (source and target).
 - **As source → targets:**
   - `→ PDF` — **LO**, `impress_pdf_Export`. **DEFAULT (★)**. Lossy (`~`).
-  - `→ PPT` — **LO**, `MS PowerPoint 97`. Within MS family; re-rendered (plain ✓).
+  - `→ PPT` — **LO**, `MS PowerPoint 97`. **Lossy (`✓~`):** legacy BIFF/PPT97 cannot
+    store SmartArt, modern charts, or Morph transitions → those are flattened/dropped on
+    down-save → §2.9 `pptx_to_ppt_legacy`. (Within the MS family, but NOT lossless — the
+    matrix cell is `✓~`, the §2.9 Lossy section lists it, and the mandatory lossy
+    disclosure applies. The earlier "plain ✓" was wrong.)
   - `→ ODP` — **LO**, `impress8`. Crosses MS→ODF boundary → lossy (`✓~`).
   - `→ PPTX` — **not offered** (same format, degenerate).
 - **As target ← sources:** `PPT → PPTX` (LO, MS-family), `ODP → PPTX` (LO, lossy).
@@ -253,7 +257,7 @@ choices; adding a setting is a scope change, §1.6). FilterData is passed on the
 | `ReduceImageResolution` | Advanced | false | false | bool | If on, downsamples images to `MaxImageResolution`. |
 | `MaxImageResolution` | Advanced | 300 | 300 | 75/150/300/600/1200 DPI | Only effective with `ReduceImageResolution=true`. |
 | `UseLosslessCompression` | Advanced | false | false | bool | PNG-style lossless instead of JPEG; larger files. |
-| `SelectPdfVersion` | Advanced | 0 (PDF 1.7) | 0 | 0=1.7, 15=PDF/A-1b, 16=PDF/A-2b, 17=PDF/A-3b… | PDF/A only if a user needs archival; not default. |
+| `SelectPdfVersion` | Advanced | 0 (PDF 1.7) | 0 | 0=PDF 1.7 (default, no restriction), 1=PDF/A-1b, 2=PDF/A-2b, 3=PDF/A-3b, 15=PDF 1.5, 16=PDF 1.6, 17=PDF 1.7 (per official LO `pdf_params`; 15/16/17 are plain PDF versions, NOT PDF/A — PDF/A is 1/2/3) | PDF/A only if a user needs archival (`1`/`2`/`3`); not default. |
 | `ExportBookmarks` | (not exposed) | true | true | bool | Slide titles → PDF outline; harmless default-on. |
 | `UseTaggedPDF` | (not exposed) | false | false | bool | Accessibility tags; **left at the Impress engine default `false`** — Impress tagged-PDF support is limited and yields noisy/low-value tag trees from slide layouts. **Deliberately unlike documents.md, where Writer sets `UseTaggedPDF=true`** (Writer emits well-structured heading/paragraph tags). The asymmetry is intentional, not a harmonisation gap. |
 | `EmbedStandardFonts` | (not exposed) | false | false | bool | Embeds the 14 base PDF fonts; off by default. |

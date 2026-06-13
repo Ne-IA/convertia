@@ -100,6 +100,16 @@ fn ingest(paths: Vec<PathBuf>, origin: IntakeOrigin) -> CollectedSet;
 // (so the §1.2 per-item DetectionOutcome is preserved into the Mixed/Unsupported/
 // Uncertain variants — a lone unsupported/uncertain drop yields the specific
 // "detected: X" message, not a generic empty report).
+//
+// Who supplies `origin` per entry point `[DECIDED]`: a DROP / launch-arg / second-
+// instance hand-off carries its origin in the C1 request (`Drop` / `LaunchArg` /
+// `SecondInstance`). The C2a `pick_for_intake` request has NO `origin` field (the
+// WebView only triggers the picker, §0.4.1) — the **C2a handler itself sets
+// `origin = IntakeOrigin::Picker`** when it funnels the Rust-opened picked paths into
+// this shared `ingest` function. So the WebView never supplies the picker origin; the
+// core stamps it. (This closes the "C2a has no origin field but the funnel needs one"
+// gap: the funnel always receives a concrete origin — from the request for C1, from the
+// handler for C2a.)
 ```
 
 ### Folder recursion (Rust-side) `[DECIDED]`
@@ -143,10 +153,25 @@ Intake is the **exhaustive freeze point** (§2.4): the moment `ingest` snapshots
 the set, that set is closed. Files appearing afterward — written by this run, a
 concurrent instance, or anything else — are **never** ingested into this run, and
 outputs landing in a watched source folder do **not** expand or restart the
-batch. The freeze covers the launch-time and second-instance hand-off explicitly
-(so a macOS `RunEvent::Opened { urls }` arriving mid-run starts a *new* batch — after
-its `file://` URLs are converted to paths — never mutating a frozen one; interaction
-with §7.1 instance policy). De-duplication of the frozen
+batch. The freeze covers the launch-time and second-instance hand-off explicitly,
+and its behaviour is **gated by whether a run is in flight `[DECIDED]`** (consistent
+with the §7.1.1/§7.8.1 refuse-busy decision):
+
+- **While IDLE** (no run in flight — the app is in `Idle`/`Summary`, §5.2): a macOS
+  `RunEvent::Opened { urls }` / Windows-argv / Linux-`%F` / second-instance hand-off
+  **starts a NEW frozen set** — after its `file://` URLs are converted to paths
+  (macOS) — exactly like a fresh drop, never mutating a frozen one.
+- **While a RUN IS IN FLIGHT** (mid-`Converting`): the launch-intake is
+  **refused-busy** per §7.1.1/§7.8.1 — the shared `forward_launch_intake` funnel both
+  launch hooks call performs the busy check **before** the freeze, so the paths are
+  **dropped** (no new set, no merge, no replace) and the `BusyNotice` surface (§5.3) is
+  shown. It is **never** ingested mid-run, on any platform (the earlier "starts a new
+  batch mid-run" reading is corrected — a mid-conversion Open-with is refused, not
+  merged).
+
+The "never mutating a frozen one" invariant holds in **both** cases (an in-flight run's
+frozen set is untouched; an idle launch starts its own fresh set; interaction with §7.1
+instance policy). De-duplication of the frozen
 set **by resolved identity** is owned by §2.3 and applied here as the set is
 built (a file reached via two paths is one member).
 
@@ -191,8 +216,8 @@ batch grouping (§1.3).
      **container**, e.g. MKV). The probe depth here is **header-level only**; the
      full `ffprobe` stream inventory is an engine-layer concern (§3.5), invoked
      later, not during the cheap detection pass.
-   - **gzip wrapper (`.svgz`)** `[DECIDED — pure-Rust bounded inflate, in §2.12 boundary
-     [OPEN]]`: a file whose magic is **`1F 8B`** (gzip) is not itself a recognised format
+   - **gzip wrapper (`.svgz`)** `[DECIDED — pure-Rust bounded inflate, stays in-core per §2.12.4]`:
+     a file whose magic is **`1F 8B`** (gzip) is not itself a recognised format
      — ConvertIA **inflates one bounded block** and re-sniffs the inner bytes; if the
      inner content is an SVG root (`<svg` after optional `<?xml`/BOM/DOCTYPE), the file is
      classified **`Svg`** (the `.svgz` compressed-SVG case the corpus §6.4.5 requires — it
@@ -204,9 +229,10 @@ batch grouping (§1.3).
      on untrusted bytes. It is **strictly bounded**: read at most **§-pinned MAX_SVGZ_SNIFF
      = 64 KiB** of inflated output and enforce a **decompression-ratio cap (≤ 100×)**,
      aborting (→ `UnsupportedType`) on either limit — defeats the decompression-bomb class.
-     This sniff is folded into the §2.12 in-core-boundary `[OPEN]` alongside the
-     text-encoding heuristic and the Rust ZIP central-directory peek (see §2.12 / the
-     README log). Cross-ref images.md (SVG `.svgz` handling — the worker re-inflates with
+     This sniff stays in-core per the §2.12.4 `[DECIDED]` (resolved in the consolidation
+     pass): the pure-Rust bounded inflate, the text-encoding heuristic, and the Rust ZIP
+     central-directory peek all stay outside the §2.12 isolation boundary (memory-safe,
+     bounded, no third-party C/C++ decoder — see §2.12.4 / the README resolved log). Cross-ref images.md (SVG `.svgz` handling — the worker re-inflates with
      librsvg's own bounded loader for the actual raster). Other gzip-wrapped content is
      `UnsupportedType` ("detected: gzip archive").
 3. **Text classification** for the magic-less formats (TXT/MD/CSV/TSV/SVG): confirm
@@ -349,7 +375,7 @@ fn group(detected: Vec<DetectionResult>) -> Grouping;
 
 enum Grouping {
     /// Exactly one eligible source format across all readable items.
-    /// `SkippedItem` is the §0.6 type (owner): { item, source, reason: ErrorKind }.
+    /// `SkippedItem` is the §0.6 type (owner): { item, source, reason: SkipReason }.
     /// `members` (eligible ItemIds) and `skipped`'s ItemIds are id-DISJOINT views over
     /// the SINGLE id space assigned at the freeze over ALL dropped items (§0.6 invariant
     /// 6) — never re-indexed from 0, so the two never collide.
@@ -410,7 +436,7 @@ struct CollectedSummary {            // == the §0.6 CollectedSet::Single field 
     count: usize,                // e.g. 48  → "48 JPG files"
     total_bytes: u64,            // for the size hint / 1.10 pre-flight
     roots: Vec<PathBuf>,         // dropped root(s) → relative-subtree + open-folder
-    skipped: Vec<SkippedItem>,   // ineligibles, §0.6 type { item, source, reason: ErrorKind }
+    skipped: Vec<SkippedItem>,   // ineligibles, §0.6 type { item, source, reason: SkipReason }
     // detection-derived hints surfaced in the summary line (per 04):
     encoding_hint: Option<String>,   // e.g. CSV detected "Windows-1252"
     delimiter_hint: Option<String>,  // e.g. CSV/TSV detected ";"
@@ -693,12 +719,16 @@ enum InvocationResult {
 - **Two-step probe-then-encode (video) `[DECIDED]`:** a video job is **two sequential
   sub-invocations of the one FFmpeg engine** — `ffprobe` then `ffmpeg` — **not** a format
   chain (§3.2.1). Because `Engine::plan()` is **Pure** (no I/O) but the encode argv depends
-  on the probe's inner-codec result, §1.7 **runs the `ffprobe` sub-invocation first, feeds
-  the result back to the engine to finalise the encode `Invocation`, then spawns the
-  `ffmpeg` encode** (and sets `progress.duration_us` from the probe, §3.5.1). So for video,
-  `plan()` is deferred/parameterised on the probe result; the encode argv is never fixed
-  before the probe. Both sub-invocations are bounded by the same §1.7 cancel/timeout/
-  group-kill machinery. (§3.2.1 / §3.5.1 own the sequencing rationale.)
+  on the probe's inner-codec result, §1.7 uses the §3.2.1/§3.2.2 **two-phase trait
+  contract**: it **calls `Engine::plan()` (which returns the `ffprobe` sub-invocation),
+  spawns it, parses its stdout into a typed `ProbeOutput` (inner codecs + `duration_us` +
+  rotation + interlace), then calls `Engine::plan_encode(job, out_tmp, &probe)` to get the
+  finalised encode `Invocation`, then spawns the `ffmpeg` encode**. The encode's
+  `ProgressModel::FfmpegKeyValue { duration_us }` is built **from `probe.duration_us`
+  inside `plan_encode`** — **not** mutated onto a pre-probe `progress` struct (§3.5.1). So
+  for video, `plan()` is the probe and `plan_encode(probe)` is the encode; the encode argv
+  is never fixed before the probe. Both sub-invocations are bounded by the same §1.7
+  cancel/timeout/group-kill machinery. (§3.2.1 / §3.5.1 own the sequencing rationale.)
 
 ### Cancellation / kill mechanism `[DECIDED — sole owner]`
 
@@ -867,6 +897,20 @@ starts and to let the user change the destination. A user-chosen destination
 (**C5 `set_destination`**, §0.4.1) re-routes `final_dir` and triggers the
 relative-subtree re-creation (§2.7).
 
+**Eager C4 `location_status` vs lazy at-write probe — reconciled `[DECIDED]`.** C4's
+divert classification and the §1.10 per-volume preflight need each item's `final_dir`
+volume + its writable/ephemeral verdict, which come from §2.7.2 `location_status`. C4
+therefore runs `location_status` **per UNIQUE intended destination directory, cached**
+(not once per file): a many-files-in-few-folders batch (e.g. 10 000 files in one folder)
+probes that folder **once** and reuses the cached verdict for every item under it, so the
+eager-at-C4 cost is bounded by the number of distinct destination directories, not the
+file count. This is **consistent with** §2.7.2's "probe lazily and cache per-directory":
+the C4 probe is the **planning hint** (classifies divert + resolves the preflight volume),
+and §2.7.2's **at-write re-check** (the late-divert path) is the authority if a location
+flips read-only between C4 and the actual §2.1 publish — the cached verdict is never a
+commitment, only a hint (§2.7.2). So C4 is eager-per-directory (cheap, cached) and the
+write is the lazy re-check — no contradiction.
+
 **Destination-change re-validation `[DECIDED]`:** because the §2.14.4 free-space
 check targets the **destination** volume, a C5 destination change must **not** leave
 the held C4 free-space verdict stale. C5 therefore returns a **re-evaluated
@@ -952,7 +996,10 @@ struct SizeEstimate {
     est_output_bytes: u64,       // output + kind-1 publish temp → the item's final_dir VOLUME (§2.14.1)
     est_scratch_bytes: u64,      // kind-2 engine working temp → the system/scratch VOLUME (§2.14.2),
                                  //   NOT necessarily the destination volume — checked separately per
-                                 //   physical volume (§2.14.4 / the per-physical-volume preflight below)
+                                 //   physical volume (§2.14.4 / the per-physical-volume preflight below).
+                                 //   ON macOS this ALSO INCLUDES the Σ of staged input sizes (the
+                                 //   §3.5.0/§7.2.6 TCC source-into-scratch copy, input-sized per
+                                 //   in-flight item); on Windows/Linux that term is 0 (no TCC staging).
     basis: EstBasis,             // PerCategoryHeuristic | EngineProbe
 }
 ```
@@ -995,7 +1042,9 @@ struct SizeEstimate {
     split by category**:
     - **`est_output_bytes` + the publish temp → each item's `final_dir` volume** (the
       destination volume — computable in C4 after the §2.7 divert classification).
-    - **`est_scratch_bytes` (kind-2) → the system/scratch volume** (§2.14.2).
+    - **`est_scratch_bytes` (kind-2) → the system/scratch volume** (§2.14.2) — **on macOS
+      this includes the Σ of staged input sizes** (§3.5.0/§7.2.6 TCC source-staging copy,
+      input-sized per in-flight item); on Windows/Linux that term is 0.
     Sum per physical volume across the batch (a destination volume that *is* the scratch
     volume gets both), and require headroom on **each** volume **independently** (× the
     margin). Set `PreflightVerdict.up_front_fail = Some(OutOfDisk)` when **any one physical
@@ -1052,7 +1101,7 @@ long conversion. The fraction source per engine (parsed by §3.5, normalised by
 |--------|----------------|
 | **FFmpeg** (audio/video/cross-cat) | `-progress pipe:` → fraction = **`out_time_us` / source-duration-µs** (the denominator is the **`ffprobe` source duration**, NOT `total_size` — `total_size` is FFmpeg's running *output byte count*, which is not a duration and must not be the denominator) → true % even for a 2-hour film |
 | **image-worker** (libvips, images) | `ProgressModel::VipsStdout` (§3.2.2): the separate image-worker process marshals libvips' `eval`-progress signal to its **stdout** as `progress=<0..100>` key=value lines (it cannot deliver an in-process callback across the process boundary), parsed by the §1.7 same stdout reader as FFmpeg's `-progress`. Fast ops emit start→`progress=end` (coarse); HEIC/AVIF HEVC/AV1 encode reports a real % |
-| **LibreOffice** (office/PDF) | No native progress signal → a **bounded indeterminate-but-animated** state with a watchdog (still reads as "working"); `[REC]` show a determinate-looking staged bar (spawn → render → export → write) rather than a raw spinner, to honour the spirit of the promise |
+| **LibreOffice** (office/PDF) | No native progress signal → a **bounded indeterminate-but-animated** state with a watchdog (still reads as "working"); `[REC]` show a determinate-looking staged bar driven by the **four canonical §0.6 `JobStage` values — `Spawning` → `Decoding` → `Encoding` → `Writing`** rather than a raw spinner. (The LO lifecycle maps onto them: process spawn / profile init → **`Spawning`**; load+layout the source document → **`Decoding`**; run the export/render filter → **`Encoding`**; flush the produced file → **`Writing`**. No separate "render"/"export" stage vocabulary is emitted on the wire — only the four `JobStage` names §0.6 defines, so §1.11 and §0.6 agree on what the frontend receives.) |
 | **poppler / pandoc** | Usually fast; staged ticks; large PDFs report per-page where `pdftotext` allows |
 | **Native CSV/TSV** (in-process, §3.5.6) | `[DECIDED]` fraction = **`bytes_processed / source_size`** emitted per N-KB chunk as the in-process engine streams the file (there is no subprocess to watch, so it self-reports). For **sub-100 KB inputs** it is effectively instant → falls back to a **start→done** (`CoarseSpawnDone`-equivalent) tick. So even the only non-subprocess engine reports a real fraction (or an honest start→done for tiny files), never a bare spinner. |
 
@@ -1121,7 +1170,8 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
   `common_root` (the beside-source root), and — when `divert_root` is `Some(..)` (a
   split-output batch) — a second "open Downloads/Documents" affordance opens the
   `divert_root`. Per-item diverted outputs are also reachable via each `ItemResult.output`
-  (C9 `reveal_item_in_dir`). The summary is the data; the buttons are §5/§7.7.
+  (C9 `open_path` with `kind = RevealInFolder`, whose Rust handler calls
+  `OpenerExt::reveal_item_in_dir`). The summary is the data; the buttons are §5/§7.7.
 - **Re-run prompt linkage:** if §2.5 detected an equivalent prior output **before**
   CONVERT, the one batch-level skip/fresh-copy prompt (§5.2) already resolved it;
   the summary reflects whichever the user chose (skipped items appear as a distinct
@@ -1131,8 +1181,12 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
   empty / unreadable-at-intake items that **never entered the queue**, §1.1/§1.3) are
   **projected into `RunResult.items` at run-end** as
   `ItemResult { source, state: JobState::Skipped(reason), output: None, reason: Some(OutcomeMsg::Skipped{ reason, .. }) }`
-  (the `reason` is the `SkippedItem.reason` `SkipReason`, e.g. `UnsupportedType`/`Empty`/
-  `Unreadable`/`Unrecognized`). They are **counted in `Totals.skipped`** (never
+  — a **trivial copy** of `SkippedItem.reason` (a `SkipReason`, §0.6: `UnsupportedType` /
+  `Uncertain` / `Empty` / `Unreadable`) into the same-typed `JobState::Skipped(SkipReason)`
+  and `OutcomeMsg::Skipped{ reason: SkipReason }` (§2.8) — **no lossy ErrorKind→SkipReason
+  reverse map** (the §1.12 helper only ever applies the forward `SkipReason → ErrorKind`,
+  e.g. `Uncertain → Unrecognized`, if an ErrorKind-shaped display string is also needed).
+  They are **counted in `Totals.skipped`** (never
   `failed`). **The reason rides the skip-shaped `OutcomeMsg::Skipped` variant** (§2.8),
   **not** `OutcomeMsg::Failure` — so a consumer pattern-matching `OutcomeMsg` can tell a
   skip from a fail without also reading `ItemResult.state` (§0.6 keeps `Skipped` and
@@ -1150,7 +1204,7 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
 | ID | Item | Owner | Status |
 |----|------|-------|--------|
 | 1.10-a | Resource budgets: absolute "too big" output ceiling, memory/handle ceilings, per-category size-heuristic constants, headroom margin (1.3×), GIF duration cap (~10 s) | §1.10 (co-owned §0.9 + 04) | `[DEFER: corpus]` — ship with the stated finite starting values; calibrate against the §6 corpus (design is decided, only the numbers are empirical) |
-| 1.2-sec | Whether the in-core text-encoding heuristic / Rust ZIP central-directory peek / **`.svgz` pure-Rust bounded inflate (flate2 `rust_backend`/miniz_oxide, ≤64 KiB + ≤100× ratio cap)** may stay outside the §2.12 isolation boundary (lean: yes — all memory-safe, bounded, no third-party **C/C++** decoder) | §2.12 (raised by §1.2) | `[OPEN]` — genuine isolation-boundary owner call (now covers all three in-core sniffs) |
+| 1.2-sec | Whether the in-core text-encoding heuristic / Rust ZIP central-directory peek / **`.svgz` pure-Rust bounded inflate (flate2 `rust_backend`/miniz_oxide, ≤64 KiB + ≤100× ratio cap)** may stay outside the §2.12 isolation boundary | §2.12.4 (raised by §1.2) | **`[DECIDED]` — YES, they stay in-core** (all memory-safe, bounded, no third-party **C/C++** decoder, so they satisfy the §2.12.4 "no C/C++ decoder in-core" absolute). Resolved in the consolidation pass — §2.12.4 / README resolved log. |
 
 ### Resolved here with a recommended default (`[REC]`)
 

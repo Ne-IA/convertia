@@ -325,9 +325,13 @@ differ and are spelled out per format.
 - **Role:** both.
 - **As source → targets:** **MP4★** (R — essentially a rename+repackage), MOV (R),
   MKV (R), WEBM (✓~), M4V (self R) · + extract-audio, to-GIF.
-- **As target ← sources:** MP4, MOV, MKV, FLV, M4V (the MP4-family sources, where a
-  user specifically wants the `.m4v` extension for Apple TV/iTunes). Offered, never
-  default.
+- **As target ← sources:** **all 10 video sources** — MP4, MOV, MKV, WEBM, AVI, WMV,
+  FLV, MPG/MPEG, M4V, 3GP — **identical to the MP4 target source-list** (M4V is an
+  MP4-family remux/repackage: the MP4-family sources remux, the rest re-encode `✓~` to
+  H.264/AAC, exactly as for the MP4 target). The matrix M4V column marks every source row,
+  so all ten are valid targets here. A user picks `.m4v` for the Apple TV/iTunes extension.
+  Offered, never default. (The earlier 5-source list — MP4/MOV/MKV/FLV/M4V only — wrongly
+  excluded AVI/WMV/WEBM/MPG/3GP, which the matrix shows as valid `✓~` M4V targets.)
 - **Engine(s):** FFmpeg. Streams are H.264/AAC (same as MP4) → remux throughout.
 - **Options/settings:** category defaults (re-encode path only — rare for M4V).
 - **Lossy?:** M4V↔MP4/MOV/MKV = **lossless remux**; →WEBM lossy → §2.9.

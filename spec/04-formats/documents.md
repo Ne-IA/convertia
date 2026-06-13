@@ -142,7 +142,7 @@ are the **concrete option lists and defaults** this file owns (§1.6).
   the export filter:
   | Setting | Default | Range/values | Surfaced? |
   |---------|---------|--------------|-----------|
-  | `SelectPdfVersion` | `0` (PDF 1.7, max compatibility) | `0`=PDF 1.7, `15`=PDF/A-1b, `16`=PDF/A-2b, `17`=PDF/A-3b (LO `writer_pdf_Export` values; harmonized with presentations.md) | no |
+  | `SelectPdfVersion` | `0` (PDF 1.7, max compatibility) | `0`=PDF 1.7 (default; **no version restriction**), `1`=PDF/A-1b, `2`=PDF/A-2b, `3`=PDF/A-3b, `15`=PDF 1.5, `16`=PDF 1.6, `17`=PDF 1.7 (verified against the official LibreOffice `pdf_params` reference, LO `writer_pdf_Export`/`impress_pdf_Export` — `15/16/17` are **plain PDF versions, NOT PDF/A**; the PDF/A levels are `1/2/3`. The earlier `15/16/17`→PDF/A mapping was WRONG and would have silently emitted plain PDF instead of PDF/A) | no |
   | `UseTaggedPDF` | `true` (accessibility: structure/headings) | bool | no |
   | `ReduceImageResolution` | `false` (preserve embedded image quality) | bool | no — see [OPEN] "compress PDF" |
   | `Quality` (JPEG) | `90` | 1–100 | no |

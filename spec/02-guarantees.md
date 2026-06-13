@@ -85,8 +85,9 @@ applied the §2.7 destination rules). Given a *final resolved destination path*
    safety) **as late as possible** — immediately before the create — to shrink the
    TOCTOU window.
 5. **Publish `tmp → final` with the no-placeholder exclusive-rename** (2.1.2): a
-   primitive that creates `final` **only if it does not exist** — Unix
-   `link`/`renameat2(RENAME_NOREPLACE)`, Windows `MoveFileExW` **without**
+   primitive that creates `final` **only if it does not exist** — Linux
+   `renameat2(RENAME_NOREPLACE)` / macOS `renameatx_np(RENAME_EXCL)` / common
+   `link`+`unlink` fallback, Windows `MoveFileExW` **without**
    `MOVEFILE_REPLACE_EXISTING` (create-only, fails-if-exists). No 0-byte placeholder
    is ever created at the final name (so no truncated/empty `final`, §2.1.3). On a name
    collision the loop advances to the next §2.2 variant.
@@ -132,27 +133,41 @@ check. `[DECIDED]`
 
 > **"Exclusive create" everywhere means this publish, not a `create_new`
 > placeholder.** Where §2.1.1 step 4, §2.2.2, §2.3.3 and §2.6.2 say "exclusive
-> create", they mean **this no-placeholder exclusive-rename publish** (Unix
-> `link`/`renameat2(RENAME_NOREPLACE)`; Windows `MoveFileExW`-without-`REPLACE_EXISTING`
+> create", they mean **this no-placeholder exclusive-rename publish** (Linux
+> `renameat2(RENAME_NOREPLACE)` / macOS `renameatx_np(RENAME_EXCL)` / common
+> `link`+`unlink` fallback; Windows `MoveFileExW`-without-`REPLACE_EXISTING`
 > / the §2.3.3 dir-handle-relative `NtSetInformationFile` form) — **never** an
 > `OpenOptions::create_new(true).open(final)` that would leave a 0-byte `final`.
 
 - **(a) No-placeholder exclusive-rename (chosen).** The engine writes to a private
   `tmp`; we then publish `tmp → final` with a primitive that **creates the name
   atomically only if it does not exist** — no prior `create_new` placeholder:
-  - **Unix:** `link(tmp, final)` (or `renameat2(..., RENAME_NOREPLACE)` on Linux
-    ≥ 3.15) — exclusive create-as-publish: it fails `EEXIST` if `final` exists,
-    giving the no-clobber guarantee **and** the atomic publish in one step, with no
-    placeholder. (`link`+`unlink(tmp)` is the portable POSIX form; `renameat2`
-    `RENAME_NOREPLACE` is the single-call form where available.) On `EEXIST` →
-    re-pick the next §2.2 variant.
-    - **Link-form success-window residual `[DECIDED]`.** Unlike `renameat2` (which
+  - **Unix — named per platform `[DECIDED]`:** the single-call exclusive
+    create-as-publish primitive **differs between Linux and macOS** (both create-only /
+    no-replace; both fall back to `link`+`unlink`):
+    - **Linux:** `renameat2(..., RENAME_NOREPLACE)` (Linux ≥ 3.15) — fails `EEXIST` if
+      `final` exists.
+    - **macOS:** `renameatx_np(..., RENAME_EXCL)` (or `renamex_np` for the non-`at`
+      form) — the macOS equivalent of `RENAME_NOREPLACE`; it returns `EEXIST` if the
+      destination exists on filesystems that advertise `VOL_CAP_INT_RENAME_EXCL`
+      (`getattrlist(2)`). **macOS has NO `renameat2`/`RENAME_NOREPLACE`** — using the
+      Linux spelling on macOS would not compile / would silently always fall to
+      `link`+`unlink`, so the platform-correct call must be `renameatx_np(RENAME_EXCL)`.
+    - **Common fallback (both OSes):** `link(tmp, final)` then `unlink(tmp)` — the
+      portable POSIX form, used when the single-call no-replace primitive is unavailable
+      or the filesystem does not support the flag (Linux `EINVAL`; macOS filesystems
+      without `VOL_CAP_INT_RENAME_EXCL`). It fails `EEXIST` if `final` exists.
+
+    Each gives the no-clobber guarantee **and** the atomic publish in one step, with no
+    placeholder. On `EEXIST` → re-pick the next §2.2 variant.
+    - **Link-form success-window residual `[DECIDED]`.** Unlike the single-call primitive
+      (Linux `renameat2(RENAME_NOREPLACE)` / macOS `renameatx_np(RENAME_EXCL)`, which
       consumes `tmp` atomically), the `link`+`unlink` fallback has a brief window
       **after `link` succeeds but before `unlink(tmp)`** where **both** `final` and
       the `tmp` `*.part` exist — a residual `.part` on the *success* path (the
-      `renameat2` path has none). This is benign (`final` is already complete and
+      single-call path has none). This is benign (`final` is already complete and
       durable) but means §2.6.2's "item success → nothing to remove" is true only on
-      the `renameat2` path; on the link path the `unlink(tmp)` is the removal, and if
+      the single-call path; on the link path the `unlink(tmp)` is the removal, and if
       it fails the leftover `*.part` is reclaimed by the §2.6.4 sweep (annotated as
       a residue, not an item failure). See the §2.1.3 link-form sub-state.
   - **Windows `[DECIDED]`:** the first-time (no-clobber) publish is a
@@ -161,8 +176,9 @@ check. `[DECIDED]`
     `REPLACE_EXISTING` omitted, `MoveFileExW` **fails (`ERROR_ALREADY_EXISTS` /
     `ERROR_FILE_EXISTS`) if `final` exists**, giving the no-clobber guarantee **and**
     the publish in one step **with no 0-byte placeholder ever created at the final
-    name** — the exact create-only shape of the Unix `link`/`renameat2(RENAME_NOREPLACE)`
-    primitive, so the §2.1.3 two-state invariant holds by construction on Windows too.
+    name** — the exact create-only shape of the Unix no-replace primitive (Linux
+    `renameat2(RENAME_NOREPLACE)` / macOS `renameatx_np(RENAME_EXCL)` / `link`+`unlink`),
+    so the §2.1.3 two-state invariant holds by construction on Windows too.
     On the exists-error → re-pick the next §2.2 variant. **(Parent-swap nuance:** the
     path-string `MoveFileExW` re-resolves `final` by path at publish time, so to *also*
     close the §2.3.3 parent-directory-swap race the publish is issued in its
@@ -198,20 +214,24 @@ check. `[DECIDED]`
 > then rename `tmp` over it) reintroduces a forbidden **third state**: a crash
 > between the placeholder create and the rename leaves a 0-byte `final` the engine
 > never wrote — exactly the "truncated/empty final masquerading as finished" §2.1.3
-> forbids. The no-placeholder publish (Unix `link`/`renameat2(RENAME_NOREPLACE)`;
+> forbids. The no-placeholder publish (Linux `renameat2(RENAME_NOREPLACE)` / macOS
+> `renameatx_np(RENAME_EXCL)` / common `link`+`unlink` fallback;
 > Windows `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`) never creates an empty
 > name, so the §2.1.3 two-state invariant holds by construction. `fs_guard::
 > atomic_publish(tmp, final)` encapsulates the per-OS primitive choice; callers (§2.1)
 > never see it.
 >
 > `[DEFER: primitive-confirmation spike, not a design question]` (owner §2.1):
-> confirm `renameat2(RENAME_NOREPLACE)` availability across the Linux floor (§0.3.1)
-> with the `link`+`unlink` fallback. **The fallback is chosen at runtime PER
-> DESTINATION, not statically `[DECIDED]`:** `renameat2(RENAME_NOREPLACE)` returns
-> **`EINVAL` on filesystems that don't support the flag** (some USB/network/FUSE
-> mounts differ from the boot volume on the same machine), so `atomic_publish` tries
-> `renameat2` and, on `EINVAL`, **falls back to `link`+`unlink` for that destination**
-> (not a build-time kernel-version switch — the same kernel can have both). On **NFS**,
+> confirm `renameat2(RENAME_NOREPLACE)` (Linux) / `renameatx_np(RENAME_EXCL)` (macOS)
+> availability across the §0.3.1 floor, with the `link`+`unlink` fallback. **The
+> fallback is chosen at runtime PER DESTINATION, not statically `[DECIDED]`:**
+> `renameat2(RENAME_NOREPLACE)` returns **`EINVAL` on Linux filesystems that don't
+> support the flag**, and `renameatx_np(RENAME_EXCL)` is **only honoured on macOS
+> filesystems that advertise `VOL_CAP_INT_RENAME_EXCL`** (some USB/network/FUSE mounts
+> differ from the boot volume on the same machine), so `atomic_publish` tries the
+> single-call primitive and, on the unsupported error, **falls back to `link`+`unlink`
+> for that destination** (not a build-time kernel-version switch — the same kernel can
+> have both). On **NFS**,
 > where a rename result can be ambiguous, treat an ambiguous outcome as
 > **name-may-be-taken** and re-pick the next §2.2 variant (never assume success). The
 > Windows primitive is **fixed**: the
@@ -234,9 +254,13 @@ After any ungraceful end, the on-disk state is exactly one of:
 - **(`link`+`unlink` fallback only) `final` exists AND a `*.part` temp also remains**
   — the crash landed in the success window *after* `link(tmp, final)` committed but
   *before* `unlink(tmp)`. `final` is complete and durable (Success); the leftover
-  `*.part` is a discardable run-owned artifact reclaimed by the §2.6.4 sweep. This
-  sub-state does **not** exist on the `renameat2`/`MoveFileExW` paths (single-call,
-  no leftover) and is still **not** a truncated-final state.
+  `*.part` is a discardable run-owned artifact reclaimed by the §2.6.4 sweep. The
+  residual-free single-call path (no leftover) exists on **BOTH** Linux
+  (`renameat2(RENAME_NOREPLACE)`) and macOS (`renameatx_np(RENAME_EXCL)`) as well as
+  Windows (`MoveFileExW`), so this sub-state is the **`link`+`unlink`-fallback case on
+  EITHER Unix OS** (where the single-call no-replace primitive is unavailable / the
+  filesystem does not support the flag) — **not** a macOS-always penalty. It is still
+  **not** a truncated-final state.
 
 There is **never** a third state (a truncated or 0-byte `final`) because (1) the
 engine only ever writes to `tmp`, never to `final`, and (2) the publish is a
@@ -289,8 +313,9 @@ TOCTOU race). Instead `output_name` produces candidates **lazily** and each
 candidate is handed to **the canonical §2.3.3 dir-handle-relative no-placeholder
 exclusive publish** — **the same single primitive every publish (incl. every
 numbering-loop retry) uses**, rooted at the **verified parent-directory handle** so the
-parent-swap TOCTOU is closed (§2.3.3): Unix `linkat`/`renameat2(olddirfd, tmp, dirfd,
-leaf, RENAME_NOREPLACE)` → fails `EEXIST`; Windows
+parent-swap TOCTOU is closed (§2.3.3): Unix `linkat` / Linux `renameat2(olddirfd, tmp,
+dirfd, leaf, RENAME_NOREPLACE)` / macOS `renameatx_np(olddirfd, tmp, dirfd, leaf,
+RENAME_EXCL)` → fails `EEXIST`; Windows
 `NtSetInformationFile(tmpHandle, …, FileRenameInformationEx)` with `RootDirectory` = the
 verified parent handle and the `FILE_RENAME_INFORMATION_EX` `Flags` bitfield **OMITTING**
 `FILE_RENAME_REPLACE_IF_EXISTS` → fails `STATUS_OBJECT_NAME_COLLISION`. (The bare
@@ -320,9 +345,17 @@ validates the **resolved final path length** against the OS limit:
   name + NUL). ConvertIA's portable build does **not** assume the "long path aware"
   manifest/registry opt-in is present on the user's machine (it is not portable to
   rely on it), so the conservative ceiling is `MAX_PATH`. **Mitigation:** internally
-  all FS calls use the **extended-length `\\?\` prefix** (via the `dunce` crate's
-  inverse — we *add* `\\?\` for our own syscalls, see §2.3.4) so ConvertIA itself
-  can read/write long paths the engines were handed; but a **final output path that
+  all FS calls use the **extended-length `\\?\` prefix** so ConvertIA itself can
+  read/write long paths the engines were handed. **How `\\?\` is obtained `[DECIDED]`:**
+  `std::fs::canonicalize` on Windows **already returns a `\\?\`-verbatim path** usable in
+  syscalls (the §2.3.1 resolved-identity path is therefore already prefixed), so for any
+  path we resolve there is nothing extra to add; for a path we *construct* (the §2.2
+  numbered candidate) we **prepend the `\\?\` prefix manually** (an absolute path → a
+  `\\?\`-verbatim path, the well-known Windows manual-prefix rule) before the syscall.
+  **There is NO "dunce inverse"** — `dunce` only *strips* a verbatim prefix (for the
+  §2.3.1 display/comparison form, §2.3.4); it never *adds* one. (The earlier "via the
+  dunce crate's inverse" was a fiction — `dunce` has no prefix-adding API.) But a **final
+  output path that
   the user/Explorer cannot then open** is still surfaced as a failure rather than a
   silent success. The check is: would the *user-facing* (non-`\\?\`) form exceed
   260? → fail clearly. Individual path **component** limit is **255** UTF-16 code
@@ -398,18 +431,25 @@ Before §2.1's exclusive create, `fs_guard::is_safe_output(final, frozen_set)`:
    case), resolve **its parent directory's** identity and the *would-be* path; a
    non-existent leaf cannot itself be a link, but its **parent** can be a symlink
    into a source tree — so the parent is canonicalised and the leaf appended.
-2. **Reject if** the resolved `final` (or its resolved parent + leaf) has a
-   `FileIdentity` equal to **any** source in the frozen set, **or** lands *inside* a
-   directory that is itself a source (folder-drop) by canonical-prefix containment.
-   "Writing beside a source would resolve onto the original" is exactly this case
-   (e.g. the output dir is a symlink back into the source dir).
+2. **Reject if** the resolved `final` (or its resolved-parent + leaf) has a
+   `FileIdentity` equal to **any** frozen **source FILE**, **or** its resolved parent
+   **resolves onto / into a frozen source FILE's resolved path** (e.g. the output dir is a
+   symlink that resolves back onto a source file, or onto a path the source file sits
+   inside). **NOT** the dropped-root container itself: the frozen set holds **files only**
+   (§0.6 invariant 4 — a dropped folder is recursed into files; the container directory is
+   **not** a frozen-set source item), so landing beside-source **inside the dropped folder
+   is the normal, correct case** and must **not** be rejected. The guard is "would this
+   write resolve onto an *original file*?", **not** "is this path under a dropped folder?".
+   "Writing beside a source would resolve onto the original" is exactly the rejected case
+   (e.g. the output dir is a symlink back onto a source file).
 3. On reject → **divert** to the §2.7 per-location fallback (Downloads/Documents or
    user-chosen), **never** proceed. The divert path is then re-checked (it too must
    pass `is_safe_output`).
 
 Because step 2 also runs as part of the §2.1 exclusive-publish loop (§2.1.2), a link
 that is created *between* the check and the write still cannot clobber a source: the
-no-placeholder exclusive publish (Unix `link`/`renameat2(RENAME_NOREPLACE)` → `EEXIST`;
+no-placeholder exclusive publish (Linux `renameat2(RENAME_NOREPLACE)` / macOS
+`renameatx_np(RENAME_EXCL)` / common `link`+`unlink` fallback → `EEXIST`;
 Windows `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` → `ERROR_ALREADY_EXISTS`)
 fails on the existing (symlink) target and we re-pick.
 
@@ -431,10 +471,13 @@ handle**, not a re-resolved path string:
    `final`). Both per-OS publish primitives accept a **destination dir fd / handle**, so
    the dir-handle-relative form is the *same* primitive, just rooted at the verified
    handle:
-   - **Unix:** `linkat(AT_FDCWD, tmp, dirfd, leaf, 0)` — or
-     `renameat2(olddirfd, tmp, dirfd, leaf, RENAME_NOREPLACE)` where supported (both take
-     a **`newdirfd`**). Fails `EEXIST` on collision → re-pick the next §2.2 variant. This
-     is exactly the §2.1.2 link/`renameat2(RENAME_NOREPLACE)` create-only publish, rooted
+   - **Unix:** `linkat(AT_FDCWD, tmp, dirfd, leaf, 0)` — or, where supported, the
+     single-call dir-relative no-replace primitive **named per platform**: Linux
+     `renameat2(olddirfd, tmp, dirfd, leaf, RENAME_NOREPLACE)` / macOS
+     `renameatx_np(olddirfd, tmp, dirfd, leaf, RENAME_EXCL)` (both take a
+     **`newdirfd`**). Fails `EEXIST` on collision → re-pick the next §2.2 variant. This
+     is exactly the §2.1.2 link / `renameat2(RENAME_NOREPLACE)` (Linux) /
+     `renameatx_np(RENAME_EXCL)` (macOS) create-only publish, rooted
      at the verified `dirfd` — **not** `openat(... O_CREAT|O_EXCL)`.
    - **Windows:** `NtSetInformationFile(tmpHandle, …, FileRenameInformationEx)` with a
      **`FILE_RENAME_INFORMATION_EX`** whose **`RootDirectory` = the verified parent dir
@@ -701,7 +744,7 @@ volume rule are owned by §2.14.2 (referenced here, not re-decided):
 
 | Trigger | Action |
 |---------|--------|
-| **Item success** | `renameat2`/`MoveFileExW` path: `tmp` was consumed by the publish — nothing to remove. **`link`+`unlink` fallback path:** the publish `link`ed `tmp→final`, so `unlink(tmp)` removes the `*.part`; if that unlink fails, the residual is reclaimed by the §2.6.4 sweep (annotated, not an item failure). |
+| **Item success** | **single-call path** (Linux `renameat2(RENAME_NOREPLACE)` / macOS `renameatx_np(RENAME_EXCL)` / Windows `MoveFileExW`): `tmp` was consumed by the publish — nothing to remove. **`link`+`unlink` fallback path** (either Unix OS where the single-call primitive is unavailable): the publish `link`ed `tmp→final`, so `unlink(tmp)` removes the `*.part`; if that unlink fails, the residual is reclaimed by the §2.6.4 sweep (annotated, not an item failure). |
 | **Item failure** (engine error, corrupt, etc.) | remove that item's `tmp`. |
 | **Cancel** (user) | §1.7 kills the engine group and, on a **bounded** confirm-wait, removes the killed item's `tmp`; **already-finished items are kept** (SSOT). **If the group-kill confirm-wait times out** (a wedged descendant still holding the `*.part`), reclamation of that publish temp is **deferred to the §2.6.4 sweep** and surfaced as a `CleanupResidue` on the Cancelled item (§2.6.4 case 3) — i.e. tmp is *not* unconditionally removed here. |
 | **Out-of-disk mid-write** | remove the partial `tmp`; report `OutOfDisk` (§2.8); **batch continues** (SSOT). |
@@ -750,7 +793,21 @@ instances** (instance A about to write into a dir does **not** delete a **live**
 B's in-progress `.part`, because B's lock is held). A lock that is **held** ⇒ live ⇒ the
 `.part` is **kept**; a lock that is **free, stale, OR entirely absent** ⇒ dead ⇒ the
 `.part` is reclaimable. (Only a currently-held lock blocks reclamation; an absent lock is
-not "uncertain" — it is dead.) This is why the publish temp is a uniquely-named **file**
+not "uncertain" — it is dead.)
+**Lock-before-part ordering invariant — what makes "absent ⇒ dead" SAFE `[DECIDED]`.**
+The "absent lock ⇒ dead ⇒ reclaimable" rule is correct **only because of a guaranteed
+ordering**: a run's `run-<RunId>/.lock` is **created and OS-locked BEFORE the run writes
+its first `.part`** (and held for the run's whole lifetime, released only at run-end /
+process exit). So there is **never** a window where a live in-progress `.part` exists while
+its owning `run-<RunId>/.lock` is absent — if instance B has written a `.part`, B's lock
+provably already exists and is held, so a concurrent instance A sweeping that dir finds the
+lock **held** and **keeps** B's live `.part`. Without this ordering, A could see a
+not-yet-created lock as "absent ⇒ dead" and delete B's live `.part`, violating the SSOT
+*"cleanup never removes another instance's in-progress file"*. The ordering is the
+**premise** the conclusion rests on; it is established by `crate::run` at run start (mint
+`RunId` → create `run-<RunId>/` → acquire the `.lock` → only then begin writing `.part`s)
+and is a §6 property-test target.
+This is why the publish temp is a uniquely-named **file**
 (not a subdir) named with the `InstanceId`+`RunId` — it makes the opportunistic same-dir
 sweep cheap, cross-instance-safe, and lock-addressable without scanning every instance
 subdir.
@@ -1085,6 +1142,24 @@ item-level kinds **and** the run/app-level kinds `MixedDrop`/`EngineMissing`/
 `WebviewFault`/`BundleDamaged` (§2.13) which `§0.4.3 ErrorKind` also carries — both
 are generated, neither is hand-written.)
 
+**Concrete anti-drift enforcement (not just "a check exists") `[DECIDED]`.** The
+`ConversionErrorKind` ↔ `§0.4.3 ErrorKind` byte-identical-variant-names guarantee is
+enforced by **one of two concrete mechanisms, recommended in order**:
+1. **Preferred — make `ErrorKind` a type alias for `ConversionErrorKind`** (`pub type
+   ErrorKind = ConversionErrorKind;`) with a single `#[serde(rename_all = "camelCase")]`
+   on the owner enum — then there is **one** enum, **no second list to drift**, and the
+   wire mirror is the same type. (Viable because both already derive the same traits and
+   carry the identical variant set incl. the run/app-level kinds.)
+2. **If a distinct type is required** (e.g. the wire enum must omit an internal-only
+   variant), keep two enums but add a **compile-time `static_assertions`** check
+   (`const_assert_eq!` on the variant counts) **plus** a `#[test]` that asserts every
+   `ConversionErrorKind` variant name has a same-spelled `ErrorKind` variant (a
+   `strum::VariantNames` round-trip) — so adding a variant to one without mirroring it in
+   the other **fails to compile / fails the test**, not merely the §06 codegen-drift diff.
+
+Either way a new variant **cannot silently fail to mirror**; the §06 bindings-drift check
+(§0.4.5) remains the third backstop. (§0.4.3 records the wire side of this decision.)
+
 ### 2.8.3 Behaviour rules tying the catalog to the pipeline `[DECIDED]`
 
 - **One message per failed item** — never a cascade of dialogs; failures collect
@@ -1266,7 +1341,10 @@ Offline is enforced **structurally**, not by policy, on two complementary halves
   file,pipe` + network-disabled build (SSRF) **and** concat `-safe 1` (never `-safe 0`) +
   a curated demuxer set without playlist/manifest dereferencing demuxers (absolute-file
   LFR), §3.5.1; pandoc `--sandbox` (§3.5.4); LibreOffice profile-hardening with no remote/
-  OLE link auto-update (§3.5.2); SVG/`<image href>` is not fetched by librsvg (images.md).
+  OLE link auto-update (§3.5.2); **SVG/librsvg — BOTH halves: no remote `<image href>`
+  fetch (SSRF) AND the absolute-file LFR half closed by staging the SVG into per-job
+  scratch on ALL platforms + base-URL-confining href/XInclude resolution to scratch +
+  refusing external resource loads (§3.5.5; §6.1.3 corpus assertion)**.
   The §2.12 wrapper's sandbox profile can **additionally** deny network syscalls and
   restrict the filesystem as defence-in-depth, but it is **not** the load-bearing control
   (it degrades to the cheap tier with no network/FS deny). These are content-fidelity
@@ -1313,11 +1391,26 @@ identically with networking disabled. This is a release gate, not a runtime chec
 > build controls — not "all engines bundled", and not the degradable §2.12.3 OS tier — as
 > the T9b evidence.
 
-- **Per-platform packet monitor / egress block (named, §6.7.3 owns the wiring):** the
-  gate runs under an **OS egress-deny** plus a packet-monitor assertion — **Linux**
-  `unshare --net` (loopback only) or `iptables -A OUTPUT -j DROP`; **macOS** a `pf`
-  outbound-deny profile; **Windows** a Windows Firewall outbound-deny rule — and any
-  outbound packet **fails the release** (zero observed is the load-bearing proof).
+- **Per-platform packet monitor / egress block — OBSERVE THE ATTEMPT, not just the
+  silence (named, §6.7.3 owns the wiring) `[DECIDED]`:** a **bare `-j DROP` / `unshare
+  --net` silently swallows the very outbound packet the monitor needs to see** — "zero
+  packets observed" then proves nothing (the deny itself hid the attempt). The gate must
+  therefore make a blocked-but-**attempted** egress **observable** and fail the release on
+  the attempt:
+  - **Linux:** instead of bare `-j DROP`, use **`iptables -A OUTPUT … -j LOG`/`NFLOG`** (log
+    the attempt) **or** `conntrack`/an `ACCEPT`-to-a-black-hole sink with a sniffer (`tcpdump`
+    on a dummy interface) — **or** `strace`/eBPF on `connect()`/`socket()`/`sendto()`; the
+    attempt is recorded above the drop. (`unshare --net` with loopback-only still works for
+    a *full block*, but pair it with `strace`/eBPF on the connect syscalls so an *attempt*
+    is visible, not silently dropped.)
+  - **macOS:** a `pf` profile that **logs** matched outbound (`pass log`/`block log` to
+    `pflog0` read by `tcpdump -i pflog0`) — or `dtrace` on the connect path — so the
+    attempt is captured even while blocked.
+  - **Windows:** a Windows Firewall outbound-**block** rule **with logging enabled**
+    (the dropped-packets log) — or ETW on the connect/socket path.
+
+  **Any observed outbound *attempt* fails the release** (zero *attempts* is the load-bearing
+  proof; "zero packets left the box" alone is not, because the deny would hide them).
 - **The §7.2.3 startup `--version` smoke-probe + warm-launch checks are WITHIN this
   gate's scope `[DECIDED]`.** Those probes **spawn third-party engine binaries**, so to
   prove "zero startup network" they run **inside the same packet-monitor / egress-deny
@@ -1368,12 +1461,12 @@ bounded by the §1.7 **timeout/kill**: after the per-job timeout (parameters own
 no SIGTERM, §1.7) → `EngineHang` (§2.8). The app stays responsive throughout (the
 core is async; the hung child is just a pending future that gets cancelled).
 
-### 2.12.3 Hardening the subprocess (defence-in-depth) `[OPEN — recommended tiers]`
+### 2.12.3 Hardening the subprocess (defence-in-depth) `[DECIDED — two tiers]`
 
-Beyond the process boundary, ConvertIA **should** drop the decoder's privileges so a
+Beyond the process boundary, ConvertIA drops the decoder's privileges so a
 *compromised* (not merely crashing) decoder can do minimal damage. The mechanism is
-**per-OS** and is the genuine `[OPEN]` here (it has real cost/portability
-trade-offs). Recommended, in priority order:
+**per-OS** and is split into two `[DECIDED]` tiers (the cheap tier is a hard v1 floor;
+the privilege-drop tier is best-effort, degrading silently — see the callout):
 
 - **All platforms (cheap, v1):** spawn each engine with **(a)** a working directory
   set to the **per-run scratch dir** (§2.6) so relative paths can't wander; **(b)**
@@ -1397,16 +1490,27 @@ trade-offs). Recommended, in priority order:
   via the Job/firewall. The Job Object is also what §1.7 uses for group-kill, so this
   is shared infrastructure.
 
-> `[OPEN]` (owner §2.12): **how deep the v1 sandbox tier goes per OS.** The
-> process-boundary + timeout + minimal-env + scratch-cwd tier is **non-negotiable
-> v1** (it is what the SSOT *requires*). The seccomp/Landlock/Seatbelt/Job-Object
-> *privilege-drop* tier is a **strong recommendation** but carries portability risk
-> (kernel/OS-version variance, the "portable, no-installation" constraint must not
-> need elevated rights to *run* the sandbox). **Recommendation: ship the cheap tier
-> in v1 on all three OSes, and the privilege-drop tier where it works without
-> requiring install-time privileges or breaking the portable build — degrading
-> gracefully to the cheap tier if a given machine can't enable it.** Flagged because
-> the exact per-OS depth is a real engineering decision feeding §0.11 and §6.
+> **v1 sandbox depth per OS — `[DECIDED]` (two tiers, owner §2.12):**
+> - **Cheap tier = the NON-NEGOTIABLE v1 floor on all three OSes `[DECIDED]`:** the
+>   §2.12.1 process boundary + the §1.7 timeout + a **minimal/cleared environment**
+>   (no inherited secrets, and **`LD_PRELOAD`/`LD_LIBRARY_PATH` (Linux) / `DYLD_*`
+>   (macOS) stripped**) + a **scratch-cwd** working directory + handing the engine only
+>   the exact input + `tmp` output paths. This tier needs no elevated rights and never
+>   breaks the portable build, so it ships **unconditionally** on Win/macOS/Linux. It is
+>   what the SSOT *Security posture* requires.
+> - **Privilege-drop tier = `[DECIDED]` best-effort, silent-degrade:** seccomp-bpf /
+>   Landlock (Linux), Seatbelt / `sandbox_init` profile (macOS), restricted-token /
+>   AppContainer + Job-Object + low-integrity (Windows). It is enabled **where it works
+>   WITHOUT install-time elevation and without breaking the portable build**, and
+>   **degrades silently to the cheap tier** on any machine/OS-version where it cannot be
+>   enabled (kernel too old, profile mechanism unavailable, portable-build constraint).
+>   It is **best-effort defence-in-depth, NOT a load-bearing guarantee** — the T9b
+>   network/LFR guarantee rests on the always-on argv/build controls (§3.5/§6.1.3), not
+>   on this tier (§0.11 T9b). So Phase 3 has a clear floor (cheap tier, mandatory) and a
+>   clear best-effort target (privilege-drop tier, where achievable).
+> The **only residual `[OPEN]`** is the *precise per-OS privilege-drop profile contents*
+> (which exact syscalls/paths each profile allows) — a tuning detail, not a commitment
+> question; the tier model itself is `[DECIDED]`. Feeds §0.11 and §6.
 
 ### 2.12.4 Where detection runs relative to the boundary `[DECIDED]`
 
@@ -1428,8 +1532,12 @@ reason: it is **pure memory-safe Rust** doing a **bounded, streamed** re-encode/
 (no third-party C/C++ decoder, no unbounded buffering — the §1.10 input-size guard bounds
 CSV-expansion DoS, §1.7 `InProcessNative` sub-case). The §2.12.4 **absolute is about
 third-party C/C++ decoders, not "only sniffs run in-core"** — so the native CSV/TSV path
-does not weaken it. Whether even the pure-Rust sniffs may stay outside the §2.12 boundary
-is the one tracked isolation-boundary `[OPEN]` (§1.2 1.2-sec / README log); the absolute
+does not weaken it. Whether the pure-Rust sniffs may stay outside the §2.12 boundary is
+now **`[DECIDED]`: yes** — the text-encoding heuristic, the Rust ZIP central-directory
+peek, and the `.svgz` bounded inflate (pure safe Rust, no C/C++ decoder, ≤64 KiB + ≤100×
+caps) **stay in-core** (memory-safe, bounded, not a full decode), so the §2.12.4 absolute
+is satisfied (it forbids third-party **C/C++** decoders in-core, which none of these are).
+(Moved off `[OPEN]` in the consolidation pass — README resolved log.) The absolute
 as worded above is **not** weakened by any of these because none invokes a third-party
 C/C++ decoder. This is true for **all** engines including the
 image core: image decode/encode runs in a **separate image-worker process**
@@ -1554,7 +1662,10 @@ startup/next-write sweep **opportunistically remove a sibling stale
 `.convertia-*.part`** (whose embedded `InstanceId`+`RunId` lets the sweep find the
 **exact** owning lock at `convertia/scratch/<InstanceId>.*/run-<RunId>/.lock` without
 scanning every instance subdir — and a lock that is **held** ⇒ live ⇒ skip; **free,
-stale, OR entirely absent** ⇒ dead ⇒ reclaimable) without having to discover and tear
+stale, OR entirely absent** ⇒ dead ⇒ reclaimable, **safe ONLY because of the §2.6.3
+lock-before-part ordering invariant** — `run-<RunId>/.lock` is created and held **before**
+the run writes its first `.part`, so a live `.part` can never coexist with an absent lock)
+without having to discover and tear
 down a directory, and it keeps the no-placeholder publish (§2.1.2) a single same-dir
 rename.
 This is what makes the §2.1 publish a true intra-volume atomic rename in the common
@@ -1592,6 +1703,16 @@ LibreOffice headless is **not** safely parallel under one profile) is a **kind-2
 working file: it lives in the per-run scratch root, one profile per run, so serialized
 LibreOffice invocations don't collide.
 
+**macOS TCC source-staging copy is a THIRD kind-2 contributor (macOS-only) `[DECIDED]`.**
+On macOS the Rust core **copies every beside-source input into kind-2 scratch before
+spawning** any engine (§3.5.0 / §7.2.6 TCC staging — the engine never first-touches a
+protected path). That staged copy is **input-sized, per item, on the scratch/system
+volume** — a real kind-2 footprint the §2.14.4 / §1.10 free-space model must count. On
+**Windows/Linux this term is 0** (no TCC, no staging). So on macOS the kind-2 estimate is
+`LibreOffice/FFmpeg working space + Σ(staged input sizes for in-flight items)`; a macOS
+batch of large videos/PDFs can exhaust the **system/scratch volume** even though the
+*output* fits the destination — which is exactly why it must be in the preflight.
+
 **Linux AppImage topology (no special handling needed) `[DECIDED]`.** On an AppImage,
 the app itself runs from a **read-only squashfs mount** — but the kind-2 scratch root
 resolves to **`app_local_data_dir()`** (under the user's writable home, e.g.
@@ -1618,7 +1739,8 @@ move-equivalent **inside** that volume:
    - copy the cross-volume temp into a **new** temp **on `final`'s volume**,
    - `sync_all()` it (durable),
    - then publish that same-volume temp → `final` with the **no-placeholder
-     exclusive-rename** (§2.1.2: Unix `link`/`renameat2(RENAME_NOREPLACE)`, Windows
+     exclusive-rename** (§2.1.2: Linux `renameat2(RENAME_NOREPLACE)` / macOS
+     `renameatx_np(RENAME_EXCL)` / common `link`+`unlink` fallback, Windows
      `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`) — intra-volume and exclusive,
      create-only, never a 0-byte placeholder,
    - `fsync` the destination directory (Unix) for durability.
@@ -1645,10 +1767,15 @@ the footprint is split by where each byte actually lands (§2.14.2):
 - **`est_output_bytes` + the kind-1 publish temp (`*.part`)** land on **each item's
   `final_dir` volume** (the destination volume, §2.14.1) — beside-source or divert.
 - **`est_scratch_bytes` (kind-2 engine working files — the LibreOffice per-run profile,
-  FFmpeg two-pass/internal temp)** land on the **system / scratch volume** that
+  FFmpeg two-pass/internal temp, **plus on macOS the Σ of staged input sizes**, §2.14.2)**
+  land on the **system / scratch volume** that
   `app_local_data_dir()`/`temp_dir()` resolves to (§2.14.2), which is **NOT** necessarily
   the destination volume (e.g. a beside-source-on-USB job: output → USB, kind-2 → internal
-  disk).
+  disk). **macOS TCC staging term `[DECIDED]`:** on macOS `est_scratch_bytes` **includes
+  the sum of staged input sizes** (the §3.5.0/§7.2.6 source-into-scratch copy, input-sized
+  per in-flight item) for the system/scratch volume; on **Windows/Linux this term is 0**
+  (no TCC staging). So a macOS batch of large inputs is checked against the scratch volume
+  for the staging copies, not only the destination volume for the outputs.
 
 So §1.10 **groups the footprint by physical volume across BOTH categories** and requires
 headroom on **every** volume the batch touches independently — the destination volume(s)

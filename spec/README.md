@@ -178,7 +178,10 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   per-arch files; `scripts/stage-engines` `lipo -create`s each sidecar. Owner: §6.1.3.
 - **E2E driver = `tauri-driver` (WebDriver), NOT Playwright** — Playwright cannot drive
   a Tauri WebView in CDP mode; use a WebDriver client (WebdriverIO / `webdriver` crate)
-  over `tauri-driver`. macOS remains `[OPEN]` (unsigned WKWebView). Owner: §6.4.6.
+  over `tauri-driver`. macOS automated E2E is **`[DECIDED]` a defined degraded smoke test**
+  (launch + synthetic-argv conversion + window/output/exit-0 assertions; `tauri-driver` has
+  no macOS WKWebView driver), with WebView UX covered by the §6.6 human walkthrough — no
+  longer `[OPEN]` (see the resolved-log entry below). Owner: §6.4.6.
 - **Offline-observability = hard gate** — the §6.4.6 E2E runs with **egress blocked**
   (Linux `unshare --net` / `iptables DROP`; macOS `pf`; Windows Firewall) **plus** the
   §2.11.4 packet-monitor assertion; any outbound attempt fails the release. Owner:
@@ -193,9 +196,15 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   EquivKeys is `[DEFER: post-v1]`. Owner: §2.5.2.
 - **OpenActions availability** — **Summary-only (state 8), not mid-run** — the run's
   RunResult-membership set is not final during `Converting`. Owner: §5.2 / §7.7.
-- **`renameat2(RENAME_NOREPLACE)` fallback** — chosen **at runtime per destination** on
-  `EINVAL` (not a static kernel switch), falling back to `link`+`unlink`; NFS ambiguous
-  rename → treat as name-may-be-taken and re-pick. Owner: §2.1.2.
+- **Exclusive create-only rename primitive named per platform** — Linux
+  `renameat2(RENAME_NOREPLACE)` / macOS `renameatx_np(RENAME_EXCL)` (macOS has NO
+  `renameat2`/`RENAME_NOREPLACE`) / Windows `MoveFileExW`-without-`REPLACE_EXISTING`. The
+  single-call no-replace primitive is chosen **at runtime per destination** (Linux
+  `EINVAL` / macOS filesystem lacking `VOL_CAP_INT_RENAME_EXCL` → fall back to
+  `link`+`unlink` for that destination; not a static kernel switch); the residual
+  `.part` success-window sub-state (§2.1.3) is the `link`+`unlink`-fallback case on
+  EITHER Unix OS, not a macOS-always penalty; NFS ambiguous rename → treat as
+  name-may-be-taken and re-pick. Owner: §2.1.2.
 - **Detection canonical type** — §1.2's `DetectionOutcome` is the one canonical type;
   §0.6's `DroppedItem.detected` carries it; the `DetectedFormat`/`DetectionConfidence`
   pair is retired (one confidence enum, one cardinality). Owner: §1.2 (referenced by §0.6).
@@ -204,8 +213,11 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   **Failed** (mid-run). Owner: §1.1 / §1.9 / §0.6.
 - **Target type name** — §1.5 adopts §0.6's `TargetOffer`/`Target` (the C3 return type);
   `OfferedTargets`/`OfferedTarget` retired. Owner: §0.6 (struct) / §1.5 (logic).
-- **`SkippedItem`** — defined in §0.6 `{ item, source, reason: ErrorKind }`;
-  `CollectedSet::Single` carries `skipped: Vec<SkippedItem>`. Owner: §0.6.
+- **`SkippedItem`** — defined in §0.6 `{ item, source, reason: SkipReason }` (NOT
+  `ErrorKind` — every SkippedItem is detection-ineligible so it always has a SkipReason,
+  making the §1.12 `OutcomeMsg::Skipped` projection a trivial copy; the forward
+  `SkipReason → ErrorKind` is the only, one-way, conversion, on the §1.12 projection
+  helper); `CollectedSet::Single` carries `skipped: Vec<SkippedItem>`. Owner: §0.6.
 - **CollectingId delivery** — the **frontend generates `CollectingId` and passes it as a
   C1 argument** (single-funnel); **no `collecting-started` event** — the §0.4.2 "no
   other events" invariant holds. Owner: §0.4.1 / §1.1.
@@ -295,7 +307,8 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   `FILE_RENAME_REPLACE_IF_EXISTS` (the Ex class's no-replace — NOT the boolean
   `ReplaceIfExists` of the non-Ex struct) → `STATUS_OBJECT_NAME_COLLISION`; bounded
   AV-retry on transient NTSTATUS `STATUS_ACCESS_DENIED`/`STATUS_SHARING_VIOLATION`. Unix
-  `linkat`/`renameat2(…, newdirfd, …, RENAME_NOREPLACE)` (NOT `openat O_CREAT|O_EXCL`).
+  `linkat` / Linux `renameat2(…, newdirfd, …, RENAME_NOREPLACE)` / macOS
+  `renameatx_np(…, newdirfd, …, RENAME_EXCL)` (NOT `openat O_CREAT|O_EXCL`).
   Owner: §2.3.3 / §2.1.2.
 - **libimagequant = BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** — upstream 4.x
   is GPLv3-or-commercial and must NOT ship; §6.1.3/§6.3.3 COPYRIGHT-text build assertion.
@@ -426,9 +439,13 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **`RunResult.divert_root: Option<PathBuf>`** added — `common_root` (beside-source) + a
   separate `divert_root` cover split outputs (one PathBuf can't carry both); §7.7.3
   membership covers both. Owner: §0.6 / §1.12 / §7.7.3.
-- **C4 vs C5 asymmetry enforced** — C4 fires once on the 3→4 transition and computes
-  `rerun`; a C4-after-C5 on the same collected-set is a no-op/error; C5 never recomputes
-  `rerun`. Owner: §0.4.1.
+- **C4 vs C5 asymmetry enforced** — C4 is callable at any point in state 4 (eager initial
+  call with the pre-highlighted default, then re-callable/debounced ~150 ms on any
+  target/option change, §5.8) and computes `rerun` + the §1.10 `preflight` verdict; it
+  **freezes after** a C5 on the same collected-set (a C4-after-C5 is a no-op/error); C5
+  never recomputes `rerun` and re-evaluates only the destination-volume `preflight`. The
+  ONLY ordering rule is the post-C5 freeze — there is no "fires exactly once". Owner:
+  §0.4.1.
 - **`OutputPlan.scratch_dir` → `publish_temp_dir`** (= `final_dir` in v1; the `*.part` is a
   sibling dotfile, not a subdir, §2.14.1); kept distinct from the kind-2 engine scratch
   root. Owner: §1.8 / §0.6.
@@ -439,7 +456,9 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **Publish temp embeds `InstanceId`+`RunId`** (`.convertia-<InstanceId>-<RunId>-<jobId>-
   <rand>.part`) so the opportunistic same-dir sweep resolves the exact owning lock
   cross-instance — never deletes a live foreign instance's `.part`; absent lock ⇒ dead ⇒
-  reclaimable. Owner: §2.14.1 / §2.6.3.
+  reclaimable **— safe ONLY because of the lock-before-part ordering invariant**:
+  `run-<RunId>/.lock` is created + OS-locked BEFORE the run writes its first `.part`, so a
+  live in-progress `.part` can never coexist with an absent lock. Owner: §2.14.1 / §2.6.3.
 - **Windows publish primitive = §2.3.3 dir-handle-relative `NtSetInformationFile`** for
   every publish incl. the §2.2.2 numbering loop (the bare path-string `MoveFileExW` is only
   the conceptual shape). Owner: §2.2.2 / §2.3.3.
@@ -450,8 +469,10 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   it is about third-party C/C++ decoders, not "only sniffs in-core"; the pure-Rust bounded
   CSV transform is acceptable. Owner: §2.12.4.
 - **Video probe-then-encode is two sub-invocations of one engine, not a chain** — `plan()`
-  stays Pure; §1.7 runs ffprobe, feeds the result back, then spawns ffmpeg. Owner: §3.2.1
-  / §1.7 / §3.5.1.
+  stays Pure and returns the `ffprobe` invocation; §1.7 spawns it, parses a typed
+  `ProbeOutput`, then calls `Engine::plan_encode(job, out_tmp, &probe)` (a second trait
+  method) to build the encode `Invocation` with `duration_us` taken FROM the probe — NO
+  in-place `progress.duration_us` struct mutation. Owner: §3.2.1 / §1.7 / §3.5.1.
 - **`PPTX → PPT` is `✓~` lossy (`pptx_to_ppt_legacy`)** — legacy BIFF8 can't hold SmartArt
   / modern charts / Morph; **`PPT → PPTX` (modernizing) stays plain `✓`**. New §2.9
   LossyKind added. Owner: presentations.md / §2.9.
@@ -482,12 +503,81 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   §6.4.6/§6.6.
 - **`MixedDropRefusal` is a full-screen STATE, not a modal** — own active re-drop DropZone
   (disabled-while-converting guard inert), `aria-live=assertive` heading, NOT
-  `role=alertdialog` (reserved for RerunPrompt/UnsupportedNotice/QuitConfirm); its own
+  `role=alertdialog` (the `role=alertdialog` decision dialogs are RerunPrompt + QuitConfirm
+  only — UnsupportedNotice is ALSO full-screen and AboutDialog is `role=dialog`; superseded
+  by the consolidation-pass bullet below); its own
   §5.10 Esc→Idle row. **Summary focus-on-entry** + **AppFault scoped to the run path**
   (pre-run C3/C4/C5 rejections render inline) decided. `BatchSummary.sampleNames` is
   client-derived (not a wire field). Owner: §5.6 / §5.2 / §5.5 / §5.10 / §5.3.
 - **`willReencode` generated binding is non-optional `boolean`** — the `?` dropped from the
   §0.4.2 table + §5.8 comments to match the Rust `bool`. Owner: §0.4.2 / §5.8.
+
+#### Resolved in the consolidation pass `[DECIDED]`
+- **C4 call-frequency = multi-call in state 4, freeze after C5** — C4 is callable at any
+  point in state 4 (eager initial call + debounced re-calls on target/option change, §5.8)
+  and computes `rerun` + the §1.10 `preflight`; the one-shot "fires exactly once" rule is
+  removed; the ONLY ordering rule is the post-C5 freeze. Owner: §0.4.1 / §5.8.
+- **Exclusive-rename primitive named per platform** — Linux `renameat2(RENAME_NOREPLACE)`
+  / macOS `renameatx_np(RENAME_EXCL)` (macOS has NO renameat2) / Windows
+  `MoveFileExW`-without-`REPLACE`; common `link`+`unlink` fallback; residual `.part`
+  sub-state (§2.1.3) is the fallback case on EITHER Unix OS. Owner: §2.1.2 / §2.3.3.
+- **Mid-run launch-intake = refuse-busy on ALL platforms** — a macOS `RunEvent::Opened` /
+  argv / second-instance arriving while a run is in flight is refused-busy (paths dropped)
+  via the shared `forward_launch_intake` funnel; while idle it starts a new frozen set.
+  The §1.1 "starts a new batch mid-run" line is corrected. BusyNotice surfaces only on the
+  UI defence-in-depth guard; the core-primary path's feedback is the window re-focus.
+  Owner: §1.1 / §7.1.1 / §7.8.1 / §5.8.
+- **LGPL link assertion scoped by linkage site** — shared-object/relinkable LGPL required
+  only where linked into the MIT core (§6.1.3 carve-out i); the separate image-worker may
+  statically link the LGPL stack as aggregation BUT must ship the relinkable-source bundle
+  (LGPL §6, carve-out ii, asserted by the build); FFmpeg-internal static LGPL is
+  aggregation (carve-out iii). Resolves the §6.1.3-vs-§3.5.5 static-link contradiction.
+  Owner: §6.1.3 / §3.5.5 / §3.6.1.
+- **SVG/librsvg local-file LFR (T9b) closed** — the image-worker configures librsvg to
+  refuse ALL external resource loads (no remote href AND no local `<image href>`/XInclude
+  out-of-input file read) and stages the SVG into per-job scratch on ALL platforms; §6.1.3
+  corpus assertion + §0.11 T9b / §2.11.1 cite the SVG control alongside FFmpeg/pandoc/LO.
+  Owner: §3.5.5 / §3.3.4 / §0.11 T9b / §2.11.1 / §6.1.3.
+- **Lock-before-part ordering invariant** — `run-<RunId>/.lock` is created and OS-locked
+  BEFORE the run writes its first `.part`; the opportunistic same-dir sweep's
+  "absent-lock ⇒ reclaimable" rule is safe ONLY because of this guaranteed ordering.
+  Owner: §2.6.3 / §2.14.1.
+- **§0.7 guarantees-layer module paths + outcome/error naming** — §0.7 maps
+  `src-tauri/src/run/` (crate::run), `outcome/` (crate::outcome), `isolation/`
+  (crate::isolation); the §2.8 taxonomy module is renamed `outcome.rs` (crate::outcome) to
+  match §2.0 — one canonical spelling, no error.rs/outcome clash. Owner: §0.7 / §2.0.
+- **`SkippedItem.reason: SkipReason`** (was `ErrorKind`) — all SkippedItems come from
+  detection-ineligible outcomes which all have a SkipReason, so the `OutcomeMsg::Skipped`
+  projection is a trivial copy; the forward `SkipReason → ErrorKind` is the only
+  (one-way) conversion, moved onto the projection helper. Owner: §0.6 / §1.12 / §2.8.
+- **Pre-flight-skip Channel emission policy = RunResult-only (no live ItemFinished)** —
+  pre-flight-skipped items are NOT emitted as live `ItemFinished{Skipped}` Channel events;
+  they appear only in the terminal `RunFinished → RunResult.items`. The `ItemOutcome::
+  Skipped` variant is reserved for that projection path. Owner: §0.4.2 / §1.9 / §1.12.
+- **Video two-phase plan contract = `plan_encode(ProbeOutput)` trait method** — `plan()`
+  returns the probe `Invocation`; the §3.2 Engine trait gains
+  `plan_encode(&self, probe: ProbeOutput) -> Invocation`; `duration_us` is provided BY the
+  probe output (carried into `plan_encode`), NOT mutated on a prior struct. The §3.5.1
+  "sets progress.duration_us" in-place-mutation sentence is removed. Owner: §3.2.1 / §1.7
+  / §3.5.1.
+- **`lastDestinationMode` read/inject flow** — on startup the frontend reads
+  `lastDestinationMode` from `tauri-plugin-store`; it is the default destination arg on
+  C4's first Targets-entry call; a stored absolute path is a re-validated "preferred" hint
+  (§7.4.1), falling back to beside-source on failure. Owner: §5.8 / §5.5 / §7.4.
+- **OpenKind = three variants with full §7.7.1 mapping; Summary split-divert two buttons**
+  — `OpenKind { Folder, File, RevealInFolder }` each maps to a concrete OpenerExt call
+  (§7.7.1); when `RunResult.divert_root` is `Some`, §5.3 OpenActions renders TWO
+  open-folder buttons (beside-source `common_root` + the divert root), both via
+  `RevealInFolder`. Owner: §5.3 / §5.2 / §0.6 / §7.7.1.
+- **UnsupportedNotice = full-screen state, not a modal** — removed from the
+  `role=alertdialog` lists; `aria-live=assertive` heading on entry, focus → DropZone on
+  dismiss, its own §5.10 Esc row. AboutDialog moved to `role=dialog` + `aria-modal=true`
+  (informational, not an alert); the `role=alertdialog` decision dialogs are now ONLY
+  RerunPrompt + QuitConfirm. Owner: §5.6 / §5.7 / §5.10.
+- **§6.7.1 Lane A a11y leg = ARIA/role + focus-order only; contrast on Lane B** — the
+  WCAG 2.1 AA contrast check runs on the `@axe-core/webdriverio` Lane-B session (jsdom
+  cannot measure computed contrast, §6.4.6a); removed from the Lane A bullet. Owner:
+  §6.7.1 / §6.4.6a.
 
 ### Deferred to corpus / usability validation `[DEFER: corpus]`
 > Design decided; only an empirical number or a real-world validation remains. These
@@ -535,26 +625,31 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   must assert it covers every decoder the 04 matrices reference (`ffmpeg -decoders`
   build assertion + §6.4.3 per-pair tests). Owner: §6.1.3 / §3.1.
 
-### Genuinely still open `[OPEN]` (owner-level, not yet resolvable)
-- **Decoder-isolation v1 sandbox depth per OS** — the cheap tier (process + timeout +
-  minimal-env + scratch-cwd, incl. stripping `LD_PRELOAD`/`LD_LIBRARY_PATH`/
-  `DYLD_*`) is non-negotiable v1; how far the privilege-drop tier (seccomp/Landlock /
-  Seatbelt / Job-Object + low-integrity) goes is a real engineering/portability call.
-  Owner: §2.12. *(Note: the libvips in-process-vs-worker question is now DECIDED —
-  separate image-worker process — and is no longer open. **Also DECIDED:** the engine
-  network+file control for T9b is NOT this OS tier — it is the always-on, cheap-tier
-  **argv/build** control on **both** halves (FFmpeg `-protocol_whitelist file,pipe` +
-  network-disabled build for SSRF, concat `-safe 1` + curated demuxer set for absolute-
-  file LFR, pandoc `--sandbox`, LibreOffice link-update-off, §3.5.1/§3.5.4/§3.5.2 +
-  §6.1.3 `-protocols`/`-demuxers` assertions); the OS network/FS-deny is defence-in-depth
-  only. So only the privilege-drop **depth** is open, not the network OR the LFR
-  guarantee.)*
-- **In-core memory-safe sniffs vs the §2.12 isolation boundary** — may the
-  **text-encoding heuristic**, the **Rust ZIP central-directory peek**, and the
+#### Resolved in the consolidation pass (moved off `[OPEN]`) `[DECIDED]`
+- **Decoder-isolation v1 sandbox depth per OS — `[DECIDED]` (two-tier model, §2.12.3).**
+  The **cheap tier** (process boundary + timeout + minimal/cleared env incl. stripping
+  `LD_PRELOAD`/`LD_LIBRARY_PATH`/`DYLD_*` + scratch-cwd + input/tmp-only paths) is the
+  **non-negotiable v1 floor on all three OSes**. The **privilege-drop tier**
+  (seccomp/Landlock, Seatbelt/`sandbox_init`, restricted-token/AppContainer +
+  Job-Object + low-integrity) is **`[DECIDED]` best-effort, silent-degrade** — enabled
+  where it works without install-time elevation / portable-build breakage, degrading to
+  the cheap tier otherwise — and is **NOT load-bearing** (the T9b network/LFR guarantee
+  rests on the always-on argv/build controls §3.5/§6.1.3, not this tier). The only
+  residual is the **precise per-OS profile contents** (`[DEFER: tuning]`, not a
+  commitment). Owner: §2.12.3.
+- **In-core memory-safe sniffs vs the §2.12 isolation boundary — `[DECIDED]` (§2.12.4).**
+  The **text-encoding heuristic**, the **Rust ZIP central-directory peek**, and the
   **`.svgz` bounded inflate** (`flate2 rust_backend`/miniz_oxide — pure safe Rust, **no
-  C/C++ decoder**; capped at ≤64 KiB inflated + ≤100× ratio, §1.2 step 2) stay outside
-  the §2.12 isolation boundary (lean: yes — all memory-safe/bounded, none is a full
-  decode and none links a third-party C/C++ decoder). The §2.12.4 absolute is worded "no
-  third-party **C/C++** decoder in-core" so these three do not violate it. Owner: §2.12
-  (raised by §1.2). *(This is the one genuinely-open isolation-boundary owner call;
-  everything else from the prior convergence pass is now DECIDED or DEFER:corpus.)*
+  C/C++ decoder**; capped ≤64 KiB inflated + ≤100× ratio, §1.2 step 2) **stay outside the
+  §2.12 isolation boundary** — all are memory-safe/bounded, none is a full decode, none
+  links a third-party C/C++ decoder, so none violates the §2.12.4 "no third-party C/C++
+  decoder in-core" absolute (which is worded exactly that way for this reason). Owner:
+  §2.12.4 (raised by §1.2). *(§2.12.4 already DECIDED this; moved here off `[OPEN]`.)*
+
+### Genuinely still open `[OPEN]` (owner-level, not yet resolvable)
+- **None at the owner level after the consolidation pass.** All prior `[OPEN]` items are
+  now `[DECIDED]` or `[DEFER: corpus]` (above). The remaining unknowns are **empirical
+  calibration only** (`[DEFER: corpus/build]` — resource-budget digits, the ≤400 MB
+  compressed ceiling vs full-CJK+pandoc upper bound, CJK font breadth, the per-OS
+  privilege-drop profile contents) — design-decided, awaiting a measured number or a
+  real-world validation, not an owner-level design call.

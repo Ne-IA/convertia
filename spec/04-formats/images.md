@@ -438,7 +438,12 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
 - **Engine(s):** **svg** rasteriser (**librsvg**, libvips' native `svgload` backend)
   invoked **as libvips' SVG load module**, then the bitmap is saved by **vips** —
   **one process** for the pair. No scripting, no external/`href` network fetch
-  (offline + security: a remote `<image href>` is **not** fetched). No patent.
+  (offline + security: a remote `<image href>` is **not** fetched), **and no out-of-input
+  local-file read** — the SVG is staged into per-job scratch on ALL platforms and
+  librsvg's base URL is set to that scratch dir, confining `<image href>`/XInclude
+  resolution to scratch (a `../`-escape is rejected), plus external resource loads are
+  refused outright (the T9b absolute-file LFR control, §3.5.5 / §6.1.3 corpus assertion).
+  No patent.
 - **Options/settings:**
   - *Basic:* **Output size.** Default render at the SVG's **intrinsic size** if it
     has explicit `width`/`height`; if it only has a `viewBox`, default to a sane

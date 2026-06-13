@@ -74,8 +74,8 @@ This is the actionable owner of "stay light"; the budget itself is owned by **§
 §3.3 owns the bundling model and §3.4 the patent matrix; **this file owns the
 build-time mechanics that realise them**:
 
-- Copyleft engines (FFmpeg, LibreOffice, poppler, pandoc, Ghostscript-if-shipped)
-  are **separate invoked binaries** (§3.6). They are placed under
+- Copyleft engines (FFmpeg, LibreOffice, poppler, pandoc — **Ghostscript: `[DECIDED]` NOT
+  shipped v1**, §3.1) are **separate invoked binaries** (§3.6). They are placed under
   `src-tauri/binaries/` (sidecars) and/or `src-tauri/resources/` (engine support
   trees like the LibreOffice program dir + the bundled font set, §3 / documents.md
   fonts `[OPEN]`), and declared in `tauri.conf.json`:
@@ -107,18 +107,39 @@ build-time mechanics that realise them**:
   §3.4**. A patent-gapped engine (e.g. an HEVC encoder absent on a platform) is
   simply not staged there; the affected target is surfaced as unavailable in the UI
   (§5.2, sourced from §3.4) — **never a silent omission** (SSOT *v1 DoD* exception 1).
-- **LGPL dynamic-link assertion (§3.6.1 build rule):** the stage step verifies the
-  LGPL libraries (libvips, libheif, libde265, librsvg, and the **external LGPL FFmpeg
-  component libs** `libmp3lame`/`libvorbis`/`libopus`) are present as **bundled shared
-  objects** (`.so`/`.dylib`/`.dll`) beside the binary — not statically absorbed into a
-  single MIT executable — so the LGPL §6 relinkability path holds. A static LGPL link is
-  a **build failure** (it would taint the MIT core). **Scope clarification `[DECIDED]`:**
-  the assertion targets the **LGPL libs ConvertIA links into the MIT core / LGPL
-  image-worker** (libvips et al.) and the **external** LGPL libs dynamically linked
-  *beside* the FFmpeg binary; it does **NOT** apply to FFmpeg-*internal* static LGPL — a
-  static GPL FFmpeg with `libmp3lame`/`libvorbis`/`libopus` baked in is GPL-clean (GPL
-  permits static LGPL) and the whole binary is aggregation (§3.6.1), so it must not fail
-  the assertion for a non-licence reason.
+- **LGPL link assertion (§3.6.1 build rule) — scoped by WHERE the lib is linked
+  `[DECIDED]`:** the LGPL §6 obligation differs for the MIT core vs the separate
+  image-worker, and the assertion must match (a single blanket "all LGPL must be shared,
+  static = fail" rule would WRONGLY fail the statically-linked image-worker that §3.5.5/
+  §3.6.1 mandate as aggregation). Three carve-outs:
+  - **(i) LGPL linked into the MIT core (the Tauri app binary) → MUST be shared/relinkable.**
+    Any LGPL lib linked into the MIT core binary itself must be a **bundled shared object**
+    (`.so`/`.dylib`/`.dll`) — a static LGPL link into the MIT core is a **build failure**
+    (it would taint the MIT core; Rust links statically by default, so this is enforced).
+    The **external LGPL FFmpeg component libs** (`libmp3lame`/`libvorbis`/`libopus`)
+    dynamically linked *beside* the FFmpeg binary are verified present as shared objects
+    too (LGPL §6 relinkability beside the GPL exe).
+  - **(ii) LGPL inside the separate image-worker (libvips/libheif/libde265/librsvg) →
+    static LGPL is acceptable AGGREGATION, but carries the LGPL §6 relink obligation.**
+    The image-worker is its **own binary** (a separate process, §3.5.5), so a static LGPL
+    link inside it is **aggregation**, not a link into the MIT core — it must **NOT** fail
+    the build for being static. **BUT** LGPL §6 relinkability still applies to a statically
+    linked LGPL executable, so this carve-out **carries an obligation, not just an
+    exemption**: the build **MUST ship the image-worker's complete corresponding source +
+    the LGPL object files** (or a documented relink recipe / `Makefile` target) alongside
+    the release so a user can relink the worker against a modified LGPL lib (§3.6.2
+    written-offer + §3.7 SBOM record the exact pinned source). The stage step **asserts the
+    relinkable-source bundle (object files / recipe) is present** for the static image-worker
+    and **fails the build if it is missing** — mirroring the FFmpeg carve-out below.
+  - **(iii) FFmpeg-internal static LGPL → aggregation, never fails the assertion.** A
+    static GPL FFmpeg with `libmp3lame`/`libvorbis`/`libopus` baked in is GPL-clean (GPL
+    permits static LGPL) and the whole binary is aggregation (§3.6.1), so it must not fail
+    the assertion for a non-licence reason.
+
+  Summary: **shared-object / relinkable LGPL is required only where the lib is linked into
+  the MIT core (carve-out i); the separate image-worker (ii) and FFmpeg (iii) are
+  aggregation — static LGPL is permitted there, with (ii) owing the §6 relinkable-source
+  bundle.**
 - **libvips no-copyleft-PDF-loader assertion (§3.1/§3.6.1 build rule) `[DECIDED]`:** the
   bundled libvips MUST be configured **WITHOUT the poppler/PDF loader (GPL — it makes
   the whole libvips build effectively GPL, libvips#2222), WITHOUT the MuPDF loader
@@ -142,8 +163,13 @@ build-time mechanics that realise them**:
 - **Exposed-parameter capability assertions (against the §3.8-pinned versions) `[DECIDED]`:**
   the per-format option names ConvertIA exposes must actually exist in the staged engine
   builds, so the stage step asserts (and **fails the build** on a miss): (1) the **FFmpeg
-  `paletteuse` dither modes** the video→GIF path exposes (`bayer`, `sierra2_4a`,
-  error-diffusion — cross-category.md) are present in the staged `ffmpeg -h filter=paletteuse`;
+  `paletteuse` dither modes** the video→GIF path exposes — the **canonical v1-exposed set is
+  exactly `bayer`, `sierra2_4a`, `floyd_steinberg`, `none`** (cross-category.md [OPEN-D]
+  `[DECIDED]`; `none`/`floyd_steinberg` are valid `paletteuse` values and `floyd_steinberg`
+  IS the "error-diffusion" mode — there is no separate generic value) — are **all** present
+  in the staged `ffmpeg -h filter=paletteuse`. The assertion checks **this exact enumerated
+  list** (the same four cross-category.md exposes in its Dither option), so the asserted set
+  and the UI-exposed set cannot drift;
   (2) the **libvips `webpsave`/`heifsave` `effort` parameter** (and `Q`) exists in the staged
   libvips (images.md exposes `effort` for WEBP/AVIF) — `vips webpsave`/`heifsave` arg
   introspection. These prevent a version bump from silently dropping an exposed knob.
@@ -171,6 +197,15 @@ build-time mechanics that realise them**:
   `-protocol_whitelist file,pipe` + `-safe 1` are the always-on runtime half, and the
   §6.4.2 adversarial-egress case (zero egress **AND** no out-of-input file read) is the
   runtime proof.
+- **SVG/librsvg external-resource (LFR) corpus assertion `[DECIDED]` (T9b absolute-file
+  LFR, §0.11 / §3.5.5):** a corpus case feeds the image-worker a **crafted SVG with an
+  external `<image href>`** — both a relative `../`-escape (`href="../secret.txt"`) and an
+  absolute `file:///etc/passwd`-style reference — pointing at a known out-of-input
+  sentinel file, and **fails the build/test if the rasterised output embeds any sentinel
+  bytes** (it must not — librsvg's base-URL confinement to the per-job scratch dir +
+  external-resource refusal reject the reference). This is the SVG analogue of the §6.4.2
+  FFmpeg adversarial-egress case, giving the SVG vector the same proof-parity as
+  FFmpeg/pandoc/LibreOffice.
 
 ### 6.1.4 CI runners
 
@@ -179,6 +214,22 @@ build-time mechanics that realise them**:
 | Windows | `windows-latest` (x64) | Rust (MSVC host triple), Node + pnpm | WebView2 is preinstalled on supported Windows; **not** bundled (no-network forbids downloading it at runtime — §0.3.1 owns the floor). **CI-realism note `[DECIDED]`:** WebView2's presence is a **runner-IMAGE property** (true on the `windows-latest` image) — **not guaranteed if the image is later pinned to a specific version**, so the E2E step verifies WebView2 is present on the pinned image. The Windows runner provides a **virtual desktop**, so — unlike the Linux/Xvfb leg — the §6.4.6 E2E needs **no extra display setup**. NSIS provided by tauri-cli. |
 | macOS | `macos-latest` (Apple Silicon) building `universal-apple-darwin` | Rust with **`rustup target add aarch64-apple-darwin x86_64-apple-darwin`** (both targets — prerequisite for the universal build and for `lipo`-merging each sidecar into its single `<name>-universal-apple-darwin` fat binary, §6.1.3), Node + pnpm | Xcode CLT for `lipo`/codesign-less packaging. No notarization step (out of scope). **Dual-arch engine sourcing (Lane-B operational prerequisite) `[DECIDED]`:** the universal build runs on an **arm64** runner, so the **engine-asset cache (§6.1.3) MUST supply pre-built binaries for BOTH `aarch64-apple-darwin` AND `x86_64-apple-darwin`** for every sidecar/lib — `scripts/stage-engines` `lipo -create`s them per §6.1.3, and it cannot lipo a slice it doesn't have. The cache provides the x86_64 slices (this is the hardest practical part); building x86_64 engines on an arm64 runner from source needs the cross toolchain / Rosetta 2 and is the documented fallback only. |
 | Linux | **`ubuntu-22.04` (pinned, NOT `ubuntu-latest`) `[DECIDED]`** | Rust, Node + pnpm | `libwebkit2gtk-4.1-dev`, `libappindicator`, `librsvg2-dev`, `patchelf`; **plus FUSE 2** for the AppImage. **Pin rationale + two FUSE notes `[DECIDED]`:** the runner is pinned to **`ubuntu-22.04`** (not the drifting `ubuntu-latest`) for **(i)** glibc-floor stability (older glibc = wider compatibility, §0.3.1 floor) and **(ii)** to avoid **FUSE2-vs-FUSE3 drift** — `ubuntu-latest` rolling to 24.04+ broke `libfuse2` packaging (the time_t `libfuse2t64` rename). (1) **FUSE 2 is a RUNTIME dependency, not build-time** — an AppImage *mounts* itself via FUSE 2 at launch, so the **end user's machine needs `libfuse2`**; the download page must disclose this (a bare "download, run, done" is false on a distro shipping only FUSE 3 — alternatively `tauri build` / the AppImage runs with `--appimage-extract-and-run`, which needs **no** FUSE at all and is the recommended CI invocation to sidestep the issue entirely). (2) If a newer runner is ever used, the install step must handle both package names (`libfuse2 \|\| libfuse2t64`) or use `--appimage-extract-and-run`. |
+
+**macOS/Windows runner-pin asymmetry — explained + drift-guarded `[DECIDED]`.** The Linux
+leg is pinned (`ubuntu-22.04`) for the glibc/FUSE reasons above; macOS/Windows are left at
+**`macos-latest`/`windows-latest`** *deliberately*, with a guard rather than a hard pin:
+- **Why not hard-pin them:** the §0.3.1 floor for Win/macOS is "rely on the OS WebView2 /
+  WKWebView present on the supported OS" — building on the *current* image is the realistic
+  end-user baseline, and unlike Linux there is no glibc-floor / FUSE-packaging hazard that a
+  newer image reopens. `macos-latest` rolling (Sonoma → Sequoia) *can* change Xcode CLT /
+  the default deployment target, which affects the universal build + the sidecar `lipo`.
+- **Drift guard (the price of `latest`) `[DECIDED]`:** each macOS/Windows leg **records the
+  resolved image label + Xcode/CLT (macOS) / WebView2 (Windows) version as a release-asset
+  line**, and the build **fails if the macOS deployment target drifts below the §0.3.1
+  floor** (`MACOSX_DEPLOYMENT_TARGET` assertion = `11.0`) or WebView2 is absent on the
+  image — so a `latest` roll surfaces loudly, not silently. If a future roll breaks the
+  build, the fallback is to **pin to the last-known-good label** (e.g. `macos-15` /
+  `windows-2025`) — recorded as the remedy, not pre-applied.
 
 The platform CI standard (`reference_self_hosted_ci_runner.md`) runs a **self-hosted
 VPS runner** for the Ne-IA org's existing four projects. ConvertIA's build matrix
@@ -318,10 +369,16 @@ libheif plugin GPL; the **required** ImageMagick permissive; …). (Ghostscript 
 sbom`** build step (the single named tool — it reads `engines.lock` + the
 `cargo cyclonedx`/pnpm outputs and emits one document); CI does not invent a second
 merger. **Pin the CycloneDX schema version `specVersion 1.5` for ALL inputs `[DECIDED]`:**
-`cargo cyclonedx` now defaults to **1.6**, so merging mixed-version CycloneDX docs can
-**fail the schema gate**. **Verified `[DECIDED]`:** `cargo-cyclonedx` **does expose
-`--spec-version` with `1.3 | 1.4 | 1.5`** (1.5 supported since the CycloneDX-1.5 release;
-the §3.8-pinned `cargo-cyclonedx` version MUST be one that exposes it). `cargo xtask sbom`
+different generators (and different `cargo-cyclonedx` versions) **default to different
+specVersions**, so merging mixed-version CycloneDX docs can **fail the schema gate** — we
+therefore pin **1.5 explicitly on every input** rather than relying on any tool default.
+**Verified `[DECIDED]`:** `cargo-cyclonedx` **does expose `--spec-version` (values incl.
+`1.3 | 1.4 | 1.5`)** (1.5 supported since the CycloneDX-1.5 release; the §3.8-pinned
+`cargo-cyclonedx` version MUST be one that exposes it). `[DEFER: verify]` the **exact
+default specVersion of the §3.8-pinned `cargo-cyclonedx`** at pin time and record it
+factually here — we do not rely on it (we pass `--spec-version 1.5` regardless), but the
+note should state the pinned tool's real default rather than a speculative "now defaults to
+1.6". `cargo xtask sbom`
 MUST pass **`--spec-version 1.5`** to `cargo cyclonedx` **and** to the pnpm/npm CycloneDX
 generator (so every input is 1.5 before merge), and **abort the merge on a schema-version
 mismatch** rather than emit an invalid mixed-version document. If a future pinned version
@@ -449,11 +506,23 @@ and stub/real engines:
 - **Adversarial-egress / network-trigger inputs (§0.11 T9b, §3.5.1/§3.5.4/§3.5.2)
   `[DECIDED]`:** a small **adversarial-network corpus** — an HLS `.m3u8` / DASH `.mpd` /
   `-f concat` script / external-reference-box MP4 (FFmpeg), a remote-`<img>`/RST-include
-  document (pandoc), a remote/OLE-link office file (LibreOffice), a remote-`href` SVG
-  (librsvg) — is converted **inside the §6.7.3 packet-monitor / egress-deny window** and
-  must produce **(a) zero outbound packets AND (b) no out-of-input file read** (verified
-  by running the convert with only the input + scratch reachable, e.g. under the §2.12
-  scratch-cwd with strace/fs-audit). This is a **distinct case from the benign §2.11.4
+  document (pandoc), a remote/OLE-link office file **AND a `WEBSERVICE()`/external-data-range
+  `.xlsx`** (LibreOffice Calc, §3.5.2), a remote-`href` **and an external local-`<image
+  href>` `../`-escape** SVG (librsvg, §3.5.5) — is converted **inside the §6.7.3
+  packet-monitor / egress-deny window** and
+  must produce **(a) zero outbound packets AND (b) no out-of-input file read** (the
+  out-of-input-read half is asserted by a known out-of-input sentinel file the engine must
+  NOT read/embed).
+  - **fs-audit-half enforcement dependency `[DECIDED]`:** the "no out-of-input file read"
+    half typically uses **`ptrace`** (strace / an `ptrace`-based fs-audit), which is
+    **commonly blocked inside CI containers** (no `SYS_PTRACE` capability) → the check
+    would silently not-enforce. So: run this leg with **`docker --cap-add SYS_PTRACE`**
+    (or outside Docker on the §6.1.4 self-hosted VPS runner); **if `ptrace` is unavailable,
+    the fallback is the §2.12.3 Linux Landlock tier** — restrict the decoder to `{input
+    ro, scratch rw}` and treat **the grant itself as the enforcement** (an out-of-input
+    open is denied by the kernel, observable as the engine's `EACCES`), so the property
+    holds without `ptrace`. **§6.1.4 must document which enforcement path the runner uses.**
+  This is a **distinct case from the benign §2.11.4
   gate** and proves the argv/build controls — not "all engines bundled" — close T9b.
 - **Cancellation (§1.7/§1.11):** mid-batch cancel keeps finished items, discards the
   in-flight one with no partial leftover, never touches originals.
@@ -554,6 +623,16 @@ covers   = [              # the (source→target) pairs this file backs (§6.4.3
 > every `[file.expect]` key has a matching `covers` 2-tuple (so the two stay in step)
 > — but the machine-checkable coupling is always the array.
 
+> **Manifest layout + discovery `[DECIDED]`.** There is **ONE root manifest
+> `tests/corpus/manifest.toml`** listing **all** `[[file]]` entries by their
+> `tests/corpus/`-relative `path` (e.g. `images/iphone_…heic`) — **not** per-category
+> manifests. `scripts/check-corpus-coverage.rs` reads exactly that single file (a fixed
+> path, no globbing of manifests), unions every entry's `covers`, and checks the bijection
+> against the §04 matrices. (A single manifest keeps discovery trivial and the bijection
+> guard's input deterministic; the per-source-format *directory* organisation is just file
+> layout, independent of the one manifest.) The guard also asserts every `[[file]].path`
+> exists on disk, so a manifest entry can't reference a missing corpus file.
+
 Concrete required contents:
 
 **Images** (`tests/corpus/images/`)
@@ -607,7 +686,8 @@ Concrete required contents:
   drop, never execute).
 - **PDF**: a text PDF (→TXT extraction), a **scanned/image-only** PDF (near-empty
   extraction, no OCR — honest), a **password-protected** PDF (fail-clearly), a
-  malformed/truncated PDF (poppler/Ghostscript tolerance), a tagged/AcroForm PDF.
+  malformed/truncated PDF (**poppler tolerance — Ghostscript is NOT shipped v1, §3.1; an
+  unrecoverable PDF must poppler-fail-clearly per §2.8**), a tagged/AcroForm PDF.
 - **TXT** in UTF-8/UTF-16/Windows-1252 + an invalid-byte file (fail-clearly, no
   mojibake); **MD** (GFM: tables/task-lists/code-fences, a local image + a remote
   image-URL that must not be fetched, YAML front-matter); **HTML** (article-like →
@@ -895,9 +975,13 @@ for the OS-agnostic checks, fanning to the matrix only for compile-sanity:
    (a `cargo run`/xtask Rust bin, §6.4.3a) asserts every §04 v1-required pair has ≥1
    backing corpus `covers` entry (and no stale couplings). Engine-free, fast — runs every
    PR so coverage gaps surface before the expensive Lane B corpus run.
-3b. **Automated a11y assertions (§6.4.6a):** `axe-core` via `vitest-axe` over the
-   rendered React tree — WCAG 2.1 AA contrast (both themes), ARIA-role validity,
-   focus-order. Engine-free, fast — runs every PR; any violation fails the lane.
+3b. **Automated a11y assertions (§6.4.6a) — jsdom leg = ARIA/role + focus-order ONLY:**
+   `axe-core` via `vitest-axe` over the rendered React tree asserts **ARIA-role/state
+   validity** and **focus-order / roving-tabindex sanity**. **The WCAG 2.1 AA contrast
+   check does NOT run here** — axe-core under jsdom **cannot measure computed contrast**
+   (jsdom applies no CSS/layout, §6.4.6a); contrast (both themes) runs on the live WebView
+   via the **`@axe-core/webdriverio`** session in **Lane B** (§6.4.6a / §6.7.2). Engine-free,
+   fast — runs every PR; any jsdom-leg violation fails the lane.
 4. **Compile-sanity on the matrix:** `cargo check` / a debug `tauri build` on all
    three legs to catch platform-specific breakage early (no full corpus run here).
 5. **`cargo audit` / `cargo deny`** (advisory + licence policy, §6.3.4).
@@ -925,13 +1009,25 @@ blocking the next:
    release.** **Runtime / cost:** the dominant cost is the corpus run (video
    re-encode + LibreOffice, the slow engines). Estimate **~30–90 min per leg**
    depending on corpus size; set CI **`timeout-minutes` ≈ 120 per leg** with headroom.
-   **macOS-leg caveat `[DECIDED]`:** the **~30–90 min** estimate is **optimistic for the
-   macOS leg** — it pulls `corpus-large` over **GitHub LFS** (no VPS-local cache, unlike the
-   self-hosted Linux leg) **and** `macos-latest` minutes bill **~10×** Linux/min (§6.1.4
-   budget note). **`[DEFER: calibrate once corpus size is known]`** — if it overruns,
-   **split the heavy video/LibreOffice subsets** (run a representative macOS subset rather
-   than the full `corpus-large` on macOS) or **raise the macOS `timeout-minutes`**; the
-   full corpus still runs on the cheaper Linux leg.
+   **macOS-leg caveat + mitigation ladder `[DECIDED]`:** the **~30–90 min** estimate is
+   **optimistic for the macOS leg** — it pulls `corpus-large` over **GitHub LFS** (no
+   VPS-local cache, unlike the self-hosted Linux leg) **and** `macos-latest` minutes bill
+   **~10×** Linux/min (§6.1.4 budget note), so the 120-min figure has thin headroom. **The
+   escalation ladder is concrete (not ad-hoc) `[DECIDED]`:**
+   1. **Initial macOS `timeout-minutes = 180`** (not 120) — give the LFS pull + 10×-cost leg
+      real headroom from the start.
+   2. **Trigger to split:** if the **average macOS Lane-B wall-clock exceeds 150 min over 3
+      consecutive release runs**, switch the macOS leg to a **representative macOS subset**:
+      one video re-encode pair (the slowest engine), one office→PDF pair (the LibreOffice
+      path), one image-worker pair, and the E2E smoke — **the §6.6 video/office smoke set** —
+      while the **full `corpus-large` continues to run on the cheaper Linux leg** (which has
+      the VPS-local LFS cache and 1× cost).
+   3. **Subset selection criterion (so it is not ad-hoc):** pick the **slowest pair per
+      engine family** (one each: video, office, image, audio) plus any pair whose §3.4
+      disposition is *macOS-specific*, so the macOS subset still exercises every macOS-unique
+      code path; pairs with no macOS-specific behaviour are covered by Linux only.
+   The full corpus always runs on at least one leg (Linux), so coverage is never lost — only
+   the redundant macOS re-run of platform-identical pairs is trimmed if the timeout bites.
    **Intra-leg parallelism** is bounded by the **§0.9 concurrency degree** and must
    honour the **LibreOffice-serialised** constraint (the office-pair tests run LO
    single-slot — the harness **imports the §0.9-owned `MAX_LO_CONCURRENCY` const**, NOT a
@@ -1012,10 +1108,11 @@ with **egress blocked** and **any outbound attempt fails the test**. Per-platfor
   unshare --net -- sh -c '
     set -e
     ip link set lo up
-    xvfb-run -a tauri-driver &           # background the driver
+    DRIVER_PORT="${DRIVER_PORT:-4444}"
+    xvfb-run -a tauri-driver --port "$DRIVER_PORT" &   # background the driver on a known port
     drv=$!
     # readiness probe: wait for the WebDriver endpoint before starting the client
-    until curl -sf http://127.0.0.1:4444/status >/dev/null; do sleep 0.5; done
+    until curl -sf "http://127.0.0.1:${DRIVER_PORT}/status" >/dev/null; do sleep 0.5; done
     run_e2e_client                        # the WebdriverIO/webdriver-crate run
     rc=$?
     kill "$drv" 2>/dev/null || true       # tear the backgrounded driver down
@@ -1024,8 +1121,11 @@ with **egress blocked** and **any outbound attempt fails the test**. Per-platfor
   ```
   (The earlier one-liner backgrounded `tauri-driver` and immediately "ran the E2E" with
   **no readiness probe and no kill** — a race that either fails to connect or leaks the
-  driver process; the probe + explicit `kill` + propagated exit code fix both. The
-  `/status` port is the `tauri-driver` default; adjust if pinned.)
+  driver process; the probe + explicit `kill` + propagated exit code fix both. **Port
+  `[DECIDED]`:** `tauri-driver` listens on **`4444` by default** and accepts **`--port`** to
+  override (`tauri-driver --help`); the script passes `--port "$DRIVER_PORT"` explicitly and
+  the readiness probe uses the same `${DRIVER_PORT:-4444}`, so the two can never disagree
+  whether or not the default changes.)
   This ordering is safe because **X11 talks over a Unix-domain socket** under
   `/tmp/.X11-unix` — a filesystem object that **survives the network-namespace isolation**
   (only TCP/IP is namespaced) — so `Xvfb` + the WebView still get a display while **all
@@ -1087,10 +1187,11 @@ add governance docs only if the contributor base grows.)**
 ## 6.9 Name/trademark clearance gate + rename propagation `[DECIDED — release-blocking; process out-of-scope, doing-the-check in-scope]`
 
 > SSOT *Naming* + *v1 DoD*: trademark/name-collision risk for **both** "ConvertIA"
-> **and** the public use of the "Ne-IA" brand has **not** been cleared; a clearance
-> check (in the jurisdictions relevant to a globally-downloadable app) is a
-> **precondition before first public release**, and the name **may change** if a
-> conflict is found.
+> **and** the public use of the "Ne-IA" brand was flagged as a **precondition before
+> first public release** (the name *could* change if a conflict were found). **Resolved
+> `[DECIDED]`: the clearance verdict is `clear` for both marks** (§6.9.1 below; recorded
+> in `docs/name-clearance.md`). The gate remains as "the clearance record is present +
+> current" (a CI-checkable artifact gate, §6.9.2), and the rename machinery stays dormant.
 
 **Scope split (important):** *registering* a trademark is **out of scope** (SSOT
 *Out of Scope* — no store/cert/vendor process). **Performing the clearance check and
@@ -1163,7 +1264,7 @@ promises has a technical home" is **verifiable**. Each gate is marked
 | 3 | **The corpus exists (required v1 asset, non-circular gate)** | this file | `tests/corpus/` + `manifest.toml` (§6.4.5); the **corpus↔pair bijection guard (§6.4.3a)** fails CI if any §04 pair has no backing corpus file (or a `covers` entry names a non-existent pair) | **in-scope-gate** |
 | 4 | **Everything runs fully offline (whole engine set bundled, no fetch)** | §3.3 (bundle-all) · §2.11 (offline invariant) | Bundling at build (§6.1.3); offline-observability E2E with egress blocked (§6.7.3); SBOM proves no runtime-fetch component | **in-scope-gate** |
 | 5 | **Offline guarantee observably true (no network at all)** | §2.11 | Network-egress-blocked E2E run asserts zero calls (§6.7.3 / §6.4.6) | **in-scope-gate** |
-| 6 | **Basic accessibility (keyboard path + readable contrast/sizes; WCAG 2.1 AA per §5.6)** | §5.6 · §5.10 (shortcut map) | **Automated axe-core a11y assertions (§6.4.6a)** — WCAG 2.1 AA contrast (≥4.5:1 text, ≥3:1 large/UI), ARIA-role validity, focus-order, both themes — run in Lane A (§6.7.1) + the keyboard-only human walkthrough (§6.6) | **in-scope-gate** |
+| 6 | **Basic accessibility (keyboard path + readable contrast/sizes; WCAG 2.1 AA per §5.6)** | §5.6 · §5.10 (shortcut map) | **Automated axe-core a11y assertions (§6.4.6a)** — **ARIA-role validity + focus-order run in Lane A (jsdom, §6.7.1)**; **WCAG 2.1 AA contrast (≥4.5:1 text, ≥3:1 large/UI, both themes) runs in Lane B on the `@axe-core/webdriverio` live-WebView session (§6.7.2)** — jsdom cannot compute contrast — plus the keyboard-only human walkthrough (§6.6) | **in-scope-gate** |
 | 7 | **Core UX flow (drag/drop+picker+keyboard → same result; reacts to type; pre-highlighted default; destination shown before convert; visible cancellable progress; end-of-batch summary; one-click open-folder/file)** | §5.2 (states) · §1.1/§1.5/§1.11/§1.12 · §7.7 (open) | E2E flow per platform (§6.4.6) + usability-floor human walkthrough (§6.6) | **in-scope-gate** |
 | 8 | **Unwritable/ephemeral-location fallback works** | §2.7 (per-location divert) · §2.14 (cross-volume) | Property tests on read-only/USB/network/temp locations (§6.4.2); divert path in corpus runs | **in-scope-gate** |
 | 9 | **Every bundled engine's required licence text + attribution present and correct (NOTICE/third-party-licenses, backed by SBOM) — missing attribution release-blocking** | §3.7 (data) · §5.9 (display) | SBOM + NOTICE assembly + **attribution-completeness gate** (§6.3.3); blocks release | **in-scope-gate** |

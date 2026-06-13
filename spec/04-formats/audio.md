@@ -167,8 +167,10 @@ Notes on the matrix:
   sense; flagged only in that specific case (§2.9), not for the common
   16-bit→16-bit path.
 - **Edge cases:** WAV has weak native metadata (LIST/INFO chunk) — FFmpeg maps the
-  common tags it can; rich tags from a tagged source may not survive into WAV (see
-  Category-wide metadata policy). Files >4 GB exceed classic WAV's 32-bit size
+  common tags it can; **rich tags from a tagged source may not survive into WAV → §2.9
+  `audio_tags_dropped`** (conditional on the source actually having metadata — disclosed
+  through the unified LossyKind UI, matching the AAC pattern, not prose-only). Files >4 GB
+  exceed classic WAV's 32-bit size
   fields — FFmpeg can write RF64, but a normal everyday file never reaches this.
 
 ### `FLAC`
@@ -336,8 +338,10 @@ Notes on the matrix:
 - **Lossy?:** **Lossless as a target.** Same 24/float-source → 16-bit caveat as
   WAV (bit-depth reduction = lossy in that one case; §2.9).
 - **Edge cases:** AIFF metadata support is limited (ID3 chunk in some files,
-  NAME/AUTH chunks) — FFmpeg maps what it can; rich tags may not fully survive
-  (see Category-wide). AIFC (compressed AIFF) sources are decoded by codec like any
+  NAME/AUTH chunks) — FFmpeg maps what it can; **rich tags from a tagged source may not
+  fully survive into AIFF → §2.9 `audio_tags_dropped`** (conditional on the source having
+  metadata — routed through the unified LossyKind UI, matching the AAC/WAV pattern, not
+  prose-only). AIFC (compressed AIFF) sources are decoded by codec like any
   container.
 
 ### `ALAC`

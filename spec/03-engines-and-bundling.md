@@ -37,10 +37,10 @@ every one; they cluster into four families:
 
 | # | Engine (bundled artifact) | Family | Drives (cross-ref) | Licence | Ships as | Patent flag |
 |---|---|---|---|---|---|---|
-| 1 | **libvips** (raster core; built with libheif/libde265, libaom/dav1d, the native **`svgload` SVG load module (librsvg)**, **cgif** for native `gifsave`, and a **REQUIRED ImageMagick** delegate for BMP+ICO save and GIF fallback) | Images | `04-formats/images.md` (raster↔raster, SVG→raster, HEIC/AVIF **decode**, HEIC↔AVIF via `heifsave`) | **LGPL-2.1+** (libvips); **cgif MIT**; see per-component rows | linked lib **inside the image-worker process** (LGPL — dynamic link OK, §3.6) | none for its own codecs |
+| 1 | **libvips** (raster core; built with libheif/libde265, libaom/dav1d, the native **`svgload` SVG load module (librsvg)**, **cgif** for native `gifsave`, and a **REQUIRED ImageMagick** delegate for BMP+ICO save and GIF fallback) | Images | `04-formats/images.md` (raster↔raster, SVG→raster, HEIC/AVIF **decode**, HEIC↔AVIF via `heifsave`) | **LGPL-2.1+** (libvips); **cgif MIT**; see per-component rows | linked lib **inside the separate image-worker process** (LGPL — static-link-as-aggregation OK with the §6.1.3 carve-out ii relinkable-source bundle; never into the MIT core, §3.6) | none for its own codecs |
 | 1a | **libheif + libde265** (HEVC decode) + **x265** (HEVC encode, built as a **dynamically-loaded libheif encoder plugin** `.so`/`.dll`/`.dylib`, not statically linked) — used by libvips' HEIC load module via `heifsave compression=hevc` | Images | HEIC decode (vips) / HEIC encode | libheif **LGPL-3.0**, libde265 **LGPL-3.0**, **x265 GPL-2.0-or-later** (verify vs the pinned source's `COPYING`; -or-later is compatible with the LGPL-3.0 libheif host, GPL-2.0-only would not be) | **x265 → dynamically-loaded libheif *plugin*, isolated** (§3.6); libheif/libde265 LGPL link | **HEVC → §3.4** |
 | 1b | **AV1: libaom (enc, via libheif `heifsave compression=av1`) / dav1d (dec, via vips AVIF load module)** — the ONE bundled AV1 encoder is **libaom** (the standalone `libavif`+aom encoder is **not** bundled; encode standardised on `heifsave`, images.md [OPEN-1] [DECIDED]) | Images | AVIF decode/encode | libaom **`BSD-2-Clause AND AOMedia-Patent-License-1.0`** (the row MUST carry **both** the BSD-2-Clause code licence **and** the "Alliance for Open Media Patent License 1.0" from the `PATENTS` file — complete attribution, §3.7); dav1d **`BSD-2-Clause`** | LGPL/BSD link in the image worker | AV1 royalty-free; **ship-posture → §3.4** |
-| 1c | **librsvg** (SVG rasteriser — libvips' native `svgload` module is librsvg-backed; resvg is NOT a libvips backend at any released version, so it is **not shipped** [DECIDED]) | Images | SVG→raster | **LGPL-2.1+** (librsvg) | linked load module inside the image-worker (LGPL — dynamic link OK, §3.6) | none |
+| 1c | **librsvg** (SVG rasteriser — libvips' native `svgload` module is librsvg-backed; resvg is NOT a libvips backend at any released version, so it is **not shipped** [DECIDED]) | Images | SVG→raster | **LGPL-2.1+** (librsvg) | linked load module inside the separate image-worker (LGPL — static-link-as-aggregation OK with the §6.1.3 carve-out ii relinkable-source bundle; never into the MIT core, §3.6) | none |
 | 1d | **ImageMagick** (libvips BMP/ICO save delegate — **REQUIRED**, plus GIF fallback) | Images | **BMP load+save, ICO save (`magickload`/`magicksave` — REQUIRED)**; GIF fallback | **ImageMagick License** (Apache-2.0-style, SPDX `ImageMagick`) — **permissive, NOT GPL** | linked delegate (permissive — no isolation); GPL *optional delegates* excluded at build | none |
 | 1e | **libimagequant** — **the BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** (PNG/GIF palette quantisation, used by libvips' `cgif`/`gifsave` and palette PNG output) | Images | PNG/GIF palette quantisation | **BSD-2-Clause** — and **only** via the frozen `lovell/libimagequant` v2.4.x fork (e.g. v2.4.1). **Upstream libimagequant 4.x is GPLv3-or-commercial — NOT permissive — and MUST NOT be bundled** (it would taint the LGPL image-worker). Pin the BSD fork by exact version+ref in `engines.lock`; a §6.1.3/§6.3.3 build assertion checks the staged `COPYRIGHT` actually contains the BSD-2 text. **ABI/soname coupling `[DECIDED]`:** libimagequant 4.x changed its **soname**, and the bundled libvips' `cgif`/`gifsave` (the §3.8 floor) links a **specific libimagequant version** — so the **bundled libvips MUST be built/linked against the v2.4.x-fork API/soname**, and a **§6.1.3 build/link assertion verifies the staged libvips resolves the bundled BSD libimagequant v2.4.x (NOT a system 4.x)**, not just that the COPYRIGHT text is BSD. | linked/vendored **inside the image-worker process** (BSD fork only) | none |
 | 2 | **FFmpeg** (**GPL-2.0+ build** — `./configure --enable-gpl` to link `libx264`; built **without `--enable-nonfree`**: `libmp3lame`, `libvorbis`, `libopus`, native `aac`/`flac`/`alac`/`pcm`, `libx264`, `libvpx-vp9`, WMA *decoders*; no `libfdk_aac`) | Audio, Video, Cross-category | `04-formats/audio.md`, `video.md`, `cross-category.md` | **GPL-2.0+** (the whole binary, because it enables GPL `libx264`; the LGPL component libs are still dynamically linked beside it, §3.6.1); written-offer-of-source obligation | **separate invoked binary** (`ffmpeg`/`ffprobe`) per §3.6 | **AAC, H.264 → §3.4**; MP3/Vorbis/Opus/FLAC/ALAC/PCM/VP9 patent-clean |
@@ -122,12 +122,24 @@ scratch on the §2.14 volume, per-step progress §1.11, step-attributed errors
 > — `ffprobe` (read inner codecs + duration) **then** `ffmpeg` (remux-or-reencode) — which
 > is **not** an `A→(X)→B` *format* chain (no intermediate artifact, one engine, one source,
 > one target). To keep `Engine::plan()` **Pure** (no I/O) while the encode argv depends on
-> the probe result, the lifecycle is: **§1.7 runs the `ffprobe` sub-invocation first, then
-> feeds the probe result back to the engine** so it finalises the encode `Invocation`,
-> which §1.7 then spawns. I.e. for video, `plan()` is **deferred/parameterised on a probe
-> result** — it produces the probe `Invocation` (or a probe-result-parameterised closure),
-> never a fixed encode argv computed before the probe. §3.5.1 / §1.7 own the two-step
-> sequencing; §3.2.1's "one engine, one (format) conversion, no intermediate artifact"
+> the probe result, the **two-phase contract is `[DECIDED]` as a second trait method**
+> (option b — a `plan_encode(ProbeOutput) -> Invocation`, NOT struct mutation, NOT a
+> stored closure):
+> - `plan()` returns the **probe `Invocation`** (the `ffprobe` sub-invocation) for a
+>   probe-requiring engine (video FFmpeg); for non-probe engines `plan()` returns the
+>   single encode `Invocation` directly and `plan_encode` is never called.
+> - the §3.2.2 `Engine` trait gains **`fn plan_encode(&self, job: &ConversionJob,
+>   out_tmp: &TempPath, probe: &ProbeOutput) -> Result<Invocation, PlanError>`** — §1.7 runs
+>   the probe sub-invocation, parses its stdout into a typed **`ProbeOutput`** (inner codecs
+>   + `duration_us` + rotation + interlace), then calls `plan_encode(.., &probe)` to get the
+>   finalised encode `Invocation`, which §1.7 then spawns.
+> - **`duration_us` is provided BY the `ProbeOutput`** carried into `plan_encode` (the
+>   encode `Invocation`'s `progress` is built with the real denominator at that point) —
+>   it is **NOT** mutated in-place onto a prior `progress` struct returned before the probe.
+>
+> So for video, `plan()` is the probe and `plan_encode(probe)` is the encode — never a
+> fixed encode argv computed before the probe. §3.5.1 / §1.7 own the two-step sequencing;
+> §3.2.1's "one engine, one (format) conversion, no intermediate artifact"
 > invariant is intact (the probe is a read, not a conversion step).
 
 ### 3.2.2 The `Engine` trait (registry seam — physical home owned by §0.7)
@@ -160,8 +172,23 @@ pub trait Engine: Send + Sync {
     /// Build the concrete invocation plan for one job. Pure (no I/O, no spawn):
     /// returns argv / env / cwd / progress-parser kind / temp-output path shape.
     /// The actual spawn/cancel/timeout is owned by §1.7; this only *describes* it.
+    /// For a PROBE-requiring engine (video FFmpeg, §3.2.1) this returns the **probe
+    /// sub-invocation** (`ffprobe`); §1.7 then calls `plan_encode` with the parsed result.
+    /// For a single-step engine it returns the encode `Invocation` directly.
     fn plan(&self, job: &ConversionJob, out_tmp: &TempPath)
         -> Result<Invocation, PlanError>;
+
+    /// Two-phase encode plan `[DECIDED §3.2.1]`. Called by §1.7 ONLY for an engine whose
+    /// `plan()` returned a probe sub-invocation: §1.7 runs the probe, parses its stdout
+    /// into `ProbeOutput`, then calls this to finalise the encode `Invocation`. The
+    /// progress denominator (`duration_us`) is taken FROM `probe` here — never mutated
+    /// onto a previously-returned struct. Default impl returns a `NoProbePhase`
+    /// PlanError (single-step engines never reach it). Pure (no I/O, no spawn).
+    fn plan_encode(&self, _job: &ConversionJob, _out_tmp: &TempPath, _probe: &ProbeOutput)
+        -> Result<Invocation, PlanError> {
+        Err(PlanError { kind: ConversionErrorKind::InternalError,
+                        detail: "engine has no probe/encode two-phase plan".into() })
+    }
 
     /// How this engine reports progress so §1.11 can normalise it
     /// (FFmpeg `-progress` k=v, LibreOffice = coarse/none, image-worker = libvips
@@ -226,6 +253,18 @@ pub type TempPath = tempfile::TempPath;
 /// job (e.g. an option value out of range). Mapped by §1.7 to a §2.8 kind
 /// (typically InternalError/UnsupportedPair). Distinct from a runtime failure.
 pub struct PlanError { pub kind: ConversionErrorKind, pub detail: String }
+
+/// The parsed result of a probe sub-invocation (§3.2.1 two-phase contract), produced
+/// by §1.7 from `ffprobe`'s stdout and handed to `plan_encode`. Engine-layer-internal.
+/// `duration_us` becomes the ProgressModel::FfmpegKeyValue denominator for the encode
+/// (provided here, NOT mutated onto a pre-probe struct). Video FFmpeg is the only v1
+/// probe-requiring engine; the shape is FFmpeg-shaped but the contract is generic.
+pub struct ProbeOutput {
+    pub duration_us: u64,                 // total media duration → §1.11 progress denominator
+    pub inner_codecs: Vec<String>,        // stream codecs → video.md remux-vs-reencode decision
+    pub rotation_deg: Option<i32>,        // display rotation (auto-orient)
+    pub interlaced: Option<bool>,         // flagged-interlaced → §video.md deinterlace default
+}
 
 pub enum ProgressModel {
     FfmpegKeyValue { duration_us: u64 },   // denominator = ffprobe duration (video.md)
@@ -420,8 +459,13 @@ the entire app are the **user-initiated** §7.7 open-project-page shell-out. The
   HTML cannot pull a remote image/include (§3.5.4).
 - **LibreOffice** — the disposable `-env:UserInstallation` profile is hardened so
   document load does **not** auto-update remote/OLE links or external references (§3.5.2).
-- **libvips** — the SVG loader (librsvg) does **not** fetch remote `href`/`<image>`
-  (offline build + §2.12).
+- **libvips / librsvg (SVG) — BOTH halves `[DECIDED]`:** the SVG loader (librsvg) does
+  **not** fetch remote `href`/`<image>` (SSRF half — offline build + scheme rejection),
+  **and** the absolute-file LFR half is closed by **staging the SVG into per-job scratch on
+  ALL platforms + setting librsvg's base URL to that scratch dir** (so `<image href>`/
+  XInclude resolution is confined to scratch + subdirs, a `../`-escape is rejected) plus,
+  where available, refusing all external resource loads outright (§3.5.5 SVG control).
+  §6.1.3 corpus case asserts no out-of-input bytes are embedded.
 §2.11 owns the *observable* "no network" property (packet monitor); §6.4 adds the
 *adversarial* egress case; this section guarantees the *supply/structural* side. These
 controls hold on the common v1 machine even when the §2.12 privilege-drop tier degrades
@@ -496,6 +540,21 @@ platform. Each cell is the **recommended** disposition (read with §3.4.4).
 | **HEVC / H.265 — DECODE** (read HEIC; read iPhone HEVC `.mov`) | `images.md` HEIC source; `video.md` MOV/MKV HEVC source | **ship-bundled** (libde265, LGPL, decode-only) | **ship-bundled** (libde265) | **ship-bundled** (libde265) |
 | **HEVC / H.265 — ENCODE** (write HEIC) | `images.md` HEIC **target** (never a default) | **ship-bundled (x265, isolated) `[DECIDED]`, behind §3.4 availability flag** | **ship-bundled (x265, isolated) `[DECIDED]`, behind flag** | **ship-bundled (x265, isolated) `[DECIDED]`, behind flag** |
 | **AV1 (AVIF)** encode+decode | `images.md` AVIF | **ship-bundled** | **ship-bundled** | **ship-bundled** |
+| **Legacy encumbered codecs — DECODE ONLY** (VC-1, MPEG-2, H.263, MPEG-4 Part 2 / DivX-class) | `video.md` WMV source (VC-1), MPG/MPEG source (MPEG-2), 3GP source (H.263), AVI source (MPEG-4 Part 2) — **read-side only** (these are never v1 encode targets) | **ship-bundled-decode-only** | **ship-bundled-decode-only** | **ship-bundled-decode-only** |
+
+**Legacy decode-only codecs — ship-bundled-decode-only everywhere, no gate `[DECIDED]`.**
+The §04 video matrices accept **WMV/MPG/MPEG/3GP/AVI sources**, whose inner bitstreams are
+VC-1 / MPEG-2 / H.263 / MPEG-4 Part 2 — all encumbered, but ConvertIA only **decodes**
+them (it re-encodes to the royalty-free/permitted default target, never *writes* these
+codecs). Disposition: **ship-bundled-decode-only on all three platforms, no §3.4
+availability flag**, because (a) **decode** has a materially lighter patent profile than
+encode — the active pools target *encode/distribution*, not bitstream *decode*; (b)
+**MPEG-2's US essential patents expired ~2026** and VC-1/H.263 are near/past expiry over
+v1's deadline-free lifetime; (c) the whole OSS ecosystem (FFmpeg in every Linux distro)
+ships these decoders. These are inside the **GPL FFmpeg binary** (the §6.1.3 curated-decoder
+assertion already lists `vc1`/`mpeg2video`/`h263`/`mpeg4` as required), so no extra
+licence surface beyond FFmpeg's. This keeps §3.4's "single owner, never re-decided
+elsewhere" claim honest — the legacy decoders now have an explicit disposition row.
 
 ### 3.4.4 Rationale + what is genuinely still OPEN
 
@@ -690,13 +749,16 @@ macOS item — acceptable, and the same copy the cross-volume path would make an
 - **Progress:** `-progress pipe:1 -nostats` → key=value lines (`out_time_us=…`,
   `total_size=…`, `progress=continue|end`) parsed into `ProgressModel::
   FfmpegKeyValue { duration_us }` (§1.11). Real per-item %, never a spinner.
-  **`duration_us` population lifecycle `[DECIDED]`:** the ffprobe duration probe runs at
-  **convert time**, *after* `Engine::progress_model()` is called at plan time — so
-  `progress_model()` returns a **placeholder `FfmpegKeyValue { duration_us: 0 }`** (an
-  unknown denominator), and the **§1.7 invocation layer sets `progress.duration_us` from
-  the probe result** once `ffprobe` succeeds, **before** the main encode begins. Until
-  the denominator is known the §1.11 bar reads as indeterminate-but-working; from the
-  first `out_time_us` tick onward it is a true %.
+  **`duration_us` population — via the two-phase plan, not struct mutation `[DECIDED]`:**
+  the `duration_us` denominator comes from the **`ProbeOutput`** §1.7 parses from
+  `ffprobe`, carried into **`Engine::plan_encode(.., &probe)`** (§3.2.1/§3.2.2) which builds
+  the encode `Invocation` with `ProgressModel::FfmpegKeyValue { duration_us: probe.duration_us }`
+  already populated. There is **no placeholder-then-mutate**: `plan()` returns the probe
+  invocation (no encode `progress` to mutate); the encode invocation is built **after** the
+  probe with the real denominator in hand. (The earlier "`progress_model()` returns
+  `duration_us: 0` and §1.7 sets `progress.duration_us` in place" mechanism is **removed**
+  in favour of `plan_encode`.) Until the first encode `out_time_us` tick the §1.11 bar
+  reads as `Spawning`/indeterminate-but-working; from the first tick onward it is a true %.
 - **Global flags (all FFmpeg jobs):** `-nostdin -hide_banner -loglevel error -y`
   — `-y` is safe because the target is the **temp** path (§2.1), never the user
   file; `-nostdin` prevents the classic FFmpeg "consumes the parent's stdin" hang.
@@ -708,7 +770,8 @@ macOS item — acceptable, and the same copy the cross-volume path would make an
   (§0.11) and would defeat the SSOT *Local/private/offline* promise on adversarial input.
   Mitigation is **argv + build controls** covering **both halves** (network/SSRF AND
   absolute-file LFR), all independent of the §2.12 OS privilege-drop tier (which is
-  `[OPEN]` and may degrade to the cheap tier with no network/FS deny):
+  **best-effort `[DECIDED]`** and may degrade to the cheap tier with no network/FS deny —
+  so it is **not** relied on here):
   - **Argv-level — network/SSRF half (the non-negotiable, cheap-tier control):** every
     FFmpeg/ffprobe invocation prepends **`-protocol_whitelist file,pipe`** (and, where a
     concat/segment demuxer is legitimately used, the explicit `-f` is pinned and the
@@ -860,6 +923,20 @@ macOS item — acceptable, and the same copy the cross-volume path would make an
     a load-time fetch or file read (composes with the §3.3.4 offline claim).
   - **No remote/OLE auto-fetch** — external-reference auto-update disabled; combined with
     the offline floor, a crafted office file cannot pull a remote target on load.
+  - **Calc external-data vectors (T9b, `[DECIDED]`)** — a crafted spreadsheet can carry
+    `WEBSERVICE()`/`WEBSERVICE`-class functions, **external data ranges** (web/import
+    ranges that refresh on load), **external cell references** to another workbook, and
+    **linked OLE objects** — each a potential load-time SSRF/LFR. The profile additionally
+    pins, best-effort: **no external-data-range refresh on load**, **no external-reference
+    recalculation on load** (`org.openoffice.Office.Calc/.../Load` external-reference update
+    off), and **linked-object / DDE auto-update off** (composing with `LinkUpdateMode = 0`
+    above). **Proof-parity with FFmpeg/pandoc `[DECIDED]`:** the registry pins are
+    **defence-in-depth**, not the load-bearing proof — the office-engine T9b half **leans on
+    the §2.11.4 packet-monitor gate + the §6.4.2 adversarial-egress Calc case** (a crafted
+    `.xlsx` with a `WEBSERVICE`/external-data-range trigger must produce **zero egress AND
+    no out-of-input file read**) as its release-blocking proof, exactly as the FFmpeg
+    `-protocols`/`-demuxers` and pandoc `--sandbox` controls are corpus-proven. So Calc gets
+    the same proof level as the other engines even where a registry key is only best-effort.
   The profile is disposable per-run (§2.14) and torn down with the run (§2.6).
 - **Licence/isolation:** MPL-2.0 sidecar (§3.6); untrusted office files (zip-bomb,
   malformed OOXML, macro-bearing) parsed inside §2.12; **macros never executed**
@@ -951,6 +1028,32 @@ macOS item — acceptable, and the same copy the cross-volume path would make an
   `HEIC↔AVIF` path; **all** HEIC/AVIF *encode* is `heifsave`, no standalone
   `heif`/`avif` encoder), ICO multi-size list. ICC/metadata carried per `images.md`
   policy.
+- **SVG external-resource control (T9b absolute-file LFR + SSRF, §0.11) `[DECIDED]`:**
+  librsvg loads resources referenced from an SVG (`<image xlink:href>`, XInclude) and, by
+  default, resolves a relative `href` against the SVG's **base URL directory or its
+  subdirectories** (it canonicalises away `..` and resolves symlinks to enforce that
+  boundary), and rejects non-`data:`/non-`file:` schemes. That closes the **remote/SSRF**
+  half (no `http`/`ftp` fetch), but on Win/Linux the image-worker is normally handed the
+  **real source path**, so a crafted SVG with `<image href="../secret.txt">` could read an
+  **out-of-input local file** and rasterise it into the output — the same absolute-file LFR
+  class the spec closes for FFmpeg. ConvertIA closes it **structurally and symmetrically**:
+  1. **Stage the SVG into per-job scratch on ALL platforms** (not just macOS §3.5.0 — the
+     SVG case extends the same staging to Win/Linux), so the only file in the resolution
+     directory is the SVG itself.
+  2. **Set librsvg's base URL to that per-job scratch dir** (the libvips `svgload`
+     base-URL the worker passes), so href/XInclude resolution is **confined to scratch +
+     subdirs** — a `../`-escape canonicalises outside scratch and is **rejected** by
+     librsvg's directory-confinement rule; scratch holds no out-of-input bytes, so nothing
+     readable is reachable.
+  3. **Where the worker can, refuse ALL external resource loads outright** (the librsvg
+     "can't load external resources" path) as belt-and-braces — v1 SVG→raster needs no
+     external `<image>`/XInclude (fonts resolve from the bundled set, §images.md), so
+     refusing them costs nothing.
+
+  Asserted by a **§6.1.3 corpus case**: an SVG with an external `<image href>` (relative
+  `../` escape AND absolute) must **NOT** embed any out-of-input bytes in the output (the
+  SVG analogue of the §6.4.2 FFmpeg adversarial-egress case). Cross-ref §3.3.4 offline
+  invariant, §0.11 T9b, §2.11.1.
 - **Progress `[DECIDED]`:** `ProgressModel::VipsStdout`. The image-worker is a **separate
   process** (§3.5.5/§0.7), so its in-process libvips **eval-progress callback** cannot
   reach the core directly. The worker installs the libvips `eval` signal handler and
@@ -971,7 +1074,9 @@ macOS item — acceptable, and the same copy the cross-volume path would make an
   **not** rely on a §2.13 `catch_unwind` boundary for this — that catches Rust panics,
   not hostile native code; §2.12.4.)
 - **Licence/isolation of components:** libvips/libheif/libde265/librsvg = LGPL
-  (link OK, dynamic); aom/dav1d = BSD; **ImageMagick = permissive
+  (linked **inside this separate worker binary** — static-link-as-aggregation OK, with
+  the §6.1.3 carve-out ii relinkable-source bundle; never linked into the MIT core);
+  aom/dav1d = BSD; **ImageMagick = permissive
   (ImageMagick License, Apache-2.0-style — link-OK, NOT GPL) and REQUIRED (BMP+ICO
   save go only through it; §3.1 row 1d).** The **only** GPL piece in the image stack
   is **x265** (HEVC encode), the aggregation case (§3.6) — shipped as a
@@ -997,6 +1102,16 @@ macOS item — acceptable, and the same copy the cross-volume path would make an
   N-KB chunk (the §1.11 *Native CSV/TSV* row owns this), falling back to a start→done
   (`CoarseSpawnDone`-equivalent) tick for sub-100 KB inputs — never a bare spinner. MIT
   (own code) — no §3.6 concern.
+- **`out_tmp` is the §2.14.1 destination-dir publish temp, NOT a system-temp file
+  `[DECIDED]`.** Like every other engine the native CSV/TSV `out_tmp` is the
+  `.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part` **sibling in the destination
+  directory** (`tempfile::NamedTempFile::new_in(final_dir)` / a `TempPath` rooted in
+  `final_dir`), picked by `crate::run` (§2.14.4) — **never** `tempfile::NamedTempFile::new()`
+  in the system temp dir. So its publish is the **same intra-volume exclusive rename**
+  (§2.1.2) as every other engine, honouring the §2.14.1 same-volume invariant. The
+  `TempPath` "deleted on drop" semantics apply only on the **cancel/fail** path; **on
+  success the temp is consumed by the §2.1 atomic publish** (rename/link), so drop is a
+  no-op — the output is **published, not dropped** (§2.6.2).
 
 ---
 
@@ -1013,8 +1128,8 @@ source where required), so the MIT core stays clean.
 | Engine/component | Licence | Linked into MIT core? | Mechanism that keeps MIT clean |
 |---|---|---|---|
 | ConvertIA orchestrator + native CSV/TSV | MIT | — | it *is* the core |
-| **libvips** + **librsvg** | **`LGPL-2.1-or-later`** (both) | **dynamic link only** (LGPL permits dynamic linking from non-GPL code, provided relinkability) — or run as the separate image-worker process (§3.5.5) | LGPL §6 dynamic-link allowance; we ship the LGPL libs + their source/offer (§3.7); **no static link** of LGPL into the MIT binary |
-| **libheif** + **libde265** | **`LGPL-3.0-or-later`** (both) | dynamic link only / inside the image-worker process (§3.5.5) | as above. **Per-component SPDX ids are split out** (libvips/librsvg = `LGPL-2.1-or-later`; libheif/libde265 = `LGPL-3.0-or-later`) so §3.7.2 emits the **correct distinct SBOM rows** rather than a lumped "LGPL-2.1/3.0" — the LGPL-3.0 host (libheif) is also why the x265 plugin must be `GPL-2.0-or-later` (upgradeable to GPLv3), §3.7.2 |
+| **libvips** + **librsvg** | **`LGPL-2.1-or-later`** (both) | **NO — inside the separate image-worker process** (§3.5.5), where they may be **statically** linked (aggregation, not a link into the MIT core); never linked into the MIT core | LGPL §6 satisfied by aggregation (separate process) **+** the relinkable-source bundle the static image-worker ships (§6.1.3 carve-out ii / §3.6.2); we ship the LGPL libs + their source/offer (§3.7). **No LGPL is linked into the MIT core** (where one ever is, it must be a shared object — §6.1.3 carve-out i) |
+| **libheif** + **libde265** | **`LGPL-3.0-or-later`** (both) | NO — inside the image-worker process (§3.5.5), static-link-as-aggregation OK | as above (aggregation + relinkable-source bundle, §6.1.3 carve-out ii). **Per-component SPDX ids are split out** (libvips/librsvg = `LGPL-2.1-or-later`; libheif/libde265 = `LGPL-3.0-or-later`) so §3.7.2 emits the **correct distinct SBOM rows** rather than a lumped "LGPL-2.1/3.0" — the LGPL-3.0 host (libheif) is also why the x265 plugin must be `GPL-2.0-or-later` (upgradeable to GPLv3), §3.7.2 |
 | **libaom / dav1d** | libaom `BSD-2-Clause AND AOMedia-Patent-License-1.0`; dav1d `BSD-2-Clause` | link OK | BSD permissive; libaom's `PATENTS` (AOM Patent License 1.0) is carried in the SBOM/NOTICE alongside the BSD-2 text (§3.7) |
 | **libimagequant** (PNG/GIF palette quantisation) — **BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** | **BSD-2-Clause** (the frozen `lovell/libimagequant` v2.4.x fork). **Upstream 4.x is GPLv3-or-commercial and MUST NOT ship** — if a GPL-leg 4.x build slipped in it would taint the LGPL image-worker (the §6.1.3/§6.3.3 COPYRIGHT-text assertion fails the build on that). | link OK (inside the image-worker) | BSD permissive; **the v2.4.x BSD fork** vendored/linked inside the image-worker process, not the MIT core |
 | **ImageMagick** (GIF/BMP/ICO save delegate) | **ImageMagick License** (Apache-2.0-style, SPDX `ImageMagick`) — **permissive, NOT GPL** | link OK | Permissive like BSD/MPL — no isolation needed. **Build caveat:** exclude GPL *optional delegates*; IM core is permissive. (Listed in the SBOM/NOTICE §3.7.) |
@@ -1025,24 +1140,31 @@ source where required), so the MIT core stays clean.
 | **poppler**, **pandoc** | GPL | **NO — separate exe** | invoked child processes |
 | **Ghostscript** | **AGPL-3.0** | **NOT shipped v1 [DECIDED]** | dropped (§3.1) so no AGPL surface ships; `[DEFER: re-add only if §6.5 corpus shows GS-salvageable PDFs]` |
 
-**LGPL dynamic-link build rule (a buildability gate, not just an assertion)
-`[DECIDED]`.** The "libvips link stays LGPL-clean" claim rests on **dynamic
-linking**, and Rust links **statically by default** — a vendored *static* libvips
-would silently break LGPL §6. So it is a **build constraint**, enforced at build
-time, that **libvips and every LGPL library it pulls in** (libheif, libde265,
-librsvg, and any linked FFmpeg libs) **ship as bundled *shared* libraries and are
-*dynamically* linked** (or supplied as relinkable object files), satisfying LGPL §6's
-shared-library path. The CI bundle check (§6.1.3) asserts the LGPL libs are present
-as shared objects (`.so`/`.dylib`/`.dll`) alongside the binary, not absorbed into a
-static MIT executable. **The same build rule forbids libvips' own copyleft PDF
+**LGPL link build rule (a buildability gate, not just an assertion) — scoped by
+linkage site `[DECIDED]`.** LGPL §6 compliance depends on **where** each LGPL lib is
+linked, and the build rule (asserted by §6.1.3, carve-outs i/ii/iii) reflects that:
+- **Into the MIT core (the Tauri app binary):** any LGPL lib linked here **MUST be a
+  bundled *shared* library** (`.so`/`.dylib`/`.dll`), dynamically linked — Rust links
+  **statically by default**, so a vendored *static* LGPL absorbed into the MIT binary
+  would silently break LGPL §6 and is a **build failure** (§6.1.3 carve-out i). In v1
+  ConvertIA links **no** LGPL into the MIT core (the whole image stack lives in the
+  separate worker), so this carve-out is a guard against regression.
+- **Inside the separate image-worker process (libvips + libheif/libde265/librsvg, and
+  any linked FFmpeg libs the worker pulls):** the worker is its **own binary** (§3.5.5),
+  so even a **statically** linked LGPL inside it is **aggregation, not a link into the MIT
+  core** — this is the **canonical v1 mechanism** (§3.5.5 builds the worker statically
+  linking the stack), not a fallback. LGPL §6 relinkability is satisfied here by the
+  **relinkable-source bundle** the static worker ships (complete corresponding source +
+  LGPL object files / a documented relink recipe), which §6.1.3 carve-out ii **asserts is
+  present and fails the build if missing** (§3.6.2 written-offer + §3.7 SBOM record the
+  pinned source). So the worker does **not** need its LGPL libs as separate shared objects.
+
+**The same build rule forbids libvips' own copyleft PDF
 loaders** (`[DECIDED]`): the bundled libvips is configured **without the poppler PDF
 loader (GPL — taints the whole libvips, libvips#2222) and without the MuPDF loader
 (AGPL)**, so "libvips is LGPL" stays true; §6.1.3 asserts no poppler/mupdf loader is
 present (ConvertIA does no libvips PDF loading — PDF→TXT is the poppler `pdftotext`
-sidecar, §3.5.3). (The separate image-worker-process `[OPEN]` (§3.5.5), if
-chosen, *also* resolves the static-link risk — the worker is a separate process, so
-even a statically-linked LGPL inside it is aggregation, not a link into the MIT core
-— but the shared-library rule is the primary, in-process-safe guarantee.)
+sidecar, §3.5.3).
 
 **The one nuance to state plainly:** the GPL components are the **whole FFmpeg
 binary** (GPL-2.0+ because it enables x264) and the *encoders* x264/x265, plus poppler
@@ -1235,6 +1357,19 @@ effort is spent where it matters.
   §6.4.5** (the corpus asset), tracked separately from the *shipped artifact* budget —
   the corpus is a test asset, never shipped, so it does **not** count against this ceiling;
   this matches §6.4.5's `[DEFER: corpus]` total-size note.
+- **Feasibility risk at the upper bound (must verify before the digit is fixed) `[DEFER:
+  corpus/build]`.** The ≤ 400 MB **compressed** ceiling is comfortable against the *low*
+  installed end (~430 MB → ~40-50% compression is routine), but at the **high installed end
+  (~700-820 MB: full-CJK fonts + pandoc 3.x upper bound)** it needs **~50%+ compression**,
+  achievable only with aggressive trim. The `[DEFER: corpus/build]` calibration **MUST
+  verify this is actually reachable before treating 400 MB as a fixed gate** (measure the
+  real trimmed-build compressed size in §6.1, both font-breadth extremes). **If the gate
+  trips, the lever order is fixed `[DECIDED]`:** (1) **trim the CJK font weights first**
+  (§3.9.3 — the single biggest swing knob, SC-only vs all-CJK); (2) only then revisit other
+  font/help trims; (3) **dropping pandoc stays BLOCKED** until LibreOffice Markdown export
+  is corpus-proven for the `DOCX/ODT/RTF → MD/HTML` pairs (documents.md [OPEN-1]) — it is a
+  post-v1 contingency, not a size lever to reach for. This ties the deferred digit to a
+  **decided remedy** rather than a silent build-gate failure.
 
 ### 3.9.3 Open size decisions (genuine)
 

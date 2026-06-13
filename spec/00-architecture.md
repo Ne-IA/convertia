@@ -271,15 +271,28 @@ signatures; the TS side is generated (§0.4.5 codegen).
   single `target` for the whole `collectedSetId`).
 - **C4 vs C5 — byte-identical payloads, different contract `[DECIDED]`.** C4
   `plan_output` and C5 `set_destination` take the **same** request fields, but **only C4
-  computes `rerun`** (the §2.5 equivalence check); **C5 never recomputes it** (it carries
-  the C4 `rerun` through unchanged — the v1 EquivKey is destination-independent, §2.5.1).
-  Because the signatures alone cannot distinguish them, the orchestrator **enforces the
-  asymmetry**: **C4 fires exactly once, on the `3→4` (target-chosen) transition** for a
-  given `collectedSetId`, and a **C4 issued *after* a C5 on the same collected-set is
-  treated as a no-op/error** (the held C4 verdict is authoritative; destination changes
-  go through C5 only). So "C4 computes rerun, C5 never does" is an enforced orchestrator
-  rule, not just prose. (The destination-independent EquivKey is the §2.5 [DECIDED] this
-  rests on.)
+  computes `rerun`** (the §2.5 equivalence check) and the §1.10 **`preflight` verdict**;
+  **C5 never recomputes `rerun`** (it carries the C4 `rerun` through unchanged — the v1
+  EquivKey is destination-independent, §2.5.1) and re-evaluates only the
+  destination-volume `preflight`. Because the signatures alone cannot distinguish them,
+  the orchestrator **enforces the asymmetry by lifecycle, NOT by a one-shot rule**:
+  - **C4 is callable at any point in state 4 `[DECIDED]`.** It is called **eagerly on the
+    `3→4` (target-chosen) transition with the pre-highlighted default already selected**,
+    then **re-callable (debounced ~150 ms, §5.8) on any target or option change** so the
+    "will save to …" line, divert preview, `rerun`, and `preflight.up_front_fail` verdict
+    never go stale. There is **no "fires exactly once"** constraint — the multi-call
+    behaviour §5.8 requires is canonical (an orchestrator that rejected the re-calls would
+    break the Targets/options UI).
+  - **C4 freezes after C5 on the same collected-set `[DECIDED]`.** Once the user has
+    changed the destination (a C5 on a given `collectedSetId`), a **subsequent C4 on that
+    same collected-set is a no-op/error** (the held C4 verdict + the C5-resolved
+    destination are authoritative; further destination changes go through C5 only). This
+    is the ONLY ordering rule — it bounds re-planning after a destination override, not the
+    in-state-4 re-calls before one.
+
+  So "C4 computes `rerun` + `preflight`, C5 never recomputes `rerun`" is an enforced
+  orchestrator rule (computed values, not just prose); the destination-independent
+  EquivKey is the §2.5 [DECIDED] this rests on.
 
 ### 0.4.2 Event / Channel enumeration (authoritative)
 
@@ -291,7 +304,7 @@ C6). A `#[serde(tag = "type", content = "data")]` enum, ordered delivery:
 | `RunStarted` | `{ runId, totalItems, willReencode: bool }` | Batch accepted; queue built. `willReencode` is a **best-effort worst-case** flag (header/container-pair-derived, **not** a per-item probe — §2.9.2): `true` ⇒ at least one item *may* re-encode → video shows the worst-case lossy note ("may be re-encoded"). **Emission rule `[DECIDED]`:** for non-video / non-applicable batches the core emits **`willReencode: false`** (never omitted) so the field always carries a definite value. **The Rust struct field is non-optional `bool` (line below), so the GENERATED `bindings.ts` type is non-optional `willReencode: boolean`** — there is no third `undefined` state. (Hand-written docs/comments elsewhere sometimes show `willReencode?` purely as a decode-tolerance convenience — consumers still treat any absent/`undefined` as `false`, §5.8 — but the generated binding is non-optional.) The exact per-item disposition is resolved at convert-time (§3.5); the summary (§1.12) reflects the actual outcome. |
 | `ItemStarted` | `{ runId, itemId, sourcePath, target }` | An item left `Pending` for `Running` (§1.9). |
 | `ItemProgress` | `{ runId, itemId, fraction: Option<f32> /* 0.0..1.0; None only where truly indeterminate (LibreOffice, §1.11) */, stage: JobStage }` | **Real per-item progress** (SSOT *not an indeterminate spinner*). Denominator is engine-specific (e.g. video = source duration from `ffprobe`, §3.5/video.md). `stage` is the §0.6/§1.11 `JobStage` (`Spawning \| Decoding \| Encoding \| Writing`); for the `None`-fraction LibreOffice case the frontend synthesises a staged determinate-looking bar from `stage` transitions (§1.11/§5.3). |
-| `ItemFinished` | `{ runId, itemId, outcome: ItemOutcome }` | Terminal per item: `Succeeded { outputPath } \| Failed { error: IpcError } \| Skipped { reason } \| Cancelled`. |
+| `ItemFinished` | `{ runId, itemId, outcome: ItemOutcome }` | Terminal per item: `Succeeded { outputPath } \| Failed { error: IpcError } \| Skipped { reason } \| Cancelled`. **Pre-flight-skip emission policy `[DECIDED]`:** pre-flight-skipped items (§1.1/§1.3 — never entered the queue, §1.9) are **NOT** emitted as live `ItemFinished{Skipped}` Channel events; they appear **only** in the terminal `RunFinished → RunResult.items` projection (§1.12). The `ItemOutcome::Skipped` variant is **reserved for that terminal-projection path** (it is not dead wire code — it carries the projected pre-flight skips and any mid-run cooperative skip), so the orchestrator emits **no live `ItemStarted`/`ItemFinished{Skipped}`** for a freeze-time skip; the ProgressList shows skipped rows only once the run reaches `Summary`. (Chosen over a post-`RunStarted` batch flush: pre-flight skips have no queue presence and no per-item work, so surfacing them once, terminally, is simpler and matches §1.9's "never enter the queue".) |
 | `BatchProgress` | `{ runId, done, total }` | Aggregate queue progress for the batch bar (§1.11). |
 | `RunFinished` | `RunResult` | Terminal for the run; mirrors C8. Carries the full summary incl. residue warnings (§2.6). |
 
@@ -394,7 +407,12 @@ pub enum ErrorKind {
 - The **authoritative enumeration of failure kinds and their exact English
   strings is owned by §2.8** (the message catalog). `ErrorKind` here is the wire
   mirror; §06 includes a drift check that the §2.8 catalog and this enum stay in
-  lock-step. `message` is filled from the §2.8 catalog **in Rust** (strings live
+  lock-step. **The concrete anti-drift mechanism is owned by §2.8.2 `[DECIDED]`:**
+  preferably **`ErrorKind` is a `type` alias for the §2.8 `ConversionErrorKind`** (one
+  enum, nothing to drift); if a distinct wire type is needed, a `static_assertions`
+  variant-count check + a variant-name round-trip `#[test]` make a missing mirror a
+  **compile/test failure**, with the §06 codegen-drift diff as the third backstop. `message`
+  is filled from the §2.8 catalog **in Rust** (strings live
   with their owner; the UI does not assemble outcome strings — §5.7).
 - `kind` is the stable contract the UI branches on (e.g. `PasswordProtected` →
   "password-protected" copy; `EngineMissing` → app-fault screen).
@@ -617,12 +635,23 @@ pub enum CollectedSet {
 pub struct SkippedItem {
     pub item: ItemId,                // stable within the collected set / run
     pub source: PathBuf,             // the dropped path, for the summary display
-    pub reason: ErrorKind,           // the §2.8 reason (UnsupportedType | Unrecognized | Empty | Unreadable)
+    pub reason: SkipReason,          // §0.6 SkipReason (UnsupportedType | Uncertain | Empty | Unreadable)
+                                     //   — NOT ErrorKind. Every SkippedItem comes from a
+                                     //   detection-INELIGIBLE outcome (§1.3), all of which have
+                                     //   a SkipReason, so storing SkipReason makes the §1.12
+                                     //   OutcomeMsg::Skipped projection a trivial copy (no lossy/
+                                     //   undefined ErrorKind→SkipReason reverse map at the
+                                     //   OutcomeMsg::Skipped boundary). §1.12 [DECIDED].
 }
-// SkipReason → ErrorKind projection (§1.3 ineligible → §2.8 reason), explicit so the
-// two enums never drift: `SkipReason::Uncertain` projects to `ErrorKind::Unrecognized`
+// The ONLY (one-way) conversion is the forward `SkipReason → ErrorKind`, used by the
+// §1.12 projection helper when a Skipped item must also surface an ErrorKind-shaped
+// display reason: `SkipReason::Uncertain` projects to `ErrorKind::Unrecognized`
 // (ErrorKind has NO `Uncertain` variant — the can't-tell skip is surfaced as
-// Unrecognized, §2.8.2). `UnsupportedType`/`Empty`/`Unreadable` map by identical name.
+// Unrecognized, §2.8.2); `UnsupportedType`/`Empty`/`Unreadable` map by identical name.
+// This map lives on the PROJECTION HELPER (§1.12), not on the struct — and is never
+// inverted (the non-injective `Uncertain→Unrecognized`, where `Unrecognized` also appears
+// as a non-skip item error, would make any reverse map ambiguous; storing SkipReason
+// avoids needing one).
 
 // ─── Targets & options ──────────────────────────────────────────────────────
 pub enum TargetId {                  // the offered-target identity (§1.5 TargetKind)
@@ -837,7 +866,8 @@ pub struct RunResult {               // canonical shape; §1.12 computes & refer
                                      //   roots, so the divert root is its own field. None when no
                                      //   item diverted. Both roots are §7.7.3 open-folder targets;
                                      //   per-item diverted outputs are also reachable via
-                                     //   ItemResult.output (C9 reveal_item_in_dir). (§1.12 / §7.7.3)
+                                     //   ItemResult.output (C9 open_path, kind=RevealInFolder,
+                                     //   via OpenerExt::reveal_item_in_dir). (§1.12 / §7.7.3)
 }
 
 pub struct ItemResult {              // §1.12
@@ -996,10 +1026,12 @@ convertia/
 │     │  ├─ registry.rs            #   Engine trait + selection (the §3.2 seam — candidate own crate)
 │     │  ├─ invoke.rs              #   §1.7 generic lifecycle (spawn/progress/cancel/timeout/error-map)
 │     │  ├─ ffmpeg.rs  libreoffice.rs  pandoc.rs  poppler.rs  image.rs  csv_native.rs
-│     ├─ fs_guard/                 # tier 2 — the reusable guarantees-fs layer; module path `crate::fs_guard` (§2.0); §2.1/2.3/2.4/2.6/2.7/2.14
+│     ├─ fs_guard/                 # tier 2 — the reusable guarantees-fs layer; module path `crate::fs_guard` (§2.0); §2.1/2.3/2.14 atomic write/no-clobber/resolved-id/path-limit/cross-volume
+│     ├─ run/                      # tier 2 — `crate::run` (§2.0): per-run/instance scratch ownership + cleanup (§2.4/§2.6), keyed on RunId/InstanceId (§7.1)
+│     ├─ outcome/                  # tier 2 — `crate::outcome` (§2.0): the §2.8 error taxonomy + message catalog AND the §2.9 lossy catalog ↔ IpcError mirror (§0.4.3); the single source of every conversion-outcome string (was `error.rs` — RENAMED to match `crate::outcome` in §2.0; there is no `crate::error`)
+│     ├─ isolation/                # tier 2 — `crate::isolation` (§2.0): the §2.12 decoder-isolation wrapper every engine spawn routes through (§1.7 calls it; §3.5 builds args inside it)
 │     ├─ pool/                     # tier 3 — subprocess pool, concurrency degree (§0.9)
 │     ├─ domain/                   # tier 3 — §0.6 types, derive specta::Type
-│     ├─ error.rs                  # tier 3 — §2.8 taxonomy ↔ IpcError mirror (§0.4.3)
 │     └─ platform/                 # tier 3 — path/volume/OS shims (§2.14, §7.7 reveal-in-folder)
 │
 ├─ src/                            # the React 19 / TS / Tailwind / Vite UI (§05)
@@ -1285,8 +1317,9 @@ no remote origins (reinforces "no network"):*
   CSS-based timing, the WebRTC gap above), so the **load-bearing** cross-WebView
   offline enforcement is **§3.3.4 nothing-to-fetch** (the app opens no socket) + the
   **§2.11.4 packet-monitor release gate** (the actual proof; §2.12.3 engine-side OS
-  network-deny is `[OPEN]` defence-in-depth where the privilege-drop tier is enabled,
-  not a v1 guarantee). The CSP is the observable WebView-side form of
+  network-deny is the **best-effort privilege-drop tier** `[DECIDED]` — defence-in-depth
+  that degrades silently to the cheap tier, **not** the load-bearing guarantee). The CSP
+  is the observable WebView-side form of
   *Local/private/offline* (verified in §2.11 / §6.4); the §2.11.4 packet gate is the
   load-bearing proof.
 - **No `asset:` protocol.** `asset:` is dropped from `img-src`/`media-src`: v1 renders
@@ -1349,7 +1382,7 @@ The `SECURITY` policy (§6.8) references this map.
 | T7 | **Path / link redirection** | A symlink/junction/alias makes an output resolve onto a source, or a TOCTOU race redirects the final write | **§2.3** resolved-identity & link safety + **§2.1** exclusive create-new-or-fail (the no-clobber guarantee is evaluated on the resolved real file) | covered |
 | T8 | **Self-feeding / batch expansion** | Outputs written into a watched source folder get re-ingested, or a second instance's files appear mid-run | **§2.4** frozen source set + **§7.1** instance/run identity (per-run temp ownership, no cross-instance ingestion) | covered |
 | T9a | **ConvertIA's own code exfiltrates user files** | The app itself (Rust core or WebView) tries to upload originals/results | **Structurally covered:** ConvertIA's own code **opens no socket** — no HTTP/updater plugin on the §0.10 allowlist, no `connect-src` to remote origins (CSP), `form-action 'self'`, no phone-home (**§7.6**). The only network is the user-initiated C10 open-project-page shell-out. Proven by the **§2.11.4** packet-monitor release gate (blocks release on any outbound packet) + **§2.11** offline invariant. | covered |
-| T9b | **A bundled engine reaches out on hostile input** | A crafted dropped file makes a bundled engine (FFmpeg HLS/DASH/concat, pandoc include, LibreOffice remote/OLE link) open an outbound socket or read an out-of-input file at convert time (SSRF/LFR; e.g. CVE-2023-6605) | **Load-bearing argv/build controls (NOT the degradable OS sandbox), BOTH halves:** **§3.5.1** FFmpeg `-protocol_whitelist file,pipe` + network-disabled build (SSRF half) **and** concat `-safe 1` (never `-safe 0`, rejects absolute/`..` paths) + a curated demuxer set without the playlist/manifest dereferencing demuxers (absolute-file LFR half) — both asserted at **§6.1.3** (`ffmpeg -protocols` + `-demuxers`); **§3.5.4** pandoc `--sandbox`; **§3.5.2** LibreOffice profile-hardening (no link/OLE auto-update). Backed by the **§6.4.2** adversarial-egress / network-trigger case (zero egress AND no out-of-input file read on a network-trigger input) and proven again by the **§2.11.4** packet-monitor gate. **Defence-in-depth only (no longer load-bearing for either half):** **§2.12.3** engine-side OS network/FS restriction — `[OPEN]`, present only where the privilege-drop tier is enabled (it **degrades to the cheap tier**), so it is **not** the structural guarantee; the per-engine argv/build controls are. | covered |
+| T9b | **A bundled engine reaches out on hostile input** | A crafted dropped file makes a bundled engine (FFmpeg HLS/DASH/concat, pandoc include, LibreOffice remote/OLE link, **a crafted SVG's `<image href>`/XInclude**) open an outbound socket or read an out-of-input file at convert time (SSRF/LFR; e.g. CVE-2023-6605, librsvg CVE-2023-38633) | **Load-bearing argv/build controls (NOT the degradable OS sandbox), BOTH halves:** **§3.5.1** FFmpeg `-protocol_whitelist file,pipe` + network-disabled build (SSRF half) **and** concat `-safe 1` (never `-safe 0`, rejects absolute/`..` paths) + a curated demuxer set without the playlist/manifest dereferencing demuxers (absolute-file LFR half) — both asserted at **§6.1.3** (`ffmpeg -protocols` + `-demuxers`); **§3.5.4** pandoc `--sandbox`; **§3.5.2** LibreOffice profile-hardening (no link/OLE auto-update); **§3.5.5** SVG/librsvg control — stage the SVG into per-job scratch on ALL platforms + base-URL-confine href/XInclude resolution to scratch + refuse external resource loads (closes the SVG absolute-file LFR half, the librsvg analogue of the FFmpeg LFR control). Backed by the **§6.4.2** adversarial-egress / network-trigger case (zero egress AND no out-of-input file read on a network-trigger input), the **§6.1.3** SVG external-`<image href>` corpus assertion (no out-of-input bytes embedded), and proven again by the **§2.11.4** packet-monitor gate. **Defence-in-depth only (no longer load-bearing for either half):** **§2.12.3** engine-side OS network/FS restriction — the **best-effort privilege-drop tier** `[DECIDED]` (present where it works without install-time elevation, **degrades silently to the cheap tier** otherwise), so it is **not** the structural guarantee; the per-engine argv/build controls are. | covered |
 | T10 | **Resource exhaustion / DoS-by-input** | A tiny SVG asked to render at 50 000 px, a 90-min→GIF, a thousands-file batch exhausting RAM/disk/handles | **§1.10** resource pre-flight & budgets + **§0.9** pool/handle bounds + the to-GIF guardrail (cross-category.md) | covered |
 
 **No orphan classes.** Every box above points at a section that owns the
