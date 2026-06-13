@@ -55,7 +55,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 > Running list of `[OPEN]` items surfaced while writing the spec; resolved items
 > move to `[DECIDED]` with a one-line rationale.
 
-- **HEIC/AAC patent disposition** — per format × platform: ship bundled / gate / rely-on-OS / unavailable. Owner: §3.4. `[OPEN]`
+- **HEIC / AAC / H.264 patent disposition** — per format × platform: ship bundled / gate / rely-on-OS / unavailable (MP4-as-default video target depends on H.264/AAC shipping on all 3 platforms). Owner: §3.4. `[OPEN]`
 - **Rust↔TS type-sharing mechanism** — manual mirror vs codegen (ts-rs / specta / tauri-specta). Owner: §0.4. `[OPEN]`
 - **Instance & run identity** — single vs multi-instance; run/instance id model. Owner: §7.1. `[OPEN]`
 - **Persistence** — does v1 persist anything (last destination / theme / window) or nothing? Owner: §7.4. `[OPEN]`

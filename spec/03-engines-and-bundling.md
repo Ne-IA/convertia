@@ -23,11 +23,15 @@
   assembles them; no runtime fetch. _(expand)_
 
 ## 3.4 Per-platform packaging & the patent-disposition matrix `[OPEN]`
-- Win/macOS/Linux specifics per engine. **Single owner of the HEIC/AAC patent
-  decision** the SSOT mandates: an explicit **format × platform × disposition**
-  table (ship-bundled / gate / rely-on-OS / unavailable). "Rely on the OS" is a
-  distinct strategy from bundling, with its own offline/isolation implications —
-  note them. The `images.md`/`audio.md` patent flags and §6.5 **reference** this
+- Win/macOS/Linux specifics per engine. **Single owner of the HEIC / AAC /
+  H.264 patent decision** the SSOT mandates: an explicit **format × platform ×
+  disposition** table (ship-bundled / gate / rely-on-OS / unavailable). Covers
+  **HEVC/HEIC** (images), **AAC** (audio) and **H.264 + AAC-in-MP4** (video) —
+  note: MP4 (H.264+AAC) is the **default video target**, so MP4-as-default
+  requires H.264/AAC ship-bundled on all three platforms; this is the video
+  category's hardest external dependency. "Rely on the OS" is a distinct strategy
+  from bundling, with its own offline/isolation implications — note them. The
+  `images.md` / `audio.md` / `video.md` patent flags and §6.5 **reference** this
   table; honest per-platform availability flows from it. Tracked in the
   open-questions log until decided. _(decide & expand)_
 
