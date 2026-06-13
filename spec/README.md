@@ -58,6 +58,60 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 > empirical number/validation remains; `[OPEN]` = a genuine unresolved owner-level
 > call. After this pass the vast majority are decided or deferred.
 
+#### Resolved in the second synthesis-fix pass (6 blockers + sound SHOULDs) `[DECIDED]`
+- **FFmpeg static-vs-dynamic linkage `[DECIDED]`** — the §3.6.1/§3.9.1 "a static FFmpeg
+  would FAIL the §6.1.3 dynamic-link assertion" claim contradicted §6.1.3 carve-out **iii**
+  (a static GPL FFmpeg with LGPL libs baked in is GPL-clean aggregation that never fails the
+  assertion; the GPL's corresponding-source subsumes LGPL §6). Resolved in favour of
+  carve-out iii: FFmpeg may be static OR dynamic; v1 ships dynamic-beside-the-exe as an
+  **engineering preference**, not a licence-mandated rule; the LGPL dynamic-link assertion
+  applies ONLY to LGPL linked into the MIT core (carve-out i). Owner: §6.1.3 / §3.6.1 / §3.9.1.
+- **CSV/TSV in-process progress = `ProgressModel::InProcessFraction` + `mpsc::Sender<f32>`
+  `[DECIDED]`** — the enum had only 3 variants (none covering the in-process self-reported
+  fraction) and §1.7 named no IPC. Added a 4th variant; §1.7's `InProcessNative` sub-case now
+  passes the executor a bounded `tokio::sync::mpsc::Sender<f32>` (`blocking_send` per N-KB
+  chunk, verified current Tokio API) which §1.7 forwards as `ItemProgress`. Owner: §3.2.2 /
+  §1.7 / §1.11 / §3.5.6.
+- **Screen-reader path now has an implementable contract (Principle 10) `[DECIDED]`** — new
+  §5.6.1 enumerates the mandatory per-component ARIA role, the assertive-announcement states,
+  and the per-state SR traversal order through the 12-state machine; §6.6 is the verification
+  gate that walks it. Owner: §5.6.1 / §6.6.
+- **English-only UI now has an owning section + CI gate (Principle 11) `[DECIDED]`** — §5.7
+  states v1 ships English-only strings with no i18n runtime; §6.10 row 23 + a Lane-A
+  Principle-11 lint (no locale-switch library import; every `strings/ui.ts` key resolves to a
+  non-empty English value) make it machine-checkable. Owner: §5.7 / §6.10.
+- **BatchSummary vs FileList skipped-list ownership `[DECIDED]`** — BatchSummary owns the
+  passive one-line tally only; **FileList** ("Show N files" disclosure) is the SINGLE owner of
+  the expandable per-item skipped rows (no duplicate inline list). Owner: §5.3.
+- **Images BMP-column alpha-flatten `[DECIDED]`** — every alpha-capable source → BMP
+  (PNG/WEBP/GIF/TIFF/HEIC/AVIF/ICO) is now `✓~` (matrix matched to its own alpha-flatten
+  prose and the parallel JPG column); JPG→BMP stays `✓` (no alpha). Owner: images.md.
+- **image→GIF dither default `[DECIDED]`** — promoted the stale images.md `[DEFER]` to
+  `[DECIDED] bayer` (cgif's only mode; parallels the video→GIF `bayer:bayer_scale=5` default).
+  Owner: images.md / cross-category.md [OPEN-D].
+- **libimagequant guard = lockfile pin, not soname `[DECIDED]`** — since the BSD v2.4.x fork
+  is statically vendored in libvips' cgif path there is no runtime soname; the §6.1.3 guard is
+  a COPYRIGHT-BSD-text check + a Cargo.lock/engines.lock provenance pin. Owner: §3.1 row 1e /
+  §6.1.3.
+- **macOS file-open = `RunEvent::Opened` only (NOT `on_open_url`) `[DECIDED]`** — corrected the
+  mis-equation with `tauri-plugin-deep-link` (custom-scheme deep links, which never fire for
+  the Open-With AppleEvent). Owner: §7.3.2 / §1.1 / §7.8.1.
+- **`vitest-axe@0.1.0` verified-real + pinned `[DECIDED]`** — confirmed on npm (Vitest-native
+  jest-axe fork, deps `axe-core ^4.4`); pinned in §0.8; the "jest-axe is wrong under Vitest"
+  framing corrected (it works; vitest-axe is preferred for ergonomics). Owner: §0.8 / §6.4.6a.
+- **Stray code-fence at video.md EOF removed**; **WMA-encoder factual fix** (wmav2 exists but
+  is out-of-v1, not "no encoder exists"); **images.md SVG engines row** corrected to the direct
+  `rsvg::Loader` security boundary (not libvips `svgload`). Owners: video.md / §3.1 / images.md.
+- **Several §5 UI derivability gaps closed `[DECIDED]`** — RerunPrompt Ctrl/⌘+N suppression is
+  reducer-level (not focus-trap alone); ProgressList `aria-busy` cleared on terminal; OpenActions
+  divert labels are concrete `strings/ui.ts` entries; `pendingVideoReencodeNote` resets on 4→3
+  back-nav; Collecting orphaned-focus fallback = the `role=status` scanning region;
+  UnsupportedNotice §5.3 controls enumerated + focus-on-Dismiss; native drop in RerunPrompt
+  silently ignored; BusyNotice auto-dismiss precisely scoped. Owner: §5.3 / §5.6 / §5.8 / §5.10.
+- **Corpus minimum-content gate `[DECIDED]`** — §6.4.5 adds a machine-checkable content floor
+  (≥1 CJK-body + ≥1 RTL-body Office doc, ≥1 non-ASCII-encoding CSV/TSV, ≥1 non-Latin-tag audio,
+  representative A/V) so an all-ASCII corpus can't pass; backs §6.10 rows 3/15. Owner: §6.4.5.
+
 #### Resolved in the synthesis-fix pass (7 blockers + alignment) `[DECIDED]`
 - **C4 never overrides a C5 destination** (was: "C4 freezes after C5") — the contradiction
   with the §5.2 rows-4/5 self-loop + §5.8 debounced re-call is removed: a post-C5
@@ -454,9 +508,11 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   row 13.
 - **Linux log dir = `~/.config/dev.ne-ia.convertia/logs/`** (Tauri v2 `app_log_dir()`
   resolves via `configDir`, not the data dir). Owner: §7.5.2.
-- **macOS launch-intake = `RunEvent::Opened { urls: Vec<Url> }`** (real in Tauri v2;
-  `tauri-plugin-deep-link` `on_open_url` the ergonomic equivalent) — `file://` URLs →
-  paths before §1.1; one canonical hook across §1.1/§7.8.1. Owner: §1.1 / §7.8.1.
+- **macOS launch-intake = `RunEvent::Opened { urls: Vec<Url> }`** (real in Tauri v2, the
+  `App::run` closure; the **sole** macOS file-open mechanism — **NOT** `tauri-plugin-deep-link`
+  `on_open_url`, which is for custom-scheme deep links and does not fire for the Open-With
+  AppleEvent) — `file://` URLs → paths before §1.1; one canonical hook across §1.1/§7.8.1.
+  Owner: §1.1 / §7.8.1.
 - **willReencode note timing** — surfaced at target choice (state 4, C3
   `Target.lossy=video_reencode`); `RunStarted.willReencode` only confirms/clears it.
   Owner: §5.7 / §5.8 / §2.9.2.
@@ -629,7 +685,9 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   `LGPL-2.1-or-later`; libheif/libde265 `LGPL-3.0-or-later`); §6.1.3 capability assertions
   for `paletteuse` dither set + `webpsave`/`heifsave` `effort`. Owner: video.md / images.md
   / cross-category.md / §3.1 / §3.4 / §3.6.1 / §6.1.3.
-- **§06 test-realism corrections** — a11y gate uses **`vitest-axe` only** (not jest-axe);
+- **§06 test-realism corrections** — a11y gate uses **`vitest-axe@0.1.0`** (a real npm
+  package, Vitest-native `jest-axe` fork — verified on npm; preferred for Vitest ergonomics,
+  **not** because jest-axe is "wrong", which works under Vitest too — §6.4.6a);
   axe under jsdom **can't measure contrast** → WCAG-AA contrast runs on the
   `@axe-core/webdriverio` session, jsdom leg = ARIA/role/focus only; **`tauri-driver` has
   NO macOS WKWebView driver** (safaridriver ref removed — it automates Safari, not a

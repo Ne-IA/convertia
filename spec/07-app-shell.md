@@ -655,17 +655,18 @@ per-location fallback applies if it has since become read-only/gone) — it is a
   - Windows: `%APPDATA%\dev.ne-ia.convertia\settings.json`
   - macOS: `~/Library/Application Support/dev.ne-ia.convertia/settings.json`
   - Linux: `$XDG_CONFIG_HOME/dev.ne-ia.convertia/settings.json` (→ `~/.config/…`)
-- **Reconciling with "portable / no system pollution":** this is a single tiny
-  cosmetic file in the OS-standard per-user config dir (not the registry, not
-  system-wide, not next to the binary), trivially deletable, holding no user data.
-  That is the honest reading of "no system pollution" — it is **not** an installer,
-  service, or scattered state. `[OPEN→README, minor]` a stricter portable reading
-  would put `settings.json` **next to the executable** (true zero-footprint when
-  the folder is deleted) — **`[REC]` use the OS config dir**, because a
-  beside-binary file breaks when the portable app runs from a read-only medium
-  (USB/DMG) and the OS config dir is the cross-platform-correct home; the
-  read-only-medium case is exactly why we don't depend on writing beside the
-  binary.
+- **Reconciling with SSOT Principle 2 "portable / no system pollution":** this single
+  tiny cosmetic file in the OS-standard **per-user** config dir is **not a registry write,
+  not system-wide, not next to the binary, not a service/LaunchAgent/daemon**, holds no user
+  data, and is **trivially removable** (delete the one folder). That is the honest reading of
+  Principle 2 — a per-user preference file is not "system pollution" (no installer, no
+  scattered system state); the §6.10 row 21 Procmon/fsusage/strace gate explicitly permits
+  writes to the OS config/log dir and the user's chosen output, and nothing else.
+  **Config-dir location `[DECIDED]` (was `[OPEN→README, minor]`):** `settings.json` lives in
+  the **OS per-user config dir** (adopting the `[REC]`), **not** beside the executable — a
+  beside-binary file breaks when the portable app runs from a read-only medium (USB/DMG),
+  and the OS config dir is the cross-platform-correct, writable home regardless of where the
+  binary sits.
 - **Failure tolerance:** persistence is **best-effort and never load-bearing** —
   if `settings.json` is unreadable/corrupt/unwritable, ConvertIA logs it (§7.5)
   and runs with defaults; a persistence failure **never** blocks a conversion or
@@ -724,7 +725,11 @@ record *what actually happened* without showing the user a stack trace.
   **not** preserve the single-file footprint.)
   `KeepOne` keeps the log from ever silently growing (consistent with "leave nothing
   behind" and "no system pollution"). The concrete crate version is pinned in the lockfile
-  + SBOM per the §0.8 no-hardcoded-digits policy.
+  + SBOM per the §0.8 no-hardcoded-digits policy. **Audit trail `[DECIDED]`:** the
+  `KeepOne == fs::remove_file` (≈1× `max_file_size`) source-verification above is recorded
+  against the **exact pinned `tauri-plugin-log` version/commit in the lockfile** — so the
+  ~1×-footprint claim is auditable, and a version bump triggers a re-check of the `KeepOne`
+  rotation arm before the bound is re-asserted (`[DEFER: verify-on-bump]`).
 
 ### 7.5.3 Redaction stance — reconciling diagnostics with privacy `[DECIDED + REC]`
 
@@ -929,9 +934,14 @@ into the **same** intake path as a drop/picker — so the frozen-source-set (§2
 and one-batch-at-a-time (§1.3) rules apply identically. The entry points:
 
 - **macOS:** the open-documents AppleEvent (the OS delivers files to the running
-  app), surfaced by Tauri v2 as **`RunEvent::Opened { urls: Vec<Url> }`** (the concrete
-  hook; `tauri-plugin-deep-link`'s `on_open_url` is the equivalent ergonomic surface).
-  The payload is **`Vec<Url>` (`file://` URLs), not paths** — each is converted via
+  app), surfaced by Tauri v2 as **`RunEvent::Opened { urls: Vec<Url> }`** handled in the
+  `App::run(...)` closure — this is the **sole** macOS file-open mechanism for ConvertIA.
+  **NOT `tauri-plugin-deep-link` / `on_open_url` `[DECIDED]`:** that plugin handles
+  **custom-scheme deep links** (`myapp://…`), a *different* OS intent; it does **not** fire
+  for the Open-With / double-click open-documents AppleEvent that delivers `file://` URLs,
+  so using it for file intake would silently never trigger. ConvertIA registers **no** URL
+  scheme (§7.8.2 negative), so `on_open_url` is irrelevant here. The payload is
+  **`Vec<Url>` (`file://` URLs), not paths** — each is converted via
   `Url::to_file_path()` before §1.1. This is the **launch/open-with** hook, **distinct**
   from the single-instance second-launch hand-off (§7.1.1, the `argv`/cwd callback); the
   single-instance plugin (§7.1.1) ensures both land in the one instance. **The

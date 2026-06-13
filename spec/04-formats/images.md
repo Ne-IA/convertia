@@ -42,14 +42,14 @@ for the binding.
 | src ＼ tgt | JPG | PNG | WEBP | GIF | BMP | TIFF | HEIC | AVIF | ICO |
 |-----------|-----|-----|------|-----|-----|------|------|------|-----|
 | **JPG**   | —          | ✓ vips      | ✓★~ vips     | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips |
-| **PNG**   | ✓~ vips    | —           | ✓★~ vips     | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips |
-| **WEBP**  | ✓★~ vips   | ✓ vips      | —            | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips |
-| **GIF**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | —            | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips |
+| **PNG**   | ✓~ vips    | —           | ✓★~ vips     | ✓~ vips      | ✓~ vips     | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips |
+| **WEBP**  | ✓★~ vips   | ✓ vips      | —            | ✓~ vips      | ✓~ vips     | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips |
+| **GIF**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | —            | ✓~ vips     | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips |
 | **BMP**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | —           | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips |
-| **TIFF**  | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | ✓ vips      | —           | ✓~ vips      | ✓~ vips      | ✓~ vips |
-| **HEIC**  | ✓★~ vips   | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips      | ✓ vips      | —          | ✓~ vips      | ✓~ vips |
-| **AVIF**  | ✓★~ vips   | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips    | —            | ✓~ vips |
-| **ICO**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | —      |
+| **TIFF**  | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | ✓~ vips     | —           | ✓~ vips      | ✓~ vips      | ✓~ vips |
+| **HEIC**  | ✓★~ vips   | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips     | ✓ vips      | —          | ✓~ vips      | ✓~ vips |
+| **AVIF**  | ✓★~ vips   | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips     | ✓ vips      | ✓~ vips    | —            | ✓~ vips |
+| **ICO**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | ✓~ vips     | ✓ vips      | ✓~ vips      | ✓~ vips      | —      |
 | **SVG**†  | ✓~ svg     | ✓★~ svg     | ✓~ svg       | ✓~ svg       | ✓~ svg      | ✓~ svg      | out*         | out*         | ✓~ svg |
 
 † **SVG is source-only, and EVERY SVG→raster cell is `~` (lossy).** It is rasterised
@@ -69,6 +69,17 @@ HEIC/AVIF. They are **not** in the offered set (SVG offers PNG/JPG/WEBP/BMP/TIFF
 so the §6.4.3a corpus↔pair bijection guard does not enumerate them. (Technically the
 SVG loader could rasterise to pixels for `heifsave` in one vips process, but the pair
 is deliberately excluded.)
+
+**BMP-column `~` (alpha-flatten) `[DECIDED]`.** Every **alpha-capable** source →
+BMP (PNG/WEBP/GIF/TIFF/HEIC/AVIF/ICO, and SVG-with-transparency) is marked `✓~`
+because v1 writes **24-bit BMP** and flattens alpha onto white (BMP carries no
+alpha) → the predictable-loss `image_alpha_flatten` note (§2.9; see the *BMP*
+entry), exactly mirroring the parallel JPG column. **JPG→BMP stays `✓` (lossless)**
+— JPG carries no alpha, so there is nothing to flatten (unlike JPG-column cells,
+which are always `~` because the JPEG codec is lossy at any Q). The `~` denotes a
+**predictable**-loss class for the common alpha-carrying input; as everywhere in
+this matrix the note is keyed on the source's alpha capability, not a per-instance
+pixel scan.
 
 **Diagonal (same→same).** Not a category-internal "conversion" in the menu, but
 re-encoding *is* a real user action (re-compress a JPG, flatten a PNG). The SSOT
@@ -98,8 +109,8 @@ savers are libvips load/save modules, not separate pipeline stages), never a cha
 
 | Short | Engine | Role | Licence | Patent | Platforms |
 |-------|--------|------|---------|--------|-----------|
-| **vips** | **libvips** (raster core, built with libheif/libde265, libaom/dav1d, cgif, the **required** ImageMagick delegate, and the librsvg `svgload` module) | Decode+encode JPG/PNG/WEBP/GIF/BMP/TIFF/ICO; HEIC/AVIF **decode** (libheif / dav1d load modules) **and encode** (`heifsave compression=hevc\|av1`); BMP save via the required ImageMagick `magicksave` delegate; **ICO save = default `magicksave`, `[DEFER: build spike]` (in-core Rust ICO assembler fallback, §3.5.5)**; SVG load (librsvg); orchestrates resize/colour/alpha | LGPL-2.1+ (libvips); cgif MIT; ImageMagick permissive; **x265 GPL-2.0-or-later (dynamically-loaded libheif plugin)** | **HEVC patents → §3.4** (HEIC); AV1 royalty-free (AVIF, ship-posture §3.4) | Win / macOS / Linux (HEIC per §3.4 disposition) |
-| **svg** | **librsvg** (libvips' native `svgload` backend; resvg is NOT a libvips backend and is **not shipped**, §3.1 row 1c) | Rasterise SVG → bitmap (no scripting, no network), **invoked as libvips' SVG load module** so vips saves the raster | librsvg LGPL-2.1+ | none | Win / macOS / Linux |
+| **vips** | **libvips** (raster core, built with libheif/libde265, libaom/dav1d, cgif, the **required** ImageMagick delegate; the librsvg `svgload` module may be present but is **NOT used** — SVG is loaded via the direct `rsvg::Loader` path, see the **svg** row + §3.5.5) | Decode+encode JPG/PNG/WEBP/GIF/BMP/TIFF/ICO; HEIC/AVIF **decode** (libheif / dav1d load modules) **and encode** (`heifsave compression=hevc\|av1`); BMP save via the required ImageMagick `magicksave` delegate; **ICO save = default `magicksave`, `[DEFER: build spike]` (in-core Rust ICO assembler fallback, §3.5.5)**; **SVG load via direct `rsvg::Loader` (not vips `svgload`)**; orchestrates resize/colour/alpha | LGPL-2.1+ (libvips); cgif MIT; ImageMagick permissive; **x265 GPL-2.0-or-later (dynamically-loaded libheif plugin)** | **HEVC patents → §3.4** (HEIC); AV1 royalty-free (AVIF, ship-posture §3.4) | Win / macOS / Linux (HEIC per §3.4 disposition) |
+| **svg** | **librsvg** (also libvips' native `svgload` backend, but ConvertIA does **not** use that path; resvg is NOT a libvips backend and is **not shipped**, §3.1 row 1c) | Rasterise SVG → bitmap (no scripting, no network) `[DECIDED]`; **librsvg is called DIRECTLY via `rsvg::Loader` (image-worker) with NO base URL — NOT via libvips `svgload`** (svgload exposes no external-resource toggle; the direct, no-base-URL call is the load-bearing T9b/CVE-2023-38633 security boundary, §3.5.5). The rendered raster is then handed to libvips for encode | librsvg LGPL-2.1+ | none | Win / macOS / Linux |
 
 **Single-engine binding (resolves §3.2 for this category):**
 
@@ -117,8 +128,9 @@ savers are libvips load/save modules, not separate pipeline stages), never a cha
    is a **build/configuration choice**, not a libaom limitation — libaom *can* decode AV1,
    but ConvertIA **configures libheif to resolve dav1d for AV1 decode** (smaller/faster
    decoder) and uses libaom **only** as the encoder. A §6.1.3 build assertion confirms the
-   staged libheif resolves dav1d for decode (parallel to the libimagequant-soname
-   assertion). Single binary.
+   staged libheif resolves dav1d for decode (a runtime-plugin enumeration; distinct from
+   the libimagequant guard, which is a lockfile pin/provenance check since libimagequant is
+   statically vendored — §3.1 row 1e). Single binary.
 4. **SVG → raster** → the image-worker loads the SVG via **`rsvg::Loader` directly**
    (NOT via libvips' `svgload` — `svgload` exposes no external-resource toggle, and the
    T9b LFR control requires loading with **no base URL**, §3.5.5), renders it, and
@@ -272,7 +284,9 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   - *Basic:* none required. Palette is generated automatically.
   - *Advanced:* `dither` amount — default **on** (the native cgif/`gifsave` backend
     supports an **ordered/Bayer-style** dither, NOT Floyd–Steinberg — error-diffusion
-    is not available in cgif; **bayer is the v1 default** per the README [DEFER]);
+    is not available in cgif; **bayer is the v1 default `[DECIDED]`**, the only mode cgif
+    offers on this path, parallel to the video→GIF `bayer:bayer_scale=5` default in
+    cross-category.md [OPEN-D] `[DECIDED]` — no scale parameter is exposed on the cgif path);
     `bitdepth`/colour count ≤ 256 — default **8** (256 colours); `effort` (palette
     search) — default **7** (vips default). `interframe maxerror`/`reuse` for
     animation — defaults left at vips defaults.

@@ -185,13 +185,21 @@ build-time mechanics that realise them**:
   asserts the staged `libimagequant` `COPYRIGHT` actually contains the **BSD-2-Clause**
   text (the frozen `lovell/libimagequant` v2.4.x fork), and **fails the build** if a
   GPLv3 leg (upstream 4.x) slipped in — the §6.3.3 SPDX-presence gate sees a declared id,
-  not the shipped text, so this text check is the real guard.
+  not the shipped text, so this text check is the real guard. **Plus a lockfile-pin
+  provenance check `[DECIDED]`:** since libimagequant is **statically vendored** inside
+  libvips' `cgif` path (no runtime soname to resolve), the stage step also asserts the
+  pinned `imagequant`/`libimagequant` ref in `engines.lock` (and any `Cargo.lock` entry) is
+  **exactly the `lovell/libimagequant` v2.4.x-fork commit** — provenance, not an ABI/soname
+  check (which would be meaningless for a vendored static lib).
 - **libheif-resolves-dav1d-for-AV1-decode assertion (§3.1 row 1b / images.md) `[DECIDED]`:**
   "libaom is encode-only" is a configuration choice, not a libaom limitation — so the stage
   step asserts the staged **libheif resolves `dav1d` as its AV1 *decoder* plugin** (e.g.
   `heif-info`/`libheif_decoder` enumeration lists dav1d, not libaom, for AV1) and **fails
   the build** if libaom is wired as the decoder (or no dav1d decoder is present). Parallel
-  to the libimagequant-soname check: the shipped wiring is verified, not trusted.
+  to the libimagequant pin/provenance check (§3.1 row 1e): the shipped wiring is verified,
+  not trusted. (Here the wiring IS a runtime plugin enumeration, so this one legitimately
+  inspects the staged libheif's resolved decoder — distinct from libimagequant, which is
+  statically vendored and so verified by its lockfile pin, not a soname.)
 - **Exposed-parameter capability assertions (against the §3.8-pinned versions) `[DECIDED]`:**
   the per-format option names ConvertIA exposes must actually exist in the staged engine
   builds, so the stage step asserts (and **fails the build** on a miss): (1) the **FFmpeg
@@ -507,10 +515,12 @@ therefore pin **1.5 explicitly on every input** rather than relying on any tool 
 default specVersion of the §3.8-pinned `cargo-cyclonedx`** at pin time and record it
 factually here — we do not rely on it (we pass `--spec-version 1.5` regardless), but the
 note should state the pinned tool's real default rather than a speculative "now defaults to
-1.6". `cargo xtask sbom`
-MUST pass **`--spec-version 1.5`** to `cargo cyclonedx` **and** to the pnpm/npm CycloneDX
-generator (so every input is 1.5 before merge), and **abort the merge on a schema-version
-mismatch** rather than emit an invalid mixed-version document. If a future pinned version
+1.6". **Invocation `[DECIDED]`:** `cargo xtask sbom` invokes **`cargo cyclonedx` as a
+subprocess** (the CLI, not the library API) — it shells out to the pinned `cargo-cyclonedx`
+binary and to the pnpm/npm CycloneDX generator, then merges their JSON. It therefore
+MUST pass **`--spec-version 1.5`** on the `cargo cyclonedx` **command line** **and** to the
+pnpm/npm CycloneDX generator (so every input is 1.5 before merge), and **abort the merge on
+a schema-version mismatch** rather than emit an invalid mixed-version document. If a future pinned version
 ever drops the flag, the fallback is to emit the tool default and **post-process +
 re-validate** the JSON to 1.5. This keeps the gate and the version-to-version diff stable
 across tooling bumps.
@@ -896,6 +906,25 @@ media in an LFS-backed `corpus-large`** fetched **only** for the full Lane-B gat
 (§6.7.2), never required for the per-PR fast lane. Target total size co-owned with
 §3.9. **[DEFER:** the exact total LFS size is calibrated as the corpus is filled.**]**
 
+**Minimum-content gate (the corpus is *content*-complete, not just pair-complete)
+`[DECIDED]`.** The §6.4.3a bijection guard proves only that every pair has *a* backing
+file — an all-ASCII / all-Latin corpus would pass it while leaving SSOT *v1 DoD*'s
+"non-Latin/RTL text, representative audio/video" content requirement unverified. So
+`scripts/check-corpus-coverage.rs` **additionally** asserts (failing Lane A / §6.7.1 if
+any is absent) that the root `manifest.toml` contains **at least one `[[file]]` whose
+`exercises` (or a dedicated `content` tag) names each of**:
+- **`cjk-body`** — ≥1 Office document (DOCX/ODT/XLSX/PPTX) with **CJK body text**;
+- **`rtl-body`** — ≥1 Office document with **RTL (Arabic/Hebrew) body text**;
+- **`non-ascii-encoding`** — ≥1 **CSV/TSV in a non-ASCII encoding** (e.g. UTF-16 or
+  Windows-1252) and ≥1 TXT in a non-UTF-8 encoding;
+- **`non-latin-tags`** — ≥1 **audio file with non-Latin ID3/Vorbis tag text**;
+- **`representative-av`** — ≥1 real **audio** and ≥1 real **video** clip (already implied
+  by the per-format rows; the lint makes the floor machine-checkable).
+
+The required tag set is a fixed list in the lint; a missing tag is a **build failure**, so
+the content floor cannot silently regress. This is the machine-checkable backing for §6.10
+DoD rows **3** (corpus exists) and **15** (real-world filename + content fidelity).
+
 ### 6.4.6 UI / end-to-end (the core-UX-flow gate)
 
 A headed browser-driver run drives the built app through **`tauri-driver`** — which
@@ -917,14 +946,26 @@ is resolved to **WebdriverIO**.) **Version pin `[DEFER: implementation]` → Web
 the session is configured with **`tauri:options`** (the `application` = the built app
 binary path, plus any `args`) and a **`tauri-driver` host/port** WebdriverIO connects to
 (`tauri-driver` proxies to the platform driver — `msedgedriver` on Windows,
-`WebKitWebDriver` on Linux); no Chrome/Firefox capability block. Concrete pin + capabilities
+`WebKitWebDriver` on Linux); no Chrome/Firefox capability block. **Two concrete
+per-platform driver facts `[DECIDED]`:** (a) **Linux:** `tauri:options.application` must
+point at the **extracted ELF binary, NOT the `.AppImage`** — the AppImage is a
+self-mounting wrapper WebDriver cannot launch as a process target, so CI first runs
+`./ConvertIA.AppImage --appimage-extract` (or `--appimage-extract-and-run`) and points
+`application` at **`squashfs-root/usr/bin/convertia`**. (b) **Windows:** the
+**`msedgedriver` version MUST match the runner's installed WebView2/Edge runtime** (a
+mismatched msedgedriver fails to attach) — the CI step resolves the runner's WebView2 build
+and fetches the matching `msedgedriver`. Concrete pin + capabilities
 block are an `[DEFER: implementation]` detail to finalise against the pinned `tauri-driver`
-minor at build time. **Note:** plain **Playwright cannot drive a Tauri WebView**
+minor at build time (also record the `tauri-driver` minor against which the default port
+`4444` holds). **Note:** plain **Playwright cannot drive a Tauri WebView**
 in its normal CDP mode (Tauri is not a Chrome DevTools-Protocol target); it is *not* the
 E2E driver here. The run exercises
 the full §5.2 flow per platform: empty → intake → collected/confirm → target+default →
-destination shown → progress → summary → open-folder. This is the automated half of the
-DoD **core-UX-flow** gate; the human half is §6.6. Frontend component/unit tests use
+destination shown → progress → summary → open-folder. **The empty/Idle step also asserts
+the "all conversion happens locally, on your machine" reassurance line is present
+`[DECIDED]`** (SSOT *Offline / privacy* surfaced on Idle, §5.2 row 1 / §5.7) — a cheap
+string-presence check so the offline reassurance can't silently drop. This is the automated
+half of the DoD **core-UX-flow** gate; the human half is §6.6. Frontend component/unit tests use
 **Vitest** (§0.8).
 
 - **Native file-drop is NOT automatable** by `tauri-driver` (the OS-level
@@ -977,9 +1018,17 @@ The DoD **basic-a11y** gate (keyboard path + readable contrast/sizes, WCAG 2.1 A
 §5.6) has both a human half (§6.6 keyboard-only walkthrough) and an **automated half
 owned here** (it had no named tool/lane before):
 
-- **Tool & lane:** **`axe-core`** run via **`vitest-axe`** (NOT `jest-axe` — the §0.8
-  runner is Vitest, and `vitest-axe` is the correct Vitest binding; matches §6.7.1)
-  against the rendered React component tree under **Vitest**, as a **Lane-A** step
+- **Tool & lane:** **`axe-core` (`^4.4`)** run via **`vitest-axe`** — a real, published npm
+  package (a Vitest-native fork of `jest-axe`; npm `latest 0.1.0`, with a `1.0.0-pre`
+  prerelease track; deps `axe-core ^4.4.2`, peer `vitest >=0.16.0`) `[DECIDED — verified on
+  npm]`. **Pin `[DECIDED]`:** pin **`vitest-axe@0.1.0`** (the stable `latest`) in §0.8; if
+  the `1.0.0-pre` line stabilises before Phase 3, bump to it. **Honest fallback note:**
+  `jest-axe` is **not** "wrong because the runner is Vitest" — it works fine under Vitest's
+  Jest-compatible matcher API; `vitest-axe` is preferred purely for first-class Vitest
+  ergonomics. If `vitest-axe` were ever unavailable, the fallback is **`axe-core` +
+  `@testing-library/react` with a manual `axe(container)` call under Vitest** (or `jest-axe`)
+  — the gate is "axe-core runs against the tree under Vitest", not a specific wrapper.
+  Used against the rendered React component tree under **Vitest**, as a **Lane-A** step
   (§6.7.1) — no WebDriver session needed for the static ARIA/role/focus checks, so it runs
   per-PR. **jsdom limitation `[DECIDED]`:** axe-core under jsdom **cannot measure computed
   contrast** (jsdom applies no CSS/layout), so the **WCAG-AA contrast check does NOT run on
@@ -1139,10 +1188,13 @@ specifically tests whether a *human who didn't build it* succeeds. Protocol:
   steps through the core flow **Idle → Collecting → Confirm → Converting → Summary** with
   the platform's native SR — **VoiceOver** (macOS), **NVDA** (Windows), **Orca** (Linux) —
   on **at least one platform** (axe-core/§6.4.6a cannot *prove* usable announcement, only
-  ARIA validity). The pass confirms: the collected summary and confirm-gate string are
-  announced (assertive), progress milestones are announced (not every tick), decision
-  dialogs announce as `alertdialog` with their accessible name (§5.6), and lossy/divert
-  notes announce politely. Recorded in `docs/usability-floor.md` (which SR, which platform);
+  ARIA validity). **This is the verification gate for the §5.6.1 implementable SR
+  contract** — the walkthrough follows the §5.6.1(3) per-state SR traversal table and
+  confirms, against §5.6.1(1)/(2): every state has a reachable non-orphaned landing
+  element; the collected summary and confirm-gate string are announced (assertive,
+  §5.6.1(2)); progress milestones are announced (not every tick); the decision dialogs
+  announce as `alertdialog` with their accessible name (§5.6.1(1)); and lossy/divert notes
+  announce politely. Recorded in `docs/usability-floor.md` (which SR, which platform);
   referenced from the §6.10 DoD row 6 (basic accessibility). This closes the gap that the
   keyboard-only walkthrough alone left (SR announcement quality is otherwise unverified).
 - **Recording:** results captured in `docs/usability-floor.md` (per platform:
@@ -1454,7 +1506,11 @@ placeholder) **plus** a `grep` for one required key section per file (e.g.
 "no telemetry" statement; `TRADEMARK.md` → the name/logo carve-out; `CONTRIBUTING.md`
 → "inbound=outbound" / the quality-bar list; `CODE_OF_CONDUCT.md` → an enforcement
 contact). A missing/stub file **fails the Lane-B gate** (§6.7.2). This closes the gap
-that a governance doc could silently ship empty.
+that a governance doc could silently ship empty. **Authoring owner `[DECIDED]`:** the
+five governance docs are a **blocking Phase-3 authoring task owned by the project owner
+(the §6.6 "owner" — the developer)**; the Lane-B gate checks **existence + non-emptiness +
+the key-section grep**, NOT prose quality, so authoring the substantive content is an
+explicit owner deliverable, not something the gate can substitute for.
 
 **`[DECIDED-6.8a]`** (resolves the former `[OPEN-6.8a]`): a `GOVERNANCE.md`/maintainer
 model doc is **NOT adopted for v1** — the seven files above satisfy the SSOT mandate; a
@@ -1540,10 +1596,10 @@ promises has a technical home" is **verifiable**. Each gate is marked
 |---|---------------|-------------------|----------------------------|-------|
 | 1 | **Every sensible source→target pair works reliably on all 3 platforms** | §04 (pairs) · §1 (pipeline) · §3 (engines) | Reliability gate / pair-status ledger (§6.5); integration+corpus tests (§6.4.3–6.4.5) | **in-scope-gate** |
 | 2 | **"Reliably" = fail-clearly + no-harm on a real-world corpus** | §2.5 (no-harm) · §2.8 (fail-clearly) | Property/fault-injection (§6.4.2) + the corpus (§6.4.5) as precondition | **in-scope-gate** |
-| 3 | **The corpus exists (required v1 asset, non-circular gate)** | this file | `tests/corpus/` + `manifest.toml` (§6.4.5); the **corpus↔pair bijection guard (§6.4.3a)** fails CI if any §04 pair has no backing corpus file (or a `covers` entry names a non-existent pair) | **in-scope-gate** |
+| 3 | **The corpus exists (required v1 asset, non-circular gate)** | this file | `tests/corpus/` + `manifest.toml` (§6.4.5); the **corpus↔pair bijection guard (§6.4.3a)** fails CI if any §04 pair has no backing corpus file (or a `covers` entry names a non-existent pair); **plus the §6.4.5 minimum-content gate** — fails CI unless the manifest tags ≥1 CJK-body + ≥1 RTL-body Office doc, ≥1 non-ASCII-encoding CSV/TSV, ≥1 non-Latin-tag audio file, and representative A/V (so the corpus is content-complete, not just pair-complete) | **in-scope-gate** |
 | 4 | **Everything runs fully offline (whole engine set bundled, no fetch)** | §3.3 (bundle-all) · §2.11 (offline invariant) | Bundling at build (§6.1.3); offline-observability E2E with egress blocked (§6.7.3); SBOM proves no runtime-fetch component | **in-scope-gate** |
 | 5 | **Offline guarantee observably true (no network at all)** | §2.11 | Network-egress-blocked E2E run asserts zero calls (§6.7.3 / §6.4.6) | **in-scope-gate** |
-| 6 | **Basic accessibility (keyboard path + readable contrast/sizes; WCAG 2.1 AA per §5.6)** | §5.6 · §5.10 (shortcut map) | **Automated axe-core a11y assertions (§6.4.6a)** — **ARIA-role validity + focus-order run in Lane A (jsdom, §6.7.1)**; **WCAG 2.1 AA contrast (≥4.5:1 text, ≥3:1 large/UI, both themes) runs in Lane B on the `@axe-core/webdriverio` live-WebView session (§6.7.2)** — jsdom cannot compute contrast. **Text-size half (body copy ≥ `--text-base` = 16px, §5.5) is verified by the §6.6 human walkthrough** — axe-core does not measure font size (§6.4.6a). Plus the keyboard-only human walkthrough (§6.6) | **in-scope-gate** |
+| 6 | **Basic accessibility (keyboard path + readable contrast/sizes; **screen-reader path, SSOT Principle 10**; WCAG 2.1 AA per §5.6)** | §5.6 · §5.6.1 (SR contract) · §5.10 (shortcut map) | **Automated axe-core a11y assertions (§6.4.6a)** — **ARIA-role validity + focus-order run in Lane A (jsdom, §6.7.1)**; **WCAG 2.1 AA contrast (≥4.5:1 text, ≥3:1 large/UI, both themes) runs in Lane B on the `@axe-core/webdriverio` live-WebView session (§6.7.2)** — jsdom cannot compute contrast. **Text-size half (body copy ≥ `--text-base` = 16px, §5.5) is verified by the §6.6 human walkthrough** — axe-core does not measure font size (§6.4.6a). Plus the keyboard-only human walkthrough (§6.6) **and the §6.6 screen-reader smoke pass that walks the §5.6.1 SR contract** | **in-scope-gate** |
 | 7 | **Core UX flow (drag/drop+picker+keyboard → same result; reacts to type; pre-highlighted default; destination shown before convert; visible cancellable progress; end-of-batch summary; one-click open-folder/file)** | §5.2 (states) · §1.1/§1.5/§1.11/§1.12 · §7.7 (open) | E2E flow per platform (§6.4.6) + usability-floor human walkthrough (§6.6) | **in-scope-gate** |
 | 8 | **Unwritable/ephemeral-location fallback works** | §2.7 (per-location divert) · §2.14 (cross-volume) | Property tests on read-only/USB/network/temp locations (§6.4.2); divert path in corpus runs | **in-scope-gate** |
 | 9 | **Every bundled engine's required licence text + attribution present and correct (NOTICE/third-party-licenses, backed by SBOM) — missing attribution release-blocking** | §3.7 (data) · §5.9 (display) | SBOM + NOTICE assembly + **attribution-completeness gate** (§6.3.3); blocks release | **in-scope-gate** |
@@ -1560,6 +1616,7 @@ promises has a technical home" is **verifiable**. Each gate is marked
 | 20 | **OS intake (Open-with / launch-args route through the single freeze funnel; no file-association pollution)** | §7.8 · §1.1/§2.4 | Launch-with-files E2E (UI enters Collecting at startup); assert no associations registered (§7.8.2) | **in-scope-gate** |
 | 21 | **Portable, no installation, no system pollution (SSOT Principle 2 — no installer/admin/elevation/registry writes/no LaunchAgent or daemon)** | §7.4/§7.8.2 (explicit negatives) · §0.10 (capabilities) · §3.4.5/§3.3 (no runtime fetch) · §7.3 (no tray/agent) | **Lane-B post-launch assertion `[DECIDED]`:** run the built app under **Procmon (Windows)** / **`fsusage`+config-dir watch (macOS)** / **`strace`/inotify (Linux)** during a conversion and assert: **no writes outside the OS config/log dir + the user's chosen output** — specifically **no registry writes** (Windows, beyond none expected), **no `LaunchAgent`/`LaunchDaemon` install** (macOS), **no system-service/unit install** (Linux), **no file-association registration** (§7.8.2). A pollution write fails the gate | **in-scope-gate** |
 | 22 | **Compressed artifact ≤ 400 MB per platform (§3.9.2 size ceiling)** | §3.9.2 (ceiling) · §3.9 (size levers) | **Artifact-size gate `[DECIDED]`:** an explicit **§6.7.2 Lane-B step** measures each platform's compressed artifact and **fails the release if any exceeds 400 MB compressed** (the §3.9.2 ceiling); recorded as a release-asset line | **in-scope-gate** |
+| 23 | **English-only UI (SSOT Principle 11) — covered by construction (no i18n runtime)** | §5.7 (English-only owning statement) | **Principle-11 CI lint `[DECIDED]`:** a **Lane-A (§6.7.1)** static lint asserts **(a)** no i18n / locale-switching library is imported anywhere in the frontend (e.g. no `i18next`/`react-intl`/`Intl`-locale-negotiation in `package.json` deps or source) and **(b)** every `strings/ui.ts` key resolves to a **non-empty English string value** (no empty/placeholder/locale-keyed entries). Fails CI on any locale-switch path or a non-English/empty string key | **in-scope-gate** |
 | — | **NOT a gate: subjective visual polish; engine-currency** | §5.5 (polish) · §3.8 (currency) | Polish is iterative (never blocks); currency is best-effort, re-validated against the gate when bumped (§6.3.4/§6.5.4) | **out-of-scope-gate** (explicit non-gates) |
 
 If a future SSOT clause is added, it must appear here with an owning section and a

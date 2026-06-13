@@ -42,8 +42,8 @@ every one; they cluster into four families:
 | 1b | **AV1: libaom (enc, via libheif `heifsave compression=av1`) / dav1d (dec, via vips AVIF load module)** — the ONE bundled AV1 encoder is **libaom** (the standalone `libavif`+aom encoder is **not** bundled; encode standardised on `heifsave`, images.md [OPEN-1] [DECIDED]) | Images | AVIF decode/encode | libaom **`BSD-2-Clause AND LicenseRef-AOMPL-1.0`** (the row MUST carry **both** the BSD-2-Clause code licence **and** the "Alliance for Open Media Patent License 1.0" from the `PATENTS` file — complete attribution, §3.7. **SPDX id note `[DECIDED]`:** the AOM Patent License has **no registered SPDX short id** — `AOMPL-1.0` is only a pending SPDX request — so it is expressed as the CycloneDX/SPDX **`LicenseRef-AOMPL-1.0`** custom-licence reference with the full AOM Patent License text carried in `THIRD-PARTY-LICENSES.txt`; the §6.3.3 gate's LicenseRef carve-out treats this as a *resolved* id. Switch to the bare `AOMPL-1.0` once SPDX registers it); dav1d **`BSD-2-Clause`** | LGPL/BSD link in the image worker | AV1 royalty-free; **ship-posture → §3.4** |
 | 1c | **librsvg** (SVG rasteriser — libvips' native `svgload` module is librsvg-backed; resvg is NOT a libvips backend at any released version, so it is **not shipped** [DECIDED]) | Images | SVG→raster | **LGPL-2.1+** (librsvg) | linked load module inside the separate image-worker (LGPL — static-link-as-aggregation OK with the §6.1.3 carve-out ii relinkable-source bundle; never into the MIT core, §3.6) | none |
 | 1d | **ImageMagick** (libvips BMP save delegate — **REQUIRED for BMP**; ICO save is the **default** path but **`[DEFER: build spike]`** §3.5.5; plus GIF fallback) | Images | **BMP load+save (`magickload`/`magicksave` — REQUIRED)**; **ICO save (`magicksave`) — default, multi-size/256px unverified, in-core Rust ICO assembler fallback §3.5.5**; GIF fallback | **ImageMagick License** (Apache-2.0-style, SPDX `ImageMagick`) — **permissive, NOT GPL** | linked delegate (permissive — no isolation); GPL *optional delegates* excluded at build | none |
-| 1e | **libimagequant** — **the BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** (PNG/GIF palette quantisation, used by libvips' `cgif`/`gifsave` and palette PNG output) | Images | PNG/GIF palette quantisation | **BSD-2-Clause** — and **only** via the frozen `lovell/libimagequant` v2.4.x fork (e.g. v2.4.1). **Upstream libimagequant 4.x is GPLv3-or-commercial — NOT permissive — and MUST NOT be bundled** (it would taint the LGPL image-worker). Pin the BSD fork by exact version+ref in `engines.lock`; a §6.1.3/§6.3.3 build assertion checks the staged `COPYRIGHT` actually contains the BSD-2 text. **ABI/soname coupling `[DECIDED]`:** libimagequant 4.x changed its **soname**, and the bundled libvips' `cgif`/`gifsave` (the §3.8 floor) links a **specific libimagequant version** — so the **bundled libvips MUST be built/linked against the v2.4.x-fork API/soname**, and a **§6.1.3 build/link assertion verifies the staged libvips resolves the bundled BSD libimagequant v2.4.x (NOT a system 4.x)**, not just that the COPYRIGHT text is BSD. | linked/vendored **inside the image-worker process** (BSD fork only) | none |
-| 2 | **FFmpeg** (**GPL-2.0+ build** — `./configure --enable-gpl` to link `libx264`; built **without `--enable-nonfree`**: `libmp3lame`, `libvorbis`, `libopus`, native `aac`/`flac`/`alac`/`pcm`, `libx264`, `libvpx-vp9`, **WMA *decoders* (decode-only — there is NO WMA encoder; WMA is a source-only format per audio.md)**; no `libfdk_aac`) | Audio, Video, Cross-category | `04-formats/audio.md`, `video.md`, `cross-category.md` | **GPL-2.0+** (the whole binary, because it enables GPL `libx264`; the LGPL component libs are still dynamically linked beside it, §3.6.1); written-offer-of-source obligation | **separate invoked binary** (`ffmpeg`/`ffprobe`) per §3.6 | **AAC, H.264 → §3.4**; MP3/Vorbis/Opus/FLAC/ALAC/PCM/VP9 patent-clean |
+| 1e | **libimagequant** — **the BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** (PNG/GIF palette quantisation, used by libvips' `cgif`/`gifsave` and palette PNG output) | Images | PNG/GIF palette quantisation | **BSD-2-Clause** — and **only** via the frozen `lovell/libimagequant` v2.4.x fork (e.g. v2.4.1). **Upstream libimagequant 4.x is GPLv3-or-commercial — NOT permissive — and MUST NOT be bundled** (it would taint the LGPL image-worker). Pin the BSD fork by exact version+ref in `engines.lock`; a §6.1.3/§6.3.3 build assertion checks the staged `COPYRIGHT` actually contains the BSD-2 text. **Pin-coupling `[DECIDED]`:** the lovell `libimagequant` v2.4.x fork is **vendored/statically linked inside libvips' `cgif`/`gifsave` path** (the §3.8 floor) — there is **no dynamic soname to resolve at runtime**, so the guard is a **lockfile assertion, not an ABI/soname check**: the **§6.1.3 build assertion verifies the pinned `imagequant`/`libimagequant` ref in `engines.lock` (and any Rust `Cargo.lock` entry) is exactly the `lovell/libimagequant` v2.4.x-fork commit** (NOT upstream 4.x, whose GPLv3 leg would taint the worker), backing the COPYRIGHT-BSD-text check with a provenance check. *(If a future platform build dynamically loads libimagequant, the soname-resolution check is added scoped to that case only.)* | linked/vendored **inside the image-worker process** (BSD fork only) | none |
+| 2 | **FFmpeg** (**GPL-2.0+ build** — `./configure --enable-gpl` to link `libx264`; built **without `--enable-nonfree`**: `libmp3lame`, `libvorbis`, `libopus`, native `aac`/`flac`/`alac`/`pcm`, `libx264`, `libvpx-vp9`, **WMA *decoders* (decode-only — the sole FFmpeg WMA encoder `wmav2` is low-quality, 2-channel-max legacy, so `→ WMA` is out of v1 per audio.md and the build never invokes a WMA encoder; WMA is a source-only format)**; no `libfdk_aac`) | Audio, Video, Cross-category | `04-formats/audio.md`, `video.md`, `cross-category.md` | **GPL-2.0+** (the whole binary, because it enables GPL `libx264`; the LGPL component libs are still dynamically linked beside it, §3.6.1); written-offer-of-source obligation | **separate invoked binary** (`ffmpeg`/`ffprobe`) per §3.6 | **AAC, H.264 → §3.4**; MP3/Vorbis/Opus/FLAC/ALAC/PCM/VP9 patent-clean |
 | 3 | **LibreOffice** (headless `soffice`, Writer+Calc+Impress + PDF export filters; bundled with a baseline open font set, §3.9) | Documents, Spreadsheets, Presentations | `04-formats/documents.md`, `spreadsheets.md`, `presentations.md` (all office↔office + every `*→PDF`) | **MPL-2.0** (+ many bundled components — full set enumerated by the SBOM, §3.7) | **separate invoked binary** (sidecar process) per §3.6 | none |
 | 4 | **poppler** (`pdftotext`) | Documents | `PDF→TXT` | **`GPL-2.0-only OR GPL-3.0-only`** (a valid SPDX expression — *not* the bare `GPL-2.0/GPL-3.0`, which §6.3.3 would reject as unresolved) | **separate invoked binary** (§3.6) | none |
 | 5 | **Ghostscript** **[DECIDED: NOT shipped v1]** (was a PDF read/repair backstop behind poppler; no user-facing pair) | Documents | (malformed-PDF tolerance — dropped) | **AGPL-3.0** | not shipped (`[DEFER: re-add if §6.5 corpus shows GS-salvageable PDFs]`) | none |
@@ -316,6 +316,19 @@ pub enum ProgressModel {
                                            //   the FfmpegKeyValue model belongs to the ENCODE
                                            //   Invocation returned by `plan_encode`, whose
                                            //   `duration_us` comes FROM the parsed ProbeOutput.
+    InProcessFraction,                     // [DECIDED] The ONE in-process engine
+                                           //   (`EngineProgram::InProcessNative`, the native
+                                           //   CSV/TSV transform, §3.5.6). It has NO stdout to
+                                           //   line-read — it SELF-REPORTS a real
+                                           //   `bytes_processed / source_size` fraction per
+                                           //   N-KB chunk (§1.11). Signals §1.7 to NOT attach a
+                                           //   stdout/stderr line-reader and instead pass the
+                                           //   executor an in-process `progress_tx:
+                                           //   mpsc::Sender<f32>` whose every send §1.7 forwards
+                                           //   as an `ItemProgress` tick (delivery mechanism:
+                                           //   §1.7 `InProcessNative` sub-case). Sub-100-KB
+                                           //   inputs emit a single start→done tick (§1.11),
+                                           //   indistinguishable on the wire from CoarseSpawnDone.
 }
 
 // ─── Engine-layer types referenced by the trait (defined here, §3.2 is owner) ──
@@ -722,7 +735,13 @@ the row exists only to record that AV1 ships on all platforms with no gate.
 > must be **re-evaluated against §0.11 T1 / §2.12** before adoption (it trades the
 > uniform process-boundary isolation for an OS-mediated one). v1 ships **no**
 > `rely-on-OS` decode path; this records the gate so a later change cannot slip the
-> isolation regression in silently.
+> isolation regression in silently. **Offline-floor guardrail (additional) `[DECIDED]`:**
+> a `rely-on-OS` step is also checked against the **SSOT offline / self-contained floor** —
+> ConvertIA must remain fully functional offline with no download, so `rely-on-OS` is
+> admissible **only** for a **never-default, low-demand codec that can be honestly gapped**
+> to `unavailable` (SSOT exception-1) when the OS component is absent. A path that is *the
+> default* or whose absence would leave a common conversion broken **may not** use
+> `rely-on-OS` (it would breach the self-contained floor); bundle it or honestly gap it.
 
 ### 3.4.4a The §3.4 availability flag — concrete representation `[DECIDED]`
 
@@ -1276,10 +1295,12 @@ conversion" is a **read-side** claim, not a write-side one).
   policy) → re-encode to UTF-8 (no BOM default) → swap delimiter → RFC-4180
   re-quote where a field contains the new delimiter/quote/newline → write to
   `out_tmp`. CSV-injection-safe (leading `= + - @` stay literal text). **Progress:**
-  because it streams the file, it **self-reports `bytes_processed / source_size`** per
-  N-KB chunk (the §1.11 *Native CSV/TSV* row owns this), falling back to a start→done
-  (`CoarseSpawnDone`-equivalent) tick for sub-100 KB inputs — never a bare spinner. MIT
-  (own code) — no §3.6 concern.
+  `ProgressModel::InProcessFraction` (§3.2.2) — because it streams the file, it
+  **self-reports `bytes_processed / source_size`** per N-KB chunk over the §1.7
+  `InProcessNative` `progress_tx: mpsc::Sender<f32>` (the §1.11 *Native CSV/TSV* row owns
+  the fraction basis; §1.7 owns the IPC delivery), falling back to a single start→done
+  tick for sub-100 KB inputs (wire-indistinguishable from `CoarseSpawnDone`) — never a
+  bare spinner. MIT (own code) — no §3.6 concern.
 - **`out_tmp` is the §2.14.1 destination-dir publish temp, NOT a system-temp file
   `[DECIDED]`.** Like every other engine the native CSV/TSV `out_tmp` is the
   `.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part` **sibling in the destination
@@ -1313,7 +1334,7 @@ source where required), so the MIT core stays clean.
 | **ImageMagick** (GIF/BMP/ICO save delegate) | **ImageMagick License** (Apache-2.0-style, SPDX `ImageMagick`) — **permissive, NOT GPL** | link OK | Permissive like BSD/MPL — no isolation needed. **Build caveat:** exclude GPL *optional delegates*; IM core is permissive. (Listed in the SBOM/NOTICE §3.7.) |
 | **x265** (HEVC encode) | **GPL-2.0-or-later** | **NO — dynamically-loaded libheif *plugin*** | x265 ships as a **separately-built, dynamically-loaded libheif encoder plugin** (`.so`/`.dll`/`.dylib`, libheif `ENABLE_PLUGIN_LOADING`) that `heifsave compression=hevc` loads at runtime. The GPL code is **never statically linked** into the image-worker's libvips or the MIT core; it lives behind libheif's plugin ABI and runs **inside the §0.7 image-worker process** (already a separate process from the core). **Accurate framing `[DECIDED]`: when x265 is loaded, the running image-worker is a GPL *combined work*** (per the FSF, dynamically loading a GPL plugin into a process makes that process's combination a GPL combined work — it is **not** an "LGPL worker with an isolated GPL plugin"). **The aggregation argument that keeps the MIT CORE clean is the *separate process* boundary** (the core invokes the worker as a child process), and that is sound + load-bearing — but **inside** the worker, both the **LGPL relink obligation** (libvips/libheif stack) **AND** the **x265 GPL corresponding-source obligation** apply to the worker-with-x265-loaded. *(A static x265-in-libvips link would taint — hence the plugin form. This replaces the dropped "standalone heif/x265 sidecar" — no such sidecar exists under the [OPEN-1] heifsave-only decision.)* |
 | **x264** (H.264 encode) | **GPL-2.0-or-later** (SPDX `GPL-2.0-or-later` — matches x265's form; x264 is GPL-2.0-**or-later**, not `GPL-2.0-only`) | **NO — inside the GPL FFmpeg binary** | reached only via the **FFmpeg binary** (separate invoked process); never linked into the MIT core |
-| **FFmpeg** build | **GPL-2.0+** (enables GPL x264 via `--enable-gpl` → the *whole* binary is GPL-2.0+, not LGPL) | **NO — separate exe** | invoked as `ffmpeg`/`ffprobe` child processes (§3.3.3); aggregation keeps the MIT core clean. The LGPL component libs (libmp3lame etc.) are **dynamically linked beside the exe** (§3.9.1) per LGPL §6 — a static FFmpeg build would fail the §6.1.3 dynamic-link assertion. Written-offer-of-source obligation honored (§3.6.2). |
+| **FFmpeg** build | **GPL-2.0+** (enables GPL x264 via `--enable-gpl` → the *whole* binary is GPL-2.0+, not LGPL) | **NO — separate exe** | invoked as `ffmpeg`/`ffprobe` child processes (§3.3.3); aggregation keeps the MIT core clean. **Static OR dynamic FFmpeg is GPL-clean `[DECIDED]`:** a static GPL FFmpeg with the LGPL component libs (libmp3lame/libvorbis/libopus) baked in is aggregation — the GPL's own corresponding-source subsumes LGPL §6 — so it **never** fails the §6.1.3 assertion (carve-out **iii**). v1 ships them **dynamically linked beside the exe** (§3.9.1) as a deliberate engineering preference (smaller diff to swap a component lib), **not** a licence-mandated build rule; when dynamic, §6.1.3 carve-out **i** verifies those component shared objects are present beside the exe. The LGPL **dynamic-link** assertion applies ONLY to an LGPL lib linked into the **MIT core** (carve-out i), never to the separate FFmpeg binary. Written-offer-of-source obligation honored (§3.6.2). |
 | **LibreOffice** | MPL-2.0 | **NO — separate sidecar** | invoked `soffice` process; MPL is weak/file-level anyway, but isolation is belt-and-suspenders + the SSOT policy |
 | **poppler**, **pandoc** | GPL | **NO — separate exe** | invoked child processes |
 | **Ghostscript** | **AGPL-3.0** | **NOT shipped v1 [DECIDED]** | dropped (§3.1) so no AGPL surface ships; `[DEFER: re-add only if §6.5 corpus shows GS-salvageable PDFs]` |
@@ -1515,7 +1536,7 @@ effort is spent where it matters.
 |---|---|---|---|
 | **LibreOffice (headless, trimmed)** | **~250–400 MB** (dominant) | Writer+Calc+Impress program tree + needed type libs; **minimal** build (no help, no UI translations, no dictionaries, no DB/Draw/Math beyond deps) | strip help/l10n/dictionaries (under ~200 MB minimal is reported feasible); drop unused modules; the **bundled font set is a sub-line below** |
 | **Bundled fonts** (LibreOffice + documents/presentations fidelity) | **~30–120 MB** `[OPEN — §3.9.2]` | Liberation/Carlito/Caladea (metric-compat Arial/Calibri/Cambria/Times/Courier) + broad **CJK + RTL** coverage (Noto-class) | CJK is the size driver; a full Noto CJK is ~100 MB+ — subset vs full is the open call |
-| **FFmpeg + ffprobe** (GPL-2.0+ build, the listed codecs incl. x264/vpx) | **~30–80 MB** (two exes + their shared libs) | multimedia binary **with the LGPL component libs as dynamically-linked shared objects beside the exe** (NOT a static build — a static link would fail the §6.1.3 LGPL dynamic-link assertion, §3.6.1) | drop unused (de)muxers/filters via `--disable-everything --enable-…` to a curated list (the `04` codec set only) |
+| **FFmpeg + ffprobe** (GPL-2.0+ build, the listed codecs incl. x264/vpx) | **~30–80 MB** (two exes + their shared libs) | multimedia binary; v1 ships the LGPL component libs as **dynamically-linked shared objects beside the exe** as an engineering preference (a static FFmpeg is equally GPL-clean aggregation per §6.1.3 carve-out iii — it is **not** a licence-mandated choice, §3.6.1) | drop unused (de)muxers/filters via `--disable-everything --enable-…` to a curated list (the `04` codec set only) |
 | **libvips + image codec stack** (libheif/libde265/x265-plugin/aom/dav1d/librsvg/cgif + **required ImageMagick** delegate) | **~20–40 MB** | image lib + codecs (image-worker process) | exclude unneeded loaders; ImageMagick is **required** (BMP+ICO save) but trimmed to BMP/ICO/GIF delegates with **GPL optional delegates excluded** (§3.6.1) — it cannot be removed |
 | **poppler `pdftotext`** | **~5–15 MB** | PDF text extractor | small |
 | **pandoc** | **~80–220 MB** (version-dependent; pandoc 3.x) | Haskell static binary (notoriously large; the **GHC runtime dominates**, so stripping saves little) | a release/stripped build trims marginally. **pandoc CANNOT be dropped wholesale for v1** — it **owns the `DOCX/ODT/RTF → MD/HTML` markup pairs** that LibreOffice 26.2 Markdown export is **not validated for** (documents.md item 1/2 `[DEFER: corpus]`); dropping it would orphan those pairs. So this is at most a **post-v1 contingency** (re-evaluate once LO Markdown export is corpus-proven for those pairs), **not** a v1 trim knob. It is the **second-biggest single exe** after LibreOffice |
@@ -1558,6 +1579,15 @@ effort is spent where it matters.
   §6.4.5** (the corpus asset), tracked separately from the *shipped artifact* budget —
   the corpus is a test asset, never shipped, so it does **not** count against this ceiling;
   this matches §6.4.5's `[DEFER: corpus]` total-size note.
+- **macOS universal-binary near-doubling `[DECIDED — budget note]`.** The macOS `.dmg`
+  ships a **universal (arm64 + x86_64) fat binary** for the app **and each bundled engine**
+  (`lipo`-combined, §6.1.4), so the macOS engine payload is **~2×** a single-arch slice —
+  the macOS artifact is the **tightest** against the ≤ 400 MB compressed ceiling. The
+  §6.1.2 size gate measures it per-platform (so the doubling can't be overlooked); if macOS
+  trips the ceiling while Win/Linux pass, the lever order above applies (CJK-font trim
+  first), and a **macOS-only single-arch fallback** (ship two `.dmg`s instead of one
+  universal) is the recorded last-resort contingency `[DEFER: corpus/build]` — it trades the
+  "one artifact per platform" nicety for headroom, only if trim cannot reach the gate.
 - **Feasibility risk at the upper bound (must verify before the digit is fixed) `[DEFER:
   corpus/build]`.** The ≤ 400 MB **compressed** ceiling is comfortable against the *low*
   installed end (~430 MB → ~40-50% compression is routine), but at the **high installed end

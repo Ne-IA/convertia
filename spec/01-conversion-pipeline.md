@@ -919,6 +919,22 @@ The lifecycle above is written for **`EngineProgram::Subprocess`** engines (the 
 Running→group-kill machine). ConvertIA's only **`EngineProgram::InProcessNative`** engine
 is the **native CSV/TSV** transform (§3.5.6, pure memory-safe Rust, no spawn). It has **no
 process to kill**, so §1.7 defines its lifecycle explicitly:
+- **Progress IPC — self-reported, no line-reader `[DECIDED]`:** because this engine has
+  **no stdout to parse**, its `Invocation` carries `progress: ProgressModel::InProcessFraction`
+  (§3.2.2). For this variant §1.7 **does NOT attach the §1.7 stdout/stderr line-reader**;
+  instead it constructs a **bounded `tokio::sync::mpsc::Sender<f32>` (`progress_tx`)** and
+  passes it into the executor when it dispatches the §3.5.6 transform on the
+  `spawn_blocking` pool. The synchronous loop calls `progress_tx.blocking_send(fraction)`
+  with `fraction = bytes_processed / source_size` at **each N-KB chunk boundary** (the same
+  granularity as the cancel poll below). §1.7 owns the matching **`Receiver<f32>`** on the
+  Tokio runtime and forwards **every received fraction as one normalised
+  `ConversionEvent::ItemProgress` tick** over the §0.4.2 channel — the same
+  `{ runId, itemId, fraction, stage }` wire shape every other engine produces (§1.11), so
+  the frontend cannot tell this engine apart. A bounded channel applies natural
+  back-pressure (a slow consumer just coalesces; no unbounded memory). For **sub-100-KB
+  inputs** the loop sends a single `1.0` on completion → an honest start→done tick
+  (§1.11), wire-indistinguishable from `CoarseSpawnDone`. Channel close (loop end or drop
+  on cancel) ends the forwarding task.
 - **Cancellation (cooperative, not a kill):** the synchronous streaming loop **polls the
   job's `CancellationToken` at every N-KB chunk boundary** (the same chunk granularity it
   uses for its `bytes_processed / source_size` progress, §1.11). On cancel it **stops
@@ -1203,9 +1219,11 @@ struct SizeEstimate {
 ### Ceilings & large lists `[DECIDED design; DEFER: corpus numbers]`
 
 - **`[DEFER: corpus]` (owner §1.10, co-owned §0.9 + 04)** the concrete numbers: the
-  absolute **"too big" output ceiling**, the **memory/handle ceilings**, the
-  per-category heuristic constants, the **headroom margin (1.3× starting value)**,
-  and the **GIF duration cap (~10 s starting value)** (`cross-category.md` [OPEN-F]).
+  absolute **"too big" output ceiling** (**starting values `[DECIDED design]`: ~4 GB
+  per-item projected output, ~16 GB aggregate-batch projected output** — finite from day
+  one so `TooBig` is enforceable, calibrated against the corpus), the **memory/handle
+  ceilings**, the per-category heuristic constants, the **headroom margin (1.3× starting
+  value)**, and the **GIF duration cap (~10 s starting value)** (`cross-category.md` [OPEN-F]).
   These are **genuinely empirical** — the right thresholds depend on corpus
   timing/measurement (a §6 asset), so they are **deferred to corpus calibration**,
   not left open as a design question. They ship with the stated finite starting
@@ -1240,7 +1258,7 @@ long conversion. The fraction source per engine (parsed by §3.5, normalised by
 | **image-worker** (libvips, images) | `ProgressModel::VipsStdout` (§3.2.2): the separate image-worker process marshals libvips' `eval`-progress signal to its **stdout** as `progress=<0..100>` key=value lines (it cannot deliver an in-process callback across the process boundary), parsed by the §1.7 same stdout reader as FFmpeg's `-progress`. Fast ops emit start→`progress=end` (coarse); HEIC/AVIF HEVC/AV1 encode reports a real % |
 | **LibreOffice** (office/PDF) | No native progress signal → a **bounded indeterminate-but-animated** state with a watchdog (still reads as "working"); `[REC]` show a determinate-looking staged bar driven by the **four canonical §0.6 `JobStage` values — `Spawning` → `Decoding` → `Encoding` → `Writing`** rather than a raw spinner. (The LO lifecycle maps onto them: process spawn / profile init → **`Spawning`**; load+layout the source document → **`Decoding`**; run the export/render filter → **`Encoding`**; flush the produced file → **`Writing`**. No separate "render"/"export" stage vocabulary is emitted on the wire — only the four `JobStage` names §0.6 defines, so §1.11 and §0.6 agree on what the frontend receives.) |
 | **poppler / pandoc** | Usually fast; staged ticks; large PDFs report per-page where `pdftotext` allows |
-| **Native CSV/TSV** (in-process, §3.5.6) | `[DECIDED]` fraction = **`bytes_processed / source_size`** emitted per N-KB chunk as the in-process engine streams the file (there is no subprocess to watch, so it self-reports). For **sub-100 KB inputs** it is effectively instant → falls back to a **start→done** (`CoarseSpawnDone`-equivalent) tick. So even the only non-subprocess engine reports a real fraction (or an honest start→done for tiny files), never a bare spinner. |
+| **Native CSV/TSV** (in-process, §3.5.6) | `[DECIDED]` `ProgressModel::InProcessFraction` (§3.2.2): fraction = **`bytes_processed / source_size`** emitted per N-KB chunk as the in-process engine streams the file (there is no subprocess to watch, so it **self-reports** over the §1.7 `InProcessNative` `progress_tx: mpsc::Sender<f32>`, which §1.7 forwards as `ItemProgress`). For **sub-100 KB inputs** it is effectively instant → a single **start→done** tick (wire-indistinguishable from `CoarseSpawnDone`). So even the only non-subprocess engine reports a real fraction (or an honest start→done for tiny files), never a bare spinner. |
 
 ```rust
 // payload SHAPE is §0.4.2's `ItemProgress` { runId, itemId, fraction, stage };

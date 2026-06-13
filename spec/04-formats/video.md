@@ -558,4 +558,3 @@ acceleration later. `[DECIDED]` NOT in v1 — software-only (`[DEFER: post-v1]`,
   problem, not just a per-format note. This category **depends on §3.4 deciding
   ship-bundled on all three platforms**; flagged as the category's hardest external
   dependency.
-```

@@ -1170,7 +1170,7 @@ the corpus (§6.4) — engine bumps are best-effort posture (§3.8), not a gate.
 | Frontend | **React 19**, **TypeScript** (strict, no `any`), **Vite** (per platform CLAUDE.md, current major), **Tailwind CSS** | exact, lockfile |
 | Frontend state | lightweight store (recommend **Zustand**) + the generated `bindings.ts`; §5.1 owns the final choice | §5.1 |
 | Package mgr | **pnpm** (`pnpm@10.13.1` class per platform standard) | pinned |
-| Test | **Vitest** (frontend) + **`vitest-axe`** (Lane-A ARIA/role/focus, §6.4.6a), **cargo test** + corpus harness (§6.4), property tests for guarantees; **E2E = WebdriverIO v9** (W3C-only, `tauri-driver`-aligned) + **`@axe-core/webdriverio`** (Lane-B live-WebView contrast gate, §6.4.6/§6.4.6a) | exact, lockfile |
+| Test | **Vitest** (frontend) + **`vitest-axe@0.1.0`** (real npm pkg, Vitest-native `jest-axe` fork; deps `axe-core ^4.4`; Lane-A ARIA/role/focus, §6.4.6a — bump to the `1.0.0-pre` line if it stabilises pre-Phase-3), **cargo test** + corpus harness (§6.4), property tests for guarantees; **E2E = WebdriverIO v9** (W3C-only, `tauri-driver`-aligned) + **`@axe-core/webdriverio`** (Lane-B live-WebView contrast gate, §6.4.6/§6.4.6a) | exact, lockfile |
 | Engines (bundled) | FFmpeg (GPL-2.0+ build — enables x264, §3.6.1), LibreOffice, poppler, pandoc, ImageMagick (required, permissive), libvips+libheif/libde265+x265-plugin/libaom/dav1d+librsvg+cgif — **all §3.1/§3.3 owned**; versions pinned + in the SBOM (§6.3). Ghostscript **[DECIDED: dropped v1]** (§3.1). | §3.8 best-effort |
 
 **Additional crates / plugins other sections depend on (pinned, in lockfile + SBOM):**
