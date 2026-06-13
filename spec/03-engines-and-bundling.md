@@ -43,7 +43,7 @@ every one; they cluster into four families:
 | 1c | **librsvg** (SVG rasteriser — libvips' native `svgload` module is librsvg-backed; resvg is NOT a libvips backend at any released version, so it is **not shipped** [DECIDED]) | Images | SVG→raster | **LGPL-2.1+** (librsvg) | linked load module inside the separate image-worker (LGPL — static-link-as-aggregation OK with the §6.1.3 carve-out ii relinkable-source bundle; never into the MIT core, §3.6) | none |
 | 1d | **ImageMagick** (libvips BMP/ICO save delegate — **REQUIRED**, plus GIF fallback) | Images | **BMP load+save, ICO save (`magickload`/`magicksave` — REQUIRED)**; GIF fallback | **ImageMagick License** (Apache-2.0-style, SPDX `ImageMagick`) — **permissive, NOT GPL** | linked delegate (permissive — no isolation); GPL *optional delegates* excluded at build | none |
 | 1e | **libimagequant** — **the BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** (PNG/GIF palette quantisation, used by libvips' `cgif`/`gifsave` and palette PNG output) | Images | PNG/GIF palette quantisation | **BSD-2-Clause** — and **only** via the frozen `lovell/libimagequant` v2.4.x fork (e.g. v2.4.1). **Upstream libimagequant 4.x is GPLv3-or-commercial — NOT permissive — and MUST NOT be bundled** (it would taint the LGPL image-worker). Pin the BSD fork by exact version+ref in `engines.lock`; a §6.1.3/§6.3.3 build assertion checks the staged `COPYRIGHT` actually contains the BSD-2 text. **ABI/soname coupling `[DECIDED]`:** libimagequant 4.x changed its **soname**, and the bundled libvips' `cgif`/`gifsave` (the §3.8 floor) links a **specific libimagequant version** — so the **bundled libvips MUST be built/linked against the v2.4.x-fork API/soname**, and a **§6.1.3 build/link assertion verifies the staged libvips resolves the bundled BSD libimagequant v2.4.x (NOT a system 4.x)**, not just that the COPYRIGHT text is BSD. | linked/vendored **inside the image-worker process** (BSD fork only) | none |
-| 2 | **FFmpeg** (**GPL-2.0+ build** — `./configure --enable-gpl` to link `libx264`; built **without `--enable-nonfree`**: `libmp3lame`, `libvorbis`, `libopus`, native `aac`/`flac`/`alac`/`pcm`, `libx264`, `libvpx-vp9`, WMA *decoders*; no `libfdk_aac`) | Audio, Video, Cross-category | `04-formats/audio.md`, `video.md`, `cross-category.md` | **GPL-2.0+** (the whole binary, because it enables GPL `libx264`; the LGPL component libs are still dynamically linked beside it, §3.6.1); written-offer-of-source obligation | **separate invoked binary** (`ffmpeg`/`ffprobe`) per §3.6 | **AAC, H.264 → §3.4**; MP3/Vorbis/Opus/FLAC/ALAC/PCM/VP9 patent-clean |
+| 2 | **FFmpeg** (**GPL-2.0+ build** — `./configure --enable-gpl` to link `libx264`; built **without `--enable-nonfree`**: `libmp3lame`, `libvorbis`, `libopus`, native `aac`/`flac`/`alac`/`pcm`, `libx264`, `libvpx-vp9`, **WMA *decoders* (decode-only — there is NO WMA encoder; WMA is a source-only format per audio.md)**; no `libfdk_aac`) | Audio, Video, Cross-category | `04-formats/audio.md`, `video.md`, `cross-category.md` | **GPL-2.0+** (the whole binary, because it enables GPL `libx264`; the LGPL component libs are still dynamically linked beside it, §3.6.1); written-offer-of-source obligation | **separate invoked binary** (`ffmpeg`/`ffprobe`) per §3.6 | **AAC, H.264 → §3.4**; MP3/Vorbis/Opus/FLAC/ALAC/PCM/VP9 patent-clean |
 | 3 | **LibreOffice** (headless `soffice`, Writer+Calc+Impress + PDF export filters; bundled with a baseline open font set, §3.9) | Documents, Spreadsheets, Presentations | `04-formats/documents.md`, `spreadsheets.md`, `presentations.md` (all office↔office + every `*→PDF`) | **MPL-2.0** (+ many bundled components — full set enumerated by the SBOM, §3.7) | **separate invoked binary** (sidecar process) per §3.6 | none |
 | 4 | **poppler** (`pdftotext`) | Documents | `PDF→TXT` | **`GPL-2.0-only OR GPL-3.0-only`** (a valid SPDX expression — *not* the bare `GPL-2.0/GPL-3.0`, which §6.3.3 would reject as unresolved) | **separate invoked binary** (§3.6) | none |
 | 5 | **Ghostscript** **[DECIDED: NOT shipped v1]** (was a PDF read/repair backstop behind poppler; no user-facing pair) | Documents | (malformed-PDF tolerance — dropped) | **AGPL-3.0** | not shipped (`[DEFER: re-add if §6.5 corpus shows GS-salvageable PDFs]`) | none |
@@ -127,7 +127,13 @@ scratch on the §2.14 volume, per-step progress §1.11, step-attributed errors
 > stored closure):
 > - `plan()` returns the **probe `Invocation`** (the `ffprobe` sub-invocation) for a
 >   probe-requiring engine (video FFmpeg); for non-probe engines `plan()` returns the
->   single encode `Invocation` directly and `plan_encode` is never called.
+>   single encode `Invocation` directly and `plan_encode` is never called. **The probe
+>   `Invocation` `[DECIDED]`** carries **`program: EngineProgram::Sidecar(EngineId::FFprobe)`**
+>   (resolves `binaries/ffprobe`, distinct from `binaries/ffmpeg`; §0.6 / §3.3.1),
+>   **`out_tmp: None`** (the probe writes only stdout JSON — no publish artifact; §1.7
+>   runs no publish/cleanup for it), and **`progress: ProgressModel::CoarseSpawnDone`**
+>   (a short read, not a streaming `-progress` source — §1.7 dispatches it through the
+>   coarse spawn→done path, never the FfmpegKeyValue line-reader).
 > - the §3.2.2 `Engine` trait gains **`fn plan_encode(&self, job: &ConversionJob,
 >   out_tmp: &TempPath, probe: &ProbeOutput) -> Result<Invocation, PlanError>`** — §1.7 runs
 >   the probe sub-invocation, parses its stdout into a typed **`ProbeOutput`** (inner codecs
@@ -173,17 +179,22 @@ pub trait Engine: Send + Sync {
     /// returns argv / env / cwd / progress-parser kind / temp-output path shape.
     /// The actual spawn/cancel/timeout is owned by §1.7; this only *describes* it.
     /// For a PROBE-requiring engine (video FFmpeg, §3.2.1) this returns the **probe
-    /// sub-invocation** (`ffprobe`); §1.7 then calls `plan_encode` with the parsed result.
-    /// For a single-step engine it returns the encode `Invocation` directly.
+    /// sub-invocation** (`ffprobe`) whose `Invocation.out_tmp` is `None` (the probe has
+    /// no publish artifact); the `out_tmp` PASSED IN is the ENCODE output temp, which
+    /// `plan()` of a probe engine ignores and `plan_encode` consumes for the encode.
+    /// For a single-step engine it returns the encode `Invocation` directly (with
+    /// `out_tmp: Some(..)` built from the passed temp).
     fn plan(&self, job: &ConversionJob, out_tmp: &TempPath)
         -> Result<Invocation, PlanError>;
 
     /// Two-phase encode plan `[DECIDED §3.2.1]`. Called by §1.7 ONLY for an engine whose
     /// `plan()` returned a probe sub-invocation: §1.7 runs the probe, parses its stdout
-    /// into `ProbeOutput`, then calls this to finalise the encode `Invocation`. The
-    /// progress denominator (`duration_us`) is taken FROM `probe` here — never mutated
-    /// onto a previously-returned struct. Default impl returns a `NoProbePhase`
-    /// PlanError (single-step engines never reach it). Pure (no I/O, no spawn).
+    /// into `ProbeOutput`, then calls this to finalise the encode `Invocation` (with
+    /// `out_tmp: Some(..)`). The progress denominator (`duration_us`) is taken FROM
+    /// `probe` here — never mutated onto a previously-returned struct. Default impl
+    /// returns a `ConversionErrorKind::InternalError` PlanError with the detail string
+    /// below (single-step engines never reach it — §1.7 only calls `plan_encode` after a
+    /// probe Invocation). Pure (no I/O, no spawn).
     fn plan_encode(&self, _job: &ConversionJob, _out_tmp: &TempPath, _probe: &ProbeOutput)
         -> Result<Invocation, PlanError> {
         Err(PlanError { kind: ConversionErrorKind::InternalError,
@@ -216,7 +227,15 @@ pub struct Invocation {
     pub env: Vec<(OsString, OsString)>, // isolated/minimal env (§3.5, §2.12)
     pub stdin: StdinPlan,         // how stdin is fed (below) — see §3.5
     pub progress: ProgressModel,
-    pub out_tmp: TempPath,        // engine writes here; §2.1 atomic-publishes on success
+    pub out_tmp: Option<TempPath>, // engine writes here; §2.1 atomic-publishes on success.
+                                   //   `Some` for every ENCODE invocation (the publish artifact).
+                                   //   `None` for a READ-ONLY sub-invocation that produces no
+                                   //   publish artifact — the video PROBE (`ffprobe`, §3.2.1):
+                                   //   ffprobe writes only stdout JSON, so there is NO output
+                                   //   temp to allocate and NOTHING for §2.1 to publish. §1.7
+                                   //   atomic-publishes ONLY when `out_tmp.is_some()`; for a
+                                   //   `None` invocation §1.7 parses stdout and runs no publish/
+                                   //   cleanup step (§1.7 cleanup table). [DECIDED]
 }
 
 /// How the Rust core locates the program to spawn. Engines are spawned Rust-side
@@ -275,7 +294,19 @@ pub enum ProgressModel {
                                            //   FfmpegKeyValue. (Renamed from VipsCallback — an
                                            //   in-process callback cannot cross the worker's
                                            //   process boundary.)
-    CoarseSpawnDone,                       // LibreOffice/pandoc/poppler: 0%→spin→100%
+    CoarseSpawnDone,                       // LibreOffice/pandoc/poppler: 0%→spin→100%.
+                                           //   ALSO the video PROBE sub-invocation
+                                           //   (`ffprobe`, §3.2.1): the probe is a short
+                                           //   read whose ONLY output is a single stdout
+                                           //   JSON blob (NOT FFmpeg `-progress` key=value
+                                           //   lines), so it streams no fraction — §1.7
+                                           //   dispatches it through the coarse spawn→done
+                                           //   path, NOT the FfmpegKeyValue line-reader.
+                                           //   [DECIDED] The probe Invocation always carries
+                                           //   `progress: ProgressModel::CoarseSpawnDone`;
+                                           //   the FfmpegKeyValue model belongs to the ENCODE
+                                           //   Invocation returned by `plan_encode`, whose
+                                           //   `duration_us` comes FROM the parsed ProbeOutput.
 }
 
 // ─── Engine-layer types referenced by the trait (defined here, §3.2 is owner) ──
@@ -435,6 +466,17 @@ Rationale (this materially shapes §0.10 and §1.7):
   This is the `EngineProgram::{Sidecar, ResourceBin}` distinction in §3.2's
   `Invocation`. The externalBin/resources placement (§3.3.1/§3.3.2) guarantees the
   file exists beside the app (portable, no install — SSOT *Portable, no installation*).
+  - **`Sidecar(EngineId)` → binary-filename mapping `[DECIDED]`.** Because
+    `EngineProgram::Sidecar` carries only an `EngineId`, the resolver needs the bare
+    binary name per `EngineId`. The convention is a **fixed `EngineId → binary-name`
+    table** owned here (Phase-3 does not invent one): `FFmpeg → "ffmpeg"`,
+    `FFprobe → "ffprobe"`, `LibreOffice → "soffice"` (launcher, where single-file —
+    else resolved via the resource tree, §3.3.1), `Poppler → "pdftotext"`,
+    `Pandoc → "pandoc"`, `ImageCore → "convertia-imgworker"` (the libvips image-worker,
+    §3.5.5). The non-trait/non-sidecar `EngineId::ImageMagick` is **not** in this table
+    (it is a delegate linked inside the image-worker, never spawned as its own sidecar,
+    §3.5.5). The `.exe` extension is appended on Windows (same rule as the app binary).
+    This is the single source of the externalBin names listed in §3.3.1.
 - `[DECIDED]` ConvertIA does **not** depend on the Tauri **shell plugin** for
   engine execution at all — engines run only from Rust (`tokio::process`). §7.7's
   open-folder/open-file/open-url uses the separate **`opener` plugin**, which is
@@ -460,15 +502,18 @@ the entire app are the **user-initiated** §7.7 open-project-page shell-out. The
 - **LibreOffice** — the disposable `-env:UserInstallation` profile is hardened so
   document load does **not** auto-update remote/OLE links or external references (§3.5.2).
 - **libvips / librsvg (SVG) — BOTH halves `[DECIDED]`:** the **primary, load-bearing
-  control is refusing ALL external resource loads outright** (`set_load_external_resources(
-  false)`) — closing **both** the SSRF half (no remote `href`/`<image>` fetch) **and** the
-  absolute-file LFR half (no local out-of-input `<image href>`/XInclude read) by
-  construction (v1 SVG→raster needs no external resources; fonts are bundled). **Staging the
-  SVG into per-job scratch on ALL platforms + setting librsvg's base URL to that scratch
-  dir** is **defence-in-depth only**, NOT the trusted control — directory-confinement is the
-  mechanism **CVE-2023-38633 bypassed** (fixed in **librsvg ≥ 2.56.3**, which §6.1.3 pins
-  and asserts), so it backstops control 1 rather than standing alone (§3.5.5 SVG control).
-  §6.1.3 corpus case asserts no out-of-input bytes are embedded.
+  control is loading the SVG via `rsvg::Loader` with NO base URL/`base_file`** — with no
+  base URL librsvg has nothing to resolve a local/relative `href` against, so it refuses
+  **all** local `<image href>`/XInclude reads by construction, and remote schemes are refused
+  regardless. This closes **both** the SSRF half (no remote `href`/`<image>` fetch) **and**
+  the absolute-file LFR half (no local out-of-input read) by construction (v1 SVG→raster
+  needs no external resources; fonts are bundled). The image-worker calls librsvg directly
+  for this (libvips `svgload` has **no** external-resource toggle). **No base-URL/scratch
+  confinement is used** — supplying any base URL is exactly what re-enables the
+  CVE-2023-38633-class resolution surface this control closes; the defence is the *absence*
+  of a base URL. The **librsvg ≥ 2.56.3** pin (§6.1.3) is a belt-and-suspenders floor, not
+  load-bearing for v1 (§3.5.5 SVG control). §6.1.3 corpus case asserts no out-of-input bytes
+  are embedded.
 §2.11 owns the *observable* "no network" property (packet monitor); §6.4 adds the
 *adversarial* egress case; this section guarantees the *supply/structural* side. These
 controls hold on the common v1 machine even when the §2.12 privilege-drop tier degrades
@@ -570,7 +615,9 @@ them (it re-encodes to the royalty-free/permitted default target, never *writes*
 codecs). Disposition: **ship-bundled-decode-only on all three platforms, no §3.4
 availability flag**, because (a) **decode** has a materially lighter patent profile than
 encode — the active pools target *encode/distribution*, not bitstream *decode*; (b)
-**MPEG-2's US essential patents expired ~2026** and VC-1/H.263 are near/past expiry over
+**MPEG-2's US essential patents fully expired in 2018** (the last US essential patent,
+US 7,334,248, expired Feb 2018 — verified against the MPEG-LA pool wind-down) and
+VC-1/H.263 are near/past expiry over
 v1's deadline-free lifetime; (c) the whole OSS ecosystem (FFmpeg in every Linux distro)
 ships these decoders. These are inside the **GPL FFmpeg binary** (the §6.1.3 curated-decoder
 assertion already lists `vc1`/`mpeg2video`/`h263`/`mpeg4` as required), so no extra
@@ -675,10 +722,18 @@ is concretely:
   change. (Equivalently a Cargo feature could gate it; `engines.lock` is chosen so the
   flip is data, lives beside the SBOM, and the build-staging step can skip staging the
   plugin when `false`.)
-- **How it propagates to the registry:** at startup §3.2.3 resolves the
-  `PatentDisposition` for the running platform; an `available = false` codec yields
-  `CodecPosture::Unavailable`, so `select()` returns `None` for the gated pair
-  (HEIC-encode) → surfaced as `PlatformUnavailable` (§2.8).
+- **How it propagates to the registry (the parse→map→capabilities flow) `[DECIDED]`:**
+  the startup sequence (§7.2) **parses `engines.lock` once**, reads each codec row's
+  per-platform `available` boolean for the **running** `Platform`, and **maps** it into a
+  `PatentDisposition` value (`available == true → CodecPosture::Available`, `false →
+  CodecPosture::Unavailable`) for each of `heic_hevc` / `aac` / `h264`. This resolved
+  `PatentDisposition` is built **before** any `Engine::capabilities(platform, patents)`
+  call and is passed into it; an `Unavailable` posture makes `capabilities()` omit (or
+  mark unavailable) the gated capability, so the §3.2.3 `select()` returns `None` for the
+  gated pair (HEIC-encode) → surfaced as `PlatformUnavailable` (§2.8). (So
+  `engines.lock.available` is the **source** of `PatentDisposition`, not a separate truth:
+  the boolean is parsed → mapped → handed to `capabilities()`; there is no second place
+  the posture is decided.)
 - **How it propagates to the UI (the load-bearing wiring):** C12 `get_engine_health`
   (§0.4.1 / §7.2.3) computes `EngineHealth.unavailable_targets: Vec<TargetId>` — it
   reads the **resolved `available` flag** (not only the build-time hash manifest): a
@@ -693,7 +748,7 @@ is concretely:
 
 | Aspect | Windows | macOS | Linux |
 |---|---|---|---|
-| Artifact | portable `.zip` (exe + bundled engine trees; no installer) + secondary NSIS per-user installer (§6.1.2) | `.app` (and/or `.dmg`) | AppImage / portable dir |
+| Artifact | portable `.zip` (exe + bundled engine trees; no installer) — **NSIS NOT shipped v1 (§6.1.2 `[DECIDED-6.1a]`)** | `.app` (and/or `.dmg`) | AppImage / portable dir |
 | Target triples | `x86_64-pc-windows-msvc` (+ `aarch64` `[DEFER]`) | `aarch64-apple-darwin` + `x86_64-apple-darwin` (universal `[DEFER §6.1]`) | `x86_64-unknown-linux-gnu` (musl `[DEFER]`) |
 | WebView runtime | WebView2 (system; **bundle-vs-rely** is §0.3.1, **never download** per offline floor) | WKWebView (system) | WebKitGTK (system; distro drift → §0.3.1) |
 | Engine exe extension | `.exe` suffix on every sidecar | none | none; **executable bit must be set on extraction** (§7.2) |
@@ -1066,42 +1121,57 @@ conversion" is a **read-side** claim, not a write-side one).
   `heif`/`avif` encoder), ICO multi-size list. ICC/metadata carried per `images.md`
   policy.
 - **SVG external-resource control (T9b absolute-file LFR + SSRF, §0.11) `[DECIDED]`:**
-  librsvg loads resources referenced from an SVG (`<image xlink:href>`, XInclude) and, by
-  default, resolves a relative `href` against the SVG's **base URL directory or its
-  subdirectories** (it canonicalises away `..` and resolves symlinks to enforce that
-  boundary), and rejects non-`data:`/non-`file:` schemes. That closes the **remote/SSRF**
-  half (no `http`/`ftp` fetch), but on Win/Linux the image-worker is normally handed the
-  **real source path**, so a crafted SVG with `<image href="../secret.txt">` could read an
-  **out-of-input local file** and rasterise it into the output — the same absolute-file LFR
-  class the spec closes for FFmpeg. ConvertIA closes it **structurally and symmetrically**,
-  with the **PRIMARY control being "refuse all external resource loads", NOT
-  directory-confinement** (which a parser-disagreement bug has historically bypassed):
-  1. **PRIMARY (load-bearing) — refuse ALL external resource loads outright `[DECIDED]`.**
-     The image-worker configures librsvg to load **no** external resources at all
-     (`set_load_external_resources(false)` / the libvips `svgload` no-external-resources
-     path) — **no** remote `href`, **no** local `<image href>`/XInclude out-of-input read.
-     This is the load-bearing control because **v1 SVG→raster needs no external
-     `<image>`/XInclude** (fonts resolve from the **bundled** set, §images.md), so refusing
-     them costs nothing and removes the entire LFR/SSRF surface by construction — there is
-     no resolution step left to subvert.
-  2. **Defence-in-depth (NOT trusted against a parser-disagreement bypass) — stage + base
-     URL.** Additionally **stage the SVG into per-job scratch on ALL platforms** (not just
-     macOS §3.5.0) and **set librsvg's base URL to that per-job scratch dir** so even *if*
-     a resolution path existed it would be confined to scratch (which holds no out-of-input
-     bytes). **This directory-confinement is explicitly demoted to defence-in-depth**: it is
-     **exactly the mechanism CVE-2023-38633 defeated** (a URL-parsing disagreement let a
-     crafted `href` escape the base-URL confinement; fixed only in **librsvg ≥ 2.56.3**), so
-     it is **not** relied on as the structural control — control 1 (no external loads) is.
-  3. **Version pin `[DECIDED]`:** **librsvg is pinned `>= 2.56.3` in `engines.lock`** (the
-     CVE-2023-38633 fix floor), with a **§6.1.3 version assertion** that fails the build if
-     the staged librsvg is older — so even the demoted defence-in-depth layer is not a known-
-     bypassed version.
+  librsvg loads resources referenced from an SVG (`<image xlink:href>`, XInclude). It
+  resolves a referenced `file:`/relative `href` **only** when it has a **base URL/base file**
+  to resolve it against; remote schemes (`http`/`ftp`/…) are **always** refused regardless.
+  Crucially, librsvg's documented model is that **when an SVG is loaded from in-memory bytes
+  or a stream with NO `base_file` set, referenced local files are refused by construction** —
+  "buffer and stream-based SVG input is unaffected" by the CVE-2023-38633 LFR class precisely
+  *because* there is no base URL to resolve a relative/absolute `href` against. Conversely,
+  **supplying a base URL/base file is exactly what RE-ENABLES** local/relative resource
+  resolution. On Win/Linux the image-worker is normally handed the **real source path**, so
+  loading the SVG *with* its source directory as base URL would let a crafted SVG with
+  `<image href="../secret.txt">` read an **out-of-input local file** and rasterise it into
+  the output — the same absolute-file LFR class the spec closes for FFmpeg. ConvertIA closes
+  it **structurally and symmetrically**, with the **PRIMARY load-bearing control being "load
+  the SVG with NO base URL", NOT directory-confinement** (which a parser-disagreement bug has
+  historically bypassed):
+  1. **PRIMARY (load-bearing) — load the SVG via `rsvg::Loader` with NO `base_file` set
+     `[DECIDED]`.** The image-worker reads the SVG bytes into memory and loads them via
+     `rsvg::Loader` (`read_stream`/`from_data`) **without** setting a `base_file`/base URL.
+     With no base URL, librsvg has nothing to resolve a `file:`/relative `href` against, so
+     **every** local `<image href>`/XInclude reference is **refused by construction**, and
+     remote schemes are refused regardless — closing **both** the SSRF half (no
+     `http`/`ftp` fetch) **and** the absolute-file LFR half (no local out-of-input read).
+     The image-worker calls **`rsvg::Loader` directly for SVG load** rather than libvips
+     `svgload`, because libvips `svgload` exposes **no** external-resource toggle (its only
+     coarse lever is the `VIPS_BLOCK_UNTRUSTED` env var); calling librsvg directly lets us
+     guarantee the no-base-URL path. This is the load-bearing control because **v1
+     SVG→raster needs no external `<image>`/XInclude** (fonts resolve from the **bundled**
+     set, §images.md), so refusing them costs nothing and removes the entire LFR/SSRF
+     surface by construction — there is no base URL, hence no resolution step to subvert.
+     **No base-URL/scratch-confinement step is used in v1**, because supplying *any* base URL
+     would re-open the exact CVE-2023-38633-class resolution surface this control exists to
+     close (per librsvg's own model, a base URL is what re-enables local resolution); the
+     defence is **the absence of a base URL**, not the confinement of one.
+  2. **Version pin (belt-and-suspenders) `[DECIDED]`:** **librsvg is pinned `>= 2.56.3` in
+     `engines.lock`** (the CVE-2023-38633 fix floor), with a **§6.1.3 version assertion**
+     that fails the build if the staged librsvg is older. This is **not** load-bearing for
+     v1 (control 1 sets no base URL, so the base-URL parser-disagreement bug is never
+     reached) — it is a belt-and-suspenders floor so that *if* a future version ever needs a
+     base URL, it is not a known-bypassed librsvg. **If** a base URL is ever genuinely
+     required in a later version, then **base-URL confinement becomes the load-bearing
+     control and must be honestly labelled as such** (carrying the residual CVE-2023-38633
+     parser-disagreement risk, mitigated only by this version floor) — it must **never** be
+     demoted under a "refuse all" that no longer holds.
 
   Asserted by a **§6.1.3 corpus case**: an SVG with an external `<image href>` (relative
   `../` escape AND absolute) must **NOT** embed any out-of-input bytes in the output (the
-  SVG analogue of the §6.4.2 FFmpeg adversarial-egress case) — and with external loads
-  refused outright (control 1) the reference must simply not resolve at all. Cross-ref
-  §3.3.4 offline invariant, §0.11 T9b, §2.11.1.
+  SVG analogue of the §6.4.2 FFmpeg adversarial-egress case) — and with the SVG loaded with
+  no base URL (control 1) the reference must simply not resolve at all. **§6.1.3 also
+  asserts** the pinned `librsvg` crate/version exposes the relied-upon
+  `rsvg::Loader::read_stream`/`from_data`-without-`base_file` path. Cross-ref §3.3.4 offline
+  invariant, §0.11 T9b, §2.11.1.
 - **Progress `[DECIDED]`:** `ProgressModel::VipsStdout`. The image-worker is a **separate
   process** (§3.5.5/§0.7), so its in-process libvips **eval-progress callback** cannot
   reach the core directly. The worker installs the libvips `eval` signal handler and
@@ -1238,6 +1308,18 @@ model (SSOT *Distribution & download trust*):
   licence text** and a line stating where its corresponding source is obtained
   (upstream + the pinned ref). This is shipped *inside* the app (resource, §3.3.1)
   and shown in About (§5.9) — so the offer travels with every copy.
+- **LGPL §6 — STATIC-LINK additionally requires a relink path `[DECIDED]`.** A source
+  pointer alone does **not** discharge LGPL §6 for a **statically-linked** LGPL library.
+  The image-worker statically links the LGPL stack (libvips + libheif + libde265 +
+  librsvg — §3.6.1 aggregation-inside-the-worker), so for it ConvertIA **additionally
+  ships the relinkable object files (the worker's own `.o`/archive + the LGPL libs as
+  separately-relinkable units) AND a documented relink recipe** so a recipient can
+  substitute a modified LGPL library and rebuild the worker (the §6.1.3 carve-out ii
+  "relinkable-source bundle"). This relink bundle is a **release artifact** asserted by
+  the §6.1.3 build (carve-out ii). (Where an LGPL lib is instead **dynamically** linked
+  — §6.1.3 carve-out i — the user can already swap the shared object, so §6 is satisfied
+  without the relink bundle.) The FFmpeg binary's internal static LGPL libs are the
+  aggregation case (carve-out iii) covered by the source pointer above.
 - AGPL: not applicable to v1 (Ghostscript dropped, §3.1). If GS is ever re-added
   (`[DEFER]`), the same model applies plus an explicit note; no network service exists
   so the AGPL §13 remote-interaction clause would not trigger.
@@ -1384,16 +1466,16 @@ effort is spent where it matters.
   (d) **Ghostscript** is **[DECIDED: dropped]** (saving ~30–60 MB; not in the total).
 - **LibreOffice + fonts + pandoc together are ~80–90% of the bundle.** Image and
   PDF-text tooling are minor. Trimming effort, if any is spent, belongs there.
-- **Compression:** the release artifact is compressed (platform-native: NSIS/zip,
-  dmg, AppImage squashfs) — download size is materially smaller than installed;
-  exact ratios `[DEFER §6.1/§6.2]`.
+- **Compression:** the release artifact is compressed (platform-native: Windows
+  `.zip`, dmg, AppImage squashfs) — download size is materially smaller than installed;
+  exact ratios `[DEFER §6.1/§6.2]`. (NSIS is not a v1 artifact, §6.1.2 `[DECIDED-6.1a]`.)
 - This is an **estimate for planning**, not a contract; the real numbers are
   measured in §6.1 once the trimmed engine builds exist, and fed back here.
 
 #### Per-platform compressed-artifact size budget + CI enforcement `[DECIDED — "stay light", SSOT Principle 1]`
 "Stay light" needs an owning number and a gate, not just an estimate:
 - **Per-platform COMPRESSED artifact ceiling (the downloaded file):** ship a **finite
-  starting budget of ≤ 400 MB compressed per platform** (the NSIS/`.zip`, `.dmg`,
+  starting budget of ≤ 400 MB compressed per platform** (the Windows `.zip`, `.dmg`,
   AppImage) as the v1 target — comfortably above the dominant LibreOffice+fonts+pandoc
   floor yet a real cap. **`[DEFER: corpus/build]`** the exact number is re-pinned once the
   trimmed engine builds + the chosen CJK-font breadth (§3.9.3) are measured in §6.1; the

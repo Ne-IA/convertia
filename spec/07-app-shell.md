@@ -88,7 +88,14 @@ emit `app://intake`** — so the paths never reach the UI mid-run. The §5.8 UI 
 (ignore `app://intake` outside `Idle`/`Summary`) is **defence-in-depth**, not the
 primary gate. **UI surface = the `BusyNotice` Banner (§5.3), rendered under the
 `AppHeader`** when that defence-in-depth guard fires (§5.5 app-chrome layout); it is a
-passive non-modal notice, never a modal.
+passive non-modal notice, never a modal. **The primary busy SIGNAL is the window
+re-focus itself `[DECIDED]`:** the single-instance callback **re-focuses the running
+window** (the OS brings ConvertIA forward) — that re-focus, landing the user back on the
+live `Converting` screen, IS the sufficient primary "we're busy" feedback. **The
+`BusyNotice` text is shown ONLY on the defence-in-depth path** (if/when an `app://intake`
+somehow reaches the UI mid-run despite the core-side gate). A Phase-3 dev must **not** add
+a new event/toast to announce busy-ness — re-focus + the (rare) defence-in-depth Banner
+are the whole surface, so the §0.4.2 three-`app://`-event invariant is not expanded.
 
 **macOS unsigned two-copies edge case = accepted v1 limitation `[DECIDED]`.** Per the §6.6
 macOS sub-test, on **unsigned builds launched from two *separately-extracted* copies of the
@@ -187,10 +194,27 @@ Engines are **bundled** as separate invoked binaries (§3.3/§3.6) — never fet
 (SSOT *Local/private/offline*). At startup the core verifies the engine set is
 present and usable:
 
-- **Presence:** resolve each expected sidecar/resource path (under the Tauri
-  resource dir / sidecar location, §0.7) and confirm the file exists. The
-  authoritative *list* of expected engines per platform is owned by §3.1/§3.3;
-  §7.2 only consumes it.
+- **Presence (out-of-band — iterates the BINARY list, NOT the `trait Engine`
+  registry) `[DECIDED]`:** the presence/integrity loop iterates the **§3.3.1 expected
+  bundled-binary list** (the `bundle.externalBin` + resource binaries — `ffmpeg`,
+  `ffprobe`, `soffice`, `pdftotext`, `pandoc`, `convertia-imgworker`), resolving each
+  path (under the Tauri resource dir / sidecar location, §0.7) and confirming the file
+  exists. It does **NOT** iterate the §3.2.3 `trait Engine` registry and does **NOT**
+  call `descriptor()` — so an engine `EngineId` that has **no `trait Engine` impl** (the
+  non-trait variants `FFprobe` and `ImageMagick`, §0.6) is reached purely through this
+  binary list, never through `descriptor()`. The authoritative *list* of expected binaries
+  per platform is owned by §3.1/§3.3; §7.2 only consumes it. **The binary name per
+  `EngineId` comes from the §3.3.1 externalBin entry** (e.g. `EngineId::FFprobe` →
+  `binaries/ffprobe`), not from any trait method.
+  - **`FFprobe` presence-checked, health rolled into FFmpeg `[DECIDED]`.** `ffprobe`
+    ships alongside `ffmpeg` (same upstream, same GPL build, §3.1 row 2 / §3.3.1) and is
+    the video two-phase probe binary (§3.2.1). It is **presence + integrity checked as its
+    own binary** (`binaries/ffprobe`) via this out-of-band loop, but — like ImageMagick —
+    it has **no standalone `EngineStatus` row in the C12 surface**: its availability is
+    rolled into the FFmpeg engine's status (a missing/corrupt `ffprobe` makes the FFmpeg
+    `EngineStatus.runnable = Some(false)`, since no video job can probe without it). Its
+    `EngineId::FFprobe` appears in the SBOM/NOTICE layer (§3.7) and this binary
+    presence/integrity loop, never in the §3.2.3 registry.
 - **Integrity `[DECIDED]`:** verify each engine binary against a **build-time
   manifest of expected hashes** shipped in-bundle (the same SBOM/checksum data
   §3.7/§6.2 produce). This is a *local* tamper/corruption check (a partially
@@ -204,12 +228,19 @@ present and usable:
   file `engine-integrity.json` in the OS config dir next to the prefs blob** (Tauri
   `app_config_dir()`, e.g. `~/.config/dev.ne-ia.convertia/` — a **separate file**, not
   merged into the 3-key prefs blob, so a prefs reset never forces a re-hash). It records,
-  per engine, `{ id, expected_hash, app_version }`. **Warm-launch validation:** if the
-  marker is present **and its `app_version` matches the running build**, do presence + the
-  cheap size/header check only; if the marker is **absent or `app_version` differs** (first
-  launch or post-update), re-hash all engines and rewrite the marker; a size/header
-  mismatch on a warm launch forces a re-hash of that engine.
-  Owner: §7.2 with §3.3.
+  per engine, `{ id, expected_hash, expected_size, app_version }`. **Warm-launch
+  validation:** if the marker is present **and its `app_version` matches the running
+  build**, do presence + the cheap size/header check only; if the marker is **absent or
+  `app_version` differs** (first launch or post-update), re-hash all engines and rewrite
+  the marker; a size/header mismatch on a warm launch forces a re-hash of that engine.
+  **The "cheap size/header check" is concrete `[DECIDED]`:** **(a) file size equals the
+  marker's `expected_size`** AND **(b) the first N bytes match the expected executable
+  magic for the platform** — **ELF `0x7F 45 4C 46`** (Linux), **PE `MZ` (`0x4D 5A`)**
+  (Windows), **Mach-O / fat `0xCA FE BA BE` (fat) or `0xCF FA ED FE` (64-bit thin)**
+  (macOS). This catches truncation/AV-gutting/partial-extract cheaply without a full
+  re-hash; it does **not** catch same-size in-place corruption (only the full re-hash on
+  first-launch / version-change does — an accepted limitation, since runtime is not a
+  tamper anchor, §0.11 T3). Owner: §7.2 with §3.3.
 - **Smoke probe `[REC]`:** optionally, a fast `--version`-style invocation per
   critical engine through the §3.5/§2.12 wrapper to confirm it *runs* on this OS
   (catches a glibc/arch mismatch a hash can't). Kept cheap; gated behind verbose
@@ -221,7 +252,13 @@ and the §7.2.4 startup-fault surface. Owned by §7.2:
 
 ```rust
 struct EngineHealth {
-    engines: Vec<EngineStatus>,        // one per expected bundled engine (§3.1 list)
+    engines: Vec<EngineStatus>,        // one per registry-eligible engine (FFmpeg, LibreOffice,
+                                       //   Poppler, Pandoc, ImageCore, NativeCsvTsv). The non-trait
+                                       //   delegate/probe binaries (FFprobe, ImageMagick) get NO
+                                       //   standalone row — their presence/integrity (checked via
+                                       //   the §7.2.3 out-of-band binary loop) is rolled into the
+                                       //   owning engine's status (FFprobe→FFmpeg, ImageMagick→
+                                       //   ImageCore).
     unavailable_targets: Vec<TargetId>,// §3.4 patent-gapped on THIS platform (PlatformUnavailable)
     all_critical_ok: bool,             // derived: every required engine present+runnable
 }
@@ -634,8 +671,12 @@ record *what actually happened* without showing the user a stack trace.
   on-disk maximum is **~1× `max_file_size` (≈5 MB)**, NOT ~2×. (This was re-checked against
   the pinned plugin version's source specifically because a single-file disk bound is
   load-bearing for the "leave nothing behind / no system pollution" budget; if a future
-  plugin version changes `KeepOne` to rename-to-backup, switch to `KeepSome(0)`/manual
-  cleanup to preserve the true single-file bound.)
+  plugin version ever changes `KeepOne` to rename-to-backup, do **NOT** switch to
+  `KeepSome(0)` — that still calls `rename_file_to_dated()` on rotation, briefly
+  producing a dated file alongside the new one and so **breaking** the single-file ~1×
+  bound. Instead implement a **manual rotate: delete the existing log file before the
+  plugin opens the new one** (or vendor a `KeepOne`-delete variant). `KeepSome(0)` does
+  **not** preserve the single-file footprint.)
   `KeepOne` keeps the log from ever silently growing (consistent with "leave nothing
   behind" and "no system pollution"). The concrete crate version is pinned in the lockfile
   + SBOM per the §0.8 no-hardcoded-digits policy.

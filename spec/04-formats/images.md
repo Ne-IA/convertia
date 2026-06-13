@@ -115,11 +115,14 @@ savers are libvips load/save modules, not separate pipeline stages), never a cha
    decoder) and uses libaom **only** as the encoder. A §6.1.3 build assertion confirms the
    staged libheif resolves dav1d for decode (parallel to the libimagequant-soname
    assertion). Single binary.
-4. **SVG → raster** → **svg** rasteriser invoked **through libvips' SVG loader**;
-   libvips performs the bitmap save. Because libvips' native `svgload` module is
-   librsvg-backed, the whole pair is one process (vips) — this satisfies
-   the no-chaining rule (the rasteriser is a *load module of* vips, not a separate
-   pipeline stage we orchestrate).
+4. **SVG → raster** → the image-worker loads the SVG via **`rsvg::Loader` directly**
+   (NOT via libvips' `svgload` — `svgload` exposes no external-resource toggle, and the
+   T9b LFR control requires loading with **no base URL**, §3.5.5), renders it, and
+   **libvips performs the bitmap save**. Both librsvg and libvips live **inside the one
+   image-worker process**, so the whole pair is still **one process** — this satisfies
+   the no-chaining rule (the rasteriser is in-process with vips, not a separate pipeline
+   stage we orchestrate). (libvips' native `svgload` module is itself librsvg-backed; we
+   call librsvg directly only to guarantee the no-base-URL security path of §3.5.5.)
 
 > **Single-engine note for HEIC/AVIF encode `[DECIDED — heifsave only]`.** ALL
 > HEIC/AVIF *encoding* is done by **libvips `heifsave`** with its `compression`
@@ -250,7 +253,12 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   fallback if a needed native saver is unavailable in the bundled vips build.
 - **Engine(s):** **vips** (load built-in; **save via native `gifsave`/cgif**, vips
   ≥ 8.12; ImageMagick `magicksave` fallback only). No patent (LZW patent long
-  expired).
+  expired). **Licence landmine cross-ref `[DECIDED]`:** the cgif `gifsave` palette path
+  (and the palette-PNG path, line 188) depends on **libimagequant**, which **MUST be the
+  BSD-2-Clause `lovell/libimagequant` v2.4.x fork — NEVER upstream libimagequant 4.x
+  (GPLv3-or-commercial, which would taint the LGPL image-worker)**; the bundled libvips
+  must build/link against that fork's API/soname (§3.1 row 1e owns this — version pin +
+  §6.1.3/§6.3.3 COPYRIGHT-and-soname assertions).
 - **Options/settings:**
   - *Basic:* none required. Palette is generated automatically.
   - *Advanced:* `dither` amount — default **on** (the native cgif/`gifsave` backend
@@ -346,10 +354,20 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
 - **Options/settings:**
   - *Basic:* **Quality — default `60`** (range 0–100; libheif/x265 mid-quality;
     visually near-transparent for photos at far smaller size than JPEG).
-  - *Advanced:* `lossless` — default **off**; `preset`/x265 `preset` — default
-    **slow** (libheif default; good quality, acceptable speed) — **[OPEN]** may
-    drop to `medium` for speed on large batches; `chroma` 4:2:0 default; bit depth
-    8 default (10-bit advanced).
+  - *Advanced:* `lossless` — default **off**; **`effort` (integer 0–9, libvips
+    `heifsave` param; NOT a `preset` string) — default `5` `[DECIDED]`** (higher =
+    slower/smaller). libvips `heifsave` has **no `preset` string** at the API level: it
+    exposes the speed/size trade-off as the integer `effort`, which libvips maps to the
+    libheif encoder `speed` setting (`speed = 9 - effort`). **x265-path caveat
+    `[DECIDED]`:** libvips currently documents `effort` as primarily honoured by the AV1
+    encoder; for the HEVC/x265 plugin path the steer still flows through libheif's
+    `speed`/encoder-params, so the encode quality/speed is governed by **libheif's
+    HEVC-encoder default tuned via `effort`** rather than a directly-passed x265 `preset`.
+    v1 ships `effort 5` and `[DEFER: corpus]` confirms whether the bundled
+    libvips/libheif HEVC path measurably honours `effort` (if it does not steer x265 at
+    all on the bundled build, `effort` is a no-op for HEIC encode and the libheif x265
+    default applies — acceptable for v1, recorded here so it is not a surprise);
+    `chroma` 4:2:0 default; bit depth 8 default (10-bit advanced).
 - **Lossy?:** HEIC encode is **lossy by default** (`→ HEIC` flagged → §2.9; flip
   `lossless`). HEIC→JPG is lossy (JPEG). HEIC→PNG/TIFF is lossless w.r.t. the
   decoded pixels (but cannot recover the HEIC's own prior loss).
@@ -441,18 +459,19 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   everyday demand to rasterise a vector to HEIC/AVIF; kept off the offered set to
   stay uncluttered.)*
 - **As target ← sources:** **none** (source-only).
-- **Engine(s):** **svg** rasteriser (**librsvg**, libvips' native `svgload` backend)
-  invoked **as libvips' SVG load module**, then the bitmap is saved by **vips** —
-  **one process** for the pair. No scripting, no external/`href` network fetch
-  (offline + security: a remote `<image href>` is **not** fetched), **and no out-of-input
-  local-file read** — the **load-bearing control is refusing ALL external resource loads
-  outright** (`set_load_external_resources(false)`; v1 SVG→raster needs no external
-  `<image>`/XInclude, fonts are bundled). Staging the SVG into per-job scratch on ALL
-  platforms + setting librsvg's base URL to that scratch dir (confining any
-  `<image href>`/XInclude resolution, a `../`-escape rejected) is **defence-in-depth only**
-  — that directory-confinement is what **CVE-2023-38633 bypassed**, so it backstops the
-  refuse-all-loads control rather than standing alone, and **librsvg is pinned ≥ 2.56.3**
-  (the fix floor, §3.5.5 / §6.1.3 version + corpus assertions). No patent.
+- **Engine(s):** **svg** rasteriser (**librsvg**) — the image-worker loads the SVG via
+  **`rsvg::Loader` directly** (not via libvips `svgload`, which exposes no external-resource
+  toggle), renders it, then the bitmap is saved by **vips** — **one process** for the pair.
+  No scripting, no external/`href` network fetch (offline + security: a remote `<image href>`
+  is **not** fetched), **and no out-of-input local-file read** — the **load-bearing control
+  is loading the SVG via `rsvg::Loader` with NO `base_file`/base URL** (`read_stream`/
+  `from_data` without a base; v1 SVG→raster needs no external `<image>`/XInclude, fonts are
+  bundled). With no base URL, librsvg has nothing to resolve a local/relative `href` against,
+  so it refuses **all** local `<image href>`/XInclude reads by construction (and remote
+  schemes regardless). **No base-URL/scratch confinement is used** — supplying any base URL
+  is exactly what RE-ENABLES the CVE-2023-38633-class resolution surface (the defence is the
+  *absence* of a base URL). **librsvg is pinned ≥ 2.56.3** as a belt-and-suspenders floor,
+  not load-bearing for v1 (§3.5.5 / §6.1.3 version + API + corpus assertions). No patent.
 - **Options/settings:**
   - *Basic:* **Output size.** Default render at the SVG's **intrinsic size** if it
     has explicit `width`/`height`; if it only has a `viewBox`, default to a sane
@@ -580,8 +599,11 @@ open contradicts "it just works").
    Lean: preserve-all + Advanced strip toggle.
 5. **ICO non-square padding default** — pad-to-square-with-transparency (no crop /
    no distort) vs centre-crop to square. Lean: pad with transparency.
-6. **x265 `preset` for HEIC encode** — `slow` (quality) vs `medium` (batch speed)
-   default; revisit against the reliability corpus / batch timing (§3.8).
+6. **`heifsave effort` for HEIC encode** — integer 0–9 (libvips param; NOT a `preset`
+   string). v1 default `effort 5` `[DECIDED]`; `[DEFER: corpus]` whether to lower to
+   `effort 3` for batch speed (and whether the bundled libheif/x265 path measurably
+   honours `effort` — libvips documents it as primarily an AV1 lever; the HEVC steer
+   flows through libheif `speed = 9 - effort`). Revisit against batch timing (§3.8).
 7. **JPG default Q = 82 / WEBP default Q = 80 / HEIC&AVIF default Q = 60** — these
    are reasoned everyday defaults above the bare-library defaults; confirm against
    the real-photo corpus (SSOT *v1 DoD* reliability gate) before locking §1.6.

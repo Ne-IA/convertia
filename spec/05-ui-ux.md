@@ -154,7 +154,7 @@ per-item outcome); the machine only sequences the user through them.
             ┌───────────────────────────── "convert more" ─────────────────────────────┐
             ▼                                                                            │
         ┌────────┐ drop / pick / launch-arg     ┌────────────┐                          │
-        │  Idle  │ ───────────────────────────▶ │ Collecting │                          │
+        │  Idle  │ ───────────────────────────▶ │ Collecting │ ◀── re-drop / pick (9)    │
         └────────┘                              └─────┬──────┘                          │
             ▲  ▲                                      │ backend result                  │
             │  │                ┌─────────────────────┼──────────────────────┐          │
@@ -162,23 +162,23 @@ per-item outcome); the machine only sequences the user through them.
             │  │        ┌──────────────┐       ┌────────────┐        ┌─────────────┐    │
             │  └────────│ MixedDrop    │       │  Confirm   │        │ Unsupported │    │
             │  dismiss  │ Refusal (9)  │       │  gate (3)  │        │ /Unreadable │────┘
-            │           └──────────────┘       └─────┬──────┘        │   (10)      │ dismiss
-            │                                        │ confirm       └─────────────┘
-            │                                        ▼
+            │           └──────┬───────┘       └─────┬──────┘        │   (10)      │ dismiss
+            │                  │ re-drop / pick      │ confirm       └─────────────┘
+            │                  └──▶ Collecting       ▼
             │                              ┌───────────────────────┐
             │                              │ Targets + Options (4)  │◀──┐ change target/opts
-            │                              │  + Destination preview │   │ (in-place)
-            │                              │  (5, folded in)        │───┘
-            │                              └───────────┬────────────┘
-            │                                          │ Convert
-            │                              §2.5 equivalent-output?
-            │                              ┌───────────┴───────────┐
-            │                          yes │                       │ no
-            │                              ▼                       │
-            │                        ┌───────────┐                 │
-            │                        │ Rerun (6) │ skip/fresh ─────┤
-            │                        └───────────┘                 │
-            │                                                      ▼
+            │                         ┌───▶│  + Destination preview │   │ (in-place)
+            │                         │    │  (5, folded in)        │───┘
+            │              cancel (Esc)    └───────────┬────────────┘
+            │              from Rerun                  │ Convert
+            │                         │     §2.5 equivalent-output?
+            │                         │     ┌──────────┴────────────┐
+            │                         │ yes │                       │ no
+            │                         │     ▼                       │
+            │                         │ ┌───────────┐               │
+            │                         └─│ Rerun (6) │ skip/fresh ───┤
+            │                           └───────────┘               │
+            │                                                       ▼
             │   app://close-requested ┌───────────────────────┐ cancel (confirmed
             │   ┌────────────────────▶│ AppCloseRequested (11) │  round-trip §5.8)
             │   │  Stay→Converting    │  overlay over Converting│  ──Quit──▶ exit
@@ -196,6 +196,14 @@ per-item outcome); the machine only sequences the user through them.
                                                                     │ "Start over" (Ctrl/⌘+N)
                                                                     └──────────────▶ Idle
 ```
+> **Two non-Idle return transitions (now drawn, previously only in the state table /
+> §5.10) `[DECIDED]`:** (1) **MixedDropRefusal (9) → Collecting** on a **re-drop / pick**
+> (the active `DropZone` the refusal screen renders, §5.2 row 9 / §5.10) — a fresh
+> single-format drop goes straight back into `Collecting`, NOT a Dismiss-to-Idle
+> round-trip (Dismiss → Idle is the *other* arrow). (2) **Rerun (6) → Targets/Destination
+> (4/5)** on **cancel (Esc)** (§5.2 row 6 "cancel → back to Destination") — Esc dismisses
+> the interstitial and returns to the folded Targets+Destination screen with the held
+> plan intact, distinct from skip/fresh which proceed to `Converting`.
 > **Diagram arrow labels (so neither is misread):** the **Summary (8) → Idle** arrow is
 > **"convert more"** (left edge, into `Idle`); the **AppFault (12) → Idle** arrow is
 > **"Start over" / Ctrl/⌘+N** (a distinct path with distinct copy — §5.10 keyboard table
@@ -233,7 +241,7 @@ restated per component.
 | Component | Role | Key states/props | Notes / cross-refs |
 |-----------|------|------------------|--------------------|
 | **DropZone** | the primary intake surface + click-to-browse + choose-folder | `dragActive`, `disabled`-while-converting | native file-drop via §5.4; **click (or Enter/Space)** invokes **C2a `pick_for_intake` `{ kind: 'files' }`** (Rust-opened `DialogExt`, no `dialog:allow-open` grant — §0.10/§5.4). **Choose-folder affordance `[DECIDED]`:** a secondary **"or choose a folder"** link/button on the DropZone (and the **Ctrl/⌘+Shift+O** accelerator, §5.10) invokes the **same C2a with `{ kind: 'folder' }`** → folder recursion runs Rust-side (§1.1). Present in `Idle` alongside the reassurance line. |
-| **BatchSummary** | the confirm-gate card | `detectedFormat`, `count`, `skipped?: SkippedItem[]` | data from §1.4 collected-summary payload; the mandatory pre-convert gate (state 3). **`sampleNames` is NOT a wire field `[DECIDED]`** — `CollectedSet::Single` carries no `sample_names`; any "e.g. `holiday.jpg`, `cat.jpg`, …" preview is **derived client-side** from the first few `CollectedSet::Single.items[].raw_path` basenames (no new wire type). **Rendering rule for `skipped`:** when non-empty, render the passive *"M file(s) weren't recognized and will be skipped"* line with an expandable list (path + §2.8 reason per item) — never blocks confirm, but is always shown so no skipped item is silently dropped (§1.4) |
+| **BatchSummary** | the confirm-gate card | `detectedFormat`, `count`, `skipped?: SkippedItem[]` | data from §1.4 collected-summary payload; the mandatory pre-convert gate (state 3). **`sampleNames` is NOT a wire field `[DECIDED]`** — `CollectedSet::Single` carries no `sample_names`; any "e.g. `holiday.jpg`, `cat.jpg`, …" preview is **derived client-side** from the first few `CollectedSet::Single.items[].raw_path` basenames (no new wire type). **`raw_path` is DISPLAY-ONLY `[DECIDED]`:** it is on the wire (§0.6 `DroppedItem.raw_path`) and reaches the WebView for this preview, but is **never re-submitted as intake** — the WebView cannot feed a path back into a conversion (intake funnels are C1/C2a, Rust-side only; this does not contradict the C2a "no raw FS path the WebView SUPPLIES" scope). **Rendering rule for `skipped`:** when non-empty, render the passive *"M file(s) weren't recognized and will be skipped"* line with an expandable list (path + §2.8 reason per item) — never blocks confirm, but is always shown so no skipped item is silently dropped (§1.4) |
 | **FileList** | optional expandable list of collected items (behind a "Show files" disclosure on the Confirm gate, state 3) | `items: { name: string; relPath?: string }[]`, `skipped?: SkippedItem[]`, `virtualized: true` | **Trigger/affordance:** collapsed by default; a "Show N files" toggle expands it. **Row data:** file name + (for folder drops) the dropped-root-relative path; **eligible vs skipped are rendered distinctly** — eligible rows plain, **skipped rows visually marked** with their §2.8 reason (so a skipped item is never hidden, §1.4). **Virtualised** (§1.10) for thousands of files. Read-only in v1 (no per-item target / no per-item deselect — both out of v1) |
 | **FormatPicker** | target tiles for the detected source | `targets[]`, `default`, `selected`, per-tile `disabledReason?` | one pre-highlighted default (§1.5); cross-category outputs (extract-audio / to-GIF) appear as extra tiles of a video source (cross-category.md); disabled tiles per §3.4 (§5.2) |
 | **OptionsPanel** | the few **basic** contextual settings for the chosen target | option descriptors (§1.6 generic model); values & defaults from 04 | e.g. JPG quality slider, GIF fps/width — **descriptors come from the backend** (§1.6), UI just renders the declared widget type |
@@ -242,7 +250,7 @@ restated per component.
 | **ProgressList** | per-item rows + aggregate bar | `Map<ItemId, ItemProgress>` (the §0.4.2 `ItemProgress` payloads, keyed by `itemId`; `JobId == ItemId` §0.6), `batchPct`, `currentItem` | real determinate progress (§1.11); virtualised for large batches; rows transition to terminal `Succeeded`/`Failed`/`Cancelled`/`Skipped`. For an indeterminate-`fraction` (LibreOffice) row it shows a staged determinate-looking bar from `stage` (§1.11) |
 | **ResultSummary** | end-of-batch outcome | `RunResult` (§1.12) | success/fail counts, per-item reason (§2.8 strings), output→source map; fully-failed banner. **Residue rendering `[DECIDED]`:** an item whose `IpcError.residue != None` (§0.4.3) — or that appears in `RunResult.cleanup_incomplete` (§1.12/§2.6.4) — is rendered as **Failed (not Succeeded)** with its reason string **including the residue path** (the §2.8 `cleanup_residue` string), optionally a **"reveal residue" link via C9** (`OpenKind::RevealInFolder`). Cross-ref §2.6/§0.4.3. A Cancelled-with-residue item (§2.6.4 case 3) shows the §2.8.2 "With residue" tail. |
 | **OpenActions** | open-folder / open-file buttons | `commonRoot`, `divertRoot?`, `filePath?` (from `RunResult` §0.6/§1.12) | **backed by §7.7** (the only OS shell-out). **Buttons → C9 `OpenKind` mapping `[DECIDED]`:** "Open folder" → C9 `{ kind: RevealInFolder, path: commonRoot }` (opens the common root, §2.7); "Open file" (single-output runs) → C9 `{ kind: File, path: filePath }`. **Split-divert → TWO open-folder buttons `[DECIDED]`:** when `RunResult.divert_root` is `Some(..)` (§1.12/§7.7.1), render BOTH "Open [beside-source]" (`commonRoot`) and "Open [Downloads/Documents]" (`divertRoot`), each `RevealInFolder`; when `None`, render only the `commonRoot` button (a single button would strand a user whose files diverted). **Availability `[DECIDED]`: Summary-only (state 8), NOT mid-run (state 7).** During `Converting` the run's results are still incomplete and the §7.7.3 RunResult-membership set is not final, so open-actions are withheld until the run reaches a terminal `Summary`; this keeps the open-finished-output model (§7.7) honest and avoids opening a folder of half-written outputs |
-| **RerunPrompt** | the §2.5 interstitial | `equivalentCount`, default=Skip | one batch-level prompt, skip-default / fresh-copy (state 6). `role="alertdialog"`; **accessible name** via `aria-labelledby` → its heading **"Already converted with these settings"** (§5.6 WCAG 4.1.2). Trigger = the Convert button (state 4/5); focus restores there on close |
+| **RerunPrompt** | the §2.5 interstitial | `equivalentCount`, default=Skip | one batch-level prompt, skip-default / fresh-copy. **State-vs-modal reconciled `[DECIDED]`:** RerunPrompt **is a state-machine state (6)** that is **rendered as a focus-trapped `role="alertdialog"` overlaid on the still-mounted-but-INERT Targets/Destination (state 4/5)** — the underlying screen is **not unmounted** (so cancel/Esc can return to it with its held plan intact), it is made **`inert`/`aria-hidden`** while the alertdialog is up. So "state 6" (machine) and "modal" (presentation) are the same thing, not a contradiction. **accessible name** via `aria-labelledby` → its heading **"Already converted with these settings"** (§5.6 WCAG 4.1.2). Trigger = the Convert button (state 4/5); focus restores there on close (cancel/Esc → back to the inert-then-restored state 4/5) |
 | **MixedDropRefusal** | pre-flight hard refusal (full-screen STATE, not a modal — §5.6) | `formatsFound[]` with counts | state 9; no subset-convert affordance in v1. **Renders an active `DropZone` as the primary action `[DECIDED]`** so a fresh single-format drop/pick goes straight to `Collecting` (re-drop), with a secondary **Dismiss → `Idle`**; resolves the earlier "is the DropZone active here?" ambiguity (yes). **It is the SAME `DropZone` component**, with the §5.8 disabled-while-`Converting` guard **inert** here (state 9 is pre-flight — nothing is converting), so the zone accepts a drop normally. Announced via `aria-live="assertive"` heading; **not** `role="alertdialog"` (§5.6) |
 | **UnsupportedNotice** (a.k.a. the state-10 intake-refusal notice) | unsupported / uncertain / all-unreadable / nothing-eligible | `variant: 'Unsupported' \| 'Unreadable' \| 'Empty'`, `detected?`, `reason` | state 10; **three explicit variants each with its own copy path** so the **`Empty`** "nothing here I can convert" branch is never overlooked despite the component's unsupported-leaning name: `Unsupported` → "can't convert this type — detected: X"; `Unreadable` → "couldn't read these files"; `Empty` (the `CollectedSet::Empty` case) → "nothing here I can convert". Plain language, no stack trace |
 | **QuitConfirm** | quit-while-converting interstitial | `onQuit`, `onStay` | state 11; overlay over `Converting`, triggered by `app://close-requested` (§7.3.2); Enter=Stay (safe default), Esc=cancel-close (§5.10). `role="alertdialog"`; **accessible name** via `aria-labelledby` → its heading **"Conversion in progress"** (§5.6 WCAG 4.1.2). **No UI trigger** — on Stay/Esc focus returns to the active element in the underlying `Converting` state (Cancel button / progress row), NOT a trigger (§5.6) |
@@ -435,11 +443,17 @@ with no-harm. Concrete requirements:
   keyboard alone (map §5.10). No mouse-only affordance exists. The drop area has a
   keyboard-equivalent (the picker).
 - **Logical focus order** following the visual wizard order; focus is **moved to
-  the new primary element on each state transition** (e.g. **on entering `Targets`
-  (3→4), focus moves to the pre-highlighted (default-selected) tile in the FormatPicker
-  radiogroup** — the `aria-checked="true"` tile that is the active radio, so a
-  keyboard user lands on the live default; to the Convert button
-  when the destination is shown), and
+  the new primary element on each state transition**. Two named rules govern the
+  Targets/Destination (state 4/5) view `[DECIDED]`:
+  - **On entering Targets (3→4):** focus moves to the **pre-highlighted
+    (default-selected) tile in the FormatPicker radiogroup** — the `aria-checked="true"`
+    tile that is the active radio, so a keyboard user lands on the live default.
+  - **When the DestinationBar becomes visible within state 4/5** (the C4 `plan_output`
+    response resolves and the "will save to …" line + Convert button render, §5.2 row
+    4/5): focus moves to the **Convert button**, so a keyboard user can proceed without
+    hunting once the destination is shown. (It does not steal focus on every debounced
+    C4 re-call — only the **first** time the DestinationBar/Convert button appears for
+    this batch; subsequent target/option changes leave focus where the user put it.)
 - **Converting (7) and Collecting (2) focus-on-entry rules `[DECIDED]`** (the two states
   §5.6 previously left unstated):
   - **Converting (7):** on entry, focus moves to the **Cancel button** (the one actionable
@@ -878,7 +892,7 @@ reference it (`a11y/keymap.ts`). It satisfies the SSOT §9 DoD gate
 
 | Action | Accelerator | Available in | Notes |
 |--------|-------------|--------------|-------|
-| **Open file picker** | **Ctrl/⌘ + O**, or **Enter/Space** on focused DropZone | `Idle` only | parity with drop (§5.4); the picker is the keyboard equivalent of dropping. (In `Summary`, **Convert more** — Ctrl/⌘+N — first returns to `Idle`, where Ctrl/⌘+O then opens the picker; Ctrl/⌘+O is **not** bound directly in `Summary`.) |
+| **Open file picker** | **Ctrl/⌘ + O** (global accelerator) — OR **Enter/Space on a focused DropZone** (per-element activation) | global chord: `Idle` only · per-element activation: any state that **renders a `DropZone`** (`Idle` AND `MixedDropRefusal` (9)) | **Split semantics `[DECIDED]`:** the **global Ctrl/⌘+O chord** is bound **in `Idle` only**; but the **Enter/Space activation of a focused `DropZone`** invokes **C2a `pick_for_intake`** wherever a `DropZone` is rendered — which in v1 is `Idle` *and* the state-9 `MixedDropRefusal` re-drop zone (so a keyboard user in state 9 re-drops via Enter/Space on that zone, not via the global chord). Parity with drop (§5.4); the picker is the keyboard equivalent of dropping. (In `Summary`, **Convert more** — Ctrl/⌘+N — first returns to `Idle`, where Ctrl/⌘+O then opens the picker; Ctrl/⌘+O is **not** bound directly in `Summary`.) |
 | **Choose folder** | **Ctrl/⌘ + Shift + O** | `Idle` | directory-mode dialog (§5.4) |
 | **Cancel collecting** (stop an in-flight folder walk/detection) | **Esc** | `Collecting` (2) | calls **C13 `cancel_ingest`** (§0.4.1) → discards the partial set → `Idle`; backs the cancel-collect control (§5.2) needed for large recursive drops (§1.10) |
 | **Confirm batch** (proceed past the collected-summary gate) | **Enter** | `Confirm` (3) | the gate's primary action; **Esc** cancels back to `Idle` |
@@ -899,7 +913,7 @@ reference it (`a11y/keymap.ts`). It satisfies the SSOT §9 DoD gate
 | **Reveal residue** (open the folder where residue remains) | **Enter/Space** on the focused link | `Summary` (8), only when an item reports `CleanupResidue` (§2.6/§2.8) | a focusable link on a residue-flagged row; activates an OpenerExt reveal of the residue location (gated like §7.7.3); Tab-reachable, no global chord |
 | **QuitConfirm Esc (cancel the close request)** | **Esc** | **QuitConfirm** (11) | a focus-trapped decision modal, but Esc **cancels the OS close request → back to `Converting`** (no trigger to restore — it was raised by `app://close-requested`, not a UI trigger); §7.3 |
 | **Dismiss UnsupportedNotice** (full-screen, not a modal) | **Esc** | `UnsupportedNotice` (10) | full-screen state, **not** a modal (§5.6): Esc → `Idle`; focus moves to the **`DropZone`** (drop again), **not** a trigger (state 10 was entered by a drop, there is no trigger) |
-| **Dismiss MixedDropRefusal** (full-screen, not a modal) | **Esc** | `MixedDropRefusal` (9) | full-screen state, **not** a modal (§5.6): Esc → `Idle` (the secondary Dismiss action); the primary action is re-dropping a single format into its active `DropZone` → `Collecting`; focus → the re-drop `DropZone`, not a trigger |
+| **Dismiss MixedDropRefusal** (full-screen, not a modal) | **Esc** | `MixedDropRefusal` (9) | full-screen state, **not** a modal (§5.6): Esc → `Idle` (the secondary Dismiss action). The primary action is re-dropping a single format into the state-9 active `DropZone` → `Collecting`. **Esc focus target `[DECIDED]`:** since Esc transitions to `Idle` (unmounting state 9 and its `DropZone`), focus lands on the **`DropZone` in the new `Idle` state** (the same component, freshly mounted — NOT the now-unmounted state-9 instance), not a trigger |
 
 ### Esc / Enter semantics on the decision gates (explicit)
 

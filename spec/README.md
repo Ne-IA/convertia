@@ -58,6 +58,58 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 > empirical number/validation remains; `[OPEN]` = a genuine unresolved owner-level
 > call. After this pass the vast majority are decided or deferred.
 
+#### Resolved in this round (SVG-API / FAT-exFAT / engine-derivability / NSIS / facts) `[DECIDED]`
+- **SVG/librsvg LFR primary control corrected to the REAL librsvg API** — was a
+  non-existent `set_load_external_resources(false)` + a self-cancelling base-URL step. Now:
+  **load via `rsvg::Loader` with NO `base_file`/base URL** (verified against librsvg's Rust
+  API — no base URL ⇒ all local `href`/XInclude refused by construction; remote always
+  refused), image-worker calls librsvg directly (libvips `svgload` has no toggle), **no
+  base-URL confinement** (a base URL is what re-enables the CVE-2023-38633 surface). librsvg
+  ≥ 2.56.3 pin demoted to belt-and-suspenders; §6.1.3 adds an API-presence assertion.
+  Owner: §3.5.5; propagated §3.3.4 / §0.11 T9b / §2.11.1 / §6.1.3 / images.md.
+- **FAT/exFAT publish gap closed** — on Unix, FAT/exFAT support **neither**
+  `RENAME_NOREPLACE` **nor** hardlinks, so the §2.1.2 `link`+`unlink` fallback itself
+  fails (no atomic no-clobber primitive). Added a **third fallback = §2.7.2 DIVERT trigger**
+  (`DivertReason::NoAtomicPublish`, Unix-only — Windows `MoveFileExW` is fine on FAT/exFAT):
+  divert to a hardlink-capable system-disk target. Owner: §2.1.2 / §2.7.2 / §2.14.2-3 / §0.6.
+- **Engine-layer derivability (4 blockers)** — **(a)** `EngineId::FFprobe` added (non-trait,
+  mirrors ImageMagick — sidecar-path + SBOM + health only); **(b)** `Invocation.out_tmp:
+  Option<TempPath>` (`None` for the probe; §1.7 publishes only when `Some`); **(c)** the
+  probe Invocation uses `ProgressModel::CoarseSpawnDone` (not FfmpegKeyValue); **(d)** §7.2.3
+  out-of-band binary presence loop (iterates the §3.3.1 binary list, NOT the trait registry)
+  defines the path for non-trait engines (FFprobe→FFmpeg, ImageMagick→ImageCore health).
+  Plus a §3.3.3 `Sidecar(EngineId)`→binary-name table. Owner: §0.6 / §3.2 / §3.3 / §7.2.
+- **§1.6 defaults registry `[REC]`→`[DECIDED]`** — CI-generated `OptionDecl.default` index;
+  §6.7.1 Lane-A guard fails the build if any §04 pair lacks a default; §6.10 row 7 now
+  "owned by §1.6" (de-hedged). Owner: §1.6 / §6.7.1 / §6.10.
+- **NSIS NOT shipped v1 `[DECIDED-6.1a]`** — portable `.zip` is the only v1 Windows
+  artifact (SSOT portable-first); NSIS deferred post-v1. Resolves the former `[OPEN-6.1a]`.
+  Owner: §6.1.2; propagated §6.7.2 / §6.10 row 13 / §0.3.1 / §3.4.5 / §3.9.
+- **§6.4.6 macOS WKWebView contradiction fixed** — opener no longer claims a macOS
+  WKWebView driver; macOS degrades to the synthetic smoke test (matches the sub-bullet).
+  Owner: §6.4.6.
+- **Two factual errors fixed** — MPEG-2 US essential patents expired **2018** (US 7,334,248),
+  not "~2026" (§3.4.3); HEIC encode uses libvips `heifsave` **integer `effort` 0–9**
+  (default 5), **not** an x265 `preset` string (verified vs libvips 8.17 / heifsave.c —
+  `speed = 9 - effort`; HEVC steer flows through libheif). Owner: §3.4.3 / images.md.
+- **HEVC/H.265 MOV→MP4 default `[DECIDED]`** — re-encode to H.264 (usability-floor); verbatim
+  remux = Advanced "keep original quality" toggle. Owner: video.md.
+- **§5.2 state diagram** gained the two missing transitions (MixedDropRefusal→Collecting
+  re-drop, Rerun→Targets/Destination cancel-Esc); **§5.6 focus-on-entry** rewritten as two
+  named `[DECIDED]` rules (FormatPicker default tile on 3→4; Convert button when the
+  DestinationBar first appears) — broken sentence fixed. Owner: §5.2 / §5.6.
+- **SHOULD-level corrections** — intake/detection panic boundary (C1/C2a `catch_unwind`,
+  §2.13.2 / §0.4.0); seccomp NOT the egress block (net namespace preferred, §2.12.3); T3
+  runtime tamper-resistance downgraded to corruption-only (§0.11); `EmptyReport` defined +
+  projection rule (§1.3); batch-progress denominator = QUEUED-only (§0.4.2); `Recognized.dims`
+  step-4 producer named (§1.2); engines.lock→PatentDisposition flow (§3.4.4a); governance-doc
+  CI completeness gate (§6.8); bundled-font baseline de-`[OPEN]`'d (documents.md/§6.1.3/§6.4.5);
+  `RotationStrategy` fallback fixed (§7.5.2); macOS CI timeout per-OS (§6.7.2); VPS kernel
+  recorded + enforcement path (§6.1.4/§6.4.2); §7.2.3 warm-launch magic-bytes check; LGPL §6
+  relink obligation (§3.6.2); libimagequant landmine cross-ref (images.md); WMA decode-only
+  (§3.1); fs-audit `::error::` annotation (§6.4.2); §5.x cluster (RerunPrompt state-vs-modal,
+  MixedDropRefusal Esc focus, file-picker split, `raw_path` display-only, BusyNotice re-focus).
+
 ### Resolved this convergence pass `[DECIDED]`
 - **Name/trademark clearance verdict = `clear`** — both "ConvertIA" and the public
   "Ne-IA" brand cleared for v1; `docs/name-clearance.md` records it; the §6.9 gate
@@ -150,10 +202,13 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **Collecting live count** — fed by an **optional `onScan` `Channel<ScanProgress>`** on
   C1 (≈2/s throttled), a run-telemetry-style Channel, **not** a 4th `app://` event (the
   three-event invariant covers `app.emit`, not command Channels). Owner: §0.4.1/§0.4.2.
-- **`crosses_volume` is reactive, not pre-planned** — `OutputPlan` drops the
-  `crosses_volume` field; `fs_guard::atomic_publish` detects cross-volume **reactively
-  on EXDEV / cross-device failure** (§2.14.3) and runs the copy-into-dest-volume
-  fallback. Owner: §0.6 / §1.8 / §2.14.
+- **`crosses_volume` is reactive at the PUBLISH, not pre-planned as a field** — `OutputPlan`
+  drops the `crosses_volume` field; `fs_guard::atomic_publish` detects cross-volume
+  **reactively on EXDEV / cross-device failure** (§2.14.3) and runs the copy-into-dest-volume
+  fallback. **Clarified `[DECIDED]`:** "not pre-planned" means **no plan field**, NOT "no
+  pre-engine decision" — *where the engine writes* when a same-volume sibling temp can't be
+  created is a pre-engine temp-PLACEMENT decision owned by §2.14.3 at run time. Owner:
+  §0.6 / §1.8 / §2.14.
 - **`willReencode` emission + wire type** — the core **always emits a definite value**
   (`false` for non-video / non-applicable batches), never omitted. The Rust struct field
   is non-optional `bool`, so the **generated `bindings.ts` type is non-optional
@@ -325,10 +380,13 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   renders disabled-with-reason. Owner: §3.4.4a / §7.2.3.
 - **WebView2-absent portable launch fails before the core runs** — cannot show an in-app
   fault; the "fail clearly" substitute is the §6.2.4 download-page prerequisite note;
-  `minimumWebview2Version` is NSIS-installer-only. Owner: §0.3.1 / §6.2.4.
+  `minimumWebview2Version` is NSIS-installer-only and **NSIS is NOT shipped v1** (§6.1.2
+  `[DECIDED-6.1a]`), so this floor-enforcement mechanism is absent in v1 — the download-page
+  note is the sole Windows floor mechanism. Owner: §0.3.1 / §6.2.4.
 - **Windows portable artifact = a `.zip`** (app exe + `binaries/` + `resources/` engine
-  trees, post-build packaging), NOT a single `.exe`; NSIS is the secondary installer.
-  Owner: §6.1.2 / §6.10 row 13.
+  trees, post-build packaging), NOT a single `.exe`; **it is the ONLY v1 Windows artifact —
+  NSIS NOT shipped v1** (§6.1.2 `[DECIDED-6.1a]`, deferred post-v1). Owner: §6.1.2 / §6.10
+  row 13.
 - **Linux log dir = `~/.config/dev.ne-ia.convertia/logs/`** (Tauri v2 `app_log_dir()`
   resolves via `configDir`, not the data dir). Owner: §7.5.2.
 - **macOS launch-intake = `RunEvent::Opened { urls: Vec<Url> }`** (real in Tauri v2;
@@ -549,13 +607,21 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   (LGPL §6, carve-out ii, asserted by the build); FFmpeg-internal static LGPL is
   aggregation (carve-out iii). Resolves the §6.1.3-vs-§3.5.5 static-link contradiction.
   Owner: §6.1.3 / §3.5.5 / §3.6.1.
-- **SVG/librsvg local-file LFR (T9b) closed** — **PRIMARY control = refuse ALL external
-  resource loads** (`set_load_external_resources(false)`; v1 SVG→raster needs none, fonts
-  bundled), closing both SSRF and local-LFR by construction. **Staging into per-job scratch
-  + base-URL confinement is DEFENCE-IN-DEPTH only, NOT trusted** — it is the mechanism
-  **CVE-2023-38633 bypassed** (fixed in **librsvg ≥ 2.56.3**, now **pinned in engines.lock
-  with a §6.1.3 version assertion**). §6.1.3 corpus assertion + §0.11 T9b / §2.11.1 cite the
-  SVG control alongside FFmpeg/pandoc/LO. Owner: §3.5.5 / §3.3.4 / §0.11 T9b / §2.11.1 / §6.1.3.
+- **SVG/librsvg local-file LFR (T9b) closed** — **PRIMARY load-bearing control = load the
+  SVG via `rsvg::Loader` with NO `base_file`/base URL** (`read_stream`/`from_data` without
+  a base; v1 SVG→raster needs no external resources, fonts bundled). With no base URL,
+  librsvg has nothing to resolve a local/relative `href` against, so it refuses ALL local
+  `<image href>`/XInclude reads by construction and remote schemes regardless — closing both
+  SSRF and local-LFR. The image-worker calls **librsvg directly** (libvips `svgload` has no
+  external-resource toggle; only `VIPS_BLOCK_UNTRUSTED`). **No base-URL/scratch confinement
+  is used** — supplying any base URL is exactly what RE-ENABLES the CVE-2023-38633-class
+  resolution surface (the defence is the *absence* of a base URL, not the confinement of
+  one). The **librsvg ≥ 2.56.3** pin (engines.lock + §6.1.3 version assertion) is
+  belt-and-suspenders, NOT load-bearing for v1; if a base URL is ever required later, base-URL
+  confinement becomes the load-bearing control and must be labelled as such (carrying the
+  CVE-2023-38633 residual). §6.1.3 corpus assertion + §6.1.3 API assertion (the pinned crate
+  exposes `read_stream`/`from_data` without `base_file`) + §0.11 T9b / §2.11.1 cite the SVG
+  control alongside FFmpeg/pandoc/LO. Owner: §3.5.5 / §3.3.4 / §0.11 T9b / §2.11.1 / §6.1.3.
 - **Lock-before-part ordering invariant** — `run-<RunId>/.lock` is created and OS-locked
   BEFORE the run writes its first `.part`; the opportunistic same-dir sweep's
   "absent-lock ⇒ reclaimable" rule is safe ONLY because of this guaranteed ordering.
@@ -665,10 +731,14 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   asserted before relying on it; Lane-B VPS runner kernel version recorded as a prerequisite.
   **`ubuntu-22.04` floor honoured per lane** (VPS-host may differ → `ubuntu:22.04` Docker or
   GitHub-hosted fallback). Owner: §6.4.2 / §6.1.4.
-- **librsvg LFR primary control = refuse ALL external loads** (`set_load_external_resources(
-  false)`); directory-confinement demoted to defence-in-depth (it is what **CVE-2023-38633**
-  bypassed); **librsvg pinned ≥ 2.56.3** with a §6.1.3 version assertion. Owner: §3.5.5 /
-  §0.11 T9b / §6.1.3 / images.md.
+- **librsvg LFR primary control = load via `rsvg::Loader` with NO `base_file`/base URL**
+  (`read_stream`/`from_data` without a base; no base URL ⇒ librsvg refuses all local
+  `href`/XInclude by construction); image-worker calls librsvg directly (libvips `svgload`
+  has no external-resource toggle). **No base-URL confinement** — supplying any base URL is
+  what RE-ENABLES the CVE-2023-38633-class surface, so the defence is the *absence* of a base
+  URL. **librsvg pinned ≥ 2.56.3** (belt-and-suspenders, not load-bearing for v1) with a
+  §6.1.3 version assertion + a §6.1.3 API assertion that the pinned crate exposes the
+  no-`base_file` path. Owner: §3.5.5 / §0.11 T9b / §6.1.3 / images.md.
 - **New DoD rows + property tests** — §6.10 row 21 (portable/no-system-pollution, Lane-B
   Procmon/strace post-launch assertion) + row 22 (≤400 MB compressed artifact gate, §6.7.2
   step); §6.4.2 macOS staged-source-copy crash-residue case; Xvfb `-nolisten tcp` in the
@@ -708,17 +778,20 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **to-GIF option scope** (trim: hard-cap / Basic start+duration / Advanced) and
   **default dither** (bayer-vs-sierra2_4a; bayer is the v1 default). Owner:
   cross-category [OPEN-D]/[OPEN-E].
-- **Video HEVC-source default** (remux-verbatim vs re-encode-to-H.264; leaning
-  re-encode default + remux as an Advanced "keep original quality"), **auto-
-  deinterlace default** (yadif on for flagged-interlaced), and **MOV-as-target
+- **Video HEVC-source default `[DECIDED]`** — re-encode HEVC→H.264 by default (honours
+  the SSOT mov→mp4 "plays everywhere" usability-floor; the §6.10 row-7 no-required-choices
+  gate can verify it), with verbatim remux offered as an Advanced "keep original quality
+  (H.265)" toggle; same disposition for AV1-in-MP4. Still genuinely open on video.md:
+  **auto-deinterlace default** (yadif on for flagged-interlaced) and **MOV-as-target
   demand** — validate in §6.6. Owner: video.md.
 - **Spreadsheets multi-sheet → CSV sheet selection** (active/first/picker; lean
   picker→active) and **XLSX default CSV-vs-PDF** — validate in §6.6. Owner:
   spreadsheets.md.
 - **Images defaults to confirm vs corpus**: GPS/location-EXIF strip-vs-preserve;
   APNG-output vs first-frame-collapse (lean collapse); ICO non-square pad-vs-crop
-  (lean pad); default Q values (JPG 82 / WEBP 80 / HEIC&AVIF 60); x265 `preset`
-  slow-vs-medium for HEIC. Owner: images.md.
+  (lean pad); default Q values (JPG 82 / WEBP 80 / HEIC&AVIF 60); **`heifsave effort`
+  (integer 0–9, libvips param — NOT an x265 `preset` string) default `5`, lower-vs-keep
+  for HEIC batch speed**. Owner: images.md.
 - **OGG/OPUS cover-art round-trip** — cover art for OGG/OPUS is a **FLAC PICTURE
   metadata block** (`-map_metadata 0`), not a video stream (`-map 0:v? -c:v copy` is
   MP3/M4A/FLAC only). Verify the round-trip on the §6.4 corpus; if unreliable, move
@@ -760,9 +833,13 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   §2.12.4 (raised by §1.2). *(§2.12.4 already DECIDED this; moved here off `[OPEN]`.)*
 
 ### Genuinely still open `[OPEN]` (owner-level, not yet resolvable)
-- **None at the owner level after the consolidation pass.** All prior `[OPEN]` items are
-  now `[DECIDED]` or `[DEFER: corpus]` (above). The remaining unknowns are **empirical
-  calibration only** (`[DEFER: corpus/build]` — resource-budget digits, the ≤400 MB
-  compressed ceiling vs full-CJK+pandoc upper bound, CJK font breadth, the per-OS
-  privilege-drop profile contents) — design-decided, awaiting a measured number or a
-  real-world validation, not an owner-level design call.
+- **None at the owner level after this round.** The items the prior pass's "None open"
+  claim had actually still left open — **NSIS-vs-portable (`[OPEN-6.1a]`)**, **HEVC/H.265
+  MOV→MP4 default**, **§1.6 defaults registry (`[REC]`)** — are now explicitly `[DECIDED]`
+  (this round, above), so the claim is now true rather than aspirational. The remaining
+  unknowns are **empirical calibration only** (`[DEFER: corpus/build]` — resource-budget
+  digits, the ≤400 MB compressed ceiling vs full-CJK+pandoc upper bound, CJK font breadth,
+  the per-OS privilege-drop profile contents, the bundled libvips/libheif HEVC-path `effort`
+  honour, the §2.1 publish-primitive availability spike incl. the FAT/exFAT detection) —
+  design-decided, awaiting a measured number or a real-world validation, not an owner-level
+  design call.

@@ -153,7 +153,7 @@ This is the principal portability risk and it interacts hard with *no-network*
 
 | OS | WebView runtime | Risk | Disposition |
 |----|-----------------|------|-------------|
-| Windows | **WebView2** (Chromium/Edge) | May be **absent or old** on older Windows; the standard Tauri remedy is the WebView2 **bootstrapper/installer**, but *that downloads at install time* — forbidden by *no-network / no-installation* | **Recommend: rely on the OS, require a present WebView2; do NOT download a runtime in v1.** Windows 11 ships WebView2 by default; Windows 10 has shipped it via Edge/Windows Update for years. **Honest failure mode `[DECIDED]`:** when WebView2 is **absent**, the WebView2 loader fails **before the Rust core runs** — the window flashes and closes and the core **cannot** present a §2.13/§7.2 in-app fault (tauri#12030; there is no built-in detection hook on the portable path). So the "fail clearly" substitute for the **canonical portable artifact (§6.1.2)** is a **§6.2.4 download-page WebView2 prerequisite note**, **not** a runtime dialog — the unconditional "never a silent blank window" promise does **not** hold for the portable launch. `bundle.windows.minimumWebview2Version` is **installer-only** (NSIS/WiX bootstrapper) — it is **inert for the portable artifact** and is scoped to the **secondary NSIS variant**, where the bootstrapper *can* enforce/install the floor. A *too-old* (present but below floor) WebView2 surfaces via the NSIS minimum-version check on that variant; on the portable path the practical floor is the §0.3.1 supported-OS floor (Win10 1809+ ships a recent-enough Evergreen runtime). (Stronger options recorded, not v1: make the WebView2-guaranteeing download the **NSIS per-user installer with bootstrapper**, and/or **bundle a fixed-version WebView2 runtime beside the exe** — a bundled runtime is not a runtime *download*, so no-network holds, at an artifact-size cost.) |
+| Windows | **WebView2** (Chromium/Edge) | May be **absent or old** on older Windows; the standard Tauri remedy is the WebView2 **bootstrapper/installer**, but *that downloads at install time* — forbidden by *no-network / no-installation* | **Recommend: rely on the OS, require a present WebView2; do NOT download a runtime in v1.** Windows 11 ships WebView2 by default; Windows 10 has shipped it via Edge/Windows Update for years. **Honest failure mode `[DECIDED]`:** when WebView2 is **absent**, the WebView2 loader fails **before the Rust core runs** — the window flashes and closes and the core **cannot** present a §2.13/§7.2 in-app fault (tauri#12030; there is no built-in detection hook on the portable path). So the "fail clearly" substitute for the **canonical portable artifact (§6.1.2)** is a **§6.2.4 download-page WebView2 prerequisite note**, **not** a runtime dialog — the unconditional "never a silent blank window" promise does **not** hold for the portable launch. `bundle.windows.minimumWebview2Version` is **installer-only** (NSIS/WiX bootstrapper) — it is **inert for the portable artifact**, and since **NSIS is NOT shipped in v1** (§6.1.2 `[DECIDED-6.1a]` — the portable `.zip` is the only v1 Windows artifact) this floor-enforcement mechanism is **not present in v1 at all**. On the portable path the practical floor is the §0.3.1 supported-OS floor (Win10 1809+ ships a recent-enough Evergreen runtime), surfaced honestly via the §6.2.4 download-page prerequisite note. (Stronger options recorded, not v1: a future post-v1 **NSIS per-user installer with bootstrapper** could enforce/install the floor, and/or **bundle a fixed-version WebView2 runtime beside the exe** — a bundled runtime is not a runtime *download*, so no-network holds, at an artifact-size cost.) |
 | macOS | **WKWebView** (system Safari/WebKit) | Tied to the OS version; no separate install | Pinned by `bundle.macOS.minimumSystemVersion`. |
 | Linux | **WebKitGTK** (`libwebkit2gtk-4.1`) | **Distro drift** — version varies widely; the portable AppImage must carry/locate a compatible WebKitGTK | Bundled/located by the AppImage packaging (§6.1); a missing/incompatible WebKitGTK is a §7.2 startup fault with a plain message. |
 
@@ -209,8 +209,12 @@ ripples to §01, §05, §0.4.5 codegen, and §06's drift check.
   cross-run leakage.
 - **Error shape** = every command returns `Result<T, IpcError>` where `IpcError`
   is a `serde`-serialised enum (§0.4 error shape below). No command ever panics
-  across the boundary (panics are caught at the worker boundary — §2.13 — and
-  surfaced as an `IpcError`/failure outcome).
+  across the boundary: the **convert** loop is caught at the per-item worker boundary
+  (§2.13.2) and the **intake/detection** path (C1 `ingest_paths` / C2a
+  `pick_for_intake` — the §1.1 walk + §1.2 detection, the first code to touch untrusted
+  bytes) is caught at its own per-path + whole-walk `catch_unwind` boundary (§2.13.2
+  "Intake/detection panic boundary"); both surface as a calm `IpcError`/failure outcome,
+  never a blank window.
 - **Cancellation** = a process-wide cancellation primitive keyed by `RunId`
   (§0.4 cancellation token). The mechanism that actually kills an in-flight engine
   is owned by **§1.7** (process-group kill; Windows has no SIGTERM); this section
@@ -305,11 +309,11 @@ C6). A `#[serde(tag = "type", content = "data")]` enum, ordered delivery:
 
 | Variant | Payload | Meaning |
 |---|---|---|
-| `RunStarted` | `{ runId, totalItems, willReencode: bool }` | Batch accepted; queue built. `willReencode` is a **conservative source-container → target-pair worst-case** flag (**re-encode *possible* ⇒ `true`**), **NOT a header/inner-codec inspection** — `RunStarted` is emitted right after C6, **before any `ffprobe`** (§1.7/§1.10 defer `ffprobe` to convert-time), so the inner codecs of MKV/MOV are **unknown** at emission and the flag is decided purely from the (source-container, target) pair (§2.9.2): `true` ⇒ at least one item *may* re-encode → video shows the worst-case lossy note ("may be re-encoded"). A pair whose only possible path is remux-verbatim is `false`; any pair that *could* re-encode is `true`. **Emission rule `[DECIDED]`:** for non-video / non-applicable batches the core emits **`willReencode: false`** (never omitted) so the field always carries a definite value. **The Rust struct field is non-optional `bool` (line below), so the GENERATED `bindings.ts` type is non-optional `willReencode: boolean`** — there is no third `undefined` state. (Hand-written docs/comments elsewhere sometimes show `willReencode?` purely as a decode-tolerance convenience — consumers still treat any absent/`undefined` as `false`, §5.8 — but the generated binding is non-optional.) The exact per-item disposition is resolved at convert-time (§3.5); the summary (§1.12) reflects the actual outcome. |
+| `RunStarted` | `{ runId, totalItems, willReencode: bool }` | Batch accepted; queue built. **`totalItems` = QUEUED (eligible) items only** (= `CollectedSet::Single.members.len()`), **excluding pre-flight-skipped items** (§1.1/§1.3 — they never enter the queue); it is the `BatchProgress.total` denominator, so a skipped item never holds the bar below 100% (skips reconciled only at the §1.12 Summary) `[DECIDED]`. `willReencode` is a **conservative source-container → target-pair worst-case** flag (**re-encode *possible* ⇒ `true`**), **NOT a header/inner-codec inspection** — `RunStarted` is emitted right after C6, **before any `ffprobe`** (§1.7/§1.10 defer `ffprobe` to convert-time), so the inner codecs of MKV/MOV are **unknown** at emission and the flag is decided purely from the (source-container, target) pair (§2.9.2): `true` ⇒ at least one item *may* re-encode → video shows the worst-case lossy note ("may be re-encoded"). A pair whose only possible path is remux-verbatim is `false`; any pair that *could* re-encode is `true`. **Emission rule `[DECIDED]`:** for non-video / non-applicable batches the core emits **`willReencode: false`** (never omitted) so the field always carries a definite value. **The Rust struct field is non-optional `bool` (line below), so the GENERATED `bindings.ts` type is non-optional `willReencode: boolean`** — there is no third `undefined` state. (Hand-written docs/comments elsewhere sometimes show `willReencode?` purely as a decode-tolerance convenience — consumers still treat any absent/`undefined` as `false`, §5.8 — but the generated binding is non-optional.) The exact per-item disposition is resolved at convert-time (§3.5); the summary (§1.12) reflects the actual outcome. |
 | `ItemStarted` | `{ runId, itemId, sourcePath, target }` | An item left `Pending` for `Running` (§1.9). |
 | `ItemProgress` | `{ runId, itemId, fraction: Option<f32> /* 0.0..1.0; None only where truly indeterminate (LibreOffice, §1.11) */, stage: JobStage }` | **Real per-item progress** (SSOT *not an indeterminate spinner*). Denominator is engine-specific (e.g. video = source duration from `ffprobe`, §3.5/video.md). `stage` is the §0.6/§1.11 `JobStage` (`Spawning \| Decoding \| Encoding \| Writing`); for the `None`-fraction LibreOffice case the frontend synthesises a staged determinate-looking bar from `stage` transitions (§1.11/§5.3). |
 | `ItemFinished` | `{ runId, itemId, outcome: ItemOutcome }` | Terminal per item: `Succeeded { outputPath } \| Failed { error: IpcError } \| Skipped { reason } \| Cancelled`. **Pre-flight-skip emission policy `[DECIDED]`:** pre-flight-skipped items (§1.1/§1.3 — never entered the queue, §1.9) are **NOT** emitted as live `ItemFinished{Skipped}` Channel events; they appear **only** in the terminal `RunFinished → RunResult.items` projection (§1.12). The `ItemOutcome::Skipped` variant is **reserved for that terminal-projection path** (it is not dead wire code — it carries the projected pre-flight skips and any mid-run cooperative skip), so the orchestrator emits **no live `ItemStarted`/`ItemFinished{Skipped}`** for a freeze-time skip; the ProgressList shows skipped rows only once the run reaches `Summary`. (Chosen over a post-`RunStarted` batch flush: pre-flight skips have no queue presence and no per-item work, so surfacing them once, terminally, is simpler and matches §1.9's "never enter the queue".) |
-| `BatchProgress` | `{ runId, done, total }` | Aggregate queue progress for the batch bar (§1.11). |
+| `BatchProgress` | `{ runId, done, total }` | Aggregate queue progress for the batch bar (§1.11). **Denominator = QUEUED (eligible) items only `[DECIDED]`:** `total` counts only items that entered the queue (= `CollectedSet::Single.members.len()`), **excluding** pre-flight-skipped items (§1.1/§1.3 — they never enter the queue, emit no live `ItemStarted`/`ItemFinished`, and §1.11's numerator excludes them). If `total` counted dropped-but-skipped items the bar could never reach 100%. Skips are reconciled **only** at the §1.12 Summary ("N converted, M skipped"). `total == RunStarted.totalItems`. |
 | `RunFinished` | `RunResult` | Terminal for the run; mirrors C8. Carries the full summary incl. residue warnings (§2.6). |
 
 **The complete enum + payload structs (the concrete type `collect_events![]` (§0.4.5)
@@ -329,6 +333,9 @@ pub enum ConversionEvent {
 
 #[derive(Clone, Serialize, specta::Type)] #[serde(rename_all = "camelCase")]
 pub struct RunStarted   { pub run_id: RunId, pub total_items: u32, pub will_reencode: bool }
+// total_items = QUEUED (eligible) items only (= CollectedSet::Single.members.len()),
+// NOT including pre-flight-skipped items (§1.1/§1.3, which never enter the queue). This is
+// the BatchProgress.total denominator; skips reconciled only at the §1.12 Summary. [DECIDED]
 #[derive(Clone, Serialize, specta::Type)] #[serde(rename_all = "camelCase")]
 pub struct ItemStarted  { pub run_id: RunId, pub item_id: ItemId, pub source_path: PathBuf, pub target: TargetId }
 #[derive(Clone, Serialize, specta::Type)] #[serde(rename_all = "camelCase")]
@@ -611,6 +618,18 @@ pub enum CollectedSet {
                                      //   its ItemId from the SINGLE id space over ALL dropped items
                                      //   (eligible + skipped); `items` is the ELIGIBLE filtered view
                                      //   — NOT re-indexed from 0 (§0.6 invariant 6).
+                                     // raw_path SCOPE `[DECIDED]`: DroppedItem.raw_path IS on this
+                                     //   wire type and reaches the WebView — but DISPLAY-ONLY (the
+                                     //   §5.3 BatchSummary derives "e.g. holiday.jpg, cat.jpg"
+                                     //   sample basenames from the first few items[].raw_path). It
+                                     //   is NEVER re-submitted by the WebView as intake: the only
+                                     //   intake funnels are C1 (paths the native drop/launch gave)
+                                     //   and C2a (paths the Rust-opened picker gave), both
+                                     //   Rust-side. The C2a "no raw FS path reaches the WebView"
+                                     //   claim is scoped to the INTAKE-PICKER funnel (the WebView
+                                     //   never SUPPLIES a path to re-ingest); a frozen set's
+                                     //   raw_path travelling back for display does not let the
+                                     //   WebView feed an arbitrary path into a conversion.
         count: usize,                // shown in the confirm gate (§1.4) — == items.len()
         skipped: Vec<SkippedItem>,   // ineligibles dropped alongside the eligible set — the
                                      //   id-DISJOINT view over the same id space (their ItemIds
@@ -749,7 +768,7 @@ pub enum JobStage { Spawning, Decoding, Encoding, Writing }
 // ─── Engine descriptor (the seam; §3.2 owns the registry/selection) ─────────
 // The stable engine discriminant used in logging/SBOM/registry (§3.2 trait Engine
 // `id()`, §3.7 SBOM rows). One variant per bundled engine; Ghostscript NOT shipped v1.
-pub enum EngineId { FFmpeg, LibreOffice, Poppler, Pandoc, ImageMagick, ImageCore, NativeCsvTsv }
+pub enum EngineId { FFmpeg, FFprobe, LibreOffice, Poppler, Pandoc, ImageMagick, ImageCore, NativeCsvTsv }
 // NOTE — `ImageMagick` is a **bundled delegate inside the image-worker** (libvips
 // `magicksave`/`magickload` for BMP+ICO, §3.5.5), NOT a registry-eligible engine: no
 // (source,target) pair maps to `EngineId::ImageMagick` (BMP/ICO route through
@@ -757,6 +776,15 @@ pub enum EngineId { FFmpeg, LibreOffice, Poppler, Pandoc, ImageMagick, ImageCore
 // registry entry**, and there is **no `trait Engine` impl** for it. Its `EngineId`
 // exists ONLY for SBOM/NOTICE attribution (§3.7) and the §7.2 EngineHealth
 // presence-check. (Prevents a spurious `Engine` impl / registry row.)
+// NOTE — `FFprobe` mirrors that same non-trait pattern: it is the video two-phase
+// PROBE binary (`binaries/ffprobe`, §3.3.1), spawned as the §3.5.1 probe sub-invocation
+// of the FFmpeg engine — NOT a registry-eligible engine in its own right (no
+// (source,target) pair maps to it; the FFmpeg `trait Engine` impl owns the pair and its
+// `plan()` returns the ffprobe `Invocation`). It has **no `EngineProgram`**, **no §3.2.3
+// registry entry**, and **no `trait Engine` impl**; its `EngineId` exists so the
+// sidecar-path resolver can locate `binaries/ffprobe` (distinct from `binaries/ffmpeg`,
+// §3.3.1), for SBOM/NOTICE attribution (§3.7), and for the §7.2 EngineHealth
+// presence-check. (Prevents a spurious `Engine` impl / registry row for the probe.)
 // A capability descriptor, NOT a process and NOT the §3.2 `trait Engine` (the
 // registry seam). The name is `EngineDescriptor` precisely to avoid colliding with
 // that trait — §0.4/§0.6/§3.2/§3.5/§6.4/§07 refer to this domain type by this name.
@@ -792,15 +820,27 @@ pub struct OutputPlan {              // computed by §1.8, consumed by §2.1/§2
                                      //   sibling DOTFILE here, NOT a per-run scratch SUBDIR. Same
                                      //   volume as final_dir. (Kind-2 engine-working scratch root,
                                      //   §2.14.2, may be on another volume and is NOT in OutputPlan.)
-    // NOTE: cross-volume is NOT pre-planned in v1 `[DECIDED]`. `fs_guard::atomic_publish`
-    // tries the direct intra-volume publish and falls back to copy-into-dest-volume
-    // ONLY reactively on EXDEV / cross-device failure (§2.14.3). There is therefore
-    // no `crosses_volume` field — the plan never predicts it; the publish detects it.
+    // NOTE: cross-volume is NOT pre-planned in v1 `[DECIDED]` — meaning ONLY that there
+    // is no stored `crosses_volume` field on OutputPlan; the plan never PREDICTS a
+    // cross-volume publish. The PUBLISH path is reactive: `fs_guard::atomic_publish`
+    // tries the direct intra-volume publish and falls back to copy-into-dest-volume ONLY
+    // on EXDEV / cross-device failure (§2.14.3). (This near-never fires on the common
+    // path: §2.1.1 step 1 / §2.14.1 place the publish temp as a SIBLING of `final` on
+    // `final`'s own volume by construction, so the publish rename is intra-volume.) The
+    // genuinely cross-volume case is the ENGINE-SCRATCH placement, which IS a pre-engine
+    // decision (where the engine is told to write when a same-volume sibling temp cannot
+    // be created) — but that placement is owned by §2.14.3 at run time, not stored as a
+    // plan field. So "not pre-planned" = no plan field, NOT "no pre-engine decision".
     // NOTE: no `final_path`/`temp_path` — the numbered final name is produced at
     // write time (§2.1 exclusive create_new loop), never stored in the plan.
 }
 
-pub enum DivertReason { Unwritable, Ephemeral }  // §2.7.2 classification
+pub enum DivertReason { Unwritable, Ephemeral, NoAtomicPublish }  // §2.7.2 classification
+// NoAtomicPublish (Unix-only): destination filesystem accepts a create but offers NO
+// create-only/atomic no-clobber publish primitive — neither RENAME_NOREPLACE-class
+// no-replace rename NOR hardlinks (FAT/exFAT-class, the canonical portable-USB case,
+// §2.14.2). Diverted to a hardlink-capable system-disk target (§2.7.3) so the full §2.1
+// publish chain holds. Windows is unaffected (MoveFileExW create-only works on FAT/exFAT).
 
 // ─── Command return DTOs (the wire shapes C4/C5/C6 return — §0.4.1) ──────────
 pub struct OutputPlanPreview {       // C4 plan_output → drives the "will save to…" line
@@ -922,9 +962,13 @@ pub enum ItemOutcome {
    on the same filesystem** (§2.14) so the §2.1 publish is a true intra-volume atomic
    rename; the
    exact numbered final name is resolved at write time, never stored. When the only
-   obtainable scratch spans volumes, `fs_guard::atomic_publish` detects this
-   **reactively on EXDEV / cross-device failure** (not via a pre-planned flag) and
-   runs the §2.14.3 copy→fsync→exclusive-rename-within-destination fallback.
+   obtainable scratch spans volumes, the **PUBLISH** detects this **reactively on EXDEV /
+   cross-device failure** (`fs_guard::atomic_publish`, not via a pre-planned flag) and
+   runs the §2.14.3 copy→fsync→exclusive-rename-within-destination fallback. "Not
+   pre-planned" means **no stored `crosses_volume` field** — it does NOT mean there is no
+   pre-engine decision: the choice of **where the engine writes** when a same-volume
+   sibling temp cannot be created IS made before the engine runs (the engine is pointed at
+   an other-volume scratch), owned by §2.14.3 at run time, not as an `OutputPlan` field.
 6. **`ItemId` is stable within a `RunId`** so progress/finished events and the
    summary all address the same item. **`ItemId` is assigned at the §1.1 freeze**
    (collected-set) as the stable index of each item in **the de-duplicated frozen `Vec`
@@ -1389,14 +1433,14 @@ The `SECURITY` policy (§6.8) references this map.
 | T1 | **Untrusted decoder input** | A crafted/corrupt/malicious file (image bomb, malformed MP4, hostile SVG, macro-laden DOCX) exploits or hangs a decoder | **§2.12** decoder isolation (separate subprocess for **every** engine including the image core — the image-worker process `[DECIDED]` §0.7/§3.5.5; contained crash/hang/exploit fails one item) + **§1.7** invocation lifecycle (timeout/kill) + **§0.9** pool bounds + **§1.2** detection security note (first code on untrusted bytes). **v1 ships no rely-on-OS decode path**; any future rely-on-OS untrusted-decode must pass the **§3.4.4** re-evaluation gate before counting as T1-covered. | covered |
 | T2 | **Malicious / compromised WebView content** | XSS-style injection or a supply-chained frontend dep tries to read the disk or call out | **§0.10** capability allowlist (no WebView `fs`, no network) + CSP (no remote origins, `object-src 'none'`) | covered |
 | T2a | **WebView steers writes to an attacker-chosen path** | A compromised WebView supplies an arbitrary `DestinationChoice::ChosenRoot(PathBuf)` to C5/C6 (the destination is WebView-held, with no server-side store — §0.4.1 C6) to write outputs somewhere unexpected | **§2.1** writes are always **non-destructive creates** (never overwrite) + **§2.3.3** write-target link-safety (a chosen destination that resolves onto / inside a frozen source is rejected and diverted) + **§2.7** divert rules. A chosen destination is honoured only as a *write* location: it **cannot harm an original** (no-clobber + link-safe) and **cannot read anything** — so an arbitrary writable ChosenRoot is bounded harm (a converted copy lands in an odd-but-writable folder), accepted in v1. The C2b destination picker is Rust-opened, but C5/C6 still accept a WebView-supplied `ChosenRoot` string; the no-harm machinery — not path provenance — is the bound. | covered |
-| T3 | **Bundled-binary supply chain** | A tampered/backdoored engine binary ships in the build | **§3.8** engine pinning + **§6.2** integrity hashes + **§6.3** SBOM (every binary enumerated, verifiable) | covered |
+| T3 | **Bundled-binary supply chain** | A tampered/backdoored engine binary ships in the build | **§3.8** engine pinning + **§6.2** integrity hashes + **§6.3** SBOM (every binary enumerated, verifiable). **Build-time** the pinned-checksum + SBOM gate catches a swapped engine; the trust anchor is the published **SHA256SUMS + minisign signature verified BEFORE first run (§6.2)**. **Runtime caveat:** the §7.2.3 startup check verifies engines against a hash manifest shipped **inside the same bundle**, so it detects **corruption/integrity** (truncation, AV-gutting, partial extract) but provides **no runtime tamper-resistance** — an attacker who can replace a binary can replace the in-bundle manifest too; runtime tamper detection is **out of scope** (unsigned portable build, SSOT). | covered (corruption/integrity only; runtime has no tamper-resistance — trust anchor is the §6.2 SHA256SUMS + minisign verified before first run) |
 | T4 | **Open-file launch of a fresh artifact** | C9 "open file" hands a just-written, possibly-still-untrusted output to an external app | **§7.7** open-file safety (reveal-in-folder, no auto-open, the artifact is *our* output not the untrusted source) + **§7.7.3** Rust-side `RunResult`-membership check (only a path that is a member of the current run's results may be opened). (Note: §0.10/§7.7.2 deliberately grant **no** `opener:*` path scope — beside-source outputs legitimately write outside `$DOWNLOAD`/`$DOCUMENT` — so the gate is the membership check, not a capability path-scope.) | covered |
 | T5 | **Core panic / app fault** | A Rust panic, WebView load failure, missing/corrupt engine at startup, damaged bundle | **§2.13** app-level fault model (`catch_unwind` worker boundary, no-stack-trace surfacing) + **§7.2** startup faults + **§0.3.1** WebView-absent handling | covered |
 | T6 | **Copyleft aggregation boundary** | Accidentally linking a GPL/LGPL engine into the MIT core (licence contamination) | **§3.6** copyleft isolation (separate invoked binaries, aggregation not linking) — architecturally enforced by the §0.3 subprocess model + §0.7 (engines are sidecars, never linked) | covered |
 | T7 | **Path / link redirection** | A symlink/junction/alias makes an output resolve onto a source, or a TOCTOU race redirects the final write | **§2.3** resolved-identity & link safety + **§2.1** exclusive create-new-or-fail (the no-clobber guarantee is evaluated on the resolved real file) | covered |
 | T8 | **Self-feeding / batch expansion** | Outputs written into a watched source folder get re-ingested, or a second instance's files appear mid-run | **§2.4** frozen source set + **§7.1** instance/run identity (per-run temp ownership, no cross-instance ingestion) | covered |
 | T9a | **ConvertIA's own code exfiltrates user files** | The app itself (Rust core or WebView) tries to upload originals/results | **Structurally covered:** ConvertIA's own code **opens no socket** — no HTTP/updater plugin on the §0.10 allowlist, no `connect-src` to remote origins (CSP), `form-action 'self'`, no phone-home (**§7.6**). The only network is the user-initiated C10 open-project-page shell-out. Proven by the **§2.11.4** packet-monitor release gate (blocks release on any outbound packet) + **§2.11** offline invariant. | covered |
-| T9b | **A bundled engine reaches out on hostile input** | A crafted dropped file makes a bundled engine (FFmpeg HLS/DASH/concat, pandoc include, LibreOffice remote/OLE link, **a crafted SVG's `<image href>`/XInclude**) open an outbound socket or read an out-of-input file at convert time (SSRF/LFR; e.g. CVE-2023-6605, librsvg CVE-2023-38633) | **Load-bearing argv/build controls (NOT the degradable OS sandbox), BOTH halves:** **§3.5.1** FFmpeg `-protocol_whitelist file,pipe` + network-disabled build (SSRF half) **and** concat `-safe 1` (never `-safe 0`, rejects absolute/`..` paths) + a curated demuxer set without the playlist/manifest dereferencing demuxers (absolute-file LFR half) — both asserted at **§6.1.3** (`ffmpeg -protocols` + `-demuxers`); **§3.5.4** pandoc `--sandbox`; **§3.5.2** LibreOffice profile-hardening (no link/OLE auto-update); **§3.5.5** SVG/librsvg control — stage the SVG into per-job scratch on ALL platforms + base-URL-confine href/XInclude resolution to scratch + refuse external resource loads (closes the SVG absolute-file LFR half, the librsvg analogue of the FFmpeg LFR control). Backed by the **§6.4.2** adversarial-egress / network-trigger case (zero egress AND no out-of-input file read on a network-trigger input), the **§6.1.3** SVG external-`<image href>` corpus assertion (no out-of-input bytes embedded), and proven again by the **§2.11.4** packet-monitor gate. **Defence-in-depth only (no longer load-bearing for either half):** **§2.12.3** engine-side OS network/FS restriction — the **best-effort privilege-drop tier** `[DECIDED]` (present where it works without install-time elevation, **degrades silently to the cheap tier** otherwise), so it is **not** the structural guarantee; the per-engine argv/build controls are. | covered |
+| T9b | **A bundled engine reaches out on hostile input** | A crafted dropped file makes a bundled engine (FFmpeg HLS/DASH/concat, pandoc include, LibreOffice remote/OLE link, **a crafted SVG's `<image href>`/XInclude**) open an outbound socket or read an out-of-input file at convert time (SSRF/LFR; e.g. CVE-2023-6605, librsvg CVE-2023-38633) | **Load-bearing argv/build controls (NOT the degradable OS sandbox), BOTH halves:** **§3.5.1** FFmpeg `-protocol_whitelist file,pipe` + network-disabled build (SSRF half) **and** concat `-safe 1` (never `-safe 0`, rejects absolute/`..` paths) + a curated demuxer set without the playlist/manifest dereferencing demuxers (absolute-file LFR half) — both asserted at **§6.1.3** (`ffmpeg -protocols` + `-demuxers`); **§3.5.4** pandoc `--sandbox`; **§3.5.2** LibreOffice profile-hardening (no link/OLE auto-update); **§3.5.5** SVG/librsvg control — load the SVG via `rsvg::Loader` with **NO base URL/`base_file`** so librsvg refuses **all** local `<image href>`/XInclude resolution by construction (no base URL = nothing to resolve against) and remote schemes regardless; calls librsvg directly (libvips `svgload` has no external-resource toggle); **no base-URL confinement is used** (supplying any base URL is what re-enables the CVE-2023-38633-class surface). Closes the SVG absolute-file LFR half, the librsvg analogue of the FFmpeg LFR control. Backed by the **§6.4.2** adversarial-egress / network-trigger case (zero egress AND no out-of-input file read on a network-trigger input), the **§6.1.3** SVG external-`<image href>` corpus assertion (no out-of-input bytes embedded), and proven again by the **§2.11.4** packet-monitor gate. **Defence-in-depth only (no longer load-bearing for either half):** **§2.12.3** engine-side OS network/FS restriction — the **best-effort privilege-drop tier** `[DECIDED]` (present where it works without install-time elevation, **degrades silently to the cheap tier** otherwise), so it is **not** the structural guarantee; the per-engine argv/build controls are. | covered |
 | T10 | **Resource exhaustion / DoS-by-input** | A tiny SVG asked to render at 50 000 px, a 90-min→GIF, a thousands-file batch exhausting RAM/disk/handles | **§1.10** resource pre-flight & budgets + **§0.9** pool/handle bounds + the to-GIF guardrail (cross-category.md) | covered |
 
 **No orphan classes.** Every box above points at a section that owns the

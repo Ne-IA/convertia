@@ -442,7 +442,10 @@ path stay *drop → (PDF already highlighted) → convert* in two clicks (Princi
   **baseline open font set** (a Liberation-class metric-compatible family covering
   the common Arial/Times/Courier metrics, plus broad Unicode coverage incl. CJK
   and RTL) with the LibreOffice sidecar so substitution is graceful and non-Latin
-  text never tofu's. Exact bundled font list → `[OPEN]` for §3.9 (size budget).
+  text never tofu's. **The bundled font set is `[DECIDED]` at §3.9.3 — Liberation +
+  Carlito + Caladea + a curated Noto CJK/RTL subset** (the §6.4.5 corpus font floor the
+  CJK/RTL fidelity gate tests against); only the **CJK breadth** remains `[DEFER: size]`
+  (which Noto CJK weights/scripts, a size-budget question, not a design one).
 
 ### Encoding & content fidelity (SSOT *Content fidelity*)
 

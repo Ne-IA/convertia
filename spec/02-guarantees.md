@@ -157,9 +157,23 @@ check. `[DECIDED]`
       portable POSIX form, used when the single-call no-replace primitive is unavailable
       or the filesystem does not support the flag (Linux `EINVAL`; macOS filesystems
       without `VOL_CAP_INT_RENAME_EXCL`). It fails `EEXIST` if `final` exists.
+    - **Third fallback — neither no-replace rename NOR hardlinks (FAT/exFAT-class)
+      `[DECIDED]`.** On a destination filesystem that supports **neither** the single-call
+      no-replace primitive **nor** hardlinks — the canonical case being **FAT32/exFAT** (the
+      portable-USB destination of §2.14.2) — the `link`+`unlink` fallback itself **fails**
+      (`link()` → `EPERM`/`ENOTSUP`, since FAT/exFAT have no hardlink support). There is
+      therefore **no mechanised create-only / atomic no-clobber publish primitive on Unix**
+      for such a destination. ConvertIA does **not** silently weaken the no-clobber/atomic
+      guarantee there: such a destination is **detected up front at §2.7.2 `location_status`
+      time and treated as a per-location DIVERT trigger** ("cannot guarantee atomic
+      no-clobber here" → divert to the hardlink-capable system-disk target, §2.7.3), so the
+      full §2.1 publish chain runs on a volume that supports it. (This is **Unix-only**:
+      Windows' `MoveFileExW`-without-`MOVEFILE_REPLACE_EXISTING` is a true create-only move
+      on FAT/exFAT too, so a Windows FAT/exFAT destination keeps the guarantee in place and
+      is **not** diverted, §2.7.2.)
 
-    Each gives the no-clobber guarantee **and** the atomic publish in one step, with no
-    placeholder. On `EEXIST` → re-pick the next §2.2 variant.
+    Each of the first two gives the no-clobber guarantee **and** the atomic publish in one
+    step, with no placeholder. On `EEXIST` → re-pick the next §2.2 variant.
     - **Link-form success-window residual `[DECIDED]`.** Unlike the single-call primitive
       (Linux `renameat2(RENAME_NOREPLACE)` / macOS `renameatx_np(RENAME_EXCL)`, which
       consumes `tmp` atomically), the `link`+`unlink` fallback has a brief window
@@ -223,8 +237,11 @@ check. `[DECIDED]`
 >
 > `[DEFER: primitive-confirmation spike, not a design question]` (owner §2.1):
 > confirm `renameat2(RENAME_NOREPLACE)` (Linux) / `renameatx_np(RENAME_EXCL)` (macOS)
-> availability across the §0.3.1 floor, with the `link`+`unlink` fallback. **The
-> fallback is chosen at runtime PER DESTINATION, not statically `[DECIDED]`:**
+> availability across the §0.3.1 floor, with the `link`+`unlink` fallback **and the
+> third fallback (FAT/exFAT-class: neither no-replace rename nor hardlinks → §2.7.2
+> divert)**. The spike also confirms the §2.7.2 FAT/exFAT-class detection (filesystem-type
+> query and/or one-shot `EINVAL`-then-`EPERM` capability probe). **The fallback is chosen at
+> runtime PER DESTINATION, not statically `[DECIDED]`:**
 > `renameat2(RENAME_NOREPLACE)` returns **`EINVAL` on Linux filesystems that don't
 > support the flag**, and `renameatx_np(RENAME_EXCL)` is **only honoured on macOS
 > filesystems that advertise `VOL_CAP_INT_RENAME_EXCL`** (some USB/network/FUSE mounts
@@ -957,6 +974,32 @@ For each source, §1.8 classifies its **intended** output location via
   → treated like unwritable → divert. (Reading a source from there is fine; only the
   *output* diverts.)
 - A **read-only USB / network share** surfaces as unwritable by the probe.
+- **No-atomic-publish-primitive test (FAT/exFAT and similar) `[DECIDED]`.** A
+  destination filesystem may **accept a create** (so it passes the writable probe) yet
+  offer **no mechanised create-only / atomic no-clobber publish primitive at all** — the
+  load-bearing case is **FAT32/exFAT** (the spec's canonical portable-USB destination,
+  §2.14.2). There, the §2.1.2 single-call no-replace primitive is **unavailable on both
+  OSes** (Linux `renameat2(RENAME_NOREPLACE)` → `EINVAL`; macOS exFAT does **not**
+  advertise `VOL_CAP_INT_RENAME_EXCL`) **and** the `link`+`unlink` fallback **cannot run**
+  because FAT/exFAT have **no hardlink support** (`link()` → `EPERM`/`ENOTSUP`). So neither
+  the no-clobber nor the atomic-publish half of §2.1 has an implementation there. **The
+  probe therefore additionally classifies the destination's filesystem:** when the volume
+  is detected as one lacking BOTH `RENAME_NOREPLACE`-class no-replace rename AND hardlinks
+  (FAT/exFAT-class; detected via the OS filesystem type / `statfs`-class query, or by a
+  one-shot capability probe in the probe dir — a no-replace-rename attempt that returns
+  `EINVAL`/unsupported AND a `link()` attempt that returns `EPERM`/`ENOTSUP`), it is
+  treated as **"cannot guarantee atomic no-clobber here" → a per-location DIVERT trigger**
+  (exactly like the unwritable case, carrying **`DivertReason::NoAtomicPublish`**, §0.6):
+  the item's output **diverts to the §2.7.3 target** (Downloads/Documents on the
+  hardlink-capable **system disk**), where the full §2.1 exclusive-publish chain holds. This is **Unix-only** — Windows' `MoveFileExW`-without-
+  `MOVEFILE_REPLACE_EXISTING` (§2.1.2) is a true create-only move on FAT/exFAT too, so a
+  Windows FAT/exFAT destination is **not** diverted. The §2.7.3 divert target is itself
+  re-run through `location_status` (including this new test), so a divert can never land
+  the output on another FAT/exFAT volume; if the only writable target is FAT/exFAT-class,
+  the item **fails clearly** (`WriteFailed`, §2.8) rather than silently dropping the
+  no-clobber/atomic guarantee. (Windows-FAT and any divert-impossible Unix-FAT case are the
+  only ways a FAT/exFAT destination is reached, and the former is safe by construction.)
+  Cross-ref §2.1.2 (the third-fallback case), §2.14.2 (USB canonical destination).
 
 ### 2.7.3 Divert target `[DECIDED]`
 
@@ -1371,9 +1414,12 @@ Offline is enforced **structurally**, not by policy, on two complementary halves
   a curated demuxer set without playlist/manifest dereferencing demuxers (absolute-file
   LFR), §3.5.1; pandoc `--sandbox` (§3.5.4); LibreOffice profile-hardening with no remote/
   OLE link auto-update (§3.5.2); **SVG/librsvg — BOTH halves: no remote `<image href>`
-  fetch (SSRF) AND the absolute-file LFR half closed by staging the SVG into per-job
-  scratch on ALL platforms + base-URL-confining href/XInclude resolution to scratch +
-  refusing external resource loads (§3.5.5; §6.1.3 corpus assertion)**.
+  fetch (SSRF) AND the absolute-file LFR half closed by loading the SVG via `rsvg::Loader`
+  with NO base URL/`base_file`, so librsvg refuses all local `<image href>`/XInclude
+  resolution by construction (no base URL = nothing to resolve against); calls librsvg
+  directly since libvips `svgload` has no external-resource toggle; no base-URL confinement
+  is used (any base URL is what re-enables the CVE-2023-38633-class surface) (§3.5.5; §6.1.3
+  corpus assertion)**.
   The §2.12 wrapper's sandbox profile can **additionally** deny network syscalls and
   restrict the filesystem as defence-in-depth, but it is **not** the load-bearing control
   (it degrades to the cheap tier with no network/FS deny). These are content-fidelity
@@ -1504,10 +1550,20 @@ the privilege-drop tier is best-effort, degrading silently — see the callout):
   engine is handed **only** the exact input path and the `tmp` output path (§3.5),
   not a directory it can scan.
 - **Linux (recommended v1 if feasible):** wrap the spawn in a **seccomp-bpf** filter
-  (e.g. via the `seccompiler`/`extrasafe` crate) denying network + exec + unexpected
-  syscalls, and/or **Landlock** (kernel ≥ 5.13, `landlock` crate) restricting the
-  decoder's filesystem to `{input file (ro), tmp dir (rw)}`. Network is denied so
-  the offline guarantee (§2.11) is enforced even on a hostile decoder.
+  (e.g. via the `seccompiler`/`extrasafe` crate) denying **exec + unexpected syscalls**
+  best-effort, and/or **Landlock** (kernel ≥ 5.13, `landlock` crate) restricting the
+  decoder's filesystem to `{input file (ro), tmp dir (rw)}`. **Network deny — use a
+  network namespace, NOT seccomp socket-filtering `[DECIDED]`:** seccomp-bpf is **not a
+  reliable egress block** — on some ABIs socket calls are multiplexed through
+  `socketcall` (so a single allow/deny does not cleanly gate them), `AF_INET` socket
+  creation is widely needed by benign libc paths, and seccomp **cannot inspect the
+  `sockaddr`** to distinguish loopback from egress. So for network deny the preferred
+  mechanism is a **network namespace** (`unshare --net`, loopback-only — the same
+  primitive §2.11.4 uses for the egress gate) where the portable build permits it, with
+  Landlock(FS) for the filesystem half. seccomp denies exec/unexpected syscalls as
+  defence-in-depth, **not** as the egress block. This tier is **defence-in-depth only**
+  (§0.10/§2.11.1): the load-bearing offline proof is §3.3.4 (nothing to fetch) + the
+  §2.11.4 packet gate, neither of which depends on this OS tier.
 - **macOS (recommended v1 if feasible):** run the engine under a **`sandbox-exec`
   profile** / Seatbelt SBPL restricting it to read the input + write the scratch dir,
   deny network and process-exec. (Apple deprecates `sandbox-exec` as a CLI **and
@@ -1629,6 +1685,24 @@ of poisoning the pool:
   `catch_unwind` works; `panic = "abort"` is **not** used for the app binary
   (it would turn a recoverable per-item bug into a whole-app crash). Engines are
   separate processes, so their abort behaviour is irrelevant to this.
+- **Intake/detection panic boundary (C1 `ingest_paths` / C2a `pick_for_intake`)
+  `[DECIDED]`.** The §2.13.2 per-item boundary above covers the *convert* loop, but the
+  **§1.1 walk + §1.2 detection** (the magic sniff, the `.svgz` bounded inflate, chardetng,
+  the Rust ZIP central-directory / OLE peeks — the **first** code to touch **untrusted
+  bytes**) runs **inside the C1/C2a command handler**, *before* any conversion item exists.
+  That code is therefore **also wrapped in `catch_unwind`**, at two granularities:
+  - **Per-path:** the detection of **one** path runs inside `catch_unwind`; a panic
+    decoding one file's header becomes that path's `DetectionOutcome::Uncertain` (it does
+    **not** abort the whole walk) — the walk continues to the next path.
+  - **Whole-walk:** the C1/C2a handler's outer body is itself wrapped so a panic that
+    escapes the per-path boundary (e.g. in the recursion/dedup bookkeeping) is converted
+    to a **calm `IpcError`** returned from the command (a `CollectedSet`-level failure the
+    §5.2 *Collecting* state renders as "couldn't read these files", **never a blank
+    window**), not an unwind across the Tauri command boundary.
+  This makes the §0.4.0 "no command ever panics across the boundary" claim true for the
+  **intake** path, not only the convert path. (Tauri v2 command futures do not themselves
+  guarantee a user-visible result on panic — the explicit `catch_unwind` here is the
+  mechanism, mirroring §2.13.2.)
 
 ### 2.13.3 App-level fault presentation (no trace) `[DECIDED]`
 
@@ -1775,7 +1849,11 @@ is a valid kind-2 scratch root. The kind-1 **publish temp** still lives on the
 *destination* volume per §2.14.1; when the destination is a different volume (a USB
 stick — the expected common case for a portable Linux tool), the §2.14.3 cross-volume
 fallback activates exactly as designed. No AppImage-specific code path is needed
-beyond the existing kind-1/kind-2 split.
+beyond the existing kind-1/kind-2 split. **(If that USB stick is FAT32/exFAT — the
+typical default format for a portable stick — the destination has no Unix create-only/
+atomic-publish primitive at all, so it is diverted at §2.7.2 to the hardlink-capable
+system disk rather than written beside-source; see §2.7.2 No-atomic-publish-primitive
+test and §2.1.2 third fallback.)**
 
 ### 2.14.3 Cross-volume fallback (only when same-volume can't be guaranteed) `[DECIDED]`
 
@@ -1788,7 +1866,10 @@ move-equivalent **inside** that volume:
 1. Write `tmp` in the **best same-volume location obtainable** for `final` (the
    destination dir as a sibling dotfile; if a sibling can't be created there, the
    destination dir's own parent on the same volume).
-2. If, despite this, the only available scratch is on **another** volume, perform a
+2. If, despite this, the only available scratch is on **another** volume, **the engine
+   is told to write its output to that other-volume scratch** (this is the pre-engine
+   temp-PLACEMENT decision the §0.6 invariant-5 note refers to — made before the engine
+   runs, *not* a stored `OutputPlan` field), and the publish then performs a
    **copy + fsync + exclusive-publish-within-destination-volume**. **The intermediate
    cross-volume temp has a named, swept home `[DECIDED]`:** that "other-volume" temp is
    **NOT** an anonymous `tempfile` in an arbitrary `$TMPDIR` — it lives under the **per-run
@@ -1807,7 +1888,11 @@ move-equivalent **inside** that volume:
      exclusive-rename** (§2.1.2: Linux `renameat2(RENAME_NOREPLACE)` / macOS
      `renameatx_np(RENAME_EXCL)` / common `link`+`unlink` fallback, Windows
      `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`) — intra-volume and exclusive,
-     create-only, never a 0-byte placeholder,
+     create-only, never a 0-byte placeholder. **(On Unix this final publish never
+     targets a FAT/exFAT-class `final`: such destinations are diverted up front at §2.7.2
+     to a hardlink-capable system-disk target, so the no-replace-or-`link` primitive is
+     always available where this step runs; on Windows `MoveFileExW` works on FAT/exFAT
+     directly.)**
    - `fsync` the destination directory (Unix) for durability.
    This is exactly the documented `EXDEV` remedy (the tempfile-crate guidance:
    *cannot persist across filesystems → copy into the destination volume, then

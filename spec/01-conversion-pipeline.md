@@ -286,6 +286,15 @@ batch grouping (§1.3).
      picture: **ID3v2 `APIC`** frame (MP3), **FLAC `PICTURE`** metadata block, **MP4
      `covr`** atom (M4A/AAC); presence ⇒ **`EmbeddedCoverArt`** note. Bounded tag/metadata
      read only (no audio decode); cross-ref audio.md cover-art handling.
+   - **raster pixel dimensions** (raster image sources) — a bounded **header** read of the
+     intrinsic width/height: **JPEG `SOF` marker**, **PNG `IHDR`**, **GIF logical-screen
+     descriptor**, **BMP `BITMAPINFOHEADER`**, **TIFF `ImageWidth`/`ImageLength` IFD tags**,
+     **WEBP `VP8`/`VP8L`/`VP8X` header**. This populates **`DetectionOutcome::Recognized.dims:
+     Option<(u32,u32)>`** (`None` for non-raster or unreadable header) — the load-bearing
+     input to the §1.10 per-pixel size estimate (which consumes `dims`, never decodes).
+     Header-level only, no image decode; bounded in-memory read in memory-safe Rust. (This
+     peek produces `Recognized.dims`, not a `CollectedNoteKind` note — the four note
+     producers above plus this dims producer together are the complete step-4 output.)
    These peeks are **bounded member reads in memory-safe Rust** (no third-party
    decoder, §2.12), so they stay in-core and cheap; they run only for the relevant
    detected types, not every item. **`CollectedSummary.notes` (§1.4) is produced
@@ -425,7 +434,23 @@ enum Grouping {
 }
 
 struct MixedReport { found: Vec<(UserFacingFormat, usize)> } // e.g. [(JPG,30),(PNG,12)]
+
+/// Carries the per-item detection outcomes of an all-ineligible drop so `group()` can
+/// project the SPECIFIC CollectedSet variant (not a generic empty), per the mapping above.
+struct EmptyReport { outcomes: Vec<DetectionResult> }         // every item's §1.2 outcome
 ```
+
+**`Empty(EmptyReport)` → CollectedSet projection rule `[DECIDED]`.** When `group()`
+finds **no eligible source**, it inspects `EmptyReport.outcomes` and projects, in this
+order: **(1)** if there is **exactly one** item and its outcome is
+`DetectionOutcome::UnsupportedType { detected }`, → `CollectedSet::Unsupported { detected }`
+(the detected-but-unsupported format, so the §5.2 state-10 copy can name it); **(2)** if
+there is **exactly one** item and its outcome is `DetectionOutcome::Uncertain { best_guess }`,
+→ `CollectedSet::Uncertain { note }` (the §1.2 uncertainty note, from `best_guess`); **(3)**
+otherwise (zero items, or 2+ ineligible items of mixed/none kinds) →
+`CollectedSet::Empty` (the generic "nothing here I can convert"). This is the single
+owner of the lone-Unsupported / lone-Uncertain specificity; §5.2 row 2 routes all three
+to the *Unsupported* screen (state 10) with the variant-specific copy.
 
 - **`Single`** → proceeds to the confirm gate (1.4). `skipped` carries the
   per-item ineligibles (unsupported/uncertain/empty/unreadable) so the summary and
@@ -680,16 +705,20 @@ bitrate to be non-degenerate), the pair is **not offered** in v1 rather than
 introducing a required choice. So the no-required-choices rule holds without
 exception for every *offered* pair.
 
-### Defaults registry & the DoD gate `[REC]`
+### Defaults registry & the DoD gate `[DECIDED]`
 
-`[REC]` **§1.6 owns a consolidated defaults registry** (the merged set of every
-`OptionDecl.default` across all pairs, sourced from 04). Rationale: the SSOT *v1
-DoD* "no required choices" gate and the §6 test suite need **one** machine-checkable
-place asserting "every offered (source,target) pair has a complete default option
-set and converts with zero clicks." This registry is generated from / validated
-against the 04 tables (a §6 CI check fails if any 04 pair lacks a default). The
-**values** remain owned by 04; this is the assembled index, not a second source of
-truth.
+`[DECIDED]` **§1.6 owns a CI-generated consolidated defaults registry** (the merged
+index of every `OptionDecl.default` across all `(source,target)` pairs, sourced from
+04). This is the **single machine-checkable home** of the SSOT *v1 DoD* "no required
+choices" gate: the drop→default→convert, zero-clicks promise needs exactly one place
+asserting "every offered `(source,target)` pair has a **complete** default option set."
+**The registry is a CI-generated artifact `[DECIDED]`:** §6.7.1 Lane-A generates the
+merged `OptionDecl.default` index from the 04 tables and runs a **guard that FAILS the
+build if any §04-offered pair lacks a default** for any of its declared options (so a
+new pair or option that ships without a default cannot pass Lane-A). The **values**
+remain owned by 04; this is the assembled/verified index, not a second source of
+truth. (Escalated from `[REC]`: this gate had no other committed home, so §1.6 commits
+to owning it; §6.10 DoD row 7 reads "owned by §1.6", not "may own".)
 
 ---
 
@@ -769,7 +798,14 @@ enum InvocationResult {
   inside `plan_encode`** — **not** mutated onto a pre-probe `progress` struct (§3.5.1). So
   for video, `plan()` is the probe and `plan_encode(probe)` is the encode; the encode argv
   is never fixed before the probe. Both sub-invocations are bounded by the same §1.7
-  cancel/timeout/group-kill machinery. (§3.2.1 / §3.5.1 own the sequencing rationale.)
+  cancel/timeout/group-kill machinery. **Probe Invocation has NO publish artifact
+  `[DECIDED]`:** the `ffprobe` sub-invocation carries **`out_tmp: None`** (§3.2.2 —
+  ffprobe writes only stdout JSON) and **`progress: ProgressModel::CoarseSpawnDone`** (not
+  the FfmpegKeyValue line-reader). So §1.7 **does NOT run the §2.1 atomic-publish or any
+  temp cleanup for the probe** — it publishes/cleans **only** for an Invocation whose
+  `out_tmp.is_some()` (the encode). The probe's only output is the parsed `ProbeOutput`
+  handed to `plan_encode`; there is no `*.part`, hence nothing for the §2.6 sweep or the
+  cleanup table to handle on the probe leg. (§3.2.1 / §3.5.1 own the sequencing rationale.)
 
 ### Cancellation / kill mechanism `[DECIDED — sole owner]`
 
@@ -917,8 +953,11 @@ struct OutputPlan {
                                  //   from the kind-2 engine-working scratch root (§2.14.2), which
                                  //   lives under app_local_data_dir and MAY be on another volume —
                                  //   that root is NOT carried in OutputPlan (it is run-scoped, §2.6).
-    // No `crosses_volume` field: cross-volume is detected REACTIVELY on EXDEV at
-    // publish time by `fs_guard::atomic_publish` (§2.14.3), never pre-planned (§0.6).
+    // No `crosses_volume` field: the PUBLISH detects cross-volume REACTIVELY on EXDEV at
+    // publish time via `fs_guard::atomic_publish` (§2.14.3). "Not pre-planned" = no plan
+    // FIELD, NOT "no pre-engine decision": where the engine writes when a same-volume
+    // sibling temp can't be created is a pre-engine temp-PLACEMENT decision owned by
+    // §2.14.3 at run time (not stored here). (§0.6 invariant 5.)
 }
 // (DivertReason, JobId == ItemId: §0.6.)
 ```
@@ -1292,8 +1331,10 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
   temp open on Windows). (§1.7)
 - **Hidden/system ignore list** = dotfiles + `.DS_Store`/`Thumbs.db`/`desktop.ini` +
   Windows hidden/system attribute (fixed, not user-config). (§1.1)
-- **§1.6 owns a consolidated defaults registry** validated against 04 for the DoD
-  "no required choices" gate. (§1.6)
+- **§1.6 owns a CI-generated consolidated defaults registry** validated against 04 for
+  the DoD "no required choices" gate. **`[DECIDED]` (escalated from `[REC]`):** §6.7.1
+  Lane-A generates the index and fails the build if any §04 pair lacks a default; §6.10
+  row 7 reads "owned by §1.6". (§1.6 / §6.7.1 / §6.10) — *no longer a bare `[REC]`.*
 - **Queue order** = deterministic collected/traversal order; no reordering. (§1.9)
 - **Aggregate progress** = monotonic `(done + active_fraction)/total`. (§1.11)
 - **No hard file-count cap**; bound memory via lightweight records + §5

@@ -157,8 +157,9 @@ differ and are spelled out per format.
   timed-metadata track and sometimes rotation flags — ConvertIA honours the
   display-matrix **rotation** so portrait clips stay portrait. HEVC→MP4: H.265 is
   legal in MP4, so the **video can remux**; but the everyday-compatibility default
-  re-encodes HEVC→H.264 for "plays everywhere" (this is an `[OPEN]` policy choice,
-  see *Category-wide*).
+  **re-encodes HEVC→H.264 for "plays everywhere"** `[DECIDED]` (a "keep original quality
+  (H.265)" Advanced toggle offers verbatim remux — see the *HEVC/H.265 default
+  disposition* decision below).
 
 ---
 
@@ -518,15 +519,21 @@ acceleration later. `[OPEN]` (parked, low priority).
 
 ### [OPEN] items (genuinely undecided)
 
-- **[OPEN] HEVC/H.265 default disposition.** When a source already holds **H.265**
-  (common from iPhones), H.265 is *legal in MP4* so a lossless **remux** is
-  possible — but H.265 does **not** "play everywhere" (older Windows/browsers lack a
-  decoder), which contradicts the MP4-default rationale. Decision needed:
-  **(a)** remux HEVC→MP4 verbatim (lossless, smaller, but less compatible) vs
-  **(b)** re-encode HEVC→H.264 (lossy, larger, maximally compatible). Leaning **(b)
-  for the everyday default** with **(a)** as a possible "keep original quality"
-  Advanced toggle. Must be settled before the corpus run. (Same question applies to
-  AV1-in-MP4.)
+- **HEVC/H.265 default disposition `[DECIDED]` (re-encode to H.264).** When a source
+  already holds **H.265** (common from iPhones), H.265 is *legal in MP4* so a lossless
+  **remux** is possible — but H.265 does **not** "play everywhere" (older Windows/browsers
+  lack a decoder), which contradicts the MP4-default "plays everywhere" rationale that
+  makes mov→mp4 an SSOT usability-floor pair. **Decision: the everyday default is (b)
+  re-encode HEVC→H.264** (lossy, larger, maximally compatible) — it honours the
+  usability-floor promise (the converted MP4 plays on any everyday target). **(a) remux
+  HEVC→MP4 verbatim** (lossless, smaller, but less compatible) is offered as a **"keep
+  original quality (H.265)" Advanced toggle**, not the default. This makes mov→mp4
+  zero-click correct (the §6.10 row-7 "no required choices" gate can verify it) and the
+  §6.6 usability-floor walkthrough can validate the chosen default. Re-encode uses the
+  §video.md H.264 defaults (CRF 23, preset medium) and depends on H.264 encode
+  availability per the §3.4 platform disposition. **Same disposition applies to AV1-in-MP4**
+  (re-encode to H.264 by default; verbatim-keep is the Advanced toggle). The H.264 encode
+  parameter values remain `[DEFER: corpus]` (numbers, not the remux-vs-reencode design).
 - **[OPEN] Auto-deinterlace default.** Auto-applying `yadif` to interlaced MPEG-2
   sources is proposed as the everyday-correct default, but deinterlacing is a
   judgement call (wrong field order looks worse). Confirm `yadif` (mode 0) as

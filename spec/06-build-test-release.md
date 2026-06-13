@@ -53,7 +53,7 @@ require admin rights for the user to run.
 
 | Platform | Tauri bundle target(s) | Canonical download (portable-first) | Notes |
 |----------|------------------------|-------------------------------------|-------|
-| **Windows x64** | post-build **zip** (portable) + `nsis` (installer) | **Portable zip archive (`.zip`)** containing the app `.exe` + the `binaries/` and `resources/` engine trees — the canonical "download, unzip, run" artifact. **NOT** a single `.exe`: the bare `app`/raw-`.exe` target does **not** embed the sidecar engine trees (FFmpeg, LibreOffice, pandoc — §3.3), which must sit **beside** the exe, so the portable artifact is necessarily a folder/zip. It is produced by an **explicit post-build packaging step** (`scripts/stage-engines` + zip), **not** natively by the `nsis` target (which produces an *installer* `.exe`, not a portable exe). NSIS is the **secondary** convenience installer running **per-user / no-admin** (`installMode: currentUser`) — and is the variant where the WebView2 floor/bootstrapper applies (§0.3.1). | MSI (`wix`) is **not** used — it implies a system install / admin. `[OPEN-6.1a]` whether to ship NSIS at all vs portable-zip-only. **(recommendation: ship the portable `.zip` as primary, NSIS per-user as a secondary convenience.)** |
+| **Windows x64** | post-build **zip** (portable) — **`nsis` NOT shipped v1 [DECIDED-6.1a]** | **Portable zip archive (`.zip`)** containing the app `.exe` + the `binaries/` and `resources/` engine trees — the **canonical AND ONLY v1 Windows artifact** ("download, unzip, run"). **NOT** a single `.exe`: the bare `app`/raw-`.exe` target does **not** embed the sidecar engine trees (FFmpeg, LibreOffice, pandoc — §3.3), which must sit **beside** the exe, so the portable artifact is necessarily a folder/zip. It is produced by an **explicit post-build packaging step** (`scripts/stage-engines` + zip), **not** natively by the `nsis` target. | MSI (`wix`) is **not** used — it implies a system install / admin. **`[DECIDED-6.1a]` NSIS is NOT shipped in v1** (resolves the former `[OPEN-6.1a]`): the portable `.zip` is the single canonical artifact, consistent with the SSOT *Portable, no installation* / *no system pollution* posture. NSIS would add a WebView2-bootstrapper wiring burden (§0.3.1) and an installer mode that contradicts portable-first for **no** v1 benefit (the portable zip already runs per-user, no-admin). **NSIS is deferred to a post-v1 convenience** `[DEFER: post-v1]`; if added later it runs **per-user / no-admin** (`installMode: currentUser`) and is the variant where the WebView2 floor/bootstrapper applies (§0.3.1). |
 | **macOS (universal)** | `app` (inside) → `dmg` | **`.dmg`** containing a **universal** `ConvertIA.app` (arm64 + x86_64 via `--target universal-apple-darwin`). | One universal artifact covers Apple-Silicon and Intel → honours "one product per platform". Unsigned/unnotarized (SSOT *Out of Scope*) → on **Sequoia (15.x)** the first launch is blocked and the Control-click bypass is gone; the user must use **Privacy & Security → "Open Anyway"**, and **each bundled sidecar is independently quarantined** (the first conversion can hit `QuarantinedByOs`, §2.8/§7.2.4). Step-by-step on the download page (§6.2.4) and About (§5.9); the §6.6 macOS walkthrough tests it on Sequoia. |
 | **Linux x64** | `appimage` (+ optionally `deb`) | **AppImage** — the portable, distro-agnostic, no-install, runs-anywhere artifact (matches SSOT portability best). | `.deb`/`.rpm` are distro-specific *installs* (system pollution); they are **secondary at most**. `[OPEN-6.1b]` whether to also publish a `.deb`. **(recommendation: AppImage-only for v1; revisit `.deb` by demand.)** |
 
@@ -77,8 +77,10 @@ build-time mechanics that realise them**:
 - Copyleft engines (FFmpeg, LibreOffice, poppler, pandoc — **Ghostscript: `[DECIDED]` NOT
   shipped v1**, §3.1) are **separate invoked binaries** (§3.6). They are placed under
   `src-tauri/binaries/` (sidecars) and/or `src-tauri/resources/` (engine support
-  trees like the LibreOffice program dir + the bundled font set, §3 / documents.md
-  fonts `[OPEN]`), and declared in `tauri.conf.json`:
+  trees like the LibreOffice program dir + the bundled font set — `[DECIDED]` baseline
+  per §3.9.3 / documents.md: **Liberation + Carlito + Caladea + a curated Noto CJK/RTL
+  subset** (only the CJK breadth is `[DEFER: size]`), the §6.4.5 corpus font floor),
+  and declared in `tauri.conf.json`:
   - **Sidecars** → `bundle.externalBin`. Tauri requires each sidecar to exist as
     `name-<target-triple>[.exe]` (e.g. `ffmpeg-x86_64-pc-windows-msvc.exe`,
     `ffmpeg-aarch64-apple-darwin`); a small build script (`scripts/stage-engines.*`,
@@ -183,7 +185,8 @@ build-time mechanics that realise them**:
   list** (the same four cross-category.md exposes in its Dither option), so the asserted set
   and the UI-exposed set cannot drift;
   (2) the **libvips `webpsave`/`heifsave` `effort` parameter** (and `Q`) exists in the staged
-  libvips (images.md exposes `effort` for WEBP/AVIF) — `vips webpsave`/`heifsave` arg
+  libvips (images.md exposes the integer `effort` for WEBP/AVIF **and HEIC** — `heifsave` has
+  no `preset` string, only `effort`, §images.md) — `vips webpsave`/`heifsave` arg
   introspection. These prevent a version bump from silently dropping an exposed knob.
 - **Curated-FFmpeg decoder-coverage assertion `[DECIDED]`:** the FFmpeg build uses
   `--disable-everything --enable-…` trimmed to the `04` codec set (size lever, §3.9),
@@ -227,14 +230,20 @@ build-time mechanics that realise them**:
   external `<image href>`** — both a relative `../`-escape (`href="../secret.txt"`) and an
   absolute `file:///etc/passwd`-style reference — pointing at a known out-of-input
   sentinel file, and **fails the build/test if the rasterised output embeds any sentinel
-  bytes** (it must not — the **PRIMARY control is librsvg's external-resource refusal**
-  `set_load_external_resources(false)`, with the base-URL/scratch confinement as
-  defence-in-depth, §3.5.5). **librsvg version-floor assertion `[DECIDED]`:** the stage step
-  **also asserts the staged librsvg is `>= 2.56.3`** (the CVE-2023-38633 fix floor — the CVE
-  that bypassed base-URL directory-confinement) and **fails the build** if older, so even
-  the demoted defence-in-depth layer is not a known-bypassed version. This is the SVG
-  analogue of the §6.4.2 FFmpeg adversarial-egress case, giving the SVG vector the same
-  proof-parity as FFmpeg/pandoc/LibreOffice.
+  bytes** (it must not — the **PRIMARY control is loading the SVG via `rsvg::Loader` with
+  NO `base_file`/base URL**, so librsvg has nothing to resolve a local/relative `href`
+  against and refuses all such loads by construction; **no base-URL confinement is used** —
+  supplying any base URL is what re-enables the CVE-2023-38633-class surface, §3.5.5).
+  **librsvg API assertion `[DECIDED]`:** the stage step **also asserts the pinned `librsvg`
+  crate/version exposes the relied-upon `rsvg::Loader::read_stream`/`from_data`-without-
+  `base_file` path** and **fails the build** if it is absent (so the load-bearing control is
+  actually buildable against the staged crate). **librsvg version-floor assertion
+  `[DECIDED]`:** the stage step **also asserts the staged librsvg is `>= 2.56.3`** (the
+  CVE-2023-38633 fix floor — the CVE that bypassed base-URL directory-confinement) and
+  **fails the build** if older; this is a belt-and-suspenders floor (not load-bearing for
+  v1, which sets no base URL) so that if a base URL is ever required later it is not a
+  known-bypassed version. This is the SVG analogue of the §6.4.2 FFmpeg adversarial-egress
+  case, giving the SVG vector the same proof-parity as FFmpeg/pandoc/LibreOffice.
 
 ### 6.1.4 CI runners
 
@@ -278,8 +287,18 @@ stays on the free self-hosted runner. Revisit only if release cadence rises.
 **self-hosted IONOS VPS runner** (used for **Lane-A** Linux and the **Lane-B** Linux corpus
 leg) has a **fixed host OS that may not be ubuntu-22.04**. So the pin is honoured **per
 lane**, not by assuming the VPS image:
-- **Record the VPS distro as a concrete fact** in `reference_self_hosted_ci_runner.md` /
-  §6.1.4 (the runner's actual `lsb_release`), so the gap is known, not guessed.
+- **Record the VPS distro AND kernel as concrete facts** in
+  `reference_self_hosted_ci_runner.md` / §6.1.4 (the runner's actual `lsb_release` **and
+  `uname -r`**), so the gap is known, not guessed. **Recorded fact (placeholder, confirm
+  at setup) `[DECIDED]`:** the Ne-IA self-hosted runner is **Ubuntu-class** (the
+  org-standard IONOS VPS per `reference_self_hosted_ci_runner.md`), whose stock kernel is
+  **≥ 5.15 (Jammy-class)** — i.e. **above the Landlock ≥ 5.13 floor** — so the **expected
+  §6.4.2 fs-audit enforcement path on the self-hosted Linux leg is Landlock** (with
+  `SYS_PTRACE` as the alternative inside `--cap-add SYS_PTRACE` Docker, §6.4.2). The
+  **exact `uname -r` is recorded at runner provisioning** (`[DEFER: record at setup]`) and
+  the build asserts Landlock availability before relying on it (§6.4.2); if the recorded
+  kernel turns out < 5.13, the leg must run under `--cap-add SYS_PTRACE` or the
+  GitHub-hosted fallback (so the fs-audit half never silently no-enforces).
 - **If the VPS OS matches the `ubuntu-22.04` glibc/FUSE floor**, the pin is satisfied
   natively and Lane-A runs directly on the host.
 - **If it does NOT match**, the **Lane-A compile-sanity + the Lane-B Linux corpus build run
@@ -377,9 +396,11 @@ normal user isn't surprised:
   runs — §0.3.1), the download page **must** carry a prerequisite note: *"ConvertIA needs
   Microsoft Edge WebView2 (built into Windows 11 and current Windows 10; if a window
   flashes and closes, install the WebView2 Runtime or update Windows/Edge)."* — this is
-  the "fail clearly" substitute for the portable path (not a runtime dialog). The
-  **NSIS** variant enforces the floor via its bootstrapper, so this note is portable-zip-
-  specific.
+  the "fail clearly" substitute for the portable path (not a runtime dialog). **Since
+  the portable `.zip` is the only v1 Windows artifact (NSIS NOT shipped v1, §6.1.2
+  `[DECIDED-6.1a]`), this WebView2 prerequisite note is the sole Windows floor mechanism
+  in v1** — there is no NSIS bootstrapper enforcing it. (A future post-v1 NSIS variant
+  would enforce the floor via its bootstrapper; not applicable to v1.)
 - **Linux AppImage FUSE 2 prerequisite `[DECIDED]`:** an AppImage *mounts* itself via
   **FUSE 2 at launch** (a runtime dependency — §6.1.4), so the page must note:
   *"Linux: the AppImage needs `libfuse2` (Ubuntu: `sudo apt install libfuse2`, or
@@ -536,7 +557,8 @@ Pure-logic tests on the §0.7 modules, **no engines, no real FS where avoidable*
 - **Target resolution (§1.5) + defaults registry (§1.6):** for **every** source
   format in §04, exactly **one** pre-highlighted default; the "no required choices"
   invariant (drop → default → convert needs zero clicks) is asserted against the
-  consolidated defaults registry §1.6 may own.
+  consolidated defaults registry **owned by §1.6** (`[DECIDED]`, CI-generated; the
+  §6.7.1 Lane-A guard below fails the build if any §04 pair lacks a default).
 - **Error taxonomy mapping (§2.8/§2.13):** each failure kind maps to its catalog
   string; worker-thread panic boundary (`catch_unwind`) surfaces a clean per-item
   failure, not a poisoned pool.
@@ -604,7 +626,11 @@ and stub/real engines:
     CLOSED if NEITHER `ptrace` NOR Landlock is available `[DECIDED]`:** when the runner has
     no `SYS_PTRACE` **and** no working Landlock (e.g. kernel < 5.13), the fs-audit half has
     **no enforcement mechanism** — it MUST **FAIL the CI gate** (a hard fail, the runner is
-    misconfigured for this mandatory check), **never silently pass**. **§6.1.4 must record
+    misconfigured for this mandatory check), **never silently pass**. **The fail-closed MUST
+    be diagnosable `[DECIDED]`:** before the non-zero exit, the step **emits a GitHub Actions
+    `::error::` annotation** (e.g. `::error::fs-audit cannot enforce: neither ptrace
+    (SYS_PTRACE) nor Landlock (kernel ≥ 5.13) available on this runner — see §6.4.2`) so the
+    reason surfaces in the checks UI, not just an opaque red exit code. **§6.1.4 must record
     the Lane-B VPS runner's kernel version** as a prerequisite (so Landlock availability is
     a known fact, not a runtime surprise) and **document which enforcement path the runner
     uses**. A mandatory adversarial-egress gate that silently no-enforces is worse than a
@@ -774,7 +800,11 @@ Concrete required contents:
 - **DOCX/DOC/ODT/RTF** real-world samples incl. **non-Latin (CJK) + RTL (Arabic/
   Hebrew)** body text, embedded images, a doc referencing a **non-bundled font**
   (substitution/reflow case), tracked-changes, a macro-enabled `.docm` (macro must
-  drop, never execute).
+  drop, never execute). **Font floor `[DECIDED]`:** the CJK/RTL fidelity assertion tests
+  against the **committed bundled font set (§3.9.3: Liberation + Carlito + Caladea +
+  curated Noto CJK/RTL)** — the corpus CJK/RTL glyphs must render (no tofu) **from the
+  bundled set alone**, so a missing-font regression fails the gate rather than silently
+  degrading to host-font substitution.
 - **PDF**: a text PDF (→TXT extraction), a **scanned/image-only** PDF (near-empty
   extraction, no OCR — honest), a **password-protected** PDF (fail-clearly), a
   malformed/truncated PDF (**poppler tolerance — Ghostscript is NOT shipped v1, §3.1; an
@@ -816,7 +846,10 @@ media in an LFS-backed `corpus-large`** fetched **only** for the full Lane-B gat
 
 A headed browser-driver run drives the built app through **`tauri-driver`** — which
 exposes a **WebDriver** endpoint over the platform WebView (WebKitGTK on Linux,
-WKWebView on macOS, WebView2 on Windows). **E2E client binding = WebdriverIO (JS),
+WebView2 on Windows). **`tauri-driver` officially supports ONLY Windows and Linux —
+there is NO macOS WKWebView driver**, so the macOS leg degrades to the synthetic
+smoke test defined in the per-platform sub-bullet below (it does **not** open a macOS
+`tauri-driver`/WebDriver session). **E2E client binding = WebdriverIO (JS),
 NOT the Rust `webdriver`/`fantoccini` crate `[DECIDED]`.** The client is **WebdriverIO**
 (the JavaScript/Node WebDriver client), not a Rust webdriver crate, **because the a11y
 contrast gate uses `@axe-core/webdriverio`** (§6.4.6a) — a **JS-only** package that
@@ -1088,6 +1121,13 @@ for the OS-agnostic checks, fanning to the matrix only for compile-sanity:
    (a `cargo run`/xtask Rust bin, §6.4.3a) asserts every §04 v1-required pair has ≥1
    backing corpus `covers` entry (and no stale couplings). Engine-free, fast — runs every
    PR so coverage gaps surface before the expensive Lane B corpus run.
+3a'. **Defaults-registry "no required choices" guard (§1.6) `[DECIDED]`:** an
+   engine-free xtask **generates the §1.6 consolidated `OptionDecl.default` index from the
+   §04 tables** and **fails the build if any §04-offered `(source,target)` pair lacks a
+   complete default option set** (every declared option must have a `default`). This is the
+   single machine-checkable home of the SSOT *v1 DoD* "no required choices" gate (§6.10 row
+   7); it runs every PR so a pair/option shipping without a default cannot merge. The
+   generated index is the §1.6-owned artifact (values still owned by §04).
 3b. **Automated a11y assertions (§6.4.6a) — jsdom leg = ARIA/role + focus-order ONLY:**
    `axe-core` via `vitest-axe` over the rendered React tree asserts **ARIA-role/state
    validity** and **focus-order / roving-tabindex sanity**. **The WCAG 2.1 AA contrast
@@ -1115,8 +1155,9 @@ Triggered by a release tag (e.g. `v1.0.0`) on `main`. Stages, **in order**, each
 blocking the next:
 1. **Matrix build (native, §6.1.4):** stage engines per platform (§6.1.3), run
    `tauri build` (+ the Windows post-build zip-packaging step §6.1.2) → per-platform
-   artifact (portable `.zip` + NSIS installer, universal `.dmg`,
-   AppImage). **Artifact-size gate `[DECIDED]`:** immediately measure each platform's
+   artifact (Windows portable `.zip` **only** — NSIS NOT shipped v1, §6.1.2
+   `[DECIDED-6.1a]`; universal `.dmg`; AppImage). **Artifact-size gate `[DECIDED]`:**
+   immediately measure each platform's
    **compressed** artifact and **fail the release if any exceeds the §3.9.1 ≤ 400 MB
    compressed ceiling** (record the measured sizes as a release-asset line; §6.10 row 22).
    **No-system-pollution post-launch check (§6.10 row 21)** also runs here on the built
@@ -1134,7 +1175,10 @@ blocking the next:
    skip macOS contrast; it is human-covered, recorded in `docs/usability-floor.md`. **Runtime / cost:** the dominant cost is the corpus run (video
    re-encode + LibreOffice, the slow engines). Estimate **~30–90 min per leg**
    depending on corpus size; set CI **`timeout-minutes` ≈ 120 per leg** with headroom.
-   **macOS-leg caveat + mitigation ladder `[DECIDED]`:** the **~30–90 min** estimate is
+   **Per-OS summary `[DECIDED]`:** the **120-min** figure applies to the **Linux +
+   Windows** legs only; the **macOS** leg starts at **180** (the escalation ladder below) —
+   a CI YAML authored from a flat 120 would under-time macOS. **macOS-leg caveat +
+   mitigation ladder `[DECIDED]`:** the **~30–90 min** estimate is
    **optimistic for the macOS leg** — it pulls `corpus-large` over **GitHub LFS** (no
    VPS-local cache, unlike the self-hosted Linux leg) **and** `macos-latest` minutes bill
    **~10×** Linux/min (§6.1.4 budget note), so the 120-min figure has thin headroom. **The
@@ -1310,6 +1354,19 @@ required) but **may surface a friendly reminder**; authorship is recorded in Git
 history (the collective-notice / no-assignment model). The inbound-warranty clause
 lives in `CONTRIBUTING.md`.
 
+**Governance-doc completeness CI gate `[DECIDED]`.** Today only `LICENSE`
+(name-match, §6.9) and `NOTICE`/`THIRD-PARTY-LICENSES.txt` (existence, §6.3.3) are
+gated; a missing/stub `PRIVACY.md` / `SECURITY.md` / `TRADEMARK.md` /
+`CODE_OF_CONDUCT.md` / `CONTRIBUTING.md` would **not** block release. So a **Lane-B
+release-gate assertion** verifies all **five** SSOT-mandated governance docs are
+**present AND non-empty** — a byte-count floor (e.g. ≥ 200 bytes, defeating an empty
+placeholder) **plus** a `grep` for one required key section per file (e.g.
+`SECURITY.md` → a "report" / private-advisory heading; `PRIVACY.md` → an "offline" /
+"no telemetry" statement; `TRADEMARK.md` → the name/logo carve-out; `CONTRIBUTING.md`
+→ "inbound=outbound" / the quality-bar list; `CODE_OF_CONDUCT.md` → an enforcement
+contact). A missing/stub file **fails the Lane-B gate** (§6.7.2). This closes the gap
+that a governance doc could silently ship empty.
+
 `[OPEN-6.8a]` whether to additionally adopt a `GOVERNANCE.md`/maintainer model doc
 for v1 — **(recommendation: defer; the seven files above satisfy the SSOT mandate;
 add governance docs only if the contributor base grows.)**
@@ -1403,7 +1460,7 @@ promises has a technical home" is **verifiable**. Each gate is marked
 | 10 | **Name/trademark clearance completed; any rename applied across repo/LICENSE/NOTICE/branding before release** | this file (§6.9) | Clearance-record gate (§6.9.2) + scripted rename propagation + old-name grep gate (§6.9.3) | **in-scope-gate** (the *clearance check + rename*); **out-of-scope-process** (*registering* a mark) |
 | 11 | **Usability floor: ordinary non-tech person completes each named conversion unaided on first try; ≥1 genuine non-dev walkthrough on ≥1 platform (owner may run the remaining two — matches the AMENDED SSOT §9 gate, owner amendment recorded at the SSOT source, implemented in §6.6)** | §5 (UX) · this file (§6.6) | Human walkthrough recorded in `docs/usability-floor.md` (which were non-dev vs owner-run); evidence gate in Lane B (§6.6/§6.7.2) | **in-scope-gate** |
 | 12 | **Published integrity hashes from one canonical source (trust substitute for no-signing)** | this file (§6.2) | SHA-256 + `SHA256SUMS` + **minisign signature (DECIDED, unconditional — Lane-B stage 6)** published to canonical GitHub Releases (§6.2.2/§6.2.3); verify recipe surfaced (§6.2.4) | **in-scope-gate** |
-| 13 | **One artifact per platform (cross-platform, one product)** | §0.2 · this file (§6.1) | Build matrix artifact table (§6.1.2): portable-zip (exe + bundled engines) / NSIS-installer (secondary) · universal-dmg · AppImage | **in-scope-gate** |
+| 13 | **One artifact per platform (cross-platform, one product)** | §0.2 · this file (§6.1) | Build matrix artifact table (§6.1.2): Windows portable-zip (exe + bundled engines; **NSIS NOT shipped v1, `[DECIDED-6.1a]`**) · universal-dmg · AppImage | **in-scope-gate** |
 | 14 | **No-harm / atomicity / fail-clearly hold even across crash/cancel/out-of-disk** | §2.1/§2.6/§2.8/§2.13/§2.14 | Atomicity-under-interruption + out-of-disk + panic-boundary property tests (§6.4.2) | **in-scope-gate** |
 | 15 | **Real-world filename + content fidelity (Unicode/emoji/long-path; CJK/RTL/encodings; CSV delimiters)** | §2.10 · §04 (per-format) | Adversarial-name unit tests (§6.4.1) + CJK/RTL/encoding corpus files (§6.4.5) | **in-scope-gate** |
 | 16 | **Patent per-platform gaps honestly surfaced (exception 1), never silent** | §3.4 (decision) · §5.2 (UI surfacing) | Ledger marks `unavailable-per-§3.4`; release-note item (§6.5.3); UI-unavailable assertion (§6.4.3) | **in-scope-gate** (recording/surfacing); patent **decision** owned by §3.4 |
@@ -1434,11 +1491,11 @@ If a future SSOT clause is added, it must appear here with an owning section and
 - **[6.4a]** Corpus storage — **small CC0/synthetic in-repo + LFS `corpus-large` for
   the full gate** (§6.4.5); exact total size **[DEFER: calibrate as corpus fills]**.
 
-Easy `[OPEN]`s resolved with a recommended default (not owner-level): artifact
-formats (§6.1.2: portable-zip / NSIS-per-user-installer / universal-dmg / AppImage),
-NSIS-vs-portable (§6.1.2a), Linux `.deb` (§6.1.2b), reproducible-build depth
-(§6.2.5b), `GOVERNANCE.md` (§6.8a), usability tester count (§6.6a) — each carries a
-**(recommendation)** inline.
+Easy `[OPEN]`s resolved (not owner-level): artifact formats (§6.1.2: Windows
+portable-zip [NSIS NOT shipped v1, **`[DECIDED-6.1a]`**] / universal-dmg / AppImage),
+NSIS-vs-portable (**`[DECIDED-6.1a]`** — portable-zip only, §6.1.2), Linux `.deb`
+(§6.1.2b), reproducible-build depth (§6.2.5b), `GOVERNANCE.md` (§6.8a), usability
+tester count (§6.6a) — each carries a **(recommendation)** or `[DECIDED]` inline.
 
 **Genuinely still open / deferred (feed the README log):** the macOS automated E2E
 under an unsigned build is **`[DECIDED]` — a defined degraded smoke test** (§6.4.6:
