@@ -152,7 +152,7 @@ This is the principal portability risk and it interacts hard with *no-network*
 
 | OS | WebView runtime | Risk | Disposition |
 |----|-----------------|------|-------------|
-| Windows | **WebView2** (Chromium/Edge) | May be **absent or old** on older Windows; the standard Tauri remedy is the WebView2 **bootstrapper/installer**, but *that downloads at install time* — forbidden by *no-network / no-installation* | **Recommend: rely on the OS, require a present WebView2; do NOT bundle the offline installer in v1** (it bloats the portable artifact and blurs "no installation"). Windows 11 ships WebView2 by default; Windows 10 has shipped it via Edge/Windows Update for years. A **missing/too-old WebView2 at startup is an app-level startup fault (§2.13 / §7.2)** with a plain message pointing the user to update Windows/Edge — never a silent blank window. `bundle.windows.minimumWebview2Version` is set as a floor check. |
+| Windows | **WebView2** (Chromium/Edge) | May be **absent or old** on older Windows; the standard Tauri remedy is the WebView2 **bootstrapper/installer**, but *that downloads at install time* — forbidden by *no-network / no-installation* | **Recommend: rely on the OS, require a present WebView2; do NOT download a runtime in v1.** Windows 11 ships WebView2 by default; Windows 10 has shipped it via Edge/Windows Update for years. **Honest failure mode `[DECIDED]`:** when WebView2 is **absent**, the WebView2 loader fails **before the Rust core runs** — the window flashes and closes and the core **cannot** present a §2.13/§7.2 in-app fault (tauri#12030; there is no built-in detection hook on the portable path). So the "fail clearly" substitute for the **canonical portable artifact (§6.1.2)** is a **§6.2.4 download-page WebView2 prerequisite note**, **not** a runtime dialog — the unconditional "never a silent blank window" promise does **not** hold for the portable launch. `bundle.windows.minimumWebview2Version` is **installer-only** (NSIS/WiX bootstrapper) — it is **inert for the portable artifact** and is scoped to the **secondary NSIS variant**, where the bootstrapper *can* enforce/install the floor. A *too-old* (present but below floor) WebView2 surfaces via the NSIS minimum-version check on that variant; on the portable path the practical floor is the §0.3.1 supported-OS floor (Win10 1809+ ships a recent-enough Evergreen runtime). (Stronger options recorded, not v1: make the WebView2-guaranteeing download the **NSIS per-user installer with bootstrapper**, and/or **bundle a fixed-version WebView2 runtime beside the exe** — a bundled runtime is not a runtime *download*, so no-network holds, at an artifact-size cost.) |
 | macOS | **WKWebView** (system Safari/WebKit) | Tied to the OS version; no separate install | Pinned by `bundle.macOS.minimumSystemVersion`. |
 | Linux | **WebKitGTK** (`libwebkit2gtk-4.1`) | **Distro drift** — version varies widely; the portable AppImage must carry/locate a compatible WebKitGTK | Bundled/located by the AppImage packaging (§6.1); a missing/incompatible WebKitGTK is a §7.2 startup fault with a plain message. |
 
@@ -233,7 +233,8 @@ signatures; the TS side is generated (§0.4.5 codegen).
 | # | Command | Request | Response | Notes |
 |---|---------|---------|----------|-------|
 | C1 | `ingest_paths` | `{ paths: Vec<PathBuf>, origin: IntakeOrigin, collectingId: CollectingId, onScan?: Channel<ScanProgress> }` | `CollectedSet` | Builds the **frozen source set** (§2.4): recurse folders (Rust), ignore hidden/system files, de-dup by resolved identity (§2.3), run detection (§1.2), group by user-facing format (§1.3). Returns the collected-summary (detected format + count) **or** a `MixedDrop` / `Unsupported` / `Uncertain` outcome. `origin` distinguishes drop / picker / launch-arg (§7.8). The frontend generates `collectingId` and passes it in so C13 can cancel this in-flight walk **before** C1's long await resolves (see note). **Optional `onScan` Channel `[DECIDED]`:** carries a **throttled live scan count** (`ScanProgress { scanned: u32 }`, ~2/s, §0.6) so the §5.2 *Collecting* state can show "Scanning… N files so far" during a long recursive walk; it is a **run-telemetry-style Channel**, NOT one of the three `app://` events (the §0.4.2 "no other IPC events" invariant covers `app.emit` events, not Channels handed to a command). |
-| C2 | `pick_paths` | `{ kind: PickKind /* files \| folder */ }` | `Vec<PathBuf>` | Opens the native dialog **Rust-side via `DialogExt`** from this command's handler `[DECIDED]` (so there is no `dialog:allow-open` WebView grant — §0.10). The picked paths are fed straight into Rust intake (`ingest_paths`, the single C1 freeze point) and never transit the WebView. Separate command so the picker is its own typed action; the WebView only triggers it, never receives raw FS paths to re-submit. |
+| C2a | `pick_for_intake` | `{ kind: PickKind /* files \| folder */, collectingId: CollectingId, onScan?: Channel<ScanProgress> }` | `CollectedSet` | The **intake picker `[DECIDED]`.** Opens the native files/folder dialog **Rust-side via `DialogExt`** from this command's handler (so there is no `dialog:allow-open` WebView grant — §0.10). The picked paths are funnelled **straight into the C1 `ingest_paths` freeze Rust-side** and this command returns the **same `CollectedSet`** C1 returns — so **no raw FS path ever reaches the WebView** (the WebView only triggers the picker and receives the collected summary, never paths to re-submit). A **cancelled dialog is a clean no-op** that returns `CollectedSet::Empty` with no error and leaves the UI in Idle (§5.4). Takes the same `collectingId` + optional `onScan` as C1 so C13 can cancel the in-flight walk. |
+| C2b | `pick_destination` | `{}` | `Option<PathBuf>` | The **destination-folder picker `[DECIDED]`.** Opens the native folder dialog **Rust-side via `DialogExt`** (still no `dialog:allow-open` grant) and **returns the chosen folder `PathBuf` to the WebView**, which carries it into **C5 `set_destination`** (and then C6). **This one path DOES transit the WebView** — unavoidable, because the destination is a WebView-held choice (§5.10 "Change destination") — and is **acceptable**: it is a *write* destination, not a source path, bounded by the §2.1 non-destructive creates (a chosen destination can never harm an original or read anything; §0.11 T2). `None` = the user cancelled (no-op; the held C4/C5 destination is unchanged). The "picked paths never transit the WebView" claim is scoped to the **intake** picker (C2a) only. |
 | C3 | `get_targets` | `{ collectedSetId: CollectedSetId }` | `TargetOffer` | From the detected source type → the offered `Vec<Target>` + the **one pre-highlighted default** + per-target lossy flags + per-target availability (from §3.4) + the declared options model (§1.6). Pure function of detection; no engine spawned. |
 | C4 | `plan_output` | `{ collectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice }` | `OutputPlanPreview` | Computes the `OutputPlan` (§1.8): resolved destination, beside-source vs chosen-root subtree re-creation, per-location divert preview, **re-run/equivalent-output detection (§2.5)** → may return a `RerunPrompt`. Also returns the §1.10 pre-flight verdict (size/space estimate, any up-front "too big" fail). Drives the "will save to …" line (SSOT *output lands somewhere obvious*) **before** convert. |
 | C5 | `set_destination` | `{ collectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice }` | `DestinationResolved` | User changes the destination before convert; revalidates writability/divert **and re-evaluates the destination-dependent preflight** — the §2.14.4 free-space check on the new volume — returning a refreshed `PreflightVerdict` so the UI's held C4 verdict never goes stale (§1.8 destination-change re-validation). The §2.5 re-run verdict is **destination-INDEPENDENT in v1** (EquivKey has no destination component, §2.5.1) and is **carried through unchanged** from C4 — C5 does **not** recompute `rerun`. |
@@ -251,10 +252,12 @@ signatures; the TS side is generated (§0.4.5 codegen).
 - `ingest_paths` is the single freeze point (§2.4) for **all** intake origins
   (drop, picker, launch args / second-instance hand-off — §7.1/§7.8).
 - **Ingest cancellation handle `[DECIDED]`.** So C13 `cancel_ingest` can target an
-  in-flight C1, the **frontend generates the `CollectingId` and passes it as a C1
-  argument** (the single-funnel option). The Rust core registers the ingest-scoped
-  `CancellationToken` under that id when C1 begins the walk, trips it on C13, and drops
-  it when C1 returns (mirrors the §0.4.4 `RunId` token lifecycle, one phase earlier).
+  in-flight ingest (a drop's **C1** *or* the intake picker's **C2a**, which funnels
+  through the same C1 freeze), the **frontend generates the `CollectingId` and passes it
+  as a C1/C2a argument** (the single-funnel option). The Rust core registers the
+  ingest-scoped `CancellationToken` under that id when the walk begins, trips it on C13,
+  and drops it when C1/C2a returns (mirrors the §0.4.4 `RunId` token lifecycle, one phase
+  earlier).
   This keeps a single freeze point **and** keeps the §0.4.2 "no other IPC events"
   invariant true — there is **no** `collecting-started` event (an earlier draft
   proposed emitting one; rejected so the event enumeration stays closed).
@@ -371,6 +374,23 @@ reload (the exact case C8 names). "The cancellation token is dropped on
 `RunFinished`" (above) drops only the *token*, **not** the `RunResult` — the result
 outlives the token for re-fetch.
 
+**Collected-set registry (so C3/C4/C5/C6 can resolve a `CollectedSetId`) `[DECIDED]`.**
+C3 `get_targets`, C4 `plan_output`, C5 `set_destination` and C6 `start_conversion`
+each take only a `collectedSetId` and must resolve it to the **frozen `CollectedSet`**
+(detected format, frozen `items`, dropped `roots`, `skipped`) — C3 reads the stored
+source format, C4/C5 plan against the stored roots, C6 rebuilds the `Batch` from the
+stored frozen items (§2.7 needs the roots for subtree re-creation). The core therefore
+holds a **collected-set registry**: a `State<'_, T>` map **`CollectedSetId →
+FrozenCollectedSet`** (the `CollectedSet::Single` payload + its `roots`), mirroring the
+`RunId`-token / `CollectingId`-token lifecycle pattern. **Lifecycle:** an entry is
+**created when C1/C2a returns** a `CollectedSet::Single` (the freeze, §2.4), **retained
+through C3/C4/C5/C6**, and **evicted** when its run starts (C6 hands the frozen items to
+the `Batch`), or when a new C1/C2a supersedes it, or at app exit. C3 is thus a **pure
+function of the stored detection result** and C6 builds the `Batch` from the **stored
+frozen items** — no second walk, no re-detection. (`Mixed`/`Unsupported`/`Uncertain`/
+`Empty` outcomes are terminal pre-flight states and are **not** registered — only a
+`Single` yields a resolvable `CollectedSetId`, §0.6 invariant 3.)
+
 ### 0.4.5 Rust↔TS type-sharing strategy `[DECIDED — tauri-specta]`
 
 The platform rule is **no `any`**; the Rust↔TS boundary must be typed with a
@@ -409,7 +429,7 @@ both `[DECIDED]`.
 
 ```
  drop / picker / launch-arg
-        │  (C1 ingest_paths / C2 pick_paths)         §1.1 intake → §2.4 freeze
+        │  (C1 ingest_paths / C2a pick_for_intake)   §1.1 intake → §2.4 freeze
         ▼
  content detection (§1.2) ──► group by user-facing format (§1.3)
         │                                            mixed → MixedDrop refusal
@@ -469,8 +489,9 @@ pub struct DroppedItem {
 // patterns elsewhere. There is no `DetectedFormat`/`DetectionConfidence` pair — the
 // earlier 3-valued confidence enum and the user_facing:Option collapse (which lost the
 // Empty-vs-Unreadable distinction) are deleted in favour of §1.2's richer enum:
-//   Recognized { format, confidence } | UnsupportedType { detected } |
+//   Recognized { format, confidence, dims: Option<(u32,u32)> } | UnsupportedType { detected } |
 //   Uncertain { best_guess } | Empty | Unreadable { reason }.
+//   (`dims` = header-derived raster width/height, §1.2 step 4 → the §1.10 cheap estimate input.)
 // `SkippedItem` (below) projects an ineligible DetectionOutcome to a §2.8 reason.
 
 /// The single grouping key (§1.3): individual user-facing format,
@@ -495,12 +516,24 @@ pub enum CollectedSet {
         skipped: Vec<SkippedItem>,   // ineligibles dropped alongside the eligible set,
                                      //   threaded through to the §1.4 confirm summary
                                      //   and the §1.12 RunResult ("N collected, M skipped")
+        // ─ confirm-screen summary fields `[DECIDED]` — this IS the §1.4 CollectedSummary
+        //   wire shape (the two are unified so the mandatory confirm gate has a real IPC
+        //   path; §1.4 is the display/projection view of exactly these fields):
+        total_bytes: u64,               // size hint / §1.10 pre-flight (§1.4)
+        roots: Vec<PathBuf>,            // dropped root(s) → §2.7 subtree + open-folder
+        encoding_hint: Option<String>,  // e.g. CSV detected "Windows-1252" (per 04)
+        delimiter_hint: Option<String>, // e.g. CSV/TSV detected ";" (per 04)
+        notes: Vec<CollectedNote>,      // §1.4-owned; PRODUCED by §1.2's bounded peek
     },
     Mixed { found: Vec<(UserFacingFormat, usize)> },  // → pre-flight refusal (§1.3)
     Unsupported { detected: String },                 // real but out-of-scope (§1.2)
     Uncertain { note: String },                       // can't tell (§1.2)
     Empty,                                             // nothing eligible
 }
+// `CollectedSet::Single` carries the FULL confirm-summary field set, so it IS the wire
+// shape C1/C2a return and the confirm gate (§1.4/§5.2) renders. `CollectedNote` is the
+// §1.4-owned type (referenced here). The collected-set registry (§0.4.4) stores this
+// payload + its roots keyed by `CollectedSetId` for C3/C4/C5/C6 to resolve.
 
 // An item present in the drop but NOT eligible for the batch (unsupported / uncertain
 // / empty / unreadable at freeze). Surfaced in the §1.4 confirm summary and the §1.12
@@ -605,6 +638,13 @@ pub enum JobStage { Spawning, Decoding, Encoding, Writing }
 // The stable engine discriminant used in logging/SBOM/registry (§3.2 trait Engine
 // `id()`, §3.7 SBOM rows). One variant per bundled engine; Ghostscript NOT shipped v1.
 pub enum EngineId { FFmpeg, LibreOffice, Poppler, Pandoc, ImageMagick, ImageCore, NativeCsvTsv }
+// NOTE — `ImageMagick` is a **bundled delegate inside the image-worker** (libvips
+// `magicksave`/`magickload` for BMP+ICO, §3.5.5), NOT a registry-eligible engine: no
+// (source,target) pair maps to `EngineId::ImageMagick` (BMP/ICO route through
+// `ImageCore` = the image-worker), it has **no `EngineProgram`** and **no §3.2.3
+// registry entry**, and there is **no `trait Engine` impl** for it. Its `EngineId`
+// exists ONLY for SBOM/NOTICE attribution (§3.7) and the §7.2 EngineHealth
+// presence-check. (Prevents a spurious `Engine` impl / registry row.)
 // A capability descriptor, NOT a process and NOT the §3.2 `trait Engine` (the
 // registry seam). The name is `EngineDescriptor` precisely to avoid colliding with
 // that trait — §0.4/§0.6/§3.2/§3.5/§6.4/§07 refer to this domain type by this name.
@@ -612,15 +652,17 @@ pub struct EngineDescriptor {        // capability descriptor, NOT a process
     pub id: EngineId,                // FFmpeg | LibreOffice | Poppler | Pandoc | ImageCore | …
                                      //   (Ghostscript [DECIDED: NOT shipped v1] — §3.1/§3.6)
     pub serialised_only: bool,       // true for LibreOffice (§0.9)
-    pub kind: EngineKind,            // Subprocess | InCoreNative (see §0.9 note + §3.2 EngineProgram)
+    pub kind: EngineKind,            // Subprocess | InProcessNative (canonical name; mirrors §3.2 EngineProgram::InProcessNative — see §0.9 note)
 }
 
 // How an engine runs. Mirrors §3.2's `EngineProgram` at the domain level: every
 // third-party engine (FFmpeg / LibreOffice / poppler / pandoc / ImageMagick and the
 // libvips IMAGE-WORKER) is a Subprocess [DECIDED §0.6 note]; ONLY ConvertIA's own
-// MIT native CSV/TSV engine (§3.5.6) is InCoreNative. There is NO in-process path
-// for any third-party decoder of untrusted bytes (§2.12.4 absolute).
-pub enum EngineKind { Subprocess, InCoreNative }
+// MIT native CSV/TSV engine (§3.5.6) is InProcessNative. There is NO in-process path
+// for any third-party decoder of untrusted bytes (§2.12.4 absolute). The variant name
+// `InProcessNative` is identical to §3.2 `EngineProgram::InProcessNative` (one canonical
+// name for the same concept; the earlier `InCoreNative` spelling is retired).
+pub enum EngineKind { Subprocess, InProcessNative }
 
 // ─── Output plan & results ──────────────────────────────────────────────────
 // OutputPlan is OWNED (computed) by §1.8; its canonical shape is copied here so
@@ -663,7 +705,14 @@ pub enum RerunDecision { Skip, FreshCopy } // C6 input: skip (safe default) | ma
 pub struct PreflightVerdict {        // §1.10 (owner) summary surfaced before convert
     pub est_total_output_bytes: u64,
     pub est_total_scratch_bytes: u64,
-    pub up_front_fail: Option<ErrorKind>, // Some(TooBig|OutOfDisk) if doomed up front (§1.10/§2.8)
+    pub up_front_fail: Option<ErrorKind>, // Some(TooBig|OutOfDisk) ONLY for the WHOLE-BATCH
+                                     //   doomed case (the §5.2 disable-Convert-wholesale
+                                     //   flag). A PER-ITEM too-big / out-of-disk is NOT
+                                     //   carried here: it is enforced at WRITE TIME (mid-run)
+                                     //   as that item's Failed(TooBig|OutOfDisk) while the
+                                     //   batch continues (§1.10 / §1.11 fast-fail surfacing).
+                                     //   So "preferably up front" = the whole-batch verdict
+                                     //   here + per-item enforcement at the §2.1 write.
 }
 
 pub struct DestinationResolved {     // C5 set_destination → revalidated destination
@@ -684,7 +733,11 @@ pub struct DestinationResolved {     // C5 set_destination → revalidated desti
 pub struct RunResult {               // canonical shape; §1.12 computes & references by name
     pub collected_set_id: CollectedSetId, // Batch.id is a CollectedSetId (§1.12)
     pub run_id: RunId,               // §7.1
-    pub items: Vec<ItemResult>,      // per-item outcome + output→source mapping (§1.12)
+    pub items: Vec<ItemResult>,      // per-item outcome + output→source mapping (§1.12).
+                                     //   INCLUDES the freeze-time pre-flight SkippedItems
+                                     //   (CollectedSet.skipped) projected as ItemResult
+                                     //   { state: Skipped(reason), output: None, reason } —
+                                     //   §1.12 `[DECIDED]`; Totals.skipped counts them.
     pub totals: Totals,              // succeeded / failed / cancelled / skipped (§1.12)
     pub cleanup_incomplete: Vec<CleanupResidue>, // §2.6 cleanup-incomplete warnings
     pub common_root: PathBuf,        // "open folder" target (§2.7 / §7.7)
@@ -835,7 +888,7 @@ convertia/
 │     │  ├─ registry.rs            #   Engine trait + selection (the §3.2 seam — candidate own crate)
 │     │  ├─ invoke.rs              #   §1.7 generic lifecycle (spawn/progress/cancel/timeout/error-map)
 │     │  ├─ ffmpeg.rs  libreoffice.rs  pandoc.rs  poppler.rs  image.rs  csv_native.rs
-│     ├─ fs_guarantees/            # tier 2 — the reusable guarantees-fs layer (§2.1/2.3/2.4/2.6/2.7/2.14)
+│     ├─ fs_guard/                 # tier 2 — the reusable guarantees-fs layer; module path `core::fs_guard` (§2.0); §2.1/2.3/2.4/2.6/2.7/2.14
 │     ├─ pool/                     # tier 3 — subprocess pool, concurrency degree (§0.9)
 │     ├─ domain/                   # tier 3 — §0.6 types, derive specta::Type
 │     ├─ error.rs                  # tier 3 — §2.8 taxonomy ↔ IpcError mirror (§0.4.3)
@@ -871,7 +924,7 @@ consumer (e.g. a headless test harness) appears. Flagged for §3.2/§0.7 sign-of
 > *links* libvips/LGPL libs internally, which is aggregation, not a link into the MIT
 > core (§3.6.1). The `EngineKind` field on the §0.6 `EngineDescriptor` records the
 > image core as `Subprocess` (the worker process); only the native CSV/TSV engine
-> (§3.5.6) is `InCoreNative`.
+> (§3.5.6) is `InProcessNative`.
 
 ---
 
@@ -958,6 +1011,13 @@ pool** governs how many engine processes run at once. **This number lives here;
   (success/fail/kill). This is the concrete code that *reads* `serialised_only`: the
   pool, at registry-build time, allocates a `Semaphore(1)` for each engine flagged
   serialised; non-serialised engines acquire only the global degree permit.
+  **How the pool gets `serialised_only` from a running job's `EngineId` `[DECIDED]`:**
+  the §3.2.3 registry maps `(SourceFmt,TargetFmt) → EngineId`, and the §3.2 `trait
+  Engine` exposes **`fn descriptor() -> EngineDescriptor`**; the pool reads
+  `registry.engine(engine_id).descriptor().serialised_only` before dispatch (or, at
+  registry-build time, pre-computes a `HashMap<EngineId, bool>` of serialised flags
+  from each registered engine's `descriptor()`, read on every dispatch). This is the
+  named `EngineId → serialised_only` path — there is no descriptor-less lookup gap.
 - **FFmpeg internal threading (avoid oversubscription).** FFmpeg's own
   `libx264`/`libvpx` use multiple internal threads per process by default, so even
   the **1–2** video-re-encode cap can saturate the CPU. v1 does **not** additionally
@@ -1005,12 +1065,15 @@ need:
     //   covers the "main" window, it is invokable. Per-command permission entries are
     //   ONLY required for PLUGIN commands (dialog/log/store). So we add NO C1..C13
     //   allow-entries here (adding them would be redundant, not load-bearing).
-    // C2 pick_paths: the native file/folder picker is opened RUST-SIDE via DialogExt
-    //   from the C2 handler `[DECIDED]` — so there is **NO `dialog:allow-open` grant**.
-    //   Picked paths re-enter Rust intake directly (the single C1 freeze point) and
-    //   never transit the untrusted WebView, mirroring the opener model below (the
-    //   asymmetric "WebView hands raw FS paths" door is closed). A Rust-internal
-    //   DialogExt call is not capability-gated.
+    // C2a pick_for_intake / C2b pick_destination: BOTH native pickers are opened
+    //   RUST-SIDE via DialogExt from their handlers `[DECIDED]` — so there is **NO
+    //   `dialog:allow-open` grant**. The INTAKE picker (C2a) funnels picked paths
+    //   straight into the C1 freeze and returns a CollectedSet, so intake paths never
+    //   transit the untrusted WebView (mirrors the opener model). The DESTINATION
+    //   picker (C2b) returns the chosen folder PathBuf to the WebView for C5 — that
+    //   one WRITE-destination path does transit the WebView (acceptable: §0.11 T2,
+    //   bounded by §2.1 non-destructive creates). A Rust-internal DialogExt call is
+    //   not capability-gated either way.
     // file-system: the core does the FS work in Rust; the WEBVIEW gets NO fs plugin
     //   scope at all (no fs:default) — it cannot read/write files directly.
     // NO shell:allow-execute — engines spawn Rust-side only (§3.3.3 [DECIDED]); the
@@ -1132,9 +1195,20 @@ fixed: deny-by-default; **no** WebView FS; **no** network; **no `shell:allow-exe
 ConvertIA's own commands whose Rust handlers call `OpenerExt` internally — not
 capability-gated — and the real gate is the Rust-side §7.7.3 RunResult-membership
 check, which works for arbitrary beside-source outputs a static scope could not);
-**no `dialog:allow-open` WebView grant** `[DECIDED]` (C2's picker is opened Rust-side
-via `DialogExt`, so picked paths enter Rust intake directly and never transit the
-WebView — closing the asymmetric "WebView hands raw FS paths" door);
+**no `dialog:allow-open` WebView grant** `[DECIDED]` (both C2 pickers are opened
+Rust-side via `DialogExt`: the **intake** picker C2a funnels picked paths into the C1
+freeze and returns a `CollectedSet`, so **intake** paths never transit the WebView;
+the **destination** picker C2b returns the chosen write-destination `PathBuf` to the
+WebView for C5, which is acceptable per §0.11 T2). **Scope note — the "WebView never
+sees raw FS paths" claim is precise, not absolute:** it holds for the *picker* intake
+surface, but the **primary intake (drag-and-drop) structurally delivers raw paths to
+the WebView** via Tauri's native `onDragDropEvent` Drop payload (§1.1/§5.4), and the
+**OS launch-arg / `app://intake`** path emits `Vec<PathBuf>` to the WebView that it
+echoes back to C1. The real mitigation is **not** "no path ever reaches the WebView"
+but that the **core treats every WebView-supplied path (drop, launch-arg, and a C5
+destination) as untrusted input re-validated at the §1.1 freeze / §2.3.3 write-target
+check** (canonicalise / resolve-identity / existence / detection); the DialogExt
+picker simply avoids *one extra* such surface and the `dialog:allow-open` grant.
 `log:default` + `store:default` for the §7.5 local log
 bridge and the §7.4 prefs blob. The image-core runs as a **separate image-worker
 process** `[DECIDED]` (§0.7/§2.12/§3.5.5) — a raw Rust spawn, so it adds **no**
@@ -1155,6 +1229,7 @@ The `SECURITY` policy (§6.8) references this map.
 |---|---|---|---|---|
 | T1 | **Untrusted decoder input** | A crafted/corrupt/malicious file (image bomb, malformed MP4, hostile SVG, macro-laden DOCX) exploits or hangs a decoder | **§2.12** decoder isolation (separate subprocess for **every** engine including the image core — the image-worker process `[DECIDED]` §0.7/§3.5.5; contained crash/hang/exploit fails one item) + **§1.7** invocation lifecycle (timeout/kill) + **§0.9** pool bounds + **§1.2** detection security note (first code on untrusted bytes). **v1 ships no rely-on-OS decode path**; any future rely-on-OS untrusted-decode must pass the **§3.4.4** re-evaluation gate before counting as T1-covered. | covered |
 | T2 | **Malicious / compromised WebView content** | XSS-style injection or a supply-chained frontend dep tries to read the disk or call out | **§0.10** capability allowlist (no WebView `fs`, no network) + CSP (no remote origins, `object-src 'none'`) | covered |
+| T2a | **WebView steers writes to an attacker-chosen path** | A compromised WebView supplies an arbitrary `DestinationChoice::ChosenRoot(PathBuf)` to C5/C6 (the destination is WebView-held, with no server-side store — §0.4.1 C6) to write outputs somewhere unexpected | **§2.1** writes are always **non-destructive creates** (never overwrite) + **§2.3.3** write-target link-safety (a chosen destination that resolves onto / inside a frozen source is rejected and diverted) + **§2.7** divert rules. A chosen destination is honoured only as a *write* location: it **cannot harm an original** (no-clobber + link-safe) and **cannot read anything** — so an arbitrary writable ChosenRoot is bounded harm (a converted copy lands in an odd-but-writable folder), accepted in v1. The C2b destination picker is Rust-opened, but C5/C6 still accept a WebView-supplied `ChosenRoot` string; the no-harm machinery — not path provenance — is the bound. | covered |
 | T3 | **Bundled-binary supply chain** | A tampered/backdoored engine binary ships in the build | **§3.8** engine pinning + **§6.2** integrity hashes + **§6.3** SBOM (every binary enumerated, verifiable) | covered |
 | T4 | **Open-file launch of a fresh artifact** | C9 "open file" hands a just-written, possibly-still-untrusted output to an external app | **§7.7** open-file safety (reveal-in-folder, no auto-open, the artifact is *our* output not the untrusted source) + **§7.7.3** Rust-side `RunResult`-membership check (only a path that is a member of the current run's results may be opened). (Note: §0.10/§7.7.2 deliberately grant **no** `opener:*` path scope — beside-source outputs legitimately write outside `$DOWNLOAD`/`$DOCUMENT` — so the gate is the membership check, not a capability path-scope.) | covered |
 | T5 | **Core panic / app fault** | A Rust panic, WebView load failure, missing/corrupt engine at startup, damaged bundle | **§2.13** app-level fault model (`catch_unwind` worker boundary, no-stack-trace surfacing) + **§7.2** startup faults + **§0.3.1** WebView-absent handling | covered |

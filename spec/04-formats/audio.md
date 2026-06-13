@@ -499,6 +499,14 @@ calm inline note at target choice (per SSOT *Fail clearly* / §2.9 catalog):
 3. **lossy → lossless** (e.g. MP3→FLAC, WMA→ALAC): **no quality gain** — bigger
    file, the discarded detail is gone forever. → §2.9 `audio_lossy_origin` (so
    users aren't misled into thinking they "upgraded" their audio).
+   - **Deliberate scope `[DECIDED]`:** `audio_lossy_origin` is flagged on lossy →
+     **FLAC/ALAC** but **intentionally NOT on lossy → WAV/AIFF**, even though WAV/AIFF
+     are equally lossless targets. Rationale: WAV/AIFF are the **common/default
+     "give me a plain uncompressed file" targets**, where users do not expect an
+     archive-quality claim — firing the note on every MP3→WAV would be alarming noise;
+     FLAC/ALAC are the **archive-quality** targets users *do* reach for to "preserve
+     quality", so the no-gain disclosure is meaningful there. The asymmetry is a
+     deliberate UX call, not an oversight (the matrix `✓~` cells reflect it).
 4. **bit-depth reduction** (>16-bit source → default 16-bit WAV/AIFF): a narrow
    lossy case, flagged only for that path. → §2.9 `audio_bitdepth`.
 

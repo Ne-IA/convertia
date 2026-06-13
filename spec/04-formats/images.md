@@ -362,12 +362,16 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   libheif's **libaom** AV1 encoder — the single bundled AV1 encoder; standalone
   libavif dropped) and the **dav1d** load module for AVIF→raster decode (libaom is
   the encoder only; AVIF *decode* is dav1d, §3.1 row 1b). **Flag → §3.4.**
-- **Options/settings:**
-  - *Basic:* **Quality — default `60`** (libavif default; range 0–100).
-  - *Advanced:* `speed`/effort 0–10 — default **6** (libavif default balance;
-    lower = slower/smaller); `lossless` — default **off**; `cq-level` (aom, 0–63)
-    — derived from Quality unless overridden; bit depth 8 default (10/12 advanced);
-    chroma 4:2:0 default.
+- **Options/settings:** (the engine is **libvips `heifsave compression=av1`**, whose
+  exposed knobs are **`Q` / `effort` / `lossless`** — there is **no `cq-level`** on
+  `heifsave` (that is a libaom/libavif-CLI concept ConvertIA does **not** expose); the
+  internal libaom `cq-level` is derived from `Q` by libheif and is not a user control.)
+  - *Basic:* **Quality (`Q`) — default `60`** (libvips `heifsave` default is 50;
+    ConvertIA pins 60; range 0–100).
+  - *Advanced:* **`effort` 0–9** — default **4** (libvips `heifsave` default for the AV1
+    encoder; 0 = fastest, 9 = slowest/smallest); **`lossless`** — default **off**; bit
+    depth 8 default (10/12 advanced); chroma 4:2:0 default. (No `speed`/`cq-level`
+    controls — those are not `heifsave` parameters.)
 - **Lossy?:** **Lossy by default** (`→ AVIF` flagged → §2.9; `lossless` available).
   AVIF→JPG lossy; AVIF→PNG/TIFF lossless w.r.t. decoded pixels.
 - **Edge cases:** **Animated AVIF** (`avis`) source: animation preserved → GIF /

@@ -251,7 +251,7 @@ choices; adding a setting is a scope change, §1.6). FilterData is passed on the
 | `UseLosslessCompression` | Advanced | false | false | bool | PNG-style lossless instead of JPEG; larger files. |
 | `SelectPdfVersion` | Advanced | 0 (PDF 1.7) | 0 | 0=1.7, 15=PDF/A-1b, 16=PDF/A-2b, 17=PDF/A-3b… | PDF/A only if a user needs archival; not default. |
 | `ExportBookmarks` | (not exposed) | true | true | bool | Slide titles → PDF outline; harmless default-on. |
-| `UseTaggedPDF` | (not exposed) | false | false | bool | Accessibility tags; off by engine default. |
+| `UseTaggedPDF` | (not exposed) | false | false | bool | Accessibility tags; **left at the Impress engine default `false`** — Impress tagged-PDF support is limited and yields noisy/low-value tag trees from slide layouts. **Deliberately unlike documents.md, where Writer sets `UseTaggedPDF=true`** (Writer emits well-structured heading/paragraph tags). The asymmetry is intentional, not a harmonisation gap. |
 | `EmbedStandardFonts` | (not exposed) | false | false | bool | Embeds the 14 base PDF fonts; off by default. |
 
 > **Default rationale.** ConvertIA ships the **bare engine defaults plus one

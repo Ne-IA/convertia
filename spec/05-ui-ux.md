@@ -123,13 +123,13 @@ per-item outcome); the machine only sequences the user through them.
 
 | # | State | Entered when | Primary content | Exits to |
 |---|-------|--------------|-----------------|----------|
-| 1 | `Idle` | app start; after "convert more"; after a refused/unsupported drop is dismissed | drop-or-browse invitation; "all conversion happens locally, on your machine" reassurance; no setup, no fields | drop/pick → `Collecting` |
+| 1 | `Idle` | app start; after "convert more"; after a refused/unsupported drop is dismissed; **after a cancelled intake picker** (C2a returned `CollectedSet::Empty`, a clean no-op — stays in `Idle`, no error, no `Collecting`) | drop-or-browse invitation; "all conversion happens locally, on your machine" reassurance; no setup, no fields | drop/pick → `Collecting`; **picker cancelled → stays `Idle`** |
 | 2 | `Collecting` | a drop/pick/launch-arg handoff is accepted; backend is freezing the set + recursing folders + detecting (§1.1/§1.2) | a **throttled live count** *"Scanning… N files so far"* (fed by C1's `onScan` `Channel<ScanProgress>`, ≈2/s, §0.4.2) for the brief collect step — falls back to indeterminate "looking at your files…" if no count yet (NOT the convert step) + a **cancel-collect** affordance backed by **C13 `cancel_ingest`** (Esc, §5.10) — discards the partial set, returns to `Idle` | C1 returns `CollectedSet::Single` → `Confirm`; `Mixed` → `MixedDropRefusal` (9); `Unsupported`/`Uncertain` → `Unsupported` (10); **`Empty` → `Unsupported` (10, the "nothing here I can convert" copy)**; (cancel) → `Idle` |
 | 3 | `Confirm` (collected/confirm gate) | backend returns a single-format collected summary (§1.4) | "**N JPG files**" (detected format + count); for recursive folder drops, the collected count is the whole point of this gate. **If any items were skipped** (§1.4/§0.6 `skipped`), a calm passive line: *"M file(s) weren't recognized and will be skipped"* with an **expandable** list (so a bad item is **never silently dropped**, §1.4) — informational, does not block confirm | confirm → `Targets`; cancel → `Idle` |
 | 4 | `Targets` (targets + options) | user confirms the batch | FormatPicker (target tiles, one **pre-highlighted default** per §1.5/04-matrices), contextual basic options, **Advanced options** drawer (§5.3), passive **lossy note** beside the chosen target (§2.9) | pick target → reveal/refresh `DestinationBar` (same state); proceed → `Destination`-confirmed (folded) or directly to the convert gate; **back → `Confirm` (3)** via a **Back** button / **Ctrl/⌘+Backspace** (§5.10), preserving the already-collected frozen set (does NOT discard it — distinct from Ctrl+N, which starts over from `Idle`) |
-| 5 | `Destination` (destination preview — folded into the Targets screen) | always shown **before** convert (SSOT *Output lands somewhere obvious*) | the "**will save to …**" line (per §1.8/§2.7 plan: beside each source by default, divert noted), **Change destination** button (directory picker C2 → C5 `set_destination`, §5.4 — **not** §7.7), the **Convert** button. **Doomed-up-front sub-state:** when the C4 `preflight.up_front_fail` is `Some(kind)` (§1.10), Convert is **disabled** with a passive inline `Note` carrying the §2.8 string (SSOT *fails fast up front*) | Convert → `Rerun?` decision (backend §2.5) → `Converting`; back → `Targets` (4; state 5 is folded into 4, so this is an in-screen step-back, and a further **Back/Ctrl+Backspace** from Targets reaches `Confirm` (3) without discarding the set); (up-front-fail) Convert disabled until destination/target change clears it |
+| 5 | `Destination` (destination preview — folded into the Targets screen) | always shown **before** convert (SSOT *Output lands somewhere obvious*) | the "**will save to …**" line (per §1.8/§2.7 plan: beside each source by default, divert noted), **Change destination** button (directory picker C2b `pick_destination` → C5 `set_destination`, §5.4 — **not** §7.7), the **Convert** button. **Doomed-up-front sub-state:** when the C4 `preflight.up_front_fail` is `Some(kind)` (§1.10), Convert is **disabled** with a passive inline `Note` carrying the §2.8 string (SSOT *fails fast up front*) | Convert → `Rerun?` decision (backend §2.5) → `Converting`; back → `Targets` (4; state 5 is folded into 4, so this is an in-screen step-back, and a further **Back/Ctrl+Backspace** from Targets reaches `Confirm` (3) without discarding the set); (up-front-fail) Convert disabled until destination/target change clears it |
 | 6 | `RerunPrompt` (interstitial) | the **C4 `plan_output` response** carries `OutputPlanPreview.rerun` (§0.4.1 / §2.5.2 — equivalence detected during planning, *before* Convert). **Reached ONLY from C4**: the §2.5 re-run verdict is **destination-independent in v1** (§2.5.1), so a **C5 `set_destination` never produces a new `rerun`** — `DestinationResolved.rerun` is carried through unchanged and the UI does **not** re-enter this state on a destination change. The held C4 `RerunDecision` carries into C6 unchanged | **one batch-level** prompt: *"You already converted these with the same settings."* — **Skip (default)** / **Make a fresh copy**; the choice becomes the `RerunDecision` passed to C6 | choose → `Converting`; cancel → back to `Destination` |
-| 7 | `Converting` (progress) | convert command accepted | **per-item** real progress (not a spinner) + **aggregate batch** bar; current-item label; **Cancel** button | all items terminal → `Summary`; cancel → confirmed-cancel round-trip (§5.8) → `Summary` (partial) |
+| 7 | `Converting` (progress) | convert command accepted | **per-item** real progress (not a spinner) + **aggregate batch** bar; current-item label; the passive **`ConvertingNote`** worst-case-lossy banner where applicable (§5.3/§5.7); **Cancel** button | all items terminal → `Summary`; cancel → confirmed-cancel round-trip (§5.8) → `Summary` (partial) |
 | 8 | `Summary` | every job reached a terminal state (§1.9) | per-item success/fail with reason (strings §2.8), output→source mapping (§1.12), **Open folder** / **Open file** (OpenActions, §7.7); a **fully-failed** batch is rendered as a clear failure banner, never a quiet "done" | "Convert more" → `Idle`; Open actions stay available |
 | 9 | `MixedDropRefusal` | the drop/folder contained >1 source format (§1.3 pre-flight) | **hard refusal**, not a partial convert: lists the formats found + counts ("Found 30 JPG, 12 PNG, 3 PDF"), asks to **re-drop a single format**; explicitly **no** "just convert the JPGs" affordance in v1 (parked) | dismiss / re-drop → `Idle`/`Collecting` |
 | 10 | `Unsupported` / `Unreadable` | detection says *real but unsupported type* or *uncertain/conflicting* (§1.2), or every collected item was unreadable/gone, **or** a `CollectedSet::Empty` (all files filtered out / nothing eligible) | plain message: *"Can't convert this type — detected: X"* / *"Couldn't tell what this file is"* / *"Nothing here I can convert"* (the Empty case); never an empty target list, never a hang | dismiss → `Idle` |
@@ -218,23 +218,24 @@ restated per component.
 
 | Component | Role | Key states/props | Notes / cross-refs |
 |-----------|------|------------------|--------------------|
-| **DropZone** | the primary intake surface + click-to-browse | `dragActive`, `disabled`-while-converting | native file-drop via §5.4; click opens picker (dialog plugin, §0.10 scope); the only element present in `Idle` besides the reassurance line |
+| **DropZone** | the primary intake surface + click-to-browse | `dragActive`, `disabled`-while-converting | native file-drop via §5.4; click invokes **C2a `pick_for_intake`** (Rust-opened `DialogExt`, no `dialog:allow-open` grant — §0.10/§5.4); the only element present in `Idle` besides the reassurance line |
 | **BatchSummary** | the confirm-gate card | `detectedFormat`, `count`, `sampleNames?`, `skipped?: SkippedItem[]` | data from §1.4 collected-summary payload; the mandatory pre-convert gate (state 3). **Rendering rule for `skipped`:** when non-empty, render the passive *"M file(s) weren't recognized and will be skipped"* line with an expandable list (path + §2.8 reason per item) — never blocks confirm, but is always shown so no skipped item is silently dropped (§1.4) |
 | **FileList** | optional expandable list of collected items (behind a "Show files" disclosure on the Confirm gate, state 3) | `items: { name: string; relPath?: string }[]`, `skipped?: SkippedItem[]`, `virtualized: true` | **Trigger/affordance:** collapsed by default; a "Show N files" toggle expands it. **Row data:** file name + (for folder drops) the dropped-root-relative path; **eligible vs skipped are rendered distinctly** — eligible rows plain, **skipped rows visually marked** with their §2.8 reason (so a skipped item is never hidden, §1.4). **Virtualised** (§1.10) for thousands of files. Read-only in v1 (no per-item target / no per-item deselect — both out of v1) |
 | **FormatPicker** | target tiles for the detected source | `targets[]`, `default`, `selected`, per-tile `disabledReason?` | one pre-highlighted default (§1.5); cross-category outputs (extract-audio / to-GIF) appear as extra tiles of a video source (cross-category.md); disabled tiles per §3.4 (§5.2) |
 | **OptionsPanel** | the few **basic** contextual settings for the chosen target | option descriptors (§1.6 generic model); values & defaults from 04 | e.g. JPG quality slider, GIF fps/width — **descriptors come from the backend** (§1.6), UI just renders the declared widget type |
 | **AdvancedDrawer** | collapsed-by-default drawer for niche options | `open` | keeps the default view clean (SSOT How It Feels 5); never gates conversion |
-| **DestinationBar** | the "will save to …" line + Change button + the up-front preflight verdict | `plan` (destination preview), `diverted?`, `preflight: PreflightVerdict` (§0.6/§1.10) | **always visible before Convert** (state 5); shows per-location divert note (§2.7); **Change → the directory picker (C2 `pick_paths` directory-mode → C5 `set_destination`, §5.4)** — *not* the §7.7 shell-out (§7.7 is open-finished-output, a different action). When `preflight.up_front_fail` is `Some(kind)` (§1.10 "doomed up front"), **Convert is disabled** and a passive inline `Note` shows the §2.8 catalog string for that kind (e.g. `TooBig`/`OutOfDisk`) — the SSOT "fails fast up front" surfacing; the user can still change the destination/target to clear it |
+| **DestinationBar** | the "will save to …" line + Change button + the up-front preflight verdict | `plan` (destination preview), `diverted?`, `preflight: PreflightVerdict` (§0.6/§1.10) | **always visible before Convert** (state 5); shows per-location divert note (§2.7); **Change → the directory picker (C2b `pick_destination` → returns the chosen `PathBuf` → C5 `set_destination`, §5.4)** — *not* the §7.7 shell-out (§7.7 is open-finished-output, a different action). When `preflight.up_front_fail` is `Some(kind)` (§1.10 "doomed up front"), **Convert is disabled** and a passive inline `Note` shows the §2.8 catalog string for that kind (e.g. `TooBig`/`OutOfDisk`) — the SSOT "fails fast up front" surfacing; the user can still change the destination/target to clear it |
 | **ProgressList** | per-item rows + aggregate bar | `Map<ItemId, ItemProgress>` (the §0.4.2 `ItemProgress` payloads, keyed by `itemId`; `JobId == ItemId` §0.6), `batchPct`, `currentItem` | real determinate progress (§1.11); virtualised for large batches; rows transition to terminal `Succeeded`/`Failed`/`Cancelled`/`Skipped`. For an indeterminate-`fraction` (LibreOffice) row it shows a staged determinate-looking bar from `stage` (§1.11) |
 | **ResultSummary** | end-of-batch outcome | `RunResult` (§1.12) | success/fail counts, per-item reason (§2.8 strings), output→source map; fully-failed banner |
 | **OpenActions** | open-folder / open-file buttons | `folderPath`, `filePath?` | **backed by §7.7** (the only OS shell-out); "open folder" opens the common root (§2.7). **Availability `[DECIDED]`: Summary-only (state 8), NOT mid-run (state 7).** During `Converting` the run's results are still incomplete and the §7.7.3 RunResult-membership set is not final, so open-actions are withheld until the run reaches a terminal `Summary`; this keeps the open-finished-output model (§7.7) honest and avoids opening a folder of half-written outputs |
 | **RerunPrompt** | the §2.5 interstitial | `equivalentCount`, default=Skip | one batch-level prompt, skip-default / fresh-copy (state 6) |
 | **MixedDropRefusal** | pre-flight hard refusal | `formatsFound[]` with counts | state 9; no subset-convert affordance in v1 |
-| **UnsupportedNotice** | unsupported / uncertain / all-unreadable / nothing-eligible | `detected?`, `reason` | state 10; plain language, no stack trace; also renders the `CollectedSet::Empty` "nothing here I can convert" case |
+| **UnsupportedNotice** (a.k.a. the state-10 intake-refusal notice) | unsupported / uncertain / all-unreadable / nothing-eligible | `variant: 'Unsupported' \| 'Unreadable' \| 'Empty'`, `detected?`, `reason` | state 10; **three explicit variants each with its own copy path** so the **`Empty`** "nothing here I can convert" branch is never overlooked despite the component's unsupported-leaning name: `Unsupported` → "can't convert this type — detected: X"; `Unreadable` → "couldn't read these files"; `Empty` (the `CollectedSet::Empty` case) → "nothing here I can convert". Plain language, no stack trace |
 | **QuitConfirm** | quit-while-converting interstitial | `onQuit`, `onStay` | state 11; overlay over `Converting`, triggered by `app://close-requested` (§7.3.2); Enter=Stay (safe default), Esc=cancel-close (§5.10) |
 | **AppFaultNotice** | post-fault recovery screen | `onStartOver` | state 12; plain "something went wrong" + Start Over → `Idle` (§2.13/§5.8); no stack trace; never fabricates per-item outcomes |
 | **AboutDialog** | About + legal-notices | `licenseData` (from §3.7), `version` (§7.6) | presentation only — §5.9 |
 | **Note** (primitive) | the passive lossy/divert/animation inline note | `kind`, `text` (string from §2.9) | calm, passive, never a blocking "I understand" dialog (SSOT *Fail clearly*) |
+| **ConvertingNote** | the passive worst-case-lossy banner adjacent to `ProgressList` during `Converting` (state 7) | `willReencode: boolean`, `lossyNote?: string` (§2.9) | shown when the worst-case "may be re-encoded" note applies (**first surfaced at state 4** via C3 `Target.lossy = video_reencode`; **confirmed/kept or cleared** by `RunStarted.willReencode`, §5.7/§5.8); uses the `--info` calm token; **non-modal, no dismiss**; wraps the `Note` primitive |
 | **primitives/** | Button, Dialog, Drawer, Tile, ProgressBar, ProgressRing, Spinner, Banner, Toast? | — | the design-system building blocks (§5.5); a determinate ProgressBar is mandatory, an indeterminate Spinner is allowed **only** for the brief `Collecting` step |
 
 ---
@@ -281,12 +282,24 @@ const unlisten = await getCurrentWindow().onDragDropEvent((e) => {
   `Idle → Collecting` on `drop` and waits for the backend's collected summary.
 
 ### File picker (parity path)
-Click on the DropZone (or the **Ctrl/⌘ + O** accelerator, §5.10) opens the OS file dialog
-via the Tauri **dialog plugin** (`open({ multiple: true, directory: false })`
-for files; a separate "choose folder" affordance uses `directory: true`). The
-dialog returns absolute paths that flow into the **same** `ingest_paths` (C1) entry
-point as drop — one intake funnel (§1.1). Dialog/opener capability scope is owned
-by **§0.10**; this section only invokes within that allowlist.
+Click on the DropZone (or the **Ctrl/⌘ + O** accelerator, §5.10) invokes the **intake
+picker command `C2a pick_for_intake`** (`kind: files`; a separate "choose folder"
+affordance passes `kind: folder`). The native dialog is opened **Rust-side via
+`DialogExt`** inside the C2a handler `[DECIDED]` — there is **no JS `open({...})` call
+and no `dialog:allow-open` WebView grant** (§0.10). The picked paths are funnelled
+**straight into the C1 `ingest_paths` freeze Rust-side**, and C2a returns the **same
+`CollectedSet`** the WebView would get from a drop — so **no raw FS path ever reaches
+the WebView**; the UI transitions `Idle → Collecting` and renders the returned summary
+exactly as for a drop (one intake funnel, §1.1). **Cancelling the dialog is a clean
+no-op**: C2a returns `CollectedSet::Empty`, the UI stays in `Idle`, no error, no
+`Collecting` transition.
+
+The **Change-destination** picker is the *separate* command **`C2b pick_destination`**
+(folder-only, also Rust-opened via `DialogExt`): it **returns the chosen folder
+`PathBuf` to the WebView**, which carries it into **C5 `set_destination`**. This is the
+one picker whose path *does* transit the WebView — unavoidable, since the destination is
+a WebView-held choice — and is acceptable (a *write* destination, bounded by §2.1, see
+§0.11 T2a). Capability scope is owned by **§0.10**; this section only invokes within it.
 
 ### Keyboard parity
 Every result reachable by drop/pick is reachable by keyboard alone (SSOT DoD
@@ -447,7 +460,7 @@ labels, button text, About text, the mixed-drop refusal phrasing) are owned
 | **Unsupported / uncertain** | `UnsupportedNotice` (10): "can't convert this type — detected: X" / "couldn't tell what this is" — never an empty target list, never an apparent hang | §2.8 / here |
 | **Destination before convert** | `DestinationBar` "will save to …" is **always visible before** the Convert button is reachable (SSOT *Output lands somewhere obvious*); per-location divert noted | here (chrome), plan from §1.8/§2.7 |
 | **Fails fast up front** (doomed batch) | when C4 `preflight.up_front_fail` is `Some(kind)` (§1.10), `DestinationBar` **disables Convert** and shows a passive inline `Note` with the §2.8 string (e.g. too-big / out-of-disk) — surfaced **before** any conversion starts | §2.8 string, here (chrome) |
-| **Worst-case lossy ("may be re-encoded")** | on `RunStarted.willReencode == true` the `ConvertingNote` surfaces the §2.9 worst-case note in the `Converting` banner; cleared if `false` (§5.8) | §2.9 (string), here (chrome) |
+| **Worst-case lossy ("may be re-encoded")** | the note is **first surfaced at target choice (state 4)** when a video target's worst-case is re-encode (C3 `Target.lossy = video_reencode`, §2.9.2) — **never first-shown mid-run**. `RunStarted.willReencode` only **confirms/keeps** the already-shown note (if `true`) or **clears** it (if `false`) in the `ConvertingNote` (§5.8); it never introduces the note for the first time | §2.9 (string), here (chrome) |
 | **Re-run / equivalent output** | `RerunPrompt` (6): one batch-level prompt, Skip default / fresh copy | §2.5 (logic), here (chrome) |
 | **No-harm / atomicity** | invisible by design — the UI never offers an "overwrite" choice; collisions are silent next-free-variant (§2.2); only the *equivalent-output* re-run gets a prompt | §02 |
 | **Cleanup couldn't complete** | if the backend reports residue (§2.6), the item is shown as **not a clean success** with where residue remains — never a green "done" | §2.6/§2.8 |
@@ -474,7 +487,8 @@ typed wrappers; feature code calls those.
 - All effectful operations are **`invoke()` calls** into the Rust core, awaited as
   Promises, typed via §0.4.5 generated types (no `any`). The full set of commands the
   frontend calls (names defined in §0.4, not invented here): `ingest_paths` (C1),
-  `pick_paths` (C2 — DropZone "browse" + the Change-destination directory picker, §5.4),
+  `pick_for_intake` (C2a — DropZone "browse" / keyboard picker → returns `CollectedSet`)
+  and `pick_destination` (C2b — Change-destination directory picker → returns `PathBuf` for C5), §5.4,
   `get_targets` (C3), `plan_output` (C4), `set_destination` (C5), `start_conversion`
   (C6), `cancel_run` (C7), `get_run_summary` (C8 — idempotent summary re-fetch after a
   WebView reload), `open_path` (C9 — open-folder/open-file, §7.7), `open_project_page`
@@ -589,12 +603,17 @@ they do not count against the three-event invariant):
 `RunStarted` (§0.4.2) carries `willReencode?: boolean` (the §2.9.2 best-effort
 worst-case flag). The core **always emits a definite value** (`false` for non-video /
 non-applicable batches — §0.4.2 emission rule); the frontend treats **absent /
-`undefined` as `false`**. On `RunStarted` the store records `willReencode` and updates
-the active lossy note (the `ConvertingNote` adjacent to the `ProgressList`): if `true`
-and the worst-case "may be re-encoded" note (§2.9) is not already shown, surface it in
-the `Converting` banner; if `false` (or absent), silently clear any pre-shown
-worst-case note. (This is the only frontend consumer of `willReencode`; the
-authoritative per-item lossy outcome still comes from the §1.12 summary.)
+`undefined` as `false`**. **The worst-case "may be re-encoded" note is first surfaced
+at target choice (state 4):** C3 `Target.lossy` can carry the `video_reencode` lossy
+kind (§2.9.2), which the FormatPicker renders as a passive note the moment that target
+is selected. `willReencode` is therefore the **during-`Converting` confirmation**, not
+the note's first or only source: on `RunStarted` the store records `willReencode` and
+updates the `ConvertingNote` (adjacent to the `ProgressList`) — if `true` it **keeps**
+the already-shown note (re-surfacing it in the `Converting` banner if it wasn't carried
+over); if `false` (or absent) it **silently clears** the pre-shown worst-case note. So
+the note's lifecycle is: **shown at state 4 (C3 `Target.lossy`) → confirmed/cleared by
+`RunStarted.willReencode`**; the authoritative per-item lossy outcome still comes from
+the §1.12 summary.
 
 ---
 
@@ -657,12 +676,13 @@ reference it (`a11y/keymap.ts`). It satisfies the SSOT §9 DoD gate
 | **Confirm batch** (proceed past the collected-summary gate) | **Enter** | `Confirm` (3) | the gate's primary action; **Esc** cancels back to `Idle` |
 | **Select target tile** | **Arrow keys** within the radio-group; **Enter/Space** selects | `Targets` (4) | tiles are one radio-group; the pre-highlighted default is pre-focused |
 | **Toggle Advanced options** | **Ctrl/⌘ + .** (period) | `Targets` (4) | opens/closes `AdvancedDrawer` |
-| **Change destination** | **Ctrl/⌘ + D** | `Targets`/`Destination` (4/5) | opens the **directory picker** (C2 `pick_paths` directory-mode → C5 `set_destination`, §5.4) — **not** §7.7 (which is open-finished-output, a separate action) |
+| **Change destination** | **Ctrl/⌘ + D** | `Targets`/`Destination` (4/5) | opens the **directory picker** (C2b `pick_destination` → returns the chosen `PathBuf` → C5 `set_destination`, §5.4) — **not** §7.7 (which is open-finished-output, a separate action) |
 | **Convert** (start the run) | **Ctrl/⌘ + Enter** | `Targets`/`Destination`, only once a destination is shown | the primary action; never reachable before the destination preview exists |
 | **Cancel conversion** | **Esc** | `Converting` (7) | triggers the **confirmed** cancel round-trip (§5.8); first Esc requests cancel, does not fabricate completion |
 | **Open output folder** | **Ctrl/⌘ + Shift + F** | `Summary` (8) | OpenActions → §7.7 (common root, §2.7) |
 | **Open output file** (single-result runs) | **Ctrl/⌘ + Shift + Enter** | `Summary` (8), when exactly one output | OpenActions → §7.7 |
-| **Start over / cancel back to Idle** | **Ctrl/⌘ + N** | `Targets` (4), `Destination` (5), `Summary` (8), `AppFault` (12) | returns to `Idle` — gives `Targets`/`Destination` a keyboard escape so the pre-convert flow is not a dead end (no temp written yet, so nothing to clean) |
+| **Back to Confirm gate** | **Ctrl/⌘ + Backspace** | `Targets`/`Destination` (4/5) | returns to the `Confirm` gate (3) **without discarding the frozen set** (preserves the collected set; distinct from Ctrl/⌘+N, which starts over from `Idle`); backs the §5.2 state-4 "Back" button |
+| **Start over / cancel back to Idle** | **Ctrl/⌘ + N** | `Targets` (4), `Destination` (5), `Summary` (8), `AppFault` (12) | returns to `Idle` — gives `Targets`/`Destination` a keyboard escape so the pre-convert flow is not a dead end (no temp written yet, so nothing to clean). **Intentionally absent in `Collecting` (2) and `Confirm` (3):** in Collecting the **Esc** cancel-collect (C13) is the escape; in Confirm **Esc** cancels back to `Idle` — so Ctrl/⌘+N is not bound there (no ambiguity) |
 | **About / legal-notices** | **F1** (and **?** where no text field is focused) | any | opens `AboutDialog` (§5.9) |
 | **Dismiss / close** any modal or notice | **Esc** | RerunPrompt, MixedDropRefusal, UnsupportedNotice, AboutDialog | closes + restores focus to trigger (§5.6) |
 

@@ -53,7 +53,7 @@ require admin rights for the user to run.
 
 | Platform | Tauri bundle target(s) | Canonical download (portable-first) | Notes |
 |----------|------------------------|-------------------------------------|-------|
-| **Windows x64** | `nsis` (+ optionally the raw `.exe`) | **Portable single `.exe`** is the canonical "download, run, done" artifact. NSIS is offered as a convenience installer that can run **per-user / no-admin** (`installMode: currentUser`). | MSI (`wix`) is **not** used — it implies a system install / admin. `[OPEN-6.1a]` whether to ship NSIS at all vs portable-exe-only. **(recommendation: ship the portable `.exe` as primary, NSIS per-user as a secondary convenience.)** |
+| **Windows x64** | post-build **zip** (portable) + `nsis` (installer) | **Portable zip archive (`.zip`)** containing the app `.exe` + the `binaries/` and `resources/` engine trees — the canonical "download, unzip, run" artifact. **NOT** a single `.exe`: the bare `app`/raw-`.exe` target does **not** embed the sidecar engine trees (FFmpeg, LibreOffice, pandoc — §3.3), which must sit **beside** the exe, so the portable artifact is necessarily a folder/zip. It is produced by an **explicit post-build packaging step** (`scripts/stage-engines` + zip), **not** natively by the `nsis` target (which produces an *installer* `.exe`, not a portable exe). NSIS is the **secondary** convenience installer running **per-user / no-admin** (`installMode: currentUser`) — and is the variant where the WebView2 floor/bootstrapper applies (§0.3.1). | MSI (`wix`) is **not** used — it implies a system install / admin. `[OPEN-6.1a]` whether to ship NSIS at all vs portable-zip-only. **(recommendation: ship the portable `.zip` as primary, NSIS per-user as a secondary convenience.)** |
 | **macOS (universal)** | `app` (inside) → `dmg` | **`.dmg`** containing a **universal** `ConvertIA.app` (arm64 + x86_64 via `--target universal-apple-darwin`). | One universal artifact covers Apple-Silicon and Intel → honours "one product per platform". Unsigned/unnotarized (SSOT *Out of Scope*) → on **Sequoia (15.x)** the first launch is blocked and the Control-click bypass is gone; the user must use **Privacy & Security → "Open Anyway"**, and **each bundled sidecar is independently quarantined** (the first conversion can hit `QuarantinedByOs`, §2.8/§7.2.4). Step-by-step on the download page (§6.2.4) and About (§5.9); the §6.6 macOS walkthrough tests it on Sequoia. |
 | **Linux x64** | `appimage` (+ optionally `deb`) | **AppImage** — the portable, distro-agnostic, no-install, runs-anywhere artifact (matches SSOT portability best). | `.deb`/`.rpm` are distro-specific *installs* (system pollution); they are **secondary at most**. `[OPEN-6.1b]` whether to also publish a `.deb`. **(recommendation: AppImage-only for v1; revisit `.deb` by demand.)** |
 
@@ -102,10 +102,31 @@ build-time mechanics that realise them**:
   simply not staged there; the affected target is surfaced as unavailable in the UI
   (§5.2, sourced from §3.4) — **never a silent omission** (SSOT *v1 DoD* exception 1).
 - **LGPL dynamic-link assertion (§3.6.1 build rule):** the stage step verifies the
-  LGPL libraries (libvips, libheif, libde265, librsvg, any linked FFmpeg libs) are
-  present as **bundled shared objects** (`.so`/`.dylib`/`.dll`) beside the binary —
-  not statically absorbed into a single MIT executable — so the LGPL §6 relinkability
-  path holds. A static LGPL link is a **build failure** (it would taint the MIT core).
+  LGPL libraries (libvips, libheif, libde265, librsvg, and the **external LGPL FFmpeg
+  component libs** `libmp3lame`/`libvorbis`/`libopus`) are present as **bundled shared
+  objects** (`.so`/`.dylib`/`.dll`) beside the binary — not statically absorbed into a
+  single MIT executable — so the LGPL §6 relinkability path holds. A static LGPL link is
+  a **build failure** (it would taint the MIT core). **Scope clarification `[DECIDED]`:**
+  the assertion targets the **LGPL libs ConvertIA links into the MIT core / LGPL
+  image-worker** (libvips et al.) and the **external** LGPL libs dynamically linked
+  *beside* the FFmpeg binary; it does **NOT** apply to FFmpeg-*internal* static LGPL — a
+  static GPL FFmpeg with `libmp3lame`/`libvorbis`/`libopus` baked in is GPL-clean (GPL
+  permits static LGPL) and the whole binary is aggregation (§3.6.1), so it must not fail
+  the assertion for a non-licence reason.
+- **libvips no-copyleft-PDF-loader assertion (§3.1/§3.6.1 build rule) `[DECIDED]`:** the
+  bundled libvips MUST be configured **WITHOUT the poppler/PDF loader (GPL — it makes
+  the whole libvips build effectively GPL, libvips#2222), WITHOUT the MuPDF loader
+  (AGPL), and without any other GPL/AGPL loader**, so the image-worker stays LGPL-only.
+  ConvertIA needs **no** libvips PDF loading (PDF→TXT is the separate poppler `pdftotext`
+  sidecar, §3.5.3), so this costs nothing. The stage step runs a **positive assertion**
+  that the staged libvips exposes **no poppler/mupdf loader/symbols** (e.g. no
+  `pdfload`/`poppler`/`mupdf` foreign loaders registered) and **fails the build** if one
+  is present (a distro/default libvips often enables poppler-glib PDF).
+- **libimagequant BSD-leg assertion (§3.1 row 1e / §3.6.1) `[DECIDED]`:** the stage step
+  asserts the staged `libimagequant` `COPYRIGHT` actually contains the **BSD-2-Clause**
+  text (the frozen `lovell/libimagequant` v2.4.x fork), and **fails the build** if a
+  GPLv3 leg (upstream 4.x) slipped in — the §6.3.3 SPDX-presence gate sees a declared id,
+  not the shipped text, so this text check is the real guard.
 - **Curated-FFmpeg decoder-coverage assertion `[DECIDED]`:** the FFmpeg build uses
   `--disable-everything --enable-…` trimmed to the `04` codec set (size lever, §3.9),
   which risks **silently dropping a decoder a 04 pair needs**. So the stage step runs
@@ -209,6 +230,20 @@ normal user isn't surprised:
   recovery actually works).
 - **Windows:** SmartScreen "Windows protected your PC" → **More info → Run anyway**
   (the analogous unsigned-build friction; surfaced on the download page).
+- **Windows WebView2 prerequisite `[DECIDED]`:** because the **portable `.zip`** cannot
+  show an in-app fault when WebView2 is **absent** (the loader fails before the core
+  runs — §0.3.1), the download page **must** carry a prerequisite note: *"ConvertIA needs
+  Microsoft Edge WebView2 (built into Windows 11 and current Windows 10; if a window
+  flashes and closes, install the WebView2 Runtime or update Windows/Edge)."* — this is
+  the "fail clearly" substitute for the portable path (not a runtime dialog). The
+  **NSIS** variant enforces the floor via its bootstrapper, so this note is portable-zip-
+  specific.
+- **Linux AppImage FUSE 2 prerequisite `[DECIDED]`:** an AppImage *mounts* itself via
+  **FUSE 2 at launch** (a runtime dependency — §6.1.4), so the page must note:
+  *"Linux: the AppImage needs `libfuse2` (Ubuntu: `sudo apt install libfuse2`, or
+  `libfuse2t64` on 24.04+); alternatively run with `--appimage-extract-and-run`."* —
+  satisfying the §6.1.4 disclosure requirement with an enforcement home (and a §6.8
+  README content item, below).
 
 ### 6.2.5 Reproducible-build intent `[OPEN — best-effort, not a gate]`
 
@@ -488,6 +523,14 @@ Concrete required contents:
 - A **portrait/rotated** clip (rotation honoured); a **VFR screen recording**
   (to-GIF fps-normalise); a **silent** clip (extract-audio "no audio track" case);
   a long-ish clip to exercise the to-GIF guardrail/cap (§cross-category).
+- **to-GIF bijection coverage `[DECIDED]`:** the §6.4.3a corpus↔pair bijection guard
+  requires every `(source → target)` pair to have a backing corpus file, so **each
+  video source corpus item's `covers` list MUST include its `["<SOURCE>", "GIF"]` pair**
+  (e.g. the MP4 item's `covers` includes `["MP4","GIF"]`, the WEBM item's includes
+  `["WEBM","GIF"]`, …) — not just one generic "long-ish clip" for all of to-GIF.
+  Otherwise the guard fails for most `video→GIF` pairs at Lane A. (One clip may *also*
+  be the dedicated guardrail/cap exerciser, but the `covers` lists must collectively
+  name every offered `video→GIF` pair.)
 
 **Documents** (`tests/corpus/documents/`)
 - **DOCX/DOC/ODT/RTF** real-world samples incl. **non-Latin (CJK) + RTL (Arabic/
@@ -545,7 +588,7 @@ DoD **core-UX-flow** gate; the human half is §6.6. Frontend component/unit test
 
 - **Native file-drop is NOT automatable** by `tauri-driver` (the OS-level
   native drag-drop event §5.4 cannot be synthesised by a WebDriver). So the
-  **automated E2E uses the file-picker path** (C2 `pick_paths` via the §5.10
+  **automated E2E uses the file-picker path** (C2a `pick_for_intake` via the §5.10
   accelerator, which funnels into the *same* C1 `ingest_paths` as a drop, §1.1) to
   reach Collecting; the **native drop itself is validated in the human walkthrough**
   (§6.6), where a real person drags a real file. This split keeps the automated gate
@@ -555,13 +598,19 @@ DoD **core-UX-flow** gate; the human half is §6.6. Frontend component/unit test
   display** — so the leg must run **under `Xvfb`** (e.g. `xvfb-run -a ...`) or a Wayland
   headless compositor. The CI Linux E2E step wraps the driver in `xvfb-run`; without it
   the WebView never comes up and the E2E silently can't start.
-- **Per-platform E2E driver `[OPEN]`:** the Windows and Linux legs use `tauri-driver`
-  (WebDriver; Linux under `Xvfb` per above). The **macOS leg is an `[OPEN]`**:
-  `tauri-driver` relies on `WKWebView`/`safaridriver`, which an **unsigned** build
-  cannot drive cleanly — so the macOS E2E may degrade to a **scripted launch +
-  screenshot/presence assertion** rather than full WebDriver, with the §6.6 human
-  walkthrough carrying the macOS core-flow validation. Flagged for the owner; the
-  Win/Linux automated E2E is firm.
+- **Per-platform E2E driver `[DECIDED — macOS degrades to a defined smoke test]`:** the
+  Windows and Linux legs use `tauri-driver` (WebDriver; Linux under `Xvfb` per above).
+  `tauri-driver` relies on `WKWebView`/`safaridriver`, which an **unsigned** build cannot
+  drive cleanly, so the **macOS automated leg is explicitly the degraded test, not full
+  WebDriver:** CI **launches the built app, drives a synthetic `argv` conversion of one
+  corpus file through the launch-intake path (§7.8/§1.1), and asserts (a) the window/
+  process is present, (b) the expected output file appears, and (c) exit 0** — a scripted
+  launch + presence/output assertion. The **WebView UX flow on macOS is covered by the
+  §6.6 human walkthrough** (which also tests the Sequoia Gatekeeper / per-sidecar
+  quarantine recovery). This is the knowable macOS DoD-#7 satisfaction; the Win/Linux
+  full-WebDriver E2E is firm. (If `safaridriver --allow-unentitled` later proves it can
+  drive an unsigned WKWebView on CI, the macOS leg is upgraded to full WebDriver — a
+  bonus, not a gate.)
 
 ---
 
@@ -682,13 +731,23 @@ specifically tests whether a *human who didn't build it* succeeds. Protocol:
 - **Staleness criterion (machine-checkable) `[DECIDED]`:** each walkthrough record
   carries a **`release_line` (the version/tag it validated)** and a **`date`**. The
   Lane-B §6.7.2 stage 5 gate **fails if the recorded `release_line` does not match
-  the release being built** (or, absent a version match, if the `date` predates the
-  current release branch's cut) — so an old walkthrough cannot silently satisfy a new
-  release. (CI checks the *evidence's* freshness; the human does the walkthrough.)
+  the release being built** (or, absent a version match, if the recorded **`date`
+  predates the date of the git tag triggering the Lane-B run** — concretely
+  `date >= git log -1 --format=%ai <tag>`, the tag's commit date) — so an old
+  walkthrough cannot silently satisfy a new release. (CI checks the *evidence's*
+  freshness against the **tag date**, unambiguously; the human does the walkthrough.)
 
-`[OPEN-6.6a]` exact tester sourcing/count beyond the SSOT minimum-of-one-per-
-platform — owner-level. **(recommendation: SSOT minimum of one non-dev per platform
-for v1; more if cheaply available.)**
+**Tester sourcing `[DECIDED]` (was `[OPEN-6.6a]`; ConvertIA is a solo/hobby project):**
+the gate is satisfiable by **at least one genuine non-developer walkthrough on at least
+one platform**, with the **owner (developer) permitted to perform the remaining two
+platform walkthroughs where a non-developer tester is not available** — recording in
+`docs/usability-floor.md` which walkthroughs were non-dev vs owner-run. "Non-developer"
+means *did not build or contribute code to ConvertIA and is not given instructions* (a
+first-time user). Rationale: the SSOT floor's intent (a human who didn't build it
+succeeds) is preserved by requiring ≥1 true non-dev pass; the solo-project reality is
+accommodated without dropping the gate. More non-dev testers are used if cheaply
+available; the macOS Sequoia quarantine sub-test (above) should preferentially get a
+non-dev tester since it is the highest non-technical-user blocker.
 
 ---
 
@@ -727,7 +786,8 @@ platform's branch-protection + auto-merge model).
 Triggered by a release tag (e.g. `v1.0.0`) on `main`. Stages, **in order**, each
 blocking the next:
 1. **Matrix build (native, §6.1.4):** stage engines per platform (§6.1.3), run
-   `tauri build` → per-platform artifact (portable `.exe`/NSIS, universal `.dmg`,
+   `tauri build` (+ the Windows post-build zip-packaging step §6.1.2) → per-platform
+   artifact (portable `.zip` + NSIS installer, universal `.dmg`,
    AppImage).
 2. **Full reliability gate (§6.5):** integration + property + corpus + E2E on **all
    three** legs; emits `reliability-report.json`. **Any `failing` pair aborts the
@@ -755,7 +815,11 @@ blocking the next:
        `concurrency` group** with **`max-parallel: 1`** for corpus jobs, and is **niced /
        cgroup-capped** (CPU + IO weight) so co-scheduled Lane-A jobs still get a slice.
        Tag-triggered Lane-B is **rare** (release-only), so a single long run is tolerable;
-       a Lane-A PR is never blocked >a few minutes by it.
+       it **should not materially delay Lane-A on typical PR loads**. **Fallback trigger
+       `[DECIDED]`:** if a Lane-B Linux run **measurably delays Lane-A on more than one
+       occasion**, **migrate the Lane-B Linux leg to a dedicated GitHub-hosted runner**
+       and keep the VPS runner **Lane-A-only** (the GitHub-hosted Linux fallback already
+       documented above becomes the standing arrangement).
      - **Disk budget:** the runner reserves headroom for the worst-case sum
        (corpus-large + 3-leg artifacts + scratch); the post-run cleanup (`docker`/build
        cache + corpus checkout) is mandatory so 720 GB is never exhausted.
@@ -828,7 +892,7 @@ All are English (public OSS repo). Mapping each to its SSOT origin and content o
 | **`SECURITY.md`** | **Private vulnerability reporting** channel (GitHub private advisories + a contact); scope statement = ConvertIA opens **untrusted files through third-party decoders** → references the §0.11 threat-surface map and the §2.12 isolation posture; best-effort patch posture **with no SLA** (SSOT); how a reporter can include a (redacted, §7.5) repro from the local log. | SSOT *Security posture* / *License & Openness*; ties to §2.12, §7.5, §0.11. |
 | **`PRIVACY.md`** | Plain-language restatement of **§2.11**: fully offline, **no network/telemetry/accounts/update-phone-home**; the only network is user-initiated (open project page, §7.7); the **cloud-sync caveat** (ConvertIA neither causes/prevents/detects your OneDrive/iCloud/Dropbox sync uploading files in a synced folder). | SSOT *Local/private/offline*; restates §2.11 (owner of the invariant). |
 | **`TRADEMARK.md`** | The MIT grant covers **code, not the "ConvertIA" name or the Ne-IA logo**; forks/redistributions must use a **different name** and may **not** use the Ne-IA logo; guidelines for nominative use. | SSOT *Trademark*. |
-| **`README.md`** (download + trust) | What it is, the **canonical-GitHub-Releases-only** download location (§6.2.2), the **verify-your-hash** recipe (§6.2.4), as-is/no-warranty + best-effort-security posture, supported-OS floor (§0.3.1), per-platform unsigned-build first-launch note. | SSOT *Distribution & download trust*. |
+| **`README.md`** (download + trust) | What it is, the **canonical-GitHub-Releases-only** download location (§6.2.2), the **verify-your-hash** recipe (§6.2.4), as-is/no-warranty + best-effort-security posture, supported-OS floor (§0.3.1), per-platform unsigned-build first-launch note, **plus the per-platform prerequisites (§6.2.4): Windows portable-zip WebView2 note (§0.3.1) and the Linux AppImage `libfuse2` note (§6.1.4)**. | SSOT *Distribution & download trust*. |
 | **`.github/` policy** | Issue templates (default new format/feature requests to **Future Ideas (Parked)** per the SSOT inclusion test — SSOT *Out of Scope*); PR template referencing the DCO/quality bar; private-advisory config wired to `SECURITY.md`. | SSOT *Out of Scope* (inbound-request default) + governance. |
 
 **DCO posture (explicit) `[DECIDED]`:** **no CLA**; a DCO **`Signed-off-by`** line
@@ -930,7 +994,7 @@ promises has a technical home" is **verifiable**. Each gate is marked
 | 10 | **Name/trademark clearance completed; any rename applied across repo/LICENSE/NOTICE/branding before release** | this file (§6.9) | Clearance-record gate (§6.9.2) + scripted rename propagation + old-name grep gate (§6.9.3) | **in-scope-gate** (the *clearance check + rename*); **out-of-scope-process** (*registering* a mark) |
 | 11 | **Usability floor: ordinary non-tech person completes each named conversion unaided on first try; ≥1 non-dev walkthrough per platform** | §5 (UX) · this file (§6.6) | Per-platform human walkthrough recorded in `docs/usability-floor.md`; evidence gate in Lane B (§6.6/§6.7.2) | **in-scope-gate** |
 | 12 | **Published integrity hashes from one canonical source (trust substitute for no-signing)** | this file (§6.2) | SHA-256 + `SHA256SUMS` (+ optional sig) published to canonical GitHub Releases (§6.2.2/§6.2.3); verify recipe surfaced (§6.2.4) | **in-scope-gate** |
-| 13 | **One artifact per platform (cross-platform, one product)** | §0.2 · this file (§6.1) | Build matrix artifact table (§6.1.2): portable-exe / universal-dmg / AppImage | **in-scope-gate** |
+| 13 | **One artifact per platform (cross-platform, one product)** | §0.2 · this file (§6.1) | Build matrix artifact table (§6.1.2): portable-zip (exe + bundled engines) / NSIS-installer (secondary) · universal-dmg · AppImage | **in-scope-gate** |
 | 14 | **No-harm / atomicity / fail-clearly hold even across crash/cancel/out-of-disk** | §2.1/§2.6/§2.8/§2.13/§2.14 | Atomicity-under-interruption + out-of-disk + panic-boundary property tests (§6.4.2) | **in-scope-gate** |
 | 15 | **Real-world filename + content fidelity (Unicode/emoji/long-path; CJK/RTL/encodings; CSV delimiters)** | §2.10 · §04 (per-format) | Adversarial-name unit tests (§6.4.1) + CJK/RTL/encoding corpus files (§6.4.5) | **in-scope-gate** |
 | 16 | **Patent per-platform gaps honestly surfaced (exception 1), never silent** | §3.4 (decision) · §5.2 (UI surfacing) | Ledger marks `unavailable-per-§3.4`; release-note item (§6.5.3); UI-unavailable assertion (§6.4.3) | **in-scope-gate** (recording/surfacing); patent **decision** owned by §3.4 |
@@ -960,7 +1024,7 @@ If a future SSOT clause is added, it must appear here with an owning section and
   the full gate** (§6.4.5); exact total size **[DEFER: calibrate as corpus fills]**.
 
 Easy `[OPEN]`s resolved with a recommended default (not owner-level): artifact
-formats (§6.1.2: portable-exe / NSIS-per-user / universal-dmg / AppImage),
+formats (§6.1.2: portable-zip / NSIS-per-user-installer / universal-dmg / AppImage),
 NSIS-vs-portable (§6.1.2a), Linux `.deb` (§6.1.2b), reproducible-build depth
 (§6.2.5b), `GOVERNANCE.md` (§6.8a), usability tester count (§6.6a) — each carries a
 **(recommendation)** inline.

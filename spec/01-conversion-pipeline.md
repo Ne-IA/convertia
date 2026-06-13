@@ -80,9 +80,9 @@ source set** (snapshot; §2.4).
 | Entry point | Mechanism | Where paths materialise |
 |-------------|-----------|-------------------------|
 | **Drag-and-drop** (files or folders) | Tauri **native drag-drop event** (`onDragDropEvent`, payload `type: 'drop'` carries `paths: string[]`) — **not** HTML5 DnD, which does not expose FS paths in a WebView (§0.4) | WebView event → forwarded to a Rust intake command |
-| **File picker** | Tauri dialog plugin (`open({ multiple: true, directory: false })`) and a separate folder mode (`directory: true`) | Dialog returns absolute paths directly to Rust |
-| **Keyboard** | Same picker, opened via the §5.10 accelerator; full parity (SSOT DoD "keyboard reach the same result") | Same as picker |
-| **OS launch entry points** | Open-with / launch args — macOS `RunEvent::Opened{urls}`, Windows `argv`, Linux `%F` desktop-entry field. Posture (associations: none in v1) owned by §7.8 | Captured at startup / on the macOS open-doc event → handed to intake |
+| **File picker** | **C2a `pick_for_intake`** (§0.4.1): the native files/folder dialog is opened **Rust-side via `DialogExt`** inside the command handler (no JS `open({…})`, no `dialog:allow-open` grant — §0.10) | Picked paths funnel **straight into this funnel Rust-side**; C2a returns the same `CollectedSet` — no path transits the WebView |
+| **Keyboard** | Same **C2a `pick_for_intake`**, invoked via the §5.10 accelerator; full parity (SSOT DoD "keyboard reach the same result") | Same as picker |
+| **OS launch entry points** | Open-with / launch args — **macOS** the Tauri v2 **`RunEvent::Opened { urls: Vec<Url> }`** (and/or `tauri-plugin-deep-link`'s `on_open_url`) — the canonical macOS open-with/launch hook; **Windows** `argv`; **Linux** `%F` desktop-entry field. The macOS payload is **`Vec<Url>` (`file://` URLs), not `Vec<PathBuf>`** — each URL is converted to a path (`Url::to_file_path()` / strip the `file://` scheme) **before** it enters the §1.1 freeze. Posture (associations: none in v1) owned by §7.8 | Captured at startup / on the macOS `RunEvent::Opened` → url→path → handed to intake |
 | **Second-instance hand-off** | When a single-instance policy (§7.1) routes a second launch's args into the running instance | The running instance's intake funnel |
 
 All five funnel into a single Rust function (pseudo-signature; exact IPC names in
@@ -136,8 +136,9 @@ the set, that set is closed. Files appearing afterward — written by this run, 
 concurrent instance, or anything else — are **never** ingested into this run, and
 outputs landing in a watched source folder do **not** expand or restart the
 batch. The freeze covers the launch-time and second-instance hand-off explicitly
-(so a `RunEvent::Opened` arriving mid-run starts a *new* batch, never mutates a
-frozen one — interaction with §7.1 instance policy). De-duplication of the frozen
+(so a macOS `RunEvent::Opened { urls }` arriving mid-run starts a *new* batch — after
+its `file://` URLs are converted to paths — never mutating a frozen one; interaction
+with §7.1 instance policy). De-duplication of the frozen
 set **by resolved identity** is owned by §2.3 and applied here as the set is
 built (a file reached via two paths is one member).
 
@@ -230,8 +231,13 @@ struct DetectionResult {
 }
 
 enum DetectionOutcome {
-    /// A supported v1 source type, with confidence.
-    Recognized { format: UserFacingFormat, confidence: Confidence },
+    /// A supported v1 source type, with confidence. `dims` carries the
+    /// **header-derived pixel width/height** for raster formats (JPEG SOF, PNG IHDR,
+    /// etc.), read by the bounded structural-peek (step 4) — `None` for non-raster or
+    /// where the header lacks them. It is the input the §1.10 cheap per-pixel size
+    /// estimate consumes, so the estimate never needs a decode (§1.10 "where the cheap
+    /// estimate's inputs come from"). Mirrored on the wire (§0.4.5).
+    Recognized { format: UserFacingFormat, confidence: Confidence, dims: Option<(u32, u32)> },
     /// A real type we identified but do not convert (SSOT: "can't convert this
     /// type — detected: X"). Carries the named type for the message.
     UnsupportedType { detected: String },
@@ -360,12 +366,22 @@ dropped paths pointing at one file are one member of one group.
 After a `Single` grouping, the pipeline produces the **collected-summary payload**
 — the backend data the confirm screen renders:
 
+**Wiring `[DECIDED]`.** `CollectedSummary` is **not a separate wire type** — its field
+set **is** the §0.6 `CollectedSet::Single` payload (the two were unified in the
+convergence pass so the mandatory confirm gate has a real IPC path: C1/C2a already
+return `CollectedSet`, and its `Single` variant now carries `total_bytes`, `roots`,
+`encoding_hint`, `delimiter_hint`, `notes` alongside `id`/`format`/`count`/`items`/
+`skipped`). `CollectedSummary` below is therefore the **display/projection name** for
+exactly those `CollectedSet::Single` fields the confirm screen renders — `§0.6 owns the
+struct shape, §1.4 owns the confirm-gate semantics`. No extra `get_collected_summary`
+command exists; the confirm screen renders the `CollectedSet::Single` C1/C2a returned
+(re-fetchable from the §0.4.4 collected-set registry by `collectedSetId` if the WebView
+reloads):
+
 ```rust
-// The display/summary projection of §0.6's `CollectedSet::Single`. It is NOT a
-// redefinition of the §0.6 `CollectedSet` enum (which §0.6 owns): it shares the
-// same `id`/`format`/`count` as `CollectedSet::Single` and adds the
-// detection-derived summary fields the confirm screen (§1.4) needs.
-struct CollectedSummary {
+// Projection of §0.6 `CollectedSet::Single` (NOT a redefinition). These ARE the
+// Single-variant fields (§0.6 is the owner); listed here so §1.4 reads standalone.
+struct CollectedSummary {            // == the §0.6 CollectedSet::Single field set
     collected_set_id: CollectedSetId, // == the §0.6 CollectedSet::Single.id
     format: UserFacingFormat,    // detected, user-facing (e.g. "JPG") — §0.6 enum
     count: usize,                // e.g. 48  → "48 JPG files"
@@ -666,8 +682,10 @@ scratch files, and violating "cleanly discards the one in progress."
 leader** and kills the **whole group**, so one cancel/kill tears down the engine
 *and all its descendants* atomically.
 
-- **Mechanism:** wrap each spawn with the **`process-wrap`** crate (the
-  cross-platform successor to `command-group`), composed over `tokio::process`:
+- **Mechanism:** wrap each spawn with the **`process-wrap`** crate (cross-platform
+  process-group / Windows Job-Object creation for engine-tree teardown — an independent
+  crate with a purpose overlapping `command-group`, not a successor/migration of it),
+  composed over `tokio::process`:
   - **Windows:** `JobObject` wrapper — the engine and all its children join one
     **Win32 Job Object**; killing the job (or closing its last handle with
     kill-on-close) terminates the entire tree immediately. Use the crate's
@@ -697,7 +715,14 @@ leader** and kills the **whole group**, so one cancel/kill tears down the engine
      progress.
   2. **Group-kill** the engine and wait for the OS to confirm the group is gone
      (so no descendant still holds the temp file open — matters on Windows where an
-     open handle blocks deletion).
+     open handle blocks deletion). **Bounded wait `[DECIDED]`:** this confirm-wait is
+     **timeout-bounded** (a short cap, generous enough for normal teardown) so a wedged
+     descendant — e.g. one blocked in uninterruptible kernel I/O on a dead mount —
+     **cannot hang the UI / quit path** (SSOT *app stays responsive*). On timeout the
+     item is marked `Cancelled`/`Failed` and the §2.6 reclamation of its temp is
+     **deferred to the §2.6 sweep** (the publish temp is a run-owned `*.part` dotfile,
+     safe to reclaim later) rather than blocking on the stuck handle. This bound is what
+     keeps §7.3.3 quit-while-converting from hanging on an unkillable descendant.
   3. **Then** invoke §2.6 cleanup to remove the per-job temp artifact. Because the
      final output is promoted only by the §2.1 atomic rename **after** a clean exit,
      a killed job has **no visible output** to undo — only the temp to discard.
@@ -863,9 +888,11 @@ struct SizeEstimate {
   04 and **must be finite** (a missing cap reintroduces the foot-gun).
 - **Where the cheap estimate's inputs come from `[DECIDED]`** (so it never needs the
   convert-time `ffprobe`):
-  - **Raster images:** §1.2 detection **carries header-derived `width`/`height`** (the
-    dimensions sit in the format header it already reads — JPEG SOF, PNG IHDR, etc.),
-    so per-pixel estimates use those, no decode.
+  - **Raster images:** §1.2 detection **carries header-derived `width`/`height`** in
+    `DetectionOutcome::Recognized.dims: Option<(u32,u32)>` (the dimensions sit in the
+    format header its bounded structural-peek already reads — JPEG SOF, PNG IHDR, etc.),
+    so per-pixel estimates consume `dims`, no decode. When `dims` is `None` (header
+    lacked them) the estimate falls back to the source byte-size bound like video below.
   - **Video / GIF:** the cheap pass does **NOT** run a per-item `ffprobe`; it uses a
     **worst-case bound from source byte-size** (+ the GIF duration cap from
     `cross-category.md`) — deliberately conservative. The precise per-item
@@ -876,12 +903,21 @@ struct SizeEstimate {
     `[OPEN-C]`.)
 - **Headroom margin:** require **free space ≥ (est_output + est_scratch) × margin**.
   `[REC]` margin **1.3×** as a starting value (confirm against the §6 corpus).
-- **Decision:** if the estimate exceeds the **"too big" ceiling** or free space is
-  insufficient → fail that item **up front** as a named §2.8 kind
-  (`TooBig` / `OutOfDisk`) **and continue the batch**. If a budget is only breached
-  mid-run (real disk usage outruns the estimate), the in-flight write fails, §2.6
-  restores free space, and the item is reported (§2.8) — the **up-front-vs-mid-run**
-  split is: estimate up front, enforce both up front *and* at write time.
+- **Decision (the up-front-vs-mid-run split, made precise) `[DECIDED]`:**
+  - **Whole-batch doomed** (the aggregate estimate exceeds the ceiling, or total free
+    space can't fit the batch) → `PreflightVerdict.up_front_fail = Some(TooBig|OutOfDisk)`
+    (§0.6), surfaced **up front before any conversion** as the §5.2 disable-Convert-
+    wholesale flag (SSOT *fails fast up front*). This is the **only** up-front fail
+    carrier — it is batch-level by design.
+  - **Per-item too-big / out-of-disk** is **enforced at WRITE TIME (mid-run)**: when an
+    item's own size/space breaches the budget (or real disk usage outruns the estimate),
+    its §2.1 write fails, §2.6 restores free space, and the item is reported as
+    `Failed(TooBig|OutOfDisk)` (§2.8) **while the batch continues** (§1.9/§1.11 fast-fail
+    surfacing). There is **no** per-item up-front-fail list on `PreflightVerdict`; a
+    per-item doom shows as that item's mid-run terminal row, not a pre-convert verdict.
+  - So: **estimate up front; the whole-batch doom fails up front; per-item doom is
+    enforced at the write** — the SSOT "preferably up front" is honoured by the
+    whole-batch verdict, and per-item correctness is honoured at write time.
 
 ### Ceilings & large lists `[DECIDED design; DEFER: corpus numbers]`
 
@@ -989,6 +1025,19 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
   CONVERT, the one batch-level skip/fresh-copy prompt (§5.2) already resolved it;
   the summary reflects whichever the user chose (skipped items appear as a distinct
   outcome, not a failure).
+- **Pre-flight skips ARE in `RunResult.items` `[DECIDED]`.** The freeze-time
+  `SkippedItem`s held in `CollectedSet::Single.skipped` (the unsupported / uncertain /
+  empty / unreadable-at-intake items that **never entered the queue**, §1.1/§1.3) are
+  **projected into `RunResult.items` at run-end** as
+  `ItemResult { source, state: JobState::Skipped(reason), output: None, reason: Some(OutcomeMsg::Failure{ kind, .. }) }`
+  (the `kind` is the `SkippedItem.reason` §2.8 kind, e.g. `UnsupportedType`/`Empty`/
+  `Unreadable`/`Unrecognized`). They are **counted in `Totals.skipped`** (never
+  `failed`). This gives the §5.2 Summary UI a single uniform source for every item's
+  source path + reason — pre-flight skips and in-run outcomes render the same way — and
+  resolves the otherwise-ambiguous "where does the Summary get a skipped item's
+  source/reason" question: it is in `RunResult.items`. (The pre-flight skip is **also**
+  shown earlier in the §1.4 confirm summary; appearing again in the final summary is
+  intentional, so nothing the user dropped is silently dropped, §1.4/§0.6.)
 
 ---
 

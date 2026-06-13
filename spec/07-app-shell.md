@@ -95,7 +95,7 @@ These two ids are the entities §0.6 lists as "defined in §7.1". Both are
 | Id | Type | Scope / lifetime | Derivation | Purpose |
 |----|------|------------------|------------|---------|
 | `InstanceId` | `Uuid` (v4) — opaque 128-bit | One running process, created once in `setup` | Random at launch | Names the per-instance scratch root (§2.14) and stamps temp artifacts so startup cleanup (§2.6) can tell *this* instance's residue from a *different* instance's still-running temp |
-| `RunId` | `Uuid` (v4) | One "drop → … → summary" cycle (one `Batch`); a new drop after a summary starts a new `RunId` | Random when the frozen source set is created (§2.4) | Owns the per-run temp subdir; cancellation/cleanup (§2.6), progress events (§0.4) and the end-of-batch summary (§1.12) are all keyed by it |
+| `RunId` | `Uuid` (v4) | One "drop → … → summary" cycle (one `Batch`); a new drop after a summary starts a new `RunId` | Random when **`start_conversion` (C6) accepts the batch** (§0.4.1 C6 / §0.4.4); the §2.4 freeze produces the **`CollectedSetId`** (the pre-run identity), **not** the `RunId` — the `RunId` is minted only when CONVERT begins, so the per-run scratch `run-<RunId>/` (§2.6.1) never exists before any RunId is minted | Owns the per-run temp subdir; cancellation/cleanup (§2.6), progress events (§0.4) and the end-of-batch summary (§1.12) are all keyed by it |
 
 Pseudo-types (mirrored to TS via the §0.4.5 mechanism — not re-decided here):
 
@@ -144,7 +144,11 @@ section only fixes the *identity* embedded in it.)
 5. **Scratch + log dir creation** with the per-instance root (§7.1.2). Reclaim
    orphaned scratch roots (§7.2.5, owned by §2.6).
 6. **WebView window create** and frontend load (the WebView runtime floor is
-   §0.3.1; a missing/old WebView is itself a §7.2/§2.13 startup fault).
+   §0.3.1). A missing/old WebView is a §7.2/§2.13 startup fault **where the core can
+   observe it** (macOS WKWebView / Linux WebKitGTK init failures the Rust core sees);
+   the **Windows WebView2-*absent* portable case is the honest exception** (§0.3.1) —
+   the loader fails before the core runs, so there is no in-app fault to show and the
+   "fail clearly" substitute is the §6.2.4 download-page prerequisite note, not a dialog.
 7. **Process launch-time intake** (§7.8): if the app was opened *with* file paths
    (OS open-doc / argv), feed them through §1.1 once the window is ready.
 8. Hand to UI empty/idle state (§5.2).
@@ -526,11 +530,12 @@ record *what actually happened* without showing the user a stack trace.
 - **Location (per-OS, Tauri `app.path().app_log_dir()`):**
   - Windows: `%LOCALAPPDATA%\dev.ne-ia.convertia\logs\`
   - macOS: `~/Library/Logs/dev.ne-ia.convertia/`
-  - Linux: Tauri **`app_log_dir()`** → `~/.local/share/dev.ne-ia.convertia/logs/`
-    (note: Tauri convention bases the log dir on the **data** dir, so this deviates
-    from the strict XDG `$XDG_STATE_HOME` (`~/.local/state`) where logs would
-    "officially" live — we follow Tauri's `app_log_dir()` for cross-platform
-    consistency, not raw XDG)
+  - Linux: Tauri **`app_log_dir()`** → `~/.config/dev.ne-ia.convertia/logs/`
+    (Tauri v2 resolves `app_log_dir()` on Linux via the **config** dir —
+    `${configDir}/${bundleIdentifier}/logs`, `configDir = $XDG_CONFIG_HOME`, default
+    `~/.config`. This deviates from the strict XDG `$XDG_STATE_HOME` (`~/.local/state`)
+    where logs would "officially" live — we follow Tauri's `app_log_dir()` for
+    cross-platform consistency, not raw XDG)
 - **Rotation/retention `[REC]`:** `tauri-plugin-log` `.max_file_size(5_000_000)`
   (bytes) with **`RotationStrategy::KeepOne`** (the bounded-footprint choice — on
   reaching `max_file_size`, keep exactly one rotated file; combined with the size cap
@@ -704,8 +709,12 @@ into the **same** intake path as a drop/picker — so the frozen-source-set (§2
 and one-batch-at-a-time (§1.3) rules apply identically. The entry points:
 
 - **macOS:** the open-documents AppleEvent (the OS delivers files to the running
-  app). Tauri surfaces this; the single-instance plugin (§7.1.1) ensures it lands
-  in the one instance.
+  app), surfaced by Tauri v2 as **`RunEvent::Opened { urls: Vec<Url> }`** (the concrete
+  hook; `tauri-plugin-deep-link`'s `on_open_url` is the equivalent ergonomic surface).
+  The payload is **`Vec<Url>` (`file://` URLs), not paths** — each is converted via
+  `Url::to_file_path()` before §1.1. This is the **launch/open-with** hook, **distinct**
+  from the single-instance second-launch hand-off (§7.1.1, the `argv`/cwd callback); the
+  single-instance plugin (§7.1.1) ensures both land in the one instance.
 - **Windows:** files passed as **`argv`** to the process. Captured in the
   single-instance callback (§7.1.1) for a second launch, and read at first launch
   in `setup` (`std::env::args_os`).

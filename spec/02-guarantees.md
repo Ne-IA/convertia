@@ -27,9 +27,12 @@
 
 ## 2.0 The reusable guarantees-fs layer (where this all lives) `[DECIDED]`
 
-All mechanisms below are implemented **once**, in the **orchestrator / guarantees-fs
-module** owned by §0.7 (not duplicated per engine or per format). Logical home
-(name is illustrative; physical tree is §0.7's call):
+All mechanisms below are implemented **once**, in the **guarantees-fs layer** owned by
+§0.7 (not duplicated per engine or per format). **Naming, fixed `[DECIDED]`:** the
+*conceptual layer* is "guarantees-fs"; its *canonical Rust module path* is
+**`core::fs_guard`** and its *physical directory* is `src-tauri/src/fs_guard/` (§0.7) —
+one module, three context-appropriate labels, **no** `fs_guarantees` module name floats
+anymore. Logical home:
 
 - `core::fs_guard` — atomic write, no-clobber, resolved-identity, path-limit checks
   (§2.1 / §2.2 / §2.3 / §2.14).
@@ -91,40 +94,45 @@ applied the §2.7 destination rules). Given a *final resolved destination path*
    no-op (NTFS metadata journaling covers the dentry). Durability sources on Windows
    are split: the **file *bytes*** are made durable by `sync_all` on the temp handle
    before the move (as on Unix); the **`MOVEFILE_WRITE_THROUGH`** flag on the
-   create-only `MoveFileExW` (and, on the §2.5 replacing path, `ReplaceFileW` with
-   `REPLACEFILE_WRITE_THROUGH`) flushes the *move/metadata* through — its documented
+   create-only `MoveFileExW` flushes the *move/metadata* through — its documented
    effect is for the **cross-volume copy-and-delete** form; for a same-volume move the
    dentry's durability rests on NTFS journaling. This is a strong best-effort, not a
    byte-for-byte equivalent of the Unix dir-fsync, so we do not claim them identical.
+   **Atomicity (the no-third-state §2.1.3 invariant) comes SOLELY from
+   `MoveFileExW`-*without*-`MOVEFILE_REPLACE_EXISTING` (create-only)** — `WRITE_THROUGH`
+   is only a best-effort metadata flush and the crash-safety invariant does **not**
+   depend on it. (No replacing path exists; `ReplaceFileW`/`REPLACEFILE_WRITE_THROUGH`
+   have no caller — §2.1.2 / §2.5.2.)
 7. On engine failure / cancel / any error in steps 3–6: **`tmp` is removed**
    (§2.6); `final` was never created → nothing to undo. Cleanup failure is itself
    handled (§2.6: never reported as clean success).
 
 ### 2.1.2 Exclusive create + atomic publish — the OS-primitive split `[DECIDED]`
 
-The **no-clobber** part and the **atomic-publish** part use *different* primitives
-because no single cross-platform call does both (exclusive-create *and* fill-from-a
-temp atomically). The chosen pattern:
+The **no-clobber** part and the **atomic-publish** part are the **same single
+no-placeholder exclusive-rename**: no single cross-platform call exclusive-creates
+*and* fills from a temp atomically, so the engine writes a private `tmp` and we publish
+`tmp → final` with a primitive that **creates `final` only if it does not exist**. The
+publish IS the no-clobber check — there is **no separate `create_new` placeholder
+reserve at `final`** (a reserve-then-rename would reintroduce the forbidden third
+state; see the "Why no-placeholder" callout and the **rejected** option (b) below).
 
-- **Reserve the name exclusively first.** `OpenOptions::new().write(true)
-  .create_new(true).open(final)` — Rust's `create_new` maps to **`O_CREAT|O_EXCL`
-  on Unix** and **`CREATE_NEW` on Windows**. This is the OS-atomic
-  *create-new-or-fail*: it fails with `ErrorKind::AlreadyExists` if a file **or a
-  (dangling) symlink** already exists at `final`, closing the TOCTOU race the SSOT
-  calls out ("even if the chosen name becomes taken between picking and writing").
-  Per the std docs this is **the** race-free exclusive create on both OSes.
-- **`AlreadyExists` → re-pick, never overwrite.** If the exclusive create fails
-  with `AlreadyExists`, the no-clobber rule (§2.2) advances to the next free
-  variant and retries — bounded retry loop (cap ~10 000 variants, then path-limit /
-  too-many-collisions failure §2.8). This is what makes the guarantee **absolute
-  against concurrent writers** (a second instance, a concurrent conversion, a file
-  that appeared meanwhile): the *kernel* enforces "new or fail", not a prior
-  `exists()` check.
+The publish, given a candidate `final` name, uses a **no-placeholder publish**: the
+final name is created **exactly once, by a rename that fails-if-exists**, so no empty
+placeholder is ever published and no third state (a 0-byte `final` we own but the
+engine never filled) can exist. On a name collision the loop advances to the next §2.2
+variant and retries — a bounded retry loop (cap ~10 000 variants, then path-limit /
+too-many-collisions failure §2.8). This is what makes the guarantee **absolute against
+concurrent writers** (a second instance, a concurrent conversion, a file that appeared
+meanwhile): the *kernel* enforces "new or fail" at publish, not a prior `exists()`
+check. `[DECIDED]`
 
-The publish itself, given a free `final` name, uses a **no-placeholder publish**:
-the final name is created **exactly once, by a rename that fails-if-exists**, so no
-empty placeholder is ever published and no third state (a 0-byte `final` we own but
-the engine never filled) can exist. `[DECIDED]`
+> **"Exclusive create" everywhere means this publish, not a `create_new`
+> placeholder.** Where §2.1.1 step 4, §2.2.2, §2.3.3 and §2.6.2 say "exclusive
+> create", they mean **this no-placeholder exclusive-rename publish** (Unix
+> `link`/`renameat2(RENAME_NOREPLACE)`; Windows `MoveFileExW`-without-`REPLACE_EXISTING`
+> / the §2.3.3 dir-handle-relative `NtSetInformationFile` form) — **never** an
+> `OpenOptions::create_new(true).open(final)` that would leave a 0-byte `final`.
 
 - **(a) No-placeholder exclusive-rename (chosen).** The engine writes to a private
   `tmp`; we then publish `tmp → final` with a primitive that **creates the name
@@ -152,21 +160,29 @@ the engine never filled) can exist. `[DECIDED]`
     the publish in one step **with no 0-byte placeholder ever created at the final
     name** — the exact create-only shape of the Unix `link`/`renameat2(RENAME_NOREPLACE)`
     primitive, so the §2.1.3 two-state invariant holds by construction on Windows too.
-    On the exists-error → re-pick the next §2.2 variant.
-    - The earlier `create_new`-reserve-then-`ReplaceFileW` ordering is **rejected for
-      the first-time publish** precisely because it first creates a 0-byte file at the
-      **final** path (`ReplaceFileW` requires the target to exist), admitting the
-      forbidden third state if a crash lands between the reserve and the replace.
-    - **`ReplaceFileW(final, tmp, NULL, REPLACEFILE_WRITE_THROUGH, ...)`** (the
-      documented NTFS atomic-replace, atomic w.r.t. readers, preserves attributes) is
-      reserved **only** for the genuinely-*replacing* path — i.e. the §2.5 re-run
-      "fresh copy onto an existing equivalent output" case where the target is meant to
-      exist; it is never the no-clobber create path.
+    On the exists-error → re-pick the next §2.2 variant. **(Parent-swap nuance:** the
+    path-string `MoveFileExW` re-resolves `final` by path at publish time, so to *also*
+    close the §2.3.3 parent-directory-swap race the publish is issued in its
+    **dir-handle-relative form — `NtSetInformationFile(FileRenameInformationEx)` with the
+    verified parent dir HANDLE as `RootDirectory` and `ReplaceIfExists = FALSE` →
+    `STATUS_OBJECT_NAME_COLLISION` on collision** — see §2.3.3. Same create-only,
+    no-placeholder semantics; rooted at a handle, not a re-parsed path.)
+    - The earlier `create_new`-reserve-then-`ReplaceFileW` ordering is **rejected**
+      precisely because it first creates a 0-byte file at the **final** path
+      (`ReplaceFileW` requires the target to exist), admitting the forbidden third
+      state if a crash lands between the reserve and the replace.
+    - **There is NO replacing-publish path in v1.** `ReplaceFileW` (the NTFS
+      atomic-*replace*, which requires the target to exist) has **no caller**: the §2.5
+      re-run **FreshCopy** decision does **not** replace an existing file — it falls
+      through to **ordinary §2.2 next-free-variant numbering** (a create-only publish at
+      the next non-existing name, §2.5.2). The absolute no-clobber rule (§2.1) means a
+      same-named file is treated as an unrelated collision and is **never** overwritten,
+      so a genuinely-replacing primitive would violate the guarantee. Windows publish is
+      therefore **always** the create-only `MoveFileExW`-without-`REPLACE_EXISTING`;
+      `MOVEFILE_REPLACE_EXISTING` and `ReplaceFileW` are **never** used.
     - **AV interference:** `MoveFileExW` can return `ERROR_ACCESS_DENIED` when antivirus
       holds a transient open handle on `tmp`; a **bounded retry** (short backoff, small
-      cap, then `WriteFailed` §2.8) is applied. `MOVEFILE_REPLACE_EXISTING` is never
-      used as the no-clobber primitive (Microsoft does not document it as atomic and it
-      can fall back to a non-atomic copy).
+      cap, then `WriteFailed` §2.8) is applied.
 - **(b) Write-into-the-reserved-handle.** Stream the engine output through an open
   exclusive handle directly (no temp + rename). **Rejected for the engine path**:
   engines are *separate processes* writing their own file (§3.5) — they cannot
@@ -194,9 +210,10 @@ the engine never filled) can exist. `[DECIDED]`
 > where a rename result can be ambiguous, treat an ambiguous outcome as
 > **name-may-be-taken** and re-pick the next §2.2 variant (never assume success). The
 > Windows primitive is **fixed**: the
-> first-time publish is `MoveFileExW` *without* `MOVEFILE_REPLACE_EXISTING` (a clean
-> create-only move, no placeholder); `ReplaceFileW` is used only on the
-> genuinely-replacing §2.5 fresh-copy path where the target is meant to exist. The
+> publish is **always** `MoveFileExW` *without* `MOVEFILE_REPLACE_EXISTING` (a clean
+> create-only move, no placeholder). **There is no replacing path** — the §2.5 re-run
+> FreshCopy uses ordinary §2.2 create-only numbering, never replacement, so
+> `ReplaceFileW`/`MOVEFILE_REPLACE_EXISTING` have no caller (§2.5.2). The
 > *guarantee and the primitive choice are both fixed*; only the Linux availability
 > check remains, and it has a guaranteed fallback.
 
@@ -393,19 +410,36 @@ would pass the leaf check yet land the file inside a source. To close it,
 `is_safe_output` + §2.1's create operate **relative to an open parent-directory
 handle**, not a re-resolved path string:
 
-1. **Open the parent dir handle first** (`O_DIRECTORY` / `openat`-style on Unix via
-   `std::fs::File::open` on the dir + `cap-std`/`openat2` for the relative create;
-   `NtCreateFile`/`CreateFile2` with a dir handle on Windows).
+1. **Open the parent dir handle first** (`O_DIRECTORY` on Unix via `std::fs::File::open`
+   on the dir; `NtCreateFile`/`CreateFile2` with a dir handle on Windows).
 2. **Verify the open dir handle's identity** (`FileIdentity`, §2.3.1) is **not**
    inside the frozen set (canonical-prefix containment on the *handle's* real path).
-3. **Create the leaf relative to that same open dir handle** (`openat(dirfd, leaf,
-   O_CREAT|O_EXCL)` on Unix; relative `NtCreateFile` on Windows). Because the file is
-   created *through the handle whose identity we just verified*, the parent cannot be
-   swapped between check and create — the handle pins the real directory.
+3. **Publish the leaf *relative to that same open dir handle*** — and the publish is
+   the **no-placeholder, create-only exclusive-rename of §2.1.2** (NOT an
+   `openat(...O_CREAT|O_EXCL)` placeholder, which would create the rejected 0-byte
+   `final`). Both per-OS publish primitives accept a **destination dir fd / handle**, so
+   the dir-handle-relative form is the *same* primitive, just rooted at the verified
+   handle:
+   - **Unix:** `linkat(AT_FDCWD, tmp, dirfd, leaf, 0)` — or
+     `renameat2(olddirfd, tmp, dirfd, leaf, RENAME_NOREPLACE)` where supported (both take
+     a **`newdirfd`**). Fails `EEXIST` on collision → re-pick the next §2.2 variant. This
+     is exactly the §2.1.2 link/`renameat2(RENAME_NOREPLACE)` create-only publish, rooted
+     at the verified `dirfd` — **not** `openat(... O_CREAT|O_EXCL)`.
+   - **Windows:** `NtSetInformationFile(tmpHandle, FileRenameInformationEx)` with the
+     **verified parent dir HANDLE as `RootDirectory`**, the relative `leaf` as
+     `FileName`, and **`ReplaceIfExists = FALSE`** (no `FILE_RENAME_REPLACE_IF_EXISTS`
+     flag) → returns **`STATUS_OBJECT_NAME_COLLISION`** if `leaf` already exists →
+     re-pick. This is the genuine **dir-handle-relative, create-only, no-placeholder**
+     Windows publish: because the move resolves `leaf` *through the handle whose identity
+     we just verified* (not by re-parsing a path string), the parent cannot be swapped
+     between check and publish. (Plain path-string `MoveFileExW` re-resolves `final` by
+     path at publish time and so does **not** close the parent-swap race on Windows;
+     `FileRenameInformationEx` with `RootDirectory` is what closes it.)
 
-So beside-source and divert writes both use a **dir-fd-relative exclusive create**;
-the parent's identity is checked once on the handle, and the leaf is created through
-it — neither the parent nor the leaf can be link-redirected in the gap.
+So beside-source and divert writes both use a **dir-fd/handle-relative, create-only
+exclusive publish**; the parent's identity is checked once on the handle, and the leaf
+is published through it — neither the parent nor the leaf can be link-redirected in the
+gap. `fs_guard::atomic_publish(parent_handle, tmp, leaf)` encapsulates the per-OS form.
 
 ### 2.3.4 Per-OS link primitives (named) `[DECIDED]`
 
@@ -525,6 +559,17 @@ cross-session limit):
    quit; nothing written to disk, §7.4). A second identical drop in the **same
    session** hits the ledger → definite equivalence → the prompt fires. This is the
    **only** signal that, on its own, fires the re-run prompt in v1.
+   - **Vanished-output edge `[DECIDED — accept the semantic]`:** the ledger fires from
+     the in-memory hit **alone**, with no disk corroboration, so if the prior output was
+     **deleted/moved between the two runs in the same session**, the prompt still fires
+     and choosing **Skip** yields *no* output. This is **accepted and documented**: the
+     ledger answers "you asked for this exact conversion already this session" (which is
+     true), and **Skip is honoured as the user's deliberate choice**; **Make a fresh
+     copy** re-creates it via ordinary §2.2 numbering. (We deliberately do **not**
+     corroborate signal 1 with a disk-presence check before firing — that would couple
+     the session-identity signal to disk state for a rare case; the safe default is Skip
+     and the user can pick fresh-copy. Disk-presence corroboration of a *vanished* output
+     is `[DEFER: post-v1]` with the cross-session ledger.)
 2. **Expected-output presence (corroborator only — never fires alone) `[DECIDED]`.**
    ConvertIA writes **deterministic** names, so a prior identical run's output sits
    exactly where this run's first candidate (`stem.ext`, §2.2) would go. **But an
@@ -672,7 +717,13 @@ per-file). This is why the publish temp is a uniquely-named **file** (not a subd
 named with the `RunId` — it makes the opportunistic same-dir sweep cheap and safe.
 A publish temp in a destination dir **never revisited** by a later run can persist
 until the user deletes it; this residual case is surfaced honestly per §2.6.4 rather
-than promised away.
+than promised away. **SSOT reconciliation `[DECIDED]`:** the "free space returns to
+roughly pre-run" promise holds **fully** on graceful failure/cancel and on the next
+write into that destination; **only after a true crash** (no chance to run run-end
+cleanup) can a single destination-resident `*.part` (≈one output size per crashed item)
+linger until opportunistic reclamation — which is **within the SSOT's stated best-effort
+cleanup tolerance** (the SSOT promises best-effort temp cleanup, not a guaranteed
+post-crash sweep of arbitrary destination dirs ConvertIA no longer remembers).
 
 ### 2.6.4 Cleanup failure → honest reporting `[DECIDED]`
 
@@ -773,6 +824,15 @@ single predictable place (per-location, not whole-batch):
 - **Mixed batch:** writable sources still write **beside** themselves; only the
   unwritable/ephemeral ones divert. This is the SSOT "per-location" semantics — the
   divert is item-by-item, never an all-or-nothing whole-batch redirect.
+- **The resolved divert target is itself subjected to the §2.7.2 ephemeral +
+  writability test `[DECIDED]`.** A divert target could *also* be ephemeral or
+  unwritable (a kiosk that redirects Downloads into a purgeable location; the same
+  pulled USB; a restricted Documents). So before diverting, `Downloads`/`Documents`
+  (or the user-chosen root) is run through the **same `location_status` check**: if it
+  resolves to an **ephemeral or unwritable** place, the item **fails clearly with
+  `WriteFailed` (§2.8)** rather than diverting an output into a place the OS may purge.
+  (The §2.3.3 `is_safe_output` link-safety + §2.2.3 path-limit run on the divert target
+  too, per §2.7.5 — the divert is never a degraded path.)
 
 ### 2.7.4 Flattening, de-collision, and the summary `[DECIDED]`
 
@@ -828,6 +888,8 @@ unknown" that leaks a raw error to the user (an unmapped internal error becomes
 `InternalError` with a generic calm message, §2.13).
 
 ```rust
+#[derive(Serialize, specta::Type)]   // generated into bindings.ts; §0.4.3 ErrorKind is its wire mirror
+#[serde(rename_all = "camelCase")]
 enum ConversionErrorKind {
     // ── item-level (one source file failed; the batch continues §1.9) ──
     Corrupt,            // decoded but structurally invalid / truncated mid-stream
@@ -923,6 +985,8 @@ substitutions:
 ```rust
 /// A surfaced one-line outcome for one item (§0.6 ItemResult.reason). Carries the
 /// stable discriminant so §5 may re-localise (§2.10) AND the resolved English line.
+#[derive(Serialize, specta::Type)]            // wire type — see specta note below
+#[serde(rename_all = "camelCase", tag = "type", content = "data")]
 enum OutcomeMsg {
     Failure { kind: ConversionErrorKind, text: String },  // §2.8.2 catalog row, substituted
     Lossy   { kind: LossyKind, text: String },            // §2.9.1 note, substituted
@@ -932,6 +996,21 @@ enum OutcomeMsg {
 `text` is the canonical English from the catalog above (§2.8.2) or the §2.9.1 note
 table, with `{x}` substitutions already applied; `kind` lets §5 swap in a localised
 string later without re-deriving the outcome.
+
+**Wire-type derivation — both `OutcomeMsg` and `ConversionErrorKind` derive
+`specta::Type` `[DECIDED]`.** `OutcomeMsg` crosses the boundary inside
+`ItemResult.reason: Option<OutcomeMsg>` (§0.6), which rides the `RunFinished` Channel
+payload and the C8 return, and it carries `ConversionErrorKind` in its `Failure`
+variant. tauri-specta generates `bindings.ts` only from types deriving `specta::Type`;
+if these two did not, codegen would fail or fall back to `any` for
+`ItemResult.reason` — violating the platform **no-`any`** rule. Therefore **both
+`OutcomeMsg` and `§2.8.1 ConversionErrorKind` (and `§2.9 LossyKind`) derive
+`specta::Type` and are registered in `collect_types![]`** (alongside the §0.4.3
+`IpcError`/`ErrorKind`). The §06 bindings-drift check (§0.4.5) **covers these types
+too**, so a change to the §2.8 taxonomy or the lossy catalog regenerates
+`bindings.ts` and fails CI if stale. (`ConversionErrorKind` is the §2.8-owned full
+set; `§0.4.3 ErrorKind` is its byte-identical wire mirror for the item-level
+variants — both are generated, neither is hand-written.)
 
 ### 2.8.3 Behaviour rules tying the catalog to the pipeline `[DECIDED]`
 
@@ -1140,6 +1219,20 @@ strategy) owns the *test*; §2.11 fixes *what is asserted*: with the machine off
 (or watched by a packet monitor / OS firewall logger), a **full conversion of every
 category produces zero outbound packets**, and the app launches and converts
 identically with networking disabled. This is a release gate, not a runtime check.
+
+- **Per-platform packet monitor / egress block (named, §6.7.3 owns the wiring):** the
+  gate runs under an **OS egress-deny** plus a packet-monitor assertion — **Linux**
+  `unshare --net` (loopback only) or `iptables -A OUTPUT -j DROP`; **macOS** a `pf`
+  outbound-deny profile; **Windows** a Windows Firewall outbound-deny rule — and any
+  outbound packet **fails the release** (zero observed is the load-bearing proof).
+- **The §7.2.3 startup `--version` smoke-probe + warm-launch checks are WITHIN this
+  gate's scope `[DECIDED]`.** Those probes **spawn third-party engine binaries**, so to
+  prove "zero startup network" they run **inside the same packet-monitor / egress-deny
+  window** (and, where the §2.12.3 privilege-drop tier is enabled, under network-deny).
+  Each is spawned with the §3.5 **minimal env** (no `http_proxy`/`https_proxy`/`*_PROXY`
+  vars, `LD_PRELOAD`/`DYLD_*` stripped), so an engine cannot reach out at probe time.
+  Net: "zero startup network" is **observably enforced for engine *spawns*** (startup
+  smoke-probe + first warm launch), not only for full conversions.
 
 ---
 

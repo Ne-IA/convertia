@@ -68,7 +68,14 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   dependency is honored. Owner: §3.4.
 - **HEVC *encode* (write HEIC)** — **ship-bundled-isolated (x265), behind the §3.4
   availability flag** so it can flip to `unavailable` (SSOT exception-1) as a config
-  change; **kvazaar (BSD)** recorded as the licence-clean alternative. Owner: §3.4.
+  change. **The flag is concrete (§3.4.4a):** a **per-platform `available` boolean on
+  the codec's `engines.lock` row**; flipping it `false` makes §3.2.3 resolve the pair to
+  `PlatformUnavailable` and C12 `get_engine_health` add HEIC to
+  `EngineHealth.unavailable_targets`, so §5.2 renders it disabled-with-reason — data,
+  not code. HEVC-encode is the **highest patent-exposure** codec in the set (27 000+
+  patents, multiple active pools beyond 2027; libheif#591) — **materially riskier than
+  AAC/H.264** and the most likely flag-flip; **kvazaar (BSD)** recorded as the
+  licence-clean alternative (removes the GPL leg, not the patent exposure). Owner: §3.4.
 - **AVIF** — ship-bundled all 3 (royalty-free). Owner: §3.4.
 - **Rust↔TS type-sharing = tauri-specta** (+ specta), generated `bindings.ts`, §06
   drift check; specta-only is the documented fallback. Owner: §0.4.5.
@@ -76,9 +83,9 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   `libwebkit2gtk-4.1`; x86-64. (Exact build numbers `[DEFER: §6.4 drift matrix]`.)
   Owner: §0.3.1.
 - **§0.10 capability allowlist** — **no `shell:allow-execute`** (engines spawn
-  Rust-side §3.3.3); **no `dialog:allow-open`** (C2 picker opens Rust-side via
+  Rust-side §3.3.3); **no `dialog:allow-open`** (both C2 pickers open Rust-side via
   `DialogExt`); **no `opener:*`** (C9/C10 call `OpenerExt` internally); `log:default` +
-  `store:default` only. Own `#[tauri::command]`s C1..C13 need **no per-command
+  `store:default` only. Own `#[tauri::command]`s C1..C13 (incl. C2a/C2b) need **no per-command
   permission entry** in Tauri v2 (only plugin commands do). Owner: §0.10.
 - **cancel-collect** — command-backed **C13 `cancel_ingest`** (ingest-scoped token);
   the §5.2 Collecting cancel control + §5.10 Esc back it. Owner: §0.4/§1.1/§5.
@@ -99,31 +106,44 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   like every other engine (resolves the §2.12.4 "all decoders are subprocesses"
   absolute and the T1 isolation). Licence analysis unaffected. Owner: §2.12 / §0.9 /
   §3.5.5 (was [OPEN]).
-- **Windows atomic-publish primitive** — first-time (no-clobber) publish =
-  `MoveFileExW` **without** `MOVEFILE_REPLACE_EXISTING` (create-only, no 0-byte
-  placeholder); `ReplaceFileW` reserved only for the §2.5 replacing path. Keeps the
-  §2.1.3 "never a third state" invariant true by construction. The §2.2.2 numbering loop
-  uses this **same** primitive (bump-suffix-and-retry on `ERROR_ALREADY_EXISTS`), not a
-  `create_new`-reserve. Owner: §2.1.2.
+- **Windows atomic-publish primitive** — the publish is **always** `MoveFileExW`
+  **without** `MOVEFILE_REPLACE_EXISTING` (create-only, no 0-byte placeholder). **There
+  is NO replacing path:** the §2.5 re-run FreshCopy uses ordinary §2.2 create-only
+  numbering (next non-existing name), never replacement, so
+  `ReplaceFileW`/`MOVEFILE_REPLACE_EXISTING` have **no caller** (absolute no-clobber
+  forbids overwriting an unrelated same-named file). Keeps the §2.1.3 "never a third
+  state" invariant true by construction. The §2.2.2 numbering loop uses this **same**
+  primitive (bump-suffix-and-retry on `ERROR_ALREADY_EXISTS`), not a `create_new`-reserve.
+  Owner: §2.1.2 / §2.5.2.
 - **SVG rasteriser = librsvg** — libvips' native `svgload` backend is **librsvg**;
   **resvg is NOT a libvips backend at any released version** and is **dropped** (not
   shipped, not in the SBOM). Owner: §3.1 row 1c / images.md.
 - **AVIF decode = dav1d only** — `dav1d` is the AVIF *decode* load module; **libaom is
   encode-only** (via `heifsave compression=av1`). Owner: §3.1 row 1b / images.md.
 - **libimagequant in the inventory + SBOM** — added to §3.1 (PNG/GIF palette
-  quantisation, inside the image-worker) with SPDX **`BSD-2-Clause`** (the permissive
-  leg of the libvips-vendored fork's dual licence — **NOT** BSD-3; verify the shipped
-  leg). x265 plugin SPDX corrected to **`GPL-2.0-or-later`** (compatible with the
-  LGPL-3.0 libheif host). Owner: §3.1 / §3.7.2 / §6.3.3 gate.
+  quantisation, inside the image-worker) with SPDX **`BSD-2-Clause`**, shipped **ONLY**
+  as the frozen **`lovell/libimagequant` v2.4.x fork** (e.g. v2.4.1), pinned by exact
+  version+ref in `engines.lock`. **Upstream libimagequant 4.x is `GPL-3.0-or-later`-or-
+  commercial — NOT permissive — and must NOT be bundled** (it would taint the LGPL
+  image-worker). A §6.1.3/§6.3.3 build assertion verifies the staged `COPYRIGHT`
+  contains the BSD-2 text (fails the build if a GPL leg slipped in). x265 plugin SPDX
+  corrected to **`GPL-2.0-or-later`** (compatible with the LGPL-3.0 libheif host).
+  Owner: §3.1 / §3.7.2 / §6.3.3 gate.
 - **Re-run/EquivKey is destination-INDEPENDENT in v1** — the EquivKey has no
   destination component, so a **C5 `set_destination` never produces a new `rerun`**;
   `DestinationResolved.rerun` is **carried through unchanged** from C4 and C5
   re-evaluates only the destination-volume free-space preflight. A destination-aware
   signal is `[DEFER: post-v1]` with the cross-session ledger. Owner: §2.5 / §0.6 / §1.8.
-- **C2 picker opens Rust-side via `DialogExt`** — **no `dialog:allow-open` WebView
-  grant**; picked paths enter Rust intake directly (the single C1 freeze point) and
-  never transit the WebView, closing the asymmetric "WebView hands raw FS paths" door
-  (mirrors the opener model). Owner: §0.10 / §0.4.1 C2.
+- **C2 split into two Rust-side pickers `[DECIDED]`** — **no `dialog:allow-open` WebView
+  grant** (both opened via `DialogExt`). **C2a `pick_for_intake`** funnels picked paths
+  straight into the C1 freeze and returns a `CollectedSet`, so **intake** paths never
+  transit the WebView (a cancelled dialog is a clean no-op → `CollectedSet::Empty`).
+  **C2b `pick_destination`** returns the chosen **write-destination `PathBuf`** to the
+  WebView for C5 — that one path *does* transit the WebView (acceptable per §0.11 T2a,
+  bounded by §2.1). The "no raw FS path reaches the WebView" claim is **scoped to the
+  intake picker**, not absolute (drop & launch-arg structurally hand paths to the
+  WebView; the real bound is core-side re-validation at the §1.1 freeze / §2.3.3 write
+  check). Owner: §0.10 / §0.4.1 C2a/C2b / §5.4.
 - **C6 destination authority** — **C6's `destination` argument is authoritative**; C4/C5
   are plan/preview + revalidation only, with **no separate server-side destination
   store** (the UI carries the last C5-resolved destination into C6). Owner: §0.4.1.
@@ -142,10 +162,11 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   §0.6 / §1.1.
 - **`EngineDescriptor` (was `struct Engine`)** — the §0.6 capability descriptor is
   renamed **`EngineDescriptor`** to avoid colliding with the §3.2 `trait Engine`; its
-  `kind: EngineKind` is **`Subprocess | InCoreNative`** (every third-party engine incl.
-  the image-worker = `Subprocess`; only native CSV/TSV = `InCoreNative`). The §3.2
-  `EngineProgram::InProcess` is renamed **`InProcessNative`** (native CSV/TSV only — no
-  in-process path for any untrusted-byte decoder). Owner: §0.6 / §3.2.
+  `kind: EngineKind` is **`Subprocess | InProcessNative`** (every third-party engine incl.
+  the image-worker = `Subprocess`; only native CSV/TSV = `InProcessNative`) — the **one
+  canonical name**, identical to the §3.2 `EngineProgram::InProcessNative` variant (the
+  earlier `EngineKind::InCoreNative` spelling and the `EngineProgram::InProcess` spelling
+  are both retired in favour of `InProcessNative`). Owner: §0.6 / §3.2.
 - **macOS universal sidecar naming** — `--target universal-apple-darwin` resolves a
   **single fat Mach-O `<name>-universal-apple-darwin`** (Tauri `lipo`-merges), not two
   per-arch files; `scripts/stage-engines` `lipo -create`s each sidecar. Owner: §6.1.3.
@@ -219,6 +240,80 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **Bundled-font baseline** — **Liberation + Carlito + Caladea + curated Noto CJK/RTL
   subset**; only CJK breadth `[DEFER: size]`. Owner: §3.9.3.
 
+#### Resolved in this fix pass `[DECIDED]`
+- **C2 split into two Rust-side pickers** — **C2a `pick_for_intake`** (→ `CollectedSet`,
+  no path to WebView, cancel = clean no-op) + **C2b `pick_destination`** (→ `PathBuf` to
+  WebView for C5; that one write-destination path transits the WebView, §0.11 T2a). The
+  "no raw path reaches the WebView" claim is **scoped to the intake picker**; drop &
+  launch-arg paths still reach the WebView and are re-validated at the §1.1 freeze.
+  Owner: §0.4.1 / §0.10 / §5.4.
+- **Collected-set registry** — a `State` map `CollectedSetId → frozen CollectedSet +
+  roots`, created on C1/C2a, retained through C3/C4/C5/C6, evicted on run start; resolves
+  the IPC `collectedSetId` for C3/C4/C5/C6. Owner: §0.4.4 / §0.6.
+- **CollectedSummary wiring** — unified into `CollectedSet::Single` (now carries
+  `total_bytes`/`roots`/`encoding_hint`/`delimiter_hint`/`notes`); it IS the wire shape
+  C1/C2a return; no separate `get_collected_summary` command. Owner: §0.6 / §1.4.
+- **Image dims carrier** — `DetectionOutcome::Recognized { …, dims: Option<(u32,u32)> }`
+  (header-derived raster w/h, §1.2 step 4) is the §1.10 cheap-estimate input. Owner:
+  §1.2 / §0.6 / §1.10.
+- **RunId timing** — minted at **start_conversion (C6)**, NOT at the §2.4 freeze (the
+  freeze produces the `CollectedSetId`). §7.1.2 corrected. Owner: §7.1.2 / §0.4.1 C6.
+- **`OutcomeMsg` / `ConversionErrorKind` / `LossyKind` derive `specta::Type`** and are in
+  `collect_types![]` (§06 drift check covers them) — no `any` for `ItemResult.reason`.
+  Owner: §2.8 / §0.4.3/§0.4.5.
+- **`EngineKind` canonical name = `InProcessNative`** (matches §3.2
+  `EngineProgram::InProcessNative`); `InCoreNative`/`InProcess` retired. Owner: §0.6/§3.2.
+- **`serialised_only` access path** — `trait Engine` gains `fn descriptor() ->
+  EngineDescriptor`; the §0.9 pool reads `registry.engine(id).descriptor().serialised_only`
+  before dispatch. Owner: §3.2 / §0.9.
+- **Pre-flight SkippedItems ARE in `RunResult.items`** (projected as `ItemResult { state:
+  Skipped(reason), output: None, reason }`, counted in `Totals.skipped`). Owner: §1.12 / §0.6.
+- **PreflightVerdict.up_front_fail is whole-batch only** — per-item too-big/out-of-disk is
+  enforced at write-time (mid-run), not an up-front per-item list. Owner: §0.6 / §1.10.
+- **§2.1.2 no-placeholder publish is the single mechanism** — the `create_new`-reserve
+  bullets removed; "exclusive create" everywhere = the no-placeholder exclusive-rename.
+  Owner: §2.1.2.
+- **No replacing publish path / `ReplaceFileW` has no caller** — FreshCopy uses ordinary
+  §2.2 create-only numbering; Windows publish is always `MoveFileExW`-without-`REPLACE`.
+  Owner: §2.1.2 / §2.5.2.
+- **§2.3.3 parent-swap race closed by dir-handle-relative publish** — Windows
+  `NtSetInformationFile(FileRenameInformationEx)` with the verified parent HANDLE as
+  `RootDirectory`, `ReplaceIfExists = FALSE` → `STATUS_OBJECT_NAME_COLLISION`; Unix
+  `linkat`/`renameat2(…, newdirfd, …, RENAME_NOREPLACE)` (NOT `openat O_CREAT|O_EXCL`).
+  Owner: §2.3.3 / §2.1.2.
+- **libimagequant = BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** — upstream 4.x
+  is GPLv3-or-commercial and must NOT ship; §6.1.3/§6.3.3 COPYRIGHT-text build assertion.
+  Owner: §3.1 / §3.6.1 / §3.7.2 / §6.1.3.
+- **libvips bundled WITHOUT poppler(GPL)/MuPDF(AGPL)/any GPL-AGPL PDF loader** — keeps
+  the image-worker LGPL-only; §6.1.3 positive build assertion. Owner: §3.1 / §3.6.1 / §6.1.3.
+- **§3.4 availability flag is concrete** — per-platform `available` boolean on the codec's
+  `engines.lock` row; C12 `get_engine_health` reads it into `unavailable_targets`; §5.2
+  renders disabled-with-reason. Owner: §3.4.4a / §7.2.3.
+- **WebView2-absent portable launch fails before the core runs** — cannot show an in-app
+  fault; the "fail clearly" substitute is the §6.2.4 download-page prerequisite note;
+  `minimumWebview2Version` is NSIS-installer-only. Owner: §0.3.1 / §6.2.4.
+- **Windows portable artifact = a `.zip`** (app exe + `binaries/` + `resources/` engine
+  trees, post-build packaging), NOT a single `.exe`; NSIS is the secondary installer.
+  Owner: §6.1.2 / §6.10 row 13.
+- **Linux log dir = `~/.config/dev.ne-ia.convertia/logs/`** (Tauri v2 `app_log_dir()`
+  resolves via `configDir`, not the data dir). Owner: §7.5.2.
+- **macOS launch-intake = `RunEvent::Opened { urls: Vec<Url> }`** (real in Tauri v2;
+  `tauri-plugin-deep-link` `on_open_url` the ergonomic equivalent) — `file://` URLs →
+  paths before §1.1; one canonical hook across §1.1/§7.8.1. Owner: §1.1 / §7.8.1.
+- **willReencode note timing** — surfaced at target choice (state 4, C3
+  `Target.lossy=video_reencode`); `RunStarted.willReencode` only confirms/clears it.
+  Owner: §5.7 / §5.8 / §2.9.2.
+- **fs module canonical = `core::fs_guard`** (layer "guarantees-fs", dir `fs_guard/`);
+  `fs_guarantees` module name retired. Owner: §2.0 / §0.7.
+- **engine manifest filename = `engines.lock`** (the §3.7.2 `engines.toml` mention fixed).
+  Owner: §3.7.2.
+- **macOS automated E2E = defined degraded smoke test** (launch + synthetic-argv
+  conversion + window/output/exit-0 assertions); WebView UX via §6.6 human walkthrough.
+  Was `[OPEN]`. Owner: §6.4.6.
+- **Usability-floor tester sourcing** — ≥1 genuine non-dev walkthrough on ≥1 platform;
+  owner (developer) may run the other two where no non-dev tester is available (solo/hobby
+  project). Was `[OPEN-6.6a]`. Owner: §6.6.
+
 ### Deferred to corpus / usability validation `[DEFER: corpus]`
 > Design decided; only an empirical number or a real-world validation remains. These
 > are **not** open design questions.
@@ -270,9 +365,5 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   separate image-worker process — and is no longer open.)*
 - **In-core text-encoding heuristic / Rust ZIP central-directory peek** — may it stay
   outside the §2.12 isolation boundary (lean: yes, memory-safe/bounded). Owner: §2.12
-  (raised by §1.2).
-- **macOS E2E driver under an unsigned build** — `tauri-driver`/`safaridriver`
-  cannot cleanly drive an unsigned WKWebView; the macOS *automated* E2E may degrade to
-  launch+screenshot, with the §6.6 human walkthrough (which now also tests the Sequoia
-  Gatekeeper/sidecar-quarantine recovery) carrying macOS core-flow validation. Owner:
-  §6.4.6.
+  (raised by §1.2). *(This is the one genuinely-open isolation-boundary owner call;
+  everything else from the prior convergence pass is now DECIDED or DEFER:corpus.)*
