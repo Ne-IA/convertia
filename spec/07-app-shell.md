@@ -319,6 +319,19 @@ fn ensure_executable(p: &Path) -> io::Result<()> {
   the §6.6 macOS walkthrough must **specifically test+pass this on Sequoia** (the
   unsigned-build usability floor depends on it). The *technical fact* (no
   auto-unquarantine; per-sidecar quarantine is real) is owned here.
+  - **`QuarantinedByOs` → retry-flow mapping (per-sidecar, no auto-retry) `[DECIDED]`:**
+    when a conversion fails because a sidecar is still quarantined, the item fails with
+    `QuarantinedByOs` (§2.8) and **ConvertIA does NOT auto-retry** — there is no watcher
+    that re-spawns the sidecar when the user approves it. The recovery loop is: the §2.8
+    plain-language message tells the user to approve **that sidecar** in **System Settings
+    → Privacy & Security → "Open Anyway"**, then **re-convert** (re-drop / re-pick and
+    Convert again). Because each sidecar is quarantined independently, a batch using
+    multiple engines (e.g. FFmpeg then pandoc) can surface `QuarantinedByOs` **more than
+    once** — once per not-yet-approved sidecar — until every sidecar the user's conversions
+    touch has been approved; after a sidecar is approved its quarantine xattr is cleared by
+    macOS and a subsequent spawn succeeds (the kind no longer fires for it). v1 does not
+    pre-warm or batch-approve sidecars; the §5.2 `QuarantinedByOs` surface is the per-item
+    fail row with the approve-then-re-convert guidance.
 - **Windows:** no execute-bit concept; bundled `.exe` sidecars run as-is. SmartScreen
   prompts are the analogous unsigned-build friction (out of scope, surfaced on the
   download page per SSOT, not here).
@@ -368,15 +381,28 @@ Two concrete facts shape the design:
    the parent's grant — the earlier "children never inherit the grant" framing was
    overstated; the mitigation is sound as **defence-in-depth** against the cases
    where the chain breaks, not because inheritance never happens.) **`[REC]`
-   Mitigation: the Rust core (which holds the TCC grant) is the **only** process that
-   first touches a TCC-protected location — it copies the source into the app-owned
-   per-job scratch (§2.14 kind-2) and hands the engine the **scratch path**, never a
-   raw protected user path.** Engines therefore operate on core-provided scratch, so
-   a TCC chain-break can never block a conversion. This dovetails with the §2.14
-   cross-volume strategy and the §2.12 isolation wrapper. The *engine arg/handle
-   plumbing* is owned by **§3.5** (see §3.5's macOS source-staging subsection); §7.2
-   owns the *requirement* that engines never be the process that first touches a
-   TCC-protected path.
+   Mitigation (READ side): the Rust core (which holds the TCC grant) is the **only**
+   process that first *reads* a TCC-protected source — it copies the source into the
+   app-owned per-job scratch (§2.14 kind-2, the §3.5.0 macOS source-staging copy) and
+   hands the engine the **scratch path**, never a raw protected user path.** Engines
+   therefore never *read* from a protected location directly, so a TCC chain-break on
+   the read side can never block a conversion. **Scope note (WRITE side) `[DECIDED]`:**
+   this absolute is **scoped to READS only**. The §2.14.1 publish temp (`out_tmp/.part`)
+   is a sibling dotfile **inside the destination dir**, and on the SSOT-default
+   beside-source path that destination dir *is* itself a TCC-protected location
+   (Desktop/Documents/Downloads/removable). The core (not the engine) is also the
+   process that first *creates* that `.part` and performs the §2.1 exclusive publish,
+   so the first write is still core-initiated — but a write into a beside-source
+   destination dir **can** still be TCC-gated, and a denial there **fails that item**
+   per §2.8 (the `QuarantinedByOs`/unreadable-or-denied kind) while the batch
+   continues. There is therefore **no claim that "a TCC chain-break can never block a
+   conversion" on the write side** — only that engines never *touch* a protected path
+   directly (read via staged scratch, write via the core's publish). This dovetails
+   with the §2.14 cross-volume strategy and the §2.12 isolation wrapper. The *engine
+   arg/handle plumbing* is owned by **§3.5** (see §3.5's macOS source-staging
+   subsection); §7.2 owns the *requirement* that engines never be the process that
+   first reads a TCC-protected path, and that beside-source output writes are the
+   core's (never the engine's).
 
 **Timing:** the first read of a protected location triggers the prompt; ConvertIA
 does **not** pre-prompt at launch (no files yet) — the prompt appears naturally at
@@ -444,16 +470,15 @@ builder
     .build(tauri::generate_context!())?
     .run(|app, event| match event {
         RunEvent::ExitRequested { api, .. } => { /* belt-and-suspenders guard */ }
-        // Open-with: PRIMARILY the macOS open-documents AppleEvent, BUT registered on ALL
-        // platforms [DECIDED] — Tauri v2 may also fire RunEvent::Opened cross-platform on a
-        // file-association open, so the handler is a belt-and-suspenders intake path on
-        // Win/Linux too (their primary intake is argv/single-instance, but if Opened ever
-        // fires there it must still funnel correctly, not be dropped). Distinct from the
-        // §7.1.1 argv callback. MUST route through the SAME funnel so the §7.1.1 refuse-busy
-        // gate is enforced here too (a mid-conversion Open-with otherwise bypasses the
-        // PRIMARY gate — it never goes through the argv callback on macOS). origin =
-        // LaunchArg on a first-launch Opened (app not yet ready → buffered), SecondInstance
-        // otherwise.
+        // Open-with: macOS-only in Tauri v2 [DECIDED] — RunEvent::Opened fires ONLY on
+        // macOS (and iOS), NEVER on Windows/Linux (their intake is argv/single-instance).
+        // The handler is registered unconditionally for code simplicity / forward-compat
+        // (one funnel, no per-OS cfg) and is simply not invoked off macOS — not a second
+        // cross-platform intake path. Distinct from the §7.1.1 argv callback. MUST route
+        // through the SAME funnel so the §7.1.1 refuse-busy gate is enforced here too (a
+        // mid-conversion Open-with otherwise bypasses the PRIMARY gate — it never goes
+        // through the argv callback on macOS). origin = LaunchArg on a first-launch Opened
+        // (app not yet ready → buffered), SecondInstance otherwise.
         RunEvent::Opened { urls } => {
             let paths: Vec<PathBuf> = urls.iter().filter_map(|u| u.to_file_path().ok()).collect();
             let origin = if frontend_ready(app) { IntakeOrigin::SecondInstance } else { IntakeOrigin::LaunchArg };
@@ -598,13 +623,19 @@ record *what actually happened* without showing the user a stack trace.
     cross-platform consistency, not raw XDG)
 - **Rotation/retention `[DECIDED]`:** `tauri-plugin-log` `.max_file_size(5_000_000)`
   (bytes) with **`RotationStrategy::KeepOne`** (the bounded-footprint choice). **API fact
-  (verified against plugins-workspace v2 source):** `RotationStrategy` has **three**
-  variants — **`KeepAll`**, **`KeepOne`**, and **`KeepSome(usize)`** (there is **no**
-  `KeepN`). We choose **`KeepOne`** for a bounded single-file footprint; **`KeepSome(n)`**
-  is the available alternative if a small rolling history is later wanted. **Footprint
-  bound:** with `KeepOne`, the logger keeps **only the most recent log up to its maximal
-  size** — on reaching `max_file_size` the existing file is **deleted** (not archived with
-  a date stamp), so the on-disk maximum is **~`max_file_size` (≈5 MB)**, not a multiple.
+  (verified against `tauri-apps/plugins-workspace` `plugins/log/src/lib.rs` on the `v2`
+  branch):** `RotationStrategy` has **three** variants — **`KeepAll`**, **`KeepOne`**, and
+  **`KeepSome(usize)`** (there is **no** `KeepN`). We choose **`KeepOne`** for a bounded
+  single-file footprint; **`KeepSome(n)`** is the available alternative if a small rolling
+  history is later wanted. **Footprint bound — re-verified at source `[DECIDED]`:** the
+  `KeepOne` rotation arm is literally `fs::remove_file(&self.path)?` — it **deletes** the
+  old file (it does **not** rename it to a `.bak`/`.log.old` backup, unlike `KeepAll`/
+  `KeepSome`, which call `rename_file_to_dated()`), so on reaching `max_file_size` the
+  on-disk maximum is **~1× `max_file_size` (≈5 MB)**, NOT ~2×. (This was re-checked against
+  the pinned plugin version's source specifically because a single-file disk bound is
+  load-bearing for the "leave nothing behind / no system pollution" budget; if a future
+  plugin version changes `KeepOne` to rename-to-backup, switch to `KeepSome(0)`/manual
+  cleanup to preserve the true single-file bound.)
   `KeepOne` keeps the log from ever silently growing (consistent with "leave nothing
   behind" and "no system pollution"). The concrete crate version is pinned in the lockfile
   + SBOM per the §0.8 no-hardcoded-digits policy.
@@ -766,12 +797,26 @@ DoD gate. The **real, sufficient gate is Rust-side**:
 Launching an **external** application on a **fresh, possibly-untrusted** artifact
 is security-relevant (§0.11 maps this threat to §7.7). Constraints:
 
-- **Only ConvertIA-produced outputs are openable** via these actions — never an
-  arbitrary path from the WebView, never a *source* file, never an engine
-  intermediate. The command **validates** the requested path against the current
-  `RunResult`'s recorded outputs (§1.12) before invoking the opener; a path not in
-  that set is refused (and logged, §7.5). This makes "open file" structurally
-  unable to launch anything other than a file the user just chose to create.
+- **Per-FILE launch vs per-ROOT folder-browse — two distinct membership rules
+  `[DECIDED]`.** The "never a source" claim is scoped to the **file-launch** path, not
+  the folder-browse path:
+  - **File launch** (`OpenKind::File` — hand the artifact to its OS default app):
+    **only a path in the current `RunResult`'s recorded OUTPUT files** (§1.12) is
+    allowed — never an arbitrary WebView path, never a *source* file, never an engine
+    intermediate. A path not in the output set is refused (and logged, §7.5). This makes
+    *file launch* structurally unable to **execute/hand-off** anything other than a file
+    the user just chose to create.
+  - **Folder browse** (`OpenKind::Folder` / `RevealInFolder` — open the OS file manager):
+    the allowed targets are the run's **roots** — `common_root` (beside-source) and, for a
+    split-output batch, `divert_root` (§1.12/§7.7.3). **Opening a root is intentionally
+    allowed even though, on a beside-source batch, `common_root` is a directory that
+    *contains the user's sources*** — this is a folder *browse*, **no handler is executed
+    on any file** (the OS just shows the directory, with an output highlighted for
+    `RevealInFolder`), so it cannot launch a source. The membership check therefore admits
+    a *root* for folder-browse kinds and an *output file* for the file-launch kind; it does
+    **not** treat the source-containing root as forbidden. "Never a source" means **no
+    source file is ever handed to a default app**, not "the folder holding sources is
+    never browsable".
 - **It hands off to the OS default app** (we do not pick the program, except the
   browser-for-URL case) — ConvertIA is not in the business of choosing handlers;
   the output's *type* is one the user explicitly converted *to*, so opening it is
@@ -808,13 +853,15 @@ and one-batch-at-a-time (§1.3) rules apply identically. The entry points:
   (below), so the §7.1.1 refuse-busy gate is enforced on a mid-conversion Open-with too**
   — a macOS Open-with against a running, busy app is refused (paths dropped), not merged
   into the frozen set (§2.4). Without this, Open-with would bypass the PRIMARY gate on
-  macOS (it never goes through the argv callback there). **`RunEvent::Opened` is registered
-  on ALL platforms `[DECIDED]`:** although it is the *primary* path only on macOS, Tauri v2
-  may **also fire `RunEvent::Opened` cross-platform on a file-association open**, so the
-  handler is registered (not `#[cfg(target_os = "macos")]`-gated) as a **belt-and-suspenders
-  intake path on Windows/Linux too** — even though their primary intake is argv/single-
-  instance, an `Opened` that fires there must funnel correctly rather than be silently
-  dropped.
+  macOS (it never goes through the argv callback there). **`RunEvent::Opened` is a macOS-only hook (Tauri-API fact) `[DECIDED]`:**
+  in Tauri v2 `RunEvent::Opened` is documented/implemented **only on macOS (and iOS)** —
+  it does **not** fire on Windows or Linux. **Win/Linux intake correctness rests entirely
+  on the argv / single-instance path**, never on `Opened`. The handler is registered
+  **unconditionally** (not `#[cfg(target_os = "macos")]`-gated) purely for **code
+  simplicity / forward-compatibility** (one funnel, no per-OS cfg around the registration);
+  it is simply never invoked off macOS, so this is a no-op there rather than a second
+  intake path. (There is **no** "may also fire cross-platform" claim — that would be a
+  wrong Tauri-v2 API fact.)
 - **Windows:** files passed as **`argv`** to the process. Captured in the
   single-instance callback (§7.1.1) for a second launch, and read at first launch
   in `setup` (`std::env::args_os`).
@@ -864,16 +911,20 @@ pitfall). The launch funnel therefore **distinguishes the two cases**:
   WebView listener exists → `app.emit("app://intake", IntakePayload{..})` as shown.
 - **First launch / app not-yet-ready**: **stash the resolved paths + origin in a managed
   `State<PendingIntake>`** instead of emitting. **Drain mechanism `[DECIDED]` — ONE path,
-  C1 re-use (no dedicated command, no `take_pending_intake` accessor):** the frontend,
-  **on root-shell mount** (later than listener-registration, so it closes the race),
-  **re-calls C1 `ingest_paths`** with the buffered set + its stored `origin` (typically
-  `LaunchArg`) — and C1's handler, finding the request already names the buffered set,
-  drains `PendingIntake` exactly once and returns the `CollectedSet`. There is **no
-  separate `take_pending_intake` command/accessor** (the earlier "or re-uses C1" hedge is
-  resolved to **C1 re-use only**), so the canonical C1–C13 IPC table (§0.4.1) stays
-  complete and the codegen/drift check covers the whole drain path; **no 4th `app://`
-  event** is added (the §0.4.2 three-event invariant holds). This guarantees a
-  launch-with-files is never lost to a listener race. (`forward_launch_intake` consults the
+  C1 re-use with a concrete `drainPending` flag (no dedicated command, no
+  `take_pending_intake` accessor):** the frontend, **on root-shell mount** (later than
+  listener-registration, so it closes the race), **ALWAYS re-calls C1 `ingest_paths` with
+  `paths: []` + `drainPending: true`** (a fresh `collectingId`). C1's handler, seeing
+  `drainPending`, **consumes `PendingIntake` exactly once** using its stored `origin`
+  (typically `LaunchArg`) and freezes that buffered set, returning its `CollectedSet`; if
+  `PendingIntake` is empty (the ordinary first launch with no files) it returns
+  `CollectedSet::Empty` and the UI stays Idle. The frontend never needs to *hold* the
+  buffered paths (it can't — they are Rust-side), so the trigger is deterministic and the
+  empty-paths + flag convention makes "first-launch-with-files" and "first-launch-empty"
+  both well-defined. There is **no separate `take_pending_intake` command/accessor**, so
+  the canonical C1–C13 IPC table (§0.4.1) stays complete and the codegen/drift check covers
+  the whole drain path; **no 4th `app://` event** is added (the §0.4.2 three-event
+  invariant holds). This guarantees a launch-with-files is never lost to a listener race. (`forward_launch_intake` consults the
   ready-flag: emit if ready, else buffer — and `PendingIntake` carries the real `origin`,
   **never** a hard-coded `SecondInstance`; a first-launch buffered set drains as
   `LaunchArg`.)

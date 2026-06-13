@@ -85,11 +85,23 @@ build-time mechanics that realise them**:
     run before `tauri build`) stages and target-triple-suffixes each binary for the
     runner's host triple. For the macOS **universal** build (`--target
     universal-apple-darwin`), Tauri v2 resolves a **single fat Mach-O sidecar named
-    `<name>-universal-apple-darwin`** (Tauri `lipo`-merges per-arch inputs / expects the
-    pre-merged universal slot — see tauri-apps/tauri#3355); it is **not** two per-arch
-    suffixed files at runtime. `scripts/stage-engines.*` must therefore, on the macOS
-    leg, build each per-arch engine (`aarch64`/`x86_64`) and **`lipo -create` them into
-    one `<name>-universal-apple-darwin` fat binary** for the externalBin slot.
+    `<name>-universal-apple-darwin`** and **expects that file to ALREADY be a pre-merged
+    fat binary** — **Tauri does NOT `lipo` sidecars `[DECIDED — verified vs Tauri v2 docs/
+    tauri#3355]`** (it auto-lipos only its **own** main app binary; for `externalBin` it
+    reads `binaries/<name>-universal-apple-darwin` as-is, or per-arch suffixed files with
+    runtime selection). So **the `lipo` is entirely `scripts/stage-engines`' job**, not
+    Tauri's: on the macOS leg the stage script must build each per-arch engine
+    (`aarch64`/`x86_64`) and **`lipo -create` them into one `<name>-universal-apple-darwin`
+    fat binary** for the externalBin slot, **before** `tauri build` runs. (This intro and
+    the §6.1.4 dual-arch-engine-sourcing note now agree: stage-engines lipos; Tauri
+    consumes.) **Dual-arch sourcing fallback `[DECIDED]`:** the universal build runs on an
+    **arm64** runner (§6.1.4), so the engine-asset cache MUST supply **both** the
+    `aarch64-apple-darwin` AND `x86_64-apple-darwin` slices for every sidecar/lib (the cache
+    is the source of the x86_64 slices). If a needed x86_64 slice is absent, the **documented
+    fallback** is to build it x86_64-on-arm64 via the cross toolchain / Rosetta 2 from source
+    (the hardest practical step, used only when the cache lacks a slice); `lipo` cannot merge
+    a slice it does not have, so a missing slice fails the macOS leg clearly rather than
+    shipping a single-arch sidecar.
   - **Engine support files** (non-executable: LibreOffice's `share/`, `program/`
     libs, fonts, pandoc data) → `bundle.resources`, resolved at runtime via the
     Tauri resource path (§3.5 owns the working-dir/env wiring; §7.2 owns startup
@@ -177,12 +189,25 @@ build-time mechanics that realise them**:
   `--disable-everything --enable-…` trimmed to the `04` codec set (size lever, §3.9),
   which risks **silently dropping a decoder a 04 pair needs**. So the stage step runs
   a **build assertion** that the curated `--enable` list covers **every decoder the
-  source matrices reference** — at minimum `wmav1`/`wmav2`/`wmapro`/`wmalossless`,
-  `vc1`, `h263`, `amrnb`, `mpeg1video`/`mpeg2video`, `vp8`/`vp9`, `dca`/`ac3`,
-  `alac`/`flac`/`pcm` (the full list is derived from the 04 matrices, not hand-kept).
-  It runs `ffmpeg -decoders` / `-muxers` on the staged binary and **fails the build**
-  if any referenced decoder/muxer is absent; the §6.4.3 per-pair integration tests are
-  the runtime backstop that catches anything the static list missed.
+  source matrices reference**. **The required-decoder set is a GENERATED manifest, not
+  a hand-kept list `[DECIDED]`:** a build step parses the `04` matrices (every codec
+  named in `audio.md` / `video.md` / `cross-category.md` / `images.md`, on the source
+  side) into `ffmpeg-required-decoders.lock`, and the assertion runs against **that**
+  generated set — so the named minimum can never drift below the real requirement. The
+  generated set **must include**, among others, the load-bearing **modern** decoders
+  the headline use cases need: **`hevc`, `h264`, `av1`** (iPhone HEVC `.mov`, modern
+  MKV, AV1-in-MKV/WEBM — see §3.4.3's image/video decoder split: these are FFmpeg's
+  *own* `hevc`/`h264`/`av1` decoders, **not** the image-worker's libde265/dav1d),
+  **`mpeg4`, `msmpeg4v2`, `msmpeg4v3`** (DivX/Xvid AVI, WMV1/2), **`mjpeg`**, **`aac`**
+  (every AAC track), **`vorbis`, `opus`** (WEBM/OGG audio decode), plus **`flv1`,
+  `vp6a`/`vp6f`** (FLV), **`mp2`**, **`wmav1`/`wmav2`/`wmapro`/`wmalossless`**, **`vc1`**,
+  **`h263`**, **`amrnb`**, **`mpeg1video`/`mpeg2video`**, **`vp8`/`vp9`**, **`dca`/`ac3`**,
+  **`alac`/`flac`/`pcm`**. (This enumeration is the *expected floor* the generator must
+  meet or exceed, documented here as a sanity check; the **authoritative** set is the
+  generated `ffmpeg-required-decoders.lock`, regenerated from the 04 matrices, never
+  hand-edited.) It runs `ffmpeg -decoders` / `-muxers` on the staged binary and **fails
+  the build** if any decoder/muxer in the generated set is absent; the §6.4.3 per-pair
+  integration tests are the runtime backstop that catches anything the static list missed.
 - **Curated-FFmpeg network-protocol + dereferencing-demuxer absence assertion `[DECIDED]`
   (T9b SSRF **and** LFR, §0.11 / §3.5.1):** the FFmpeg build disables networking protocols
   at configure time (no `--enable-protocol=http`/`https`/`tcp`/`tls`/`rtmp`/`hls` family;
@@ -202,10 +227,14 @@ build-time mechanics that realise them**:
   external `<image href>`** — both a relative `../`-escape (`href="../secret.txt"`) and an
   absolute `file:///etc/passwd`-style reference — pointing at a known out-of-input
   sentinel file, and **fails the build/test if the rasterised output embeds any sentinel
-  bytes** (it must not — librsvg's base-URL confinement to the per-job scratch dir +
-  external-resource refusal reject the reference). This is the SVG analogue of the §6.4.2
-  FFmpeg adversarial-egress case, giving the SVG vector the same proof-parity as
-  FFmpeg/pandoc/LibreOffice.
+  bytes** (it must not — the **PRIMARY control is librsvg's external-resource refusal**
+  `set_load_external_resources(false)`, with the base-URL/scratch confinement as
+  defence-in-depth, §3.5.5). **librsvg version-floor assertion `[DECIDED]`:** the stage step
+  **also asserts the staged librsvg is `>= 2.56.3`** (the CVE-2023-38633 fix floor — the CVE
+  that bypassed base-URL directory-confinement) and **fails the build** if older, so even
+  the demoted defence-in-depth layer is not a known-bypassed version. This is the SVG
+  analogue of the §6.4.2 FFmpeg adversarial-egress case, giving the SVG vector the same
+  proof-parity as FFmpeg/pandoc/LibreOffice.
 
 ### 6.1.4 CI runners
 
@@ -243,6 +272,22 @@ Linux/min — relevant to the hobby/no-paid-upgrades budget
 (`user_hobby_budget_no_paid_upgrades.md`); the infrequent-release cadence keeps it
 within free-tier/affordable bounds, and the Linux leg (the frequent Lane-A path)
 stays on the free self-hosted runner. Revisit only if release cadence rises.
+
+**`ubuntu-22.04` pin vs the self-hosted Lane-A runner's actual OS — reconciled per lane
+`[DECIDED]`.** The `ubuntu-22.04` pin above is a **GitHub-hosted-image** label; the
+**self-hosted IONOS VPS runner** (used for **Lane-A** Linux and the **Lane-B** Linux corpus
+leg) has a **fixed host OS that may not be ubuntu-22.04**. So the pin is honoured **per
+lane**, not by assuming the VPS image:
+- **Record the VPS distro as a concrete fact** in `reference_self_hosted_ci_runner.md` /
+  §6.1.4 (the runner's actual `lsb_release`), so the gap is known, not guessed.
+- **If the VPS OS matches the `ubuntu-22.04` glibc/FUSE floor**, the pin is satisfied
+  natively and Lane-A runs directly on the host.
+- **If it does NOT match**, the **Lane-A compile-sanity + the Lane-B Linux corpus build run
+  inside a `ubuntu:22.04` Docker container** on the VPS runner (so the glibc floor / FUSE
+  packaging match the pinned baseline regardless of the host OS), **or** the Lane-B Linux
+  leg uses **GitHub-hosted `ubuntu-22.04` as the documented fallback** (already the standing
+  fallback for VPS contention, above). Either way the *artifact-relevant* build always meets
+  the `ubuntu-22.04` floor; only the *runner host* is allowed to differ.
 
 ---
 
@@ -286,6 +331,17 @@ For **every** published artifact:
   recipe (§6.2.4) includes `minisign -Vm SHA256SUMS -P <contents of docs/minisign.pub>`.
   (Adopting the [REC] — a clear strengthening of the SSOT trust substitute with no
   downside.)
+  - **Key-rotation policy `[DECIDED]`:** a re-key MUST be **distinguishable from a
+    supply-chain compromise**, so rotation is a **deliberate, announced, signed** event,
+    never a silent swap: (1) commit the **new** public key to `docs/minisign.pub` in a
+    **dedicated commit whose message announces the rotation** (and, where possible, GPG/SSH-
+    signed or made via a protected-branch PR), (2) **retain the old key** as
+    `docs/minisign-retired.pub` (so old releases stay verifiable and the change is auditable),
+    (3) **note the rotation in the release notes** of the first release signed with the new
+    key, and (4) rotate the CI secrets (`MINISIGN_SECRET_KEY`/`MINISIGN_PASSWORD`). A user
+    who sees `docs/minisign.pub` change without the announced retired-key + release-note
+    trail should treat it as suspicious — which is exactly the property a silent swap would
+    destroy.
 
 ### 6.2.4 How a user verifies (must be surfaced) `[DECIDED]`
 
@@ -388,7 +444,14 @@ across tooling bumps.
 
 Output format: **CycloneDX JSON** as the canonical SBOM (developer-friendly,
 good licence+component fidelity); a **CycloneDX→SPDX** export is generated too if a
-consumer needs the ISO-standard form. Both are release assets.
+consumer needs the ISO-standard form. Both are release assets. **Conversion tool
+`[DECIDED]`:** the CycloneDX→SPDX export is produced by the **CycloneDX CLI's `convert`
+command** (`cyclonedx convert --input-format json --output-format spdxjson` — the official
+`@cyclonedx/cyclonedx-cli`/`cyclonedx-cli` tool, which supports SPDX-JSON output), pinned
+in §3.8 alongside the other SBOM tools. (If a future pin drops SPDX-JSON support, the
+fallback is `syft convert` from the already-present Syft, which also emits `spdx-json`.) The
+SPDX export is a convenience artifact, not the gate input — the §6.3.3 completeness gate
+reads the canonical CycloneDX JSON.
 
 ### 6.3.2 NOTICE / third-party-licenses assembly
 
@@ -414,6 +477,14 @@ not pass. Concretely:
    written-offer-of-source entry.
 3. **No** component is missing a resolved SPDX licence id (an `UNKNOWN`/`NOASSERTION`
    licence is a hard fail — forces a human to classify it before ship).
+   **`LicenseRef` carve-out `[DECIDED]`:** a CycloneDX/SPDX **`LicenseRef-…`**
+   custom-licence entry (for a legitimately-attributed licence that has **no registered
+   SPDX short id yet** — e.g. **`LicenseRef-AOMPL-1.0`** for libaom's AOM Patent
+   License, §3.1 row 1b) **satisfies** this "resolved id" gate **iff** its full licence
+   text is present in `THIRD-PARTY-LICENSES.txt`; it is **not** treated as
+   `UNKNOWN`/`NOASSERTION`. Without this carve-out a not-yet-registered but correctly
+   attributed licence would be an unfixable hard fail. (`UNKNOWN`/`NOASSERTION` remain
+   hard fails — the carve-out covers only a named `LicenseRef` *with* its text.)
 4. **No** engine whose licence is *incompatible with inbound-MIT-clean distribution
    as a separate binary* slipped in (policy: copyleft is fine **as an aggregated
    separate binary**; anything that would taint the MIT core via linking is rejected
@@ -478,7 +549,12 @@ and stub/real engines:
   crash/force-quit/cancel) **never** leaves a truncated visible file — only a
   discardable temp artifact, cleaned on next run (§2.6). Cross-volume path
   (source on USB → output in Downloads, §2.14) exercised: copy→fsync→atomic-rename
-  *within* the destination volume.
+  *within* the destination volume. **macOS staged-source-copy case (added) `[DECIDED]`:**
+  on macOS, **kill the app between the §3.5.0 staged source copy and the engine spawn** and
+  assert on next launch that the staged copy **and** its `run-<RunId>/` dir are reclaimed by
+  the §2.6.3 startup sweep (the staged source copy is created *after* the run-lock, so
+  absent-lock⇒dead⇒reclaimable covers it, §2.14.2) — so the staged SOURCE copy is a tested
+  residue path, not only the kind-1 `.part`.
 - **No-harm fuzz:** randomized batches over the corpus assert **source bytes are
   byte-identical before/after** every run (originals never touched), including the
   same-source==same-target re-encode case (§2.1) and the divert/fallback path
@@ -521,7 +597,18 @@ and stub/real engines:
     the fallback is the §2.12.3 Linux Landlock tier** — restrict the decoder to `{input
     ro, scratch rw}` and treat **the grant itself as the enforcement** (an out-of-input
     open is denied by the kernel, observable as the engine's `EACCES`), so the property
-    holds without `ptrace`. **§6.1.4 must document which enforcement path the runner uses.**
+    holds without `ptrace`. **Landlock availability MUST be asserted before relying on it
+    `[DECIDED]`:** Landlock is a best-effort *silent-degrade* tier in production (§2.12.3),
+    so the fs-audit MUST first **probe that the kernel actually has Landlock** (ABI ≥ 1,
+    kernel ≥ 5.13) and that the ruleset applied — it must NOT assume the grant took. **Fail
+    CLOSED if NEITHER `ptrace` NOR Landlock is available `[DECIDED]`:** when the runner has
+    no `SYS_PTRACE` **and** no working Landlock (e.g. kernel < 5.13), the fs-audit half has
+    **no enforcement mechanism** — it MUST **FAIL the CI gate** (a hard fail, the runner is
+    misconfigured for this mandatory check), **never silently pass**. **§6.1.4 must record
+    the Lane-B VPS runner's kernel version** as a prerequisite (so Landlock availability is
+    a known fact, not a runtime surprise) and **document which enforcement path the runner
+    uses**. A mandatory adversarial-egress gate that silently no-enforces is worse than a
+    visible red — so the absence of both tiers blocks, it does not pass.
   This is a **distinct case from the benign §2.11.4
   gate** and proves the argv/build controls — not "all engines bundled" — close T9b.
 - **Cancellation (§1.7/§1.11):** mid-batch cancel keeps finished items, discards the
@@ -577,9 +664,13 @@ cannot be declared `reliable` without a corpus file whose `covers` list names it
 The integration + property suites run on **all three native CI legs** (§6.1.4) —
 the reliability bar is *per-platform* (SSOT: "on all three platforms"). Additional
 platform-specific concerns:
-- **WebView rendering drift (§0.3.1):** a light UI smoke test (the §6.4.6
-  `tauri-driver` WebDriver flow) runs on each platform to catch WebView2/WKWebView/
-  WebKitGTK layout/behaviour differences in the core flow.
+- **WebView rendering drift (§0.3.1):** a light UI smoke test catches
+  WebView2/WKWebView/WebKitGTK layout/behaviour differences in the core flow. **The
+  driver differs by platform `[DECIDED §6.4.6]`:** the **§6.4.6 `tauri-driver` WebDriver
+  flow runs on Windows and Linux only**. On **macOS** `tauri-driver` has **no WKWebView
+  driver**, so the WebView-rendering-drift check there is covered by the **§6.4.6 degraded
+  smoke test** (launch + synthetic-argv conversion + window/output/exit-0 assertions)
+  **plus** the §6.6 human walkthrough — there is no macOS WebDriver flow to implement.
 - **macOS TCC** file-access prompts that the beside-source default can trigger
   (§7.2) are exercised in the macOS leg's headed smoke run.
 - **LibreOffice headless is NOT safely parallel** (§0.9) — the office-pair
@@ -725,10 +816,17 @@ media in an LFS-backed `corpus-large`** fetched **only** for the full Lane-B gat
 
 A headed browser-driver run drives the built app through **`tauri-driver`** — which
 exposes a **WebDriver** endpoint over the platform WebView (WebKitGTK on Linux,
-WKWebView on macOS, WebView2 on Windows) — using a **WebDriver client**
-(**WebdriverIO**, or the Rust **`webdriver`/`fantoccini` crate**). **Note:** plain
-**Playwright cannot drive a Tauri WebView** in its normal CDP mode (Tauri is not a
-Chrome DevTools-Protocol target); it is *not* the E2E driver here. The run exercises
+WKWebView on macOS, WebView2 on Windows). **E2E client binding = WebdriverIO (JS),
+NOT the Rust `webdriver`/`fantoccini` crate `[DECIDED]`.** The client is **WebdriverIO**
+(the JavaScript/Node WebDriver client), not a Rust webdriver crate, **because the a11y
+contrast gate uses `@axe-core/webdriverio`** (§6.4.6a) — a **JS-only** package that
+cannot be driven from a Rust client; choosing the Rust crate would force hand-rolling the
+axe-core injection (inject + run axe via `execute_script`, capture JSON). With WebdriverIO
+the `@axe-core/webdriverio` integration is first-class and the contrast session reuses the
+same driver session as the flow E2E. (The earlier "WebdriverIO, or the Rust crate" hedge
+is resolved to **WebdriverIO**.) **Note:** plain **Playwright cannot drive a Tauri WebView**
+in its normal CDP mode (Tauri is not a Chrome DevTools-Protocol target); it is *not* the
+E2E driver here. The run exercises
 the full §5.2 flow per platform: empty → intake → collected/confirm → target+default →
 destination shown → progress → summary → open-folder. This is the automated half of the
 DoD **core-UX-flow** gate; the human half is §6.6. Frontend component/unit tests use
@@ -781,7 +879,11 @@ owned here** (it had no named tool/lane before):
 - **Concrete assertions:** (a) **WCAG 2.1 AA contrast** — ≥4.5:1 for normal text, ≥3:1
   for large text and UI components/graphical objects (axe `color-contrast` rule, run in
   both Light and Dark themes, §5.5) — **on the `@axe-core/webdriverio` Linux/Windows
-  session only** (jsdom cannot compute contrast); (b) **ARIA role/state validity** (no
+  session only** (jsdom cannot compute contrast). **macOS automated-coverage gap
+  `[DECIDED]`:** because `tauri-driver` has **no macOS WKWebView driver** (§6.4.6), there
+  is **no automated contrast check on macOS** — the macOS WCAG-AA contrast gate is
+  satisfied **only by the §6.6 human walkthrough's readable-contrast check** (an explicitly
+  acknowledged gap, not a silent skip; recorded in `docs/usability-floor.md`); (b) **ARIA role/state validity** (no
   invalid or orphaned roles; the §5.6 `radiogroup`/`radio` tiles carry valid
   `aria-checked`) — jsdom leg; (c) **focus-order / tabindex sanity** (roving-tabindex
   radiogroup, §5.6) — jsdom leg — and labelled
@@ -915,6 +1017,17 @@ specifically tests whether a *human who didn't build it* succeeds. Protocol:
   walkthrough completes the core path **keyboard-only** (per the §5.10 shortcut map)
   and verifies readable contrast/text-size; this checks the DoD **basic-a11y** gate
   with a human, complementing automated a11y assertions (§5.6).
+- **Screen-reader smoke pass (SSOT Principle 10 "a screen-reader path exists")
+  `[DECIDED]`:** in addition to the keyboard-only pass, **one screen-reader walkthrough**
+  steps through the core flow **Idle → Collecting → Confirm → Converting → Summary** with
+  the platform's native SR — **VoiceOver** (macOS), **NVDA** (Windows), **Orca** (Linux) —
+  on **at least one platform** (axe-core/§6.4.6a cannot *prove* usable announcement, only
+  ARIA validity). The pass confirms: the collected summary and confirm-gate string are
+  announced (assertive), progress milestones are announced (not every tick), decision
+  dialogs announce as `alertdialog` with their accessible name (§5.6), and lossy/divert
+  notes announce politely. Recorded in `docs/usability-floor.md` (which SR, which platform);
+  referenced from the §6.10 DoD row 6 (basic accessibility). This closes the gap that the
+  keyboard-only walkthrough alone left (SR announcement quality is otherwise unverified).
 - **Recording:** results captured in `docs/usability-floor.md` (per platform:
   tester profile, tasks, pass/fail, observed friction, the default-validation notes).
   This file is a **required v1 artifact**; the gate is "three platform walkthroughs
@@ -1003,10 +1116,22 @@ blocking the next:
 1. **Matrix build (native, §6.1.4):** stage engines per platform (§6.1.3), run
    `tauri build` (+ the Windows post-build zip-packaging step §6.1.2) → per-platform
    artifact (portable `.zip` + NSIS installer, universal `.dmg`,
-   AppImage).
+   AppImage). **Artifact-size gate `[DECIDED]`:** immediately measure each platform's
+   **compressed** artifact and **fail the release if any exceeds the §3.9.1 ≤ 400 MB
+   compressed ceiling** (record the measured sizes as a release-asset line; §6.10 row 22).
+   **No-system-pollution post-launch check (§6.10 row 21)** also runs here on the built
+   artifact (Procmon/`fsusage`/`strace` — assert no registry/LaunchAgent/daemon/association
+   writes).
 2. **Full reliability gate (§6.5):** integration + property + corpus + E2E on **all
    three** legs; emits `reliability-report.json`. **Any `failing` pair aborts the
-   release.** **Runtime / cost:** the dominant cost is the corpus run (video
+   release.** **Includes the WCAG-AA contrast a11y session `[DECIDED]`:** the
+   **`@axe-core/webdriverio` contrast check** (§6.4.6a — WCAG 2.1 AA, both themes) runs as
+   a **named step on the Linux + Windows legs** here (it needs the live WebView's computed
+   styles; jsdom cannot compute contrast, so it is **NOT** in the Lane-A per-PR a11y leg).
+   **macOS contrast is the acknowledged automated-coverage gap:** `tauri-driver` has no
+   macOS WKWebView driver (§6.4.6), so the **macOS WCAG-AA contrast gate is verified ONLY
+   via the §6.6 human walkthrough** (readable-contrast check) — Phase 3 must not silently
+   skip macOS contrast; it is human-covered, recorded in `docs/usability-floor.md`. **Runtime / cost:** the dominant cost is the corpus run (video
    re-encode + LibreOffice, the slow engines). Estimate **~30–90 min per leg**
    depending on corpus size; set CI **`timeout-minutes` ≈ 120 per leg** with headroom.
    **macOS-leg caveat + mitigation ladder `[DECIDED]`:** the **~30–90 min** estimate is
@@ -1017,7 +1142,10 @@ blocking the next:
    1. **Initial macOS `timeout-minutes = 180`** (not 120) — give the LFS pull + 10×-cost leg
       real headroom from the start.
    2. **Trigger to split:** if the **average macOS Lane-B wall-clock exceeds 150 min over 3
-      consecutive release runs**, switch the macOS leg to a **representative macOS subset**:
+      consecutive release runs** — **OR, for the first two runs where no 3-run average yet
+      exists `[DECIDED]`, if a *single* macOS Lane-B run exceeds 180 min** (so the ladder is
+      actionable from run 1 of a deadline-free v1, not only after 3 releases have shipped) —
+      switch the macOS leg to a **representative macOS subset**:
       one video re-encode pair (the slowest engine), one office→PDF pair (the LibreOffice
       path), one image-worker pair, and the E2E smoke — **the §6.6 video/office smoke set** —
       while the **full `corpus-large` continues to run on the cheaper Linux leg** (which has
@@ -1109,11 +1237,15 @@ with **egress blocked** and **any outbound attempt fails the test**. Per-platfor
     set -e
     ip link set lo up
     DRIVER_PORT="${DRIVER_PORT:-4444}"
-    xvfb-run -a tauri-driver --port "$DRIVER_PORT" &   # background the driver on a known port
+    # Xvfb must NOT open a TCP X socket inside the loopback-only net-ns: distro Xvfb
+    # packages vary on the -nolisten tcp default, and a TCP bind attempt fails here →
+    # pass it explicitly so Xvfb uses only Unix-domain sockets (otherwise intermittent
+    # CI failures when the default is "listen").
+    xvfb-run -a --server-args="-nolisten tcp" tauri-driver --port "$DRIVER_PORT" &
     drv=$!
     # readiness probe: wait for the WebDriver endpoint before starting the client
     until curl -sf "http://127.0.0.1:${DRIVER_PORT}/status" >/dev/null; do sleep 0.5; done
-    run_e2e_client                        # the WebdriverIO/webdriver-crate run
+    run_e2e_client                        # the WebdriverIO run (§6.4.6 client binding)
     rc=$?
     kill "$drv" 2>/dev/null || true       # tear the backgrounded driver down
     exit $rc
@@ -1279,6 +1411,8 @@ promises has a technical home" is **verifiable**. Each gate is marked
 | 18 | **Single-instance + run identity (no cross-instance temp clobber; freeze unaffected by a second launch)** | §7.1 · §2.4/§2.6 | Single-instance plugin behaviour test; per-run/instance temp-ownership + advisory-lock liveness property tests (§6.4.2) | **in-scope-gate** |
 | 19 | **Startup integrity & engine-presence (missing/corrupt engine → app-fault, not a crash)** | §7.2.3 · §2.13 | Startup-fault test: a removed/truncated bundled engine yields the plain app-fault screen, never a stack trace (§6.4.2 / §6.4.6 headed smoke) | **in-scope-gate** |
 | 20 | **OS intake (Open-with / launch-args route through the single freeze funnel; no file-association pollution)** | §7.8 · §1.1/§2.4 | Launch-with-files E2E (UI enters Collecting at startup); assert no associations registered (§7.8.2) | **in-scope-gate** |
+| 21 | **Portable, no installation, no system pollution (SSOT Principle 2 — no installer/admin/elevation/registry writes/no LaunchAgent or daemon)** | §7.4/§7.8.2 (explicit negatives) · §0.10 (capabilities) · §3.4.5/§3.3 (no runtime fetch) · §7.3 (no tray/agent) | **Lane-B post-launch assertion `[DECIDED]`:** run the built app under **Procmon (Windows)** / **`fsusage`+config-dir watch (macOS)** / **`strace`/inotify (Linux)** during a conversion and assert: **no writes outside the OS config/log dir + the user's chosen output** — specifically **no registry writes** (Windows, beyond none expected), **no `LaunchAgent`/`LaunchDaemon` install** (macOS), **no system-service/unit install** (Linux), **no file-association registration** (§7.8.2). A pollution write fails the gate | **in-scope-gate** |
+| 22 | **Compressed artifact ≤ 400 MB per platform (§3.9.1 size ceiling)** | §3.9.1 (ceiling) · §3.9 (size levers) | **Artifact-size gate `[DECIDED]`:** an explicit **§6.7.2 Lane-B step** measures each platform's compressed artifact and **fails the release if any exceeds 400 MB compressed** (the §3.9.1 ceiling); recorded as a release-asset line | **in-scope-gate** |
 | — | **NOT a gate: subjective visual polish; engine-currency** | §5.5 (polish) · §3.8 (currency) | Polish is iterative (never blocks); currency is best-effort, re-validated against the gate when bumped (§6.3.4/§6.5.4) | **out-of-scope-gate** (explicit non-gates) |
 
 If a future SSOT clause is added, it must appear here with an owning section and a

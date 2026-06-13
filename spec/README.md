@@ -174,8 +174,13 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   earlier `EngineKind::InCoreNative` spelling and the `EngineProgram::InProcess` spelling
   are both retired in favour of `InProcessNative`). Owner: §0.6 / §3.2.
 - **macOS universal sidecar naming** — `--target universal-apple-darwin` resolves a
-  **single fat Mach-O `<name>-universal-apple-darwin`** (Tauri `lipo`-merges), not two
-  per-arch files; `scripts/stage-engines` `lipo -create`s each sidecar. Owner: §6.1.3.
+  **single fat Mach-O `<name>-universal-apple-darwin`**, not two per-arch files.
+  **Correction `[DECIDED — verified vs Tauri v2]`:** Tauri **does NOT `lipo` sidecars** (it
+  auto-lipos only its own main app binary); it expects the externalBin fat binary to be
+  **pre-merged**, so `scripts/stage-engines` `lipo -create`s each sidecar **before**
+  `tauri build`. The §6.1.3 intro and the script section now agree (stage-engines lipos,
+  Tauri consumes). Dual-arch sourcing fallback (build x86_64-on-arm64 via cross/Rosetta when
+  the cache lacks a slice) documented. Owner: §6.1.3.
 - **E2E driver = `tauri-driver` (WebDriver), NOT Playwright** — Playwright cannot drive
   a Tauri WebView in CDP mode; use a WebDriver client (WebdriverIO / `webdriver` crate)
   over `tauri-driver`. macOS automated E2E is **`[DECIDED]` a defined degraded smoke test**
@@ -382,8 +387,11 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **`Invocation` (plan, §3.2.2) vs `EngineInvocation` (dispatch envelope, §1.7)** — the
   latter wraps `(JobId, EngineId, Invocation, CancellationToken)`; duplicated argv/cwd/env
   removed from §1.7. `TempPath = tempfile::TempPath`. `InvocationResult` carries the
-  Rust-internal `ConversionErrorKind`, mapped to wire `ErrorKind` only at §0.4.3. Owner:
-  §3.2.2 / §1.7.
+  Rust-internal `ConversionErrorKind`; the orchestrator (`crate::run`) maps it to wire
+  `ErrorKind` via `ErrorKind::from(kind)` at the **§1.9 Running→Failed transition** (the
+  `From<ConversionErrorKind> for ErrorKind` impl is owned by `crate::outcome`; identity
+  under the §2.8 type-alias mechanism) and at the §0.4.3 IPC boundary — one conversion,
+  call-site `crate::run`, definition-site `crate::outcome`. Owner: §1.9 / §3.2.2 / §1.7.
 - **`OutcomeMsg::Skipped { reason: SkipReason }`** added — a pre-flight skip rides a
   skip-shaped variant (not `Failure`), so skip ≠ fail at the type level. Owner: §2.8 / §1.12.
 - **process-wrap = the maintainer-described successor to command-group** (was wrongly
@@ -397,8 +405,11 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **minisign signature is unconditional/DECIDED** (the "optional"/"if it ships" hedges
   removed, §6.2.3/§6.2.4/§6.10 row 12). **CycloneDX `specVersion 1.5` pinned for ALL SBOM
   inputs** (§6.3.1). **engines.lock SPDX fixed**: x264 `GPL-2.0-or-later`, poppler
-  `GPL-2.0-only OR GPL-3.0-only`, libaom `BSD-2-Clause AND AOMedia-Patent-License-1.0`
-  (§3.1). Owner: §6.2 / §6.3 / §3.1.
+  `GPL-2.0-only OR GPL-3.0-only`, libaom `BSD-2-Clause AND LicenseRef-AOMPL-1.0`
+  (the AOM Patent License has **no registered SPDX id** — `AOMPL-1.0` is only a pending
+  SPDX request — so it is a `LicenseRef` custom licence with full text in
+  `THIRD-PARTY-LICENSES.txt`; the §6.3.3 gate gains a `LicenseRef`-with-text carve-out
+  so it is not a `NOASSERTION` hard fail) (§3.1). Owner: §6.2 / §6.3 / §3.1.
 - **verboseLog effect timing = read-at-startup → next launch** (About toggle: "applies
   after restart"). **Engine-integrity cache** = `engine-integrity.json` in the config dir,
   keyed on `app_version`. **First-launch macOS `Opened` buffer-then-replay** (avoids the
@@ -413,9 +424,14 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   is promoted into the shared `forward_launch_intake` funnel both launch hooks call
   (argv callback AND `RunEvent::Opened`), so a mid-conversion Open-with is refused on macOS
   too (no longer bypasses the PRIMARY §7.1.1 gate). Owner: §7.8.1 / §7.1.1.
-- **First-launch macOS drain mechanism = C1 re-use on root-shell mount** (no dedicated
-  command, no 4th `app://` event); `PendingIntake` carries the real `origin` (`LaunchArg`),
-  never a hard-coded `SecondInstance`. Owner: §7.8.1.
+- **First-launch macOS drain mechanism = C1 re-use on root-shell mount with a concrete
+  `drainPending: true` + `paths: []` call** (no dedicated command, no 4th `app://` event);
+  the handler consumes `State<PendingIntake>` (its stored `origin`, `LaunchArg`) and freezes
+  it, or returns `CollectedSet::Empty` if none; the frontend never holds the buffered paths.
+  `PendingIntake` carries the real `origin` (`LaunchArg`), never a hard-coded
+  `SecondInstance`. Owner: §7.8.1 / §0.4.1 C1. **`RunEvent::Opened` is macOS-only in Tauri
+  v2** (NOT cross-platform — Win/Linux intake is argv/single-instance); the handler is
+  registered unconditionally only for code simplicity, never invoked off macOS. Owner: §7.8.1.
 - **FFmpeg T9b covers BOTH halves structurally** — SSRF via `-protocol_whitelist file,pipe`
   + network-disabled build; **absolute-file LFR via concat `-safe 1` (never `-safe 0`) +
   curated demuxer set without playlist/manifest dereferencing demuxers** (§6.1.3 `-protocols`
@@ -533,11 +549,13 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   (LGPL §6, carve-out ii, asserted by the build); FFmpeg-internal static LGPL is
   aggregation (carve-out iii). Resolves the §6.1.3-vs-§3.5.5 static-link contradiction.
   Owner: §6.1.3 / §3.5.5 / §3.6.1.
-- **SVG/librsvg local-file LFR (T9b) closed** — the image-worker configures librsvg to
-  refuse ALL external resource loads (no remote href AND no local `<image href>`/XInclude
-  out-of-input file read) and stages the SVG into per-job scratch on ALL platforms; §6.1.3
-  corpus assertion + §0.11 T9b / §2.11.1 cite the SVG control alongside FFmpeg/pandoc/LO.
-  Owner: §3.5.5 / §3.3.4 / §0.11 T9b / §2.11.1 / §6.1.3.
+- **SVG/librsvg local-file LFR (T9b) closed** — **PRIMARY control = refuse ALL external
+  resource loads** (`set_load_external_resources(false)`; v1 SVG→raster needs none, fonts
+  bundled), closing both SSRF and local-LFR by construction. **Staging into per-job scratch
+  + base-URL confinement is DEFENCE-IN-DEPTH only, NOT trusted** — it is the mechanism
+  **CVE-2023-38633 bypassed** (fixed in **librsvg ≥ 2.56.3**, now **pinned in engines.lock
+  with a §6.1.3 version assertion**). §6.1.3 corpus assertion + §0.11 T9b / §2.11.1 cite the
+  SVG control alongside FFmpeg/pandoc/LO. Owner: §3.5.5 / §3.3.4 / §0.11 T9b / §2.11.1 / §6.1.3.
 - **Lock-before-part ordering invariant** — `run-<RunId>/.lock` is created and OS-locked
   BEFORE the run writes its first `.part`; the opportunistic same-dir sweep's
   "absent-lock ⇒ reclaimable" rule is safe ONLY because of this guaranteed ordering.
@@ -578,6 +596,95 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   WCAG 2.1 AA contrast check runs on the `@axe-core/webdriverio` Lane-B session (jsdom
   cannot measure computed contrast, §6.4.6a); removed from the Lane A bullet. Owner:
   §6.7.1 / §6.4.6a.
+
+#### Resolved in the review-fix pass `[DECIDED]`
+- **macOS TCC absolute scoped to READS only** — §7.2.6 fact 2: engines never first-*read*
+  a protected source (staged via §3.5.0 scratch), but the §2.14.1 beside-source publish
+  `.part` write is the **core's** (never the engine's) and a TCC denial there **fails that
+  item** per §2.8; the "a TCC chain-break can never block a conversion" claim is a
+  **read-side** claim, not write-side. §3.5.0 carries the write-side scope note. Owner:
+  §7.2.6 / §3.5.0 / §2.14.1.
+- **Video vs image HEVC/AV1 decode are TWO engines** — image HEIC/AVIF decode =
+  libheif+libde265/dav1d (image-worker); video HEVC-in-MOV/MKV + AV1-in-MKV/WEBM decode =
+  FFmpeg's **own native `hevc`/`av1` decoders** (GPL FFmpeg binary, never libde265/the
+  image module). §3.4.3 matrix split into per-engine rows; §6.1.3 lists `hevc`+`av1` as
+  required FFmpeg decoders. Owner: §3.4.3 / §3.4.4 / §3.5.1 / §6.1.3.
+- **Curated-FFmpeg decoder set = generated-from-04 manifest** (`ffmpeg-required-decoders.lock`,
+  never hand-kept); the documented floor now includes the modern decoders
+  `hevc`/`h264`/`av1`/`mpeg4`/`msmpeg4v2`/`msmpeg4v3`/`mjpeg`/`aac`/`vorbis`/`opus` (+ legacy)
+  so a literal build can open iPhone-HEVC/AAC/WEBM/AVI sources. Owner: §6.1.3 / §3.1.
+- **libaom SPDX = `BSD-2-Clause AND LicenseRef-AOMPL-1.0`** (AOM Patent License has no
+  registered SPDX id — `AOMPL-1.0` is only a pending request) + a **§6.3.3 `LicenseRef`-with-
+  text carve-out** so it satisfies the "resolved id" gate (not a `NOASSERTION` hard fail);
+  full AOM Patent License text in `THIRD-PARTY-LICENSES.txt`. Owner: §3.1 / §3.6.1 / §3.7.2 /
+  §6.3.3.
+- **Orchestrator ConversionErrorKind→ErrorKind mapping home named** — `crate::run` (the §1.9
+  transition owner) calls `ErrorKind::from(kind)` at the Running→Failed transition; the
+  `From<ConversionErrorKind> for ErrorKind` impl is owned by `crate::outcome` (identity under
+  the §2.8 type-alias mechanism). Owner: §1.9 / §0.4.3 / §1.7 / §2.8.
+- **§1.2 in-core sniffs DECIDED (stale `[OPEN — owner §2.12]` tag removed)** — text-encoding
+  heuristic + ZIP central-dir peek + `.svgz` bounded inflate stay in-core (memory-safe,
+  bounded, no third-party C/C++ decoder, §2.12.4). Owner: §1.2 / §2.12.4.
+- **QuitConfirm focus-restore + alertdialog accessible names** — §5.6 focus-restore-on-close
+  scoped to the modals WITH a UI trigger (RerunPrompt → Convert button; AboutDialog → About
+  control); QuitConfirm (OS-raised, no trigger) returns focus to the underlying `Converting`
+  active element. Both `role=alertdialog` elements get accessible names via `aria-labelledby`
+  (RerunPrompt "Already converted with these settings"; QuitConfirm "Conversion in progress").
+  Owner: §5.6 / §5.3.
+- **SVG-source matrix: every SVG→raster cell is `~` (lossy)** — `image_svg_raster` fires for
+  every SVG→raster pair incl. the SVG→PNG ★ default; the matrix row marks all raster targets
+  `~`; the footnote rewritten (rasterise inherently lossy + target-codec LossyKind on top).
+  Owner: images.md (matrix) / §2.9 (kind).
+- **§6.4.4 cross-platform test corrected** — the `tauri-driver` WebDriver flow runs on
+  Windows + Linux only; macOS WebView-drift is covered by the §6.4.6 degraded smoke test +
+  §6.6 walkthrough (no macOS WKWebView driver). Owner: §6.4.4 / §6.4.6.
+- **`RunEvent::Opened` is macOS-only in Tauri v2** (NOT cross-platform) — Win/Linux intake
+  is argv/single-instance; handler registered unconditionally only for code simplicity,
+  never invoked off macOS. **First-launch drain = C1 with `paths:[]` + `drainPending:true`**
+  (consumes `State<PendingIntake>`; frontend never holds the buffered paths). Owner: §7.8.1 /
+  §0.4.1 C1 / §7.3.2.
+- **`RotationStrategy::KeepOne` footprint re-verified at source = ~1× `max_file_size`** —
+  the `KeepOne` arm is `fs::remove_file` (deletes, no `.bak`); the lens's ~2x rename-to-backup
+  claim was wrong. Owner: §7.5.2.
+- **lipo: Tauri does NOT merge sidecars** (verified vs Tauri v2) — it auto-lipos only its own
+  main binary; `externalBin` must be a **pre-merged** fat binary, so `scripts/stage-engines`
+  does the `lipo`. §6.1.3 intro aligned with the script section; dual-arch fallback documented.
+  Owner: §6.1.3.
+- **E2E client binding = WebdriverIO (JS)**, not the Rust webdriver/fantoccini crate — because
+  `@axe-core/webdriverio` (the contrast a11y gate) is JS-only. Owner: §6.4.6 / §6.4.6a.
+- **ThemeToggle keyboard = Tab-reachable only** (no dedicated accelerator) — recorded in §5.10
+  with the FileList-disclosure / Convert-more / Reveal-residue rows; Confirm-gate assertive SR
+  string + canonical no-warranty About string added. Owner: §5.10 / §5.7 / §5.9.
+- **CollectedNoteKind all four variants have producers** — §1.2 step 4 adds the ICO ICONDIR
+  count peek (MultiSizeIcon) + the audio cover-art tag peek (EmbeddedCoverArt); the bare-variant
+  + `detail` carrier convention clarified. Owner: §1.2 / §0.6.
+- **CycloneDX→SPDX export tool named** = CycloneDX CLI `convert` (`--output-format spdxjson`;
+  Syft `convert` fallback), pinned in §3.8. **minisign key-rotation policy** added (announced
+  signed commit + retained `minisign-retired.pub` + release-note). Owner: §6.3.1 / §6.2.3.
+- **fs-audit fails CLOSED if neither ptrace NOR Landlock available**; Landlock availability
+  asserted before relying on it; Lane-B VPS runner kernel version recorded as a prerequisite.
+  **`ubuntu-22.04` floor honoured per lane** (VPS-host may differ → `ubuntu:22.04` Docker or
+  GitHub-hosted fallback). Owner: §6.4.2 / §6.1.4.
+- **librsvg LFR primary control = refuse ALL external loads** (`set_load_external_resources(
+  false)`); directory-confinement demoted to defence-in-depth (it is what **CVE-2023-38633**
+  bypassed); **librsvg pinned ≥ 2.56.3** with a §6.1.3 version assertion. Owner: §3.5.5 /
+  §0.11 T9b / §6.1.3 / images.md.
+- **New DoD rows + property tests** — §6.10 row 21 (portable/no-system-pollution, Lane-B
+  Procmon/strace post-launch assertion) + row 22 (≤400 MB compressed artifact gate, §6.7.2
+  step); §6.4.2 macOS staged-source-copy crash-residue case; Xvfb `-nolisten tcp` in the
+  egress snippet; macOS Lane-B timeout ladder fires on a single >180-min run for the first two
+  releases; §6.6 screen-reader smoke pass (VoiceOver/NVDA/Orca). Owner: §6.10 / §6.4.2 / §6.7.2
+  / §6.7.3 / §6.6.
+- **Guarantee tightenings** — §2.7 subtree dir-creation mechanism (create-only ancestors,
+  full-final-dir link-safety, non-dir-collision fail); §2.6.3 startup-sweep liveness probe is a
+  NON-BLOCKING try-lock (`flock LOCK_NB`/`F_SETLK`/`LockFileEx LOCKFILE_FAIL_IMMEDIATELY`);
+  §2.14.3 cross-volume fallback temp lives under the per-run scratch root / carries
+  InstanceId+RunId; macOS staged-input preflight bounded to PEAK CONCURRENT, not whole-batch Σ;
+  §1.1 per-item walk failure skips-and-continues; C2a dialog non-blocking + CollectingId token
+  dropped on every exit branch; §0.4.2 app://intake IDLE-path-only; RunStarted.willReencode =
+  conservative container-pair worst-case (pre-ffprobe); ConvertingNote carry-over store field
+  `pendingVideoReencodeNote`; WebRTC/macOS-privilege-drop accepted-residual framing; T4
+  open_path per-file-launch vs per-root-folder-browse split. Owners as noted in each section.
 
 ### Deferred to corpus / usability validation `[DEFER: corpus]`
 > Design decided; only an empirical number or a real-world validation remains. These
@@ -621,9 +728,15 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   (free/low-volume tier exists). v1 ships FFmpeg's native LGPL AAC, surfaced in NOTICE;
   the decision (ship-bundled, no revenue) stands. Tracked as honest grey area, not an
   open design call (legal-advice items are out of scope). Owner: §3.4.2.
-- **Curated-FFmpeg decoder coverage** — the `--disable-everything --enable-…` build
-  must assert it covers every decoder the 04 matrices reference (`ffmpeg -decoders`
-  build assertion + §6.4.3 per-pair tests). Owner: §6.1.3 / §3.1.
+- **Curated-FFmpeg decoder coverage** — `[DECIDED]` **generated-from-04 manifest**
+  (`ffmpeg-required-decoders.lock`, never hand-kept): the build parses every codec the
+  04 matrices name on the source side and asserts the curated `--disable-everything
+  --enable-…` build covers it (`ffmpeg -decoders` build assertion + §6.4.3 per-pair
+  tests). The documented floor explicitly includes the modern decoders `hevc`/`h264`/
+  `av1`/`mpeg4`/`msmpeg4v2`/`msmpeg4v3`/`mjpeg`/`aac`/`vorbis`/`opus` (+ legacy set) so
+  a literal build can open the headline iPhone-HEVC/AAC/WEBM/AVI sources. The only
+  remaining `[DEFER: corpus]` part is confirming the generated set is complete against
+  the real corpus, not the design. Owner: §6.1.3 / §3.1.
 
 #### Resolved in the consolidation pass (moved off `[OPEN]`) `[DECIDED]`
 - **Decoder-isolation v1 sandbox depth per OS — `[DECIDED]` (two-tier model, §2.12.3).**

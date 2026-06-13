@@ -762,12 +762,17 @@ On startup (§7.2 sequence) `crate::run::sweep_stale`:
 1. Lists `convertia/<InstanceId>.<pid>/run-*` dirs under the **central scratch
    root** (kind-2 working files).
 2. For each, checks **liveness** via §7.1's mechanism — recommended: an **advisory
-   lock file** `run-<RunId>/.lock` held with an OS lock for the run's lifetime
-   (Unix `flock`/`fcntl` `F_SETLK`; Windows `LockFileEx` exclusive on the lock
-   file). A dir whose lock is **still held** belongs to a **live** instance → **left
-   untouched**. A dir whose lock is **free/stale** belongs to a dead/crashed run →
-   removed (its working files are the discardable artifacts the SSOT says are
-   "cleaned up on next run").
+   lock file** `run-<RunId>/.lock` held with an OS lock for the run's lifetime, probed
+   with a **NON-BLOCKING try-lock `[DECIDED]`** so the sweep never hangs on a live
+   instance (the app must stay responsive): **Unix `flock(LOCK_EX | LOCK_NB)`** or
+   **`fcntl(F_SETLK)`** (`F_SETLK` is already non-blocking; bare `flock` **without**
+   `LOCK_NB` would *block* until the holder releases — wrong here); **Windows
+   `LockFileEx` with `LOCKFILE_FAIL_IMMEDIATELY | LOCKFILE_EXCLUSIVE_LOCK`** (bare
+   `LockFileEx` **without** `LOCKFILE_FAIL_IMMEDIATELY` blocks — wrong here). Interpretation:
+   **would-block / immediate-fail ⇒ the lock is still held ⇒ LIVE ⇒ left untouched**;
+   **immediate acquire ⇒ free/stale ⇒ DEAD/crashed run ⇒ removed** (and the sweep
+   immediately releases the lock it just took). The working files of a dead run are the
+   discardable artifacts the SSOT says are "cleaned up on next run".
 3. This is what makes the SSOT promise *"temp artifacts are owned per-run so cleanup
    never removes another instance's in-progress file"* concrete: liveness is by
    **held-lock — the single authoritative predicate** — not by guessing from
@@ -873,6 +878,30 @@ divert path.
    under `D` (SSOT: "re-creates the relative subfolder structure rather than
    flattening"). The common root is the deepest directory containing all frozen
    sources (computed at freeze, §2.4).
+
+   **Subtree directory-creation mechanism `[DECIDED]` (owner: §2.7 / §1.8).** Re-creating
+   `D/sub/dir/` is more than "the relative path is preserved" — the intermediate dirs must
+   be created safely, **before** the engine writes its `out_tmp` there (§2.14.1), and the
+   creation itself must honour the §2.3 link-safety invariant:
+   - **Create-only, ancestor-by-ancestor.** Each missing ancestor under `D` is created
+     **create-only** (`mkdir`, never `mkdir -p`-that-silently-accepts-an-existing-file): a
+     `create_dir` that races another creator and gets `AlreadyExists` re-checks that the
+     existing entry **is a directory** and continues; any other error fails the item.
+   - **Non-directory collision fails clearly.** If an ancestor path `D/sub` already exists
+     as a **non-directory** (a regular file / symlink-to-file occupies the name), the item
+     **fails with a clear §2.8 error** (an `Unwritable`/`Io`-class kind), never silently
+     overwriting or diverting around it.
+   - **Full-final-dir link-safety, not just the leaf.** The §2.3.3 link-safety check is
+     extended to the **whole final directory** `D/sub/dir` (canonicalise/identity-check the
+     **deepest** created/existing dir), not only the immediate leaf parent — a symlinked
+     `D/sub` could redirect the write into a frozen source tree (§2.3 forbids writing onto
+     a source), and checking only the leaf parent would miss an ancestor redirect. The
+     §2.3.3 parent-handle for the exclusive publish is taken on the **deepest created dir**
+     (the file's actual parent), so the publish is dir-handle-relative against the verified
+     directory.
+   These steps run in §1.8 path planning / §2.7 before the engine spawn; a failure at any
+   ancestor surfaces as a per-item §2.8 failure (batch continues, §1.9), never a partial
+   silently-wrong tree.
 
 ### 2.7.2 Per-location writability & ephemerality classification `[DECIDED]`
 
@@ -1481,9 +1510,14 @@ the privilege-drop tier is best-effort, degrading silently — see the callout):
   the offline guarantee (§2.11) is enforced even on a hostile decoder.
 - **macOS (recommended v1 if feasible):** run the engine under a **`sandbox-exec`
   profile** / Seatbelt SBPL restricting it to read the input + write the scratch dir,
-  deny network and process-exec. (Apple deprecates `sandbox-exec` as a CLI but the
-  underlying `sandbox_init` profile mechanism remains; portable-build constraints
-  apply.)
+  deny network and process-exec. (Apple deprecates `sandbox-exec` as a CLI **and
+  `sandbox_init` is a private/unsupported API** — not part of the stable platform
+  contract — so on an **unsigned, portable** build the Seatbelt route **most often
+  degrades to the cheap tier** in practice. This is fine: it is **explicitly accepted**
+  because the macOS privilege-drop tier is **not load-bearing** — the T9b network/LFR
+  guarantee rests on the always-on argv/build controls (§3.5/§6.1.3) and the offline
+  guarantee on §3.3.4 + the §2.11.4 packet gate, neither of which depends on Seatbelt.
+  This is exactly why T9b/offline correctly do not depend on this tier.)
 - **Windows (recommended v1 if feasible):** spawn in a **restricted token / App
   Container or Job Object** with **`JOB_OBJECT_LIMIT`** flags (kill-on-job-close so
   no orphan survives, memory cap), a **low-integrity** token, and network disabled
@@ -1709,9 +1743,29 @@ spawning** any engine (§3.5.0 / §7.2.6 TCC staging — the engine never first-
 protected path). That staged copy is **input-sized, per item, on the scratch/system
 volume** — a real kind-2 footprint the §2.14.4 / §1.10 free-space model must count. On
 **Windows/Linux this term is 0** (no TCC, no staging). So on macOS the kind-2 estimate is
-`LibreOffice/FFmpeg working space + Σ(staged input sizes for in-flight items)`; a macOS
+`LibreOffice/FFmpeg working space + staged input sizes for the in-flight set`; a macOS
 batch of large videos/PDFs can exhaust the **system/scratch volume** even though the
 *output* fits the destination — which is exactly why it must be in the preflight.
+**PEAK-CONCURRENT, not whole-batch Σ `[DECIDED]`:** staged source copies are reclaimed
+**per item** as each engine finishes, so at most §0.9 **concurrency-degree** of them coexist
+— the §1.10 preflight must bound this term to the **peak concurrent footprint** (~`degree ×
+largest in-flight staged inputs`), **not** the sum of every item's staged-input size across
+the whole batch (which would over-count and falsely trip `OutOfDisk`).
+
+**Staged-copy lifecycle — created AFTER the run-lock, reclaimed unconditionally
+`[DECIDED]`.** The macOS staged **source** copy is a kind-2 file under the **per-run
+scratch root** `convertia/<InstanceId>.<pid>/run-<RunId>/`, and it is created **after the
+`run-<RunId>/.lock` is acquired** — the same **lock-before-part ordering invariant**
+(§2.6.3 / §2.14.1) that covers `.part` files therefore covers the staged source copy too,
+so the §2.6.3 startup sweep reclaims it on the next launch after a crash (**absent lock ⇒
+dead ⇒ reclaimable**). It is also reclaimed by the §2.6.2 **run-scope cleanup
+unconditionally** on every normal/cancel/error exit (it lives inside the run dir that
+`cleanup_run` removes). A cancel between staging and engine-spawn therefore leaves no
+stranded source copy; a crash there is reclaimed at next launch. **§6.4.2 property-test
+case (added):** *kill the app between the staged source copy and the engine spawn; on next
+launch assert the staged copy (and its `run-<RunId>/` dir) is reclaimed by the startup
+sweep* — enumerated alongside the kind-1 `.part` crash cases so the staged SOURCE copy is
+not an untested residue path.
 
 **Linux AppImage topology (no special handling needed) `[DECIDED]`.** On an AppImage,
 the app itself runs from a **read-only squashfs mount** — but the kind-2 scratch root
@@ -1735,7 +1789,18 @@ move-equivalent **inside** that volume:
    destination dir as a sibling dotfile; if a sibling can't be created there, the
    destination dir's own parent on the same volume).
 2. If, despite this, the only available scratch is on **another** volume, perform a
-   **copy + fsync + exclusive-publish-within-destination-volume**:
+   **copy + fsync + exclusive-publish-within-destination-volume**. **The intermediate
+   cross-volume temp has a named, swept home `[DECIDED]`:** that "other-volume" temp is
+   **NOT** an anonymous `tempfile` in an arbitrary `$TMPDIR` — it lives under the **per-run
+   central scratch root** (`convertia/<InstanceId>.<pid>/run-<RunId>/`, the kind-2 root
+   covered by the run-lock and swept by §2.6.3 step 1), **or**, if it must sit elsewhere on
+   that volume, it carries the **same `InstanceId`+`RunId` `.convertia-<InstanceId>-<RunId>-
+   <jobId>-<rand>.part` naming** as a kind-1 publish temp (so the §2.6.3 per-file
+   opportunistic sweep resolves its owning lock cross-instance). Either way the
+   **lock-before-part ordering invariant** (§2.6.3 / §2.14.1) covers it — the
+   `run-<RunId>/.lock` is held before this temp is written, so **absent lock ⇒ dead ⇒
+   reclaimable** still holds and a crash mid-fallback cannot strand a temp that escapes both
+   sweeps. Then:
    - copy the cross-volume temp into a **new** temp **on `final`'s volume**,
    - `sync_all()` it (durable),
    - then publish that same-volume temp → `final` with the **no-placeholder

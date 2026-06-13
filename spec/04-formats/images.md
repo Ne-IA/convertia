@@ -48,12 +48,18 @@ for the binding.
 | **HEIC**  | ✓★~ vips   | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips      | ✓ vips      | —          | ✓~ vips      | ✓ vips |
 | **AVIF**  | ✓★~ vips   | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips    | —            | ✓ vips |
 | **ICO**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | —      |
-| **SVG**†  | ✓~ svg     | ✓★ svg      | ✓ svg        | ✓~ svg       | ✓ svg       | ✓ svg       | out*         | out*         | ✓ svg  |
+| **SVG**†  | ✓~ svg     | ✓★~ svg     | ✓~ svg       | ✓~ svg       | ✓~ svg      | ✓~ svg      | out*         | out*         | ✓~ svg |
 
-† **SVG is source-only.** It is rasterised once (vector → pixels) and that bitmap
-is saved to the target; the rasterise step is inherently lossy *to a fixed pixel
-grid* (you lose infinite scalability), independent of the target codec — see the
-SVG entry. The `✓~` cells additionally carry the target codec's own lossiness.
+† **SVG is source-only, and EVERY SVG→raster cell is `~` (lossy).** It is rasterised
+once (vector → pixels) and that bitmap is saved to the target; the rasterise step is
+inherently lossy *to a fixed pixel grid* (you lose infinite scalability) **regardless
+of the target codec**, so **all** SVG→raster pairs — including the SVG→PNG ★ default —
+fire the §2.9 **`image_svg_raster`** LossyKind (this is why every cell in the SVG row,
+not just SVG→JPG/GIF, is marked `✓~`). Cells whose target codec is *additionally* lossy
+**also** fire that target-codec-specific LossyKind on top of `image_svg_raster` — e.g.
+SVG→GIF adds **`image_palette`** (≤256-colour palette), SVG→JPG adds JPEG compression
+loss, SVG→WEBP/HEIC/AVIF add their lossy-codec note. The disclosure derivation MUST emit
+`image_svg_raster` for every SVG→raster pair (never omit it for the `★` PNG default).
 
 \* SVG→HEIC / SVG→AVIF are **`out`** (matrix and offered set agree — see *Pairs
 deliberately out* and the SVG entry): no everyday demand to rasterise a vector to
@@ -439,11 +445,14 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   invoked **as libvips' SVG load module**, then the bitmap is saved by **vips** —
   **one process** for the pair. No scripting, no external/`href` network fetch
   (offline + security: a remote `<image href>` is **not** fetched), **and no out-of-input
-  local-file read** — the SVG is staged into per-job scratch on ALL platforms and
-  librsvg's base URL is set to that scratch dir, confining `<image href>`/XInclude
-  resolution to scratch (a `../`-escape is rejected), plus external resource loads are
-  refused outright (the T9b absolute-file LFR control, §3.5.5 / §6.1.3 corpus assertion).
-  No patent.
+  local-file read** — the **load-bearing control is refusing ALL external resource loads
+  outright** (`set_load_external_resources(false)`; v1 SVG→raster needs no external
+  `<image>`/XInclude, fonts are bundled). Staging the SVG into per-job scratch on ALL
+  platforms + setting librsvg's base URL to that scratch dir (confining any
+  `<image href>`/XInclude resolution, a `../`-escape rejected) is **defence-in-depth only**
+  — that directory-confinement is what **CVE-2023-38633 bypassed**, so it backstops the
+  refuse-all-loads control rather than standing alone, and **librsvg is pinned ≥ 2.56.3**
+  (the fix floor, §3.5.5 / §6.1.3 version + corpus assertions). No patent.
 - **Options/settings:**
   - *Basic:* **Output size.** Default render at the SVG's **intrinsic size** if it
     has explicit `width`/`height`; if it only has a `viewBox`, default to a sane
