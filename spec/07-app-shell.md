@@ -64,7 +64,12 @@ using the official **`tauri-plugin-single-instance`** (v2). Rationale:
   file argv, §7.8) reaches the primary instance — without it the OS spawns a new
   process. On **macOS** the OS already routes a second open to the running app via
   the open-documents AppleEvent (§7.8); single-instance is kept for parity and to
-  cover direct binary re-execution of the portable build.
+  cover direct binary re-execution of the portable build. **`[REC]` macOS
+  single-instance behaviour is a §6.6 verification item** — `tauri-plugin-single-
+  instance`'s macOS path is the least-mature of the three (the AppleEvent route does
+  most of the work there), so the §6.6 macOS walkthrough must confirm a second launch
+  / Open-with re-focuses the running instance and hands paths off, rather than starting
+  a competing converter.
 - **Multi-user / fast-user-switching:** the lock is **per OS user**, not
   machine-global (the plugin's default lock scope), so two different logged-in
   users may each run their own instance — acceptable because their temp/scratch
@@ -176,13 +181,16 @@ present and usable:
   critical engine through the §3.5/§2.12 wrapper to confirm it *runs* on this OS
   (catches a glibc/arch mismatch a hash can't). Kept cheap; gated behind verbose
   mode (§7.5) on warm launches.
-  - **macOS ordering caveat `[REC]`:** on macOS a quarantined/Gatekeeper-blocked
-    bundled binary (§7.2.4 — builds are unsigned) makes the spawn itself fail. To
-    ensure that fault surfaces **in a window** (not as a silent pre-window hang),
-    the macOS smoke probe is **deferred until after the WebView window is shown**
-    (step 6), or **downgraded to presence + hash only on first launch** with the
-    runtime-spawn check happening lazily on the first real conversion. Either way the
-    quarantine fault becomes a visible §2.13 app-fault message, never a blank window.
+  - **macOS ordering caveat `[REC]`:** on macOS Sequoia a quarantined/Gatekeeper-
+    blocked bundled binary (§7.2.4 — builds are unsigned, and **each sidecar is
+    independently quarantined**) makes the spawn itself fail. To ensure that fault
+    surfaces **in a window** (not as a silent pre-window hang), the macOS smoke probe
+    is **deferred until after the WebView window is shown** (step 6), or **downgraded
+    to presence + hash only on first launch** with the runtime-spawn check happening
+    lazily on the first real conversion. Either way the quarantine fault becomes a
+    visible **`QuarantinedByOs`** (§2.8) message guiding the user to Privacy & Security
+    → "Open Anyway", **never** a blank window — and it is distinguished from a genuinely
+    missing/corrupt engine (`EngineMissing`/`BundleDamaged`).
 
 **Outcome of a failure:** a missing, corrupt, or non-runnable **required** engine
 is an **app-level startup fault** (§2.13) presented in plain language ("A required
@@ -210,14 +218,25 @@ fn ensure_executable(p: &Path) -> io::Result<()> {
 }
 ```
 
-- **macOS quarantine (`com.apple.quarantine`):** because builds are **not**
-  notarized/signed (out of scope, SSOT), Gatekeeper may quarantine the bundle and
-  block bundled binaries. ConvertIA does **not** attempt to silently strip the
-  quarantine xattr (that would be a misleading security gesture); instead the
-  fault path (§7.2.3 / §2.13) gives honest first-run guidance, consistent with the
-  published-checksum-as-trust-substitute posture (SSOT *Distribution & download
-  trust*). The user-facing copy lives with §2.13/§5; the *technical fact* (no
-  auto-unquarantine) is owned here.
+- **macOS quarantine (`com.apple.quarantine`) — Sequoia reality `[DECIDED]`:**
+  because builds are **not** notarized/signed (out of scope, SSOT), Gatekeeper
+  quarantines the bundle and blocks both the app and **each independently-quarantined
+  bundled sidecar** (FFmpeg, LibreOffice's `soffice`, pdftotext, pandoc, the image
+  worker). On **macOS Sequoia (15.x) the old Control-click "Open" bypass was removed**:
+  the user must, on a blocked launch, go to **System Settings → Privacy & Security →
+  "Open Anyway"**. Critically, **approving the app does not approve the sidecars** — so
+  even after ConvertIA opens, the **first conversion can fail** when a still-quarantined
+  sidecar refuses to spawn, and each blocked sidecar may need its own "Open Anyway".
+  ConvertIA does **not** silently strip the quarantine xattr (a misleading security
+  gesture). Instead this is surfaced honestly as the distinct **`QuarantinedByOs`**
+  error kind (§2.8) — distinguished from `EngineMissing`/`BundleDamaged` — whose copy
+  tells the user to use Privacy & Security → "Open Anyway" and retry (§2.8.2 row).
+  The §7.2.3 macOS-ordering caveat ensures this surfaces **in a window**, not as a
+  silent pre-window hang. The user-facing download-page steps (blocked-on-first-launch
+  → Privacy & Security → Open Anyway → sidecars may each need it) are owned by §6.2.4;
+  the §6.6 macOS walkthrough must **specifically test+pass this on Sequoia** (the
+  unsigned-build usability floor depends on it). The *technical fact* (no
+  auto-unquarantine; per-sidecar quarantine is real) is owned here.
 - **Windows:** no execute-bit concept; bundled `.exe` sidecars run as-is. SmartScreen
   prompts are the analogous unsigned-build friction (out of scope, surfaced on the
   download page per SSOT, not here).
@@ -308,23 +327,27 @@ equivalent; ordinary filesystem ACL denials map to the same §2.8 error kind.
 Two complementary hooks own the lifecycle (per Tauri v2):
 
 - **`WindowEvent::CloseRequested { api, .. }`** — fires when the user clicks the
-  window's close control. Registered via **`Builder::on_window_event(|window,
-  event| …)`** (the builder hook, whose closure receives `(&Window, &WindowEvent)`)
-  — **not** a per-`WebviewWindow` method. ConvertIA inspects *converter state* and
-  may `api.prevent_close()` to run the §7.3.3 guard. The v2 frontend equivalent is
-  listening for **`tauri://close-requested`** (e.g.
+  window's close control. Registered via **`Builder::on_window_event(|event| …)`**
+  (the builder hook). **In Tauri v2 the closure takes a SINGLE argument** — a
+  `&GlobalWindowEvent` (NOT the v1 two-parameter `(&Window, &WindowEvent)` form) —
+  from which you obtain the window via `event.window()` and the event payload via
+  `event.event()`. ConvertIA inspects *converter state* and may `api.prevent_close()`
+  to run the §7.3.3 guard. The v2 frontend equivalent is listening for
+  **`tauri://close-requested`** (e.g.
   `getCurrentWindow().listen('tauri://close-requested', …)` /
   `onCloseRequested(e => e.preventDefault())`). **`[REC]` do the decision in Rust**
   (the core owns batch state) and only use the JS side to render the confirm UI
   (§5.2), to avoid a split-brain "is it converting?" check.
-- **`RunEvent::ExitRequested { api, .. }`** and **`RunEvent::Exit`** (via
-  `Builder::run(|app, event| …)` / `on_event`) — `ExitRequested` is the last
-  chance to `api.prevent_exit()`; `Exit` is the final cleanup point (flush logs,
-  best-effort scratch cleanup — mechanism §2.6).
+- **`RunEvent::ExitRequested { api, .. }`** and **`RunEvent::Exit`** — handled by the
+  closure passed to **`App::run`** (i.e. `builder.build(ctx)?.run(|app, event| …)` —
+  the run-event handler is on the built `App`, **not** on `Builder`). `ExitRequested`
+  is the last chance to `api.prevent_exit()`; `Exit` is the final cleanup point (flush
+  logs, best-effort scratch cleanup — mechanism §2.6).
 
 ```rust
-.on_window_event(|window, event| {
-    if let WindowEvent::CloseRequested { api, .. } = event {
+.on_window_event(|event| {                         // v2: single &GlobalWindowEvent arg
+    if let WindowEvent::CloseRequested { api, .. } = event.event() {
+        let window = event.window();
         if converter_is_busy(window.app_handle()) {   // run-level state (§1.9)
             api.prevent_close();
             window.emit("app://close-requested", ()).ok(); // §0.4-owned event → §5.2 confirm UI
@@ -332,11 +355,14 @@ Two complementary hooks own the lifecycle (per Tauri v2):
     }
 })
 // …
-.run(|app, event| match event {
-    RunEvent::ExitRequested { api, .. } => { /* belt-and-suspenders guard */ }
-    RunEvent::Exit => { flush_logs(app); best_effort_scratch_cleanup(app); /* §2.6 */ }
-    _ => {}
-});
+// the run-event handler lives on the built App, not Builder:
+builder
+    .build(tauri::generate_context!())?
+    .run(|app, event| match event {
+        RunEvent::ExitRequested { api, .. } => { /* belt-and-suspenders guard */ }
+        RunEvent::Exit => { flush_logs(app); best_effort_scratch_cleanup(app); /* §2.6 */ }
+        _ => {}
+    });
 ```
 
 ### 7.3.3 Quit-while-converting `[REC: confirm → cancel cleanly]`
@@ -469,10 +495,12 @@ record *what actually happened* without showing the user a stack trace.
     "officially" live — we follow Tauri's `app_log_dir()` for cross-platform
     consistency, not raw XDG)
 - **Rotation/retention `[REC]`:** `tauri-plugin-log` `.max_file_size(5_000_000)`
-  (bytes) with **`RotationStrategy::KeepSome(3)`** (the real plugin variant — keep a
-  small number of rotated files; `KeepN` is not a real variant) — **bounded total
-  footprint**, so the log can never silently grow (consistent with "leave nothing
-  behind" and "no system pollution"). Old files are discarded automatically.
+  (bytes) with **`RotationStrategy::KeepOne`** (the bounded-footprint choice — on
+  reaching `max_file_size`, keep exactly one rotated file; combined with the size cap
+  the total footprint is bounded). **Note:** `tauri-plugin-log`'s `RotationStrategy`
+  enum has **only `KeepAll` and `KeepOne`** — `KeepN`/`KeepSome` are **not** real
+  variants. `KeepOne` keeps the log from ever silently growing (consistent with "leave
+  nothing behind" and "no system pollution"); the older file is discarded automatically.
 
 ### 7.5.3 Redaction stance — reconciling diagnostics with privacy `[DECIDED + REC]`
 
@@ -558,15 +586,19 @@ visible** (SSOT). The §7.4 persistence design leaves room for a single future
 ### 7.7.1 Mechanism: `tauri-plugin-opener` `[DECIDED]`
 
 All shell-out goes through the official **`tauri-plugin-opener`** (the v2
-successor to the old `shell.open` allowlist). Three operations, exposed as IPC
-commands (the canonical command names/payloads are enumerated by §0.4 — listed
-here by behaviour, not re-specified):
+successor to the old `shell.open` allowlist). **`[DECIDED]` the WebView does NOT call
+the opener plugin directly** — the three operations are ConvertIA's **own** typed IPC
+commands (C9/C10, §0.4.1), and their **Rust handlers call the plugin's `OpenerExt`
+methods internally**. A Rust-internal `OpenerExt` call is **not** capability-gated
+(capabilities gate only what the WebView may invoke), so the §0.10 manifest carries
+**no `opener:*` grant** at all. Three operations (canonical command names/payloads
+enumerated by §0.4 — listed here by the `OpenerExt` method the Rust handler calls):
 
-| Operation | Plugin API | Behaviour | Used by |
+| Operation | `OpenerExt` method (Rust, called internally) | Behaviour | Used by |
 |-----------|-----------|-----------|---------|
-| **Reveal output in file manager** | `reveal_item_in_dir(path)` (Rust `opener::reveal_item_in_dir`, JS `revealItemInDir`) | Opens the OS file manager **with the file selected/highlighted**: Explorer `/select,` on Windows, Finder reveal on macOS, best-effort folder-open on Linux | "Open folder" (§5.3) |
-| **Open a finished output** | `open_path(path)` (JS `openPath`) | Opens the converted file in the OS default app for its type | "Open file" (§5.3) |
-| **Open the project/releases page** | `open_url(url)` | Opens the canonical Ne-IA URL in the default browser | About link (§5.9 / §7.6.2) |
+| **Reveal output in file manager** | `app.opener().reveal_item_in_dir(path)` (JS API name `revealItemInDir`) | Opens the OS file manager **with the file selected/highlighted**: Explorer `/select,` on Windows, Finder reveal on macOS, best-effort folder-open on Linux | C9 → "Open folder" (§5.3) |
+| **Open a finished output** | `app.opener().open_path(path, None)` (JS API name `openPath`) | Opens the converted file in the OS default app for its type | C9 → "Open file" (§5.3) |
+| **Open the project/releases page** | `app.opener().open_url(URL, None)` (JS API name `openUrl`) | Opens the canonical Ne-IA URL in the default browser | C10 → About link (§5.9 / §7.6.2) |
 
 **"Open folder" target (per SSOT *How It Feels* 8):** opens the **common root of
 the dropped selection** (the mapping is owned by §1.12/§2.7); for the beside-source
@@ -576,23 +608,27 @@ specific output when a single file is the subject; Linux file managers vary, so
 the **`[REC]`** fallback is "open the containing directory" (no reliable
 cross-distro select).
 
-### 7.7.2 Allowlist scope (§0.10 owns, §7.7 constrains) `[REC]`
+### 7.7.2 Where the gate lives (no static opener scope) `[DECIDED]`
 
-The opener capability must be **scoped, not blanket** (§0.10 owns the exact
-manifest; §7.7 states the required scope):
+Because the WebView calls **only** ConvertIA's C9/C10 commands — never the opener
+plugin directly — the opener-path gate is **not** a static capability scope (§0.10
+carries no `opener:*` grant). This is deliberate and necessary: the §2.7 default writes
+output **beside the source** (Desktop, USB, arbitrary project folders), routinely
+**outside** any OS-known root like `$DOWNLOAD`/`$DOCUMENT`, so a static glob scope could
+**never** cover the common case — it would only silently break the open-folder/open-file
+DoD gate. The **real, sufficient gate is Rust-side**:
 
-- **`opener:allow-reveal-item-in-dir` / `opener:allow-open-path`:** scoped to paths
-  ConvertIA legitimately produces — i.e. **outputs under a destination the app
-  itself planned** (§1.8/§2.7) and the **dropped roots**. Recommended scope
-  pattern restricts to the output/destination trees rather than `**/*` everywhere;
-  the binding glob is set in §0.10. The point: the WebView can ask to reveal *an
-  output we made*, not arbitrary system paths.
-- **`opener:allow-open-url`:** scoped to **`https://` only**, and **`[REC]`** to the
-  fixed canonical Ne-IA host(s); the project page is a constant, not user input, so
-  the URL need not be a free parameter at all (the command can take **no URL
-  argument** and open a compiled-in constant — strongest option). **`[REC]` open
-  the compiled-in constant**, eliminating any URL-injection surface from the
-  WebView.
+- **Reveal / open-path (C9):** the Rust handler **validates the requested path against
+  the current `RunResult`'s recorded outputs** (or their common root, §1.12/§7.7.3)
+  **before** calling `OpenerExt` — works for *arbitrary* beside-source destinations, not
+  just OS roots. A path not in that set is refused (and logged, §7.5). This is a
+  membership check, which a static glob cannot express.
+- **Open-url (C10):** the command takes **no URL argument** from the WebView; the Rust
+  handler opens a **compiled-in canonical Ne-IA URL constant**, eliminating any
+  URL-injection surface. (A capability allow-list, even if present, can only
+  further-restrict an outer bound applied *before* the handler — it could never widen
+  to cover beside-source outputs, which is exactly why the load-bearing check is the
+  Rust-side `RunResult` membership test, not a manifest scope.)
 
 ### 7.7.3 Open-file safety `[DECIDED + REC]`
 

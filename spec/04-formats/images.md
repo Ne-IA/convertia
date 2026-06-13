@@ -27,33 +27,37 @@ Rows = **source** format, columns = **target** format. Cell legend:
 - `—` — same format as source on the diagonal (re-encode handled, see note)
 - `out: <reason>` — fails the inclusion test / direction rule; not offered
 
-Engine short-names: **vips** = libvips raster core, **heif** = libheif (HEVC/x265),
-**avif** = libavif (AV1), **svg** = SVG rasteriser (resvg/librsvg) **invoked via
-libvips' SVG loader** (so the *raster save* stays in vips — still one engine for
-the pair). See *Engines* for the binding.
+Engine short-names: **vips** = libvips raster core (incl. `heifsave` for ALL
+HEIC/AVIF *encode* — `compression=hevc` via the x265 libheif plugin, `compression=av1`
+via libaom — and `magicksave` via the **required** ImageMagick delegate for BMP/ICO),
+**svg** = SVG rasteriser (resvg/librsvg) **invoked via libvips' SVG loader** (so the
+*raster save* stays in vips — still one engine for the pair). (There are **no separate
+`heif`/`avif` short-names** — the standalone encoders were dropped; all HEIC/AVIF
+encode is `vips heifsave`, [OPEN-1] [DECIDED].) See *Engines* for the binding.
 
 | src ＼ tgt | JPG | PNG | WEBP | GIF | BMP | TIFF | HEIC | AVIF | ICO |
 |-----------|-----|-----|------|-----|-----|------|------|------|-----|
-| **JPG**   | —          | ✓ vips      | ✓★~ vips     | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ heif      | ✓~ avif      | ✓ vips |
-| **PNG**   | ✓~ vips    | —           | ✓★~ vips     | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ heif      | ✓~ avif      | ✓ vips |
-| **WEBP**  | ✓★~ vips   | ✓ vips      | —            | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ heif      | ✓~ avif      | ✓ vips |
-| **GIF**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | —            | ✓ vips      | ✓ vips      | ✓~ heif      | ✓~ avif      | ✓ vips |
-| **BMP**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | —           | ✓ vips      | ✓~ heif      | ✓~ avif      | ✓ vips |
-| **TIFF**  | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | ✓ vips      | —           | ✓~ heif      | ✓~ avif      | ✓ vips |
-| **HEIC**  | ✓★~ vips/heif | ✓ vips/heif | ✓~ vips/heif | ✓~ vips/heif | ✓ vips/heif | ✓ vips/heif | —          | ✓~ avif      | ✓ vips/heif |
-| **AVIF**  | ✓★~ vips/avif | ✓ vips/avif | ✓~ vips/avif | ✓~ vips/avif | ✓ vips/avif | ✓ vips/avif | ✓~ heif    | —            | ✓ vips/avif |
-| **ICO**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ heif      | ✓~ avif      | —      |
-| **SVG**†  | ✓~ svg     | ✓★ svg      | ✓ svg        | ✓~ svg       | ✓ svg       | ✓ svg       | ✓~ heif*     | ✓ avif*      | ✓ svg  |
+| **JPG**   | —          | ✓ vips      | ✓★~ vips     | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips |
+| **PNG**   | ✓~ vips    | —           | ✓★~ vips     | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips |
+| **WEBP**  | ✓★~ vips   | ✓ vips      | —            | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips |
+| **GIF**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | —            | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips |
+| **BMP**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | —           | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips |
+| **TIFF**  | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | ✓ vips      | —           | ✓~ vips      | ✓~ vips      | ✓ vips |
+| **HEIC**  | ✓★~ vips   | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips      | ✓ vips      | —          | ✓~ vips      | ✓ vips |
+| **AVIF**  | ✓★~ vips   | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips    | —            | ✓ vips |
+| **ICO**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | —      |
+| **SVG**†  | ✓~ svg     | ✓★ svg      | ✓ svg        | ✓~ svg       | ✓ svg       | ✓ svg       | ✓~ vips*     | ✓ vips*      | ✓ svg  |
 
 † **SVG is source-only.** It is rasterised once (vector → pixels) and that bitmap
 is saved to the target; the rasterise step is inherently lossy *to a fixed pixel
 grid* (you lose infinite scalability), independent of the target codec — see the
 SVG entry. The `✓~` cells additionally carry the target codec's own lossiness.
 
-\* SVG→HEIC / SVG→AVIF: the rasterised pixels are handed to heif/avif. Listed for
-matrix completeness, but see *Category-wide → SVG default* — these are **low
-demand** and are **out** unless a user explicitly picks them; the offered set for
-SVG is PNG/JPG/WEBP/(BMP/TIFF/ICO). Marked `out` in the SVG entry.
+\* SVG→HEIC / SVG→AVIF: the SVG loader rasterises to pixels which vips then hands to
+`heifsave` (one vips process — no separate encoder). Listed for matrix completeness,
+but see *Category-wide → SVG default* — these are **low demand** and are **out** unless
+a user explicitly picks them; the offered set for SVG is PNG/JPG/WEBP/(BMP/TIFF/ICO).
+Marked `out` in the SVG entry.
 
 **Diagonal (same→same).** Not a category-internal "conversion" in the menu, but
 re-encoding *is* a real user action (re-compress a JPG, flatten a PNG). The SSOT
@@ -76,48 +80,41 @@ dedicated "re-compress / optimise" action is **parked** (not in v1). Marked `—
 
 ## Engines
 
-Single raster core + two codec sidecars + one vector rasteriser. **Per (source,
-target) pair exactly one engine runs** (§3.2). HEIC/AVIF decode *into* the raster
-core for non-HEIC/non-AVIF targets, and the dedicated codec encodes *out* for
-HEIC/AVIF targets — each such pair is still served end-to-end by **one** binary
-(see the binding rules below), never a vips→heif chain.
+Single raster core (libvips, with linked codec/delegate components) + one vector
+rasteriser. **Per (source, target) pair exactly one engine runs** (§3.2): every image
+pair is served end-to-end by **vips** (the SVG loader and the heif/cgif/ImageMagick
+savers are libvips load/save modules, not separate pipeline stages), never a chain.
 
 | Short | Engine | Role | Licence | Patent | Platforms |
 |-------|--------|------|---------|--------|-----------|
-| **vips** | **libvips** (raster core) | Decode+encode JPG/PNG/WEBP/GIF/BMP/TIFF/ICO; SVG load (via its SVG load module); orchestrates resize/colour/alpha | LGPL-2.1+ | none for these codecs | Win / macOS / Linux |
-| **heif** | **libheif** + **x265** (HEVC encode) / built-in HEVC decode | Encode HEIC; decode HEIC | libheif LGPL-3.0; **x265 GPL-2.0** | **HEVC patents → §3.4** | per §3.4 disposition |
-| **avif** | **libavif** + **aom** (or dav1d decode) | Encode AVIF (AV1); decode AVIF | BSD-2-Clause / aom BSD | AV1 royalty-free, **but ship-disposition tracked in §3.4** | Win / macOS / Linux |
-| **svg** | **resvg** (preferred) *or* **librsvg** | Rasterise SVG → bitmap (no scripting, no network) | resvg MPL-2.0 / librsvg LGPL-2.1+ | none | Win / macOS / Linux |
+| **vips** | **libvips** (raster core, built with libheif/libde265, libaom/dav1d, cgif, the **required** ImageMagick delegate, and the SVG load module) | Decode+encode JPG/PNG/WEBP/GIF/BMP/TIFF/ICO; HEIC/AVIF **decode** (libheif/dav1d load modules) **and encode** (`heifsave compression=hevc\|av1`); BMP/ICO save via the required ImageMagick `magicksave` delegate; SVG load; orchestrates resize/colour/alpha | LGPL-2.1+ (libvips); cgif MIT; ImageMagick permissive; **x265 GPL-2.0 (dynamically-loaded libheif plugin)** | **HEVC patents → §3.4** (HEIC); AV1 royalty-free (AVIF, ship-posture §3.4) | Win / macOS / Linux (HEIC per §3.4 disposition) |
+| **svg** | **resvg** (preferred) *or* **librsvg** | Rasterise SVG → bitmap (no scripting, no network), **invoked as libvips' SVG load module** so vips saves the raster | resvg MPL-2.0 / librsvg LGPL-2.1+ | none | Win / macOS / Linux |
 
 **Single-engine binding (resolves §3.2 for this category):**
 
-1. **Raster ↔ raster** (JPG/PNG/WEBP/GIF/BMP/TIFF/ICO any-to-any) → **vips**.
-2. **→ HEIC** (any raster source) → **heif** (heif decodes nothing here; it
-   receives RGBA from the loader and encodes). **HEIC →** any raster target →
-   handled by **vips** (vips links libheif as its HEIC *load* module), so the pair
-   is one binary (vips) end-to-end. **HEIC → AVIF** is the one cross-codec pair →
-   served by **avif** (avif tool decodes HEIC? no — see note) → **DECISION below**.
-3. **→ AVIF** (any raster source) → **avif**. **AVIF →** any raster target →
-   **vips** (libavif as vips' AVIF load module). Single binary.
+1. **Raster ↔ raster** (JPG/PNG/WEBP/GIF/BMP/TIFF/ICO any-to-any) → **vips** (GIF
+   save via native cgif; **BMP load+save and ICO save via the required ImageMagick
+   `magicksave`/`magickload` delegate** — libvips has no native BMP/ICO save, §3.1).
+2. **→ HEIC** (any raster source) → **vips `heifsave compression=hevc`** (the x265
+   libheif plugin). **HEIC →** any raster target → **vips** (libheif as the HEIC *load*
+   module). **HEIC → AVIF** → **vips `heifsave compression=av1`** — one vips process.
+3. **→ AVIF** (any raster source) → **vips `heifsave compression=av1`** (libaom via
+   libheif). **AVIF →** any raster target → **vips** (dav1d/libaom as the AVIF *load*
+   module). Single binary.
 4. **SVG → raster** → **svg** rasteriser invoked **through libvips' SVG loader**;
    libvips performs the bitmap save. Because libvips bundles the SVG load module
    that wraps resvg/librsvg, the whole pair is one process (vips) — this satisfies
    the no-chaining rule (the rasteriser is a *load module of* vips, not a separate
    pipeline stage we orchestrate).
 
-> **Single-engine note for the two cross-codec pairs `HEIC→AVIF` and `AVIF→HEIC`.**
-> These cannot be done by a raster-core decode + same-tool encode in one binary
-> without that binary linking *both* libheif and libavif. Resolution: route both
-> through **libvips**, which can be built with **both** libheif (HEIC load) and a
-> heif/avif *save* module (libheif also encodes AVIF via its AV1 plugin, and
-> libvips' `heifsave` takes a `compression` selector = `hevc | av1`). So
-> `HEIC→AVIF` and `AVIF→HEIC` are **one vips process** using `heifsave
-> compression=av1|hevc`. This keeps every pair single-engine. The standalone
-> `heif`/`avif` CLI sidecars remain available for `raster→HEIC` / `raster→AVIF`
-> where they give better encoder control; **[OPEN]** whether to standardise on
-> vips' `heifsave`/`heifsave compression=av1` for *all* HEIC/AVIF encodes (one
-> code path, simpler) versus the standalone encoders (more knobs). See
-> *Category-wide → [OPEN]*.
+> **Single-engine note for HEIC/AVIF encode `[DECIDED — heifsave only]`.** ALL
+> HEIC/AVIF *encoding* is done by **libvips `heifsave`** with its `compression`
+> selector (`hevc` via the x265 libheif plugin, `av1` via libheif's libaom AV1
+> encoder). So `raster→HEIC`, `raster→AVIF`, and the cross-codec `HEIC→AVIF` /
+> `AVIF→HEIC` are each **one vips process** — every pair single-engine, one code path,
+> and **only ONE AV1 encoder ships** (libaom). The standalone `heif`/`avif` CLI
+> encoders are **not** bundled (dropped in [OPEN-1] [DECIDED]; see *Category-wide →
+> [DECIDED]* and §3.4 / §3.5.5 / §3.6.1).
 
 Patent dispositions (HEVC for HEIC, AV1 build/ship posture for AVIF) are **owned
 by the §3.4 format × platform × disposition matrix** and are **not re-decided
@@ -241,10 +238,12 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   expired).
 - **Options/settings:**
   - *Basic:* none required. Palette is generated automatically.
-  - *Advanced:* `dither` — default **on** (Floyd–Steinberg, better gradients);
+  - *Advanced:* `dither` amount — default **on** (the native cgif/`gifsave` backend
+    supports an **ordered/Bayer-style** dither, NOT Floyd–Steinberg — error-diffusion
+    is not available in cgif; **bayer is the v1 default** per the README [DEFER]);
     `bitdepth`/colour count ≤ 256 — default **8** (256 colours); `effort` (palette
     search) — default **7** (vips default). `interframe maxerror`/`reuse` for
-    animation — defaults left at vips/IM defaults.
+    animation — defaults left at vips defaults.
 - **Lossy?:** **Lossy as a target** (`→ GIF`) — 256-colour palette quantisation +
   optional dithering loses colour (→ §2.9). As a *source*, GIF→PNG/etc. is
   lossless w.r.t. the GIF's own pixels (GIF is already ≤256 colours), so GIF→PNG
@@ -263,9 +262,10 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
 - **As source → targets:** JPG, **PNG★**, WEBP, GIF, TIFF, HEIC, AVIF, ICO.
 - **As target ← sources:** JPG, PNG, WEBP, GIF, TIFF, HEIC, AVIF, ICO, SVG —
   **vips**.
-- **Engine(s):** **vips**. *(libvips BMP load is built-in; BMP **save** uses the
-  native saver where the bundled vips build provides it, else the ImageMagick
-  `magicksave` fallback — still one vips process.)* No patent.
+- **Engine(s):** **vips**. *(libvips has **no native BMP support** — both BMP **load**
+  (`magickload`) and BMP **save** (`magicksave`) go through the **required** ImageMagick
+  delegate; still one vips process. ImageMagick is permissive, not GPL, §3.1 row 1d.)*
+  No patent.
 - **Options/settings:** none required (BMP is uncompressed). *Advanced:* none
   meaningful for v1 (no RLE toggle exposed).
 - **Lossy?:** BMP is uncompressed/lossless → **`→ BMP` is not lossy**; the source's
@@ -315,11 +315,12 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   runs in **vips** (libheif as load module); HEIC→AVIF via vips `heifsave
   compression=av1` (see single-engine note).
 - **As target ← sources:** JPG, PNG, WEBP, GIF, BMP, TIFF, AVIF, ICO, SVG —
-  **heif** encode (x265). Included because some users want Apple-native HEIC, but
-  **never a default** (compatibility-poor on non-Apple).
-- **Engine(s):** **heif** (libheif + x265 encode; built-in HEVC decode) for
-  encode; **vips** (libheif load module) for HEIC→raster decode. **Patent flag →
-  §3.4** (HEVC; x265 is GPL-2.0 → ships as a separate invoked binary per §3.6).
+  **vips `heifsave compression=hevc`**. Included because some users want
+  Apple-native HEIC, but **never a default** (compatibility-poor on non-Apple).
+- **Engine(s):** **vips** end-to-end — `heifsave compression=hevc` for encode (via
+  the **x265 libheif plugin**), and the libheif load module for HEIC→raster decode.
+  **Patent flag → §3.4** (HEVC; x265 is GPL-2.0 → ships as a **dynamically-loaded
+  libheif plugin**, never statically linked, per §3.6).
 - **Options/settings:**
   - *Basic:* **Quality — default `60`** (range 0–100; libheif/x265 mid-quality;
     visually near-transparent for photos at far smaller size than JPEG).
@@ -345,15 +346,18 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
 - **Role:** **both**. A genuinely modern target (excellent compression, alpha,
   HDR, animation).
 - **As source → targets:** **JPG★** (open-everywhere need), PNG, WEBP, GIF, BMP,
-  TIFF, HEIC, ICO. AVIF→raster runs in **vips** (libavif load module); AVIF→HEIC
+  TIFF, HEIC, ICO. AVIF→raster runs in **vips** (dav1d/libaom load module); AVIF→HEIC
   via vips `heifsave compression=hevc`.
 - **As target ← sources:** JPG, PNG, WEBP, GIF, BMP, TIFF, HEIC, ICO, SVG —
-  **avif** encode (aom). May be the **default** *only* where the SSOT tie-breaker
-  clearly favours a modern target — but for safe everyday compatibility we keep
-  the per-source defaults at PNG/JPG/WEBP and offer AVIF as an explicit choice (not
-  defaulted *from* anything in v1, to avoid handing users files that "don't open").
-- **Engine(s):** **avif** (libavif + aom encode; dav1d/aom decode) for encode;
-  **vips** (libavif load module) for AVIF→raster. **Flag → §3.4.**
+  **vips `heifsave compression=av1`** (libaom). May be the **default** *only* where the
+  SSOT tie-breaker clearly favours a modern target — but for safe everyday
+  compatibility we keep the per-source defaults at PNG/JPG/WEBP and offer AVIF as an
+  explicit choice (not defaulted *from* anything in v1, to avoid handing users files
+  that "don't open").
+- **Engine(s):** **vips** end-to-end — `heifsave compression=av1` for encode (via
+  libheif's **libaom** AV1 encoder — the single bundled AV1 encoder; standalone
+  libavif dropped) and the dav1d/libaom load module for AVIF→raster decode.
+  **Flag → §3.4.**
 - **Options/settings:**
   - *Basic:* **Quality — default `60`** (libavif default; range 0–100).
   - *Advanced:* `speed`/effort 0–10 — default **6** (libavif default balance;
@@ -376,12 +380,11 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   an ICO holds several sizes, the **largest image** is selected as the source
   pixels (most useful), with the rest discarded (note if >1 size). **vips**.
 - **As target ← sources:** JPG, PNG, WEBP, GIF, BMP, TIFF, HEIC, AVIF, SVG —
-  **vips** (ICO save via the ImageMagick delegate). The classic everyday use is
-  **PNG/JPG/SVG → ICO** to make a favicon/app icon.
-- **Engine(s):** **vips** (load built-in; **save via the native ICO saver where the
-  bundled vips build provides one, else the ImageMagick `magicksave` delegate** —
-  ICO multi-size assembly is the case most likely to still use the delegate). One
-  vips process either way. No patent.
+  **vips** (ICO save via the **required** ImageMagick delegate). The classic everyday
+  use is **PNG/JPG/SVG → ICO** to make a favicon/app icon.
+- **Engine(s):** **vips** (ICO load built-in; **ICO save via the required ImageMagick
+  `magicksave` delegate** — libvips has no native ICO saver, so the multi-size ICO
+  assembly always goes through ImageMagick, §3.1 row 1d). One vips process. No patent.
 - **Options/settings:**
   - *Basic:* **Icon sizes — default a standard multi-resolution set
     `[16, 32, 48, 256]`** (covers favicons + Windows app icons in one file). The

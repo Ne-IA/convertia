@@ -54,7 +54,7 @@ require admin rights for the user to run.
 | Platform | Tauri bundle target(s) | Canonical download (portable-first) | Notes |
 |----------|------------------------|-------------------------------------|-------|
 | **Windows x64** | `nsis` (+ optionally the raw `.exe`) | **Portable single `.exe`** is the canonical "download, run, done" artifact. NSIS is offered as a convenience installer that can run **per-user / no-admin** (`installMode: currentUser`). | MSI (`wix`) is **not** used — it implies a system install / admin. `[OPEN-6.1a]` whether to ship NSIS at all vs portable-exe-only. **(recommendation: ship the portable `.exe` as primary, NSIS per-user as a secondary convenience.)** |
-| **macOS (universal)** | `app` (inside) → `dmg` | **`.dmg`** containing a **universal** `ConvertIA.app` (arm64 + x86_64 via `--target universal-apple-darwin`). | One universal artifact covers Apple-Silicon and Intel → honours "one product per platform". Unsigned/unnotarized (SSOT *Out of Scope*) → first-launch Gatekeeper friction is documented on the download page (§6.2.4) and About (§5.9). |
+| **macOS (universal)** | `app` (inside) → `dmg` | **`.dmg`** containing a **universal** `ConvertIA.app` (arm64 + x86_64 via `--target universal-apple-darwin`). | One universal artifact covers Apple-Silicon and Intel → honours "one product per platform". Unsigned/unnotarized (SSOT *Out of Scope*) → on **Sequoia (15.x)** the first launch is blocked and the Control-click bypass is gone; the user must use **Privacy & Security → "Open Anyway"**, and **each bundled sidecar is independently quarantined** (the first conversion can hit `QuarantinedByOs`, §2.8/§7.2.4). Step-by-step on the download page (§6.2.4) and About (§5.9); the §6.6 macOS walkthrough tests it on Sequoia. |
 | **Linux x64** | `appimage` (+ optionally `deb`) | **AppImage** — the portable, distro-agnostic, no-install, runs-anywhere artifact (matches SSOT portability best). | `.deb`/`.rpm` are distro-specific *installs* (system pollution); they are **secondary at most**. `[OPEN-6.1b]` whether to also publish a `.deb`. **(recommendation: AppImage-only for v1; revisit `.deb` by demand.)** |
 
 ARM Windows and ARM Linux are **out of v1** (SSOT platform scope = Win/macOS/Linux
@@ -112,7 +112,7 @@ build-time mechanics that realise them**:
 |-----|--------|---------------------|------------------------|
 | Windows | `windows-latest` (x64) | Rust (MSVC host triple), Node + pnpm | WebView2 is preinstalled on supported Windows; **not** bundled (no-network forbids downloading it at runtime — §0.3.1 owns the floor). NSIS provided by tauri-cli. |
 | macOS | `macos-latest` (Apple Silicon) building `universal-apple-darwin` | Rust with **`rustup target add aarch64-apple-darwin x86_64-apple-darwin`** (both targets — prerequisite for the universal build and for staging both per-arch sidecar files, §6.1.3), Node + pnpm | Xcode CLT for `lipo`/codesign-less packaging. No notarization step (out of scope). |
-| Linux | `ubuntu-latest` (pin a specific LTS for glibc floor stability) | Rust, Node + pnpm | `libwebkit2gtk-4.1-dev`, `libappindicator`, `librsvg2-dev`, `patchelf`, `libfuse2` (AppImage). **glibc of the build image sets the minimum Linux version** — pin an older Ubuntu LTS to maximise compatibility; documented in §0.3.1's floor. |
+| Linux | `ubuntu-latest` (pin a specific LTS for glibc floor stability) | Rust, Node + pnpm | `libwebkit2gtk-4.1-dev`, `libappindicator`, `librsvg2-dev`, `patchelf`; **plus FUSE 2** for the AppImage. **Two FUSE notes `[DECIDED]`:** (1) **FUSE 2 is a RUNTIME dependency, not build-time** — an AppImage *mounts* itself via FUSE 2 at launch, so the **end user's machine needs `libfuse2`**; the download page must disclose this (a bare "download, run, done" is false on a distro shipping only FUSE 3 — the alternative is to run with `--appimage-extract-and-run` / extract manually). (2) The package was **renamed `libfuse2t64` on Ubuntu 24.04+** (the time_t transition), so the CI install step must handle both names (`libfuse2 \|\| libfuse2t64`) or the 24.04 runner breaks. **glibc of the build image sets the minimum Linux version** — pin an older Ubuntu LTS to maximise compatibility; documented in §0.3.1's floor. |
 
 The platform CI standard (`reference_self_hosted_ci_runner.md`) runs a **self-hosted
 VPS runner** for the Ne-IA org's existing four projects. ConvertIA's build matrix
@@ -161,9 +161,14 @@ For **every** published artifact:
   This is *not* code-signing the binary (out of scope) but signing the *checksum
   manifest* — it closes the "attacker replaces both the artifact **and** its hash"
   gap that bare checksums leave open, at near-zero cost and entirely within
-  "no store/cert" scope. The minisign **public key lives in the repo**; the verify
-  recipe (§6.2.4) includes `minisign -Vm SHA256SUMS -P <pubkey>`. (Adopting the
-  [REC] — a clear strengthening of the SSOT trust substitute with no downside.)
+  "no store/cert" scope. **Key handling `[DECIDED]`:** the minisign **public key is
+  committed at `docs/minisign.pub` in the repo** (and restated on the download page),
+  so anyone can verify; the **private key is a CI secret named `MINISIGN_SECRET_KEY`**
+  (with its passphrase in `MINISIGN_PASSWORD`), injected only into the Lane-B release
+  job that signs `SHA256SUMS` — never committed, never in the bundle. The verify
+  recipe (§6.2.4) includes `minisign -Vm SHA256SUMS -P <contents of docs/minisign.pub>`.
+  (Adopting the [REC] — a clear strengthening of the SSOT trust substitute with no
+  downside.)
 
 ### 6.2.4 How a user verifies (must be surfaced) `[DECIDED]`
 
@@ -175,8 +180,24 @@ highest-risk moment** (SSOT):
   `sha256sum -c SHA256SUMS`.
 - If §6.2.3's signature ships: `minisign -Vm SHA256SUMS -P <pubkey>`.
 The page also restates the **as-is / no-warranty / best-effort-security** posture
-(SSOT *License & Openness*), and the unsigned-build first-launch friction per OS
-(Gatekeeper on macOS, SmartScreen on Windows) so a normal user isn't surprised.
+(SSOT *License & Openness*), and the unsigned-build first-launch friction per OS so a
+normal user isn't surprised:
+
+- **macOS Sequoia (15.x) `[DECIDED]` — step-by-step (the bypass changed):** because
+  the build is unsigned/unnotarized, the first launch is **blocked** by Gatekeeper, and
+  on Sequoia the old Control-click "Open" shortcut **no longer works**. The page must
+  spell out: (1) double-click → "ConvertIA can't be opened" → **Open System Settings →
+  Privacy & Security**, scroll to the blocked-app notice, click **"Open Anyway"**, then
+  re-launch and confirm; (2) **each bundled tool (FFmpeg, LibreOffice, pandoc, etc.) is
+  independently quarantined** — so the **first conversion** may also be blocked and the
+  same Privacy & Security → "Open Anyway" step may be needed **per sidecar** the first
+  time it runs. ConvertIA surfaces this in-app as the `QuarantinedByOs` message (§2.8 /
+  §7.2.4) rather than failing silently. This is a **material non-technical-user
+  blocker**, so the §6.6 macOS walkthrough must test+pass it on Sequoia (the unsigned
+  posture is re-affirmed acceptable only because the §6.6 floor verifies the guided
+  recovery actually works).
+- **Windows:** SmartScreen "Windows protected your PC" → **More info → Run anyway**
+  (the analogous unsigned-build friction; surfaced on the download page).
 
 ### 6.2.5 Reproducible-build intent `[OPEN — best-effort, not a gate]`
 
@@ -202,14 +223,21 @@ not bit-reproducible. `[OPEN-6.2b]` how far to pursue determinism — deferred.
 ### 6.3.1 What "the SBOM" actually covers (two layers)
 
 ConvertIA's bill of materials is **not** just its Rust crate graph — the
-load-bearing licence risk is the **bundled engine binaries** (FFmpeg LGPL,
-LibreOffice MPL, poppler/pandoc/Ghostscript GPL/AGPL, libvips LGPL, x265 GPL, …).
-So the SBOM is assembled in **two layers**:
+load-bearing licence risk is the **bundled engine binaries** (**FFmpeg GPL-2.0+** —
+it enables x264, §3.6.1; LibreOffice MPL; poppler/pandoc GPL; libvips LGPL; the x265
+libheif plugin GPL; the **required** ImageMagick permissive; …). (Ghostscript is
+**dropped v1**, §3.1 — no AGPL row.) So the SBOM is assembled in **two layers**:
 
 | Layer | Contents | Tool |
 |-------|----------|------|
 | **App dependency graph** | Rust crates (`Cargo.lock`) + JS deps (`pnpm-lock.yaml`) that compose ConvertIA's own MIT code | **`cargo cyclonedx`** for Rust; an npm/pnpm CycloneDX generator for the frontend; merged into one CycloneDX document. |
 | **Bundled engines (the important layer)** | Every separately-invoked engine binary + its support libs/fonts, each as an SBOM component with **name, version, licence (SPDX id), source URL, and the per-platform availability** | A **manually-maintained `engines.lock` manifest** (owned/sourced by §3.1/§3.8) is the authoritative input; CI converts it into CycloneDX components and merges with the dependency-graph layer. Optionally **Syft** scans the staged bundle to *cross-check* that nothing in the shipped tree is missing from the manifest (drift detection). |
+
+**The merge step `[DECIDED]`:** the two layers are merged by **§3.7.2's `cargo xtask
+sbom`** build step (the single named tool — it reads `engines.lock` + the
+`cargo cyclonedx`/pnpm outputs and emits one document); CI does not invent a second
+merger. **Pin the CycloneDX schema version** (e.g. `specVersion 1.5`) so the gate and
+diff are stable across tooling bumps.
 
 Output format: **CycloneDX JSON** as the canonical SBOM (developer-friendly,
 good licence+component fidelity); a **CycloneDX→SPDX** export is generated too if a
@@ -402,6 +430,16 @@ covers   = [              # the (source→target) pairs this file backs (§6.4.3
 "HEIC→AVIF" = { result = "success", lossy = "image_lossy_codec" }
 ```
 
+> **Two pair encodings, deliberately distinct `[DECIDED]`.** `covers` uses the
+> **structured array form** `["HEIC", "JPG"]` (an array of `[source, target]` 2-tuples)
+> because the §6.4.3a bijection guard **parses** it programmatically and matches each
+> 2-tuple against the §04 matrix cells — no string-splitting on `→`. The
+> `[file.expect]` keys use the **`"SOURCE→TARGET"` label string** purely as a
+> human-readable TOML table key for the per-target expected outcome. The guard reads
+> `covers` (the array form) **only**; it never parses the `→` keys. A CI lint asserts
+> every `[file.expect]` key has a matching `covers` 2-tuple (so the two stay in step)
+> — but the machine-checkable coupling is always the array.
+
 Concrete required contents:
 
 **Images** (`tests/corpus/images/`)
@@ -496,12 +534,18 @@ the human half is §6.6. Frontend component/unit tests use **Vitest** (§0.8).
   reach Collecting; the **native drop itself is validated in the human walkthrough**
   (§6.6), where a real person drags a real file. This split keeps the automated gate
   honest about what it can and cannot synthesise.
+- **Linux E2E needs a virtual display `[DECIDED]`:** the Linux `tauri-driver` leg runs
+  on a headless CI runner, but **WebKitGTK will not initialise without an X/Wayland
+  display** — so the leg must run **under `Xvfb`** (e.g. `xvfb-run -a ...`) or a Wayland
+  headless compositor. The CI Linux E2E step wraps the driver in `xvfb-run`; without it
+  the WebView never comes up and the E2E silently can't start.
 - **Per-platform E2E driver `[OPEN]`:** the Windows and Linux legs use `tauri-driver`
-  (WebDriver). The **macOS leg is an `[OPEN]`**: `tauri-driver` relies on
-  `WKWebView`/`safaridriver`, which an **unsigned** build cannot drive cleanly — so
-  the macOS E2E may degrade to a **scripted launch + screenshot/presence assertion**
-  rather than full WebDriver, with the §6.6 human walkthrough carrying the macOS
-  core-flow validation. Flagged for the owner; the Win/Linux automated E2E is firm.
+  (WebDriver; Linux under `Xvfb` per above). The **macOS leg is an `[OPEN]`**:
+  `tauri-driver` relies on `WKWebView`/`safaridriver`, which an **unsigned** build
+  cannot drive cleanly — so the macOS E2E may degrade to a **scripted launch +
+  screenshot/presence assertion** rather than full WebDriver, with the §6.6 human
+  walkthrough carrying the macOS core-flow validation. Flagged for the owner; the
+  Win/Linux automated E2E is firm.
 
 ---
 
@@ -601,6 +645,16 @@ specifically tests whether a *human who didn't build it* succeeds. Protocol:
   (5) on completion uses **open-folder/open-file** and **finds the output**; (6)
   hits no stack trace, no cryptic message, no dead end. A task where the tester
   gets stuck or needs help **fails** the floor for that platform → fix → re-walk.
+- **macOS Sequoia first-launch + sidecar quarantine (mandatory macOS sub-test)
+  `[DECIDED]`:** the macOS walkthrough **must run on Sequoia (15.x)** from a freshly
+  **downloaded** (quarantined) artifact, and the tester must succeed at **both** the
+  blocked-app first-launch recovery (Privacy & Security → "Open Anyway", since the
+  Control-click bypass is gone) **and** the **first-conversion** step where an
+  independently-quarantined sidecar may be blocked — confirming the in-app
+  `QuarantinedByOs` guidance (§2.8/§7.2.4) and the §6.2.4 download-page steps actually
+  get a non-technical user through. If the unsigned build leaves the tester stuck at
+  Gatekeeper or a silent first-conversion failure, the macOS floor **fails** → revisit
+  the unsigned posture / the guidance copy → re-walk.
 - **Accessibility floor (part of the same gate, SSOT *For anyone*):** at least one
   walkthrough completes the core path **keyboard-only** (per the §5.10 shortcut map)
   and verifies readable contrast/text-size; this checks the DoD **basic-a11y** gate
@@ -668,7 +722,12 @@ blocking the next:
    honour the **LibreOffice-serialised** constraint (the office-pair tests run LO
    single-slot — the harness reuses the §0.9 config so the test env matches prod).
    The **`corpus-large` LFS set is fetched only for this Lane-B run** (never the
-   per-PR fast lane, §6.4.5).
+   per-PR fast lane, §6.4.5). **Runner `[DECIDED]`:** the **Linux** Lane-B leg runs on
+   the **self-hosted VPS runner** (same as Lane A, §6.1.4) — it has local/cheap LFS
+   bandwidth and disk for `corpus-large`; the **macOS/Windows** Lane-B legs use the
+   GitHub-hosted runners (no self-hosted equivalent), so for those `corpus-large` is
+   pulled over GitHub LFS bandwidth — a budgeted, tag-only cost (release frequency is
+   low, §6.1.4 budget note).
 3. **SBOM + NOTICE assembly + attribution-completeness gate (§6.3):** generate
    CycloneDX (app + engines), assemble `NOTICE`/`THIRD-PARTY-LICENSES.txt`, run the
    §6.3.3 completeness check. **A missing/UNKNOWN attribution aborts the release**

@@ -111,7 +111,8 @@ offline (§3.3).
         ┌──────────────────────────────────────────────────────────────┐
         │  Engine subprocesses (separate invoked binaries — §3.5/§3.6)   │
         │  FFmpeg · LibreOffice (soffice --headless) · poppler pdftotext  │
-        │  · pandoc · (Ghostscript) · image codec tools (see §0.9 note)   │
+        │  · pandoc · image codec tools (see §0.9 note)                   │
+        │  (Ghostscript [DECIDED: dropped v1] — §3.1)                      │
         │  Untrusted bytes are parsed HERE, never in the core.            │
         └──────────────────────────────────────────────────────────────┘
 ```
@@ -231,31 +232,32 @@ signatures; the TS side is generated (§0.4.5 codegen).
 
 | # | Command | Request | Response | Notes |
 |---|---------|---------|----------|-------|
-| C1 | `ingest_paths` | `{ paths: Vec<PathBuf>, origin: IntakeOrigin }` | `CollectedSet` | Builds the **frozen source set** (§2.4): recurse folders (Rust), ignore hidden/system files, de-dup by resolved identity (§2.3), run detection (§1.2), group by user-facing format (§1.3). Returns the collected-summary (detected format + count) **or** a `MixedDrop` / `Unsupported` / `Uncertain` outcome. `origin` distinguishes drop / picker / launch-arg (§7.8). |
+| C1 | `ingest_paths` | `{ paths: Vec<PathBuf>, origin: IntakeOrigin, collectingId: CollectingId }` | `CollectedSet` | Builds the **frozen source set** (§2.4): recurse folders (Rust), ignore hidden/system files, de-dup by resolved identity (§2.3), run detection (§1.2), group by user-facing format (§1.3). Returns the collected-summary (detected format + count) **or** a `MixedDrop` / `Unsupported` / `Uncertain` outcome. `origin` distinguishes drop / picker / launch-arg (§7.8). The frontend generates `collectingId` and passes it in so C13 can cancel this in-flight walk **before** C1's long await resolves (see note). |
 | C2 | `pick_paths` | `{ kind: PickKind /* files | folder */ }` | `Vec<PathBuf>` | Opens the native dialog (capability-gated, §0.10). The picked paths are then fed to `ingest_paths` (single freeze point). Separate command so the dialog open is its own permissioned action. |
 | C3 | `get_targets` | `{ collectedSetId: CollectedSetId }` | `TargetOffer` | From the detected source type → the offered `Vec<Target>` + the **one pre-highlighted default** + per-target lossy flags + per-target availability (from §3.4) + the declared options model (§1.6). Pure function of detection; no engine spawned. |
 | C4 | `plan_output` | `{ collectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice }` | `OutputPlanPreview` | Computes the `OutputPlan` (§1.8): resolved destination, beside-source vs chosen-root subtree re-creation, per-location divert preview, **re-run/equivalent-output detection (§2.5)** → may return a `RerunPrompt`. Also returns the §1.10 pre-flight verdict (size/space estimate, any up-front "too big" fail). Drives the "will save to …" line (SSOT *output lands somewhere obvious*) **before** convert. |
-| C5 | `set_destination` | `{ destination: DestinationChoice }` | `DestinationResolved` | User changes the destination before convert; revalidates writability/divert. |
+| C5 | `set_destination` | `{ collectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice }` | `DestinationResolved` | User changes the destination before convert; revalidates writability/divert **and re-evaluates the destination-dependent verdicts** — the §2.14.4 free-space check on the new volume and the §2.5 re-run detection (which differs by destination) — returning a refreshed `PreflightVerdict`/`rerun` so the UI's held C4 verdict never goes stale (§1.8 destination-change re-validation). |
 | C6 | `start_conversion` | `{ collectedSetId, target, options, destination, rerunDecision: RerunDecision, onProgress: Channel<ConversionEvent> }` | `RunId` | Creates a `RunId`, enqueues the batch (§1.9), spawns workers (§0.9), and **streams `ConversionEvent`s over the Channel** (E-series below). Returns immediately with the `RunId` (the run proceeds async; the Channel carries all telemetry). |
 | C7 | `cancel_run` | `{ runId: RunId }` | `()` | Trips the §0.4 cancellation token for that run. The actual in-flight engine kill is §1.7's mechanism. Already-finished items are kept (SSOT *cancellable*); the in-progress item is discarded cleanly (§2.1/§2.6). |
 | C8 | `get_run_summary` | `{ runId: RunId }` | `RunResult` | The end-of-batch summary (§1.12): per-item success/fail/skip + reasons + output→source map + residue warnings (§2.6). Also delivered as the terminal `ConversionEvent::RunFinished`; this command is the idempotent re-fetch (e.g. after a WebView reload). |
-| C9 | `open_path` | `{ kind: OpenKind /* folder | file | revealInFolder */, path: PathBuf }` | `()` | The DoD "one-click open-folder/open-file" shell-out. **How** it shells out per OS is owned by §7.7; **which** path is owned by §2.7; the **capability scope** is §0.10 (opener). |
-| C10 | `open_project_page` | `{}` | `()` | The **only** permitted network action — user-initiated open of the canonical GitHub project/releases URL in the default browser (SSOT *Local/private/offline* "only network activity is user-initiated"). Fixed URL constant in Rust; opener-scoped to that exact origin (§0.10, §7.6). |
+| C9 | `open_path` | `{ kind: OpenKind /* folder | file | revealInFolder */, path: PathBuf }` | `()` | The DoD "one-click open-folder/open-file" action. The Rust handler **validates `path` against the current `RunResult`'s recorded outputs (or their common root)** (§7.7.3 — the real, sufficient gate; works for arbitrary beside-source destinations) and then calls the opener plugin's `OpenerExt` (reveal/open) **internally**. **How** it shells out per OS is owned by §7.7; **which** path is allowed is the §7.7.3 RunResult check; there is **no `opener:*` WebView capability** (§0.10). |
+| C10 | `open_project_page` | `{}` | `()` | The **only** permitted network action — user-initiated open of the canonical GitHub project/releases URL in the default browser (SSOT *Local/private/offline* "only network activity is user-initiated"). The Rust handler opens a **fixed URL constant** via `OpenerExt::open_url` internally; the WebView supplies no URL, so this single origin is the only reachable one (§7.6). No `opener:*` WebView grant (§0.10). |
 | C11 | `get_app_info` | `{}` | `AppInfo` | Version, build id, and the **third-party-licenses / NOTICE** data for the About screen (data generated by §3.7; displayed by §5.9). No network. |
 | C12 | `get_engine_health` | `{}` | `EngineHealth` | Startup self-check result: which bundled engines are present/runnable, which §3.4 patent-gated targets are available on this platform. Feeds §5.2 (disable/omit unavailable targets) and §7.2 (startup faults). Cached from the §7.2 startup probe; cheap to call. |
-| C13 | `cancel_ingest` | `{ collectingId: CollectingId }` | `()` | Cancels an **in-flight** `ingest_paths` (C1) — the recursive walk/detection of a thousands-file folder (§1.10) can run long enough that the §5.2 *Collecting* state's cancel-collect control must have a backing command. Trips an **ingest-scoped `CancellationToken`** keyed by a pre-`RunId` `CollectingId` (§0.6) that C1 creates and returns to the frontend at the start of collection (see note). The §1.1 walkdir/detection loop polls it and stops cooperatively, discarding the partial (un-frozen) set — **no cleanup obligation** (no temp is written during ingest). Keyboard: §5.10. |
+| C13 | `cancel_ingest` | `{ collectingId: CollectingId }` | `()` | Cancels an **in-flight** `ingest_paths` (C1) — the recursive walk/detection of a thousands-file folder (§1.10) can run long enough that the §5.2 *Collecting* state's cancel-collect control must have a backing command. Trips an **ingest-scoped `CancellationToken`** keyed by the pre-`RunId` `CollectingId` (§0.6) that the **frontend generated and passed to C1** (see note) — so C13 can name the in-flight walk even though C1's own response hasn't returned yet. The §1.1 walkdir/detection loop polls it and stops cooperatively, discarding the partial (un-frozen) set — **no cleanup obligation** (no temp is written during ingest). Keyboard: §5.10. |
 
 **Notes binding to other owners:**
 
 - `ingest_paths` is the single freeze point (§2.4) for **all** intake origins
   (drop, picker, launch args / second-instance hand-off — §7.1/§7.8).
-- **Ingest cancellation handle.** So C13 `cancel_ingest` can target an in-flight C1,
-  the `CollectingId` is made available to the frontend **before** C1's long await
-  resolves. Mechanism (one of, Phase-3 detail): C1 emits an `app`-scoped
-  `collecting-started { collectingId }` event the instant it begins the walk, **or**
-  C1 takes a frontend-generated `CollectingId` as an argument. Either keeps a single
-  freeze point; the token is created in C1, tripped by C13, dropped when C1 returns
-  (mirrors the §0.4.4 `RunId` token lifecycle, one phase earlier).
+- **Ingest cancellation handle `[DECIDED]`.** So C13 `cancel_ingest` can target an
+  in-flight C1, the **frontend generates the `CollectingId` and passes it as a C1
+  argument** (the single-funnel option). The Rust core registers the ingest-scoped
+  `CancellationToken` under that id when C1 begins the walk, trips it on C13, and drops
+  it when C1 returns (mirrors the §0.4.4 `RunId` token lifecycle, one phase earlier).
+  This keeps a single freeze point **and** keeps the §0.4.2 "no other IPC events"
+  invariant true — there is **no** `collecting-started` event (an earlier draft
+  proposed emitting one; rejected so the event enumeration stays closed).
 - `get_targets`/`plan_output`/`start_conversion` together realise the SSOT flow
   *drop → pick target → (see destination) → convert*; the **pipeline that runs
   inside `start_conversion` is owned entirely by §01** — this contract only fixes
@@ -322,8 +324,8 @@ pub enum ErrorKind {
     // owner (§06 drift check enforces this). Item-level (§2.8):
     Corrupt, Empty, Unrecognized, UnsupportedType, UnsupportedPair,
     Unreadable, Gone, PasswordProtected, NoAudioTrack, TooBig, OutOfDisk,
-    WriteFailed, PathTooLong, EngineCrash, EngineHang, EngineError,
-    PlatformUnavailable, CleanupResidue, InternalError,
+    WriteFailed, PathTooLong, TooManyCollisions, EngineCrash, EngineHang, EngineError,
+    PlatformUnavailable, QuarantinedByOs, CleanupResidue, InternalError,
     // run/app-level (§2.13):
     MixedDrop, EngineMissing, WebviewFault, BundleDamaged,
 }
@@ -448,16 +450,20 @@ pub struct DroppedItem {
     pub raw_path: PathBuf,        // as the OS handed it
     pub resolved_path: PathBuf,   // symlink/junction/alias-resolved (§2.3)
     pub size_bytes: u64,
-    pub detected: DetectedFormat, // §1.2 owns the detection algorithm
+    pub detected: DetectionOutcome, // §1.2 OWNS this type (the single canonical
+                                  //   detection result); defined in §1.2, mirrored
+                                  //   on the wire (§0.4.5). NOT a separate
+                                  //   DetectedFormat — that earlier name is retired.
 }
 
-pub enum DetectionConfidence { Certain, Ambiguous, Unknown } // §1.2
-
-pub struct DetectedFormat {
-    pub user_facing: Option<UserFacingFormat>, // e.g. Jpg, Mp4, Docx … None = undetected
-    pub confidence: DetectionConfidence,
-    pub note: Option<String>,    // "detected: X" for unsupported/uncertain (§1.2)
-}
+// `DetectionOutcome` + its `Confidence { High, Low }` are OWNED by §1.2 (the
+// detection-algorithm owner) and referenced here, exactly like JobState/SkipReason
+// patterns elsewhere. There is no `DetectedFormat`/`DetectionConfidence` pair — the
+// earlier 3-valued confidence enum and the user_facing:Option collapse (which lost the
+// Empty-vs-Unreadable distinction) are deleted in favour of §1.2's richer enum:
+//   Recognized { format, confidence } | UnsupportedType { detected } |
+//   Uncertain { best_guess } | Empty | Unreadable { reason }.
+// `SkippedItem` (below) projects an ineligible DetectionOutcome to a §2.8 reason.
 
 /// The single grouping key (§1.3): individual user-facing format,
 /// NOT the six SSOT categories, NOT codec subtypes. Jpg != Png, Mp4 != Mov.
@@ -478,11 +484,24 @@ pub enum CollectedSet {
         format: UserFacingFormat,
         items: Vec<DroppedItem>,     // frozen, de-duplicated by resolved identity
         count: usize,                // shown in the confirm gate (§1.4)
+        skipped: Vec<SkippedItem>,   // ineligibles dropped alongside the eligible set,
+                                     //   threaded through to the §1.4 confirm summary
+                                     //   and the §1.12 RunResult ("N collected, M skipped")
     },
     Mixed { found: Vec<(UserFacingFormat, usize)> },  // → pre-flight refusal (§1.3)
     Unsupported { detected: String },                 // real but out-of-scope (§1.2)
     Uncertain { note: String },                       // can't tell (§1.2)
     Empty,                                             // nothing eligible
+}
+
+// An item present in the drop but NOT eligible for the batch (unsupported / uncertain
+// / empty / unreadable at freeze). Surfaced in the §1.4 confirm summary and the §1.12
+// summary so a bad item is never silently dropped. Referenced by §1.3 Grouping::Single
+// and §1.4 CollectedSummary.
+pub struct SkippedItem {
+    pub item: ItemId,                // stable within the collected set / run
+    pub source: PathBuf,             // the dropped path, for the summary display
+    pub reason: ErrorKind,           // the §2.8 reason (UnsupportedType | Unrecognized | Empty | Unreadable)
 }
 
 // ─── Targets & options ──────────────────────────────────────────────────────
@@ -569,7 +588,8 @@ pub enum JobStage { Spawning, Decoding, Encoding, Writing }
 
 // ─── Engine (the seam; §3.2 owns the registry/selection) ────────────────────
 pub struct Engine {                  // capability descriptor, NOT a process
-    pub id: EngineId,                // FFmpeg | LibreOffice | Poppler | Pandoc | Ghostscript | ImageCore | …
+    pub id: EngineId,                // FFmpeg | LibreOffice | Poppler | Pandoc | ImageCore | …
+                                     //   (Ghostscript [DECIDED: NOT shipped v1] — §3.1/§3.6)
     pub serialised_only: bool,       // true for LibreOffice (§0.9)
     pub kind: EngineKind,            // Sidecar | InProcessCrate (see §0.9 note)
 }
@@ -618,6 +638,12 @@ pub struct PreflightVerdict {        // §1.10 (owner) summary surfaced before c
 pub struct DestinationResolved {     // C5 set_destination → revalidated destination
     pub destination: DestinationChoice,
     pub diverted: Option<DivertReason>, // recomputed per-location divert (§2.7)
+    pub preflight: PreflightVerdict, // RE-EVALUATED for the new destination volume
+                                     //   (§2.14.4 free-space targets the destination;
+                                     //   §1.8 destination-change re-validation) so the
+                                     //   UI's held C4 verdict never goes stale
+    pub rerun: Option<RerunPrompt>,  // re-run detection differs by destination (§2.5);
+                                     //   re-evaluated here too
 }
 
 pub struct RunResult {               // canonical shape; §1.12 computes & references by name
@@ -792,15 +818,20 @@ dependency direction at the compiler level. Recommendation: **start as a module*
 (`src-tauri/src/engines/`) and extract to a workspace crate only if a second
 consumer (e.g. a headless test harness) appears. Flagged for §3.2/§0.7 sign-off.
 
-> **Note — image codecs are the one "in-process vs sidecar" wrinkle.** Unlike
+> **Note — image codecs run in a separate image-worker process `[DECIDED]`.** Unlike
 > FFmpeg/LibreOffice/pandoc/poppler (clearly separate binaries), the image core
-> (libvips + libheif/libavif/resvg load modules, per images.md) can be linked as a
-> Rust crate **or** invoked as a CLI sidecar. The **isolation requirement (§2.12)
-> for untrusted image bytes** plus the **copyleft-isolation rule (§3.6)** for the
-> GPL pieces (x265) push toward a **sidecar** here too; the final call is co-owned
-> by §2.12 (isolation) and §3.6 (licensing) and is referenced, not decided, by
-> this section. The `EngineKind::{Sidecar, InProcessCrate}` field in §0.6 exists
-> precisely to carry that decision per engine.
+> (libvips + libheif/libde265/resvg load modules + cgif, per images.md) *could* be
+> linked as a Rust crate **or** run out-of-process. The **isolation requirement
+> (§2.12) for untrusted image bytes** (the T1 headline threat — a libvips/libheif/
+> resvg memory-corruption exploit must not run inside the ConvertIA core address
+> space) settles it: **v1 runs image decode/encode in a separate short-lived
+> image-worker process**, so a hostile-image exploit is contained by the same OS
+> process boundary as every other engine and §2.12.4's "all decoders are
+> subprocesses" stays true. (§3.6 licensing is unaffected — libvips is LGPL either
+> way; this is a security/robustness call, now resolved.) The image-worker still
+> *links* libvips/LGPL libs internally, which is aggregation, not a link into the MIT
+> core (§3.6.1). The `EngineKind::{Sidecar, InProcessCrate}` field in §0.6 records
+> the image core as a worker-process sidecar.
 
 ---
 
@@ -825,7 +856,7 @@ the corpus (§6.4) — engine bumps are best-effort posture (§3.8), not a gate.
 | Frontend state | lightweight store (recommend **Zustand**) + the generated `bindings.ts`; §5.1 owns the final choice | §5.1 |
 | Package mgr | **pnpm** (`pnpm@10.13.1` class per platform standard) | pinned |
 | Test | **Vitest** (frontend), **cargo test** + corpus harness (§6.4), property tests for guarantees | exact |
-| Engines (bundled) | FFmpeg (LGPL build), LibreOffice, poppler, pandoc, (Ghostscript), libvips+libheif/x265+libavif/aom+resvg — **all §3.1/§3.3 owned**; versions pinned + in the SBOM (§6.3) | §3.8 best-effort |
+| Engines (bundled) | FFmpeg (GPL-2.0+ build — enables x264, §3.6.1), LibreOffice, poppler, pandoc, ImageMagick (required, permissive), libvips+libheif/libde265+x265-plugin/libaom/dav1d+resvg+cgif — **all §3.1/§3.3 owned**; versions pinned + in the SBOM (§6.3). Ghostscript **[DECIDED: dropped v1]** (§3.1). | §3.8 best-effort |
 
 **Additional crates / plugins other sections depend on (pinned, in lockfile + SBOM):**
 
@@ -837,7 +868,7 @@ the corpus (§6.4) — engine bumps are best-effort posture (§3.8), not a gate.
 | **tauri-plugin-single-instance** | §7.1 | single-instance policy + launch-arg hand-off |
 | **tauri-plugin-store** | §7.4 | the single `settings.json` prefs blob (theme + lastDestinationMode) |
 | **tauri-plugin-log** | §7.5 | local-only rotating diagnostic log + JS bridge |
-| **tauri-plugin-opener** | §7.7 | open-folder / open-file / open-url shell-out (the only OS shell-out) |
+| **tauri-plugin-opener** | §7.7 | open-folder / open-file / open-url shell-out (the only OS shell-out) — called **Rust-side via `OpenerExt`** from the C9/C10 handlers (no WebView `opener:*` grant, §0.10/§7.7.1) |
 
 Concrete crate **versions are deliberately not hard-coded in this prose** (they go
 stale); the lockfiles + SBOM are the source of truth (§6.3). This table fixes the
@@ -870,7 +901,7 @@ pool** governs how many engine processes run at once. **This number lives here;
 | **LibreOffice** (`soffice --headless`) | **serialised — exactly 1 at a time** `[DECIDED]` | LibreOffice headless is **NOT safely parallel under one user profile**: concurrent `soffice` instances sharing a profile **lock/corrupt** it — a *correctness* issue, not just contention. The pool runs a dedicated **single-slot LibreOffice lane**; all office/PDF-export jobs (documents/spreadsheets/presentations) serialise through it. Mitigation detail (per-run isolated `-env:UserInstallation` profiles) is co-owned with §3.5; even with isolated profiles the safe v1 stance is **one office conversion at a time**. |
 | **FFmpeg** (video re-encode) | **low — 1–2** | CPU-bound; already the slowest op (video.md). Counts against the global degree. |
 | **FFmpeg** (audio / extract-audio / remux) | up to global degree | light/IO-bound; may run more in parallel. |
-| **Image core** (vips/heif/avif/svg) | up to global degree | per-item, bounded-memory (vips streaming); fast. |
+| **Image core** (vips/heif/avif/svg) | up to global degree | per-item, bounded-memory (vips streaming); fast. Runs as a **separate image-worker process** `[DECIDED]` (§0.7/§2.12), one short-lived worker per item, so a hostile-image decoder exploit is process-isolated like every other engine. |
 | **poppler / pandoc** | up to global degree | light, short-lived. |
 | **native CSV/TSV** (in-Rust, no subprocess) | up to global degree (worker threads) | trivial cost. |
 
@@ -930,27 +961,24 @@ need:
     //   WebView is granted no command-execute surface at all. (Removed deliberately;
     //   a raw Rust tokio::process spawn is not capability-gated, so no grant is
     //   needed, and granting one would only re-open the threat §3.3.3 closed.)
-    {
-      // C9 reveal "open folder" — Explorer /select, Finder reveal (§7.7.1)
-      "identifier": "opener:allow-reveal-item-in-dir",
-      "allow": [{ "path": "$DOWNLOAD/**" }, { "path": "$DOCUMENT/**" }]
-      // Scope note: the static manifest can only express OS-known roots; the
-      //   authoritative output-only check is enforced Rust-side (§7.7.3 validates
-      //   the path is in the current RunResult's recorded outputs before opening).
-    },
-    {
-      // C9 "open file" — open a finished output in its default app (§7.7.1)
-      "identifier": "opener:allow-open-path",
-      "allow": [{ "path": "$DOWNLOAD/**" }, { "path": "$DOCUMENT/**" }]
-      // Same Rust-side output-validation as above (§7.7.3); the static glob is the
-      //   coarse outer bound, the RunResult membership check is the real gate.
-    },
-    {
-      // C10 open-project-page — compiled-in constant URL; the command takes no URL
-      //   argument from the WebView (§7.7.2), so this is the only reachable origin.
-      "identifier": "opener:allow-open-url",
-      "allow": [{ "url": "https://github.com/Ne-IA/convertia*" }]  // ONLY this origin (§7.6)
-    },
+    //
+    // NO opener:* grant on the WebView either `[DECIDED]`. The "open folder /
+    //   open file" affordance (C9) and "open project page" (C10) are ConvertIA's
+    //   OWN typed IPC commands; their Rust handlers call the opener plugin's
+    //   `OpenerExt` (reveal/open/openUrl) INTERNALLY (§7.7.1). A Rust-internal
+    //   `OpenerExt` call is NOT capability-gated (capabilities gate only what the
+    //   WebView may invoke), so no `opener:allow-*` permission is required — and
+    //   granting one would be the WRONG model here: a static `opener` path scope is
+    //   an enforced OUTER bound applied BEFORE any Rust handler runs, so it can only
+    //   FURTHER-RESTRICT, never widen. Since the §2.7 default writes output BESIDE
+    //   the source (Desktop, USB, arbitrary project folders — routinely outside
+    //   $DOWNLOAD/$DOCUMENT), a $DOWNLOAD/$DOCUMENT-scoped grant would SILENTLY
+    //   BREAK the one-click open-folder/open-file DoD gate for the common case.
+    //   The real, sufficient gate is the Rust-side RunResult-membership check
+    //   (§7.7.3): C9 opens a path only if it is in the current run's recorded
+    //   outputs (or their common root) — which works for arbitrary beside-source
+    //   destinations. C10 is locked to the compiled-in project URL constant in Rust
+    //   (no WebView-supplied URL). See §0.4.1 C9/C10, §7.7.2/§7.7.3.
     "log:default",                        // §7.5.1 JS→Rust log bridge (frontend errors → same local file)
     "store:default"                       // §7.4.2 the single settings.json prefs blob (theme + lastDestinationMode)
   ]
@@ -974,12 +1002,20 @@ Notes / deliberate exclusions:
   surface-widening or implied a spawn path §1.7 rejects). The Tauri **opener** plugin
   is a *separate* plugin from shell-execute; the opener grants above do **not** grant
   command execution.
-- **`opener` is split and output-scoped**: `reveal-item-in-dir` + `open-path` for
-  **outputs only** (C9 — coarsely globbed to the OS output roots in the manifest, and
-  authoritatively validated Rust-side against the run's recorded outputs, §7.7.2/
-  §7.7.3), and `open-url` locked to the single compiled-in canonical project origin
-  (C10, no WebView-supplied URL). `reveal-item-in-dir` is the safer primary "open
-  folder" affordance (it does not execute the file); `open-path` is secondary.
+- **`opener` is NOT a WebView grant `[DECIDED]`.** C9 (open folder / open file) and
+  C10 (open project page) are ConvertIA's own typed IPC commands; their Rust handlers
+  call the opener plugin's `OpenerExt` (reveal / open-path / open-url) **internally**.
+  A Rust-internal `OpenerExt` call is not capability-gated, so the manifest carries
+  **no `opener:allow-*` permission**. The authoritative gate is Rust-side: C9 validates
+  the requested path against the current `RunResult`'s recorded outputs (or their common
+  root) before opening (§7.7.3 — works for arbitrary beside-source destinations, which a
+  static `$DOWNLOAD/$DOCUMENT` scope could never cover), and C10 opens only the
+  compiled-in canonical project URL (no WebView-supplied URL, §7.6). `reveal-item-in-dir`
+  is the safer primary "open folder" affordance (it does not execute the file); open-path
+  is secondary. (Rationale for dropping the static scope: a capability allow-list is an
+  enforced **outer** bound applied **before** the Rust handler — it can only further-
+  restrict, never widen — so a $DOWNLOAD/$DOCUMENT glob would silently break the
+  beside-source open gate, not secure it.)
 - **`log:default`** is on the allowlist because §7.5.1 ships a thin JS→Rust log
   bridge (frontend errors land in the same local-only file). It grants **no network**
   — the log sink is a local file; CSP still forbids remote origins.
@@ -996,20 +1032,34 @@ no remote origins (reinforces "no network"):*
   "default-src": "'self'",
   "script-src": "'self'",
   "style-src": "'self' 'unsafe-inline'",   // Tailwind/inline-style needs; tighten with nonces if feasible
-  "img-src": "'self' data: asset: blob:",  // app assets + generated previews/thumbnails as data/blob
+  "img-src": "'self' data: blob:",         // app assets + generated previews/thumbnails as data/blob (NO asset: — v1 renders no user file from disk; §0.10 note)
   "font-src": "'self'",
   "connect-src": "'self' ipc: http://ipc.localhost",  // Tauri v2 IPC custom protocol ONLY — NO https/remote
-  "media-src": "'self' asset: blob:",
+  "media-src": "'self' blob:",             // generated content only (NO asset:)
   "object-src": "'none'",
   "base-uri": "'self'",
+  "form-action": "'self'",                 // no form POST to a remote target
+  "webrtc": "'block'",                     // close the RTCPeerConnection exfil channel CSP otherwise leaves open
   "frame-src": "'none'"
 }
 ```
 
-- **No remote origin appears anywhere** in the CSP — a network request from the
-  WebView is structurally impossible (the only `connect-src` is the Tauri IPC
-  protocol). This is the observable, enforced form of *Local/private/offline*
-  (verified in §2.11 / §6.4).
+- **No remote origin appears anywhere** in the CSP — **no ordinary fetch/XHR/
+  WebSocket/remote-subresource network is possible** from the WebView (the only
+  `connect-src` is the Tauri IPC protocol; `form-action 'self'` blocks remote form
+  POST; `webrtc 'block'` closes the RTCPeerConnection channel a bare `connect-src`
+  leaves open). CSP alone does **not** close every exotic side channel (DNS-prefetch,
+  CSS-based timing), so the **structural** offline enforcement is the §2.12.3
+  engine-side OS network-deny + the §2.11.4 packet-monitor release gate, **not** the
+  CSP by itself. The CSP is the observable WebView-side form of *Local/private/offline*
+  (verified in §2.11 / §6.4); the §2.11.4 packet gate is the load-bearing proof.
+- **No `asset:` protocol.** `asset:` is dropped from `img-src`/`media-src`: v1 renders
+  **no** user file from disk in the WebView (there is no preview feature in §05), it
+  would contradict the no-WebView-FS model, and the asset protocol would additionally
+  need `assetProtocol.enable` + a scope + an `asset.localhost` CSP host on Windows
+  (none declared). `data:`/`blob:` remain for app-generated content only. A future
+  in-WebView preview would be a `[DEFER]` that re-adds `asset:` with the required
+  config.
 - `style-src 'unsafe-inline'` is the one pragmatic loosening (Tailwind + React
   inline styles); tightening to nonces is a polish item, not a gate. (Note: the
   platform "no inline CSS" rule targets hand-authored stylesheets; framework-
@@ -1017,11 +1067,14 @@ no remote origins (reinforces "no network"):*
 
 **Status `[DECIDED]`.** The allowlist shape **and** its concrete contents are now
 fixed: deny-by-default; **no** WebView FS; **no** network; **no `shell:allow-execute`**
-(engines spawn Rust-side per §3.3.3); `opener` split into output-scoped reveal/open
-+ a compiled-in project URL; `log:default` + `store:default` for the §7.5 local log
-bridge and the §7.4 prefs blob. The only remaining variability is whether the
-optional image-core runs in-process vs as an internal image-worker (§0.7/§2.12/§3.5.5)
-— a raw Rust spawn either way, so it adds **no** WebView capability regardless. The
+(engines spawn Rust-side per §3.3.3); **no `opener:*` WebView grant** (C9/C10 are
+ConvertIA's own commands whose Rust handlers call `OpenerExt` internally — not
+capability-gated — and the real gate is the Rust-side §7.7.3 RunResult-membership
+check, which works for arbitrary beside-source outputs a static scope could not);
+`log:default` + `store:default` for the §7.5 local log
+bridge and the §7.4 prefs blob. The image-core runs as a **separate image-worker
+process** `[DECIDED]` (§0.7/§2.12/§3.5.5) — a raw Rust spawn, so it adds **no**
+WebView capability regardless. The
 former `[OPEN]` (shell scope WebView-exposed vs Rust-only) is **closed: Rust-only,
 no shell grant** (§3.3.3). Cross-refs: §3.3.3 (spawn model), §7.4 (store), §7.5 (log),
 §7.7 (opener scope it constrains).
@@ -1036,7 +1089,7 @@ The `SECURITY` policy (§6.8) references this map.
 
 | # | Threat class | Vector | Owner (mechanism) | Status |
 |---|---|---|---|---|
-| T1 | **Untrusted decoder input** | A crafted/corrupt/malicious file (image bomb, malformed MP4, hostile SVG, macro-laden DOCX) exploits or hangs a decoder | **§2.12** decoder isolation (separate subprocess, contained crash/hang fails one item) + **§1.7** invocation lifecycle (timeout/kill) + **§0.9** pool bounds + **§1.2** detection security note (first code on untrusted bytes) | covered |
+| T1 | **Untrusted decoder input** | A crafted/corrupt/malicious file (image bomb, malformed MP4, hostile SVG, macro-laden DOCX) exploits or hangs a decoder | **§2.12** decoder isolation (separate subprocess for **every** engine including the image core — the image-worker process `[DECIDED]` §0.7/§3.5.5; contained crash/hang/exploit fails one item) + **§1.7** invocation lifecycle (timeout/kill) + **§0.9** pool bounds + **§1.2** detection security note (first code on untrusted bytes) | covered |
 | T2 | **Malicious / compromised WebView content** | XSS-style injection or a supply-chained frontend dep tries to read the disk or call out | **§0.10** capability allowlist (no WebView `fs`, no network) + CSP (no remote origins, `object-src 'none'`) | covered |
 | T3 | **Bundled-binary supply chain** | A tampered/backdoored engine binary ships in the build | **§3.8** engine pinning + **§6.2** integrity hashes + **§6.3** SBOM (every binary enumerated, verifiable) | covered |
 | T4 | **Open-file launch of a fresh artifact** | C9 "open file" hands a just-written, possibly-still-untrusted output to an external app | **§7.7** open-file safety (reveal-in-folder preferred over launch where risky; the artifact is *our* output, not the untrusted source) + **§0.10** opener path scope | covered |
@@ -1044,7 +1097,7 @@ The `SECURITY` policy (§6.8) references this map.
 | T6 | **Copyleft aggregation boundary** | Accidentally linking a GPL/LGPL engine into the MIT core (licence contamination) | **§3.6** copyleft isolation (separate invoked binaries, aggregation not linking) — architecturally enforced by the §0.3 subprocess model + §0.7 (engines are sidecars, never linked) | covered |
 | T7 | **Path / link redirection** | A symlink/junction/alias makes an output resolve onto a source, or a TOCTOU race redirects the final write | **§2.3** resolved-identity & link safety + **§2.1** exclusive create-new-or-fail (the no-clobber guarantee is evaluated on the resolved real file) | covered |
 | T8 | **Self-feeding / batch expansion** | Outputs written into a watched source folder get re-ingested, or a second instance's files appear mid-run | **§2.4** frozen source set + **§7.1** instance/run identity (per-run temp ownership, no cross-instance ingestion) | covered |
-| T9 | **Network exfiltration of user files** | Anything tries to upload originals/results | **§0.10** CSP (no remote `connect-src`) + no `http`/updater plugin + **§2.11** offline invariant + **§7.6** no phone-home; only network is the user-initiated C10 open-project-page | covered |
+| T9 | **Network exfiltration of user files** | Anything tries to upload originals/results | **§0.10** CSP (no remote `connect-src`, `form-action 'self'`, `webrtc 'block'`) + no `http`/updater plugin + **§2.12.3** engine-side OS network-deny (the structural enforcement) + **§2.11** offline invariant + **§7.6** no phone-home + **§2.11.4** packet-monitor release gate (the load-bearing proof); only network is the user-initiated C10 open-project-page | covered |
 | T10 | **Resource exhaustion / DoS-by-input** | A tiny SVG asked to render at 50 000 px, a 90-min→GIF, a thousands-file batch exhausting RAM/disk/handles | **§1.10** resource pre-flight & budgets + **§0.9** pool/handle bounds + the to-GIF guardrail (cross-category.md) | covered |
 
 **No orphan classes.** Every box above points at a section that owns the

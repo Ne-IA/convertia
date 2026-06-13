@@ -30,8 +30,8 @@ Rows = source, cols = target. Cell legend:
 `·` identity (same format, not offered as a conversion).
 
 Engine short-names: **LO** = LibreOffice headless · **pp** = poppler `pdftotext` ·
-**pd** = pandoc. (Ghostscript is bundled with poppler for PDF read/repair
-plumbing but owns no user-facing pair in this category — see *Engines*.)
+**pd** = pandoc. (Ghostscript is **[DECIDED: NOT shipped v1]** — poppler-only PDF→TXT,
+no AGPL surface; see *Engines* / §3.1.)
 
 | src ＼ tgt | PDF | DOCX | DOC | ODT | RTF | TXT | MD | HTML |
 |-----------|-----|------|-----|-----|-----|-----|----|------|
@@ -76,7 +76,7 @@ plumbing but owns no user-facing pair in this category — see *Engines*.)
 |--------|-----------------------|---------|-----------|
 | **LibreOffice** (headless, `soffice --headless --convert-to`) | All office reads/writes (`DOCX/DOC/ODT/RTF`), and **every `*→PDF`** in the platform (this category plus the cross-category producer rows) | **MPL-2.0** (file-level copyleft; permissive enough to bundle, still shipped as a separate invoked binary per SSOT policy) | Separate sidecar process, routed through the §2.12 isolation wrapper; per-run isolated user profile (see *Edge cases*) |
 | **poppler** `pdftotext` | `PDF → TXT` extraction | **GPL-2.0/GPL-3.0** | Copyleft → **separate invoked binary** (aggregation, §3.6); written-offer-of-source honored |
-| **Ghostscript** | PDF read/repair plumbing only (decrypt-detection, malformed-PDF tolerance behind `pdftotext`); **no user-facing pair** | **AGPL-3.0** | Copyleft → separate invoked binary (§3.6). `[OPEN]` whether GS is bundled at all in v1 — see *Category-wide* |
+| **Ghostscript** | *(was: PDF read/repair plumbing behind `pdftotext`; no user-facing pair)* | **AGPL-3.0** | **[DECIDED: NOT shipped v1]** (§3.1/§3.6) — poppler-only PDF→TXT removes the AGPL surface; `[DEFER: re-add only if §6.5 corpus shows GS-salvageable PDFs]` |
 | **pandoc** | Markup conversions: `MD/HTML/TXT ↔` and office→markup down-conversions (`DOCX/DOC/ODT/RTF → TXT/MD/HTML`) | **GPL-2.0+** | Copyleft → separate invoked binary (§3.6) |
 
 **Single-engine-per-pair conformance (§3.2).** Each cell maps to exactly one
@@ -134,8 +134,9 @@ are the **concrete option lists and defaults** this file owns (§1.6).
 - **Engine(s):**
   - *Produce PDF:* **LibreOffice** headless, filter `writer_pdf_Export` (Writer),
     `calc_pdf_Export` (Calc), `impress_pdf_Export` (Impress). MPL-2.0.
-  - *Consume PDF (→TXT):* **poppler `pdftotext`** (GPL). Ghostscript only as a
-    fault-tolerance backstop behind poppler, never user-facing.
+  - *Consume PDF (→TXT):* **poppler `pdftotext`** (GPL) only. (Ghostscript is
+    **[DECIDED: NOT shipped v1]** — no GS fault-tolerance backstop; poppler-only,
+    fail-clearly on the rare unrecoverable PDF. §3.1.)
 - **Options/settings (PDF as the *output* of `*→PDF`):** ConvertIA exposes **none**
   by default — "it just works" (Principle 8). Internal fixed defaults passed to
   the export filter:
@@ -157,14 +158,15 @@ are the **concrete option lists and defaults** this file owns (§1.6).
 - **Edge cases:**
   - **Password-protected / encrypted PDF → OUT OF SCOPE.** ConvertIA does not
     prompt for or crack passwords. An encrypted PDF reaching `PDF→TXT` is detected
-    (Ghostscript/poppler report encryption) and **fails clearly** ("this PDF is
+    (poppler reports encryption) and **fails clearly** ("this PDF is
     password-protected — ConvertIA can't read it") per §2.8 — never a crash, never
     a silent empty output.
   - **Scanned / image-only PDF → TXT** yields little or no text (no OCR in v1). The
     `pdf→txt` lossy note already warns "text only"; an essentially-empty
     extraction is reported, not surfaced as a misleading success of an empty file.
-  - **Malformed / truncated PDF:** poppler tolerates many; Ghostscript backstop
-    repairs some; unrecoverable → fail clearly (§2.8), batch continues (§1.9).
+  - **Malformed / truncated PDF:** poppler tolerates many; an unrecoverable PDF →
+    fail clearly (§2.8), batch continues (§1.9). (No Ghostscript repair backstop in
+    v1 — GS dropped, §3.1; `[DEFER: re-add only if §6.5 shows GS-salvageable PDFs]`.)
   - **PDF forms (AcroForm/XFA), tagged structure, layers:** flattened to their
     visible text on `→TXT`; not reconstructed.
   - **Very large PDF:** sized in pre-flight (§1.10); progress is real per-item.

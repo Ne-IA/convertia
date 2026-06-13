@@ -80,15 +80,18 @@ applied the §2.7 destination rules). Given a *final resolved destination path*
    TOCTOU window.
 5. **Publish `tmp → final` with the no-placeholder exclusive-rename** (2.1.2): a
    primitive that creates `final` **only if it does not exist** — Unix
-   `link`/`renameat2(RENAME_NOREPLACE)`, Windows `create_new`-reserve then
-   `ReplaceFileW`. No 0-byte placeholder is ever published (so no truncated/empty
-   `final`, §2.1.3). On a name collision the loop advances to the next §2.2 variant.
+   `link`/`renameat2(RENAME_NOREPLACE)`, Windows `MoveFileExW` **without**
+   `MOVEFILE_REPLACE_EXISTING` (create-only, fails-if-exists). No 0-byte placeholder
+   is ever created at the final name (so no truncated/empty `final`, §2.1.3). On a name
+   collision the loop advances to the next §2.2 variant.
 6. **Durability of the publish:** on Unix, after the rename **fsync the containing
    directory** (open the parent dir, `fsync` its fd) so the new dentry survives a
    crash — per the LWN/evanjones durability findings (rename is atomic but not
    durable without the directory fsync). On Windows the directory-fsync step is a
-   no-op (NTFS metadata journaling covers it); `ReplaceFileW` with
-   `REPLACEFILE_WRITE_THROUGH` is the equivalent durability guarantee.
+   no-op (NTFS metadata journaling covers it); the create-only `MoveFileExW` with the
+   **`MOVEFILE_WRITE_THROUGH`** flag (and, on the §2.5 replacing path, `ReplaceFileW`
+   with `REPLACEFILE_WRITE_THROUGH`) provides the equivalent flush-through durability
+   guarantee.
 7. On engine failure / cancel / any error in steps 3–6: **`tmp` is removed**
    (§2.6); `final` was never created → nothing to undo. Cleanup failure is itself
    handled (§2.6: never reported as clean success).
@@ -128,18 +131,29 @@ the engine never filled) can exist. `[DECIDED]`
     placeholder. (`link`+`unlink(tmp)` is the portable POSIX form; `renameat2`
     `RENAME_NOREPLACE` is the single-call form where available.) On `EEXIST` →
     re-pick the next §2.2 variant.
-  - **Windows:** there is **no documented exclusive-create rename**, so publish in
-    two documented-atomic steps: reserve the name race-free with `create_new`
-    (`CREATE_NEW`), close the handle, then **`ReplaceFileW(final, tmp, NULL,
-    REPLACEFILE_WRITE_THROUGH, ...)`** — the documented NTFS atomic-replace
-    primitive (atomic w.r.t. readers, preserves attributes). `MoveFileExW(...,
-    MOVEFILE_REPLACE_EXISTING)` is **not** used as the publish primitive because
-    Microsoft does **not** document it as atomic (it can fall back to a non-atomic
-    copy) and can return `ERROR_ACCESS_DENIED` when AV holds an open handle on the
-    just-created placeholder. For the AV `ERROR_ACCESS_DENIED` case, a **bounded
-    retry** (short backoff, small cap, then `WriteFailed` §2.8) is applied. The
-    `create_new` reservation is *ours*, so the `ReplaceFileW` replaces only our own
-    placeholder, never anyone else's file.
+  - **Windows `[DECIDED]`:** the first-time (no-clobber) publish is a
+    **create-only move with no placeholder**: **`MoveFileExW(tmp, final,
+    MOVEFILE_WRITE_THROUGH)`** — i.e. **WITHOUT** `MOVEFILE_REPLACE_EXISTING`. With
+    `REPLACE_EXISTING` omitted, `MoveFileExW` **fails (`ERROR_ALREADY_EXISTS` /
+    `ERROR_FILE_EXISTS`) if `final` exists**, giving the no-clobber guarantee **and**
+    the publish in one step **with no 0-byte placeholder ever created at the final
+    name** — the exact create-only shape of the Unix `link`/`renameat2(RENAME_NOREPLACE)`
+    primitive, so the §2.1.3 two-state invariant holds by construction on Windows too.
+    On the exists-error → re-pick the next §2.2 variant.
+    - The earlier `create_new`-reserve-then-`ReplaceFileW` ordering is **rejected for
+      the first-time publish** precisely because it first creates a 0-byte file at the
+      **final** path (`ReplaceFileW` requires the target to exist), admitting the
+      forbidden third state if a crash lands between the reserve and the replace.
+    - **`ReplaceFileW(final, tmp, NULL, REPLACEFILE_WRITE_THROUGH, ...)`** (the
+      documented NTFS atomic-replace, atomic w.r.t. readers, preserves attributes) is
+      reserved **only** for the genuinely-*replacing* path — i.e. the §2.5 re-run
+      "fresh copy onto an existing equivalent output" case where the target is meant to
+      exist; it is never the no-clobber create path.
+    - **AV interference:** `MoveFileExW` can return `ERROR_ACCESS_DENIED` when antivirus
+      holds a transient open handle on `tmp`; a **bounded retry** (short backoff, small
+      cap, then `WriteFailed` §2.8) is applied. `MOVEFILE_REPLACE_EXISTING` is never
+      used as the no-clobber primitive (Microsoft does not document it as atomic and it
+      can fall back to a non-atomic copy).
 - **(b) Write-into-the-reserved-handle.** Stream the engine output through an open
   exclusive handle directly (no temp + rename). **Rejected for the engine path**:
   engines are *separate processes* writing their own file (§3.5) — they cannot
@@ -151,18 +165,19 @@ the engine never filled) can exist. `[DECIDED]`
 > between the placeholder create and the rename leaves a 0-byte `final` the engine
 > never wrote — exactly the "truncated/empty final masquerading as finished" §2.1.3
 > forbids. The no-placeholder publish (Unix `link`/`renameat2(RENAME_NOREPLACE)`;
-> Windows `ReplaceFileW`) never publishes an empty name, so the §2.1.3 two-state
-> invariant holds by construction. `fs_guard::atomic_publish(tmp, final)`
-> encapsulates the per-OS primitive choice; callers (§2.1) never see it.
+> Windows `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`) never creates an empty
+> name, so the §2.1.3 two-state invariant holds by construction. `fs_guard::
+> atomic_publish(tmp, final)` encapsulates the per-OS primitive choice; callers (§2.1)
+> never see it.
 >
-> `[OPEN]` (owner §2.1, **primitive-confirmation spike, not a design question**):
+> `[DEFER: primitive-confirmation spike, not a design question]` (owner §2.1):
 > confirm `renameat2(RENAME_NOREPLACE)` availability across the Linux floor (§0.3.1)
-> with the `link`+`unlink` fallback, and confirm `ReplaceFileW`'s behaviour when
-> `final` does **not** yet exist (it requires the target to exist, so the first-time
-> publish uses the `create_new`-then-`ReplaceFileW` ordering above, or a plain
-> `MoveFileExW` *without* `REPLACE_EXISTING` which is a clean create-only move). The
-> *guarantee and the primitive choice are fixed*; only this small portability spike
-> remains.
+> with the `link`+`unlink` fallback. The Windows primitive is **fixed**: the
+> first-time publish is `MoveFileExW` *without* `MOVEFILE_REPLACE_EXISTING` (a clean
+> create-only move, no placeholder); `ReplaceFileW` is used only on the
+> genuinely-replacing §2.5 fresh-copy path where the target is meant to exist. The
+> *guarantee and the primitive choice are both fixed*; only the Linux availability
+> check remains, and it has a guaranteed fallback.
 
 ### 2.1.3 Crash / power-loss invariant `[DECIDED]`
 
@@ -775,10 +790,12 @@ enum ConversionErrorKind {
     OutOfDisk,          // ENOSPC while writing (§2.6 cleans the partial)
     WriteFailed,        // the output write/publish failed for a non-space reason (perm/IO at the destination, §2.1/§2.7)
     PathTooLong,        // §2.2.3 — name/extension would exceed OS path limit
+    TooManyCollisions,  // §2.1.2/§2.2 — the ~10,000-variant no-clobber cap was exhausted (a degenerate dir)
     EngineCrash,        // subprocess killed by signal / nonzero abnormal exit (§1.7/§2.12)
     EngineHang,         // exceeded the §1.7 timeout, killed (§2.12)
     EngineError,        // subprocess clean nonzero exit w/ classifiable stderr (§3.5)
     PlatformUnavailable,// patent-gapped on this platform (§3.4) — honest "unavailable here"
+    QuarantinedByOs,    // macOS Gatekeeper quarantined a bundled engine sidecar so it can't spawn (§7.2.3) — distinct from EngineMissing/BundleDamaged
     CleanupResidue,     // item failed AND its partial couldn't be removed (§2.6.4)
     InternalError,      // catch-all for an unexpected internal fault (§2.13), no trace shown
     // ── run/app-level (§2.13); surfaced via app://fault, not a per-item row ──
@@ -825,10 +842,12 @@ plain, calm, never blaming, never technical (SSOT *Fail clearly*). These are the
 | `OutOfDisk` | **"There isn't enough free disk space to finish this conversion."** | — | batch continues; partial cleaned (§2.6). |
 | `WriteFailed` | **"ConvertIA couldn't save the converted file to that location."** | — | non-space write/publish failure at the destination (permission/IO, §2.1/§2.7); distinct from `OutOfDisk`. |
 | `PathTooLong` | **"The output name would be too long for this system, so this file was skipped. Try a shorter folder or file name."** | — | never truncates (§2.2.3). |
+| `TooManyCollisions` | **"There are already too many files with this name in that folder, so this one couldn't be saved. Try a different folder."** | — | the §2.1.2/§2.2 no-clobber numbering cap (~10,000 variants) was exhausted; a degenerate destination directory. |
 | `EngineCrash` | **"Something went wrong while converting this file, so it was skipped."** | — | subprocess crash; no trace shown. Detail goes to §7.5 log only. |
 | `EngineHang` | **"This file took too long to convert and was stopped."** | — | §1.7 timeout. |
 | `EngineError` | **"ConvertIA couldn't convert this file."** | — | clean nonzero exit; generic calm fallback. |
 | `PlatformUnavailable` | **"This conversion isn't available on {platform} because the required format support can't be included here."** | `{platform}` | the §3.4 honest per-platform gap; SSOT v1-DoD exception 1. |
+| `QuarantinedByOs` | **"macOS is blocking one of ConvertIA's built-in tools with a security check. Open System Settings → Privacy & Security and choose "Open Anyway", then try again."** | — | macOS Sequoia per-sidecar quarantine — a bundled engine couldn't spawn because Gatekeeper quarantined it (§7.2.3); distinct from a missing/corrupt engine. |
 | `CleanupResidue` | **"This file couldn't be converted, and a temporary file may remain at {path}."** | `{path}` | the only failure that names a path of residue (§2.6.4). |
 | `InternalError` | **"Something unexpected went wrong, so this file was skipped. The rest of your files will continue."** | — | §2.13; never a stack trace. |
 
@@ -1137,10 +1156,25 @@ detection is **header/magic-byte sniffing only** (a bounded read of the first N
 bytes + light structure checks), implemented in **safe Rust** with **no full
 decode** — so it is acceptable to run **in-core** (it doesn't invoke a third-party
 decoder). The moment a full decode is needed (the actual conversion), that runs in
-the isolated subprocess. §1.2 states this; §2.12 confirms the boundary: *no
-third-party decoder library is linked into or run inside the Rust core* — they are
-all subprocesses. (This also reinforces §3.6: copyleft engines are aggregated as
-separate binaries, never linked into the MIT core.)
+an isolated subprocess. §1.2 states this; §2.12 confirms the boundary: *no
+third-party decoder library is linked into or run inside the Rust core — every full
+decode runs in a separate subprocess*. This is true for **all** engines including the
+image core: image decode/encode runs in a **separate image-worker process**
+`[DECIDED]` (§0.7/§3.5.5 — the README/§3.5.5 in-process-vs-worker `[OPEN]` is resolved
+to the worker), so a memory-corruption exploit in libvips/libheif/libde265/resvg/a
+TIFF loader executes inside that throwaway worker's address space, **not** ConvertIA's
+core — the §2.12.1 process boundary contains it exactly as for FFmpeg/LibreOffice and
+T1 (§0.11) is uniformly subprocess-isolated. (This also reinforces §3.6: copyleft
+engines are aggregated as separate binaries; the image-worker links libvips/LGPL
+internally, which is aggregation, never a link into the MIT core.)
+
+> **Note — the §2.13 `catch_unwind` boundary is NOT a containment mechanism for
+> hostile native code.** It catches *Rust* panics in ConvertIA's own orchestration
+> code at the item boundary; it does **not** contain arbitrary-code-execution or
+> memory corruption inside a native decoder. The only thing that contains a
+> compromised decoder is the **OS process boundary** above (plus the §2.12.3
+> privilege-drop tier). Do not cite `catch_unwind` as a security boundary against
+> untrusted decoder input.
 
 ---
 
@@ -1306,7 +1340,8 @@ move-equivalent **inside** that volume:
    - `sync_all()` it (durable),
    - then publish that same-volume temp → `final` with the **no-placeholder
      exclusive-rename** (§2.1.2: Unix `link`/`renameat2(RENAME_NOREPLACE)`, Windows
-     `ReplaceFileW`) — intra-volume and exclusive, never a 0-byte placeholder,
+     `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`) — intra-volume and exclusive,
+     create-only, never a 0-byte placeholder,
    - `fsync` the destination directory (Unix) for durability.
    This is exactly the documented `EXDEV` remedy (the tempfile-crate guidance:
    *cannot persist across filesystems → copy into the destination volume, then

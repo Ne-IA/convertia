@@ -105,9 +105,11 @@ differ and are spelled out per format.
   (i.e. **every** video source — MP4 is the universal default target).
 - **Engine(s):** FFmpeg (single engine, all platforms). Video re-encode →
   **libx264** (H.264); audio re-encode → native **aac** encoder. **Patent flag:**
-  H.264 and AAC are patent-encumbered; ConvertIA bundles an **LGPL FFmpeg with the
-  native built-in AAC encoder and libx264 enabled** — disposition deferred to the
-  **§3.4 patent matrix** (the single owner). This entry does not re-decide it; if
+  H.264 and AAC are patent-encumbered; ConvertIA bundles a **GPL-2.0+ FFmpeg**
+  (`--enable-gpl` to link libx264 relicenses the whole binary GPL — it is NOT an LGPL
+  build, §3.1/§3.6.1) **with the native built-in AAC encoder and libx264 enabled**,
+  shipped as a separate invoked binary (aggregation) with the written-offer-of-source
+  obligation — disposition deferred to the **§3.4 patent matrix** (the single owner). This entry does not re-decide it; if
   §3.4 marks H.264/AAC encode unavailable on a platform, MP4-as-target is honestly
   surfaced as unavailable there per SSOT *v1 DoD* exception 1. (Practical note: x264
   + the FFmpeg-native AAC encoder are the long-standing default bundle choice and

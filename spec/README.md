@@ -81,10 +81,51 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **cancel-collect** — command-backed **C13 `cancel_ingest`** (ingest-scoped token);
   the §5.2 Collecting cancel control + §5.10 Esc back it. Owner: §0.4/§1.1/§5.
 - **HEIC/AVIF encode code-path** — standardise on libvips `heifsave` (one AV1 encoder,
-  libaom; standalone heif/avif dropped). Owner: images.md [OPEN-1] / §3.5.5.
-- **GIF/BMP/ICO save path** — native `gifsave` (cgif, MIT) / `bmpsave` (libvips
-  ≥ 8.12); ImageMagick `magicksave` fallback only. **ImageMagick is permissive (not
-  GPL).** Owner: images.md / §3.5.5 / §3.6.1.
+  libaom; standalone heif/avif dropped). **x265 ships as a dynamically-loaded libheif
+  encoder plugin** (never statically linked). Owner: images.md [OPEN-1] / §3.5.5 / §3.6.1.
+- **GIF native; BMP/ICO require ImageMagick** — native `gifsave` (cgif, MIT). **libvips
+  has NO native BMP or ICO save at any version**, so **BMP (load+save) and ICO (save)
+  go through the REQUIRED ImageMagick `magicksave`/`magickload` delegate — ImageMagick
+  is a mandatory bundled component, NOT a fallback.** ImageMagick is permissive (not
+  GPL). Owner: images.md / §3.1 row 1d / §3.5.5 / §3.6.1.
+- **FFmpeg licence class = GPL-2.0+** — the single bundled FFmpeg binary enables
+  `libx264` (`--enable-gpl`), so the **whole binary is GPL-2.0+, not LGPL**; shipped as
+  a separate invoked binary (aggregation), written-offer-of-source honored, LGPL
+  component libs dynamically linked beside it. Owner: §3.1 / §3.6.1.
+- **libvips placement = separate image-worker process** — image decode/encode runs
+  out-of-process so a hostile-image exploit is contained by the OS process boundary
+  like every other engine (resolves the §2.12.4 "all decoders are subprocesses"
+  absolute and the T1 isolation). Licence analysis unaffected. Owner: §2.12 / §0.9 /
+  §3.5.5 (was [OPEN]).
+- **Windows atomic-publish primitive** — first-time (no-clobber) publish =
+  `MoveFileExW` **without** `MOVEFILE_REPLACE_EXISTING` (create-only, no 0-byte
+  placeholder); `ReplaceFileW` reserved only for the §2.5 replacing path. Keeps the
+  §2.1.3 "never a third state" invariant true by construction. Owner: §2.1.2.
+- **Detection canonical type** — §1.2's `DetectionOutcome` is the one canonical type;
+  §0.6's `DroppedItem.detected` carries it; the `DetectedFormat`/`DetectionConfidence`
+  pair is retired (one confidence enum, one cardinality). Owner: §1.2 (referenced by §0.6).
+- **Empty/Unreadable classification** — intake-time empty/unreadable = **Skipped**
+  (pre-flight `SkipReason`, never queued); turn-time-after-freeze unreadable/gone =
+  **Failed** (mid-run). Owner: §1.1 / §1.9 / §0.6.
+- **Target type name** — §1.5 adopts §0.6's `TargetOffer`/`Target` (the C3 return type);
+  `OfferedTargets`/`OfferedTarget` retired. Owner: §0.6 (struct) / §1.5 (logic).
+- **`SkippedItem`** — defined in §0.6 `{ item, source, reason: ErrorKind }`;
+  `CollectedSet::Single` carries `skipped: Vec<SkippedItem>`. Owner: §0.6.
+- **CollectingId delivery** — the **frontend generates `CollectingId` and passes it as a
+  C1 argument** (single-funnel); **no `collecting-started` event** — the §0.4.2 "no
+  other events" invariant holds. Owner: §0.4.1 / §1.1.
+- **Opener model** — the WebView calls only ConvertIA's own C9/C10 commands, whose Rust
+  handlers call `OpenerExt` internally (not capability-gated); **no `opener:*` WebView
+  grant**. The real gate is the Rust-side §7.7.3 `RunResult`-membership check (works for
+  arbitrary beside-source outputs a static scope could never cover). Owner: §0.10 /
+  §0.4.1 / §7.7.
+- **Theme persistence** — the §7.4 2-key prefs blob persists `theme`; a minimal in-app
+  Light/Dark/System toggle is provided (default `system`). Owner: §7.4 / §5.5.
+- **macOS unsigned posture** — accepted for v1, **with** the §6.2.4 Sequoia step-by-step
+  (blocked first launch → Privacy & Security → "Open Anyway" → per-sidecar quarantine),
+  the §2.8 `QuarantinedByOs` error kind, and a mandatory §6.6 Sequoia walkthrough that
+  must pass (the unsigned floor depends on the guided recovery working). Owner: §6.2.4 /
+  §7.2.4 / §6.6.
 - **Ghostscript** — **dropped in v1** (poppler-only PDF→TXT, no AGPL). `[DEFER: re-add
   if corpus shows GS-salvageable PDFs]`. Owner: §3.1/§3.6.
 - **Cross-session re-run ledger** — **not in v1** (session-only; signal 1 demoted to
@@ -139,16 +180,16 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 
 ### Genuinely still open `[OPEN]` (owner-level, not yet resolvable)
 - **Decoder-isolation v1 sandbox depth per OS** — the cheap tier (process + timeout +
-  minimal-env + scratch-cwd) is non-negotiable v1; how far the privilege-drop tier
-  (seccomp/Landlock / Seatbelt / Job-Object + low-integrity) goes is a real
-  engineering/portability call. Owner: §2.12.
+  minimal-env + scratch-cwd, incl. stripping `LD_PRELOAD`/`LD_LIBRARY_PATH`/
+  `DYLD_*`) is non-negotiable v1; how far the privilege-drop tier (seccomp/Landlock /
+  Seatbelt / Job-Object + low-integrity) goes is a real engineering/portability call.
+  Owner: §2.12. *(Note: the libvips in-process-vs-worker question is now DECIDED —
+  separate image-worker process — and is no longer open.)*
 - **In-core text-encoding heuristic / Rust ZIP central-directory peek** — may it stay
   outside the §2.12 isolation boundary (lean: yes, memory-safe/bounded). Owner: §2.12
   (raised by §1.2).
-- **libvips in-process vs separate image-worker process** — security/robustness
-  isolation placement (lean: separate worker); licence analysis unaffected. Owner:
-  §2.12/§0.9 (raised by §3.5.5).
 - **macOS E2E driver under an unsigned build** — `tauri-driver`/`safaridriver`
-  cannot cleanly drive an unsigned WKWebView; the macOS E2E may degrade to
-  launch+screenshot, with the §6.6 human walkthrough carrying macOS core-flow
-  validation. Owner: §6.4.6.
+  cannot cleanly drive an unsigned WKWebView; the macOS *automated* E2E may degrade to
+  launch+screenshot, with the §6.6 human walkthrough (which now also tests the Sequoia
+  Gatekeeper/sidecar-quarantine recovery) carrying macOS core-flow validation. Owner:
+  §6.4.6.

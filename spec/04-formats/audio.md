@@ -4,7 +4,11 @@
 > AAC\*, M4A, OGG (Vorbis), OPUS, WMA, AIFF, ALAC. \*patent-encumbered →
 > disposition in §3.4. Follows the per-format template in [README](README.md).
 >
-> **One engine for the whole category: FFmpeg (LGPL build).** Every audio
+> **One engine for the whole category: FFmpeg.** (The single bundled FFmpeg binary
+> is **GPL-2.0+** because it enables `libx264` for the video category, §3.1/§3.6.1 —
+> it is the same binary across audio/video/cross-category, shipped as a separate
+> invoked binary. The *audio* encoders it uses here are all LGPL/BSD; the GPL class
+> comes from x264 in the shared binary.) Every audio
 > source→target pair is satisfied by a single FFmpeg invocation (decode source →
 > re-encode target), so the §3.2 single-engine-per-pair rule holds trivially and
 > no pair is ever chained. The "extract audio from video" outputs (video →
@@ -54,7 +58,7 @@ Rows = detected **source**, columns = chosen **target**. Cell legend:
   cell (diagonal) = re-encode same format, offered only where it has everyday
   meaning (re-compress), else `—`.
 
-All cells are FFmpeg (LGPL build) — the engine column is omitted from the grid to
+All cells are FFmpeg (the shared GPL-2.0+ binary; §3.6.1) — the engine column is omitted from the grid to
 keep it readable and stated once per entry instead.
 
 | src ＼ tgt | MP3 | WAV | FLAC | AAC | M4A | OGG | OPUS | AIFF | ALAC | WMA |
@@ -109,13 +113,14 @@ Notes on the matrix:
   the layer; a file that is really MP2 is detected as such and treated as
   out-of-scope (not silently called MP3).
 - **Role:** both.
-- **As source → targets:** WAV, FLAC, AAC, M4A, OGG, OPUS, AIFF, ALAC.
-  *(MP3→MP3 not offered — see diagonal note.)* All conversions decode MP3 to PCM
+- **As source → targets:** **WAV ★**, FLAC, AAC, M4A, OGG, OPUS, AIFF, ALAC.
+  *(MP3→MP3 not offered — see diagonal note; the per-source default is WAV per the
+  Category-wide table, [OPEN/DEFER]: WAV-vs-FLAC.)* All conversions decode MP3 to PCM
   first, so every target inherits the source's already-lost detail.
 - **As target ← sources:** WAV, FLAC, AAC, M4A, OGG, OPUS, AIFF, ALAC, WMA
   (**MP3 is the default target of every other audio source** — the universally
   compatible everyday choice).
-- **Engine:** FFmpeg, encoder **`libmp3lame`** (LGPL build bundles LAME). All
+- **Engine:** FFmpeg, encoder **`libmp3lame`** (LAME, LGPL — bundled in the shared FFmpeg binary). All
   platforms. No patent flag for ConvertIA's purposes (MP3 patents expired 2017).
 - **Options/settings:**
   - *Default (no choice):* **VBR quality `-q:a 2`** (LAME `-V2`, ≈170–210 kb/s
@@ -204,8 +209,8 @@ Notes on the matrix:
 - **As source → targets:** MP3 ★, WAV, FLAC, M4A, OGG, OPUS, AIFF, ALAC.
 - **As target ← sources:** every other audio format (the small, modern, widely
   playable lossy choice when MP3 isn't specifically wanted).
-- **Engine:** FFmpeg, **native `aac` encoder** (the LGPL build's built-in encoder
-  — **LGPL-compatible, no `--enable-nonfree`/libfdk_aac**). Muxer = **`adts`**
+- **Engine:** FFmpeg, **native `aac` encoder** (FFmpeg's built-in encoder —
+  **license-clean, no `--enable-nonfree`/libfdk_aac**). Muxer = **`adts`**
   (writes raw `.aac`). All platforms.
 - **Patent flag:** ⚠ **AAC is patent-encumbered → disposition decided in §3.4**
   (format × platform × ship/gate/rely-on-OS/unavailable). ConvertIA references
@@ -497,14 +502,17 @@ Exact strings live in the **§2.9 message catalog** (home); this file only recor
 
 ### Engine, licensing, offline
 
-- **One engine, FFmpeg (LGPL build)**, shipped as a **separate invoked binary**
-  (SSOT engine-license policy / §3.6 copyleft isolation) — never linked into the
-  MIT core. The LGPL build deliberately uses **only LGPL-compatible
-  encoders/decoders**: `libmp3lame` (LAME, LGPL), `libvorbis`, `libopus`, native
+- **One engine, FFmpeg**, shipped as a **separate invoked binary** (SSOT
+  engine-license policy / §3.6 copyleft isolation) — never linked into the MIT core.
+  The single bundled FFmpeg binary is **GPL-2.0+** (it enables `libx264` for the video
+  category, §3.6.1; the whole binary is therefore GPL, not LGPL), carrying the
+  written-offer-of-source obligation (§3.6.2). The *audio* encoders/decoders it uses
+  are all license-clean: `libmp3lame` (LAME, LGPL), `libvorbis`, `libopus`, native
   `aac`, native `flac`/`alac`/`pcm`, and the WMA *decoders*. It is built **without
-  `--enable-nonfree`** — so **no `libfdk_aac`** (that would taint the binary's
-  redistribution). The native AAC encoder is used precisely because it is
-  license-clean. FFmpeg's LGPL NOTICE + LAME's licence are surfaced via §3.7.
+  `--enable-nonfree`** — so **no `libfdk_aac`** (that nonfree taint is separate from
+  the x264 GPL relicensing and would make the binary non-redistributable). The native
+  AAC encoder is used precisely because it is license-clean. FFmpeg's GPL NOTICE +
+  LAME's licence + the source offer are surfaced via §3.7.
 - **Fully offline:** every codec is inside the bundled binary; no runtime fetch
   (SSOT offline floor).
 - **AAC patent disposition is *not* an engine-licence issue** (the native encoder

@@ -78,9 +78,9 @@ Pull the audio track out of a video and save it as a standalone audio file.
 
 - **Role:** operation. **Source side:** any v1 video format. **Target side:** a
   **subset of the audio category** (chosen below; exact subset is **[OPEN-A]**).
-- **Engine:** **FFmpeg** (LGPL build; copyleft-isolated separate binary per
-  §3.6, invoked via §3.5/§1.7, through the §2.12 isolation wrapper). Single
-  process per item. Same engine on Windows / macOS / Linux.
+- **Engine:** **FFmpeg** (the shared **GPL-2.0+** binary — enables libx264, §3.6.1;
+  copyleft-isolated separate binary per §3.6, invoked via §3.5/§1.7, through the §2.12
+  isolation wrapper). Single process per item. Same engine on Windows / macOS / Linux.
 - **Detection signature:** none of its own — this operation is *offered* once a
   source is detected as a v1 video (signatures owned by [video.md](video.md));
   the output file's own signature is the target audio format's (owned by
@@ -173,11 +173,11 @@ result). The **no-decision default** path is: drop video → choose "Extract aud
   the target container supports tags (per [audio.md](audio.md) tag policy); never
   invent tags. Cover-art extraction is **not** part of extract-audio.
 
-> **`[OPEN-B]` — MP3 quality preset → FFmpeg flag mapping.** The *Standard / High
-> / Max* labels and their exact `-q:a` / `-b:a` values are shared with the audio
-> category (MP3 as a standalone target) and **must be defined once** to avoid
-> drift — propose owning the canonical MP3 preset table in [audio.md](audio.md)
-> and referencing it here. Tracked in the open-questions log.
+> **`[OPEN-B]` — MP3 quality preset → FFmpeg flag mapping. `[DECIDED]`** The
+> *Standard / High / Small* labels and their exact `-q:a` / `-b:a` values are shared
+> with the audio category (MP3 as a standalone target) and are **defined once** — the
+> canonical MP3 preset table is **owned by [audio.md](audio.md)** and referenced here
+> verbatim (no separate label set). Resolved.
 
 ### Lossy?
 
@@ -239,8 +239,8 @@ Turn a (short) video clip into a shareable animated GIF.
 
 - **Role:** operation. **Source side:** any v1 video format. **Target side:**
   exactly **GIF** (the format is documented in [images.md](images.md)).
-- **Engine:** **FFmpeg** (same bundled LGPL binary as above). Single process per
-  item. The high-quality path uses FFmpeg's `palettegen` + `paletteuse` filters.
+- **Engine:** **FFmpeg** (same bundled GPL-2.0+ binary as above, §3.6.1). Single
+  process per item. The high-quality path uses FFmpeg's `palettegen` + `paletteuse` filters.
 - **Detection signature:** output GIF = `GIF87a` / `GIF89a` magic (`47 49 46 38
   37/39 61`), animated GIF89a; owned by [images.md](images.md).
 
@@ -285,7 +285,7 @@ settings that materially change a normal user's result; for to-GIF, **fps**,
 | **FPS** | Basic (it visibly changes smoothness vs size) | presets *Smooth 15 / Standard 12 / Small 10* (or a 5–20 range, Advanced) | **12 fps** |
 | **Width** | Basic | presets *Large 640 / Medium 480 / Small 320* px (height auto, aspect kept, `-1`) | **480 px** |
 | **Trim (start + duration)** | **[OPEN-E]** — Basic or Advanced or omit-in-v1 | start `-ss`, duration `-t` | **whole clip, capped** (see guardrail) |
-| Dither | Advanced (rarely touched) | `bayer` / `sierra2_4a` / `none` | **`bayer:bayer_scale=5`** ([OPEN-D]) |
+| Dither | Advanced (rarely touched) | `bayer` / `sierra2_4a` / `floyd_steinberg` / `none` (the full set FFmpeg `paletteuse` accepts — note this is FFmpeg, NOT the cgif `gifsave` path, so error-diffusion IS available here) | **`bayer:bayer_scale=5`** ([OPEN-D]) |
 | Loop | (none) | — | **infinite loop** (`-loop 0`, the GIF norm) |
 | Max colours | (not exposed) | — | **256** (full palette) |
 
@@ -434,12 +434,12 @@ the default (MP3) is unchanged — so no platform loses the *operation*, at most
 
 | ID | Decision | Status |
 |----|----------|--------|
-| **[OPEN-A]** | Final extract-audio target subset (proposed **MP3★/M4A/WAV/FLAC/OGG**); incl. whether to keep OGG, and the AAC/M4A patent flag (→§3.4) | open |
-| **[OPEN-B]** | MP3 *Standard/High/Max* preset → `-q:a`/`-b:a` mapping (own canonically in [audio.md](audio.md), reference here) | open |
-| **[OPEN-C]** | Probe for "no audio track" up front (disable target with reason) vs offer-then-fail — cost vs UX on large recursive batches | open |
-| **[OPEN-D]** | Default GIF dither (`bayer:bayer_scale=5` proposed) | open |
-| **[OPEN-E]** | to-GIF **trim** scope: hard cap only / Basic start+duration / Advanced (recommend Basic start+duration) | open |
-| **[OPEN-F]** | to-GIF guardrail numbers: default duration cap (~10 s), per-pixel size heuristic, absolute "too big" ceiling (co-owned §1.10) | open |
+| **[OPEN-A]** | Final extract-audio target subset (proposed **MP3★/M4A/WAV/FLAC/OGG**); incl. whether to keep OGG, and the AAC/M4A patent flag (→§3.4) | `[DEFER: corpus]` — subset shape decided; validate the OGG-keep call in §6.6 |
+| **[OPEN-B]** | MP3 *Standard/High/Max* preset → `-q:a`/`-b:a` mapping | **`[DECIDED]`** — owned canonically in [audio.md](audio.md) (High V0 / Standard V2 / Small V5 + explicit CBR), reused verbatim here; resolved at L159 |
+| **[OPEN-C]** | Probe for "no audio track" up front (disable target with reason) vs offer-then-fail — cost vs UX on large recursive batches | `[DEFER: corpus]` — validate in §6.6 |
+| **[OPEN-D]** | Default GIF dither | **`[DECIDED]`** — `bayer:bayer_scale=5` (favours small files, the everyday GIF priority); error-diffusion modes remain available as Advanced |
+| **[OPEN-E]** | to-GIF **trim** scope: hard cap only / Basic start+duration / Advanced (recommend Basic start+duration) | `[DEFER: corpus]` — design leans Basic start+duration; validate in §6.6 |
+| **[OPEN-F]** | to-GIF guardrail numbers: default duration cap (~10 s), per-pixel size heuristic, absolute "too big" ceiling (co-owned §1.10) | `[DEFER: corpus]` — finite starting values ship; calibrate against the §6 corpus |
 
 > None of these block enumerating the **pairs**: both operations are **in** for
 > all ten video sources regardless of how A–F resolve; A–F tune *which audio

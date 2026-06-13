@@ -102,7 +102,7 @@ state small and mostly a finite-state-machine plus a per-item progress list.
   data crosses IPC and is push-driven via a Channel (§5.8), not request/cache.
 
 ### Shared types with Rust
-The Rust↔TS type bridge (so `Batch`, `DetectedFormat`, `ConversionJob`,
+The Rust↔TS type bridge (so `Batch`, `DetectionOutcome`, `ConversionJob`,
 `Target`, `RunResult`, error/lossy payloads, the progress event union) are
 **typed end-to-end with no `any`** — mechanism owned by **§0.4.5** (manual mirror
 vs ts-rs/specta/tauri-specta; CI drift check in §06). This section **consumes**
@@ -124,10 +124,10 @@ per-item outcome); the machine only sequences the user through them.
 | # | State | Entered when | Primary content | Exits to |
 |---|-------|--------------|-----------------|----------|
 | 1 | `Idle` | app start; after "convert more"; after a refused/unsupported drop is dismissed | drop-or-browse invitation; "all conversion happens locally, on your machine" reassurance; no setup, no fields | drop/pick → `Collecting` |
-| 2 | `Collecting` | a drop/pick/launch-arg handoff is accepted; backend is freezing the set + recursing folders + detecting (§1.1/§1.2) | indeterminate-OK "looking at your files…" *only for the brief collect step* (NOT the convert step) + a **cancel-collect** affordance backed by **C13 `cancel_ingest`** (Esc, §5.10) — discards the partial set, returns to `Idle` | → `Confirm` \| `MixedDropRefusal` \| `Unsupported` \| (cancel) `Idle` |
+| 2 | `Collecting` | a drop/pick/launch-arg handoff is accepted; backend is freezing the set + recursing folders + detecting (§1.1/§1.2) | indeterminate-OK "looking at your files…" *only for the brief collect step* (NOT the convert step) + a **cancel-collect** affordance backed by **C13 `cancel_ingest`** (Esc, §5.10) — discards the partial set, returns to `Idle` | C1 returns `CollectedSet::Single` → `Confirm`; `Mixed` → `MixedDropRefusal` (9); `Unsupported`/`Uncertain` → `Unsupported` (10); **`Empty` → `Unsupported` (10, the "nothing here I can convert" copy)**; (cancel) → `Idle` |
 | 3 | `Confirm` (collected/confirm gate) | backend returns a single-format collected summary (§1.4) | "**N JPG files**" (detected format + count); for recursive folder drops, the collected count is the whole point of this gate | confirm → `Targets`; cancel → `Idle` |
 | 4 | `Targets` (targets + options) | user confirms the batch | FormatPicker (target tiles, one **pre-highlighted default** per §1.5/04-matrices), contextual basic options, **Advanced options** drawer (§5.3), passive **lossy note** beside the chosen target (§2.9) | pick target → reveal/refresh `DestinationBar` (same state); proceed → `Destination`-confirmed (folded) or directly to the convert gate |
-| 5 | `Destination` (destination preview — folded into the Targets screen) | always shown **before** convert (SSOT *Output lands somewhere obvious*) | the "**will save to …**" line (per §1.8/§2.7 plan: beside each source by default, divert noted), **Change destination** button (opens dialog, §7.7), the **Convert** button | Convert → `Rerun?` decision (backend §2.5) → `Converting`; back → `Targets` |
+| 5 | `Destination` (destination preview — folded into the Targets screen) | always shown **before** convert (SSOT *Output lands somewhere obvious*) | the "**will save to …**" line (per §1.8/§2.7 plan: beside each source by default, divert noted), **Change destination** button (directory picker C2 → C5 `set_destination`, §5.4 — **not** §7.7), the **Convert** button. **Doomed-up-front sub-state:** when the C4 `preflight.up_front_fail` is `Some(kind)` (§1.10), Convert is **disabled** with a passive inline `Note` carrying the §2.8 string (SSOT *fails fast up front*) | Convert → `Rerun?` decision (backend §2.5) → `Converting`; back → `Targets`; (up-front-fail) Convert disabled until destination/target change clears it |
 | 6 | `RerunPrompt` (interstitial) | the **C4 `plan_output` response** carries `OutputPlanPreview.rerun` (§0.4.1 / §2.5.2 — equivalence detected during planning, *before* Convert) | **one batch-level** prompt: *"You already converted these with the same settings."* — **Skip (default)** / **Make a fresh copy**; the choice becomes the `RerunDecision` passed to C6 | choose → `Converting`; cancel → back to `Destination` |
 | 7 | `Converting` (progress) | convert command accepted | **per-item** real progress (not a spinner) + **aggregate batch** bar; current-item label; **Cancel** button | all items terminal → `Summary`; cancel → confirmed-cancel round-trip (§5.8) → `Summary` (partial) |
 | 8 | `Summary` | every job reached a terminal state (§1.9) | per-item success/fail with reason (strings §2.8), output→source mapping (§1.12), **Open folder** / **Open file** (OpenActions, §7.7); a **fully-failed** batch is rendered as a clear failure banner, never a quiet "done" | "Convert more" → `Idle`; Open actions stay available |
@@ -224,7 +224,7 @@ restated per component.
 | **FormatPicker** | target tiles for the detected source | `targets[]`, `default`, `selected`, per-tile `disabledReason?` | one pre-highlighted default (§1.5); cross-category outputs (extract-audio / to-GIF) appear as extra tiles of a video source (cross-category.md); disabled tiles per §3.4 (§5.2) |
 | **OptionsPanel** | the few **basic** contextual settings for the chosen target | option descriptors (§1.6 generic model); values & defaults from 04 | e.g. JPG quality slider, GIF fps/width — **descriptors come from the backend** (§1.6), UI just renders the declared widget type |
 | **AdvancedDrawer** | collapsed-by-default drawer for niche options | `open` | keeps the default view clean (SSOT How It Feels 5); never gates conversion |
-| **DestinationBar** | the "will save to …" line + Change button | `plan` (destination preview), `diverted?` | **always visible before Convert** (state 5); shows per-location divert note (§2.7); Change → dialog (§7.7) |
+| **DestinationBar** | the "will save to …" line + Change button + the up-front preflight verdict | `plan` (destination preview), `diverted?`, `preflight: PreflightVerdict` (§0.6/§1.10) | **always visible before Convert** (state 5); shows per-location divert note (§2.7); **Change → the directory picker (C2 `pick_paths` directory-mode → C5 `set_destination`, §5.4)** — *not* the §7.7 shell-out (§7.7 is open-finished-output, a different action). When `preflight.up_front_fail` is `Some(kind)` (§1.10 "doomed up front"), **Convert is disabled** and a passive inline `Note` shows the §2.8 catalog string for that kind (e.g. `TooBig`/`OutOfDisk`) — the SSOT "fails fast up front" surfacing; the user can still change the destination/target to clear it |
 | **ProgressList** | per-item rows + aggregate bar | `Map<ItemId, ItemProgress>` (the §0.4.2 `ItemProgress` payloads, keyed by `itemId`; `JobId == ItemId` §0.6), `batchPct`, `currentItem` | real determinate progress (§1.11); virtualised for large batches; rows transition to terminal `Succeeded`/`Failed`/`Cancelled`/`Skipped`. For an indeterminate-`fraction` (LibreOffice) row it shows a staged determinate-looking bar from `stage` (§1.11) |
 | **ResultSummary** | end-of-batch outcome | `RunResult` (§1.12) | success/fail counts, per-item reason (§2.8 strings), output→source map; fully-failed banner |
 | **OpenActions** | open-folder / open-file buttons | `folderPath`, `filePath?` | **backed by §7.7** (the only OS shell-out); "open folder" opens the common root (§2.7) |
@@ -330,15 +330,17 @@ raw hex. Token groups:
   fixed, not placeholder.
 - **Elevation/shadow, motion** tokens (below).
 
-### Light / dark `[DECIDED — both, follow OS, recommendation]`
+### Light / dark `[DECIDED — both; follow OS by default; theme persists]`
 Support **light and dark**, defaulting to the **OS preference**
-(`prefers-color-scheme`), resolved into the colour tokens at the root. Whether the
-*chosen* theme persists across launches is a **persistence** question owned by
-**§7.4** (`[OPEN]` there: v1 may persist nothing); if §7.4 lands on "persist
-nothing", the theme simply follows the OS each launch — acceptable and consistent
-with *portable / no system pollution*. No in-app theme toggle is required for v1
-(following the OS is enough); a toggle is a cheap addition if §7.4 allows
-persistence.
+(`prefers-color-scheme`), resolved into the colour tokens at the root. **Theme
+persistence is `[DECIDED]`:** §7.4 ships the **2-key prefs blob** (`theme` +
+`lastDestinationMode`) via `tauri-plugin-store`, so a chosen theme **does** persist
+across launches (a `theme` of `system` keeps following the OS). Because the `theme`
+key persists, **a minimal in-app Light/Dark/System toggle IS provided** (it writes the
+`theme` key via the store, §7.4.2) — without one, a persisted non-`system` value could
+never be set or reset. (The earlier "no in-app toggle required" line is superseded by
+the persistence decision.) The default value is `system` (follow the OS) so the
+zero-interaction path is unchanged.
 
 ### Motion / eye-candy budget `[DECIDED]`
 "A bit of eye candy is welcome" (SSOT) but **restrained and accessible**:
@@ -382,6 +384,11 @@ with no-harm. Concrete requirements:
   when the destination is shown, to the first failed row in `Summary`), and
   **trapped inside modals** (RerunPrompt, AboutDialog, MixedDropRefusal) with
   **Esc** to close (§5.10) and focus **restored** to the trigger on close.
+  Specifically for the two **pre-flight notices**: on entering **MixedDropRefusal**
+  (state 9) focus moves to its **re-drop / dismiss** action (the heading is announced
+  assertively), and on entering **UnsupportedNotice** (state 10) focus moves to its
+  **dismiss** action; on dismissing either, focus is **restored to the `DropZone`**
+  (the natural next action is to drop again), not left orphaned.
 - **Contrast & text size.** Body text and interactive elements meet **WCAG 2.1 AA
   contrast (≥4.5:1 text, ≥3:1 large text / UI)** against both themes; the minimum
   body size and the token scale (§5.5) respect OS text-scaling; nothing critical
@@ -392,8 +399,11 @@ with no-harm. Concrete requirements:
     found").
   - `Converting`: announce **batch milestones** (start, each item complete /
     failed *throttled* to avoid a 1000-item flood — e.g. every N% or on each
-    failure), **not** every progress tick. The per-item bar carries
-    `aria-valuenow`.
+    failure), **not** every progress tick. Every `role="progressbar"` (per-item and
+    aggregate) carries **`aria-valuemin="0"`, `aria-valuemax="100"`, and
+    `aria-valuenow`** (WCAG 4.1.2 — a ship gate, §5.6); for the indeterminate-`fraction`
+    (LibreOffice) row that has no `aria-valuenow`, set **`aria-busy="true"`** instead so
+    SR users hear "busy" rather than a bogus value.
   - `Summary`: announce the outcome ("42 succeeded, 6 failed").
   - **Modal/decision states announce assertively** (`aria-live="assertive"` /
     `role="alertdialog"` as fitting): **MixedDropRefusal** (state 9, the formats-found
@@ -427,6 +437,8 @@ labels, button text, About text, the mixed-drop refusal phrasing) are owned
 | **Pre-flight refusal** (mixed drop) | `MixedDropRefusal` state (9) — distinct from a mid-run skip | here (chrome) |
 | **Unsupported / uncertain** | `UnsupportedNotice` (10): "can't convert this type — detected: X" / "couldn't tell what this is" — never an empty target list, never an apparent hang | §2.8 / here |
 | **Destination before convert** | `DestinationBar` "will save to …" is **always visible before** the Convert button is reachable (SSOT *Output lands somewhere obvious*); per-location divert noted | here (chrome), plan from §1.8/§2.7 |
+| **Fails fast up front** (doomed batch) | when C4 `preflight.up_front_fail` is `Some(kind)` (§1.10), `DestinationBar` **disables Convert** and shows a passive inline `Note` with the §2.8 string (e.g. too-big / out-of-disk) — surfaced **before** any conversion starts | §2.8 string, here (chrome) |
+| **Worst-case lossy ("may be re-encoded")** | on `RunStarted.willReencode == true` the `ConvertingNote` surfaces the §2.9 worst-case note in the `Converting` banner; cleared if `false` (§5.8) | §2.9 (string), here (chrome) |
 | **Re-run / equivalent output** | `RerunPrompt` (6): one batch-level prompt, Skip default / fresh copy | §2.5 (logic), here (chrome) |
 | **No-harm / atomicity** | invisible by design — the UI never offers an "overwrite" choice; collisions are silent next-free-variant (§2.2); only the *equivalent-output* re-run gets a prompt | §02 |
 | **Cleanup couldn't complete** | if the backend reports residue (§2.6), the item is shown as **not a clean success** with where residue remains — never a green "done" | §2.6/§2.8 |
@@ -451,11 +463,16 @@ typed wrappers; feature code calls those.
 
 ### Command/response model
 - All effectful operations are **`invoke()` calls** into the Rust core, awaited as
-  Promises, typed via §0.4.5 generated types (no `any`). Conceptual calls (names
-  defined in §0.4, not invented here): `ingest_paths` (C1), `get_targets` (C3),
-  `plan_output` (C4), `start_conversion` (C6), `set_destination` (C5),
-  `cancel_run` (C7), `open_path` (C9, via §7.7). The frontend treats these as
-  opaque typed RPCs.
+  Promises, typed via §0.4.5 generated types (no `any`). The full set of commands the
+  frontend calls (names defined in §0.4, not invented here): `ingest_paths` (C1),
+  `pick_paths` (C2 — DropZone "browse" + the Change-destination directory picker, §5.4),
+  `get_targets` (C3), `plan_output` (C4), `set_destination` (C5), `start_conversion`
+  (C6), `cancel_run` (C7), `get_run_summary` (C8 — idempotent summary re-fetch after a
+  WebView reload), `open_path` (C9 — open-folder/open-file, §7.7), `open_project_page`
+  (C10 — the About "open Releases" link, §5.9/§7.6), `get_app_info` (C11 — About data,
+  §5.9), `get_engine_health` (C12 — drives disabled/omitted target tiles, §5.2/§3.4),
+  `cancel_ingest` (C13 — the Collecting cancel-collect control, §5.2/§5.10). The
+  frontend treats these as opaque typed RPCs.
 - Long-running work (the conversion run) must **not** block on a single Promise
   resolving at the end (Cloudflare-100s-style hangs don't apply locally, but a
   60-minute batch resolving one Promise at the end gives no progress) — instead
@@ -508,7 +525,9 @@ must be honest:
 
 1. User hits Cancel (button or **Esc**, §5.10) in `Converting`.
 2. UI **optimistically** flips to a "Cancelling…" affordance and **disables**
-   Cancel (no double-cancel), but does **not** fabricate a finished state.
+   Cancel (no double-cancel) — **a second Esc (or Cancel click) while in the
+   "Cancelling…" state is silently ignored** (no second `cancel_run`, no UI change),
+   so the user cannot double-cancel; the UI does **not** fabricate a finished state.
 3. Frontend calls the **cancel command** (name §0.4) with the `runId` /
    cancellation token (§0.4 token shape).
 4. The backend stops the queue, kills the in-flight engine (§1.7), cleans the
@@ -535,6 +554,29 @@ progress). Frontend behaviour:
   to load) are **startup** concerns owned by **§7.2/§2.13** — outside this state
   machine (the UI may never even mount). This section only handles faults that
   occur **after** the UI is live.
+
+### App-wide event subscription (`app.emit` / `listen`)
+The three app-wide events (the **only** ones — §0.4.2: `app://fault`,
+`app://intake`, `app://close-requested`; no others) are subscribed **on mount** of
+the root shell (alongside the run Channel, which is per-run):
+- **`app://fault`** → render `AppFaultNotice` (state 12), per the disconnect handling
+  above.
+- **`app://close-requested`** → render `QuitConfirm` (state 11), per §7.3.
+- **`app://intake` `{ paths, origin }`** (second-instance launch / Open-with hand-off,
+  §7.1/§7.8) → on receipt, call **`ingest_paths` (C1)** with `{ paths, origin }` and a
+  freshly-generated `collectingId` → enter `Collecting` (exactly like a native drop).
+  **Defensive guard:** an `app://intake` received **outside** `Idle`/`Summary` is
+  **ignored** (refuse-busy, §7.1, means it cannot arrive mid-`Converting`; ignoring it
+  elsewhere prevents a mid-flow set-swap). Owned/emitted by §7.8.1; consumed here.
+
+### `RunStarted.willReencode` consumption
+`RunStarted` (§0.4.2) carries `willReencode?: boolean` (the §2.9.2 best-effort
+worst-case flag). On `RunStarted` the store records `willReencode` and updates the
+active lossy note (the `ConvertingNote` adjacent to the `ProgressList`): if `true` and
+the worst-case "may be re-encoded" note (§2.9) is not already shown, surface it in the
+`Converting` banner; if `false`, silently clear any pre-shown worst-case note. (This is
+the only frontend consumer of `willReencode`; the authoritative per-item lossy outcome
+still comes from the §1.12 summary.)
 
 ---
 
@@ -595,7 +637,7 @@ reference it (`a11y/keymap.ts`). It satisfies the SSOT §9 DoD gate
 | **Confirm batch** (proceed past the collected-summary gate) | **Enter** | `Confirm` (3) | the gate's primary action; **Esc** cancels back to `Idle` |
 | **Select target tile** | **Arrow keys** within the radio-group; **Enter/Space** selects | `Targets` (4) | tiles are one radio-group; the pre-highlighted default is pre-focused |
 | **Toggle Advanced options** | **Ctrl/⌘ + .** (period) | `Targets` (4) | opens/closes `AdvancedDrawer` |
-| **Change destination** | **Ctrl/⌘ + D** | `Targets`/`Destination` (4/5) | opens the directory dialog (§7.7/§0.10) |
+| **Change destination** | **Ctrl/⌘ + D** | `Targets`/`Destination` (4/5) | opens the **directory picker** (C2 `pick_paths` directory-mode → C5 `set_destination`, §5.4) — **not** §7.7 (which is open-finished-output, a separate action) |
 | **Convert** (start the run) | **Ctrl/⌘ + Enter** | `Targets`/`Destination`, only once a destination is shown | the primary action; never reachable before the destination preview exists |
 | **Cancel conversion** | **Esc** | `Converting` (7) | triggers the **confirmed** cancel round-trip (§5.8); first Esc requests cancel, does not fabricate completion |
 | **Open output folder** | **Ctrl/⌘ + Shift + F** | `Summary` (8) | OpenActions → §7.7 (common root, §2.7) |
@@ -637,7 +679,7 @@ native menu is added) are app-window scoped.
 |------|-----------------|-------|
 | **State store library** | Zustand recommended (tiny, selector-granular); genuinely substitutable for any minimal store keeping the IPC-façade + selector rules | §5.1 (this file) — low-stakes, resolvable |
 | **Patent-gapped target: disabled-tile-with-note vs omit** | leaning **disabled-with-note** (honest, surfaces *why*); final call depends on §3.4 dispositions actually existing on a platform **and** the §9 usability walkthrough | rendering here, **availability data §3.4** |
-| **Theme persistence** | both themes follow OS by default; whether the chosen theme persists is **gated by §7.4** (`[OPEN]`: v1 may persist nothing). If nothing persists, no in-app toggle needed | §7.4 |
+| **Theme persistence** | **`[DECIDED]`** — §7.4 ships the 2-key prefs blob (`theme` + `lastDestinationMode`), so the chosen theme persists; a minimal Light/Dark/System toggle is provided (writes the `theme` key via `tauri-plugin-store`). Default `system`. (No longer open.) | §7.4 / §5.5 |
 
 > The two **inherited** UI-adjacent opens from 04-formats — the **to-GIF option
 > scope** (`[OPEN-E]`, trim in Basic vs Advanced) and the **extract-audio target
