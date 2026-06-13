@@ -76,8 +76,10 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   `libwebkit2gtk-4.1`; x86-64. (Exact build numbers `[DEFER: §6.4 drift matrix]`.)
   Owner: §0.3.1.
 - **§0.10 capability allowlist** — **no `shell:allow-execute`** (engines spawn
-  Rust-side §3.3.3); opener output-scoped + compiled-in project URL; `log:default` +
-  `store:default` added. Owner: §0.10.
+  Rust-side §3.3.3); **no `dialog:allow-open`** (C2 picker opens Rust-side via
+  `DialogExt`); **no `opener:*`** (C9/C10 call `OpenerExt` internally); `log:default` +
+  `store:default` only. Own `#[tauri::command]`s C1..C13 need **no per-command
+  permission entry** in Tauri v2 (only plugin commands do). Owner: §0.10.
 - **cancel-collect** — command-backed **C13 `cancel_ingest`** (ingest-scoped token);
   the §5.2 Collecting cancel control + §5.10 Esc back it. Owner: §0.4/§1.1/§5.
 - **HEIC/AVIF encode code-path** — standardise on libvips `heifsave` (one AV1 encoder,
@@ -100,7 +102,73 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **Windows atomic-publish primitive** — first-time (no-clobber) publish =
   `MoveFileExW` **without** `MOVEFILE_REPLACE_EXISTING` (create-only, no 0-byte
   placeholder); `ReplaceFileW` reserved only for the §2.5 replacing path. Keeps the
-  §2.1.3 "never a third state" invariant true by construction. Owner: §2.1.2.
+  §2.1.3 "never a third state" invariant true by construction. The §2.2.2 numbering loop
+  uses this **same** primitive (bump-suffix-and-retry on `ERROR_ALREADY_EXISTS`), not a
+  `create_new`-reserve. Owner: §2.1.2.
+- **SVG rasteriser = librsvg** — libvips' native `svgload` backend is **librsvg**;
+  **resvg is NOT a libvips backend at any released version** and is **dropped** (not
+  shipped, not in the SBOM). Owner: §3.1 row 1c / images.md.
+- **AVIF decode = dav1d only** — `dav1d` is the AVIF *decode* load module; **libaom is
+  encode-only** (via `heifsave compression=av1`). Owner: §3.1 row 1b / images.md.
+- **libimagequant in the inventory + SBOM** — added to §3.1 (PNG/GIF palette
+  quantisation, inside the image-worker) with SPDX **`BSD-2-Clause`** (the permissive
+  leg of the libvips-vendored fork's dual licence — **NOT** BSD-3; verify the shipped
+  leg). x265 plugin SPDX corrected to **`GPL-2.0-or-later`** (compatible with the
+  LGPL-3.0 libheif host). Owner: §3.1 / §3.7.2 / §6.3.3 gate.
+- **Re-run/EquivKey is destination-INDEPENDENT in v1** — the EquivKey has no
+  destination component, so a **C5 `set_destination` never produces a new `rerun`**;
+  `DestinationResolved.rerun` is **carried through unchanged** from C4 and C5
+  re-evaluates only the destination-volume free-space preflight. A destination-aware
+  signal is `[DEFER: post-v1]` with the cross-session ledger. Owner: §2.5 / §0.6 / §1.8.
+- **C2 picker opens Rust-side via `DialogExt`** — **no `dialog:allow-open` WebView
+  grant**; picked paths enter Rust intake directly (the single C1 freeze point) and
+  never transit the WebView, closing the asymmetric "WebView hands raw FS paths" door
+  (mirrors the opener model). Owner: §0.10 / §0.4.1 C2.
+- **C6 destination authority** — **C6's `destination` argument is authoritative**; C4/C5
+  are plan/preview + revalidation only, with **no separate server-side destination
+  store** (the UI carries the last C5-resolved destination into C6). Owner: §0.4.1.
+- **Collecting live count** — fed by an **optional `onScan` `Channel<ScanProgress>`** on
+  C1 (≈2/s throttled), a run-telemetry-style Channel, **not** a 4th `app://` event (the
+  three-event invariant covers `app.emit`, not command Channels). Owner: §0.4.1/§0.4.2.
+- **`crosses_volume` is reactive, not pre-planned** — `OutputPlan` drops the
+  `crosses_volume` field; `fs_guard::atomic_publish` detects cross-volume **reactively
+  on EXDEV / cross-device failure** (§2.14.3) and runs the copy-into-dest-volume
+  fallback. Owner: §0.6 / §1.8 / §2.14.
+- **`willReencode` emission** — the core **always emits a definite value**
+  (`false` for non-video / non-applicable batches), never omitted; consumers treat
+  absent as `false`. Owner: §0.4.2 / §5.8.
+- **`ItemId` assignment** — assigned at the §1.1 freeze as the stable index of each item
+  in the de-duplicated frozen items `Vec`, identical through Batch/Run/events. Owner:
+  §0.6 / §1.1.
+- **`EngineDescriptor` (was `struct Engine`)** — the §0.6 capability descriptor is
+  renamed **`EngineDescriptor`** to avoid colliding with the §3.2 `trait Engine`; its
+  `kind: EngineKind` is **`Subprocess | InCoreNative`** (every third-party engine incl.
+  the image-worker = `Subprocess`; only native CSV/TSV = `InCoreNative`). The §3.2
+  `EngineProgram::InProcess` is renamed **`InProcessNative`** (native CSV/TSV only — no
+  in-process path for any untrusted-byte decoder). Owner: §0.6 / §3.2.
+- **macOS universal sidecar naming** — `--target universal-apple-darwin` resolves a
+  **single fat Mach-O `<name>-universal-apple-darwin`** (Tauri `lipo`-merges), not two
+  per-arch files; `scripts/stage-engines` `lipo -create`s each sidecar. Owner: §6.1.3.
+- **E2E driver = `tauri-driver` (WebDriver), NOT Playwright** — Playwright cannot drive
+  a Tauri WebView in CDP mode; use a WebDriver client (WebdriverIO / `webdriver` crate)
+  over `tauri-driver`. macOS remains `[OPEN]` (unsigned WKWebView). Owner: §6.4.6.
+- **Offline-observability = hard gate** — the §6.4.6 E2E runs with **egress blocked**
+  (Linux `unshare --net` / `iptables DROP`; macOS `pf`; Windows Firewall) **plus** the
+  §2.11.4 packet-monitor assertion; any outbound attempt fails the release. Owner:
+  §6.7.3 / §6.10 DoD #5.
+- **Lane-B Linux corpus runner** — stays on the **self-hosted VPS runner** with a
+  dedicated concurrency group / `max-parallel: 1` + nice/cgroup caps so it does not
+  starve the four other projects' Lane-A CI; `corpus-large` uses a persistent VPS-local
+  LFS cache (Ne-IA org quota for the macOS/Windows legs only). GitHub-hosted Linux is the
+  documented fallback. Owner: §6.7.2.
+- **Concurrent identical same-session batches** — **accept the documented best-effort
+  degradation** (a silent extra numbered copy, never an overwrite); reserving in-flight
+  EquivKeys is `[DEFER: post-v1]`. Owner: §2.5.2.
+- **OpenActions availability** — **Summary-only (state 8), not mid-run** — the run's
+  RunResult-membership set is not final during `Converting`. Owner: §5.2 / §7.7.
+- **`renameat2(RENAME_NOREPLACE)` fallback** — chosen **at runtime per destination** on
+  `EINVAL` (not a static kernel switch), falling back to `link`+`unlink`; NFS ambiguous
+  rename → treat as name-may-be-taken and re-pick. Owner: §2.1.2.
 - **Detection canonical type** — §1.2's `DetectionOutcome` is the one canonical type;
   §0.6's `DroppedItem.detected` carries it; the `DetectedFormat`/`DetectionConfidence`
   pair is retired (one confidence enum, one cardinality). Owner: §1.2 (referenced by §0.6).
@@ -119,7 +187,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   grant**. The real gate is the Rust-side §7.7.3 `RunResult`-membership check (works for
   arbitrary beside-source outputs a static scope could never cover). Owner: §0.10 /
   §0.4.1 / §7.7.
-- **Theme persistence** — the §7.4 2-key prefs blob persists `theme`; a minimal in-app
+- **Theme persistence** — the §7.4 **3-key** prefs blob persists `theme`; a minimal in-app
   Light/Dark/System toggle is provided (default `system`). Owner: §7.4 / §5.5.
 - **macOS unsigned posture** — accepted for v1, **with** the §6.2.4 Sequoia step-by-step
   (blocked first launch → Privacy & Security → "Open Anyway" → per-sidecar quarantine),
@@ -131,8 +199,11 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **Cross-session re-run ledger** — **not in v1** (session-only; signal 1 demoted to
   in-session corroborator only, §2.5.2). `[DEFER: post-v1 hashes-only ledger]`.
   Owner: §7.4/§2.5.
-- **Persistence** — ship the **2-key prefs blob** (theme + lastDestinationMode), OS
-  config dir. Owner: §7.4.
+- **Persistence** — ship the **3-key prefs blob** (theme + lastDestinationMode +
+  verboseLog), OS config dir. Owner: §7.4.
+- **Verbose-log toggle persistence** — `verboseLog` is the **3rd §7.4 prefs key**
+  (persisted across launches), not session-only; the earlier "if §7.4 ships" hedge is
+  removed (§7.4 is `[DECIDED]`). Owner: §7.4 / §5.9 / §7.5.
 - **Logging** — ship the **local on-disk log + verbose opt-in** (privacy-by-default,
   no network). Owner: §7.5.
 - **Instance hand-off while RUNNING** — **refuse-busy**. Owner: §7.1.
@@ -177,6 +248,18 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   APNG-output vs first-frame-collapse (lean collapse); ICO non-square pad-vs-crop
   (lean pad); default Q values (JPG 82 / WEBP 80 / HEIC&AVIF 60); x265 `preset`
   slow-vs-medium for HEIC. Owner: images.md.
+- **OGG/OPUS cover-art round-trip** — cover art for OGG/OPUS is a **FLAC PICTURE
+  metadata block** (`-map_metadata 0`), not a video stream (`-map 0:v? -c:v copy` is
+  MP3/M4A/FLAC only). Verify the round-trip on the §6.4 corpus; if unreliable, move
+  OGG/OPUS to the tag-poor list (`audio_tags_dropped`). Owner: §3.5.1 / audio.md.
+- **AAC manufacturer-distribution patent leg** — the Via LA AAC programme nominally
+  levies a per-unit royalty on distributing AAC encoder/decoder implementations
+  (free/low-volume tier exists). v1 ships FFmpeg's native LGPL AAC, surfaced in NOTICE;
+  the decision (ship-bundled, no revenue) stands. Tracked as honest grey area, not an
+  open design call (legal-advice items are out of scope). Owner: §3.4.2.
+- **Curated-FFmpeg decoder coverage** — the `--disable-everything --enable-…` build
+  must assert it covers every decoder the 04 matrices reference (`ffmpeg -decoders`
+  build assertion + §6.4.3 per-pair tests). Owner: §6.1.3 / §3.1.
 
 ### Genuinely still open `[OPEN]` (owner-level, not yet resolvable)
 - **Decoder-isolation v1 sandbox depth per OS** — the cheap tier (process + timeout +

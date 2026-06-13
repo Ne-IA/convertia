@@ -77,12 +77,13 @@ build-time mechanics that realise them**:
     `name-<target-triple>[.exe]` (e.g. `ffmpeg-x86_64-pc-windows-msvc.exe`,
     `ffmpeg-aarch64-apple-darwin`); a small build script (`scripts/stage-engines.*`,
     run before `tauri build`) stages and target-triple-suffixes each binary for the
-    runner's host triple. For the macOS **universal** build, Tauri's externalBin
-    naming requires **BOTH** `<name>-aarch64-apple-darwin` **AND**
-    `<name>-x86_64-apple-darwin` files to be present (each *may* itself be a fat
-    Mach-O, but there is **no** `<name>-universal-apple-darwin` slot — Tauri expects
-    the two per-arch suffixed files, not one merged-universal one). `scripts/stage-
-    engines.*` must therefore stage **two files per sidecar** on the macOS leg.
+    runner's host triple. For the macOS **universal** build (`--target
+    universal-apple-darwin`), Tauri v2 resolves a **single fat Mach-O sidecar named
+    `<name>-universal-apple-darwin`** (Tauri `lipo`-merges per-arch inputs / expects the
+    pre-merged universal slot — see tauri-apps/tauri#3355); it is **not** two per-arch
+    suffixed files at runtime. `scripts/stage-engines.*` must therefore, on the macOS
+    leg, build each per-arch engine (`aarch64`/`x86_64`) and **`lipo -create` them into
+    one `<name>-universal-apple-darwin` fat binary** for the externalBin slot.
   - **Engine support files** (non-executable: LibreOffice's `share/`, `program/`
     libs, fonts, pandoc data) → `bundle.resources`, resolved at runtime via the
     Tauri resource path (§3.5 owns the working-dir/env wiring; §7.2 owns startup
@@ -105,13 +106,23 @@ build-time mechanics that realise them**:
   present as **bundled shared objects** (`.so`/`.dylib`/`.dll`) beside the binary —
   not statically absorbed into a single MIT executable — so the LGPL §6 relinkability
   path holds. A static LGPL link is a **build failure** (it would taint the MIT core).
+- **Curated-FFmpeg decoder-coverage assertion `[DECIDED]`:** the FFmpeg build uses
+  `--disable-everything --enable-…` trimmed to the `04` codec set (size lever, §3.9),
+  which risks **silently dropping a decoder a 04 pair needs**. So the stage step runs
+  a **build assertion** that the curated `--enable` list covers **every decoder the
+  source matrices reference** — at minimum `wmav1`/`wmav2`/`wmapro`/`wmalossless`,
+  `vc1`, `h263`, `amrnb`, `mpeg1video`/`mpeg2video`, `vp8`/`vp9`, `dca`/`ac3`,
+  `alac`/`flac`/`pcm` (the full list is derived from the 04 matrices, not hand-kept).
+  It runs `ffmpeg -decoders` / `-muxers` on the staged binary and **fails the build**
+  if any referenced decoder/muxer is absent; the §6.4.3 per-pair integration tests are
+  the runtime backstop that catches anything the static list missed.
 
 ### 6.1.4 CI runners
 
 | Leg | Runner | Toolchain installed | Platform-specific deps |
 |-----|--------|---------------------|------------------------|
 | Windows | `windows-latest` (x64) | Rust (MSVC host triple), Node + pnpm | WebView2 is preinstalled on supported Windows; **not** bundled (no-network forbids downloading it at runtime — §0.3.1 owns the floor). NSIS provided by tauri-cli. |
-| macOS | `macos-latest` (Apple Silicon) building `universal-apple-darwin` | Rust with **`rustup target add aarch64-apple-darwin x86_64-apple-darwin`** (both targets — prerequisite for the universal build and for staging both per-arch sidecar files, §6.1.3), Node + pnpm | Xcode CLT for `lipo`/codesign-less packaging. No notarization step (out of scope). |
+| macOS | `macos-latest` (Apple Silicon) building `universal-apple-darwin` | Rust with **`rustup target add aarch64-apple-darwin x86_64-apple-darwin`** (both targets — prerequisite for the universal build and for `lipo`-merging each sidecar into its single `<name>-universal-apple-darwin` fat binary, §6.1.3), Node + pnpm | Xcode CLT for `lipo`/codesign-less packaging. No notarization step (out of scope). |
 | Linux | `ubuntu-latest` (pin a specific LTS for glibc floor stability) | Rust, Node + pnpm | `libwebkit2gtk-4.1-dev`, `libappindicator`, `librsvg2-dev`, `patchelf`; **plus FUSE 2** for the AppImage. **Two FUSE notes `[DECIDED]`:** (1) **FUSE 2 is a RUNTIME dependency, not build-time** — an AppImage *mounts* itself via FUSE 2 at launch, so the **end user's machine needs `libfuse2`**; the download page must disclose this (a bare "download, run, done" is false on a distro shipping only FUSE 3 — the alternative is to run with `--appimage-extract-and-run` / extract manually). (2) The package was **renamed `libfuse2t64` on Ubuntu 24.04+** (the time_t transition), so the CI install step must handle both names (`libfuse2 \|\| libfuse2t64`) or the 24.04 runner breaks. **glibc of the build image sets the minimum Linux version** — pin an older Ubuntu LTS to maximise compatibility; documented in §0.3.1's floor. |
 
 The platform CI standard (`reference_self_hosted_ci_runner.md`) runs a **self-hosted
@@ -395,7 +406,7 @@ The integration + property suites run on **all three native CI legs** (§6.1.4) 
 the reliability bar is *per-platform* (SSOT: "on all three platforms"). Additional
 platform-specific concerns:
 - **WebView rendering drift (§0.3.1):** a light UI smoke test (the §6.4.6
-  Playwright/WebDriver flow) runs on each platform to catch WebView2/WKWebView/
+  `tauri-driver` WebDriver flow) runs on each platform to catch WebView2/WKWebView/
   WebKitGTK layout/behaviour differences in the core flow.
 - **macOS TCC** file-access prompts that the beside-source default can trigger
   (§7.2) are exercised in the macOS leg's headed smoke run.
@@ -521,13 +532,18 @@ media in an LFS-backed `corpus-large`** fetched **only** for the full Lane-B gat
 
 ### 6.4.6 UI / end-to-end (the core-UX-flow gate)
 
-A headed browser-driver run (**Tauri's WebDriver support / `tauri-driver`**, or
-Playwright against the built app) exercises the full §5.2 flow per platform:
-empty → intake → collected/confirm → target+default → destination shown → progress →
-summary → open-folder. This is the automated half of the DoD **core-UX-flow** gate;
-the human half is §6.6. Frontend component/unit tests use **Vitest** (§0.8).
+A headed browser-driver run drives the built app through **`tauri-driver`** — which
+exposes a **WebDriver** endpoint over the platform WebView (WebKitGTK on Linux,
+WKWebView on macOS, WebView2 on Windows) — using a **WebDriver client**
+(**WebdriverIO**, or the Rust **`webdriver`/`fantoccini` crate**). **Note:** plain
+**Playwright cannot drive a Tauri WebView** in its normal CDP mode (Tauri is not a
+Chrome DevTools-Protocol target); it is *not* the E2E driver here. The run exercises
+the full §5.2 flow per platform: empty → intake → collected/confirm → target+default →
+destination shown → progress → summary → open-folder. This is the automated half of the
+DoD **core-UX-flow** gate; the human half is §6.6. Frontend component/unit tests use
+**Vitest** (§0.8).
 
-- **Native file-drop is NOT automatable** by `tauri-driver`/Playwright (the OS-level
+- **Native file-drop is NOT automatable** by `tauri-driver` (the OS-level
   native drag-drop event §5.4 cannot be synthesised by a WebDriver). So the
   **automated E2E uses the file-picker path** (C2 `pick_paths` via the §5.10
   accelerator, which funnels into the *same* C1 `ingest_paths` as a drop, §1.1) to
@@ -728,6 +744,27 @@ blocking the next:
    GitHub-hosted runners (no self-hosted equivalent), so for those `corpus-large` is
    pulled over GitHub LFS bandwidth — a budgeted, tag-only cost (release frequency is
    low, §6.1.4 budget note).
+   - **Self-hosted-runner capacity & contention analysis `[DECIDED]`.** The VPS runner
+     (12 vCore / 24 GB RAM / 720 GB NVMe) is **shared** with four other Ne-IA projects'
+     Lane-A CI. A Lane-B Linux corpus run is **disk- and CPU-heavy** (corpus-large LFS
+     +
+     staged engines + `tauri build` artifacts + transient scratch can reach tens of GB;
+     the slow LibreOffice/video legs saturate cores for 30–90 min) and must **not starve
+     the other projects' fast lanes**:
+     - **Concurrency isolation:** the Lane-B job runs under a **dedicated runner label /
+       `concurrency` group** with **`max-parallel: 1`** for corpus jobs, and is **niced /
+       cgroup-capped** (CPU + IO weight) so co-scheduled Lane-A jobs still get a slice.
+       Tag-triggered Lane-B is **rare** (release-only), so a single long run is tolerable;
+       a Lane-A PR is never blocked >a few minutes by it.
+     - **Disk budget:** the runner reserves headroom for the worst-case sum
+       (corpus-large + 3-leg artifacts + scratch); the post-run cleanup (`docker`/build
+       cache + corpus checkout) is mandatory so 720 GB is never exhausted.
+     - **LFS hosting:** `corpus-large` lives in the **Ne-IA org LFS quota**, but the
+       Linux leg uses a **persistent VPS-local LFS cache** (clone once, reuse) so repeat
+       runs do not re-egress the org quota; only the macOS/Windows legs pull over GitHub
+       LFS bandwidth (the budgeted tag-only cost above). If org LFS egress becomes the
+       bottleneck, the Linux leg is the cache of record. (Revisiting GitHub-hosted Linux
+       for Lane-B remains the documented fallback if VPS contention proves unmanageable.)
 3. **SBOM + NOTICE assembly + attribution-completeness gate (§6.3):** generate
    CycloneDX (app + engines), assemble `NOTICE`/`THIRD-PARTY-LICENSES.txt`, run the
    §6.3.3 completeness check. **A missing/UNKNOWN attribution aborts the release**
@@ -756,10 +793,23 @@ disabled/absent (§7.6); users learn of releases by visiting the page
 
 No code-signing, no notarization, no store submission (SSOT *Out of Scope*) — only
 the in-code-required artifacts (SBOM, checksums) are produced. No telemetry, no
-network-touching test that would contradict the offline invariant (§2.11) — the
-offline-observability test (6.10 / §2.11) asserts the *running app* makes **zero
-network calls**, ideally enforced by running the E2E flow with network egress
-blocked at the runner.
+network-touching test that would contradict the offline invariant (§2.11).
+
+**Offline-observability hard gate `[DECIDED]` (6.10 DoD #5 / §2.11.4).** This is a
+**concrete release-blocking gate**, not "ideally enforced": the §6.4.6 E2E flow is run
+with **egress blocked** and **any outbound attempt fails the test**. Per-platform tool:
+- **Linux (Lane-B leg):** run the full E2E **inside a network namespace with egress
+  blocked** — `unshare --net` (loopback only) or `iptables -A OUTPUT -j DROP` (allowing
+  only the local WebDriver/IPC loopback). Any outbound packet aborts the run.
+- **macOS:** run under an **OS firewall egress-deny** profile (`pf` rule blocking
+  outbound to non-loopback) **plus** the §2.11.4 packet-monitor assertion.
+- **Windows:** a **Windows Firewall outbound-deny rule** for the app **plus** the
+  §2.11.4 packet-monitor assertion.
+
+The packet-monitor assertion (§2.11.4) — zero outbound packets observed for the whole
+E2E — is the load-bearing proof on every platform; the OS-level egress block is the
+enforcement that turns an accidental call into a hard failure rather than a silent
+success.
 
 ---
 

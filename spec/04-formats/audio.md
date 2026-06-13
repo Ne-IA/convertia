@@ -477,7 +477,12 @@ size/speed-neutral knobs (FLAC level) or bit-depth.
   - **WAV / AIFF** — only a weak INFO/chunk tag model; rich tags and cover art may
     **not survive**. Disclosed where the source carried tags.
 - **Cover art** specifically: survives MP3↔FLAC↔OGG↔OPUS↔M4A/ALAC; dropped for raw
-  AAC and (largely) WAV/AIFF.
+  AAC and (largely) WAV/AIFF. **Mechanism differs by container (§3.5.1):** MP3/M4A/FLAC
+  carry cover art as an **attached-picture video stream** (`-map 0:v? -c:v copy`);
+  **OGG/OPUS** carry it as a **FLAC PICTURE metadata block** (`METADATA_BLOCK_PICTURE`
+  Vorbis comment) via metadata copy, **not** a video-stream copy. OGG/OPUS picture
+  round-trip is **`[DEFER: corpus]`** — if it proves unreliable on the §6.4 corpus,
+  OGG/OPUS move to the tag-poor list and fire `audio_tags_dropped` (§2.9).
 - This is the audio side of SSOT *Content fidelity* (preserve the content, not
   just the wrapper) — tags are content. Non-Latin/CJK/RTL tag text is preserved
   (UTF-8 through the tag models that support it; §2.10).

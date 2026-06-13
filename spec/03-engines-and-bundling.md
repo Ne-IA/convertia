@@ -35,11 +35,12 @@ every one; they cluster into four families:
 
 | # | Engine (bundled artifact) | Family | Drives (cross-ref) | Licence | Ships as | Patent flag |
 |---|---|---|---|---|---|---|
-| 1 | **libvips** (raster core; built with libheif/libde265, libaom/dav1d, an SVG load module wrapping **resvg**, **cgif** for native `gifsave`, and a **REQUIRED ImageMagick** delegate for BMP+ICO save and GIF fallback) | Images | `04-formats/images.md` (raster↔raster, SVG→raster, HEIC/AVIF **decode**, HEIC↔AVIF via `heifsave`) | **LGPL-2.1+** (libvips); **cgif MIT**; see per-component rows | linked lib **inside the image-worker process** (LGPL — dynamic link OK, §3.6) | none for its own codecs |
-| 1a | **libheif + libde265** (HEVC decode) + **x265** (HEVC encode, built as a **dynamically-loaded libheif encoder plugin** `.so`/`.dll`/`.dylib`, not statically linked) — used by libvips' HEIC load module via `heifsave compression=hevc` | Images | HEIC decode (vips) / HEIC encode | libheif **LGPL-3.0**, libde265 **LGPL-3.0**, **x265 GPL-2.0** | **x265 → dynamically-loaded libheif *plugin*, isolated** (§3.6); libheif/libde265 LGPL link | **HEVC → §3.4** |
+| 1 | **libvips** (raster core; built with libheif/libde265, libaom/dav1d, the native **`svgload` SVG load module (librsvg)**, **cgif** for native `gifsave`, and a **REQUIRED ImageMagick** delegate for BMP+ICO save and GIF fallback) | Images | `04-formats/images.md` (raster↔raster, SVG→raster, HEIC/AVIF **decode**, HEIC↔AVIF via `heifsave`) | **LGPL-2.1+** (libvips); **cgif MIT**; see per-component rows | linked lib **inside the image-worker process** (LGPL — dynamic link OK, §3.6) | none for its own codecs |
+| 1a | **libheif + libde265** (HEVC decode) + **x265** (HEVC encode, built as a **dynamically-loaded libheif encoder plugin** `.so`/`.dll`/`.dylib`, not statically linked) — used by libvips' HEIC load module via `heifsave compression=hevc` | Images | HEIC decode (vips) / HEIC encode | libheif **LGPL-3.0**, libde265 **LGPL-3.0**, **x265 GPL-2.0-or-later** (verify vs the pinned source's `COPYING`; -or-later is compatible with the LGPL-3.0 libheif host, GPL-2.0-only would not be) | **x265 → dynamically-loaded libheif *plugin*, isolated** (§3.6); libheif/libde265 LGPL link | **HEVC → §3.4** |
 | 1b | **AV1: libaom (enc, via libheif `heifsave compression=av1`) / dav1d (dec, via vips AVIF load module)** — the ONE bundled AV1 encoder is **libaom** (the standalone `libavif`+aom encoder is **not** bundled; encode standardised on `heifsave`, images.md [OPEN-1] [DECIDED]) | Images | AVIF decode/encode | aom **BSD-2 + patent grant**, dav1d **BSD-2** | LGPL/BSD link in the image worker | AV1 royalty-free; **ship-posture → §3.4** |
-| 1c | **resvg** (SVG rasteriser, via libvips load module) | Images | SVG→raster | **MPL-2.0** (resvg) / fallback librsvg **LGPL-2.1+** | linked load module (MPL/LGPL) | none |
+| 1c | **librsvg** (SVG rasteriser — libvips' native `svgload` module is librsvg-backed; resvg is NOT a libvips backend at any released version, so it is **not shipped** [DECIDED]) | Images | SVG→raster | **LGPL-2.1+** (librsvg) | linked load module inside the image-worker (LGPL — dynamic link OK, §3.6) | none |
 | 1d | **ImageMagick** (libvips BMP/ICO save delegate — **REQUIRED**, plus GIF fallback) | Images | **BMP load+save, ICO save (`magickload`/`magicksave` — REQUIRED)**; GIF fallback | **ImageMagick License** (Apache-2.0-style, SPDX `ImageMagick`) — **permissive, NOT GPL** | linked delegate (permissive — no isolation); GPL *optional delegates* excluded at build | none |
+| 1e | **libimagequant** (PNG/GIF palette quantisation — used by libvips' `cgif`/`gifsave` and palette PNG output) | Images | PNG/GIF palette quantisation | **BSD-2-Clause** (the permissive leg of the libvips-vendored fork's GPL-vs-BSD dual licence — verify the shipped leg; **NOT** BSD-3) | linked/vendored **inside the image-worker process** | none |
 | 2 | **FFmpeg** (**GPL-2.0+ build** — `./configure --enable-gpl` to link `libx264`; built **without `--enable-nonfree`**: `libmp3lame`, `libvorbis`, `libopus`, native `aac`/`flac`/`alac`/`pcm`, `libx264`, `libvpx-vp9`, WMA *decoders*; no `libfdk_aac`) | Audio, Video, Cross-category | `04-formats/audio.md`, `video.md`, `cross-category.md` | **GPL-2.0+** (the whole binary, because it enables GPL `libx264`; the LGPL component libs are still dynamically linked beside it, §3.6.1); written-offer-of-source obligation | **separate invoked binary** (`ffmpeg`/`ffprobe`) per §3.6 | **AAC, H.264 → §3.4**; MP3/Vorbis/Opus/FLAC/ALAC/PCM/VP9 patent-clean |
 | 3 | **LibreOffice** (headless `soffice`, Writer+Calc+Impress + PDF export filters; bundled with a baseline open font set, §3.9) | Documents, Spreadsheets, Presentations | `04-formats/documents.md`, `spreadsheets.md`, `presentations.md` (all office↔office + every `*→PDF`) | **MPL-2.0** (+ many bundled components — full set enumerated by the SBOM, §3.7) | **separate invoked binary** (sidecar process) per §3.6 | none |
 | 4 | **poppler** (`pdftotext`) | Documents | `PDF→TXT` | **GPL-2.0/GPL-3.0** | **separate invoked binary** (§3.6) | none |
@@ -84,7 +85,7 @@ exe; **GPL** (the **FFmpeg binary itself** — GPL-2.0+ because it enables x264 
 plus x264, the **x265 libheif plugin**, poppler, pandoc) **always invoked or
 dynamically-plugin-loaded, never statically linked into the MIT core**, each carrying
 the written-offer-of-source obligation (§3.6.2); **AGPL** (Ghostscript) **not shipped
-v1**; **MPL** (LibreOffice, resvg) invoked (LibreOffice) / linked (resvg);
+v1**; **MPL** (LibreOffice) invoked;
 **permissive** — **BSD** (libaom/dav1d) and the **ImageMagick License** (ImageMagick,
 SPDX `ImageMagick`, Apache-2.0-style) — both unrestricted and link-OK (ImageMagick is
 **not** GPL and is a **required** component, not a fallback).
@@ -123,7 +124,7 @@ pub trait Engine: Send + Sync {
     /// disposition resolved at build time. Used to populate the registry and to
     /// decide per-platform availability (honest "unavailable here").
     fn capabilities(&self, platform: Platform, patents: &PatentDisposition)
-        -> Vec<Capability>;            // each Capability = (SourceFmt, TargetFmt, Direction)
+        -> Vec<EngineCapability>;      // named struct (defined below): {source, target, direction}
 
     /// Build the concrete invocation plan for one job. Pure (no I/O, no spawn):
     /// returns argv / env / cwd / progress-parser kind / temp-output path shape.
@@ -162,9 +163,15 @@ pub struct Invocation {
 /// (§3.3.3), never via the WebView shell — the path is resolved through Tauri's
 /// PathResolver (externalBin sidecar or a binary inside the resources tree §3.3.1).
 pub enum EngineProgram {
-    Sidecar(EngineId),            // externalBin, resolved to binaries/<name>-<triple>[.exe]
+    Sidecar(EngineId),            // externalBin, resolved to binaries/<name>-<triple>[.exe].
+                                  //   The image-worker (libvips, §3.5.5) is ALSO Sidecar-class:
+                                  //   a separate short-lived subprocess [DECIDED] (§0.6 note,
+                                  //   §3.5.5, §3.6.1) — NOT linked into the core.
     ResourceBin { engine: EngineId, rel: PathBuf }, // a binary inside a resources tree (e.g. soffice)
-    InProcess(EngineId),          // libvips in-process / image-worker (§3.5.5) — no spawn path
+    InProcessNative(EngineId),    // ConvertIA's own MIT in-core Rust engine — native CSV/TSV
+                                  //   ONLY (§3.5.6). No spawn, no third-party native code; the
+                                  //   ONLY non-subprocess engine. (There is NO in-process path
+                                  //   for any decoder of untrusted bytes — §2.12.4 absolute.)
 }
 
 /// How the engine's stdin is supplied (§3.5; pandoc sometimes reads bytes on stdin).
@@ -180,6 +187,41 @@ pub enum ProgressModel {
     VipsCallback,                          // libvips eval callback %
     CoarseSpawnDone,                       // LibreOffice/pandoc/poppler: 0%→spin→100%
 }
+
+// ─── Engine-layer types referenced by the trait (defined here, §3.2 is owner) ──
+/// The running/target platform. Resolved at build/startup; drives both
+/// `capabilities()` and the §3.4 patent disposition.
+pub enum Platform { Win, MacOS, Linux }
+
+/// Conversion direction of a capability cell (matches the 04 matrices' arrows).
+pub enum Direction { Decode, Encode, Both }
+
+/// The build-time-resolved patent/ship posture per encumbered codec on THIS
+/// platform (§3.4). `Available` = shipped & usable; `Unavailable` = honestly gapped
+/// (the only legitimate `select()` → None, surfaced as §2.8 PlatformUnavailable).
+pub struct PatentDisposition {
+    pub heic_hevc: CodecPosture,   // HEVC encode/decode for HEIC (§3.4)
+    pub aac: CodecPosture,         // AAC (§3.4)
+    pub h264: CodecPosture,        // H.264 (§3.4)
+    // additional encumbered codecs added here as §3.4 evolves; default royalty-free → Available
+}
+
+pub enum CodecPosture { Available, Unavailable }
+
+/// One capability a registered engine declares for a (source, target) pair on a
+/// platform. Replaces the earlier bare `(SourceFmt, TargetFmt, Direction)` tuple
+/// with a named struct so the registry/codegen surface is unambiguous.
+pub struct EngineCapability {
+    pub source: SourceFmt,         // user-facing source format (§1.5 / 04)
+    pub target: TargetFmt,         // user-facing target format
+    pub direction: Direction,
+}
+
+// Type aliases (the user-facing format vocabulary is §0.6-owned):
+//   SourceFmt = UserFacingFormat (§0.6);  TargetFmt = TargetId (§0.6);
+//   EngineId  = the stable engine discriminant (§0.6 EngineDescriptor.id).
+pub type SourceFmt = UserFacingFormat;     // §0.6
+pub type TargetFmt = TargetId;             // §0.6
 ```
 
 ### 3.2.3 Selection algorithm `[DECIDED]`
@@ -205,8 +247,7 @@ fn select(src: SourceFmt, tgt: TargetFmt, plat: Platform) -> Option<EngineId>
 - **No fallback engine chain.** There is intentionally no "if engine A fails try
   engine B" — a single owner per pair keeps results deterministic and identical
   across platforms (SSOT *Cross-platform, one product*). Engine *internal*
-  fallbacks (libvips' SVG loader preferring resvg, falling back to librsvg at
-  **build** time; poppler's GS backstop *within* `PDF→TXT`) are an
+  fallbacks (poppler's GS backstop *within* `PDF→TXT`) are an
   implementation detail of one engine, not a registry-level alternate, and do not
   violate single-engine-per-pair.
 - The few `04` `[OPEN]`s about *which* engine owns a pair (`MD→PDF` LO-vs-pandoc;
@@ -228,7 +269,7 @@ downloaded after the app itself.
 | Mechanism | Used for | Tauri config | Resolved at runtime by |
 |---|---|---|---|
 | **`bundle.externalBin`** (sidecars, target-triple-suffixed) | FFmpeg, ffprobe, soffice launcher, pdftotext, pandoc — the **standalone invoked binaries** (Ghostscript **[DECIDED: dropped]**; **x265 is NOT a sidecar** — it ships as a dynamically-loaded libheif encoder *plugin* under `resources`, §3.1 row 1a) | `"bundle": { "externalBin": ["binaries/ffmpeg", "binaries/ffprobe", "binaries/soffice", "binaries/pdftotext", "binaries/pandoc"] }` | spawned by the Rust core (see 3.3.3) |
-| **`bundle.resources`** (verbatim files/dirs) | the LibreOffice **program tree + profile template + bundled fonts**, the **image-worker stack** (libvips + libheif/libde265 + the **x265 libheif plugin** + libaom/dav1d + resvg + cgif + the **required ImageMagick** delegate), FFmpeg/pandoc data files if any, the NOTICE/third-party-licenses text (§3.7) | `"bundle": { "resources": { "engines/libreoffice/": "engines/libreoffice/", "engines/image/": "engines/image/", "fonts/": "fonts/", "THIRD-PARTY-LICENSES.txt": "" } }` | `app.path().resolve(rel, BaseDirectory::Resource)` |
+| **`bundle.resources`** (verbatim files/dirs) | the LibreOffice **program tree + profile template + bundled fonts**, the **image-worker stack** (libvips + libheif/libde265 + the **x265 libheif plugin** + libaom/dav1d + librsvg + cgif + the **required ImageMagick** delegate), FFmpeg/pandoc data files if any, the NOTICE/third-party-licenses text (§3.7) | `"bundle": { "resources": { "engines/libreoffice/": "engines/libreoffice/", "engines/image/": "engines/image/", "fonts/": "fonts/", "THIRD-PARTY-LICENSES.txt": "" } }` | `app.path().resolve(rel, BaseDirectory::Resource)` |
 
 > **Why LibreOffice is `resources`, not `externalBin`.** `externalBin` is for a
 > single self-contained executable that gets the target-triple suffix; LibreOffice
@@ -345,12 +386,17 @@ availability (SSOT *v1 DoD* exception 1) flows from here.
   so.)* Not in this matrix.
 - **AAC** — still administered by a patent pool (Via LA, reorg'd late 2025).
   Crucially: there are **no licence fees for *distributing AAC bitstreams*** — the
-  royalties target *encoder/decoder distribution by manufacturers*. ConvertIA
-  bundles FFmpeg's **native, license-clean LGPL AAC encoder** (not libfdk_aac);
-  the **patent** question is whether shipping an AAC encoder/decoder triggers a
-  manufacturer royalty. Many open-source distros ship FFmpeg's native AAC freely;
-  the exposure is a **theoretical patent claim**, not a licence-compatibility
-  problem.
+  royalties target *encoder/decoder distribution*. The honest grey area: the Via LA
+  AAC programme **does nominally levy a per-unit royalty on distributing AAC
+  encoder/decoder implementations by "manufacturers"** (a free / low-volume tier
+  exists — the SSOT flags this as grey, not clearly-zero). ConvertIA bundles FFmpeg's
+  **native, license-clean LGPL AAC encoder** (not libfdk_aac), so there is **no
+  licence-compatibility problem**; the residual exposure is the **manufacturer
+  encoder/decoder-distribution patent leg**, not bitstream distribution. **`[DECIDED]`
+  ship bundled** (no revenue, hobby/non-commercial, free/low-volume tier; many
+  open-source distros ship FFmpeg's native AAC freely) and **surface AAC in the
+  NOTICE** (§3.7). The decision is technical/redistributability — legal-advice items
+  are out of scope for this spec.
 - **H.264 / AVC** — patent pool (MPEG LA / now Via LA); **last US patent expires
   ~2027-11** (patent-term-adjusted). So H.264 is *months* from expiry at the v1
   horizon but **not yet free**. Same shape as AAC: the *engine* (x264/FFmpeg) is
@@ -549,11 +595,20 @@ macOS item — acceptable, and the same copy the cross-volume path would make an
   - FLAC `-c:a flac -compression_level 5`; WAV `-c:a pcm_s16le`; AIFF
     `-c:a pcm_s16be`; OGG `-c:a libvorbis -q:a 3`; OPUS `-c:a libopus -b:a 128k`;
     ALAC `-c:a alac` + `ipod`. `-map_metadata 0` for tag carry (audio.md policy).
-  - **Cover-art passthrough:** where the target container supports an embedded
-    picture (**MP3/M4A/FLAC/OGG/OPUS**) add `-map 0:v? -c:v copy` (the `?` makes the
-    attached-picture stream optional so audio-without-art still works); **raw ADTS
-    `.aac` and WAV/AIFF omit it** (no picture support → the `audio_tags_dropped` §2.9
-    note fires, audio.md tag policy).
+  - **Cover-art passthrough:** mechanism differs by container.
+    - **MP3 / M4A / FLAC** store cover art as an **attached-picture *video* stream** →
+      add `-map 0:v? -c:v copy` (the `?` makes the attached-picture stream optional so
+      audio-without-art still works).
+    - **OGG / OPUS** do **NOT** carry a video stream; cover art is a **FLAC PICTURE
+      metadata block** (`METADATA_BLOCK_PICTURE` Vorbis comment), so `-map 0:v? -c:v
+      copy` would drop or error. Cover-art carry for OGG/OPUS is a **metadata copy**
+      (`-map_metadata 0` carries the comment block where ffmpeg supports it), **not** a
+      video-stream copy. **`[DEFER: corpus]`** verify OGG/OPUS picture round-trips on
+      the §6.4 corpus; if it proves unreliable, annotate OGG/OPUS with
+      `audio_tags_dropped` (§2.9) and remove them from the "supports embedded picture"
+      list (update audio.md accordingly).
+    - **Raw ADTS `.aac` and WAV/AIFF omit it** (no picture support → the
+      `audio_tags_dropped` §2.9 note fires, audio.md tag policy).
   - **Channel handling:** preserve source channels by default (audio.md). For
     **>2-channel sources → MP3/OGG** (whose everyday encoders are best at stereo) add
     `-ac 2` downmix and fire the §2.9 `audio_downmix` note; **AAC/M4A/OPUS/FLAC/WAV**
@@ -703,7 +758,7 @@ macOS item — acceptable, and the same copy the cross-volume path would make an
 - **Progress:** `ProgressModel::VipsCallback` (libvips eval-progress signal) → a
   real % for large images.
 - **Isolation `[DECIDED]`:** image decode/encode runs in a **separate short-lived
-  image-worker process** (not an in-app thread), so a libvips/libheif/libde265/resvg/
+  image-worker process** (not an in-app thread), so a libvips/libheif/libde265/librsvg/
   codec crash, hang, **or memory-corruption exploit** is contained by the OS process
   boundary and fails **that one item** (§2.8) without wedging the app — exactly the
   §2.12.1 boundary every other engine gets, matching the §0.3 "separate engine
@@ -713,7 +768,7 @@ macOS item — acceptable, and the same copy the cross-volume path would make an
   **not** rely on a §2.13 `catch_unwind` boundary for this — that catches Rust panics,
   not hostile native code; §2.12.4.)
 - **Licence/isolation of components:** libvips/libheif/libde265/librsvg = LGPL
-  (link OK, dynamic); resvg/aom/dav1d = MPL/BSD; **ImageMagick = permissive
+  (link OK, dynamic); aom/dav1d = BSD; **ImageMagick = permissive
   (ImageMagick License, Apache-2.0-style — link-OK, NOT GPL) and REQUIRED (BMP+ICO
   save go only through it; §3.1 row 1d).** The **only** GPL piece in the image stack
   is **x265** (HEVC encode), the aggregation case (§3.6) — shipped as a
@@ -747,9 +802,10 @@ source where required), so the MIT core stays clean.
 |---|---|---|---|
 | ConvertIA orchestrator + native CSV/TSV | MIT | — | it *is* the core |
 | **libvips** (+ libheif, libde265, librsvg) | **LGPL-2.1/3.0** | **dynamic link only** (LGPL permits dynamic linking from non-GPL code, provided relinkability) — or run as the separate image-worker process (§3.5.5) | LGPL §6 dynamic-link allowance; we ship the LGPL libs + their source/offer (§3.7); **no static link** of LGPL into the MIT binary |
-| **resvg** (MPL), **aom/dav1d/libavif** (BSD) | MPL-2.0 / BSD | link OK | MPL is file-level copyleft (our files stay MIT); BSD permissive |
+| **aom/dav1d** (BSD) | BSD-2 | link OK | BSD permissive |
+| **libimagequant** (PNG/GIF palette quantisation) | **BSD-2-Clause** (the permissive leg of the libvips-vendored fork's GPL-vs-BSD dual licence; verify the shipped leg — if a GPL leg ever shipped it would move to the isolated-GPL rows below) | link OK (inside the image-worker) | BSD permissive; vendored/linked inside the image-worker process, not the MIT core |
 | **ImageMagick** (GIF/BMP/ICO save delegate) | **ImageMagick License** (Apache-2.0-style, SPDX `ImageMagick`) — **permissive, NOT GPL** | link OK | Permissive like BSD/MPL — no isolation needed. **Build caveat:** exclude GPL *optional delegates*; IM core is permissive. (Listed in the SBOM/NOTICE §3.7.) |
-| **x265** (HEVC encode) | **GPL-2.0** | **NO — dynamically-loaded libheif *plugin*** | x265 ships as a **separately-built, dynamically-loaded libheif encoder plugin** (`.so`/`.dll`/`.dylib`, libheif `ENABLE_PLUGIN_LOADING`) that `heifsave compression=hevc` loads at runtime. The GPL code is **never statically linked** into the image-worker's libvips or the MIT core; it lives behind libheif's plugin ABI and runs **inside the §0.7 image-worker process** (already a separate process from the core). *(A static x265-in-libvips link would taint — hence the plugin form. This replaces the dropped "standalone heif/x265 sidecar" — no such sidecar exists under the [OPEN-1] heifsave-only decision.)* |
+| **x265** (HEVC encode) | **GPL-2.0-or-later** | **NO — dynamically-loaded libheif *plugin*** | x265 ships as a **separately-built, dynamically-loaded libheif encoder plugin** (`.so`/`.dll`/`.dylib`, libheif `ENABLE_PLUGIN_LOADING`) that `heifsave compression=hevc` loads at runtime. The GPL code is **never statically linked** into the image-worker's libvips or the MIT core; it lives behind libheif's plugin ABI and runs **inside the §0.7 image-worker process** (already a separate process from the core). *(A static x265-in-libvips link would taint — hence the plugin form. This replaces the dropped "standalone heif/x265 sidecar" — no such sidecar exists under the [OPEN-1] heifsave-only decision.)* |
 | **x264** (H.264 encode) | **GPL-2.0** | **NO — inside the GPL FFmpeg binary** | reached only via the **FFmpeg binary** (separate invoked process); never linked into the MIT core |
 | **FFmpeg** build | **GPL-2.0+** (enables GPL x264 via `--enable-gpl` → the *whole* binary is GPL-2.0+, not LGPL) | **NO — separate exe** | invoked as `ffmpeg`/`ffprobe` child processes (§3.3.3); aggregation keeps the MIT core clean. The LGPL component libs (libmp3lame etc.) are **dynamically linked beside the exe** (§3.9.1) per LGPL §6 — a static FFmpeg build would fail the §6.1.3 dynamic-link assertion. Written-offer-of-source obligation honored (§3.6.2). |
 | **LibreOffice** | MPL-2.0 | **NO — separate sidecar** | invoked `soffice` process; MPL is weak/file-level anyway, but isolation is belt-and-suspenders + the SSOT policy |
@@ -839,12 +895,17 @@ gate is **§6.3**. This section produces the *data* those consume.
    top-level engines — including the **FFmpeg binary** (SPDX `GPL-2.0-or-later`, with
    the written-offer-of-source line — it enables x264, §3.6.1), **ImageMagick**
    (SPDX `ImageMagick`, permissive, **REQUIRED** for BMP+ICO save), **cgif** (MIT, the
-   native `gifsave` backend §3.5.5), the **x265 libheif plugin** (SPDX `GPL-2.0-only`,
-   with offer-of-source), the **libheif AV1-encoder dependency `libaom`** (BSD-2 +
-   patent grant), **dav1d** (BSD-2), **resvg** (MPL-2.0) / **librsvg** (LGPL-2.1+), and
+   native `gifsave` backend §3.5.5), the **x265 libheif plugin** (SPDX
+   **`GPL-2.0-or-later`** — verify against the pinned source's `COPYING`; GPL-2.0-only
+   would be incompatible with the LGPL-3.0 libheif host, whereas -or-later is
+   upgradeable to GPLv3 (what Debian ships) — with offer-of-source), the **libheif
+   AV1-encoder dependency `libaom`** (BSD-2 + patent grant), **dav1d** (BSD-2),
+   **librsvg** (LGPL-2.1+ — the libvips `svgload` SVG backend), and
    **libimagequant** (the gifsave/cgif palette-quantisation dependency — SPDX
-   **`BSD-3-Clause`**, the dual-licensed `pngquant` library's permissive option; recorded
-   explicitly so the §6.3.3 no-UNKNOWN gate does not block on it). The §6.3.3
+   **`BSD-2-Clause`**, the permissive leg of the libvips-vendored fork's GPL-vs-BSD
+   dual licence; **NOT** BSD-3 — verify the shipped leg against the vendored `COPYRIGHT`,
+   and if any GPL leg were shipped it would need the §3.6 copyleft-isolation note;
+   recorded explicitly so the §6.3.3 no-UNKNOWN gate does not block on it). The §6.3.3
    attribution-completeness gate fails if any shipped component lacks a row, so these
    must be enumerated or the release blocks.
 5. `tauri build` includes both as resources (§3.3.1).
@@ -910,7 +971,7 @@ effort is spent where it matters.
 | **LibreOffice (headless, trimmed)** | **~250–400 MB** (dominant) | Writer+Calc+Impress program tree + needed type libs; **minimal** build (no help, no UI translations, no dictionaries, no DB/Draw/Math beyond deps) | strip help/l10n/dictionaries (under ~200 MB minimal is reported feasible); drop unused modules; the **bundled font set is a sub-line below** |
 | **Bundled fonts** (LibreOffice + documents/presentations fidelity) | **~30–120 MB** `[OPEN — §3.9.2]` | Liberation/Carlito/Caladea (metric-compat Arial/Calibri/Cambria/Times/Courier) + broad **CJK + RTL** coverage (Noto-class) | CJK is the size driver; a full Noto CJK is ~100 MB+ — subset vs full is the open call |
 | **FFmpeg + ffprobe** (GPL-2.0+ build, the listed codecs incl. x264/vpx) | **~30–80 MB** (two exes + their shared libs) | multimedia binary **with the LGPL component libs as dynamically-linked shared objects beside the exe** (NOT a static build — a static link would fail the §6.1.3 LGPL dynamic-link assertion, §3.6.1) | drop unused (de)muxers/filters via `--disable-everything --enable-…` to a curated list (the `04` codec set only) |
-| **libvips + image codec stack** (libheif/libde265/x265-plugin/aom/dav1d/resvg/cgif + **required ImageMagick** delegate) | **~20–40 MB** | image lib + codecs (image-worker process) | exclude unneeded loaders; ImageMagick is **required** (BMP+ICO save) but trimmed to BMP/ICO/GIF delegates with **GPL optional delegates excluded** (§3.6.1) — it cannot be removed |
+| **libvips + image codec stack** (libheif/libde265/x265-plugin/aom/dav1d/librsvg/cgif + **required ImageMagick** delegate) | **~20–40 MB** | image lib + codecs (image-worker process) | exclude unneeded loaders; ImageMagick is **required** (BMP+ICO save) but trimmed to BMP/ICO/GIF delegates with **GPL optional delegates excluded** (§3.6.1) — it cannot be removed |
 | **poppler `pdftotext`** | **~5–15 MB** | PDF text extractor | small |
 | **pandoc** | **~80–220 MB** (version-dependent; pandoc 3.x) | Haskell static binary (notoriously large; the **GHC runtime dominates**, so stripping saves little) | a release/stripped build trims marginally; the real lever is **dropping pandoc in favour of LibreOffice 26.2 Markdown** (co-owned [OPEN] with documents.md) — this is the **second-biggest single exe** after LibreOffice |
 | **Ghostscript** **[DECIDED: NOT shipped v1]** | **0 MB** (~30–60 MB if ever re-added) | PDF repair backstop — dropped (§3.1) | already dropped; this whole row is saved |

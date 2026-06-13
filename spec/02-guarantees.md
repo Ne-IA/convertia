@@ -88,10 +88,14 @@ applied the §2.7 destination rules). Given a *final resolved destination path*
    directory** (open the parent dir, `fsync` its fd) so the new dentry survives a
    crash — per the LWN/evanjones durability findings (rename is atomic but not
    durable without the directory fsync). On Windows the directory-fsync step is a
-   no-op (NTFS metadata journaling covers it); the create-only `MoveFileExW` with the
-   **`MOVEFILE_WRITE_THROUGH`** flag (and, on the §2.5 replacing path, `ReplaceFileW`
-   with `REPLACEFILE_WRITE_THROUGH`) provides the equivalent flush-through durability
-   guarantee.
+   no-op (NTFS metadata journaling covers the dentry). Durability sources on Windows
+   are split: the **file *bytes*** are made durable by `sync_all` on the temp handle
+   before the move (as on Unix); the **`MOVEFILE_WRITE_THROUGH`** flag on the
+   create-only `MoveFileExW` (and, on the §2.5 replacing path, `ReplaceFileW` with
+   `REPLACEFILE_WRITE_THROUGH`) flushes the *move/metadata* through — its documented
+   effect is for the **cross-volume copy-and-delete** form; for a same-volume move the
+   dentry's durability rests on NTFS journaling. This is a strong best-effort, not a
+   byte-for-byte equivalent of the Unix dir-fsync, so we do not claim them identical.
 7. On engine failure / cancel / any error in steps 3–6: **`tmp` is removed**
    (§2.6); `final` was never created → nothing to undo. Cleanup failure is itself
    handled (§2.6: never reported as clean success).
@@ -131,6 +135,15 @@ the engine never filled) can exist. `[DECIDED]`
     placeholder. (`link`+`unlink(tmp)` is the portable POSIX form; `renameat2`
     `RENAME_NOREPLACE` is the single-call form where available.) On `EEXIST` →
     re-pick the next §2.2 variant.
+    - **Link-form success-window residual `[DECIDED]`.** Unlike `renameat2` (which
+      consumes `tmp` atomically), the `link`+`unlink` fallback has a brief window
+      **after `link` succeeds but before `unlink(tmp)`** where **both** `final` and
+      the `tmp` `*.part` exist — a residual `.part` on the *success* path (the
+      `renameat2` path has none). This is benign (`final` is already complete and
+      durable) but means §2.6.2's "item success → nothing to remove" is true only on
+      the `renameat2` path; on the link path the `unlink(tmp)` is the removal, and if
+      it fails the leftover `*.part` is reclaimed by the §2.6.4 sweep (annotated as
+      a residue, not an item failure). See the §2.1.3 link-form sub-state.
   - **Windows `[DECIDED]`:** the first-time (no-clobber) publish is a
     **create-only move with no placeholder**: **`MoveFileExW(tmp, final,
     MOVEFILE_WRITE_THROUGH)`** — i.e. **WITHOUT** `MOVEFILE_REPLACE_EXISTING`. With
@@ -172,7 +185,15 @@ the engine never filled) can exist. `[DECIDED]`
 >
 > `[DEFER: primitive-confirmation spike, not a design question]` (owner §2.1):
 > confirm `renameat2(RENAME_NOREPLACE)` availability across the Linux floor (§0.3.1)
-> with the `link`+`unlink` fallback. The Windows primitive is **fixed**: the
+> with the `link`+`unlink` fallback. **The fallback is chosen at runtime PER
+> DESTINATION, not statically `[DECIDED]`:** `renameat2(RENAME_NOREPLACE)` returns
+> **`EINVAL` on filesystems that don't support the flag** (some USB/network/FUSE
+> mounts differ from the boot volume on the same machine), so `atomic_publish` tries
+> `renameat2` and, on `EINVAL`, **falls back to `link`+`unlink` for that destination**
+> (not a build-time kernel-version switch — the same kernel can have both). On **NFS**,
+> where a rename result can be ambiguous, treat an ambiguous outcome as
+> **name-may-be-taken** and re-pick the next §2.2 variant (never assume success). The
+> Windows primitive is **fixed**: the
 > first-time publish is `MoveFileExW` *without* `MOVEFILE_REPLACE_EXISTING` (a clean
 > create-only move, no placeholder); `ReplaceFileW` is used only on the
 > genuinely-replacing §2.5 fresh-copy path where the target is meant to exist. The
@@ -188,6 +209,12 @@ After any ungraceful end, the on-disk state is exactly one of:
 - **`final` does not exist, a `*.part` temp may remain** — the rename had not yet
   committed. The temp is a **discardable run-owned artifact**, cleaned on next run
   (§2.6). *No partial output masquerading as finished.*
+- **(`link`+`unlink` fallback only) `final` exists AND a `*.part` temp also remains**
+  — the crash landed in the success window *after* `link(tmp, final)` committed but
+  *before* `unlink(tmp)`. `final` is complete and durable (Success); the leftover
+  `*.part` is a discardable run-owned artifact reclaimed by the §2.6.4 sweep. This
+  sub-state does **not** exist on the `renameat2`/`MoveFileExW` paths (single-call,
+  no leftover) and is still **not** a truncated-final state.
 
 There is **never** a third state (a truncated or 0-byte `final`) because (1) the
 engine only ever writes to `tmp`, never to `final`, and (2) the publish is a
@@ -238,8 +265,11 @@ on collision: format!("{stem} ({n}).{ext}")        // n = 1,2,3,…
 `n` is **not** chosen by listing the directory and picking max+1 (that is itself a
 TOCTOU race). Instead `output_name` produces candidates **lazily** and each
 candidate is handed to §2.1.2's **no-placeholder exclusive publish** (Unix
-`link`/`renameat2(RENAME_NOREPLACE)` → fails `EEXIST`; Windows `create_new`-reserve →
-fails `AlreadyExists`); on the exists-error it yields the next candidate. So numbering
+`link`/`renameat2(RENAME_NOREPLACE)` → fails `EEXIST`; Windows the atomic
+**`MoveFileExW(tmp, final, MOVEFILE_WRITE_THROUGH)` WITHOUT `MOVEFILE_REPLACE_EXISTING`**
+→ fails `ERROR_ALREADY_EXISTS`/`ERROR_FILE_EXISTS` — the §2.1.2-declared first-time
+publish primitive, **not** a `create_new`-reserve); on the exists-error it bumps the
+counter suffix and yields the next candidate. So numbering
 and the absolute no-clobber guarantee are the **same loop** — the directory's real
 state at the instant of the exclusive publish decides, not a stale scan. (An optional
 cheap `symlink_metadata` pre-check may skip obviously-taken low numbers as an
@@ -352,8 +382,8 @@ Before §2.1's exclusive create, `fs_guard::is_safe_output(final, frozen_set)`:
 Because step 2 also runs as part of the §2.1 exclusive-publish loop (§2.1.2), a link
 that is created *between* the check and the write still cannot clobber a source: the
 no-placeholder exclusive publish (Unix `link`/`renameat2(RENAME_NOREPLACE)` → `EEXIST`;
-Windows `create_new`-reserve → `AlreadyExists`) fails on the existing (symlink) target
-and we re-pick.
+Windows `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` → `ERROR_ALREADY_EXISTS`)
+fails on the existing (symlink) target and we re-pick.
 
 **Parent-directory safety is made atomic via a directory-handle, not a path
 `[DECIDED]`.** The `create_new` of the *leaf* is exclusive, but a separate TOCTOU
@@ -472,6 +502,15 @@ EquivKey = hash(
   model is owned by §1.6 / 04-formats; §2.5 only consumes the resolved values.
 - Source **identity** (not path) means a re-run reached via a different but
   same-file path still matches.
+- **The key has NO destination component, so in v1 the re-run verdict is
+  destination-INDEPENDENT `[DECIDED]`.** Signal 1 (the in-session ledger) keys on
+  `(source_identity, target_format, settings)` only; changing the destination (C5)
+  cannot create or clear a ledger hit. A C5 `set_destination` change therefore
+  re-evaluates **only** the destination-dependent preflight (free space on the new
+  volume, §2.14.4 / §1.10) and **leaves `rerun` unchanged** — it is carried through
+  from the C4 verdict, never recomputed by destination. A future destination-aware
+  signal (per-destination disk-presence) would require the deferred cross-session
+  ledger and is **[DEFER: post-v1]** (see §2.5.3 fallback note).
 
 ### 2.5.2 Detecting "this exact conversion already produced output" `[DECIDED]`
 
@@ -511,11 +550,15 @@ enters the **RerunPrompt** state (§5.2 state 6) **from the C4 response, before
 Convert is pressed**, not as a separate round-trip after C6. C6 `start_conversion`
 then carries the user's `RerunDecision` (Skip / FreshCopy). (§1.0's flow reflects
 this: re-run detection sits at the §1.8 output-planning step, which C4 drives.)
-**Concurrent identical batch edge:** if an identical batch is *running* in the same
-session when C4 queries the ledger, the in-flight batch's `EquivKey`s are added to
-the ledger only at *its* completion, so the second batch may miss the equivalence and
-fall through to §2.2 **silent next-free-variant numbering** — an acceptable
-best-effort miss (never an overwrite, §2.1).
+**Concurrent identical batch edge `[DECIDED: accept best-effort degradation]`:** if an
+identical batch is *running* in the same session when C4 queries the ledger, the
+in-flight batch's `EquivKey`s are added to the ledger only at *its* completion, so the
+second batch may miss the equivalence and fall through to §2.2 **silent
+next-free-variant numbering** — a silent extra numbered copy the prompt would otherwise
+have offered to skip. We **do not** reserve in-flight `EquivKey`s at batch start in v1
+(it would add cross-batch locking for a rare race); the residual is an **acceptable
+best-effort miss** within the SSOT's stated tolerance (never an overwrite, §2.1).
+Reserving in-flight keys is **[DEFER: post-v1]** alongside the cross-session ledger.
 It is **one** prompt for the whole batch (SSOT: "one plain batch-level prompt"),
 surfaced as the §5.2 *re-run prompt* state with `Skip` (default, focused) /
 `Make fresh copies`. The prompt's strings are UI-chrome (§5.7), but the **decision
@@ -525,7 +568,7 @@ semantics** (skip-default; fresh-copy → ordinary numbering) are owned here.
 
 When ConvertIA **cannot** determine equivalence — the prior output was **renamed or
 moved** (so the deterministic name is free again), or this is a **new session** and
-the ledger is empty, or the destination differs — it **does not** guess. It falls
+the ledger is empty — it **does not** guess. It falls
 through to §2.2 **silent next-free-variant numbering**. The invariant the SSOT
 pins: the *failure mode of detection is a harmless extra numbered copy, never an
 overwrite*. This is acceptable precisely because §2.1's exclusive-create makes
@@ -583,7 +626,7 @@ volume rule are owned by §2.14.2 (referenced here, not re-decided):
 
 | Trigger | Action |
 |---------|--------|
-| **Item success** | `tmp` already renamed to `final` (§2.1); nothing to remove. |
+| **Item success** | `renameat2`/`MoveFileExW` path: `tmp` was consumed by the publish — nothing to remove. **`link`+`unlink` fallback path:** the publish `link`ed `tmp→final`, so `unlink(tmp)` removes the `*.part`; if that unlink fails, the residual is reclaimed by the §2.6.4 sweep (annotated, not an item failure). |
 | **Item failure** (engine error, corrupt, etc.) | remove that item's `tmp`. |
 | **Cancel** (user) | §1.7 kills the engine; the killed item's `tmp` is removed; **already-finished items are kept** (SSOT). |
 | **Out-of-disk mid-write** | remove the partial `tmp`; report `OutOfDisk` (§2.8); **batch continues** (SSOT). |
@@ -687,6 +730,12 @@ For each source, §1.8 classifies its **intended** output location via
   reality). Failure (`PermissionDenied`, `ReadOnlyFilesystem`, network errors) →
   **unwritable**. *Recommended:* probe lazily and cache per-directory within the run
   to avoid probing every file in a 10 000-file batch in the same folder.
+  - **Probe-cleanup-failure handling `[DECIDED]`.** If the probe file is *created*
+    (so the dir is writable) but its **removal fails**, the verdict is **writable**
+    (the create succeeded — that is the test) and the leftover probe file is **not**
+    cause to divert. The probe uses the run-owned `.convertia-*.part`-class naming so
+    the §2.6 sweep reclaims it; the failure is logged locally (§7.5) only. We never
+    divert *solely* because probe-cleanup failed.
   - **The per-directory writability cache is a planning *hint*, not a commitment
     `[DECIDED]`.** A location can flip read-only *between* the probe and the actual
     write (USB pulled, share dropped, permission changed mid-run). When the real
@@ -697,7 +746,11 @@ For each source, §1.8 classifies its **intended** output location via
     does the item report `WriteFailed` (§2.8). So a post-probe read-only flip is a
     **late divert**, not an immediate item failure — consistent with §2.7's
     divert-unwritable-locations intent. (A non-writability error — e.g. `OutOfDisk` —
-    is **not** a divert trigger; it fails per §2.8 / §1.10.)
+    is **not** a divert trigger; it fails per §2.8 / §1.10.) **The late-divert publish
+    re-runs the full safety chain on the divert target**: §2.3.3 `is_safe_output`
+    (the divert dir must not resolve into the frozen source set) **and** §2.2.3
+    path-limit, before its §2.1 exclusive publish — a late divert never skips the
+    link-safety / path-limit checks just because it is a fallback.
 - **Ephemeral test:** is the dir inside a **known-ephemeral OS temp location**?
   - Win: under `%TEMP%` / `%TMP%` / `GetTempPathW`.
   - macOS: under `$TMPDIR` (per-user `…/T/`), `/tmp`, `/var/folders/…`.
@@ -861,6 +914,25 @@ plain, calm, never blaming, never technical (SSOT *Fail clearly*). These are the
 | Cancelled | **"Stopped. {ok} files were already converted and kept; the rest were not started."** |
 | With residue | append **"Some temporary files may remain — see details."** |
 
+**`OutcomeMsg` — the surfaced per-item string (defined here; §0.6 `ItemResult.reason`
+references it).** The §0.6 `ItemResult.reason: Option<OutcomeMsg>` is **either** a §2.8
+failure string **or** a §2.9 lossy note. It is the *resolved, ready-to-show* line (so
+the summary needs no second lookup), produced by `core::outcome` from the kind + its
+substitutions:
+
+```rust
+/// A surfaced one-line outcome for one item (§0.6 ItemResult.reason). Carries the
+/// stable discriminant so §5 may re-localise (§2.10) AND the resolved English line.
+enum OutcomeMsg {
+    Failure { kind: ConversionErrorKind, text: String },  // §2.8.2 catalog row, substituted
+    Lossy   { kind: LossyKind, text: String },            // §2.9.1 note, substituted
+}
+```
+
+`text` is the canonical English from the catalog above (§2.8.2) or the §2.9.1 note
+table, with `{x}` substitutions already applied; `kind` lets §5 swap in a localised
+string later without re-deriving the outcome.
+
 ### 2.8.3 Behaviour rules tying the catalog to the pipeline `[DECIDED]`
 
 - **One message per failed item** — never a cascade of dialogs; failures collect
@@ -900,7 +972,8 @@ gating the Convert button.
 | `LossyKind` | Triggering pairs (from 04) | Canonical English note |
 |-------------|----------------------------|------------------------|
 | `image_lossy_codec` | `→ JPG/WEBP(lossy)/HEIC/AVIF` from any source (images.md) | **"Saved with compression — fine details may be slightly reduced."** |
-| `image_palette` | `→ GIF` (256-colour); `→ ICO` (downscaled sizes) | **"Reduced to 256 colours — some colour detail is lost."** |
+| `image_palette` | `→ GIF` (256-colour) | **"Reduced to 256 colours — some colour detail is lost."** |
+| `image_downscale` | `→ ICO` (multi-size icon assembly, images.md) | **"Resized to multiple icon sizes — detail may be lost at smaller sizes."** |
 | `image_alpha_flatten` | alpha source `→ JPG/BMP` (transparency policy) | **"Transparency isn't supported here and will be filled with a background colour."** |
 | `image_animation_flatten` | animated source `→` still target (animation policy) | **"Animated — only the first frame is converted."** |
 | `image_svg_raster` | `SVG → raster` (svg entry) | **"Vector image converted to a fixed-size picture ({w}×{h}) — it won't scale up cleanly afterward."** |
@@ -1161,7 +1234,7 @@ third-party decoder library is linked into or run inside the Rust core — every
 decode runs in a separate subprocess*. This is true for **all** engines including the
 image core: image decode/encode runs in a **separate image-worker process**
 `[DECIDED]` (§0.7/§3.5.5 — the README/§3.5.5 in-process-vs-worker `[OPEN]` is resolved
-to the worker), so a memory-corruption exploit in libvips/libheif/libde265/resvg/a
+to the worker), so a memory-corruption exploit in libvips/libheif/libde265/librsvg/a
 TIFF loader executes inside that throwaway worker's address space, **not** ConvertIA's
 core — the §2.12.1 process boundary contains it exactly as for FFmpeg/LibreOffice and
 T1 (§0.11) is uniformly subprocess-isolated. (This also reinforces §3.6: copyleft

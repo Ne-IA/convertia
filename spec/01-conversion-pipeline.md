@@ -245,6 +245,16 @@ enum DetectionOutcome {
 }
 
 enum Confidence { High, Low }   // Low never silently falls back to the extension
+
+/// Why a file's bytes could not be read at freeze/detect time (§1.2). Owned here;
+/// the §2.8 taxonomy projects these to a plain-language string. Distinct from a
+/// conversion-time failure (that is §2.8 `ConversionErrorKind`).
+enum ReadFailure {
+    NotFound,        // gone between drop and freeze (§2.4)
+    PermissionDenied,// OS denied read
+    Locked,          // exclusively locked by another process (esp. Windows)
+    IoError,         // any other OS read error
+}
 ```
 
 **Outcome rules (SSOT-bound):**
@@ -370,6 +380,23 @@ struct CollectedSummary {
                                  // not invented here (spreadsheets.md / images.md own
                                  // the per-format peek; §1.2 owns running it)
 }
+
+/// A detection-derived informational note surfaced in the confirm summary (§1.4).
+/// Owned here (§1.4). A stable `kind` (so §5 can localise via §2.10) plus an optional
+/// detail value; never a pre-localised sentence. Examples: MultipleSheets{ n },
+/// AnimatedSource, MultiSizeIcon{ sizes }, EmbeddedCoverArt.
+struct CollectedNote {
+    kind: CollectedNoteKind,     // stable discriminant → §5 label catalogue (§2.10)
+    detail: Option<String>,      // optional value (e.g. "3 sheets", "Windows-1252")
+}
+
+enum CollectedNoteKind {
+    MultipleSheets,              // spreadsheets.md: >1 sheet, only one exported
+    AnimatedSource,              // images.md: animated source → still target flattens
+    MultiSizeIcon,               // images.md: ICO source holds >1 size
+    EmbeddedCoverArt,            // audio.md: cover art present
+    Other,                       // catch-all carrying `detail`; never silently dropped
+}
 ```
 
 ### The confirm gate `[DECIDED]`
@@ -491,6 +518,36 @@ enum OptionKind {
 /// raw-vs-resolved distinction in v1: the registry's declared `OptionDecl.default`s
 /// merged with user overrides ARE the resolved values.
 struct EffectiveOptions(BTreeMap<OptionKey, OptionValue>); // == §0.6 OptionValues
+
+// ─── The option-model leaf types (defined here, §1.6 is their owner) ─────────
+/// Stable machine key for an option (e.g. "quality", "fps", "lossless"). Used as
+/// the BTreeMap key and in the §2.5 EquivKey canonicalisation, so it must be a
+/// stable string, never a UI label. Newtype over a short ASCII slug.
+struct OptionKey(String);
+
+/// A UI-chrome label key (§5 resolves it to a localised string, §2.10). NOT a
+/// user-facing string itself — keeps the domain model i18n-free (§2.8/§2.9 own
+/// surfaced strings; this is §5's catalogue key).
+struct LabelKey(String);
+
+/// One concrete, fully-resolved option value. INVARIANT: every variant is
+/// JSON-serialisable (it crosses the §0.4.5 tauri-specta wire) and round-trips
+/// through the §2.5 canonical form. No floats with NaN/Inf; colours as #RRGGBB(AA).
+enum OptionValue {
+    Int(i64),               // IntRange / Size resolved value
+    Bool(bool),             // Toggle
+    Enum(String),           // the chosen EnumChoice.value (stable id, not the label)
+    Color(String),          // "#RRGGBB" or "#RRGGBBAA"
+}
+
+/// A named preset choice inside an Enum option (e.g. MP3 "High"/"Standard"/"Small").
+struct EnumChoice {
+    value: String,          // stable id stored in OptionValue::Enum (never localised)
+    label: LabelKey,        // §5 UI-chrome label for the choice
+}
+
+/// Display unit for an IntRange (purely for the §5 label; not semantic).
+enum Unit { Percent, Kbps, Px, Dpi, Fps }
 ```
 
 ### Basic vs Advanced `[DECIDED]`
@@ -621,11 +678,13 @@ leader** and kills the **whole group**, so one cancel/kill tears down the engine
     (negative-pgid `SIGKILL`/`SIGTERM`), reaping descendants.
   - This deliberately **does not route engine spawning through
     `tauri_plugin_shell`'s sidecar** kill path (whose `CommandChild::kill` is
-    tree-incomplete). The shell plugin/sidecar **resource bundling** is still used
-    for *locating* the bundled binaries (§3.3) and its allowlist still gates what
-    the WebView may trigger (§0.10) — but the **spawn+kill is done in Rust** via
-    `process-wrap` for tree-correctness. `[REC]` flagged so §0.9/§3.5 align on this
-    one spawn path.
+    tree-incomplete). Per §0.10/§3.3.3 `[DECIDED]` there is **no `shell:allow-execute`
+    grant at all** and the shell plugin is **not** used for engine execution: bundled-
+    binary **paths are resolved Rust-side** via `current_exe()` / the Tauri
+    `PathResolver` (§3.3.3), not the shell plugin's allowlist. The **only** way to
+    start an engine is the typed **C6** command the core validates; the spawn+kill is
+    pure Rust via `process-wrap` (Windows Job Object / POSIX process-group) for
+    tree-correctness. `[DECIDED]` — §0.9/§3.5 align on this one spawn path.
 - **Cooperative vs forceful:** v1 uses **forceful group-kill** (no cooperative
   drain). Rationale: these engines have no clean "abort" IPC, the output is
   written to a **temp path** (§2.14) and only atomically promoted on success
@@ -688,7 +747,8 @@ struct OutputPlan {
     base_name: OsString,         // SOURCE base name kept (§2.2)
     extension: OsString,         // from the chosen TARGET (§2.2)
     scratch_dir: PathBuf,        // per-run publish-temp dir, SAME volume as final_dir (§2.14)
-    crosses_volume: bool,        // §2.14 cross-volume copy→fsync→rename strategy needed
+    // No `crosses_volume` field: cross-volume is detected REACTIVELY on EXDEV at
+    // publish time by `fs_guard::atomic_publish` (§2.14.3), never pre-planned (§0.6).
 }
 // (DivertReason, JobId == ItemId: §0.6.)
 ```
@@ -709,13 +769,14 @@ starts and to let the user change the destination. A user-chosen destination
 relative-subtree re-creation (§2.7).
 
 **Destination-change re-validation `[DECIDED]`:** because the §2.14.4 free-space
-check targets the **destination** volume and §2.5 re-run detection differs when the
-destination differs, a C5 destination change must **not** leave the held C4 verdicts
-stale. C5 therefore returns a **re-evaluated `PreflightVerdict`** (and `rerun` where
-§2.5 applies) alongside the resolved destination — i.e. C5 re-runs the
+check targets the **destination** volume, a C5 destination change must **not** leave
+the held C4 free-space verdict stale. C5 therefore returns a **re-evaluated
+`PreflightVerdict`** alongside the resolved destination — i.e. C5 re-runs the
 destination-dependent slice of C4's planning for the new volume (§0.6
-`DestinationResolved` is extended accordingly; §0.4.1 owns the wire shape). The plan
-itself is recomputed per job at write time from the updated destination.
+`DestinationResolved`; §0.4.1 owns the wire shape). The **§2.5 re-run verdict is
+destination-INDEPENDENT in v1** (the EquivKey has no destination component, §2.5.1),
+so `rerun` is **carried through unchanged** from C4 — C5 does not recompute it. The
+plan itself is recomputed per job at write time from the updated destination.
 
 ---
 
@@ -800,6 +861,19 @@ struct SizeEstimate {
   ~1 byte/px` guardrail (supplied by `cross-category.md` [OPEN-F]); audio/video
   bounded by source size/duration. The heuristic **constants** are co-owned with
   04 and **must be finite** (a missing cap reintroduces the foot-gun).
+- **Where the cheap estimate's inputs come from `[DECIDED]`** (so it never needs the
+  convert-time `ffprobe`):
+  - **Raster images:** §1.2 detection **carries header-derived `width`/`height`** (the
+    dimensions sit in the format header it already reads — JPEG SOF, PNG IHDR, etc.),
+    so per-pixel estimates use those, no decode.
+  - **Video / GIF:** the cheap pass does **NOT** run a per-item `ffprobe`; it uses a
+    **worst-case bound from source byte-size** (+ the GIF duration cap from
+    `cross-category.md`) — deliberately conservative. The precise per-item
+    duration/dimension probe (`EstBasis::EngineProbe`) is **deferred to convert-time**
+    (§3.5's `ffprobe`, which runs then anyway), where a refined estimate may still trip
+    the mid-run enforcement. So `PerCategoryHeuristic` is the up-front basis; `EngineProbe`
+    is the convert-time refinement, never an up-front cost. (Aligns the cross-category
+    `[OPEN-C]`.)
 - **Headroom margin:** require **free space ≥ (est_output + est_scratch) × margin**.
   `[REC]` margin **1.3×** as a starting value (confirm against the §6 corpus).
 - **Decision:** if the estimate exceeds the **"too big" ceiling** or free space is

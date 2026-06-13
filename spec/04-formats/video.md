@@ -73,6 +73,12 @@ Notes on the `R`/`✓~` choice per cell:
   given item to re-encode (`✓~`) only when a specific inner codec is *not* legal in
   the target (e.g. MKV holding HEVC/VP9 → MP4 may re-encode video; PCM/Vorbis audio
   → MP4 re-encodes audio to AAC). The matrix marks the **common** case.
+  - **FLV footnote:** the FLV `R` cells hold **only for H.264/AAC FLV**. **Older
+    VP6 / Sorenson Spark (H.263-class) FLV cannot losslessly remux to MP4/MOV/M4V**
+    (those codecs are not legal in the MP4 family — only MKV can wrap them verbatim),
+    so the §3.5 runtime check re-encodes such items (`✓~`) on the MP4-family targets.
+    Phase-3 must **not** implement an always-remux FLV→MP4 path — the remux-vs-reencode
+    decision is per-item from the ffprobe inner-codec inventory (§3.5).
 - **→ WEBM** is always **✓~ re-encode**: WEBM legally carries only VP8/VP9/AV1
   video + Vorbis/Opus audio, which the H.264/AAC mainstream never matches, so a
   WEBM target always decodes-and-re-encodes (lossy).
