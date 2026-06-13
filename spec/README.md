@@ -37,8 +37,9 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 
 ## Conventions
 
-- **Decision tags:** `[DECIDED]` (fixed here / by the SSOT), `[OPEN]` (needs a
-  call — collected in the log below), `[DEFER]` (resolved during implementation).
+- **Decision tags:** `[DECIDED]` (fixed here / by the SSOT), `[OPEN]` (a genuine
+  unresolved owner-level call — collected in the log below), `[DEFER: …]` (design is
+  decided; only an empirical number or a real-world validation remains).
 - **SSOT references** by section *name* (e.g. *Never harm the original*).
 - Code/identifiers in English; this doc in English (public OSS repo).
 
@@ -52,45 +53,102 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 
 ## Open-questions log
 
-> Running list of `[OPEN]` items surfaced while writing the spec; resolved items
-> move to `[DECIDED]` with a one-line rationale.
+> Kept honest after the convergence pass. `[DECIDED]` = resolved (one-line
+> rationale); `[DEFER: corpus]` / `[DEFER: …]` = the *design* is fixed and only an
+> empirical number/validation remains; `[OPEN]` = a genuine unresolved owner-level
+> call. After this pass the vast majority are decided or deferred.
 
-### Patents & codecs
-- **HEIC / AAC / H.264 patent disposition (umbrella)** — per format × platform: ship-bundled / gate / rely-on-OS / unavailable; MP4-as-default-video depends on H.264/AAC shipping on all 3 platforms. Owner: §3.4. `[OPEN]`
-- **HEVC *encode* (writing HEIC) per-platform disposition** — x265 GPL + heaviest patents, never a default target; ship-bundled-isolated (REC) vs unavailable (SSOT-exception-1). Decide before the §6.5 corpus run. Owner: §3.4. `[OPEN]`
+### Resolved this convergence pass `[DECIDED]`
+- **Name/trademark clearance verdict = `clear`** — both "ConvertIA" and the public
+  "Ne-IA" brand cleared for v1; `docs/name-clearance.md` records it; the §6.9 gate
+  (record present + current) is retained and the rename machinery stays dormant.
+  Owner: §6.9.
+- **HEIC/AAC/H.264 patent disposition** — **ship-bundled on all 3 platforms** (native
+  LGPL AAC, x264, libde265 HEVC-decode), isolated per §3.6; the MP4-default-video
+  dependency is honored. Owner: §3.4.
+- **HEVC *encode* (write HEIC)** — **ship-bundled-isolated (x265), behind the §3.4
+  availability flag** so it can flip to `unavailable` (SSOT exception-1) as a config
+  change; **kvazaar (BSD)** recorded as the licence-clean alternative. Owner: §3.4.
+- **AVIF** — ship-bundled all 3 (royalty-free). Owner: §3.4.
+- **Rust↔TS type-sharing = tauri-specta** (+ specta), generated `bindings.ts`, §06
+  drift check; specta-only is the documented fallback. Owner: §0.4.5.
+- **Supported-OS floor** — Win10 1809+/11; macOS 11+; Ubuntu-22.04-LTS-class
+  `libwebkit2gtk-4.1`; x86-64. (Exact build numbers `[DEFER: §6.4 drift matrix]`.)
+  Owner: §0.3.1.
+- **§0.10 capability allowlist** — **no `shell:allow-execute`** (engines spawn
+  Rust-side §3.3.3); opener output-scoped + compiled-in project URL; `log:default` +
+  `store:default` added. Owner: §0.10.
+- **cancel-collect** — command-backed **C13 `cancel_ingest`** (ingest-scoped token);
+  the §5.2 Collecting cancel control + §5.10 Esc back it. Owner: §0.4/§1.1/§5.
+- **HEIC/AVIF encode code-path** — standardise on libvips `heifsave` (one AV1 encoder,
+  libaom; standalone heif/avif dropped). Owner: images.md [OPEN-1] / §3.5.5.
+- **GIF/BMP/ICO save path** — native `gifsave` (cgif, MIT) / `bmpsave` (libvips
+  ≥ 8.12); ImageMagick `magicksave` fallback only. **ImageMagick is permissive (not
+  GPL).** Owner: images.md / §3.5.5 / §3.6.1.
+- **Ghostscript** — **dropped in v1** (poppler-only PDF→TXT, no AGPL). `[DEFER: re-add
+  if corpus shows GS-salvageable PDFs]`. Owner: §3.1/§3.6.
+- **Cross-session re-run ledger** — **not in v1** (session-only; signal 1 demoted to
+  in-session corroborator only, §2.5.2). `[DEFER: post-v1 hashes-only ledger]`.
+  Owner: §7.4/§2.5.
+- **Persistence** — ship the **2-key prefs blob** (theme + lastDestinationMode), OS
+  config dir. Owner: §7.4.
+- **Logging** — ship the **local on-disk log + verbose opt-in** (privacy-by-default,
+  no network). Owner: §7.5.
+- **Instance hand-off while RUNNING** — **refuse-busy**. Owner: §7.1.
+- **Engine integrity verification** — **hash-on-first-launch + cheap warm check**.
+  Owner: §7.2.
+- **Sign `SHA256SUMS`** — **yes, project minisign key** (manifest signature, not
+  code-signing). Owner: §6.2.
+- **CI runners** — **GitHub-hosted mac/win, self-hosted Linux for Lane A** (budget
+  note retained). Owner: §6.1.
+- **CI engine-acquisition** — **pinned, checksum-verified asset cache**. Owner: §6.1.
+- **Corpus storage** — **small CC0/synthetic in-repo + LFS `corpus-large` for the
+  full gate**; total size `[DEFER: corpus]`. Owner: §6.4.
+- **Bundled-font baseline** — **Liberation + Carlito + Caladea + curated Noto CJK/RTL
+  subset**; only CJK breadth `[DEFER: size]`. Owner: §3.9.3.
 
-### Architecture & toolchain
-- **Rust↔TS type-sharing mechanism** — tauri-specta (REC) vs ts-rs/specta + hand-written drift-checked command map; toolchain-maturity bet against pinned Tauri. Owner: §0.4 (type-sharing subsection §0.4.5). `[OPEN]`
-- **Supported-OS floor** — exact min Windows build / macOS version / WebKitGTK version; product-support commitment, QA cost cross-cutting §6.1/§6.4. Owner: §0.3.1. `[OPEN]`
+### Deferred to corpus / usability validation `[DEFER: corpus]`
+> Design decided; only an empirical number or a real-world validation remains. These
+> are **not** open design questions.
+- **Resource budget numbers** — "too big" ceiling, memory/handle ceilings,
+  per-category heuristics, **headroom margin 1.3×**, **GIF duration cap ~10 s** ship
+  as finite starting values, tuned against the §6 corpus. Owner: §1.10 (co-owned
+  §0.9 + cross-category [OPEN-F]).
+- **Documents `MD→PDF`/`MD→ODT/DOCX` ownership** (LO 26.2 MD import unproven; default
+  LO, pandoc fallback) and **`RTF→markup` ownership** (pandoc, LO fallback if too
+  lossy). `DOC→markup` is already DECIDED LibreOffice. Owner: documents.md.
+- **`*→MD` image policy** — drop-with-note (lean) vs data-URI inline. Owner:
+  documents.md.
+- **extract-audio target subset** (MP3★/M4A/WAV/FLAC/OGG; keep OGG?) and **"no audio
+  track" up-front probe** (disable-with-reason vs offer-then-fail). Owner:
+  cross-category [OPEN-A]/[OPEN-C].
+- **to-GIF option scope** (trim: hard-cap / Basic start+duration / Advanced) and
+  **default dither** (bayer-vs-sierra2_4a; bayer is the v1 default). Owner:
+  cross-category [OPEN-D]/[OPEN-E].
+- **Video HEVC-source default** (remux-verbatim vs re-encode-to-H.264; leaning
+  re-encode default + remux as an Advanced "keep original quality"), **auto-
+  deinterlace default** (yadif on for flagged-interlaced), and **MOV-as-target
+  demand** — validate in §6.6. Owner: video.md.
+- **Spreadsheets multi-sheet → CSV sheet selection** (active/first/picker; lean
+  picker→active) and **XLSX default CSV-vs-PDF** — validate in §6.6. Owner:
+  spreadsheets.md.
+- **Images defaults to confirm vs corpus**: GPS/location-EXIF strip-vs-preserve;
+  APNG-output vs first-frame-collapse (lean collapse); ICO non-square pad-vs-crop
+  (lean pad); default Q values (JPG 82 / WEBP 80 / HEIC&AVIF 60); x265 `preset`
+  slow-vs-medium for HEIC. Owner: images.md.
 
-### Guarantees & resources
-- **Decoder-isolation v1 sandbox depth per OS** — cheap tier (process + timeout + minimal-env + scratch-cwd) is non-negotiable; how far the privilege-drop tier (seccomp/Landlock / Seatbelt / Job-Object + low-integrity) goes, constrained by portable/no-install. Owner: §2.12. `[OPEN]`
-- **Resource budget numbers** — absolute "too big" output ceiling, memory/handle ceilings, per-category size-heuristic constants, headroom margin (REC 1.3×), GIF duration cap (~10 s) + per-pixel heuristic; must be finite v1 values, tuned against the §6 corpus. Owner: §1.10, co-owned §0.9 + 04/cross-category [OPEN-F]. `[OPEN]`
-- **In-core text-encoding heuristic / Rust ZIP central-directory peek** — may it stay outside the §2.12 isolation boundary (lean: yes, memory-safe/bounded). Owner: §2.12 (raised by §1.2). `[OPEN]`
-- **Cross-session re-run ledger** — add a hashes-only on-disk EquivKey record (survives restart) vs strict persist-nothing (REC not v1). Owner: §7.4 / §2.5. `[OPEN]`
-- **libvips in-process vs separate image-worker process** — security/robustness isolation placement (REC separate worker); licence analysis unaffected. Owner: §2.12 / §0.9 (raised by §3.5.5). `[OPEN]`
-- **Bundled-font-set contents** — Liberation/Carlito/Caladea + CJK/RTL Noto breadth vs binary size (the SC-vs-all-CJK weight knob); shared by documents/spreadsheets/presentations. Owner: §3.9.3. `[OPEN]`
-
-### App shell
-- **Instance & run identity** — single-instance + hand-off and the InstanceId/RunId model are DECIDED; remaining: second-launch hand-off **while a batch is RUNNING** — queue-after-current vs refuse-with-busy (REC refuse-busy). Owner: §7.1. `[OPEN]`
-- **Engine integrity verification** — hash-every-engine-every-launch vs hash-once-then-cache-marker (startup latency for the heavy office engine vs assurance; REC hash-on-first-launch + cheap warm check). Owner: §7.2 with §3.3. `[OPEN]`
-- **Persistence** — ship the minimal 2-key prefs blob (theme + lastDestinationMode; REC) vs strict zero-persistence in v1; and prefs file location OS-config-dir (REC) vs beside-binary. Owner: §7.4. `[OPEN]`
-- **Logging** — ship a local on-disk log at all + the verbose-mode opt-in for full-path/command-line capture (REC yes to both, privacy-by-default). Owner: §7.5. `[OPEN]`
-
-### Formats (04)
-- **extract-audio target subset** — proposed MP3★/M4A/WAV/FLAC/OGG; whether to keep OGG, and the AAC/M4A patent flag routes to §3.4. Owner: 04-formats/cross-category [OPEN-A]. `[OPEN]`
-- **extract-audio "no audio track" up-front probe** — disable-target-with-reason vs offer-then-fail (cost vs UX on large recursive batches). Owner: 04-formats/cross-category [OPEN-C]. `[OPEN]`
-- **to-GIF option scope** — trim window: hard-cap-only / Basic start+duration / Advanced (REC Basic start+duration); plus default dither bayer-vs-sierra2_4a. Owner: 04-formats/cross-category [OPEN-D]/[OPEN-E]. `[OPEN]`
-- **Video HEVC/H.265 default disposition when source is already H.265** — remux verbatim (lossless, less compatible) vs re-encode to H.264 (lossy, plays-everywhere; leaning re-encode default + remux as Advanced "keep original quality"). Owner: 04-formats/video. `[OPEN]`
-- **Video auto-deinterlace default** (yadif on for flagged-interlaced MPEG-2) and MOV-as-an-offered-target-at-all — validate in the §6.6 usability walkthrough. Owner: 04-formats/video. `[OPEN]`
-- **Spreadsheets multi-sheet → CSV sheet selection** — active-sheet vs first-sheet vs user-picker (lean picker defaulting to active); and XLSX default target CSV-vs-PDF (validate in §6.6). Owner: 04-formats/spreadsheets. `[OPEN]`
-- **Documents MD→PDF / MD→ODT/DOCX engine ownership** (LibreOffice 26.2 MD import unproven) and DOC/RTF→markup ownership (pandoc can't read .doc; RTF reader gaps) — single-engine, no chaining; needs corpus validation. Owner: 04-formats/documents. `[OPEN]`
-- **Documents Ghostscript bundling** — drop in v1 (REC, poppler-only PDF→TXT) vs keep AGPL backstop; and *→MD image policy (drop-with-note vs data-URI inline). Owner: 04-formats/documents / §3.1. `[OPEN]`
-- **Images metadata/privacy & encode paths** — strip GPS/location EXIF by default vs preserve-all + Advanced toggle; APNG output vs first-frame collapse; ICO non-square pad-vs-crop; HEIC/AVIF encode code-path (vips heifsave vs standalone heif/avif); confirm default Q values (JPG 82 / WEBP 80 / HEIC&AVIF 60) against the corpus. Owner: 04-formats/images. `[OPEN]`
-
-### Build / test / release (06)
-- **Name/trademark clearance VERDICT** for "ConvertIA" and the public "Ne-IA" brand (clear vs rename vs abort) — SSOT-mandated, release-blocking legal/branding judgement, no recommendation. Owner: §6.9 [OPEN-6.9a]. `[OPEN]`
-- **Sign SHA256SUMS with a project minisign/GPG key** — strengthens the no-code-signing trust substitute (REC yes). Owner: §6.2 [OPEN-6.2a]. `[OPEN]`
-- **macOS/Windows CI runners** — GitHub-hosted (Actions-minute spend vs hobby/no-paid-upgrades budget) vs self-hosted (REC GitHub-hosted for mac/win, self-hosted Linux for Lane A). Owner: §6.1 [OPEN-6.1e]. `[OPEN]`
-- **CI engine-acquisition mechanism** — vendored-LFS vs pinned checksum cache (REC) vs build-from-source; co-owned with the §3.9 size budget. Owner: §6.1 [OPEN-6.1d]. `[OPEN]`
-- **Real-world corpus storage/size** — in-repo CC0/synthetic (REC) vs LFS corpus-large for the full gate; total size co-owned with §3.9. Owner: §6.4 [OPEN-6.4a]. `[OPEN]`
+### Genuinely still open `[OPEN]` (owner-level, not yet resolvable)
+- **Decoder-isolation v1 sandbox depth per OS** — the cheap tier (process + timeout +
+  minimal-env + scratch-cwd) is non-negotiable v1; how far the privilege-drop tier
+  (seccomp/Landlock / Seatbelt / Job-Object + low-integrity) goes is a real
+  engineering/portability call. Owner: §2.12.
+- **In-core text-encoding heuristic / Rust ZIP central-directory peek** — may it stay
+  outside the §2.12 isolation boundary (lean: yes, memory-safe/bounded). Owner: §2.12
+  (raised by §1.2).
+- **libvips in-process vs separate image-worker process** — security/robustness
+  isolation placement (lean: separate worker); licence analysis unaffected. Owner:
+  §2.12/§0.9 (raised by §3.5.5).
+- **macOS E2E driver under an unsigned build** — `tauri-driver`/`safaridriver`
+  cannot cleanly drive an unsigned WKWebView; the macOS E2E may degrade to
+  launch+screenshot, with the §6.6 human walkthrough carrying macOS core-flow
+  validation. Owner: §6.4.6.

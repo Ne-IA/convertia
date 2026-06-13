@@ -46,9 +46,10 @@ boundary.
 intake (1.1) ─▶ detection (1.2) ─▶ grouping + pre-flight (1.3)
    ─▶ collected-summary + CONFIRM GATE (1.4)
    ─▶ target resolution (1.5) ─▶ options model (1.6)
-   ─▶ destination shown / changeable (OutputPlan preview, 1.8 + §2.7)
-   ─▶ [re-run detection §2.5 may inject one batch-level prompt]
-   ─▶ resource pre-flight & budgets (1.10)
+   ─▶ destination shown / changeable (OutputPlan preview, 1.8 + §2.7) ── C4 plan_output
+   ─▶ [re-run detection §2.5 runs IN C4 → OutputPlanPreview.rerun → UI enters
+       RerunPrompt (§5.2) BEFORE Convert; the user's RerunDecision rides C6]
+   ─▶ resource pre-flight & budgets (1.10, also surfaced in the C4 preview)
    ─▶ CONVERT: per-item engine invocation (1.7) ─▶ OutputPlan finalise (1.8)
         ─▶ atomic write (§2.1/§2.14)  [with live progress 1.11, cancellable 1.7]
    ─▶ end-of-batch summary (1.12)
@@ -87,17 +88,17 @@ All five funnel into a single Rust function (pseudo-signature; exact IPC names i
 §0.4):
 
 ```rust
-/// One funnel for every entry point. Returns a freshly built, frozen Batch
-/// (or a pre-flight rejection — mixed formats / nothing eligible).
-fn ingest(paths: Vec<PathBuf>, source: IntakeSource) -> IngestOutcome;
-
-enum IntakeSource { DragDrop, Picker, Launch, SecondInstance }
-
-enum IngestOutcome {
-    Collected(CollectedSet),     // → 1.4 confirm gate
-    MixedRejected(MixedReport),  // → 1.3 refusal (formats + counts)
-    NothingEligible(EmptyReport),// all hidden/system/zero, or none readable
-}
+/// One funnel for every entry point. Returns the §0.6 `CollectedSet` (the single
+/// discriminated union C1 returns over the wire — §0.4.1): its `Single` variant is
+/// the collected batch → 1.4 confirm gate; `Mixed` → 1.3 refusal; `Unsupported` /
+/// `Uncertain` → 1.2 decline; `Empty` → "nothing eligible".
+fn ingest(paths: Vec<PathBuf>, origin: IntakeOrigin) -> CollectedSet;
+// `IntakeOrigin` is §0.6's enum { Drop, Picker, LaunchArg, SecondInstance } — the
+// ONE canonical name (this file used "IntakeSource" before; corrected to match
+// §0.4/§0.6). There is no separate `IngestOutcome` type: the outcome IS CollectedSet
+// (so the §1.2 per-item DetectionOutcome is preserved into the Mixed/Unsupported/
+// Uncertain variants — a lone unsupported/uncertain drop yields the specific
+// "detected: X" message, not a generic empty report).
 ```
 
 ### Folder recursion (Rust-side) `[DECIDED]`
@@ -117,6 +118,13 @@ cannot enumerate a directory (§0.4). Recursion:
 - Produces a flat list of candidate file paths; the **dropped root(s)** are
   retained so §2.7 can re-create the relative subtree and "open folder" can open
   the common root.
+- **Cooperatively cancellable** (`[DECIDED]`): the walk + per-item detection loop
+  polls an **ingest-scoped `CancellationToken`** keyed by the `CollectingId` (§0.6),
+  tripped by **C13 `cancel_ingest`** (§0.4.1). On cancel it stops the walk and
+  **discards the partial, not-yet-frozen set** — there is **no cleanup obligation**
+  (no temp/`*.part` is written during ingest; the freeze and any conversion happen
+  after). This is what backs the §5.2 *Collecting*-state cancel-collect control,
+  needed because a thousands-file recursive walk (§1.10) can run long.
 
 ### Freeze point `[DECIDED]`
 
@@ -163,11 +171,37 @@ batch grouping (§1.3).
      **container**, e.g. MKV). The probe depth here is **header-level only**; the
      full `ffprobe` stream inventory is an engine-layer concern (§3.5), invoked
      later, not during the cheap detection pass.
+   - **gzip wrapper (`.svgz`)**: a file whose magic is **`1F 8B`** (gzip) is not
+     itself a recognised format — ConvertIA **decompresses one bounded block** and
+     re-sniffs the inner bytes; if the inner content is an SVG root (`<svg` after
+     optional `<?xml`/BOM/DOCTYPE), the file is classified **`Svg`** (the
+     `.svgz` compressed-SVG case the corpus §6.4.5 requires — it does **not** decode
+     as text, so it must be caught here, not in step 3, or it would drop silently as
+     unrecognised). Cross-ref images.md (SVG `.svgz` handling). Other gzip-wrapped
+     content is `UnsupportedType` ("detected: gzip archive").
 3. **Text classification** for the magic-less formats (TXT/MD/CSV/TSV/SVG): confirm
    the bytes decode as text (BOM → strict UTF-8 → single-byte codepage fallback),
    then apply the per-file rules (SVG root element; CSV/TSV delimiter sniff;
    TXT-vs-MD by extension/intent). Encoding/delimiter specifics owned by the 04
-   files.
+   files. (Note: `.svgz` is gzip, **not** text — caught by the gzip rule in step 2,
+   not here.)
+4. **Bounded structural-peek for the §1.4 summary `notes`** (cheap, still
+   header/member-level — the producer of `CollectedSummary.notes`): once a type is
+   recognised, ConvertIA may read a **small, bounded** structural fact needed for the
+   confirm-gate summary line, **without** a full decode:
+   - **`>1 sheet`** (spreadsheets) — a bounded ZIP-member read of `xl/workbook.xml`
+     (XLSX) / the ODS `content.xml` sheet count / OLE2 directory (XLS); cross-ref
+     spreadsheets.md (its multi-sheet `[OPEN]`). Drives the "only one sheet is
+     exported" note (§2.9 `sheet_to_delimited`).
+   - **`animated source present`** (images) — a bounded descriptor-count peek: GIF
+     image-descriptor count, WEBP `VP8X` animation flag / `ANMF` chunks, APNG `acTL`
+     chunk, AVIF `avis` brand; cross-ref images.md animation policy. Drives the
+     "animated — only the first frame is converted" note (§2.9
+     `image_animation_flatten`) at the summary level.
+   These peeks are **bounded member reads in memory-safe Rust** (no third-party
+   decoder, §2.12), so they stay in-core and cheap; they run only for the relevant
+   detected types, not every item. **`CollectedSummary.notes` (§1.4) is produced
+   here** (the previous draft declared the field with no producer — fixed).
 
 ### Detection result model `[DECIDED]`
 
@@ -250,6 +284,13 @@ iff their `UserFacingFormat` is equal.
 ### v1 batch rule: one source format at a time `[DECIDED]`
 
 ```rust
+// `Grouping` is an INTERNAL projection that maps onto §0.6's wire/domain
+// `CollectedSet` (the type C1 returns). The mapping preserves the §1.2 per-item
+// `DetectionOutcome` so a single Unsupported/Uncertain drop produces the specific
+// "detected: X" message (not a generic empty report):
+//   Single → CollectedSet::Single ; Mixed → CollectedSet::Mixed{found} ;
+//   a lone Unsupported → CollectedSet::Unsupported{detected} ;
+//   a lone Uncertain → CollectedSet::Uncertain{note} ; otherwise → CollectedSet::Empty.
 fn group(detected: Vec<DetectionResult>) -> Grouping;
 
 enum Grouping {
@@ -257,7 +298,8 @@ enum Grouping {
     Single { format: UserFacingFormat, members: Vec<ItemId>, skipped: Vec<SkippedItem> },
     /// Two or more distinct eligible source formats → hard pre-flight refusal.
     Mixed(MixedReport),
-    /// No eligible source at all.
+    /// No eligible source at all — carries the per-item DetectionOutcomes so a lone
+    /// unsupported/uncertain drop maps to the specific CollectedSet variant above.
     Empty(EmptyReport),
 }
 
@@ -304,7 +346,10 @@ struct CollectedSummary {
     // detection-derived hints surfaced in the summary line (per 04):
     encoding_hint: Option<String>,   // e.g. CSV detected "Windows-1252"
     delimiter_hint: Option<String>,  // e.g. CSV/TSV detected ";"
-    notes: Vec<CollectedNote>,   // e.g. ">1 sheet", "animated source present"
+    notes: Vec<CollectedNote>,   // e.g. ">1 sheet", "animated source present" —
+                                 // PRODUCED by §1.2's bounded structural-peek (step 4),
+                                 // not invented here (spreadsheets.md / images.md own
+                                 // the per-format peek; §1.2 owns running it)
 }
 ```
 
@@ -342,16 +387,14 @@ struct OfferedTargets {
 }
 
 struct OfferedTarget {
-    id: TargetId,
-    kind: TargetKind,            // Format(FormatId) | CrossCat(Operation)
-    availability: Availability,  // Available | Unavailable { reason } per §3.4
-    lossy: Option<LossyFlag>,    // predictable-loss marker → §2.9 (string is §2.9's)
+    id: TargetId,                // §0.6 TargetId = Format(FormatId) | Op(CrossCatOp)
+    availability: Availability,  // §0.6: Available | Unavailable { reason } per §3.4
+    lossy: Option<LossyKind>,    // predictable-loss marker → §2.9 (the ONE canonical
+                                 // name: §2.9's LossyKind; this file used "LossyFlag"
+                                 // before — corrected). String lives in §2.9.
 }
-
-enum TargetKind {
-    Format(FormatId),
-    CrossCat(CrossCatOp),        // ExtractAudio | ToGif — targets of a VIDEO source
-}
+// TargetId/Availability/FormatId/CrossCatOp are §0.6's; the offered target's
+// kind is carried by `TargetId` itself (no separate TargetKind needed).
 ```
 
 **Rules this section owns (general; per-source specifics in 04):**
@@ -428,7 +471,11 @@ enum OptionKind {
 
 /// The effective, resolved option set for a batch — feeds §1.7 (engine args via
 /// §3.5), §2.5 (re-run equivalence keys on these), and §1.10 (size estimate).
-struct EffectiveOptions(BTreeMap<OptionKey, OptionValue>);
+/// This IS §0.6's `OptionValues` (the wire/domain name); `EffectiveOptions` is the
+/// in-pipeline alias for the same `BTreeMap<OptionKey, OptionValue>`. There is no
+/// raw-vs-resolved distinction in v1: the registry's declared `OptionDecl.default`s
+/// merged with user overrides ARE the resolved values.
+struct EffectiveOptions(BTreeMap<OptionKey, OptionValue>); // == §0.6 OptionValues
 ```
 
 ### Basic vs Advanced `[DECIDED]`
@@ -514,8 +561,10 @@ enum InvocationResult {
 - **`stdout`/`stderr` are streamed line-by-line** and parsed by the §3.5 per-engine
   adapter into normalised progress ticks (FFmpeg `-progress pipe:` key=value;
   LibreOffice has no native progress → §1.11's heuristic; libvips is fast/atomic →
-  coarse ticks). Normalised ticks flow to the frontend via a **`tauri::ipc::Channel<ProgressEvent>`** (the streaming IPC primitive; channel/event payloads are
-  defined in **§0.4**, not here). `stderr` is **captured in full** for
+  coarse ticks). Normalised ticks flow to the frontend over the **§0.4.2
+  `Channel<ConversionEvent>`** as `ConversionEvent::ItemProgress` (the wire shape is
+  defined in **§0.4**, not here; "ProgressEvent" in §1.11 is the internal projection
+  of that wire variant). `stderr` is **captured in full** for
   exit-classification and for the §7.5 verbose/diagnostic echo, and fed to §2.13
   for `stderr`-classify-into-§2.8.
 - **Timeout / hang policy:** an item that produces **no progress and no output**
@@ -612,16 +661,21 @@ cross-volume strategy) **consumes** this plan.
 
 ```rust
 /// Computed per job, before any write. Rules = §2.7; naming = §2.2; identity = §2.3.
+/// This is the canonical shared/wire shape, copied verbatim into §0.6 (domain model)
+/// and consumed by §2.1/§2.14. DIRECTORY-BASED by design: the exact final name +
+/// no-clobber numbering is resolved at write time on the RESOLVED real file
+/// (§2.1 exclusive-create) — NEVER pre-baked into a `final_path` string (a
+/// pre-numbered path would reintroduce the §2.1.2 TOCTOU race).
 struct OutputPlan {
     job: JobId,
     final_dir: PathBuf,          // beside-source OR diverted (§2.7)
-    diverted: Option<DivertReason>, // unwritable / ephemeral (§2.7)
+    diverted: Option<DivertReason>, // unwritable / ephemeral (§2.7); None = beside-source
     base_name: OsString,         // SOURCE base name kept (§2.2)
     extension: OsString,         // from the chosen TARGET (§2.2)
-    // exact final name + no-clobber numbering is resolved at write time on the
-    // RESOLVED real file (§2.1 exclusive-create), not pre-baked into a string:
-    scratch_dir: PathBuf,        // per-run temp, SAME volume as final_dir (§2.14)
+    scratch_dir: PathBuf,        // per-run publish-temp dir, SAME volume as final_dir (§2.14)
+    crosses_volume: bool,        // §2.14 cross-volume copy→fsync→rename strategy needed
 }
+// (DivertReason, JobId == ItemId: §0.6.)
 ```
 
 What this section **owns**: the *computation* — resolve the destination root,
@@ -646,14 +700,15 @@ destination.
 ### States
 
 ```rust
-enum JobState {
-    Pending,                 // queued, not started
-    Running,                 // engine invoked (1.7)
-    Succeeded,               // output verified + atomically written (§2.1)
-    Failed(ErrorKind),       // named §2.8 kind; nothing written for it
-    Cancelled,               // user cancel; nothing written for it
-    Skipped,                 // detected-ineligible pre-flight (unsupported/uncertain/empty/unreadable)
-}
+// The state TYPE is §0.6's `JobState` (referenced, not redefined); this section
+// owns the TRANSITIONS between its variants. For convenience the variants:
+//   Pending                  // queued, not started
+//   Running                  // engine invoked (1.7)
+//   Succeeded                // output verified + atomically published (§2.1)
+//   Failed(ErrorKind)        // named §2.8 kind; nothing written for it
+//   Cancelled                // user cancel; nothing written for it
+//   Skipped(SkipReason)      // detected-ineligible pre-flight (§0.6 SkipReason:
+//                            //   UnsupportedType | Uncertain | Empty | Unreadable)
 ```
 
 ```
@@ -696,7 +751,7 @@ Pending ─▶ Running ─┬─▶ Succeeded
 
 ---
 
-## 1.10 Resource pre-flight & budgets `[OPEN]`
+## 1.10 Resource pre-flight & budgets `[DECIDED design; DEFER: corpus-tuned numbers]`
 
 The model the SSOT Boundary Note delegates ("disk-space estimation thresholds,
 very-large-batch handling"). This section owns the **estimation + decision**;
@@ -730,15 +785,17 @@ struct SizeEstimate {
   restores free space, and the item is reported (§2.8) — the **up-front-vs-mid-run**
   split is: estimate up front, enforce both up front *and* at write time.
 
-### Ceilings & large lists `[OPEN]`
+### Ceilings & large lists `[DECIDED design; DEFER: corpus numbers]`
 
-- **`[OPEN — owner §1.10, co-owned §0.9 + 04]`** the concrete numbers: the absolute
-  **"too big" output ceiling**, the **memory/handle ceilings**, the per-category
-  heuristic constants, the headroom margin, and the GIF duration cap
-  (`cross-category.md` [OPEN-F]). These must be *some* finite v1 values; they are
-  flagged for tuning against the real-world corpus (SSOT *v1 DoD* reliability gate),
-  not invented blind. Rationale they stay open: the right thresholds depend on
-  corpus timing/measurement, which is a §6 asset.
+- **`[DEFER: corpus]` (owner §1.10, co-owned §0.9 + 04)** the concrete numbers: the
+  absolute **"too big" output ceiling**, the **memory/handle ceilings**, the
+  per-category heuristic constants, the **headroom margin (1.3× starting value)**,
+  and the **GIF duration cap (~10 s starting value)** (`cross-category.md` [OPEN-F]).
+  These are **genuinely empirical** — the right thresholds depend on corpus
+  timing/measurement (a §6 asset), so they are **deferred to corpus calibration**,
+  not left open as a design question. They ship with the stated finite starting
+  values (margin 1.3×, GIF cap ~10 s) and are tuned against the real-world corpus
+  (SSOT *v1 DoD* reliability gate) — finite-from-day-one, calibrated-against-corpus.
 - **Large recursively-collected lists** (thousands of files): the **frozen set and
   job queue are bounded in memory** by storing lightweight `ItemId`/path records,
   not file contents; the **UI list is virtualized** (§5 owns the virtualization
@@ -770,11 +827,13 @@ long conversion. The fraction source per engine (parsed by §3.5, normalised by
 | **poppler / pandoc** | Usually fast; staged ticks; large PDFs report per-page where `pdftotext` allows |
 
 ```rust
-struct ProgressEvent {           // payload SHAPE defined in §0.4; semantics here
-    job: JobId,
-    fraction: Option<f32>,       // 0.0..=1.0 ; None only where truly unknowable (LO)
-    stage: JobStage,             // Spawning | Decoding | Encoding | Writing
-}
+// payload SHAPE is §0.4.2's `ItemProgress` { runId, itemId, fraction, stage };
+// `JobStage` is the §0.6 wire enum (Spawning | Decoding | Encoding | Writing).
+// This section owns the SEMANTICS (the per-engine fraction basis above):
+//   fraction: Option<f32>   // 0.0..=1.0 ; None ONLY where truly unknowable (LibreOffice)
+//   stage:    JobStage      // §0.6
+// For the None-fraction LibreOffice case the frontend synthesises a staged
+// determinate-looking bar from `stage` transitions (§5.3) — never a raw spinner.
 ```
 
 ### Aggregate batch progress `[DECIDED]`
@@ -804,25 +863,18 @@ the rest continue. The app **stays responsive regardless of batch or file size**
 ## 1.12 End-of-batch summary `[DECIDED]`
 
 When every job has left `Pending`/`Running`, the pipeline emits the **`RunResult`**
-summary (the §0.6 entity; rendered by §5.3 `ResultSummary`):
+summary. **`RunResult`, `ItemResult`, `Totals` and `CleanupResidue` are the §0.6
+domain types — owned and defined there, referenced (never restated) here** (this
+section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payload;
+§5.3 `ResultSummary` renders it). For reference, the §0.6 shape is:
 
-```rust
-struct RunResult {
-    collected_set_id: CollectedSetId, // §0.6 (Batch.id is a CollectedSetId)
-    run_id: RunId,               // §7.1
-    items: Vec<ItemResult>,
-    totals: Totals,              // succeeded / failed / cancelled / skipped
-    common_root: PathBuf,        // "open folder" target (§2.7 / §7.7)
-    cleanup_incomplete: Vec<CleanupResidue>, // §2.6: residue-may-remain cases
-}
-
-struct ItemResult {
-    source: PathBuf,             // for output→source mapping
-    state: JobState,
-    output: Option<PathBuf>,     // Some(..) only when Succeeded
-    reason: Option<OutcomeMsg>,  // §2.8 failure string OR §2.9 lossy note (link)
-}
-```
+- `RunResult { collected_set_id, run_id, items: Vec<ItemResult>, totals: Totals,
+  cleanup_incomplete: Vec<CleanupResidue>, common_root }`
+- `ItemResult { source, state: JobState, output: Option<PathBuf>, reason:
+  Option<OutcomeMsg> }`
+- `Totals { succeeded, failed, cancelled, skipped }` — the "all failed" condition is
+  **derived** (`failed == total && total > 0`), not a stored field.
+- `CleanupResidue { item, residue_path }` (§2.6.4).
 
 - **Per-item success/failure with reasons** and **output locations**; every output
   is **mapped back to its source** (SSOT How It Feels 7 — the completion summary
@@ -846,8 +898,8 @@ struct ItemResult {
 
 | ID | Item | Owner | Status |
 |----|------|-------|--------|
-| 1.10-a | Resource budgets: absolute "too big" output ceiling, memory/handle ceilings, per-category size-heuristic constants, headroom margin (REC 1.3×), GIF duration cap | §1.10 (co-owned §0.9 + 04) | `[OPEN]` — tune against the §6 corpus; must be finite in v1 |
-| 1.2-sec | Whether the in-core text-encoding heuristic / Rust ZIP central-directory peek may stay outside the §2.12 isolation boundary (lean: yes — memory-safe, bounded) | §2.12 (raised by §1.2) | `[OPEN]` |
+| 1.10-a | Resource budgets: absolute "too big" output ceiling, memory/handle ceilings, per-category size-heuristic constants, headroom margin (1.3×), GIF duration cap (~10 s) | §1.10 (co-owned §0.9 + 04) | `[DEFER: corpus]` — ship with the stated finite starting values; calibrate against the §6 corpus (design is decided, only the numbers are empirical) |
+| 1.2-sec | Whether the in-core text-encoding heuristic / Rust ZIP central-directory peek may stay outside the §2.12 isolation boundary (lean: yes — memory-safe, bounded) | §2.12 (raised by §1.2) | `[OPEN]` — genuine isolation-boundary owner call |
 
 ### Resolved here with a recommended default (`[REC]`)
 

@@ -77,9 +77,12 @@ build-time mechanics that realise them**:
     `name-<target-triple>[.exe]` (e.g. `ffmpeg-x86_64-pc-windows-msvc.exe`,
     `ffmpeg-aarch64-apple-darwin`); a small build script (`scripts/stage-engines.*`,
     run before `tauri build`) stages and target-triple-suffixes each binary for the
-    runner's host triple. For the macOS **universal** build, both arch slices must
-    be present (each sidecar staged for both triples, or itself a `lipo`-merged
-    universal Mach-O).
+    runner's host triple. For the macOS **universal** build, Tauri's externalBin
+    naming requires **BOTH** `<name>-aarch64-apple-darwin` **AND**
+    `<name>-x86_64-apple-darwin` files to be present (each *may* itself be a fat
+    Mach-O, but there is **no** `<name>-universal-apple-darwin` slot — Tauri expects
+    the two per-arch suffixed files, not one merged-universal one). `scripts/stage-
+    engines.*` must therefore stage **two files per sidecar** on the macOS leg.
   - **Engine support files** (non-executable: LibreOffice's `share/`, `program/`
     libs, fonts, pandoc data) → `bundle.resources`, resolved at runtime via the
     Tauri resource path (§3.5 owns the working-dir/env wiring; §7.2 owns startup
@@ -87,33 +90,42 @@ build-time mechanics that realise them**:
 - The whole engine set is **vendored into the build inputs** — never fetched at
   runtime (SSOT offline floor) and, per the supply-chain stance (§6.3.4),
   **pinned by version + checksum**, ideally not fetched at build time from a live
-  network either (a local/cached engine artifact store). `[OPEN-6.1d]` exact
-  engine-acquisition mechanism for CI (vendored in-repo via Git LFS vs a pinned
-  release-asset cache vs a reproducible build-from-source step). The **size budget**
-  this implies is owned by §3.9. **(recommendation: a pinned, checksum-verified
-  engine-asset cache keyed by engine version; not committed raw into Git.)**
+  network either (a local/cached engine artifact store). **`[DECIDED]` (adopting the
+  [REC]): a pinned, checksum-verified engine-asset cache keyed by engine version**,
+  **not** committed raw into Git (avoids bloating the repo) and **not** built from
+  source per-release (too slow). The **size budget** this implies is owned by §3.9.
+  (Build-from-source remains a documented fallback if a pinned artifact becomes
+  unavailable.)
 - A platform's artifact ships **only the engines available on that platform per
   §3.4**. A patent-gapped engine (e.g. an HEVC encoder absent on a platform) is
   simply not staged there; the affected target is surfaced as unavailable in the UI
   (§5.2, sourced from §3.4) — **never a silent omission** (SSOT *v1 DoD* exception 1).
+- **LGPL dynamic-link assertion (§3.6.1 build rule):** the stage step verifies the
+  LGPL libraries (libvips, libheif, libde265, librsvg, any linked FFmpeg libs) are
+  present as **bundled shared objects** (`.so`/`.dylib`/`.dll`) beside the binary —
+  not statically absorbed into a single MIT executable — so the LGPL §6 relinkability
+  path holds. A static LGPL link is a **build failure** (it would taint the MIT core).
 
 ### 6.1.4 CI runners
 
 | Leg | Runner | Toolchain installed | Platform-specific deps |
 |-----|--------|---------------------|------------------------|
 | Windows | `windows-latest` (x64) | Rust (MSVC host triple), Node + pnpm | WebView2 is preinstalled on supported Windows; **not** bundled (no-network forbids downloading it at runtime — §0.3.1 owns the floor). NSIS provided by tauri-cli. |
-| macOS | `macos-latest` (Apple Silicon) building `universal-apple-darwin` | Rust with both `aarch64-apple-darwin` + `x86_64-apple-darwin` targets, Node + pnpm | Xcode CLT for `lipo`/codesign-less packaging. No notarization step (out of scope). |
+| macOS | `macos-latest` (Apple Silicon) building `universal-apple-darwin` | Rust with **`rustup target add aarch64-apple-darwin x86_64-apple-darwin`** (both targets — prerequisite for the universal build and for staging both per-arch sidecar files, §6.1.3), Node + pnpm | Xcode CLT for `lipo`/codesign-less packaging. No notarization step (out of scope). |
 | Linux | `ubuntu-latest` (pin a specific LTS for glibc floor stability) | Rust, Node + pnpm | `libwebkit2gtk-4.1-dev`, `libappindicator`, `librsvg2-dev`, `patchelf`, `libfuse2` (AppImage). **glibc of the build image sets the minimum Linux version** — pin an older Ubuntu LTS to maximise compatibility; documented in §0.3.1's floor. |
 
 The platform CI standard (`reference_self_hosted_ci_runner.md`) runs a **self-hosted
 VPS runner** for the Ne-IA org's existing four projects. ConvertIA's build matrix
 **cannot** reuse a single Linux VPS runner for all three legs (no native macOS/Windows
-there). `[OPEN-6.1e]` use **GitHub-hosted** runners for the macOS/Windows legs
-(matching upstream Tauri guidance; spends Actions minutes — weigh against the
-platform's hobby/no-paid-upgrades budget, `user_hobby_budget_no_paid_upgrades.md`)
-vs self-hosting mac/win runners. **(recommendation: GitHub-hosted for mac/win, the
-self-hosted Linux runner for the Linux leg + the lint/test gate; release builds are
-infrequent — one-large-all-or-nothing v1, SSOT — so minute spend is bounded.)**
+there). **`[DECIDED]` (adopting the [REC]): GitHub-hosted runners for the
+macOS/Windows legs; the self-hosted Linux runner for the Linux leg + the Lane-A
+lint/test gate.** Rationale: matches upstream Tauri guidance, and release builds are
+**infrequent** (one-large-all-or-nothing v1, SSOT) so Actions-minute spend is
+bounded. **Budget note (kept visible):** GitHub **macOS**-hosted minutes bill ~10×
+Linux/min — relevant to the hobby/no-paid-upgrades budget
+(`user_hobby_budget_no_paid_upgrades.md`); the infrequent-release cadence keeps it
+within free-tier/affordable bounds, and the Linux leg (the frequent Lane-A path)
+stays on the free self-hosted runner. Revisit only if release cadence rises.
 
 ---
 
@@ -139,17 +151,19 @@ For **every** published artifact:
 - A **SHA-256** is computed in CI immediately after the artifact is built (before
   upload) and published as:
   - a per-file `<artifact>.sha256` sidecar, **and**
-  - a single signed-by-content `SHA256SUMS` manifest covering all artifacts of the
-    release (the familiar `sha256sum -c SHA256SUMS` workflow).
-- The **SBOM** (§6.3) and the **`SHA256SUMS`** are themselves release assets.
-- `[OPEN-6.2a]` whether to additionally publish a **minisign / GPG detached
-  signature over `SHA256SUMS`** — note this is *not* code-signing the binary (out of
-  scope) but signing the *checksum manifest*, which materially strengthens the trust
-  substitute at near-zero cost and stays within "no store/cert" scope.
-  **(recommendation: yes — a project minisign key over `SHA256SUMS`, public key in
-  the repo; it closes the "attacker replaces both the artifact and its hash" gap
-  that bare checksums don't.)** Tracked in the open-questions log because it touches
-  the SSOT trust posture.
+  - a single `SHA256SUMS` manifest covering **every release asset** (the familiar
+    `sha256sum -c SHA256SUMS` workflow). "Every asset" means the platform binaries
+    **and** the SBOM (CycloneDX/SPDX), `NOTICE`/`THIRD-PARTY-LICENSES.txt`, and
+    `reliability-report.json` — so a user can verify the attribution and
+    reliability artifacts too, not just the executable. (`SHA256SUMS` itself is the
+    only asset it cannot list; the optional minisign signature §6.2.3a covers it.)
+- **`[DECIDED]` publish a project minisign detached signature over `SHA256SUMS`.**
+  This is *not* code-signing the binary (out of scope) but signing the *checksum
+  manifest* — it closes the "attacker replaces both the artifact **and** its hash"
+  gap that bare checksums leave open, at near-zero cost and entirely within
+  "no store/cert" scope. The minisign **public key lives in the repo**; the verify
+  recipe (§6.2.4) includes `minisign -Vm SHA256SUMS -P <pubkey>`. (Adopting the
+  [REC] — a clear strengthening of the SSOT trust substitute with no downside.)
 
 ### 6.2.4 How a user verifies (must be surfaced) `[DECIDED]`
 
@@ -326,6 +340,27 @@ presentations + cross-category extract-audio/to-GIF), against the §6.4.5 corpus
   unavailable, the integration test asserts the target is **absent/disabled** (not
   attempted) rather than failing — honest unavailability, not a test failure.
 
+#### 6.4.3a Corpus↔pair bijection guard (the non-circular gate, made concrete) `[DECIDED]`
+
+SSOT §9 makes "the corpus exists and backs every pair" a precondition; this is the
+**machine-checkable** form (the check §6.10 row 3 names but no section previously
+specified). A CI script (`scripts/check-corpus-coverage.*`, run in **Lane A**
+§6.7.1 — cheap, no engines) asserts a **bijection** between the §04 pair matrices
+and the corpus `manifest.toml`:
+
+1. **Enumerate every v1-required `(source → target)` pair** from the §04 matrices
+   (images/audio/video/documents/spreadsheets/presentations + the two cross-category
+   ops), excluding diagonals/`out`/`—` cells and pairs §3.4 marks `unavailable` on
+   *all* platforms.
+2. **Union the `covers` lists** from every corpus `manifest.toml` entry.
+3. **Fail CI if any required pair has zero backing corpus files** (a pair with no
+   `covers` entry) — *and* fail if any `covers` entry names a pair that does **not**
+   exist in the §04 matrices (a stale/typo'd coupling). Both directions of the
+   bijection are checked, so the gate cannot rot.
+
+This is what makes the §6.5 reliability gate **non-circular**: a pair literally
+cannot be declared `reliable` without a corpus file whose `covers` list names it.
+
 ### 6.4.4 Cross-platform test runs
 
 The integration + property suites run on **all three native CI legs** (§6.1.4) —
@@ -347,9 +382,27 @@ The corpus is a **required v1 asset and a precondition for declaring any pair do
 LFS/release-asset store if size demands) under `tests/corpus/`, **organised by
 source format**, with a `manifest.toml` recording for each file: source format,
 provenance/licence (corpus files must themselves be redistributable — public-domain
-/ CC0 / self-produced / synthetic), the **properties it is chosen to exercise**, and
-the **expected outcome** per target (success / specific fail-clearly kind / specific
-lossy note). Concrete required contents:
+/ CC0 / self-produced / synthetic), the **properties it is chosen to exercise**, the
+**expected outcome** per target (success / specific fail-clearly kind / specific
+lossy note), and a **`covers` list** — the explicit `(source, target)` pairs this
+file backs (the coupling field that makes the §6.4.3a bijection guard machine-
+checkable). Manifest shape (per file):
+
+```toml
+[[file]]
+path     = "images/iphone_p3_orientation6.heic"
+source   = "HEIC"
+licence  = "CC0"          # must be redistributable
+exercises = ["orientation-bake", "ICC-P3", "HDR-10bit"]
+covers   = [              # the (source→target) pairs this file backs (§6.4.3a)
+  ["HEIC", "JPG"], ["HEIC", "PNG"], ["HEIC", "WEBP"], ["HEIC", "AVIF"],
+]
+[file.expect]             # expected outcome per target
+"HEIC→JPG"  = { result = "success", lossy = "image_lossy_codec" }
+"HEIC→AVIF" = { result = "success", lossy = "image_lossy_codec" }
+```
+
+Concrete required contents:
 
 **Images** (`tests/corpus/images/`)
 - Real **iPhone HEIC** photos (HDR, 10-bit, with EXIF orientation tags 1/3/6/8, GPS,
@@ -421,20 +474,34 @@ lossy note). Concrete required contents:
 
 Corpus files **must be redistributable**; where a real-world artifact can't be
 licensed for the public repo, a **synthetic equivalent** that reproduces the same
-structural property is used and noted in the manifest. `[OPEN-6.4a]` corpus storage
-(in-repo vs Git LFS vs release-asset bundle) and target total size — co-owned with
-§3.9 bandwidth concerns. **(recommendation: small synthetic + CC0 files in-repo;
-larger real-world media in an LFS-backed `corpus-large` fetched only for the full
-gate run, never required for the per-PR fast lane.)**
+structural property is used and noted in the manifest. **`[DECIDED]` corpus storage
+(adopting the [REC]): small synthetic + CC0 files committed in-repo** (so the per-PR
+fast lane and the bijection guard §6.4.3a always have them), **larger real-world
+media in an LFS-backed `corpus-large`** fetched **only** for the full Lane-B gate run
+(§6.7.2), never required for the per-PR fast lane. Target total size co-owned with
+§3.9. **[DEFER:** the exact total LFS size is calibrated as the corpus is filled.**]**
 
 ### 6.4.6 UI / end-to-end (the core-UX-flow gate)
 
 A headed browser-driver run (**Tauri's WebDriver support / `tauri-driver`**, or
 Playwright against the built app) exercises the full §5.2 flow per platform:
-empty → drop (via the §0.4 native file-drop path, since HTML5 DnD yields no FS
-paths) → collected/confirm → target+default → destination shown → progress →
+empty → intake → collected/confirm → target+default → destination shown → progress →
 summary → open-folder. This is the automated half of the DoD **core-UX-flow** gate;
 the human half is §6.6. Frontend component/unit tests use **Vitest** (§0.8).
+
+- **Native file-drop is NOT automatable** by `tauri-driver`/Playwright (the OS-level
+  native drag-drop event §5.4 cannot be synthesised by a WebDriver). So the
+  **automated E2E uses the file-picker path** (C2 `pick_paths` via the §5.10
+  accelerator, which funnels into the *same* C1 `ingest_paths` as a drop, §1.1) to
+  reach Collecting; the **native drop itself is validated in the human walkthrough**
+  (§6.6), where a real person drags a real file. This split keeps the automated gate
+  honest about what it can and cannot synthesise.
+- **Per-platform E2E driver `[OPEN]`:** the Windows and Linux legs use `tauri-driver`
+  (WebDriver). The **macOS leg is an `[OPEN]`**: `tauri-driver` relies on
+  `WKWebView`/`safaridriver`, which an **unsigned** build cannot drive cleanly — so
+  the macOS E2E may degrade to a **scripted launch + screenshot/presence assertion**
+  rather than full WebDriver, with the §6.6 human walkthrough carrying the macOS
+  core-flow validation. Flagged for the owner; the Win/Linux automated E2E is firm.
 
 ---
 
@@ -542,6 +609,12 @@ specifically tests whether a *human who didn't build it* succeeds. Protocol:
   tester profile, tasks, pass/fail, observed friction, the default-validation notes).
   This file is a **required v1 artifact**; the gate is "three platform walkthroughs
   recorded, all named conversions pass" before release.
+- **Staleness criterion (machine-checkable) `[DECIDED]`:** each walkthrough record
+  carries a **`release_line` (the version/tag it validated)** and a **`date`**. The
+  Lane-B §6.7.2 stage 5 gate **fails if the recorded `release_line` does not match
+  the release being built** (or, absent a version match, if the `date` predates the
+  current release branch's cut) — so an old walkthrough cannot silently satisfy a new
+  release. (CI checks the *evidence's* freshness; the human does the walkthrough.)
 
 `[OPEN-6.6a]` exact tester sourcing/count beyond the SSOT minimum-of-one-per-
 platform — owner-level. **(recommendation: SSOT minimum of one non-dev per platform
@@ -569,6 +642,10 @@ for the OS-agnostic checks, fanning to the matrix only for compile-sanity:
    **fails if the committed types differ** (enforces the IPC contract + "no `any`").
 3. **Unit + property + fault-injection tests (§6.4.1/§6.4.2)** — Rust + Vitest;
    fast, engine-light, run on every PR.
+3a. **Corpus↔pair bijection guard (§6.4.3a):** `scripts/check-corpus-coverage.*`
+   asserts every §04 v1-required pair has ≥1 backing corpus `covers` entry (and no
+   stale couplings). Engine-free, fast — runs every PR so coverage gaps surface
+   before the expensive Lane B corpus run.
 4. **Compile-sanity on the matrix:** `cargo check` / a debug `tauri build` on all
    three legs to catch platform-specific breakage early (no full corpus run here).
 5. **`cargo audit` / `cargo deny`** (advisory + licence policy, §6.3.4).
@@ -584,7 +661,14 @@ blocking the next:
    AppImage).
 2. **Full reliability gate (§6.5):** integration + property + corpus + E2E on **all
    three** legs; emits `reliability-report.json`. **Any `failing` pair aborts the
-   release.**
+   release.** **Runtime / cost:** the dominant cost is the corpus run (video
+   re-encode + LibreOffice, the slow engines). Estimate **~30–90 min per leg**
+   depending on corpus size; set CI **`timeout-minutes` ≈ 120 per leg** with headroom.
+   **Intra-leg parallelism** is bounded by the **§0.9 concurrency degree** and must
+   honour the **LibreOffice-serialised** constraint (the office-pair tests run LO
+   single-slot — the harness reuses the §0.9 config so the test env matches prod).
+   The **`corpus-large` LFS set is fetched only for this Lane-B run** (never the
+   per-PR fast lane, §6.4.5).
 3. **SBOM + NOTICE assembly + attribution-completeness gate (§6.3):** generate
    CycloneDX (app + engines), assemble `NOTICE`/`THIRD-PARTY-LICENSES.txt`, run the
    §6.3.3 completeness check. **A missing/UNKNOWN attribution aborts the release**
@@ -596,7 +680,8 @@ blocking the next:
    passing walkthroughs for all three platforms for this release line. **Blocks if
    absent.** (Human step — its *evidence* is what CI checks.)
 6. **Integrity hashing (§6.2.3):** compute SHA-256 per artifact, build `SHA256SUMS`
-   (+ optional signature, §6.2.3 `[OPEN]`).
+   covering **every** release asset, **and the minisign signature over `SHA256SUMS`**
+   (§6.2.3 `[DECIDED]`).
 7. **Publish to canonical GitHub Releases (§6.2.2):** upload artifacts + `SHA256SUMS`
    + `.sha256` files + SBOM (CycloneDX/SPDX) + `reliability-report.json` +
    `NOTICE`/`THIRD-PARTY-LICENSES.txt` as a **single coordinated release** (one
@@ -629,7 +714,7 @@ All are English (public OSS repo). Mapping each to its SSOT origin and content o
 |------|------------------|---------------------|
 | **`LICENSE`** | MIT, header `Copyright (c) 2026 Ne-IA and ConvertIA contributors` (collective notice — inbound=outbound, **no assignment**). | SSOT *License & Openness*. Gate: present + name matches §6.9 clearance. |
 | **`NOTICE`** + **`THIRD-PARTY-LICENSES.txt`** | Per-engine name+version, full licence text, written-offer-of-source for GPL-family. **Generated** from `engines.lock` + SBOM (§6.3.2), never hand-drifted. | SSOT *Engine-license policy*; **data owned by §3.7**, assembly here (§6.3), display §5.9. **Release-blocking** (§6.3.3). |
-| **`CONTRIBUTING.md`** | Inbound=outbound under MIT; **no CLA**; **optional DCO sign-off** (`Signed-off-by`, *requested not required*); the **inbound-warranty clause** (contributors warrant submissions are their own work or compatibly-licensed for inbound MIT; incompatibly-licensed code is not accepted); how to run the test/lint lanes (§6.7.1); the no-`any`/no-TODO/no-`console.log`-in-prod/no-inline-CSS quality bar (CLAUDE.md). | SSOT *License & Openness* (contributions). |
+| **`CONTRIBUTING.md`** | Inbound=outbound under MIT; **no CLA**; **optional DCO sign-off** (`Signed-off-by`, *requested not required*); the **inbound-warranty clause** (contributors warrant submissions are their own work or compatibly-licensed for inbound MIT; incompatibly-licensed code is not accepted); how to run the test/lint lanes (§6.7.1); the quality bar **stated directly** in CONTRIBUTING (no `any`; no `// TODO`; no `console.log` in prod; no inline CSS; every change production-ready) — **not** by reference to a private `CLAUDE.md` (an internal file, not present in the public OSS repo). | SSOT *License & Openness* (contributions). |
 | **`CODE_OF_CONDUCT.md`** | A standard CoC (Contributor Covenant-class) with the SECURITY/maintainer contact for enforcement. | SSOT *License & Openness* (a code of conduct accompanies the repo). |
 | **`SECURITY.md`** | **Private vulnerability reporting** channel (GitHub private advisories + a contact); scope statement = ConvertIA opens **untrusted files through third-party decoders** → references the §0.11 threat-surface map and the §2.12 isolation posture; best-effort patch posture **with no SLA** (SSOT); how a reporter can include a (redacted, §7.5) repro from the local log. | SSOT *Security posture* / *License & Openness*; ties to §2.12, §7.5, §0.11. |
 | **`PRIVACY.md`** | Plain-language restatement of **§2.11**: fully offline, **no network/telemetry/accounts/update-phone-home**; the only network is user-initiated (open project page, §7.7); the **cloud-sync caveat** (ConvertIA neither causes/prevents/detects your OneDrive/iCloud/Dropbox sync uploading files in a synced folder). | SSOT *Local/private/offline*; restates §2.11 (owner of the invariant). |
@@ -675,18 +760,22 @@ date, findings, and a **verdict ∈ {clear, conflict→rename, conflict→abort}
 is an **owner/human task**, not automatable — but its **evidence is what the gate
 checks**.
 
-`[OPEN-6.9a]` **(owner-level, genuinely open):** the clearance verdict itself —
-whether "ConvertIA"/"Ne-IA" are clear, and if not, the replacement name. This is a
-real, unresolved precondition the SSOT explicitly leaves open; it **cannot** be
-fake-resolved here. Fed to the README open-questions log. *No recommendation — this
-is a legal/branding judgement for the owner.*
+**`[DECIDED]` clearance verdict = `clear`.** The owner has cleared **both**
+"ConvertIA" and the public "Ne-IA" brand for v1 use. `docs/name-clearance.md` records
+this verdict (`clear`), dated for the release line; the §6.9.2 gate asserts the record
+is present and current. No rename is required, so the §6.9.3 mechanical rename
+propagation stays dormant (a documented capability, not a v1 action). (The legal
+*advice/registration* process remains out of scope per the SSOT; the **technical
+gate** — assert a current `clear` record exists — is in scope and retained.)
 
 ### 6.9.2 The release gate (CI-checkable)
 
 Lane B stage 4 (§6.7.2) **asserts** `docs/name-clearance.md` exists, is dated for
 the current release line, and its verdict is `clear` **or** `conflict→rename` with a
 completed rename (next clause). A `conflict→abort` or a missing/stale record
-**blocks the release**. (CI checks the *record*; the human does the *check*.)
+**blocks the release**. (CI checks the *record*; the human does the *check*.) For v1
+the verdict is **`clear`** (§6.9.1 [DECIDED]); the gate's job is to confirm that
+record stays present and current per release line.
 
 ### 6.9.3 Mechanical rename propagation (if a conflict surfaces)
 
@@ -722,10 +811,10 @@ promises has a technical home" is **verifiable**. Each gate is marked
 |---|---------------|-------------------|----------------------------|-------|
 | 1 | **Every sensible source→target pair works reliably on all 3 platforms** | §04 (pairs) · §1 (pipeline) · §3 (engines) | Reliability gate / pair-status ledger (§6.5); integration+corpus tests (§6.4.3–6.4.5) | **in-scope-gate** |
 | 2 | **"Reliably" = fail-clearly + no-harm on a real-world corpus** | §2.5 (no-harm) · §2.8 (fail-clearly) | Property/fault-injection (§6.4.2) + the corpus (§6.4.5) as precondition | **in-scope-gate** |
-| 3 | **The corpus exists (required v1 asset, non-circular gate)** | this file | `tests/corpus/` + `manifest.toml` (§6.4.5); CI fails if a pair has no backing corpus file | **in-scope-gate** |
+| 3 | **The corpus exists (required v1 asset, non-circular gate)** | this file | `tests/corpus/` + `manifest.toml` (§6.4.5); the **corpus↔pair bijection guard (§6.4.3a)** fails CI if any §04 pair has no backing corpus file (or a `covers` entry names a non-existent pair) | **in-scope-gate** |
 | 4 | **Everything runs fully offline (whole engine set bundled, no fetch)** | §3.3 (bundle-all) · §2.11 (offline invariant) | Bundling at build (§6.1.3); offline-observability E2E with egress blocked (§6.7.3); SBOM proves no runtime-fetch component | **in-scope-gate** |
 | 5 | **Offline guarantee observably true (no network at all)** | §2.11 | Network-egress-blocked E2E run asserts zero calls (§6.7.3 / §6.4.6) | **in-scope-gate** |
-| 6 | **Basic accessibility (keyboard path + readable contrast/sizes)** | §5.6 · §5.10 (shortcut map) | Automated a11y assertions (§5.6) + the keyboard-only human walkthrough (§6.6) | **in-scope-gate** |
+| 6 | **Basic accessibility (keyboard path + readable contrast/sizes; WCAG 2.1 AA per §5.6)** | §5.6 · §5.10 (shortcut map) | Automated a11y assertions incl. **WCAG 2.1 AA contrast (≥4.5:1 text, ≥3:1 large/UI)** (§5.6) + the keyboard-only human walkthrough (§6.6) | **in-scope-gate** |
 | 7 | **Core UX flow (drag/drop+picker+keyboard → same result; reacts to type; pre-highlighted default; destination shown before convert; visible cancellable progress; end-of-batch summary; one-click open-folder/file)** | §5.2 (states) · §1.1/§1.5/§1.11/§1.12 · §7.7 (open) | E2E flow per platform (§6.4.6) + usability-floor human walkthrough (§6.6) | **in-scope-gate** |
 | 8 | **Unwritable/ephemeral-location fallback works** | §2.7 (per-location divert) · §2.14 (cross-volume) | Property tests on read-only/USB/network/temp locations (§6.4.2); divert path in corpus runs | **in-scope-gate** |
 | 9 | **Every bundled engine's required licence text + attribution present and correct (NOTICE/third-party-licenses, backed by SBOM) — missing attribution release-blocking** | §3.7 (data) · §5.9 (display) | SBOM + NOTICE assembly + **attribution-completeness gate** (§6.3.3); blocks release | **in-scope-gate** |
@@ -737,6 +826,9 @@ promises has a technical home" is **verifiable**. Each gate is marked
 | 15 | **Real-world filename + content fidelity (Unicode/emoji/long-path; CJK/RTL/encodings; CSV delimiters)** | §2.10 · §04 (per-format) | Adversarial-name unit tests (§6.4.1) + CJK/RTL/encoding corpus files (§6.4.5) | **in-scope-gate** |
 | 16 | **Patent per-platform gaps honestly surfaced (exception 1), never silent** | §3.4 (decision) · §5.2 (UI surfacing) | Ledger marks `unavailable-per-§3.4`; release-note item (§6.5.3); UI-unavailable assertion (§6.4.3) | **in-scope-gate** (recording/surfacing); patent **decision** owned by §3.4 |
 | 17 | **Reliability-demotion (exception 2) explicit + documented, last resort** | §3.2/§04 (which pair) · this file | Ledger `demoted` state + recorded rationale + release-note item (§6.5.3) | **in-scope-gate** |
+| 18 | **Single-instance + run identity (no cross-instance temp clobber; freeze unaffected by a second launch)** | §7.1 · §2.4/§2.6 | Single-instance plugin behaviour test; per-run/instance temp-ownership + advisory-lock liveness property tests (§6.4.2) | **in-scope-gate** |
+| 19 | **Startup integrity & engine-presence (missing/corrupt engine → app-fault, not a crash)** | §7.2.3 · §2.13 | Startup-fault test: a removed/truncated bundled engine yields the plain app-fault screen, never a stack trace (§6.4.2 / §6.4.6 headed smoke) | **in-scope-gate** |
+| 20 | **OS intake (Open-with / launch-args route through the single freeze funnel; no file-association pollution)** | §7.8 · §1.1/§2.4 | Launch-with-files E2E (UI enters Collecting at startup); assert no associations registered (§7.8.2) | **in-scope-gate** |
 | — | **NOT a gate: subjective visual polish; engine-currency** | §5.5 (polish) · §3.8 (currency) | Polish is iterative (never blocks); currency is best-effort, re-validated against the gate when bumped (§6.3.4/§6.5.4) | **out-of-scope-gate** (explicit non-gates) |
 
 If a future SSOT clause is added, it must appear here with an owning section and a
@@ -746,23 +838,24 @@ If a future SSOT clause is added, it must appear here with an owning section and
 
 ## Open-questions log contributions (this section)
 
-Genuine owner-level `[OPEN]`s surfaced here (feed the README log):
-- **[OPEN-6.9a]** Name/trademark **clearance verdict** for "ConvertIA" / "Ne-IA"
-  (clear vs rename vs abort) — a real SSOT-mandated precondition; legal/branding
-  judgement, **no recommendation**, release-blocking.
-- **[OPEN-6.2a]** Sign `SHA256SUMS` with a project minisign/GPG key (strengthens the
-  no-signing trust substitute without entering code-signing scope). *Recommend yes.*
-- **[OPEN-6.1e]** macOS/Windows CI runners: GitHub-hosted vs self-hosted (Actions-
-  minute spend vs the hobby/no-paid-upgrades budget). *Recommend GitHub-hosted for
-  mac/win, self-hosted Linux for Lane A.*
-- **[OPEN-6.1d]** CI engine-acquisition mechanism (vendored-LFS vs pinned checksum
-  cache vs build-from-source) — co-owned with §3.9 size budget. *Recommend pinned
-  checksum cache.*
-- **[OPEN-6.4a]** Corpus storage/size (in-repo vs LFS `corpus-large`) — co-owned
-  with §3.9. *Recommend small CC0/synthetic in-repo + LFS large for the full gate.*
+**Now `[DECIDED]` (this round) — adopted from their recommendations:**
+- **[6.9a] Name/trademark clearance verdict = `clear`** for "ConvertIA" / "Ne-IA"
+  (owner-cleared; §6.9.1). The release gate (record present + current) is retained;
+  the legal *process* stays out of scope.
+- **[6.2a]** Sign `SHA256SUMS` with a **project minisign key** — DECIDED yes (§6.2.3).
+- **[6.1e]** CI runners — **GitHub-hosted for mac/win, self-hosted Linux for Lane A**
+  (§6.1.4; budget note retained).
+- **[6.1d]** CI engine-acquisition — **pinned, checksum-verified asset cache**
+  (§6.1.3).
+- **[6.4a]** Corpus storage — **small CC0/synthetic in-repo + LFS `corpus-large` for
+  the full gate** (§6.4.5); exact total size **[DEFER: calibrate as corpus fills]**.
 
 Easy `[OPEN]`s resolved with a recommended default (not owner-level): artifact
 formats (§6.1.2: portable-exe / NSIS-per-user / universal-dmg / AppImage),
 NSIS-vs-portable (§6.1.2a), Linux `.deb` (§6.1.2b), reproducible-build depth
 (§6.2.5b), `GOVERNANCE.md` (§6.8a), usability tester count (§6.6a) — each carries a
 **(recommendation)** inline.
+
+**Genuinely still open / deferred (feed the README log):** the macOS E2E driver under
+an unsigned build (§6.4.6 `[OPEN]`), and the exact `corpus-large` total size
+(`[DEFER: corpus]`).

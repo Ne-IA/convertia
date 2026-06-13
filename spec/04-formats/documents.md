@@ -37,7 +37,7 @@ plumbing but owns no user-facing pair in this category — see *Engines*.)
 |-----------|-----|------|-----|-----|-----|-----|----|------|
 | **PDF**   | ·   | —    | —   | —   | —   | ✓★~ pp | — | —   |
 | **DOCX**  | ✓★~ LO | ·  | ✓ LO | ✓ LO | ✓ LO | ✓~ pd | ✓~ pd | ✓~ pd |
-| **DOC**   | ✓★~ LO | ✓ LO | · | ✓ LO | ✓ LO | ✓~ pd | ✓~ pd | ✓~ pd |
+| **DOC**   | ✓★~ LO | ✓ LO | · | ✓ LO | ✓ LO | ✓~ LO† | ✓~ LO† | ✓~ LO† |
 | **ODT**   | ✓★~ LO | ✓ LO | ✓ LO | ·  | ✓ LO | ✓~ pd | ✓~ pd | ✓~ pd |
 | **RTF**   | ✓★~ LO | ✓ LO | ✓ LO | ✓ LO | ·  | ✓~ pd | ✓~ pd | ✓~ pd |
 | **TXT**   | ✓★ LO | ✓ pd | — | ✓ pd | ✓ pd | · | ✓ pd | ✓ pd |
@@ -59,6 +59,14 @@ plumbing but owns no user-facing pair in this category — see *Engines*.)
 - **`*→DOC`** (legacy binary Word 97-2003) is offered **only** from office sources,
   not from `TXT/MD/HTML` — nobody plausibly wants `markdown→.doc`; the modern
   `.docx` is the sole everyday Word target for those, so `TXT/MD/HTML→DOC` is `—`.
+
+> **† `DOC → TXT/MD/HTML` is LibreOffice, NOT pandoc.** pandoc **cannot read legacy
+> binary `.doc`** (and the engine notes + §3.2 + §3.5.4 say so), so these
+> down-conversions are owned by **LibreOffice's** markup export filters (`Text`,
+> `Markdown`, `HTML (StarWriter)`) — keeping every pair single-engine, no chaining.
+> The XML/text sources (`DOCX/ODT/RTF → TXT/MD/HTML`) stay with **pandoc** (which
+> reads them natively). LibreOffice's Markdown export is new in 26.2 → its
+> reliability is the `[OPEN-2]` flag in *Category-wide*.
 
 ---
 
@@ -133,7 +141,7 @@ are the **concrete option lists and defaults** this file owns (§1.6).
   the export filter:
   | Setting | Default | Range/values | Surfaced? |
   |---------|---------|--------------|-----------|
-  | `SelectPdfVersion` | `0` (PDF 1.x, max compatibility) | `0` standard, `1` PDF/A-1 | no |
+  | `SelectPdfVersion` | `0` (PDF 1.7, max compatibility) | `0`=PDF 1.7, `15`=PDF/A-1b, `16`=PDF/A-2b, `17`=PDF/A-3b (LO `writer_pdf_Export` values; harmonized with presentations.md) | no |
   | `UseTaggedPDF` | `true` (accessibility: structure/headings) | bool | no |
   | `ReduceImageResolution` | `false` (preserve embedded image quality) | bool | no — see [OPEN] "compress PDF" |
   | `Quality` (JPEG) | `90` | 1–100 | no |
@@ -210,16 +218,17 @@ are the **concrete option lists and defaults** this file owns (§1.6).
   magic is shared by legacy `.xls` and `.ppt` — detection inspects the internal
   stream directory to disambiguate (§1.2).
 - **Role:** **both**.
-- **As source → targets:** identical target set to DOCX —
+- **As source → targets:** same target *set* as DOCX, but **TXT/MD/HTML are owned
+  by LibreOffice, not pandoc** (pandoc can't read binary `.doc`) —
   | Target | Engine | Default | Lossy |
   |--------|--------|:------:|:-----:|
   | **PDF** | LibreOffice | ★ | ✓ reflow |
   | DOCX | LibreOffice | | — (modernize) |
   | ODT | LibreOffice | | — |
   | RTF | LibreOffice | | ✓ |
-  | TXT | pandoc | | ✓ |
-  | MD | pandoc | | ✓ |
-  | HTML | pandoc | | ✓ |
+  | TXT | **LibreOffice** (`Text`) | | ✓ |
+  | MD | **LibreOffice** (`Markdown`, 26.2) | | ✓ |
+  | HTML | **LibreOffice** (`HTML (StarWriter)`) | | ✓ |
 - **As target ← sources:** `DOCX, ODT, RTF` (LibreOffice). **Not** from
   `TXT/MD/HTML` (no everyday demand for `markdown→.doc` — see matrix note). Not PDF.
 - **Engine(s):** LibreOffice reads legacy `.doc` natively; pandoc cannot read
@@ -478,27 +487,29 @@ nag.
   is the modern Word target for these sources).
 - **Multi-file HTML site / HTML+assets folder** → out (not a single document).
 
-### [OPEN] decisions (genuine — not fake-resolved)
+### Open / deferred decisions
 
-1. **`MD→PDF` and `MD→ODT/DOCX/RTF` engine ownership.** Native LibreOffice
-   Markdown *import* landed only in **LibreOffice 26.2 (Mar 2026)** and is
-   unproven on the v1 corpus. Options, each keeping the single-engine rule:
-   (a) LibreOffice imports `.md` and exports PDF/ODT/DOCX directly (preferred if
-   reliable); (b) pandoc owns `MD→DOCX/ODT/RTF/HTML/TXT` (mature) while `MD→PDF`
-   stays LibreOffice via its MD import. A `MD→(pandoc HTML)→(LO PDF)` chain is
-   **disallowed** (§3.2), so this must resolve to a direct owner. **Tracked in the
-   open-questions log.**
-2. **`DOC→TXT/MD/HTML` and `RTF→TXT/MD/HTML` engine ownership.** pandoc **cannot**
-   read legacy binary `.doc`; its RTF reader has known gaps. Current decision:
-   **LibreOffice** owns the DOC down-conversions; pandoc owns the RTF ones unless
-   corpus testing shows its RTF reader is too lossy, in which case LibreOffice
-   takes those too. Needs corpus validation before lock-in.
-3. **Ghostscript bundling.** Is Ghostscript actually needed in v1, or does poppler
-   alone cover `PDF→TXT` robustly? GS adds AGPL surface and binary weight for only
-   a fault-tolerance backstop. Decide whether to bundle (§3.9 budget, §3.6 AGPL).
-4. **`*→MD` image policy** (see *Images* above) — drop-with-note vs data-URI inline.
-5. **Bundled font set contents** (§3.9 size budget) — exact families balancing
-   Arial/Times/Courier metric-compat + full CJK/RTL Unicode coverage vs binary size.
-6. **"Compress / smaller PDF" toggle** — the one plausible future Advanced option
-   for `*→PDF` (`ReduceImageResolution`/`Quality`). Out of v1 by the "adding a
-   setting is a scope change" rule; recorded so it isn't lost.
+1. **`MD→PDF` and `MD→ODT/DOCX/RTF` engine ownership — `[DEFER: corpus]`.** Native
+   LibreOffice Markdown *import* landed only in **LibreOffice 26.2 (Mar 2026)** and
+   is unproven on the v1 corpus. The v1 default is **(a) LibreOffice imports `.md`
+   and exports PDF/ODT/DOCX directly** (single-engine); the documented fallback,
+   **only if the corpus shows LO MD import unreliable**, is **(b) pandoc owns
+   `MD→DOCX/ODT/RTF/HTML/TXT`** while `MD→PDF` stays LO. A `MD→(pandoc HTML)→(LO
+   PDF)` chain is **disallowed** (§3.2). Genuinely empirical → deferred to corpus
+   validation, not an open design question.
+2. **`RTF→TXT/MD/HTML` engine ownership — `[DEFER: corpus]`.** pandoc owns the RTF
+   down-conversions **unless** corpus testing shows its RTF reader too lossy
+   (super/subscript, complex tables), in which case **LibreOffice** takes them.
+   (`DOC→TXT/MD/HTML` is **already DECIDED LibreOffice** — pandoc can't read binary
+   `.doc`; see the matrix `LO†` cells and the engine-ownership note.) Empirical →
+   deferred.
+3. **Ghostscript bundling — `[DECIDED]`: dropped in v1** (poppler-only `PDF→TXT`, no
+   AGPL surface; §3.1/§3.6). **[DEFER:** re-add only if the §6.5 corpus shows poppler
+   failing PDFs GS would salvage.**]**
+4. **`*→MD` image policy — `[DEFER: corpus]`** (see *Images* above) — drop-with-note
+   (lean) vs data-URI inline; resolve against real `.docx`/`.odt` corpus files.
+5. **Bundled font set — `[DECIDED]` baseline in §3.9.3** (Liberation+Carlito+Caladea
+   + curated Noto CJK/RTL subset); only the CJK breadth is **[DEFER: size]**.
+6. **"Compress / smaller PDF" toggle — out of v1** (the one plausible future Advanced
+   option for `*→PDF`: `ReduceImageResolution`/`Quality`). Out by the "adding a
+   setting is a scope change" rule; recorded so it isn't lost. (Not open — parked.)

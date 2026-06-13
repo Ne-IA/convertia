@@ -231,10 +231,14 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   pick — but the *fixed* default stays PNG (first frame) for predictability;
   WEBP/GIF-passthrough keep the animation if the user chooses them.
 - **As target ← sources:** JPG, PNG, WEBP, BMP, TIFF, HEIC, AVIF, ICO, SVG. GIF
-  **save delegates to ImageMagick** inside the libvips build (`magicksave`) —
-  still the **vips** binary/process from our side (one engine).
-- **Engine(s):** **vips** (load built-in; **save via bundled ImageMagick
-  delegate**). No patent (LZW patent long expired).
+  **save uses libvips' native `gifsave` (cgif backend, libvips ≥ 8.12)** `[DECIDED]`
+  — **not** the ImageMagick delegate. This is one vips process, gives better GIF
+  quality/size, and **removes ImageMagick from the GIF path** (cgif is MIT). The
+  ImageMagick delegate (`magicksave`) is retained **only** as a compatibility
+  fallback if a needed native saver is unavailable in the bundled vips build.
+- **Engine(s):** **vips** (load built-in; **save via native `gifsave`/cgif**, vips
+  ≥ 8.12; ImageMagick `magicksave` fallback only). No patent (LZW patent long
+  expired).
 - **Options/settings:**
   - *Basic:* none required. Palette is generated automatically.
   - *Advanced:* `dither` — default **on** (Floyd–Steinberg, better gradients);
@@ -259,8 +263,9 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
 - **As source → targets:** JPG, **PNG★**, WEBP, GIF, TIFF, HEIC, AVIF, ICO.
 - **As target ← sources:** JPG, PNG, WEBP, GIF, TIFF, HEIC, AVIF, ICO, SVG —
   **vips**.
-- **Engine(s):** **vips**. *(libvips BMP load is built-in; BMP **save** is via the
-  ImageMagick delegate, same as GIF — still one vips process.)* No patent.
+- **Engine(s):** **vips**. *(libvips BMP load is built-in; BMP **save** uses the
+  native saver where the bundled vips build provides it, else the ImageMagick
+  `magicksave` fallback — still one vips process.)* No patent.
 - **Options/settings:** none required (BMP is uncompressed). *Advanced:* none
   meaningful for v1 (no RLE toggle exposed).
 - **Lossy?:** BMP is uncompressed/lossless → **`→ BMP` is not lossy**; the source's
@@ -373,8 +378,10 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
 - **As target ← sources:** JPG, PNG, WEBP, GIF, BMP, TIFF, HEIC, AVIF, SVG —
   **vips** (ICO save via the ImageMagick delegate). The classic everyday use is
   **PNG/JPG/SVG → ICO** to make a favicon/app icon.
-- **Engine(s):** **vips** (load built-in; **save via ImageMagick delegate**). No
-  patent.
+- **Engine(s):** **vips** (load built-in; **save via the native ICO saver where the
+  bundled vips build provides one, else the ImageMagick `magicksave` delegate** —
+  ICO multi-size assembly is the case most likely to still use the delegate). One
+  vips process either way. No patent.
 - **Options/settings:**
   - *Basic:* **Icon sizes — default a standard multi-resolution set
     `[16, 32, 48, 256]`** (covers favicons + Windows app icons in one file). The
@@ -510,11 +517,14 @@ open contradicts "it just works").
   (e.g. tiny SVG asked to render at 50 000 px) is rejected up front, never OOMs.
 
 ### [OPEN] items (genuine, not fake-resolved)
-1. **HEIC/AVIF encode code-path:** standardise *all* HEIC/AVIF *encoding* on
-   libvips `heifsave` (`compression=hevc|av1`) for a single code path and to make
-   `HEIC↔AVIF` trivially single-engine — **vs** keeping the standalone
-   `heif`/`avif` encoders for finer control. Cross-cuts §3.2 / §3.5. (Decode-side
-   binding via vips load modules is settled.)
+1. **HEIC/AVIF encode code-path — `[DECIDED]`: standardise on libvips `heifsave`.**
+   *All* HEIC/AVIF *encoding* uses libvips `heifsave` (`compression=hevc` for HEIC
+   via x265, `compression=av1` for AVIF via libheif's AV1 plugin → **libaom**). One
+   code path; `HEIC↔AVIF` is trivially single-engine; and crucially **only ONE AV1
+   encoder ships** (libaom, via libheif) — the standalone `libavif`+aom encoder is
+   **not** bundled (it would duplicate an AV1 encoder for no v1 benefit). The
+   standalone `heif`/`avif` CLI sidecars are dropped from v1. Decode-side binding via
+   vips load modules was already settled. (Cross-ref §3.4 / §3.5.5 / §3.6.1.)
 2. **§3.4 patent dispositions** (HEVC for HEIC; AV1 ship-posture for AVIF) per
    platform — **owned by §3.4**, referenced here. Per-platform HEIC availability
    (and any "unavailable on platform X" honest surfacing) flows from that table.

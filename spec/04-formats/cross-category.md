@@ -160,7 +160,7 @@ result). The **no-decision default** path is: drop video → choose "Extract aud
 | M4A | (none by default) — copy when AAC source; Quality (Advanced) only applies on re-encode | re-encode bitrate *Standard / High* | copy if AAC source, else **`-b:a 192k`** |
 | WAV | (none) | fixed 16-bit PCM `pcm_s16le` | **16-bit PCM**, source sample rate & channels preserved |
 | FLAC | Compression level (Advanced only, rarely useful) | 0–8 | **5** (FFmpeg default) — lossless regardless |
-| OGG | Quality (Advanced) | Vorbis `-q:a` 0–10 | copy if Vorbis source, else **`-q:a 5` (~160 kbps)** |
+| OGG | Quality (Advanced) | Vorbis `-q:a` 0–10 | copy if Vorbis source, else **`-q:a 3` (~112 kbps)** — the canonical OGG default owned by [audio.md](audio.md) (aligned; the earlier `-q:a 5` drift is resolved to audio.md's value) |
 
 - **Sample rate / channels:** **always preserved from the source** by default (no
   resample, no downmix) — a setting to change them is a scope addition, not a v1
@@ -255,11 +255,14 @@ and §2.6 temp ownership):
 ```
 [0:v] fps=<fps>,scale=<w>:-1:flags=lanczos,split [s0][s1];
 [s0] palettegen=stats_mode=diff [p];
-[s1][p] paletteuse=dither=sjpeg/bayer
+[s1][p] paletteuse=dither=bayer:bayer_scale=5
 ```
 
-(Exact filter string is constructed in §3.5; shown here to fix the **method**, not
-to own argument syntax.) `lanczos` scaling and a per-clip optimised palette are
+(`sjpeg` is **not** a valid `paletteuse` dither value — FFmpeg rejects it; the valid
+dither modes are `bayer` / `sierra2_4a` / `floyd_steinberg` / `none`, and the v1
+default is `bayer:bayer_scale=5` per [OPEN-D], matching §3.5.1.) Exact filter string
+is constructed in §3.5; shown here to fix the **method**, not to own argument
+syntax. `lanczos` scaling and a per-clip optimised palette are
 what make the result look good; `fps` downsampling + width cap are what keep the
 file sane. `stats_mode=diff` weights the palette toward moving regions
 (better motion fidelity); `dither` choice trades dot-pattern visibility vs

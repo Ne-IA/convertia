@@ -59,7 +59,7 @@ offered set is visible.
 | **MKV**  | ✓★ R | ✓ R | self R | ✓~ | ✓ R | ✓ (x-cat) | ✓~ (x-cat) |
 | **WEBM** | ✓★~ | ✓~ | ✓ R | self R | ✓~ | ✓ (x-cat) | ✓~ (x-cat) |
 | **AVI**  | ✓★~ | ✓~ | ✓ R | ✓~ | ✓~ | ✓ (x-cat) | ✓~ (x-cat) |
-| **WMV**  | ✓★~ | ✓~ | ✓~ | ✓~ | ✓~ | ✓ (x-cat) | ✓~ (x-cat) |
+| **WMV**  | ✓★~ | ✓~ | ✓ R | ✓~ | ✓~ | ✓ (x-cat) | ✓~ (x-cat) |
 | **FLV**  | ✓★ R | ✓ R | ✓ R | ✓~ | ✓ R | ✓ (x-cat) | ✓~ (x-cat) |
 | **MPG/MPEG** | ✓★~ | ✓~ | ✓ R | ✓~ | ✓~ | ✓ (x-cat) | ✓~ (x-cat) |
 | **M4V**  | ✓★ R | ✓ R | ✓ R | ✓~ | self R | ✓ (x-cat) | ✓~ (x-cat) |
@@ -239,16 +239,20 @@ differ and are spelled out per format.
   by `.wma` (audio-only) — the presence of a video stream (probed) tells WMV from
   WMA. Extension `.wmv` (`.asf`).
 - **Role:** both (legacy source; **not** a target).
-- **As source → targets:** **MP4★** (✓~), MOV (✓~), MKV (✓~ — see below), WEBM
-  (✓~), M4V (✓~) · + extract-audio, to-GIF.
+- **As source → targets:** **MP4★** (✓~), MOV (✓~), **MKV (✓ R — usually lossless,
+  see below)**, WEBM (✓~), M4V (✓~) · + extract-audio, to-GIF.
 - **As target ← sources:** **none** — Windows-only legacy delivery format, no
   everyday demand to *produce*. Out as target.
-- **Engine(s):** FFmpeg. WMV holds **WMV1/2/3 (VC-1-class)** video + **WMA** audio.
-  These rarely remux cleanly into modern containers, so **even →MKV is typically a
-  re-encode** (hence ✓~ not R) — the WMV/WMA codecs are not first-class in MP4/MKV
-  delivery. Modernization → H.264/AAC.
+- **Engine(s):** FFmpeg. WMV holds **WMV1/2/3 / VC-1** video + **WMA** audio.
+  **Matroska (MKV) can carry VC-1 and WMA verbatim**, so **WMV→MKV is commonly a
+  lossless remux** (`-c copy`, container swap) — corrected from the prior "always
+  re-encode" claim. Old **WMV7/8 (WMV1/2)** variants that some Matroska muxers won't
+  accept fall back to re-encode at runtime (the §3.5 probe decides per item). The
+  **MP4-family** targets (MP4/MOV/M4V) are **not** first-class homes for WMV/WMA, so
+  those stay re-encode (✓~); modernization → H.264/AAC.
 - **Options/settings:** category defaults.
-- **Lossy?:** every WMV→* is **re-encode = lossy** → §2.9.
+- **Lossy?:** **WMV→MKV is usually a lossless remux** (VC-1/WMA copied verbatim;
+  older WMV7/8 may re-encode). **WMV→MP4/MOV/M4V/WEBM** = re-encode = lossy → §2.9.
 - **Edge cases:** DRM-protected WMV/ASF (legacy PlaysForSure) **cannot** be decoded
   → fails clearly per SSOT *Fail clearly* (one plain message: "this file is
   copy-protected and can't be converted"), batch continues. VC-1 advanced-profile
@@ -389,11 +393,19 @@ The engine layer (§3.5) decides per item, never asking the user:
    H.264 video + Vorbis audio → MP4 copies video, transcodes audio to AAC). This is
    still **one engine, one FFmpeg invocation** — no chaining, satisfies §3.2.
 
-Because remux vs re-encode changes whether the result is lossy, the §2.9 lossy note
-is shown **based on the planned disposition for that batch**, not statically per
-container pair — a batch that will remux shows no loss note; one that will
-re-encode does. (For a batch of mixed items where some remux and some re-encode,
-the note is shown if **any** item re-encodes — honest worst-case.)
+Because remux vs re-encode changes whether the result is lossy, the §2.9
+`video_reencode` note's firing is governed by §2.9.2. **Timing matters:** the *exact*
+per-item disposition needs the full `ffprobe` stream inventory, which is deferred to
+**convert-time** (§1.2/§3.5) — it is **not** run on every item before convert (too
+costly on large recursive batches). So the note shown at **target choice** is a
+**header/container-pair-derived best-effort worst-case** (§2.9.2): a target pair that
+is **always re-encode** (→WEBM, or a legacy source with known-incompatible inner
+codecs) fires the note definitely; a pair that **commonly remuxes** but *might*
+re-encode a given item fires the worst-case *"may be re-encoded"* phrasing rather
+than falsely promising losslessness. `RunStarted.willReencode` (§0.4.2) carries this
+same worst-case flag. The **§1.12 summary reflects what actually happened** per item
+once §3.5 resolved the real disposition. (For a mixed batch, the pre-convert note
+shows if **any** item *may* re-encode — honest worst-case.)
 
 ### Default codec / quality / resolution
 

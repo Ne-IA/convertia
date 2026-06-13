@@ -62,10 +62,12 @@ The §2.1 atomic write **consumes the `OutputPlan`** produced by §1.8 (which al
 applied the §2.7 destination rules). Given a *final resolved destination path*
 `final` and a *resolved-equal* check from §2.3, the write is:
 
-1. **Pick the scratch path** `tmp` on the **same volume as `final`** (§2.14 owns
-   *which* volume and the cross-volume fallback). `tmp` is created in the per-run
-   scratch dir (§2.6) with a unique, run-owned name, e.g.
-   `convertia-<RunId>-<jobId>-<rand>.part`.
+1. **Pick the publish-temp path** `tmp` on the **same volume as `final`** (§2.14
+   owns *which* volume and the cross-volume fallback). Per §2.14.1 the publish temp
+   is a uniquely-named **sibling file in the destination directory** (not the central
+   scratch root, which is frequently on a different volume), e.g.
+   `…/<dest_dir>/.convertia-<RunId>-<jobId>-<rand>.part`. Ownership is encoded in the
+   `RunId` so cleanup (§2.6) can identify it.
 2. **Engine writes into `tmp`** (the engine is told to write to `tmp`, never to
    `final`; §3.5 constructs the arg). The engine runs through the §2.12 isolation
    wrapper.
@@ -76,14 +78,17 @@ applied the §2.7 destination rules). Given a *final resolved destination path*
 4. **Resolve `final` and the no-clobber decision** (§2.2 numbering + §2.3 link
    safety) **as late as possible** — immediately before the create — to shrink the
    TOCTOU window.
-5. **Exclusive create-or-fail of `final`**, then move the bytes in atomically. Two
-   mechanically distinct steps because OS rename semantics differ (see 2.1.2).
-6. **Durability of the rename:** on Unix, after the rename **fsync the containing
+5. **Publish `tmp → final` with the no-placeholder exclusive-rename** (2.1.2): a
+   primitive that creates `final` **only if it does not exist** — Unix
+   `link`/`renameat2(RENAME_NOREPLACE)`, Windows `create_new`-reserve then
+   `ReplaceFileW`. No 0-byte placeholder is ever published (so no truncated/empty
+   `final`, §2.1.3). On a name collision the loop advances to the next §2.2 variant.
+6. **Durability of the publish:** on Unix, after the rename **fsync the containing
    directory** (open the parent dir, `fsync` its fd) so the new dentry survives a
    crash — per the LWN/evanjones durability findings (rename is atomic but not
    durable without the directory fsync). On Windows the directory-fsync step is a
-   no-op (NTFS metadata journaling covers it); `MoveFileExW` with
-   `MOVEFILE_WRITE_THROUGH` is the equivalent guarantee.
+   no-op (NTFS metadata journaling covers it); `ReplaceFileW` with
+   `REPLACEFILE_WRITE_THROUGH` is the equivalent durability guarantee.
 7. On engine failure / cancel / any error in steps 3–6: **`tmp` is removed**
    (§2.6); `final` was never created → nothing to undo. Cleanup failure is itself
    handled (§2.6: never reported as clean success).
@@ -109,32 +114,55 @@ temp atomically). The chosen pattern:
   that appeared meanwhile): the *kernel* enforces "new or fail", not a prior
   `exists()` check.
 
-The publish itself, given the reserved `final` handle, is **`[OPEN]` between two
-mechanically-equal options** (recommended default below):
+The publish itself, given a free `final` name, uses a **no-placeholder publish**:
+the final name is created **exactly once, by a rename that fails-if-exists**, so no
+empty placeholder is ever published and no third state (a 0-byte `final` we own but
+the engine never filled) can exist. `[DECIDED]`
 
-- **(a) Reserve-then-rename (recommended).** The exclusive `create_new` reserves
-  the name as a 0-byte placeholder; we then `rename(tmp → final)` which **atomically
-  replaces** the placeholder we own. On Unix `rename(2)` is atomic and replaces.
-  On Windows plain `rename` **fails if the target exists**, so use
-  **`MoveFileExW(tmp, final, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`**
-  (exposed via the `windows` crate or `fs::rename` on modern Rust which already
-  calls `MoveFileExW` with replace). The placeholder we created is *ours*, so
-  replacing it cannot clobber anyone else's file.
-- **(b) Write-into-the-reserved-handle.** Stream the engine output through the open
+- **(a) No-placeholder exclusive-rename (chosen).** The engine writes to a private
+  `tmp`; we then publish `tmp → final` with a primitive that **creates the name
+  atomically only if it does not exist** — no prior `create_new` placeholder:
+  - **Unix:** `link(tmp, final)` (or `renameat2(..., RENAME_NOREPLACE)` on Linux
+    ≥ 3.15) — exclusive create-as-publish: it fails `EEXIST` if `final` exists,
+    giving the no-clobber guarantee **and** the atomic publish in one step, with no
+    placeholder. (`link`+`unlink(tmp)` is the portable POSIX form; `renameat2`
+    `RENAME_NOREPLACE` is the single-call form where available.) On `EEXIST` →
+    re-pick the next §2.2 variant.
+  - **Windows:** there is **no documented exclusive-create rename**, so publish in
+    two documented-atomic steps: reserve the name race-free with `create_new`
+    (`CREATE_NEW`), close the handle, then **`ReplaceFileW(final, tmp, NULL,
+    REPLACEFILE_WRITE_THROUGH, ...)`** — the documented NTFS atomic-replace
+    primitive (atomic w.r.t. readers, preserves attributes). `MoveFileExW(...,
+    MOVEFILE_REPLACE_EXISTING)` is **not** used as the publish primitive because
+    Microsoft does **not** document it as atomic (it can fall back to a non-atomic
+    copy) and can return `ERROR_ACCESS_DENIED` when AV holds an open handle on the
+    just-created placeholder. For the AV `ERROR_ACCESS_DENIED` case, a **bounded
+    retry** (short backoff, small cap, then `WriteFailed` §2.8) is applied. The
+    `create_new` reservation is *ours*, so the `ReplaceFileW` replaces only our own
+    placeholder, never anyone else's file.
+- **(b) Write-into-the-reserved-handle.** Stream the engine output through an open
   exclusive handle directly (no temp + rename). **Rejected for the engine path**:
   engines are *separate processes* writing their own file (§3.5) — they cannot
   share our Rust file handle, and they may write non-atomically. (b) is only viable
   for in-core writes, which ConvertIA has none of (every output is engine-produced).
 
-> **Recommendation:** **(a) reserve-then-`tmp`-rename**, because (1) it keeps the
-> no-clobber reservation race-free via `create_new`, (2) the engine writes to a
-> private `tmp` it fully controls, and (3) the final flip is a single atomic rename
-> the OS guarantees. The placeholder is created with `create_new` and immediately
-> closed; the window between reservation and rename is sub-millisecond and the
-> rename is replace-our-own, so no third party can be clobbered. **Marked `[OPEN]`**
-> only because the precise Windows replace-semantics ordering (placeholder vs
-> rename-with-REPLACE_EXISTING) wants a small spike to confirm no race on NTFS; the
-> *guarantee* is fixed, the *micro-mechanics* are the open detail. Owner: §2.1.
+> **Why no-placeholder.** A reserve-then-rename design (create a 0-byte placeholder,
+> then rename `tmp` over it) reintroduces a forbidden **third state**: a crash
+> between the placeholder create and the rename leaves a 0-byte `final` the engine
+> never wrote — exactly the "truncated/empty final masquerading as finished" §2.1.3
+> forbids. The no-placeholder publish (Unix `link`/`renameat2(RENAME_NOREPLACE)`;
+> Windows `ReplaceFileW`) never publishes an empty name, so the §2.1.3 two-state
+> invariant holds by construction. `fs_guard::atomic_publish(tmp, final)`
+> encapsulates the per-OS primitive choice; callers (§2.1) never see it.
+>
+> `[OPEN]` (owner §2.1, **primitive-confirmation spike, not a design question**):
+> confirm `renameat2(RENAME_NOREPLACE)` availability across the Linux floor (§0.3.1)
+> with the `link`+`unlink` fallback, and confirm `ReplaceFileW`'s behaviour when
+> `final` does **not** yet exist (it requires the target to exist, so the first-time
+> publish uses the `create_new`-then-`ReplaceFileW` ordering above, or a plain
+> `MoveFileExW` *without* `REPLACE_EXISTING` which is a clean create-only move). The
+> *guarantee and the primitive choice are fixed*; only this small portability spike
+> remains.
 
 ### 2.1.3 Crash / power-loss invariant `[DECIDED]`
 
@@ -146,10 +174,16 @@ After any ungraceful end, the on-disk state is exactly one of:
   committed. The temp is a **discardable run-owned artifact**, cleaned on next run
   (§2.6). *No partial output masquerading as finished.*
 
-There is **never** a third state (a truncated `final`) because the engine never
-writes to `final` and the publish is a single atomic rename. This satisfies the
-SSOT "holds even across an ungraceful end". Cross-volume nuance (when `tmp` and
-`final` cannot be on the same volume) is §2.14.
+There is **never** a third state (a truncated or 0-byte `final`) because (1) the
+engine only ever writes to `tmp`, never to `final`, and (2) the publish is a
+**no-placeholder** exclusive-rename (§2.1.2) — `final` springs into existence already
+complete, in one atomic step, with **no intermediate empty placeholder** that a
+crash could leave behind. (The earlier reserve-then-rename design, which created a
+0-byte placeholder first, *would* have admitted that third state on a crash between
+reserve and rename; it is rejected in §2.1.2 precisely for that reason.) This
+satisfies the SSOT "holds even across an ungraceful end". Cross-volume nuance (when
+`tmp` and `final` cannot be on the same volume) is §2.14 — there the only rename is
+still intra-volume and exclusive, so the same two-state invariant holds.
 
 ---
 
@@ -184,15 +218,17 @@ on collision: format!("{stem} ({n}).{ext}")        // n = 1,2,3,…
   vs claimed extension (a misnamed `.jpg`-that-is-PNG converted to WEBP →
   `name.webp`).
 
-### 2.2.2 Collision discovery is via §2.1's exclusive create, not a pre-scan
+### 2.2.2 Collision discovery is via §2.1's exclusive publish, not a pre-scan
 
 `n` is **not** chosen by listing the directory and picking max+1 (that is itself a
 TOCTOU race). Instead `output_name` produces candidates **lazily** and each
-candidate is handed to §2.1.2's `create_new`; on `AlreadyExists` it yields the next
-candidate. So numbering and the absolute no-clobber guarantee are the **same loop** —
-the directory's real state at the instant of create decides, not a stale scan. (An
-optional cheap `symlink_metadata` pre-check may skip obviously-taken low numbers as
-an optimisation, but the **authority is always the exclusive create**.)
+candidate is handed to §2.1.2's **no-placeholder exclusive publish** (Unix
+`link`/`renameat2(RENAME_NOREPLACE)` → fails `EEXIST`; Windows `create_new`-reserve →
+fails `AlreadyExists`); on the exists-error it yields the next candidate. So numbering
+and the absolute no-clobber guarantee are the **same loop** — the directory's real
+state at the instant of the exclusive publish decides, not a stale scan. (An optional
+cheap `symlink_metadata` pre-check may skip obviously-taken low numbers as an
+optimisation, but the **authority is always the kernel's exclusive publish**.)
 
 This is the technical realisation of the SSOT distinction:
 
@@ -298,9 +334,33 @@ Before §2.1's exclusive create, `fs_guard::is_safe_output(final, frozen_set)`:
    user-chosen), **never** proceed. The divert path is then re-checked (it too must
    pass `is_safe_output`).
 
-Because step 2 also runs as part of the §2.1 `create_new` loop, a link that is
-created *between* the check and the write still cannot clobber a source: `create_new`
-fails `AlreadyExists` on the existing (symlink) target and we re-pick.
+Because step 2 also runs as part of the §2.1 exclusive-publish loop (§2.1.2), a link
+that is created *between* the check and the write still cannot clobber a source: the
+no-placeholder exclusive publish (Unix `link`/`renameat2(RENAME_NOREPLACE)` → `EEXIST`;
+Windows `create_new`-reserve → `AlreadyExists`) fails on the existing (symlink) target
+and we re-pick.
+
+**Parent-directory safety is made atomic via a directory-handle, not a path
+`[DECIDED]`.** The `create_new` of the *leaf* is exclusive, but a separate TOCTOU
+exists if the **parent** is swapped to a symlink (into a source tree) *between* the
+parent canonicalisation (step 1) and the leaf create — a redirected-but-empty parent
+would pass the leaf check yet land the file inside a source. To close it,
+`is_safe_output` + §2.1's create operate **relative to an open parent-directory
+handle**, not a re-resolved path string:
+
+1. **Open the parent dir handle first** (`O_DIRECTORY` / `openat`-style on Unix via
+   `std::fs::File::open` on the dir + `cap-std`/`openat2` for the relative create;
+   `NtCreateFile`/`CreateFile2` with a dir handle on Windows).
+2. **Verify the open dir handle's identity** (`FileIdentity`, §2.3.1) is **not**
+   inside the frozen set (canonical-prefix containment on the *handle's* real path).
+3. **Create the leaf relative to that same open dir handle** (`openat(dirfd, leaf,
+   O_CREAT|O_EXCL)` on Unix; relative `NtCreateFile` on Windows). Because the file is
+   created *through the handle whose identity we just verified*, the parent cannot be
+   swapped between check and create — the handle pins the real directory.
+
+So beside-source and divert writes both use a **dir-fd-relative exclusive create**;
+the parent's identity is checked once on the handle, and the leaf is created through
+it — neither the parent nor the leaf can be link-redirected in the gap.
 
 ### 2.3.4 Per-OS link primitives (named) `[DECIDED]`
 
@@ -400,21 +460,47 @@ EquivKey = hash(
 
 ### 2.5.2 Detecting "this exact conversion already produced output" `[DECIDED]`
 
-Detection is **best-effort** and uses two cheap, offline signals (no DB, honoring
-§7.4's "persist nothing / session-only" lean — see *fallback* for the cross-session
-limit):
+Detection is **best-effort** and, in v1, rests on **one authoritative signal** — the
+in-session ledger — with disk presence demoted to a non-firing corroborator (no DB,
+honoring §7.4's "persist nothing / session-only" lean — see *fallback* for the
+cross-session limit):
 
-1. **Expected-output presence.** Compute the **first** candidate output name
-   (`stem.ext`, §2.2) at the planned destination (§2.7). If a file already exists
-   *there* whose presence is consistent with a prior identical run, that is the
-   strong signal. Because ConvertIA writes **deterministic** names, the prior run's
-   output is exactly where this run's first candidate would go.
-2. **In-session run ledger (recommended).** Within the **current app session**,
-   `core::run` keeps an in-memory `HashSet<EquivKey>` of conversions already
-   completed this session (cleared on quit; nothing written to disk, §7.4). A second
-   identical drop in the same session hits the ledger → definite equivalence.
+1. **In-session run ledger (the sole authority that fires the prompt) `[DECIDED]`.**
+   Within the **current app session**, `core::run` keeps an in-memory
+   `HashSet<EquivKey>` of conversions already completed this session (cleared on
+   quit; nothing written to disk, §7.4). A second identical drop in the **same
+   session** hits the ledger → definite equivalence → the prompt fires. This is the
+   **only** signal that, on its own, fires the re-run prompt in v1.
+2. **Expected-output presence (corroborator only — never fires alone) `[DECIDED]`.**
+   ConvertIA writes **deterministic** names, so a prior identical run's output sits
+   exactly where this run's first candidate (`stem.ext`, §2.2) would go. **But an
+   existing same-named file is not, by itself, re-run evidence**: nothing on disk
+   distinguishes "the output of a prior identical run" from "an unrelated
+   pre-existing file that merely shares the name" — and the SSOT requires these two
+   cases **not** be conflated (an unrelated collision → silent numbering, §2.2;
+   only a *detected* re-run → prompt). Therefore disk presence **must not fire the
+   prompt on its own**: across sessions (where the ledger is empty) an existing
+   same-named file is an **ordinary collision → silent next-free-variant numbering**,
+   never a re-run. Presence is used only to *corroborate* signal 1 within the same
+   session (it cannot upgrade a non-ledger hit into a re-run). The qualifier
+   "consistent with a prior identical run" is, on disk alone, unmechanisable — which
+   is exactly why signal 1 is the sole authority. (A sound cross-session signal would
+   require the deferred cross-session ledger; see *fallback* and §7.4.)
 
-A batch-level prompt fires when **any** item in the batch is flagged equivalent.
+A batch-level prompt fires when **any** item in the batch is flagged equivalent
+**by signal 1 (the in-session ledger)**.
+
+**When detection runs (ordering) `[DECIDED]`.** Re-run equivalence is computed during
+**C4 `plan_output`** and returned in `OutputPlanPreview.rerun` (§0.4.1) — so the UI
+enters the **RerunPrompt** state (§5.2 state 6) **from the C4 response, before
+Convert is pressed**, not as a separate round-trip after C6. C6 `start_conversion`
+then carries the user's `RerunDecision` (Skip / FreshCopy). (§1.0's flow reflects
+this: re-run detection sits at the §1.8 output-planning step, which C4 drives.)
+**Concurrent identical batch edge:** if an identical batch is *running* in the same
+session when C4 queries the ledger, the in-flight batch's `EquivKey`s are added to
+the ledger only at *its* completion, so the second batch may miss the equivalence and
+fall through to §2.2 **silent next-free-variant numbering** — an acceptable
+best-effort miss (never an overwrite, §2.1).
 It is **one** prompt for the whole batch (SSOT: "one plain batch-level prompt"),
 surfaced as the §5.2 *re-run prompt* state with `Skip` (default, focused) /
 `Make fresh copies`. The prompt's strings are UI-chrome (§5.7), but the **decision
@@ -431,13 +517,14 @@ overwrite*. This is acceptable precisely because §2.1's exclusive-create makes
 overwrite impossible regardless of what §2.5 concludes — §2.5 only decides *prompt
 vs silent-number*, never *number vs overwrite*.
 
-> `[OPEN]` (owner §7.4 / §2.5): whether a **cross-session** ledger is worth adding
-> (a tiny on-disk record of completed `EquivKey`s) to make re-run detection survive
-> a restart. SSOT leans "persist nothing"; the privacy invariant (§2.11) would
-> require the ledger to store **only opaque hashes, never paths/content**.
-> **Recommendation: do not persist in v1** — keep §2.5 session-only; the harmless
-> extra copy across sessions is within the SSOT's stated best-effort tolerance.
-> Flagged because it is genuinely a product/persistence call, not a mechanism call.
+> **`[DECIDED]` cross-session ledger = NOT in v1 (session-only).** §2.5 stays
+> session-only (the in-memory ledger, signal 1's sole authority §2.5.2); the harmless
+> extra numbered copy across sessions is within the SSOT's stated best-effort
+> tolerance, and "persist nothing" is honored (§7.4). A future on-disk
+> `EquivKey`-hashes-only record (which would restore a sound cross-session re-run
+> signal) is **[DEFER: post-v1]** — if added it must store **only opaque hashes,
+> never paths/content** (privacy invariant §2.11). (Adopting the standing [REC]: do
+> not persist in v1.)
 
 ---
 
@@ -453,15 +540,27 @@ and where.
 
 ### 2.6.1 Temp ownership model `[DECIDED]`
 
-- **Scratch root** is owned by §2.14 (where it lives, which volume). Within it, each
-  run gets a **run-scoped subdirectory** named with the `RunId` (§7.1):
-  `…/convertia/run-<RunId>/`. Every `*.part` (§2.1) and any engine working file
-  (§3.5 working dir) lives under that run dir.
-- **`RunId` encodes ownership**, so a cleanup sweep can tell *its own* temps from a
-  *concurrent instance's* temps. The RunId model and its uniqueness/liveness
-  semantics are §7.1's to define; §2.6 *requires* it to be (a) unique per run and
-  (b) liveness-checkable (so a stale dir from a dead run is distinguishable from a
-  live one — see 2.6.3).
+ConvertIA has **two kinds of temp** with **different homes** — the split and the
+volume rule are owned by §2.14.2 (referenced here, not re-decided):
+
+- **Kind-2 engine working files** (LibreOffice profile, FFmpeg internal temp, etc.)
+  live under the **central per-run scratch dir** named with the `RunId` (§7.1):
+  `…/convertia/<InstanceId>.<pid>/run-<RunId>/` under the §2.14 scratch root.
+- **The kind-1 publish temp (`*.part`)** does **not** live in the central scratch
+  root — its location is **deferred entirely to §2.14**, which puts it on
+  **`final`'s volume** (the destination dir) so the §2.1 publish is a true
+  intra-volume atomic rename even in the common beside-source case (where the
+  central scratch root would frequently be on a *different* volume → an `EXDEV`
+  cross-volume move on the **common** path, defeating §2.1). Per §2.14.1 the publish
+  temp is a uniquely-named **sibling file** in the destination dir, e.g.
+  `…/<dest_dir>/.convertia-<RunId>-<jobId>-<rand>.part`, **not** a subdir, so the
+  startup sweep (§2.6.3) can opportunistically remove a stale one when a later run
+  next writes there.
+- **`RunId` encodes ownership** in both temp names, so a cleanup sweep can tell *its
+  own* temps from a *concurrent instance's* temps. The RunId model and its
+  uniqueness/liveness semantics are §7.1's to define; §2.6 *requires* it to be (a)
+  unique per run and (b) liveness-checkable (so a stale central scratch dir from a
+  dead run is distinguishable from a live one — see 2.6.3).
 
 ### 2.6.2 Cleanup triggers `[DECIDED]`
 
@@ -473,8 +572,8 @@ and where.
 | **Item failure** (engine error, corrupt, etc.) | remove that item's `tmp`. |
 | **Cancel** (user) | §1.7 kills the engine; the killed item's `tmp` is removed; **already-finished items are kept** (SSOT). |
 | **Out-of-disk mid-write** | remove the partial `tmp`; report `OutOfDisk` (§2.8); **batch continues** (SSOT). |
-| **Run end (any reason)** | remove the now-empty `run-<RunId>/` dir. |
-| **Next app start** | sweep stale `run-<RunId>/` dirs from prior runs (§2.6.3). |
+| **Run end (any reason)** | remove the now-empty central `run-<RunId>/` dir **and** any leftover `*.part` publish temps in the run's known destination dirs (destination roots are in memory at run end). |
+| **Next app start** | sweep stale central `run-<RunId>/` dirs from prior runs (§2.6.3); destination-resident `*.part` from a *crashed* prior run are reclaimed opportunistically by a later write into that dir, not by the startup sweep (§2.6.3 limitation). |
 
 Removal restores free space to "roughly what it was before the run" (SSOT) — temps
 are the only thing ConvertIA adds to disk besides the final outputs, and successful
@@ -484,17 +583,38 @@ finals are intended; failed/cancelled items leave nothing.
 
 On startup (§7.2 sequence) `core::run::sweep_stale`:
 
-1. Lists `convertia/run-*` dirs under the scratch root.
+1. Lists `convertia/<InstanceId>.<pid>/run-*` dirs under the **central scratch
+   root** (kind-2 working files).
 2. For each, checks **liveness** via §7.1's mechanism — recommended: an **advisory
    lock file** `run-<RunId>/.lock` held with an OS lock for the run's lifetime
    (Unix `flock`/`fcntl` `F_SETLK`; Windows `LockFileEx` exclusive on the lock
    file). A dir whose lock is **still held** belongs to a **live** instance → **left
    untouched**. A dir whose lock is **free/stale** belongs to a dead/crashed run →
-   removed (its `*.part` files are the discardable artifacts the SSOT says are
+   removed (its working files are the discardable artifacts the SSOT says are
    "cleaned up on next run").
 3. This is what makes the SSOT promise *"temp artifacts are owned per-run so cleanup
    never removes another instance's in-progress file"* concrete: liveness is by
-   held-lock, not by guessing from timestamps.
+   **held-lock — the single authoritative predicate** — not by guessing from
+   timestamps and **not** by the PID embedded in the dir name (§7.1.2). The PID is a
+   human-readable label / fast pre-filter only; it is **not** the liveness test
+   (PIDs are reused → a dead run's PID may belong to a live unrelated process). The
+   held advisory lock is the one predicate both §2.6 and §7.1.2 defer to.
+
+**Destination-resident publish temps — the honest limitation `[DECIDED]`.** The
+kind-1 `*.part` publish temps live in the *destination* dirs (§2.14.1), **not** the
+central scratch root, and §7.4 does **not** persist the set of destination roots a
+prior run wrote to. So a post-restart sweep **cannot enumerate** where stale `*.part`
+files might be — the central-scratch sweep above will not find them. ConvertIA
+therefore reclaims a destination-resident publish temp at exactly two moments:
+**(a)** at run-end and same-session retry (the destination roots are known
+in-memory), and **(b) opportunistically**: whenever any *later* run is about to write
+into a destination dir, it first removes any sibling stale `.convertia-*.part` whose
+embedded `RunId` belongs to a **dead** run (same liveness check as step 2, applied
+per-file). This is why the publish temp is a uniquely-named **file** (not a subdir)
+named with the `RunId` — it makes the opportunistic same-dir sweep cheap and safe.
+A publish temp in a destination dir **never revisited** by a later run can persist
+until the user deletes it; this residual case is surfaced honestly per §2.6.4 rather
+than promised away.
 
 ### 2.6.4 Cleanup failure → honest reporting `[DECIDED]`
 
@@ -552,6 +672,17 @@ For each source, §1.8 classifies its **intended** output location via
   reality). Failure (`PermissionDenied`, `ReadOnlyFilesystem`, network errors) →
   **unwritable**. *Recommended:* probe lazily and cache per-directory within the run
   to avoid probing every file in a 10 000-file batch in the same folder.
+  - **The per-directory writability cache is a planning *hint*, not a commitment
+    `[DECIDED]`.** A location can flip read-only *between* the probe and the actual
+    write (USB pulled, share dropped, permission changed mid-run). When the real
+    §2.1 publish then fails for a writability reason, ConvertIA **re-triggers the
+    §2.7 per-location divert for that item** (treat the just-failed location as
+    unwritable, divert to the §2.7.3 target, re-run the §2.1 publish there) **before**
+    reporting any failure. Only if the divert target *also* fails to accept the write
+    does the item report `WriteFailed` (§2.8). So a post-probe read-only flip is a
+    **late divert**, not an immediate item failure — consistent with §2.7's
+    divert-unwritable-locations intent. (A non-writability error — e.g. `OutOfDisk` —
+    is **not** a divert trigger; it fails per §2.8 / §1.10.)
 - **Ephemeral test:** is the dir inside a **known-ephemeral OS temp location**?
   - Win: under `%TEMP%` / `%TMP%` / `GetTempPathW`.
   - macOS: under `$TMPDIR` (per-user `…/T/`), `/tmp`, `/var/folders/…`.
@@ -777,11 +908,22 @@ gating the Convert button.
 
 ### 2.9.2 Note behaviour rules `[DECIDED]`
 
-- **Predictable only.** A note appears **only** when the planned disposition is
-  *known* to be lossy. For video, the note is keyed to the **planned remux-vs-
-  re-encode decision** (§video.md Category-wide): a batch that will **remux** shows
-  **no** note; one that will **re-encode** shows `video_reencode`. For a mixed batch
-  where *any* item re-encodes, the note shows (honest worst-case) — per video.md.
+- **Predictable only.** A note appears **only** when loss is *predictable* at the
+  moment of target choice. For **video**, the precise per-item remux-vs-re-encode
+  disposition is **not** known before convert (the full `ffprobe` stream inventory
+  is deferred to convert-time, §1.2/§3.5 — running it on every item of a thousands-
+  file recursive batch up front is too costly). So the `video_reencode` note is an
+  **explicit header-derived best-effort / worst-case** signal computed at target
+  choice from the **container pair** (the static matrix flag in video.md) and any
+  cheap header hint: if the chosen target pair is **always re-encode** (e.g.
+  →WEBM, or a legacy-source container whose inner codecs are known-incompatible) the
+  note shows; if the pair is **commonly a remux** but a given item *might* still
+  re-encode, the note is phrased as the worst-case *"may be re-encoded"* (honest, not
+  a false promise of losslessness). The **precise** per-item disposition is resolved
+  only at convert-time (§3.5 `ffprobe`), and the summary (§1.12) reflects what
+  actually happened. This keeps §1.2 (header-only detection), §2.9.2 (the note) and
+  §0.4.2 (`RunStarted.willReencode`) in agreement: all three are **best-effort
+  worst-case before convert, exact after**.
 - **One note, not a nag.** At most the relevant note(s) for the chosen target are
   shown together as calm inline lines; never a modal, never per-file, never a
   blocking acknowledgement (SSOT explicit).
@@ -1094,19 +1236,24 @@ The atomic-publish (§2.1.2) is a `rename(tmp → final)`, which is only atomic
 > **`tmp` is always created on the same volume as `final`** (the *destination*), not
 > necessarily the same volume as the source.
 
-Concretely, `core::run` picks the per-job scratch path **inside the destination
-directory's volume**. The simplest correct choice: a **hidden per-run scratch
-subdir inside (or adjacent to) the destination directory itself** —
-`…/<dest_dir>/.convertia-run-<RunId>/<job>.part` — guaranteeing same-volume by
-construction. This is what makes the §2.1 rename a true atomic publish in the common
+Concretely, `core::run` picks the publish-temp path **inside the destination
+directory itself** (same volume by construction). The chosen form is a
+**uniquely-named dotfile *sibling* of `final`**, not a subdir:
+`…/<dest_dir>/.convertia-<RunId>-<jobId>-<rand>.part`. A bare **file** (rather than a
+`.convertia-run-<RunId>/` subdir) is deliberate: it lets the §2.6.3 startup/next-write
+sweep **opportunistically remove a sibling stale `.convertia-*.part`** (whose
+embedded `RunId` belongs to a dead run) without having to discover and tear down a
+directory, and it keeps the no-placeholder publish (§2.1.2) a single same-dir rename.
+This is what makes the §2.1 publish a true intra-volume atomic rename in the common
 beside-source case (dest dir = source dir = one volume) **and** in the divert case
-(dest dir = Downloads = system volume; scratch also on the system volume).
+(dest dir = Downloads = system volume; publish temp also on the system volume).
 
-- *Recommended scratch placement:* **inside the destination directory** (a dotted
-  run-dir), removed by §2.6 on run end. This avoids any cross-volume move for the
-  *publish*. If the destination directory itself is not writable, §2.7 has **already
-  diverted** the destination to a writable one — so by the time §2.14 places scratch,
-  the destination is known-writable (§2.7.2 probe).
+- *Recommended publish-temp placement:* a **dotfile sibling** in the destination
+  directory, removed by §2.6 on run end (and opportunistically by a later write,
+  §2.6.3). This avoids any cross-volume move for the *publish*. If the destination
+  directory itself is not writable, §2.7 has **already diverted** the destination to
+  a writable one — so by the time §2.14 places the publish temp, the destination is
+  known-writable (§2.7.2 probe).
 - *Alternative considered & rejected for the publish:* a single global app scratch
   dir (e.g. under the OS temp) for *all* runs. Rejected as the *publish* temp because
   it is frequently on a **different volume** than a beside-source destination,
@@ -1132,6 +1279,16 @@ LibreOffice headless is **not** safely parallel under one profile) is a **kind-2
 working file: it lives in the per-run scratch root, one profile per run, so serialized
 LibreOffice invocations don't collide.
 
+**Linux AppImage topology (no special handling needed) `[DECIDED]`.** On an AppImage,
+the app itself runs from a **read-only squashfs mount** — but the kind-2 scratch root
+resolves to **`app_local_data_dir()`** (under the user's writable home, e.g.
+`~/.local/share/…`), which is on the **system volume**, not the squashfs mount, and
+is a valid kind-2 scratch root. The kind-1 **publish temp** still lives on the
+*destination* volume per §2.14.1; when the destination is a different volume (a USB
+stick — the expected common case for a portable Linux tool), the §2.14.3 cross-volume
+fallback activates exactly as designed. No AppImage-specific code path is needed
+beyond the existing kind-1/kind-2 split.
+
 ### 2.14.3 Cross-volume fallback (only when same-volume can't be guaranteed) `[DECIDED]`
 
 In the rare case where the publish temp truly cannot be co-located with `final` on
@@ -1141,25 +1298,27 @@ creating a sibling scratch dir is disallowed, or a quirky network mount), the
 move-equivalent **inside** that volume:
 
 1. Write `tmp` in the **best same-volume location obtainable** for `final` (the
-   destination dir; if a sibling dotdir can't be made, the destination dir's own
-   parent on the same volume).
+   destination dir as a sibling dotfile; if a sibling can't be created there, the
+   destination dir's own parent on the same volume).
 2. If, despite this, the only available scratch is on **another** volume, perform a
-   **copy + fsync + atomic-rename-within-destination-volume**:
+   **copy + fsync + exclusive-publish-within-destination-volume**:
    - copy the cross-volume temp into a **new** temp **on `final`'s volume**,
    - `sync_all()` it (durable),
-   - then `rename` that same-volume temp → `final` (atomic, intra-volume),
+   - then publish that same-volume temp → `final` with the **no-placeholder
+     exclusive-rename** (§2.1.2: Unix `link`/`renameat2(RENAME_NOREPLACE)`, Windows
+     `ReplaceFileW`) — intra-volume and exclusive, never a 0-byte placeholder,
    - `fsync` the destination directory (Unix) for durability.
    This is exactly the documented `EXDEV` remedy (the tempfile-crate guidance:
    *cannot persist across filesystems → copy into the destination volume, then
    rename*). The cross-volume step is a **copy**, never a cross-volume `rename`
-   (which would fail `EXDEV`); the **only** rename is intra-volume and atomic.
+   (which would fail `EXDEV`); the **only** rename is intra-volume and exclusive.
 3. The extra copy is removed by §2.6. The user-visible result is identical: `final`
    appears atomically or not at all; a crash leaves only discardable temps.
 
 `fs_guard::atomic_publish(tmp, final)` encapsulates all of this: it tries the
-direct intra-volume rename first, and only on `EXDEV` (Unix) / cross-device failure
-(Windows) falls back to copy-into-dest-volume-then-rename. Callers (§2.1) never see
-the distinction.
+direct intra-volume no-placeholder publish (§2.1.2) first, and only on `EXDEV`
+(Unix) / cross-device failure (Windows) falls back to copy-into-dest-volume-then-
+exclusive-publish. Callers (§2.1) never see the distinction.
 
 ### 2.14.4 Space accounting ties to §1.10 `[DECIDED]`
 

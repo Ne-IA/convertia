@@ -193,8 +193,10 @@ Notes on the matrix:
 ### `AAC`
 
 - **Detection:** Advanced Audio Coding, **raw ADTS** stream. Magic = ADTS sync
-  `FF F1` (MPEG-4, no CRC) / `FF F9` (with CRC) — i.e. `FF Fx` with the
-  layer/protection bits matching ADTS. Extension `.aac`. **Disambiguation:** an
+  word `FF Fx` where the low nibble encodes MPEG-version + protection-absent bits:
+  **`FF F1` = MPEG-4, no CRC**; **`FF F9` = MPEG-2, no CRC**; `FF F0` / `FF F8` =
+  the with-CRC variants (protection present). All are valid ADTS. Extension `.aac`.
+  **Disambiguation:** an
   AAC *codec* inside an MP4 container is an **M4A**, not this — `.aac` here means
   the raw ADTS elementary stream. Bare `FF Fx` overlaps MP3 frame sync; FFmpeg's
   probe resolves ADTS-vs-MP3 by parsing the header fields.

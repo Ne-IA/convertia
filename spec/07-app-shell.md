@@ -70,13 +70,13 @@ using the official **`tauri-plugin-single-instance`** (v2). Rationale:
   users may each run their own instance — acceptable because their temp/scratch
   (§2.14) and output locations are user-scoped anyway.
 
-`[OPEN→README]` *Remaining owner call:* whether the second-launch hand-off, when
-the primary instance is **mid-conversion**, (a) silently queues the new paths as
-a fresh idle-state drop once the current batch ends, or (b) is refused with a
-calm "ConvertIA is busy — finish or cancel the current batch first" note. **`[REC]`
-option (b)** for v1: it keeps the freeze point (§2.4) and the one-batch-at-a-time
-model (§1.3) unambiguous and avoids a hidden queue the user can't see. UI surface
-in §5.2.
+**`[DECIDED]` second-launch hand-off while mid-conversion = refuse-busy (option b).**
+When the primary instance is **mid-conversion**, a second launch's paths are
+**refused** with a calm "ConvertIA is busy — finish or cancel the current batch
+first" note (rather than silently queued as a deferred drop). This keeps the freeze
+point (§2.4) and the one-batch-at-a-time model (§1.3) unambiguous and avoids a hidden
+queue the user can't see. (Adopting the standing [REC].) When **idle**, a second
+launch's paths start a fresh drop normally. UI surface in §5.2.
 
 ### 7.1.2 `InstanceId` and `RunId` model `[DECIDED]`
 
@@ -97,12 +97,20 @@ pub struct RunId(pub Uuid);        // field of `Batch`/`RunResult` (§0.6)
 
 **Scratch-root naming (the load-bearing detail §2.6/§2.14 depend on):** the
 per-instance scratch root is named with **both** the `InstanceId` **and the OS
-PID**, e.g. `…/convertia/scratch/<InstanceId>.<pid>/`. The combination lets
-startup cleanup (§7.2.5, mechanism owned by §2.6) safely reclaim an *orphaned*
-scratch root (process gone, PID not alive / not us) while never deleting a
-**concurrent same-user instance's** live root. Per-run subdirs live under it as
-`…/<InstanceId>.<pid>/run-<RunId>/`. (Exact path policy is owned by §2.14; this
+PID**, e.g. `…/convertia/scratch/<InstanceId>.<pid>/`. Per-run subdirs live under it
+as `…/<InstanceId>.<pid>/run-<RunId>/`. (Exact path policy is owned by §2.14; this
 section only fixes the *identity* embedded in it.)
+
+> **Liveness predicate — the advisory lock is authoritative, the PID is a label
+> `[DECIDED]`.** The PID in the dir name is a **human-readable hint / fast
+> pre-filter only**; it is **not** the liveness test, because PIDs are reused (a dead
+> instance's PID may now belong to an unrelated live process → false "alive", or a
+> wrapped/re-execed process changes PID → false "dead"). The **single authoritative
+> liveness predicate** is the **§2.6.3 advisory lock** (`run-<RunId>/.lock` held via
+> Unix `flock`/`fcntl` / Windows `LockFileEx` for the run's lifetime): lock-held ⇒
+> live ⇒ never reclaimed; lock-free/stale ⇒ dead ⇒ reclaimable. §2.6.3 owns the
+> mechanism; §7.1 only supplies the identity it locks. So PID-alive is **never** used
+> as the predicate (reuse race); the held-lock is.
 
 ---
 
@@ -154,19 +162,27 @@ present and usable:
   resource dir / sidecar location, §0.7) and confirm the file exists. The
   authoritative *list* of expected engines per platform is owned by §3.1/§3.3;
   §7.2 only consumes it.
-- **Integrity `[REC]`:** verify each engine binary against a **build-time
+- **Integrity `[DECIDED]`:** verify each engine binary against a **build-time
   manifest of expected hashes** shipped in-bundle (the same SBOM/checksum data
   §3.7/§6.2 produce). This is a *local* tamper/corruption check (a partially
   extracted portable archive, a truncated download, AV quarantine that gutted a
   file) — **not** a security trust anchor (signing/notarization is out of scope,
-  SSOT). `[OPEN→README, defer-able]` Full-hash-every-engine on *every* launch may
-  add noticeable startup latency for the heavy office engine; a reasonable
-  refinement is hash-on-first-launch-then-cache-a-marker, or presence + a cheap
-  size/header check on warm launches. Owner: §7.2 with §3.3.
+  SSOT). **Strategy `[DECIDED]` (adopting the [REC]): hash-on-first-launch, then
+  cache a marker; on warm launches do presence + a cheap size/header check**, not a
+  full re-hash of the heavy office engine each time (avoids startup latency). A full
+  re-hash is triggered only when the marker is absent (first launch / post-update).
+  Owner: §7.2 with §3.3.
 - **Smoke probe `[REC]`:** optionally, a fast `--version`-style invocation per
   critical engine through the §3.5/§2.12 wrapper to confirm it *runs* on this OS
   (catches a glibc/arch mismatch a hash can't). Kept cheap; gated behind verbose
   mode (§7.5) on warm launches.
+  - **macOS ordering caveat `[REC]`:** on macOS a quarantined/Gatekeeper-blocked
+    bundled binary (§7.2.4 — builds are unsigned) makes the spawn itself fail. To
+    ensure that fault surfaces **in a window** (not as a silent pre-window hang),
+    the macOS smoke probe is **deferred until after the WebView window is shown**
+    (step 6), or **downgraded to presence + hash only on first launch** with the
+    runtime-spawn check happening lazily on the first real conversion. Either way the
+    quarantine fault becomes a visible §2.13 app-fault message, never a blank window.
 
 **Outcome of a failure:** a missing, corrupt, or non-runnable **required** engine
 is an **app-level startup fault** (§2.13) presented in plain language ("A required
@@ -232,20 +248,34 @@ Two concrete facts shape the design:
    These strings ship in the macOS bundle config (Tauri `tauri.conf.json` →
    `bundle.macOS` / `infoPlist`); the **exact phrasing is owned here** as a §7.2
    deliverable (English, SSOT Principle 11) and must read honestly (local
-   conversion only).
-2. **Child processes do NOT inherit the parent's TCC grant.** A separately-spawned
-   sidecar engine (our copyleft-isolation model, §3.6) that opens a protected
-   path can hit a TCC denial **even though the GUI app was granted access** —
-   macOS attributes TCC to the responsible process, and a plain spawned child is
-   not covered by the parent's grant. **`[REC]` Mitigation: the Rust core opens
-   the source file itself and hands the engine a file descriptor / a path under
-   the app-owned scratch dir (§2.14), rather than handing the engine a raw
-   protected user path to open.** I.e. the core (which holds the TCC grant) is the
-   only process that touches TCC-protected locations; engines operate on
-   core-provided handles/scratch. This dovetails with the §2.14 cross-volume
-   strategy (copy-into-scratch then atomic rename) and the §2.12 isolation wrapper.
-   The *engine arg/handle plumbing* is owned by §3.5; §7.2 owns the *requirement*
-   that engines never be the process that first touches a TCC-protected path.
+   conversion only). **The canonical v1 strings `[DECIDED]`:**
+
+   | Info.plist key | English usage-description string |
+   |----------------|----------------------------------|
+   | `NSDesktopFolderUsageDescription` | *"ConvertIA needs access to your Desktop to read files you convert there and save the results next to them. Everything stays on your Mac."* |
+   | `NSDocumentsFolderUsageDescription` | *"ConvertIA needs access to your Documents to read files you convert there and save the results next to them. Everything stays on your Mac."* |
+   | `NSDownloadsFolderUsageDescription` | *"ConvertIA needs access to your Downloads to read files you convert there and save the results next to them. Everything stays on your Mac."* |
+   | `NSRemovableVolumesUsageDescription` | *"ConvertIA needs access to removable drives (USB sticks, SD cards) to read files you convert from them. Everything stays on your Mac."* |
+
+   (Honest-disclosure wording: local conversion only, nothing uploaded — consistent
+   with §2.11. These are the §7.2 deliverable; §5 may refine UI-chrome wording, not
+   these OS-level strings.)
+2. **Do not rely on the responsible-process chain holding for spawned engines.** A
+   separately-spawned sidecar engine (our copyleft-isolation model, §3.6) that opens
+   a protected path *can* hit a TCC denial in some chain-break edge cases. (Note:
+   macOS tracks a **responsible-process chain**, so a child usually *does* inherit
+   the parent's grant — the earlier "children never inherit the grant" framing was
+   overstated; the mitigation is sound as **defence-in-depth** against the cases
+   where the chain breaks, not because inheritance never happens.) **`[REC]`
+   Mitigation: the Rust core (which holds the TCC grant) is the **only** process that
+   first touches a TCC-protected location — it copies the source into the app-owned
+   per-job scratch (§2.14 kind-2) and hands the engine the **scratch path**, never a
+   raw protected user path.** Engines therefore operate on core-provided scratch, so
+   a TCC chain-break can never block a conversion. This dovetails with the §2.14
+   cross-volume strategy and the §2.12 isolation wrapper. The *engine arg/handle
+   plumbing* is owned by **§3.5** (see §3.5's macOS source-staging subsection); §7.2
+   owns the *requirement* that engines never be the process that first touches a
+   TCC-protected path.
 
 **Timing:** the first read of a protected location triggers the prompt; ConvertIA
 does **not** pre-prompt at launch (no files yet) — the prompt appears naturally at
@@ -277,13 +307,16 @@ equivalent; ordinary filesystem ACL denials map to the same §2.8 error kind.
 
 Two complementary hooks own the lifecycle (per Tauri v2):
 
-- **`WindowEvent::CloseRequested { api, .. }`** (via `WebviewWindow::on_window_event`)
-  — fires when the user clicks the window's close control. ConvertIA inspects
-  *converter state* and may `api.prevent_close()` to run the §7.3.3 guard. The
-  equivalent frontend hook is `getCurrentWindow().onCloseRequested(e => e.preventDefault())`;
-  **`[REC]` do the decision in Rust** (the core owns batch state) and only use the
-  JS hook to render the confirm UI (§5.2), to avoid a split-brain "is it
-  converting?" check.
+- **`WindowEvent::CloseRequested { api, .. }`** — fires when the user clicks the
+  window's close control. Registered via **`Builder::on_window_event(|window,
+  event| …)`** (the builder hook, whose closure receives `(&Window, &WindowEvent)`)
+  — **not** a per-`WebviewWindow` method. ConvertIA inspects *converter state* and
+  may `api.prevent_close()` to run the §7.3.3 guard. The v2 frontend equivalent is
+  listening for **`tauri://close-requested`** (e.g.
+  `getCurrentWindow().listen('tauri://close-requested', …)` /
+  `onCloseRequested(e => e.preventDefault())`). **`[REC]` do the decision in Rust**
+  (the core owns batch state) and only use the JS side to render the confirm UI
+  (§5.2), to avoid a split-brain "is it converting?" check.
 - **`RunEvent::ExitRequested { api, .. }`** and **`RunEvent::Exit`** (via
   `Builder::run(|app, event| …)` / `on_event`) — `ExitRequested` is the last
   chance to `api.prevent_exit()`; `Exit` is the final cleanup point (flush logs,
@@ -340,7 +373,7 @@ the frozen set — out of v1, parked alongside presets.)
 
 ---
 
-## 7.4 Persistence & app state `[REC: v1 persists effectively nothing]`
+## 7.4 Persistence & app state `[DECIDED: v1 persists only a 2-key cosmetic blob]`
 
 > SSOT origin: *Local, private & offline* (no accounts, no telemetry), *Portable,
 > no installation* (no system pollution), *Future Ideas (Parked)* (presets,
@@ -369,14 +402,14 @@ from the user's files:
 | `theme` | `"system" \| "light" \| "dark"` | `"system"` | UI preference, not user data; re-asking every launch is annoying. §5.5 owns the theme itself. |
 | `lastDestinationMode` | `"beside-source" \| "<absolute path>"` | `"beside-source"` | Re-uses a *chosen* destination (§2.7) across launches; **stores a folder path the user explicitly picked, never a source path or filename**. |
 
-`[OPEN→README]` *Genuine owner call:* whether to ship even this minimal blob or go
-**strictly zero-persistence** in v1. **`[REC]` ship the 2-key blob** — it stays
-inside "no user data / no history", improves everyday feel, and is trivially
-inspectable. If the owner prefers absolute purity, dropping it costs nothing
-(theme → always `system`, destination → always `beside-source` each launch).
-Whichever way, **a `lastDestinationMode` path must be re-validated as writable at
-use time** (§2.7 per-location fallback applies if it has since become read-only/
-gone) — it is a *hint*, never a guarantee.
+**`[DECIDED]`: ship the 2-key blob.** It stays inside "no user data / no history",
+improves everyday feel, and is trivially inspectable — adopting the standing [REC].
+(Dropping it would cost nothing functionally — theme → always `system`, destination →
+always `beside-source` — so this is a low-stakes default, not a load-bearing call.)
+**A `lastDestinationMode` path is always re-validated as writable at use time** (§2.7
+per-location fallback applies if it has since become read-only/gone) — it is a
+*hint*, never a guarantee. The blob's location/mechanism is §7.4.2; its capability
+(`store:default`) is on the §0.10 allowlist.
 
 ### 7.4.2 If shipped: where it lives & how `[REC]`
 
@@ -413,9 +446,9 @@ gone) — it is a *hint*, never a guarantee.
 > (privacy invariant) and §2.13 (fault model). Feeds §6.8 SECURITY/bug-report
 > path and the §6.5 reliability gate. README owner: §7.5.
 
-### 7.5.1 Decision: a local, opt-in-verbosity log exists `[REC]`
+### 7.5.1 Decision: a local, opt-in-verbosity log exists `[DECIDED]`
 
-**Recommendation: ship a local, on-disk log, default level `warn`/`info`,** using
+**`[DECIDED]` ship a local, on-disk log, default level `warn`/`info`,** using
 the official **`tauri-plugin-log`** (Rust + a thin JS bridge so frontend errors
 also land in the same file). It is **purely local** — written to disk, never
 transmitted (no network sink; CSP/allowlist forbid it, §0.10/§2.11). It exists
@@ -430,12 +463,16 @@ record *what actually happened* without showing the user a stack trace.
 - **Location (per-OS, Tauri `app.path().app_log_dir()`):**
   - Windows: `%LOCALAPPDATA%\dev.ne-ia.convertia\logs\`
   - macOS: `~/Library/Logs/dev.ne-ia.convertia/`
-  - Linux: `$XDG_DATA_HOME/dev.ne-ia.convertia/logs/` (→ `~/.local/share/…`)
-- **Rotation/retention `[REC]`:** `tauri-plugin-log` `max_file_size` (e.g.
-  `5_000_000` bytes) with `RotationStrategy::KeepN` keeping a small number (e.g. 3)
-  of files — **bounded total footprint**, so the log can never silently grow
-  (consistent with "leave nothing behind" and "no system pollution"). Old files
-  are discarded automatically.
+  - Linux: Tauri **`app_log_dir()`** → `~/.local/share/dev.ne-ia.convertia/logs/`
+    (note: Tauri convention bases the log dir on the **data** dir, so this deviates
+    from the strict XDG `$XDG_STATE_HOME` (`~/.local/state`) where logs would
+    "officially" live — we follow Tauri's `app_log_dir()` for cross-platform
+    consistency, not raw XDG)
+- **Rotation/retention `[REC]`:** `tauri-plugin-log` `.max_file_size(5_000_000)`
+  (bytes) with **`RotationStrategy::KeepSome(3)`** (the real plugin variant — keep a
+  small number of rotated files; `KeepN` is not a real variant) — **bounded total
+  footprint**, so the log can never silently grow (consistent with "leave nothing
+  behind" and "no system pollution"). Old files are discarded automatically.
 
 ### 7.5.3 Redaction stance — reconciling diagnostics with privacy `[DECIDED + REC]`
 
@@ -607,7 +644,10 @@ and one-batch-at-a-time (§1.3) rules apply identically. The entry points:
 fn forward_launch_intake(app: &AppHandle, argv: &[String], cwd: &str) {
     let paths = parse_path_args(argv, cwd);     // resolve relative → absolute
     if paths.is_empty() { return; }
-    app.emit("app://intake", paths).ok(); // §0.4-owned event; UI mirrors a drop (§5.2/§1.1)
+    // §0.4.2 `app://intake` payload is { paths, origin } (NOT bare paths) so the
+    // frontend can re-call C1 ingest_paths with the correct IntakeOrigin (§0.6).
+    let origin = IntakeOrigin::SecondInstance;  // or LaunchArg at first launch
+    app.emit("app://intake", IntakePayload { paths, origin }).ok(); // UI mirrors a drop (§5.2/§1.1)
 }
 ```
 
