@@ -202,9 +202,10 @@ lossy compression — the disclosure should not imply WAV/FLAC *improves* qualit
 
 - **No audio track** (silent screen-capture, GoPro clip with audio disabled): the
   operation is offered (we can't always know pre-flight without probing), but on
-  run it **fails that one item clearly** — "this video has no audio track to
-  extract" — and the rest of the batch continues (§1.9 mid-run skip, §2.8 error
-  taxonomy; this is a *named* failure kind, not a generic engine error). **Better
+  run it **fails that one item clearly** — the §2.8 `NoAudioTrack` kind ("This
+  file has no audio to extract.") — and the rest of the batch continues (§1.9
+  mid-run skip, §2.8 error taxonomy; this is a *named* failure kind, not a generic
+  engine error). **Better
   if cheaply knowable:** probe during detection/collected-summary so the
   extract-audio target is shown disabled-with-reason rather than offered-then-
   failed — feasibility flagged **[OPEN-C]** (a full `ffprobe` of every item in a
@@ -221,7 +222,7 @@ lossy compression — the disclosure should not imply WAV/FLAC *improves* qualit
   is 16-bit PCM (downconverts bit depth — minor, expected); 5.1 → preserved as
   5.1 in WAV/FLAC, **not** auto-downmixed to stereo (no silent channel loss).
   MP3/OGG re-encode of >2ch follows the encoder's standard channel handling
-  (note in §2.9 if a downmix is forced by the codec).
+  (§2.9 `audio_downmix` if a downmix is forced by the codec).
 - **Very long videos** (2-hour movie): extract-audio output is bounded and
   modest (audio is small); the §1.10 "too big" guardrail rarely triggers here —
   unlike to-GIF. Progress is real per-item (§1.11), driven by FFmpeg time
@@ -332,8 +333,8 @@ to the §1.10 resource pre-flight; §1.10 owns the threshold mechanics):
    fast and clearly, preferably up front*; §2.8 named failure kind). The rest of
    the batch continues.
 4. The estimate + cap are **honest, not silent truncation**: if a cap shortened
-   the clip, that's a predictable, disclosed outcome (passive note via §2.9), not
-   a quiet surprise.
+   the clip, that's a predictable, disclosed outcome (passive note via §2.9
+   `video_to_gif`), not a quiet surprise.
 
 > **`[OPEN-F]` — the cap & ceiling numbers.** The default duration cap (proposed
 > 10 s), the per-pixel heuristic constant, and the absolute "too big" ceiling are
@@ -348,9 +349,9 @@ fps downsampling (motion), scale-down (resolution), 256-colour quantisation
 (palette/dither), and audio drop. This is **not** an error and **not** a
 re-encode-quality slider — it is the nature of the operation, so the passive
 inline note is shown for to-GIF **unconditionally** (SSOT: "to animated GIF"
-genuinely drops a lot). **Exact string lives in §2.9** (link only) — it should
-convey "colours, smoothness and sound are reduced — GIFs are for short clips,"
-calmly, once, not per-conversion.
+genuinely drops a lot). **Exact string lives in §2.9 `video_to_gif`** (link
+only) — it conveys that colours, smoothness and sound are reduced and GIFs are
+for short clips, calmly, once, not per-conversion.
 
 ### Edge cases
 

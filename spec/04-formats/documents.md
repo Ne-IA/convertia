@@ -144,8 +144,8 @@ are the **concrete option lists and defaults** this file owns (§1.6).
   is tracked in *Category-wide [OPEN]*.
 - **Options (PDF as *source*, → TXT):** see the TXT entry.
 - **Lossy?:** As a **target**, `*→PDF` from word-processor sources is *reflow*
-  lossy (→ §2.9: `docx→pdf may reflow`); from `TXT` it is faithful. As a
-  **source**, `PDF→TXT` is heavily lossy (→ §2.9: `pdf→txt drops layout`).
+  lossy (→ §2.9 `doc_pdf_reflow`); from `TXT` it is faithful. As a
+  **source**, `PDF→TXT` is heavily lossy (→ §2.9 `doc_pdf_to_text`).
 - **Edge cases:**
   - **Password-protected / encrypted PDF → OUT OF SCOPE.** ConvertIA does not
     prompt for or crack passwords. An encrypted PDF reaching `PDF→TXT` is detected
@@ -189,8 +189,9 @@ are the **concrete option lists and defaults** this file owns (§1.6).
   inlined as data URIs so the single HTML file is portable — honors *content
   fidelity*); `DOCX→MD` writes GitHub-Flavored Markdown (`-t gfm`) with
   `--extract-media` disabled in favor of referencing — `[OPEN]` image policy below.
-- **Lossy?:** `→PDF` reflow (§2.9); `→RTF/TXT/MD/HTML` drop progressively more
-  formatting (§2.9 generic "formatting may be simplified"). `→DOC/ODT` near-lossless.
+- **Lossy?:** `→PDF` reflow (§2.9 `doc_pdf_reflow`); `→TXT` (§2.9 `doc_to_text`),
+  `→MD/RTF` (§2.9 `doc_simplified`) drop progressively more formatting. `→HTML`
+  (§2.9 `doc_simplified`). `→DOC/ODT` near-lossless.
 - **Edge cases:** **fonts** — if a document font isn't embedded and isn't on the
   system, LibreOffice substitutes (metrics shift → reflow); ConvertIA bundles a
   baseline metric-compatible font set to minimize this (see *Category-wide*).
@@ -359,7 +360,7 @@ are the **concrete option lists and defaults** this file owns (§1.6).
   normal person's `.md` most likely is. `MD→HTML` uses `--standalone
   --embed-resources` (self-contained page) by default.
 - **Lossy?:** `MD→PDF/HTML/DOCX/ODT/RTF` faithful; `MD→TXT` strips syntax (lossy,
-  §2.9 "markup removed").
+  §2.9 `doc_to_text`).
 - **Edge cases:** embedded image references (`![](path)` / remote URLs) — **local**
   relative images are resolved/embedded; **remote** URLs are *not* fetched (SSOT
   *fully offline / no network*) — they become broken references and this is noted.
@@ -390,7 +391,8 @@ are the **concrete option lists and defaults** this file owns (§1.6).
 - **Options/settings:** none surfaced.
 - **Lossy?:** `HTML→PDF` is lossy in the sense that LibreOffice's HTML/CSS engine
   is **not** a full modern browser — complex CSS/JS-driven layouts will differ
-  (§2.9 generic "appearance may differ"). `HTML→TXT/MD` drop styling. Simple,
+  (§2.9 `doc_html_render`). `HTML→TXT/MD` drop styling (§2.9 `doc_to_text` /
+  `doc_simplified`). Simple,
   document-like HTML (articles, reports) converts faithfully.
 - **Edge cases:** **JavaScript is never executed** — only static HTML is rendered
   (offline + security). **External CSS/images** referenced by remote URL are
@@ -425,7 +427,7 @@ path stay *drop → (PDF already highlighted) → convert* in two clicks (Princi
   so the PDF looks the same on any viewer.
 - When a *source* document references a font that is neither embedded nor present,
   LibreOffice substitutes a metric-compatible face → minor reflow (this is the
-  primary cause of the `docx→pdf may reflow` lossy note). ConvertIA bundles a
+  primary cause of the §2.9 `doc_pdf_reflow` lossy note). ConvertIA bundles a
   **baseline open font set** (a Liberation-class metric-compatible family covering
   the common Arial/Times/Courier metrics, plus broad Unicode coverage incl. CJK
   and RTL) with the LibreOffice sidecar so substitution is graceful and non-Latin
@@ -452,16 +454,13 @@ path stay *drop → (PDF already highlighted) → convert* in two clicks (Princi
 
 ### Lossy disclosure (links to §2.9 — strings live there, not here)
 
-Predictably-lossy pairs in this category, mapped to their §2.9 note family:
-- `PDF → TXT` → §2.9 `pdf→txt drops layout` ("text only — layout, tables and
-  images are dropped").
-- `* → PDF` from word-processor sources (`DOCX/DOC/ODT/RTF`) → §2.9 `docx→pdf may
-  reflow` ("layout may shift slightly").
-- `HTML → PDF` → §2.9 "appearance may differ from a web browser".
-- `* → TXT` (from DOCX/DOC/ODT/RTF/MD/HTML) → §2.9 "formatting and images are
-  dropped — text only".
-- `* → MD` and `* → RTF` from rich sources → §2.9 "some formatting may be
-  simplified".
+Predictably-lossy pairs in this category, each mapped to the exact §2.9
+`LossyKind` (the catalog owns the string; this file only names the kind):
+- `PDF → TXT` → §2.9 `doc_pdf_to_text`.
+- `* → PDF` from word-processor sources (`DOCX/DOC/ODT/RTF`) → §2.9 `doc_pdf_reflow`.
+- `HTML → PDF` → §2.9 `doc_html_render`.
+- `* → TXT` (from DOCX/DOC/ODT/RTF/MD/HTML) → §2.9 `doc_to_text`.
+- `* → MD` and `* → RTF` from rich sources → §2.9 `doc_simplified`.
 - `TXT/MD → PDF/HTML/office` are **not** flagged (faithful).
 
 The note is a calm, passive inline line next to the chosen target (Principle 7),

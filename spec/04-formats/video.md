@@ -205,7 +205,7 @@ differ and are spelled out per format.
   re-encode) → §2.9.
 - **Edge cases:** WEBM can have **transparency (alpha, VP8/VP9 yuva420p)** — alpha
   is **lost** when re-encoding to H.264/MP4 (H.264 has no alpha) → an extra §2.9
-  note for that specific case. WEBM has no native subtitle muxing in common use;
+  note (`video_alpha_lost`) for that specific case. WEBM has no native subtitle muxing in common use;
   audio is single-track in practice.
 
 ---
@@ -432,8 +432,8 @@ defaults.
   - **Text** subtitles (SRT, MOV_TEXT, WebVTT) → **converted to `mov_text`** and
     kept inside the MP4 (one engine, in the same invocation).
   - **Image** subtitles (PGS, VobSub/DVD) and **styled ASS/SSA** → **cannot** be
-    represented as `mov_text`; they are **dropped** with a §2.9 note ("embedded
-    subtitles were dropped") rather than failing the conversion. Burning subtitles
+    represented as `mov_text`; they are **dropped** with a §2.9 note
+    (`video_subs_dropped`) rather than failing the conversion. Burning subtitles
     into the picture is **out of v1** (irreversible, a real choice — parked).
 - **MKV → MKV / → MP4-as-remux**: all subtitle/chapter/attachment streams that the
   target supports are **copied**; unsupported ones are dropped with the note.

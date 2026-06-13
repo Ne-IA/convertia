@@ -447,12 +447,12 @@ The XLSX→CSV default is the one debatable call — see [OPEN] below.
 The lossy pairs in this category, each cross-referenced to the §2.9 string
 catalog (this file records *which* pairs; §2.9 owns the exact note text):
 
-| Pair(s) | Loss | §2.9 entry |
+| Pair(s) | Loss | §2.9 `LossyKind` |
 |---------|------|-----------|
-| `XLSX/XLS/ODS → CSV` and `→ TSV` | one sheet only; all formatting, formulas-as-text, charts, colours, multi-sheet structure dropped — values only | `spreadsheet→delimited-text` |
-| `XLSX/XLS/ODS → PDF` | live workbook → fixed page; formulas frozen, wide tables may scale/clip, fonts may substitute | `spreadsheet→pdf` *(shares the documents.md office→pdf string family)* |
-| `* → XLS` | legacy limits: 65 536 rows / 256 columns max; post-2003 features dropped | `xlsx/ods→xls-legacy` |
-| `CSV/TSV → workbook` with a non-Unicode chosen output encoding (rare) | un-representable characters would be lost — flagged, not silently dropped | `text-encoding-narrowing` |
+| `XLSX/XLS/ODS → CSV` and `→ TSV` | one sheet only; all formatting, formulas-as-text, charts, colours, multi-sheet structure dropped — values only | `sheet_to_delimited` |
+| `XLSX/XLS/ODS → PDF` | live workbook → fixed page; formulas frozen, wide tables may scale/clip, fonts may substitute | `doc_pdf_reflow` *(shared office→PDF kind)* |
+| `* → XLS` | legacy limits: 65 536 rows / 256 columns max; post-2003 features dropped | `xls_legacy_limits` |
+| `CSV/TSV → workbook` with a non-Unicode chosen output encoding (rare) | un-representable characters would be lost — flagged, not silently dropped | `text_encoding_narrowed` |
 
 `CSV ↔ TSV` and `CSV/TSV → workbook` (UTF-8) are **not lossy** and carry no note.
 

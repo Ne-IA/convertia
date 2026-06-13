@@ -223,7 +223,7 @@ Notes on the matrix:
 - **Lossy?:** **Always lossy as a target.** Disclosure → §2.9.
 - **Edge cases:** raw ADTS `.aac` carries **no metadata container** — tags from
   the source are **dropped** (ADTS has no tag frames); this is itself a predictable
-  loss noted at the AAC target (§2.9 "tags are dropped"). Users who want AAC *with*
+  loss noted at the AAC target (§2.9 `audio_tags_dropped`). Users who want AAC *with*
   tags should pick **M4A**. HE-AAC / AAC+ profiles are not produced (native
   encoder = LC only); a normal user never needs them.
 
@@ -390,7 +390,8 @@ Notes on the matrix:
 
 ### Per-source default target (one-glance summary)
 
-The pre-highlighted default is **MP3** for **every** audio source. Rationale (SSOT
+The pre-highlighted default is **MP3** for every audio source **except MP3
+itself, which defaults to WAV** (MP3→MP3 is not offered). Rationale (SSOT
 *How It Feels* 4 + the *Fail clearly* downstream-compatibility caveat): MP3 is the
 single most universally playable audio format — it opens on every phone, car
 stereo, browser, and legacy device. When someone converts audio, "give me a normal
@@ -480,15 +481,14 @@ Three predictably-lossy situations are flagged in the matrix and disclosed as a
 calm inline note at target choice (per SSOT *Fail clearly* / §2.9 catalog):
 
 1. **lossy → lossy** (e.g. MP3→AAC, OGG→OPUS): a *second* round of compression
-   loss (transcoding/generation loss).
+   loss (transcoding/generation loss). → §2.9 `audio_transcode`.
 2. **lossless/lossy → lossy** as a target (any `→ MP3/AAC/M4A/OGG/OPUS`): the
-   target is lossy.
+   target is lossy. → §2.9 `audio_lossy_target`.
 3. **lossy → lossless** (e.g. MP3→FLAC, WMA→ALAC): **no quality gain** — bigger
-   file, the discarded detail is gone forever. A distinct §2.9 string ("the
-   original is already compressed; this won't add quality") so users aren't misled
-   into thinking they "upgraded" their audio.
+   file, the discarded detail is gone forever. → §2.9 `audio_lossy_origin` (so
+   users aren't misled into thinking they "upgraded" their audio).
 4. **bit-depth reduction** (>16-bit source → default 16-bit WAV/AIFF): a narrow
-   lossy case, flagged only for that path.
+   lossy case, flagged only for that path. → §2.9 `audio_bitdepth`.
 
 Exact strings live in the **§2.9 message catalog** (home); this file only records
 *which* pairs trigger them (the `✓~` cells).

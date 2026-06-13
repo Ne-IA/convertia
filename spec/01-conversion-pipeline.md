@@ -1,86 +1,871 @@
 # 01 — Conversion Pipeline (platform-independent core)
 
 > The canonical, engine-agnostic core: how an item goes from "dropped" to
-> "converted output", independent of any specific format or OS. (00.5 is a
+> "converted output", independent of any specific format or OS. (§0.5 is a
 > navigational map; **this file owns the pipeline**.)
-> Origin: SSOT *How It Feels to Use*, *Recognize files by content*, *Fail clearly*.
+> Origin: SSOT *How It Feels to Use*, *Recognize files by content*, *Fail clearly*,
+> *It just works by default*, *Visible progress, cancellable*.
 
-## 1.1 Input intake
-- Drag-and-drop, file picker, keyboard; folder drop. **All intake paths arrive as
-  real FS paths in Rust** — via Tauri **native file-drop** (not HTML5 DnD, §0.4),
-  the picker/dialog, **and OS launch entry points** (Open-with / launch args /
-  macOS open-doc / Windows argv / Linux `%F`, posture owned by §7.8). **Folder
-  recursion runs in Rust** (ignore hidden/system files). The complete set of
-  entry points feeds one place that builds the **frozen source set** (snapshot;
-  §2.4), so the freeze point is exhaustive incl. the launch-time / second-instance
-  hand-off (§7.1). _(expand)_
+## Status & decision tags
 
-## 1.2 Content-based format detection
-- Magic-byte / content sniffing strategy; detection result model; confidence;
-  the misnamed-file and no-extension cases; "detected but unsupported" and
-  "uncertain/conflicting" outcomes (SSOT *Recognize files by content*).
-- **Security note:** detection is the **first code touching untrusted bytes** —
-  state where it runs (in-core vs isolated) and whether header-only sniffing is
-  inside or outside the §2.12 isolation boundary. _(expand)_
+`[DECIDED]` fixed here / by the SSOT · `[OPEN]` needs an owner-level call (feeds the
+README open-questions log) · `[REC]` an `[OPEN]` resolved here with a recommended
+default. Parked Phase-1 decisions honoured throughout: **Tauri** (Rust core +
+React UI), **bundle everything offline / zero runtime fetch**, **copyleft engines
+isolated as separate invoked binaries** (§3.6).
 
-## 1.3 Batch grouping & the pre-flight rule
-- Grouping key = **individual user-facing format** (not category, not codec
-  subtype). Same-format-only v1 batch; mixed-drop pre-flight refusal (hard
-  reject, list found formats + counts). Resolved-identity de-duplication (§2.3).
-  _(expand)_
+## What this file owns vs references
 
-## 1.4 Collected-set summary & confirm gate
-- Produces the **collected-summary payload** (detected format + counts, e.g.
-  "48 JPG files") and the mandatory pre-convert **confirm gate** (SSOT How It
-  Feels 3). Backend payload here; UI state in §5.2. _(expand)_
+| Concern | Owner |
+|---------|-------|
+| The engine-agnostic pipeline stages (1.1–1.12), their order, the in-memory state machine | **this file** |
+| Generic option-declaration model (§1.6) | **this file** |
+| Generic engine-invocation lifecycle **incl. the cancellation/kill mechanism** (§1.7) | **this file (sole owner)** |
+| `OutputPlan` *computation* (§1.8) | **this file** (the *rules* it applies are §2.7; the *write* is §2.1/§2.14) |
+| IPC command/event signatures (names, payloads, error shape, channels) | §0.4 (referenced, never restated) |
+| Core domain types (`DroppedItem`, `Batch`, `ConversionJob`, `Target`, `OutputPlan`, `RunResult`, `RunId`/`InstanceId`) | §0.6 / §7.1 (referenced) |
+| Concurrency degree, worker pool, LibreOffice-serialization rule | §0.9 (referenced) |
+| No-harm / atomicity / no-clobber / frozen set / re-run detection / cleanup / error taxonomy / temp & cross-volume strategy / decoder isolation | §2.1–§2.14 (referenced) |
+| Per-engine concrete argument construction, progress-signal formats, exit codes | §3.5 (referenced) |
+| Engine registry / selection / single-engine-per-pair rule | §3.2 (referenced) |
+| Per-format detection signatures, target sets, per-pair options & default *values* | 04-formats (referenced; never restated) |
+| UI screen states, async/event subscription lifecycle, virtualization | §5 (referenced) |
+| Instance/run identity, startup engine-presence check, OS intake entry points | §7.1 / §7.2 / §7.8 (referenced) |
 
-## 1.5 Target resolution
-- From detected source type → the offered target set (incl. cross-category
-  outputs as targets of the source); the **one fixed pre-highlighted default per
-  source** (general rule lives here; per-source defaults marked in the 04
-  matrices). **One target applies to the whole batch.** Owns the general "a
-  multi-category format (e.g. PDF) is one detected type → de-duplicated union of
-  targets" rule. _(expand)_
+The pipeline is a **pure orchestrator**: it never parses format bytes itself
+beyond detection (§1.2), never constructs engine arguments (§3.5), and never
+performs the final write (§2.1). It sequences stages, owns the in-memory job
+state, and routes every untrusted-byte operation through the §2.12 isolation
+boundary.
 
-## 1.6 Options model — **owner of the generic option-declaration model**
-- Owns the **generic** model: option types, basic-vs-"Advanced", and the
-  **no-decision defaulting** rule. Concrete per-pair option lists and default
-  **values** live in 04 (per-source) and are **not restated** here. May own a
-  consolidated defaults registry the DoD "no required choices" gate verifies
-  against. _(expand)_
+---
 
-## 1.7 Engine-invocation model — **generic owner (incl. cancellation/kill)**
-- The engine-agnostic subprocess **lifecycle**: spawn → progress channel →
-  **cancellation/kill mechanism** (process-group kill vs cooperative; Windows has
-  no SIGTERM; ordering so a mid-flight engine dies cleanly while §2.6 cleanup and
-  §2.1 no-partial hold) → timeout/hang → exit-code → mapping to the §2.8 error
-  taxonomy. **Sole owner of cancellation**; §0.9/§1.11/§5.8 reference it. Runs
-  **through the §2.12 isolation wrapper**. Per-engine concrete argument
-  construction lives in §3.5 (not restated here). _(expand)_
+## 1.0 End-to-end stage flow (the spine)
 
-## 1.8 Output planning
-- Computes the `OutputPlan` (resolve destination, re-create relative subtree,
-  per-location divert) **before** the write, applying the rules owned by §2.7.
-  The §2.1 atomic write consumes this plan. _(expand)_
+```
+intake (1.1) ─▶ detection (1.2) ─▶ grouping + pre-flight (1.3)
+   ─▶ collected-summary + CONFIRM GATE (1.4)
+   ─▶ target resolution (1.5) ─▶ options model (1.6)
+   ─▶ destination shown / changeable (OutputPlan preview, 1.8 + §2.7)
+   ─▶ [re-run detection §2.5 may inject one batch-level prompt]
+   ─▶ resource pre-flight & budgets (1.10)
+   ─▶ CONVERT: per-item engine invocation (1.7) ─▶ OutputPlan finalise (1.8)
+        ─▶ atomic write (§2.1/§2.14)  [with live progress 1.11, cancellable 1.7]
+   ─▶ end-of-batch summary (1.12)
+```
 
-## 1.9 Job & batch lifecycle
-- States: `Pending → Running → Succeeded | Failed | Cancelled | Skipped`.
-- Queue semantics, ordering, per-item isolation, mid-run skip vs pre-flight
-  refusal. _(expand)_
+Three **gates** stop automatic progression and require a user action (all UI
+states owned by §5.2): the **confirm gate** (1.4, mandatory), the **re-run
+prompt** (only if §2.5 fires), and the **mixed-drop refusal** (1.3, a hard
+reject, not a gate the user can pass without re-dropping). Everything else flows
+to a sensible default with no required choice (SSOT *It just works by default*;
+the §1.6 defaulting rule guarantees this).
+
+The whole flow before CONVERT is **cheap and synchronous-feeling** (detection +
+grouping + summary build); CONVERT is the only long-running phase and is fully
+async (Tokio, §0.9) with real progress (§1.11).
+
+---
+
+## 1.1 Input intake `[DECIDED]`
+
+**Goal:** every way a file can enter ConvertIA arrives as a **real, absolute
+filesystem path in Rust**, feeding **one** intake funnel that builds the **frozen
+source set** (snapshot; §2.4).
+
+### Entry points (enumerated)
+
+| Entry point | Mechanism | Where paths materialise |
+|-------------|-----------|-------------------------|
+| **Drag-and-drop** (files or folders) | Tauri **native drag-drop event** (`onDragDropEvent`, payload `type: 'drop'` carries `paths: string[]`) — **not** HTML5 DnD, which does not expose FS paths in a WebView (§0.4) | WebView event → forwarded to a Rust intake command |
+| **File picker** | Tauri dialog plugin (`open({ multiple: true, directory: false })`) and a separate folder mode (`directory: true`) | Dialog returns absolute paths directly to Rust |
+| **Keyboard** | Same picker, opened via the §5.10 accelerator; full parity (SSOT DoD "keyboard reach the same result") | Same as picker |
+| **OS launch entry points** | Open-with / launch args — macOS `RunEvent::Opened{urls}`, Windows `argv`, Linux `%F` desktop-entry field. Posture (associations: none in v1) owned by §7.8 | Captured at startup / on the macOS open-doc event → handed to intake |
+| **Second-instance hand-off** | When a single-instance policy (§7.1) routes a second launch's args into the running instance | The running instance's intake funnel |
+
+All five funnel into a single Rust function (pseudo-signature; exact IPC names in
+§0.4):
+
+```rust
+/// One funnel for every entry point. Returns a freshly built, frozen Batch
+/// (or a pre-flight rejection — mixed formats / nothing eligible).
+fn ingest(paths: Vec<PathBuf>, source: IntakeSource) -> IngestOutcome;
+
+enum IntakeSource { DragDrop, Picker, Launch, SecondInstance }
+
+enum IngestOutcome {
+    Collected(CollectedSet),     // → 1.4 confirm gate
+    MixedRejected(MixedReport),  // → 1.3 refusal (formats + counts)
+    NothingEligible(EmptyReport),// all hidden/system/zero, or none readable
+}
+```
+
+### Folder recursion (Rust-side) `[DECIDED]`
+
+A dropped/picked **folder** is expanded **recursively in Rust** — the WebView
+cannot enumerate a directory (§0.4). Recursion:
+
+- Walks subfolders depth-first (recommended crate: **`walkdir`** for ergonomic
+  recursive iteration; `std::fs::read_dir` is the fallback). Symlinked
+  directories are **not followed** as a traversal step (loop-safety; the
+  resolved-identity de-dup in §2.3 handles file-level link aliasing).
+- **Ignores hidden/system files** (SSOT How It Feels 2): names beginning `.`
+  (dotfiles) on all platforms, plus the platform sentinels **`.DS_Store`**,
+  **`Thumbs.db`**, **`desktop.ini`**, and Windows hidden/system file-attribute
+  flagged entries. `[REC]` the ignore list is a fixed constant (not user-config
+  in v1); recorded here so §6 can assert it.
+- Produces a flat list of candidate file paths; the **dropped root(s)** are
+  retained so §2.7 can re-create the relative subtree and "open folder" can open
+  the common root.
+
+### Freeze point `[DECIDED]`
+
+Intake is the **exhaustive freeze point** (§2.4): the moment `ingest` snapshots
+the set, that set is closed. Files appearing afterward — written by this run, a
+concurrent instance, or anything else — are **never** ingested into this run, and
+outputs landing in a watched source folder do **not** expand or restart the
+batch. The freeze covers the launch-time and second-instance hand-off explicitly
+(so a `RunEvent::Opened` arriving mid-run starts a *new* batch, never mutates a
+frozen one — interaction with §7.1 instance policy). De-duplication of the frozen
+set **by resolved identity** is owned by §2.3 and applied here as the set is
+built (a file reached via two paths is one member).
+
+**Zero-byte / unreadable at intake:** a 0-byte file is kept in the set and fails
+at detection/conversion as a named kind (§2.8), *not* silently dropped here — the
+user dropped it, so the summary must account for it. A path that is already
+unreadable/gone at intake time is recorded and surfaced (§2.8 `unreadable/gone`).
+
+---
+
+## 1.2 Content-based format detection `[DECIDED]`
+
+Detection answers, per item: **what is this, really?** — never trusting the
+extension (SSOT *Recognize files by content*). It drives **both** eligibility and
+batch grouping (§1.3).
+
+### Strategy (layered)
+
+1. **Magic-byte / signature sniff** on a bounded header window (recommended read:
+   **first 4 KiB**, plus a small trailer probe for the formats that need it, e.g.
+   JPEG `FF D9`). The concrete signatures live in **04-formats** per format
+   (e.g. PNG `89 50 4E 47…`, `%PDF-`, RIFF/`ftyp` boxes, EBML `1A 45 DF A3`,
+   ASF GUID) — **not restated here**.
+2. **Container introspection** where the magic is generic and shared:
+   - **ZIP-family disambiguation** (`50 4B 03 04`): read the archive's
+     `[Content_Types].xml` / ODF `mimetype` member to tell DOCX vs XLSX vs PPTX
+     vs ODT/ODS/ODP (rule owned per file in 04; detection performs the peek).
+   - **OLE2 / CFB** (`D0 CF 11 E0…`): inspect the stream directory to tell legacy
+     DOC vs XLS vs PPT.
+   - **`ftyp` box brand**: MP4 vs MOV vs M4V vs 3GP vs AVIF/HEIC vs M4A.
+   - **Codec-inside-container probe**: an `.m4a` is AAC vs ALAC; an Ogg page is
+     Vorbis vs Opus; a video container's inner codecs (used later by §3.5's
+     remux-vs-re-encode decision, but the *user-facing source type* is the
+     **container**, e.g. MKV). The probe depth here is **header-level only**; the
+     full `ffprobe` stream inventory is an engine-layer concern (§3.5), invoked
+     later, not during the cheap detection pass.
+3. **Text classification** for the magic-less formats (TXT/MD/CSV/TSV/SVG): confirm
+   the bytes decode as text (BOM → strict UTF-8 → single-byte codepage fallback),
+   then apply the per-file rules (SVG root element; CSV/TSV delimiter sniff;
+   TXT-vs-MD by extension/intent). Encoding/delimiter specifics owned by the 04
+   files.
+
+### Detection result model `[DECIDED]`
+
+```rust
+struct DetectionResult {
+    item: ItemId,
+    outcome: DetectionOutcome,
+}
+
+enum DetectionOutcome {
+    /// A supported v1 source type, with confidence.
+    Recognized { format: UserFacingFormat, confidence: Confidence },
+    /// A real type we identified but do not convert (SSOT: "can't convert this
+    /// type — detected: X"). Carries the named type for the message.
+    UnsupportedType { detected: String },
+    /// Decoded/sniffed but the signal is contradictory or below threshold.
+    /// (SSOT: name what we think it is, or that we can't tell, decline clearly.)
+    Uncertain { best_guess: Option<String> },
+    /// 0-byte / no bytes to read.
+    Empty,
+    /// Could not read the bytes at all (gone/locked/permission).
+    Unreadable { reason: ReadFailure },
+}
+
+enum Confidence { High, Low }   // Low never silently falls back to the extension
+```
+
+**Outcome rules (SSOT-bound):**
+- `UnsupportedType` and `Uncertain` and `Empty`/`Unreadable` are **never** offered
+  a target list and **never** silently extension-fallback or guessed
+  (SSOT *Recognize files by content*). They are surfaced (eligible=false) with the
+  exact §2.8 plain-language string.
+- A file whose extension lies (a `.jpg` that is really PNG) is grouped and
+  converted as its **detected** type.
+- Detection feeds §1.3 grouping by the **individual user-facing format** the
+  `UserFacingFormat` maps to (not the six categories, not codec subtypes).
+
+### Where detection runs — security `[REC]`
+
+Detection is **the first code that touches untrusted bytes**, so its placement
+relative to the §2.12 isolation boundary is security-relevant:
+
+- **Header-only magic sniff + ZIP/OLE/`ftyp` structural peeks + text/encoding
+  classification run in-core** (in the Rust process). `[REC]` rationale: these are
+  bounded reads parsed by **memory-safe Rust** crates (e.g. `infer`/custom matcher
+  for magic, a Rust ZIP reader for the content-type member, an encoding detector
+  such as `chardetng`) over a **capped window** — they do not invoke a
+  third-party C/C++ decoder, so the classic decoder attack surface (§0.11
+  "untrusted decoder input") is not yet engaged. Keeping detection in-core makes
+  the cheap pass fast (no subprocess per item for thousands of files).
+- **The full decode** (anything that hands bytes to libvips/FFmpeg/LibreOffice/
+  poppler/pandoc) happens only at **conversion time**, **inside** the §2.12
+  boundary (§1.7 routes every invocation through the isolation wrapper).
+- `[OPEN — owner §2.12]` whether the **text-encoding heuristic** and any
+  Rust-side ZIP central-directory parse are considered "trusted enough" to stay
+  in-core, or must also be isolated. Lean: in-core (memory-safe, bounded). Flagged
+  because §2.12 owns the final isolation-boundary line, not §1.2. → open-questions
+  log.
+
+---
+
+## 1.3 Batch grouping & the pre-flight rule `[DECIDED]`
+
+### Grouping key
+
+The grouping key is the **individual user-facing format** (SSOT How It Feels 3,
+Principle 6) — **not** the six scope categories and **not** codec-level subtypes:
+
+- `.jpg` ≠ `.png`; **MP4 ≠ MOV ≠ MKV** (container, not codec); **MP3 ≠ WAV**;
+  **OGG(Vorbis) ≠ OPUS** (codec ID, distinct user-facing formats); **M4A(AAC) ≠
+  ALAC**; **CSV ≠ TSV** (delimiter-determined). These distinctions are exactly the
+  detection outputs of §1.2, settled per format in 04.
+- A **multi-category** format (e.g. PDF, shared by documents/sheets/slides) is
+  **one** detected type and is offered the **de-duplicated union** of its sensible
+  targets (rule owned by §1.5; assembled in the 04 canonical home).
+
+`UserFacingFormat` (the §0.6 enum) **is** the grouping key. Two items group together
+iff their `UserFacingFormat` is equal.
+
+### v1 batch rule: one source format at a time `[DECIDED]`
+
+```rust
+fn group(detected: Vec<DetectionResult>) -> Grouping;
+
+enum Grouping {
+    /// Exactly one eligible source format across all readable items.
+    Single { format: UserFacingFormat, members: Vec<ItemId>, skipped: Vec<SkippedItem> },
+    /// Two or more distinct eligible source formats → hard pre-flight refusal.
+    Mixed(MixedReport),
+    /// No eligible source at all.
+    Empty(EmptyReport),
+}
+
+struct MixedReport { found: Vec<(UserFacingFormat, usize)> } // e.g. [(JPG,30),(PNG,12)]
+```
+
+- **`Single`** → proceeds to the confirm gate (1.4). `skipped` carries the
+  per-item ineligibles (unsupported/uncertain/empty/unreadable) so the summary and
+  the collected-set display can show "N collected, M skipped (why)".
+- **`Mixed`** → **hard pre-flight refusal** (SSOT How It Feels 3): ConvertIA does
+  **not** convert a subset. It names the formats it found **with counts** and asks
+  the user to **re-drop a single format**. There is **no** "convert just the JPGs"
+  affordance in v1 (mixed-format handling is parked — SSOT *Future Ideas*). This is
+  a **distinct** behaviour from skipping one bad item mid-run (§1.9): the mixed
+  refusal happens **before** any conversion and rejects the whole drop.
+- **`Empty`** → "nothing here I can convert" with the detected reasons (e.g. "all
+  files were unreadable" / "only hidden files were found").
+
+**De-dup interaction:** the resolved-identity de-dup (§2.3) runs in §1.1 as the
+set is frozen, so by grouping time each member is a unique resolved file. Two
+dropped paths pointing at one file are one member of one group.
+
+---
+
+## 1.4 Collected-set summary & confirm gate `[DECIDED]`
+
+### Payload (owned here; UI state in §5.2)
+
+After a `Single` grouping, the pipeline produces the **collected-summary payload**
+— the backend data the confirm screen renders:
+
+```rust
+// The display/summary projection of §0.6's `CollectedSet::Single`. It is NOT a
+// redefinition of the §0.6 `CollectedSet` enum (which §0.6 owns): it shares the
+// same `id`/`format`/`count` as `CollectedSet::Single` and adds the
+// detection-derived summary fields the confirm screen (§1.4) needs.
+struct CollectedSummary {
+    collected_set_id: CollectedSetId, // == the §0.6 CollectedSet::Single.id
+    format: UserFacingFormat,    // detected, user-facing (e.g. "JPG") — §0.6 enum
+    count: usize,                // e.g. 48  → "48 JPG files"
+    total_bytes: u64,            // for the size hint / 1.10 pre-flight
+    roots: Vec<PathBuf>,         // dropped root(s) → relative-subtree + open-folder
+    skipped: Vec<SkippedItem>,   // ineligibles, with §2.8 reason each
+    // detection-derived hints surfaced in the summary line (per 04):
+    encoding_hint: Option<String>,   // e.g. CSV detected "Windows-1252"
+    delimiter_hint: Option<String>,  // e.g. CSV/TSV detected ";"
+    notes: Vec<CollectedNote>,   // e.g. ">1 sheet", "animated source present"
+}
+```
+
+### The confirm gate `[DECIDED]`
+
+A **mandatory** pre-convert gate (SSOT How It Feels 3): **before converting,
+ConvertIA shows what it collected** (format + count, e.g. "48 JPG files"),
+*especially* for recursively collected folders where the user cannot see the file
+count any other way. The user confirms (or cancels / re-drops). The gate is
+satisfied by an explicit affirmative action (button / Enter, per §5.10). It is the
+**only always-present interstitial** between drop and target choice.
+
+The summary line is *informational only* — it does not require choices; choices
+(target/options) come after, on the next screen (§1.5/§1.6). Combining the
+confirm and target screens into one view is a §5 layout decision; the **gate
+semantics** (an explicit confirm exists, batch is shown first) are fixed here.
+
+---
+
+## 1.5 Target resolution `[DECIDED]`
+
+### From source → offered targets
+
+Given the single `UserFacingFormat`, the pipeline resolves the **offered target set**
+from the **engine/format registry** (§3.2 owns the registry; the concrete
+per-source target lists and the single default live in **04-formats** and are
+**not restated here**):
+
+```rust
+fn resolve_targets(src: UserFacingFormat, platform: Platform) -> OfferedTargets;
+
+struct OfferedTargets {
+    targets: Vec<OfferedTarget>,
+    default: TargetId,           // exactly ONE pre-highlighted default (below)
+}
+
+struct OfferedTarget {
+    id: TargetId,
+    kind: TargetKind,            // Format(FormatId) | CrossCat(Operation)
+    availability: Availability,  // Available | Unavailable { reason } per §3.4
+    lossy: Option<LossyFlag>,    // predictable-loss marker → §2.9 (string is §2.9's)
+}
+
+enum TargetKind {
+    Format(FormatId),
+    CrossCat(CrossCatOp),        // ExtractAudio | ToGif — targets of a VIDEO source
+}
+```
+
+**Rules this section owns (general; per-source specifics in 04):**
+
+1. **One detected type → de-duplicated union of its sensible targets.** A
+   multi-category format (PDF) yields the union of document/sheet/slide-side
+   targets, de-duplicated (assembled in the 04 canonical home, e.g. PDF in
+   `documents.md`). The pipeline does not re-derive the matrix; it reads the
+   registry.
+2. **Cross-category outputs are *targets of the source*, not a second source**
+   (SSOT *Direction & shape rule*). A video source's offered set is its video
+   targets **plus** `extract-audio` **plus** `to-GIF` (the closed set, owned by
+   `cross-category.md`). Choosing one applies to the **whole same-source batch**.
+3. **Exactly one pre-highlighted default per source** (SSOT How It Feels 4). The
+   **general defaulting rule** is owned here; the **per-source default value** is
+   marked in each 04 matrix:
+   > *Tie-break favours a widely-compatible target, unless a modern format
+   > (WEBP/AVIF/OPUS) is clearly the better everyday choice; AVIF/HEIC are never a
+   > default target. Same-format (diagonal) is never offered as a target tile.*
+   The pipeline trusts the registry's `default` flag (sourced from 04); it does
+   not invent it.
+4. **One `Target` per `Batch`** (the §0.6 invariant): **per-file target selection
+   is out of v1.** The chosen `TargetId` is a batch-level property.
+5. **Same-format diagonal** is excluded from the offered tiles (per 04; e.g. images
+   omit same→same, video offers a "normalize" self-target where it has everyday
+   meaning). The registry encodes which diagonals are offered.
+
+### Patent-gapped / unavailable targets `[DECIDED — routing only]`
+
+A target may be `Unavailable` on the current platform per the **§3.4 patent
+disposition matrix** (HEIC/AAC/H.264 × platform). The pipeline **reads** §3.4's
+verdict via the registry and marks the `OfferedTarget.availability`; it never
+re-decides it. Whether an unavailable target is **omitted vs shown-disabled-with-
+note** is a §5.2 presentation decision sourced from §3.4. The **default** is
+guaranteed `Available` on every shipping platform: if a per-source default would
+be gapped, that is a §3.4/category product problem (notably MP4-as-default video
+depends on H.264/AAC shipping everywhere — flagged by video.md and §3.4), not a
+silent omission here.
+
+---
+
+## 1.6 Options model — **owner of the generic option-declaration model** `[DECIDED]`
+
+This section owns the **generic** model only. **Concrete per-pair option lists and
+default *values* live in 04** (per-source) and are **not restated** here.
+
+### Generic option declaration
+
+```rust
+/// A declared option for the (source, target) pair, supplied by the registry
+/// (values defined in 04). The pipeline renders/collects these generically.
+struct OptionDecl {
+    key: OptionKey,
+    label: LabelKey,             // UI-chrome string → §5 (not §2.8/§2.9)
+    surface: Surface,            // Basic | Advanced
+    kind: OptionKind,
+    default: OptionValue,        // the no-decision default (from 04)
+}
+
+enum Surface { Basic, Advanced }
+
+enum OptionKind {
+    /// Bounded integer (quality/CRF/compression level) with a range + optional unit.
+    IntRange { min: i64, max: i64, step: i64, unit: Option<Unit> },
+    /// A small named preset set (e.g. MP3 High/Standard/Small) mapping to engine flags.
+    Enum { choices: Vec<EnumChoice> },
+    /// A boolean toggle (lossless on/off, progressive, BOM).
+    Toggle,
+    /// A pixel/size value (SVG width, GIF width).
+    Size { min: u32, max: u32 },
+    /// A colour (flatten background) — picker; default usually white.
+    Color,
+}
+
+/// The effective, resolved option set for a batch — feeds §1.7 (engine args via
+/// §3.5), §2.5 (re-run equivalence keys on these), and §1.10 (size estimate).
+struct EffectiveOptions(BTreeMap<OptionKey, OptionValue>);
+```
+
+### Basic vs Advanced `[DECIDED]`
+
+- **Basic**: the few switches that *materially* change a normal user's result
+  (e.g. WEBP quality, GIF fps/width, the re-encode "Quality" slider). Shown
+  directly.
+- **Advanced**: many/niche options, tucked behind an **"Advanced options"** drawer
+  so the default view stays clean (SSOT How It Feels 5; §5.3 owns the drawer
+  component).
+- **v1 exposes only settings that materially change a normal user's result** —
+  adding a setting is a **scope change**, not a default. Rich per-format option
+  sets and remembered presets are **out of v1** (SSOT). Some categories expose
+  **none** (documents/PDF, ALAC, BMP).
+
+### The no-decision defaulting rule `[DECIDED]`
+
+**Every option has a default; the common path requires zero choices** (SSOT
+*It just works by default*, Principle 8). The pipeline builds `EffectiveOptions`
+by taking each `OptionDecl.default` unless the user overrode it. Converting with
+zero interaction (drop → confirm → default target → convert) is always valid.
+
+**The one structural exception:** where a target is *degenerate without a required
+choice* (same-format re-encode, parked per 04 — e.g. MP3→MP3 needs a target
+bitrate to be non-degenerate), the pair is **not offered** in v1 rather than
+introducing a required choice. So the no-required-choices rule holds without
+exception for every *offered* pair.
+
+### Defaults registry & the DoD gate `[REC]`
+
+`[REC]` **§1.6 owns a consolidated defaults registry** (the merged set of every
+`OptionDecl.default` across all pairs, sourced from 04). Rationale: the SSOT *v1
+DoD* "no required choices" gate and the §6 test suite need **one** machine-checkable
+place asserting "every offered (source,target) pair has a complete default option
+set and converts with zero clicks." This registry is generated from / validated
+against the 04 tables (a §6 CI check fails if any 04 pair lacks a default). The
+**values** remain owned by 04; this is the assembled index, not a second source of
+truth.
+
+---
+
+## 1.7 Engine-invocation model — **generic owner (incl. cancellation/kill)** `[DECIDED]`
+
+The engine-agnostic subprocess lifecycle. **Per-engine concrete argument
+construction, progress-signal parsing, and exit-code/`stderr` quirks live in
+§3.5** (not restated here). Every invocation runs **through the §2.12 isolation
+wrapper**. This section is the **sole owner of the cancellation/kill mechanism**;
+§0.9, §1.10, §1.11, §5.8 and the 04 files reference it.
+
+### Invocation lifecycle (state machine per item)
+
+```
+spawn ─▶ Running ──(progress events)──▶ ...
+            │
+            ├──▶ exit 0  ─▶ verify output ─▶ Succeeded
+            ├──▶ exit ≠0 / stderr-classified ─▶ Failed(kind)   [→ §2.8]
+            ├──▶ timeout / no-progress ─▶ kill ─▶ Failed(EngineHang) [→ §2.8]
+            ├──▶ user cancel ─▶ kill ─▶ Cancelled
+            └──▶ spawn error (binary missing/denied) ─▶ Failed/AppFault [→ §2.13]
+```
+
+```rust
+struct EngineInvocation {
+    job: JobId,
+    engine: EngineId,            // vips | ffmpeg | soffice | poppler | pandoc (§3.1)
+    argv: Vec<OsString>,         // BUILT BY §3.5 — opaque to this layer
+    work_dir: PathBuf,           // per-run scratch (§2.6/§2.14)
+    env: Vec<(OsString, OsString)>,
+    cancel: CancellationToken,   // tokio_util::sync::CancellationToken
+}
+
+enum InvocationResult {
+    Succeeded,
+    Failed(ErrorKind),           // mapped to the §2.8 taxonomy
+    Cancelled,
+}
+```
+
+### Spawn & progress channel `[DECIDED]`
+
+- Spawned on the **Tokio** async runtime (`tauri::async_runtime` / `tokio::process`,
+  §0.9 owns the worker pool & concurrency degree).
+- **`stdout`/`stderr` are streamed line-by-line** and parsed by the §3.5 per-engine
+  adapter into normalised progress ticks (FFmpeg `-progress pipe:` key=value;
+  LibreOffice has no native progress → §1.11's heuristic; libvips is fast/atomic →
+  coarse ticks). Normalised ticks flow to the frontend via a **`tauri::ipc::Channel<ProgressEvent>`** (the streaming IPC primitive; channel/event payloads are
+  defined in **§0.4**, not here). `stderr` is **captured in full** for
+  exit-classification and for the §7.5 verbose/diagnostic echo, and fed to §2.13
+  for `stderr`-classify-into-§2.8.
+- **Timeout / hang policy:** an item that produces **no progress and no output**
+  for a per-engine watchdog interval (parameters owned by §0.9; mechanism here) is
+  treated as hung → killed → `Failed(EngineHang)` (§2.8). A hang fails **that one item**;
+  the batch continues (SSOT *Fail clearly*).
+
+### Cancellation / kill mechanism `[DECIDED — sole owner]`
+
+This is the load-bearing, single-owner decision. It must satisfy four SSOT/spec
+constraints simultaneously: (a) cancelling keeps already-finished items and
+**cleanly discards the one in progress with no partial leftover** (SSOT *Visible
+progress, cancellable* + §2.1 no-partial); (b) a decoder crash/hang fails one item
+without wedging the app (§2.12); (c) **never touches originals** (§2.4); (d) works
+on **Windows, macOS and Linux** with engines that themselves spawn children.
+
+**Problem (researched, real):** several bundled engines spawn **child processes of
+their own** — most importantly **LibreOffice**, where `soffice` re-execs/launches
+`soffice.bin`; FFmpeg/poppler/pandoc are simpler but must still die promptly.
+Killing only the **immediate** child (the naive `std::process::Child::kill`, and
+notably Tauri's `tauri_plugin_shell` `CommandChild::kill`, which targets only the
+direct child and on Windows is documented to leave the tree running) **orphans**
+`soffice.bin` and any decoder grandchildren — leaking processes, file handles and
+scratch files, and violating "cleanly discards the one in progress."
+
+**Decision:** ConvertIA spawns every engine as a **process-group / job-object
+leader** and kills the **whole group**, so one cancel/kill tears down the engine
+*and all its descendants* atomically.
+
+- **Mechanism:** wrap each spawn with the **`process-wrap`** crate (the
+  cross-platform successor to `command-group`), composed over `tokio::process`:
+  - **Windows:** `JobObject` wrapper — the engine and all its children join one
+    **Win32 Job Object**; killing the job (or closing its last handle with
+    kill-on-close) terminates the entire tree immediately. Use the crate's
+    `KillOnDrop` / `CreationFlags` shims so the job correctly tracks
+    kill-on-drop + `CREATE_SUSPENDED`/`CREATE_NEW_PROCESS_GROUP` flags.
+  - **POSIX (macOS/Linux):** `ProcessGroup::leader()` wrapper — the engine becomes
+    a **process-group leader** (`setpgid`); `kill()` signals the whole group
+    (negative-pgid `SIGKILL`/`SIGTERM`), reaping descendants.
+  - This deliberately **does not route engine spawning through
+    `tauri_plugin_shell`'s sidecar** kill path (whose `CommandChild::kill` is
+    tree-incomplete). The shell plugin/sidecar **resource bundling** is still used
+    for *locating* the bundled binaries (§3.3) and its allowlist still gates what
+    the WebView may trigger (§0.10) — but the **spawn+kill is done in Rust** via
+    `process-wrap` for tree-correctness. `[REC]` flagged so §0.9/§3.5 align on this
+    one spawn path.
+- **Cooperative vs forceful:** v1 uses **forceful group-kill** (no cooperative
+  drain). Rationale: these engines have no clean "abort" IPC, the output is
+  written to a **temp path** (§2.14) and only atomically promoted on success
+  (§2.1), so a hard kill leaves **only** a discardable temp artifact — exactly what
+  §2.6 cleanup removes. A graceful `SIGTERM`-then-`SIGKILL` escalation on POSIX is
+  a possible refinement but unnecessary for correctness; Windows has no `SIGTERM`
+  anyway (job-kill is the primitive). `[REC]` forceful group-kill in v1.
+- **Ordering (kill ↔ cleanup ↔ no-partial):**
+  1. Signal cancel via the `CancellationToken`; the invocation loop stops reading
+     progress.
+  2. **Group-kill** the engine and wait for the OS to confirm the group is gone
+     (so no descendant still holds the temp file open — matters on Windows where an
+     open handle blocks deletion).
+  3. **Then** invoke §2.6 cleanup to remove the per-job temp artifact. Because the
+     final output is promoted only by the §2.1 atomic rename **after** a clean exit,
+     a killed job has **no visible output** to undo — only the temp to discard.
+  4. Mark the job `Cancelled` (user) or `Failed(EngineHang/EngineCrash)` (watchdog/exit) and
+     **continue the queue** (§1.9). Already-`Succeeded` items are untouched.
+- **Granularity:** cancel is **batch-level** in the UI (SSOT "batches … can be
+  cancelled"). Internally it maps to: stop dequeuing `Pending`, group-kill the
+  currently-`Running` item(s) (≤ the §0.9 concurrency degree), leave `Succeeded`
+  intact. A cancelled-but-already-finished item stays finished.
+- **App-exit / quit-while-converting:** the same group-kill runs for every live
+  job on shutdown (so no orphans survive the app — the §7.3 quit-while-converting
+  policy calls into this). On an **ungraceful** end (crash/power-loss) the OS
+  reaps the Windows job; POSIX orphans are reaped by re-parenting + the
+  **startup cleanup** (§2.6) discarding the previous run's owned temp.
+
+### Exit & output verification `[DECIDED]`
+
+On exit 0, the adapter (§3.5) reports success **only if** the expected temp output
+exists and is non-empty (a "success exit but empty/zero output" — e.g. an
+essentially-empty PDF→TXT extraction — is handled per the 04 edge rules / §2.8, not
+reported as a clean success of an empty file). Exit ≠ 0 or a `stderr`-classified
+fault maps to the **§2.8 error taxonomy** (corrupt / unsupported-internal /
+password-protected / engine-crash / …); the mapping table is §2.8's, fed by §3.5's
+per-engine classifier.
+
+---
+
+## 1.8 Output planning `[DECIDED]`
+
+The pipeline computes the **`OutputPlan`** for each job **before** the write,
+applying the **rules owned by §2.7** (beside-each-source default; user-chosen
+destination re-creates the relative subtree; per-location divert for
+unwritable/ephemeral locations). The §2.1 atomic write (with the §2.14
+cross-volume strategy) **consumes** this plan.
+
+```rust
+/// Computed per job, before any write. Rules = §2.7; naming = §2.2; identity = §2.3.
+struct OutputPlan {
+    job: JobId,
+    final_dir: PathBuf,          // beside-source OR diverted (§2.7)
+    diverted: Option<DivertReason>, // unwritable / ephemeral (§2.7)
+    base_name: OsString,         // SOURCE base name kept (§2.2)
+    extension: OsString,         // from the chosen TARGET (§2.2)
+    // exact final name + no-clobber numbering is resolved at write time on the
+    // RESOLVED real file (§2.1 exclusive-create), not pre-baked into a string:
+    scratch_dir: PathBuf,        // per-run temp, SAME volume as final_dir (§2.14)
+}
+```
+
+What this section **owns**: the *computation* — resolve the destination root,
+re-create the dropped-root-relative subtree (so folder layout is preserved /
+re-created rather than flattened), choose the divert target when a location is
+unwritable/ephemeral, and pick a `scratch_dir` on the **same filesystem as
+`final_dir`** so the §2.1 rename stays atomic (cross-volume fallback owned by
+§2.14). What it **references**: the *rules* (§2.7), the *naming contract* (§2.2),
+the *resolved-identity & link safety* (§2.3), and the *atomic write itself* (§2.1).
+
+**Destination shown before convert (SSOT How It Feels 7):** the `OutputPlan`
+(specifically `final_dir`, and any divert) is computed early enough to render the
+"will save to …" line **before** conversion starts and to let the user change the
+destination. A user-chosen destination re-routes `final_dir` and triggers the
+relative-subtree re-creation (§2.7). The plan is recomputed if the user changes the
+destination.
+
+---
+
+## 1.9 Job & batch lifecycle `[DECIDED]`
+
+### States
+
+```rust
+enum JobState {
+    Pending,                 // queued, not started
+    Running,                 // engine invoked (1.7)
+    Succeeded,               // output verified + atomically written (§2.1)
+    Failed(ErrorKind),       // named §2.8 kind; nothing written for it
+    Cancelled,               // user cancel; nothing written for it
+    Skipped,                 // detected-ineligible pre-flight (unsupported/uncertain/empty/unreadable)
+}
+```
+
+```
+                 ┌────────────▶ Skipped        (set at detection/grouping; never enters the queue)
+Pending ─▶ Running ─┬─▶ Succeeded
+                    ├─▶ Failed(kind)
+                    └─▶ Cancelled
+```
+
+- `Skipped` is assigned **before** the queue (a §1.2/§1.3 ineligible item never
+  becomes `Pending`); it is distinct from a mid-run `Failed`.
+- A `Batch` aggregates its jobs; the batch is `Running` while any job is
+  `Pending`/`Running`, then resolves to a summary (§1.12).
+
+### Queue semantics `[DECIDED]`
+
+- **Ordering:** deterministic, stable — recommended **collected/traversal order**
+  (depth-first folder order from §1.1), so progress and the summary read
+  predictably. `[REC]` no priority/size reordering in v1.
+- **Concurrency:** the number of jobs `Running` at once = the **§0.9 concurrency
+  degree** (referenced, not set here). §0.9 also owns the **LibreOffice
+  serialization** rule (headless LO is *not* safely parallel under one user
+  profile — parallel instances lock/corrupt). The pipeline simply respects the
+  degree and any per-engine serialization the §0.9 pool enforces; it does not pick
+  the number.
+- **Per-item isolation:** each job runs through its own §2.12-isolated invocation
+  with its own per-job scratch (§2.6 ownership). A **worker-thread panic** is
+  caught at the §2.13 panic boundary and surfaced as a clean per-item `Failed`,
+  never a poisoned pool that wedges the batch.
+- **Mid-run skip vs pre-flight refusal (the SSOT distinction, restated):**
+  - **Pre-flight refusal** (§1.3 `Mixed`): a *multi-format drop* is rejected
+    **wholesale, before converting** — re-drop a single format.
+  - **Mid-run skip** (here): a source that was present at drop but is **unreadable
+    or gone when its turn comes** (removed media, moved/deleted/renamed, exclusive
+    lock, denied read), or a corrupt/too-big/out-of-disk item, fails **that one
+    item** with a §2.8 message and the **batch continues**. A bad item is **never
+    silently** dropped — it appears in the summary.
+- **A batch where everything failed is a clear failure**, never a quiet finish
+  (§1.12).
+
+---
 
 ## 1.10 Resource pre-flight & budgets `[OPEN]`
-- The model the SSOT Boundary Note delegates: up-front **output/temp size
-  estimation** per pair (+ headroom margin, per-category heuristic), the
-  up-front-vs-mid-run fail decision, the **"too big" threshold**, memory/handle
-  ceilings (concurrency degree owned by §0.9 — referenced here), and large-list
-  (thousands of recursively-collected files) handling + UI virtualization (§5).
-  Feeds §1.8 / §2.6 / §2.8 / §2.14. _(expand)_
 
-## 1.11 Progress & cancellation
-- Real per-item progress (not indeterminate); aggregate batch progress;
-  cancellation surfaced here, **mechanism owned by §1.7**; fast-fail for "too big
-  / doomed for space" (§1.10). _(expand)_
+The model the SSOT Boundary Note delegates ("disk-space estimation thresholds,
+very-large-batch handling"). This section owns the **estimation + decision**;
+concrete per-pair size heuristics are supplied by 04 (e.g. the GIF guardrail in
+`cross-category.md`), and the **concurrency degree** is §0.9.
 
-## 1.12 End-of-batch summary
-- Per-item success/failure, reasons, output locations; fully-failed = clear
-  failure; mapping output → source. _(expand)_
+### Up-front estimation `[REC]`
+
+Before (and during) CONVERT, estimate **output + scratch footprint** per item, so a
+doomed run fails **fast and clearly, preferably up front** (SSOT How It Feels 6):
+
+```rust
+struct SizeEstimate {
+    est_output_bytes: u64,
+    est_scratch_bytes: u64,      // temp during conversion (§2.14)
+    basis: EstBasis,             // PerCategoryHeuristic | EngineProbe
+}
+```
+
+- **Per-category heuristic** (cheap, no decode): e.g. images ≈ source-pixels ×
+  bytes-per-pixel for the target codec; **GIF** uses the explicit `frames × w × h ×
+  ~1 byte/px` guardrail (supplied by `cross-category.md` [OPEN-F]); audio/video
+  bounded by source size/duration. The heuristic **constants** are co-owned with
+  04 and **must be finite** (a missing cap reintroduces the foot-gun).
+- **Headroom margin:** require **free space ≥ (est_output + est_scratch) × margin**.
+  `[REC]` margin **1.3×** as a starting value (confirm against the §6 corpus).
+- **Decision:** if the estimate exceeds the **"too big" ceiling** or free space is
+  insufficient → fail that item **up front** as a named §2.8 kind
+  (`TooBig` / `OutOfDisk`) **and continue the batch**. If a budget is only breached
+  mid-run (real disk usage outruns the estimate), the in-flight write fails, §2.6
+  restores free space, and the item is reported (§2.8) — the **up-front-vs-mid-run**
+  split is: estimate up front, enforce both up front *and* at write time.
+
+### Ceilings & large lists `[OPEN]`
+
+- **`[OPEN — owner §1.10, co-owned §0.9 + 04]`** the concrete numbers: the absolute
+  **"too big" output ceiling**, the **memory/handle ceilings**, the per-category
+  heuristic constants, the headroom margin, and the GIF duration cap
+  (`cross-category.md` [OPEN-F]). These must be *some* finite v1 values; they are
+  flagged for tuning against the real-world corpus (SSOT *v1 DoD* reliability gate),
+  not invented blind. Rationale they stay open: the right thresholds depend on
+  corpus timing/measurement, which is a §6 asset.
+- **Large recursively-collected lists** (thousands of files): the **frozen set and
+  job queue are bounded in memory** by storing lightweight `ItemId`/path records,
+  not file contents; the **UI list is virtualized** (§5 owns the virtualization
+  component). `[REC]` no hard cap on file *count* in v1 (the cap is on per-item
+  size and total disk, not list length); a very large batch simply queues and shows
+  aggregate progress (§1.11). Memory stays flat because only ≤ the §0.9 concurrency
+  degree of items are decoded at once.
+
+This section **feeds** §1.8 (plan only if it fits), §2.6 (cleanup on
+out-of-disk), §2.8 (the named failure kinds), §2.14 (scratch sizing) and §5
+(virtualization + the fast-fail message).
+
+---
+
+## 1.11 Progress & cancellation `[DECIDED]`
+
+### Real per-item progress (not indeterminate) `[DECIDED]`
+
+Every item reports a **real progress fraction**, never an indeterminate spinner
+(SSOT *Visible progress, cancellable* — "working, not hung"), even for a single
+long conversion. The fraction source per engine (parsed by §3.5, normalised by
+§1.7, delivered over the §0.4 channel):
+
+| Engine | Progress basis |
+|--------|----------------|
+| **FFmpeg** (audio/video/cross-cat) | `-progress pipe:` → `out_time_us` / `total_size`; **denominator = source duration** from `ffprobe` → true % even for a 2-hour film |
+| **libvips** (images) | Fast/near-atomic; coarse ticks (start → done) plus libvips' progress signal where available; tiny files are effectively instant |
+| **LibreOffice** (office/PDF) | No native progress signal → a **bounded indeterminate-but-animated** state with a watchdog (still reads as "working"); `[REC]` show a determinate-looking staged bar (spawn → render → export → write) rather than a raw spinner, to honour the spirit of the promise |
+| **poppler / pandoc** | Usually fast; staged ticks; large PDFs report per-page where `pdftotext` allows |
+
+```rust
+struct ProgressEvent {           // payload SHAPE defined in §0.4; semantics here
+    job: JobId,
+    fraction: Option<f32>,       // 0.0..=1.0 ; None only where truly unknowable (LO)
+    stage: JobStage,             // Spawning | Decoding | Encoding | Writing
+}
+```
+
+### Aggregate batch progress `[DECIDED]`
+
+The batch shows **both** per-item progress (the active item[s]) and an **aggregate**
+(`completed_items / total_items`, with the active item's fraction blended for
+smoothness). `[REC]` aggregate = `(succeeded + failed + cancelled + active_fraction)
+/ total` — monotonic, never jumps backward.
+
+### Cancellation (surfaced here, mechanism §1.7) `[DECIDED]`
+
+Cancellation is **surfaced** in this section (the batch-level "Cancel" affordance,
+optimistic-UI-then-confirmed-kill round-trip owned by §5.8) but the **mechanism is
+owned by §1.7** (group-kill, ordering, no-partial). Cancelling **keeps the files
+already finished** and **cleanly discards the one in progress** (no partial
+leftover, never touches originals).
+
+### Fast-fail surfacing `[DECIDED]`
+
+"Too big / doomed for disk space" items (decided by §1.10) surface here as an
+immediate per-item fast-fail (preferably up front), with the §2.8 message, while
+the rest continue. The app **stays responsive regardless of batch or file size**
+(all conversion is off the UI thread, on the §0.9 Tokio pool).
+
+---
+
+## 1.12 End-of-batch summary `[DECIDED]`
+
+When every job has left `Pending`/`Running`, the pipeline emits the **`RunResult`**
+summary (the §0.6 entity; rendered by §5.3 `ResultSummary`):
+
+```rust
+struct RunResult {
+    collected_set_id: CollectedSetId, // §0.6 (Batch.id is a CollectedSetId)
+    run_id: RunId,               // §7.1
+    items: Vec<ItemResult>,
+    totals: Totals,              // succeeded / failed / cancelled / skipped
+    common_root: PathBuf,        // "open folder" target (§2.7 / §7.7)
+    cleanup_incomplete: Vec<CleanupResidue>, // §2.6: residue-may-remain cases
+}
+
+struct ItemResult {
+    source: PathBuf,             // for output→source mapping
+    state: JobState,
+    output: Option<PathBuf>,     // Some(..) only when Succeeded
+    reason: Option<OutcomeMsg>,  // §2.8 failure string OR §2.9 lossy note (link)
+}
+```
+
+- **Per-item success/failure with reasons** and **output locations**; every output
+  is **mapped back to its source** (SSOT How It Feels 7 — the completion summary
+  maps each output to its source; matters for flattened/diverted fallback outputs).
+- **Fully-failed batch = a clear failure**, never a quiet finish (SSOT *Fail
+  clearly*).
+- **Cleanup-failure honesty (§2.6):** if cleanup could not complete for an item, it
+  is **never reported as a clean success** — the summary says residue may remain and
+  **where** (`cleanup_incomplete`).
+- **Completion actions** (one-click "open folder" / "open file" — SSOT How It Feels
+  8) are rendered by §5.3 `OpenActions` and executed by §7.7; "open folder" opens
+  `common_root`. The summary is the data; the buttons are §5/§7.7.
+- **Re-run prompt linkage:** if §2.5 detected an equivalent prior output **before**
+  CONVERT, the one batch-level skip/fresh-copy prompt (§5.2) already resolved it;
+  the summary reflects whichever the user chose (skipped items appear as a distinct
+  outcome, not a failure).
+
+---
+
+## Open items raised by this file (for the README open-questions log)
+
+| ID | Item | Owner | Status |
+|----|------|-------|--------|
+| 1.10-a | Resource budgets: absolute "too big" output ceiling, memory/handle ceilings, per-category size-heuristic constants, headroom margin (REC 1.3×), GIF duration cap | §1.10 (co-owned §0.9 + 04) | `[OPEN]` — tune against the §6 corpus; must be finite in v1 |
+| 1.2-sec | Whether the in-core text-encoding heuristic / Rust ZIP central-directory peek may stay outside the §2.12 isolation boundary (lean: yes — memory-safe, bounded) | §2.12 (raised by §1.2) | `[OPEN]` |
+
+### Resolved here with a recommended default (`[REC]`)
+
+- **Engine spawn+kill path** = `process-wrap` (Windows Job Object / POSIX process
+  group), **not** the Tauri shell-plugin `CommandChild::kill` path, so the whole
+  engine *subprocess tree* (esp. LibreOffice `soffice.bin`) dies on cancel/kill.
+  (§1.7 — the sole-owned mechanism; flagged for §0.9/§3.5 alignment.)
+- **Forceful group-kill** in v1 (no cooperative drain); safe because output is
+  temp-then-atomic-rename (§2.1/§2.14). (§1.7)
+- **Kill→wait-for-group-gone→cleanup→continue** ordering (so no descendant holds the
+  temp open on Windows). (§1.7)
+- **Hidden/system ignore list** = dotfiles + `.DS_Store`/`Thumbs.db`/`desktop.ini` +
+  Windows hidden/system attribute (fixed, not user-config). (§1.1)
+- **§1.6 owns a consolidated defaults registry** validated against 04 for the DoD
+  "no required choices" gate. (§1.6)
+- **Queue order** = deterministic collected/traversal order; no reordering. (§1.9)
+- **Aggregate progress** = monotonic `(done + active_fraction)/total`. (§1.11)
+- **No hard file-count cap**; bound memory via lightweight records + §5
+  virtualization + §0.9-bounded concurrent decodes. (§1.10)
+- **LibreOffice progress** shown as a staged determinate-looking bar (not a raw
+  spinner) since LO emits no native progress. (§1.11)

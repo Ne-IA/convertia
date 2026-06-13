@@ -78,8 +78,8 @@ Notes on the cells:
   PPTX→ODP, PPT→ODP all round-trip through Impress's model and can drop/approximate
   features. **PPTX→PPT and PPT→PPTX stay within the MS family** and are far less
   lossy, but still re-rendered — marked plain `✓` (the within-family loss is the
-  ordinary Office round-trip, not flagged as a predictable-loss note unless the
-  corpus shows otherwise; see [OPEN-1]).
+  ordinary within-MS-family re-render, **not** flagged as a predictable-loss
+  §2.9 note ([OPEN-1] resolved — see Lossy disclosure).
 - **Same-format cells are `—`** (PPTX→PPTX etc.). A presentation→same-format
   "conversion" has no everyday demand and is degenerate; it is **not** offered as
   a target (unlike images, there is no "re-compress" use case here). The no-harm
@@ -122,9 +122,9 @@ Notes on the cells:
   - As **→ PPT / → ODP target**: **no exposed options** — straight format
     re-encode at engine default. (No quality/compression knob is meaningful for
     office→office; SSOT *It just works by default*.)
-- **Lossy?:** As source to PDF/ODP — yes (see §2.9 catalog rows
-  `pptx→pdf`, `pptx→odp`). To PPT — within-family re-render; not flagged by
-  default ([OPEN-1]).
+- **Lossy?:** As source to PDF — yes (§2.9 `slides_to_pdf_flatten`); to ODP — yes,
+  crossing MS→ODF (§2.9 `office_roundtrip_approx`). To PPT — within-MS-family
+  re-render; **not** flagged ([OPEN-1] resolved: no §2.9 note).
 - **Edge cases:** **embedded media** (video/audio in slides) — *not* embedded in
   the PDF; a poster/first-frame is rendered, the media itself is dropped (a known
   LibreOffice limitation; note this is part of the →PDF lossy disclosure).
@@ -161,8 +161,9 @@ Notes on the cells:
   **No patent flag.**
 - **Options/settings:** identical model to PPTX — PDF options only as a →PDF
   target; no options for office→office.
-- **Lossy?:** As source to PDF/ODP — yes (§2.9 rows `ppt→pdf`, `ppt→odp`). To
-  PPTX — within-family, not flagged by default ([OPEN-1]).
+- **Lossy?:** As source to PDF — yes (§2.9 `slides_to_pdf_flatten`); to ODP — yes,
+  crossing MS→ODF (§2.9 `office_roundtrip_approx`). To PPTX — within-MS-family,
+  **not** flagged ([OPEN-1] resolved: no §2.9 note).
 - **Edge cases:** Legacy binary PPT can carry **VBA macros** — never executed,
   dropped on re-export. **Older/rare PPT features** (some legacy effects,
   WordArt) may render approximately. **Embedded OLE/media** behave as for PPTX.
@@ -194,9 +195,10 @@ Notes on the cells:
   LibreOffice's own, so *import* is the highest-fidelity of the three. Export
   filter `impress8`. Licence MPL-2.0, sidecar. **No patent flag.**
 - **Options/settings:** PDF options only as →PDF target; none for office→office.
-- **Lossy?:** As source to PDF — yes (§2.9 `odp→pdf`). To PPTX/PPT — yes, crossing
-  ODF→MS (§2.9 `odp→pptx`, `odp→ppt`). ODP is the **most-faithfully-rendered
-  source** to PDF because it is native, but PDF still flattens animations/effects.
+- **Lossy?:** As source to PDF — yes (§2.9 `slides_to_pdf_flatten`). To PPTX/PPT —
+  yes, crossing ODF→MS (§2.9 `office_roundtrip_approx`). ODP is the
+  **most-faithfully-rendered source** to PDF because it is native, but PDF still
+  flattens animations/effects.
 - **Edge cases:** ODP→PPTX/PPT can lose ODF-only features (certain custom shapes,
   presentation-specific styles, some transition types absent in the MS schema).
   Embedded media/fonts/OLE behave as for PPTX. Otherwise as the common edge cases
@@ -212,9 +214,9 @@ authoritative list lives there):
 
 | Producer (this category) | Engine | Filter | Lossy |
 |---|---|---|---|
-| `PPTX → PDF` | LO | `impress_pdf_Export` | yes (§2.9 `pptx→pdf`) |
-| `PPT → PDF`  | LO | `impress_pdf_Export` | yes (§2.9 `ppt→pdf`) |
-| `ODP → PDF`  | LO | `impress_pdf_Export` | yes (§2.9 `odp→pdf`) |
+| `PPTX → PDF` | LO | `impress_pdf_Export` | yes (§2.9 `slides_to_pdf_flatten`) |
+| `PPT → PDF`  | LO | `impress_pdf_Export` | yes (§2.9 `slides_to_pdf_flatten`) |
+| `ODP → PDF`  | LO | `impress_pdf_Export` | yes (§2.9 `slides_to_pdf_flatten`) |
 
 PDF is **not** a presentation *source* (reverse direction out of v1).
 
@@ -269,15 +271,22 @@ Predictable, disclosed loss in this category, by pair (the §2.9 catalog owns th
 exact note strings; this table only records *which* pairs are lossy and *what
 class* of loss):
 
-| Pair | Loss class | What is lost / changed |
+| Pair | §2.9 `LossyKind` | What is lost / changed |
 |---|---|---|
-| `pptx→pdf`, `ppt→pdf`, `odp→pdf` | **render-flatten** | Editability lost; **animations/transitions/triggers flattened** to final slide state; **embedded video/audio dropped** (poster only); **fonts substituted** if not embedded → reflow/clipping; speaker notes omitted unless the notes switch is on. |
-| `odp→pptx`, `odp→ppt` | **ODF→MS round-trip** | ODF-only shapes/styles/transitions approximated or dropped to fit the MS schema; minor layout shift. |
-| `pptx→odp`, `ppt→odp` | **MS→ODF round-trip** | MS-only effects (some SmartArt/WordArt/transition types) approximated; minor layout shift. |
-| `pptx→ppt`, `ppt→pptx` | **within-MS re-render** ([OPEN-1]) | Re-rendered through Impress's model; usually minor. Whether this rises to a *disclosed* §2.9 note is [OPEN-1]. |
+| `PPTX/PPT/ODP → PDF` | `slides_to_pdf_flatten` | Editability lost; **animations/transitions/triggers flattened** to final slide state; **embedded video/audio dropped** (poster only); **fonts substituted** if not embedded → reflow/clipping; speaker notes omitted unless the notes switch is on. |
+| `ODP → PPTX/PPT`, `PPTX/PPT → ODP` | `office_roundtrip_approx` | Cross-model (ODF↔MS) round-trip: ODF-only shapes/styles/transitions and MS-only effects (some SmartArt/WordArt/transition types) approximated or dropped to fit the other schema; minor layout shift. |
+| `PPTX → PPT`, `PPT → PPTX` | *(none — resolved [OPEN-1])* | Within-MS-family re-render through Impress's model; usually minor and **not** flagged with a §2.9 note (it is not a cross-model loss). See [OPEN-1] resolution below. |
 
-All →PDF pairs surface a **single passive inline note** at the moment PDF is the
-chosen target (SSOT Principle 7: calm, non-blocking, not a per-conversion nag).
+All →PDF pairs surface a **single passive inline note** (`slides_to_pdf_flatten`)
+at the moment PDF is the chosen target (SSOT Principle 7: calm, non-blocking, not a
+per-conversion nag).
+
+> **[OPEN-1] resolved.** `PPTX↔PPT` within-MS-family re-render does **not** get a
+> disclosed §2.9 lossy note: it stays inside the same presentation model (no
+> animation flatten, no cross-schema mapping), so any drift is incidental, not the
+> *predictable, content-faithfulness* loss §2.9 is scoped to (§2.9.2). The
+> cross-model `office_roundtrip_approx` note covers the ODF↔MS direction; the
+> within-family direction is treated as not-lossy for disclosure purposes.
 
 ### Font handling (the dominant fidelity factor)
 
@@ -335,12 +344,13 @@ assume PowerPoint's fonts are installed. ConvertIA's policy:
 
 ### [OPEN] / Parked
 
-- **[OPEN-1] — Flag `pptx↔ppt` (within-MS) as a disclosed §2.9 loss?** Both are
-  re-rendered through Impress's model, so *some* drift exists, but within the MS
-  family it is usually minor. Decision needed (driven by the §9 corpus): show a
-  passive loss note for `pptx→ppt`/`ppt→pptx`, or treat as non-disclosed ordinary
-  re-encode. Default leaning: **no note** unless the corpus shows material drift.
-  Tracked in the open-questions log.
+- **[OPEN-1] — RESOLVED: `pptx↔ppt` (within-MS) is NOT a disclosed §2.9 loss.**
+  Both are re-rendered through Impress's model, so *some* drift exists, but it
+  stays within the same MS presentation model (no animation flatten, no
+  cross-schema mapping) — incidental drift, not the predictable
+  content-faithfulness loss §2.9 is scoped to (§2.9.2). Decision: **no §2.9 note**
+  for `pptx→ppt`/`ppt→pptx`; the cross-model `office_roundtrip_approx` note covers
+  the ODF↔MS direction only. (No longer open; retained for traceability.)
 - **[OPEN-2] — Bundled font set for fidelity.** Exact list of fonts shipped with
   the LibreOffice sidecar (metric-compatible MS substitutes + CJK/RTL coverage)
   vs. binary-size budget (§3.9). This is *shared* with `documents.md` and

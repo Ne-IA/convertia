@@ -2,95 +2,877 @@
 
 > System architecture and the technical skeleton everything else hangs off.
 > Origin: SSOT *Portable, no installation*, *Cross-platform, one product*,
-> *Local, private & offline*. **Read together with [07-app-shell](07-app-shell.md)**
-> — the process model here depends on its instance/run-identity model.
+> *Local, private & offline*, *Security posture*. **Read together with
+> [07-app-shell](07-app-shell.md)** — the process model here depends on its
+> instance/run-identity model (§7.1).
+>
+> **What this file OWNS (authoritative):** the §0.4 IPC contract (the one canonical
+> enumeration of commands + events + payloads + error shape + cancellation token),
+> the §0.6 domain model (Rust types + invariants), the §0.7 logical-module
+> decomposition + physical tree, the §0.8 tech stack & pinned versions, the §0.9
+> concurrency degree + engine-subprocess pool, the §0.10 capabilities/CSP
+> allowlist, and the §0.11 assembled threat map. **What it REFERENCES (does not
+> restate):** the pipeline (§01 owns it; §0.5 is only a map), per-format engine
+> detail (04-formats), the guarantees (§02), decoder isolation (§2.12), the
+> patent matrix (§3.4), and the app-shell decisions (§07).
+
+---
 
 ## 0.1 Goals & constraints recap (from SSOT)
-- Portable, install-free, one artifact per platform (Win/macOS/Linux), fully
-  offline, local & private, modern-clean UI. _(skeleton — expand)_
+
+The architecture is the smallest design that simultaneously honours every
+load-bearing SSOT promise. These constraints are quoted here only to anchor the
+decisions in the rest of the file; their *implementations* live in the owning
+sections.
+
+| SSOT promise (name) | Architectural consequence | Owner of the mechanism |
+|---|---|---|
+| *Portable, no installation* | Single self-contained artifact per OS; no installer, no admin rights, no system services; all engines ride inside the bundle | §0.2, §0.7, §06 |
+| *Cross-platform, one product* | One codebase → three builds; identical UX/guarantees; per-platform variance confined to the WebView runtime (§0.3.1) and the §3.4 patent gaps | §0.2, §0.3.1, §06 |
+| *Local, private & offline* | Zero network capability in the security boundary: no remote origins in CSP, no `http`/updater plugins on the allowlist; the only network is the user-initiated open-project-page shell-out | §0.10, §0.11, §2.11, §7.6 |
+| *Never harm the original* / atomicity | A reusable **guarantees-fs** layer is a first-class module that ALL output flows through; engines never write the final file directly | §0.7, §2.1/§2.3/§2.6/§2.7/§2.14 |
+| *Fail clearly* | A single error taxonomy crosses the IPC boundary as one typed error shape (§0.4); panics are caught at the worker boundary (§2.13) | §0.4, §2.8, §2.13 |
+| *Security posture* (untrusted decoders) | Decoders run as **separate invoked subprocesses** behind the §2.12 isolation wrapper, never linked into the core; the WebView half is locked by §0.10 | §0.3, §0.9, §0.10, §0.11, §2.12 |
+| *It just works by default* | The IPC surface is verb-oriented and stateful in Rust; the frontend is a thin view (§0.3) that never needs to enumerate a directory or hold engine knowledge | §0.3, §0.4 |
+
+`[DECIDED]` These are inherited from Phase 1 and the SSOT; this file does not
+re-open them.
+
+---
 
 ## 0.2 Framework choice — Tauri `[DECIDED]`
-- Why Tauri vs Electron/Wails (size, system WebView, Rust core, reuse of the
-  React/TS/Tailwind stack). Trade-offs and what it commits us to. _(expand)_
+
+**Decision (Phase 1, honoured here): Tauri v2.** Rust core + a React 19 / TypeScript
+/ Tailwind / Vite WebView UI. Engines are **bundled sidecars/resources**, fully
+offline (§3.3).
+
+**Why Tauri over Electron / Wails:**
+
+- **Size & portability.** Tauri uses the OS's **system WebView** (no bundled
+  Chromium), so the *app shell* is a few MB of Rust + assets rather than ~150 MB
+  of browser. This directly serves *Portable, no installation* and offsets the
+  one accepted cost of *bundle-everything* — the heavy part of ConvertIA's
+  download is the **engines** (FFmpeg, LibreOffice; §3.9), not the framework. An
+  Electron baseline would add the browser weight *on top of* the engines.
+- **Rust core.** The guarantees (atomic write, resolved-identity link safety,
+  frozen set, cleanup) are filesystem- and concurrency-critical and benefit from
+  Rust's ownership model and mature crates (see §0.8); subprocess orchestration of
+  untrusted decoders wants a strong process/IO story. Electron's main process is
+  Node (looser FS/concurrency story); Wails (Go) is viable but the platform's
+  existing stack is React/TS, and Tauri lets us **reuse that stack verbatim** for
+  the UI.
+- **Security model.** Tauri v2 ships an explicit **capabilities/permissions**
+  system + CSP (§0.10) — exactly the WebView-side lockdown the SSOT *Security
+  posture* and *offline* promises need, declaratively, rather than hand-rolled.
+- **Stack reuse.** React 19 / TS / Tailwind / Vite is the Ne-IA platform standard;
+  the UI is "just a web app" with a typed IPC seam.
+
+**What Tauri commits us to (trade-offs, addressed in the owning sections):**
+
+1. **WebView runtime variance per OS** — the single biggest portability risk;
+   owned by §0.3.1.
+2. **Native file-drop, not HTML5 DnD** — the WebView cannot see real FS paths;
+   intake is Rust-side (§0.4 boundary fact, §1.1, §5.4).
+3. **The Rust↔TS boundary must be typed** to satisfy the platform "no `any`" rule
+   — owned by §0.4.5.
+4. **Sidecar invocation is gated by the capability allowlist** — the
+   shell/`externalBin` scope (§0.10) is the seam through which §3.5 launches
+   engines.
+5. **The Tauri updater plugin must be deliberately absent** (no phone-home) —
+   §7.6.
+
+---
 
 ## 0.3 High-level architecture
-- Two-tier: **Rust core** (backend logic, engine orchestration, filesystem, the
-  guarantees) + **React/TS frontend** (UI only).
-- Process model: Tauri main process, WebView, and **separate engine subprocesses**.
-- Diagram + responsibilities per tier. Decoder isolation is owned by §2.12 — this
-  section only references it. _(expand)_
 
-### 0.3.1 WebView runtime variance & supported-OS floor `[OPEN]`
-- Tauri uses a **different system WebView per OS** (WebView2 / WKWebView /
-  WebKitGTK). Real risk for portable / no-installation / no-runtime-fetch:
-  WebView2 absent or old on Windows (bundle-vs-rely decision — but no-network
-  forbids downloading it), WebKitGTK distro drift, minimum OS versions. Rendering
-  drift across runtimes is a §6.4 test implication; a missing/old WebView at
-  startup is a §7.2 / §2.13 startup fault. State the supported-OS floor here.
-  _(decide & expand)_
+**Two-tier, three-process-class model.**
+
+```
+┌───────────────────────────────────────────────────────────────────────┐
+│  ConvertIA process (single instance — §7.1)                            │
+│                                                                         │
+│  ┌─────────────────────────┐        Tauri IPC (custom protocol)        │
+│  │  WebView (UI tier)       │  ◄──────── commands (req/resp) ──────────┐│
+│  │  React 19 / TS / Tailwind│  ──────────  events / Channel<T> ───────►││
+│  │  • renders state         │                                          ││
+│  │  • NO fs, NO engines,    │     ┌────────────────────────────────┐   ││
+│  │    NO directory walk     │     │  Rust core (logic tier)        │   ││
+│  └─────────────────────────┘     │  • IPC handlers (§0.4)         │   ││
+│                                   │  • orchestrator (queue, §1.9)  │   ││
+│                                   │  • detection (§1.2)            │   ││
+│                                   │  • guarantees-fs (§2.x)        │   ││
+│                                   │  • engine-registry seam (§3.2) │   ││
+│                                   │  • subprocess pool (§0.9)      │   ││
+│                                   └───────────────┬────────────────┘   ││
+│                                                   │ spawn (isolated,   ││
+│                                                   │  §2.12 wrapper)     ││
+└───────────────────────────────────────────────────┼────────────────────┘
+                                                     ▼
+        ┌──────────────────────────────────────────────────────────────┐
+        │  Engine subprocesses (separate invoked binaries — §3.5/§3.6)   │
+        │  FFmpeg · LibreOffice (soffice --headless) · poppler pdftotext  │
+        │  · pandoc · (Ghostscript) · image codec tools (see §0.9 note)   │
+        │  Untrusted bytes are parsed HERE, never in the core.            │
+        └──────────────────────────────────────────────────────────────┘
+```
+
+**Tier responsibilities:**
+
+- **WebView (UI tier)** — *view only.* Renders the screen states (§5.2), captures
+  user intent, calls commands and subscribes to events/Channels (§5.8). It holds
+  **no** filesystem access, **no** engine knowledge, and cannot enumerate a
+  directory (the WebView has no real FS paths — §0.4 boundary fact). It is treated
+  as **untrusted** by the core (the §0.10 capability allowlist is the contract).
+
+- **Rust core (logic tier)** — *all logic.* IPC handlers (§0.4), the conversion
+  orchestrator (queue/lifecycle — §1.9, owned by §01), content detection (§1.2),
+  the **guarantees-fs** layer (§0.7; the reusable home of §2.1/§2.3/§2.6/§2.7/
+  §2.14), the engine-registry seam (§3.2), and the subprocess pool (§0.9). It is
+  the only tier that touches the filesystem and the only tier that spawns engines.
+
+- **Engine subprocesses** — *the actual conversions and the untrusted-byte parsing.*
+  Each is a **separate, independently-invoked binary** (aggregation, not linking;
+  §3.6) so the MIT core stays clean and a decoder crash/hang is contained.
+  Spawned and governed by the §0.9 pool, launched through the §3.5 argument
+  construction, **routed through the §2.12 isolation wrapper** (the owner of the
+  per-platform isolation mechanism). This section states *that* decoders are
+  isolated subprocesses; **§2.12 owns *how* they are isolated** and is referenced,
+  not restated, here.
+
+**Process count.** One ConvertIA process (the Tauri host, which embeds the WebView
+as the OS provides it) + N short-lived engine subprocesses, where N is bounded by
+the §0.9 concurrency degree. No background services, no tray daemon (§7.3).
+
+### 0.3.1 WebView runtime variance & supported-OS floor `[OPEN → recommended floor]`
+
+Tauri renders the UI in the **OS-provided WebView**, which differs per platform.
+This is the principal portability risk and it interacts hard with *no-network*
+(we may not download a runtime) and *no-installation*.
+
+| OS | WebView runtime | Risk | Disposition |
+|----|-----------------|------|-------------|
+| Windows | **WebView2** (Chromium/Edge) | May be **absent or old** on older Windows; the standard Tauri remedy is the WebView2 **bootstrapper/installer**, but *that downloads at install time* — forbidden by *no-network / no-installation* | **Recommend: rely on the OS, require a present WebView2; do NOT bundle the offline installer in v1** (it bloats the portable artifact and blurs "no installation"). Windows 11 ships WebView2 by default; Windows 10 has shipped it via Edge/Windows Update for years. A **missing/too-old WebView2 at startup is an app-level startup fault (§2.13 / §7.2)** with a plain message pointing the user to update Windows/Edge — never a silent blank window. `bundle.windows.minimumWebview2Version` is set as a floor check. |
+| macOS | **WKWebView** (system Safari/WebKit) | Tied to the OS version; no separate install | Pinned by `bundle.macOS.minimumSystemVersion`. |
+| Linux | **WebKitGTK** (`libwebkit2gtk-4.1`) | **Distro drift** — version varies widely; the portable AppImage must carry/locate a compatible WebKitGTK | Bundled/located by the AppImage packaging (§6.1); a missing/incompatible WebKitGTK is a §7.2 startup fault with a plain message. |
+
+**Recommended supported-OS floor (v1)** — *recommendation, owner sign-off pending,
+fed to the README open-questions log:*
+
+- **Windows 10 (1809 / build 17763) and Windows 11**, x86-64, with WebView2
+  present (Evergreen). `minimumWebview2Version` ≈ a recent-but-not-bleeding-edge
+  Chromium (e.g. the `110.x` class) so our CSS/JS baseline is safe.
+- **macOS 11 Big Sur and later** (covers the WKWebView feature set React 19 + our
+  Tailwind build target need; `minimumSystemVersion: "11.0"`). Universal binary
+  (Intel + Apple Silicon).
+- **Linux: a glibc desktop with `libwebkit2gtk-4.1`** (Ubuntu 22.04 LTS-class and
+  newer, Fedora current); shipped as an x86-64 AppImage. ARM is out of v1.
+
+Rationale for keeping this `[OPEN]`: the exact Windows build / macOS version /
+WebKitGTK minimum is a product-support commitment with QA cost, and it cross-cuts
+§6.4 (rendering-drift test matrix) and §6.1 (packaging). The architecture is
+indifferent to the exact numbers; the *shape* (rely-on-OS WebView, fail clearly at
+startup if absent/old, floor declared in config) is `[DECIDED]`.
+
+**Rendering-drift implication (→ §6.4):** because three different browser engines
+render the same UI, visual/behaviour drift (CSS, font rendering, drag-events) is a
+test concern, not a runtime one. **Startup-time WebView faults (→ §7.2 / §2.13):**
+an absent/old/broken WebView is an *app-level* fault, surfaced once, plainly.
+
+---
 
 ## 0.4 Frontend ↔ backend boundary (IPC) — **single authoritative contract**
-- This section is the **one canonical enumeration** of the IPC surface: every
-  Tauri **command** (name, request/response payload, error shape, cancellation
-  token) and every **event** (progress/streaming channels, payloads). 01 (pipeline)
-  and 05.8 (UI) **reference** this, never restate it. _(expand)_
-- **Boundary fact — native file-drop:** in a Tauri WebView, HTML5 drag-and-drop
-  generally does **not** expose real filesystem paths; intake must use **Tauri
-  native file-drop events**, and folder recursion (§1.1) runs in **Rust**, not JS
-  (the WebView can't enumerate a directory). This constrains §1.1/§5.4. _(expand)_
 
-### 0.4.1 Rust↔TS type-sharing strategy `[OPEN]`
-- Decide: manual mirroring vs codegen (ts-rs / specta / tauri-specta) vs
-  JSON-schema. Names the tool, where generated types land (§0.7), and the CI
-  drift check (§06). Enforces the platform "no `any`" rule. 05.1 references this.
-  _(decide — in open-questions log)_
+This section is **the** canonical enumeration of the IPC surface. §01 (pipeline)
+and §5.8 (UI async model) **reference** these names and shapes; they never restate
+or redefine them. The contract is the spine: changing a command/event/payload here
+ripples to §01, §05, §0.4.5 codegen, and §06's drift check.
+
+### 0.4.0 Mechanics (Tauri v2 primitives used)
+
+- **Commands** = `#[tauri::command] async fn` handlers, registered in the
+  `invoke_handler`, called from TS via `invoke('cmd_name', args)`. Long-running
+  work is `async` so the WebView stays responsive (SSOT *visible progress, stays
+  responsive*).
+- **Shared state** = injected via `State<'_, T>` (e.g. the orchestrator handle,
+  the run registry). Commands are thin; they delegate to the orchestrator.
+- **One-way streaming Rust→TS** = **`tauri::ipc::Channel<T>`** — the v2 ordered,
+  high-throughput channel. **Per-run progress uses a Channel** handed to the
+  `start_conversion` command (ordered delivery, backpressure-friendly, scoped to
+  the run — preferred over global events for hot per-item progress).
+- **Broadcast / app-wide notifications Rust→TS** = `app.emit(event, payload)` /
+  TS `listen(event, cb)` — used for **lifecycle-level** events not tied to a
+  single run channel (e.g. `auth`-style app faults, startup readiness). The bulk
+  of conversion telemetry goes through the Channel, not global events, to avoid
+  cross-run leakage.
+- **Error shape** = every command returns `Result<T, IpcError>` where `IpcError`
+  is a `serde`-serialised enum (§0.4 error shape below). No command ever panics
+  across the boundary (panics are caught at the worker boundary — §2.13 — and
+  surfaced as an `IpcError`/failure outcome).
+- **Cancellation** = a process-wide cancellation primitive keyed by `RunId`
+  (§0.4 cancellation token). The mechanism that actually kills an in-flight engine
+  is owned by **§1.7** (process-group kill; Windows has no SIGTERM); this section
+  defines only the *token and the command* that trips it.
+
+**Boundary fact — native file-drop `[DECIDED]`.** In a Tauri WebView, HTML5
+drag-and-drop does **not** expose real filesystem paths. Intake therefore uses
+**Tauri's native file-drop event** (the window `onDragDropEvent` / `DragDrop`
+payload carries real `PathBuf`s) and the native **dialog** picker; **folder
+recursion runs in Rust** (§1.1), because the WebView cannot enumerate a directory.
+This constrains §1.1 (intake) and §5.4 (DnD UI). The frontend's DnD handler exists
+only to drive hover/visual affordance; the *paths* arrive over the native event,
+not the DOM drop.
+
+### 0.4.1 Command enumeration (authoritative)
+
+All payloads are the §0.6 domain types (or thin DTOs of them); field naming is
+`camelCase` on the wire (Rust `#[serde(rename_all = "camelCase")]`). Pseudo-Rust
+signatures; the TS side is generated (§0.4.5 codegen).
+
+| # | Command | Request | Response | Notes |
+|---|---------|---------|----------|-------|
+| C1 | `ingest_paths` | `{ paths: Vec<PathBuf>, origin: IntakeOrigin }` | `CollectedSet` | Builds the **frozen source set** (§2.4): recurse folders (Rust), ignore hidden/system files, de-dup by resolved identity (§2.3), run detection (§1.2), group by user-facing format (§1.3). Returns the collected-summary (detected format + count) **or** a `MixedDrop` / `Unsupported` / `Uncertain` outcome. `origin` distinguishes drop / picker / launch-arg (§7.8). |
+| C2 | `pick_paths` | `{ kind: PickKind /* files | folder */ }` | `Vec<PathBuf>` | Opens the native dialog (capability-gated, §0.10). The picked paths are then fed to `ingest_paths` (single freeze point). Separate command so the dialog open is its own permissioned action. |
+| C3 | `get_targets` | `{ collectedSetId: CollectedSetId }` | `TargetOffer` | From the detected source type → the offered `Vec<Target>` + the **one pre-highlighted default** + per-target lossy flags + per-target availability (from §3.4) + the declared options model (§1.6). Pure function of detection; no engine spawned. |
+| C4 | `plan_output` | `{ collectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice }` | `OutputPlanPreview` | Computes the `OutputPlan` (§1.8): resolved destination, beside-source vs chosen-root subtree re-creation, per-location divert preview, **re-run/equivalent-output detection (§2.5)** → may return a `RerunPrompt`. Also returns the §1.10 pre-flight verdict (size/space estimate, any up-front "too big" fail). Drives the "will save to …" line (SSOT *output lands somewhere obvious*) **before** convert. |
+| C5 | `set_destination` | `{ destination: DestinationChoice }` | `DestinationResolved` | User changes the destination before convert; revalidates writability/divert. |
+| C6 | `start_conversion` | `{ collectedSetId, target, options, destination, rerunDecision: RerunDecision, onProgress: Channel<ConversionEvent> }` | `RunId` | Creates a `RunId`, enqueues the batch (§1.9), spawns workers (§0.9), and **streams `ConversionEvent`s over the Channel** (E-series below). Returns immediately with the `RunId` (the run proceeds async; the Channel carries all telemetry). |
+| C7 | `cancel_run` | `{ runId: RunId }` | `()` | Trips the §0.4 cancellation token for that run. The actual in-flight engine kill is §1.7's mechanism. Already-finished items are kept (SSOT *cancellable*); the in-progress item is discarded cleanly (§2.1/§2.6). |
+| C8 | `get_run_summary` | `{ runId: RunId }` | `RunResult` | The end-of-batch summary (§1.12): per-item success/fail/skip + reasons + output→source map + residue warnings (§2.6). Also delivered as the terminal `ConversionEvent::RunFinished`; this command is the idempotent re-fetch (e.g. after a WebView reload). |
+| C9 | `open_path` | `{ kind: OpenKind /* folder | file | revealInFolder */, path: PathBuf }` | `()` | The DoD "one-click open-folder/open-file" shell-out. **How** it shells out per OS is owned by §7.7; **which** path is owned by §2.7; the **capability scope** is §0.10 (opener). |
+| C10 | `open_project_page` | `{}` | `()` | The **only** permitted network action — user-initiated open of the canonical GitHub project/releases URL in the default browser (SSOT *Local/private/offline* "only network activity is user-initiated"). Fixed URL constant in Rust; opener-scoped to that exact origin (§0.10, §7.6). |
+| C11 | `get_app_info` | `{}` | `AppInfo` | Version, build id, and the **third-party-licenses / NOTICE** data for the About screen (data generated by §3.7; displayed by §5.9). No network. |
+| C12 | `get_engine_health` | `{}` | `EngineHealth` | Startup self-check result: which bundled engines are present/runnable, which §3.4 patent-gated targets are available on this platform. Feeds §5.2 (disable/omit unavailable targets) and §7.2 (startup faults). Cached from the §7.2 startup probe; cheap to call. |
+
+**Notes binding to other owners:**
+
+- `ingest_paths` is the single freeze point (§2.4) for **all** intake origins
+  (drop, picker, launch args / second-instance hand-off — §7.1/§7.8).
+- `get_targets`/`plan_output`/`start_conversion` together realise the SSOT flow
+  *drop → pick target → (see destination) → convert*; the **pipeline that runs
+  inside `start_conversion` is owned entirely by §01** — this contract only fixes
+  the boundary.
+- There is intentionally **no per-item-target command** — the **one-Target-per-
+  Batch** invariant (§0.6) is enforced by the shape of `start_conversion` (a
+  single `target` for the whole `collectedSetId`).
+
+### 0.4.2 Event / Channel enumeration (authoritative)
+
+**Run telemetry — `Channel<ConversionEvent>`** (handed to `start_conversion`,
+C6). A `#[serde(tag = "type", content = "data")]` enum, ordered delivery:
+
+| Variant | Payload | Meaning |
+|---|---|---|
+| `RunStarted` | `{ runId, totalItems, willReencode?: bool }` | Batch accepted; queue built. `willReencode` lets video show the §2.9 worst-case lossy note. |
+| `ItemStarted` | `{ runId, itemId, sourcePath, target }` | An item left `Pending` for `Running` (§1.9). |
+| `ItemProgress` | `{ runId, itemId, fraction: f32 /* 0.0..1.0 */, phase?: ItemPhase }` | **Real per-item progress** (SSOT *not an indeterminate spinner*). Denominator is engine-specific (e.g. video = source duration from `ffprobe`, §3.5/video.md). `phase` distinguishes probe / convert / write where useful. |
+| `ItemFinished` | `{ runId, itemId, outcome: ItemOutcome }` | Terminal per item: `Succeeded { outputPath } \| Failed { error: IpcError } \| Skipped { reason } \| Cancelled`. |
+| `BatchProgress` | `{ runId, done, total }` | Aggregate queue progress for the batch bar (§1.11). |
+| `RunFinished` | `RunResult` | Terminal for the run; mirrors C8. Carries the full summary incl. residue warnings (§2.6). |
+
+> **Why a Channel, not events, for run telemetry:** ordering (progress monotonic
+> per item), throughput (a 5000-file batch emits a lot), and **scoping** (the
+> Channel dies with the run — no cross-run leakage, no global listener cleanup
+> bug). This is the Tauri v2 recommended pattern for streamed Rust→frontend data.
+
+**App-wide events — `app.emit` / TS `listen`** (not run-scoped):
+
+| Event | Payload | Meaning |
+|---|---|---|
+| `app://fault` | `AppFault` | An **app-level** fault (§2.13): WebView core disconnect, a startup engine-missing escalation, damaged bundle. The UI shows a plain, no-stack-trace message (§5.8 backend-disconnect handling). |
+| `app://intake` | `{ paths, origin }` | The OS handed the running (single) instance new paths via a **second-instance launch / Open-with** (§7.1/§7.8). The frontend reacts by calling `ingest_paths`. Only emitted on the single-instance path. |
+| `app://close-requested` | `()` | The OS window-close was intercepted **while a run is in flight** (§7.3.2): the core called `prevent_close` and asks the frontend to show the quit-while-converting confirm (§5.2/§7.3.3). The emit/intercept mechanism is owned by §7.3; the event name is fixed here. |
+
+Apart from these three (`app://fault`, `app://intake`, `app://close-requested`),
+there are **no other IPC events**. No telemetry, no heartbeat, no network-driven
+event — consistent with *offline / no phone-home* (§2.11, §7.6).
+
+### 0.4.3 Error shape (authoritative) — `IpcError`
+
+Every command's `Err` and every `ItemOutcome::Failed.error` is one shape:
+
+```rust
+#[derive(Serialize, /* specta::Type */)]
+#[serde(rename_all = "camelCase")]
+pub struct IpcError {
+    /// Stable machine code from the §2.8 taxonomy — drives UI branching + i18n.
+    pub kind: ErrorKind,
+    /// Pre-localised plain-language English message (the §2.8 catalog string).
+    /// NEVER a stack trace, never raw engine stderr (SSOT *no stack traces*).
+    pub message: String,
+    /// Optional path the error concerns (for the summary's output→source map).
+    pub path: Option<PathBuf>,
+    /// Optional residue location when cleanup could not complete (§2.6) — so the
+    /// item is never reported as a clean success.
+    pub residue: Option<PathBuf>,
+}
+
+#[derive(Serialize /* specta::Type */)]
+#[serde(rename_all = "camelCase")]
+pub enum ErrorKind {
+    // Wire mirror of §2.8 `ConversionErrorKind` — names are byte-identical to the
+    // owner (§06 drift check enforces this). Item-level (§2.8):
+    Corrupt, Empty, Unrecognized, UnsupportedType, UnsupportedPair,
+    Unreadable, Gone, PasswordProtected, NoAudioTrack, TooBig, OutOfDisk,
+    WriteFailed, PathTooLong, EngineCrash, EngineHang, EngineError,
+    PlatformUnavailable, CleanupResidue, InternalError,
+    // run/app-level (§2.13):
+    MixedDrop, EngineMissing, WebviewFault, BundleDamaged,
+}
+```
+
+> **Note — `Cancelled` is not an `ErrorKind`.** A cancelled item is the
+> `ItemOutcome::Cancelled` variant (§0.4.2), not a failure; it never carries an
+> `IpcError`. The wire enum mirrors **only** the §2.8 taxonomy.
+
+- The **authoritative enumeration of failure kinds and their exact English
+  strings is owned by §2.8** (the message catalog). `ErrorKind` here is the wire
+  mirror; §06 includes a drift check that the §2.8 catalog and this enum stay in
+  lock-step. `message` is filled from the §2.8 catalog **in Rust** (strings live
+  with their owner; the UI does not assemble outcome strings — §5.7).
+- `kind` is the stable contract the UI branches on (e.g. `PasswordProtected` →
+  "password-protected" copy; `EngineMissing` → app-fault screen).
+
+### 0.4.4 Cancellation token (authoritative)
+
+- A `RunId` indexes a `CancellationToken` (recommend `tokio_util::sync::
+  CancellationToken`) held in the run registry (`State`). `cancel_run` (C7)
+  calls `.cancel()`.
+- Workers poll/await the token at safe points and, crucially, the **§1.7
+  invocation layer** wires the token to the engine subprocess so a cancel triggers
+  the process-group kill (§1.7 owns the kill mechanism and the ordering that keeps
+  §2.6 cleanup and §2.1 no-partial intact). This section owns only the token's
+  *identity and lifecycle* (created in C6, tripped by C7, dropped on `RunFinished`).
+- Cancellation is **cooperative at the orchestrator level, forceful at the engine
+  level** (kill the child), reconciled by §1.7.
+
+### 0.4.5 Rust↔TS type-sharing strategy `[OPEN → recommended: tauri-specta]`
+
+The platform rule is **no `any`**; the Rust↔TS boundary must be typed with a
+single source of truth. Options surveyed:
+
+| Approach | Verdict |
+|---|---|
+| **Manual mirroring** | Rejected — guaranteed drift; violates the "no `any` by accident" intent. |
+| **ts-rs** | Generates `.ts` from Rust types via derive, but treats types **individually** (a type and its dependency graph aren't exported together cleanly) and, critically, **does not model Tauri *commands or events*** — we'd still hand-write the `invoke`/Channel wrappers and could drift on argument names. |
+| **specta** (alone) | The introspection layer ts-rs lacks (full type graph), but not Tauri-aware on its own. |
+| **tauri-specta** (specta + Tauri integration) | **Recommended.** Purpose-built for Tauri v2: annotate commands with `#[specta::specta]`, collect via `collect_commands![]` / `collect_events![]`, and it emits a single `bindings.ts` exposing **typed `commands.*` wrappers, typed event/Channel helpers, and all referenced types** — exactly the C1–C12 + E-series surface above, with no `any` and no hand-written invoke glue. |
+| **JSON-schema** | Heavier toolchain, no first-class Tauri command typing; rejected. |
+
+**Recommendation (owner sign-off pending — README open-questions log):** adopt
+**tauri-specta** (with specta). Generated output lands at a single tracked path —
+**`src/lib/ipc/bindings.ts`** (the frontend's only door to the backend; §5.1/§5.8
+import from here and never call raw `invoke`). Generation runs as part of the
+debug build / a dedicated `cargo` step; **§06 owns a CI drift check** that fails if
+`bindings.ts` is stale vs the Rust source (regenerate + `git diff --exit-code`).
+
+Why this stays `[OPEN]` (not fake-resolved): it is a **toolchain-maturity bet** —
+tauri-specta v2 must be confirmed stable against our pinned Tauri (§0.8) and its
+Channel-typing must cover the `ConversionEvent` enum cleanly; the fallback (specta
+for types + a thin hand-written, drift-checked command map) is held in reserve.
+The *decision to codegen, not mirror* is `[DECIDED]`; the *exact tool* is the
+sign-off item.
+
+---
 
 ## 0.5 Conversion pipeline overview (navigational only)
-- End-to-end flow map: drop → detect → group/confirm → present targets → plan
-  output → convert (queue) → write (guarantees) → summarise. **This is a map;
-  01 is the canonical owner of the pipeline.** _(expand)_
+
+> **This is a map. §01 is the canonical owner of the pipeline.** Nothing here is
+> authoritative; it shows where the IPC commands (§0.4) hook into the §01 stages.
+
+```
+ drop / picker / launch-arg
+        │  (C1 ingest_paths / C2 pick_paths)         §1.1 intake → §2.4 freeze
+        ▼
+ content detection (§1.2) ──► group by user-facing format (§1.3)
+        │                                            mixed → MixedDrop refusal
+        ▼
+ collected-summary + confirm gate (§1.4)             (UI §5.2)
+        │  (C3 get_targets)
+        ▼
+ target resolution + default (§1.5) + options (§1.6)
+        │  (C4 plan_output)
+        ▼
+ output planning (§1.8) ──► re-run detection (§2.5) ──► resource pre-flight (§1.10)
+        │  (C6 start_conversion + Channel<ConversionEvent>)
+        ▼
+ queue / job lifecycle (§1.9) ──► engine invocation (§1.7) ──► §0.9 pool
+        │                            through §2.12 isolation, args §3.5
+        ▼
+ atomic write via guarantees-fs (§2.1/§2.3/§2.6/§2.7/§2.14)
+        │  (E: ItemProgress / ItemFinished / BatchProgress)
+        ▼
+ end-of-batch summary (§1.12)  (C8 get_run_summary / E: RunFinished)  (UI §5.2)
+```
+
+---
 
 ## 0.6 Core domain model
-- Entities: `DroppedItem`, `DetectedFormat`, `Batch`, `ConversionJob`,
-  `Target`, `Engine`, `OutputPlan`, `RunResult`, plus `RunId`/`InstanceId`
-  (defined in §7.1). Fields + invariants — incl. the explicit invariant
-  **one `Target` per `Batch`** (no per-item targets in v1). _(expand)_
+
+The shared vocabulary. These are **Rust** types (the source of truth); the TS
+mirror is generated (§0.4.5). `RunId`/`InstanceId` are **defined by §7.1** and
+referenced here (this section does not own their identity policy). Fields are
+illustrative-but-concrete; invariants are normative.
+
+```rust
+// ─── Identity (defined by §7.1; referenced here) ────────────────────────────
+pub struct InstanceId(Uuid);   // one per app launch (§7.1)
+pub struct RunId(Uuid);        // one per start_conversion (§0.4 C6 / §7.1)
+pub struct CollectedSetId(Uuid);
+pub struct ItemId(u32);        // stable within a run
+
+// ─── Intake & detection ─────────────────────────────────────────────────────
+pub enum IntakeOrigin { Drop, Picker, LaunchArg, SecondInstance } // §7.8
+
+pub struct DroppedItem {
+    pub raw_path: PathBuf,        // as the OS handed it
+    pub resolved_path: PathBuf,   // symlink/junction/alias-resolved (§2.3)
+    pub size_bytes: u64,
+    pub detected: DetectedFormat, // §1.2 owns the detection algorithm
+}
+
+pub enum DetectionConfidence { Certain, Ambiguous, Unknown } // §1.2
+
+pub struct DetectedFormat {
+    pub user_facing: Option<UserFacingFormat>, // e.g. Jpg, Mp4, Docx … None = undetected
+    pub confidence: DetectionConfidence,
+    pub note: Option<String>,    // "detected: X" for unsupported/uncertain (§1.2)
+}
+
+/// The single grouping key (§1.3): individual user-facing format,
+/// NOT the six SSOT categories, NOT codec subtypes. Jpg != Png, Mp4 != Mov.
+pub enum UserFacingFormat { Jpg, Png, Webp, Gif, Bmp, Tiff, Heic, Avif, Ico, Svg,
+    Mp3, Wav, Flac, Aac, M4a, Ogg, Opus, Wma, Aiff, Alac,
+    Mp4, Mov, Mkv, Webm, Avi, Wmv, Flv, Mpeg, M4v, ThreeGp,
+    Pdf, Docx, Doc, Odt, Rtf, Txt, Md, Html,
+    Xlsx, Xls, Ods, Csv, Tsv,
+    Pptx, Ppt, Odp }
+// (The enumeration is the SSOT *What It Converts* set; 04-formats owns each one's
+//  detection signature, targets, engine, options. This enum is just the key.)
+
+// ─── Collected set (the frozen batch candidate) ─────────────────────────────
+pub enum CollectedSet {
+    Single {                         // exactly one user-facing format → a batch
+        id: CollectedSetId,
+        instance: InstanceId,
+        format: UserFacingFormat,
+        items: Vec<DroppedItem>,     // frozen, de-duplicated by resolved identity
+        count: usize,                // shown in the confirm gate (§1.4)
+    },
+    Mixed { found: Vec<(UserFacingFormat, usize)> },  // → pre-flight refusal (§1.3)
+    Unsupported { detected: String },                 // real but out-of-scope (§1.2)
+    Uncertain { note: String },                       // can't tell (§1.2)
+    Empty,                                             // nothing eligible
+}
+
+// ─── Targets & options ──────────────────────────────────────────────────────
+pub struct Target {                  // an offered output choice for a source
+    pub id: TargetId,                // e.g. Format(Webp) | Op(ExtractAudio) | Op(ToGif)
+    pub label: String,
+    pub lossy: Option<LossyNoteRef>, // §2.9 catalog key (string lives in §2.9)
+    pub availability: Availability,  // from §3.4 (Available | Unavailable { reason })
+    pub options: OptionsSchema,      // §1.6 generic model; 04 owns concrete values
+}
+
+pub struct TargetOffer {
+    pub set: CollectedSetId,
+    pub targets: Vec<Target>,
+    pub default_target: TargetId,    // exactly ONE pre-highlighted default (§1.5)
+}
+
+pub struct OptionValues(/* keyed by OptionsSchema; §1.6 */);
+
+// ─── The batch & its jobs ───────────────────────────────────────────────────
+pub struct Batch {
+    pub id: CollectedSetId,
+    pub source_format: UserFacingFormat,
+    pub target: Target,              // INVARIANT: exactly one, whole-batch (below)
+    pub options: OptionValues,       // INVARIANT: one effective set, whole-batch
+    pub destination: DestinationChoice,
+    pub jobs: Vec<ConversionJob>,
+}
+
+pub enum DestinationChoice {
+    BesideSource,                    // default (§2.7); per-location divert applies
+    ChosenRoot(PathBuf),             // re-creates relative subtree (§2.7)
+}
+
+pub struct ConversionJob {
+    pub item: ItemId,
+    pub source: DroppedItem,
+    pub state: JobState,             // §1.9 owns the lifecycle transitions
+    pub plan: Option<OutputPlan>,    // computed by §1.8 before write
+}
+
+pub enum JobState { Pending, Running, Succeeded, Failed(IpcError), Skipped(SkipReason), Cancelled } // §1.9
+
+// ─── Engine (the seam; §3.2 owns the registry/selection) ────────────────────
+pub struct Engine {                  // capability descriptor, NOT a process
+    pub id: EngineId,                // FFmpeg | LibreOffice | Poppler | Pandoc | Ghostscript | ImageCore | …
+    pub serialised_only: bool,       // true for LibreOffice (§0.9)
+    pub kind: EngineKind,            // Sidecar | InProcessCrate (see §0.9 note)
+}
+
+// ─── Output plan & results ──────────────────────────────────────────────────
+pub struct OutputPlan {              // computed by §1.8, consumed by §2.1; §2.7 rules
+    pub final_path: PathBuf,         // base name + target ext, no-clobber numbered (§2.2)
+    pub temp_path: PathBuf,          // per-run owned scratch (§2.6/§2.14), same volume as final (§2.14)
+    pub diverted: bool,              // per-location fallback fired (§2.7)
+    pub crosses_volume: bool,        // §2.14 cross-volume strategy needed
+}
+
+pub struct RunResult {               // §1.12
+    pub run: RunId,
+    pub items: Vec<ItemSummary>,     // outcome + output→source mapping
+    pub all_failed: bool,            // true => clear failure, never a quiet finish (§1.12)
+    pub residue: Vec<PathBuf>,       // §2.6 cleanup-incomplete warnings
+    pub common_root: PathBuf,        // "open folder" target (§2.7)
+}
+```
+
+**Invariants (normative):**
+
+1. **One `Target` per `Batch` (v1).** `Batch.target` is a single value applied to
+   every `ConversionJob` in the batch. There is no per-item target — enforced by
+   the absence of any per-item-target IPC command (§0.4) and by `start_conversion`
+   taking one `target`. (SSOT *How It Feels* 4: "one chosen target applies to the
+   whole same-source batch".)
+2. **One effective `OptionValues` per `Batch`.** Same rationale; also what §2.5
+   keys "same effective settings" on.
+3. **A `Batch` exists only from a `CollectedSet::Single`.** `Mixed`/`Unsupported`/
+   `Uncertain`/`Empty` never produce a batch — they are pre-flight terminal states
+   (§1.3 refusal / §1.2 decline). No subset conversion.
+4. **The `items` set is frozen and resolved-identity-deduplicated** at ingest
+   (§2.4/§2.3); nothing is added after the freeze, including outputs landing in a
+   source folder.
+5. **`OutputPlan.temp_path` and `final_path` are on the same filesystem** (§2.14);
+   when source/scratch/final span volumes, `crosses_volume` drives the §2.14
+   copy→fsync→rename-within-destination strategy.
+6. **`ItemId` is stable within a `RunId`** so progress/finished events and the
+   summary all address the same item.
+
+The **detection algorithm** (§1.2), **lifecycle transitions** (§1.9), **engine
+selection** (§3.2), **per-format options/defaults** (04-formats), **output-naming
+mechanics** (§2.2) and **identity policy** (§7.1) are owned by those sections;
+this model only fixes the *shapes and invariants* the whole system shares.
+
+---
 
 ## 0.7 Project layout & logical module decomposition
-- **Logical modules** (the architecture, owned here): orchestrator /
-  guarantees-fs layer (the reusable home of §2.1/§2.3/§2.7/§2.14 atomicity) /
-  engine-registry seam (§3.2 — trait crate?) / IPC handlers / detection. State
-  dependency direction so the directory tree doesn't *become* the architecture by
-  accident.
-- **Physical tree:** Rust crate(s), `src-tauri/`, frontend `src/`,
-  engines/sidecar, shared/generated types, tests, build scripts — mapping the
-  logical modules onto the tree. _(expand)_
+
+### Logical modules (the architecture — owned here)
+
+Dependencies point **downward only**; nothing below depends on anything above it
+(so the directory tree does not silently *become* the architecture). The
+**guarantees-fs** layer and the **engine-registry seam** are the two reuse hubs.
+
+```
+            ┌─────────────────────────────────────────────┐
+   tier 0   │  ipc  (Tauri command/event handlers, §0.4)  │  ← WebView talks only here
+            └───────────────┬─────────────────────────────┘
+                            │ depends on
+            ┌───────────────▼─────────────────────────────┐
+   tier 1   │  orchestrator  (queue, job lifecycle §1.9,   │
+            │   run registry + cancellation tokens §0.4.4, │
+            │   progress fan-out to the Channel)           │
+            └───────┬───────────────┬───────────────┬──────┘
+                    │               │               │
+        ┌───────────▼───┐  ┌────────▼───────┐  ┌────▼──────────────────┐
+ tier 2 │  detection    │  │ engine-registry│  │  guarantees-fs        │
+        │  (§1.2)       │  │  seam (§3.2)   │  │  (no-clobber/atomic/   │
+        │               │  │  + invocation  │  │  resolved-id/frozen/   │
+        │               │  │  (§1.7) + args  │  │  cleanup/destination/  │
+        │               │  │  (§3.5) +       │  │  temp §2.1/2.3/2.4/    │
+        │               │  │  isolation seam │  │  2.6/2.7/2.14)         │
+        │               │  │  (calls §2.12)  │  │                        │
+        └───────┬───────┘  └────────┬───────┘  └───────────┬───────────┘
+                │                   │                       │
+        ┌───────▼───────────────────▼───────────────────────▼───────────┐
+ tier 3 │  domain  (§0.6 types) + errors (§2.8 taxonomy)                │
+        │  + platform util (paths, volume detection §2.14, OS shims)    │
+        └──────────────────────────────────────────────────────────────┘
+            ┌─────────────────────────────────────────────┐
+   tier 3  │  subprocess pool  (§0.9) — used by engine-     │  (sibling of guarantees-fs;
+            │  registry invocation; owns concurrency degree │   depended on by tier 2 engine seam)
+            └─────────────────────────────────────────────┘
+```
+
+**Module responsibilities & who owns the behaviour:**
+
+- **`ipc`** — the §0.4 command/event handlers; the *only* module the WebView
+  reaches. Thin: validate, delegate to `orchestrator`, map `Result` → `IpcError`.
+- **`orchestrator`** — the §01 pipeline conductor: builds the queue, drives
+  `JobState`, holds the run registry + cancellation tokens (§0.4.4), and fans
+  progress out to the Channel. Owns nothing the guarantees/engines own; it
+  *sequences* them.
+- **`detection`** — §1.2 content sniffing. First code to touch untrusted bytes;
+  §1.2 owns whether header sniffing sits inside/outside the §2.12 boundary.
+- **`engine-registry seam`** — the §3.2 `Engine` trait + registry + selection, the
+  §1.7 generic invocation lifecycle, and §3.5 per-engine arg construction; every
+  spawn routes through the §2.12 isolation wrapper and the §0.9 pool. This is the
+  reusable engine home — adding a format pair is (mostly) a registry entry.
+- **`guarantees-fs`** — the **reusable home of the no-harm machinery**:
+  no-clobber/atomic write (§2.1), resolved-identity & link safety (§2.3), frozen
+  set (§2.4), cleanup/temp ownership (§2.6), destination/divert (§2.7), cross-
+  volume strategy (§2.14). Every output flows through here; **engines never write
+  the final file** — they write to a temp the guarantees-fs layer owns, which then
+  performs the atomic publish.
+- **`domain`** — the §0.6 types + §2.8 error taxonomy; depended on by everyone,
+  depends on nothing.
+- **`subprocess pool`** — §0.9; the concurrency-degree owner and the per-engine
+  parallelism rules (LibreOffice serialised).
+
+### Physical tree (mapping the logical modules onto disk)
+
+```
+convertia/
+├─ src-tauri/                      # the Rust core + Tauri host (the binary)
+│  ├─ Cargo.toml                   # workspace root or member; pinned versions §0.8
+│  ├─ tauri.conf.json              # bundle, CSP, externalBin, minimum-OS (§0.10, §0.3.1, §3.3)
+│  ├─ build.rs                     # tauri-build; (optionally) tauri-specta gen hook
+│  ├─ capabilities/
+│  │  └─ main.json                 # the §0.10 capability allowlist (commands, fs, dialog, opener, shell-sidecar)
+│  ├─ binaries/                    # bundled engine sidecars per platform (§3.3), externalBin targets
+│  │  ├─ ffmpeg-x86_64-pc-windows-msvc.exe  (etc. — target-triple-suffixed)
+│  │  ├─ soffice…  pdftotext…  pandoc…  (per-platform; §3.1/§3.3)
+│  ├─ resources/                   # bundled non-exe engine assets (LibreOffice profile seed, fonts §documents.md, image codec libs)
+│  └─ src/
+│     ├─ main.rs                   # Tauri builder, invoke_handler (C1–C12), collect_commands!/collect_events! (§0.4.5)
+│     ├─ ipc/                      # tier 0 — §0.4 handlers, one file per command group
+│     ├─ orchestrator/             # tier 1 — queue, lifecycle (§1.9), run registry, cancellation (§0.4.4)
+│     ├─ detection/                # tier 2 — §1.2
+│     ├─ engines/                  # tier 2 — registry/seam (§3.2), invocation (§1.7), args (§3.5), per-engine modules
+│     │  ├─ registry.rs            #   Engine trait + selection (the §3.2 seam — candidate own crate)
+│     │  ├─ invoke.rs              #   §1.7 generic lifecycle (spawn/progress/cancel/timeout/error-map)
+│     │  ├─ ffmpeg.rs  libreoffice.rs  pandoc.rs  poppler.rs  image.rs  csv_native.rs
+│     ├─ fs_guarantees/            # tier 2 — the reusable guarantees-fs layer (§2.1/2.3/2.4/2.6/2.7/2.14)
+│     ├─ pool/                     # tier 3 — subprocess pool, concurrency degree (§0.9)
+│     ├─ domain/                   # tier 3 — §0.6 types, derive specta::Type
+│     ├─ error.rs                  # tier 3 — §2.8 taxonomy ↔ IpcError mirror (§0.4.3)
+│     └─ platform/                 # tier 3 — path/volume/OS shims (§2.14, §7.7 reveal-in-folder)
+│
+├─ src/                            # the React 19 / TS / Tailwind / Vite UI (§05)
+│  ├─ lib/ipc/bindings.ts          # GENERATED by tauri-specta (§0.4.5) — the only IPC door
+│  ├─ components/  hooks/  state/  styles/   # §5.x owns these
+│  └─ main.tsx
+│
+├─ index.html  vite.config.ts  package.json  tsconfig.json   # frontend build
+├─ tests/                          # Rust integration + corpus harness (§6.4); guarantees property tests
+└─ scripts/                        # build/bundle/SBOM/checksum (§06)
+```
+
+**Engine-registry-as-crate `[OPEN → recommend: module first, extract later]`:**
+the §3.2 seam *could* be its own crate (`convertia-engines`) to enforce the
+dependency direction at the compiler level. Recommendation: **start as a module**
+(`src-tauri/src/engines/`) and extract to a workspace crate only if a second
+consumer (e.g. a headless test harness) appears. Flagged for §3.2/§0.7 sign-off.
+
+> **Note — image codecs are the one "in-process vs sidecar" wrinkle.** Unlike
+> FFmpeg/LibreOffice/pandoc/poppler (clearly separate binaries), the image core
+> (libvips + libheif/libavif/resvg load modules, per images.md) can be linked as a
+> Rust crate **or** invoked as a CLI sidecar. The **isolation requirement (§2.12)
+> for untrusted image bytes** plus the **copyleft-isolation rule (§3.6)** for the
+> GPL pieces (x265) push toward a **sidecar** here too; the final call is co-owned
+> by §2.12 (isolation) and §3.6 (licensing) and is referenced, not decided, by
+> this section. The `EngineKind::{Sidecar, InProcessCrate}` field in §0.6 exists
+> precisely to carry that decision per engine.
+
+---
 
 ## 0.8 Tech stack & pinned versions
-- Rust toolchain, Tauri version, Node/pnpm, React 19, Vite, Tailwind, Vitest,
-  key Rust crates. Versioning/pinning policy. _(expand)_
+
+`[DECIDED]` framework & language; `[OPEN]` exact patch pins (locked at first build,
+recorded in lockfiles + the SBOM, §6.3). Versioning policy: **pin everything**
+(Cargo.lock + pnpm-lock committed); bumps are deliberate and re-validated against
+the corpus (§6.4) — engine bumps are best-effort posture (§3.8), not a gate.
+
+| Layer | Choice | Pin policy |
+|---|---|---|
+| Rust toolchain | stable (recommend a recent stable, e.g. `1.8x` class as of build) via `rust-toolchain.toml` | pinned channel |
+| Tauri | **v2** (`tauri` 2.x, `tauri-build`, `@tauri-apps/api` 2.x) | exact, lockfile |
+| Async runtime | **tokio** (multi-thread) — Tauri's async commands run on it; subprocess IO + Channel feed off it | exact |
+| IPC type-gen | **tauri-specta** + **specta** (§0.4.5, `[OPEN]` sign-off) | exact |
+| Cancellation | **tokio-util** (`CancellationToken`) | exact |
+| Error plumbing | **thiserror** (core error enums) → mapped to `IpcError` (§0.4.3); `serde` for wire | exact |
+| Detection | content-sniffing crate(s) — `infer` and/or hand-rolled magic tables; §1.2 owns the strategy | exact |
+| FS guarantees | `tempfile` (owned scratch), `same-file`/`dunce` (resolved-identity, Windows path canonicalisation), `fs2`/platform calls (free-space), atomic rename via std + §2.14 cross-volume fallback | exact |
+| Frontend | **React 19**, **TypeScript** (strict, no `any`), **Vite** (per platform CLAUDE.md, current major), **Tailwind CSS** | exact, lockfile |
+| Frontend state | lightweight store (recommend **Zustand**) + the generated `bindings.ts`; §5.1 owns the final choice | §5.1 |
+| Package mgr | **pnpm** (`pnpm@10.13.1` class per platform standard) | pinned |
+| Test | **Vitest** (frontend), **cargo test** + corpus harness (§6.4), property tests for guarantees | exact |
+| Engines (bundled) | FFmpeg (LGPL build), LibreOffice, poppler, pandoc, (Ghostscript), libvips+libheif/x265+libavif/aom+resvg — **all §3.1/§3.3 owned**; versions pinned + in the SBOM (§6.3) | §3.8 best-effort |
+
+Concrete crate **versions are deliberately not hard-coded in this prose** (they go
+stale); the lockfiles + SBOM are the source of truth (§6.3). This table fixes the
+*choices*, not the digits.
+
+---
 
 ## 0.9 Concurrency, threading & engine-subprocess pool — **owner of the concurrency degree**
-- Async runtime; worker pool; the **engine-subprocess pool & contention
-  governance**: how many engines run at once (the single concurrency-degree
-  number lives here; §1.10 references it for budgets), **per-engine parallelism**
-  — note **LibreOffice headless is NOT safely parallel under one user profile**
-  (serialize it; parallel instances lock/corrupt — a correctness issue), OS
-  handle limits, and the timeout/hang policy parameters (mechanism owned by §1.7).
-  Bound to §7.1 (instance/run identity) and §2.6 (temp ownership). _(expand)_
 
-## 0.10 Tauri security boundary — capabilities/permissions allowlist + CSP `[OPEN]`
-- Tauri v2's explicit capabilities/permissions allowlist (which commands the
-  WebView may call; FS / dialog / **shell-opener** / shell-sidecar scope) plus CSP
-  (no remote origins → reinforces "no network"). This is the **WebView half** of
-  security; §2.12 is the **subprocess/decoder half**. It enables/limits the §3.5
-  sidecar invocation and the §7.7 open-folder/file shell-out. _(expand)_
+**Async runtime.** tokio multi-threaded. Tauri commands are `async` and return
+quickly (C6 returns a `RunId` immediately; the run proceeds in the background and
+streams over the Channel) so the WebView never blocks (SSOT *stays responsive*).
+
+**The pool & the single concurrency-degree number.** A bounded **engine-subprocess
+pool** governs how many engine processes run at once. **This number lives here;
+§1.10 references it for budgets, §1.11 for batch progress.**
+
+`[DECIDED] default concurrency policy:`
+
+- **Global degree = `clamp(physical_cores − 1, 1, 4)`**, default-capped low because
+  the heaviest engines are CPU-bound (video re-encode) and we must keep the app
+  responsive and the machine usable. A sensible everyday default is **2–4**; the
+  cap of 4 prevents a 16-core machine from spawning 16 FFmpeg re-encodes and
+  thrashing.
+- **Per-engine parallelism overrides the global degree where correctness or
+  resource pressure demands:**
+
+| Engine | Parallelism | Rationale |
+|---|---|---|
+| **LibreOffice** (`soffice --headless`) | **serialised — exactly 1 at a time** `[DECIDED]` | LibreOffice headless is **NOT safely parallel under one user profile**: concurrent `soffice` instances sharing a profile **lock/corrupt** it — a *correctness* issue, not just contention. The pool runs a dedicated **single-slot LibreOffice lane**; all office/PDF-export jobs (documents/spreadsheets/presentations) serialise through it. Mitigation detail (per-run isolated `-env:UserInstallation` profiles) is co-owned with §3.5; even with isolated profiles the safe v1 stance is **one office conversion at a time**. |
+| **FFmpeg** (video re-encode) | **low — 1–2** | CPU-bound; already the slowest op (video.md). Counts against the global degree. |
+| **FFmpeg** (audio / extract-audio / remux) | up to global degree | light/IO-bound; may run more in parallel. |
+| **Image core** (vips/heif/avif/svg) | up to global degree | per-item, bounded-memory (vips streaming); fast. |
+| **poppler / pandoc** | up to global degree | light, short-lived. |
+| **native CSV/TSV** (in-Rust, no subprocess) | up to global degree (worker threads) | trivial cost. |
+
+- **OS handle limits.** The pool bounds concurrent child processes and open file
+  handles so a thousands-file recursive batch (§1.10) never exhausts the OS
+  descriptor table; the queue feeds the pool, it does not pre-spawn the world.
+- **Timeout / hang policy parameters.** The pool carries the *parameters* (per-
+  engine wall-clock timeout, hang detection via no-progress watchdog); the
+  **mechanism** (how a timed-out/hung engine is killed and mapped to §2.8) is
+  **owned by §1.7** and referenced here. Defaults are generous for video (a long
+  film legitimately takes minutes) and tight for the light engines.
+- **Panic isolation.** A worker thread driving a job wraps its body so a Rust-side
+  panic surfaces as a clean per-item `Failed` (§2.13 `catch_unwind`/isolate-and-
+  report), never poisoning the pool. (Mechanism owned by §2.13.)
+
+**Binding to identity & temp.** Each running job is `(InstanceId, RunId, ItemId)`
+(§7.1) and writes only into its **per-run owned scratch** (§2.6/§2.14), so parallel
+jobs — and a second app instance, if §7.1 allows one — never collide on temp files
+and cleanup never removes another job's in-progress file.
+
+---
+
+## 0.10 Tauri security boundary — capabilities/permissions allowlist + CSP `[OPEN → recommended allowlist]`
+
+This is the **WebView half** of security (the WebView is untrusted; the
+capabilities system is the contract for what it may ask the core to do). The
+**subprocess/decoder half** is §2.12. Together they form the §0.11 map.
+
+**Capability allowlist (`src-tauri/capabilities/main.json`)** — *recommended,
+deliberately minimal; sign-off pending.* The WebView is granted **only** what the
+§0.4 commands need:
+
+```jsonc
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-capability",
+  "description": "ConvertIA main window — minimal offline file-converter surface",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",                       // base webview/window/event/path (incl. Channel)
+    // — our own commands C1..C12 are allowed by being on the invoke_handler;
+    //   custom commands are gated by the capability referencing them where Tauri requires.
+    "dialog:allow-open",                  // native file/folder picker (C2 pick_paths)
+    // file-system: the core does the FS work in Rust; the WEBVIEW gets NO fs plugin
+    //   scope at all (no fs:default) — it cannot read/write files directly.
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [{ "path": "**" }]         // C9 open-folder/file — reveal converted outputs (§7.7)
+    },
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://github.com/Ne-IA/convertia*" }]  // C10 ONLY this origin (§7.6)
+    },
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [                           // engine sidecars (§3.3/§3.5) — sidecar:true, exact names
+        { "name": "binaries/ffmpeg",  "sidecar": true, "args": true },
+        { "name": "binaries/soffice", "sidecar": true, "args": true },
+        { "name": "binaries/pdftotext","sidecar": true, "args": true },
+        { "name": "binaries/pandoc",  "sidecar": true, "args": true }
+        // (image core + ghostscript added per the §0.7 sidecar-vs-crate decision)
+      ]
+    }
+  ]
+}
+```
+
+Notes / deliberate exclusions:
+
+- **No `fs:` scope is granted to the WebView.** All filesystem access is Rust-side
+  through `guarantees-fs`; the UI never reads or writes files. This is stronger
+  than the SSOT minimum and shrinks the threat surface (§0.11).
+- **No `http`/`fetch` permission, no updater plugin** → the WebView has **no
+  network capability** (reinforces *offline*; §2.11, §7.6).
+- **`shell:allow-execute` is scoped to the exact sidecar names with `sidecar:
+  true`** — the WebView cannot spawn an arbitrary command; and in practice the
+  *core* spawns engines (the orchestrator), so even this could be tightened to
+  core-only invocation. Recommendation: engines are spawned by the **Rust core
+  via `tauri_plugin_shell`'s `Command::new_sidecar`** rather than from JS, so the
+  shell capability may ultimately not need a WebView grant at all — `[OPEN]`
+  whether any shell scope is exposed to the WebView (lean: **no**; spawn from
+  Rust). This enables/limits the §3.5 sidecar invocation.
+- **`opener` is split**: open-**path** for outputs (C9, broad path scope, no
+  network), open-**url** locked to the single canonical project origin (C10).
+
+**Content-Security-Policy (`tauri.conf.json → app.security.csp`)** — *recommended,
+no remote origins (reinforces "no network"):*
+
+```jsonc
+"csp": {
+  "default-src": "'self'",
+  "script-src": "'self'",
+  "style-src": "'self' 'unsafe-inline'",   // Tailwind/inline-style needs; tighten with nonces if feasible
+  "img-src": "'self' data: asset: blob:",  // app assets + generated previews/thumbnails as data/blob
+  "font-src": "'self'",
+  "connect-src": "'self' ipc: http://ipc.localhost",  // Tauri v2 IPC custom protocol ONLY — NO https/remote
+  "media-src": "'self' asset: blob:",
+  "object-src": "'none'",
+  "base-uri": "'self'",
+  "frame-src": "'none'"
+}
+```
+
+- **No remote origin appears anywhere** in the CSP — a network request from the
+  WebView is structurally impossible (the only `connect-src` is the Tauri IPC
+  protocol). This is the observable, enforced form of *Local/private/offline*
+  (verified in §2.11 / §6.4).
+- `style-src 'unsafe-inline'` is the one pragmatic loosening (Tailwind + React
+  inline styles); tightening to nonces is a polish item, not a gate. (Note: the
+  platform "no inline CSS" rule targets hand-authored stylesheets; framework-
+  emitted styles under a locked CSP are the accepted exception here.)
+
+Why `[OPEN]`: the **exact** permission identifiers and whether the shell scope is
+WebView-exposed or Rust-only depend on the final §3.5 spawn mechanism and the
+§0.7 image-engine sidecar decision; the *shape* (deny-by-default, no WebView FS,
+no network, sidecars exact-named, opener split) is `[DECIDED]`. Fed to the README
+open-questions log.
+
+---
 
 ## 0.11 Security model & threat-surface map
-- One assembled map (the pieces are owned elsewhere; this verifies coverage):
-  threat classes → owner —
-  **untrusted decoder input** → §2.12; **malicious WebView content** → §0.10 (CSP/
-  allowlist); **bundled-binary supply chain** → §3.8/§6.3 (SBOM); **open-file
-  launch of a fresh artifact** → §7.7; **core panic / app fault** → §2.13;
-  **copyleft aggregation boundary** → §3.6. The `SECURITY` policy (§6.8)
-  references this map. _(expand)_
+
+One assembled map. The pieces are **owned elsewhere**; this section's job is to
+prove **coverage** — every threat class has a named owner and no class is orphaned.
+The `SECURITY` policy (§6.8) references this map.
+
+| # | Threat class | Vector | Owner (mechanism) | Status |
+|---|---|---|---|---|
+| T1 | **Untrusted decoder input** | A crafted/corrupt/malicious file (image bomb, malformed MP4, hostile SVG, macro-laden DOCX) exploits or hangs a decoder | **§2.12** decoder isolation (separate subprocess, contained crash/hang fails one item) + **§1.7** invocation lifecycle (timeout/kill) + **§0.9** pool bounds + **§1.2** detection security note (first code on untrusted bytes) | covered |
+| T2 | **Malicious / compromised WebView content** | XSS-style injection or a supply-chained frontend dep tries to read the disk or call out | **§0.10** capability allowlist (no WebView `fs`, no network) + CSP (no remote origins, `object-src 'none'`) | covered |
+| T3 | **Bundled-binary supply chain** | A tampered/backdoored engine binary ships in the build | **§3.8** engine pinning + **§6.2** integrity hashes + **§6.3** SBOM (every binary enumerated, verifiable) | covered |
+| T4 | **Open-file launch of a fresh artifact** | C9 "open file" hands a just-written, possibly-still-untrusted output to an external app | **§7.7** open-file safety (reveal-in-folder preferred over launch where risky; the artifact is *our* output, not the untrusted source) + **§0.10** opener path scope | covered |
+| T5 | **Core panic / app fault** | A Rust panic, WebView load failure, missing/corrupt engine at startup, damaged bundle | **§2.13** app-level fault model (`catch_unwind` worker boundary, no-stack-trace surfacing) + **§7.2** startup faults + **§0.3.1** WebView-absent handling | covered |
+| T6 | **Copyleft aggregation boundary** | Accidentally linking a GPL/LGPL engine into the MIT core (licence contamination) | **§3.6** copyleft isolation (separate invoked binaries, aggregation not linking) — architecturally enforced by the §0.3 subprocess model + §0.7 (engines are sidecars, never linked) | covered |
+| T7 | **Path / link redirection** | A symlink/junction/alias makes an output resolve onto a source, or a TOCTOU race redirects the final write | **§2.3** resolved-identity & link safety + **§2.1** exclusive create-new-or-fail (the no-clobber guarantee is evaluated on the resolved real file) | covered |
+| T8 | **Self-feeding / batch expansion** | Outputs written into a watched source folder get re-ingested, or a second instance's files appear mid-run | **§2.4** frozen source set + **§7.1** instance/run identity (per-run temp ownership, no cross-instance ingestion) | covered |
+| T9 | **Network exfiltration of user files** | Anything tries to upload originals/results | **§0.10** CSP (no remote `connect-src`) + no `http`/updater plugin + **§2.11** offline invariant + **§7.6** no phone-home; only network is the user-initiated C10 open-project-page | covered |
+| T10 | **Resource exhaustion / DoS-by-input** | A tiny SVG asked to render at 50 000 px, a 90-min→GIF, a thousands-file batch exhausting RAM/disk/handles | **§1.10** resource pre-flight & budgets + **§0.9** pool/handle bounds + the to-GIF guardrail (cross-category.md) | covered |
+
+**No orphan classes.** Every box above points at a section that owns the
+mechanism; this file invents none of them. If a new threat class is identified
+during implementation it is added here with an owner before code lands (the map is
+the coverage contract the §6.8 `SECURITY` policy points at).
