@@ -136,9 +136,9 @@ per-item outcome); the machine only sequences the user through them.
 | 7a | `Converting (Cancelling…)` (sub-state of 7) `[DECIDED]` | user pressed **Cancel** / **Esc** during `Converting` (C7 `cancel_run` fired, §5.8 round-trip in flight) | **stays in state 7's screen** — the **progress list is still live** (already-finished items kept, the in-progress item winding down); the **Cancel button is disabled** with a **"Cancelling…"** label; a **second Esc is ignored** (no double-cancel, no quit-confirm here); no new control appears | backend confirms cancel → `Summary` (partial); the run never returns to interactive `Converting` from here |
 | 8 | `Summary` | every job reached a terminal state (§1.9) | per-item success/fail with reason (strings §2.8), output→source mapping (§1.12), **Open folder** / **Open file** (OpenActions, §7.7); **when outputs split (`RunResult.divert_root` is `Some`), TWO open-folder buttons** — beside-source (`common_root`) + the divert root (Downloads/Documents) — else a single common-root button (§5.3/§7.7.1); a **fully-failed** batch is rendered as a clear failure banner, never a quiet "done" | "Convert more" → `Idle`; Open actions stay available |
 | 9 | `MixedDropRefusal` | the drop/folder contained >1 source format (§1.3 pre-flight) | **hard refusal**, not a partial convert: lists the formats found + counts ("Found 30 JPG, 12 PNG, 3 PDF"), asks to **re-drop a single format**; explicitly **no** "just convert the JPGs" affordance in v1 (parked). **`[DECIDED]` the refusal screen renders an active `DropZone` as its primary action** (plus a Dismiss) so a **fresh single-format drop/pick goes straight to `Collecting`** without a Dismiss-to-Idle round-trip | **re-drop (onto the screen's DropZone) → `Collecting`**; **Dismiss → `Idle`** |
-| 10 | `Unsupported` / `Unreadable` | detection says *real but unsupported type* or *uncertain/conflicting* (§1.2), or every collected item was unreadable/gone, **or** a `CollectedSet::Empty` (all files filtered out / nothing eligible) | plain message: *"Can't convert this type — detected: X"* / *"Couldn't tell what this file is"* / *"Nothing here I can convert"* (the Empty case); never an empty target list, never a hang | dismiss → `Idle` |
+| 10 | `Unsupported` / `Unreadable` | detection says *real but unsupported type* or *uncertain/conflicting* (§1.2), or every collected item was unreadable/gone, **or** a `CollectedSet::Empty { skipped }` (all files filtered out / nothing eligible) | plain message: *"Can't convert this type — detected: X"* / *"Couldn't tell what this file is"* / *"Nothing here I can convert"* — and for the Empty case, when `skipped` is non-empty, a **per-reason tally** derived from `Empty.skipped` (§0.6/§1.3, using the §0.6 `SkipReason` set): *"N files, none convertible (M unreadable, K unsupported, …)"*; an all-hidden drop is `Empty { skipped: vec![] }` → the plain "only hidden files were found" copy, no tally; never an empty target list, never a hang | dismiss → `Idle` |
 | 11 | `AppCloseRequested` (overlay over `Converting`) | the OS window-close was intercepted mid-run → backend emits **`app://close-requested`** (§0.4.2 / §7.3.2) | a calm confirm **interstitial over** `Converting`: *"A conversion is in progress. Quit anyway? Files already finished are kept; the one in progress will be discarded."* — **Quit** / **Stay**; **Enter = Stay** (safe default), **Esc** cancels the close | **Stay** → back to `Converting`; **Quit** → backend runs cancel+cleanup+exit (§7.3.3) → app exits |
-| 12 | `AppFault` | **scoped to the run path `[DECIDED]`:** the `Converting` Channel goes silent or the C6/C7 Promise rejects unexpectedly (core panic, IPC drop during a run — §2.13/§5.8), in place of `Summary`; **plus** the app-level `app://fault` faults (WebView core disconnect, startup engine-missing, damaged bundle). A **pre-run** C3/C4/C5 rejection does **NOT** escalate to AppFault — it renders as an **inline error in the current state** (e.g. a `Targets`/`Destination` inline `Note`), since no run is in flight and recovery is local (SSOT-faithful "fail clearly" without a full-screen takeover) | plain **no-stack-trace** message: *"Something went wrong and the conversion stopped."* + **Start over**; never fabricates per-item outcomes for items it never heard back about | **Start over** (Ctrl/⌘+N) → `Idle` |
+| 12 | `AppFault` | **scoped to the run path `[DECIDED]`:** the `Converting` Channel goes silent or the C6/C7 Promise rejects unexpectedly (core panic, IPC drop during a run — §2.13/§5.8), in place of `Summary`; **plus** the app-level `app://fault` faults (WebView core disconnect, startup engine-missing, damaged bundle). A **pre-run** C3/C4/C5 rejection does **NOT** escalate to AppFault — it renders via the **`CommandError` inline-error slot** (a passive `Note` above the `FormatPicker` in `Targets`/`Destination`, generic `strings/ui.ts` message + retry/Ctrl+N — see the component catalog), since no run is in flight and recovery is local (SSOT-faithful "fail clearly" without a full-screen takeover) | plain **no-stack-trace** message: *"Something went wrong and the conversion stopped."* + **Start over**; never fabricates per-item outcomes for items it never heard back about | **Start over** (Ctrl/⌘+N) → `Idle` |
 
 > **Mid-run skip vs pre-flight refusal — keep distinct (SSOT *Fail clearly*).**
 > `MixedDropRefusal` (state 9) and `Unsupported` (state 10) are **pre-flight** —
@@ -171,7 +171,7 @@ per-item outcome); the machine only sequences the user through them.
             │                         │    │  (5, folded in)        │───┘
             │              cancel (Esc)    └───────────┬────────────┘
             │              from Rerun                  │ Convert
-            │                         │     §2.5 equivalent-output?
+            │                         │     C4 `rerun` flag? (held at C4 plan time, §0.4.1)
             │                         │     ┌──────────┴────────────┐
             │                         │ yes │                       │ no
             │                         │     ▼                       │
@@ -215,6 +215,26 @@ per-item outcome); the machine only sequences the user through them.
 > (not `Idle`) when the app was launched with files. Read the top-left as a **dashed
 > "startup + files" arrow straight into `Collecting`** that skips the `Idle` empty-state; a
 > plain launch (no files) starts in `Idle` as drawn.
+>
+> **Additional arrows/nodes the ASCII is too cramped to draw, pinned here `[DECIDED]` (the
+> text/tables are authoritative — Phase 3 derives the machine from these, not the art):**
+> - **Targets (4) → Confirm (3) back-arrow.** The §5.2 row-4 table + §5.10
+>   (**Ctrl/⌘+Backspace** / a **Back** button) define a back transition from Targets to the
+>   Confirm gate that **preserves the frozen set** (distinct from Ctrl+N → Idle). It is a
+>   real edge of the machine even though the ASCII omits it for space.
+> - **7a `Converting (Cancelling…)` sub-state node.** §5.2 row 7a is a sub-state of
+>   Converting (7): **Converting (7) → 7a** on Cancel/Esc (C7 `cancel_run`), and **7a →
+>   Summary (8, partial)** on backend cancel-confirm. 7a never returns to interactive
+>   Converting. The diagram's single `Converting → Summary` edge stands in for the 7→7a→8
+>   path.
+> - **`app://fault` is a WILDCARD edge into AppFault (12), not only from Converting.**
+>   `app://fault` is subscribed **globally** (§5.8), so an app-level fault (WebView core
+>   disconnect, damaged bundle) routes to **AppFault (12) from ANY state**, not just
+>   Converting. **Scoping `[DECIDED]`:** a **runtime** `app://fault` outside Converting is
+>   in practice a **startup concern** (engine-missing / bundle-damaged faults fire during
+>   §7.2 startup, before or just as the UI mounts) — so the only *interactive*-state source
+>   drawn is Converting; the wildcard is recorded here so a Phase-3 reducer wires the global
+>   `app://fault → AppFault(12)` handler, not a Converting-only one.
 
 ### Patent-gapped / unavailable target rendering `[DECIDED — disabled-with-note, recommendation]`
 A target that the **§3.4 format×platform matrix** marks *unavailable on this
@@ -252,7 +272,7 @@ restated per component.
 | **OpenActions** | open-folder / open-file buttons | `commonRoot`, `divertRoot?`, `filePath?` (from `RunResult` §0.6/§1.12) | **backed by §7.7** (the only OS shell-out). **Buttons → C9 `OpenKind` mapping `[DECIDED]`:** "Open folder" → C9 `{ kind: RevealInFolder, path: commonRoot }` (opens the common root, §2.7); "Open file" (single-output runs) → C9 `{ kind: File, path: filePath }`. **Split-divert → TWO open-folder buttons `[DECIDED]`:** when `RunResult.divert_root` is `Some(..)` (§1.12/§7.7.1), render BOTH "Open [beside-source]" (`commonRoot`) and "Open [Downloads/Documents]" (`divertRoot`), each `RevealInFolder`; when `None`, render only the `commonRoot` button (a single button would strand a user whose files diverted). **Availability `[DECIDED]`: Summary-only (state 8), NOT mid-run (state 7).** During `Converting` the run's results are still incomplete and the §7.7.3 RunResult-membership set is not final, so open-actions are withheld until the run reaches a terminal `Summary`; this keeps the open-finished-output model (§7.7) honest and avoids opening a folder of half-written outputs |
 | **RerunPrompt** | the §2.5 interstitial | `equivalentCount`, default=Skip | one batch-level prompt, skip-default / fresh-copy. **State-vs-modal reconciled `[DECIDED]`:** RerunPrompt **is a state-machine state (6)** that is **rendered as a focus-trapped `role="alertdialog"` overlaid on the still-mounted-but-INERT Targets/Destination (state 4/5)** — the underlying screen is **not unmounted** (so cancel/Esc can return to it with its held plan intact), it is made **`inert`/`aria-hidden`** while the alertdialog is up. So "state 6" (machine) and "modal" (presentation) are the same thing, not a contradiction. **accessible name** via `aria-labelledby` → its heading **"Already converted with these settings"** (§5.6 WCAG 4.1.2). Trigger = the Convert button (state 4/5); focus restores there on close (cancel/Esc → back to the inert-then-restored state 4/5) |
 | **MixedDropRefusal** | pre-flight hard refusal (full-screen STATE, not a modal — §5.6) | `formatsFound[]` with counts | state 9; no subset-convert affordance in v1. **Renders an active `DropZone` as the primary action `[DECIDED]`** so a fresh single-format drop/pick goes straight to `Collecting` (re-drop), with a secondary **Dismiss → `Idle`**; resolves the earlier "is the DropZone active here?" ambiguity (yes). **It is the SAME `DropZone` component**, with the §5.8 disabled-while-`Converting` guard **inert** here (state 9 is pre-flight — nothing is converting), so the zone accepts a drop normally. Announced via `aria-live="assertive"` heading; **not** `role="alertdialog"` (§5.6) |
-| **UnsupportedNotice** (a.k.a. the state-10 intake-refusal notice) | unsupported / uncertain / all-unreadable / nothing-eligible | `variant: 'Unsupported' \| 'Unreadable' \| 'Empty'`, `detected?`, `reason` | state 10; **three explicit variants each with its own copy path** so the **`Empty`** "nothing here I can convert" branch is never overlooked despite the component's unsupported-leaning name: `Unsupported` → "can't convert this type — detected: X"; `Unreadable` → "couldn't read these files"; `Empty` (the `CollectedSet::Empty` case) → "nothing here I can convert". Plain language, no stack trace |
+| **UnsupportedNotice** (a.k.a. the state-10 intake-refusal notice) | unsupported / uncertain / all-unreadable / nothing-eligible | `variant: 'Unsupported' \| 'Unreadable' \| 'Empty'`, `detected?`, `reason`, `skipTally?: Array<{reason: SkipReason, count: number}>` | state 10; **three explicit variants each with its own copy path** so the **`Empty`** "nothing here I can convert" branch is never overlooked despite the component's unsupported-leaning name: `Unsupported` → "can't convert this type — detected: X"; `Unreadable` → "couldn't read these files"; `Empty` (the `CollectedSet::Empty { skipped }` case) → "nothing here I can convert", and when `skipTally` (derived client-side from `Empty.skipped`, §0.6/§1.3, grouping by the §0.6 `SkipReason`) is non-empty, the per-reason line *"N files, none convertible (M unreadable, K unsupported, …)"*. Plain language, no stack trace |
 | **QuitConfirm** | quit-while-converting interstitial | `onQuit`, `onStay` | state 11; overlay over `Converting`, triggered by `app://close-requested` (§7.3.2); Enter=Stay (safe default), Esc=cancel-close (§5.10). `role="alertdialog"`; **accessible name** via `aria-labelledby` → its heading **"Conversion in progress"** (§5.6 WCAG 4.1.2). **No UI trigger** — on Stay/Esc focus returns to the active element in the underlying `Converting` state (Cancel button / progress row), NOT a trigger (§5.6) |
 | **AppFaultNotice** | post-fault recovery screen | `onStartOver` | state 12; plain "something went wrong" + Start Over → `Idle` (§2.13/§5.8); no stack trace; never fabricates per-item outcomes |
 | **AboutDialog** | About + legal-notices | `licenseData` (from §3.7), `version` (§7.6) | presentation only — §5.9 |
@@ -260,7 +280,8 @@ restated per component.
 | **ThemeToggle** | the Light/Dark/System selector (§5.5 [DECIDED]) | `value: 'light' \| 'dark' \| 'system'` (default `system`) | lives in **AppHeader** (right side); writes the **`theme`** key via `tauri-plugin-store` (§7.4.2); three explicit states; persists across launches (§5.5 *Light/dark*). Keyboard-reachable per §5.10. |
 | **BusyNotice** | the refuse-busy surface (§7.1.1) | `text` (the §7.1.1 "ConvertIA is busy — finish or cancel the current batch first" string) | **`[DECIDED]` form = a passive non-modal Banner** (the `Banner` primitive, NOT a modal/`Toast`), shown in `AppHeader`/top-of-workspace. **Trigger:** the §5.8 `app://intake` guard fires while the app is **not** `Idle`/`Summary` (i.e. a second-launch/Open-with hand-off arrived mid-run — §7.1.1's defence-in-depth UI guard). Auto-dismisses on the next state change or a manual close; never blocks the running batch. Cross-ref §7.1.1 (primary refuse-busy gate is the single-instance callback; this is the visible surface). |
 | **Note** (primitive) | the passive lossy/divert/animation inline note | `kind`, `text` (string from §2.9) | calm, passive, never a blocking "I understand" dialog (SSOT *Fail clearly*) |
-| **ConvertingNote** | the passive worst-case-lossy banner adjacent to `ProgressList` during `Converting` (state 7) | `willReencode: boolean`, `lossyNote?: string` (§2.9) | shown when the worst-case "may be re-encoded" note applies (**first surfaced at state 4** via C3 `Target.lossy = video_reencode`; **confirmed/kept or cleared** by `RunStarted.willReencode`, §5.7/§5.8); uses the `--info` calm token; **non-modal, no dismiss**; wraps the `Note` primitive |
+| **ConvertingNote** | the passive worst-case-lossy banner adjacent to `ProgressList` during `Converting` (state 7) | `note: string \| null` (§2.9) | **the component READS the store's `pendingVideoReencodeNote` (§5.8) — it does NOT take `willReencode`/`lossyNote` props** (`willReencode` is consumed by the reducer to set/clear the store field, not by the component; an earlier draft's `willReencode: boolean, lossyNote?` props are corrected to a single `note: string \| null` that mirrors the store). Renders the note when non-`null` (**first surfaced at state 4** via C3 `Target.lossy = video_reencode`; **confirmed/kept or cleared** in the store by `RunStarted.willReencode`, §5.7/§5.8); uses the `--info` calm token; **non-modal, no dismiss**; wraps the `Note` primitive |
+| **CommandError** (the pre-run inline-error slot) `[DECIDED]` | the owner of the §5.2 state-12 note that "a pre-run **C3/C4/C5** rejection renders as an inline error in the current state" — a passive inline error `Note` shown **in `Targets`/`Destination` (4/5)**, **placed above the `FormatPicker`** | `message: string` (a generic `strings/ui.ts` string — e.g. *"Couldn't prepare these files — try again."*; never a raw error/stack), `onRetry` | rendered when a C3/C4/C5 IPC call **rejects** while no run is in flight (the SSOT-faithful "fail clearly" without a full-screen AppFault takeover, §5.2 row 12). Wraps the `Note` primitive with the failure (not `--info`) token; carries a **retry** action (re-issue the failed command) and **Ctrl/⌘+N** (start over). Distinct from `AppFaultNotice` (full-screen, run-path only) and from the passive lossy/divert notes |
 | **primitives/** | Button, Dialog, Drawer, Tile, ProgressBar, ProgressRing, Spinner, Banner | — | the design-system building blocks (§5.5); a determinate ProgressBar is mandatory, an indeterminate Spinner is allowed **only** for the brief `Collecting` step. **No `Toast` primitive in v1 `[DECIDED]`** — the only transient-notice need (the refuse-busy `BusyNotice`) uses the passive non-modal **`Banner`**, so the earlier "Toast?" is resolved as *not needed* |
 
 ---
@@ -314,6 +335,26 @@ const unlisten = await getCurrentWindow().onDragDropEvent((e) => {
 - The drop only *hands paths to the backend*; the **frozen source set** (§2.4),
   detection (§1.2) and grouping (§1.3) all happen Rust-side. The UI transitions
   `Idle → Collecting` on `drop` and waits for the backend's collected summary.
+
+### Native drop in a NON-`Idle` state `[DECIDED]`
+`onDragDropEvent` is window-global, so a `drop` can arrive in **any** UI state, not just
+`Idle`. The per-state policy (so a Phase-3 reducer has a definite branch for every state):
+- **Pre-run, not-yet-converting states — `Confirm` (3), `Targets` (4), `Destination` (5):**
+  a drop is treated as a **RE-DROP**: the not-yet-run pre-run state is **discarded** and the
+  machine returns to **`Collecting`** with the newly-dropped paths (a fresh C1 freeze). No
+  work has started, the user clearly means "actually, convert *these* instead", and there is
+  no partial result to lose. (Same shape as the §5.2 row-9 MixedDropRefusal re-drop.)
+- **`Summary` (8) (post-run):** a drop is a **re-drop → `Collecting`** as well — it is the
+  ergonomic equivalent of "convert more" with files already in hand (the finished run is
+  terminal and kept on disk; nothing is lost).
+- **`RerunPrompt` (6):** the focus-trapped decision modal **ignores** a native drop while it
+  is open (the user must resolve Skip / Make-fresh-copy first); the drop is dismissed.
+- **`Converting` (7) / `Converting (Cancelling…)` (7a):** a drop is **ignored** — the
+  `DropZone`'s `disabled`-while-converting guard is inert here and the one-batch-at-a-time
+  model (§1.3) forbids a mid-run intake (mirrors the §7.1 refuse-busy posture for launch
+  intake; no `BusyNotice` is needed for a same-window drop, it is simply a no-op).
+- **`AppCloseRequested` (11) / `AppFault` (12):** **ignored** — a quit-confirm overlay and a
+  fault-recovery screen are not intake surfaces.
 
 ### File picker (parity path)
 Click on the DropZone (or the **Ctrl/⌘ + O** accelerator, §5.10) invokes the **intake
@@ -380,7 +421,13 @@ raw hex. Token groups:
   the offline invariant §2.11); sizes `--text-xs … --text-2xl`; line-heights;
   weight `regular/medium/semibold`. **Readable contrast & text sizes are a DoD
   accessibility gate** (§5.6), so the *minimum* body size and contrast ratios are
-  fixed, not placeholder.
+  fixed, not placeholder. **Concrete body floor `[DECIDED]`: `--text-base = 1rem
+  (16px)` is the minimum size for body copy** — the everyday readable default; the
+  larger tokens (`--text-lg`/`--text-xl`/`--text-2xl`) are for headings. **`--text-xs`
+  (≈0.75rem/12px) and `--text-sm` are for *supplementary labels* (meta, captions,
+  fine-print) only — never for body copy.** This fixes the SSOT "readable text sizes"
+  half of the gate at a defensible AA floor (16px), so the §6.6 walkthrough has a
+  concrete minimum to verify against (the §6.4.6a axe leg checks contrast, not size).
 - **Elevation/shadow, motion** tokens (below).
 
 ### Light / dark `[DECIDED — both; follow OS by default; theme persists]`
@@ -498,11 +545,44 @@ with no-harm. Concrete requirements:
   likewise a full-screen pre-flight notice; on dismissing it, focus is **restored to the
   `DropZone`** (drop again), not left orphaned. Neither uses `role="alertdialog"` and
   neither is focus-trapped.
+- **Edge-case keyboard/focus/ARIA rules `[DECIDED]` (7a, back-nav, RerunPrompt, AppFault):**
+  - **(a) `app://close-requested` during 7a `Converting (Cancelling…)`:** raising `QuitConfirm`
+    (state 11) while already in 7a is allowed; **Stay returns to 7a** (the cancel is still
+    winding down — not back to interactive Converting), and **Quit** proceeds to the §7.3.3
+    cancel+cleanup+exit (the in-flight cancel folds into the quit teardown). It does **not**
+    auto-Quit just because a cancel is already in progress.
+  - **(b) Focus-on-entry for re-entering Confirm (3) via Back from Targets:** focus moves to
+    the **Confirm button** (same as a fresh entry to state 3) — not left on the now-unmounted
+    Targets control. For **AppFault (12)** on entry, focus moves to the **Start Over** button.
+  - **(c) Ctrl/⌘+N while the focus-trapped RerunPrompt (6) modal is open:** **suppressed** —
+    the modal is focus-trapped and `role="alertdialog"`, so global accelerators (Ctrl/⌘+N
+    start-over) are inert until the user resolves Skip / Make-fresh-copy or cancels (Esc).
+  - **(d) In-progress item progressbar during 7a:** the winding-down item's
+    `role="progressbar"` **retains its last `aria-valuenow`** (it does not flip to
+    indeterminate/`aria-busy`) — the bar freezes at its last real fraction until the item
+    reaches a terminal Cancelled state, so SR users do not hear a value regress to "busy".
+  - **(e) AppFault (12) chrome:** the **AppHeader / ThemeToggle / About** remain **operational**
+    in AppFault (theme toggle + About still work; only the conversion surface is gone), so a
+    fault screen is not a dead end beyond Start Over.
+  - **(f) RerunPrompt string reconciliation `[DECIDED]`:** the **heading** is *"Already
+    converted with these settings"* and the **body** is *"You already converted these with
+    the same settings."* — these are **two distinct `strings/ui.ts` entries** (a short heading
+    + a sentence body), intentionally not identical; both owned by `strings/ui.ts` so they
+    localise together and neither is a stray literal.
+  - **(g) §5.2 row-6 branch labelling:** the diagram/table branch into RerunPrompt is the
+    **"C4 rerun flag?"** check — the §2.5 equivalent-output verdict is **detected and held at
+    C4 plan time** (`OutputPlanPreview.rerun`) and merely **surfaced when Convert is pressed**;
+    it is **not** a fresh equivalence computation at Convert time. (Relabel any
+    "§2.5 equivalent-output?" branch text as "C4 `rerun` flag?" to match §0.4.1.)
 - **Contrast & text size.** Body text and interactive elements meet **WCAG 2.1 AA
-  contrast (≥4.5:1 text, ≥3:1 large text / UI)** against both themes; the minimum
-  body size and the token scale (§5.5) respect OS text-scaling; nothing critical
-  is conveyed by **colour alone** (the lossy note has text + icon, failures have a
-  label not just red).
+  contrast (≥4.5:1 text, ≥3:1 large text / UI)** against both themes; **body copy must
+  use `--text-base` or larger (≥16px equivalent)** — `--text-xs`/`--text-sm` are
+  reserved for supplementary labels, never body (§5.5 token floor); the token scale
+  (§5.5) respects OS text-scaling; nothing critical is conveyed by **colour alone**
+  (the lossy note has text + icon, failures have a label not just red). The
+  contrast half is gated by the §6.4.6a axe-core leg (≥4.5:1); the **text-size half
+  is verified by the §6.6 human walkthrough** against this `--text-base` floor (axe
+  does not measure font size).
 - **Screen-reader announcements** via an ARIA-live region (`a11y/announcer.ts`):
   - `Collecting`/`Confirm`: announce the collected summary ("48 JPG files
     found"). **Confirm-gate assertive string pattern `[DECIDED]`** (a `strings/ui.ts`
@@ -649,6 +729,10 @@ the Phase-3 task list is unambiguous:
   "will save to …" line, the divert preview, the `rerun` prompt, and the
   `preflight.up_front_fail` verdict never go stale. The SSOT requires a destination preview
   **before** Convert, so C4 must have resolved before the Convert button is enabled.
+  **After a C5 destination change, a subsequent target/option change still re-runs C4
+  (§0.4.1) — but that C4 call carries the C5-resolved destination in its `destination`
+  argument (the held session destination, not the persisted default), so C4 never resets
+  the destination away from the user's C5 choice.** Destination authority stays with C5.
 - **C5 `set_destination`** is called **only when the user changes the destination** via
   the C2b `pick_destination` picker (Change-destination); it re-evaluates the
   destination-dependent preflight and **carries `rerun` through unchanged** (§2.5.1

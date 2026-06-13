@@ -55,7 +55,7 @@ require admin rights for the user to run.
 |----------|------------------------|-------------------------------------|-------|
 | **Windows x64** | post-build **zip** (portable) — **`nsis` NOT shipped v1 [DECIDED-6.1a]** | **Portable zip archive (`.zip`)** containing the app `.exe` + the `binaries/` and `resources/` engine trees — the **canonical AND ONLY v1 Windows artifact** ("download, unzip, run"). **NOT** a single `.exe`: the bare `app`/raw-`.exe` target does **not** embed the sidecar engine trees (FFmpeg, LibreOffice, pandoc — §3.3), which must sit **beside** the exe, so the portable artifact is necessarily a folder/zip. It is produced by an **explicit post-build packaging step** (`scripts/stage-engines` + zip), **not** natively by the `nsis` target. | MSI (`wix`) is **not** used — it implies a system install / admin. **`[DECIDED-6.1a]` NSIS is NOT shipped in v1** (resolves the former `[OPEN-6.1a]`): the portable `.zip` is the single canonical artifact, consistent with the SSOT *Portable, no installation* / *no system pollution* posture. NSIS would add a WebView2-bootstrapper wiring burden (§0.3.1) and an installer mode that contradicts portable-first for **no** v1 benefit (the portable zip already runs per-user, no-admin). **NSIS is deferred to a post-v1 convenience** `[DEFER: post-v1]`; if added later it runs **per-user / no-admin** (`installMode: currentUser`) and is the variant where the WebView2 floor/bootstrapper applies (§0.3.1). |
 | **macOS (universal)** | `app` (inside) → `dmg` | **`.dmg`** containing a **universal** `ConvertIA.app` (arm64 + x86_64 via `--target universal-apple-darwin`). | One universal artifact covers Apple-Silicon and Intel → honours "one product per platform". Unsigned/unnotarized (SSOT *Out of Scope*) → on **Sequoia (15.x)** the first launch is blocked and the Control-click bypass is gone; the user must use **Privacy & Security → "Open Anyway"**, and **each bundled sidecar is independently quarantined** (the first conversion can hit `QuarantinedByOs`, §2.8/§7.2.4). Step-by-step on the download page (§6.2.4) and About (§5.9); the §6.6 macOS walkthrough tests it on Sequoia. |
-| **Linux x64** | `appimage` (+ optionally `deb`) | **AppImage** — the portable, distro-agnostic, no-install, runs-anywhere artifact (matches SSOT portability best). | `.deb`/`.rpm` are distro-specific *installs* (system pollution); they are **secondary at most**. `[OPEN-6.1b]` whether to also publish a `.deb`. **(recommendation: AppImage-only for v1; revisit `.deb` by demand.)** |
+| **Linux x64** | `appimage` (**AppImage-only v1**) | **AppImage** — the portable, distro-agnostic, no-install, runs-anywhere artifact (matches SSOT portability best). | `.deb`/`.rpm` are distro-specific *installs* (system pollution). **`[DECIDED-6.1b]` AppImage-only for v1** (resolves the former `[OPEN-6.1b]`): the single canonical Linux artifact is the AppImage, consistent with the portable-first / no-system-pollution posture (same rationale as the Windows portable-zip `[DECIDED-6.1a]`); a `.deb` is **deferred to post-v1, by demand** `[DEFER: post-v1]`. |
 
 ARM Windows and ARM Linux are **out of v1** (SSOT platform scope = Win/macOS/Linux
 desktop; no commitment to every CPU arch). `[OPEN-6.1c]` Linux arm64 / Windows
@@ -117,6 +117,18 @@ build-time mechanics that realise them**:
   source per-release (too slow). The **size budget** this implies is owned by §3.9.
   (Build-from-source remains a documented fallback if a pinned artifact becomes
   unavailable.)
+- **Cache hosting mechanism `[DECIDED]`:** the engine-asset cache is **GitHub Actions
+  cache** (`actions/cache`) keyed **`<engine>-<version>-<triple>`** (e.g.
+  `ffmpeg-7.1-aarch64-apple-darwin`), with a **checksum-verified pinned-upstream-URL fetch**
+  as the populate path / fallback on a cache miss (download the pinned upstream release
+  asset, verify its SHA-256 against the in-repo pin, then store under the same key). Each
+  cache entry stores the verified per-triple binary tree; `scripts/stage-engines` reads from
+  the restored cache (never the live network at package time). **macOS dual-arch key scheme:**
+  the universal build needs **two slices per engine** — the key carries the triple, so a
+  macOS engine has **two distinct keys** (`<engine>-<version>-aarch64-apple-darwin` AND
+  `<engine>-<version>-x86_64-apple-darwin`); `scripts/stage-engines` restores both and
+  `lipo -create`s them into the `<name>-universal-apple-darwin` fat binary (§6.1.4). A
+  cache miss on either slice falls back to the pinned-URL fetch for that slice.
 - A platform's artifact ships **only the engines available on that platform per
   §3.4**. A patent-gapped engine (e.g. an HEVC encoder absent on a platform) is
   simply not staged there; the affected target is surfaced as unavailable in the UI
@@ -145,6 +157,11 @@ build-time mechanics that realise them**:
     written-offer + §3.7 SBOM record the exact pinned source). The stage step **asserts the
     relinkable-source bundle (object files / recipe) is present** for the static image-worker
     and **fails the build if it is missing** — mirroring the FFmpeg carve-out below.
+    **The bundle MUST also cover x265 `[DECIDED]`:** when the x265 GPL plugin is loaded, the
+    image-worker is a **GPL combined work** (§3.6.1 x265 row), so the corresponding-source
+    obligation extends to **x265 itself** (its GPL §3 complete corresponding source + offer),
+    not only the LGPL stack — the assertion checks the **pinned x265 source/offer is present**
+    alongside the LGPL source, and fails the build if x265's source is missing.
   - **(iii) FFmpeg-internal static LGPL → aggregation, never fails the assertion.** A
     static GPL FFmpeg with `libmp3lame`/`libvorbis`/`libopus` baked in is GPL-clean (GPL
     permits static LGPL) and the whole binary is aggregation (§3.6.1), so it must not fail
@@ -185,9 +202,28 @@ build-time mechanics that realise them**:
   list** (the same four cross-category.md exposes in its Dither option), so the asserted set
   and the UI-exposed set cannot drift;
   (2) the **libvips `webpsave`/`heifsave` `effort` parameter** (and `Q`) exists in the staged
-  libvips (images.md exposes the integer `effort` for WEBP/AVIF **and HEIC** — `heifsave` has
+  libvips (images.md exposes the integer `effort` for WEBP/**AVIF** — `heifsave` has
   no `preset` string, only `effort`, §images.md) — `vips webpsave`/`heifsave` arg
-  introspection. These prevent a version bump from silently dropping an exposed knob.
+  introspection. **The `heifsave effort` arg-presence check is necessary but NOT sufficient
+  for HEIC exposure `[DECIDED]`:** images.md gates the HEIC `effort` *control* on a
+  `[DEFER: corpus]` spike confirming `effort` measurably steers the bundled x265/HEVC path —
+  if the corpus shows it is inert for HEIC, the control is **hidden for HEIC** (no dead
+  control); AVIF `effort` stays exposed (libvips-documented as honoured). These prevent a
+  version bump from silently dropping an exposed knob.
+- **ICO multi-size/256px save spike `[DEFER: corpus/build spike]` (gates the v1 `* → ICO`
+  pairs):** ImageMagick's ICO encoder has documented trouble with **256px / multi-size**
+  entries and libvips' `magicksave` is not documented to support `.ico` save (§3.5.5), so the
+  ICO-save capability is **unverified**. A build spike MUST confirm the bundled
+  libvips+ImageMagick can **write a valid multi-size `.ico` including a 256px embedded-PNG
+  entry** (`[16,32,48,256]`, the 256 stored as embedded PNG); a corpus case re-opens the
+  produced `.ico` and verifies all four entries + the 256px PNG marker. **Two outcomes:**
+  (a) **spike passes** → the `magicksave` ICO path is confirmed and **this assertion fails
+  the build if magicksave ICO save regresses**; (b) **spike fails** → ConvertIA ships the
+  **in-core Rust ICO container assembler** (§3.5.5) instead, the assertion targets that
+  assembler's output, and ImageMagick is dropped from the ICO path. **Until the spike
+  resolves, the `* → ICO` v1 pairs are gated on it** — the §6.4.3 ICO corpus case (multi-res
+  16/32/48/256 + non-square) is the runtime proof of whichever path ships, and this build
+  assertion is **not** stated as settled-and-working until the spike outcome is recorded.
 - **Curated-FFmpeg decoder-coverage assertion `[DECIDED]`:** the FFmpeg build uses
   `--disable-everything --enable-…` trimmed to the `04` codec set (size lever, §3.9),
   which risks **silently dropping a decoder a 04 pair needs**. So the stage step runs
@@ -211,6 +247,19 @@ build-time mechanics that realise them**:
   hand-edited.) It runs `ffmpeg -decoders` / `-muxers` on the staged binary and **fails
   the build** if any decoder/muxer in the generated set is absent; the §6.4.3 per-pair
   integration tests are the runtime backstop that catches anything the static list missed.
+- **Curated-FFmpeg ENCODER-coverage assertion `[DECIDED]` (same generated-from-04 treatment
+  as decoders):** the `--disable-everything --enable-…` trim can **also** silently drop a
+  needed native **encoder** (a default-on native encoder excluded by the trim), so the same
+  build step parses the `04` matrices on the **TARGET** side into
+  **`ffmpeg-required-encoders.lock`** and runs **`ffmpeg -encoders`** on the staged binary,
+  **failing the build** if any required encoder is absent. The generated encoder set **must
+  include**, among others, the load-bearing target encoders: **native `aac`** (M4A/AAC
+  targets), **`alac`**, **`flac`**, **`pcm_s16le`/`pcm_s16be`/pcm_*** (WAV/AIFF/ALAC),
+  **`libmp3lame`** (MP3), **`libvorbis`** (OGG), **`libopus`** (OPUS), **`libx264`** (H.264
+  video), **`libvpx-vp9`** (WEBM/VP9). (As with decoders, this is the *expected floor*; the
+  authoritative set is the generated `ffmpeg-required-encoders.lock`, regenerated from the 04
+  target matrices, never hand-edited.) So a trimmed build can't drop an encoder a 04 target
+  needs without failing CI.
 - **Curated-FFmpeg network-protocol + dereferencing-demuxer absence assertion `[DECIDED]`
   (T9b SSRF **and** LFR, §0.11 / §3.5.1):** the FFmpeg build disables networking protocols
   at configure time (no `--enable-protocol=http`/`https`/`tcp`/`tls`/`rtmp`/`hls` family;
@@ -698,7 +747,9 @@ platform-specific concerns:
   smoke test** (launch + synthetic-argv conversion + window/output/exit-0 assertions)
   **plus** the §6.6 human walkthrough — there is no macOS WebDriver flow to implement.
 - **macOS TCC** file-access prompts that the beside-source default can trigger
-  (§7.2) are exercised in the macOS leg's headed smoke run.
+  (§7.2) **cannot be answered headlessly**, so they are **NOT** exercised in the automated
+  smoke run (which writes only to a temp dir, where no TCC prompt fires, §6.4.6) — the
+  **TCC-prompt exercise is a §6.6 human-walkthrough item**.
 - **LibreOffice headless is NOT safely parallel** (§0.9) — the office-pair
   integration tests must run LibreOffice **serialized**; the harness honours the
   §0.9 concurrency-degree config so the test environment matches production.
@@ -857,7 +908,15 @@ cannot be driven from a Rust client; choosing the Rust crate would force hand-ro
 axe-core injection (inject + run axe via `execute_script`, capture JSON). With WebdriverIO
 the `@axe-core/webdriverio` integration is first-class and the contrast session reuses the
 same driver session as the flow E2E. (The earlier "WebdriverIO, or the Rust crate" hedge
-is resolved to **WebdriverIO**.) **Note:** plain **Playwright cannot drive a Tauri WebView**
+is resolved to **WebdriverIO**.) **Version pin `[DEFER: implementation]` → WebdriverIO v9**
+(the W3C-WebDriver-only major, aligned with `tauri-driver`'s W3C session model; pinned in
+§0.8 alongside `@axe-core/webdriverio`). **`wdio.conf.js` capabilities for `tauri-driver`:**
+the session is configured with **`tauri:options`** (the `application` = the built app
+binary path, plus any `args`) and a **`tauri-driver` host/port** WebdriverIO connects to
+(`tauri-driver` proxies to the platform driver — `msedgedriver` on Windows,
+`WebKitWebDriver` on Linux); no Chrome/Firefox capability block. Concrete pin + capabilities
+block are an `[DEFER: implementation]` detail to finalise against the pinned `tauri-driver`
+minor at build time. **Note:** plain **Playwright cannot drive a Tauri WebView**
 in its normal CDP mode (Tauri is not a Chrome DevTools-Protocol target); it is *not* the
 E2E driver here. The run exercises
 the full §5.2 flow per platform: empty → intake → collected/confirm → target+default →
@@ -893,6 +952,21 @@ DoD **core-UX-flow** gate; the human half is §6.6. Frontend component/unit test
   third-party WKWebView WebDriver bridge — e.g. an in-app W3C WebDriver server plugin —
   later proves it can drive an unsigned WKWebView on CI, the macOS leg is upgraded to full
   WebDriver — a bonus, not a gate.)
+- **macOS smoke test: Gatekeeper quarantine + TCC `[DECIDED]`.** The smoke test runs against
+  a **locally-built artifact on the same runner**, which does **NOT** receive
+  `com.apple.quarantine` (that xattr is set only on *downloaded* files), so the launch needs
+  **no `spctl`/`xattr` bypass** — provided the smoke test runs on the **build-output
+  `ConvertIA.app` directly** (no archive/re-extract step between build and smoke). **If the
+  pipeline zips and re-unzips the `.app` before the smoke test**, the re-extracted copy IS
+  quarantined and the smoke step MUST first run **`xattr -rd com.apple.quarantine
+  ConvertIA.app`** before launch. **Phase-3 path: run the smoke test on the build-output dir
+  (no zip round-trip) → no quarantine handling needed.** **TCC `[DECIDED]`:** TCC
+  file-access prompts **cannot be answered headlessly**, so the automated smoke leg **writes
+  to and reads from a `TMPDIR`/temp dir only** (no Desktop/Documents/Downloads access), where
+  **no TCC prompt fires**; the **TCC-prompt exercise (beside-source default touching a
+  protected folder) is moved to the §6.6 human walkthrough** (§6.4.4's "macOS TCC … in the
+  headed smoke run" is corrected to: TCC is a §6.6 human-walkthrough item, the automated leg
+  stays in a temp dir to avoid prompting).
 
 #### 6.4.6a Automated accessibility assertions (DoD basic-a11y owner) `[DECIDED]`
 
@@ -921,6 +995,13 @@ owned here** (it had no named tool/lane before):
   `aria-checked`) — jsdom leg; (c) **focus-order / tabindex sanity** (roving-tabindex
   radiogroup, §5.6) — jsdom leg — and labelled
   controls. Any axe violation at the configured impact level **fails the build**.
+- **Text-size half of the gate `[DECIDED]`:** axe-core does **not** check font size, so the
+  **minimum-body-text-size** half of the §5.6 gate (body copy ≥ `--text-base` = 16px, §5.5)
+  is **verified by the §6.6 human walkthrough**, not by the automated leg — the walkthrough
+  confirms body copy renders at the §5.5 `--text-base` floor (`--text-xs`/`--text-sm` reserved
+  for supplementary labels). (An optional belt-and-suspenders computed-`font-size` assertion
+  on the `@axe-core/webdriverio` session — no main-content text element below 16px — MAY be
+  added in the Lane-B run, but the human walkthrough is the operative v1 text-size gate.)
 - **Cross-ref:** the rendered colours come from the §5.5 design tokens; this gate is what
   makes the §5.6 "WCAG 2.1 AA" claim verifiable rather than aspirational.
 
@@ -1158,7 +1239,7 @@ blocking the next:
    artifact (Windows portable `.zip` **only** — NSIS NOT shipped v1, §6.1.2
    `[DECIDED-6.1a]`; universal `.dmg`; AppImage). **Artifact-size gate `[DECIDED]`:**
    immediately measure each platform's
-   **compressed** artifact and **fail the release if any exceeds the §3.9.1 ≤ 400 MB
+   **compressed** artifact and **fail the release if any exceeds the §3.9.2 ≤ 400 MB
    compressed ceiling** (record the measured sizes as a release-asset line; §6.10 row 22).
    **No-system-pollution post-launch check (§6.10 row 21)** also runs here on the built
    artifact (Procmon/`fsusage`/`strace` — assert no registry/LaunchAgent/daemon/association
@@ -1185,10 +1266,11 @@ blocking the next:
    escalation ladder is concrete (not ad-hoc) `[DECIDED]`:**
    1. **Initial macOS `timeout-minutes = 180`** (not 120) — give the LFS pull + 10×-cost leg
       real headroom from the start.
-   2. **Trigger to split:** if the **average macOS Lane-B wall-clock exceeds 150 min over 3
-      consecutive release runs** — **OR, for the first two runs where no 3-run average yet
-      exists `[DECIDED]`, if a *single* macOS Lane-B run exceeds 180 min** (so the ladder is
-      actionable from run 1 of a deadline-free v1, not only after 3 releases have shipped) —
+   2. **Trigger to split `[DECIDED]`:** the **operative v1 trigger is a SINGLE macOS Lane-B
+      run exceeding 180 min** — actionable from run 1 (a 3-consecutive-run average is
+      unreachable at first ship, so it cannot be the v1 gate). The **3-consecutive-run
+      average > 150 min** rule is **post-v1 only** (a smoothing refinement once a release
+      history exists). On the single-run trigger,
       switch the macOS leg to a **representative macOS subset**:
       one video re-encode pair (the slowest engine), one office→PDF pair (the LibreOffice
       path), one image-worker pair, and the E2E smoke — **the §6.6 video/office smoke set** —
@@ -1315,12 +1397,16 @@ with **egress blocked** and **any outbound attempt fails the test**. Per-platfor
   "Firewall outbound-deny rule for the app" is **fragile for a portable, unsigned exe at a
   random `TEMP` path** (no stable program identity / install path to scope a rule to). So
   the enforcement is **either** a **per-run `New-NetFirewallRule -Program <resolved
-  absolute path>`** created **and removed** around the test (scoped to that run's actual
-  exe path), **or** the process is launched inside a **network-denied Job Object**. **Note:
-  unlike the Linux `unshare --net` net-namespace, the Windows firewall rule is NOT a
-  structural-equivalent hard isolation** — so on Windows the **§2.11.4 packet-monitor
-  assertion is the real load-bearing gate** (the firewall rule is best-effort enforcement,
-  the monitor is the proof). Run both.
+  absolute path> -Direction Outbound -Action Block`** created **and removed** around the test
+  (scoped to that run's actual exe path), **or** the process is launched inside an
+  **AppContainer network-isolation profile** (an AppContainer with no network capability
+  cannot open sockets). **A Job Object is NOT an option for network deny** — `JOB_OBJECT_LIMIT`
+  flags govern memory/CPU/process-count/UI, not sockets (§2.12.3). **Note: unlike the Linux
+  `unshare --net` net-namespace, the Windows per-program firewall rule is NOT a
+  structural-equivalent hard isolation** (the AppContainer profile is the closest structural
+  equivalent) — so on Windows the **§2.11.4 packet-monitor assertion is the real load-bearing
+  gate** (the firewall/AppContainer is best-effort enforcement, the monitor is the proof).
+  Run both.
 
 The packet-monitor assertion (§2.11.4) — zero outbound packets observed for the whole
 E2E — is the load-bearing proof on every platform; the OS-level egress block is the
@@ -1453,7 +1539,7 @@ promises has a technical home" is **verifiable**. Each gate is marked
 | 3 | **The corpus exists (required v1 asset, non-circular gate)** | this file | `tests/corpus/` + `manifest.toml` (§6.4.5); the **corpus↔pair bijection guard (§6.4.3a)** fails CI if any §04 pair has no backing corpus file (or a `covers` entry names a non-existent pair) | **in-scope-gate** |
 | 4 | **Everything runs fully offline (whole engine set bundled, no fetch)** | §3.3 (bundle-all) · §2.11 (offline invariant) | Bundling at build (§6.1.3); offline-observability E2E with egress blocked (§6.7.3); SBOM proves no runtime-fetch component | **in-scope-gate** |
 | 5 | **Offline guarantee observably true (no network at all)** | §2.11 | Network-egress-blocked E2E run asserts zero calls (§6.7.3 / §6.4.6) | **in-scope-gate** |
-| 6 | **Basic accessibility (keyboard path + readable contrast/sizes; WCAG 2.1 AA per §5.6)** | §5.6 · §5.10 (shortcut map) | **Automated axe-core a11y assertions (§6.4.6a)** — **ARIA-role validity + focus-order run in Lane A (jsdom, §6.7.1)**; **WCAG 2.1 AA contrast (≥4.5:1 text, ≥3:1 large/UI, both themes) runs in Lane B on the `@axe-core/webdriverio` live-WebView session (§6.7.2)** — jsdom cannot compute contrast — plus the keyboard-only human walkthrough (§6.6) | **in-scope-gate** |
+| 6 | **Basic accessibility (keyboard path + readable contrast/sizes; WCAG 2.1 AA per §5.6)** | §5.6 · §5.10 (shortcut map) | **Automated axe-core a11y assertions (§6.4.6a)** — **ARIA-role validity + focus-order run in Lane A (jsdom, §6.7.1)**; **WCAG 2.1 AA contrast (≥4.5:1 text, ≥3:1 large/UI, both themes) runs in Lane B on the `@axe-core/webdriverio` live-WebView session (§6.7.2)** — jsdom cannot compute contrast. **Text-size half (body copy ≥ `--text-base` = 16px, §5.5) is verified by the §6.6 human walkthrough** — axe-core does not measure font size (§6.4.6a). Plus the keyboard-only human walkthrough (§6.6) | **in-scope-gate** |
 | 7 | **Core UX flow (drag/drop+picker+keyboard → same result; reacts to type; pre-highlighted default; destination shown before convert; visible cancellable progress; end-of-batch summary; one-click open-folder/file)** | §5.2 (states) · §1.1/§1.5/§1.11/§1.12 · §7.7 (open) | E2E flow per platform (§6.4.6) + usability-floor human walkthrough (§6.6) | **in-scope-gate** |
 | 8 | **Unwritable/ephemeral-location fallback works** | §2.7 (per-location divert) · §2.14 (cross-volume) | Property tests on read-only/USB/network/temp locations (§6.4.2); divert path in corpus runs | **in-scope-gate** |
 | 9 | **Every bundled engine's required licence text + attribution present and correct (NOTICE/third-party-licenses, backed by SBOM) — missing attribution release-blocking** | §3.7 (data) · §5.9 (display) | SBOM + NOTICE assembly + **attribution-completeness gate** (§6.3.3); blocks release | **in-scope-gate** |
@@ -1469,7 +1555,7 @@ promises has a technical home" is **verifiable**. Each gate is marked
 | 19 | **Startup integrity & engine-presence (missing/corrupt engine → app-fault, not a crash)** | §7.2.3 · §2.13 | Startup-fault test: a removed/truncated bundled engine yields the plain app-fault screen, never a stack trace (§6.4.2 / §6.4.6 headed smoke) | **in-scope-gate** |
 | 20 | **OS intake (Open-with / launch-args route through the single freeze funnel; no file-association pollution)** | §7.8 · §1.1/§2.4 | Launch-with-files E2E (UI enters Collecting at startup); assert no associations registered (§7.8.2) | **in-scope-gate** |
 | 21 | **Portable, no installation, no system pollution (SSOT Principle 2 — no installer/admin/elevation/registry writes/no LaunchAgent or daemon)** | §7.4/§7.8.2 (explicit negatives) · §0.10 (capabilities) · §3.4.5/§3.3 (no runtime fetch) · §7.3 (no tray/agent) | **Lane-B post-launch assertion `[DECIDED]`:** run the built app under **Procmon (Windows)** / **`fsusage`+config-dir watch (macOS)** / **`strace`/inotify (Linux)** during a conversion and assert: **no writes outside the OS config/log dir + the user's chosen output** — specifically **no registry writes** (Windows, beyond none expected), **no `LaunchAgent`/`LaunchDaemon` install** (macOS), **no system-service/unit install** (Linux), **no file-association registration** (§7.8.2). A pollution write fails the gate | **in-scope-gate** |
-| 22 | **Compressed artifact ≤ 400 MB per platform (§3.9.1 size ceiling)** | §3.9.1 (ceiling) · §3.9 (size levers) | **Artifact-size gate `[DECIDED]`:** an explicit **§6.7.2 Lane-B step** measures each platform's compressed artifact and **fails the release if any exceeds 400 MB compressed** (the §3.9.1 ceiling); recorded as a release-asset line | **in-scope-gate** |
+| 22 | **Compressed artifact ≤ 400 MB per platform (§3.9.2 size ceiling)** | §3.9.2 (ceiling) · §3.9 (size levers) | **Artifact-size gate `[DECIDED]`:** an explicit **§6.7.2 Lane-B step** measures each platform's compressed artifact and **fails the release if any exceeds 400 MB compressed** (the §3.9.2 ceiling); recorded as a release-asset line | **in-scope-gate** |
 | — | **NOT a gate: subjective visual polish; engine-currency** | §5.5 (polish) · §3.8 (currency) | Polish is iterative (never blocks); currency is best-effort, re-validated against the gate when bumped (§6.3.4/§6.5.4) | **out-of-scope-gate** (explicit non-gates) |
 
 If a future SSOT clause is added, it must appear here with an owning section and a
@@ -1486,15 +1572,18 @@ If a future SSOT clause is added, it must appear here with an owning section and
 - **[6.2a]** Sign `SHA256SUMS` with a **project minisign key** — DECIDED yes (§6.2.3).
 - **[6.1e]** CI runners — **GitHub-hosted for mac/win, self-hosted Linux for Lane A**
   (§6.1.4; budget note retained).
-- **[6.1d]** CI engine-acquisition — **pinned, checksum-verified asset cache**
-  (§6.1.3).
+- **[6.1d]** CI engine-acquisition — **pinned, checksum-verified asset cache** hosted on
+  **`actions/cache` keyed `<engine>-<version>-<triple>`** with a checksum-verified
+  pinned-upstream-URL populate/fallback; macOS keeps **two per-triple keys per engine**
+  (arm64 + x86_64) for the `lipo` universal build (§6.1.3).
 - **[6.4a]** Corpus storage — **small CC0/synthetic in-repo + LFS `corpus-large` for
   the full gate** (§6.4.5); exact total size **[DEFER: calibrate as corpus fills]**.
 
 Easy `[OPEN]`s resolved (not owner-level): artifact formats (§6.1.2: Windows
 portable-zip [NSIS NOT shipped v1, **`[DECIDED-6.1a]`**] / universal-dmg / AppImage),
 NSIS-vs-portable (**`[DECIDED-6.1a]`** — portable-zip only, §6.1.2), Linux `.deb`
-(§6.1.2b), reproducible-build depth (§6.2.5b), `GOVERNANCE.md` (§6.8a), usability
+(**`[DECIDED-6.1b]`** — AppImage-only v1, `.deb` deferred post-v1, §6.1.2), reproducible-build
+depth (§6.2.5b), `GOVERNANCE.md` (§6.8a), usability
 tester count (§6.6a) — each carries a **(recommendation)** or `[DECIDED]` inline.
 
 **Genuinely still open / deferred (feed the README log):** the macOS automated E2E

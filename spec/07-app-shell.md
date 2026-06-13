@@ -59,7 +59,20 @@ using the official **`tauri-plugin-single-instance`** (v2). Rationale:
     // origin = SecondInstance; the §7.8.1 funnel enforces the refuse-busy gate (below).
     forward_launch_argv(app, &argv, &cwd, IntakeOrigin::SecondInstance); // → §7.8 → §1.1 intake
 }))
+// then the remaining §0.8 plugins are registered in the same Builder chain:
+//   .plugin(tauri_plugin_dialog::init())   // §0.4.1 C2a/C2b native pickers via DialogExt
+//   .plugin(tauri_plugin_opener::init())   // §7.7 open-folder/file/url via OpenerExt
+//   .plugin(tauri_plugin_store::Builder::default().build())  // §7.4 settings.json
+//   .plugin(tauri_plugin_log::Builder::new()...build())      // §7.5 rotating log
 ```
+
+**Plugin registration order `[DECIDED]`:** `tauri-plugin-single-instance` is registered
+**first** (it must win before any window is created); the remaining §0.8 plugins —
+`tauri-plugin-dialog` (the C2a/C2b native pickers, called Rust-side via `DialogExt`, §0.4.1),
+`tauri-plugin-opener` (§7.7), `tauri-plugin-store` (§7.4) and `tauri-plugin-log` (§7.5) —
+follow in the same Builder chain. `tauri_plugin_dialog::init()` is **required** for
+`app.dialog().file().pick_file(..)` / `.pick_folder(..)` to exist in the C2a/C2b handlers
+(without it both pickers fail to compile).
 
 - On **Windows/Linux** this is the only way a second launch (and any OS-passed
   file argv, §7.8) reaches the primary instance — without it the OS spawns a new
@@ -237,7 +250,13 @@ present and usable:
   marker's `expected_size`** AND **(b) the first N bytes match the expected executable
   magic for the platform** — **ELF `0x7F 45 4C 46`** (Linux), **PE `MZ` (`0x4D 5A`)**
   (Windows), **Mach-O / fat `0xCA FE BA BE` (fat) or `0xCF FA ED FE` (64-bit thin)**
-  (macOS). This catches truncation/AV-gutting/partial-extract cheaply without a full
+  (macOS). **The magic-byte check (b) applies ONLY to the EXECUTABLE sidecars `[DECIDED]`**
+  (the §3.3.1 `externalBin` binaries — `ffmpeg`/`ffprobe`/`soffice`/`pdftotext`/`pandoc`/
+  `convertia-imgworker`). **Non-binary bundled resources (the bundled fonts §3.9, the
+  LibreOffice program-tree data files, NOTICE/licence text) have NO single executable magic**,
+  so for them the warm-launch check is **size-only** (size equals `expected_size`); their
+  full content is covered by the **first-launch / version-change full re-hash** like every
+  other resource. This catches truncation/AV-gutting/partial-extract cheaply without a full
   re-hash; it does **not** catch same-size in-place corruption (only the full re-hash on
   first-launch / version-change does — an accepted limitation, since runtime is not a
   tamper anchor, §0.11 T3). Owner: §7.2 with §3.3.
@@ -259,6 +278,13 @@ struct EngineHealth {
                                        //   the §7.2.3 out-of-band binary loop) is rolled into the
                                        //   owning engine's status (FFprobe→FFmpeg, ImageMagick→
                                        //   ImageCore).
+                                       // NativeCsvTsv is NOT in the §3.3.1 binary list (it is
+                                       //   InProcessNative, §3.5.6 — no sidecar file to resolve),
+                                       //   so the §7.2.3 presence/integrity LOOP does not produce
+                                       //   its row. Its EngineStatus is SYNTHESIZED `[DECIDED]`:
+                                       //   `{ present: true, integrity_ok: true, runnable: Some(true) }`
+                                       //   (always-available-in-core, pure-Rust, nothing to verify)
+                                       //   — appended after the loop, never from it.
     unavailable_targets: Vec<TargetId>,// §3.4 patent-gapped on THIS platform (PlatformUnavailable)
     all_critical_ok: bool,             // derived: every required engine present+runnable
 }
@@ -278,15 +304,18 @@ struct EngineStatus {
 > rolled into the image-worker's (`EngineId::ImageCore`) health. Its `EngineId::ImageMagick`
 > appears **only** in the SBOM/NOTICE layer (§3.7), never in the §3.2.3 registry or this
 > presence-check loop — consistent with §3.1's "delegate, not a registry engine".
-> **BUT** ImageMagick is **REQUIRED for BMP load+save and ICO save** (§3.1 row 1d — not a
-> fallback), so a present-but-broken/missing delegate would otherwise fail **every BMP/ICO
-> conversion silently at first use at runtime**, not at startup. To surface that as a
-> **startup fault** instead, the image-worker smoke probe (§7.2.3 above) **MUST include a
-> BMP-or-ICO delegate exercise `[DECIDED]`** — e.g. a tiny `magicksave`/`magickload`
-> round-trip **or** a `vips`/ImageMagick `--list-formats`-style check verifying **BMP and
-> ICO are registered delegates** — so a missing/corrupt ImageMagick delegate makes the
-> `ImageCore` `EngineStatus.runnable = Some(false)` (and BMP/ICO targets show as
-> unavailable, §5.2) at startup, never a silent per-item failure on the first BMP/ICO job.
+> **BUT** ImageMagick is **REQUIRED for BMP load+save** (§3.1 row 1d — not a
+> fallback), so a present-but-broken/missing delegate would otherwise fail **every BMP
+> conversion silently at first use at runtime**, not at startup. (**ICO save** is the
+> `magicksave` default but `[DEFER: build spike]` §3.5.5 — if the spike fails, ICO save uses
+> the in-core Rust assembler and does **not** depend on the ImageMagick delegate.) To surface
+> a missing BMP delegate as a **startup fault** instead, the image-worker smoke probe (§7.2.3
+> above) **MUST include a BMP delegate exercise `[DECIDED]`** — e.g. a tiny
+> `magicksave`/`magickload` BMP round-trip **or** a `vips`/ImageMagick `--list-formats`-style
+> check verifying **BMP is a registered delegate** (and, **if the magicksave ICO path ships**,
+> ICO too) — so a missing/corrupt ImageMagick delegate makes the `ImageCore`
+> `EngineStatus.runnable = Some(false)` (and BMP targets show as unavailable, §5.2) at
+> startup, never a silent per-item failure on the first BMP job.
 
 **`AppInfo` — the C11 return (defined here; §0.4.1 C11 references it; §5.9 displays
 it; the licence/NOTICE data is generated by §3.7).** No network; all data is
@@ -487,7 +516,12 @@ Two complementary hooks own the lifecycle (per Tauri v2):
   closure passed to **`App::run`** (i.e. `builder.build(ctx)?.run(|app, event| …)` —
   the run-event handler is on the built `App`, **not** on `Builder`). `ExitRequested`
   is the last chance to `api.prevent_exit()`; `Exit` is the final cleanup point (flush
-  logs, best-effort scratch cleanup — mechanism §2.6).
+  logs, best-effort scratch cleanup). **`best_effort_scratch_cleanup` IS the same idempotent
+  §2.6 `cleanup_run` path `[DECIDED]`** — not a separate cleanup implementation: it invokes
+  the §2.6 run-end cleanup (remove the central `run-<RunId>/` dir + `*.part` in the recorded
+  `final_dir` set), **best-effort and non-blocking** (it must not stall app exit). If a
+  **wedged descendant** still holds a `.part` at exit (§1.7 group-kill timed out), that temp
+  is **deferred to the §2.6.3 next-launch startup sweep** — exit never blocks waiting on it.
 
 ```rust
 .on_window_event(|window, event| {                 // v2: two args (&Window, &WindowEvent)
@@ -604,8 +638,15 @@ per-location fallback applies if it has since become read-only/gone) — it is a
 
 - **Mechanism:** the official **`tauri-plugin-store`** (a single JSON file,
   `settings.json`), or a hand-rolled equivalent — either is fine; the store plugin
-  is the lower-effort default. Capability `store:default` scoped to the one file
-  (§0.10 owns the allowlist entry).
+  is the lower-effort default. Capability `store:default` (§0.10 owns the allowlist
+  entry). **Scope accuracy `[DECIDED]`:** `store:default` grants all store operations
+  (`load`/`get`/`set`/`delete`/`save`/…) with **no pre-configured per-file scope** — it
+  applies to **every store the plugin creates**, not one file (verified vs the v2 store
+  plugin permission reference; there is no Tauri-native per-file store scope). ConvertIA
+  achieves **effective single-file scoping only by convention**: it only ever opens/uses
+  the store API for `settings.json` (one `Store.load('settings.json')` call site, no other
+  store names). This is a code convention, **not** a permission restriction — do not
+  describe the capability as "scoped to the one file".
 - **Location (per-OS, via Tauri `app.path().app_config_dir()`):**
   - Windows: `%APPDATA%\dev.ne-ia.convertia\settings.json`
   - macOS: `~/Library/Application Support/dev.ne-ia.convertia/settings.json`

@@ -448,6 +448,16 @@ Before §2.1's exclusive create, `fs_guard::is_safe_output(final, frozen_set)`:
    case), resolve **its parent directory's** identity and the *would-be* path; a
    non-existent leaf cannot itself be a link, but its **parent** can be a symlink
    into a source tree — so the parent is canonicalised and the leaf appended.
+   **Ordering with §2.7.1 subtree re-creation `[DECIDED]`:** this step presumes the parent
+   directory **already exists**. For a **user-chosen-destination subtree** (`D/sub/dir/file`,
+   §2.7.1) the parent may **not** exist yet — so the ordering is: **(a)** §2.7.1 create-only
+   ancestor creation runs first (`mkdir` each missing ancestor under `D`, ancestor-by-
+   ancestor); **(b)** the parent-dir handle is then opened on the **DEEPEST created dir**
+   (the file's actual parent) and its identity verified per §2.7.1's full-final-dir
+   link-safety; **(c)** the leaf is published **dir-handle-relative** against that verified
+   directory (§2.3.3 below). So "resolve its parent" here means *the deepest created
+   ancestor*, which by step (b) exists when this check runs — removing the "parent may not
+   exist yet" ambiguity for the subtree path.
 2. **Reject if** the resolved `final` (or its resolved-parent + leaf) has a
    `FileIdentity` equal to **any** frozen **source FILE**, **or** its resolved parent
    **resolves onto / into a frozen source FILE's resolved path** (e.g. the output dir is a
@@ -765,7 +775,7 @@ volume rule are owned by §2.14.2 (referenced here, not re-decided):
 | **Item failure** (engine error, corrupt, etc.) | remove that item's `tmp`. |
 | **Cancel** (user) | §1.7 kills the engine group and, on a **bounded** confirm-wait, removes the killed item's `tmp`; **already-finished items are kept** (SSOT). **If the group-kill confirm-wait times out** (a wedged descendant still holding the `*.part`), reclamation of that publish temp is **deferred to the §2.6.4 sweep** and surfaced as a `CleanupResidue` on the Cancelled item (§2.6.4 case 3) — i.e. tmp is *not* unconditionally removed here. |
 | **Out-of-disk mid-write** | remove the partial `tmp`; report `OutOfDisk` (§2.8); **batch continues** (SSOT). |
-| **Run end (any reason)** | remove the now-empty central `run-<RunId>/` dir **and** any leftover `*.part` publish temps in the run's known destination dirs (destination roots are in memory at run end). |
+| **Run end (any reason)** | remove the now-empty central `run-<RunId>/` dir **and** any leftover `*.part` publish temps in the run's **RECORDED `final_dir` set** — the union of **every distinct `final_dir` actually used this run**, tracked in memory as outputs are planned/written. This is **not** just the dropped/destination roots: it **includes late-divert targets (§2.7.2) and cross-volume intermediates (§2.14.3)**, which can land in dirs that are neither a drop root nor the chosen destination. (Recording the actual `final_dir` per item as it is written is what makes run-end cleanup enumerate every dir a `*.part` could have been written to; the §2.6.3 opportunistic/startup sweep is the post-crash backstop.) |
 | **Next app start** | sweep stale central `run-<RunId>/` dirs from prior runs (§2.6.3); destination-resident `*.part` from a *crashed* prior run are reclaimed opportunistically by a later write into that dir, not by the startup sweep (§2.6.3 limitation). |
 
 Removal restores free space to "roughly what it was before the run" (SSOT) — temps
@@ -836,12 +846,17 @@ subdir.
 A publish temp in a destination dir **never revisited** by a later run can persist
 until the user deletes it; this residual case is surfaced honestly per §2.6.4 rather
 than promised away. **SSOT reconciliation `[DECIDED]`:** the "free space returns to
-roughly pre-run" promise holds **fully** on graceful failure/cancel and on the next
-write into that destination; **only after a true crash** (no chance to run run-end
-cleanup) can a single destination-resident `*.part` (≈one output size per crashed item)
-linger until opportunistic reclamation — which is **within the SSOT's stated best-effort
-cleanup tolerance** (the SSOT promises best-effort temp cleanup, not a guaranteed
-post-crash sweep of arbitrary destination dirs ConvertIA no longer remembers).
+roughly pre-run" promise holds **fully** on graceful failure/cancel **in the normal
+case** (the engine group exits within the §1.7 confirm-wait and run-end cleanup reclaims
+every temp), and on the next write into that destination. **Two carve-outs where a single
+destination-resident `*.part` (≈one output size) can linger** until opportunistic
+reclamation: **(1) a true crash** (no chance to run run-end cleanup); **(2) a graceful
+cancel where the §1.7 bounded group-kill confirm-wait TIMED OUT on a wedged descendant**
+(§2.6.2 Cancel row / §2.6.4 case 3) — there the publish-temp reclamation is **deferred to
+the §2.6.4 sweep** and the Cancelled item surfaces a `CleanupResidue`, so a `*.part` can
+linger past the cancel. Both are **within the SSOT's stated best-effort cleanup tolerance**
+(the SSOT promises best-effort temp cleanup, not a guaranteed sweep when a descendant is
+wedged or after a crash) and are surfaced honestly (§2.6.4), never promised away.
 
 ### 2.6.4 Cleanup failure → honest reporting `[DECIDED]`
 
@@ -1575,10 +1590,18 @@ the privilege-drop tier is best-effort, degrading silently — see the callout):
   guarantee on §3.3.4 + the §2.11.4 packet gate, neither of which depends on Seatbelt.
   This is exactly why T9b/offline correctly do not depend on this tier.)
 - **Windows (recommended v1 if feasible):** spawn in a **restricted token / App
-  Container or Job Object** with **`JOB_OBJECT_LIMIT`** flags (kill-on-job-close so
-  no orphan survives, memory cap), a **low-integrity** token, and network disabled
-  via the Job/firewall. The Job Object is also what §1.7 uses for group-kill, so this
-  is shared infrastructure.
+  Container** with a **low-integrity** token, inside a **Job Object** with
+  **`JOB_OBJECT_LIMIT`** flags (kill-on-job-close so no orphan survives, memory cap).
+  **Network confinement is NOT a Job-Object capability `[DECIDED]`** — `JOB_OBJECT_LIMIT`
+  flags govern memory/CPU/process-count/UI, **not sockets**. Network is denied instead by
+  **either** an **AppContainer network-isolation profile** (an AppContainer with **no**
+  `internetClient`/`internetClientServer`/`privateNetworkClientServer` capability cannot
+  open network sockets) **or** a **per-program Windows Firewall/WFP rule**
+  (`New-NetFirewallRule -Program <absolute exe path> -Direction Outbound -Action Block`).
+  The **Job Object is only the group-kill / resource-cap mechanism** (shared with §1.7),
+  **never** the network bound. As with the Linux split (net namespace, not seccomp, is the
+  egress block), the network confinement is named to the mechanism that actually provides
+  it; the §2.11.4 packet-monitor is the load-bearing offline gate regardless of tier.
 
 > **v1 sandbox depth per OS — `[DECIDED]` (two tiers, owner §2.12):**
 > - **Cheap tier = the NON-NEGOTIABLE v1 floor on all three OSes `[DECIDED]`:** the
@@ -1590,7 +1613,9 @@ the privilege-drop tier is best-effort, degrading silently — see the callout):
 >   what the SSOT *Security posture* requires.
 > - **Privilege-drop tier = `[DECIDED]` best-effort, silent-degrade:** seccomp-bpf /
 >   Landlock (Linux), Seatbelt / `sandbox_init` profile (macOS), restricted-token /
->   AppContainer + Job-Object + low-integrity (Windows). It is enabled **where it works
+>   AppContainer + low-integrity + Job-Object resource caps (Windows) — with network deny
+>   via the **AppContainer network-isolation profile or a per-program firewall/WFP rule**
+>   (NOT the Job Object, which cannot restrict sockets). It is enabled **where it works
 >   WITHOUT install-time elevation and without breaking the portable build**, and
 >   **degrades silently to the cheap tier** on any machine/OS-version where it cannot be
 >   enabled (kernel too old, profile mechanism unavailable, portable-build constraint).
@@ -1880,8 +1905,26 @@ move-equivalent **inside** that volume:
    opportunistic sweep resolves its owning lock cross-instance). Either way the
    **lock-before-part ordering invariant** (§2.6.3 / §2.14.1) covers it — the
    `run-<RunId>/.lock` is held before this temp is written, so **absent lock ⇒ dead ⇒
-   reclaimable** still holds and a crash mid-fallback cannot strand a temp that escapes both
-   sweeps. Then:
+   reclaimable** still holds and a crash mid-fallback cannot strand a temp that escapes
+   *run-end* cleanup (the §2.6.2 recorded-`final_dir` set includes this intermediate's dir).
+   **Honest post-crash limitation `[DECIDED]`:** when the intermediate sits **on a volume
+   OTHER than the central-scratch-root volume** (the "elsewhere on that volume" case above),
+   the **§2.6.3 startup sweep does NOT enumerate it** — the central-scratch startup sweep
+   only walks the central-scratch-root volume (exactly the same limitation §2.6.3 already
+   states for a destination-resident `*.part` after a crash). So after a **true crash** an
+   off-central-volume cross-volume intermediate is reclaimed only **opportunistically** (a
+   later write into that dir, or a manual delete), not by the startup sweep — within the same
+   best-effort tolerance as a crashed destination-resident `*.part` (§2.6.3). Then:
+   - **re-check destination-volume free space for the intermediate `[DECIDED]`:** the
+     copy-into-dest step makes the output's bytes exist a **second time on `final`'s volume**
+     (the intermediate copy) — coexisting with the publish temp — so this path's **peak
+     destination-volume footprint is ~2× output**. The §1.10 / §2.14.4 preflight models
+     `est_output`+publish-temp and `est_scratch`, but **NOT** this cross-volume intermediate,
+     so on a near-full destination volume the copy can `ENOSPC` despite preflight passing.
+     **Before the copy**, re-check `final`-volume free space against the intermediate's size
+     (≈ output) and **fail the item clearly with `OutOfDisk` (§2.8)** if it won't fit —
+     mirroring §2.7.2's late-divert "never assume it fits" rule. (Same posture: preflight is
+     a best-effort gate, the at-use re-check is the bound.)
    - copy the cross-volume temp into a **new** temp **on `final`'s volume**,
    - `sync_all()` it (durable),
    - then publish that same-volume temp → `final` with the **no-placeholder

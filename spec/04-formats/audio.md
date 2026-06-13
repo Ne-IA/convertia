@@ -188,8 +188,12 @@ Notes on the matrix:
     default, the standard speed/size balance. Compression level changes **size and
     speed only, never the audio** (FLAC is lossless at every level).
   - *Advanced — "FLAC compression":* `Fast (0)` · `Standard (5) [default]` ·
-    `Best/smallest (8)` (0–12 valid; we cap the exposed choice at 8 — 9–12 are
-    marginal and slow).
+    `Best/smallest (8)`. **Range correction `[DECIDED]`: 0–8 is the valid/standard FLAC
+    range** — libFLAC's native maximum is **8**, and FFmpeg's levels **9–12 are
+    undocumented/non-standard** (they do NOT match a standard libFLAC 9–12 — FFmpeg accepts
+    them internally but they behave as ~8 or are undefined). So the **exposed cap of 8 is
+    correct** and Phase-3 must **not** expect standard FLAC semantics above 8; do not surface
+    9–12. (Earlier "0–12 valid" was inaccurate.)
   - Sample rate / bit depth / channels preserved exactly from source.
 - **Lossy?:** **Lossless as a target.** Lossy *origin* (e.g. MP3→FLAC) is flagged
   as no-quality-gain (§2.9), not as further loss.

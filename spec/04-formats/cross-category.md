@@ -150,6 +150,17 @@ copy-vs-re-encode choice is made for them to be as lossless and fast as the
 target allows. The lossy inline note (below) reflects the **outcome**, not the
 mechanism.
 
+**AAC copy path vs the §3.4 AAC encoder gate `[DECIDED]`.** The §3.4.4a availability flag
+gates only the **AAC *encoder*/capabilities** (the patent argument rests on
+encoder-distribution). The **AAC→M4A `-c:a copy`** path **decodes/remuxes only — it never
+invokes the AAC encoder** — so it carries a **lighter patent profile** (no encode) and is in
+principle unaffected by the encoder gate. **But to keep the format×platform offered set
+honest and simple, the rule is: if AAC is ever marked unavailable on a platform (§3.4), the
+M4A extract-audio target is DISABLED regardless of copy-vs-encode** (we do not offer an M4A
+target that silently emits an AAC bitstream where AAC is gated off). So the copy path's
+lighter profile is **noted**, but the **gate is applied at the M4A-target level**, not at the
+copy-vs-encode branch — one consistent availability story per platform.
+
 ### Options / settings + defaults
 
 extract-audio is deliberately **near-zero-option** (SSOT "it just works by

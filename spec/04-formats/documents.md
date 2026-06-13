@@ -66,7 +66,8 @@ no AGPL surface; see *Engines* / §3.1.)
 > `Markdown`, `HTML (StarWriter)`) — keeping every pair single-engine, no chaining.
 > The XML/text sources (`DOCX/ODT/RTF → TXT/MD/HTML`) stay with **pandoc** (which
 > reads them natively). LibreOffice's Markdown export is new in 26.2 → its
-> reliability is the `[OPEN-2]` flag in *Category-wide*.
+> reliability is the `[DEFER: corpus]` flag in *Category-wide* (design fixed, reliability
+> empirical; `MD→PDF` parks if the gate fails — no chain-free fallback).
 
 ---
 
@@ -238,8 +239,8 @@ are the **concrete option lists and defaults** this file owns (§1.6).
   can read it**. pandoc **cannot** read legacy `.doc`. **Resolution (single-engine
   rule):** `DOC→TXT/MD/HTML` is owned by **LibreOffice's** markup export filters
   (`Text`, `Markdown`†, `HTML (StarWriter)`) — *not* pandoc — so no chaining is
-  needed. († LibreOffice Markdown export is new in 26.2; `[OPEN]` reliability flag
-  in *Category-wide*.)
+  needed. († LibreOffice Markdown export is new in 26.2; `[DEFER: corpus]` reliability flag
+  in *Category-wide* — design fixed, only reliability empirical.)
 - **Options/settings:** none surfaced.
 - **Lossy?:** same profile as DOCX.
 - **Edge cases:** Old binary `.doc` with unusual code pages — LibreOffice handles
@@ -359,13 +360,17 @@ are the **concrete option lists and defaults** this file owns (§1.6).
 - **As target ← sources:** `DOCX, DOC, ODT, RTF, HTML, TXT` — extract a
   Markdown skeleton from richer documents (headings, lists, links, tables, basic
   emphasis). From DOC via LibreOffice; others via pandoc.
-- **Engine(s):** `MD→PDF` LibreOffice (renders Markdown to a laid-out PDF);
-  `MD→HTML/DOCX/ODT/RTF/TXT` pandoc. **`MD→PDF` engine `[OPEN]`** — see below:
-  LibreOffice's native Markdown *import* is brand-new (26.2). If it proves
-  unreliable, the fallback owner for `MD→PDF` and `MD→ODT/DOCX` is still a single
-  engine (pandoc can produce DOCX/ODT, and a bundled HTML→PDF via LibreOffice
-  would be a *chain* — disallowed), so the decision is recorded as an explicit
-  open item rather than silently chained.
+- **Engine(s):** `MD→PDF` LibreOffice (renders Markdown to a laid-out PDF, via LO 26.2's
+  new native Markdown *import*); `MD→HTML/DOCX/ODT/RTF/TXT` pandoc. **`MD→PDF` engine
+  `[DEFER: corpus]`** (design fixed = LO 26.2 Markdown import; only its reliability is
+  empirical) — see below.
+  **No chain-free fallback for `MD→PDF` `[DECIDED — flag explicitly]`:** `MD→DOCX/ODT/RTF`
+  fall back to **pandoc** (single engine), but **`MD→PDF` has NO single-engine fallback** —
+  the `MD→pandoc-HTML→LibreOffice-PDF` chain is **explicitly disallowed** (no chains). So if
+  the LO 26.2 Markdown-import corpus gate **fails**, `MD→PDF` must be **demoted to parked**
+  (per the SSOT v1-DoD second exception — a pair may be parked rather than shipped broken),
+  **not** silently routed through a chain. Phase 3 must **not** assume a silent fallback
+  exists for `MD→PDF`; the corpus result decides ship-vs-park.
 - **Options/settings:** none surfaced. pandoc input dialect fixed to `gfm`
   (GitHub-Flavored: tables, task lists, strikethrough, autolinks) — the dialect a
   normal person's `.md` most likely is. `MD→HTML` uses `--standalone
@@ -499,9 +504,13 @@ nag.
    is unproven on the v1 corpus. The v1 default is **(a) LibreOffice imports `.md`
    and exports PDF/ODT/DOCX directly** (single-engine); the documented fallback,
    **only if the corpus shows LO MD import unreliable**, is **(b) pandoc owns
-   `MD→DOCX/ODT/RTF/HTML/TXT`** while `MD→PDF` stays LO. A `MD→(pandoc HTML)→(LO
-   PDF)` chain is **disallowed** (§3.2). Genuinely empirical → deferred to corpus
-   validation, not an open design question.
+   `MD→DOCX/ODT/RTF/HTML/TXT`**. A `MD→(pandoc HTML)→(LO PDF)` chain is
+   **disallowed** (§3.2). **`MD→PDF` has NO chain-free fallback `[DECIDED]`:** unlike
+   `MD→DOCX/ODT/RTF` (which fall back to pandoc), `MD→PDF` can ONLY be served by LO's
+   Markdown import — pandoc has no single-engine PDF path here without the disallowed chain.
+   So **if the LO 26.2 corpus gate fails, `MD→PDF` is DEMOTED TO PARKED** (per the SSOT
+   v1-DoD second exception), not chained and not shipped broken. Genuinely empirical →
+   deferred to corpus validation, not an open design question.
 2. **`RTF→TXT/MD/HTML` engine ownership — `[DEFER: corpus]`.** pandoc owns the RTF
    down-conversions **unless** corpus testing shows its RTF reader too lossy
    (super/subscript, complex tables), in which case **LibreOffice** takes them.

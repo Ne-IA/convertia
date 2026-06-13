@@ -298,9 +298,13 @@ batch grouping (§1.3).
    These peeks are **bounded member reads in memory-safe Rust** (no third-party
    decoder, §2.12), so they stay in-core and cheap; they run only for the relevant
    detected types, not every item. **`CollectedSummary.notes` (§1.4) is produced
-   here** — **all four `CollectedNoteKind` variants** (`MultipleSheets`, `AnimatedSource`,
-   `MultiSizeIcon`, `EmbeddedCoverArt`) now have a declared producer in this step, so the
-   enum and its producer agree (no unreachable variant).
+   here** — **all four typed `CollectedNoteKind` variants** (`MultipleSheets`,
+   `AnimatedSource`, `MultiSizeIcon`, `EmbeddedCoverArt`) have a declared producer in this
+   step. The fifth variant, **`Other`**, is a **reserved forward-compatible extension point
+   emitted by no current (v1) engine** — it carries an arbitrary `detail` so a future
+   detection note can be surfaced without a wire-type change, and is rendered via the §5
+   generic-note fallback if ever produced. So every *typed* variant has a producer and the
+   one catch-all is intentionally unproduced-in-v1 (not an unreachable bug).
 
 ### Detection result model `[DECIDED]`
 
@@ -416,7 +420,8 @@ iff their `UserFacingFormat` is equal.
 // "detected: X" message (not a generic empty report):
 //   Single → CollectedSet::Single ; Mixed → CollectedSet::Mixed{found} ;
 //   a lone Unsupported → CollectedSet::Unsupported{detected} ;
-//   a lone Uncertain → CollectedSet::Uncertain{note} ; otherwise → CollectedSet::Empty.
+//   a lone Uncertain → CollectedSet::Uncertain{note} ;
+//   otherwise → CollectedSet::Empty{skipped} (skip reasons projected from EmptyReport.outcomes).
 fn group(detected: Vec<DetectionResult>) -> Grouping;
 
 enum Grouping {
@@ -448,7 +453,12 @@ order: **(1)** if there is **exactly one** item and its outcome is
 there is **exactly one** item and its outcome is `DetectionOutcome::Uncertain { best_guess }`,
 → `CollectedSet::Uncertain { note }` (the §1.2 uncertainty note, from `best_guess`); **(3)**
 otherwise (zero items, or 2+ ineligible items of mixed/none kinds) →
-`CollectedSet::Empty` (the generic "nothing here I can convert"). This is the single
+`CollectedSet::Empty { skipped }` (the generic "nothing here I can convert") — **`skipped`
+is projected from `EmptyReport.outcomes`**: each ineligible item becomes a `SkippedItem
+{ item, source, reason: SkipReason }` (§0.6), so the per-item skip reasons §5.2 state-10
+shows are **carried on the wire**, not discarded (a 2+ all-ineligible drop no longer
+collapses to a reason-less Empty). The genuinely-zero-items case (cancelled dialog /
+drained-empty `PendingIntake`) is `Empty { skipped: vec![] }`. This is the single
 owner of the lone-Unsupported / lone-Uncertain specificity; §5.2 row 2 routes all three
 to the *Unsupported* screen (state 10) with the variant-specific copy.
 
@@ -461,8 +471,14 @@ to the *Unsupported* screen (state 10) with the variant-specific copy.
   affordance in v1 (mixed-format handling is parked — SSOT *Future Ideas*). This is
   a **distinct** behaviour from skipping one bad item mid-run (§1.9): the mixed
   refusal happens **before** any conversion and rejects the whole drop.
-- **`Empty`** → "nothing here I can convert" with the detected reasons (e.g. "all
-  files were unreadable" / "only hidden files were found").
+- **`Empty { skipped }`** → "nothing here I can convert" with the detected reasons
+  (e.g. "all files were unreadable" / "all of an out-of-scope type") — the §0.6
+  `skipped: Vec<SkippedItem>` payload carries the per-item reasons so §5.2 state-10 can
+  tally them ("N files, none convertible — M unreadable, K unsupported, …", using the
+  §0.6 `SkipReason` set); the reasons are no longer lost when 2+ ineligible items collapse
+  to Empty. The **all-hidden** drop is the genuinely-zero-items case (hidden/system files
+  are walk-filtered and never become `SkippedItem`s, §1.1) → `Empty { skipped: vec![] }`,
+  rendered with the plain "only hidden files were found" copy (no tally).
 
 **De-dup interaction:** the resolved-identity de-dup (§2.3) runs in §1.1 as the
 set is frozen, so by grouping time each member is a unique resolved file. Two
@@ -806,6 +822,14 @@ enum InvocationResult {
   `out_tmp.is_some()` (the encode). The probe's only output is the parsed `ProbeOutput`
   handed to `plan_encode`; there is no `*.part`, hence nothing for the §2.6 sweep or the
   cleanup table to handle on the probe leg. (§3.2.1 / §3.5.1 own the sequencing rationale.)
+  **Probe stdout is BUFFERED-and-JSON-parsed, NOT routed to the line reader `[DECIDED]`:**
+  the probe sub-invocation runs `ffprobe -print_format json …`, which emits a **single JSON
+  blob** (not key=value progress lines). So for the probe invocation §1.7 **captures stdout
+  in full and hands the complete buffer to the §3.5.1 adapter's `ProbeOutput` JSON parser** —
+  it does **not** feed probe stdout to the line-by-line progress reader. The line-by-line
+  progress reader (above) is used **only** for invocations with a streaming `ProgressModel`
+  (`FfmpegKeyValue` for the encode, `VipsStdout` for the image-worker); the probe's
+  `CoarseSpawnDone` model emits a start→done tick while its stdout is buffered for the parser.
 
 ### Cancellation / kill mechanism `[DECIDED — sole owner]`
 

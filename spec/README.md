@@ -58,6 +58,71 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 > empirical number/validation remains; `[OPEN]` = a genuine unresolved owner-level
 > call. After this pass the vast majority are decided or deferred.
 
+#### Resolved in the synthesis-fix pass (7 blockers + alignment) `[DECIDED]`
+- **C4 never overrides a C5 destination** (was: "C4 freezes after C5") — the contradiction
+  with the §5.2 rows-4/5 self-loop + §5.8 debounced re-call is removed: a post-C5
+  target/option change still re-runs C4 (nothing goes stale), but the recomputed plan
+  carries the C5-resolved destination; destination authority stays with C5. Owner: §0.4.1;
+  propagated §5.8 / §5.2 rows 4/5 (no freeze ref) / two resolved-decision entries below.
+- **`CollectedNoteKind` — four typed variants have producers; `Other` is a reserved
+  extension point** — the false "four variants / no unreachable" claim (enum has five) is
+  corrected: the typed four each have a §1.2 producer, `Other` is a forward-compatible
+  catch-all emitted by no v1 engine. Owner: §1.2 / §1.4.
+- **`tauri-plugin-dialog` added to the §0.8 plugin table** — both C2a/C2b pickers depend on
+  `DialogExt`; `tauri_plugin_dialog::init()` registration noted in §7.1 Builder wiring
+  (verified vs the v2 plugins-workspace docs). Owner: §0.8 / §7.1.
+- **`image_alpha_flatten` wired in images.md** — the §2.9 LossyKind now has its hook: the
+  transparency-policy section + the JPG and BMP *As target* entries carry it, and every
+  raster→ICO matrix cell is `✓~` (matching the ICO entry's `image_downscale` prose). Owner:
+  images.md / §2.9.
+- **`CollectedSet::Empty { skipped: Vec<SkippedItem> }`** — was payload-less, dropping the
+  per-item skip reasons §1.3 promised to show; now carries them (projected from
+  `EmptyReport.outcomes`) so a 2+ all-ineligible drop renders "N files, none convertible (M
+  unreadable, K unsupported, …)". Owner: §0.6; propagated §1.3 / §5.2 state-10 / UnsupportedNotice.
+- **Minimum body text-size DoD value pinned** — `--text-base = 1rem/16px` is the body floor
+  (`--text-xs` is supplementary labels only); §5.6 adds the rule; verified by the §6.6 human
+  walkthrough against the §5.5 token minimum (§6.10 row 6 qualified — axe-core does not check
+  text size). Owner: §5.5 / §5.6 / §6.10.
+- **ICO-save via `magicksave` demoted to `[DEFER: corpus/build spike]`** — ImageMagick's ICO
+  encoder 256px/multi-size support is unverified (and libvips' magicksave docs do not list
+  `.ico` for save); the §6.1.3 build assertion is gated on the spike, with an in-core Rust
+  ICO container assembler (wrapping vips-produced PNG/BMP frames) as the named fallback.
+  Owner: images.md / §3.5.5 / §6.1.3.
+- **SHOULD-level alignment (same pass) `[DECIDED]`** — **engine-asset cache hosting** =
+  `actions/cache` keyed `<engine>-<version>-<triple>` + checksum-verified pinned-URL
+  populate/fallback, macOS keeps two per-triple keys per engine for the `lipo` universal build
+  (§6.1.3); **Windows network confinement** = AppContainer network-isolation profile / per-program
+  firewall (WFP) rule — **NOT** a Job Object (which cannot restrict sockets), §2.12.3/§6.7.3;
+  **macOS CI smoke** runs on the build-output dir (no quarantine) + writes to a temp dir (no TCC
+  prompt), TCC moved to the §6.6 walkthrough (§6.4.4/§6.4.6); **FFmpeg SSRF floor** reframed as
+  **build-time-primary** (network protocol family absent at configure time; `-protocol_whitelist`
+  is defence-in-depth, bypassable per CVE-2023-6605), §3.5.1/§6.1.3; **x265-in-libheif** = the
+  worker-with-x265-loaded is a **GPL combined work** (separate-process keeps the MIT core clean;
+  the relinkable-source bundle covers x265's GPL corresponding-source), §3.6.1/§6.1.3; **x265
+  libheif-plugin runtime discovery** via `LIBHEIF_PLUGIN_PATH` (one whitelisted var) or libheif's
+  explicit plugin-load API, §3.5.5; **HEIC `effort` exposure** corpus-gated (hidden for HEIC if
+  inert), §images.md; **`store:default`** has no per-file scope (convention-scoped), §0.10/§7.4.2;
+  **WebView source-path echo (app://intake → C1)** = §0.11 **T2b** (accepted bounded harm,
+  freeze-time §1.1 re-validation is the bound); **EXDEV cross-volume intermediate** free-space
+  re-checked before the copy (§2.14.3); **§2.6 space-restoration** carve-out broadened to the
+  wedged-descendant graceful-cancel case (§2.6.3); **run-end cleanup** enumerates the RECORDED
+  `final_dir` set incl. divert/cross-volume dirs (§2.6.2); **§2.3.3↔§2.7.1** subtree ancestor-
+  creation ordering cross-referenced; **ffprobe stdout** buffered-and-JSON-parsed, not line-read
+  (§1.7); **ErrorKind::MixedDrop** has no IpcError producer (it is the `CollectedSet::Mixed`
+  success return) (§0.4.3); **FLAC compression** range corrected to **0–8** (libFLAC max 8;
+  FFmpeg 9–12 non-standard), audio.md; **MD→PDF** = no chain-free fallback → parks if the LO 26.2
+  gate fails, documents.md; **extract-audio AAC copy** gated at the M4A-target level (not the
+  copy/encode branch), cross-category.md; **FFmpeg ENCODER set** now generated-and-asserted like
+  decoders (`ffmpeg-required-encoders.lock`), §6.1.3; **UI/UX** five derivability gaps
+  (Targets→Confirm back-arrow + 7a node + app://fault wildcard pinned as notes; ConvertingNote
+  reads the store, props = `note: string|null`; native-drop-in-non-Idle rule; CommandError
+  inline-error slot) + the keyboard/focus/ARIA edge-case cluster (7a/back-nav/RerunPrompt/AppFault),
+  §5.2/§5.3/§5.4/§5.6/§5.8; **build/test alignment** (§3.9.1→§3.9.2 ceiling cross-ref; WebdriverIO
+  v9 + `@axe-core/webdriverio` pinned in §0.8; macOS single-run-180min operative trigger, 3-run
+  average post-v1; `[OPEN-6.1b]`→AppImage-only v1; EngineHealth NativeCsvTsv synthesized not
+  loop-derived; warm magic-byte check executables-only; RunEvent::Exit cleanup = idempotent §2.6
+  path), §6/§7.
+
 #### Resolved in this round (SVG-API / FAT-exFAT / engine-derivability / NSIS / facts) `[DECIDED]`
 - **SVG/librsvg LFR primary control corrected to the REAL librsvg API** — was a
   non-existent `set_load_external_resources(false)` + a self-cancelling base-URL step. Now:
@@ -515,11 +580,13 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   membership covers both. Owner: §0.6 / §1.12 / §7.7.3.
 - **C4 vs C5 asymmetry enforced** — C4 is callable at any point in state 4 (eager initial
   call with the pre-highlighted default, then re-callable/debounced ~150 ms on any
-  target/option change, §5.8) and computes `rerun` + the §1.10 `preflight` verdict; it
-  **freezes after** a C5 on the same collected-set (a C4-after-C5 is a no-op/error); C5
+  target/option change, §5.8) and computes `rerun` + the §1.10 `preflight` verdict; C5
   never recomputes `rerun` and re-evaluates only the destination-volume `preflight`. The
-  ONLY ordering rule is the post-C5 freeze — there is no "fires exactly once". Owner:
-  §0.4.1.
+  ONLY ordering rule: **C4 never overrides a C5 destination** — a post-C5 target/option
+  change still re-runs C4 (so nothing goes stale), but the recomputed plan **carries the
+  C5-resolved destination** in C4's `destination: DestinationChoice` argument; destination
+  authority stays with C5. There is no "fires exactly once" and no post-C5 C4 freeze.
+  Owner: §0.4.1.
 - **`OutputPlan.scratch_dir` → `publish_temp_dir`** (= `final_dir` in v1; the `*.part` is a
   sibling dotfile, not a subdir, §2.14.1); kept distinct from the kind-2 engine scratch
   root. Owner: §1.8 / §0.6.
@@ -568,7 +635,8 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   NO macOS WKWebView driver** (safaridriver ref removed — it automates Safari, not a
   WKWebView); the Linux egress snippet gets a `/status` readiness probe + `kill` +
   propagated exit; the Windows egress is a **per-run `New-NetFirewallRule -Program <abs
-  path>`** or network-denied Job Object, with the §2.11.4 packet-monitor as the real gate;
+  path>`** or an **AppContainer network-isolation profile** (NOT a Job Object — that cannot
+  restrict sockets), with the §2.11.4 packet-monitor as the real gate;
   Linux runner pinned to **`ubuntu-22.04`** (FUSE2/FUSE3 + glibc drift); `cargo-cyclonedx
   --spec-version 1.5` **verified exposed**. Owner: §6.4.6/§6.4.6a / §6.7.3 / §6.1.4 / §6.3.1.
 - **macOS reload-during-run is NOT a supported recovery path in v1** — known open Tauri
@@ -587,10 +655,12 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   §0.4.2 table + §5.8 comments to match the Rust `bool`. Owner: §0.4.2 / §5.8.
 
 #### Resolved in the consolidation pass `[DECIDED]`
-- **C4 call-frequency = multi-call in state 4, freeze after C5** — C4 is callable at any
-  point in state 4 (eager initial call + debounced re-calls on target/option change, §5.8)
-  and computes `rerun` + the §1.10 `preflight`; the one-shot "fires exactly once" rule is
-  removed; the ONLY ordering rule is the post-C5 freeze. Owner: §0.4.1 / §5.8.
+- **C4 call-frequency = multi-call in state 4, C4 never overrides a C5 destination** — C4
+  is callable at any point in state 4 (eager initial call + debounced re-calls on
+  target/option change, §5.8) and computes `rerun` + the §1.10 `preflight`; the one-shot
+  "fires exactly once" rule is removed; the ONLY ordering rule is that a post-C5 C4 re-run
+  carries the C5-resolved destination (C4 never changes the destination away from the C5
+  value — destination authority lives with C5). Owner: §0.4.1 / §5.8.
 - **Exclusive-rename primitive named per platform** — Linux `renameat2(RENAME_NOREPLACE)`
   / macOS `renameatx_np(RENAME_EXCL)` (macOS has NO renameat2) / Windows
   `MoveFileExW`-without-`REPLACE`; common `link`+`unlink` fallback; residual `.part`
@@ -721,9 +791,13 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **ThemeToggle keyboard = Tab-reachable only** (no dedicated accelerator) — recorded in §5.10
   with the FileList-disclosure / Convert-more / Reveal-residue rows; Confirm-gate assertive SR
   string + canonical no-warranty About string added. Owner: §5.10 / §5.7 / §5.9.
-- **CollectedNoteKind all four variants have producers** — §1.2 step 4 adds the ICO ICONDIR
-  count peek (MultiSizeIcon) + the audio cover-art tag peek (EmbeddedCoverArt); the bare-variant
-  + `detail` carrier convention clarified. Owner: §1.2 / §0.6.
+- **CollectedNoteKind — four typed variants have producers; `Other` is a reserved
+  extension point** — §1.2 step 4 adds the ICO ICONDIR count peek (MultiSizeIcon) + the
+  audio cover-art tag peek (EmbeddedCoverArt); the bare-variant + `detail` carrier
+  convention clarified. The enum has **five** variants: the four typed ones each have a
+  declared §1.2 producer, and `Other` is a forward-compatible catch-all **emitted by no v1
+  engine** (not an unreachable bug) — the §1.2 "no unreachable variant" claim is scoped to
+  the typed four. Owner: §1.2 / §0.6.
 - **CycloneDX→SPDX export tool named** = CycloneDX CLI `convert` (`--output-format spdxjson`;
   Syft `convert` fallback), pinned in §3.8. **minisign key-rotation policy** added (announced
   signed commit + retained `minisign-retired.pub` + release-note). Owner: §6.3.1 / §6.2.3.
@@ -790,8 +864,10 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **Images defaults to confirm vs corpus**: GPS/location-EXIF strip-vs-preserve;
   APNG-output vs first-frame-collapse (lean collapse); ICO non-square pad-vs-crop
   (lean pad); default Q values (JPG 82 / WEBP 80 / HEIC&AVIF 60); **`heifsave effort`
-  (integer 0–9, libvips param — NOT an x265 `preset` string) default `5`, lower-vs-keep
-  for HEIC batch speed**. Owner: images.md.
+  (integer 0–9, libvips param — NOT an x265 `preset` string) default `5` — but HEIC
+  `effort` EXPOSURE is `[DEFER: corpus]`-gated: exposed only if the corpus confirms it
+  measurably steers the bundled x265/HEVC path, else HIDDEN for HEIC (no dead control);
+  AVIF `effort` stays exposed (libvips-documented as honoured)**. Owner: images.md.
 - **OGG/OPUS cover-art round-trip** — cover art for OGG/OPUS is a **FLAC PICTURE
   metadata block** (`-map_metadata 0`), not a video stream (`-map 0:v? -c:v copy` is
   MP3/M4A/FLAC only). Verify the round-trip on the §6.4 corpus; if unreliable, move
@@ -835,11 +911,22 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 ### Genuinely still open `[OPEN]` (owner-level, not yet resolvable)
 - **None at the owner level after this round.** The items the prior pass's "None open"
   claim had actually still left open — **NSIS-vs-portable (`[OPEN-6.1a]`)**, **HEVC/H.265
-  MOV→MP4 default**, **§1.6 defaults registry (`[REC]`)** — are now explicitly `[DECIDED]`
-  (this round, above), so the claim is now true rather than aspirational. The remaining
-  unknowns are **empirical calibration only** (`[DEFER: corpus/build]` — resource-budget
-  digits, the ≤400 MB compressed ceiling vs full-CJK+pandoc upper bound, CJK font breadth,
-  the per-OS privilege-drop profile contents, the bundled libvips/libheif HEVC-path `effort`
-  honour, the §2.1 publish-primitive availability spike incl. the FAT/exFAT detection) —
-  design-decided, awaiting a measured number or a real-world validation, not an owner-level
-  design call.
+  MOV→MP4 default**, **§1.6 defaults registry (`[REC]`)** — are `[DECIDED]`; the
+  synthesis-fix round additionally resolved **`[OPEN-6.1b]` Linux `.deb`** (→ AppImage-only
+  v1, `.deb` post-v1), the **engine-asset cache hosting** (→ `actions/cache` keyed
+  `<engine>-<version>-<triple>` + pinned-URL fallback), the **Windows network-confinement
+  mechanism** (→ AppContainer profile / per-program firewall rule, NOT a Job Object), the
+  **`store:default` scope** (no per-file scope — convention-scoped), the **min body
+  text-size** (→ `--text-base` = 16px floor), the **WebdriverIO pin** (→ v9), and the
+  **`CollectedSet::Empty` payload / CollectedNoteKind `Other` / C4-vs-C5 destination
+  authority / `tauri-plugin-dialog` / `image_alpha_flatten` wiring** blockers. So the claim
+  is true rather than aspirational. The remaining unknowns are **empirical calibration
+  only** (`[DEFER: corpus/build]` — resource-budget digits, the ≤400 MB compressed ceiling
+  vs full-CJK+pandoc upper bound, CJK font breadth, the per-OS privilege-drop profile
+  contents, the **bundled libvips/libheif HEVC-path `effort` honour (which also gates whether
+  the HEIC `effort` control is EXPOSED or hidden, §images.md)**, the **ICO multi-size/256px
+  `magicksave` build spike (else the in-core Rust ICO assembler fallback ships, §images.md/
+  §6.1.3)**, the **LO 26.2 Markdown-import gate (else `MD→PDF` parks — no chain-free
+  fallback, §documents.md)**, and the §2.1 publish-primitive availability spike incl. the
+  FAT/exFAT detection) — design-decided, awaiting a measured number or a real-world
+  validation, not an owner-level design call.

@@ -29,7 +29,9 @@ Rows = **source** format, columns = **target** format. Cell legend:
 
 Engine short-names: **vips** = libvips raster core (incl. `heifsave` for ALL
 HEIC/AVIF *encode* — `compression=hevc` via the x265 libheif plugin, `compression=av1`
-via libaom — and `magicksave` via the **required** ImageMagick delegate for BMP/ICO),
+via libaom — and `magicksave` via the **required** ImageMagick delegate for BMP, and the
+default ICO-save path (ICO save **`[DEFER: build spike]`** §3.5.5; in-core Rust ICO
+assembler fallback)),
 **svg** = SVG rasteriser (**librsvg**, libvips' native `svgload` backend) **invoked
 via libvips' SVG loader** (so the *raster save* stays in vips — still one engine for
 the pair; resvg is NOT a libvips backend and is **not shipped** [DECIDED] §3.1 row 1c).
@@ -39,14 +41,14 @@ for the binding.
 
 | src ＼ tgt | JPG | PNG | WEBP | GIF | BMP | TIFF | HEIC | AVIF | ICO |
 |-----------|-----|-----|------|-----|-----|------|------|------|-----|
-| **JPG**   | —          | ✓ vips      | ✓★~ vips     | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips |
-| **PNG**   | ✓~ vips    | —           | ✓★~ vips     | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips |
-| **WEBP**  | ✓★~ vips   | ✓ vips      | —            | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips |
-| **GIF**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | —            | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips |
-| **BMP**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | —           | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips |
-| **TIFF**  | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | ✓ vips      | —           | ✓~ vips      | ✓~ vips      | ✓ vips |
-| **HEIC**  | ✓★~ vips   | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips      | ✓ vips      | —          | ✓~ vips      | ✓ vips |
-| **AVIF**  | ✓★~ vips   | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips    | —            | ✓ vips |
+| **JPG**   | —          | ✓ vips      | ✓★~ vips     | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips |
+| **PNG**   | ✓~ vips    | —           | ✓★~ vips     | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips |
+| **WEBP**  | ✓★~ vips   | ✓ vips      | —            | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips |
+| **GIF**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | —            | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips |
+| **BMP**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | —           | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓~ vips |
+| **TIFF**  | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | ✓ vips      | —           | ✓~ vips      | ✓~ vips      | ✓~ vips |
+| **HEIC**  | ✓★~ vips   | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips      | ✓ vips      | —          | ✓~ vips      | ✓~ vips |
+| **AVIF**  | ✓★~ vips   | ✓ vips      | ✓~ vips      | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips    | —            | ✓~ vips |
 | **ICO**   | ✓~ vips    | ✓★ vips     | ✓~ vips      | ✓~ vips      | ✓ vips      | ✓ vips      | ✓~ vips      | ✓~ vips      | —      |
 | **SVG**†  | ✓~ svg     | ✓★~ svg     | ✓~ svg       | ✓~ svg       | ✓~ svg      | ✓~ svg      | out*         | out*         | ✓~ svg |
 
@@ -96,14 +98,16 @@ savers are libvips load/save modules, not separate pipeline stages), never a cha
 
 | Short | Engine | Role | Licence | Patent | Platforms |
 |-------|--------|------|---------|--------|-----------|
-| **vips** | **libvips** (raster core, built with libheif/libde265, libaom/dav1d, cgif, the **required** ImageMagick delegate, and the librsvg `svgload` module) | Decode+encode JPG/PNG/WEBP/GIF/BMP/TIFF/ICO; HEIC/AVIF **decode** (libheif / dav1d load modules) **and encode** (`heifsave compression=hevc\|av1`); BMP/ICO save via the required ImageMagick `magicksave` delegate; SVG load (librsvg); orchestrates resize/colour/alpha | LGPL-2.1+ (libvips); cgif MIT; ImageMagick permissive; **x265 GPL-2.0-or-later (dynamically-loaded libheif plugin)** | **HEVC patents → §3.4** (HEIC); AV1 royalty-free (AVIF, ship-posture §3.4) | Win / macOS / Linux (HEIC per §3.4 disposition) |
+| **vips** | **libvips** (raster core, built with libheif/libde265, libaom/dav1d, cgif, the **required** ImageMagick delegate, and the librsvg `svgload` module) | Decode+encode JPG/PNG/WEBP/GIF/BMP/TIFF/ICO; HEIC/AVIF **decode** (libheif / dav1d load modules) **and encode** (`heifsave compression=hevc\|av1`); BMP save via the required ImageMagick `magicksave` delegate; **ICO save = default `magicksave`, `[DEFER: build spike]` (in-core Rust ICO assembler fallback, §3.5.5)**; SVG load (librsvg); orchestrates resize/colour/alpha | LGPL-2.1+ (libvips); cgif MIT; ImageMagick permissive; **x265 GPL-2.0-or-later (dynamically-loaded libheif plugin)** | **HEVC patents → §3.4** (HEIC); AV1 royalty-free (AVIF, ship-posture §3.4) | Win / macOS / Linux (HEIC per §3.4 disposition) |
 | **svg** | **librsvg** (libvips' native `svgload` backend; resvg is NOT a libvips backend and is **not shipped**, §3.1 row 1c) | Rasterise SVG → bitmap (no scripting, no network), **invoked as libvips' SVG load module** so vips saves the raster | librsvg LGPL-2.1+ | none | Win / macOS / Linux |
 
 **Single-engine binding (resolves §3.2 for this category):**
 
 1. **Raster ↔ raster** (JPG/PNG/WEBP/GIF/BMP/TIFF/ICO any-to-any) → **vips** (GIF
-   save via native cgif; **BMP load+save and ICO save via the required ImageMagick
-   `magicksave`/`magickload` delegate** — libvips has no native BMP/ICO save, §3.1).
+   save via native cgif; **BMP load+save via the required ImageMagick
+   `magicksave`/`magickload` delegate** — libvips has no native BMP save, §3.1; **ICO save
+   = default `magicksave`, `[DEFER: build spike]` with an in-core Rust ICO assembler
+   fallback wrapping vips frames, §3.5.5**).
 2. **→ HEIC** (any raster source) → **vips `heifsave compression=hevc`** (the x265
    libheif plugin). **HEIC →** any raster target → **vips** (libheif as the HEIC *load*
    module). **HEIC → AVIF** → **vips `heifsave compression=av1`** — one vips process.
@@ -155,6 +159,10 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
 - **As target ← sources:** PNG, WEBP, GIF, BMP, TIFF, HEIC, AVIF, ICO, SVG.
   Always **vips** (`jpegsave`). Producing JPG **always flattens transparency**
   onto a background (JPEG has no alpha) → see *Edge cases*.
+  **Lossy?:** a source **with alpha → JPG** is lossy by alpha-flatten →
+  **`image_alpha_flatten`** (§2.9) — the predictable-loss note fires for any
+  alpha-carrying source (PNG/WEBP/GIF/TIFF/HEIC/AVIF/ICO/SVG with transparency);
+  baseline JPEG is also lossy by codec (`image_lossy_codec`, §2.9) at any Q.
 - **Engine(s):** **vips** `jpegsave`. No patent flag (baseline JPEG is free).
 - **Options/settings:**
   - *Basic:* **Quality `Q` — default `82`** (libvips lib default is 75; we raise
@@ -298,9 +306,11 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   No patent.
 - **Options/settings:** none required (BMP is uncompressed). *Advanced:* none
   meaningful for v1 (no RLE toggle exposed).
-- **Lossy?:** BMP is uncompressed/lossless → **`→ BMP` is not lossy**; the source's
-  bit depth is written out. (A source that had alpha loses it only if writing a
-  legacy 24-bit BMP — see edge cases.)
+- **Lossy?:** BMP's codec is uncompressed/lossless, so a no-alpha source `→ BMP` is
+  **not lossy** (the source's bit depth is written out). **But a source WITH alpha →
+  BMP is lossy by alpha-flatten** (v1 writes 24-bit BMP, §edge-cases) →
+  **`image_alpha_flatten`** (§2.9) — the predictable-loss note fires for any
+  alpha-carrying source (PNG/WEBP/GIF/TIFF/HEIC/AVIF/ICO/SVG with transparency).
 - **Edge cases:** **Transparency:** classic BMP has no alpha; 32-bit BMP can carry
   alpha but support is patchy — v1 writes **24-bit BMP and flattens alpha** onto
   white (predictable, universally readable). Huge BMPs are large but fine (handled
@@ -355,18 +365,20 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   - *Basic:* **Quality — default `60`** (range 0–100; libheif/x265 mid-quality;
     visually near-transparent for photos at far smaller size than JPEG).
   - *Advanced:* `lossless` — default **off**; **`effort` (integer 0–9, libvips
-    `heifsave` param; NOT a `preset` string) — default `5` `[DECIDED]`** (higher =
-    slower/smaller). libvips `heifsave` has **no `preset` string** at the API level: it
-    exposes the speed/size trade-off as the integer `effort`, which libvips maps to the
-    libheif encoder `speed` setting (`speed = 9 - effort`). **x265-path caveat
-    `[DECIDED]`:** libvips currently documents `effort` as primarily honoured by the AV1
-    encoder; for the HEVC/x265 plugin path the steer still flows through libheif's
-    `speed`/encoder-params, so the encode quality/speed is governed by **libheif's
-    HEVC-encoder default tuned via `effort`** rather than a directly-passed x265 `preset`.
-    v1 ships `effort 5` and `[DEFER: corpus]` confirms whether the bundled
-    libvips/libheif HEVC path measurably honours `effort` (if it does not steer x265 at
-    all on the bundled build, `effort` is a no-op for HEIC encode and the libheif x265
-    default applies — acceptable for v1, recorded here so it is not a surprise);
+    `heifsave` param; NOT a `preset` string) — default `5`, but exposure is
+    `[DEFER: corpus]`-GATED** (higher = slower/smaller). libvips `heifsave` has **no
+    `preset` string** at the API level: it exposes the speed/size trade-off as the integer
+    `effort`, which libvips maps to the libheif encoder `speed` setting (`speed = 9 -
+    effort`). **x265-path caveat `[DECIDED — gate exposure, do not ship a dead control]`:**
+    libvips currently documents `effort` as primarily honoured by the AV1 encoder; for the
+    HEVC/x265 plugin path it may **not measurably steer** x265 on the bundled build.
+    **Resolution (no-surprise UI):** the HEIC `effort` control is **exposed ONLY IF the
+    `[DEFER: corpus]` spike confirms it measurably steers the bundled x265/HEVC path**; **if
+    the corpus shows `effort` is inert for HEIC, the control is HIDDEN for HEIC targets** (the
+    libheif x265 default applies silently — ConvertIA does **not** show a control that does
+    nothing). This differs from **AVIF** `effort` (libvips-documented as honoured → stays
+    exposed). The §6.1.3 `heifsave effort` capability assertion (arg exists) is necessary but
+    not sufficient — the steer-confirmation is the corpus gate that decides exposure;
     `chroma` 4:2:0 default; bit depth 8 default (10-bit advanced).
 - **Lossy?:** HEIC encode is **lossy by default** (`→ HEIC` flagged → §2.9; flip
   `lossless`). HEIC→JPG is lossy (JPEG). HEIC→PNG/TIFF is lossless w.r.t. the
@@ -425,11 +437,17 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   an ICO holds several sizes, the **largest image** is selected as the source
   pixels (most useful), with the rest discarded (note if >1 size). **vips**.
 - **As target ← sources:** JPG, PNG, WEBP, GIF, BMP, TIFF, HEIC, AVIF, SVG —
-  **vips** (ICO save via the **required** ImageMagick delegate). The classic everyday
-  use is **PNG/JPG/SVG → ICO** to make a favicon/app icon.
-- **Engine(s):** **vips** (ICO load built-in; **ICO save via the required ImageMagick
-  `magicksave` delegate** — libvips has no native ICO saver, so the multi-size ICO
-  assembly always goes through ImageMagick, §3.1 row 1d). One vips process. No patent.
+  **vips** (ICO save via the ImageMagick `magicksave` delegate **by default**, or the
+  in-core Rust ICO assembler fallback — `[DEFER: build spike]`, §3.5.5/§6.1.3). The classic
+  everyday use is **PNG/JPG/SVG → ICO** to make a favicon/app icon.
+- **Engine(s):** **vips** (ICO load built-in; **ICO save `[DEFER: corpus/build spike]`** —
+  the default path is the ImageMagick `magicksave` delegate (libvips has no native ICO
+  saver), but ImageMagick's ICO encoder has documented trouble with **256px / multi-size**
+  entries, so the multi-size-incl-256px capability is **unverified** until the §6.1.3 build
+  spike confirms it (§3.5.5). **Fallback if the spike fails: an in-core Rust ICO container
+  assembler** wrapping vips-produced per-size PNG/BMP frames — ICO is a trivial container,
+  so this removes ImageMagick from the ICO path entirely while keeping vips as the per-frame
+  encoder. Either way: one vips process for the frames. No patent.
 - **Options/settings:**
   - *Basic:* **Icon sizes — default a standard multi-resolution set
     `[16, 32, 48, 256]`** (covers favicons + Windows app icons in one file). The
@@ -558,7 +576,10 @@ open contradicts "it just works").
   TIFF, HEIC, AVIF, ICO).
 - For alpha-incapable targets (**JPG, BMP**) alpha is **flattened onto a
   background** — default **white** (Advanced: choose background colour). This is a
-  predictable, calm inline note, not a blocker.
+  predictable, calm inline note, not a blocker → **§2.9 `image_alpha_flatten`** (the
+  canonical LossyKind that owns this disclosure; the JPG and BMP *As target* entries
+  carry the matching `lossy: image_alpha_flatten` hook so the §6.7.1 Lane-A guard and
+  the matrix below agree).
 
 ### Animation policy
 - **Animated sources:** GIF, animated WEBP, APNG, animated AVIF (`avis`),

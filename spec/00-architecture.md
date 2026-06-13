@@ -291,12 +291,19 @@ signatures; the TS side is generated (§0.4.5 codegen).
     never go stale. There is **no "fires exactly once"** constraint — the multi-call
     behaviour §5.8 requires is canonical (an orchestrator that rejected the re-calls would
     break the Targets/options UI).
-  - **C4 freezes after C5 on the same collected-set `[DECIDED]`.** Once the user has
-    changed the destination (a C5 on a given `collectedSetId`), a **subsequent C4 on that
-    same collected-set is a no-op/error** (the held C4 verdict + the C5-resolved
-    destination are authoritative; further destination changes go through C5 only). This
-    is the ONLY ordering rule — it bounds re-planning after a destination override, not the
-    in-state-4 re-calls before one.
+  - **C4 never overrides a C5 destination `[DECIDED]`.** Destination authority lives with
+    C5: once the user has changed the destination (a C5 on a given `collectedSetId`), a
+    **subsequent C4 on that same collected-set must carry the C5-resolved destination in its
+    `destination: DestinationChoice` argument** — C4 never resets the destination to a
+    different value. A post-C5 target/option change (the realistic §5.2 rows 4/5 flow:
+    enter-Targets → change-destination → reconsider-and-change-target) is therefore **legal
+    and still re-runs C4** (debounced, §5.8) so `rerun`, `preflight.up_front_fail`, the lossy
+    note and the "will save to …" line never go stale — but the orchestrator **feeds the
+    held C5 destination back into the recomputed plan** (the caller passes it, or the
+    orchestrator re-applies the retained C5 destination if C4 arrives carrying a stale
+    default). The bound is narrow: **C4 may re-plan freely post-C5; it just cannot change
+    the destination away from the C5 value.** Further *destination* changes still go through
+    C5 only. This is the ONLY ordering rule.
 
   So "C4 computes `rerun` + `preflight`, C5 never recomputes `rerun`" is an enforced
   orchestrator rule (computed values, not just prose); the destination-independent
@@ -409,6 +416,14 @@ pub enum ErrorKind {
 > **Note — `Cancelled` is not an `ErrorKind`.** A cancelled item is the
 > `ItemOutcome::Cancelled` variant (§0.4.2), not a failure; it never carries an
 > `IpcError`. The wire enum mirrors **only** the §2.8 taxonomy.
+>
+> **Note — `MixedDrop` is never carried as an `IpcError`.** Like `Cancelled`, **no code path
+> produces `Err(IpcError { kind: MixedDrop })`** — a mixed drop is returned as the **success**
+> value `CollectedSet::Mixed { found }` from C1 (§0.6), which drives the §5.2 `MixedDropRefusal`
+> state 9. The `MixedDrop` `ErrorKind` entry exists **only as the byte-identical wire mirror**
+> of the §2.8 catalog (so the enum stays drift-locked), **not** as a producible run/app-level
+> error — do **not** search §2.13 for a `MixedDrop` producer (there is none); its producer is
+> the `CollectedSet::Mixed` success-return.
 
 - **Both `IpcError` and `ErrorKind` derive `specta::Type` and are registered in
   `collect_types![]`** (consistent with §2.8 §2.8.2): tauri-specta generates
@@ -648,7 +663,20 @@ pub enum CollectedSet {
     Mixed { found: Vec<(UserFacingFormat, usize)> },  // → pre-flight refusal (§1.3)
     Unsupported { detected: String },                 // real but out-of-scope (§1.2)
     Uncertain { note: String },                       // can't tell (§1.2)
-    Empty,                                             // nothing eligible
+    Empty { skipped: Vec<SkippedItem> },              // nothing eligible — carries the per-item
+                                                      //   skip reasons (§1.3 projection from
+                                                      //   EmptyReport.outcomes) so the §5.2 state-10
+                                                      //   copy can show "N files, none convertible
+                                                      //   (M unreadable, K unsupported, …)" instead
+                                                      //   of a reason-less empty (SSOT Fail-clearly).
+                                                      //   The tally uses SkipReason (UnsupportedType
+                                                      //   | Uncertain | Empty | Unreadable); hidden/
+                                                      //   system files are walk-filtered and never
+                                                      //   become SkippedItems (so an all-hidden drop
+                                                      //   is Empty { skipped: vec![] }).
+                                                      //   Empty-vec for the genuinely-zero-items case
+                                                      //   (cancelled dialog / drained PendingIntake /
+                                                      //   all files hidden-filtered).
 }
 // `CollectedSet::Single` carries the FULL confirm-summary field set, so it IS the wire
 // shape C1/C2a return and the confirm gate (§1.4/§5.2) renders. `CollectedNote` is the
@@ -1140,7 +1168,7 @@ the corpus (§6.4) — engine bumps are best-effort posture (§3.8), not a gate.
 | Frontend | **React 19**, **TypeScript** (strict, no `any`), **Vite** (per platform CLAUDE.md, current major), **Tailwind CSS** | exact, lockfile |
 | Frontend state | lightweight store (recommend **Zustand**) + the generated `bindings.ts`; §5.1 owns the final choice | §5.1 |
 | Package mgr | **pnpm** (`pnpm@10.13.1` class per platform standard) | pinned |
-| Test | **Vitest** (frontend), **cargo test** + corpus harness (§6.4), property tests for guarantees | exact |
+| Test | **Vitest** (frontend) + **`vitest-axe`** (Lane-A ARIA/role/focus, §6.4.6a), **cargo test** + corpus harness (§6.4), property tests for guarantees; **E2E = WebdriverIO v9** (W3C-only, `tauri-driver`-aligned) + **`@axe-core/webdriverio`** (Lane-B live-WebView contrast gate, §6.4.6/§6.4.6a) | exact, lockfile |
 | Engines (bundled) | FFmpeg (GPL-2.0+ build — enables x264, §3.6.1), LibreOffice, poppler, pandoc, ImageMagick (required, permissive), libvips+libheif/libde265+x265-plugin/libaom/dav1d+librsvg+cgif — **all §3.1/§3.3 owned**; versions pinned + in the SBOM (§6.3). Ghostscript **[DECIDED: dropped v1]** (§3.1). | §3.8 best-effort |
 
 **Additional crates / plugins other sections depend on (pinned, in lockfile + SBOM):**
@@ -1152,6 +1180,7 @@ the corpus (§6.4) — engine bumps are best-effort posture (§3.8), not a gate.
 | **chardetng** | §1.2 | text-encoding detection for the magic-less formats |
 | **flate2** (`rust_backend`/miniz_oxide feature ONLY — pure safe Rust, NO zlib/zlib-ng C backend) | §1.2 | bounded in-core `.svgz` (1F-8B) inflate for content detection (≤64 KiB + ≤100× ratio cap); pure-Rust so the §2.12.4 "no third-party C/C++ decoder in-core" absolute holds |
 | **tauri-plugin-single-instance** | §7.1 | single-instance policy + launch-arg hand-off |
+| **tauri-plugin-dialog** | §0.4.1 C2a/C2b, §1.1, §5.4 | native file/folder picker via `DialogExt` (`app.dialog().file().pick_file(..)` / `.pick_folder(..)`), called **Rust-side** from the C2a/C2b handlers — **no `dialog:allow-open` WebView grant** (the `dialog:*` capability is only for the JS guest bindings, which ConvertIA does not use). Registered via `tauri_plugin_dialog::init()` in the §7.x Builder. |
 | **tauri-plugin-store** | §7.4 | the single `settings.json` prefs blob (theme + lastDestinationMode + verboseLog) |
 | **tauri-plugin-log** | §7.5 | local-only rotating diagnostic log + JS bridge |
 | **tauri-plugin-opener** | §7.7 | open-folder / open-file / open-url shell-out (the only OS shell-out) — called **Rust-side via `OpenerExt`** from the C9/C10 handlers (no WebView `opener:*` grant, §0.10/§7.7.1) |
@@ -1335,7 +1364,10 @@ Notes / deliberate exclusions:
   bridge (frontend errors land in the same local-only file). It grants **no network**
   — the log sink is a local file; CSP still forbids remote origins.
 - **`store:default`** is on the allowlist for the single `settings.json` prefs blob
-  (§7.4.2: theme + lastDestinationMode + verboseLog), scoped by the store plugin to that one file.
+  (§7.4.2: theme + lastDestinationMode + verboseLog). **`store:default` grants all store
+  operations with no per-file scope** (it covers every store the plugin creates — there is
+  no Tauri-native per-file scope, §7.4.2); ConvertIA limits itself to the one
+  `settings.json` **by convention** (its only store call site), not by a permission scope.
   Both `log:` and `store:` are local-only and consistent with *offline / no
   system-pollution* (a single OS-config-dir file, no network).
 
@@ -1433,6 +1465,7 @@ The `SECURITY` policy (§6.8) references this map.
 | T1 | **Untrusted decoder input** | A crafted/corrupt/malicious file (image bomb, malformed MP4, hostile SVG, macro-laden DOCX) exploits or hangs a decoder | **§2.12** decoder isolation (separate subprocess for **every** engine including the image core — the image-worker process `[DECIDED]` §0.7/§3.5.5; contained crash/hang/exploit fails one item) + **§1.7** invocation lifecycle (timeout/kill) + **§0.9** pool bounds + **§1.2** detection security note (first code on untrusted bytes). **v1 ships no rely-on-OS decode path**; any future rely-on-OS untrusted-decode must pass the **§3.4.4** re-evaluation gate before counting as T1-covered. | covered |
 | T2 | **Malicious / compromised WebView content** | XSS-style injection or a supply-chained frontend dep tries to read the disk or call out | **§0.10** capability allowlist (no WebView `fs`, no network) + CSP (no remote origins, `object-src 'none'`) | covered |
 | T2a | **WebView steers writes to an attacker-chosen path** | A compromised WebView supplies an arbitrary `DestinationChoice::ChosenRoot(PathBuf)` to C5/C6 (the destination is WebView-held, with no server-side store — §0.4.1 C6) to write outputs somewhere unexpected | **§2.1** writes are always **non-destructive creates** (never overwrite) + **§2.3.3** write-target link-safety (a chosen destination that resolves onto / inside a frozen source is rejected and diverted) + **§2.7** divert rules. A chosen destination is honoured only as a *write* location: it **cannot harm an original** (no-clobber + link-safe) and **cannot read anything** — so an arbitrary writable ChosenRoot is bounded harm (a converted copy lands in an odd-but-writable folder), accepted in v1. The C2b destination picker is Rust-opened, but C5/C6 still accept a WebView-supplied `ChosenRoot` string; the no-harm machinery — not path provenance — is the bound. | covered |
+| T2b | **WebView re-submits an attacker-chosen SOURCE path** | On the idle launch/Open-with path the core emits `app://intake` carrying the full `Vec<PathBuf>` to the (untrusted) WebView, which echoes those paths back to **C1 `ingest_paths`** — a trust-boundary crossing (the WebView holds source paths it then re-submits). A compromised WebView could substitute an arbitrary readable path before re-submission. | **Accepted bounded harm (same posture as T2a).** The only harm a substituted source path can cause is "**convert an attacker-named readable file to an output beside it**" — it **cannot overwrite or harm any original** (§2.1 no-clobber + §2.3 link-safety bound the *write*) and produces only a converted copy. The bound is the **freeze-time §1.1 re-validation** (canonicalise / resolve-identity / existence / detection at the §2.4 freeze), **not** path provenance: every path C1 receives — regardless of whether it came from a native drop, the Rust picker, or a WebView `app://intake` echo — is re-validated at the freeze before any engine touches it. (The C2a **intake-picker** funnel keeps source paths Rust-side entirely; this T2b row covers only the launch-arg/`app://intake` echo, which is unavoidable because the OS hands the launch paths to the running instance and the idle UI drives C1.) | covered |
 | T3 | **Bundled-binary supply chain** | A tampered/backdoored engine binary ships in the build | **§3.8** engine pinning + **§6.2** integrity hashes + **§6.3** SBOM (every binary enumerated, verifiable). **Build-time** the pinned-checksum + SBOM gate catches a swapped engine; the trust anchor is the published **SHA256SUMS + minisign signature verified BEFORE first run (§6.2)**. **Runtime caveat:** the §7.2.3 startup check verifies engines against a hash manifest shipped **inside the same bundle**, so it detects **corruption/integrity** (truncation, AV-gutting, partial extract) but provides **no runtime tamper-resistance** — an attacker who can replace a binary can replace the in-bundle manifest too; runtime tamper detection is **out of scope** (unsigned portable build, SSOT). | covered (corruption/integrity only; runtime has no tamper-resistance — trust anchor is the §6.2 SHA256SUMS + minisign verified before first run) |
 | T4 | **Open-file launch of a fresh artifact** | C9 "open file" hands a just-written, possibly-still-untrusted output to an external app | **§7.7** open-file safety (reveal-in-folder, no auto-open, the artifact is *our* output not the untrusted source) + **§7.7.3** Rust-side `RunResult`-membership check (only a path that is a member of the current run's results may be opened). (Note: §0.10/§7.7.2 deliberately grant **no** `opener:*` path scope — beside-source outputs legitimately write outside `$DOWNLOAD`/`$DOCUMENT` — so the gate is the membership check, not a capability path-scope.) | covered |
 | T5 | **Core panic / app fault** | A Rust panic, WebView load failure, missing/corrupt engine at startup, damaged bundle | **§2.13** app-level fault model (`catch_unwind` worker boundary, no-stack-trace surfacing) + **§7.2** startup faults + **§0.3.1** WebView-absent handling | covered |
