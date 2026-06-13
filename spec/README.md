@@ -154,12 +154,18 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   `crosses_volume` field; `fs_guard::atomic_publish` detects cross-volume **reactively
   on EXDEV / cross-device failure** (§2.14.3) and runs the copy-into-dest-volume
   fallback. Owner: §0.6 / §1.8 / §2.14.
-- **`willReencode` emission** — the core **always emits a definite value**
-  (`false` for non-video / non-applicable batches), never omitted; consumers treat
-  absent as `false`. Owner: §0.4.2 / §5.8.
+- **`willReencode` emission + wire type** — the core **always emits a definite value**
+  (`false` for non-video / non-applicable batches), never omitted. The Rust struct field
+  is non-optional `bool`, so the **generated `bindings.ts` type is non-optional
+  `willReencode: boolean`** (no `undefined` third state); the §0.4.2 table / §5.8 comments
+  no longer show a stale `?`. Consumers still treat any absent as `false` for robustness.
+  Owner: §0.4.2 / §5.8.
 - **`ItemId` assignment** — assigned at the §1.1 freeze as the stable index of each item
-  in the de-duplicated frozen items `Vec`, identical through Batch/Run/events. Owner:
-  §0.6 / §1.1.
+  in the de-duplicated frozen `Vec` of **ALL dropped items (eligible AND skipped alike)**,
+  over a **single id space**; `CollectedSet::Single.items` / `.skipped` are id-DISJOINT
+  filtered views (never re-indexed from 0), so a `SkippedItem.item` never collides with an
+  eligible id and §1.12 projects skipped items into `RunResult.items` clash-free. Identical
+  through Batch/Run/events. Owner: §0.6 / §1.1.
 - **`EngineDescriptor` (was `struct Engine`)** — the §0.6 capability descriptor is
   renamed **`EngineDescriptor`** to avoid colliding with the §3.2 `trait Engine`; its
   `kind: EngineKind` is **`Subprocess | InProcessNative`** (every third-party engine incl.
@@ -324,23 +330,35 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   Was `[OPEN]`. Owner: §6.4.6.
 - **Usability-floor tester sourcing** — ≥1 genuine non-dev walkthrough on ≥1 platform;
   owner (developer) may run the other two where no non-dev tester is available (solo/hobby
-  project). Was `[OPEN-6.6a]`. **SSOT-acknowledged** relaxation of §9 "per platform" (§6.6
-  SSOT note). **§6.10 DoD row 11 now matches §6.6.** Owner: §6.6.
+  project). Was `[OPEN-6.6a]`. **The SSOT §9 gate text is now AMENDED at the source**
+  (recorded owner amendment with footnote) to match this wording — so it is no longer a
+  spec relaxation of a literal SSOT gate but a spec implementing the amended SSOT. §6.6 +
+  §6.10 DoD row 11 match the amended SSOT. Owner: §6.6 (SSOT amendment by the SSOT owner).
 
 #### Resolved in this convergence fix pass `[DECIDED]`
-- **Engine network control for T9b = always-on argv/build, NOT the OS sandbox** — FFmpeg
-  `-protocol_whitelist file,pipe` + network-disabled build (§6.1.3 `ffmpeg -protocols`
-  assertion), pandoc `--sandbox`, LibreOffice profile-hardening (no remote/OLE link
-  auto-update). The §0.11 threat split into **T9a** (app's own code opens no socket —
-  structural) and **T9b** (a bundled engine coerced out on hostile input — argv/build +
-  §6.4.2 adversarial-egress case). The OS network-deny (§2.12.3) is defence-in-depth only.
-  Owner: §3.5.1/§3.5.2/§3.5.4 / §0.11 / §2.11.
+- **Engine network+file control for T9b = always-on argv/build, NOT the OS sandbox** —
+  FFmpeg `-protocol_whitelist file,pipe` + network-disabled build (§6.1.3 `ffmpeg
+  -protocols` assertion) closes the **SSRF half**; FFmpeg concat **`-safe 1`** (never
+  `-safe 0`, rejects absolute/`..` paths) + a curated demuxer set without the playlist/
+  manifest dereferencing demuxers (§6.1.3 `ffmpeg -demuxers` assertion) closes the
+  **absolute-file LFR half**; pandoc `--sandbox`, LibreOffice profile-hardening (no remote/
+  OLE link auto-update). The §0.11 threat split into **T9a** (app's own code opens no
+  socket — structural) and **T9b** (a bundled engine coerced out on hostile input —
+  argv/build, **both halves**, + §6.4.2 adversarial-egress case which checks zero egress
+  AND no out-of-input file read). The OS network/FS-restriction (§2.12.3) is defence-in-
+  depth only — **no longer load-bearing for the LFR half** (the earlier over-claim that
+  argv/build alone needed the OS tier for absolute-file LFR is corrected here).
+  Owner: §3.5.1/§3.5.2/§3.5.4 / §0.11 / §2.11 / §6.1.3.
 - **`.svgz` in-core inflate = pure-Rust `flate2 rust_backend`/miniz_oxide**, ≤64 KiB +
   ≤100× ratio cap; §2.12.4 absolute reworded to "no third-party **C/C++** decoder in-core"
   (the three bounded pure-Rust sniffs don't violate it). Owner: §1.2 / §2.12 / §0.8.
-- **Resource pre-flight free-space = PER-DESTINATION-VOLUME** (grouped by each item's
-  resolved `final_dir` volume), not a single aggregate — fixes the beside-source/divert
-  multi-volume case. Owner: §1.10 / §2.14.4 / §0.6.
+- **Resource pre-flight free-space = PER-PHYSICAL-VOLUME, split by category** — `est_output`
+  + the publish temp checked against each item's `final_dir` volume; `est_scratch` (kind-2
+  LO profile / FFmpeg two-pass temp) checked against the system/scratch volume
+  (`app_local_data_dir`), which is **not** necessarily the destination volume. Requires
+  headroom on every physical volume the batch touches (refines the earlier
+  per-destination-volume DECIDED, which mis-attributed kind-2 scratch to the destination).
+  Owner: §1.10 / §2.14.4 / §0.6.
 - **externalBin sidecar runtime path** = bare name beside the app exe via
   `current_exe().parent()` (Tauri strips the target-triple suffix on bundle; the suffix is
   build/stage-time only); `BaseDirectory::Resource` is for resources-tree binaries only.
@@ -373,6 +391,104 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   keyed on `app_version`. **First-launch macOS `Opened` buffer-then-replay** (avoids the
   listener race). Owner: §7.5.3 / §7.2.3 / §7.8.1.
 
+#### Resolved in this round `[DECIDED]`
+- **`IpcError` / `ErrorKind` derive `specta::Type`** (were commented out) + `ScanProgress`
+  derives `specta::Type` — all in `collect_types![]`; no `any` for errors or the C1 scan
+  Channel. The §0.4.3/§2.8 wire-mirror notes corrected to "ALL variants" (item- AND
+  run/app-level). Owner: §0.4.3 / §2.8 / §0.4.2.
+- **macOS `RunEvent::Opened` Open-with goes through the refuse-busy gate** — the busy check
+  is promoted into the shared `forward_launch_intake` funnel both launch hooks call
+  (argv callback AND `RunEvent::Opened`), so a mid-conversion Open-with is refused on macOS
+  too (no longer bypasses the PRIMARY §7.1.1 gate). Owner: §7.8.1 / §7.1.1.
+- **First-launch macOS drain mechanism = C1 re-use on root-shell mount** (no dedicated
+  command, no 4th `app://` event); `PendingIntake` carries the real `origin` (`LaunchArg`),
+  never a hard-coded `SecondInstance`. Owner: §7.8.1.
+- **FFmpeg T9b covers BOTH halves structurally** — SSRF via `-protocol_whitelist file,pipe`
+  + network-disabled build; **absolute-file LFR via concat `-safe 1` (never `-safe 0`) +
+  curated demuxer set without playlist/manifest dereferencing demuxers** (§6.1.3 `-protocols`
+  + `-demuxers` assertions). The §2.12.3 OS tier is no longer load-bearing for LFR.
+  Owner: §3.5.1 / §6.1.3 / §0.11 / §2.11.
+- **`ItemId` indexes the FULL frozen Vec of ALL dropped items** (eligible + skipped),
+  one id space; `items`/`skipped` are id-disjoint filtered views (never re-indexed) — no
+  collision when §1.12 projects skipped into `RunResult.items`. Owner: §0.6 / §1.1.
+- **`InProcessNative` (native CSV/TSV) lifecycle** — cooperative cancel polled at each
+  N-KB chunk boundary (no kill step), a wall-clock timeout guard, runs up to the global
+  degree on `spawn_blocking` threads (never blocks the Tokio runtime). Owner: §1.7 / §0.9.
+- **Image-worker progress = `VipsStdout`** (renamed from `VipsCallback`) — the separate
+  worker process marshals the libvips eval-progress to its stdout `progress=<0..100>`
+  key=value, parsed by the §1.7 same line-reader as FFmpeg `-progress`. Owner: §3.2.2 / §3.5.5.
+- **Image-worker is a named externalBin** `convertia-imgworker-<triple>` in the §0.7
+  `binaries/` tree + §0.3 subprocess box, resolved via `current_exe().parent()` (§3.3.3).
+  Owner: §0.7 / §0.3 / §3.5.5.
+- **Usability gate = AMENDED SSOT §9** (recorded owner amendment with footnote): ≥1
+  genuine non-dev walkthrough overall, owner may run the others — the SSOT text itself is
+  changed, no longer a spec relaxation. Owner: §6.6 / SSOT §9.
+- **`RunResult.divert_root: Option<PathBuf>`** added — `common_root` (beside-source) + a
+  separate `divert_root` cover split outputs (one PathBuf can't carry both); §7.7.3
+  membership covers both. Owner: §0.6 / §1.12 / §7.7.3.
+- **C4 vs C5 asymmetry enforced** — C4 fires once on the 3→4 transition and computes
+  `rerun`; a C4-after-C5 on the same collected-set is a no-op/error; C5 never recomputes
+  `rerun`. Owner: §0.4.1.
+- **`OutputPlan.scratch_dir` → `publish_temp_dir`** (= `final_dir` in v1; the `*.part` is a
+  sibling dotfile, not a subdir, §2.14.1); kept distinct from the kind-2 engine scratch
+  root. Owner: §1.8 / §0.6.
+- **Free-space preflight = PER-PHYSICAL-VOLUME, split by category** — `est_output`+publish
+  temp → final_dir volume; `est_scratch` (kind-2) → system/scratch volume; headroom on
+  every physical volume (refines the earlier per-destination-volume DECIDED). Owner: §1.10
+  / §2.14.4 / §0.6.
+- **Publish temp embeds `InstanceId`+`RunId`** (`.convertia-<InstanceId>-<RunId>-<jobId>-
+  <rand>.part`) so the opportunistic same-dir sweep resolves the exact owning lock
+  cross-instance — never deletes a live foreign instance's `.part`; absent lock ⇒ dead ⇒
+  reclaimable. Owner: §2.14.1 / §2.6.3.
+- **Windows publish primitive = §2.3.3 dir-handle-relative `NtSetInformationFile`** for
+  every publish incl. the §2.2.2 numbering loop (the bare path-string `MoveFileExW` is only
+  the conceptual shape). Owner: §2.2.2 / §2.3.3.
+- **Late divert re-checks free-space + path-limit** on the divert volume (not just
+  link-safety) before its §2.1 publish — fails the item clearly, never assumes it fits.
+  Owner: §2.7.2 / §2.14.4 / §2.10.
+- **Native CSV/TSV is a 4th in-core untrusted-byte path** — §2.12.4 absolute reworded:
+  it is about third-party C/C++ decoders, not "only sniffs in-core"; the pure-Rust bounded
+  CSV transform is acceptable. Owner: §2.12.4.
+- **Video probe-then-encode is two sub-invocations of one engine, not a chain** — `plan()`
+  stays Pure; §1.7 runs ffprobe, feeds the result back, then spawns ffmpeg. Owner: §3.2.1
+  / §1.7 / §3.5.1.
+- **`PPTX → PPT` is `✓~` lossy (`pptx_to_ppt_legacy`)** — legacy BIFF8 can't hold SmartArt
+  / modern charts / Morph; **`PPT → PPTX` (modernizing) stays plain `✓`**. New §2.9
+  LossyKind added. Owner: presentations.md / §2.9.
+- **Format facts corrected** — VP9 CRF range is **0–63** (15–35 is the recommended band, a
+  slider validates 0..=63); "libaom encode-only" is a **configuration** (libheif resolves
+  dav1d for AV1 decode, §6.1.3 assertion); GIF dither **seam** (cgif Bayer-only on
+  image→GIF vs FFmpeg `paletteuse` error-diffusion on video→GIF); **SVG fonts** resolve
+  from the **bundled** set (image-worker has no host fonts), not host OS; raw-AAC exclusion
+  does **not** dodge the §3.4 AAC patent (M4A re-encode invokes the same encoder); H.264
+  hedged to "~2027-11 bulk of the pool; later-filed AVC-essential patents may run to
+  ~2030"; §3.1 "five engines" headline drops "+ optional Ghostscript" (GS not shipped) and
+  names ImageMagick mandatory; §3.6.1 LGPL row split per-component (libvips/librsvg
+  `LGPL-2.1-or-later`; libheif/libde265 `LGPL-3.0-or-later`); §6.1.3 capability assertions
+  for `paletteuse` dither set + `webpsave`/`heifsave` `effort`. Owner: video.md / images.md
+  / cross-category.md / §3.1 / §3.4 / §3.6.1 / §6.1.3.
+- **§06 test-realism corrections** — a11y gate uses **`vitest-axe` only** (not jest-axe);
+  axe under jsdom **can't measure contrast** → WCAG-AA contrast runs on the
+  `@axe-core/webdriverio` session, jsdom leg = ARIA/role/focus only; **`tauri-driver` has
+  NO macOS WKWebView driver** (safaridriver ref removed — it automates Safari, not a
+  WKWebView); the Linux egress snippet gets a `/status` readiness probe + `kill` +
+  propagated exit; the Windows egress is a **per-run `New-NetFirewallRule -Program <abs
+  path>`** or network-denied Job Object, with the §2.11.4 packet-monitor as the real gate;
+  Linux runner pinned to **`ubuntu-22.04`** (FUSE2/FUSE3 + glibc drift); `cargo-cyclonedx
+  --spec-version 1.5` **verified exposed**. Owner: §6.4.6/§6.4.6a / §6.7.3 / §6.1.4 / §6.3.1.
+- **macOS reload-during-run is NOT a supported recovery path in v1** — known open Tauri
+  crash (#9933/#12338); C8 idempotent re-serve covers a FRESH post-terminal listener, not
+  a mid-stream reload; a mid-run IPC drop surfaces as `AppFault`. Owner: §0.4.4 / §5.8 /
+  §6.4.6/§6.6.
+- **`MixedDropRefusal` is a full-screen STATE, not a modal** — own active re-drop DropZone
+  (disabled-while-converting guard inert), `aria-live=assertive` heading, NOT
+  `role=alertdialog` (reserved for RerunPrompt/UnsupportedNotice/QuitConfirm); its own
+  §5.10 Esc→Idle row. **Summary focus-on-entry** + **AppFault scoped to the run path**
+  (pre-run C3/C4/C5 rejections render inline) decided. `BatchSummary.sampleNames` is
+  client-derived (not a wire field). Owner: §5.6 / §5.2 / §5.5 / §5.10 / §5.3.
+- **`willReencode` generated binding is non-optional `boolean`** — the `?` dropped from the
+  §0.4.2 table + §5.8 comments to match the Rust `bool`. Owner: §0.4.2 / §5.8.
+
 ### Deferred to corpus / usability validation `[DEFER: corpus]`
 > Design decided; only an empirical number or a real-world validation remains. These
 > are **not** open design questions.
@@ -385,6 +501,10 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   lossy). `DOC→markup` is already DECIDED LibreOffice. Owner: documents.md.
 - **`*→MD` image policy** — drop-with-note (lean) vs data-URI inline. Owner:
   documents.md.
+- **pandoc `--sandbox` data-file check** — confirm the assigned pandoc pairs
+  (markup↔markup, `*→HTML --embed-resources`) run under `--sandbox` without needing a
+  blocked on-disk data file; if one does, bundle it and pass it explicitly on argv (never
+  drop `--sandbox`). Owner: §3.5.4.
 - **extract-audio target subset** (MP3★/M4A/WAV/FLAC/OGG; keep OGG?) and **"no audio
   track" up-front probe** (disable-with-reason vs offer-then-fail). Owner:
   cross-category [OPEN-A]/[OPEN-C].
@@ -422,11 +542,13 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   Seatbelt / Job-Object + low-integrity) goes is a real engineering/portability call.
   Owner: §2.12. *(Note: the libvips in-process-vs-worker question is now DECIDED —
   separate image-worker process — and is no longer open. **Also DECIDED:** the engine
-  network control for T9b is NOT this OS tier — it is the always-on, cheap-tier
-  **argv/build** control (FFmpeg `-protocol_whitelist file,pipe` + network-disabled build,
-  pandoc `--sandbox`, LibreOffice link-update-off, §3.5.1/§3.5.4/§3.5.2); the OS
-  network-deny is defence-in-depth only. So only the privilege-drop **depth** is open, not
-  the network guarantee.)*
+  network+file control for T9b is NOT this OS tier — it is the always-on, cheap-tier
+  **argv/build** control on **both** halves (FFmpeg `-protocol_whitelist file,pipe` +
+  network-disabled build for SSRF, concat `-safe 1` + curated demuxer set for absolute-
+  file LFR, pandoc `--sandbox`, LibreOffice link-update-off, §3.5.1/§3.5.4/§3.5.2 +
+  §6.1.3 `-protocols`/`-demuxers` assertions); the OS network/FS-deny is defence-in-depth
+  only. So only the privilege-drop **depth** is open, not the network OR the LFR
+  guarantee.)*
 - **In-core memory-safe sniffs vs the §2.12 isolation boundary** — may the
   **text-encoding heuristic**, the **Rust ZIP central-directory peek**, and the
   **`.svgz` bounded inflate** (`flate2 rust_backend`/miniz_oxide — pure safe Rust, **no

@@ -103,7 +103,10 @@ or **AIFF**). The proposed v1 subset, by everyday demand:
 
 Excluded from the subset (still full formats in [audio.md](audio.md), just not
 offered *as extract-audio targets*): **AAC** (raw `.aac` — M4A covers the AAC use
-case in a friendlier container; avoids needing a §3.4 patent disposition *here*),
+case in a friendlier container; **this does NOT avoid the §3.4 AAC patent
+disposition** — M4A re-encode invokes the **same AAC encoder** regardless, so the §3.4
+disposition applies either way; the exclusion is purely a UX/redundancy call, not a
+patent one),
 **OPUS** (re-encoding an already-lossy track to Opus is niche), **WMA**
 (Windows-legacy, declining), **AIFF** (Apple-uncompressed — WAV covers the
 uncompressed want), **ALAC** (Apple-lossless — FLAC covers the lossless want).

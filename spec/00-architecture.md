@@ -110,8 +110,9 @@ offline (§3.3).
                                                      ▼
         ┌──────────────────────────────────────────────────────────────┐
         │  Engine subprocesses (separate invoked binaries — §3.5/§3.6)   │
-        │  FFmpeg · LibreOffice (soffice --headless) · poppler pdftotext  │
-        │  · pandoc · image codec tools (see §0.9 note)                   │
+        │  FFmpeg/ffprobe · LibreOffice (soffice --headless) · poppler    │
+        │  pdftotext · pandoc · convertia-imgworker (libvips image-worker │
+        │  process — §0.9/§3.5.5, a packaged externalBin)                 │
         │  (Ghostscript [DECIDED: dropped v1] — §3.1)                      │
         │  Untrusted bytes are parsed HERE, never in the core.            │
         └──────────────────────────────────────────────────────────────┘
@@ -268,6 +269,17 @@ signatures; the TS side is generated (§0.4.5 codegen).
 - There is intentionally **no per-item-target command** — the **one-Target-per-
   Batch** invariant (§0.6) is enforced by the shape of `start_conversion` (a
   single `target` for the whole `collectedSetId`).
+- **C4 vs C5 — byte-identical payloads, different contract `[DECIDED]`.** C4
+  `plan_output` and C5 `set_destination` take the **same** request fields, but **only C4
+  computes `rerun`** (the §2.5 equivalence check); **C5 never recomputes it** (it carries
+  the C4 `rerun` through unchanged — the v1 EquivKey is destination-independent, §2.5.1).
+  Because the signatures alone cannot distinguish them, the orchestrator **enforces the
+  asymmetry**: **C4 fires exactly once, on the `3→4` (target-chosen) transition** for a
+  given `collectedSetId`, and a **C4 issued *after* a C5 on the same collected-set is
+  treated as a no-op/error** (the held C4 verdict is authoritative; destination changes
+  go through C5 only). So "C4 computes rerun, C5 never does" is an enforced orchestrator
+  rule, not just prose. (The destination-independent EquivKey is the §2.5 [DECIDED] this
+  rests on.)
 
 ### 0.4.2 Event / Channel enumeration (authoritative)
 
@@ -276,7 +288,7 @@ C6). A `#[serde(tag = "type", content = "data")]` enum, ordered delivery:
 
 | Variant | Payload | Meaning |
 |---|---|---|
-| `RunStarted` | `{ runId, totalItems, willReencode?: bool }` | Batch accepted; queue built. `willReencode` is a **best-effort worst-case** flag (header/container-pair-derived, **not** a per-item probe — §2.9.2): `true` ⇒ at least one item *may* re-encode → video shows the worst-case lossy note ("may be re-encoded"). **Emission rule `[DECIDED]`:** for non-video / non-applicable batches the core emits **`willReencode: false`** (never omitted) so the field always carries a definite value; the `?` in the type is only for forward-compat decode tolerance. Consumers treat absent/`undefined` as `false` (§5.8). The exact per-item disposition is resolved at convert-time (§3.5); the summary (§1.12) reflects the actual outcome. |
+| `RunStarted` | `{ runId, totalItems, willReencode: bool }` | Batch accepted; queue built. `willReencode` is a **best-effort worst-case** flag (header/container-pair-derived, **not** a per-item probe — §2.9.2): `true` ⇒ at least one item *may* re-encode → video shows the worst-case lossy note ("may be re-encoded"). **Emission rule `[DECIDED]`:** for non-video / non-applicable batches the core emits **`willReencode: false`** (never omitted) so the field always carries a definite value. **The Rust struct field is non-optional `bool` (line below), so the GENERATED `bindings.ts` type is non-optional `willReencode: boolean`** — there is no third `undefined` state. (Hand-written docs/comments elsewhere sometimes show `willReencode?` purely as a decode-tolerance convenience — consumers still treat any absent/`undefined` as `false`, §5.8 — but the generated binding is non-optional.) The exact per-item disposition is resolved at convert-time (§3.5); the summary (§1.12) reflects the actual outcome. |
 | `ItemStarted` | `{ runId, itemId, sourcePath, target }` | An item left `Pending` for `Running` (§1.9). |
 | `ItemProgress` | `{ runId, itemId, fraction: Option<f32> /* 0.0..1.0; None only where truly indeterminate (LibreOffice, §1.11) */, stage: JobStage }` | **Real per-item progress** (SSOT *not an indeterminate spinner*). Denominator is engine-specific (e.g. video = source duration from `ffprobe`, §3.5/video.md). `stage` is the §0.6/§1.11 `JobStage` (`Spawning \| Decoding \| Encoding \| Writing`); for the `None`-fraction LibreOffice case the frontend synthesises a staged determinate-looking bar from `stage` transitions (§1.11/§5.3). |
 | `ItemFinished` | `{ runId, itemId, outcome: ItemOutcome }` | Terminal per item: `Succeeded { outputPath } \| Failed { error: IpcError } \| Skipped { reason } \| Cancelled`. |
@@ -341,7 +353,7 @@ event — consistent with *offline / no phone-home* (§2.11, §7.6).
 Every command's `Err` and every `ItemOutcome::Failed.error` is one shape:
 
 ```rust
-#[derive(Serialize, /* specta::Type */)]
+#[derive(Serialize, specta::Type)]   // generated into bindings.ts; in collect_types![] (§2.8)
 #[serde(rename_all = "camelCase")]
 pub struct IpcError {
     /// Stable machine code from the §2.8 taxonomy — drives UI branching + i18n.
@@ -356,7 +368,7 @@ pub struct IpcError {
     pub residue: Option<PathBuf>,
 }
 
-#[derive(Serialize /* specta::Type */)]
+#[derive(Serialize, specta::Type)]   // generated into bindings.ts; in collect_types![] (§2.8)
 #[serde(rename_all = "camelCase")]
 pub enum ErrorKind {
     // Wire mirror of §2.8 `ConversionErrorKind` — names are byte-identical to the
@@ -374,6 +386,11 @@ pub enum ErrorKind {
 > `ItemOutcome::Cancelled` variant (§0.4.2), not a failure; it never carries an
 > `IpcError`. The wire enum mirrors **only** the §2.8 taxonomy.
 
+- **Both `IpcError` and `ErrorKind` derive `specta::Type` and are registered in
+  `collect_types![]`** (consistent with §2.8 §2.8.2): tauri-specta generates
+  `bindings.ts` only from `specta::Type` types, so without the derive `ItemOutcome::
+  Failed.error` and every command `Err` would generate as `any` — a no-`any`-rule
+  violation. The §06 bindings-drift check (§0.4.5) covers both.
 - The **authoritative enumeration of failure kinds and their exact English
   strings is owned by §2.8** (the message catalog). `ErrorKind` here is the wire
   mirror; §06 includes a drift check that the §2.8 catalog and this enum stay in
@@ -402,6 +419,18 @@ persistence — consistent with §7.4) **until a new run starts or the app exits
 reload (the exact case C8 names). "The cancellation token is dropped on
 `RunFinished`" (above) drops only the *token*, **not** the `RunResult` — the result
 outlives the token for re-fetch.
+
+> **Reload-during-run is NOT a supported recovery path on macOS in v1 `[DECIDED]`.**
+> There is a **known still-open macOS Tauri crash when the WebView reloads while an async
+> command / `invoke` is in flight** (tauri-apps/tauri #9933 / #12338 — distinct from the
+> #12030 WebView2-absent case the spec already cites). So C8's "idempotent re-serve" and
+> the long-lived `Channel<ConversionEvent>` cover a **FRESH listener attaching after the
+> run has already terminated** (re-fetch the retained `RunResult`, re-subscribe for a new
+> run) — **not** a reload *mid-stream* while C6's run is still emitting. v1 does **not**
+> claim reload-during-run resilience on macOS; the §6.4.6/§6.6 macOS verification covers
+> the post-terminal re-serve, and §5.8 surfaces a mid-run IPC drop as `AppFault` (the run
+> path), never as a silently-recovered reload. (Windows/Linux are not affected by this
+> specific bug, but v1 scopes the guarantee to post-terminal re-serve uniformly.)
 
 **Collected-set registry (so C3/C4/C5/C6 can resolve a `CollectedSetId`) `[DECIDED]`.**
 C3 `get_targets`, C4 `plan_output`, C5 `set_destination` and C6 `start_conversion`
@@ -498,6 +527,8 @@ pub struct CollectedSetId(Uuid);
 pub struct ItemId(u32);        // stable within a run
 pub type JobId = ItemId;       // §1.7/§1.8 say "JobId"; it IS the ItemId of the job's item
 pub struct CollectingId(Uuid); // ingest-scoped cancellation handle, pre-RunId (§0.4 C13)
+#[derive(Clone, Serialize, specta::Type)] // Channel<ScanProgress> payload MUST derive specta::Type
+                                          // (in collect_types![]) or the C1 onScan payload is `any`
 pub struct ScanProgress { pub scanned: u32 } // C1 onScan Channel payload (§0.4.2), throttled live count
 
 // ─── Intake & detection ─────────────────────────────────────────────────────
@@ -550,9 +581,14 @@ pub enum CollectedSet {
         id: CollectedSetId,
         instance: InstanceId,
         format: UserFacingFormat,
-        items: Vec<DroppedItem>,     // frozen, de-duplicated by resolved identity
-        count: usize,                // shown in the confirm gate (§1.4)
-        skipped: Vec<SkippedItem>,   // ineligibles dropped alongside the eligible set,
+        items: Vec<DroppedItem>,     // frozen, de-duplicated by resolved identity. Each carries
+                                     //   its ItemId from the SINGLE id space over ALL dropped items
+                                     //   (eligible + skipped); `items` is the ELIGIBLE filtered view
+                                     //   — NOT re-indexed from 0 (§0.6 invariant 6).
+        count: usize,                // shown in the confirm gate (§1.4) — == items.len()
+        skipped: Vec<SkippedItem>,   // ineligibles dropped alongside the eligible set — the
+                                     //   id-DISJOINT view over the same id space (their ItemIds
+                                     //   never collide with eligible ones, §0.6 invariant 6);
                                      //   threaded through to the §1.4 confirm summary
                                      //   and the §1.12 RunResult ("N collected, M skipped")
         // ─ confirm-screen summary fields `[DECIDED]` — this IS the §1.4 CollectedSummary
@@ -715,7 +751,10 @@ pub struct OutputPlan {              // computed by §1.8, consumed by §2.1/§2
     pub diverted: Option<DivertReason>, // unwritable / ephemeral (§2.7); None = beside-source
     pub base_name: OsString,         // SOURCE base name kept (§2.2)
     pub extension: OsString,         // from the chosen TARGET (§2.2)
-    pub scratch_dir: PathBuf,        // per-run publish-temp dir, SAME volume as final_dir (§2.14)
+    pub publish_temp_dir: PathBuf,   // EQUALS final_dir in v1 (§2.14.1): the kind-1 `*.part` is a
+                                     //   sibling DOTFILE here, NOT a per-run scratch SUBDIR. Same
+                                     //   volume as final_dir. (Kind-2 engine-working scratch root,
+                                     //   §2.14.2, may be on another volume and is NOT in OutputPlan.)
     // NOTE: cross-volume is NOT pre-planned in v1 `[DECIDED]`. `fs_guard::atomic_publish`
     // tries the direct intra-volume publish and falls back to copy-into-dest-volume
     // ONLY reactively on EXDEV / cross-device failure (§2.14.3). There is therefore
@@ -746,11 +785,14 @@ pub struct PreflightVerdict {        // §1.10 (owner) summary surfaced before c
     pub est_total_scratch_bytes: u64,
     pub up_front_fail: Option<ErrorKind>, // Some(TooBig|OutOfDisk) ONLY for the WHOLE-BATCH
                                      //   doomed case (the §5.2 disable-Convert-wholesale
-                                     //   flag). OutOfDisk fires when ANY ONE destination
-                                     //   VOLUME's grouped footprint cannot fit that volume's
-                                     //   free space — the check is PER-DESTINATION-VOLUME, not
-                                     //   a single aggregate (§2.7 beside-source/divert spread
-                                     //   a batch across 2+ volumes; §1.10 / §2.14.4). TooBig =
+                                     //   flag). OutOfDisk fires when ANY ONE PHYSICAL VOLUME's
+                                     //   grouped footprint cannot fit its free space — the check
+                                     //   is PER-PHYSICAL-VOLUME, split by category: est_output +
+                                     //   publish temp → each item's final_dir volume; est_scratch
+                                     //   (kind-2) → the system/scratch volume (§2.14.2), which is
+                                     //   NOT necessarily the destination. (§2.7 beside-source/
+                                     //   divert spread a batch across 2+ destination volumes;
+                                     //   §1.10 / §2.14.4.) TooBig =
                                      //   the absolute per-item/aggregate output ceiling. A
                                      //   PER-ITEM too-big / out-of-disk is NOT carried here: it
                                      //   is enforced at WRITE TIME (mid-run) as that item's
@@ -788,7 +830,14 @@ pub struct RunResult {               // canonical shape; §1.12 computes & refer
                                      //   §1.12 `[DECIDED]`; Totals.skipped counts them.
     pub totals: Totals,              // succeeded / failed / cancelled / skipped (§1.12)
     pub cleanup_incomplete: Vec<CleanupResidue>, // §2.6 cleanup-incomplete warnings
-    pub common_root: PathBuf,        // "open folder" target (§2.7 / §7.7)
+    pub common_root: PathBuf,        // "open folder" target for the BESIDE-SOURCE outputs
+                                     //   (the dropped-selection common ancestor, §2.7 / §7.7)
+    pub divert_root: Option<PathBuf>,// Some(Downloads/Documents/chosen) when ANY item was
+                                     //   diverted (§2.7.3) — a SINGLE PathBuf cannot carry both
+                                     //   roots, so the divert root is its own field. None when no
+                                     //   item diverted. Both roots are §7.7.3 open-folder targets;
+                                     //   per-item diverted outputs are also reachable via
+                                     //   ItemResult.output (C9 reveal_item_in_dir). (§1.12 / §7.7.3)
 }
 
 pub struct ItemResult {              // §1.12
@@ -830,17 +879,24 @@ pub enum ItemOutcome {
 4. **The `items` set is frozen and resolved-identity-deduplicated** at ingest
    (§2.4/§2.3); nothing is added after the freeze, including outputs landing in a
    source folder.
-5. **`OutputPlan.scratch_dir` (the publish-temp dir) and `final_dir` are on the same
-   filesystem** (§2.14) so the §2.1 publish is a true intra-volume atomic rename; the
+5. **`OutputPlan.publish_temp_dir` (where the kind-1 `*.part` lives — EQUALS `final_dir`
+   in v1, the `*.part` being a sibling dotfile, not a subdir, §2.14.1) and `final_dir` are
+   on the same filesystem** (§2.14) so the §2.1 publish is a true intra-volume atomic
+   rename; the
    exact numbered final name is resolved at write time, never stored. When the only
    obtainable scratch spans volumes, `fs_guard::atomic_publish` detects this
    **reactively on EXDEV / cross-device failure** (not via a pre-planned flag) and
    runs the §2.14.3 copy→fsync→exclusive-rename-within-destination fallback.
 6. **`ItemId` is stable within a `RunId`** so progress/finished events and the
    summary all address the same item. **`ItemId` is assigned at the §1.1 freeze**
-   (collected-set) as the stable index of each item in the de-duplicated frozen items
-   `Vec` (§2.4), and is identical through `Batch`/`Run` and every per-item event
-   (`SkippedItem` pre-`RunId`, `ItemProgress`/`ItemFinished` in-run).
+   (collected-set) as the stable index of each item in **the de-duplicated frozen `Vec`
+   of ALL dropped items — eligible AND skipped alike** (§2.4), assigned **once** over
+   that single id space. `CollectedSet::Single.items` (eligible `DroppedItem`s) and
+   `.skipped` (ineligible `SkippedItem`s) are **id-disjoint filtered VIEWS over that one
+   id space** — they are **never re-indexed from 0**, so a `SkippedItem.item` can never
+   collide with an eligible item's id, and §1.12 can project the skipped items into
+   `RunResult.items` without an id clash. The id is identical through `Batch`/`Run` and
+   every per-item event (`SkippedItem` pre-`RunId`, `ItemProgress`/`ItemFinished` in-run).
 
 The **detection algorithm** (§1.2), **lifecycle transitions** (§1.9), **engine
 selection** (§3.2), **per-format options/defaults** (04-formats), **output-naming
@@ -925,7 +981,11 @@ convertia/
 │  │  └─ main.json                 # the §0.10 capability allowlist (commands, dialog, opener, log, store — NO shell-execute, NO fs; §3.3.3)
 │  ├─ binaries/                    # bundled engine sidecars per platform (§3.3), externalBin targets
 │  │  ├─ ffmpeg-x86_64-pc-windows-msvc.exe  (etc. — target-triple-suffixed)
-│  │  ├─ soffice…  pdftotext…  pandoc…  (per-platform; §3.1/§3.3)
+│  │  ├─ ffprobe…  soffice…  pdftotext…  pandoc…  (per-platform; §3.1/§3.3)
+│  │  ├─ convertia-imgworker-<triple>[.exe]  # the libvips IMAGE-WORKER process (§0.9/§3.5.5)
+│  │  │                                      #   — a packaged externalBin (NOT linked into the core),
+│  │  │                                      #   resolved Rust-side via current_exe().parent() (§3.3.3);
+│  │  │                                      #   links libvips/libheif/libde265/librsvg/ImageMagick (§3.6.1)
 │  ├─ resources/                   # bundled non-exe engine assets (LibreOffice profile seed, fonts §documents.md, image codec libs)
 │  └─ src/
 │     ├─ main.rs                   # Tauri builder, invoke_handler (C1–C13), collect_commands!/collect_events! (§0.4.5)
@@ -1289,7 +1349,7 @@ The `SECURITY` policy (§6.8) references this map.
 | T7 | **Path / link redirection** | A symlink/junction/alias makes an output resolve onto a source, or a TOCTOU race redirects the final write | **§2.3** resolved-identity & link safety + **§2.1** exclusive create-new-or-fail (the no-clobber guarantee is evaluated on the resolved real file) | covered |
 | T8 | **Self-feeding / batch expansion** | Outputs written into a watched source folder get re-ingested, or a second instance's files appear mid-run | **§2.4** frozen source set + **§7.1** instance/run identity (per-run temp ownership, no cross-instance ingestion) | covered |
 | T9a | **ConvertIA's own code exfiltrates user files** | The app itself (Rust core or WebView) tries to upload originals/results | **Structurally covered:** ConvertIA's own code **opens no socket** — no HTTP/updater plugin on the §0.10 allowlist, no `connect-src` to remote origins (CSP), `form-action 'self'`, no phone-home (**§7.6**). The only network is the user-initiated C10 open-project-page shell-out. Proven by the **§2.11.4** packet-monitor release gate (blocks release on any outbound packet) + **§2.11** offline invariant. | covered |
-| T9b | **A bundled engine reaches out on hostile input** | A crafted dropped file makes a bundled engine (FFmpeg HLS/DASH/concat, pandoc include, LibreOffice remote/OLE link) open an outbound socket or read an out-of-input file at convert time (SSRF/LFR; e.g. CVE-2023-6605) | **Load-bearing argv/build controls (NOT the degradable OS sandbox):** **§3.5.1** FFmpeg `-protocol_whitelist file,pipe` + network-disabled build (asserted §6.1.3); **§3.5.4** pandoc `--sandbox`; **§3.5.2** LibreOffice profile-hardening (no link/OLE auto-update). Backed by the **§6.4.2** adversarial-egress / network-trigger case (zero egress AND no out-of-input file read on a network-trigger input) and proven again by the **§2.11.4** packet-monitor gate. **Defence-in-depth only:** **§2.12.3** engine-side OS network-deny — `[OPEN]`, present only where the privilege-drop tier is enabled (it **degrades to the cheap tier with no network deny**), so it is **not** the structural guarantee; the per-engine argv/build controls are. | covered |
+| T9b | **A bundled engine reaches out on hostile input** | A crafted dropped file makes a bundled engine (FFmpeg HLS/DASH/concat, pandoc include, LibreOffice remote/OLE link) open an outbound socket or read an out-of-input file at convert time (SSRF/LFR; e.g. CVE-2023-6605) | **Load-bearing argv/build controls (NOT the degradable OS sandbox), BOTH halves:** **§3.5.1** FFmpeg `-protocol_whitelist file,pipe` + network-disabled build (SSRF half) **and** concat `-safe 1` (never `-safe 0`, rejects absolute/`..` paths) + a curated demuxer set without the playlist/manifest dereferencing demuxers (absolute-file LFR half) — both asserted at **§6.1.3** (`ffmpeg -protocols` + `-demuxers`); **§3.5.4** pandoc `--sandbox`; **§3.5.2** LibreOffice profile-hardening (no link/OLE auto-update). Backed by the **§6.4.2** adversarial-egress / network-trigger case (zero egress AND no out-of-input file read on a network-trigger input) and proven again by the **§2.11.4** packet-monitor gate. **Defence-in-depth only (no longer load-bearing for either half):** **§2.12.3** engine-side OS network/FS restriction — `[OPEN]`, present only where the privilege-drop tier is enabled (it **degrades to the cheap tier**), so it is **not** the structural guarantee; the per-engine argv/build controls are. | covered |
 | T10 | **Resource exhaustion / DoS-by-input** | A tiny SVG asked to render at 50 000 px, a 90-min→GIF, a thousands-file batch exhausting RAM/disk/handles | **§1.10** resource pre-flight & budgets + **§0.9** pool/handle bounds + the to-GIF guardrail (cross-category.md) | covered |
 
 **No orphan classes.** Every box above points at a section that owns the

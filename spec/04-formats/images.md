@@ -103,7 +103,12 @@ savers are libvips load/save modules, not separate pipeline stages), never a cha
    module). **HEIC → AVIF** → **vips `heifsave compression=av1`** — one vips process.
 3. **→ AVIF** (any raster source) → **vips `heifsave compression=av1`** (libaom via
    libheif — encode). **AVIF →** any raster target → **vips** (**dav1d** as the AVIF
-   *load*/decode module; libaom is encode-only). Single binary.
+   *load*/decode module). **Note `[DECIDED — configuration]`:** "libaom is encode-only"
+   is a **build/configuration choice**, not a libaom limitation — libaom *can* decode AV1,
+   but ConvertIA **configures libheif to resolve dav1d for AV1 decode** (smaller/faster
+   decoder) and uses libaom **only** as the encoder. A §6.1.3 build assertion confirms the
+   staged libheif resolves dav1d for decode (parallel to the libimagequant-soname
+   assertion). Single binary.
 4. **SVG → raster** → **svg** rasteriser invoked **through libvips' SVG loader**;
    libvips performs the bitmap save. Because libvips' native `svgload` module is
    librsvg-backed, the whole pair is one process (vips) — this satisfies
@@ -248,6 +253,13 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
     `bitdepth`/colour count ≤ 256 — default **8** (256 colours); `effort` (palette
     search) — default **7** (vips default). `interframe maxerror`/`reuse` for
     animation — defaults left at vips defaults.
+  - **Seam note — this is the *image*→GIF (cgif) path `[DECIDED]`.** The Bayer-only
+    constraint applies to the **cgif `gifsave` save path** used here (raster image → GIF).
+    The **video→GIF** path is a **different engine** (FFmpeg `palettegen`+`paletteuse`,
+    cross-category.md), where **error-diffusion dither IS available** (`paletteuse=dither=
+    sierra2_4a` etc.) — so the dither options differ by source category and must not be
+    conflated. cross-category.md owns the video→GIF dither set; this section owns only the
+    image→GIF cgif set.
 - **Lossy?:** **Lossy as a target** (`→ GIF`) — 256-colour palette quantisation +
   optional dithering loses colour (→ §2.9). As a *source*, GIF→PNG/etc. is
   lossless w.r.t. the GIF's own pixels (GIF is already ≤256 colours), so GIF→PNG
@@ -351,7 +363,8 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   HDR, animation).
 - **As source → targets:** **JPG★** (open-everywhere need), PNG, WEBP, GIF, BMP,
   TIFF, HEIC, ICO. AVIF→raster runs in **vips** (**dav1d** AVIF *decode* load module —
-  libaom is encode-only); AVIF→HEIC via vips `heifsave compression=hevc`.
+  libheif is configured to resolve dav1d for AV1 decode, using libaom only as the encoder,
+  see the configuration note above); AVIF→HEIC via vips `heifsave compression=hevc`.
 - **As target ← sources:** JPG, PNG, WEBP, GIF, BMP, TIFF, HEIC, ICO, SVG —
   **vips `heifsave compression=av1`** (libaom). May be the **default** *only* where the
   SSOT tie-breaker clearly favours a modern target — but for safe everyday
@@ -440,8 +453,13 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   fixed-size image — picked size: WxH") → §2.9. On top of that, SVG→JPG/WEBP/GIF
   carries the target codec's own loss.
 - **Edge cases:** **Transparency** preserved (PNG/WEBP/TIFF/ICO); flattened to
-  background for JPG/BMP. **Fonts:** librsvg uses **system fonts**; a missing
-  font substitutes (a font note may be surfaced — predictable loss). **Huge/zero
+  background for JPG/BMP. **Fonts `[DECIDED]`:** SVG text is rendered with the
+  **bundled font set (§3.9.3)** — **not** host OS fonts. The librsvg rasteriser runs
+  **inside the image-worker process**, which has **no host-font access** (consistent with
+  the offline/portable floor and the §2.12 isolation), so its fontconfig is pointed at the
+  bundled Liberation/Carlito/Caladea + Noto subset. A glyph not in the bundled set
+  substitutes (a predictable-loss font note may be surfaced) — the substitution is
+  deterministic across machines, unlike host-font resolution. **Huge/zero
   intrinsic size:** if no size resolvable, fall back to viewBox @96 DPI; clamp a
   pathological render size against the §1.10 budget (a 1×1 viewBox asked to render
   at 50000 px fails clearly, not OOM). **Untrusted SVG** is decoded inside the

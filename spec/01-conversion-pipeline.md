@@ -350,6 +350,9 @@ fn group(detected: Vec<DetectionResult>) -> Grouping;
 enum Grouping {
     /// Exactly one eligible source format across all readable items.
     /// `SkippedItem` is the §0.6 type (owner): { item, source, reason: ErrorKind }.
+    /// `members` (eligible ItemIds) and `skipped`'s ItemIds are id-DISJOINT views over
+    /// the SINGLE id space assigned at the freeze over ALL dropped items (§0.6 invariant
+    /// 6) — never re-indexed from 0, so the two never collide.
     Single { format: UserFacingFormat, members: Vec<ItemId>, skipped: Vec<SkippedItem> },
     /// Two or more distinct eligible source formats → hard pre-flight refusal.
     Mixed(MixedReport),
@@ -687,6 +690,15 @@ enum InvocationResult {
   for a per-engine watchdog interval (parameters owned by §0.9; mechanism here) is
   treated as hung → killed → `Failed(EngineHang)` (§2.8). A hang fails **that one item**;
   the batch continues (SSOT *Fail clearly*).
+- **Two-step probe-then-encode (video) `[DECIDED]`:** a video job is **two sequential
+  sub-invocations of the one FFmpeg engine** — `ffprobe` then `ffmpeg` — **not** a format
+  chain (§3.2.1). Because `Engine::plan()` is **Pure** (no I/O) but the encode argv depends
+  on the probe's inner-codec result, §1.7 **runs the `ffprobe` sub-invocation first, feeds
+  the result back to the engine to finalise the encode `Invocation`, then spawns the
+  `ffmpeg` encode** (and sets `progress.duration_us` from the probe, §3.5.1). So for video,
+  `plan()` is deferred/parameterised on the probe result; the encode argv is never fixed
+  before the probe. Both sub-invocations are bounded by the same §1.7 cancel/timeout/
+  group-kill machinery. (§3.2.1 / §3.5.1 own the sequencing rationale.)
 
 ### Cancellation / kill mechanism `[DECIDED — sole owner]`
 
@@ -770,6 +782,30 @@ leader** and kills the **whole group**, so one cancel/kill tears down the engine
   reaps the Windows job; POSIX orphans are reaped by re-parenting + the
   **startup cleanup** (§2.6) discarding the previous run's owned temp.
 
+### `InProcessNative` sub-case — the one non-subprocess engine `[DECIDED]`
+
+The lifecycle above is written for **`EngineProgram::Subprocess`** engines (the spawn→
+Running→group-kill machine). ConvertIA's only **`EngineProgram::InProcessNative`** engine
+is the **native CSV/TSV** transform (§3.5.6, pure memory-safe Rust, no spawn). It has **no
+process to kill**, so §1.7 defines its lifecycle explicitly:
+- **Cancellation (cooperative, not a kill):** the synchronous streaming loop **polls the
+  job's `CancellationToken` at every N-KB chunk boundary** (the same chunk granularity it
+  uses for its `bytes_processed / source_size` progress, §1.11). On cancel it **stops
+  mid-stream, drops the `out_tmp` `TempPath`** (deleted on drop, §3.2.2) and reports
+  `Cancelled` — exactly the "no partial leftover" guarantee, reached cooperatively instead
+  of by group-kill. There is **no kill step to sequence** in the §2.6 ordering for this
+  engine (step 2 "group-kill" is a no-op; the temp-discard step still runs).
+- **Timeout / hang bound:** a **wall-clock timeout guard** (the §0.9-owned per-engine
+  timeout, tight for this light engine) wraps the synchronous call; on expiry the loop is
+  cancelled cooperatively (same chunk-boundary poll), the temp is discarded, and the item
+  is `Failed(EngineHang)` — so even a pathological input cannot wedge a worker forever.
+- **Concurrency / permit model:** it runs on the §0.9 pool **up to the global degree, on
+  dedicated worker threads** (a `spawn_blocking`-style pool so the synchronous CPU/IO loop
+  **never blocks the Tokio runtime** that drives the subprocess engines and the IPC). It
+  holds a global-degree permit like any other job; it has **no** `serialised_only` lane.
+  The §1.10 input-size guard bounds CSV expansion (a §2.12.4 in-core untrusted-byte path,
+  but pure bounded Rust — DoS-bounded, see §2.12.4).
+
 ### Exit & output verification `[DECIDED]`
 
 On exit 0, the adapter (§3.5) reports success **only if** the expected temp output
@@ -803,7 +839,13 @@ struct OutputPlan {
     diverted: Option<DivertReason>, // unwritable / ephemeral (§2.7); None = beside-source
     base_name: OsString,         // SOURCE base name kept (§2.2)
     extension: OsString,         // from the chosen TARGET (§2.2)
-    scratch_dir: PathBuf,        // per-run publish-temp dir, SAME volume as final_dir (§2.14)
+    publish_temp_dir: PathBuf,   // where the kind-1 publish temp lives. EQUALS final_dir in
+                                 //   v1 (§2.14.1): the `*.part` is a uniquely-named sibling
+                                 //   DOTFILE inside final_dir, NOT a per-run scratch subdir.
+                                 //   Same volume as final_dir by construction (§2.14.1). Distinct
+                                 //   from the kind-2 engine-working scratch root (§2.14.2), which
+                                 //   lives under app_local_data_dir and MAY be on another volume —
+                                 //   that root is NOT carried in OutputPlan (it is run-scoped, §2.6).
     // No `crosses_volume` field: cross-volume is detected REACTIVELY on EXDEV at
     // publish time by `fs_guard::atomic_publish` (§2.14.3), never pre-planned (§0.6).
 }
@@ -813,9 +855,9 @@ struct OutputPlan {
 What this section **owns**: the *computation* — resolve the destination root,
 re-create the dropped-root-relative subtree (so folder layout is preserved /
 re-created rather than flattened), choose the divert target when a location is
-unwritable/ephemeral, and pick a `scratch_dir` on the **same filesystem as
-`final_dir`** so the §2.1 rename stays atomic (cross-volume fallback owned by
-§2.14). What it **references**: the *rules* (§2.7), the *naming contract* (§2.2),
+unwritable/ephemeral, and set `publish_temp_dir` (= `final_dir` in v1; the `*.part` is
+a sibling dotfile there, not a subdir, §2.14.1) on the **same filesystem as `final_dir`**
+so the §2.1 rename stays atomic (cross-volume fallback owned by §2.14). What it **references**: the *rules* (§2.7), the *naming contract* (§2.2),
 the *resolved-identity & link safety* (§2.3), and the *atomic write itself* (§2.1).
 
 **Destination shown before convert (SSOT How It Feels 7):** the `OutputPlan`
@@ -907,8 +949,10 @@ doomed run fails **fast and clearly, preferably up front** (SSOT How It Feels 6)
 
 ```rust
 struct SizeEstimate {
-    est_output_bytes: u64,
-    est_scratch_bytes: u64,      // temp during conversion (§2.14)
+    est_output_bytes: u64,       // output + kind-1 publish temp → the item's final_dir VOLUME (§2.14.1)
+    est_scratch_bytes: u64,      // kind-2 engine working temp → the system/scratch VOLUME (§2.14.2),
+                                 //   NOT necessarily the destination volume — checked separately per
+                                 //   physical volume (§2.14.4 / the per-physical-volume preflight below)
     basis: EstBasis,             // PerCategoryHeuristic | EngineProbe
 }
 ```
@@ -933,23 +977,32 @@ struct SizeEstimate {
     the mid-run enforcement. So `PerCategoryHeuristic` is the up-front basis; `EngineProbe`
     is the convert-time refinement, never an up-front cost. (Aligns the cross-category
     `[OPEN-C]`.)
-- **Headroom margin:** require **free space ≥ (est_output + est_scratch) × margin**.
-  `[REC]` margin **1.3×** as a starting value (confirm against the §6 corpus).
+- **Headroom margin:** require **free space ≥ footprint × margin** on **each physical
+  volume** (see the split below — `est_output` and `est_scratch` may land on different
+  volumes). `[REC]` margin **1.3×** as a starting value (confirm against the §6 corpus).
 - **Decision (the up-front-vs-mid-run split, made precise) `[DECIDED]`:**
-  - **Whole-batch doomed is PER-DESTINATION-VOLUME, not a single aggregate `[DECIDED]`.**
-    The §2.7 beside-source default lands each item's temp+final on its **own source
-    volume** (§2.14.1), and per-location divert sends some items to Downloads and others
-    beside themselves — so a batch routinely spans **2+ destination volumes with no single
-    destination volume**. A summed check against one volume's free space is therefore
-    **wrong** (5 GB destined for a 1 GB USB stick would falsely PASS against 500 GB of
-    internal free space, then fail one-by-one mid-run — defeating "fail fast, up front").
-    Instead: **group each item's estimated (output + scratch) footprint by the volume its
-    resolved `final_dir` lands on** (computable in C4 after the §2.7 divert classification,
-    before convert) and require headroom on **each** volume **independently**. Set
-    `PreflightVerdict.up_front_fail = Some(OutOfDisk)` when **any one volume's grouped
-    footprint cannot fit that volume's free space** (× the headroom margin). `TooBig`
-    (the absolute output-size ceiling) stays per-item / aggregate as before. This is the
-    **only** up-front fail carrier — batch-level by design, but evaluated per-volume.
+  - **Whole-batch doomed is PER-PHYSICAL-VOLUME, split by where each byte lands `[DECIDED]`.**
+    The §2.7 beside-source default lands each item's **publish temp + final** on its **own
+    source volume** (§2.14.1), and per-location divert sends some items to Downloads and
+    others beside themselves — so a batch routinely spans **2+ destination volumes with no
+    single destination volume**. Crucially, the **kind-2 engine working scratch** (LO
+    per-run profile, FFmpeg two-pass/internal temp — `est_scratch_bytes`) does **NOT** land
+    on the destination volume: it lands on the **system / scratch volume** that
+    `app_local_data_dir()`/`temp_dir()` resolves to (§2.14.2). A summed check against one
+    volume is therefore **wrong** in two ways (a 5 GB share destined for a 1 GB USB stick
+    falsely PASSing against 500 GB internal; a heavy office batch exhausting the **system**
+    volume while every destination volume passes). Instead, group by **physical volume,
+    split by category**:
+    - **`est_output_bytes` + the publish temp → each item's `final_dir` volume** (the
+      destination volume — computable in C4 after the §2.7 divert classification).
+    - **`est_scratch_bytes` (kind-2) → the system/scratch volume** (§2.14.2).
+    Sum per physical volume across the batch (a destination volume that *is* the scratch
+    volume gets both), and require headroom on **each** volume **independently** (× the
+    margin). Set `PreflightVerdict.up_front_fail = Some(OutOfDisk)` when **any one physical
+    volume's grouped footprint cannot fit its free space**. `TooBig` (the absolute
+    output-size ceiling) stays per-item / aggregate as before. This is the **only** up-front
+    fail carrier — batch-level by design, but evaluated per-physical-volume (destination
+    volumes **and** the system/scratch volume).
   - **Per-item too-big / out-of-disk** is **enforced at WRITE TIME (mid-run)**: when an
     item's own size/space breaches the budget (or real disk usage outruns the estimate),
     its §2.1 write fails, §2.6 restores free space, and the item is reported as
@@ -998,7 +1051,7 @@ long conversion. The fraction source per engine (parsed by §3.5, normalised by
 | Engine | Progress basis |
 |--------|----------------|
 | **FFmpeg** (audio/video/cross-cat) | `-progress pipe:` → fraction = **`out_time_us` / source-duration-µs** (the denominator is the **`ffprobe` source duration**, NOT `total_size` — `total_size` is FFmpeg's running *output byte count*, which is not a duration and must not be the denominator) → true % even for a 2-hour film |
-| **libvips** (images) | Fast/near-atomic; coarse ticks (start → done) plus libvips' progress signal where available; tiny files are effectively instant |
+| **image-worker** (libvips, images) | `ProgressModel::VipsStdout` (§3.2.2): the separate image-worker process marshals libvips' `eval`-progress signal to its **stdout** as `progress=<0..100>` key=value lines (it cannot deliver an in-process callback across the process boundary), parsed by the §1.7 same stdout reader as FFmpeg's `-progress`. Fast ops emit start→`progress=end` (coarse); HEIC/AVIF HEVC/AV1 encode reports a real % |
 | **LibreOffice** (office/PDF) | No native progress signal → a **bounded indeterminate-but-animated** state with a watchdog (still reads as "working"); `[REC]` show a determinate-looking staged bar (spawn → render → export → write) rather than a raw spinner, to honour the spirit of the promise |
 | **poppler / pandoc** | Usually fast; staged ticks; large PDFs report per-page where `pdftotext` allows |
 | **Native CSV/TSV** (in-process, §3.5.6) | `[DECIDED]` fraction = **`bytes_processed / source_size`** emitted per N-KB chunk as the in-process engine streams the file (there is no subprocess to watch, so it self-reports). For **sub-100 KB inputs** it is effectively instant → falls back to a **start→done** (`CoarseSpawnDone`-equivalent) tick. So even the only non-subprocess engine reports a real fraction (or an honest start→done for tiny files), never a bare spinner. |
@@ -1046,7 +1099,9 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
 §5.3 `ResultSummary` renders it). For reference, the §0.6 shape is:
 
 - `RunResult { collected_set_id, run_id, items: Vec<ItemResult>, totals: Totals,
-  cleanup_incomplete: Vec<CleanupResidue>, common_root }`
+  cleanup_incomplete: Vec<CleanupResidue>, common_root, divert_root: Option<PathBuf> }`
+  (`common_root` = beside-source open-folder target; `divert_root` = `Some(..)` when any
+  item diverted, §0.6 / §2.7.4 — a single field cannot carry both roots)
 - `ItemResult { source, state: JobState, output: Option<PathBuf>, reason:
   Option<OutcomeMsg> }`
 - `Totals { succeeded, failed, cancelled, skipped }` — the "all failed" condition is
@@ -1063,7 +1118,10 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
   **where** (`cleanup_incomplete`).
 - **Completion actions** (one-click "open folder" / "open file" — SSOT How It Feels
   8) are rendered by §5.3 `OpenActions` and executed by §7.7; "open folder" opens
-  `common_root`. The summary is the data; the buttons are §5/§7.7.
+  `common_root` (the beside-source root), and — when `divert_root` is `Some(..)` (a
+  split-output batch) — a second "open Downloads/Documents" affordance opens the
+  `divert_root`. Per-item diverted outputs are also reachable via each `ItemResult.output`
+  (C9 `reveal_item_in_dir`). The summary is the data; the buttons are §5/§7.7.
 - **Re-run prompt linkage:** if §2.5 detected an equivalent prior output **before**
   CONVERT, the one batch-level skip/fresh-copy prompt (§5.2) already resolved it;
   the summary reflects whichever the user chose (skipped items appear as a distinct

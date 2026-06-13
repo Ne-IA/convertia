@@ -133,6 +133,20 @@ build-time mechanics that realise them**:
   text (the frozen `lovell/libimagequant` v2.4.x fork), and **fails the build** if a
   GPLv3 leg (upstream 4.x) slipped in — the §6.3.3 SPDX-presence gate sees a declared id,
   not the shipped text, so this text check is the real guard.
+- **libheif-resolves-dav1d-for-AV1-decode assertion (§3.1 row 1b / images.md) `[DECIDED]`:**
+  "libaom is encode-only" is a configuration choice, not a libaom limitation — so the stage
+  step asserts the staged **libheif resolves `dav1d` as its AV1 *decoder* plugin** (e.g.
+  `heif-info`/`libheif_decoder` enumeration lists dav1d, not libaom, for AV1) and **fails
+  the build** if libaom is wired as the decoder (or no dav1d decoder is present). Parallel
+  to the libimagequant-soname check: the shipped wiring is verified, not trusted.
+- **Exposed-parameter capability assertions (against the §3.8-pinned versions) `[DECIDED]`:**
+  the per-format option names ConvertIA exposes must actually exist in the staged engine
+  builds, so the stage step asserts (and **fails the build** on a miss): (1) the **FFmpeg
+  `paletteuse` dither modes** the video→GIF path exposes (`bayer`, `sierra2_4a`,
+  error-diffusion — cross-category.md) are present in the staged `ffmpeg -h filter=paletteuse`;
+  (2) the **libvips `webpsave`/`heifsave` `effort` parameter** (and `Q`) exists in the staged
+  libvips (images.md exposes `effort` for WEBP/AVIF) — `vips webpsave`/`heifsave` arg
+  introspection. These prevent a version bump from silently dropping an exposed knob.
 - **Curated-FFmpeg decoder-coverage assertion `[DECIDED]`:** the FFmpeg build uses
   `--disable-everything --enable-…` trimmed to the `04` codec set (size lever, §3.9),
   which risks **silently dropping a decoder a 04 pair needs**. So the stage step runs
@@ -143,13 +157,20 @@ build-time mechanics that realise them**:
   It runs `ffmpeg -decoders` / `-muxers` on the staged binary and **fails the build**
   if any referenced decoder/muxer is absent; the §6.4.3 per-pair integration tests are
   the runtime backstop that catches anything the static list missed.
-- **Curated-FFmpeg network-protocol-absence assertion `[DECIDED]` (T9b, §0.11 / §3.5.1):**
-  the FFmpeg build disables networking protocols at configure time (no
-  `--enable-protocol=http`/`https`/`tcp`/`tls`/`rtmp`/`hls` family; `--disable-network`
-  where it does not break a needed demuxer). The stage step runs **`ffmpeg -protocols`**
-  on the staged binary and **fails the build** if any network protocol is present. This is
-  the build-time half of the §3.5.1 control; the argv `-protocol_whitelist file,pipe` is
-  the always-on runtime half, and the §6.4.2 adversarial-egress case is the runtime proof.
+- **Curated-FFmpeg network-protocol + dereferencing-demuxer absence assertion `[DECIDED]`
+  (T9b SSRF **and** LFR, §0.11 / §3.5.1):** the FFmpeg build disables networking protocols
+  at configure time (no `--enable-protocol=http`/`https`/`tcp`/`tls`/`rtmp`/`hls` family;
+  `--disable-network` where it does not break a needed demuxer). The stage step runs
+  **`ffmpeg -protocols`** on the staged binary and **fails the build** if any network
+  protocol is present (the SSRF half). It **also** runs **`ffmpeg -demuxers`** and **fails
+  the build** if a playlist/manifest dereferencing demuxer ConvertIA does not need is
+  present (the absolute-file LFR half — local-HLS `hls`, DASH `dash`, and any external-
+  reference playlist demuxer; the `concat` demuxer, if present for a legitimate §04 pair,
+  is only ever invoked with the default `-safe 1`, never `-safe 0`, so it rejects absolute/
+  `..` paths). These are the build-time half of the §3.5.1 control; the argv
+  `-protocol_whitelist file,pipe` + `-safe 1` are the always-on runtime half, and the
+  §6.4.2 adversarial-egress case (zero egress **AND** no out-of-input file read) is the
+  runtime proof.
 
 ### 6.1.4 CI runners
 
@@ -157,7 +178,7 @@ build-time mechanics that realise them**:
 |-----|--------|---------------------|------------------------|
 | Windows | `windows-latest` (x64) | Rust (MSVC host triple), Node + pnpm | WebView2 is preinstalled on supported Windows; **not** bundled (no-network forbids downloading it at runtime — §0.3.1 owns the floor). **CI-realism note `[DECIDED]`:** WebView2's presence is a **runner-IMAGE property** (true on the `windows-latest` image) — **not guaranteed if the image is later pinned to a specific version**, so the E2E step verifies WebView2 is present on the pinned image. The Windows runner provides a **virtual desktop**, so — unlike the Linux/Xvfb leg — the §6.4.6 E2E needs **no extra display setup**. NSIS provided by tauri-cli. |
 | macOS | `macos-latest` (Apple Silicon) building `universal-apple-darwin` | Rust with **`rustup target add aarch64-apple-darwin x86_64-apple-darwin`** (both targets — prerequisite for the universal build and for `lipo`-merging each sidecar into its single `<name>-universal-apple-darwin` fat binary, §6.1.3), Node + pnpm | Xcode CLT for `lipo`/codesign-less packaging. No notarization step (out of scope). **Dual-arch engine sourcing (Lane-B operational prerequisite) `[DECIDED]`:** the universal build runs on an **arm64** runner, so the **engine-asset cache (§6.1.3) MUST supply pre-built binaries for BOTH `aarch64-apple-darwin` AND `x86_64-apple-darwin`** for every sidecar/lib — `scripts/stage-engines` `lipo -create`s them per §6.1.3, and it cannot lipo a slice it doesn't have. The cache provides the x86_64 slices (this is the hardest practical part); building x86_64 engines on an arm64 runner from source needs the cross toolchain / Rosetta 2 and is the documented fallback only. |
-| Linux | `ubuntu-latest` (pin a specific LTS for glibc floor stability) | Rust, Node + pnpm | `libwebkit2gtk-4.1-dev`, `libappindicator`, `librsvg2-dev`, `patchelf`; **plus FUSE 2** for the AppImage. **Two FUSE notes `[DECIDED]`:** (1) **FUSE 2 is a RUNTIME dependency, not build-time** — an AppImage *mounts* itself via FUSE 2 at launch, so the **end user's machine needs `libfuse2`**; the download page must disclose this (a bare "download, run, done" is false on a distro shipping only FUSE 3 — the alternative is to run with `--appimage-extract-and-run` / extract manually). (2) The package was **renamed `libfuse2t64` on Ubuntu 24.04+** (the time_t transition), so the CI install step must handle both names (`libfuse2 \|\| libfuse2t64`) or the 24.04 runner breaks. **glibc of the build image sets the minimum Linux version** — pin an older Ubuntu LTS to maximise compatibility; documented in §0.3.1's floor. |
+| Linux | **`ubuntu-22.04` (pinned, NOT `ubuntu-latest`) `[DECIDED]`** | Rust, Node + pnpm | `libwebkit2gtk-4.1-dev`, `libappindicator`, `librsvg2-dev`, `patchelf`; **plus FUSE 2** for the AppImage. **Pin rationale + two FUSE notes `[DECIDED]`:** the runner is pinned to **`ubuntu-22.04`** (not the drifting `ubuntu-latest`) for **(i)** glibc-floor stability (older glibc = wider compatibility, §0.3.1 floor) and **(ii)** to avoid **FUSE2-vs-FUSE3 drift** — `ubuntu-latest` rolling to 24.04+ broke `libfuse2` packaging (the time_t `libfuse2t64` rename). (1) **FUSE 2 is a RUNTIME dependency, not build-time** — an AppImage *mounts* itself via FUSE 2 at launch, so the **end user's machine needs `libfuse2`**; the download page must disclose this (a bare "download, run, done" is false on a distro shipping only FUSE 3 — alternatively `tauri build` / the AppImage runs with `--appimage-extract-and-run`, which needs **no** FUSE at all and is the recommended CI invocation to sidestep the issue entirely). (2) If a newer runner is ever used, the install step must handle both package names (`libfuse2 \|\| libfuse2t64`) or use `--appimage-extract-and-run`. |
 
 The platform CI standard (`reference_self_hosted_ci_runner.md`) runs a **self-hosted
 VPS runner** for the Ne-IA org's existing four projects. ConvertIA's build matrix
@@ -298,11 +319,15 @@ sbom`** build step (the single named tool — it reads `engines.lock` + the
 `cargo cyclonedx`/pnpm outputs and emits one document); CI does not invent a second
 merger. **Pin the CycloneDX schema version `specVersion 1.5` for ALL inputs `[DECIDED]`:**
 `cargo cyclonedx` now defaults to **1.6**, so merging mixed-version CycloneDX docs can
-**fail the schema gate**. `cargo xtask sbom` MUST pass **`--spec-version 1.5`** to
-`cargo cyclonedx` **and** to the pnpm/npm CycloneDX generator (so every input is 1.5
-before merge), and **abort the merge on a schema-version mismatch** rather than emit an
-invalid mixed-version document. This keeps the gate and the version-to-version diff
-stable across tooling bumps.
+**fail the schema gate**. **Verified `[DECIDED]`:** `cargo-cyclonedx` **does expose
+`--spec-version` with `1.3 | 1.4 | 1.5`** (1.5 supported since the CycloneDX-1.5 release;
+the §3.8-pinned `cargo-cyclonedx` version MUST be one that exposes it). `cargo xtask sbom`
+MUST pass **`--spec-version 1.5`** to `cargo cyclonedx` **and** to the pnpm/npm CycloneDX
+generator (so every input is 1.5 before merge), and **abort the merge on a schema-version
+mismatch** rather than emit an invalid mixed-version document. If a future pinned version
+ever drops the flag, the fallback is to emit the tool default and **post-process +
+re-validate** the JSON to 1.5. This keeps the gate and the version-to-version diff stable
+across tooling bumps.
 
 Output format: **CycloneDX JSON** as the canonical SBOM (developer-friendly,
 good licence+component fidelity); a **CycloneDX→SPDX** export is generated too if a
@@ -401,6 +426,18 @@ and stub/real engines:
   byte-identical before/after** every run (originals never touched), including the
   same-source==same-target re-encode case (§2.1) and the divert/fallback path
   (§2.7) (guarantees hold identically there).
+- **Divert / fallback scenarios (the §2.7 per-location divert, named) `[DECIDED]`:** the
+  property/fault-injection harness exercises each concrete unwritable/ephemeral case
+  ConvertIA must divert from — **(a) a read-only mount** (`chmod`-stripped dir / read-only
+  loopback or USB), **(b) a network share** (writable and read-only — flips mid-run to
+  exercise the §2.7.2 late-divert), **(c) an OS-ephemeral temp dir** (`/tmp`, `%TEMP%`,
+  `$TMPDIR`/`/var/folders` — output must divert, not silently land in a purgeable place),
+  and **(d) a cross-volume destination** (source on USB → output diverted to Downloads on
+  the system disk, exercising the §2.14.3 copy→fsync→atomic-rename-within-destination
+  fallback). Each asserts the output lands at the §2.7.3 divert target (or fails clearly
+  per §2.7.3 when the divert target is itself ephemeral/unwritable), the original is
+  untouched, and the **late-divert re-checks** (§2.7.2: §2.3.3 link-safety + §2.2.3
+  path-limit + §2.14.4 per-volume free-space on the divert volume) all run.
 - **Out-of-disk / too-big (§1.10/§2.8):** a constrained-FS harness proves the item
   fails fast+clearly, the batch continues, and free space returns to ~baseline
   (§2.6); a cleanup that itself fails is **never** reported as a clean success.
@@ -631,17 +668,20 @@ DoD **core-UX-flow** gate; the human half is §6.6. Frontend component/unit test
   the WebView never comes up and the E2E silently can't start.
 - **Per-platform E2E driver `[DECIDED — macOS degrades to a defined smoke test]`:** the
   Windows and Linux legs use `tauri-driver` (WebDriver; Linux under `Xvfb` per above).
-  `tauri-driver` relies on `WKWebView`/`safaridriver`, which an **unsigned** build cannot
-  drive cleanly, so the **macOS automated leg is explicitly the degraded test, not full
-  WebDriver:** CI **launches the built app, drives a synthetic `argv` conversion of one
-  corpus file through the launch-intake path (§7.8/§1.1), and asserts (a) the window/
-  process is present, (b) the expected output file appears, and (c) exit 0** — a scripted
-  launch + presence/output assertion. The **WebView UX flow on macOS is covered by the
-  §6.6 human walkthrough** (which also tests the Sequoia Gatekeeper / per-sidecar
-  quarantine recovery). This is the knowable macOS DoD-#7 satisfaction; the Win/Linux
-  full-WebDriver E2E is firm. (If `safaridriver --allow-unentitled` later proves it can
-  drive an unsigned WKWebView on CI, the macOS leg is upgraded to full WebDriver — a
-  bonus, not a gate.)
+  **`tauri-driver` officially supports ONLY Windows (Edge WebDriver) and Linux
+  (WebKitWebDriver) — there is NO macOS WKWebView driver in the official stack** (Apple's
+  `safaridriver` automates *Safari itself*, not a WKWebView embedded in a desktop app, so
+  it does **not** apply here — the earlier `safaridriver` reference was incorrect). So the
+  **macOS automated leg is explicitly the degraded test, not full WebDriver:** CI
+  **launches the built app, drives a synthetic `argv` conversion of one corpus file through
+  the launch-intake path (§7.8/§1.1), and asserts (a) the window/process is present, (b)
+  the expected output file appears, and (c) exit 0** — a scripted launch + presence/output
+  assertion. The **WebView UX flow on macOS is covered by the §6.6 human walkthrough**
+  (which also tests the Sequoia Gatekeeper / per-sidecar quarantine recovery). This is the
+  knowable macOS DoD-#7 satisfaction; the Win/Linux full-WebDriver E2E is firm. (If a
+  third-party WKWebView WebDriver bridge — e.g. an in-app W3C WebDriver server plugin —
+  later proves it can drive an unsigned WKWebView on CI, the macOS leg is upgraded to full
+  WebDriver — a bonus, not a gate.)
 
 #### 6.4.6a Automated accessibility assertions (DoD basic-a11y owner) `[DECIDED]`
 
@@ -649,16 +689,22 @@ The DoD **basic-a11y** gate (keyboard path + readable contrast/sizes, WCAG 2.1 A
 §5.6) has both a human half (§6.6 keyboard-only walkthrough) and an **automated half
 owned here** (it had no named tool/lane before):
 
-- **Tool & lane:** **`axe-core`** run via **`jest-axe`/`vitest-axe`** against the
-  rendered React component tree under **Vitest** (the §0.8 frontend test runner), as a
-  **Lane-A** step (§6.7.1) — no WebDriver session needed for the static checks, so it runs
-  per-PR. (Where a check needs the live WebView — e.g. computed-style contrast on the real
-  theme — it runs against the §6.4.6 `tauri-driver` session via `@axe-core/webdriverio`.)
+- **Tool & lane:** **`axe-core`** run via **`vitest-axe`** (NOT `jest-axe` — the §0.8
+  runner is Vitest, and `vitest-axe` is the correct Vitest binding; matches §6.7.1)
+  against the rendered React component tree under **Vitest**, as a **Lane-A** step
+  (§6.7.1) — no WebDriver session needed for the static ARIA/role/focus checks, so it runs
+  per-PR. **jsdom limitation `[DECIDED]`:** axe-core under jsdom **cannot measure computed
+  contrast** (jsdom applies no CSS/layout), so the **WCAG-AA contrast check does NOT run on
+  the Vitest/jsdom leg** — it runs on the live WebView via the **`@axe-core/webdriverio`
+  session against the §6.4.6 `tauri-driver`** run (Linux/Windows, where real computed
+  styles exist). The jsdom leg covers only **ARIA/role validity + focus-order**.
 - **Concrete assertions:** (a) **WCAG 2.1 AA contrast** — ≥4.5:1 for normal text, ≥3:1
   for large text and UI components/graphical objects (axe `color-contrast` rule, run in
-  both Light and Dark themes, §5.5); (b) **ARIA role/state validity** (no invalid or
-  orphaned roles; the §5.6 `radiogroup`/`radio` tiles carry valid `aria-checked`); (c)
-  **focus-order / tabindex sanity** (roving-tabindex radiogroup, §5.6) and labelled
+  both Light and Dark themes, §5.5) — **on the `@axe-core/webdriverio` Linux/Windows
+  session only** (jsdom cannot compute contrast); (b) **ARIA role/state validity** (no
+  invalid or orphaned roles; the §5.6 `radiogroup`/`radio` tiles carry valid
+  `aria-checked`) — jsdom leg; (c) **focus-order / tabindex sanity** (roving-tabindex
+  radiogroup, §5.6) — jsdom leg — and labelled
   controls. Any axe violation at the configured impact level **fails the build**.
 - **Cross-ref:** the rendered colours come from the §5.5 design tokens; this gate is what
   makes the §5.6 "WCAG 2.1 AA" claim verifiable rather than aspirational.
@@ -814,11 +860,14 @@ accommodated without dropping the gate. More non-dev testers are used if cheaply
 available; the macOS Sequoia quarantine sub-test (above) should preferentially get a
 non-dev tester since it is the highest non-technical-user blocker.
 
-> **SSOT note.** This relaxes the SSOT *v1 DoD* "per platform" wording to a
-> solo-project reading. The spec adopts it as the **SSOT owner's recorded decision** (so
-> the relaxation is SSOT-acknowledged, not a silent spec divergence from §9); the SSOT
-> intent — a human who didn't build it succeeds unaided — is fully preserved by the ≥1
-> genuine non-dev pass. §6.10 DoD row 11 matches this wording exactly.
+> **SSOT note `[DECIDED — SSOT amended]`.** The SSOT *v1 DoD* usability-floor gate has
+> been **amended at the source** (SSOT §9, recorded owner amendment with footnote): its
+> wording is now "≥1 genuine non-developer walkthrough overall, owner may run the
+> remaining platform walkthroughs", exactly matching this §6.6 text — so this is **no
+> longer a spec relaxation of a literal SSOT gate** (the prior "SSOT-acknowledged
+> decision" framing) but a spec faithfully implementing the amended SSOT. The SSOT intent
+> — a human who didn't build it succeeds unaided — is preserved by the ≥1 genuine non-dev
+> pass. §6.10 DoD row 11 matches this wording exactly.
 
 ---
 
@@ -960,8 +1009,23 @@ with **egress blocked** and **any outbound attempt fails the test**. Per-platfor
   **and** `unshare --net`. The **net-namespace wraps the entire `Xvfb`+E2E process**, and
   loopback must be brought up inside it:
   ```sh
-  unshare --net -- sh -c 'ip link set lo up && xvfb-run -a tauri-driver & … run E2E …'
+  unshare --net -- sh -c '
+    set -e
+    ip link set lo up
+    xvfb-run -a tauri-driver &           # background the driver
+    drv=$!
+    # readiness probe: wait for the WebDriver endpoint before starting the client
+    until curl -sf http://127.0.0.1:4444/status >/dev/null; do sleep 0.5; done
+    run_e2e_client                        # the WebdriverIO/webdriver-crate run
+    rc=$?
+    kill "$drv" 2>/dev/null || true       # tear the backgrounded driver down
+    exit $rc
+  '
   ```
+  (The earlier one-liner backgrounded `tauri-driver` and immediately "ran the E2E" with
+  **no readiness probe and no kill** — a race that either fails to connect or leaks the
+  driver process; the probe + explicit `kill` + propagated exit code fix both. The
+  `/status` port is the `tauri-driver` default; adjust if pinned.)
   This ordering is safe because **X11 talks over a Unix-domain socket** under
   `/tmp/.X11-unix` — a filesystem object that **survives the network-namespace isolation**
   (only TCP/IP is namespaced) — so `Xvfb` + the WebView still get a display while **all
@@ -971,8 +1035,16 @@ with **egress blocked** and **any outbound attempt fails the test**. Per-platfor
   silently passes — hence the pinned form above.
 - **macOS:** run under an **OS firewall egress-deny** profile (`pf` rule blocking
   outbound to non-loopback) **plus** the §2.11.4 packet-monitor assertion.
-- **Windows:** a **Windows Firewall outbound-deny rule** for the app **plus** the
-  §2.11.4 packet-monitor assertion.
+- **Windows `[DECIDED — packet-monitor is the load-bearing gate here]`:** a blanket
+  "Firewall outbound-deny rule for the app" is **fragile for a portable, unsigned exe at a
+  random `TEMP` path** (no stable program identity / install path to scope a rule to). So
+  the enforcement is **either** a **per-run `New-NetFirewallRule -Program <resolved
+  absolute path>`** created **and removed** around the test (scoped to that run's actual
+  exe path), **or** the process is launched inside a **network-denied Job Object**. **Note:
+  unlike the Linux `unshare --net` net-namespace, the Windows firewall rule is NOT a
+  structural-equivalent hard isolation** — so on Windows the **§2.11.4 packet-monitor
+  assertion is the real load-bearing gate** (the firewall rule is best-effort enforcement,
+  the monitor is the proof). Run both.
 
 The packet-monitor assertion (§2.11.4) — zero outbound packets observed for the whole
 E2E — is the load-bearing proof on every platform; the OS-level egress block is the
@@ -1096,7 +1168,7 @@ promises has a technical home" is **verifiable**. Each gate is marked
 | 8 | **Unwritable/ephemeral-location fallback works** | §2.7 (per-location divert) · §2.14 (cross-volume) | Property tests on read-only/USB/network/temp locations (§6.4.2); divert path in corpus runs | **in-scope-gate** |
 | 9 | **Every bundled engine's required licence text + attribution present and correct (NOTICE/third-party-licenses, backed by SBOM) — missing attribution release-blocking** | §3.7 (data) · §5.9 (display) | SBOM + NOTICE assembly + **attribution-completeness gate** (§6.3.3); blocks release | **in-scope-gate** |
 | 10 | **Name/trademark clearance completed; any rename applied across repo/LICENSE/NOTICE/branding before release** | this file (§6.9) | Clearance-record gate (§6.9.2) + scripted rename propagation + old-name grep gate (§6.9.3) | **in-scope-gate** (the *clearance check + rename*); **out-of-scope-process** (*registering* a mark) |
-| 11 | **Usability floor: ordinary non-tech person completes each named conversion unaided on first try; ≥1 genuine non-dev walkthrough on ≥1 platform (owner may run the remaining two — §6.6 [DECIDED] solo-project reading of the SSOT "per platform" wording, recorded by the SSOT owner)** | §5 (UX) · this file (§6.6) | Human walkthrough recorded in `docs/usability-floor.md` (which were non-dev vs owner-run); evidence gate in Lane B (§6.6/§6.7.2) | **in-scope-gate** |
+| 11 | **Usability floor: ordinary non-tech person completes each named conversion unaided on first try; ≥1 genuine non-dev walkthrough on ≥1 platform (owner may run the remaining two — matches the AMENDED SSOT §9 gate, owner amendment recorded at the SSOT source, implemented in §6.6)** | §5 (UX) · this file (§6.6) | Human walkthrough recorded in `docs/usability-floor.md` (which were non-dev vs owner-run); evidence gate in Lane B (§6.6/§6.7.2) | **in-scope-gate** |
 | 12 | **Published integrity hashes from one canonical source (trust substitute for no-signing)** | this file (§6.2) | SHA-256 + `SHA256SUMS` + **minisign signature (DECIDED, unconditional — Lane-B stage 6)** published to canonical GitHub Releases (§6.2.2/§6.2.3); verify recipe surfaced (§6.2.4) | **in-scope-gate** |
 | 13 | **One artifact per platform (cross-platform, one product)** | §0.2 · this file (§6.1) | Build matrix artifact table (§6.1.2): portable-zip (exe + bundled engines) / NSIS-installer (secondary) · universal-dmg · AppImage | **in-scope-gate** |
 | 14 | **No-harm / atomicity / fail-clearly hold even across crash/cancel/out-of-disk** | §2.1/§2.6/§2.8/§2.13/§2.14 | Atomicity-under-interruption + out-of-disk + panic-boundary property tests (§6.4.2) | **in-scope-gate** |

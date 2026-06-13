@@ -71,8 +71,9 @@ applied the §2.7 destination rules). Given a *final resolved destination path*
    owns *which* volume and the cross-volume fallback). Per §2.14.1 the publish temp
    is a uniquely-named **sibling file in the destination directory** (not the central
    scratch root, which is frequently on a different volume), e.g.
-   `…/<dest_dir>/.convertia-<RunId>-<jobId>-<rand>.part`. Ownership is encoded in the
-   `RunId` so cleanup (§2.6) can identify it.
+   `…/<dest_dir>/.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part`. Ownership is
+   encoded in the `InstanceId`+`RunId` so cleanup (§2.6) can identify it **and resolve its
+   exact owning lock cross-instance** (§2.6.3 / §2.14.1).
 2. **Engine writes into `tmp`** (the engine is told to write to `tmp`, never to
    `final`; §3.5 constructs the arg). The engine runs through the §2.12 isolation
    wrapper.
@@ -285,16 +286,22 @@ on collision: format!("{stem} ({n}).{ext}")        // n = 1,2,3,…
 
 `n` is **not** chosen by listing the directory and picking max+1 (that is itself a
 TOCTOU race). Instead `output_name` produces candidates **lazily** and each
-candidate is handed to §2.1.2's **no-placeholder exclusive publish** (Unix
-`link`/`renameat2(RENAME_NOREPLACE)` → fails `EEXIST`; Windows the atomic
-**`MoveFileExW(tmp, final, MOVEFILE_WRITE_THROUGH)` WITHOUT `MOVEFILE_REPLACE_EXISTING`**
-→ fails `ERROR_ALREADY_EXISTS`/`ERROR_FILE_EXISTS` — the §2.1.2-declared first-time
-publish primitive, **not** a `create_new`-reserve); on the exists-error it bumps the
-counter suffix and yields the next candidate. So numbering
-and the absolute no-clobber guarantee are the **same loop** — the directory's real
-state at the instant of the exclusive publish decides, not a stale scan. (An optional
-cheap `symlink_metadata` pre-check may skip obviously-taken low numbers as an
-optimisation, but the **authority is always the kernel's exclusive publish**.)
+candidate is handed to **the canonical §2.3.3 dir-handle-relative no-placeholder
+exclusive publish** — **the same single primitive every publish (incl. every
+numbering-loop retry) uses**, rooted at the **verified parent-directory handle** so the
+parent-swap TOCTOU is closed (§2.3.3): Unix `linkat`/`renameat2(olddirfd, tmp, dirfd,
+leaf, RENAME_NOREPLACE)` → fails `EEXIST`; Windows
+`NtSetInformationFile(tmpHandle, …, FileRenameInformationEx)` with `RootDirectory` = the
+verified parent handle and the `FILE_RENAME_INFORMATION_EX` `Flags` bitfield **OMITTING**
+`FILE_RENAME_REPLACE_IF_EXISTS` → fails `STATUS_OBJECT_NAME_COLLISION`. (The bare
+path-string `MoveFileExW(tmp, final)` WITHOUT `MOVEFILE_REPLACE_EXISTING` is only the
+**conceptual** create-only shape; the **real** primitive is the dir-handle-relative form
+of §2.3.3, because the path-string form does NOT close the parent-swap race — see §2.3.3.)
+On the exists-error it bumps the counter suffix and yields the next candidate. So numbering
+and the absolute no-clobber guarantee are the **same loop** — the directory's real state at
+the instant of the exclusive publish decides, not a stale scan. (An optional cheap
+`symlink_metadata` pre-check may skip obviously-taken low numbers as an optimisation, but
+the **authority is always the kernel's exclusive dir-handle-relative publish**.)
 
 This is the technical realisation of the SSOT distinction:
 
@@ -677,11 +684,13 @@ volume rule are owned by §2.14.2 (referenced here, not re-decided):
   central scratch root would frequently be on a *different* volume → an `EXDEV`
   cross-volume move on the **common** path, defeating §2.1). Per §2.14.1 the publish
   temp is a uniquely-named **sibling file** in the destination dir, e.g.
-  `…/<dest_dir>/.convertia-<RunId>-<jobId>-<rand>.part`, **not** a subdir, so the
-  startup sweep (§2.6.3) can opportunistically remove a stale one when a later run
-  next writes there.
-- **`RunId` encodes ownership** in both temp names, so a cleanup sweep can tell *its
-  own* temps from a *concurrent instance's* temps. The RunId model and its
+  `…/<dest_dir>/.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part`, **not** a subdir, so
+  the startup sweep (§2.6.3) can opportunistically remove a stale one when a later run
+  next writes there — resolving its exact owning lock cross-instance from the embedded
+  `InstanceId`+`RunId`.
+- **`InstanceId`+`RunId` encode ownership** in both temp names, so a cleanup sweep can
+  tell *its own* temps from a *concurrent instance's* temps (and never deletes a live
+  foreign instance's in-progress `.part`). The RunId model and its
   uniqueness/liveness semantics are §7.1's to define; §2.6 *requires* it to be (a)
   unique per run and (b) liveness-checkable (so a stale central scratch dir from a
   dead run is distinguishable from a live one — see 2.6.3).
@@ -733,9 +742,18 @@ therefore reclaims a destination-resident publish temp at exactly two moments:
 **(a)** at run-end and same-session retry (the destination roots are known
 in-memory), and **(b) opportunistically**: whenever any *later* run is about to write
 into a destination dir, it first removes any sibling stale `.convertia-*.part` whose
-embedded `RunId` belongs to a **dead** run (same liveness check as step 2, applied
-per-file). This is why the publish temp is a uniquely-named **file** (not a subdir)
-named with the `RunId` — it makes the opportunistic same-dir sweep cheap and safe.
+owning run is **dead** (same liveness check as step 2, applied per-file). **Cross-instance
+liveness `[DECIDED]`:** because the `.part` filename embeds **both `InstanceId` and
+`RunId`** (§2.14.1), the per-file check resolves the **exact** owning lock —
+`convertia/scratch/<InstanceId>.*/run-<RunId>/.lock` — and is therefore **correct across
+instances** (instance A about to write into a dir does **not** delete a **live** instance
+B's in-progress `.part`, because B's lock is held). A lock that is **held** ⇒ live ⇒ the
+`.part` is **kept**; a lock that is **free, stale, OR entirely absent** ⇒ dead ⇒ the
+`.part` is reclaimable. (Only a currently-held lock blocks reclamation; an absent lock is
+not "uncertain" — it is dead.) This is why the publish temp is a uniquely-named **file**
+(not a subdir) named with the `InstanceId`+`RunId` — it makes the opportunistic same-dir
+sweep cheap, cross-instance-safe, and lock-addressable without scanning every instance
+subdir.
 A publish temp in a destination dir **never revisited** by a later run can persist
 until the user deletes it; this residual case is surfaced honestly per §2.6.4 rather
 than promised away. **SSOT reconciliation `[DECIDED]`:** the "free space returns to
@@ -830,10 +848,21 @@ For each source, §1.8 classifies its **intended** output location via
     **late divert**, not an immediate item failure — consistent with §2.7's
     divert-unwritable-locations intent. (A non-writability error — e.g. `OutOfDisk` —
     is **not** a divert trigger; it fails per §2.8 / §1.10.) **The late-divert publish
-    re-runs the full safety chain on the divert target**: §2.3.3 `is_safe_output`
-    (the divert dir must not resolve into the frozen source set) **and** §2.2.3
-    path-limit, before its §2.1 exclusive publish — a late divert never skips the
-    link-safety / path-limit checks just because it is a fallback.
+    re-runs the full safety chain on the divert target** — because the up-front per-volume
+    free-space verdict (§2.14.4) and the §2.2.3 path-limit check were computed for the
+    **original** beside-source path, which can be a **different volume and a different
+    absolute-path length** than the divert destination (Downloads/Documents):
+    - §2.3.3 `is_safe_output` (the divert dir must not resolve into the frozen source set),
+    - §2.2.3 **path-limit re-checked against the divert destination's full absolute path**
+      (fail the item `PathTooLong` if it would exceed the OS limit — never silently
+      truncate),
+    - the **§2.14.4 per-physical-volume free-space check re-run against the divert
+      destination's volume** (fail the item `OutOfDisk` if it would not fit — never assume
+      it fits because the original volume did),
+    all **before** its §2.1 exclusive publish. A failed re-check fails that **one** item
+    clearly (`PathTooLong` / `OutOfDisk`, §2.8) while the batch continues — a late divert
+    never skips the link-safety / path-limit / free-space checks just because it is a
+    fallback (SSOT Principle-5: guarantees apply **identically on the divert path**).
 - **Ephemeral test:** is the dir inside a **known-ephemeral OS temp location**?
   - Win: under `%TEMP%` / `%TMP%` / `GetTempPathW`.
   - macOS: under `$TMPDIR` (per-user `…/T/`), `/tmp`, `/var/folders/…`.
@@ -1051,8 +1080,10 @@ if these two did not, codegen would fail or fall back to `any` for
 `IpcError`/`ErrorKind`). The §06 bindings-drift check (§0.4.5) **covers these types
 too**, so a change to the §2.8 taxonomy or the lossy catalog regenerates
 `bindings.ts` and fails CI if stale. (`ConversionErrorKind` is the §2.8-owned full
-set; `§0.4.3 ErrorKind` is its byte-identical wire mirror for the item-level
-variants — both are generated, neither is hand-written.)
+set; `§0.4.3 ErrorKind` is its byte-identical wire mirror for **all variants** — the
+item-level kinds **and** the run/app-level kinds `MixedDrop`/`EngineMissing`/
+`WebviewFault`/`BundleDamaged` (§2.13) which `§0.4.3 ErrorKind` also carries — both
+are generated, neither is hand-written.)
 
 ### 2.8.3 Behaviour rules tying the catalog to the pipeline `[DECIDED]`
 
@@ -1108,6 +1139,7 @@ gating the Convert button.
 | `text_encoding_narrowed` | `CSV/TSV → workbook/CSV` with a non-Unicode chosen encoding (spreadsheets.md) | **"Some characters can't be saved in the chosen encoding and would be lost."** |
 | `slides_to_pdf_flatten` | `PPTX/PPT/ODP → PDF` (presentations.md) | **"Animations, transitions and embedded media are flattened or dropped, and editing is no longer possible."** |
 | `office_roundtrip_approx` | ODF↔MS office round-trip: `ODP → PPTX/PPT`, `PPTX → ODP` (presentations.md); also slide `→ PPTX/PPT` re-layout | **"Some effects and layout may shift when converting between PowerPoint and OpenDocument."** |
+| `pptx_to_ppt_legacy` | `PPTX → PPT` (presentations.md) — downgrade to the legacy BIFF8/PowerPoint-97 format | **"Saved in the old PowerPoint format — SmartArt, modern charts, and newer transitions (e.g. Morph) can't be stored and are simplified or dropped."** |
 | `audio_lossy_target` | `→ MP3/AAC/M4A/OGG/OPUS` (audio.md) | **"Saved in a compressed audio format — some quality is reduced."** |
 | `audio_transcode` | lossy source `→` lossy target (e.g. MP3→AAC) | **"Re-compressing already-compressed audio — quality drops a little more."** |
 | `audio_lossy_origin` | lossy source `→` lossless target (e.g. MP3→FLAC) | **"This won't improve quality — the original is already compressed, so the result is just larger."** |
@@ -1229,13 +1261,16 @@ Offline is enforced **structurally**, not by policy, on two complementary halves
   opens no socket). **Bundling alone does NOT prove a bundled engine cannot reach out on
   hostile input** (the **T9b** half — a crafted file driving FFmpeg HLS/DASH/concat,
   pandoc includes, or LibreOffice remote/OLE links): that is closed **structurally** by
-  **always-on, cheap-tier argv/build controls** independent of the §2.12 OS sandbox —
-  FFmpeg `-protocol_whitelist file,pipe` + network-disabled build (§3.5.1), pandoc
-  `--sandbox` (§3.5.4), LibreOffice profile-hardening with no remote/OLE link
-  auto-update (§3.5.2); SVG/`<image href>` is not fetched by librsvg (images.md). The
-  §2.12 wrapper's sandbox profile can **additionally** deny network syscalls as
-  defence-in-depth, but it is **not** the load-bearing control (it degrades to the cheap
-  tier with no network deny). These are content-fidelity *and* offline guarantees.
+  **always-on, cheap-tier argv/build controls** independent of the §2.12 OS sandbox, on
+  **both** the SSRF half and the absolute-file LFR half — FFmpeg `-protocol_whitelist
+  file,pipe` + network-disabled build (SSRF) **and** concat `-safe 1` (never `-safe 0`) +
+  a curated demuxer set without playlist/manifest dereferencing demuxers (absolute-file
+  LFR), §3.5.1; pandoc `--sandbox` (§3.5.4); LibreOffice profile-hardening with no remote/
+  OLE link auto-update (§3.5.2); SVG/`<image href>` is not fetched by librsvg (images.md).
+  The §2.12 wrapper's sandbox profile can **additionally** deny network syscalls and
+  restrict the filesystem as defence-in-depth, but it is **not** the load-bearing control
+  (it degrades to the cheap tier with no network/FS deny). These are content-fidelity
+  *and* offline guarantees.
 
 ### 2.11.2 No telemetry / accounts / update phone-home `[DECIDED]`
 
@@ -1268,11 +1303,15 @@ identically with networking disabled. This is a release gate, not a runtime chec
 > **Benign vs adversarial scope.** This gate runs the **benign** corpus (it proves
 > T9a — ConvertIA's own code opens no socket — and catches an accidental fetch). It does
 > **not** by itself prove **T9b** (a bundled engine coerced to reach out by a *crafted*
-> input). T9b is closed structurally by the §3.5.1/§3.5.4/§3.5.2 argv/build controls and
-> verified by the **§6.4.2 adversarial-egress case** (a network-trigger input must
-> show **zero egress AND no out-of-input file read**), which runs inside this same
-> packet-monitor / egress-deny window. Cite the argv/build controls — not "all engines
-> bundled" — as the T9b evidence.
+> input). T9b is closed structurally by the §3.5.1/§3.5.4/§3.5.2 argv/build controls —
+> **both** the network/SSRF half (FFmpeg `-protocol_whitelist file,pipe` + network-disabled
+> build) **and** the absolute-file LFR half (FFmpeg concat `-safe 1`, never `-safe 0`, +
+> the curated demuxer set without playlist/manifest dereferencing demuxers; pandoc
+> `--sandbox`; LibreOffice link-update-off) — and verified by the **§6.4.2 adversarial-
+> egress case** (a network-trigger input must show **zero egress AND no out-of-input file
+> read**), which runs inside this same packet-monitor / egress-deny window. Cite the argv/
+> build controls — not "all engines bundled", and not the degradable §2.12.3 OS tier — as
+> the T9b evidence.
 
 - **Per-platform packet monitor / egress block (named, §6.7.3 owns the wiring):** the
   gate runs under an **OS egress-deny** plus a packet-monitor assertion — **Linux**
@@ -1378,14 +1417,21 @@ decode** — so it is acceptable to run **in-core** (it doesn't invoke a third-p
 C/C++ decoder). The moment a full decode is needed (the actual conversion), that runs
 in an isolated subprocess. §1.2 states this; §2.12 confirms the boundary, stated
 precisely: *no third-party **C/C++** decoder library is linked into or run inside the
-Rust core — every full decode runs in a separate subprocess*. The **only** in-core
-operations on untrusted bytes are a **small set of bounded, memory-safe pure-Rust
-sniffs** — the text-encoding heuristic, the Rust ZIP central-directory peek, and the
-`.svgz` bounded inflate (`flate2 rust_backend`/miniz_oxide, ≤64 KiB + ≤100× ratio cap,
-§1.2 step 2) — which are **not** full decodes and run no C/C++ decoder. Whether even
-these may stay outside the §2.12 boundary is the one tracked isolation-boundary `[OPEN]`
-(§1.2 1.2-sec / README log); the absolute as worded above is **not** weakened by them
-because they invoke no third-party C/C++ decoder. This is true for **all** engines including the
+Rust core — every full decode runs in a separate subprocess*. The in-core operations on
+untrusted bytes are: (a) a **small set of bounded, memory-safe pure-Rust sniffs** — the
+text-encoding heuristic, the Rust ZIP central-directory peek, and the `.svgz` bounded
+inflate (`flate2 rust_backend`/miniz_oxide, ≤64 KiB + ≤100× ratio cap, §1.2 step 2) —
+which are **not** full decodes and run no C/C++ decoder; and (b) the **native CSV/TSV
+`InProcessNative` conversion** (§3.5.6), which *is* a full in-core untrusted-byte
+**transform** (not a mere sniff) but is **acceptable in-core** for the same structural
+reason: it is **pure memory-safe Rust** doing a **bounded, streamed** re-encode/re-quote
+(no third-party C/C++ decoder, no unbounded buffering — the §1.10 input-size guard bounds
+CSV-expansion DoS, §1.7 `InProcessNative` sub-case). The §2.12.4 **absolute is about
+third-party C/C++ decoders, not "only sniffs run in-core"** — so the native CSV/TSV path
+does not weaken it. Whether even the pure-Rust sniffs may stay outside the §2.12 boundary
+is the one tracked isolation-boundary `[OPEN]` (§1.2 1.2-sec / README log); the absolute
+as worded above is **not** weakened by any of these because none invokes a third-party
+C/C++ decoder. This is true for **all** engines including the
 image core: image decode/encode runs in a **separate image-worker process**
 `[DECIDED]` (§0.7/§3.5.5 — the README/§3.5.5 in-process-vs-worker `[OPEN]` is resolved
 to the worker), so a memory-corruption exploit in libvips/libheif/libde265/librsvg/a
@@ -1499,12 +1545,18 @@ The atomic-publish (§2.1.2) is a `rename(tmp → final)`, which is only atomic
 
 Concretely, `crate::run` picks the publish-temp path **inside the destination
 directory itself** (same volume by construction). The chosen form is a
-**uniquely-named dotfile *sibling* of `final`**, not a subdir:
-`…/<dest_dir>/.convertia-<RunId>-<jobId>-<rand>.part`. A bare **file** (rather than a
-`.convertia-run-<RunId>/` subdir) is deliberate: it lets the §2.6.3 startup/next-write
-sweep **opportunistically remove a sibling stale `.convertia-*.part`** (whose
-embedded `RunId` belongs to a dead run) without having to discover and tear down a
-directory, and it keeps the no-placeholder publish (§2.1.2) a single same-dir rename.
+**uniquely-named dotfile *sibling* of `final`**, not a subdir, and it **embeds the
+owning `InstanceId` as well as the `RunId`** so its authoritative lock is directly
+addressable from the filename alone:
+`…/<dest_dir>/.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part`. A bare **file**
+(rather than a `.convertia-run-<RunId>/` subdir) is deliberate: it lets the §2.6.3
+startup/next-write sweep **opportunistically remove a sibling stale
+`.convertia-*.part`** (whose embedded `InstanceId`+`RunId` lets the sweep find the
+**exact** owning lock at `convertia/scratch/<InstanceId>.*/run-<RunId>/.lock` without
+scanning every instance subdir — and a lock that is **held** ⇒ live ⇒ skip; **free,
+stale, OR entirely absent** ⇒ dead ⇒ reclaimable) without having to discover and tear
+down a directory, and it keeps the no-placeholder publish (§2.1.2) a single same-dir
+rename.
 This is what makes the §2.1 publish a true intra-volume atomic rename in the common
 beside-source case (dest dir = source dir = one volume) **and** in the divert case
 (dest dir = Downloads = system volume; publish temp also on the system volume).
@@ -1585,17 +1637,29 @@ exclusive-publish. Callers (§2.1) never see the distinction.
 ### 2.14.4 Space accounting ties to §1.10 `[DECIDED]`
 
 The scratch model means a conversion transiently needs **destination-volume free
-space ≈ output size** (publish temp) **plus** any kind-2 working space. §1.10 (resource
-pre-flight, `[OPEN]` budgets) owns the up-front estimate and the "doomed for disk"
-fast-fail; §2.14 **supplies** the model it estimates against: *publish temp lands on
-the destination volume*, so §1.10's free-space check must target **each destination
-volume the batch writes to**, not the source volume and **not a single aggregate volume**.
-Because the §2.7 beside-source default and per-location divert can spread one batch
-across **several volumes** (each item lands on its own `final_dir`'s volume, §2.14.1),
-the §1.10 pre-flight **groups the footprint by destination volume and requires headroom
-on each volume independently** — a 5 GB share destined for a 1 GB stick must fail up
-front even when the internal disk has ample room. The to-GIF guardrail
-(cross-category.md) and video re-encode estimates feed the same §1.10 per-volume check.
+space ≈ output size** (publish temp) **plus** any kind-2 working space — and the two
+**may live on different physical volumes**. §1.10 (resource pre-flight, `[OPEN]` budgets)
+owns the up-front estimate and the "doomed for disk" fast-fail; §2.14 **supplies** the
+model it estimates against. The free-space check is therefore **per PHYSICAL volume**, and
+the footprint is split by where each byte actually lands (§2.14.2):
+- **`est_output_bytes` + the kind-1 publish temp (`*.part`)** land on **each item's
+  `final_dir` volume** (the destination volume, §2.14.1) — beside-source or divert.
+- **`est_scratch_bytes` (kind-2 engine working files — the LibreOffice per-run profile,
+  FFmpeg two-pass/internal temp)** land on the **system / scratch volume** that
+  `app_local_data_dir()`/`temp_dir()` resolves to (§2.14.2), which is **NOT** necessarily
+  the destination volume (e.g. a beside-source-on-USB job: output → USB, kind-2 → internal
+  disk).
+
+So §1.10 **groups the footprint by physical volume across BOTH categories** and requires
+headroom on **every** volume the batch touches independently — the destination volume(s)
+**and** the system/scratch volume. A 5 GB share destined for a 1 GB stick must fail up
+front (destination volume) even when the internal disk has ample room; equally, a heavy
+office/video batch whose kind-2 scratch would exhaust the **system volume** must fail up
+front even when each destination volume passes. Because the §2.7 beside-source default and
+per-location divert can spread one batch across **several destination volumes** (each item
+lands on its own `final_dir`'s volume, §2.14.1), there may be 2+ destination volumes plus
+the one scratch volume to verify. The to-GIF guardrail (cross-category.md) and video
+re-encode estimates feed the same §1.10 per-physical-volume check.
 
 ---
 

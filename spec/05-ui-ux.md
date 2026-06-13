@@ -47,6 +47,9 @@ src/
     machine.ts                 # the screen-state machine (§5.2), reducer + guards
     store.ts                   # app store (choice below)
   components/
+    AppHeader.tsx              # §5.3/§5.5 — persistent slim chrome bar (BrandLogo + ThemeToggle + About)
+    ThemeToggle.tsx            # §5.3/§5.5 — Light/Dark/System selector (writes `theme`, §7.4.2)
+    BusyNotice.tsx             # §5.3/§7.1.1 — refuse-busy Banner under AppHeader (defence-in-depth, §5.8)
     DropZone.tsx               # §5.3
     BatchSummary.tsx
     FileList.tsx
@@ -134,7 +137,7 @@ per-item outcome); the machine only sequences the user through them.
 | 9 | `MixedDropRefusal` | the drop/folder contained >1 source format (§1.3 pre-flight) | **hard refusal**, not a partial convert: lists the formats found + counts ("Found 30 JPG, 12 PNG, 3 PDF"), asks to **re-drop a single format**; explicitly **no** "just convert the JPGs" affordance in v1 (parked). **`[DECIDED]` the refusal screen renders an active `DropZone` as its primary action** (plus a Dismiss) so a **fresh single-format drop/pick goes straight to `Collecting`** without a Dismiss-to-Idle round-trip | **re-drop (onto the screen's DropZone) → `Collecting`**; **Dismiss → `Idle`** |
 | 10 | `Unsupported` / `Unreadable` | detection says *real but unsupported type* or *uncertain/conflicting* (§1.2), or every collected item was unreadable/gone, **or** a `CollectedSet::Empty` (all files filtered out / nothing eligible) | plain message: *"Can't convert this type — detected: X"* / *"Couldn't tell what this file is"* / *"Nothing here I can convert"* (the Empty case); never an empty target list, never a hang | dismiss → `Idle` |
 | 11 | `AppCloseRequested` (overlay over `Converting`) | the OS window-close was intercepted mid-run → backend emits **`app://close-requested`** (§0.4.2 / §7.3.2) | a calm confirm **interstitial over** `Converting`: *"A conversion is in progress. Quit anyway? Files already finished are kept; the one in progress will be discarded."* — **Quit** / **Stay**; **Enter = Stay** (safe default), **Esc** cancels the close | **Stay** → back to `Converting`; **Quit** → backend runs cancel+cleanup+exit (§7.3.3) → app exits |
-| 12 | `AppFault` | the Channel goes silent / a command Promise rejects unexpectedly (core panic, IPC drop — §2.13/§5.8), in place of `Summary` | plain **no-stack-trace** message: *"Something went wrong and the conversion stopped."* + **Start over**; never fabricates per-item outcomes for items it never heard back about | **Start over** (Ctrl/⌘+N) → `Idle` |
+| 12 | `AppFault` | **scoped to the run path `[DECIDED]`:** the `Converting` Channel goes silent or the C6/C7 Promise rejects unexpectedly (core panic, IPC drop during a run — §2.13/§5.8), in place of `Summary`; **plus** the app-level `app://fault` faults (WebView core disconnect, startup engine-missing, damaged bundle). A **pre-run** C3/C4/C5 rejection does **NOT** escalate to AppFault — it renders as an **inline error in the current state** (e.g. a `Targets`/`Destination` inline `Note`), since no run is in flight and recovery is local (SSOT-faithful "fail clearly" without a full-screen takeover) | plain **no-stack-trace** message: *"Something went wrong and the conversion stopped."* + **Start over**; never fabricates per-item outcomes for items it never heard back about | **Start over** (Ctrl/⌘+N) → `Idle` |
 
 > **Mid-run skip vs pre-flight refusal — keep distinct (SSOT *Fail clearly*).**
 > `MixedDropRefusal` (state 9) and `Unsupported` (state 10) are **pre-flight** —
@@ -222,7 +225,7 @@ restated per component.
 | Component | Role | Key states/props | Notes / cross-refs |
 |-----------|------|------------------|--------------------|
 | **DropZone** | the primary intake surface + click-to-browse + choose-folder | `dragActive`, `disabled`-while-converting | native file-drop via §5.4; **click (or Enter/Space)** invokes **C2a `pick_for_intake` `{ kind: 'files' }`** (Rust-opened `DialogExt`, no `dialog:allow-open` grant — §0.10/§5.4). **Choose-folder affordance `[DECIDED]`:** a secondary **"or choose a folder"** link/button on the DropZone (and the **Ctrl/⌘+Shift+O** accelerator, §5.10) invokes the **same C2a with `{ kind: 'folder' }`** → folder recursion runs Rust-side (§1.1). Present in `Idle` alongside the reassurance line. |
-| **BatchSummary** | the confirm-gate card | `detectedFormat`, `count`, `sampleNames?`, `skipped?: SkippedItem[]` | data from §1.4 collected-summary payload; the mandatory pre-convert gate (state 3). **Rendering rule for `skipped`:** when non-empty, render the passive *"M file(s) weren't recognized and will be skipped"* line with an expandable list (path + §2.8 reason per item) — never blocks confirm, but is always shown so no skipped item is silently dropped (§1.4) |
+| **BatchSummary** | the confirm-gate card | `detectedFormat`, `count`, `skipped?: SkippedItem[]` | data from §1.4 collected-summary payload; the mandatory pre-convert gate (state 3). **`sampleNames` is NOT a wire field `[DECIDED]`** — `CollectedSet::Single` carries no `sample_names`; any "e.g. `holiday.jpg`, `cat.jpg`, …" preview is **derived client-side** from the first few `CollectedSet::Single.items[].raw_path` basenames (no new wire type). **Rendering rule for `skipped`:** when non-empty, render the passive *"M file(s) weren't recognized and will be skipped"* line with an expandable list (path + §2.8 reason per item) — never blocks confirm, but is always shown so no skipped item is silently dropped (§1.4) |
 | **FileList** | optional expandable list of collected items (behind a "Show files" disclosure on the Confirm gate, state 3) | `items: { name: string; relPath?: string }[]`, `skipped?: SkippedItem[]`, `virtualized: true` | **Trigger/affordance:** collapsed by default; a "Show N files" toggle expands it. **Row data:** file name + (for folder drops) the dropped-root-relative path; **eligible vs skipped are rendered distinctly** — eligible rows plain, **skipped rows visually marked** with their §2.8 reason (so a skipped item is never hidden, §1.4). **Virtualised** (§1.10) for thousands of files. Read-only in v1 (no per-item target / no per-item deselect — both out of v1) |
 | **FormatPicker** | target tiles for the detected source | `targets[]`, `default`, `selected`, per-tile `disabledReason?` | one pre-highlighted default (§1.5); cross-category outputs (extract-audio / to-GIF) appear as extra tiles of a video source (cross-category.md); disabled tiles per §3.4 (§5.2) |
 | **OptionsPanel** | the few **basic** contextual settings for the chosen target | option descriptors (§1.6 generic model); values & defaults from 04 | e.g. JPG quality slider, GIF fps/width — **descriptors come from the backend** (§1.6), UI just renders the declared widget type |
@@ -232,7 +235,7 @@ restated per component.
 | **ResultSummary** | end-of-batch outcome | `RunResult` (§1.12) | success/fail counts, per-item reason (§2.8 strings), output→source map; fully-failed banner. **Residue rendering `[DECIDED]`:** an item whose `IpcError.residue != None` (§0.4.3) — or that appears in `RunResult.cleanup_incomplete` (§1.12/§2.6.4) — is rendered as **Failed (not Succeeded)** with its reason string **including the residue path** (the §2.8 `cleanup_residue` string), optionally a **"reveal residue" link via C9** (`OpenKind::RevealInFolder`). Cross-ref §2.6/§0.4.3. A Cancelled-with-residue item (§2.6.4 case 3) shows the §2.8.2 "With residue" tail. |
 | **OpenActions** | open-folder / open-file buttons | `folderPath`, `filePath?` | **backed by §7.7** (the only OS shell-out); "open folder" opens the common root (§2.7). **Availability `[DECIDED]`: Summary-only (state 8), NOT mid-run (state 7).** During `Converting` the run's results are still incomplete and the §7.7.3 RunResult-membership set is not final, so open-actions are withheld until the run reaches a terminal `Summary`; this keeps the open-finished-output model (§7.7) honest and avoids opening a folder of half-written outputs |
 | **RerunPrompt** | the §2.5 interstitial | `equivalentCount`, default=Skip | one batch-level prompt, skip-default / fresh-copy (state 6) |
-| **MixedDropRefusal** | pre-flight hard refusal | `formatsFound[]` with counts | state 9; no subset-convert affordance in v1. **Renders an active `DropZone` as the primary action `[DECIDED]`** so a fresh single-format drop/pick goes straight to `Collecting` (re-drop), with a secondary **Dismiss → `Idle`**; resolves the earlier "is the DropZone active here?" ambiguity (yes) |
+| **MixedDropRefusal** | pre-flight hard refusal (full-screen STATE, not a modal — §5.6) | `formatsFound[]` with counts | state 9; no subset-convert affordance in v1. **Renders an active `DropZone` as the primary action `[DECIDED]`** so a fresh single-format drop/pick goes straight to `Collecting` (re-drop), with a secondary **Dismiss → `Idle`**; resolves the earlier "is the DropZone active here?" ambiguity (yes). **It is the SAME `DropZone` component**, with the §5.8 disabled-while-`Converting` guard **inert** here (state 9 is pre-flight — nothing is converting), so the zone accepts a drop normally. Announced via `aria-live="assertive"` heading; **not** `role="alertdialog"` (§5.6) |
 | **UnsupportedNotice** (a.k.a. the state-10 intake-refusal notice) | unsupported / uncertain / all-unreadable / nothing-eligible | `variant: 'Unsupported' \| 'Unreadable' \| 'Empty'`, `detected?`, `reason` | state 10; **three explicit variants each with its own copy path** so the **`Empty`** "nothing here I can convert" branch is never overlooked despite the component's unsupported-leaning name: `Unsupported` → "can't convert this type — detected: X"; `Unreadable` → "couldn't read these files"; `Empty` (the `CollectedSet::Empty` case) → "nothing here I can convert". Plain language, no stack trace |
 | **QuitConfirm** | quit-while-converting interstitial | `onQuit`, `onStay` | state 11; overlay over `Converting`, triggered by `app://close-requested` (§7.3.2); Enter=Stay (safe default), Esc=cancel-close (§5.10) |
 | **AppFaultNotice** | post-fault recovery screen | `onStartOver` | state 12; plain "something went wrong" + Start Over → `Idle` (§2.13/§5.8); no stack trace; never fabricates per-item outcomes |
@@ -428,14 +431,24 @@ with no-harm. Concrete requirements:
   (3→4), focus moves to the pre-highlighted (default-selected) tile in the FormatPicker
   radiogroup** — the `aria-checked="true"` tile that is the active radio, so a
   keyboard user lands on the live default; to the Convert button
-  when the destination is shown, to the first failed row in `Summary`), and
-  **trapped inside modals** (RerunPrompt, AboutDialog, MixedDropRefusal) with
+  when the destination is shown), and
+- **Summary (state 8) focus-on-entry rule `[DECIDED]`:** when the run ends and `Summary`
+  mounts, focus moves to — in priority order — **(1) the first `Failed` row** (announced
+  `aria-live="assertive"`) if any item failed; **(2) the `OpenActions` primary button**
+  ("Open folder") if **all** items succeeded; **(3) the fully-failed banner's primary
+  affordance** (Start over / Convert more) if **every** item failed. For a virtualised
+  results list, the target row must be **scrolled into view and rendered before** focus is
+  set (never focus a not-yet-mounted virtual row). And
+  **trapped inside modals** (RerunPrompt, AboutDialog, QuitConfirm) with
   **Esc** to close (§5.10) and focus **restored** to the trigger on close.
-  Specifically for the two **pre-flight notices**: on entering **MixedDropRefusal**
-  (state 9) focus moves to its **re-drop / dismiss** action (the heading is announced
-  assertively), and on entering **UnsupportedNotice** (state 10) focus moves to its
-  **dismiss** action; on dismissing either, focus is **restored to the `DropZone`**
-  (the natural next action is to drop again), not left orphaned.
+  **`MixedDropRefusal` (state 9) is NOT a modal `[DECIDED]`** — it is a **full-screen
+  state** with its own **active re-drop `DropZone`** (the SSOT "re-drop a single format"
+  reading), so it is **not** focus-trapped and does **not** use `role="alertdialog"`: on
+  entry its **heading is announced assertively** (`aria-live="assertive"`) and focus moves
+  to the **re-drop `DropZone`** (the natural next action), with a secondary **Dismiss →
+  `Idle`**. `UnsupportedNotice` (state 10) is likewise a pre-flight notice whose dismiss
+  action takes focus; on dismissing it, focus is **restored to the `DropZone`** (drop
+  again), not left orphaned.
 - **Contrast & text size.** Body text and interactive elements meet **WCAG 2.1 AA
   contrast (≥4.5:1 text, ≥3:1 large text / UI)** against both themes; the minimum
   body size and the token scale (§5.5) respect OS text-scaling; nothing critical
@@ -452,15 +465,19 @@ with no-harm. Concrete requirements:
     (LibreOffice) row that has no `aria-valuenow`, set **`aria-busy="true"`** instead so
     SR users hear "busy" rather than a bogus value.
   - `Summary`: announce the outcome ("42 succeeded, 6 failed").
-  - **Modal/decision states announce assertively** (`aria-live="assertive"` /
-    `role="alertdialog"` as fitting): the **Confirm gate** (state 3 — it is a required
-    decision point, so its summary incl. any skipped-count is announced assertively on
-    entry), **MixedDropRefusal** (state 9, the formats-found refusal),
-    **Unsupported/Unreadable** (state 10, incl. the nothing-eligible case),
-    **RerunPrompt** (state 6), and **AppFault** (state 12, "something went wrong").
+  - **Decision states announce assertively.** Two distinct shapes `[DECIDED]`:
+    - **`role="alertdialog"` (focus-trapped modals)** — reserved for the genuine
+      interrupting decisions: **RerunPrompt** (state 6), **UnsupportedNotice** (state 10,
+      incl. the nothing-eligible case), and the **QuitConfirm** overlay (state 11,
+      Stay/Quit). The **Confirm gate** (state 3) is also a required decision point and its
+      summary (incl. any skipped-count) is announced assertively on entry.
+    - **`aria-live="assertive"` heading on a FULL-SCREEN state (NOT `alertdialog`)** —
+      **MixedDropRefusal** (state 9): it has its own active re-drop `DropZone`, so it is a
+      full-screen state, not a trapped modal; its heading is announced assertively but it
+      carries no `role="alertdialog"`. **AppFault** (state 12) is likewise a full-screen
+      "something went wrong" state with an assertive heading and a single Start-over action.
     Lossy/divert notes announce **politely** (`aria-live="polite"`) — they are calm,
-    not alarms. The **QuitConfirm** overlay (state 11) is a focus-trapped
-    `alertdialog` with the Stay/Quit actions announced.
+    not alarms.
 - **Semantics:** the target tiles are a **`role="radiogroup"`** container with
   **`aria-labelledby`** pointing at its heading; each tile is a **`role="radio"`** with
   `aria-checked` (exactly one default checked, §1.5); the DropZone is `role="button"`;
@@ -503,10 +520,12 @@ labels, button text, About text, the mixed-drop refusal phrasing) are owned
 | **Fully-failed batch** | `Summary` renders a clear **failure** banner, never a quiet finish (SSOT *Fail clearly*) | here + §1.12 |
 | **Offline / privacy** | the `Idle` reassurance line "all conversion happens locally, on your machine"; the About screen restates the offline + cloud-sync caveat (§2.11) | here / §5.9 |
 
-**No blocking dialogs principle.** The only modal interruptions in the whole flow
-are the **RerunPrompt**, the **MixedDropRefusal**, the **UnsupportedNotice**, and
-the **AboutDialog** — each a deliberate decision point or dismissible info, never
-a per-file nag. Lossy notes and divert notes are **non-modal** passive `Note`s.
+**No blocking dialogs principle.** The only **focus-trapped modal** (`role="alertdialog"`)
+interruptions in the whole flow are the **RerunPrompt**, the **UnsupportedNotice**, the
+**QuitConfirm** overlay, and the **AboutDialog** — each a deliberate decision point or
+dismissible info, never a per-file nag. **`MixedDropRefusal` is a full-screen STATE, not a
+modal** (it has its own active re-drop `DropZone`; assertive heading, no `alertdialog`,
+§5.6). Lossy notes and divert notes are **non-modal** passive `Note`s.
 
 ---
 
@@ -526,8 +545,10 @@ typed wrappers; feature code calls those.
   `pick_for_intake` (C2a — DropZone "browse" / keyboard picker → returns `CollectedSet`)
   and `pick_destination` (C2b — Change-destination directory picker → returns `PathBuf` for C5), §5.4,
   `get_targets` (C3), `plan_output` (C4), `set_destination` (C5), `start_conversion`
-  (C6), `cancel_run` (C7), `get_run_summary` (C8 — idempotent summary re-fetch after a
-  WebView reload), `open_path` (C9 — open-folder/open-file, §7.7), `open_project_page`
+  (C6), `cancel_run` (C7), `get_run_summary` (C8 — idempotent summary re-fetch by a
+  **fresh listener AFTER the run terminated**; **reload-during-run is NOT a supported
+  recovery path on macOS in v1** — a known open Tauri crash, §0.4.4 — so a mid-stream
+  reload surfaces as `AppFault`, not a silent recovery), `open_path` (C9 — open-folder/open-file, §7.7), `open_project_page`
   (C10 — the About "open Releases" link, §5.9/§7.6), `get_app_info` (C11 — About data,
   §5.9), `get_engine_health` (C12 — drives disabled/omitted target tiles, §5.2/§3.4),
   `cancel_ingest` (C13 — the Collecting cancel-collect control, §5.2/§5.10). The
@@ -571,7 +592,7 @@ import { invoke, Channel } from '@tauri-apps/api/core';
 import { commands, type ConversionEvent } from '@/lib/ipc/bindings'; // §0.4.5
 
 // ConversionEvent (the §0.4.2 `#[serde(tag="type", content="data")]` enum) =
-//   | { type: 'RunStarted';   data: { runId: RunId; totalItems: number; willReencode?: boolean } }
+//   | { type: 'RunStarted';   data: { runId: RunId; totalItems: number; willReencode: boolean } } // non-optional (Rust `bool`, §0.4.2)
 //   | { type: 'ItemStarted';  data: { runId: RunId; itemId: ItemId; sourcePath: string; target: TargetId } }
 //   | { type: 'ItemProgress'; data: { runId: RunId; itemId: ItemId; fraction: number | null; stage: JobStage } }
 //   | { type: 'ItemFinished'; data: { runId: RunId; itemId: ItemId; outcome: ItemOutcome } } // Succeeded{outputPath}|Failed{error}|Skipped{reason}|Cancelled
@@ -671,9 +692,11 @@ they do not count against the three-event invariant):
   never interrupted).
 
 ### `RunStarted.willReencode` consumption
-`RunStarted` (§0.4.2) carries `willReencode?: boolean` (the §2.9.2 best-effort
-worst-case flag). The core **always emits a definite value** (`false` for non-video /
-non-applicable batches — §0.4.2 emission rule); the frontend treats **absent /
+`RunStarted` (§0.4.2) carries `willReencode: boolean` (the §2.9.2 best-effort
+worst-case flag). **The generated `bindings.ts` type is non-optional `boolean`** (the
+Rust struct field is `bool`, §0.4.2) — there is no `undefined` third state. The core
+**always emits a definite value** (`false` for non-video / non-applicable batches —
+§0.4.2 emission rule); for robustness the frontend still treats any **absent /
 `undefined` as `false`**. **The worst-case "may be re-encoded" note is first surfaced
 at target choice (state 4):** C3 `Target.lossy` can carry the `video_reencode` lossy
 kind (§2.9.2), which the FormatPicker renders as a passive note the moment that target
@@ -744,7 +767,7 @@ reference it (`a11y/keymap.ts`). It satisfies the SSOT §9 DoD gate
 
 | Action | Accelerator | Available in | Notes |
 |--------|-------------|--------------|-------|
-| **Open file picker** | **Ctrl/⌘ + O**, or **Enter/Space** on focused DropZone | `Idle` (and `Summary` "convert more" returns to Idle) | parity with drop (§5.4); the picker is the keyboard equivalent of dropping |
+| **Open file picker** | **Ctrl/⌘ + O**, or **Enter/Space** on focused DropZone | `Idle` only | parity with drop (§5.4); the picker is the keyboard equivalent of dropping. (In `Summary`, **Convert more** — Ctrl/⌘+N — first returns to `Idle`, where Ctrl/⌘+O then opens the picker; Ctrl/⌘+O is **not** bound directly in `Summary`.) |
 | **Choose folder** | **Ctrl/⌘ + Shift + O** | `Idle` | directory-mode dialog (§5.4) |
 | **Cancel collecting** (stop an in-flight folder walk/detection) | **Esc** | `Collecting` (2) | calls **C13 `cancel_ingest`** (§0.4.1) → discards the partial set → `Idle`; backs the cancel-collect control (§5.2) needed for large recursive drops (§1.10) |
 | **Confirm batch** (proceed past the collected-summary gate) | **Enter** | `Confirm` (3) | the gate's primary action; **Esc** cancels back to `Idle` |
@@ -756,9 +779,10 @@ reference it (`a11y/keymap.ts`). It satisfies the SSOT §9 DoD gate
 | **Open output folder** | **Ctrl/⌘ + Shift + F** | `Summary` (8) | OpenActions → §7.7 (common root, §2.7) |
 | **Open output file** (single-result runs) | **Ctrl/⌘ + Shift + Enter** | `Summary` (8), when exactly one output | OpenActions → §7.7 |
 | **Back to Confirm gate** | **Ctrl/⌘ + Backspace** | `Targets`/`Destination` (4/5) | returns to the `Confirm` gate (3) **without discarding the frozen set** (preserves the collected set; distinct from Ctrl/⌘+N, which starts over from `Idle`); backs the §5.2 state-4 "Back" button |
-| **Start over / cancel back to Idle** | **Ctrl/⌘ + N** | `Targets` (4), `Destination` (5), `Summary` (8), `AppFault` (12) | returns to `Idle` — gives `Targets`/`Destination` a keyboard escape so the pre-convert flow is not a dead end (no temp written yet, so nothing to clean). **Intentionally absent in `Collecting` (2) and `Confirm` (3):** in Collecting the **Esc** cancel-collect (C13) is the escape; in Confirm **Esc** cancels back to `Idle` — so Ctrl/⌘+N is not bound there (no ambiguity) |
+| **Start over / Convert more / cancel back to Idle** | **Ctrl/⌘ + N** | `Targets` (4), `Destination` (5), `Summary` (8), `AppFault` (12) | returns to `Idle`; the **label is state-contextual `[DECIDED]`**: **"Convert more"** in `Summary` (8) (the run finished successfully — start a fresh drop), **"Start over"** in `AppFault` (12) (recover from a fault), and a plain cancel-back-to-Idle escape in `Targets`/`Destination` (no temp written yet, so nothing to clean). **Intentionally absent in `Collecting` (2) and `Confirm` (3):** in Collecting the **Esc** cancel-collect (C13) is the escape; in Confirm **Esc** cancels back to `Idle` — so Ctrl/⌘+N is not bound there (no ambiguity) |
 | **About / legal-notices** | **F1** (and **?** where no text field is focused) | any | opens `AboutDialog` (§5.9) |
-| **Dismiss / close** any modal or notice | **Esc** | RerunPrompt, MixedDropRefusal, UnsupportedNotice, AboutDialog | closes + restores focus to trigger (§5.6) |
+| **Dismiss / close** any modal or notice | **Esc** | RerunPrompt, UnsupportedNotice, AboutDialog, QuitConfirm | closes + restores focus to trigger (§5.6) |
+| **Dismiss MixedDropRefusal** | **Esc** | `MixedDropRefusal` (9) | full-screen state, **not** a modal (§5.6): Esc → `Idle` (the secondary Dismiss action); the primary action is re-dropping a single format into its active `DropZone` → `Collecting` |
 
 ### Esc / Enter semantics on the decision gates (explicit)
 
@@ -766,7 +790,7 @@ reference it (`a11y/keymap.ts`). It satisfies the SSOT §9 DoD gate
 |------|-----------|---------|
 | **Confirm gate** (3) | proceed to Targets | cancel batch → `Idle` |
 | **Re-run prompt** (6) | activate the **focused** button; **default focus = Skip** (the safe default per §2.5) | cancel the prompt → back to `Destination` (does **not** convert) |
-| **Mixed-drop refusal** (9) | dismiss (acknowledge) → `Idle` | dismiss → `Idle` (identical; refusal has no "proceed") |
+| **Mixed-drop refusal** (9) *(full-screen state, not a modal — §5.6)* | **Enter/Space on the focused re-drop `DropZone`** opens the picker / accepts a re-drop → `Collecting` (the primary action) | **Esc** = the secondary **Dismiss** → `Idle` (refusal has no "proceed"; re-dropping a single format is the way forward) |
 | **Unsupported / unreadable** (10) | dismiss → `Idle` | dismiss → `Idle` |
 | **About dialog** | (no default action) | close |
 | **Converting** (7) | — (no Enter action) | request cancel (confirmed round-trip) |

@@ -57,7 +57,7 @@ reason). Engine short-name **LO** = LibreOffice headless.
 
 | Source ↓ \ Target → | PDF | PPTX | PPT | ODP |
 |---|---|---|---|---|
-| **PPTX** | ★~ LO | — *(same format)* | ✓ LO | ✓~ LO |
+| **PPTX** | ★~ LO | — *(same format)* | ✓~ LO | ✓~ LO |
 | **PPT**  | ★~ LO | ✓ LO | — *(same format)* | ✓~ LO |
 | **ODP**  | ★~ LO | ✓~ LO | ✓~ LO | — *(same format)* |
 | **PDF**  | — *(canonical home: `documents.md`)* | out — reverse/reconstructive (parked) | out — reverse/reconstructive (parked) | out — reverse/reconstructive (parked) |
@@ -76,10 +76,12 @@ Notes on the cells:
   `.pptx`"; "open this old `.ppt` in modern PowerPoint as `.pptx`"). They are
   **lossy whenever crossing the MS↔ODF boundary** (`✓~`): ODP→PPTX, ODP→PPT,
   PPTX→ODP, PPT→ODP all round-trip through Impress's model and can drop/approximate
-  features. **PPTX→PPT and PPT→PPTX stay within the MS family** and are far less
-  lossy, but still re-rendered — marked plain `✓` (the within-family loss is the
-  ordinary within-MS-family re-render, **not** flagged as a predictable-loss
-  §2.9 note ([OPEN-1] resolved — see Lossy disclosure).
+  features. **The two within-MS-family directions are NOT symmetric `[OPEN-1] resolved`:**
+  **`PPT→PPTX` (modernizing to a richer format) stays plain `✓`** — the newer format can
+  hold everything the legacy one did. **`PPTX→PPT` (downgrading to legacy BIFF8 /
+  PowerPoint-97) is `✓~` lossy** — PPT **structurally cannot represent** SmartArt, modern
+  charts, or newer transitions (e.g. Morph), so these are simplified/dropped; it carries
+  the §2.9 **`pptx_to_ppt_legacy`** note. (See Lossy disclosure.)
 - **Same-format cells are `—`** (PPTX→PPTX etc.). A presentation→same-format
   "conversion" has no everyday demand and is degenerate; it is **not** offered as
   a target (unlike images, there is no "re-compress" use case here). The no-harm
@@ -123,8 +125,9 @@ Notes on the cells:
     re-encode at engine default. (No quality/compression knob is meaningful for
     office→office; SSOT *It just works by default*.)
 - **Lossy?:** As source to PDF — yes (§2.9 `slides_to_pdf_flatten`); to ODP — yes,
-  crossing MS→ODF (§2.9 `office_roundtrip_approx`). To PPT — within-MS-family
-  re-render; **not** flagged ([OPEN-1] resolved: no §2.9 note).
+  crossing MS→ODF (§2.9 `office_roundtrip_approx`). **To PPT — yes, `✓~`** ([OPEN-1]
+  resolved): downgrading to legacy BIFF8 loses SmartArt / modern charts / Morph that PPT
+  cannot store → §2.9 **`pptx_to_ppt_legacy`** note.
 - **Edge cases:** **embedded media** (video/audio in slides) — *not* embedded in
   the PDF; a poster/first-frame is rendered, the media itself is dropped (a known
   LibreOffice limitation; note this is part of the →PDF lossy disclosure).
@@ -162,8 +165,9 @@ Notes on the cells:
 - **Options/settings:** identical model to PPTX — PDF options only as a →PDF
   target; no options for office→office.
 - **Lossy?:** As source to PDF — yes (§2.9 `slides_to_pdf_flatten`); to ODP — yes,
-  crossing MS→ODF (§2.9 `office_roundtrip_approx`). To PPTX — within-MS-family,
-  **not** flagged ([OPEN-1] resolved: no §2.9 note).
+  crossing MS→ODF (§2.9 `office_roundtrip_approx`). **To PPTX — NOT lossy, plain `✓`**
+  ([OPEN-1] resolved): this is the *modernizing* direction — the richer PPTX can hold
+  everything the legacy PPT did, so no §2.9 note (unlike the reverse PPTX→PPT downgrade).
 - **Edge cases:** Legacy binary PPT can carry **VBA macros** — never executed,
   dropped on re-export. **Older/rare PPT features** (some legacy effects,
   WordArt) may render approximately. **Embedded OLE/media** behave as for PPTX.
@@ -275,18 +279,23 @@ class* of loss):
 |---|---|---|
 | `PPTX/PPT/ODP → PDF` | `slides_to_pdf_flatten` | Editability lost; **animations/transitions/triggers flattened** to final slide state; **embedded video/audio dropped** (poster only); **fonts substituted** if not embedded → reflow/clipping; speaker notes omitted unless the notes switch is on. |
 | `ODP → PPTX/PPT`, `PPTX/PPT → ODP` | `office_roundtrip_approx` | Cross-model (ODF↔MS) round-trip: ODF-only shapes/styles/transitions and MS-only effects (some SmartArt/WordArt/transition types) approximated or dropped to fit the other schema; minor layout shift. |
-| `PPTX → PPT`, `PPT → PPTX` | *(none — resolved [OPEN-1])* | Within-MS-family re-render through Impress's model; usually minor and **not** flagged with a §2.9 note (it is not a cross-model loss). See [OPEN-1] resolution below. |
+| `PPT → PPTX` (modernizing) | *(none — resolved [OPEN-1])* | Within-MS-family re-render to a *richer* format; the newer format holds everything the legacy one did → **not** flagged. |
+| `PPTX → PPT` (downgrade to legacy) | `pptx_to_ppt_legacy` | Downgrade to BIFF8/PowerPoint-97: **SmartArt, modern charts, and newer transitions (e.g. Morph) cannot be stored** in the legacy format → simplified or dropped. A genuine content-faithfulness loss → §2.9 note. |
 
 All →PDF pairs surface a **single passive inline note** (`slides_to_pdf_flatten`)
 at the moment PDF is the chosen target (SSOT Principle 7: calm, non-blocking, not a
 per-conversion nag).
 
-> **[OPEN-1] resolved.** `PPTX↔PPT` within-MS-family re-render does **not** get a
-> disclosed §2.9 lossy note: it stays inside the same presentation model (no
-> animation flatten, no cross-schema mapping), so any drift is incidental, not the
-> *predictable, content-faithfulness* loss §2.9 is scoped to (§2.9.2). The
-> cross-model `office_roundtrip_approx` note covers the ODF↔MS direction; the
-> within-family direction is treated as not-lossy for disclosure purposes.
+> **[OPEN-1] resolved — the two MS-family directions are asymmetric.**
+> **`PPT → PPTX` (modernizing)** does **not** get a §2.9 note: it goes to a *richer*
+> format that holds everything the legacy one did — any drift is incidental, not the
+> *predictable, content-faithfulness* loss §2.9 is scoped to (§2.9.2).
+> **`PPTX → PPT` (downgrade to legacy BIFF8) DOES get the `pptx_to_ppt_legacy` §2.9 note:**
+> PPT **structurally cannot represent** SmartArt, modern charts, or newer transitions
+> (Morph), so they are simplified or dropped — a real content-faithfulness loss, disclosed
+> per SSOT *fail/disclose clearly*. (The earlier blanket "within-MS-family is not-lossy"
+> resolution was too broad downward and is corrected here.) The cross-model
+> `office_roundtrip_approx` note still covers the ODF↔MS direction.
 
 ### Font handling (the dominant fidelity factor)
 
@@ -344,13 +353,14 @@ assume PowerPoint's fonts are installed. ConvertIA's policy:
 
 ### [OPEN] / Parked
 
-- **[OPEN-1] — RESOLVED: `pptx↔ppt` (within-MS) is NOT a disclosed §2.9 loss.**
-  Both are re-rendered through Impress's model, so *some* drift exists, but it
-  stays within the same MS presentation model (no animation flatten, no
-  cross-schema mapping) — incidental drift, not the predictable
-  content-faithfulness loss §2.9 is scoped to (§2.9.2). Decision: **no §2.9 note**
-  for `pptx→ppt`/`ppt→pptx`; the cross-model `office_roundtrip_approx` note covers
-  the ODF↔MS direction only. (No longer open; retained for traceability.)
+- **[OPEN-1] — RESOLVED (asymmetric): `ppt→pptx` is NOT a disclosed loss; `pptx→ppt` IS.**
+  The two within-MS-family directions differ. **`ppt→pptx` (modernizing)** goes to a
+  *richer* format that holds everything the legacy one did → incidental drift only, **no
+  §2.9 note**. **`pptx→ppt` (downgrade to legacy BIFF8/PowerPoint-97)** **structurally
+  loses** SmartArt, modern charts, and newer transitions (Morph) that PPT cannot store →
+  the new **`pptx_to_ppt_legacy`** §2.9 note fires. The cross-model
+  `office_roundtrip_approx` note still covers the ODF↔MS direction. (Corrects the earlier
+  too-broad "within-MS is not-lossy" reading; no longer open, retained for traceability.)
 - **[OPEN-2] — Bundled font set for fidelity.** Exact list of fonts shipped with
   the LibreOffice sidecar (metric-compatible MS substitutes + CJK/RTL coverage)
   vs. binary-size budget (§3.9). This is *shared* with `documents.md` and

@@ -387,7 +387,22 @@ category is just its set of pairs). v1 is shippable when:
   LICENSE/NOTICE and branding);
 - **usability floor:** an ordinary non-technical person can complete each named
   conversion unaided on first try (drop → pick → convert → find output),
-  validated by at least one informal non-developer walkthrough per platform.
+  validated by **at least one informal non-developer walkthrough** — on **at
+  least one platform** with a genuine non-developer, the owner permitted to run
+  the remaining two platform walkthroughs where no non-developer tester is
+  available.¹
+
+> ¹ **Owner amendment (intentional, recorded here).** The original wording read
+> "at least one informal non-developer walkthrough *per platform*" (three
+> platforms). ConvertIA is a solo/hobby project; sourcing a fresh non-developer
+> on all three OSes per release is not reliably possible. The SSOT owner amends
+> the gate to require **≥1 genuine non-developer walkthrough overall** (the macOS
+> Sequoia quarantine step preferentially gets the non-dev tester, being the
+> highest non-technical-user blocker), with the **owner** allowed to run the
+> remaining platform walkthroughs. The floor's *intent* — a human who did not
+> build the app succeeds unaided — is fully preserved by the ≥1 true non-dev pass.
+> Spec §6.6 implements this; spec §6.10 DoD row 11 matches it. This is the SSOT
+> text being changed, not a spec divergence from it.
 
 **Not a gate.** Subjective visual polish ("modern / eye candy") is iterative,
 never release-blocking; engine-currency is a best-effort posture, not a gate.

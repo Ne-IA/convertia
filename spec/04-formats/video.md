@@ -205,9 +205,13 @@ differ and are spelled out per format.
   fast enough.) **As source:** VP8/VP9/AV1 + Vorbis/Opus decode fine.
 - **Options/settings:** WEBM-target re-encode uses **constant-quality** mode:
   `-c:v libvpx-vp9 -b:v 0 -crf 32 -row-mt 1` (CRF 32 = the "good for everyday web"
-  midpoint of the 15–35 range), audio `-c:a libopus -b:a 96k`. **Single-pass** by
-  default — two-pass is smaller but doubles runtime and is out of v1's no-knobs
-  default (an Advanced toggle is `[OPEN]`).
+  default). **The libvpx-vp9 CRF range is `0–63`** (0 = best/largest, 63 =
+  worst/smallest); **15–35 is the *recommended* everyday band**, not the codec's full
+  range. If a VP9 quality slider is ever exposed, its **validation bound is `0..=63`** and
+  it maps the Smaller↔Better presets into the 15–35 recommended band (default 32) — the
+  slider must not clamp the codec range to 15–35. Audio `-c:a libopus -b:a 96k`.
+  **Single-pass** by default — two-pass is smaller but doubles runtime and is out of v1's
+  no-knobs default (an Advanced toggle is `[OPEN]`).
 - **Lossy?:** WEBM→MP4/MOV/M4V = re-encode (VP9→H.264) = **lossy** → §2.9.
   WEBM→MKV = remux VP9 verbatim (lossless). source→WEBM = **always lossy** (VP9/Opus
   re-encode) → §2.9.
@@ -421,7 +425,7 @@ shows if **any** item *may* re-encode — honest worst-case.)
 |---|---|---|
 | Video codec (re-encode) | **H.264 (libx264)** for MP4/MOV/MKV/M4V; **VP9 (libvpx-vp9)** for WEBM | universal vs web |
 | Quality (H.264) | **CRF 23**, preset **medium** | x264 native defaults; sane 18–28 range |
-| Quality (VP9) | **CRF 32**, `-b:v 0` (constant quality), single-pass, `-row-mt 1` | "good for web" midpoint |
+| Quality (VP9) | **CRF 32**, `-b:v 0` (constant quality), single-pass, `-row-mt 1` | libvpx-vp9 CRF range is **0–63** (15–35 is the recommended band; 32 = "good for web"); a slider validates `0..=63` |
 | Audio codec (re-encode) | **AAC-LC** (MP4 family) / **Opus** (WEBM) | native FFmpeg encoders |
 | Audio bitrate | **128 kbps** AAC / **96 kbps** Opus | transparent-enough everyday default |
 | Resolution / frame rate | **unchanged** (copy source W×H and fps) | never upscale; never down-res by default — no synthetic loss |

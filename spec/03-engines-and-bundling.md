@@ -28,8 +28,10 @@
 The full engine set is fixed by `04-formats/*` (those files already chose every
 per-pair engine; this section must **not** contradict them). v1 ships **five
 top-level third-party engines** — libvips (image core, with its linked codec/delegate
-components 1a–1d), FFmpeg, LibreOffice, poppler, pandoc (+ optional Ghostscript) —
-plus ConvertIA's own in-core Rust text engine. Counting each separately-licensed
+components 1a–1d, including the **mandatory bundled ImageMagick delegate** for BMP/ICO
+save — §3.5.5), FFmpeg, LibreOffice, poppler, pandoc — plus ConvertIA's own in-core Rust
+text engine. **Ghostscript is `[DECIDED: NOT shipped in v1]`** (poppler-only PDF→TXT, no
+AGPL — §3.6); it is **not** an "optional" component. Counting each separately-licensed
 bundled component (the SBOM granularity, §3.7), the inventory rows below enumerate
 every one; they cluster into four families:
 
@@ -115,6 +117,19 @@ chaining.** If chaining ever enters scope it needs its own home (intermediate
 scratch on the §2.14 volume, per-step progress §1.11, step-attributed errors
 §2.8); explicitly **not v1**.
 
+> **Probe-then-encode is NOT chaining (and `plan()` stays Pure) `[DECIDED]`.** The
+> single-engine FFmpeg video job runs **two sequential sub-invocations of the SAME engine**
+> — `ffprobe` (read inner codecs + duration) **then** `ffmpeg` (remux-or-reencode) — which
+> is **not** an `A→(X)→B` *format* chain (no intermediate artifact, one engine, one source,
+> one target). To keep `Engine::plan()` **Pure** (no I/O) while the encode argv depends on
+> the probe result, the lifecycle is: **§1.7 runs the `ffprobe` sub-invocation first, then
+> feeds the probe result back to the engine** so it finalises the encode `Invocation`,
+> which §1.7 then spawns. I.e. for video, `plan()` is **deferred/parameterised on a probe
+> result** — it produces the probe `Invocation` (or a probe-result-parameterised closure),
+> never a fixed encode argv computed before the probe. §3.5.1 / §1.7 own the two-step
+> sequencing; §3.2.1's "one engine, one (format) conversion, no intermediate artifact"
+> invariant is intact (the probe is a read, not a conversion step).
+
 ### 3.2.2 The `Engine` trait (registry seam — physical home owned by §0.7)
 
 The engine layer is a **registry of capability-declaring engines** behind one
@@ -149,14 +164,16 @@ pub trait Engine: Send + Sync {
         -> Result<Invocation, PlanError>;
 
     /// How this engine reports progress so §1.11 can normalise it
-    /// (FFmpeg `-progress` k=v, LibreOffice = coarse/none, vips = callback, etc.).
+    /// (FFmpeg `-progress` k=v, LibreOffice = coarse/none, image-worker = libvips
+    /// eval-progress marshalled to stdout k=v across the worker process boundary, etc.).
     fn progress_model(&self) -> ProgressModel;
 
     /// Map this engine's exit code + stderr into the §2.8 error taxonomy.
     /// Returns the §2.8-owned `ConversionErrorKind` (NOT a separate "FailureKind" —
     /// that name is dropped; §2.8 is the single owner of the failure-kind set).
     /// `ErrorKind` (§0.4.3) is the wire projection of `ConversionErrorKind`; the
-    /// §06 drift check keeps the two byte-identical for the item-level variants.
+    /// §06 drift check keeps the two byte-identical for ALL variants (the item-level
+    /// kinds AND the run/app-level MixedDrop/EngineMissing/WebviewFault/BundleDamaged).
     fn classify_failure(&self, exit: ExitStatus, stderr: &str) -> ConversionErrorKind;
 }
 ```
@@ -212,7 +229,13 @@ pub struct PlanError { pub kind: ConversionErrorKind, pub detail: String }
 
 pub enum ProgressModel {
     FfmpegKeyValue { duration_us: u64 },   // denominator = ffprobe duration (video.md)
-    VipsCallback,                          // libvips eval callback %
+    VipsStdout,                            // image-worker marshals the libvips eval-progress
+                                           //   callback to stdout `progress=<0..100>` key=value
+                                           //   lines (the worker is a SEPARATE process, §3.5.5);
+                                           //   parsed by the §1.7 same line-reader path as
+                                           //   FfmpegKeyValue. (Renamed from VipsCallback — an
+                                           //   in-process callback cannot cross the worker's
+                                           //   process boundary.)
     CoarseSpawnDone,                       // LibreOffice/pandoc/poppler: 0%→spin→100%
 }
 
@@ -296,7 +319,7 @@ downloaded after the app itself.
 
 | Mechanism | Used for | Tauri config | Resolved at runtime by |
 |---|---|---|---|
-| **`bundle.externalBin`** (sidecars, target-triple-suffixed) | FFmpeg, ffprobe, soffice launcher, pdftotext, pandoc — the **standalone invoked binaries** (Ghostscript **[DECIDED: dropped]**; **x265 is NOT a sidecar** — it ships as a dynamically-loaded libheif encoder *plugin* under `resources`, §3.1 row 1a) | `"bundle": { "externalBin": ["binaries/ffmpeg", "binaries/ffprobe", "binaries/soffice", "binaries/pdftotext", "binaries/pandoc"] }` | spawned by the Rust core (see 3.3.3) |
+| **`bundle.externalBin`** (sidecars, target-triple-suffixed) | FFmpeg, ffprobe, soffice launcher, pdftotext, pandoc, **`convertia-imgworker`** (the libvips image-worker process, §3.5.5) — the **standalone invoked binaries** (Ghostscript **[DECIDED: dropped]**; **x265 is NOT a sidecar** — it ships as a dynamically-loaded libheif encoder *plugin* under `resources`, §3.1 row 1a) | `"bundle": { "externalBin": ["binaries/ffmpeg", "binaries/ffprobe", "binaries/soffice", "binaries/pdftotext", "binaries/pandoc", "binaries/convertia-imgworker"] }` | spawned by the Rust core (see 3.3.3) |
 | **`bundle.resources`** (verbatim files/dirs) | the LibreOffice **program tree + profile template + bundled fonts**, the **image-worker stack** (libvips + libheif/libde265 + the **x265 libheif plugin** + libaom/dav1d + librsvg + cgif + the **required ImageMagick** delegate), FFmpeg/pandoc data files if any, the NOTICE/third-party-licenses text (§3.7) | `"bundle": { "resources": { "engines/libreoffice/": "engines/libreoffice/", "engines/image/": "engines/image/", "fonts/": "fonts/", "THIRD-PARTY-LICENSES.txt": "" } }` | `app.path().resolve(rel, BaseDirectory::Resource)` |
 
 > **Why LibreOffice is `resources`, not `externalBin`.** `externalBin` is for a
@@ -387,8 +410,11 @@ Every engine above is self-contained once bundled. The only network code paths i
 the entire app are the **user-initiated** §7.7 open-project-page shell-out. The
 "no engine fetches anything" property is backed by **structural, always-on controls**,
 **not** by the degradable §2.12 OS network-deny:
-- **FFmpeg/ffprobe** — argv `-protocol_whitelist file,pipe` + a network-disabled build,
-  asserted at §6.1.3 (§3.5.1). Blocks the HLS/DASH/concat SSRF & LFR class.
+- **FFmpeg/ffprobe** — argv `-protocol_whitelist file,pipe` + a network-disabled build
+  (SSRF half) **plus** concat `-safe 1` (never `-safe 0`) + a curated demuxer set without
+  the playlist/manifest dereferencing demuxers (absolute-file LFR half), asserted at
+  §6.1.3 (§3.5.1). Closes the HLS/DASH/concat SSRF & LFR class **structurally** (argv/build,
+  not the OS sandbox).
 - **pandoc** — invoked with **`--sandbox`** (its built-in restriction that blocks
   reading/writing files and fetching network resources from the document) so a crafted MD/
   HTML cannot pull a remote image/include (§3.5.4).
@@ -443,11 +469,12 @@ availability (SSOT *v1 DoD* exception 1) flows from here.
   open-source distros ship FFmpeg's native AAC freely) and **surface AAC in the
   NOTICE** (§3.7). The decision is technical/redistributability — legal-advice items
   are out of scope for this spec.
-- **H.264 / AVC** — patent pool (MPEG LA / now Via LA); **last US patent expires
-  ~2027-11** (patent-term-adjusted). So H.264 is *months* from expiry at the v1
-  horizon but **not yet free**. Same shape as AAC: the *engine* (x264/FFmpeg) is
-  license-clean; the residual risk is a patent claim on distributing an H.264
-  encoder.
+- **H.264 / AVC** — patent pool (MPEG LA / now Via LA); the **bulk of the pool's US
+  patents expire ~2027-11** (patent-term-adjusted), **but later-filed AVC-essential
+  patents may run to ~2030** — so "months from free" applies to the bulk, not the entire
+  pool. H.264 is **not yet free** at the v1 horizon either way. Same shape as AAC: the
+  *engine* (x264/FFmpeg) is license-clean; the residual risk is a patent claim on
+  distributing an H.264 encoder.
 - **HEVC / H.265** (used by HEIC) — the **most encumbered**: multiple active pools
   (Access Advance, Via LA), a Jan-2026 rate increase, **27,000+ patents**, full
   protection well beyond 2027. The HEVC **encoder** (x265) is **GPL** *and*
@@ -679,21 +706,45 @@ macOS item — acceptable, and the same copy the cross-volume path would make an
   FFmpeg open an outbound socket or read an arbitrary local file at convert time — the
   SSRF/LFR class (e.g. CVE-2023-6605 DASH-playlist SSRF). This is the **T9b** vector
   (§0.11) and would defeat the SSOT *Local/private/offline* promise on adversarial input.
-  Mitigation is **two layers**, both independent of the §2.12 OS privilege-drop tier
-  (which is `[OPEN]` and may degrade to the cheap tier with no network deny):
-  - **Argv-level (the non-negotiable, cheap-tier control):** every FFmpeg/ffprobe
-    invocation prepends **`-protocol_whitelist file,pipe`** (and, where a concat/segment
-    demuxer is legitimately used, the explicit `-f` is pinned and the whitelist is **not**
-    widened to network schemes). This is set **before each input** (the option is
-    per-demuxer). It blocks `http`/`https`/`tcp`/`tls`/`rtmp`/`hls`/`concat`-fetch etc. at
-    the FFmpeg layer regardless of OS sandbox depth.
-  - **Build-time (defence-in-depth):** the curated FFmpeg build disables networking
+  Mitigation is **argv + build controls** covering **both halves** (network/SSRF AND
+  absolute-file LFR), all independent of the §2.12 OS privilege-drop tier (which is
+  `[OPEN]` and may degrade to the cheap tier with no network/FS deny):
+  - **Argv-level — network/SSRF half (the non-negotiable, cheap-tier control):** every
+    FFmpeg/ffprobe invocation prepends **`-protocol_whitelist file,pipe`** (and, where a
+    concat/segment demuxer is legitimately used, the explicit `-f` is pinned and the
+    whitelist is **not** widened to network schemes). This is set **before each input**
+    (the option is per-demuxer). It blocks `http`/`https`/`tcp`/`tls`/`rtmp`/`hls`/
+    `concat`-fetch etc. at the FFmpeg layer regardless of OS sandbox depth — closing the
+    **SSRF half** structurally.
+  - **Argv-level — absolute-file LFR half (the part `file,pipe` does NOT cover) `[DECIDED]`:**
+    `-protocol_whitelist file,pipe` MUST keep `file:` enabled (the input *is* a file), so a
+    crafted playlist/manifest/concat-script could otherwise dereference an arbitrary
+    **absolute** local file (`file:///etc/passwd`) or a `..`-traversal. This half is closed
+    structurally by **two argv/build controls, not the OS sandbox**:
+    - **`-safe 1` on the concat demuxer (NEVER `-safe 0`):** `-safe 1` is FFmpeg's default
+      and **rejects absolute paths and `..`-traversal** in a concat script (only portable
+      relative names are accepted) — ConvertIA never passes `-safe 0`, so a crafted
+      `-f concat` script cannot read out-of-input absolute files. (Verified against the
+      FFmpeg concat-demuxer docs: a path is "safe" only if it has no protocol spec, is
+      relative, and uses the portable charset; `-safe 0` is the only way to lift this, and
+      we never set it.)
+    - **dereferencing demuxers constrained/absent in the curated build:** the playlist/
+      manifest demuxers that can open *other* files (local-HLS `.m3u8`, DASH `.mpd`,
+      `image2` glob/pattern, external-reference EXTF/`dash`) are either **not enabled** in
+      the §6.1.3 `--disable-everything --enable-…` curated build (none is needed for any §04
+      pair — ConvertIA converts single self-contained media files, never playlists) **or**
+      invoked only with their non-dereferencing options. A §6.1.3 `ffmpeg -demuxers` build
+      assertion verifies the playlist/segment demuxers ConvertIA does not need are absent.
+  - **Build-time (network protocols absent):** the curated FFmpeg build disables networking
     protocols at configure time (no `--enable-protocol=http` family; `--disable-network`
     where it does not break a needed demuxer), asserted by a **§6.1.3 `ffmpeg -protocols`
     build assertion** (the network protocols MUST be absent / not built in).
   Together with the §6.4.2 adversarial-egress case (a network-trigger input must
   show **zero egress AND no out-of-input file read**), this backs the §3.3.4 "nothing
-  fetches" claim **structurally** — it does not rely on the degradable OS network-deny.
+  fetches" claim **structurally on BOTH halves** (SSRF via the whitelist + network-disabled
+  build; absolute-file LFR via `-safe 1` + the curated demuxer set) — it does **not** rely
+  on the degradable OS network-deny / §2.12.3 FS-restriction tier. The §2.12.3 privilege-drop
+  tier remains defence-in-depth, no longer load-bearing for T9b-LFR.
 - **Audio (`audio.md`):** decode → encoder per that file's table, e.g.
   - MP3 `-c:a libmp3lame -q:a 2` (VBR default) / `-b:a Nk` (CBR presets);
   - AAC `-c:a aac -b:a 192k` + muxer `adts` (raw `.aac`) or `ipod` (`.m4a`,
@@ -860,6 +911,13 @@ macOS item — acceptable, and the same copy the cross-volume path would make an
   images, not silent local inlining. (`--sandbox` does not constrain PDF production or
   filters, but ConvertIA uses **neither** with pandoc — `*→PDF` is LibreOffice-owned and no
   pandoc Lua/JSON filters are configured — so the documented `--sandbox` gaps do not apply.)
+  **`[DEFER: corpus]` data-file check:** confirm the actual pairs ConvertIA assigns pandoc
+  (markup↔markup, `*→HTML --standalone --embed-resources`) all **run cleanly under
+  `--sandbox`** on the §6.4 corpus — i.e. none needs an on-disk pandoc **data file**
+  (templates, reference docs, syntax-highlight definitions) that `--sandbox` would block.
+  If a chosen pair turns out to require a blocked data file, the fix is to **bundle that
+  data file and pass it explicitly on the argv** (so it is a named input the sandbox
+  permits), never to drop `--sandbox`.
 - **Progress:** `CoarseSpawnDone`. **Exit/stderr:** non-zero + message → §2.8
   generic; a "pandoc: …: openBinaryFile … does not exist" never occurs because the
   core verifies the input before spawn. **Licence:** GPL → invoked binary (§3.6).
@@ -872,7 +930,13 @@ macOS item — acceptable, and the same copy the cross-volume path would make an
   it still produces an `Invocation`-equivalent plan (operation + params + `out_tmp`) so
   §1.7's lifecycle and §2.12's isolation wrap it uniformly. (libvips' streaming model
   keeps even huge rasters in bounded memory; the pathological-size guard from
-  `images.md` feeds §1.10.)
+  `images.md` feeds §1.10.) **Packaged artifact `[DECIDED]`:** the worker ships as a
+  concrete **`externalBin` sidecar `convertia-imgworker-<triple>[.exe]`** (named in the
+  §0.7 `binaries/` tree and the §0.3 subprocess box), **resolved Rust-side via
+  `current_exe().parent()`** (the §3.3.3 [DECIDED] sidecar-resolution path — Tauri strips
+  the triple suffix on bundle), **never linked into the MIT core**. So `EngineProgram::
+  Sidecar(EngineId::ImageCore)` resolves to this artifact; Phase-3 builds it as its own
+  binary that statically links the libvips/libheif/libde265/librsvg/ImageMagick stack.
 - **Operation map (from `images.md`):** load (by detected type, **not** extension)
   → optional auto-rotate (EXIF orientation baked, tag reset to 1) → optional
   alpha-flatten (white bg for JPG/BMP) → save with the per-target saver and its
@@ -887,8 +951,15 @@ macOS item — acceptable, and the same copy the cross-volume path would make an
   `HEIC↔AVIF` path; **all** HEIC/AVIF *encode* is `heifsave`, no standalone
   `heif`/`avif` encoder), ICO multi-size list. ICC/metadata carried per `images.md`
   policy.
-- **Progress:** `ProgressModel::VipsCallback` (libvips eval-progress signal) → a
-  real % for large images.
+- **Progress `[DECIDED]`:** `ProgressModel::VipsStdout`. The image-worker is a **separate
+  process** (§3.5.5/§0.7), so its in-process libvips **eval-progress callback** cannot
+  reach the core directly. The worker installs the libvips `eval` signal handler and
+  **marshals each tick to its own stdout as a `progress=<0..100>` key=value line**
+  (optionally `progress=end` on completion) — exactly the cross-process wire mechanism
+  FFmpeg uses (`-progress pipe:1` key=value). The §1.7 invocation layer's **same**
+  line-by-line stdout reader parses these into normalised `ItemProgress` ticks. (For ops
+  that are reliably sub-second the worker may simply emit start→`progress=end`, equivalent
+  to `CoarseSpawnDone`; HEIC/AVIF HEVC/AV1 encode is the case where a real % matters.)
 - **Isolation `[DECIDED]`:** image decode/encode runs in a **separate short-lived
   image-worker process** (not an in-app thread), so a libvips/libheif/libde265/librsvg/
   codec crash, hang, **or memory-corruption exploit** is contained by the OS process
@@ -942,7 +1013,8 @@ source where required), so the MIT core stays clean.
 | Engine/component | Licence | Linked into MIT core? | Mechanism that keeps MIT clean |
 |---|---|---|---|
 | ConvertIA orchestrator + native CSV/TSV | MIT | — | it *is* the core |
-| **libvips** (+ libheif, libde265, librsvg) | **LGPL-2.1/3.0** | **dynamic link only** (LGPL permits dynamic linking from non-GPL code, provided relinkability) — or run as the separate image-worker process (§3.5.5) | LGPL §6 dynamic-link allowance; we ship the LGPL libs + their source/offer (§3.7); **no static link** of LGPL into the MIT binary |
+| **libvips** + **librsvg** | **`LGPL-2.1-or-later`** (both) | **dynamic link only** (LGPL permits dynamic linking from non-GPL code, provided relinkability) — or run as the separate image-worker process (§3.5.5) | LGPL §6 dynamic-link allowance; we ship the LGPL libs + their source/offer (§3.7); **no static link** of LGPL into the MIT binary |
+| **libheif** + **libde265** | **`LGPL-3.0-or-later`** (both) | dynamic link only / inside the image-worker process (§3.5.5) | as above. **Per-component SPDX ids are split out** (libvips/librsvg = `LGPL-2.1-or-later`; libheif/libde265 = `LGPL-3.0-or-later`) so §3.7.2 emits the **correct distinct SBOM rows** rather than a lumped "LGPL-2.1/3.0" — the LGPL-3.0 host (libheif) is also why the x265 plugin must be `GPL-2.0-or-later` (upgradeable to GPLv3), §3.7.2 |
 | **libaom / dav1d** | libaom `BSD-2-Clause AND AOMedia-Patent-License-1.0`; dav1d `BSD-2-Clause` | link OK | BSD permissive; libaom's `PATENTS` (AOM Patent License 1.0) is carried in the SBOM/NOTICE alongside the BSD-2 text (§3.7) |
 | **libimagequant** (PNG/GIF palette quantisation) — **BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** | **BSD-2-Clause** (the frozen `lovell/libimagequant` v2.4.x fork). **Upstream 4.x is GPLv3-or-commercial and MUST NOT ship** — if a GPL-leg 4.x build slipped in it would taint the LGPL image-worker (the §6.1.3/§6.3.3 COPYRIGHT-text assertion fails the build on that). | link OK (inside the image-worker) | BSD permissive; **the v2.4.x BSD fork** vendored/linked inside the image-worker process, not the MIT core |
 | **ImageMagick** (GIF/BMP/ICO save delegate) | **ImageMagick License** (Apache-2.0-style, SPDX `ImageMagick`) — **permissive, NOT GPL** | link OK | Permissive like BSD/MPL — no isolation needed. **Build caveat:** exclude GPL *optional delegates*; IM core is permissive. (Listed in the SBOM/NOTICE §3.7.) |

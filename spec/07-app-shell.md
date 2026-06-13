@@ -56,7 +56,8 @@ using the official **`tauri-plugin-single-instance`** (v2). Rationale:
     // Running in the EXISTING (primary) instance. The second process has
     // already exited. Re-focus the window and forward any launch-time paths.
     let _ = app.get_webview_window("main").map(|w| { let _ = w.set_focus(); });
-    forward_launch_intake(app, &argv, &cwd); // → §7.8 → §1.1 frozen-set intake
+    // origin = SecondInstance; the §7.8.1 funnel enforces the refuse-busy gate (below).
+    forward_launch_argv(app, &argv, &cwd, IntakeOrigin::SecondInstance); // → §7.8 → §1.1 intake
 }))
 ```
 
@@ -421,6 +422,16 @@ builder
     .build(tauri::generate_context!())?
     .run(|app, event| match event {
         RunEvent::ExitRequested { api, .. } => { /* belt-and-suspenders guard */ }
+        // macOS Open-with (open-documents AppleEvent) — distinct from the §7.1.1 argv
+        // callback. MUST route through the SAME funnel so the §7.1.1 refuse-busy gate is
+        // enforced here too (a mid-conversion Open-with otherwise bypasses the PRIMARY
+        // gate — it never goes through the argv callback on macOS). origin = LaunchArg on
+        // a first-launch Opened (app not yet ready → buffered), SecondInstance otherwise.
+        RunEvent::Opened { urls } => {
+            let paths: Vec<PathBuf> = urls.iter().filter_map(|u| u.to_file_path().ok()).collect();
+            let origin = if frontend_ready(app) { IntakeOrigin::SecondInstance } else { IntakeOrigin::LaunchArg };
+            forward_launch_intake(app, paths, origin); // → §7.8.1 funnel → busy gate + §1.1
+        }
         RunEvent::Exit => { flush_logs(app); best_effort_scratch_cleanup(app); /* §2.6 */ }
         _ => {}
     });
@@ -694,10 +705,13 @@ output **beside the source** (Desktop, USB, arbitrary project folders), routinel
 DoD gate. The **real, sufficient gate is Rust-side**:
 
 - **Reveal / open-path (C9):** the Rust handler **validates the requested path against
-  the current `RunResult`'s recorded outputs** (or their common root, §1.12/§7.7.3)
-  **before** calling `OpenerExt` — works for *arbitrary* beside-source destinations, not
-  just OS roots. A path not in that set is refused (and logged, §7.5). This is a
-  membership check, which a static glob cannot express.
+  the current `RunResult`'s recorded outputs** (or their roots — both `common_root` AND,
+  for a split-output batch, `divert_root`, §1.12/§7.7.3) **before** calling `OpenerExt` —
+  works for *arbitrary* beside-source destinations, not just OS roots. A path not in that
+  set is refused (and logged, §7.5). This is a membership check, which a static glob cannot
+  express. (When outputs split between beside-source and a divert root, **both** roots are
+  open-folder targets and **both** are in the membership set — a single `common_root` could
+  not represent the diverted half, §0.6.)
 - **Open-url (C10):** the command takes **no URL argument** from the WebView; the Rust
   handler opens a **compiled-in canonical Ne-IA URL constant**, eliminating any
   URL-injection surface. (A capability allow-list, even if present, can only
@@ -747,7 +761,12 @@ and one-batch-at-a-time (§1.3) rules apply identically. The entry points:
   The payload is **`Vec<Url>` (`file://` URLs), not paths** — each is converted via
   `Url::to_file_path()` before §1.1. This is the **launch/open-with** hook, **distinct**
   from the single-instance second-launch hand-off (§7.1.1, the `argv`/cwd callback); the
-  single-instance plugin (§7.1.1) ensures both land in the one instance.
+  single-instance plugin (§7.1.1) ensures both land in the one instance. **The
+  `RunEvent::Opened` handler routes through the same `forward_launch_intake` funnel
+  (below), so the §7.1.1 refuse-busy gate is enforced on a mid-conversion Open-with too**
+  — a macOS Open-with against a running, busy app is refused (paths dropped), not merged
+  into the frozen set (§2.4). Without this, Open-with would bypass the PRIMARY gate on
+  macOS (it never goes through the argv callback there).
 - **Windows:** files passed as **`argv`** to the process. Captured in the
   single-instance callback (§7.1.1) for a second launch, and read at first launch
   in `setup` (`std::env::args_os`).
@@ -755,14 +774,36 @@ and one-batch-at-a-time (§1.3) rules apply identically. The entry points:
   same as Windows.
 
 ```rust
-// One funnel for every launch-time path source → §1.1 frozen-set builder.
-fn forward_launch_intake(app: &AppHandle, argv: &[String], cwd: &str) {
-    let paths = parse_path_args(argv, cwd);     // resolve relative → absolute
+// One funnel for EVERY launch-time path source → §1.1 frozen-set builder. Both the
+// single-instance argv/cwd callback (§7.1.1) AND the macOS RunEvent::Opened handler
+// (below) call THIS, so the refuse-busy gate (§7.1.1) and the buffer-then-replay race
+// fix are enforced once, at the single funnel — not duplicated per hook.
+fn forward_launch_intake(app: &AppHandle, paths: Vec<PathBuf>, origin: IntakeOrigin) {
     if paths.is_empty() { return; }
+    // §7.1.1 PRIMARY refuse-busy gate, enforced HERE for BOTH launch hooks: a
+    // mid-conversion second-launch / Open-with must NOT reach §1.1 (it would violate
+    // the §2.4 freeze). When busy: DROP the paths — do not emit app://intake, do not
+    // buffer into PendingIntake. (No new app:// event: the §0.4.2 three-event invariant
+    // holds. The §5.8 BusyNotice Banner is the defence-in-depth surface if app://intake
+    // ever leaks; the primary gate's job is to never let it leak — incl. via Opened.)
+    if converter_is_busy(app) {                  // run-level state (§1.9), same predicate as §7.3.2
+        return;
+    }
     // §0.4.2 `app://intake` payload is { paths, origin } (NOT bare paths) so the
     // frontend can re-call C1 ingest_paths with the correct IntakeOrigin (§0.6).
-    let origin = IntakeOrigin::SecondInstance;  // or LaunchArg at first launch
-    app.emit("app://intake", IntakePayload { paths, origin }).ok(); // UI mirrors a drop (§5.2/§1.1)
+    // The ready-flag branch (emit-if-ready vs buffer-into-PendingIntake) is below.
+    if frontend_ready(app) {
+        app.emit("app://intake", IntakePayload { paths, origin }).ok(); // UI mirrors a drop (§5.2/§1.1)
+    } else {
+        buffer_pending_intake(app, paths, origin);  // first-launch race fix (below)
+    }
+}
+
+// Caller at the single-instance hook (§7.1.1) resolves argv → paths, origin = SecondInstance;
+// the first-launch setup reader uses origin = LaunchArg; the macOS RunEvent::Opened handler
+// converts urls → paths and uses LaunchArg (first launch) / SecondInstance (already running).
+fn forward_launch_argv(app: &AppHandle, argv: &[String], cwd: &str, origin: IntakeOrigin) {
+    forward_launch_intake(app, parse_path_args(argv, cwd), origin);
 }
 ```
 
@@ -773,12 +814,17 @@ fn forward_launch_intake(app: &AppHandle, argv: &[String], cwd: &str) {
 pitfall). The launch funnel therefore **distinguishes the two cases**:
 - **App already running** (second-instance hand-off, or a mid-session `Opened`): the
   WebView listener exists → `app.emit("app://intake", IntakePayload{..})` as shown.
-- **First launch / app not-yet-ready**: **stash the resolved paths in a managed
-  `State<PendingIntake>`** instead of emitting; the frontend, **on mount / a
-  `frontend_ready` signal**, calls a small command (or re-uses **C1 `ingest_paths`** with
-  the buffered set) to **drain** `PendingIntake` exactly once. This guarantees a
-  launch-with-files is never lost to a listener race. (`forward_launch_intake` consults the
-  ready-flag: emit if ready, else buffer.)
+- **First launch / app not-yet-ready**: **stash the resolved paths + origin in a managed
+  `State<PendingIntake>`** instead of emitting. **Drain mechanism `[DECIDED]` — C1
+  re-use, no dedicated command:** the frontend, **on root-shell mount** (later than
+  listener-registration, so it closes the race), calls a thin
+  `take_pending_intake` accessor (or **re-uses C1 `ingest_paths`** with the buffered
+  set + its stored `origin`, typically `LaunchArg`) to **drain** `PendingIntake` exactly
+  once. No separate "drain" command and no 4th `app://` event is added (the §0.4.2
+  three-event invariant holds). This guarantees a launch-with-files is never lost to a
+  listener race. (`forward_launch_intake` consults the ready-flag: emit if ready, else
+  buffer — and `PendingIntake` carries the real `origin`, **never** a hard-coded
+  `SecondInstance`; a first-launch buffered set drains as `LaunchArg`.)
 
 **Interaction with single-instance + freeze (§7.1.1 / §2.4):** at first launch the
 paths seed the idle state as if dropped (via the buffer-then-replay above). A *second*
