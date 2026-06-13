@@ -246,7 +246,8 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   - *Advanced:* `effort` 0–6 — default **4** (vips default); `alpha_q` 1–100 —
     default **100** (full-quality alpha); `near_lossless` — default **off**;
     `smart_subsample` — default **off**; `min_size`/`mixed` (anim) — default off.
-- **Lossy?:** **Lossy by default** (`→ WEBP` flagged lossy → §2.9); flip
+- **Lossy?:** **Lossy by default** (`→ WEBP` flagged lossy → §2.9 **`image_lossy_codec`**,
+  matching the JPG citation pattern); flip
   `lossless` to make WEBP→/→WEBP lossless. WEBP→JPG is lossy (JPEG). WEBP(lossy)→
   PNG is *not newly* lossy (PNG is lossless) but cannot recover detail already lost.
 - **Edge cases:** **Transparency** (alpha) preserved to alpha-capable targets;
@@ -282,23 +283,27 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   §6.1.3/§6.3.3 COPYRIGHT-and-soname assertions).
 - **Options/settings:**
   - *Basic:* none required. Palette is generated automatically.
-  - *Advanced:* `dither` amount — default **on** (the native cgif/`gifsave` backend
-    supports an **ordered/Bayer-style** dither, NOT Floyd–Steinberg — error-diffusion
-    is not available in cgif; **bayer is the v1 default `[DECIDED]`**, the only mode cgif
-    offers on this path, parallel to the video→GIF `bayer:bayer_scale=5` default in
-    cross-category.md [OPEN-D] `[DECIDED]` — no scale parameter is exposed on the cgif path);
+  - *Advanced:* `dither` — **a single float AMOUNT (0–1) `[DECIDED]`**, default **on**
+    (libvips `gifsave`'s `dither` parameter is an *amount*, NOT a mode selector). The cgif/
+    libimagequant save path applies an **ordered dither** and exposes **NO Floyd–Steinberg /
+    error-diffusion MODE** — the only control is the dither *strength*. So the v1 UI exposes a
+    dither on/off (or 0–1 strength) toggle, **not** a mode dropdown — there is no
+    `bayer`-vs-`sierra2_4a` choice on this path (that choice exists only on the FFmpeg
+    video→GIF path, below). This parallels the video→GIF default (cross-category.md [OPEN-D]
+    `[DECIDED]`) only in spirit; the cgif path has no `bayer_scale`-style parameter at all.
     `bitdepth`/colour count ≤ 256 — default **8** (256 colours); `effort` (palette
     search) — default **7** (vips default). `interframe maxerror`/`reuse` for
     animation — defaults left at vips defaults.
-  - **Seam note — this is the *image*→GIF (cgif) path `[DECIDED]`.** The Bayer-only
-    constraint applies to the **cgif `gifsave` save path** used here (raster image → GIF).
-    The **video→GIF** path is a **different engine** (FFmpeg `palettegen`+`paletteuse`,
-    cross-category.md), where **error-diffusion dither IS available** (`paletteuse=dither=
-    sierra2_4a` etc.) — so the dither options differ by source category and must not be
-    conflated. cross-category.md owns the video→GIF dither set; this section owns only the
-    image→GIF cgif set.
+  - **Seam note — this is the *image*→GIF (cgif) path `[DECIDED]`.** The **single-dither-amount
+    / no-mode-selector** constraint applies to the **cgif `gifsave` save path** used here
+    (raster image → GIF). The **video→GIF** path is a **different engine** (FFmpeg
+    `palettegen`+`paletteuse`, cross-category.md), where **error-diffusion dither IS available**
+    (`paletteuse=dither=sierra2_4a` etc., AND a `bayer`/`bayer_scale` mode) — so the dither
+    options differ by source category and must not be conflated. cross-category.md owns the
+    video→GIF dither set; this section owns only the image→GIF cgif set.
 - **Lossy?:** **Lossy as a target** (`→ GIF`) — 256-colour palette quantisation +
-  optional dithering loses colour (→ §2.9). As a *source*, GIF→PNG/etc. is
+  optional dithering loses colour (→ §2.9 **`image_palette`**, matching the JPG citation
+  pattern). As a *source*, GIF→PNG/etc. is
   lossless w.r.t. the GIF's own pixels (GIF is already ≤256 colours), so GIF→PNG
   is **not** lossy.
 - **Edge cases:** **Transparency:** GIF supports 1-bit (on/off) transparency only;
@@ -395,7 +400,8 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
     exposed). The §6.1.3 `heifsave effort` capability assertion (arg exists) is necessary but
     not sufficient — the steer-confirmation is the corpus gate that decides exposure;
     `chroma` 4:2:0 default; bit depth 8 default (10-bit advanced).
-- **Lossy?:** HEIC encode is **lossy by default** (`→ HEIC` flagged → §2.9; flip
+- **Lossy?:** HEIC encode is **lossy by default** (`→ HEIC` flagged → §2.9
+  **`image_lossy_codec`**, matching the JPG citation pattern; flip
   `lossless`). HEIC→JPG is lossy (JPEG). HEIC→PNG/TIFF is lossless w.r.t. the
   decoded pixels (but cannot recover the HEIC's own prior loss).
 - **Edge cases:** **Live Photos / image sequences / depth / aux images:** v1
@@ -436,7 +442,8 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
     encoder; 0 = fastest, 9 = slowest/smallest); **`lossless`** — default **off**; bit
     depth 8 default (10/12 advanced); chroma 4:2:0 default. (No `speed`/`cq-level`
     controls — those are not `heifsave` parameters.)
-- **Lossy?:** **Lossy by default** (`→ AVIF` flagged → §2.9; `lossless` available).
+- **Lossy?:** **Lossy by default** (`→ AVIF` flagged → §2.9 **`image_lossy_codec`**, matching
+  the JPG citation pattern; `lossless` available).
   AVIF→JPG lossy; AVIF→PNG/TIFF lossless w.r.t. decoded pixels.
 - **Edge cases:** **Animated AVIF** (`avis`) source: animation preserved → GIF /
   animated WEBP; first frame for stills (note). **HDR / 10-12-bit / wide gamut:**

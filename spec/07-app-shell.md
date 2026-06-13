@@ -223,6 +223,13 @@ present and usable:
   per platform is owned by §3.1/§3.3; §7.2 only consumes it. **The binary name per
   `EngineId` comes from the §3.3.1 externalBin entry** (e.g. `EngineId::FFprobe` →
   `binaries/ffprobe`), not from any trait method.
+  - **Names are BARE runtime names, NOT target-triple-suffixed `[DECIDED]`.** The presence
+    loop checks the **bare runtime names** — `ffmpeg`, `ffprobe`, `soffice`, `pdftotext`,
+    `pandoc`, `convertia-imgworker` — matching the §3.3.3 `current_exe().parent()` resolution
+    (Tauri strips the `-<target-triple>` suffix at bundle time; the suffix is a build/stage
+    artifact only). **On Windows append `.exe`** to each. Checking the suffixed
+    `ffmpeg-x86_64-unknown-linux-gnu` name at runtime would **always report missing** — the
+    loop must use the stripped names that actually ship beside the app exe.
   - **`FFprobe` presence-checked, health rolled into FFmpeg `[DECIDED]`.** `ffprobe`
     ships alongside `ffmpeg` (same upstream, same GPL build, §3.1 row 2 / §3.3.1) and is
     the video two-phase probe binary (§3.2.1). It is **presence + integrity checked as its
@@ -256,7 +263,15 @@ present and usable:
   (Windows), **Mach-O / fat `0xCA FE BA BE` (fat) or `0xCF FA ED FE` (64-bit thin)**
   (macOS). **The magic-byte check (b) applies ONLY to the EXECUTABLE sidecars `[DECIDED]`**
   (the §3.3.1 `externalBin` binaries — `ffmpeg`/`ffprobe`/`soffice`/`pdftotext`/`pandoc`/
-  `convertia-imgworker`). **Non-binary bundled resources (the bundled fonts §3.9, the
+  `convertia-imgworker`). **`soffice` magic is platform-conditional `[DECIDED]`:** on
+  **Linux** the bundled `soffice` is a **`#!` shell-script wrapper, NOT an ELF** (it `exec`s
+  the real `soffice.bin` ELF in the program tree), so its magic check is a **shebang check
+  (`0x23 0x21` = `#!`) / script-type check**, **not** the ELF magic (an ELF check on it would
+  always fail); the actual LibreOffice ELF binaries (`soffice.bin` etc.) live in the program
+  tree and are covered by the size-only warm check + first-launch full re-hash like the other
+  program-tree files. On **macOS** `soffice` is a **Mach-O** (standard Mach-O magic applies);
+  on **Windows** `soffice.exe` is a PE. All other executable sidecars use the standard
+  per-platform magic. **Non-binary bundled resources (the bundled fonts §3.9, the
   LibreOffice program-tree data files, NOTICE/licence text) have NO single executable magic**,
   so for them the warm-launch check is **size-only** (size equals `expected_size`); their
   full content is covered by the **first-launch / version-change full re-hash** like every
@@ -383,6 +398,14 @@ fn ensure_executable(p: &Path) -> io::Result<()> {
   gesture). Instead this is surfaced honestly as the distinct **`QuarantinedByOs`**
   error kind (§2.8) — distinguished from `EngineMissing`/`BundleDamaged` — whose copy
   tells the user to use Privacy & Security → "Open Anyway" and retry (§2.8.2 row).
+  **Canonical `QuarantinedByOs` message `[DECIDED]` (plain language, NO stack trace, MUST name
+  the specific blocked sidecar):** *"Could not launch {engine name} — blocked by macOS
+  security. Open System Settings → Privacy & Security and click \"Open Anyway\" next to
+  {engine name}, then try again."* The `{engine name}` is the friendly sidecar name (e.g.
+  "FFmpeg", "LibreOffice", "pandoc") so the user knows **which** "Open Anyway" to click; the
+  §2.8 catalog owns the string (this is the fixed text it carries). The Sequoia
+  final-confirmation step (the OS shows a final "click **Open** to confirm" dialog after
+  "Open Anyway") is part of the §6.2.4 step-by-step.
   The §7.2.3 macOS-ordering caveat ensures this surfaces **in a window**, not as a
   silent pre-window hang. The user-facing download-page steps (blocked-on-first-launch
   → Privacy & Security → Open Anyway → sidecars may each need it) are owned by §6.2.4;

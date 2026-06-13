@@ -87,7 +87,7 @@ Pull the audio track out of a video and save it as a standalone audio file.
   the output file's own signature is the target audio format's (owned by
   [audio.md](audio.md)).
 
-### Target subset offered — proposal + `[OPEN-A]` `[DEFER: corpus]`
+### Target subset offered — `[OPEN-A]`: floor `[DECIDED]`, M4A/OGG `[DEFER: corpus]`
 
 The audio category has ten formats (MP3, WAV, FLAC, AAC, M4A, OGG, OPUS, WMA,
 AIFF, ALAC). Offering **all ten** as extract-audio targets fails the SSOT
@@ -112,9 +112,13 @@ patent one),
 (Windows-legacy, declining), **AIFF** (Apple-uncompressed — WAV covers the
 uncompressed want), **ALAC** (Apple-lossless — FLAC covers the lossless want).
 
-> **`[OPEN-A]` `[DEFER: corpus]` — final extract-audio target subset.** Proposal above is
-> **MP3 (default), M4A, WAV, FLAC, OGG** — subset shape DECIDED; the only residual is an
-> empirical OGG-keep validation in §6.6 (see the table). Two sub-points:
+> **`[OPEN-A]` — extract-audio target subset.** **Minimum GUARANTEED subset `[DECIDED]` =
+> MP3★ + WAV + FLAC** (the always-present v1 extract-audio targets, so **C3 for a video source
+> is derivable now** — the SSOT mov→mp3 case is in scope and MP3★ is the default). **M4A and
+> OGG are `[DEFER: corpus]`** additions on top of that floor (M4A pending the §3.4 AAC
+> disposition confirmation + corpus; OGG pending the §6.6 OGG-keep validation). So the subset
+> is **{MP3★, WAV, FLAC} guaranteed, + {M4A, OGG} corpus-validated**; the residual is which of
+> the two deferred targets ship, not the floor. Two sub-points:
 > 1. **AAC/M4A patent flag.** M4A output is AAC-encoded → an encoder choice with
 >    patent implications. If the bundled FFmpeg uses the **native FFmpeg AAC
 >    encoder** (built-in, no external libfdk-aac), the disposition still routes
@@ -453,7 +457,7 @@ the default (MP3) is unchanged — so no platform loses the *operation*, at most
 
 | ID | Decision | Status |
 |----|----------|--------|
-| **[OPEN-A]** | Final extract-audio target subset (proposed **MP3★/M4A/WAV/FLAC/OGG**); incl. whether to keep OGG, and the AAC/M4A patent flag (→§3.4) | `[DEFER: corpus]` — subset shape decided; validate the OGG-keep call in §6.6 |
+| **[OPEN-A]** | Extract-audio target subset | **`[DECIDED]` minimum guaranteed subset = MP3★ + WAV + FLAC** (always present → C3 for video sources derivable now). **M4A + OGG are `[DEFER: corpus]`** on top (M4A pending §3.4 AAC confirmation; OGG pending §6.6 OGG-keep validation). The floor is fixed; only which deferred targets ship remains empirical. |
 | **[OPEN-B]** | MP3 *Standard/High/Max* preset → `-q:a`/`-b:a` mapping | **`[DECIDED]`** — owned canonically in [audio.md](audio.md) (High V0 / Standard V2 / Small V5 + explicit CBR), reused verbatim here; resolved at L159 |
 | **[OPEN-C]** | Probe for "no audio track" up front (disable target with reason) vs offer-then-fail — cost vs UX on large recursive batches | `[DEFER: corpus]` — validate in §6.6 |
 | **[OPEN-D]** | Default GIF dither | **`[DECIDED]`** — `bayer:bayer_scale=5` (favours small files, the everyday GIF priority); error-diffusion modes remain available as Advanced |

@@ -41,7 +41,7 @@ no AGPL surface; see *Engines* / §3.1.)
 | **ODT**   | ✓★~ LO | ✓ LO | ✓ LO | ·  | ✓ LO | ✓~ pd | ✓~ pd | ✓~ pd |
 | **RTF**   | ✓★~ LO | ✓ LO | ✓ LO | ✓ LO | ·  | ✓~ pd | ✓~ pd | ✓~ pd |
 | **TXT**   | ✓★ LO | ✓ pd | — | ✓ pd | ✓ pd | · | ✓ pd | ✓ pd |
-| **MD**    | ✓★ LO | ✓ pd | — | ✓ pd | ✓ pd | ✓~ pd | · | ✓ pd |
+| **MD**    | ✓★~ LO | ✓ pd | — | ✓ pd | ✓ pd | ✓~ pd | · | ✓ pd |
 | **HTML**  | ✓★~ LO | ✓ pd | — | ✓ pd | ✓ pd | ✓~ pd | ✓~ pd | · |
 
 **Reading the matrix.**
@@ -120,7 +120,7 @@ are the **concrete option lists and defaults** this file owns (§1.6).
   | `ODT → PDF`  | LibreOffice | documents (here) | ✓ (reflow) |
   | `RTF → PDF`  | LibreOffice | documents (here) | ✓ (reflow) |
   | `TXT → PDF`  | LibreOffice | documents (here) | — (faithful) |
-  | `MD → PDF`   | LibreOffice | documents (here) | — (faithful render) |
+  | `MD → PDF`   | LibreOffice | documents (here) | ✓ (reflow) |
   | `HTML → PDF` | LibreOffice | documents (here) | ✓ (rendering differences) |
   | `PPTX → PDF` | LibreOffice | [presentations.md](presentations.md) | ✓ (animations/transitions/embedded media dropped) |
   | `PPT → PDF`  | LibreOffice | [presentations.md](presentations.md) | ✓ (animations/transitions/embedded media dropped) |
@@ -351,7 +351,7 @@ are the **concrete option lists and defaults** this file owns (§1.6).
 - **As source → targets:**
   | Target | Engine | Default | Lossy |
   |--------|--------|:------:|:-----:|
-  | **PDF** | LibreOffice | ★ | — (faithful render of the MD) |
+  | **PDF** | LibreOffice | ★ | ✓ reflow (`doc_pdf_reflow`, §2.9 — LO lays MD out with font-substitution/reflow like every other word-processor `→PDF`) |
   | HTML | pandoc | | — (the natural rendering) |
   | DOCX | pandoc | | — |
   | ODT | pandoc | | — |
@@ -375,8 +375,11 @@ are the **concrete option lists and defaults** this file owns (§1.6).
   (GitHub-Flavored: tables, task lists, strikethrough, autolinks) — the dialect a
   normal person's `.md` most likely is. `MD→HTML` uses `--standalone
   --embed-resources` (self-contained page) by default.
-- **Lossy?:** `MD→PDF/HTML/DOCX/ODT/RTF` faithful; `MD→TXT` strips syntax (lossy,
-  §2.9 `doc_to_text`).
+- **Lossy?:** `MD→PDF` is **reflow-lossy `[DECIDED]` (`✓★~`, §2.9 `doc_pdf_reflow`)** — LO
+  lays Markdown out into pages with **font substitution + reflow** exactly like every other
+  word-processor `→PDF-via-LO` path (DOCX/DOC/ODT/RTF/HTML→PDF are all `✓★~`), so MD→PDF is
+  classified the SAME, **not** "faithful" like the structureless `TXT→PDF` case. `MD→HTML/DOCX/
+  ODT/RTF` faithful; `MD→TXT` strips syntax (lossy, §2.9 `doc_to_text`).
 - **Edge cases:** embedded image references (`![](path)` / remote URLs) — **local**
   relative images are resolved/embedded; **remote** URLs are *not* fetched (SSOT
   *fully offline / no network*) — they become broken references and this is noted.
@@ -477,11 +480,15 @@ path stay *drop → (PDF already highlighted) → convert* in two clicks (Princi
 Predictably-lossy pairs in this category, each mapped to the exact §2.9
 `LossyKind` (the catalog owns the string; this file only names the kind):
 - `PDF → TXT` → §2.9 `doc_pdf_to_text`.
-- `* → PDF` from word-processor sources (`DOCX/DOC/ODT/RTF`) → §2.9 `doc_pdf_reflow`.
+- `* → PDF` from word-processor sources (`DOCX/DOC/ODT/RTF`) **and `MD → PDF`** (LO lays
+  Markdown out with reflow/font-substitution, same as the word-processor sources) → §2.9
+  `doc_pdf_reflow`.
 - `HTML → PDF` → §2.9 `doc_html_render`.
 - `* → TXT` (from DOCX/DOC/ODT/RTF/MD/HTML) → §2.9 `doc_to_text`.
 - `* → MD` and `* → RTF` from rich sources → §2.9 `doc_simplified`.
-- `TXT/MD → PDF/HTML/office` are **not** flagged (faithful).
+- `TXT → PDF/HTML/office` and `MD → HTML/office` are **not** flagged (faithful). **`MD → PDF`
+  IS flagged `doc_pdf_reflow`** (the one MD→PDF exception — LO reflows it, see above);
+  `TXT → PDF` stays faithful because plain text has no structure to reflow.
 
 The note is a calm, passive inline line next to the chosen target (Principle 7),
 shown only for these predictable cases — never a blocking dialog or per-conversion

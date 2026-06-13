@@ -121,7 +121,8 @@ control + generation-loss disclosure; see Format-default decisions item 2 / see
 - **As target ← sources:** WAV, FLAC, AAC, M4A, OGG, OPUS, AIFF, ALAC, WMA
   (**MP3 is the default target of every other audio source** — the universally
   compatible everyday choice).
-- **Engine:** FFmpeg, encoder **`libmp3lame`** (LAME, LGPL — bundled in the shared FFmpeg binary). All
+- **Engine:** FFmpeg, encoder **`libmp3lame`** (LAME, SPDX **`LGPL-2.0-or-later`** — bundled
+  as a shared object beside / in the shared FFmpeg binary, §3.1 row 2a / §3.7.2 SBOM row). All
   platforms. No patent flag for ConvertIA's purposes (MP3 patents expired 2017).
 - **Options/settings:**
   - *Default (no choice):* **VBR quality `-q:a 2`** (LAME `-V2`, ≈170–210 kb/s
@@ -284,8 +285,11 @@ control + generation-loss disclosure; see Format-default decisions item 2 / see
 - **As source → targets:** MP3 ★, WAV, FLAC, AAC, M4A, OPUS, AIFF, ALAC.
 - **As target ← sources:** every other audio format (the open, lossy choice;
   modest everyday demand but a real "I need an .ogg" case).
-- **Engine:** FFmpeg, encoder **`libvorbis`**, muxer **`ogg`**. All platforms.
-  No patent flag (Vorbis is royalty-free).
+- **Engine:** FFmpeg, encoder **`libvorbis`**, muxer **`ogg`** (i.e. `-c:a libvorbis -f ogg`).
+  All platforms. No patent flag (Vorbis is royalty-free). **The extract-audio `OGG` target is
+  Ogg/Vorbis (`-c:a libvorbis -f ogg`) — DISTINCT from `OPUS` (Opus-in-Ogg, `-c:a libopus`)**:
+  both can live in an Ogg container, but ConvertIA treats them as separate user-facing targets
+  (the OGG target is always Vorbis, never Opus), matching the detection disambiguation above.
 - **Options/settings:**
   - *Default:* **VBR quality `-q:a 3`** (libvorbis quality 3.0 ≈ 112 kb/s) —
     FFmpeg/Vorbis's own default; Vorbis is quality-based and VBR by nature.

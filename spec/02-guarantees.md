@@ -94,7 +94,12 @@ applied the §2.7 destination rules). Given a *final resolved destination path*
 6. **Durability of the publish:** on Unix, after the rename **fsync the containing
    directory** (open the parent dir, `fsync` its fd) so the new dentry survives a
    crash — per the LWN/evanjones durability findings (rename is atomic but not
-   durable without the directory fsync). On Windows the directory-fsync step is a
+   durable without the directory fsync). **On the `link`+`unlink` fallback path** (either
+   Unix OS lacking the single-call no-replace primitive) the **same directory fsync applies**:
+   after the `link(tmp, final)` succeeds, **fsync `final`'s parent directory** so the new
+   `final` dentry is durable (the file *bytes* are already durable — `link` shares the inode
+   `sync_all`'d in step 3, so no second byte-fsync is needed; only the new dentry needs the
+   dir-fsync). On Windows the directory-fsync step is a
    no-op (NTFS metadata journaling covers the dentry). Durability sources on Windows
    are split: the **file *bytes*** are made durable by `sync_all` on the temp handle
    before the move (as on Unix); the **`MOVEFILE_WRITE_THROUGH`** flag on the
@@ -775,7 +780,7 @@ volume rule are owned by §2.14.2 (referenced here, not re-decided):
 | **Item failure** (engine error, corrupt, etc.) | remove that item's `tmp`. |
 | **Cancel** (user) | §1.7 kills the engine group and, on a **bounded** confirm-wait, removes the killed item's `tmp`; **already-finished items are kept** (SSOT). **If the group-kill confirm-wait times out** (a wedged descendant still holding the `*.part`), reclamation of that publish temp is **deferred to the §2.6.4 sweep** and surfaced as a `CleanupResidue` on the Cancelled item (§2.6.4 case 3) — i.e. tmp is *not* unconditionally removed here. |
 | **Out-of-disk mid-write** | remove the partial `tmp`; report `OutOfDisk` (§2.8); **batch continues** (SSOT). |
-| **Run end (any reason)** | remove the now-empty central `run-<RunId>/` dir **and** any leftover `*.part` publish temps in the run's **RECORDED `final_dir` set** — the union of **every distinct `final_dir` actually used this run**, tracked in memory as outputs are planned/written. This is **not** just the dropped/destination roots: it **includes late-divert targets (§2.7.2) and cross-volume intermediates (§2.14.3)**, which can land in dirs that are neither a drop root nor the chosen destination. (Recording the actual `final_dir` per item as it is written is what makes run-end cleanup enumerate every dir a `*.part` could have been written to; the §2.6.3 opportunistic/startup sweep is the post-crash backstop.) |
+| **Run end (any reason)** | remove the now-empty central `run-<RunId>/` dir **and** leftover publish temps in the run's **RECORDED `final_dir` set** — the union of **every distinct `final_dir` actually used this run**, tracked in memory as outputs are planned/written. This is **not** just the dropped/destination roots: it **includes late-divert targets (§2.7.2) and cross-volume intermediates (§2.14.3)**, which can land in dirs that are neither a drop root nor the chosen destination. **CRITICAL — own-prefix scope, never a bare `*.part` glob `[DECIDED]`:** a RECORDED `final_dir` can be **shared across concurrent instances** (the beside-source-into-the-same-folder scenario §2.6.1/§2.6.3 guard), so run-end cleanup removes **only this run's own temps by exact prefix** — `.convertia-<thisInstanceId>-<thisRunId>-*.part` — in each recorded dir, and **never** a bare `*.part` / `.convertia-*.part` glob (which would delete a concurrent foreign instance's **live** in-progress `.part`, violating the SSOT *"cleanup never removes another instance's in-progress file"*). For any **non-matching** `.convertia-*.part` encountered in a recorded dir, apply the §2.6.3 per-file **"held lock ⇒ keep"** guard so a foreign live temp is never deleted (a dead foreign run's residue may be opportunistically reclaimed under that guard, but never a live one). (Recording the actual `final_dir` per item as it is written is what makes run-end cleanup enumerate every dir a `*.part` could have been written to; the §2.6.3 opportunistic/startup sweep is the post-crash backstop.) |
 | **Next app start** | sweep stale central `run-<RunId>/` dirs from prior runs (§2.6.3); destination-resident `*.part` from a *crashed* prior run are reclaimed opportunistically by a later write into that dir, not by the startup sweep (§2.6.3 limitation). |
 
 Removal restores free space to "roughly what it was before the run" (SSOT) — temps
@@ -786,9 +791,12 @@ finals are intended; failed/cancelled items leave nothing.
 
 On startup (§7.2 sequence) `crate::run::sweep_stale`:
 
-1. Lists `convertia/<InstanceId>.<pid>/run-*` dirs under the **central scratch
-   root** (kind-2 working files).
-2. For each, checks **liveness** via §7.1's mechanism — recommended: an **advisory
+1. Lists run dirs across **ALL instance dirs** — the glob is
+   `convertia/scratch/<*>.<*>/run-*` (every `<InstanceId>.<pid>` dir, not just this
+   instance's), under the **central scratch root** (kind-2 working files), so a crashed
+   *foreign* instance's stale run dirs are reclaimable too.
+2. For each, checks **liveness** via §7.1's mechanism — **the held lock is the SOLE delete
+   gate** (an mtime/PID is never a delete predicate on its own) — recommended: an **advisory
    lock file** `run-<RunId>/.lock` held with an OS lock for the run's lifetime, probed
    with a **NON-BLOCKING try-lock `[DECIDED]`** so the sweep never hangs on a live
    instance (the app must stay responsive): **Unix `flock(LOCK_EX | LOCK_NB)`** or
@@ -800,6 +808,17 @@ On startup (§7.2 sequence) `crate::run::sweep_stale`:
    **immediate acquire ⇒ free/stale ⇒ DEAD/crashed run ⇒ removed** (and the sweep
    immediately releases the lock it just took). The working files of a dead run are the
    discardable artifacts the SSOT says are "cleaned up on next run".
+   **Create-then-not-yet-locked window `[DECIDED]`:** there is a tiny window where a brand-new
+   live run has **created its `run-<RunId>/` dir but not yet acquired the `.lock`**, during
+   which the sweep would see a lockless dir and could wrongly delete it. Two guards close it:
+   (a) the **lock-before-population ordering invariant** (§2.6.3 below / §2.14.1: a run creates
+   `run-<RunId>/`, acquires + OS-locks `.lock`, and only then writes any content — so a
+   *populated* dir always has a held lock); and because a freshly-created **empty** dir can
+   still precede its lock, (b) the sweep **skips any lockless run dir whose mtime is within a
+   short grace window** (created in the last few seconds) and reclaims it only on a later sweep
+   if it is still lockless and stale. A lockless **stale** dir (mtime well past the grace
+   window, no held lock) is dead and reclaimed; a lockless **very-recent** dir is left for next
+   time. This keeps "held-lock ⇒ keep" authoritative while never racing a just-starting run.
 3. This is what makes the SSOT promise *"temp artifacts are owned per-run so cleanup
    never removes another instance's in-progress file"* concrete: liveness is by
    **held-lock — the single authoritative predicate** — not by guessing from
@@ -826,6 +845,15 @@ B's in-progress `.part`, because B's lock is held). A lock that is **held** ⇒ 
 `.part` is **kept**; a lock that is **free, stale, OR entirely absent** ⇒ dead ⇒ the
 `.part` is reclaimable. (Only a currently-held lock blocks reclamation; an absent lock is
 not "uncertain" — it is dead.)
+**Pre-RunId probe residue — `InstanceId`-only liveness `[DECIDED]`.** The §2.7.2 C4
+writability probe runs **before** any `RunId` exists, so its leftover is named
+`.convertia-<InstanceId>-probe-<rand>.part` (no `RunId`, no `jobId`). The per-file sweep
+recognises this shape and resolves liveness by **`InstanceId` alone**: if **any** lock
+under `convertia/scratch/<InstanceId>.*/` is currently held the owning instance is alive ⇒
+**keep**; if no live lock exists for that `InstanceId` the instance is dead ⇒ **reclaim**.
+This never consults a `run-<RunId>/.lock` (a probe never minted one). A live foreign
+instance's probe residue is therefore never deleted while that instance is alive, exactly
+like the run-owned `.part` case.
 **Lock-before-part ordering invariant — what makes "absent ⇒ dead" SAFE `[DECIDED]`.**
 The "absent lock ⇒ dead ⇒ reclaimable" rule is correct **only because of a guaranteed
 ordering**: a run's `run-<RunId>/.lock` is **created and OS-locked BEFORE the run writes
@@ -952,8 +980,13 @@ For each source, §1.8 classifies its **intended** output location via
   - **Probe-cleanup-failure handling `[DECIDED]`.** If the probe file is *created*
     (so the dir is writable) but its **removal fails**, the verdict is **writable**
     (the create succeeded — that is the test) and the leftover probe file is **not**
-    cause to divert. The probe uses the run-owned `.convertia-*.part`-class naming so
-    the §2.6 sweep reclaims it; the failure is logged locally (§7.5) only. We never
+    cause to divert. **The probe runs at C4 (§1.8/§1.10), BEFORE the RunId is minted
+    (§7.1.2: RunId is minted at C6), so it CANNOT carry a `RunId` and uses a distinct
+    pre-RunId name keyed on `InstanceId` only: `.convertia-<InstanceId>-probe-<rand>.part`.**
+    The §2.6.3 per-file sweep reclaims this `InstanceId`-only probe residue via **InstanceId
+    liveness** (any live lock under `convertia/scratch/<InstanceId>.*` ⇒ the instance is
+    alive ⇒ keep; no live instance lock ⇒ dead ⇒ reclaim) — **not** a `run-<RunId>/.lock`
+    that never existed for a probe. The failure is logged locally (§7.5) only. We never
     divert *solely* because probe-cleanup failed.
   - **The per-directory writability cache is a planning *hint*, not a commitment
     `[DECIDED]`.** A location can flip read-only *between* the probe and the actual
@@ -1119,10 +1152,14 @@ enum ConversionErrorKind {
     CleanupResidue,     // item failed AND its partial couldn't be removed (§2.6.4)
     InternalError,      // catch-all for an unexpected internal fault (§2.13), no trace shown
     // ── run/app-level (§2.13); surfaced via app://fault, not a per-item row ──
-    MixedDrop,          // >1 source format in one drop — pre-flight refusal (§1.3); chrome string §5
     EngineMissing,      // a required bundled engine is absent/unrunnable at startup (§7.2)
     WebviewFault,       // the WebView core disconnected / failed to load (§2.13/§5.8)
     BundleDamaged,      // the app bundle/resources failed their integrity check (§7.2)
+    // ── pre-flight (NOT carried as an IpcError; mirror-only for drift-lock) ──
+    MixedDrop,          // >1 source format in one drop — pre-flight refusal (§1.3); chrome string §5.
+                        //   NO §2.13 producer: it is the CollectedSet::Mixed SUCCESS return from C1
+                        //   (§0.6) driving the §5.2 state-9 refusal — listed here ONLY to keep the
+                        //   enum byte-identical to the §0.4.3 wire mirror (do not search §2.13 for it).
 }
 ```
 
@@ -1133,10 +1170,12 @@ no Rust `Debug` of the underlying error, no engine command line (that goes to th
 local log §7.5 if enabled, never to the user — SSOT "no stack traces").
 
 The **item-level** kinds are reported as a per-item `Failed` row and the batch
-keeps going (§1.9); the **run/app-level** kinds (`MixedDrop`, `EngineMissing`,
+keeps going (§1.9); the **run/app-level** kinds (`EngineMissing`,
 `WebviewFault`, `BundleDamaged`) are not per-item outcomes — they travel over the
-`app://fault` / refusal path (§0.4.2, §2.13) and `MixedDrop` specifically is the
-pre-flight refusal (§1.3), surfaced with §5 chrome (the catalog below covers the
+`app://fault` path (§0.4.2, §2.13). **`MixedDrop` is neither item-level nor app://fault** —
+it has **no IpcError producer at all**: it is the `CollectedSet::Mixed` SUCCESS return from C1
+(§0.6), the pre-flight refusal (§1.3) surfaced with §5 chrome (state 9). It appears in the
+enum only as the byte-identical wire mirror (the catalog below covers the
 item-level kinds; the app-level kinds carry §5/§7.2 chrome strings, not §2.8.2
 rows).
 
@@ -1291,7 +1330,7 @@ gating the Convert button.
 | `image_alpha_flatten` | alpha source `→ JPG/BMP` (transparency policy) | **"Transparency isn't supported here and will be filled with a background colour."** |
 | `image_animation_flatten` | animated source `→` still target (animation policy) | **"Animated — only the first frame is converted."** |
 | `image_svg_raster` | `SVG → raster` (svg entry) | **"Vector image converted to a fixed-size picture ({w}×{h}) — it won't scale up cleanly afterward."** |
-| `doc_pdf_reflow` | `DOCX/DOC/ODT/RTF → PDF` (documents.md); **`XLSX/XLS/ODS → PDF` (spreadsheets.md)** — the same office→PDF reflow kind covers spreadsheet→PDF too | **"Layout may shift slightly when converted to PDF."** |
+| `doc_pdf_reflow` | `DOCX/DOC/ODT/RTF → PDF` **and `MD → PDF`** (documents.md — LO lays Markdown out with reflow/font-substitution like the word-processor sources); **`XLSX/XLS/ODS → PDF` (spreadsheets.md)** — the same office→PDF reflow kind covers spreadsheet→PDF too | **"Layout may shift slightly when converted to PDF."** |
 | `doc_pdf_to_text` | `PDF → TXT` | **"Text only — layout, tables and images are dropped."** |
 | `doc_html_render` | `HTML → PDF` | **"The result may look different from a web browser."** |
 | `doc_to_text` | `* → TXT` from rich sources | **"Text only — formatting and images are dropped."** |
@@ -1931,7 +1970,11 @@ move-equivalent **inside** that volume:
      exclusive-rename** (§2.1.2: Linux `renameat2(RENAME_NOREPLACE)` / macOS
      `renameatx_np(RENAME_EXCL)` / common `link`+`unlink` fallback, Windows
      `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`) — intra-volume and exclusive,
-     create-only, never a 0-byte placeholder. **(On Unix this final publish never
+     create-only, never a 0-byte placeholder. **The cross-volume copy happens EXACTLY ONCE
+     `[DECIDED]`:** if the publish hits a name collision, the §2.2 numbering retry
+     **re-renames the SAME already-copied same-volume intermediate** to the next variant —
+     it does **NOT** re-copy across the volume per attempt (the expensive cross-volume copy is
+     done once; only the cheap intra-volume exclusive-rename loops). **(On Unix this final publish never
      targets a FAT/exFAT-class `final`: such destinations are diverted up front at §2.7.2
      to a hardlink-capable system-disk target, so the no-replace-or-`link` primitive is
      always available where this step runs; on Windows `MoveFileExW` works on FAT/exFAT

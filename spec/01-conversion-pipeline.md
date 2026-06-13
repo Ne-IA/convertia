@@ -82,7 +82,7 @@ source set** (snapshot; §2.4).
 | **Drag-and-drop** (files or folders) | Tauri **native drag-drop event** (`onDragDropEvent`, payload `type: 'drop'` carries `paths: string[]`) — **not** HTML5 DnD, which does not expose FS paths in a WebView (§0.4) | WebView event → forwarded to a Rust intake command |
 | **File picker** | **C2a `pick_for_intake`** (§0.4.1): the native files/folder dialog is opened **Rust-side via `DialogExt`** inside the command handler (no JS `open({…})`, no `dialog:allow-open` grant — §0.10) | Picked paths funnel **straight into this funnel Rust-side**; C2a returns the same `CollectedSet` — no path transits the WebView |
 | **Keyboard** | Same **C2a `pick_for_intake`**, invoked via the §5.10 accelerator; full parity (SSOT DoD "keyboard reach the same result") | Same as picker |
-| **OS launch entry points** | Open-with / launch args — **macOS** the Tauri v2 **`RunEvent::Opened { urls: Vec<Url> }`** (and/or `tauri-plugin-deep-link`'s `on_open_url`) — the canonical macOS open-with/launch hook; **Windows** `argv`; **Linux** `%F` desktop-entry field. The macOS payload is **`Vec<Url>` (`file://` URLs), not `Vec<PathBuf>`** — each URL is converted to a path (`Url::to_file_path()` / strip the `file://` scheme) **before** it enters the §1.1 freeze. Posture (associations: none in v1) owned by §7.8 | Captured at startup / on the macOS `RunEvent::Opened` → url→path → handed to intake |
+| **OS launch entry points** | Open-with / launch args — **macOS** the Tauri v2 **`RunEvent::Opened { urls: Vec<Url> }`** — the **SOLE** macOS file-open mechanism (**NOT** `tauri-plugin-deep-link`'s `on_open_url`, which handles custom-scheme deep links and **never fires** for the Open-With AppleEvent); **Windows** `argv`; **Linux** `%F` desktop-entry field. The macOS payload is **`Vec<Url>` (`file://` URLs), not `Vec<PathBuf>`** — each URL is converted to a path (`Url::to_file_path()` / strip the `file://` scheme) **before** it enters the §1.1 freeze. Each `RunEvent::Opened` (launch AND mid-run Open-With) is routed through the shared `forward_launch_intake` refuse-busy funnel (§7.8.1). Posture (associations: none in v1) owned by §7.8 | Captured at startup / on the macOS `RunEvent::Opened` → url→path → handed to intake |
 | **Second-instance hand-off** | When a single-instance policy (§7.1) routes a second launch's args into the running instance | The running instance's intake funnel |
 
 All five funnel into a single Rust function (pseudo-signature; exact IPC names in
@@ -606,8 +606,11 @@ fn resolve_targets(src: UserFacingFormat, platform: Platform) -> TargetOffer;
 4. **One `Target` per `Batch`** (the §0.6 invariant): **per-file target selection
    is out of v1.** The chosen `TargetId` is a batch-level property.
 5. **Same-format diagonal** is excluded from the offered tiles (per 04; e.g. images
-   omit same→same, video offers a "normalize" self-target where it has everyday
-   meaning). The registry encodes which diagonals are offered.
+   omit same→same). **The ONLY v1 diagonal exception is the video "normalize" self-target
+   `[DECIDED]`** — **owned by video.md** (the MP4→MP4 / MOV→MOV / MKV→MKV / WEBM→WEBM / M4V→M4V
+   normalize/`+faststart` self-target, video.md §"Same-container"); MP3→MP3 and all other
+   audio/image/office same-format diagonals are **NOT v1** (README `[DECIDED]`). The registry
+   encodes which diagonals are offered, and only the video normalize diagonal is enabled in v1.
 
 ### Patent-gapped / unavailable targets `[DECIDED — routing only]`
 
@@ -789,15 +792,20 @@ enum InvocationResult {
 
 - Spawned on the **Tokio** async runtime (`tauri::async_runtime` / `tokio::process`,
   §0.9 owns the worker pool & concurrency degree).
-- **`stdout`/`stderr` are streamed line-by-line** and parsed by the §3.5 per-engine
+- **`stdout`/`stderr` handling is per-`ProgressModel` `[DECIDED]`:** for invocations with a
+  **streaming** `ProgressModel` (`FfmpegKeyValue`, `VipsStdout`, `InProcessFraction`),
+  `stdout`/`stderr` are **streamed line-by-line** and parsed by the §3.5 per-engine
   adapter into normalised progress ticks (FFmpeg `-progress pipe:` key=value;
   LibreOffice has no native progress → §1.11's heuristic; libvips is fast/atomic →
-  coarse ticks). Normalised ticks flow to the frontend over the **§0.4.2
-  `Channel<ConversionEvent>`** as `ConversionEvent::ItemProgress` (the wire shape is
-  defined in **§0.4**, not here; "ProgressEvent" in §1.11 is the internal projection
-  of that wire variant). `stderr` is **captured in full** for
-  exit-classification and for the §7.5 verbose/diagnostic echo, and fed to §2.13
-  for `stderr`-classify-into-§2.8.
+  coarse ticks). For **`ProgressModel::CoarseSpawnDone`** (the ffprobe probe sub-invocation,
+  below) §1.7 instead **buffers stdout in full** and passes the **complete buffer** to the
+  §3.5.1 adapter's `ProbeOutput` JSON parser — **no line reader is attached** to a
+  CoarseSpawnDone stdout (it would corrupt the single-JSON-blob parse). Normalised ticks flow
+  to the frontend over the **§0.4.2 `Channel<ConversionEvent>`** as
+  `ConversionEvent::ItemProgress` (the wire shape is defined in **§0.4**, not here;
+  "ProgressEvent" in §1.11 is the internal projection of that wire variant). `stderr` is
+  **captured in full** for exit-classification and for the §7.5 verbose/diagnostic echo, and
+  fed to §2.13 for `stderr`-classify-into-§2.8.
 - **Timeout / hang policy:** an item that produces **no progress and no output**
   for a per-engine watchdog interval (parameters owned by §0.9; mechanism here) is
   treated as hung → killed → `Failed(EngineHang)` (§2.8). A hang fails **that one item**;
@@ -946,6 +954,18 @@ process to kill**, so §1.7 defines its lifecycle explicitly:
   timeout, tight for this light engine) wraps the synchronous call; on expiry the loop is
   cancelled cooperatively (same chunk-boundary poll), the temp is discarded, and the item
   is `Failed(EngineHang)` — so even a pathological input cannot wedge a worker forever.
+  - **Wedged-uninterruptible-read caveat `[DECIDED]`:** because this engine has **no
+    subprocess to force-kill**, a read that **blocks uninterruptibly in the kernel** (e.g. a
+    dead network mount, a stalled USB) **cannot be force-cancelled** — the cooperative poll
+    only fires at a chunk boundary, and a wedged read never reaches the next boundary. In that
+    case the **timeout marks the item `Failed(EngineHang)` and the run CONTINUES** (the wedged
+    thread is abandoned, not awaited), exactly like the subprocess hang case — the user is
+    never left staring at a hang. **The abandoned thread MUST NOT exhaust the blocking pool
+    `[DECIDED]`:** the `spawn_blocking` pool is **bounded** (a few parked threads cannot starve
+    it — the pool size is sized with headroom above the global degree), AND/OR CSV/TSV reads go
+    through a **bounded chunked reader with a short per-read deadline** so a single read syscall
+    cannot block indefinitely in the first place. Either way a handful of wedged reads degrade
+    gracefully (those items fail, the batch finishes) rather than wedging the whole pool.
 - **Concurrency / permit model:** it runs on the §0.9 pool **up to the global degree, on
   dedicated worker threads** (a `spawn_blocking`-style pool so the synchronous CPU/IO loop
   **never blocks the Tokio runtime** that drives the subprocess engines and the IPC). It
@@ -1014,8 +1034,13 @@ the *resolved-identity & link safety* (§2.3), and the *atomic write itself* (§
 (specifically `final_dir`, and any divert) is computed early enough (in **C4
 `plan_output`**, §0.4.1) to render the "will save to …" line **before** conversion
 starts and to let the user change the destination. A user-chosen destination
-(**C5 `set_destination`**, §0.4.1) re-routes `final_dir` and triggers the
-relative-subtree re-creation (§2.7).
+(**C5 `set_destination`**, §0.4.1) **revalidates writability and updates the held
+destination authority + the §1.10 preflight verdict** for the new volume (§2.14.4) — it does
+**not** itself re-create the relative subtree. The per-job `OutputPlan` re-computation that
+actually applies the new destination's **relative-subtree re-creation (§2.7)** runs at
+**C6/write-time**, using C6's authoritative `destination` argument (§0.4.1 C6 destination
+authority). So C5 = revalidate + hold the destination + refresh the preview verdict; C6 =
+build the OutputPlan (with subtree re-creation) from the held destination.
 
 **Eager C4 `location_status` vs lazy at-write probe — reconciled `[DECIDED]`.** C4's
 divert classification and the §1.10 per-volume preflight need each item's `final_dir`
@@ -1103,6 +1128,19 @@ Pending ─▶ Running ─┬─▶ Succeeded
   profile — parallel instances lock/corrupt). The pipeline simply respects the
   degree and any per-engine serialization the §0.9 pool enforces; it does not pick
   the number.
+- **Batch construction projects pre-flight skips as non-queue `Skipped` records `[DECIDED]`.**
+  When the orchestrator (`crate::run`) builds the `Batch` from the **frozen `CollectedSet`**
+  at **C6 (start_conversion)**, it creates, for **every `SkippedItem` in
+  `CollectedSet::Single.skipped`**, a `ConversionJob` record with
+  `JobState = Skipped(reason)` set **at construction** (the `SkipReason` copied directly from
+  `SkippedItem.reason`, §0.6). These `Skipped` jobs **never enter the `Pending` queue** and
+  receive **no `Channel` events** (no live `ItemStarted`/`ItemProgress`/`ItemFinished`, per
+  §0.4.2) — they exist **only as non-queue entries** so the §1.12 run-end projection can emit
+  them into `RunResult.items` and `Totals.skipped`. A `Skipped(reason)` job **never
+  transitions** (it is terminal at construction). This is the single anchor that prevents a
+  skip from being stored only inside the `CollectedSet` and lost at C6: the skips are
+  materialised into the `Batch` at construction, alongside the `Pending` eligible jobs, over
+  the §1.1 single id space (so a `SkippedItem.item` never collides with an eligible `ItemId`).
 - **Per-item isolation:** each job runs through its own §2.12-isolated invocation
   with its own per-job scratch (§2.6 ownership). A **worker-thread panic** is
   caught at the §2.13 panic boundary and surfaced as a clean per-item `Failed`,
@@ -1269,6 +1307,18 @@ long conversion. The fraction source per engine (parsed by §3.5, normalised by
 // For the None-fraction LibreOffice case the frontend synthesises a staged
 // determinate-looking bar from `stage` transitions (§5.3) — never a raw spinner.
 ```
+
+**Video probe-phase progress gap `[DECIDED]`.** A video job runs the `ffprobe`
+sub-invocation (`ProgressModel::CoarseSpawnDone`, §1.7) **before** the encode's
+`FfmpegKeyValue` fraction starts, so without a deliberate tick the bar would sit at **0%**
+during the probe (a "looks hung" moment, contra SSOT *working, not hung*). So §1.7 emits, for
+the probe leg: **`ItemProgress { fraction: Some(0.0), stage: Spawning }` at probe-start** and
+**`ItemProgress { fraction: Some(0.05), stage: Decoding }` at probe-done** — the bar shows
+immediate motion (0 → 5%) while the probe runs, then the **encode `FfmpegKeyValue` fraction
+takes over from 0.05 onward** (rescaled into the 0.05..=1.0 band, or simply continuing — the
+encode % dominates the runtime). This is the **one deliberate departure** from the
+`None`-fraction LibreOffice case: the probe is short and bounded, so a small synthetic
+start/done pair is honest (it really is spawning then decoding the header), not a fake.
 
 ### Aggregate batch progress `[DECIDED]`
 

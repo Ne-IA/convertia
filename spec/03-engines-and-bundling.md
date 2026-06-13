@@ -44,6 +44,7 @@ every one; they cluster into four families:
 | 1d | **ImageMagick** (libvips BMP save delegate — **REQUIRED for BMP**; ICO save is the **default** path but **`[DEFER: build spike]`** §3.5.5; plus GIF fallback) | Images | **BMP load+save (`magickload`/`magicksave` — REQUIRED)**; **ICO save (`magicksave`) — default, multi-size/256px unverified, in-core Rust ICO assembler fallback §3.5.5**; GIF fallback | **ImageMagick License** (Apache-2.0-style, SPDX `ImageMagick`) — **permissive, NOT GPL** | linked delegate (permissive — no isolation); GPL *optional delegates* excluded at build | none |
 | 1e | **libimagequant** — **the BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** (PNG/GIF palette quantisation, used by libvips' `cgif`/`gifsave` and palette PNG output) | Images | PNG/GIF palette quantisation | **BSD-2-Clause** — and **only** via the frozen `lovell/libimagequant` v2.4.x fork (e.g. v2.4.1). **Upstream libimagequant 4.x is GPLv3-or-commercial — NOT permissive — and MUST NOT be bundled** (it would taint the LGPL image-worker). Pin the BSD fork by exact version+ref in `engines.lock`; a §6.1.3/§6.3.3 build assertion checks the staged `COPYRIGHT` actually contains the BSD-2 text. **Pin-coupling `[DECIDED]`:** the lovell `libimagequant` v2.4.x fork is **vendored/statically linked inside libvips' `cgif`/`gifsave` path** (the §3.8 floor) — there is **no dynamic soname to resolve at runtime**, so the guard is a **lockfile assertion, not an ABI/soname check**: the **§6.1.3 build assertion verifies the pinned `imagequant`/`libimagequant` ref in `engines.lock` (and any Rust `Cargo.lock` entry) is exactly the `lovell/libimagequant` v2.4.x-fork commit** (NOT upstream 4.x, whose GPLv3 leg would taint the worker), backing the COPYRIGHT-BSD-text check with a provenance check. *(If a future platform build dynamically loads libimagequant, the soname-resolution check is added scoped to that case only.)* | linked/vendored **inside the image-worker process** (BSD fork only) | none |
 | 2 | **FFmpeg** (**GPL-2.0+ build** — `./configure --enable-gpl` to link `libx264`; built **without `--enable-nonfree`**: `libmp3lame`, `libvorbis`, `libopus`, native `aac`/`flac`/`alac`/`pcm`, `libx264`, `libvpx-vp9`, **WMA *decoders* (decode-only — the sole FFmpeg WMA encoder `wmav2` is low-quality, 2-channel-max legacy, so `→ WMA` is out of v1 per audio.md and the build never invokes a WMA encoder; WMA is a source-only format)**; no `libfdk_aac`) | Audio, Video, Cross-category | `04-formats/audio.md`, `video.md`, `cross-category.md` | **GPL-2.0+** (the whole binary, because it enables GPL `libx264`; the LGPL component libs are still dynamically linked beside it, §3.6.1); written-offer-of-source obligation | **separate invoked binary** (`ffmpeg`/`ffprobe`) per §3.6 | **AAC, H.264 → §3.4**; MP3/Vorbis/Opus/FLAC/ALAC/PCM/VP9 patent-clean |
+| 2a | **FFmpeg external codec libraries** — `libmp3lame` (MP3 enc), `libvorbis` + `libogg` (Vorbis/Ogg), `libopus` (Opus enc), `libvpx` (VP9 enc, WEBM target). v1 ships these as **separate shared objects staged beside the FFmpeg exe** (§3.9.1 dynamic preference) — each is a distinct staged binary, so **each gets its own §3.7.2 `engines.lock`/SBOM row** | Audio, Video | audio.md (`→ MP3`/`→ OGG`/`→ OPUS`), video.md (`→ WEBM`) | **libmp3lame `LGPL-2.0-or-later`** (triggers the §6.1.3 carve-out-(i)/§3.6.2 relink+offer obligation); **libvorbis / libogg / libopus / libvpx all `BSD-3-Clause`** (libvpx ALSO carries its `PATENTS` grant in `THIRD-PARTY-LICENSES.txt`, like libaom/x264) | linked into the **GPL FFmpeg binary** (separate invoked process) — never the MIT core; LGPL libmp3lame's §6 subsumed by FFmpeg's GPL corresponding-source, offer honoured (§3.6.2) | none for these codecs (MP3/Vorbis/Opus/VP9 patent-clean) |
 | 3 | **LibreOffice** (headless `soffice`, Writer+Calc+Impress + PDF export filters; bundled with a baseline open font set, §3.9) | Documents, Spreadsheets, Presentations | `04-formats/documents.md`, `spreadsheets.md`, `presentations.md` (all office↔office + every `*→PDF`) | **MPL-2.0** (+ many bundled components — full set enumerated by the SBOM, §3.7) | **separate invoked binary** (sidecar process) per §3.6 | none |
 | 4 | **poppler** (`pdftotext`) | Documents | `PDF→TXT` | **`GPL-2.0-only OR GPL-3.0-only`** (a valid SPDX expression — *not* the bare `GPL-2.0/GPL-3.0`, which §6.3.3 would reject as unresolved) | **separate invoked binary** (§3.6) | none |
 | 5 | **Ghostscript** **[DECIDED: NOT shipped v1]** (was a PDF read/repair backstop behind poppler; no user-facing pair) | Documents | (malformed-PDF tolerance — dropped) | **AGPL-3.0** | not shipped (`[DEFER: re-add if §6.5 corpus shows GS-salvageable PDFs]`) | none |
@@ -92,8 +93,10 @@ every one; they cluster into four families:
   have salvaged]`. This removes the AGPL surface entirely from v1 (§3.6 + §3.9).
 
 Licence-class summary (drives §3.6/§3.7): **MIT** core; **LGPL** (libvips,
-libheif/libde265, librsvg, and the FFmpeg *component* libs) dynamic-linked beside the
-exe; **GPL** (the **FFmpeg binary itself** — GPL-2.0+ because it enables x264 —
+libheif/libde265, librsvg, and the FFmpeg LGPL component lib **`libmp3lame`**); **BSD-3-Clause**
+(the FFmpeg component libs **`libvorbis`/`libogg`/`libopus`/`libvpx`** — `libvpx` also carries
+its `PATENTS` grant) — all the FFmpeg component libs are dynamic-linked beside the exe (§3.1 row
+2a / §3.7.2); **GPL** (the **FFmpeg binary itself** — GPL-2.0+ because it enables x264 —
 plus x264, the **x265 libheif plugin**, poppler, pandoc) **always invoked or
 dynamically-plugin-loaded, never statically linked into the MIT core**, each carrying
 the written-offer-of-source obligation (§3.6.2); **AGPL** (Ghostscript) **not shipped
@@ -1241,6 +1244,17 @@ conversion" is a **read-side** claim, not a write-side one).
      control and must be honestly labelled as such** (carrying the residual CVE-2023-38633
      parser-disagreement risk, mitigated only by this version floor) — it must **never** be
      demoted under a "refuse all" that no longer holds.
+  3. **`VIPS_BLOCK_UNTRUSTED` for the OTHER libvips loaders — defence-in-depth, NOT load-bearing
+     `[DECIDED]`:** for the non-SVG libvips loaders (`tiffload`, `pngload`, `jpegload`,
+     `heifload`, etc.), the image-worker env **sets `VIPS_BLOCK_UNTRUSTED=1`** as
+     **defence-in-depth** — it tells libvips to refuse loaders it considers untrusted /
+     route to safer paths. It is **whitelisted** in the worker env (distinct from the stripped
+     `LD_*`/`DYLD_*` vars, §2.12.3). **It is explicitly NOT the load-bearing control:** the
+     load-bearing T1 isolation for a hostile image is the **separate image-worker process
+     boundary** (§2.12 / §0.9 — a decoder exploit is contained by the OS process boundary like
+     every other engine), which holds regardless of any env var. `VIPS_BLOCK_UNTRUSTED` is a
+     cheap extra layer, not the guarantee; the SVG path (controls 1–2) does **not** rely on it
+     at all (librsvg is called directly). This closes the lever the spec itself raised.
 
   Asserted by a **§6.1.3 corpus case**: an SVG with an external `<image href>` (relative
   `../` escape AND absolute) must **NOT** embed any out-of-input bytes in the output (the
@@ -1335,6 +1349,7 @@ source where required), so the MIT core stays clean.
 | **x265** (HEVC encode) | **GPL-2.0-or-later** | **NO — dynamically-loaded libheif *plugin*** | x265 ships as a **separately-built, dynamically-loaded libheif encoder plugin** (`.so`/`.dll`/`.dylib`, libheif `ENABLE_PLUGIN_LOADING`) that `heifsave compression=hevc` loads at runtime. The GPL code is **never statically linked** into the image-worker's libvips or the MIT core; it lives behind libheif's plugin ABI and runs **inside the §0.7 image-worker process** (already a separate process from the core). **Accurate framing `[DECIDED]`: when x265 is loaded, the running image-worker is a GPL *combined work*** (per the FSF, dynamically loading a GPL plugin into a process makes that process's combination a GPL combined work — it is **not** an "LGPL worker with an isolated GPL plugin"). **The aggregation argument that keeps the MIT CORE clean is the *separate process* boundary** (the core invokes the worker as a child process), and that is sound + load-bearing — but **inside** the worker, both the **LGPL relink obligation** (libvips/libheif stack) **AND** the **x265 GPL corresponding-source obligation** apply to the worker-with-x265-loaded. *(A static x265-in-libvips link would taint — hence the plugin form. This replaces the dropped "standalone heif/x265 sidecar" — no such sidecar exists under the [OPEN-1] heifsave-only decision.)* |
 | **x264** (H.264 encode) | **GPL-2.0-or-later** (SPDX `GPL-2.0-or-later` — matches x265's form; x264 is GPL-2.0-**or-later**, not `GPL-2.0-only`) | **NO — inside the GPL FFmpeg binary** | reached only via the **FFmpeg binary** (separate invoked process); never linked into the MIT core |
 | **FFmpeg** build | **GPL-2.0+** (enables GPL x264 via `--enable-gpl` → the *whole* binary is GPL-2.0+, not LGPL) | **NO — separate exe** | invoked as `ffmpeg`/`ffprobe` child processes (§3.3.3); aggregation keeps the MIT core clean. **Static OR dynamic FFmpeg is GPL-clean `[DECIDED]`:** a static GPL FFmpeg with the LGPL component libs (libmp3lame/libvorbis/libopus) baked in is aggregation — the GPL's own corresponding-source subsumes LGPL §6 — so it **never** fails the §6.1.3 assertion (carve-out **iii**). v1 ships them **dynamically linked beside the exe** (§3.9.1) as a deliberate engineering preference (smaller diff to swap a component lib), **not** a licence-mandated build rule; when dynamic, §6.1.3 carve-out **i** verifies those component shared objects are present beside the exe. The LGPL **dynamic-link** assertion applies ONLY to an LGPL lib linked into the **MIT core** (carve-out i), never to the separate FFmpeg binary. Written-offer-of-source obligation honored (§3.6.2). |
+| **FFmpeg component libs** (`libmp3lame` LGPL-2.0-or-later; `libvorbis`/`libogg`/`libopus`/`libvpx` BSD-3-Clause) | per-component (see §3.1 row 2a / §3.7.2) | **NO — linked into the GPL FFmpeg binary** | reached only through the FFmpeg binary (separate invoked process); never linked into the MIT core. **libmp3lame is LGPL**, so its §6 relink obligation rides along — subsumed by FFmpeg's GPL corresponding-source + written offer (§3.6.2), and each ships its own §3.7.2 SBOM row (release-blocking if absent). **libvpx is the VP9/WEBM-target encoder** and carries its `PATENTS` grant alongside the BSD-3 text, mirroring the x264/libaom patent-text rows. |
 | **LibreOffice** | MPL-2.0 | **NO — separate sidecar** | invoked `soffice` process; MPL is weak/file-level anyway, but isolation is belt-and-suspenders + the SSOT policy |
 | **poppler**, **pandoc** | GPL | **NO — separate exe** | invoked child processes |
 | **Ghostscript** | **AGPL-3.0** | **NOT shipped v1 [DECIDED]** | dropped (§3.1) so no AGPL surface ships; `[DEFER: re-add only if §6.5 corpus shows GS-salvageable PDFs]` |
@@ -1472,6 +1487,33 @@ gate is **§6.3**. This section produces the *data* those consume.
    §6.1.3/§6.3.3 build assertion verifies the staged `COPYRIGHT` actually contains the
    **BSD-2-Clause** text and **fails the build** if a GPL leg slipped in — so the SPDX
    id in `engines.lock` is corroborated by the shipped text, not trusted blindly).
+   - **FFmpeg external component libraries — each gets its OWN row `[DECIDED]`.** v1 ships
+     FFmpeg's encoder/codec dependencies as **separate shared objects staged beside the
+     FFmpeg exe** (the §3.9.1 dynamic-beside-the-exe v1 preference), so each is a distinct
+     staged binary and **§3.7.3 requires its own `engines.lock`/SBOM row** (a staged `.so`
+     with no manifest row is release-blocking). The required rows:
+     - **libmp3lame** — SPDX **`LGPL-2.0-or-later`** (the LAME library; the lame *frontend*
+       differs but only the library ships). Being **LGPL**, it ALSO triggers the §6.1.3
+       carve-out-(i)/§3.6.2 **relinkability/written-offer obligation** for an LGPL component
+       linked into the GPL FFmpeg binary — honoured the same way as the FFmpeg GPL
+       corresponding-source (the GPL's corresponding-source subsumes LGPL §6, but the row +
+       offer must exist). Used by the MP3 encode path (`-c:a libmp3lame`, §3.5.1 / audio.md).
+     - **libvorbis** — SPDX **`BSD-3-Clause`** (Xiph Vorbis encoder, `-c:a libvorbis`).
+     - **libogg** — SPDX **`BSD-3-Clause`** (Ogg container/bitstream framing for Vorbis/Opus
+       in `.ogg`).
+     - **libopus** — SPDX **`BSD-3-Clause`** (Opus encoder, `-c:a libopus`).
+     - **libvpx** — SPDX **`BSD-3-Clause`** **plus its `PATENTS` grant** (carried in
+       `THIRD-PARTY-LICENSES.txt` alongside the BSD-3 text, mirroring the libaom/x264
+       patent-text treatment): the **VP9 encoder for the WEBM target** (`-c:v libvpx-vp9`,
+       §3.5.1 / video.md). libvpx is also added to the §3.1 inventory + §3.6.1 aggregation
+       table as the WEBM-target encoder.
+     **If FFmpeg is instead built statically (§6.1.3 carve-out iii)** so these libs are
+     subsumed into the single GPL FFmpeg binary, the static build's GPL corresponding-source
+     covers them and they need no *separate-staged-binary* row — but their SBOM rows still
+     exist as sub-components of the FFmpeg build (CycloneDX nested components). **v1's stated
+     preference is dynamic-beside-the-exe (§3.9.1), so the separate-staged rows above are the
+     v1 path**; the §6.3.3 manifest-completeness gate is satisfiable either way, never both
+     implied.
    The §6.3.3 attribution-completeness gate fails if any shipped component lacks a row,
    so these must be enumerated or the release blocks.
 5. `tauri build` includes both as resources (§3.3.1).

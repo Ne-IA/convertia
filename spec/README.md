@@ -58,6 +58,93 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 > empirical number/validation remains; `[OPEN]` = a genuine unresolved owner-level
 > call. After this pass the vast majority are decided or deferred.
 
+#### Resolved in the third synthesis-fix pass (13 blockers + sound SHOULDs) `[DECIDED]`
+- **§1.1 macOS entry-point no longer cites `on_open_url` `[DECIDED]`** — the §1.1 entry-point
+  table macOS row dropped the stale "(and/or `tauri-plugin-deep-link`'s `on_open_url`)" and
+  now states `RunEvent::Opened` is the **SOLE** macOS file-open mechanism, routed through the
+  §7.8.1 `forward_launch_intake` refuse-busy funnel — matching §7.3.2/§7.8.1. Owner: §1.1.
+- **§0.10 per-command-ACL caveat added `[DECIDED]`** — the "own commands need NO per-command
+  capability entry" comment now carries the load-bearing precondition: true ONLY under the
+  Tauri v2 DEFAULT config (no `AppManifest::commands` opt-in in build.rs); v1 keeps the
+  default. Applied to §0.10 AND the README §0.10 entry. Owner: §0.10.
+- **`ScanProgress` specta-feature precondition + `CollectingId` derive `[DECIDED]`** —
+  `ScanProgress`'s note now states typed `Channel<T>` needs the `specta` feature on the tauri
+  crate (via tauri-specta `features=["specta"]`); `CollectingId(Uuid)` gained
+  `#[derive(Clone, Copy, Serialize, Deserialize, specta::Type)]` (it crosses IPC as a C1/C13
+  arg) so the §0.4.5 drift check no longer emits `any`. Owner: §0.6.
+- **§2.7.2 C4 probe is pre-RunId `[DECIDED]`** — the writability probe runs at C4 (before the
+  C6 RunId mint), so it uses `.convertia-<InstanceId>-probe-<rand>.part` (InstanceId only) and
+  §2.6.3 reclaims it via **InstanceId liveness**, not a non-existent `run-<RunId>/.lock`.
+  Owner: §2.7.2 / §2.6.3.
+- **§2.6.2 run-end cleanup own-prefix-scoped `[DECIDED]`** — the "Run end" row no longer uses
+  a bare `*.part` glob (which could delete a concurrent foreign instance's live temp in a
+  shared `final_dir`); it removes only `.convertia-<thisInstanceId>-<thisRunId>-*.part` and
+  applies the §2.6.3 held-lock guard to any non-matching `.convertia-*.part`. Owner: §2.6.2.
+- **§1.7 line-reader vs ffprobe-buffered reconciled `[DECIDED]`** — the §1.7 opening now
+  qualifies stdout handling per `ProgressModel`: line-by-line for streaming models
+  (FfmpegKeyValue/VipsStdout/InProcessFraction), buffered-and-JSON-parsed for the
+  CoarseSpawnDone ffprobe probe (no line reader). Owner: §1.7.
+- **§1.9 batch construction projects pre-flight skips `[DECIDED]`** — a new §1.9 Queue-semantics
+  bullet states that at C6 the orchestrator materialises a `Skipped(reason)` ConversionJob for
+  every `CollectedSet::Single.skipped` item (no queue entry, no Channel events, terminal at
+  construction) so §1.12 projects them into `RunResult.items`. Owner: §1.9.
+- **FFmpeg external-component SBOM rows added `[DECIDED]`** — see the dedicated entry below.
+- **§6.7.1 Lane A renumbered `[DECIDED]`** — duplicate step 3/3a/3a'/3b cleaned to a clean
+  sequence 1..6 (lint, type-drift, unit+property+fault, corpus bijection, defaults-registry,
+  a11y, compile-sanity, audit/deny). Owner: §6.7.1.
+- **§05 state-machine contradictions fixed `[DECIDED]`** — (1) state-10 focus lands on the
+  Dismiss button (heading announced via `aria-live=assertive`, `tabindex=-1`, not focused) in
+  §5.6.1/§5.6/§5.3; (2) §5.3 BusyNotice trigger now explicitly the defence-in-depth path only
+  (primary busy signal = window re-focus, §5.8/§7.8.1); (3) §5.4 per-state drop table gained a
+  state-9/10 row (re-drop → Collecting). Owner: §5.3 / §5.4 / §5.6.1.
+- **Summary keyboard parity `[DECIDED]`** — §5.10 makes the deliberate two-step
+  Ctrl/⌘+N→Ctrl/⌘+O the Summary keyboard equivalent (Summary renders no DropZone, so no
+  single-chord picker), explicitly satisfying the SSOT three-input-paths equivalence. Owner: §5.10.
+- **§6.5.3 release-note-item home + §6.4.5 image-corpus floor concretised `[DECIDED]`** —
+  §6.5.3 now defines the structured release-note item (home `docs/demoted-pairs.md` + CHANGELOG
+  mirror, required fields, §6.8 completeness tie-in) so §6.10 rows 16/17 are non-stub; §6.4.5
+  added a `real-image` content floor (≥1 HEIC/AVIF/SVG/multi-size-ICO/PNG-with-alpha). Owner:
+  §6.5.3 / §6.4.5.
+- **§5.9 About single enumeration + §5.7 idle-reassurance string key `[DECIDED]`** — §5.9 lists
+  the 9 mandatory About items in one render checklist; the §5.7 offline/privacy line is pinned
+  as `idle_reassurance` (fixed `strings/ui.ts` text) for the §6.10 drift check. Owner: §5.9 / §5.7.
+- **`MD→PDF` lossy classification `[DECIDED]`** — resolved to **reflow-lossy `✓★~`
+  (`doc_pdf_reflow`)**, matching every other word-processor `→PDF-via-LO` path (DOCX/DOC/ODT/
+  RTF/HTML→PDF) since LO lays Markdown out with font-substitution/reflow; the earlier
+  "faithful" classification (which conflated it with the structureless TXT→PDF case) is
+  corrected across documents.md (matrix row, per-format table, lossy lists, chain table) and
+  the §2.9 `doc_pdf_reflow` catalog source list. Owner: documents.md / §2.9.
+- **`VIPS_BLOCK_UNTRUSTED` for non-SVG libvips loaders `[DECIDED]`** — **set in the image-worker
+  env as defence-in-depth** (whitelisted, distinct from the stripped `LD_*`/`DYLD_*` vars) for
+  tiffload/pngload/etc., but **explicitly NOT load-bearing**: the load-bearing T1 control is the
+  separate image-worker process boundary; the SVG path calls librsvg directly and does not rely
+  on it. Owner: §3.5.5.
+- **Per-volume free-space surfacing `[DECIDED v1 scope]`** — v1 surfaces only the BOOLEAN
+  verdict + AGGREGATE totals in `PreflightVerdict` (cannot name the short volume in the
+  doomed-USB case); a per-volume breakdown is `[DEFER: post-v1]`. Owner: §0.6 / §1.10.
+- **T2 coverage + WebRTC residual `[DECIDED]`** — added a **T2c** threat row naming the
+  `store:default` + `log:default` WebView write surface (bounded to config dir, no user-file
+  contents, store-name cannot traverse out); softened the WebRTC accepted-residual to "worst
+  case = path STRINGS + conversion METADATA, NOT file bytes". Owner: §0.11.
+- **SHOULD-level alignment (this pass) `[DECIDED]`** — §7.2.3 presence loop uses BARE runtime
+  names (+`.exe` on Windows, not target-triple-suffixed); §7.2.3 `soffice` magic is
+  platform-conditional (Linux shebang wrapper, macOS Mach-O); §7.2.4 canonical `QuarantinedByOs`
+  message names the specific sidecar + §6.2.4 Sequoia final-confirm step; §6.7.3 macOS offline
+  gate runs the synthetic-argv smoke (not WebDriver) under `pf`+sudo with a §6.10-row-5 WKWebView
+  acknowledged-gap, Linux `unshare --net` preflight + Docker `--network=none` note; §6.7.2 macOS
+  Lane-B trigger loosened to "two consecutive >180min OR single >240min"; §0.6
+  `CollectedSet::Single.count` construction-time invariant; `MixedDrop` regrouped out of the
+  §2.13 app://fault comment group (its own pre-flight/mirror-only group) in §0.4.3 + §2.8;
+  §0.9 libvips per-worker thread oversubscription lever [DEFER: profile]; §1.8 C5-revalidate vs
+  C6-OutputPlan-recompute split; §1.11 video probe-phase progress tick (0.0→0.05); §2.1.1 step 6
+  link+unlink dir-fsync; §2.14.3 cross-volume single-copy retry; §2.6.3 startup-sweep
+  all-instance glob + held-lock-sole-gate + create-then-not-yet-locked grace window; §6.4.6
+  AppImage dynamic binary-name + `rm -rf squashfs-root/`; §1.7 InProcessNative
+  wedged-uninterruptible-read caveat (bounded pool, timeout→Failed, run continues); §6.5.3 heading
+  fix; images/audio LossyKind citations (`image_palette`/`image_lossy_codec`), libmp3lame SPDX
+  `LGPL-2.0-or-later`, extract-audio OGG=Ogg/Vorbis-distinct-from-Opus; §1.5 video-normalize as
+  the sole v1 diagonal. Owners as noted per section.
+
 #### Resolved in the second synthesis-fix pass (6 blockers + sound SHOULDs) `[DECIDED]`
 - **FFmpeg static-vs-dynamic linkage `[DECIDED]`** — the §3.6.1/§3.9.1 "a static FFmpeg
   would FAIL the §6.1.3 dynamic-link assertion" claim contradicted §6.1.3 carve-out **iii**
@@ -66,6 +153,16 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   carve-out iii: FFmpeg may be static OR dynamic; v1 ships dynamic-beside-the-exe as an
   **engineering preference**, not a licence-mandated rule; the LGPL dynamic-link assertion
   applies ONLY to LGPL linked into the MIT core (carve-out i). Owner: §6.1.3 / §3.6.1 / §3.9.1.
+- **FFmpeg external-component SBOM rows `[DECIDED]` (this pass)** — the §3.7.2 enumeration
+  lacked rows for the FFmpeg component shared objects, which §6.3.3 makes release-blocking
+  (a staged `.so` with no manifest row fails). Added explicit `engines.lock`/SBOM rows:
+  **libmp3lame** (`LGPL-2.0-or-later` — also triggers the carve-out-(i)/§3.6.2 relink+offer
+  obligation), **libvorbis / libogg / libopus / libvpx** (`BSD-3-Clause`; libvpx is the
+  VP9/WEBM-target encoder and carries its `PATENTS` grant text, mirroring x264/libaom).
+  Resolves the static-vs-dynamic OPEN at the SBOM level: v1 = dynamic-beside-the-exe with the
+  separate rows above; a static FFmpeg subsumes them under its GPL corresponding-source +
+  nested SBOM sub-components — **never both implied**. Owner: §3.7.2 / §3.1 row 2a / §3.6.1 /
+  §6.1.3 carve-outs i/iii.
 - **CSV/TSV in-process progress = `ProgressModel::InProcessFraction` + `mpsc::Sender<f32>`
   `[DECIDED]`** — the enum had only 3 variants (none covering the in-process self-reported
   fraction) and §1.7 named no IPC. Added a 4th variant; §1.7's `InProcessNative` sub-case now
@@ -87,7 +184,12 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   (PNG/WEBP/GIF/TIFF/HEIC/AVIF/ICO) is now `✓~` (matrix matched to its own alpha-flatten
   prose and the parallel JPG column); JPG→BMP stays `✓` (no alpha). Owner: images.md.
 - **image→GIF dither default `[DECIDED]`** — promoted the stale images.md `[DEFER]` to
-  `[DECIDED] bayer` (cgif's only mode; parallels the video→GIF `bayer:bayer_scale=5` default).
+  `[DECIDED] dither-on`. **Corrected this pass:** libvips `gifsave`'s `dither` is a single
+  float AMOUNT (0–1), NOT a mode selector — the cgif/libimagequant path applies ordered dither
+  with **no Floyd–Steinberg/error-diffusion MODE** and no `bayer_scale`-style param (the
+  earlier "bayer, cgif's only mode" phrasing was imprecise: there is no mode dropdown on this
+  path at all; the bayer-vs-sierra2_4a choice exists only on the FFmpeg video→GIF path).
+  Owner: images.md / cross-category.md [OPEN-D].
   Owner: images.md / cross-category.md [OPEN-D].
 - **libimagequant guard = lockfile pin, not soname `[DECIDED]`** — since the BSD v2.4.x fork
   is statically vendored in libvips' cgif path there is no runtime soname; the §6.1.3 guard is
@@ -257,7 +359,13 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   Rust-side §3.3.3); **no `dialog:allow-open`** (both C2 pickers open Rust-side via
   `DialogExt`); **no `opener:*`** (C9/C10 call `OpenerExt` internally); `log:default` +
   `store:default` only. Own `#[tauri::command]`s C1..C13 (incl. C2a/C2b) need **no per-command
-  permission entry** in Tauri v2 (only plugin commands do). Owner: §0.10.
+  permission entry** in Tauri v2 — **CAVEAT (verified vs Tauri v2 source
+  `webview/mod.rs` + `acl/mod.rs::has_app_manifest`):** a custom command needs ACL validation
+  only when (1) it is a plugin command, (2) the app defines its own APP ACL MANIFEST (`__app-acl__`,
+  the production-hardening opt-in), or (3) the request is from a REMOTE origin. v1 hits none
+  (no app ACL manifest defined = DEFAULT; WebView is local-only). So the no-entry claim is
+  correct as the implemented v1 path; **if a future build opts into the app ACL manifest, each
+  C1..C13 needs an `allow-<cmd>` entry or is silently denied.** Owner: §0.10.
 - **cancel-collect** — command-backed **C13 `cancel_ingest`** (ingest-scoped token);
   the §5.2 Collecting cancel control + §5.10 Esc back it. Owner: §0.4/§1.1/§5.
 - **HEIC/AVIF encode code-path** — standardise on libvips `heifsave` (one AV1 encoder,
@@ -874,9 +982,10 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **New DoD rows + property tests** — §6.10 row 21 (portable/no-system-pollution, Lane-B
   Procmon/strace post-launch assertion) + row 22 (≤400 MB compressed artifact gate, §6.7.2
   step); §6.4.2 macOS staged-source-copy crash-residue case; Xvfb `-nolisten tcp` in the
-  egress snippet; macOS Lane-B timeout ladder fires on a single >180-min run for the first two
-  releases; §6.6 screen-reader smoke pass (VoiceOver/NVDA/Orca). Owner: §6.10 / §6.4.2 / §6.7.2
-  / §6.7.3 / §6.6.
+  egress snippet; macOS Lane-B timeout ladder fires on **two consecutive >180-min runs OR a
+  single >240-min run** (loosened from the bare single->180 trigger to avoid runner-variability
+  false positives; 3-run-average rule stays post-v1); §6.6 screen-reader smoke pass
+  (VoiceOver/NVDA/Orca). Owner: §6.10 / §6.4.2 / §6.7.2 / §6.7.3 / §6.6.
 - **Guarantee tightenings** — §2.7 subtree dir-creation mechanism (create-only ancestors,
   full-final-dir link-safety, non-dir-collision fail); §2.6.3 startup-sweep liveness probe is a
   NON-BLOCKING try-lock (`flock LOCK_NB`/`F_SETLK`/`LockFileEx LOCKFILE_FAIL_IMMEDIATELY`);
@@ -904,12 +1013,17 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   (markup↔markup, `*→HTML --embed-resources`) run under `--sandbox` without needing a
   blocked on-disk data file; if one does, bundle it and pass it explicitly on argv (never
   drop `--sandbox`). Owner: §3.5.4.
-- **extract-audio target subset** (MP3★/M4A/WAV/FLAC/OGG; keep OGG?) and **"no audio
-  track" up-front probe** (disable-with-reason vs offer-then-fail). Owner:
-  cross-category [OPEN-A]/[OPEN-C].
-- **to-GIF option scope** (trim: hard-cap / Basic start+duration / Advanced) and
-  **default dither** (bayer-vs-sierra2_4a; bayer is the v1 default). Owner:
-  cross-category [OPEN-D]/[OPEN-E].
+- **extract-audio target subset `[DECIDED floor]`** — **minimum GUARANTEED subset = MP3★ +
+  WAV + FLAC** (always present → C3 for video sources derivable now; SSOT mov→mp3 in scope),
+  with **M4A + OGG as `[DEFER: corpus]`** on top (M4A pending §3.4 AAC confirmation; OGG
+  pending §6.6 OGG-keep). The floor is fixed; only which deferred targets ship is empirical.
+  **"no audio track" up-front probe** (disable-with-reason vs offer-then-fail) stays
+  `[DEFER: corpus]`. Owner: cross-category [OPEN-A]/[OPEN-C].
+- **to-GIF option scope** (trim: hard-cap / Basic start+duration / Advanced) stays
+  `[DEFER: corpus]`. **Default dither `[DECIDED]`:** video→GIF (FFmpeg) = `bayer:bayer_scale=5`
+  (a real mode choice exists on that path); image→GIF (cgif) = a single dither AMOUNT (no
+  mode selector — corrected this pass, libvips `gifsave` `dither` is a float, not a
+  bayer-vs-sierra2_4a choice). Owner: cross-category [OPEN-D]/[OPEN-E] / images.md.
 - **Video HEVC-source default `[DECIDED]`** — re-encode HEVC→H.264 by default (honours
   the SSOT mov→mp4 "plays everywhere" usability-floor; the §6.10 row-7 no-required-choices
   gate can verify it), with verbatim remux offered as an Advanced "keep original quality

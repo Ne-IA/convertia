@@ -143,9 +143,12 @@ build-time mechanics that realise them**:
     Any LGPL lib linked into the MIT core binary itself must be a **bundled shared object**
     (`.so`/`.dylib`/`.dll`) — a static LGPL link into the MIT core is a **build failure**
     (it would taint the MIT core; Rust links statically by default, so this is enforced).
-    The **external LGPL FFmpeg component libs** (`libmp3lame`/`libvorbis`/`libopus`)
-    dynamically linked *beside* the FFmpeg binary are verified present as shared objects
-    too (LGPL §6 relinkability beside the GPL exe).
+    The **external FFmpeg component libs** dynamically linked *beside* the FFmpeg binary
+    are verified present as shared objects too. **Only `libmp3lame` is LGPL** (so the §6
+    relinkability-beside-the-GPL-exe obligation applies to it); `libvorbis`/`libogg`/
+    `libopus`/`libvpx` are **BSD-3-Clause** (no relink obligation — present-as-shared-object
+    is for SBOM-completeness, not LGPL §6). Each has its own §3.7.2 row (release-blocking if
+    absent); `libvpx` is the VP9/WEBM-target encoder and carries its `PATENTS` text.
   - **(ii) LGPL inside the separate image-worker (libvips/libheif/libde265/librsvg) →
     static LGPL is acceptable AGGREGATION, but carries the LGPL §6 relink obligation.**
     The image-worker is its **own binary** (a separate process, §3.5.5), so a static LGPL
@@ -164,9 +167,12 @@ build-time mechanics that realise them**:
     not only the LGPL stack — the assertion checks the **pinned x265 source/offer is present**
     alongside the LGPL source, and fails the build if x265's source is missing.
   - **(iii) FFmpeg-internal static LGPL → aggregation, never fails the assertion.** A
-    static GPL FFmpeg with `libmp3lame`/`libvorbis`/`libopus` baked in is GPL-clean (GPL
-    permits static LGPL) and the whole binary is aggregation (§3.6.1), so it must not fail
-    the assertion for a non-licence reason.
+    static GPL FFmpeg with `libmp3lame` (LGPL) plus the BSD `libvorbis`/`libogg`/`libopus`/
+    `libvpx` baked in is GPL-clean (GPL permits static LGPL/BSD) and the whole binary is
+    aggregation (§3.6.1), so it must not fail the assertion for a non-licence reason. v1's
+    stated preference is dynamic-beside-the-exe (carve-out i path), so this carve-out covers
+    the static-FFmpeg alternative without leaving both implied (§3.7.2). Each component still
+    appears as a nested SBOM sub-component of the FFmpeg build.
 
   Summary: **shared-object / relinkable LGPL is required only where the lib is linked into
   the MIT core (carve-out i); the separate image-worker (ii) and FFmpeg (iii) are
@@ -439,7 +445,8 @@ normal user isn't surprised:
   on Sequoia the old Control-click "Open" shortcut **no longer works**. The page must
   spell out: (1) double-click → "ConvertIA can't be opened" → **Open System Settings →
   Privacy & Security**, scroll to the blocked-app notice, click **"Open Anyway"**, then
-  re-launch and confirm; (2) **each bundled tool (FFmpeg, LibreOffice, pandoc, etc.) is
+  **on the final confirmation dialog macOS shows, click "Open" to confirm** (the Sequoia flow
+  adds this extra confirm step after "Open Anyway"), then re-launch and confirm; (2) **each bundled tool (FFmpeg, LibreOffice, pandoc, etc.) is
   independently quarantined** — so the **first conversion** may also be blocked and the
   same Privacy & Security → "Open Anyway" step may be needed **per sidecar** the first
   time it runs. ConvertIA surfaces this in-app as the `QuarantinedByOs` message (§2.8 /
@@ -466,7 +473,7 @@ normal user isn't surprised:
   satisfying the §6.1.4 disclosure requirement with an enforcement home (and a §6.8
   README content item, below).
 
-### 6.2.5 Reproducible-build intent `[OPEN — best-effort, not a gate]`
+### 6.2.5 Reproducible-build intent `[DECIDED — best-effort, not a gate]`
 
 Full bit-for-bit reproducibility across the Rust+WebView+vendored-engine artifact
 is **hard** (timestamps, build-paths, per-runner toolchain drift, the prebuilt
@@ -919,7 +926,14 @@ any is absent) that the root `manifest.toml` contains **at least one `[[file]]` 
   Windows-1252) and ≥1 TXT in a non-UTF-8 encoding;
 - **`non-latin-tags`** — ≥1 **audio file with non-Latin ID3/Vorbis tag text**;
 - **`representative-av`** — ≥1 real **audio** and ≥1 real **video** clip (already implied
-  by the per-format rows; the lint makes the floor machine-checkable).
+  by the per-format rows; the lint makes the floor machine-checkable);
+- **`real-image`** (image floor `[DECIDED]`) — the bijection guard alone could pass §6.10
+  row 3 ("every pair works") on an all-synthetic / all-plain raster set, undercutting the SSOT
+  "real photos" clause, so the content floor **additionally** requires each of: **≥1 HEIC**
+  (real iPhone-class photo, the headline decode path), **≥1 AVIF**, **≥1 SVG** (the
+  librsvg/no-base-URL path), **≥1 multi-size ICO** (the ICONDIR-count / `magicksave` or
+  in-core-assembler path), and **≥1 PNG with an alpha channel** (the §2.9 `image_alpha_flatten`
+  source). A missing image-floor tag is a build failure exactly like the others.
 
 The required tag set is a fixed list in the lint; a missing tag is a **build failure**, so
 the content floor cannot silently regress. This is the machine-checkable backing for §6.10
@@ -951,7 +965,14 @@ per-platform driver facts `[DECIDED]`:** (a) **Linux:** `tauri:options.applicati
 point at the **extracted ELF binary, NOT the `.AppImage`** — the AppImage is a
 self-mounting wrapper WebDriver cannot launch as a process target, so CI first runs
 `./ConvertIA.AppImage --appimage-extract` (or `--appimage-extract-and-run`) and points
-`application` at **`squashfs-root/usr/bin/convertia`**. (b) **Windows:** the
+`application` at the extracted binary under `squashfs-root/usr/bin/`. **The binary name is
+resolved DYNAMICALLY, NOT hardcoded `[DECIDED]`:** the extracted binary name matches the
+**case-sensitive Tauri `productName`** (e.g. `ConvertIA`, not a hardcoded lowercase
+`convertia`), so CI **globs `squashfs-root/usr/bin/*`** (or reads `productName` from
+`tauri.conf.json`) to find the actual binary rather than assuming a lowercase name — a
+hardcoded `convertia` would not exist if `productName` is `ConvertIA`. **Cleanup:** after the
+E2E, CI runs **`rm -rf squashfs-root/`** so the extracted tree does not accumulate across runs
+or contaminate the artifact/disk-budget. (b) **Windows:** the
 **`msedgedriver` version MUST match the runner's installed WebView2/Edge runtime** (a
 mismatched msedgedriver fails to attach) — the CI step resolves the runner's WebView2 build
 and fetches the matching `msedgedriver`. Concrete pin + capabilities
@@ -1121,6 +1142,26 @@ silent omissions:
   **last resort**, requires a recorded rationale in the ledger, and is **never** a
   convenience cut. (SSOT.)
 
+**Concrete shape & home of a "release-note item" `[DECIDED]` (so rows 16/17 are non-stub).**
+A release-note item for a demoted or patent-gapped pair is **not** free-form prose; it is a
+structured entry with a fixed home and required fields, so Phase 3 has an exact anchor:
+- **Home:** a tracked `docs/demoted-pairs.md` table in the repo (the single canonical file),
+  **plus** a one-line summary mirrored into the release `CHANGELOG.md`/GitHub Release body for
+  that version. The §6.5.2 pair-status ledger is the machine-readable source; `docs/demoted-pairs.md`
+  is its human-readable, release-attached projection.
+- **Required fields (each row):** **(a)** the pair (`source → target`, e.g. `HEIC encode`/
+  `RTF → MD`); **(b)** the **kind** (`patent-gap-per-platform` (exception 1) | `reliability-
+  demotion` (exception 2)); **(c)** the **affected platform(s)** (all / Linux / macOS /
+  Windows); **(d)** the **reason** (one sentence — e.g. "no openly-redistributable HEVC
+  encoder ships on Linux", or the recorded reliability-failure rationale); **(e)** the
+  **ledger ref** (the §6.5.2 entry id) and, for exception 1, the §3.4 `engines.lock`
+  `available=false` row it derives from.
+- **CI tie-in `[DECIDED]`:** the §6.8 governance-completeness gate verifies that **every
+  ledger entry in state `unavailable-per-§3.4` or `demoted` has a matching `docs/demoted-pairs.md`
+  row** (and vice-versa — no orphan rows), so a silent omission **fails the release**. This is
+  what makes §6.10 rows 16/17 ("release-note item (§6.5.3)") a concrete, machine-checkable
+  gate rather than a stub.
+
 ### 6.5.4 Re-validation on engine bump
 
 When §3.8 bumps a bundled engine (best-effort currency), the **full reliability gate
@@ -1253,27 +1294,27 @@ for the OS-agnostic checks, fanning to the matrix only for compile-sanity:
    differ** (enforces the IPC contract + "no `any`").
 3. **Unit + property + fault-injection tests (§6.4.1/§6.4.2)** — Rust + Vitest;
    fast, engine-light, run on every PR.
-3a. **Corpus↔pair bijection guard (§6.4.3a):** `scripts/check-corpus-coverage.rs`
+4. **Corpus↔pair bijection guard (§6.4.3a):** `scripts/check-corpus-coverage.rs`
    (a `cargo run`/xtask Rust bin, §6.4.3a) asserts every §04 v1-required pair has ≥1
    backing corpus `covers` entry (and no stale couplings). Engine-free, fast — runs every
    PR so coverage gaps surface before the expensive Lane B corpus run.
-3a'. **Defaults-registry "no required choices" guard (§1.6) `[DECIDED]`:** an
+4a. **Defaults-registry "no required choices" guard (§1.6) `[DECIDED]`:** an
    engine-free xtask **generates the §1.6 consolidated `OptionDecl.default` index from the
    §04 tables** and **fails the build if any §04-offered `(source,target)` pair lacks a
    complete default option set** (every declared option must have a `default`). This is the
    single machine-checkable home of the SSOT *v1 DoD* "no required choices" gate (§6.10 row
    7); it runs every PR so a pair/option shipping without a default cannot merge. The
    generated index is the §1.6-owned artifact (values still owned by §04).
-3b. **Automated a11y assertions (§6.4.6a) — jsdom leg = ARIA/role + focus-order ONLY:**
+4b. **Automated a11y assertions (§6.4.6a) — jsdom leg = ARIA/role + focus-order ONLY:**
    `axe-core` via `vitest-axe` over the rendered React tree asserts **ARIA-role/state
    validity** and **focus-order / roving-tabindex sanity**. **The WCAG 2.1 AA contrast
    check does NOT run here** — axe-core under jsdom **cannot measure computed contrast**
    (jsdom applies no CSS/layout, §6.4.6a); contrast (both themes) runs on the live WebView
    via the **`@axe-core/webdriverio`** session in **Lane B** (§6.4.6a / §6.7.2). Engine-free,
    fast — runs every PR; any jsdom-leg violation fails the lane.
-4. **Compile-sanity on the matrix:** `cargo check` / a debug `tauri build` on all
+5. **Compile-sanity on the matrix:** `cargo check` / a debug `tauri build` on all
    three legs to catch platform-specific breakage early (no full corpus run here).
-5. **`cargo audit` / `cargo deny`** (advisory + licence policy, §6.3.4).
+6. **`cargo audit` / `cargo deny`** (advisory + licence policy, §6.3.4).
 Branch protection requires Lane A green before merge to `main` (matches the
 platform's branch-protection + auto-merge model).
 
@@ -1321,11 +1362,13 @@ blocking the next:
    escalation ladder is concrete (not ad-hoc) `[DECIDED]`:**
    1. **Initial macOS `timeout-minutes = 180`** (not 120) — give the LFS pull + 10×-cost leg
       real headroom from the start.
-   2. **Trigger to split `[DECIDED]`:** the **operative v1 trigger is a SINGLE macOS Lane-B
-      run exceeding 180 min** — actionable from run 1 (a 3-consecutive-run average is
-      unreachable at first ship, so it cannot be the v1 gate). The **3-consecutive-run
-      average > 150 min** rule is **post-v1 only** (a smoothing refinement once a release
-      history exists). On the single-run trigger,
+   2. **Trigger to split `[DECIDED]`:** the **operative v1 trigger is TWO CONSECUTIVE macOS
+      Lane-B runs each exceeding 180 min, OR a single run exceeding 240 min** — actionable from
+      run 2 / run 1 respectively, while a **one-off** slow or LFS-congested macOS run does
+      **not** permanently switch the leg to a subset corpus (which could hide a macOS-specific
+      failure). A bare single-run-over-180 trigger is too sensitive to runner variability, so it
+      is **not** the v1 gate. The **3-consecutive-run average > 150 min** rule is **post-v1
+      only** (a smoothing refinement once a release history exists). On the trigger firing,
       switch the macOS leg to a **representative macOS subset**:
       one video re-encode pair (the slowest engine), one office→PDF pair (the LibreOffice
       path), one image-worker pair, and the E2E smoke — **the §6.6 video/office smoke set** —
@@ -1409,6 +1452,16 @@ with **egress blocked** and **any outbound attempt fails the test**. Per-platfor
 - **Linux (Lane-B leg):** run the full E2E **inside a network namespace with egress
   blocked** — `unshare --net` (loopback only) or `iptables -A OUTPUT -j DROP` (allowing
   only the local WebDriver/IPC loopback). Any outbound packet aborts the run.
+  **Precondition `[DECIDED]`:** `unshare --net` requires **unprivileged user namespaces**
+  (`kernel.unprivileged_userns_clone=1` / `user.max_user_namespaces>0`), so the job runs a
+  **preflight `unshare --net true` assertion with a clear diagnostic** ("net-namespace
+  unavailable — enable unprivileged userns or run with `--cap-add NET_ADMIN`") and **fails
+  loud rather than silently skipping the isolation**. **If the VPS runner runs inside Docker**
+  (the §6.1.4 containerised path), unprivileged `unshare --net` may be denied by the default
+  seccomp/AppArmor profile — in that case the job MUST use **`--network=none`** on the
+  container **or** add **`--cap-add NET_ADMIN`** rather than relying on in-container `unshare`;
+  the §6.1.4 kernel-recording requirement is the cross-ref for which path the runner host
+  supports.
   **Composing the net-ns with the §6.4.6 `Xvfb` display (order-sensitive, pinned)
   `[DECIDED]`:** WebKitGTK needs a display, so the E2E must run under **both** `xvfb-run`
   **and** `unshare --net`. The **net-namespace wraps the entire `Xvfb`+E2E process**, and
@@ -1446,8 +1499,18 @@ with **egress blocked** and **any outbound attempt fails the test**. Per-platfor
   local WebDriver/IPC loopback. Getting the nesting backwards (xvfb-run outside the netns,
   or forgetting `ip link set lo up`) yields either no display or a half-isolated gate that
   silently passes — hence the pinned form above.
-- **macOS:** run under an **OS firewall egress-deny** profile (`pf` rule blocking
-  outbound to non-loopback) **plus** the §2.11.4 packet-monitor assertion.
+- **macOS `[DECIDED — what actually runs here]`:** macOS has **no `tauri-driver` WKWebView
+  driver** (§6.4.6), so the offline gate runs the **§6.4.6 synthetic-argv smoke test** (launch
+  + argv-driven conversion + window/output/exit-0 assertions) — **NOT** the WebDriver E2E flow
+  the Linux/Windows legs run — under a **`pf` outbound-deny** profile (`pf` anchor/rule blocking
+  outbound to non-loopback) **plus** the §2.11.4 packet-monitor assertion. **`pfctl` needs
+  `sudo`** to load the anchor; GitHub-hosted macOS runners have **passwordless sudo**, recorded
+  as a **§6.1.4 runner-image assumption** (if a future runner image drops passwordless sudo the
+  gate degrades to the packet-monitor alone). **Acknowledged gap (§6.10 row 5):** because the
+  macOS leg cannot drive the WebView, the **WebView CSP offline property on macOS is verified by
+  human walkthrough (§6.6) + static config inspection only**, NOT packet-monitored through a
+  driven WebView — the argv smoke test packet-asserts the *core/engine* egress, not the
+  WKWebView's; this is the one platform where the offline observability is not driver-monitored.
 - **Windows `[DECIDED — packet-monitor is the load-bearing gate here]`:** a blanket
   "Firewall outbound-deny rule for the app" is **fragile for a portable, unsigned exe at a
   random `TEMP` path** (no stable program identity / install path to scope a rule to). So
@@ -1506,7 +1569,12 @@ placeholder) **plus** a `grep` for one required key section per file (e.g.
 "no telemetry" statement; `TRADEMARK.md` → the name/logo carve-out; `CONTRIBUTING.md`
 → "inbound=outbound" / the quality-bar list; `CODE_OF_CONDUCT.md` → an enforcement
 contact). A missing/stub file **fails the Lane-B gate** (§6.7.2). This closes the gap
-that a governance doc could silently ship empty. **Authoring owner `[DECIDED]`:** the
+that a governance doc could silently ship empty. **The same gate also asserts the
+`docs/demoted-pairs.md` ↔ ledger consistency `[DECIDED]`** (§6.5.3): every §6.5.2 pair-status
+ledger entry in state `unavailable-per-§3.4` or `demoted` MUST have a matching
+`docs/demoted-pairs.md` row (required fields present, §6.5.3) **and vice-versa** (no orphan
+rows) — so a patent-gapped or demoted pair can never ship without its release-note item, making
+§6.10 rows 16/17 a concrete machine-checkable gate. **Authoring owner `[DECIDED]`:** the
 five governance docs are a **blocking Phase-3 authoring task owned by the project owner
 (the §6.6 "owner" — the developer)**; the Lane-B gate checks **existence + non-emptiness +
 the key-section grep**, NOT prose quality, so authoring the substantive content is an
@@ -1596,7 +1664,7 @@ promises has a technical home" is **verifiable**. Each gate is marked
 |---|---------------|-------------------|----------------------------|-------|
 | 1 | **Every sensible source→target pair works reliably on all 3 platforms** | §04 (pairs) · §1 (pipeline) · §3 (engines) | Reliability gate / pair-status ledger (§6.5); integration+corpus tests (§6.4.3–6.4.5) | **in-scope-gate** |
 | 2 | **"Reliably" = fail-clearly + no-harm on a real-world corpus** | §2.5 (no-harm) · §2.8 (fail-clearly) | Property/fault-injection (§6.4.2) + the corpus (§6.4.5) as precondition | **in-scope-gate** |
-| 3 | **The corpus exists (required v1 asset, non-circular gate)** | this file | `tests/corpus/` + `manifest.toml` (§6.4.5); the **corpus↔pair bijection guard (§6.4.3a)** fails CI if any §04 pair has no backing corpus file (or a `covers` entry names a non-existent pair); **plus the §6.4.5 minimum-content gate** — fails CI unless the manifest tags ≥1 CJK-body + ≥1 RTL-body Office doc, ≥1 non-ASCII-encoding CSV/TSV, ≥1 non-Latin-tag audio file, and representative A/V (so the corpus is content-complete, not just pair-complete) | **in-scope-gate** |
+| 3 | **The corpus exists (required v1 asset, non-circular gate)** | this file | `tests/corpus/` + `manifest.toml` (§6.4.5); the **corpus↔pair bijection guard (§6.4.3a)** fails CI if any §04 pair has no backing corpus file (or a `covers` entry names a non-existent pair); **plus the §6.4.5 minimum-content gate** — fails CI unless the manifest tags ≥1 CJK-body + ≥1 RTL-body Office doc, ≥1 non-ASCII-encoding CSV/TSV, ≥1 non-Latin-tag audio file, representative A/V, **and the image floor (≥1 HEIC, ≥1 AVIF, ≥1 SVG, ≥1 multi-size ICO, ≥1 PNG-with-alpha)** (so the corpus is content-complete, not just pair-complete, and not all-synthetic/all-plain images) | **in-scope-gate** |
 | 4 | **Everything runs fully offline (whole engine set bundled, no fetch)** | §3.3 (bundle-all) · §2.11 (offline invariant) | Bundling at build (§6.1.3); offline-observability E2E with egress blocked (§6.7.3); SBOM proves no runtime-fetch component | **in-scope-gate** |
 | 5 | **Offline guarantee observably true (no network at all)** | §2.11 | Network-egress-blocked E2E run asserts zero calls (§6.7.3 / §6.4.6) | **in-scope-gate** |
 | 6 | **Basic accessibility (keyboard path + readable contrast/sizes; **screen-reader path, SSOT Principle 10**; WCAG 2.1 AA per §5.6)** | §5.6 · §5.6.1 (SR contract) · §5.10 (shortcut map) | **Automated axe-core a11y assertions (§6.4.6a)** — **ARIA-role validity + focus-order run in Lane A (jsdom, §6.7.1)**; **WCAG 2.1 AA contrast (≥4.5:1 text, ≥3:1 large/UI, both themes) runs in Lane B on the `@axe-core/webdriverio` live-WebView session (§6.7.2)** — jsdom cannot compute contrast. **Text-size half (body copy ≥ `--text-base` = 16px, §5.5) is verified by the §6.6 human walkthrough** — axe-core does not measure font size (§6.4.6a). Plus the keyboard-only human walkthrough (§6.6) **and the §6.6 screen-reader smoke pass that walks the §5.6.1 SR contract** | **in-scope-gate** |

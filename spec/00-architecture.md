@@ -410,8 +410,13 @@ pub enum ErrorKind {
     Unreadable, Gone, PasswordProtected, NoAudioTrack, TooBig, OutOfDisk,
     WriteFailed, PathTooLong, TooManyCollisions, EngineCrash, EngineHang, EngineError,
     PlatformUnavailable, QuarantinedByOs, CleanupResidue, InternalError,
-    // run/app-level (§2.13):
-    MixedDrop, EngineMissing, WebviewFault, BundleDamaged,
+    // run/app-level (§2.13); surfaced via app://fault:
+    EngineMissing, WebviewFault, BundleDamaged,
+    // pre-flight (NOT carried as an IpcError; mirror-only for drift-lock — see note below).
+    //   MixedDrop has NO §2.13 producer: it is the CollectedSet::Mixed SUCCESS return from C1
+    //   (§0.6), driving the §5.2 MixedDropRefusal state 9. It lives here ONLY so the wire enum
+    //   stays byte-identical to the §2.8 catalog — do NOT search §2.13 for its producer.
+    MixedDrop,
 }
 ```
 
@@ -572,9 +577,16 @@ pub struct RunId(Uuid);        // one per start_conversion (§0.4 C6 / §7.1)
 pub struct CollectedSetId(Uuid);
 pub struct ItemId(u32);        // stable within a run
 pub type JobId = ItemId;       // §1.7/§1.8 say "JobId"; it IS the ItemId of the job's item
+#[derive(Clone, Copy, Serialize, Deserialize, specta::Type)] // crosses IPC as a C1 arg (frontend-
+                                          // generated, §0.4.1) AND C13 cancel_ingest arg → in
+                                          // collect_types![] or the §0.4.5 drift check emits `any`
 pub struct CollectingId(Uuid); // ingest-scoped cancellation handle, pre-RunId (§0.4 C13)
 #[derive(Clone, Serialize, specta::Type)] // Channel<ScanProgress> payload MUST derive specta::Type
-                                          // (in collect_types![]) or the C1 onScan payload is `any`
+                                          // (in collect_types![]) or the C1 onScan payload is `any`.
+                                          // PRECONDITION: typed Channel<T> serialisation requires the
+                                          // `specta` feature on the tauri crate (enabled transitively
+                                          // by tauri-specta's tauri dependency with features=["specta"]);
+                                          // without it Channel<ScanProgress> is opaque in bindings.ts.
 pub struct ScanProgress { pub scanned: u32 } // C1 onScan Channel payload (§0.4.2), throttled live count
 
 // ─── Intake & detection ─────────────────────────────────────────────────────
@@ -647,7 +659,14 @@ pub enum CollectedSet {
                                      //   never SUPPLIES a path to re-ingest); a frozen set's
                                      //   raw_path travelling back for display does not let the
                                      //   WebView feed an arbitrary path into a conversion.
-        count: usize,                // shown in the confirm gate (§1.4) — == items.len()
+        count: usize,                // shown in the confirm gate (§1.4). INVARIANT `[DECIDED]`:
+                                     //   count == items.len(), set ONCE at construction (the
+                                     //   §1.1 freeze) and NEVER mutated independently. Kept as a
+                                     //   separate field (not always derived) so a wire consumer
+                                     //   reading the confirm tally never has to walk the full
+                                     //   items Vec (a 10k-file batch); the §6 property-test
+                                     //   asserts count == items.len() so the duplication can
+                                     //   never silently drift.
         skipped: Vec<SkippedItem>,   // ineligibles dropped alongside the eligible set — the
                                      //   id-DISJOINT view over the same id space (their ItemIds
                                      //   never collide with eligible ones, §0.6 invariant 6);
@@ -907,6 +926,13 @@ pub struct PreflightVerdict {        // §1.10 (owner) summary surfaced before c
                                      //   (§1.10 / §1.11 fast-fail surfacing). So "preferably up
                                      //   front" = the per-volume whole-batch verdict here +
                                      //   per-item enforcement at the §2.1 write.
+    // v1 SURFACING SCOPE `[DECIDED]`: the check is computed PER-PHYSICAL-VOLUME (above), but
+    //   v1 surfaces only the BOOLEAN verdict (up_front_fail Some/None) + the AGGREGATE totals
+    //   (est_total_output_bytes / est_total_scratch_bytes) to §5.2 — it does NOT carry a
+    //   per-volume breakdown, so the UI cannot NAME the short volume in the doomed-1GB-USB
+    //   case (it says "won't fit", not "the USB is the one that's short"). A per-volume
+    //   breakdown (Vec<{ volume, free, needed }>) so §5.2 can name the short volume is
+    //   [DEFER: post-v1] — v1's boolean+aggregate is the SSOT "fails fast up front" floor.
 }
 
 pub struct DestinationResolved {     // C5 set_destination → revalidated destination
@@ -1253,6 +1279,16 @@ pool** governs how many engine processes run at once. **This number lives here;
   most cores. Net: video re-encode is effectively serial-ish on typical machines,
   by design — not a bug. (If profiling later shows oversubscription on
   many-core machines, capping `-threads` per process is the lever — recorded, not v1.)
+- **libvips internal threading (image-worker oversubscription) `[DEFER: profile]`.**
+  Analogous to the FFmpeg case: **libvips spawns its own internal thread pool per
+  image-worker process** (its `vips_concurrency` default ≈ core count). If the §0.9 image-core
+  pool runs **N** image workers concurrently, the effective thread count is
+  **N × libvips-threads**, which on a many-core machine can far exceed physical cores. v1 does
+  not cap this by default (a single image op finishing fast is usually the win), but if
+  profiling against the §6 corpus shows N-worker oversubscription, the levers are
+  **`VIPS_CONCURRENCY=1` per worker** (in the worker's whitelisted env, distinct from the
+  stripped `LD_*`/`DYLD_*` vars, §2.12.3) **or** lowering the image-worker global-degree cap.
+  Recorded as the lever, not a v1 commitment. Owner: §0.9 (co-ref §3.5.5).
 - **Timeout / hang policy parameters.** The pool carries the *parameters* (per-
   engine wall-clock timeout, hang detection via no-progress watchdog); the
   **mechanism** (how a timed-out/hung engine is killed and mapped to §2.8) is
@@ -1292,6 +1328,18 @@ need:
     //   covers the "main" window, it is invokable. Per-command permission entries are
     //   ONLY required for PLUGIN commands (dialog/log/store). So we add NO C1..C13
     //   allow-entries here (adding them would be redundant, not load-bearing).
+    // CAVEAT (load-bearing, verified vs Tauri v2 source `webview/mod.rs` +
+    //   `acl/mod.rs::has_app_manifest`): a custom (app-own) command requires ACL/capability
+    //   validation ONLY when one of: (1) it is a PLUGIN command, (2) the app has defined its
+    //   own APP ACL MANIFEST (the `__app-acl__` key — emitted when the app declares per-command
+    //   permissions for its own commands, the Tauri-encouraged production-hardening path,
+    //   wired via build.rs `tauri_build` app-manifest/commands), or (3) the request comes from
+    //   a REMOTE origin. v1 hits NONE: no app ACL manifest is defined (DEFAULT), and the
+    //   WebView is local-only (no remote origin, §0.10 CSP). So C1..C13 need NO per-command
+    //   entry HERE as the implemented v1 path. **If a future build opts INTO the app ACL
+    //   manifest, each C1..C13 then needs an `allow-<cmd-name>` entry or it is silently
+    //   DENIED** — do not add the opt-in without adding all C1..C13 allow-entries. (Remote
+    //   origin never applies: ConvertIA serves only the bundled local app.)
     // C2a pick_for_intake / C2b pick_destination: BOTH native pickers are opened
     //   RUST-SIDE via DialogExt from their handlers `[DECIDED]` — so there is **NO
     //   `dialog:allow-open` grant**. The INTAKE picker (C2a) funnels picked paths
@@ -1407,13 +1455,17 @@ no remote origins (reinforces "no network"):*
   that degrades silently to the cheap tier, **not** the load-bearing guarantee). The CSP
   is the observable WebView-side form of
   *Local/private/offline* (verified in §2.11 / §6.4); the §2.11.4 packet gate is the
-  load-bearing proof. **Accepted residual `[DECIDED]`:** the `webrtc 'block'` no-op on 2
+  load-bearing proof. **Accepted residual `[DECIDED]` (honest bound):** the `webrtc 'block'` no-op on 2
   of 3 WebView engines is an **explicitly-accepted residual** — even if a WKWebView/
-  WebKitGTK WebRTC channel could be opened, the WebView has **no filesystem/path access**
-  (no `asset:`, no `fs:` plugin, no path ever reaches it for the intake picker, §0.4.1
-  C2a), so it has **nothing local to exfiltrate**; the real bound is the **no-WebView-FS
-  model + §3.3.4 nothing-to-fetch + the §2.11.4 packet gate**, not the CSP directive. The
-  residual therefore costs nothing and is not chased with a per-engine workaround.
+  WebKitGTK WebRTC channel could be opened, the WebView has **no filesystem read access**
+  (no `asset:`, no `fs:` plugin, it cannot read **file bytes** from disk). It does, however,
+  hold **path STRINGS + conversion METADATA** — the §0.6 `DroppedItem.raw_path` basenames it
+  derives the BatchSummary preview from, the C2b destination `PathBuf`, and per-item
+  outcome/format data. So the **honest worst-case leak over an exotic WebRTC channel is
+  filenames/paths + conversion metadata, NOT file contents** (a far smaller surface than "the
+  disk"). The real bound is the **no-WebView-FS-read model + §3.3.4 nothing-to-fetch + the
+  §2.11.4 packet gate**, not the CSP directive; the residual is bounded to path/metadata
+  strings and is not chased with a per-engine workaround.
 - **No `asset:` protocol.** `asset:` is dropped from `img-src`/`media-src`: v1 renders
   **no** user file from disk in the WebView (there is no preview feature in §05), it
   would contradict the no-WebView-FS model, and the asset protocol would additionally
@@ -1468,6 +1520,7 @@ The `SECURITY` policy (§6.8) references this map.
 | T2 | **Malicious / compromised WebView content** | XSS-style injection or a supply-chained frontend dep tries to read the disk or call out | **§0.10** capability allowlist (no WebView `fs`, no network) + CSP (no remote origins, `object-src 'none'`) | covered |
 | T2a | **WebView steers writes to an attacker-chosen path** | A compromised WebView supplies an arbitrary `DestinationChoice::ChosenRoot(PathBuf)` to C5/C6 (the destination is WebView-held, with no server-side store — §0.4.1 C6) to write outputs somewhere unexpected | **§2.1** writes are always **non-destructive creates** (never overwrite) + **§2.3.3** write-target link-safety (a chosen destination that resolves onto / inside a frozen source is rejected and diverted) + **§2.7** divert rules. A chosen destination is honoured only as a *write* location: it **cannot harm an original** (no-clobber + link-safe) and **cannot read anything** — so an arbitrary writable ChosenRoot is bounded harm (a converted copy lands in an odd-but-writable folder), accepted in v1. The C2b destination picker is Rust-opened, but C5/C6 still accept a WebView-supplied `ChosenRoot` string; the no-harm machinery — not path provenance — is the bound. | covered |
 | T2b | **WebView re-submits an attacker-chosen SOURCE path** | On the idle launch/Open-with path the core emits `app://intake` carrying the full `Vec<PathBuf>` to the (untrusted) WebView, which echoes those paths back to **C1 `ingest_paths`** — a trust-boundary crossing (the WebView holds source paths it then re-submits). A compromised WebView could substitute an arbitrary readable path before re-submission. | **Accepted bounded harm (same posture as T2a).** The only harm a substituted source path can cause is "**convert an attacker-named readable file to an output beside it**" — it **cannot overwrite or harm any original** (§2.1 no-clobber + §2.3 link-safety bound the *write*) and produces only a converted copy. The bound is the **freeze-time §1.1 re-validation** (canonicalise / resolve-identity / existence / detection at the §2.4 freeze), **not** path provenance: every path C1 receives — regardless of whether it came from a native drop, the Rust picker, or a WebView `app://intake` echo — is re-validated at the freeze before any engine touches it. (The C2a **intake-picker** funnel keeps source paths Rust-side entirely; this T2b row covers only the launch-arg/`app://intake` echo, which is unavoidable because the OS hands the launch paths to the running instance and the idle UI drives C1.) | covered |
+| T2c | **WebView plugin-write surface (`store:default` + `log:default`)** | The WebView is granted `store:default` (the 3-key prefs blob, §7.4.2) and `log:default` (§7.5) — the ONE place it can cause a *write*, so the "no WebView fs" claim in T2 is not absolute and must be named or it is an orphan class | **Bounded to the OS config dir, no user-file contents, no exfil `[DECIDED]`.** The store writes only the 3 fixed prefs keys (`theme`/`lastDestinationMode`/`verboseLog`) and the log writes only diagnostic lines — **never user file CONTENTS**, never to an arbitrary path: both are confined to `app_config_dir()` (`~/.config/dev.ne-ia.convertia/…`). The store **name is a compiled-in constant** (the WebView supplies no store filename), so it **cannot traverse out of `config_dir`** via a `../`-style name in the pinned `tauri-plugin-store` version (a §6.1.3/§0.10 assertion confirms the plugin version cannot escape `config_dir`; if a future plugin version ever could, the prefs writes move Rust-side). The worst-case harm is corrupting the local prefs/log (a clean reset recovers), never reading or exfiltrating user data — so this write surface is bounded and named, not orphaned. | covered |
 | T3 | **Bundled-binary supply chain** | A tampered/backdoored engine binary ships in the build | **§3.8** engine pinning + **§6.2** integrity hashes + **§6.3** SBOM (every binary enumerated, verifiable). **Build-time** the pinned-checksum + SBOM gate catches a swapped engine; the trust anchor is the published **SHA256SUMS + minisign signature verified BEFORE first run (§6.2)**. **Runtime caveat:** the §7.2.3 startup check verifies engines against a hash manifest shipped **inside the same bundle**, so it detects **corruption/integrity** (truncation, AV-gutting, partial extract) but provides **no runtime tamper-resistance** — an attacker who can replace a binary can replace the in-bundle manifest too; runtime tamper detection is **out of scope** (unsigned portable build, SSOT). | covered (corruption/integrity only; runtime has no tamper-resistance — trust anchor is the §6.2 SHA256SUMS + minisign verified before first run) |
 | T4 | **Open-file launch of a fresh artifact** | C9 "open file" hands a just-written, possibly-still-untrusted output to an external app | **§7.7** open-file safety (reveal-in-folder, no auto-open, the artifact is *our* output not the untrusted source) + **§7.7.3** Rust-side `RunResult`-membership check (only a path that is a member of the current run's results may be opened). (Note: §0.10/§7.7.2 deliberately grant **no** `opener:*` path scope — beside-source outputs legitimately write outside `$DOWNLOAD`/`$DOCUMENT` — so the gate is the membership check, not a capability path-scope.) | covered |
 | T5 | **Core panic / app fault** | A Rust panic, WebView load failure, missing/corrupt engine at startup, damaged bundle | **§2.13** app-level fault model (`catch_unwind` worker boundary, no-stack-trace surfacing) + **§7.2** startup faults + **§0.3.1** WebView-absent handling | covered |
