@@ -58,8 +58,9 @@ require admin rights for the user to run.
 | **Linux x64** | `appimage` (**AppImage-only v1**) | **AppImage** — the portable, distro-agnostic, no-install, runs-anywhere artifact (matches SSOT portability best). | `.deb`/`.rpm` are distro-specific *installs* (system pollution). **`[DECIDED-6.1b]` AppImage-only for v1** (resolves the former `[OPEN-6.1b]`): the single canonical Linux artifact is the AppImage, consistent with the portable-first / no-system-pollution posture (same rationale as the Windows portable-zip `[DECIDED-6.1a]`); a `.deb` is **deferred to post-v1, by demand** `[DEFER: post-v1]`. |
 
 ARM Windows and ARM Linux are **out of v1** (SSOT platform scope = Win/macOS/Linux
-desktop; no commitment to every CPU arch). `[OPEN-6.1c]` Linux arm64 / Windows
-arm64 — deferred, low demand. The supported-OS floor (minimum Windows/macOS/distro
+desktop; no commitment to every CPU arch). **`[DECIDED-6.1c]` Linux arm64 / Windows
+arm64 are out of v1** (`[DEFER: post-v1]`, by demand — low demand; resolves the former
+`[OPEN-6.1c]`). The supported-OS floor (minimum Windows/macOS/distro
 versions, WebView availability) is **owned by §0.3.1** and referenced by the
 release notes; it is not re-decided here.
 
@@ -467,7 +468,9 @@ engine-currency "best-effort, not a gate" posture). Cheap measures we *do* take:
 pinned toolchains (§0.8), pinned engine versions+checksums (§3.8/§6.1.3),
 `SOURCE_DATE_EPOCH` where the toolchain honours it, and recording the exact
 toolchain/engine versions in the SBOM so a build is at least **auditable** even if
-not bit-reproducible. `[OPEN-6.2b]` how far to pursue determinism — deferred.
+not bit-reproducible. **`[DECIDED-6.2b]`** how far to pursue determinism — **best-effort,
+NOT a release gate** (the cheap measures above ship; deeper bit-reproducibility is
+`[DEFER: post-v1]`, not an owner-level design call).
 
 ---
 
@@ -829,7 +832,7 @@ Concrete required contents:
 
 **Video** (`tests/corpus/video/`) — short clips (a few seconds) to keep runtime sane:
 - **MP4 (H.264+AAC)** → the lossless-remux baseline; **MOV from iPhone (HEVC)** →
-  the §04 HEVC-default `[OPEN]` case; **MKV** with **multiple audio tracks + SRT +
+  the §04 HEVC-default `[DECIDED]` case (re-encode→H.264 by default); **MKV** with **multiple audio tracks + SRT +
   ASS + PGS subtitles + chapters + font attachments** (the keep/convert/drop policy);
   **WEBM (VP9+Opus, and a VP8 alpha clip)**; legacy **AVI (DivX+MP3)**, **WMV
   (VC-1+WMA)**, **FLV (H.264/AAC and old Sorenson)**, **MPG (interlaced MPEG-2 +
@@ -1453,9 +1456,10 @@ placeholder) **plus** a `grep` for one required key section per file (e.g.
 contact). A missing/stub file **fails the Lane-B gate** (§6.7.2). This closes the gap
 that a governance doc could silently ship empty.
 
-`[OPEN-6.8a]` whether to additionally adopt a `GOVERNANCE.md`/maintainer model doc
-for v1 — **(recommendation: defer; the seven files above satisfy the SSOT mandate;
-add governance docs only if the contributor base grows.)**
+**`[DECIDED-6.8a]`** (resolves the former `[OPEN-6.8a]`): a `GOVERNANCE.md`/maintainer
+model doc is **NOT adopted for v1** — the seven files above satisfy the SSOT mandate; a
+governance doc is added only if the contributor base grows (ConvertIA is a solo/hobby
+project, so no maintainer-model doc is warranted yet). `[DEFER: post-v1]` by demand.
 
 ---
 

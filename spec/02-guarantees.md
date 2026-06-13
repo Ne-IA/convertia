@@ -1623,9 +1623,9 @@ the privilege-drop tier is best-effort, degrading silently — see the callout):
 >   network/LFR guarantee rests on the always-on argv/build controls (§3.5/§6.1.3), not
 >   on this tier (§0.11 T9b). So Phase 3 has a clear floor (cheap tier, mandatory) and a
 >   clear best-effort target (privilege-drop tier, where achievable).
-> The **only residual `[OPEN]`** is the *precise per-OS privilege-drop profile contents*
-> (which exact syscalls/paths each profile allows) — a tuning detail, not a commitment
-> question; the tier model itself is `[DECIDED]`. Feeds §0.11 and §6.
+> The **only residual** is the *precise per-OS privilege-drop profile contents*
+> (which exact syscalls/paths each profile allows) — `[DEFER: tuning]`, a tuning detail,
+> not a commitment question; the tier model itself is `[DECIDED]`. Feeds §0.11 and §6.
 
 ### 2.12.4 Where detection runs relative to the boundary `[DECIDED]`
 
@@ -1953,8 +1953,8 @@ exclusive-publish. Callers (§2.1) never see the distinction.
 
 The scratch model means a conversion transiently needs **destination-volume free
 space ≈ output size** (publish temp) **plus** any kind-2 working space — and the two
-**may live on different physical volumes**. §1.10 (resource pre-flight, `[OPEN]` budgets)
-owns the up-front estimate and the "doomed for disk" fast-fail; §2.14 **supplies** the
+**may live on different physical volumes**. §1.10 (resource pre-flight, `[DEFER: corpus]`
+budget digits) owns the up-front estimate and the "doomed for disk" fast-fail; §2.14 **supplies** the
 model it estimates against. The free-space check is therefore **per PHYSICAL volume**, and
 the footprint is split by where each byte actually lands (§2.14.2):
 - **`est_output_bytes` + the kind-1 publish temp (`*.part`)** land on **each item's

@@ -21,8 +21,12 @@
 > About/OpenActions (§5.2/§5.3/§5.9).
 >
 > Decision tags: `[DECIDED]` fixed here/by SSOT · `[OPEN]` owner-level call (feeds
-> the README open-questions log) · `[REC]` an `[OPEN]` resolved here with a
-> recommended default · `[DEFER]` settled during implementation.
+> the README open-questions log) · `[REC]` a recommended default that, **per the owner's
+> standing mandate, is ADOPTED AS DECIDED** (sensible-default sections — instance/run
+> identity §7.1, sidecar verification §7.2.3, window model §7.3.1, persistence §7.4,
+> logging §7.5, OS shell-out §7.7, intake posture §7.8 — are all decided; the `[REC]`
+> marker is retained only to show the call originated as a recommendation) ·
+> `[DEFER]` settled during implementation. **No section in 07 is genuinely `[OPEN]`.**
 
 ---
 

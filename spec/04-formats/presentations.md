@@ -311,9 +311,9 @@ assume PowerPoint's fonts are installed. ConvertIA's policy:
 2. **Bundle a sensible base font set** with the LibreOffice sidecar so common
    decks render acceptably offline (the bundled-font inventory and whether to
    ship metric-compatible substitutes — e.g. Liberation/Carlito/Caladea for
-   Arial/Calibri/Cambria — is owned by §3.x bundling; **[OPEN-2]** below tracks
-   the exact list). Metric-compatible substitutes keep line breaks ⇒ much less
-   reflow than arbitrary fallback.
+   Arial/Calibri/Cambria — is owned by §3.x bundling; **[OPEN-2] `[DECIDED]`** below —
+   §3.9.3 baseline, only CJK breadth `[DEFER: size]`). Metric-compatible substitutes keep
+   line breaks ⇒ much less reflow than arbitrary fallback.
 3. **No runtime font download** (SSOT offline floor) — missing fonts are
    substituted from the bundle, never fetched.
 4. Font substitution is part of the →PDF / cross-family lossy disclosure (it is
@@ -323,8 +323,8 @@ assume PowerPoint's fonts are installed. ConvertIA's policy:
 
 - **Text content fidelity** (CJK, RTL/Arabic/Hebrew, mixed scripts) comes through
   intact (SSOT *Content fidelity*) **provided a glyph-bearing font is available**
-  — this re-emphasises the bundled-font set ([OPEN-2]) must cover at least Latin +
-  common CJK/RTL coverage, or those slides render with `.notdef` boxes. This is
+  — this re-emphasises the bundled-font set ([OPEN-2] `[DECIDED]`) must cover at least
+  Latin + common CJK/RTL coverage, or those slides render with `.notdef` boxes. This is
   the same constraint as `documents.md`.
 - **Colour:** slides are RGB; PDF export keeps RGB. No CMYK/colour-management
   decisions are exposed (out of scope for everyday presentations).
@@ -355,7 +355,7 @@ assume PowerPoint's fonts are installed. ConvertIA's policy:
   source never touched, write-to-temp + atomic rename, no-clobber numbering,
   per-location divert (§2.1/§2.2/§2.7). Nothing presentation-specific overrides it.
 
-### [OPEN] / Parked
+### Decisions / Parked (resolved)
 
 - **[OPEN-1] — RESOLVED (asymmetric): `ppt→pptx` is NOT a disclosed loss; `pptx→ppt` IS.**
   The two within-MS-family directions differ. **`ppt→pptx` (modernizing)** goes to a
@@ -365,18 +365,18 @@ assume PowerPoint's fonts are installed. ConvertIA's policy:
   the new **`pptx_to_ppt_legacy`** §2.9 note fires. The cross-model
   `office_roundtrip_approx` note still covers the ODF↔MS direction. (Corrects the earlier
   too-broad "within-MS is not-lossy" reading; no longer open, retained for traceability.)
-- **[OPEN-2] — Bundled font set for fidelity.** Exact list of fonts shipped with
-  the LibreOffice sidecar (metric-compatible MS substitutes + CJK/RTL coverage)
-  vs. binary-size budget (§3.9). This is *shared* with `documents.md` and
-  `spreadsheets.md` (same engine, same font dependence) and should be resolved
-  once, centrally, in §3.x bundling — recorded here because it is the dominant
-  fidelity lever for slides.
-- **[OPEN-3] — Notes-pages switch wording/placement.** Confirm the single Basic
-  switch label ("Include speaker-notes pages") and that it maps to
-  `ExportNotesPages=true` (notes **pages**, the full-page layout) rather than
-  `ExportNotes=true` (notes as PDF annotations). Leaning `ExportNotesPages` —
-  that is what users mean by "export with my notes". UI-string final form is a §5
-  concern.
+- **[OPEN-2] — Bundled font set for fidelity. `[DECIDED]` (resolved centrally).** The
+  font set shipped with the LibreOffice sidecar is the §3.9.3 baseline
+  (Liberation+Carlito+Caladea metric-compatible MS substitutes + a curated Noto CJK/RTL
+  subset), *shared* with `documents.md` and `spreadsheets.md` (same engine, same font
+  dependence) and owned once in §3.x bundling. Only the **CJK breadth** remains
+  `[DEFER: size]` against the binary-size budget (§3.9). Recorded here because fonts are
+  the dominant fidelity lever for slides.
+- **[OPEN-3] — Notes-pages switch. `[DECIDED]` → `ExportNotesPages=true`.** The single
+  Basic switch ("Include speaker-notes pages") maps to **`ExportNotesPages=true`** (notes
+  **pages**, the full-page layout) — NOT `ExportNotes=true` (notes as PDF annotations) —
+  because that is what users mean by "export with my notes". The exact UI-string final
+  form is a §5 concern (not a §04 design call), not an open question.
 - **[PARKED] — Slide → image fan-out** (one PNG/JPG per slide, into a named
   folder). This is a **one-to-many** conversion → out of v1 by the SSOT direction
   rule, parked under *Future Ideas (one-to-many fan-out)*. LibreOffice **can**

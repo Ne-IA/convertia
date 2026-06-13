@@ -206,8 +206,9 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   *source*, libvips can load APNG frames (`n=-1`); animation is **preserved only
   when the target also supports animation** (→ WEBP/GIF). For a still target the
   **first frame** is used (note surfaced like other animation-flatten cases). As a
-  *target*, vips writing APNG is limited — **[OPEN]** whether APNG *output* is
-  supported or animated sources →PNG collapse to first frame (see *Category-wide*).
+  *target*, vips writing APNG is limited — **`[DECIDED]`** animated sources → PNG
+  **collapse to the first frame** (APNG *output* not supported v1; see *Format-default
+  decisions* item 3).
   16-bit PNG preserved through 16-bit-capable targets (TIFF/PNG), down-converted
   to 8-bit for 8-bit targets. ICC + text chunks preserved.
 
@@ -462,8 +463,8 @@ redistributable HEVC encoder) flows from that matrix, not from this file.
   itself losslessly stored (PNG/BMP). ICO→PNG (largest frame) is **not** lossy.
 - **Edge cases:** **Transparency preserved** (ICO supports alpha via PNG/32-bit
   BMP entries). Non-square sources are letter-/pillar-boxed transparently or
-  centred — **[OPEN]** default: **pad to square with transparency** (don't crop,
-  don't distort) — flagged in *Category-wide*. CUR files declined (out of scope).
+  centred — **`[DECIDED]`** default: **pad to square with transparency** (don't crop,
+  don't distort) — see *Format-default decisions* item 5. CUR files declined (out of scope).
 
 ### SVG (source only)
 - **Detection:** text/XML — root `<svg` element (optionally after `<?xml …?>` /
@@ -551,13 +552,12 @@ open contradicts "it just works").
 - **Orientation:** always **baked** — the image is rotated to upright pixels and
   the EXIF `Orientation` tag reset to `1`, so no viewer can re-rotate it wrongly.
   This is the one metadata field we normalise rather than passthrough.
-- **[OPEN] — GPS/privacy:** should ConvertIA **strip GPS** (and other
-  location/serial EXIF) by default for privacy, given the SSOT privacy ethos? It is
-  a *local* tool (nothing uploaded), so stripping is not required for the offline
-  guarantee — but a user converting a photo to share may not expect GPS to ride
-  along. Candidate default: **preserve all** (faithful, least surprising for
-  archival) with an **Advanced "remove location/metadata" toggle**. Flagged for
-  decision; not silently resolved.
+- **`[DECIDED]` — GPS/privacy:** ConvertIA **preserves all** descriptive metadata
+  (incl. GPS/location EXIF) by default, with an **Advanced "remove location/metadata"
+  toggle**. It is a *local* tool (nothing uploaded), so stripping is not required for the
+  offline guarantee, and silent metadata loss is the bigger surprise for archival; a user
+  sharing a photo who wants GPS gone uses the explicit toggle. (See *Format-default
+  decisions* item 4.)
 
 ### Colour-profile (ICC) policy
 - **Default: preserve/embed** the source ICC profile into the output whenever the
@@ -566,8 +566,9 @@ open contradicts "it just works").
 - Wide-gamut (Display-P3, Adobe RGB) sources are **not force-converted to sRGB** in
   v1 (faithful passthrough); if a target/codec path cannot carry the profile, the
   pixels are converted into the embedded/working space so colours don't shift
-  visibly. **[OPEN]** whether to offer an Advanced "convert to sRGB for max
-  compatibility" — parked unless demand.
+  visibly. **`[DECIDED]`** an Advanced "convert to sRGB for max compatibility" toggle is
+  **NOT in v1** (`[DEFER: post-v1]`, by demand) — faithful wide-gamut passthrough is the
+  v1 default.
 - CMYK sources (JPEG/TIFF) are converted to RGB for RGB-only targets (with the
   source profile if present, else a default CMYK profile).
 
@@ -600,7 +601,7 @@ open contradicts "it just works").
   even very large rasters within bounded memory; a pathological synthetic size
   (e.g. tiny SVG asked to render at 50 000 px) is rejected up front, never OOMs.
 
-### [OPEN] items (genuine, not fake-resolved)
+### Format-default decisions (resolved; only the corpus-gated items remain `[DEFER: corpus]`)
 1. **HEIC/AVIF encode code-path — `[DECIDED]`: standardise on libvips `heifsave`.**
    *All* HEIC/AVIF *encoding* uses libvips `heifsave` (`compression=hevc` for HEIC
    via x265, `compression=av1` for AVIF via libheif's AV1 plugin → **libaom**). One
@@ -612,19 +613,24 @@ open contradicts "it just works").
 2. **§3.4 patent dispositions** (HEVC for HEIC; AV1 ship-posture for AVIF) per
    platform — **owned by §3.4**, referenced here. Per-platform HEIC availability
    (and any "unavailable on platform X" honest surfacing) flows from that table.
-3. **APNG output:** is animated-PNG *output* supported, or do animated sources →
-   PNG always collapse to first frame? (Animated PNG *input* is supported.)
-   Current lean: collapse to first frame for PNG; route "keep the animation" to
-   WEBP/GIF.
-4. **EXIF GPS / location stripping default** (privacy) — see Metadata policy.
-   Lean: preserve-all + Advanced strip toggle.
-5. **ICO non-square padding default** — pad-to-square-with-transparency (no crop /
-   no distort) vs centre-crop to square. Lean: pad with transparency.
+3. **APNG output — `[DECIDED]`: collapse to first frame for PNG.** Animated sources →
+   PNG collapse to the first frame; "keep the animation" routes to WEBP/GIF. (Animated
+   PNG *input* is supported.) Rationale: libvips APNG *write* is limited, and PNG is the
+   "single still image" everyday target — animation belongs on WEBP/GIF.
+4. **EXIF GPS / location stripping default — `[DECIDED]`: preserve-all + Advanced strip
+   toggle.** v1 preserves metadata (incl. GPS) by default and offers an Advanced
+   "strip location/metadata" toggle (see Metadata policy). Rationale: silent metadata
+   loss is the bigger surprise; stripping is an explicit, opt-in privacy action.
+5. **ICO non-square padding default — `[DECIDED]`: pad to square with transparency**
+   (no crop, no distort). Rationale: padding never discards image content, whereas
+   centre-crop silently drops pixels.
 6. **`heifsave effort` for HEIC encode** — integer 0–9 (libvips param; NOT a `preset`
    string). v1 default `effort 5` `[DECIDED]`; `[DEFER: corpus]` whether to lower to
    `effort 3` for batch speed (and whether the bundled libheif/x265 path measurably
    honours `effort` — libvips documents it as primarily an AV1 lever; the HEVC steer
    flows through libheif `speed = 9 - effort`). Revisit against batch timing (§3.8).
-7. **JPG default Q = 82 / WEBP default Q = 80 / HEIC&AVIF default Q = 60** — these
-   are reasoned everyday defaults above the bare-library defaults; confirm against
-   the real-photo corpus (SSOT *v1 DoD* reliability gate) before locking §1.6.
+7. **JPG default Q = 82 / WEBP default Q = 80 / HEIC&AVIF default Q = 60 —
+   `[DEFER: corpus]`.** These reasoned everyday defaults (above the bare-library
+   defaults) are the v1 starting values; the only residual is confirming them against
+   the real-photo corpus (SSOT *v1 DoD* reliability gate) before locking §1.6 — a
+   measured calibration, not an open design call.

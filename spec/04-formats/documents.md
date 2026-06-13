@@ -145,13 +145,13 @@ are the **concrete option lists and defaults** this file owns (§1.6).
   |---------|---------|--------------|-----------|
   | `SelectPdfVersion` | `0` (PDF 1.7, max compatibility) | `0`=PDF 1.7 (default; **no version restriction**), `1`=PDF/A-1b, `2`=PDF/A-2b, `3`=PDF/A-3b, `15`=PDF 1.5, `16`=PDF 1.6, `17`=PDF 1.7 (verified against the official LibreOffice `pdf_params` reference, LO `writer_pdf_Export`/`impress_pdf_Export` — `15/16/17` are **plain PDF versions, NOT PDF/A**; the PDF/A levels are `1/2/3`. The earlier `15/16/17`→PDF/A mapping was WRONG and would have silently emitted plain PDF instead of PDF/A) | no |
   | `UseTaggedPDF` | `true` (accessibility: structure/headings) | bool | no |
-  | `ReduceImageResolution` | `false` (preserve embedded image quality) | bool | no — see [OPEN] "compress PDF" |
+  | `ReduceImageResolution` | `false` (preserve embedded image quality) | bool | no — see "compress PDF" (`[DECIDED]` out of v1) |
   | `Quality` (JPEG) | `90` | 1–100 | no |
   | `ExportBookmarks` | `true` | bool | no |
   | Page range | all pages | — | no |
   No "Advanced options" panel ships for documents in v1 (SSOT: adding a setting is
   a scope change). The single candidate future toggle ("compress / smaller PDF")
-  is tracked in *Category-wide [OPEN]*.
+  is `[DECIDED]` out of v1 — tracked in *Category-wide* (`[DEFER: post-v1]`).
 - **Options (PDF as *source*, → TXT):** see the TXT entry.
 - **Lossy?:** As a **target**, `*→PDF` from word-processor sources is *reflow*
   lossy (→ §2.9 `doc_pdf_reflow`); from `TXT` it is faithful. As a
@@ -199,7 +199,7 @@ are the **concrete option lists and defaults** this file owns (§1.6).
   `--wrap=preserve`; `DOCX→HTML` uses `--embed-resources --standalone` (images
   inlined as data URIs so the single HTML file is portable — honors *content
   fidelity*); `DOCX→MD` writes GitHub-Flavored Markdown (`-t gfm`) with
-  `--extract-media` disabled in favor of referencing — `[OPEN]` image policy below.
+  `--extract-media` disabled in favor of referencing — `[DEFER: corpus]` image policy below.
 - **Lossy?:** `→PDF` reflow (§2.9 `doc_pdf_reflow`); `→TXT` (§2.9 `doc_to_text`),
   `→MD/RTF` (§2.9 `doc_simplified`) drop progressively more formatting. `→HTML`
   (§2.9 `doc_simplified`). `→DOC/ODT` near-lossless.
@@ -299,7 +299,7 @@ are the **concrete option lists and defaults** this file owns (§1.6).
   (RTF reader added to recent pandoc) for `RTF→TXT/MD/HTML`. **Fallback note:**
   pandoc's RTF reader has known gaps (super/subscript, complex tables); if it is
   judged unreliable on the corpus, ownership of `RTF→TXT/MD/HTML` falls back to
-  **LibreOffice's** markup export — `[OPEN]` recorded in *Category-wide*.
+  **LibreOffice's** markup export — `[DEFER: corpus]` recorded in *Category-wide* (item 2).
 - **Options/settings:** none surfaced.
 - **Lossy?:** `→PDF` reflow; markup simplification.
 - **Edge cases:** RTF embeds images as hex/encoded blobs — preserved into office
@@ -333,8 +333,8 @@ are the **concrete option lists and defaults** this file owns (§1.6).
   office` pandoc (reads input as plain/markdown, writes target).
 - **Options/settings:** **encoding on output is fixed to UTF-8** (with no BOM by
   default) — content-fidelity guarantee (§2.10). No surfaced switch in v1.
-  `[OPEN]` whether an "output encoding" advanced toggle is ever needed (parked —
-  UTF-8 is the right default for everyone).
+  `[DECIDED]` NOT in v1: an "output encoding" advanced toggle is not offered
+  (`[DEFER: post-v1]`) — UTF-8 is the right default for everyone.
 - **Lossy?:** `TXT→*` is **not** lossy (plain text has nothing to lose); only the
   *reverse* (`*→TXT`) is lossy.
 - **Edge cases:** **encoding** is the whole game — input charset is detected, and
@@ -467,9 +467,10 @@ path stay *drop → (PDF already highlighted) → convert* in two clicks (Princi
   single output file is self-contained — no sidecar asset folder, honoring the
   one-file→one-file model.
 - Into **TXT** and bare **MD**: images are dropped (TXT) or referenced, never
-  silently exported to loose files. **`[OPEN]`:** the exact `DOCX/ODT→MD` image
-  policy — inline as base64 data URIs vs reference vs drop. Leaning **drop with a
-  note** for MD (data-URI-bloated Markdown is ugly), but this needs a decision.
+  silently exported to loose files. **`[DEFER: corpus]`:** the exact `DOCX/ODT→MD` image
+  policy — inline as base64 data URIs vs reference vs drop — leans **drop with a
+  note** for MD (data-URI-bloated Markdown is ugly); the lean is fixed and only the
+  call is validated against real `.docx`/`.odt` corpus files (Category-wide item 4).
 
 ### Lossy disclosure (links to §2.9 — strings live there, not here)
 
@@ -524,6 +525,6 @@ nag.
    (lean) vs data-URI inline; resolve against real `.docx`/`.odt` corpus files.
 5. **Bundled font set — `[DECIDED]` baseline in §3.9.3** (Liberation+Carlito+Caladea
    + curated Noto CJK/RTL subset); only the CJK breadth is **[DEFER: size]**.
-6. **"Compress / smaller PDF" toggle — out of v1** (the one plausible future Advanced
-   option for `*→PDF`: `ReduceImageResolution`/`Quality`). Out by the "adding a
-   setting is a scope change" rule; recorded so it isn't lost. (Not open — parked.)
+6. **"Compress / smaller PDF" toggle — `[DECIDED]` out of v1** (the one plausible future
+   Advanced option for `*→PDF`: `ReduceImageResolution`/`Quality`). Out by the "adding a
+   setting is a scope change" rule; recorded so it isn't lost (`[DEFER: post-v1]`).

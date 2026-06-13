@@ -77,7 +77,8 @@ is intrinsic to the operation (to-GIF) — see each operation's entry below.
 Pull the audio track out of a video and save it as a standalone audio file.
 
 - **Role:** operation. **Source side:** any v1 video format. **Target side:** a
-  **subset of the audio category** (chosen below; exact subset is **[OPEN-A]**).
+  **subset of the audio category** (chosen below; exact subset is **[OPEN-A] `[DEFER: corpus]`** —
+  subset shape decided, only the OGG-keep call awaits §6.6 validation; see the table).
 - **Engine:** **FFmpeg** (the shared **GPL-2.0+** binary — enables libx264, §3.6.1;
   copyleft-isolated separate binary per §3.6, invoked via §3.5/§1.7, through the §2.12
   isolation wrapper). Single process per item. Same engine on Windows / macOS / Linux.
@@ -86,7 +87,7 @@ Pull the audio track out of a video and save it as a standalone audio file.
   the output file's own signature is the target audio format's (owned by
   [audio.md](audio.md)).
 
-### Target subset offered — proposal + `[OPEN-A]`
+### Target subset offered — proposal + `[OPEN-A]` `[DEFER: corpus]`
 
 The audio category has ten formats (MP3, WAV, FLAC, AAC, M4A, OGG, OPUS, WMA,
 AIFF, ALAC). Offering **all ten** as extract-audio targets fails the SSOT
@@ -111,8 +112,9 @@ patent one),
 (Windows-legacy, declining), **AIFF** (Apple-uncompressed — WAV covers the
 uncompressed want), **ALAC** (Apple-lossless — FLAC covers the lossless want).
 
-> **`[OPEN-A]` — final extract-audio target subset.** Proposal above is
-> **MP3 (default), M4A, WAV, FLAC, OGG**. Two genuine open decisions:
+> **`[OPEN-A]` `[DEFER: corpus]` — final extract-audio target subset.** Proposal above is
+> **MP3 (default), M4A, WAV, FLAC, OGG** — subset shape DECIDED; the only residual is an
+> empirical OGG-keep validation in §6.6 (see the table). Two sub-points:
 > 1. **AAC/M4A patent flag.** M4A output is AAC-encoded → an encoder choice with
 >    patent implications. If the bundled FFmpeg uses the **native FFmpeg AAC
 >    encoder** (built-in, no external libfdk-aac), the disposition still routes
@@ -222,9 +224,9 @@ lossy compression — the disclosure should not imply WAV/FLAC *improves* qualit
   engine error). **Better
   if cheaply knowable:** probe during detection/collected-summary so the
   extract-audio target is shown disabled-with-reason rather than offered-then-
-  failed — feasibility flagged **[OPEN-C]** (a full `ffprobe` of every item in a
-  large recursive batch has a cost; header-level stream-count is cheap). Never
-  writes a 0-byte audio file.
+  failed — feasibility flagged **[OPEN-C] `[DEFER: corpus]`** (a full `ffprobe` of every
+  item in a large recursive batch has a cost; header-level stream-count is cheap; validate
+  the cost/UX trade in §6.6 — see the table). Never writes a 0-byte audio file.
 - **Multiple audio tracks** (multilingual MKV, commentary track): **first track
   only** in v1 (deterministic). Per-track / all-tracks extraction is **parked**
   (would be a one-to-many fan-out → out of v1 by SSOT). The lossy/summary text
@@ -276,13 +278,13 @@ and §2.6 temp ownership):
 **v1-exposed** dither modes are `bayer` / `sierra2_4a` / `floyd_steinberg` / `none`
 (FFmpeg also accepts `sierra2` and `heckbert` — and `sierra3`/`burkes`/`atkinson` on
 6.0+ — which we deliberately do **not** expose in v1), and the v1 default is
-`bayer:bayer_scale=5` per [OPEN-D], matching §3.5.1.) Exact filter string
+`bayer:bayer_scale=5` per [OPEN-D] `[DECIDED]`, matching §3.5.1.) Exact filter string
 is constructed in §3.5; shown here to fix the **method**, not to own argument
 syntax. `lanczos` scaling and a per-clip optimised palette are
 what make the result look good; `fps` downsampling + width cap are what keep the
 file sane. `stats_mode=diff` weights the palette toward moving regions
 (better motion fidelity); `dither` choice trades dot-pattern visibility vs
-banding (**[OPEN-D]**).
+banding (**[OPEN-D] `[DECIDED]`** — default `bayer:bayer_scale=5`; see the table).
 
 > Single-pass `palettegen` in the same graph (no separate analysis pass writing a
 > PNG) is the chosen trade-off: marginally less optimal than a true two-pass
@@ -290,7 +292,7 @@ banding (**[OPEN-D]**).
 > call for an everyday converter. A second analysis pass is **not** worth the
 > temp-file + double-decode cost for v1.
 
-### Options / settings + defaults — scope is `[OPEN-E]`
+### Options / settings + defaults — scope is `[OPEN-E]` `[DEFER: corpus]`
 
 The honest open decision is **how many knobs to expose**. SSOT says expose only
 settings that materially change a normal user's result; for to-GIF, **fps**,
@@ -300,13 +302,13 @@ settings that materially change a normal user's result; for to-GIF, **fps**,
 |--------|-------|--------|---------------------------|
 | **FPS** | Basic (it visibly changes smoothness vs size) | presets *Smooth 15 / Standard 12 / Small 10* (or a 5–20 range, Advanced) | **12 fps** |
 | **Width** | Basic | presets *Large 640 / Medium 480 / Small 320* px (height auto, aspect kept, `-1`) | **480 px** |
-| **Trim (start + duration)** | **[OPEN-E]** — Basic or Advanced or omit-in-v1 | start `-ss`, duration `-t` | **whole clip, capped** (see guardrail) |
-| Dither | Advanced (rarely touched) | `bayer` / `sierra2_4a` / `floyd_steinberg` / `none` (the **v1-exposed subset**; FFmpeg `paletteuse` additionally supports `sierra2` and `heckbert`, not exposed in v1 — note this is FFmpeg, NOT the cgif `gifsave` path, so error-diffusion IS available here) | **`bayer:bayer_scale=5`** ([OPEN-D]) |
+| **Trim (start + duration)** | **[OPEN-E] `[DEFER: corpus]`** — leans Basic start+duration (validate §6.6) | start `-ss`, duration `-t` | **whole clip, capped** (see guardrail) |
+| Dither | Advanced (rarely touched) | `bayer` / `sierra2_4a` / `floyd_steinberg` / `none` (the **v1-exposed subset**; FFmpeg `paletteuse` additionally supports `sierra2` and `heckbert`, not exposed in v1 — note this is FFmpeg, NOT the cgif `gifsave` path, so error-diffusion IS available here) | **`bayer:bayer_scale=5`** ([OPEN-D] `[DECIDED]`) |
 | Loop | (none) | — | **infinite loop** (`-loop 0`, the GIF norm) |
 | Max colours | (not exposed) | — | **256** (full palette) |
 
-> **`[OPEN-E]` — trim scope.** A GIF of a 90-minute film is absurd; some way to
-> pick a short window is arguably essential to the operation's everyday value.
+> **`[OPEN-E]` `[DEFER: corpus]` — trim scope.** A GIF of a 90-minute film is absurd; some
+> way to pick a short window is arguably essential to the operation's everyday value.
 > Three candidate v1 positions:
 > 1. **No trim UI, hard duration cap** (simplest): always GIF-ify from the start
 >    up to the guardrail cap (below), e.g. first **10 s**. Predictable, zero
@@ -318,10 +320,10 @@ settings that materially change a normal user's result; for to-GIF, **fps**,
 > the owner. *Recommendation leaning option 2* (a trim window is most of why
 > people make GIFs), but explicitly deferred. Tracked in open-questions log.
 
-> **`[OPEN-D]` — default dither.** `bayer` (ordered, crosshatch but tiny files)
+> **`[OPEN-D]` `[DECIDED]` — default dither.** `bayer` (ordered, crosshatch but tiny files)
 > vs `sierra2_4a` (error-diffusion, smoother but larger, can "shimmer" between
-> frames). Pick one default; surface the other in Advanced. Default proposal
-> `bayer:bayer_scale=5` (favours small files — the everyday GIF priority).
+> frames). DECIDED: default `bayer:bayer_scale=5` (favours small files — the everyday GIF
+> priority); the error-diffusion modes remain available in Advanced.
 
 - **Sample rate / audio:** GIF has **no audio** — the audio track is dropped
   (intrinsic to the format, not a "loss" to disclose beyond the obvious). No
@@ -343,7 +345,7 @@ to the §1.10 resource pre-flight; §1.10 owns the threshold mechanics):
    per-pixel-per-frame heuristic for GIF). This is cheap (no decode needed — clip
    length + chosen fps/width are known).
 2. **Default duration cap** when no trim is chosen: encode at most **N seconds**
-   (proposal **N = 10 s** — see [OPEN-E]; the cap is *also* the guardrail's main
+   (proposal **N = 10 s** — see [OPEN-E] `[DEFER: corpus]`; the cap is *also* the guardrail's main
    lever). The cap is applied as `-t` in the same single invocation.
 3. **Fail-fast threshold:** if the estimate still exceeds the §1.10 "too big"
    ceiling (e.g. very high width + long allowed window), the item **fails clearly
@@ -355,11 +357,12 @@ to the §1.10 resource pre-flight; §1.10 owns the threshold mechanics):
    the clip, that's a predictable, disclosed outcome (passive note via §2.9
    `video_to_gif`), not a quiet surprise.
 
-> **`[OPEN-F]` — the cap & ceiling numbers.** The default duration cap (proposed
-> 10 s), the per-pixel heuristic constant, and the absolute "too big" ceiling are
-> **[OPEN]** and co-owned with §1.10 (resource pre-flight). They must be *some*
-> finite value in v1 — leaving the cap unset is not an option (it reintroduces
-> the foot-gun). Tracked in open-questions log.
+> **`[OPEN-F]` `[DEFER: corpus]` — the cap & ceiling numbers.** The default duration cap
+> (proposed 10 s), the per-pixel heuristic constant, and the absolute "too big" ceiling are
+> **`[DEFER: corpus]`** (finite starting values ship; calibrate against the §6 corpus) and
+> co-owned with §1.10 (resource pre-flight). They must be *some* finite value in v1 —
+> leaving the cap unset is not an option (it reintroduces the foot-gun). Tracked in the
+> open-questions log.
 
 ### Lossy?
 

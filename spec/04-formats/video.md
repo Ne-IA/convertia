@@ -202,8 +202,8 @@ differ and are spelled out per format.
 - **Engine(s):** FFmpeg. **As target:** video → **libvpx-vp9** (VP9), audio →
   **libopus** (Opus). VP8/Vorbis are legacy; VP9/Opus is the v1 WEBM output. (AV1 is
   intentionally **not** the WEBM-target codec in v1 — `libaom-av1` is far too slow
-  for an everyday desktop converter; `[OPEN]` revisit if SVT-AV1 bundling proves
-  fast enough.) **As source:** VP8/VP9/AV1 + Vorbis/Opus decode fine.
+  for an everyday desktop converter; `[DECIDED]` NOT in v1 — `[DEFER: post-v1]`, revisit
+  if SVT-AV1 bundling proves fast enough.) **As source:** VP8/VP9/AV1 + Vorbis/Opus decode fine.
 - **Options/settings:** WEBM-target re-encode uses **constant-quality** mode:
   `-c:v libvpx-vp9 -b:v 0 -crf 32 -row-mt 1` (CRF 32 = the "good for everyday web"
   default). **The libvpx-vp9 CRF range is `0–63`** (0 = best/largest, 63 =
@@ -212,7 +212,7 @@ differ and are spelled out per format.
   it maps the Smaller↔Better presets into the 15–35 recommended band (default 32) — the
   slider must not clamp the codec range to 15–35. Audio `-c:a libopus -b:a 96k`.
   **Single-pass** by default — two-pass is smaller but doubles runtime and is out of v1's
-  no-knobs default (an Advanced toggle is `[OPEN]`).
+  no-knobs default (an Advanced two-pass toggle is `[DECIDED]` NOT in v1 — `[DEFER: post-v1]`).
 - **Lossy?:** WEBM→MP4/MOV/M4V = re-encode (VP9→H.264) = **lossy** → §2.9.
   WEBM→MKV = remux VP9 verbatim (lossless). source→WEBM = **always lossy** (VP9/Opus
   re-encode) → §2.9.
@@ -312,8 +312,9 @@ differ and are spelled out per format.
 - **Lossy?:** re-encode to H.264/AAC = **lossy** → §2.9; →MKV remux lossless.
 - **Edge cases:** **Interlaced** MPEG-2 (DVD/broadcast) is common — ConvertIA applies
   **deinterlace (`yadif`) automatically** when the source is flagged interlaced so
-  the MP4 looks right on progressive screens (an `[OPEN]` default — see
-  *Category-wide*). Multi-program transport streams: ConvertIA takes the **first/best
+  the MP4 looks right on progressive screens (a `[DEFER: corpus]` default — design is
+  default-on for flagged-interlaced sources, only the call is corpus-confirmed; see
+  *Format-default decisions*). Multi-program transport streams: ConvertIA takes the **first/best
   program** (specialist multi-program demux is out of scope). AC-3 audio → AAC on
   re-encode.
 
@@ -473,13 +474,14 @@ defaults.
 
 - **Metadata** (title, creation time, GPS/maker tags) is **copied** where the target
   supports it (`-map_metadata 0`). Privacy note: ConvertIA is offline and does not
-  strip metadata by default — a "strip location/metadata" toggle is `[OPEN]` for a
-  future release, not v1.
+  strip metadata by default — a "strip location/metadata" toggle is `[DECIDED]` NOT in v1
+  (`[DEFER: post-v1]`; see *Format-default decisions*).
 - **Color** primaries / transfer / matrix and HDR (BT.2020/PQ/HLG) tags are
   **preserved on remux**. On an **HDR→H.264 re-encode** the tags are kept but x264
-  does not tone-map → an `[OPEN]` edge: HDR→SDR tone-mapping is *not* done in v1
-  (out — specialist); HDR sources re-encoded to MP4 keep HDR signalling, which most
-  everyday players handle. Flagged for the corpus.
+  does not tone-map → `[DECIDED]`: HDR→SDR tone-mapping is *not* done in v1
+  (out of scope — specialist); HDR sources re-encoded to MP4 keep HDR signalling, which most
+  everyday players handle. (The visual outcome on the corpus is a `[DEFER: corpus]` check,
+  not a design call.)
 
 ### Long-running progress, cancellation, very large files
 
@@ -515,9 +517,9 @@ visibly different quality, complicate the bundled-offline guarantee, and are a
 classic source of "works on my machine" failures — exactly what an everyday
 converter must avoid. Software-only keeps **one identical result on all three
 platforms** (SSOT *Cross-platform, one product*). Revisit as an opt-in Advanced
-acceleration later. `[OPEN]` (parked, low priority).
+acceleration later. `[DECIDED]` NOT in v1 — software-only (`[DEFER: post-v1]`, low priority).
 
-### [OPEN] items (genuinely undecided)
+### Format-default decisions (resolved; corpus-gated items remain `[DEFER: corpus]`)
 
 - **HEVC/H.265 default disposition `[DECIDED]` (re-encode to H.264).** When a source
   already holds **H.265** (common from iPhones), H.265 is *legal in MP4* so a lossless
@@ -534,21 +536,22 @@ acceleration later. `[OPEN]` (parked, low priority).
   availability per the §3.4 platform disposition. **Same disposition applies to AV1-in-MP4**
   (re-encode to H.264 by default; verbatim-keep is the Advanced toggle). The H.264 encode
   parameter values remain `[DEFER: corpus]` (numbers, not the remux-vs-reencode design).
-- **[OPEN] Auto-deinterlace default.** Auto-applying `yadif` to interlaced MPEG-2
-  sources is proposed as the everyday-correct default, but deinterlacing is a
-  judgement call (wrong field order looks worse). Confirm `yadif` (mode 0) as
-  default-on for flagged-interlaced sources, default-off otherwise.
-- **[OPEN] WEBM two-pass & AV1-as-WEBM-target.** v1 = single-pass VP9. Whether to
-  offer two-pass (smaller, ~2× time) as Advanced, and whether SVT-AV1 is fast enough
-  to ever be the WEBM target codec, are deferred.
-- **[OPEN] Metadata/location stripping toggle.** Default = preserve metadata
-  (`-map_metadata 0`). A privacy "strip location & metadata" Advanced toggle is a
-  candidate but not v1.
-- **[OPEN] MOV as an offered target at all.** MOV-as-target is included on the
-  assumption Mac users occasionally want it; if the corpus/usability walkthrough
-  shows no real demand (everyone wants MP4), MOV-as-target may be demoted to
-  source-only to shrink the matrix. Validate during the §9 usability floor.
-- **[OPEN] §3.4 dependency.** H.264/AAC encode availability per platform is owned by
+- **Auto-deinterlace default — `[DEFER: corpus]`.** The v1 design is `yadif` (mode 0)
+  **default-on for flagged-interlaced sources, default-off otherwise**; the only residual
+  is empirical — deinterlacing is a judgement call (wrong field order looks worse), so the
+  default-on call is confirmed against the §6 interlaced-MPEG-2 corpus, not re-designed.
+- **WEBM two-pass & AV1-as-WEBM-target — `[DECIDED]` NOT in v1.** v1 = **single-pass
+  VP9**. Two-pass (smaller, ~2× time) as an Advanced toggle and SVT-AV1 as a WEBM target
+  codec are both **`[DEFER: post-v1]`** (by demand / bundle-cost) — single-pass VP9 is the
+  v1 WEBM path.
+- **Metadata/location stripping toggle — `[DECIDED]`: preserve.** Default = **preserve
+  metadata** (`-map_metadata 0`); a privacy "strip location & metadata" Advanced toggle is
+  **NOT in v1** (`[DEFER: post-v1]`) — consistent with the images.md GPS decision.
+- **MOV as an offered target — `[DEFER: corpus]`.** MOV-as-target is included on the
+  assumption Mac users occasionally want it; the residual is empirical — if the
+  corpus/usability walkthrough (§9) shows no real demand (everyone wants MP4), MOV-as-target
+  is demoted to source-only to shrink the matrix. Validated during the §9 usability floor.
+- **§3.4 dependency.** H.264/AAC encode availability per platform is owned by
   §3.4. If §3.4 ever marks them unavailable on a platform, **MP4-as-target there
   must fall back** — but MP4 is *the default for every source*, so a platform
   without H.264/AAC encode would have **no default target**, which is a product

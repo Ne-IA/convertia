@@ -204,10 +204,16 @@ pub trait Engine: Send + Sync {
                         detail: "engine has no probe/encode two-phase plan".into() })
     }
 
-    /// How this engine reports progress so §1.11 can normalise it
-    /// (FFmpeg `-progress` k=v, LibreOffice = coarse/none, image-worker = libvips
-    /// eval-progress marshalled to stdout k=v across the worker process boundary, etc.).
-    fn progress_model(&self) -> ProgressModel;
+    // NO `progress_model()` trait method `[DECIDED]`. Progress is a PER-INVOCATION
+    // property, not a per-engine constant: the SAME video FFmpeg engine emits a probe
+    // `Invocation` with `progress: ProgressModel::CoarseSpawnDone` and an encode
+    // `Invocation` with `progress: ProgressModel::FfmpegKeyValue { duration_us }` — two
+    // different values for one engine, which a single static method cannot express. The
+    // §1.7 dispatch therefore reads the progress model from `Invocation.progress` (the
+    // field §1.7 already carries in its `EngineInvocation.plan`); §1.11 normalises THAT.
+    // (FFmpeg `-progress` k=v, LibreOffice coarse, image-worker libvips eval-progress
+    // marshalled to stdout k=v across the worker boundary — all set per-invocation on
+    // `Invocation.progress` by `plan()`/`plan_encode()`.)
 
     /// Map this engine's exit code + stderr into the §2.8 error taxonomy.
     /// Returns the §2.8-owned `ConversionErrorKind` (NOT a separate "FailureKind" —
@@ -374,10 +380,10 @@ fn select(src: SourceFmt, tgt: TargetFmt, plat: Platform) -> Option<EngineId>
   fallbacks (poppler's GS backstop *within* `PDF→TXT`) are an
   implementation detail of one engine, not a registry-level alternate, and do not
   violate single-engine-per-pair.
-- The few `04` `[OPEN]`s about *which* engine owns a pair (`MD→PDF` LO-vs-pandoc;
-  `RTF→markup` pandoc-vs-LO; "standardise all HEIC/AVIF encode on vips `heifsave`
-  vs standalone `heif`/`avif`") are **owned by their `04` files**, referenced here:
-  whichever they resolve to, it remains a *single* registry owner — the trait and
+- The few `04` engine-ownership items for a pair (`MD→PDF` LO-vs-pandoc `[DEFER: corpus]`;
+  `RTF→markup` pandoc-vs-LO `[DEFER: corpus]`; HEIC/AVIF encode standardised on vips
+  `heifsave` `[DECIDED]`) are **owned by their `04` files**, referenced here: whichever
+  way the deferred ones resolve, it remains a *single* registry owner — the trait and
   lookup are unaffected. They feed the README open-questions log via `04`.
 
 ---
@@ -957,7 +963,8 @@ conversion" is a **read-side** claim, not a write-side one).
   text subs); **re-encode** = `-c:v libx264 -crf 23 -preset medium -pix_fmt
   yuv420p` (H.264 family) or `-c:v libvpx-vp9 -b:v 0 -crf 32 -row-mt 1` (WEBM) +
   `-c:a aac -b:a 128k` / `-c:a libopus -b:a 96k`; `yadif` deinterlace when flagged
-  (`video.md` `[OPEN]`); rotation honored. **Mixed remux/re-encode in one
+  (`video.md` `[DEFER: corpus]` — default-on for flagged-interlaced); rotation honored.
+  **Mixed remux/re-encode in one
   invocation** (video may copy while audio transcodes) — still one process (§3.2).
 - **Cross-category (`cross-category.md`):** extract-audio = `-vn -map 0:a:0
   -c:a copy|<encoder>` (copy when codec matches container, else least-lossy
@@ -999,8 +1006,8 @@ conversion" is a **read-side** claim, not a write-side one).
     (spreadsheets.md owns the token semantics; this file owns assembling the
     comma-separated token string, e.g. field-sep=44/9, text-delim=34, charset
     token, "save cell contents as shown"=true / "export formulae"=false);
-  - DOC→markup (the LO-owned down-conversions, documents.md `[OPEN-2]`): `Text` /
-    `HTML (StarWriter)` / `Markdown`† (LO 26.2).
+  - DOC→markup (the LO-owned down-conversions — `[DECIDED]` LibreOffice, documents.md
+    item 2): `Text` / `HTML (StarWriter)` / `Markdown`† (LO 26.2).
 - **FilterData JSON** (PDF export options, e.g. `ExportNotesPages`,
   `SelectPdfVersion`, `UseTaggedPDF`, `Quality`) is passed inline:
   `pdf:impress_pdf_Export:{"ExportNotesPages":{"type":"boolean","value":"true"}}`
@@ -1087,8 +1094,8 @@ conversion" is a **read-side** claim, not a write-side one).
   stdin cleanly; `StdinPlan::PipeBytes`).
 - **Concrete opts (from `documents.md`):** `--wrap=preserve`; `*→HTML`
   `--standalone --embed-resources` (self-contained single file, images inlined);
-  `MD` read dialect `-f gfm`; `*→MD` `-t gfm`; `[OPEN]` image policy
-  (drop-with-note vs data-URI) owned by documents.md.
+  `MD` read dialect `-f gfm`; `*→MD` `-t gfm`; `[DEFER: corpus]` image policy
+  (leans drop-with-note vs data-URI) owned by documents.md.
 - **Reader limits honored (not re-decided):** pandoc **cannot** read legacy binary
   `.doc` and has gaps reading RTF → those down-conversions are **not** assigned to
   pandoc (documents.md reassigns them to LibreOffice); the registry (§3.2) never
@@ -1511,7 +1518,7 @@ effort is spent where it matters.
 | **FFmpeg + ffprobe** (GPL-2.0+ build, the listed codecs incl. x264/vpx) | **~30–80 MB** (two exes + their shared libs) | multimedia binary **with the LGPL component libs as dynamically-linked shared objects beside the exe** (NOT a static build — a static link would fail the §6.1.3 LGPL dynamic-link assertion, §3.6.1) | drop unused (de)muxers/filters via `--disable-everything --enable-…` to a curated list (the `04` codec set only) |
 | **libvips + image codec stack** (libheif/libde265/x265-plugin/aom/dav1d/librsvg/cgif + **required ImageMagick** delegate) | **~20–40 MB** | image lib + codecs (image-worker process) | exclude unneeded loaders; ImageMagick is **required** (BMP+ICO save) but trimmed to BMP/ICO/GIF delegates with **GPL optional delegates excluded** (§3.6.1) — it cannot be removed |
 | **poppler `pdftotext`** | **~5–15 MB** | PDF text extractor | small |
-| **pandoc** | **~80–220 MB** (version-dependent; pandoc 3.x) | Haskell static binary (notoriously large; the **GHC runtime dominates**, so stripping saves little) | a release/stripped build trims marginally. **pandoc CANNOT be dropped wholesale for v1** — it **owns the `DOCX/ODT/RTF → MD/HTML` markup pairs** that LibreOffice 26.2 Markdown export is **not validated for** (documents.md [OPEN-1]); dropping it would orphan those pairs. So this is at most a **post-v1 contingency** (re-evaluate once LO Markdown export is corpus-proven for those pairs), **not** a v1 trim knob. It is the **second-biggest single exe** after LibreOffice |
+| **pandoc** | **~80–220 MB** (version-dependent; pandoc 3.x) | Haskell static binary (notoriously large; the **GHC runtime dominates**, so stripping saves little) | a release/stripped build trims marginally. **pandoc CANNOT be dropped wholesale for v1** — it **owns the `DOCX/ODT/RTF → MD/HTML` markup pairs** that LibreOffice 26.2 Markdown export is **not validated for** (documents.md item 1/2 `[DEFER: corpus]`); dropping it would orphan those pairs. So this is at most a **post-v1 contingency** (re-evaluate once LO Markdown export is corpus-proven for those pairs), **not** a v1 trim knob. It is the **second-biggest single exe** after LibreOffice |
 | **Ghostscript** **[DECIDED: NOT shipped v1]** | **0 MB** (~30–60 MB if ever re-added) | PDF repair backstop — dropped (§3.1) | already dropped; this whole row is saved |
 | **ConvertIA Tauri app** (Rust core + WebView assets) | **~10–25 MB** | the app itself (Tauri's own footprint is small — the WebView is system-provided) | Tauri's whole point: tiny vs Electron |
 | **WebView runtime** | **0 MB bundled** | system WebView2/WKWebView/WebKitGTK (never bundled, never downloaded — §3.4.5/§0.3.1) | n/a |
@@ -1523,8 +1530,8 @@ effort is spent where it matters.
   trim level, (b) the **bundled-font breadth** (CJK is the swing factor — Latin-only
   would be tens of MB; full CJK+RTL pushes toward the top of the range), (c) pandoc
   (**kept for v1** — it owns the `DOCX/ODT/RTF → MD/HTML` pairs LO Markdown export is
-  unvalidated for, documents.md [OPEN-1]; dropping it is a **post-v1 contingency only**,
-  not a v1 trim lever), and
+  unvalidated for, documents.md item 1/2 `[DEFER: corpus]`; dropping it is a **post-v1
+  contingency only**, not a v1 trim lever), and
   (d) **Ghostscript** is **[DECIDED: dropped]** (saving ~30–60 MB; not in the total).
 - **LibreOffice + fonts + pandoc together are ~80–90% of the bundle.** Image and
   PDF-text tooling are minor. Trimming effort, if any is spent, belongs there.
@@ -1561,8 +1568,9 @@ effort is spent where it matters.
   trips, the lever order is fixed `[DECIDED]`:** (1) **trim the CJK font weights first**
   (§3.9.3 — the single biggest swing knob, SC-only vs all-CJK); (2) only then revisit other
   font/help trims; (3) **dropping pandoc stays BLOCKED** until LibreOffice Markdown export
-  is corpus-proven for the `DOCX/ODT/RTF → MD/HTML` pairs (documents.md [OPEN-1]) — it is a
-  post-v1 contingency, not a size lever to reach for. This ties the deferred digit to a
+  is corpus-proven for the `DOCX/ODT/RTF → MD/HTML` pairs (documents.md item 1/2
+  `[DEFER: corpus]`) — it is a post-v1 contingency, not a size lever to reach for. This
+  ties the deferred digit to a
   **decided remedy** rather than a silent build-gate failure.
 
 ### 3.9.3 Open size decisions (genuine)
@@ -1571,8 +1579,8 @@ effort is spent where it matters.
   Carlito + Caladea** (metric-compat Arial/Calibri/Cambria/Times/Courier) **+ a
   curated Noto subset: Noto Sans/Serif CJK-SC/TC/JP/KR "Regular" weights + Noto Sans
   Arabic/Hebrew**. This is the single biggest fidelity lever for documents/
-  spreadsheets/presentations (their font `[OPEN]`s — `documents.md` §5,
-  `presentations.md` [OPEN-2] — all resolve to this baseline). The **only residual is
+  spreadsheets/presentations (their font items — `documents.md` §5 `[DECIDED]`,
+  `presentations.md` [OPEN-2] `[DECIDED]` — all resolve to this baseline). The **only residual is
   the CJK weight count / SC-vs-all-CJK breadth**, a pure size knob: **[DEFER: tune
   CJK breadth against the §3.9 size measurement once the trimmed builds exist].** The
   *families* are fixed; only how many CJK weights ship is the deferred calibration.
@@ -1609,5 +1617,8 @@ effort is spent where it matters.
 > GPL & decode-only libde265 — strukturag/libheif, x265.org; LibreOffice headless
 > ~190 MB minimal–~400 MB — LibreOffice portable/headless distributions; Tauri v2
 > `externalBin`/`resources`/sidecar + capabilities — v2.tauri.app docs (verified
-> via Context7). These ground the §3.4 recommendations; the owner-level `[OPEN]`s
-> (HEVC-encode, font set) remain explicit calls, not closed by research.
+> via Context7). These ground the §3.4 recommendations; the former owner-level calls
+> (HEVC-encode ship-posture, font set) are now `[DECIDED]` — HEVC-encode
+> ship-bundled-isolated behind the §3.4 availability flag, font set the §3.9.3 baseline
+> (only CJK breadth `[DEFER: size]`) — design-closed, with the patent exposure recorded
+> as an honest grey area rather than an open design question.

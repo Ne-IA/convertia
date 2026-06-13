@@ -306,7 +306,7 @@ token string (see §3.5 for exact assembly).
 | **Output encoding** | *Advanced* | **UTF-8** (token 3 = **76**) | Override: UTF-8, UTF-16, **Windows-1252** (token 3 = 1), ISO-8859-1/-15. |
 | **Byte-order mark (BOM)** | *Advanced* | **off** for UTF-8 | On request only (token 14). UTF-8 without BOM is the portable default; a BOM is offered for users feeding Excel-on-Windows that mis-reads UTF-8. |
 | **Cell content** | *Advanced* | **values as shown** (token 9 *Save cell contents as shown* = true; token 10 *Export cell formulae* = false) | The everyday default: a CSV of **results**, not `=A1+B1` strings. Optional **"export formulas instead of values"** flips tokens 9/10 — niche, *Advanced* only. |
-| **Which sheet (multi-sheet)** | basic (only shown if >1 sheet) | **first/active sheet only** | See the multi-sheet decision below — this is the load-bearing **[OPEN]** detail. |
+| **Which sheet (multi-sheet)** | basic (only shown if >1 sheet) | **picker, default = active sheet** | See the multi-sheet decision below — `[DECIDED]` (picker defaulting to active sheet; §6.6-validated). |
 | Quote all text fields | *(not exposed v1)* | off | LO default; numbers unquoted. Adding it is a scope change. |
 
 ### CSV / TSV **import** options (CSV/TSV → workbook)
@@ -346,7 +346,7 @@ The PDF *page* options (PDF/A, quality) belong to the canonical PDF entry; the
 | **TSV**  | **XLSX** | Same as CSV. |
 
 Each source has **exactly one** fixed default (per §1.5 / README convention).
-The XLSX→CSV default is the one debatable call — see [OPEN] below.
+The XLSX→CSV default is the one debatable call — `[DEFER: corpus]`, see Open items below.
 
 ### CSV / TSV encoding policy (SSOT *Content fidelity*)
 
@@ -393,7 +393,7 @@ The XLSX→CSV default is the one debatable call — see [OPEN] below.
   formula — the CSV-injection / DDE class) is closed: imported delimited text is
   ingested as **data**, formula evaluation on import is **not** exposed in v1.
 
-### Multi-sheet handling — `* → CSV/TSV` (load-bearing **[OPEN]**)
+### Multi-sheet handling — `* → CSV/TSV` (load-bearing decision — resolved below)
 
 - **Hard constraint from the SSOT:** conversions are strictly
   **one-source → one-target**; **one-to-many fan-out is parked** (SSOT *Direction
@@ -407,23 +407,22 @@ The XLSX→CSV default is the one debatable call — see [OPEN] below.
 - **Therefore the v1 behaviour is: a multi-sheet workbook → CSV/TSV exports ONE
   sheet**, and ConvertIA tells the user this is happening (a passive note when
   the source has >1 sheet: *"only one sheet is exported to CSV"*) rather than
-  silently dropping data. The **[OPEN]** detail is purely *which* sheet and how
-  it is chosen:
+  silently dropping data. The remaining detail — purely *which* sheet and how
+  it is chosen — is resolved below:
 
-  - **[OPEN] A — which single sheet.** Options: (a) the workbook's **active
-    sheet** as saved (matches "what I was looking at when I saved", LO's natural
-    headless behaviour); (b) always the **first physical sheet** (predictable,
-    name-independent); (c) **let the user pick** the sheet from a dropdown when
-    >1 sheet is detected (most honest, one extra optional click — does **not**
-    violate "no required choices" if it defaults to the active/first sheet).
-    *Leaning (c) with default = active sheet*, because silently exporting a sheet
-    the user did not mean is a data-surprise the SSOT *Fail clearly* spirit
-    dislikes. **Not resolved — needs a call.**
+  - **A — which single sheet. `[DECIDED]` → (c) picker defaulting to active sheet
+    (`[DEFER: corpus]` validate in §6.6).** Options were: (a) the workbook's **active
+    sheet** as saved (LO's natural headless behaviour); (b) always the **first physical
+    sheet** (predictable); (c) **let the user pick** the sheet from a dropdown when
+    >1 sheet is detected, **defaulting to the active sheet** (most honest, one extra
+    optional click — does **not** violate "no required choices" since it defaults).
+    **DECIDED: (c) with default = active sheet**, because silently exporting a sheet the
+    user did not mean is the data-surprise the SSOT *Fail clearly* spirit dislikes; the
+    only residual is a §6.6 usability confirmation of the picker affordance (empirical).
 
-  - **[OPEN] B — single-sheet fast path.** When the workbook has exactly **one**
+  - **B — single-sheet fast path. `[DECIDED]`** When the workbook has exactly **one**
     sheet, no note and no picker — it just converts (the overwhelming common
-    case). Only multi-sheet workbooks trigger the note/picker. *(This part is
-    settled; only A is open.)*
+    case). Only multi-sheet workbooks trigger the note/picker. *(Settled.)*
 
 - **What is NOT open:** the no-fan-out rule (multiple-CSV output stays parked),
   and the → PDF case (PDF *can* be multi-page, so → PDF keeps all sheets — no
@@ -456,17 +455,15 @@ catalog (this file records *which* pairs; §2.9 owns the exact note text):
 
 `CSV ↔ TSV` and `CSV/TSV → workbook` (UTF-8) are **not lossy** and carry no note.
 
-### Open items
+### Open items (resolved)
 
-- **[OPEN] XLSX default target = CSV vs XLSX-staying-put.** We set XLSX's default
-  to **CSV** (most common "get the data out" want). Counter-argument: a user
-  dropping an `.xlsx` may more often want `→ PDF` (share a frozen copy) than
-  `→ CSV`. Both are defensible; **CSV chosen** for now as the data-centric
-  everyday action, but this is the one source whose default is genuinely
-  debatable and should be validated against the SSOT usability walkthrough.
-- **[OPEN] Multi-sheet → CSV sheet selection** — see *Multi-sheet handling*
-  above ([OPEN] A): active-sheet vs first-sheet vs user-picker. Leaning
-  user-picker defaulting to active sheet. Needs a call before Phase 3.
-- **[OPEN] Pipe-delimited (`.psv`) as a first-class TSV-sibling target?** —
-  currently *not* offered as a target (only auto-*detected* as a CSV input
-  variant). Likely stays out (niche), parked unless demand appears.
+- **XLSX default target = CSV vs XLSX-staying-put — `[DEFER: corpus]`.** XLSX's default
+  is **CSV** (most common "get the data out" want); the counter-argument (drop `.xlsx` →
+  more often want `→ PDF` to share a frozen copy) is defensible, so **CSV is the v1
+  starting default** and the only residual is an empirical confirmation against the SSOT
+  usability walkthrough (§6.6) — a measured call, not an open design question.
+- **Multi-sheet → CSV sheet selection — `[DECIDED]`** (picker defaulting to active sheet;
+  §6.6-validated) — see *Multi-sheet handling* item A above.
+- **Pipe-delimited (`.psv`) as a first-class TSV-sibling target — `[DECIDED]` NOT in v1.**
+  `.psv` is only auto-*detected* as a CSV input variant, never offered as a target; it
+  stays out (niche), `[DEFER: post-v1]` unless demand appears.

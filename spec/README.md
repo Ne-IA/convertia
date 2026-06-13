@@ -855,15 +855,29 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **Video HEVC-source default `[DECIDED]`** — re-encode HEVC→H.264 by default (honours
   the SSOT mov→mp4 "plays everywhere" usability-floor; the §6.10 row-7 no-required-choices
   gate can verify it), with verbatim remux offered as an Advanced "keep original quality
-  (H.265)" toggle; same disposition for AV1-in-MP4. Still genuinely open on video.md:
-  **auto-deinterlace default** (yadif on for flagged-interlaced) and **MOV-as-target
-  demand** — validate in §6.6. Owner: video.md.
-- **Spreadsheets multi-sheet → CSV sheet selection** (active/first/picker; lean
-  picker→active) and **XLSX default CSV-vs-PDF** — validate in §6.6. Owner:
-  spreadsheets.md.
-- **Images defaults to confirm vs corpus**: GPS/location-EXIF strip-vs-preserve;
-  APNG-output vs first-frame-collapse (lean collapse); ICO non-square pad-vs-crop
-  (lean pad); default Q values (JPG 82 / WEBP 80 / HEIC&AVIF 60); **`heifsave effort`
+  (H.265)" toggle; same disposition for AV1-in-MP4. Newly DECIDED on video.md:
+  **metadata-strip toggle NOT v1** (preserve; `[DEFER: post-v1]`), **WEBM two-pass &
+  AV1-as-WEBM-target NOT v1** (single-pass VP9; `[DEFER: post-v1]`), **HW-encode NOT v1**.
+  Still `[DEFER: corpus]` (empirical only): **auto-deinterlace default** (design = yadif
+  on for flagged-interlaced) and **MOV-as-target demand** — validate in §6.6. Owner: video.md.
+- **Spreadsheets multi-sheet → CSV sheet selection `[DECIDED]`** — **picker defaulting to
+  active sheet** (§6.6 confirms the affordance, `[DEFER: corpus]`); **PSV target NOT v1**
+  `[DECIDED]`. **XLSX default CSV-vs-PDF `[DEFER: corpus]`** (CSV is the v1 default; validate
+  in §6.6). Owner: spreadsheets.md.
+- **Audio MP3-source default `[DECIDED]` = WAV** (over FLAC — FLAC-of-MP3 is the misleading
+  no-gain case); **MP3→MP3 same-format & surround force-stereo NOT v1** `[DECIDED]`
+  (`[DEFER: post-v1]`). Owner: audio.md.
+- **Presentations `[DECIDED]`** — notes switch → `ExportNotesPages=true`; bundled font set =
+  §3.9.3 baseline (only CJK breadth `[DEFER: size]`). Owner: presentations.md.
+- **Documents `[DECIDED]`** — "compress/smaller PDF" toggle & TXT "output encoding" toggle
+  both NOT v1 (`[DEFER: post-v1]`); `*→MD` image policy `[DEFER: corpus]` (leans drop-with-note).
+  Owner: documents.md.
+- **UI `[DECIDED]`** — state store = **Zustand**; patent-gapped target = **disabled-tile-with-note**
+  (§9 usability confirms the affordance, `[DEFER: corpus]`). Owner: §5.11.
+- **Images defaults — newly DECIDED**: GPS/location-EXIF **preserve** (+ Advanced strip
+  toggle); APNG-output → **first-frame-collapse**; ICO non-square → **pad** with
+  transparency; wide-gamut→sRGB toggle NOT v1. Still `[DEFER: corpus]`: default Q values
+  (JPG 82 / WEBP 80 / HEIC&AVIF 60); **`heifsave effort`
   (integer 0–9, libvips param — NOT an x265 `preset` string) default `5` — but HEIC
   `effort` EXPOSURE is `[DEFER: corpus]`-gated: exposed only if the corpus confirms it
   measurably steers the bundled x265/HEVC path, else HIDDEN for HEIC (no dead control);
@@ -919,8 +933,13 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   **`store:default` scope** (no per-file scope — convention-scoped), the **min body
   text-size** (→ `--text-base` = 16px floor), the **WebdriverIO pin** (→ v9), and the
   **`CollectedSet::Empty` payload / CollectedNoteKind `Other` / C4-vs-C5 destination
-  authority / `tauri-plugin-dialog` / `image_alpha_flatten` wiring** blockers. So the claim
-  is true rather than aspirational. The remaining unknowns are **empirical calibration
+  authority / `tauri-plugin-dialog` / `image_alpha_flatten` wiring** blockers. This round
+  also **demoted `[OPEN-6.1c]` (Linux/Windows arm64 → `[DECIDED-6.1c]`, out of v1 / post-v1
+  by demand)** and **`[OPEN-6.8a]` (`GOVERNANCE.md` → `[DECIDED-6.8a]`, not adopted v1)**,
+  and **synced the cross-category.md inline body tags `[OPEN-A]/[OPEN-C]/[OPEN-D]/[OPEN-E]/
+  [OPEN-F]` to their own §"Open items (honest)" table dispositions** (A/C/E/F `[DEFER: corpus]`;
+  D `[DECIDED]`) so no live bare `[OPEN]` remains in the body that the table already settled.
+  So the claim is true rather than aspirational. The remaining unknowns are **empirical calibration
   only** (`[DEFER: corpus/build]` — resource-budget digits, the ≤400 MB compressed ceiling
   vs full-CJK+pandoc upper bound, CJK font breadth, the per-OS privilege-drop profile
   contents, the **bundled libvips/libheif HEVC-path `effort` honour (which also gates whether

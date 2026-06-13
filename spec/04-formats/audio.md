@@ -89,7 +89,8 @@ Notes on the matrix:
   a target bitrate as a *required* choice to be meaningful (otherwise it silently
   re-encodes at the default and just adds generation loss), which conflicts with
   the "no required choices" default model. Same-format re-encode is therefore not
-  offered. *(If promoted later, it gets its own [OPEN] resolution — see
+  offered. *(`[DEFER: post-v1]` — if promoted later it needs a required target-bitrate
+control + generation-loss disclosure; see Format-default decisions item 2 / see
   Category-wide.)*
 - **Lossy→lossless cells** (e.g. MP3→FLAC, AAC→ALAC) are supported because users
   genuinely want them (archival, importing into a lossless library, feeding a
@@ -416,7 +417,7 @@ default.
 
 | Source | Default target | Why |
 |--------|---------------|-----|
-| MP3  | **WAV** | MP3→MP3 is excluded, so the everyday default is "decode to plain WAV" (raw/editable audio); lossy→lossless adds no quality, but WAV is the expected target. ([OPEN]: WAV vs FLAC) |
+| MP3  | **WAV** | MP3→MP3 is excluded, so the everyday default is "decode to plain WAV" (raw/editable audio); lossy→lossless adds no quality, but WAV is the expected target. (`[DECIDED]`: WAV over FLAC — see Format-default decisions) |
 | WAV  | **MP3** | universal, small |
 | FLAC | **MP3** | universal, small (shrink a lossless library file to share) |
 | AAC  | **MP3** | universal (escape Apple/ADTS into something that plays everywhere) |
@@ -432,9 +433,9 @@ default.
 > **default is WAV** (the most-compatible *non-MP3* everyday choice — raw
 > playable/editable audio). This is the single source whose default is not MP3,
 > purely because MP3 is excluded as its own target. *(Marked in the matrix MP3 row:
-> WAV cell is the highlighted default for the MP3 source.)* — **[OPEN]** below
-> questions whether an MP3 source should instead default to FLAC; provisionally
-> **WAV**.
+> WAV cell is the highlighted default for the MP3 source.)* — **`[DECIDED]`** (see
+> Format-default decisions): WAV is the default over FLAC, because FLAC of an MP3 is the
+> misleading no-quality-gain case (§2.9 point 3).
 
 ### Bitrate / quality defaults (the no-decision defaults), at a glance
 
@@ -553,28 +554,27 @@ Exact strings live in the **§2.9 message catalog** (home); this file only recor
   extension (`.mp3` that is really FLAC; `.m4a` that is really ALAC) is handled
   correctly.
 
-### [OPEN] items (genuine, not fake-resolved)
+### Format-default decisions (resolved — were `[OPEN]`)
 
-1. **MP3-source default target — WAV vs FLAC.** Since MP3→MP3 is excluded, the MP3
-   source needs *some* default. Provisionally **WAV** (maximally compatible, raw
-   audio). Argument for **FLAC** instead: smaller, still lossless, and "I have an
-   MP3 and want a lossless-ish archive" is plausible — but FLAC of an MP3 is the
-   misleading no-quality-gain case (§2.9 point 3), which is a poor *default*. Lean
-   **WAV**. → confirm.
-2. **Same-format re-encode (MP3→MP3, "shrink this MP3") — parked or included?**
-   Currently parked (diagonal `—`) because it needs a *required* bitrate choice to
-   be non-degenerate, clashing with the no-required-choices model. Real everyday
-   demand exists ("make this MP3 smaller for email"). If promoted, it needs: a
-   mandatory target-bitrate control (the one allowed exception to "no required
-   choices") and a clear generation-loss disclosure. → decide in a later pass; not
-   v1 as written.
+1. **MP3-source default target — WAV vs FLAC. `[DECIDED]` → WAV.** Since MP3→MP3 is
+   excluded, the MP3 source needs *some* default. **DECIDED: WAV** (maximally
+   compatible, raw playable/editable audio). FLAC was the alternative (smaller, still
+   lossless), but FLAC of an MP3 is the misleading no-quality-gain case (§2.9 point 3),
+   a poor *default*; FLAC stays offered, just not the default. Rationale: the safe
+   everyday default must not imply a quality gain that isn't there.
+2. **Same-format re-encode (MP3→MP3, "shrink this MP3") — `[DECIDED]` NOT in v1.**
+   Parked (diagonal `—`): a non-degenerate MP3→MP3 needs a *required* target-bitrate
+   choice, which clashes with the no-required-choices model. Real demand exists ("make
+   this MP3 smaller for email") so it is a documented **`[DEFER: post-v1]`** candidate
+   (would need the one allowed required-control exception + a generation-loss
+   disclosure), but it is **not v1**.
 3. **AAC patent disposition** is **deferred to §3.4** (not open *here*, but its
    resolution directly sets AAC + M4A(AAC) per-platform availability — flagged so
    this file's coverage is read together with that matrix). If §3.4 rules AAC
    "unavailable" on, say, Linux, then on Linux the AAC and M4A targets disappear
    *and* AAC/M4A sources can't be decoded — surfaced honestly per SSOT v1-DoD.
-4. **Down-mix policy for surround→stereo-only contexts.** v1 preserves channels;
-   no explicit "convert 5.1 to stereo" control. Edge everyday case (a surround M4A
-   → MP3 for a phone) — currently channels are preserved and the encoder handles
-   it; whether to expose a "force stereo" Advanced toggle is unresolved. Lean: not
-   in v1. → confirm.
+4. **Down-mix policy for surround→stereo-only contexts. `[DECIDED]` NOT in v1.** v1
+   **preserves channels** (no explicit "convert 5.1 to stereo" control); the encoder
+   handles the surround-M4A→MP3-for-phone edge case via its standard channel handling
+   (§2.9 `audio_downmix` only if the codec forces a downmix). A "force stereo" Advanced
+   toggle is a `[DEFER: post-v1]` scope addition, not a v1 default.

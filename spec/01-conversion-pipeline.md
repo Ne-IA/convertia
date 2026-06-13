@@ -270,8 +270,8 @@ batch grouping (§1.3).
    confirm-gate summary line, **without** a full decode:
    - **`>1 sheet`** (spreadsheets) — a bounded ZIP-member read of `xl/workbook.xml`
      (XLSX) / the ODS `content.xml` sheet count / OLE2 directory (XLS); cross-ref
-     spreadsheets.md (its multi-sheet `[OPEN]`). Drives the "only one sheet is
-     exported" note (§2.9 `sheet_to_delimited`).
+     spreadsheets.md (its multi-sheet `[DECIDED]` — picker defaulting to active sheet).
+     Drives the "only one sheet is exported" note (§2.9 `sheet_to_delimited`).
    - **`animated source present`** (images) — a bounded descriptor-count peek: GIF
      image-descriptor count, WEBP `VP8X` animation flag / `ANMF` chunks, APNG `acTL`
      chunk, AVIF `avis` brand; cross-ref images.md animation policy. Drives the
