@@ -75,7 +75,7 @@ no AGPL surface; see *Engines* / §3.1.)
 | Engine | Role in this category | Licence | Isolation |
 |--------|-----------------------|---------|-----------|
 | **LibreOffice** (headless, `soffice --headless --convert-to`) | All office reads/writes (`DOCX/DOC/ODT/RTF`), and **every `*→PDF`** in the platform (this category plus the cross-category producer rows) | **MPL-2.0** (file-level copyleft; permissive enough to bundle, still shipped as a separate invoked binary per SSOT policy) | Separate sidecar process, routed through the §2.12 isolation wrapper; per-run isolated user profile (see *Edge cases*) |
-| **poppler** `pdftotext` | `PDF → TXT` extraction | **GPL-2.0/GPL-3.0** | Copyleft → **separate invoked binary** (aggregation, §3.6); written-offer-of-source honored |
+| **poppler** `pdftotext` | `PDF → TXT` extraction | **`GPL-2.0-only OR GPL-3.0-only`** (valid SPDX; §3.1) | Copyleft → **separate invoked binary** (aggregation, §3.6); written-offer-of-source honored |
 | **Ghostscript** | *(was: PDF read/repair plumbing behind `pdftotext`; no user-facing pair)* | **AGPL-3.0** | **[DECIDED: NOT shipped v1]** (§3.1/§3.6) — poppler-only PDF→TXT removes the AGPL surface; `[DEFER: re-add only if §6.5 corpus shows GS-salvageable PDFs]` |
 | **pandoc** | Markup conversions: `MD/HTML/TXT ↔` and office→markup down-conversions (`DOCX/DOC/ODT/RTF → TXT/MD/HTML`) | **GPL-2.0+** | Copyleft → separate invoked binary (§3.6) |
 

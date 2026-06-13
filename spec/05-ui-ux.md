@@ -104,8 +104,8 @@ state small and mostly a finite-state-machine plus a per-item progress list.
 ### Shared types with Rust
 The Rust↔TS type bridge (so `Batch`, `DetectionOutcome`, `ConversionJob`,
 `Target`, `RunResult`, error/lossy payloads, the progress event union) are
-**typed end-to-end with no `any`** — mechanism owned by **§0.4.5** (manual mirror
-vs ts-rs/specta/tauri-specta; CI drift check in §06). This section **consumes**
+**typed end-to-end with no `any`** — mechanism owned by **§0.4.5** (DECIDED:
+**tauri-specta** + specta; CI drift check in §06). This section **consumes**
 those generated types from `src/lib/ipc/bindings.ts` (§0.7/§0.4.5) and re-decides
 nothing.
 
@@ -126,12 +126,12 @@ per-item outcome); the machine only sequences the user through them.
 | 1 | `Idle` | app start; after "convert more"; after a refused/unsupported drop is dismissed; **after a cancelled intake picker** (C2a returned `CollectedSet::Empty`, a clean no-op — stays in `Idle`, no error, no `Collecting`) | drop-or-browse invitation; "all conversion happens locally, on your machine" reassurance; no setup, no fields | drop/pick → `Collecting`; **picker cancelled → stays `Idle`** |
 | 2 | `Collecting` | a drop/pick/launch-arg handoff is accepted; backend is freezing the set + recursing folders + detecting (§1.1/§1.2) | a **throttled live count** *"Scanning… N files so far"* (fed by C1's `onScan` `Channel<ScanProgress>`, ≈2/s, §0.4.2) for the brief collect step — falls back to indeterminate "looking at your files…" if no count yet (NOT the convert step) + a **cancel-collect** affordance backed by **C13 `cancel_ingest`** (Esc, §5.10) — discards the partial set, returns to `Idle` | C1 returns `CollectedSet::Single` → `Confirm`; `Mixed` → `MixedDropRefusal` (9); `Unsupported`/`Uncertain` → `Unsupported` (10); **`Empty` → `Unsupported` (10, the "nothing here I can convert" copy)**; (cancel) → `Idle` |
 | 3 | `Confirm` (collected/confirm gate) | backend returns a single-format collected summary (§1.4) | "**N JPG files**" (detected format + count); for recursive folder drops, the collected count is the whole point of this gate. **If any items were skipped** (§1.4/§0.6 `skipped`), a calm passive line: *"M file(s) weren't recognized and will be skipped"* with an **expandable** list (so a bad item is **never silently dropped**, §1.4) — informational, does not block confirm | confirm → `Targets`; cancel → `Idle` |
-| 4 | `Targets` (targets + options) | user confirms the batch | FormatPicker (target tiles, one **pre-highlighted default** per §1.5/04-matrices), contextual basic options, **Advanced options** drawer (§5.3), passive **lossy note** beside the chosen target (§2.9) | pick target → reveal/refresh `DestinationBar` (same state); proceed → `Destination`-confirmed (folded) or directly to the convert gate; **back → `Confirm` (3)** via a **Back** button / **Ctrl/⌘+Backspace** (§5.10), preserving the already-collected frozen set (does NOT discard it — distinct from Ctrl+N, which starts over from `Idle`) |
+| 4 | `Targets` (targets + options) | user confirms the batch (C3 `get_targets` has resolved on the 3→4 transition, §5.8) | FormatPicker (target tiles, one **pre-highlighted default** per §1.5/04-matrices), contextual basic options, **Advanced options** drawer (§5.3), passive **lossy note** beside the chosen target (§2.9) | pick target → reveal/refresh `DestinationBar` (same state). **C4 `plan_output` is (re-)called on entry with the default selected AND on every target/option change (debounced, §5.8 call-timing)** so the "will save to …" line, divert preview, `rerun`, and `preflight.up_front_fail` verdict never go stale. proceed → `Destination`-confirmed (folded) or directly to the convert gate; **back → `Confirm` (3)** via a **Back** button / **Ctrl/⌘+Backspace** (§5.10), preserving the already-collected frozen set (does NOT discard it — distinct from Ctrl+N, which starts over from `Idle`) |
 | 5 | `Destination` (destination preview — folded into the Targets screen) | always shown **before** convert (SSOT *Output lands somewhere obvious*) | the "**will save to …**" line (per §1.8/§2.7 plan: beside each source by default, divert noted), **Change destination** button (directory picker C2b `pick_destination` → C5 `set_destination`, §5.4 — **not** §7.7), the **Convert** button. **Doomed-up-front sub-state:** when the C4 `preflight.up_front_fail` is `Some(kind)` (§1.10), Convert is **disabled** with a passive inline `Note` carrying the §2.8 string (SSOT *fails fast up front*) | Convert → `Rerun?` decision (backend §2.5) → `Converting`; back → `Targets` (4; state 5 is folded into 4, so this is an in-screen step-back, and a further **Back/Ctrl+Backspace** from Targets reaches `Confirm` (3) without discarding the set); (up-front-fail) Convert disabled until destination/target change clears it |
 | 6 | `RerunPrompt` (interstitial) | the **C4 `plan_output` response** carries `OutputPlanPreview.rerun` (§0.4.1 / §2.5.2 — equivalence detected during planning, *before* Convert). **Reached ONLY from C4**: the §2.5 re-run verdict is **destination-independent in v1** (§2.5.1), so a **C5 `set_destination` never produces a new `rerun`** — `DestinationResolved.rerun` is carried through unchanged and the UI does **not** re-enter this state on a destination change. The held C4 `RerunDecision` carries into C6 unchanged | **one batch-level** prompt: *"You already converted these with the same settings."* — **Skip (default)** / **Make a fresh copy**; the choice becomes the `RerunDecision` passed to C6 | choose → `Converting`; cancel → back to `Destination` |
 | 7 | `Converting` (progress) | convert command accepted | **per-item** real progress (not a spinner) + **aggregate batch** bar; current-item label; the passive **`ConvertingNote`** worst-case-lossy banner where applicable (§5.3/§5.7); **Cancel** button | all items terminal → `Summary`; cancel → confirmed-cancel round-trip (§5.8) → `Summary` (partial) |
 | 8 | `Summary` | every job reached a terminal state (§1.9) | per-item success/fail with reason (strings §2.8), output→source mapping (§1.12), **Open folder** / **Open file** (OpenActions, §7.7); a **fully-failed** batch is rendered as a clear failure banner, never a quiet "done" | "Convert more" → `Idle`; Open actions stay available |
-| 9 | `MixedDropRefusal` | the drop/folder contained >1 source format (§1.3 pre-flight) | **hard refusal**, not a partial convert: lists the formats found + counts ("Found 30 JPG, 12 PNG, 3 PDF"), asks to **re-drop a single format**; explicitly **no** "just convert the JPGs" affordance in v1 (parked) | dismiss / re-drop → `Idle`/`Collecting` |
+| 9 | `MixedDropRefusal` | the drop/folder contained >1 source format (§1.3 pre-flight) | **hard refusal**, not a partial convert: lists the formats found + counts ("Found 30 JPG, 12 PNG, 3 PDF"), asks to **re-drop a single format**; explicitly **no** "just convert the JPGs" affordance in v1 (parked). **`[DECIDED]` the refusal screen renders an active `DropZone` as its primary action** (plus a Dismiss) so a **fresh single-format drop/pick goes straight to `Collecting`** without a Dismiss-to-Idle round-trip | **re-drop (onto the screen's DropZone) → `Collecting`**; **Dismiss → `Idle`** |
 | 10 | `Unsupported` / `Unreadable` | detection says *real but unsupported type* or *uncertain/conflicting* (§1.2), or every collected item was unreadable/gone, **or** a `CollectedSet::Empty` (all files filtered out / nothing eligible) | plain message: *"Can't convert this type — detected: X"* / *"Couldn't tell what this file is"* / *"Nothing here I can convert"* (the Empty case); never an empty target list, never a hang | dismiss → `Idle` |
 | 11 | `AppCloseRequested` (overlay over `Converting`) | the OS window-close was intercepted mid-run → backend emits **`app://close-requested`** (§0.4.2 / §7.3.2) | a calm confirm **interstitial over** `Converting`: *"A conversion is in progress. Quit anyway? Files already finished are kept; the one in progress will be discarded."* — **Quit** / **Stay**; **Enter = Stay** (safe default), **Esc** cancels the close | **Stay** → back to `Converting`; **Quit** → backend runs cancel+cleanup+exit (§7.3.3) → app exits |
 | 12 | `AppFault` | the Channel goes silent / a command Promise rejects unexpectedly (core panic, IPC drop — §2.13/§5.8), in place of `Summary` | plain **no-stack-trace** message: *"Something went wrong and the conversion stopped."* + **Start over**; never fabricates per-item outcomes for items it never heard back about | **Start over** (Ctrl/⌘+N) → `Idle` |
@@ -188,11 +188,14 @@ per-item outcome); the machine only sequences the user through them.
             │   │                                        ▼   ▼
             │   │                          ┌───────────────┐ ┌──────────────┐
             └───┴──── "convert more" ──────│  Summary (8)  │ │ AppFault (12)│
-                                           └───────────────┘ └──────┬───────┘
-                                                       ▲            │ Start over (Ctrl/⌘+N)
-                                                       └── convert ─┘  └────────────▶ Idle
-                                                          more
+              (Summary→Idle)               └───────────────┘ └──────┬───────┘
+                                                                    │ "Start over" (Ctrl/⌘+N)
+                                                                    └──────────────▶ Idle
 ```
+> **Diagram arrow labels (so neither is misread):** the **Summary (8) → Idle** arrow is
+> **"convert more"** (left edge, into `Idle`); the **AppFault (12) → Idle** arrow is
+> **"Start over" / Ctrl/⌘+N** (a distinct path with distinct copy — §5.10 keyboard table
+> + the §5.2 state-12 row). They are NOT the same transition.
 
 ### Patent-gapped / unavailable target rendering `[DECIDED — disabled-with-note, recommendation]`
 A target that the **§3.4 format×platform matrix** marks *unavailable on this
@@ -218,7 +221,7 @@ restated per component.
 
 | Component | Role | Key states/props | Notes / cross-refs |
 |-----------|------|------------------|--------------------|
-| **DropZone** | the primary intake surface + click-to-browse | `dragActive`, `disabled`-while-converting | native file-drop via §5.4; click invokes **C2a `pick_for_intake`** (Rust-opened `DialogExt`, no `dialog:allow-open` grant — §0.10/§5.4); the only element present in `Idle` besides the reassurance line |
+| **DropZone** | the primary intake surface + click-to-browse + choose-folder | `dragActive`, `disabled`-while-converting | native file-drop via §5.4; **click (or Enter/Space)** invokes **C2a `pick_for_intake` `{ kind: 'files' }`** (Rust-opened `DialogExt`, no `dialog:allow-open` grant — §0.10/§5.4). **Choose-folder affordance `[DECIDED]`:** a secondary **"or choose a folder"** link/button on the DropZone (and the **Ctrl/⌘+Shift+O** accelerator, §5.10) invokes the **same C2a with `{ kind: 'folder' }`** → folder recursion runs Rust-side (§1.1). Present in `Idle` alongside the reassurance line. |
 | **BatchSummary** | the confirm-gate card | `detectedFormat`, `count`, `sampleNames?`, `skipped?: SkippedItem[]` | data from §1.4 collected-summary payload; the mandatory pre-convert gate (state 3). **Rendering rule for `skipped`:** when non-empty, render the passive *"M file(s) weren't recognized and will be skipped"* line with an expandable list (path + §2.8 reason per item) — never blocks confirm, but is always shown so no skipped item is silently dropped (§1.4) |
 | **FileList** | optional expandable list of collected items (behind a "Show files" disclosure on the Confirm gate, state 3) | `items: { name: string; relPath?: string }[]`, `skipped?: SkippedItem[]`, `virtualized: true` | **Trigger/affordance:** collapsed by default; a "Show N files" toggle expands it. **Row data:** file name + (for folder drops) the dropped-root-relative path; **eligible vs skipped are rendered distinctly** — eligible rows plain, **skipped rows visually marked** with their §2.8 reason (so a skipped item is never hidden, §1.4). **Virtualised** (§1.10) for thousands of files. Read-only in v1 (no per-item target / no per-item deselect — both out of v1) |
 | **FormatPicker** | target tiles for the detected source | `targets[]`, `default`, `selected`, per-tile `disabledReason?` | one pre-highlighted default (§1.5); cross-category outputs (extract-audio / to-GIF) appear as extra tiles of a video source (cross-category.md); disabled tiles per §3.4 (§5.2) |
@@ -226,17 +229,20 @@ restated per component.
 | **AdvancedDrawer** | collapsed-by-default drawer for niche options | `open` | keeps the default view clean (SSOT How It Feels 5); never gates conversion |
 | **DestinationBar** | the "will save to …" line + Change button + the up-front preflight verdict | `plan` (destination preview), `diverted?`, `preflight: PreflightVerdict` (§0.6/§1.10) | **always visible before Convert** (state 5); shows per-location divert note (§2.7); **Change → the directory picker (C2b `pick_destination` → returns the chosen `PathBuf` → C5 `set_destination`, §5.4)** — *not* the §7.7 shell-out (§7.7 is open-finished-output, a different action). When `preflight.up_front_fail` is `Some(kind)` (§1.10 "doomed up front"), **Convert is disabled** and a passive inline `Note` shows the §2.8 catalog string for that kind (e.g. `TooBig`/`OutOfDisk`) — the SSOT "fails fast up front" surfacing; the user can still change the destination/target to clear it |
 | **ProgressList** | per-item rows + aggregate bar | `Map<ItemId, ItemProgress>` (the §0.4.2 `ItemProgress` payloads, keyed by `itemId`; `JobId == ItemId` §0.6), `batchPct`, `currentItem` | real determinate progress (§1.11); virtualised for large batches; rows transition to terminal `Succeeded`/`Failed`/`Cancelled`/`Skipped`. For an indeterminate-`fraction` (LibreOffice) row it shows a staged determinate-looking bar from `stage` (§1.11) |
-| **ResultSummary** | end-of-batch outcome | `RunResult` (§1.12) | success/fail counts, per-item reason (§2.8 strings), output→source map; fully-failed banner |
+| **ResultSummary** | end-of-batch outcome | `RunResult` (§1.12) | success/fail counts, per-item reason (§2.8 strings), output→source map; fully-failed banner. **Residue rendering `[DECIDED]`:** an item whose `IpcError.residue != None` (§0.4.3) — or that appears in `RunResult.cleanup_incomplete` (§1.12/§2.6.4) — is rendered as **Failed (not Succeeded)** with its reason string **including the residue path** (the §2.8 `cleanup_residue` string), optionally a **"reveal residue" link via C9** (`OpenKind::RevealInFolder`). Cross-ref §2.6/§0.4.3. A Cancelled-with-residue item (§2.6.4 case 3) shows the §2.8.2 "With residue" tail. |
 | **OpenActions** | open-folder / open-file buttons | `folderPath`, `filePath?` | **backed by §7.7** (the only OS shell-out); "open folder" opens the common root (§2.7). **Availability `[DECIDED]`: Summary-only (state 8), NOT mid-run (state 7).** During `Converting` the run's results are still incomplete and the §7.7.3 RunResult-membership set is not final, so open-actions are withheld until the run reaches a terminal `Summary`; this keeps the open-finished-output model (§7.7) honest and avoids opening a folder of half-written outputs |
 | **RerunPrompt** | the §2.5 interstitial | `equivalentCount`, default=Skip | one batch-level prompt, skip-default / fresh-copy (state 6) |
-| **MixedDropRefusal** | pre-flight hard refusal | `formatsFound[]` with counts | state 9; no subset-convert affordance in v1 |
+| **MixedDropRefusal** | pre-flight hard refusal | `formatsFound[]` with counts | state 9; no subset-convert affordance in v1. **Renders an active `DropZone` as the primary action `[DECIDED]`** so a fresh single-format drop/pick goes straight to `Collecting` (re-drop), with a secondary **Dismiss → `Idle`**; resolves the earlier "is the DropZone active here?" ambiguity (yes) |
 | **UnsupportedNotice** (a.k.a. the state-10 intake-refusal notice) | unsupported / uncertain / all-unreadable / nothing-eligible | `variant: 'Unsupported' \| 'Unreadable' \| 'Empty'`, `detected?`, `reason` | state 10; **three explicit variants each with its own copy path** so the **`Empty`** "nothing here I can convert" branch is never overlooked despite the component's unsupported-leaning name: `Unsupported` → "can't convert this type — detected: X"; `Unreadable` → "couldn't read these files"; `Empty` (the `CollectedSet::Empty` case) → "nothing here I can convert". Plain language, no stack trace |
 | **QuitConfirm** | quit-while-converting interstitial | `onQuit`, `onStay` | state 11; overlay over `Converting`, triggered by `app://close-requested` (§7.3.2); Enter=Stay (safe default), Esc=cancel-close (§5.10) |
 | **AppFaultNotice** | post-fault recovery screen | `onStartOver` | state 12; plain "something went wrong" + Start Over → `Idle` (§2.13/§5.8); no stack trace; never fabricates per-item outcomes |
 | **AboutDialog** | About + legal-notices | `licenseData` (from §3.7), `version` (§7.6) | presentation only — §5.9 |
+| **AppHeader** | the persistent slim app-chrome bar (present in every state) | `theme`, `busy?: boolean` | **App-chrome home (§5.5):** `<BrandLogo>` (Ne-IA mark, §5.5) on the **left**; the **ThemeToggle** + an **About/`?`** trigger on the **right**. Anchors the three otherwise-homeless surfaces below. Slim, calm, never competes with the workspace. |
+| **ThemeToggle** | the Light/Dark/System selector (§5.5 [DECIDED]) | `value: 'light' \| 'dark' \| 'system'` (default `system`) | lives in **AppHeader** (right side); writes the **`theme`** key via `tauri-plugin-store` (§7.4.2); three explicit states; persists across launches (§5.5 *Light/dark*). Keyboard-reachable per §5.10. |
+| **BusyNotice** | the refuse-busy surface (§7.1.1) | `text` (the §7.1.1 "ConvertIA is busy — finish or cancel the current batch first" string) | **`[DECIDED]` form = a passive non-modal Banner** (the `Banner` primitive, NOT a modal/`Toast`), shown in `AppHeader`/top-of-workspace. **Trigger:** the §5.8 `app://intake` guard fires while the app is **not** `Idle`/`Summary` (i.e. a second-launch/Open-with hand-off arrived mid-run — §7.1.1's defence-in-depth UI guard). Auto-dismisses on the next state change or a manual close; never blocks the running batch. Cross-ref §7.1.1 (primary refuse-busy gate is the single-instance callback; this is the visible surface). |
 | **Note** (primitive) | the passive lossy/divert/animation inline note | `kind`, `text` (string from §2.9) | calm, passive, never a blocking "I understand" dialog (SSOT *Fail clearly*) |
 | **ConvertingNote** | the passive worst-case-lossy banner adjacent to `ProgressList` during `Converting` (state 7) | `willReencode: boolean`, `lossyNote?: string` (§2.9) | shown when the worst-case "may be re-encoded" note applies (**first surfaced at state 4** via C3 `Target.lossy = video_reencode`; **confirmed/kept or cleared** by `RunStarted.willReencode`, §5.7/§5.8); uses the `--info` calm token; **non-modal, no dismiss**; wraps the `Note` primitive |
-| **primitives/** | Button, Dialog, Drawer, Tile, ProgressBar, ProgressRing, Spinner, Banner, Toast? | — | the design-system building blocks (§5.5); a determinate ProgressBar is mandatory, an indeterminate Spinner is allowed **only** for the brief `Collecting` step |
+| **primitives/** | Button, Dialog, Drawer, Tile, ProgressBar, ProgressRing, Spinner, Banner | — | the design-system building blocks (§5.5); a determinate ProgressBar is mandatory, an indeterminate Spinner is allowed **only** for the brief `Collecting` step. **No `Toast` primitive in v1 `[DECIDED]`** — the only transient-notice need (the refuse-busy `BusyNotice`) uses the passive non-modal **`Banner`**, so the earlier "Toast?" is resolved as *not needed* |
 
 ---
 
@@ -257,8 +263,17 @@ const unlisten = await getCurrentWindow().onDragDropEvent((e) => {
     case 'over':  setDragActive(true); break;        // visual affordance only
     case 'leave': setDragActive(false); break;
     case 'drop':  setDragActive(false);
-                  // e.payload.paths: absolute path strings (files AND folders)
-                  ipc.ingestPaths(e.payload.paths);  // → §0.4 C1 ingest_paths
+                  // e.payload.paths: absolute path strings (files AND folders).
+                  // C1 (§0.4.1) REQUIRES a frontend-generated collectingId + origin
+                  // (README DECIDED: "the frontend generates CollectingId and passes
+                  // it as a C1 argument"), so C13 can cancel this in-flight walk.
+                  const collectingId = crypto.randomUUID() as CollectingId;
+                  ipc.ingestPaths({
+                    paths: e.payload.paths,
+                    origin: 'drop',          // IntakeOrigin (REQUIRED, §0.4.1 C1)
+                    collectingId,
+                    // onScan?: optional ScanProgress Channel (§5.8 intake telemetry)
+                  });                          // → §0.4 C1 ingest_paths
                   break;
   }
 });
@@ -283,8 +298,11 @@ const unlisten = await getCurrentWindow().onDragDropEvent((e) => {
 
 ### File picker (parity path)
 Click on the DropZone (or the **Ctrl/⌘ + O** accelerator, §5.10) invokes the **intake
-picker command `C2a pick_for_intake`** (`kind: files`; a separate "choose folder"
-affordance passes `kind: folder`). The native dialog is opened **Rust-side via
+picker command `C2a pick_for_intake`** (`kind: files`). The **choose-folder affordance**
+is a **secondary "or choose a folder" link on the DropZone** (and the **Ctrl/⌘ + Shift +
+O** accelerator, §5.10) that calls the **same C2a with `kind: folder`** — it surfaces in
+`Idle` next to the files picker, so a folder is as discoverable as a file. The native
+dialog is opened **Rust-side via
 `DialogExt`** inside the C2a handler `[DECIDED]` — there is **no JS `open({...})` call
 and no `dialog:allow-open` WebView grant** (§0.10). The picked paths are funnelled
 **straight into the C1 `ingest_paths` freeze Rust-side**, and C2a returns the **same
@@ -375,6 +393,16 @@ zero-interaction path is unchanged.
 - No modal blocking overlay during conversion — the window stays responsive
   (SSOT *stays responsive regardless of batch or file size*), Cancel always live.
 
+### App chrome layout `[DECIDED]`
+A single **persistent slim app-header** (`AppHeader`, §5.3) frames every §5.2 state and
+is the home for the three otherwise-homeless surfaces: **left** = the `<BrandLogo>`
+Ne-IA mark; **right** = the **ThemeToggle** (Light/Dark/System, §5.5 *Light/dark*) and an
+**About/`?`** trigger (opens `AboutDialog`, §5.9). The **refuse-busy `BusyNotice`** Banner
+(§7.1.1) renders just under this header (top of the workspace) when a mid-run hand-off is
+refused. The header is calm and slim so the workspace (DropZone / pickers / progress)
+stays the focus; it never adds a second navigation model. The **choose-folder**
+affordance lives on the DropZone in `Idle` (see §5.4), not in the header.
+
 ### Ne-IA logo placeholder `[DECIDED — placeholder]`
 The **Ne-IA logo** appears as branding (header/About) per SSOT *Design Intent*.
 It ships as a **bundled local asset** (offline; no CDN) behind a single
@@ -396,7 +424,10 @@ with no-harm. Concrete requirements:
   keyboard alone (map §5.10). No mouse-only affordance exists. The drop area has a
   keyboard-equivalent (the picker).
 - **Logical focus order** following the visual wizard order; focus is **moved to
-  the new primary element on each state transition** (e.g. to the Convert button
+  the new primary element on each state transition** (e.g. **on entering `Targets`
+  (3→4), focus moves to the pre-highlighted (default-selected) tile in the FormatPicker
+  radiogroup** — the `aria-checked="true"` tile that is the active radio, so a
+  keyboard user lands on the live default; to the Convert button
   when the destination is shown, to the first failed row in `Summary`), and
   **trapped inside modals** (RerunPrompt, AboutDialog, MixedDropRefusal) with
   **Esc** to close (§5.10) and focus **restored** to the trigger on close.
@@ -433,11 +464,16 @@ with no-harm. Concrete requirements:
 - **Semantics:** the target tiles are a **`role="radiogroup"`** container with
   **`aria-labelledby`** pointing at its heading; each tile is a **`role="radio"`** with
   `aria-checked` (exactly one default checked, §1.5); the DropZone is `role="button"`;
-  the lossy note is associated with its target via `aria-describedby`. **Disabled
-  (patent-gapped) tiles** stay **in the tab order** as `role="radio"`
-  **`aria-disabled="true"` `tabindex="0"`** with the reason text exposed (WCAG 2.1 AA —
-  a disabled control the user can still focus to hear *why*), **never** just visual
-  dimming and never removed from the tab order.
+  the lossy note is associated with its target via `aria-describedby`. The radiogroup uses
+  the standard **roving-tabindex** pattern (only the active/checked radio is `tabindex="0"`,
+  the rest `tabindex="-1"`; **arrow keys** move selection within the group, Tab enters/exits
+  it). **Disabled (patent-gapped) tiles `[DECIDED — option (b)]`:** they are **kept in the
+  arrow-key navigation order** as `role="radio"` **`aria-disabled="true"`** so a keyboard
+  user can arrow onto them and hear the reason text *why* (WCAG 2.1 AA), but they carry
+  **`tabindex="-1"`** like every non-active radio — i.e. they participate in arrow-key
+  roving, **not** the Tab sequence (this keeps the roving-tabindex contract intact rather
+  than the earlier `tabindex="0"`, which would have broken the single-tab-stop radiogroup
+  rule). They are **never** just visual dimming and **never** removed from arrow navigation.
 - The §9 **non-developer walkthrough per platform** is the validation that this is
   *actually* usable, not just spec-compliant.
 
@@ -503,6 +539,24 @@ typed wrappers; feature code calls those.
   **Channel** (below). The pattern mirrors the platform's "respond immediately,
   stream/poll the rest" posture.
 
+#### IPC call-timing on the Confirm → Targets → Destination flow `[DECIDED]`
+The §5.2 state machine leaves *which transition* fires C3/C4/C5 implicit; pinned here so
+the Phase-3 task list is unambiguous:
+- **C3 `get_targets`** is called **on the Confirm → Targets transition (3 → 4)** — the UI
+  enters `Targets` only **after** C3 resolves (so the FormatPicker always has its tiles +
+  pre-highlighted default before it is shown). C3 is a pure function of detection (no
+  engine), so it is cheap.
+- **C4 `plan_output`** is called **once a target is selected** — i.e. **eagerly on entry
+  to `Targets` with the pre-highlighted default already selected**, then **re-called
+  (debounced ~150 ms) on any target change or option change** so the `DestinationBar`
+  "will save to …" line, the divert preview, the `rerun` prompt, and the
+  `preflight.up_front_fail` verdict never go stale. The SSOT requires a destination preview
+  **before** Convert, so C4 must have resolved before the Convert button is enabled.
+- **C5 `set_destination`** is called **only when the user changes the destination** via
+  the C2b `pick_destination` picker (Change-destination); it re-evaluates the
+  destination-dependent preflight and **carries `rerun` through unchanged** (§2.5.1
+  destination-independence). It is **not** part of the default forward path.
+
 ### Progress subscription lifecycle (Channel)
 Per-item and batch progress stream from Rust via a **`tauri::ipc::Channel`**
 (ordered delivery — correct for sequential progress) passed *into* the
@@ -540,6 +594,20 @@ async function startRun(plan: StartArgs): Promise<void> {
   per tick. SR announcements are throttled separately (§5.6).
 - **Run/instance identity** (`runId`, single-vs-multi-instance) is owned by **§7.1**
   — the frontend just carries the `runId` the backend assigned.
+
+### Intake scan telemetry subscription (Channel)
+Mirrors the progress-subscription lifecycle for the **`onScan` `Channel<ScanProgress>`**
+(§0.4.1 C1 / C2a, §0.4.2): the frontend **creates** the `onScan` Channel when it issues
+**C1 `ingest_paths`** (or **C2a `pick_for_intake`**), sets `ch.onmessage = (m) =>
+store.setScanCount(m.scanned)` so the §5.2 *Collecting* "Scanning… N files so far"
+display updates (≈2/s, throttled, coalesced into animation-frame updates like the
+progress map), and **drops** the Channel when C1/C2a resolves (the `CollectedSet` returns)
+— after which the UI leaves *Collecting*. The Channel is **command-scoped** (not an
+`app://` event, so it does not count against the §0.4.2 three-event invariant). If no
+count has arrived yet, *Collecting* shows the indeterminate "looking at your files…"
+fallback (§5.2 state 2). **Cancellation:** the §5.2 cancel-collect control / **Esc**
+fires **C13 `cancel_ingest`** with the same `CollectingId` (§5.10) and drops the Channel;
+the partial set is discarded Rust-side (§1.1).
 
 ### Cancellation — optimistic vs confirmed round-trip
 SSOT *Visible progress, cancellable* + the cancel **mechanism owned by §1.7**
@@ -597,7 +665,10 @@ they do not count against the three-event invariant):
   `app://intake` received **outside** `Idle`/`Summary` is **ignored** (belt-and-braces
   — under the core gate it cannot arrive mid-`Converting`; ignoring it elsewhere
   prevents a mid-flow set-swap if the core gate ever regressed). Owned/emitted by
-  §7.8.1; consumed here.
+  §7.8.1; consumed here. **When the UI guard suppresses an `app://intake` received
+  outside `Idle`/`Summary`, it renders the passive `BusyNotice` Banner (§5.3) under the
+  `AppHeader`** so the refuse is visible rather than a silent drop (the running batch is
+  never interrupted).
 
 ### `RunStarted.willReencode` consumption
 `RunStarted` (§0.4.2) carries `willReencode?: boolean` (the §2.9.2 best-effort
@@ -652,7 +723,10 @@ nothing.
   **still purely local — nothing is sent**, §2.11). Off by default. **Persistence
   `[DECIDED]`:** `verboseLog` is the **3rd key in the §7.4 prefs blob** (alongside
   `theme` + `lastDestinationMode`), so the choice persists across launches; the
-  earlier "if §7.4 ships" hedge is removed (§7.4 is `[DECIDED]`). This is the §7.5.3
+  earlier "if §7.4 ships" hedge is removed (§7.4 is `[DECIDED]`). **Effect timing
+  `[DECIDED]`:** because `tauri-plugin-log` sets verbosity at plugin-init (read once at
+  startup, §7.5.3), the toggle **takes effect on the next launch** — so it shows an
+  **"applies after restart"** hint next to the label. This is the §7.5.3
   surface; the toggle's *behaviour* is owned by §7.5.
 - **Opening:** reachable from a header/menu affordance and the **F1 / ?**
   accelerator (§5.10); a modal dialog with focus-trap + **Esc** to close (§5.6).

@@ -224,12 +224,17 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   verboseLog), OS config dir. Owner: §7.4.
 - **Verbose-log toggle persistence** — `verboseLog` is the **3rd §7.4 prefs key**
   (persisted across launches), not session-only; the earlier "if §7.4 ships" hedge is
-  removed (§7.4 is `[DECIDED]`). Owner: §7.4 / §5.9 / §7.5.
+  removed (§7.4 is `[DECIDED]`). **Effect timing = read-at-startup → effective next
+  launch** (tauri-plugin-log sets verbosity at plugin-init); the About toggle shows
+  "applies after restart". Owner: §7.4 / §5.9 / §7.5.
 - **Logging** — ship the **local on-disk log + verbose opt-in** (privacy-by-default,
   no network). Owner: §7.5.
-- **Instance hand-off while RUNNING** — **refuse-busy**. Owner: §7.1.
-- **Engine integrity verification** — **hash-on-first-launch + cheap warm check**.
-  Owner: §7.2.
+- **Instance hand-off while RUNNING** — **refuse-busy** (UI surface = the `BusyNotice`
+  Banner, §5.3). Owner: §7.1.
+- **Engine integrity verification** — **`[DECIDED]` hash-on-first-launch + cheap warm
+  check**; cache = a `engine-integrity.json` marker in the OS config dir (next to, not
+  inside, the prefs blob) keyed on `app_version` (re-hash on absent/version-mismatch,
+  presence+size/header check otherwise). Owner: §7.2.3 (SSOT DoD gate 19).
 - **Sign `SHA256SUMS`** — **yes, project minisign key** (manifest signature, not
   code-signing). Owner: §6.2.
 - **CI runners** — **GitHub-hosted mac/win, self-hosted Linux for Lane A** (budget
@@ -267,7 +272,9 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   EngineDescriptor`; the §0.9 pool reads `registry.engine(id).descriptor().serialised_only`
   before dispatch. Owner: §3.2 / §0.9.
 - **Pre-flight SkippedItems ARE in `RunResult.items`** (projected as `ItemResult { state:
-  Skipped(reason), output: None, reason }`, counted in `Totals.skipped`). Owner: §1.12 / §0.6.
+  Skipped(reason), output: None, reason: Some(OutcomeMsg::Skipped{..}) }`, counted in
+  `Totals.skipped`). The reason rides the skip-shaped `OutcomeMsg::Skipped` variant (§2.8),
+  **not** `OutcomeMsg::Failure`, so skip ≠ fail at the type level. Owner: §1.12 / §0.6 / §2.8.
 - **PreflightVerdict.up_front_fail is whole-batch only** — per-item too-big/out-of-disk is
   enforced at write-time (mid-run), not an up-front per-item list. Owner: §0.6 / §1.10.
 - **§2.1.2 no-placeholder publish is the single mechanism** — the `create_new`-reserve
@@ -277,8 +284,11 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   §2.2 create-only numbering; Windows publish is always `MoveFileExW`-without-`REPLACE`.
   Owner: §2.1.2 / §2.5.2.
 - **§2.3.3 parent-swap race closed by dir-handle-relative publish** — Windows
-  `NtSetInformationFile(FileRenameInformationEx)` with the verified parent HANDLE as
-  `RootDirectory`, `ReplaceIfExists = FALSE` → `STATUS_OBJECT_NAME_COLLISION`; Unix
+  `NtSetInformationFile(…, FileRenameInformationEx)` with a `FILE_RENAME_INFORMATION_EX`
+  whose `RootDirectory` is the verified parent HANDLE and whose `Flags` bitfield OMITS
+  `FILE_RENAME_REPLACE_IF_EXISTS` (the Ex class's no-replace — NOT the boolean
+  `ReplaceIfExists` of the non-Ex struct) → `STATUS_OBJECT_NAME_COLLISION`; bounded
+  AV-retry on transient NTSTATUS `STATUS_ACCESS_DENIED`/`STATUS_SHARING_VIOLATION`. Unix
   `linkat`/`renameat2(…, newdirfd, …, RENAME_NOREPLACE)` (NOT `openat O_CREAT|O_EXCL`).
   Owner: §2.3.3 / §2.1.2.
 - **libimagequant = BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** — upstream 4.x
@@ -303,8 +313,10 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **willReencode note timing** — surfaced at target choice (state 4, C3
   `Target.lossy=video_reencode`); `RunStarted.willReencode` only confirms/clears it.
   Owner: §5.7 / §5.8 / §2.9.2.
-- **fs module canonical = `core::fs_guard`** (layer "guarantees-fs", dir `fs_guard/`);
-  `fs_guarantees` module name retired. Owner: §2.0 / §0.7.
+- **fs module canonical = `crate::fs_guard`** (layer "guarantees-fs", dir `fs_guard/`);
+  `fs_guarantees` module name retired. Path is `crate::fs_guard` **not** `core::fs_guard`
+  (in a Rust binary crate `core` is the no_std stdlib crate, so an app module can't be
+  named `core`). Owner: §2.0 / §0.7.
 - **engine manifest filename = `engines.lock`** (the §3.7.2 `engines.toml` mention fixed).
   Owner: §3.7.2.
 - **macOS automated E2E = defined degraded smoke test** (launch + synthetic-argv
@@ -312,7 +324,54 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   Was `[OPEN]`. Owner: §6.4.6.
 - **Usability-floor tester sourcing** — ≥1 genuine non-dev walkthrough on ≥1 platform;
   owner (developer) may run the other two where no non-dev tester is available (solo/hobby
-  project). Was `[OPEN-6.6a]`. Owner: §6.6.
+  project). Was `[OPEN-6.6a]`. **SSOT-acknowledged** relaxation of §9 "per platform" (§6.6
+  SSOT note). **§6.10 DoD row 11 now matches §6.6.** Owner: §6.6.
+
+#### Resolved in this convergence fix pass `[DECIDED]`
+- **Engine network control for T9b = always-on argv/build, NOT the OS sandbox** — FFmpeg
+  `-protocol_whitelist file,pipe` + network-disabled build (§6.1.3 `ffmpeg -protocols`
+  assertion), pandoc `--sandbox`, LibreOffice profile-hardening (no remote/OLE link
+  auto-update). The §0.11 threat split into **T9a** (app's own code opens no socket —
+  structural) and **T9b** (a bundled engine coerced out on hostile input — argv/build +
+  §6.4.2 adversarial-egress case). The OS network-deny (§2.12.3) is defence-in-depth only.
+  Owner: §3.5.1/§3.5.2/§3.5.4 / §0.11 / §2.11.
+- **`.svgz` in-core inflate = pure-Rust `flate2 rust_backend`/miniz_oxide**, ≤64 KiB +
+  ≤100× ratio cap; §2.12.4 absolute reworded to "no third-party **C/C++** decoder in-core"
+  (the three bounded pure-Rust sniffs don't violate it). Owner: §1.2 / §2.12 / §0.8.
+- **Resource pre-flight free-space = PER-DESTINATION-VOLUME** (grouped by each item's
+  resolved `final_dir` volume), not a single aggregate — fixes the beside-source/divert
+  multi-volume case. Owner: §1.10 / §2.14.4 / §0.6.
+- **externalBin sidecar runtime path** = bare name beside the app exe via
+  `current_exe().parent()` (Tauri strips the target-triple suffix on bundle; the suffix is
+  build/stage-time only); `BaseDirectory::Resource` is for resources-tree binaries only.
+  Owner: §3.3.3 / §3.2.2.
+- **`RotationStrategy` API fact corrected** — three variants `KeepAll | KeepOne |
+  KeepSome(usize)` (no `KeepN`); we keep `KeepOne` (on-disk max ≈ `max_file_size`, single
+  file, old deleted on rotation). Promoted `[REC]`→`[DECIDED]`. Owner: §7.5.2.
+- **`Invocation` (plan, §3.2.2) vs `EngineInvocation` (dispatch envelope, §1.7)** — the
+  latter wraps `(JobId, EngineId, Invocation, CancellationToken)`; duplicated argv/cwd/env
+  removed from §1.7. `TempPath = tempfile::TempPath`. `InvocationResult` carries the
+  Rust-internal `ConversionErrorKind`, mapped to wire `ErrorKind` only at §0.4.3. Owner:
+  §3.2.2 / §1.7.
+- **`OutcomeMsg::Skipped { reason: SkipReason }`** added — a pre-flight skip rides a
+  skip-shaped variant (not `Failure`), so skip ≠ fail at the type level. Owner: §2.8 / §1.12.
+- **process-wrap = the maintainer-described successor to command-group** (was wrongly
+  "not a successor"). Owner: §1.7.
+- **UI component homes added** — `AppHeader` (BrandLogo + ThemeToggle + About), `BusyNotice`
+  (refuse-busy Banner, §7.1.1), `ThemeToggle`, and the DropZone **choose-folder** affordance;
+  **no `Toast` primitive** ("Toast?" resolved → Banner). C3/C4/C5 **IPC call-timing** pinned
+  (§5.8). AppFault→Idle diagram arrow relabelled "Start over". Owner: §5.3 / §5.5 / §5.8.
+- **Automated a11y gate** = axe-core via vitest-axe (Lane A, §6.4.6a/§6.7.1): WCAG 2.1 AA
+  contrast (both themes), ARIA-role validity, focus-order. Owner: §6.4.6a / §6.10 row 6.
+- **minisign signature is unconditional/DECIDED** (the "optional"/"if it ships" hedges
+  removed, §6.2.3/§6.2.4/§6.10 row 12). **CycloneDX `specVersion 1.5` pinned for ALL SBOM
+  inputs** (§6.3.1). **engines.lock SPDX fixed**: x264 `GPL-2.0-or-later`, poppler
+  `GPL-2.0-only OR GPL-3.0-only`, libaom `BSD-2-Clause AND AOMedia-Patent-License-1.0`
+  (§3.1). Owner: §6.2 / §6.3 / §3.1.
+- **verboseLog effect timing = read-at-startup → next launch** (About toggle: "applies
+  after restart"). **Engine-integrity cache** = `engine-integrity.json` in the config dir,
+  keyed on `app_version`. **First-launch macOS `Opened` buffer-then-replay** (avoids the
+  listener race). Owner: §7.5.3 / §7.2.3 / §7.8.1.
 
 ### Deferred to corpus / usability validation `[DEFER: corpus]`
 > Design decided; only an empirical number or a real-world validation remains. These
@@ -362,8 +421,18 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   `DYLD_*`) is non-negotiable v1; how far the privilege-drop tier (seccomp/Landlock /
   Seatbelt / Job-Object + low-integrity) goes is a real engineering/portability call.
   Owner: §2.12. *(Note: the libvips in-process-vs-worker question is now DECIDED —
-  separate image-worker process — and is no longer open.)*
-- **In-core text-encoding heuristic / Rust ZIP central-directory peek** — may it stay
-  outside the §2.12 isolation boundary (lean: yes, memory-safe/bounded). Owner: §2.12
+  separate image-worker process — and is no longer open. **Also DECIDED:** the engine
+  network control for T9b is NOT this OS tier — it is the always-on, cheap-tier
+  **argv/build** control (FFmpeg `-protocol_whitelist file,pipe` + network-disabled build,
+  pandoc `--sandbox`, LibreOffice link-update-off, §3.5.1/§3.5.4/§3.5.2); the OS
+  network-deny is defence-in-depth only. So only the privilege-drop **depth** is open, not
+  the network guarantee.)*
+- **In-core memory-safe sniffs vs the §2.12 isolation boundary** — may the
+  **text-encoding heuristic**, the **Rust ZIP central-directory peek**, and the
+  **`.svgz` bounded inflate** (`flate2 rust_backend`/miniz_oxide — pure safe Rust, **no
+  C/C++ decoder**; capped at ≤64 KiB inflated + ≤100× ratio, §1.2 step 2) stay outside
+  the §2.12 isolation boundary (lean: yes — all memory-safe/bounded, none is a full
+  decode and none links a third-party C/C++ decoder). The §2.12.4 absolute is worded "no
+  third-party **C/C++** decoder in-core" so these three do not violate it. Owner: §2.12
   (raised by §1.2). *(This is the one genuinely-open isolation-boundary owner call;
   everything else from the prior convergence pass is now DECIDED or DEFER:corpus.)*

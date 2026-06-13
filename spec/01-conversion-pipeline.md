@@ -128,6 +128,14 @@ cannot enumerate a directory (§0.4). Recursion:
   (no temp/`*.part` is written during ingest; the freeze and any conversion happen
   after). This is what backs the §5.2 *Collecting*-state cancel-collect control,
   needed because a thousands-file recursive walk (§1.10) can run long.
+  - **C2a native-dialog phase scope `[DECIDED]`:** for **C2a `pick_for_intake`** the
+    Rust-side OS-modal dialog opens **before** any walk begins. To keep C13 honest, the
+    handler **registers the `CollectingId` token at handler entry — before opening the
+    dialog** — so a C13 arriving during the dialog **cleanly abandons the C2a result**
+    (the handler checks the token after the dialog returns and yields `CollectedSet::Empty`
+    rather than walking the picked paths). The OS dialog box itself is not force-closed by
+    C13 (no portable API to do so), but its result is discarded — so C13 is never a silent
+    no-op. (A drop/launch-arg C1 has no dialog phase; the token covers the whole walk.)
 
 ### Freeze point `[DECIDED]`
 
@@ -183,14 +191,24 @@ batch grouping (§1.3).
      **container**, e.g. MKV). The probe depth here is **header-level only**; the
      full `ffprobe` stream inventory is an engine-layer concern (§3.5), invoked
      later, not during the cheap detection pass.
-   - **gzip wrapper (`.svgz`)**: a file whose magic is **`1F 8B`** (gzip) is not
-     itself a recognised format — ConvertIA **decompresses one bounded block** and
-     re-sniffs the inner bytes; if the inner content is an SVG root (`<svg` after
-     optional `<?xml`/BOM/DOCTYPE), the file is classified **`Svg`** (the
-     `.svgz` compressed-SVG case the corpus §6.4.5 requires — it does **not** decode
-     as text, so it must be caught here, not in step 3, or it would drop silently as
-     unrecognised). Cross-ref images.md (SVG `.svgz` handling). Other gzip-wrapped
-     content is `UnsupportedType` ("detected: gzip archive").
+   - **gzip wrapper (`.svgz`)** `[DECIDED — pure-Rust bounded inflate, in §2.12 boundary
+     [OPEN]]`: a file whose magic is **`1F 8B`** (gzip) is not itself a recognised format
+     — ConvertIA **inflates one bounded block** and re-sniffs the inner bytes; if the
+     inner content is an SVG root (`<svg` after optional `<?xml`/BOM/DOCTYPE), the file is
+     classified **`Svg`** (the `.svgz` compressed-SVG case the corpus §6.4.5 requires — it
+     does **not** decode as text, so it must be caught here, not in step 3, or it would
+     drop silently as unrecognised). **Decoder choice (so the §2.12.4 isolation absolute
+     is not violated):** the inflate is done with a **pure-Rust DEFLATE** — `flate2` pinned
+     to the **`rust_backend` feature (miniz_oxide, safe Rust, no C compiler)**, NOT a
+     zlib/zlib-ng C backend — so no third-party **C/C++** decoder runs inside the Rust core
+     on untrusted bytes. It is **strictly bounded**: read at most **§-pinned MAX_SVGZ_SNIFF
+     = 64 KiB** of inflated output and enforce a **decompression-ratio cap (≤ 100×)**,
+     aborting (→ `UnsupportedType`) on either limit — defeats the decompression-bomb class.
+     This sniff is folded into the §2.12 in-core-boundary `[OPEN]` alongside the
+     text-encoding heuristic and the Rust ZIP central-directory peek (see §2.12 / the
+     README log). Cross-ref images.md (SVG `.svgz` handling — the worker re-inflates with
+     librsvg's own bounded loader for the actual raster). Other gzip-wrapped content is
+     `UnsupportedType` ("detected: gzip archive").
 3. **Text classification** for the magic-less formats (TXT/MD/CSV/TSV/SVG): confirm
    the bytes decode as text (BOM → strict UTF-8 → single-byte codepage fallback),
    then apply the per-file rules (SVG root element; CSV/TSV delimiter sniff;
@@ -279,21 +297,23 @@ Detection is **the first code that touches untrusted bytes**, so its placement
 relative to the §2.12 isolation boundary is security-relevant:
 
 - **Header-only magic sniff + ZIP/OLE/`ftyp` structural peeks + text/encoding
-  classification run in-core** (in the Rust process). `[REC]` rationale: these are
-  bounded reads parsed by **memory-safe Rust** crates (e.g. `infer`/custom matcher
-  for magic, a Rust ZIP reader for the content-type member, an encoding detector
-  such as `chardetng`) over a **capped window** — they do not invoke a
-  third-party C/C++ decoder, so the classic decoder attack surface (§0.11
-  "untrusted decoder input") is not yet engaged. Keeping detection in-core makes
-  the cheap pass fast (no subprocess per item for thousands of files).
+  classification + the `.svgz` bounded inflate run in-core** (in the Rust process).
+  `[REC]` rationale: these are bounded reads parsed by **memory-safe Rust** crates (e.g.
+  `infer`/custom matcher for magic, a Rust ZIP reader for the content-type member, an
+  encoding detector such as `chardetng`, and **`flate2` pinned to its `rust_backend`
+  (miniz_oxide) feature** for the `.svgz` 1F-8B inflate — pure safe Rust, no C decoder)
+  over a **capped window** (the `.svgz` inflate additionally capped at ≤64 KiB + ≤100×
+  ratio) — they do not invoke a third-party C/C++ decoder, so the classic decoder attack
+  surface (§0.11 "untrusted decoder input") is not yet engaged. Keeping detection in-core
+  makes the cheap pass fast (no subprocess per item for thousands of files).
 - **The full decode** (anything that hands bytes to libvips/FFmpeg/LibreOffice/
   poppler/pandoc) happens only at **conversion time**, **inside** the §2.12
   boundary (§1.7 routes every invocation through the isolation wrapper).
-- `[OPEN — owner §2.12]` whether the **text-encoding heuristic** and any
-  Rust-side ZIP central-directory parse are considered "trusted enough" to stay
-  in-core, or must also be isolated. Lean: in-core (memory-safe, bounded). Flagged
-  because §2.12 owns the final isolation-boundary line, not §1.2. → open-questions
-  log.
+- `[OPEN — owner §2.12]` whether the **text-encoding heuristic**, any Rust-side ZIP
+  central-directory parse, and the **`.svgz` pure-Rust bounded inflate** are considered
+  "trusted enough" to stay in-core, or must also be isolated. Lean: in-core (all
+  memory-safe, bounded, no third-party C/C++ decoder). Flagged because §2.12 owns the
+  final isolation-boundary line, not §1.2. → open-questions log.
 
 ---
 
@@ -625,19 +645,27 @@ spawn ─▶ Running ──(progress events)──▶ ...
             └──▶ spawn error (binary missing/denied) ─▶ Failed/AppFault [→ §2.13]
 ```
 
+**`EngineInvocation` is the dispatch envelope, NOT a second plan type.** `[DECIDED]`
+The plan-time artifact is the §3.2.2 **`Invocation`** returned by `Engine::plan()` (it
+owns `program`/`args`/`cwd`/`env`/`stdin`/`progress`/`out_tmp` — the single source of
+the argv/cwd/env). `EngineInvocation` (this section) is only the **dispatch envelope**
+the §1.7 lifecycle submits to the §0.9 pool: it wraps `(JobId, EngineId, Invocation,
+CancellationToken)` and adds nothing the §3.2 `Invocation` already carries. It does
+**not** re-declare argv/work_dir/env (those live in the wrapped `Invocation`):
+
 ```rust
 struct EngineInvocation {
     job: JobId,
-    engine: EngineId,            // vips | ffmpeg | soffice | poppler | pandoc (§3.1)
-    argv: Vec<OsString>,         // BUILT BY §3.5 — opaque to this layer
-    work_dir: PathBuf,           // per-run scratch (§2.6/§2.14)
-    env: Vec<(OsString, OsString)>,
+    engine: EngineId,            // (see §0.6 EngineId — the canonical variant set)
+    plan: Invocation,            // §3.2.2 — the plan artifact: program/args/cwd/env/stdin/out_tmp
     cancel: CancellationToken,   // tokio_util::sync::CancellationToken
 }
 
 enum InvocationResult {
     Succeeded,
-    Failed(ErrorKind),           // mapped to the §2.8 taxonomy
+    Failed(ConversionErrorKind), // §2.8 taxonomy (the Rust-internal kind, §2.8 owner);
+                                 //   the orchestrator maps to the IPC `ErrorKind` only at the
+                                 //   §0.4.3 boundary (IpcError { kind: ErrorKind::from(kind), .. })
     Cancelled,
 }
 ```
@@ -683,8 +711,10 @@ leader** and kills the **whole group**, so one cancel/kill tears down the engine
 *and all its descendants* atomically.
 
 - **Mechanism:** wrap each spawn with the **`process-wrap`** crate (cross-platform
-  process-group / Windows Job-Object creation for engine-tree teardown — an independent
-  crate with a purpose overlapping `command-group`, not a successor/migration of it),
+  process-group / Windows Job-Object creation for engine-tree teardown — the
+  maintainer-described **successor to `command-group`** by the same author, carrying much
+  of its code; versioning starts at 6.0.0 and the paradigm shifts to **composable
+  per-concern wrappers** rather than command-group's single cross-platform API),
   composed over `tokio::process`:
   - **Windows:** `JobObject` wrapper — the engine and all its children join one
     **Win32 Job Object**; killing the job (or closing its last handle with
@@ -719,10 +749,12 @@ leader** and kills the **whole group**, so one cancel/kill tears down the engine
      **timeout-bounded** (a short cap, generous enough for normal teardown) so a wedged
      descendant — e.g. one blocked in uninterruptible kernel I/O on a dead mount —
      **cannot hang the UI / quit path** (SSOT *app stays responsive*). On timeout the
-     item is marked `Cancelled`/`Failed` and the §2.6 reclamation of its temp is
-     **deferred to the §2.6 sweep** (the publish temp is a run-owned `*.part` dotfile,
-     safe to reclaim later) rather than blocking on the stuck handle. This bound is what
-     keeps §7.3.3 quit-while-converting from hanging on an unkillable descendant.
+     item is marked `Cancelled`/`Failed`, its temp reclamation is **deferred to the §2.6
+     sweep** (the publish temp is a run-owned `*.part` dotfile, safe to reclaim later)
+     rather than blocking on the stuck handle, **and the item carries a `CleanupResidue`
+     so the deferred temp is surfaced honestly** — a Cancelled item gets the §2.8.2
+     "With residue" summary tail (§2.6.4 case 3), never a silent leftover. This bound is
+     what keeps §7.3.3 quit-while-converting from hanging on an unkillable descendant.
   3. **Then** invoke §2.6 cleanup to remove the per-job temp artifact. Because the
      final output is promoted only by the §2.1 atomic rename **after** a clean exit,
      a killed job has **no visible output** to undo — only the temp to discard.
@@ -904,20 +936,30 @@ struct SizeEstimate {
 - **Headroom margin:** require **free space ≥ (est_output + est_scratch) × margin**.
   `[REC]` margin **1.3×** as a starting value (confirm against the §6 corpus).
 - **Decision (the up-front-vs-mid-run split, made precise) `[DECIDED]`:**
-  - **Whole-batch doomed** (the aggregate estimate exceeds the ceiling, or total free
-    space can't fit the batch) → `PreflightVerdict.up_front_fail = Some(TooBig|OutOfDisk)`
-    (§0.6), surfaced **up front before any conversion** as the §5.2 disable-Convert-
-    wholesale flag (SSOT *fails fast up front*). This is the **only** up-front fail
-    carrier — it is batch-level by design.
+  - **Whole-batch doomed is PER-DESTINATION-VOLUME, not a single aggregate `[DECIDED]`.**
+    The §2.7 beside-source default lands each item's temp+final on its **own source
+    volume** (§2.14.1), and per-location divert sends some items to Downloads and others
+    beside themselves — so a batch routinely spans **2+ destination volumes with no single
+    destination volume**. A summed check against one volume's free space is therefore
+    **wrong** (5 GB destined for a 1 GB USB stick would falsely PASS against 500 GB of
+    internal free space, then fail one-by-one mid-run — defeating "fail fast, up front").
+    Instead: **group each item's estimated (output + scratch) footprint by the volume its
+    resolved `final_dir` lands on** (computable in C4 after the §2.7 divert classification,
+    before convert) and require headroom on **each** volume **independently**. Set
+    `PreflightVerdict.up_front_fail = Some(OutOfDisk)` when **any one volume's grouped
+    footprint cannot fit that volume's free space** (× the headroom margin). `TooBig`
+    (the absolute output-size ceiling) stays per-item / aggregate as before. This is the
+    **only** up-front fail carrier — batch-level by design, but evaluated per-volume.
   - **Per-item too-big / out-of-disk** is **enforced at WRITE TIME (mid-run)**: when an
     item's own size/space breaches the budget (or real disk usage outruns the estimate),
     its §2.1 write fails, §2.6 restores free space, and the item is reported as
     `Failed(TooBig|OutOfDisk)` (§2.8) **while the batch continues** (§1.9/§1.11 fast-fail
     surfacing). There is **no** per-item up-front-fail list on `PreflightVerdict`; a
     per-item doom shows as that item's mid-run terminal row, not a pre-convert verdict.
-  - So: **estimate up front; the whole-batch doom fails up front; per-item doom is
-    enforced at the write** — the SSOT "preferably up front" is honoured by the
-    whole-batch verdict, and per-item correctness is honoured at write time.
+  - So: **estimate up front; the per-volume whole-batch doom fails up front; per-item doom
+    is enforced at the write** — the SSOT "preferably up front" is honoured by the
+    per-volume whole-batch verdict (which now correctly catches the doomed-USB-volume case
+    in the common beside-source layout), and per-item correctness is honoured at write time.
 
 ### Ceilings & large lists `[DECIDED design; DEFER: corpus numbers]`
 
@@ -959,6 +1001,7 @@ long conversion. The fraction source per engine (parsed by §3.5, normalised by
 | **libvips** (images) | Fast/near-atomic; coarse ticks (start → done) plus libvips' progress signal where available; tiny files are effectively instant |
 | **LibreOffice** (office/PDF) | No native progress signal → a **bounded indeterminate-but-animated** state with a watchdog (still reads as "working"); `[REC]` show a determinate-looking staged bar (spawn → render → export → write) rather than a raw spinner, to honour the spirit of the promise |
 | **poppler / pandoc** | Usually fast; staged ticks; large PDFs report per-page where `pdftotext` allows |
+| **Native CSV/TSV** (in-process, §3.5.6) | `[DECIDED]` fraction = **`bytes_processed / source_size`** emitted per N-KB chunk as the in-process engine streams the file (there is no subprocess to watch, so it self-reports). For **sub-100 KB inputs** it is effectively instant → falls back to a **start→done** (`CoarseSpawnDone`-equivalent) tick. So even the only non-subprocess engine reports a real fraction (or an honest start→done for tiny files), never a bare spinner. |
 
 ```rust
 // payload SHAPE is §0.4.2's `ItemProgress` { runId, itemId, fraction, stage };
@@ -1029,10 +1072,13 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
   `SkippedItem`s held in `CollectedSet::Single.skipped` (the unsupported / uncertain /
   empty / unreadable-at-intake items that **never entered the queue**, §1.1/§1.3) are
   **projected into `RunResult.items` at run-end** as
-  `ItemResult { source, state: JobState::Skipped(reason), output: None, reason: Some(OutcomeMsg::Failure{ kind, .. }) }`
-  (the `kind` is the `SkippedItem.reason` §2.8 kind, e.g. `UnsupportedType`/`Empty`/
+  `ItemResult { source, state: JobState::Skipped(reason), output: None, reason: Some(OutcomeMsg::Skipped{ reason, .. }) }`
+  (the `reason` is the `SkippedItem.reason` `SkipReason`, e.g. `UnsupportedType`/`Empty`/
   `Unreadable`/`Unrecognized`). They are **counted in `Totals.skipped`** (never
-  `failed`). This gives the §5.2 Summary UI a single uniform source for every item's
+  `failed`). **The reason rides the skip-shaped `OutcomeMsg::Skipped` variant** (§2.8),
+  **not** `OutcomeMsg::Failure` — so a consumer pattern-matching `OutcomeMsg` can tell a
+  skip from a fail without also reading `ItemResult.state` (§0.6 keeps `Skipped` and
+  `Failed` distinct and §1.12 `Totals` counts them separately; they must not be conflated). This gives the §5.2 Summary UI a single uniform source for every item's
   source path + reason — pre-flight skips and in-run outcomes render the same way — and
   resolves the otherwise-ambiguous "where does the Summary get a skipped item's
   source/reason" question: it is in `RunResult.items`. (The pre-flight skip is **also**
@@ -1046,7 +1092,7 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
 | ID | Item | Owner | Status |
 |----|------|-------|--------|
 | 1.10-a | Resource budgets: absolute "too big" output ceiling, memory/handle ceilings, per-category size-heuristic constants, headroom margin (1.3×), GIF duration cap (~10 s) | §1.10 (co-owned §0.9 + 04) | `[DEFER: corpus]` — ship with the stated finite starting values; calibrate against the §6 corpus (design is decided, only the numbers are empirical) |
-| 1.2-sec | Whether the in-core text-encoding heuristic / Rust ZIP central-directory peek may stay outside the §2.12 isolation boundary (lean: yes — memory-safe, bounded) | §2.12 (raised by §1.2) | `[OPEN]` — genuine isolation-boundary owner call |
+| 1.2-sec | Whether the in-core text-encoding heuristic / Rust ZIP central-directory peek / **`.svgz` pure-Rust bounded inflate (flate2 `rust_backend`/miniz_oxide, ≤64 KiB + ≤100× ratio cap)** may stay outside the §2.12 isolation boundary (lean: yes — all memory-safe, bounded, no third-party **C/C++** decoder) | §2.12 (raised by §1.2) | `[OPEN]` — genuine isolation-boundary owner call (now covers all three in-core sniffs) |
 
 ### Resolved here with a recommended default (`[REC]`)
 

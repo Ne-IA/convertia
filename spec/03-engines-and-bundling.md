@@ -37,13 +37,13 @@ every one; they cluster into four families:
 |---|---|---|---|---|---|---|
 | 1 | **libvips** (raster core; built with libheif/libde265, libaom/dav1d, the native **`svgload` SVG load module (librsvg)**, **cgif** for native `gifsave`, and a **REQUIRED ImageMagick** delegate for BMP+ICO save and GIF fallback) | Images | `04-formats/images.md` (raster↔raster, SVG→raster, HEIC/AVIF **decode**, HEIC↔AVIF via `heifsave`) | **LGPL-2.1+** (libvips); **cgif MIT**; see per-component rows | linked lib **inside the image-worker process** (LGPL — dynamic link OK, §3.6) | none for its own codecs |
 | 1a | **libheif + libde265** (HEVC decode) + **x265** (HEVC encode, built as a **dynamically-loaded libheif encoder plugin** `.so`/`.dll`/`.dylib`, not statically linked) — used by libvips' HEIC load module via `heifsave compression=hevc` | Images | HEIC decode (vips) / HEIC encode | libheif **LGPL-3.0**, libde265 **LGPL-3.0**, **x265 GPL-2.0-or-later** (verify vs the pinned source's `COPYING`; -or-later is compatible with the LGPL-3.0 libheif host, GPL-2.0-only would not be) | **x265 → dynamically-loaded libheif *plugin*, isolated** (§3.6); libheif/libde265 LGPL link | **HEVC → §3.4** |
-| 1b | **AV1: libaom (enc, via libheif `heifsave compression=av1`) / dav1d (dec, via vips AVIF load module)** — the ONE bundled AV1 encoder is **libaom** (the standalone `libavif`+aom encoder is **not** bundled; encode standardised on `heifsave`, images.md [OPEN-1] [DECIDED]) | Images | AVIF decode/encode | aom **BSD-2 + patent grant**, dav1d **BSD-2** | LGPL/BSD link in the image worker | AV1 royalty-free; **ship-posture → §3.4** |
+| 1b | **AV1: libaom (enc, via libheif `heifsave compression=av1`) / dav1d (dec, via vips AVIF load module)** — the ONE bundled AV1 encoder is **libaom** (the standalone `libavif`+aom encoder is **not** bundled; encode standardised on `heifsave`, images.md [OPEN-1] [DECIDED]) | Images | AVIF decode/encode | libaom **`BSD-2-Clause AND AOMedia-Patent-License-1.0`** (the row MUST carry **both** the BSD-2-Clause code licence **and** the "Alliance for Open Media Patent License 1.0" from the `PATENTS` file — complete attribution, §3.7); dav1d **`BSD-2-Clause`** | LGPL/BSD link in the image worker | AV1 royalty-free; **ship-posture → §3.4** |
 | 1c | **librsvg** (SVG rasteriser — libvips' native `svgload` module is librsvg-backed; resvg is NOT a libvips backend at any released version, so it is **not shipped** [DECIDED]) | Images | SVG→raster | **LGPL-2.1+** (librsvg) | linked load module inside the image-worker (LGPL — dynamic link OK, §3.6) | none |
 | 1d | **ImageMagick** (libvips BMP/ICO save delegate — **REQUIRED**, plus GIF fallback) | Images | **BMP load+save, ICO save (`magickload`/`magicksave` — REQUIRED)**; GIF fallback | **ImageMagick License** (Apache-2.0-style, SPDX `ImageMagick`) — **permissive, NOT GPL** | linked delegate (permissive — no isolation); GPL *optional delegates* excluded at build | none |
-| 1e | **libimagequant** — **the BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** (PNG/GIF palette quantisation, used by libvips' `cgif`/`gifsave` and palette PNG output) | Images | PNG/GIF palette quantisation | **BSD-2-Clause** — and **only** via the frozen `lovell/libimagequant` v2.4.x fork (e.g. v2.4.1). **Upstream libimagequant 4.x is GPLv3-or-commercial — NOT permissive — and MUST NOT be bundled** (it would taint the LGPL image-worker). Pin the BSD fork by exact version+ref in `engines.lock`; a §6.1.3/§6.3.3 build assertion checks the staged `COPYRIGHT` actually contains the BSD-2 text. | linked/vendored **inside the image-worker process** (BSD fork only) | none |
+| 1e | **libimagequant** — **the BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** (PNG/GIF palette quantisation, used by libvips' `cgif`/`gifsave` and palette PNG output) | Images | PNG/GIF palette quantisation | **BSD-2-Clause** — and **only** via the frozen `lovell/libimagequant` v2.4.x fork (e.g. v2.4.1). **Upstream libimagequant 4.x is GPLv3-or-commercial — NOT permissive — and MUST NOT be bundled** (it would taint the LGPL image-worker). Pin the BSD fork by exact version+ref in `engines.lock`; a §6.1.3/§6.3.3 build assertion checks the staged `COPYRIGHT` actually contains the BSD-2 text. **ABI/soname coupling `[DECIDED]`:** libimagequant 4.x changed its **soname**, and the bundled libvips' `cgif`/`gifsave` (the §3.8 floor) links a **specific libimagequant version** — so the **bundled libvips MUST be built/linked against the v2.4.x-fork API/soname**, and a **§6.1.3 build/link assertion verifies the staged libvips resolves the bundled BSD libimagequant v2.4.x (NOT a system 4.x)**, not just that the COPYRIGHT text is BSD. | linked/vendored **inside the image-worker process** (BSD fork only) | none |
 | 2 | **FFmpeg** (**GPL-2.0+ build** — `./configure --enable-gpl` to link `libx264`; built **without `--enable-nonfree`**: `libmp3lame`, `libvorbis`, `libopus`, native `aac`/`flac`/`alac`/`pcm`, `libx264`, `libvpx-vp9`, WMA *decoders*; no `libfdk_aac`) | Audio, Video, Cross-category | `04-formats/audio.md`, `video.md`, `cross-category.md` | **GPL-2.0+** (the whole binary, because it enables GPL `libx264`; the LGPL component libs are still dynamically linked beside it, §3.6.1); written-offer-of-source obligation | **separate invoked binary** (`ffmpeg`/`ffprobe`) per §3.6 | **AAC, H.264 → §3.4**; MP3/Vorbis/Opus/FLAC/ALAC/PCM/VP9 patent-clean |
 | 3 | **LibreOffice** (headless `soffice`, Writer+Calc+Impress + PDF export filters; bundled with a baseline open font set, §3.9) | Documents, Spreadsheets, Presentations | `04-formats/documents.md`, `spreadsheets.md`, `presentations.md` (all office↔office + every `*→PDF`) | **MPL-2.0** (+ many bundled components — full set enumerated by the SBOM, §3.7) | **separate invoked binary** (sidecar process) per §3.6 | none |
-| 4 | **poppler** (`pdftotext`) | Documents | `PDF→TXT` | **GPL-2.0/GPL-3.0** | **separate invoked binary** (§3.6) | none |
+| 4 | **poppler** (`pdftotext`) | Documents | `PDF→TXT` | **`GPL-2.0-only OR GPL-3.0-only`** (a valid SPDX expression — *not* the bare `GPL-2.0/GPL-3.0`, which §6.3.3 would reject as unresolved) | **separate invoked binary** (§3.6) | none |
 | 5 | **Ghostscript** **[DECIDED: NOT shipped v1]** (was a PDF read/repair backstop behind poppler; no user-facing pair) | Documents | (malformed-PDF tolerance — dropped) | **AGPL-3.0** | not shipped (`[DEFER: re-add if §6.5 corpus shows GS-salvageable PDFs]`) | none |
 | 6 | **pandoc** | Documents | markup conversions (`MD/HTML/TXT ↔`, office→markup for XML/text sources) | **GPL-2.0+** | **separate invoked binary** (§3.6) | none |
 | — | **ConvertIA native CSV/TSV engine** (Rust, in-core) | Spreadsheets | `CSV↔TSV`, encoding/delimiter sniff | **MIT** (own code) | compiled into the core | none |
@@ -179,7 +179,10 @@ pub struct Invocation {
 /// (§3.3.3), never via the WebView shell — the path is resolved through Tauri's
 /// PathResolver (externalBin sidecar or a binary inside the resources tree §3.3.1).
 pub enum EngineProgram {
-    Sidecar(EngineId),            // externalBin, resolved to binaries/<name>-<triple>[.exe].
+    Sidecar(EngineId),            // externalBin. STAGED at build as binaries/<name>-<triple>[.exe];
+                                  //   Tauri STRIPS the triple on bundle, so at RUNTIME it is the
+                                  //   bare <name>[.exe] beside the app exe — resolve via
+                                  //   current_exe().parent() (§3.3.3), NOT BaseDirectory::Resource.
                                   //   The image-worker (libvips, §3.5.5) is ALSO Sidecar-class:
                                   //   a separate short-lived subprocess [DECIDED] (§0.6 note,
                                   //   §3.5.5, §3.6.1) — NOT linked into the core.
@@ -192,6 +195,15 @@ pub enum EngineProgram {
 
 /// How the engine's stdin is supplied (§3.5; pandoc sometimes reads bytes on stdin).
 pub enum StdinPlan { None, PipeBytes }
+
+/// The publish-temp the engine writes its output to. `[DECIDED]` This is
+/// `tempfile::TempPath` (tempfile is already in §0.8): a path whose file is deleted
+/// on drop, matching the §2.1 "path deleted on drop / never a placeholder" semantics.
+/// Lifecycle: the path is picked by `crate::run` inside the destination volume
+/// (§2.14.4) and OWNED by the §1.7 invocation; on item SUCCESS the §2.1 atomic publish
+/// consumes it (rename/link) so drop is a no-op; on failure/cancel drop (or the §2.6
+/// sweep) removes it. The engine only writes to it — it never owns deletion.
+pub type TempPath = tempfile::TempPath;
 
 /// A pure planning error (no I/O): the engine cannot build an Invocation for this
 /// job (e.g. an option value out of range). Mapped by §1.7 to a §2.8 kind
@@ -341,15 +353,23 @@ Rationale (this materially shapes §0.10 and §1.7):
   `tokio::process`, it resolves the bundled program path as follows (so Phase 3 does
   not rediscover it):
   - **externalBin sidecars** (ffmpeg, ffprobe, pdftotext, pandoc, the soffice
-    launcher where single-file): the triple-suffixed binary sits beside the app
-    executable, resolved via **`std::env::current_exe()`** + the target-triple suffix
-    Tauri stages (`<name>-<target-triple>[.exe]`), or equivalently
-    `app.path().resolve("<name>", BaseDirectory::Resource)` where the bundler places
-    them in the resource dir. Either resolves to an **absolute path**; `PATH` is never
-    relied on (§3.5 env note).
-  - **resources-tree binaries** (the LibreOffice `program/soffice.bin`):
-    **`app.path().resolve("engines/libreoffice/program/soffice", BaseDirectory::Resource)`**
-    — an absolute path inside the bundled resource tree.
+    launcher where single-file): resolved at runtime by the **bare name** (NO triple
+    suffix) **beside the app executable** —
+    **`std::env::current_exe()?.parent()` joined with `ffmpeg` / `ffmpeg.exe`** (the
+    same `[.exe]` extension rule as the app binary). **The `-<target-triple>` suffix is a
+    build/stage-time naming convention only** (§3.3.2 stages the source as
+    `binaries/<name>-<target-triple>[.exe]`); **Tauri strips that suffix when bundling**,
+    so the shipped binary next to the app exe is just `ffmpeg`/`ffmpeg.exe` — resolving
+    `current_exe()` + the triple suffix would look for a file that does not exist in the
+    shipped bundle. **Do NOT use `BaseDirectory::Resource` for externalBin** — sidecars sit
+    next to the main exe, not in the resources tree. Because §0.10 deliberately omits the
+    shell plugin, this manual `current_exe()`-relative resolution (the same location the
+    shell plugin's `sidecar()` would compute) is the supported pattern. Resolves to an
+    **absolute path**; `PATH` is never relied on (§3.5 env note).
+  - **resources-tree binaries** (the LibreOffice `program/soffice.bin` and the other
+    `bundle.resources` engine files): **`app.path().resolve("engines/libreoffice/program/soffice", BaseDirectory::Resource)`**
+    — an absolute path inside the bundled resource tree. `BaseDirectory::Resource` is
+    correct **here only** (genuine resources-tree binaries), not for externalBin.
   This is the `EngineProgram::{Sidecar, ResourceBin}` distinction in §3.2's
   `Invocation`. The externalBin/resources placement (§3.3.1/§3.3.2) guarantees the
   file exists beside the app (portable, no install — SSOT *Portable, no installation*).
@@ -364,12 +384,22 @@ Rationale (this materially shapes §0.10 and §1.7):
 ### 3.3.4 Offline invariant (cross-ref §2.11)
 
 Every engine above is self-contained once bundled. The only network code paths in
-the entire app are the **user-initiated** §7.7 open-project-page shell-out;
-**there is no engine that fetches anything** — explicitly: libvips' SVG loader
-does **not** fetch remote `href`/`<image>` (offline + §2.12), pandoc does **not**
-fetch remote images (`documents.md` MD/HTML notes), LibreOffice HTML import does
-**not** fetch remote CSS/img. §2.11 owns the observable "no network" property;
-this section guarantees the *supply* side (nothing to fetch).
+the entire app are the **user-initiated** §7.7 open-project-page shell-out. The
+"no engine fetches anything" property is backed by **structural, always-on controls**,
+**not** by the degradable §2.12 OS network-deny:
+- **FFmpeg/ffprobe** — argv `-protocol_whitelist file,pipe` + a network-disabled build,
+  asserted at §6.1.3 (§3.5.1). Blocks the HLS/DASH/concat SSRF & LFR class.
+- **pandoc** — invoked with **`--sandbox`** (its built-in restriction that blocks
+  reading/writing files and fetching network resources from the document) so a crafted MD/
+  HTML cannot pull a remote image/include (§3.5.4).
+- **LibreOffice** — the disposable `-env:UserInstallation` profile is hardened so
+  document load does **not** auto-update remote/OLE links or external references (§3.5.2).
+- **libvips** — the SVG loader (librsvg) does **not** fetch remote `href`/`<image>`
+  (offline build + §2.12).
+§2.11 owns the *observable* "no network" property (packet monitor); §6.4 adds the
+*adversarial* egress case; this section guarantees the *supply/structural* side. These
+controls hold on the common v1 machine even when the §2.12 privilege-drop tier degrades
+to the cheap tier (which by itself does not block a socket open).
 
 ---
 
@@ -643,6 +673,27 @@ macOS item — acceptable, and the same copy the cross-volume path would make an
 - **Global flags (all FFmpeg jobs):** `-nostdin -hide_banner -loglevel error -y`
   — `-y` is safe because the target is the **temp** path (§2.1), never the user
   file; `-nostdin` prevents the classic FFmpeg "consumes the parent's stdin" hang.
+- **Engine-level network/protocol restriction `[DECIDED — always-on, cheap-tier]`.**
+  The bundled GPL FFmpeg ships with the full default protocol set, so a crafted dropped
+  file (HLS/`.m3u8`, `-f concat` script, DASH manifest, external-reference box) can make
+  FFmpeg open an outbound socket or read an arbitrary local file at convert time — the
+  SSRF/LFR class (e.g. CVE-2023-6605 DASH-playlist SSRF). This is the **T9b** vector
+  (§0.11) and would defeat the SSOT *Local/private/offline* promise on adversarial input.
+  Mitigation is **two layers**, both independent of the §2.12 OS privilege-drop tier
+  (which is `[OPEN]` and may degrade to the cheap tier with no network deny):
+  - **Argv-level (the non-negotiable, cheap-tier control):** every FFmpeg/ffprobe
+    invocation prepends **`-protocol_whitelist file,pipe`** (and, where a concat/segment
+    demuxer is legitimately used, the explicit `-f` is pinned and the whitelist is **not**
+    widened to network schemes). This is set **before each input** (the option is
+    per-demuxer). It blocks `http`/`https`/`tcp`/`tls`/`rtmp`/`hls`/`concat`-fetch etc. at
+    the FFmpeg layer regardless of OS sandbox depth.
+  - **Build-time (defence-in-depth):** the curated FFmpeg build disables networking
+    protocols at configure time (no `--enable-protocol=http` family; `--disable-network`
+    where it does not break a needed demuxer), asserted by a **§6.1.3 `ffmpeg -protocols`
+    build assertion** (the network protocols MUST be absent / not built in).
+  Together with the §6.4.2 adversarial-egress case (a network-trigger input must
+  show **zero egress AND no out-of-input file read**), this backs the §3.3.4 "nothing
+  fetches" claim **structurally** — it does not rely on the degradable OS network-deny.
 - **Audio (`audio.md`):** decode → encoder per that file's table, e.g.
   - MP3 `-c:a libmp3lame -q:a 2` (VBR default) / `-b:a Nk` (CBR presets);
   - AAC `-c:a aac -b:a 192k` + muxer `adts` (raw `.aac`) or `ipod` (`.m4a`,
@@ -745,9 +796,23 @@ macOS item — acceptable, and the same copy the cross-volume path would make an
   §2.8 "password-protected" kind (documents/spreadsheets/presentations all rely on
   this). A stale soffice lock from a crashed prior run is avoided by the per-run
   profile + `--nolockcheck`.
+- **Profile hardening `[DECIDED — concrete mechanism behind "macros never executed"]`.**
+  `--headless --convert-to` does **not** by itself disable macros, and document-event
+  /`AutoOpen` macros plus remote/OLE link auto-update can fire on *load*. The enforcement
+  is the disposable `-env:UserInstallation` profile, **pre-seeded with a
+  `registrymodifications.xcu`** that pins (T1 DOCX-macro vector, §0.11):
+  - **Macro security at the highest level** — `org.openoffice.Office.Common/Security/
+    Scripting/MacroSecurityLevel = 3` (disable all without notification) + `DisableMacrosExecution
+    = true`; no Basic IDE. Macros are never run, no prompt blocks the headless process.
+  - **No link auto-update on load** — `…/Filter/…`/document `LinkUpdateMode = 0` (never
+    update links when loading) so external-reference / DDE / remote-OLE links don't trigger
+    a load-time fetch or file read (composes with the §3.3.4 offline claim).
+  - **No remote/OLE auto-fetch** — external-reference auto-update disabled; combined with
+    the offline floor, a crafted office file cannot pull a remote target on load.
+  The profile is disposable per-run (§2.14) and torn down with the run (§2.6).
 - **Licence/isolation:** MPL-2.0 sidecar (§3.6); untrusted office files (zip-bomb,
   malformed OOXML, macro-bearing) parsed inside §2.12; **macros never executed**
-  (headless + the `04` "macros dropped" policy).
+  (the profile-hardening above + the `04` "macros dropped" policy).
 
 ### 3.5.3 poppler `pdftotext` (PDF→TXT)
 
@@ -781,8 +846,20 @@ macOS item — acceptable, and the same copy the cross-volume path would make an
   `.doc` and has gaps reading RTF → those down-conversions are **not** assigned to
   pandoc (documents.md reassigns them to LibreOffice); the registry (§3.2) never
   hands pandoc a `.doc`.
-- **Network:** pandoc must **not** fetch remote images/CSS — runs with no network
-  reachable (offline); remote refs become broken refs with a note (documents.md).
+- **Network / file-read restriction `[DECIDED — always-on `--sandbox`]`:** every pandoc
+  invocation runs with **`--sandbox`** (pandoc ≥2.15), which confines readers/writers to
+  the file(s) named on the command line and **blocks all network access and file-system
+  reads** from the document. This is the cheap-tier, OS-sandbox-independent control behind
+  the §3.3.4 "pandoc fetches nothing" claim: a crafted MD/HTML/RST/Org/LaTeX include or
+  remote `<img>`/CSS cannot pull a remote or local out-of-input file (mitigates the LFR/
+  SSRF class for the markup engine; RST/Org/LaTeX file-include directives are the named
+  risk pandoc's own security note calls out). **Trade-off (consistent with documents.md):**
+  because `--sandbox` also blocks *legitimate* local image reads, `*→HTML`
+  `--embed-resources` can embed only resources pandoc can reach under the sandbox — so the
+  documents.md `*→markup` image policy resolves to **drop-with-note** for out-of-input
+  images, not silent local inlining. (`--sandbox` does not constrain PDF production or
+  filters, but ConvertIA uses **neither** with pandoc — `*→PDF` is LibreOffice-owned and no
+  pandoc Lua/JSON filters are configured — so the documented `--sandbox` gaps do not apply.)
 - **Progress:** `CoarseSpawnDone`. **Exit/stderr:** non-zero + message → §2.8
   generic; a "pandoc: …: openBinaryFile … does not exist" never occurs because the
   core verifies the input before spawn. **Licence:** GPL → invoked binary (§3.6).
@@ -844,9 +921,11 @@ macOS item — acceptable, and the same copy the cross-volume path would make an
 - No subprocess; a single streamed pass: detect encoding/delimiter (spreadsheets.md
   policy) → re-encode to UTF-8 (no BOM default) → swap delimiter → RFC-4180
   re-quote where a field contains the new delimiter/quote/newline → write to
-  `out_tmp`. CSV-injection-safe (leading `= + - @` stay literal text). No progress
-  model needed beyond byte-count (`CoarseSpawnDone`-class). MIT (own code) — no
-  §3.6 concern.
+  `out_tmp`. CSV-injection-safe (leading `= + - @` stay literal text). **Progress:**
+  because it streams the file, it **self-reports `bytes_processed / source_size`** per
+  N-KB chunk (the §1.11 *Native CSV/TSV* row owns this), falling back to a start→done
+  (`CoarseSpawnDone`-equivalent) tick for sub-100 KB inputs — never a bare spinner. MIT
+  (own code) — no §3.6 concern.
 
 ---
 
@@ -864,11 +943,11 @@ source where required), so the MIT core stays clean.
 |---|---|---|---|
 | ConvertIA orchestrator + native CSV/TSV | MIT | — | it *is* the core |
 | **libvips** (+ libheif, libde265, librsvg) | **LGPL-2.1/3.0** | **dynamic link only** (LGPL permits dynamic linking from non-GPL code, provided relinkability) — or run as the separate image-worker process (§3.5.5) | LGPL §6 dynamic-link allowance; we ship the LGPL libs + their source/offer (§3.7); **no static link** of LGPL into the MIT binary |
-| **aom/dav1d** (BSD) | BSD-2 | link OK | BSD permissive |
+| **libaom / dav1d** | libaom `BSD-2-Clause AND AOMedia-Patent-License-1.0`; dav1d `BSD-2-Clause` | link OK | BSD permissive; libaom's `PATENTS` (AOM Patent License 1.0) is carried in the SBOM/NOTICE alongside the BSD-2 text (§3.7) |
 | **libimagequant** (PNG/GIF palette quantisation) — **BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** | **BSD-2-Clause** (the frozen `lovell/libimagequant` v2.4.x fork). **Upstream 4.x is GPLv3-or-commercial and MUST NOT ship** — if a GPL-leg 4.x build slipped in it would taint the LGPL image-worker (the §6.1.3/§6.3.3 COPYRIGHT-text assertion fails the build on that). | link OK (inside the image-worker) | BSD permissive; **the v2.4.x BSD fork** vendored/linked inside the image-worker process, not the MIT core |
 | **ImageMagick** (GIF/BMP/ICO save delegate) | **ImageMagick License** (Apache-2.0-style, SPDX `ImageMagick`) — **permissive, NOT GPL** | link OK | Permissive like BSD/MPL — no isolation needed. **Build caveat:** exclude GPL *optional delegates*; IM core is permissive. (Listed in the SBOM/NOTICE §3.7.) |
 | **x265** (HEVC encode) | **GPL-2.0-or-later** | **NO — dynamically-loaded libheif *plugin*** | x265 ships as a **separately-built, dynamically-loaded libheif encoder plugin** (`.so`/`.dll`/`.dylib`, libheif `ENABLE_PLUGIN_LOADING`) that `heifsave compression=hevc` loads at runtime. The GPL code is **never statically linked** into the image-worker's libvips or the MIT core; it lives behind libheif's plugin ABI and runs **inside the §0.7 image-worker process** (already a separate process from the core). *(A static x265-in-libvips link would taint — hence the plugin form. This replaces the dropped "standalone heif/x265 sidecar" — no such sidecar exists under the [OPEN-1] heifsave-only decision.)* |
-| **x264** (H.264 encode) | **GPL-2.0** | **NO — inside the GPL FFmpeg binary** | reached only via the **FFmpeg binary** (separate invoked process); never linked into the MIT core |
+| **x264** (H.264 encode) | **GPL-2.0-or-later** (SPDX `GPL-2.0-or-later` — matches x265's form; x264 is GPL-2.0-**or-later**, not `GPL-2.0-only`) | **NO — inside the GPL FFmpeg binary** | reached only via the **FFmpeg binary** (separate invoked process); never linked into the MIT core |
 | **FFmpeg** build | **GPL-2.0+** (enables GPL x264 via `--enable-gpl` → the *whole* binary is GPL-2.0+, not LGPL) | **NO — separate exe** | invoked as `ffmpeg`/`ffprobe` child processes (§3.3.3); aggregation keeps the MIT core clean. The LGPL component libs (libmp3lame etc.) are **dynamically linked beside the exe** (§3.9.1) per LGPL §6 — a static FFmpeg build would fail the §6.1.3 dynamic-link assertion. Written-offer-of-source obligation honored (§3.6.2). |
 | **LibreOffice** | MPL-2.0 | **NO — separate sidecar** | invoked `soffice` process; MPL is weak/file-level anyway, but isolation is belt-and-suspenders + the SSOT policy |
 | **poppler**, **pandoc** | GPL | **NO — separate exe** | invoked child processes |
@@ -967,7 +1046,8 @@ gate is **§6.3**. This section produces the *data* those consume.
    **`GPL-2.0-or-later`** — verify against the pinned source's `COPYING`; GPL-2.0-only
    would be incompatible with the LGPL-3.0 libheif host, whereas -or-later is
    upgradeable to GPLv3 (what Debian ships) — with offer-of-source), the **libheif
-   AV1-encoder dependency `libaom`** (BSD-2 + patent grant), **dav1d** (BSD-2),
+   AV1-encoder dependency `libaom`** (`BSD-2-Clause AND AOMedia-Patent-License-1.0`),
+   **dav1d** (`BSD-2-Clause`),
    **librsvg** (LGPL-2.1+ — the libvips `svgload` SVG backend), and
    **libimagequant** (the gifsave/cgif palette-quantisation dependency — SPDX
    **`BSD-2-Clause`**, shipped **only** as the frozen `lovell/libimagequant` **v2.4.x**
@@ -1065,6 +1145,24 @@ effort is spent where it matters.
   exact ratios `[DEFER §6.1/§6.2]`.
 - This is an **estimate for planning**, not a contract; the real numbers are
   measured in §6.1 once the trimmed engine builds exist, and fed back here.
+
+#### Per-platform compressed-artifact size budget + CI enforcement `[DECIDED — "stay light", SSOT Principle 1]`
+"Stay light" needs an owning number and a gate, not just an estimate:
+- **Per-platform COMPRESSED artifact ceiling (the downloaded file):** ship a **finite
+  starting budget of ≤ 400 MB compressed per platform** (the NSIS/`.zip`, `.dmg`,
+  AppImage) as the v1 target — comfortably above the dominant LibreOffice+fonts+pandoc
+  floor yet a real cap. **`[DEFER: corpus/build]`** the exact number is re-pinned once the
+  trimmed engine builds + the chosen CJK-font breadth (§3.9.3) are measured in §6.1; the
+  **design (a hard ceiling exists and is enforced) is DECIDED**, only the digit is empirical.
+- **CI enforcement (the actionable gate):** the **§6.1.2 packaging step measures each
+  platform artifact's compressed size and FAILS the build if it exceeds the budget** (a
+  Lane-B gate, with the current measured sizes published as a release asset for
+  transparency). Without this gate "stay light" has no teeth; with it, a regression that
+  bloats the bundle (e.g. an un-trimmed engine, a full Noto CJK) blocks the release.
+- **Corpus-size co-ownership:** the **LFS `corpus-large` total size is co-owned with
+  §6.4.5** (the corpus asset), tracked separately from the *shipped artifact* budget —
+  the corpus is a test asset, never shipped, so it does **not** count against this ceiling;
+  this matches §6.4.5's `[DEFER: corpus]` total-size note.
 
 ### 3.9.3 Open size decisions (genuine)
 

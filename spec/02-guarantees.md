@@ -30,17 +30,19 @@
 All mechanisms below are implemented **once**, in the **guarantees-fs layer** owned by
 §0.7 (not duplicated per engine or per format). **Naming, fixed `[DECIDED]`:** the
 *conceptual layer* is "guarantees-fs"; its *canonical Rust module path* is
-**`core::fs_guard`** and its *physical directory* is `src-tauri/src/fs_guard/` (§0.7) —
+**`crate::fs_guard`** and its *physical directory* is `src-tauri/src/fs_guard/` (§0.7) —
 one module, three context-appropriate labels, **no** `fs_guarantees` module name floats
-anymore. Logical home:
+anymore. (The path is `crate::fs_guard`, **not** `core::fs_guard` — in a Rust binary
+crate `core` resolves to the no_std standard-library crate, so an application module may
+not be named `core`; the app crate's modules are addressed `crate::…`.) Logical home:
 
-- `core::fs_guard` — atomic write, no-clobber, resolved-identity, path-limit checks
+- `crate::fs_guard` — atomic write, no-clobber, resolved-identity, path-limit checks
   (§2.1 / §2.2 / §2.3 / §2.14).
-- `core::run` — per-run/instance scratch ownership and cleanup (§2.6), keyed on the
+- `crate::run` — per-run/instance scratch ownership and cleanup (§2.6), keyed on the
   `RunId`/`InstanceId` defined by §7.1.
-- `core::outcome` — the error taxonomy + message catalog (§2.8) and lossy catalog
+- `crate::outcome` — the error taxonomy + message catalog (§2.8) and lossy catalog
   (§2.9), the **single source of every conversion-outcome string**.
-- `core::isolation` — the decoder-isolation wrapper (§2.12) every engine spawn
+- `crate::isolation` — the decoder-isolation wrapper (§2.12) every engine spawn
   routes through (§1.7 calls it; §3.5 builds the args inside it).
 
 The pipeline (§1.8 output planning, §1.7 invocation, §1.9 lifecycle) **calls into**
@@ -163,8 +165,10 @@ check. `[DECIDED]`
     On the exists-error → re-pick the next §2.2 variant. **(Parent-swap nuance:** the
     path-string `MoveFileExW` re-resolves `final` by path at publish time, so to *also*
     close the §2.3.3 parent-directory-swap race the publish is issued in its
-    **dir-handle-relative form — `NtSetInformationFile(FileRenameInformationEx)` with the
-    verified parent dir HANDLE as `RootDirectory` and `ReplaceIfExists = FALSE` →
+    **dir-handle-relative form — `NtSetInformationFile(…, FileRenameInformationEx)` with a
+    `FILE_RENAME_INFORMATION_EX` whose `RootDirectory` is the verified parent dir HANDLE
+    and whose `Flags` bitfield OMITS `FILE_RENAME_REPLACE_IF_EXISTS` (the Ex class's
+    no-replace; NOT the boolean `ReplaceIfExists` of the non-Ex struct) →
     `STATUS_OBJECT_NAME_COLLISION` on collision** — see §2.3.3. Same create-only,
     no-placeholder semantics; rooted at a handle, not a re-parsed path.)
     - The earlier `create_new`-reserve-then-`ReplaceFileW` ordering is **rejected**
@@ -425,15 +429,23 @@ handle**, not a re-resolved path string:
      a **`newdirfd`**). Fails `EEXIST` on collision → re-pick the next §2.2 variant. This
      is exactly the §2.1.2 link/`renameat2(RENAME_NOREPLACE)` create-only publish, rooted
      at the verified `dirfd` — **not** `openat(... O_CREAT|O_EXCL)`.
-   - **Windows:** `NtSetInformationFile(tmpHandle, FileRenameInformationEx)` with the
-     **verified parent dir HANDLE as `RootDirectory`**, the relative `leaf` as
-     `FileName`, and **`ReplaceIfExists = FALSE`** (no `FILE_RENAME_REPLACE_IF_EXISTS`
-     flag) → returns **`STATUS_OBJECT_NAME_COLLISION`** if `leaf` already exists →
-     re-pick. This is the genuine **dir-handle-relative, create-only, no-placeholder**
-     Windows publish: because the move resolves `leaf` *through the handle whose identity
-     we just verified* (not by re-parsing a path string), the parent cannot be swapped
-     between check and publish. (Plain path-string `MoveFileExW` re-resolves `final` by
-     path at publish time and so does **not** close the parent-swap race on Windows;
+   - **Windows:** `NtSetInformationFile(tmpHandle, …, FileRenameInformationEx)` with a
+     **`FILE_RENAME_INFORMATION_EX`** whose **`RootDirectory` = the verified parent dir
+     HANDLE**, `FileName` = the relative `leaf`, and **`Flags` with `FILE_RENAME_REPLACE_IF_EXISTS`
+     (0x1) OMITTED** (the Ex class uses a **`Flags` bitfield**, *not* the boolean
+     `ReplaceIfExists` of the older non-Ex `FILE_RENAME_INFORMATION` — pick ONE struct; we
+     use the **Ex** form for `RootDirectory`-relative resolution, so "no-replace" = clearing
+     that flag bit, not setting a boolean false) → returns **`STATUS_OBJECT_NAME_COLLISION`**
+     if `leaf` already exists → re-pick. This is the genuine **dir-handle-relative,
+     create-only, no-placeholder** Windows publish: because the move resolves `leaf`
+     *through the handle whose identity we just verified* (not by re-parsing a path string),
+     the parent cannot be swapped between check and publish. **Bounded AV-retry on the
+     publish `[DECIDED]`:** the publish itself may transiently fail with the NTSTATUS
+     `STATUS_ACCESS_DENIED` / `STATUS_SHARING_VIOLATION` (AV/indexer holding a handle on
+     `tmp` or `leaf`) — apply the **same bounded short-backoff retry as §2.1.2** (these are
+     NTSTATUS codes, not the Win32 `ERROR_*` of `MoveFileExW`; map accordingly) before
+     giving up to a §2.8 `WriteFailed`. (Plain path-string `MoveFileExW` re-resolves `final`
+     by path at publish time and so does **not** close the parent-swap race on Windows;
      `FileRenameInformationEx` with `RootDirectory` is what closes it.)
 
 So beside-source and divert writes both use a **dir-fd/handle-relative, create-only
@@ -554,7 +566,7 @@ honoring §7.4's "persist nothing / session-only" lean — see *fallback* for th
 cross-session limit):
 
 1. **In-session run ledger (the sole authority that fires the prompt) `[DECIDED]`.**
-   Within the **current app session**, `core::run` keeps an in-memory
+   Within the **current app session**, `crate::run` keeps an in-memory
    `HashSet<EquivKey>` of conversions already completed this session (cleared on
    quit; nothing written to disk, §7.4). A second identical drop in the **same
    session** hits the ledger → definite equivalence → the prompt fires. This is the
@@ -570,6 +582,15 @@ cross-session limit):
      the session-identity signal to disk state for a rare case; the safe default is Skip
      and the user can pick fresh-copy. Disk-presence corroboration of a *vanished* output
      is `[DEFER: post-v1]` with the cross-session ledger.)
+   - **Changed-destination edge `[DECIDED — accept the semantic]`:** because the EquivKey
+     has **no destination component** (§2.5.1) and the in-session ledger is the **sole**
+     firing authority, converting a set beside-source and then **re-dropping the same set
+     to a freshly-chosen folder** still fires the re-run prompt — even though that chosen
+     destination holds **no** prior output — and **Skip** then produces nothing *there*.
+     This is within best-effort tolerance (the same family as the vanished-output edge: the
+     ledger answers "you asked for this exact conversion this session", which is true) and
+     is accepted in v1; the destination-aware re-run signal that would distinguish it is the
+     same **`[DEFER: post-v1]`** item (needs the cross-session/destination-aware ledger).
 2. **Expected-output presence (corroborator only — never fires alone) `[DECIDED]`.**
    ConvertIA writes **deterministic** names, so a prior identical run's output sits
    exactly where this run's first candidate (`stem.ext`, §2.2) would go. **But an
@@ -667,13 +688,13 @@ volume rule are owned by §2.14.2 (referenced here, not re-decided):
 
 ### 2.6.2 Cleanup triggers `[DECIDED]`
 
-`core::run::cleanup_item` / `cleanup_run` remove run-owned temps on every exit path:
+`crate::run::cleanup_item` / `cleanup_run` remove run-owned temps on every exit path:
 
 | Trigger | Action |
 |---------|--------|
 | **Item success** | `renameat2`/`MoveFileExW` path: `tmp` was consumed by the publish — nothing to remove. **`link`+`unlink` fallback path:** the publish `link`ed `tmp→final`, so `unlink(tmp)` removes the `*.part`; if that unlink fails, the residual is reclaimed by the §2.6.4 sweep (annotated, not an item failure). |
 | **Item failure** (engine error, corrupt, etc.) | remove that item's `tmp`. |
-| **Cancel** (user) | §1.7 kills the engine; the killed item's `tmp` is removed; **already-finished items are kept** (SSOT). |
+| **Cancel** (user) | §1.7 kills the engine group and, on a **bounded** confirm-wait, removes the killed item's `tmp`; **already-finished items are kept** (SSOT). **If the group-kill confirm-wait times out** (a wedged descendant still holding the `*.part`), reclamation of that publish temp is **deferred to the §2.6.4 sweep** and surfaced as a `CleanupResidue` on the Cancelled item (§2.6.4 case 3) — i.e. tmp is *not* unconditionally removed here. |
 | **Out-of-disk mid-write** | remove the partial `tmp`; report `OutOfDisk` (§2.8); **batch continues** (SSOT). |
 | **Run end (any reason)** | remove the now-empty central `run-<RunId>/` dir **and** any leftover `*.part` publish temps in the run's known destination dirs (destination roots are in memory at run end). |
 | **Next app start** | sweep stale central `run-<RunId>/` dirs from prior runs (§2.6.3); destination-resident `*.part` from a *crashed* prior run are reclaimed opportunistically by a later write into that dir, not by the startup sweep (§2.6.3 limitation). |
@@ -684,7 +705,7 @@ finals are intended; failed/cancelled items leave nothing.
 
 ### 2.6.3 Startup sweep — never touch a live instance's temp `[DECIDED]`
 
-On startup (§7.2 sequence) `core::run::sweep_stale`:
+On startup (§7.2 sequence) `crate::run::sweep_stale`:
 
 1. Lists `convertia/<InstanceId>.<pid>/run-*` dirs under the **central scratch
    root** (kind-2 working files).
@@ -737,6 +758,13 @@ went away, permission flip), the item is **not** silently downgraded. Two cases:
   **failed** (§2.8) **with** the `CleanupResidue` annotation naming the path (SSOT:
   "ConvertIA says residue may remain and where"). It is **never** counted as a clean
   success. The string lives in the §2.8 catalog (`cleanup_residue` row).
+- **An item was *cancelled* and its publish temp was not removed in the §1.7 bounded
+  group-kill confirm-wait** (a wedged descendant still holds the `*.part`): the Cancelled
+  item **carries a `CleanupResidue`** naming the deferred path, the temp is reclaimed by
+  the §2.6.3/§2.6.4 sweep, and the §2.8.2 Cancelled summary gets the **"With residue"** tail
+  ("Some temporary files may remain — see details."). This closes the gap where the §2.6.2
+  "Cancel" row used to imply unconditional removal — a wedged-cancel residue is tracked and
+  surfaced, never silently dropped.
 
 ---
 
@@ -776,11 +804,15 @@ divert path.
 For each source, §1.8 classifies its **intended** output location via
 `fs_guard::location_status(dir)`:
 
-- **Writable test:** attempt to create (and immediately remove) a probe file via
-  `create_new` in the target dir (the same primitive as §2.1, so the test matches
-  reality). Failure (`PermissionDenied`, `ReadOnlyFilesystem`, network errors) →
-  **unwritable**. *Recommended:* probe lazily and cache per-directory within the run
-  to avoid probing every file in a 10 000-file batch in the same folder.
+- **Writable test:** create-and-immediately-remove a **throwaway probe file** via
+  `create_new` in the target dir — this only confirms the directory **accepts a create**.
+  **Note: this is NOT the §2.1 publish primitive.** §2.1.2's no-placeholder publish
+  **never** uses `create_new` at the final path (it is the exclusive *rename* of the
+  finished temp); the probe's `create_new` is on a disposable probe path, not the output.
+  Do **not** wire the probe and the publish to the same helper. Failure
+  (`PermissionDenied`, `ReadOnlyFilesystem`, network errors) → **unwritable**.
+  *Recommended:* probe lazily and cache per-directory within the run to avoid probing
+  every file in a 10 000-file batch in the same folder.
   - **Probe-cleanup-failure handling `[DECIDED]`.** If the probe file is *created*
     (so the dir is writable) but its **removal fails**, the verdict is **writable**
     (the create succeeded — that is the test) and the leftover probe file is **not**
@@ -881,7 +913,7 @@ traces.**
 
 ### 2.8.1 The `ConversionError` taxonomy `[DECIDED]`
 
-A Rust enum in `core::outcome`, each variant a **stable kind** carried over IPC
+A Rust enum in `crate::outcome`, each variant a **stable kind** carried over IPC
 (§0.4 owns the wire shape; §2.8 owns the *set* and their strings). Every engine /
 FS / detection failure **must** map to exactly one of these — there is no "other /
 unknown" that leaks a raw error to the user (an unmapped internal error becomes
@@ -938,7 +970,7 @@ rows).
 ### 2.8.2 The message catalog `[DECIDED]`
 
 The **exact canonical English strings**. One row per kind. `{x}` are runtime
-substitutions filled by `core::outcome` (the type name, the path, the size). Tone:
+substitutions filled by `crate::outcome` (the type name, the path, the size). Tone:
 plain, calm, never blaming, never technical (SSOT *Fail clearly*). These are the
 **conversion-outcome** strings; UI-chrome strings live in §5.
 
@@ -979,7 +1011,7 @@ plain, calm, never blaming, never technical (SSOT *Fail clearly*). These are the
 **`OutcomeMsg` — the surfaced per-item string (defined here; §0.6 `ItemResult.reason`
 references it).** The §0.6 `ItemResult.reason: Option<OutcomeMsg>` is **either** a §2.8
 failure string **or** a §2.9 lossy note. It is the *resolved, ready-to-show* line (so
-the summary needs no second lookup), produced by `core::outcome` from the kind + its
+the summary needs no second lookup), produced by `crate::outcome` from the kind + its
 substitutions:
 
 ```rust
@@ -990,6 +1022,16 @@ substitutions:
 enum OutcomeMsg {
     Failure { kind: ConversionErrorKind, text: String },  // §2.8.2 catalog row, substituted
     Lossy   { kind: LossyKind, text: String },            // §2.9.1 note, substituted
+    Skipped { reason: SkipReason, text: String },         // §0.6 SkipReason — a pre-flight
+                                                          //   ineligible (UnsupportedType/Empty/
+                                                          //   Unreadable/Unrecognized). A skip is
+                                                          //   NOT a failure: it rides a skip-shaped
+                                                          //   variant so a consumer pattern-matching
+                                                          //   OutcomeMsg can tell skip from fail
+                                                          //   WITHOUT also reading ItemResult.state
+                                                          //   (§0.6 JobState distinguishes them and
+                                                          //   §1.12 Totals counts them separately —
+                                                          //   "must not be conflated").
 }
 ```
 
@@ -1056,7 +1098,7 @@ gating the Convert button.
 | `image_alpha_flatten` | alpha source `→ JPG/BMP` (transparency policy) | **"Transparency isn't supported here and will be filled with a background colour."** |
 | `image_animation_flatten` | animated source `→` still target (animation policy) | **"Animated — only the first frame is converted."** |
 | `image_svg_raster` | `SVG → raster` (svg entry) | **"Vector image converted to a fixed-size picture ({w}×{h}) — it won't scale up cleanly afterward."** |
-| `doc_pdf_reflow` | `DOCX/DOC/ODT/RTF → PDF` (documents.md) | **"Layout may shift slightly when converted to PDF."** |
+| `doc_pdf_reflow` | `DOCX/DOC/ODT/RTF → PDF` (documents.md); **`XLSX/XLS/ODS → PDF` (spreadsheets.md)** — the same office→PDF reflow kind covers spreadsheet→PDF too | **"Layout may shift slightly when converted to PDF."** |
 | `doc_pdf_to_text` | `PDF → TXT` | **"Text only — layout, tables and images are dropped."** |
 | `doc_html_render` | `HTML → PDF` | **"The result may look different from a web browser."** |
 | `doc_to_text` | `* → TXT` from rich sources | **"Text only — formatting and images are dropped."** |
@@ -1181,16 +1223,19 @@ Offline is enforced **structurally**, not by policy, on two complementary halves
   HTTP/fetch capability. §2.11 *requires* this; §0.10 *implements* it. Result: the
   UI **cannot** make a network request even if a dependency tried to.
 - **Engine/core half (this section + §3.3).** **Every engine is bundled** (§3.3 —
-  decided "bundle everything"), so no engine is fetched at runtime. Engines run as
-  subprocesses inside the §2.12 isolation wrapper with **no network capability
-  needed or granted**; the wrapper's sandbox profile (§2.12) can additionally
-  **deny network syscalls** to the decoder processes as defence-in-depth.
-  ConvertIA's Rust core makes **no outbound network calls** of any kind for a
-  conversion — there is no HTTP client in the conversion path. Specific engine
-  behaviours that *could* reach out are pinned off in 04: pandoc/LibreOffice/HTML
-  rendering **do not fetch remote images/CSS** (documents.md: remote URLs become
-  broken references, never fetched); SVG/`<image href>` is not fetched
-  (images.md); these are content-fidelity *and* offline guarantees.
+  decided "bundle everything"), so no engine is fetched at runtime. ConvertIA's Rust
+  core makes **no outbound network calls** of any kind for a conversion — there is no
+  HTTP client in the conversion path (this is the **T9a** half — the app's own code
+  opens no socket). **Bundling alone does NOT prove a bundled engine cannot reach out on
+  hostile input** (the **T9b** half — a crafted file driving FFmpeg HLS/DASH/concat,
+  pandoc includes, or LibreOffice remote/OLE links): that is closed **structurally** by
+  **always-on, cheap-tier argv/build controls** independent of the §2.12 OS sandbox —
+  FFmpeg `-protocol_whitelist file,pipe` + network-disabled build (§3.5.1), pandoc
+  `--sandbox` (§3.5.4), LibreOffice profile-hardening with no remote/OLE link
+  auto-update (§3.5.2); SVG/`<image href>` is not fetched by librsvg (images.md). The
+  §2.12 wrapper's sandbox profile can **additionally** deny network syscalls as
+  defence-in-depth, but it is **not** the load-bearing control (it degrades to the cheap
+  tier with no network deny). These are content-fidelity *and* offline guarantees.
 
 ### 2.11.2 No telemetry / accounts / update phone-home `[DECIDED]`
 
@@ -1219,6 +1264,15 @@ strategy) owns the *test*; §2.11 fixes *what is asserted*: with the machine off
 (or watched by a packet monitor / OS firewall logger), a **full conversion of every
 category produces zero outbound packets**, and the app launches and converts
 identically with networking disabled. This is a release gate, not a runtime check.
+
+> **Benign vs adversarial scope.** This gate runs the **benign** corpus (it proves
+> T9a — ConvertIA's own code opens no socket — and catches an accidental fetch). It does
+> **not** by itself prove **T9b** (a bundled engine coerced to reach out by a *crafted*
+> input). T9b is closed structurally by the §3.5.1/§3.5.4/§3.5.2 argv/build controls and
+> verified by the **§6.4.2 adversarial-egress case** (a network-trigger input must
+> show **zero egress AND no out-of-input file read**), which runs inside this same
+> packet-monitor / egress-deny window. Cite the argv/build controls — not "all engines
+> bundled" — as the T9b evidence.
 
 - **Per-platform packet monitor / egress block (named, §6.7.3 owns the wiring):** the
   gate runs under an **OS egress-deny** plus a packet-monitor assertion — **Linux**
@@ -1321,10 +1375,17 @@ Detection (§1.2) is the **first code touching untrusted bytes**. ConvertIA's
 detection is **header/magic-byte sniffing only** (a bounded read of the first N
 bytes + light structure checks), implemented in **safe Rust** with **no full
 decode** — so it is acceptable to run **in-core** (it doesn't invoke a third-party
-decoder). The moment a full decode is needed (the actual conversion), that runs in
-an isolated subprocess. §1.2 states this; §2.12 confirms the boundary: *no
-third-party decoder library is linked into or run inside the Rust core — every full
-decode runs in a separate subprocess*. This is true for **all** engines including the
+C/C++ decoder). The moment a full decode is needed (the actual conversion), that runs
+in an isolated subprocess. §1.2 states this; §2.12 confirms the boundary, stated
+precisely: *no third-party **C/C++** decoder library is linked into or run inside the
+Rust core — every full decode runs in a separate subprocess*. The **only** in-core
+operations on untrusted bytes are a **small set of bounded, memory-safe pure-Rust
+sniffs** — the text-encoding heuristic, the Rust ZIP central-directory peek, and the
+`.svgz` bounded inflate (`flate2 rust_backend`/miniz_oxide, ≤64 KiB + ≤100× ratio cap,
+§1.2 step 2) — which are **not** full decodes and run no C/C++ decoder. Whether even
+these may stay outside the §2.12 boundary is the one tracked isolation-boundary `[OPEN]`
+(§1.2 1.2-sec / README log); the absolute as worded above is **not** weakened by them
+because they invoke no third-party C/C++ decoder. This is true for **all** engines including the
 image core: image decode/encode runs in a **separate image-worker process**
 `[DECIDED]` (§0.7/§3.5.5 — the README/§3.5.5 in-process-vs-worker `[OPEN]` is resolved
 to the worker), so a memory-corruption exploit in libvips/libheif/libde265/librsvg/a
@@ -1436,7 +1497,7 @@ The atomic-publish (§2.1.2) is a `rename(tmp → final)`, which is only atomic
 > **`tmp` is always created on the same volume as `final`** (the *destination*), not
 > necessarily the same volume as the source.
 
-Concretely, `core::run` picks the publish-temp path **inside the destination
+Concretely, `crate::run` picks the publish-temp path **inside the destination
 directory itself** (same volume by construction). The chosen form is a
 **uniquely-named dotfile *sibling* of `final`**, not a subdir:
 `…/<dest_dir>/.convertia-<RunId>-<jobId>-<rand>.part`. A bare **file** (rather than a
@@ -1527,9 +1588,14 @@ The scratch model means a conversion transiently needs **destination-volume free
 space ≈ output size** (publish temp) **plus** any kind-2 working space. §1.10 (resource
 pre-flight, `[OPEN]` budgets) owns the up-front estimate and the "doomed for disk"
 fast-fail; §2.14 **supplies** the model it estimates against: *publish temp lands on
-the destination volume*, so §1.10's free-space check must target the **destination**
-volume, not the source volume. The to-GIF guardrail (cross-category.md) and video
-re-encode estimates feed the same §1.10 check on the destination volume.
+the destination volume*, so §1.10's free-space check must target **each destination
+volume the batch writes to**, not the source volume and **not a single aggregate volume**.
+Because the §2.7 beside-source default and per-location divert can spread one batch
+across **several volumes** (each item lands on its own `final_dir`'s volume, §2.14.1),
+the §1.10 pre-flight **groups the footprint by destination volume and requires headroom
+on each volume independently** — a 5 GB share destined for a 1 GB stick must fail up
+front even when the internal disk has ample room. The to-GIF guardrail
+(cross-category.md) and video re-encode estimates feed the same §1.10 per-volume check.
 
 ---
 

@@ -258,9 +258,11 @@ and §2.6 temp ownership):
 [s1][p] paletteuse=dither=bayer:bayer_scale=5
 ```
 
-(`sjpeg` is **not** a valid `paletteuse` dither value — FFmpeg rejects it; the valid
-dither modes are `bayer` / `sierra2_4a` / `floyd_steinberg` / `none`, and the v1
-default is `bayer:bayer_scale=5` per [OPEN-D], matching §3.5.1.) Exact filter string
+(`sjpeg` is **not** a valid `paletteuse` dither value — FFmpeg rejects it; the
+**v1-exposed** dither modes are `bayer` / `sierra2_4a` / `floyd_steinberg` / `none`
+(FFmpeg also accepts `sierra2` and `heckbert` — and `sierra3`/`burkes`/`atkinson` on
+6.0+ — which we deliberately do **not** expose in v1), and the v1 default is
+`bayer:bayer_scale=5` per [OPEN-D], matching §3.5.1.) Exact filter string
 is constructed in §3.5; shown here to fix the **method**, not to own argument
 syntax. `lanczos` scaling and a per-clip optimised palette are
 what make the result look good; `fps` downsampling + width cap are what keep the
@@ -285,7 +287,7 @@ settings that materially change a normal user's result; for to-GIF, **fps**,
 | **FPS** | Basic (it visibly changes smoothness vs size) | presets *Smooth 15 / Standard 12 / Small 10* (or a 5–20 range, Advanced) | **12 fps** |
 | **Width** | Basic | presets *Large 640 / Medium 480 / Small 320* px (height auto, aspect kept, `-1`) | **480 px** |
 | **Trim (start + duration)** | **[OPEN-E]** — Basic or Advanced or omit-in-v1 | start `-ss`, duration `-t` | **whole clip, capped** (see guardrail) |
-| Dither | Advanced (rarely touched) | `bayer` / `sierra2_4a` / `floyd_steinberg` / `none` (the full set FFmpeg `paletteuse` accepts — note this is FFmpeg, NOT the cgif `gifsave` path, so error-diffusion IS available here) | **`bayer:bayer_scale=5`** ([OPEN-D]) |
+| Dither | Advanced (rarely touched) | `bayer` / `sierra2_4a` / `floyd_steinberg` / `none` (the **v1-exposed subset**; FFmpeg `paletteuse` additionally supports `sierra2` and `heckbert`, not exposed in v1 — note this is FFmpeg, NOT the cgif `gifsave` path, so error-diffusion IS available here) | **`bayer:bayer_scale=5`** ([OPEN-D]) |
 | Loop | (none) | — | **infinite loop** (`-loop 0`, the GIF norm) |
 | Max colours | (not exposed) | — | **256** (full palette) |
 

@@ -283,6 +283,35 @@ C6). A `#[serde(tag = "type", content = "data")]` enum, ordered delivery:
 | `BatchProgress` | `{ runId, done, total }` | Aggregate queue progress for the batch bar (§1.11). |
 | `RunFinished` | `RunResult` | Terminal for the run; mirrors C8. Carries the full summary incl. residue warnings (§2.6). |
 
+**The complete enum + payload structs (the concrete type `collect_events![]` (§0.4.5)
+needs).** All derive `Clone, Serialize, specta::Type` (no `any`; in `collect_types!`):
+
+```rust
+#[derive(Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase", tag = "type", content = "data")]
+pub enum ConversionEvent {
+    RunStarted(RunStarted),
+    ItemStarted(ItemStarted),
+    ItemProgress(ItemProgress),
+    ItemFinished(ItemFinished),
+    BatchProgress(BatchProgress),
+    RunFinished(RunResult),          // §0.6 RunResult (mirrors C8)
+}
+
+#[derive(Clone, Serialize, specta::Type)] #[serde(rename_all = "camelCase")]
+pub struct RunStarted   { pub run_id: RunId, pub total_items: u32, pub will_reencode: bool }
+#[derive(Clone, Serialize, specta::Type)] #[serde(rename_all = "camelCase")]
+pub struct ItemStarted  { pub run_id: RunId, pub item_id: ItemId, pub source_path: PathBuf, pub target: TargetId }
+#[derive(Clone, Serialize, specta::Type)] #[serde(rename_all = "camelCase")]
+pub struct ItemProgress { pub run_id: RunId, pub item_id: ItemId, pub fraction: Option<f32>, pub stage: JobStage }
+#[derive(Clone, Serialize, specta::Type)] #[serde(rename_all = "camelCase")]
+pub struct ItemFinished { pub run_id: RunId, pub item_id: ItemId, pub outcome: ItemOutcome }
+#[derive(Clone, Serialize, specta::Type)] #[serde(rename_all = "camelCase")]
+pub struct BatchProgress{ pub run_id: RunId, pub done: u32, pub total: u32 }
+```
+(`will_reencode` is a plain `bool` on the wire — the core always emits a definite value,
+§2.9.2 emission rule; `JobStage`/`ItemOutcome`/`RunResult` are the §0.6 types.)
+
 > **Why a Channel, not events, for run telemetry:** ordering (progress monotonic
 > per item), throughput (a 5000-file batch emits a lot), and **scoping** (the
 > Channel dies with the run — no cross-run leakage, no global listener cleanup
@@ -473,6 +502,16 @@ pub struct ScanProgress { pub scanned: u32 } // C1 onScan Channel payload (§0.4
 
 // ─── Intake & detection ─────────────────────────────────────────────────────
 pub enum IntakeOrigin { Drop, Picker, LaunchArg, SecondInstance } // §7.8
+
+// ─── Wire DTOs for the C-commands + app:// hand-off (derive specta::Type; in
+//     collect_types!). Defined here so every C1–C13 + app:// shape has one typed
+//     home (no inline-comment-only types). camelCase on the wire. ─────────────
+pub enum PickKind { Files, Folder }                 // C2a pick_for_intake `kind`
+pub enum OpenKind { Folder, File, RevealInFolder }  // C9 open_path `kind` (§7.7)
+pub struct IntakePayload {                           // app://intake hand-off (§7.8.1)
+    pub paths: Vec<PathBuf>,
+    pub origin: IntakeOrigin,                        // Drop | LaunchArg | SecondInstance
+}
 
 pub struct DroppedItem {
     pub raw_path: PathBuf,        // as the OS handed it
@@ -707,12 +746,18 @@ pub struct PreflightVerdict {        // §1.10 (owner) summary surfaced before c
     pub est_total_scratch_bytes: u64,
     pub up_front_fail: Option<ErrorKind>, // Some(TooBig|OutOfDisk) ONLY for the WHOLE-BATCH
                                      //   doomed case (the §5.2 disable-Convert-wholesale
-                                     //   flag). A PER-ITEM too-big / out-of-disk is NOT
-                                     //   carried here: it is enforced at WRITE TIME (mid-run)
-                                     //   as that item's Failed(TooBig|OutOfDisk) while the
-                                     //   batch continues (§1.10 / §1.11 fast-fail surfacing).
-                                     //   So "preferably up front" = the whole-batch verdict
-                                     //   here + per-item enforcement at the §2.1 write.
+                                     //   flag). OutOfDisk fires when ANY ONE destination
+                                     //   VOLUME's grouped footprint cannot fit that volume's
+                                     //   free space — the check is PER-DESTINATION-VOLUME, not
+                                     //   a single aggregate (§2.7 beside-source/divert spread
+                                     //   a batch across 2+ volumes; §1.10 / §2.14.4). TooBig =
+                                     //   the absolute per-item/aggregate output ceiling. A
+                                     //   PER-ITEM too-big / out-of-disk is NOT carried here: it
+                                     //   is enforced at WRITE TIME (mid-run) as that item's
+                                     //   Failed(TooBig|OutOfDisk) while the batch continues
+                                     //   (§1.10 / §1.11 fast-fail surfacing). So "preferably up
+                                     //   front" = the per-volume whole-batch verdict here +
+                                     //   per-item enforcement at the §2.1 write.
 }
 
 pub struct DestinationResolved {     // C5 set_destination → revalidated destination
@@ -736,7 +781,10 @@ pub struct RunResult {               // canonical shape; §1.12 computes & refer
     pub items: Vec<ItemResult>,      // per-item outcome + output→source mapping (§1.12).
                                      //   INCLUDES the freeze-time pre-flight SkippedItems
                                      //   (CollectedSet.skipped) projected as ItemResult
-                                     //   { state: Skipped(reason), output: None, reason } —
+                                     //   { state: Skipped(reason), output: None,
+                                     //     reason: Some(OutcomeMsg::Skipped{ reason, .. }) } —
+                                     //   skip rides the skip-shaped OutcomeMsg variant (§2.8),
+                                     //   NOT Failure, so skip != fail at the type level —
                                      //   §1.12 `[DECIDED]`; Totals.skipped counts them.
     pub totals: Totals,              // succeeded / failed / cancelled / skipped (§1.12)
     pub cleanup_incomplete: Vec<CleanupResidue>, // §2.6 cleanup-incomplete warnings
@@ -888,7 +936,7 @@ convertia/
 │     │  ├─ registry.rs            #   Engine trait + selection (the §3.2 seam — candidate own crate)
 │     │  ├─ invoke.rs              #   §1.7 generic lifecycle (spawn/progress/cancel/timeout/error-map)
 │     │  ├─ ffmpeg.rs  libreoffice.rs  pandoc.rs  poppler.rs  image.rs  csv_native.rs
-│     ├─ fs_guard/                 # tier 2 — the reusable guarantees-fs layer; module path `core::fs_guard` (§2.0); §2.1/2.3/2.4/2.6/2.7/2.14
+│     ├─ fs_guard/                 # tier 2 — the reusable guarantees-fs layer; module path `crate::fs_guard` (§2.0); §2.1/2.3/2.4/2.6/2.7/2.14
 │     ├─ pool/                     # tier 3 — subprocess pool, concurrency degree (§0.9)
 │     ├─ domain/                   # tier 3 — §0.6 types, derive specta::Type
 │     ├─ error.rs                  # tier 3 — §2.8 taxonomy ↔ IpcError mirror (§0.4.3)
@@ -958,6 +1006,7 @@ the corpus (§6.4) — engine bumps are best-effort posture (§3.8), not a gate.
 | **process-wrap** | §1.7 | cross-platform process-group / Job-Object spawn+group-kill (engine tree teardown) |
 | **walkdir** | §1.1 | ergonomic recursive folder enumeration (Rust-side intake) |
 | **chardetng** | §1.2 | text-encoding detection for the magic-less formats |
+| **flate2** (`rust_backend`/miniz_oxide feature ONLY — pure safe Rust, NO zlib/zlib-ng C backend) | §1.2 | bounded in-core `.svgz` (1F-8B) inflate for content detection (≤64 KiB + ≤100× ratio cap); pure-Rust so the §2.12.4 "no third-party C/C++ decoder in-core" absolute holds |
 | **tauri-plugin-single-instance** | §7.1 | single-instance policy + launch-arg hand-off |
 | **tauri-plugin-store** | §7.4 | the single `settings.json` prefs blob (theme + lastDestinationMode + verboseLog) |
 | **tauri-plugin-log** | §7.5 | local-only rotating diagnostic log + JS bridge |
@@ -1009,8 +1058,11 @@ pool** governs how many engine processes run at once. **This number lives here;
   engine must **acquire BOTH** the global degree semaphore **and** that engine's
   single-permit semaphore **before spawn**, and **releases both on subprocess exit**
   (success/fail/kill). This is the concrete code that *reads* `serialised_only`: the
-  pool, at registry-build time, allocates a `Semaphore(1)` for each engine flagged
-  serialised; non-serialised engines acquire only the global degree permit.
+  pool, at registry-build time, allocates a `Semaphore(MAX_LO_CONCURRENCY)` for each
+  engine flagged serialised; non-serialised engines acquire only the global degree permit.
+  **`MAX_LO_CONCURRENCY = 1` is a §0.9-owned `pub const` `[DECIDED]`** (the single source
+  of the LibreOffice serialisation degree); the §6.7.2 test harness **imports this same
+  constant** rather than hard-coding `1`, so the test env can never drift from prod.
   **How the pool gets `serialised_only` from a running job's `EngineId` `[DECIDED]`:**
   the §3.2.3 registry maps `(SourceFmt,TargetFmt) → EngineId`, and the §3.2 `trait
   Engine` exposes **`fn descriptor() -> EngineDescriptor`**; the pool reads
@@ -1236,7 +1288,8 @@ The `SECURITY` policy (§6.8) references this map.
 | T6 | **Copyleft aggregation boundary** | Accidentally linking a GPL/LGPL engine into the MIT core (licence contamination) | **§3.6** copyleft isolation (separate invoked binaries, aggregation not linking) — architecturally enforced by the §0.3 subprocess model + §0.7 (engines are sidecars, never linked) | covered |
 | T7 | **Path / link redirection** | A symlink/junction/alias makes an output resolve onto a source, or a TOCTOU race redirects the final write | **§2.3** resolved-identity & link safety + **§2.1** exclusive create-new-or-fail (the no-clobber guarantee is evaluated on the resolved real file) | covered |
 | T8 | **Self-feeding / batch expansion** | Outputs written into a watched source folder get re-ingested, or a second instance's files appear mid-run | **§2.4** frozen source set + **§7.1** instance/run identity (per-run temp ownership, no cross-instance ingestion) | covered |
-| T9 | **Network exfiltration of user files** | Anything tries to upload originals/results | **Load-bearing:** **§3.3.4** nothing-to-fetch (the app never opens a socket; all engines bundled) + **§2.11.4** packet-monitor release gate (the actual proof, blocks release on any outbound packet) + **§2.11** offline invariant + **§7.6** no phone-home. **WebView half:** **§0.10** CSP (no remote `connect-src`, `form-action 'self'`, no `http`/updater plugin). **Defence-in-depth only:** **§2.12.3** engine-side OS network-deny — `[OPEN]` and present only where the privilege-drop tier is enabled (it **degrades to the cheap tier with no network deny**), so it is **not** a v1 structural guarantee. Only network is the user-initiated C10 open-project-page | covered |
+| T9a | **ConvertIA's own code exfiltrates user files** | The app itself (Rust core or WebView) tries to upload originals/results | **Structurally covered:** ConvertIA's own code **opens no socket** — no HTTP/updater plugin on the §0.10 allowlist, no `connect-src` to remote origins (CSP), `form-action 'self'`, no phone-home (**§7.6**). The only network is the user-initiated C10 open-project-page shell-out. Proven by the **§2.11.4** packet-monitor release gate (blocks release on any outbound packet) + **§2.11** offline invariant. | covered |
+| T9b | **A bundled engine reaches out on hostile input** | A crafted dropped file makes a bundled engine (FFmpeg HLS/DASH/concat, pandoc include, LibreOffice remote/OLE link) open an outbound socket or read an out-of-input file at convert time (SSRF/LFR; e.g. CVE-2023-6605) | **Load-bearing argv/build controls (NOT the degradable OS sandbox):** **§3.5.1** FFmpeg `-protocol_whitelist file,pipe` + network-disabled build (asserted §6.1.3); **§3.5.4** pandoc `--sandbox`; **§3.5.2** LibreOffice profile-hardening (no link/OLE auto-update). Backed by the **§6.4.2** adversarial-egress / network-trigger case (zero egress AND no out-of-input file read on a network-trigger input) and proven again by the **§2.11.4** packet-monitor gate. **Defence-in-depth only:** **§2.12.3** engine-side OS network-deny — `[OPEN]`, present only where the privilege-drop tier is enabled (it **degrades to the cheap tier with no network deny**), so it is **not** the structural guarantee; the per-engine argv/build controls are. | covered |
 | T10 | **Resource exhaustion / DoS-by-input** | A tiny SVG asked to render at 50 000 px, a 90-min→GIF, a thousands-file batch exhausting RAM/disk/handles | **§1.10** resource pre-flight & budgets + **§0.9** pool/handle bounds + the to-GIF guardrail (cross-category.md) | covered |
 
 **No orphan classes.** Every box above points at a section that owns the
