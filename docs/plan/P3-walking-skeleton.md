@@ -44,7 +44,8 @@
 > atomicity-under-interruption home (P0.5.9) → **P3.19**; the temp-ownership / lock-before-part
 > home (P0.5.9) → **P3.20/P3.21**; the T7/T8 link-safety/self-feeding homes (P0.5.9) → **P3.64**;
 > `cargo-mutants` over the `fs_guard`/`detect`/`outcome` kernel (P0.5.10) → the **P3.6–P3.18 /
-> P3.26–P3.29 / P3.46** kernel boxes. P3.67 carries the explicit `needs: P0.5.8` edge; the
+> P3.26–P3.29 / P3.46 / P3.68–P3.69** kernel boxes (the §2.8.2/§2.9.1 catalogs are the
+> `crate::outcome` string-table leg). P3.67 carries the explicit `needs: P0.5.8` edge; the
 > other activation edges resolve trivially since P0 is `[x]` before the loop reaches P3.
 
 ## Boundaries (decided, see plan/README.md)
@@ -55,7 +56,7 @@
   contract). **P3 IMPLEMENTS** the bodies behind them for the CSV→TSV slice. A box that
   needs a P2-declared type/handler-stub carries an explicit `needs: P2.<n>` edge; the
   load-bearing P3→P2 edges are wired on the boxes (the type-consuming ones) and owned by
-  the P3.68 reconciliation box so no P3→P2 dependency is left implicit.
+  the P3.70 reconciliation box so no P3→P2 dependency is left implicit.
 - **P3 → P4:** P3 establishes the `crate::isolation` + pool **interface shells**; P4
   **expands** them into the real §2.12 wrapper + §0.9 pool. P3 builds the **real**
   `crate::fs_guard`.
@@ -77,7 +78,7 @@ reaches the `InProcessNative` branch — with `crate::isolation` and the §0.9 p
   - [ ] **P3.1.2** [RUST] Scaffold the `crate::run` module root + its public function shells · §2.0 §0.7
     > `src-tauri/src/run/` with public shells only (`cleanup_item`/`cleanup_run`/`sweep_stale` + the run-lifecycle ordering seam) wired so the later `run` boxes (P3.20–P3.25) fill the bodies; no dependency on `fs_guard` to compile its root.
   - [ ] **P3.1.3** [RUST] Scaffold the `crate::outcome` error-taxonomy module root · §2.0 §0.7 §2.8
-    > `src-tauri/src/outcome/` as the §2.8 taxonomy + `OutcomeMsg`/`CleanupResidue` string home (the `From<ConversionErrorKind>` projection seam P3.46 fills) wired so the later boxes fill the bodies; no dependency on `fs_guard`/`run` to compile its root.
+    > `src-tauri/src/outcome/` as the §2.8 taxonomy + `OutcomeMsg`/`CleanupResidue` string home (the `From<ConversionErrorKind>` projection seam P3.46 fills; the §2.8.2 message catalog P3.68 + the §2.9.1 lossy-note catalog P3.69 author the string TABLES) wired so the later boxes fill the bodies; no dependency on `fs_guard`/`run` to compile its root.
 - [ ] **P3.2** [RUST] Build the `crate::isolation` compile-time interface shell (no spawn, no FFI) · §2.12.1 §2.12.4 §0.7
   needs: P3.1
   > the §2.12 decoder-isolation wrapper as an **interface-only shell** so the §1.7 dispatch enum's `Subprocess` arm type-checks; it spawns nothing in P3. CSV→TSV genuinely bypasses it at runtime (§2.12.4 absolute: pure in-core memory-safe Rust, no third-party C/C++ decoder), so this is a compile-time stub, NOT a forward dependency on P4. P4 expands this shell into the real wrapper (it must not rebuild it from scratch).
@@ -175,9 +176,9 @@ item leaves nothing (or surfaces the residue). Activation target for P0.5.9 temp
 - [ ] **P3.24** [RUST] Build the opportunistic destination-resident `*.part` reclaim (cross-instance lock-addressable) · §2.6.3
   needs: P3.23
   > because kind-1 `*.part` live in destination dirs (not the central scratch root) and §7.4 persists no destination set, reclaim them at (a) run-end/same-session retry and (b) **opportunistically** before any later write into a dest dir: remove a sibling stale `.convertia-*.part` only when its owning run is **dead** — resolve the exact owning lock `convertia/scratch/<InstanceId>.*/run-<RunId>/.lock` from the embedded ids (held ⇒ keep; free/stale/**absent** ⇒ dead ⇒ reclaim). Recognise the **pre-RunId probe residue** `.convertia-<InstanceId>-probe-<rand>.part` (no RunId/jobId) → resolve liveness by `InstanceId` alone (§2.6.3 / §2.7.2).
-- [ ] **P3.25** [RUST] Build cleanup-failure honesty — `CleanupResidue` surfacing, never a silent clean success · §2.6.4 §1.12 · G31
-  needs: P3.22
-  > if removing a temp fails: success-with-undeletable-`tmp` → success stands + a `residue` annotation; a failed item whose partial couldn't be cleaned → reported **Failed** WITH `CleanupResidue` naming the path (never a clean success); a Cancelled item whose publish temp survived the §1.7 bounded group-kill confirm-wait → carries a `CleanupResidue` + the §2.8.2 "With residue" tail (§2.6.4 case 3). `CleanupResidue { item, residue_path }` flows into `RunResult.cleanup_incomplete` (§1.12). The string lives in `crate::outcome` (§2.8 `cleanup_residue` row).
+- [ ] **P3.25** [RUST] Build cleanup-failure honesty — `CleanupResidue` surfacing, never a silent clean success · §2.6.4 §1.12 §2.8.2 · G31
+  needs: P3.22, P3.68
+  > if removing a temp fails: success-with-undeletable-`tmp` → success stands + a `residue` annotation; a failed item whose partial couldn't be cleaned → reported **Failed** WITH `CleanupResidue` naming the path (never a clean success); a Cancelled item whose publish temp survived the §1.7 bounded group-kill confirm-wait → carries a `CleanupResidue` + the §2.8.2 "With residue" tail (§2.6.4 case 3). `CleanupResidue { item, residue_path }` flows into `RunResult.cleanup_incomplete` (§1.12). The `{path}`-substituted `CleanupResidue` string + the "With residue" tail live in `crate::outcome` (the §2.8.2 catalog row authored in **P3.68** — `needs: P3.68`, followed in place by DECISION C).
 
 ---
 
@@ -285,8 +286,8 @@ fans progress over the Channel, and the §0.4 commands the slice needs — so a 
 drop→convert round-trip runs through the typed IPC surface.
 
 - [ ] **P3.46** [RUST] Build the §1.9 job/batch lifecycle + the Running→Failed kind mapping · §1.9 §2.8
-  needs: P3.45, P3.38
-  > drive `JobState` transitions (`Pending → Running → {Succeeded|Failed(kind)|Cancelled}`; `Skipped` set at construction, never enters the queue, terminal); `crate::run` maps `InvocationResult::Failed(kind)` (internal `ConversionErrorKind`) to the wire `ErrorKind` via `ErrorKind::from(kind)` (the `From` impl owned by `crate::outcome`) **before** the state is recorded / a row or event emitted (§1.9). Deterministic collected/traversal queue order, no reordering (§1.9). A worker-thread panic is caught at the §2.13 boundary as a clean per-item `Failed` (the panic-boundary body is P4; P3 wires the per-item isolation seam).
+  needs: P3.45, P3.38, P3.68
+  > drive `JobState` transitions (`Pending → Running → {Succeeded|Failed(kind)|Cancelled}`; `Skipped` set at construction, never enters the queue, terminal); `crate::run` maps `InvocationResult::Failed(kind)` (internal `ConversionErrorKind`) to the wire `ErrorKind` via `ErrorKind::from(kind)` (the `From` impl owned by `crate::outcome`) and renders the per-item `OutcomeMsg::Failure { text }` from the **§2.8.2 catalog (P3.68)** **before** the state is recorded / a row or event emitted (§1.9). Deterministic collected/traversal queue order, no reordering (§1.9). A worker-thread panic is caught at the §2.13 boundary as a clean per-item `Failed` (the panic-boundary body is P4; P3 wires the per-item isolation seam). (`needs: P3.68` — the §2.8.2 string catalog this mapping renders into `OutcomeMsg.text`, built at end-of-P3 + followed in place by DECISION C.)
 - [ ] **P3.47** [RUST] Materialise pre-flight skips into the batch at C6 construction (non-queue `Skipped` records) · §1.9 §1.12
   needs: P3.46, P3.32
   > at C6 the orchestrator builds the `Batch` from the frozen `CollectedSet`, creating for **every `SkippedItem` in `CollectedSet::Single.skipped`** a `ConversionJob` with `JobState = Skipped(reason)` set at construction (reason copied from `SkippedItem.reason`) over the §1.1 single id space — these never enter `Pending`, receive **no** Channel events, and are terminal at construction. This is the single anchor preventing a skip from being lost between the `CollectedSet` and the §1.12 projection (§1.9).
@@ -296,9 +297,9 @@ drop→convert round-trip runs through the typed IPC surface.
 - [ ] **P3.49** [RUST] Implement C1 `ingest_paths` / C3 `get_targets` / C4 `plan_output` for the slice · §0.4.1 §1.3 §1.4 §1.5
   needs: P3.32, P3.29, P3.40
   > **C1** funnels drop/picker/launch-arg paths into the single freeze (P3.32), returns `CollectedSet` (`Single`/`Mixed`/`Unsupported`/`Uncertain`/`Empty`) projected per the §1.3 `group()` rule — incl. the lone-Unsupported / lone-Uncertain specificity + the `EmptyReport→skipped` projection. **C3** resolves the CSV/TSV `TargetOffer` (the offered set, the one pre-highlighted default = TSV for a CSV source, lossy flag, availability) from the registry (§1.5). **C4** computes the `OutputPlan` preview + `rerun` (P3.40) + the §1.10 preflight verdict; eager on `3→4`, debounced re-call on change (§0.4.1).
-- [ ] **P3.50** [RUST] Implement C8 `get_run_summary` + the §1.12 `RunResult` projection (incl. pre-flight skips) · §0.4.1 §1.12
-  needs: P3.47, P3.25
-  > the §1.12 run-end projection: `RunResult { collected_set_id, run_id, items, totals, cleanup_incomplete, common_root, divert_root }`; map each output back to its source; a fully-failed batch is a clear failure (derived `failed == total && total > 0`). Project **pre-flight skips** into `RunResult.items` as `ItemResult { state: Skipped(reason), output: None, reason: OutcomeMsg::Skipped{reason} }` (trivial copy, no lossy reverse map), counted in `Totals.skipped` (never `failed`). C8 is the idempotent re-fetch (mirrors the terminal `RunFinished`).
+- [ ] **P3.50** [RUST] Implement C8 `get_run_summary` + the §1.12 `RunResult` projection (incl. pre-flight skips + the batch-summary string) · §0.4.1 §1.12 §2.8.2
+  needs: P3.47, P3.25, P3.68
+  > the §1.12 run-end projection: `RunResult { collected_set_id, run_id, items, totals, cleanup_incomplete, common_root, divert_root }`; map each output back to its source; a fully-failed batch is a clear failure (derived `failed == total && total > 0`). Project **pre-flight skips** into `RunResult.items` as `ItemResult { state: Skipped(reason), output: None, reason: OutcomeMsg::Skipped{reason} }` (trivial copy, no lossy reverse map), counted in `Totals.skipped` (never `failed`); assemble the §1.12 **batch-level summary string** (All succeeded / Partial / All failed / Cancelled + the With-residue tail) from the §2.8.2 catalog (P3.68). C8 is the idempotent re-fetch (mirrors the terminal `RunFinished`). (`needs: P3.68` for the batch-summary strings, followed in place by DECISION C.)
 - [ ] **P3.51** [RUST] Implement C9 `open_path` with the §7.7.3 RunResult-membership validation · §0.4.1 §2.7.4
   needs: P3.50
   > the DoD one-click open-folder/open-file action: the Rust handler **validates `path` against the current `RunResult`'s recorded outputs (or their common/divert root)** (§7.7.3 — the real gate; no `opener:*` WebView grant, §0.10) then calls `OpenerExt` (reveal/open) internally. `OpenKind::{Folder|File|RevealInFolder}`; "open folder" opens `common_root`, and when `divert_root` is `Some(..)` a second affordance opens the divert root (§2.7.4 / §1.12).
@@ -385,8 +386,29 @@ whole Tauri + atomic-publish + IPC stack early (the README walking-skeleton purp
 
 ---
 
+### `crate::outcome`: the §2.8.2 message catalog + §2.9.1 lossy-note catalog (the single string home)
+
+**Goal:** the actual canonical-English STRING TABLES `crate::outcome` is the "single
+source of every conversion-outcome string" for (§2.0 line 43). P2 authored the
+`ConversionErrorKind` ENUM (P2.18/P2.18.1), the `OutcomeMsg` TYPE + projection helper
+(P2.20), and the `LossyKind` ENUM (P2.8.2); these two boxes author the kind→string
+TABLES themselves — without them `OutcomeMsg::{Failure,Lossy}.text` has nothing to
+produce. They sit at end-of-P3 (the outcome cluster's string-table leg) rather than
+re-numbering the whole phase; the consumers (P3.25/P3.46/P3.50 + P4.64/P4.68/P8.19/
+P8.20 + every per-pair fail-clearly / lossy-iff-flagged test) carry the forward
+`needs:` resolved in place by DECISION C.
+
+- [ ] **P3.68** [RUST] Author the §2.8.2 `ConversionErrorKind` → canonical-English message catalog (all item kinds + the 5 batch-summary strings + `{detected}`/`{platform}`/`{path}` substitution) · §2.8.2 §2.8 · G23 G57
+  needs: P3.1, P2.18, P2.20
+  > the §2.8.2 single-home string table in `crate::outcome` (the home §2.0 names): one canonical-English row per `ConversionErrorKind` item/app kind (`Corrupt`/`Empty`/`Unrecognized`/`UnsupportedType`/`UnsupportedPair`/`Unreadable`/`Gone`/`PasswordProtected`/`NoAudioTrack`/`TooBig`/`OutOfDisk`/`WriteFailed`/`PathTooLong`/`TooManyCollisions`/`EngineCrash`/`EngineHang`/`EngineError`/`PlatformUnavailable`/`QuarantinedByOs`/`CleanupResidue`/`InternalError`) with the `{detected}`/`{platform}`/`{path}` runtime-substitution wiring applied, PLUS the 5 **batch-level summary strings** (All succeeded / Partial / All failed / Cancelled / With-residue tail, assembled by §1.12). Produces `OutcomeMsg::Failure { kind, text }` (and the per-item `Skipped`/run-level chrome rows that ride the catalog) — the table P3.46 maps INTO via `ErrorKind::from`, P3.25 reads for the `cleanup_residue`/`CleanupResidue` row, P3.50 reads for the §1.12 projection, and P4.68/P8.19 render verbatim (UI never re-authors the string). Tone: plain/calm/never-blaming (SSOT *Fail clearly*); English-only (G57). A `#[test]` asserts every `ConversionErrorKind` variant has a non-empty catalog row (no unhomed kind). (`needs: P2.18` for the enum + `P2.20` for `OutcomeMsg`; the consumers carry the forward edge to this box per DECISION C.)
+- [ ] **P3.69** [RUST] Author the §2.9.1 `LossyKind` → canonical-English note catalog (all variants + the `{w}`×`{h}` substitution) · §2.9.1 §2.9 · G23 G57
+  needs: P3.1, P2.8.2, P2.20
+  > the §2.9.1 single-home lossy-note table in `crate::outcome` (§2.9 "single home of every lossy-note string"): one calm canonical-English note per `LossyKind` variant (`image_lossy_codec`/`image_palette`/`image_downscale`/`image_alpha_flatten`/`image_animation_flatten`/`image_svg_raster`/`doc_pdf_reflow`/`doc_pdf_to_text`/`doc_html_render`/`doc_to_text`/`doc_simplified`/`sheet_to_delimited`/`xls_legacy_limits`/`text_encoding_narrowed`/`slides_to_pdf_flatten`/`office_roundtrip_approx`/`pptx_to_ppt_legacy`/`audio_lossy_target`/`audio_transcode`/`audio_lossy_origin`/`audio_bitdepth`/`audio_tags_dropped`/`video_reencode`/`video_alpha_lost`/`video_subs_dropped`/`video_to_gif`/`audio_downmix`), incl. the **`image_svg_raster` `{w}`×`{h}` substitution**; produces `OutcomeMsg::Lossy { kind, text }`. The table P4.64 surfaces verbatim in FormatPicker, P8.20 polishes the presentation of, and every P5/P6 lossy-iff-flagged test (P5.47/P5.48/P5.50/P5.69, P6.29/P6.60, …) asserts FIRES against. English-only (G57). A `#[test]` asserts every `LossyKind` variant has a non-empty note row. (`needs: P2.8.2` for the `LossyKind` enum + `P2.20` for `OutcomeMsg`; the consumers carry the forward edge per DECISION C.)
+
+---
+
 ### Cross-phase reconciliation (the deferred P3→P2 contract `needs:`)
 
-- [ ] **P3.68** [GATE] Wire the deferred P3→P2 contract `needs:` edges — domain types, detection-outcome, error model, IPC commands/events, state machine · §0.6 §0.4 · G7 G20
+- [ ] **P3.70** [GATE] Wire the deferred P3→P2 contract `needs:` edges — domain types, detection-outcome, error model, IPC commands/events, state machine · §0.6 §0.4 · G7 G20
   needs: P2.4, P2.8, P2.13, P2.15, P2.18, P2.20, P2.22, P2.25, P2.26, P2.29, P2.37, P2.39, P2.120
-  > the P3 instance of the cross-phase reconciliation obligation (the master plan-lint forbidden-string check is P4.76): P3 IMPLEMENTS the bodies behind P2's contracts, so every P3 box that consumes a P2-declared type/handler must carry the edge — P3.5 plan() reads the `Target`/`EngineId`/`EngineDescriptor` types (**P2.8/P2.13**); P3.29 populates `DetectionOutcome` (**P2.15**); P3.32 freezes into `Vec<DroppedItem>` (**P2.4**); P3.46 maps internal kind → wire `ErrorKind` via the `From`/`OutcomeMsg` projection (**P2.18/P2.20**); P3.48 C6 fan-out over the `ConversionEvent` Channel (**P2.29/P2.37**); P3.49 C1/C3/C4 contracts (**P2.22/P2.25/P2.26**); P3.53 the §5.2 state machine over the three `app://` listeners (**P2.39/P2.120**). `needs:` these P2 boxes here so the §6 selection builds the P2 contract first (P2 is `[x]` before the loop reaches P3, so trivially satisfied — but the edge must RESOLVE, not dangle); no P3 box `>`-note defers a `needs:` with the P4.76-forbidden phrasing.
+  > the P3 instance of the cross-phase reconciliation obligation (the master plan-lint forbidden-string check is P4.76): P3 IMPLEMENTS the bodies behind P2's contracts, so every P3 box that consumes a P2-declared type/handler must carry the edge — P3.5 plan() reads the `Target`/`EngineId`/`EngineDescriptor` types (**P2.8/P2.13**); P3.29 populates `DetectionOutcome` (**P2.15**); P3.32 freezes into `Vec<DroppedItem>` (**P2.4**); P3.46 maps internal kind → wire `ErrorKind` via the `From`/`OutcomeMsg` projection (**P2.18/P2.20**); P3.68 authors the §2.8.2 catalog over `ConversionErrorKind`/`OutcomeMsg` (**P2.18/P2.20**) and P3.69 the §2.9.1 catalog over `LossyKind`/`OutcomeMsg` (**P2.8.2/P2.20**); P3.48 C6 fan-out over the `ConversionEvent` Channel (**P2.29/P2.37**); P3.49 C1/C3/C4 contracts (**P2.22/P2.25/P2.26**); P3.53 the §5.2 state machine over the three `app://` listeners (**P2.39/P2.120**). `needs:` these P2 boxes here so the §6 selection builds the P2 contract first (P2 is `[x]` before the loop reaches P3, so trivially satisfied — but the edge must RESOLVE, not dangle); no P3 box `>`-note defers a `needs:` with the P4.76-forbidden phrasing.

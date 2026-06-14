@@ -82,9 +82,27 @@ gate have real crates to act on (activating P0.4.1/P0.3.6/P0.3.7/P0.4.2).
 - [ ] **P1.10** [RUST] Stand up the §0.7 tier-3 `outcome` module shell (error-taxonomy home) · §2.8 · G29
   needs: P1.9
   > `crate::outcome` (the renamed-from-`error` §0.7 module) as an interface-only home for the §2.8 taxonomy + the §0.4.3 `IpcError`/`ErrorKind` wire mirror; P1 lands the module + an empty placeholder so the tree compiles and §06's drift mechanism has a home — the full catalog/strings are P2/§02.
-- [ ] **P1.11** [RUST] Stand up the §0.7 `platform`/`fs_guard`/`run`/`detection`/`engines`/`isolation`/`pool`/`orchestrator`/`ipc` module shells · §0.7 · G29 G9
+- [ ] **P1.11** [RUST] Scaffold the 9 §0.7 Rust library module roots (grouping shell) · §0.7 · G29 G9
   needs: P1.6, P1.9
-  > one compile-only `mod` per §0.7 logical module with its canonical path (`crate::fs_guard`/`crate::run`/`crate::isolation`/`crate::pool`/`crate::detection`/`crate::engines`/`crate::orchestrator`/`crate::ipc`/`crate::platform`), dependencies pointing strictly downward, so the §0.7 architecture exists as code (not just a tree) and the P0 G9 repo-invariant greps (no `Command::new` outside `crate::isolation`, no `127.0.0.1` outside `#[cfg(test)]`) have their real module boundaries (activates the P0.3.10 invariants (b)/(c)).
+  > the grouping parent for the nine §0.7 logical module roots, each a compile-only `mod` with its canonical path and dependencies pointing strictly downward, so the §0.7 architecture exists as code (not just a tree) and the P0 G9 repo-invariant greps (no `Command::new` outside `crate::isolation`, no `127.0.0.1` outside `#[cfg(test)]`) have their real module boundaries (activates the P0.3.10 invariants (b)/(c)). Each shell can fail to compile independently and is built + checked off on its own (the loop works the sub-boxes top-to-bottom; a broken `orchestrator` shell is unrelated to a broken `ipc` shell), mirroring the P3.1 three-root split. The parent is `[x]` only when all nine sub-boxes are `[x]` (_format.md §2). Downstream boxes that consume one module root `needs:` the specific sub-box (or P1.11 when they need the whole tree).
+  - [ ] **P1.11.1** [RUST] Scaffold the `crate::platform` module-root shell (the OS-abstraction leaf) · §0.7 · G29
+    > compile-only `mod platform` with its canonical path, no dependency on any other §0.7 module (the lowest OS-abstraction leaf); the per-OS helpers later boxes fill (no body in P1).
+  - [ ] **P1.11.2** [RUST] Scaffold the `crate::fs_guard` module-root shell · §0.7 · G29 G9
+    > compile-only `mod fs_guard` (canonical path) — the §2.0 no-harm-kernel home P3.1.1 fills; downward-only deps; joins the P0 G9 grep scope.
+  - [ ] **P1.11.3** [RUST] Scaffold the `crate::run` module-root shell · §0.7 · G29
+    > compile-only `mod run` (canonical path) — the §2.6 scratch/cleanup-lifecycle home P3.1.2 fills; downward-only deps.
+  - [ ] **P1.11.4** [RUST] Scaffold the `crate::detection` module-root shell · §0.7 · G29
+    > compile-only `mod detection` (canonical path) — the §1.2 layered-detection home P3.26 fills; downward-only deps.
+  - [ ] **P1.11.5** [RUST] Scaffold the `crate::engines` module-root shell · §0.7 · G29
+    > compile-only `mod engines` (canonical path) — the §3.2 engine-registry/`Engine`-trait home P4.1 fills; downward-only deps.
+  - [ ] **P1.11.6** [RUST] Scaffold the `crate::isolation` module-root shell · §0.7 · G29 G9
+    > compile-only `mod isolation` (canonical path) — the §2.12 decoder-isolation home P3.2 (shell) / P4.13 (real wrapper) fill; the sole legitimate `Command::new` site (P0 G9 invariant (b) scopes its grep to this module); downward-only deps.
+  - [ ] **P1.11.7** [RUST] Scaffold the `crate::pool` module-root shell · §0.7 · G29
+    > compile-only `mod pool` (canonical path) — the §0.9 subprocess-pool home P3.3 (shell) / P4.20 (real pool) fill; downward-only deps.
+  - [ ] **P1.11.8** [RUST] Scaffold the `crate::orchestrator` module-root shell · §0.7 · G29
+    > compile-only `mod orchestrator` (canonical path) — the §1.9 batch/job-lifecycle home P3.46 fills; downward-only deps (calls into fs_guard/run/detection/engines/isolation/pool, never up).
+  - [ ] **P1.11.9** [RUST] Scaffold the `crate::ipc` module-root shell · §0.7 · G29 G9
+    > compile-only `mod ipc` (canonical path) — the §0.4 command/event surface home P2.21 fills; downward-only deps; joins the P0 G9 grep scope (no raw `127.0.0.1`/`localhost` outside `#[cfg(test)]`).
 
 ---
 
@@ -187,7 +205,13 @@ the per-push a11y leg (G33a) against real source.
   > the strict `tsconfig.json` (`strict: true`, `noImplicitAny`, the platform no-`any` rule) covering `src/**` incl. the generated `bindings.ts` — the project the P0 TS gates `tsc --noEmit` (G6 diff-scoped / G13 whole-project) act on (activates the P0.4.7 contract for the TS half).
 - [ ] **P1.31** [UI] Stand up `main.tsx` + `App.tsx` — React 19 root mount + empty screen-state router shell · §5.1 §5.2
   needs: P1.29, P1.30
-  > the React 19 root mount (providers) + an `App.tsx` top-level shell that renders an empty/Idle placeholder — the minimal mounted UI the empty window shows; the full §5.2 state machine is P2/P8, so P1 lands only the router seam.
+  > the React 19 root mount (providers) + an `App.tsx` top-level shell that renders an empty/Idle placeholder — the minimal mounted UI the empty window shows; P1 lands only the router seam. **The §5.2 reducer FSM is built in P3 (the slice subset, P3.53) and completed to all 12 states in P4 (P4.79); the §5.1 Zustand shared store shell is P1.31.2 (body filled by P2.120's async wiring).** (The earlier "full §5.2 state machine is P2/P8" note was wrong: P2 builds only the §1.1 *intake* state machine + Rust contracts and P8 is chrome/polish — neither owns the §5.2 FSM.)
+  - [ ] **P1.31.1** [UI] Add the §5.1 Zustand shared-store dependency + the §0.8 pinned-floor JS supply-chain assertion · §5.1 §0.8 · G18c G18d
+    needs: P1.2.2
+    > add `zustand` (the §5.1 `[DECIDED — Zustand]` shared app-store library; any equivalent minimal store is acceptable but v1 is fixed to Zustand) to the frontend `package.json`, regenerate `pnpm-lock.yaml`, and add it to the P1.60 JS-tree §0.8 pinned-floor / resolution-URL / lifecycle-script assertion set (G18c/G18d) so the new dep is covered by the same supply-chain leg as `vitest-axe`/WebdriverIO. Dependency only; the store artifact is P1.31.2.
+  - [ ] **P1.31.2** [UI] Stand up `src/state/store.ts` — the §5.1 selector-granular shared app-store shell · §5.1 §1.10
+    needs: P1.31.1, P1.31
+    > the §5.1 Zustand store SHELL (`src/state/store.ts`) holding the machine state, the collected batch, the chosen target+options, the resolved-destination preview, and the **live progress map** — with **selector granularity** so the §1.10 1000-row virtualised ProgressList re-renders per-row, not per-tick-whole-tree. P1 lands the typed store shape + selectors as scaffolding (the §5.2 reducer FSM is the separate P3.53/P4.79 artifact that drives it); the live-progress wiring into the store is filled by P2.120's async model. Distinct from the Rust-side `tauri-plugin-store` prefs blob (P1.14/P2.85) — that is the 3-key `settings.json`, this is the in-memory frontend app store.
 - [ ] **P1.32** [UI] Author the Tailwind config + `design/tokens.css` token-file shell · §5.1 §5.5 · G9
   needs: P1.29
   > the Tailwind setup + an empty-but-present `design/tokens.css` (CSS custom properties) — the single home for colour tokens the P0 G9 invariant (a) ("no hardcoded colour outside `design/tokens.css`") scopes to (activates P0.3.10 invariant (a)); the real token values are P8 polish.
@@ -308,9 +332,25 @@ The P0 `→ activated in P<n>` gates flip from skip-with-warning to fail-closed 
 stands their targets up; this section proves the flip actually happened (no gate
 silently stuck in its bootstrap skip state) and homes the contributor build-setup doc.
 
-- [ ] **P1.62** [GATE] Assert each P1-activated `→ activated in P1` gate flipped to fail-CLOSED (a planted violation in the real target MUST fail it) · §6.7.1 · G24
+- [ ] **P1.62** [GATE] Assert all P1-activated gates flipped to fail-CLOSED (grouping shell — a planted violation in each now-real target MUST fail its gate) · §6.7.1 · G24
   needs: P1.52, P1.53, P1.56, P1.57, P1.58, P1.59, P1.60, P1.20, P1.21, P1.18
-  > the gate-activation assertion closing the fail-open-until-activated loop: for each gate whose P0 box carries `→ activated in P1` and whose target P1 just stood up (G47 CSP/capability over `tauri.conf.json`/`capabilities/main.json`; G19 type-drift; G27/G28 coverage; G33a jsdom-axe; G57 English-only; G53 forbidden-dep; G30 build-matrix; G18/G18a-d supply-chain), run its **G24 negative self-test against the now-real target** — a planted violation (a mis-encoded CSP directive, an `fs:` capability grant, a stale `bindings.ts`, an `any`, a non-English literal, an updater dep) MUST fail the gate — confirming it is **enforcing**, not stuck in its P0 bootstrap skip-with-warning state. Record each flip in the existing `docs/process/gate-status.md` decision-log. (The reverse `→ activated in P<n>` edges already exist on the P1 boxes; this box is the single owner that proves the activation actually closed the loop — mirrored as later phases produce gate targets, e.g. the P3–P7 format gates G22/G23.)
+  > the grouping parent closing the fail-open-until-activated loop: for each gate whose P0 box carries `→ activated in P1` and whose target P1 just stood up, run its **G24 negative self-test against the now-real target** — a planted violation MUST fail the gate, confirming it is **enforcing**, not stuck in its P0 bootstrap skip-with-warning state. Each gate (or closely-related cluster) is its own separately-faileable sub-box so a single failing gate's self-test is attributable in the build output (not opaque behind a 10-gate aggregate). Each sub-box records its flip in the existing `docs/process/gate-status.md` decision-log; the parent is `[x]` only when all sub-boxes are (_format.md §2). (The reverse `→ activated in P<n>` edges already exist on the P1 boxes; this box is the single owner that proves the activation closed the loop — mirrored as later phases produce gate targets, e.g. the P3–P7 format gates G22/G23.)
+  - [ ] **P1.62.1** [GATE] G47 self-test — a mis-encoded CSP directive / an `fs:`/`http:`/`shell`/`opener:`/`dialog:` capability grant / a present updater block in the real `tauri.conf.json`/`capabilities/main.json` MUST fail · §0.10 · G24 G47
+    needs: P1.20, P1.21, P1.18
+  - [ ] **P1.62.2** [GATE] G19 self-test — a stale `bindings.ts` (hand-edited / un-regenerated) MUST fail the type-drift check · §0.4.5 · G24 G19
+    needs: P1.53
+  - [ ] **P1.62.3** [GATE] G27/G28 self-test — a coverage drop below the per-domain floor / the ≥80% diff floor MUST fail · §6.7.1 · G24 G27 G28
+    needs: P1.54
+  - [ ] **P1.62.4** [GATE] G33a self-test — a planted invalid/orphaned ARIA role / broken focus-order in the rendered tree MUST fail the jsdom-axe leg · §6.4.6a · G24 G33a
+    needs: P1.56
+  - [ ] **P1.62.5** [GATE] G57 self-test — a non-English user-facing literal / an i18n-runtime import MUST fail the English-only leg · §5.7 · G24 G57
+    needs: P1.57
+  - [ ] **P1.62.6** [GATE] G53 self-test — a core-crate dependency on a forbidden lib (updater/HTTP-client/imgworker C libs) MUST fail the forbidden-dep gate · §0.7 · G24 G53
+    needs: P1.59
+  - [ ] **P1.62.7** [GATE] G30 self-test — a platform-specific compile break / a single-arch sidecar leg MUST fail the 3-OS build-matrix · §6.1.4 · G24 G30
+    needs: P1.58
+  - [ ] **P1.62.8** [GATE] G18/G18a-d self-test — a non-frozen lockfile / a bad resolution URL / a lifecycle-script-enabled dep MUST fail the supply-chain leg · §0.8 · G24 G18 G18a G18b G18c G18d
+    needs: P1.59, P1.60
 - [ ] **P1.63** [DOC] Author `DEVELOPMENT.md` — per-OS dev prerequisites + the off-CI engine-asset acquisition path + tauri dev/build commands · §6.7.1 · G51
   needs: P1.42
   > the contributor build-setup doc the CONTRIBUTING.md (P1.42, "how to run the §6.7.1 lanes") + the download-facing README (P1.47) do NOT cover: per-OS dev prerequisites (Rust toolchain, Node+pnpm, the platform WebView runtime, system build deps); **how a contributor obtains the bundled engine binaries for a local `tauri dev`/`tauri build` OFF-CI** (the cold-cache pinned-URL fetch path `scripts/stage-engines` uses, since P4.28's cache is `actions/cache`-centric — non-obvious for a hundreds-of-MB GPL/LGPL engine set); and the `tauri dev` / `tauri build` commands. Gate-light (G51 public-prose typo only). (Alternative if local-bundle-build is out of v1 scope: an explicit `[DECIDED]` note recording that, rather than a silent absence — taken here as the doc, since the offline app is built locally by contributors.)

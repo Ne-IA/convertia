@@ -68,7 +68,11 @@
   needs: P2.2
 - [ ] **P2.8** [RUST] Author the target/option types — `TargetId`/`FormatId`/`CrossCatOp`/`Availability`/`Target`/`TargetOffer`/`OptionValues` · §0.6 §1.5 §1.6
   needs: P2.3
+  > incl. the §1.5 `Target.lossy: Option<LossyKind>` field (the predictable-loss marker) — its `LossyKind` type is authored in the P2.8.2 sub-box so the field type-checks and mirrors to `bindings.ts` rather than generating as `any`.
   - [ ] **P2.8.1** [RUST] Author the §1.6 `OptionDecl` wire-type family — `OptionDecl`/`OptionKind`/`OptionKey`/`OptionValue`/`EnumChoice`/`Unit` (+ `LabelKey`) · §0.6 §1.6
+  - [ ] **P2.8.2** [RUST] Author the §2.9 `LossyKind` enum (all variants) + register it in `collect_types![]` · §2.9 §1.5 §0.4.3 · G23
+    needs: P1.25
+    > the §2.9 `LossyKind` wire enum the §1.5 `Target.lossy: Option<LossyKind>` field (P2.8) and the §0.6 `OutcomeMsg::Lossy { kind }` (P2.20) reference: author every §2.9.1 variant (`image_lossy_codec`/`image_palette`/`image_downscale`/`image_alpha_flatten`/`image_animation_flatten`/`image_svg_raster`/`doc_pdf_reflow`/`doc_pdf_to_text`/`doc_html_render`/`doc_to_text`/`doc_simplified`/`sheet_to_delimited`/`xls_legacy_limits`/`text_encoding_narrowed`/`slides_to_pdf_flatten`/`office_roundtrip_approx`/`pptx_to_ppt_legacy`/`audio_lossy_target`/`audio_transcode`/`audio_lossy_origin`/`audio_bitdepth`/`audio_tags_dropped`/`video_reencode`/`video_alpha_lost`/`video_subs_dropped`/`video_to_gif`/`audio_downmix`), deriving `specta::Type` and **registered in the P1.25 `collect_types![]` registry** (§2.8.2 line 1261 explicitly REQUIRES `LossyKind` derive `specta::Type` + be in `collect_types![]`) so `Target.lossy` does NOT generate as `any` (the no-`any` rule). The enum is the wire TYPE; the §2.9.1 kind→note STRING TABLE is the separate `crate::outcome` box P3.69. **Cardinality note (escalated, not silently reconciled):** §1.5 declares `Target.lossy: Option<LossyKind>` (≤1 on the wire) but §2.9.2 + P4.64 render a CO-APPLYING set (de-dup to the most-specific 2–3) — author the wire field as §1.5 says (`Option<LossyKind>` for the single primary marker) and record the §1.5-vs-§2.9.2 conflict for owner escalation per the conflict order (SSOT > spec); do NOT change `Option` to `Vec` here without a spec decision.
     > the §1.6-owned generic option-declaration model the §0.6 `Target.options: Vec<OptionDecl>` embeds and `OptionValues == BTreeMap<OptionKey, OptionValue>` keys on: author `OptionDecl` (the declared knob: key/label/kind/default/tier), `OptionKind` (`IntRange`/`Enum`/`Toggle`/`Size`/`Color`), `OptionKey`, `OptionValue`, `EnumChoice`, `Unit` (and `LabelKey`), each deriving `specta::Type` and **registered in the P1.25 `collect_types!` registry** so the §0.4.5 type-drift check has them to mirror to `bindings.ts` (else they generate as `any`). This is the **single home** the P4 options-panel RENDERS (P4.63) and P5–P7 register declarations against — without it the entire per-format `OptionDecl` registration design rests on an unhomed type.
 - [ ] **P2.9** [RUST] Author the destination/plan types — `DestinationChoice`/`OutputPlan`/`DivertReason` (directory-based, no pre-baked `final_path`) · §0.6 §2.7 §2.14.1
   needs: P2.6
@@ -350,8 +354,8 @@
 
 ### P2.18 — Shell-level a11y, English-only, UI-async & IPC-responsiveness contracts
 
-- [ ] **P2.120** [UI] Wire the frontend async model to the generated `commands.*` / `ConversionEvent` Channel + the three `app://` listeners (§5.8) · §5.8 §0.4.2
-  needs: P1.27, P2.37, P2.39
+- [ ] **P2.120** [UI] Wire the frontend async model to the generated `commands.*` / `ConversionEvent` Channel + the three `app://` listeners (§5.8) — feeding the §5.1 store live-progress map · §5.8 §0.4.2 §5.1
+  needs: P1.27, P2.37, P2.39, P1.31.2
 - [ ] **P2.121** [UI] Wire the native drag-drop affordance (hover/visual only; paths arrive over the native event → C1, never the DOM drop) · §5.4 §0.4.0
   needs: P2.120, P2.22
 - [ ] **P2.122** [UI] Establish the app-chrome a11y baseline (ARIA roles/focus order on the shell — the per-push `vitest-axe` target) · §5.5 · G33a
@@ -360,9 +364,15 @@
   needs: P1.37, P2.120
 - [ ] **P2.124** [UI] Wire the backend-disconnect / mid-run IPC-drop handling to `AppFault` (the §5.8 app-fault surface) · §5.8 §2.13
   needs: P2.120, P2.39
-- [ ] **P2.125** [RUST,TEST] Assert the IPC-responsiveness invariant — no synchronous C-command blocks the WebView past a bound (large-folder C1 streams `ScanProgress`; C3/C4 cannot wedge the UI) · §0.4 §1.1 §1.11
+- [ ] **P2.125** [RUST,TEST] Assert the IPC-responsiveness invariant — no synchronous C-command blocks the WebView past a bound (grouping shell) · §0.4 §1.1 §1.11
   needs: P2.36, P2.38
-  > the WebView-side analogue of the per-engine watchdog (the §0.4 C6 "return immediately, stream" model + the platform 100s-timeout discipline): assert no synchronous C-command can wedge the UI — a large-folder C1 `ingest_paths` streams `ScanProgress { scanned }` over its `onScan` Channel (P2.38) rather than blocking until the whole walk finishes; C3 `get_targets` / C4 `plan_output` (incl. the §1.10 preflight) and a huge-folder C1 ingest return within a bounded budget or yield cooperatively, never a frozen WebView. A test drives a synthetic large-folder C1 + a slow-preflight C4 and asserts progress events arrive / the call returns bounded. (The per-ENGINE wall-clock/watchdog timeouts are P3.44/P4.12; this is the C-command-surface responsiveness contract.)
+  > the WebView-side analogue of the per-engine watchdog (the §0.4 C6 "return immediately, stream" model + the platform 100s-timeout discipline): assert no synchronous C-command can wedge the UI. The two independent assertions target different commands and fail independently, so they are split into separately-faileable sub-boxes; the parent is `[x]` only when both are (_format.md §2). (The per-ENGINE wall-clock/watchdog timeouts are P3.44/P4.12; this is the C-command-surface responsiveness contract.)
+  - [ ] **P2.125.1** [RUST,TEST] Assert the C1 scan-path streams `ScanProgress` on a large folder (never blocks until the whole walk finishes) · §1.1 §1.11 · G31
+    needs: P2.38
+    > a large-folder C1 `ingest_paths` streams `ScanProgress { scanned }` over its `onScan` Channel (P2.38) rather than blocking until the whole walk completes; a test drives a synthetic large-folder C1 and asserts progress events arrive (the UI is never frozen during a deep recursive walk).
+  - [ ] **P2.125.2** [RUST,TEST] Assert C3 `get_targets` / C4 `plan_output` (incl. §1.10 preflight) return within a bounded budget · §0.4 §1.11 · G31
+    needs: P2.36
+    > C3 `get_targets` / C4 `plan_output` (incl. the §1.10 preflight) and a huge-folder C1 ingest return within a bounded budget or yield cooperatively, never a frozen WebView; a test drives a slow-preflight C4 and asserts the call returns bounded.
 
 ### P0 activation targets (the cross-cutting security-test homes P0 points into P2)
 

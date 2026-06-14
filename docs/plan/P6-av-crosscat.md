@@ -69,26 +69,26 @@
   needs: P6.1
   > run `ffmpeg -demuxers` on the staged binary and FAIL the build if a playlist/manifest dereferencing demuxer ConvertIA does not need is present (local-HLS `hls`, DASH `dash`, `image2` glob/pattern, external-reference EXTF). No §04 pair needs a playlist demuxer (single self-contained files only). This is the absolute-file LFR half that `-protocol_whitelist file,pipe` does NOT cover.
 - [ ] **P6.8** [RUST] Wire the FFmpeg invocation through the §2.12 isolation boundary with the minimal-env + loader-strip + cwd=scratch contract · §3.5.1 §2.12 §2.14 · G29
-  needs: P6.1
-  > register FFmpeg in the §3.2 `Engine` registry; route every invocation through the P4 §2.12 isolation wrapper with cwd = per-run scratch (§2.14), minimal isolated env (`LC_ALL=C.UTF-8`, no proxy vars, `PATH` not relied on — absolute bundled path), and the explicit dynamic-loader-injection strip (`LD_PRELOAD`/`LD_LIBRARY_PATH`/`DYLD_INSERT_LIBRARIES`/`DYLD_LIBRARY_PATH` cleared, G29 `.env_clear()` invariant). Untrusted A/V parsed in FFmpeg demuxers/decoders = classic attack surface.
+  needs: P6.1, P4.13, P4.14
+  > register FFmpeg in the §3.2 `Engine` registry; route every invocation through the **P4-built §2.12 isolation wrapper (P4.13 cheap-tier floor + P4.14 loader-var strip)** with cwd = per-run scratch (§2.14), minimal isolated env (`LC_ALL=C.UTF-8`, no proxy vars, `PATH` not relied on — absolute bundled path), and the explicit dynamic-loader-injection strip (`LD_PRELOAD`/`LD_LIBRARY_PATH`/`DYLD_INSERT_LIBRARIES`/`DYLD_LIBRARY_PATH` cleared, G29 `.env_clear()` invariant). Untrusted A/V parsed in FFmpeg demuxers/decoders = classic attack surface. (`needs: P4.13/P4.14` — the P4 isolation wrapper this engine routes through, per the P6.78 reconciliation obligation.)
 - [ ] **P6.9** [RUST] Apply the always-on global FFmpeg flags + the argv SSRF/LFR defence-in-depth · §3.5.1 · G38 G42 G42b
   needs: P6.8
   > prepend the global flags to every FFmpeg job: `-nostdin -hide_banner -loglevel error -y` (`-y` safe — target is the §2.1 temp path, `-nostdin` prevents the parent-stdin-consume hang); the per-input `-protocol_whitelist file,pipe` (defence-in-depth on the network-absent build, set before each input); and NEVER `-safe 0` on the concat demuxer (`-safe 1` default rejects absolute/`..` paths). These are the runtime half of the §3.5.1 control.
 - [ ] **P6.10** [RUST] Wire FFprobe stream inspection + the `ProbeOutput` → `plan_encode` denominator path · §3.5.1 §1.7 §1.11 · G31
-  needs: P6.8
-  > `ffprobe -v error -print_format json -show_streams -show_format <input>` (probe-first for video) parsed into `ProbeOutput` (inner codecs / duration / rotation / interlace); the duration becomes the §1.11 progress denominator carried into `Engine::plan_encode(.., &probe)` (§3.2.1/§3.2.2) which builds the encode `Invocation` with `ProgressModel::FfmpegKeyValue { duration_us }` already populated — NO placeholder-then-mutate.
+  needs: P6.8, P4.9
+  > `ffprobe -v error -print_format json -show_streams -show_format <input>` (probe-first for video) parsed into `ProbeOutput` (inner codecs / duration / rotation / interlace); the duration becomes the §1.11 progress denominator carried into `Engine::plan_encode(.., &probe)` (§3.2.1/§3.2.2) which builds the encode `Invocation` with `ProgressModel::FfmpegKeyValue { duration_us }` already populated — NO placeholder-then-mutate. (`needs: P4.9` — the P4-built two-step probe-then-encode sequencing this populates, per the P6.78 reconciliation obligation.)
 - [ ] **P6.11** [RUST] Wire the FFmpeg `-progress pipe:1` parser into the §1.11 real per-item progress bar · §3.5.1 §1.11 · G31
-  needs: P6.10
-  > `-progress pipe:1 -nostats` → key=value lines (`out_time_us=`/`total_size=`/`progress=continue|end`) parsed into `ProgressModel::FfmpegKeyValue`; until the first `out_time_us` tick the bar reads `Spawning`/indeterminate-but-working, then a true % against the probe duration — never a spinner (the SSOT *How It Feels* 6 promise for long video re-encodes).
+  needs: P6.10, P4.8
+  > `-progress pipe:1 -nostats` → key=value lines (`out_time_us=`/`total_size=`/`progress=continue|end`) parsed into `ProgressModel::FfmpegKeyValue`; until the first `out_time_us` tick the bar reads `Spawning`/indeterminate-but-working, then a true % against the probe duration — never a spinner (the SSOT *How It Feels* 6 promise for long video re-encodes). (`needs: P4.8` — the P4-built per-`ProgressModel` stdout line-reader dispatch this feeds, per the P6.78 reconciliation obligation.)
 - [ ] **P6.12** [RUST] Wire the FFmpeg exit/stderr → §2.8 error-kind mapping (`classify_failure`) · §3.5.1 §2.8 · G31
-  needs: P6.8
-  > map known stderr patterns: "could not find codec parameters"/"Invalid data" → corrupt; the cross-category "No audio" path → the named `NoAudioTrack` kind; DRM/"Operation not permitted" on FairPlay/WMV → the §video.md "copy-protected" message; everything else → generic engine-failure (still plain-language §2.13). A crashing/hanging decode fails THAT one item and the batch continues.
+  needs: P6.8, P4.48
+  > map known stderr patterns: "could not find codec parameters"/"Invalid data" → corrupt; the cross-category "No audio" path → the named `NoAudioTrack` kind; DRM/"Operation not permitted" on FairPlay/WMV → the §video.md "copy-protected" message; everything else → generic engine-failure (still plain-language §2.13). A crashing/hanging decode fails THAT one item and the batch continues. (`needs: P4.48` — the P4-built capture-and-classify-into-§2.8 generic seam this fills the FFmpeg classifier for, per the P6.78 reconciliation obligation.)
 - [ ] **P6.13** [RUST] Wire cancellation via process-group kill + the no-partial-output guarantee for FFmpeg · §3.5.1 §1.7 §2.1
-  needs: P6.8
-  > cancellation routes through §1.7 process-group kill (FFmpeg may spawn children); a cancelled re-encode leaves NO partial output (FFmpeg writes to the §2.1 temp `out_tmp`, atomic-renamed only on success); already-finished batch items are kept.
+  needs: P6.8, P4.10, P4.11
+  > cancellation routes through the **P4-built §1.7 process-group kill (P4.10) + the kill↔cleanup↔no-partial ordering (P4.11)** (FFmpeg may spawn children); a cancelled re-encode leaves NO partial output (FFmpeg writes to the §2.1 temp `out_tmp`, atomic-renamed only on success); already-finished batch items are kept. (`needs: P4.10/P4.11` — the P4 cancel/kill mechanism, per the P6.78 reconciliation obligation.)
 - [ ] **P6.14** [TEST] Add the per-engine FFmpeg §7.2.3 availability/integrity row + the in-bundle hash-manifest entry · §7.2.3 · G46 G37
-  needs: P6.2
-  > populate the FFmpeg + FFprobe rows in the build-time in-bundle hash manifest and the `EngineHealth` availability table (the per-engine variant of the P4 startup-verifier framework) so a missing/corrupt FFmpeg escalates to a §2.13 app-fault, not a crash, and feeds C12 `get_engine_health` (§5.2 disables unavailable targets).
+  needs: P6.2, P4.42
+  > populate the FFmpeg + FFprobe rows in the build-time in-bundle hash manifest and the `EngineHealth` availability table (the per-engine variant of the **P4-built §7.2.3 startup-verifier framework, P4.42**) so a missing/corrupt FFmpeg escalates to a §2.13 app-fault, not a crash, and feeds C12 `get_engine_health` (§5.2 disables unavailable targets). (`needs: P4.42` — the P4 integrity-verifier framework this populates a row in, per the P6.78 reconciliation obligation.)
 
 ---
 
@@ -114,44 +114,28 @@
   needs: P6.9, P6.16
   > MP3 encode `-c:a libmp3lame -q:a 2` (VBR ≈190k default); always-lossy-as-target. MP3 is the default target of every audio source except MP3 itself. (audio.md MP3 entry.)
   - [ ] **P6.18.1** [RUST] Wire the MP3 quality advanced-option mapping (V0/V2/V5 + CBR 128/192/320) · §1.6 · G31
-    > the "MP3 quality" preset set → `-q:a N` (VBR High V0 / Standard V2 / Small V5) or `-b:a Nk` (CBR 128/192/320); this same canonical MP3 preset table is reused verbatim by cross-category extract-audio→MP3 (OPEN-B).
-  - [ ] **P6.18.2** [UI] Register the "MP3 quality" advanced-option DECLARATION against the P4 panel · §1.6 §2.9 · G47
-    > register the §1.6 option declaration (no new panel chrome — P4 owns it); Standard [default].
+    > the "MP3 quality" preset set → `-q:a N` (VBR High V0 / Standard V2 / Small V5) or `-b:a Nk` (CBR 128/192/320); this same canonical MP3 preset table is reused verbatim by cross-category extract-audio→MP3 (OPEN-B). The "MP3 quality" UI option DECLARATION is the top-level box P6.70 (registered against the P4 panel).
 - [ ] **P6.19** [RUST] Wire the WAV target — `pcm_s16le` 16-bit default + bit-depth advanced option · §3.5.1 · G31
   needs: P6.9, P6.16
-  > WAV encode `-c:a pcm_s16le` via `wav` muxer, 16-bit default, sample-rate/channels preserved; lossless-as-target except the >16-bit-source → default-16-bit bit-depth-reduction case (fire `audio_bitdepth`). Weak WAV tag model → fire `audio_tags_dropped` only when the source carried tags.
-  - [ ] **P6.19.1** [UI] Register the "WAV bit depth" advanced-option DECLARATION (16 / 24 / 32-float) · §1.6 · G47
-    > `16-bit [default]` · `24-bit (pcm_s24le)` · `32-bit float (pcm_f32le)`.
+  > WAV encode `-c:a pcm_s16le` via `wav` muxer, 16-bit default, sample-rate/channels preserved; lossless-as-target except the >16-bit-source → default-16-bit bit-depth-reduction case (fire `audio_bitdepth`). Weak WAV tag model → fire `audio_tags_dropped` only when the source carried tags. The "WAV bit depth" UI option DECLARATION is the top-level box P6.71.
 - [ ] **P6.20** [RUST] Wire the FLAC target — `flac -compression_level 5` default + level advanced option · §3.5.1 · G31
   needs: P6.9, P6.16
-  > FLAC encode `-c:a flac -compression_level 5` (level changes size/speed only, never the audio); lossless-as-target; lossy-ORIGIN flagged `audio_lossy_origin` (no quality gain). Vorbis comments + PICTURE block round-trip.
-  - [ ] **P6.20.1** [UI] Register the "FLAC compression" advanced-option DECLARATION (Fast 0 / Standard 5 / Best 8) · §1.6 · G47
-    > exposed cap is 8 (libFLAC native max; FFmpeg 9–12 are non-standard — do NOT surface); validation range `0..=8`.
+  > FLAC encode `-c:a flac -compression_level 5` (level changes size/speed only, never the audio); lossless-as-target; lossy-ORIGIN flagged `audio_lossy_origin` (no quality gain). Vorbis comments + PICTURE block round-trip. The "FLAC compression" UI option DECLARATION is the top-level box P6.72.
 - [ ] **P6.21** [RUST] Wire the AAC target — native `aac -b:a 192k` CBR + adts muxer, reading §3.4 availability · §3.5.1 §3.4 · G31
   needs: P6.9, P6.16
-  > AAC encode native `-c:a aac -b:a 192k` CBR (native-encoder VBR is unstable) + muxer `adts` (raw `.aac`); always-lossy; raw ADTS has NO tag container → cover art + tags DROPPED (`audio_tags_dropped`). READS the §3.4 AAC per-platform cell (P4 matrix) — if AAC is unavailable on a platform, the AAC target is honestly disabled there (never re-decided here).
-  - [ ] **P6.21.1** [UI] Register the "AAC quality" advanced-option DECLARATION (128/192/256 CBR) · §1.6 · G47
-    > no VBR exposed (encoder limitation); 192k [default].
+  > AAC encode native `-c:a aac -b:a 192k` CBR (native-encoder VBR is unstable) + muxer `adts` (raw `.aac`); always-lossy; raw ADTS has NO tag container → cover art + tags DROPPED (`audio_tags_dropped`). READS the §3.4 AAC per-platform cell (P4 matrix) — if AAC is unavailable on a platform, the AAC target is honestly disabled there (never re-decided here). The "AAC quality" UI option DECLARATION is the top-level box P6.73.
 - [ ] **P6.22** [RUST] Wire the M4A target — native `aac` + `ipod` muxer + faststart, reading §3.4 (inherits AAC) · §3.5.1 §3.4 · G31
   needs: P6.21
-  > M4A encode native `-c:a aac -b:a 192k` + muxer `ipod` (`.m4a`) + `-movflags +faststart`; identical quality knobs to AAC; KEEPS metadata (iTunes `ilst` atoms + cover art) — M4A's advantage over raw `.aac`. INHERITS AAC's §3.4 disposition (the codec is AAC); M4A-holding-ALAC is the separate ALAC target.
-  - [ ] **P6.22.1** [UI] Register the M4A quality advanced-option DECLARATION (shares the AAC preset set) · §1.6 · G47
-    > 128/192/256 CBR; container difference (`.m4a` iTunes atoms) chosen automatically, not a user setting.
+  > M4A encode native `-c:a aac -b:a 192k` + muxer `ipod` (`.m4a`) + `-movflags +faststart`; identical quality knobs to AAC; KEEPS metadata (iTunes `ilst` atoms + cover art) — M4A's advantage over raw `.aac`. INHERITS AAC's §3.4 disposition (the codec is AAC); M4A-holding-ALAC is the separate ALAC target. The "M4A quality" UI option DECLARATION is the top-level box P6.74.
 - [ ] **P6.23** [RUST] Wire the OGG (Vorbis) target — `libvorbis -q:a 3` VBR + ogg muxer · §3.5.1 · G31
   needs: P6.9, P6.16
-  > OGG encode `-c:a libvorbis -q:a 3` (≈112k) muxer `ogg` — DISTINCT from OPUS (the OGG target is always Vorbis, never Opus); always-lossy; Vorbis comments + cover-art-as-PICTURE-block. No patent flag (royalty-free).
-  - [ ] **P6.23.1** [UI] Register the "OGG quality" advanced-option DECLARATION (q3/q5/q7) · §1.6 · G47
-    > Vorbis quality scale −1..10; expose the useful middle; q3 [default].
+  > OGG encode `-c:a libvorbis -q:a 3` (≈112k) muxer `ogg` — DISTINCT from OPUS (the OGG target is always Vorbis, never Opus); always-lossy; Vorbis comments + cover-art-as-PICTURE-block. No patent flag (royalty-free). The "OGG quality" UI option DECLARATION is the top-level box P6.75.
 - [ ] **P6.24** [RUST] Wire the OPUS target — `libopus -b:a 128k` VBR + opus muxer (48 kHz internal) · §3.5.1 · G31
   needs: P6.9, P6.16
-  > OPUS encode `-c:a libopus -b:a 128k` (`-vbr on`) muxer `opus`; FFmpeg resamples to Opus's 48 kHz internal rate transparently (not a user-visible loss); always-lossy; never the per-source DEFAULT (older players may not open `.opus`). No patent flag.
-  - [ ] **P6.24.1** [UI] Register the "OPUS bitrate" advanced-option DECLARATION (96/128/192) · §1.6 · G47
-    > 128k [default]; `-vbr on` retained throughout.
+  > OPUS encode `-c:a libopus -b:a 128k` (`-vbr on`) muxer `opus`; FFmpeg resamples to Opus's 48 kHz internal rate transparently (not a user-visible loss); always-lossy; never the per-source DEFAULT (older players may not open `.opus`). No patent flag. The "OPUS bitrate" UI option DECLARATION is the top-level box P6.76.
 - [ ] **P6.25** [RUST] Wire the AIFF target — `pcm_s16be` 16-bit big-endian + aiff muxer · §3.5.1 · G31
   needs: P6.9, P6.16
-  > AIFF encode `-c:a pcm_s16be` muxer `aiff`, 16-bit big-endian default; lossless-as-target with the same >16-bit-source → 16-bit `audio_bitdepth` caveat as WAV; limited AIFF tag model → `audio_tags_dropped` when the source carried tags.
-  - [ ] **P6.25.1** [UI] Register the "AIFF bit depth" advanced-option DECLARATION (16 / 24) · §1.6 · G47
-    > `16-bit [default]` · `24-bit (pcm_s24be)`.
+  > AIFF encode `-c:a pcm_s16be` muxer `aiff`, 16-bit big-endian default; lossless-as-target with the same >16-bit-source → 16-bit `audio_bitdepth` caveat as WAV; limited AIFF tag model → `audio_tags_dropped` when the source carried tags. The "AIFF bit depth" UI option DECLARATION is the top-level box P6.77.
 - [ ] **P6.26** [RUST] Wire the ALAC target — native `alac` + `ipod` muxer + faststart (lossless, no knob) · §3.5.1 · G31
   needs: P6.9, P6.16
   > ALAC encode `-c:a alac` muxer `ipod` (`.m4a` whose codec is ALAC) + `+faststart`; lossless, NO quality/compression knob exposed (FFmpeg's ALAC encoder has none) — the advanced view stays clean; lossy-ORIGIN flagged `audio_lossy_origin`. NO patent flag (ALAC is open/royalty-free — never confuse with AAC's §3.4 status). Same `ilst` metadata + cover art as M4A.
@@ -181,8 +165,8 @@
   needs: P6.30
   > add the audio edge fixtures + content-floor tags: a multichannel (5.1) source (`audio_downmix` / channel-preservation); a >16-bit source (`audio_bitdepth`); files with non-Latin/CJK/RTL tag text (`non-latin-tags` content-floor tag, §2.10); corrupt/truncated + 0-byte + a `.mp3` that is really FLAC (mislabel) cases; cover-art round-trip fixtures for the MP3↔FLAC↔OGG↔OPUS↔M4A/ALAC set.
 - [ ] **P6.32** [TEST] Add the audio per-pair integration tests (every audio pair, structural reader = ffprobe) · §6.4.3 §6.5 · G31 G32
-  needs: P6.30, P6.31, P6.29
-  > for every enumerated audio `(source → target)` pair, against every corpus file of its source format, on all three platforms: completes with exit success; output validated by the MANDATORY structural reader (`ffprobe` decodes + reports the expected codec, stream count > 0 — NOT magic re-detect); no-harm (source `sha256` unchanged, atomic write, no-clobber); fail-clearly on the known-bad fixtures; lossy disclosure fires iff flagged; tag/cover-art/channel content-fidelity spot-checks. (§6.4.3 runner built in P4.)
+  needs: P6.30, P6.31, P6.29, P4.58
+  > for every enumerated audio `(source → target)` pair, against every corpus file of its source format, on all three platforms: completes with exit success; output validated by the MANDATORY structural reader (`ffprobe` decodes + reports the expected codec, stream count > 0 — NOT magic re-detect); no-harm (source `sha256` unchanged, atomic write, no-clobber); fail-clearly on the known-bad fixtures; lossy disclosure fires iff flagged; tag/cover-art/channel content-fidelity spot-checks. (§6.4.3 runner built in P4 — `needs: P4.58`, the per-pair runner, per the P6.78 reconciliation obligation.)
 - [ ] **P6.33** [TEST] Add the audio determinism + cross-decoder re-validation sub-assertions · §6.4.3 §2.5 · G32 G38
   needs: P6.32
   > the §2.5/G32 determinism floor — same source+settings twice → `sha256(out1)==sha256(out2)` for ≥1 pair per output-format category (enumerated in the manifest); cross-decoder validation for headline formats via ffprobe; document known-non-deterministic encoders as manifest exceptions.
@@ -256,8 +240,8 @@
   needs: P6.47
   > add a DRM-protected FairPlay `.m4v` + a DRM WMV (fail-clearly); a portrait/rotated clip (rotation honoured); a VFR screen recording (to-GIF fps-normalise); a silent clip (extract-audio "no audio track"); a long-ish clip for the to-GIF guardrail/cap; tag the `representative-av` content floor (≥1 real video, already implied by the per-format rows).
 - [ ] **P6.49** [TEST] Add the video per-pair integration tests (every container pair, structural reader = ffprobe + remux-correctness) · §6.4.3 §6.5 · G31 G32
-  needs: P6.47, P6.48, P6.45
-  > for every enumerated video `(source → target)` container pair, against every corpus file of its source, on all three platforms: completes + output decodes via `ffprobe` (expected codec, stream count > 0); no-harm + fail-clearly on DRM/corrupt fixtures; remux-vs-re-encode chose the LOSSLESS path when codecs already fit (the key video content-fidelity check); lossy disclosure fires per the PLANNED disposition; rotation/subtitle/chapter content-fidelity spot-checks; patent-gapped targets asserted absent (not attempted) where §3.4 marks unavailable.
+  needs: P6.47, P6.48, P6.45, P4.58
+  > for every enumerated video `(source → target)` container pair, against every corpus file of its source, on all three platforms: completes + output decodes via `ffprobe` (expected codec, stream count > 0); no-harm + fail-clearly on DRM/corrupt fixtures; remux-vs-re-encode chose the LOSSLESS path when codecs already fit (the key video content-fidelity check); lossy disclosure fires per the PLANNED disposition; rotation/subtitle/chapter content-fidelity spot-checks; patent-gapped targets asserted absent (not attempted) where §3.4 marks unavailable. (`needs: P4.58` — the P4-built §6.4.3 per-pair runner, per the P6.78 reconciliation obligation.)
 - [ ] **P6.50** [TEST] Add the video determinism note + the per-push adversarial-egress leg for FFmpeg video · §6.4.2 §6.4.3 §2.11.4 · G32 G42 G42b
   needs: P6.49
   > extend the §6.4.2 per-push adversarial-egress + T9b-sentinel run to the video corpus (crafted external-reference/manifest-bearing video → zero egress incl. DNS + no out-of-input read); document VP9/AV1 variable-encode as known-non-deterministic G32 manifest exceptions (no `sha256` determinism floor for those, a `diffoscope`-localised note instead).
@@ -328,9 +312,9 @@
 - [ ] **P6.61** [TEST] Stage the to-GIF bijection corpus coverage (every `["<SOURCE>","GIF"]` pair) + extract-audio covers · §6.4.5 §6.4.3a · G24a G22
   needs: P6.47
   > extend each video corpus item's `covers` list to include its `["<SOURCE>","GIF"]` 2-tuple (MP4 item → `["MP4","GIF"]`, WEBM item → `["WEBM","GIF"]`, … — not one generic clip) AND its extract-audio `(video → MP3/WAV/FLAC/…)` 2-tuples, so the §6.4.3a bijection guard does not fail at Lane A for most cross-category pairs; regenerate the SHA-256 manifest in the same commit (G24a).
-- [ ] **P6.62** [TEST] Add the cross-category per-pair integration tests (extract-audio + to-GIF, structural readers) · §6.4.3 §6.5 · G31 G32
-  needs: P6.61, P6.55, P6.60, P6.54, P6.69
-  > for every `(video → audio-subset)` extract-audio pair and every `(video → GIF)` pair, against the corpus, on all three platforms: completes + output decodes (`ffprobe` for extracted audio with expected codec; GIF89a valid + nonzero frames for to-GIF); the stream-copy path verified lossless where codecs match; the NoAudioTrack fixture fails-clearly; the to-GIF note fires unconditionally; the guardrail fail-fast triggers on the over-cap fixture; M4A patent-gapped target asserted absent where §3.4 unavailable.
+- [ ] **P6.62** [TEST] Add the cross-category per-pair integration tests (extract-audio FLOOR + to-GIF, structural readers) · §6.4.3 §6.5 · G31 G32
+  needs: P6.61, P6.55, P6.60, P6.54, P4.58
+  > for every `(video → audio-FLOOR-subset {MP3/WAV/FLAC})` extract-audio pair and every `(video → GIF)` pair, against the corpus, on all three platforms: completes + output decodes (`ffprobe` for extracted audio with expected codec; GIF89a valid + nonzero frames for to-GIF); the stream-copy path verified lossless where codecs match; the NoAudioTrack fixture fails-clearly; the to-GIF note fires unconditionally; the guardrail fail-fast triggers on the over-cap fixture; M4A patent-gapped target asserted absent where §3.4 unavailable. **The corpus-validated M4A/OGG extract-audio additions are tested by P6.69** (the `[!]` box unlocked by P9.44) — NOT a `needs:` of this floor box, so this box does not deadlock waiting on the P9.44 corpus evidence (P9.44 itself `needs: P6.66` which `needs:` this box, so P6.69 must not be a prerequisite of the gate that ultimately unlocks it).
 - [ ] **P6.63** [TEST] Wire the cross-category re-run/equivalent-output detection (source + target + effective settings) · §2.5 · G31
   needs: P6.51, P6.56
   > §2.5 keys on source + target + EFFECTIVE settings: "extract audio → MP3 (Standard)" re-run on the same video triggers the skip/fresh-copy prompt; changing fps or MP3 quality is a NEW conversion (ordinary numbering); output naming/no-clobber/atomic-write/beside-source-divert apply identically (an extracted `clip.mp3` / `clip.gif` keeps the source base name + new extension, no-clobber numbered).
@@ -343,11 +327,11 @@
 ## P6.x — macOS TCC staging, phase reliability gate & advanced-options completeness
 
 - [ ] **P6.65** [RUST] Verify FFmpeg receives the macOS kind-2 scratch-staged source path (never the raw protected path) · §3.5.0 §7.2.6 §2.14.2 · G31
-  needs: P6.8
-  > assert (macOS only) that the Rust core stages the dropped source into per-job kind-2 scratch BEFORE spawning FFmpeg and hands FFmpeg the SCRATCH path as `<input>` — so a spawned engine is never the first process to touch a TCC-protected Desktop/Documents/Downloads/removable path (composes with the §2.14 cross-volume strategy; the macOS staged-input term in the §1.10 preflight). Read-side only (the write-side `.part` is the core's per §7.2.6).
+  needs: P6.8, P4.25
+  > assert (macOS only) that the **P4-built TCC source-staging (P4.24/P4.25)** stages the dropped source into per-job kind-2 scratch BEFORE spawning FFmpeg and hands FFmpeg the SCRATCH path as `<input>` — so a spawned engine is never the first process to touch a TCC-protected Desktop/Documents/Downloads/removable path (composes with the §2.14 cross-volume strategy; the macOS staged-input term in the §1.10 preflight). Read-side only (the write-side `.part` is the core's per §7.2.6). (`needs: P4.25` — the P4 staged-path engine-arg plumbing, per the P6.78 reconciliation obligation.)
 - [ ] **P6.66** [TEST] Assert the §6.5 phase reliability gate — every P6 pair `reliable` on all three platforms · §6.5 §6.5.2 · G31 G32
-  needs: P6.35, P6.49, P6.62, P6.65
-  > the phase-level §6.5 coverage gate: the §6.5.2 pair-status ledger marks EVERY enumerated P6 pair (audio + video container + extract-audio + to-GIF) `reliable` on every platform where it is not `unavailable-per-§3.4` or `demoted`; any `failing` cell blocks; record the two permissible exceptions (patent per-platform gap; last-resort demotion) in `docs/demoted-pairs.md` + the ledger with the required fields. The report is published as a release asset.
+  needs: P6.35, P6.49, P6.62, P6.65, P4.59, P4.60
+  > the phase-level §6.5 coverage gate: the **P4-built §6.5.2 pair-status ledger generator (P4.60) + the §6.4.3a corpus↔pair bijection guard (P4.59)** mark EVERY enumerated P6 pair (audio + video container + extract-audio + to-GIF) `reliable` on every platform where it is not `unavailable-per-§3.4` or `demoted`; any `failing` cell blocks; record the two permissible exceptions (patent per-platform gap; last-resort demotion) in `docs/demoted-pairs.md` + the ledger with the required fields. The report is published as a release asset. (`needs: P4.59/P4.60` — the P4 ledger generator + bijection guard, per the P6.78 reconciliation obligation.)
 - [ ] **P6.67** [TEST] Assert the FFmpeg-family advanced-option completeness (every declared option resolves + every pair has a test) · §1.6 §6.4 · G22 G23
   needs: P6.18, P6.19, P6.20, P6.21, P6.22, P6.23, P6.24, P6.25, P6.40, P6.55, P6.57, P6.58
   > the §6.4 completeness wiring for this engine: G22 every FFmpeg-family format ∈ the README support matrix ∧ has a corpus fixture ∧ has a round-trip test; G23 every `convert_*`/engine command for an FFmpeg pair has a partner test; every registered §1.6 advanced-option declaration resolves to a non-empty handler + a UI control on the P4 panel (no orphan declaration, no declared-but-unwired option).
@@ -357,6 +341,51 @@
 
 ### Corpus-validated extract-audio additions (split from the guaranteed floor)
 
-- [ ] **P6.69** [RUST] Wire the corpus-validated extract-audio M4A/OGG additions (on the P6.52 floor) · §3.4 · G31
-  needs: P6.52, P6.54, P9.44
-  > the [OPEN-A] **corpus-validated additions** {M4A, OGG} registered on top of the P6.52 guaranteed floor — **gated on P9.44 corpus evidence** (M4A pending §3.4 AAC confirmation; OGG pending the §6.6 OGG-keep round-trip), so a corpus failure demotes only these two targets without blocking the floor's check-off; M4A additionally reads the §3.4 gate at the target level (P6.54). On a P9.44 demote outcome the affected target is dropped + a `docs/demoted-pairs.md` row added (the P9.44 wiring-consequence this box owns). Reuse the audio.md encode params verbatim.
+- [!] **P6.69** [RUST] Wire the corpus-validated extract-audio M4A/OGG additions (on the P6.52 floor) · §3.4 · G31
+  unlocked-by: P9.44
+  > blocked: the [OPEN-A] **corpus-validated additions** {M4A, OGG} registered on top of the P6.52 guaranteed floor are genuinely **un-buildable until P9.44 lands its corpus evidence** (M4A pending §3.4 AAC confirmation; OGG pending the §6.6 OGG-keep round-trip) — P9.44 is an activation/unlock (it "demotes only these two targets" on a pessimistic outcome), NOT a staged input to a step this box can run now, so this is a `[!]` + `unlocked-by:` block, not a `[ ]` + `needs:` (the _format.md §5.2 worked-example test: there is nothing to build at P6.69 until P9.44's corpus run decides keep-vs-demote — exactly the P5.4-style case). On the auto-unlock scan P9.44→`[x]` flips this to `[ ]` with the effective `needs: P6.52, P6.54` (the floor + the §3.4 M4A target-level gate it then registers on); a P9.44 demote outcome drops the affected target + adds a `docs/demoted-pairs.md` row (the P9.44 wiring-consequence this box owns). Reuse the audio.md encode params verbatim. (P9.44 in turn `needs: P6.66`, the P6 FFmpeg-reliability gate, so the corpus run validates against real staged infrastructure — see P9.44.)
+
+---
+
+## P6.x — Audio advanced-option declarations (registered against the P4 options-panel shell)
+
+> The panel **chrome** was built in P4 (P4.63 widget dispatch + P4.73 AdvancedDrawer);
+> these boxes register only per-target audio option **DECLARATIONS** (§1.6), elevated to
+> top-level boxes (matching P5's RUST-savers-vs-UI-declarations separation, P5.20–P5.25
+> vs P5.37–P5.44) so a [RUST] encoder box is never blocked on its [UI] declaration — each
+> declaration `needs:` its encoder box (the source-of-the-knob) and renders against the
+> P4 panel (the `needs: P4.63/P4.73` edge is carried centrally by the P6.78 reconciliation
+> box, mirroring P5.70). No new panel chrome.
+
+- [ ] **P6.70** [UI] Register the "MP3 quality" advanced-option DECLARATION against the P4 panel · §1.6 §2.9 · G47
+  needs: P6.18.1
+  > register the §1.6 option declaration (no new panel chrome — P4 owns it); Standard [default]; the V0/V2/V5 + CBR 128/192/320 preset set mapped by P6.18.1.
+- [ ] **P6.71** [UI] Register the "WAV bit depth" advanced-option DECLARATION (16 / 24 / 32-float) · §1.6 · G47
+  needs: P6.19
+  > `16-bit [default]` · `24-bit (pcm_s24le)` · `32-bit float (pcm_f32le)`.
+- [ ] **P6.72** [UI] Register the "FLAC compression" advanced-option DECLARATION (Fast 0 / Standard 5 / Best 8) · §1.6 · G47
+  needs: P6.20
+  > exposed cap is 8 (libFLAC native max; FFmpeg 9–12 are non-standard — do NOT surface); validation range `0..=8`.
+- [ ] **P6.73** [UI] Register the "AAC quality" advanced-option DECLARATION (128/192/256 CBR) · §1.6 · G47
+  needs: P6.21
+  > no VBR exposed (encoder limitation); 192k [default].
+- [ ] **P6.74** [UI] Register the M4A quality advanced-option DECLARATION (shares the AAC preset set) · §1.6 · G47
+  needs: P6.22
+  > 128/192/256 CBR; container difference (`.m4a` iTunes atoms) chosen automatically, not a user setting.
+- [ ] **P6.75** [UI] Register the "OGG quality" advanced-option DECLARATION (q3/q5/q7) · §1.6 · G47
+  needs: P6.23
+  > Vorbis quality scale −1..10; expose the useful middle; q3 [default].
+- [ ] **P6.76** [UI] Register the "OPUS bitrate" advanced-option DECLARATION (96/128/192) · §1.6 · G47
+  needs: P6.24
+  > 128k [default]; `-vbr on` retained throughout.
+- [ ] **P6.77** [UI] Register the "AIFF bit depth" advanced-option DECLARATION (16 / 24) · §1.6 · G47
+  needs: P6.25
+  > `16-bit [default]` · `24-bit (pcm_s24be)`.
+
+---
+
+## Cross-phase reconciliation (the deferred P6→P4 harness `needs:`)
+
+- [ ] **P6.78** [GATE] Wire the deferred P6→P4 harness `needs:` edges — isolation boundary, §1.7 lifecycle/probe/progress/kill, per-pair runner + ledger + bijection, TCC staging, options-panel shell · §3.5.1 · G7 G20
+  needs: P4.13, P4.14, P4.8, P4.9, P4.10, P4.11, P4.25, P4.42, P4.48, P4.58, P4.59, P4.60, P4.63, P4.73
+  > the P6 instance of the cross-phase reconciliation obligation (the master plan-lint forbidden-string check is P4.76; reciprocal of P3.70/P5.70/P9.46): declare the load-bearing P6→P4 edges the FFmpeg-family boxes consume — FFmpeg routes through the **P4.13/P4.14 §2.12 isolation wrapper** (P6.8); probe-then-encode + progress + classify + cancel/kill ride the **P4.8/P4.9/P4.10/P4.11/P4.48 §1.7 lifecycle** (P6.10–P6.13); macOS TCC staging is **P4.25** (P6.65); the per-engine availability row populates the **P4.42 verifier framework** (P6.14); every per-pair test runs on the **P4.58 §6.4.3 runner** (P6.32/P6.49/P6.62) and the phase gate drives the **P4.59 bijection guard + P4.60 ledger generator** (P6.66); every advanced-option DECLARATION box (P6.18.1's UI P6.70–P6.77, the video P6.40.1, the extract-audio P6.55.1, the to-GIF P6.57.1/P6.57.2/P6.58.1) renders against the **P4.63 OptionsPanel widget dispatch + the P4.73 AdvancedDrawer**. `needs:` these P4 harness boxes here so the §6 selection builds the P4 mechanism first (P4 is `[x]` before the loop reaches P6 — the edges must RESOLVE, not dangle; the inline engine edges on P6.8–P6.66 carry the per-box dependency, this box is the auditable single owner). No P6 box `>`-note defers a `needs:` with the P4.76-forbidden phrasing.
