@@ -1449,18 +1449,26 @@ gate is **§6.3**. This section produces the *data* those consume.
 
 | Artifact | Content | Format | Where it lives |
 |---|---|---|---|
-| **SBOM** | Every bundled component: name, version, **pinned source ref/commit**, upstream URL, licence (SPDX id), supplier | **CycloneDX JSON** (recommended) `[recommended]` — broad tooling, easy to diff in CI | shipped as a release artifact (§6.2) **and** bundled as a resource |
+| **SBOM** | Every bundled component: name, version, **pinned source ref/commit**, upstream URL, licence (SPDX id), supplier, **a mandatory `purl` (`pkg:generic/<name>@<version>` minimum; a CPE where one exists — FFmpeg/poppler/libheif carry CVEs a PURL-generic match misses)**, and the **per-artifact SHA-256** (the trust anchor §6.1.3/§6.3.4 verifies against — emitted into the CycloneDX component so `osv-scanner`/`grype` match by PURL, not by a bare `(name, version)` that matches nothing) | **CycloneDX JSON** (recommended) `[recommended]` — broad tooling, easy to diff in CI | shipped as a release artifact (§6.2) **and** bundled as a resource |
 | **THIRD-PARTY-LICENSES.txt** | Concatenated **full licence text** of every component + per-component "corresponding source: <url>@<ref>" line (§3.6.2) | plain UTF-8 text | bundled resource (§3.3.1); displayed verbatim in About (§5.9) |
 | **NOTICE** (repo) | Top-level attribution + the collective copyright notice (SSOT: `Copyright (c) 2026 Ne-IA and ConvertIA contributors`) + pointer to THIRD-PARTY-LICENSES | text | repo root (authored §6.8 from this data) |
 
 ### 3.7.2 How it is generated (build step — cross-ref §6.3)
 
 1. The engine inventory (§3.1) is the **single source list**: each engine's id,
-   pinned version (§3.8), upstream URL, SPDX licence id, and `linked|invoked`
-   class are declared in the **build manifest `engines.lock`** (in `src-tauri/`; the
-   single canonical name used by §6.3.1/§6.3.2/§6.3.3/§6.8 — there is no `engines.toml`).
-   This manifest is the authoritative input — **not** hand-curated prose, so it can't
-   drift from what actually ships.
+   pinned version (§3.8), upstream URL, SPDX licence id, `linked|invoked`
+   class, a mandatory **`purl`** (and a CPE where one exists), and the per-artifact
+   **SHA-256** are declared in the **build manifest `engines.lock`** (in `src-tauri/`;
+   the single canonical name used by §6.3.1/§6.3.2/§6.3.3/§6.8 — there is no
+   `engines.toml`). Every staged shared object (`.dll`/`.dylib`/`.so`, T3a §0.11) gets
+   its own row with its own SHA-256. This manifest is the authoritative input —
+   **not** hand-curated prose, so it can't drift from what actually ships.
+   - **Pin-establishment provenance `[DECIDED]`:** when a NEW engine version is pinned,
+     the recorded SHA-256 MUST be corroborated against the upstream project's own
+     published checksum/signature (FFmpeg/LibreOffice/poppler all publish these), with
+     the corroboration **source URL recorded beside the pin** — pinning a hash of an
+     *unverified* first download only launders provenance (the xz/liblzma class). Any
+     `engines.lock` SHA edit is a hard Co-Pilot escalation (§6.3.4).
 2. A build script (`cargo xtask sbom` / a Node build step, §6.1) reads the
    manifest + Rust crate licences (via `cargo about` / `cargo-cyclonedx`) +
    the bundled-engine entries → emits the **CycloneDX SBOM** and concatenates

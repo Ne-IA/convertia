@@ -1677,9 +1677,13 @@ in an isolated subprocess. §1.2 states this; §2.12 confirms the boundary, stat
 precisely: *no third-party **C/C++** decoder library is linked into or run inside the
 Rust core — every full decode runs in a separate subprocess*. The in-core operations on
 untrusted bytes are: (a) a **small set of bounded, memory-safe pure-Rust sniffs** — the
-text-encoding heuristic, the Rust ZIP central-directory peek, and the `.svgz` bounded
-inflate (`flate2 rust_backend`/miniz_oxide, ≤64 KiB + ≤100× ratio cap, §1.2 step 2) —
-which are **not** full decodes and run no C/C++ decoder; and (b) the **native CSV/TSV
+text-encoding heuristic, the Rust ZIP central-directory peek, the `.svgz` bounded
+inflate (`flate2 rust_backend`/miniz_oxide, ≤64 KiB + ≤100× ratio cap, §1.2 step 2),
+**the OLE2/CFB stream-directory read** (legacy `.doc`/`.xls`/`.ppt` detection, §1.2),
+and the **bounded XML structural peeks** (`xl/workbook.xml`, ODS `content.xml` — read
+with a `quick-xml`/`roxmltree` reader whose **DTD/external-entity resolution is disabled
+by construction**, defeating XXE / billion-laughs; G48 asserts this) — which are **not**
+full decodes and run no C/C++ decoder; and (b) the **native CSV/TSV
 `InProcessNative` conversion** (§3.5.6), which *is* a full in-core untrusted-byte
 **transform** (not a mere sniff) but is **acceptable in-core** for the same structural
 reason: it is **pure memory-safe Rust** doing a **bounded, streamed** re-encode/re-quote
