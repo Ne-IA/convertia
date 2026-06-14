@@ -816,10 +816,22 @@ The heart of the reliability gate (§6.5). For **every** (source→target) pair
 enumerated across §04 (the matrices in images/audio/video/documents/spreadsheets/
 presentations + cross-category extract-audio/to-GIF), against the §6.4.5 corpus:
 - the conversion **completes** with exit success and produces a **valid file of the
-  target format** (validated by re-detecting the output's magic bytes via §1.2, and
-  a format-appropriate structural check — e.g. `ffprobe` the audio/video output is
-  decodable; the image decodes and has expected dimensions; `pdftotext`/poppler can
-  open the produced PDF; the CSV round-trips field counts);
+  target format**. **The MANDATORY validity gate is a per-format STRUCTURAL READER
+  that decodes the output, NOT a magic re-detect** — re-detecting the output's magic
+  bytes via §1.2 only proves the file *starts* with the right header (a truncated MOOV
+  atom, a 0-duration track, a blank raster, a broken OOXML relationship graph all pass
+  magic re-detect), so magic re-detect via §1.2 is an **optional cheap pre-screen
+  only**, never sufficient on its own. The structural reader is per category and
+  REQUIRED: `ffprobe` decodes the audio/video output and reports the expected codec
+  (stream count > 0); the image decodes via `vipsheader` with nonzero dimensions;
+  `pdftotext`/poppler opens the produced PDF *and returns nonzero text for a
+  text-bearing source*; OOXML is `unzip`-able with a well-formed `[Content_Types].xml`;
+  **CSV/TSV is parsed with a real RFC-4180 reader (the in-workspace `csv` crate, §3.5.6)
+  and the leading `=`/`+`/`@` injection cells are asserted preserved literally as text
+  (CSV-injection non-execution on the output side) — NOT a bare field-count parity,
+  which passes on mis-quoted / embedded-newline output that is unparseable.** These are
+  reinforced by the §6.4.5/`build-gates.md` G31 non-empty / output≠input /
+  content-bearing sub-assertions;
 - the **content-fidelity** spot-checks pass: CJK/RTL text survives doc/sheet/slide
   conversions (§2.10); image orientation is baked upright (§04 images); audio
   tags/cover-art round-trip where the target supports them (§04 audio); video
