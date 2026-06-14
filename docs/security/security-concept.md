@@ -67,9 +67,12 @@ so a deprecation/rename surfaces as an escalation, not a silent skip; **(b)** on
 reviewer error/timeout/rate-limit/5xx the loop retries with backoff a bounded number
 of times, then **HARD-STOPS + escalates** to Co-Pilot — it **NEVER** auto-emits a `GO`
 trailer with fewer than **two live** reviews and never silently degrades to a single or
-zero reviewer (G12 only checks the trailer is well-formed, never that two live models
-actually ran, so this rule is the only thing preventing a well-formed-but-unbacked
-`GO`). **Correlated-blind-spot residual (stated honestly):** Opus and Sonnet share
+zero reviewer (G12 checks the trailer is well-formed and — since r5 — that a `GO/GO` trailer
+on a non-trivial diff carries each reviewer's NON-EMPTY findings block, but still cannot prove
+two LIVE models ran, so this rule remains the load-bearing defence against a
+well-formed-but-unbacked `GO`; the findings-block sub-check raises the cheat cost from "emit one
+trailer line" to "fabricate a plausible per-reviewer finding set" and keeps a fabricated block an
+auditable spot-audit target). **Correlated-blind-spot residual (stated honestly):** Opus and Sonnet share
 model lineage, so "both `GO`, 0 findings" is a *correlated* signal, not two independent
 ones — the only retrospective backstop is the auditable-smell spot-audit above; whether
 one reviewer should be a different model family (to make "independent" literally true)
@@ -87,11 +90,14 @@ published release. No plane trusts an earlier one to have caught everything.
 | **L2 — pre-push hook** (fires at `git push` time) | `git push` | Git-hook manager, budget < ~3 min; cheap-commit fastpath | the push | `--no-verify` (**forbidden**); legitimate fastpath skips for docs-only / check-off commits |
 | **L3 — commit-msg hook** (L3 fires at `git commit`, chronologically **before** L2 which fires at `git push`; numbering is stable-by-assignment, not chronological) | `git commit` | Conventional-commit format check | the commit | git auto-subjects (merge/revert/fixup) allowed |
 | **L4 — CI (GitHub Actions)** | After push | The same gates re-run on a clean checkout + the heavy gates (cross-platform build, corpus, coverage, SAST, SBOM) | a red `main` (fix immediately) | none for required checks — and **G56a** asserts in CI that the GitHub required-status-checks config exists (so "a red L4 blocks" is real repo state, not an invisible assumption) |
-| **L5 — Release** | On a `v*` tag | Release workflow: SBOM + completeness, license hard-fail, copyleft-source-bundle present, **checksums + minisign over `SHA256SUMS`** (the *only* signing in scope — **not** binary code-signing/notarization, SSOT *Out of Scope*), size budget, egress/no-pollution observability gates | the release | none (release-blocking) |
+| **L5 — Release** | On a `v*` tag | Release workflow: SBOM + completeness, license hard-fail, copyleft-source-bundle present, **checksums + minisign over `SHA256SUMS`** (the *only* signing in scope — **not** binary code-signing/notarization, SSOT *Out of Scope*), size budget, egress/no-pollution observability gates. The **`v*` tag trigger itself is trust-gated by G56b** (tag-protection ruleset + the release job's first step asserting the tagged commit is an ancestor of `origin/main` with main's required checks green for that SHA, before any secret is read) — so a tag on a never-green commit cannot mint a signed artifact | the release | none (release-blocking); the tag trigger guarded by G56b |
 
-**Two enforcement planes principle.** Every meaningful gate runs **locally (L1–L3)
-and again in CI (L4)**. Local hooks give realtime feedback and keep `main` clean;
-CI is the immutable backstop that proves green on a fresh clone. A red CI run is
+**Two enforcement planes principle.** Every gate that CAN run locally runs **both
+planes — locally (L1–L3) and again in CI (L4)**; inherently CI-only gates
+(repo-config introspection G56/G56a/G56b, the cross-platform/corpus/SAST heavies
+G26–G33, the whole release-tier L5 set G35–G60) run in CI only. Local hooks give
+realtime feedback and keep `main` clean; CI is the immutable backstop that proves
+green on a fresh clone. A red CI run is
 fixed immediately — never re-run hoping it passes, never `--no-verify`.
 
 ## 4. Security principles (the invariants the gates defend)
@@ -156,7 +162,14 @@ fixed immediately — never re-run hoping it passes, never `--no-verify`.
     **Branch-protection / required-status-checks config** is also CI-protected, not
     just documented: in the single-branch direct-to-`main` model the repo config is the
     only thing that makes a red run actually block, so G56a queries the GitHub API and
-    fails on missing required checks / enabled force-push or deletion / admin-bypass.
+    fails on missing required checks / enabled force-push or deletion / admin-bypass (and,
+    as sub-checks, on disabled secret-scanning/push-protection or a non-read default
+    workflow-permission). **The secret-bearing release trigger is the `v*` TAG ref, which
+    G56a does not cover — so G56b applies the same "a red run actually blocks" guard to the
+    tag ref:** a `v*` tag-protection ruleset + a release-workflow first step asserting the
+    tagged commit is an ancestor of `origin/main` with main's required checks green for that
+    SHA, before any secret is read, so a tag on a never-green commit cannot mint a signed
+    artifact.
 11. **CI runner-host integrity (the secret never shares a host with untrusted
     input).** The `MINISIGN_SECRET_KEY`/`MINISIGN_PASSWORD` are the single most
     damaging secret in the system — the entire user-facing trust substitute
@@ -186,7 +199,14 @@ fixed immediately — never re-run hoping it passes, never `--no-verify`.
     must not claim a free-tier harden-runner control on a self-hosted job.) This is
     enforced structurally (G56 — a workflow lint flags any secret-using job bound to a
     self-hosted label, and asserts harden-runner presence/mode ONLY on GitHub-hosted
-    jobs, never on a self-hosted job where the free tier would be inert).
+    jobs, never on a self-hosted job where the free tier would be inert). **Community-tier
+    silent-degrade residual (stated honestly):** harden-runner's free/Community tier carries
+    a ~10k-runs/week ceiling above which it silently degrades to no-enforcement — a
+    silent-degrade-to-no-enforcement on a control the design relies on for the secret's host
+    is exactly the failure class hardened against elsewhere. The signing job is rare/tag-only
+    so the ceiling won't bind in practice, but to be safe the release job **asserts
+    harden-runner reported ENFORCED (BLOCK active), not merely present** — a degraded-to-audit
+    or no-enforce status on the signing job is a release-blocking fail.
 
 ## 5. Threat model → control → gate
 
@@ -212,8 +232,8 @@ control but no verifying gate is itself a gap.
 | **T5** core panic / app fault | §2.13 app-level fault model (`catch_unwind` worker boundary) + §7.2 startup faults + §0.3.1 WebView-absent handling | **G15** panic-boundary unit test (panic → app-fault, not crash); **G46** missing/corrupt-engine → app-fault acceptance |
 | **T6** copyleft aggregation boundary | §3.6 copyleft isolation (separately-invoked binaries, aggregation not linking); §0.3/§0.7 subprocess model | **G18** `cargo-deny` GPL/AGPL ban on the Rust crate graph; **G36** SBOM forbidden-family hard-fail; **G38b** LGPL-relink + GPL-corresponding-source bundle-present assertion (§6.1.3 ii/iii incl. x265 GPL §3); **G53** core-crate forbidden-dependency check (`cargo-deny [bans]` workspace-member-scoped — no image-worker C libs in the core closure) |
 | **T7** path / link redirection (symlink/junction/TOCTOU) | §2.3 resolved-identity & link safety + §2.1 exclusive create-new-or-fail on the resolved real file | **G19/G31** atomic-publish/fs-safety unit + property tests; adversarial-path corpus |
-| **T8** self-feeding / batch expansion | §2.4 frozen source set + §7.1 instance/run identity | **G15** frozen-set + per-run-ownership unit tests |
-| **T9a** ConvertIA's own code exfiltrates user files | structural: opens no socket — no HTTP/updater on the §0.10 allowlist, no remote `connect-src`, no phone-home (§7.6) | **G47** CSP/capability lint + **G18** HTTP-client deny-list (no socket-opening dep ships); **G42** packet-monitor / egress-deny release gate (the proof) |
+| **T8** self-feeding / batch expansion | §2.4 frozen source set + §7.1 instance/run identity | **G15** frozen-set + per-run-ownership unit tests (the data-structure leg); **G31** T8 INTEGRATION sub-test (the live-path leg) — a batch whose conversion writes outputs INTO the same watched/dropped source folder mid-run asserts the fresh outputs are **NOT** in the run's ingest/result set (snapshot-not-live-iteration, §2.4.2), and a two-instance fixture where instance B drops a `file`/`*.part` into a shared folder mid-run asserts instance A's frozen set never grows (§2.4.3 concurrent-instance hand-off) |
+| **T9a** ConvertIA's own code exfiltrates user files | structural: opens no socket — no HTTP/updater on the §0.10 allowlist, no remote `connect-src`, no phone-home (§7.6) | **G29 project-local rule (g)** the per-push Rust-source `std::net`/`tokio::net`-outside-allow-list ban (the only per-push proof that first-party Rust opens no socket — catches the renamed/transitive crate G18's name-based ban misses) + **G47** CSP/capability lint + **G18** HTTP-client deny-list (no socket-opening dep ships); **G42** packet-monitor / egress-deny release gate (the release-tier proof) |
 | **T9b** bundled engine reaches out / reads out-of-input on hostile input (incl. the LibreOffice macro-execution / `WEBSERVICE()`-external-data vectors) | load-bearing argv/build controls: FFmpeg `-protocol_whitelist file,pipe` + curated demuxers + `concat -safe 1`; pandoc `--sandbox` (pandoc ≥ 2.17, else the flag is silently ignored); LibreOffice hardened profile (`MacroSecurityLevel = 3` + `DisableMacrosExecution = true`, `LinkUpdateMode = 0`, no external-data-range / `WEBSERVICE()` refresh on load, §3.5.2); librsvg **no base URL** (§3.5.x). **Two load-bearing halves, each with its own armed enforcement substrate:** (a) **zero outbound packets** (the egress half) and (b) **no out-of-input FILE READ** (the read half — symmetric, not a mere oracle) | **G38** per-engine build assertions (`ffmpeg -protocols`/`-demuxers`, librsvg no-base-URL, `pandoc --version ≥ 2.17`, the **LibreOffice profile assertion** — parse the shipped `registrymodifications.xcu` and assert `MacroSecurityLevel`/`DisableMacrosExecution`/`LinkUpdateMode` + the external-data keys); **G31** corpus sentinels (a `.docm`/`.xlsm`/`.pptm` AutoOpen/`Workbook_Open` macro writing a canary inside the egress-deny window → canary **NOT** created; a `WEBSERVICE()` `.xlsx` → no egress/no out-of-input read), pulled forward into the per-push L4 leg; **G42** release-confirmation adversarial-egress monitor (the EGRESS half — zero outbound packets, armed-window canary, fail-closed); **G42b** the read-half fs-audit enforcement substrate (spec §6.4.2 — `ptrace`/Landlock, fail-CLOSED when neither is available, out-of-input sentinel + planted-positive, symmetric with G42 so the read half can never silently no-enforce) |
 | **T10** resource exhaustion / DoS-by-input | §1.10 resource pre-flight & budgets + §0.9 pool/handle bounds + the to-GIF guardrail | **G16/G31** adversarial resource-budget corpus + property tests (oversized-render SVG, over-duration to-GIF, over-cardinality batch → fail-clearly, batch continues, no handle/RAM exhaustion); decompression-bomb fixtures (svgz/ZIP-in-OPC/nested-flate) |
 | **T11** macOS engine-as-first-TCC-accessor (silent-deny) | §3.5.0/§7.2.6 macOS TCC source staging — the Rust core (holding the TCC grant from §1.1 freeze) copies a TCC-protected source into a per-job kind-2 scratch path (§2.14.2) **before** spawning, so a sidecar is never the first process to touch Desktop/Documents/Downloads/removable media (a chain-break otherwise triggers an invisible TCC denial / wrong-process prompt that defeats the conversion, and is silent on CI which runs from `TMPDIR`) | **G31** macOS sub-test (the Rust core PID, not the engine PID, is the first accessor of the protected path; the engine receives a kind-2 scratch path); **G29** Semgrep rule (every `Command::new` in `crate::isolation` under `cfg(target_os="macos")` is preceded by the stage-for-TCC / scratch-staging call) |
@@ -223,16 +243,17 @@ load-bearing security guarantees with their own gates):
 
 | Guarantee | Primary control | Verifying gate |
 |---|---|---|
-| credential / secret in repo | no secrets committed; the real CI secrets `MINISIGN_SECRET_KEY` **and** `MINISIGN_PASSWORD` (§6.2.3) | **G2** `gitleaks` secrets scan using the **current** subcommands (`gitleaks` v8.19+ deprecated `protect`/`detect`): L1 `gitleaks git --staged` + **L2** `gitleaks git` over the unpushed range `@{u}..HEAD` (the last local catch before a secret goes public; **excluded from the docs-only fastpath** — secrets in `.md` count) + L4 full-tree `gitleaks dir` + a release-tier **full-history `gitleaks git`** leg over the commit log (a once-committed-then-removed secret stays live forever in a **public** OSS repo with no PR-review backstop); a committed `.gitleaks.toml` carries a **custom rule matching the minisign secret-key shape** (the `untrusted comment:` header co-occurring with a long base64 blob / a banned `*.key` staging) — `gitleaks`' default PEM rule keys on `-----BEGIN…-----` delimiters and a minisign key has none, so the PEM rule alone would **miss** it |
+| credential / secret in repo | no secrets committed; the real CI secrets are **THREE**: `MINISIGN_SECRET_KEY` **and** `MINISIGN_PASSWORD` (§6.2.3) **and** the build-session reviewer-API `ANTHROPIC_API_KEY` (`sk-ant-…`, the §5 reviewer-API dependency row) | **G2** `gitleaks` secrets scan using the **current** subcommands (`gitleaks` v8.19+ deprecated `protect`/`detect`): L1 `gitleaks git --staged` + **L2** `gitleaks git` over the unpushed range `@{u}..HEAD` (the last local catch before a secret goes public; **excluded from the docs-only fastpath** — secrets in `.md` count) + L4 full-tree `gitleaks dir` + a release-tier **full-history `gitleaks git`** leg over the commit log (a once-committed-then-removed secret stays live forever in a **public** OSS repo with no PR-review backstop). All THREE secrets are named + provably caught + planted-positived: a committed `.gitleaks.toml` carries a **custom rule matching the minisign secret-key shape** (the `untrusted comment:` header co-occurring with a long base64 blob / a banned `*.key` staging) — `gitleaks`' default PEM rule keys on `-----BEGIN…-----` delimiters and a minisign key has none, so the PEM rule alone would **miss** it; **`ANTHROPIC_API_KEY` is caught by `gitleaks`' bundled Anthropic-key rule (`sk-ant-` prefix) — confirmed present + a planted-positive**; **`MINISIGN_PASSWORD` is a free-form passphrase that relies only on entropy + the `MINISIGN_PASSWORD` env-name scan**, so a committed `MINISIGN_PASSWORD=<value>` literal line is additionally banned by a custom rule. The G56a secret-scanning + push-protection sub-check is the free GitHub-native backstop for all three |
 | authentic, verifiable download | per-file SHA-256 + minisign-signed `SHA256SUMS` + published verify recipe (§6.2) — the recipe is `minisign -Vm SHA256SUMS -p docs/minisign.pub` (**lowercase `-p` = public-key file path**; uppercase `-P` expects an inline base64 string and would fail on a path — standardised across README + spec §6.2.3/§6.2.4); an **out-of-band pubkey fingerprint** anchor (the in-repo `docs/minisign.pub` TOFU is otherwise circular — an attacker serving a tampered clone swaps artifact + `SHA256SUMS` + `.minisig` + pubkey together) | **G39** checksums + minisign over `SHA256SUMS` **+ a release-tier executable assertion that RUNS the exact documented recipe** against the just-produced `SHA256SUMS` + `.minisig` + committed pubkey and fails the release on non-zero (turns "recipe present" into "recipe correct and working"); **G44** verify recipe present + literal-form match; **G39/G44 sub-assertion** that `docs/minisign.pub` matches the fingerprint published out-of-band (a pinned README via the verified GitHub web UI / org page the pipeline cannot rewrite); the key-compromise/loss + coordinated-disclosure path lives in `vuln-response.md` (the human-readable retired/compromised-key commit IS the revocation channel for an offline app) |
 | §7.5 log never carries file contents / full paths | redaction in the logging layer (§7.5) | **G15** (redaction property-test sub-case): a known secret-looking path stem fed through the logger is absent from the log |
 | §2.14.1 per-run temp ownership + mode | per-run-owned scratch, `0o700` scratch root / `0o600` `.part` publish-temp | **G15/G31** temp-ownership + mode-bits assertion |
 | hardened CI supply chain | least-privilege `permissions`, SHA-pinned actions (current via `dependabot.yml` covering **github-actions, cargo, and npm** ecosystems), lockfile-locked builds, no fork-PR release, pinned+digest-verified gate tools, per-workflow concurrency + `timeout-minutes` | **G49** `actionlint` (L1); **G50** `zizmor` (L4); **G18a** lockfile-integrity (`--locked`/`--frozen-lockfile` + `git diff --exit-code` lockfiles); **G56** `dependabot.yml` github-actions **+ cargo + npm** entries + push-workflow concurrency/timeout-minutes assertions |
 | CI runner-host integrity (principle 11) | the secret-bearing signing job runs only on an ephemeral GitHub-hosted runner, host-isolated from the untrusted-corpus/fuzz jobs; **`step-security/harden-runner` (BLOCK mode) on the GitHub-hosted signing job ONLY** (its free/Community tier works only on GitHub-hosted runners; self-hosted needs Enterprise); on the shared self-hosted VPS the enforcement is **G42b ptrace/Landlock + G42 nftables/strace + the VPS egress allowlist + an ephemeral/JIT low-priv runner**, NOT harden-runner | **G56** workflow lint — a secret-using job bound to a self-hosted runner label is a hard fail; the corpus/fuzz job and the signing job assert disjoint runner hosts; **harden-runner presence/mode is asserted ONLY on GitHub-hosted jobs** (a self-hosted harden-runner claim would be inert on the free tier, so the lint must not require it there) |
-| GitHub branch-protection / required-status-checks config | the single-branch direct-to-`main` model has no PR and no second reviewer, so the **only** thing that turns a red CI run into an actual block is repo config (required status checks present + required, force-push/deletion disabled, admin-bypass off) — invisible to the codebase and silently relaxable in the GitHub UI | **G56a** branch-protection config assertion — queries the GitHub ruleset/branch-protection API for `main` (`gh api repos/:owner/:repo/branches/main/protection` or the rulesets API) and fails if the agreed required checks are not all present-and-required, or `allow_force_pushes`/`allow_deletions`/admin-bypass is enabled (fail-soft only during the P0 bootstrap box, then hard) |
+| GitHub branch-protection / required-status-checks config | the single-branch direct-to-`main` model has no PR and no second reviewer, so the **only** thing that turns a red CI run into an actual block is repo config (required status checks present + required, force-push/deletion disabled, admin-bypass off) — invisible to the codebase and silently relaxable in the GitHub UI; **plus two further invisible-config settings free and load-bearing for a public repo holding the most-damaging secret:** native secret-scanning + push-protection ENABLED, and the repo's default workflow permissions = read-only (a workflow omitting a `permissions:` key inherits this) | **G56a** branch-protection config assertion — queries the GitHub ruleset/branch-protection API for `main` (`gh api repos/:owner/:repo/branches/main/protection` or the rulesets API) and fails if the agreed required checks are not all present-and-required, or `allow_force_pushes`/`allow_deletions`/admin-bypass is enabled; **+ sub-checks: `secret_scanning`/`secret_scanning_push_protection` enabled and `default_workflow_permissions == "read"` + `can_approve_pull_request_reviews == false`** (fail-soft only during the P0 bootstrap box, then hard) |
+| release-tag (`v*`) trust — the secret-bearing trigger G56a does NOT cover | the minisign release job (the ONLY holder of `MINISIGN_SECRET_KEY`/`MINISIGN_PASSWORD`) fires on a `v*` tag, but G56a guards only the `main` BRANCH ref — so the loop / a compromised `GITHUB_TOKEN` / a stale-or-forced tag could create a `v*` tag on a commit that never passed L4 green and mint a signed artifact; the release trigger needs the same "a red run actually blocks" guard applied to the tag ref | **G56b** release-tag trust gate — (1) a GitHub **tag-protection ruleset on `v*`** asserted via the rulesets API (only the owner/a protected actor may create release tags); (2) the release workflow's FIRST step asserts the tagged commit is an **ancestor of `origin/main`** AND **main's required checks were green for that exact SHA** (`gh api …/commits/<sha>/check-runs`), aborting before any secret is read otherwise; (3) the `v*` tag is an annotated/signed tag, verified. Leg 1 fail-soft in the P0 bootstrap box then hard; legs 2/3 fail-closed always |
 | JS/WebView supply-chain symmetry with Rust | committed `.npmrc` registry pin + resolution-URL guard (dependency-confusion defence); a frontend GPL/AGPL license deny over the pnpm graph; a committed minimal `onlyBuiltDependencies` allowlist (install-lifecycle-script lockdown) | **G17** `pnpm audit`; **G18c** `.npmrc` registry-pin + every `pnpm-lock.yaml` resolution URL ∈ the allowed registry; **G36b** frontend GPL/AGPL license hard-fail (cdxgen SBOM → `jq`/license filter); **G18d** `onlyBuiltDependencies` allowlist-growth lint (+ fail if `enable-pre-post-scripts`/`unsafe-perm` is set) |
 | Principle-11 English-only / string-ownership (spec §6.7.1 / §6.10 row 23 — v1 is English-ONLY, no i18n runtime) | no locale-switch / i18n-runtime library import; every `strings/ui.ts` key resolves to a non-empty English value; user-facing literals live in `strings/ui.ts` | **G57** English-only / string-ownership lint (Lane-A, activated in P1) — fails on any locale-switch/i18n import, on an empty/missing `ui.ts` key, or a user-facing literal outside `strings/ui.ts` |
-| build-time reviewer-API dependency (the ONE breach of the hermetic-CI principle, named honestly) | the G1 dual review calls the **Anthropic API** on every box — the single sanctioned build-time network dependency, the one place principle 10's "hermetic CI / everything that touches the minisigned bytes" is breached. It is **OUTSIDE the minisigned-bytes boundary** because it *observes but does not produce* the artifact. **Residuals stated:** (a) it is a live network call from the build session, the only one; (b) a spoofed/compromised endpoint could emit a **forged `GO`** — but G1 is **not** a security control (every `Gnn` except G1 is the real control), so a forged GO suppresses only the human review-trace the spot-audit relies on, it cannot ship insecure code; (c) the full staged diff (incl. any committed test-fixture material) leaves the machine to a third party — acceptable for an OSS repo, but a stated fact. Model IDs are pinned (§4) | **G1** (quality amplifier, not a security control) + the auditable-smell spot-audit (§4); mitigated structurally by "every Gnn except G1 is the deterministic control" |
+| build-time reviewer-API dependency (the ONE breach of the hermetic-CI principle, named honestly) | the G1 dual review calls the **Anthropic API** on every box — the single sanctioned build-time network dependency, the one place principle 10's "hermetic CI / everything that touches the minisigned bytes" is breached. It is **OUTSIDE the minisigned-bytes boundary** because it *observes but does not produce* the artifact. **Residuals stated:** (a) it is a live network call from the build session, the only one; (b) a spoofed/compromised endpoint could emit a **forged `GO`** — but G1 is **not** a security control (every `Gnn` except G1 is the real control), so a forged GO suppresses only the human review-trace the spot-audit relies on, it cannot ship insecure code; (c) the full staged diff (incl. any committed test-fixture material) leaves the machine to a third party — acceptable for an OSS repo, but a stated fact; (d) **prompt-injection via a committed fixture** — adversarial corpus bytes added to the diff reach the reviewer as DATA, never as instructions, and even a reviewer subverted into a forged `GO` cannot ship insecure code because **G1 is not a security control** (every `Gnn` except G1 is the deterministic control), so the bound on this vector is the same "a forged GO suppresses only the review-trace, never a gate" framing as (b). Model IDs are pinned (§4) | **G1** (quality amplifier, not a security control) + the auditable-smell spot-audit (§4); mitigated structurally by "every Gnn except G1 is the deterministic control" |
 | release-artifact completeness (the single backstop catching "the SBOM/CVE-report/source-bundle silently didn't get attached") | every required release asset enumerated + present before publish | **G58** release-manifest completeness meta-gate — fails the release if any of the per-OS bundle, `SHA256SUMS`, `SHA256SUMS.minisig`, SBOM file(s), dated open-CVE report (G17b), `NOTICE`/`THIRD-PARTY-LICENSES`, copyleft corresponding-source bundle (G38b), measured-sizes asset, `usability-floor.md`, `name-clearance.md`, or the §6.5.3 CHANGELOG/release-notes (with demoted/lossy pairs) is missing |
 
 > Every row above also lists, in [build-gates.md](build-gates.md), the concrete
@@ -294,8 +315,9 @@ load-bearing security guarantees with their own gates):
   attack surface — gains a registry pin + resolution-URL guard, a GPL/AGPL license
   hard-fail, and an install-lifecycle-script lockdown, matching the Rust-side
   `cargo-deny`/`cargo-vet` discipline.
-- **Boundary statement de-frozen.** "G2–G50" → "every gate except G1" (the catalogue
-  now reaches G56, and G53/G55 ARE security controls).
+- **Boundary statement de-frozen.** "G2–G50" → "every gate except G1" (at r2 the catalogue
+  reached G56 — it has since grown past G67; the open phrasing deliberately does not freeze a
+  numeric upper bound, plan-lint check 11 enforces that — and G53/G55 ARE security controls).
 - **Living-doc/spec-sync (r2).** The LibreOffice macro/profile build assertion + the
   `WEBSERVICE()` sentinel (G38/G31), the pandoc `--sandbox` version-floor (G38), the
   PURL/SHA-256 `engines.lock` schema fields, the `engines.lock` pin-provenance rule,
@@ -382,8 +404,73 @@ load-bearing security guarantees with their own gates):
   self-test-prelude (G24); macOS `otool -l` LC_RPATH (G37b); the process-scoped Windows
   socket snapshot + named-pipe tool + ETW privilege/fail-closed (G42); the minisign-fingerprint
   consistency (G44) + corpus-provenance (G24a) sub-checks; attest-build-provenance verify +
-  offline bundle asset.
+  offline bundle asset (the gate id **G59** was assigned in r5 — see §11).
 - **Living-doc/spec-sync (r4).** Spec §0.10 (the three by-construction hardening keys),
   spec §0.7 (main.json directory comment), spec §6.7.2 + §6 CI-hardening (harden-runner
   runner-type reality), spec §2.14 (scratch-residue confidentiality accepted-residual) are
   owned by the spec and edited in this same change (SSOT > spec > docs).
+
+## 11. Reconciled during P0 review r5
+
+- **Release-tag (`v*`) trust gate (G56b, new).** The secret-bearing minisign release job fires on a
+  `v*` tag, but G56a guarded only the `main` BRANCH ref — so the loop / a compromised `GITHUB_TOKEN`
+  / a stale-or-forced tag could create a `v*` tag on a never-green commit and mint a signed artifact.
+  G56b applies the same "a red run actually blocks" guard to the tag ref: a `v*` tag-protection
+  ruleset + a release-workflow first step asserting the tagged commit is an ancestor of `origin/main`
+  with main's required checks green for that SHA (before any secret is read) + signed/annotated-tag
+  verify. The single highest-value gap closed this round.
+- **T8 got its first integration/corpus gate (G31).** T8 was the only adversarial input-class with a
+  unit-only verifying gate; G31 now hosts the live-walk leg (output-written-into-source-folder
+  mid-batch → not in the ingest/result set, §2.4.2; a two-instance fixture where B drops a `*.part`
+  mid-run → A's frozen set never grows, §2.4.3), listed in the §5 T8 row + the G31 host-list + the
+  P0.5 homes. G15 stays the data-structure unit leg.
+- **attest-build-provenance status drift resolved (G59).** It carried three contradictory statuses
+  (§8 `[DEFER]` / P0.7 "v1 OWNER DECISION" / §10 "done"). Resolved to ONE: adopted-for-v1, catalogue
+  row **G59** (verify-on-runner + offline Sigstore bundle asset, in the G58 enumeration), §8
+  `[DEFER]` removed, the P0.7 "only if later adopted" hedge removed, `id-token: write` scoped to the
+  release job only. New plan-lint **check 17** asserts the four homes agree.
+- **G42 macOS fallback corrected (tool fix).** `nettop -m tcp -P` observes socket STATE
+  (`ESTABLISHED`), not the connect() ATTEMPT, so a blocked canary records nothing and the gate's own
+  armed-window self-test would spuriously fail closed on every macOS fallback run; `-m tcp` also
+  blinds it to UDP/DNS. Replaced with interface-level `tcpdump -i lo0 -n` + `tcpdump -i en0 -n`
+  (ships on the macOS runner, captures SYN/RST + UDP DNS even for a blocked connection), same
+  fail-closed posture if absent.
+- **T9a per-push Rust-source proof (G29 rule (g)).** The `std::net`/`tokio::net`-outside-allow-list
+  Semgrep rule was listed in P0.4, parked in §8, AND missing from the G29 rule list. Promoted to G29
+  project-local rule **(g)** (initially-empty `net-allow-list.txt`, planted-positive), removed from §8
+  forward-ideas, cited in the §5 T9a row. The behavioural `cargo-acl`/cackle upgrade is now an
+  owner-decidable P0.4 contract.
+- **P0.7 G42/G42b plane-annotation reconciled.** The three-leg phasing is named explicitly: the
+  ENFORCEMENT SUBSTRATE activates with the first engine spawn (P4); the per-push PULL-FORWARD leg runs
+  from P6/P7; the full per-OS egress-DENY window + release-confirmation G42/G42b are BUILT in P9.
+- **New gates/ids this round:** **G56b** (release-tag trust), **G59** (attest-build-provenance,
+  promoted from `[DEFER]`), **G60** (reserved — third-party-reproducibility delta of the self-compiled
+  layer), **G66** (reserved — scheduled engine-version-currency poller), **G67** (reserved — OSSF
+  Scorecard informational corroboration); G29 rule **(g)** (`std::net` ban); G9 invariants **(e)**
+  (no `cargo vet update/sync/import` in CI/scripts) + **(f)** (no `fc.gen()` outside the shrink
+  wrapper); plan-lint **checks 17** (§8↔adopted-gate status agreement) + **18** (named-build-loop-
+  procedure presence). G56a gained secret-scanning/push-protection + default-workflow-permission
+  sub-checks; G56 gained the `id-token`-scope + `pull_request_target`-safe-handler + harden-runner-
+  ENFORCED sub-rules; G64/G65 homed in P0.7 beside the other release ratchets; cargo-careful + Kani
+  added as owner-decidable in-core over-assurance contracts.
+- **Gate hardening this round.** G35 NOTICE-parity gained the GPL/LGPL corresponding-source-POINTER
+  assertion (the §3.6.2 GPL-FFmpeg discharge mechanism) + the from-source pinned-source/toolchain
+  reference; G18a added `imports.lock` to the lockfile diff (+ G18b decided ≥2 import sources required);
+  G31 gained the non-empty/output≠input/size-plausibility + the T8 integration sub-tests; G32 gained
+  machine-enumerated lossless pairs + the lossy-disclosure property test + the conversion-output
+  determinism sub-assertion; G48 clarified the ASAN-coverage honesty + pinned libFuzzer resource
+  bounds (`-rss_limit_mb`/`-max_len`/`-timeout`/`-max_total_time`); G38 gained the FFmpeg
+  enabled-decoder allow-list; G12 gained the findings-block-presence sub-check; G29 gained per-rule
+  planted-positives; check 10 promoted to regenerate-and-diff for the security manifests; plan-lint
+  gained the golden-fixture-must-exit-1 base-case meta-check; the gate-quarantine procedure gained the
+  self-referential L1/plan-lint bootstrap exception; the build-loop push-exit-code capture adopted the
+  RMA marker-file pattern (Quirk #22); G47 gained `bundle.createUpdaterArtifacts`-absent + the
+  DNS-prefetch meta-tag; `ANTHROPIC_API_KEY` named as the third real secret; the gitleaks-action
+  org-license footgun, the `cargo-cyclonedx` crate-vs-subcommand naming, the `scripts/glibc-floor.toml`
+  + the LibreOffice carve-out globs named; the L1-budget-soft + the two-enforcement-planes-honest
+  framing corrected; the security-critical-file change-control named as an owner-decidable L(-1).
+- **Living-doc/spec-sync (r5).** Where r5 gates reference spec material owned by the spec — §6.7.2/§6.7.3
+  (the G56b tag-trust enforcement on the release trigger), §3.6.2 (the GPL FFmpeg corresponding-source
+  discharge mechanism G35 asserts), §0.10 (the `bundle.createUpdaterArtifacts` + DNS-prefetch
+  side-channel G47 asserts), §6.4.1 (the detect-KAT G15 reads) — the spec is edited in the same change
+  per the SSOT > spec > docs conflict order; those spec edits are noted here so the fill pass syncs them.
