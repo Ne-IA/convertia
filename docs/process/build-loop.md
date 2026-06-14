@@ -193,7 +193,7 @@ checked off only after every sub-box is done**. The dual review (step 5) fires
 > to the original box and build it. The plan is dependency-following, not
 > dependency-stepping-over.
 >
-> This **replaces RMA's `[!]`-block-and-skip model**, which we do **not** use: RMA
+> This **replaces a `[!]`-block-and-skip model**, which we do **not** use: that model
 > would mark a box `[!]` and move on, leaving a hole to be filled later out of
 > order. ConvertIA instead resolves the dependency *in place* — the `needs:`
 > annotation makes the prerequisite *detectable*, and the loop satisfies it before

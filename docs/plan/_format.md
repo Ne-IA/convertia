@@ -62,7 +62,7 @@ other bracketed token at a box position — a stray `[X]`, `[-]`, `[~]`, `[wip]`
 
 > **`[!]` is the exception, not the tool of first resort — prefer dependency-
 > following (DECISION C, §5).** When the next box needs an *unbuilt but buildable*
-> box, the loop does **not** mark it `[!]` and move on (that is RMA's
+> box, the loop does **not** mark it `[!]` and move on (that is the
 > block-and-skip model, which ConvertIA does **not** use, `build-loop.md` §3 step
 > 2). It follows the `needs:` annotation, builds the prerequisite **in place**, and
 > returns — leaving **no hole**. `[!]` / `[!extern]` are reserved for a block the
@@ -210,8 +210,8 @@ is the whole point of **DECISION C, dependency-following**:
 > and builds the original box.** The plan is dependency-*following*, not
 > dependency-stepping-over.
 
-This **replaces RMA's `[!]`-block-and-skip model**, which ConvertIA does not use:
-RMA marked a box `[!]` and moved on, leaving a hole to be filled later out of order.
+This **replaces a `[!]`-block-and-skip model**, which ConvertIA does not use:
+that model marks a box `[!]` and moves on, leaving a hole to be filled later out of order.
 ConvertIA resolves the dependency **in place**.
 
 - `needs:` targets are **other box-ids** (`P<x>.<y>` or a sub-box `P<x>.<y>.<z>`),
