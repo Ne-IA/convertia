@@ -418,7 +418,11 @@ For **every** published artifact:
   so anyone can verify; the **private key is a CI secret named `MINISIGN_SECRET_KEY`**
   (with its passphrase in `MINISIGN_PASSWORD`), injected only into the Lane-B release
   job that signs `SHA256SUMS` — never committed, never in the bundle. The verify
-  recipe (§6.2.4) includes `minisign -Vm SHA256SUMS -P <contents of docs/minisign.pub>`.
+  recipe (§6.2.4) includes `minisign -Vm SHA256SUMS -p docs/minisign.pub` (lowercase
+  `-p` = a public-key **file path**; uppercase `-P` would expect the key as an inline
+  base64 **string**, so `-P docs/minisign.pub` would fail — the recipe is standardised on
+  `-p` across this doc, §6.2.4, and the README, and a release-tier gate **runs the literal
+  recipe**, build-gates G39/G44, so "recipe present" becomes "recipe correct and working").
   (Adopting the [REC] — a clear strengthening of the SSOT trust substitute with no
   downside.)
   - **Key-rotation policy `[DECIDED]`:** a re-key MUST be **distinguishable from a
@@ -442,7 +446,9 @@ highest-risk moment** (SSOT):
   §6.1.2 — hash the downloaded archive, not a loose `.exe`.)
 - macOS/Linux: `shasum -a 256 ConvertIA.dmg` / `sha256sum ConvertIA.AppImage`, or
   `sha256sum -c SHA256SUMS`.
-- Verify the minisign signature: `minisign -Vm SHA256SUMS -P <pubkey>`.
+- Verify the minisign signature: `minisign -Vm SHA256SUMS -p docs/minisign.pub`
+  (lowercase `-p` = public-key **file path**; uppercase `-P` expects an inline base64
+  key string and would fail on a file path).
 The page also restates the **as-is / no-warranty / best-effort-security** posture
 (SSOT *License & Openness*), and the unsigned-build first-launch friction per OS so a
 normal user isn't surprised:
@@ -608,28 +614,37 @@ recorded here per the SSOT > spec > security/docs conflict order (a living
 security/process doc may not add a gate the spec does not mention without the spec
 being updated in the same change):
 
-- **WebView CSP + capability structural lint** (build-gates **G47**): a per-PR gate
+- **WebView CSP + capability structural lint** (build-gates **G47**): a per-push gate
   parses `tauri.conf.json`'s `app.security.csp` + `src-tauri/capabilities/*.json`
   with `jq`/`serde_json` (not regex) and fails on any §0.10 violation — any remote
   scheme in any CSP directive (the only non-`'self'` `connect-src` tokens permitted
   are the Tauri IPC `ipc:` + `http://ipc.localhost`), `object-src ≠ 'none'`,
   `form-action ≠ 'self'`, any `fs:`/`http:`/`shell:allow-execute`/`opener:*`/`dialog:`
   grant, or the presence of `tauri-plugin-updater` / any HTTP-client plugin / an
-  `updater` bundle block / an updater pubkey. This is the **per-PR** verifying gate
+  `updater` bundle block / an updater pubkey. This is the **per-push** verifying gate
   for §0.11 T2/T2a/T2c/T9a and the structural assertion of the §7.6.1 updater-absence
   claim (the §6.7.1 Lane-A blind-spot note's "verified by the type/config checks" is
   this gate). Paired with a `cargo-deny [bans]` deny-list for `tauri-plugin-updater`
   and the common HTTP-client crates (`reqwest`/`ureq`/`hyper`/`isahc`/`curl`).
-- **Static-security / unsafe policy** (build-gates **G29**): `#![forbid(unsafe_code)]`
-  at the core-crate root with a small allow-listed FFI module (the §2.1/§2.3 OS
-  primitives, the §0.9 Job-Object kill) — the gate is "no new `unsafe` outside the
-  allow-listed FFI module". A **Semgrep** layer (`p/rust` + `p/typescript` +
-  `p/security-audit` + project-local rules, pinned/vendored for offline use) augments
-  it; `cargo-geiger` is **informational only** (a census, not an enforcer).
+- **Static-security / unsafe policy** (build-gates **G29**): `#![deny(unsafe_code)]`
+  at the crate root of **every** first-party Rust crate (the core AND
+  `convertia-imgworker`), with a **single narrowly allow-listed FFI module** carrying
+  `#[allow(unsafe_code)]` (the core's §2.1/§2.3 OS primitives + the §0.9 Job-Object kill;
+  the imgworker's libvips/libheif/libde265/librsvg/libimagequant FFI). The gate is "no new
+  `unsafe` outside the allow-listed FFI module", enforced by deny-at-root **plus** a check
+  that `#[allow(unsafe_code)]` appears on exactly the one allow-listed module path.
+  **`#![forbid(unsafe_code)]` is NOT usable on an FFI-bearing crate** — `forbid` is
+  deliberately un-overridable (a module cannot re-permit `unsafe` via
+  `#[allow(unsafe_code)]` under `forbid`), so an FFI crate under `forbid` would not
+  compile; `forbid` is reserved only for a pure-logic sub-crate with **zero** unsafe.
+  A **Semgrep** layer (`p/rust` + `p/typescript` + the committed project-local rules,
+  pinned/vendored for offline use; the managed `p/security-audit` pack is fetched live and
+  breaks offline) augments it; `cargo-geiger` is **informational only** (a census, not an
+  enforcer).
 - **CI workflow hardening** (build-gates **G49/G50/G18a**): every workflow declares
   least-privilege `permissions` (the secret-bearing release job gets `contents: write`
   ONLY and never runs on a fork PR); every third-party action is pinned by full
-  commit SHA (kept current via `dependabot.yml`); `actionlint` (per-PR) + `zizmor`
+  commit SHA (kept current via `dependabot.yml`); `actionlint` (per-push) + `zizmor`
   (CI) lint the workflows; the build resolves only the committed lockfiles (`--locked`
   / `pnpm install --frozen-lockfile`, with `git diff --exit-code` on the lockfiles);
   per-PUSH-workflow `concurrency` + `cancel-in-progress` + explicit `timeout-minutes`.
@@ -1359,11 +1374,25 @@ non-dev tester since it is the highest non-technical-user blocker.
 ## 6.7 CI/CD `[DECIDED — two-lane pipeline]`
 
 Two lanes, reflecting the platform CI standard (`reference_cicd_setup.md`:
-reusable workflows + branch protection + auto-merge + deploy-gate) adapted from a
+reusable workflows + a green-`main` deploy-gate) adapted from a
 *server-deploy* model to a *desktop-release* model (there is **no server deploy** —
 ConvertIA is a downloadable artifact; the "deploy" is a GitHub Release).
 
-### 6.7.1 Lane A — PR / push validation (fast, every change)
+> **Single-branch model `[DECIDED — P0 review r3]`.** ConvertIA builds **direct to
+> `main`** in a single-Build-Loop model: **no second branch, no merge step, no
+> auto-merge** (security-concept §2). The enforcement is therefore **CI green on
+> `main` + required status checks on every push to `main`** — a red `main` is **fixed
+> immediately**, never bypassed. The reference's "branch-protection + auto-merge +
+> before-merge" framing does **not** apply to our flow; it is replaced throughout this
+> section by **per-push validation on `main`**. The **one** residual `PR` concept that
+> legitimately survives is the **external fork pull-request**: ConvertIA is a *public*
+> OSS repo, so an external contributor can still open a fork PR, and the **G56 fork-PR
+> secret guard** (the secret-bearing release job never runs on a fork PR) is retained —
+> justified by *external contributors*, **not** by our own direct-to-`main` flow. Where
+> a gate below reads "per-PR", read **"per-push (on `main`)"** unless it is explicitly
+> the fork-contributor guard.
+
+### 6.7.1 Lane A — per-push validation on `main` (fast, every change)
 
 Runs on the **self-hosted Linux runner** (cheap; `reference_self_hosted_ci_runner.md`)
 for the OS-agnostic checks, fanning to the matrix only for compile-sanity:
@@ -1379,34 +1408,41 @@ for the OS-agnostic checks, fanning to the matrix only for compile-sanity:
 4. **Corpus↔pair bijection guard (§6.4.3a):** `scripts/check-corpus-coverage.rs`
    (a `cargo run`/xtask Rust bin, §6.4.3a) asserts every §04 v1-required pair has ≥1
    backing corpus `covers` entry (and no stale couplings). Engine-free, fast — runs every
-   PR so coverage gaps surface before the expensive Lane B corpus run.
+   push so coverage gaps surface before the expensive Lane B corpus run.
 4a. **Defaults-registry "no required choices" guard (§1.6) `[DECIDED]`:** an
    engine-free xtask **generates the §1.6 consolidated `OptionDecl.default` index from the
    §04 tables** and **fails the build if any §04-offered `(source,target)` pair lacks a
    complete default option set** (every declared option must have a `default`). This is the
    single machine-checkable home of the SSOT *v1 DoD* "no required choices" gate (§6.10 row
-   7); it runs every PR so a pair/option shipping without a default cannot merge. The
-   generated index is the §1.6-owned artifact (values still owned by §04).
+   7); it runs every push so a pair/option shipping without a default reddens `main`
+   (fixed immediately). The generated index is the §1.6-owned artifact (values still
+   owned by §04).
 4b. **Automated a11y assertions (§6.4.6a) — jsdom leg = ARIA/role + focus-order ONLY:**
    `axe-core` via `vitest-axe` over the rendered React tree asserts **ARIA-role/state
    validity** and **focus-order / roving-tabindex sanity**. **The WCAG 2.1 AA contrast
    check does NOT run here** — axe-core under jsdom **cannot measure computed contrast**
    (jsdom applies no CSS/layout, §6.4.6a); contrast (both themes) runs on the live WebView
    via the **`@axe-core/webdriverio`** session in **Lane B** (§6.4.6a / §6.7.2). Engine-free,
-   fast — runs every PR; any jsdom-leg violation fails the lane.
+   fast — runs every push; any jsdom-leg violation fails the lane.
 5. **Compile-sanity on the matrix:** `cargo check` / a debug `tauri build` on all
    three legs to catch platform-specific breakage early (no full corpus run here).
 6. **`cargo audit` / `cargo deny`** (advisory + licence policy, §6.3.4).
-Branch protection requires Lane A green before merge to `main` (matches the
-platform's branch-protection + auto-merge model).
+The enforcement is **CI green on `main` via required status checks on every push to
+`main`** (single-branch model, security-concept §2) — a red Lane A **fails the push /
+reddens `main`** and is **fixed immediately**, never bypassed; there is **no merge step
+and no auto-merge** to gate. (The set of Lane-A checks that are *required status checks*
+on `main` is asserted in CI by build-gates **G56a** — the branch-protection/ruleset
+config that makes a red run actually block is otherwise invisible repo state.)
 
 > **Lane-A blind spot (acknowledged) `[DECIDED]`:** the **offline-egress hard gate is
-> Lane-B-only** (tag-triggered, §6.7.3), so an accidental network call introduced in a PR
-> is **not** caught per-PR. The compensating **per-PR** guards are: the **§2.11.4
+> Lane-B-only** (tag-triggered, §6.7.3), so an accidental network call introduced on a push
+> is **not** caught per-push. The compensating **per-push** guards are: the **§2.11.4
 > packet-monitor *property tests*** (core — assert no socket opens in the conversion path,
 > run in Lane A step 3) and the **§0.10 WebView CSP** (frontend — no remote `connect-src`,
-> verified by the type/config checks). The full OS-egress-deny E2E run remains the Lane-B
-> backstop. This keeps the blind spot bounded rather than silent.
+> verified by the type/config checks); the §6.7.3 adversarial-egress corpus is additionally
+> **pulled forward into the per-push L4 leg** where the enforcement path is available
+> (build-gates G42 / the per-push adversarial-egress pull-forward). The full OS-egress-deny
+> E2E run remains the Lane-B backstop. This keeps the blind spot bounded rather than silent.
 
 ### 6.7.2 Lane B — Release pipeline (tag-triggered, the full gate)
 
@@ -1427,7 +1463,7 @@ blocking the next:
    release.** **Includes the WCAG-AA contrast a11y session `[DECIDED]`:** the
    **`@axe-core/webdriverio` contrast check** (§6.4.6a — WCAG 2.1 AA, both themes) runs as
    a **named step on the Linux + Windows legs** here (it needs the live WebView's computed
-   styles; jsdom cannot compute contrast, so it is **NOT** in the Lane-A per-PR a11y leg).
+   styles; jsdom cannot compute contrast, so it is **NOT** in the Lane-A per-push a11y leg).
    **macOS contrast is the acknowledged automated-coverage gap:** `tauri-driver` has no
    macOS WKWebView driver (§6.4.6), so the **macOS WCAG-AA contrast gate is verified ONLY
    via the §6.6 human walkthrough** (readable-contrast check) — Phase 3 must not silently

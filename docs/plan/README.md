@@ -401,8 +401,10 @@ Scope*). **SBOM finalization** (per-engine rows populated in P5–P7 now finaliz
 release gate); the **Lane-B GitHub Releases
 pipeline**. **§6.2.4 download / trust-page content authoring** (pure technical
 release mechanics enabling verified downloads — in scope): write the copy-paste
-**verify-hash recipe** including the literal `minisign -Vm SHA256SUMS -P <docs/minisign.pub>`
-step + the Windows WebView2 / Linux libfuse2 prerequisite notes, and the
+**verify-hash recipe** including the literal `minisign -Vm SHA256SUMS -p docs/minisign.pub`
+step (lowercase **`-p` = public-key FILE PATH**; uppercase `-P` expects an inline base64
+key string and would FAIL on a path — build-gates G39 RUNS this literal recipe so a broken
+form fails the release) + the Windows WebView2 / Linux libfuse2 prerequisite notes, and the
 **macOS Sequoia step-by-step Gatekeeper / per-sidecar-quarantine recovery**
 instructions (the SSOT "reaching the user at the highest-risk moment"
 trust-substitute) — so the P11 §6.6 walkthrough has authored content to validate.

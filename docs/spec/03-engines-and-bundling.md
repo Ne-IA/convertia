@@ -1546,6 +1546,46 @@ blocker).
 - **Pinning:** every engine is pinned to an **exact version + source ref** in the
   build manifest (§3.7.2). Reproducible inputs → the §3.7 SBOM is exact and the
   §6.2 integrity hashes are meaningful.
+- **Engine acquisition — prebuilt vs from-source, PER engine PER platform `[DECIDED —
+  P0 review r3]`.** The §3.7.2 pin-establishment-provenance rule ("corroborate the
+  recorded SHA-256 against the upstream's own published checksum/signature") is only
+  satisfiable if the *acquisition mode* of each binary is decided, because prebuilt and
+  from-source have different ground truths:
+  - **From-source (CI-compiled):** the §3.7.2 binary SHA-256 verifies **our own**
+    (non-bit-reproducible, §6.2.5 best-effort) build output — it is a **build-output
+    stability check, NOT a provenance anchor**. The real provenance anchor moves to **(a)**
+    the **source tarball hash**, corroborated against the upstream's **signed release**
+    (GPG/minisign/SHA on the project's own site), recorded beside the pin, **and (b)** the
+    **build toolchain + base image pinned by digest** (otherwise a poisoned toolchain is the
+    unverified input). This is the preferred mode for engines whose upstream publishes a
+    signed source release.
+  - **Prebuilt third-party binary:** several upstreams publish **no signature and often no
+    checksum** for their prebuilt binaries (notably **FFmpeg** — the common Windows builds
+    from **gyan.dev / BtbN** are unsigned). For these the corroboration MUST be one of the
+    **satisfiable** anchors, named per engine: **(i)** cross-check the **same artifact hash
+    across ≥ 2 independent mirrors/build providers** (an attacker must poison both), **or
+    (ii)** pin via a **distro's GPG-signed package + signed repo metadata** as the provenance
+    anchor (e.g. a Debian/Ubuntu/Homebrew-bottle whose package signature is the trust root),
+    recording the signed-metadata source URL beside the pin. A bare hash of a single
+    unsigned download is **NOT** acceptable corroboration — it just launders an unverified
+    download (the failure the rule exists to prevent).
+  - **FFmpeg specifically** (the flagship, worst-case engine): v1 corroboration is **either**
+    a from-source CI build from the GPG-signed `ffmpeg.org` source release (anchor = signed
+    source tarball + digest-pinned build container) **or** a prebuilt cross-checked across ≥ 2
+    independent providers; the chosen mode + corroboration URLs are recorded in `engines.lock`
+    and surfaced to the dual review on any change. build-gates **G37** references this policy
+    and must name a satisfiable corroboration source for every engine, FFmpeg included.
+- **Engine-source allow-list (the `[sources]` analogue for engine binaries) `[DECIDED —
+  P0 review r3]`.** A committed allow-list of permitted upstream **origins** per engine
+  (e.g. `ffmpeg.org` / the FFmpeg GitHub org, `libreoffice.org` / TDF, freedesktop/poppler,
+  strukturag/libheif, videolan/dav1d, the chosen distro/Homebrew origins) constrains **which
+  hosts** a pin may come from. Every `engines.lock` source URL — **both** the pin/download URL
+  **and** the corroboration-checksum URL — must resolve to an allow-listed origin, and where
+  the upstream publishes its checksum on a **separate** channel the two MUST be on
+  **independent** origins (so a single poisoned host cannot serve both the artifact and a
+  matching hash). This is the engine-tier `[sources]` gate (build-gates **G37**), pairing with
+  the acquisition-mode decision above — the engine binary is "the highest-value place to plant
+  a backdoor" (§3.7.2), so its source host is constrained, not just its hash.
 - **Minimum-version floors that gate a *capability*** (not just currency) are
   recorded here so a bump can't silently drop them: **libvips ≥ 8.12** (native
   `gifsave`/cgif backend — §3.5.5/§3.6.1, so the GIF path uses cgif natively). A bump
