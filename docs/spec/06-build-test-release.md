@@ -585,12 +585,51 @@ its failure blocks artifact publication exactly like a failed no-harm property t
 ### 6.3.4 Supply-chain hygiene (the bundled-binary surface)
 
 Per §0.11's threat map (*bundled-binary supply chain → §3.8/§6.3*): the pinned
-engine versions+checksums (§6.1.3) are verified at stage time; `cargo audit` /
-`cargo deny` run in CI over the Rust graph (advisory + licence-policy enforcement,
-non-release-blocking advisory-wise but licence-policy-blocking). Engine
-**currency** (keeping decoders patched) is a **best-effort posture, not a gate**
-(SSOT) — owned by §3.8; this file only ensures a bumped engine is re-validated
-against the corpus (§6.4/§6.5) before it can ship.
+engine versions+checksums (§6.1.3) are verified at stage time **against the
+change-reviewed in-repo `engines.lock`** before staging AND **re-verified on
+cache-restore** (an Actions cache is not integrity-protected — on mismatch, delete +
+refetch from the pinned upstream URL); `cargo audit` / `cargo deny` run in CI over
+the Rust graph (advisory + licence-policy enforcement, non-release-blocking
+advisory-wise but licence-policy-blocking). Engine **currency** (keeping decoders
+patched) is a **best-effort posture, not a gate** (SSOT) — owned by §3.8; this file
+only ensures a bumped engine is re-validated against the corpus (§6.4/§6.5) before it
+can ship.
+
+**Additional supply-chain & CI-hardening controls `[DECIDED — added P0 review r1]`.**
+These are owned by the build-gate catalogue (`docs/security/build-gates.md`) and are
+recorded here per the SSOT > spec > security/docs conflict order (a living
+security/process doc may not add a gate the spec does not mention without the spec
+being updated in the same change):
+
+- **WebView CSP + capability structural lint** (build-gates **G47**): a per-PR gate
+  parses `tauri.conf.json`'s `app.security.csp` + `src-tauri/capabilities/*.json`
+  with `jq`/`serde_json` (not regex) and fails on any §0.10 violation — any remote
+  scheme in any CSP directive (the only non-`'self'` `connect-src` tokens permitted
+  are the Tauri IPC `ipc:` + `http://ipc.localhost`), `object-src ≠ 'none'`,
+  `form-action ≠ 'self'`, any `fs:`/`http:`/`shell:allow-execute`/`opener:*`/`dialog:`
+  grant, or the presence of `tauri-plugin-updater` / any HTTP-client plugin / an
+  `updater` bundle block / an updater pubkey. This is the **per-PR** verifying gate
+  for §0.11 T2/T2a/T2c/T9a and the structural assertion of the §7.6.1 updater-absence
+  claim (the §6.7.1 Lane-A blind-spot note's "verified by the type/config checks" is
+  this gate). Paired with a `cargo-deny [bans]` deny-list for `tauri-plugin-updater`
+  and the common HTTP-client crates (`reqwest`/`ureq`/`hyper`/`isahc`/`curl`).
+- **Static-security / unsafe policy** (build-gates **G29**): `#![forbid(unsafe_code)]`
+  at the core-crate root with a small allow-listed FFI module (the §2.1/§2.3 OS
+  primitives, the §0.9 Job-Object kill) — the gate is "no new `unsafe` outside the
+  allow-listed FFI module". A **Semgrep** layer (`p/rust` + `p/typescript` +
+  `p/security-audit` + project-local rules, pinned/vendored for offline use) augments
+  it; `cargo-geiger` is **informational only** (a census, not an enforcer).
+- **CI workflow hardening** (build-gates **G49/G50/G18a**): every workflow declares
+  least-privilege `permissions` (the secret-bearing release job gets `contents: write`
+  ONLY and never runs on a fork PR); every third-party action is pinned by full
+  commit SHA (kept current via `dependabot.yml`); `actionlint` (per-PR) + `zizmor`
+  (CI) lint the workflows; the build resolves only the committed lockfiles (`--locked`
+  / `pnpm install --frozen-lockfile`, with `git diff --exit-code` on the lockfiles).
+- **Bundled-engine CVE awareness** (build-gates **G17b**, *informational*): an
+  `osv-scanner` (or `grype`-over-SBOM) scan of the `engines.lock` `(component,
+  version)` pairs emits a dated open-CVE report as an owner-signed-off release asset —
+  **non-blocking**, to honour the §3.8 "engine currency is best-effort, not a gate"
+  posture, but turning that posture into an actual detector rather than a blind spot.
 
 ---
 
@@ -669,7 +708,27 @@ and stub/real engines:
   encrypted/DRM (password PDF/XLSX/PPTX, FairPlay M4V, PlaysForSure WMV), and
   decompression-bomb-shaped inputs each produce **one plain message**, no crash, no
   app wedge, batch continues. The decoder runs inside the §2.12 isolation boundary;
-  these tests verify a hanging/crashing engine fails **one** item.
+  these tests verify a hanging/crashing engine fails **one** item. **Backed by explicit
+  decompression-bomb FIXTURES `[DECIDED]`** in the §6.4.5 corpus (an svgz bomb, a
+  ZIP-bomb-in-OPC DOCX, a deeply-nested PDF flate stream) so the bomb case is files,
+  not only a property concept.
+  - **In-core detector fuzz harness `[DECIDED]` (the one untrusted-byte path OUTSIDE
+    the §2.12 isolation boundary):** the §1.2 detection layer (the pure-Rust bounded
+    gzip/svgz inflate, the Rust ZIP central-directory peek, the OLE2/CFB directory
+    read, the bounded `xl/workbook.xml`/ODS `content.xml` structural peeks) runs in the
+    trust kernel, so a panic/OOM/UB there is in the core, not a contained subprocess.
+    It carries a **coverage-guided `cargo-fuzz` (libFuzzer)** target over
+    `crate::detect`/sniff on a hostile ZIP/OLE2/gzip/svgz/XML corpus, asserting: **no
+    panic/abort**, the decompression-ratio cap (≤100×) and the `MAX_SVGZ_SNIFF`
+    (≤64 KiB) bound **actually fire**, and the XML reader has **DTD/external-entity
+    resolution disabled by construction** (a `quick-xml`/`roxmltree` reader with entity
+    resolution off — defeats XXE / billion-laughs in the workbook/content peek). The
+    coverage-guided run is constrained to where libFuzzer is reliable (**Linux + macOS,
+    nightly toolchain**); the per-push/pre-push leg is a fast deterministic `proptest`
+    smoke / saved-crash-corpus replay, **not** an instrumented Windows build. This is
+    distinct from the engine-side T1 control above (the corpus fault-injection THROUGH
+    the §2.12 boundary): `cargo-fuzz`/libFuzzer is in-process Rust and cannot reach the
+    isolated C/C++ engines, so the two T1 surfaces have two distinct gates.
 - **Adversarial-egress / network-trigger inputs (§0.11 T9b, §3.5.1/§3.5.4/§3.5.2)
   `[DECIDED]`:** a small **adversarial-network corpus** — an HLS `.m3u8` / DASH `.mpd` /
   `-f concat` script / external-reference-box MP4 (FFmpeg), a remote-`<img>`/RST-include

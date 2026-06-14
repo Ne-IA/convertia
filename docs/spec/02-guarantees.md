@@ -1856,6 +1856,13 @@ beside-source case (dest dir = source dir = one volume) **and** in the divert ca
   forcing the cross-volume fallback (2.14.3) on the **common** path. The global temp
   is fine for **transient engine working files** that are *not* the publish artifact
   (see 2.14.2).
+- **Mode bits `[DECIDED]` (so the §0.11 temp-ownership gate has a concrete target):**
+  on POSIX the **per-run scratch root** is created `0o700` (owner-only) and the
+  `.part` **publish-temp** `0o600` — a per-run scratch must never be world-readable in
+  a shared `/tmp`/`$TMPDIR`, since transient engine working files may briefly hold
+  converted bytes. On Windows the equivalent is the default per-user ACL (the scratch
+  lives under the user profile / `app_local_data_dir()`; no explicit broadening). A
+  unit/property gate asserts these modes (build-gates G15/G31).
 
 ### 2.14.2 Two kinds of scratch `[DECIDED]`
 
