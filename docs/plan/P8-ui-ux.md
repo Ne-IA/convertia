@@ -51,8 +51,8 @@
 - **Cross-phase edges carried INLINE (no reconciliation box):** unlike the
   format-exercise phases (P5/P6/P7), P8 ships **no** per-pair tests against the P4
   reliability runner and **no** deferred P4-harness edges, so it carries the
-  cross-phase reconciliation obligation (P4.76; reciprocal of P3.70/P5.70/P6.78/
-  P7.76/P9.46) **inline on each box** rather than in a dedicated reconciliation box:
+  cross-phase reconciliation obligation (P4.76; reciprocal of P3.70/P5.72/P6.92/
+  P7.77/P9.46) **inline on each box** rather than in a dedicated reconciliation box:
   P8.1.1→P2.39/P1.37 (`app://intake` + strings), P8.3/P8.16→P2.85 (`tauri-plugin-store`
   prefs blob), P8.10/P8.12→P2.34 (C11 `get_app_info`), P8.15→P2.33 (C10
   `open_project_page`), P8.19→P3.68 (§2.8.2 catalog), P8.20→P1.31.2/P3.69 (§5.1 store +

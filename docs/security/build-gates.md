@@ -101,6 +101,16 @@
 
 ## 1. L0 — Build-Loop per box (the dual review, "holy grail")
 
+| ID | Gate | Tool / mechanism | Blocks | Scope / fail-mode |
+|---|---|---|---|---|
+| **G1** | Opus + Sonnet pre-commit dual review | two model reviewers critique the staged diff; recorded as a `Dual-Review: opus=… sonnet=…` commit trailer (presence/well-formedness gated by G12) | commit (self-gate) | always-on; **quality amplifier, NOT a security control** (only the deterministic gates G2+ are security controls — §0). The prose contract is below. |
+
+> **G1 has a catalogue ROW (above) AND the prose contract (below).** Every gate
+> cited in a box header `· <Gnn>` ref must resolve to a `| **Gnn** |` row
+> (`_format.md` §3.1/§7); the P0 dual-review boxes (P0.1.3 / P0.6.1–P0.6.3) cite
+> `G1` as a header ref, so the row is mandatory. The row is the machine target; the
+> prose paragraphs that follow are the human contract.
+
 **G1 — Opus + Sonnet pre-commit dual review.** *Plane L0.* Before each build
 commit, two model reviewers (`opus` + `sonnet`) critique the **staged diff**
 (`git diff --cached`, inline — not a SHA) for completeness, correctness, and

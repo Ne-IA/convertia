@@ -976,10 +976,16 @@ conversion" is a **read-side** claim, not a write-side one).
       list (update audio.md accordingly).
     - **Raw ADTS `.aac` and WAV/AIFF omit it** (no picture support → the
       `audio_tags_dropped` §2.9 note fires, audio.md tag policy).
-  - **Channel handling:** preserve source channels by default (audio.md). For
-    **>2-channel sources → MP3/OGG** (whose everyday encoders are best at stereo) add
-    `-ac 2` downmix and fire the §2.9 `audio_downmix` note; **AAC/M4A/OPUS/FLAC/WAV**
-    preserve the source channel layout (no forced downmix).
+  - **Channel handling:** preserve source channels by default for **every** target
+    (audio.md "Sample rate, channels, bit depth — preservation policy": no down-mix to
+    stereo in v1 unless the encoder strictly requires it; Format-default item 4:
+    `audio_downmix` fires "only if the codec forces a downmix"). libmp3lame and
+    libvorbis both carry >2 channels, so MP3/OGG (like AAC/M4A/OPUS/FLAC/WAV) **preserve
+    the source channel layout — there is NO proactive `-ac 2` downmix**; the §2.9
+    `audio_downmix` note fires ONLY where the chosen encoder/muxer strictly forces a
+    downmix (a codec-forced-only kind). *(Corrected: the prior `>2-channel → MP3/OGG
+    -ac 2` line contradicted the authoritative audio.md preservation policy and is
+    removed.)*
 - **Video (`video.md`):** **remux** = `-c copy` (+ `-movflags +faststart` for
   MP4/MOV/M4V, `-fflags +genpts` for FLV, `mov_text` subtitle convert for MKV→MP4
   text subs); **re-encode** = `-c:v libx264 -crf 23 -preset medium -pix_fmt

@@ -48,6 +48,9 @@ target. The workspace + lockfiles come first because every language gate
     > the committed `.npmrc` pinning the registry (the P0 G18c resolution-URL guard's target) and asserting `enable-pre-post-scripts=false` / no `unsafe-perm`; this is the config the P0.3.8 JS supply-chain skeleton was authored against.
   - [ ] **P1.2.2** [BUILD] Generate + commit the initial `pnpm-lock.yaml` · §0.8 · G18a G18c
     > the first resolved lockfile so the P0 G18a `--frozen-lockfile` + `git diff --exit-code` contract and the G18c resolution-URL guard have a real file to act on (activates P0.4.9 / P0.3.8 for the JS half).
+  - [ ] **P1.2.3** [BUILD] Add `@tauri-apps/cli` (the `tauri dev`/`tauri build` runner) to frontend devDependencies + the `tauri` pnpm scripts · §0.8 · G18a G18c
+    needs: P1.2.2
+    > add `@tauri-apps/cli` 2.x (matched to the §0.8 `tauri` 2.x pin) to the frontend `package.json` **devDependencies** — the tool that RUNS every `tauri dev` / `tauri build` invocation (P1.58 debug-build, P10.9 release-build, the P9.4/P11.5 AppImage consumers all depend on it existing + reproducible). The §0.8 dependency table (00-architecture.md) now lists `@tauri-apps/cli` under the Tauri v2 entry (escalated this round). Regenerate + commit `pnpm-lock.yaml` so the dep is locked, add the `tauri dev` / `tauri build` pnpm scripts (replacing P1.2's placeholders), and add `@tauri-apps/cli` to the P1.60 JS-tree §0.8 pinned-floor / G18c / G18d assertion set — mirroring exactly how P1.31.1 homes Zustand and P1.60 homes `vitest-axe`/WebdriverIO. Distinct from P0.2.10's digest-pin of the CLI/bundler in the CI IMAGE (release-trust): that hardens the toolchain that touches the minisigned bytes; THIS commits the CLI to the lockfile so `pnpm install` brings it and `tauri build` is invokable + reproducible at all.
 - [ ] **P1.3** [BUILD] Commit `rust-toolchain.toml` pinning the §0.8 stable channel · §0.8 · G24
   > the exact stable channel + components (`rustfmt`, `clippy`, `llvm-tools-preview` for `cargo-llvm-cov`) asserted not-floating — the file the P0.2.1 "asserted not-floating" check + the date-pinned-nightly-for-fuzz wiring reference. (The nightly date-pin for `cargo-fuzz` is P0.2.1-owned; this box pins the stable channel the toolchain builds on.)
 - [ ] **P1.4** [BUILD] Author the root `.gitignore` + `.gitattributes` (text/EOL + LFS hooks) · §0.7 · G52 G24a
@@ -128,6 +131,7 @@ startup spine as far as the foundation allows.
     > a unit/property assertion that the boot path opens no socket (the §7.2.2 observable property + the Lane-A compensating guard for the Lane-B-only egress gate, §6.7.1); pairs with the P0 G29 `std::net` allow-list rule (rule (g)) which is initially empty.
 - [ ] **P1.16** [RUST] Create the §7.3.1 main window + show an empty WebView frame · §7.3.1 §0.3.1
   needs: P1.13, P1.20, P1.27
+  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P1.20` (the §0.10 CSP encode) and `P1.27` (the `commands.ts`/`events.ts` façade) point at later document-order boxes the window must load a CSP-correct, IPC-wired frame against; DECISION C builds them first. Acyclic + valid; documented at the `needs:` line.
   > the single `main` window from `tauri.conf.json` showing the loaded (empty) React frame — the literal P1 "empty ConvertIA window boots" deliverable; the §0.3.1 WebView-runtime floor (WebView2/WKWebView/WebKitGTK) is relied-on, not bundled.
 - [ ] **P1.17** [RUST] Implement the §7.2.4 portable-build executable-permission setup (unix `+x` idempotent) · §7.2.4
   needs: P1.14
@@ -148,8 +152,8 @@ fail-open to fail-closed.
 - [ ] **P1.19** [BUILD] Author `tauri.conf.json` — bundle identity, window, externalBin/resources slots, minimum-OS floor · §0.3.1 §0.7 §3.3 · G47
   needs: P1.1
   > the base `tauri.conf.json`: app identifier (`dev.ne-ia.convertia`), the §7.3.1 window, empty-but-declared `bundle.externalBin`/`bundle.resources` slots (engines land P4–P7), and the §0.3.1 supported-OS floor knobs (`minimumSystemVersion: "11.0"`, the Windows/Linux floor notes); the file the P0 G47 lint parses.
-  - [ ] **P1.19.1** [BUILD] Set `productName: "ConvertIA"` + the §7.3.1 main-window title in `tauri.conf.json` · §7.3.1 §0.3.1 · G47
-    > set the case-sensitive `productName: "ConvertIA"` (the case the §6.9.3 rename pass + P9.4.2's `squashfs-root/usr/bin/*` glob + P11.2.2 depend on — `ConvertIA`, NOT `convertia`) and the §7.3.1 main-window title; the field is load-bearing for the AppImage binary name + the Linux/macOS bundle name, not a cosmetic. (The FINAL "ConvertIA"/Ne-IA name itself stays an owner-controlled placeholder per §6.9.3; the slot + the v1 working name are set here.)
+  - [ ] **P1.19.1** [BUILD] Set `productName: "ConvertIA"` + the §7.3.1 main-window title + the macOS plist positive-set assertions in `tauri.conf.json` · §7.3.1 §0.3.1 §7.8.2 · G47
+    > set the case-sensitive `productName: "ConvertIA"` (the case the §6.9.3 rename pass + P9.4.2's `squashfs-root/usr/bin/*` glob + the P11.2 AppImage RC-artifact collection depend on — `ConvertIA`, NOT `convertia`) and the §7.3.1 main-window title; the field is load-bearing for the AppImage binary name + the Linux/macOS bundle name, not a cosmetic. (The FINAL "ConvertIA"/Ne-IA name itself stays an owner-controlled placeholder per §6.9.3; the slot + the v1 working name are set here.) **Plus the macOS plist SET-edge assertions** (asserting the positive facts at the source, not only at the P10.13 drift edge): the §0.3.1 `minimumSystemVersion: "11.0"` propagates into the built bundle's `LSMinimumSystemVersion` (the real §0.3.1 correctness chain), and `CFBundleDocumentTypes` is **absent** from the generated `Info.plist` (the macOS leg of the §7.8.2 no-file-association negative — P1.24 covers the no-URL-scheme leg; this completes the macOS file-association negative). Cheap structural assertions in the same G47 parse.
   - [ ] **P1.19.2** [BUILD] Stage a bundled PLACEHOLDER icon set wired into `tauri.conf.json → bundle.icon` · §6.9.3 §0.3.1 · G47
     > stage the Tauri-required icon set (`32x32.png` / `128x128.png` / `128x128@2x.png` / `icon.icns` / `icon.ico` / the Windows `Square*Logo.png` set) as a bundled-local **placeholder** under `src-tauri/icons/` and wire `bundle.icon` to it, so the build produces a real installable artifact from P1 on (Tauri fails the bundle with no icon set). The FINAL Ne-IA art is the §6.9.3-deferred owner deliverable swapped in the P8.23-class scope-(ii) pass (mirrors the P8.2 BrandLogo placeholder pattern); P1 lands only the placeholder slot. The G47 structural lint additionally asserts `bundle.icon` is non-empty + `productName` is set (the file the lint parses).
 - [ ] **P1.20** [BUILD] Encode the §0.10 locked CSP object in `tauri.conf.json → app.security.csp` · §0.10 · G47
@@ -211,7 +215,7 @@ the per-push a11y leg (G33a) against real source.
     > add `zustand` (the §5.1 `[DECIDED — Zustand]` shared app-store library; any equivalent minimal store is acceptable but v1 is fixed to Zustand) to the frontend `package.json`, regenerate `pnpm-lock.yaml`, and add it to the P1.60 JS-tree §0.8 pinned-floor / resolution-URL / lifecycle-script assertion set (G18c/G18d) so the new dep is covered by the same supply-chain leg as `vitest-axe`/WebdriverIO. Dependency only; the store artifact is P1.31.2.
   - [ ] **P1.31.2** [UI] Stand up `src/state/store.ts` — the §5.1 selector-granular shared app-store shell · §5.1 §1.10
     needs: P1.31.1, P1.31
-    > the §5.1 Zustand store SHELL (`src/state/store.ts`) holding the machine state, the collected batch, the chosen target+options, the resolved-destination preview, and the **live progress map** — with **selector granularity** so the §1.10 1000-row virtualised ProgressList re-renders per-row, not per-tick-whole-tree. P1 lands the typed store shape + selectors as scaffolding (the §5.2 reducer FSM is the separate P3.53/P4.79 artifact that drives it); the live-progress wiring into the store is filled by P2.120's async model. Distinct from the Rust-side `tauri-plugin-store` prefs blob (P1.14/P2.85) — that is the 3-key `settings.json`, this is the in-memory frontend app store.
+    > the §5.1 Zustand store SHELL (`src/state/store.ts`) holding the machine state, the collected batch, the chosen target+options, the resolved-destination preview, the **live progress map**, and the **`pendingVideoReencodeNote`** field (§5.1/§5.8 — the worst-case `video_reencode` ConvertingNote banner that P8.20 reads + P4.64 surfaces from the `RunStarted.willReencode` signal; this is its single typed home in the store shape) — with **selector granularity** so the §1.10 1000-row virtualised ProgressList re-renders per-row, not per-tick-whole-tree. P1 lands the typed store shape + selectors as scaffolding (the §5.2 reducer FSM is the separate P3.53/P4.79 artifact that drives it); the live-progress wiring into the store + the `pendingVideoReencodeNote` population from `RunStarted.willReencode` are filled by P2.120's async model. Distinct from the Rust-side `tauri-plugin-store` prefs blob (P1.14/P2.85) — that is the 3-key `settings.json`, this is the in-memory frontend app store.
 - [ ] **P1.32** [UI] Author the Tailwind config + `design/tokens.css` token-file shell · §5.1 §5.5 · G9
   needs: P1.29
   > the Tailwind setup + an empty-but-present `design/tokens.css` (CSS custom properties) — the single home for colour tokens the P0 G9 invariant (a) ("no hardcoded colour outside `design/tokens.css`") scopes to (activates P0.3.10 invariant (a)); the real token values are P8 polish.
@@ -291,9 +295,15 @@ ADDED by the phase that produces their input — NOT here.
 
 - [ ] **P1.51** [CI] Author the Lane-A workflow shell wired into the P0 L4 skeleton · §6.7.1 · G25 G49 G56
   > the `.github/workflows/` Lane-A workflow (push-on-`main` + fork-PR) plugged into the P0.2.4 clean-checkout matrix slot: top-level `permissions: contents: read`, per-job `timeout-minutes`, per-push `concurrency: {group, cancel-in-progress: true}`, SHA-pinned actions — the empty heavy-gate slots P0 left for P1 to fill; actionlint/zizmor-clean (P0 G49/G50). (No `needs:` on `dependabot.yml` — the workflow shell has no technical dependency on it; the logical "workflow exists before dependabot covers it" ordering is carried by P1.55's `needs: P1.51`.)
-- [ ] **P1.52** [CI] Wire the §6.7.1 step-1 lint/format leg (rustfmt/clippy/eslint/tsc/prettier/yamllint) · §6.7.1 · G3 G4 G5 G6 G14
+- [ ] **P1.52** [CI] Wire the §6.7.1 step-1 lint/format legs (per-tool, gate-attributable) · §6.7.1 · G3 G4 G5 G6 G14
   needs: P1.51
-  > the Lane-A lint/format step: `cargo fmt --check`, `cargo clippy -D warnings` (+ the no-panic-sloppiness deny set), `eslint` + `tsc --noEmit`, `prettier --check`, `yamllint` — the P0 language gates (G3/G4/G5/G6, full at G14) now bound to the P1-scaffolded Rust crate + TS project (activates the CI wiring-point of P0.4.1 / P0.4.7).
+  > the Lane-A lint/format step decomposed into per-tool legs (each carrying only the gates it directly satisfies, so the first CI failure is attributable without log-diving): the Rust leg (.1), the JS/TS leg (.2), the YAML/config leg (.3). Each sub-box wires its leg into the P1.51 Lane-A shell; the parent is `[x]` only when all sub-boxes are (_format.md §2). Activates the CI wiring-point of P0.4.1 (Rust) / P0.4.7 (TS).
+  - [ ] **P1.52.1** [CI] Wire the Rust lint/format leg (`cargo fmt --check` + `cargo clippy -D warnings` + the no-panic-sloppiness deny set) · §6.7.1 · G3 G4 G14
+    > the Rust leg: `cargo fmt --check` (G3) + `cargo clippy -D warnings` with the no-panic-sloppiness/exhaustive-match deny set (G4 diff-scoped, full `--all-targets --all-features` at G14) bound to the P1-scaffolded core crate; a clippy regression is attributable here, independent of the JS leg.
+  - [ ] **P1.52.2** [CI] Wire the JS/TS lint/format/type-check leg (`eslint` + `tsc --noEmit` + `prettier --check`) · §6.7.1 · G5 G6 G14
+    > the JS/TS leg: `eslint` (flat config, the project-local no-`any`/`fc.gen()` rules) + `tsc --noEmit` (G6 diff-scoped, whole-project at G13/G14) + `prettier --check` (the G3 prettier leg over TS/CSS/JSON) bound to the P1 TS project; an eslint/tsc regression is attributable here.
+  - [ ] **P1.52.3** [CI] Wire the YAML/config-hygiene leg (`yamllint` over `.github/`/config YAML) · §6.7.1 · tooling-only
+    > the YAML/config-hygiene leg: `yamllint` over the workflow + config YAML — distinct from the `actionlint` workflow-lint (P0 G49) and the `editorconfig-checker` EOL leg (P0 G52); it carries no Gnn of its own (a config-hygiene linter, not a catalogue gate), so the absence is declared `tooling-only`. A YAML drift is attributable here, never opaque behind the language gates.
 - [ ] **P1.53** [CI] Wire the §6.7.1 step-2 Rust↔TS type-drift check · §6.7.1 §0.4.5 · G19
   needs: P1.51, P1.28
   > the Lane-A step running `cargo xtask codegen` + `git diff --exit-code` on `bindings.ts` (the P1.28 invocation) — fails on stale generated types; the concrete activation of the P0 G19 framework (P0.3.9).
@@ -310,14 +320,14 @@ ADDED by the phase that produces their input — NOT here.
   needs: P1.51, P1.38
   > the Lane-A step running the P0 G57 English-only / string-ownership lint over `strings/ui.ts` (every key non-empty English; no i18n-runtime import) — activates G57 (P0.4.6) against the P1.37 module.
 - [ ] **P1.58** [CI] Wire the §6.7.1 step-5 compile-sanity 3-OS matrix (`cargo check` + debug `tauri build`) · §6.7.1 §6.1.4 · G30
-  needs: P1.51, P1.16
-  > the Win/macOS/Linux matrix running `cargo check` / a debug `tauri build` to catch platform-specific breakage early (no full corpus run) — the literal "empty window boots on 3 OS from clean checkout" CI proof; activates the P0 G30 cross-platform build-matrix contract (P0.4.10) for the debug shell (the universal-`lipo` sidecar leg binds when engines land in P4).
+  needs: P1.51, P1.16, P1.2.3
+  > the Win/macOS/Linux matrix running `cargo check` / a debug `tauri build` to catch platform-specific breakage early (no full corpus run) — the literal "empty window boots on 3 OS from clean checkout" CI proof; activates the P0 G30 cross-platform build-matrix contract (P0.4.10) for the debug shell (the universal-`lipo` sidecar leg binds when engines land in P4). (`needs: P1.2.3` — `tauri build` cannot run until `@tauri-apps/cli` is in the lockfile.)
 - [ ] **P1.59** [CI] Wire the §6.7.1 step-6 `cargo audit` + `cargo deny` supply-chain leg + the §0.8 pinned-floor assertion · §6.7.1 §6.3.4 §0.8 · G17 G18 G18a G18b G53
   needs: P1.51, P1.7
   > the Lane-A advisory + license + bans + lockfile-integrity leg: `cargo audit` (plain, no `--locked`) + `cargo deny check` over the real `Cargo.lock` (P1.7) — activates the P0 `deny.toml`/`cargo-vet` skeleton (P0.3.6), the lockfile-integrity contract (P0.4.9), and the core-crate forbidden-dep gate (P0.3.7 G53) against the P1 workspace graph. **Plus the §0.8 pinned-floor assertion:** a small `cargo deny`-bans / lockfile check that the source-verified load-bearing §0.8 crates (`tauri-specta`, `specta`, `walkdir`, `csv`, `chardetng`, `tempfile`, `process-wrap`, `landlock`, the librsvg-≥2.56.3 binding floor, etc.) are present at **≥ their pinned floor** in `Cargo.lock` (not merely locked) — so a drift below a relied-upon API floor fails the gate here rather than surfacing when the API changed; the TS-side `vitest-axe@0.1.0` / WebdriverIO-v9 pins are asserted in the P1.60 JS leg.
-- [ ] **P1.60** [CI] Wire the JS-tree supply-chain Lane-A leg (resolution-URL + lifecycle-script + frontend license) · §6.7.1 §6.3.4 · G18c G18d G36b
-  needs: P1.51, P1.2.2
-  > the Lane-A step asserting the P0 G18c resolution-URL guard, G18d `onlyBuiltDependencies` lockdown, and G36b frontend GPL/AGPL deny over the real `pnpm-lock.yaml` (P1.2.2) — activates the P0.3.8 JS supply-chain config against the committed pnpm graph.
+- [ ] **P1.60** [CI] Wire the JS-tree supply-chain Lane-A leg (resolution-URL + lifecycle-script + frontend license + the §0.8 JS pinned-floor) · §6.7.1 §6.3.4 §0.8 · G18c G18d G36b
+  needs: P1.51, P1.2.2, P1.2.3
+  > the Lane-A step asserting the P0 G18c resolution-URL guard, G18d `onlyBuiltDependencies` lockdown, and G36b frontend GPL/AGPL deny over the real `pnpm-lock.yaml` (P1.2.2) — activates the P0.3.8 JS supply-chain config against the committed pnpm graph. **Plus the §0.8 JS pinned-floor assertion set:** `@tauri-apps/cli` 2.x (P1.2.3, matched to the `tauri` 2.x pin), `@tauri-apps/api` 2.x, `vitest-axe@0.1.0`, WebdriverIO v9 + `@axe-core/webdriverio`, and `zustand` (P1.31.1) are present at ≥ their pinned floor in `pnpm-lock.yaml` — the JS-side mirror of the P1.59 Rust pinned-floor leg.
 - [ ] **P1.61** [CI] Record the Lane-A required-status-check set for the §6.7.1 G56a branch-protection assertion · §6.7.1 · G56a
   needs: P1.52, P1.53, P1.54, P1.56, P1.57, P1.58, P1.59, P1.60
   > enumerate the Lane-A jobs that must be required status checks on `main` (the set the P0 G56a branch-protection config assertion, P0.2.8, queries the ruleset API for) — so a red Lane-A actually blocks; the §6.7.1 single-branch direct-to-`main` enforcement made real now that Lane-A jobs exist.
@@ -337,17 +347,19 @@ silently stuck in its bootstrap skip state) and homes the contributor build-setu
     needs: P1.20, P1.21, P1.18
   - [ ] **P1.62.2** [GATE] G19 self-test — a stale `bindings.ts` (hand-edited / un-regenerated) MUST fail the type-drift check · §0.4.5 · G24 G19
     needs: P1.53
-  - [ ] **P1.62.3** [GATE] G27/G28 self-test — a coverage drop below the per-domain floor / the ≥80% diff floor MUST fail · §6.7.1 · G24 G27 G28
+  - [ ] **P1.62.3** [GATE] G27 self-test — a coverage drop below the per-domain floor MUST fail · §6.7.1 · G24 G27
     needs: P1.54
-  - [ ] **P1.62.4** [GATE] G33a self-test — a planted invalid/orphaned ARIA role / broken focus-order in the rendered tree MUST fail the jsdom-axe leg · §6.4.6a · G24 G33a
+  - [ ] **P1.62.4** [GATE] G28 self-test — a changed-lines diff below the ≥80% diff-coverage floor MUST fail · §6.7.1 · G24 G28
+    needs: P1.54
+  - [ ] **P1.62.5** [GATE] G33a self-test — a planted invalid/orphaned ARIA role / broken focus-order in the rendered tree MUST fail the jsdom-axe leg · §6.4.6a · G24 G33a
     needs: P1.56
-  - [ ] **P1.62.5** [GATE] G57 self-test — a non-English user-facing literal / an i18n-runtime import MUST fail the English-only leg · §5.7 · G24 G57
+  - [ ] **P1.62.6** [GATE] G57 self-test — a non-English user-facing literal / an i18n-runtime import MUST fail the English-only leg · §5.7 · G24 G57
     needs: P1.57
-  - [ ] **P1.62.6** [GATE] G53 self-test — a core-crate dependency on a forbidden lib (updater/HTTP-client/imgworker C libs) MUST fail the forbidden-dep gate · §0.7 · G24 G53
+  - [ ] **P1.62.7** [GATE] G53 self-test — a core-crate dependency on a forbidden lib (updater/HTTP-client/imgworker C libs) MUST fail the forbidden-dep gate · §0.7 · G24 G53
     needs: P1.59
-  - [ ] **P1.62.7** [GATE] G30 self-test — a platform-specific compile break / a single-arch sidecar leg MUST fail the 3-OS build-matrix · §6.1.4 · G24 G30
+  - [ ] **P1.62.8** [GATE] G30 self-test — a platform-specific compile break / a single-arch sidecar leg MUST fail the 3-OS build-matrix · §6.1.4 · G24 G30
     needs: P1.58
-  - [ ] **P1.62.8** [GATE] G18/G18a-d self-test — a non-frozen lockfile / a bad resolution URL / a lifecycle-script-enabled dep MUST fail the supply-chain leg · §0.8 · G24 G18 G18a G18b G18c G18d
+  - [ ] **P1.62.9** [GATE] G18/G18a-d self-test — a non-frozen lockfile / a bad resolution URL / a lifecycle-script-enabled dep MUST fail the supply-chain leg · §0.8 · G24 G18 G18a G18b G18c G18d
     needs: P1.59, P1.60
 - [ ] **P1.63** [DOC] Author `DEVELOPMENT.md` — per-OS dev prerequisites + the off-CI engine-asset acquisition path + tauri dev/build commands · §6.7.1 · G51
   needs: P1.42

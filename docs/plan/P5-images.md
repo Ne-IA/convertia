@@ -74,10 +74,10 @@
   > the stage-step assertion that the chosen P5.6 path is in force — parse the staged `policy.xml` for the denied coder set, OR introspect `convert -list coder`/`-list policy` — and **fail the build** if a dangerous coder/delegate is enabled.
 - [ ] **P5.8** [BUILD] Stage libheif + libde265 (HEVC decode) for HEIC read · §3.1 §3.5.5 §6.1.3 §3.4.3 · G37 G37b
   needs: P5.1
-  > libheif (LGPL-3.0) + libde265 (LGPL-3.0) as the libvips HEIC **load** module (decode-only — §3.4.3 image HEVC-decode row is ship-bundled all platforms); pinned in `engines.lock`, dynamic-closure asserted; SPDX-expression validated (P5.64).
+  > libheif (LGPL-3.0) + libde265 (LGPL-3.0) as the libvips HEIC **load** module (decode-only — §3.4.3 image HEVC-decode row is ship-bundled all platforms); pinned in `engines.lock`, dynamic-closure asserted; SPDX-expression validated (P5.66).
 - [ ] **P5.9** [BUILD] Stage the x265 HEVC encoder as a dynamically-loaded libheif encoder plugin (GPL, never static-linked) · §3.1 §3.5.5 §3.6.1 §3.4.3 · G37 G38b
   needs: P5.8
-  > x265 (GPL-2.0-or-later — verified vs the pinned source `COPYING`; `-or-later` is compatible with the LGPL-3.0 libheif host) shipped as a **dynamically-loaded libheif encoder plugin** `.so`/`.dll`/`.dylib` under `resources`, **never** statically linked into libvips or the MIT core (§3.6 aggregation); behind the §3.4.4a per-platform `available` flag (read in P5.32). G38b: the x265 GPL §3 corresponding-source bundle (P5.65).
+  > x265 (GPL-2.0-or-later — verified vs the pinned source `COPYING`; `-or-later` is compatible with the LGPL-3.0 libheif host) shipped as a **dynamically-loaded libheif encoder plugin** `.so`/`.dll`/`.dylib` under `resources`, **never** statically linked into libvips or the MIT core (§3.6 aggregation); behind the §3.4.4a per-platform `available` flag (read in P5.32). G38b: the x265 GPL §3 corresponding-source bundle (P5.67).
 - [ ] **P5.10** [BUILD] Wire x265-libheif-plugin runtime discovery in the portable bundle (LIBHEIF_PLUGIN_PATH whitelist OR add-plugin API) · §3.5.5 §6.1.3 · G38 G29
   needs: P5.9
   > the statically-linked libheif must find the plugin at an **arbitrary extracted path** while §3.5 strips loader/injection env vars — so the worker resolves `<exe_dir>/resources/heif-plugins/` relative to `current_exe()` and points libheif at it **either** by whitelisting the single `LIBHEIF_PLUGIN_PATH` var in the otherwise-minimal env **or** (preferred, env-free) via libheif's explicit add-plugin-directory/load-plugin API; the minimal-env construction is G29-ruled.
@@ -250,13 +250,13 @@
   needs: P5.20, P5.46.1
   > each `* → JPG` pair completes with exit success, output decodes via `vipsheader` with nonzero dims, source byte-unchanged (G32 no-harm), output≠input, orientation baked upright, alpha-source flatten asserted, `image_lossy_codec`(+`image_alpha_flatten`) fires iff the §04 cell is flagged.
 - [ ] **P5.48** [TEST] Per-pair integration tests: → PNG (all sources) — decode + dims + lossless + APNG-collapse + image_animation_flatten + no-spurious-lossy · §6.4.3 §6.5 · G31 G32
-  needs: P5.21, P5.46.1, P5.69
+  needs: P5.21, P5.46.1, P5.71
   > each `* → PNG` pair decodes, source-unchanged, lossless (no lossy note unless palette explicitly enabled), animated source collapses to first frame and **`image_animation_flatten` fires iff the source is animated** (the §2.9.1 lossy-iff-flagged assertion, mirroring P5.47's `image_alpha_flatten` — fires for animated GIF/WEBP/APNG/`avis`→PNG, does NOT fire for a still source), RGBA/16-bit/ICC/text-chunk fidelity spot-checks.
 - [ ] **P5.49** [TEST] Per-pair integration tests: → WEBP (all sources) — decode + dims + animation-passthrough + lossy-disclosure · §6.4.3 §6.5 · G31 G32
   needs: P5.22, P5.46.1
   > each `* → WEBP` pair decodes, source-unchanged, `image_lossy_codec` iff flagged (default lossy), animated source preserves animation (validated via ffprobe per the §6.4.5 animated-WEBP convention, not dwebp), alpha preserved.
 - [ ] **P5.50** [TEST] Per-pair integration tests: → GIF (all sources) — decode + dims + palette + animation-passthrough + NO image_animation_flatten · §6.4.3 §6.5 · G31 G32
-  needs: P5.23, P5.46.1, P5.69
+  needs: P5.23, P5.46.1, P5.71
   > each `* → GIF` pair decodes, source-unchanged, `image_palette` fires, animation **preserved** on animated sources (GIF/animated-WEBP/`avis`→GIF) / first-frame for stills — and `image_animation_flatten` **does NOT fire** for any `→GIF` pair (GIF is animation-capable, so the negative coverage of the §2.9.1 lossy-iff-flagged property: animation is preserved, never flattened, on this target), 1-bit transparency handled.
 - [ ] **P5.51** [TEST] Per-pair integration tests: → TIFF (all sources) — decode + dims + lossless-default + 16-bit/CMYK fidelity · §6.4.3 §6.5 · G31 G32
   needs: P5.24, P5.46.1
@@ -273,50 +273,56 @@
 - [ ] **P5.55** [TEST] Per-pair integration tests: → AVIF encode (all sources, incl. HEIC→AVIF) — decode + codec + lossy + dav1d-decode-revalidate · §6.4.3 §3.4.3 §6.5 · G31 G32
   needs: P5.33, P5.46.1
   > each `* → AVIF` pair completes, output decodes (cross-library re-validate via ffprobe per P0.5.6 — a different decoder family), `image_lossy_codec` iff flagged, source-unchanged; AVIF available everywhere (no patent gap).
-- [ ] **P5.56** [TEST] Per-pair integration tests: HEIC/AVIF/ICO source → raster targets — primary-image-only + HDR-tonemap + largest-frame + image_animation_flatten (animated-AVIF → still) · §6.4.3 §6.5 · G31 G32
-  needs: P5.34, P5.35, P5.36, P5.46.1, P5.69
-  > each `{HEIC,AVIF,ICO} → raster` pair decodes, source-unchanged, primary-image-only (HEIC bursts / animated-AVIF-to-still), HDR→8-bit tone-map note, ICO largest-frame selection note, orientation baked, ICC preserved; HEIC→raster/AVIF→raster lossless w.r.t. decoded pixels (no spurious lossy on →PNG/TIFF); **`image_animation_flatten` fires for an animated-AVIF (`avis`) source → a still raster target** (and not for a still HEIC/AVIF/ICO source) — the §2.9.1 lossy-iff-flagged coverage for the animated-source-decode cell.
-- [ ] **P5.57** [TEST] Per-pair integration tests: SVG → {PNG,JPG,WEBP,BMP,TIFF,ICO} — decode + dims + image_svg_raster always + bundled-font render · §6.4.3 §6.5 · G31 G32
+- [ ] **P5.56** [TEST] Per-pair integration tests: HEIC source → raster targets (libheif/libde265 HEVC-decode path) — primary-image-only + HDR-tonemap + burst-drop · §6.4.3 §6.5 · G31 G32
+  needs: P5.34, P5.46.1
+  > each `HEIC → raster` pair decodes via the libheif/libde265 HEVC-decode load module (P5.34), source-unchanged, **primary-image-only** (Live Photos / sequences / bursts / depth / aux dropped, note), HDR/10-bit → 8-bit SDR tone-map note for 8-bit targets, orientation baked, ICC preserved; HEIC→raster lossless w.r.t. decoded pixels (no spurious lossy on →PNG/TIFF). Split from the former three-decoder monolith: one box per distinct decode code-path (the file's one-box-per-decoder policy; the RUST builders are already the three separate P5.34/P5.35/P5.36).
+- [ ] **P5.57** [TEST] Per-pair integration tests: AVIF source → raster targets (dav1d AV1-decode path) — primary-image-only + HDR-tonemap + animated-AVIF first-frame + image_animation_flatten · §6.4.3 §6.5 · G31 G32
+  needs: P5.35, P5.46.1, P5.71
+  > each `AVIF → raster` pair decodes via the dav1d AV1-decode load module (P5.35; the dav1d-resolution wired in P5.12), source-unchanged, HDR/10-12-bit/wide-gamut → 8-bit tone-map note, orientation baked, ICC/EXIF preserved; AVIF→raster lossless w.r.t. decoded pixels (no spurious lossy on →PNG/TIFF); **`image_animation_flatten` fires for an animated-AVIF (`avis`) source → a still raster target** (and not for a still AVIF source) — the §2.9.1 lossy-iff-flagged coverage for the animated-source-decode cell (this is the ONLY animated-source decode case, so the `needs: P5.71` animation-flatten edge sits here, not on the HEIC/ICO boxes).
+- [ ] **P5.58** [TEST] Per-pair integration tests: ICO source → raster targets (built-in libvips ICO loader) — largest-frame selection + alpha-preserve · §6.4.3 §6.5 · G31 G32
+  needs: P5.36, P5.46.1
+  > each `ICO → raster` pair decodes via the built-in libvips ICO loader (P5.36), source-unchanged, **largest-frame selection** when the ICO holds several sizes (note if >1 size, the rest discarded), alpha preserved, orientation baked; ICO→PNG (largest frame) not lossy. Distinct code-path from the HEIC/AVIF decoders (a built-in loader, no patent/codec library), so its own box per the one-box-per-decoder policy.
+- [ ] **P5.59** [TEST] Per-pair integration tests: SVG → {PNG,JPG,WEBP,BMP,TIFF,ICO} — decode + dims + image_svg_raster always + bundled-font render · §6.4.3 §6.5 · G31 G32
   needs: P5.30, P5.46.1
   > each SVG→raster pair decodes at the resolved size, `image_svg_raster` fires for **every** pair incl. the PNG★ default (plus the target-codec LossyKind where additionally lossy), bundled-font glyphs render (no tofu, deterministic substitution), source-unchanged.
-- [ ] **P5.58** [TEST] SVG no-base-URL out-of-input / no-egress §6.1.3 corpus case (remote + relative-`../` + absolute `<image href>` not resolved) · §3.5.5 §6.4.2 §0.11 · G31 G32 G42b
+- [ ] **P5.60** [TEST] SVG no-base-URL out-of-input / no-egress §6.1.3 corpus case (remote + relative-`../` + absolute `<image href>` not resolved) · §3.5.5 §6.4.2 §0.11 · G31 G32 G42b
   needs: P5.28, P5.46
   > the SVG analogue of the FFmpeg adversarial-egress case — an SVG with an external `<image href>` (relative `../` escape AND absolute AND remote) must **NOT** embed any out-of-input bytes in the output and must trigger **no egress**; with the SVG loaded no-base-URL (P5.28) the reference simply does not resolve. The per-push adversarial-egress pull-forward leg (G42b) is wired in P9; this box stages the SVG sentinel + the out-of-input assertion the corpus run consumes.
-- [ ] **P5.59** [TEST] ImageMagick crafted-BMP + SVG-via-MSL/URL-coder sentinel corpus case (no egress, no out-of-input read) · §3.5.5 §6.4.2 §0.11 · G31 G42b
+- [ ] **P5.61** [TEST] ImageMagick crafted-BMP + SVG-via-MSL/URL-coder sentinel corpus case (no egress, no out-of-input read) · §3.5.5 §6.4.2 §0.11 · G31 G42b
   needs: P5.6, P5.46
   > the §3.5.5 T9b/T1 ImageMagick sentinel (the densest-CVE decoder family — ImageTragick / MSL / MVG / URL coder class): a crafted BMP + an SVG-via-MSL/URL-coder fixture must produce **no egress + no out-of-input read** (the coder lockdown P5.6 holds); staged here for the P9 adversarial-egress window + the §6.4.2 oracle.
-- [ ] **P5.60** [TEST] Determinism + source-unchanged sub-assertions: >=1 byte-stable pair per saver category + known-non-deterministic AVIF/HEIC manifest exceptions · §2.5 §6.4.3 · G31 G32
+- [ ] **P5.62** [TEST] Determinism + source-unchanged sub-assertions: >=1 byte-stable pair per saver category + known-non-deterministic AVIF/HEIC manifest exceptions · §2.5 §6.4.3 · G31 G32
   needs: P5.47, P5.48, P5.51
   > the P0.5.5 determinism floor for images — same source+settings twice → `sha256(out1)==sha256(out2)` for >=1 pair per output-format category, byte-stable pairs enumerated with a rationale in `tests/corpus/manifest.toml`, and the **known-non-deterministic AVIF/HEIC variable-encode** documented as manifest exceptions; source-unchanged (G32) over every image corpus source.
 
 ### Reliability ledger, SBOM/NOTICE rows, availability rows
 
-- [ ] **P5.61** [TEST] Mark every available image pair `reliable` in the §6.5.2 pair-status ledger on all 3 platforms · §6.5 §6.5.1 §6.5.2 · G31
-  needs: P5.47, P5.48, P5.49, P5.50, P5.51, P5.52, P5.53, P5.54, P5.55, P5.56, P5.57
+- [ ] **P5.63** [TEST] Mark every available image pair `reliable` in the §6.5.2 pair-status ledger on all 3 platforms · §6.5 §6.5.1 §6.5.2 · G31
+  needs: P5.47, P5.48, P5.49, P5.50, P5.51, P5.52, P5.53, P5.54, P5.55, P5.56, P5.57, P5.58, P5.59
   > drive the P4-built ledger generator so every enumerated image pair is `reliable` (valid output + no-harm + fail-clearly + lossy-disclosure-matches + content-fidelity, on each platform where §3.4 says it is available) — `reliability-report.json` + human table; any `failing` cell blocks; this is the §6.5 coverage gate for the image category travelling with the format work (category-by-category sequencing).
-- [ ] **P5.62** [TEST] Record the HEIC-encode patent-gap exception (per platform) as a §6.5.3 demoted-pairs / release-note row · §6.5.3 §3.4.3 · G31
-  needs: P5.54, P5.61
+- [ ] **P5.64** [TEST] Record the HEIC-encode patent-gap exception (per platform) as a §6.5.3 demoted-pairs / release-note row · §6.5.3 §3.4.3 · G31
+  needs: P5.54, P5.63
   > for any platform where §3.4 marks HEIC-encode `unavailable`, add the structured `docs/demoted-pairs.md` row (`kind=patent-gap-per-platform`, affected platform(s), one-sentence reason, ledger ref + the `engines.lock available=false` row it derives from) so the §6.8 governance gate finds a matching row and the gap is documented, never silent. (No-op if §3.4 ships HEIC-encode available on all three.)
-- [ ] **P5.63** [BUILD] Populate the image-stack §3.7.2 `engines.lock` + CycloneDX SBOM rows (libvips/libheif/libde265/x265/libaom/dav1d/librsvg/cgif/libimagequant/ImageMagick) · §3.7.2 §3.6.2 · G35 G35a G36 G37
+- [ ] **P5.65** [BUILD] Populate the image-stack §3.7.2 `engines.lock` + CycloneDX SBOM rows (libvips/libheif/libde265/x265/libaom/dav1d/librsvg/cgif/libimagequant/ImageMagick) · §3.7.2 §3.6.2 · G35 G35a G36 G37
   needs: P5.1, P5.5, P5.8, P5.9, P5.11, P5.13, P5.3
   > each image engine/component a §3.7.2 row (mandatory `purl` + SHA-256), the SBOM `purl`-keyed rows + the **DERIVED static-link closure** (G35a) for the statically-linked image-worker stack; license hard-fail (G36) confirms only x265 is GPL (the isolated plugin), the rest LGPL/BSD/permissive; per-engine acquisition anchored per P0.7.3.
-- [ ] **P5.64** [BUILD] Validate the image-stack SPDX expressions + generated-vs-committed NOTICE/THIRD-PARTY-LICENSES parity · §3.7 §6.3.3 · G36 G35
-  needs: P5.63
+- [ ] **P5.66** [BUILD] Validate the image-stack SPDX expressions + generated-vs-committed NOTICE/THIRD-PARTY-LICENSES parity · §3.7 §6.3.3 · G36 G35
+  needs: P5.65
   > the SPDX-expression validation leg for the image rows — x265 `GPL-2.0-or-later`, libheif/libde265/librsvg/libvips `LGPL-*`, libaom **both** `BSD-2-Clause AND LicenseRef-AOMPL-1.0` (the AOM Patent License text carried in `THIRD-PARTY-LICENSES.txt`, the §6.3.3 LicenseRef carve-out), dav1d/cgif/libimagequant BSD/MIT, ImageMagick `ImageMagick`; every GPL/LGPL row has its license text + a corresponding-source pointer line in `THIRD-PARTY-LICENSES`; AAC/HEVC patent posture surfaced in NOTICE.
-- [ ] **P5.65** [BUILD] Author the x265 GPL §3 + image-worker LGPL §6 corresponding-source bundle-present §6.1.3 assertion · §6.1.3 §3.6.2 · G38b
-  needs: P5.9, P5.63, P4.75
-  > the §6.1.3 carve-out ii/iii bundle-presence assertion for the image stack — ship the static image-worker's complete corresponding source + LGPL object files / relink recipe **and** (because it loads the GPL x265 plugin → GPL combined work) the **x265 GPL §3 complete corresponding source + written offer**; the stage step **fails the build** if either source bundle is missing (the §5 T6 row). **One fact, one home (the SBOM-row pattern, _format.md §8):** P4.75 builds the GENERIC relink-carve-out logic for the image-worker code object; this box (P5.65) is the per-engine BUNDLE-PRESENT assertion as the actual x265/image stack stages; P10.21 is the whole-bundle release assemble+assert — each a different artifact at a different build stage, so the near-identical wording is three layers, not a triple-build (`needs: P4.75`, the generic leg this per-engine assertion populates).
-- [ ] **P5.66** [BUILD] Populate the per-engine §7.2.3 availability rows for the image stack (presence + integrity manifest entries) · §7.2.3 §3.4.4a · G37
-  needs: P5.1, P5.63
+- [ ] **P5.67** [BUILD] Author the x265 GPL §3 + image-worker LGPL §6 corresponding-source bundle-present §6.1.3 assertion · §6.1.3 §3.6.2 · G38b
+  needs: P5.9, P5.65, P4.75
+  > the §6.1.3 carve-out ii/iii bundle-presence assertion for the image stack — ship the static image-worker's complete corresponding source + LGPL object files / relink recipe **and** (because it loads the GPL x265 plugin → GPL combined work) the **x265 GPL §3 complete corresponding source + written offer**; the stage step **fails the build** if either source bundle is missing (the §5 T6 row). **One fact, one home (the SBOM-row pattern, _format.md §8):** P4.75 builds the GENERIC relink-carve-out logic for the image-worker code object; this box (P5.67) is the per-engine BUNDLE-PRESENT assertion as the actual x265/image stack stages; P10.21 is the whole-bundle release assemble+assert — each a different artifact at a different build stage, so the near-identical wording is three layers, not a triple-build (`needs: P4.75`, the generic leg this per-engine assertion populates).
+- [ ] **P5.68** [BUILD] Populate the per-engine §7.2.3 availability rows for the image stack (presence + integrity manifest entries) · §7.2.3 §3.4.4a · G37
+  needs: P5.1, P5.65
   > add the image-engine entries to the build-time in-bundle hash manifest + the §7.2.3 startup-verifier availability rows (the image-specific variant of the P4 generic verifier), so `EngineHealth.present`/`integrity_ok`/`runnable` covers libvips + the codec stack and HEIC-encode availability reflects the §3.4.4a flag; ImageMagick is presence-checked for attribution only (it is a delegate, not a registry engine — no `Engine` impl / registry row, §3.5.5).
 
 ### Build-spike / corpus-gated decision records
 
-- [ ] **P5.67** [DOC] Record the HEIC `effort`-steers-x265 corpus spike outcome → decide HEIC `effort` exposure (else hidden) · §6.1.3 · G7
+- [ ] **P5.69** [DOC] Record the HEIC `effort`-steers-x265 corpus spike outcome → decide HEIC `effort` exposure (else hidden) · §6.1.3 · G7
   needs: P5.42, P5.46
   > run the `[DEFER: corpus]` spike confirming whether the integer `heifsave effort` measurably steers the bundled x265/HEVC path; **record the outcome** in this plan's notes and flip the P5.42 declaration accordingly — exposed for HEIC iff it steers, **HIDDEN for HEIC** if inert (no dead control; AVIF `effort` stays exposed regardless). The §6.1.3 arg-presence check (P5.15) is necessary but not sufficient — this corpus spike is the exposure decider.
-- [ ] **P5.68** [DOC] Confirm the corpus-gated default-Q values (JPG 82 / WEBP 80 / HEIC&AVIF 60) against the real-photo corpus · §6.5 · G7
-  needs: P5.46, P5.61
+- [ ] **P5.70** [DOC] Confirm the corpus-gated default-Q values (JPG 82 / WEBP 80 / HEIC&AVIF 60) against the real-photo corpus · §6.5 · G7
+  needs: P5.46, P5.63
   > the `[DEFER: corpus]` calibration of the reasoned everyday defaults against the §6.4.5 real-photo corpus before locking §1.6 — a measured confirmation, not an open design call; record the confirmed values (or any adjustment + rationale) in this plan's notes.
 
 ### Animation-flatten transform & the §2.9.1 `image_animation_flatten` LossyKind firing
@@ -329,12 +335,12 @@
 > the animation-flatten cell, positioned after the savers it routes through (document
 > order; the saver `needs:` are forward edges resolved in place by DECISION C).
 
-- [ ] **P5.69** [RUST] Wire the animated-source → still-target first-frame collapse + the `image_animation_flatten` firing (NOT when animation is preserved) · §3.5.5 §2.9.1 · G29 G31 G32
+- [ ] **P5.71** [RUST] Wire the animated-source → still-target first-frame collapse + the `image_animation_flatten` firing (NOT when animation is preserved) · §3.5.5 §2.9.1 · G29 G31 G32
   needs: P5.16, P5.20, P5.21, P5.24, P5.25, P5.27
-  > the transform + firing for the §2.9.1 `image_animation_flatten` LossyKind: when an **animated source** (animated GIF/animated-WEBP/APNG/animated-AVIF `avis`) is converted to a **still target** (JPG/PNG/BMP/TIFF/ICO — and HEIC/AVIF-still), the worker collapses to the **first frame** and the `image_animation_flatten` LossyKind fires (the verbatim §2.9.1 note "Animated — only the first frame is converted."); it **does NOT fire** when animation is preserved (→GIF / animated-WEBP, P5.22/P5.23). Pure transform inside the §2.12 boundary (no I/O). This is the single home for the animation-flatten cell of the G32 lossy-iff-flagged product; the per-pair assertions are in P5.48/P5.50/P5.56 (mirroring the P5.47 `image_alpha_flatten` assertion).
+  > the transform + firing for the §2.9.1 `image_animation_flatten` LossyKind: when an **animated source** (animated GIF/animated-WEBP/APNG/animated-AVIF `avis`) is converted to a **still target** (JPG/PNG/BMP/TIFF/ICO — and HEIC/AVIF-still), the worker collapses to the **first frame** and the `image_animation_flatten` LossyKind fires (the verbatim §2.9.1 note "Animated — only the first frame is converted."); it **does NOT fire** when animation is preserved (→GIF / animated-WEBP, P5.22/P5.23). Pure transform inside the §2.12 boundary (no I/O). This is the single home for the animation-flatten cell of the G32 lossy-iff-flagged product; the per-pair assertions are in P5.48/P5.50/P5.57 (the animated-AVIF-source-decode case is the AVIF-source test P5.57, mirroring the P5.47 `image_alpha_flatten` assertion).
 
 ### Cross-phase reconciliation (the deferred P5→P4 `needs:`)
 
-- [ ] **P5.70** [GATE] Wire the deferred P5→P4 harness `needs:` edges — isolation boundary, §1.7 line-reader, per-pair runner, options-panel shell · §3.5.5 · G7 G20
+- [ ] **P5.72** [GATE] Wire the deferred P5→P4 harness `needs:` edges — isolation boundary, §1.7 line-reader, per-pair runner, options-panel shell · §3.5.5 · G7 G20
   needs: P4.36, P4.8, P4.58, P4.63, P4.73
-  > the P5 instance of the cross-phase reconciliation obligation (the master plan-lint forbidden-string check is P4.76; reciprocal of P3.70/P6.78/P7.76/P9.46): declare the load-bearing P5→P4 edges the per-saver/per-declaration/per-pair-test boxes consume — every image-worker load/save box (P5.16/P5.19/P5.20–P5.36) runs inside the **P4.36 §2.12 isolation boundary** + marshals progress through the **P4.8/P4.35 §1.7 line-reader**; every per-pair integration test (P5.47–P5.57) runs on the **P4.58 §6.4.3 per-pair runner**; every advanced-option DECLARATION box (P5.37–P5.44) renders against the **P4.63 OptionsPanel widget dispatch** + the **P4.73 AdvancedDrawer**. `needs:` the P4 harness boxes here so the §6 selection can build-it-first-then-return rather than proceeding against an unbuilt P4 dependency; no P5 box `>`-note defers a `needs:` with the P4.76-forbidden phrasing.
+  > the P5 instance of the cross-phase reconciliation obligation (the master plan-lint forbidden-string check is P4.76; reciprocal of P3.70/P6.78/P7.77/P9.46): declare the load-bearing P5→P4 edges the per-saver/per-declaration/per-pair-test boxes consume — every image-worker load/save box (P5.16/P5.19/P5.20–P5.36) runs inside the **P4.36 §2.12 isolation boundary** + marshals progress through the **P4.8/P4.35 §1.7 line-reader**; every per-pair integration test (P5.47–P5.59) runs on the **P4.58 §6.4.3 per-pair runner**; every advanced-option DECLARATION box (P5.37–P5.44) renders against the **P4.63 OptionsPanel widget dispatch** + the **P4.73 AdvancedDrawer**. `needs:` the P4 harness boxes here so the §6 selection can build-it-first-then-return rather than proceeding against an unbuilt P4 dependency; no P5 box `>`-note defers a `needs:` with the P4.76-forbidden phrasing.

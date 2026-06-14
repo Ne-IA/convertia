@@ -1186,7 +1186,7 @@ the corpus (§6.4) — engine bumps are best-effort posture (§3.8), not a gate.
 | Layer | Choice | Pin policy |
 |---|---|---|
 | Rust toolchain | stable (recommend a recent stable, e.g. `1.8x` class as of build) via `rust-toolchain.toml` | pinned channel |
-| Tauri | **v2** (`tauri` 2.x, `tauri-build`, `@tauri-apps/api` 2.x) | exact, lockfile |
+| Tauri | **v2** (`tauri` 2.x, `tauri-build`, `@tauri-apps/api` 2.x, **`@tauri-apps/cli` 2.x** — the devDependency that RUNS `tauri dev`/`tauri build`, matched to the `tauri` 2.x pin) | exact, lockfile |
 | Async runtime | **tokio** (multi-thread) — Tauri's async commands run on it; subprocess IO + Channel feed off it | exact |
 | IPC type-gen | **tauri-specta** + **specta** (§0.4.5, `[DECIDED]`) | exact |
 | Cancellation | **tokio-util** (`CancellationToken`) | exact |
