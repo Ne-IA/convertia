@@ -42,10 +42,20 @@ framework even though it detects and transforms untrusted input.
 
 ---
 
-## P0 — RESERVED (owner)
+## P0 — Build & Security System
 
-> Intentionally left for the owner to define before the box-fill pass. Not
-> touched by the skeleton review.
+**The foundation before the foundation** — the guardrail system every later phase
+runs under: security concept, the full gate system, the build-loop, the Opus/Sonnet
+dual review, and the test methodology. Built **before** P1 writes app code.
+
+**Detailed structure:** [P0-build-and-security.md](P0-build-and-security.md)
+(clusters P0.1–P0.7). **Concept:** [security-concept.md](../security/security-concept.md)
++ [build-gates.md](../security/build-gates.md).
+
+**Boundaries:** P0 builds the gate *system* + content-independent gates + the
+language-gate framework; **P1** wires the language gates as it scaffolds + authors
+the general governance docs; **P10** builds the release pipeline whose policy P0
+defines.
 
 ---
 
