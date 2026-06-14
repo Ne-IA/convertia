@@ -259,7 +259,9 @@ not honestly make.)
 
 ## 5. Threat model → control → gate
 
-The spec's threat map (spec §0.11) is the **authoritative enumeration** — exactly
+The spec's threat map (spec §0.11, owned by
+[00-architecture.md](../spec/00-architecture.md) — `02-guarantees.md` only
+cross-references it) is the **authoritative enumeration** — exactly
 **16 classes**: `T1, T2, T2a, T2b, T2c, T3, T3a, T4, T5, T6, T7, T8, T9a, T9b, T10, T11`.
 This table carries **one row per class** (including the `a`/`b`/`c` sub-rows),
 mapping each to its primary runtime/build control **and** the concrete `Gnn` gate
