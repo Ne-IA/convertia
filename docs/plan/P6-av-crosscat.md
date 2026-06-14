@@ -275,9 +275,9 @@
 - [ ] **P6.51** [RUST] Wire extract-audio as a target of every video source (`-vn -map 0:a:0`) + the first-track rule · §3.5.1 §1.5 · G31
   needs: P6.35, P6.36
   > offer extract-audio on all ten v1 video sources (§1.5 target resolution adds it alongside the video default); `-vn -map 0:a:0` (deterministic FIRST audio track in v1 — per-track / all-tracks is parked, no one-to-many fan-out); preserve source sample rate + channels (no resample/downmix by default); carry source tags where the target container supports them; cover-art extraction is NOT part of extract-audio.
-- [ ] **P6.52** [RUST] Wire the extract-audio target subset (floor MP3★/WAV/FLAC + corpus-validated M4A/OGG) · §3.4 · G31
-  needs: P6.51, P6.18, P6.19, P6.20, P6.22, P6.23
-  > register the [OPEN-A] subset: GUARANTEED floor {MP3★ default, WAV, FLAC} (C3 derivable now — the SSOT mov→mp3 case in scope); + {M4A, OGG} corpus-validated additions (M4A pending §3.4 AAC confirmation; OGG pending §6.6 OGG-keep). Excluded as extract targets: raw AAC, OPUS, WMA, AIFF, ALAC. Reuse the audio.md encode params + the canonical MP3 preset table verbatim ([OPEN-B] resolved).
+- [ ] **P6.52** [RUST] Wire the GUARANTEED extract-audio target floor (MP3★/WAV/FLAC) · §3.4 · G31
+  needs: P6.51, P6.18, P6.19, P6.20
+  > register the [OPEN-A] **guaranteed floor** {MP3★ default, WAV, FLAC} (C3-derivable now once the MP3/WAV/FLAC encode paths P6.18–P6.20 are done — the SSOT mov→mp3 case in scope; this leg can be checked off immediately, **independent of any corpus evidence**). Excluded as extract targets: raw AAC, OPUS, WMA, AIFF, ALAC. Reuse the audio.md encode params + the canonical MP3 preset table verbatim ([OPEN-B] resolved). The corpus-validated **M4A/OGG additions** are the separate box P6.69 (they require P9.44 corpus evidence and must NOT block the floor's check-off — split per the atomicity bar).
 - [ ] **P6.53** [RUST] Wire the extract-audio stream-copy-vs-re-encode decision (codec-inside-container) · §3.5.1 · G31
   needs: P6.52
   > automatic per-item: `-c:a copy` (lossless, fast) when source codec is byte-compatible with the chosen target container — source AAC → M4A (the dominant MP4/MOV/M4V/3GP case), source MP3 → MP3 (FLV/AVI), source Vorbis → OGG (WebM); else re-encode (any → MP3/WAV always-decode-to-PCM/FLAC-lossless, AAC→MP3, etc.). Engine-internal §3.2 capability decision, zero user choice; the lossy note reflects the OUTCOME not the mechanism.
@@ -329,7 +329,7 @@
   needs: P6.47
   > extend each video corpus item's `covers` list to include its `["<SOURCE>","GIF"]` 2-tuple (MP4 item → `["MP4","GIF"]`, WEBM item → `["WEBM","GIF"]`, … — not one generic clip) AND its extract-audio `(video → MP3/WAV/FLAC/…)` 2-tuples, so the §6.4.3a bijection guard does not fail at Lane A for most cross-category pairs; regenerate the SHA-256 manifest in the same commit (G24a).
 - [ ] **P6.62** [TEST] Add the cross-category per-pair integration tests (extract-audio + to-GIF, structural readers) · §6.4.3 §6.5 · G31 G32
-  needs: P6.61, P6.55, P6.60, P6.54
+  needs: P6.61, P6.55, P6.60, P6.54, P6.69
   > for every `(video → audio-subset)` extract-audio pair and every `(video → GIF)` pair, against the corpus, on all three platforms: completes + output decodes (`ffprobe` for extracted audio with expected codec; GIF89a valid + nonzero frames for to-GIF); the stream-copy path verified lossless where codecs match; the NoAudioTrack fixture fails-clearly; the to-GIF note fires unconditionally; the guardrail fail-fast triggers on the over-cap fixture; M4A patent-gapped target asserted absent where §3.4 unavailable.
 - [ ] **P6.63** [TEST] Wire the cross-category re-run/equivalent-output detection (source + target + effective settings) · §2.5 · G31
   needs: P6.51, P6.56
@@ -354,3 +354,9 @@
 - [ ] **P6.68** [TEST] Add the FFmpeg engine-bump re-validation hook (full reliability gate re-runs on a pin change) · §6.5.4 §3.8 · G37 G17b
   needs: P6.2, P6.66
   > wire the §6.5.4 rule for the FFmpeg `engines.lock` pin: a version/SHA change re-runs the FULL P6 reliability gate before that FFmpeg version can ship (a patch must not silently regress a pair); the ledger status-diff is part of the bump review; the informational per-push OSV/grype over the PURL-keyed FFmpeg row (CPE `cpe:2.3:a:ffmpeg:ffmpeg:<ver>`) feeds vuln-response (CVSS ≥ 7 on an exercised path → release-blocking escalation).
+
+### Corpus-validated extract-audio additions (split from the guaranteed floor)
+
+- [ ] **P6.69** [RUST] Wire the corpus-validated extract-audio M4A/OGG additions (on the P6.52 floor) · §3.4 · G31
+  needs: P6.52, P6.54, P9.44
+  > the [OPEN-A] **corpus-validated additions** {M4A, OGG} registered on top of the P6.52 guaranteed floor — **gated on P9.44 corpus evidence** (M4A pending §3.4 AAC confirmation; OGG pending the §6.6 OGG-keep round-trip), so a corpus failure demotes only these two targets without blocking the floor's check-off; M4A additionally reads the §3.4 gate at the target level (P6.54). On a P9.44 demote outcome the affected target is dropped + a `docs/demoted-pairs.md` row added (the P9.44 wiring-consequence this box owns). Reuse the audio.md encode params verbatim.

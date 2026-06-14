@@ -20,6 +20,14 @@
 
 - Work proceeds **one logical phase at a time, top to bottom**, and **box by box**
   within a phase. A phase is "done" when every `[ ]` step under it is checked.
+- **Atomicity-granularity policy (cross-phase, so a reviewer reads it once):** the box
+  granularity is **deliberately uniform-in-intent but varies in shape per phase** — P2
+  lands **one box per domain type / contract** (the type-sharing surface), while P5–P7
+  land **one box per saver / decoder / code-path** with the per-pair corpus, integration
+  test and ledger row as **separate boxes** (a code-path is the smallest unit genuinely
+  built once and then exercised across the pairs that share it; each pair still gets its
+  own backing so no pair hides in a group). This is intentional, not inconsistency — the
+  P5–P7 per-pair-test split is **finer**, not coarser, than P2's per-type split.
 - This file currently holds the **logical phase skeleton only**. The atomic
   `[ ]` steps are added in a later fill pass — **after** this structure is
   reviewed and signed off (and after P0 content is supplied by the owner).

@@ -56,7 +56,7 @@
   > the bundled libvips configured **without** the poppler/PDF + MuPDF + any GPL/AGPL loader (so the worker stays LGPL-only, §3.1/§3.6.1); pinned by version+SHA-256 in `engines.lock` per the P0.7.3/P0.7.4 acquisition policy, staged by `scripts/stage-engines`, dynamic-dependency-closure asserted (G37b).
 - [ ] **P5.2** [BUILD] Add the libvips no-copyleft-PDF-loader §6.1.3 positive build assertion · §6.1.3 §3.1 · G38
   needs: P5.1
-  > the stage-step assertion that the staged libvips exposes **no** `pdfload`/`poppler`/`mupdf` foreign loader/symbols and **fails the build** if one is present (a distro libvips often enables poppler-glib PDF — libvips#2222) — the image-specific variant of the P4 generic §6.1.3 framework.
+  > the stage-step assertion that the staged libvips exposes **no** `pdfload`/`poppler`/`mupdf` foreign loader/symbols and **fails the build** if one is present (a distro libvips often enables poppler-glib PDF — libvips#2222) — the image-specific variant of the P4 generic §6.1.3 framework. **Artifact + stage distinction (vs P4.52):** P4.52 is the P4 proof-of-life check on the P4.33 imgworker's libvips; this box asserts the **newly-staged P5.1 libvips before any P5 image engine builds against it** — same property, different artifact at a different build stage (each fact keeps one home, _format.md §8).
 - [ ] **P5.3** [BUILD] Stage cgif + the lovell/libimagequant v2.4.x BSD fork for native gifsave + palette PNG · §3.1 §3.5.5 §6.1.3 · G37
   needs: P5.1
   > cgif (MIT) for native `gifsave`, plus the **BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** vendored/statically linked inside the cgif/palette path (never upstream 4.x GPLv3-or-commercial which would taint the LGPL worker, §3.1 row 1e); pinned by exact version+ref in `engines.lock`.
@@ -249,15 +249,15 @@
 - [ ] **P5.47** [TEST] Per-pair integration tests: → JPG (all sources) — vipsheader decode + dims + orientation-bake + alpha-flatten + lossy-disclosure-iff-flagged · §6.4.3 §6.5 · G31 G32
   needs: P5.20, P5.46.1
   > each `* → JPG` pair completes with exit success, output decodes via `vipsheader` with nonzero dims, source byte-unchanged (G32 no-harm), output≠input, orientation baked upright, alpha-source flatten asserted, `image_lossy_codec`(+`image_alpha_flatten`) fires iff the §04 cell is flagged.
-- [ ] **P5.48** [TEST] Per-pair integration tests: → PNG (all sources) — decode + dims + lossless + APNG-collapse + no-spurious-lossy · §6.4.3 §6.5 · G31 G32
-  needs: P5.21, P5.46.1
-  > each `* → PNG` pair decodes, source-unchanged, lossless (no lossy note unless palette explicitly enabled), animated source collapses to first frame with the note, RGBA/16-bit/ICC/text-chunk fidelity spot-checks.
+- [ ] **P5.48** [TEST] Per-pair integration tests: → PNG (all sources) — decode + dims + lossless + APNG-collapse + image_animation_flatten + no-spurious-lossy · §6.4.3 §6.5 · G31 G32
+  needs: P5.21, P5.46.1, P5.69
+  > each `* → PNG` pair decodes, source-unchanged, lossless (no lossy note unless palette explicitly enabled), animated source collapses to first frame and **`image_animation_flatten` fires iff the source is animated** (the §2.9.1 lossy-iff-flagged assertion, mirroring P5.47's `image_alpha_flatten` — fires for animated GIF/WEBP/APNG/`avis`→PNG, does NOT fire for a still source), RGBA/16-bit/ICC/text-chunk fidelity spot-checks.
 - [ ] **P5.49** [TEST] Per-pair integration tests: → WEBP (all sources) — decode + dims + animation-passthrough + lossy-disclosure · §6.4.3 §6.5 · G31 G32
   needs: P5.22, P5.46.1
   > each `* → WEBP` pair decodes, source-unchanged, `image_lossy_codec` iff flagged (default lossy), animated source preserves animation (validated via ffprobe per the §6.4.5 animated-WEBP convention, not dwebp), alpha preserved.
-- [ ] **P5.50** [TEST] Per-pair integration tests: → GIF (all sources) — decode + dims + palette + animation-passthrough + image_palette · §6.4.3 §6.5 · G31 G32
-  needs: P5.23, P5.46.1
-  > each `* → GIF` pair decodes, source-unchanged, `image_palette` fires, animation preserved on animated sources / first-frame for stills with note, 1-bit transparency handled.
+- [ ] **P5.50** [TEST] Per-pair integration tests: → GIF (all sources) — decode + dims + palette + animation-passthrough + NO image_animation_flatten · §6.4.3 §6.5 · G31 G32
+  needs: P5.23, P5.46.1, P5.69
+  > each `* → GIF` pair decodes, source-unchanged, `image_palette` fires, animation **preserved** on animated sources (GIF/animated-WEBP/`avis`→GIF) / first-frame for stills — and `image_animation_flatten` **does NOT fire** for any `→GIF` pair (GIF is animation-capable, so the negative coverage of the §2.9.1 lossy-iff-flagged property: animation is preserved, never flattened, on this target), 1-bit transparency handled.
 - [ ] **P5.51** [TEST] Per-pair integration tests: → TIFF (all sources) — decode + dims + lossless-default + 16-bit/CMYK fidelity · §6.4.3 §6.5 · G31 G32
   needs: P5.24, P5.46.1
   > each `* → TIFF` pair decodes, source-unchanged, lossless by default (no lossy note unless `compression=jpeg`), 16-bit/CMYK/alpha/ICC fidelity, multi-page source → first page with note.
@@ -273,9 +273,9 @@
 - [ ] **P5.55** [TEST] Per-pair integration tests: → AVIF encode (all sources, incl. HEIC→AVIF) — decode + codec + lossy + dav1d-decode-revalidate · §6.4.3 §3.4.3 §6.5 · G31 G32
   needs: P5.33, P5.46.1
   > each `* → AVIF` pair completes, output decodes (cross-library re-validate via ffprobe per P0.5.6 — a different decoder family), `image_lossy_codec` iff flagged, source-unchanged; AVIF available everywhere (no patent gap).
-- [ ] **P5.56** [TEST] Per-pair integration tests: HEIC/AVIF/ICO source → raster targets — primary-image-only + HDR-tonemap + largest-frame · §6.4.3 §6.5 · G31 G32
-  needs: P5.34, P5.35, P5.36, P5.46.1
-  > each `{HEIC,AVIF,ICO} → raster` pair decodes, source-unchanged, primary-image-only (HEIC bursts / animated-AVIF-to-still), HDR→8-bit tone-map note, ICO largest-frame selection note, orientation baked, ICC preserved; HEIC→raster/AVIF→raster lossless w.r.t. decoded pixels (no spurious lossy on →PNG/TIFF).
+- [ ] **P5.56** [TEST] Per-pair integration tests: HEIC/AVIF/ICO source → raster targets — primary-image-only + HDR-tonemap + largest-frame + image_animation_flatten (animated-AVIF → still) · §6.4.3 §6.5 · G31 G32
+  needs: P5.34, P5.35, P5.36, P5.46.1, P5.69
+  > each `{HEIC,AVIF,ICO} → raster` pair decodes, source-unchanged, primary-image-only (HEIC bursts / animated-AVIF-to-still), HDR→8-bit tone-map note, ICO largest-frame selection note, orientation baked, ICC preserved; HEIC→raster/AVIF→raster lossless w.r.t. decoded pixels (no spurious lossy on →PNG/TIFF); **`image_animation_flatten` fires for an animated-AVIF (`avis`) source → a still raster target** (and not for a still HEIC/AVIF/ICO source) — the §2.9.1 lossy-iff-flagged coverage for the animated-source-decode cell.
 - [ ] **P5.57** [TEST] Per-pair integration tests: SVG → {PNG,JPG,WEBP,BMP,TIFF,ICO} — decode + dims + image_svg_raster always + bundled-font render · §6.4.3 §6.5 · G31 G32
   needs: P5.30, P5.46.1
   > each SVG→raster pair decodes at the resolved size, `image_svg_raster` fires for **every** pair incl. the PNG★ default (plus the target-codec LossyKind where additionally lossy), bundled-font glyphs render (no tofu, deterministic substitution), source-unchanged.
@@ -318,3 +318,23 @@
 - [ ] **P5.68** [DOC] Confirm the corpus-gated default-Q values (JPG 82 / WEBP 80 / HEIC&AVIF 60) against the real-photo corpus · §6.5 · G7
   needs: P5.46, P5.61
   > the `[DEFER: corpus]` calibration of the reasoned everyday defaults against the §6.4.5 real-photo corpus before locking §1.6 — a measured confirmation, not an open design call; record the confirmed values (or any adjustment + rationale) in this plan's notes.
+
+### Animation-flatten transform & the §2.9.1 `image_animation_flatten` LossyKind firing
+
+> The §2.9.1 `image_animation_flatten` LossyKind ("Animated — only the first frame is
+> converted.") is a first-class image-category lossy kind whose disclosure must fire over
+> the G32 lossy-iff-flagged property across the FormatId×FormatId product. Every other
+> image LossyKind has a dedicated transform/firing box (alpha-flatten P5.18, svg-raster
+> P5.28/P5.30, lossy-codec/palette/downscale per saver); this box is the missing peer for
+> the animation-flatten cell, positioned after the savers it routes through (document
+> order; the saver `needs:` are forward edges resolved in place by DECISION C).
+
+- [ ] **P5.69** [RUST] Wire the animated-source → still-target first-frame collapse + the `image_animation_flatten` firing (NOT when animation is preserved) · §3.5.5 §2.9.1 · G29 G31 G32
+  needs: P5.16, P5.20, P5.21, P5.24, P5.25, P5.27
+  > the transform + firing for the §2.9.1 `image_animation_flatten` LossyKind: when an **animated source** (animated GIF/animated-WEBP/APNG/animated-AVIF `avis`) is converted to a **still target** (JPG/PNG/BMP/TIFF/ICO — and HEIC/AVIF-still), the worker collapses to the **first frame** and the `image_animation_flatten` LossyKind fires (the verbatim §2.9.1 note "Animated — only the first frame is converted."); it **does NOT fire** when animation is preserved (→GIF / animated-WEBP, P5.22/P5.23). Pure transform inside the §2.12 boundary (no I/O). This is the single home for the animation-flatten cell of the G32 lossy-iff-flagged product; the per-pair assertions are in P5.48/P5.50/P5.56 (mirroring the P5.47 `image_alpha_flatten` assertion).
+
+### Cross-phase reconciliation (the deferred P5→P4 `needs:`)
+
+- [ ] **P5.70** [GATE] Wire the deferred P5→P4 harness `needs:` edges — isolation boundary, §1.7 line-reader, options-panel shell · §3.5.5 · G7 G20
+  needs: P4.36, P4.8, P4.63, P4.73
+  > the P5 instance of the cross-phase reconciliation obligation (the master plan-lint forbidden-string check is P4.76): declare the load-bearing P5→P4 edges the per-saver/per-declaration boxes consume — every image-worker load/save box (P5.16/P5.19/P5.20–P5.36) runs inside the **P4.36 §2.12 isolation boundary** + marshals progress through the **P4.8/P4.35 §1.7 line-reader**; every advanced-option DECLARATION box (P5.37–P5.44) renders against the **P4.63 OptionsPanel widget dispatch** + the **P4.73 AdvancedDrawer**. `needs:` the P4 harness boxes here so the §6 selection can build-it-first-then-return rather than proceeding against an unbuilt P4 dependency; no P5 box `>`-note defers a `needs:` with the P4.76-forbidden phrasing.

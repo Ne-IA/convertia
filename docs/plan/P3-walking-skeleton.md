@@ -36,12 +36,16 @@
 > - **No image-worker / libvips / any subprocess engine here** — the first real sidecar is
 >   validated in P4/P5.
 >
-> **Activation targets for P0:** several P0 boxes carry `→ activated in P3` /
-> `→ activated in P3+` notes (G31/G32 output-validity P0.5.5; the §1.2 detection-fuzz KAT
-> P0.5.7; the detect/`fs_guard` fuzz targets P0.4.3; the §2.1.3 atomicity-under-interruption
-> + temp-ownership homes P0.5.9; `cargo-mutants` over the `fs_guard`/`detect` kernel P0.5.10).
-> The boxes below are the concrete things those gates activate against; a later pass
-> reconciles P0's `needs:`/`→ activated` against these real box-ids.
+> **Activation targets for P0 (named box-ids):** several P0 boxes carry `→ activated in P3` /
+> `→ activated in P3+` notes — the concrete P3 boxes they activate against are:
+> G31/G32 output-validity (P0.5.5) → **P3.38/P3.62**; the §1.2 detection-fuzz KAT
+> (P0.5.7) → **P3.30**; the detect/`fs_guard` fuzz targets + the replay convention
+> (P0.4.3 / P0.5.8) → **P3.30/P3.6/P3.8/P3.41 + P3.67**; the §2.1.3
+> atomicity-under-interruption home (P0.5.9) → **P3.19**; the temp-ownership / lock-before-part
+> home (P0.5.9) → **P3.20/P3.21**; the T7/T8 link-safety/self-feeding homes (P0.5.9) → **P3.64**;
+> `cargo-mutants` over the `fs_guard`/`detect`/`outcome` kernel (P0.5.10) → the **P3.6–P3.18 /
+> P3.26–P3.29 / P3.46** kernel boxes. P3.67 carries the explicit `needs: P0.5.8` edge; the
+> other activation edges resolve trivially since P0 is `[x]` before the loop reaches P3.
 
 ## Boundaries (decided, see plan/README.md)
 
@@ -49,8 +53,9 @@
   `CollectedSet`/`OutputPlan`/`RunResult`/`JobStage`/`JobState`, the §0.4 IPC
   command/event signatures, the §1.1 intake state machine, the C12 `EngineHealth`
   contract). **P3 IMPLEMENTS** the bodies behind them for the CSV→TSV slice. A box that
-  needs a P2-declared type/handler-stub uses `needs:` against the P2 box once it exists; the
-  reconciliation pass wires those targets.
+  needs a P2-declared type/handler-stub carries an explicit `needs: P2.<n>` edge; the
+  load-bearing P3→P2 edges are wired on the boxes (the type-consuming ones) and owned by
+  the P3.68 reconciliation box so no P3→P2 dependency is left implicit.
 - **P3 → P4:** P3 establishes the `crate::isolation` + pool **interface shells**; P4
   **expands** them into the real §2.12 wrapper + §0.9 pool. P3 builds the **real**
   `crate::fs_guard`.
@@ -66,7 +71,13 @@ reaches the `InProcessNative` branch — with `crate::isolation` and the §0.9 p
 **compile-time interface shells** so the in-core path compiles without spawning anything.
 
 - [ ] **P3.1** [RUST] Scaffold the `crate::fs_guard` / `crate::run` / `crate::outcome` module roots with their public surface · §2.0 §0.7
-  > stand up `src-tauri/src/fs_guard/`, `src-tauri/src/run/`, `src-tauri/src/outcome/` as the §2.0 trust-kernel leaf modules (no dependency on UI/IPC/engine-registry; the layer never calls back up, §2.0 dependency direction). Public function shells only (`atomic_publish`, `output_name`, `resolve_identity`, `is_safe_output`, `check_path_limit`, `location_status`, `cleanup_item`/`cleanup_run`/`sweep_stale`) wired so the later `fs_guard`/`run`/`outcome` boxes fill the bodies; `#![deny(unsafe_code)]` at the crate root (no FFI in any P3 module).
+  > stand up the three §2.0 trust-kernel leaf-module roots (no dependency on UI/IPC/engine-registry; the layer never calls back up, §2.0 dependency direction) as three INDEPENDENT sub-boxes — they have no mutual dependency at scaffold time, so each is worked + checked off on its own (the loop works them top-to-bottom; a body issue in one root does not couple to the others). `#![deny(unsafe_code)]` at the crate root (no FFI in any P3 module). Downstream boxes that consume one root `needs: P3.1` (the parent gates on all three roots existing — each downstream box needs only the root it names in its own body).
+  - [ ] **P3.1.1** [RUST] Scaffold the `crate::fs_guard` module root + its public function shells · §2.0 §0.7
+    > `src-tauri/src/fs_guard/` with public shells only (`atomic_publish`, `output_name`, `resolve_identity`, `is_safe_output`, `check_path_limit`, `location_status`) wired so the later `fs_guard` boxes (P3.6–P3.19, P3.31–P3.40) fill the bodies.
+  - [ ] **P3.1.2** [RUST] Scaffold the `crate::run` module root + its public function shells · §2.0 §0.7
+    > `src-tauri/src/run/` with public shells only (`cleanup_item`/`cleanup_run`/`sweep_stale` + the run-lifecycle ordering seam) wired so the later `run` boxes (P3.20–P3.25) fill the bodies; no dependency on `fs_guard` to compile its root.
+  - [ ] **P3.1.3** [RUST] Scaffold the `crate::outcome` error-taxonomy module root · §2.0 §0.7 §2.8
+    > `src-tauri/src/outcome/` as the §2.8 taxonomy + `OutcomeMsg`/`CleanupResidue` string home (the `From<ConversionErrorKind>` projection seam P3.46 fills) wired so the later boxes fill the bodies; no dependency on `fs_guard`/`run` to compile its root.
 - [ ] **P3.2** [RUST] Build the `crate::isolation` compile-time interface shell (no spawn, no FFI) · §2.12.1 §2.12.4 §0.7
   needs: P3.1
   > the §2.12 decoder-isolation wrapper as an **interface-only shell** so the §1.7 dispatch enum's `Subprocess` arm type-checks; it spawns nothing in P3. CSV→TSV genuinely bypasses it at runtime (§2.12.4 absolute: pure in-core memory-safe Rust, no third-party C/C++ decoder), so this is a compile-time stub, NOT a forward dependency on P4. P4 expands this shell into the real wrapper (it must not rebuild it from scratch).
@@ -303,6 +314,20 @@ drop→convert round-trip runs through the typed IPC surface.
 Idle/DropZone → Collecting → Confirm → Targets (TSV) → Destination → Converting → Summary —
 exercising the generated `bindings.ts` IPC door. Full polish + the rich components are P4/P8.
 
+> **P3↔P4 UI-seam model (DECIDED — the recommended model, stated in both phases):**
+> P3 builds **intentionally-minimal, slice-only renderers** of these components (just
+> enough to drive the CSV→TSV vertical slice end-to-end and prove the IPC door). P4's
+> §P4.14 generic UX-correctness primitives (P4.63–P4.69 + P4.73/P4.74) **SUPERSEDE**
+> them — P4 rebuilds each into the generic, option-declaration-driven, fully-a11y
+> component P5–P7 register against. P4 does **NOT** extend the P3 renderers in place;
+> it replaces them (the P3 versions are deliberately throwaway slice scaffolding, not a
+> foundation P4 builds on). Each P4 UI box names the P3 box it supersedes + carries the
+> `needs: P3.5x` edge so the loop builds the P3 slice-renderer first (it is the live UI
+> until P4) and the supersede is explicit, never a silent double-build. This keeps the
+> walking-skeleton philosophy literally true (P3 proves the slice; P4 generalises) and
+> is the single owner of the answer to "does P4 rebuild or extend P3's UI?" — it
+> **rebuilds (supersedes)**.
+
 - [ ] **P3.53** [UI] Build the §5.2 walking-skeleton state machine (the slice subset) · §5.2 §5.8 · G57
   needs: P3.48
   > a finite-state reducer over the slice states: `Idle (1) → Collecting (2) → Confirm (3) → Targets+Destination (4/5) → [RerunPrompt (6)] → Converting (7) → Summary (8)`, plus the pre-flight `MixedDropRefusal (9)` / `Unsupported (10)` branches and the global `app://fault → AppFault (12)` wildcard edge. Driven by inbound IPC results/events (§5.8); the backend is the source of truth for facts. All user-facing literals via `strings/ui.ts` (English-only, G57, P0.4.6).
@@ -357,3 +382,11 @@ whole Tauri + atomic-publish + IPC stack early (the README walking-skeleton purp
 - [ ] **P3.67** [TEST] Stand up `tests/fuzz_replay.rs` — replay every `fuzz/crashes/`+`fuzz/corpus/` file through the now-real detect + fs_guard (+ CSV/TSV) fuzz-target functions on the STABLE toolchain · §6.4.2 · G48 G24
   needs: P0.5.8, P3.30, P3.8, P3.41
   > the activation target for the P0.5.8 fuzz-crash replay convention (`→ activated in P3`): now that the real fuzz-target function BODIES exist — `crate::detect` (P3.30 KAT/sniff), `crate::fs_guard::resolve_identity`/`is_safe_output` (P3.6/P3.8), and the in-core CSV/TSV transform (P3.41) — wire `tests/fuzz_replay.rs` as a plain `cargo test` integration test feeding every committed `fuzz/crashes/`+`fuzz/corpus/` file directly to those target functions with **NO libFuzzer harness**, so it compiles + runs on EVERY platform incl. Windows under the **STABLE** toolchain (only the instrumented `cargo-fuzz` leg needs nightly — Linux/macOS, the P0.4.3/G48 leg). The G24 planted-positive (a committed crash fixture MUST fail the replay if its fix is reverted) binds here. This is the P3 box the P0.5.8 `→ activated in P3` edge points at (`needs: P0.5.8`, the P0-authored convention, satisfied since P0 is `[x]` before the loop).
+
+---
+
+### Cross-phase reconciliation (the deferred P3→P2 contract `needs:`)
+
+- [ ] **P3.68** [GATE] Wire the deferred P3→P2 contract `needs:` edges — domain types, detection-outcome, error model, IPC commands/events, state machine · §0.6 §0.4 · G7 G20
+  needs: P2.4, P2.8, P2.13, P2.15, P2.18, P2.20, P2.22, P2.25, P2.26, P2.29, P2.37, P2.39, P2.120
+  > the P3 instance of the cross-phase reconciliation obligation (the master plan-lint forbidden-string check is P4.76): P3 IMPLEMENTS the bodies behind P2's contracts, so every P3 box that consumes a P2-declared type/handler must carry the edge — P3.5 plan() reads the `Target`/`EngineId`/`EngineDescriptor` types (**P2.8/P2.13**); P3.29 populates `DetectionOutcome` (**P2.15**); P3.32 freezes into `Vec<DroppedItem>` (**P2.4**); P3.46 maps internal kind → wire `ErrorKind` via the `From`/`OutcomeMsg` projection (**P2.18/P2.20**); P3.48 C6 fan-out over the `ConversionEvent` Channel (**P2.29/P2.37**); P3.49 C1/C3/C4 contracts (**P2.22/P2.25/P2.26**); P3.53 the §5.2 state machine over the three `app://` listeners (**P2.39/P2.120**). `needs:` these P2 boxes here so the §6 selection builds the P2 contract first (P2 is `[x]` before the loop reaches P3, so trivially satisfied — but the edge must RESOLVE, not dangle); no P3 box `>`-note defers a `needs:` with the P4.76-forbidden phrasing.

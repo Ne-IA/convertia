@@ -268,8 +268,7 @@ toolchain. Data-dependent guards (bijection §6.4.3a, defaults-registry §1.6) a
 ADDED by the phase that produces their input — NOT here.
 
 - [ ] **P1.51** [CI] Author the Lane-A workflow shell wired into the P0 L4 skeleton · §6.7.1 · G25 G49 G56
-  needs: P1.55
-  > the `.github/workflows/` Lane-A workflow (push-on-`main` + fork-PR) plugged into the P0.2.4 clean-checkout matrix slot: top-level `permissions: contents: read`, per-job `timeout-minutes`, per-push `concurrency: {group, cancel-in-progress: true}`, SHA-pinned actions — the empty heavy-gate slots P0 left for P1 to fill; actionlint/zizmor-clean (P0 G49/G50).
+  > the `.github/workflows/` Lane-A workflow (push-on-`main` + fork-PR) plugged into the P0.2.4 clean-checkout matrix slot: top-level `permissions: contents: read`, per-job `timeout-minutes`, per-push `concurrency: {group, cancel-in-progress: true}`, SHA-pinned actions — the empty heavy-gate slots P0 left for P1 to fill; actionlint/zizmor-clean (P0 G49/G50). (No `needs:` on `dependabot.yml` — the workflow shell has no technical dependency on it; the logical "workflow exists before dependabot covers it" ordering is carried by P1.55's `needs: P1.51`.)
 - [ ] **P1.52** [CI] Wire the §6.7.1 step-1 lint/format leg (rustfmt/clippy/eslint/tsc/prettier/yamllint) · §6.7.1 · G3 G4 G5 G6 G14
   needs: P1.51
   > the Lane-A lint/format step: `cargo fmt --check`, `cargo clippy -D warnings` (+ the no-panic-sloppiness deny set), `eslint` + `tsc --noEmit`, `prettier --check`, `yamllint` — the P0 language gates (G3/G4/G5/G6, full at G14) now bound to the P1-scaffolded Rust crate + TS project (activates the CI wiring-point of P0.4.1 / P0.4.7).
@@ -280,7 +279,8 @@ ADDED by the phase that produces their input — NOT here.
   needs: P1.51
   > the fast engine-light test leg (`cargo test` + Vitest) feeding the P0 coverage floors (G27 per-domain, G28 ≥80% diff) which were created at 0% in P0 and begin enforcing as P1 code lands; activates the coverage gate (P0.4.8) for the foundation crates.
 - [ ] **P1.55** [CI] Add `dependabot.yml` coverage for the P1-scaffolded ecosystems (github-actions, cargo, npm) · §6.7.2 · G56
-  > extend/confirm `dependabot.yml` covers github-actions + cargo + npm now that the `Cargo.toml`/`package.json` exist — the presence the P0 G56 sub-assertion (P0.2.6) asserts; the pip ecosystem is the gate-tooling `requirements-ci.txt` (P0-owned).
+  needs: P1.51
+  > extend/confirm `dependabot.yml` covers github-actions + cargo + npm now that the `Cargo.toml`/`package.json` exist — the presence the P0 G56 sub-assertion (P0.2.6) asserts; the pip ecosystem is the gate-tooling `requirements-ci.txt` (P0-owned). (`needs: P1.51` for the logical "the Lane-A workflow dependabot covers exists first" ordering; no technical build dependency.)
 - [ ] **P1.56** [CI] Wire the §6.7.1 step-4b automated-a11y (jsdom) leg · §6.7.1 §6.4.6a · G33a
   needs: P1.51, P1.35
   > the Lane-A `vitest-axe` jsdom step asserting ARIA-role/state validity + focus-order (NOT contrast — that is Lane-B, §6.4.6a) over the rendered React tree; activates the P0 G33a per-push leg with the P1.35 runner.
@@ -290,12 +290,27 @@ ADDED by the phase that produces their input — NOT here.
 - [ ] **P1.58** [CI] Wire the §6.7.1 step-5 compile-sanity 3-OS matrix (`cargo check` + debug `tauri build`) · §6.7.1 §6.1.4 · G30
   needs: P1.51, P1.16
   > the Win/macOS/Linux matrix running `cargo check` / a debug `tauri build` to catch platform-specific breakage early (no full corpus run) — the literal "empty window boots on 3 OS from clean checkout" CI proof; activates the P0 G30 cross-platform build-matrix contract (P0.4.10) for the debug shell (the universal-`lipo` sidecar leg binds when engines land in P4).
-- [ ] **P1.59** [CI] Wire the §6.7.1 step-6 `cargo audit` + `cargo deny` supply-chain leg · §6.7.1 §6.3.4 · G17 G18 G18a G18b G53
+- [ ] **P1.59** [CI] Wire the §6.7.1 step-6 `cargo audit` + `cargo deny` supply-chain leg + the §0.8 pinned-floor assertion · §6.7.1 §6.3.4 §0.8 · G17 G18 G18a G18b G53
   needs: P1.51, P1.7
-  > the Lane-A advisory + license + bans + lockfile-integrity leg: `cargo audit` (plain, no `--locked`) + `cargo deny check` over the real `Cargo.lock` (P1.7) — activates the P0 `deny.toml`/`cargo-vet` skeleton (P0.3.6), the lockfile-integrity contract (P0.4.9), and the core-crate forbidden-dep gate (P0.3.7 G53) against the P1 workspace graph.
+  > the Lane-A advisory + license + bans + lockfile-integrity leg: `cargo audit` (plain, no `--locked`) + `cargo deny check` over the real `Cargo.lock` (P1.7) — activates the P0 `deny.toml`/`cargo-vet` skeleton (P0.3.6), the lockfile-integrity contract (P0.4.9), and the core-crate forbidden-dep gate (P0.3.7 G53) against the P1 workspace graph. **Plus the §0.8 pinned-floor assertion:** a small `cargo deny`-bans / lockfile check that the source-verified load-bearing §0.8 crates (`tauri-specta`, `specta`, `walkdir`, `csv`, `chardetng`, `tempfile`, `process-wrap`, `landlock`, the librsvg-≥2.56.3 binding floor, etc.) are present at **≥ their pinned floor** in `Cargo.lock` (not merely locked) — so a drift below a relied-upon API floor fails the gate here rather than surfacing when the API changed; the TS-side `vitest-axe@0.1.0` / WebdriverIO-v9 pins are asserted in the P1.60 JS leg.
 - [ ] **P1.60** [CI] Wire the JS-tree supply-chain Lane-A leg (resolution-URL + lifecycle-script + frontend license) · §6.7.1 §6.3.4 · G18c G18d G36b
   needs: P1.51, P1.2.2
   > the Lane-A step asserting the P0 G18c resolution-URL guard, G18d `onlyBuiltDependencies` lockdown, and G36b frontend GPL/AGPL deny over the real `pnpm-lock.yaml` (P1.2.2) — activates the P0.3.8 JS supply-chain config against the committed pnpm graph.
 - [ ] **P1.61** [CI] Record the Lane-A required-status-check set for the §6.7.1 G56a branch-protection assertion · §6.7.1 · G56a
   needs: P1.52, P1.53, P1.54, P1.56, P1.57, P1.58, P1.59, P1.60
   > enumerate the Lane-A jobs that must be required status checks on `main` (the set the P0 G56a branch-protection config assertion, P0.2.8, queries the ruleset API for) — so a red Lane-A actually blocks; the §6.7.1 single-branch direct-to-`main` enforcement made real now that Lane-A jobs exist.
+
+---
+
+## Gate-activation verification & contributor docs
+
+The P0 `→ activated in P<n>` gates flip from skip-with-warning to fail-closed as P1
+stands their targets up; this section proves the flip actually happened (no gate
+silently stuck in its bootstrap skip state) and homes the contributor build-setup doc.
+
+- [ ] **P1.62** [GATE] Assert each P1-activated `→ activated in P1` gate flipped to fail-CLOSED (a planted violation in the real target MUST fail it) · §6.7.1 · G24
+  needs: P1.52, P1.53, P1.56, P1.57, P1.58, P1.59, P1.60, P1.20, P1.21, P1.18
+  > the gate-activation assertion closing the fail-open-until-activated loop: for each gate whose P0 box carries `→ activated in P1` and whose target P1 just stood up (G47 CSP/capability over `tauri.conf.json`/`capabilities/main.json`; G19 type-drift; G27/G28 coverage; G33a jsdom-axe; G57 English-only; G53 forbidden-dep; G30 build-matrix; G18/G18a-d supply-chain), run its **G24 negative self-test against the now-real target** — a planted violation (a mis-encoded CSP directive, an `fs:` capability grant, a stale `bindings.ts`, an `any`, a non-English literal, an updater dep) MUST fail the gate — confirming it is **enforcing**, not stuck in its P0 bootstrap skip-with-warning state. Record each flip in the existing `docs/process/gate-status.md` decision-log. (The reverse `→ activated in P<n>` edges already exist on the P1 boxes; this box is the single owner that proves the activation actually closed the loop — mirrored as later phases produce gate targets, e.g. the P3–P7 format gates G22/G23.)
+- [ ] **P1.63** [DOC] Author `DEVELOPMENT.md` — per-OS dev prerequisites + the off-CI engine-asset acquisition path + tauri dev/build commands · §6.7.1 · G51
+  needs: P1.42
+  > the contributor build-setup doc the CONTRIBUTING.md (P1.42, "how to run the §6.7.1 lanes") + the download-facing README (P1.47) do NOT cover: per-OS dev prerequisites (Rust toolchain, Node+pnpm, the platform WebView runtime, system build deps); **how a contributor obtains the bundled engine binaries for a local `tauri dev`/`tauri build` OFF-CI** (the cold-cache pinned-URL fetch path `scripts/stage-engines` uses, since P4.28's cache is `actions/cache`-centric — non-obvious for a hundreds-of-MB GPL/LGPL engine set); and the `tauri dev` / `tauri build` commands. Gate-light (G51 public-prose typo only). (Alternative if local-bundle-build is out of v1 scope: an explicit `[DECIDED]` note recording that, rather than a silent absence — taken here as the doc, since the offline app is built locally by contributors.)

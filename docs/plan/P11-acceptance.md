@@ -159,9 +159,15 @@
 - [ ] **P11.25** [TEST] Verify DoD gate 8 — unwritable/ephemeral-location divert fallback on the RC · §6.10 · G31
   needs: P11.2
   > assert the §6.10-row-8 fallback: the RC's per-location divert + cross-volume strategy works on read-only / USB(FAT/exFAT) / network / temp locations (the §2.7/§2.14 divert path exercised in the corpus run). The `fs_guard` divert primitives are built in P3; this box confirms the RC's divert fallback passes.
-- [ ] **P11.26** [TEST] Verify the remaining release-blocking gates are GREEN — governance-completeness, name-clearance, release-artifact completeness · §6.8 §6.9 · G44 G45 G58
-  needs: P11.16, P11.21
-  > assert the P10-built release-blocking meta-gates passed for the RC: **G44** governance-completeness (every required governance doc present + non-stub, incl. the literal-form minisign verify-recipe + the libfuse2/WebView2/Sequoia prerequisite notes + the §6.5.3 demoted-pairs bijection from P11.16); **G45** name/trademark clearance-record (`docs/name-clearance.md` present, dated for the RC line, verdict = clear; old-name grep clean); **G58** release-artifact completeness meta-gate (every required asset present — per-OS bundle, `SHA256SUMS`, `.minisig`, SBOM, dated open-CVE report, NOTICE/THIRD-PARTY-LICENSES, copyleft corresponding-source bundle, measured-sizes asset, `usability-floor.md`, `name-clearance.md`, CHANGELOG/release-notes, the Sigstore bundle — and every enumerated asset has a `SHA256SUMS` line). → §6.10 DoD rows 9/10/12/13.
+- [ ] **P11.26** [TEST] Verify the G44 governance-completeness gate is GREEN on the RC (every governance doc present + non-stub + recipe/prereq notes + demoted-pairs bijection) · §6.8 · G44
+  needs: P11.16
+  > assert the P10-built **G44** governance-completeness meta-gate passed for the RC: every required governance doc present + non-stub, incl. the literal-form minisign verify-recipe + the libfuse2/WebView2/Sequoia prerequisite notes + the §6.5.3 demoted-pairs bijection (from P11.16). Separately faileable from G45/G58 so a governance miss is attributable on its own. → §6.10 DoD rows 9/12.
+- [ ] **P11.27** [TEST] Verify the G45 name/trademark clearance-record gate is GREEN on the RC (present + dated + verdict clear + old-name grep clean) · §6.9 · G45
+  needs: P11.2
+  > assert the P10-built **G45** clearance gate passed for the RC: `docs/name-clearance.md` present, dated for the RC line, verdict = clear; the post-rename old-name grep is clean (or N/A for the v1 clear verdict). Separately faileable from G44/G58. → §6.10 DoD row 10.
+- [ ] **P11.28** [TEST] Verify the G58 release-artifact completeness meta-gate is GREEN on the RC (every required asset present + SHA256SUMS-covered) · §6.8 · G58
+  needs: P11.21
+  > assert the P10-built **G58** release-artifact completeness meta-gate passed for the RC: every required asset present — per-OS bundle, `SHA256SUMS`, `.minisig`, SBOM, dated open-CVE report, NOTICE/THIRD-PARTY-LICENSES, copyleft corresponding-source bundle, measured-sizes asset, `usability-floor.md`, `name-clearance.md`, CHANGELOG/release-notes, the Sigstore bundle — and every enumerated asset has a `SHA256SUMS` line. Separately faileable from G44/G45 so a missing-asset failure is attributable on its own. → §6.10 DoD rows 12/13.
 
 ---
 
@@ -172,11 +178,11 @@
 > evidence artifact, with **no** DoD row left unproven. This is the meta-assertion
 > over P11.2–P11.4.
 
-- [ ] **P11.27** [TEST] Assert every §6.10 in-scope-gate row maps to a green RC evidence artifact (no unproven DoD row) · §6.10
-  needs: P11.26, P11.14, P11.7
+- [ ] **P11.29** [TEST] Assert every §6.10 in-scope-gate row maps to a green RC evidence artifact (no unproven DoD row) · §6.10
+  needs: P11.26, P11.27, P11.28, P11.14, P11.7
   > a completeness check over the §6.10 DoD-traceability table: for each **in-scope-gate** row (1–23), assert a corresponding P11 verification box passed and its evidence is indexed in the P11.3 acceptance manifest — so a DoD row cannot be silently unverified at RC. Confirms the §6.10 "every clause has a §6 mechanism" invariant holds *and was actually run* for this RC (not merely that the table is internally consistent — that is plan-lint/spec-lint's job).
-- [ ] **P11.28** [DOC] Assert the explicit non-gates are correctly excluded — visual polish + engine-currency are not RC blockers · §6.10
-  needs: P11.27
+- [ ] **P11.30** [DOC] Assert the explicit non-gates are correctly excluded — visual polish + engine-currency are not RC blockers · §6.10
+  needs: P11.29
   > assert the §6.10 explicit non-gate row holds for the RC: subjective visual polish ("modern/eye-candy", P8 scope (ii)) and engine-currency (§3.8 best-effort) are **not** treated as release blockers — so a not-yet-polished visual or a non-latest engine pin does not wrongly block the RC, and conversely no real gate was demoted to "polish" to dodge it. Records the non-blocking determination in the acceptance manifest.
 
 ---
@@ -188,7 +194,7 @@
 > validated set and that the re-validation machinery is wired, so a post-RC security
 > bump cannot silently regress a pair.
 
-- [ ] **P11.29** [TEST] Confirm the RC engine set matches the validated `engines.lock` + the §6.5.4 re-validation path is wired · §6.5.4 §3.7.2 · G37
+- [ ] **P11.31** [TEST] Confirm the RC engine set matches the validated `engines.lock` + the §6.5.4 re-validation path is wired · §6.5.4 §3.7.2 · G37
   needs: P11.15
   > assert every bundled engine in the RC matches its `engines.lock` `purl`+SHA-256 row (the set the §6.5 ledger was validated against) and that the §6.5.4 full-reliability-gate re-run is wired to fire on any future engine bump (the ledger diff being part of the bump's review) — so the RC is provably the validated engine set and the no-silent-regression continuity gate is live for post-v1. → ties the §6.5 reliability green (P11.15) to the §3.8 vuln-response release path.
 
@@ -200,6 +206,6 @@
 > and its evidence is indexed, the RC is signed off. No new behaviour — a recorded,
 > auditable acceptance decision.
 
-- [ ] **P11.30** [RELEASE] Sign off the RC — every DoD gate green, every §6.6 sub-gate passed, evidence indexed · §6.10 §6.5 · G58
-  needs: P11.28, P11.29
-  > the RC sign-off: assert that the P11.3 acceptance manifest shows **all** of — the cross-platform E2E matrix green (P11.2), all six §6.6 usability-floor sub-gates passed (P11.3), every §6.10 in-scope DoD gate verified green on the RC (P11.4–P11.5: reliability §6.5, startup-integrity §7.2.3, offline-egress, ≤400 MB size, no-system-pollution, governance/clearance, artifact-completeness), and the engine-set/continuity check (P11.6) — then record the dated sign-off line against the RC tag. This is the SSOT *v1 DoD* satisfied end-to-end; the release may publish. → the final acceptance box of P1–P11.
+- [ ] **P11.32** [RELEASE] Sign off the RC — every DoD gate green, every §6.6 sub-gate passed, evidence indexed · §6.10 §6.5 · G58
+  needs: P11.30, P11.31
+  > the RC sign-off: assert that the P11.3 acceptance manifest shows **all** of — the cross-platform E2E matrix complete + green (P11.7), all six §6.6 usability-floor sub-gates passed (P11.14), every §6.10 in-scope DoD gate verified green on the RC (P11.15–P11.28: reliability §6.5, startup-integrity §7.2.3, offline-egress, ≤400 MB size, no-system-pollution, governance/clearance/artifact-completeness), the DoD-traceability completeness (P11.29) + the non-gate exclusions (P11.30), and the engine-set/continuity check (P11.31) — then record the dated sign-off line against the RC tag. This is the SSOT *v1 DoD* satisfied end-to-end; the release may publish. → the final acceptance box of P1–P11.

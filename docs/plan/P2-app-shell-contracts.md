@@ -61,12 +61,15 @@
   needs: P2.3
 - [ ] **P2.5** [RUST] Author `SkippedItem` + `SkipReason` { UnsupportedType, Uncertain, Empty, Unreadable } (id-disjoint over the single id space) · §0.6 §1.3
   needs: P2.4
-- [ ] **P2.6** [RUST] Author the `CollectedSet` enum — `Single`/`Mixed`/`Unsupported`/`Uncertain`/`Empty` (the C1/C2a return + unified §1.4 confirm-summary fields) · §0.6 §1.1 §1.4
+- [ ] **P2.6** [RUST] Author the `CollectedSet` enum — `Single`/`Mixed`/`Unsupported`/`Uncertain`/`Empty` (the C1/C2a return + unified §1.4 confirm-summary fields) + the `CollectedNote` type · §0.6 §1.1 §1.4
   needs: P2.5
+  > the §0.6 `CollectedSet` enum + the §1.4-owned **`CollectedNote`** type the §0.6 `CollectedSet` confirm-summary embeds (`notes: Vec<CollectedNote>`, PRODUCED by §1.2's bounded peek — encoding/delimiter/multi-sheet/animation hints): author `CollectedNote` explicitly, deriving `specta::Type` and **registered in the P1.25 `collect_types!` registry** so it mirrors to `bindings.ts` rather than generating as `any` (the §1.4 confirm-summary FIELDS are P3.27/P3.28's; the wire TYPE is homed here).
 - [ ] **P2.7** [RUST] Author the wire-DTO types — `PickKind`/`OpenKind`/`IntakePayload`/`ScanProgress` · §0.6 §0.4.1 §0.4.2
   needs: P2.2
 - [ ] **P2.8** [RUST] Author the target/option types — `TargetId`/`FormatId`/`CrossCatOp`/`Availability`/`Target`/`TargetOffer`/`OptionValues` · §0.6 §1.5 §1.6
   needs: P2.3
+  - [ ] **P2.8.1** [RUST] Author the §1.6 `OptionDecl` wire-type family — `OptionDecl`/`OptionKind`/`OptionKey`/`OptionValue`/`EnumChoice`/`Unit` (+ `LabelKey`) · §0.6 §1.6
+    > the §1.6-owned generic option-declaration model the §0.6 `Target.options: Vec<OptionDecl>` embeds and `OptionValues == BTreeMap<OptionKey, OptionValue>` keys on: author `OptionDecl` (the declared knob: key/label/kind/default/tier), `OptionKind` (`IntRange`/`Enum`/`Toggle`/`Size`/`Color`), `OptionKey`, `OptionValue`, `EnumChoice`, `Unit` (and `LabelKey`), each deriving `specta::Type` and **registered in the P1.25 `collect_types!` registry** so the §0.4.5 type-drift check has them to mirror to `bindings.ts` (else they generate as `any`). This is the **single home** the P4 options-panel RENDERS (P4.63) and P5–P7 register declarations against — without it the entire per-format `OptionDecl` registration design rests on an unhomed type.
 - [ ] **P2.9** [RUST] Author the destination/plan types — `DestinationChoice`/`OutputPlan`/`DivertReason` (directory-based, no pre-baked `final_path`) · §0.6 §2.7 §2.14.1
   needs: P2.6
 - [ ] **P2.10** [RUST] Author `Batch`/`ConversionJob`/`JobState`/`JobStage` · §0.6 §1.9
@@ -360,3 +363,19 @@
 - [ ] **P2.125** [RUST,TEST] Assert the IPC-responsiveness invariant — no synchronous C-command blocks the WebView past a bound (large-folder C1 streams `ScanProgress`; C3/C4 cannot wedge the UI) · §0.4 §1.1 §1.11
   needs: P2.36, P2.38
   > the WebView-side analogue of the per-engine watchdog (the §0.4 C6 "return immediately, stream" model + the platform 100s-timeout discipline): assert no synchronous C-command can wedge the UI — a large-folder C1 `ingest_paths` streams `ScanProgress { scanned }` over its `onScan` Channel (P2.38) rather than blocking until the whole walk finishes; C3 `get_targets` / C4 `plan_output` (incl. the §1.10 preflight) and a huge-folder C1 ingest return within a bounded budget or yield cooperatively, never a frozen WebView. A test drives a synthetic large-folder C1 + a slow-preflight C4 and asserts progress events arrive / the call returns bounded. (The per-ENGINE wall-clock/watchdog timeouts are P3.44/P4.12; this is the C-command-surface responsiveness contract.)
+
+### P0 activation targets (the cross-cutting security-test homes P0 points into P2)
+
+> Two P0 boxes carry `→ activated in P2` / `→ activated in P3/P4/P9` edges that point
+> into the C1–C13 surface + the logging infra P2 builds: P0.4.3's per-`#[tauri::command]`
+> serde-boundary + per-numeric-IPC-arg overflow legs, and P0.5.9's §7.5 log-redaction
+> property gate. These boxes are the concrete activation targets those P0 homes resolve
+> against — each names the P0 box-id so the cross-ref is plan-lint-detectable (the
+> P3.67→P0.5.8 pattern).
+
+- [ ] **P2.126** [TEST] Instantiate the P0.4.3 serde-boundary fuzz + per-numeric-IPC-arg overflow legs over the now-real C1–C13 commands · §0.4.3 §1.1 · G48 G16
+  needs: P2.36, P0.4.3
+  > the activation target for the P0.4.3 `→ activated in P2 as C1–C13 land` edge: now that C1–C13 exist (P2.21–P2.35, surface-complete at P2.36), instantiate both legs using the P0.4.3 harness layout — **(a)** the cargo-fuzz serde-boundary target over **each** `#[tauri::command]` (malformed `serde_json` at the IPC boundary → a structured `Err`, **never** a panic across the Tauri boundary) and **(b)** the per-numeric-IPC-arg arithmetic-overflow `proptest` (boundary values `u32::MAX`/`i32::MIN`/0/1/2^16-1 → a structured `Err`, the T10 `arithmetic_side_effects`-deny companion). This is the P2 box the P0.4.3 `→ activated in P2` edge points at (`needs: P2.36`; the P0.4.3 harness/contract is `[x]` before the loop). → activates the P0.4.3 serde-boundary + per-numeric-IPC-arg legs.
+- [ ] **P2.127** [TEST] Stand up the §7.5 log-redaction property gate — a secret-shaped path stem through the configured logger is absent from output · §7.5 §2.11 · G31
+  needs: P2.94, P0.5.9
+  > the activation target for the P0.5.9 §7.5 log-redaction home (`→ activated in P3/P4/P9`, resolved here in P2 where the logging infra lands): feed a **secret-looking path stem** (a value matching the gitleaks minisign-secret-key / generic-secret shape, plus a full file path) through the **configured `tauri-plugin-log` logger at verbose level** (P2.89/P2.94) and assert the secret + the full path are **absent** from the rotating-file + stderr output (the §7.5.3 redaction stance P2.93 asserts as a STANCE — this is the property test that proves it fires). Distinct from the egress-window sentinels (P9.x), which exercise out-of-input reads, not logger redaction. → this is the P0.5.9 log-redaction activation target (`needs: P2.94`, the verbose-mode/logger box; the P0.5.9 home is `[x]` before the loop).

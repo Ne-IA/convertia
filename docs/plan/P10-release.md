@@ -79,6 +79,9 @@
 - [ ] **P10.7** [CI] Bind the secret-bearing signing job to an ephemeral GitHub-hosted runner host-disjoint from the Lane-B corpus/fuzz legs · §6.7.2 §6.1.4 · G56
   needs: P0.2.7, P10.4
   > execute P0.2.7/P0.7.5's runner-host-integrity policy at the pipeline: the integrity-hash+sign stage runs on an **ephemeral GitHub-hosted runner** under `step-security/harden-runner` (BLOCK), **never** the shared self-hosted VPS that ran the stage-2 untrusted-corpus/fuzz Linux leg; assert the signing job and the corpus/fuzz job declare **disjoint hosts / no shared workspace** (G56 fails a secret-using job on a self-hosted label). Implements security-concept principle 11.
+  - [ ] **P10.7.1** [CI] Assert the signing job's `CARGO_NET_OFFLINE=true`-after-`cargo fetch --locked` posture (the P0.4.4 build.rs/proc-macro execution-isolation contract) · §3.8 §6.7.2 · G56
+    needs: P0.4.4
+    > execute the P0.4.4 contract at the pipeline: a `jq`/`yq`-over-parsed-YAML sub-assertion that the secret-bearing signing job (a) runs an explicit `cargo fetch --locked` **before** any `cargo build`/`test`, (b) sets `CARGO_NET_OFFLINE=true` in its `env:` so a build.rs/proc-macro cannot phone home to exfiltrate `MINISIGN_SECRET_KEY` after the fetch, and (c) has **no** `cargo build`/`test` step without `CARGO_NET_OFFLINE` in scope — the G56 no-network-after-fetch sub-rule. Reinforced by the harden-runner BLOCK (P10.7); P0.4.4 is the policy source.
 
 ---
 
