@@ -517,7 +517,7 @@ load-bearing security guarantees with their own gates):
   planted-positives; check 10 promoted to regenerate-and-diff for the security manifests; plan-lint
   gained the golden-fixture-must-exit-1 base-case meta-check; the gate-quarantine procedure gained the
   self-referential L1/plan-lint bootstrap exception; the build-loop push-exit-code capture adopted the
-  RMA marker-file pattern (Quirk #22); G47 gained `bundle.createUpdaterArtifacts`-absent + the
+  background-push marker-file pattern; G47 gained `bundle.createUpdaterArtifacts`-absent + the
   DNS-prefetch meta-tag; `ANTHROPIC_API_KEY` named as the third real secret; the gitleaks-action
   org-license footgun, the `cargo-cyclonedx` crate-vs-subcommand naming, the `scripts/glibc-floor.toml`
   + the LibreOffice carve-out globs named; the L1-budget-soft + the two-enforcement-planes-honest

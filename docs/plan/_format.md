@@ -307,7 +307,7 @@ Because selection is deterministic, the **numbering and reference integrity that
 `plan-lint` (G7/G20) runs on both planes — **L1 pre-commit** on a staged plan edit,
 **L4 full-tree fail-closed** — and is itself unit-tested (its checks ship fixtures;
 `plan-lint` check 16 / the G24 self-test discipline). The **format-specific** checks
-this file defines (distinct from the doc-wide consistency checks 5–23 catalogued in
+this file defines (distinct from the doc-wide consistency checks 5–24 catalogued in
 `build-gates.md` §6, which `plan-lint` also runs) are:
 
 - **Marker validity** — every box marker ∈ `{[ ], [x], [!], [!extern]}`; no fifth
@@ -409,7 +409,7 @@ box carries no ref. `plan-lint` passes it.
 - Who follows a `needs:` vs who escalates a block:
   [`roles-and-escalation.md`](../process/roles-and-escalation.md) §4.
 - The gate that enforces this format (`plan-lint`, G7/G20) + the doc-wide
-  consistency checks 5–23: [`build-gates.md`](../security/build-gates.md) §6.
+  consistency checks 5–24: [`build-gates.md`](../security/build-gates.md) §6.
 - Project rules / the `needs:` ↔ `unlocked-by:` vocabulary (DECISION C) / DoD
   summary: [`CLAUDE.md`](../../CLAUDE.md) §2.
 - The plan index + the phase skeleton this format fills: [`README.md`](README.md).
