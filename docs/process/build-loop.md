@@ -433,11 +433,11 @@ cheaper one.
 
 > `plan-lint` check 14 holds the **G1, P0.6, and this** copy of the list
 > item-count- and item-identifier-identical; if they ever disagree, **this file
-> wins**. This is RMACLAUDE §11's nine points with the **RLS/tenant,
-> immutable-audit-log-row, and migrations rows dropped** (no multi-tenant DB in an
-> offline desktop app) and the **`engines.lock`/SBOM row and the §0.11+§5
-> threat-class row added** (9 − 3 + 2 = 8). Output-validity is **not** a ninth item
-> — it lives inside item (c)'s highest-sensible-test bar.
+> wins**. This 8-point list derives from a prior-project nine-point DoD with the
+> **RLS/tenant, immutable-audit-log-row, and migrations rows dropped** (no
+> multi-tenant DB in an offline desktop app) and the **`engines.lock`/SBOM row and
+> the §0.11+§5 threat-class row added** (9 − 3 + 2 = 8). Output-validity is **not**
+> a ninth item — it lives inside item (c)'s highest-sensible-test bar.
 
 A change is **done** only when:
 
@@ -630,4 +630,5 @@ surgery — `plan-lint` check 18 asserts a canonical phrase for this exists here
 - Roles & escalation: [`roles-and-escalation.md`](roles-and-escalation.md)
 - Test strategy: [`test-strategy.md`](test-strategy.md)
 - Vulnerability response (CVE → user, no auto-update): [`vuln-response.md`](vuln-response.md)
+  *(authored in P0.6; absent until P0 completes)*
 - SSOT (what & why): [`docs/SINGLE-SOURCE-OF-TRUTH.md`](../SINGLE-SOURCE-OF-TRUTH.md)

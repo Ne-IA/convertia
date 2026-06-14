@@ -30,11 +30,19 @@ video, documents, spreadsheets and presentations.
 
 ## Documentation
 
+The docs form a single layered system. The **conflict order** (higher wins) is
+**SSOT > spec > security/process docs > plan > code > conversation** — when two
+layers disagree, the higher one wins and the lower is corrected, never silently
+reconciled.
+
 | Doc | Purpose |
 |-----|---------|
 | [SINGLE-SOURCE-OF-TRUTH.md](docs/SINGLE-SOURCE-OF-TRUTH.md) | The idea, rules and scope — **what & why** (authoritative). |
-| [spec/](docs/spec/README.md) | The technical specification — **how** (work in progress). |
-| [plan/](docs/plan/README.md) | The implementation roadmap — phased TODO (P1–P11). |
+| [spec/](docs/spec/README.md) | The technical specification — **how the app works** (living). |
+| [security/](docs/security/security-concept.md) | The build-safety concept — threat model, defense-in-depth, and the gate catalogue (`G1..Gnn`): **how we build it safely** (living). |
+| [process/](docs/process/build-loop.md) | The build process — the autonomous build-loop runbook, roles & escalation, and the test strategy (living). |
+| [plan/](docs/plan/README.md) | The implementation roadmap — phased executable TODO (P0 bootstrap + P1–P11). |
+| [CLAUDE.md](CLAUDE.md) | The repo's own project rules for Claude Code (conflict rule, DoD summary, anti-patterns). |
 
 ## License
 

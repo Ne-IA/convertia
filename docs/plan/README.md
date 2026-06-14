@@ -1,8 +1,20 @@
-# ConvertIA — Implementation Plan (Phase 3)
+# ConvertIA — Implementation Plan (index)
 
 > The implementation roadmap, derived from the [Specification](../spec/README.md)
 > (which is itself derived from the [Single Source of Truth](../SINGLE-SOURCE-OF-TRUTH.md)).
-> Conflict rule unchanged: **SSOT wins**, then the spec, then this plan.
+> **Conflict order (unchanged, every layer):**
+> **SSOT > spec > security/process docs > plan > code > conversation.**
+> When two layers disagree, the higher one wins — never silently reconcile.
+>
+> **How the plan is built:** the autonomous Build-Loop session works this plan box
+> by box (P1 onward) under the rules in [`docs/process/build-loop.md`](../process/build-loop.md)
+> (the master-prompt runbook, the 8-point Definition-of-Done, the hard-stops) and
+> [`docs/process/roles-and-escalation.md`](../process/roles-and-escalation.md);
+> every box runs the gate system in [`docs/security/build-gates.md`](../security/build-gates.md)
+> (`G1..Gnn`) + the dual review. The repo's own rules are in
+> [`CLAUDE.md`](../../CLAUDE.md); the box format the loop reads is
+> [`_format.md`](_format.md). **P0 is bootstrapped manually** (DECISION B); the loop
+> starts at P1.
 
 ## How this plan is used
 

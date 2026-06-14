@@ -150,11 +150,13 @@ A change is **done** only when:
    was introduced. (Items 7 and 8 fire **independently** — either alone requires its
    action.)
 
-(This is RMACLAUDE §11's nine points with the RLS/tenant, immutable-audit-row and
-migrations rows **dropped** — no multi-tenant DB in an offline desktop app — and the
-two ConvertIA-specific facts (`engines.lock`/SBOM row, threat-class row) **added**:
-9 − 3 + 2 = 8. Output-validity is not a ninth item — it lives inside item 3's
-highest-sensible-test bar, per P0.6's canonical list.)
+(This 8-point set derives from a prior-project nine-point DoD with the RLS/tenant,
+immutable-audit-row and migrations rows **dropped** — no multi-tenant DB in an
+offline desktop app — and the two ConvertIA-specific facts (`engines.lock`/SBOM
+row, threat-class row) **added**: 9 − 3 + 2 = 8. Output-validity is not a ninth
+item — it lives inside item 3's highest-sensible-test bar, per P0.6's canonical
+list. The derivation is recorded in P0.6 of
+[`docs/plan/P0-build-and-security.md`](docs/plan/P0-build-and-security.md).)
 
 ## 5. Anti-patterns (NEVER)
 
@@ -171,7 +173,8 @@ highest-sensible-test bar, per P0.6's canonical list.)
 - **Any network call** outside the one user-initiated About → Releases link. No
   runtime fetch of engines, no update check, no telemetry. (Because there is **no
   auto-update**, the only path a security fix reaches a user is a new full release —
-  the runbook is [`docs/process/vuln-response.md`](docs/process/vuln-response.md).)
+  the runbook is [`docs/process/vuln-response.md`](docs/process/vuln-response.md),
+  authored in P0.6; see the §2 bootstrap note for where the rule lives until then.)
 - **A dependency that opens a network surface** — `tauri-plugin-http` (it wraps
   `reqwest` and registers an IPC-accessible HTTP client on init), or any
   `reqwest`/`ureq`/`hyper`/`isahc`/`curl`-class crate, in `Cargo.toml`. Caught at
@@ -235,6 +238,7 @@ In brief:
 - Test strategy: [`docs/process/test-strategy.md`](docs/process/test-strategy.md)
 - Roles & escalation: [`docs/process/roles-and-escalation.md`](docs/process/roles-and-escalation.md)
 - Vulnerability response (CVE → user, no-auto-update): [`docs/process/vuln-response.md`](docs/process/vuln-response.md)
+  *(authored in P0.6; absent until P0 completes — see the §2 bootstrap note)*
 - Plan (executable TODO): [`docs/plan/README.md`](docs/plan/README.md) ·
   [`docs/plan/P0-build-and-security.md`](docs/plan/P0-build-and-security.md)
 

@@ -7,7 +7,9 @@
 > **Status: living.** This document is refined *during* implementation; whenever a
 > control or gate changes while building, it is recorded here first. It does **not**
 > override the product truth:
-> **conflict order = [SSOT](../SINGLE-SOURCE-OF-TRUTH.md) > [spec](../spec/README.md) > this document.**
+> **conflict order = [SSOT](../SINGLE-SOURCE-OF-TRUTH.md) > [spec](../spec/README.md) > this document**
+> (the full order is SSOT > spec > security/process docs > plan > code > conversation;
+> this document sits in the security/process-docs layer).
 > Where this doc and the spec describe the same control, the spec's `§` is the
 > source of the technical detail; this doc is the consolidated security view + the
 > mapping to enforcement.
@@ -58,7 +60,7 @@ be the alternative, but the open phrasing cannot rot.) The dual review raises qu
 encode; its evidence trail (each reviewer's findings + convergence/divergence
 recorded verbatim in the commit body) makes a "both GO, 0 findings" on a non-trivial
 diff an **auditable smell** for periodic Co-Pilot spot-audit. Conflict order for the
-Build-Loop: **SSOT > spec > these security/process docs > code > conversation.**
+Build-Loop: **SSOT > spec > these security/process docs > plan > code > conversation.**
 
 **Reviewer availability + integrity (build-loop soundness, authored in build-loop.md).**
 Because the autonomous loop leans on G1 executing, its failure modes are explicit:
