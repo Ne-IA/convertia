@@ -651,9 +651,13 @@ being updated in the same change):
 - **CI runner-host integrity** (build-gates **G56**, *added P0 review r2*): the
   secret-bearing signing step (§6.7.2 stage 6) runs on an ephemeral GitHub-hosted
   runner, host-isolated from the self-hosted-VPS Lane-B corpus/fuzz jobs (§6.1.4/§6.7.2);
-  a workflow lint fails any secret-using job bound to a self-hosted label, and the Linux
-  jobs use `step-security/harden-runner`. The single most damaging secret never shares a
-  host with untrusted corpus input.
+  a workflow lint fails any secret-using job bound to a self-hosted label, and the
+  **GitHub-hosted signing job** uses `step-security/harden-runner` (its free/Community
+  tier works only on GitHub-hosted runners; self-hosted requires a StepSecurity
+  Enterprise license, so on the self-hosted VPS the egress enforcement is the §6.4.2
+  ptrace/Landlock fs-audit + the §6.7.3 nftables/strace monitor + the VPS egress
+  allowlist + an ephemeral/JIT low-priv runner, not harden-runner). The single most
+  damaging secret never shares a host with untrusted corpus input.
 - **JS/WebView supply-chain parity** (build-gates **G17/G18c/G18d/G36b**, *added P0
   review r2*): a committed `.npmrc` registry pin + a resolution-URL guard over
   `pnpm-lock.yaml` (dependency-confusion defence); a committed minimal
@@ -1555,9 +1559,13 @@ blocking the next:
    handles untrusted input is the textbook host-compromise vector — once poisoned, every
    future release could be silently re-signed with the real key. The signing job and the
    untrusted-corpus/fuzz jobs declare **disjoint runner hosts** (no shared workspace, no
-   shared host); the Linux jobs run under `step-security/harden-runner` (Linux-only
-   enforcement). A workflow lint (build-gates **G56**) fails any secret-using job bound
-   to a self-hosted label. This implements security-concept principle 11.
+   shared host); the **GitHub-hosted signing job** runs under `step-security/harden-runner`
+   (BLOCK mode) — its free/Community tier works only on GitHub-hosted runners (self-hosted
+   needs a StepSecurity Enterprise license), so the shared self-hosted VPS leg relies on
+   the §6.4.2 ptrace/Landlock fs-audit + the §6.7.3 nftables/strace egress monitor + the
+   VPS egress allowlist + an ephemeral/JIT low-priv runner instead. A workflow lint
+   (build-gates **G56**) fails any secret-using job bound to a self-hosted label. This
+   implements security-concept principle 11.
 7. **Publish to canonical GitHub Releases (§6.2.2):** upload artifacts + `SHA256SUMS`
    + `.sha256` files + SBOM (CycloneDX/SPDX) + `reliability-report.json` +
    `NOTICE`/`THIRD-PARTY-LICENSES.txt` as a **single coordinated release** (one

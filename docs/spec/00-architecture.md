@@ -1116,7 +1116,7 @@ convertia/
 │  ├─ tauri.conf.json              # bundle, CSP, externalBin, minimum-OS (§0.10, §0.3.1, §3.3)
 │  ├─ build.rs                     # tauri-build; (optionally) tauri-specta gen hook
 │  ├─ capabilities/
-│  │  └─ main.json                 # the §0.10 capability allowlist (commands, dialog, opener, log, store — NO shell-execute, NO fs; §3.3.3)
+│  │  └─ main.json                 # the §0.10 capability allowlist (core, log, store — NO dialog, NO opener, NO shell-execute, NO fs; dialog/opener are Rust-side-only, not WebView grants, §3.3.3)
 │  ├─ binaries/                    # bundled engine sidecars per platform (§3.3), externalBin targets
 │  │  ├─ ffmpeg-x86_64-pc-windows-msvc.exe  (etc. — target-triple-suffixed)
 │  │  ├─ ffprobe…  soffice…  pdftotext…  pandoc…  (per-platform; §3.1/§3.3)
@@ -1478,6 +1478,24 @@ no remote origins (reinforces "no network"):*
   inline styles); tightening to nonces is a polish item, not a gate. (Note: the
   platform "no inline CSS" rule targets hand-authored stylesheets; framework-
   emitted styles under a locked CSP are the accepted exception here.)
+- **Three by-construction release-hardening config keys are asserted absent/false
+  `[DECIDED]`** (each is a real Tauri v2 `tauri.conf.json` knob that, if flipped, would
+  widen §0.11 T2 silently — they are structurally enforced by build-gates **G47**, which
+  already parses `tauri.conf.json`):
+  - **`app.withGlobalTauri` MUST be absent/`false`** (the Tauri default). When `true` it
+    injects the **full Tauri API onto `window.__TAURI__`**, so any XSS or supply-chained
+    frontend dependency could invoke our IPC commands **directly from JavaScript** instead
+    of only through the app's own React code — a direct T2 widening. v1 uses the `@tauri-apps/api`
+    module imports, not the global, so the global is never needed.
+  - **`app.security.dangerousDisableAssetCspModification` MUST be absent / `false` /
+    empty-array.** It suppresses Tauri's built-in CSP modification for the listed directives;
+    if set it could silently strip the enforcement of `script-src 'self'` / `connect-src`
+    from the injected CSP layer **even when this §0.10 CSP object declares them** — defeating
+    the offline CSP proof. The name carries `dangerous` for exactly this reason.
+  - **`app.windows[].devtools` (and the bundle/release `devtools` feature) MUST NOT be
+    enabled in the release/bundle profile** — devtools open in a shipped build is an
+    inspection/injection surface on the untrusted WebView. (Debug builds may enable it; the
+    release profile must not.)
 
 **Status `[DECIDED]`.** The allowlist shape **and** its concrete contents are now
 fixed: deny-by-default; **no** WebView FS; **no** network; **no `shell:allow-execute`**

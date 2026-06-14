@@ -1819,6 +1819,17 @@ final move stays atomic, and the cross-volume fallback.
 > **Ownership.** §2.1 / §2.6 / §1.10 / §3.5 / §7.2 **reference** this instead of each
 > implying its own temp model. §2.14 is the one place the volume question is answered.
 
+**Scratch-residue confidentiality posture `[DECIDED]` (accepted residual, not a silent gap).**
+For the macOS TCC staging (§3.5.0) and the cross-volume copy (§2.14.3) a **copy of the
+source** may transit kind-2 scratch, and after an *ungraceful* end (power loss, SIGKILL) it
+may persist as **plaintext in scratch** until the next-run §2.6.3/§2.7.2 orphan reclaim.
+ConvertIA performs **no secure/zeroing wipe** of scratch (a best-effort `unlink` only) — for
+a **local / private / single-user** offline product this is an **explicitly-accepted residual**,
+not an undisclosed gap, consistent with the SSOT *local-private* posture; secure erase of
+copied source bytes is **out of scope**. (The §2.6 cleanup-residue *honesty* — telling the user
+a temp file may remain and where — is a separate, in-scope promise; this note is only about the
+absence of cryptographic wipe.)
+
 ### 2.14.1 Same-volume rule: scratch goes next to the *final*, not next to the *source* `[DECIDED]`
 
 The atomic-publish (§2.1.2) is a `rename(tmp → final)`, which is only atomic
