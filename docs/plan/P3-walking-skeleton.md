@@ -41,8 +41,10 @@
 > G31/G32 output-validity (P0.5.5) → **P3.38/P3.62**; the §1.2 detection-fuzz KAT
 > (P0.5.7) → **P3.30**; the detect/`fs_guard` fuzz targets + the replay convention
 > (P0.4.3 / P0.5.8) → **P3.30/P3.6/P3.8/P3.41 + P3.67**; the §2.1.3
-> atomicity-under-interruption home (P0.5.9) → **P3.19**; the temp-ownership / lock-before-part
-> home (P0.5.9) → **P3.20/P3.21**; the T7/T8 link-safety/self-feeding homes (P0.5.9) → **P3.64**;
+> atomicity-under-interruption home + the §2.1.2 Windows-AV-retry fault-injection home (both
+> P0.5.9) → **P3.19**; the §2.14.1 temp-ownership / lock-before-part MECHANISM (P0.5.9) →
+> **P3.20/P3.21** with its dedicated security-TEST home → **P3.71**; the T7/T8
+> link-safety/self-feeding homes (P0.5.9) → **P3.64**;
 > `cargo-mutants` over the `fs_guard`/`detect`/`outcome` kernel (P0.5.10) → the **P3.6–P3.18 /
 > P3.26–P3.29 / P3.46 / P3.68–P3.69** kernel boxes (the §2.8.2/§2.9.1 catalogs are the
 > `crate::outcome` string-table leg). P3.67 carries the explicit `needs: P0.5.8` edge; the
@@ -149,9 +151,9 @@ two-state crash invariant. This is the heart of what the walking skeleton proves
 - [ ] **P3.18** [RUST] Build the FAT/exFAT-class detection + `DivertReason::NoAtomicPublish` (Unix-only) · §2.1.2 §2.7.2 · G48
   needs: P3.13
   > detect a destination filesystem that supports **neither** the no-replace rename **nor** hardlinks (FAT/exFAT — `link()` → `EPERM`/`ENOTSUP`): via the OS filesystem-type/`statfs`-class query OR a one-shot capability probe (no-replace-rename → `EINVAL`/unsupported AND `link()` → `EPERM`/`ENOTSUP`). On Unix this is a per-location **DIVERT trigger** carrying `DivertReason::NoAtomicPublish` (§0.6) — the full §2.1 chain then runs on the hardlink-capable system disk (P3.6). **Windows is NOT diverted** — `MoveFileExW`-without-`REPLACE_EXISTING` is a true create-only move on FAT/exFAT too. A G48 bound-firing target.
-- [ ] **P3.19** [TEST] Assert the §2.1.3 two-state crash/power-loss invariant — kill in the post-`sync_all`-pre-`rename` window · §2.1.3 · G31 G15
-  needs: P3.16
-  > a `#[cfg(test)]` fence in `fs_guard::atomic_publish` injecting a kill **specifically between `sync_all()` and the rename** (all 3 OS) and asserting the on-disk state is **exactly one of** the §2.1.3 states (complete `final`, OR no `final` + a discardable `*.part`, OR — link-fallback only — `final` + a leftover `*.part`) — **never** a truncated/0-byte `final`. This is the activation target for P0.5.9's atomicity-under-interruption home. G31 source-unchanged leg corroborates no original was touched.
+- [ ] **P3.19** [TEST] Assert the §2.1.3 two-state crash/power-loss invariant (kill in the post-`sync_all`-pre-`rename` window) + the §2.1.2 Windows AV-retry fault-injection · §2.1.3 §2.1.2 · G31 G15
+  needs: P3.16, P3.14
+  > a `#[cfg(test)]` fence in `fs_guard::atomic_publish` injecting a kill **specifically between `sync_all()` and the rename** (all 3 OS) and asserting the on-disk state is **exactly one of** the §2.1.3 states (complete `final`, OR no `final` + a discardable `*.part`, OR — link-fallback only — `final` + a leftover `*.part`) — **never** a truncated/0-byte `final`. **Plus the §2.1.2 Windows AV-retry fault-injection case:** a `#[cfg(test)]` seam in the Windows `FileRenameInformationEx` path (P3.14) injects a transient `STATUS_SHARING_VIOLATION`/`STATUS_ACCESS_DENIED` and asserts the **bounded short-backoff retry** fires and, when the violation persists past the cap, the publish surfaces `WriteFailed` (§2.8) — never a silent overwrite, never an unbounded spin. This box is the activation target for BOTH P0.5.9 homes it names: the §2.1.3 atomicity-under-interruption home AND the §2.1.2 Windows-AV-retry fault-injection home. G31 source-unchanged leg corroborates no original was touched. (`needs: P3.14` for the Windows publish path the AV-retry seam injects into.)
 
 ---
 
@@ -369,8 +371,8 @@ integration test, the output-validity readers binding, and the cross-OS run that
 whole Tauri + atomic-publish + IPC stack early (the README walking-skeleton purpose).
 
 - [ ] **P3.61** [TEST] Author the CSV→TSV / TSV→CSV corpus fixtures + the bound-firing CSV-expansion fixture · §6.4.5 §6.4.2 · G24a G16
-  needs: P3.42
-  > committed corpus fixtures for both pairs (incl. a Windows-1252-encoded CSV, a quoted-field/embedded-delimiter CSV, a CSV-injection `=…`/`@…` leading-token file, a CJK/RTL-content file) under the §6.4.5 conventions; a deterministic **bound-firing** fixture exercising the §1.10 CSV-expansion input-size guard. Each fixture's SHA-256 joins the §6.4.2 corpus manifest (G24a integrity, P0.5.4); single-source helper, no inline duplication (§6.4.2).
+  needs: P3.42, P0.5.11
+  > committed corpus fixtures for both pairs (incl. a Windows-1252-encoded CSV, a quoted-field/embedded-delimiter CSV, a CSV-injection `=…`/`@…` leading-token file, a CJK/RTL-content file) under the §6.4.5 conventions; a deterministic **bound-firing** fixture exercising the §1.10 CSV-expansion input-size guard. Each fixture's SHA-256 joins the §6.4.2 corpus manifest **via the `stage-corpus` generator (P0.5.11) in the same commit** (G24a integrity, P0.5.4 — never a hand-computed hash); single-source helper, no inline duplication (§6.4.2). (`needs: P0.5.11` for the manifest generator the corpus landing invokes.)
 - [ ] **P3.62** [TEST] Bind the G31/G32 output-validity + source-unchanged readers to the CSV/TSV pairs · §6.4.3 §2.5 · G31 G32
   needs: P3.61, P3.38
   > activate the P0.5.5/P0.5.6 invariants on these pairs: **(a) SOURCE-UNCHANGED** — `sha256` of every corpus source unchanged before/after (the no-harm proof, G31); **(b) OUTPUT-VALIDITY** — the produced output passes a **real RFC-4180 reader** (the `csv` crate) + CSV-injection literal-preservation (NOT bare field-count) + non-empty/output≠input/size-plausibility (G32). Register CSV↔TSV in `tests/corpus/manifest.toml` with its byte-stable/lossy disposition + the determinism sub-assertion (`sha256(out1)==sha256(out2)`).
@@ -418,3 +420,20 @@ P8.20 + every per-pair fail-clearly / lossy-iff-flagged test) carry the forward
 - [ ] **P3.70** [GATE] Wire the deferred P3→P2 contract `needs:` edges — domain types, detection-outcome, error model, IPC commands/events, state machine · §0.6 §0.4 · G7 G20
   needs: P2.4, P2.8, P2.13, P2.15, P2.18, P2.20, P2.22, P2.25, P2.26, P2.29, P2.37, P2.39, P2.120
   > the P3 instance of the cross-phase reconciliation obligation (the master plan-lint forbidden-string check is P4.76): P3 IMPLEMENTS the bodies behind P2's contracts, so every P3 box that consumes a P2-declared type/handler must carry the edge — P3.5 plan() reads the `Target`/`EngineId`/`EngineDescriptor` types (**P2.8/P2.13**); P3.29 populates `DetectionOutcome` (**P2.15**); P3.32 freezes into `Vec<DroppedItem>` (**P2.4**); P3.46 maps internal kind → wire `ErrorKind` via the `From`/`OutcomeMsg` projection (**P2.18/P2.20**); P3.68 authors the §2.8.2 catalog over `ConversionErrorKind`/`OutcomeMsg` (**P2.18/P2.20**) and P3.69 the §2.9.1 catalog over `LossyKind`/`OutcomeMsg` (**P2.8.2/P2.20**); P3.48 C6 fan-out over the `ConversionEvent` Channel (**P2.29/P2.37**); P3.49 C1/C3/C4 contracts (**P2.22/P2.25/P2.26**); P3.53 the §5.2 state machine over the three `app://` listeners (**P2.39/P2.120**). `needs:` these P2 boxes here so the §6 selection builds the P2 contract first (P2 is `[x]` before the loop reaches P3, so trivially satisfied — but the edge must RESOLVE, not dangle); no P3 box `>`-note defers a `needs:` with the P4.76-forbidden phrasing.
+
+---
+
+### `crate::run`/`crate::fs_guard`: the §2.14.1 temp-ownership security-test home
+
+**Goal:** the [TEST] box that EXERCISES the §2.14.1 temp-ownership security invariants the
+P3.20/P3.21 MECHANISM builders produce — the Unix mode bits, the Windows per-run scratch-root
+DACL, cleanup-on-fault/kill leaving no orphan, and the Windows AV-lock-during-cleanup path. It
+is the activation target for P0.5.9's §2.14.1 temp-ownership home (P3.20/P3.21 remain the
+MECHANISM home). Placed at end-of-phase (after the P3.68/P3.69 string-table leg + the P3.70
+reconciliation box, the file's established end-of-P3 placement convention) so it stays a
+single gap-free id (`.71`) rather than re-numbering the whole P3 sequence + every cross-phase
+reciprocal reference to P3.70.
+
+- [ ] **P3.71** [TEST] Assert the §2.14.1 temp-ownership security invariants — Unix `0o700`/`0o600` mode bits + Windows scratch-root current-user-SID DACL + cleanup-on-fault/kill-no-orphan + the AV-lock-during-cleanup retry/deferred-delete path · §2.14.1 §2.6.3 §2.6.4 · G31 G15
+  needs: P3.20, P3.21, P3.22, P3.23, P3.24
+  > the security-TEST home that EXERCISES the §2.14.1 temp-ownership invariants the P3.20 publish-temp-ownership + P3.21 lock-before-part MECHANISM builders produce (those stay the mechanism home): **(a) Unix mode bits** — the per-run kind-2 scratch ROOT is created `0o700` and every kind-1 `*.part` publish temp is `0o600` (assert the on-disk `st_mode` permission bits, all Unix); **(b) the Windows per-run scratch-root DACL** — the run-start `run-<RunId>/` scratch root grants access **only to the current-user SID** via an explicit restrictive DACL at create (assert via `icacls`/the security-descriptor query that no broader principal is granted); **(c) cleanup-on-fault/kill leaves no orphaned temp** — inject a fault/kill on a representative exit path and assert `cleanup_item`/`cleanup_run` (P3.22) + the startup sweep (P3.23) reclaim every own-prefix temp, leaving zero orphan (own-prefix-scoped, never a bare `*.part` glob that would touch a foreign live temp); **(d) the Windows AV-lock-during-cleanup path** — a held temp during cleanup yields `ERROR_SHARING_VIOLATION` → assert the bounded retry-after-release OR the `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` deferred-delete fallback fires (never a silent leak, never an unbounded spin). G31 source-unchanged corroborates no original is touched. (`needs: P3.20`+`P3.21` for the ownership/lock mechanism, `P3.22`+`P3.23`+`P3.24` for the cleanup/sweep/reclaim paths this box asserts.)

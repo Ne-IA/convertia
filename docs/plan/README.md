@@ -188,14 +188,19 @@ primitives** so each engine phase is testable end-to-end against a built UI.
 a round-trip invocation succeeds through the §2.12 isolation boundary, the startup
 verifier reports a populated `EngineHealth`, and the §6.4.3 runner + pair-status
 ledger + §6.4.3a bijection guard produce their first report — **and** a
-representative P5 image pair can be driven end-to-end through the P4-built
-options-panel shell + progress/cancel + result-actions UI (the UX-harness leg, so
-P4 is not "done" on the engine side alone).
+representative **in-P4 image round-trip** (a P4-staged minimal fixture + throwaway
+pair, NOT a P5 corpus pair — P4 stays self-contained, no P4→P5 phase-order
+inversion) can be driven end-to-end through the P4-built options-panel shell +
+progress/cancel + result-actions UI to a first ledger cell over the P4 fixture (the
+UX-harness leg, so P4 is not "done" on the engine side alone).
 
-**Scope:** generalized engine-invocation layer; per-OS sidecar packaging &
-bundling (everything offline); the isolated **image-worker** process
+**Scope:** the generalized **§1.7 engine-invocation lifecycle** (the generic
+invocation/cancellation/kill layer every engine plugs into); per-OS sidecar
+packaging & bundling (everything offline); the isolated **image-worker** process
 (`convertia-imgworker`, §3.5.5 — the first real sidecar) + the §2.12 isolation
-boundary; resource budgets/limits; the **generic isolation framework only** —
+boundary; the **§1.10 resource pre-flight & budgets engine** (estimation +
+per-volume decision + mid-run enforcement); the **generic isolation framework
+only** —
 the §2.12 decoder-isolation wrapper, the §0.9 subprocess pool, the §2.12.3
 best-effort privilege-drop tier, and threat-map assembly/ownership (§0.11).
 **macOS TCC source-staging (§3.5.0 / §7.2.6 — load-bearing for every macOS engine
@@ -256,7 +261,9 @@ P8, and P8 stays a genuinely sequential pure-polish phase. P4 must **not**
 re-implement `crate::fs_guard` (built in P3, §02 reference here covers only the
 §2.12 isolation wrapper + §2.13 app-fault model).
 
-**Spec home:** 03-engines-and-bundling (incl. §3.4 patent-disposition matrix,
+**Spec home:** 01-conversion-pipeline (§1.7 generic engine-invocation lifecycle,
+§1.10 resource pre-flight & budgets engine),
+03-engines-and-bundling (incl. §3.4 patent-disposition matrix,
 §3.5.0 macOS TCC staging, §3.9 size-budget levers),
 02-guarantees (§2.8/§2.9 UX-correctness primitives, §2.12/§2.13),
 06-build-test-release (§6.4.3/§6.4.3a/§6.5 reliability machinery, SBOM scaffold,

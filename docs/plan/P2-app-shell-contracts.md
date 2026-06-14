@@ -297,8 +297,9 @@
 ### P2.13 — Update posture (§7.6) — no auto-updater (defense in depth)
 
 - [ ] **P2.97** [DOC] Record the no-startup/background version-check assertion (zero network calls at startup) · §7.6.1 §7.2.2
-- [ ] **P2.98** [RUST] Encode the version-display source for About (`app.package_info().version` / `CARGO_PKG_VERSION`) feeding C11 · §7.6.2 §7.2.3
-  needs: P2.34
+- [ ] **P2.98** [RUST] Encode BOTH C11/About data sources — the version-display source (`app.package_info().version` / `CARGO_PKG_VERSION`) AND the `AppInfo.build_id` PRODUCER (§6 CI build id at build time + deterministic dev fallback) · §7.6.2 §7.2.3 · G19
+  needs: P2.34, P2.112
+  > the two data sources that POPULATE the C11 `AppInfo` (P2.112) the §5.9 About screen renders (RELEASE-BLOCKING per SSOT — neither field may silently ship empty): **(a) version** — `app.package_info().version` / `CARGO_PKG_VERSION`, the §7.6.2 displayed current version. **(b) the `build_id` PRODUCER** — wire WHERE the §7.2.3 `build_id: String // CI build identifier (§6)` comes from: the §6 (Lane-B/`build-loop`) build-time CI build identifier (the git SHA + the GitHub Actions run-id, injected at build time via a build-script `env!`/`option_env!` over a CI-set var) with a **deterministic dev fallback** (e.g. the short git SHA or a literal `"dev"` marker when the CI var is absent, never an empty string), so a local `tauri dev` build still yields a non-empty `build_id` and a CI build carries the real §6 identifier. The drift-check (G19, §0.4.5) covers the generated-binding side once C11 is type-shared. (`needs: P2.34` for the C11 contract + `P2.112` for the `AppInfo` type whose `build_id`/`version` fields this box populates.)
 - [ ] **P2.99** [DOC] Record the future opt-in update-check parked decision (`updateCheckOptIn` not present in v1) · §7.6.3 §7.4
 
 ### P2.14 — OS shell-out (§7.7) — open-folder / open-file / open-url

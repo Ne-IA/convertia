@@ -11,7 +11,9 @@
 > (P5–P7) registers per-format declarations against an already-built UI and reaches its
 > §6.5 `reliable` gate without waiting on P8.
 >
-> Spec home: 03-engines-and-bundling (engine-invocation layer, per-OS bundling, image-
+> Spec home: 01-conversion-pipeline (§1.7 the generic engine-invocation lifecycle —
+> §P4.1, P4.6–P4.12; §1.10 the resource pre-flight & budgets engine — §P4.15, P4.71/P4.72),
+> 03-engines-and-bundling (engine-invocation layer, per-OS bundling, image-
 > worker `convertia-imgworker`, §3.4 patent matrix + §3.4.4a availability wiring, §3.5.0
 > macOS TCC staging, §3.9 size levers), 02-guarantees (§2.12 isolation, §0.9 pool,
 > §2.12.3 privilege-drop, §0.11 threat-map, §2.13 app-fault, §2.8/§2.9 UX primitives),
@@ -23,9 +25,11 @@
 > **Exit criterion (proof-of-life):** `convertia-imgworker` boots, a round-trip
 > invocation succeeds through the §2.12 isolation boundary, the startup verifier reports
 > a populated `EngineHealth`, the §6.4.3 runner + pair-status ledger + §6.4.3a bijection
-> guard produce their first report, **and** a representative P5 image pair is driven
-> end-to-end through the P4-built options-panel shell + progress/cancel + result-actions
-> UI (the UX-harness leg — P4 is not "done" on the engine side alone).
+> guard produce their first report, **and** a representative **in-P4 image round-trip**
+> (a P4-staged minimal fixture + throwaway pair, NOT a P5 corpus pair — so P4 is
+> self-contained, no P4→P5 inversion) is driven end-to-end through the P4-built
+> options-panel shell + progress/cancel + result-actions UI to a first ledger cell over
+> the P4 fixture (the UX-harness leg — P4 is not "done" on the engine side alone).
 >
 > **This is the v0 base** — atomic `[ ]` boxes below; a later adversarial review will
 > deepen, split and complete it. P4 does **not** re-implement `crate::fs_guard` (built in
@@ -379,9 +383,9 @@
 
 ### P4.17 — Proof-of-life exit gate
 
-- [ ] **P4.78** [TEST] Drive a representative P5 image pair end-to-end through the P4 UX harness (options-panel → progress/cancel → result-actions) · §6.5 §6.4.3 §5.7 · G31 G33a
+- [ ] **P4.78** [TEST] Drive a representative in-P4 image round-trip end-to-end through the P4 UX harness (in-P4 fixture + throwaway pair → options-panel → progress/cancel → result-actions → first ledger cell) · §6.5 §6.4.3 §5.7 · G31 G33a
   needs: P4.37, P4.58, P4.60, P4.63, P4.65, P4.67
-  > the P4 UX-harness exit leg (so P4 is not "done" on the engine side alone): drive a representative P5 image pair end-to-end through the P4-built options-panel shell + lossy-note + progress/cancel + result-actions UI to a §6.4.3 structural-reader pass and a first §6.5.2 ledger cell — proving P5–P7 register declarations against an already-built UI and a pair can reach its §6.5 `reliable` gate without waiting on P8.
+  > the P4 UX-harness exit leg (so P4 is not "done" on the engine side alone), made **self-contained in P4** — it stages its own input, never reaches forward into P5: stage a **minimal in-P4 image fixture** (a tiny synthetic raster, e.g. a few-pixel PNG, committed under `tests/corpus/` with its SHA-256 in the manifest, G24a) and register a **throwaway/representative pair** (the imgworker decode→encode round-trip P4.37 already drives — e.g. PNG→PNG over the synthetic fixture) so the §6.4.3 per-pair runner (P4.58) has a real backing file + a real `(source,target,platform)` key with NO P5 corpus/saver dependency; then drive that round-trip end-to-end through the P4-built options-panel shell + lossy-note + progress/cancel + result-actions UI to a §6.4.3 structural-reader pass (`vipsheader` decode + nonzero dims over the P4 fixture) and a **first §6.5.2 ledger cell over the P4 fixture** — proving P5–P7 register declarations against an already-built UI + runner + ledger and a pair can reach its §6.5 `reliable` gate without waiting on P8. (The real P5 image corpus + savers + per-pair pairs land in P5; this exit leg proves the harness on a P4-owned fixture, so P4 has no P4→P5 phase-order inversion.)
 - [ ] **P4.79** [TEST] Verify the P4 proof-of-life exit criterion (imgworker boots + isolated round-trip + populated EngineHealth + first reliability report) · §3.5.5 §2.12 §7.2.3 §6.4.3 · G46 G31
   needs: P4.37, P4.44, P4.59, P4.60, P4.78
   > the consolidated P4 exit gate (README P4 proof-of-life): `convertia-imgworker` boots, a round-trip invocation succeeds through the §2.12 isolation boundary (P4.37), the §7.2.3 startup verifier reports a populated `EngineHealth` (P4.44), the §6.4.3 runner + §6.5.2 pair-status ledger + §6.4.3a bijection guard produce their first report (P4.58–P4.60), AND the UX-harness leg (P4.78) passes — the full P4 "done" predicate.

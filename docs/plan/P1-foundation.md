@@ -32,7 +32,7 @@
 
 ---
 
-## Monorepo, pnpm workspace & repo skeleton
+### Monorepo, pnpm workspace & repo skeleton
 
 The §0.7 physical tree exists as an empty-but-wired monorepo with a pinned
 toolchain, so every later box has a home and the P0 lockfile/registry gates have a
@@ -60,7 +60,7 @@ target. The workspace + lockfiles come first because every language gate
 
 ---
 
-## Rust core crate & Cargo workspace
+### Rust core crate & Cargo workspace
 
 The `src-tauri/` Rust crate(s) compile from a clean checkout with the §0.7 module
 decomposition as interface-only shells, so `clippy`/`cargo-deny`/the unsafe-policy
@@ -109,7 +109,7 @@ gate have real crates to act on (activating P0.4.1/P0.3.6/P0.3.7/P0.4.2).
 
 ---
 
-## Tauri v2 shell & app boot
+### Tauri v2 shell & app boot
 
 The Tauri v2 host builds and shows an empty window on all three OS from a clean
 checkout (the P1 goal proper), wiring the §0.8 plugins and the §7.2.1 ordered
@@ -142,7 +142,7 @@ startup spine as far as the foundation allows.
 
 ---
 
-## Tauri config, capabilities & CSP baseline
+### Tauri config, capabilities & CSP baseline
 
 `tauri.conf.json` + `capabilities/main.json` + `index.html` exist and match the
 §0.10 locked allowlist/CSP object exactly — the literal targets the P0 G47
@@ -156,6 +156,8 @@ fail-open to fail-closed.
     > set the case-sensitive `productName: "ConvertIA"` (the case the §6.9.3 rename pass + P9.4.2's `squashfs-root/usr/bin/*` glob + the P11.2 AppImage RC-artifact collection depend on — `ConvertIA`, NOT `convertia`) and the §7.3.1 main-window title; the field is load-bearing for the AppImage binary name + the Linux/macOS bundle name, not a cosmetic. (The FINAL "ConvertIA"/Ne-IA name itself stays an owner-controlled placeholder per §6.9.3; the slot + the v1 working name are set here.) **Plus the macOS plist SET-edge assertions** (asserting the positive facts at the source, not only at the P10.13 drift edge): the §0.3.1 `minimumSystemVersion: "11.0"` propagates into the built bundle's `LSMinimumSystemVersion` (the real §0.3.1 correctness chain), and `CFBundleDocumentTypes` is **absent** from the generated `Info.plist` (the macOS leg of the §7.8.2 no-file-association negative — P1.24 covers the no-URL-scheme leg; this completes the macOS file-association negative). Cheap structural assertions in the same G47 parse.
   - [ ] **P1.19.2** [BUILD] Stage a bundled PLACEHOLDER icon set wired into `tauri.conf.json → bundle.icon` · §6.9.3 §0.3.1 · G47
     > stage the Tauri-required icon set (`32x32.png` / `128x128.png` / `128x128@2x.png` / `icon.icns` / `icon.ico` / the Windows `Square*Logo.png` set) as a bundled-local **placeholder** under `src-tauri/icons/` and wire `bundle.icon` to it, so the build produces a real installable artifact from P1 on (Tauri fails the bundle with no icon set). The FINAL Ne-IA art is the §6.9.3-deferred owner deliverable swapped in the P8.23-class scope-(ii) pass (mirrors the P8.2 BrandLogo placeholder pattern); P1 lands only the placeholder slot. The G47 structural lint additionally asserts `bundle.icon` is non-empty + `productName` is set (the file the lint parses).
+  - [ ] **P1.19.3** [BUILD] Set the initial `version` in `tauri.conf.json`/`Cargo.toml` + record the semver ↔ `v*`-tag ↔ `release_line` relationship · §7.6.2 §6.5.3
+    > set the single source of the app version (the `version` field in `tauri.conf.json` / the workspace `Cargo.toml`, surfaced at runtime as `CARGO_PKG_VERSION` / `app.package_info().version`) at an initial `0.x` semver — the value the §7.6.2 About screen displays (P2.98 reads it) and the `AppInfo.version` field. **Plus record the version scheme** (one home, so it cannot drift): the app `version` is **semver**; a release is cut as a signed annotated **`v<version>` git tag** (the `v*`-tag Lane-B trigger, P0.2.5/P0.2.9/P10.1); the **`release_line`** the P10.44/P10.56/P11 staleness gates key on **IS that version/tag** (`release_line` = "the version/tag it validated", §6.5.3). So `version` ↔ `v*`-tag ↔ `release_line` are one identity in three surfaces — set the slot + record the relationship here so no later box re-decides it. (The FINAL public version/name stays an owner call per §6.9.3; the slot + scheme are set now.)
 - [ ] **P1.20** [BUILD] Encode the §0.10 locked CSP object in `tauri.conf.json → app.security.csp` · §0.10 · G47
   needs: P1.19
   > the exact §0.10 CSP directives (`default-src`/`script-src` `'self'`; `connect-src 'self' ipc: http://ipc.localhost`; `img-src`/`media-src` NO `asset:`; `object-src`/`frame-src`/`frame-ancestors 'none'`; `base-uri`/`form-action 'self'`; `webrtc 'block'`) — structurally equal per-directive to the locked object the P0 G47 lint asserts against (activates G47's CSP leg, P0.3.2).
@@ -174,7 +176,7 @@ fail-open to fail-closed.
 
 ---
 
-## Rust↔TS type-sharing & IPC codegen scaffold
+### Rust↔TS type-sharing & IPC codegen scaffold
 
 The §0.4.5 tauri-specta codegen pipeline emits the single tracked `bindings.ts`
 and CI can prove it non-stale — activating the P0 G19 drift framework (P0.3.9) with
@@ -195,7 +197,7 @@ a concrete command + path, even though the C-command surface is empty until P2.
 
 ---
 
-## WebView app (React 19 / TS-strict / Tailwind / Vite)
+### WebView app (React 19 / TS-strict / Tailwind / Vite)
 
 The React 19 / TypeScript-strict / Tailwind / Vite frontend builds and mounts an
 empty app inside the WebView — activating the P0 TS gate contract (G5/G6/G13) and
@@ -220,21 +222,24 @@ the per-push a11y leg (G33a) against real source.
   needs: P1.29
   > the Tailwind setup + an empty-but-present `design/tokens.css` (CSS custom properties) — the single home for colour tokens the P0 G9 invariant (a) ("no hardcoded colour outside `design/tokens.css`") scopes to (activates P0.3.10 invariant (a)); the real token values are P8 polish.
 - [ ] **P1.33** [UI] Author the flat ESLint + stylelint config (incl. project-local no-`any` / `fc.gen()` rules) · §5.1 · G5 G9
-  needs: P1.30
-  > the flat ESLint config + stylelint carrying the project-local rules the P0.4.7 contract names (no `any`, the §6.4.2 `fc.gen()`-shrink-wrapper rule paired with P0 G9 invariant (f)) — the config the P0 G5 lint leg consumes; activates the eslint half of P0.4.7.
+  needs: P1.30, P1.35.1
+  > the flat ESLint config + stylelint carrying the project-local rules the P0.4.7 contract names (no `any`, the §6.4.2 `fc.gen()`-shrink-wrapper rule paired with P0 G9 invariant (f)) — the config the P0 G5 lint leg consumes; activates the eslint half of P0.4.7. (`needs: P1.35.1` — a same-phase forward edge, resolved in place by DECISION C — for the `fast-check` dependency the project-local `fc.gen()` rule presupposes; the rule lints `fast-check` usage so the dep is its prerequisite even though P1.35.1 sits later in document order.)
 - [ ] **P1.34** [UI] Author the Prettier config + the `prettier --check` posture · §5.1 · G3
   needs: P1.30
   > the committed Prettier config the P0 G3 format mirror (`prettier --check`, no auto-write) runs over the TS/CSS/JSON tree; activates the prettier leg of the P0 format gate.
 - [ ] **P1.35** [UI] Wire Vitest + `vitest-axe` with the jsdom environment · §5.1 §6.4.6a · G33a
   needs: P1.31
   > the Vitest config (jsdom env) + `vitest-axe@0.1.0` so the P0 a11y per-push leg (G33a — ARIA/role/focus over the rendered React tree, NOT contrast) has a runner + a rendered tree to scan; activates G33a (the §6.4.6a jsdom leg) against the P1.31 mounted app.
+  - [ ] **P1.35.1** [UI] Add the `fast-check` TS property-test dependency + its §0.8 pinned-floor JS supply-chain assertion · §6.4.2 §0.8 · G18c G18d
+    needs: P1.2.2
+    > add `fast-check` (the P0.5.2 canonical TS property-test library — Rust uses `proptest`, TS uses `fast-check`, the language split) to the frontend `package.json` **devDependencies**, regenerate + commit `pnpm-lock.yaml`, and add it to the **P1.60 JS-tree §0.8 pinned-floor / resolution-URL / lifecycle-script assertion set** (G18c/G18d) so the new dep is covered by the same supply-chain leg as `zustand`/`vitest-axe`/WebdriverIO — mirroring exactly how P1.31.1 homes Zustand. This is the dep the P0.5.2 property-test doctrine, the P0.3.10 G9 invariant (f) (`fc.gen(` shrink-wrapper ban), and the P1.33 project-local `fc.gen()` eslint rule all presuppose; without this box `fast-check` is referenced everywhere but installed by no box. Dependency only; the first TS property test that USES it carries `needs: P1.35.1`.
 - [ ] **P1.36** [UI] Add the §5.1 lint rule enforcing the single-IPC-consumer boundary · §5.1 · G5
   needs: P1.33, P1.27
   > an ESLint rule (or config restriction) failing any `@tauri-apps/api` import outside `src/lib/ipc/**` — the §5.1 "exactly one IPC consumer" discipline the spec requires be lint-enforceable; runs in the P0 G5 lint leg.
 
 ---
 
-## Strings module & a11y module shells
+### Strings module & a11y module shells
 
 `src/strings/ui.ts` and the `a11y/` shells are established as structural
 scaffolding (not deferred) per the README P1 scope — activating the P0 G57
@@ -255,7 +260,7 @@ English-only / string-ownership lint against a real `strings/ui.ts`.
 
 ---
 
-## Governance docs, README & `.github/` templates
+### Governance docs, README & `.github/` templates
 
 The §6.8 governance set + README download/trust skeleton + `.github/` templates
 exist from the first commit (they gate contribution and have no build dependency);
@@ -285,7 +290,7 @@ here.
 
 ---
 
-## Lane-A CI scaffold (per-push validation on `main`)
+### Lane-A CI scaffold (per-push validation on `main`)
 
 The §6.7.1 Lane-A per-push pipeline runs on every push to `main`, wiring the
 lint/format/type-check/compile-sanity/audit steps + the 3-OS build into the P0 CI
@@ -302,8 +307,8 @@ ADDED by the phase that produces their input — NOT here.
     > the Rust leg: `cargo fmt --check` (G3) + `cargo clippy -D warnings` with the no-panic-sloppiness/exhaustive-match deny set (G4 diff-scoped, full `--all-targets --all-features` at G14) bound to the P1-scaffolded core crate; a clippy regression is attributable here, independent of the JS leg.
   - [ ] **P1.52.2** [CI] Wire the JS/TS lint/format/type-check leg (`eslint` + `tsc --noEmit` + `prettier --check`) · §6.7.1 · G5 G6 G14
     > the JS/TS leg: `eslint` (flat config, the project-local no-`any`/`fc.gen()` rules) + `tsc --noEmit` (G6 diff-scoped, whole-project at G13/G14) + `prettier --check` (the G3 prettier leg over TS/CSS/JSON) bound to the P1 TS project; an eslint/tsc regression is attributable here.
-  - [ ] **P1.52.3** [CI] Wire the YAML/config-hygiene leg (`yamllint` over `.github/`/config YAML) · §6.7.1 · tooling-only
-    > the YAML/config-hygiene leg: `yamllint` over the workflow + config YAML — distinct from the `actionlint` workflow-lint (P0 G49) and the `editorconfig-checker` EOL leg (P0 G52); it carries no Gnn of its own (a config-hygiene linter, not a catalogue gate), so the absence is declared `tooling-only`. A YAML drift is attributable here, never opaque behind the language gates.
+  - [ ] **P1.52.3** [CI] Wire the YAML/config-hygiene leg (`yamllint` over `.github/`/config YAML) · §6.7.1
+    > the YAML/config-hygiene leg: `yamllint` over the workflow + config YAML — distinct from the `actionlint` workflow-lint (P0 G49) and the `editorconfig-checker` EOL leg (P0 G52); it carries no Gnn of its own (a config-hygiene linter, not a catalogue gate), but it satisfies the at-least-one-ref rule via the §6.7.1 Lane-A home it wires into, so it carries `· §6.7.1` and is NOT `tooling-only` (a real ref and `tooling-only` are mutually exclusive, _format.md §3.1). A YAML drift is attributable here, never opaque behind the language gates.
 - [ ] **P1.53** [CI] Wire the §6.7.1 step-2 Rust↔TS type-drift check · §6.7.1 §0.4.5 · G19
   needs: P1.51, P1.28
   > the Lane-A step running `cargo xtask codegen` + `git diff --exit-code` on `bindings.ts` (the P1.28 invocation) — fails on stale generated types; the concrete activation of the P0 G19 framework (P0.3.9).
@@ -327,14 +332,14 @@ ADDED by the phase that produces their input — NOT here.
   > the Lane-A advisory + license + bans + lockfile-integrity leg: `cargo audit` (plain, no `--locked`) + `cargo deny check` over the real `Cargo.lock` (P1.7) — activates the P0 `deny.toml`/`cargo-vet` skeleton (P0.3.6), the lockfile-integrity contract (P0.4.9), and the core-crate forbidden-dep gate (P0.3.7 G53) against the P1 workspace graph. **Plus the §0.8 pinned-floor assertion:** a small `cargo deny`-bans / lockfile check that the source-verified load-bearing §0.8 crates (`tauri-specta`, `specta`, `walkdir`, `csv`, `chardetng`, `tempfile`, `process-wrap`, `landlock`, the librsvg-≥2.56.3 binding floor, etc.) are present at **≥ their pinned floor** in `Cargo.lock` (not merely locked) — so a drift below a relied-upon API floor fails the gate here rather than surfacing when the API changed; the TS-side `vitest-axe@0.1.0` / WebdriverIO-v9 pins are asserted in the P1.60 JS leg.
 - [ ] **P1.60** [CI] Wire the JS-tree supply-chain Lane-A leg (resolution-URL + lifecycle-script + frontend license + the §0.8 JS pinned-floor) · §6.7.1 §6.3.4 §0.8 · G18c G18d G36b
   needs: P1.51, P1.2.2, P1.2.3
-  > the Lane-A step asserting the P0 G18c resolution-URL guard, G18d `onlyBuiltDependencies` lockdown, and G36b frontend GPL/AGPL deny over the real `pnpm-lock.yaml` (P1.2.2) — activates the P0.3.8 JS supply-chain config against the committed pnpm graph. **Plus the §0.8 JS pinned-floor assertion set:** `@tauri-apps/cli` 2.x (P1.2.3, matched to the `tauri` 2.x pin), `@tauri-apps/api` 2.x, `vitest-axe@0.1.0`, WebdriverIO v9 + `@axe-core/webdriverio`, and `zustand` (P1.31.1) are present at ≥ their pinned floor in `pnpm-lock.yaml` — the JS-side mirror of the P1.59 Rust pinned-floor leg.
+  > the Lane-A step asserting the P0 G18c resolution-URL guard, G18d `onlyBuiltDependencies` lockdown, and G36b frontend GPL/AGPL deny over the real `pnpm-lock.yaml` (P1.2.2) — activates the P0.3.8 JS supply-chain config against the committed pnpm graph. **Plus the §0.8 JS pinned-floor assertion set:** `@tauri-apps/cli` 2.x (P1.2.3, matched to the `tauri` 2.x pin), `@tauri-apps/api` 2.x, `vitest-axe@0.1.0`, WebdriverIO v9 + `@axe-core/webdriverio`, `zustand` (P1.31.1), and `fast-check` (P1.35.1) are present at ≥ their pinned floor in `pnpm-lock.yaml` — the JS-side mirror of the P1.59 Rust pinned-floor leg.
 - [ ] **P1.61** [CI] Record the Lane-A required-status-check set for the §6.7.1 G56a branch-protection assertion · §6.7.1 · G56a
   needs: P1.52, P1.53, P1.54, P1.56, P1.57, P1.58, P1.59, P1.60
   > enumerate the Lane-A jobs that must be required status checks on `main` (the set the P0 G56a branch-protection config assertion, P0.2.8, queries the ruleset API for) — so a red Lane-A actually blocks; the §6.7.1 single-branch direct-to-`main` enforcement made real now that Lane-A jobs exist.
 
 ---
 
-## Gate-activation verification & contributor docs
+### Gate-activation verification & contributor docs
 
 The P0 `→ activated in P<n>` gates flip from skip-with-warning to fail-closed as P1
 stands their targets up; this section proves the flip actually happened (no gate

@@ -159,8 +159,8 @@
 > precede the test boxes.
 
 - [ ] **P6.30** [TEST] Stage the audio corpus (one file per source format) + its manifest + SHA-256 entries · §6.4.5 · G24a G22
-  needs: P6.1
-  > add `tests/corpus/audio/` files: one per source format (MP3 VBR/CBR + ID3v2 + cover; WAV 16/24/float; FLAC + Vorbis comments + cover; raw-ADTS `.aac`; M4A-holding-AAC AND a separate M4A-holding-ALAC; OGG-Vorbis; `.opus`; AIFF; WMA v2/Pro/Lossless), each with a root-`manifest.toml` `[[file]]` (source / redistributable licence / `exercises` / `covers` 2-tuples / `[file.expect]`); regenerate the §6.4.5/P0.5.4 SHA-256 corpus manifest in the same commit (G24a). Files must be CC0/public-domain/self-produced/synthetic.
+  needs: P6.1, P0.5.11
+  > add `tests/corpus/audio/` files: one per source format (MP3 VBR/CBR + ID3v2 + cover; WAV 16/24/float; FLAC + Vorbis comments + cover; raw-ADTS `.aac`; M4A-holding-AAC AND a separate M4A-holding-ALAC; OGG-Vorbis; `.opus`; AIFF; WMA v2/Pro/Lossless), each with a root-`manifest.toml` `[[file]]` (source / redistributable licence / `exercises` / `covers` 2-tuples / `[file.expect]`); regenerate the §6.4.5/P0.5.4 SHA-256 corpus manifest **via the `stage-corpus` generator (P0.5.11)** in the same commit (G24a). Files must be CC0/public-domain/self-produced/synthetic. (`needs: P0.5.11` for the manifest generator.)
 - [ ] **P6.31** [TEST] Stage the audio edge-case + content-floor corpus fixtures · §6.4.5 · G24a G31
   needs: P6.30
   > add the audio edge fixtures + content-floor tags: a multichannel (5.1) source (`audio_downmix` / channel-preservation); a >16-bit source (`audio_bitdepth`); files with non-Latin/CJK/RTL tag text (`non-latin-tags` content-floor tag, §2.10); corrupt/truncated + 0-byte + a `.mp3` that is really FLAC (mislabel) cases; cover-art round-trip fixtures for the MP3↔FLAC↔OGG↔OPUS↔M4A/ALAC set.
@@ -275,8 +275,8 @@
 ### Video corpus + per-pair video tests
 
 - [ ] **P6.57** [TEST] Stage the video corpus (short clips, one per source + the inner-codec cases) + manifest + SHA-256 · §6.4.5 · G24a G22
-  needs: P6.1
-  > add `tests/corpus/video/` short clips: MP4 (H.264+AAC, lossless-remux baseline); MOV-from-iPhone (HEVC, the re-encode-default case); MKV with multiple audio tracks + SRT + ASS + PGS subtitles + chapters + font attachments; WEBM (VP9+Opus, and a VP8 alpha clip); AVI (DivX+MP3); WMV (VC-1+WMA); FLV (H.264/AAC and old Sorenson); MPG (interlaced MPEG-2 + AC-3); M4V (DRM-free); 3GP (H.263+AMR-NB) — each with its `manifest.toml` `[[file]]` + redistributable licence; regenerate the SHA-256 corpus manifest in the same commit (G24a).
+  needs: P6.1, P0.5.11
+  > add `tests/corpus/video/` short clips: MP4 (H.264+AAC, lossless-remux baseline); MOV-from-iPhone (HEVC, the re-encode-default case); MKV with multiple audio tracks + SRT + ASS + PGS subtitles + chapters + font attachments; WEBM (VP9+Opus, and a VP8 alpha clip); AVI (DivX+MP3); WMV (VC-1+WMA); FLV (H.264/AAC and old Sorenson); MPG (interlaced MPEG-2 + AC-3); M4V (DRM-free); 3GP (H.263+AMR-NB) — each with its `manifest.toml` `[[file]]` + redistributable licence; regenerate the SHA-256 corpus manifest **via the `stage-corpus` generator (P0.5.11)** in the same commit (G24a). (`needs: P0.5.11` for the manifest generator.)
 - [ ] **P6.58** [TEST] Stage the video edge-case fixtures (DRM, rotation, VFR, silent, interlace) + content-floor `representative-av` · §6.4.5 · G24a G31
   needs: P6.57
   > add a DRM-protected FairPlay `.m4v` + a DRM WMV (fail-clearly); a portrait/rotated clip (rotation honoured); a VFR screen recording (to-GIF fps-normalise); a silent clip (extract-audio "no audio track"); a long-ish clip for the to-GIF guardrail/cap; tag the `representative-av` content floor (≥1 real video, already implied by the per-format rows).
