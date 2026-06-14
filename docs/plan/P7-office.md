@@ -182,13 +182,13 @@ clusters and `needs:` their cluster's pair boxes.
 - [ ] **P7.23** [RUST] Wire pandoc through the §2.12 boundary + the always-on `--sandbox` SSRF/LFR control · §3.5.4 §3.3.4 §2.12 §0.11 · G29 G42 G42b
   needs: P7.22, P4.13
   > register pandoc in the §3.2 registry (`EngineProgram::Sidecar`); route through the §2.12 isolation wrapper (cwd=scratch, minimal env, loader-strip, G29 `.env_clear()`); **every pandoc invocation runs with `--sandbox`** (≥2.15) — confines readers/writers to the named file(s) and blocks all network + file-system reads from the document (a crafted MD/HTML/RST/Org/LaTeX include or remote `<img>`/CSS cannot pull a remote/local out-of-input file). This is the load-bearing markup-engine SSRF/LFR control (the §3.3.4 "pandoc fetches nothing" claim) — corpus-proven by the §6.4.2 adversarial-egress case, not the registry. No pandoc Lua/JSON filters and no pandoc PDF production configured (so the documented `--sandbox` gaps don't apply).
-- [ ] **P7.24** [RUST] Wire the fixed pandoc option set (`--wrap=preserve`, `-f gfm`/`-t gfm`, `*→HTML --standalone --embed-resources`) + stdin plan · §3.5.4 documents.md · G31
+- [ ] **P7.24** [RUST] Wire the fixed pandoc option set (`--wrap=preserve`, `-f gfm`/`-t gfm`, `*→HTML --standalone --embed-resources`) + stdin plan · §3.5.4 · G31
   needs: P7.23
   > the §3.5.4 concrete opts: `pandoc -f <in-fmt> -t <out-fmt> [opts] -o <out_tmp> <input>` (or stdin via `StdinPlan::PipeBytes` for awkward paths); `--wrap=preserve` always; `*→HTML` adds `--standalone --embed-resources` (self-contained single file); MD read dialect `-f gfm`; `*→MD` writes `-t gfm`. The per-pair `-f`/`-t` format codes are owned by the §04 pairs (P7.31–P7.38).
 - [ ] **P7.25** [RUST] Wire the pandoc exit/stderr → §2.8 mapping (`classify_failure`) + cancellation + no-partial-output · §3.5.4 §2.8 §1.7 §2.1 · G31
   needs: P7.23
   > map pandoc non-zero + message → §2.8 generic plain-language engine-failure (the "openBinaryFile … does not exist" case never occurs — the core verifies the input before spawn); cancellation via §1.7 process-group kill; a cancelled pandoc job leaves NO partial output (writes into the §2.1 `out_tmp`, atomic-published only on success); `CoarseSpawnDone` progress.
-- [ ] **P7.26** [TEST] Verify pandoc runs cleanly under `--sandbox` for every assigned pair (no blocked on-disk data file) · §3.5.4 §6.4 documents.md · G31
+- [ ] **P7.26** [TEST] Verify pandoc runs cleanly under `--sandbox` for every assigned pair (no blocked on-disk data file) · §3.5.4 §6.4 · G31
   needs: P7.23
   > the `[DEFER: corpus]` data-file check: confirm every pair ConvertIA assigns pandoc (markup↔markup, `*→HTML --standalone --embed-resources`, the office→markup down-conversions) runs cleanly under `--sandbox` on the §6.4 corpus — none needs a blocked on-disk pandoc data file (templates, reference docs, syntax-highlight definitions). If a pair turns out to need one, the recorded fix is to **bundle that data file and pass it explicitly on the argv** (a named input the sandbox permits), NEVER to drop `--sandbox`. Records the resolution against real corpus files.
 - [ ] **P7.27** [RUST] Verify pandoc receives the macOS kind-2 scratch-staged source (path or stdin) · §3.5.0 §7.2.6 §2.14.2 · G31 G29
@@ -209,12 +209,16 @@ clusters and `needs:` their cluster's pair boxes.
 > dispatcher (which already owns the text/CSV/TSV path) — the activation target for
 > the P0.5.7 KAT convention + the P0.4.3 detect-fuzz target.
 
-- [ ] **P7.29** [RUST] Wire the ZIP/OPC container content-type disambiguation (DOCX vs XLSX vs PPTX vs ODF) · §1.2 documents.md spreadsheets.md presentations.md · G15 G31
-  needs: P3.25
+- [ ] **P7.29** [RUST] Wire the ZIP/OPC container content-type disambiguation (DOCX vs XLSX vs PPTX vs ODF) · §1.2 · G15 G31
+  needs: P3.26
   > extend the §1.2 dispatcher: a `50 4B 03 04` (`PK`) leader peeks inside the OPC archive's `[Content_Types].xml` — WordprocessingML + `word/document.xml` ⇒ **DOCX**; `…spreadsheetml…` + `xl/workbook.xml` ⇒ **XLSX**; `…presentationml.*` + `ppt/presentation.xml` ⇒ **PPTX**; the uncompressed first-stored `mimetype` member ⇒ ODF (`…opendocument.text`⇒**ODT**, `…spreadsheet`⇒**ODS**, `…presentation`⇒**ODP**). A `.docx` that is really an XLSX/ODS/PPTX is classified by its inner manifest, never its name. The container parse stays bounded/memory-safe (no third-party C/C++ decoder pre-detect, §2.12.4) and feeds the decompression-bomb-in-OPC bound (P3 zip-slip/ratio caps).
-- [ ] **P7.30** [RUST] Wire the OLE2/CFB stream-directory disambiguation (DOC vs XLS vs PPT) + the text-magic signatures (RTF/HTML/PDF) · §1.2 documents.md spreadsheets.md presentations.md · G15 G31
-  needs: P3.25
-  > extend the §1.2 dispatcher: a `D0 CF 11 E0 A1 B1 1A E1` (CFB) leader reads the internal stream directory — `WordDocument` ⇒ **DOC**, `Workbook`/`Book` ⇒ **XLS**, `PowerPoint Document` ⇒ **PPT** (the shared-OLE2 disambiguation, the headline collision); plus the text-magic signatures: RTF `7B 5C 72 74 66` (`{\rtf`) at offset 0; PDF `25 50 44 46 2D` (`%PDF-`) tolerating a short junk prefix; HTML sniff (`<!DOCTYPE html`/`<html`/leading `<` HTML-ish, case-insensitive, BOM/whitespace-tolerant); the `.fods` flat-XML ⇒ ODS-family and the `.docm`/`.xlsm`/`.pptm`/`.ppsx`/`.pps`/`.otp`/`.potx` macro/template/autoplay variants mapped to their base class. MD vs TXT is by **extension/intent** (`.md`⇒MD, `.txt`⇒TXT — Markdown is valid plain text), keyed onto the resulting `UserFacingFormat` (§1.3 grouping).
+- [ ] **P7.30** [RUST] Wire the OLE2/CFB stream-directory disambiguation + the text-magic signatures (two independent §1.2 parser surfaces) · §1.2 · G15 G31
+  needs: P3.26
+  > extend the §1.2 dispatcher with two **independently-writable, independently-testable** detection surfaces (different fixture sets) — split into the two sub-boxes so a failure is attributable. The container parse stays bounded/memory-safe (no third-party C/C++ decoder pre-detect, §2.12.4).
+  - [ ] **P7.30.1** [RUST] Wire the OLE2/CFB compound-file CLSID/stream-directory disambiguation (DOC vs XLS vs PPT) · §1.2 · G15 G31
+    > a `D0 CF 11 E0 A1 B1 1A E1` (CFB) leader reads the internal stream directory — `WordDocument` ⇒ **DOC**, `Workbook`/`Book` ⇒ **XLS**, `PowerPoint Document` ⇒ **PPT** (the shared-OLE2 disambiguation, the headline collision); the `.docm`/`.xlsm`/`.pptm`/`.ppsx`/`.pps`/`.otp`/`.potx` macro/template/autoplay variants mapped to their base class, keyed onto the resulting `UserFacingFormat` (§1.3 grouping).
+  - [ ] **P7.30.2** [RUST] Wire the text-magic signatures (RTF / HTML / PDF) + the flat-XML `.fods` + the MD-vs-TXT intent rule · §1.2 · G15 G31
+    > RTF `7B 5C 72 74 66` (`{\rtf`) at offset 0; PDF `25 50 44 46 2D` (`%PDF-`) tolerating a short junk prefix; HTML sniff (`<!DOCTYPE html`/`<html`/leading `<` HTML-ish, case-insensitive, BOM/whitespace-tolerant); the `.fods` flat-XML ⇒ ODS-family; MD vs TXT is by **extension/intent** (`.md`⇒MD, `.txt`⇒TXT — Markdown is valid plain text), keyed onto the resulting `UserFacingFormat` (§1.3 grouping).
 
 ---
 
@@ -224,16 +228,16 @@ clusters and `needs:` their cluster's pair boxes.
 > (formatting/layout simplified). DOC→markup is LO-owned (P7.39 — pandoc can't read
 > binary `.doc`). Each pair box `needs:` the shared pandoc runtime wiring.
 
-- [ ] **P7.31** [RUST] Wire `DOCX → TXT/MD/HTML` (pandoc, `-f docx`) · §3.5.4 documents.md · G31 G32
+- [ ] **P7.31** [RUST] Wire `DOCX → TXT/MD/HTML` (pandoc, `-f docx`) · §3.5.4 · G31 G32
   needs: P7.24
   > register `DOCX→TXT` (`-t plain`), `DOCX→MD` (`-t gfm`), `DOCX→HTML` (`-t html --standalone --embed-resources`) via pandoc; `--wrap=preserve`; lossy `doc_to_text` (TXT) / `doc_simplified` (MD) / `doc_simplified` (HTML); embedded images extracted/inlined into HTML, dropped-with-note for TXT and bare MD (the `[DEFER: corpus]` `*→MD` image policy leans **drop-with-note**, validated P7.61).
-- [ ] **P7.32** [RUST] Wire `ODT → TXT/MD/HTML` (pandoc, `-f odt`) · §3.5.4 documents.md · G31 G32
+- [ ] **P7.32** [RUST] Wire `ODT → TXT/MD/HTML` (pandoc, `-f odt`) · §3.5.4 · G31 G32
   needs: P7.24
   > register `ODT→TXT`/`ODT→MD`/`ODT→HTML` via pandoc (reads ODT natively); same opt set + lossy kinds as DOCX; ODT is LibreOffice's home format but the markup down-conversions stay pandoc (cleaner/lighter HTML/MD per the documents.md single-owner resolution).
-- [ ] **P7.33** [RUST] Wire `RTF → TXT/MD/HTML` (pandoc default, LO `[DEFER: corpus]` fallback) · §3.5.4 documents.md · G31 G32
+- [ ] **P7.33** [RUST] Wire `RTF → TXT/MD/HTML` (pandoc default, LO `[DEFER: corpus]` fallback) · §3.5.4 · G31 G32
   needs: P7.24
   > register `RTF→TXT`/`RTF→MD`/`RTF→HTML` via pandoc's RTF reader as the v1 default; same opt set + lossy kinds; **ownership is `[DEFER: corpus]`** — pandoc's RTF reader has known gaps (super/subscript, complex tables) and if the corpus shows it too lossy, ownership falls back to LibreOffice's markup export (P7.62 resolves; the registry stays single-owner whichever way it resolves). RTF code-page header drives encoding so non-Latin text survives.
-- [ ] **P7.34** [RUST] Wire `HTML → TXT/MD` (pandoc, `-f html`) · §3.5.4 documents.md · G31 G32
+- [ ] **P7.34** [RUST] Wire `HTML → TXT/MD` (pandoc, `-f html`) · §3.5.4 · G31 G32
   needs: P7.24
   > register `HTML→TXT` (tags stripped → plain text, `doc_to_text`) and `HTML→MD` (rich HTML simplified to Markdown, `doc_simplified`) via pandoc; **single-file HTML only** in v1; JavaScript never executed; external CSS/images by remote URL not fetched (offline + `--sandbox`); `<meta charset>`/BOM honored.
 
@@ -246,16 +250,16 @@ clusters and `needs:` their cluster's pair boxes.
 > from TXT/MD/HTML (no everyday `markdown→.doc` demand — matrix `—`). `*→PDF` from
 > these sources is LO-owned (P7.40), NOT pandoc (no chained pandoc→LaTeX step).
 
-- [ ] **P7.35** [RUST] Wire `TXT → DOCX/ODT/RTF/MD/HTML` (pandoc) + the UTF-8-no-BOM output rule · §3.5.4 documents.md §2.10 · G31 G32
+- [ ] **P7.35** [RUST] Wire `TXT → DOCX/ODT/RTF/MD/HTML` (pandoc) + the UTF-8-no-BOM output rule · §3.5.4 §2.10 · G31 G32
   needs: P7.24
   > register `TXT→DOCX`/`TXT→ODT`/`TXT→RTF`/`TXT→MD`/`TXT→HTML` via pandoc (input read as plain/markdown, target written); **not lossy** (plain text has nothing to lose — only the reverse `*→TXT` is); output encoding fixed to **UTF-8 (no BOM default)** — the content-fidelity guarantee (§2.10); CR/LF normalized on the target's terms; mixed-encoding/invalid bytes → fail clearly rather than emit mojibake. NO "output encoding" toggle (`[DECIDED]` out of v1).
-- [ ] **P7.36** [RUST] Wire `MD → HTML/DOCX/ODT/RTF/TXT` (pandoc) + the gfm dialect + local-only image resolution · §3.5.4 documents.md · G31 G32
+- [ ] **P7.36** [RUST] Wire `MD → HTML/DOCX/ODT/RTF/TXT` (pandoc) + the gfm dialect + local-only image resolution · §3.5.4 · G31 G32
   needs: P7.24
   > register `MD→HTML`/`MD→DOCX`/`MD→ODT`/`MD→RTF`/`MD→TXT` via pandoc (input `-f gfm`); `MD→HTML` adds `--standalone --embed-resources`; all faithful **except `MD→TXT`** (strips syntax → plain prose, `doc_to_text`). Local relative image refs resolved/embedded where `--sandbox` allows; **remote URLs NOT fetched** (offline) → broken refs, noted; raw HTML passed through; fenced code monospaced; YAML front-matter parsed as metadata not printed. (NB: `MD→PDF` is LO-only, P7.41 — pandoc has NO chain-free PDF path here.)
-- [ ] **P7.37** [RUST] Wire `HTML → DOCX/ODT/RTF` (pandoc) · §3.5.4 documents.md · G31 G32
+- [ ] **P7.37** [RUST] Wire `HTML → DOCX/ODT/RTF` (pandoc) · §3.5.4 · G31 G32
   needs: P7.24
   > register `HTML→DOCX`/`HTML→ODT` (faithful, `—`) and `HTML→RTF` (`✓`, rich features simplified) via pandoc; single-file HTML only; JS never executed, remote assets not fetched; relative local assets resolved where the sandbox allows.
-- [ ] **P7.38** [TEST] Assert the `*→DOC`-from-markup absent-target rule (TXT/MD/HTML→DOC is `—`, not offered) · §1.5 documents.md · G22 G31
+- [ ] **P7.38** [TEST] Assert the `*→DOC`-from-markup absent-target rule (TXT/MD/HTML→DOC is `—`, not offered) · §1.5 · G22 G31
   needs: P7.35, P7.36, P7.37
   > a registry/offered-set assertion: `TXT→DOC`, `MD→DOC`, `HTML→DOC` are **NOT offered** (matrix `—` — no everyday `markdown→.doc` demand; the modern `.docx` is the sole Word target for these sources). The bijection guard (§6.4.3a) must not flag a missing fixture/test for a non-offered pair; `*→DOC` is offered ONLY from office sources (P7.39).
 
@@ -267,10 +271,10 @@ clusters and `needs:` their cluster's pair boxes.
 > down-conversions (pandoc can't read binary `.doc`). LibreOffice for all — keeping
 > every pair single-engine. Each pair box `needs:` the LibreOffice runtime wiring.
 
-- [ ] **P7.39** [RUST] Wire `DOC → TXT/MD/HTML` (LibreOffice markup export, NOT pandoc) + the LO-Markdown-export `[DEFER: corpus]` flag · §3.5.2 documents.md · G31 G32
+- [ ] **P7.39** [RUST] Wire `DOC → TXT/MD/HTML` (LibreOffice markup export, NOT pandoc) + the LO-Markdown-export `[DEFER: corpus]` flag · §3.5.2 · G31 G32
   needs: P7.8, P7.9, P7.10, P7.11
   > register `DOC→TXT` (`Text`), `DOC→MD` (`Markdown`†, LO 26.2), `DOC→HTML` (`HTML (StarWriter)`) via **LibreOffice** — pandoc **cannot** read legacy binary `.doc`, so these down-conversions are LO-owned (keeps every pair single-engine, no chaining); lossy `doc_to_text`/`doc_simplified`; LO handles legacy code pages so non-Latin text survives; embedded OLE objects (old equation editor) may not render → reported, not crashed. The LO Markdown EXPORT is new in 26.2 → its reliability is the `[DEFER: corpus]` flag (design fixed, reliability empirical — distinct from the MD-import gate P7.64).
-- [ ] **P7.40** [RUST] Wire the office↔office round-trips `DOCX/DOC/ODT/RTF` among themselves (LibreOffice) · §3.5.2 documents.md · G31 G32
+- [ ] **P7.40** [RUST] Wire the office↔office round-trips `DOCX/DOC/ODT/RTF` among themselves (LibreOffice) · §3.5.2 · G31 G32
   needs: P7.8, P7.9, P7.10, P7.11
   > register every office↔office pair via LO with the fixed filters: `→DOCX` (`MS Word 2007 XML`), `→DOC` (`MS Word 97`), `→ODT` (`writer8`), `→RTF` (`Rich Text Format`); the matrix `✓` set (`DOCX↔DOC/ODT/RTF`, `DOC↔DOCX/ODT/RTF`, `ODT↔DOCX/DOC/RTF`, `RTF↔DOCX/DOC/ODT`); `→DOC/ODT` near-lossless (`—`/minor feature loss), `→RTF` `✓` (rich features simplified → `doc_simplified`). ODT round-trips are highest-fidelity (LO home format); fonts/embedded-images/tracked-changes/encoding handled per documents.md edge cases; macros never executed (the P7.5 profile). `*→DOC` offered ONLY from office sources (not TXT/MD/HTML).
 
@@ -284,16 +288,16 @@ clusters and `needs:` their cluster's pair boxes.
 > exports in one pass (no chained pandoc→LaTeX). `TXT→PDF` is faithful; the
 > word-processor + `MD→PDF` + `HTML→PDF` paths are reflow/render lossy.
 
-- [ ] **P7.41** [RUST] Wire `DOCX/DOC/ODT/RTF → PDF` (LibreOffice `writer_pdf_Export`) + the `doc_pdf_reflow` lossy flag · §3.5.2 documents.md §2.9 · G31 G32
+- [ ] **P7.41** [RUST] Wire `DOCX/DOC/ODT/RTF → PDF` (LibreOffice `writer_pdf_Export`) + the `doc_pdf_reflow` lossy flag · §3.5.2 §2.9 · G31 G32
   needs: P7.13, P7.40
   > register the four word-processor `→PDF` producers via LO Writer filter `writer_pdf_Export` with the FilterData defaults (P7.24-doc; `UseTaggedPDF=true` — Writer emits well-structured heading/paragraph tags); each is the `★` default for its source; all `✓★~` lossy `doc_pdf_reflow` (font-substitution/reflow — the bundled-font set P7.2 minimizes it); embedded images preserved into PDF.
-- [ ] **P7.42** [RUST] Wire `TXT → PDF` (LibreOffice, faithful) · §3.5.2 documents.md §2.9 · G31 G32
+- [ ] **P7.42** [RUST] Wire `TXT → PDF` (LibreOffice, faithful) · §3.5.2 §2.9 · G31 G32
   needs: P7.13
   > register `TXT→PDF` via LO (lays text into pages); the `★` default for TXT; **faithful (`✓★`, NOT lossy)** — plain text has no structure to reflow, so `TXT→PDF` is the one `→PDF`-via-LO path that carries NO lossy note (deliberately unlike `MD→PDF`).
-- [ ] **P7.43** [RUST] Wire `HTML → PDF` (LibreOffice HTML import filter) + the `doc_html_render` lossy flag · §3.5.2 documents.md §2.9 · G31 G32
+- [ ] **P7.43** [RUST] Wire `HTML → PDF` (LibreOffice HTML import filter) + the `doc_html_render` lossy flag · §3.5.2 §2.9 · G31 G32
   needs: P7.13
   > register `HTML→PDF` via LO's HTML import filter rendering to a laid-out PDF in one pass (no headless-Chromium/wkhtmltopdf — keeps the bundle lean + the pair single-engine); the `★` default for HTML; lossy `doc_html_render` ("may look different from a web browser" — LO's HTML/CSS engine is not a full modern browser); JavaScript never executed; external remote CSS/images not fetched (offline) → noted gaps; relative local assets resolved; `<meta charset>`/BOM honored; embedded `<svg>`/data-URI images render, remote `<img src=http…>` do not.
-- [ ] **P7.44** [RUST] Wire the PDF-export internal fixed-defaults table (none surfaced for documents v1) · §1.6 documents.md · G31
+- [ ] **P7.44** [RUST] Wire the PDF-export internal fixed-defaults table (none surfaced for documents v1) · §1.6 · G31
   needs: P7.13
   > the documents.md internal fixed defaults passed to the export filter, NONE surfaced ("it just works", Principle 8): `SelectPdfVersion=0` (PDF 1.7, max compatibility — verified `15/16/17` are plain PDF versions NOT PDF/A, the PDF/A levels are `1/2/3`); `UseTaggedPDF=true`; `ReduceImageResolution=false`; `Quality=90`; `ExportBookmarks=true`; page range = all. NO advanced-options panel ships for documents v1; the "compress/smaller PDF" toggle is `[DECIDED]` out of v1 (`[DEFER: post-v1]`).
 
@@ -301,13 +305,13 @@ clusters and `needs:` their cluster's pair boxes.
 
 ## P7.x — Document category: PDF→TXT + the canonical producer-list assertion + edge cases
 
-- [ ] **P7.45** [RUST] Wire `PDF → TXT` registration (poppler) as the only PDF-source pair + the parked-reverse rule · §3.5.3 documents.md §1.5 · G31 G32
+- [ ] **P7.45** [RUST] Wire `PDF → TXT` registration (poppler) as the only PDF-source pair + the parked-reverse rule · §3.5.3 §1.5 · G31 G32
   needs: P7.18, P7.19
   > register `PDF→TXT` (poppler) as the **only** offered PDF-source pair (the `★` default for PDF — "get the text out"); heavily lossy `doc_pdf_to_text`; `PDF→DOCX/ODT/HTML/MD/RTF/DOC` are out of v1 (reverse/reconstructive, SSOT Direction & shape rule) — a registry/offered-set assertion that they are NOT offered (the bijection guard must not flag them); OCR of scanned/image PDFs explicitly Parked.
-- [ ] **P7.46** [TEST] Assert the single canonical PDF as-target producer list (all 13 producers in one table) · documents.md §1.5 · G22 G31
+- [ ] **P7.46** [TEST] Assert the single canonical PDF as-target producer list (all 13 producers in one table) · §1.5 · G22 G31
   needs: P7.41, P7.42, P7.43, P7.51, P7.55
   > a structural assertion that the offered PDF as-target producer set == the canonical documents.md table exactly: the 7 document producers (`DOCX/DOC/ODT/RTF/TXT/MD/HTML→PDF`) + the 3 presentation producers (`PPTX/PPT/ODP→PDF`, P7.55) + the 3 spreadsheet producers (`XLSX/XLS/ODS→PDF`, P7.51) — every PDF producer in the entire app is in this one table; the cross-category rows are owned by their files but the PDF column is asserted assembled in one place (it can never be split or contradicted).
-- [ ] **P7.47** [TEST] Assert the document edge cases — encrypted PDF, scanned-PDF empty extraction, encrypted/macro office, fonts · §2.8 documents.md · G31
+- [ ] **P7.47** [TEST] Assert the document edge cases — encrypted PDF, scanned-PDF empty extraction, encrypted/macro office, fonts · §2.8 · G31
   needs: P7.45, P7.41, P7.39
   > the documents.md edge cases as fail-clearly/no-harm tests: password-protected/encrypted PDF → §2.8 "password-protected" (never cracked, never silent empty); scanned/image-only PDF → near-empty TXT reported honestly; encrypted office files → §2.8 password-protected via the LO exit-0-but-wrote-nothing rule (P7.11); macro-bearing `.docm` never executes a macro (P7.5 profile); a document font neither embedded nor on the system → LO substitutes from the bundled set (P7.2) → minor reflow (`doc_pdf_reflow`), non-Latin never tofus.
 
@@ -318,10 +322,10 @@ clusters and `needs:` their cluster's pair boxes.
 - [ ] **P7.48** [TEST] Stage the document corpus (one file per source format) + manifest + SHA-256 entries · §6.4.5 · G24a G22
   needs: P7.1, P7.16, P7.22
   > add `tests/corpus/documents/` files: one per source format (PDF text + a scanned/image-only PDF + an encrypted PDF; DOCX; legacy binary DOC; ODT; RTF; TXT; MD with gfm features + local + remote image refs; single-file HTML), each with a root-`manifest.toml` `[[file]]` (source / redistributable licence / `exercises` / `covers` 2-tuples / `[file.expect]`); regenerate the §6.4.5/P0.5.4 SHA-256 corpus manifest in the same commit (G24a). Files must be CC0/public-domain/self-produced/synthetic.
-- [ ] **P7.49** [TEST] Stage the document content-floor + edge-case fixtures (CJK/RTL, fonts, decompression bombs, malformed) · §6.4.5 §6.4.2 documents.md · G24a G31 G48
+- [ ] **P7.49** [TEST] Stage the document content-floor + edge-case fixtures (CJK/RTL, fonts, decompression bombs, malformed) · §6.4.5 §6.4.2 · G24a G31 G48
   needs: P7.48
   > add the content-floor + edge fixtures: CJK + RTL (Arabic/Hebrew) text documents (the §2.10 content-fidelity corpus — the bundled-font fidelity gate, P7.2); a non-embedded-font document (substitution/reflow); the ZIP-bomb-in-OPC DOCX + a deeply-nested PDF flate-stream decompression-bomb fixture (the §6.4.2/P0.5.3 bomb corpus, fed to the highest-privilege parsers); corrupt/truncated + 0-byte PDF/DOCX/DOC; a `.docx` that is really an ODS (mis-named, content-over-name detection); tracked-changes/comments + embedded-image + embedded-OLE fixtures.
-- [ ] **P7.50** [TEST] Add the document per-pair integration tests (every doc pair, structural readers per target) + lossy-disclosure map · §6.4.3 §6.5 §2.9 documents.md · G31 G32
+- [ ] **P7.50** [TEST] Add the document per-pair integration tests (every doc pair, structural readers per target) + lossy-disclosure map · §6.4.3 §6.5 §2.9 · G31 G32
   needs: P7.48, P7.49
   > for every enumerated document `(source → target)` pair, against every corpus file of its source, on all three platforms: completes (LO exit-0-but-wrote-nothing verified by non-empty output, P7.11); output validated by the MANDATORY structural reader (poppler-opens for PDF + the document→image-or-text OCR `expected_text` content check, NOT a size floor; `unzip`+`[Content_Types].xml` for DOCX; a real reader for ODT/RTF; non-empty/output≠input/size-plausibility for TXT/MD/HTML); no-harm (source `sha256` unchanged, atomic write, no-clobber); fail-clearly on the known-bad fixtures; the §2.9 lossy map fires IFF the §04 matrix flags the pair (`doc_pdf_reflow`/`doc_pdf_to_text`/`doc_to_text`/`doc_simplified`/`doc_html_render`; `TXT→PDF` and `MD→HTML/office` NOT flagged; `MD→PDF` IS flagged `doc_pdf_reflow`); CJK/RTL content-fidelity spot-checks (the §6.4.3 runner is P4-built). G32 lossy-disclosure property holds over the `FormatId×FormatId` product.
 
@@ -335,40 +339,46 @@ clusters and `needs:` their cluster's pair boxes.
 > defended by the import FilterOptions + the "quoted fields are text" switch. Each
 > LO pair box `needs:` the LibreOffice runtime wiring.
 
-- [ ] **P7.51** [RUST] Wire `XLSX/XLS/ODS → PDF` (LibreOffice `calc_pdf_Export`) + the spreadsheet-side `→PDF` options + `doc_pdf_reflow` flag · §3.5.2 spreadsheets.md §2.9 · G31 G32
+- [ ] **P7.51** [RUST] Wire `XLSX/XLS/ODS → PDF` (LibreOffice `calc_pdf_Export`) + the spreadsheet-side `→PDF` options + `doc_pdf_reflow` flag · §3.5.2 §2.9 · G31 G32
   needs: P7.13, P7.9, P7.10, P7.11
   > register the three spreadsheet `→PDF` producers via LO Calc filter `calc_pdf_Export` (PDF target owned by documents.md; these are the producer rows); lossy `doc_pdf_reflow` (live workbook → frozen page; formulas freeze to values, wide tables scale/clip, fonts substitute); the spreadsheet-side controls (Advanced): **Sheets to print** = all non-empty sheets (PDF can be multi-page → all populated sheets, empty skipped); **Page orientation** = inherit doc print settings else portrait; **Fit wide sheets** = fit-to-width 1 page wide (the "why is half my table missing" fix).
-- [ ] **P7.52** [RUST] Wire `XLS/ODS/CSV/TSV → XLSX` and `XLSX/ODS/CSV/TSV → XLS` and the `↔ODS` workbook pairs (LibreOffice) + `xls_legacy_limits` · §3.5.2 spreadsheets.md §2.9 · G31 G32
+- [ ] **P7.52** [RUST] Wire the LibreOffice workbook↔workbook target registrations (three independent filter registrations) · §3.5.2 §2.9 · G31 G32
   needs: P7.8, P7.9, P7.10, P7.11
-  > register the workbook↔workbook pairs via LO: `→XLSX` (`Calc MS Excel 2007 XML`, the `★` default for XLS/ODS/CSV/TSV — "modernise/turn-into-a-real-workbook"), `→XLS` (`MS Excel 97`), `→ODS` (`calc8`); `→ODS` practically lossless for ordinary content, `→XLS` the **only lossy workbook target** (`xls_legacy_limits` — 65 536 rows × 256 cols, post-2003 features dropped); charts/images/pivots/conditional-formatting/styles/comments/named-ranges/print-areas preserved workbook↔workbook to the extent both formats support, rasterised/frozen on `→PDF`; macros/VBA always dropped, never executed; `.xlsm`/`.fods` detected as XLSX/ODS-family.
-- [ ] **P7.53** [RUST] Wire `CSV/TSV → XLSX/XLS/ODS` (LibreOffice import with sniffed-delimiter/encoding FilterOptions) + the CSV-injection-safe import · §3.5.2 spreadsheets.md §0.11 · G31 G32
-  needs: P7.8, P7.9, P7.10, P7.11, P3.27
+  > register the workbook↔workbook pairs via LO as **three independent filter registrations** (distinct engine invocation + distinct lossiness analysis each, split into sub-boxes so a failure is attributable). Shared edge rules across all three: charts/images/pivots/conditional-formatting/styles/comments/named-ranges/print-areas preserved workbook↔workbook to the extent both formats support; macros/VBA always dropped, never executed; `.xlsm`/`.fods` detected as XLSX/ODS-family.
+  - [ ] **P7.52.1** [RUST] Wire `* → XLSX` (`Calc MS Excel 2007 XML`, the `★` default for XLS/ODS/CSV/TSV) · §3.5.2 · G31 G32
+    > `→XLSX` (`Calc MS Excel 2007 XML`) — the `★` default for XLS/ODS/CSV/TSV ("modernise/turn-into-a-real-workbook"); not lossy as a target (the richest workbook container).
+  - [ ] **P7.52.2** [RUST] Wire `* → XLS` (`MS Excel 97`) + the `xls_legacy_limits` lossy disclosure (the only lossy workbook target) · §3.5.2 §2.9 · G31 G32
+    > `→XLS` (`MS Excel 97`) — the **only lossy workbook target**, the sole carrier of `xls_legacy_limits` (65 536 rows × 256 cols, post-2003 features dropped); the lossy note fires only on this direction.
+  - [ ] **P7.52.3** [RUST] Wire `↔ ODS` (`calc8`) — practically lossless for ordinary content · §3.5.2 · G31 G32
+    > `→ODS` (`calc8`) — practically lossless for ordinary content (LO home format, no §2.9 note for ordinary content).
+- [ ] **P7.53** [RUST] Wire `CSV/TSV → XLSX/XLS/ODS` (LibreOffice import with sniffed-delimiter/encoding FilterOptions) + the CSV-injection-safe import · §3.5.2 §0.11 · G31 G32
+  needs: P7.8, P7.9, P7.10, P7.11, P3.28
   > register `CSV/TSV → XLSX/XLS/ODS` via the LO Calc import filter `Text - txt - csv (StarCalc)` with explicit import `FilterOptions` carrying the **P3-sniffed delimiter (token 1) + encoding (token 3)** so LO does not re-guess (deterministic import); **CSV-injection-safe**: a leading `=`/`+`/`-`/`@` cell is imported as **text**, never auto-executed as a live formula (formula evaluation on import NOT exposed in v1 — the DDE/CSV-injection class closed); `CSV→workbook` is **not lossy** (text in, richer container out — only adds structure); ragged rows padded with empty cells (never truncated); a stray BOM consumed not emitted as a phantom first cell; embedded newlines in quoted fields preserved (RFC-4180).
-- [ ] **P7.54** [RUST] Surface the native `CSV↔TSV` pair registration in the spreadsheet category (P3-built engine, not rebuilt) · §3.5.6 spreadsheets.md §3.2 · G31 G32
-  needs: P3.40, P3.41
+- [ ] **P7.54** [RUST] Surface the native `CSV↔TSV` pair registration in the spreadsheet category (P3-built engine, not rebuilt) · §3.5.6 §3.2 · G31 G32
+  needs: P3.41, P3.42
   > register the native `CSV→TSV` and `TSV→CSV` pairs (`EngineProgram::InProcessNative`, the P3-built MIT streamed transform — encoding-normalise → delimiter-swap → RFC-4180 re-quote → CSV-injection literal-preservation) into the spreadsheet category's offered set; **not rebuilt** — only its category membership + per-source-default routing (CSV's offered set includes `TSV` native, TSV's includes `CSV` native) surfaced here. `CSV↔TSV` is **not lossy** (both plain text; only delimiter + encoding normalise to UTF-8). The split keeps CSV↔TSV out of LO precisely to avoid LO's number/date auto-recognition mangling (`0123`→`123`, `3/4`→a date) — a content-fidelity decision, not just perf.
 
 ---
 
 ## P7.x — Spreadsheet category: shared option sets, encoding/delimiter policy, multi-sheet & advanced-option declarations
 
-- [ ] **P7.55** [RUST] Wire the CSV/TSV EXPORT FilterOptions assembly (field-sep / quote / encoding / BOM / values-not-formulas) · §3.5.2 spreadsheets.md · G31
+- [ ] **P7.55** [RUST] Wire the CSV/TSV EXPORT FilterOptions assembly (field-sep / quote / encoding / BOM / values-not-formulas) · §3.5.2 · G31
   needs: P7.8
   > assemble the LO `Text - txt - csv (StarCalc)` export `FilterOptions` token string for `workbook→CSV/TSV`: field-separator fixed by target (CSV=ASCII 44, TSV=ASCII 9, token 1); text-delimiter double-quote (ASCII 34, token 2, RFC-4180 quoting); output encoding default **UTF-8** (token 3=76), Windows-1252 (token 3=1)/UTF-16/ISO-8859-1/-15 overrides; BOM off for UTF-8 (token 14, on-request only); **cell content = values as shown** (token 9 *Save cell contents as shown*=true, token 10 *Export cell formulae*=false — a CSV of results not `=A1+B1`). The opposite (export formulas) flips tokens 9/10 (Advanced, off).
-- [ ] **P7.56** [RUST] Wire the `* → CSV/TSV` lossy disclosure + the multi-sheet ONE-sheet behaviour + the single-sheet fast path · §3.5.2 spreadsheets.md §2.9 · G31 G32
+- [ ] **P7.56** [RUST] Wire the `* → CSV/TSV` lossy disclosure + the multi-sheet ONE-sheet behaviour + the single-sheet fast path · §3.5.2 §2.9 · G31 G32
   needs: P7.52, P7.55
   > register `XLSX/XLS/ODS → CSV` (CSV the `★` default for XLSX) and `→ TSV` via LO; lossy `sheet_to_delimited` (one sheet only; formatting/formulas-as-text/charts/colours/multi-sheet dropped — values only); the load-bearing multi-sheet decision: a multi-sheet workbook → CSV/TSV exports **ONE sheet** (aligns with the one-source→one-target rule; one-to-many fan-out is parked) with a passive note ("only one sheet is exported to CSV"); single-sheet workbooks get **no note and no picker** (the overwhelming common case, the fast path). `CSV/TSV→PDF` is **out** (matrix note ² — a delimited text file has no page layout; the in-app path is `CSV→XLSX` first) — assert it is NOT offered.
-- [ ] **P7.57** [UI] Register the multi-sheet picker advanced-option DECLARATION (default = active sheet, shown only when >1 sheet) · §1.6 spreadsheets.md · G47
+- [ ] **P7.57** [UI] Register the multi-sheet picker advanced-option DECLARATION (default = active sheet, shown only when >1 sheet) · §1.6 · G47
   needs: P7.56
   > register the `[DECIDED]` (c) multi-sheet picker against the P4 panel: a dropdown shown **only when >1 sheet** is detected, **defaulting to the active sheet** (does not violate "no required choices" — it defaults); silently exporting a sheet the user didn't mean is the data-surprise the SSOT *Fail clearly* spirit dislikes. (The §6.6 usability confirmation of the affordance is the only residual.)
-- [ ] **P7.58** [RUST] Wire the CSV/TSV encoding + delimiter detection policy + the no-silent-transliteration rule · §1.2 spreadsheets.md §2.10 · G31 G32
-  needs: P3.26, P3.27
+- [ ] **P7.58** [RUST] Wire the CSV/TSV encoding + delimiter detection policy + the no-silent-transliteration rule · §1.2 §2.10 · G31 G32
+  needs: P3.27, P3.28
   > surface the spreadsheets.md encoding policy onto the office path (the sniff itself is P3-built): on read BOM-first → strict UTF-8 → **Windows-1252** fallback (NOT ISO-8859-1 — Latin-1 mis-handles the `0x80–0x9F` curly-quote/em-dash/€ range); delimiter sniff over the first 20 non-empty lines among `,`/`;`/`\t`/`|` choosing the most consistent field-count (semicolon-CSV handled — `1,50` not mis-split; a tab winner reclassifies as TSV, §1.3); on write **UTF-8 without BOM** default; **no silent transliteration** — characters un-representable in a user-chosen non-Unicode output encoding are flagged lossy (`text_encoding_narrowed`), never dropped/`?`-replaced silently; undetectable/ambiguous → decline clearly (§2.8), never a wrong split.
-  - [ ] **P7.58.1** [UI] Register the CSV/TSV input encoding + input delimiter Advanced-option DECLARATIONS · §1.6 spreadsheets.md · G47
+  - [ ] **P7.58.1** [UI] Register the CSV/TSV input encoding + input delimiter Advanced-option DECLARATIONS · §1.6 · G47
     > input encoding (Auto-detect default; UTF-8/UTF-16 LE/BE/Windows-1252/ISO-8859-1/-15 overrides, passed verbatim as LO import token 3 so LO does not re-sniff); input delimiter (Auto-detect default; comma/semicolon/tab/pipe/custom-single-char overrides, passed as token 1).
-  - [ ] **P7.58.2** [UI] Register the "Quoted fields are text" + the output encoding/BOM/export-formulas Advanced-option DECLARATIONS · §1.6 spreadsheets.md · G47
+  - [ ] **P7.58.2** [UI] Register the "Quoted fields are text" + the output encoding/BOM/export-formulas Advanced-option DECLARATIONS · §1.6 · G47
     > "Quoted fields are text" (default OFF — the `0123`-leading-zero / `3/4`-becomes-a-date fix: token "quoted field as text"=true, *Detect special numbers*=false); output encoding (UTF-8 default) + BOM (off for UTF-8) + "export formulas instead of values" (Advanced, off) for the export side; first-row-is-header NOT exposed (a downstream concern).
-- [ ] **P7.59** [TEST] Wire the spreadsheet per-source-default-target table (XLSX→CSV; XLS/ODS/CSV/TSV→XLSX) zero-click assertion · §1.5 §1.6 spreadsheets.md · G31
+- [ ] **P7.59** [TEST] Wire the spreadsheet per-source-default-target table (XLSX→CSV; XLS/ODS/CSV/TSV→XLSX) zero-click assertion · §1.5 §1.6 · G31
   needs: P7.51, P7.52, P7.54, P7.56
   > a §1.6 defaults-registry assertion: the pre-highlighted default = **CSV** for XLSX, **XLSX** for XLS/ODS/CSV/TSV; dropping any spreadsheet + hitting convert with zero clicks produces the table's default (the no-required-choices gate). XLSX→CSV is the one debatable call (`[DEFER: corpus]` §6.6 usability confirmation — a measured call, not an open design question). Pipe-delimited `.psv` is auto-DETECTED as a CSV input variant, never offered as a target (`[DECIDED]` NOT in v1).
 
@@ -376,10 +386,10 @@ clusters and `needs:` their cluster's pair boxes.
 
 ## P7.x — Spreadsheet category: corpus, per-pair tests
 
-- [ ] **P7.60** [TEST] Stage the spreadsheet corpus + content-floor/edge fixtures + manifest + SHA-256 · §6.4.5 §6.4.2 spreadsheets.md · G24a G22 G31
+- [ ] **P7.60** [TEST] Stage the spreadsheet corpus + content-floor/edge fixtures + manifest + SHA-256 · §6.4.5 §6.4.2 · G24a G22 G31
   needs: P7.1
   > add `tests/corpus/spreadsheets/` files: one per source (XLSX multi-sheet + formulas + charts + `.xlsm`; legacy XLS; ODS + `.fods`; CSV — comma + semicolon-European + Windows-1252-encoded + a leading-`=`/`@` CSV-injection file + a quoted-embedded-delimiter file + a CJK/RTL-content file; TSV with an in-field tab); edge fixtures (a >65 536-row workbook for `xls_legacy_limits`; an encrypted XLSX; a `WEBSERVICE`/external-data-range `.xlsx` T9b sentinel; a ragged-row CSV; a multi-sheet workbook for the picker); each a `manifest.toml` `[[file]]` + redistributable licence; regenerate the SHA-256 manifest in the same commit (G24a). (Reuses the P3 CSV/TSV fixtures where they already cover a case — no inline duplication, single-source helper.)
-- [ ] **P7.61** [TEST] Add the spreadsheet per-pair integration tests (every sheet pair, structural readers) + the CSV-injection/value-fidelity checks · §6.4.3 §6.5 §2.9 spreadsheets.md · G31 G32
+- [ ] **P7.61** [TEST] Add the spreadsheet per-pair integration tests (every sheet pair, structural readers) + the CSV-injection/value-fidelity checks · §6.4.3 §6.5 §2.9 · G31 G32
   needs: P7.60
   > for every enumerated spreadsheet `(source → target)` pair, against every corpus file of its source, on all three platforms: completes (LO exit-0-but-wrote-nothing verified); output validated by the structural reader (`unzip`+`[Content_Types].xml`+`xl/workbook.xml` for XLSX; ODF reader for ODS; a real RFC-4180 CSV/TSV reader — NOT bare field-count — with the CSV-injection literal-preservation assertion and the no-value-mangling `0123`/`3/4` checks; poppler-opens for PDF); no-harm + fail-clearly (encrypted/corrupt fixtures); the multi-sheet single-sheet-export note fires on >1-sheet sources only; `sheet_to_delimited`/`xls_legacy_limits`/`text_encoding_narrowed`/`doc_pdf_reflow` fire IFF the §04 matrix flags it; `CSV↔TSV` + `CSV/TSV→workbook`(UTF-8) carry NO note; CJK/RTL value-fidelity spot-checks.
 
@@ -402,16 +412,16 @@ clusters and `needs:` their cluster's pair boxes.
 > pair box `needs:` the LibreOffice runtime wiring. (PDF→PPTX/ODP reverse parked;
 > slide→image fan-out parked.)
 
-- [ ] **P7.63** [RUST] Wire `PPTX/PPT/ODP → PDF` (LibreOffice `impress_pdf_Export`) + the `slides_to_pdf_flatten` lossy flag + Impress `UseTaggedPDF=false` · §3.5.2 presentations.md §2.9 · G31 G32
+- [ ] **P7.63** [RUST] Wire `PPTX/PPT/ODP → PDF` (LibreOffice `impress_pdf_Export`) + the `slides_to_pdf_flatten` lossy flag + Impress `UseTaggedPDF=false` · §3.5.2 §2.9 · G31 G32
   needs: P7.13, P7.9, P7.10, P7.11
   > register the three slide `→PDF` producers via LO Impress filter `impress_pdf_Export`, the `★` default for every slide source; lossy `slides_to_pdf_flatten` (editability lost; animations/transitions/triggers flattened to final state; embedded video/audio dropped — poster/first-frame only; fonts substituted if not embedded; speaker notes omitted unless the notes switch is on); `UseTaggedPDF=false` deliberately (Impress tagged-PDF is limited/noisy — the intentional asymmetry vs documents' Writer `UseTaggedPDF=true`, not a harmonisation gap). Container-detection collisions (P7.29/P7.30) are the headline risk.
-- [ ] **P7.64** [RUST] Wire the slide office↔office pairs with the ASYMMETRIC MS-family loss (`PPT→PPTX` plain · `PPTX→PPT` lossy) + ODF↔MS lossy · §3.5.2 presentations.md §2.9 · G31 G32
+- [ ] **P7.64** [RUST] Wire the slide office↔office pairs with the ASYMMETRIC MS-family loss (`PPT→PPTX` plain · `PPTX→PPT` lossy) + ODF↔MS lossy · §3.5.2 §2.9 · G31 G32
   needs: P7.8, P7.9, P7.10, P7.11
   > register the slide office↔office pairs via LO: `→PPTX` (`Impress MS PowerPoint 2007 XML`), `→PPT` (`MS PowerPoint 97`), `→ODP` (`impress8`); the [OPEN-1]-resolved asymmetry — **`PPT→PPTX` plain `✓`** (modernizing to a richer format that holds everything the legacy one did → NO §2.9 note) vs **`PPTX→PPT` `✓~` lossy `pptx_to_ppt_legacy`** (downgrade to BIFF8/PowerPoint-97 structurally can't store SmartArt/modern-charts/Morph → simplified/dropped); the cross-model `ODP→PPTX/PPT` + `PPTX/PPT→ODP` all `✓~` `office_roundtrip_approx` (ODF↔MS shapes/styles/transitions approximated); same-format cells `—` (not offered, degenerate — no "re-compress" use case for slides); embedded media/fonts/OLE + macros-dropped per the per-format edge cases; ODP is the highest-fidelity import (LO home format).
-- [ ] **P7.65** [TEST] Assert the slide reverse/fan-out parked rules (PDF→PPTX/ODP out; slide→image out) + the no-office-office-options rule · §1.5 presentations.md · G22 G31
+- [ ] **P7.65** [TEST] Assert the slide reverse/fan-out parked rules (PDF→PPTX/ODP out; slide→image out) + the no-office-office-options rule · §1.5 · G22 G31
   needs: P7.63, P7.64
   > a registry/offered-set assertion: `PDF→PPTX/PPT/ODP` are out (reverse/reconstructive, parked — the bijection guard must not flag them); slide→image fan-out (one PNG/JPG per slide) is parked (one-to-many, SSOT direction rule — LO `impress_png_Export`/`impress_jpg_Export` recorded as a clean post-v1 add, capability noted not lost); office→office presentations expose **no** options at all (a straight engine-default re-encode — intentional, not a gap).
-- [ ] **P7.66** [UI] Register the "Include speaker-notes pages" Basic-option DECLARATION (`ExportNotesPages=true`) · §1.6 presentations.md · G47
+- [ ] **P7.66** [UI] Register the "Include speaker-notes pages" Basic-option DECLARATION (`ExportNotesPages=true`) · §1.6 · G47
   needs: P7.63
   > register the single Basic switch for the slide `→PDF` pairs against the P4 panel: "Include speaker-notes pages" → **`ExportNotesPages=true`** (notes PAGES, the full-page layout — NOT `ExportNotes=true` notes-as-annotations, [OPEN-3] resolved), default OFF; the one switch with broad everyday demand ("export the deck with my notes for the printout"). The rest of the impress PDF FilterData (Quality/ReduceImageResolution/MaxImageResolution/UseLosslessCompression/SelectPdfVersion/EmbedStandardFonts) stay Advanced/not-exposed at engine defaults; office→office has no exposed options.
 
@@ -419,10 +429,10 @@ clusters and `needs:` their cluster's pair boxes.
 
 ## P7.x — Presentation category: corpus, per-pair tests
 
-- [ ] **P7.67** [TEST] Stage the presentation corpus + content-floor/edge fixtures + manifest + SHA-256 · §6.4.5 §6.4.2 presentations.md · G24a G22 G31
+- [ ] **P7.67** [TEST] Stage the presentation corpus + content-floor/edge fixtures + manifest + SHA-256 · §6.4.5 §6.4.2 · G24a G22 G31
   needs: P7.1
   > add `tests/corpus/presentations/` files: one per source (PPTX with SmartArt + modern charts + a Morph transition + embedded media + embedded fonts + speaker notes; legacy binary PPT + a `.pps`; ODP + a `.otp`; macro-enabled `.pptm`/`.ppsx`), each a `manifest.toml` `[[file]]` + redistributable licence; edge fixtures (an encrypted/password PPTX; a corrupt/partial OPC zip; a 0-byte deck; a CFB-ambiguous `.ppt`-vs-`.doc`-vs-`.xls` set; a CJK/RTL-text deck; a deck whose font is not embedded; a deck with embedded video for the poster-only drop); regenerate the SHA-256 manifest in the same commit (G24a).
-- [ ] **P7.68** [TEST] Add the presentation per-pair integration tests (every slide pair, structural readers) + the asymmetric-loss assertion · §6.4.3 §6.5 §2.9 presentations.md · G31 G32
+- [ ] **P7.68** [TEST] Add the presentation per-pair integration tests (every slide pair, structural readers) + the asymmetric-loss assertion · §6.4.3 §6.5 §2.9 · G31 G32
   needs: P7.67
   > for every enumerated slide `(source → target)` pair, against every corpus file of its source, on all three platforms: completes (LO exit-0-but-wrote-nothing verified); output validated by the structural reader (poppler-opens + the slide→image OCR `expected_text` content check for `→PDF`; `unzip`+`[Content_Types].xml` for PPTX; ODF reader for ODP); no-harm + fail-clearly (encrypted/corrupt/0-byte fixtures); macros never executed; the asymmetric loss asserted (`PPT→PPTX` fires NO note; `PPTX→PPT` fires `pptx_to_ppt_legacy`; ODF↔MS fires `office_roundtrip_approx`; `→PDF` fires `slides_to_pdf_flatten` unconditionally); embedded-media poster-only drop + font-substitution + CJK/RTL content-fidelity spot-checks. G32 lossy-disclosure-iff-flagged holds.
 
@@ -437,13 +447,13 @@ clusters and `needs:` their cluster's pair boxes.
 > DEMOTED TO PARKED (per the SSOT v1-DoD second exception), never silently chained.
 > `MD→DOCX/ODT/RTF/HTML/TXT` are pandoc-owned and unaffected (P7.36).
 
-- [ ] **P7.69** [RUST] Wire `MD → PDF` via LibreOffice 26.2 Markdown import + the `doc_pdf_reflow` lossy flag (the ship path) · §3.5.2 documents.md §2.9 §3.2 · G31 G32
+- [ ] **P7.69** [RUST] Wire `MD → PDF` via LibreOffice 26.2 Markdown import + the `doc_pdf_reflow` lossy flag (the ship path) · §3.5.2 §2.9 §3.2 · G31 G32
   needs: P7.13, P7.41
   > register `MD→PDF` via **LO 26.2's native Markdown import** → `writer_pdf_Export` (single-engine, no chaining); the `★` default for MD; lossy **`doc_pdf_reflow`** (the one MD→PDF exception — LO lays Markdown out with font-substitution/reflow exactly like the word-processor `→PDF` paths, classified the SAME as DOCX/DOC/ODT/RTF/HTML→PDF, **not** "faithful" like the structureless `TXT→PDF`). Local relative images resolved; remote URLs not fetched (offline) → broken refs noted. This is the ship path that the P7.70 gate either confirms reliable or demotes.
-- [ ] **P7.70** [TEST] Run the LO-26.2-Markdown-import corpus gate → resolve ship-vs-park for `MD→PDF` (record in `docs/demoted-pairs.md` if parked) · §6.5 §6.5.3 documents.md §3.2 · G31 G32
+- [ ] **P7.70** [TEST] Run the LO-26.2-Markdown-import corpus gate → resolve ship-vs-park for `MD→PDF` (record in `docs/demoted-pairs.md` if parked) · §6.5 §6.5.3 §3.2 · G31 G32
   needs: P7.69, P7.48, P7.49
   > the `[DEFER: corpus]` resolution: run the LO 26.2 Markdown-import path against the MD corpus (gfm features, local + remote image refs, code blocks, front-matter, CJK/RTL) on all three platforms and decide: **(ship)** if it meets the §6.5 reliability bar → `MD→PDF` is `reliable` in the ledger; **(park)** if it FAILS → `MD→PDF` is **demoted to parked** (SSOT v1-DoD second exception) — NOT chained (the `MD→pandoc-HTML→LO-PDF` chain stays disallowed, §3.2), NOT shipped broken — with a `docs/demoted-pairs.md` row (kind=`reliability-demotion`, affected platform(s), reason, ledger ref) + the §6.5.3 release-note mirror + the §6.8 orphan-row check. Phase 3 must NOT assume a silent fallback exists.
-- [ ] **P7.71** [TEST] Resolve the `MD→ODT/DOCX/RTF` LO-import-vs-pandoc ownership (`[DEFER: corpus]`, single registry owner either way) · §6.5 documents.md §3.2 · G31 G32
+- [ ] **P7.71** [TEST] Resolve the `MD→ODT/DOCX/RTF` LO-import-vs-pandoc ownership (`[DEFER: corpus]`, single registry owner either way) · §6.5 §3.2 · G31 G32
   needs: P7.70, P7.36
   > the documents.md open-item 1 second half: the v1 default is LO 26.2 imports `.md` and exports ODT/DOCX directly (single-engine); the documented fallback **only if the corpus shows LO MD import unreliable** is pandoc owning `MD→DOCX/ODT/RTF/HTML/TXT` (P7.36 already wires the pandoc path). Resolve against the same P7.70 corpus run; whichever way it lands the registry stays a SINGLE owner per pair (the trait/lookup unaffected, §3.2.3). Unlike `MD→PDF`, these DO have the chain-free pandoc fallback so they are never parked. Record the resolution in this plan's notes.
 

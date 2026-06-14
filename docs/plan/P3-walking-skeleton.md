@@ -131,10 +131,13 @@ two-state crash invariant. This is the heart of what the walking skeleton proves
 - [ ] **P3.16** [RUST] Build the durability sequence — `sync_all` + post-publish directory fsync · §2.1.1
   needs: P3.15
   > step 3 `tmp.sync_all()` (`fsync`/`FlushFileBuffers`) so bytes are durable **before** the rename; step 6 on Unix **fsync the containing directory** after the rename (and on the `link`+`unlink` path after `link`, the same dir-fsync — bytes already durable via the shared inode); Windows dir-fsync is a no-op (NTFS journaling), `MOVEFILE_WRITE_THROUGH` is best-effort metadata flush only. Atomicity does NOT depend on `WRITE_THROUGH` (§2.1.1).
-- [ ] **P3.17** [RUST] Build the FAT/exFAT-class detection + `DivertReason::NoAtomicPublish` (Unix-only) · §2.1.2 §2.7.2 · G48
+- [ ] **P3.17** [RUST] Build the §2.14.3 EXDEV cross-volume fallback inside `fs_guard::atomic_publish` (copy-exactly-once → same-volume exclusive publish) · §2.14.3 §2.1.2 §2.8 · G48 G31
+  needs: P3.16, P3.15
+  > the §2.14.3 `[DECIDED]` reactive cross-device fallback `fs_guard::atomic_publish` tries the direct intra-volume no-placeholder publish (P3.14/P3.15) first and only on **EXDEV/cross-device** runs: (a) detect the cross-device failure; (b) place the engine output on a **named, swept other-volume kind-2 temp** (under the per-run scratch root, or carrying the `.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part` naming so §2.6.3 reclaims it — never an anonymous `$TMPDIR` `tempfile`), the lock-before-part ordering (P3.21) covering it; (c) **re-check `final`-volume free space against the intermediate (≈ output) BEFORE the copy** and fail `OutOfDisk` (§2.8) if it won't fit (this path's ~2× destination-volume peak the §1.10/§2.14.4 preflight does NOT model — mirror §2.7.2's late-divert "never assume it fits"); (d) copy the cross-volume temp into a **new same-volume temp** + `sync_all()` it; (e) publish that same-volume temp → `final` with the no-placeholder exclusive-rename (P3.12/P3.14), the §2.2 numbering retry **re-renaming the SAME already-copied intermediate** on a collision (the expensive cross-volume copy happens **EXACTLY ONCE**; only the cheap intra-volume exclusive-rename loops); (f) dir-fsync; the extra copy removed by §2.6. The cross-volume step is a **copy**, never a cross-volume `rename`; the only rename is intra-volume + exclusive. (The §2.14.2 `0o700` per-run kind-2 scratch-ROOT creation primitive this temp lands under is owned by P3.21's run-lifecycle ordering — the run-start `run-<RunId>/` create-then-lock step.)
+- [ ] **P3.18** [RUST] Build the FAT/exFAT-class detection + `DivertReason::NoAtomicPublish` (Unix-only) · §2.1.2 §2.7.2 · G48
   needs: P3.13
   > detect a destination filesystem that supports **neither** the no-replace rename **nor** hardlinks (FAT/exFAT — `link()` → `EPERM`/`ENOTSUP`): via the OS filesystem-type/`statfs`-class query OR a one-shot capability probe (no-replace-rename → `EINVAL`/unsupported AND `link()` → `EPERM`/`ENOTSUP`). On Unix this is a per-location **DIVERT trigger** carrying `DivertReason::NoAtomicPublish` (§0.6) — the full §2.1 chain then runs on the hardlink-capable system disk (P3.6). **Windows is NOT diverted** — `MoveFileExW`-without-`REPLACE_EXISTING` is a true create-only move on FAT/exFAT too. A G48 bound-firing target.
-- [ ] **P3.18** [TEST] Assert the §2.1.3 two-state crash/power-loss invariant — kill in the post-`sync_all`-pre-`rename` window · §2.1.3 · G31 G15
+- [ ] **P3.19** [TEST] Assert the §2.1.3 two-state crash/power-loss invariant — kill in the post-`sync_all`-pre-`rename` window · §2.1.3 · G31 G15
   needs: P3.16
   > a `#[cfg(test)]` fence in `fs_guard::atomic_publish` injecting a kill **specifically between `sync_all()` and the rename** (all 3 OS) and asserting the on-disk state is **exactly one of** the §2.1.3 states (complete `final`, OR no `final` + a discardable `*.part`, OR — link-fallback only — `final` + a leftover `*.part`) — **never** a truncated/0-byte `final`. This is the activation target for P0.5.9's atomicity-under-interruption home. G31 source-unchanged leg corroborates no original was touched.
 
@@ -146,23 +149,23 @@ two-state crash invariant. This is the heart of what the walking skeleton proves
 instance's temp, and honest residue reporting — so a killed/failed/cancelled walking-skeleton
 item leaves nothing (or surfaces the residue). Activation target for P0.5.9 temp-ownership.
 
-- [ ] **P3.19** [RUST] Build the publish-temp naming + ownership model (`InstanceId`+`RunId`-encoded) · §2.6.1 §2.14.1 §3.5.6
+- [ ] **P3.20** [RUST] Build the publish-temp naming + ownership model (`InstanceId`+`RunId`-encoded) · §2.6.1 §2.14.1 §3.5.6
   needs: P3.1
   > the kind-1 publish temp is a uniquely-named **sibling dotfile** in the destination dir — `…/<dest_dir>/.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part` (`tempfile::NamedTempFile::new_in(final_dir)` / a `TempPath` rooted in `final_dir`), on `final`'s volume by construction (§2.14.1), **never** a system-temp file (§3.5.6 — the native engine's `out_tmp` is this dest-dir temp). `InstanceId`+`RunId` encode ownership so cleanup can tell its own temps from a concurrent instance's and resolve the exact owning lock (§2.6.1).
-- [ ] **P3.20** [RUST] Build the lock-before-part run-lifecycle ordering invariant · §2.6.3 §2.14.1
-  needs: P3.19
-  > `crate::run` at run start: mint `RunId` → create `run-<RunId>/` under the central scratch root → acquire + OS-lock `.lock` → **only then** write the first `*.part`. This is the premise that makes "absent lock ⇒ dead ⇒ reclaimable" SAFE (so a concurrent sweeper never deletes a live foreign `*.part`, §2.6.3) — a §6 property-test target.
-- [ ] **P3.21** [RUST] Build `crate::run::cleanup_item` / `cleanup_run` — own-prefix-scoped cleanup on every exit path · §2.6.2 · G31
-  needs: P3.19
-  > the per-exit-path cleanup table (§2.6.2): item-success (single-call → nothing to remove; link-fallback → `unlink(tmp)`); item-failure → remove that `tmp`; out-of-disk → remove partial + `OutOfDisk` (§2.8), batch continues; run-end → remove the recorded `final_dir` set's temps **by exact own prefix `.convertia-<thisInstanceId>-<thisRunId>-*.part`**, **never a bare `*.part` glob** (which would delete a concurrent foreign instance's live temp — SSOT). Recording the actual `final_dir` per written item (incl. divert/cross-volume) is what makes run-end enumerate every dir a temp landed in.
-- [ ] **P3.22** [RUST] Build `crate::run::sweep_stale` — startup sweep with held-lock as the sole delete gate · §2.6.3
+- [ ] **P3.21** [RUST] Build the lock-before-part run-lifecycle ordering invariant · §2.6.3 §2.14.1
   needs: P3.20
-  > on startup glob `convertia/scratch/<*>.<*>/run-*` across ALL instance dirs; liveness via a **NON-BLOCKING try-lock** (Unix `flock(LOCK_EX|LOCK_NB)`/`fcntl(F_SETLK)`; Windows `LockFileEx` with `LOCKFILE_FAIL_IMMEDIATELY|LOCKFILE_EXCLUSIVE_LOCK` — bare forms BLOCK, wrong here). Would-block ⇒ LIVE ⇒ untouched; immediate-acquire ⇒ DEAD ⇒ removed (then release). Held-lock is the **sole** delete predicate — never mtime/PID alone (PIDs are reused, §7.1.2). Close the create-then-not-yet-locked window: skip lockless run dirs within a short mtime grace window.
-- [ ] **P3.23** [RUST] Build the opportunistic destination-resident `*.part` reclaim (cross-instance lock-addressable) · §2.6.3
-  needs: P3.22
-  > because kind-1 `*.part` live in destination dirs (not the central scratch root) and §7.4 persists no destination set, reclaim them at (a) run-end/same-session retry and (b) **opportunistically** before any later write into a dest dir: remove a sibling stale `.convertia-*.part` only when its owning run is **dead** — resolve the exact owning lock `convertia/scratch/<InstanceId>.*/run-<RunId>/.lock` from the embedded ids (held ⇒ keep; free/stale/**absent** ⇒ dead ⇒ reclaim). Recognise the **pre-RunId probe residue** `.convertia-<InstanceId>-probe-<rand>.part` (no RunId/jobId) → resolve liveness by `InstanceId` alone (§2.6.3 / §2.7.2).
-- [ ] **P3.24** [RUST] Build cleanup-failure honesty — `CleanupResidue` surfacing, never a silent clean success · §2.6.4 §1.12 · G31
+  > `crate::run` at run start: mint `RunId` → create `run-<RunId>/` under the central scratch root → acquire + OS-lock `.lock` → **only then** write the first `*.part`. This is the premise that makes "absent lock ⇒ dead ⇒ reclaimable" SAFE (so a concurrent sweeper never deletes a live foreign `*.part`, §2.6.3) — a §6 property-test target.
+- [ ] **P3.22** [RUST] Build `crate::run::cleanup_item` / `cleanup_run` — own-prefix-scoped cleanup on every exit path · §2.6.2 · G31
+  needs: P3.20
+  > the per-exit-path cleanup table (§2.6.2): item-success (single-call → nothing to remove; link-fallback → `unlink(tmp)`); item-failure → remove that `tmp`; out-of-disk → remove partial + `OutOfDisk` (§2.8), batch continues; run-end → remove the recorded `final_dir` set's temps **by exact own prefix `.convertia-<thisInstanceId>-<thisRunId>-*.part`**, **never a bare `*.part` glob** (which would delete a concurrent foreign instance's live temp — SSOT). Recording the actual `final_dir` per written item (incl. divert/cross-volume) is what makes run-end enumerate every dir a temp landed in.
+- [ ] **P3.23** [RUST] Build `crate::run::sweep_stale` — startup sweep with held-lock as the sole delete gate · §2.6.3
   needs: P3.21
+  > on startup glob `convertia/scratch/<*>.<*>/run-*` across ALL instance dirs; liveness via a **NON-BLOCKING try-lock** (Unix `flock(LOCK_EX|LOCK_NB)`/`fcntl(F_SETLK)`; Windows `LockFileEx` with `LOCKFILE_FAIL_IMMEDIATELY|LOCKFILE_EXCLUSIVE_LOCK` — bare forms BLOCK, wrong here). Would-block ⇒ LIVE ⇒ untouched; immediate-acquire ⇒ DEAD ⇒ removed (then release). Held-lock is the **sole** delete predicate — never mtime/PID alone (PIDs are reused, §7.1.2). Close the create-then-not-yet-locked window: skip lockless run dirs within a short mtime grace window.
+- [ ] **P3.24** [RUST] Build the opportunistic destination-resident `*.part` reclaim (cross-instance lock-addressable) · §2.6.3
+  needs: P3.23
+  > because kind-1 `*.part` live in destination dirs (not the central scratch root) and §7.4 persists no destination set, reclaim them at (a) run-end/same-session retry and (b) **opportunistically** before any later write into a dest dir: remove a sibling stale `.convertia-*.part` only when its owning run is **dead** — resolve the exact owning lock `convertia/scratch/<InstanceId>.*/run-<RunId>/.lock` from the embedded ids (held ⇒ keep; free/stale/**absent** ⇒ dead ⇒ reclaim). Recognise the **pre-RunId probe residue** `.convertia-<InstanceId>-probe-<rand>.part` (no RunId/jobId) → resolve liveness by `InstanceId` alone (§2.6.3 / §2.7.2).
+- [ ] **P3.25** [RUST] Build cleanup-failure honesty — `CleanupResidue` surfacing, never a silent clean success · §2.6.4 §1.12 · G31
+  needs: P3.22
   > if removing a temp fails: success-with-undeletable-`tmp` → success stands + a `residue` annotation; a failed item whose partial couldn't be cleaned → reported **Failed** WITH `CleanupResidue` naming the path (never a clean success); a Cancelled item whose publish temp survived the §1.7 bounded group-kill confirm-wait → carries a `CleanupResidue` + the §2.8.2 "With residue" tail (§2.6.4 case 3). `CleanupResidue { item, residue_path }` flows into `RunResult.cleanup_incomplete` (§1.12). The string lives in `crate::outcome` (§2.8 `cleanup_residue` row).
 
 ---
@@ -174,20 +177,20 @@ classification scaffolding) and classifies the walking-skeleton types — enough
 drop→detect→group. P5–P7 later add only per-format signatures. Activation target for the
 P0.5.7 KAT convention and the P0.4.3 detect fuzz target.
 
-- [ ] **P3.25** [RUST] Build the layered-detection dispatcher skeleton (magic → container → text → structural-peek) · §1.2 §2.12.4 · G29
+- [ ] **P3.26** [RUST] Build the layered-detection dispatcher skeleton (magic → container → text → structural-peek) · §1.2 §2.12.4 · G29
   needs: P3.1
   > the §1.2 strategy order as a dispatcher: (1) magic-byte/signature sniff on a bounded **first-4-KiB** header window; (2) container introspection seam (ZIP/OLE/`ftyp`/gzip — stubbed for P3, filled by P5–P7); (3) text classification; (4) bounded structural-peek for `notes`/`dims`. All steps are bounded reads in **memory-safe Rust** with no third-party C/C++ decoder, so detection runs **in-core** (§2.12.4 absolute satisfied) — no isolation subprocess for a sniff. Only the text-classification path needed for CSV/TSV is live in P3; the rest are typed seams.
-- [ ] **P3.26** [RUST] Build the text/encoding classification (BOM → UTF-8 → codepage fallback) · §1.2 §2.10.2
-  needs: P3.25
-  > confirm bytes decode as text (BOM → strict UTF-8 → single-byte codepage fallback, e.g. `chardetng`); the encoding heuristic stays **in-core** (memory-safe, bounded, no C/C++ decoder, §2.12.4). Produces `CollectedSummary.encoding_hint` (e.g. "Windows-1252") for the §1.4 summary line. Text encoding is detected, **never assumed from the extension** (§2.10.2).
-- [ ] **P3.27** [RUST] Build CSV-vs-TSV delimiter detection (content over name) · §1.2 §2.10.2
+- [ ] **P3.27** [RUST] Build the text/encoding classification (BOM → UTF-8 → codepage fallback) · §1.2 §2.10.2
   needs: P3.26
-  > delimiter sniff over the bounded sample: a consistent tab-delimited file is **TSV** even if named `.csv` (content over name, §1.2/spreadsheets.md); a consistent comma file is CSV; produce `CollectedSummary.delimiter_hint`. Ambiguous (no consistent delimiter) → `Uncertain` (never silently extension-fall-back). Grouping keys on the resulting **`UserFacingFormat`** (CSV ≠ TSV, delimiter-determined, §1.3).
-- [ ] **P3.28** [RUST] Populate the `DetectionOutcome` result model + outcome rules · §1.2
+  > confirm bytes decode as text (BOM → strict UTF-8 → single-byte codepage fallback, e.g. `chardetng`); the encoding heuristic stays **in-core** (memory-safe, bounded, no C/C++ decoder, §2.12.4). Produces `CollectedSummary.encoding_hint` (e.g. "Windows-1252") for the §1.4 summary line. Text encoding is detected, **never assumed from the extension** (§2.10.2).
+- [ ] **P3.28** [RUST] Build CSV-vs-TSV delimiter detection (content over name) · §1.2 §2.10.2
   needs: P3.27
-  > emit `DetectionOutcome::Recognized { format, confidence: Confidence, dims: None }` for CSV/TSV (non-raster → `dims: None`); `UnsupportedType { detected }` / `Uncertain { best_guess }` / `Empty` / `Unreadable { reason: ReadFailure }` for the others. Outcome rules: unsupported/uncertain/empty/unreadable are **never** offered a target list and never extension-fall-back (§1.2); a `.csv`-that-is-really-TSV converts as its **detected** type. `Confidence { High, Low }` — `Low` never silently falls back to the extension.
-- [ ] **P3.29** [TEST] Stand up the §1.2 detection KAT first entries (CSV/TSV) · §1.2 §6.4.1 · G15
+  > delimiter sniff over the bounded sample: a consistent tab-delimited file is **TSV** even if named `.csv` (content over name, §1.2/spreadsheets.md); a consistent comma file is CSV; produce `CollectedSummary.delimiter_hint`. Ambiguous (no consistent delimiter) → `Uncertain` (never silently extension-fall-back). Grouping keys on the resulting **`UserFacingFormat`** (CSV ≠ TSV, delimiter-determined, §1.3).
+- [ ] **P3.29** [RUST] Populate the `DetectionOutcome` result model + outcome rules · §1.2
   needs: P3.28
+  > emit `DetectionOutcome::Recognized { format, confidence: Confidence, dims: None }` for CSV/TSV (non-raster → `dims: None`); `UnsupportedType { detected }` / `Uncertain { best_guess }` / `Empty` / `Unreadable { reason: ReadFailure }` for the others. Outcome rules: unsupported/uncertain/empty/unreadable are **never** offered a target list and never extension-fall-back (§1.2); a `.csv`-that-is-really-TSV converts as its **detected** type. `Confidence { High, Low }` — `Low` never silently falls back to the extension.
+- [ ] **P3.30** [TEST] Stand up the §1.2 detection KAT first entries (CSV/TSV) · §1.2 §6.4.1 · G15
+  needs: P3.29
   > add the first `tests/detect-kat.toml` entries pinning canonical CSV/TSV (and a `.csv`-that-is-TSV, an ambiguous→`Uncertain`) files to their exact `FormatId`, read by the G15 unit test so §6.4.1's claim is machine-enforced at L2 (activates the P0.5.7 KAT convention). A pure-Rust detection-fuzz target on `crate::detect` is the P0.4.3/G48 leg (registered there).
 
 ---
@@ -198,23 +201,23 @@ P0.5.7 KAT convention and the P0.4.3 detect fuzz target.
 destination model incl. per-location writability/ephemeral/FAT-exFAT divert — so the walking
 skeleton can ingest a CSV folder and land output beside-source or diverted, on all 3 OS.
 
-- [ ] **P3.30** [RUST] Build the §1.1 recursive folder walk + hidden/system filter + per-item-failure-continues · §1.1 §2.4.1
+- [ ] **P3.31** [RUST] Build the §1.1 recursive folder walk + hidden/system filter + per-item-failure-continues · §1.1 §2.4.1
   needs: P3.7
   > the Rust-side depth-first walk (`walkdir`; symlinked dirs not followed as a traversal step, loop-safety); ignore dotfiles + `.DS_Store`/`Thumbs.db`/`desktop.ini` + Windows hidden/system-attribute entries (fixed constant, §1.1); a per-item read/detect failure mid-walk yields a `SkippedItem` and the walk **CONTINUES** (only a `cancel_ingest`/fatal-walk-root error stops it). Retain dropped root(s) for §2.7 subtree re-creation + open-folder.
-- [ ] **P3.31** [RUST] Build the §2.4 freeze point + zero-byte/unreadable-at-intake = Skipped · §2.4.1 §2.4.2 §1.1
-  needs: P3.30
+- [ ] **P3.32** [RUST] Build the §2.4 freeze point + zero-byte/unreadable-at-intake = Skipped · §2.4.1 §2.4.2 §1.1
+  needs: P3.31
   > snapshot the set **eagerly and once** into an immutable `Vec<DroppedItem>` (conversion iterates the snapshot, never re-reads the dir — the structural no-self-feeding defence, §2.4.2); de-dup by `FileIdentity` (P3.7). A 0-byte/unreadable-at-intake item → `Skipped(SkipReason::Empty|Unreadable)` in the §1.4 summary (NOT silently dropped, NOT counted `failed`) — distinct from the **turn-time** unreadable/gone = `Failed` (§1.1). Closes T8 (no self-feeding) at the freeze.
-- [ ] **P3.32** [RUST] Build `fs_guard::location_status` — writability + ephemeral classification (cached per-dir) · §2.7.2 · G31
+- [ ] **P3.33** [RUST] Build `fs_guard::location_status` — writability + ephemeral classification (cached per-dir) · §2.7.2 · G31
   needs: P3.1
-  > the **writable** test: `create_new` a throwaway probe file (`.convertia-<InstanceId>-probe-<rand>.part`, pre-RunId, §2.7.2) then remove it — confirms the dir accepts a create (NOT the §2.1 publish primitive; do not share the helper). Probe **lazily, cache per-directory** within the run. **Ephemeral** test: under `%TEMP%`/`GetTempPathW` (Win), `$TMPDIR`/`/tmp`/`/var/folders` (macOS), `$TMPDIR`/`/tmp`/`/var/tmp`/`/run/user/<uid>` (Linux) → divert. Probe-cleanup-failure → still **writable**, logged only, never a divert. The per-dir cache is a planning **hint**, not a commitment (P3.35 re-checks at write).
-- [ ] **P3.33** [RUST] Build the §2.7 destination modes — beside-source + user-chosen-root subtree re-creation (create-only, ancestor-by-ancestor) · §2.7.1 §1.8
-  needs: P3.9, P3.32
+  > the **writable** test: `create_new` a throwaway probe file (`.convertia-<InstanceId>-probe-<rand>.part`, pre-RunId, §2.7.2) then remove it — confirms the dir accepts a create (NOT the §2.1 publish primitive; do not share the helper). Probe **lazily, cache per-directory** within the run. **Ephemeral** test: under `%TEMP%`/`GetTempPathW` (Win), `$TMPDIR`/`/tmp`/`/var/folders` (macOS), `$TMPDIR`/`/tmp`/`/var/tmp`/`/run/user/<uid>` (Linux) → divert. Probe-cleanup-failure → still **writable**, logged only, never a divert. The per-dir cache is a planning **hint**, not a commitment (P3.36 re-checks at write).
+- [ ] **P3.34** [RUST] Build the §2.7 destination modes — beside-source + user-chosen-root subtree re-creation (create-only, ancestor-by-ancestor) · §2.7.1 §1.8
+  needs: P3.9, P3.33
   > **beside-source (default):** output in the source's parent dir. **User-chosen root `D`:** re-create the dropped-root-relative subtree `D/sub/dir/file.<tgt>` (never flattened); each missing ancestor created **create-only** (`mkdir`, never `mkdir -p`-that-accepts-an-existing-file), ancestor-by-ancestor, then the deepest-created dir's handle is opened + link-safety-verified (P3.9) before the leaf publish (§2.7.1 / §2.3.3 ordering). The common root = deepest dir containing all frozen sources (computed at freeze).
-- [ ] **P3.34** [RUST] Build the §2.7.3 divert target resolution + re-test of the divert root · §2.7.3 §2.7.4
-  needs: P3.32
-  > on an unwritable/ephemeral/`NoAtomicPublish` location, divert that source's output (per-location, not whole-batch) to **Downloads → Documents fallback** via `PathResolver` (`download_dir()`/`document_dir()`), overridable by the user-chosen root. The divert target is itself run through `location_status` (incl. the FAT/exFAT test, P3.17) — if it too is ephemeral/unwritable/FAT-exFAT → fail clearly `WriteFailed` (§2.8), never divert onto a purgeable/another-FAT volume. Diverted outputs de-collided by the same §2.2 numbering; summary maps each output to its source (§2.7.4).
-- [ ] **P3.35** [RUST] Build the late-divert path — post-probe read-only flip re-runs the full safety chain · §2.7.2 §2.7.5 · G31
-  needs: P3.34, P3.15, P3.11
+- [ ] **P3.35** [RUST] Build the §2.7.3 divert target resolution + re-test of the divert root · §2.7.3 §2.7.4
+  needs: P3.33
+  > on an unwritable/ephemeral/`NoAtomicPublish` location, divert that source's output (per-location, not whole-batch) to **Downloads → Documents fallback** via `PathResolver` (`download_dir()`/`document_dir()`), overridable by the user-chosen root. The divert target is itself run through `location_status` (incl. the FAT/exFAT test, P3.18) — if it too is ephemeral/unwritable/FAT-exFAT → fail clearly `WriteFailed` (§2.8), never divert onto a purgeable/another-FAT volume. Diverted outputs de-collided by the same §2.2 numbering; summary maps each output to its source (§2.7.4).
+- [ ] **P3.36** [RUST] Build the late-divert path — post-probe read-only flip re-runs the full safety chain · §2.7.2 §2.7.5 · G31
+  needs: P3.35, P3.15, P3.11
   > when the real §2.1 publish fails for a **writability** reason (USB pulled / share dropped / permission flip after the cached probe), treat the location as unwritable and **late-divert** to the §2.7.3 target **before** reporting failure — re-running the full chain on the divert target: §2.3.3 `is_safe_output`, §2.2.3 path-limit re-checked against the divert **absolute path**, §2.14.4 free-space re-checked against the divert **volume**, then the §2.1 publish. A non-writability error (`OutOfDisk`) is NOT a divert trigger. The divert path is **not degraded** — every guarantee runs identically (§2.7.5, the SSOT Principle-5 assertion this proves end-to-end).
 
 ---
@@ -225,17 +228,17 @@ skeleton can ingest a CSV folder and land output beside-source or diverted, on a
 together, plus the §2.5 re-run detection — the orchestration that consumes detect+plan and
 produces an atomic publish for the walking-skeleton job.
 
-- [ ] **P3.36** [RUST] Build the §1.8 `OutputPlan` computation (directory-based, no pre-baked `final_path`) · §1.8 §2.7
-  needs: P3.33, P3.34
+- [ ] **P3.37** [RUST] Build the §1.8 `OutputPlan` computation (directory-based, no pre-baked `final_path`) · §1.8 §2.7
+  needs: P3.34, P3.35
   > compute `OutputPlan { job, final_dir, diverted: Option<DivertReason>, base_name, extension, publish_temp_dir }` per job before any write, applying the §2.7 rules: resolve `final_dir` (beside-source or diverted), set `publish_temp_dir = final_dir` (the sibling-dotfile temp on the same volume, §2.14.1). **Directory-based by design** — the exact final name + `(n)` numbering is resolved at write time on the resolved real file (P3.15), **never** pre-baked into a `final_path` string (a pre-numbered path reintroduces the §2.1.2 TOCTOU race). No `crosses_volume` field (EXDEV detected reactively at publish, §2.14.3).
-- [ ] **P3.37** [RUST] Assemble the §2.1.1 per-item write sequence (pick-temp → engine-writes → sync → resolve-late → publish → dir-fsync → cleanup-on-error) · §2.1.1 · G31 G32
-  needs: P3.36, P3.16, P3.21
-  > wire the 7 steps in order: (1) pick the publish-temp on `final`'s volume (P3.19); (2) the native CSV/TSV engine writes into `tmp` (P3.8); (3) `tmp.sync_all()`; (4) resolve `final` + the no-clobber decision **as late as possible**; (5) the no-placeholder exclusive-rename publish (P3.15); (6) durability dir-fsync (P3.16); (7) on any error in 3–6, remove `tmp` — `final` was never created (P3.21). Exit-verification: success **only if** the temp output exists and is non-empty (§1.7). G31/G32 source-unchanged + output-validity bind to this pair (activation target for P0.5.5).
-- [ ] **P3.38** [RUST] Build the §2.5 re-run equivalence key + in-session ledger (the sole firing signal) · §2.5.1 §2.5.2
-  needs: P3.36
+- [ ] **P3.38** [RUST] Assemble the §2.1.1 per-item write sequence (pick-temp → engine-writes → sync → resolve-late → publish → dir-fsync → cleanup-on-error) · §2.1.1 · G31 G32
+  needs: P3.37, P3.16, P3.22
+  > wire the 7 steps in order: (1) pick the publish-temp on `final`'s volume (P3.20); (2) the native CSV/TSV engine writes into `tmp` (P3.8); (3) `tmp.sync_all()`; (4) resolve `final` + the no-clobber decision **as late as possible**; (5) the no-placeholder exclusive-rename publish (P3.15); (6) durability dir-fsync (P3.16); (7) on any error in 3–6, remove `tmp` — `final` was never created (P3.22). Exit-verification: success **only if** the temp output exists and is non-empty (§1.7). G31/G32 source-unchanged + output-validity bind to this pair (activation target for P0.5.5).
+- [ ] **P3.39** [RUST] Build the §2.5 re-run equivalence key + in-session ledger (the sole firing signal) · §2.5.1 §2.5.2
+  needs: P3.37
   > `EquivKey = hash(source_identity, target_format, effective_settings_canon)` — **no destination component** (v1 verdict destination-independent, §2.5.1); `effective_settings_canon` is the fully-defaulted option set serialised order-independently. `crate::run` keeps an in-memory `HashSet<EquivKey>` (cleared on quit, nothing persisted, §7.4) — a second identical drop **same session** → the prompt fires. Disk presence is a **corroborator only, never fires alone** (an existing same-named file is an ordinary collision → silent numbering across sessions, §2.5.2). Accept the documented vanished-output / changed-destination edges.
-- [ ] **P3.39** [RUST] Wire re-run detection into C4 + the §2.5.3 never-overwrite fallback · §2.5.2 §2.5.3 §1.8
-  needs: P3.38
+- [ ] **P3.40** [RUST] Wire re-run detection into C4 + the §2.5.3 never-overwrite fallback · §2.5.2 §2.5.3 §1.8
+  needs: P3.39
   > compute re-run equivalence during **C4 `plan_output`**, returned in `OutputPlanPreview.rerun` (so the UI enters RerunPrompt before Convert); C6 carries the user's `RerunDecision` (Skip default / FreshCopy → ordinary §2.2 numbering, **never** a replacing publish). When equivalence can't be determined (renamed/moved prior output, new session) → fall through to §2.2 silent next-free-variant numbering — the failure mode is a harmless extra numbered copy, **never** an overwrite (which §2.1's exclusive-create makes impossible regardless, §2.5.3).
 
 ---
@@ -246,20 +249,20 @@ produces an atomic publish for the walking-skeleton job.
 re-quoting — and its §1.7 `InProcessNative` lifecycle (self-reported progress, cooperative
 cancel, wall-clock timeout). This is the one engine the walking skeleton runs.
 
-- [ ] **P3.40** [RUST] Build the streamed CSV/TSV transform pass (encoding-normalise → delimiter-swap → RFC-4180 re-quote) · §3.5.6 §2.10.2
-  needs: P3.27, P3.5
-  > a single streamed pass: detect encoding/delimiter (P3.26/P3.27) → re-encode to **UTF-8 (no BOM default)** → swap delimiter → **RFC-4180 re-quote** where a field contains the new delimiter/quote/newline → write to `out_tmp`. Use a real RFC-4180 reader (the `csv` crate). MIT (own code, no §3.6 concern). Both directions (CSV→TSV and TSV→CSV); the offered non-diagonal default for a CSV source is **TSV** (same-format CSV diagonal excluded from tiles, §1.5).
-- [ ] **P3.41** [RUST] Build the CSV-injection-safe literal-preservation rule · §3.5.6 · G32
-  needs: P3.40
+- [ ] **P3.41** [RUST] Build the streamed CSV/TSV transform pass (encoding-normalise → delimiter-swap → RFC-4180 re-quote) · §3.5.6 §2.10.2
+  needs: P3.28, P3.5
+  > a single streamed pass: detect encoding/delimiter (P3.27/P3.28) → re-encode to **UTF-8 (no BOM default)** → swap delimiter → **RFC-4180 re-quote** where a field contains the new delimiter/quote/newline → write to `out_tmp`. Use a real RFC-4180 reader (the `csv` crate). MIT (own code, no §3.6 concern). Both directions (CSV→TSV and TSV→CSV); the offered non-diagonal default for a CSV source is **TSV** (same-format CSV diagonal excluded from tiles, §1.5).
+- [ ] **P3.42** [RUST] Build the CSV-injection-safe literal-preservation rule · §3.5.6 · G32
+  needs: P3.41
   > leading `= + - @` stay **literal text** (never re-interpreted as a formula) — the CSV-injection-safe guarantee (§3.5.6); the G32 output-validity reader asserts CSV-injection literal-preservation (P0.5.6) over the corpus, so this is the behaviour that gate binds to.
-- [ ] **P3.42** [RUST] Build the §1.7 `InProcessNative` self-reported progress (`progress_tx` → `ItemProgress`) · §1.7 §1.11 §3.2.2
-  needs: P3.40, P3.4
+- [ ] **P3.43** [RUST] Build the §1.7 `InProcessNative` self-reported progress (`progress_tx` → `ItemProgress`) · §1.7 §1.11 §3.2.2
+  needs: P3.41, P3.4
   > no stdout to line-read → §1.7 attaches **no** line-reader and instead passes a bounded `tokio::sync::mpsc::Sender<f32>` (`progress_tx`) into the `spawn_blocking` executor; the sync loop `blocking_send(bytes_processed / source_size)` at each N-KB chunk; §1.7 forwards every received fraction as one `ConversionEvent::ItemProgress { runId, itemId, fraction, stage }` — wire-indistinguishable from every other engine (§1.11). Sub-100-KB inputs → a single `1.0` start→done tick (indistinguishable from `CoarseSpawnDone`). Bounded channel = natural back-pressure.
-- [ ] **P3.43** [RUST] Build the §1.7 cooperative cancel (poll token at chunk boundary, drop `out_tmp`) · §1.7 §2.1
-  needs: P3.42
-  > the sync loop polls the job's `CancellationToken` at every N-KB chunk boundary; on cancel it stops mid-stream, **drops the `out_tmp` `TempPath`** (deleted on drop, §3.2.2) → `Cancelled` with no partial leftover — the "cleanly discards the one in progress" guarantee reached **cooperatively** (no kill step to sequence; the §2.6 group-kill step is a no-op for this engine, §1.7 InProcessNative sub-case).
-- [ ] **P3.44** [RUST] Build the §1.7 wall-clock timeout + wedged-uninterruptible-read bound · §1.7 §0.9 §2.12.4
+- [ ] **P3.44** [RUST] Build the §1.7 cooperative cancel (poll token at chunk boundary, drop `out_tmp`) · §1.7 §2.1
   needs: P3.43
+  > the sync loop polls the job's `CancellationToken` at every N-KB chunk boundary; on cancel it stops mid-stream, **drops the `out_tmp` `TempPath`** (deleted on drop, §3.2.2) → `Cancelled` with no partial leftover — the "cleanly discards the one in progress" guarantee reached **cooperatively** (no kill step to sequence; the §2.6 group-kill step is a no-op for this engine, §1.7 InProcessNative sub-case).
+- [ ] **P3.45** [RUST] Build the §1.7 wall-clock timeout + wedged-uninterruptible-read bound · §1.7 §0.9 §2.12.4
+  needs: P3.44
   > a §0.9-owned wall-clock timeout (tight for this light engine) wraps the sync call; on expiry the loop is cancelled cooperatively → `Failed(EngineHang)`, run **CONTINUES**. The wedged-uninterruptible-read caveat: the abandoned thread MUST NOT exhaust the `spawn_blocking` pool — the pool is **bounded with headroom** above the global degree, AND/OR reads go through a **bounded chunked reader with a short per-read deadline**, so a handful of wedged reads degrade gracefully (those items fail, the batch finishes). The §1.10 input-size guard bounds CSV-expansion DoS (in-core untrusted-byte but pure bounded Rust, §2.12.4).
 
 ---
@@ -270,27 +273,27 @@ cancel, wall-clock timeout). This is the one engine the walking skeleton runs.
 fans progress over the Channel, and the §0.4 commands the slice needs — so a real
 drop→convert round-trip runs through the typed IPC surface.
 
-- [ ] **P3.45** [RUST] Build the §1.9 job/batch lifecycle + the Running→Failed kind mapping · §1.9 §2.8
-  needs: P3.44, P3.37
+- [ ] **P3.46** [RUST] Build the §1.9 job/batch lifecycle + the Running→Failed kind mapping · §1.9 §2.8
+  needs: P3.45, P3.38
   > drive `JobState` transitions (`Pending → Running → {Succeeded|Failed(kind)|Cancelled}`; `Skipped` set at construction, never enters the queue, terminal); `crate::run` maps `InvocationResult::Failed(kind)` (internal `ConversionErrorKind`) to the wire `ErrorKind` via `ErrorKind::from(kind)` (the `From` impl owned by `crate::outcome`) **before** the state is recorded / a row or event emitted (§1.9). Deterministic collected/traversal queue order, no reordering (§1.9). A worker-thread panic is caught at the §2.13 boundary as a clean per-item `Failed` (the panic-boundary body is P4; P3 wires the per-item isolation seam).
-- [ ] **P3.46** [RUST] Materialise pre-flight skips into the batch at C6 construction (non-queue `Skipped` records) · §1.9 §1.12
-  needs: P3.45, P3.31
+- [ ] **P3.47** [RUST] Materialise pre-flight skips into the batch at C6 construction (non-queue `Skipped` records) · §1.9 §1.12
+  needs: P3.46, P3.32
   > at C6 the orchestrator builds the `Batch` from the frozen `CollectedSet`, creating for **every `SkippedItem` in `CollectedSet::Single.skipped`** a `ConversionJob` with `JobState = Skipped(reason)` set at construction (reason copied from `SkippedItem.reason`) over the §1.1 single id space — these never enter `Pending`, receive **no** Channel events, and are terminal at construction. This is the single anchor preventing a skip from being lost between the `CollectedSet` and the §1.12 projection (§1.9).
-- [ ] **P3.47** [RUST] Wire the C6 `start_conversion` run + the `ConversionEvent` Channel fan-out · §0.4.1 §0.4.2 §1.11
-  needs: P3.45
-  > C6 creates a `RunId`, enqueues the batch (§0.9), spawns the in-core worker, returns the `RunId` immediately, and streams `ConversionEvent`s: `RunStarted { totalItems = QUEUED-eligible count, willReencode: false }` (CSV/TSV is never re-encode), `ItemStarted`, `ItemProgress` (P3.42), `ItemFinished { outcome }`, `BatchProgress { done, total }` (denominator = queued items only, so a skip never holds the bar below 100%), terminal `RunFinished(RunResult)`. Pre-flight skips emit **no live** `ItemFinished{Skipped}` — terminal-projection only (§0.4.2).
-- [ ] **P3.48** [RUST] Implement C1 `ingest_paths` / C3 `get_targets` / C4 `plan_output` for the slice · §0.4.1 §1.3 §1.4 §1.5
-  needs: P3.31, P3.28, P3.39
-  > **C1** funnels drop/picker/launch-arg paths into the single freeze (P3.31), returns `CollectedSet` (`Single`/`Mixed`/`Unsupported`/`Uncertain`/`Empty`) projected per the §1.3 `group()` rule — incl. the lone-Unsupported / lone-Uncertain specificity + the `EmptyReport→skipped` projection. **C3** resolves the CSV/TSV `TargetOffer` (the offered set, the one pre-highlighted default = TSV for a CSV source, lossy flag, availability) from the registry (§1.5). **C4** computes the `OutputPlan` preview + `rerun` (P3.39) + the §1.10 preflight verdict; eager on `3→4`, debounced re-call on change (§0.4.1).
-- [ ] **P3.49** [RUST] Implement C8 `get_run_summary` + the §1.12 `RunResult` projection (incl. pre-flight skips) · §0.4.1 §1.12
-  needs: P3.46, P3.24
+- [ ] **P3.48** [RUST] Wire the C6 `start_conversion` run + the `ConversionEvent` Channel fan-out · §0.4.1 §0.4.2 §1.11
+  needs: P3.46
+  > C6 creates a `RunId`, enqueues the batch (§0.9), spawns the in-core worker, returns the `RunId` immediately, and streams `ConversionEvent`s: `RunStarted { totalItems = QUEUED-eligible count, willReencode: false }` (CSV/TSV is never re-encode), `ItemStarted`, `ItemProgress` (P3.43), `ItemFinished { outcome }`, `BatchProgress { done, total }` (denominator = queued items only, so a skip never holds the bar below 100%), terminal `RunFinished(RunResult)`. Pre-flight skips emit **no live** `ItemFinished{Skipped}` — terminal-projection only (§0.4.2).
+- [ ] **P3.49** [RUST] Implement C1 `ingest_paths` / C3 `get_targets` / C4 `plan_output` for the slice · §0.4.1 §1.3 §1.4 §1.5
+  needs: P3.32, P3.29, P3.40
+  > **C1** funnels drop/picker/launch-arg paths into the single freeze (P3.32), returns `CollectedSet` (`Single`/`Mixed`/`Unsupported`/`Uncertain`/`Empty`) projected per the §1.3 `group()` rule — incl. the lone-Unsupported / lone-Uncertain specificity + the `EmptyReport→skipped` projection. **C3** resolves the CSV/TSV `TargetOffer` (the offered set, the one pre-highlighted default = TSV for a CSV source, lossy flag, availability) from the registry (§1.5). **C4** computes the `OutputPlan` preview + `rerun` (P3.40) + the §1.10 preflight verdict; eager on `3→4`, debounced re-call on change (§0.4.1).
+- [ ] **P3.50** [RUST] Implement C8 `get_run_summary` + the §1.12 `RunResult` projection (incl. pre-flight skips) · §0.4.1 §1.12
+  needs: P3.47, P3.25
   > the §1.12 run-end projection: `RunResult { collected_set_id, run_id, items, totals, cleanup_incomplete, common_root, divert_root }`; map each output back to its source; a fully-failed batch is a clear failure (derived `failed == total && total > 0`). Project **pre-flight skips** into `RunResult.items` as `ItemResult { state: Skipped(reason), output: None, reason: OutcomeMsg::Skipped{reason} }` (trivial copy, no lossy reverse map), counted in `Totals.skipped` (never `failed`). C8 is the idempotent re-fetch (mirrors the terminal `RunFinished`).
-- [ ] **P3.50** [RUST] Implement C9 `open_path` with the §7.7.3 RunResult-membership validation · §0.4.1 §2.7.4
-  needs: P3.49
+- [ ] **P3.51** [RUST] Implement C9 `open_path` with the §7.7.3 RunResult-membership validation · §0.4.1 §2.7.4
+  needs: P3.50
   > the DoD one-click open-folder/open-file action: the Rust handler **validates `path` against the current `RunResult`'s recorded outputs (or their common/divert root)** (§7.7.3 — the real gate; no `opener:*` WebView grant, §0.10) then calls `OpenerExt` (reveal/open) internally. `OpenKind::{Folder|File|RevealInFolder}`; "open folder" opens `common_root`, and when `divert_root` is `Some(..)` a second affordance opens the divert root (§2.7.4 / §1.12).
-- [ ] **P3.51** [RUST] Wire C7 `cancel_run` / C13 `cancel_ingest` to the cooperative cancel + ingest-token · §0.4.1 §1.1 · G54
-  needs: P3.47, P3.30
-  > **C7** trips the run's §0.4.4 cancellation token → the in-core cooperative cancel (P3.43); already-finished items kept, in-progress discarded cleanly. **C13** trips the ingest-scoped `CancellationToken` keyed by the frontend-generated `CollectingId` (registered at C1 handler entry, dropped on **every** exit branch — no token leak) → the §1.1 walk stops cooperatively, discarding the partial un-frozen set (no cleanup obligation, no temp written during ingest). G54 governs the gate-plane integrity these handlers run under (no security claim of its own).
+- [ ] **P3.52** [RUST] Wire C7 `cancel_run` / C13 `cancel_ingest` to the cooperative cancel + ingest-token · §0.4.1 §1.1 · G54
+  needs: P3.48, P3.31
+  > **C7** trips the run's §0.4.4 cancellation token → the in-core cooperative cancel (P3.44); already-finished items kept, in-progress discarded cleanly. **C13** trips the ingest-scoped `CancellationToken` keyed by the frontend-generated `CollectingId` (registered at C1 handler entry, dropped on **every** exit branch — no token leak) → the §1.1 walk stops cooperatively, discarding the partial un-frozen set (no cleanup obligation, no temp written during ingest). G54 governs the gate-plane integrity these handlers run under (no security claim of its own).
 
 ---
 
@@ -300,29 +303,29 @@ drop→convert round-trip runs through the typed IPC surface.
 Idle/DropZone → Collecting → Confirm → Targets (TSV) → Destination → Converting → Summary —
 exercising the generated `bindings.ts` IPC door. Full polish + the rich components are P4/P8.
 
-- [ ] **P3.52** [UI] Build the §5.2 walking-skeleton state machine (the slice subset) · §5.2 §5.8 · G57
-  needs: P3.47
+- [ ] **P3.53** [UI] Build the §5.2 walking-skeleton state machine (the slice subset) · §5.2 §5.8 · G57
+  needs: P3.48
   > a finite-state reducer over the slice states: `Idle (1) → Collecting (2) → Confirm (3) → Targets+Destination (4/5) → [RerunPrompt (6)] → Converting (7) → Summary (8)`, plus the pre-flight `MixedDropRefusal (9)` / `Unsupported (10)` branches and the global `app://fault → AppFault (12)` wildcard edge. Driven by inbound IPC results/events (§5.8); the backend is the source of truth for facts. All user-facing literals via `strings/ui.ts` (English-only, G57, P0.4.6).
-- [ ] **P3.53** [UI] Build the DropZone + C2a/C2b intake wiring (drop, click-to-browse, choose-folder) · §5.3 §5.4 §0.4.1
-  needs: P3.52
+- [ ] **P3.54** [UI] Build the DropZone + C2a/C2b intake wiring (drop, click-to-browse, choose-folder) · §5.3 §5.4 §0.4.1
+  needs: P3.53
   > **DropZone** in `Idle` (1) + the state-9 re-drop: native file-drop via the window-global `onDragDropEvent` (`paths: string[]`, NOT HTML5 DnD); click/Enter/Space → **C2a `pick_for_intake { kind: 'files' }`**; the "or choose a folder" affordance → **C2a `{ kind: 'folder' }`** (no `dialog:allow-open` grant — Rust-side `DialogExt`, §5.4/§0.10). No raw FS path transits the WebView for intake. A cancelled picker → `CollectedSet::Empty` → stays `Idle`.
-- [ ] **P3.54** [UI] Build the Confirm gate (BatchSummary + FileList skip rows) · §5.3 §1.4
-  needs: P3.53
-  > **BatchSummary** renders the mandatory pre-convert gate (state 3): detected format + count ("N CSV files"); when `skipped` is non-empty, the passive one-line tally *"M file(s) weren't recognized and will be skipped"* (never blocks confirm, never silent). **FileList** (behind a "Show N files" disclosure) is the single owner of the per-item detail — eligible rows plain, skipped rows visually marked with their §2.8 reason; virtualised. `sampleNames`/`raw_path` are display-only, never re-submitted as intake (§5.3).
-- [ ] **P3.55** [UI] Build the FormatPicker (TSV target) + DestinationBar (will-save-to + Change + preflight) · §5.3 §1.5 §2.7
+- [ ] **P3.55** [UI] Build the Confirm gate (BatchSummary + FileList skip rows) · §5.3 §1.4
   needs: P3.54
-  > **FormatPicker** shows the offered target tile(s) with the one pre-highlighted **default = TSV** for a CSV source (descriptors from C3, no platform matrix hardcoded). **DestinationBar** always visible before Convert (state 5): the "**will save to …**" line (beside-source default / divert noted, from the C4 plan), the **Change destination** button (C2b `pick_destination` → C5 `set_destination`), and the **Convert** button **disabled** with a passive `Note` when `preflight.up_front_fail` is `Some(kind)` (the §2.8 string — fails fast up front).
-- [ ] **P3.56** [UI] Build the RerunPrompt interstitial (Skip default / Fresh copy / Cancel) · §5.3 §2.5
+  > **BatchSummary** renders the mandatory pre-convert gate (state 3): detected format + count ("N CSV files"); when `skipped` is non-empty, the passive one-line tally *"M file(s) weren't recognized and will be skipped"* (never blocks confirm, never silent). **FileList** (behind a "Show N files" disclosure) is the single owner of the per-item detail — eligible rows plain, skipped rows visually marked with their §2.8 reason; virtualised. `sampleNames`/`raw_path` are display-only, never re-submitted as intake (§5.3).
+- [ ] **P3.56** [UI] Build the FormatPicker (TSV target) + DestinationBar (will-save-to + Change + preflight) · §5.3 §1.5 §2.7
   needs: P3.55
-  > the one batch-level prompt (state 6), entered **only** from the C4 `rerun` flag (destination-independent, never re-entered on a C5 change): *"Already converted with these settings."* — **Skip (default, focused)** / **Make a fresh copy** / **Cancel** (Esc → back to Destination with the held plan intact). The choice becomes the `RerunDecision` carried into C6. Rendered as a focus-trapped `role="alertdialog"` over the inert-but-mounted Targets/Destination.
-- [ ] **P3.57** [UI] Build the Converting screen (ProgressList real per-item + aggregate bar + Cancel) · §5.3 §1.11 §0.4.2
+  > **FormatPicker** shows the offered target tile(s) with the one pre-highlighted **default = TSV** for a CSV source (descriptors from C3, no platform matrix hardcoded). **DestinationBar** always visible before Convert (state 5): the "**will save to …**" line (beside-source default / divert noted, from the C4 plan), the **Change destination** button (C2b `pick_destination` → C5 `set_destination`), and the **Convert** button **disabled** with a passive `Note` when `preflight.up_front_fail` is `Some(kind)` (the §2.8 string — fails fast up front).
+- [ ] **P3.57** [UI] Build the RerunPrompt interstitial (Skip default / Fresh copy / Cancel) · §5.3 §2.5
   needs: P3.56
-  > **ProgressList** keyed by `itemId` over the `ItemProgress` payloads: real determinate per-item progress (never a bare spinner — the native engine self-reports a real fraction or an honest start→done, §1.11) + the aggregate `BatchProgress` bar; rows transition to terminal `Succeeded`/`Failed`/`Cancelled`/`Skipped`. **Cancel** button → C7 `cancel_run` → the `Converting (Cancelling…)` (7a) sub-state (button disabled, label "Cancelling…", a second Esc ignored) → `Summary` (partial) on backend confirm.
-- [ ] **P3.58** [UI] Build the Summary screen (ResultSummary + OpenActions, split-divert two-button) · §5.3 §1.12 §2.6.4
+  > the one batch-level prompt (state 6), entered **only** from the C4 `rerun` flag (destination-independent, never re-entered on a C5 change): *"Already converted with these settings."* — **Skip (default, focused)** / **Make a fresh copy** / **Cancel** (Esc → back to Destination with the held plan intact). The choice becomes the `RerunDecision` carried into C6. Rendered as a focus-trapped `role="alertdialog"` over the inert-but-mounted Targets/Destination.
+- [ ] **P3.58** [UI] Build the Converting screen (ProgressList real per-item + aggregate bar + Cancel) · §5.3 §1.11 §0.4.2
   needs: P3.57
+  > **ProgressList** keyed by `itemId` over the `ItemProgress` payloads: real determinate per-item progress (never a bare spinner — the native engine self-reports a real fraction or an honest start→done, §1.11) + the aggregate `BatchProgress` bar; rows transition to terminal `Succeeded`/`Failed`/`Cancelled`/`Skipped`. **Cancel** button → C7 `cancel_run` → the `Converting (Cancelling…)` (7a) sub-state (button disabled, label "Cancelling…", a second Esc ignored) → `Summary` (partial) on backend confirm.
+- [ ] **P3.59** [UI] Build the Summary screen (ResultSummary + OpenActions, split-divert two-button) · §5.3 §1.12 §2.6.4
+  needs: P3.58
   > **ResultSummary** renders `RunResult`: per-item success/fail/skip with §2.8 reason strings, output→source map, fully-failed banner (never a quiet "done"); a residue item (`IpcError.residue != None` / in `cleanup_incomplete`) rendered **Failed** with the residue path + an optional "reveal residue" link (C9 `RevealInFolder`). **OpenActions** (Summary-only, not mid-run): "Open folder" → C9 `RevealInFolder` on `common_root`; on `divert_root = Some(..)` render TWO buttons ("Open source folder" + "Open saved-to folder") with the connector line — labels are real `strings/ui.ts` entries (§5.3). "Convert more" → `Idle`.
-- [ ] **P3.59** [UI] Build the pre-flight refusal + fault screens (MixedDropRefusal, Unsupported, AppFault) · §5.2 §5.3 §2.13
-  needs: P3.53
+- [ ] **P3.60** [UI] Build the pre-flight refusal + fault screens (MixedDropRefusal, Unsupported, AppFault) · §5.2 §5.3 §2.13
+  needs: P3.54
   > **MixedDropRefusal** (state 9): hard refusal listing formats+counts, an **active DropZone** as the primary re-drop action (→ `Collecting`) + Dismiss → `Idle`; no subset-convert. **UnsupportedNotice** (state 10): four variants (`Unsupported`/`Uncertain` + its note/`Unreadable`/`Empty` + skip tally), `aria-live="assertive"` heading, focus on Dismiss. **AppFaultNotice** (state 12): plain no-stack-trace "Something went wrong" + Start over (Ctrl/⌘+N), never fabricates per-item outcomes (§2.13). The CommandError inline slot handles a pre-run C3/C4/C5 reject without a full-screen takeover.
 
 ---
@@ -333,21 +336,24 @@ exercising the generated `bindings.ts` IPC door. Full polish + the rich componen
 integration test, the output-validity readers binding, and the cross-OS run that de-risks the
 whole Tauri + atomic-publish + IPC stack early (the README walking-skeleton purpose).
 
-- [ ] **P3.60** [TEST] Author the CSV→TSV / TSV→CSV corpus fixtures + the bound-firing CSV-expansion fixture · §6.4.5 §6.4.2 · G24a G16
-  needs: P3.41
+- [ ] **P3.61** [TEST] Author the CSV→TSV / TSV→CSV corpus fixtures + the bound-firing CSV-expansion fixture · §6.4.5 §6.4.2 · G24a G16
+  needs: P3.42
   > committed corpus fixtures for both pairs (incl. a Windows-1252-encoded CSV, a quoted-field/embedded-delimiter CSV, a CSV-injection `=…`/`@…` leading-token file, a CJK/RTL-content file) under the §6.4.5 conventions; a deterministic **bound-firing** fixture exercising the §1.10 CSV-expansion input-size guard. Each fixture's SHA-256 joins the §6.4.2 corpus manifest (G24a integrity, P0.5.4); single-source helper, no inline duplication (§6.4.2).
-- [ ] **P3.61** [TEST] Bind the G31/G32 output-validity + source-unchanged readers to the CSV/TSV pairs · §6.4.3 §2.5 · G31 G32
-  needs: P3.60, P3.37
+- [ ] **P3.62** [TEST] Bind the G31/G32 output-validity + source-unchanged readers to the CSV/TSV pairs · §6.4.3 §2.5 · G31 G32
+  needs: P3.61, P3.38
   > activate the P0.5.5/P0.5.6 invariants on these pairs: **(a) SOURCE-UNCHANGED** — `sha256` of every corpus source unchanged before/after (the no-harm proof, G31); **(b) OUTPUT-VALIDITY** — the produced output passes a **real RFC-4180 reader** (the `csv` crate) + CSV-injection literal-preservation (NOT bare field-count) + non-empty/output≠input/size-plausibility (G32). Register CSV↔TSV in `tests/corpus/manifest.toml` with its byte-stable/lossy disposition + the determinism sub-assertion (`sha256(out1)==sha256(out2)`).
-- [ ] **P3.62** [TEST] Author the per-pair integration runner end-to-end pass (drop→…→publish→summary) · §6.4.3 §6.5 · G15 G31
-  needs: P3.61, P3.49
+- [ ] **P3.63** [TEST] Author the per-pair integration runner end-to-end pass (drop→…→publish→summary) · §6.4.3 §6.5 · G15 G31
+  needs: P3.62, P3.50
   > the §6.4.3 per-pair integration test driving the **real** vertical slice — frozen-set freeze → detect → C3/C4 → C6 convert → §2.1 atomic publish → `RunResult` summary — against the real temp FS (never mock the no-harm/`fs_guard` layer, the thing under test, P0.5.1); assert the published output exists at the expected beside-source/diverted name, the no-clobber numbering on a pre-existing collision, and the summary maps output→source. G15 unit+integration; the §6.5 ledger marks the pair `reliable` once it passes (the walking-skeleton's first ledger entry).
-- [ ] **P3.63** [TEST] Add the §2.3/§2.4 link-safety + frozen-set + no-self-feeding integration cases · §2.3.3 §2.4.2 · G31 G48
-  needs: P3.62
+- [ ] **P3.64** [TEST] Add the §2.3/§2.4 link-safety + frozen-set + no-self-feeding integration cases · §2.3.3 §2.4.2 · G31 G48
+  needs: P3.63
   > integration cases proving the kernel on real links: a source reached via a symlink + its target both dropped → de-duped to one (§2.3.2); an output dir that is a symlink resolving onto a source → diverted, never clobbered (§2.3.3, T7); an output landing in a watched source folder does NOT expand/restart the batch (§2.4.2 snapshot, T8); a hardlink/junction-to-source identity caught by dev+inode/file-index. These are the activation targets for the P0.5.9 T7/T8 homes + the P0.4.3 `is_safe_output` fuzz.
-- [ ] **P3.64** [TEST] Add the FAT/exFAT-divert + atomicity-under-interruption cross-volume integration case · §2.1.2 §2.7.2 §2.14.3 · G31
-  needs: P3.63, P3.17
-  > an integration case on a FAT/exFAT-class destination (Unix): the publish diverts with `DivertReason::NoAtomicPublish` to the hardlink-capable system disk and the full §2.1 chain holds there (Windows-FAT is NOT diverted and keeps the guarantee by construction, §2.1.2); a cross-volume (`EXDEV`) publish detected reactively (§2.14.3); plus the §2.1.3 kill-in-the-rename-window assertion (P3.18) wired into the cross-OS run so the two-state invariant is proven on a real second volume.
-- [ ] **P3.65** [TEST] Prove the full slice green on Windows + macOS + Linux (the cross-OS de-risk run) · §6.1.3 §6.7.1 · G15 G30
-  needs: P3.64, P3.58
-  > run the P3.62 integration runner + a thin smoke of the C1→C6→C8 round-trip on **all 3 OS** in the Lane-A matrix (G30 build-matrix, P0.4.10) — the README walking-skeleton purpose: de-risk the Tauri + atomic-publish + IPC stack early on every platform before any heavy engine. Assert the per-OS publish primitive (Linux `renameat2`/macOS `renameatx_np`/Windows `FileRenameInformationEx`) is exercised and green, and the slice builds + bundles on each OS (no engine/sidecar dependency to stage, §3.5.6).
+- [ ] **P3.65** [TEST] Add the FAT/exFAT-divert + atomicity-under-interruption cross-volume integration case · §2.1.2 §2.7.2 §2.14.3 · G31
+  needs: P3.64, P3.18, P3.17
+  > an integration case on a FAT/exFAT-class destination (Unix): the publish diverts with `DivertReason::NoAtomicPublish` to the hardlink-capable system disk and the full §2.1 chain holds there (Windows-FAT is NOT diverted and keeps the guarantee by construction, §2.1.2); a cross-volume (`EXDEV`) publish detected reactively exercises the §2.14.3 copy-exactly-once fallback **built in P3.17** (asserting the intermediate is named/swept, the destination-volume free-space re-check fires, and a numbering collision re-renames the already-copied intermediate, never re-copies); plus the §2.1.3 kill-in-the-rename-window assertion (P3.19) wired into the cross-OS run so the two-state invariant is proven on a real second volume.
+- [ ] **P3.66** [TEST] Prove the full slice green on Windows + macOS + Linux (the cross-OS de-risk run) · §6.1.3 §6.7.1 · G15 G30
+  needs: P3.65, P3.59
+  > run the P3.63 integration runner + a thin smoke of the C1→C6→C8 round-trip on **all 3 OS** in the Lane-A matrix (G30 build-matrix, P0.4.10) — the README walking-skeleton purpose: de-risk the Tauri + atomic-publish + IPC stack early on every platform before any heavy engine. Assert the per-OS publish primitive (Linux `renameat2`/macOS `renameatx_np`/Windows `FileRenameInformationEx`) is exercised and green, and the slice builds + bundles on each OS (no engine/sidecar dependency to stage, §3.5.6).
+- [ ] **P3.67** [TEST] Stand up `tests/fuzz_replay.rs` — replay every `fuzz/crashes/`+`fuzz/corpus/` file through the now-real detect + fs_guard (+ CSV/TSV) fuzz-target functions on the STABLE toolchain · §6.4.2 · G48 G24
+  needs: P0.5.8, P3.30, P3.8, P3.41
+  > the activation target for the P0.5.8 fuzz-crash replay convention (`→ activated in P3`): now that the real fuzz-target function BODIES exist — `crate::detect` (P3.30 KAT/sniff), `crate::fs_guard::resolve_identity`/`is_safe_output` (P3.6/P3.8), and the in-core CSV/TSV transform (P3.41) — wire `tests/fuzz_replay.rs` as a plain `cargo test` integration test feeding every committed `fuzz/crashes/`+`fuzz/corpus/` file directly to those target functions with **NO libFuzzer harness**, so it compiles + runs on EVERY platform incl. Windows under the **STABLE** toolchain (only the instrumented `cargo-fuzz` leg needs nightly — Linux/macOS, the P0.4.3/G48 leg). The G24 planted-positive (a committed crash fixture MUST fail the replay if its fix is reverted) binds here. This is the P3 box the P0.5.8 `→ activated in P3` edge points at (`needs: P0.5.8`, the P0-authored convention, satisfied since P0 is `[x]` before the loop).

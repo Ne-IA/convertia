@@ -48,6 +48,7 @@
 > of the P0.7-policy / P4-framework gates for FFmpeg specifically.
 
 - [ ] **P6.1** [BUILD] Stage the FFmpeg + FFprobe sidecar per-OS (cache-keyed, target-triple-suffixed) · §6.1.3 §3.3 · G37
+  needs: P4.27
   > `scripts/stage-engines` restores the `actions/cache`-hosted `ffmpeg-<ver>-<triple>` engine-asset cache (checksum-verified pinned-URL fetch on a miss), places the FFmpeg + FFprobe sidecars under `src-tauri/binaries/` target-triple-suffixed (`ffmpeg-x86_64-pc-windows-msvc.exe`, …), and declares them in `tauri.conf.json` `bundle.externalBin`. The single GPL-2.0+ binary serves audio/video/cross-category. → executes the P0.7.3/P0.7.4 acquisition+staging policy for FFmpeg.
 - [ ] **P6.2** [BUILD] Anchor the FFmpeg engine acquisition + add its `engines.lock` row + SBOM rows · §3.7.2 §3.8 · G37 G35 G36
   needs: P6.1
@@ -109,58 +110,58 @@
 - [ ] **P6.17** [RUST] Wire the channel-preservation + forced-downmix policy · §3.5.1 · G31
   needs: P6.15
   > preserve source channel layout by default for every target; for >2-channel sources → MP3/OGG add `-ac 2` and fire the §2.9 `audio_downmix` note; AAC/M4A/OPUS/FLAC/WAV preserve the source layout (no forced downmix). No silent resample/bit-depth change in the default path.
-- [ ] **P6.18** [RUST] Wire the MP3 target — `libmp3lame -q:a 2` VBR default · §3.5.1 audio.md · G31
+- [ ] **P6.18** [RUST] Wire the MP3 target — `libmp3lame -q:a 2` VBR default · §3.5.1 · G31
   needs: P6.9, P6.16
   > MP3 encode `-c:a libmp3lame -q:a 2` (VBR ≈190k default); always-lossy-as-target. MP3 is the default target of every audio source except MP3 itself. (audio.md MP3 entry.)
-  - [ ] **P6.18.1** [RUST] Wire the MP3 quality advanced-option mapping (V0/V2/V5 + CBR 128/192/320) · §1.6 audio.md · G31
+  - [ ] **P6.18.1** [RUST] Wire the MP3 quality advanced-option mapping (V0/V2/V5 + CBR 128/192/320) · §1.6 · G31
     > the "MP3 quality" preset set → `-q:a N` (VBR High V0 / Standard V2 / Small V5) or `-b:a Nk` (CBR 128/192/320); this same canonical MP3 preset table is reused verbatim by cross-category extract-audio→MP3 (OPEN-B).
   - [ ] **P6.18.2** [UI] Register the "MP3 quality" advanced-option DECLARATION against the P4 panel · §1.6 §2.9 · G47
     > register the §1.6 option declaration (no new panel chrome — P4 owns it); Standard [default].
-- [ ] **P6.19** [RUST] Wire the WAV target — `pcm_s16le` 16-bit default + bit-depth advanced option · §3.5.1 audio.md · G31
+- [ ] **P6.19** [RUST] Wire the WAV target — `pcm_s16le` 16-bit default + bit-depth advanced option · §3.5.1 · G31
   needs: P6.9, P6.16
   > WAV encode `-c:a pcm_s16le` via `wav` muxer, 16-bit default, sample-rate/channels preserved; lossless-as-target except the >16-bit-source → default-16-bit bit-depth-reduction case (fire `audio_bitdepth`). Weak WAV tag model → fire `audio_tags_dropped` only when the source carried tags.
-  - [ ] **P6.19.1** [UI] Register the "WAV bit depth" advanced-option DECLARATION (16 / 24 / 32-float) · §1.6 audio.md · G47
+  - [ ] **P6.19.1** [UI] Register the "WAV bit depth" advanced-option DECLARATION (16 / 24 / 32-float) · §1.6 · G47
     > `16-bit [default]` · `24-bit (pcm_s24le)` · `32-bit float (pcm_f32le)`.
-- [ ] **P6.20** [RUST] Wire the FLAC target — `flac -compression_level 5` default + level advanced option · §3.5.1 audio.md · G31
+- [ ] **P6.20** [RUST] Wire the FLAC target — `flac -compression_level 5` default + level advanced option · §3.5.1 · G31
   needs: P6.9, P6.16
   > FLAC encode `-c:a flac -compression_level 5` (level changes size/speed only, never the audio); lossless-as-target; lossy-ORIGIN flagged `audio_lossy_origin` (no quality gain). Vorbis comments + PICTURE block round-trip.
-  - [ ] **P6.20.1** [UI] Register the "FLAC compression" advanced-option DECLARATION (Fast 0 / Standard 5 / Best 8) · §1.6 audio.md · G47
+  - [ ] **P6.20.1** [UI] Register the "FLAC compression" advanced-option DECLARATION (Fast 0 / Standard 5 / Best 8) · §1.6 · G47
     > exposed cap is 8 (libFLAC native max; FFmpeg 9–12 are non-standard — do NOT surface); validation range `0..=8`.
-- [ ] **P6.21** [RUST] Wire the AAC target — native `aac -b:a 192k` CBR + adts muxer, reading §3.4 availability · §3.5.1 audio.md §3.4 · G31
+- [ ] **P6.21** [RUST] Wire the AAC target — native `aac -b:a 192k` CBR + adts muxer, reading §3.4 availability · §3.5.1 §3.4 · G31
   needs: P6.9, P6.16
   > AAC encode native `-c:a aac -b:a 192k` CBR (native-encoder VBR is unstable) + muxer `adts` (raw `.aac`); always-lossy; raw ADTS has NO tag container → cover art + tags DROPPED (`audio_tags_dropped`). READS the §3.4 AAC per-platform cell (P4 matrix) — if AAC is unavailable on a platform, the AAC target is honestly disabled there (never re-decided here).
-  - [ ] **P6.21.1** [UI] Register the "AAC quality" advanced-option DECLARATION (128/192/256 CBR) · §1.6 audio.md · G47
+  - [ ] **P6.21.1** [UI] Register the "AAC quality" advanced-option DECLARATION (128/192/256 CBR) · §1.6 · G47
     > no VBR exposed (encoder limitation); 192k [default].
-- [ ] **P6.22** [RUST] Wire the M4A target — native `aac` + `ipod` muxer + faststart, reading §3.4 (inherits AAC) · §3.5.1 audio.md §3.4 · G31
+- [ ] **P6.22** [RUST] Wire the M4A target — native `aac` + `ipod` muxer + faststart, reading §3.4 (inherits AAC) · §3.5.1 §3.4 · G31
   needs: P6.21
   > M4A encode native `-c:a aac -b:a 192k` + muxer `ipod` (`.m4a`) + `-movflags +faststart`; identical quality knobs to AAC; KEEPS metadata (iTunes `ilst` atoms + cover art) — M4A's advantage over raw `.aac`. INHERITS AAC's §3.4 disposition (the codec is AAC); M4A-holding-ALAC is the separate ALAC target.
-  - [ ] **P6.22.1** [UI] Register the M4A quality advanced-option DECLARATION (shares the AAC preset set) · §1.6 audio.md · G47
+  - [ ] **P6.22.1** [UI] Register the M4A quality advanced-option DECLARATION (shares the AAC preset set) · §1.6 · G47
     > 128/192/256 CBR; container difference (`.m4a` iTunes atoms) chosen automatically, not a user setting.
-- [ ] **P6.23** [RUST] Wire the OGG (Vorbis) target — `libvorbis -q:a 3` VBR + ogg muxer · §3.5.1 audio.md · G31
+- [ ] **P6.23** [RUST] Wire the OGG (Vorbis) target — `libvorbis -q:a 3` VBR + ogg muxer · §3.5.1 · G31
   needs: P6.9, P6.16
   > OGG encode `-c:a libvorbis -q:a 3` (≈112k) muxer `ogg` — DISTINCT from OPUS (the OGG target is always Vorbis, never Opus); always-lossy; Vorbis comments + cover-art-as-PICTURE-block. No patent flag (royalty-free).
-  - [ ] **P6.23.1** [UI] Register the "OGG quality" advanced-option DECLARATION (q3/q5/q7) · §1.6 audio.md · G47
+  - [ ] **P6.23.1** [UI] Register the "OGG quality" advanced-option DECLARATION (q3/q5/q7) · §1.6 · G47
     > Vorbis quality scale −1..10; expose the useful middle; q3 [default].
-- [ ] **P6.24** [RUST] Wire the OPUS target — `libopus -b:a 128k` VBR + opus muxer (48 kHz internal) · §3.5.1 audio.md · G31
+- [ ] **P6.24** [RUST] Wire the OPUS target — `libopus -b:a 128k` VBR + opus muxer (48 kHz internal) · §3.5.1 · G31
   needs: P6.9, P6.16
   > OPUS encode `-c:a libopus -b:a 128k` (`-vbr on`) muxer `opus`; FFmpeg resamples to Opus's 48 kHz internal rate transparently (not a user-visible loss); always-lossy; never the per-source DEFAULT (older players may not open `.opus`). No patent flag.
-  - [ ] **P6.24.1** [UI] Register the "OPUS bitrate" advanced-option DECLARATION (96/128/192) · §1.6 audio.md · G47
+  - [ ] **P6.24.1** [UI] Register the "OPUS bitrate" advanced-option DECLARATION (96/128/192) · §1.6 · G47
     > 128k [default]; `-vbr on` retained throughout.
-- [ ] **P6.25** [RUST] Wire the AIFF target — `pcm_s16be` 16-bit big-endian + aiff muxer · §3.5.1 audio.md · G31
+- [ ] **P6.25** [RUST] Wire the AIFF target — `pcm_s16be` 16-bit big-endian + aiff muxer · §3.5.1 · G31
   needs: P6.9, P6.16
   > AIFF encode `-c:a pcm_s16be` muxer `aiff`, 16-bit big-endian default; lossless-as-target with the same >16-bit-source → 16-bit `audio_bitdepth` caveat as WAV; limited AIFF tag model → `audio_tags_dropped` when the source carried tags.
-  - [ ] **P6.25.1** [UI] Register the "AIFF bit depth" advanced-option DECLARATION (16 / 24) · §1.6 audio.md · G47
+  - [ ] **P6.25.1** [UI] Register the "AIFF bit depth" advanced-option DECLARATION (16 / 24) · §1.6 · G47
     > `16-bit [default]` · `24-bit (pcm_s24be)`.
-- [ ] **P6.26** [RUST] Wire the ALAC target — native `alac` + `ipod` muxer + faststart (lossless, no knob) · §3.5.1 audio.md · G31
+- [ ] **P6.26** [RUST] Wire the ALAC target — native `alac` + `ipod` muxer + faststart (lossless, no knob) · §3.5.1 · G31
   needs: P6.9, P6.16
   > ALAC encode `-c:a alac` muxer `ipod` (`.m4a` whose codec is ALAC) + `+faststart`; lossless, NO quality/compression knob exposed (FFmpeg's ALAC encoder has none) — the advanced view stays clean; lossy-ORIGIN flagged `audio_lossy_origin`. NO patent flag (ALAC is open/royalty-free — never confuse with AAC's §3.4 status). Same `ilst` metadata + cover art as M4A.
-- [ ] **P6.27** [RUST] Wire WMA as a DECODE-only source (no `→ WMA` target) + the source-options-from-target rule · §3.5.1 audio.md · G31
+- [ ] **P6.27** [RUST] Wire WMA as a DECODE-only source (no `→ WMA` target) + the source-options-from-target rule · §3.5.1 · G31
   needs: P6.15
   > WMA decoders `wmav1`/`wmav2`/`wmapro`/`wmalossless` all decode-capable; `→ WMA` is PARKED out of v1 (no target wiring — only `wmav2` exists and it is low-quality legacy); as a source its options are the chosen target's; WMA→lossless-target = lossy-origin, WMA→lossy-target = second lossy round; ASF metadata mapped to tag-supporting targets.
-- [ ] **P6.28** [TEST] Wire the per-source-default-target table (MP3 default for all except MP3→WAV) · §1.5 §1.6 audio.md · G31
+- [ ] **P6.28** [TEST] Wire the per-source-default-target table (MP3 default for all except MP3→WAV) · §1.5 §1.6 · G31
   needs: P6.18, P6.19
   > the pre-highlighted default = MP3 for every audio source EXCEPT MP3 itself (→ WAV, since MP3→MP3 is excluded); a Lane-A defaults-registry assertion (§1.6) verifies the no-required-choices gate: dropping any audio and hitting convert with zero clicks produces the table's default. (DECIDED: MP3-source default is WAV over FLAC.)
-- [ ] **P6.29** [TEST] Wire the audio lossy-disclosure trigger map (the `✓~` matrix cells ↔ §2.9 kinds) · §2.9 audio.md · G31 G32
+- [ ] **P6.29** [TEST] Wire the audio lossy-disclosure trigger map (the `✓~` matrix cells ↔ §2.9 kinds) · §2.9 · G31 G32
   needs: P6.18, P6.19, P6.20, P6.21, P6.22, P6.23, P6.24, P6.25, P6.26
   > assert each §2.9 audio kind fires IFF the §04 matrix flags the pair: `audio_lossy_target` (any → MP3/AAC/M4A/OGG/OPUS), `audio_transcode` (lossy → lossy), `audio_lossy_origin` (lossy → FLAC/ALAC ONLY — deliberately NOT WAV/AIFF), `audio_bitdepth` (>16-bit → default 16-bit WAV/AIFF), `audio_tags_dropped` (→ raw AAC / WAV / AIFF when source had tags), `audio_downmix` (forced codec downmix). The G32 lossy-disclosure property holds over the `FormatId×FormatId` product.
 
@@ -208,39 +209,39 @@
 > SOURCES but NOT offered as targets. Each video box `needs:` the audio sub-gate
 > (P6.35).
 
-- [ ] **P6.36** [RUST] Wire the video-source detection signatures + brand/DocType disambiguation · §1.2 video.md · G15 G31
+- [ ] **P6.36** [RUST] Wire the video-source detection signatures + brand/DocType disambiguation · §1.2 · G15 G31
   needs: P6.35
   > add the §1.2 video signatures: MP4-family `ftyp` with brand disambiguation (`isom`/`mp4x`/`avc1` = MP4, `qt  ` = MOV, `M4V `/`M4VH` = M4V, `3gp4`/`3g2a` = 3GP — brand not extension); MOV `moov`/`mdat`/`wide` for ftyp-less QuickTime; MKV/WEBM EBML `1A 45 DF A3` disambiguated by DocType (`matroska` vs `webm`); AVI RIFF+`AVI `; WMV ASF GUID + video-stream-present (vs WMA audio-only); FLV `FLV`+version; MPG/MPEG start codes `00 00 01 BA`/`B3` + `.ts` sync `0x47`.
-- [ ] **P6.37** [RUST] Wire the automatic remux-vs-re-encode decision from the FFprobe inner-codec inventory · §3.5.1 video.md §3.2 · G31
+- [ ] **P6.37** [RUST] Wire the automatic remux-vs-re-encode decision from the FFprobe inner-codec inventory · §3.5.1 §3.2 · G31
   needs: P6.36, P6.10
   > the §3.5/video.md per-item decision (a §3.2 capability decision, zero user choice): remux (`-c copy`, lossless) IFF every kept stream's codec is legal in the target container AND no normalization is needed; else re-encode (decode → H.264/AAC or VP9/Opus, lossy); MIXED allowed (video copies while audio transcodes) — still ONE FFmpeg invocation. Per-item from the inventory, never an always-remux path (FLV VP6/Sorenson, WMV7/8, MKV-only audio all force re-encode).
-- [ ] **P6.38** [RUST] Wire the H.264 re-encode params + faststart + yuv420p + rotation, reading §3.4 H.264 · §3.5.1 video.md §3.4 · G31
+- [ ] **P6.38** [RUST] Wire the H.264 re-encode params + faststart + yuv420p + rotation, reading §3.4 H.264 · §3.5.1 §3.4 · G31
   needs: P6.37
   > re-encode path for MP4/MOV/MKV/M4V: `-c:v libx264 -crf 23 -preset medium -pix_fmt yuv420p` + `-c:a aac -b:a 128k`; `-movflags +faststart` (front-loaded moov) for MP4/MOV/M4V; `-fflags +genpts` for FLV remux; rotation honoured (portrait stays portrait); resolution/fps unchanged (never upscale). READS the §3.4 H.264/AAC cell (P4 matrix) — ship-bundled on all three platforms is the category's hardest dependency (MP4 is every source's default).
-- [ ] **P6.39** [RUST] Wire the VP9/Opus WEBM-target re-encode params (constant-quality, single-pass) · §3.5.1 video.md · G31
+- [ ] **P6.39** [RUST] Wire the VP9/Opus WEBM-target re-encode params (constant-quality, single-pass) · §3.5.1 · G31
   needs: P6.37
   > WEBM target `-c:v libvpx-vp9 -b:v 0 -crf 32 -row-mt 1` (constant-quality, single-pass — two-pass + AV1-as-WEBM-target are DECIDED-not-in-v1) + `-c:a libopus -b:a 96k`; → WEBM is ALWAYS lossy re-encode (codecs never match the H.264/AAC mainstream). VP9 CRF validation bound is `0..=63` (15–35 recommended band, default 32) — must not clamp the codec range.
-- [ ] **P6.40** [RUST] Wire the HEVC/H.265-default disposition (re-encode to H.264) + the keep-original Advanced toggle · §3.5.1 video.md §3.4 · G31
+- [ ] **P6.40** [RUST] Wire the HEVC/H.265-default disposition (re-encode to H.264) + the keep-original Advanced toggle · §3.5.1 §3.4 · G31
   needs: P6.38
   > the DECIDED HEVC default: an H.265 source (common iPhone `.mov`) re-encodes HEVC→H.264 by DEFAULT (lossy, larger, plays everywhere — honours the usability-floor mov→mp4 promise) using FFmpeg's native `hevc` DECODER (inside the GPL binary, never libde265); a "keep original quality (H.265)" Advanced toggle offers verbatim remux. Same disposition for AV1-in-MP4. Decode reads the §3.4 HEVC-video-decode cell.
-  - [ ] **P6.40.1** [UI] Register the "keep original quality (H.265)" Advanced-option DECLARATION · §1.6 video.md · G47
+  - [ ] **P6.40.1** [UI] Register the "keep original quality (H.265)" Advanced-option DECLARATION · §1.6 · G47
     > the verbatim-remux toggle, default OFF (re-encode is the default); same toggle covers AV1-in-MP4.
-- [ ] **P6.41** [RUST] Wire the audio-tracks + subtitles + chapters/attachments keep/convert/drop policy · §3.5.1 video.md · G31
+- [ ] **P6.41** [RUST] Wire the audio-tracks + subtitles + chapters/attachments keep/convert/drop policy · §3.5.1 · G31
   needs: P6.37
   > keep ALL audio tracks (remux copies; re-encode transcodes each to AAC/Opus; WEBM keeps first track); MKV→MP4 subtitles: TEXT (SRT/MOV_TEXT/WebVTT) → converted to `mov_text` in the same invocation; IMAGE (PGS/VobSub) + styled ASS/SSA → DROPPED with `video_subs_dropped` (no subtitle burn-in in v1); chapters + font attachments copied to MKV, dropped-with-note for MP4 where unsupported.
-- [ ] **P6.42** [RUST] Wire the auto-deinterlace (yadif) + metadata/color/HDR preservation + alpha-loss note · §3.5.1 video.md · G31
+- [ ] **P6.42** [RUST] Wire the auto-deinterlace (yadif) + metadata/color/HDR preservation + alpha-loss note · §3.5.1 · G31
   needs: P6.37
   > `yadif` (mode 0) deinterlace default-ON for flagged-interlaced sources (DEFER:corpus calibrates only the call, not the design); `-map_metadata 0` metadata preserve (no strip toggle in v1); color primaries/transfer/matrix + HDR (BT.2020/PQ/HLG) preserved on remux, kept-as-signalling on H.264 re-encode (no tone-map in v1); WEBM-alpha → H.264 fires `video_alpha_lost`.
-- [ ] **P6.43** [RUST] Wire the per-format video target registrations (MP4/MOV/MKV/WEBM/M4V) + the self-conversion normalize path · §3.5.1 video.md · G31
+- [ ] **P6.43** [RUST] Wire the per-format video target registrations (MP4/MOV/MKV/WEBM/M4V) + the self-conversion normalize path · §3.5.1 · G31
   needs: P6.38, P6.39
   > register the five offered video targets (MP4, MOV, MKV, WEBM, M4V) reading each source's offered set + the `R`/`✓~` disposition from the video.md matrix; the same-container "self" path (MP4→MP4 etc.) NORMALIZES (remux + `+faststart` + re-index, no re-encode) and writes `name (1).mp4` beside the source (no overwrite). AVI/WMV/FLV/MPG/3GP have NO self target (not offered as targets). Software-only encoding (no NVENC/QSV/VideoToolbox in v1).
-- [ ] **P6.44** [TEST] Wire the every-source-default-is-MP4 zero-click assertion · §1.6 video.md · G31
+- [ ] **P6.44** [TEST] Wire the every-source-default-is-MP4 zero-click assertion · §1.6 · G31
   needs: P6.38
   > a §1.6 defaults-registry assertion: dropping ANY video and hitting convert with zero clicks produces a valid MP4 (MP4 is the pre-highlighted default for all ten sources); flag the §3.4 H.264/AAC-ship-bundled-on-all-three-platforms hard precondition (a platform with no H.264 encode would have no default target — a product problem, not a footnote).
-- [ ] **P6.45** [TEST] Wire the worst-case `willReencode` note + the §1.12 actual-disposition summary · §2.9 §2.9.2 §0.4.2 video.md · G31 G32
+- [ ] **P6.45** [TEST] Wire the worst-case `willReencode` note + the §1.12 actual-disposition summary · §2.9 §2.9.2 §0.4.2 · G31 G32
   needs: P6.37
   > the §2.9.2 timing rule: the target-choice note is a header/container-pair worst-case (`RunStarted.willReencode`, §0.4.2) — a definitely-re-encode pair (→WEBM, legacy source) fires `video_reencode` certainly; a commonly-remux pair fires the "may be re-encoded" worst-case rather than falsely promising losslessness; the §1.12 end-of-batch summary reflects what ACTUALLY happened once §3.5 resolved the real per-item disposition. G32 lossy-disclosure-iff-flagged uses the PLANNED disposition.
-- [ ] **P6.46** [RUST] Wire the DRM-protected + zero-audio + very-large video edge handling · §3.5.1 video.md §1.10 · G31
+- [ ] **P6.46** [RUST] Wire the DRM-protected + zero-audio + very-large video edge handling · §3.5.1 §1.10 · G31
   needs: P6.12, P6.37
   > DRM (FairPlay `.m4v`, PlaysForSure WMV/ASF) → the §video.md "copy-protected, can't be converted" message, batch continues, nothing written; a source with no audio track converts fine (silent video, never an error); §1.10 owns the up-front size/space pre-flight + "too big" fast-fail (video is the category most likely to trip the budgets); concurrency degree owned by §0.9 (low parallelism for CPU-heavy re-encode).
 
@@ -254,7 +255,7 @@
 - [ ] **P6.48** [TEST] Stage the video edge-case fixtures (DRM, rotation, VFR, silent, interlace) + content-floor `representative-av` · §6.4.5 · G24a G31
   needs: P6.47
   > add a DRM-protected FairPlay `.m4v` + a DRM WMV (fail-clearly); a portrait/rotated clip (rotation honoured); a VFR screen recording (to-GIF fps-normalise); a silent clip (extract-audio "no audio track"); a long-ish clip for the to-GIF guardrail/cap; tag the `representative-av` content floor (≥1 real video, already implied by the per-format rows).
-- [ ] **P6.49** [TEST] Add the video per-pair integration tests (every container pair, structural reader = ffprobe + remux-correctness) · §6.4.3 §6.5 video.md · G31 G32
+- [ ] **P6.49** [TEST] Add the video per-pair integration tests (every container pair, structural reader = ffprobe + remux-correctness) · §6.4.3 §6.5 · G31 G32
   needs: P6.47, P6.48, P6.45
   > for every enumerated video `(source → target)` container pair, against every corpus file of its source, on all three platforms: completes + output decodes via `ffprobe` (expected codec, stream count > 0); no-harm + fail-clearly on DRM/corrupt fixtures; remux-vs-re-encode chose the LOSSLESS path when codecs already fit (the key video content-fidelity check); lossy disclosure fires per the PLANNED disposition; rotation/subtitle/chapter content-fidelity spot-checks; patent-gapped targets asserted absent (not attempted) where §3.4 marks unavailable.
 - [ ] **P6.50** [TEST] Add the video determinism note + the per-push adversarial-egress leg for FFmpeg video · §6.4.2 §6.4.3 §2.11.4 · G32 G42 G42b
@@ -271,22 +272,22 @@
 > optional re-encode). Resolves the deferred [OPEN-A] subset (floor MP3★+WAV+FLAC
 > guaranteed; M4A/OGG corpus-validated).
 
-- [ ] **P6.51** [RUST] Wire extract-audio as a target of every video source (`-vn -map 0:a:0`) + the first-track rule · §3.5.1 cross-category.md §1.5 · G31
+- [ ] **P6.51** [RUST] Wire extract-audio as a target of every video source (`-vn -map 0:a:0`) + the first-track rule · §3.5.1 §1.5 · G31
   needs: P6.35, P6.36
   > offer extract-audio on all ten v1 video sources (§1.5 target resolution adds it alongside the video default); `-vn -map 0:a:0` (deterministic FIRST audio track in v1 — per-track / all-tracks is parked, no one-to-many fan-out); preserve source sample rate + channels (no resample/downmix by default); carry source tags where the target container supports them; cover-art extraction is NOT part of extract-audio.
-- [ ] **P6.52** [RUST] Wire the extract-audio target subset (floor MP3★/WAV/FLAC + corpus-validated M4A/OGG) · cross-category.md audio.md §3.4 · G31
+- [ ] **P6.52** [RUST] Wire the extract-audio target subset (floor MP3★/WAV/FLAC + corpus-validated M4A/OGG) · §3.4 · G31
   needs: P6.51, P6.18, P6.19, P6.20, P6.22, P6.23
   > register the [OPEN-A] subset: GUARANTEED floor {MP3★ default, WAV, FLAC} (C3 derivable now — the SSOT mov→mp3 case in scope); + {M4A, OGG} corpus-validated additions (M4A pending §3.4 AAC confirmation; OGG pending §6.6 OGG-keep). Excluded as extract targets: raw AAC, OPUS, WMA, AIFF, ALAC. Reuse the audio.md encode params + the canonical MP3 preset table verbatim ([OPEN-B] resolved).
-- [ ] **P6.53** [RUST] Wire the extract-audio stream-copy-vs-re-encode decision (codec-inside-container) · §3.5.1 cross-category.md · G31
+- [ ] **P6.53** [RUST] Wire the extract-audio stream-copy-vs-re-encode decision (codec-inside-container) · §3.5.1 · G31
   needs: P6.52
   > automatic per-item: `-c:a copy` (lossless, fast) when source codec is byte-compatible with the chosen target container — source AAC → M4A (the dominant MP4/MOV/M4V/3GP case), source MP3 → MP3 (FLV/AVI), source Vorbis → OGG (WebM); else re-encode (any → MP3/WAV always-decode-to-PCM/FLAC-lossless, AAC→MP3, etc.). Engine-internal §3.2 capability decision, zero user choice; the lossy note reflects the OUTCOME not the mechanism.
-- [ ] **P6.54** [RUST] Wire the M4A-extract-target §3.4 gate at the target level (copy path noted, gate at M4A) · cross-category.md §3.4 · G31
+- [ ] **P6.54** [RUST] Wire the M4A-extract-target §3.4 gate at the target level (copy path noted, gate at M4A) · §3.4 · G31
   needs: P6.53
   > the DECIDED rule: the AAC→M4A `-c:a copy` path decodes/remuxes only (lighter patent profile, no encode) — NOTED — but to keep the format×platform offered set honest, if §3.4 marks AAC unavailable on a platform the M4A extract target is DISABLED there REGARDLESS of copy-vs-encode, falling back to MP3 (already the default, no UX disruption). One consistent availability story per platform.
-- [ ] **P6.55** [RUST] Wire the extract-audio NoAudioTrack named-failure + edge cases · §2.8 cross-category.md · G31
+- [ ] **P6.55** [RUST] Wire the extract-audio NoAudioTrack named-failure + edge cases · §2.8 · G31
   needs: P6.51, P6.12
   > the §2.8 `NoAudioTrack` kind ("This file has no audio to extract.") on a silent source — a NAMED failure, batch continues, never a 0-byte audio file ([OPEN-C] cheap up-front probe to disable-with-reason is DEFER:corpus); multichannel (5.1) preserved into WAV/FLAC (not auto-downmixed); corrupt/truncated source → item fails clearly, no partial audio (§2.1/§2.6); WAV/FLAC extraction cannot un-bake the source's existing lossy compression (the §2.9 note must not imply quality improvement).
-  - [ ] **P6.55.1** [UI] Register the extract-audio quality advanced-option DECLARATIONS (per-target, reusing audio.md presets) · §1.6 cross-category.md · G47
+  - [ ] **P6.55.1** [UI] Register the extract-audio quality advanced-option DECLARATIONS (per-target, reusing audio.md presets) · §1.6 · G47
     > MP3 quality (Standard ≈ V2 default), M4A re-encode bitrate, FLAC compression level, OGG quality — all reusing the audio.md canonical preset tables; WAV has none (fixed 16-bit PCM).
 
 ---
@@ -298,25 +299,25 @@
 > intrinsically lossy. Resolves the deferred to-GIF trim + size-cap items
 > ([OPEN-E]/[OPEN-F] finite ship-now values, corpus-calibrated).
 
-- [ ] **P6.56** [RUST] Wire to-GIF as a target of every video source via the single-process palette filtergraph · §3.5.1 cross-category.md §3.2 · G31
+- [ ] **P6.56** [RUST] Wire to-GIF as a target of every video source via the single-process palette filtergraph · §3.5.1 §3.2 · G31
   needs: P6.35, P6.36
   > offer to-GIF on all ten v1 video sources; build the single-invocation filtergraph `fps=<fps>,scale=<w>:-1:flags=lanczos,split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5` + `-loop 0` — NO intermediate palette PNG (one §3.2 engine call, no chaining); `lanczos` scale + per-clip palette = quality, `fps`-down + width-cap = sane size; audio dropped (intrinsic), transparency not preserved (opaque output).
-- [ ] **P6.57** [RUST] Wire the to-GIF basic options — FPS + width defaults + the dither/loop/colours fixed defaults · §1.6 cross-category.md · G31
+- [ ] **P6.57** [RUST] Wire the to-GIF basic options — FPS + width defaults + the dither/loop/colours fixed defaults · §1.6 · G31
   needs: P6.56
   > FPS preset (Smooth 15 / Standard 12 / Small 10, default 12); Width preset (Large 640 / Medium 480 / Small 320 px, height `-1` aspect-kept, default 480); fixed defaults — dither `bayer:bayer_scale=5` ([OPEN-D] DECIDED), `-loop 0` infinite, 256 colours; VFR sources fps-normalised; odd dimensions even-rounded; sub-second clip → valid tiny GIF.
-  - [ ] **P6.57.1** [UI] Register the to-GIF FPS + Width Basic-option DECLARATIONS · §1.6 cross-category.md · G47
+  - [ ] **P6.57.1** [UI] Register the to-GIF FPS + Width Basic-option DECLARATIONS · §1.6 · G47
     > FPS + Width in the Basic view (they visibly change smoothness/size vs file size).
-  - [ ] **P6.57.2** [UI] Register the to-GIF dither Advanced-option DECLARATION (bayer/sierra2_4a/floyd_steinberg/none) · §1.6 cross-category.md · G47
+  - [ ] **P6.57.2** [UI] Register the to-GIF dither Advanced-option DECLARATION (bayer/sierra2_4a/floyd_steinberg/none) · §1.6 · G47
     > the v1-exposed dither subset only (NOT `sierra2`/`heckbert` — FFmpeg accepts but v1 hides; `sjpeg` is not a valid value); default `bayer:bayer_scale=5`.
-- [ ] **P6.58** [RUST] Wire the to-GIF trim window (start + duration) · §1.6 cross-category.md · G31
+- [ ] **P6.58** [RUST] Wire the to-GIF trim window (start + duration) · §1.6 · G31
   needs: P6.56
   > the [OPEN-E] resolution (design leans Basic start+duration, validate §6.6): `-ss <start>` + `-t <duration>` in the same single invocation; default = whole clip up to the duration cap (P6.59). A trim window is most of why people make GIFs.
-  - [ ] **P6.58.1** [UI] Register the to-GIF trim Basic-option DECLARATION (start + duration) · §1.6 cross-category.md · G47
+  - [ ] **P6.58.1** [UI] Register the to-GIF trim Basic-option DECLARATION (start + duration) · §1.6 · G47
     > two number fields ("from 00:15, for 6 s"); leaving defaults = whole clip up to cap.
-- [ ] **P6.59** [RUST] Wire the to-GIF size guardrail — up-front estimate + duration cap + fail-fast (feeds §1.10) · §1.10 cross-category.md §2.8 · G31
-  needs: P6.56, P6.58
-  > the MANDATORY guardrail (this op supplies the inputs; §1.10 owns the threshold mechanics): up-front cheap estimate `fps × min(clip_len, trim_or_cap) × out_w × out_h × ~1 byte/px` (no decode needed); a finite default duration cap (proposal N=10 s, [OPEN-F] DEFER:corpus — MUST be some finite value, leaving it unset reintroduces the foot-gun) applied as `-t`; fail-fast up front if the estimate exceeds the §1.10 "too big" ceiling (a §2.8 named failure kind), batch continues; a cap that shortened the clip is a DISCLOSED outcome (`video_to_gif`), never silent truncation.
-- [ ] **P6.60** [RUST] Wire the to-GIF unconditional lossy note + HDR/4K edge handling · §2.9 cross-category.md · G31 G32
+- [ ] **P6.59** [RUST] Wire the to-GIF size guardrail — up-front estimate + duration cap + fail-fast (feeds §1.10) · §1.10 §2.8 · G31
+  needs: P6.56, P6.58, P4.71
+  > the MANDATORY guardrail (this op supplies the inputs; the **P4-built §1.10 engine (P4.71)** owns the threshold mechanics): up-front cheap estimate `fps × min(clip_len, trim_or_cap) × out_w × out_h × ~1 byte/px` (no decode needed); a finite default duration cap (proposal N=10 s, [OPEN-F] DEFER:corpus — MUST be some finite value, leaving it unset reintroduces the foot-gun) applied as `-t`; fail-fast up front if the estimate exceeds the §1.10 "too big" ceiling (a §2.8 named failure kind), batch continues; a cap that shortened the clip is a DISCLOSED outcome (`video_to_gif`), never silent truncation. (cross-category.md owns the GIF-specific defaults; this box feeds them into the §1.10 engine.)
+- [ ] **P6.60** [RUST] Wire the to-GIF unconditional lossy note + HDR/4K edge handling · §2.9 · G31 G32
   needs: P6.56
   > to-GIF is ALWAYS intrinsically lossy (fps-down + scale-down + 256-colour quantize + audio-drop), so the §2.9 `video_to_gif` passive note shows UNCONDITIONALLY (once, calmly, not per-conversion) — G32 must assert it fires for every to-GIF pair; HDR/wide-gamut tone-mapped down by the decode→scale→palettegen chain (flattened but valid); 4K caught by the 480px width default + the guardrail; corrupt source → fails clearly, no partial GIF.
 
@@ -327,13 +328,13 @@
 - [ ] **P6.61** [TEST] Stage the to-GIF bijection corpus coverage (every `["<SOURCE>","GIF"]` pair) + extract-audio covers · §6.4.5 §6.4.3a · G24a G22
   needs: P6.47
   > extend each video corpus item's `covers` list to include its `["<SOURCE>","GIF"]` 2-tuple (MP4 item → `["MP4","GIF"]`, WEBM item → `["WEBM","GIF"]`, … — not one generic clip) AND its extract-audio `(video → MP3/WAV/FLAC/…)` 2-tuples, so the §6.4.3a bijection guard does not fail at Lane A for most cross-category pairs; regenerate the SHA-256 manifest in the same commit (G24a).
-- [ ] **P6.62** [TEST] Add the cross-category per-pair integration tests (extract-audio + to-GIF, structural readers) · §6.4.3 §6.5 cross-category.md · G31 G32
+- [ ] **P6.62** [TEST] Add the cross-category per-pair integration tests (extract-audio + to-GIF, structural readers) · §6.4.3 §6.5 · G31 G32
   needs: P6.61, P6.55, P6.60, P6.54
   > for every `(video → audio-subset)` extract-audio pair and every `(video → GIF)` pair, against the corpus, on all three platforms: completes + output decodes (`ffprobe` for extracted audio with expected codec; GIF89a valid + nonzero frames for to-GIF); the stream-copy path verified lossless where codecs match; the NoAudioTrack fixture fails-clearly; the to-GIF note fires unconditionally; the guardrail fail-fast triggers on the over-cap fixture; M4A patent-gapped target asserted absent where §3.4 unavailable.
-- [ ] **P6.63** [TEST] Wire the cross-category re-run/equivalent-output detection (source + target + effective settings) · §2.5 cross-category.md · G31
+- [ ] **P6.63** [TEST] Wire the cross-category re-run/equivalent-output detection (source + target + effective settings) · §2.5 · G31
   needs: P6.51, P6.56
   > §2.5 keys on source + target + EFFECTIVE settings: "extract audio → MP3 (Standard)" re-run on the same video triggers the skip/fresh-copy prompt; changing fps or MP3 quality is a NEW conversion (ordinary numbering); output naming/no-clobber/atomic-write/beside-source-divert apply identically (an extracted `clip.mp3` / `clip.gif` keeps the source base name + new extension, no-clobber numbered).
-- [ ] **P6.64** [TEST] Wire the cross-category batch interaction (one chosen target over the same-source batch) · §1.3 cross-category.md · G31
+- [ ] **P6.64** [TEST] Wire the cross-category batch interaction (one chosen target over the same-source batch) · §1.3 · G31
   needs: P6.51, P6.56
   > the SSOT batch rule for this file: cross-category outputs are TARGETS of one video source, never a second source format; the batch key is the video source type only (§1.3); choosing "Extract audio" or "To GIF" applies that one target to the whole same-source batch (48 `.mov` → 48 MP3s, or 48 GIFs); per-file target is out of v1.
 

@@ -103,17 +103,17 @@ startup spine as far as the foundation allows.
 - [ ] **P1.14** [RUST] Register the §0.8 Tauri plugins in the Builder (single-instance, dialog, store, log, opener) · §0.8 §0.10
   needs: P1.13
   > `tauri_plugin_single_instance::init` / `tauri_plugin_dialog::init` / `tauri_plugin_store` / `tauri_plugin_log` / `tauri_plugin_opener` registered in the Builder — the crates §1.1/§0.4.1/§7.4/§7.5/§7.7 depend on; their WebView grants are §0.10 (dialog/opener are Rust-side-only, NOT WebView capabilities). Wiring only; the handlers that USE them are P2+.
-- [ ] **P1.15** [RUST] Wire the §7.2.1 ordered startup-sequence spine (interface-only stages) · §7.2.1 §7.2.2
+- [ ] **P1.15** [RUST] Stand up the minimal `setup` closure stages the empty window needs (NOT the §7.2.1 ordering) · §7.2.1 §7.2.2
   needs: P1.14
-  > the §7.2.1 ordered `setup` spine as named-but-mostly-empty stages: single-instance guard (step 1, real via the plugin), `InstanceId` + base-path resolution via `app.path()` (step 2), placeholder slots for engine-presence (step 3 → P4), exec-permission setup (step 4 → P1.18), scratch/log creation + orphan reclaim (step 5 → P3/§2.6), window create (step 6), launch-intake feed (step 7 → P2). P1 owns the ORDER; later phases fill the bodies.
+  > the minimal `setup` closure the bootable empty window needs as named-but-mostly-empty stages: single-instance guard (real via the plugin), `InstanceId` + base-path resolution via `app.path()`, and the window-create slot. **P1 does NOT own the §7.2.1 step ORDER** — the §7.2.1 ordered startup-sequence spine (steps 1–8, the engine-presence / exec-permission / scratch-orphan-reclaim / launch-intake / WebView-absent-fault slots) is the **app-shell spine homed in P2's startup-sequence-ordering cluster** per the README P2 scope; P1 lands only the compile-and-boot stages, P2 establishes the ordering, later phases fill the bodies. The §7.2.1 ref is read-only context here (the ordered sequence is P2's box).
   - [ ] **P1.15.1** [RUST] Assert §7.2.2 zero-startup-network as a boot invariant test · §7.2.2 §2.11 · G29
     > a unit/property assertion that the boot path opens no socket (the §7.2.2 observable property + the Lane-A compensating guard for the Lane-B-only egress gate, §6.7.1); pairs with the P0 G29 `std::net` allow-list rule (rule (g)) which is initially empty.
 - [ ] **P1.16** [RUST] Create the §7.3.1 main window + show an empty WebView frame · §7.3.1 §0.3.1
   needs: P1.13, P1.20, P1.27
   > the single `main` window from `tauri.conf.json` showing the loaded (empty) React frame — the literal P1 "empty ConvertIA window boots" deliverable; the §0.3.1 WebView-runtime floor (WebView2/WKWebView/WebKitGTK) is relied-on, not bundled.
 - [ ] **P1.17** [RUST] Implement the §7.2.4 portable-build executable-permission setup (unix `+x` idempotent) · §7.2.4
-  needs: P1.15
-  > the `ensure_executable` unix helper (`0o111`-bit set idempotently on each launch) from §7.2.4 — load-bearing for the portable macOS/Linux artifact where extracted sidecars may lack `+x`; Windows is a no-op. P1 lands the helper + its slot in the §7.2.1 step-4 sequence (no engines to chmod yet — exercised P4).
+  needs: P1.14
+  > the `ensure_executable` unix helper (`0o111`-bit set idempotently on each launch) from §7.2.4 — load-bearing for the portable macOS/Linux artifact where extracted sidecars may lack `+x`; Windows is a no-op. P1 lands the helper only (no engines to chmod yet — exercised P4); its slot in the §7.2.1 step-4 sequence is wired by the P2 startup-ordering spine.
 - [ ] **P1.18** [RUST] Assert the §7.6.1 no-updater posture by construction · §7.6.1 §7.6 · G47
   needs: P1.14
   > assert `tauri-plugin-updater` is absent from `Cargo.toml`/the Builder and no `updater`/pubkey/endpoint config exists — "its absence is the implementation" (§7.6.1); the structural form is the P0 G47 lint over `tauri.conf.json` (no `updater` block / no `createUpdaterArtifacts`), so this box names what the G47 target must NOT contain.
@@ -130,6 +130,10 @@ fail-open to fail-closed.
 - [ ] **P1.19** [BUILD] Author `tauri.conf.json` — bundle identity, window, externalBin/resources slots, minimum-OS floor · §0.3.1 §0.7 §3.3 · G47
   needs: P1.1
   > the base `tauri.conf.json`: app identifier (`dev.ne-ia.convertia`), the §7.3.1 window, empty-but-declared `bundle.externalBin`/`bundle.resources` slots (engines land P4–P7), and the §0.3.1 supported-OS floor knobs (`minimumSystemVersion: "11.0"`, the Windows/Linux floor notes); the file the P0 G47 lint parses.
+  - [ ] **P1.19.1** [BUILD] Set `productName: "ConvertIA"` + the §7.3.1 main-window title in `tauri.conf.json` · §7.3.1 §0.3.1 · G47
+    > set the case-sensitive `productName: "ConvertIA"` (the case the §6.9.3 rename pass + P9.4.2's `squashfs-root/usr/bin/*` glob + P11.2.2 depend on — `ConvertIA`, NOT `convertia`) and the §7.3.1 main-window title; the field is load-bearing for the AppImage binary name + the Linux/macOS bundle name, not a cosmetic. (The FINAL "ConvertIA"/Ne-IA name itself stays an owner-controlled placeholder per §6.9.3; the slot + the v1 working name are set here.)
+  - [ ] **P1.19.2** [BUILD] Stage a bundled PLACEHOLDER icon set wired into `tauri.conf.json → bundle.icon` · §6.9.3 §0.3.1 · G47
+    > stage the Tauri-required icon set (`32x32.png` / `128x128.png` / `128x128@2x.png` / `icon.icns` / `icon.ico` / the Windows `Square*Logo.png` set) as a bundled-local **placeholder** under `src-tauri/icons/` and wire `bundle.icon` to it, so the build produces a real installable artifact from P1 on (Tauri fails the bundle with no icon set). The FINAL Ne-IA art is the §6.9.3-deferred owner deliverable swapped in the P8.23-class scope-(ii) pass (mirrors the P8.2 BrandLogo placeholder pattern); P1 lands only the placeholder slot. The G47 structural lint additionally asserts `bundle.icon` is non-empty + `productName` is set (the file the lint parses).
 - [ ] **P1.20** [BUILD] Encode the §0.10 locked CSP object in `tauri.conf.json → app.security.csp` · §0.10 · G47
   needs: P1.19
   > the exact §0.10 CSP directives (`default-src`/`script-src` `'self'`; `connect-src 'self' ipc: http://ipc.localhost`; `img-src`/`media-src` NO `asset:`; `object-src`/`frame-src`/`frame-ancestors 'none'`; `base-uri`/`form-action 'self'`; `webrtc 'block'`) — structurally equal per-directive to the locked object the P0 G47 lint asserts against (activates G47's CSP leg, P0.3.2).

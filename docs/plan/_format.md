@@ -326,7 +326,12 @@ this file defines (distinct from the doc-wide consistency checks 5–24 catalogu
   token alongside a real ref **fails** — the loop never builds against a phantom
   reference, and `tooling-only` always means a genuine, declared absence.
 - **`needs:`-targets exist** — every `needs:` box-id is a real box in the plan; the
-  graph is **acyclic** (§5.1). A dangling or cyclic `needs:` fails.
+  graph is **acyclic** (§5.1). A dangling or cyclic `needs:` fails. **`plan-lint`
+  loads ALL phase files — `P0`..`P11` — when resolving `needs:` targets** (even though
+  the Build-Loop's *execution* scan is `P1`..`P11`, §6): a later phase that activates a
+  `P0`-authored gate may carry `needs: P0.x` (trivially satisfied, since `P0` is `[x]`
+  before the loop reaches `P1`), so a `needs: P0.x` edge must resolve, not dangle. The
+  acyclicity check likewise spans `P0`..`P11`.
 - **Annotation pairing** — `unlocked-by:` appears **only** under a `[!]` box and
   names a real box; no blocked box is **silent** — a `[!]` box carries a `>`-note
   **or** an `unlocked-by:`, and a `[!extern]` box carries a mandatory `>`-note (it
