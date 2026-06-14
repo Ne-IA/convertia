@@ -346,7 +346,7 @@
 
 - [ ] **P5.72** [GATE] Wire the deferred P5→P4 harness `needs:` edges — isolation boundary, §1.7 line-reader, per-pair runner, options-panel shell · §3.5.5 · G7 G20
   needs: P4.36, P4.8, P4.58, P4.63, P4.73
-  > the P5 instance of the cross-phase reconciliation obligation (the master plan-lint forbidden-string check is P4.76; reciprocal of P3.70/P6.92/P7.77/P9.46): declare the load-bearing P5→P4 edges the per-saver/per-declaration/per-pair-test boxes consume — every image-worker load/save box (P5.16/P5.19/P5.20–P5.36) runs inside the **P4.36 §2.12 isolation boundary** + marshals progress through the **P4.8/P4.35 §1.7 line-reader**; every per-pair integration test (P5.47–P5.59) runs on the **P4.58 §6.4.3 per-pair runner**; every advanced-option DECLARATION box (P5.37–P5.44 + the ICO declaration P5.73) renders against the **P4.63 OptionsPanel widget dispatch** + the **P4.73 AdvancedDrawer**. `needs:` the P4 harness boxes here so the §6 selection can build-it-first-then-return rather than proceeding against an unbuilt P4 dependency; no P5 box `>`-note defers a `needs:` with the P4.76-forbidden phrasing.
+  > the P5 instance of the cross-phase reconciliation obligation (the master plan-lint forbidden-string check is P4.76; reciprocal of P3.70/P6.92/P7.77/P9.46): declare the load-bearing P5→P4 edges the per-saver/per-declaration/per-pair-test boxes consume — every image-worker load/save box (P5.16/P5.19/P5.20–P5.36) runs inside the **P4.36 §2.12 isolation boundary** + marshals progress through the **P4.8/P4.35 §1.7 line-reader**; every per-pair integration test (P5.47–P5.59) runs on the **P4.58 §6.4.3 per-pair runner**; every advanced-option DECLARATION box (P5.37–P5.44 + the ICO declaration P5.73) renders against the **P4.63 OptionsPanel widget dispatch** + the **P4.73 AdvancedDrawer**. The end-of-phase image-engine bump re-validation hook (P5.74) carries only intra-P5 edges (`needs: P5.63`/`P5.65`) — the §6.5.4 trigger is the image `engines.lock` pin, not a P4 harness box — so it needs no P4 reconciliation edge, named here only for end-of-phase-box completeness (parallel to the FFmpeg P6.82 / office P7.76 hooks). `needs:` the P4 harness boxes here so the §6 selection can build-it-first-then-return rather than proceeding against an unbuilt P4 dependency; no P5 box `>`-note defers a `needs:` with the P4.76-forbidden phrasing.
 
 ---
 
@@ -362,3 +362,22 @@
 - [ ] **P5.73** [UI] Register the ICO advanced-option declarations (Basic icon-sizes default `[16,32,48,256]` no-upscale; Advanced custom-size-list / single-size mode / 256px-embedded-PNG on) · §1.6 · G47
   needs: P5.27, P4.63, P4.73
   > the §1.6 ICO option declaration the images.md ICO Options/settings entry defines (the only offered raster target without one): **Basic** — `icon sizes` defaulting to the standard multi-resolution set `[16,32,48,256]` (favicons + Windows app icons in one file), high-quality Lanczos downscale, **upscale-beyond-source skipped** with a note; **Advanced** — a `custom size list`, a `single size` mode, and `256px stored as embedded PNG` (default on, required for a valid/small 256 entry) — declared against the P4-built OptionsPanel widget dispatch (P4.63) + the AdvancedDrawer (P4.73), no new panel chrome (the §1.6 generic declaration model). Mirrors P5.37–P5.43's per-target declarations; the values are the images.md ICO `[DECIDED]` defaults the P5.27 ICO-save path + P5.53 runtime assertion already implement. (`needs: P5.27` for the ICO-save path the declaration drives + `P4.63`/`P4.73` for the panel/drawer it renders against — the cross-phase edges carried via the P5.72 reconciliation box.)
+
+---
+
+### Image-engine bump re-validation hook (the §6.5.4 SSOT-continuity gate for the image pins)
+
+> The §6.5.4 "full reliability gate re-runs before a bundled engine can ship a bump" trigger
+> wired for the image `engines.lock` pins — the per-engine-phase symmetry P6 (P6.82) and P7
+> (P7.76) keep. The image stack is the largest and most CVE-dense decoder set in the product
+> (libvips/libheif/libde265/x265/libaom/dav1d/librsvg/cgif/libimagequant/ImageMagick — P5.61
+> calls ImageMagick "the densest-CVE decoder family"), so a silent libvips/libheif/ImageMagick
+> security bump regressing an image pair is exactly the regression §6.5.4 exists to catch.
+> Without this box P11.31 ("the §6.5.4 re-validation path is wired") has no image-engine
+> machinery to confirm green — the FFmpeg/office hooks are built by P6.82/P7.76, the image
+> hook nowhere. Placed at end-of-phase (gap-free `.74`, after the P5.72 reconciliation + the
+> P5.73 ICO declaration, the file's end-of-P5 placement convention).
+
+- [ ] **P5.74** [TEST] Add the image-engine bump re-validation hook (full P5 reliability gate re-runs on an image `engines.lock` pin change) · §6.5.4 §3.8 · G37 G17b
+  needs: P5.63, P5.65
+  > wire the §6.5.4 rule for the image-stack `engines.lock` pins (libvips/libheif/libde265/x265/libaom/dav1d/librsvg/cgif/libimagequant/ImageMagick): a version/SHA change on any image-stack row re-runs the FULL P5 reliability gate before that engine version can ship (a patch must not silently regress an image pair — e.g. a libheif/libde265 HEVC-decode bump or an ImageMagick BMP-delegate bump that quietly changes a raster); the §6.5 reliability-ledger (P5.63) status-diff is part of the bump review; the informational per-push OSV/grype over the PURL/CPE-keyed image rows (x265/libvips/ImageMagick/libde265 are real CVE surfaces) feeds vuln-response (CVSS ≥ 7 on an exercised image path → release-blocking escalation). Parallel to the FFmpeg hook (P6.82) + the office hook (P7.76); the path P11.31 confirms is wired for the image engines. (`needs: P5.63` for the image reliability-ledger the re-run drives + `P5.65` for the image `engines.lock`/SBOM rows whose pin change is the trigger.)

@@ -187,6 +187,7 @@ a concrete command + path, even though the C-command surface is empty until P2.
   > the tauri-specta `Builder` configured with `collect_commands!`/`collect_events!`/`collect_types!` (the §0.6 identity types from P1.9 registered so they don't generate as `any`), emitting to the single tracked path — the codegen engine the §06 drift check guards; empty command set in P1 (C1–C13 are P2).
 - [ ] **P1.26** [UI] Generate + commit `src/lib/ipc/bindings.ts` at the single §0.7 tracked path · §0.4.5 §0.7 · G19
   needs: P1.25, P1.29
+  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P1.29` points at the Vite config defined later in document order — the codegen + commit runs against that build config, so DECISION C builds P1.29 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
   > run the codegen and commit the generated `src/lib/ipc/bindings.ts` (the frontend's only IPC door) — the concrete file the P0 G19 drift check regenerates + `git diff --exit-code`s; activates G19 (P0.3.9) with a real generated target.
 - [ ] **P1.27** [UI] Author the `commands.ts`/`events.ts` typed-façade re-export shells · §5.1 §5.8
   needs: P1.26
@@ -223,7 +224,8 @@ the per-push a11y leg (G33a) against real source.
   > the Tailwind setup + an empty-but-present `design/tokens.css` (CSS custom properties) — the single home for colour tokens the P0 G9 invariant (a) ("no hardcoded colour outside `design/tokens.css`") scopes to (activates P0.3.10 invariant (a)); the real token values are P8 polish.
 - [ ] **P1.33** [UI] Author the flat ESLint + stylelint config (incl. project-local no-`any` / `fc.gen()` rules) · §5.1 · G5 G9
   needs: P1.30, P1.35.1
-  > the flat ESLint config + stylelint carrying the project-local rules the P0.4.7 contract names (no `any`, the §6.4.2 `fc.gen()`-shrink-wrapper rule paired with P0 G9 invariant (f)) — the config the P0 G5 lint leg consumes; activates the eslint half of P0.4.7. (`needs: P1.35.1` — a same-phase forward edge, resolved in place by DECISION C — for the `fast-check` dependency the project-local `fc.gen()` rule presupposes; the rule lints `fast-check` usage so the dep is its prerequisite even though P1.35.1 sits later in document order.)
+  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P1.35.1` points at the `fast-check` dependency defined later in document order — the project-local `fc.gen()`-shrink-wrapper rule lints `fast-check` usage, so DECISION C builds P1.35.1 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
+  > the flat ESLint config + stylelint carrying the project-local rules the P0.4.7 contract names (no `any`, the §6.4.2 `fc.gen()`-shrink-wrapper rule paired with P0 G9 invariant (f)) — the config the P0 G5 lint leg consumes; activates the eslint half of P0.4.7. (`needs: P1.35.1` for the `fast-check` dependency the project-local `fc.gen()` rule presupposes; the rule lints `fast-check` usage so the dep is its prerequisite even though P1.35.1 sits later in document order.)
 - [ ] **P1.34** [UI] Author the Prettier config + the `prettier --check` posture · §5.1 · G3
   needs: P1.30
   > the committed Prettier config the P0 G3 format mirror (`prettier --check`, no auto-write) runs over the TS/CSS/JSON tree; activates the prettier leg of the P0 format gate.
@@ -366,7 +368,7 @@ silently stuck in its bootstrap skip state) and homes the contributor build-setu
     needs: P1.58
   - [ ] **P1.62.9** [GATE] G18/G18a-d self-test — a non-frozen lockfile / a bad resolution URL / a lifecycle-script-enabled dep MUST fail the supply-chain leg · §0.8 · G24 G18 G18a G18b G18c G18d
     needs: P1.59, P1.60
-  - [ ] **P1.62.10** [GATE] P0.4.5 over-assurance-contracts activation — assert `gate-status.md` carries an initial dated `informational` entry for each (`cargo-acl`/cackle, Kani, `cargo-careful`, `cargo-geiger`) · §1.2 · G29
+  - [ ] **P1.62.10** [GATE] P0.4.5 over-assurance-contracts activation — assert `gate-status.md` carries an initial dated `informational` entry for each (`cargo-acl`/cackle, Kani, `cargo-careful`, `cargo-geiger`) · tooling-only
     > the P0.4.5 owner-decidable contracts (`cargo-acl`/cackle, Kani, `cargo-careful`, `cargo-geiger`) carry `→ activated in P1` but, unlike the fail-closed gates in .1–.9, are **informational-only in P0** (status tracked in `docs/process/gate-status.md`, plan-lint check 23) — so their activation is NOT a fail-closed planted-violation self-test but a **presence check**: assert `docs/process/gate-status.md` carries an initial `informational` entry (with a dated rationale) for each of the four, so the P0.4.5 activation is machine-verifiable rather than silently absent. (Distinct from .1–.9: this verifies the gate-status.md entries EXIST, it does not plant a violation — these gates are informational, not fail-closed, so a "MUST fail" self-test does not apply.)
 - [ ] **P1.63** [DOC] Author `DEVELOPMENT.md` — per-OS dev prerequisites + the off-CI engine-asset acquisition path + tauri dev/build commands · §6.7.1 · G51
   needs: P1.42

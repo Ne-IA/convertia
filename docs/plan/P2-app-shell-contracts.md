@@ -186,6 +186,7 @@
   needs: P1.14
 - [ ] **P2.52** [RUST] Wire the single-instance callback — re-focus the "main" window + forward argv via `forward_launch_argv`, origin `SecondInstance` · §7.1.1 §7.8.1
   needs: P1.14, P2.51, P2.54.1
+  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.54.1` points at the `parse_path_args` helper sub-box defined later in document order — `forward_launch_argv` forwards argv through that helper, so DECISION C builds P2.54.1 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
 - [ ] **P2.53** [DOC] Record the macOS edge cases — least-mature single-instance leg (§6.6 verification item) + the unsigned two-copies accepted-limitation · §7.1.1
 
 ### P2.8 — OS-intake funnel (§7.8.1) — the launch/Open-with state machine

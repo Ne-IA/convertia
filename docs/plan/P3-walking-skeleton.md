@@ -46,10 +46,14 @@
 > under the P3.19 grouping shell); the §2.14.1 temp-ownership / lock-before-part MECHANISM (P0.5.9) →
 > **P3.20/P3.21** with its dedicated security-TEST home → **P3.71**; the T7/T8
 > link-safety/self-feeding homes (P0.5.9) → **P3.64**;
-> `cargo-mutants` over the `fs_guard`/`detect`/`outcome` kernel (P0.5.10) → the **P3.6–P3.18 /
-> P3.26–P3.29 / P3.46 / P3.68–P3.69** kernel boxes (the §2.8.2/§2.9.1 catalogs are the
-> `crate::outcome` string-table leg). P3.67 carries the explicit `needs: P0.5.8` edge; the
-> other activation edges resolve trivially since P0 is `[x]` before the loop reaches P3.
+> `cargo-mutants` over the `fs_guard`/`detect`/`outcome` kernel (P0.5.10) → the runnable
+> first-informational-pass [GATE] box **P3.72** (`needs: P0.5.10` + the **P3.6/P3.8/P3.18 /
+> P3.29 / P3.46 / P3.68/P3.69** kernel-body boxes it injects mutants into; the §2.8.2/§2.9.1
+> catalogs are the `crate::outcome` string-table leg) — the box that RUNS the gate +
+> initialises the per-crate ratchet + the `gate-status.md` entry, mirroring P3.67's
+> fuzz-replay activation. Both P3.67 (`needs: P0.5.8`) and P3.72 (`needs: P0.5.10`) carry the
+> explicit P0→P3 edge; the other activation edges resolve trivially since P0 is `[x]` before
+> the loop reaches P3.
 
 ## Boundaries (decided, see plan/README.md)
 
@@ -147,7 +151,8 @@ two-state crash invariant. This is the heart of what the walking skeleton proves
   needs: P3.15
   > step 3 `tmp.sync_all()` (`fsync`/`FlushFileBuffers`) so bytes are durable **before** the rename; step 6 on Unix **fsync the containing directory** after the rename (and on the `link`+`unlink` path after `link`, the same dir-fsync — bytes already durable via the shared inode); Windows dir-fsync is a no-op (NTFS journaling), `MOVEFILE_WRITE_THROUGH` is best-effort metadata flush only. Atomicity does NOT depend on `WRITE_THROUGH` (§2.1.1).
 - [ ] **P3.17** [RUST] Build the §2.14.3 EXDEV cross-volume fallback inside `fs_guard::atomic_publish` (copy-exactly-once → same-volume exclusive publish) · §2.14.3 §2.1.2 §2.8 · G48 G31
-  needs: P3.16, P3.15
+  needs: P3.16, P3.15, P3.20, P3.21
+  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P3.20`/`P3.21` point at the publish-temp naming model (`.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part`, P3.20) + the lock-before-part run-lifecycle invariant (P3.21) defined later in document order — the EXDEV fallback places its cross-volume intermediate under the per-run scratch root using that `.part` naming so §2.6.3 can reclaim it, so DECISION C builds both first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
   > the §2.14.3 `[DECIDED]` reactive cross-device fallback `fs_guard::atomic_publish` tries the direct intra-volume no-placeholder publish (P3.14/P3.15) first and only on **EXDEV/cross-device** runs: (a) detect the cross-device failure; (b) place the engine output on a **named, swept other-volume kind-2 temp** (under the per-run scratch root, or carrying the `.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part` naming so §2.6.3 reclaims it — never an anonymous `$TMPDIR` `tempfile`), the lock-before-part ordering (P3.21) covering it; (c) **re-check `final`-volume free space against the intermediate (≈ output) BEFORE the copy** and fail `OutOfDisk` (§2.8) if it won't fit (this path's ~2× destination-volume peak the §1.10/§2.14.4 preflight does NOT model — mirror §2.7.2's late-divert "never assume it fits"); (d) copy the cross-volume temp into a **new same-volume temp** + `sync_all()` it; (e) publish that same-volume temp → `final` with the no-placeholder exclusive-rename (P3.12/P3.14), the §2.2 numbering retry **re-renaming the SAME already-copied intermediate** on a collision (the expensive cross-volume copy happens **EXACTLY ONCE**; only the cheap intra-volume exclusive-rename loops); (f) dir-fsync; the extra copy removed by §2.6. The cross-volume step is a **copy**, never a cross-volume `rename`; the only rename is intra-volume + exclusive. (The §2.14.2 `0o700` per-run kind-2 scratch-ROOT creation primitive this temp lands under is owned by P3.21's run-lifecycle ordering — the run-start `run-<RunId>/` create-then-lock step.)
 - [ ] **P3.18** [RUST] Build the FAT/exFAT-class detection + `DivertReason::NoAtomicPublish` (Unix-only) · §2.1.2 §2.7.2 · G48
   needs: P3.13
@@ -387,7 +392,7 @@ whole Tauri + atomic-publish + IPC stack early (the README walking-skeleton purp
   needs: P3.61, P3.38
   > activate the P0.5.5/P0.5.6 invariants on these pairs: **(a) SOURCE-UNCHANGED** — `sha256` of every corpus source unchanged before/after (the no-harm proof, G31); **(b) OUTPUT-VALIDITY** — the produced output passes a **real RFC-4180 reader** (the `csv` crate) + CSV-injection literal-preservation (NOT bare field-count) + non-empty/output≠input/size-plausibility (G32). Register CSV↔TSV in `tests/corpus/manifest.toml` with its byte-stable/lossy disposition + the determinism sub-assertion (`sha256(out1)==sha256(out2)`).
 - [ ] **P3.63** [TEST] Author the per-pair integration runner end-to-end pass (drop→…→publish→summary) — activates the G23 handler→test gate for the first `convert_*` · §6.4.3 §6.5 · G15 G31 G23
-  needs: P3.62, P3.50
+  needs: P3.62, P3.50, P0.4.11
   > the §6.4.3 per-pair integration test driving the **real** vertical slice — frozen-set freeze → detect → C3/C4 → C6 convert → §2.1 atomic publish → `RunResult` summary — against the real temp FS (never mock the no-harm/`fs_guard` layer, the thing under test, P0.5.1); assert the published output exists at the expected beside-source/diverted name, the no-clobber numbering on a pre-existing collision, and the summary maps output→source. G15 unit+integration; the §6.5 ledger marks the pair `reliable` once it passes (the walking-skeleton's first ledger entry). **This is the partner test for the first `convert_*` IPC handler (the C6 `start_conversion` run path wired in P3.48 + the slice CSV/TSV transform P3.41) and so ACTIVATES the G23 handler→test bijection first fail-close from P3** (the contract authored in P0.4.11): once this test + that handler land, G23's `git ls-files` walk fail-closes for the CSV→TSV pair (no matrix row or bijection script needed — distinct from the G22 schema-parity leg, which first fail-closes in P4.59).
 - [ ] **P3.64** [TEST] Add the §2.3/§2.4 link-safety + frozen-set + no-self-feeding integration cases · §2.3.2 §2.3.3 §2.4.2 §2.4.3 · G31 G48
   needs: P3.63
@@ -459,3 +464,22 @@ reciprocal reference to P3.70.
   - [ ] **P3.71.4** [TEST] Assert the Windows AV-lock-during-cleanup retry / `MoveFileEx` deferred-delete path · §2.6.4 · G31 G15
     needs: P3.22
     > **(d) the Windows AV-lock-during-cleanup path** — a held temp during cleanup yields `ERROR_SHARING_VIOLATION` → assert the bounded retry-after-release OR the `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` deferred-delete fallback fires (never a silent leak, never an unbounded spin). Windows-specific.
+
+---
+
+### `cargo-mutants` first informational pass over the no-harm/atomicity/no-misroute kernel
+
+**Goal:** the [GATE] box that RUNS the P0.5.10-authored scoped `cargo-mutants` gate now that
+the kernel crate BODIES exist — the first informational pass over `crate::fs_guard` +
+`crate::detect` + `crate::outcome`, initialising the per-crate ratchet + the `gate-status.md`
+informational entry. It is the activation target for P0.5.10's `→ activated in P3+` note
+(`needs: P0.5.10`), mirroring the P3.67 fuzz-replay activation box: P0 authored the
+CONTRACT + ratchet shape; this box is the runnable first pass against the real bodies that
+the kernel-body boxes build, so the gate is enforced rather than authored-then-never-run.
+Placed at end-of-phase (after the P3.68/P3.69 string-table leg + P3.70 reconciliation +
+P3.71 temp-ownership test home, the file's established end-of-P3 convention) so it stays a
+single gap-free id (`.72`) rather than re-numbering the whole P3 sequence.
+
+- [ ] **P3.72** [GATE] Run the first informational `cargo-mutants` pass over `crate::fs_guard` + `crate::detect` + `crate::outcome`, initialise `max_survived_mutants.toml` per crate + the `gate-status.md` informational entry · §6.4 · G15 G24
+  needs: P0.5.10, P3.6, P3.8, P3.18, P3.29, P3.46, P3.68, P3.69
+  > the activation target for the P0.5.10 scoped mutation-testing gate (`→ activated in P3+`, "needs the kernel crates"): now that the no-harm/atomicity/no-misroute kernel BODIES exist — `crate::fs_guard` (`resolve_identity`/`is_safe_output`/`atomic_publish`/the FAT-exFAT divert, P3.6/P3.8/P3.18 + P3.15–P3.16), `crate::detect` (P3.29), and `crate::outcome` (the §2.8.2/§2.9.1 string-table leg P3.68/P3.69 + the §2.8 projection P3.46) — run the FIRST **informational** `cargo-mutants` pass scoped to those three crates, emitting a per-crate survived-mutant report and **initialising the decrease-only `max_survived_mutants.toml` ratchet per crate at the first-run count** (P0.5.10's activation criteria), plus writing the dated `informational` entry in `docs/process/gate-status.md` (plan-lint check 23). Line coverage proves a line ran, not that a test would CATCH a regression there — this is the kernel gate that proves the no-harm tests bite. Owner-decidable informational→required like G17b (the owner flips to required when the survived count reaches **0** for `crate::fs_guard` + `crate::detect`, P0.5.10). Release-tier — runs on the release-confirmation leg, never per-push (the run cost). (`needs: P0.5.10` — the P0-authored contract + ratchet shape, satisfied since P0 is `[x]` before the loop reaches P3; the kernel-body boxes P3.6/P3.8/P3.18/P3.29/P3.46/P3.68/P3.69 for the real bodies the mutants are injected into, mirroring the P3.67→P0.5.8 activation pattern.)
