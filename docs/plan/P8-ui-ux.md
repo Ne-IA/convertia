@@ -48,6 +48,16 @@
 - **P9 validates** a11y (headed-E2E axe-core contrast G33b, SR smoke, keyboard-path
   equivalence) and **P11** runs the §6.6 usability walkthrough — P8 ships the
   *implementation* those phases verify, not the validation harness.
+- **Cross-phase edges carried INLINE (no reconciliation box):** unlike the
+  format-exercise phases (P5/P6/P7), P8 ships **no** per-pair tests against the P4
+  reliability runner and **no** deferred P4-harness edges, so it carries the
+  cross-phase reconciliation obligation (P4.76; reciprocal of P3.70/P5.70/P6.78/
+  P7.76/P9.46) **inline on each box** rather than in a dedicated reconciliation box:
+  P8.1.1→P2.39/P1.37 (`app://intake` + strings), P8.3/P8.16→P2.85 (`tauri-plugin-store`
+  prefs blob), P8.10/P8.12→P2.34 (C11 `get_app_info`), P8.15→P2.33 (C10
+  `open_project_page`), P8.19→P3.68 (§2.8.2 catalog), P8.20→P1.31.2/P3.69 (§5.1 store +
+  §2.9.1 catalog). No P8 box `>`-note defers a `needs:` with the P4.76-forbidden
+  phrasing (`the fill pass adds those needs` / `the reconciliation pass wires those`).
 
 ---
 
@@ -56,13 +66,14 @@
 - [ ] **P8.1** [UI] Build the persistent slim AppHeader chrome frame · §5.3 §5.5
   > scope (i). The single persistent `AppHeader` present in every §5.2 state — slim, calm, never a second navigation model — laying out the three otherwise-homeless surfaces: BrandLogo (left), ThemeToggle + About/`?` trigger (right), with the BusyNotice Banner slot just under it (top of workspace). Renders identically across all 12 states.
   - [ ] **P8.1.1** [UI] Build the BusyNotice passive Banner (the §5.8 defence-in-depth leaked-`app://intake`-while-busy path) + its auto-dismiss rule · §5.3 §7.1.1 §5.8 · G57 G33a
-    > scope (i). The `BusyNotice.tsx` passive non-modal Banner in the AppHeader slot, fired **ONLY** on the §5.8 defence-in-depth path — a leaked `app://intake` arriving while not Idle/Summary (NOT the primary refuse-busy path, which the core handles core-side with no emit, P2.55/P2.72); carries the §7.1.1 "ConvertIA is busy…" `strings/ui.ts` string (English-only, G57). Auto-dismiss rule: it persists across the Converting family (7→7a Cancelling does **NOT** dismiss it) and clears on **leaving** the Converting family (→ Summary(8) / AppFault(12)). Passive (never modal, never forces a choice — `role` is a status Banner, not `alertdialog`), the per-push `vitest-axe` ARIA target (G33a). (Build-order: consumes the P2 `app://intake` event binding + the P1 strings scaffold; the fill pass adds those `needs:`.)
+    needs: P8.1, P2.39, P1.37
+    > scope (i). The `BusyNotice.tsx` passive non-modal Banner in the AppHeader slot, fired **ONLY** on the §5.8 defence-in-depth path — a leaked `app://intake` arriving while not Idle/Summary (NOT the primary refuse-busy path, which the core handles core-side with no emit, P2.55/P2.72); carries the §7.1.1 "ConvertIA is busy…" `strings/ui.ts` string (English-only, G57). Auto-dismiss rule: it persists across the Converting family (7→7a Cancelling does **NOT** dismiss it) and clears on **leaving** the Converting family (→ Summary(8) / AppFault(12)). Passive (never modal, never forces a choice — `role` is a status Banner, not `alertdialog`), the per-push `vitest-axe` ARIA target (G33a). (Build-order: `needs: P2.39` for the `app://intake` event binding + `P1.37` for the `strings/ui.ts` scaffold the §7.1.1 string lands in, per the P8 boundary note — the cross-phase edges declared, not deferred.)
 - [ ] **P8.2** [UI] Build the BrandLogo primitive reading the bundled offline placeholder SVG · §5.5
   needs: P8.1
   > scope (i) (ship-gating: the header is a ship surface; the *final mark* is scope-(ii) branding). A single `<BrandLogo>` primitive reading a bundled-local placeholder SVG (offline, no CDN, §2.11) so the owner can swap the final Ne-IA mark without touching layout; the logo + "ConvertIA"/"Ne-IA" names are NOT MIT-granted (SSOT Trademark) — placeholder stand-in only.
 - [ ] **P8.3** [UI] Build the ThemeToggle (Light/Dark/System) writing the `theme` prefs key · §5.5 §7.4.2
-  needs: P8.1
-  > scope (i). The Light/Dark/System selector in AppHeader (right side); three explicit states; default `system` (follow `prefers-color-scheme`); writes the `theme` key via `tauri-plugin-store` (§7.4.2) so the choice persists across launches; cycles `system → light → dark`. Tab-reachable only, no global accelerator (§5.10) — wired to the keymap in P8.18.
+  needs: P8.1, P2.85
+  > scope (i). The Light/Dark/System selector in AppHeader (right side); three explicit states; default `system` (follow `prefers-color-scheme`); writes the `theme` key via `tauri-plugin-store` (§7.4.2) so the choice persists across launches; cycles `system → light → dark`. Tab-reachable only, no global accelerator (§5.10) — wired to the keymap in P8.18. (`needs: P2.85` — the `tauri-plugin-store` 3-key prefs blob this `theme` key writes into.)
 - [ ] **P8.4** [UI] Resolve the persisted `theme` into the design tokens at the root · §5.5 §7.4.2
   needs: P8.3
   > scope (i). Read the persisted `theme` at startup / store-hydration; a `system` value follows the OS `prefers-color-scheme`; resolve the chosen mode into the `design/tokens.css` colour tokens at the root so light + dark both render from one semantic token set (`theme.ts` light/dark resolution).
@@ -87,14 +98,14 @@
   needs: P8.1
   > scope (i), RELEASE-BLOCKING (SSOT §4 static About/legal-notices; G44 governance-completeness). The static in-app About / legal-notices dialog — presentation only, generates nothing. `role="dialog"` + `aria-modal="true"` (NOT `alertdialog` — it forces no decision; an alert role would be a WCAG 4.1.2 violation, §5.6), focus-trapped, `aria-labelledby` → its "About ConvertIA" heading, Esc-dismissible. Opened from the AppHeader About/`?` control + F1/`?` (§5.10) — keymap wiring in P8.18.
 - [ ] **P8.10** [UI] Render the About version + build-id + MIT copyright lines from C11 `get_app_info` · §5.9 §7.6.2 · G33a
-  needs: P8.9
-  > scope (i), RELEASE-BLOCKING. About checklist items 1–2: the current app version + build identifier (C11 `get_app_info`, §7.6 supplies the value, §5.9 renders) and the copyright line matching the repo `LICENSE`/`NOTICE` (the MIT copyright holder). The frontend treats C11 as an opaque typed RPC (§5.8) via `src/lib/ipc/**` only.
+  needs: P8.9, P2.34
+  > scope (i), RELEASE-BLOCKING. About checklist items 1–2: the current app version + build identifier (C11 `get_app_info`, §7.6 supplies the value, §5.9 renders) and the copyright line matching the repo `LICENSE`/`NOTICE` (the MIT copyright holder). The frontend treats C11 as an opaque typed RPC (§5.8) via `src/lib/ipc/**` only. (`needs: P2.34` — the C11 `get_app_info` contract this renders.)
 - [ ] **P8.11** [UI] Author the canonical as-is/no-warranty + offline + cloud-sync About strings · §5.9 §5.7 §2.11 · G57
   needs: P8.9
   > scope (i), RELEASE-BLOCKING. About checklist items 3–5 as fixed `strings/ui.ts` entries (not free-form prose, so the §6.10 Principle-11 / drift lint covers them, G57): the canonical no-warranty string "ConvertIA is provided as-is, with no warranty. Use at your own risk."; the "fully offline" reassurance line (the `idle_reassurance`-class fixed string); the §2.11.3 cloud-sync caveat (your own OneDrive/iCloud/Dropbox may sync originals/results — ConvertIA neither causes nor prevents it) + the adjacent best-effort-security line.
 - [ ] **P8.12** [UI] Build the scrollable third-party-licenses / NOTICE area presenting the §3.7 data · §5.9 · G44
-  needs: P8.9
-  > scope (i), RELEASE-BLOCKING (a missing attribution is release-blocking, SSOT §9 / G44). About checklist item 6: a scrollable list rendering the §3.7-generated NOTICE/SBOM data (engine name → licence → notice text), with copyleft engines flagged per §3.6 + the written-offer-of-source pointer line. Data ships as a bundled offline asset (no fetch); About displays, never generates. C11 `get_app_info` supplies the NOTICE data.
+  needs: P8.9, P2.34
+  > scope (i), RELEASE-BLOCKING (a missing attribution is release-blocking, SSOT §9 / G44). About checklist item 6: a scrollable list rendering the §3.7-generated NOTICE/SBOM data (engine name → licence → notice text), with copyleft engines flagged per §3.6 + the written-offer-of-source pointer line. Data ships as a bundled offline asset (no fetch); About displays, never generates. C11 `get_app_info` supplies the NOTICE data. (`needs: P2.34` — the C11 `get_app_info` contract supplying the NOTICE data.)
 - [ ] **P8.13** [UI] Render the Ne-IA branding block in About (logo placeholder + name) · §5.9 §5.5
   needs: P8.9, P8.2
   > scope (i) (the credits/trademark block is a ship surface; final art is scope-(ii)). About checklist item 8: the `<BrandLogo>` placeholder + "ConvertIA" name credits block — the home for credits + third-party-licenses (SSOT: no operated service → no web-style legal-notice obligation, so the in-app screen is the home). Logo + names NOT MIT-granted (SSOT Trademark).
@@ -105,25 +116,32 @@
 ### About→Releases link (§7.6.2) — scope (i)
 
 - [ ] **P8.15** [UI] Build the user-initiated "Open Releases page" About link via C10 `open_project_page` · §5.9 §7.6.2 · G44
-  needs: P8.9
-  > scope (i), ship-gating. About checklist item 7: a user-initiated link to the canonical Ne-IA GitHub Releases page (C10 `open_project_page` → the §7.7 `open_url` shell-out, the ONLY permitted, explicitly-user-triggered network action). NEVER an automatic check, no fetch/parse of the page itself (§7.6.1 no phone-home). The frontend calls C10 as an opaque typed RPC via `src/lib/ipc/**`; the no-`OpenKind` C10 row (§7.7.1) is the wiring point.
+  needs: P8.9, P2.33
+  > scope (i), ship-gating. About checklist item 7: a user-initiated link to the canonical Ne-IA GitHub Releases page (C10 `open_project_page` → the §7.7 `open_url` shell-out, the ONLY permitted, explicitly-user-triggered network action). NEVER an automatic check, no fetch/parse of the page itself (§7.6.1 no phone-home). The frontend calls C10 as an opaque typed RPC via `src/lib/ipc/**`; the no-`OpenKind` C10 row (§7.7.1) is the wiring point. (`needs: P2.33` — the C10 `open_project_page` contract this link invokes.)
 
 ### Settings chrome (verbose-log toggle) — scope (i)
 
 - [ ] **P8.16** [UI] Build the verbose-logging toggle in About with the "applies after restart" hint · §5.9 §7.4.2 · G57
-  needs: P8.9
-  > scope (i), ship-gating settings chrome. About checklist item 9: the "Detailed diagnostic log" labelled toggle (§7.5.3 mandate) with its disclosure notice (turning it on makes the LOCAL log additionally record file paths + engine command lines, still purely local — nothing sent, §2.11); off by default. Persists as the 3rd key (`verboseLog`) in the §7.4 prefs blob; takes effect on next launch (plugin-init reads it once) so it shows the "applies after restart" hint (§7.5.3). The toggle is the §7.5.3 SURFACE; logging behaviour is owned by §7.5. Labels are `strings/ui.ts` (G57).
+  needs: P8.9, P2.85
+  > scope (i), ship-gating settings chrome. About checklist item 9: the "Detailed diagnostic log" labelled toggle (§7.5.3 mandate) with its disclosure notice (turning it on makes the LOCAL log additionally record file paths + engine command lines, still purely local — nothing sent, §2.11); off by default. Persists as the 3rd key (`verboseLog`) in the §7.4 prefs blob; takes effect on next launch (plugin-init reads it once) so it shows the "applies after restart" hint (§7.5.3). The toggle is the §7.5.3 SURFACE; logging behaviour is owned by §7.5. Labels are `strings/ui.ts` (G57). (`needs: P2.85` — the `tauri-plugin-store` 3-key prefs blob this `verboseLog` key persists into.)
 
 ### Cross-cutting error / edge-state copy refinement — scope (i)
 
-- [ ] **P8.17** [UI] Refine the Idle empty-state with the canonical `idle_reassurance` string · §5.2 §5.7 · G57
-  > scope (i) (the offline-promise string is ship; the empty-state eye-candy is scope-(ii), P8.27). The `Idle` (state 1) drop-or-browse invitation + the pinned offline reassurance `strings/ui.ts` key `idle_reassurance: "All conversion happens locally, on your machine — nothing is ever uploaded."` (an SSOT Local/private/offline promise given concrete-string treatment so the §6.10 Principle-11 lint / drift check covers it — not free-form prose, G57). No setup, no fields.
+- [ ] **P8.17** [UI] Refine the Idle empty-state, RENDERING the P1.37-owned `idle_reassurance` string · §5.2 §5.7 · G57
+  needs: P1.37
+  > scope (i) (the offline-promise string is ship; the empty-state eye-candy is scope-(ii), P8.27). The `Idle` (state 1) drop-or-browse invitation that **renders the P1.37-owned `idle_reassurance` `strings/ui.ts` key** (the SSOT Local/private/offline promise — authored + G57-lint-covered in P1.37, NOT re-defined here; P8 owns no string keys per the P8 boundary, it consumes the module). No setup, no fields. (`needs: P1.37` — the strings module that owns the key this state renders.)
 - [ ] **P8.18** [UI] Fill the canonical keymap entries P8 chrome owns into `a11y/keymap.ts` · §5.10
   needs: P8.3, P8.9, P8.15
   > scope (i). Register into the single-source `a11y/keymap.ts` the §5.10 accelerators the P8 chrome introduces: F1 / `?` → AboutDialog (any state, when no text field focused); the ThemeToggle Tab-to-then-Enter/Space activation (no dedicated chord, §5.5); AboutDialog Esc-close-and-restore-focus-to-trigger (the About control in AppHeader). The keymap is the single source; per-component code only references it.
 - [ ] **P8.19** [UI] Refine the cross-cutting §2.8 error / edge-state copy presentation (not per-format) · §5.2 §5.7 §2.8 · G57
   needs: P3.68
-  > scope (i). Cross-cutting polish of the §2.8 error / edge-state SURFACING that is not a per-format declaration: the full-screen `UnsupportedNotice` (10) four variants (`Unsupported`/`Uncertain`/`Unreadable`/`Empty`) incl. the `Empty` per-reason skip-tally line, the `MixedDropRefusal` (9) formats-found list copy, the `AppFaultNotice` (12) "Something went wrong" line, the `CommandError` pre-run inline-error slot copy, the §1.4 confirm-gate skip tally, the fully-failed `Summary` banner, and the §1.12 batch-level summary strings — rendered verbatim from the §2.8-owned catalog (the §2.8.2 table authored in P3.68; UI must not paraphrase), with UI-chrome wrapper strings in `strings/ui.ts` (English-only, G57). Refines presentation against the P4-built error-copy framework; does not re-author the catalog (§2.8 owns it — `needs: P3.68`).
+  > scope (i). Cross-cutting polish of the §2.8 error / edge-state SURFACING that is not a per-format declaration, rendered verbatim from the §2.8-owned catalog (the §2.8.2 table authored in P3.68; UI must not paraphrase), with UI-chrome wrapper strings in `strings/ui.ts` (English-only, G57). Refines presentation against the P4-built error-copy framework; does not re-author the catalog (§2.8 owns it — `needs: P3.68`). Split into three independently-verifiable sub-boxes by surface (different components, different spec refs: §5.2/§5.3 states 9/10/12 vs §1.4 vs §1.12) so a failure is attributable.
+  - [ ] **P8.19.1** [UI] Refine the full-screen error-state copy — UnsupportedNotice (10) four variants + MixedDropRefusal (9) + AppFaultNotice (12) · §5.2 §5.3 §2.8 · G57
+    > scope (i). The full-screen `UnsupportedNotice` (state 10) four variants (`Unsupported`/`Uncertain`/`Unreadable`/`Empty`) incl. the `Empty` per-reason skip-tally line, the `MixedDropRefusal` (state 9) formats-found list copy, and the `AppFaultNotice` (state 12) "Something went wrong" line — verbatim from the §2.8.2 catalog (P3.68), UI-chrome wrappers in `strings/ui.ts` (G57).
+  - [ ] **P8.19.2** [UI] Refine the inline / partial-error copy — CommandError pre-run slot + the §1.4 confirm-gate skip tally · §5.3 §1.4 §2.8 · G57
+    > scope (i). The `CommandError` pre-run inline-error slot copy (the passive `Note` above FormatPicker for a C3/C4/C5 reject) and the §1.4 confirm-gate skip tally — verbatim from the §2.8.2 catalog (P3.68), UI-chrome wrappers in `strings/ui.ts` (G57).
+  - [ ] **P8.19.3** [UI] Refine the Summary / batch-level copy — fully-failed banner + the §1.12 batch-level summary strings · §1.12 §2.8 · G57
+    > scope (i). The fully-failed `Summary` banner and the §1.12 batch-level summary strings (all/partial/all-failed/cancelled/with-residue) — verbatim from the §2.8.2 catalog (P3.68), UI-chrome wrappers in `strings/ui.ts` (G57).
 - [ ] **P8.20** [UI] Refine the cross-cutting §2.9 lossy/fidelity-note presentation (not per-format) · §5.7 §2.9 §5.1 · G57
   needs: P1.31.2, P3.69
   > scope (i). Cross-cutting polish of the §2.9 lossy-note SURFACING that is not a per-format declaration: the passive inline `Note` calm/`--info` styling beside the chosen target (shown once, never a blocking "I understand" dialog or per-conversion nag), the multi-kind de-dup-to-most-specific-2-3 rule (§2.9.2), and the `ConvertingNote` worst-case-`video_reencode` banner reading the §5.1 store `pendingVideoReencodeNote` field (§5.8; the store is P1.31.2) — verbatim from the §2.9-owned string catalog (the §2.9.1 table authored in P3.69; UI must not paraphrase). Refines presentation against the P4-built lossy-note surfacing; does not re-author the catalog (§2.9 owns it — `needs: P3.69`).
