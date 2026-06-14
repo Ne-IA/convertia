@@ -412,10 +412,14 @@ trust-substitute) — so the P11 §6.6 walkthrough has authored content to valid
 artifact-size gate** (DoD row 22 — measure each platform's compressed artifact,
 fail the release if any exceeds the §3.9.2 ceiling, publish measured sizes as a
 release asset; the size *levers* are owned in P4) and the **§6.10 row 21
-no-system-pollution post-launch assertion** (run the built app under Procmon (Win)
-/ `fsusage`+config-dir watch (macOS) / `strace`+inotify (Linux) during a
-conversion, asserting no registry/LaunchAgent/daemon/file-association writes and no
-writes outside config+log+chosen output). **Release-blocking gates homed here:**
+no-system-pollution post-launch assertion** (G43 — the load-bearing leg is a
+**CLI-automatable before/after STATE snapshot-diff** on every OS: `reg export` of
+HKCU+HKLM\SOFTWARE + file-system diff (Win) / `LaunchAgents`+`LaunchDaemons`+file-association
+DB enumeration + `lsof +D` (macOS — NOT the SIP-blocked `fs_usage` DTrace live trace) /
+`~/.local`+`~/.config`+desktop-dir diff (Linux); the live `strace`+inotify monitor is the
+authoritative leg on Linux and informational-where-available on macOS/Windows — asserting no
+registry/LaunchAgent/daemon/file-association writes and no writes outside config+log+chosen
+output). **Release-blocking gates homed here:**
 the §6.8 **governance-completeness** assertion (every required governance doc
 present + non-stub) and the §6.9 **name/trademark clearance-record** assertion
 (`docs/name-clearance.md` present, dated for the release line, verdict = clear) +

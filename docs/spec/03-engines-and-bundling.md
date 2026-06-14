@@ -1184,6 +1184,25 @@ conversion" is a **read-side** claim, not a write-side one).
   `HEIC↔AVIF` path; **all** HEIC/AVIF *encode* is `heifsave`, no standalone
   `heif`/`avif` encoder), ICO multi-size list. ICC/metadata carried per `images.md`
   policy.
+- **ImageMagick coder/delegate hardening `[DECIDED — T9b/T1 load-bearing]`:** ImageMagick
+  is the historically most CVE-dense decoder family (ImageTragick CVE-2016-3714 + the
+  URL/MSL/MVG/HTTPS/FTP/EPHEMERAL/TEXT/LABEL coder class — SSRF, out-of-input file
+  read/move/delete, and RCE-on-crafted-input vectors). Because it is statically linked
+  **inside** `convertia-imgworker`, the §2.12 worker isolation bounds blast radius but is
+  the §2.12.3 **degradable** tier, so it is **NOT** the structural control for the
+  ImageMagick attack surface. The load-bearing control is a **coder/delegate lockdown**,
+  enforced one of two ways: **(a)** the bundle ships a **hardened `policy.xml`** denying the
+  dangerous coders (`<policy domain="coder" rights="none" pattern="{URL,HTTPS,HTTP,FTP,EPHEMERAL,MVG,MSL,TEXT,LABEL,SHOW,WIN,PLT}">`)
+  + a path-rights deny on `@`-indirect reads, and the worker sets **`MAGICK_CONFIGURE_PATH`**
+  to the bundle policy dir (MagickCore reads `policy.xml` from there — without the env var the
+  system / no policy is used, so this var is mandatory, set in the worker's minimal env like
+  the `LIBHEIF_PLUGIN_PATH` whitelist); **OR (b)** the trimmed IM is **built with those
+  coders/delegates excluded** (`--without-modules`/coder-excluded — which also avoids the
+  `policy.xml`-bypass build caveat). The §6.1.3 build assertion verifies whichever path was
+  taken (parse the staged `policy.xml`, or introspect `convert -list coder`/`-list policy`);
+  the §6.4.2 corpus carries a crafted-BMP + SVG-via-MSL/URL-coder sentinel asserting no
+  egress + no out-of-input read. (GPL/network optional delegates are already excluded per
+  §3.6.1.)
 - **x265 libheif-plugin runtime discovery in the portable bundle `[DECIDED]`:** the x265
   HEVC encoder ships as a **dynamically-loaded libheif plugin** under `resources` (§3.6.1),
   but the statically-linked libheif inside `convertia-imgworker` must find it at an
