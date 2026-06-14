@@ -10,6 +10,6 @@
 - **Green and orange live in the logo only.** Do **not** spread all three colours
   across the interface (no "circus" look).
 - Exact colour tokens (hex values) are derived from the final logo source during
-  **P8** and recorded in the spec design system (`spec/05-ui-ux.md`).
+  **P8** and recorded in the spec design system (`docs/spec/05-ui-ux.md`).
 - The PNG here is the master source; per-platform app icons (`src-tauri/icons/`)
   are generated from it in **P1**.

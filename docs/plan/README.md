@@ -1,7 +1,7 @@
 # ConvertIA — Implementation Plan (Phase 3)
 
-> The implementation roadmap, derived from the [Specification](spec/README.md)
-> (which is itself derived from the [Single Source of Truth](SINGLE-SOURCE-OF-TRUTH.md)).
+> The implementation roadmap, derived from the [Specification](../spec/README.md)
+> (which is itself derived from the [Single Source of Truth](../SINGLE-SOURCE-OF-TRUTH.md)).
 > Conflict rule unchanged: **SSOT wins**, then the spec, then this plan.
 
 ## How this plan is used

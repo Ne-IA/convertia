@@ -32,8 +32,9 @@ video, documents, spreadsheets and presentations.
 
 | Doc | Purpose |
 |-----|---------|
-| [SINGLE-SOURCE-OF-TRUTH.md](SINGLE-SOURCE-OF-TRUTH.md) | The idea, rules and scope — **what & why** (authoritative). |
-| [spec/](spec/README.md) | The technical specification — **how** (work in progress). |
+| [SINGLE-SOURCE-OF-TRUTH.md](docs/SINGLE-SOURCE-OF-TRUTH.md) | The idea, rules and scope — **what & why** (authoritative). |
+| [spec/](docs/spec/README.md) | The technical specification — **how** (work in progress). |
+| [plan/](docs/plan/README.md) | The implementation roadmap — phased TODO (P1–P11). |
 
 ## License
 
