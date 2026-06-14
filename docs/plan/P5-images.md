@@ -74,10 +74,10 @@
   > the stage-step assertion that the chosen P5.6 path is in force — parse the staged `policy.xml` for the denied coder set, OR introspect `convert -list coder`/`-list policy` — and **fail the build** if a dangerous coder/delegate is enabled.
 - [ ] **P5.8** [BUILD] Stage libheif + libde265 (HEVC decode) for HEIC read · §3.1 §3.5.5 §6.1.3 §3.4.3 · G37 G37b
   needs: P5.1
-  > libheif (LGPL-3.0) + libde265 (LGPL-3.0) as the libvips HEIC **load** module (decode-only — §3.4.3 image HEVC-decode row is ship-bundled all platforms); pinned in `engines.lock`, dynamic-closure asserted; SPDX-expression validated (P5.66).
+  > libheif (LGPL-3.0) + libde265 (LGPL-3.0) as the libvips HEIC **load** module (decode-only — §3.4.3 image HEVC-decode row is ship-bundled all platforms); pinned in `engines.lock`, dynamic-closure asserted; SPDX-expression validated (P5.68).
 - [ ] **P5.9** [BUILD] Stage the x265 HEVC encoder as a dynamically-loaded libheif encoder plugin (GPL, never static-linked) · §3.1 §3.5.5 §3.6.1 §3.4.3 · G37 G38b
   needs: P5.8
-  > x265 (GPL-2.0-or-later — verified vs the pinned source `COPYING`; `-or-later` is compatible with the LGPL-3.0 libheif host) shipped as a **dynamically-loaded libheif encoder plugin** `.so`/`.dll`/`.dylib` under `resources`, **never** statically linked into libvips or the MIT core (§3.6 aggregation); behind the §3.4.4a per-platform `available` flag (read in P5.32). G38b: the x265 GPL §3 corresponding-source bundle (P5.67).
+  > x265 (GPL-2.0-or-later — verified vs the pinned source `COPYING`; `-or-later` is compatible with the LGPL-3.0 libheif host) shipped as a **dynamically-loaded libheif encoder plugin** `.so`/`.dll`/`.dylib` under `resources`, **never** statically linked into libvips or the MIT core (§3.6 aggregation); behind the §3.4.4a per-platform `available` flag (read in P5.32). G38b: the x265 GPL §3 corresponding-source bundle (P5.69).
 - [ ] **P5.10** [BUILD] Wire x265-libheif-plugin runtime discovery in the portable bundle (LIBHEIF_PLUGIN_PATH whitelist OR add-plugin API) · §3.5.5 §6.1.3 · G38 G29
   needs: P5.9
   > the statically-linked libheif must find the plugin at an **arbitrary extracted path** while §3.5 strips loader/injection env vars — so the worker resolves `<exe_dir>/resources/heif-plugins/` relative to `current_exe()` and points libheif at it **either** by whitelisting the single `LIBHEIF_PLUGIN_PATH` var in the otherwise-minimal env **or** (preferred, env-free) via libheif's explicit add-plugin-directory/load-plugin API; the minimal-env construction is G29-ruled.
@@ -95,13 +95,13 @@
   > the stage-step assertions that the staged librsvg is **>= 2.56.3** (fail if older) **and** that the pinned `librsvg` crate/version exposes the relied-upon `rsvg::Loader::read_stream`/`from_data`-without-`base_file` path P5.28 depends on.
 - [ ] **P5.15** [BUILD] Author the image-stack exposed-parameter capability §6.1.3 assertions (webpsave/heifsave effort + Q, jpegsave/pngsave/tiffsave/gifsave args) · §3.5.5 §6.1.3 · G38
   needs: P5.1, P5.8, P5.11
-  > the image-specific list plugged into the P4 capability-assertion framework — assert the staged libvips actually exposes every per-format knob P5.33–P5.41 declare (`jpegsave` Q/chroma/progressive/optimize_coding, `pngsave` compression/interlace/palette, `webpsave` Q/lossless/effort/alpha_q/near_lossless/smart_subsample, `tiffsave` compression/predictor/tile/pyramid, `gifsave` dither-amount/bitdepth/effort, **`heifsave` `effort`+`Q`** for HEIC+AVIF) — a version bump silently dropping a knob **fails the build**. (The `heifsave effort` arg-presence check is necessary-but-not-sufficient for HEIC exposure — the steer-confirmation corpus spike P5.42 decides HEIC exposure.)
+  > the image-specific list plugged into the P4 capability-assertion framework — assert the staged libvips actually exposes every per-format knob P5.37–P5.44 declare (`jpegsave` Q/chroma/progressive/optimize_coding, `pngsave` compression/interlace/palette, `webpsave` Q/lossless/effort/alpha_q/near_lossless/smart_subsample, `tiffsave` compression/predictor/tile/pyramid, `gifsave` dither-amount/bitdepth/effort, **`heifsave` `effort`+`Q`** for HEIC+AVIF) — a version bump silently dropping a knob **fails the build**. (The `heifsave effort` arg-presence check is necessary-but-not-sufficient for HEIC exposure — the steer-confirmation corpus spike P5.71 decides the P5.43 HEIC `effort` exposure.)
 
 ### Image-worker operation wiring (load → transform → save)
 
 - [ ] **P5.16** [RUST] Wire the image-worker load step — by detected type (not extension), inside the §2.12 boundary · §3.5.5 §1.2 §2.12 · G29 G31
   needs: P5.1
-  > the worker's load dispatch keyed on the §1.2-detected `FormatId` (built P3, per-format image signatures added P5.43), routing to the right libvips loader / load module / direct rsvg path; runs inside the P4 §2.12 isolation boundary; `VIPS_BLOCK_UNTRUSTED=1` whitelisted in the worker env as defence-in-depth for the non-SVG loaders (NOT load-bearing — the process boundary is, §3.5.5 control 3).
+  > the worker's load dispatch keyed on the §1.2-detected `FormatId` (built P3, per-format image signatures added P5.45), routing to the right libvips loader / load module / direct rsvg path; runs inside the P4 §2.12 isolation boundary; `VIPS_BLOCK_UNTRUSTED=1` whitelisted in the worker env as defence-in-depth for the non-SVG loaders (NOT load-bearing — the process boundary is, §3.5.5 control 3).
 - [ ] **P5.17** [RUST] Wire the EXIF-orientation auto-rotate (bake upright, reset tag to 1) transform step · §3.5.5 · G29 G31
   needs: P5.16
   > the always-on orientation normalisation (image rotated to upright pixels, EXIF `Orientation` reset to `1`) — the one metadata field normalised not passed through (images.md Metadata policy); applies across every source that carries orientation (JPG/TIFF/HEIC/…).
@@ -110,7 +110,7 @@
   > the conditional flatten onto a background (default **white**, advanced override) applied only for alpha-incapable targets (JPG/BMP), feeding the `image_alpha_flatten` LossyKind for any alpha-carrying source; pure transform, no I/O.
 - [ ] **P5.19** [RUST] Wire the per-target saver dispatch + Invocation/VipsStdout progress marshalling · §3.5.5 §3.2.2 §1.11 · G29 G31
   needs: P5.16
-  > the worker's save dispatch mapping a resolved `TargetFmt` to the per-target saver + its params (P5.33–P5.41), producing the `Invocation`-equivalent plan; the worker installs the libvips `eval` signal handler and **marshals each tick to stdout as `progress=<0..100>` key=value lines** (`ProgressModel::VipsStdout`) parsed by the §1.7 line-reader (the worker is a separate process — an in-process callback cannot cross the boundary).
+  > the worker's save dispatch mapping a resolved `TargetFmt` to the per-target saver + its params (the savers P5.20–P5.36), producing the `Invocation`-equivalent plan; the worker installs the libvips `eval` signal handler and **marshals each tick to stdout as `progress=<0..100>` key=value lines** (`ProgressModel::VipsStdout`) parsed by the §1.7 line-reader (the worker is a separate process — an in-process callback cannot cross the boundary).
 
 ### Raster→raster pairs (the shared in-core vips savers)
 
@@ -152,7 +152,7 @@
   > the `[DEFER: build spike]` resolution — confirm the bundled libvips+ImageMagick `magicksave` can write a valid multi-size `.ico` including a **256px embedded-PNG** entry; **record the binary outcome in this plan's notes:** (a) spike passes → the ICO-save path uses `magicksave` and the §6.1.3 assertion fails the build if magicksave ICO save regresses; (b) spike fails → the ICO-save path uses the in-core Rust ICO container assembler and the assertion targets that output, dropping ImageMagick from the ICO path. This box is the **single decision record**; the ICO-save path itself is built once in P5.28 against the recorded outcome (so exactly one code path is authored, never two mutually-exclusive open boxes).
 - [ ] **P5.27** [RUST] Wire the ICO-save path per the P5.26-recorded outcome (magicksave default OR the in-core Rust ICO assembler fallback; pad-to-square + per-size Lanczos, no-upscale) · §3.5.5 §6.1.3 · G29 G31
   needs: P5.26, P5.19
-  > ICO save for `{JPG,PNG,WEBP,GIF,BMP,TIFF,HEIC,AVIF,SVG} → ICO`, built against **whichever path P5.26 recorded** (no mutual-exclusion: a single box, one code path chosen by the spike): **outcome (a)** → `magicksave` writes the `.ico` directly; **outcome (b)** → a safe-Rust ICONDIR + per-entry image-data assembler wraps vips-produced per-size frames (ICO is a trivial container), removing ImageMagick from the ICO path while keeping vips as the per-frame encoder (the per-frame encode stays one vips process). Both paths produce the default multi-resolution set `[16,32,48,256]`, high-quality Lanczos downscale, **upscale-beyond-source skipped** (note if smaller), non-square **padded to square with transparency** (`[DECIDED]` item 5), 256px stored as embedded PNG; lossy by downscale (`image_downscale`, NOT `image_palette`). The §6.1.3 assertion (P5.54) targets whichever output ships.
+  > ICO save for `{JPG,PNG,WEBP,GIF,BMP,TIFF,HEIC,AVIF,SVG} → ICO`, built against **whichever path P5.26 recorded** (no mutual-exclusion: a single box, one code path chosen by the spike): **outcome (a)** → `magicksave` writes the `.ico` directly; **outcome (b)** → a safe-Rust ICONDIR + per-entry image-data assembler wraps vips-produced per-size frames (ICO is a trivial container), removing ImageMagick from the ICO path while keeping vips as the per-frame encoder (the per-frame encode stays one vips process). Both paths produce the default multi-resolution set `[16,32,48,256]`, high-quality Lanczos downscale, **upscale-beyond-source skipped** (note if smaller), non-square **padded to square with transparency** (`[DECIDED]` item 5), 256px stored as embedded PNG; lossy by downscale (`image_downscale`, NOT `image_palette`). The §6.1.3 assertion (P5.56) targets whichever output ships.
 
 ### SVG source path (librsvg, the no-base-URL T9b/SSRF control)
 
@@ -195,7 +195,7 @@
 > The panel **chrome** was built in P4; P5 registers only per-format option
 > **DECLARATIONS** (§1.6 generic declaration model). Each declaration's exposed-arg
 > existence is build-asserted at P5.15; the values are the images.md `[DECIDED]`
-> defaults (the `[DEFER: corpus]` ones are confirmed against the corpus, P5.42).
+> defaults (the `[DEFER: corpus]` ones are confirmed against the corpus, P5.71).
 
 - [ ] **P5.37** [UI] Register the JPG advanced-option declarations (Q=82, chroma auto, progressive on, optimize_coding on, flatten bg) · §1.6 · G47
   needs: P5.20
@@ -209,33 +209,39 @@
 - [ ] **P5.40** [UI] Register the GIF advanced-option declarations (dither = single 0–1 AMOUNT, NOT a mode selector; bitdepth=8, effort=7) · §1.6 · G47
   needs: P5.23
   > advanced `dither` exposed as a **single float amount (0–1) / on-off toggle, default on — NOT a Floyd–Steinberg/mode dropdown** (the cgif/libimagequant save path has no error-diffusion MODE, only strength — the seam note: the bayer/sierra2_4a mode choice exists ONLY on the FFmpeg video→GIF path, P6, and must not be conflated); `bitdepth`/colour count <=256 (default **8**), `effort` palette-search (default **7**); interframe maxerror/reuse at vips defaults.
-- [ ] **P5.41** [UI] Register the BMP + TIFF advanced-option declarations (BMP none; TIFF compression=deflate, Q82-if-jpeg, predictor horizontal, tile/pyramid off) · §1.6 · G47
-  needs: P5.24, P5.25
-  > BMP: none meaningful (uncompressed, no RLE toggle); TIFF advanced `compression` `none|jpeg|deflate|lzw|packbits|zstd` (default **deflate**), `Q` 82 only if `compression=jpeg`, `predictor` horizontal for deflate/lzw, `tile`/`pyramid` off.
-- [ ] **P5.42** [UI] Register the HEIC + AVIF advanced-option declarations (HEIC Q=60, lossless off, effort 0–9 corpus-gated; AVIF Q=60, effort=4, lossless off; NO cq-level/preset/speed) · §1.6 · G47
-  needs: P5.31, P5.33
-  > HEIC basic Q (0–100, default **60**), advanced `lossless` off + integer `effort` 0–9 (default 5) **exposed only if the P5.69 corpus spike confirms `effort` measurably steers the bundled x265/HEVC path — else HIDDEN for HEIC** (no dead control; libheif `speed=9-effort`); AVIF basic Q (0–100, default **60**), advanced `effort` 0–9 (default **4**, libvips-documented as honoured → stays exposed) + `lossless` off; **no `cq-level`/`preset`/`speed` controls** (not heifsave params); 8-bit default, 10/12-bit + chroma 4:2:0 advanced.
-- [ ] **P5.43** [UI] Register the SVG advanced-option declarations (width-px / scale 1.0 / explicit WxH / background transparent / dpi 96) · §1.6 · G47
+- [ ] **P5.41** [UI] Register the BMP advanced-option declaration (none meaningful — document the intentional empty set) · §1.6 · G47
+  needs: P5.25
+  > BMP: **none meaningful** (uncompressed, no RLE toggle) — declared as an explicit empty option set against the P4 shell so the absence is intentional, not an omission; registers against the P5.25 `magicksave` BMP path. Split from the former BMP+TIFF combined box (different savers, radically different option sets) so a partial-failure dual-review is attributable per saver, matching the one-box-per-format pattern of P5.37–P5.40/P5.45.
+- [ ] **P5.42** [UI] Register the TIFF advanced-option declaration (compression=deflate, Q82-if-jpeg, predictor horizontal, tile/pyramid off) · §1.6 · G47
+  needs: P5.24
+  > TIFF advanced `compression` `none|jpeg|deflate|lzw|packbits|zstd` (default **deflate**), `Q` 82 only if `compression=jpeg`, `predictor` horizontal for deflate/lzw, `tile`/`pyramid` off; registers against the P5.24 `tiffsave` path. Split from the former BMP+TIFF combined box (a different saver + a full option set vs BMP's empty set), separately dual-reviewed.
+- [ ] **P5.43** [UI] Register the HEIC advanced-option declaration (Q=60, lossless off, effort 0–9 corpus-gated) · §1.6 · G47
+  needs: P5.31
+  > HEIC basic Q (0–100, default **60**), advanced `lossless` off + integer `effort` 0–9 (default 5) **exposed only if the P5.71 corpus spike confirms `effort` measurably steers the bundled x265/HEVC path — else HIDDEN for HEIC** (no dead control; libheif `speed=9-effort`); **no `cq-level`/`preset`/`speed` controls** (not heifsave params); 8-bit default, 10/12-bit + chroma 4:2:0 advanced. Registers against the P5.31 `heifsave compression=hevc` path. Split from the former HEIC+AVIF combined box: HEIC's effort is corpus-gated via the P5.71 spike (an asymmetric dependency the AVIF half does not share), so the spike points at THIS box, not a combined one — separately dual-reviewed from AVIF.
+- [ ] **P5.44** [UI] Register the AVIF advanced-option declaration (Q=60, effort=4, lossless off; NO cq-level/preset/speed) · §1.6 · G47
+  needs: P5.33
+  > AVIF basic Q (0–100, default **60**), advanced `effort` 0–9 (default **4**, libvips-documented as honoured → stays exposed) + `lossless` off; **no `cq-level`/`preset`/`speed` controls** (not heifsave params); 8-bit default, 10/12-bit + chroma 4:2:0 advanced. Registers against the P5.33 `heifsave compression=av1` path (a fixed-effort path, no corpus gate). Split from the former HEIC+AVIF combined box (a different encode path + no spike dependency), separately dual-reviewed.
+- [ ] **P5.45** [UI] Register the SVG advanced-option declarations (width-px / scale 1.0 / explicit WxH / background transparent / dpi 96) · §1.6 · G47
   needs: P5.29
   > basic target width in px (height auto) default = intrinsic + 2×/3× scale shortcut; advanced `scale`/`zoom` (default **1.0**), explicit `width`×`height`, `background` transparent (white for JPG/BMP), `dpi` (default **96**).
-- [ ] **P5.44** [UI] Register the category-wide advanced toggles — strip location/metadata (off) + ICC preserve (no sRGB-convert in v1) + flatten background colour · §1.6 · G47
+- [ ] **P5.46** [UI] Register the category-wide advanced toggles — strip location/metadata (off) + ICC preserve (no sRGB-convert in v1) + flatten background colour · §1.6 · G47
   needs: P5.37
   > the cross-format advanced toggles: **"remove location/metadata"** off-by-default (preserve-all incl. GPS is the v1 default, `[DECIDED]` item 4); ICC **preserve/embed** (the "convert to sRGB" toggle is explicitly NOT in v1, `[DEFER: post-v1]`); the alpha-flatten background-colour picker (default white) — declared once for JPG/BMP targets.
 
 ### Detection signatures (per-format magic, added to the P3 framework)
 
-- [ ] **P5.45** [RUST] Add the per-format image detection signatures to the §1.2 framework (content-sniff, not extension) · §1.2 · G15 G29
+- [ ] **P5.47** [RUST] Add the per-format image detection signatures to the §1.2 framework (content-sniff, not extension) · §1.2 · G15 G29
   needs: P5.16
   > the magic/structure signatures for every image source (JPG `FF D8 FF`+APPn+`FF D9`; PNG `89504E47…`+APNG `acTL`; WEBP RIFF/WEBP+`VP8 `/`VP8L`/`VP8X`; GIF `GIF87a`/`GIF89a`; BMP `42 4D`+DIB-header-sanity; TIFF `II*\0`/`MM\0*`+BigTIFF; HEIC ISO-BMFF `ftyp` `heic`/`heix`/`heif`/`mif1`/`heis`/`hevc`; AVIF `ftyp avif`/`avis`; ICO `00 00 01 00` — CUR `00 00 02 00` declined; SVG root `<svg`+`.svgz` gunzip) — added to the P3-bootstrapped §1.2 layered detector; the P0.5.7 detect-KAT convention covers the ambiguous cells.
 
 ### Corpus (the §6.4.5 image set + the bijection-guard backing)
 
-- [ ] **P5.46** [TEST] Stage the image corpus into `tests/corpus/images/` + manifest entries with `covers` + SHA-256 manifest · §6.4.5 §6.4.3a · G24a G31
-  needs: P5.45, P0.5.11
+- [ ] **P5.48** [TEST] Stage the image corpus into `tests/corpus/images/` + manifest entries with `covers` + SHA-256 manifest · §6.4.5 §6.4.3a · G24a G31
+  needs: P5.47, P0.5.11
   > the concrete §6.4.5 image contents — real iPhone HEIC (HDR/10-bit/orientation 1/3/6/8/GPS/ICC-P3); JPEG (EXIF-orientation/progressive/CMYK/12-bit/truncated-tail); PNG (RGBA/16-bit/palette/APNG); WEBP (lossy/lossless/animated/alpha); AVIF (still + `avis` + HDR); GIF (static + animated); TIFF (multi-page/16-bit/CMYK/big-endian); BMP (24/32-bit, top-down/bottom-up); ICO (multi-res 16/32/48/256 + non-square); SVG (intrinsic/viewBox-only/missing-font/`.svgz`/**remote `<image href>`**/pathological tiny-viewBox-huge-render) — each redistributable (CC0/synthetic), each `[[file]]` with `source`/`licence`/`exercises`/`covers`/`[file.expect]`; SHA-256 added to the §6.4.5 manifest **via the `stage-corpus` generator (P0.5.11) in the same commit** (G24a integrity), small/synthetic in-repo + large real media in `corpus-large` LFS. (`needs: P0.5.11` for the manifest generator.)
-  - [ ] **P5.46.1** [TEST] Populate every image `covers` 2-tuple so the §6.4.3a bijection guard passes for all 78 image pairs · §6.4.3a §6.4.5 · G31
+  - [ ] **P5.48.1** [TEST] Populate every image `covers` 2-tuple so the §6.4.3a bijection guard passes for all 78 image pairs · §6.4.3a §6.4.5 · G31
     > the `covers` arrays collectively name **every** offered image `(source→target)` pair (72 raster↔raster + 6 SVG→raster), excluding diagonals/`out`(SVG→HEIC/AVIF)/`unavailable`-on-all-platforms cells, so `scripts/check-corpus-coverage.rs` (P4) finds a backing file for each — and no `covers` 2-tuple names a non-existent matrix cell (both directions of the bijection).
-  - [ ] **P5.46.2** [TEST] Add the §6.4.5 minimum-content image tags (non-ascii-encoding n/a; orientation/HDR/ICC/animation/alpha exercisers) · §6.4.5 · G31
+  - [ ] **P5.48.2** [TEST] Add the §6.4.5 minimum-content image tags (non-ascii-encoding n/a; orientation/HDR/ICC/animation/alpha exercisers) · §6.4.5 · G31
     > assert the manifest carries at least the image-relevant content exercisers (orientation-bake, ICC-P3, HDR-10bit, animation-collapse, APNG, animated-WEBP/AVIF/GIF, alpha-flatten, multi-page, palette) so the corpus is content-complete for images, not merely pair-complete.
 
 ### Per-pair integration tests (the §6.4.3 runner + structural readers)
@@ -246,86 +252,86 @@
 > by saver/decoder group so each is an atomic, separately-faileable box; a later pass
 > may split further to one-box-per-pair if the reviewer wants finer grain.
 
-- [ ] **P5.47** [TEST] Per-pair integration tests: → JPG (all sources) — vipsheader decode + dims + orientation-bake + alpha-flatten + lossy-disclosure-iff-flagged · §6.4.3 §6.5 · G31 G32
-  needs: P5.20, P5.46.1
+- [ ] **P5.49** [TEST] Per-pair integration tests: → JPG (all sources) — vipsheader decode + dims + orientation-bake + alpha-flatten + lossy-disclosure-iff-flagged · §6.4.3 §6.5 · G31 G32
+  needs: P5.20, P5.48.1
   > each `* → JPG` pair completes with exit success, output decodes via `vipsheader` with nonzero dims, source byte-unchanged (G32 no-harm), output≠input, orientation baked upright, alpha-source flatten asserted, `image_lossy_codec`(+`image_alpha_flatten`) fires iff the §04 cell is flagged.
-- [ ] **P5.48** [TEST] Per-pair integration tests: → PNG (all sources) — decode + dims + lossless + APNG-collapse + image_animation_flatten + no-spurious-lossy · §6.4.3 §6.5 · G31 G32
-  needs: P5.21, P5.46.1, P5.71
-  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P5.71` points at the animation-flatten transform/firing box later in document order (the § Animation-flatten section) — this `→PNG` test asserts against the `image_animation_flatten` firing P5.71 owns, so DECISION C builds P5.71 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
-  > each `* → PNG` pair decodes, source-unchanged, lossless (no lossy note unless palette explicitly enabled), animated source collapses to first frame and **`image_animation_flatten` fires iff the source is animated** (the §2.9.1 lossy-iff-flagged assertion, mirroring P5.47's `image_alpha_flatten` — fires for animated GIF/WEBP/APNG/`avis`→PNG, does NOT fire for a still source), RGBA/16-bit/ICC/text-chunk fidelity spot-checks. (`needs: P5.71` — a same-phase forward edge, resolved in place by DECISION C per the § Animation-flatten section's documented ordering inversion — for the animated-source→still-target first-frame-collapse + `image_animation_flatten` firing this `→PNG` test asserts against.)
-- [ ] **P5.49** [TEST] Per-pair integration tests: → WEBP (all sources) — decode + dims + animation-passthrough + lossy-disclosure · §6.4.3 §6.5 · G31 G32
-  needs: P5.22, P5.46.1
+- [ ] **P5.50** [TEST] Per-pair integration tests: → PNG (all sources) — decode + dims + lossless + APNG-collapse + image_animation_flatten + no-spurious-lossy · §6.4.3 §6.5 · G31 G32
+  needs: P5.21, P5.48.1, P5.73
+  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P5.73` points at the animation-flatten transform/firing box later in document order (the § Animation-flatten section) — this `→PNG` test asserts against the `image_animation_flatten` firing P5.73 owns, so DECISION C builds P5.73 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
+  > each `* → PNG` pair decodes, source-unchanged, lossless (no lossy note unless palette explicitly enabled), animated source collapses to first frame and **`image_animation_flatten` fires iff the source is animated** (the §2.9.1 lossy-iff-flagged assertion, mirroring P5.49's `image_alpha_flatten` — fires for animated GIF/WEBP/APNG/`avis`→PNG, does NOT fire for a still source), RGBA/16-bit/ICC/text-chunk fidelity spot-checks. (`needs: P5.73` — a same-phase forward edge, resolved in place by DECISION C per the § Animation-flatten section's documented ordering inversion — for the animated-source→still-target first-frame-collapse + `image_animation_flatten` firing this `→PNG` test asserts against.)
+- [ ] **P5.51** [TEST] Per-pair integration tests: → WEBP (all sources) — decode + dims + animation-passthrough + lossy-disclosure · §6.4.3 §6.5 · G31 G32
+  needs: P5.22, P5.48.1
   > each `* → WEBP` pair decodes, source-unchanged, `image_lossy_codec` iff flagged (default lossy), animated source preserves animation (validated via ffprobe per the §6.4.5 animated-WEBP convention, not dwebp), alpha preserved.
-- [ ] **P5.50** [TEST] Per-pair integration tests: → GIF (all sources) — decode + dims + palette + animation-passthrough + NO image_animation_flatten · §6.4.3 §6.5 · G31 G32
-  needs: P5.23, P5.46.1, P5.71
-  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P5.71` points at the animation-flatten transform/firing box later in document order (the § Animation-flatten section) — this `→GIF` test asserts the NEGATIVE of the `image_animation_flatten` firing P5.71 owns (animation preserved, never flattened), so DECISION C builds P5.71 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
-  > each `* → GIF` pair decodes, source-unchanged, `image_palette` fires, animation **preserved** on animated sources (GIF/animated-WEBP/`avis`→GIF) / first-frame for stills — and `image_animation_flatten` **does NOT fire** for any `→GIF` pair (GIF is animation-capable, so the negative coverage of the §2.9.1 lossy-iff-flagged property: animation is preserved, never flattened, on this target), 1-bit transparency handled. (`needs: P5.71` — a same-phase forward edge, resolved in place by DECISION C per the § Animation-flatten section's documented ordering inversion — for the `image_animation_flatten` firing logic this `→GIF` test asserts the NEGATIVE of, the peer to P5.48's positive `→PNG` case.)
-- [ ] **P5.51** [TEST] Per-pair integration tests: → TIFF (all sources) — decode + dims + lossless-default + 16-bit/CMYK fidelity · §6.4.3 §6.5 · G31 G32
-  needs: P5.24, P5.46.1
+- [ ] **P5.52** [TEST] Per-pair integration tests: → GIF (all sources) — decode + dims + palette + animation-passthrough + NO image_animation_flatten · §6.4.3 §6.5 · G31 G32
+  needs: P5.23, P5.48.1, P5.73
+  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P5.73` points at the animation-flatten transform/firing box later in document order (the § Animation-flatten section) — this `→GIF` test asserts the NEGATIVE of the `image_animation_flatten` firing P5.73 owns (animation preserved, never flattened), so DECISION C builds P5.73 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
+  > each `* → GIF` pair decodes, source-unchanged, `image_palette` fires, animation **preserved** on animated sources (GIF/animated-WEBP/`avis`→GIF) / first-frame for stills — and `image_animation_flatten` **does NOT fire** for any `→GIF` pair (GIF is animation-capable, so the negative coverage of the §2.9.1 lossy-iff-flagged property: animation is preserved, never flattened, on this target), 1-bit transparency handled. (`needs: P5.73` — a same-phase forward edge, resolved in place by DECISION C per the § Animation-flatten section's documented ordering inversion — for the `image_animation_flatten` firing logic this `→GIF` test asserts the NEGATIVE of, the peer to P5.50's positive `→PNG` case.)
+- [ ] **P5.53** [TEST] Per-pair integration tests: → TIFF (all sources) — decode + dims + lossless-default + 16-bit/CMYK fidelity · §6.4.3 §6.5 · G31 G32
+  needs: P5.24, P5.48.1
   > each `* → TIFF` pair decodes, source-unchanged, lossless by default (no lossy note unless `compression=jpeg`), 16-bit/CMYK/alpha/ICC fidelity, multi-page source → first page with note.
-- [ ] **P5.52** [TEST] Per-pair integration tests: → BMP (all sources) — decode + dims + 24-bit alpha-flatten (JPG→BMP lossless) · §6.4.3 §6.5 · G31 G32
-  needs: P5.25, P5.46.1
+- [ ] **P5.54** [TEST] Per-pair integration tests: → BMP (all sources) — decode + dims + 24-bit alpha-flatten (JPG→BMP lossless) · §6.4.3 §6.5 · G31 G32
+  needs: P5.25, P5.48.1
   > each `* → BMP` pair decodes via magickload re-read, source-unchanged, 24-bit output, `image_alpha_flatten` fires for alpha sources and **does not** fire for JPG→BMP (lossless — JPG has no alpha), no spurious lossy note for no-alpha sources.
-- [ ] **P5.53** [TEST] Per-pair integration tests: → ICO (all sources) — re-open .ico + assert 16/32/48/256 entries + 256px PNG marker + non-square padding + image_downscale · §6.4.3 §6.1.3 §6.5 · G31 G32
-  needs: P5.27, P5.46.1
+- [ ] **P5.55** [TEST] Per-pair integration tests: → ICO (all sources) — re-open .ico + assert 16/32/48/256 entries + 256px PNG marker + non-square padding + image_downscale · §6.4.3 §6.1.3 §6.5 · G31 G32
+  needs: P5.27, P5.48.1
   > each `* → ICO` pair completes, the produced `.ico` is **re-opened and all four [16,32,48,256] entries + the 256px embedded-PNG marker verified** (the runtime proof of whichever ICO path shipped per the P5.26-recorded outcome, built in P5.27), non-square padding to square asserted, `image_downscale` fires; this is the corpus case the §6.1.3 ICO spike (P5.26) points at — the single ICO-save box P5.27 covers both spike outcomes, so no `[!]`/mutual-exclusion gating is needed.
-- [ ] **P5.54** [TEST] Per-pair integration tests: → HEIC encode (all sources, incl. AVIF→HEIC) — decode + codec + lossy + patent-gap-skip · §6.4.3 §3.4.3 §6.5 · G31 G32
-  needs: P5.31, P5.32, P5.46.1
+- [ ] **P5.56** [TEST] Per-pair integration tests: → HEIC encode (all sources, incl. AVIF→HEIC) — decode + codec + lossy + patent-gap-skip · §6.4.3 §3.4.3 §6.5 · G31 G32
+  needs: P5.31, P5.32, P5.48.1
   > each `* → HEIC` pair on platforms where §3.4 marks HEIC-encode **available**: completes, output decodes (cross-library re-validate via ffprobe per P0.5.6), `image_lossy_codec` iff flagged, source-unchanged; on a platform where §3.4 marks it **unavailable** the test asserts the target is **absent/disabled (not attempted)** — honest unavailability, not a failure.
-- [ ] **P5.55** [TEST] Per-pair integration tests: → AVIF encode (all sources, incl. HEIC→AVIF) — decode + codec + lossy + dav1d-decode-revalidate · §6.4.3 §3.4.3 §6.5 · G31 G32
-  needs: P5.33, P5.46.1
+- [ ] **P5.57** [TEST] Per-pair integration tests: → AVIF encode (all sources, incl. HEIC→AVIF) — decode + codec + lossy + dav1d-decode-revalidate · §6.4.3 §3.4.3 §6.5 · G31 G32
+  needs: P5.33, P5.48.1
   > each `* → AVIF` pair completes, output decodes (cross-library re-validate via ffprobe per P0.5.6 — a different decoder family), `image_lossy_codec` iff flagged, source-unchanged; AVIF available everywhere (no patent gap).
-- [ ] **P5.56** [TEST] Per-pair integration tests: HEIC source → raster targets (libheif/libde265 HEVC-decode path) — primary-image-only + HDR-tonemap + burst-drop · §6.4.3 §6.5 · G31 G32
-  needs: P5.34, P5.46.1
+- [ ] **P5.58** [TEST] Per-pair integration tests: HEIC source → raster targets (libheif/libde265 HEVC-decode path) — primary-image-only + HDR-tonemap + burst-drop · §6.4.3 §6.5 · G31 G32
+  needs: P5.34, P5.48.1
   > each `HEIC → raster` pair decodes via the libheif/libde265 HEVC-decode load module (P5.34), source-unchanged, **primary-image-only** (Live Photos / sequences / bursts / depth / aux dropped, note), HDR/10-bit → 8-bit SDR tone-map note for 8-bit targets, orientation baked, ICC preserved; HEIC→raster lossless w.r.t. decoded pixels (no spurious lossy on →PNG/TIFF). Split from the former three-decoder monolith: one box per distinct decode code-path (the file's one-box-per-decoder policy; the RUST builders are already the three separate P5.34/P5.35/P5.36).
-- [ ] **P5.57** [TEST] Per-pair integration tests: AVIF source → raster targets (dav1d AV1-decode path) — primary-image-only + HDR-tonemap + animated-AVIF first-frame + image_animation_flatten · §6.4.3 §6.5 · G31 G32
-  needs: P5.35, P5.46.1, P5.71
-  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P5.71` points at the animation-flatten transform/firing box later in document order (the § Animation-flatten section) — this AVIF-source test is the ONLY animated-source decode case and asserts the `image_animation_flatten` firing P5.71 owns, so DECISION C builds P5.71 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
-  > each `AVIF → raster` pair decodes via the dav1d AV1-decode load module (P5.35; the dav1d-resolution wired in P5.12), source-unchanged, HDR/10-12-bit/wide-gamut → 8-bit tone-map note, orientation baked, ICC/EXIF preserved; AVIF→raster lossless w.r.t. decoded pixels (no spurious lossy on →PNG/TIFF); **`image_animation_flatten` fires for an animated-AVIF (`avis`) source → a still raster target** (and not for a still AVIF source) — the §2.9.1 lossy-iff-flagged coverage for the animated-source-decode cell (this is the ONLY animated-source decode case, so the `needs: P5.71` animation-flatten edge sits here, not on the HEIC/ICO boxes).
-- [ ] **P5.58** [TEST] Per-pair integration tests: ICO source → raster targets (built-in libvips ICO loader) — largest-frame selection + alpha-preserve · §6.4.3 §6.5 · G31 G32
-  needs: P5.36, P5.46.1
+- [ ] **P5.59** [TEST] Per-pair integration tests: AVIF source → raster targets (dav1d AV1-decode path) — primary-image-only + HDR-tonemap + animated-AVIF first-frame + image_animation_flatten · §6.4.3 §6.5 · G31 G32
+  needs: P5.35, P5.48.1, P5.73
+  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P5.73` points at the animation-flatten transform/firing box later in document order (the § Animation-flatten section) — this AVIF-source test is the ONLY animated-source decode case and asserts the `image_animation_flatten` firing P5.73 owns, so DECISION C builds P5.73 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
+  > each `AVIF → raster` pair decodes via the dav1d AV1-decode load module (P5.35; the dav1d-resolution wired in P5.12), source-unchanged, HDR/10-12-bit/wide-gamut → 8-bit tone-map note, orientation baked, ICC/EXIF preserved; AVIF→raster lossless w.r.t. decoded pixels (no spurious lossy on →PNG/TIFF); **`image_animation_flatten` fires for an animated-AVIF (`avis`) source → a still raster target** (and not for a still AVIF source) — the §2.9.1 lossy-iff-flagged coverage for the animated-source-decode cell (this is the ONLY animated-source decode case, so the `needs: P5.73` animation-flatten edge sits here, not on the HEIC/ICO boxes).
+- [ ] **P5.60** [TEST] Per-pair integration tests: ICO source → raster targets (built-in libvips ICO loader) — largest-frame selection + alpha-preserve · §6.4.3 §6.5 · G31 G32
+  needs: P5.36, P5.48.1
   > each `ICO → raster` pair decodes via the built-in libvips ICO loader (P5.36), source-unchanged, **largest-frame selection** when the ICO holds several sizes (note if >1 size, the rest discarded), alpha preserved, orientation baked; ICO→PNG (largest frame) not lossy. Distinct code-path from the HEIC/AVIF decoders (a built-in loader, no patent/codec library), so its own box per the one-box-per-decoder policy.
-- [ ] **P5.59** [TEST] Per-pair integration tests: SVG → {PNG,JPG,WEBP,BMP,TIFF,ICO} — decode + dims + image_svg_raster always + bundled-font render · §6.4.3 §6.5 · G31 G32
-  needs: P5.30, P5.46.1
+- [ ] **P5.61** [TEST] Per-pair integration tests: SVG → {PNG,JPG,WEBP,BMP,TIFF,ICO} — decode + dims + image_svg_raster always + bundled-font render · §6.4.3 §6.5 · G31 G32
+  needs: P5.30, P5.48.1
   > each SVG→raster pair decodes at the resolved size, `image_svg_raster` fires for **every** pair incl. the PNG★ default (plus the target-codec LossyKind where additionally lossy), bundled-font glyphs render (no tofu, deterministic substitution), source-unchanged.
-- [ ] **P5.60** [TEST] SVG no-base-URL out-of-input / no-egress §6.1.3 corpus case (remote + relative-`../` + absolute `<image href>` not resolved) · §3.5.5 §6.4.2 §0.11 · G31 G32 G42b
-  needs: P5.28, P5.46
+- [ ] **P5.62** [TEST] SVG no-base-URL out-of-input / no-egress §6.1.3 corpus case (remote + relative-`../` + absolute `<image href>` not resolved) · §3.5.5 §6.4.2 §0.11 · G31 G32 G42b
+  needs: P5.28, P5.48
   > the SVG analogue of the FFmpeg adversarial-egress case — an SVG with an external `<image href>` (relative `../` escape AND absolute AND remote) must **NOT** embed any out-of-input bytes in the output and must trigger **no egress**; with the SVG loaded no-base-URL (P5.28) the reference simply does not resolve. The per-push adversarial-egress pull-forward leg (G42b) is wired in P9; this box stages the SVG sentinel + the out-of-input assertion the corpus run consumes.
-- [ ] **P5.61** [TEST] ImageMagick crafted-BMP + SVG-via-MSL/URL-coder sentinel corpus case (no egress, no out-of-input read) · §3.5.5 §6.4.2 §0.11 · G31 G42b
-  needs: P5.6, P5.46
+- [ ] **P5.63** [TEST] ImageMagick crafted-BMP + SVG-via-MSL/URL-coder sentinel corpus case (no egress, no out-of-input read) · §3.5.5 §6.4.2 §0.11 · G31 G42b
+  needs: P5.6, P5.48
   > the §3.5.5 T9b/T1 ImageMagick sentinel (the densest-CVE decoder family — ImageTragick / MSL / MVG / URL coder class): a crafted BMP + an SVG-via-MSL/URL-coder fixture must produce **no egress + no out-of-input read** (the coder lockdown P5.6 holds); staged here for the P9 adversarial-egress window + the §6.4.2 oracle.
-- [ ] **P5.62** [TEST] Determinism + source-unchanged sub-assertions: >=1 byte-stable pair per saver category + known-non-deterministic AVIF/HEIC manifest exceptions · §2.5 §6.4.3 · G31 G32
-  needs: P5.47, P5.48, P5.51
+- [ ] **P5.64** [TEST] Determinism + source-unchanged sub-assertions: >=1 byte-stable pair per saver category + known-non-deterministic AVIF/HEIC manifest exceptions · §2.5 §6.4.3 · G31 G32
+  needs: P5.49, P5.50, P5.53
   > the P0.5.5 determinism floor for images — same source+settings twice → `sha256(out1)==sha256(out2)` for >=1 pair per output-format category, byte-stable pairs enumerated with a rationale in `tests/corpus/manifest.toml`, and the **known-non-deterministic AVIF/HEIC variable-encode** documented as manifest exceptions; source-unchanged (G32) over every image corpus source.
 
 ### Reliability ledger, SBOM/NOTICE rows, availability rows
 
-- [ ] **P5.63** [TEST] Mark every available image pair `reliable` in the §6.5.2 pair-status ledger on all 3 platforms · §6.5 §6.5.1 §6.5.2 · G31
-  needs: P5.47, P5.48, P5.49, P5.50, P5.51, P5.52, P5.53, P5.54, P5.55, P5.56, P5.57, P5.58, P5.59
+- [ ] **P5.65** [TEST] Mark every available image pair `reliable` in the §6.5.2 pair-status ledger on all 3 platforms · §6.5 §6.5.1 §6.5.2 · G31
+  needs: P5.49, P5.50, P5.51, P5.52, P5.53, P5.54, P5.55, P5.56, P5.57, P5.58, P5.59, P5.60, P5.61
   > drive the P4-built ledger generator so every enumerated image pair is `reliable` (valid output + no-harm + fail-clearly + lossy-disclosure-matches + content-fidelity, on each platform where §3.4 says it is available) — `reliability-report.json` + human table; any `failing` cell blocks; this is the §6.5 coverage gate for the image category travelling with the format work (category-by-category sequencing).
-- [ ] **P5.64** [TEST] Record the HEIC-encode patent-gap exception (per platform) as a §6.5.3 demoted-pairs / release-note row · §6.5.3 §3.4.3 · G31
-  needs: P5.54, P5.63
+- [ ] **P5.66** [TEST] Record the HEIC-encode patent-gap exception (per platform) as a §6.5.3 demoted-pairs / release-note row · §6.5.3 §3.4.3 · G31
+  needs: P5.56, P5.65
   > for any platform where §3.4 marks HEIC-encode `unavailable`, add the structured `docs/demoted-pairs.md` row (`kind=patent-gap-per-platform`, affected platform(s), one-sentence reason, ledger ref + the `engines.lock available=false` row it derives from) so the §6.8 governance gate finds a matching row and the gap is documented, never silent. (No-op if §3.4 ships HEIC-encode available on all three.)
-- [ ] **P5.65** [BUILD] Populate the image-stack §3.7.2 `engines.lock` + CycloneDX SBOM rows (libvips/libheif/libde265/x265/libaom/dav1d/librsvg/cgif/libimagequant/ImageMagick) · §3.7.2 §3.6.2 · G35 G35a G36 G37
+- [ ] **P5.67** [BUILD] Populate the image-stack §3.7.2 `engines.lock` + CycloneDX SBOM rows (libvips/libheif/libde265/x265/libaom/dav1d/librsvg/cgif/libimagequant/ImageMagick) · §3.7.2 §3.6.2 · G35 G35a G36 G37
   needs: P5.1, P5.5, P5.8, P5.9, P5.11, P5.13, P5.3
   > each image engine/component a §3.7.2 row (mandatory `purl` + SHA-256), the SBOM `purl`-keyed rows + the **DERIVED static-link closure** (G35a) for the statically-linked image-worker stack; license hard-fail (G36) confirms only x265 is GPL (the isolated plugin), the rest LGPL/BSD/permissive; per-engine acquisition anchored per P0.7.3.
-- [ ] **P5.66** [BUILD] Validate the image-stack SPDX expressions + generated-vs-committed NOTICE/THIRD-PARTY-LICENSES parity · §3.7 §6.3.3 · G36 G35
-  needs: P5.65
+- [ ] **P5.68** [BUILD] Validate the image-stack SPDX expressions + generated-vs-committed NOTICE/THIRD-PARTY-LICENSES parity · §3.7 §6.3.3 · G36 G35
+  needs: P5.67
   > the SPDX-expression validation leg for the image rows — x265 `GPL-2.0-or-later`, libheif/libde265/librsvg/libvips `LGPL-*`, libaom **both** `BSD-2-Clause AND LicenseRef-AOMPL-1.0` (the AOM Patent License text carried in `THIRD-PARTY-LICENSES.txt`, the §6.3.3 LicenseRef carve-out), dav1d/cgif/libimagequant BSD/MIT, ImageMagick `ImageMagick`; every GPL/LGPL row has its license text + a corresponding-source pointer line in `THIRD-PARTY-LICENSES`; AAC/HEVC patent posture surfaced in NOTICE.
-- [ ] **P5.67** [BUILD] Author the x265 GPL §3 + image-worker LGPL §6 corresponding-source bundle-present §6.1.3 assertion · §6.1.3 §3.6.2 · G38b
-  needs: P5.9, P5.65, P4.75
-  > the §6.1.3 carve-out ii/iii bundle-presence assertion for the image stack — ship the static image-worker's complete corresponding source + LGPL object files / relink recipe **and** (because it loads the GPL x265 plugin → GPL combined work) the **x265 GPL §3 complete corresponding source + written offer**; the stage step **fails the build** if either source bundle is missing (the §5 T6 row). **One fact, one home (the SBOM-row pattern, _format.md §8):** P4.75 builds the GENERIC relink-carve-out logic for the image-worker code object; this box (P5.67) is the per-engine BUNDLE-PRESENT assertion as the actual x265/image stack stages; P10.21 is the whole-bundle release assemble+assert — each a different artifact at a different build stage, so the near-identical wording is three layers, not a triple-build (`needs: P4.75`, the generic leg this per-engine assertion populates).
-- [ ] **P5.68** [BUILD] Populate the per-engine §7.2.3 availability rows for the image stack (presence + integrity manifest entries) · §7.2.3 §3.4.4a · G37
-  needs: P5.1, P5.65
+- [ ] **P5.69** [BUILD] Author the x265 GPL §3 + image-worker LGPL §6 corresponding-source bundle-present §6.1.3 assertion · §6.1.3 §3.6.2 · G38b
+  needs: P5.9, P5.67, P4.75
+  > the §6.1.3 carve-out ii/iii bundle-presence assertion for the image stack — ship the static image-worker's complete corresponding source + LGPL object files / relink recipe **and** (because it loads the GPL x265 plugin → GPL combined work) the **x265 GPL §3 complete corresponding source + written offer**; the stage step **fails the build** if either source bundle is missing (the §5 T6 row). **One fact, one home (the SBOM-row pattern, _format.md §8):** P4.75 builds the GENERIC relink-carve-out logic for the image-worker code object; this box (P5.69) is the per-engine BUNDLE-PRESENT assertion as the actual x265/image stack stages; P10.21 is the whole-bundle release assemble+assert — each a different artifact at a different build stage, so the near-identical wording is three layers, not a triple-build (`needs: P4.75`, the generic leg this per-engine assertion populates).
+- [ ] **P5.70** [BUILD] Populate the per-engine §7.2.3 availability rows for the image stack (presence + integrity manifest entries) · §7.2.3 §3.4.4a · G37
+  needs: P5.1, P5.67
   > add the image-engine entries to the build-time in-bundle hash manifest + the §7.2.3 startup-verifier availability rows (the image-specific variant of the P4 generic verifier), so `EngineHealth.present`/`integrity_ok`/`runnable` covers libvips + the codec stack and HEIC-encode availability reflects the §3.4.4a flag; ImageMagick is presence-checked for attribution only (it is a delegate, not a registry engine — no `Engine` impl / registry row, §3.5.5).
 
 ### Build-spike / corpus-gated decision records
 
-- [ ] **P5.69** [DOC] Record the HEIC `effort`-steers-x265 corpus spike outcome → decide HEIC `effort` exposure (else hidden) · §6.1.3 · G7
-  needs: P5.42, P5.46
-  > run the `[DEFER: corpus]` spike confirming whether the integer `heifsave effort` measurably steers the bundled x265/HEVC path; **record the outcome** in this plan's notes and flip the P5.42 declaration accordingly — exposed for HEIC iff it steers, **HIDDEN for HEIC** if inert (no dead control; AVIF `effort` stays exposed regardless). The §6.1.3 arg-presence check (P5.15) is necessary but not sufficient — this corpus spike is the exposure decider.
-- [ ] **P5.70** [DOC] Confirm the corpus-gated default-Q values (JPG 82 / WEBP 80 / HEIC&AVIF 60) against the real-photo corpus · §6.5 · G7
-  needs: P5.46, P5.63
+- [ ] **P5.71** [DOC] Record the HEIC `effort`-steers-x265 corpus spike outcome → decide HEIC `effort` exposure (else hidden) · §6.1.3 · G7
+  needs: P5.43, P5.48
+  > run the `[DEFER: corpus]` spike confirming whether the integer `heifsave effort` measurably steers the bundled x265/HEVC path; **record the outcome** in this plan's notes and flip the **P5.43 HEIC declaration** accordingly — exposed for HEIC iff it steers, **HIDDEN for HEIC** if inert (no dead control; AVIF `effort` (P5.44) stays exposed regardless). The §6.1.3 arg-presence check (P5.15) is necessary but not sufficient — this corpus spike is the exposure decider. (`needs: P5.43`, the HEIC half of the former combined declaration, the spike's repoint target per the per-format split.)
+- [ ] **P5.72** [DOC] Confirm the corpus-gated default-Q values (JPG 82 / WEBP 80 / HEIC&AVIF 60) against the real-photo corpus · §6.5 · G7
+  needs: P5.48, P5.65
   > the `[DEFER: corpus]` calibration of the reasoned everyday defaults against the §6.4.5 real-photo corpus before locking §1.6 — a measured confirmation, not an open design call; record the confirmed values (or any adjustment + rationale) in this plan's notes.
 
 ### Animation-flatten transform & the §2.9.1 `image_animation_flatten` LossyKind firing
@@ -338,30 +344,30 @@
 > the animation-flatten cell, positioned after the savers it routes through (document
 > order; the saver `needs:` are forward edges resolved in place by DECISION C).
 
-- [ ] **P5.71** [RUST] Wire the animated-source → still-target first-frame collapse + the `image_animation_flatten` firing (NOT when animation is preserved) · §3.5.5 §2.9.1 · G29 G31 G32
+- [ ] **P5.73** [RUST] Wire the animated-source → still-target first-frame collapse + the `image_animation_flatten` firing (NOT when animation is preserved) · §3.5.5 §2.9.1 · G29 G31 G32
   needs: P5.16, P5.20, P5.21, P5.24, P5.25, P5.27
-  > the transform + firing for the §2.9.1 `image_animation_flatten` LossyKind: when an **animated source** (animated GIF/animated-WEBP/APNG/animated-AVIF `avis`) is converted to a **still target** (JPG/PNG/BMP/TIFF/ICO — and HEIC/AVIF-still), the worker collapses to the **first frame** and the `image_animation_flatten` LossyKind fires (the verbatim §2.9.1 note "Animated — only the first frame is converted."); it **does NOT fire** when animation is preserved (→GIF / animated-WEBP, P5.22/P5.23). Pure transform inside the §2.12 boundary (no I/O). This is the single home for the animation-flatten cell of the G32 lossy-iff-flagged product; the per-pair assertions are in P5.48/P5.50/P5.57 (the animated-AVIF-source-decode case is the AVIF-source test P5.57, mirroring the P5.47 `image_alpha_flatten` assertion).
+  > the transform + firing for the §2.9.1 `image_animation_flatten` LossyKind: when an **animated source** (animated GIF/animated-WEBP/APNG/animated-AVIF `avis`) is converted to a **still target** (JPG/PNG/BMP/TIFF/ICO — and HEIC/AVIF-still), the worker collapses to the **first frame** and the `image_animation_flatten` LossyKind fires (the verbatim §2.9.1 note "Animated — only the first frame is converted."); it **does NOT fire** when animation is preserved (→GIF / animated-WEBP, P5.22/P5.23). Pure transform inside the §2.12 boundary (no I/O). This is the single home for the animation-flatten cell of the G32 lossy-iff-flagged product; the per-pair assertions are in P5.50/P5.52/P5.59 (the animated-AVIF-source-decode case is the AVIF-source test P5.59, mirroring the P5.49 `image_alpha_flatten` assertion).
 
 ### Cross-phase reconciliation (the deferred P5→P4 `needs:`)
 
-- [ ] **P5.72** [GATE] Wire the deferred P5→P4 harness `needs:` edges — isolation boundary, §1.7 line-reader, per-pair runner, options-panel shell · §3.5.5 · G7 G20
+- [ ] **P5.74** [GATE] Wire the deferred P5→P4 harness `needs:` edges — isolation boundary, §1.7 line-reader, per-pair runner, options-panel shell · §3.5.5 · G7 G20
   needs: P4.36, P4.8, P4.58, P4.63, P4.73
-  > the P5 instance of the cross-phase reconciliation obligation (the master plan-lint forbidden-string check is P4.76; reciprocal of P3.70/P6.92/P7.77/P9.46): declare the load-bearing P5→P4 edges the per-saver/per-declaration/per-pair-test boxes consume — every image-worker load/save box (P5.16/P5.19/P5.20–P5.36) runs inside the **P4.36 §2.12 isolation boundary** + marshals progress through the **P4.8/P4.35 §1.7 line-reader**; every per-pair integration test (P5.47–P5.59) runs on the **P4.58 §6.4.3 per-pair runner**; every advanced-option DECLARATION box (P5.37–P5.44 + the ICO declaration P5.73) renders against the **P4.63 OptionsPanel widget dispatch** + the **P4.73 AdvancedDrawer**. The end-of-phase image-engine bump re-validation hook (P5.74) carries only intra-P5 edges (`needs: P5.63`/`P5.65`) — the §6.5.4 trigger is the image `engines.lock` pin, not a P4 harness box — so it needs no P4 reconciliation edge, named here only for end-of-phase-box completeness (parallel to the FFmpeg P6.82 / office P7.76 hooks). `needs:` the P4 harness boxes here so the §6 selection can build-it-first-then-return rather than proceeding against an unbuilt P4 dependency; no P5 box `>`-note defers a `needs:` with the P4.76-forbidden phrasing.
+  > the P5 instance of the cross-phase reconciliation obligation (the master plan-lint forbidden-string check is P4.76; reciprocal of P3.70/P6.92/P7.77/P9.46): declare the load-bearing P5→P4 edges the per-saver/per-declaration/per-pair-test boxes consume — every image-worker load/save box (P5.16/P5.19/P5.20–P5.36) runs inside the **P4.36 §2.12 isolation boundary** + marshals progress through the **P4.8/P4.35 §1.7 line-reader**; every per-pair integration test (P5.47–P5.61) runs on the **P4.58 §6.4.3 per-pair runner**; every advanced-option DECLARATION box (P5.37–P5.46 + the ICO declaration P5.75) renders against the **P4.63 OptionsPanel widget dispatch** + the **P4.73 AdvancedDrawer**. The end-of-phase image-engine bump re-validation hook (P5.76) carries only intra-P5 edges (`needs: P5.65`/`P5.67`) — the §6.5.4 trigger is the image `engines.lock` pin, not a P4 harness box — so it needs no P4 reconciliation edge, named here only for end-of-phase-box completeness (parallel to the FFmpeg P6.82 / office P7.76 hooks). `needs:` the P4 harness boxes here so the §6 selection can build-it-first-then-return rather than proceeding against an unbuilt P4 dependency; no P5 box `>`-note defers a `needs:` with the P4.76-forbidden phrasing.
 
 ---
 
 ### ICO advanced-option declaration (registered against the P4 options-panel shell)
 
 > The one offered image target whose §1.6 option declaration was missing from the
-> P5.37–P5.44 declaration group. ICO has a **Basic** option (icon sizes), so this is a
+> P5.37–P5.46 declaration group. ICO has a **Basic** option (icon sizes), so this is a
 > wholly-missing declaration box, not merely an advanced surface. Placed at end-of-phase
 > (the file's end-of-P5 placement convention — gap-free `.73` — rather than re-numbering
-> the P5.44–P5.72 sequence + every cross-phase reference to it); carried via the P5.72
+> the P5.44–P5.74 sequence + every cross-phase reference to it); carried via the P5.74
 > reconciliation box's declaration list above.
 
-- [ ] **P5.73** [UI] Register the ICO advanced-option declarations (Basic icon-sizes default `[16,32,48,256]` no-upscale; Advanced custom-size-list / single-size mode / 256px-embedded-PNG on) · §1.6 · G47
+- [ ] **P5.75** [UI] Register the ICO advanced-option declarations (Basic icon-sizes default `[16,32,48,256]` no-upscale; Advanced custom-size-list / single-size mode / 256px-embedded-PNG on) · §1.6 · G47
   needs: P5.27, P4.63, P4.73
-  > the §1.6 ICO option declaration the images.md ICO Options/settings entry defines (the only offered raster target without one): **Basic** — `icon sizes` defaulting to the standard multi-resolution set `[16,32,48,256]` (favicons + Windows app icons in one file), high-quality Lanczos downscale, **upscale-beyond-source skipped** with a note; **Advanced** — a `custom size list`, a `single size` mode, and `256px stored as embedded PNG` (default on, required for a valid/small 256 entry) — declared against the P4-built OptionsPanel widget dispatch (P4.63) + the AdvancedDrawer (P4.73), no new panel chrome (the §1.6 generic declaration model). Mirrors P5.37–P5.43's per-target declarations; the values are the images.md ICO `[DECIDED]` defaults the P5.27 ICO-save path + P5.53 runtime assertion already implement. (`needs: P5.27` for the ICO-save path the declaration drives + `P4.63`/`P4.73` for the panel/drawer it renders against — the cross-phase edges carried via the P5.72 reconciliation box.)
+  > the §1.6 ICO option declaration the images.md ICO Options/settings entry defines (the only offered raster target without one): **Basic** — `icon sizes` defaulting to the standard multi-resolution set `[16,32,48,256]` (favicons + Windows app icons in one file), high-quality Lanczos downscale, **upscale-beyond-source skipped** with a note; **Advanced** — a `custom size list`, a `single size` mode, and `256px stored as embedded PNG` (default on, required for a valid/small 256 entry) — declared against the P4-built OptionsPanel widget dispatch (P4.63) + the AdvancedDrawer (P4.73), no new panel chrome (the §1.6 generic declaration model). Mirrors P5.37–P5.45's per-target declarations; the values are the images.md ICO `[DECIDED]` defaults the P5.27 ICO-save path + P5.55 runtime assertion already implement. (`needs: P5.27` for the ICO-save path the declaration drives + `P4.63`/`P4.73` for the panel/drawer it renders against — the cross-phase edges carried via the P5.74 reconciliation box.)
 
 ---
 
@@ -370,14 +376,14 @@
 > The §6.5.4 "full reliability gate re-runs before a bundled engine can ship a bump" trigger
 > wired for the image `engines.lock` pins — the per-engine-phase symmetry P6 (P6.82) and P7
 > (P7.76) keep. The image stack is the largest and most CVE-dense decoder set in the product
-> (libvips/libheif/libde265/x265/libaom/dav1d/librsvg/cgif/libimagequant/ImageMagick — P5.61
+> (libvips/libheif/libde265/x265/libaom/dav1d/librsvg/cgif/libimagequant/ImageMagick — P5.63
 > calls ImageMagick "the densest-CVE decoder family"), so a silent libvips/libheif/ImageMagick
 > security bump regressing an image pair is exactly the regression §6.5.4 exists to catch.
-> Without this box P11.31 ("the §6.5.4 re-validation path is wired") has no image-engine
+> Without this box P11.32 ("the §6.5.4 re-validation path is wired") has no image-engine
 > machinery to confirm green — the FFmpeg/office hooks are built by P6.82/P7.76, the image
-> hook nowhere. Placed at end-of-phase (gap-free `.74`, after the P5.72 reconciliation + the
-> P5.73 ICO declaration, the file's end-of-P5 placement convention).
+> hook nowhere. Placed at end-of-phase (gap-free `.74`, after the P5.74 reconciliation + the
+> P5.75 ICO declaration, the file's end-of-P5 placement convention).
 
-- [ ] **P5.74** [TEST] Add the image-engine bump re-validation hook (full P5 reliability gate re-runs on an image `engines.lock` pin change) · §6.5.4 §3.8 · G37 G17b
-  needs: P5.63, P5.65
-  > wire the §6.5.4 rule for the image-stack `engines.lock` pins (libvips/libheif/libde265/x265/libaom/dav1d/librsvg/cgif/libimagequant/ImageMagick): a version/SHA change on any image-stack row re-runs the FULL P5 reliability gate before that engine version can ship (a patch must not silently regress an image pair — e.g. a libheif/libde265 HEVC-decode bump or an ImageMagick BMP-delegate bump that quietly changes a raster); the §6.5 reliability-ledger (P5.63) status-diff is part of the bump review; the informational per-push OSV/grype over the PURL/CPE-keyed image rows (x265/libvips/ImageMagick/libde265 are real CVE surfaces) feeds vuln-response (CVSS ≥ 7 on an exercised image path → release-blocking escalation). Parallel to the FFmpeg hook (P6.82) + the office hook (P7.76); the path P11.31 confirms is wired for the image engines. (`needs: P5.63` for the image reliability-ledger the re-run drives + `P5.65` for the image `engines.lock`/SBOM rows whose pin change is the trigger.)
+- [ ] **P5.76** [TEST] Add the image-engine bump re-validation hook (full P5 reliability gate re-runs on an image `engines.lock` pin change) · §6.5.4 §3.8 · G37 G17b
+  needs: P5.65, P5.67
+  > wire the §6.5.4 rule for the image-stack `engines.lock` pins (libvips/libheif/libde265/x265/libaom/dav1d/librsvg/cgif/libimagequant/ImageMagick): a version/SHA change on any image-stack row re-runs the FULL P5 reliability gate before that engine version can ship (a patch must not silently regress an image pair — e.g. a libheif/libde265 HEVC-decode bump or an ImageMagick BMP-delegate bump that quietly changes a raster); the §6.5 reliability-ledger (P5.65) status-diff is part of the bump review; the informational per-push OSV/grype over the PURL/CPE-keyed image rows (x265/libvips/ImageMagick/libde265 are real CVE surfaces) feeds vuln-response (CVSS ≥ 7 on an exercised image path → release-blocking escalation). Parallel to the FFmpeg hook (P6.82) + the office hook (P7.76); the path P11.32 confirms is wired for the image engines. (`needs: P5.65` for the image reliability-ledger the re-run drives + `P5.67` for the image `engines.lock`/SBOM rows whose pin change is the trigger.)
