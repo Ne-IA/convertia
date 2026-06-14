@@ -1,4 +1,4 @@
-# P9 — Hardening (performance · validation · security · corpus)
+# P9 — Hardening (resource budgets · validation · security · corpus)
 
 > **Goal:** ConvertIA meets its **non-functional contracts** and the **deferred
 > empirical items** are validated. P9 *exercises* the controls earlier phases built —

@@ -394,13 +394,16 @@ visual styling, Ne-IA branding, empty-state eye-candy (SSOT marks only
 
 ---
 
-## P9 — Hardening (performance · validation · security · corpus)
+## P9 — Hardening (resource budgets · validation · security · corpus)
 
 **Goal:** the app meets its non-functional contracts and the deferred empirical
 items are validated. (The strings module is built in P1 and the structural-a11y
 wiring in P4, so this phase *validates* them, it does not introduce them.)
 
-**Scope:** performance budgets; the **§6.4.6 headed-E2E infrastructure** itself —
+**Scope:** resource/size budgets (the §1.10 RESOURCE ceilings — disk/memory/`TooBig`,
+1.3× headroom, GIF ~10s cap; there is no startup-time/latency budget in the SSOT/spec
+to home — responsiveness is qualitative via IPC-non-blocking + visible progress);
+the **§6.4.6 headed-E2E infrastructure** itself —
 wire up **`tauri-driver`** (Windows + Linux only), **WebdriverIO v9** +
 **`@axe-core/webdriverio`**, author `wdio.conf.js` with the `tauri:options`
 capabilities, and the **Linux `Xvfb` virtual-display** wiring (the scaffolding

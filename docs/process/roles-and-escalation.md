@@ -196,6 +196,35 @@ inside. Concretely:
 
 ---
 
+## 5a. Incoming pull requests & Dependabot bumps — owned by Co-Pilot, never the loop
+
+**The autonomous Build-Loop never reviews or merges an incoming PR.** The loop
+commits **directly to `main`** and has **no merge step** ([build-loop.md §0](build-loop.md#0-who-runs-this-and-what-it-is-not)) —
+it builds plan boxes, it does not process the inbound-PR queue. Yet this is a
+*public* OSS repo with two real incoming-PR sources that need an explicit owner so
+the queue cannot grow silently while the loop builds forever:
+
+- **Dependabot dependency-bump PRs** — the `dependabot.yml` stood up in P0.2.6 covers
+  **github-actions + cargo + npm + pip**, so green bumps arrive as PRs against `main`.
+- **External fork pull-requests** — the only surviving "PR" concept in the single-branch
+  model ([build-loop.md §0](build-loop.md#0-who-runs-this-and-what-it-is-not)); their
+  review→merge is otherwise unspecified.
+
+**Ownership (DECIDED):** **incoming-PR triage / review / merge is the Co-Pilot
+(owner) session's job, not the autonomous loop's.** The loop has no authority to
+merge, rewrite history, or force-push (§1), so it neither opens, reviews, nor merges
+these PRs; it may *surface* a security-relevant bump as a Co-Pilot item but never
+acts on it. A green Dependabot bump reaches `main` via a **manual Co-Pilot merge**,
+and **any bump that touches `engines.lock` additionally runs the §6.5 engine-bump
+re-validation** (the CVE→user path in
+[vuln-response.md](vuln-response.md) routes a security bump through "bump the
+`engines.lock` pin → re-run the §6.5 reliability gate → new release"; P0.6.9). This
+sits at the **maintenance-process layer**, outside the v1 build-box plan — recorded
+here as an explicit decision so its absence from the plan boxes is deliberate, not a
+silent gap.
+
+---
+
 ## 6. Hard-stops
 
 The loop **stops and escalates** (it does not push past these). The

@@ -299,6 +299,7 @@
 - [ ] **P2.97** [DOC] Record the no-startup/background version-check assertion (zero network calls at startup) · §7.6.1 §7.2.2
 - [ ] **P2.98** [RUST] Encode BOTH C11/About data sources — the version-display source (`app.package_info().version` / `CARGO_PKG_VERSION`) AND the `AppInfo.build_id` PRODUCER (§6 CI build id at build time + deterministic dev fallback) · §7.6.2 §7.2.3 · G19
   needs: P2.34, P2.112
+  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.112` points at the `AppInfo` type box later in document order — the `build_id`/`version` fields this box populates have nowhere to land until `AppInfo` (P2.112) exists, so DECISION C builds P2.112 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
   > the two data sources that POPULATE the C11 `AppInfo` (P2.112) the §5.9 About screen renders (RELEASE-BLOCKING per SSOT — neither field may silently ship empty): **(a) version** — `app.package_info().version` / `CARGO_PKG_VERSION`, the §7.6.2 displayed current version. **(b) the `build_id` PRODUCER** — wire WHERE the §7.2.3 `build_id: String // CI build identifier (§6)` comes from: the §6 (Lane-B/`build-loop`) build-time CI build identifier (the git SHA + the GitHub Actions run-id, injected at build time via a build-script `env!`/`option_env!` over a CI-set var) with a **deterministic dev fallback** (e.g. the short git SHA or a literal `"dev"` marker when the CI var is absent, never an empty string), so a local `tauri dev` build still yields a non-empty `build_id` and a CI build carries the real §6 identifier. The drift-check (G19, §0.4.5) covers the generated-binding side once C11 is type-shared. (`needs: P2.34` for the C11 contract + `P2.112` for the `AppInfo` type whose `build_id`/`version` fields this box populates.)
 - [ ] **P2.99** [DOC] Record the future opt-in update-check parked decision (`updateCheckOptIn` not present in v1) · §7.6.3 §7.4
 
@@ -346,8 +347,9 @@
   needs: P2.110
 - [ ] **P2.113** [RUST] Wire C12 `get_engine_health` to return the cached `EngineHealth` (the cache is populated by the P4 probe; contract type-shared now) · §0.4.1 §7.2.3
   needs: P2.111, P2.21
-- [ ] **P2.114** [UI] Consume `EngineHealth` in the UI to disable/omit unavailable targets (the §5.2 surface) · §7.2.3 §5.2
+- [ ] **P2.114** [UI] Author the typed `EngineHealth` → `unavailable_targets` store-selector seam (contract plumbing only; the visual disable-with-reason tiles are P4.69.2) · §7.2.3 §5.1
   needs: P2.113, P1.27
+  > **contract seam only, no engine behaviour** (P2 boundary: "no engine spawn, no conversion, no corpus"; the cache C12 reads is empty until the P4 probe populates it, P2.113 note). Author the typed §5.1-store-shape selector/façade surfacing `EngineHealth.unavailable_targets: Vec<TargetId>` to the FormatPicker layer over the generated `commands.ts`/`bindings.ts` C12 path (P1.27 façade) — the read seam later consumers bind against. It does **NOT** render anything: the visual **disable-with-reason** FormatPicker tiles (the §5.2 surface — `aria-disabled` on the §3.4 patent-gapped/unavailable tiles) are built for real in **P4.69.2**, fed by the P4.44 `EngineHealth` population, exactly as **P5.32 says "P4 owns the wiring; this box consumes it"**. So this box is the type-shared store-shape seam (buildable now with no backing data), not the disable UI (which has nothing to disable until P4). (`needs: P2.113` for the C12 return + `P1.27` for the IPC façade the selector reads through.)
 
 ### P2.17 — §7.8.2 explicit negatives (DoD gate 20)
 

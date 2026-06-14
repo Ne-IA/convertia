@@ -143,8 +143,13 @@ A box that decomposes into ordered steps lists them as **indented** child boxes:
 
 ### 3.3 The `>`-note
 
-A single-line Markdown blockquote (`  > …`) directly under a box records a fact the
-header cannot carry — for a blocked box, **what** the block is. The requirement is
+A Markdown blockquote (`  > …`) directly under a box records a fact the
+header cannot carry — for a blocked box, **what** the block is. Each `>`-note is a
+**single line**, but a box may carry **more than one** consecutive single-line
+`>`-note (the established forward-ref convention pairs a structured
+`> **Forward-ref note (DECISION-C ordering inversion):** …` line with the box's
+descriptive `>`-note — both single-line, stacked). `plan-lint` (§7) enforces **no
+"exactly one `>`-note" cap**; it parses each `>`-leading line independently. The requirement is
 the **either-or** the linter enforces (§5.2, §7 "annotation pairing"): a `[!]` /
 `[!extern]` box must not be a **silent** block, so it carries a `>`-note **or** an
 `unlocked-by:` (or both). Concretely:
