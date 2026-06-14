@@ -151,7 +151,10 @@ primitives** so each engine phase is testable end-to-end against a built UI.
 **Exit criterion (proof-of-life):** P4 is "done" when `convertia-imgworker` boots,
 a round-trip invocation succeeds through the §2.12 isolation boundary, the startup
 verifier reports a populated `EngineHealth`, and the §6.4.3 runner + pair-status
-ledger + §6.4.3a bijection guard produce their first report.
+ledger + §6.4.3a bijection guard produce their first report — **and** a
+representative P5 image pair can be driven end-to-end through the P4-built
+options-panel shell + progress/cancel + result-actions UI (the UX-harness leg, so
+P4 is not "done" on the engine side alone).
 
 **Scope:** generalized engine-invocation layer; per-OS sidecar packaging &
 bundling (everything offline); the isolated **image-worker** process
@@ -159,6 +162,14 @@ bundling (everything offline); the isolated **image-worker** process
 boundary; resource budgets/limits; the **generic isolation framework only** —
 the §2.12 decoder-isolation wrapper, the §0.9 subprocess pool, the §2.12.3
 best-effort privilege-drop tier, and threat-map assembly/ownership (§0.11).
+**macOS TCC source-staging (§3.5.0 / §7.2.6 — load-bearing for every macOS engine
+read):** the Rust core copies a TCC-protected source into per-job kind-2 scratch
+(§2.14.2) **before** spawning and hands the sidecar the scratch path, so a spawned
+engine is never the first process to touch Desktop/Documents/Downloads/removable;
+it is the macOS staged-input term in the §1.10 `est_scratch_bytes` preflight and
+composes with the §2.14 cross-volume strategy — homed here because the first real
+engine spawn (the imgworker proof-of-life) would otherwise hit a TCC chain-break
+denial.
 **Per-engine SSRF/LFR hardening** (FFmpeg protocol-whitelist §3.5.1, pandoc
 `--sandbox` §3.5.4, LibreOffice profile-hardening §3.5.2, librsvg-no-base-URL
 §3.5.5) lives in its **engine phase** (P5/P6/P7), not here. **Reliability
@@ -176,7 +187,14 @@ missing/corrupt engine to a §2.13 app-fault, not a crash — homed here because
 travels with per-OS sidecar packaging and consumes the build-time hash manifest;
 the **runtime half of the T3 supply-chain threat**. Per-engine availability rows
 are incrementally filled by P5–P7 as each sidecar is staged, mirroring the
-SBOM-row pattern. **Bundle-time build assertions (§6.1.3 — run by
+SBOM-row pattern. **§3.4 patent-disposition matrix (single owner — decided here,
+never re-decided downstream):** author the HEIC/AAC/H.264/AV1 ship-bundled /
+rely-on-OS / gate / unavailable matrix, the §3.4.4a `engines.lock` per-platform
+`available` boolean → `PatentDisposition` → `EngineHealth.unavailable_targets`
+wiring (feeding the C12 contract declared in P2 and the §1.5 per-source default
+availability) and the §3.4.5 per-platform packaging specifics, as **one**
+cross-cutting deliverable — P5/P6 then only **read** the per-codec cell.
+**Bundle-time build assertions (§6.1.3 — run by
 `scripts/stage-engines`):** the **generic cross-cutting** assertions — the LGPL
 shared-object-or-fail link assertion for the MIT core, the libvips-no-copyleft-PDF-loader
 assertion, the libimagequant BSD-2-Clause leg-text + lockfile-pin provenance
@@ -202,11 +220,12 @@ P8, and P8 stays a genuinely sequential pure-polish phase. P4 must **not**
 re-implement `crate::fs_guard` (built in P3, §02 reference here covers only the
 §2.12 isolation wrapper + §2.13 app-fault model).
 
-**Spec home:** 03-engines-and-bundling (incl. §3.9 size-budget levers),
+**Spec home:** 03-engines-and-bundling (incl. §3.4 patent-disposition matrix,
+§3.5.0 macOS TCC staging, §3.9 size-budget levers),
 02-guarantees (§2.8/§2.9 UX-correctness primitives, §2.12/§2.13),
 06-build-test-release (§6.4.3/§6.4.3a/§6.5 reliability machinery, SBOM scaffold,
 §6.1.3 build assertions), 07-app-shell (§7.2.3 integrity-manifest generation +
-startup verifier), 05-ui-ux (generic UX-correctness primitives: options-panel
+startup verifier, §7.2.6 macOS TCC-staging requirement), 05-ui-ux (generic UX-correctness primitives: options-panel
 shell, lossy notes, progress/cancel, error copy, structural a11y).
 
 *Atomic `[ ]` steps: added in the fill pass.*
@@ -221,7 +240,8 @@ and marked **reliable** in the §6.5 ledger.
 
 **Scope:** libvips core + libheif/x265, libaom (AVIF), librsvg (svgload),
 ImageMagick magicksave delegate, cgif; all image conversions (both directions)
-with per-format advanced options and patent-gated paths; resolves the ICO
+with per-format advanced options and patent-gated paths (reading the §3.4
+disposition matrix homed in P4 — never re-deciding); resolves the ICO
 build-spike (magicksave 256px/multi-size vs in-core Rust ICO fallback). Per-format
 **advanced-option DECLARATIONS** (§1.6) are registered here against the P4-built
 options-panel shell (no new panel chrome); the per-engine §6.1.3 build assertions
@@ -249,7 +269,9 @@ coverage" = each pair backed by corpus + per-pair integration tests and marked
 
 **Scope:** FFmpeg-backed audio and video conversions; cross-category
 (extract-audio, to-GIF) with the specified guardrails; per-format advanced
-options; A/V probing (FFprobe). Resolves the deferred cross-category items
+options; A/V probing (FFprobe). AAC/H.264/AV1 target availability **reads** the
+§3.4 patent-disposition matrix homed in P4 (per-codec cell, never re-decided).
+Resolves the deferred cross-category items
 (extract-audio target subset, to-GIF trim/caps). Per-format **advanced-option
 DECLARATIONS** (§1.6) are registered here against the P4-built options-panel shell;
 the per-engine §6.1.3 assertions and §7.2.3 availability rows are this phase's
@@ -335,8 +357,9 @@ built in P1/P4);
 **§2.10 real-world filename/content fidelity** validation (adversarial-name unit
 tests §6.4.1 + CJK/RTL/encoding corpus §6.4.5; the byte-verbatim-stem / path-limit
 *mechanism* lives in the guarantees-fs layer of P2/P3 — **not** parked UI
-localization, which the SSOT defers); decoder-isolation / fuzz validation;
-threat-map verification; the **offline-egress observability gate** (§2.11.4 /
+localization, which the SSOT defers); decoder-isolation / fuzz validation (exercising the P4-built §2.12
+boundary + the P5–P7 per-engine §3.5.x SSRF/LFR controls — no new isolation
+mechanism introduced); threat-map verification; the **offline-egress observability gate** (§2.11.4 /
 §6.7.3 — per-platform packet-monitor + egress-deny window proving zero outbound
 packets + crafted-input engines cannot reach out or read out-of-input files
 (T9a/T9b), plus the §6.4.2 adversarial-egress case, with zero-startup-network in
@@ -364,7 +387,8 @@ signature over `SHA256SUMS`** (public key at `docs/minisign.pub`, private key as
 the `MINISIGN_SECRET_KEY` CI secret, with the rotation policy) — the *only*
 signing in scope; this is **not** binary code-signing/notarization (SSOT *Out of
 Scope*). **SBOM finalization** (per-engine rows populated in P5–P7 now finalized)
-+ integrity hashing; reproducible-ish builds; the **Lane-B GitHub Releases
++ integrity hashing; reproducible-ish builds (§6.2.5 — best-effort, **not** a
+release gate); the **Lane-B GitHub Releases
 pipeline**. **§6.2.4 download / trust-page content authoring** (pure technical
 release mechanics enabling verified downloads — in scope): write the copy-paste
 **verify-hash recipe** including the literal `minisign -Vm SHA256SUMS -P <docs/minisign.pub>`
@@ -423,3 +447,27 @@ P11 only proves it green.)
 (Definition of Done).
 
 *Atomic `[ ]` steps: added in the fill pass.*
+
+---
+
+## Notes for the box-fill pass (captured from skeleton review r3)
+
+> Guidance for when atomic `[ ]` steps are written — not structural, not boxes.
+> Lives here so it survives until the fill pass; strip once consumed.
+
+- **P6:** add an internal §6.5 ledger sub-gate marking **audio pairs reliable
+  before video pairs** are attempted (video on 3 platforms is the heaviest corpus
+  run — gives measurable intra-phase progress).
+- **P8:** make scope (i) ship-gating UI atomic boxes with a clear
+  **"P8 ship-gating done"** sub-gate; label scope (ii) visual polish as a named
+  **non-blocking** stretch (may continue after the P11 RC) so "P8 done for
+  release" is unambiguous.
+- **P4 / P1:** note that P4's threat-map assembly **back-fills** the
+  `SECURITY.md` → §0.11 reference (P1 authors `SECURITY.md`; the §0.11 map is
+  assembled in P4) so the "no orphan threat classes" contract stays auditable.
+- **Owner call — early headed-E2E smoke:** a single thin `tauri-driver` smoke
+  driving the P3 CSV→TSV slice through the real WebView (Win+Linux, no
+  axe/contrast/corpus) could be pulled forward into P4 as an early integration
+  probe. **Default (taken):** headed-E2E stays in P9 — defensible, since the §6.5
+  gate keys on engine-level tests and P4's vitest-axe jsdom leg keeps the UI
+  unit-testable. Flip if you'd rather probe the real WebView earlier.
