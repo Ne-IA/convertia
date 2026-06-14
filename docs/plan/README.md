@@ -97,6 +97,8 @@ hardened, not finished here; Lane B (release pipeline) is assembled in P10.
 **Spec home:** 00-architecture, 06-build-test-release (tooling, §6.7 Lane A,
 §6.8 governance), 07-app-shell (window), 05-ui-ux (strings/a11y modules).
 
+**Boxes:** [P1-foundation.md](P1-foundation.md)
+
 *Atomic `[ ]` steps: added in the fill pass.*
 
 ---
@@ -127,6 +129,8 @@ runtime probe that populates it is built in P4.
 
 **Spec home:** 00-architecture, 01-conversion-pipeline (§1.1 intake), 07-app-shell
 (§7.2 startup sequence + C12 `EngineHealth` contract, §7.8 intake posture).
+
+**Boxes:** [P2-app-shell-contracts.md](P2-app-shell-contracts.md)
 
 *Atomic `[ ]` steps: added in the fill pass.*
 
@@ -159,6 +163,8 @@ build `crate::isolation`/the pool from scratch — it fills the shells P3 establ
 02-guarantees (§2.1–§2.7 fs_guard incl. §2.2 output naming, §2.3 link-safety [T7],
 §2.4 frozen set [T8], §2.5 re-run detection, §2.6 cleanup/temp-ownership),
 05-ui-ux (minimal).
+
+**Boxes:** [P3-walking-skeleton.md](P3-walking-skeleton.md)
 
 *Atomic `[ ]` steps: added in the fill pass.*
 
@@ -250,6 +256,8 @@ re-implement `crate::fs_guard` (built in P3, §02 reference here covers only the
 startup verifier, §7.2.6 macOS TCC-staging requirement), 05-ui-ux (generic UX-correctness primitives: options-panel
 shell, lossy notes, progress/cancel, error copy, structural a11y).
 
+**Boxes:** [P4-engine-framework.md](P4-engine-framework.md)
+
 *Atomic `[ ]` steps: added in the fill pass.*
 
 ---
@@ -279,6 +287,8 @@ URL** (§3.5.5) so it resolves no local/remote references.
 **Spec home:** 04-formats/images, 03-engines-and-bundling (§3.5.5 librsvg),
 06-build-test-release (§6.4.3/§6.4.5 corpus, §6.5 ledger).
 
+**Boxes:** [P5-images.md](P5-images.md)
+
 *Atomic `[ ]` steps: added in the fill pass.*
 
 ---
@@ -307,6 +317,8 @@ curated demuxers, `-protocol_whitelist file,pipe`, `concat -safe 1` (asserted at
 **Spec home:** 04-formats/audio, 04-formats/video, 04-formats/cross-category,
 03-engines-and-bundling (§3.5.1 FFmpeg hardening), 06-build-test-release (§6.5).
 
+**Boxes:** [P6-av-crosscat.md](P6-av-crosscat.md)
+
 *Atomic `[ ]` steps: added in the fill pass.*
 
 ---
@@ -333,6 +345,8 @@ LibreOffice disposable-profile + no remote-link auto-update (§3.5.2).
 04-formats/presentations, 03-engines-and-bundling (§3.5.2/§3.5.4 hardening),
 06-build-test-release (§6.5).
 
+**Boxes:** [P7-office.md](P7-office.md)
+
 *Atomic `[ ]` steps: added in the fill pass.*
 
 ---
@@ -358,6 +372,8 @@ visual styling, Ne-IA branding, empty-state eye-candy (SSOT marks only
 
 **Spec home:** 05-ui-ux, 02-guarantees (§2.8 fail-clearly, §2.9 lossy notes),
 07-app-shell (§7.6.2 About→Releases link).
+
+**Boxes:** [P8-ui-ux.md](P8-ui-ux.md)
 
 *Atomic `[ ]` steps: added in the fill pass.*
 
@@ -390,6 +406,8 @@ budgets, CJK font breadth, privilege-drop profile, etc.).
 
 **Spec home:** 02-guarantees (§2.10, §2.11.4), 05-ui-ux (a11y validation),
 06-build-test-release (§6.4 corpus, §6.4.6 headed-E2E infra, §6.7.3 egress gate).
+
+**Boxes:** [P9-hardening.md](P9-hardening.md)
 
 *Atomic `[ ]` steps: added in the fill pass.*
 
@@ -444,6 +462,8 @@ authoring, §6.3 SBOM, §6.7.2 Lane B incl. size gate, §6.10 row 21 no-pollutio
 gate, §6.8 governance gate, §6.9 clearance gate), 07-app-shell (§7.6 no-update
 posture).
 
+**Boxes:** [P10-release.md](P10-release.md)
+
 *Atomic `[ ]` steps: added in the fill pass.*
 
 ---
@@ -473,6 +493,8 @@ P11 only proves it green.)
 **Spec home:** 06-build-test-release (§6.5/§6.6 usability floor/§6.10 DoD),
 07-app-shell (§7.2.3 startup-integrity gate), SINGLE-SOURCE-OF-TRUTH.md
 (Definition of Done).
+
+**Boxes:** [P11-acceptance.md](P11-acceptance.md)
 
 *Atomic `[ ]` steps: added in the fill pass.*
 
