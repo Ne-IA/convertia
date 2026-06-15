@@ -755,8 +755,8 @@ thematic, dual-reviewed commits to `main`; this section logs them.
   hard-stop + escalation to Co-Pilot → owner; build-loop.md §6, roles-and-escalation §4(g)). This is
   the one **ownership control above the deterministic gates** — the trailer records an owner decision;
   the gate audits its presence, not the intent.
-- **New gate this round:** **G71** (L(-1)-ack pre-push gate) — a `| **G71** |` L2 *(mirror)* row, now
-  `max(Gnn)`; the "Vacated / reserved gate IDs" blockquote records it for navigational completeness
+- **New gate this round:** **G71** (L(-1)-ack pre-push gate) — a `| **G71** |` L2 *(mirror)* row (max(Gnn)
+  when Stage 1 shipped; **now below `max(Gnn) == G72`** after the Stage-3a G72 row); the "Vacated / reserved gate IDs" blockquote records it for navigational completeness
   (plan-lint check 22 sees it as a row). **Fail-soft during the P0 bootstrap, fail-closed from P1**
   (the G56a pattern — the P0 build itself edits L(-1) files under owner drive). New P0 box **P0.2.14**
   (wire G71 + author `scripts/l-neg1-files.toml` + the G24 self-test). The G24a `.gitattributes`/
