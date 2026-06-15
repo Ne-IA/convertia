@@ -25,7 +25,7 @@
 |---|---|---|---|
 | **Build-Loop session** | The autonomous builder. Reads [build-loop.md](build-loop.md) top to bottom, then works the plan box by box (**P1 onward**), writes tests, runs every gate + the [dual review](build-loop.md#step-5--pre-commit-opus--sonnet-dual-review-g1) (G1), and commits **directly to `main`** + pushes. The gates are the protection — no second branch, no merge step. | Routine implementation, pattern, naming, path, and default-value choices — **itself**, after a codebase/process-doc pattern lookup (§3), each tagged `[Build-Session-Entscheidung: <box-id>]` at the code site. Phase-cut / "which phase owns this" questions answered from the plan. | Merge, rewrite history, force-push, `--no-verify`, `core.hooksPath` redirection, pick a side in a spec contradiction, or build **P0** (DECISION B, §5). It escalates *to* Co-Pilot — it never resolves a genuine fork on its own. |
 | **Co-Pilot session** | The owner's partner. The Build-Loop's **escalation & clarification target**; the home of strategic / cross-phase / architecture decisions and high-level review. Drives the **manual P0 bootstrap** with the owner (§5). | Cross-phase architecture with no spec/SSOT source; how to *resolve* a spec/SSOT contradiction once the owner has ruled on the fork; whether a misfiring gate is scoped or quarantined ([build-loop.md §6](build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape)); P0 content alongside the owner. | Override the conflict order, or change scope / SSOT intent. A genuine fork (§4) goes to the **owner**; Co-Pilot frames it, the owner calls it. |
-| **Owner** | Final authority. | The genuine forks: scope, legal/license posture, the [reviewer-family flip](../security/security-concept.md#2-working-model--two-sessions-one-branch), the [security-critical-file L(-1) ack policy](../plan/P0-build-and-security.md), the v1 cut, and any decision a doc records as "owner decision / owner call". Drives the start/stop vocabulary ([build-loop.md §7](build-loop.md#7-escalation-conversation-and-the-startstop-vocabulary)). | — |
+| **Owner** | Final authority. | The genuine forks: scope, legal/license posture, the [reviewer-family flip](../security/security-concept.md#2-working-model--two-sessions-one-branch), the [security-critical-file L(-1) ack policy](../security/security-concept.md#2-working-model--two-sessions-one-branch), the v1 cut, and any decision a doc records as "owner decision / owner call". Drives the start/stop vocabulary ([build-loop.md §7](build-loop.md#7-escalation-conversation-and-the-startstop-vocabulary)). | — |
 
 **Escalation path:** **Build-Loop → Co-Pilot → owner.** A finding never skips a
 rung: the Build-Loop does not address the owner directly through the loop's output;
@@ -169,6 +169,12 @@ Two further blockers route the same way (their mechanics live in build-loop.md, 
   bounded retry. **NEVER** auto-emit a `GO` trailer with fewer than two live reviews;
   hard-stop + escalate
   ([build-loop.md §3 step 5](build-loop.md#step-5--pre-commit-opus--sonnet-dual-review-g1)).
+- **(g) A needed L(-1) security-critical-file edit** — the loop **NEVER** edits a
+  security-critical file (the gates' own cage) autonomously; a box that requires editing
+  one is a **hard-stop + escalate** so the **owner** makes/approves it and adds the
+  `L-neg1-ack: owner` trailer ([security-concept §2](../security/security-concept.md#2-working-model--two-sessions-one-branch),
+  gate **G71**). The explicit, load-bearing case of (c)'s "any decision a doc reserves as
+  an owner decision".
 
 ### NOT escalation (decide yourself, tagged)
 
@@ -266,6 +272,8 @@ view:
   attempts.
 - An **anomalous CI cancel** (a `cancelled` run with no successor —
   [build-loop.md §3 step 6](build-loop.md#step-6--commit--push-gates-run-never-bypass)).
+- A needed **L(-1) security-critical-file edit** (trigger (g)) — the loop never edits the
+  gates' own cage; the **owner** makes/acks it (`L-neg1-ack: owner`, G71).
 - A **soft-stop / hard-stop / phase-change** cadence boundary
   ([build-loop.md §6](build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape)) —
   pause and summarize for the owner.

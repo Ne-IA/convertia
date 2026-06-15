@@ -48,6 +48,24 @@ manifest, license compliance).
   session escalates on genuine blocks (see [roles-and-escalation.md](../process/roles-and-escalation.md),
   authored in P0); it decides routine implementation/pattern/naming/default
   choices itself.
+- **L(-1) security-critical-file change-control (owner decision D1).** The files that
+  carry the power to silently weaken an enforcement plane — gate scripts + their
+  self-tests, `lefthook.yml`, the CI workflows (`.github/**`), `deny.toml`,
+  `.gitleaks.toml` + allowlist/baseline, the `cargo-vet` exemption set + `imports.lock`,
+  `.gitattributes`/`.lfsconfig`, the G56b SSH allowed-signers file, the Tauri
+  `capabilities`, `engines.lock`, the reviewer-rubric block, the security/process docs,
+  and the authoritative glob list `scripts/l-neg1-files.toml` itself — are the **L(-1)
+  security-critical-file set** (the cage the gates live in). **The autonomous Build-Loop
+  NEVER edits an L(-1) file:** a needed L(-1) edit is an **unconditional hard-stop +
+  escalation to Co-Pilot** ([roles-and-escalation §4(g)](../process/roles-and-escalation.md#4-when-to-escalate-to-co-pilot-the-exhaustive-trigger-set),
+  [build-loop.md §6](../process/build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape)),
+  where the **owner** makes or approves the edit and records it as a `L-neg1-ack: owner`
+  commit-body trailer. The pre-push gate **G71** mechanically audits the trailer's
+  presence on any L(-1)-touching commit (fail-soft during the P0 bootstrap, fail-closed
+  from P1). This is the one **ownership control above the deterministic gates** — the
+  trailer records an owner decision; G71 checks the evidence, not the intent (so a leaked
+  key or a unilateral cage edit cannot pass unseen). It is independent of the G1
+  `Dual-Review:` trailer; both may co-occur on one commit.
 
 **The dual review is a quality amplifier, not a security control.** The Opus+Sonnet
 review (G1) is self-attested via an unverifiable commit trailer; a gamed `GO/GO`
@@ -721,3 +739,30 @@ load-bearing security guarantees with their own gates):
   highest sensible level + output-validity) and item (b) (the spec-`§`/decision that obsoleted the old expectation,
   synced in the same commit) — so it is an anti-pattern + a gate + a dual-review scope, **NOT a 9th DoD item**. The
   three plan-lint-policed DoD copies (build-loop.md §5 / the G1 row / P0.6) are byte-identical and unchanged.
+
+## 16. Reconciled during P0 review r15 (the pre-P0 plan-amendment)
+
+A completeness pass before the manual P0 build surfaced findings to fold in as gates / boxes /
+policy **before** building starts (owner directive: "erst Plan-Nachzug, dann P0"). Delivered as
+thematic, dual-reviewed commits to `main`; this section logs them.
+
+- **L(-1) security-critical-file change-control — DECIDED (owner decision D1).** The previously-open
+  "whether an ack is required" item (§7 / build-gates.md §7) is resolved **YES**: any commit touching
+  an L(-1) security-critical file (the gates' own cage, enumerated in §2; authoritative machine list
+  `scripts/l-neg1-files.toml`) is **owner-approved before push via a `L-neg1-ack: owner` commit-body
+  trailer**, and **the autonomous Build-Loop NEVER edits an L(-1) file** (a needed L(-1) edit is a
+  hard-stop + escalation to Co-Pilot → owner; build-loop.md §6, roles-and-escalation §4(g)). This is
+  the one **ownership control above the deterministic gates** — the trailer records an owner decision;
+  the gate audits its presence, not the intent.
+- **New gate this round:** **G71** (L(-1)-ack pre-push gate) — a `| **G71** |` L2 *(mirror)* row, now
+  `max(Gnn)`; the "Vacated / reserved gate IDs" blockquote records it for navigational completeness
+  (plan-lint check 22 sees it as a row). **Fail-soft during the P0 bootstrap, fail-closed from P1**
+  (the G56a pattern — the P0 build itself edits L(-1) files under owner drive). New P0 box **P0.2.14**
+  (wire G71 + author `scripts/l-neg1-files.toml` + the G24 self-test). The G24a `.gitattributes`/
+  `.lfsconfig` ack wording was reconciled to the owner-ack trailer; the roles §1 Owner-row link was
+  repointed to §2.
+- **Invariant attestations:** the **8-point DoD is untouched** (check 14 stays green — D1 is an
+  anti-pattern + a gate + an escalation trigger, **NOT a 9th DoD item**); **G71 carries no §5 threat
+  row** (it is a governance / change-control, not a threat-class control — it lives in the §2 working
+  model, like the dual-review change-control framing). The policy + cross-refs (§2, build-gates G71 +
+  §7, build-loop §6, roles §4(g)/§6, CLAUDE.md §5, P0.2.14) are mutually consistent.

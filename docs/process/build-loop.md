@@ -543,6 +543,10 @@ A change is **done** only when:
   of severity, never silently reconciled.
 - **Reviewer unavailability** — two live reviews unobtainable after bounded retry.
 - An **anomalous CI cancel** (a `cancelled` run with no successor — §3 step 6).
+- A needed **L(-1) security-critical-file edit** — the loop NEVER edits a
+  security-critical file (the gates' own cage) autonomously; hard-stop + escalate so the
+  owner makes/acks it (`L-neg1-ack: owner`, G71; security-concept §2,
+  roles-and-escalation §4(g)).
 
 **Token-Notbremse / cadence numbers (the ConvertIA v1 baselines — `plan-lint` check
 15 asserts these appear verbatim here):**

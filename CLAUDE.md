@@ -257,6 +257,17 @@ list. The derivation is recorded in P0.6 of
   `G68` (doc-graph integrity & freshness — orphan / cross-doc-resolution /
   described-the-old-way; the gates→`.md` case is one instance,
   [`build-gates.md`](docs/security/build-gates.md) §6 check 25).
+- **An L(-1) security-critical-file edit by the autonomous Build-Loop, or any L(-1)
+  edit lacking the `L-neg1-ack: owner` trailer.** The files that can silently weaken an
+  enforcement plane (gate scripts, `lefthook.yml`, `.github/**`, `deny.toml`,
+  `.gitleaks.toml`, the cargo-vet exemption set, `engines.lock`, the Tauri capabilities,
+  the reviewer rubric, the security/process docs, and `scripts/l-neg1-files.toml` itself)
+  are the **L(-1) set** (non-exhaustive; the authoritative list is
+  `scripts/l-neg1-files.toml`, enumerated in security-concept §2) — the loop NEVER edits
+  one (hard-stop + escalate so the **owner** makes/acks it); enforced by the pre-push gate
+  **G71** (owner decision D1,
+  [security-concept §2](docs/security/security-concept.md#2-working-model--two-sessions-one-branch),
+  [`build-gates.md`](docs/security/build-gates.md) G71).
 - `--no-verify`, force-push, `core.hooksPath` redirection, or disabling a required
   CI check — the complete forbidden-bypass set (security-concept §3).
 
