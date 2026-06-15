@@ -245,6 +245,17 @@ escalate** (the loop is downstream of the spec).
   **output-validity** bar: the produced file is read back by a **real structural
   reader** (G31/G32), not "the engine returned no error", with a representative
   real-world corpus behind the §6.5 reliability ledger.
+- **No green-by-rewrite (the mindset for a test that the change turns red).** If the
+  box's change makes a **previously-passing** test go red, the **default assumption is
+  the CODE is wrong, not the test**. Rewriting/relaxing/skipping/deleting the test to
+  get green is allowed (and is usually right), but **only** after proving **both** (1)
+  the old expectation is genuinely obsolete (cite the spec-`§`/decision that changed
+  the behaviour) **and** (2) the new expectation is correct (verified against the spec
+  or by reading back the real result — never "it's green now"). If (1)+(2) can't be
+  proven, fix the code. This does **not** forbid changing a test — it requires a
+  one-line `[Test-Change: <box-id> — old-obsolete+new-correct, §ref]` justification;
+  the mechanical signal is **G70**, the doctrine is [test-strategy.md](test-strategy.md)
+  §8.
 - **Spec-sync in the same commit:** a deliberate or forced deviation from the spec
   is reflected in the spec/security docs **in the same commit** — code never
   outlives the spec that covers it (living-doc rule). Run `plan-lint`/`spec-lint`
@@ -293,6 +304,16 @@ build commit. Input: the STAGED diff (git diff --cached, inline). Critique it fo
      locked §0.10 CSP / least-privilege Tauri)?
   4. SECURITY      — does it open a network surface, weaken a gate, widen the CSP /
      capabilities, or touch a security-critical file? Name the threat class (§5).
+  5. TEST-INTEGRITY (HIGH-SCRUTINY) — does the diff MODIFY / RELAX / SKIP / DELETE a
+     test, or flip one red→green (a rewritten assertion, an added #[ignore]/it.skip/
+     should_panic, a removed/commented-out assertion)? If so, ask explicitly: "is this
+     SUPPRESSING A REAL REGRESSION?" The default is the CODE is wrong, not the test. A
+     test change is acceptable ONLY if the commit proves BOTH (1) the old expectation
+     is genuinely obsolete (a spec-§/decision cite) AND (2) the new expectation is
+     correct (verified vs the spec / by reading back the real result, never "it's green
+     now"). A red→green test edit lacking that (1)+(2) justification is a P0/P1
+     finding. (Mechanical signal: G70 flags an unjustified suppression marker; YOUR job
+     is the SEMANTIC call — test-strategy.md §8.)
 
 Rank every finding P0 (must-fix, blocks) → P1 (must-fix) → P2 → P3. Give each one a
 one-line reason WITH a spec-§ or file ref. State convergence/divergence explicitly:
@@ -395,6 +416,21 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
   re-stage → re-review (step 5) → new commit. **Never `--no-verify`, never
   force-push, never `core.hooksPath` redirection, never disable a required CI
   check.** **3 consecutive gate-red pushes → hard-stop + escalate.**
+- **When the red is a TEST the box's change made fail — apply the code-first
+  default, do NOT green-by-rewrite.** A test that the change turned red is, by
+  default, **catching a regression in the new code** — so the first move is **fix the
+  code**, not the test. A test edit to get green is permitted **only** after proving
+  **both** (1) the old expectation is genuinely obsolete (cite the spec-`§`/decision)
+  **and** (2) the new expectation is correct (verified vs the spec / by reading the
+  real result back, never "it's green now"); that **(1)+(2) justification goes in the
+  commit body** and the edit is a **high-scrutiny item for the step-5 dual review**
+  (rubric point 5). The mechanical signal that an unjustified test-suppression marker
+  (`#[ignore]`/`it.skip`/a `should_panic` on a real assertion/a removed assertion)
+  slipped in is **G70** — it FLAGS + REQUIRES the `[Test-Change: <box-id> —
+  old-obsolete+new-correct, §ref]` justification (or, for a marker in a brand-new
+  test with no prior expectation, the net-new variant `[Test-Change: <box-id> —
+  new-test:<reason>, §ref]`), it does **not** forbid the change. Doctrine:
+  [test-strategy.md](test-strategy.md) §8.
 - **Watch your own CI run (your push to `main` IS `main`).** Capture the run
   **SHA-anchored** — `git rev-parse HEAD`, then `gh run list --branch main --json
   databaseId,headSha,status` filtering `headSha == <commit-sha>` (NOT `--limit 1`

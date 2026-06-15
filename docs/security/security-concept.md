@@ -685,3 +685,39 @@ load-bearing security guarantees with their own gates):
   any P1–P11 dir §0.7 does not yet home (the freshness rule — never let §1a invent an unmapped-in-§0.7 dir). The
   8-point DoD and its three plan-lint-policed copies (build-loop.md / G1 / P0.6) are untouched (the new rules live in
   the anti-patterns + the new gates, not a 9th DoD item) so check 14 stays green.
+
+## 15. Reconciled during P0 review r14
+
+- **The "no green-by-rewrite" test-change discipline is now a NAMED control, not a habit (new gate G70 + a G1
+  test-integrity scrutiny scope).** A real, common LLM failure mode: when a box's change turns a previously-passing
+  test red, the model bluntly rewrites/relaxes/skips/deletes the test until green and ASSUMES that is fine — but a red
+  test frequently catches a genuine regression in the new code, so a blind rewrite HIDES the bug behind a green check.
+  **The rule (the default is the CODE is wrong, not the test):** a test rewrite/relax/skip/delete is permitted — and is
+  the right move in ~95% of cases — but ONLY after positively proving BOTH (1) the old expectation is genuinely
+  obsolete (cite the spec-`§`/decision that changed the behaviour) AND (2) the new expectation is correct (verified vs
+  the spec / by reading the real result back, never "it's green now"); else fix the code. It is recorded as the
+  **doctrine** in [test-strategy.md](../process/test-strategy.md) §8, an **anti-pattern** in CLAUDE.md §5, the
+  build-loop Step-4/Step-5/Step-6 handling, a **G1 dual-review HIGH-SCRUTINY test-integrity item** (rubric point 5 — "is
+  this suppressing a real regression?", a P0/P1 finding if the (1)+(2) justification is absent from the commit body),
+  and the new mechanical gate **G70**.
+- **The mechanism FLAGS + REQUIRES JUSTIFICATION, it does NOT forbid (the owner constraint).** This is deliberately
+  NOT a friction wall: changing a test is necessary in the common case and stays a first-class move. **G70** (the
+  G8-deferral analogue applied to TESTS) is the mechanical signal leg — a diff ADDING a test-suppression marker
+  (`#[ignore]`/`#[cfg(ignore)]`/`it.skip`/`describe.skip`/`.only`/`test.skip`/`xfail`, a retro-fitted `#[should_panic]`,
+  a removed/commented-out assertion in a changed test) FAILS unless a `[Test-Change: <box-id> —
+  old-obsolete+new-correct, §ref]` justification tag (or the net-new variant `[Test-Change: <box-id> —
+  new-test:<reason>, §ref]` for a marker in a brand-new test) sits within ±N lines; a justified marker passes
+  normally. The
+  **SEMANTIC** "is this rewrite legitimate?" call stays the **G1 dual review's** job (exactly the G8↔G1 split: G8/G70
+  flag the marker, G1 judges the design). G70 is a quality/structural control (like G8/G68/G69), so it carries **no §5
+  threat-row** (it is not a security control) but ships a **G24 positive+negative self-test** registered in
+  `scripts/gate-selftests/` like every custom gate (plan-lint check 16).
+- **New gate this round:** **G70** (test-suppression-marker gate) — a `| **G70** |` L2 *(mirror)* row appended past the
+  former `max(Gnn) == G69`; the "Vacated / reserved gate IDs" blockquote + plan-lint check 22 (every integer N in
+  `2..max(Gnn)` is a row or note) see it as a row, so no reserved-note entry is needed. New P0 box **P0.3.14** (build
+  G70 + its G24 self-test, content-independent cluster); the G1 strengthening is reflected in **P0.6.1** (protocol) +
+  **P0.6.2** (the reviewer rubric carries the test-integrity scrutiny item).
+- **8-point DoD untouched (check 14 stays green).** The discipline lives ENTIRELY in DoD item (c) (tests green at the
+  highest sensible level + output-validity) and item (b) (the spec-`§`/decision that obsoleted the old expectation,
+  synced in the same commit) — so it is an anti-pattern + a gate + a dual-review scope, **NOT a 9th DoD item**. The
+  three plan-lint-policed DoD copies (build-loop.md §5 / the G1 row / P0.6) are byte-identical and unchanged.

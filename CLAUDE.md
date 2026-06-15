@@ -227,6 +227,17 @@ list. The derivation is recorded in P0.6 of
 - **Skeleton/stub as a default.** Build it fully (SSOT Principle 1: completeness
   within scope). A stub is only ever a named, compile-time interface shell that a
   *named, scheduled* box fills — never a quiet placeholder.
+- **Rewriting / relaxing / skipping / deleting a failing test to make it pass
+  WITHOUT proving the old assertion is genuinely obsolete AND the new one correct.**
+  A red test may be catching a real regression in the new code; the default is **the
+  code is wrong**, not the test. (Changing a test IS allowed and usually right — but
+  **verified + justified**, never assumed: prove (1) the old expectation is obsolete
+  (cite the spec-`§`/decision) **and** (2) the new expectation is correct (verified vs
+  the spec / by reading the real result back, not "it's green now"), record the
+  `[Test-Change: <box-id> — old-obsolete+new-correct, §ref]` rationale, and pass
+  `G70` + the `G1` test-integrity check. This is "no green-by-rewrite" —
+  [`docs/process/test-strategy.md`](docs/process/test-strategy.md) §8; it flags +
+  requires justification, it does **not** forbid.)
 - **Auto-generated `CLAUDE.md` / spec / security sections without review.**
 - **Backwards-compat hacks for not-yet-existing code.**
 - **A structural element (a folder) not in the §1a "Repo layout" map (a projection of

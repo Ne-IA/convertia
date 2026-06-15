@@ -119,7 +119,7 @@ always includes the §0.2 output-validity bar.
 | **Fuzz** | "Never panic / OOM / UB on arbitrary bytes" on the **DECODE path that runs in-core** (outside the §2.12 boundary) + an unsafe census | **`cargo-fuzz`** (libFuzzer); **`cargo-geiger`** (census) | §6.4.2 (in-core fuzz harness) / §2.12.4 | **G48** (fuzz); `cargo-geiger` informational (**G29**) |
 | **E2E** | The real built app driven through the real window: the §5.2 core flow end-to-end | **`tauri-driver`** + **WebdriverIO** (Win/Linux); macOS = defined degraded smoke | §6.4.6 | *no dedicated Gnn* — E2E runs **on** the **G30** platform matrix; the per-push E2E result blocks red `main` via the CI job directly |
 | **a11y** | WCAG 2.1 AA: ARIA/role/focus + computed contrast | `vitest-axe` (jsdom) + `@axe-core/webdriverio` (live WebView) | §6.4.6a | **G33a** (per-push), **G33b** (release) |
-| **Visual regression** | Screenshot diff of the rendered UI against a baseline | *(no gate — see §8)* | *(none — §6.4.6 family)* | **G34 — VACATED** |
+| **Visual regression** | Screenshot diff of the rendered UI against a baseline | *(no gate — see §9)* | *(none — §6.4.6 family)* | **G34 — VACATED** |
 
 ### 1.1 Unit — Rust core (the guarantees layer · §6.4.1 · G15)
 
@@ -379,7 +379,7 @@ that G30 matrix** and its per-push pass/fail **blocks red `main` via the CI job
 directly**. A Build-Loop author looking up G30 will find only the build/`lipo`
 assertion — the E2E *result* is the CI job's, not a `Gnn` lookup. (Adopting a
 dedicated id would need a spec §6.4.6-family contract first, then an id from the
-vacant range — the same rule §8 states for the vacated G34.)
+vacant range — the same rule §9 states for the vacated G34.)
 
 **Platform reality (the driver differs · spec §6.4.6):**
 
@@ -440,12 +440,12 @@ per §5.6) has an automated half here and a human half (§6.6). **Critical + ser
 The rendered colours come from the §5.5 design tokens; this level is what makes the
 §5.6 "WCAG 2.1 AA" claim verifiable rather than aspirational.
 
-### 1.8 Visual regression — see §8
+### 1.8 Visual regression — see §9
 
 A screenshot-diff level (fixed tolerance, baseline updated only on intentional
-change) is **methodologically defined in §8** but has **no release-blocking gate in
+change) is **methodologically defined in §9** but has **no release-blocking gate in
 v1** — its would-be gate **G34 is VACATED** because a visual-regression gate has no
-spec `§`-home. See §8 for the activation rule.
+spec `§`-home. See §9 for the activation rule.
 
 ---
 
@@ -761,7 +761,7 @@ with retries. The policy is narrow on purpose:
   committed to `fuzz/crashes/`.
 - **Engineer determinism instead of retrying.** Pin **locale** and **timezone**
   (`TZ`) in the CI environment; turn **animations off**
-  (`prefers-reduced-motion`/`animation-duration: 0`) for the §1.6 / §1.7 / §8
+  (`prefers-reduced-motion`/`animation-duration: 0`) for the §1.6 / §1.7 / §9
   levels; pin the CI **seed** (§1.3); freeze any clock the assertion reads. The
   **conversion-output determinism** invariant (§2 / G32) is the same principle
   applied to the *product*: a non-deterministic output is a bug (an embedded
@@ -773,7 +773,81 @@ root cause and the same fix: remove the nondeterminism, do not retry around it.
 
 ---
 
-## 8. Visual regression (methodology defined; gate VACATED in v1)
+## 8. Test changes under failure (no green-by-rewrite)
+
+When a box's change turns a **previously-passing** test red, the model's reflex —
+**bluntly rewrite / relax / skip / delete the test until it goes green, and assume
+that is fine** — is a real and common failure mode: a red test is frequently
+**catching a genuine regression in the new code**, and a blind rewrite **hides the
+bug** behind a green check. This section adds the discipline that closes that hole.
+It **adds verification + visibility, it does NOT remove the ability to change a
+test** — changing a test is necessary in the overwhelming majority of cases and
+stays a normal, first-class move; it just has to be **verified and recorded**, never
+**assumed**.
+
+### 8.1 The rule (code-first default)
+
+- **When a previously-passing test goes red because of a change, the DEFAULT
+  assumption is: the CODE is wrong, not the test.** Start there. Read the failure as
+  a signal about the new code first, a signal about a stale expectation second.
+- **Rewriting / relaxing / skipping / deleting the test to make it pass is
+  PERMITTED — and is the right move in the common case — but ONLY after positively
+  proving BOTH:**
+  1. **the old expectation is genuinely obsolete** — the behaviour *legitimately*
+     changed; **cite the spec-`§` / the recorded decision that changed it** (the
+     conflict order SSOT > spec > security/process docs > plan > code still governs —
+     a behaviour change with no higher-layer source is itself an escalation, not a
+     licence to edit the test); **AND**
+  2. **the new expectation is correct** — verified **against the spec**, or by
+     **reading back the real result** with the §0.2 output-validity bar (a real
+     structural reader for a conversion, the real value for a logic test) — **never
+     "it's green now, so it's fine"** (green-after-edit is the exact non-proof this
+     rule exists to reject).
+- **If (1)+(2) cannot both be proven → the code is wrong; fix the code, not the
+  test.** The red test did its job.
+- A **test-change that flips a test red→green** (a rewritten/relaxed assertion, a
+  newly-added suppression marker, a removed/commented-out assertion) is a
+  **HIGH-SCRUTINY event for the G1 dual review** (§5 of build-loop.md): the two
+  reviewers explicitly ask **"is this suppressing a real regression?"**, and the
+  **(1)+(2) justification is recorded in the commit body**.
+
+### 8.2 It does NOT forbid — it flags + requires justification
+
+This is a **flag-and-justify mechanism, not a friction wall**, and **not** a ban.
+The premise is that a legitimate, outdated-expectation test change happens in roughly
+**95% of cases** and must stay cheap: a justified change passes normally with a
+**one-line rationale** (the (1)+(2) citation). The discipline only *fires* on the
+**unjustified** rewrite — the silent "make red go green" with no spec/decision cite
+and no read-back of the new result. The mechanical signal leg is the **G70
+test-suppression-marker gate** (the G8-deferral analogue applied to tests): adding a
+test-suppression marker — `#[ignore]`, `it.skip`/`describe.skip`/`.only`,
+`test.skip`, an `xfail`, a `#[should_panic]` slapped onto a previously-real
+assertion, or a removed/commented-out assertion in a changed test — **fails UNLESS a
+justification tag** sits within ±N lines. The tag has **two shapes** — the
+changed-expectation form `[Test-Change: <box-id> — old-obsolete+new-correct, §ref]`
+(the green-by-rewrite case this rule targets) and, for a marker that is part of a
+**brand-new test** with no prior expectation to obsolete (a legitimate net-new
+`#[should_panic]` panic-path test, a deliberately-`#[ignore]`d scaffold), the net-new
+form `[Test-Change: <box-id> — new-test:<reason>, §ref]`. **G70 FLAGS + REQUIRES the
+justification; it does NOT forbid the marker** — either tag shape passes. The **semantic** question ("is this rewrite
+actually legitimate, or is it hiding a regression?") stays the **G1 dual review's**
+job (§8.1 last bullet); G70 is the cheap mechanical signal that *surfaces* the change
+so the dual review and the commit reader cannot miss it.
+
+### 8.3 Why this is not a new DoD item
+
+The doctrine here is **already inside** DoD item (c) ("tests at the highest
+technically sensible level are green" + the output-validity bar) and item (b)
+("spec/docs synced in the same commit" — the spec-`§`/decision that obsoleted the old
+expectation). This section makes the **handling under failure** explicit and gives it
+a mechanical signal (G70) + a dual-review scope, exactly as the
+no-skeleton rule (§4) is enforced by G8 without being a DoD item. The **8-point DoD
+is unchanged** — this is an anti-pattern + a gate + a dual-review scope, not a ninth
+item.
+
+---
+
+## 9. Visual regression (methodology defined; gate VACATED in v1)
 
 The visual-regression *method* is defined so that adopting it later needs no new
 design call — only a spec `§`-home and an id:
@@ -803,7 +877,7 @@ not a DoD bar.
 
 ---
 
-## 9. How a box picks its level (the per-box decision)
+## 10. How a box picks its level (the per-box decision)
 
 At **step 4 of the loop** ([build-loop.md](build-loop.md) §3), the Build-Loop picks
 the **highest technically sensible level** (DoD item (c)). The decision is
@@ -845,7 +919,7 @@ build-loop.md), do not improvise a weaker test.
 
 ---
 
-## 10. References
+## 11. References
 
 - Technical home (the pipeline + corpus + reliability ledger):
   [spec §6.4](../spec/06-build-test-release.md) (`§6.4.1`–`§6.4.6a`), §6.5, §6.6.
@@ -856,7 +930,9 @@ build-loop.md), do not improvise a weaker test.
   `cargo-geiger` informational), **G30** (cross-platform build matrix the E2E flow
   runs on), **G31/G32** (per-pair corpus + structural readers + round-trip/
   determinism), **G33a/G33b** (a11y), **G34** (vacated visual-regression),
-  **G42/G42b** (egress / fs-audit), **G48** (in-core fuzz), **G60** (`diffoscope`).
+  **G42/G42b** (egress / fs-audit), **G48** (in-core fuzz), **G60** (`diffoscope`),
+  **G70** (test-suppression-marker gate — the §8 no-green-by-rewrite signal leg; the
+  semantic "is this rewrite legitimate" check stays the G1 dual review).
 - Threat model the security tests defend:
   [security-concept.md](../security/security-concept.md) §4–§5 (T1, T2, T5, T7, T8,
   T9b, T10, T11).
