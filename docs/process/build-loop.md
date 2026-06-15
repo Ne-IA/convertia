@@ -108,6 +108,18 @@ full** and the referenced **gate IDs** in
 acceptance criteria, column lists, enums, error kinds, and IPC schemas live there,
 not in the box.
 
+> **Context-routing — the loop runs LEAN (references, not inlines).** This prompt
+> **points** at [security-concept.md](../security/security-concept.md) /
+> [build-gates.md](../security/build-gates.md) for a per-box gate lookup and a red-CI
+> fix — it deliberately does **NOT inline the whole gate/security corpus** into the
+> loop session (no context ballast). The loop reads only the `Gnn` rows a box
+> references, on demand. The **full picture** — the complete gate catalogue, the
+> threat model, the cross-phase security view — is the **Co-Pilot's** to hold
+> ([roles-and-escalation.md](roles-and-escalation.md): Co-Pilot owns/holds the full
+> security+gate picture; the loop looks up on red-CI). A fill-pass must never paste
+> the corpus into this prompt — the lean-loop / full-Co-Pilot split is asserted by the
+> P0.1.7 documentation-wiring & context-routing audit.
+
 At the end of session-start, emit exactly one line and **wait for a start word**
 (see §10) — do not proactively build:
 
@@ -237,6 +249,17 @@ escalate** (the loop is downstream of the spec).
   is reflected in the spec/security docs **in the same commit** — code never
   outlives the spec that covers it (living-doc rule). Run `plan-lint`/`spec-lint`
   `--quiet` locally before staging if a doc was edited.
+- **Doc-graph freshness in the same commit (the general form of spec-sync — DoD item
+  (b)).** A change to **any** authoritative source — a gate (`Gnn`), a control, a
+  decision, a path/directory, a convention, an enum variant, a version pin — is
+  reflected in **every** referencing doc in the **same commit**: no stale, no
+  contradictory, no orphaned `.md`. **G68** (doc-graph integrity & freshness) enforces
+  it graph-wide (the gates→`.md` case is one instance); a drift reddens the push.
+- **Structural-map update in the same commit.** Never create a structural element (a
+  folder) that is not in the **CLAUDE.md §1a "Repo layout" map** — if a new directory
+  is genuinely needed for clean logical separation, **update the map in the same
+  commit**. **G69** asserts the map ↔ on-disk tree bidirectionally; an unmapped folder
+  (or a stale map entry) reddens the push.
 - **Inline decision tags** at every non-spec choice site:
   `[Build-Session-Entscheidung: <box-id>]` for a self-made pattern/naming/default
   choice, **directly at the code site**, not only in the commit body. (This tag

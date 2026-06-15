@@ -323,6 +323,31 @@ load-bearing security guarantees with their own gates):
 - This doc and [build-gates.md](build-gates.md) are themselves under the
   doc-consistency gate (`plan-lint`/`spec-lint`, P0.3): every `§` reference must
   resolve and every gate named here must exist in the catalogue.
+- **Doc-graph freshness is machine-enforced, not a promise (the general form of the
+  spec-sync rule).** A change to **any** authoritative source — a gate (`Gnn`), a
+  control, a decision, a path/directory, a convention, an enum variant, a version
+  pin — must be reflected in **every** referencing doc in the **same commit** (no
+  stale, no contradictory, no orphaned `.md`); the **gates→`.md` consistency case is
+  ONE instance, not the scope**. **G68** (doc-graph integrity & freshness) enforces
+  this graph-wide — no-orphan + cross-doc-reference resolution + the
+  described-the-old-way freshness fingerprint across the **repo-scoped** graph
+  `CLAUDE.md` ↔ SSOT ↔ spec ↔ security ↔ process ↔ plan (the out-of-repo `~/.claude`
+  memory channel is audited once, manually, in P0.1.7 — it is outside `git ls-files`
+  and not a continuous G68 node). The structural analogue is **G69** (every repo
+  directory ∈ the CLAUDE.md §1a "Repo layout" map ∧ every mapped dir exists, AND that
+  §1a map is a faithful projection of the higher spec §0.7 physical tree per SSOT >
+  spec > docs) — nothing structural lives outside the map, which never invents a dir
+  §0.7 does not home.
+- **Context-routing — the autonomous loop runs LEAN; the Co-Pilot holds the full
+  picture.** The [build-loop.md](../process/build-loop.md) prompt **references** this
+  doc + [build-gates.md](build-gates.md) for a per-box / red-CI gate lookup but does
+  **NOT inline** the whole security/gate corpus into the lean loop session (no context
+  ballast). The complete gate catalogue, the threat model, and the cross-phase
+  security view are the **Co-Pilot's** to carry
+  ([roles-and-escalation.md](../process/roles-and-escalation.md)). This is a
+  defense-in-depth property, not a convenience: a bloated loop prompt dilutes the
+  per-box focus the gates depend on. The split is asserted by the P0.1.7
+  documentation-wiring & context-routing audit.
 
 ## 7. Reconciled during P0 review r1
 
@@ -615,3 +640,48 @@ load-bearing security guarantees with their own gates):
   §7.8.2 (deep-link/URL-scheme absence + local-`url`, G47), §1.10 (output/scratch byte budget, T10), §7.2.3
   (bundled-config startup hashing, G46), §6.4.2 (CI-host resource bound + DNS-egress leg, G26/G42) are owned by the
   spec and edited in the same change per SSOT > spec > docs; noted here so the fill pass syncs them.
+
+## 14. Reconciled during P0 review r13
+
+- **The living-doc system is now SELF-ENFORCING — a generalized two-principle mechanism (new gates G68 + G69).**
+  The whole doc/structure graph keeping itself honest was a PROSE discipline (the §6 living-doc rules, the per-doc
+  spec-sync promise) with no graph-wide gate — exactly the "policy, not a machine invariant" gap the design closes
+  everywhere else. **Principle 1 (the doc graph keeps itself honest) → G68** doc-graph integrity & freshness: the
+  GENERAL "no source-of-truth drifts from the doc graph" enforcement — every `.md` reachable/linked from its proper
+  index (no orphan), every cross-doc reference across the **repo-scoped** graph (`CLAUDE.md` ↔ SSOT ↔ spec ↔ security
+  ↔ process ↔ plan) resolving, and the load-bearing FRESHNESS leg (a change to any authoritative source — a `Gnn`, an
+  enum, a path incl. the spec §0.7 physical tree, a version pin, a decision — reflected in every describing doc in the
+  same commit, the **gates→`.md` case being ONE instance**). The out-of-repo `~/.claude` memory channel (`MEMORY.md` +
+  the memory files) is deliberately NOT a G68 node — it is outside `git ls-files`, unreachable by a repo-scoped gate,
+  so its one-time population audit is the manual P0.1.7 check, not the continuous gate. **Principle 2 (one operational
+  structural map, derived from the higher §0.7 source) → G69** structural-map integrity: every repo directory ∈ the
+  CLAUDE.md §1a "Repo layout" map ∧ every mapped dir exists (bidirectional), AND the §1a map is a **faithful
+  projection of spec §0.7** (the higher source per SSOT > spec > docs — G69 asserts §1a ⊆ §0.7 so the two cannot
+  drift) — nothing structural lives outside the map, and the map never invents a dir §0.7 does not home. Both are
+  `plan-lint`-family stdlib-only legs (build-gates §6 checks 25/26) with G24 positive+negative self-tests; G68 is
+  fail-closed from P0 (the doc graph exists), G69 is `→ activated in P1` (its CLAUDE.md "Repo layout" map target is
+  authored at P1-end, box P1.64).
+- **§6 living-doc rules extended.** Doc-graph freshness (the general form of the spec-sync rule, gates→`.md` one
+  instance) + the context-routing principle (the autonomous loop runs LEAN — references-not-inlines the gate/security
+  corpus — while the Co-Pilot holds the full picture) are added as living-doc rules; both were prior prose habits now
+  named as controls. The context-routing split is asserted by the new P0.1.7 documentation-wiring & context-routing
+  audit box.
+- **New gates this round:** **G68** (doc-graph integrity & freshness), **G69** (structural-map integrity) — the two
+  rows appended past the former `max(Gnn) == G64` (the reserved release-tier ids G65/G66/G67 stay prose-only notes
+  below them; build-gates.md "Vacated / reserved gate IDs" map + check 22 updated). New plan-lint **checks 25**
+  (G68 leg) + **26** (G69 leg). New P0 boxes: **P0.1.7** (documentation-wiring & context-routing audit + G68 wiring),
+  **P0.3.12** (build G68), **P0.3.13** (build G69, `→ activated in P1`); new P1 boxes **P1.64** (establish the full
+  folder structure + author the CLAUDE.md "Repo layout" map as the §0.7 projection — activates G69) + **P1.65**
+  (final CLAUDE.md review). CLAUDE.md gains the §1a "Repo layout" map (the operational §0.7 projection, NOT a
+  competing source) + the two standing anti-patterns (no unmapped folder / no doc drift — the latter named as DoD
+  item 2's general form; the 8-point DoD itself is UNCHANGED).
+- **Dual-authority resolved (r13 dual-review P1).** The CLAUDE.md §1a map is explicitly the **operational projection
+  of the higher spec §0.7 physical tree** (SSOT > spec > docs), not a second authoritative source — G69 check 26
+  binds §1a ⊆ §0.7 and G68 check 25 fingerprints §0.7 so a §0.7 edit not mirrored into §1a is stale. This closes the
+  one structural source-of-truth pair the map gate would otherwise leave unguarded.
+- **Living-doc/spec-sync (r13).** This DOC-graph round edits no spec `§` for a product BEHAVIOUR — G68/G69 govern the
+  doc/structure graph (`CLAUDE.md` + `docs/`). The one structural touchpoint is spec **§0.7** (the physical tree): it
+  is the higher source the §1a map projects from, and **P1.64 edits §0.7 in the same commit** as it authors §1a for
+  any P1–P11 dir §0.7 does not yet home (the freshness rule — never let §1a invent an unmapped-in-§0.7 dir). The
+  8-point DoD and its three plan-lint-policed copies (build-loop.md / G1 / P0.6) are untouched (the new rules live in
+  the anti-patterns + the new gates, not a 9th DoD item) so check 14 stays green.

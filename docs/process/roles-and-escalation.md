@@ -36,6 +36,27 @@ deterministic gates (every `Gnn` except G1), so an escalation is a quality / blo
 signal, not the thing that keeps insecure code out (the gates do that on a clean
 checkout regardless of who is watching).
 
+**Context-routing — who holds what (lean loop / full Co-Pilot).** The two sessions
+are deliberately given **different amounts of the security/gate corpus**:
+
+- **The Build-Loop runs LEAN.** Its prompt
+  ([build-loop.md §2](build-loop.md#2-read-these-at-session-start-mandatory))
+  **references** [build-gates.md](../security/build-gates.md) +
+  [security-concept.md](../security/security-concept.md) for a **per-box / red-CI
+  gate lookup** — it reads only the `Gnn` rows a box cites, on demand — and does
+  **NOT inline** the whole gate/security corpus into the session (no context
+  ballast). On a red CI it looks the gate up; it does not carry the catalogue.
+- **The Co-Pilot holds the FULL picture.** The complete gate catalogue (`G1..Gnn`),
+  the threat model (security-concept §0.11/§5), and the cross-phase security view are
+  the Co-Pilot's to carry — it is the home of the strategic / high-level security
+  review, so it reasons over the corpus the loop only samples.
+
+This split is a defense-in-depth property, not a convenience (a bloated loop prompt
+dilutes the per-box focus the gates rely on) and is **asserted by the P0.1.7
+documentation-wiring & context-routing audit** + stated as a living-doc rule in
+[security-concept.md §6](../security/security-concept.md#6-living-doc-rules). A
+fill-pass must never paste the corpus into the loop prompt.
+
 ---
 
 ## 2. The default: decide it yourself

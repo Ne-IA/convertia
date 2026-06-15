@@ -40,6 +40,47 @@ hard-stop + escalate** — the build is downstream of the spec and cannot pick a
   no minimal-viable tiering, no fixed deadline — completeness is the gate. Partial
   *public* release is not a thing; internal *sequencing* (the plan's phases) is.
 
+## 1a. Repo layout (the operational per-dir map)
+
+> **This is the operational map of where everything lives — the flat dir-set `G69`
+> mechanically checks bidirectionally against the on-disk tree** (every repo directory
+> appears here ∧ every mapped dir exists; [`build-gates.md`](docs/security/build-gates.md)
+> §6 check 26). **It is NOT the single source of truth — the higher source is spec
+> [§0.7](docs/spec/00-architecture.md) "Physical tree"** (the logical-module
+> decomposition + its rationale), which outranks this docs-layer map per the repo
+> conflict rule **SSOT > spec > docs**. This §1a map is a **faithful projection of the
+> §0.7 physical tree** onto the flat dir-set G69 asserts; a `G68/G69` sub-check binds
+> the two so they cannot drift (the §0.7-derived dir set ⊇ this map's dir set;
+> [`build-gates.md`](docs/security/build-gates.md) §6 checks 25/26). When the two
+> disagree, **§0.7 wins** — fix §1a to match, never the reverse.
+> **Standing rule (anti-pattern below):** never create a structural element (a folder)
+> that is not in **both** §0.7 and this map — if a new one is genuinely needed for
+> clean logical separation, **update §0.7 AND this map in the SAME commit**
+> (gate-enforced).
+>
+> **Bootstrap status: this is a PLACEHOLDER stub, finalized by the P1-end box
+> [`P1.64`](docs/plan/P1-foundation.md)** ("Establish the complete repository folder
+> structure + author the CLAUDE.md Repo-layout map") — which creates every directory
+> the product needs across P1–P11 and completes this map (as the §0.7 projection) to
+> one row per dir, the event that flips `G69` from skip-with-warning to fail-closed.
+> Until P1.64, only the already-existing `docs/` and `assets/` trees are real; the rest
+> are authored as P1 scaffolds them.
+
+```
+convertia/                  → repo root (Git, GitHub: Ne-IA/convertia)
+├── CLAUDE.md               → this file — the repo's own rules + this map
+├── README.md               → download/trust page (user-facing)
+├── LICENSE                 → MIT + collective copyright
+├── docs/                   → all documentation (the doc graph G68 guards)
+│   ├── SINGLE-SOURCE-OF-TRUTH.md   → SSOT (what & why)
+│   ├── spec/               → the spec (how) — 00-architecture … 07-app-shell, 04-formats/
+│   ├── security/           → security-concept.md + build-gates.md (G1..Gnn)
+│   ├── process/            → build-loop.md, test-strategy.md, roles-and-escalation.md, vuln-response.md, gate-status.md, p0-completion.md
+│   └── plan/               → P0..P11 + README index + _format.md
+├── assets/                 → static brand/design assets (exists)
+└── … (src-tauri/, src/, tests/, fuzz/, scripts/, .github/, bundle/, design/ — authored + mapped per dir by P1.64)
+```
+
 ## 2. Working model — two sessions, one branch
 
 | Session | Role |
@@ -188,6 +229,23 @@ list. The derivation is recorded in P0.6 of
   *named, scheduled* box fills — never a quiet placeholder.
 - **Auto-generated `CLAUDE.md` / spec / security sections without review.**
 - **Backwards-compat hacks for not-yet-existing code.**
+- **A structural element (a folder) not in the §1a "Repo layout" map (a projection of
+  the higher spec §0.7 physical tree).** Never create a directory that is absent from
+  the map; if a new one is genuinely needed for clean logical separation, **update spec
+  §0.7 AND the §1a map in the SAME commit** (§0.7 is the higher source per SSOT > spec >
+  docs; §1a is its operational projection) — gate-enforced by `G69` (the bidirectional
+  CLAUDE.md-map ↔ on-disk-tree assertion + the §1a ⊆ §0.7 projection bind,
+  [`build-gates.md`](docs/security/build-gates.md) §6 check 26). Nothing structural
+  lives outside the map, and the map never invents a dir §0.7 does not home.
+- **A change to an authoritative source that leaves a referencing doc stale.** Any
+  change to a source of truth — a **gate** (`Gnn`), a **control**, a **decision**, a
+  **path**/directory, a **convention**, an **enum** variant, a **version pin** — is
+  reflected in **every** doc that references it, in the **SAME commit**: no stale, no
+  contradictory, no orphaned `.md`. This is **DoD item 2's general form** ("spec/docs
+  synchronous in the same commit") extended to the whole doc graph, gate-enforced by
+  `G68` (doc-graph integrity & freshness — orphan / cross-doc-resolution /
+  described-the-old-way; the gates→`.md` case is one instance,
+  [`build-gates.md`](docs/security/build-gates.md) §6 check 25).
 - `--no-verify`, force-push, `core.hooksPath` redirection, or disabling a required
   CI check — the complete forbidden-bypass set (security-concept §3).
 
