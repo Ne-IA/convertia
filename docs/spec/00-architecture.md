@@ -1292,8 +1292,15 @@ pool** governs how many engine processes run at once. **This number lives here;
 - **Timeout / hang policy parameters.** The pool carries the *parameters* (per-
   engine wall-clock timeout, hang detection via no-progress watchdog); the
   **mechanism** (how a timed-out/hung engine is killed and mapped to §2.8) is
-  **owned by §1.7** and referenced here. Defaults are generous for video (a long
-  film legitimately takes minutes) and tight for the light engines.
+  **owned by §1.7** and referenced here. The concrete values are **named `pub const`s in
+  this §0.9 pool module** (co-located with `MAX_LO_CONCURRENCY`, and **imported by the §6.7.2
+  test harness** so test and prod can never drift): a **per-engine wall-clock timeout**
+  (generous for video — a long film legitimately takes minutes — tight for the light
+  engines), the **watchdog poll interval**, and the **no-progress threshold** (time without
+  stdout/stderr/output-size progress before a hang is declared). v1 ships **baseline values
+  calibrated against the §6 corpus**, and a committed **timeout-sentinel corpus case** (a
+  deterministic input / a `#[cfg(test)]` sidecar that reliably exceeds the budget or stalls
+  without progress) exercises the §1.7 reap so the parameters are test-covered, not prose.
 - **Panic isolation.** A worker thread driving a job wraps its body so a Rust-side
   panic surfaces as a clean per-item `Failed` (§2.13 `catch_unwind`/isolate-and-
   report), never poisoning the pool. (Mechanism owned by §2.13.)

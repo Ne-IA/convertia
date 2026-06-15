@@ -81,7 +81,7 @@
   > the §1.7 ordering: signal cancel → group-kill + **timeout-bounded** confirm-wait (so a wedged descendant cannot hang the UI/quit) → on-timeout defer temp reclaim to the §2.6 sweep AND carry `CleanupResidue` (the §2.8.2 "With residue" tail, never a silent leftover) → §2.6 cleanup of the per-job temp → mark Cancelled/Failed and continue the queue (§1.9). Already-`Succeeded` items untouched.
 - [ ] **P4.12** [RUST] Build the timeout / no-progress watchdog + exit & output verification (non-empty temp) · §1.7 §0.9 · G29 G31
   needs: P4.7
-  > the §1.7 watchdog (per-engine no-progress interval, parameters from §0.9) → kill → `Failed(EngineHang)`; exit-0 reports success **only if** the expected temp output exists and is non-empty (the "exit 0 but empty/zero output" guard); exit≠0 / stderr-classified → §2.8 taxonomy via the §3.5 per-engine `classify_failure`.
+  > the §1.7 watchdog (per-engine no-progress interval, parameters from §0.9 — the per-engine wall-clock timeout / watchdog poll interval / no-progress threshold are §0.9-owned `pub const`s with v1 baseline values calibrated against the §6 corpus, imported by the §6.7.2 harness so test≠prod drift is impossible; the committed timeout-sentinel corpus case asserts this reap fires) → kill → `Failed(EngineHang)`; exit-0 reports success **only if** the expected temp output exists and is non-empty (the "exit 0 but empty/zero output" guard); exit≠0 / stderr-classified → §2.8 taxonomy via the §3.5 per-engine `classify_failure`.
 
 ### The §2.12 decoder-isolation wrapper (`crate::isolation`)
 

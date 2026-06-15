@@ -886,15 +886,27 @@ platform-specific concerns:
 - **LibreOffice headless is NOT safely parallel** (§0.9) — the office-pair
   integration tests must run LibreOffice **serialized**; the harness honours the
   §0.9 concurrency-degree config so the test environment matches production.
+- **Output-determinism floor is per-platform (§2 / G32):** the enumerated determinism
+  pairs (≥ 1 per engine per output-format category) run on all three native CI legs, so a
+  platform-specific non-determinism (an OS encoder build embedding a timestamp the others
+  do not, or uninitialised padding) is caught; a category whose only pair is §3.4-unavailable
+  on a platform is covered by another available pair in that category on that platform.
 
 ### 6.4.5 The real-world input corpus (concrete contents) `[DECIDED — required v1 asset]`
 
 The corpus is a **required v1 asset and a precondition for declaring any pair done**
 (SSOT) — without it the reliability gate is circular. It lives in the repo (or an
-LFS/release-asset store if size demands) under `tests/corpus/`, **organised by
+LFS/release-asset store if size demands) under `tests/corpus/` (a **repo/CI-only test
+asset — never bundled into the installed application**; a `tests/corpus/` path in the
+staged app bundle is caught by the G35 test-asset-exclusion sub-check), **organised by
 source format**, with a `manifest.toml` recording for each file: source format,
 provenance/licence (corpus files must themselves be redistributable — public-domain
-/ CC0 / self-produced / synthetic), the **properties it is chosen to exercise**, the
+/ CC0 / self-produced / synthetic) **plus a non-empty `provenance` source** (a URL, a
+generator-script reference, or `self-produced`) making each licence declaration
+human-auditable — **G24a** asserts the `provenance` record's presence + that every
+`tests/corpus/` file is manifested (byte-level licence inference is not machine-decidable,
+so the gate enforces the auditable RECORD, not a content-licence claim), the **properties
+it is chosen to exercise**, the
 **expected outcome** per target (success / specific fail-clearly kind / specific
 lossy note), and a **`covers` list** — the explicit `(source, target)` pairs this
 file backs (the coupling field that makes the §6.4.3a bijection guard machine-
@@ -905,6 +917,7 @@ checkable). Manifest shape (per file):
 path     = "images/iphone_p3_orientation6.heic"
 source   = "HEIC"
 licence  = "CC0"          # must be redistributable
+provenance = "https://example.org/source"  # auditable source / generator-ref / self-produced (G24a)
 exercises = ["orientation-bake", "ICC-P3", "HDR-10bit"]
 covers   = [              # the (source→target) pairs this file backs (§6.4.3a)
   ["HEIC", "JPG"], ["HEIC", "PNG"], ["HEIC", "WEBP"], ["HEIC", "AVIF"],
@@ -1516,8 +1529,10 @@ blocking the next:
    the redundant macOS re-run of platform-identical pairs is trimmed if the timeout bites.
    **Intra-leg parallelism** is bounded by the **§0.9 concurrency degree** and must
    honour the **LibreOffice-serialised** constraint (the office-pair tests run LO
-   single-slot — the harness **imports the §0.9-owned `MAX_LO_CONCURRENCY` const**, NOT a
-   hard-coded `1`, so the test env can never drift from prod).
+   single-slot — the harness **imports the §0.9-owned `MAX_LO_CONCURRENCY` const** (and
+   likewise the §0.9-owned **timeout / watchdog consts** — per-engine wall-clock timeout,
+   watchdog poll interval, no-progress threshold), NOT a
+   hard-coded `1` (or hard-coded timeout values), so the test env can never drift from prod).
    The **`corpus-large` LFS set is fetched only for this Lane-B run** (never the
    per-PR fast lane, §6.4.5). **Runner `[DECIDED]`:** the **Linux** Lane-B leg runs on
    the **self-hosted VPS runner** (same as Lane A, §6.1.4) — it has local/cheap LFS

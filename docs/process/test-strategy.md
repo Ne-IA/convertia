@@ -178,8 +178,11 @@ live-window behaviour is the E2E level (§1.6). The contrast half of a11y does
 
 These directly defend the SSOT hard promises and run with a **real (temp)
 filesystem** and **real or stub engines** as the case demands (a fault-injection
-case that proves "a hanging engine fails one item" needs a real subprocess; a
-budget case may use a deterministic stub harness). Conventions:
+case that proves "a hanging engine fails one item" needs a real subprocess — the
+committed **timeout-sentinel corpus case** (a deterministic input / `#[cfg(test)]`
+sidecar that reliably stalls without progress) exercises the §0.9 watchdog parameters
++ the §1.7 reap to `Failed(EngineHang)`; a budget case may use a deterministic stub
+harness). Conventions:
 
 - **Shrinking is MANDATORY.** Rust = **`proptest`** (macro-based shrinking, no
   hand-rolled `Shrink` impls). TS = **`fast-check`** (a custom `Arbitrary` must
@@ -491,7 +494,12 @@ is **≥ 1 pair per engine PER OUTPUT-FORMAT CATEGORY** (FFmpeg audio/video/cont
 LibreOffice word-processing/spreadsheet/presentation; libvips/ImageMagick
 per-colour-space — each category enumerated in the corpus manifest so plan-lint
 checks the floor is met; "≥ 1 per engine" was too weak — a different muxer/writer
-can embed a timestamp the first pair did not). A **`diffoscope`** (the reserved
+can embed a timestamp the first pair did not). **The floor is met PER PLATFORM:** the
+enumerated determinism pairs run on all three native CI legs (§6.4.4) — a category whose
+only pair is §3.4-unavailable on a platform is covered by another available pair in that
+category on that platform; plan-lint checks the per-platform floor (non-determinism can be
+platform-specific — an embedded timestamp / uninitialised padding can appear in one OS'
+encoder build and not another). A **`diffoscope`** (the reserved
 **G60** tool) **empty-diff** assertion on the double-run pair is the positive proof:
 `sha256` inequality says outputs *differ*, `diffoscope` localises it to the embedded
 timestamp / PDF XMP `CreateDate` / padding so the leak is **diagnosable**, not just

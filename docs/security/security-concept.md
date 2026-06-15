@@ -766,3 +766,12 @@ thematic, dual-reviewed commits to `main`; this section logs them.
   row** (it is a governance / change-control, not a threat-class control — it lives in the §2 working
   model, like the dual-review change-control framing). The policy + cross-refs (§2, build-gates G71 +
   §7, build-loop §6, roles §4(g)/§6, CLAUDE.md §5, P0.2.14) are mutually consistent.
+- **Stage 2 (test/corpus cluster) — no new gate, no `max(Gnn)` change.** (a) The **output-determinism
+  floor is now explicitly per-platform** (test-strategy §2 / G32 / spec §6.4.4 — the enumerated
+  determinism pairs run on all three native CI legs, so a platform-specific timestamp/padding leak
+  cannot hide). (b) **Corpus auditable-provenance folded into G24a** (a marginal new corpus-licence gate
+  would overlap G24a, so instead G24a gains: a non-empty auditable `provenance` record per file, every
+  corpus file manifested, and the corpus repo/CI-only — the not-in-bundle leg rides the G35 test-asset-exclusion sub-check; byte-level licence inference is undecidable, so the gate enforces the auditable RECORD) — spec
+  §6.4.5 + P0.5.4. (c) **Per-engine timeout values** are now named §0.9 `pub const`s (per-engine
+  wall-clock / watchdog poll interval / no-progress threshold) with v1 baselines calibrated against the
+  §6 corpus + a committed **timeout-sentinel** corpus case (spec §0.9, test-strategy §1.3, P0.5.3, P4.12).
