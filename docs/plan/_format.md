@@ -113,7 +113,7 @@ show the placement).
 | **Tag** | `[Tag]` | Exactly one primary tag from the taxonomy (§4), in square brackets, right after the box-id. A second tag is allowed only as a comma-joined pair `[Tag,Tag2]` for a genuinely cross-cutting box (§4). |
 | **Title** | short imperative phrase | One line, English (CLAUDE.md §8), imperative ("Wire …", "Author …", "Stage …"), no trailing period. Describes the *deliverable*, not the activity. |
 | **Refs separator** | ` · ` | A space-bullet-space (`·`, U+00B7) separates the title from the references and the reference groups from each other. |
-| **Spec-§ refs** | `§<n>.<...>` | Zero or more spec section references (`§2.1.2`, `§3.5.6`, `§0.10`). **Every one must resolve** to a real heading/anchor in `docs/spec/` (§7). The acceptance criteria live there. |
+| **Spec-§ refs** | `§<n>.<...>` | Zero or more spec section references (`§2.1.2`, `§3.5.6`, `§0.10`). **Every one must resolve** to a real heading/anchor in `docs/spec/` (§7). The acceptance criteria live there. The **format-coverage track (`docs/spec/04-formats/`) is prose-anchored, not numbered** — its category files (`images.md`/`audio.md`/… ) carry `### <FORMAT>` slug headings, no numbered `§4.x` sections — so a box citing a per-format/per-pair coverage CONTRACT uses the **`§04/<file>#<slug>` anchor form** (e.g. `§04/images.md#png`, `§04/audio.md#mp3`), which `plan-lint` resolves to a real `### ` heading anchor in that category file (§7). A bare `§4` / `§4.x` token does **not** resolve (there is no numbered §4 tree) and **fails** — the resolvable coverage ref is always the `§04/<file>#<slug>` form. A conversion-behaviour box that implements a per-pair acceptance fact (which sources→targets, the per-pair lossy classification, the per-source default target) **should carry the `§04/<file>#<slug>` ref alongside** its `§3.x` engine ref / `§6.x` test ref so the builder routes to the coverage contract, not only the engine/test spec. |
 | **Gate-id refs** | `G<nn>` | Zero or more gate IDs (`G31`, `G47`, `G54`). **Every one must resolve** to a row in [`build-gates.md`](../security/build-gates.md) (§7). A box that *builds* or *activates* a gate names it; a box merely *governed by* a gate need not. |
 
 A box **must reference at least one** spec `§` **or** gate id (DoD item (a):
@@ -330,6 +330,16 @@ this file defines (distinct from the doc-wide consistency checks 5–24 catalogu
   are mutually exclusive, §3.1). A typo'd `§`, a dangling `Gnn`, or a `tooling-only`
   token alongside a real ref **fails** — the loop never builds against a phantom
   reference, and `tooling-only` always means a genuine, declared absence.
+  **Format-coverage anchor leg (`§04/<file>#<slug>`):** a coverage-track ref of the
+  form `§04/<file>#<slug>` (§3.1) resolves by checking that `docs/spec/04-formats/<file>`
+  exists **and** contains a `### ` heading whose GitHub-style slug equals `<slug>` — so
+  the per-format/per-pair acceptance contract a box implements is a *resolvable* anchor,
+  not a filename-only reference. A bare `§4` / `§4.x` token **fails** (there is no
+  numbered §4 tree in `04-formats/`); a `§04/<file>#<slug>` whose file or slug does not
+  exist **fails**. This gives the coverage track (track C) the same resolvable-anchor
+  guarantee the numbered `§0`–`§3`/`§5`–`§7` tracks already have. (The gate that BUILDS
+  this leg + its G24 self-test is the P4 coverage-anchor `[GATE]` box; this format change
+  is recorded here in the same commit as that box per the format-change protocol below.)
 - **`needs:`-targets exist** — every `needs:` box-id is a real box in the plan; the
   graph is **acyclic** (§5.1). A dangling or cyclic `needs:` fails. **`plan-lint`
   loads ALL phase files — `P0`..`P11` — when resolving `needs:` targets** (even though
