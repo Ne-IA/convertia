@@ -787,3 +787,12 @@ thematic, dual-reviewed commits to `main`; this section logs them.
   (unsigned distribution / download-MITM) — the control (minisign-signed `SHA256SUMS` + out-of-band
   pubkey fingerprint, G39/G44) already existed but was not formally enumerated; added to spec §0.11 +
   this §5 (threat count **16 → 17**, plan-lint check 8 updated). **8-point DoD untouched.**
+- **Stage 3b (product / process cluster) — no gate / threat / DoD change.** (a) **Min-RAM floor +
+  low-memory graceful degradation:** a **2 GB minimum-supported / 4 GB recommended** floor (spec
+  §0.3.1) + an explicit §1.10 low-memory policy (the effective §0.9 degree adapts to available memory
+  down to serial, a high-memory watermark pauses new-item dispatch with the §5 `LowMemoryNote`, a single
+  over-budget item → `Failed(TooBig)`; responsiveness holds, §1.11) — implemented in the §0.9 pool
+  (P4.20) + verified by a memory-constrained-host stress test (P6.56.1, test-strategy §1.3). (b)
+  **P0→P1 MEMORY handoff checklist:** P0.1.7's vague "correctly populated" is now a concrete 5-item
+  checklist (reviewer-family decision, L(-1)/D1 policy, gate-status + P0-completion pointers,
+  context-routing principle, no-redundancy) the Co-Pilot verifies before the loop starts at P1.

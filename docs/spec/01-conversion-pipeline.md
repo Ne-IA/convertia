@@ -1274,6 +1274,17 @@ struct SizeEstimate {
   size and total disk, not list length); a very large batch simply queues and shows
   aggregate progress (§1.11). Memory stays flat because only ≤ the §0.9 concurrency
   degree of items are decoded at once.
+- **Low-memory graceful degradation `[DECIDED design; DEFER: corpus]`.** On a
+  memory-constrained machine the app **degrades — it never OOM-crashes or freezes**: the
+  **effective §0.9 concurrency degree adapts to available memory** (down to **serial**:
+  `effective = min(cpu-degree, per-engine-cap, memory-based-cap)`), a **high-memory
+  watermark pauses dispatch of NEW items** (in-flight items finish; the §5 passive `LowMemoryNote` banner
+  shows a brief "working — low memory" line, not a modal) and resumes as memory frees, and
+  a single item that still exceeds its **§1.10 per-item memory ceiling** is killed (the §1.7 kill mechanism, reinforced by the §2.12.3 Job-Object memory cap where that tier is present) to a clean
+  `Failed(TooBig)` (the batch continues, host RSS returns to baseline). The watermark + the
+  memory-based degree cap are corpus-calibrated starting values (like the other §1.10
+  numbers). This is why the §0.3.1 2 GB floor holds: bounded concurrency + adaptive degree
+  + per-item kill keep peak RSS finite regardless of batch size.
 
 This section **feeds** §1.8 (plan only if it fits), §2.6 (cleanup on
 out-of-disk), §2.8 (the named failure kinds), §2.14 (scratch sizing) and §5
@@ -1340,7 +1351,9 @@ leftover, never touches originals).
 "Too big / doomed for disk space" items (decided by §1.10) surface here as an
 immediate per-item fast-fail (preferably up front), with the §2.8 message, while
 the rest continue. The app **stays responsive regardless of batch or file size**
-(all conversion is off the UI thread, on the §0.9 Tokio pool).
+(all conversion is off the UI thread, on the §0.9 Tokio pool) — **including on a low-RAM
+machine**, where the §1.10 low-memory policy reduces the effective degree / pauses
+new-item dispatch rather than thrash or freeze the UI.
 
 ---
 

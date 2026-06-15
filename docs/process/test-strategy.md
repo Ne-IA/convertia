@@ -220,6 +220,13 @@ The §6.4.2 cases this level owns:
 - **Out-of-disk / too-big (§1.10/§2.8):** a constrained-FS harness proves the item
   fails fast + clearly, the batch continues, free space returns to ~baseline
   (§2.6); a cleanup that itself fails is **never** reported as a clean success.
+- **Low-memory / memory-pressure (§1.10 low-memory policy):** a **memory-constrained-host**
+  harness (cap available RAM, run a large batch) asserts the app **degrades gracefully** —
+  the effective §0.9 degree drops toward serial, the high-memory watermark pauses NEW item
+  dispatch (with the §5 `LowMemoryNote`), in-flight items finish, the batch completes, and peak RSS
+  stays bounded — **no OOM-crash, no UI freeze**; a single over-budget item is killed to
+  `Failed(TooBig)` while the batch continues. `[DEFER: corpus]` for the exact constrained-RAM
+  number (calibrated like the §1.10 budgets).
 - **Malformed / adversarial inputs (§2.12/§2.13):** truncated, 0-byte,
   fuzzed-header, encrypted/DRM, and decompression-bomb-shaped inputs each produce
   **one plain message**, no crash, no app wedge, batch continues — backed by

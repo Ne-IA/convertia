@@ -168,6 +168,12 @@ build numbers stay tunable against the §6.4 drift matrix, but the floor is fixe
   (Intel + Apple Silicon).
 - **Linux: a glibc desktop with `libwebkit2gtk-4.1`** (Ubuntu 22.04 LTS-class and
   newer, Fedora current); shipped as an x86-64 AppImage. ARM is out of v1.
+- **Minimum RAM (all platforms) `[DECIDED design; DEFER: corpus-calibrated]`:** **2 GB
+  minimum-supported, 4 GB recommended.** The app runs in ≤ 2 GB by bounding concurrency
+  (only ≤ the §0.9 degree of items decoded at once, lightweight frozen-set/queue records,
+  a virtualized UI list — §1.10) and by degrading gracefully under memory pressure (the
+  §1.10 low-memory policy). Below 2 GB it still launches + converts (serially, slower) but
+  is outside the tested envelope; the exact floor is calibrated against the §6 corpus.
 
 Status: the **floor is `[DECIDED]`** (Windows 10 1809+/11; macOS 11+; Ubuntu
 22.04-LTS-class `libwebkit2gtk-4.1`; x86-64). The architecture is indifferent to the
