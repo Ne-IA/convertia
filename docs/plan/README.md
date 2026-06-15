@@ -445,7 +445,13 @@ signature over `SHA256SUMS`** (public key at `docs/minisign.pub`, private key as
 the `MINISIGN_SECRET_KEY` CI secret, with the rotation policy) — the *only*
 signing in scope; this is **not** binary code-signing/notarization (SSOT *Out of
 Scope*). **SBOM finalization** (per-engine rows populated in P5–P7 now finalized)
-+ integrity hashing; reproducible-ish builds (§6.2.5 — best-effort, **not** a
++ integrity hashing; the **§6.7.2 build-provenance attestation** (G59 — `actions/attest-build-provenance`
+verified on-runner + the offline Sigstore bundle as a release asset, P10.31–33); the
+**§6.2 auditable-Rust-binary leg** (G55 — `cargo auditable build` so the shipped binary embeds
+its dependency list, the SBOM↔embedded-list agreement, P10.23); the **§6.5/§3.4.3 bundled-engine
+CVE-awareness** release escalation (G17b — informational OSV/grype over the PURL-keyed
+`engines.lock`, the CVSS ≥ 7-on-an-exercised-path release-blocking rule + the advisory-DB
+staleness floor, P10.24–25); reproducible-ish builds (§6.2.5 — best-effort, **not** a
 release gate); the **Lane-B GitHub Releases
 pipeline**. **§6.2.4 download / trust-page content authoring** (pure technical
 release mechanics enabling verified downloads — in scope): write the copy-paste
