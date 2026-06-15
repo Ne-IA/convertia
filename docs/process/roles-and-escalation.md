@@ -250,6 +250,14 @@ sits at the **maintenance-process layer**, outside the v1 build-box plan — rec
 here as an explicit decision so its absence from the plan boxes is deliberate, not a
 silent gap.
 
+**Bootstrap hold for `engines.lock` bumps (P1–P3, DECIDED — r15):** the §6.5 re-validation
+machinery (the §6.4.3 runner + the P4.61 pair-status ledger) does not exist until P4 — so
+during **P1–P3** a Dependabot/CVE `engines.lock` bump is **HELD as a Co-Pilot review item
+(surfaced, never auto-merged)**, not landed unvalidated. From **P4 onward** the bump runs the
+§6.5 re-validation and the **G72** gate enforces a regenerated-green pair-status-ledger proof
+before it lands — closing the forward-history gap where an untested engine version could pin
+on `main` before the validation machinery exists.
+
 ---
 
 ## 6. Hard-stops
@@ -274,6 +282,9 @@ view:
   [build-loop.md §3 step 6](build-loop.md#step-6--commit--push-gates-run-never-bypass)).
 - A needed **L(-1) security-critical-file edit** (trigger (g)) — the loop never edits the
   gates' own cage; the **owner** makes/acks it (`L-neg1-ack: owner`, G71).
+- **GitHub API unreachable mid-session** (during the push-wait / `gh run watch`) beyond the
+  bounded retry — the loop cannot confirm its own CI run is green, so it hard-stops rather
+  than proceed past an unobserved run ([build-loop.md §3 step 6](build-loop.md#step-6--commit--push-gates-run-never-bypass)).
 - A **soft-stop / hard-stop / phase-change** cadence boundary
   ([build-loop.md §6](build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape)) —
   pause and summarize for the owner.

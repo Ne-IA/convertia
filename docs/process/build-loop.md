@@ -441,7 +441,16 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
   conclusion from the G56 concurrency cancel is reconciled by the
   **successor-exists check** (a higher-`databaseId` run for a *later* SHA): if a
   successor exists the cancel was expected and the loop waits on it; if **no
-  successor exists, the cancel is anomalous → STOP + escalate**.
+  successor exists, the cancel is anomalous → STOP + escalate**. **Transient GitHub-API
+  failure during the wait (r15):** `gh run list` / `gh run watch` (and the push-wait above)
+  are wrapped in a **bounded retry-with-backoff** for a transient API error / rate-limit /
+  5xx / timeout — the same posture as the step-5 reviewer-availability retry; if the API
+  stays unreachable **beyond the bounded retry**, the loop **hard-stops + escalates** (it
+  never silently proceeds past an unobserved CI run, and never treats an unreachable API as
+  a green run). This is a **mid-session** rule — distinct from the step-0 startup CI-health
+  check, which fail-OPENS if unreachable; once a box is in flight, an unobservable CI run is
+  a STOP, not a fail-open. The loop emits a periodic **liveness/heartbeat** status line while
+  blocked on CI (§8) so the operator can tell "building" from "silently wedged".
 - **Egress-window protection — the one mandatory rule:** **the loop MUST NOT push
   the check-off commit until the box-commit run completes green**
   (`gh run watch --exit-status <box-run-id>` returns 0). (`cancel-in-progress:
@@ -547,6 +556,11 @@ A change is **done** only when:
   security-critical file (the gates' own cage) autonomously; hard-stop + escalate so the
   owner makes/acks it (`L-neg1-ack: owner`, G71; security-concept §2,
   roles-and-escalation §4(g)).
+- **GitHub API unreachable mid-session beyond the bounded retry** — during the push-wait
+  or `gh run watch` (§3 step 6), a transient API error / rate-limit / 5xx / timeout is
+  retried with backoff; if it cannot be resolved the loop hard-stops + escalates rather than
+  proceed past an unobserved CI run (distinct from the step-0 startup health check, which
+  fail-opens if the API is unreachable).
 
 **Token-Notbremse / cadence numbers (the ConvertIA v1 baselines — `plan-lint` check
 15 asserts these appear verbatim here):**
@@ -642,6 +656,12 @@ Co-Pilot: 1 item — SPEC-CONTRADICTION §2.7.2 vs §2.14.2 on cross-volume publ
 Batched boxes: **one status line per box** (each with the shared SHA + shared review
 result). At each **phase boundary**: a mini-report — boxes built, commits, and the
 consolidated `[!extern]` list for that phase.
+
+**Liveness while blocked.** While the loop is blocked waiting on a CI run
+(`gh run watch`, §3 step 6) or a long-running box, it emits a **periodic
+liveness/heartbeat line** (the run-id + elapsed wait) so the operator can distinguish
+"building / waiting on CI" from "silently wedged". A wait that exceeds the bounded retry
+on an unreachable GitHub API is the §6 **mid-session hard-stop**, not a silent hang.
 
 ---
 
