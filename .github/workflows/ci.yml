@@ -53,6 +53,10 @@ jobs:
         run: python3 scripts/gate-selftests/g24-install-gate-tools.py --require-network
       - name: 'G54: gate-plane integrity self-test'
         run: python3 scripts/gate-selftests/g54-gate-plane.py
+      - name: 'G54b: defense-in-depth plane-config integrity (gate-planes.toml)'
+        run: python3 scripts/check-gate-planes
+      - name: 'G24: gate-planes config self-test'
+        run: python3 scripts/gate-selftests/g24-gate-planes.py
       # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
       #   gitleaks dir full-tree (P0.3.1) | plan-lint/spec-lint full (P0.3.5) |
       #   G8 + G21 deferral full-tree (P0.3.4) | G70 test-suppression (P0.3.14) |

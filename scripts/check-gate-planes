@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""check-gate-planes - G54b defense-in-depth plane-config integrity (P0.2.12).
+
+Asserts scripts/gate-planes.toml - the machine-readable source-of-truth for the enforcement-
+plane STRUCTURE + the fail-open/closed policy (the "empty-but-wired contract" the P0.3/P0.4
+gates slot into) - is well-formed and complete:
+
+  (1) the fail-closed DEFAULT is declared (`default_posture = "fail-closed"`);
+  (2) every plane L(-1), L0, L1, L2, L3, L4, L5 is defined exactly once, each with id/name/
+      trigger/enforcement/mirror and no unknown key;
+  (3) every fail-OPEN exception is JUSTIFIED - a [[fail_open]] array-of-tables row (NOT a plain
+      [fail_open] table, NOT an inline array mis-scoped into the last [[plane]]) naming the gate,
+      the plane(s) it fail-opens at, the covering plane/phase (`covered_by`), and a reason; a
+      silent fail-open is forbidden. The covering must be GENUINE: `fail_open_at` may name only
+      DEFINED planes, and `covered_by` may not name any plane that is itself in `fail_open_at`
+      (a plane cannot cover its own fail-open) - multi-plane- and whitespace-robust; any
+      plane-SHAPED `covered_by` token must resolve to a defined plane (no dangling "L99").
+      `covered_by` MAY instead be a non-plane PHASE reference (e.g. "P10 / P3+ activation",
+      "P0.7.17 provisioning") - then no plane self-cover is possible and only its presence is asserted.
+
+This is the plane-DEFINITION-integrity sibling of G54 (plane-EXECUTION integrity: hooks installed
++ not redirected). stdlib-only (tomllib, Python 3.11+). fail-closed: any defect -> exit 1.
+L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+
+Usage: check-gate-planes [<gate-planes.toml>]   (default: the committed scripts/gate-planes.toml)
+Exit:  0 = config sound; 1 = a defect; 2 = config missing / unparseable.
+"""
+from __future__ import annotations
+
+import re
+import sys
+import tomllib
+from pathlib import Path
+
+REQUIRED_PLANES = ("L(-1)", "L0", "L1", "L2", "L3", "L4", "L5")
+PLANE_FIELDS = ("id", "name", "trigger", "enforcement", "mirror")
+PLANE_OPTIONAL = ("budget_seconds", "budget_kind")
+FAIL_OPEN_FIELDS = ("gate", "fail_open_at", "covered_by", "reason")
+FAIL_OPEN_OPTIONAL = ("leg",)
+
+# A token that LOOKS like a plane id ("L(-1)", "L0".."L5", or a bogus "L99"): used to catch a
+# dangling / self-covering plane reference in covered_by WITHOUT rejecting a legitimate non-plane
+# (phase) covering reference like "P10" / "P0.7.17 provisioning" / "owner/Co-Pilot manual drive".
+PLANE_SHAPED = re.compile(r"^L(?:\(-?\d+\)|-?\d+)$")
+# Plane tokens inside a multi-plane field (e.g. fail_open_at = "L1/L2/L4") are separated by any
+# of "/", "+", "," or whitespace; "." and "-" are NOT separators (so "P0.7.17" / "Co-Pilot" stay whole).
+# [Build-Session-Entscheidung: P0.2.12] separator set = the forms any legitimate config actually uses
+# ("/", "+", ",", whitespace). A near-miss shape outside it (";"/"|"-separated, "L 1", lowercase "l1")
+# is NOT silently absorbed: its token never matches a DEFINED plane, so a self-cover written that way
+# still fails closed via the defined-plane check below (G1 r2 verified rc 1). Robustness is bounded to
+# the multi-plane + whitespace contract; semantic config-vs-runtime truth is the plan-lint P0.3.5 leg.
+_SEP = re.compile(r"[\s/,+]+")
+
+
+def fail(msg: str) -> None:
+    print(f"[G54b] FAIL: {msg}", file=sys.stderr)
+
+
+def plane_tokens(value: object) -> list[str]:
+    """Split a (possibly multi-plane) field into its non-empty, whitespace-stripped tokens."""
+    return [t for t in _SEP.split(str(value).strip()) if t]
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    cfg = Path(argv[0]) if argv else Path(__file__).resolve().parent / "gate-planes.toml"
+    if not cfg.is_file():
+        print(f"[G54b] {cfg} missing", file=sys.stderr)
+        return 2
+    try:
+        data = tomllib.loads(cfg.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as e:
+        print(f"[G54b] {cfg} is not valid TOML: {e}", file=sys.stderr)
+        return 2
+
+    problems = 0
+
+    if data.get("default_posture") != "fail-closed":
+        fail(f"default_posture must be 'fail-closed' (got {data.get('default_posture')!r}) - "
+             "fail-closed is the mandatory default; a gate fail-opens only via a justified exception")
+        problems += 1
+
+    # `plane` MUST be an array-of-tables ([[plane]] -> list of dicts). A plain [plane] table
+    # (a dict) or any other shape is a structural defect, not a silent pass - and the field
+    # access below assumes dicts, so fail-closed here rather than crash.
+    planes = data.get("plane", [])
+    if not isinstance(planes, list) or not all(isinstance(p, dict) for p in planes):
+        fail("`plane` must be an array-of-tables ([[plane]]); a plain [plane] table or other shape is invalid")
+        return 1
+
+    ids = [p.get("id") for p in planes]
+    defined = {i for i in ids if isinstance(i, str)}
+    for req in REQUIRED_PLANES:
+        if req not in ids:
+            fail(f"plane {req} is not defined")
+            problems += 1
+    for dup in sorted({i for i in ids if ids.count(i) > 1}, key=str):
+        fail(f"plane {dup!r} is defined more than once")
+        problems += 1
+    allowed_plane_keys = set(PLANE_FIELDS) | set(PLANE_OPTIONAL)
+    for p in planes:
+        for field in PLANE_FIELDS:
+            if not str(p.get(field, "")).strip():
+                fail(f"plane {p.get('id', '?')!r} lacks a non-empty '{field}'")
+                problems += 1
+        for key in p:
+            if key not in allowed_plane_keys:
+                fail(f"plane {p.get('id', '?')!r} has an unknown key {key!r} - a stray key (e.g. an "
+                     "inline-array `fail_open` mis-scoped by TOML into the last [[plane]]) is rejected")
+                problems += 1
+
+    # `fail_open` MUST be an array-of-tables too. A plain [fail_open] table (a dict) would otherwise
+    # iterate its string keys and AttributeError; an inline array mis-placed AFTER [[plane]] blocks
+    # is caught above (the last plane gains an unknown `fail_open` key, so it never silently scopes
+    # away to zero top-level exceptions).
+    fail_opens = data.get("fail_open", [])
+    if not isinstance(fail_opens, list) or not all(isinstance(x, dict) for x in fail_opens):
+        fail("`fail_open` must be an array-of-tables ([[fail_open]]), not a plain [fail_open] table "
+             "or an inline value (a silent zero-exception pass is forbidden)")
+        return 1
+
+    allowed_fo_keys = set(FAIL_OPEN_FIELDS) | set(FAIL_OPEN_OPTIONAL)
+    for ex in fail_opens:
+        gate = ex.get("gate", "?")
+        for field in FAIL_OPEN_FIELDS:
+            if not str(ex.get(field, "")).strip():
+                fail(f"fail_open exception {gate!r} lacks '{field}' - a fail-open MUST name its "
+                     "covering plane/phase + reason (no silent fail-open)")
+                problems += 1
+        for key in ex:
+            if key not in allowed_fo_keys:
+                fail(f"fail_open exception {gate!r} has an unknown key {key!r}")
+                problems += 1
+        # `fail_open_at` names WHERE the gate fail-opens: only DEFINED planes (possibly several,
+        # e.g. "L1/L2/L4"). A bogus plane there is a defect.
+        at_planes = set()
+        for tok in plane_tokens(ex.get("fail_open_at", "")):
+            if tok not in defined:
+                fail(f"fail_open exception {gate!r}: fail_open_at names {tok!r}, not a defined plane")
+                problems += 1
+            else:
+                at_planes.add(tok)
+        # `covered_by` may be a plane (or several) OR a non-plane phase reference. Any plane-SHAPED
+        # token must resolve to a defined plane (catches a dangling "L99"); and none may be a plane
+        # that is itself in fail_open_at (a plane cannot cover its own fail-open - multi-plane- and
+        # whitespace-robust). A non-plane phase token ("P10", "owner") needs no further check.
+        for tok in plane_tokens(ex.get("covered_by", "")):
+            if PLANE_SHAPED.match(tok):
+                if tok not in defined:
+                    fail(f"fail_open exception {gate!r}: covered_by names plane {tok!r}, which is not defined")
+                    problems += 1
+                elif tok in at_planes:
+                    fail(f"fail_open exception {gate!r}: covered_by plane {tok!r} also appears in "
+                         "fail_open_at - a plane cannot cover its own fail-open")
+                    problems += 1
+
+    if problems:
+        print(f"[G54b] gate-plane config FAILED ({problems} problem(s)).", file=sys.stderr)
+        return 1
+    print(f"[G54b] gate-plane config OK ({len(planes)} planes, "
+          f"{len(fail_opens)} justified fail-open exception(s))")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

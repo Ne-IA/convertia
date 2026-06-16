@@ -1,0 +1,111 @@
+# scripts/gate-planes.toml - the defense-in-depth enforcement planes + the fail-open/closed
+# policy, as machine-readable config (P0.2.12, G54b). This is the "empty-but-wired contract"
+# the P0.3/P0.4 gates slot into: it is the SOURCE-OF-TRUTH for the plane STRUCTURE + the
+# fail-open policy. The per-gate plane assignment + posture lives in the build-gates.md §5
+# catalogue (kept in sync with this file + security-concept §3 by plan-lint, P0.3.5).
+# Validated by scripts/check-gate-planes (G54b - the plane-DEFINITION-integrity sibling of the
+# G54 plane-EXECUTION-integrity gate). L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+#
+# A change passes staged, INDEPENDENT planes from idea to release; no plane trusts an earlier
+# one to have caught everything (security-concept §3). Every gate that CAN run locally runs
+# BOTH planes - locally (L1-L3) AND again on a clean checkout in CI (L4) - the two-enforcement-
+# planes principle; inherently-CI-only gates (repo-config introspection, the heavy
+# build/corpus/coverage/SAST gates, the release tier) run at L4/L5 only.
+
+# fail-closed is the DEFAULT posture for EVERY gate. A gate is fail-OPEN only when another
+# plane guarantees enforcement; each such case is an explicit [[fail_open]] row below that
+# names its covering plane + the reason. A silent fail-open is forbidden.
+default_posture = "fail-closed"
+
+# --- the planes (security-concept §3) ---------------------------------------
+[[plane]]
+id = "L(-1)"
+name = "change-control"
+trigger = "any commit whose diff touches an L(-1) security-critical file"
+enforcement = "owner-ack `L-neg1-ack: owner` commit-body trailer (G71, pre-push + L4 mirror); the autonomous Build-Loop NEVER edits an L(-1) file (hard-stop + escalate)"
+mirror = "L2 + L4"
+
+[[plane]]
+id = "L0"
+name = "build-loop-per-box"
+trigger = "while building, before each commit"
+enforcement = "the build-loop discipline + the Opus+Sonnet dual review (G1) on the staged diff; no fix-push cycle (no push between a fix and its re-review)"
+mirror = "local"   # a quality amplifier, NOT a deterministic security control
+
+[[plane]]
+id = "L1"
+name = "pre-commit"
+trigger = "git commit"
+budget_seconds = 10          # SOFT target (build-gates §0)
+budget_kind = "soft"
+enforcement = "lefthook pre-commit, parallel; diff-scoped gates"
+mirror = "L1 + L4"
+
+[[plane]]
+id = "L2"
+name = "pre-push"
+trigger = "git push"
+budget_seconds = 180
+budget_kind = "hard"
+enforcement = "lefthook pre-push; range / full-tree gates; cheap-commit (docs-only / check-off) fastpath"
+mirror = "L2 + L4"
+
+[[plane]]
+id = "L3"
+name = "commit-msg"
+trigger = "git commit (chronologically BEFORE L2, which fires at git push)"
+enforcement = "lefthook commit-msg; conventional-commit format + the dual-review trailer"
+mirror = "L3 + L4"
+
+[[plane]]
+id = "L4"
+name = "ci-clean-checkout"
+trigger = "after push (GitHub Actions, the L4 mirror)"
+enforcement = "clean-checkout re-run of the L1-L3 plane + the heavy CI-only gates (cross-platform build, corpus, coverage, SAST, SBOM, repo-config introspection)"
+mirror = "the immutable net; G56a asserts in CI that the required-status-checks config exists, so 'a red L4 blocks' is real repo state"
+
+[[plane]]
+id = "L5"
+name = "release-tier"
+trigger = "v* tag (the release pipeline)"
+enforcement = "release-acceptance gates (build matrix -> size -> SBOM + integrity -> minisign over SHA256SUMS -> build-provenance attestation -> publish); the G56b tag-trust gate gates entry BEFORE any secret is read"
+mirror = "CI only (assembled in P10)"
+
+# --- fail-OPEN exceptions (each justified by a covering plane) ---------------
+# The recurring justified patterns (the only sanctioned reasons to fail-open):
+#   (a) a DIFF-SCOPED local leg fail-opens without a diff base; its FULL-TREE L4 mirror is the
+#       fail-closed net (so a missed local diff cannot escape - L4 re-checks the whole tree);
+#   (b) a TARGET-ABSENT gate skips-with-warning while the artifact it inspects does not yet
+#       exist (the P0 "authored now, fail-closes when the target lands" bootstrap posture);
+#   (c) the L(-1)/G71 + G56a/G56b CONFIG-introspection gates are fail-SOFT during the P0
+#       bootstrap and fail-CLOSED from P1.
+# Rows are added by each gate's box as it is built (P0.3/P0.4+); the set below seeds the
+# already-built fail-open legs. Every row MUST name `covered_by` + `reason`.
+
+[[fail_open]]
+gate = "G54"
+leg = "push-from-stale-base"
+fail_open_at = "L2"
+covered_by = "L4"
+reason = "the stale-base check skips when origin/main is unknown (fresh clone / offline); the L4 clean-checkout always fetches origin/main so the parity is re-established there (pattern a)"
+
+[[fail_open]]
+gate = "G56"
+leg = "runner-host + cargo-fuzz pin (check_runner_host / check_fuzz_pin)"
+fail_open_at = "L1/L2/L4"
+covered_by = "P10 / P3+ activation"
+reason = "no secret-reading job and no cargo-fuzz invocation exist until the signing job (P10) / the fuzz harness (P3+); the assertions are authored + self-tested now and fail-CLOSE the moment their target lands (pattern b)"
+
+[[fail_open]]
+gate = "G56b"
+leg = "signed-tag (leg 3)"
+fail_open_at = "L5"
+covered_by = "P0.7.17 provisioning"
+reason = "git verify-tag is skip-with-warning until the SSH allowed-signers file is provisioned in P0.7.17, then fail-CLOSED; legs 1/2 (ancestry, green-history) are fail-closed always (pattern c)"
+
+[[fail_open]]
+gate = "G71"
+leg = "L(-1)-ack pre-push"
+fail_open_at = "L2"
+covered_by = "owner/Co-Pilot manual drive during P0"
+reason = "fail-SOFT during the P0 bootstrap (the build itself edits L(-1) files under owner drive), fail-CLOSED from P1 (pattern c); not yet wired (P0.2.14)"

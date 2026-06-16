@@ -32,6 +32,8 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
   commands:
     gate-plane-integrity:
       run: python3 scripts/check-gate-plane
+    gate-plane-config:
+      run: python3 scripts/check-gate-planes
     # L1 gate slots (filled by their boxes): gitleaks --staged (P0.3.1) /
     # plan-lint --quiet on the docs glob (P0.3.5) / G8 new-marker (P0.3.4) /
     # clippy diff + tsc diff (P0.4).
