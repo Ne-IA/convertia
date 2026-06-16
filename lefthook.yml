@@ -1,0 +1,46 @@
+# lefthook.yml - the L1/L2/L3 git-hook plane executor (P0.2.2).
+#
+# lefthook itself is pinned + checksum-verified via scripts/install-gate-tools
+# (P0.2.1): a poisoned lefthook can silently no-op EVERY local hook (the
+# core.hooksPath-bypass equivalent), so the G54 gate-plane-integrity check
+# (scripts/check-gate-plane, P0.2.3) asserts the hooks are installed + not
+# redirected on every run, and the L4 CI mirror re-invokes the same hooks.
+#
+# CHRONOLOGICAL PLANE <-> HOOK MAPPING (security-concept sec3):
+#   pre-commit = L1  (fires at `git commit`;                  soft budget < 10 s; diff-scoped)
+#   commit-msg = L3  (fires at `git commit`, BEFORE pre-push; conventional-commit + dual-review trailer)
+#   pre-push   = L2  (fires at `git push`;                    budget < 3 min; range / full-tree)
+# Stated explicitly so commit-msg (L3) is never wired into pre-push or omitted.
+# commit-msg is DECLARED by P0.3.3 (when its gates G11/G12 are built); lefthook
+# needs a command per hook, so an empty hook is not declared here - the mapping
+# above is the "not omitted" guarantee.
+#
+# GATE SLOTS: the only command wired now is the G54 integrity check. Each L1/L2/L3
+# gate is added to the slots below by the box that BUILDS it (so a gate is wired
+# only after it is built + self-tested) - gitleaks (P0.3.1), plan-lint (P0.3.5),
+# G8 (P0.3.4), G70 (P0.3.14), clippy/tsc (P0.4), G11/G12 commit-msg (P0.3.3).
+#
+# Requires Python 3.11+ on PATH as `python3` (the stdlib-only gate scripts) and
+# the pinned tools installed under .gate-tools/bin (scripts/install-gate-tools).
+# This file is L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+
+min_version: "2.1.9"
+assert_lefthook_installed: true
+
+pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
+  parallel: true
+  commands:
+    gate-plane-integrity:
+      run: python3 scripts/check-gate-plane
+    # L1 gate slots (filled by their boxes): gitleaks --staged (P0.3.1) /
+    # plan-lint --quiet on the docs glob (P0.3.5) / G8 new-marker (P0.3.4) /
+    # clippy diff + tsc diff (P0.4).
+
+pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
+  parallel: true
+  commands:
+    gate-plane-integrity:
+      run: python3 scripts/check-gate-plane --pre-push
+    # L2 gate slots (filled by their boxes): gitleaks range (P0.3.1) /
+    # plan-lint full (P0.3.5) / G8 + G70 full-tree (P0.3.4 / P0.3.14) /
+    # dual-review trailer G12 (P0.3.3) / clippy --all-targets + tsc project (P0.4).

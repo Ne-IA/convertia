@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""check-gate-plane - G54 gate-plane integrity assertion (P0.2.3).
+
+Asserts the local git-hook plane is intact and not silently bypassed:
+
+  (1) HOOKS INSTALLED  - the EFFECTIVE hooks dir holds lefthook-managed pre-commit +
+                         pre-push hooks. The effective dir is `core.hooksPath` when set,
+                         else `git rev-parse --git-path hooks` (= .git/hooks).
+  (2) NOT REDIRECTED   - `core.hooksPath`, when set, REDIRECTS the whole plane, so it IS
+                         the effective dir checked in (1). We resolve it DIRECTLY and do
+                         NOT rely on `git rev-parse --git-path hooks` honouring it - so a
+                         redirect to a non-lefthook dir is caught (its hooks lack the
+                         lefthook marker), and the configured value is surfaced in the
+                         failure message. A redirect silently disables ALL local hooks
+                         WITHOUT --no-verify.
+  (3) PUSH-FROM-STALE-BASE (--pre-push only) - origin/main is an ancestor of HEAD
+                         (merge-base HEAD origin/main == origin/main), so a push is
+                         never from a stale base. Skipped (fail-open on this leg
+                         only) when origin/main is unknown - fresh clone / offline.
+
+Two-plane parity (the L4 CI mirror re-invokes the same hooks) is asserted by the CI
+workflow (P0.2.4+), not here. fail-closed: any violation -> exit 1. stdlib-only.
+This script is L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+
+Usage: check-gate-plane [--pre-push]
+Exit:  0 = plane intact; 1 = a violation; 2 = not a git repo / git error.
+"""
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+LEFTHOOK_MARKER = "lefthook"            # lefthook-generated hooks are full of it
+# pre-commit (L1) + pre-push (L2). commit-msg (L3) joins this set when P0.3.3 declares
+# the commit-msg hook (G11/G12) in lefthook.yml - until then there is no commit-msg
+# hook to assert (the incremental gate-slot model; not a silent gap).
+REQUIRED_HOOKS = ("pre-commit", "pre-push")
+
+
+def git(*args: str) -> tuple[int, str]:
+    p = subprocess.run(["git", *args], capture_output=True, text=True)
+    return p.returncode, (p.stdout + p.stderr).strip()
+
+
+def fail(msg: str) -> None:
+    print(f"[G54] FAIL: {msg}", file=sys.stderr)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G54 gate-plane integrity (P0.2.3)")
+    ap.add_argument("--pre-push", action="store_true",
+                    help="also assert the push-from-stale-base guard")
+    args = ap.parse_args(argv)
+
+    rc, top = git("rev-parse", "--show-toplevel")
+    if rc != 0:
+        print("[G54] not a git repository", file=sys.stderr)
+        return 2
+
+    # Resolve the EFFECTIVE hooks dir. core.hooksPath, when set, REDIRECTS the whole
+    # plane, so it IS the effective dir (we do not rely on `git rev-parse --git-path
+    # hooks` honouring it - it may not). If the redirect points at a non-lefthook dir,
+    # the lefthook-marker checks below catch the silent bypass.
+    _, hookspath_cfg = git("config", "--get", "core.hooksPath")
+    redirect_note = f" [core.hooksPath={hookspath_cfg}]" if hookspath_cfg else ""
+    if hookspath_cfg:
+        hooks_dir = Path(hookspath_cfg)
+        if not hooks_dir.is_absolute():
+            hooks_dir = (Path(top) / hooks_dir).resolve()
+    else:
+        rc, hooks_path = git("rev-parse", "--git-path", "hooks")
+        if rc != 0:
+            fail("cannot resolve the effective hooks dir (git rev-parse --git-path hooks)")
+            return 2
+        hooks_dir = Path(hooks_path)
+        if not hooks_dir.is_absolute():
+            hooks_dir = (Path(top) / hooks_dir).resolve()
+
+    problems = 0
+    for hook in REQUIRED_HOOKS:
+        f = hooks_dir / hook
+        if not f.is_file():
+            fail(f"{hook} missing from the effective hooks dir {hooks_dir} "
+                 f"- run `lefthook install`{redirect_note}")
+            problems += 1
+            continue
+        try:
+            content = f.read_text(encoding="utf-8", errors="replace").lower()
+        except OSError as e:
+            fail(f"cannot read {f}: {e}")
+            problems += 1
+            continue
+        if LEFTHOOK_MARKER not in content:
+            fail(f"{hook} in {hooks_dir} is NOT lefthook-managed (redirected/overwritten?)"
+                 f"{redirect_note}")
+            problems += 1
+
+    if args.pre_push:
+        rc, _ = git("rev-parse", "--verify", "--quiet", "origin/main")
+        if rc != 0:
+            print("[G54] origin/main unknown (fresh clone / offline) - stale-base leg skipped",
+                  file=sys.stderr)
+        else:
+            rc, _ = git("merge-base", "--is-ancestor", "origin/main", "HEAD")
+            if rc != 0:
+                fail("push-from-stale-base: origin/main is NOT an ancestor of HEAD "
+                     "(your branch is behind origin/main - pull/rebase before pushing)")
+                problems += 1
+
+    if problems:
+        print(f"[G54] gate-plane integrity FAILED ({problems} problem(s)).", file=sys.stderr)
+        return 1
+    print("[G54] gate-plane integrity OK" + (" (+ push-from-stale-base)" if args.pre_push else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
