@@ -1,0 +1,58 @@
+# .github/workflows/scorecard.yml - OSSF Scorecard informational corroboration (P0.2.11 - G67).
+#
+# tooling-only: a scheduled + default-branch-push run of ossf/scorecard-action that
+# INDEPENDENTLY corroborates the bespoke G50/G56/G56a assertions (branch-protection, pinned
+# deps, dangerous workflows, token scope). A divergence is a Co-Pilot REVIEW ITEM, never a
+# required green check (a third-party scanner, not a deterministic in-repo gate - so it is
+# NOT in the G56a required-status-checks set, and a red Scorecard never blocks a push).
+#
+# Read-only BY DESIGN: `publish_results: false` + NO SARIF code-scanning upload, so the job
+# needs NO `security-events: write` / `id-token: write` (both of which check-ci-supply-chain
+# forbids until P10) - Scorecard's per-check results are printed to the run log/summary for
+# Co-Pilot review. Actions SHA-pinned (G50). This file is L(-1) security-critical (.github/**).
+#
+# REVIEW SURFACE: the `results_file` SARIF below is written but intentionally NOT retained
+# (uploading to code-scanning would need security-events:write); the scorecard binary logs the
+# per-check scores to the run console/summary, which IS the Co-Pilot review surface.
+# BRANCH-PROTECTION CAVEAT: under the default GITHUB_TOKEN (no PAT) the Branch-Protection check
+# scores low/inconclusive by design (a PAT is needed on a public repo) - that is a KNOWN token
+# limitation, NOT a G56a divergence; a real divergence is any OTHER axis disagreeing with the
+# bespoke G50/G56/G56a gates.
+
+name: scorecard
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '24 6 * * 1'   # weekly, Monday 06:24 UTC
+
+# Least privilege: read-only at the workflow level (G49/G56); the job elevates only to the
+# read scopes Scorecard needs to introspect the repo. NEVER security-events/id-token here.
+permissions:
+  contents: read
+
+# Per-push concurrency so a newer push supersedes an in-flight informational scan.
+concurrency:
+  group: scorecard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analysis:
+    name: ossf-scorecard
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: read   # read the repo
+      actions: read    # read workflow run metadata (Scorecard's Token-Permissions/CI checks)
+    steps:
+      - name: Checkout (no credentials persisted)
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - name: OSSF Scorecard analysis (informational; no publish, no code-scanning upload)
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a  # v2.4.3
+        with:
+          results_file: scorecard-results.sarif
+          results_format: sarif
+          publish_results: false
