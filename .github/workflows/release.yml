@@ -1,0 +1,41 @@
+# .github/workflows/release.yml - Lane B: release-pipeline SKELETON (P0.2.5 - L5 - G58).
+#
+# Triggered by a v* tag on main (spec sec 6.7.2). This is the empty-but-wired skeleton:
+# the L5 acceptance-gate STAGES (matrix build per sec 6.1.4 -> <=400 MB artifact-size
+# gate -> SBOM + integrity -> minisign over SHA256SUMS -> build-provenance attestation
+# -> GitHub Release publish) are the P0.7 release-gate POLICY, ASSEMBLED in P10. The
+# first-step tag-trust assertion (the tagged commit is an ancestor of origin/main AND
+# main's required checks were green for that SHA, aborting BEFORE any secret is read)
+# is wired in P0.2.9 (G56b).
+#
+# NO secret is read in this skeleton; the secret-bearing signing job is host-bound +
+# token-scoped in P0.2.7 / P0.2.10. DELIBERATELY no `concurrency: cancel-in-progress`
+# on a release workflow (a cancelled release is worse than a delayed one). Actions are
+# SHA-pinned (G50). This file is L(-1) security-critical (.github/**).
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: release-gate-guard
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout (no credentials persisted)
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Fail-closed until the Lane-B pipeline is assembled (P10)
+        run: |
+          echo "The Lane-B release pipeline (build / size / SBOM / minisign / attest /"
+          echo "publish) is assembled in P10, and the tag-trust gate in P0.2.9 (G56b)."
+          echo "A v* tag pushed against this empty skeleton is REJECTED fail-closed, so a"
+          echo "release can never hollow-succeed before the real gates exist."
+          exit 1
