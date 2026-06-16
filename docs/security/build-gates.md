@@ -308,9 +308,15 @@ the §6.6 walkthrough — see G42/G33b.)
 > The catalogue thesis is that **every `Gnn` IS a real security/quality control**, so a
 > silently-missing integer ID (a fill-pass author could mis-read a gap as "three gates
 > removed", or collide with it) is an audit-trail defect for a P0 whose bar is *exhaustive*.
-> plan-lint **check 22** asserts every integer `N` in `2..max(Gnn)` is either a `| **Gn** |`
-> table row OR carries a documented vacated/reserved/deleted note here, so no ID can be
+> plan-lint **check 22** asserts every integer `N` in `2..max(Gnn)` is either a `| **Gnn** |`
+> table row OR carries a documented vacated/reserved/deleted/split note here, so no ID can be
 > invisible. The non-row IDs and their reasons:
+> - **G33 — SPLIT (sub-letter-only, no plain row).** Integer 33 exists ONLY as the a11y sub-letter
+>   pair: **G33a** (the jsdom/`vitest-axe` ARIA leg, Lane-A) and **G33b** (the release-tier
+>   `@axe-core/webdriverio` WCAG-AA contrast leg, L5). There is no plain `| **G33** |` row — so,
+>   unlike G18/G24/G42/G56 (each of which has a plain integer row covering its integer), 33 would be
+>   invisible to check 22's integer scan without this note (sub-letter rows are "outside check 22's
+>   integer scope", per the G18e note below). This `split` note is integer 33's coverage.
 > - **G34 — VACATED** (no spec §-home for a visual-regression gate; see the note above).
 > - **G40 — DELETED** (was a `cosign`/SLSA binary-signing gate; removed because binary
 >   code-signing/notarization is **SSOT *Out of Scope*** — only minisign over `SHA256SUMS`
@@ -363,7 +369,7 @@ the §6.6 walkthrough — see G42/G33b.)
 >   fail-closed from P4** (wired in P4.61). It is a `| **G72** |` table row, NOT a reserved note — check 22 reads it
 >   as a row; recorded here as the new `max(Gnn)`.
 > A reserved id becomes a `| **Gnn** |` row only when its control is adopted (then check 22
-> sees the row instead of the note); a deleted/vacated id stays a note forever.
+> sees the row instead of the note); a deleted/vacated/split id stays a note forever.
 
 ### L5 — Release (tag-triggered; release-blocking)
 | ID | Gate | Tool / mechanism | Blocks |
@@ -594,10 +600,12 @@ Invariant checks (initial set; expanded during P0 review):
     thesis rests on).** check 5 is one-directional (catalogue ⊇ security-concept) and check 4 targets sub-section
     HEADINGS, not gate IDs, so NOTHING asserted the catalogue's own integer ID space is gap-free-or-annotated —
     and the catalogue silently jumped G60→G64 (G61/G62/G63 absent) and omitted any note for the deleted G40.
-    This check enumerates every `| **Gn** |` integer table row, computes `max(Gnn)`, and asserts **every integer
-    `N` in `2..max(Gnn)` is EITHER a table row OR carries a documented vacated/reserved/deleted note** in the
+    This check enumerates every `| **Gnn** |` integer table row (the plain-integer rows only — a sub-letter id
+    like `G33a` does NOT by itself satisfy its integer), computes `max(Gnn)`, and asserts **every integer
+    `N` in `2..max(Gnn)` is EITHER a plain table row OR carries a documented vacated/reserved/deleted/split note** in the
     "Vacated / reserved gate IDs" blockquote (or the G34 note), so a fill-pass author can never collide with or
-    misread an invisible ID. A new gap (an inserted-then-removed gate) fails the build unless its note is added in
+    misread an invisible ID. An integer present ONLY as sub-letter rows (`G33` → `G33a`/`G33b`, with no plain
+    `| **G33** |` row) MUST carry a `split` note, so it is never invisible. A new gap (an inserted-then-removed gate) fails the build unless its note is added in
     the same commit. Stdlib-only.
 23. **Informational→required ratchet decision-log presence (r7 — a silent status flip is invisible).** The
     informational-then-ratcheted gates (`cargo-mutants` G15-leg, G17b, G64, G65, the owner-decidable `cargo-acl`/
