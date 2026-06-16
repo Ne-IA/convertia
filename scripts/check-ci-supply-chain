@@ -1,0 +1,619 @@
+#!/usr/bin/env python3
+"""check-ci-supply-chain - G56 CI supply-chain config hygiene (P0.2.6).
+
+The residual CI/config assertions that zizmor (G50) + actionlint (G49) do NOT cover.
+STDLIB-ONLY (no YAML library - the gate plane forbids vendoring one). A naive line scan
+is trivially evaded by valid-but-exotic YAML dialects, so this parser is HARDENED and -
+crucially - FAIL-CLOSED: anything it cannot statically reason about (a YAML construct a
+real parser resolves differently than a line scan) makes it ERROR rather than pass
+vacuously. zizmor remains the PRIMARY YAML-parsing G50 control; this is the G56 residual
+backstop against a future malicious/careless L(-1) `.github/**` diff.
+
+Fail-closed pre-pass (every workflow + dependabot.yml the gate reasons about):
+  * multiple YAML documents (`---` / `...` beyond a leading marker) -> reject;
+  * YAML anchors (`&name`), aliases (`*name`), merge keys (`<<:`) -> reject (stdlib
+    cannot resolve them, so a value could be defined out of the scanner's sight);
+  * duplicate TOP-LEVEL mapping keys -> reject (YAML resolves a dup to the LAST, a
+    line scan would trust the FIRST);
+  * explicit YAML tags (`!!type` / `!tag`) and complex/explicit keys (`? key`) -> reject
+    (both change resolution in ways a line scan cannot follow);
+  * block-scalar bodies (`run: |` / `: >`) are excised before any structural scan so
+    literal shell text never masquerades as - or hides - YAML structure;
+  * inline FLOW-MAPPING values (`{ ... }`) under the security-relevant keys (`on:` and
+    its children, `permissions:` at top-level AND per-job, `jobs:`) -> reject: a flow map
+    hides key/value structure from a line scan (a flow SEQUENCE `[a, b]` carries no hidden
+    keys and is fine). Anchors/aliases are detected ONLY at YAML node-start positions, so a
+    `*glob`/`&bg` shell token mid-scalar in a single-line `run:` is not a false anchor.
+
+Assertions (after the file is known to be in plain, statically-analysable block form):
+  (1) .github/dependabot.yml exists + declares all four ecosystems (github-actions,
+      cargo, npm, pip), each item carrying a `directory` and a `schedule` at the item's
+      own child indent (zizmor checks a PRESENT file's content, never its presence).
+  (2) id-token discipline - no `id-token:` permission key anywhere (top-level OR per-job),
+      in block, quoted-key (`'id-token':`) or flow (`{ id-token: write }`, via the pre-pass)
+      form (the release-job `id-token: write` lands in P10; until then it is forbidden).
+  (3) concurrency POLARITY - a push-(non-release)-triggered workflow declares
+      `cancel-in-progress: true` (any YAML-1.1 truthy spelling: true/True/yes/on); a
+      RELEASE-CLASS workflow (push.tags / release / create) must NOT (a cancelled release
+      is worse than a delayed one; release-safety dominates when a workflow is both, and a
+      `${{ }}` cancel-in-progress expression cannot prove it won't cancel -> fail-closed for
+      a release). The trigger is classified from ONLY the first indentation level under `on:`
+      (so a deep `workflow_dispatch.inputs.tags` / a valid `schedule: - cron:` is not
+      mistaken for a trigger); an `on:` form that cannot be classified (flow-style / alias /
+      block-list-of-mappings / unknown) -> fail-closed.
+  (4) per-JOB `timeout-minutes` at the job's own child indent (a step-level timeout does
+      not count); flow-style job mappings are rejected fail-closed; a reusable-workflow
+      call job (`uses:` with a `.github/` path or `@ref` value) is exempt (GitHub forbids
+      job-level timeout-minutes there) - a non-ref `uses:` value buys no exemption.
+  (5) permissions read-only - TOP-LEVEL must exist with `contents: read`; NO permissions
+      block (top-level OR per-job - GitHub per-job permissions OVERRIDE the default) may set
+      any key to write/write-all (until the P10 release job); a value that a line scan cannot
+      resolve (empty/next-line or a block-scalar `|`/`>` indicator), a flow-style block, and
+      a non-`read-all` inline scalar are all rejected fail-closed.
+
+fail-closed: any violation -> exit 1. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+
+Usage: check-ci-supply-chain [--root DIR]
+Exit:  0 = clean; 1 = a violation; 2 = .github not found under --root.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+REQUIRED_ECOSYSTEMS = {"github-actions", "cargo", "npm", "pip"}
+
+
+def fail(msg: str) -> None:
+    print(f"[G56] FAIL: {msg}", file=sys.stderr)
+
+
+def strip_comment(line: str) -> str:
+    """Drop a trailing YAML `#` comment, respecting single/double quotes."""
+    q = None
+    for i, ch in enumerate(line):
+        if q:
+            if ch == q:
+                q = None
+        elif ch in "\"'":
+            q = ch
+        elif ch == "#" and (i == 0 or line[i - 1] in " \t"):
+            return line[:i].rstrip()
+    return line.rstrip()
+
+
+def unquote(s: str) -> str:
+    s = s.strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
+        return s[1:-1]
+    return s
+
+
+def blank_spans(line: str) -> str:
+    """Blank out `${{ ... }}` expressions and quoted strings (so anchor/alias scans on
+    the result cannot false-positive on `&&` in an expression or a `*` glob in a quote)."""
+    out = list(line)
+    for m in re.finditer(r"\$\{\{.*?\}\}", line):
+        for i in range(m.start(), m.end()):
+            out[i] = " "
+    res, q = [], None
+    for ch in out:
+        if q:
+            res.append(" ")
+            if ch == q:
+                q = None
+        elif ch in "\"'":
+            q = ch
+            res.append(" ")
+        else:
+            res.append(ch)
+    return "".join(res)
+
+
+def structural_lines(raw: list[str]) -> list[str]:
+    """Comment-strip every line and excise block-scalar (`|`/`>`) bodies, so what
+    remains is the file's analysable YAML structure only."""
+    stripped = [strip_comment(ln) for ln in raw]
+    keep = [True] * len(stripped)
+    i = 0
+    while i < len(stripped):
+        s = stripped[i]
+        if re.search(r":\s*[|>][+\-0-9]*\s*$", s) or re.match(r"^\s*-\s*[|>][+\-0-9]*\s*$", s):
+            indent = len(s) - len(s.lstrip())
+            j = i + 1
+            while j < len(stripped):
+                b = stripped[j]
+                if not b.strip():
+                    keep[j] = False
+                    j += 1
+                    continue
+                if (len(b) - len(b.lstrip())) > indent:
+                    keep[j] = False
+                    j += 1
+                else:
+                    break
+            i = j
+            continue
+        i += 1
+    return [s for s, k in zip(stripped, keep) if k]
+
+
+def precheck(name: str, lines: list[str]) -> int:
+    """Fail-closed on YAML constructs a stdlib line scan cannot safely resolve."""
+    problems = 0
+
+    # multiple documents
+    seen_content, markers = False, 0
+    for ln in lines:
+        st = ln.strip()
+        if not st:
+            continue
+        if st == "---" or st.startswith("--- "):
+            markers += 1
+            if seen_content or markers > 1:
+                fail(f"{name}: multiple YAML documents (--- / ...) - the gate verifies a single document")
+                problems += 1
+                break
+            continue
+        if st == "..." or st.startswith("... "):
+            fail(f"{name}: YAML document-end marker (...) - the gate verifies a single document")
+            problems += 1
+            break
+        seen_content = True
+
+    # anchors / aliases / merge keys - detected ONLY at YAML node-start positions
+    # (after `:`+space, a `- ` sequence item, or a flow `[`/`{`/`,`), so a shell token
+    # like `cp dist/ *staging` or `echo $X &bg` in a single-line `run:` scalar - where
+    # `*`/`&` sit mid-scalar, not at a node start - is NOT misread as YAML structure.
+    flagged = set()
+    for ln in lines:
+        b = blank_spans(ln)
+        if re.search(r"(?:^\s*|[\[{,]\s*)<<\s*:", b) and "merge" not in flagged:
+            fail(f"{name}: YAML merge key (<<:) is not statically verifiable - use plain block style")
+            problems += 1
+            flagged.add("merge")
+        if re.search(r"(?::\s+|^\s*-\s+|[\[{,]\s*)&[A-Za-z0-9_]", b) and "anchor" not in flagged:
+            fail(f"{name}: YAML anchor (&name) is not statically verifiable - use plain block style")
+            problems += 1
+            flagged.add("anchor")
+        if re.search(r"(?::\s+|^\s*-\s+|[\[{,]\s*)\*[A-Za-z0-9_]", b) and "alias" not in flagged:
+            fail(f"{name}: YAML alias (*name) is not statically verifiable - use plain block style")
+            problems += 1
+            flagged.add("alias")
+        # a `!` at a value node-start (`: !`, `- !`, flow `[{,`) OR at the START of a line's
+        # content (`^\s*!`, i.e. a tag on a mapping KEY like `  !!str packages: write`, which
+        # a value-position-only scan would miss while the perms parser silently drops it).
+        if re.search(r"(?::\s+|^\s*-\s+|[\[{,]\s*|^\s*)!", b) and "tag" not in flagged:
+            fail(f"{name}: an explicit YAML tag (!!type / !tag) changes how a value resolves and is "
+                 "not statically verifiable - use a plain block value")
+            problems += 1
+            flagged.add("tag")
+        if re.match(r"^\s*\?\s", ln) and "complexkey" not in flagged:
+            fail(f"{name}: a YAML explicit/complex key (`? key`) is not statically verifiable - use a plain key")
+            problems += 1
+            flagged.add("complexkey")
+
+    # duplicate top-level keys (YAML resolves to the LAST; a line scan trusts the FIRST)
+    seen, dups = set(), set()
+    for ln in lines:
+        if not ln or ln[0].isspace() or ln.startswith(("---", "...")):
+            continue
+        if ":" not in ln:
+            continue
+        key = unquote(ln.split(":", 1)[0])
+        if key in seen:
+            dups.add(key)
+        seen.add(key)
+    for k in sorted(dups):
+        fail(f"{name}: duplicate top-level key '{k}' (YAML resolves to the last; the gate cannot trust the first)")
+        problems += 1
+
+    return problems
+
+
+def top_key(lines: list[str], key: str) -> tuple[str | None, list[str]]:
+    """(inline value or None, indented body lines) for the top-level (col-0) `key:`.
+    Quoted keys are normalised, so `'on':` == `on`. Duplicates are pre-rejected, so the
+    first match is the only match."""
+    inline, body, capturing = None, [], False
+    for ln in lines:
+        if not ln.strip():
+            if capturing:
+                body.append(ln)
+            continue
+        if not ln[0].isspace():
+            if capturing:
+                break
+            head, _, val = ln.partition(":")
+            if unquote(head) == key:
+                capturing = True
+                inline = val.strip() or None
+            continue
+        if capturing:
+            body.append(ln)
+    return inline, body
+
+
+def first_level(body: list[str]) -> tuple[set[str], dict[str, list[str]]]:
+    """(keys at the minimal indent, {key: deeper subtree lines}) - handles block-map
+    (`push:`) and block-list (`- push`) forms."""
+    real = [ln for ln in body if ln.strip()]
+    if not real:
+        return set(), {}
+    base = min(len(ln) - len(ln.lstrip()) for ln in real)
+    keys, sub, cur = set(), {}, None
+    for ln in body:
+        if not ln.strip():
+            continue
+        ind = len(ln) - len(ln.lstrip())
+        if ind == base:
+            s = ln.strip()
+            name = s[2:] if s.startswith("- ") else s
+            k = unquote(name.split(":", 1)[0].strip())
+            keys.add(k)
+            cur = k if not s.startswith("- ") else None
+            if cur is not None:
+                sub[cur] = []
+        elif cur is not None and ind > base:
+            sub[cur].append(ln)
+    return keys, sub
+
+
+def list_items(block: list[str]) -> list[list[str]]:
+    """Split a YAML block sequence into per-item line groups (each `- ...` item)."""
+    items, cur, item_indent = [], None, None
+    for ln in block:
+        if not ln.strip():
+            if cur is not None:
+                cur.append(ln)
+            continue
+        indent = len(ln) - len(ln.lstrip())
+        if ln.lstrip().startswith("- "):
+            if item_indent is None:
+                item_indent = indent
+            if indent == item_indent:
+                if cur is not None:
+                    items.append(cur)
+                cur = [ln]
+                continue
+        if cur is not None:
+            cur.append(ln)
+    if cur is not None:
+        items.append(cur)
+    return items
+
+
+def item_children(item: list[str]) -> list[str]:
+    """Direct child lines (at the item's content indent) of a `- key: ...` sequence item,
+    including the key inlined after the dash."""
+    if not item:
+        return []
+    first = item[0]
+    dash = first.index("-")
+    content_indent = dash + 2
+    out = [" " * content_indent + first[content_indent:]] if len(first) > content_indent else []
+    for ln in item[1:]:
+        if not ln.strip():
+            continue
+        if (len(ln) - len(ln.lstrip())) == content_indent:
+            out.append(ln)
+    return out
+
+
+def parse_jobs(jobs_body: list[str]) -> tuple[dict[str, list[str]], bool]:
+    """(job-id -> DIRECT-child lines, flow_style_seen). Direct children are the lines at
+    the first deeper indent (step-level keys excluded). A flow-style job value
+    (`build: { ... }`) sets flow_style_seen -> fail-closed."""
+    real = [ln for ln in jobs_body if ln.strip()]
+    if not real:
+        return {}, False
+    ji = min(len(ln) - len(ln.lstrip()) for ln in real)
+    out: dict[str, list[str]] = {}
+    cur, child_indent, children, flow = None, None, [], False
+    for ln in jobs_body:
+        if not ln.strip():
+            continue
+        indent = len(ln) - len(ln.lstrip())
+        if indent == ji:
+            head, _, val = ln.strip().partition(":")
+            if val.strip().startswith("{"):
+                flow = True
+            if cur is not None:
+                out[cur] = children
+            cur, child_indent, children = unquote(head), None, []
+        elif cur is not None and indent > ji:
+            if child_indent is None:
+                child_indent = indent
+            if indent == child_indent:
+                children.append(ln)
+    if cur is not None:
+        out[cur] = children
+    return out, flow
+
+
+def check_dependabot(root: Path) -> int:
+    f = root / ".github" / "dependabot.yml"
+    if not f.is_file():
+        fail(f"{f} missing - G56 requires dependabot coverage")
+        return 1
+    lines = structural_lines(f.read_text(encoding="utf-8", errors="replace").splitlines())
+    problems = precheck("dependabot.yml", lines)
+    _, updates = top_key(lines, "updates")
+    ecos: set[str] = set()
+    for item in list_items(updates):
+        # a flow-style item (`- { ... }`) cannot be field-verified by a line scan; reject
+        # fail-closed with ONE clear message, consistent with the workflow flow-style rejections.
+        head = item[0].lstrip()
+        if head.startswith("- ") and head[2:].lstrip().startswith("{"):
+            fm = re.search(r"package-ecosystem\s*:\s*['\"]?([A-Za-z][\w-]*)", "\n".join(item))
+            fail(f"dependabot {('ecosystem ' + repr(fm.group(1))) if fm else 'item'} uses a flow-style "
+                 "item - use block style so `package-ecosystem`/`directory`/`schedule` are verifiable")
+            problems += 1
+            continue
+        children = item_children(item)
+        ctext = "\n".join(children)
+        # Resolve the ecosystem from the item's DIRECT-CHILD `package-ecosystem` KEY only
+        # (line-anchored), NOT a substring of the whole item - so a decoy `package-ecosystem:`
+        # planted in another field VALUE (e.g. `target-branch: "package-ecosystem: cargo"`)
+        # cannot shadow the real key. Exactly one such key is required.
+        eco_keys = re.findall(r"^\s*package-ecosystem\s*:\s*['\"]?([A-Za-z][\w-]*)", ctext, re.M)
+        if len(eco_keys) != 1:
+            fail(f"dependabot update item has {len(eco_keys)} direct-child `package-ecosystem` "
+                 "keys (expected exactly 1)")
+            problems += 1
+            if not eco_keys:
+                continue
+        eco = eco_keys[0]
+        ecos.add(eco)
+        # defense-in-depth: a non-`package-ecosystem` field whose VALUE embeds the literal
+        # `package-ecosystem:` is a coverage-spoof attempt - reject fail-closed.
+        for cl in children:
+            if not re.match(r"^\s*package-ecosystem\s*:", cl) and "package-ecosystem:" in cl:
+                fail(f"dependabot ecosystem '{eco}': a field value embeds 'package-ecosystem:' "
+                     "(coverage-spoof attempt)")
+                problems += 1
+                break
+        if not re.search(r"^\s*director(y|ies)\s*:", ctext, re.M):
+            fail(f"dependabot ecosystem '{eco}' block lacks a top-level `directory`")
+            problems += 1
+        if not re.search(r"^\s*schedule\s*:", ctext, re.M):
+            fail(f"dependabot ecosystem '{eco}' block lacks a top-level `schedule`")
+            problems += 1
+    missing = REQUIRED_ECOSYSTEMS - ecos
+    if missing:
+        fail(f"dependabot.yml is missing ecosystem(s): {', '.join(sorted(missing))}")
+        problems += 1
+    return problems
+
+
+def permission_blocks(lines: list[str]) -> list[tuple[int, list[str]]]:
+    """(indent, body lines) for every BLOCK-form `permissions:` (top-level at indent 0
+    and per-job at a deeper indent); inline / flow forms are handled separately."""
+    out: list[tuple[int, list[str]]] = []
+    i = 0
+    while i < len(lines):
+        m = re.match(r"^(\s*)['\"]?permissions['\"]?\s*:\s*(.*)$", lines[i])
+        if m and m.group(2).strip() == "":  # block form (value on the following lines)
+            indent = len(m.group(1))
+            body, j = [], i + 1
+            while j < len(lines):
+                b = lines[j]
+                if not b.strip():
+                    j += 1
+                    continue
+                if (len(b) - len(b.lstrip())) > indent:
+                    body.append(b)
+                    j += 1
+                else:
+                    break
+            out.append((indent, body))
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def report_perm_block(name: str, body: list[str], top_level: bool) -> int:
+    """Assert a permissions block is read-only: no key set to write/write-all, no value
+    that a line scan cannot resolve (empty/next-line or a block-scalar `|`/`>` indicator),
+    and (top-level only) `contents: read`. id-token is reported once by the whole-file scan."""
+    problems = 0
+    perms: dict[str, str] = {}
+    for ln in body:
+        if not ln.strip():
+            continue
+        m = re.match(r"^\s+(\S+)\s*:\s*(.*)$", ln)
+        if not m:
+            # a non-blank permissions-body line the scalar-key:value pattern cannot parse
+            # (e.g. a quoted key with an embedded space `"!!str packages": write`) must FAIL
+            # closed, never be silently skipped.
+            fail(f"{name}: unparseable permissions line {ln.strip()!r} - cannot prove read-only")
+            problems += 1
+            continue
+        key, val = unquote(m.group(1)), m.group(2).strip()
+        if val == "" or re.fullmatch(r"[|>][+\-0-9]*", val) or val[:1] in ("[", "{"):
+            fail(f"{name}: permission '{key}' has a non-inline / block-scalar / flow value - cannot "
+                 f"prove read-only (use `{key}: read`)")
+            problems += 1
+            perms[key] = "<unknown>"
+        else:
+            perms[key] = unquote(val)
+    if top_level and perms.get("contents") != "read":
+        fail(f"{name}: top-level permissions.contents is {perms.get('contents')!r}, must be read")
+        problems += 1
+    bad = sorted(k for k, v in perms.items() if v in ("write", "write-all") and k != "id-token")
+    if bad:
+        scope = "top-level" if top_level else "per-job"
+        fail(f"{name}: {scope} permissions grants write: {', '.join(bad)} "
+             "(read-only required; no job may elevate to write until the P10 release job)")
+        problems += 1
+    return problems
+
+
+def check_workflow(path: Path) -> int:
+    name = path.name
+    lines = structural_lines(path.read_text(encoding="utf-8", errors="replace").splitlines())
+    problems = precheck(name, lines)
+
+    # (5a) flow-style permissions anywhere (top-level OR per-job) cannot be statically
+    # verified for contents-read / id-token - reject fail-closed. Empty `{}`/`{ }`
+    # (= no permissions, most restrictive) is allowed.
+    if any(re.match(r"^\s*['\"]?permissions['\"]?\s*:\s*\{\s*[^}\s]", ln) for ln in lines):
+        fail(f"{name}: flow-style `permissions: {{...}}` is unsupported - use block style "
+             "(so contents-read and the id-token prohibition are verifiable)")
+        problems += 1
+
+    # (5b) inline-SCALAR permissions (top-level OR per-job; GitHub per-job permissions
+    # OVERRIDE the read-only top-level default): the only read-only inline scalar GitHub
+    # accepts is `read-all` (empty `{}` flow is handled by (5a)); write-all / write / any
+    # other scalar is rejected fail-closed.
+    for ln in lines:
+        m = re.match(r"^\s*['\"]?permissions['\"]?\s*:\s*([^\s{].*)$", ln)
+        if m and unquote(m.group(1).strip()) != "read-all":
+            fail(f"{name}: inline `permissions: {unquote(m.group(1).strip())}` is not read-only "
+                 "(use block `contents: read`, or `read-all`)")
+            problems += 1
+
+    # (5c) every BLOCK-form permissions (top-level + per-job): no write key, no value a
+    # line scan cannot resolve; contents: read required on the top-level block only. An
+    # empty/null body (`permissions:` with nothing under it) is left to (5d).
+    for indent, pbody in permission_blocks(lines):
+        if not pbody:
+            continue
+        problems += report_perm_block(name, pbody, top_level=(indent == 0))
+
+    # (5d) a top-level permissions context MUST exist (the inline-scalar read-only check is (5b)).
+    p_inline, p_body = top_key(lines, "permissions")
+    if p_inline is None and not p_body:
+        fail(f"{name}: no top-level `permissions:` block (want contents: read)")
+        problems += 1
+
+    # (2) id-token discipline - any id-token permission key (top-level or per-job), in
+    # block or quoted-key form. A flow-style `permissions: { id-token: write }` is caught
+    # by (5a); a `run:`-string mention of "id-token" never starts a line, so no false-positive.
+    if any(re.match(r"^\s*['\"]?id-token['\"]?\s*:", ln) for ln in lines):
+        fail(f"{name}: an `id-token:` permission key is set - not allowed until the P10 attestation job")
+        problems += 1
+
+    # (3) concurrency polarity - depth-aware trigger classification.
+    # A flow-MAPPING value under on: (`on: {...}` or `push: { tags: ... }`) hides the
+    # trigger structure from a line scan, so it is unclassifiable -> fail-closed (mirroring
+    # the flow-jobs / flow-permissions rejections). A flow SEQUENCE (`branches: [main]`,
+    # `on: [push, pull_request]`) is fine - it carries no hidden keys.
+    on_inline, on_body = top_key(lines, "on")
+    events, sub = first_level(on_body)
+    # Only at the FIRST indent level under on: (the event-name level) does a flow-MAPPING
+    # value (`push: { tags }`) or a block-list-of-MAPPINGS item (`- push:`, which GitHub
+    # does not accept) hide the trigger structure -> unclassifiable -> fail-closed. A flow
+    # SEQUENCE (`branches: [main]`) and a DEEPER `- cron:` under schedule: (the canonical
+    # valid scheduled form) carry no hidden trigger and stay classifiable.
+    unparseable_on = False
+    _on_real = [ln for ln in on_body if ln.strip()]
+    if _on_real:
+        _base = min(len(ln) - len(ln.lstrip()) for ln in _on_real)
+        for ln in _on_real:
+            if (len(ln) - len(ln.lstrip())) != _base:
+                continue
+            if re.search(r":\s*\{", ln) or re.match(r"^\s*-\s+\S+\s*:", ln):
+                unparseable_on = True
+                break
+    if on_inline is not None:
+        v = on_inline.strip()
+        if v.startswith("["):
+            events |= {unquote(x) for x in v.strip("[]").split(",") if x.strip()}
+        elif v.startswith("{"):
+            unparseable_on = True
+        elif re.fullmatch(r"[a-z_]+", unquote(v)):
+            events.add(unquote(v))
+        else:
+            unparseable_on = True
+
+    c_inline, c_body = top_key(lines, "concurrency")
+    conc_text = (c_inline or "") + "\n" + "\n".join(c_body)
+    # YAML-1.1 truthy spellings (GitHub Actions resolves True/TRUE/yes/on like snakeyaml);
+    # tolerate an explicit !!tag prefix and quotes (an actual tag is already pre-rejected).
+    # PUSH side needs cancel = a YAML-1.1 truthy spelling. RELEASE side is fully fail-closed:
+    # a cancel-in-progress that is PRESENT and not PROVABLY falsy (false/no/off) must fail -
+    # so an exotic-but-truthy spelling, an unresolvable ${{ }} expression, or a multi-line
+    # value cannot smuggle a release-cancelling config past the gate.
+    has_cancel_truthy = bool(
+        re.search(r'cancel-in-progress\s*:\s*(?:!!\S+\s+)?["\']?(?:true|yes|on|y)\b', conc_text, re.I))
+    cancel_present = bool(re.search(r'cancel-in-progress\s*:', conc_text))
+    cancel_falsy = bool(
+        re.search(r'cancel-in-progress\s*:\s*(?:!!\S+\s+)?["\']?(?:false|no|off|n)\b', conc_text, re.I))
+    if unparseable_on:
+        fail(f"{name}: on: trigger is not statically classifiable (flow-style / alias / unknown form) "
+             "- use plain block style so concurrency polarity is verifiable")
+        problems += 1
+    else:
+        is_release_class = bool({"release", "create"} & events)
+        if "push" in sub:
+            push_keys, _ = first_level(sub["push"])
+            if "tags" in push_keys:
+                is_release_class = True
+        # release safety dominates: a workflow that is BOTH push-branch and release-class is
+        # classified release-class (only the must-NOT-cancel rule applies), never both.
+        is_push_branch = ("push" in events) and not is_release_class
+        if is_push_branch and not has_cancel_truthy:
+            fail(f"{name}: push-triggered workflow lacks `concurrency.cancel-in-progress: true`")
+            problems += 1
+        if is_release_class and cancel_present and not cancel_falsy:
+            fail(f"{name}: release-class workflow must NOT set cancel-in-progress "
+                 "(a cancelled release is worse than a delayed one; only an explicit "
+                 "false/no/off passes - an expression or exotic value fails closed)")
+            problems += 1
+
+    # (4) per-JOB timeout-minutes; flow-style jobs fail-closed; uses:-jobs exempt
+    _, jobs_body = top_key(lines, "jobs")
+    jobs, flow_job = parse_jobs(jobs_body)
+    if flow_job:
+        fail(f"{name}: flow-style job mapping under `jobs:` is unsupported "
+             "(use block style so a job-level timeout-minutes is verifiable)")
+        problems += 1
+    else:
+        for jid, children in jobs.items():
+            # exempt a reusable-workflow CALL job (GitHub forbids job-level timeout-minutes
+            # there) - but ONLY when `uses:` names a real reusable workflow under
+            # `.github/workflows/` (local `./.github/workflows/x.yml` or cross-repo
+            # `org/repo/.github/workflows/x.yml@ref`), so a bogus `uses:` value buys nothing.
+            if any(re.match(r"^\s*uses\s*:", c) and re.search(r"\.github/workflows/", c) for c in children):
+                continue
+            if not any(re.match(r"^\s*timeout-minutes\s*:", c) for c in children):
+                fail(f"{name}: job '{jid}' lacks a job-level `timeout-minutes`")
+                problems += 1
+    return problems
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G56 CI supply-chain config hygiene (P0.2.6)")
+    ap.add_argument("--root", type=Path,
+                    default=Path(__file__).resolve().parent.parent,
+                    help="repo root to check (default: the repo; a fixture tree in the self-test)")
+    args = ap.parse_args(argv)
+
+    gh = args.root / ".github"
+    if not gh.is_dir():
+        print(f"[G56] .github not found under {args.root}", file=sys.stderr)
+        return 2
+
+    problems = check_dependabot(args.root)
+
+    wfdir = gh / "workflows"
+    wfs = (sorted(wfdir.glob("*.yml")) + sorted(wfdir.glob("*.yaml"))) if wfdir.is_dir() else []
+    if not wfs:
+        fail("no workflow files under .github/workflows/")
+        problems += 1
+    for wf in wfs:
+        problems += check_workflow(wf)
+
+    if problems:
+        print(f"[G56] CI supply-chain hygiene FAILED ({problems} problem(s)).", file=sys.stderr)
+        return 1
+    print(f"[G56] CI supply-chain hygiene OK ({len(wfs)} workflow(s) + dependabot.yml)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,42 @@
+# .github/dependabot.yml - supply-chain dependency automation (P0.2.6 - G49 G50 G56).
+#
+# Opens bump PRs for github-actions + Rust(cargo) + JS(npm/pnpm) + Python(pip). G56
+# asserts this file carries all four `package-ecosystem` entries (the pin-and-watch
+# discipline is symmetric across the actions graph, the crate graph, the pnpm graph,
+# AND the pip gate-toolchain layer in requirements-ci.txt). Missing manifests
+# (Cargo.toml/package.json land in P1.51) are tolerated - Dependabot skips an
+# ecosystem whose manifest is absent, no error.
+#
+# Single-branch model: every bump PR is Co-Pilot/owner-reviewed; the autonomous
+# Build-Loop NEVER opens, reviews, or auto-merges these (roles-and-escalation sec 5a).
+# This file is L(-1) security-critical (.github/**, G71).
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"   # workflows in .github/workflows/*  (LIVE)
+    directory: "/"
+    schedule: { interval: "weekly", day: "monday", time: "04:00" }
+    commit-message: { prefix: "deps(actions)" }
+    open-pull-requests-limit: 5
+    labels: ["bot:dependabot", "type:dependencies"]
+
+  - package-ecosystem: "cargo"            # Cargo.toml + Cargo.lock  (scaffolded P1.51)
+    directory: "/"
+    schedule: { interval: "weekly", day: "monday", time: "04:00" }
+    commit-message: { prefix: "deps(cargo)" }
+    open-pull-requests-limit: 5
+    labels: ["bot:dependabot", "type:dependencies"]
+
+  - package-ecosystem: "npm"              # pnpm workspace + pnpm-lock.yaml  (scaffolded P1.51)
+    directory: "/"
+    schedule: { interval: "weekly", day: "monday", time: "04:00" }
+    commit-message: { prefix: "deps(npm)" }
+    open-pull-requests-limit: 5
+    labels: ["bot:dependabot", "type:dependencies"]
+
+  - package-ecosystem: "pip"              # requirements-ci.txt - the gate-tool layer  (LIVE)
+    directory: "/"
+    schedule: { interval: "weekly", day: "monday", time: "04:00" }
+    commit-message: { prefix: "deps(pip)" }
+    open-pull-requests-limit: 5
+    labels: ["bot:dependabot", "type:dependencies"]

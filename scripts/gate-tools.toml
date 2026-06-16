@@ -65,3 +65,20 @@ linux-aarch64  = { url = "https://github.com/rhysd/actionlint/releases/download/
 macos-x86_64   = { url = "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_darwin_amd64.tar.gz", sha256 = "5b44c3bc2255115c9b69e30efc0fecdf498fdb63c5d58e17084fd5f16324c644" }
 macos-aarch64  = { url = "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_darwin_arm64.tar.gz", sha256 = "aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f" }
 windows-x86_64 = { url = "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_windows_amd64.zip",   sha256 = "6e7241b51e6817ea6a047693d8e6fed13b31819c9a0dd6c5a726e1592d22f6e9", asset_kind = "zip" }
+
+# --- zizmor - the GitHub Actions security auditor (G50/P0.2.6; SHA-pinned-actions,
+# excessive-permissions, dangerous-triggers, template-injection, cache-poisoning,
+# secret-redaction). Ships as a per-platform ARCHIVE (tar.gz / windows zip). ---
+[tools.zizmor]
+version       = "1.25.2"
+origin        = "https://github.com/zizmorcore/zizmor/releases/download/v1.25.2/"
+bin_name      = "zizmor"
+asset_kind    = "targz"   # default (linux/macos); the windows platform overrides to "zip"
+corroboration = "zizmor's GitHub release v1.25.2 publishes no checksums.txt, so each platform archive sha256 was computed from the official release download AND corroborated by `gh attestation verify --owner zizmorcore` (exit 0, GitHub build provenance) on the linux x86_64 artifact; established 2026-06-16 by ch4ngo88"
+
+[tools.zizmor.platforms]
+linux-x86_64   = { url = "https://github.com/zizmorcore/zizmor/releases/download/v1.25.2/zizmor-x86_64-unknown-linux-gnu.tar.gz",  sha256 = "aa1facd105f0d83fe5c55b1adcd9d7417de5d83aa27471f91dc0b66cf3803577" }
+linux-aarch64  = { url = "https://github.com/zizmorcore/zizmor/releases/download/v1.25.2/zizmor-aarch64-unknown-linux-gnu.tar.gz", sha256 = "4b4b9491112c2a09b318101c0d3349b73af1c4f532e097dd6d0164f2abda760d" }
+macos-x86_64   = { url = "https://github.com/zizmorcore/zizmor/releases/download/v1.25.2/zizmor-x86_64-apple-darwin.tar.gz",       sha256 = "353271b9ec301dd4ba158af481323c831c6e9b494d5ac3f5aa58cf4b207699cc" }
+macos-aarch64  = { url = "https://github.com/zizmorcore/zizmor/releases/download/v1.25.2/zizmor-aarch64-apple-darwin.tar.gz",      sha256 = "624ef0e09521aecd862126be0f6d7754669af2646750d68ac48a114be33c3146" }
+windows-x86_64 = { url = "https://github.com/zizmorcore/zizmor/releases/download/v1.25.2/zizmor-x86_64-pc-windows-msvc.zip",       sha256 = "65d46a8144f701200621b580f632076d80d082d60856de9f88793a95fb5882d7", asset_kind = "zip" }

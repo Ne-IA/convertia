@@ -59,3 +59,27 @@ jobs:
       #   CSP/capability lint (P0.3.2) | doc-graph G68 + struct-map G69 (P0.3.12/13) |
       #   cargo-deny + cargo-audit (P0.3.6 / P0.4.1) | clippy --all-targets + tsc + eslint
       #   (P0.4, activated in P1) | the per-gate-script self-test prelude (P0.2.13).
+
+  workflow-security:
+    name: workflow-security
+    runs-on: ubuntu-22.04           # OS-independent audit; Linux-only saves macOS minutes (G56 cost discipline)
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+      - name: Install + verify pinned workflow tools (actionlint, zizmor)
+        run: python3 scripts/install-gate-tools --tool actionlint --tool zizmor
+      - name: 'G49: actionlint over .github/workflows'
+        run: .gate-tools/bin/actionlint
+      - name: 'G50: zizmor workflow security audit (offline, regular persona)'
+        run: .gate-tools/bin/zizmor --offline --persona regular .github/workflows/
+      - name: 'G56: CI supply-chain config hygiene (dependabot 4-eco, id-token, concurrency polarity, timeouts, perms)'
+        run: python3 scripts/check-ci-supply-chain
+      - name: 'G24: ci-supply-chain self-test (planted positives + negatives)'
+        run: python3 scripts/gate-selftests/g24-ci-supply-chain.py
