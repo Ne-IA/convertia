@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""setup-dev - one-step developer bootstrap (run after clone).
+
+Does the whole local setup the gate plane needs:
+  1. install + checksum-verify the pinned gate tools  -> .gate-tools/bin
+     (python3 scripts/install-gate-tools)
+  2. install the lefthook git-hook plane (pre-commit/pre-push)
+  3. REPAIR lefthook's generated hooks so they work on ANY repo path, then
+  4. verify each generated hook parses under POSIX sh.
+
+WHY step 3: lefthook embeds an UNQUOTED absolute path to its own binary in every
+generated hook. On a repo path containing spaces or parentheses (e.g.
+".../ne-ia (platform)/...") that unquoted path is a POSIX-sh SYNTAX ERROR - it
+breaks the whole hook, silently disabling local enforcement. This script quotes
+that path after `lefthook install`. On a clean path the quoting is a harmless
+no-op, so setup-dev is safe + identical everywhere.
+
+Idempotent. stdlib-only (Python 3.11+). Run:  python3 scripts/setup-dev
+Exit: 0 = ready; non-zero = a step failed (with a clear message).
+"""
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+IS_WIN = sys.platform.startswith("win")
+LEFTHOOK = REPO / ".gate-tools" / "bin" / ("lefthook.exe" if IS_WIN else "lefthook")
+
+
+def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+    print(f"  $ {' '.join(str(c) for c in cmd)}")
+    return subprocess.run(cmd, **kw)
+
+
+def step(msg: str) -> None:
+    print(f"\n==> {msg}")
+
+
+def die(msg: str) -> None:
+    print(f"[setup-dev] FAILED: {msg}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def install_gate_tools() -> None:
+    step("1/4  install + verify pinned gate tools")
+    p = run([sys.executable, str(REPO / "scripts" / "install-gate-tools")])
+    if p.returncode != 0:
+        die("install-gate-tools failed (see output above)")
+
+
+def lefthook_install() -> None:
+    step("2/4  install the lefthook git-hook plane")
+    if not LEFTHOOK.is_file():
+        die(f"lefthook not found at {LEFTHOOK} - did step 1 install it?")
+    p = run([str(LEFTHOOK), "install"], cwd=str(REPO))
+    if p.returncode != 0:
+        die("lefthook install failed")
+
+
+def effective_hooks_dir() -> Path:
+    p = subprocess.run(["git", "rev-parse", "--git-path", "hooks"],
+                       cwd=str(REPO), capture_output=True, text=True)
+    if p.returncode != 0:
+        die("git rev-parse --git-path hooks failed (not a git repo?)")
+    d = Path(p.stdout.strip())
+    if not d.is_absolute():
+        d = (REPO / d).resolve()
+    return d
+
+
+def repair_hooks(hooks_dir: Path) -> None:
+    step("3/4  repair generated hooks (quote lefthook's embedded path)")
+    embedded = LEFTHOOK.resolve().as_posix()        # the form lefthook writes (forward slashes)
+    patched_any = False
+    for hook in sorted(hooks_dir.glob("*")):
+        if hook.suffix == ".sample" or not hook.is_file():
+            continue
+        text = hook.read_text(encoding="utf-8", errors="replace")
+        if embedded not in text:
+            continue
+        # Idempotent + targeted: quote the two unquoted occurrences lefthook emits
+        # (the `elif <p> -h` probe and the `    <p> "$@"` invocation). On a re-run
+        # those patterns are already quoted, so the replaces are no-ops and the
+        # `new != text` guard below skips the write - re-entering this body is
+        # harmless (the bare path is still a substring of the quoted form).
+        new = (text
+               .replace(f"elif {embedded} -h", f'elif "{embedded}" -h')
+               .replace(f"\n    {embedded} ", f'\n    "{embedded}" '))
+        if new != text:
+            hook.write_text(new, encoding="utf-8")
+            print(f"  quoted embedded path in {hook.name}")
+            patched_any = True
+    if not patched_any:
+        print("  nothing to quote (clean path or already repaired) - ok")
+
+
+def verify_parse(hooks_dir: Path) -> None:
+    step("4/4  verify each generated hook parses under sh")
+    # If no sh is on PATH we skip the parse check INTENTIONALLY (not an oversight):
+    # git invokes the hook with its own bundled sh at runtime, and on a clean path
+    # the generated hooks are valid regardless.
+    sh = subprocess.run(["sh", "-c", "exit 0"], capture_output=True)
+    if sh.returncode != 0:
+        print("  sh not available - skipping parse check (git uses its own sh at runtime)")
+        return
+    broken = []
+    for hook in sorted(hooks_dir.glob("*")):
+        if hook.suffix == ".sample" or not hook.is_file():
+            continue
+        if subprocess.run(["sh", "-n", str(hook)], capture_output=True).returncode != 0:
+            broken.append(hook.name)
+    if broken:
+        die(f"hook(s) still do not parse after repair: {', '.join(broken)}")
+    print("  all generated hooks parse OK")
+
+
+def main() -> int:
+    print("setup-dev - ConvertIA developer bootstrap")
+    install_gate_tools()
+    lefthook_install()
+    hd = effective_hooks_dir()
+    repair_hooks(hd)
+    verify_parse(hd)
+    print("\n[setup-dev] ready - the gate plane is installed and the hooks parse. "
+          "Commits/pushes now run the L1/L2/L3 gates.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
