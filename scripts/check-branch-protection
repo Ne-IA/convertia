@@ -6,15 +6,20 @@ block is GitHub repo config - which is invisible to the codebase and silently re
 UI. G50/G56 lint workflow FILES but cannot see repo settings. This gate queries the GitHub API
 (scheduled + per-push) and asserts the load-bearing, otherwise-invisible config. Legs:
 
-  CORE - branch protection on `main` (`repos/<repo>/branches/<branch>/protection`):
-    * the agreed required status checks are all present-and-required (EXPECTED_REQUIRED_CHECKS
-      subset of the protection's required checks - subset so adding heavy gates in P0.3/P0.4 does
-      not break it);
-    * `enforce_admins` is true (no admin-bypass);
-    * `allow_force_pushes` / `allow_deletions` are both false.
-  (g) required_signatures on `main` - target-gated: fail-SOFT (skip-with-warning) until the
-      committed SSH allowed-signers file lands (P0.7.17, the loop then signs its own commits),
-      then fail-closed.
+  CORE - the active branch RULESETS on `main` (`repos/<repo>/rulesets` + a GET per ruleset). The
+    direct-to-`main` model needs the TRUSTED pusher to direct-push while the UNTRUSTED (fork-PR)
+    path stays gated - classic branch protection cannot express that (required checks block ALL
+    direct pushes, GH006), so the config is two rulesets:
+    * a `required_status_checks` rule whose checks cover EXPECTED_REQUIRED_CHECKS (subset, so adding
+      heavier checks in P0.3/P0.4 never red-fails this), with its bypass set restricted to the repo-
+      ADMIN role ONLY (the trusted direct-pusher - a fork-PR is still gated, the owner/Build-Loop
+      can push);
+    * `non_fast_forward` (block force-push) + `deletion` rules with NO bypass (history protection
+      applies to EVERYONE incl. admins).
+    [This resolves the prior `enforce_admins`-vs-direct-push contradiction - security-concept §3.]
+  (g) a `required_signatures` ruleset rule on `main` - target-gated: fail-SOFT (skip-with-warning)
+      until the committed SSH allowed-signers file lands (P0.7.17, the loop then signs its own
+      commits), then fail-closed.
   (d) native secret-scanning + push-protection enabled (`repos/<repo>` security_and_analysis).
   (e) default workflow permissions read-only + can_approve_pull_request_reviews == false
       (`repos/<repo>/actions/permissions/workflow`).
@@ -32,11 +37,11 @@ lands - the same target-existence flip G56b leg 3 uses.
 The pure evaluate_*() / taint_or_gate() functions take parsed JSON and are driven by the G24 self-
 test on fixtures; the LIVE `gh api` calls are owner/CI-verified (G56a is exempt from the plan-lint
 check-16 fixture requirement - an API-introspection gate). The `gh` calls use the workflow
-GITHUB_TOKEN, which on its default `contents: read` scope CANNOT read the admin-scoped branch-
-protection / repo-config endpoints (GitHub exposes no `administration` GITHUB_TOKEN permission, so
-the elevation cannot even be requested) - hence the gate runs fail-SOFT in CI on the default token
-and is owner-verified; the P1 hard-enforce path supplies an admin-scoped PAT secret + --enforce. No
-`secrets.*` release value is read here.
+GITHUB_TOKEN, which on its default `contents: read` scope CANNOT read the admin-scoped rulesets /
+repo-config endpoints (GitHub exposes no `administration` GITHUB_TOKEN permission, so the elevation
+cannot even be requested) - hence the gate runs fail-SOFT in CI on the default token and is owner-
+verified; the P1 hard-enforce path supplies an admin-scoped PAT secret + --enforce. No `secrets.*`
+release value is read here.
 
 fail-closed under --enforce. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
 
@@ -77,30 +82,91 @@ def fail(msg: str) -> None:
 
 
 # --- pure evaluators (fixture-testable; no network) -------------------------------------------
-def evaluate_branch_protection(data: dict, expected_checks: tuple[str, ...],
-                               require_signatures: bool) -> tuple[list[str], list[str]]:
-    """(hard_problems, soft_notes) for a parsed branches/<b>/protection object."""
+ADMIN_ROLE_ID = 5  # GitHub built-in RepositoryRole id for "Admin" - the trusted direct-pusher that
+# may bypass the required-checks rule (so a fork-PR stays gated). The history-protection rules
+# (force-push / deletion) permit NO bypass at all.
+
+
+def ruleset_targets_main(rs: dict, branch: str = "main") -> bool:
+    """A branch ruleset applies to <branch> if its ref_name `include` covers it (the literal ref or
+    the ~ALL / ~DEFAULT_BRANCH wildcards) and does not `exclude` it."""
+    if rs.get("target") != "branch":
+        return False
+    cond = (rs.get("conditions") or {}).get("ref_name") or {}
+    ref = f"refs/heads/{branch}"
+    inc = cond.get("include") or []
+    exc = cond.get("exclude") or []
+    return (ref in inc or "~ALL" in inc or "~DEFAULT_BRANCH" in inc) and ref not in exc
+
+
+def bypass_is_admin_only(rs: dict) -> bool:
+    """True iff every bypass actor is the built-in repo-ADMIN role - any other actor (a user, a
+    team, an app, a wider role) means someone beyond the trusted direct-pusher can skip the rule."""
+    return all(a.get("actor_type") == "RepositoryRole" and a.get("actor_id") == ADMIN_ROLE_ID
+               for a in (rs.get("bypass_actors") or []))
+
+
+def bypass_unreadable(rs: dict) -> bool:
+    """True iff bypass_actors is absent/null - GitHub OMITS the field unless the token has ruleset
+    WRITE access, so an absent/null value is 'cannot verify the bypass posture', NOT 'empty' (which
+    would be a silent fail-open: a wide-open bypass hidden behind a read-only token). A genuine
+    empty list [] is readable + means no bypass, so it is NOT unreadable."""
+    return rs.get("bypass_actors") is None
+
+
+def evaluate_rulesets(rulesets: list[dict], expected_checks: tuple[str, ...],
+                      require_signatures: bool) -> tuple[list[str], list[str]]:
+    """(hard, soft) for the ACTIVE branch rulesets that target the branch. Asserts: a required_
+    status_checks rule covers EXPECTED with an admin-ONLY bypass; non_fast_forward + deletion rules
+    exist with NO bypass; (g) a required_signatures rule (target-gated)."""
     hard: list[str] = []
     soft: list[str] = []
-    rsc = data.get("required_status_checks") or {}
-    present = {c.get("context") for c in (rsc.get("checks") or [])}
-    # older API shape: contexts[] instead of checks[]
-    present |= set(rsc.get("contexts") or [])
-    missing = [c for c in expected_checks if c not in present]
-    if missing:
-        hard.append("required status checks not all present-and-required: missing " + ", ".join(missing))
-    if not (data.get("enforce_admins") or {}).get("enabled"):
-        hard.append("admin-bypass is enabled - enforce_admins must be true")
-    if (data.get("allow_force_pushes") or {}).get("enabled"):
-        hard.append("allow_force_pushes is enabled - must be false")
-    if (data.get("allow_deletions") or {}).get("enabled"):
-        hard.append("allow_deletions is enabled - must be false")
-    sig = (data.get("required_signatures") or {}).get("enabled")
-    if require_signatures:
-        if not sig:
-            hard.append("required_signatures is not enabled on the branch (allowed-signers exists -> hard)")
+    # index each rule by type with its hosting ruleset (the bypass posture is per-ruleset)
+    by_type: dict[str, list[tuple[dict, dict]]] = {}
+    for rs in rulesets:
+        for rule in (rs.get("rules") or []):
+            by_type.setdefault(rule.get("type"), []).append((rs, rule))
+
+    rsc = by_type.get("required_status_checks") or []
+    if not rsc:
+        hard.append("no active ruleset on the branch has a required_status_checks rule - a red CI "
+                    "run would not block a fork-PR merge")
+    else:
+        present: set[str] = set()
+        for rs, rule in rsc:
+            for c in (rule.get("parameters") or {}).get("required_status_checks") or []:
+                present.add(c.get("context"))
+        missing = [c for c in expected_checks if c not in present]
+        if missing:
+            hard.append("required status checks not all present-and-required: missing " + ", ".join(missing))
+        for rs, _ in rsc:
+            if bypass_unreadable(rs):
+                hard.append(f"ruleset {rs.get('name', '?')!r}: bypass_actors not readable (token lacks "
+                            "ruleset write access) - cannot verify the required-checks bypass is admin-only")
+            elif not bypass_is_admin_only(rs):
+                hard.append(f"ruleset {rs.get('name', '?')!r} bypassing required_status_checks has a "
+                            "non-admin bypass actor - only the repo-admin (trusted direct-pusher) may bypass")
+
+    for rule_type, label in (("non_fast_forward", "force-push (non-fast-forward)"),
+                             ("deletion", "branch deletion")):
+        hosts = by_type.get(rule_type) or []
+        if not hosts:
+            hard.append(f"no active ruleset on the branch blocks {label}")
+            continue
+        for rs, _ in hosts:
+            if bypass_unreadable(rs):
+                hard.append(f"ruleset {rs.get('name', '?')!r} blocking {label}: bypass_actors not "
+                            "readable (token lacks ruleset write access) - cannot verify it has no bypass")
+            elif rs.get("bypass_actors"):
+                hard.append(f"ruleset {rs.get('name', '?')!r} blocking {label} has a bypass actor - "
+                            "history protection must apply to EVERYONE (no bypass)")
+
+    sig = by_type.get("required_signatures") or []
+    if require_signatures and not sig:
+        hard.append("no active ruleset on the branch has a required_signatures rule "
+                    "(allowed-signers exists -> hard)")
     elif not sig:
-        soft.append("(g) required_signatures skipped (fail-soft) - allowed-signers not yet "
+        soft.append("(g) required_signatures rule skipped (fail-soft) - allowed-signers not yet "
                     "provisioned (P0.7.17); becomes hard once it lands")
     return hard, soft
 
@@ -187,6 +253,24 @@ def api_json(path: str) -> tuple[str, object, str]:
     return "error", None, err
 
 
+def fetch_branch_rulesets(repo: str, branch: str) -> tuple[str, list[dict] | None, str]:
+    """('ok', [full ruleset dicts that are active + target <branch>], '') | a read-failure status.
+    Lists the repo rulesets, then GETs each (the list endpoint omits rules/bypass_actors)."""
+    status, data, err = api_json(f"repos/{repo}/rulesets")
+    if status != "ok":
+        return status, None, err
+    full: list[dict] = []
+    for summary in (data or []):
+        if summary.get("enforcement") != "active":
+            continue
+        st, rs, e = api_json(f"repos/{repo}/rulesets/{summary.get('id')}")
+        if st != "ok":
+            return st, None, e
+        if isinstance(rs, dict) and ruleset_targets_main(rs, branch):
+            full.append(rs)
+    return "ok", full, ""
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="G56a branch-protection / repo-config assertion (P0.2.8)")
     ap.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""),
@@ -227,14 +311,17 @@ def main(argv: list[str] | None = None) -> int:
                                                         if args.enforce else " (fail-soft, P0)"))
         return None
 
-    # CORE + (g): branch protection
-    bp = readable("branch protection", f"repos/{args.repo}/branches/{args.branch}/protection",
-                  notfound_hard=f"branch `{args.branch}` is NOT protected (no required checks / "
-                                "force-push + deletion guards) - the single-branch model is unguarded")
-    if isinstance(bp, dict):
-        h, s = evaluate_branch_protection(bp, EXPECTED_REQUIRED_CHECKS, args.allowed_signers.is_file())
+    # CORE + (g): the active branch rulesets on <branch> (an empty list => unprotected => the
+    # rule-missing findings fire hard, exactly like the old "branch not protected").
+    rs_status, rulesets, rs_err = fetch_branch_rulesets(args.repo, args.branch)
+    if rs_status == "ok":
+        h, s = evaluate_rulesets(rulesets, EXPECTED_REQUIRED_CHECKS, args.allowed_signers.is_file())
         hard += h
         soft += s
+    else:
+        note = f"could not read branch rulesets for `{args.branch}` ({rs_err})"
+        (hard if args.enforce else soft).append(
+            note + (" [unverifiable -> fail-closed under --enforce]" if args.enforce else " (fail-soft, P0)"))
 
     # (d): repo security settings
     repo = readable("repo security settings", f"repos/{args.repo}", notfound_hard=None)
@@ -269,7 +356,7 @@ def main(argv: list[str] | None = None) -> int:
         out(f"G56a: {len(hard)} repo-config issue(s); fail-SOFT during the P0 bootstrap "
             "(becomes hard with --enforce from P1)")
         return 0
-    out(f"G56a: branch `{args.branch}` protection + repo config OK"
+    out(f"G56a: branch `{args.branch}` rulesets + repo config OK"
         + (f" ({len(soft)} target-absent leg(s) fail-soft)" if soft else ""))
     return 0
 

@@ -3,9 +3,10 @@
 
 Drives the PURE evaluate_*() functions with fixture JSON (the live `gh api` calls are owner/CI-
 verified - G56a is exempt from the plan-lint check-16 fixture requirement, an API-introspection
-gate). Proves: the branch-protection core (required checks subset, enforce_admins, force-push/
-deletion, required_signatures target-gating), the repo-security (d), workflow-perms (e) and the
-T2-taint OR-gate (f) all classify correctly, and main() handles a missing repo per posture.
+gate). Proves: the ruleset core (ruleset_targets_main; bypass_is_admin_only; evaluate_rulesets -
+required checks subset, admin-only check-bypass, no-bypass history protection, required_signatures
+target-gating), the repo-security (d), workflow-perms (e) and the T2-taint OR-gate (f) all classify
+correctly, and main() handles a missing repo per posture.
 stdlib-only. Exit 0 = all held; 1 = a self-test failed.
 """
 import importlib.machinery
@@ -29,46 +30,94 @@ def record(name: str, ok: bool, detail: str = "") -> None:
     print(f"[{'PASS' if ok else 'FAIL'}] {name}{(' - ' + detail) if detail else ''}")
 
 
-def bp(*, checks=None, contexts=None, admins=True, force=False, deletions=False, sig=False) -> dict:
-    rsc: dict = {}
-    if checks is not None:
-        rsc["checks"] = [{"context": c} for c in checks]
-    if contexts is not None:
-        rsc["contexts"] = list(contexts)
-    return {
-        "required_status_checks": rsc,
-        "enforce_admins": {"enabled": admins},
-        "allow_force_pushes": {"enabled": force},
-        "allow_deletions": {"enabled": deletions},
-        "required_signatures": {"enabled": sig},
-    }
+ADMIN_BYPASS = [{"actor_type": "RepositoryRole", "actor_id": 5, "bypass_mode": "always"}]
 
 
-# --- evaluate_branch_protection ---------------------------------------------------------------
-h, s = m.evaluate_branch_protection(bp(checks=EXPECTED), EXPECTED, False)
-record("BP valid (all checks, no admin-bypass, no force/del) -> no hard", not h)
-record("BP valid + sig-not-required -> (g) soft note present", any("required_signatures" in x for x in s))
+def rs_checks(contexts=EXPECTED, bypass="admin", sig=False):
+    """A ruleset hosting a required_status_checks rule (+ optionally a required_signatures rule)."""
+    by = ADMIN_BYPASS if bypass == "admin" else (bypass or [])
+    rules = [{"type": "required_status_checks",
+              "parameters": {"required_status_checks": [{"context": c} for c in contexts]}}]
+    if sig:
+        rules.append({"type": "required_signatures"})
+    return {"name": "checks", "target": "branch", "enforcement": "active",
+            "conditions": {"ref_name": {"include": ["refs/heads/main"], "exclude": []}},
+            "bypass_actors": by, "rules": rules}
 
-h, _ = m.evaluate_branch_protection(bp(checks=EXPECTED[1:]), EXPECTED, False)
-record("BP missing a required check -> hard", any("present-and-required" in x for x in h))
 
-h, _ = m.evaluate_branch_protection(bp(checks=EXPECTED, admins=False), EXPECTED, False)
-record("BP enforce_admins false -> hard", any("admin-bypass" in x for x in h))
+def rs_history(bypass=None, rules=("non_fast_forward", "deletion")):
+    """A ruleset hosting the history-protection rules (force-push / deletion)."""
+    return {"name": "history", "target": "branch", "enforcement": "active",
+            "conditions": {"ref_name": {"include": ["refs/heads/main"], "exclude": []}},
+            "bypass_actors": bypass or [], "rules": [{"type": t} for t in rules]}
 
-h, _ = m.evaluate_branch_protection(bp(checks=EXPECTED, force=True), EXPECTED, False)
-record("BP allow_force_pushes true -> hard", any("force_pushes" in x for x in h))
 
-h, _ = m.evaluate_branch_protection(bp(checks=EXPECTED, deletions=True), EXPECTED, False)
-record("BP allow_deletions true -> hard", any("deletions" in x for x in h))
+# --- ruleset_targets_main ---------------------------------------------------------------------
+def _rs(include, exclude=None, target="branch"):
+    return {"target": target, "conditions": {"ref_name": {"include": include, "exclude": exclude or []}}}
 
-h, _ = m.evaluate_branch_protection(bp(checks=EXPECTED, sig=False), EXPECTED, True)
-record("BP required_signatures off WHILE allowed-signers exists -> hard", any("required_signatures" in x for x in h))
 
-h, _ = m.evaluate_branch_protection(bp(checks=EXPECTED, sig=True), EXPECTED, True)
-record("BP required_signatures on + required -> no hard", not h)
+record("targets_main: include refs/heads/main -> True", m.ruleset_targets_main(_rs(["refs/heads/main"])))
+record("targets_main: include ~ALL -> True", m.ruleset_targets_main(_rs(["~ALL"])))
+record("targets_main: include ~DEFAULT_BRANCH -> True", m.ruleset_targets_main(_rs(["~DEFAULT_BRANCH"])))
+record("targets_main: main excluded -> False",
+       not m.ruleset_targets_main(_rs(["~ALL"], exclude=["refs/heads/main"])))
+record("targets_main: tag target -> False", not m.ruleset_targets_main(_rs(["refs/heads/main"], target="tag")))
 
-h, _ = m.evaluate_branch_protection(bp(contexts=EXPECTED), EXPECTED, False)
-record("BP legacy contexts[] shape recognized -> no hard", not h)
+# --- bypass_is_admin_only ---------------------------------------------------------------------
+record("bypass admin-only -> True", m.bypass_is_admin_only({"bypass_actors": ADMIN_BYPASS}))
+record("bypass empty -> True (vacuous)", m.bypass_is_admin_only({"bypass_actors": []}))
+record("bypass a user actor -> False",
+       not m.bypass_is_admin_only({"bypass_actors": [{"actor_type": "User", "actor_id": 42}]}))
+record("bypass a wider role (Write=3) -> False",
+       not m.bypass_is_admin_only({"bypass_actors": [{"actor_type": "RepositoryRole", "actor_id": 3}]}))
+
+# --- bypass_unreadable (absent/null vs genuinely-empty) ---------------------------------------
+record("bypass_unreadable: present empty [] -> False (readable, no bypass)",
+       not m.bypass_unreadable({"bypass_actors": []}))
+record("bypass_unreadable: absent key -> True", m.bypass_unreadable({}))
+record("bypass_unreadable: null value -> True", m.bypass_unreadable({"bypass_actors": None}))
+
+# --- evaluate_rulesets ------------------------------------------------------------------------
+h, s = m.evaluate_rulesets([rs_checks(), rs_history()], EXPECTED, False)
+record("RS valid (admin-bypass checks + no-bypass history) -> no hard", not h)
+record("RS valid + sig-not-required -> (g) soft note", any("required_signatures" in x for x in s))
+
+h, _ = m.evaluate_rulesets([rs_history()], EXPECTED, False)
+record("RS missing the checks ruleset -> hard", any("required_status_checks rule" in x for x in h))
+
+h, _ = m.evaluate_rulesets([rs_checks(contexts=EXPECTED[1:]), rs_history()], EXPECTED, False)
+record("RS missing a required check -> hard", any("present-and-required" in x for x in h))
+
+h, _ = m.evaluate_rulesets(
+    [rs_checks(bypass=[{"actor_type": "User", "actor_id": 42}]), rs_history()], EXPECTED, False)
+record("RS non-admin bypass on the checks ruleset -> hard", any("non-admin bypass" in x for x in h))
+
+h, _ = m.evaluate_rulesets([rs_checks(), rs_history(rules=("deletion",))], EXPECTED, False)
+record("RS missing the force-push block -> hard", any("force-push" in x for x in h))
+
+h, _ = m.evaluate_rulesets([rs_checks(), rs_history(rules=("non_fast_forward",))], EXPECTED, False)
+record("RS missing the deletion block -> hard", any("deletion" in x for x in h))
+
+h, _ = m.evaluate_rulesets([rs_checks(), rs_history(bypass=ADMIN_BYPASS)], EXPECTED, False)
+record("RS history ruleset WITH a bypass actor -> hard", any("history protection must apply" in x for x in h))
+
+h, _ = m.evaluate_rulesets([rs_checks(sig=True), rs_history()], EXPECTED, True)
+record("RS required_signatures present + required -> no hard", not h)
+
+h, _ = m.evaluate_rulesets([rs_checks(sig=False), rs_history()], EXPECTED, True)
+record("RS required_signatures MISSING while allowed-signers exists -> hard",
+       any("required_signatures rule" in x for x in h))
+
+_no_by = rs_checks()
+del _no_by["bypass_actors"]
+h, _ = m.evaluate_rulesets([_no_by, rs_history()], EXPECTED, False)
+record("RS checks ruleset bypass_actors UNREADABLE (omitted) -> hard", any("not readable" in x for x in h))
+
+_hist_no_by = rs_history()
+del _hist_no_by["bypass_actors"]
+h, _ = m.evaluate_rulesets([rs_checks(), _hist_no_by], EXPECTED, False)
+record("RS history ruleset bypass_actors UNREADABLE (omitted) -> hard", any("not readable" in x for x in h))
 
 # --- evaluate_repo_security (d) ---------------------------------------------------------------
 ok = {"security_and_analysis": {"secret_scanning": {"status": "enabled"},
