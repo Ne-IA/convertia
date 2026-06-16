@@ -94,6 +94,48 @@ rc, out = run_installer('schema_version = 1\n[toolchain]\nrust_stable = "stable"
 record("floating toolchain channel is rejected", rc == 1 and "floating" in out.lower(), f"exit={rc}")
 
 
+def archive_leg() -> None:
+    """Hermetic: extract_binary round-trips the inner binary from a tar.gz (nested
+    member) + a zip (root member), and fails on a missing member - covers the P0.2.4
+    archive-extraction code path without network."""
+    import importlib.machinery
+    import importlib.util
+    import io
+    import tarfile
+    import zipfile
+    # install-gate-tools has no .py extension, so give an explicit source loader.
+    loader = importlib.machinery.SourceFileLoader("install_gate_tools", str(INSTALLER))
+    spec = importlib.util.spec_from_loader("install_gate_tools", loader)
+    igt = importlib.util.module_from_spec(spec)
+    loader.exec_module(igt)
+    payload = b"#!/bin/sh\necho fake-tool\n"
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        tgz = d / "a.tar.gz"
+        with tarfile.open(tgz, "w:gz") as tf:
+            info = tarfile.TarInfo("actionlint-1.0/actionlint")
+            info.size = len(payload)
+            tf.addfile(info, io.BytesIO(payload))
+        o1 = d / "o1"
+        igt.extract_binary(tgz, "targz", o1, "actionlint")
+        record("archive extract tar.gz (nested member)", o1.read_bytes() == payload)
+        z = d / "a.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("actionlint.exe", payload)
+        o2 = d / "o2.exe"
+        igt.extract_binary(z, "zip", o2, "actionlint.exe")
+        record("archive extract zip (root member)", o2.read_bytes() == payload)
+        missing = False
+        try:
+            igt.extract_binary(z, "zip", d / "x", "nonexistent")
+        except igt.GateToolError:
+            missing = True
+        record("archive missing member fails", missing)
+
+
+archive_leg()
+
+
 def pip_leg() -> None:
     with tempfile.TemporaryDirectory() as td:
         rq = Path(td) / "reqs.txt"
@@ -126,6 +168,22 @@ else:
     record("wrong checksum fails the install", rc == 1 and "mismatch" in out.lower(), f"exit={rc}")
     rc, out = run_installer(manifest(SMALL_ASSET, good))
     record("correct checksum passes the install", rc == 0, f"exit={rc}")
+
+# Idempotency: a 2nd install of the same pinned source = a verified no-op via the
+# source-sha256 stamp (the path ARCHIVE tools rely on for re-runs + --offline).
+if not online():
+    record("install idempotent (2nd run skips)", True, "SKIP (offline)")
+else:
+    with tempfile.TemporaryDirectory() as td:
+        man = Path(td) / "m.toml"
+        man.write_text(manifest(SMALL_ASSET, real_sha()), encoding="utf-8")
+        dest = Path(td) / "dest"
+        cmd = [sys.executable, str(INSTALLER), "--manifest", str(man), "--dest", str(dest)]
+        p1 = subprocess.run(cmd, capture_output=True, text=True)
+        p2 = subprocess.run(cmd, capture_output=True, text=True)
+        ok = (p1.returncode == 0 and p2.returncode == 0
+              and "already verified" in (p2.stdout + p2.stderr))
+        record("install idempotent (2nd run = already verified)", ok, f"{p1.returncode}/{p2.returncode}")
 
 failed = [n for n, ok, _ in results if not ok]
 print(f"\n[g24-install-gate-tools] {len(results) - len(failed)}/{len(results)} assertions passed.")

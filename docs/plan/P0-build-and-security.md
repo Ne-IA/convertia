@@ -88,7 +88,7 @@ mechanism* (P0.2.1) comes first because every other tool here is installed throu
 - [x] **P0.2.3** [GATE] Build the gate-plane integrity assertion — hooks-installed + not-redirected + two-plane parity + push-from-stale-base · G54 G24
   needs: P0.2.2
   > the after-clone bootstrap is **`scripts/setup-dev`** (`install-gate-tools` + `lefthook install` + a quote-repair of lefthook's unquoted embedded-path so the generated hooks parse on **any** repo path incl. spaces/parens — a lefthook generation bug; a no-op on clean paths); `lefthook install` is mandatory after clone (no local protection without it); G54 resolves the **EFFECTIVE** hooks dir (`core.hooksPath` when set, else `git rev-parse --git-path hooks`) and asserts it holds lefthook-managed hooks, so a `core.hooksPath` redirect to a non-lefthook dir is caught (a redirect silently disables ALL local hooks without `--no-verify`); the two-plane parity (CI re-invokes the same hooks); and the push-from-stale-base guard `git merge-base HEAD origin/main == origin/main`. G24 positive+negative self-test.
-- [ ] **P0.2.4** [CI] Stand up the GitHub Actions CI skeleton (L4) — clean-checkout matrix · §6.7.1 · G25
+- [x] **P0.2.4** [CI] Stand up the GitHub Actions CI skeleton (L4) — clean-checkout matrix · §6.7.1 · G25
   > the L4 clean-checkout job matrix (Win/macOS/Linux) that mirrors L1–L2 (G25) + holds the empty heavy-gate slots P0.3/P0.4 fill. Top-level `permissions: contents: read`; per-job `timeout-minutes`; per-PUSH-workflow `concurrency: {group, cancel-in-progress: true}` (never on the release/tag workflow).
 - [ ] **P0.2.5** [CI] Stand up the release-workflow skeleton (L5) — tag-triggered, empty gate slots · §6.7.2 · G58
   needs: P0.2.1

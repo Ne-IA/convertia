@@ -15,6 +15,10 @@ target/
 # Installed pinned gate tools (downloaded + checksum-verified by scripts/install-gate-tools)
 .gate-tools/
 
+# Python bytecode cache (the stdlib-only gate + bootstrap scripts)
+__pycache__/
+*.pyc
+
 # Env / secrets
 .env
 .env.*

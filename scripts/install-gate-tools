@@ -109,6 +109,37 @@ def download(url: str, dest_tmp: Path) -> None:
         shutil.copyfileobj(resp, out, CHUNK)
 
 
+def extract_binary(archive: Path, kind: str, out_path: Path, want_name: str) -> None:
+    """Extract the single archive member whose basename == want_name to out_path.
+
+    The archive's sha256 is verified by the caller BEFORE this runs, so the archive is
+    the pinned, corroborated artifact. Only that ONE member's bytes are written (never
+    extractall) - no archive-path-traversal (zip-slip) exposure.
+    """
+    if kind == "targz":
+        import tarfile
+        with tarfile.open(archive, "r:gz") as tf:
+            member = next((m for m in tf.getmembers()
+                           if m.isfile() and Path(m.name).name == want_name), None)
+            if member is None:
+                raise GateToolError(f"{want_name!r} not found in the tar.gz archive")
+            src = tf.extractfile(member)
+            if src is None:
+                raise GateToolError(f"could not read {want_name!r} from the tar.gz archive")
+            with src:
+                out_path.write_bytes(src.read())
+    elif kind == "zip":
+        import zipfile
+        with zipfile.ZipFile(archive) as zf:
+            name = next((n for n in zf.namelist()
+                         if not n.endswith("/") and Path(n).name == want_name), None)
+            if name is None:
+                raise GateToolError(f"{want_name!r} not found in the zip archive")
+            out_path.write_bytes(zf.read(name))
+    else:
+        raise GateToolError(f"cannot extract asset_kind {kind!r}")
+
+
 def install_tool(name: str, entry: dict, dest: Path, platform_key: str, offline: bool) -> None:
     platforms = entry.get("platforms", {})
     if platform_key not in platforms:
@@ -121,48 +152,57 @@ def install_tool(name: str, entry: dict, dest: Path, platform_key: str, offline:
     want = pin["sha256"].lower()
     origin = entry["origin"]
     bin_name = entry.get("bin_name", name)
-    asset_kind = entry.get("asset_kind", "raw")
+    # asset_kind is per-platform first (a tool may ship tar.gz on unix + zip on windows),
+    # then the tool-level default, then "raw".
+    asset_kind = pin.get("asset_kind", entry.get("asset_kind", "raw"))
     version = entry.get("version", "?")
 
     is_windows = platform_key.startswith("windows")
     bindir = dest / "bin"
     bindir.mkdir(parents=True, exist_ok=True)
     out_path = bindir / (bin_name + (".exe" if is_windows else ""))
+    # Record the SOURCE artifact's pinned sha256 beside the binary. For an ARCHIVE
+    # tool the extracted binary's hash != the archive's `want`, so it cannot be
+    # re-derived from out_path - the stamp is what makes idempotency AND --offline
+    # work for archive tools (and uniformly for raw).
+    stamp = bindir / ("." + out_path.name + ".source-sha256")
 
-    # Idempotent: an existing install whose content already matches is a no-op.
-    if out_path.is_file() and sha256_file(out_path) == want:
+    # Idempotent: a prior install of THIS pinned source artifact is a verified no-op.
+    if out_path.is_file() and stamp.is_file() and stamp.read_text(encoding="utf-8").strip() == want:
         print(f"[ok]      {name} {version} ({platform_key}) - already verified")
         return
 
     verify_origin(url, origin)
 
-    if asset_kind != "raw":
-        raise GateToolError(
-            f"asset_kind {asset_kind!r} is unsupported "
-            "(add archive extraction in the same change as the first tool that needs it)"
-        )
+    if asset_kind not in ("raw", "targz", "zip"):
+        raise GateToolError(f"unsupported asset_kind {asset_kind!r} (expected raw/targz/zip)")
 
     if offline:
         raise GateToolError("--offline and no verified install present (cannot fetch)")
 
     with tempfile.TemporaryDirectory() as td:
-        tmp = Path(td) / "download.bin"
+        tmp = Path(td) / "download"
         try:
             download(url, tmp)
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             raise GateToolError(f"download failed: {e}") from e
         got = sha256_file(tmp)
         if got != want:
-            # HARD FAIL - the entire point of this script.
+            # HARD FAIL - the entire point of this script. For an archive this verifies
+            # the ARCHIVE's pinned sha256 BEFORE anything is extracted from it.
             raise GateToolError(
                 "SHA-256 MISMATCH - refusing to install\n"
                 f"  expected: {want}\n  got:      {got}\n  url:      {url}"
             )
-        shutil.move(str(tmp), str(out_path))
+        if asset_kind == "raw":
+            shutil.move(str(tmp), str(out_path))
+        else:
+            extract_binary(tmp, asset_kind, out_path, bin_name + (".exe" if is_windows else ""))
 
     if not is_windows:
         mode = out_path.stat().st_mode
         out_path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    stamp.write_text(want, encoding="utf-8")  # the verified source hash -> idempotency + --offline
     print(f"[install] {name} {version} ({platform_key}) - sha256 verified")
 
 

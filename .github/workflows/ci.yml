@@ -1,0 +1,61 @@
+# .github/workflows/ci.yml - Lane A: per-push validation on `main` (P0.2.4 - L4 - G25).
+#
+# The clean-checkout CI MIRROR of the local L1/L2 git-hook plane (security-concept §3;
+# spec §6.7.1). Today it bootstraps + self-tests the pinned gate tooling on all three
+# OS; the HEAVY GATES (clippy / tsc / gitleaks / plan-lint / ...) are added to the
+# slots below by the box that builds each (P0.3 / P0.4) - the empty-but-wired skeleton.
+#
+# Runner-host [Build-Session-Entscheidung: P0.2.4]: the skeleton uses GitHub-HOSTED
+# runners so it runs without the self-hosted-runner provisioning step; the §6.1.4
+# self-hosted Linux Lane-A migration is a later infra step (P0.2.7). Third-party
+# actions are SHA-PINNED (G50; the full token-scope/dependabot hardening is P0.2.6).
+# This file is L(-1) security-critical (.github/**, scripts/l-neg1-files.toml).
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: read-only by default (G49/G56). Elevated per-job only where needed
+# (none here); never set id-token on this push/PR workflow (P0.2.6).
+permissions:
+  contents: read
+
+# Per-push/PR concurrency so a newer push supersedes an in-flight run. NEVER added to
+# the release/tag workflow (P0.2.5).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate-tooling:
+    name: gate-tooling
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14, windows-2022]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+      - name: Install + verify pinned gate tools
+        run: python3 scripts/install-gate-tools
+      - name: 'G24: install-gate-tools self-test (the pin verify control, both ways)'
+        run: python3 scripts/gate-selftests/g24-install-gate-tools.py --require-network
+      - name: 'G54: gate-plane integrity self-test'
+        run: python3 scripts/gate-selftests/g54-gate-plane.py
+      # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
+      #   gitleaks dir full-tree (P0.3.1) | plan-lint/spec-lint full (P0.3.5) |
+      #   G8 + G21 deferral full-tree (P0.3.4) | G70 test-suppression (P0.3.14) |
+      #   CSP/capability lint (P0.3.2) | doc-graph G68 + struct-map G69 (P0.3.12/13) |
+      #   cargo-deny + cargo-audit (P0.3.6 / P0.4.1) | clippy --all-targets + tsc + eslint
+      #   (P0.4, activated in P1) | the per-gate-script self-test prelude (P0.2.13).

@@ -1155,7 +1155,8 @@ convertia/
 │
 ├─ index.html  vite.config.ts  package.json  tsconfig.json   # frontend build
 ├─ tests/                          # Rust integration + corpus harness (§6.4); guarantees property tests
-└─ scripts/                        # build/bundle/SBOM/checksum (§06)
+├─ scripts/                        # build/bundle/SBOM/checksum (§06) + the pinned-gate-tool installer + gate self-tests (P0.2)
+└─ .github/                        # CI (Lane A §6.7.1) + release (Lane B §6.7.2) workflows + dependabot; SHA-pinned actions
 ```
 
 **Engine-registry-as-crate `[OPEN → recommend: module first, extract later]`:**

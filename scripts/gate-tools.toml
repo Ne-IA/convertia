@@ -16,7 +16,7 @@
 # GROWTH: this manifest is seeded with the toolchain + lefthook (the L1/L2/L3
 # executor, needed first by P0.2.2). Each additional gate tool is pinned here BY THE
 # BOX THAT INTRODUCES IT, through the same mechanism — gitleaks (P0.3.1),
-# actionlint/zizmor (P0.2.6), typos/editorconfig-checker (P0.3.11), Syft/cargo-deny/
+# actionlint (P0.2.4 - CI workflow validator), zizmor (P0.2.6), typos/editorconfig-checker (P0.3.11), Syft/cargo-deny/
 # cargo-vet/cargo-fuzz/minisign/cyclonedx (their boxes). pip-installed tools
 # (Semgrep, P0.4.2) live in `requirements-ci.txt` (the --require-hashes leg), not
 # here. [Build-Session-Entscheidung: P0.2.1 — mechanism + first-tool pins now,
@@ -47,3 +47,21 @@ linux-aarch64  = { url = "https://github.com/evilmartians/lefthook/releases/down
 macos-x86_64   = { url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.9/lefthook_2.1.9_MacOS_x86_64",      sha256 = "0868b9b5b9cd807b0f9e0135fadaff1bd99fa026cccc15cbfd4510f0ee3b5431" }
 macos-aarch64  = { url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.9/lefthook_2.1.9_MacOS_arm64",       sha256 = "fd506e05954af2062ce320d59ac1f5bf13fad8d694694a72bc6ef91e8c284e3d" }
 windows-x86_64 = { url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.9/lefthook_2.1.9_Windows_x86_64.exe", sha256 = "bcb94c2524153e8e003a4fe3ae77f86e84729c9f089efc1c6b20c00e832de046" }
+
+# --- actionlint - the GitHub Actions workflow validator (G50/P0.2.6 family; pinned
+# here in P0.2.4 because it validates the first workflow). Ships as a per-platform
+# ARCHIVE (.tar.gz on linux/macos, .zip on windows) - the archive sha256 is verified
+# before the `actionlint` binary is extracted from it. ---
+[tools.actionlint]
+version       = "1.7.12"
+origin        = "https://github.com/rhysd/actionlint/releases/download/v1.7.12/"
+bin_name      = "actionlint"
+asset_kind    = "targz"   # default (linux/macos); the windows platform overrides to "zip"
+corroboration = "official actionlint_1.7.12_checksums.txt (GitHub release v1.7.12); release build-provenance verified via `gh attestation verify --owner rhysd` (exit 0) on the linux_amd64 artifact; each pinned platform archive sha256 from that attested checksums.txt; established 2026-06-16 by ch4ngo88"
+
+[tools.actionlint.platforms]
+linux-x86_64   = { url = "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz",  sha256 = "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8" }
+linux-aarch64  = { url = "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_arm64.tar.gz",  sha256 = "325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6" }
+macos-x86_64   = { url = "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_darwin_amd64.tar.gz", sha256 = "5b44c3bc2255115c9b69e30efc0fecdf498fdb63c5d58e17084fd5f16324c644" }
+macos-aarch64  = { url = "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_darwin_arm64.tar.gz", sha256 = "aba9ced2dee8d27fecca3dc7feb1a7f9a52caefa1eb46f3271ea66b6e0e6953f" }
+windows-x86_64 = { url = "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_windows_amd64.zip",   sha256 = "6e7241b51e6817ea6a047693d8e6fed13b31819c9a0dd6c5a726e1592d22f6e9", asset_kind = "zip" }
