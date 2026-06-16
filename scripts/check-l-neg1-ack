@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""check-l-neg1-ack - G71 L(-1) security-critical-file change-control (P0.2.14).
+
+Owner decision D1 (security-concept §2): the files that can silently weaken an enforcement plane are
+the **L(-1) set**. The autonomous Build-Loop NEVER edits one - a needed L(-1) edit is a hard-stop +
+escalation where the **owner** makes/approves it and records an `L-neg1-ack: owner` commit-body
+trailer. This pre-push gate (L2, + the L4 CI mirror) audits the TRAILER's presence on every commit
+in the push range whose diff touches an L(-1) file (per the authoritative glob list
+scripts/l-neg1-files.toml - itself L(-1), so the cage cannot be silently narrowed). It checks the
+EVIDENCE, not the intent: a leaked token or a unilateral cage edit cannot pass unseen.
+
+The trailer is the **only** sanctioned escape (security-concept §2): there is NO check-off or
+`[!extern]` exemption for an L(-1)-touching commit. A commit that touches **no** L(-1) file needs no
+trailer - which is how an ordinary commit and a plan check-off (it touches only `docs/plan/**`, NOT
+L(-1)) pass; but the moment a commit's diff touches a caged file, the owner-ack is required, no
+matter the subject. (An unrestricted `[!extern]`/check-off escape would waive the ack on exactly the
+gate catalogue / hooks / toolchain it is meant to guard - the §2-vs-plan conflict resolves to §2.)
+
+POSTURE: **fail-soft during the P0 bootstrap (no --enforce): a missing trailer warns, exit 0**
+(the P0 build itself edits L(-1) files under owner drive); **--enforce (wired from P1): a missing
+trailer on an L(-1)-touching commit -> exit 1** (the G56a fail-soft-then-hard pattern).
+
+stdlib-only (tomllib, Python 3.11+). L(-1) security-critical (matched by `scripts/check-*`).
+
+Usage: check-l-neg1-ack [--base <ref>] [--head <ref>] [--enforce] [--cage <l-neg1-files.toml>]
+       (--base default: the @{u}->origin/<branch>->origin/main->origin/HEAD chain; in CI pass
+        --base "$GITHUB_EVENT_BEFORE" for the exact push range)
+Exit:  0 = clean or fail-soft (P0); 1 = a missing trailer under --enforce; 2 = bad invocation / cage missing.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+DEFAULT_CAGE = Path(__file__).resolve().parent / "l-neg1-files.toml"
+ACK_RE = re.compile(r"^L-neg1-ack:[ \t]*owner[ \t]*$", re.MULTILINE)
+
+
+def out(msg: str) -> None:
+    print(f"[G71] {msg}")
+
+
+def fail(msg: str) -> None:
+    print(f"[G71] FAIL: {msg}", file=sys.stderr)
+
+
+def glob_to_regex(glob: str) -> re.Pattern[str]:
+    """gitignore-ish: `**` => any chars incl `/`; `*` => any chars except `/`; `?` => one except `/`."""
+    parts: list[str] = []
+    i = 0
+    while i < len(glob):
+        if glob.startswith("**", i):
+            parts.append(".*")
+            i += 2
+        elif glob[i] == "*":
+            parts.append("[^/]*")
+            i += 1
+        elif glob[i] == "?":
+            parts.append("[^/]")
+            i += 1
+        else:
+            parts.append(re.escape(glob[i]))
+            i += 1
+    return re.compile("^" + "".join(parts) + "$")
+
+
+def load_patterns(cage: Path) -> list[re.Pattern[str]] | None:
+    """Compile the cage globs, or None if the file is missing / unparseable / malformed."""
+    if not cage.is_file():
+        return None
+    try:
+        data = tomllib.loads(cage.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError:
+        return None
+    pats = data.get("patterns")
+    if not isinstance(pats, list) or not pats or not all(isinstance(p, str) and p for p in pats):
+        return None
+    return [glob_to_regex(p) for p in pats]
+
+
+def is_l_neg1(path: str, regexes: list[re.Pattern[str]]) -> bool:
+    p = path.strip().replace("\\", "/")
+    return bool(p) and any(rx.match(p) for rx in regexes)
+
+
+def git(*args: str) -> tuple[int, str]:
+    p = subprocess.run(["git", *args], capture_output=True, text=True)
+    return p.returncode, p.stdout
+
+
+def _resolves(ref: str) -> bool:
+    return git("rev-parse", "--verify", "--quiet", ref)[0] == 0
+
+
+def resolve_base(explicit: str | None) -> str | None:
+    """An explicit --base if it resolves, else the @{u}->origin/<branch>->origin/main->origin/HEAD
+    chain. None if none resolve (=> degrade to auditing only the tip commit)."""
+    if explicit:
+        return explicit if _resolves(explicit) else None
+    cands = ["@{u}"]
+    rc, b = git("rev-parse", "--abbrev-ref", "HEAD")
+    b = b.strip()
+    if rc == 0 and b and b != "HEAD":
+        cands.append(f"origin/{b}")
+    cands += ["origin/main", "origin/HEAD"]
+    return next((c for c in cands if _resolves(c)), None)
+
+
+def commits_in_range(base: str | None, head: str) -> list[str] | None:
+    rc, o = git("rev-list", "-1", head) if base is None else git("rev-list", f"{base}..{head}")
+    return o.split() if rc == 0 else None
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G71 L(-1)-ack change-control gate (P0.2.14)")
+    ap.add_argument("--base", default=None, help="range base (default: the upstream/origin chain)")
+    ap.add_argument("--head", default="HEAD", help="range head (default: HEAD)")
+    ap.add_argument("--enforce", action="store_true",
+                    help="fail-CLOSED on a missing trailer (wired from P1; off = fail-soft P0)")
+    ap.add_argument("--cage", type=Path, default=DEFAULT_CAGE, help="the L(-1) glob list (l-neg1-files.toml)")
+    args = ap.parse_args(argv)
+
+    regexes = load_patterns(args.cage)
+    if regexes is None:
+        msg = f"cage list {args.cage} missing / unparseable / malformed - cannot audit L(-1) acks"
+        if args.enforce:
+            fail(msg)
+            return 2
+        out(f"{msg}; skipping (fail-soft, P0)")
+        return 0
+
+    base = resolve_base(args.base)
+    commits = commits_in_range(base, args.head)
+    if commits is None:
+        msg = f"could not compute the push range ({base}..{args.head})"
+        (fail if args.enforce else out)(msg + (" -> fail-closed" if args.enforce else " -> fail-soft (P0)"))
+        return 1 if args.enforce else 0
+    if base is None and commits:
+        out(f"no range base resolved - auditing only the tip commit {commits[0][:12]} (degraded; L2 has the full range)")
+
+    violations: list[tuple[str, str, list[str]]] = []
+    for sha in commits:
+        subject = git("log", "-1", "--format=%s", sha)[1].strip()
+        message = git("log", "-1", "--format=%B", sha)[1]
+        files = [f for f in git("diff-tree", "--no-commit-id", "--name-only", "-r", sha)[1].splitlines() if f.strip()]
+        touched = [f for f in files if is_l_neg1(f, regexes)]
+        if not touched:
+            continue   # touches no caged file - no ack needed (an ordinary commit / a docs/plan check-off
+                       # passes here); there is NO check-off/[!extern] escape for an L(-1)-touching commit
+        if not ACK_RE.search(message):
+            violations.append((sha, subject, touched))
+
+    if violations:
+        for sha, subject, touched in violations:
+            shown = ", ".join(touched[:3]) + (" …" if len(touched) > 3 else "")
+            fail(f"{sha[:12]} {subject!r} touches L(-1) file(s) [{shown}] without an "
+                 "`L-neg1-ack: owner` trailer")
+        if args.enforce:
+            fail(f"G71: {len(violations)} L(-1)-touching commit(s) lack the owner-ack trailer - FAILED (enforced)")
+            return 1
+        out(f"G71: {len(violations)} L(-1)-touching commit(s) lack the owner-ack trailer; fail-SOFT "
+            "during the P0 bootstrap (becomes hard with --enforce from P1)")
+        return 0
+    out(f"G71: {len(commits)} commit(s) in range - every L(-1)-touching commit carries the owner-ack trailer")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

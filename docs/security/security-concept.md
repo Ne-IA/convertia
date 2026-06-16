@@ -51,8 +51,11 @@ manifest, license compliance).
 - **L(-1) security-critical-file change-control (owner decision D1).** The files that
   carry the power to silently weaken an enforcement plane — gate scripts + their
   self-tests, `lefthook.yml`, the CI workflows (`.github/**`), `deny.toml`,
-  `.gitleaks.toml` + allowlist/baseline, the `cargo-vet` exemption set + `imports.lock`,
-  `.gitattributes`/`.lfsconfig`, the G56b SSH allowed-signers file, the Tauri
+  `.gitleaks.toml` + allowlist/baseline, the pip gate-toolchain pin `requirements-ci.txt`
+  (it reads CI secrets and emits findings, so a version bump is a trust-boundary event — r7),
+  the `cargo-vet` exemption set + `imports.lock`,
+  `.gitattributes`/`.lfsconfig`, the G56b SSH allowed-signers file, the
+  `rust-toolchain.toml` channel pin, the Tauri
   `capabilities`, `engines.lock`, the reviewer-rubric block, the security/process docs,
   and the authoritative glob list `scripts/l-neg1-files.toml` itself — are the **L(-1)
   security-critical-file set** (the cage the gates live in). **The autonomous Build-Loop
@@ -61,8 +64,9 @@ manifest, license compliance).
   [build-loop.md §6](../process/build-loop.md#6-hard-stops-token-notbremse-and-the-gate-quarantine-escape)),
   where the **owner** makes or approves the edit and records it as a `L-neg1-ack: owner`
   commit-body trailer. The pre-push gate **G71** mechanically audits the trailer's
-  presence on any L(-1)-touching commit (fail-soft during the P0 bootstrap, fail-closed
-  from P1). This is the one **ownership control above the deterministic gates** — the
+  presence on any L(-1)-touching commit (the trailer is the **only** sanctioned escape —
+  there is **no** check-off / `[!extern]` exemption for an L(-1) edit; a commit touching no
+  L(-1) file needs no trailer) (fail-soft during the P0 bootstrap, fail-closed from P1). This is the one **ownership control above the deterministic gates** — the
   trailer records an owner decision; G71 checks the evidence, not the intent (so a leaked
   key or a unilateral cage edit cannot pass unseen). It is independent of the G1
   `Dual-Review:` trailer; both may co-occur on one commit.

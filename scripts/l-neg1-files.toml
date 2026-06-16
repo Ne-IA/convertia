@@ -1,0 +1,49 @@
+# scripts/l-neg1-files.toml - the authoritative L(-1) security-critical-file cage (P0.2.14, G71).
+#
+# Owner decision D1 (security-concept §2): the files that carry the power to silently weaken an
+# enforcement plane are the **L(-1) set**. The autonomous Build-Loop NEVER edits one; an owner-
+# driven L(-1) edit records an `L-neg1-ack: owner` commit-body trailer, which the G71 pre-push gate
+# (scripts/check-l-neg1-ack) mechanically audits. This file is the MACHINE-READABLE projection of
+# the security-concept §2 enumeration - the two are kept in sync (a §2 change without a matching
+# pattern here, or vice-versa, is the drift G68 + a Co-Pilot review catch).
+#
+# This file is ITSELF L(-1) (matched by `scripts/*.toml` below), so the cage cannot be silently
+# narrowed: removing a pattern is itself an L(-1) edit that needs the owner-ack trailer.
+#
+# Patterns are gitignore-style POSIX paths (forward slashes): `*` matches within one path segment,
+# `**` matches any depth, `?` one non-`/` char. Matched against each commit's diff file paths. Many
+# targets do not exist yet (deny.toml, .gitleaks.toml, supply-chain/, requirements-ci.txt, src-tauri/
+# capabilities/, engines.lock, docs/process/) - their globs are authored NOW so the cage is ready
+# the moment the file lands (a not-yet-existing glob simply matches nothing).
+
+patterns = [
+  # --- gate scripts + their self-tests (the enforcement logic itself) ---
+  "scripts/check-*",              # check-branch-protection / check-ci-supply-chain / check-gate-plane(s) / ...
+  "scripts/fastpath-*",           # the L2 fastpath skip detectors (G10)
+  "scripts/run-gate-selftests",   # the L4 continuous-armed-canary runner
+  "scripts/install-gate-tools",   # the pinned-tool fetch-and-verify installer
+  "scripts/setup-dev",            # patches the generated git hooks (a poisoned one silently no-ops the plane)
+  "scripts/gate-selftests/**",    # every gate self-test (the planted-positive canaries)
+  "scripts/*.toml",               # gate-planes.toml + l-neg1-files.toml itself (cage cannot be silently narrowed)
+
+  # --- the enforcement-plane config ---
+  "lefthook.yml",                 # the L1/L2/L3 git-hook executor
+  ".github/**",                   # all CI workflows + composite actions + the G56b allowed-signers file
+
+  # --- supply-chain trust configs ---
+  "deny.toml",                    # cargo-deny bans/licenses/advisories
+  ".gitleaks.toml",               # gitleaks rules + allowlist/baseline
+  "supply-chain/**",              # cargo-vet exemption set (config.toml) + the committed imports.lock
+  ".gitattributes",               # LFS / EOL / merge attributes
+  ".lfsconfig",                   # git-LFS endpoint
+  "requirements-ci.txt",          # the pip gate-toolchain layer (Semgrep et al.) - reads CI secrets + emits findings (r7, P0.2.14)
+
+  # --- the build artifacts' trust roots ---
+  "rust-toolchain.toml",          # the pinned Rust compiler channel (a bump = trusted-build subversion)
+  "src-tauri/capabilities/**",    # the locked Tauri capabilities / permissions allowlist
+  "engines.lock",                 # the pinned bundled-engine digests
+
+  # --- the docs that DEFINE the gates + the process (incl. the reviewer-rubric block) ---
+  "docs/security/**",             # security-concept.md + build-gates.md (the Gnn catalogue)
+  "docs/process/**",              # build-loop.md / test-strategy.md / roles-and-escalation.md / vuln-response.md / the reviewer rubric
+]
