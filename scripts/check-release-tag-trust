@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""check-release-tag-trust - G56b release-tag (v*) trust assertion (P0.2.9, the workflow half).
+
+The FIRST step of the Lane-B release-pipeline guard job (.github/workflows/release.yml): it
+ABORTS BEFORE ANY SECRET IS READ unless the tagged commit is trustworthy. A release can only
+ever come from a commit that landed on `main` with green CI and a signed tag - never from an
+arbitrary, red, or unsigned ref. Three legs:
+
+  (1) ANCESTRY (fail-closed, always) - the tagged commit is an ancestor of `origin/main`
+      (`git merge-base --is-ancestor <sha> origin/main`), so a tag pushed at a commit that
+      never landed on main is rejected.
+  (2) GREEN-HISTORY (fail-closed, always) - main's CI was green for that EXACT SHA: every
+      check-run for the SHA is completed + success/neutral/skipped, and >=1 check-run exists
+      (`gh api repos/<repo>/commits/<sha>/check-runs --paginate`). A red / in-flight / check-
+      less SHA is rejected. (API-introspection; the parse logic is self-tested on fixtures,
+      the live `gh` call is release/owner-verified - the G56a/P0.2.8 exemption pattern.)
+  (3) SIGNED-TAG (fail-SOFT until provisioned, then fail-closed) - the `v*` tag is a signed
+      annotated tag verifiable against the committed SSH allowed-signers file
+      (`git -c gpg.ssh.allowedSignersFile=<file> verify-tag <tag>`). The allowed-signers file
+      + the loop's signing key are provisioned in P0.7.17; until that file exists this leg is
+      skip-with-warning (fail-soft), and fail-closed the moment it lands.
+
+The `gh` call uses the workflow's GITHUB_TOKEN (`github.token`, NOT a `secrets.*` value), so
+the guard job itself reads no release secret - the secret-bearing signing job runs only after
+this gate passes, on the ephemeral GitHub-hosted runner (P0.2.7 / principle 11).
+
+fail-closed: leg (1)/(2) failure -> exit 1; leg (3) failure -> exit 1 once allowed-signers
+exists. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+
+Usage: check-release-tag-trust [--tag <ref>] [--repo <owner/repo>] [--allowed-signers <path>]
+       (--tag defaults to $GITHUB_REF; --repo to $GITHUB_REPOSITORY)
+Exit:  0 = trusted; 1 = a fail-closed leg failed; 2 = bad invocation / git error.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+# check-run conclusions that DO NOT block a release (a green/irrelevant outcome).
+OK_CONCLUSIONS = {"success", "neutral", "skipped"}
+DEFAULT_ALLOWED_SIGNERS = ".github/allowed-signers"  # provisioned in P0.7.17
+
+
+def out(msg: str) -> None:
+    print(f"[G56b] {msg}")
+
+
+def fail(msg: str) -> None:
+    print(f"[G56b] FAIL: {msg}", file=sys.stderr)
+
+
+def git(*args: str) -> tuple[int, str]:
+    p = subprocess.run(["git", *args], capture_output=True, text=True)
+    return p.returncode, (p.stdout + p.stderr).strip()
+
+
+def tag_name_from_ref(ref: str) -> str | None:
+    """`refs/tags/v1.2.3` -> `v1.2.3`; a bare `v1.2.3` is returned as-is."""
+    ref = ref.strip()
+    if ref.startswith("refs/tags/"):
+        return ref[len("refs/tags/"):]
+    if ref.startswith("refs/"):
+        return None  # a non-tag ref must never reach the release gate
+    return ref or None
+
+
+def flatten_pages(parsed: object) -> dict:
+    """Normalize a `gh api --paginate --slurp` result into {check_runs: [...]}. --slurp on a
+    multi-page OBJECT-wrapped endpoint returns a LIST of per-page objects (without it, gh
+    CONCATENATES page objects and json.loads fails); a single page may arrive as one object."""
+    if isinstance(parsed, list):
+        runs = [r for page in parsed if isinstance(page, dict) for r in (page.get("check_runs") or [])]
+    elif isinstance(parsed, dict):
+        runs = parsed.get("check_runs") or []
+    else:
+        runs = []
+    return {"check_runs": runs}
+
+
+def evaluate_check_runs(data: dict) -> tuple[bool, str]:
+    """Green iff >=1 check-run AND every run is completed with an OK conclusion. Pure - the
+    self-test drives this with fixture JSON so the green-history logic is verifiable offline."""
+    runs = data.get("check_runs") or []
+    if not runs:
+        return False, "no check-runs for the SHA - cannot confirm green CI history (fail-closed)"
+    bad = []
+    for r in runs:
+        name = r.get("name", "?")
+        if r.get("status") != "completed":
+            bad.append(f"{name}=<{r.get('status')}>")
+        elif r.get("conclusion") not in OK_CONCLUSIONS:
+            bad.append(f"{name}=<{r.get('conclusion')}>")
+    if bad:
+        return False, "non-green check-run(s): " + ", ".join(bad)
+    return True, f"all {len(runs)} check-run(s) green"
+
+
+def leg_ancestry(sha: str) -> bool:
+    rc, _ = git("rev-parse", "--verify", "--quiet", "origin/main")
+    if rc != 0:
+        fail("origin/main is unknown - cannot prove the tag descends from main "
+             "(fetch origin/main before the gate)")
+        return False
+    rc, _ = git("merge-base", "--is-ancestor", sha, "origin/main")
+    if rc != 0:
+        fail(f"tagged commit {sha[:12]} is NOT an ancestor of origin/main - a release tag must "
+             "point at a commit that landed on main")
+        return False
+    out(f"leg 1 ANCESTRY ok - {sha[:12]} is an ancestor of origin/main")
+    return True
+
+
+def leg_green_history(repo: str, sha: str) -> bool:
+    if not repo:
+        fail("no repository (set --repo or $GITHUB_REPOSITORY) - cannot query check-runs")
+        return False
+    p = subprocess.run(
+        ["gh", "api", "--paginate", "--slurp",
+         f"repos/{repo}/commits/{sha}/check-runs?per_page=100"],
+        capture_output=True, text=True)
+    if p.returncode != 0:
+        fail(f"`gh api .../commits/{sha[:12]}/check-runs` failed: {p.stderr.strip()}")
+        return False
+    try:
+        data = flatten_pages(json.loads(p.stdout or "[]"))
+    except json.JSONDecodeError as e:
+        fail(f"could not parse check-runs JSON: {e}")
+        return False
+    ok, reason = evaluate_check_runs(data)
+    (out if ok else fail)(f"leg 2 GREEN-HISTORY {'ok' if ok else 'FAILED'} - {reason}")
+    return ok
+
+
+def leg_signed_tag(tag: str, allowed_signers: Path) -> bool:
+    if not allowed_signers.is_file():
+        out(f"leg 3 SIGNED-TAG skipped (fail-soft) - allowed-signers file {allowed_signers} "
+            "not yet provisioned (P0.7.17); becomes fail-closed once it lands")
+        return True
+    rc, msg = git("-c", f"gpg.ssh.allowedSignersFile={allowed_signers}",
+                  "-c", "gpg.format=ssh", "verify-tag", tag)
+    if rc != 0:
+        fail(f"leg 3 SIGNED-TAG FAILED - `git verify-tag {tag}` did not verify against "
+             f"{allowed_signers}: {msg}")
+        return False
+    out(f"leg 3 SIGNED-TAG ok - {tag} verified against {allowed_signers}")
+    return True
+
+
+def resolve_tag_sha(tag: str) -> str | None:
+    """The COMMIT sha a tag points at (dereferencing an annotated tag); None if unresolvable.
+    `rev-list -n 1` resolves both lightweight + annotated tags to the commit; the
+    `^{commit}` rev-parse is a belt-and-suspenders fallback."""
+    rc, sha = git("rev-list", "-n", "1", f"refs/tags/{tag}")
+    if rc != 0 or not sha:
+        rc, sha = git("rev-parse", f"{tag}^{{commit}}")
+    return sha if rc == 0 and sha else None
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G56b release-tag (v*) trust assertion (P0.2.9)")
+    ap.add_argument("--tag", default=os.environ.get("GITHUB_REF", ""),
+                    help="the tag ref (refs/tags/v*) or name; defaults to $GITHUB_REF")
+    ap.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""),
+                    help="owner/repo for the check-runs query; defaults to $GITHUB_REPOSITORY")
+    ap.add_argument("--allowed-signers", type=Path,
+                    default=Path(os.environ.get("RELEASE_ALLOWED_SIGNERS", DEFAULT_ALLOWED_SIGNERS)),
+                    help="committed SSH allowed-signers file (P0.7.17)")
+    args = ap.parse_args(argv)
+
+    tag = tag_name_from_ref(args.tag)
+    if not tag or not tag.startswith("v"):
+        fail(f"refusing to release a non-`v*`-tag ref {args.tag!r} - the release gate runs only "
+             "for a v* tag")
+        return 2
+
+    sha = resolve_tag_sha(tag)
+    if not sha:
+        fail(f"cannot resolve the commit for tag {tag}")
+        return 2
+
+    ok1 = leg_ancestry(sha)
+    ok2 = leg_green_history(args.repo, sha)
+    ok3 = leg_signed_tag(tag, args.allowed_signers)
+    if ok1 and ok2 and ok3:
+        out(f"release tag {tag} ({sha[:12]}) is TRUSTED - all legs passed")
+        return 0
+    fail(f"release tag {tag} is NOT trusted - aborting before any secret is read")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

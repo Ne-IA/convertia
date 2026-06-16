@@ -28,14 +28,25 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     steps:
-      - name: Checkout (no credentials persisted)
+      - name: Checkout (full history, no credentials persisted)
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           persist-credentials: false
+          fetch-depth: 0           # full history so the tag-ancestry check has a merge-base
+      - name: Fetch origin/main (for the tag-ancestry check)
+        run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+      - name: 'G56b: release-tag trust gate (ancestry + green-history + signed-tag); aborts BEFORE any secret'
+        env:
+          GH_TOKEN: ${{ github.token }}   # github.token, NOT a release secret - guard runs pre-secret
+        run: python3 scripts/check-release-tag-trust
       - name: Fail-closed until the Lane-B pipeline is assembled (P10)
         run: |
           echo "The Lane-B release pipeline (build / size / SBOM / minisign / attest /"
-          echo "publish) is assembled in P10, and the tag-trust gate in P0.2.9 (G56b)."
-          echo "A v* tag pushed against this empty skeleton is REJECTED fail-closed, so a"
-          echo "release can never hollow-succeed before the real gates exist."
+          echo "publish) is assembled in P10. The G56b tag-trust gate above has run; this"
+          echo "skeleton then REJECTS fail-closed so a release can never hollow-succeed"
+          echo "before the real acceptance gates exist."
           exit 1

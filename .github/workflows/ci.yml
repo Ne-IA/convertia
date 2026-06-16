@@ -83,3 +83,5 @@ jobs:
         run: python3 scripts/check-ci-supply-chain
       - name: 'G24: ci-supply-chain self-test (planted positives + negatives)'
         run: python3 scripts/gate-selftests/g24-ci-supply-chain.py
+      - name: 'G24: release-tag-trust self-test (G56b legs: ancestry / green-history / signed-tag)'
+        run: python3 scripts/gate-selftests/g24-release-tag-trust.py
