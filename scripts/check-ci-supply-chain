@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""check-ci-supply-chain - G56 CI supply-chain config hygiene (P0.2.6 + P0.2.7 runner-host).
+"""check-ci-supply-chain - G56 CI supply-chain config hygiene (P0.2.6 + P0.2.7 runner-host
++ P0.2.10 cargo-fuzz toolchain pin).
 
 The residual CI/config assertions that zizmor (G50) + actionlint (G49) do NOT cover.
 STDLIB-ONLY (no YAML library - the gate plane forbids vendoring one). A naive line scan
@@ -55,6 +56,9 @@ Assertions (after the file is known to be in plain, statically-analysable block 
       secret job must use step-security/harden-runner with `egress-policy: block`; a secret
       job whose runs-on is not a literal recognized hosted image is rejected fail-closed.
       Non-secret jobs are unconstrained (fail-open until the P10 signing job lands).
+  (7) cargo-fuzz toolchain pin (P0.2.10, G37) - every `cargo ... fuzz` invocation names the
+      DATE-PINNED nightly channel (`cargo +nightly-YYYY-MM-DD fuzz`), never a bare/implicit
+      +nightly (which would float off the pinned toolchain). Fail-open until a fuzz job lands.
 
 fail-closed: any violation -> exit 1. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
 
@@ -690,6 +694,54 @@ def check_runner_host(name: str, lines: list[str], raw_lines: list[str]) -> int:
     return problems
 
 
+def check_fuzz_pin(name: str, raw_lines: list[str]) -> int:
+    """(7) cargo-fuzz toolchain pin (P0.2.10, G37/G56): every `cargo ... fuzz` invocation must
+    name the DATE-PINNED nightly channel (`cargo +nightly-YYYY-MM-DD fuzz`), never a bare
+    `+nightly` nor an implicit channel - cargo-fuzz's internal `+nightly` does NOT honour
+    rust-toolchain.toml, so a fuzz run would silently float off the pinned toolchain that
+    touches the to-be-minisigned bytes. Scans the comment-stripped (block-scalar-retained)
+    text with shell backslash line-continuations collapsed, so a `cargo … fuzz` inside a
+    `run: |` body - even split across continued lines - is seen. Fail-open until a fuzz job
+    exists (P3+); the exact channel value is cross-checked against the committed pin
+    (gate-tools.toml `[toolchain] fuzz_nightly`) when the cargo-fuzz harness is wired (P0.4.3/P3)."""
+    problems = 0
+    # collapse POSIX shell line-continuations (`\`<newline>) so a `cargo \`<NL>`fuzz` is seen as
+    # one command (the regexes below would otherwise miss the split tokens).
+    text = re.sub(r"\\\n\s*", " ", "\n".join(raw_lines))
+    # SUBCOMMAND form: a `cargo … fuzz` where `fuzz` is a standalone subcommand token (NOT the
+    # `fuzz` inside `cargo-fuzz`, via `(?<!-)`) and the cargo->fuzz segment stays within one
+    # command (no `;`/`|`/`&`). Intervening global flags / `+channel` are tolerated; the segment
+    # must carry a date-pinned `+nightly-YYYY-MM-DD` channel.
+    for m in re.finditer(r"\bcargo\s+([^\n;|&]*?)(?<!-)\bfuzz\b", text):
+        if not re.search(r"\+nightly-\d{4}-\d{2}-\d{2}\b", m.group(1)):
+            fail(f"{name}: `cargo … fuzz` must name the date-pinned nightly channel "
+                 "(`cargo +nightly-YYYY-MM-DD fuzz`) - a bare / implicit / non-pinned +nightly "
+                 "floats off the pinned toolchain (cargo-fuzz ignores rust-toolchain.toml)")
+            problems += 1
+    # BINARY form `cargo-fuzz <subcmd>` AT A COMMAND POSITION - it cannot name a +channel so it
+    # always floats. A command position is line-start, after a separator (;&|), a subshell/brace/
+    # backtick opener, or `run:`, optionally preceded by env-assignments (`FOO=bar`) and command-
+    # prefix words (time/nice/exec/command/sudo) or a loop/conditional keyword (do/then/else). An
+    # install ARG (`cargo install … cargo-fuzz`) is NOT at a command position, so it is not flagged.
+    # NB: the `|` in the boundary class also (intentionally) catches a cargo-fuzz on the first line
+    # of a `run: |` block scalar (the YAML `|` indicator precedes it); keep it. The subcommand
+    # regex above stays deliberately loose (it can over-reject a `--features fuzz`-style incidental
+    # `fuzz` token - a SAFE over-fail) rather than tighten and risk missing an unpinned run.
+    # The prefix set covers NO-ARG transparent command prefixes (env / nohup / setsid / doas /
+    # time / nice / exec / command / sudo), inline env-assignments (`A=B`), and loop/conditional
+    # keywords. ARG-BEARING prefixes (`timeout 60`, `nice -n 5`, `stdbuf -oL`, `taskset`/`ionice`),
+    # forwarding programs (`xargs`), path-prefixed invocations (`./cargo-fuzz`, `/usr/bin/cargo-fuzz`),
+    # and flag-bearing prefixes are the named P0.4.3/P3 precise-cargo-invocation-parse refinement
+    # (enumeration is the wrong tool there); the gate is fail-open until a fuzz job lands (P3).
+    _binbound = (r"(?:(?:^|\n)\s*|[;&|(){}`]\s*|run\s*:\s*)"
+                 r"(?:\w+=\S*\s+|(?:time|nice|exec|command|sudo|env|nohup|setsid|doas|do|then|else|while|until|elif)\s+)*")
+    for _ in re.finditer(_binbound + r"cargo-fuzz\b", text):
+        fail(f"{name}: the `cargo-fuzz` binary form cannot pin a toolchain channel - use the "
+             "subcommand form `cargo +nightly-YYYY-MM-DD fuzz` so the nightly is date-pinned")
+        problems += 1
+    return problems
+
+
 def check_workflow(path: Path) -> int:
     name = path.name
     raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -701,6 +753,7 @@ def check_workflow(path: Path) -> int:
     stripped = [strip_comment(ln) for ln in raw]
     problems = precheck(name, lines)
     problems += check_runner_host(name, lines, stripped)
+    problems += check_fuzz_pin(name, stripped)
 
     # (5a) flow-style permissions anywhere (top-level OR per-job) cannot be statically
     # verified for contents-read / id-token - reject fail-closed. Empty `{}`/`{ }`

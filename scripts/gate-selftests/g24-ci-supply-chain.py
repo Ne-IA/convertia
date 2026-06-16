@@ -749,6 +749,53 @@ leg("RH36 block-seq [ubuntu-latest, linux] convention label fails", "recognized"
         "      - uses: step-security/harden-runner@v2\n        with:\n          egress-policy: block\n"
         "      - run: minisign -Sm SHA256SUMS\n        env:\n          MK: ${{ secrets.MINISIGN_SECRET_KEY }}\n"})
 
+# ---------------------------------------------------------------------------
+# P0.2.10 check 7: cargo-fuzz must name the date-pinned nightly channel
+# ---------------------------------------------------------------------------
+_FUZZ = ("name: ci\non:\n  push:\n    branches: [main]\n"
+         "permissions:\n  contents: read\n"
+         "concurrency:\n  group: ci-x\n  cancel-in-progress: true\n"
+         "jobs:\n  fuzz:\n    runs-on: ubuntu-22.04\n    timeout-minutes: 10\n"
+         "    steps:\n      - run: {cmd}\n")
+leg("FP1 cargo +nightly fuzz (bare) fails", "date-pinned",
+    workflows={"ci.yml": _FUZZ.format(cmd="cargo +nightly fuzz run detect")})
+leg("FP2 cargo fuzz (no channel) fails", "date-pinned",
+    workflows={"ci.yml": _FUZZ.format(cmd="cargo fuzz run detect")})
+leg("FP3 cargo +nightly-2026-06-16 fuzz passes", "",
+    workflows={"ci.yml": _FUZZ.format(cmd="cargo +nightly-2026-06-16 fuzz run detect")})
+leg("FP4 cargo-fuzz binary form fails", "binary form",
+    workflows={"ci.yml": _FUZZ.format(cmd="cargo-fuzz run detect")})
+# a `run: |` block whose cargo-fuzz spans a shell `\`-continuation must still be seen
+_FUZZML = ("name: ci\non:\n  push:\n    branches: [main]\n"
+           "permissions:\n  contents: read\n"
+           "concurrency:\n  group: ci-x\n  cancel-in-progress: true\n"
+           "jobs:\n  fuzz:\n    runs-on: ubuntu-22.04\n    timeout-minutes: 10\n"
+           "    steps:\n      - run: |\n{body}")
+leg("FP5 backslash-continuation bare +nightly fuzz fails", "date-pinned",
+    workflows={"ci.yml": _FUZZML.format(body="          cargo \\\n            +nightly fuzz run detect\n")})
+leg("FP6 flag between cargo and fuzz (cargo +nightly --quiet fuzz) fails", "date-pinned",
+    workflows={"ci.yml": _FUZZ.format(cmd="cargo +nightly --quiet fuzz run detect")})
+# installing the cargo-fuzz tool is NOT an unpinned invocation -> must PASS
+leg("FP7 cargo install cargo-fuzz passes (not an invocation)", "",
+    workflows={"ci.yml": _FUZZ.format(cmd="cargo install --locked cargo-fuzz")})
+leg("FP8 date-pinned fuzz across a backslash-continuation passes", "",
+    workflows={"ci.yml": _FUZZML.format(body="          cargo \\\n            +nightly-2026-06-16 fuzz run detect\n")})
+# binary-form cargo-fuzz at the FULL set of shell command positions must all be caught
+leg("FP9 env-prefixed cargo-fuzz fails", "binary form",
+    workflows={"ci.yml": _FUZZ.format(cmd="RUST_BACKTRACE=1 cargo-fuzz run detect")})
+leg("FP10 time-prefixed cargo-fuzz fails", "binary form",
+    workflows={"ci.yml": _FUZZ.format(cmd="time cargo-fuzz run detect")})
+leg("FP11 cargo-fuzz after loop `do` fails", "binary form",
+    workflows={"ci.yml": _FUZZML.format(body="          for t in detect; do cargo-fuzz run; done\n")})
+leg("FP12 cargo-fuzz in a subshell fails", "binary form",
+    workflows={"ci.yml": _FUZZML.format(body="          (cargo-fuzz run detect)\n")})
+leg("FP13 cargo-fuzz in a brace group fails", "binary form",
+    workflows={"ci.yml": _FUZZML.format(body="          { cargo-fuzz run detect; }\n")})
+leg("FP14 env VAR=val cargo-fuzz fails", "binary form",
+    workflows={"ci.yml": _FUZZ.format(cmd="env RUST_BACKTRACE=1 cargo-fuzz run detect")})
+leg("FP15 nohup cargo-fuzz fails", "binary form",
+    workflows={"ci.yml": _FUZZ.format(cmd="nohup cargo-fuzz run detect")})
+
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-ci-supply-chain] {len(results) - len(failed)}/{len(results)} assertions passed.")
 sys.exit(1 if failed else 0)
