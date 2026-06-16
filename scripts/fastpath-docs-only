@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""fastpath-docs-only - L2 docs-only skip detector (P0.2.13, G10).
+
+At L2 (pre-push) the EXPENSIVE full-tree hooks (the heavy build/lint/CVE gates G13-G18+, wired in
+P0.3/P0.4) may be skipped when the push range provably touches ONLY documentation - the cheap-
+commit fastpath (security-concept §3 / build-gates "Fastpath / skip (L2 only)"). This detector
+decides skip-eligible vs must-run over the **RANGE DIFF of all unpushed commits** (`origin/main..
+HEAD`), NOT the HEAD subject, and **DEFAULTS TO MUST-RUN on any ambiguity** (no range base, a git
+error, an empty range, an unrecognized path) - a wrong "skip" would skip a needed gate, so the only
+safe default is "run".
+
+NOT governed by this fastpath: the **G2 gitleaks RANGE leg is NEVER skipped** (a secret can live in
+docs too) - callers exclude G2 from the docs-only skip; this detector governs only the heavy gates.
+
+SKIP-ELIGIBLE is an explicit **allowlist, default-DENY** and **`.md`-only by path** (build-gates §4
+invariant): the range touches only `docs/**/*.md`, a top-level `*.md` (README), `LICENSE`, or
+`NOTICE`. ANYTHING else (`src/`, `src-tauri/`, `scripts/`, `.github/`, `*.toml`, `*.lock`, `*.rs`,
+`*.ts`, a dotfile, **a non-`.md` file even UNDER `docs/`** such as `docs/gen.py` or a relocated
+config, or any `..` path segment) => must-run - so a "docs-only also covers .json/.rs docs"
+relaxation can never silently disable G47/G37/G18c. Conservative by design.
+
+stdlib-only. Exit: 0 = docs-only (skip-eligible); 1 = must-run (code-touching OR ambiguous/error).
+L(-1) security-critical (scripts/l-neg1-files.toml, G71) - a fastpath that wrongly skips is a hole.
+
+Usage: fastpath-docs-only [--base <ref>] [--head <ref>]   (defaults: origin/main..HEAD)
+"""
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+
+
+def is_skip_eligible(path: str) -> bool:
+    """A single changed path that is pure documentation (default-DENY: unmatched => not eligible).
+    **`.md`-only BY PATH** per the build-gates §4 invariant: the security-load-bearing NON-`.md`
+    files are deliberately NOT skippable, so a non-`.md` file even UNDER docs/ (a generator script,
+    a fixture, a relocated config) still forces the heavy gates - a 'docs-only also covers .json/.rs
+    docs' relaxation must never silently disable G47/G37/G18c."""
+    p = path.strip().replace("\\", "/")
+    if not p or p.endswith("/") or ".." in p.split("/"):   # blank / bare dir / any `..` segment => deny
+        return False
+    if p in ("LICENSE", "NOTICE"):
+        return True
+    if "/" not in p:                      # a top-level file: only *.md (README.md, CHANGELOG.md, ...)
+        return p.endswith(".md")
+    return p.startswith("docs/") and p.endswith(".md")   # .md UNDER docs/ - NOT docs/x.rs, NOT docs-extra/
+
+
+def is_docs_only(changed: list[str]) -> bool:
+    """True iff the range is NON-EMPTY and EVERY changed path is skip-eligible. An empty list is
+    NOT docs-only (an empty/ambiguous range must run, never silently skip)."""
+    files = [f for f in changed if f.strip()]
+    return bool(files) and all(is_skip_eligible(f) for f in files)
+
+
+def _resolves(ref: str) -> bool:
+    return subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref],
+                          capture_output=True, text=True).returncode == 0
+
+
+def _current_branch() -> str | None:
+    p = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True)
+    b = p.stdout.strip()
+    return b if p.returncode == 0 and b and b != "HEAD" else None
+
+
+def resolve_base(explicit: str | None) -> str | None:
+    """The range base per the build-gates fallback chain: an explicit --base if given, else
+    `@{u}` -> `origin/<branch>` -> `origin/main` -> `origin/HEAD`, the FIRST that resolves. None if
+    none resolve (the first-push / no-upstream / 0-unpushed-commits case => MUST-RUN, fail-safe)."""
+    if explicit:
+        return explicit if _resolves(explicit) else None
+    candidates = ["@{u}"]
+    branch = _current_branch()
+    if branch:
+        candidates.append(f"origin/{branch}")
+    candidates += ["origin/main", "origin/HEAD"]
+    return next((c for c in candidates if _resolves(c)), None)
+
+
+def changed_files(base: str, head: str) -> list[str] | None:
+    """The net range diff `base..head`, or None on a git error (=> must-run). Net diff: a file
+    changed then reverted across the range does not appear, which is correct - there is no net
+    code to scan, so skipping the heavy gates stays safe (the G2 gitleaks range leg is never
+    skipped regardless, as it scans history not the net tree)."""
+    p = subprocess.run(["git", "diff", "--name-only", f"{base}..{head}"], capture_output=True, text=True)
+    if p.returncode != 0:
+        return None
+    return [ln for ln in p.stdout.splitlines() if ln.strip()]
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="L2 docs-only skip detector (P0.2.13, G10)")
+    ap.add_argument("--base", default=None,
+                    help="explicit range base (default: the @{u}->origin/<branch>->origin/main->origin/HEAD chain)")
+    ap.add_argument("--head", default="HEAD", help="range head (default: HEAD)")
+    args = ap.parse_args(argv)
+
+    base = resolve_base(args.base)
+    if base is None:
+        print("[G10] fastpath-docs-only: no range base resolved (first push / no upstream / explicit "
+              "base unknown) -> MUST-RUN (fail-safe)")
+        return 1
+    files = changed_files(base, args.head)
+    if files is None:
+        print(f"[G10] fastpath-docs-only: `git diff {base}..{args.head}` errored -> MUST-RUN (fail-safe)")
+        return 1
+    if not files:
+        print(f"[G10] fastpath-docs-only: 0 changed files in {base}..{args.head} (no unpushed commits) "
+              "-> MUST-RUN (nothing to skip on)")
+        return 1
+    if is_docs_only(files):
+        print(f"[G10] fastpath-docs-only: range is docs-only ({len(files)} file(s)) -> skip-eligible")
+        return 0
+    # files is non-empty AND not docs-only => at least one non-doc path exists.
+    non_docs = [f for f in files if not is_skip_eligible(f)]
+    print(f"[G10] fastpath-docs-only: range touches non-docs ({len(non_docs)} of {len(files)}, "
+          f"e.g. {non_docs[0]}) -> MUST-RUN")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

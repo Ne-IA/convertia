@@ -257,6 +257,24 @@ skipped **only** when provably irrelevant, via detectors that each default to
   correctly fails **open** to "run everything" — this is the **normal** no-base case,
   **not** a hook failure, so the Build-Loop must not misread it as a red push and trip
   the 3-failures escalation on session 1.
+
+> **Delivered (P0.2.13):** the byte-scan docs-only guard is [`scripts/fastpath-docs-only`](../../scripts/fastpath-docs-only)
+> — pure `is_skip_eligible`/`is_docs_only` over the **net range diff** with the documented base
+> fallback chain (`@{u}` → `origin/<branch>` → `origin/main` → `origin/HEAD`); an explicit
+> **allowlist, default-DENY** (only `docs/**/*.md` + top-level `*.md` + `LICENSE`/`NOTICE` are skip-
+> eligible — **`.md`-only by path** per the §4 invariant: a non-`.md` file even under `docs/` still
+> forces the heavy gates, and any `..` path segment is denied); **exit 0 = docs-only/skip-eligible,
+> exit 1 = must-run** (code-touching OR ambiguous OR
+> 0-unpushed-commits OR no-base). It is the empty-but-wired contract the heavy L2 hooks (G13–G18+,
+> P0.3/P0.4) consult; the **G2 gitleaks range leg is never gated by it**. The **check-off fastpath**
+> is `is_docs_only ∧ a check-off subject` — the diff side reuses this detector, so the subject test
+> is a 1-line add wired with the L2 cheap-commit consumer (P0.3+). Its G10 positive+negative smoke
+> test is [`scripts/gate-selftests/test-docs-only-fastpath-pattern.py`](../../scripts/gate-selftests/test-docs-only-fastpath-pattern.py).
+> **The L4 continuous-armed-canary** ([`scripts/run-gate-selftests`](../../scripts/run-gate-selftests))
+> auto-discovers + runs EVERY `gate-selftests/*` self-test as a 3-OS prelude on every CI run (the
+> former per-self-test ci.yml steps are consolidated into it), so a pinned-tool bump that breaks a
+> stable script's parsing — or a new gate whose self-test was never wired — is caught (complements
+> plan-lint check 16). Both new scripts are L(-1) security-critical.
 - **The docs-only guard is `.md`-only by path, and the security-load-bearing NON-`.md`
   files are deliberately NOT skippable** — `tauri.conf.json`, `src-tauri/capabilities/*.json`,
   `engines.lock`, `deny.toml`, `.gitleaks.toml`, `.npmrc`, `.github/**`, the SBOM inputs

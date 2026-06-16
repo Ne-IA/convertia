@@ -53,20 +53,20 @@ jobs:
           python-version: '3.12'
       - name: Install + verify pinned gate tools
         run: python3 scripts/install-gate-tools
-      - name: 'G24: install-gate-tools self-test (the pin verify control, both ways)'
-        run: python3 scripts/gate-selftests/g24-install-gate-tools.py --require-network
-      - name: 'G54: gate-plane integrity self-test'
-        run: python3 scripts/gate-selftests/g54-gate-plane.py
+      # G10 continuous-armed-canary (P0.2.13): one auto-discovering prelude runs EVERY gate-script
+      # self-test (the g24-*/g54-* planted-positives + the test-*-fastpath-pattern smoke tests) on
+      # all three OS, so a pinned-tool bump that breaks a stable script's parsing - or a new gate
+      # whose self-test was never wired here - is caught. Replaces the former per-self-test steps.
+      - name: 'G10: continuous-armed-canary — run EVERY gate-script self-test (P0.2.13 prelude)'
+        run: python3 scripts/run-gate-selftests --require-network
       - name: 'G54b: defense-in-depth plane-config integrity (gate-planes.toml)'
         run: python3 scripts/check-gate-planes
-      - name: 'G24: gate-planes config self-test'
-        run: python3 scripts/gate-selftests/g24-gate-planes.py
       # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
       #   gitleaks dir full-tree (P0.3.1) | plan-lint/spec-lint full (P0.3.5) |
       #   G8 + G21 deferral full-tree (P0.3.4) | G70 test-suppression (P0.3.14) |
       #   CSP/capability lint (P0.3.2) | doc-graph G68 + struct-map G69 (P0.3.12/13) |
       #   cargo-deny + cargo-audit (P0.3.6 / P0.4.1) | clippy --all-targets + tsc + eslint
-      #   (P0.4, activated in P1) | the per-gate-script self-test prelude (P0.2.13).
+      #   (P0.4, activated in P1).
 
   workflow-security:
     name: workflow-security
@@ -89,13 +89,10 @@ jobs:
         run: .gate-tools/bin/zizmor --offline --persona regular .github/workflows/
       - name: 'G56: CI supply-chain config hygiene (dependabot 4-eco, id-token, concurrency polarity, timeouts, perms)'
         run: python3 scripts/check-ci-supply-chain
-      - name: 'G24: ci-supply-chain self-test (planted positives + negatives)'
-        run: python3 scripts/gate-selftests/g24-ci-supply-chain.py
-      - name: 'G24: release-tag-trust self-test (G56b legs: ancestry / green-history / signed-tag)'
-        run: python3 scripts/gate-selftests/g24-release-tag-trust.py
       - name: 'G56a: branch-protection / repo-config assertion (fail-soft in P0; --enforce wired in P1)'
         run: python3 scripts/check-branch-protection
         env:
           GH_TOKEN: ${{ github.token }}
-      - name: 'G24: branch-protection self-test (fixture-driven evaluate_* legs)'
-        run: python3 scripts/gate-selftests/g24-branch-protection.py
+      # NOTE: the g24-*/g54-* self-tests for these gates (ci-supply-chain, release-tag-trust,
+      # branch-protection) run in the gate-tooling job's G10 continuous-armed-canary prelude
+      # (3-OS), not here — one auto-discovering runner is the single source of self-test truth.

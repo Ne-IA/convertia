@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""run-gate-selftests - the L4 continuous-armed-canary self-test prelude (P0.2.13).
+
+Discovers and runs EVERY gate-script self-test under scripts/gate-selftests/ on every CI run, so a
+pinned-tool bump that breaks a stable gate-script's parsing - OR a new gate whose self-test was
+never manually wired into ci.yml - is caught as a prelude (the continuous-armed-canary pattern,
+complementing plan-lint check 16's planted-positive registry). A self-test is the planted-positive
+canary for its gate; running ALL of them every run means none can silently rot.
+
+Discovery: every `scripts/gate-selftests/*.py` (the `g24-*`/`g54-*` planted-positive self-tests +
+the `test-*-fastpath-pattern` G10 fastpath smoke tests). `--require-network` is forwarded ONLY to
+the install-gate-tools self-test - the one leg that needs the network to exercise the pinned-
+download/verify path; all other self-tests are deterministic + offline.
+
+stdlib-only. Exit 0 iff EVERY discovered self-test passes; 1 if any fails (or none are found).
+L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+
+Usage: run-gate-selftests [--require-network]
+"""
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+SELFTEST_DIR = Path(__file__).resolve().parent / "gate-selftests"
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    require_network = "--require-network" in argv
+
+    tests = sorted(p for p in SELFTEST_DIR.glob("*.py") if not p.name.startswith("_"))
+    if not tests:
+        print(f"[canary] no self-tests found under {SELFTEST_DIR} - the prelude must find ≥1", file=sys.stderr)
+        return 1
+
+    failed: list[str] = []
+    for t in tests:
+        cmd = [sys.executable, str(t)]
+        if require_network and "install-gate-tools" in t.name:
+            cmd.append("--require-network")
+        print(f"\n[canary] === {t.name}{' --require-network' if cmd[-1].startswith('--') else ''} ===")
+        if subprocess.run(cmd).returncode != 0:
+            failed.append(t.name)
+
+    print(f"\n[canary] {len(tests) - len(failed)}/{len(tests)} gate self-test(s) passed.")
+    if failed:
+        print("[canary] FAILED: " + ", ".join(failed), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
