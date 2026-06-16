@@ -562,6 +562,193 @@ leg("R6c flow-sequence permission value fails", "flow value", workflows={"ci.yml
     "jobs:\n  build:\n    runs-on: ubuntu-22.04\n    timeout-minutes: 10\n    steps:\n      - run: echo hi\n"
 )})
 
+# ---------------------------------------------------------------------------
+# P0.2.7 runner-host integrity (check 6): a secret-reading job must not be self-hosted,
+# a GitHub-hosted secret job must use harden-runner BLOCK, and a non-literal-hosted
+# runs-on for a secret job is rejected fail-closed. Non-secret jobs are unconstrained.
+# ---------------------------------------------------------------------------
+
+def _sign_wf(runs_on, *, harden=None, harden_if=False, secret=True, multiline=False,
+             wf_env=False, secret_expr="${{ secrets.MINISIGN_SECRET_KEY }}",
+             run="minisign -Sm SHA256SUMS"):
+    """A release-class (tags) workflow with one job. harden=None|'block'|'audit';
+    harden_if gates the harden step with `if:`; multiline uses a `run: |` block scalar;
+    wf_env puts the secret in a WORKFLOW-level env; secret_expr is the secret reference."""
+    out = ["name: release", "on:", "  push:", "    tags: ['v*']", "permissions:", "  contents: read"]
+    if wf_env:
+        out += ["env:", f"  MK: {secret_expr}"]
+    out += ["jobs:", "  sign:", f"    runs-on: {runs_on}", "    timeout-minutes: 10", "    steps:"]
+    if harden:
+        out += ["      - uses: step-security/harden-runner@abc123"]
+        if harden_if:
+            out += ["        if: ${{ false }}"]
+        out += ["        with:", f"          egress-policy: {harden}"]
+    if multiline:
+        out += ["      - run: |", f"          {run}"]
+    else:
+        out += [f"      - run: {run}"]
+    if secret and not wf_env:
+        out += ["        env:", f"          MK: {secret_expr}"]
+    return "\n".join(out) + "\n"
+
+
+leg("RH1 secret job on self-hosted fails", "self-hosted",
+    workflows={"release.yml": _sign_wf("self-hosted")})
+leg("RH2 hosted secret job without harden-runner fails", "harden-runner",
+    workflows={"release.yml": _sign_wf("ubuntu-22.04")})
+leg("RH3 hosted secret job with harden-runner block passes", "",
+    workflows={"release.yml": _sign_wf("ubuntu-22.04", harden="block")})
+leg("RH4 hosted secret job with harden-runner audit (not block) fails", "harden-runner",
+    workflows={"release.yml": _sign_wf("ubuntu-22.04", harden="audit")})
+leg("RH5 secret job with matrix/expression runs-on fails", "recognized",
+    workflows={"release.yml": _sign_wf("${{ matrix.os }}")})
+# a NON-secret job on self-hosted is unconstrained (fail-open) - must PASS
+leg("RH6 non-secret self-hosted job passes", "",
+    workflows={"release.yml": _sign_wf("self-hosted", secret=False, run="echo hi")})
+# a literal `secrets.txt` in a run-string is NOT a ${{ secrets }} reference - must PASS
+leg("RH7 secrets.txt run-string is not a secret ref (passes)", "",
+    workflows={"release.yml": _sign_wf("self-hosted", secret=False, run="cp secrets.txt /tmp/out")})
+
+# --- round-2 runner-host adversarial legs (the 6 reviewer bypasses) ---
+# (A) a multi-line `run: |` step's sibling env secret must still be SEEN (not excised)
+leg("RH8 multi-line run + env secret on self-hosted fails", "self-hosted",
+    workflows={"release.yml": _sign_wf("self-hosted", multiline=True)})
+leg("RH9 multi-line run + env secret hosted-no-harden fails", "harden-runner",
+    workflows={"release.yml": _sign_wf("ubuntu-22.04", multiline=True)})
+# (B) bracket-index, uppercase, and workflow-level secret references must be detected
+leg("RH10 bracket-index secret on self-hosted fails", "self-hosted",
+    workflows={"release.yml": _sign_wf("self-hosted", secret_expr="${{ secrets['MINISIGN_SECRET_KEY'] }}")})
+leg("RH11 uppercase SECRETS. on self-hosted fails", "self-hosted",
+    workflows={"release.yml": _sign_wf("self-hosted", secret_expr="${{ SECRETS.MINISIGN_SECRET_KEY }}")})
+leg("RH12 workflow-level env secret + self-hosted job fails", "self-hosted",
+    workflows={"release.yml": _sign_wf("self-hosted", wf_env=True, secret=False, run="echo build")})
+# (C) harden-runner must be a REAL unconditional uses-step in BLOCK mode
+leg("RH13 harden-runner decoy in a run-string does not satisfy (fails)", "harden-runner",
+    workflows={"release.yml": (
+        "name: release\non:\n  push:\n    tags: ['v*']\n"
+        "permissions:\n  contents: read\n"
+        "jobs:\n  sign:\n    runs-on: ubuntu-22.04\n    timeout-minutes: 10\n    steps:\n"
+        '      - run: echo "uses: step-security/harden-runner egress-policy: block"\n'
+        "      - run: minisign -Sm SHA256SUMS\n        env:\n          MK: ${{ secrets.MINISIGN_SECRET_KEY }}\n"
+    )})
+leg("RH14 if-gated harden-runner does not satisfy (fails)", "harden-runner",
+    workflows={"release.yml": _sign_wf("ubuntu-22.04", harden="block", harden_if=True)})
+# (P2) a step-level `with: runs-on:` must not shadow the job-level self-hosted runs-on
+leg("RH15 step-level runs-on does not shadow job-level self-hosted (fails)", "self-hosted",
+    workflows={"release.yml": (
+        "name: release\non:\n  push:\n    tags: ['v*']\n"
+        "permissions:\n  contents: read\n"
+        "jobs:\n  sign:\n    runs-on: self-hosted\n    timeout-minutes: 10\n    steps:\n"
+        "      - uses: some/action@v1\n        with:\n          runs-on: ubuntu-22.04\n"
+        "      - run: minisign -Sm SHA256SUMS\n        env:\n          MK: ${{ secrets.MINISIGN_SECRET_KEY }}\n"
+    )})
+# robustness: an ARM/large hosted label is still a hosted image (must PASS with harden block)
+leg("RH16 ARM hosted label secret + harden block passes", "",
+    workflows={"release.yml": _sign_wf("ubuntu-24.04-arm", harden="block")})
+
+# --- round-3 runner-host adversarial legs (the 3 reviewer bypasses) ---
+_HDR = ("name: release\non:\n  push:\n    tags: ['v*']\n"
+        "permissions:\n  contents: read\n"
+        "jobs:\n  sign:\n    runs-on: {ro}\n    timeout-minutes: 10\n    steps:\n")
+
+# (1) secret read via toJSON(secrets) / split-delimiter ${{ ... secrets.K }} must be SEEN
+leg("RH17 toJSON(secrets) on self-hosted fails", "self-hosted",
+    workflows={"release.yml": _sign_wf("self-hosted", secret_expr="${{ toJSON(secrets) }}")})
+leg("RH18 split-delimiter secret in run body on self-hosted fails", "self-hosted",
+    workflows={"release.yml": _HDR.format(ro="self-hosted") +
+        "      - run: |\n          echo ${{\n            secrets.MINISIGN_SECRET_KEY }}\n"})
+leg("RH19 folded env split-secret on self-hosted fails", "self-hosted",
+    workflows={"release.yml": _HDR.format(ro="self-hosted") +
+        "      - run: echo build\n        env:\n          MK: >-\n            ${{\n              secrets.MINISIGN_SECRET_KEY }}\n"})
+
+# (2) a block-scalar (run: | / name: |) decoy must NOT forge a harden-runner block step
+leg("RH20 block-scalar run decoy harden does not satisfy (fails)", "harden-runner",
+    workflows={"release.yml": _HDR.format(ro="ubuntu-22.04") +
+        "      - name: fake\n        run: |\n          uses: step-security/harden-runner@v2\n"
+        "          egress-policy: block\n"
+        "      - run: minisign -Sm SHA256SUMS\n        env:\n          MK: ${{ secrets.MINISIGN_SECRET_KEY }}\n"})
+leg("RH21 name-block-scalar decoy with real audit step (fails)", "harden-runner",
+    workflows={"release.yml": _HDR.format(ro="ubuntu-22.04") +
+        "      - uses: step-security/harden-runner@v2\n        name: |\n          egress-policy: block\n"
+        "        with:\n          egress-policy: audit\n"
+        "      - run: minisign -Sm SHA256SUMS\n        env:\n          MK: ${{ secrets.MINISIGN_SECRET_KEY }}\n"})
+
+# (3) a lookalike action name (harden-runner-fork) must NOT satisfy the harden requirement
+leg("RH22 lookalike harden-runner-fork does not satisfy (fails)", "harden-runner",
+    workflows={"release.yml": _HDR.format(ro="ubuntu-22.04") +
+        "      - uses: step-security/harden-runner-fork@v2\n        with:\n          egress-policy: block\n"
+        "      - run: minisign -Sm SHA256SUMS\n        env:\n          MK: ${{ secrets.MINISIGN_SECRET_KEY }}\n"})
+
+# robustness: a real harden block step alongside an innocuous run: | must still PASS
+leg("RH23 real harden block + innocuous run-block passes", "",
+    workflows={"release.yml": _HDR.format(ro="ubuntu-22.04") +
+        "      - uses: step-security/harden-runner@v2\n        with:\n          egress-policy: block\n"
+        '      - run: |\n          echo "building"\n          echo "done"\n'
+        "      - run: minisign -Sm SHA256SUMS\n        env:\n          MK: ${{ secrets.MINISIGN_SECRET_KEY }}\n"})
+
+# --- round-4 runner-host adversarial legs ---
+# (P0) egress-policy:block must be a direct child of the harden step's OWN with: mapping -
+# not an env var named egress-policy, not a bare deeper key, not a flow-style with:.
+leg("RH24 egress-policy under env: (not with:) does not satisfy (fails)", "harden-runner",
+    workflows={"release.yml": _HDR.format(ro="ubuntu-22.04") +
+        "      - uses: step-security/harden-runner@v2\n        env:\n          egress-policy: block\n"
+        "      - run: minisign -Sm SHA256SUMS\n        env:\n          MK: ${{ secrets.MINISIGN_SECRET_KEY }}\n"})
+leg("RH25 bare egress-policy step key (no with:) does not satisfy (fails)", "harden-runner",
+    workflows={"release.yml": _HDR.format(ro="ubuntu-22.04") +
+        "      - uses: step-security/harden-runner@v2\n        egress-policy: block\n"
+        "      - run: minisign -Sm SHA256SUMS\n        env:\n          MK: ${{ secrets.MINISIGN_SECRET_KEY }}\n"})
+leg("RH26 flow-style with: harden is fail-closed (fails)", "harden-runner",
+    workflows={"release.yml": _HDR.format(ro="ubuntu-22.04") +
+        "      - uses: step-security/harden-runner@v2\n        with: { egress-policy: block }\n"
+        "      - run: minisign -Sm SHA256SUMS\n        env:\n          MK: ${{ secrets.MINISIGN_SECRET_KEY }}\n"})
+# (P1) format('{0}', secrets.X) / fromJSON('{}').secrets.X secret reads must be SEEN
+leg("RH27 format('{0}', secrets.X) on self-hosted fails", "self-hosted",
+    workflows={"release.yml": _sign_wf("self-hosted", secret_expr="${{ format('{0}', secrets.MINISIGN_SECRET_KEY) }}")})
+leg("RH28 fromJSON('{}').secrets.X on self-hosted fails", "self-hosted",
+    workflows={"release.yml": _sign_wf("self-hosted", secret_expr="${{ fromJSON('{}').secrets.MINISIGN_SECRET_KEY }}")})
+
+# --- round-5 runner-host adversarial legs ---
+# (P0) a multi-element runs-on list pulling in a self-hosted CONVENTION label (linux/x64)
+# must NOT be classified as hosted on element 0 alone - it can only run self-hosted.
+leg("RH29 list runs-on [ubuntu-latest, linux] secret fails", "recognized",
+    workflows={"release.yml": _sign_wf("[ubuntu-latest, linux]", harden="block")})
+leg("RH30 list runs-on [ubuntu-22.04, x64] secret fails", "recognized",
+    workflows={"release.yml": _sign_wf("[ubuntu-22.04, x64]", harden="block")})
+# robustness: a single-element all-hosted list is genuinely hosted (must PASS with harden)
+leg("RH31 single-element [ubuntu-latest] list + harden passes", "",
+    workflows={"release.yml": _sign_wf("[ubuntu-latest]", harden="block")})
+# (P1) an escaped-brace format string before the secret token must still be SEEN
+leg("RH32 escaped-brace format secret on self-hosted fails", "self-hosted",
+    workflows={"release.yml": _sign_wf("self-hosted", secret_expr="${{ format('{{x}}', secrets.MINISIGN_SECRET_KEY) }}")})
+
+# --- round-6 runner-host adversarial legs ---
+# a continue-on-error harden step is conditional enforcement -> does NOT satisfy
+leg("RH33 continue-on-error harden step does not satisfy (fails)", "harden-runner",
+    workflows={"release.yml": _HDR.format(ro="ubuntu-22.04") +
+        "      - uses: step-security/harden-runner@v2\n        continue-on-error: true\n"
+        "        with:\n          egress-policy: block\n"
+        "      - run: minisign -Sm SHA256SUMS\n        env:\n          MK: ${{ secrets.MINISIGN_SECRET_KEY }}\n"})
+leg("RH37 continue-on-error: ${{ expr }} harden step does not satisfy (fails)", "harden-runner",
+    workflows={"release.yml": _HDR.format(ro="ubuntu-22.04") +
+        "      - uses: step-security/harden-runner@v2\n        continue-on-error: ${{ true }}\n"
+        "        with:\n          egress-policy: block\n"
+        "      - run: minisign -Sm SHA256SUMS\n        env:\n          MK: ${{ secrets.MINISIGN_SECRET_KEY }}\n"})
+# block-SEQUENCE runs-on must be resolved like a flow list (every label must be hosted)
+_BSEQ = ("name: release\non:\n  push:\n    tags: ['v*']\n"
+         "permissions:\n  contents: read\n"
+         "jobs:\n  sign:\n    runs-on:\n{labels}    timeout-minutes: 10\n    steps:\n")
+leg("RH34 block-seq runs-on with self-hosted fails", "self-hosted",
+    workflows={"release.yml": _BSEQ.format(labels="      - self-hosted\n      - linux\n") +
+        "      - run: minisign -Sm SHA256SUMS\n        env:\n          MK: ${{ secrets.MINISIGN_SECRET_KEY }}\n"})
+leg("RH35 block-seq all-hosted [ubuntu-latest] + harden passes", "",
+    workflows={"release.yml": _BSEQ.format(labels="      - ubuntu-latest\n") +
+        "      - uses: step-security/harden-runner@v2\n        with:\n          egress-policy: block\n"
+        "      - run: minisign -Sm SHA256SUMS\n        env:\n          MK: ${{ secrets.MINISIGN_SECRET_KEY }}\n"})
+leg("RH36 block-seq [ubuntu-latest, linux] convention label fails", "recognized",
+    workflows={"release.yml": _BSEQ.format(labels="      - ubuntu-latest\n      - linux\n") +
+        "      - uses: step-security/harden-runner@v2\n        with:\n          egress-policy: block\n"
+        "      - run: minisign -Sm SHA256SUMS\n        env:\n          MK: ${{ secrets.MINISIGN_SECRET_KEY }}\n"})
+
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-ci-supply-chain] {len(results) - len(failed)}/{len(results)} assertions passed.")
 sys.exit(1 if failed else 0)

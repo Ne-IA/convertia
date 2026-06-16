@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""check-ci-supply-chain - G56 CI supply-chain config hygiene (P0.2.6).
+"""check-ci-supply-chain - G56 CI supply-chain config hygiene (P0.2.6 + P0.2.7 runner-host).
 
 The residual CI/config assertions that zizmor (G50) + actionlint (G49) do NOT cover.
 STDLIB-ONLY (no YAML library - the gate plane forbids vendoring one). A naive line scan
@@ -50,6 +50,11 @@ Assertions (after the file is known to be in plain, statically-analysable block 
       any key to write/write-all (until the P10 release job); a value that a line scan cannot
       resolve (empty/next-line or a block-scalar `|`/`>` indicator), a flow-style block, and
       a non-`read-all` inline scalar are all rejected fail-closed.
+  (6) runner-host integrity (P0.2.7, security-concept principle 11) - a job that reads a CI
+      secret (`${{ secrets.* }}`) must NOT run on a self-hosted runner, and a GitHub-hosted
+      secret job must use step-security/harden-runner with `egress-policy: block`; a secret
+      job whose runs-on is not a literal recognized hosted image is rejected fail-closed.
+      Non-secret jobs are unconstrained (fail-open until the P10 signing job lands).
 
 fail-closed: any violation -> exit 1. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
 
@@ -64,6 +69,14 @@ import sys
 from pathlib import Path
 
 REQUIRED_ECOSYSTEMS = {"github-actions", "cargo", "npm", "pip"}
+# a GitHub-HOSTED runner image label (incl. -arm / -large / -N-core variants); the only
+# safe host for a secret-bearing job. Anything else - self-hosted, a custom label, a
+# matrix/${{ }} expression, an object runs-on - is rejected fail-closed. (A self-hosted
+# runner CAN be mislabelled to look hosted; that residual is zizmor/the P10 review's job.)
+HOSTED_RUNNER = re.compile(r"^(ubuntu|macos|windows)-[\w.-]+$", re.I)
+# the `secrets` CONTEXT word, used by reads_secret() inside a ${{ }} expression interior
+# (a literal `secrets.txt` run-string has no ${{; `inputs.secrets_x` has no word boundary).
+SECRETS_WORD = re.compile(r"\bsecrets\b", re.I)
 
 
 def fail(msg: str) -> None:
@@ -452,10 +465,242 @@ def report_perm_block(name: str, body: list[str], top_level: bool) -> int:
     return problems
 
 
+def job_bodies(jobs_body: list[str]) -> dict[str, list[str]]:
+    """job-id -> ALL of the job's body lines (every depth below the header), so a scan can
+    reach runs-on (a direct child) AND the steps (deeper) for secret refs / harden-runner."""
+    real = [ln for ln in jobs_body if ln.strip()]
+    if not real:
+        return {}
+    ji = min(len(ln) - len(ln.lstrip()) for ln in real)
+    out: dict[str, list[str]] = {}
+    cur, body = None, []
+    for ln in jobs_body:
+        if not ln.strip():
+            continue
+        ind = len(ln) - len(ln.lstrip())
+        if ind == ji:
+            if cur is not None:
+                out[cur] = body
+            cur, body = unquote(ln.strip().partition(":")[0]), []
+        elif cur is not None and ind > ji:
+            body.append(ln)
+    if cur is not None:
+        out[cur] = body
+    return out
+
+
+def child_block(body: list[str], key: str) -> list[str]:
+    """The lines under the FIRST `key:` at body's direct-child indent (e.g. a job's
+    `steps:` sequence)."""
+    real = [ln for ln in body if ln.strip()]
+    if not real:
+        return []
+    ci = min(len(ln) - len(ln.lstrip()) for ln in real)
+    out, capturing = [], False
+    for ln in body:
+        if not ln.strip():
+            if capturing:
+                out.append(ln)
+            continue
+        ind = len(ln) - len(ln.lstrip())
+        if ind == ci:
+            if capturing:
+                break
+            if re.match(rf"^\s*{key}\s*:", ln):
+                capturing = True
+            continue
+        if capturing:
+            out.append(ln)
+    return out
+
+
+def job_direct_child_value(body: list[str], key: str) -> str | None:
+    """The inline value of `key:` at the job's DIRECT-CHILD indent (so a deeper step-level
+    `with: runs-on: <hosted>` cannot shadow a job-level `runs-on: self-hosted`)."""
+    real = [ln for ln in body if ln.strip()]
+    if not real:
+        return None
+    ci = min(len(ln) - len(ln.lstrip()) for ln in real)
+    for ln in body:
+        if not ln.strip() or (len(ln) - len(ln.lstrip())) != ci:
+            continue
+        m = re.match(rf"^\s*{key}\s*:\s*(\S.*)$", ln)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def step_with_block(step: list[str]) -> list[str]:
+    """The lines under a step item's own `with:` key (egress-policy must be a direct child
+    of THIS step's with: mapping, not an env var / bare key / sibling step). The step's
+    content indent is the dash column + 2; a flow/inline `with: {...}` yields [] -> fail-closed."""
+    if not step:
+        return []
+    first = step[0]
+    dash = re.match(r"\s*-\s+", first)  # content indent = end of the `- ` prefix (any spacing)
+    if not dash:
+        return []
+    ci = len(dash.group(0))
+    norm = ([" " * ci + first[ci:]] if len(first) > ci else []) + list(step[1:])
+    out, capturing = [], False
+    for ln in norm:
+        if not ln.strip():
+            if capturing:
+                out.append(ln)
+            continue
+        ind = len(ln) - len(ln.lstrip())
+        if ind == ci:
+            if capturing:
+                break
+            if re.match(r"^\s*with\s*:\s*$", ln):  # block-form with: only (a flow `with: {..}` -> no body -> fail-closed)
+                capturing = True
+            continue
+        if capturing and ind > ci:
+            out.append(ln)
+    return out
+
+
+def job_has_harden_block(body: list[str]) -> bool:
+    """True iff a STEP in this job is an UNCONDITIONAL step-security/harden-runner with
+    `egress-policy: block` AS A DIRECT CHILD OF THAT STEP'S OWN `with:` MAPPING - so a decoy
+    in a run-string / step `name:` / an `env:` var named egress-policy / a sibling step, an
+    `if:`-gated step, a flow-style `with:`, or `egress-policy: audit` does NOT satisfy it."""
+    for step in list_items(child_block(body, "steps")):
+        st = "\n".join(step)
+        # the EXACT action name only (a `(?![\w./-])` boundary, so a typosquat/fork like
+        # `harden-runner-fork` or `harden-runner.evil` does NOT satisfy the requirement).
+        if not re.search(r"^\s*-?\s*uses\s*:\s*['\"]?step-security/harden-runner(?![\w./-])", st, re.M):
+            continue
+        if re.search(r"^\s*-?\s*if\s*:", st, re.M):
+            continue  # conditionally-run -> cannot prove it enforces
+        if re.search(r"^\s*-?\s*continue-on-error\s*:\s*(?:['\"]?(?:true|yes|on)\b|\$\{\{)", st, re.M | re.I):
+            continue  # a truthy OR ${{ expression }} continue-on-error could tolerate a failing
+            #          harden setup -> not unconditional enforcement (mirrors check-3's expr handling)
+        with_body = step_with_block(step)
+        if with_body and re.search(r"^\s*egress-policy\s*:\s*['\"]?block\b",
+                                   "\n".join(with_body), re.M | re.I):
+            return True
+    return False
+
+
+def blank_quotes(s: str) -> str:
+    """Replace single/double-quoted string spans with spaces (so a `}}`/`secrets` INSIDE a
+    string literal - e.g. a `format('{{x}}', ...)` escape - is not read as structure)."""
+    out, q = [], None
+    for ch in s:
+        if q:
+            out.append(" ")
+            if ch == q:
+                q = None
+        elif ch in "\"'":
+            q = ch
+            out.append(" ")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def reads_secret(text: str) -> bool:
+    """True iff `text` references the GitHub `secrets` context inside any ${{ }} expression.
+    Brace-and-quote aware: the terminating `}}` is the first one OUTSIDE a string literal
+    (so a `format('{{lit}}', secrets.K)` escape does not end the expression early), and the
+    `secrets` word is sought only OUTSIDE string literals in the interior (so a literal
+    string `'secrets'` is not a false match). Spans expressions across physical lines."""
+    i = 0
+    while True:
+        start = text.find("${{", i)
+        if start < 0:
+            return False
+        j, q = start + 3, None
+        while j < len(text):
+            ch = text[j]
+            if q:
+                if ch == q:
+                    q = None
+            elif ch in "\"'":
+                q = ch
+            elif ch == "}" and j + 1 < len(text) and text[j + 1] == "}":
+                break
+            j += 1
+        if SECRETS_WORD.search(blank_quotes(text[start + 3:j])):
+            return True
+        i = j + 2
+
+
+def check_runner_host(name: str, lines: list[str], raw_lines: list[str]) -> int:
+    """(6) Runner-host integrity (security-concept principle 11): a job that reads a CI
+    secret must NEVER run on a self-hosted runner (it would share a host with the
+    untrusted-corpus/fuzz jobs), and a GitHub-HOSTED secret job must carry an unconditional
+    step-security/harden-runner step in BLOCK egress mode. A secret job whose runs-on is not
+    a literal recognized hosted image (self-hosted / custom label / matrix / ${{ }} /
+    object / list) is rejected fail-closed. Non-secret jobs are unconstrained (fail-open
+    until the P10 signing job lands).
+
+    Two views of the file are used to avoid a block-scalar working both ways: SECRET
+    detection runs over `raw_lines` (comment-stripped, NOT block-scalar-excised) so a
+    `${{ secrets.* }}` in a multi-line `run:` body / sibling `env:` is seen; STRUCTURAL
+    analysis (runs-on, harden-runner step) runs over `lines` (block-scalar-EXCISED) so a
+    `run: |` / `name: |` body whose text mimics `uses: harden-runner` / `egress-policy:
+    block` cannot forge a harden step. Secrets are matched over the JOINED body so a
+    `${{` and `secrets` split across physical lines are still caught."""
+    problems = 0
+    # a workflow-LEVEL env secret is injected into EVERY job, so it makes every job secret-reading.
+    _, top_env_raw = top_key(raw_lines, "env")
+    wf_env_secret = reads_secret("\n".join(top_env_raw))
+    struct = job_bodies(top_key(lines, "jobs")[1])       # excised -> structure
+    raw = job_bodies(top_key(raw_lines, "jobs")[1])       # non-excised -> secret scan
+    for jid, body in struct.items():
+        if not (wf_env_secret or reads_secret("\n".join(raw.get(jid, [])))):
+            continue  # no secret read -> nothing to assert
+        # Resolve the runs-on label(s) across scalar (`ubuntu-22.04`), flow-list (`[a, b]`),
+        # and block-sequence (`runs-on:\n  - a\n  - b`) forms. A list/sequence runner must
+        # carry EVERY listed label; a generic convention label (linux/x64/...) is only on
+        # SELF-HOSTED runners, so a secret job must be a single literal hosted image OR an
+        # all-hosted-image set - never a conjunction that pulls in a non-hosted label.
+        runs_on = job_direct_child_value(body, "runs-on")
+        if runs_on is not None:
+            labels = ([unquote(e) for e in runs_on.strip("[]").split(",") if e.strip()]
+                      if runs_on.startswith("[") else [unquote(runs_on)])
+        else:  # block-sequence form (or unresolvable)
+            labels = []
+            for ln in child_block(body, "runs-on"):
+                m = re.match(r"^\s*-\s*(\S.*)$", ln)
+                if m:
+                    labels.append(unquote(m.group(1).strip()))
+        if not labels:
+            fail(f"{name}: secret-reading job '{jid}' has no resolvable job-level `runs-on` - "
+                 "cannot verify host (an object/empty runs-on is not statically verifiable)")
+            problems += 1
+            continue
+        if any("self-hosted" in lbl.lower() for lbl in labels):
+            fail(f"{name}: secret-reading job '{jid}' runs on a SELF-HOSTED runner - a CI secret must "
+                 "never share a host with the untrusted-corpus/fuzz jobs (security-concept principle 11)")
+            problems += 1
+        elif labels and all(HOSTED_RUNNER.match(lbl) for lbl in labels):
+            if not job_has_harden_block(body):
+                fail(f"{name}: GitHub-hosted secret-reading job '{jid}' must carry an unconditional "
+                     "step-security/harden-runner step with `egress-policy: block`")
+                problems += 1
+        else:
+            fail(f"{name}: secret-reading job '{jid}' runs-on labels {labels!r} are not all recognized "
+                 "GitHub-hosted images - a secret job must name a literal hosted runner / all-hosted set "
+                 "(no matrix / expression / custom or convention label / object), so its host is "
+                 "statically verifiable")
+            problems += 1
+    return problems
+
+
 def check_workflow(path: Path) -> int:
     name = path.name
-    lines = structural_lines(path.read_text(encoding="utf-8", errors="replace").splitlines())
+    raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    lines = structural_lines(raw)
+    # check (6) takes BOTH views: the excised `lines` for STRUCTURE (runs-on / harden step,
+    # so a block-scalar body cannot forge a harden step) and the comment-stripped-but-NOT-
+    # excised `stripped` for SECRET detection (so a secret in a multi-line `run:` body or a
+    # sibling `env:` is still seen). checks (1)-(5) use the excised `lines`.
+    stripped = [strip_comment(ln) for ln in raw]
     problems = precheck(name, lines)
+    problems += check_runner_host(name, lines, stripped)
 
     # (5a) flow-style permissions anywhere (top-level OR per-job) cannot be statically
     # verified for contents-read / id-token - reject fail-closed. Empty `{}`/`{ }`
