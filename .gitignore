@@ -12,6 +12,9 @@ out/
 /src-tauri/target/
 target/
 
+# Installed pinned gate tools (downloaded + checksum-verified by scripts/install-gate-tools)
+.gate-tools/
+
 # Env / secrets
 .env
 .env.*

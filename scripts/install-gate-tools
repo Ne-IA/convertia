@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""install-gate-tools - pinned gate-tool fetch-and-verify (P0.2.1).
+
+Reads scripts/gate-tools.toml, downloads each pinned tool for the CURRENT
+platform from its allow-listed origin, verifies the pinned SHA-256, and installs
+it under .gate-tools/bin/. A SHA-256 MISMATCH IS A HARD FAILURE (exit 1) - that
+is the security control (security-concept s0, build-gates s0 / G24 / G54): a
+poisoned or typosquatted gate tool both misses real findings AND can read CI
+secrets, so every gate tool is pinned by exact version and verified by content.
+
+stdlib-only (tomllib / hashlib / urllib), so it runs on a clean checkout with no
+bootstrap dependency beyond Python >= 3.11. Invoke as `python3 scripts/install-gate-tools`.
+
+The recorded sha256 was CORROBORATED at pin-establishment (the tool's own
+signature/attestation OR >=2 independent origins; see each tool's `corroboration`
+in the manifest). This script enforces that pinned value at install time; a
+checksum/version edit in the manifest is a hard Co-Pilot escalation (the manifest
+is L(-1), scripts/l-neg1-files.toml, G71).
+
+Usage:
+  install-gate-tools [--manifest PATH] [--dest DIR] [--offline]
+                     [--tool NAME ...] [--list]
+
+Exit codes:
+  0  all selected tools verified / installed
+  1  a verification or structural failure (the fail-closed control)
+  2  usage / missing-manifest error
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import platform
+import re
+import shutil
+import stat
+import sys
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+if sys.version_info < (3, 11):
+    sys.exit(
+        "install-gate-tools requires Python >= 3.11 (tomllib); "
+        f"found {platform.python_version()}."
+    )
+import tomllib  # noqa: E402  - stdlib since 3.11, imported after the version guard
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_MANIFEST = REPO_ROOT / "scripts" / "gate-tools.toml"
+DEFAULT_DEST = REPO_ROOT / ".gate-tools"
+SCHEMA_VERSION = 1
+DOWNLOAD_TIMEOUT = 120  # seconds
+CHUNK = 1 << 16
+
+
+class GateToolError(Exception):
+    """A structural or verification failure (maps to exit 1)."""
+
+
+def detect_platform() -> str:
+    """Return the canonical '<os>-<arch>' key used in the manifest."""
+    osmap = {"Linux": "linux", "Darwin": "macos", "Windows": "windows"}
+    sysname = platform.system()
+    if sysname not in osmap:
+        raise GateToolError(f"unsupported OS: {sysname!r}")
+    archmap = {"x86_64": "x86_64", "amd64": "x86_64", "arm64": "aarch64", "aarch64": "aarch64"}
+    mach = platform.machine().lower()
+    if mach not in archmap:
+        raise GateToolError(f"unsupported architecture: {platform.machine()!r}")
+    return f"{osmap[sysname]}-{archmap[mach]}"
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(CHUNK), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def verify_origin(url: str, origin: str) -> None:
+    """Source allow-list: url MUST be https, share the origin's HOST, sit under the
+    origin's path, and contain no '..' traversal segment. A bare prefix match is too
+    weak; a urlsplit host check defeats `github.com.evil.com`-style look-alikes and
+    path traversal that string-prefixing alone would let through."""
+    u = urllib.parse.urlsplit(url)
+    o = urllib.parse.urlsplit(origin)
+    if u.scheme != "https":
+        raise GateToolError(f"non-https url rejected: {url}")
+    if u.netloc != o.netloc:
+        raise GateToolError(
+            f"url host {u.netloc!r} is not the allow-listed origin host {o.netloc!r}: {url}"
+        )
+    if ".." in u.path.split("/"):
+        raise GateToolError(f"url path contains a '..' traversal segment: {url}")
+    if not url.startswith(origin):
+        raise GateToolError(
+            "url is not under the allow-listed origin\n"
+            f"  url:    {url}\n  origin: {origin}"
+        )
+
+
+def download(url: str, dest_tmp: Path) -> None:
+    req = urllib.request.Request(url, headers={"User-Agent": "convertia-install-gate-tools"})
+    with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT) as resp, dest_tmp.open("wb") as out:
+        shutil.copyfileobj(resp, out, CHUNK)
+
+
+def install_tool(name: str, entry: dict, dest: Path, platform_key: str, offline: bool) -> None:
+    platforms = entry.get("platforms", {})
+    if platform_key not in platforms:
+        raise GateToolError(
+            f"no pin for platform {platform_key!r} "
+            f"(pinned: {', '.join(sorted(platforms)) or 'none'})"
+        )
+    pin = platforms[platform_key]
+    url = pin["url"]
+    want = pin["sha256"].lower()
+    origin = entry["origin"]
+    bin_name = entry.get("bin_name", name)
+    asset_kind = entry.get("asset_kind", "raw")
+    version = entry.get("version", "?")
+
+    is_windows = platform_key.startswith("windows")
+    bindir = dest / "bin"
+    bindir.mkdir(parents=True, exist_ok=True)
+    out_path = bindir / (bin_name + (".exe" if is_windows else ""))
+
+    # Idempotent: an existing install whose content already matches is a no-op.
+    if out_path.is_file() and sha256_file(out_path) == want:
+        print(f"[ok]      {name} {version} ({platform_key}) - already verified")
+        return
+
+    verify_origin(url, origin)
+
+    if asset_kind != "raw":
+        raise GateToolError(
+            f"asset_kind {asset_kind!r} is unsupported "
+            "(add archive extraction in the same change as the first tool that needs it)"
+        )
+
+    if offline:
+        raise GateToolError("--offline and no verified install present (cannot fetch)")
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td) / "download.bin"
+        try:
+            download(url, tmp)
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            raise GateToolError(f"download failed: {e}") from e
+        got = sha256_file(tmp)
+        if got != want:
+            # HARD FAIL - the entire point of this script.
+            raise GateToolError(
+                "SHA-256 MISMATCH - refusing to install\n"
+                f"  expected: {want}\n  got:      {got}\n  url:      {url}"
+            )
+        shutil.move(str(tmp), str(out_path))
+
+    if not is_windows:
+        mode = out_path.stat().st_mode
+        out_path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    print(f"[install] {name} {version} ({platform_key}) - sha256 verified")
+
+
+def validate_toolchain(manifest: dict, repo_root: Path) -> list[str]:
+    """Assert the [toolchain] pins are exact (not floating) + consistent with rust-toolchain.toml.
+
+    P0.2.1 "asserted not-floating": a floating channel ('stable' / 'beta' / bare
+    'nightly') is a daily-moving build input and is forbidden. Returns a list of
+    error strings (empty = ok). Manifests with no [toolchain] section (e.g. the
+    self-test fixtures) are skipped.
+    """
+    tc = manifest.get("toolchain")
+    if not tc:
+        return []
+    errs: list[str] = []
+    stable = str(tc.get("rust_stable", ""))
+    nightly = str(tc.get("fuzz_nightly", ""))
+    if not re.fullmatch(r"\d+\.\d+\.\d+", stable):
+        errs.append(f"rust_stable {stable!r} is not an exact X.Y.Z (floating channel forbidden)")
+    if not re.fullmatch(r"nightly-\d{4}-\d{2}-\d{2}", nightly):
+        errs.append(f"fuzz_nightly {nightly!r} is not nightly-YYYY-MM-DD (floating nightly forbidden)")
+    rtt = repo_root / "rust-toolchain.toml"
+    if rtt.is_file():
+        try:
+            with rtt.open("rb") as f:
+                channel = str(tomllib.load(f).get("toolchain", {}).get("channel", ""))
+        except (tomllib.TOMLDecodeError, OSError) as e:
+            errs.append(f"cannot read rust-toolchain.toml: {e}")
+        else:
+            if stable and channel != stable:
+                errs.append(
+                    f"rust-toolchain.toml channel {channel!r} != gate-tools.toml rust_stable {stable!r}"
+                )
+    return errs
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="pinned gate-tool fetch-and-verify (P0.2.1)")
+    ap.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    ap.add_argument("--dest", type=Path, default=DEFAULT_DEST)
+    ap.add_argument("--offline", action="store_true")
+    ap.add_argument("--tool", action="append", dest="tools", default=None,
+                    help="install only this tool (repeatable); default = all")
+    ap.add_argument("--list", action="store_true", help="list pinned tools and exit")
+    args = ap.parse_args(argv)
+
+    if not args.manifest.is_file():
+        print(f"[install-gate-tools] manifest not found: {args.manifest}", file=sys.stderr)
+        return 2
+    try:
+        with args.manifest.open("rb") as f:
+            manifest = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, OSError) as e:
+        print(f"[install-gate-tools] cannot parse manifest: {e}", file=sys.stderr)
+        return 1
+
+    if manifest.get("schema_version") != SCHEMA_VERSION:
+        print(
+            f"[install-gate-tools] schema_version {manifest.get('schema_version')!r} "
+            f"!= expected {SCHEMA_VERSION}",
+            file=sys.stderr,
+        )
+        return 1
+
+    tools = manifest.get("tools", {})
+    if args.list:
+        for n, e in sorted(tools.items()):
+            plats = ", ".join(sorted(e.get("platforms", {})))
+            print(f"{n} {e.get('version', '?')}  platforms: {plats}")
+        return 0
+
+    try:
+        platform_key = detect_platform()
+    except GateToolError as e:
+        print(f"[install-gate-tools] {e}", file=sys.stderr)
+        return 1
+
+    selected = args.tools if args.tools else sorted(tools)
+    failures: list[str] = []
+    for name in selected:
+        if name not in tools:
+            print(f"[FAIL]    {name}: not in manifest", file=sys.stderr)
+            failures.append(name)
+            continue
+        try:
+            install_tool(name, tools[name], args.dest, platform_key, args.offline)
+        except (GateToolError, KeyError) as e:
+            print(f"[FAIL]    {name}: {e}", file=sys.stderr)
+            failures.append(name)
+
+    # "asserted not-floating" (P0.2.1): the [toolchain] pins must be exact and
+    # consistent with rust-toolchain.toml (a floating channel is forbidden).
+    tc_errors = validate_toolchain(manifest, REPO_ROOT)
+    for e in tc_errors:
+        print(f"[FAIL]    toolchain: {e}", file=sys.stderr)
+
+    if failures or tc_errors:
+        print(
+            f"\n[install-gate-tools] {len(failures) + len(tc_errors)} failure(s) - FAIL CLOSED.",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"\n[install-gate-tools] all {len(selected)} tool(s) + toolchain pins verified "
+        f"({platform_key})."
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

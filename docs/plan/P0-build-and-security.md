@@ -79,7 +79,7 @@ the doc-consistency gate (G7/G20) cannot pass until they parse.
 empty-but-wired harnesses that the P0.3/P0.4 gates plug into. The gate-tool *pinning
 mechanism* (P0.2.1) comes first because every other tool here is installed through it.
 
-- [ ] **P0.2.1** [GATE,CI] Build the pinned-gate-tool fetch-and-verify mechanism + its wrong-checksum self-test · §3.8 · G24
+- [x] **P0.2.1** [GATE,CI] Build the pinned-gate-tool fetch-and-verify mechanism + its wrong-checksum self-test · §3.8 · G24
   needs: P0.1.2
   > the §0 pin-and-verify control: a `scripts/install-gate-tools` that downloads each tool at its committed exact version, verifies checksum/image-digest, and ships a **G24 negative self-test — a deliberately-wrong checksum MUST fail the install**. Pin store covers `lefthook`/`gitleaks`/`actionlint`/`zizmor`/`typos`/`editorconfig-checker`/Semgrep/Syft/`cargo-deny`/`cargo-vet`/`cargo-fuzz`/`minisign`/… A committed **gate-tool source allow-list** (per-tool upstream origin) + each checksum corroborated at pin-establishment against the tool's OWN published signature OR ≥2 independent origins (the G37 acquisition-mode discipline applied to gate tools, which both read CI secrets and catch real findings); a checksum edit is a hard Co-Pilot escalation. `pip`-installed tools use `pip install --require-hashes -r requirements-ci.txt` with a planted-positive that a hashless install fails. Commit `rust-toolchain.toml` (exact stable + date-pinned `nightly-YYYY-MM-DD` for G48), asserted not-floating.
 - [ ] **P0.2.2** [GATE] Set up the `lefthook` git-hook manager — the L1/L2/L3 plane executor · G54 G24

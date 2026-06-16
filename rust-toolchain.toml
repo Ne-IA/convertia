@@ -1,0 +1,20 @@
+# rust-toolchain.toml — the pinned Rust toolchain (P0.2.1 · spec §0.8).
+#
+# Pins the DEFAULT stable channel EXACTLY so the build is never a moving target
+# (security-concept §0 "pin everything"; build-gates §0 "asserted not-floating").
+# rustup verifies its own download signatures, so no sha256 is pinned here.
+#
+# The date-pinned NIGHTLY used by cargo-fuzz (G48) is deliberately NOT a second
+# channel in this file (rust-toolchain.toml carries exactly one channel). It is
+# pinned in `scripts/gate-tools.toml` [toolchain].fuzz_nightly and invoked
+# EXPLICITLY by the fuzz job (`cargo +nightly-YYYY-MM-DD fuzz`, P0.2.10/P0.4.3) —
+# a bare floating `+nightly` is forbidden because it ignores this file's channel.
+#
+# This file is an L(-1) security-critical file (scripts/l-neg1-files.toml): a
+# channel edit is a hard Co-Pilot escalation (owner-ack, G71).
+
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+# Per-platform compile targets are added by the build matrix (P0.4.10); none are
+# forced here so a clean checkout installs only what the host needs.

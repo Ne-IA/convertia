@@ -1,0 +1,20 @@
+# requirements-ci.txt — pip-installed gate tools, HASH-PINNED (P0.2.1 · §0).
+#
+# Install with:  python -m pip install --require-hashes -r requirements-ci.txt
+#
+# --require-hashes REFUSES any requirement that lacks a sha256 --hash and refuses
+# any unpinned (non-"==") version. A bare `pip install semgrep==X.Y.Z` verifies
+# only the version STRING, not the content; --require-hashes verifies the bytes.
+# A hashless / unpinned entry added here is a PLANTED-POSITIVE failure — the
+# install must fail (build-gates §0; the G24-style self-test in
+# scripts/gate-selftests/ proves a hashless entry is rejected).
+#
+# Each entry is pinned exact-version + PyPI sha256, corroborated at
+# pin-establishment per §0. This file is L(-1) (scripts/l-neg1-files.toml, G71).
+#
+# Seeded EMPTY of real tools on purpose: the first pip-installed gate tool is
+# Semgrep (the SAST gate, G29), introduced by P0.4.2 — its pinned `semgrep==<ver>`
+# + `--hash=sha256:...` (and its transitive deps, fully hash-locked) are added
+# THERE, through this same --require-hashes leg. No tool is pip-installed before
+# P0.4.2; this file is the structural home that leg installs from, and the
+# planted-positive self-test exercises the discipline today with a synthetic entry.

@@ -1,0 +1,49 @@
+# scripts/gate-tools.toml — the PINNED GATE-TOOL MANIFEST (P0.2.1).
+#
+# Every gate / SAST / SBOM / lint tool is pinned by EXACT version and verified by
+# SHA-256 at install (security-concept §0; build-gates §0). `scripts/install-gate-tools`
+# reads this file, downloads each tool for the current platform from its
+# allow-listed `origin`, verifies the pinned `sha256`, and a MISMATCH IS A HARD
+# FAILURE — that is the security control (a poisoned/typosquatted gate tool both
+# misses real findings and can read CI secrets).
+#
+# CORROBORATION DISCIPLINE (§0, the part a runtime hash-check cannot give): each
+# recorded sha256 was authenticated AT PIN-ESTABLISHMENT against the tool's own
+# published signature/attestation OR >=2 independent origins, recorded per tool in
+# `corroboration`. A checksum/version edit here is a HARD Co-Pilot escalation like
+# an engines.lock SHA edit — this file is L(-1) (scripts/l-neg1-files.toml, G71).
+#
+# GROWTH: this manifest is seeded with the toolchain + lefthook (the L1/L2/L3
+# executor, needed first by P0.2.2). Each additional gate tool is pinned here BY THE
+# BOX THAT INTRODUCES IT, through the same mechanism — gitleaks (P0.3.1),
+# actionlint/zizmor (P0.2.6), typos/editorconfig-checker (P0.3.11), Syft/cargo-deny/
+# cargo-vet/cargo-fuzz/minisign/cyclonedx (their boxes). pip-installed tools
+# (Semgrep, P0.4.2) live in `requirements-ci.txt` (the --require-hashes leg), not
+# here. [Build-Session-Entscheidung: P0.2.1 — mechanism + first-tool pins now,
+# remaining tools pinned per-introducing-box; matches §0.8 "[DEFER: build] exact
+# patch pins locked at first build" + the plan's per-box tool-introduction pattern.]
+
+schema_version = 1
+
+# --- Rust toolchain (rustup-managed; rustup verifies its own signatures) -------
+[toolchain]
+rust_stable  = "1.96.0"               # mirrors rust-toolchain.toml's channel (asserted equal + not-floating)
+fuzz_nightly = "nightly-2026-06-16"   # cargo-fuzz G48; invoked as `cargo +nightly-2026-06-16 fuzz` (P0.2.10)
+
+# --- lefthook — the L1/L2/L3 git-hook plane executor (G54) ---------------------
+# A poisoned lefthook can silently no-op EVERY local hook (the core.hooksPath-bypass
+# equivalent), so it is pinned + checksum-verified like every other tool and carries
+# the G24 wrong-checksum self-test (security-concept §0, build-gates §0/G54).
+[tools.lefthook]
+version       = "2.1.9"
+origin        = "https://github.com/evilmartians/lefthook/releases/download/v2.1.9/"
+bin_name      = "lefthook"
+asset_kind    = "raw"   # the downloaded asset IS the executable (no archive to extract)
+corroboration = "official lefthook_checksums.txt (GitHub release v2.1.9); release build-provenance verified via `gh attestation verify --owner evilmartians` (exit 0) on the Linux_x86_64 artifact; each pinned platform sha256 taken from that attested checksums.txt; established 2026-06-16 by ch4ngo88"
+
+[tools.lefthook.platforms]
+linux-x86_64   = { url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.9/lefthook_2.1.9_Linux_x86_64",      sha256 = "0d60b0d350c923963729574f6431171f0277788884ad0c6284fa0160c36e3877" }
+linux-aarch64  = { url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.9/lefthook_2.1.9_Linux_aarch64",     sha256 = "304321997336c450af6b5c0cc641c59141168866fca0b1fc3767e067812600a9" }
+macos-x86_64   = { url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.9/lefthook_2.1.9_MacOS_x86_64",      sha256 = "0868b9b5b9cd807b0f9e0135fadaff1bd99fa026cccc15cbfd4510f0ee3b5431" }
+macos-aarch64  = { url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.9/lefthook_2.1.9_MacOS_arm64",       sha256 = "fd506e05954af2062ce320d59ac1f5bf13fad8d694694a72bc6ef91e8c284e3d" }
+windows-x86_64 = { url = "https://github.com/evilmartians/lefthook/releases/download/v2.1.9/lefthook_2.1.9_Windows_x86_64.exe", sha256 = "bcb94c2524153e8e003a4fe3ae77f86e84729c9f089efc1c6b20c00e832de046" }
