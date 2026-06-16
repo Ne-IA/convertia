@@ -17,9 +17,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: '17 3 * * 1'   # weekly UI-drift canary for G56a (branch-protection / repo-config), P0.2.8
 
-# Least privilege: read-only by default (G49/G56). Elevated per-job only where needed
-# (none here); never set id-token on this push/PR workflow (P0.2.6).
+# Least privilege: read-only by default (G49/G56). Elevated per-job only where needed (none here:
+# G56a's branch-protection/repo-config reads need an ADMIN scope GITHUB_TOKEN cannot hold, so in
+# P0 it runs fail-soft on the default token and is owner-verified; a P1 admin-scoped PAT secret is
+# the hard-enforce path). Never set id-token on this push/PR workflow (P0.2.6).
 permissions:
   contents: read
 
@@ -89,3 +93,9 @@ jobs:
         run: python3 scripts/gate-selftests/g24-ci-supply-chain.py
       - name: 'G24: release-tag-trust self-test (G56b legs: ancestry / green-history / signed-tag)'
         run: python3 scripts/gate-selftests/g24-release-tag-trust.py
+      - name: 'G56a: branch-protection / repo-config assertion (fail-soft in P0; --enforce wired in P1)'
+        run: python3 scripts/check-branch-protection
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: 'G24: branch-protection self-test (fixture-driven evaluate_* legs)'
+        run: python3 scripts/gate-selftests/g24-branch-protection.py

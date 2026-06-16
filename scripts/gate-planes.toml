@@ -97,6 +97,13 @@ covered_by = "P10 / P3+ activation"
 reason = "no secret-reading job and no cargo-fuzz invocation exist until the signing job (P10) / the fuzz harness (P3+); the assertions are authored + self-tested now and fail-CLOSE the moment their target lands (pattern b)"
 
 [[fail_open]]
+gate = "G56a"
+leg = "branch-protection / repo-config introspection"
+fail_open_at = "L4"
+covered_by = "P1 --enforce + owner verification"
+reason = "the default CI GITHUB_TOKEN cannot read admin-scoped branch-protection / repo config (GitHub exposes no `administration` token scope), and the config is owner-provisioned mid-P0; the gate runs fail-SOFT in CI on the default token and is owner-verified now, becoming fail-CLOSED at P1 via an admin-scoped PAT secret + --enforce (pattern c)"
+
+[[fail_open]]
 gate = "G56b"
 leg = "signed-tag (leg 3)"
 fail_open_at = "L5"

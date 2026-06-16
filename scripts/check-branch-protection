@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""check-branch-protection - G56a GitHub branch-protection / repo-config assertion (P0.2.8).
+
+In the single-branch direct-to-`main` model the ONLY thing that turns a red CI run into a real
+block is GitHub repo config - which is invisible to the codebase and silently relaxable in the
+UI. G50/G56 lint workflow FILES but cannot see repo settings. This gate queries the GitHub API
+(scheduled + per-push) and asserts the load-bearing, otherwise-invisible config. Legs:
+
+  CORE - branch protection on `main` (`repos/<repo>/branches/<branch>/protection`):
+    * the agreed required status checks are all present-and-required (EXPECTED_REQUIRED_CHECKS
+      subset of the protection's required checks - subset so adding heavy gates in P0.3/P0.4 does
+      not break it);
+    * `enforce_admins` is true (no admin-bypass);
+    * `allow_force_pushes` / `allow_deletions` are both false.
+  (g) required_signatures on `main` - target-gated: fail-SOFT (skip-with-warning) until the
+      committed SSH allowed-signers file lands (P0.7.17, the loop then signs its own commits),
+      then fail-closed.
+  (d) native secret-scanning + push-protection enabled (`repos/<repo>` security_and_analysis).
+  (e) default workflow permissions read-only + can_approve_pull_request_reviews == false
+      (`repos/<repo>/actions/permissions/workflow`).
+  (f) T2/WebView inter-procedural-taint OR-gate: PASS if CodeQL default-setup is `configured`
+      (`repos/<repo>/code-scanning/default-setup`) OR the G29 rule-(i) Semgrep taint ruleset is
+      present under scripts/semgrep-rules/. Target-absent => fail-SOFT until one exists (P0.4);
+      the XOR ("exactly one") is machine-enforced by plan-lint check 21 (P0.3.5), not here.
+
+POSTURE: **fail-soft during the P0 bootstrap (no --enforce): every finding warns, exit 0**;
+**--enforce (wired from P1): a config violation or an unreadable required endpoint -> exit 1**.
+The target-absent legs (required_signatures before the allowed-signers file; the (f) OR-gate
+before CodeQL/G29) stay skip-with-warning even under --enforce, then fail-close when their target
+lands - the same target-existence flip G56b leg 3 uses.
+
+The pure evaluate_*() / taint_or_gate() functions take parsed JSON and are driven by the G24 self-
+test on fixtures; the LIVE `gh api` calls are owner/CI-verified (G56a is exempt from the plan-lint
+check-16 fixture requirement - an API-introspection gate). The `gh` calls use the workflow
+GITHUB_TOKEN, which on its default `contents: read` scope CANNOT read the admin-scoped branch-
+protection / repo-config endpoints (GitHub exposes no `administration` GITHUB_TOKEN permission, so
+the elevation cannot even be requested) - hence the gate runs fail-SOFT in CI on the default token
+and is owner-verified; the P1 hard-enforce path supplies an admin-scoped PAT secret + --enforce. No
+`secrets.*` release value is read here.
+
+fail-closed under --enforce. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+
+Usage: check-branch-protection [--repo <owner/repo>] [--branch main] [--enforce]
+                               [--allowed-signers <path>] [--semgrep-dir <path>]
+       (--repo defaults to $GITHUB_REPOSITORY)
+Exit:  0 = config OK or fail-soft (P0); 1 = a violation under --enforce; 2 = bad invocation.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+# The agreed required status-check contexts that MUST be present-and-required on `main`. Kept in
+# sync with the ci.yml job matrix (DoD item 2); a SUBSET assertion, so P0.3/P0.4 adding heavier
+# required checks on the GitHub side never red-fails this - it asserts OUR minimum is enforced.
+EXPECTED_REQUIRED_CHECKS = (
+    "gate-tooling (ubuntu-22.04)",
+    "gate-tooling (macos-14)",
+    "gate-tooling (windows-2022)",
+    "workflow-security",
+)
+DEFAULT_ALLOWED_SIGNERS = ".github/allowed-signers"  # provisioned in P0.7.17 (shared with G56b)
+DEFAULT_SEMGREP_DIR = "scripts/semgrep-rules"        # G29 rule-(i) taint ruleset home (P0.4)
+
+
+def out(msg: str) -> None:
+    print(f"[G56a] {msg}")
+
+
+def fail(msg: str) -> None:
+    print(f"[G56a] FAIL: {msg}", file=sys.stderr)
+
+
+# --- pure evaluators (fixture-testable; no network) -------------------------------------------
+def evaluate_branch_protection(data: dict, expected_checks: tuple[str, ...],
+                               require_signatures: bool) -> tuple[list[str], list[str]]:
+    """(hard_problems, soft_notes) for a parsed branches/<b>/protection object."""
+    hard: list[str] = []
+    soft: list[str] = []
+    rsc = data.get("required_status_checks") or {}
+    present = {c.get("context") for c in (rsc.get("checks") or [])}
+    # older API shape: contexts[] instead of checks[]
+    present |= set(rsc.get("contexts") or [])
+    missing = [c for c in expected_checks if c not in present]
+    if missing:
+        hard.append("required status checks not all present-and-required: missing " + ", ".join(missing))
+    if not (data.get("enforce_admins") or {}).get("enabled"):
+        hard.append("admin-bypass is enabled - enforce_admins must be true")
+    if (data.get("allow_force_pushes") or {}).get("enabled"):
+        hard.append("allow_force_pushes is enabled - must be false")
+    if (data.get("allow_deletions") or {}).get("enabled"):
+        hard.append("allow_deletions is enabled - must be false")
+    sig = (data.get("required_signatures") or {}).get("enabled")
+    if require_signatures:
+        if not sig:
+            hard.append("required_signatures is not enabled on the branch (allowed-signers exists -> hard)")
+    elif not sig:
+        soft.append("(g) required_signatures skipped (fail-soft) - allowed-signers not yet "
+                    "provisioned (P0.7.17); becomes hard once it lands")
+    return hard, soft
+
+
+def evaluate_repo_security(data: dict) -> list[str]:
+    """(d) secret-scanning + push-protection enabled (parsed repos/<repo>)."""
+    hard: list[str] = []
+    sa = data.get("security_and_analysis") or {}
+    if (sa.get("secret_scanning") or {}).get("status") != "enabled":
+        hard.append("(d) secret-scanning is not enabled")
+    if (sa.get("secret_scanning_push_protection") or {}).get("status") != "enabled":
+        hard.append("(d) secret-scanning push-protection is not enabled")
+    return hard
+
+
+def evaluate_workflow_perms(data: dict) -> list[str]:
+    """(e) default workflow permissions read-only (parsed actions/permissions/workflow)."""
+    hard: list[str] = []
+    if data.get("default_workflow_permissions") != "read":
+        hard.append(f"(e) default workflow permissions are "
+                    f"{data.get('default_workflow_permissions')!r}, must be 'read'")
+    if data.get("can_approve_pull_request_reviews") is not False:
+        hard.append("(e) can_approve_pull_request_reviews must be false")
+    return hard
+
+
+_NEITHER_NOTE = ("(f) neither CodeQL default-setup configured NOR the G29 rule-(i) Semgrep taint "
+                 "ruleset present - fail-soft until one lands (P0.4); the XOR is plan-lint check 21")
+
+
+def taint_or_gate(codeql_status: str, codeql_state: str | None, semgrep_present: bool,
+                  enforce: bool) -> tuple[str | None, str | None]:
+    """(hard, soft) for the (f) OR-gate; at most one is set. `codeql_status` in {'ok','notfound',
+    'error'}. OK (None, None) if CodeQL default-setup is `configured` OR a Semgrep taint ruleset is
+    present. If NEITHER and the CodeQL read ERRORED (403/5xx - cannot confirm it isn't configured),
+    the leg is UNVERIFIABLE: hard under --enforce, soft in P0. A clean not-configured (a 404, or an
+    ok-but-not-`configured` state) with no Semgrep is the target-absent soft note - never hard,
+    even under --enforce (it fail-closes only once its (f) target actually lands, P0.4)."""
+    if (codeql_status == "ok" and codeql_state == "configured") or semgrep_present:
+        return None, None
+    if codeql_status == "error":
+        n = "(f) could not read code-scanning default-setup AND no G29 Semgrep taint ruleset present"
+        return (n + " [unverifiable -> fail-closed under --enforce]", None) if enforce \
+            else (None, n + " (fail-soft, P0)")
+    return None, _NEITHER_NOTE
+
+
+# A G29 rule-(i) taint ruleset DECLARES `mode: taint` (the Semgrep schema key) - a line-anchored
+# match, NOT a bare "taint" substring (which a comment / rule-id / prose would false-positive).
+# [Build-Session-Entscheidung: P0.2.8] match exactly the VALID Semgrep schema form (block-style,
+# lowercase `mode: taint`) - NOT case-insensitive / flow-style `{mode: taint}`, which are not valid
+# Semgrep and which the G29 ruleset (our own artifact, authored P0.4) must not use. This binds the
+# G29 authoring convention: the rule-(i) taint ruleset is block-style lowercase `mode: taint`. The
+# (f) OR-gate is soft-only regardless (real taint enforcement = plan-lint check 21 XOR + G29), so an
+# off-convention false-negative here suppresses only a soft note, never lets a weakened config pass.
+_MODE_TAINT = re.compile(r'^\s*mode:\s*["\']?taint\b', re.MULTILINE)
+
+
+def semgrep_taint_ruleset_present(semgrep_dir: Path) -> bool:
+    """A G29 rule-(i) taint ruleset = a *.yml/*.yaml under the dir that declares `mode: taint`."""
+    if not semgrep_dir.is_dir():
+        return False
+    for f in (*semgrep_dir.glob("*.yml"), *semgrep_dir.glob("*.yaml")):
+        try:
+            if _MODE_TAINT.search(f.read_text(encoding="utf-8")):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+# --- live gh api (owner/CI-verified) ----------------------------------------------------------
+def api_json(path: str) -> tuple[str, object, str]:
+    """('ok', data, '') | ('notfound', None, err) | ('error', None, err)."""
+    p = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+    if p.returncode == 0:
+        try:
+            return "ok", json.loads(p.stdout or "null"), ""
+        except json.JSONDecodeError as e:
+            return "error", None, f"unparseable JSON from {path}: {e}"
+    err = p.stderr.strip() or p.stdout.strip()
+    if "404" in err or "Not Found" in err:
+        return "notfound", None, err
+    return "error", None, err
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G56a branch-protection / repo-config assertion (P0.2.8)")
+    ap.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""),
+                    help="owner/repo; defaults to $GITHUB_REPOSITORY")
+    ap.add_argument("--branch", default="main", help="protected branch (default: main)")
+    ap.add_argument("--enforce", action="store_true",
+                    help="fail-CLOSED on a violation/unreadable endpoint (wired from P1; off = fail-soft P0)")
+    ap.add_argument("--allowed-signers", type=Path,
+                    default=Path(os.environ.get("RELEASE_ALLOWED_SIGNERS", DEFAULT_ALLOWED_SIGNERS)),
+                    help="committed SSH allowed-signers file (P0.7.17) - gates the required_signatures leg")
+    ap.add_argument("--semgrep-dir", type=Path, default=Path(DEFAULT_SEMGREP_DIR),
+                    help="G29 rule-(i) Semgrep taint-ruleset dir (P0.4) - the (f) OR-gate alternative")
+    args = ap.parse_args(argv)
+
+    if not args.repo:
+        msg = "no $GITHUB_REPOSITORY / --repo - cannot introspect repo config"
+        if args.enforce:
+            fail(msg)
+            return 2
+        out(f"{msg}; skipping (fail-soft, P0 bootstrap)")
+        return 0
+
+    hard: list[str] = []
+    soft: list[str] = []
+
+    def readable(kind: str, path: str, *, notfound_hard: str | None) -> object | None:
+        """Fetch JSON; route read failures through the posture. notfound_hard: a message that turns
+        a 404 into a hard violation (e.g. branch not protected), or None to treat 404 as a soft skip."""
+        status, data, err = api_json(path)
+        if status == "ok":
+            return data
+        if status == "notfound" and notfound_hard is not None:
+            hard.append(notfound_hard)
+            return None
+        # notfound-without-a-hard-meaning, or a read error: cannot verify -> hard under enforce, else soft
+        note = f"could not read {kind} ({path}): {err}"
+        (hard if args.enforce else soft).append(note + (" [unverifiable -> fail-closed under --enforce]"
+                                                        if args.enforce else " (fail-soft, P0)"))
+        return None
+
+    # CORE + (g): branch protection
+    bp = readable("branch protection", f"repos/{args.repo}/branches/{args.branch}/protection",
+                  notfound_hard=f"branch `{args.branch}` is NOT protected (no required checks / "
+                                "force-push + deletion guards) - the single-branch model is unguarded")
+    if isinstance(bp, dict):
+        h, s = evaluate_branch_protection(bp, EXPECTED_REQUIRED_CHECKS, args.allowed_signers.is_file())
+        hard += h
+        soft += s
+
+    # (d): repo security settings
+    repo = readable("repo security settings", f"repos/{args.repo}", notfound_hard=None)
+    if isinstance(repo, dict):
+        hard += evaluate_repo_security(repo)
+
+    # (e): default workflow permissions
+    wf = readable("workflow permissions", f"repos/{args.repo}/actions/permissions/workflow",
+                  notfound_hard=None)
+    if isinstance(wf, dict):
+        hard += evaluate_workflow_perms(wf)
+
+    # (f): T2-taint OR-gate (CodeQL default-setup OR the G29 Semgrep ruleset). A 404 on default-setup
+    # is the EXPECTED "not configured" state; a 403/error is UNVERIFIABLE (hard under --enforce). The
+    # OR short-circuits on a present Semgrep ruleset, so a CodeQL read failure is moot when one exists.
+    cq_status, cq_data, _ = api_json(f"repos/{args.repo}/code-scanning/default-setup")
+    cq_state = cq_data.get("state") if isinstance(cq_data, dict) else None
+    hf, sf = taint_or_gate(cq_status, cq_state, semgrep_taint_ruleset_present(args.semgrep_dir), args.enforce)
+    if hf:
+        hard.append(hf)
+    if sf:
+        soft.append(sf)
+
+    for s in soft:
+        out("soft: " + s)
+    if hard:
+        for h in hard:
+            fail(h)
+        if args.enforce:
+            fail(f"G56a: {len(hard)} repo-config violation(s) - FAILED (enforced)")
+            return 1
+        out(f"G56a: {len(hard)} repo-config issue(s); fail-SOFT during the P0 bootstrap "
+            "(becomes hard with --enforce from P1)")
+        return 0
+    out(f"G56a: branch `{args.branch}` protection + repo config OK"
+        + (f" ({len(soft)} target-absent leg(s) fail-soft)" if soft else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
