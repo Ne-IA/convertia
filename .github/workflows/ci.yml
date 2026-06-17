@@ -69,8 +69,9 @@ jobs:
         run: python3 scripts/check-csp-capabilities
       - name: 'G21: deferral / dead-marker scan — full production tree (fail-closed)'
         run: python3 scripts/check-deferral --full
+      - name: 'G7/G20: plan-lint / spec-lint doc-consistency (34 checks, full)'
+        run: python3 scripts/plan-lint
       # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
-      #   plan-lint/spec-lint full (P0.3.5) |
       #   G70 test-suppression (P0.3.14) |
       #   doc-graph G68 + struct-map G69 (P0.3.12/13) |
       #   cargo-deny + cargo-audit (P0.3.6 / P0.4.1) | clippy --all-targets + tsc + eslint

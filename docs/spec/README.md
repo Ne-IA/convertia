@@ -58,7 +58,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 > empirical number/validation remains; `[OPEN]` = a genuine unresolved owner-level
 > call. After this pass the vast majority are decided or deferred.
 
-#### Resolved in the third synthesis-fix pass (13 blockers + sound SHOULDs) `[DECIDED]`
+### Resolved in the third synthesis-fix pass (13 blockers + sound SHOULDs) `[DECIDED]`
 - **§1.1 macOS entry-point no longer cites `on_open_url` `[DECIDED]`** — the §1.1 entry-point
   table macOS row dropped the stale "(and/or `tauri-plugin-deep-link`'s `on_open_url`)" and
   now states `RunEvent::Opened` is the **SOLE** macOS file-open mechanism, routed through the
@@ -145,7 +145,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   `LGPL-2.0-or-later`, extract-audio OGG=Ogg/Vorbis-distinct-from-Opus; §1.5 video-normalize as
   the sole v1 diagonal. Owners as noted per section.
 
-#### Resolved in the second synthesis-fix pass (6 blockers + sound SHOULDs) `[DECIDED]`
+### Resolved in the second synthesis-fix pass (6 blockers + sound SHOULDs) `[DECIDED]`
 - **FFmpeg static-vs-dynamic linkage `[DECIDED]`** — the §3.6.1/§3.9.1 "a static FFmpeg
   would FAIL the §6.1.3 dynamic-link assertion" claim contradicted §6.1.3 carve-out **iii**
   (a static GPL FFmpeg with LGPL libs baked in is GPL-clean aggregation that never fails the
@@ -214,7 +214,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   (≥1 CJK-body + ≥1 RTL-body Office doc, ≥1 non-ASCII-encoding CSV/TSV, ≥1 non-Latin-tag audio,
   representative A/V) so an all-ASCII corpus can't pass; backs §6.10 rows 3/15. Owner: §6.4.5.
 
-#### Resolved in the synthesis-fix pass (7 blockers + alignment) `[DECIDED]`
+### Resolved in the synthesis-fix pass (7 blockers + alignment) `[DECIDED]`
 - **C4 never overrides a C5 destination** (was: "C4 freezes after C5") — the contradiction
   with the §5.2 rows-4/5 self-loop + §5.8 debounced re-call is removed: a post-C5
   target/option change still re-runs C4 (nothing goes stale), but the recomputed plan
@@ -279,7 +279,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   loop-derived; warm magic-byte check executables-only; RunEvent::Exit cleanup = idempotent §2.6
   path), §6/§7.
 
-#### Resolved in this round (SVG-API / FAT-exFAT / engine-derivability / NSIS / facts) `[DECIDED]`
+### Resolved in this round (SVG-API / FAT-exFAT / engine-derivability / NSIS / facts) `[DECIDED]`
 - **SVG/librsvg LFR primary control corrected to the REAL librsvg API** — was a
   non-existent `set_load_external_resources(false)` + a self-cancelling base-URL step. Now:
   **load via `rsvg::Loader` with NO `base_file`/base URL** (verified against librsvg's Rust
@@ -550,7 +550,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **Bundled-font baseline** — **Liberation + Carlito + Caladea + curated Noto CJK/RTL
   subset**; only CJK breadth `[DEFER: size]`. Owner: §3.9.3.
 
-#### Resolved in this fix pass `[DECIDED]`
+### Resolved in this fix pass `[DECIDED]`
 - **C2 split into two Rust-side pickers** — **C2a `pick_for_intake`** (→ `CollectedSet`,
   no path to WebView, cancel = clean no-op) + **C2b `pick_destination`** (→ `PathBuf` to
   WebView for C5; that one write-destination path transits the WebView, §0.11 T2a). The
@@ -640,7 +640,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   spec relaxation of a literal SSOT gate but a spec implementing the amended SSOT. §6.6 +
   §6.10 DoD row 11 match the amended SSOT. Owner: §6.6 (SSOT amendment by the SSOT owner).
 
-#### Resolved in this convergence fix pass `[DECIDED]`
+### Resolved in this convergence fix pass `[DECIDED]`
 - **Engine network+file control for T9b = always-on argv/build, NOT the OS sandbox** —
   FFmpeg `-protocol_whitelist file,pipe` + network-disabled build (§6.1.3 `ffmpeg
   -protocols` assertion) closes the **SSRF half**; FFmpeg concat **`-safe 1`** (never
@@ -702,7 +702,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   keyed on `app_version`. **First-launch macOS `Opened` buffer-then-replay** (avoids the
   listener race). Owner: §7.5.3 / §7.2.3 / §7.8.1.
 
-#### Resolved in this round `[DECIDED]`
+### Resolved in this round `[DECIDED]`
 - **`IpcError` / `ErrorKind` derive `specta::Type`** (were commented out) + `ScanProgress`
   derives `specta::Type` — all in `collect_types![]`; no `any` for errors or the C1 scan
   Channel. The §0.4.3/§2.8 wire-mirror notes corrected to "ALL variants" (item- AND
@@ -820,7 +820,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **`willReencode` generated binding is non-optional `boolean`** — the `?` dropped from the
   §0.4.2 table + §5.8 comments to match the Rust `bool`. Owner: §0.4.2 / §5.8.
 
-#### Resolved in the consolidation pass `[DECIDED]`
+### Resolved in the consolidation pass `[DECIDED]`
 - **C4 call-frequency = multi-call in state 4, C4 never overrides a C5 destination** — C4
   is callable at any point in state 4 (eager initial call + debounced re-calls on
   target/option change, §5.8) and computes `rerun` + the §1.10 `preflight`; the one-shot
@@ -899,7 +899,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   cannot measure computed contrast, §6.4.6a); removed from the Lane A bullet. Owner:
   §6.7.1 / §6.4.6a.
 
-#### Resolved in the review-fix pass `[DECIDED]`
+### Resolved in the review-fix pass `[DECIDED]`
 - **macOS TCC absolute scoped to READS only** — §7.2.6 fact 2: engines never first-*read*
   a protected source (staged via §3.5.0 scratch), but the §2.14.1 beside-source publish
   `.part` write is the **core's** (never the engine's) and a TCC denial there **fails that
@@ -1073,7 +1073,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   remaining `[DEFER: corpus]` part is confirming the generated set is complete against
   the real corpus, not the design. Owner: §6.1.3 / §3.1.
 
-#### Resolved in the consolidation pass (moved off `[OPEN]`) `[DECIDED]`
+### Resolved in the consolidation pass (moved off `[OPEN]`) `[DECIDED]`
 - **Decoder-isolation v1 sandbox depth per OS — `[DECIDED]` (two-tier model, §2.12.3).**
   The **cheap tier** (process boundary + timeout + minimal/cleared env incl. stripping
   `LD_PRELOAD`/`LD_LIBRARY_PATH`/`DYLD_*` + scratch-cwd + input/tmp-only paths) is the

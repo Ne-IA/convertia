@@ -32,7 +32,7 @@
 
 ---
 
-### Monorepo, pnpm workspace & repo skeleton
+## Monorepo, pnpm workspace & repo skeleton
 
 The §0.7 physical tree exists as an empty-but-wired monorepo with a pinned
 toolchain, so every later box has a home and the P0 lockfile/registry gates have a
@@ -60,7 +60,7 @@ target. The workspace + lockfiles come first because every language gate
 
 ---
 
-### Rust core crate & Cargo workspace
+## Rust core crate & Cargo workspace
 
 The `src-tauri/` Rust crate(s) compile from a clean checkout with the §0.7 module
 decomposition as interface-only shells, so `clippy`/`cargo-deny`/the unsafe-policy
@@ -109,7 +109,7 @@ gate have real crates to act on (activating P0.4.1/P0.3.6/P0.3.7/P0.4.2).
 
 ---
 
-### Tauri v2 shell & app boot
+## Tauri v2 shell & app boot
 
 The Tauri v2 host builds and shows an empty window on all three OS from a clean
 checkout (the P1 goal proper), wiring the §0.8 plugins and the §7.2.1 ordered
@@ -142,7 +142,7 @@ startup spine as far as the foundation allows.
 
 ---
 
-### Tauri config, capabilities & CSP baseline
+## Tauri config, capabilities & CSP baseline
 
 `tauri.conf.json` + `capabilities/main.json` + `index.html` exist and match the
 §0.10 locked allowlist/CSP object exactly — the literal targets the P0 G47
@@ -178,7 +178,7 @@ fail-open to fail-closed.
 
 ---
 
-### Rust↔TS type-sharing & IPC codegen scaffold
+## Rust↔TS type-sharing & IPC codegen scaffold
 
 The §0.4.5 tauri-specta codegen pipeline emits the single tracked `bindings.ts`
 and CI can prove it non-stale — activating the P0 G19 drift framework (P0.3.9) with
@@ -200,7 +200,7 @@ a concrete command + path, even though the C-command surface is empty until P2.
 
 ---
 
-### WebView app (React 19 / TS-strict / Tailwind / Vite)
+## WebView app (React 19 / TS-strict / Tailwind / Vite)
 
 The React 19 / TypeScript-strict / Tailwind / Vite frontend builds and mounts an
 empty app inside the WebView — activating the P0 TS gate contract (G5/G6/G13) and
@@ -243,7 +243,7 @@ the per-push a11y leg (G33a) against real source.
 
 ---
 
-### Strings module & a11y module shells
+## Strings module & a11y module shells
 
 `src/strings/ui.ts` and the `a11y/` shells are established as structural
 scaffolding (not deferred) per the README P1 scope — activating the P0 G57
@@ -264,7 +264,7 @@ English-only / string-ownership lint against a real `strings/ui.ts`.
 
 ---
 
-### Governance docs, README & `.github/` templates
+## Governance docs, README & `.github/` templates
 
 The §6.8 governance set + README download/trust skeleton + `.github/` templates
 exist from the first commit (they gate contribution and have no build dependency);
@@ -294,7 +294,7 @@ here.
 
 ---
 
-### Lane-A CI scaffold (per-push validation on `main`)
+## Lane-A CI scaffold (per-push validation on `main`)
 
 The §6.7.1 Lane-A per-push pipeline runs on every push to `main`, wiring the
 lint/format/type-check/compile-sanity/audit steps + the 3-OS build into the P0 CI
@@ -343,7 +343,7 @@ ADDED by the phase that produces their input — NOT here.
 
 ---
 
-### Gate-activation verification & contributor docs
+## Gate-activation verification & contributor docs
 
 The P0 `→ activated in P<n>` gates flip from skip-with-warning to fail-closed as P1
 stands their targets up; this section proves the flip actually happened (no gate
@@ -378,7 +378,7 @@ silently stuck in its bootstrap skip state) and homes the contributor build-setu
 
 ---
 
-### Repository structure map & CLAUDE.md finalization
+## Repository structure map & CLAUDE.md finalization
 
 The complete repository folder structure is established and the authoritative
 CLAUDE.md "Repo layout" map is authored at P1-end — the single home that says where

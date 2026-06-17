@@ -40,7 +40,7 @@
 
 ---
 
-### Engine-registry seam & the `Engine` trait
+## Engine-registry seam & the `Engine` trait
 
 - [ ] **P4.1** [RUST] Define the `Engine` trait — id/descriptor/capabilities/plan/plan_encode/classify_failure · §3.2.2 · G29
   needs: P3.4
@@ -58,7 +58,7 @@
   needs: P4.4
   > the pool reads `registry.engine(id).descriptor().serialised_only` before dispatch (or a pre-computed `HashMap<EngineId,bool>` at registry-build time) — the named path §0.9 depends on, no descriptor-less lookup gap; consumed by the §0.9 single-permit semaphore wiring (P4.20).
 
-### Generic invocation lifecycle (§1.7)
+## Generic invocation lifecycle (§1.7)
 
 - [ ] **P4.6** [RUST] Build the `EngineInvocation` dispatch envelope + `InvocationResult` · §1.7 · G29
   needs: P4.2
@@ -83,7 +83,7 @@
   needs: P4.7
   > the §1.7 watchdog (per-engine no-progress interval, parameters from §0.9 — the per-engine wall-clock timeout / watchdog poll interval / no-progress threshold are §0.9-owned `pub const`s with v1 baseline values calibrated against the §6 corpus, imported by the §6.7.2 harness so test≠prod drift is impossible; the committed timeout-sentinel corpus case asserts this reap fires) → kill → `Failed(EngineHang)`; exit-0 reports success **only if** the expected temp output exists and is non-empty (the "exit 0 but empty/zero output" guard); exit≠0 / stderr-classified → §2.8 taxonomy via the §3.5 per-engine `classify_failure`.
 
-### The §2.12 decoder-isolation wrapper (`crate::isolation`)
+## The §2.12 decoder-isolation wrapper (`crate::isolation`)
 
 - [ ] **P4.13** [RUST] Build the `crate::isolation` cheap-tier floor (process boundary + minimal/cleared env + scratch-cwd + input/tmp-only handing) · §2.12.1 §2.12.3 · G29 G9
   needs: P3.2
@@ -122,7 +122,7 @@
   needs: P4.13
   > the §2.12.4 absolute as a build/lint assertion: every full decode runs in a subprocess; the in-core untrusted-byte operations (detection sniffs P3, the native CSV/TSV transform §3.5.6) are pure memory-safe Rust with no third-party C/C++ decoder linked into the core — the G53 forbidden-dep gate (P0.3.7) + G29 unsafe-policy are the enforcers; this box wires the §2.12.4 confirmation that the image core runs in the separate worker (P4.31), not in-core.
 
-### Subprocess pool & concurrency degree (§0.9)
+## Subprocess pool & concurrency degree (§0.9)
 
 - [ ] **P4.20** [RUST] Expand the P3 pool shell into the bounded engine-subprocess pool + global concurrency degree · §0.9 · G29
   needs: P4.5, P3.3
@@ -137,7 +137,7 @@
   needs: P4.20, P4.8, P3.43, P3.44, P3.45
   > **Does NOT rebuild the P3 InProcessNative lifecycle — only re-homes it on the real pool.** P3 already built the full §1.7 `InProcessNative` lifecycle for the one non-subprocess engine (native CSV/TSV): the bounded `spawn_blocking` execution + `mpsc::Sender<f32>` `progress_tx`→`ItemProgress` (P3.43), the cooperative chunk-boundary cancel that drops `out_tmp` (P3.44), and the wall-clock timeout → `Failed(EngineHang)` + the wedged-uninterruptible-read bounded-pool/short-per-read-deadline caveat (P3.45) — against the P3 interface-only pool shell. This box RE-HOMES that already-built lane onto the now-real bounded engine-subprocess pool (P4.20): register the InProcessNative engine to acquire a global-degree permit (no serialised lane) from the real pool, so the P3-built `spawn_blocking` execution shares the pool's bounded budget + headroom rather than the P3 shell's stub. (`needs: P3.43/P3.44/P3.45` — the P3-built lifecycle this re-homes, NOT a second build; the cross-phase edge wired here per the P4.77 reconciliation obligation.)
 
-### macOS TCC source staging (§3.5.0 / §7.2.6)
+## macOS TCC source staging (§3.5.0 / §7.2.6)
 
 - [ ] **P4.24** [RUST] Build the macOS TCC source-staging copy (core copies source into per-job kind-2 scratch before spawn) · §3.5.0 §7.2.6 §0.11 · G29 G31
   needs: P4.13, P3.21
@@ -149,7 +149,7 @@
   needs: P4.25
   > make the §0.11-T11 / G29 rule satisfiable: every `Command::new` in `crate::isolation` under `cfg(target_os="macos")` is preceded by the stage-for-TCC call (the project-local Semgrep rule's enforcement target, authored in P0.4.2); + the staged-input term feeds the §1.10 `est_scratch_bytes` macOS preflight.
 
-### Per-OS sidecar packaging & bundling (§3.3)
+## Per-OS sidecar packaging & bundling (§3.3)
 
 - [ ] **P4.27** [BUILD] Build the `scripts/stage-engines` skeleton — placement, externalBin triple-suffixing, resources tree, per-OS layout · §3.3.1 §3.3.2 §6.1.3 · G37
   needs: P0.4.10
@@ -185,7 +185,7 @@
   needs: P4.32
   > the §7.2.4 portable-build `ensure_executable` (Unix): on each launch set the exec bit on each engine binary if missing (`perm.mode() | 0o755`), so a portable-archive extract without +x can still spawn; Windows runs `.exe` as-is. (The macOS quarantine path → `QuarantinedByOs` is the §7.2.4/§2.8 surface, wired with the verifier in P4.46.)
 
-### The image-worker `convertia-imgworker` (the first real sidecar)
+## The image-worker `convertia-imgworker` (the first real sidecar)
 
 - [ ] **P4.34** [BUILD,RUST] Build `convertia-imgworker` as its own externalBin binary (links the libvips/libheif/librsvg/ImageMagick stack, not the MIT core) · §3.5.5 §0.7 §3.6.1 · G53 G37
   needs: P4.27, P4.32
@@ -206,7 +206,7 @@
   needs: P4.37, P4.7
   > the P4 exit-criterion proof-of-life: a representative image round-trip invocation succeeds end-to-end through the §1.7 lifecycle + the §2.12 isolation wrapper (spawn worker → decode/encode → `VipsStdout` progress → exit-0 → non-empty `out_tmp` → §2.1 atomic publish), the first real sidecar validated; the G26/G31 corpus fault-injection oracle binds here. (Per-format image pairs + per-engine hardening are P5.)
 
-### Patent-disposition matrix & availability wiring (§3.4)
+## Patent-disposition matrix & availability wiring (§3.4)
 
 - [ ] **P4.39** [DOC] Author the §3.4 patent-disposition matrix (HEIC/HEVC/AAC/H.264/AV1/legacy-decode × platform) as the single owner · §3.4 §3.4.3 §3.4.4 · G7
   needs: P0.1.1
@@ -216,7 +216,7 @@
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P4.56` points at the §3.7.2 `engines.lock` schema scaffold 16 boxes later in document order — the per-platform `available` boolean row this box reads has nowhere to land until the `engines.lock` container (P4.56) exists, so DECISION C builds P4.56 first; the edge is acyclic and valid, the inversion is documented here so it is visible at the `needs:` line.
   > the §3.4.4a [DECIDED] wiring: the per-platform `available = {win,macos,linux}` boolean on the codec's `engines.lock` row (the config-change escape hatch — flip = data edit + rebuild, not code); the startup sequence (§7.2) parses `engines.lock` once, reads each codec row's `available` for the running `Platform`, maps it into a `PatentDisposition` (`true→Available`, `false→Unavailable`) for `heic_hevc`/`aac`/`h264`, built BEFORE any `capabilities(platform, patents)` call (P4.4) and passed in. The single source of the posture, not a second truth. The patent→UI wiring (`EngineHealth.unavailable_targets`) is built with the startup verifier (P4.45), since C12 `get_engine_health` reads the resolved `available` flag.
 
-### Startup engine-presence + integrity verification (§7.2.3)
+## Startup engine-presence + integrity verification (§7.2.3)
 
 - [ ] **P4.41** [BUILD] Build the build-time in-bundle hash manifest GENERATION (per-engine `{id,expected_hash,expected_size}`) · §7.2.3 §6.2 · G37 G35
   needs: P4.27
@@ -244,7 +244,7 @@
   - [ ] **P4.46.1** [RUST] Wire the macOS `QuarantinedByOs` lazy-probe ordering + per-sidecar retry-flow (defer the smoke probe until after the window shows / lazy on first conversion) · §7.2.3 §7.2.4 §2.8 · G46 G29
     > the macOS ordering caveat (`cfg(target_os="macos")`): defer the smoke probe until after the window shows / lazy on first conversion so a `QuarantinedByOs` fault surfaces **in a window**, distinct from `EngineMissing`/`BundleDamaged`; the per-sidecar `QuarantinedByOs` retry-flow (no auto-retry, name the blocked sidecar). Requires a macOS quarantine fixture (a quarantined-`xattr` sidecar) to exercise the distinct-kind path; fails independently of the general P4.46 routing. (The §7.2.4 exec-permission setup that precedes it is P4.33.)
 
-### App-level fault model & panic boundary (§2.13)
+## App-level fault model & panic boundary (§2.13)
 
 - [ ] **P4.47** [RUST] Build the worker-thread `catch_unwind` panic boundary (per-item isolate-and-report, `panic="unwind"`) · §2.13.2 · G29
   needs: P4.7
@@ -259,7 +259,7 @@
   needs: P4.47
   > the §2.13.1 three fault classes (item/run/app) + the §2.13.3 calm single-screen presentation (no crash dialog/trace): startup faults (engine missing/corrupt, damaged bundle, missing/old WebView, no scratch) → the §7.2-owned plain message; mid-run escaped panic → "Something went wrong… Your original files are safe and untouched."; WebView/backend disconnect → calm reconnect affordance (§5.8); the `AppFaultNotice` component (state 12) with no fabricated per-item outcomes.
 
-### Generic bundle-time build assertions (§6.1.3)
+## Generic bundle-time build assertions (§6.1.3)
 
 - [ ] **P4.51** [BUILD] Build the generic §6.1.3 build-assertion framework hooked into `scripts/stage-engines` · §6.1.3 · G37 G38
   needs: P4.27
@@ -277,7 +277,7 @@
   needs: P4.34, P4.51
   > the §6.1.3 [DECIDED] runtime-plugin-enumeration assertion that the staged libheif resolves `dav1d` as its AV1 *decoder* plugin (e.g. `heif-info`/decoder enumeration lists dav1d, not libaom, for AV1) and fails the build if libaom is wired as the decoder or no dav1d decoder is present (the shipped wiring is verified, not trusted).
 
-### SBOM + NOTICE / third-party-licenses scaffold (§3.7 / §6.3)
+## SBOM + NOTICE / third-party-licenses scaffold (§3.7 / §6.3)
 
 - [ ] **P4.56** [BUILD] Build the `engines.lock` schema + the `cargo xtask sbom` two-layer merge scaffold + the engine-source allow-list gate (CycloneDX 1.5, purl+SHA-256 rows) · §3.7.2 §6.3.1 §3.7.1 §3.8 · G35 G35a G37
   needs: P0.7.1
@@ -298,7 +298,7 @@
   needs: P4.56
   > the §3.7.3/§6.3.3 release-blocking completeness gate scaffold: every `externalBin` + every `resources` engine file (incl. each staged shared object) must have an `engines.lock`/SBOM row with licence text + source pointer or the build fails; the Syft staged-bundle cross-check (an unexpected/side-loaded `.so`/`.dll`/`.dylib` hard-fails, T3a); the SPDX-expression VALIDATION leg + LicenseRef-AOMPL-1.0 carve-out hooks. Activates per-engine as rows land in P5–P7 (the gate is the framework here).
 
-### Reliability harness (§6.4.3 / §6.4.3a / §6.5)
+## Reliability harness (§6.4.3 / §6.4.3a / §6.5)
 
 - [ ] **P4.59** [TEST] Build the §6.4.3 per-pair integration runner (real engines, per-format structural reader, fidelity + lossy + patent-gap assertions) · §6.4.3 §6.5 · G31 G32
   needs: P4.7, P0.5.6
@@ -320,7 +320,7 @@
   needs: P4.59
   > the §6.5.2 [DECIDED] generated pair-status report keyed `(source,target,platform)`, each cell ∈ `{reliable, failing, unavailable-per-§3.4, demoted}`; a pair is `reliable` per §6.5.1 (valid structural output + no-harm + fail-clearly + lossy-matches-§04 + content-fidelity on each available platform); the release gate (every enumerated pair `reliable` where not `unavailable-per-§3.4`/`demoted`, any `failing` blocks release); published as a release asset. Generator built here; pairs marked reliable category-by-category in P5–P7. Also feeds **G72** (engines.lock-bump corpus re-validation): from P4 on, a CVE/Dependabot engine bump must carry a regenerated-green pair-status-ledger proof for the bumped engine's pairs before it lands (the roles §5a P1–P3 bootstrap hold lifts here).
 
-### Binary-size-budget levers (§3.9)
+## Binary-size-budget levers (§3.9)
 
 - [ ] **P4.62** [BUILD] Build the early per-component size-baseline measurement (compressed, per platform) · §3.9 §3.9.1 §3.9.2 · G41
   needs: P4.27
@@ -329,7 +329,7 @@
   needs: P4.62
   > the §3.9.1/§3.9.3 trim levers + the [DECIDED] fixed lever-order if the ceiling trips: (1) trim CJK font weights first (the §3.9.3 baseline = Liberation+Carlito+Caladea+a curated Noto CJK/RTL subset; only the CJK breadth is `[DEFER: size]`); (2) other font/help trims; (3) dropping pandoc stays BLOCKED (it owns the DOCX/ODT/RTF→MD/HTML pairs LO Markdown export is unvalidated for) — a post-v1 contingency, not a lever; GPL-optional-delegate exclusion / shared-lib dedup. Ties the deferred digit to a decided remedy.
 
-### Generic UX-correctness primitives (§05 / §2.8 / §2.9)
+## Generic UX-correctness primitives (§05 / §2.8 / §2.9)
 
 > **P3↔P4 UI-seam model (DECIDED — same statement as P3's UI header):** P3 built
 > intentionally-minimal, slice-only renderers (DropZone P3.54, FormatPicker+DestinationBar
@@ -378,7 +378,7 @@
   needs: P4.70
   > the §6.4.6a [DECIDED] automated-a11y Lane-A leg: `axe-core` via `vitest-axe@0.1.0` over the rendered React tree under Vitest/jsdom — ARIA role/state validity (no invalid/orphaned roles; the radiogroup tiles carry valid `aria-checked`) + focus-order/tabindex sanity + labelled controls; any violation at the configured impact fails the build. (Contrast is the Lane-B `@axe-core/webdriverio` leg, G33b, P9 — jsdom can't compute contrast; text-size is the §6.6 human walkthrough, P11.)
 
-### Resource pre-flight & budgets engine (§1.10)
+## Resource pre-flight & budgets engine (§1.10)
 
 > The §1.10 `[DECIDED design]` estimation+decision mechanism — the cross-cutting home
 > is P4 (every engine phase depends on it; P4 owns the §0.9 pool + §2.14 staging it
@@ -394,7 +394,7 @@
   needs: P4.72, P3.38
   > the §1.10 mid-run half (the up-front-vs-mid-run split's per-item leg): at WRITE time, when an item's own size/space breaches the budget (or real disk usage outruns the estimate), the §2.1 write fails, §2.6 restores free space, and the item is reported `Failed(TooBig|OutOfDisk)` (§2.8) **while the batch continues** (§1.9/§1.11 fast-fail surfacing) — there is NO per-item up-front-fail list on `PreflightVerdict`; a per-item doom shows as that item's mid-run terminal row. Plugs the budget check into the P3-built §2.1.1 per-item write sequence (the resolve-late step) + the §2.6 free-space restore. (`needs: P3.38` for the §2.1.1 per-item write sequence — the cross-phase edge wired here per the P4.77 reconciliation obligation.)
 
-### Deferred-split completions & cross-phase reconciliation
+## Deferred-split completions & cross-phase reconciliation
 
 > The split-off siblings of P4.52/P4.64/P4.70 (each a genuinely disjoint surface that
 > must carry its own dual review, _format.md §3.2 / build-loop §3 step 2) plus the
@@ -417,7 +417,7 @@
   > No `needs:` — this box installs the G20 plan-lint rule that AUDITS the listed boxes' edges; it runs structurally (the rule fires on the plan text), it does not build code against those boxes, so it requires none of them `[x]` first.
   > the single reconciliation-obligation box closing the DECISION-C cross-phase gap: declare the deferred forward `needs:` edges P4 boxes carry in their build-order notes — P4.1→P3 §1.7-dispatch-shell; P4.13→P3.2 isolation-shell; P4.18.1→P0.5.9 (isolation/privilege-drop activation) + P0.7.12 (the G42/G42b leg-(a) enforcement-substrate anchor); P4.20→P3.3 pool-shell; P4.28.1→P0.7.3 (from-source engine-compilation harness executing the from-source acquisition policy); P4.56.3→P0.7.3 (engine-source allow-list gate executing the allow-list policy); P4.23→P3.43/P3.44/P3.45 (re-homes the P3-built InProcessNative lane onto the real pool — NOT a rebuild); P4.24→P3 §2.14 kind-2 scratch; P4.35.1→P0.4.3 (imgworker-FFI fuzz activation); P4.40 reads the P2 C12 contract; P4.64→P2.8+P1.27; P4.65→P2.20+P1.27; P4.66→P2.37+P1.27+P1.31.2; P4.67.1→P2.39+P2.120+P4.78; P4.68→P2.7+P1.27; P4.69→P2.12+P2.19; P4.72→P2.11+P3.37; P4.73→P3.38; P4.78→P3.53+P1.31.2 (full §5.2 reducer) — and **register a plan-lint check (G20, check-set) that FAILS any box whose `>`-note literally contains `the fill pass adds those needs` / `the reconciliation pass wires those`**, so a half-wired plan cannot be declared done. **Plus a structural leg (the silent-omission guard): plan-lint asserts every format/exercise phase file that ships per-pair tests against the P4 §6.4.3 runner (any box carrying `needs: P4.59` — P5/P6/P7) contains a `[GATE]` reconciliation box whose title contains the literal token `reconciliation` and whose `needs:` includes P4.59 — turning a phase that simply OMITS its reconciliation box (the case the forbidden-string leg cannot catch, since it only fires on a box that USES the banned phrase) into a detectable lint failure rather than a review-time catch. Each reconciliation box header title carries the literal `reconciliation` token so this predicate matches the boxes it validates (P5.74/P6.92/P7.77/P3.70/P9.46 all titled "Wire the deferred P<n>→P<m> harness reconciliation `needs:` edges …").** (A phase like P8 that ships NO box with `needs: P4.59` is exempt and carries its cross-phase edges inline per a boundary note, P8 Boundaries.) The reciprocal P3/P5/P6/P7/P9 reconciliation boxes (P3.70/P5.74/P6.92/P7.77/P9.46) carry the same obligation for their phases. (Authored as the obligation + the plan-lint leg; the actual `needs:` edges are added on the P4 boxes in the same pass — this box is the tracked owner so the obligation is auditable, not a silent deferral.)
 
-### P4.16a — Full §5.2 frontend state machine (completes the P3 slice subset)
+## P4.16a — Full §5.2 frontend state machine (completes the P3 slice subset)
 
 > P3.53 built only the §5.2 *slice subset* (states 1→2→3→4/5→[6]→7→8 + 9/10 +
 > `app://fault`→12). §5.2 is the named owner of the full 12-state FSM + transition
@@ -430,7 +430,7 @@
   needs: P3.53, P1.31.2
   > extend the P3.53 slice reducer to the **complete §5.2 transition table** — all 12 states + the edges the slice omitted: the **Targets(4)→Confirm(3) Back** edge (preserve the frozen set, never re-collect), the **Rerun(6)→Destination(5) cancel-Esc** edge, the **MixedDropRefusal(9)→Collecting** re-drop edge, and the **launch-into-Collecting initial state** (a launch-arg/Open-with intake enters Collecting directly, not Idle); states 7a (Cancelling) and 11 (QuitConfirm) are the edge boxes P4.67/P4.67.1 add ONTO this reducer (they `needs:` this box). Driven by inbound IPC results/events (§5.8); the backend is the source of truth; the reducer state lives in the §5.1 store (P1.31.2). All user-facing literals via `strings/ui.ts` (English-only, G57). SUPERSEDES the P3.53 slice subset in place by extension (the reducer is the one FSM, not a throwaway like the P3 *renderers* P4.64–P4.70 replace). (`needs: P3.53` for the slice reducer it extends + `P1.31.2` for the §5.1 store it lives in — the cross-phase edges wired here per the P4.77 reconciliation obligation.)
 
-### Proof-of-life exit gate
+## Proof-of-life exit gate
 
 - [ ] **P4.79** [TEST] Drive a representative in-P4 image round-trip end-to-end through the P4 UX harness (in-P4 fixture + throwaway pair → options-panel → progress/cancel → result-actions → first ledger cell) · §6.5 §6.4.3 §5.7 · G31 G33a
   needs: P4.38, P4.59, P4.61, P4.64, P4.66, P4.68

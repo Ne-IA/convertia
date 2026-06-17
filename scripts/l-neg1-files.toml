@@ -21,6 +21,7 @@ patterns = [
   "scripts/check-*",              # check-branch-protection / check-ci-supply-chain / check-gate-plane(s) / ...
   "scripts/fastpath-*",           # the L2 fastpath skip detectors (G10)
   "scripts/run-*",                # gate drivers: run-gate-selftests (canary), run-gitleaks (G2)
+  "scripts/plan-lint",            # the plan-lint / spec-lint doc-consistency gate (G7/G20)
   "scripts/install-gate-tools",   # the pinned-tool fetch-and-verify installer
   "scripts/setup-dev",            # patches the generated git hooks (a poisoned one silently no-ops the plane)
   "scripts/gate-selftests/**",    # every gate self-test (the planted-positive canaries)

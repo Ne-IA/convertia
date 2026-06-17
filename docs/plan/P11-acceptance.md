@@ -45,7 +45,7 @@
 
 ---
 
-### RC assembly & freeze (the artifact under test)
+## RC assembly & freeze (the artifact under test)
 
 > P11 verifies *a specific release candidate*. These boxes establish the exact bytes
 > every later box runs against, so the reliability run, the egress run, the size
@@ -63,7 +63,7 @@
 
 ---
 
-### Cross-platform E2E test matrix (the automated flow gate)
+## Cross-platform E2E test matrix (the automated flow gate)
 
 > The README P11 scope's "cross-platform E2E test matrix": prove the §6.4.6 headed
 > E2E flow runs green on every platform leg of the RC. The harness is built in P9;
@@ -85,7 +85,7 @@
 
 ---
 
-### §6.6 usability-floor walkthrough (six separately-faileable sub-gates)
+## §6.6 usability-floor walkthrough (six separately-faileable sub-gates)
 
 > The SSOT *v1 DoD* usability floor (§6.6): a human who did not build ConvertIA
 > completes each named conversion unaided. The README mandates this be **six distinct
@@ -117,7 +117,7 @@
 
 ---
 
-### Definition-of-Done verification against the SSOT
+## Definition-of-Done verification against the SSOT
 
 > The README P11 scope: confirm the SSOT *v1 DoD* gates are green on the RC. Each box
 > below proves one already-built gate passes against the frozen RC — the §6.5
@@ -174,7 +174,7 @@
 
 ---
 
-### DoD-traceability completeness (every §6.10 row demonstrated)
+## DoD-traceability completeness (every §6.10 row demonstrated)
 
 > The README claim "every behaviour the SSOT promises has a technical home" is itself
 > a verifiable gate (§6.10): P11 must show **every** §6.10 row is exercised by an RC
@@ -190,7 +190,7 @@
 
 ---
 
-### Engine-bump re-validation readiness (the SSOT continuity gate)
+## Engine-bump re-validation readiness (the SSOT continuity gate)
 
 > The SSOT requires the full reliability gate to re-run before any bundled-engine
 > bump can ship (§6.5.4). At RC time P11 confirms the RC's engine set is the
@@ -203,7 +203,7 @@
 
 ---
 
-### RC sign-off
+## RC sign-off
 
 > The terminal box of the entire plan: once every P11 verification box above is `[x]`
 > and its evidence is indexed, the RC is signed off. No new behaviour — a recorded,

@@ -48,7 +48,7 @@
 
 ---
 
-### Domain model contracts (§0.6 shared vocabulary)
+## Domain model contracts (§0.6 shared vocabulary)
 
 - [ ] **P2.1** [RUST] Author the identity types — `InstanceId`/`RunId`/`CollectedSetId`/`ItemId`/`JobId`/`CollectingId` · §0.6 §7.1.2
   needs: P1.9, P1.25
@@ -93,7 +93,7 @@
 - [ ] **P2.14** [TEST] Property-test the §0.6 normative invariants (one-Target-per-Batch, `count == items.len()`, frozen `items`, stable `ItemId`, same-volume publish-temp) · §0.6 · G22 G23
   needs: P2.12, P2.13
 
-### Detection-outcome contract (the §1.2 result type)
+## Detection-outcome contract (the §1.2 result type)
 
 - [ ] **P2.15** [RUST] Author `DetectionOutcome` (`Recognized`/`UnsupportedType`/`Uncertain`/`Empty`/`Unreadable`) + `Confidence` { High, Low } as the single canonical detection result · §1.2 §0.6
   needs: P2.3
@@ -102,7 +102,7 @@
 - [ ] **P2.17** [RUST] Author `ReadFailure`/`EmptyReport` contract types feeding the `Empty { skipped }` reason tally · §1.2 §0.6
   needs: P2.15
 
-### Error & outcome model contract (the §2.8 wire mirror)
+## Error & outcome model contract (the §2.8 wire mirror)
 
 - [ ] **P2.18** [RUST] Author `ErrorKind` as a `type` alias of (or drift-locked mirror of) the §2.8 `ConversionErrorKind` in `crate::outcome` · §0.4.3 §2.8.1
   needs: P1.10, P1.25
@@ -114,7 +114,7 @@
 - [ ] **P2.20** [RUST] Author `OutcomeMsg` + the `SkipReason → ErrorKind` forward (one-way, non-inverted) projection helper · §0.6 §2.8.2 §1.12
   needs: P2.18, P2.16
 
-### IPC command surface (C1–C13 contracts)
+## IPC command surface (C1–C13 contracts)
 
 - [ ] **P2.21** [RUST] Wire the `invoke_handler` + register C1–C13 on the Builder (handlers thin, delegate to orchestrator) · §0.4.0 §0.7
   needs: P1.11, P1.13, P1.25
@@ -149,7 +149,7 @@
 - [ ] **P2.36** [GATE] Assert the C1–C13 IPC-surface set is complete + drift-free (no extra/missing command; plan-lint check 9/12 target) · §0.4.1 · G23
   needs: P2.35, P2.33, P2.34, P2.31, P2.32
 
-### IPC event / Channel surface (the three `app://` events + telemetry Channels)
+## IPC event / Channel surface (the three `app://` events + telemetry Channels)
 
 - [ ] **P2.37** [RUST] Author the `ConversionEvent` Channel enum + its payload structs (`RunStarted`/`ItemStarted`/`ItemProgress`/`ItemFinished`/`BatchProgress`/`RunFinished`) · §0.4.2 §1.11
   needs: P2.12, P1.25
@@ -171,7 +171,7 @@
   needs: P2.39
   > exactly `{app://fault, app://intake, app://close-requested}` exist, no fourth `app://` event — AND each event's §0.4.2 payload type is authored + in `collect_types![]` (`AppFault` P2.39.1, `IntakePayload` P2.7, `()` for close-requested) so no `app://` payload mirrors as `any` (the no-`any` rule); transitively covers P2.39.1's `AppFault` via the `needs: P2.39` parent (P2.39 is `[x]` only when P2.39.1 is).
 
-### Registries & cancellation lifecycle (the orchestrator state)
+## Registries & cancellation lifecycle (the orchestrator state)
 
 - [ ] **P2.42** [RUST] Build the `RunId` → `CancellationToken` run registry (created in C6, tripped by C7, dropped on `RunFinished`) · §0.4.4 §1.7
   needs: P2.29, P2.30
@@ -183,7 +183,7 @@
   needs: P2.35, P2.23
 - [ ] **P2.46** [DOC] Record the macOS reload-during-run non-recovery scope (`[DECIDED]` post-terminal re-serve only) · §0.4.4
 
-### Instance & run identity + single-instance policy (§7.1)
+## Instance & run identity + single-instance policy (§7.1)
 
 - [ ] **P2.47** [RUST] Establish the `InstanceId` app-managed singleton (random v4, never persisted/networked) · §7.1.2 §2.11
   needs: P2.1, P1.14
@@ -200,7 +200,7 @@
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.54.1` points at the `parse_path_args` helper sub-box defined later in document order — `forward_launch_argv` forwards argv through that helper, so DECISION C builds P2.54.1 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
 - [ ] **P2.53** [DOC] Record the macOS edge cases — least-mature single-instance leg (§6.6 verification item) + the unsigned two-copies accepted-limitation · §7.1.1
 
-### OS-intake funnel (§7.8.1) — the launch/Open-with state machine
+## OS-intake funnel (§7.8.1) — the launch/Open-with state machine
 
 - [ ] **P2.54** [RUST] Build the single `forward_launch_intake(app, paths, origin)` funnel (every launch-time path source routes here) · §7.8.1 §1.1
   needs: P2.47, P2.39
@@ -223,7 +223,7 @@
 - [ ] **P2.61** [UI] Wire the root-shell-mount drain trigger (always re-call C1 with `drainPending: true` after listener registration, closing the listener race) · §7.8.1 §5.2
   needs: P2.60, P1.27
 
-### Intake freeze state machine (§1.1) — idle-vs-in-flight gating
+## Intake freeze state machine (§1.1) — idle-vs-in-flight gating
 
 - [ ] **P2.62** [RUST] Implement the §1.1 single `ingest(paths, origin) -> CollectedSet` funnel (the exhaustive freeze point for all five entry points) · §1.1 §2.4
   needs: P2.22, P2.6
@@ -256,7 +256,7 @@
 - [ ] **P2.76** [RUST] Apply resolved-identity de-dup as the frozen set is built (a file reached via two paths is one member) · §1.1 §2.3
   needs: P2.75
 
-### Window & app lifecycle (§7.3)
+## Window & app lifecycle (§7.3)
 
 - [ ] **P2.77** [DOC] Record the no-tray / no-background-agent / closing-quits posture (portable, no system pollution) · §7.3.1
 - [ ] **P2.78** [RUST] Create the single "main" window at startup (no tray, no secondary windows, default size each launch) · §7.3.1 §7.4.1
@@ -273,7 +273,7 @@
   needs: P2.80, P2.42
 - [ ] **P2.84** [DOC] Record the no-persistent-queue / no-resume-across-launches `[DECIDED]` (in-memory queue only; re-drop on next launch) · §7.3.4 §7.4
 
-### Persistence (§7.4) — the 3-key prefs blob
+## Persistence (§7.4) — the 3-key prefs blob
 
 - [ ] **P2.85** [RUST] Implement the 3-key `settings.json` prefs blob via `tauri-plugin-store` (`theme`/`lastDestinationMode`/`verboseLog`, defaults) · §7.4.1 §7.4.2
   needs: P1.14
@@ -285,7 +285,7 @@
 - [ ] **P2.88** [RUST] Encode the `lastDestinationMode` re-validate-as-writable-at-use-time rule (a hint, never a guarantee; §2.7 fallback applies) · §7.4.1 §2.7
   needs: P2.85
 
-### Logging & diagnostics (§7.5) — local-only, no telemetry
+## Logging & diagnostics (§7.5) — local-only, no telemetry
 
 - [ ] **P2.89** [RUST] Configure `tauri-plugin-log` — rotating file + dev stderr, default level `warn`/`info`, no network sink · §7.5.1 §7.5.2
   needs: P1.14
@@ -306,7 +306,7 @@
   needs: P2.89, P1.27
 - [ ] **P2.96** [DOC] Record the no-automatic-upload-ever stance (the §6.8 bug-report flow attaches the log manually) · §7.5.3 §2.11
 
-### Update posture (§7.6) — no auto-updater (defense in depth)
+## Update posture (§7.6) — no auto-updater (defense in depth)
 
 - [ ] **P2.97** [DOC] Record the no-startup/background version-check assertion (zero network calls at startup) · §7.6.1 §7.2.2
 - [ ] **P2.98** [RUST] Encode BOTH C11/About data sources — the version-display source (`app.package_info().version` / `CARGO_PKG_VERSION`) AND the `AppInfo.build_id` PRODUCER (§6 CI build id at build time + deterministic dev fallback) · §7.6.2 §7.2.3 · G19
@@ -315,7 +315,7 @@
   > the two data sources that POPULATE the C11 `AppInfo` (P2.112) the §5.9 About screen renders (RELEASE-BLOCKING per SSOT — neither field may silently ship empty): **(a) version** — `app.package_info().version` / `CARGO_PKG_VERSION`, the §7.6.2 displayed current version. **(b) the `build_id` PRODUCER** — wire WHERE the §7.2.3 `build_id: String // CI build identifier (§6)` comes from: the §6 (Lane-B/`build-loop`) build-time CI build identifier (the git SHA + the GitHub Actions run-id, injected at build time via a build-script `env!`/`option_env!` over a CI-set var) with a **deterministic dev fallback** (e.g. the short git SHA or a literal `"dev"` marker when the CI var is absent, never an empty string), so a local `tauri dev` build still yields a non-empty `build_id` and a CI build carries the real §6 identifier. The drift-check (G19, §0.4.5) covers the generated-binding side once C11 is type-shared. (`needs: P2.34` for the C11 contract + `P2.112` for the `AppInfo` type whose `build_id`/`version` fields this box populates.)
 - [ ] **P2.99** [DOC] Record the future opt-in update-check parked decision (`updateCheckOptIn` not present in v1) · §7.6.3 §7.4
 
-### OS shell-out (§7.7) — open-folder / open-file / open-url
+## OS shell-out (§7.7) — open-folder / open-file / open-url
 
 - [ ] **P2.100** [RUST] Map all three `OpenKind` variants to concrete `OpenerExt` calls (`RevealInFolder`→`reveal_item_in_dir`, `Folder`→`open_path`(dir), `File`→`open_path`) · §7.7.1 §0.6
   needs: P2.32
@@ -329,7 +329,7 @@
   needs: P2.33
 - [ ] **P2.105** [DOC] Record the open-file safety posture (no auto-open, reveal-in-folder is the preferred default, OS default app on explicit click only) · §7.7.3
 
-### Startup sequence ordering (§7.2.1) — the app-shell spine
+## Startup sequence ordering (§7.2.1) — the app-shell spine
 
 - [ ] **P2.106** [RUST] Establish the §7.2.1 ordered startup sequence as the shell spine (steps 1–8, window shown only after steps 3–5 succeed) · §7.2.1 §2.13
   needs: P1.15, P2.51, P2.78, P2.81
@@ -347,7 +347,7 @@
 - [ ] **P2.109** [RUST] Surface a missing/old/broken macOS-WKWebView / Linux-WebKitGTK init as a §2.13/§7.2 startup fault (where the core observes it) · §7.2.1 §0.3.1 §2.13
   needs: P2.106.6, P2.39
 
-### The C12 `EngineHealth` contract (probe body is P4)
+## The C12 `EngineHealth` contract (probe body is P4)
 
 - [ ] **P2.110** [RUST] Author the `EngineStatus` type (`id`/`present`/`integrity_ok`/`runnable: Option<bool>`) · §7.2.3 §0.6
   needs: P2.13, P1.25
@@ -363,7 +363,7 @@
   needs: P2.113, P1.27
   > **contract seam only, no engine behaviour** (P2 boundary: "no engine spawn, no conversion, no corpus"; the cache C12 reads is empty until the P4 probe populates it, P2.113 note). Author the typed §5.1-store-shape selector/façade surfacing `EngineHealth.unavailable_targets: Vec<TargetId>` to the FormatPicker layer over the generated `commands.ts`/`bindings.ts` C12 path (P1.27 façade) — the read seam later consumers bind against. It does **NOT** render anything: the visual **disable-with-reason** FormatPicker tiles (the §5.2 surface — `aria-disabled` on the §3.4 patent-gapped/unavailable tiles) are built for real in **P4.70.2**, fed by the P4.45 `EngineHealth` population, exactly as **P5.32 says "P4 owns the wiring; this box consumes it"**. So this box is the type-shared store-shape seam (buildable now with no backing data), not the disable UI (which has nothing to disable until P4). (`needs: P2.113` for the C12 return + `P1.27` for the IPC façade the selector reads through.)
 
-### §7.8.2 explicit negatives (DoD gate 20)
+## §7.8.2 explicit negatives (DoD gate 20)
 
 - [ ] **P2.115** [DOC] Record the no-file-association / no-default-handler-claim negative (no `.heic`/`.docx` handler registration) · §7.8.2
 - [ ] **P2.116** [DOC] Record the no-URL-scheme / no-deep-link negative (no `convertia://`, no deep-link plugin) · §7.8.2
@@ -372,7 +372,7 @@
 - [ ] **P2.119** [GATE] Assert the §7.8.2 negatives structurally (no deep-link block, no URL-scheme registration under `src-tauri/`) — the DoD-gate-20 enforcement · §7.8.2 §0.10 · G47
   needs: P1.24, P2.116
 
-### Shell-level a11y, English-only, UI-async & IPC-responsiveness contracts
+## Shell-level a11y, English-only, UI-async & IPC-responsiveness contracts
 
 - [ ] **P2.120** [UI] Wire the frontend async model to the generated `commands.*` / `ConversionEvent` Channel + the three `app://` listeners (§5.8) — feeding the §5.1 store live-progress map + the `pendingVideoReencodeNote` field · §5.8 §0.4.2 §5.1
   needs: P1.27, P2.37, P2.39, P1.31.2
@@ -395,7 +395,7 @@
     needs: P2.36
     > C3 `get_targets` / C4 `plan_output` (incl. the §1.10 preflight) and a huge-folder C1 ingest return within a bounded budget or yield cooperatively, never a frozen WebView; a test drives a slow-preflight C4 and asserts the call returns bounded.
 
-### P0 activation targets (the cross-cutting security-test homes P0 points into P2)
+## P0 activation targets (the cross-cutting security-test homes P0 points into P2)
 
 > Two P0 boxes carry `→ activated in P2` / `→ activated in P3/P4/P9` edges that point
 > into the C1–C13 surface + the logging infra P2 builds: P0.4.3's per-`#[tauri::command]`

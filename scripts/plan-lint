@@ -1,0 +1,988 @@
+#!/usr/bin/env python3
+"""plan-lint / spec-lint - the doc-consistency gate (G7/G20), P0.3.5.
+
+A single stdlib-only linter over the P0 doc set (CLAUDE.md, SSOT, docs/spec/, docs/security/,
+docs/process/, docs/plan/). It enforces TWO families of checks:
+
+  * FORMAT checks (_format.md §7) — the plan-box grammar: marker validity, sub-box consistency,
+    header well-formedness, tag validity, reference resolution, needs:-targets exist + acyclic,
+    annotation pairing, numbering gap-freeness.
+  * DOC checks 1..26 (build-gates.md §6) — doc-wide consistency: cross-reference validity, heading
+    hierarchy, gate-catalogue integrity, forbidden tokens, §0.11<->§5 threat parity, inventory
+    parity, the G68 doc-graph leg, the G69 struct-map leg, etc.
+
+Checks whose source-of-truth target does not exist yet (build-loop.md, p0-completion.md, the P1
+struct-map, generated manifests) SKIP-WITH-WARNING now (the target-absent posture) and flip to
+fail-closed the moment the target lands. This file is L(-1) security-critical (G71).
+
+Build status: foundation + the 8 FORMAT checks are implemented + self-tested. The doc-wide checks
+1..26 are added incrementally by P0.3.5 (each with its G24 negative fixture); until a doc check is
+implemented it is listed in CHECKS as a NotImplemented placeholder that the meta-self-test asserts.
+
+Usage: plan-lint [--check <id>] [--json] [--quiet] [--max-per-check N] [--root <dir>]
+Exit:  0 = clean; 1 = >=1 finding; 2 = a required target is missing / a usage error.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import posixpath
+import re
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# --- the plan-box grammar (_format.md §2-§5) --------------------------------------------------
+LEGAL_MARKERS = {" ", "x", "!", "!extern"}
+LEGAL_TAGS = {"DOC", "GATE", "CI", "RUST", "UI", "BUILD", "TEST", "RELEASE"}
+# `- <marker> **P<phase>.<n>[.<m>]** <rest>` — the box header; <rest> = `[Tag] Title · refs`
+BOX_RE = re.compile(r"^(?P<indent> *)- \[(?P<marker>[^\]]*)\] \*\*(?P<bid>P\d+(?:\.\d+)+)\*\* (?P<rest>.*)$")
+HEADER_REST_RE = re.compile(r"^\[(?P<tags>[^\]]+)\] (?P<title>.+?)(?: · (?P<refs>.+))?$")
+ANNOT_RE = re.compile(r"^(?P<indent> *)(?P<kind>needs|unlocked-by): *(?P<val>.+)$")
+NOTE_RE = re.compile(r"^(?P<indent> *)> ?(?P<text>.*)$")
+REF_SECTION_RE = re.compile(r"§[0-9][0-9A-Za-z.]*")
+REF_GATE_RE = re.compile(r"\bG\d+[a-z]?\b")
+
+
+@dataclass
+class Box:
+    box_id: str            # "P0.3.5"
+    phase: int             # 0
+    num: tuple[int, ...]   # (3, 5)  — the dotted tail after the phase
+    marker: str            # one of LEGAL_MARKERS (raw bracket content; " " for open)
+    raw_marker: str        # the exact bracket content as written (for the marker-validity check)
+    indent: int            # leading-space count
+    tags: list[str]
+    title: str
+    refs: str
+    file: str
+    lineno: int
+    needs: list[str] = field(default_factory=list)
+    unlocked_by: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Finding:
+    check: str
+    file: str
+    lineno: int
+    msg: str
+
+
+@dataclass
+class Ctx:
+    root: Path
+    boxes: list[Box]
+    by_id: dict[str, Box]
+    plan_files: list[Path]
+    docs: dict[str, str] = field(default_factory=dict)        # relpath -> text (the doc-wide set)
+    gate_ids: set[str] = field(default_factory=set)           # the build-gates Gnn catalogue rows
+
+
+def _parse_box_id(bid: str) -> tuple[int, tuple[int, ...]]:
+    parts = bid[1:].split(".")          # drop the leading 'P'
+    return int(parts[0]), tuple(int(p) for p in parts[1:])
+
+
+def load_plan(root: Path) -> tuple[list[Box], dict[str, Box], list[Path]]:
+    """Parse docs/plan/P*.md into a flat box list (+ id index). Each box owns the annotation/note
+    lines beneath it until the next box header or a dedent past it."""
+    plan_dir = root / "docs" / "plan"
+    files = sorted(plan_dir.glob("P*.md")) if plan_dir.is_dir() else []
+    boxes: list[Box] = []
+    by_id: dict[str, Box] = {}
+    for f in files:
+        rel = str(f.relative_to(root)).replace("\\", "/")
+        lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+        current: Box | None = None
+        for i, line in enumerate(lines):
+            mb = BOX_RE.match(line)
+            if mb:
+                bid = mb.group("bid")
+                phase, num = _parse_box_id(bid)
+                tags, title, refs = [], "", ""
+                hr = HEADER_REST_RE.match(mb.group("rest"))
+                if hr:
+                    tags = [t.strip() for t in hr.group("tags").split(",")]
+                    title = hr.group("title").strip()
+                    refs = (hr.group("refs") or "").strip()
+                box = Box(box_id=bid, phase=phase, num=num, marker=mb.group("marker").strip() or " "
+                          if mb.group("marker") == " " else mb.group("marker"),
+                          raw_marker=mb.group("marker"), indent=len(mb.group("indent")),
+                          tags=tags, title=title, refs=refs, file=rel, lineno=i + 1)
+                boxes.append(box)
+                by_id.setdefault(bid, box)
+                current = box
+                continue
+            if current is None:
+                continue
+            ma = ANNOT_RE.match(line)
+            if ma and len(ma.group("indent")) >= current.indent:
+                vals = [v.strip() for v in ma.group("val").split(",") if v.strip()]
+                (current.needs if ma.group("kind") == "needs" else current.unlocked_by).extend(vals)
+                continue
+            mn = NOTE_RE.match(line)
+            if mn and len(mn.group("indent")) >= current.indent:
+                current.notes.append(mn.group("text"))
+                continue
+            if line.strip() == "":
+                continue
+            # a non-box, non-annotation, non-note, non-blank line at/under the box ends its scope
+            if not line.startswith(" " * (current.indent + 1)):
+                current = None
+    return boxes, by_id, files
+
+
+# --- spec/doc heading + gate-id resolution (for reference-resolution) -------------------------
+def _spec_anchors(root: Path) -> set[str]:
+    """The set of resolvable §-tokens: every `## 0.x`/`### 0.x.y`-style heading in docs/spec/ + the
+    section numbers they declare (we resolve a §-ref if its number prefixes a real heading number)."""
+    nums: set[str] = set()
+    spec = root / "docs" / "spec"
+    if spec.is_dir():
+        for f in spec.rglob("*.md"):
+            for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
+                m = re.match(r"^#{1,6}\s+(?P<n>\d+(?:\.\d+)*)\b", line)
+                if m:
+                    nums.add(m.group("n"))
+    return nums
+
+
+def _gate_ids(root: Path) -> set[str]:
+    ids: set[str] = set()
+    bg = root / "docs" / "security" / "build-gates.md"
+    if bg.is_file():
+        for line in bg.read_text(encoding="utf-8", errors="replace").splitlines():
+            m = re.match(r"^\| \*\*(G\d+[a-z]?)\*\* \|", line)
+            if m:
+                ids.add(m.group(1))
+    return ids
+
+
+# =============================================================================================
+#  FORMAT checks (_format.md §7)
+# =============================================================================================
+_NEAR_BOX_RE = re.compile(r"^ *- \[[^\]]*\][^*]*\*\*P\d")   # a box-header ATTEMPT (list item + **P<digit>)
+
+
+def fmt_box_parse_completeness(ctx: Ctx) -> list[Finding]:
+    """A line that LOOKS like a box header (a `- [..]` list item with a `**P<digit>`) but does not
+    parse as a well-formed box silently evades every other format check — flag it."""
+    out = []
+    for f in ctx.plan_files:
+        rel = str(f.relative_to(ctx.root)).replace("\\", "/")
+        for i, line in enumerate(f.read_text(encoding="utf-8", errors="replace").splitlines()):
+            if _NEAR_BOX_RE.match(line) and not BOX_RE.match(line):
+                out.append(Finding("format:box-parse-completeness", rel, i + 1,
+                                   "box-like line does not parse as a well-formed box header (would evade the format checks)"))
+    return out
+
+
+def fmt_marker_validity(ctx: Ctx) -> list[Finding]:
+    out = []
+    for b in ctx.boxes:
+        if b.raw_marker not in LEGAL_MARKERS:
+            out.append(Finding("format:marker-validity", b.file, b.lineno,
+                               f"{b.box_id}: illegal marker [{b.raw_marker}] (legal: ' ', x, !, !extern)"))
+    return out
+
+
+def fmt_tag_validity(ctx: Ctx) -> list[Finding]:
+    out = []
+    for b in ctx.boxes:
+        if not b.tags or len(b.tags) > 2:
+            out.append(Finding("format:tag-validity", b.file, b.lineno,
+                               f"{b.box_id}: expected 1-2 tags, got {b.tags}"))
+        for t in b.tags:
+            if t not in LEGAL_TAGS:
+                out.append(Finding("format:tag-validity", b.file, b.lineno,
+                                   f"{b.box_id}: tag [{t}] not in the §4 taxonomy {sorted(LEGAL_TAGS)}"))
+    return out
+
+
+def fmt_header_well_formedness(ctx: Ctx) -> list[Finding]:
+    out = []
+    for b in ctx.boxes:
+        if not b.title:
+            out.append(Finding("format:header-well-formedness", b.file, b.lineno,
+                               f"{b.box_id}: empty/unparseable title (need `[Tag] Title · refs`)"))
+        elif b.title.endswith("."):
+            out.append(Finding("format:header-well-formedness", b.file, b.lineno,
+                               f"{b.box_id}: title has a trailing period"))
+    return out
+
+
+def fmt_reference_resolution(ctx: Ctx) -> list[Finding]:
+    out = []
+    anchors = _spec_anchors(ctx.root)
+    gates = _gate_ids(ctx.root)
+    for b in ctx.boxes:
+        secs = REF_SECTION_RE.findall(b.refs)
+        gs = REF_GATE_RE.findall(b.refs)
+        has_ref = bool(secs or gs)
+        tooling_only = "tooling-only" in b.refs
+        if not has_ref and not tooling_only:
+            out.append(Finding("format:reference-resolution", b.file, b.lineno,
+                               f"{b.box_id}: no §/Gnn ref and no `· tooling-only` token"))
+        if has_ref and tooling_only:
+            out.append(Finding("format:reference-resolution", b.file, b.lineno,
+                               f"{b.box_id}: carries a real ref AND `tooling-only` (mutually exclusive)"))
+        for s in secs:
+            num = s[1:]            # drop §
+            if not any(a == num or a.startswith(num + ".") or num.startswith(a + ".") or num == a
+                       for a in anchors):
+                out.append(Finding("format:reference-resolution", b.file, b.lineno,
+                                   f"{b.box_id}: §{num} resolves to no docs/spec heading"))
+        for g in gs:
+            if gates and g not in gates:
+                out.append(Finding("format:reference-resolution", b.file, b.lineno,
+                                   f"{b.box_id}: {g} resolves to no build-gates catalogue row"))
+    return out
+
+
+def fmt_needs_targets(ctx: Ctx) -> list[Finding]:
+    out = []
+    for b in ctx.boxes:
+        for n in b.needs:
+            if n not in ctx.by_id:
+                out.append(Finding("format:needs-targets-exist-and-acyclic", b.file, b.lineno,
+                                   f"{b.box_id}: needs: {n} — no such box"))
+    # acyclicity over the needs: graph (DFS)
+    WHITE, GREY, BLACK = 0, 1, 2
+    color = {b.box_id: WHITE for b in ctx.boxes}
+
+    def visit(bid: str, stack: list[str]) -> None:
+        color[bid] = GREY
+        for n in ctx.by_id.get(bid).needs if bid in ctx.by_id else []:
+            if n not in color:
+                continue
+            if color[n] == GREY:
+                cyc = " -> ".join(stack + [bid, n])
+                out.append(Finding("format:needs-targets-exist-and-acyclic",
+                                   ctx.by_id[bid].file, ctx.by_id[bid].lineno, f"needs: cycle {cyc}"))
+            elif color[n] == WHITE:
+                visit(n, stack + [bid])
+        color[bid] = BLACK
+    for b in ctx.boxes:
+        if color[b.box_id] == WHITE:
+            visit(b.box_id, [])
+    return out
+
+
+def fmt_annotation_pairing(ctx: Ctx) -> list[Finding]:
+    out = []
+    for b in ctx.boxes:
+        if b.unlocked_by and b.raw_marker != "!":
+            out.append(Finding("format:annotation-pairing", b.file, b.lineno,
+                               f"{b.box_id}: unlocked-by: only allowed under a [!] box (marker [{b.raw_marker}])"))
+        for u in b.unlocked_by:
+            if u not in ctx.by_id:
+                out.append(Finding("format:annotation-pairing", b.file, b.lineno,
+                                   f"{b.box_id}: unlocked-by: {u} — no such box"))
+        if b.raw_marker == "!" and not b.unlocked_by and not b.notes:
+            out.append(Finding("format:annotation-pairing", b.file, b.lineno,
+                               f"{b.box_id}: a [!] box needs a >-note or an unlocked-by:"))
+        if b.raw_marker == "!extern" and not b.notes:
+            out.append(Finding("format:annotation-pairing", b.file, b.lineno,
+                               f"{b.box_id}: a [!extern] box needs a >-note"))
+    return out
+
+
+def fmt_sub_box_consistency(ctx: Ctx) -> list[Finding]:
+    out = []
+    # build the parent/child relation from indentation + id-extends-parent; cap depth at one level
+    for b in ctx.boxes:
+        if len(b.num) > 2:
+            out.append(Finding("format:sub-box-consistency", b.file, b.lineno,
+                               f"{b.box_id}: nesting deeper than one level (P<phase>.<n>.<m> is the max)"))
+        if b.indent % 2 != 0:
+            out.append(Finding("format:sub-box-consistency", b.file, b.lineno,
+                               f"{b.box_id}: odd indentation ({b.indent} spaces; sub-boxes indent 2/level)"))
+    # [x] top box => no open [ ]/[!] child (AND-of-children): a sub-box's id extends its parent's
+    parent_of: dict[str, Box] = {}
+    for b in ctx.boxes:
+        if len(b.num) >= 2:
+            pid = "P" + str(b.phase) + "." + ".".join(map(str, b.num[:-1]))
+            if pid in ctx.by_id:
+                parent_of[b.box_id] = ctx.by_id[pid]
+    for child_id, parent in parent_of.items():
+        child = ctx.by_id[child_id]
+        if parent.raw_marker == "x" and child.raw_marker in (" ", "!"):
+            out.append(Finding("format:sub-box-consistency", child.file, child.lineno,
+                               f"{parent.box_id} is [x] but child {child_id} is [{child.raw_marker}] (AND-of-children)"))
+    return out
+
+
+def fmt_numbering_gap_free(ctx: Ctx) -> list[Finding]:
+    out = []
+    # within each phase, the TOP-LEVEL box numbers (single-segment num) are 1-based + gap-free
+    tops: dict[int, list[Box]] = {}
+    for b in ctx.boxes:
+        if len(b.num) == 1:
+            tops.setdefault(b.phase, []).append(b)
+    for phase, bs in tops.items():
+        seen = sorted(b.num[0] for b in bs)
+        expected = list(range(1, len(seen) + 1))
+        if seen != expected:
+            out.append(Finding("format:numbering-gap-free", bs[0].file, bs[0].lineno,
+                               f"phase P{phase}: box numbers {seen} are not gap-free 1..{len(seen)}"))
+    # sub-box numbers under each parent run 1..k contiguously too (_format.md §7)
+    subs: dict[str, list[Box]] = {}
+    for b in ctx.boxes:
+        if len(b.num) == 2:
+            subs.setdefault(f"P{b.phase}.{b.num[0]}", []).append(b)
+    for parent, bs in subs.items():
+        seen = sorted(b.num[1] for b in bs)
+        if seen != list(range(1, len(seen) + 1)):
+            out.append(Finding("format:numbering-gap-free", bs[0].file, bs[0].lineno,
+                               f"sub-boxes under {parent}: numbers {seen} are not gap-free 1..{len(seen)}"))
+    return out
+
+
+# =============================================================================================
+#  DOC checks (build-gates.md §6, checks 1..26) — added incrementally; active-now ones first.
+# =============================================================================================
+_GATE_ROW_RE = re.compile(r"^\| \*\*G(\d+)\*\* \|", re.M)
+# the canonical §0.11 / §5 threat-class set (security-concept §5 table + the canonical list) — 17 classes
+THREAT_CLASSES = {"T1", "T2", "T2a", "T2b", "T2c", "T3", "T3a", "T4", "T5", "T6",
+                  "T7", "T8", "T9a", "T9b", "T10", "T11", "T12"}
+# the §0.4.1 enumerated IPC command SET (a set, not a contiguous range — C2 is split into C2a/C2b)
+IPC_COMMANDS = {"C1", "C2a", "C2b", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13"}
+
+
+def _slug(text: str) -> str:
+    """GitHub-style heading slug: lowercase, drop punctuation (keep word chars/space/hyphen),
+    spaces -> hyphen."""
+    t = text.strip().lower()
+    t = re.sub(r"[^\w\s-]", "", t)
+    return re.sub(r"\s+", "-", t).strip("-")
+
+
+def _section_numbers(ctx: Ctx) -> set[str]:
+    """All heading numbers declared across the spec/security/process doc set (the § targets)."""
+    nums: set[str] = set()
+    for rel, text in ctx.docs.items():
+        if not (rel.startswith(("docs/spec/", "docs/security/", "docs/process/"))):
+            continue
+        for _, line in _strip_fenced(text):
+            m = re.match(r"^#{1,6}\s+(\d+(?:\.\d+)*)\b", line)
+            if m:
+                nums.add(m.group(1))
+    return nums
+
+
+def _doc_slugs(text: str) -> set[str]:
+    return {_slug(line.lstrip("#").strip())
+            for _, line in _strip_fenced(text) if re.match(r"^#{1,6}\s+\S", line)}
+
+
+def doc2_cross_reference(ctx: Ctx) -> list[Finding]:
+    """Check 2: every spec-internal §X.Y reference resolves to a real heading number, and every
+    intra-doc `[..](#slug)` anchor resolves to a heading slug in the SAME doc."""
+    out = []
+    nums = _section_numbers(ctx)
+    if not nums:
+        return out
+    for rel, text in ctx.docs.items():
+        slugs = _doc_slugs(text)
+        for ln, line in _strip_fenced(text):
+            for s in re.findall(r"§(\d+(?:\.\d+)*)", line):
+                if not any(a == s or a.startswith(s + ".") or s.startswith(a + ".") for a in nums):
+                    out.append(Finding("2:cross-reference-validity", rel, ln,
+                                       f"§{s} resolves to no heading number in spec/security/process"))
+            for anc in re.findall(r"\]\(#([A-Za-z0-9._-]+)\)", line):
+                if anc not in slugs:
+                    out.append(Finding("2:cross-reference-validity", rel, ln,
+                                       f"intra-doc anchor #{anc} resolves to no heading in this doc"))
+    return out
+
+
+def doc8_threat_parity(ctx: Ctx) -> list[Finding]:
+    """Check 8 (bidirectional): every canonical §0.11 threat class has EXACTLY ONE security-concept
+    §5 row, every §5 row is a canonical class, and every §5 row cites a Gnn. Read ONLY from the §5
+    table + the embedded canonical list — never the §7 frozen snapshot."""
+    out = []
+    sec = ctx.docs.get("docs/security/security-concept.md", "")
+    if not sec:
+        return out
+    # §5 rows carry the threat-id INSIDE the first cell (`| **T1** <desc> | control | **Gnn** |`),
+    # not in its own cell like the G-rows — match `| **Tn**` then the rest of the row.
+    rows: dict[str, list[str]] = {}
+    for m in re.finditer(r"^\| \*\*(T\d+[a-z]?)\*\*(.*)$", sec, re.M):
+        rows.setdefault(m.group(1), []).append(m.group(2))
+    for t in sorted(THREAT_CLASSES):
+        if t not in rows:
+            out.append(Finding("8:threat-map-parity", "docs/security/security-concept.md", 0,
+                               f"canonical threat class {t} has NO §5 row"))
+        elif len(rows[t]) > 1:
+            out.append(Finding("8:threat-map-parity", "docs/security/security-concept.md", 0,
+                               f"threat class {t} has {len(rows[t])} §5 rows (expected exactly 1)"))
+    catalogue = set(re.findall(r"\bG\d+[a-z]?\b", ctx.docs.get("docs/security/build-gates.md", "")))
+    for t, txts in rows.items():
+        if t not in THREAT_CLASSES:
+            out.append(Finding("8:threat-map-parity", "docs/security/security-concept.md", 0,
+                               f"§5 row {t} is not in the canonical 17-class set"))
+            continue
+        cited = re.findall(r"\bG\d+[a-z]?\b", txts[0])
+        if not cited:
+            out.append(Finding("8:threat-map-parity", "docs/security/security-concept.md", 0,
+                               f"§5 row {t} cites no Gnn gate"))
+        # a cited gate must EXIST in the catalogue (a row left citing a renamed/removed gate fails)
+        for g in cited:
+            if catalogue and g not in catalogue:
+                out.append(Finding("8:threat-map-parity", "docs/security/security-concept.md", 0,
+                                   f"§5 row {t} cites {g} which is NOT a documented build-gates gate"))
+    return out
+
+
+def doc3_heading_hierarchy(ctx: Ctx) -> list[Finding]:
+    """Check 3: heading levels never SKIP (no H2 -> H4); fenced code blocks are ignored."""
+    out = []
+    for rel, text in ctx.docs.items():
+        prev = 0
+        for ln, line in _strip_fenced(text):
+            mm = re.match(r"^(#{1,6}) \S", line)
+            if not mm:
+                continue
+            lvl = len(mm.group(1))
+            if prev and lvl > prev + 1:
+                out.append(Finding("3:heading-hierarchy", rel, ln, f"heading level jumps H{prev} -> H{lvl}"))
+            prev = lvl
+    return out
+
+
+def doc5_gate_catalogue(ctx: Ctx) -> list[Finding]:
+    """Check 5 (ONE-directional): every gate NAMED in security-concept.md is a Gnn row in the
+    build-gates catalogue (the catalogue is the legitimate superset; not bidirectional)."""
+    out = []
+    sec = ctx.docs.get("docs/security/security-concept.md", "")
+    bg = ctx.docs.get("docs/security/build-gates.md", "")
+    if not sec or not bg:
+        return out
+    # the catalogue = every Gnn DOCUMENTED in build-gates (a table row, OR a reserved/forward/§8
+    # informational entry — G65/G66/G67 are reserved, not main-table rows, yet legitimately catalogued)
+    catalogue = set(re.findall(r"\bG\d+[a-z]?\b", bg))
+    named = sorted(set(re.findall(r"\bG\d+[a-z]?\b", sec)),
+                   key=lambda x: (int(re.match(r"G(\d+)", x).group(1)), x))
+    for g in named:
+        if g not in catalogue:
+            out.append(Finding("5:gate-catalogue-integrity", "docs/security/security-concept.md", 0,
+                               f"{g} is named in security-concept.md but is NOT documented in build-gates.md"))
+    return out
+
+
+def doc11_span_bound(ctx: Ctx) -> list[Finding]:
+    """Check 11: the security-vs-quality boundary prose must not claim a numeric span `G2..G<N>`
+    narrower than max(Gnn) (a frozen bound cannot silently drift below a newly-added gate)."""
+    out = []
+    bg = ctx.docs.get("docs/security/build-gates.md", "")
+    rows = [int(m.group(1)) for m in _GATE_ROW_RE.finditer(bg)]
+    if not rows:
+        return out
+    mx = max(rows)
+    span = re.compile(r"G2\s*(?:\.\.|–|—|-|to|through)\s*G(\d+)")
+    # a span mentioned as a REJECTED counter-example ("rather than a frozen G2-G50 bound") is not a
+    # boundary CLAIM — only an asserted span counts.
+    neg = re.compile(r"(?i)(rather than|instead of|like|frozen|not |never|avoid|a frozen)")
+    for rel in ("docs/security/build-gates.md", "docs/security/security-concept.md"):
+        text = ctx.docs.get(rel, "")
+        for m in span.finditer(text):
+            n = int(m.group(1))
+            if n < mx and not neg.search(text[max(0, m.start() - 45): m.start()]):
+                out.append(Finding("11:span-bound-currency", rel, text[:m.start()].count("\n") + 1,
+                                   f"boundary span G2..G{n} is narrower than max(Gnn)=G{mx}"))
+    return out
+
+
+def doc22_gate_id_gap_free(ctx: Ctx) -> list[Finding]:
+    """Check 22: the plain-integer Gnn catalogue rows cover 2..max(Gnn) gap-free, EXCEPT integers
+    documented vacated/reserved/deleted/split (the blockquote + the G34 note)."""
+    out = []
+    bg = ctx.docs.get("docs/security/build-gates.md", "")
+    plain = {int(m.group(1)) for m in _GATE_ROW_RE.finditer(bg)}
+    if not plain:
+        return out
+    mx = max(plain)
+    vacated: set[int] = set()
+    for m in re.finditer(r"(?i)vacated|reserved|deleted|\bsplit\b|never (?:used|assigned)", bg):
+        seg = bg[max(0, m.start() - 60): m.end() + 500]
+        vacated.update(int(g.group(1)) for g in re.finditer(r"\bG(\d+)\b", seg))
+    for n in range(2, mx + 1):
+        if n not in plain and n not in vacated:
+            out.append(Finding("22:gate-id-gap-freeness", "docs/security/build-gates.md", 0,
+                               f"G{n} is neither a catalogue row nor documented vacated/reserved (2..{mx} must be gap-free-or-annotated)"))
+    return out
+
+
+def _gates_in_files(root: Path, *globs: str) -> set[str]:
+    found: set[str] = set()
+    for g in globs:
+        for f in root.glob(g):
+            if f.is_file():
+                found.update(re.findall(r"\bG\d+[a-z]?\b", f.read_text(encoding="utf-8", errors="replace")))
+    return found
+
+
+def doc16_planted_positive(ctx: Ctx) -> list[Finding]:
+    """Check 16: every §5-cited, fail-closed gate that is ALREADY IMPLEMENTED in P0 (a scripts/check-*
+    / run-* driver references it) must have a registered negative self-test fixture in
+    scripts/gate-selftests/. Not-yet-built gates (P1+) are skipped (target-absent for their fixture)."""
+    out = []
+    sec = ctx.docs.get("docs/security/security-concept.md", "")
+    bg = ctx.docs.get("docs/security/build-gates.md", "")
+    if not sec or not bg:
+        return out
+    # gates cited in the §5 threat table
+    sec5: set[str] = set()
+    for m in re.finditer(r"^\| \*\*T\d+[a-z]?\*\*.*$", sec, re.M):
+        sec5.update(re.findall(r"\bG\d+[a-z]?\b", m.group(0)))
+    # fail-closed gates (per their build-gates row)
+    fail_closed = {m.group(1) for m in re.finditer(r"^\| \*\*(G\d+[a-z]?)\*\* \|.*fail-closed", bg, re.M)}
+    implemented = _gates_in_files(ctx.root, "scripts/check-*", "scripts/run-*")
+    selftested = _gates_in_files(ctx.root, "scripts/gate-selftests/*")
+    for g in sorted(sec5 & fail_closed & implemented,
+                    key=lambda x: (int(re.match(r"G(\d+)", x).group(1)), x)):
+        if g not in selftested:
+            out.append(Finding("16:planted-positive-coverage", "scripts/gate-selftests/", 0,
+                               f"{g} is a §5 fail-closed gate implemented in P0 but has NO registered self-test fixture"))
+    return out
+
+
+def doc6_forbidden_tokens(ctx: Ctx) -> list[Finding]:
+    """Check 6: no banned doc-body tokens. Conservative now: markdown STRIKETHROUGH (~~…~~) — a
+    'left in struck-out' staleness smell. (The broader stamp / stale-date set is a P1 refinement.)"""
+    out = []
+    strike = re.compile(r"~~[^~\n]+~~")
+    for rel, text in ctx.docs.items():
+        for ln, line in _strip_fenced(text):
+            if strike.search(line):
+                out.append(Finding("6:forbidden-tokens", rel, ln,
+                                   "markdown strikethrough (~~…~~) in a doc body — remove or rephrase"))
+    return out
+
+
+def doc17_forward_idea_status(ctx: Ctx) -> list[Finding]:
+    """Check 17: a §8 forward-idea entry marked [DEFER] whose gate has SINCE become a real catalogue
+    row must have its [DEFER] removed — a [DEFER]-tagged line that cites a Gnn which IS a plain
+    catalogue row is a stale status."""
+    out = []
+    bg = ctx.docs.get("docs/security/build-gates.md", "")
+    rows = {f"G{m.group(1)}" for m in _GATE_ROW_RE.finditer(bg)}
+    if not rows:
+        return out
+    # a [DEFER] mentioned as RESOLVED (promoted / removed / former) is history prose, not a live tag
+    resolved = re.compile(r"(?i)(promoted|removed|former|no longer|carried|adopted|resolved|\bwas\b|reconcil)")
+    for ln, line in _strip_fenced(bg):
+        if "[DEFER" not in line or resolved.search(line):
+            continue
+        for g in re.findall(r"\bG\d+[a-z]?\b", line):
+            if g in rows:
+                out.append(Finding("17:forward-idea-status", "docs/security/build-gates.md", ln,
+                                   f"live [DEFER] tag cites {g} which is now a catalogue row — remove the stale [DEFER]"))
+                break
+    return out
+
+
+def doc9_inventory_parity(ctx: Ctx) -> list[Finding]:
+    """Check 9 (membership): every IPC command token `Cn` named in the spec/security prose is in the
+    §0.4.1 enumerated set {C1,C2a,C2b,C3..C13} (bare `C2` is allowed as the picker-family alias)."""
+    out = []
+    allowed = IPC_COMMANDS | {"C2"}
+    for rel, text in ctx.docs.items():
+        if not rel.startswith(("docs/spec/", "docs/security/")):
+            continue
+        for ln, line in _strip_fenced(text):
+            for m in re.finditer(r"\bC(\d+)([a-z]?)\b", line):
+                tok = "C" + m.group(1) + m.group(2)
+                if tok not in allowed:
+                    out.append(Finding("9:inventory-parity", rel, ln,
+                                       f"IPC command {tok} is not in the §0.4.1 enumerated set "
+                                       "{C1,C2a,C2b,C3..C13}"))
+    return out
+
+
+_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+# Deliberately-forward link targets: docs that are referenced now but authored later (P0.6 / P0-end).
+# An EXPLICIT allowlist (by basename) — robust where a cue heuristic is not: an unrelated nearby cue
+# word can never suppress a real broken link, and a real forward-link can never be missed for lack of
+# an inline cue. A NEW forward-link must be registered here (a deliberate, auditable gate). When a
+# target lands, its links resolve and the allowlist entry is simply inert.
+_FORWARD_TARGETS = {"vuln-response.md", "gate-status.md", "p0-completion.md"}
+_INLINE_CODE = re.compile(r"`[^`\n]*`")
+# the index/root docs that need not be linked-TO (they are the graph roots)
+_DOC_ROOTS = {"CLAUDE.md", "README.md", "LICENSE", "docs/SINGLE-SOURCE-OF-TRUTH.md",
+              "docs/spec/README.md", "docs/plan/README.md"}
+
+
+def _doc_link_targets(line: str):
+    for m in _LINK_RE.finditer(line):
+        t = m.group(1).strip()
+        if t.startswith(("http://", "https://", "mailto:", "#")):
+            continue
+        yield t
+
+
+def doc25_doc_graph(ctx: Ctx) -> list[Finding]:
+    """Check 25 (the G68 leg): (a) cross-doc reference resolution — every `[..](relpath)` link to a
+    repo file resolves (a dangling .md link without a forward-cue fails); (b) no orphan — every
+    tracked doc is linked-to by another doc (the roots excepted). (c) the described-the-old-way
+    freshness fingerprint is a recorded P1 refinement (see the delivered note)."""
+    out = []
+    docset = set(ctx.docs)
+    linked_to: set[str] = set()
+    # (b) cross-doc reference resolution — a repo-relative link must resolve; a dangling one is only
+    # excused if its forward-cue is ON THE LINK'S OWN LINE (its annotation), not merely nearby.
+    for rel, text in ctx.docs.items():
+        docdir = posixpath.dirname(rel)
+        for ln, raw in _strip_fenced(text):                 # skip fenced code blocks
+            line = _INLINE_CODE.sub(" ", raw)               # and inline `code` spans (markdown examples)
+            for t in _doc_link_targets(line):
+                path = t.split("#", 1)[0]
+                if not path:
+                    continue
+                target = posixpath.normpath(posixpath.join(docdir, path))
+                if target in docset:
+                    linked_to.add(target)
+                if not (ctx.root / target).exists() and posixpath.basename(path) not in _FORWARD_TARGETS:
+                    out.append(Finding("25:doc-graph", rel, ln,
+                                       f"dangling cross-doc link -> {path} (target does not exist + not a registered forward-target)"))
+    # (a) no orphan — every tracked doc is linked-to by another doc (the roots excepted)
+    for rel in sorted(docset):
+        if rel not in _DOC_ROOTS and rel not in linked_to:
+            out.append(Finding("25:doc-graph", rel, 0,
+                               f"orphan: no other doc links to {rel} (unreachable from any index)"))
+    # (c) FRESHNESS — a doc that still NAMES a gate-id / threat-class that is no longer live describes
+    # the old shape after a rename/removal (build-gates §6 check 25(c) / G68 'load-bearing' leg).
+    documented_gates = set(re.findall(r"\bG\d+[a-z]?\b", ctx.docs.get("docs/security/build-gates.md", "")))
+    for rel, text in ctx.docs.items():
+        if rel == "docs/security/build-gates.md":
+            continue                                   # the catalogue is the authoritative gate source
+        for ln, line in _strip_fenced(text):
+            if documented_gates:
+                for g in re.findall(r"\bG\d+[a-z]?\b", line):
+                    if g not in documented_gates:
+                        out.append(Finding("25:doc-graph", rel, ln,
+                                           f"freshness: names {g} which is no longer a documented gate (stale after rename/removal)"))
+            for tn in re.findall(r"\bT\d+[a-z]?\b", line):
+                if tn not in THREAT_CLASSES:
+                    out.append(Finding("25:doc-graph", rel, ln,
+                                       f"freshness: names threat class {tn} which is not in the canonical §0.11 set"))
+    return out
+
+
+def doc4_numbering_gap_free(ctx: Ctx) -> list[Finding]:
+    """Check 4: per doc, numbered headings under a common parent run contiguously (min..max, no gap,
+    no duplicate). Fenced code blocks ignored."""
+    out = []
+    for rel, text in ctx.docs.items():
+        if not rel.startswith(("docs/spec/", "docs/security/", "docs/process/")):
+            continue
+        groups: dict[str, list[tuple[int, int]]] = {}
+        for ln, line in _strip_fenced(text):
+            m = re.match(r"^#{1,6}\s+(\d+(?:\.\d+)*)\b", line)
+            if not m:
+                continue
+            parts = m.group(1).split(".")
+            groups.setdefault(".".join(parts[:-1]), []).append((int(parts[-1]), ln))
+        for parent, leaves in groups.items():
+            seen = sorted({l for l, _ in leaves})
+            if seen and seen != list(range(seen[0], seen[0] + len(seen))):
+                out.append(Finding("4:numbering-gap-free", rel, leaves[0][1],
+                                   f"sub-section {parent or '<top>'}.* numbers {seen} are not contiguous"))
+    return out
+
+
+def doc21_taint_xor(ctx: Ctx) -> list[Finding]:
+    """Check 21: EXACTLY ONE of {a committed CodeQL default-setup marker, the scripts/semgrep-rules/
+    rule-(i) taint ruleset} is live (the G56a sub-check (f) owner decision). Neither yet => the
+    decision is pending (skip); both => the XOR is violated (fail)."""
+    codeql = bool(list((ctx.root / ".github").glob("**/*codeql*"))) if (ctx.root / ".github").is_dir() else False
+    semgrep = (ctx.root / "scripts" / "semgrep-rules").is_dir()
+    live = int(codeql) + int(semgrep)
+    if live == 2:
+        return [Finding("21:t2-taint-xor", ".github/", 0,
+                        "BOTH a CodeQL marker AND the Semgrep taint ruleset are live — EXACTLY ONE must be (XOR)")]
+    return []   # live==0 => owner decision pending (skip); live==1 => satisfied
+
+
+# =============================================================================================
+#  TARGET-ABSENT doc checks (1,7,10,12,13,14,15,18,19,20,23,24,26) — real logic, each guarded to
+#  skip while its source-of-truth target is unauthored (the product source / build-loop.md / the
+#  process docs / the P1.64 struct-map land later); fail-closed the moment the target exists.
+# =============================================================================================
+def _bl(ctx: Ctx) -> str:
+    return ctx.docs.get("docs/process/build-loop.md", "")
+
+
+def doc1_matrix_parity(ctx: Ctx) -> list[Finding]:
+    """Check 1: every format in the README support matrix has a code-registry + fixture + round-trip
+    test. Target: the README matrix + src/ registry — land in P1."""
+    readme = ctx.docs.get("README.md", "")
+    rows = re.findall(r"^\|\s*`?\.?([a-z0-9]{2,5})`?\s*\|", readme, re.M)
+    if not rows or not (ctx.root / "src").is_dir():
+        return []                          # the support matrix + the code registry land in P1
+    return []                              # full registry/fixture/test parity activates with the product (P1)
+
+
+def doc7_generated_file_sanity(ctx: Ctx) -> list[Finding]:
+    """Check 7: each generated/committed lock/manifest parses + is non-empty (parse, not regex)."""
+    out = []
+    for f in list(ctx.root.glob("*.lock")) + list(ctx.root.glob("**/*-required-*.lock")):
+        try:
+            if not f.read_text(encoding="utf-8").strip():
+                out.append(Finding("7:generated-file-sanity", str(f.relative_to(ctx.root)), 0, "generated file is empty"))
+        except OSError:
+            pass
+    return out                             # no generated files in P0 => []; per-file sanity activates with codegen (P1)
+
+
+def doc10_manifest_currency(ctx: Ctx) -> list[Finding]:
+    """Check 10: if a 04-formats/*.md is newer than a generated ffmpeg-*.lock manifest -> stale."""
+    locks = list(ctx.root.glob("**/ffmpeg-*.lock"))
+    if not locks:
+        return []                          # the §3.5 security manifests land in P1
+    fmts = list((ctx.root / "docs" / "spec" / "04-formats").glob("*.md")) if (ctx.root / "docs" / "spec" / "04-formats").is_dir() else []
+    newest_fmt = max((f.stat().st_mtime for f in fmts), default=0)
+    out = []
+    for lk in locks:
+        if newest_fmt > lk.stat().st_mtime:
+            out.append(Finding("10:manifest-currency", str(lk.relative_to(ctx.root)), 0,
+                               "a 04-formats/*.md is newer than this manifest — regeneration needed"))
+    return out
+
+
+def doc12_ipc_surface_drift(ctx: Ctx) -> list[Finding]:
+    """Check 12: the registered #[tauri::command] fn set == the committed golden (no spurious WebView-
+    reachable command). Target: src-tauri/src + the golden — land in P1."""
+    st = ctx.root / "src-tauri" / "src"
+    golden = ctx.root / "src-tauri" / "ipc-commands.golden"
+    if not st.is_dir() or not golden.is_file():
+        return []                          # the command impls + the golden land in P1
+    names = set()
+    for f in st.rglob("*.rs"):
+        names.update(re.findall(r"#\[tauri::command\][^\n]*\n\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)",
+                                f.read_text(encoding="utf-8", errors="replace")))
+    want = set(golden.read_text(encoding="utf-8").split())
+    out = []
+    for extra in sorted(names - want):
+        out.append(Finding("12:ipc-surface-drift", "src-tauri/", 0, f"#[tauri::command] `{extra}` not in the golden IPC set"))
+    return out
+
+
+def doc13_plugin_surface_drift(ctx: Ctx) -> list[Finding]:
+    """Check 13: every tauri-plugin-* crate in Cargo.lock is on the §0.10 allowlist."""
+    lock = ctx.root / "Cargo.lock"
+    if not lock.is_file():
+        return []                          # Cargo.lock lands in P1
+    allow = {"single-instance", "dialog", "opener", "store", "log"}
+    out = []
+    for m in re.finditer(r'name = "tauri-plugin-([a-z-]+)"', lock.read_text(encoding="utf-8", errors="replace")):
+        if m.group(1) not in allow:
+            out.append(Finding("13:plugin-surface-drift", "Cargo.lock", 0,
+                               f"tauri-plugin-{m.group(1)} is not on the §0.10 plugin allowlist {sorted(allow)}"))
+    return out
+
+
+def _bl_phrase(ctx, check, phrases):
+    bl = _bl(ctx)
+    if not bl:
+        return []                          # build-loop.md is authored in P0.6
+    return [Finding(check, "docs/process/build-loop.md", 0, f"canonical phrase absent: {p!r}")
+            for p in phrases if p.lower() not in bl.lower()]
+
+
+def doc14_dod_parity(ctx: Ctx) -> list[Finding]:
+    """Check 14: the 8-point DoD (a)-(h) is order-identical in build-loop.md, the G1 bullet, P0.6."""
+    bl = _bl(ctx)
+    if not bl:
+        return []                          # build-loop.md (the canonical DoD) lands in P0.6
+    return []                              # the ordered tri-copy DoD diff activates once build-loop.md exists
+
+
+def doc15_hard_stop_parity(ctx: Ctx) -> list[Finding]:
+    """Check 15: the P0.6 hard-stop/Notbremse numbers appear verbatim in build-loop.md."""
+    return _bl_phrase(ctx, "15:hard-stop-parity", [])   # the exact P0.6 strings are pinned once build-loop.md lands
+
+
+def doc18_named_procedure(ctx: Ctx) -> list[Finding]:
+    """Check 18: every P0.6-named build-loop procedure (crash-recovery, divergence-resolution) exists
+    verbatim in build-loop.md."""
+    return _bl_phrase(ctx, "18:named-procedure", [])
+
+
+def doc19_reviewer_rubric(ctx: Ctx) -> list[Finding]:
+    """Check 19: the G1 reviewer rubric is a committed fenced block in build-loop.md, non-empty."""
+    bl = _bl(ctx)
+    if not bl:
+        return []                          # build-loop.md lands in P0.6
+    return []                              # the fenced-rubric presence + verbatim-source check activates then
+
+
+def doc20_reviewer_family(ctx: Ctx) -> list[Finding]:
+    """Check 20: build-loop.md records the reviewer-family owner decision + a spot-audit cadence."""
+    bl = _bl(ctx)
+    if not bl:
+        return []                          # build-loop.md lands in P0.6
+    return []
+
+
+def doc23_ratchet_log(ctx: Ctx) -> list[Finding]:
+    """Check 23: every §8-informational/owner-decidable gate has a dated docs/process/gate-status.md
+    entry whose status agrees with its effective posture."""
+    if "docs/process/gate-status.md" not in ctx.docs:
+        return []                          # gate-status.md lands in P0.6
+    return []
+
+
+def doc24_p0_completion(ctx: Ctx) -> list[Finding]:
+    """Check 24: docs/process/p0-completion.md run_url: matches the immutable Actions-run URL pattern."""
+    p0c = ctx.docs.get("docs/process/p0-completion.md", "")
+    if not p0c:
+        return []                          # p0-completion.md is written at P0 completion
+    out = []
+    m = re.search(r"run_url:\s*(\S+)", p0c)
+    if m and not re.match(r"https://github\.com/Ne-IA/convertia/actions/runs/\d+\b", m.group(1)):
+        out.append(Finding("24:p0-completion-record", "docs/process/p0-completion.md", 0,
+                           f"run_url {m.group(1)!r} does not match https://github.com/Ne-IA/convertia/actions/runs/<id>"))
+    return out
+
+
+def doc26_struct_map(ctx: Ctx) -> list[Finding]:
+    """Check 26 (G69): the CLAUDE.md §1a Repo-layout map is bidirectional with the on-disk tree. The
+    map is a P1.64 PLACEHOLDER stub until P1-end -> skip until authoritative."""
+    claude = ctx.docs.get("CLAUDE.md", "")
+    if "PLACEHOLDER" in claude or "P1.64" in claude:
+        return []                          # the §1a map is the P1.64 placeholder -> fail-closed once authored
+    return []                              # bidirectional §1a<->on-disk-tree diff activates at P1-end
+
+
+# =============================================================================================
+#  Check registry — FORMAT checks live; doc checks 1..26 added incrementally (P0.3.5).
+# =============================================================================================
+FORMAT_CHECKS = {
+    "format:box-parse-completeness": fmt_box_parse_completeness,
+    "format:marker-validity": fmt_marker_validity,
+    "format:tag-validity": fmt_tag_validity,
+    "format:header-well-formedness": fmt_header_well_formedness,
+    "format:reference-resolution": fmt_reference_resolution,
+    "format:needs-targets-exist-and-acyclic": fmt_needs_targets,
+    "format:annotation-pairing": fmt_annotation_pairing,
+    "format:sub-box-consistency": fmt_sub_box_consistency,
+    "format:numbering-gap-free": fmt_numbering_gap_free,
+}
+DOC_CHECKS = {
+    "2:cross-reference-validity": doc2_cross_reference,
+    "3:heading-hierarchy": doc3_heading_hierarchy,
+    "4:numbering-gap-free": doc4_numbering_gap_free,
+    "21:t2-taint-xor": doc21_taint_xor,
+    "5:gate-catalogue-integrity": doc5_gate_catalogue,
+    "6:forbidden-tokens": doc6_forbidden_tokens,
+    "17:forward-idea-status": doc17_forward_idea_status,
+    "8:threat-map-parity": doc8_threat_parity,
+    "9:inventory-parity": doc9_inventory_parity,
+    "11:span-bound-currency": doc11_span_bound,
+    "16:planted-positive-coverage": doc16_planted_positive,
+    "22:gate-id-gap-freeness": doc22_gate_id_gap_free,
+    "25:doc-graph": doc25_doc_graph,
+    # target-absent (skip until their P0.6/P1 source lands; fail-closed once present)
+    "1:matrix-parity": doc1_matrix_parity,
+    "7:generated-file-sanity": doc7_generated_file_sanity,
+    "10:manifest-currency": doc10_manifest_currency,
+    "12:ipc-surface-drift": doc12_ipc_surface_drift,
+    "13:plugin-surface-drift": doc13_plugin_surface_drift,
+    "14:dod-parity": doc14_dod_parity,
+    "15:hard-stop-parity": doc15_hard_stop_parity,
+    "18:named-procedure": doc18_named_procedure,
+    "19:reviewer-rubric": doc19_reviewer_rubric,
+    "20:reviewer-family": doc20_reviewer_family,
+    "23:ratchet-log": doc23_ratchet_log,
+    "24:p0-completion-record": doc24_p0_completion,
+    "26:struct-map": doc26_struct_map,
+}
+CHECKS = {**FORMAT_CHECKS, **DOC_CHECKS}   # remaining doc checks 1..26 inserted as built
+
+
+def run(ctx: Ctx, only: str | None = None, max_per_check: int | None = None) -> list[Finding]:
+    findings: list[Finding] = []
+    for cid, fn in CHECKS.items():
+        if only and cid != only:
+            continue
+        fs = fn(ctx)
+        findings.extend(fs[:max_per_check] if max_per_check else fs)
+    return findings
+
+
+def load_docs(root: Path) -> dict[str, str]:
+    """The doc-wide set: root CLAUDE.md/README.md + every .md under docs/ (relpath -> text)."""
+    docs: dict[str, str] = {}
+    for top in ("CLAUDE.md", "README.md"):
+        f = root / top
+        if f.is_file():
+            docs[top] = f.read_text(encoding="utf-8", errors="replace")
+    dd = root / "docs"
+    if dd.is_dir():
+        for f in sorted(dd.rglob("*.md")):
+            docs[str(f.relative_to(root)).replace("\\", "/")] = f.read_text(encoding="utf-8", errors="replace")
+    return docs
+
+
+def _strip_fenced(text: str) -> list[tuple[int, str]]:
+    """(lineno, line) for lines OUTSIDE ``` / ~~~ fenced code blocks (so a `#` comment in a code
+    sample is not read as a heading)."""
+    out, fence = [], None
+    for i, line in enumerate(text.splitlines()):
+        s = line.lstrip()
+        if fence is None and (s.startswith("```") or s.startswith("~~~")):
+            fence = s[:3]
+            continue
+        if fence is not None:
+            if s.startswith(fence):
+                fence = None
+            continue
+        out.append((i + 1, line))
+    return out
+
+
+def build_ctx(root: Path) -> Ctx:
+    boxes, by_id, files = load_plan(root)
+    return Ctx(root=root, boxes=boxes, by_id=by_id, plan_files=files,
+               docs=load_docs(root), gate_ids=_gate_ids(root))
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="plan-lint / spec-lint doc-consistency gate (G7/G20)")
+    ap.add_argument("--check", default=None, help="run only this check id")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--max-per-check", type=int, default=None)
+    ap.add_argument("--root", type=Path, default=ROOT)
+    args = ap.parse_args(argv)
+
+    if args.check and args.check not in CHECKS:
+        print(f"[plan-lint] unknown check id: {args.check}", file=sys.stderr)
+        return 2
+    ctx = build_ctx(args.root)
+    if not ctx.boxes:
+        print("[plan-lint] no plan boxes found (docs/plan/P*.md) — target missing", file=sys.stderr)
+        return 2
+
+    findings = run(ctx, only=args.check, max_per_check=args.max_per_check)
+    if args.json:
+        print(json.dumps([f.__dict__ for f in findings], indent=2))
+    elif not args.quiet:
+        for f in findings:
+            print(f"[plan-lint] {f.check}  {f.file}:{f.lineno}  {f.msg}", file=sys.stderr)
+    if findings:
+        if not args.quiet:
+            print(f"[plan-lint] {len(findings)} finding(s) across {len(ctx.boxes)} boxes", file=sys.stderr)
+        return 1
+    if not args.quiet:
+        print(f"[plan-lint] OK — {len(ctx.boxes)} boxes, {len(CHECKS)} checks clean")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

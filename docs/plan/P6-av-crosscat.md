@@ -40,7 +40,7 @@
 
 ---
 
-### FFmpeg engine staging, hardening & runtime wiring
+## FFmpeg engine staging, hardening & runtime wiring
 
 > The FFmpeg/FFprobe sidecar must exist, be hardened (curated build + argv
 > controls), checksum-verified, SBOM-rowed and runtime-wired through the §2.12
@@ -104,7 +104,7 @@
 
 ---
 
-### Audio pairs (FFmpeg, audio-file → audio-file)
+## Audio pairs (FFmpeg, audio-file → audio-file)
 
 > Every audio source→target pair is one FFmpeg invocation (decode → re-encode);
 > §3.2 single-engine-per-pair holds trivially, no chaining. Defaults + advanced
@@ -167,7 +167,7 @@
 
 ---
 
-### Audio corpus + per-pair audio tests
+## Audio corpus + per-pair audio tests
 
 > The §6.4.5 audio corpus + the per-pair §6.4.3 integration tests that let each
 > audio pair reach `reliable`. The corpus↔pair bijection guard (§6.4.3a, built in
@@ -241,7 +241,7 @@
 
 ---
 
-### Video pairs (FFmpeg, container conversions + remux/re-encode)
+## Video pairs (FFmpeg, container conversions + remux/re-encode)
 
 > The user-facing format is the CONTAINER (§1.3 batch key); what is cheap depends
 > on the inner CODECS (probed by FFprobe). Remux-vs-re-encode is decided
@@ -291,7 +291,7 @@
 
 ---
 
-### Video corpus + per-pair video tests
+## Video corpus + per-pair video tests
 
 - [ ] **P6.57** [TEST] Stage the video corpus (short clips, one per source + the inner-codec cases) + manifest + SHA-256 · §6.4.5 · G24a G22
   needs: P6.1, P0.5.11
@@ -332,7 +332,7 @@
 
 ---
 
-### Cross-category: extract-audio (video → audio subset)
+## Cross-category: extract-audio (video → audio subset)
 
 > Operations on a video source, NOT a second source format. The batch key is the
 > video source type only (§1.3); the offered target set = the video targets PLUS
@@ -360,7 +360,7 @@
 
 ---
 
-### Cross-category: to-animated-GIF (video → GIF, with guardrails)
+## Cross-category: to-animated-GIF (video → GIF, with guardrails)
 
 > Turn a short video clip into a shareable animated GIF — one FFmpeg invocation via
 > the split/palettegen/paletteuse filtergraph (no temp PNG, no chaining). ALWAYS
@@ -391,7 +391,7 @@
 
 ---
 
-### Cross-category corpus, tests, re-run detection & batch
+## Cross-category corpus, tests, re-run detection & batch
 
 - [ ] **P6.75** [TEST] Stage the to-GIF bijection corpus coverage (every `["<SOURCE>","GIF"]` pair) + extract-audio covers · §6.4.5 §6.4.3a · G24a G22
   needs: P6.57, P0.5.11
@@ -408,7 +408,7 @@
 
 ---
 
-### macOS TCC staging, phase reliability gate & advanced-options completeness
+## macOS TCC staging, phase reliability gate & advanced-options completeness
 
 - [ ] **P6.79** [RUST] Verify FFmpeg receives the macOS kind-2 scratch-staged source path (never the raw protected path) · §3.5.0 §7.2.6 §2.14.2 · G31
   needs: P6.8, P4.25
@@ -423,7 +423,7 @@
   needs: P6.2, P6.80
   > wire the §6.5.4 rule for the FFmpeg `engines.lock` pin: a version/SHA change re-runs the FULL P6 reliability gate before that FFmpeg version can ship (a patch must not silently regress a pair); the ledger status-diff is part of the bump review; the informational per-push OSV/grype over the PURL-keyed FFmpeg row (CPE `cpe:2.3:a:ffmpeg:ffmpeg:<ver>`) feeds vuln-response (CVSS ≥ 7 on an exercised path → release-blocking escalation).
 
-### Corpus-validated extract-audio additions (split from the guaranteed floor)
+## Corpus-validated extract-audio additions (split from the guaranteed floor)
 
 - [!] **P6.83** [RUST] Wire the corpus-validated extract-audio M4A/OGG additions (on the P6.66 floor) · §3.4 · G31
   unlocked-by: P9.44
@@ -434,7 +434,7 @@
 
 ---
 
-### Audio advanced-option declarations (registered against the P4 options-panel shell)
+## Audio advanced-option declarations (registered against the P4 options-panel shell)
 
 > The panel **chrome** was built in P4 (P4.64 widget dispatch + P4.74 AdvancedDrawer);
 > these boxes register only per-target audio option **DECLARATIONS** (§1.6), elevated to
