@@ -11,14 +11,12 @@
 #   commit-msg = L3  (fires at `git commit`, BEFORE pre-push; conventional-commit + dual-review trailer)
 #   pre-push   = L2  (fires at `git push`;                    budget < 3 min; range / full-tree)
 # Stated explicitly so commit-msg (L3) is never wired into pre-push or omitted.
-# commit-msg is DECLARED by P0.3.3 (when its gates G11/G12 are built); lefthook
-# needs a command per hook, so an empty hook is not declared here - the mapping
-# above is the "not omitted" guarantee.
+# commit-msg (L3) is DECLARED below as of P0.3.3 (G11 conventional-commit subject);
+# G12 (the Dual-Review trailer) is the L2 pre-push half of the commit-hygiene plane.
 #
-# GATE SLOTS: the only command wired now is the G54 integrity check. Each L1/L2/L3
-# gate is added to the slots below by the box that BUILDS it (so a gate is wired
-# only after it is built + self-tested) - gitleaks (P0.3.1), plan-lint (P0.3.5),
-# G8 (P0.3.4), G70 (P0.3.14), clippy/tsc (P0.4), G11/G12 commit-msg (P0.3.3).
+# GATE SLOTS: each L1/L2/L3 gate is added to the slots below by the box that BUILDS
+# it (so a gate is wired only after it is built + self-tested) - remaining:
+# plan-lint (P0.3.5), G8 (P0.3.4), G70 (P0.3.14), clippy/tsc (P0.4).
 #
 # Requires Python 3.11+ on PATH as `python3` (the stdlib-only gate scripts) and
 # the pinned tools installed under .gate-tools/bin (scripts/install-gate-tools).
@@ -43,6 +41,11 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
     # L1 gate slots (filled by their boxes): plan-lint --quiet on the docs glob (P0.3.5) /
     # G8 new-marker (P0.3.4) / clippy diff + tsc diff (P0.4).
 
+commit-msg:        # L3 - fires at `git commit` (after pre-commit, before pre-push)
+  commands:
+    conventional:    # G11 - conventional-commit subject; lefthook passes the msg-file path as {1}
+      run: python3 scripts/check-commit-msg {1}
+
 pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
   parallel: true
   commands:
@@ -52,6 +55,7 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/check-l-neg1-ack
     gitleaks:        # G2 - scan the unpushed range (the last local catch before a secret goes public)
       run: python3 scripts/run-gitleaks --range
+    dual-review:     # G12 - the Dual-Review trailer on each unpushed non-check-off commit
+      run: python3 scripts/check-dual-review
     # L2 gate slots (filled by their boxes): plan-lint full (P0.3.5) /
-    # G8 + G70 full-tree (P0.3.4 / P0.3.14) / dual-review trailer G12 (P0.3.3) /
-    # clippy --all-targets + tsc project (P0.4).
+    # G8 + G70 full-tree (P0.3.4 / P0.3.14) / clippy --all-targets + tsc project (P0.4).

@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""check-dual-review - G12 Dual-Review-trailer gate, at pre-push (L2) (P0.3.3).
+
+Every box commit records the Opus+Sonnet pre-commit dual review (DoD item 5). At pre-push this gate
+asserts, for each unpushed commit in the range, the exact trailer
+
+    Dual-Review: opus=(GO|NOGO) sonnet=(GO|NOGO)
+
+is present + well-formed, AND — when the verdict is GO/GO — the body actually carries a review
+narrative (a findings block), so a bare GO/GO trailer slapped on without doing the review fails.
+
+EXEMPT: a check-off commit — subject `chore(todo): … (abgehakt|done)` AND a docs-`.md`-only diff —
+needs no review (the shared skip shape; canonically pinned in build-loop.md at P0.6). The L2 range
+base follows the same `@{u}` -> `origin/<branch>` -> `origin/main` -> `origin/HEAD` fallback chain as
+the other range gates; on a first push (no base) every commit reachable from HEAD is checked.
+
+stdlib-only. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+Exit: 0 = every checked commit OK; 1 = a missing/ill-formed trailer or an empty GO/GO narrative; 2 = git error.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+
+TRAILER_RE = re.compile(r"^Dual-Review: opus=(GO|NOGO) sonnet=(GO|NOGO)$", re.M)
+# the check-off commit: a TODO tick in docs only (the shared skip shape — build-loop.md P0.6)
+CHECKOFF_SUBJECT_RE = re.compile(r"^chore\(todo\): .*\b(abgehakt|done)\b", re.I)
+# a GO/GO commit must carry a review narrative — any of these markers, OUTSIDE the trailer line
+FINDINGS_MARKERS = re.compile(r"\b(review|findings?|NOGO|P[0-3]|verdict|skeptic)\b", re.I)
+
+
+def git(*args: str) -> tuple[int, str]:
+    p = subprocess.run(["git", *args], capture_output=True, text=True)
+    return p.returncode, p.stdout
+
+
+def _resolves(ref: str) -> bool:
+    # peel to ^{commit} so a well-formed-but-ABSENT 40-hex SHA (a rewritten/force-pushed
+    # github.event.before) returns rc!=0 and routes to the tip-only fallback, instead of
+    # `rev-parse --verify <40-hex>` rc=0 (git treats any full hex as already-resolved).
+    return git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")[0] == 0
+
+
+def resolve_base() -> str | None:
+    cands = ["@{u}"]
+    rc, b = git("rev-parse", "--abbrev-ref", "HEAD")
+    b = b.strip()
+    if rc == 0 and b and b != "HEAD":
+        cands.append(f"origin/{b}")
+    cands += ["origin/main", "origin/HEAD"]
+    return next((c for c in cands if _resolves(c)), None)
+
+
+def is_checkoff(subject: str, files: list[str]) -> bool:
+    return bool(CHECKOFF_SUBJECT_RE.match(subject)) and bool(files) and all(f.endswith(".md") for f in files)
+
+
+def has_findings_block(body: str) -> bool:
+    """A review narrative is present in the BODY beneath the subject. The SUBJECT (the first non-blank
+    line) is EXCLUDED — every box commit subject carries a box-id like `(P0.3.3)` which would match the
+    `P[0-3]` marker and make this check inert; the narrative must live in the body. The trailer lines
+    are also removed."""
+    lines = body.splitlines()
+    subj = next((i for i, ln in enumerate(lines) if ln.strip()), None)
+    body_lines = lines[subj + 1:] if subj is not None else []
+    kept = [ln for ln in body_lines
+            if not ln.startswith(("Dual-Review:", "L-neg1-ack:", "Co-Authored-By:"))]
+    return bool(FINDINGS_MARKERS.search("\n".join(kept)))
+
+
+def evaluate_commit(subject: str, body: str, files: list[str]) -> str | None:
+    """(pure) None if the commit is OK/exempt; else the error reason."""
+    if is_checkoff(subject, files):
+        return None
+    m = TRAILER_RE.search(body)
+    if not m:
+        return ("missing a well-formed `Dual-Review: opus=(GO|NOGO) sonnet=(GO|NOGO)` trailer "
+                "(exempt only a `chore(todo): … (abgehakt|done)` docs-only check-off)")
+    if m.group(1) == "GO" and m.group(2) == "GO" and not has_findings_block(body):
+        return "a GO/GO Dual-Review trailer but NO review narrative/findings in the commit body"
+    return None
+
+
+def commit_shas(base_arg: str | None) -> tuple[int, list[str], str]:
+    """The unpushed commits to check. L2: base_arg=None -> resolve_base()..HEAD. L4 mirror: base_arg =
+    the push `before` SHA -> base..HEAD; an all-zeros (new ref) / unresolvable (shallow) base, or no
+    resolvable base at all, falls back to the HEAD TIP only — safe, never re-checks old history."""
+    if base_arg is not None:
+        if base_arg.strip("0") and _resolves(base_arg):
+            rc, raw = git("rev-list", f"{base_arg}..HEAD")
+            return rc, raw.split(), f"{base_arg[:9]}..HEAD"
+        rc, raw = git("rev-list", "-1", "HEAD")
+        return rc, raw.split(), "HEAD tip (base unresolvable — new ref / shallow)"
+    base = resolve_base()
+    if base:
+        rc, raw = git("rev-list", f"{base}..HEAD")
+        return rc, raw.split(), f"{base}..HEAD"
+    rc, raw = git("rev-list", "-1", "HEAD")
+    return rc, raw.split(), "HEAD tip (no upstream — first push)"
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="G12 Dual-Review-trailer gate (P0.3.3)")
+    ap.add_argument("--base", default=None, help="L4 mirror: the push 'before' SHA (range = base..HEAD)")
+    args = ap.parse_args()
+    rc, shas, rng = commit_shas(args.base)
+    if rc != 0:
+        print(f"[G12] FAIL: could not list commits for {rng}", file=sys.stderr)
+        return 2
+    if not shas:
+        print("[G12] no unpushed commits to check")
+        return 0
+
+    problems: list[str] = []
+    for sha in shas:
+        rc, msg = git("show", "-s", "--format=%B", sha)
+        if rc != 0:
+            problems.append(f"{sha[:9]}: could not read the commit message")
+            continue
+        lines = msg.splitlines()
+        subject = next((ln for ln in lines if ln.strip()), "")
+        rc, names = git("diff-tree", "--no-commit-id", "--name-only", "-r", sha)
+        files = names.split() if rc == 0 else []
+        err = evaluate_commit(subject, msg, files)
+        if err:
+            problems.append(f"{sha[:9]} ({subject[:50]!r}): {err}")
+
+    if problems:
+        for p in problems:
+            print(f"[G12] FAIL: {p}", file=sys.stderr)
+        return 1
+    print(f"[G12] Dual-Review trailer OK on {len(shas)} unpushed commit(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

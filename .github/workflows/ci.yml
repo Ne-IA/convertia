@@ -104,6 +104,11 @@ jobs:
         env:
           BEFORE: ${{ github.event.before }}   # via env (not inline) to avoid template-injection (G50/zizmor)
         run: python3 scripts/check-l-neg1-ack --base "$BEFORE"
+      - name: 'G12: Dual-Review trailer over the push range (L4 mirror of the L2 pre-push gate)'
+        if: github.event_name == 'push'        # build-loop commits only; fork-PR commits carry no trailer
+        env:
+          BEFORE: ${{ github.event.before }}   # via env (not inline) to avoid template-injection (G50/zizmor)
+        run: python3 scripts/check-dual-review --base "$BEFORE"
       # NOTE: the g24-*/g54-* self-tests for these gates (ci-supply-chain, release-tag-trust,
       # branch-protection) run in the gate-tooling job's G10 continuous-armed-canary prelude
       # (3-OS), not here — one auto-discovering runner is the single source of self-test truth.
