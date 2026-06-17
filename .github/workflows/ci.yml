@@ -79,6 +79,8 @@ jobs:
         run: python3 scripts/check-js-supply-chain
       - name: 'G19: generated-artifact drift-check framework (regen + git diff --exit-code; targets registered in P1)'
         run: python3 scripts/check-generated-drift
+      - name: 'G9: repo-invariant grep gate ((e) cargo-vet-mutator-in-CI/scripts LIVE; a-d,f target Rust/TS/CSS source in P1)'
+        run: python3 scripts/check-repo-invariants
       # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
       #   G70 test-suppression (P0.3.14) |
       #   doc-graph G68 + struct-map G69 (P0.3.12/13) |

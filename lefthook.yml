@@ -48,6 +48,8 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
       run: python3 scripts/check-core-deps
     js-supply-chain: # G18c/G18d - .npmrc registry pin + lifecycle lockdown (pnpm-lock URL guard live P1)
       run: python3 scripts/check-js-supply-chain
+    repo-invariants: # G9 - repo-invariant grep gate ((e) cargo-vet-mutator LIVE; a-d,f target-absent until P1)
+      run: python3 scripts/check-repo-invariants
     # L1 gate slots (filled by their boxes): clippy diff + tsc diff (P0.4).
 
 commit-msg:        # L3 - fires at `git commit` (after pre-commit, before pre-push)

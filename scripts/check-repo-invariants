@@ -1,0 +1,563 @@
+#!/usr/bin/env python3
+"""check-repo-invariants - G9 repo-invariant grep gate (P0.3.10).
+
+A small, COMMITTED, NON-EMPTY set of structural "this pattern never appears outside its one allowed
+home" invariants - the cheap deterministic backstop to the heavier semantic gates (G29 Semgrep, G47
+CSP-parse). Each invariant is a forbidden pattern + the precise scope it is banned in + the ONE
+carved-out home where it is legitimate; a positive+negative G24 self-test machine-proves both the
+catch and the carve-out.
+
+The six committed invariants (build-gates.md G9):
+  (a) no hardcoded hex COLOUR outside the design-token home `design/tokens.css` (CSS/TS/TSX) -
+      the CLAUDE.md no-inline-CSS rule + the §5.5 design-token home (the `no-hex-outside-primitives`
+      pattern). Comments are blanked + `href="#…"`/`url(#…)` fragment refs are neutralised so a PR-ref
+      `// fixes #1234` or an anchor href does not false-positive (named/rgb()/hsl() are out of scope).
+  (b) no subprocess `Command::new` outside the `crate::isolation` module (Rust) - belt-and-suspenders
+      to the G29 Semgrep spawn rule. Matches the QUALIFIED spawn forms `std::process::Command::new`
+      / `tokio::process::Command::new` / `process::Command::new` (NOT a bare `Command::new`, which a
+      clap CLI builder also uses - the bare imported form is G29's import-resolving job; this grep is
+      the cheap qualified-form net).
+  (c) no `unsafe impl Send/Sync` outside the allow-listed FFI module (Rust), where `Send`/`Sync` is
+      the IMPLEMENTED TRAIT (not a generic BOUND `<T: Send>`); comments blanked.
+  (d) no raw `127.0.0.1` / `localhost` literal in first-party Rust/TS production code outside a
+      `#[cfg(test)]` block - with the PRECISE LibreOffice carve-out: the bundled third-party config
+      tree (`bundle/LibreOffice/**`, `bundle/LibreOffice.app/**`, `bundle/libreoffice/**`) may
+      legitimately reference a loopback UNO endpoint and is EXCLUDED; first-party code stays
+      localhost-banned with NO exception. Only a genuine test gate exempts: `#[cfg(not(test))]` (the
+      MOST production-only cfg) is NOT exempt, and a `#[cfg(test)]` on a non-block item does not leak.
+      Comments are blanked (a `// localhost` note is not a literal); string literals are kept.
+  (e) no `cargo vet update` / `sync` / `import` invocation in any `.github/workflows/*.yml` or a
+      `scripts/` file (only a Co-Pilot-reviewed `imports.lock` edit may change the cargo-vet trust
+      set; a CI/script auto-refresh of the committed trust DB is banned, pairing with G18a's
+      `imports.lock`-in-the-diff check). **LIVE NOW** (the others target Rust/TS/CSS source that
+      lands in P1). See the PROSE-VS-INVOCATION note below.
+  (f) no `fc.gen(` outside the approved shrink-wrapper in TS test files - the §P0.5 "ban fc.gen()
+      without a shrink wrapper" rule made machine-enforceable.
+
+PROSE-VS-INVOCATION (invariant (e)) - the load-bearing subtlety:
+  The pattern string `cargo vet update` legitimately appears as PROSE in this very gate, in its
+  self-test fixtures (both under `scripts/`), and in other gate docstrings (e.g. `check-supply-chain`
+  describes the rule) - none of those are real invocations. The discriminator is structural, applied
+  per file type:
+    * COMMAND languages — YAML (`.github/workflows/*.yml`) + shell (`.sh`/`.bash`): strip only `#`
+      comments, KEEP scalar/`run:` values AND string literals - a `run: cargo vet update` step OR a
+      shell `eval "cargo vet update"` is a real invocation and survives; a `# ...` comment does not. The
+      comment strip is QUOTE-AWARE ACROSS physical lines (`_strip_command_comments`): a `#` on a
+      continuation line of an OPEN quote is data, not a comment, so a multiline-quoted scalar is never
+      truncated to hide a real invocation after the closing quote (FAIL-SAFE: an unbalanced quote keeps
+      the rest unstripped - an over-triggering prose false-positive beats a hidden invocation).
+    * DATA/code languages — Python / TOML / extensionless `scripts/` files: blank `#` comments AND
+      every string literal (`'`,`"`,`'''`,`\"\"\"`). In Python a CONTIGUOUS `cargo vet update` can only
+      live inside a string/comment (a real invocation is a `subprocess.run([...])` LIST that no
+      contiguous regex matches), so blanking removes all prose without hiding a catchable invocation.
+      The one residual - a Python `os.system("cargo vet update")` string - is accepted as covered
+      downstream by G18a's `imports.lock`-in-the-diff check (any actual trust-set mutation reddens the
+      push as an `imports.lock` drift regardless of how it was triggered).
+  MULTILINE / LOGICAL-LINE matching (`_logical_lines`): the match runs PER LOGICAL LINE, where a logical
+  line folds in only GENUINE continuations - a shell `\\`-line-continuation, or a YAML block/folded/plain
+  scalar body (a following line MORE-INDENTED than the base). So a command SPLIT across lines (a folded
+  `run: >-`, a plain multiline scalar, a shell backslash-continuation) is caught, while two same-indent
+  sibling lines or a blanked comment line are NEVER joined - no cross-line false-positive that would
+  block a legit push (the round-2 fix; the earlier "span any newline" approach false-joined unrelated
+  lines). Combined with the strict `cargo\\s+vet\\s+<verb>` shape (no intervening non-whitespace token),
+  the gate flags a real folded invocation and not an incidental token adjacency.
+  YAML SCALAR scope (deliberate): the mutator phrase is flagged in ANY YAML scalar, not only `run:` -
+  a `name:`/`env:` scalar containing the literal phrase is invocation-shaped and worth flagging
+  (fail-safe for the live security invariant); narrowing to executable keys is a recorded refinement.
+
+CARVE-OUT PATHS chosen this box [Build-Session-Entscheidung: P0.3.10] (the contract names (a)/(d)
+concretely; (b)/(c)/(f) homes are picked here, robust to the unknown P1 crate layout, and CONFIRMED
+when the real code lands in P1 - adjusting a carve-out is itself a reviewed L(-1) edit):
+  (b) `crate::isolation`     -> any path segment `isolation` under a Rust `src` tree (`.../isolation/**`
+                                or `.../isolation.rs`).
+  (c) the FFI module         -> any path segment `ffi` under a Rust `src` tree (`.../ffi/**` or
+                                `.../ffi.rs`).
+  (f) the shrink-wrapper     -> the pinned allow-listed wrapper path(s) in FC_WRAPPER_PATHS.
+
+Invariants (a)/(b)/(c)/(d)/(f) target source absent until P1 (no `design/`, `src/`, `src-tauri/`,
+`bundle/` yet) - they scan no files today and pass (target-absent); the patterns + carve-outs are
+authored + self-tested NOW. Invariant (e) is LIVE over the existing workflows + `scripts/`.
+
+stdlib-only. L(-1) security-critical (matched by `scripts/check-*` in scripts/l-neg1-files.toml, G71).
+Exit: 0 = no invariant violated (or target-absent); 1 = a violation; 2 = bad invocation.
+"""
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# --- forbidden patterns -----------------------------------------------------------------------
+HEX_COLOUR_RE = re.compile(r"#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})\b")
+# qualified subprocess-spawn forms only (NOT bare `Command::new` - clap's builder uses that; the
+# bare imported form is G29's import-resolving Semgrep job, this is the cheap belt-and-suspenders net)
+SPAWN_RE = re.compile(r"\b(?:(?:std|tokio)::)?process::Command::new\b")
+# Send/Sync must be the IMPLEMENTED TRAIT (right after `impl` + an optional generic-param list),
+# NOT a generic BOUND: `unsafe impl<T: Send> Foo for W<T>` is a legit non-Send/Sync impl and must NOT
+# flag, while `unsafe impl<T> Send for W<T>` must. The `<(?:[^<>]|<[^<>]*>)*>` tolerates one level of
+# nested generics (`<T: Iterator<Item=u8>>`); deeper nesting is a recorded P1 refinement.
+UNSAFE_IMPL_RE = re.compile(r"\bunsafe\s+impl\s*(?:<(?:[^<>]|<[^<>]*>)*>)?\s*(?:Send|Sync)\b")
+LOCALHOST_RE = re.compile(r"\b127\.0\.0\.1\b|\blocalhost\b", re.IGNORECASE)
+VET_MUTATOR_RE = re.compile(r"\bcargo\s+vet\s+(?:update|sync|import)\b")
+FC_GEN_RE = re.compile(r"\bfc\.gen\s*\(")
+
+# (f) the ONE allowed home of `fc.gen(` - the approved shrink-wrapper [Build-Session-Entscheidung:
+# P0.3.10; the concrete path is confirmed when the P0.5/P1 test-support helper lands].
+FC_WRAPPER_PATHS = ("tests/support/fc-arbitraries.ts",)
+
+# a path is "test code" (excluded from the production-scoped invariants a/b/c/d) by this shape
+TEST_PAT = re.compile(r"(^|/)(tests?|__tests__|fuzz|benches)/|\.(test|spec)\.")
+# the precise LibreOffice bundled-config carve-out for (d) - pinned platform-specific trees
+LIBREOFFICE_BUNDLE = ("bundle/LibreOffice", "bundle/LibreOffice.app", "bundle/libreoffice")
+
+
+def _norm(p: str) -> str:
+    return p.replace("\\", "/")
+
+
+def _under(p: str, prefix: str) -> bool:
+    p = _norm(p)
+    return p == prefix or p.startswith(prefix + "/")
+
+
+def _is_first_party_src(p: str) -> bool:
+    """First-party product Rust/TS source roots (NOT the bundled engines, NOT docs/tooling/tests)."""
+    return any(_under(p, r) for r in ("src", "src-tauri/src"))
+
+
+# --- comment/string blanking (preserve newlines + length so reported line numbers stay original) --
+def _blank_keep_newlines(seg: str) -> str:
+    return "".join("\n" if ch == "\n" else " " for ch in seg)
+
+
+def _blank_code(text: str) -> str:
+    """Blank `#` comments AND ' " ''' \"\"\" string spans to spaces (Python / TOML / shell). A token
+    that SURVIVES is real code, never a comment/docstring/string-literal mention - this is what makes
+    invariant (e) immune to its own pattern definition, its self-test fixtures, and other gates'
+    prose descriptions of the rule (all of which live inside strings/comments)."""
+    res: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "#":
+            j = text.find("\n", i)
+            j = n if j == -1 else j
+            res.append(" " * (j - i))
+            i = j
+            continue
+        if c in "'\"":
+            triple = text[i:i + 3]
+            if triple in ("'''", '"""'):
+                end = text.find(triple, i + 3)
+                end = n if end == -1 else end + 3
+                res.append(_blank_keep_newlines(text[i:end]))
+                i = end
+                continue
+            q, j = c, i + 1
+            while j < n and text[j] != "\n":
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == q:
+                    j += 1
+                    break
+                j += 1
+            res.append(_blank_keep_newlines(text[i:j]))
+            i = j
+            continue
+        res.append(c)
+        i += 1
+    return "".join(res)
+
+
+def _strip_command_comments(text: str, is_yaml: bool) -> str:
+    """Strip `#` comments from a COMMAND-language file (YAML/shell), QUOTE-AWARE ACROSS physical lines:
+    a `'…'`/`"…"` that opens on one line carries its quote state to the next, so a `#` on a continuation
+    line of an OPEN quote is DATA, not a comment (the round-2 P0 fix - a per-line reset wrongly truncated
+    a multiline-quoted scalar and dropped a real `; cargo vet update` after the closing quote). FAIL-SAFE:
+    an unbalanced quote leaves the rest "in quote" so no `#` is stripped (an over-triggering prose
+    false-positive beats a hidden invocation on the LIVE gate). A `#` is a comment only OUTSIDE any quote
+    at SOL or after whitespace.
+
+    QUOTE-OPENER rule is LANGUAGE-SPECIFIC (round-4 P0 fix - mixing the two hid a real shell invocation):
+      * SHELL: `'`/`"` ALWAYS open - shell allows word-adjacent quoting (`X=a"b # c"` quotes `b # c`, so the
+        `#` is DATA and a trailing `; cargo vet update` after the closing quote EXECUTES and MUST be caught).
+        A word-internal apostrophe in shell CODE (`echo don't`) is an UNBALANCED-quote SYNTAX ERROR, not a
+        valid script - over-flagging it (fail-safe) blocks no legitimate push.
+      * YAML: `'`/`"` open only at a scalar START (approximated by "not preceded by a word char"), so a
+        word-internal apostrophe in a YAML scalar (an English contraction `name: it's CI`) is literal, not a
+        delimiter, and a `#` after it is a real YAML comment (the round-3 P1 false-positive fix). In YAML a
+        ` #` also starts a comment in a plain scalar, so `run: X=a"b # c"` is `run: X=a"b` + a comment -
+        nothing executes, and stripping it is correct.
+    Blanks comments to spaces; preserves newlines + length (line numbers)."""
+    res: list[str] = []
+    q = None
+    prev = "\n"          # start-of-line == preceded-by-newline, so a leading `#` is a comment
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if q:
+            res.append(c)
+            if c == "\\" and q == '"' and i + 1 < n:      # backslash-escape only inside a double quote
+                res.append(text[i + 1]); prev = text[i + 1]; i += 2; continue
+            if c == q:
+                q = None
+            prev = c; i += 1; continue
+        # YAML guards the opener against a word-internal contraction; shell never does (word-adjacent
+        # quoting is real shell, so the quote MUST open or a real trailing invocation would be stripped).
+        if c in "'\"" and not (is_yaml and (prev.isalnum() or prev == "_")):
+            q = c; res.append(c); prev = c; i += 1; continue
+        if c == "#" and prev in " \t\n":
+            j = text.find("\n", i)
+            j = n if j == -1 else j
+            res.append(" " * (j - i)); prev = " "; i = j; continue
+        res.append(c); prev = c; i += 1
+    return "".join(res)
+
+
+def _logical_lines(text: str, fold_indent: bool = True) -> list[tuple[int, str]]:
+    """Reconstruct LOGICAL lines so a command SPLIT across physical lines is matched as ONE unit while
+    unrelated sibling lines / blanked comment lines are NEVER joined (the round-2 P1 fix). A following
+    physical line continues the current logical line iff it is a GENUINE continuation: the current line
+    ends in a shell `\\`-line-continuation, OR (only when `fold_indent`) the following non-blank line is
+    MORE-INDENTED than the logical line's base indent (a YAML block/folded/plain-scalar body). Per-
+    logical-line matching then never spans an arbitrary newline - two same-indent siblings (`echo cargo`
+    / `vet update`) or a blanked comment line stay separate, but a folded scalar / `\\`-continuation
+    folds into one line. `fold_indent` is TRUE only for YAML (indentation is structural); for SHELL it
+    is FALSE - shell is NOT indentation-sensitive, so a cosmetically-indented next line is a SEPARATE
+    command, not a continuation (only a trailing `\\` continues), else `echo cargo\\n  vet update` would
+    false-join into a phantom `cargo vet update` (round-3 fix). Returns [(1-based start line, joined)]."""
+    def indent(s: str) -> int:
+        return len(s) - len(s.lstrip(" \t"))
+    phys = text.split("\n")
+    out: list[tuple[int, str]] = []
+    i = 0
+    while i < len(phys):
+        base = indent(phys[i])
+        buf = [phys[i]]
+        start = i
+        i += 1
+        while i < len(phys):
+            cur = phys[i]
+            # a shell line-continuation is an ODD number of trailing backslashes (the last `\` escapes the
+            # newline); an EVEN count is escaped literal backslash(es) ending the command - not a continuation.
+            rstripped = buf[-1].rstrip()
+            ends_backslash = (len(rstripped) - len(rstripped.rstrip("\\"))) % 2 == 1
+            more_indented = fold_indent and cur.strip() != "" and indent(cur) > base
+            if ends_backslash or more_indented:
+                buf.append(cur)
+                i += 1
+            else:
+                break
+        out.append((start + 1, " ".join(seg.strip().rstrip("\\").strip() for seg in buf)))
+    return out
+
+
+# --- (d) #[cfg(test)] exemption -----------------------------------------------------------------
+# match ANY #[cfg(...)] attribute, capturing the predicate body; a separate test decides whether it
+# is a TEST gate (so `#[cfg(not(test))]` - the MOST production-only cfg - is NOT mistaken for one).
+_CFG_ATTR_RE = re.compile(r"#\[\s*cfg\s*\((?P<body>[^\]]*?)\)\s*\]")
+
+
+def _attr_is_test_gate(body: str) -> bool:
+    """True iff this cfg predicate compiles the item INTO test builds - a bare `test` token (incl.
+    `any(test, …)` / `all(test, …)`) but NOT a `test` that appears only inside a `not(...)` (e.g.
+    `not(test)` / `all(not(test), …)`, which is production-only). Operates on string-blanked text, so
+    a `feature = "test-utils"` string never counts (its bytes are already spaces)."""
+    no_not = re.sub(r"\bnot\s*\([^)]*\)", "", body)     # drop `not(...)` spans, then look for a bare `test`
+    return re.search(r"\btest\b", no_not) is not None
+
+
+_RUST_CHAR_RE = re.compile(r"'(?:\\.[^']*|[^'\\])'")
+
+
+def _lex_blank(text: str, *, rust: bool, blank_strings: bool, blank_comments: bool) -> str:
+    """A string-aware C-family lexer that blanks comments and/or string literals (preserving newlines
+    + length), used two ways: (1) blank_strings+blank_comments -> reliable brace counting for the
+    `#[cfg(test)]` scan (a `println!("{}")` format brace lives inside the blanked string); (2)
+    blank_comments only (KEEP strings) -> the (d) localhost match, so a `"http://localhost"` STRING
+    literal is still caught while a `// mentions localhost` COMMENT is not (the `//` inside the URL
+    string is correctly NOT treated as a comment - the string-awareness check-deferral also relies on).
+
+    `rust=True`: `'x'`/`'\\n'` is a char literal (string-class), but `'a` is a LIFETIME (left intact);
+    `rust=False` (TS): `'`/`"`/`` ` `` are all string delimiters. Conservative: nested block comments +
+    Rust `r"..."` raw strings are a recorded P1 refinement - the realistic confounders are handled."""
+    res: list[str] = []
+    i, n = 0, len(text)
+
+    def out(seg: str, blank: bool) -> None:
+        res.append(_blank_keep_newlines(seg) if blank else seg)
+
+    while i < n:
+        c = text[i]
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            j = text.find("\n", i)
+            j = n if j == -1 else j
+            out(text[i:j], blank_comments)
+            i = j
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            end = text.find("*/", i + 2)
+            if end == -1:
+                out(text[i:], blank_comments)
+                break
+            out(text[i:end + 2], blank_comments)
+            i = end + 2
+            continue
+        if c == '"' or c == "`" or (c == "'" and not rust):
+            q = c
+            j = i + 1
+            while j < n and text[j] != ("\n" if q != "`" else None):
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == q:
+                    j += 1
+                    break
+                j += 1
+            out(text[i:j], blank_strings)
+            i = j
+            continue
+        if c == "'" and rust:
+            m = _RUST_CHAR_RE.match(text, i)        # char literal `'x'` (blank) vs lifetime `'a` (keep)
+            if m:
+                out(m.group(0), blank_strings)
+                i = m.end()
+                continue
+            res.append(c)
+            i += 1
+            continue
+        res.append(c)
+        i += 1
+    return "".join(res)
+
+
+def _blank_rust(text: str) -> str:
+    return _lex_blank(text, rust=True, blank_strings=True, blank_comments=True)
+
+
+def _cfg_test_exempt_lines(rust_src: str) -> set[int]:
+    """1-based line numbers covered by a `#[cfg(test)]`-attributed block (attribute line through the
+    matching `}`), so a localhost literal inside a test module is exempt from invariant (d)."""
+    code = _blank_rust(rust_src)
+    # only the cfg attributes that are genuine TEST gates (reject `#[cfg(not(test))]`)
+    attr_starts = {m.start() for m in _CFG_ATTR_RE.finditer(code) if _attr_is_test_gate(m.group("body"))}
+    exempt: set[int] = set()
+    i, n, line = 0, len(code), 1
+    depth, pending, pending_line = 0, False, 0
+    while i < n:
+        c = code[i]
+        if c == "\n":
+            line += 1
+            i += 1
+            continue
+        if i in attr_starts and depth == 0 and not pending:
+            pending, pending_line = True, line
+        if c == "{":
+            if pending:
+                depth, pending = 1, False
+                exempt.add(pending_line)
+                exempt.add(line)
+            elif depth > 0:
+                depth += 1
+                exempt.add(line)
+        elif c == "}":
+            if depth > 0:
+                exempt.add(line)
+                depth -= 1
+        elif c == ";" and pending and depth == 0:
+            # the #[cfg(test)] attached to a NON-block item (`use`/`const`/`static`/`type`/`mod m;`);
+            # its scope ends at the `;` - clear pending so a later production `{` is NOT swallowed.
+            pending = False
+        else:
+            if depth > 0 or pending:
+                exempt.add(line)
+        i += 1
+    return exempt
+
+
+# --- the matcher ---------------------------------------------------------------------------------
+def _line_hits(text: str, rx: re.Pattern, skip: frozenset[int] = frozenset()) -> list[tuple[int, str]]:
+    out: list[tuple[int, str]] = []
+    for i, line in enumerate(text.splitlines()):
+        if (i + 1) in skip:
+            continue
+        if rx.search(line):
+            out.append((i + 1, line.strip()[:100]))
+    return out
+
+
+def _code_no_comments(relpath: str, text: str) -> str:
+    """Blank COMMENTS (keep string literals) for the code-scanning invariants (a)/(b)/(c)/(f), so a
+    pattern mentioned in a `//`/`/* */` comment (a PR-ref `// fixes #1234`, a `// std::process::
+    Command::new` note) does not false-positive, while a real literal in a string still flags. Rust
+    vs C-family (TS/CSS) by extension - both share `//` + `/* */`."""
+    return _lex_blank(text, rust=_norm(relpath).endswith(".rs"), blank_strings=False, blank_comments=True)
+
+
+# --- the invariants ------------------------------------------------------------------------------
+class Invariant:
+    def __init__(self, id: str, desc: str, live: bool, in_scope, scan) -> None:
+        self.id = id
+        self.desc = desc
+        self.live = live
+        self.in_scope = in_scope          # (relpath) -> bool
+        self.scan = scan                  # (relpath, text) -> [(lineno, snippet)]
+
+
+# (a) hardcoded colour
+def _a_in_scope(p: str) -> bool:
+    p = _norm(p)
+    if p == "design/tokens.css":
+        return False
+    if Path(p).suffix not in {".css", ".ts", ".tsx"}:
+        return False
+    if TEST_PAT.search(p):
+        return False
+    return any(_under(p, r) for r in ("src", "design"))
+
+
+# anchor/SVG fragment refs that coincidentally look like a hex colour (`href="#fff"`, `url(#abc)`) -
+# neutralise the leading `#` so HEX_COLOUR_RE does not flag a fragment id. Named/rgb()/hsl() colours
+# are deliberately out of scope (mirrors the no-hex-outside-primitives pattern); the residual
+# all-hex element-id collision (`href="#deadbeef"`) is a recorded P1-activation refinement.
+_FRAGMENT_REF_RE = re.compile(r"((?:xlink:)?href\s*=\s*[\"']?|url\(\s*[\"']?)(#[0-9a-fA-F]{3,8})")
+
+
+def _a_scan(relpath: str, text: str) -> list[tuple[int, str]]:
+    scannable = _code_no_comments(relpath, text)        # drop PR-refs / SHAs in comments
+    scannable = _FRAGMENT_REF_RE.sub(lambda m: m.group(1) + "_" * len(m.group(2)), scannable)
+    return _line_hits(scannable, HEX_COLOUR_RE)
+
+
+# (b) subprocess spawn outside crate::isolation
+def _b_in_scope(p: str) -> bool:
+    p = _norm(p)
+    if Path(p).suffix != ".rs" or TEST_PAT.search(p) or not _is_first_party_src(p):
+        return False
+    return re.search(r"(?:^|/)isolation(?:/|\.rs$)", p) is None
+
+
+# (c) unsafe impl Send/Sync outside the FFI module
+def _c_in_scope(p: str) -> bool:
+    p = _norm(p)
+    if Path(p).suffix != ".rs" or TEST_PAT.search(p) or not _is_first_party_src(p):
+        return False
+    return re.search(r"(?:^|/)ffi(?:/|\.rs$)", p) is None
+
+
+# (d) raw localhost outside #[cfg(test)] (with the LibreOffice carve-out)
+def _is_libreoffice_bundle(p: str) -> bool:
+    return any(_under(p, g) for g in LIBREOFFICE_BUNDLE)
+
+
+def _d_in_scope(p: str) -> bool:
+    p = _norm(p)
+    if _is_libreoffice_bundle(p):
+        return False
+    if Path(p).suffix not in {".rs", ".ts", ".tsx"} or TEST_PAT.search(p):
+        return False
+    return _is_first_party_src(p)
+
+
+def _d_scan(relpath: str, text: str) -> list[tuple[int, str]]:
+    rust = _norm(relpath).endswith(".rs")
+    skip = _cfg_test_exempt_lines(text) if rust else frozenset()
+    # blank COMMENTS only (keep string literals): a `"http://localhost"` literal is still caught,
+    # a `// mentions localhost` comment is not (the localhost-LITERAL invariant, not a prose ban).
+    scannable = _lex_blank(text, rust=rust, blank_strings=False, blank_comments=True)
+    return _line_hits(scannable, LOCALHOST_RE, frozenset(skip))
+
+
+# (e) cargo-vet trust-set mutation in CI/scripts (LIVE)
+def _e_in_scope(p: str) -> bool:
+    p = _norm(p)
+    if p.startswith(".github/workflows/") and (p.endswith(".yml") or p.endswith(".yaml")):
+        return True
+    return p.startswith("scripts/")
+
+
+def _e_scan(relpath: str, text: str) -> list[tuple[int, str]]:
+    p = _norm(relpath)
+    is_yaml = p.endswith((".yml", ".yaml"))
+    if is_yaml or p.endswith((".sh", ".bash")):
+        # COMMAND languages: keep scalars/strings (a `run:` step, a shell `eval "cargo vet update"`),
+        # drop only `#` comments (cross-line quote-aware; the quote-opener rule is language-specific -
+        # shell quotes word-adjacent, YAML only at a scalar start - so a real shell invocation is not hidden).
+        scannable = _strip_command_comments(text, is_yaml=is_yaml)
+    else:
+        # DATA/code languages (python/toml/extensionless): blank `#` comments AND every string, so the
+        # gate's own pattern def, this self-test's fixtures, and other gates' prose all vanish (a real
+        # python invocation is a subprocess LIST a contiguous regex can't match; the os.system-string
+        # residual is covered downstream by G18a's imports.lock-in-the-diff check once it lands in P1).
+        scannable = _blank_code(text)
+    # match PER LOGICAL LINE - a genuine shell `\`-continuation / YAML folded-or-indented scalar body is
+    # reconstructed into one line, but unrelated sibling lines + blanked comment lines stay separate, so
+    # a real split command is caught WITHOUT a cross-line false-join blocking legit pushes. Indent-folding
+    # is YAML-only (shell is not indentation-sensitive - only a trailing `\` continues).
+    out: list[tuple[int, str]] = []
+    for lineno, logical in _logical_lines(scannable, fold_indent=is_yaml):
+        if VET_MUTATOR_RE.search(logical):
+            out.append((lineno, logical.strip()[:100]))
+    return out
+
+
+# (f) fc.gen( outside the approved shrink-wrapper. Scope BROADENED past the contract's `*.test.ts`
+# [Build-Session-Entscheidung: P0.3.10] to every Vitest test file - `.test.ts(x)`/`.spec.ts(x)` +
+# a `__tests__/` dir - since `fc.gen` is just as wrong in a `.tsx` or an infix-less `__tests__/` test;
+# over-coverage is safe (the contract names a floor, not a ceiling).
+def _f_in_scope(p: str) -> bool:
+    p = _norm(p)
+    if p in FC_WRAPPER_PATHS:
+        return False
+    if re.search(r"\.(test|spec)\.tsx?$", p) is not None:
+        return True
+    return re.search(r"(?:^|/)__tests__/.*\.tsx?$", p) is not None
+
+
+INVARIANTS = [
+    Invariant("a", "hardcoded hex colour outside design/tokens.css", False, _a_in_scope, _a_scan),
+    Invariant("b", "process::Command::new outside crate::isolation", False, _b_in_scope,
+              lambda rel, t: _line_hits(_code_no_comments(rel, t), SPAWN_RE)),
+    Invariant("c", "unsafe impl Send/Sync outside the FFI module", False, _c_in_scope,
+              lambda rel, t: _line_hits(_code_no_comments(rel, t), UNSAFE_IMPL_RE)),
+    Invariant("d", "raw 127.0.0.1/localhost outside #[cfg(test)] (LibreOffice carve-out)", False,
+              _d_in_scope, _d_scan),
+    Invariant("e", "cargo vet update/sync/import in CI or scripts/", True, _e_in_scope, _e_scan),
+    Invariant("f", "fc.gen( outside the approved shrink-wrapper in TS test files", False, _f_in_scope,
+              lambda rel, t: _line_hits(_code_no_comments(rel, t), FC_GEN_RE)),
+]
+
+
+def _git_ls_files() -> list[str]:
+    r = subprocess.run(["git", "-C", str(ROOT), "ls-files"], capture_output=True, text=True)
+    return r.stdout.splitlines() if r.returncode == 0 else []
+
+
+def main() -> int:
+    files = _git_ls_files()
+    violations: list[tuple[str, str, int, str]] = []
+    for inv in INVARIANTS:
+        for f in files:
+            if not inv.in_scope(f):
+                continue
+            text = (ROOT / f).read_text(encoding="utf-8", errors="replace")
+            for ln, snip in inv.scan(f, text):
+                violations.append((inv.id, f, ln, snip))
+    if violations:
+        for vid, f, ln, snip in violations:
+            print(f"[G9] FAIL (invariant {vid}): {f}:{ln}: {snip}", file=sys.stderr)
+        print(f"[G9] {len(violations)} repo-invariant violation(s) - fail-closed", file=sys.stderr)
+        return 1
+    live = ",".join(i.id for i in INVARIANTS if i.live)
+    dormant = ",".join(i.id for i in INVARIANTS if not i.live)
+    print(f"[G9] {len(INVARIANTS)} repo-invariants OK (live now: {live}; "
+          f"target-absent until P1: {dormant})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
