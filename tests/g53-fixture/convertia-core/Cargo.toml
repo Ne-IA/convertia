@@ -1,0 +1,10 @@
+[package]
+name = "convertia-core"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# THE PLANTED VIOLATION: the MIT core must NEVER depend on an image-worker-only copyleft C lib (§3.6 /
+# T6). check-core-deps' core-closure walk must catch this and fail the build.
+libvips-sys = { path = "../libvips-sys" }

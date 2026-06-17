@@ -25,6 +25,7 @@ patterns = [
   "scripts/install-gate-tools",   # the pinned-tool fetch-and-verify installer
   "scripts/setup-dev",            # patches the generated git hooks (a poisoned one silently no-ops the plane)
   "scripts/gate-selftests/**",    # every gate self-test (the planted-positive canaries)
+  "tests/g53-fixture/**",         # the G53 negative fixture (a neutered planted-violation = false-green)
   "scripts/*.toml",               # gate-planes.toml + l-neg1-files.toml itself (cage cannot be silently narrowed)
 
   # --- the enforcement-plane config ---

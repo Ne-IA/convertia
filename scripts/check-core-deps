@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""check-core-deps - G53 core-crate forbidden-dependency gate (P0.3.7, T6).
+
+The build-time analogue of the §3.6 "LGPL must not link into the MIT core" assertion: the MIT core
+crate's Cargo dependency CLOSURE must NOT contain the image-worker-only C libs (the §3.6.1 set: libvips
+/ libheif / libde265 / librsvg / libimagequant + ImageMagick, via their -sys bindings). Those LGPL/
+copyleft (+ memory-unsafe-decoder) libs are linked ONLY by the
+separate `convertia-imgworker` binary (aggregation, not linkage into the core) — so a deny must be
+SCOPED to the core crate's subtree, never workspace-wide (libvips is legitimately present in the
+image-worker). cargo-deny `[bans]` cannot express a per-member scope, so this is the spec-sanctioned
+`cargo metadata` dep-tree walk: resolve the core crate, walk its transitive closure, fail if a
+forbidden lib appears. A careless refactor that pulls a copyleft C lib into the core fails HERE (T6).
+
+The closure walk is a PURE function (testable against synthetic `cargo metadata` JSON with no cargo
+binary). The LIVE `cargo metadata` invocation activates in P1 once the workspace exists; until then
+this is target-absent and skipped with a notice (fail-closed the moment a Cargo manifest lands without
+the walk being runnable). stdlib-only (json, subprocess).
+
+Exit: 0 = the core closure is clean (or target-absent); 1 = a forbidden lib is in the core closure / a
+       layout the walk cannot evaluate; 2 = cargo metadata unparseable.
+"""
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+CARGO_TOML_CANDIDATES = (ROOT / "Cargo.toml", ROOT / "src-tauri" / "Cargo.toml")
+
+# the MIT core crate whose closure is policed (the P1 workspace confirms the exact name; §0.7 tree)
+CORE_CRATE_NAME = "convertia-core"
+# distinctive name stems of the image-worker-only C libs that must never enter the MIT core closure -
+# the §3.6.1 must-isolate set: libvips + libheif/libde265 (HEVC, LGPL-3.0) + librsvg + libimagequant
+# (all copyleft/LGPL), plus ImageMagick (an image-worker delegate the §2.12 isolation boundary also
+# keeps out of the core). Stems cover the -sys / -rs / bare-wrapper binding name variants.
+# NOTE — name-substring matching is the P0 baseline; a renamed/vendored wrapper could evade. P1 (real
+# Cargo.lock) refines this to match on the resolved package's `links`/source metadata or an explicit
+# binding-crate allowlist. Recorded in the G53 row.
+FORBIDDEN_STEMS = (
+    "libvips", "libheif", "libde265", "de265", "librsvg", "rsvg",
+    "libimagequant", "imagequant", "imagemagick", "magick",
+)
+
+
+def _pkg_name(pkg_id: str, id_to_name: dict[str, str]) -> str:
+    return id_to_name.get(pkg_id, pkg_id)
+
+
+def core_closure(metadata: dict, core_name: str = CORE_CRATE_NAME) -> set[str] | None:
+    """(pure) The set of crate NAMES in the transitive resolved dependency closure of `core_name`,
+    or None if the core crate is not present in this metadata (a layout the walk cannot evaluate)."""
+    packages = metadata.get("packages") or []
+    id_to_name = {p["id"]: p["name"] for p in packages if "id" in p and "name" in p}
+    name_to_id = {p["name"]: p["id"] for p in packages if "id" in p and "name" in p}
+    resolve = metadata.get("resolve") or {}
+    nodes = {n["id"]: n for n in (resolve.get("nodes") or []) if "id" in n}
+    root_id = name_to_id.get(core_name)
+    if root_id is None:
+        return None
+    seen: set[str] = set()
+    stack = [root_id]
+    while stack:
+        cur = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        node = nodes.get(cur, {})
+        # cargo metadata: nodes[].deps[].pkg (current) or nodes[].dependencies[] (older / no-features)
+        for dep in node.get("deps") or []:
+            pid = dep.get("pkg")
+            if pid:
+                stack.append(pid)
+        for pid in node.get("dependencies") or []:
+            stack.append(pid)
+    return {_pkg_name(i, id_to_name) for i in seen}
+
+
+def forbidden_in_closure(closure: set[str], stems: tuple[str, ...] = FORBIDDEN_STEMS) -> list[str]:
+    """(pure) The closure crate names that match a forbidden image-worker lib stem (the core crate
+    itself is in the closure but never matches a stem)."""
+    return sorted(n for n in closure if any(s in n.lower() for s in stems))
+
+
+def _workspace_manifest() -> Path | None:
+    return next((p for p in CARGO_TOML_CANDIDATES if p.is_file()), None)
+
+
+def main() -> int:
+    manifest = _workspace_manifest()
+    if manifest is None:
+        print("[G53] no Cargo workspace yet (lands in P1) - skipping the core-closure walk "
+              "(the rule + the tests/g53-fixture negative fixture are authored); fail-closed the "
+              "moment the workspace exists")
+        return 0
+    if not shutil.which("cargo"):
+        print("[G53] FAIL: a Cargo manifest exists but `cargo` is not installed - the core-closure "
+              "walk cannot run (do not let G53 silently skip on a missing toolchain)", file=sys.stderr)
+        return 1
+    proc = subprocess.run(
+        ["cargo", "metadata", "--format-version", "1", "--locked", "--manifest-path", str(manifest)],
+        capture_output=True, text=True)
+    if proc.returncode != 0:
+        print(f"[G53] FAIL: `cargo metadata` failed:\n{proc.stderr}", file=sys.stderr)
+        return 1
+    try:
+        metadata = json.loads(proc.stdout)
+    except json.JSONDecodeError as e:
+        print(f"[G53] cargo metadata is not valid JSON: {e}", file=sys.stderr)
+        return 2
+    closure = core_closure(metadata)
+    if closure is None:
+        print(f"[G53] FAIL: core crate `{CORE_CRATE_NAME}` not found in the workspace metadata - the "
+              "gate cannot police a closure it cannot resolve (reconcile the core crate name in P1)",
+              file=sys.stderr)
+        return 1
+    hits = forbidden_in_closure(closure)
+    if hits:
+        print(f"[G53] FAIL: the MIT core `{CORE_CRATE_NAME}` dependency closure contains image-worker "
+              f"copyleft C lib(s) {hits} - §3.6 forbids linking them into the core (they belong to the "
+              "separate convertia-imgworker binary only)", file=sys.stderr)
+        return 1
+    print(f"[G53] core-crate dependency closure OK ({len(closure)} crates; none of "
+          f"{list(FORBIDDEN_STEMS)} present in `{CORE_CRATE_NAME}`)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

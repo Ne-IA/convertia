@@ -1,0 +1,10 @@
+# tests/g53-fixture/ — G53 NEGATIVE fixture (P0.3.7, T6). A minimal Cargo workspace in which the MIT
+# core crate (convertia-core) is DELIBERATELY given an image-worker-only copyleft C-lib dependency
+# (libvips-sys, via a local path crate so `cargo metadata` resolves offline). The core-closure walk in
+# scripts/check-core-deps MUST flag it — `g24-core-deps.py` drives this fixture once cargo is available
+# (P1) and asserts the gate exits 1; the pure walk is unit-tested against synthetic metadata in P0.
+# This fixture is NOT the real workspace (check-core-deps only inspects the repo-root / src-tauri
+# manifest), so it can never accidentally taint the real core closure.
+[workspace]
+members = ["convertia-core", "libvips-sys"]
+resolver = "2"

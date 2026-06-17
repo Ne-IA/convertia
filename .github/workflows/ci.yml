@@ -73,6 +73,8 @@ jobs:
         run: python3 scripts/plan-lint
       - name: 'G18/G18b: supply-chain policy growth-guard (cargo-deny/cargo-vet config; live checks land P1)'
         run: python3 scripts/check-supply-chain
+      - name: 'G53: core-crate forbidden-dependency walk (image-worker copyleft excluded from the MIT core; live P1)'
+        run: python3 scripts/check-core-deps
       # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
       #   G70 test-suppression (P0.3.14) |
       #   doc-graph G68 + struct-map G69 (P0.3.12/13) |

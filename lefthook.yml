@@ -44,6 +44,8 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
       run: python3 scripts/plan-lint --quiet
     supply-chain:    # G18 - cargo-deny/cargo-vet policy growth-guard (structural; live checks land P1)
       run: python3 scripts/check-supply-chain
+    core-deps:       # G53 - the MIT core's dep closure excludes the image-worker copyleft C libs (T6; live P1)
+      run: python3 scripts/check-core-deps
     # L1 gate slots (filled by their boxes): clippy diff + tsc diff (P0.4).
 
 commit-msg:        # L3 - fires at `git commit` (after pre-commit, before pre-push)
@@ -68,5 +70,7 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/plan-lint
     supply-chain:    # G18/G18b - full supply-chain policy growth-guard + live cargo-deny/vet (P1)
       run: python3 scripts/check-supply-chain
+    core-deps:       # G53 - core-crate forbidden-dependency walk (T6; live cargo metadata in P1)
+      run: python3 scripts/check-core-deps
     # L2 gate slots (filled by their boxes):
     # G70 full-tree (P0.3.14) / clippy --all-targets + tsc project (P0.4).
