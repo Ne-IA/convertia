@@ -53,6 +53,7 @@ manifest, license compliance).
   self-tests, `lefthook.yml`, the CI workflows (`.github/**`), `deny.toml`,
   `.gitleaks.toml` + allowlist/baseline, the pip gate-toolchain pin `requirements-ci.txt`
   (it reads CI secrets and emits findings, so a version bump is a trust-boundary event — r7),
+  the JS supply-chain pin `.npmrc` (G18c/G18d registry pin + install-lifecycle lockdown),
   the `cargo-vet` exemption set + `imports.lock`,
   `.gitattributes`/`.lfsconfig`, the G56b SSH allowed-signers file, the
   `rust-toolchain.toml` channel pin, the Tauri

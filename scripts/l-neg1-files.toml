@@ -34,6 +34,7 @@ patterns = [
 
   # --- supply-chain trust configs ---
   "deny.toml",                    # cargo-deny bans/licenses/advisories
+  ".npmrc",                       # JS registry pin + install-lifecycle lockdown (G18c/G18d)
   ".gitleaks.toml",               # gitleaks rules + allowlist (G2)
   ".gitleaks-baseline.json",      # the gitleaks one-time accepted-findings baseline (G2)
   "supply-chain/**",              # cargo-vet exemption set (config.toml) + the committed imports.lock

@@ -1,0 +1,423 @@
+#!/usr/bin/env python3
+"""check-js-supply-chain - G18c / G18d (+ G36b slot) JS/WebView supply-chain gate (P0.3.8).
+
+The WebView is the ENTIRE T2 attack surface, so its supply chain matches the Rust-side discipline. This
+freezes the JS supply-chain posture (stdlib only):
+
+  * G18c REGISTRY PIN - `.npmrc` pins the default registry to the single allowed origin AND declares no
+    scoped/per-registry override to any other origin (`@scope:registry=` / `//host/:registry`); once
+    `pnpm-lock.yaml` exists (P1) EVERY resolution is checked - a registry tarball must be from the
+    allowed host, and any non-registry resolution SCHEME (git+/git:/ssh:/file:/protocol-relative //) is
+    rejected outright (a git/ssh dep is clone-and-BUILD = code-exec from an arbitrary host);
+  * G18d LIFECYCLE LOCKDOWN - `.npmrc` keeps the install posture locked (no `enable-pre-post-scripts`,
+    no `unsafe-perm`, `frozen-lockfile` on); once a pnpm manifest exists (P1) the build-script allowlist
+    (`onlyBuiltDependencies` / pnpm-11 `allowBuilds`) stays <= the frozen count, FAIL-CLOSED on a
+    present-but-unparseable allowlist, and a committed manifest WITHOUT a committed lockfile FAILS
+    (mirrors the Rust check-supply-chain workspace-state - never a silent skip on a real workspace);
+  * G36b (release-tier slot) - the frontend GPL/AGPL hard-fail runs over the cdxgen SBOM (G35), which
+    lands later - target-absent here.
+
+Scope note: the lockfile resolution scan + the onlyBuiltDependencies count activate in P1 (the lockfile/
+manifest are target-absent now); the `.npmrc` posture is enforced now. The covered surface is the
+committed-config install/source-substitution surface of the PINNED pnpm (10.13.1, §0.8) - a pnpm
+major-version bump is itself a pinned-version change (security-concept §0 pin-and-verify) that triggers
+a re-audit of this gate against the new pnpm config surface. `.npmrc` is L(-1)
+(scripts/l-neg1-files.toml, G71) - relaxing the pin / lockdown is an owner-ack + Dual-Review change.
+
+Exit: 0 = posture OK (+ live checks pass or target-absent); 1 = a relaxation / a foreign-or-non-registry
+       resolution / a scoped-registry override / a grown-or-unparseable allowlist / a lock-missing
+       manifest; 2 = a config file is missing or unparseable.
+"""
+from __future__ import annotations
+
+import json
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+NPMRC = ROOT / ".npmrc"
+PNPM_LOCK = ROOT / "pnpm-lock.yaml"
+PNPM_WORKSPACE = ROOT / "pnpm-workspace.yaml"
+PACKAGE_JSON = ROOT / "package.json"
+# pnpm's `pnpmfile` setting DEFAULTS to ['.pnpmfile.mjs']; pnpm reads .pnpmfile.mjs (ESM) OR
+# .pnpmfile.cjs (CommonJS) - forbid all four names (the .mjs default is the more-preferred one)
+PNPMFILE_CANDIDATES = (ROOT / ".pnpmfile.mjs", ROOT / ".pnpmfile.cjs",
+                       ROOT / "pnpmfile.mjs", ROOT / "pnpmfile.cjs")
+PATCHES_DIR = ROOT / "patches"
+_SKIP_DIRS = {"node_modules", ".git", ".gate-tools", "target", "dist"}
+# override/resolution values that REDIRECT a dependency's source location (vs a plain version pin or the
+# accepted npm:-alias name-trust residual / a legit workspace: monorepo link)
+_REDIRECT_SPEC = re.compile(r"(?i)^\s*(file:|link:|portal:|git\+|git:|ssh:|https?://)")
+_INSTALL_HOOKS = ("preinstall", "install", "postinstall", "prepare", "preprepare", "postprepare",
+                  "prepublish", "dependencies")
+
+ALLOWED_REGISTRY = "https://registry.npmjs.org/"
+ALLOWED_HOST = "registry.npmjs.org"
+EXPECTED_ONLYBUILT_COUNT = 0          # the build-script allowlist; a bump is reviewed HERE with a box-id
+_UNCOUNTABLE = 10 ** 9                 # fail-closed sentinel: an allowlist that is present but unparseable
+
+# resolution tokens in a pnpm-lock.yaml: any scheme://... (incl. git+ssh / git+https / ssh / git /
+# file) OR a protocol-relative //host.tld/... (the leading-// guarded to a dotted host so a base64
+# integrity hash that happens to contain `//` is not matched)
+_RESOLUTION_RE = re.compile(
+    r"(?:(?:git\+)?(?:https?|ssh|git|file):)//[^\s'\"}\]]+"
+    r"|(?<![\w./:])//[a-z0-9-]+(?:\.[a-z0-9-]+)+/[^\s'\"}\]]*",
+    re.IGNORECASE,
+)
+
+
+def fail(msg: str) -> None:
+    print(f"[G18c/d] FAIL: {msg}", file=sys.stderr)
+
+
+def parse_npmrc(text: str) -> dict[str, str]:
+    """(pure) Parse an .npmrc into a key->value dict (ignores full-line ; / # comments + blanks; npm
+    .npmrc has NO inline comments, so a value keeps everything after `=`)."""
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith((";", "#")):
+            continue
+        if "=" in line:
+            k, _, v = line.partition("=")
+            out[k.strip().lower()] = v.strip()
+    return out
+
+
+def evaluate_npmrc(cfg: dict[str, str]) -> list[str]:
+    """(pure) Registry-pin + lifecycle-lockdown problems in the parsed .npmrc."""
+    problems: list[str] = []
+    if cfg.get("registry") != ALLOWED_REGISTRY:
+        problems.append(f"`registry` is {cfg.get('registry')!r}, not the pinned {ALLOWED_REGISTRY!r} - "
+                        "an unpinned/foreign registry is the dependency-confusion surface (G18c)")
+    # a scoped (@scope:registry) or per-host (//host/:registry) override to any other origin is the
+    # source-substitution vector even when the default registry stays pinned
+    for key, val in cfg.items():
+        if key != "registry" and key.endswith(":registry"):
+            if val.rstrip("/") != ALLOWED_REGISTRY.rstrip("/"):
+                problems.append(f"scoped/per-registry override `{key}={val}` points off the allowed "
+                                f"origin - a scoped dep would resolve from it (source-substitution, G18c)")
+    if cfg.get("enable-pre-post-scripts", "false").lower() == "true":
+        problems.append("`enable-pre-post-scripts=true` - npm pre/post script hooks must stay OFF (a dep "
+                        "could run arbitrary code on install) (G18d)")
+    if cfg.get("unsafe-perm", "false").lower() == "true":
+        problems.append("`unsafe-perm=true` - must stay off (G18d)")
+    if cfg.get("frozen-lockfile", "true").lower() != "true":
+        problems.append("`frozen-lockfile` is not true - CI must install against the committed lockfile, "
+                        "never silently resolve a different graph (G18a JS analogue)")
+    return problems
+
+
+def lockfile_url_problems(lock_text: str) -> list[str]:
+    """(pure) Every resolution in a pnpm-lock.yaml must be a registry tarball from the allowed host; any
+    foreign host or non-registry scheme (git/ssh/file/protocol-relative = clone-and-build / off-registry)
+    is rejected."""
+    problems: list[str] = []
+    for token in _RESOLUTION_RE.findall(lock_text):
+        low = token.lower()
+        if low.startswith(("https://", "http://")):
+            host = token.split("://", 1)[1].split("/", 1)[0].lower()
+            if host != ALLOWED_HOST:
+                problems.append(f"pnpm-lock.yaml resolves from a non-allowed host: {token} (only "
+                                f"{ALLOWED_HOST} is permitted - G18c)")
+        else:
+            problems.append(f"pnpm-lock.yaml has a non-registry resolution scheme: {token} (git/ssh/file/"
+                            "protocol-relative resolutions are clone-and-build / off-registry - G18c)")
+    return problems
+
+
+def _list_count_under(text: str, key: str) -> int | None:
+    """(pure) Count a YAML list under `key:` - inline `[a, b]` / empty `[]` / a block of `- item` lines
+    (comment + blank lines skipped); None if `key` is absent."""
+    inline = re.search(rf"(?m)^{re.escape(key)}:\s*\[([^\]]*)\]\s*$", text)
+    if inline is not None:
+        return len([x for x in inline.group(1).split(",") if x.strip()])
+    m = re.search(rf"(?m)^{re.escape(key)}:\s*$", text)
+    if not m:
+        return None
+    count = 0
+    for line in text[m.end():].splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue                                  # skip blanks + comment lines inside the block
+        if re.match(r"^\s*-\s+\S", line):
+            count += 1
+        elif not line.startswith((" ", "\t")):
+            break                                     # a new top-level key ends the list
+    return count
+
+
+def workspace_onlybuilt_count(text: str) -> int | None:
+    """(pure) The onlyBuiltDependencies list size in a pnpm-workspace.yaml; None if the key is absent."""
+    return _list_count_under(text, "onlyBuiltDependencies")
+
+
+def workspace_registries_problems(text: str) -> list[str]:
+    """(pure) pnpm-workspace.yaml supports a first-class `registries:` map (a `default:` registry + per-
+    scope `\"@scope\":` registries) that re-points resolution with NO .npmrc involvement - the YAML
+    analogue of the .npmrc registry pin / scoped-registry override (G18c). Every value under it must be
+    the allowed origin; fail-closed on a present-but-unparseable block."""
+    m = re.search(r"(?m)^registries:\s*$", text)
+    if not m:
+        if re.search(r"(?m)^registries:\s*\S", text):     # inline/anchor form we will not parse
+            return ["pnpm-workspace.yaml `registries:` is in an inline/anchor form this guard cannot "
+                    "parse - fail-closed; write it as a plain block of `key: url` lines (G18c)"]
+        return []
+    problems: list[str] = []
+    saw_entry = False
+    for line in text[m.end():].splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if not line.startswith((" ", "\t")):
+            break                                          # a new top-level key ends the block
+        mm = re.match(r"\s+(\S+)\s*:\s*(\S+)\s*$", line)
+        if not mm:
+            problems.append(f"pnpm-workspace.yaml `registries:` has an unparseable entry {s!r} - "
+                            "fail-closed (G18c)")
+            continue
+        saw_entry = True
+        val = mm.group(2).strip().strip("\"'")
+        if val.rstrip("/") != ALLOWED_REGISTRY.rstrip("/"):
+            problems.append(f"pnpm-workspace.yaml registries.{mm.group(1).strip(chr(34) + chr(39))} = "
+                            f"{val} points off the allowed origin {ALLOWED_REGISTRY} (source-"
+                            "substitution, G18c)")
+    if not saw_entry and not problems:
+        problems.append("pnpm-workspace.yaml `registries:` block is present but has no parseable entry - "
+                        "fail-closed (G18c)")
+    return problems
+
+
+_BUILD_ALLOWLIST_KEYS = ("onlyBuiltDependencies", "allowBuilds")   # pnpm 10 / pnpm 11
+
+
+def onlybuilt_count() -> int | None:
+    """The pnpm build-script allowlist size, None if no pnpm manifest / key exists (target-absent), or
+    the fail-closed sentinel _UNCOUNTABLE if a manifest declares the key in a form we cannot count."""
+    if PACKAGE_JSON.is_file():
+        try:
+            pkg = json.loads(PACKAGE_JSON.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return _UNCOUNTABLE
+        pnpm = pkg.get("pnpm") if isinstance(pkg.get("pnpm"), dict) else {}
+        for key in _BUILD_ALLOWLIST_KEYS:
+            v = pnpm.get(key)
+            if isinstance(v, list):
+                return len(v)
+            if v is not None:
+                return _UNCOUNTABLE                   # present but not a list -> fail-closed
+    if PNPM_WORKSPACE.is_file():
+        text = PNPM_WORKSPACE.read_text(encoding="utf-8")
+        for key in _BUILD_ALLOWLIST_KEYS:
+            n = _list_count_under(text, key)
+            if n is not None:
+                return n
+        if re.search(r"(?m)^\s*(onlyBuiltDependencies|allowBuilds):", text):
+            return _UNCOUNTABLE                        # the key is present but unparseable -> fail-closed
+    return None
+
+
+def nonroot_npmrc(root: Path) -> list[Path]:
+    """Every committed `.npmrc` OUTSIDE the repo root (pnpm reads per-directory .npmrc, so a subdir one
+    could re-point the registry / unlock scripts unseen by the root-only scan). node_modules/.git/build
+    dirs excluded."""
+    root_npmrc = root / ".npmrc"
+    out = []
+    for p in root.rglob(".npmrc"):
+        if p == root_npmrc:
+            continue
+        if any(part in _SKIP_DIRS for part in p.relative_to(root).parts):
+            continue
+        out.append(p)
+    return out
+
+
+def _redirect_specs_in_map(label: str, d: object) -> list[str]:
+    """(pure) Flag every {name: spec} entry whose spec is a SOURCE redirect (_REDIRECT_SPEC) - used for
+    package.json dependency/override/resolution maps. A plain version / npm: / workspace: stays clean."""
+    out: list[str] = []
+    if isinstance(d, dict):
+        for k, v in d.items():
+            if isinstance(v, str) and _REDIRECT_SPEC.match(v):
+                out.append(f"`{label}.{k}` = {v!r} is a SOURCE-redirect spec (file/link/portal/git/url) - "
+                           "a local/off-registry dependency the resolution-URL guard cannot see; forbidden")
+    return out
+
+
+def _yaml_redirect_block(text: str, key: str) -> list[str]:
+    """(pure) Flag source-redirecting values under a top-level `key:` map (overrides/resolutions) in a
+    pnpm-workspace.yaml - a `file:`/`link:`/`portal:`/`git`/url target replaces a dependency's SOURCE
+    (the URL guard cannot see a local-path redirect). pnpm 11 reads overrides ONLY from this yaml (it
+    dropped the package.json `pnpm` field), so this is the PRIMARY override location. Fail-closed on an
+    inline/anchor form. A plain version pin (^1.2.3) and an npm:-alias (the reserved-G18e name residual)
+    stay clean."""
+    problems: list[str] = []
+    # [^\S\n] = horizontal whitespace only (NOT a newline) so a same-line check cannot cross into a
+    # following block body
+    inline = re.search(rf"(?m)^{key}:[^\S\n]*\{{(.*)\}}[^\S\n]*$", text)
+    if inline is not None:
+        for part in inline.group(1).split(","):
+            if ":" in part:
+                v = part.split(":", 1)[1].strip().strip("\"'")
+                if _REDIRECT_SPEC.match(v):
+                    problems.append(f"pnpm-workspace.yaml `{key}` redirects a dependency SOURCE ({v}) - "
+                                    "a local/off-registry override the URL guard cannot see; forbidden")
+        return problems
+    m = re.search(rf"(?m)^{key}:[^\S\n]*$", text)        # block header (only whitespace after the colon)
+    if not m:
+        if re.search(rf"(?m)^{key}:[^\S\n]*\S", text):   # same-line scalar/anchor that is not a {map}
+            return [f"pnpm-workspace.yaml `{key}:` is in an inline/anchor form this guard cannot parse - "
+                    "fail-closed; write it as a plain block of `name: spec` lines (G18d)"]
+        return problems
+    for line in text[m.end():].splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if not line.startswith((" ", "\t")):
+            break
+        mm = re.match(r"\s+(\S+)\s*:\s*(\S.*)$", line)
+        if mm:
+            v = mm.group(2).strip().strip("\"'")
+            if _REDIRECT_SPEC.match(v):
+                problems.append(f"pnpm-workspace.yaml `{key}.{mm.group(1).strip(chr(34) + chr(39))}` "
+                                f"redirects a dependency SOURCE ({v}) - a local/off-registry override the "
+                                "URL guard cannot see; forbidden")
+    return problems
+
+
+def install_mutation_problems(pkg: dict, ws_text: str, patches_present: bool) -> list[str]:
+    """(pure) Committed config that MUTATES a dependency's source or runs install-time code while its
+    resolution URL stays the legitimate registry - the class the .pnpmfile.cjs forbid opened: pnpm
+    `patchedDependencies` + a `patches/` dir; a SOURCE-redirect spec (file/link/portal/git/url) in any
+    dependency-spec location - package.json dependencies/devDependencies/optionalDependencies/
+    peerDependencies/overrides/resolutions AND pnpm-workspace.yaml overrides/resolutions/catalog/
+    catalogs; and root install-lifecycle scripts. Forbidden outright in a zero-egress product. (A
+    subdir package.json in a future multi-package workspace is a P1-activation refinement - only the
+    root package.json + workspace yaml exist in v1's single front-end package.)"""
+    problems: list[str] = []
+    pnpm = pkg.get("pnpm") if isinstance(pkg.get("pnpm"), dict) else {}
+    if pnpm.get("patchedDependencies") or re.search(r"(?m)^\s*patchedDependencies:\s*\S", ws_text) \
+            or re.search(r"(?m)^\s*patchedDependencies:\s*$", ws_text) or patches_present:
+        problems.append("a committed pnpm `patchedDependencies` / `patches/` exists - an install-time "
+                        "patch mutates a third-party dependency's source (the resolution URL stays "
+                        "npmjs.org, so the URL guard is blind to it); forbidden in a zero-egress product")
+    # a source-redirect spec (file:/link:/portal:/git+/ssh/url) is the same SOURCE-mutation class whether
+    # it sits in a direct dependency field, an override, or a version catalog - scan EVERY committed
+    # location that carries a dependency spec, in package.json AND pnpm-workspace.yaml (pnpm 11 reads
+    # overrides/catalogs only from the yaml). A plain version pin (^1.2.3) / npm:-alias (G18e name
+    # residual) / workspace: (legit monorepo link) stay clean.
+    # configDependencies (pnpm 10): a registry-sourced config PACKAGE installed before graph resolution,
+    # whose documented role is to supply .pnpmfile.cjs hooks + patch files + the build allowlist - it
+    # defeats the .pnpmfile.cjs + patchedDependencies + allowlist forbids at once, behind a clean
+    # registry tarball the URL guard cannot flag. Forbidden outright.
+    if pnpm.get("configDependencies") or re.search(r"(?m)^configDependencies:", ws_text):
+        problems.append("a committed pnpm `configDependencies` exists - a registry-sourced config package "
+                        "injects install-time hooks / patches / the build-script allowlist BEFORE graph "
+                        "resolution (defeating the .pnpmfile.cjs + patchedDependencies + allowlist forbids "
+                        "behind a clean registry tarball); forbidden in a zero-egress product")
+    # onlyBuiltDependenciesFile: a FILE pointer for the build allowlist sidesteps the inline count guard
+    if pnpm.get("onlyBuiltDependenciesFile") or re.search(r"(?m)^onlyBuiltDependenciesFile:", ws_text):
+        problems.append("`onlyBuiltDependenciesFile` points the build-script allowlist at a separate file, "
+                        "sidestepping the inline count - keep the allowlist inline (G18d)")
+    # dangerouslyAllowAllBuilds (pnpm 10.9.0+): runs EVERY dependency's build/lifecycle script with no
+    # allowlist - one key re-opens the whole lifecycle-code-exec surface G18d locks down. pnpm copies the
+    # raw js-yaml value into config and gates on a BARE truthiness check (`if (opts.dangerouslyAllowAll
+    # Builds)`), so ANY JS-truthy scalar (true/True/yes/on/y/enabled/1/"true"/!!bool true) enables it.
+    # Detect FAIL-CLOSED: flag the key whenever it is present with any value that is NOT a falsy literal.
+    falsy = r"(?:false|no|off|0|null|~)\s*(?:#.*)?$"
+    if pnpm.get("dangerouslyAllowAllBuilds") or re.search(rf"(?mi)^dangerouslyAllowAllBuilds:\s*(?!{falsy})\S", ws_text):
+        problems.append("`dangerouslyAllowAllBuilds` is set - it auto-runs EVERY dependency's build/"
+                        "lifecycle script with NO allowlist (bypasses the onlyBuiltDependencies guard "
+                        "entirely); forbidden (G18d)")
+    # packageExtensions: injects dependency sub-maps into a third-party package's manifest at resolve
+    # time - scan the injected specs for the same source-redirect class
+    pkg_ext = pnpm.get("packageExtensions")
+    if isinstance(pkg_ext, dict):
+        for ext_pkg, ext in pkg_ext.items():
+            if isinstance(ext, dict):
+                for field in ("dependencies", "peerDependencies", "optionalDependencies"):
+                    problems += _redirect_specs_in_map(f"packageExtensions.{ext_pkg}.{field}", ext.get(field))
+    for label in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
+        problems += _redirect_specs_in_map(label, pkg.get(label))
+    problems += _redirect_specs_in_map("pnpm.overrides", pnpm.get("overrides"))
+    problems += _redirect_specs_in_map("resolutions", pkg.get("resolutions"))
+    for key in ("overrides", "resolutions", "catalog", "catalogs"):
+        problems += _yaml_redirect_block(ws_text, key)
+    scripts = pkg.get("scripts") if isinstance(pkg.get("scripts"), dict) else {}
+    for hook in _INSTALL_HOOKS:
+        if hook in scripts:
+            problems.append(f"root package.json `{hook}` script runs install-time code in the secret-"
+                            "bearing CI job - a zero-egress product ships no install-time scripts")
+    return problems
+
+
+def main() -> int:
+    if not NPMRC.is_file():
+        print(f"[G18c/d] {NPMRC} missing", file=sys.stderr)
+        return 2
+    problems = evaluate_npmrc(parse_npmrc(NPMRC.read_text(encoding="utf-8")))
+    for sub in nonroot_npmrc(ROOT):
+        problems.append(f"a committed non-root .npmrc exists ({sub.relative_to(ROOT).as_posix()}) - pnpm "
+                        "reads per-directory .npmrc, so only a single repo-root .npmrc may carry the pin "
+                        "(G18c); move its settings to the root or remove it")
+
+    # a committed .pnpmfile.cjs is arbitrary install-time code (a custom fetcher/resolver can re-source
+    # any dependency while the recorded lockfile URL still reads npmjs.org, defeating the URL guard) -
+    # it has no place in a zero-egress offline product; forbid it outright (G18c/G18d)
+    for pf in PNPMFILE_CANDIDATES:
+        if pf.is_file():
+            problems.append(f"a committed {pf.name} exists - pnpm install-time custom fetcher/resolver "
+                            "code can silently re-source dependencies (defeats the resolution-URL guard) "
+                            "and runs in the secret-bearing CI job; forbidden in a zero-egress product")
+    # the pnpm-workspace.yaml `registries:` map is the YAML analogue of the .npmrc registry pin
+    ws_text = PNPM_WORKSPACE.read_text(encoding="utf-8") if PNPM_WORKSPACE.is_file() else ""
+    if ws_text:
+        problems += workspace_registries_problems(ws_text)
+
+    # committed install-time source-mutation / code (patchedDependencies+patches, source-redirect
+    # overrides, root install-lifecycle scripts) - the resolution-URL guard is blind to these
+    pkg: dict = {}
+    if PACKAGE_JSON.is_file():
+        try:
+            loaded = json.loads(PACKAGE_JSON.read_text(encoding="utf-8"))
+            pkg = loaded if isinstance(loaded, dict) else {}
+        except json.JSONDecodeError:
+            problems.append("package.json is not valid JSON - fail-closed")
+    problems += install_mutation_problems(pkg, ws_text, any(PATCHES_DIR.glob("*")) if PATCHES_DIR.is_dir() else False)
+
+    manifest_present = PACKAGE_JSON.is_file() or PNPM_WORKSPACE.is_file()
+    if PNPM_LOCK.is_file():
+        problems += lockfile_url_problems(PNPM_LOCK.read_text(encoding="utf-8"))
+    elif manifest_present:
+        problems.append("a pnpm manifest exists but pnpm-lock.yaml is missing - the committed lockfile "
+                        "must exist for the resolution-URL guard to run (G18a/G18c); never a silent skip")
+    else:
+        print("[G18c] no pnpm-lock.yaml yet (lands in P1) - skipping the resolution-URL guard "
+              "(the .npmrc registry pin is enforced now); fail-closed the moment the lockfile exists")
+
+    n = onlybuilt_count()
+    if n is None:
+        print("[G18d] no pnpm manifest yet (lands in P1) - skipping the onlyBuiltDependencies "
+              "allowlist count (pnpm 10 blocks lifecycle scripts by default); fail-closed in P1")
+    elif n >= _UNCOUNTABLE:
+        problems.append("the pnpm build-script allowlist (onlyBuiltDependencies/allowBuilds) is present "
+                        "but not in a form this guard can count - fail-closed (rewrite it as a plain "
+                        "list, or extend the parser here with a Dual-Review note) (G18d)")
+    elif n > EXPECTED_ONLYBUILT_COUNT:
+        problems.append(f"onlyBuiltDependencies allowlist holds {n} entr(ies) > the frozen "
+                        f"{EXPECTED_ONLYBUILT_COUNT} - a build-script allowlist growth must raise "
+                        "EXPECTED_ONLYBUILT_COUNT here with a box-id + Dual-Review note (G18d)")
+
+    if problems:
+        for p in problems:
+            fail(p)
+        return 1
+    print(f"[G18c/d] JS supply-chain posture OK (registry pinned to {ALLOWED_HOST}, no scoped override; "
+          "pre/post-scripts + unsafe-perm off; frozen-lockfile on; lockfile/allowlist checks "
+          "target-absent until P1)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
