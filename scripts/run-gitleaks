@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""run-gitleaks - the G2 secrets-scan driver across the planes (P0.3.1).
+
+Wraps the pinned, vendored, checksum-verified gitleaks BINARY (.gate-tools/bin/gitleaks) so the
+range-base fallback chain is ONE testable place, not duplicated/forgotten across the hooks + CI:
+
+  --staged   L1 (pre-commit):  `gitleaks git --staged`  — the diff being committed.
+  --range    L2 (pre-push):    `gitleaks git <base>..HEAD` — all unpushed commits, the LAST local
+             catch before a secret goes public. Base = the first of `@{u}` -> `origin/<branch>` ->
+             `origin/main` -> `origin/HEAD` that resolves; if NONE resolve (first push to an empty
+             remote) it FULL-scans every commit (no range), the safe direction. NOT skipped by the
+             docs-only fastpath — a secret can live in a `.md`.
+  --dir      L4 (CI clean-checkout): `gitleaks dir .` — the whole working tree.
+  --history  L5 (nightly schedule):  `gitleaks git` over the ENTIRE commit history (the CI job must
+             check out with fetch-depth: 0; a default shallow checkout scans only the tip).
+
+All modes use the committed .gitleaks.toml + (if present) the .gitleaks-baseline.json, run --redact
+(never print a secret), and pass gitleaks' exit code straight through (1 = leak found = the gate
+fails). The pure resolve_base() is driven by the G24 first-push self-test. stdlib-only.
+L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+
+Usage: run-gitleaks {--staged | --range | --dir | --history}
+Exit:  0 = clean; 1 = leak found / gitleaks error; 2 = bad invocation / gitleaks binary missing.
+"""
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG = ROOT / ".gitleaks.toml"
+BASELINE = ROOT / ".gitleaks-baseline.json"
+
+
+def out(msg: str) -> None:
+    print(f"[G2] {msg}")
+
+
+def fail(msg: str) -> None:
+    print(f"[G2] FAIL: {msg}", file=sys.stderr)
+
+
+def gitleaks_bin() -> str | None:
+    for cand in (ROOT / ".gate-tools" / "bin" / "gitleaks.exe", ROOT / ".gate-tools" / "bin" / "gitleaks"):
+        if cand.is_file():
+            return str(cand)
+    import shutil
+    return shutil.which("gitleaks")
+
+
+def git(*args: str) -> tuple[int, str]:
+    p = subprocess.run(["git", *args], capture_output=True, text=True)
+    return p.returncode, p.stdout.strip()
+
+
+def _resolves(ref: str) -> bool:
+    return git("rev-parse", "--verify", "--quiet", ref)[0] == 0
+
+
+def resolve_base() -> str | None:
+    """The L2 range base per the fallback chain; None => first push (full-scan)."""
+    cands = ["@{u}"]
+    rc, b = git("rev-parse", "--abbrev-ref", "HEAD")
+    if rc == 0 and b and b != "HEAD":
+        cands.append(f"origin/{b}")
+    cands += ["origin/main", "origin/HEAD"]
+    return next((c for c in cands if _resolves(c)), None)
+
+
+def common_args() -> list[str]:
+    args = ["--config", str(CONFIG), "--redact", "--no-banner", "--exit-code", "1"]
+    if BASELINE.is_file():
+        args += ["--baseline-path", str(BASELINE)]
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G2 gitleaks secrets-scan driver (P0.3.1)")
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--staged", action="store_true", help="L1 pre-commit: scan the staged diff")
+    mode.add_argument("--range", action="store_true", help="L2 pre-push: scan the unpushed range")
+    mode.add_argument("--dir", action="store_true", help="L4 CI: scan the whole working tree")
+    mode.add_argument("--history", action="store_true", help="L5 nightly: scan the entire commit history")
+    args = ap.parse_args(argv)
+
+    gl = gitleaks_bin()
+    if gl is None:
+        fail("pinned gitleaks binary not found - run scripts/install-gate-tools")
+        return 2
+    if not CONFIG.is_file():
+        fail(f"{CONFIG} missing")
+        return 2
+
+    if args.dir:
+        cmd = [gl, "dir", str(ROOT), *common_args()]
+    elif args.history:
+        # a SHALLOW checkout would silently scan only the tip - assert the full history is present
+        # at RUNTIME (stronger than a static fetch-depth: 0 YAML lint: it catches the real state).
+        rc, shallow = git("rev-parse", "--is-shallow-repository")
+        if rc == 0 and shallow == "true":
+            fail("history scan on a SHALLOW checkout — only the tip would be scanned; the CI job MUST "
+                 "check out with fetch-depth: 0")
+            return 2
+        out("scanning the ENTIRE commit history")
+        cmd = [gl, "git", *common_args()]
+    elif args.staged:
+        cmd = [gl, "git", "--staged", *common_args()]
+    else:  # --range
+        base = resolve_base()
+        if base is None:
+            out("no range base resolved (first push / empty remote) - FULL-scanning every commit")
+            cmd = [gl, "git", *common_args()]
+        else:
+            out(f"scanning the unpushed range {base}..HEAD")
+            cmd = [gl, "git", f"{base}..HEAD", *common_args()]
+
+    rc = subprocess.run(cmd).returncode
+    if rc == 0:
+        out("no leaks found")
+    elif rc == 1:
+        fail("a secret/credential was detected - the push/commit is blocked (rotate the secret; it is NOT enough to amend)")
+    else:
+        fail(f"gitleaks errored (rc={rc})")
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

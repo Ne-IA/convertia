@@ -20,7 +20,7 @@ patterns = [
   # --- gate scripts + their self-tests (the enforcement logic itself) ---
   "scripts/check-*",              # check-branch-protection / check-ci-supply-chain / check-gate-plane(s) / ...
   "scripts/fastpath-*",           # the L2 fastpath skip detectors (G10)
-  "scripts/run-gate-selftests",   # the L4 continuous-armed-canary runner
+  "scripts/run-*",                # gate drivers: run-gate-selftests (canary), run-gitleaks (G2)
   "scripts/install-gate-tools",   # the pinned-tool fetch-and-verify installer
   "scripts/setup-dev",            # patches the generated git hooks (a poisoned one silently no-ops the plane)
   "scripts/gate-selftests/**",    # every gate self-test (the planted-positive canaries)
@@ -32,7 +32,8 @@ patterns = [
 
   # --- supply-chain trust configs ---
   "deny.toml",                    # cargo-deny bans/licenses/advisories
-  ".gitleaks.toml",               # gitleaks rules + allowlist/baseline
+  ".gitleaks.toml",               # gitleaks rules + allowlist (G2)
+  ".gitleaks-baseline.json",      # the gitleaks one-time accepted-findings baseline (G2)
   "supply-chain/**",              # cargo-vet exemption set (config.toml) + the committed imports.lock
   ".gitattributes",               # LFS / EOL / merge attributes
   ".lfsconfig",                   # git-LFS endpoint

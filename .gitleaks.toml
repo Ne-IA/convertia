@@ -1,0 +1,49 @@
+# .gitleaks.toml — the G2 secrets / credential scan config (P0.3.1).
+#
+# Catches the THREE real CI secrets (security-concept §5): MINISIGN_SECRET_KEY (custom rule below —
+# the default key rules miss it: a minisign key has NO `-----BEGIN-----` PEM envelope),
+# MINISIGN_PASSWORD (a banned literal assignment + gitleaks' entropy rules), and ANTHROPIC_API_KEY
+# (`sk-ant-…`, the reviewer-API secret — gitleaks' bundled rule + the custom belt-and-suspenders one).
+#
+# The pinned, vendored, checksum-verified gitleaks BINARY runs this (NOT gitleaks/gitleaks-action,
+# which needs a commercial licence for org-owned repos). Planes: `git --staged` at L1, `git
+# @{u}..HEAD` range at L2 (excluded from the docs-only fastpath — a secret can be in a .md), `dir`
+# full-tree at L4, full-HISTORY `git` nightly at L5. This file + the baseline are L(-1)
+# (scripts/l-neg1-files.toml, G71); the allowlist is growth-guarded by check-gitleaks-allowlist (G2).
+
+title = "ConvertIA secrets scan"
+
+[extend]
+useDefault = true   # gitleaks' bundled rule set (incl. its Anthropic rule) + the custom rules below
+
+# --- MINISIGN secret key — a single base64 blob, Ed signature algo ("RW…" prefix), ~212 chars
+# (a minisign PUBLIC key is the same "RW…" prefix but only ~56 chars, excluded by the length floor;
+# both password-protected "RWRT…" and passwordless "RWQA…" KDF variants are caught). No PEM envelope,
+# so gitleaks' private-key rules cannot see it. Verified against a real minisign-0.12 key. ---
+[[rules]]
+id          = "minisign-secret-key"
+description = "minisign secret key blob (Ed algo, ~212-char base64; no -----BEGIN----- envelope)"
+regex       = '''\bRW[A-Za-z0-9+/]{180,}={0,2}'''
+
+# --- MINISIGN_PASSWORD — a banned LITERAL assignment. Excludes the legitimate `${{ secrets.… }}`
+# / `$VAR` reference forms (the value char class starts with neither `$` nor `{`). ---
+[[rules]]
+id          = "minisign-password-literal"
+description = "a literal MINISIGN_PASSWORD value (not a ${{ secrets.* }} / $env reference)"
+regex       = '''(?i)MINISIGN_PASSWORD['"]?\s*[:=]\s*['"]?[A-Za-z0-9!@#%^&*_.+=/-]{8,}'''
+keywords    = ["minisign_password"]
+
+# --- ANTHROPIC API key — the reviewer-API secret. DISTINCT id from gitleaks' bundled anthropic rule
+# so the two STACK (no id-collision dedup) — this one is the explicit, self-tested guarantee. ---
+[[rules]]
+id          = "anthropic-api-key-custom"
+description = "Anthropic API key (sk-ant-…)"
+regex       = '''\bsk-ant-[A-Za-z0-9_-]{24,}'''
+keywords    = ["sk-ant-"]
+
+[allowlist]
+description = "the committed gitleaks test fixtures + this config itself — the only sanctioned matches"
+paths = [
+  '''(^|/)\.gitleaks\.toml$''',
+  '''(^|/)scripts/gate-selftests/gitleaks-fixtures/''',
+]

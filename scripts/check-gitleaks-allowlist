@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""check-gitleaks-allowlist - G2 allowlist / baseline growth-guard (P0.3.1).
+
+The gitleaks allowlist + baseline are the one place a real secret could be silently SWALLOWED (an
+over-broad allowlist path, or a baseline that "accepts" a genuine finding). So they are FROZEN here:
+
+  * `.gitleaks.toml` `[allowlist].paths` must equal EXACTLY the expected set below (no add / remove
+    / change) — only the committed fixtures + the config itself;
+  * `.gitleaks.toml` declares NO allowlist `regexes`/`commits`/`stopwords` (value-level blanket
+    exemptions are forbidden — exempt by the narrow fixture PATH only);
+  * `.gitleaks-baseline.json` holds <= EXPECTED_BASELINE_COUNT accepted findings.
+
+Growing any of these means editing the frozen expectation in THIS file — itself L(-1)
+(scripts/l-neg1-files.toml, G71), so the change carries the owner-ack + a Dual-Review note and is a
+visible Co-Pilot review item, not a quiet widening. stdlib-only (tomllib, json).
+
+Exit: 0 = the allowlist/baseline match the frozen expectation; 1 = drift; 2 = a file is missing/unparseable.
+"""
+from __future__ import annotations
+
+import json
+import sys
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG = ROOT / ".gitleaks.toml"
+BASELINE = ROOT / ".gitleaks-baseline.json"
+
+# the FROZEN allowlist paths (a change here is an L(-1) edit + a Co-Pilot review item, never quiet)
+EXPECTED_ALLOWLIST_PATHS = {
+    r"(^|/)\.gitleaks\.toml$",
+    r"(^|/)scripts/gate-selftests/gitleaks-fixtures/",
+}
+# the custom rules that MUST stay present (a deletion/rename would silently drop a named-secret guard)
+EXPECTED_CUSTOM_RULE_IDS = {"minisign-secret-key", "minisign-password-literal", "anthropic-api-key-custom"}
+EXPECTED_BASELINE_COUNT = 0   # the repo accepts ZERO pre-existing findings; a bump is reviewed here
+FORBIDDEN_ALLOWLIST_KEYS = ("regexes", "regexTarget", "commits", "stopwords")  # value-level blanket exemptions
+
+
+def fail(msg: str) -> None:
+    print(f"[G2] FAIL: {msg}", file=sys.stderr)
+
+
+def evaluate(cfg: object, baseline: object) -> list[str]:
+    """(pure) Return the list of growth/drift problems for the parsed .gitleaks.toml `cfg` (+ the
+    parsed baseline JSON). Guards EVERY way the config could silently SWALLOW a secret: a widened/
+    changed top-level allowlist, a value-level blanket, gitleaks' bundled defenses turned off
+    (useDefault=false), a deleted/renamed custom rule, a per-rule allowlist neutralising a rule, or
+    a baseline accepting a finding."""
+    problems: list[str] = []
+    cfg = cfg if isinstance(cfg, dict) else {}
+    al = cfg.get("allowlist") if isinstance(cfg.get("allowlist"), dict) else {}
+    rules = cfg.get("rules") if isinstance(cfg.get("rules"), list) else []
+    extend = cfg.get("extend") if isinstance(cfg.get("extend"), dict) else {}
+
+    # gitleaks' bundled defense-in-depth must stay ON (useDefault=false silently drops every builtin rule)
+    if extend.get("useDefault") is not True:
+        problems.append("`[extend].useDefault` is not true - the bundled gitleaks ruleset (its own "
+                        "secret rules + high-entropy catch) would be silently dropped")
+
+    # the named-secret custom rules must all still be present (a deletion/rename drops a guard)
+    rule_ids = {r.get("id") for r in rules if isinstance(r, dict)}
+    for missing in sorted(EXPECTED_CUSTOM_RULE_IDS - rule_ids):
+        problems.append(f"custom rule `{missing}` is missing (deleted or renamed) - a named-secret guard "
+                        "cannot be silently dropped")
+    # no PER-RULE allowlist may neutralise a rule (value-level blanket, same risk as the top-level one)
+    for r in rules:
+        if isinstance(r, dict) and r.get("allowlist"):
+            problems.append(f"rule `{r.get('id', '?')}` has a per-rule allowlist - forbidden (it could "
+                            "neutralise the rule); exempt by the narrow top-level fixture PATH only")
+
+    paths = set(al.get("paths") or [])
+    if paths != EXPECTED_ALLOWLIST_PATHS:
+        added = paths - EXPECTED_ALLOWLIST_PATHS
+        removed = EXPECTED_ALLOWLIST_PATHS - paths
+        problems.append(f"allowlist paths drifted from the frozen set (added {sorted(added)}, "
+                        f"removed {sorted(removed)}) - update EXPECTED_ALLOWLIST_PATHS here (L(-1)) with a note")
+    for key in FORBIDDEN_ALLOWLIST_KEYS:
+        if al.get(key):
+            problems.append(f"allowlist declares `{key}` - value-level blanket exemptions are forbidden "
+                            "(a secret could hide behind one); exempt by the narrow fixture PATH only")
+    if baseline is None:
+        pass                                  # no baseline file -> zero accepted findings, fine
+    elif not isinstance(baseline, list):
+        problems.append("baseline is not a JSON array of findings")
+    elif len(baseline) > EXPECTED_BASELINE_COUNT:
+        problems.append(f"baseline holds {len(baseline)} accepted finding(s) > the expected "
+                        f"{EXPECTED_BASELINE_COUNT} - a baseline bump must raise EXPECTED_BASELINE_COUNT "
+                        "here with a Dual-Review note")
+    return problems
+
+
+def main() -> int:
+    if not CONFIG.is_file():
+        print(f"[G2] {CONFIG} missing", file=sys.stderr)
+        return 2
+    try:
+        cfg = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as e:
+        print(f"[G2] {CONFIG} is not valid TOML: {e}", file=sys.stderr)
+        return 2
+    baseline: object = None
+    if BASELINE.is_file():
+        try:
+            baseline = json.loads(BASELINE.read_text(encoding="utf-8") or "null")
+        except json.JSONDecodeError as e:
+            print(f"[G2] {BASELINE} is not valid JSON: {e}", file=sys.stderr)
+            return 2
+
+    problems = evaluate(cfg, baseline)
+    if problems:
+        for p in problems:
+            fail(p)
+        return 1
+    print(f"[G2] gitleaks config OK (useDefault on; {len(EXPECTED_CUSTOM_RULE_IDS)} custom rules present; "
+          f"{len(EXPECTED_ALLOWLIST_PATHS)} frozen allowlist paths; <= {EXPECTED_BASELINE_COUNT} baseline finding(s))")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -34,9 +34,12 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
       run: python3 scripts/check-gate-plane
     gate-plane-config:
       run: python3 scripts/check-gate-planes
-    # L1 gate slots (filled by their boxes): gitleaks --staged (P0.3.1) /
-    # plan-lint --quiet on the docs glob (P0.3.5) / G8 new-marker (P0.3.4) /
-    # clippy diff + tsc diff (P0.4).
+    gitleaks:        # G2 - scan the staged diff for the 3 CI secrets (never docs-only-skipped)
+      run: python3 scripts/run-gitleaks --staged
+    gitleaks-allowlist:   # G2 - the allowlist/baseline cannot quietly widen to swallow a secret
+      run: python3 scripts/check-gitleaks-allowlist
+    # L1 gate slots (filled by their boxes): plan-lint --quiet on the docs glob (P0.3.5) /
+    # G8 new-marker (P0.3.4) / clippy diff + tsc diff (P0.4).
 
 pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
   parallel: true
@@ -45,6 +48,8 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/check-gate-plane --pre-push
     l-neg1-ack:      # G71 - owner-ack on any L(-1)-touching commit in the push range (fail-soft in P0)
       run: python3 scripts/check-l-neg1-ack
-    # L2 gate slots (filled by their boxes): gitleaks range (P0.3.1) /
-    # plan-lint full (P0.3.5) / G8 + G70 full-tree (P0.3.4 / P0.3.14) /
-    # dual-review trailer G12 (P0.3.3) / clippy --all-targets + tsc project (P0.4).
+    gitleaks:        # G2 - scan the unpushed range (the last local catch before a secret goes public)
+      run: python3 scripts/run-gitleaks --range
+    # L2 gate slots (filled by their boxes): plan-lint full (P0.3.5) /
+    # G8 + G70 full-tree (P0.3.4 / P0.3.14) / dual-review trailer G12 (P0.3.3) /
+    # clippy --all-targets + tsc project (P0.4).

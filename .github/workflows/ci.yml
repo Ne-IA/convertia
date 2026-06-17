@@ -61,8 +61,12 @@ jobs:
         run: python3 scripts/run-gate-selftests --require-network
       - name: 'G54b: defense-in-depth plane-config integrity (gate-planes.toml)'
         run: python3 scripts/check-gate-planes
+      - name: 'G2: gitleaks secrets scan — full working tree (clean-checkout dir mode)'
+        run: python3 scripts/run-gitleaks --dir
+      - name: 'G2: gitleaks allowlist/baseline growth-guard'
+        run: python3 scripts/check-gitleaks-allowlist
       # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
-      #   gitleaks dir full-tree (P0.3.1) | plan-lint/spec-lint full (P0.3.5) |
+      #   plan-lint/spec-lint full (P0.3.5) |
       #   G8 + G21 deferral full-tree (P0.3.4) | G70 test-suppression (P0.3.14) |
       #   CSP/capability lint (P0.3.2) | doc-graph G68 + struct-map G69 (P0.3.12/13) |
       #   cargo-deny + cargo-audit (P0.3.6 / P0.4.1) | clippy --all-targets + tsc + eslint
