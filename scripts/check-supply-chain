@@ -1,0 +1,258 @@
+#!/usr/bin/env python3
+"""check-supply-chain - G18 / G18a / G18b structural growth-guard (P0.3.6).
+
+The cargo-deny `deny.toml` and the cargo-vet `supply-chain/` config are the one place the supply-chain
+policy could be silently WEAKENED (a forbidden HTTP-client un-denied, a copyleft license allow-listed,
+`yanked` downgraded, an import source dropped below the >=2 floor, an exemption added without review).
+So the policy INTENT is FROZEN here (a stdlib TOML parse — no cargo-deny/cargo-vet binary needed):
+
+  * deny.toml `[bans].deny` MUST still name every forbidden crate (updater + the HTTP-client family);
+  * deny.toml `[licenses].allow` may contain ONLY the frozen permissive set (any copyleft/non-commercial
+    or unvetted license is flagged), and it is allow-list-only (cargo-deny v2) so everything unlisted/
+    low-confidence is fail-closed denied;
+  * deny.toml `[advisories]` is v2 with `yanked = "deny"`; its `ignore` set MUST equal the cargo-audit
+    ignore set (the G18 two-scanner reconciliation - no advisory silenced in one tool but live in the other);
+  * deny.toml `[sources]` denies unknown registry/git and allow-lists crates.io;
+  * supply-chain/config.toml declares >= 2 distinct import sources (one compromised audit DB cannot
+    single-handedly vouch a crate) and its cargo-vet exemption set is growth-guarded (<= the frozen count);
+  * the §0.10 tauri-plugin allowlist is intact (the deny-all-except set plan-lint check 13 enforces).
+
+Growing/relaxing any of these means editing the frozen expectation in THIS file - itself L(-1)
+(scripts/l-neg1-files.toml, G71), so the change carries the owner-ack + a Dual-Review note. The LIVE
+`cargo deny check` / `cargo vet check --locked` run in P1 once the workspace Cargo.lock exists (this
+gate skips them with a notice until then - the target-absent P0 posture). stdlib-only (tomllib).
+
+Exit: 0 = the policy matches the frozen expectation (+ live checks pass or are target-absent);
+      1 = drift / a relaxation; 2 = a config file is missing or unparseable.
+"""
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+DENY = ROOT / "deny.toml"
+VET_CONFIG = ROOT / "supply-chain" / "config.toml"
+VET_IMPORTS = ROOT / "supply-chain" / "imports.lock"
+AUDIT_TOML = ROOT / "audit.toml"           # cargo-audit ignore config (G17; may not exist yet)
+# the workspace manifest/lock may sit at the repo root OR under src-tauri/ (spec §0.7 leaves it "root
+# OR member" until P1) - search BOTH so the live tier can never be silently disarmed by a layout the
+# hard-coded path missed (a Cargo.toml-without-lock FAILS rather than skipping; see _workspace_state).
+CARGO_LOCK_CANDIDATES = (ROOT / "Cargo.lock", ROOT / "src-tauri" / "Cargo.lock")
+CARGO_TOML_CANDIDATES = (ROOT / "Cargo.toml", ROOT / "src-tauri" / "Cargo.toml")
+
+# --- frozen policy expectations (a change here is an L(-1) edit + a Co-Pilot review item) -----------
+# every forbidden crate that MUST stay on deny.toml [bans].deny (un-denying one re-opens the egress surface)
+FORBIDDEN_CRATES = {
+    "tauri-plugin-updater", "tauri-plugin-http",
+    "reqwest", "ureq", "hyper", "isahc", "curl", "curl-sys",
+}
+# the §0.10-granted tauri-plugin allowlist (shared intent with plan-lint check 13)
+TAURI_PLUGIN_ALLOWLIST = {"single-instance", "dialog", "opener", "store", "log"}
+# the FROZEN permissive license allow-set: deny.toml [licenses].allow may contain ONLY these. Any other
+# license is flagged - every copyleft / network-copyleft / non-commercial family (GPL/AGPL/LGPL/EUPL/
+# OSL/CDDL/EPL/SSPL/CC-BY-NC) AND any unvetted permissive one - so a new entry forces a vetted addition
+# HERE (L(-1)) with a note. More robust than a copyleft denylist, which can always miss a family.
+EXPECTED_LICENSE_ALLOW = frozenset({
+    "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause",
+    "ISC", "Unicode-3.0", "Unicode-DFS-2016", "Zlib", "CC0-1.0", "MPL-2.0",
+})
+MIN_IMPORT_SOURCES = 2          # >=2 distinct audit DBs (Mozilla + Google baseline)
+MIN_CONFIDENCE = 0.8            # the license-detection confidence floor (we ship 0.93)
+EXPECTED_EXEMPTION_COUNT = 0    # cargo-vet exemptions accepted; a bump is reviewed HERE with a box-id
+
+
+def fail(msg: str) -> None:
+    print(f"[G18] FAIL: {msg}", file=sys.stderr)
+
+
+def _ignore_set(advisories: object) -> set[str]:
+    """The advisory ids in an `[advisories].ignore` / cargo-audit `[advisories].ignore` list."""
+    ig = advisories.get("ignore") if isinstance(advisories, dict) else None
+    out: set[str] = set()
+    for e in ig or []:
+        if isinstance(e, str):
+            out.add(e)
+        elif isinstance(e, dict) and isinstance(e.get("id"), str):
+            out.add(e["id"])
+    return out
+
+
+def evaluate_deny(cfg: object, audit_ignores: set[str]) -> list[str]:
+    """(pure) Growth/relaxation problems in the parsed deny.toml `cfg`, reconciled against the
+    cargo-audit ignore set."""
+    problems: list[str] = []
+    cfg = cfg if isinstance(cfg, dict) else {}
+    bans = cfg.get("bans") if isinstance(cfg.get("bans"), dict) else {}
+    licenses = cfg.get("licenses") if isinstance(cfg.get("licenses"), dict) else {}
+    advisories = cfg.get("advisories") if isinstance(cfg.get("advisories"), dict) else {}
+    sources = cfg.get("sources") if isinstance(cfg.get("sources"), dict) else {}
+
+    # [bans]: every forbidden crate still denied; wildcards denied
+    denied = set()
+    for e in bans.get("deny") or []:
+        name = e.get("crate") or e.get("name") if isinstance(e, dict) else (e if isinstance(e, str) else None)
+        if name:
+            denied.add(name)
+    for missing in sorted(FORBIDDEN_CRATES - denied):
+        problems.append(f"[bans].deny no longer denies `{missing}` - a socket-opening/updater crate guard "
+                        "cannot be silently dropped (T2/T9a)")
+    if bans.get("wildcards") != "deny":
+        problems.append("[bans].wildcards is not \"deny\" - a wildcard version spec must be rejected")
+
+    # [licenses]: allow-list-only (v2), copyleft never allowed, confidence floor held, no blanket exceptions
+    if licenses.get("version") != 2:
+        problems.append("[licenses].version is not 2 - v2 is allow-list-only (fail-closed); a v1 config "
+                        "could carry a permissive `unlicensed`/`copyleft` escape")
+    allow = [a for a in (licenses.get("allow") or []) if isinstance(a, str)]
+    for lic in sorted(set(allow) - EXPECTED_LICENSE_ALLOW):
+        problems.append(f"[licenses].allow contains `{lic}` which is NOT on the frozen permissive set - "
+                        "any new license (a copyleft/non-commercial family such as GPL/AGPL/LGPL/EUPL/OSL/"
+                        "CDDL/SSPL/CC-BY-NC, or an unvetted permissive one) must be vetted + added to "
+                        "EXPECTED_LICENSE_ALLOW here (L(-1)) with a box-id + Dual-Review note")
+    ct = licenses.get("confidence-threshold")
+    if not isinstance(ct, (int, float)) or ct < MIN_CONFIDENCE:
+        problems.append(f"[licenses].confidence-threshold ({ct!r}) is below the {MIN_CONFIDENCE} floor - "
+                        "a low-confidence license detection must fail closed, not silently pass")
+    if licenses.get("exceptions"):
+        problems.append("[licenses].exceptions is non-empty - a per-crate license exception must be added "
+                        "HERE (the frozen expectation) with a box-id + Dual-Review note, never quietly")
+
+    # [advisories]: v2 + yanked deny + ignore reconciliation with cargo-audit
+    if advisories.get("version") != 2:
+        problems.append("[advisories].version is not 2 - v2 denies vulnerability/unmaintained/unsound/notice "
+                        "by default; a v1 config could leave a kind permissive")
+    if advisories.get("yanked") != "deny":
+        problems.append("[advisories].yanked is not \"deny\" - a yanked crate must hard-fail")
+    deny_ignores = _ignore_set(advisories)
+    if deny_ignores != audit_ignores:
+        only_deny = sorted(deny_ignores - audit_ignores)
+        only_audit = sorted(audit_ignores - deny_ignores)
+        problems.append(f"advisory ignore sets disagree (cargo-deny only: {only_deny}, cargo-audit only: "
+                        f"{only_audit}) - an advisory silenced in one scanner but live in the other is a "
+                        "false-green (G18 two-scanner reconciliation); the two ignore sets must be equal")
+
+    # [sources]: unknown denied, crates.io allow-listed
+    if sources.get("unknown-registry") != "deny":
+        problems.append("[sources].unknown-registry is not \"deny\" - an unknown registry is the "
+                        "dependency-confusion surface")
+    if sources.get("unknown-git") != "deny":
+        problems.append("[sources].unknown-git is not \"deny\"")
+    if "https://github.com/rust-lang/crates.io-index" not in (sources.get("allow-registry") or []):
+        problems.append("[sources].allow-registry does not list crates.io - the sources check is a no-op "
+                        "without a populated allow-list")
+    return problems
+
+
+def evaluate_vet(cfg: object) -> list[str]:
+    """(pure) Problems in the parsed supply-chain/config.toml `cfg`: the >=2-import-source floor + the
+    exemption growth-guard."""
+    problems: list[str] = []
+    cfg = cfg if isinstance(cfg, dict) else {}
+    imports = cfg.get("imports") if isinstance(cfg.get("imports"), dict) else {}
+    # count DISTINCT url VALUES (not table keys) - two keys pointing at the SAME url give zero
+    # redundancy, so a single compromised DB could still single-handedly vouch a crate
+    urls = {v["url"] for v in imports.values()
+            if isinstance(v, dict) and isinstance(v.get("url"), str) and v["url"]}
+    if len(urls) < MIN_IMPORT_SOURCES:
+        problems.append(f"supply-chain/config.toml declares {len(urls)} DISTINCT import URL(s) < the "
+                        f"required {MIN_IMPORT_SOURCES} - one compromised audit DB could single-handedly "
+                        "vouch a crate; keep >=2 distinct [imports.*] source URLs")
+    exemptions = cfg.get("exemptions") if isinstance(cfg.get("exemptions"), dict) else {}
+    total = sum(len(v) if isinstance(v, list) else 1 for v in exemptions.values())
+    if total > EXPECTED_EXEMPTION_COUNT:
+        problems.append(f"cargo-vet exemption set holds {total} entr(ies) > the expected "
+                        f"{EXPECTED_EXEMPTION_COUNT} - growth must raise EXPECTED_EXEMPTION_COUNT here with a "
+                        "box-id + Dual-Review note (symmetry with the G2 allowlist)")
+    return problems
+
+
+def _load(path: Path) -> object:
+    return tomllib.loads(path.read_text(encoding="utf-8"))
+
+
+def _workspace_state(lock_candidates=CARGO_LOCK_CANDIDATES, toml_candidates=CARGO_TOML_CANDIDATES):
+    """(pure-ish) Resolve the Rust workspace state from the candidate manifest/lock paths:
+      * ('ready', manifest, lock)   - a Cargo.lock was found -> run the live tier;
+      * ('lock-missing', manifest)  - a Cargo.toml exists but NO lock at any candidate -> FAIL (a
+                                      layout mismatch / un-generated lock must redden main, never
+                                      silently disarm the live cargo-deny/vet tier);
+      * ('absent',)                 - no workspace yet (the P0 pre-P1 posture) -> skip with a notice."""
+    lock = next((p for p in lock_candidates if p.is_file()), None)
+    toml = next((p for p in toml_candidates if p.is_file()), None)
+    if lock is not None:
+        return ("ready", toml or lock.parent / "Cargo.toml", lock)
+    if toml is not None:
+        return ("lock-missing", toml)
+    return ("absent",)
+
+
+def _live_checks() -> list[str]:
+    """Run the LIVE cargo-deny / cargo-vet binaries once the workspace lock exists (root OR src-tauri/);
+    target-absent + skipped until then, but FAIL-CLOSED if a manifest exists without a lock."""
+    state = _workspace_state()
+    if state[0] == "absent":
+        print("[G18] no Cargo workspace yet (lands in P1) - skipping live `cargo deny`/`cargo vet` "
+              "(structural policy guard still enforced); fail-closed the moment the lockfile exists")
+        return []
+    if state[0] == "lock-missing":
+        return [f"a Cargo manifest ({state[1]}) exists but no Cargo.lock was found at any candidate "
+                f"location {[str(p) for p in CARGO_LOCK_CANDIDATES]} - the live supply-chain tier cannot "
+                "run; generate/commit the lockfile (do not let G18 silently skip on a layout mismatch)"]
+    _, manifest, _lock = state
+    problems: list[str] = []
+    manifest_dir = manifest.parent
+    if shutil.which("cargo-deny"):
+        r = subprocess.run(["cargo", "deny", "--manifest-path", str(manifest), "check"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            problems.append("`cargo deny check` failed:\n" + (r.stderr or r.stdout))
+    else:
+        problems.append("a Cargo.lock exists but `cargo-deny` is not installed - the live G18 check cannot run")
+    if shutil.which("cargo-vet"):
+        r = subprocess.run(["cargo", "vet", "--locked", "check"], capture_output=True, text=True, cwd=manifest_dir)
+        if r.returncode != 0:
+            problems.append("`cargo vet --locked check` failed:\n" + (r.stderr or r.stdout))
+        if not VET_IMPORTS.is_file():
+            problems.append("supply-chain/imports.lock is missing - the committed trust DB must exist "
+                            "(no live-registry trust at gate time)")
+    else:
+        problems.append("a Cargo.lock exists but `cargo-vet` is not installed - the live G18b check cannot run")
+    return problems
+
+
+def main() -> int:
+    for path in (DENY, VET_CONFIG):
+        if not path.is_file():
+            print(f"[G18] {path} missing", file=sys.stderr)
+            return 2
+    try:
+        deny_cfg = _load(DENY)
+        vet_cfg = _load(VET_CONFIG)
+    except tomllib.TOMLDecodeError as e:
+        print(f"[G18] config is not valid TOML: {e}", file=sys.stderr)
+        return 2
+    audit_ignores: set[str] = set()
+    if AUDIT_TOML.is_file():
+        try:
+            audit_ignores = _ignore_set(_load(AUDIT_TOML).get("advisories"))
+        except tomllib.TOMLDecodeError as e:
+            print(f"[G18] {AUDIT_TOML} is not valid TOML: {e}", file=sys.stderr)
+            return 2
+
+    problems = evaluate_deny(deny_cfg, audit_ignores) + evaluate_vet(vet_cfg) + _live_checks()
+    if problems:
+        for p in problems:
+            fail(p)
+        return 1
+    print(f"[G18] supply-chain policy OK ({len(FORBIDDEN_CRATES)} forbidden crates denied; copyleft "
+          f"excluded; allow-list-only licenses; yanked=deny; >={MIN_IMPORT_SOURCES} cargo-vet import "
+          f"sources; <= {EXPECTED_EXEMPTION_COUNT} exemption(s))")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -69,13 +69,16 @@ jobs:
         run: python3 scripts/check-csp-capabilities
       - name: 'G21: deferral / dead-marker scan — full production tree (fail-closed)'
         run: python3 scripts/check-deferral --full
-      - name: 'G7/G20: plan-lint / spec-lint doc-consistency (34 checks, full)'
+      - name: 'G7/G20: plan-lint / spec-lint doc-consistency (35 checks, full)'
         run: python3 scripts/plan-lint
+      - name: 'G18/G18b: supply-chain policy growth-guard (cargo-deny/cargo-vet config; live checks land P1)'
+        run: python3 scripts/check-supply-chain
       # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
       #   G70 test-suppression (P0.3.14) |
       #   doc-graph G68 + struct-map G69 (P0.3.12/13) |
-      #   cargo-deny + cargo-audit (P0.3.6 / P0.4.1) | clippy --all-targets + tsc + eslint
-      #   (P0.4, activated in P1).
+      #   G18a lockfile --locked + git diff --exit-code (Cargo.lock/pnpm-lock.yaml/imports.lock) +
+      #   live cargo-deny check + cargo-vet --locked check + cargo-audit (P0.4.1) | clippy
+      #   --all-targets + tsc + eslint (P0.4, activated in P1 once the lockfiles exist).
 
   workflow-security:
     name: workflow-security

@@ -1,0 +1,30 @@
+# supply-chain/config.toml — cargo-vet configuration (G18b first-party crate-trust audit). Authored
+# P0.3.6; `cargo vet init` / `import` / `suggest` / `check` run in P1 against the workspace Cargo.lock.
+# This file declares the import sources + criteria policy the P1 bootstrap uses. The fetched trust DB
+# (supply-chain/imports.lock) is committed in P1 and treated like a lockfile — a Co-Pilot-reviewed
+# change, NEVER auto-fetched at gate time (G18a `--locked` discipline + G9 invariant (e): no
+# `cargo vet update`/`sync`/`import` in CI or scripts/). L(-1) (supply-chain/**, G71).
+#
+# Full bootstrap protocol: build-gates.md G18b. Structural guard: scripts/check-supply-chain.
+
+[cargo-vet]
+version = "0.10"
+
+# ≥ 2 DISTINCT import sources are REQUIRED (decided r5: Mozilla + Google supply-chain as the baseline
+# pair, ISRG an optional third) so a single compromised audit DB cannot single-handedly vouch a
+# malicious crate. check-supply-chain asserts ≥ 2 distinct [imports.*] remain declared.
+[imports.mozilla]
+url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
+
+[imports.google]
+url = "https://raw.githubusercontent.com/google/supply-chain/main/audits.toml"
+
+# Criteria policy (applied per-crate by `cargo vet suggest` in P1):
+#   * build-only deps (incl. proc-macros) -> `safe-to-run`
+#   * runtime deps                        -> `safe-to-deploy`
+# A NEW unvetted dep requires certify-or-documented-exemption; the Build-Loop ESCALATES a block and
+# never silently exempts (G18b).
+
+# [[exemptions.*]] — the cargo-vet exemption set is GROWTH-GUARDED (symmetry with the G2 gitleaks
+# allowlist + the G29 suppression ledger): each exemption carries a box-id + a Dual-Review note, and
+# exemption-set growth is a Co-Pilot review item. Empty at P0 (no Cargo.lock to vet yet).

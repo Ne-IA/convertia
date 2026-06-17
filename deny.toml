@@ -1,0 +1,80 @@
+# deny.toml — cargo-deny supply-chain policy (G18 + G18a wiring). Authored P0.3.6; the live
+# `cargo deny check` activates in P1 once the workspace Cargo.lock exists (cargo-deny is pinned then).
+# Until then this file is STRUCTURALLY growth-guarded by scripts/check-supply-chain (a stdlib parser
+# that freezes the policy intent below — no quiet widening). Schema = cargo-deny v2 (validated against
+# the pinned binary in P1). L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+#
+# Threat anchors: T2 (untrusted bytes / WebView), T9a (a socket-opening dep in the core). The rule of
+# the whole app is zero egress — so NO HTTP-client / updater crate may enter the dependency tree, and
+# GPL/AGPL may not contaminate the MIT core (the copyleft image-worker libs ship as separate binaries,
+# never linked into the core crate graph).
+
+[graph]
+# evaluate the policy over every target/feature we ship (no platform-specific escape)
+all-features = true
+
+[advisories]
+# cargo-deny v2: vulnerability / unmaintained / unsound / notice all DENY by default; a yanked crate
+# is a hard fail; nothing is ignored. Any id added to `ignore` here MUST also be ignored in the
+# cargo-audit config (G18 two-scanner reconciliation) — check-supply-chain asserts the two sets agree.
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+# cargo-deny v2: ALLOW-LIST ONLY — anything not listed (incl. GPL/AGPL/LGPL and any unrecognised or
+# low-confidence license) is DENIED. This is the fail-closed posture (symmetry with G36 on the JS side):
+# a crate whose license cannot be resolved above the confidence threshold fails the build.
+version = 2
+confidence-threshold = 0.93
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "Zlib",
+  "CC0-1.0",
+  "MPL-2.0",
+]
+# No blanket per-crate license exceptions: a real exception is added here WITH a box-id + Dual-Review
+# note (check-supply-chain growth-guards this list — it cannot quietly absorb a copyleft crate).
+exceptions = []
+
+[bans]
+# multiple-versions intentionally "warn", NOT cargo-deny's "deny" default: a duplicate-version graph is
+# a hygiene signal, not a security control (the T2/T9a egress controls are the deny[] list + sources),
+# and duplicate transitive versions are common + not worth a hard build failure.
+# [Build-Session-Entscheidung: P0.3.6]
+multiple-versions = "warn"
+wildcards = "deny"
+# T2/T9a: no updater and no socket-opening HTTP-client crate enters the tree. tauri-plugin-http wraps
+# reqwest and registers an IPC-accessible HTTP client on init — it is denied at the dependency level so
+# a careless `cargo add` fails HERE (before it could ever reach G47 / a capability JSON).
+deny = [
+  { crate = "tauri-plugin-updater" },
+  { crate = "tauri-plugin-http" },
+  { crate = "reqwest" },
+  { crate = "ureq" },
+  { crate = "hyper" },
+  { crate = "isahc" },
+  { crate = "curl" },
+  { crate = "curl-sys" },
+]
+# NOTE — the "deny EVERY tauri-plugin-* except the §0.10-granted allowlist {single-instance, dialog,
+# opener, store, log}" rule cannot be expressed natively in cargo-deny (it has no deny-pattern-with-
+# exceptions). It is enforced structurally instead: scripts/check-supply-chain + plan-lint check 13
+# assert that every `tauri-plugin-*` crate in Cargo.lock is on that allowlist (active in P1 when the
+# lock exists). The deny[] list above hard-blocks the two specifically-dangerous plugins regardless.
+
+[sources]
+# the `sources` check is a no-op without an explicit allow-list, so populate it: only crates.io and an
+# (empty) git allow-list. An unknown registry or git source is the dependency-confusion surface (the
+# Rust analogue of G18c on the JS side).
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

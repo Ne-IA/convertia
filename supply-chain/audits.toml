@@ -1,0 +1,8 @@
+# supply-chain/audits.toml — ConvertIA's own (first-party) crate-trust audits (G18b). Populated in P1
+# via `cargo vet certify` once the workspace Cargo.lock exists; each entry records a per-crate audit at
+# `safe-to-run` (build-only / proc-macro deps) or `safe-to-deploy` (runtime deps). Empty at P0.
+# L(-1) (supply-chain/**, G71).
+
+[criteria]
+
+[audits]

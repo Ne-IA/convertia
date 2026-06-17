@@ -42,6 +42,8 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
       run: python3 scripts/check-deferral --diff
     plan-lint:       # G7/G20 - doc-consistency (format + doc checks); --quiet, fast realtime pass
       run: python3 scripts/plan-lint --quiet
+    supply-chain:    # G18 - cargo-deny/cargo-vet policy growth-guard (structural; live checks land P1)
+      run: python3 scripts/check-supply-chain
     # L1 gate slots (filled by their boxes): clippy diff + tsc diff (P0.4).
 
 commit-msg:        # L3 - fires at `git commit` (after pre-commit, before pre-push)
@@ -62,7 +64,9 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/check-dual-review
     deferral:        # G21 - full production-tree deferral/dead-marker scan (fail-closed; no diff-base excuse)
       run: python3 scripts/check-deferral --full
-    plan-lint:       # G7/G20 - full doc-consistency lint (all 34 checks, fail-closed)
+    plan-lint:       # G7/G20 - full doc-consistency lint (all 35 checks, fail-closed)
       run: python3 scripts/plan-lint
+    supply-chain:    # G18/G18b - full supply-chain policy growth-guard + live cargo-deny/vet (P1)
+      run: python3 scripts/check-supply-chain
     # L2 gate slots (filled by their boxes):
     # G70 full-tree (P0.3.14) / clippy --all-targets + tsc project (P0.4).
