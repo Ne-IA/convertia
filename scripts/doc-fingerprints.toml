@@ -1,0 +1,73 @@
+# scripts/doc-fingerprints.toml — the G68 check-25 leg (c2) freshness ledger (P0.3.12).
+#
+# WHY: plan-lint check 25's resolution leg (b) and name-matching freshness leg (c1) catch a doc that
+# links to a moved file or NAMES a removed/renamed gate-id. They CANNOT see the "described-the-old-way"
+# drift where an authoritative SOURCE keeps its name but changes its CONTENT — a Gnn row reworded, the
+# spec §0.7 physical tree edited, a §0.8 version pin bumped — silently stranding every doc that
+# DESCRIBES it. This ledger is the per-source content-fingerprint that closes that gap (build-gates.md
+# §6 check 25(c) / the G68 "load-bearing" freshness leg; the same content-fingerprint discipline the
+# G29 suppression ledger uses).
+#
+# HOW: each [[source]] records the sha256 of an authoritative source REGION as of when the docs that
+# DESCRIBE it were last reasoned against it. plan-lint recomputes the region's hash on every run; a
+# MISMATCH fails check 25. The fix is never to silently re-hash: you re-VERIFY each `describes` doc
+# against the new source content, update them where stale, THEN re-bless the fingerprint here — all in
+# the SAME commit (DoD item 2). Because this file is L(-1) (matched by `scripts/*.toml`, G71), a
+# re-bless is an owner-acked edit — the freshness check cannot be silently waived on the source it guards.
+#
+# COMPUTING a fingerprint: `sha256:` + sha256 of the LF-normalized region. For kind="file" the region
+# is the whole file; for kind="section" it is the numbered-heading body (heading line through the line
+# before the next heading of level <= its own, fence-aware). Always compute via plan-lint's own
+# `_lf`/`_extract_section` so seed-time and check-time normalize identically (see the P0.3.12 box).
+#
+# FIELDS: id (stable label) · kind ("file" | "section") · file (repo-relative) · anchor (section number,
+# kind="section" only) · describes (the docs reasoned against this source — informational, surfaced in
+# the failure message) · fingerprint ("sha256:<64 lowercase hex>") · dormant (optional {file, contains}:
+# the entry is SKIPPED while `file` still contains ANY string in `contains` (a str OR a list) — for a
+# binding whose describing doc is not yet authored; matches the G69 check-26 OR-dormancy exactly).
+#
+# FLOOR: plan-lint's _REQUIRED_FP_IDS lists the seed ids that MUST be present here, else the freshness
+# axis would silently no-op (a fail-OPEN hole). An empty/seedless ledger, or one a required seed was
+# dropped from, FAILS check 25. Retiring a binding = edit BOTH this file AND _REQUIRED_FP_IDS in the
+# same owner-acked L(-1) commit.
+#
+# SCOPE (P0.3.12): the mechanism is fail-closed from P0; the ledger is SEEDED with the live + dormant
+# bindings whose source exists today and GROWS as P1 stabilizes more describing relationships (gate-row
+# bindings once the catalogue settles, §0.8 version pins, the Rust dispatch enums). Adding a [[source]]
+# is the normal ledger-growth discipline, never a deferral of the mechanism.
+
+# (a) LIVE — the authoritative L(-1) cage glob-list. Its prose copies (security-concept §2, the
+#     build-gates G71 row, CLAUDE.md §5, the docs-only-fastpath list) are its human descriptions; the
+#     G71 row itself states this sync is "held in sync by G68". A cage edit (a glob added/removed) must
+#     re-verify those four prose copies — this fingerprint forces it. Both the cage and this ledger are
+#     L(-1), so a cage change + this re-bless ride the one owner-acked commit.
+[[source]]
+id = "l-neg1-cage"
+kind = "file"
+file = "scripts/l-neg1-files.toml"
+describes = [
+  "security-concept.md §2 (the L(-1) enumeration)",
+  "build-gates.md G71 row (the cage description)",
+  "CLAUDE.md §5 (the L(-1) anti-pattern bullet)",
+  "the docs-only-fastpath L(-1) list (G10)",
+]
+fingerprint = "sha256:d99dfb835f5c2375dad35e630d9e893f064280e83e933e38972ab2c707075639"
+
+# (b) DORMANT until P1.64 — the spec §0.7 physical tree is the HIGHER source (SSOT > spec > docs); the
+#     CLAUDE.md §1a "Repo layout" map is its operational projection. This fingerprint is the freshness
+#     companion to G69 check 26's projection bind: once §1a is authored at P1.64, a §0.7 tree edit not
+#     mirrored into §1a surfaces as stale. While CLAUDE.md still carries EITHER the "PLACEHOLDER" or the
+#     "P1.64" marker (§1a is the bootstrap stub), the binding is dormant — the EXACT OR-condition G69
+#     check 26 (doc26_struct_map) skips on, so the two gates activate together, never apart.
+#     The recorded hash is today's §0.7. **P1.64 OBLIGATION:** when §1a is authored, P1.64 MUST delete
+#     the whole bootstrap-status block so NEITHER "PLACEHOLDER" nor "P1.64" survives in CLAUDE.md §1a,
+#     AND re-bless this fingerprint in the same commit — otherwise this entry AND G69 check 26 both stay
+#     dormant forever (the shared latent risk of the marker-based dormancy, accepted + tracked here).
+[[source]]
+id = "spec-0.7-physical-tree"
+kind = "section"
+file = "docs/spec/00-architecture.md"
+anchor = "0.7"
+describes = ["CLAUDE.md §1a Repo-layout map (the §0.7 projection)"]
+fingerprint = "sha256:1ac6a2d508d0c61fd52c10d58da20fee7109e7923e3a3f0c8109a7614382d80a"
+dormant = { file = "CLAUDE.md", contains = ["PLACEHOLDER", "P1.64"] }

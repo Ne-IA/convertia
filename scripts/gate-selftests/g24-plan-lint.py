@@ -6,10 +6,12 @@ box IS flagged (so no check is green-by-vacuity). Plus the base-case golden inva
 passes (exit 0) and a deliberately-broken synthetic box-set exits non-empty. The doc-wide checks 1..26
 get their own legs as they are built. stdlib-only. Exit 0 = all held; 1 = a self-test failed.
 """
+import hashlib
 import importlib.machinery
 import importlib.util
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "plan-lint"
@@ -156,6 +158,114 @@ record("25 forward-allowlist: a dangling link to an UNREGISTERED target -> still
            dctx({"docs/spec/README.md": "[x](gone.md) — but this is planned for later\n"}))))
 record("25 code-span: a link inside an inline `code` span -> NOT flagged",
        not any("dangling" in f.msg for f in m.doc25_doc_graph(dctx({"docs/a.md": "example `[x](nope.md)` here\n"}))))
+
+# --- check 25 leg (c2): the per-source content-fingerprint freshness ledger (P0.3.12) ---------
+# Each leg drives the PURE m._freshness_fingerprints(entries, root, docs) so a synthetic source can be
+# supplied via the `docs` dict (no temp files): an entry whose `file` is in `docs` reads that content.
+def _fp(text):
+    return "sha256:" + hashlib.sha256(m._lf(text).encode()).hexdigest()
+
+
+def _ff(entries, docs):
+    return m._freshness_fingerprints(entries, ROOT, docs)
+
+
+_DOC = "scripts/x.toml"
+_CONTENT = 'patterns = [\n  "a/*",\n]\n'
+record("25-fp: a matching file fingerprint is clean",
+       _ff([{"id": "x", "kind": "file", "file": _DOC, "fingerprint": _fp(_CONTENT)}], {_DOC: _CONTENT}) == [])
+record("25-fp: a stale file fingerprint is caught (same-name content drift)",
+       any("freshness-fingerprint" in f.msg and "'x'" in f.msg
+           for f in _ff([{"id": "x", "kind": "file", "file": _DOC, "fingerprint": "sha256:" + "0" * 64}],
+                        {_DOC: _CONTENT})))
+
+# kind="section": the fingerprint is scoped to the §0.7 region, so a §0.8 change must NOT trip it
+_ARCH = "## 0.7 Tree\n\nsrc/ here\n\n## 0.8 Pins\n\npnpm 10.13.1\n"
+_SE = [{"id": "s07", "kind": "section", "file": "docs/spec/a.md", "anchor": "0.7",
+        "fingerprint": "sha256:" + hashlib.sha256(m._extract_section(_ARCH, "0.7").encode()).hexdigest()}]
+record("25-fp: a section fingerprint matching its region is clean",
+       _ff(_SE, {"docs/spec/a.md": _ARCH}) == [])
+record("25-fp: a change OUTSIDE the fingerprinted section does NOT trip it (region scoping)",
+       _ff(_SE, {"docs/spec/a.md": "## 0.7 Tree\n\nsrc/ here\n\n## 0.8 Pins\n\npnpm 10.99.9\n"}) == [])
+record("25-fp: a change INSIDE the fingerprinted section IS caught",
+       any("s07" in f.msg for f in _ff(_SE, {"docs/spec/a.md": "## 0.7 Tree\n\nsrc/ MOVED\n\n## 0.8 Pins\n\npnpm 10.13.1\n"})))
+
+# region unresolvable -> fail-closed (a renamed/removed section, a missing file)
+record("25-fp: a section anchor that no longer exists fails closed",
+       any("not found" in f.msg for f in _ff(
+           [{"id": "s", "kind": "section", "file": "docs/spec/a.md", "anchor": "9.9", "fingerprint": "sha256:" + "0" * 64}],
+           {"docs/spec/a.md": _ARCH})))
+record("25-fp: a source file that does not exist fails closed",
+       any("not found" in f.msg for f in _ff(
+           [{"id": "mm", "kind": "file", "file": "scripts/__nope__.toml", "fingerprint": "sha256:" + "0" * 64}], {})))
+
+# dormancy works BOTH ways (skip while the describing doc is unauthored; activate once it is)
+_DORM = {"id": "d", "kind": "file", "file": _DOC, "fingerprint": "sha256:" + "0" * 64,  # deliberately WRONG
+         "dormant": {"file": "CLAUDE.md", "contains": "P1.64"}}
+record("25-fp: a dormant entry (marker present) is skipped even with a wrong fingerprint",
+       _ff([_DORM], {_DOC: _CONTENT, "CLAUDE.md": "... finalized by the P1.64 box ..."}) == [])
+record("25-fp: the SAME entry is NOT skipped once the dormancy marker is gone (then caught)",
+       any("'d'" in f.msg for f in _ff([_DORM], {_DOC: _CONTENT, "CLAUDE.md": "no marker here\n"})))
+
+# malformed entries fail closed (never silently pass)
+record("25-fp: a malformed fingerprint (not sha256:<64hex>) fails closed",
+       any("malformed fingerprint" in f.msg for f in _ff(
+           [{"id": "b", "kind": "file", "file": _DOC, "fingerprint": "deadbeef"}], {_DOC: _CONTENT})))
+record("25-fp: an unknown kind fails closed",
+       any("unknown kind" in f.msg for f in _ff(
+           [{"id": "k", "kind": "blob", "file": _DOC, "fingerprint": "sha256:" + "0" * 64}], {_DOC: _CONTENT})))
+
+# a missing committed ledger is fail-closed (the freshness axis cannot silently no-op)
+with tempfile.TemporaryDirectory() as _td:
+    _entries, _fatal = m._read_fp_ledger(Path(_td))
+    record("25-fp: a missing committed ledger fails closed", _fatal is not None and _entries == [])
+
+# the REAL ledger parses, carries the live seed, and is clean today (seed hashes match the real sources)
+_RE, _RF = m._read_fp_ledger(ROOT)
+record("25-fp: the real ledger parses + carries the live l-neg1-cage seed",
+       _RF is None and any(e.get("id") == "l-neg1-cage" for e in _RE))
+record("25-fp: the real ledger is clean today (every seed fingerprint matches its real source)",
+       _RF is None and m._freshness_fingerprints(_RE, ROOT, m.load_docs(ROOT)) == [])
+
+
+# --- G1-review fixes: the required-seed FLOOR + array-of-tables guard + list-dormancy (P0.3.12) ---
+def _read_ledger_body(body):
+    """Parse a synthetic ledger body through the real _read_fp_ledger over a temp root."""
+    with tempfile.TemporaryDirectory() as td:
+        sp = Path(td) / "scripts"
+        sp.mkdir()
+        (sp / "doc-fingerprints.toml").write_text(body, encoding="utf-8")
+        return m._read_fp_ledger(Path(td))
+
+
+_E64 = "0" * 64
+# P2: an empty/seedless ledger (file present, zero [[source]]) FAILS the floor — no silent no-op
+_e1, _f1 = _read_ledger_body("# only a comment, no [[source]] tables\n")
+record("25-fp: an empty-but-present ledger fails the required-seed floor (no silent no-op)",
+       _f1 is not None and "required seed" in _f1.msg)
+# P2: dropping a required seed (only l-neg1-cage present, spec-0.7 missing) FAILS closed
+_e2, _f2 = _read_ledger_body(f'[[source]]\nid = "l-neg1-cage"\nkind = "file"\nfile = "x"\nfingerprint = "sha256:{_E64}"\n')
+record("25-fp: a ledger missing a required seed id fails closed (names the missing id)",
+       _f2 is not None and "spec-0.7-physical-tree" in _f2.msg)
+# P3: a plain string-array `source = [...]` fails closed CLEANLY (no AttributeError crash)
+try:
+    _e3, _f3 = _read_ledger_body('source = ["a", "b"]\n')
+    _ok3 = _f3 is not None and "array of tables" in _f3.msg
+except Exception:
+    _ok3 = False
+record("25-fp: a plain-array (non-array-of-tables) ledger fails closed, does NOT crash", _ok3)
+# the floor is SATISFIED by a minimal ledger carrying both required ids (not green-by-over-strictness)
+_e4, _f4 = _read_ledger_body(
+    f'[[source]]\nid = "l-neg1-cage"\nkind = "file"\nfile = "x"\nfingerprint = "sha256:{_E64}"\n'
+    f'[[source]]\nid = "spec-0.7-physical-tree"\nkind = "file"\nfile = "y"\nfingerprint = "sha256:{_E64}"\n')
+record("25-fp: a ledger carrying every required seed id passes the floor (no fatal)", _f4 is None)
+# P3: list `contains` is the exact G69 OR-dormancy — dormant if ANY marker present, active if NONE
+_DL = {"id": "spec-0.7-physical-tree", "kind": "file", "file": _DOC, "fingerprint": "sha256:" + _E64,
+       "dormant": {"file": "CLAUDE.md", "contains": ["PLACEHOLDER", "P1.64"]}}
+record("25-fp: list `contains` is dormant when ANY marker is present (PLACEHOLDER alone)",
+       _ff([_DL], {_DOC: _CONTENT, "CLAUDE.md": "this is a PLACEHOLDER stub\n"}) == [])
+record("25-fp: list `contains` is ACTIVE (caught) when NO marker is present",
+       any("'spec-0.7" in f.msg for f in _ff([_DL], {_DOC: _CONTENT, "CLAUDE.md": "real finalized map\n"})))
 record("8 threat-parity: a §5 row citing a non-catalogue gate -> caught",
        any("G9999" in f.msg for f in m.doc8_threat_parity(
            dctx({"docs/security/security-concept.md": "| **T1** d | c | G9999 |\n",

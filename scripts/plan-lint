@@ -25,10 +25,12 @@ Exit:  0 = clean; 1 = >=1 finding; 2 = a required target is missing / a usage er
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import posixpath
 import re
 import sys
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -625,11 +627,169 @@ def _doc_link_targets(line: str):
         yield t
 
 
+# --- check-25 leg (c2): the per-source content-fingerprint freshness ledger (P0.3.12) ------------
+# The "described-the-old-way" drift the resolution leg (b) and the name-matching leg (c1) cannot see:
+# an authoritative SOURCE whose CONTENT changes while its NAME/id persists (a Gnn row reworded, the
+# §0.7 physical tree edited, a version pin bumped) leaves every doc that DESCRIBES it silently stale.
+# The committed ledger scripts/doc-fingerprints.toml records, per source region, the sha256 the
+# describing docs were reasoned against; this leg recomputes it and FAILS on a mismatch — the same
+# content-fingerprint discipline the G29 suppression ledger uses (build-gates §6 check 25(c) / the
+# G68 "load-bearing" freshness leg). The ledger is L(-1) (matched by scripts/*.toml, G71): a silent
+# re-bless would waive freshness on exactly the source it guards, so a re-bless is owner-acked.
+_FP_LEDGER = "scripts/doc-fingerprints.toml"
+# The minimum binding FLOOR: these ids MUST be present in the ledger. An empty/seedless ledger (or one
+# from which a required seed was silently dropped) would make the freshness axis no-op — a fail-OPEN
+# hole against the contract's "cannot silently no-op". Retiring a binding means editing BOTH the ledger
+# AND this set in one owner-acked L(-1) commit (the cage friction is deliberate, G71).
+_REQUIRED_FP_IDS = {"l-neg1-cage", "spec-0.7-physical-tree"}
+_FP_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_SECTION_HEADING_RE = re.compile(r"^(#{1,6})\s+(\d+(?:\.\d+)*)\b")
+
+
+def _lf(text: str) -> str:
+    """LF-normalize so a fingerprint is stable across a CRLF/LF checkout (the G52 footgun)."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _extract_section(text: str, anchor: str) -> str | None:
+    """The raw body of the numbered heading whose number == `anchor` (e.g. '0.7'), from its heading
+    line through the line before the next heading of level <= its own. Headings inside ``` / ~~~
+    fences are ignored (a code sample's '## x' is not a real heading). None if no such heading."""
+    lines = _lf(text).split("\n")
+    fence = None
+    start = start_level = None
+    end = len(lines)
+    for i, line in enumerate(lines):
+        s = line.lstrip()
+        if fence is None and (s.startswith("```") or s.startswith("~~~")):
+            fence = s[:3]
+            continue
+        if fence is not None:
+            if s.startswith(fence):
+                fence = None
+            continue
+        mh = _SECTION_HEADING_RE.match(line)
+        if not mh:
+            continue
+        level, num = len(mh.group(1)), mh.group(2)
+        if start is None:
+            if num == anchor:
+                start, start_level = i, level
+        elif level <= start_level:
+            end = i
+            break
+    if start is None:
+        return None
+    return "\n".join(lines[start:end])
+
+
+def _fp_region(entry: dict, root: Path, docs: dict[str, str]) -> tuple[str | None, str | None]:
+    """(region_text, error) for one ledger entry. Reads from `docs` when the source is in the doc
+    set, else from the filesystem (the cage TOMLs live under scripts/, outside docs/). A non-None
+    error means the region could not be resolved (fail-closed)."""
+    rel = entry.get("file")
+    if not rel:
+        return None, "missing 'file'"
+    text = docs.get(rel)
+    if text is None:
+        p = root / rel
+        if not p.is_file():
+            return None, f"source file {rel} not found"
+        text = p.read_text(encoding="utf-8", errors="replace")
+    kind = entry.get("kind")
+    if kind == "file":
+        return _lf(text), None
+    if kind == "section":
+        anchor = entry.get("anchor")
+        if not anchor:
+            return None, "kind='section' needs 'anchor'"
+        body = _extract_section(text, anchor)
+        if body is None:
+            return None, f"section §{anchor} not found in {rel} (renamed/removed — re-point the entry)"
+        return body, None
+    return None, f"unknown kind {kind!r} (expected 'file' or 'section')"
+
+
+def _freshness_fingerprints(entries: list[dict], root: Path, docs: dict[str, str]) -> list[Finding]:
+    """Recompute each ledger entry's source-region sha256 and compare to the recorded fingerprint.
+    A dormant entry (its `dormant.file` still contains ANY string in `dormant.contains`, which is a
+    str or list) is skipped — the binding's describing doc is not yet authored (e.g. §0.7→§1a while
+    CLAUDE.md still carries 'PLACEHOLDER'/'P1.64', the EXACT OR-condition G69 check 26 keys on). Every
+    other defect (malformed/missing field, unresolved region, hash mismatch) FAILS closed. The
+    minimum-seed FLOOR (_REQUIRED_FP_IDS) is enforced upstream in _read_fp_ledger, not here, so this
+    pure function stays drivable with arbitrary synthetic entries by the self-test."""
+    out: list[Finding] = []
+    for entry in entries:
+        eid = entry.get("id", "<no-id>")
+        dormant = entry.get("dormant")
+        if isinstance(dormant, dict):
+            dfile, needle = dormant.get("file"), dormant.get("contains")
+            needles = needle if isinstance(needle, list) else ([needle] if needle else [])
+            if dfile and needles:                           # a malformed/empty dormant falls through = ACTIVE (fail-closed)
+                dtext = docs.get(dfile)
+                if dtext is None:
+                    dp = root / dfile
+                    dtext = dp.read_text(encoding="utf-8", errors="replace") if dp.is_file() else ""
+                if any(n in dtext for n in needles):        # ANY marker present => dormant (the exact G69 check-26 OR)
+                    continue                                # dormant: the describing doc is not yet authored
+        recorded = entry.get("fingerprint", "")
+        if not isinstance(recorded, str) or not _FP_RE.match(recorded):
+            out.append(Finding("25:doc-graph", _FP_LEDGER, 0,
+                               f"freshness-fingerprint: entry {eid!r} has a malformed fingerprint "
+                               f"{recorded!r} (want 'sha256:<64 lowercase hex>')"))
+            continue
+        region, err = _fp_region(entry, root, docs)
+        if err is not None:
+            out.append(Finding("25:doc-graph", _FP_LEDGER, 0,
+                               f"freshness-fingerprint: entry {eid!r} — {err}"))
+            continue
+        actual = "sha256:" + hashlib.sha256(region.encode("utf-8")).hexdigest()
+        if actual != recorded:
+            out.append(Finding("25:doc-graph", _FP_LEDGER, 0,
+                               f"freshness-fingerprint: source {eid!r} ({entry.get('file')}) changed "
+                               f"since its describing docs were reasoned against it — re-verify "
+                               f"{entry.get('describes', [])} and re-bless the fingerprint in THIS "
+                               f"commit (an L(-1) re-bless, G71). recorded={recorded} actual={actual}"))
+    return out
+
+
+def _read_fp_ledger(root: Path) -> tuple[list[dict], Finding | None]:
+    """Parse scripts/doc-fingerprints.toml -> ([[source]] entries, fatal-finding-or-None). A missing,
+    unparseable, mis-shaped (not an array OF TABLES), OR floor-violating (a required seed id absent)
+    committed ledger is fail-closed — so the freshness axis can NEVER silently no-op (an empty/seedless
+    ledger, or one a required binding was dropped from, is itself a defect, not a clean pass)."""
+    p = root / _FP_LEDGER
+    if not p.is_file():
+        return [], Finding("25:doc-graph", _FP_LEDGER, 0,
+                           "freshness-fingerprint: the committed ledger is missing — cannot assert "
+                           "doc-graph freshness (fail-closed)")
+    try:
+        data = tomllib.loads(p.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as e:
+        return [], Finding("25:doc-graph", _FP_LEDGER, 0,
+                           f"freshness-fingerprint: ledger is unparseable TOML ({e}) — fail-closed")
+    entries = data.get("source", [])
+    if not isinstance(entries, list) or any(not isinstance(e, dict) for e in entries):
+        return [], Finding("25:doc-graph", _FP_LEDGER, 0,
+                           "freshness-fingerprint: ledger [[source]] must be an array of tables — fail-closed")
+    missing = sorted(_REQUIRED_FP_IDS - {e.get("id") for e in entries})
+    if missing:
+        return [], Finding("25:doc-graph", _FP_LEDGER, 0,
+                           f"freshness-fingerprint: the ledger is missing required seed(s) {missing} — "
+                           "the freshness axis would silently no-op; re-seed (or, to retire a binding, "
+                           "update _REQUIRED_FP_IDS in the SAME owner-acked L(-1) commit) — fail-closed")
+    return entries, None
+
+
 def doc25_doc_graph(ctx: Ctx) -> list[Finding]:
-    """Check 25 (the G68 leg): (a) cross-doc reference resolution — every `[..](relpath)` link to a
-    repo file resolves (a dangling .md link without a forward-cue fails); (b) no orphan — every
-    tracked doc is linked-to by another doc (the roots excepted). (c) the described-the-old-way
-    freshness fingerprint is a recorded P1 refinement (see the delivered note)."""
+    """Check 25 (the G68 leg): (a) no orphan — every tracked doc is linked-to by another doc (the
+    roots excepted); (b) cross-doc reference resolution — every `[..](relpath)` link to a repo file
+    resolves (a dangling .md link without a registered forward-target fails); (c) freshness, in two
+    axes — (c1) a doc still NAMING a removed/renamed gate-id or threat-class is stale (the
+    vanished-token case), and (c2) the per-source content-fingerprint ledger
+    scripts/doc-fingerprints.toml catches the same-name drift the resolution + (c1) legs cannot — a
+    source whose CONTENT changed while its name persisted, leaving its describing docs stale
+    (build-gates §6 check 25(c) / the G68 'load-bearing' freshness leg, P0.3.12)."""
     out = []
     docset = set(ctx.docs)
     linked_to: set[str] = set()
@@ -670,6 +830,13 @@ def doc25_doc_graph(ctx: Ctx) -> list[Finding]:
                 if tn not in THREAT_CLASSES:
                     out.append(Finding("25:doc-graph", rel, ln,
                                        f"freshness: names threat class {tn} which is not in the canonical §0.11 set"))
+    # (c2) FRESHNESS — the content-fingerprint axis (the same-name drift c1 cannot see); fail-closed
+    # on a missing/unparseable ledger so the freshness assertion can never silently no-op.
+    entries, fatal = _read_fp_ledger(ctx.root)
+    if fatal is not None:
+        out.append(fatal)
+    else:
+        out.extend(_freshness_fingerprints(entries, ctx.root, ctx.docs))
     return out
 
 
