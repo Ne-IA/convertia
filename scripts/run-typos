@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""run-typos - the G51 prose typo gate driver (P0.3.11).
+
+Wraps the pinned, checksum-verified `typos` (typos-cli) BINARY (.gate-tools/bin/typos) so the
+PUBLIC-FACING-PROSE scope is ONE testable place: a typo in the security policy / the minisign
+verify recipe / a user-facing string is a trust-damaging defect the marker gates G8/G21 (which scan
+for deferral markers, not prose) cannot catch. typos is a CURATED-LIST finder (near-zero false
+positives on Rust/TS identifiers), driven by the committed `.typos.toml` allowlist.
+
+SCOPE (build-gates.md G51) - the public-facing prose, NOT the whole repo (the plan/spec docs carry
+domain terms that would false-positive). The list is filtered to the files that EXIST: the security
+docs are live now; `SECURITY.md`/`PRIVACY.md`/`TRADEMARK.md` + the user-facing string catalog join
+the scan automatically as they land in P0.6/P1 (no code change - just the files appearing).
+
+stdlib-only. L(-1) security-critical (scripts/l-neg1-files.toml, G71). Exit: 0 = clean (or no scope
+file exists yet / binary absent on a dev box); 1 = a typo was found; 2 = bad invocation.
+"""
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG = ROOT / ".typos.toml"
+
+# the G51 public-facing-prose scope (filtered to existing files); P0.6/P1 files join as they land.
+SCOPE = [
+    "SECURITY.md",
+    "PRIVACY.md",
+    "TRADEMARK.md",
+    "docs/security/security-concept.md",
+    "docs/security/build-gates.md",
+    # P1: the user-facing error/string catalog (e.g. src/.../ui strings) is added here when it lands.
+]
+
+
+def typos_bin() -> str | None:
+    for cand in (ROOT / ".gate-tools" / "bin" / "typos.exe", ROOT / ".gate-tools" / "bin" / "typos"):
+        if cand.is_file():
+            return str(cand)
+    return shutil.which("typos")
+
+
+def main() -> int:
+    tb = typos_bin()
+    if tb is None:
+        print("[G51] SKIP - pinned typos binary not found (run scripts/install-gate-tools); the L4 "
+              "gate-tooling job installs it and runs this for real.")
+        return 0
+    if not CONFIG.is_file():
+        print(f"[G51] FAIL: {CONFIG} missing", file=sys.stderr)
+        return 2
+    targets = [str(ROOT / p) for p in SCOPE if (ROOT / p).is_file()]
+    if not targets:
+        print("[G51] no public-facing prose file exists yet (the security docs land first) - pass")
+        return 0
+    # typos exits 2 when typos are found, 0 when clean; map any non-zero to a gate failure (1).
+    r = subprocess.run([tb, "--config", str(CONFIG), *targets])
+    if r.returncode == 0:
+        print(f"[G51] no typos in {len(targets)} public-facing prose file(s)")
+        return 0
+    print("[G51] FAIL: a typo was found in public-facing prose (fix it, or allowlist a genuine "
+          "domain term in .typos.toml with justification)", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

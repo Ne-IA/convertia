@@ -100,3 +100,39 @@ linux-aarch64  = { url = "https://github.com/gitleaks/gitleaks/releases/download
 macos-x86_64   = { url = "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_darwin_x64.tar.gz",   sha256 = "dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709" }
 macos-aarch64  = { url = "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_darwin_arm64.tar.gz", sha256 = "b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5" }
 windows-x86_64 = { url = "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_windows_x64.zip",     sha256 = "d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e", asset_kind = "zip" }
+
+# --- typos (typos-cli) - the curated-list prose typo finder (G51, P0.3.11). Ships as a per-platform
+# ARCHIVE (tar.gz linux/macos, zip windows) holding the `typos` binary + docs/LICENSE; the archive
+# sha256 is verified before extraction. Linux build is the static musl target. ---
+[tools.typos]
+version       = "1.47.2"
+origin        = "https://github.com/crate-ci/typos/releases/download/v1.47.2/"
+bin_name      = "typos"
+asset_kind    = "targz"   # default (linux/macos); the windows platform overrides to "zip"
+corroboration = "crate-ci/typos release v1.47.2 publishes NO checksums.txt, so each pinned platform archive sha256 was computed from the official GitHub release download AND corroborated by a 2nd INDEPENDENT origin: the ScoopInstaller/Main bucket records the IDENTICAL windows_msvc.zip sha256 (f4a12400..., version 1.47.2); Homebrew typos-cli stable also == 1.47.2. typos publishes no build-provenance attestation (`gh attestation verify --owner crate-ci` -> HTTP 404). RESIDUAL (honest): no attestation/reproducible-build link to the prebuilt archives; a future attested typos release should be re-pinned via the attestation arm. Established 2026-06-17 by Co-Pilot (Build-Loop), owner-acked."
+
+[tools.typos.platforms]
+linux-x86_64   = { url = "https://github.com/crate-ci/typos/releases/download/v1.47.2/typos-v1.47.2-x86_64-unknown-linux-musl.tar.gz",  sha256 = "7aef58932fc123b4cf4b40d86468e89a3297d80169051d7cfd13a235e05fc426" }
+linux-aarch64  = { url = "https://github.com/crate-ci/typos/releases/download/v1.47.2/typos-v1.47.2-aarch64-unknown-linux-musl.tar.gz", sha256 = "596d5c6b9ecf34307f68bea649178c5b45a4398fe3a1fcef9598e85aa2ccb742" }
+macos-x86_64   = { url = "https://github.com/crate-ci/typos/releases/download/v1.47.2/typos-v1.47.2-x86_64-apple-darwin.tar.gz",        sha256 = "469a2d9fc894b0cdcec6e4fa3719b4c4638e195feee6517d4845450f8e8985c6" }
+macos-aarch64  = { url = "https://github.com/crate-ci/typos/releases/download/v1.47.2/typos-v1.47.2-aarch64-apple-darwin.tar.gz",       sha256 = "23ca24a9186b5cb395b5f6c8eea8cdb02911c8980833e016454b56e90c3bd474" }
+windows-x86_64 = { url = "https://github.com/crate-ci/typos/releases/download/v1.47.2/typos-v1.47.2-x86_64-pc-windows-msvc.zip",        sha256 = "f4a12400c48cc08e7f5435b64d0ecb08c54091b97c3ccabf6cea178d0969ca1f", asset_kind = "zip" }
+
+# --- editorconfig-checker - the EOL/charset/final-newline hygiene checker (G52, P0.3.11). The
+# `editorconfig-checker-<os>-<arch>` archives hold a CLEAN `editorconfig-checker` binary at the
+# archive root (the `ec-*` archives use a platform-named binary that the basename-match installer
+# cannot resolve, so they are NOT used). macOS is the universal `darwin-all` archive (both arches).
+# Ships tar.gz (linux/macos) + zip (windows); the archive sha256 is verified before extraction. ---
+[tools.editorconfig-checker]
+version       = "3.7.0"
+origin        = "https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v3.7.0/"
+bin_name      = "editorconfig-checker"
+asset_kind    = "targz"   # default (linux/macos); the windows platform overrides to "zip"
+corroboration = "official editorconfig-checker checksums.txt (GitHub release v3.7.0) - each pinned platform archive downloaded + `sha256sum -c`-verified against it (all OK). 2nd origin (version/project identity): Homebrew editorconfig-checker stable == 3.7.0 (builds from the v3.7.0 source tag). No build-provenance attestation (`gh attestation verify --owner editorconfig-checker` -> HTTP 404) and not in Scoop. RESIDUAL (honest, same class as gitleaks): no attestation + no independent recording of the prebuilt BINARY archive hashes (Homebrew builds from source), so binary-hash trust rests on the official checksums.txt; a future attested release should be re-pinned via the attestation arm. Established 2026-06-17 by Co-Pilot (Build-Loop), owner-acked."
+
+[tools.editorconfig-checker.platforms]
+linux-x86_64   = { url = "https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v3.7.0/editorconfig-checker-linux-amd64.tar.gz", sha256 = "4b0eeb52a1b337cdd6d23a38dd0b1d9d4fc8e66840939819af32ae8388770fb4" }
+linux-aarch64  = { url = "https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v3.7.0/editorconfig-checker-linux-arm64.tar.gz", sha256 = "8c29f86796192439beea1ccbe91df9d6fc4eaab23d50486b6a0d36dc40ad3660" }
+macos-x86_64   = { url = "https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v3.7.0/editorconfig-checker-darwin-all.tar.gz",  sha256 = "1045b3c31216294a9ea47cc846c3522cd9a79d72670525c1575d6b8dc58dbe68" }
+macos-aarch64  = { url = "https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v3.7.0/editorconfig-checker-darwin-all.tar.gz",  sha256 = "1045b3c31216294a9ea47cc846c3522cd9a79d72670525c1575d6b8dc58dbe68" }
+windows-x86_64 = { url = "https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v3.7.0/editorconfig-checker-windows-amd64.zip",   sha256 = "3a57217fa4e132c797c7b07f0a9d31cf093455c0fa90843a51ab1c2cb190888f", asset_kind = "zip" }

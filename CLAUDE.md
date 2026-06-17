@@ -260,7 +260,7 @@ list. The derivation is recorded in P0.6 of
 - **An L(-1) security-critical-file edit by the autonomous Build-Loop, or any L(-1)
   edit lacking the `L-neg1-ack: owner` trailer.** The files that can silently weaken an
   enforcement plane (gate scripts, `lefthook.yml`, `.github/**`, `deny.toml`,
-  `.gitleaks.toml`, `.npmrc`, the cargo-vet exemption set, `engines.lock`, the Tauri capabilities,
+  `.gitleaks.toml`, `.npmrc`, `.editorconfig`, `.typos.toml`, the cargo-vet exemption set, `engines.lock`, the Tauri capabilities,
   the reviewer rubric, the security/process docs, and `scripts/l-neg1-files.toml` itself)
   are the **L(-1) set** (non-exhaustive; the authoritative list is
   `scripts/l-neg1-files.toml`, enumerated in security-concept §2) — the loop NEVER edits

@@ -1,0 +1,26 @@
+# editorconfig.org — the committed cross-platform EOL / charset / final-newline / trailing-whitespace
+# policy enforced by G52 (editorconfig-checker, P0.3.11). Scope is the hygiene axes G3 (cargo fmt /
+# prettier) does NOT cover: `.toml` / `.yaml` / `.md` / shell + the stdlib gate scripts. Paired with
+# `.gitattributes` (`eol=lf`) so `core.autocrlf` on a Windows checkout cannot drift a tracked file to
+# CRLF (the footgun a `.sh` hook would hit). Indentation is deliberately NOT asserted here — G52's
+# contract is EOL/charset/final-newline, and rustfmt/prettier own indentation. `root = true` stops the
+# editorconfig search at the repo root. This file is L(-1) (scripts/l-neg1-files.toml, G71): weakening
+# it silently disarms the EOL/charset guard.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.md]
+# a Markdown hard line-break is two trailing spaces — do not trim them (charset/eol/final-newline still apply)
+trim_trailing_whitespace = false
+
+[*.{png,ico,icns,svg,gz,zip,woff,woff2,ttf,otf,jpg,jpeg,webp,pdf}]
+# binary / asset files: assert no text hygiene (editorconfig-checker also auto-skips detected binaries)
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset

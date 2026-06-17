@@ -1,0 +1,20 @@
+# Line-ending normalisation. The repo is LF everywhere; `eol=lf` makes git store AND check out LF
+# regardless of `core.autocrlf`, so a Windows clone cannot introduce CRLF that G52 (editorconfig-checker)
+# would then flag locally. `text=auto` lets git auto-detect text vs binary. This file is L(-1)
+# (scripts/l-neg1-files.toml, G71).
+* text=auto eol=lf
+
+# Binary / asset files: never EOL-normalise, never diff as text.
+*.png  binary
+*.ico  binary
+*.icns binary
+*.jpg  binary
+*.jpeg binary
+*.webp binary
+*.pdf  binary
+*.gz   binary
+*.zip  binary
+*.woff  binary
+*.woff2 binary
+*.ttf  binary
+*.otf  binary

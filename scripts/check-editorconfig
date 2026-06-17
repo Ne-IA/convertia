@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""check-editorconfig - the G52 EOL / charset / final-newline hygiene gate driver (P0.3.11).
+
+Wraps the pinned, checksum-verified `editorconfig-checker` BINARY (.gate-tools/bin/editorconfig-checker)
+so the cross-platform hygiene G3 (cargo fmt / prettier) does NOT cover - line endings, charset, a
+final newline, trailing whitespace on `.toml`/`.yaml`/`.md`/shell + the stdlib gate scripts - is
+enforced. A CRLF drift in a `.sh` hook (or a security doc) is a real Windows footgun G3 misses; this
+gate caught exactly that on its first run. Rules live in the committed `.editorconfig`; `.gitattributes`
+(`eol=lf`) keeps a Windows checkout from drifting to CRLF in the first place.
+
+editorconfig-checker reads `.editorconfig`, scans the tree from the repo root, respects `.gitignore`
+(so the gitignored `.gate-tools/` binaries are skipped) + auto-skips detected binary files.
+
+stdlib-only. L(-1) security-critical (scripts/l-neg1-files.toml, G71). Exit: 0 = clean (or binary
+absent on a dev box); 1 = a hygiene violation; 2 = bad invocation / missing .editorconfig.
+"""
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+EDITORCONFIG = ROOT / ".editorconfig"
+
+
+def ec_bin() -> str | None:
+    for cand in (ROOT / ".gate-tools" / "bin" / "editorconfig-checker.exe",
+                 ROOT / ".gate-tools" / "bin" / "editorconfig-checker"):
+        if cand.is_file():
+            return str(cand)
+    return shutil.which("editorconfig-checker")
+
+
+def main() -> int:
+    eb = ec_bin()
+    if eb is None:
+        print("[G52] SKIP - pinned editorconfig-checker binary not found (run scripts/install-gate-tools); "
+              "the L4 gate-tooling job installs it and runs this for real.")
+        return 0
+    if not EDITORCONFIG.is_file():
+        print(f"[G52] FAIL: {EDITORCONFIG} missing (the committed policy G52 enforces)", file=sys.stderr)
+        return 2
+    r = subprocess.run([eb], cwd=str(ROOT))
+    if r.returncode == 0:
+        print("[G52] EOL / charset / final-newline / trailing-whitespace hygiene OK")
+        return 0
+    print("[G52] FAIL: an EOL/charset/final-newline/trailing-whitespace violation (normalise the file "
+          "to LF + utf-8 + a final newline; `.gitattributes` eol=lf prevents the drift)", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

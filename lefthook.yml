@@ -50,6 +50,10 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
       run: python3 scripts/check-js-supply-chain
     repo-invariants: # G9 - repo-invariant grep gate ((e) cargo-vet-mutator LIVE; a-d,f target-absent until P1)
       run: python3 scripts/check-repo-invariants
+    typos:           # G51 - prose typo gate (typos) over the public-facing-prose scope
+      run: python3 scripts/run-typos
+    editorconfig:    # G52 - EOL/charset/final-newline hygiene (editorconfig-checker + .editorconfig)
+      run: python3 scripts/check-editorconfig
     # L1 gate slots (filled by their boxes): clippy diff + tsc diff (P0.4).
 
 commit-msg:        # L3 - fires at `git commit` (after pre-commit, before pre-push)

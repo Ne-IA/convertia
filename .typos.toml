@@ -1,0 +1,17 @@
+# typos-cli configuration for G51 (the prose typo gate, P0.3.11). Allowlists domain terms / valid
+# spellings that typos' curated list would otherwise flag in the public-facing prose scope. Every entry
+# is a deliberate allowlist decision — adding one is the same "suppression ledger" discipline as the
+# gitleaks allowlist, so this file is L(-1) (scripts/l-neg1-files.toml, G71): a real typo silently
+# allowlisted here would be un-scanned. Keep entries minimal + as NARROW as possible.
+[default.extend-words]
+# "mis" — the public-facing-prose scope is technical security docs that BOTH use "mis-" as a prefix
+# (mis-stripped / mis-scoped / mis-read) AND discuss the bare token "mis" itself (these gate notes do).
+# A prefix-only `extend-ignore-re` would FALSE-POSITIVE on that legitimate discussion and block doc
+# commits; so this whole-word self-map (`mis = "mis"`) accepts the bare token. HONEST LEDGER NOTE
+# (G1 review P2): this DOES mask a genuine standalone `mis`->`miss` typo — accepted because such a typo
+# in carefully-authored technical security prose is implausible AND the G1 dual-review reads the prose
+# (the semantic backstop); narrow this to the prose files (e.g. a `[type.md]` scope) if app source ever
+# enters the typos scope.
+mis = "mis"
+# "unparseable" is a valid alternative spelling of "unparsable" used consistently in the spec/security docs.
+unparseable = "unparseable"
