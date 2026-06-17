@@ -38,8 +38,10 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
       run: python3 scripts/check-gitleaks-allowlist
     csp-capabilities:     # G47 - WebView CSP + Tauri capability lockdown (skips until P1's conf lands)
       run: python3 scripts/check-csp-capabilities
+    deferral:        # G8 - NEW deferral/dead markers in the staged production diff (fail-open w/o base)
+      run: python3 scripts/check-deferral --diff
     # L1 gate slots (filled by their boxes): plan-lint --quiet on the docs glob (P0.3.5) /
-    # G8 new-marker (P0.3.4) / clippy diff + tsc diff (P0.4).
+    # clippy diff + tsc diff (P0.4).
 
 commit-msg:        # L3 - fires at `git commit` (after pre-commit, before pre-push)
   commands:
@@ -57,5 +59,7 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/run-gitleaks --range
     dual-review:     # G12 - the Dual-Review trailer on each unpushed non-check-off commit
       run: python3 scripts/check-dual-review
+    deferral:        # G21 - full production-tree deferral/dead-marker scan (fail-closed; no diff-base excuse)
+      run: python3 scripts/check-deferral --full
     # L2 gate slots (filled by their boxes): plan-lint full (P0.3.5) /
-    # G8 + G70 full-tree (P0.3.4 / P0.3.14) / clippy --all-targets + tsc project (P0.4).
+    # G70 full-tree (P0.3.14) / clippy --all-targets + tsc project (P0.4).

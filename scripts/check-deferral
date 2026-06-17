@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""check-deferral - G8 (L1 diff) / G21 (L2+L4 full-tree) deferral / dead-marker gate (P0.3.4).
+
+A phase-sequenced autonomous loop writes "comes in P5" / "for now" / a quiet `stub` instead of a
+literal `TODO` (a prior-project audit found 308 such untracked gaps). This gate scans PRODUCTION code
+(the product source — NOT docs, NOT the gate tooling, so it never flags its own marker list or the
+CLAUDE.md/spec anti-pattern catalogues) for:
+
+  HARD markers (CLAUDE.md §5 hard rules; forbidden ANYWHERE in a production line):
+    TODO / FIXME, the Rust macros unimplemented! / todo! / unreachable! / dbg! / println! /
+    compile_error!, console.log, the TS type-escapes `: any` / `as any`, inline `style=` / `style:`.
+  SOFT deferral phrasings (matched ONLY inside COMMENT text, so a legit `placeholder=` attribute or
+    prose word is not flagged): stub / placeholder / phase 2 / later / for now / temporary / not yet /
+    will add / comes in P<n> / deferred to / once <phase> / currently absent.
+
+SUPPRESSION: a `[Build-Session-Entscheidung: <box-id>]` tag within ±6 lines is a documented choice
+site, not a deferral, and suppresses. A bare `[!extern]` suppresses ONLY in `.md` under `docs/plan/`
+— NEVER in production code (a G24 negative self-test plants `[!extern]` in a `.rs` comment beside a
+deferral and asserts it STILL FAILS).
+
+PLANE / FAIL-MODE: --diff at L1 (new added production lines only; FAIL-OPEN if no diff base). --full
+at L2 pre-push AND the L4 CI mirror (whole production tree; "no diff base" is unreachable; FAIL-CLOSED).
+The product source lands in P1 — until then --full finds no production files and passes (target-absent).
+stdlib-only. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+
+Usage: check-deferral {--diff | --full}
+Exit:  0 = no unsuppressed marker (or no production files yet); 1 = a deferral/dead marker; 2 = bad invocation.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# production-code scope: the product source only (NOT docs / scripts tooling / pure config)
+PROD_ROOTS = ("src", "src-tauri/src")
+PROD_EXTS = {".rs", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css"}
+# first-party production files that live OUTSIDE the roots (spec §0.7): the tauri build script + the
+# frontend build entry/config. (NB index.html's `<!-- -->` SOFT-comment scan is a P1 refinement —
+# HARD markers + its inline `<script>` `//` comments ARE scanned today.)
+PROD_FILES = {"src-tauri/build.rs", "index.html", "vite.config.ts", "vite.config.js"}
+TEST_PAT = re.compile(r"(^|/)(tests?|__tests__|fuzz|benches)/|\.(test|spec)\.")
+
+# HARD markers — forbidden anywhere in a production line
+HARD_MARKERS = [
+    ("TODO/FIXME", re.compile(r"\b(?:TODO|FIXME)\b")),
+    ("unimplemented!", re.compile(r"\bunimplemented!")),
+    ("todo!", re.compile(r"\btodo!")),
+    ("unreachable!", re.compile(r"\bunreachable!")),
+    ("dbg!", re.compile(r"\bdbg!")),
+    ("println!", re.compile(r"\bprintln!")),
+    ("compile_error!", re.compile(r"\bcompile_error!")),
+    ("console.log", re.compile(r"\bconsole\.log\b")),
+    (": any", re.compile(r":\s*any\b")),
+    ("as any", re.compile(r"\bas\s+any\b")),
+    ("inline style=", re.compile(r"\bstyle\s*=")),
+    ("inline style:", re.compile(r"\bstyle\s*:")),
+]
+# SOFT deferral phrasings — matched ONLY in comment text (avoid legit attrs/prose)
+SOFT_MARKERS = [
+    ("stub", re.compile(r"(?i)\bstub\b")),
+    ("placeholder", re.compile(r"(?i)\bplaceholder\b")),
+    ("phase 2", re.compile(r"(?i)\bphase\s*2\b")),
+    ("later", re.compile(r"(?i)\blater\b")),
+    ("for now", re.compile(r"(?i)\bfor now\b")),
+    ("temporary", re.compile(r"(?i)\btemporary\b")),
+    ("not yet", re.compile(r"(?i)\bnot yet\b")),
+    ("will add", re.compile(r"(?i)\bwill add\b")),
+    ("comes in P<n>", re.compile(r"(?i)\bcomes in p\s*\d")),
+    ("deferred to", re.compile(r"(?i)\bdeferred to\b")),
+    ("once <phase>", re.compile(r"(?i)\bonce (?:p\d|phase)\b")),
+    ("currently absent", re.compile(r"(?i)\bcurrently absent\b")),
+]
+SUPPRESS_TAG_RE = re.compile(r"\[Build-Session-Entscheidung:\s*[^\]]+\]")
+EXTERN_RE = re.compile(r"\[!extern\]")
+SUPPRESS_WINDOW = 6
+
+
+def is_production_file(relpath: str) -> bool:
+    p = relpath.replace("\\", "/")
+    if p in PROD_FILES:
+        return True
+    if not any(p == r or p.startswith(r + "/") for r in PROD_ROOTS):
+        return False
+    if Path(p).suffix not in PROD_EXTS:
+        return False
+    return not TEST_PAT.search(p)
+
+
+def _is_docs_plan_md(relpath: str) -> bool:
+    p = relpath.replace("\\", "/")
+    return p.startswith("docs/plan/") and p.endswith(".md")
+
+
+def _comment_spans(line: str, in_block: bool) -> tuple[str, bool]:
+    """The comment text of `line` given the prior block-comment state, plus the new state. STATEFUL
+    (so a `/* … */` body line with no leading `*` is still comment) and STRING-AWARE (so a `//` or
+    `/*` inside a "…"/'…' literal — e.g. a URL `"http://x"` — is NOT a comment start). Returns
+    (comment_text, in_block_after)."""
+    if in_block:
+        end = line.find("*/")
+        if end == -1:
+            return line, True                          # whole line still inside the block
+        rest_c, nb = _comment_spans(line[end + 2:], False)
+        return line[:end] + "\n" + rest_c, nb
+    i, n = 0, len(line)
+    while i < n:
+        c = line[i]
+        if c in "\"'`":                                 # a quote — a string span ONLY if it closes here
+            j, closed = i + 1, False
+            while j < n:
+                if line[j] == "\\":
+                    j += 2
+                    continue
+                if line[j] == c:
+                    closed = True
+                    break
+                j += 1
+            if closed:
+                i = j + 1                               # skip the whole string literal (e.g. a URL)
+                continue
+            # no closing quote on the line: an apostrophe (e.g. in a regex `/don't/`) or an
+            # unterminated string (invalid code) — NOT a string span. Treat the quote as a plain
+            # char so a following // or /* SOFT comment is still detected (G1 re-review P1 fix).
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and line[i + 1] == "/":
+            return line[i + 2:], False                  # // line comment to EOL
+        if c == "/" and i + 1 < n and line[i + 1] == "*":
+            end = line.find("*/", i + 2)
+            if end == -1:
+                return line[i + 2:], True               # /* opens a block to EOL
+            rest_c, nb = _comment_spans(line[end + 2:], False)
+            return line[i + 2:end] + "\n" + rest_c, nb
+        i += 1
+    return "", False
+
+
+def is_suppressed(lines: list[str], idx: int, relpath: str) -> bool:
+    lo, hi = max(0, idx - SUPPRESS_WINDOW), min(len(lines), idx + SUPPRESS_WINDOW + 1)
+    window = "\n".join(lines[lo:hi])
+    if SUPPRESS_TAG_RE.search(window):
+        return True
+    # a bare [!extern] suppresses ONLY in docs/plan/*.md — never in production code
+    return bool(EXTERN_RE.search(window) and _is_docs_plan_md(relpath))
+
+
+def scan_text(text: str, relpath: str, only_lines: set[int] | None = None) -> list[tuple[int, str, str]]:
+    """(pure) Return [(lineno, marker, line)] for unsuppressed markers. `only_lines` (1-based) limits
+    reporting to those lines (the L1 new-added-lines mode); None = report all (the full-tree mode)."""
+    lines = text.splitlines()
+    out: list[tuple[int, str, str]] = []
+    in_block = False
+    for i, line in enumerate(lines):
+        comment, in_block = _comment_spans(line, in_block)   # update state for EVERY line, even skipped ones
+        if only_lines is not None and (i + 1) not in only_lines:
+            continue
+        hits = [name for name, rx in HARD_MARKERS if rx.search(line)]
+        if comment:
+            hits += [name for name, rx in SOFT_MARKERS if rx.search(comment)]
+        if hits and not is_suppressed(lines, i, relpath):
+            out.append((i + 1, ", ".join(hits), line.strip()))
+    return out
+
+
+def git(*args: str) -> tuple[int, str]:
+    p = subprocess.run(["git", *args], capture_output=True, text=True)
+    return p.returncode, p.stdout
+
+
+def _tracked_production_files() -> list[str]:
+    rc, out = git("ls-files")
+    return [f for f in out.splitlines() if is_production_file(f)] if rc == 0 else []
+
+
+def _added_lines(relpath: str, base: str | None) -> set[int]:
+    """1-based line numbers ADDED in the working/staged diff of relpath (for the L1 new-only mode)."""
+    diff_args = ["diff", "--unified=0", "--no-color"]
+    if base:
+        diff_args.append(base)
+    diff_args += ["--", relpath]
+    rc, out = git(*diff_args)
+    added: set[int] = set()
+    new_ln = 0
+    for line in out.splitlines():
+        m = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
+        if m:
+            new_ln = int(m.group(1))
+            continue
+        if line.startswith("+") and not line.startswith("+++"):
+            added.add(new_ln)
+            new_ln += 1
+        elif not line.startswith("-"):
+            new_ln += 1
+    return added
+
+
+def run_full() -> int:
+    files = _tracked_production_files()
+    if not files:
+        print("[G21] no production source files yet (the product lands in P1) — pass (target-absent)")
+        return 0
+    violations = []
+    for f in files:
+        text = (ROOT / f).read_text(encoding="utf-8", errors="replace")
+        for ln, marker, src in scan_text(text, f):
+            violations.append(f"{f}:{ln}: {marker} — {src[:80]}")
+    if violations:
+        for v in violations:
+            print(f"[G21] FAIL: {v}", file=sys.stderr)
+        print(f"[G21] {len(violations)} unsuppressed deferral/dead marker(s) — full-tree, FAIL-CLOSED", file=sys.stderr)
+        return 1
+    print(f"[G21] no unsuppressed deferral/dead markers in {len(files)} production file(s)")
+    return 0
+
+
+def run_diff() -> int:
+    # the L1 new-marker-only mode: scan added production lines in the staged diff (vs HEAD)
+    rc, _ = git("rev-parse", "--verify", "--quiet", "HEAD")
+    base = "HEAD" if rc == 0 else None      # fail-OPEN: no diff base (fresh repo) -> nothing to compare
+    if base is None:
+        print("[G8] no diff base (fresh repo) — pass (fail-open; the L2/L4 full-tree mirror is fail-closed)")
+        return 0
+    rc, out = git("diff", "--cached", "--name-only", "--diff-filter=ACMR")
+    changed = [f for f in out.splitlines() if is_production_file(f)] if rc == 0 else []
+    violations = []
+    for f in changed:
+        added = _added_lines(f, "--cached")
+        if not added:
+            continue
+        # scan the STAGED (index) blob, not the worktree, so the scanned content + line numbers
+        # agree with the --cached added-line set even when the worktree has since diverged.
+        rc, text = git("show", f":{f}")
+        if rc != 0:
+            continue
+        for ln, marker, src in scan_text(text, f, only_lines=added):
+            violations.append(f"{f}:{ln}: {marker} — {src[:80]}")
+    if violations:
+        for v in violations:
+            print(f"[G8] FAIL: {v}", file=sys.stderr)
+        print(f"[G8] {len(violations)} NEW unsuppressed deferral/dead marker(s) staged", file=sys.stderr)
+        return 1
+    print("[G8] no new unsuppressed deferral/dead markers in the staged production diff")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G8/G21 deferral / dead-marker gate (P0.3.4)")
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--diff", action="store_true", help="L1: scan new staged production lines (fail-open)")
+    mode.add_argument("--full", action="store_true", help="L2/L4: scan the whole production tree (fail-closed)")
+    args = ap.parse_args(argv)
+    return run_diff() if args.diff else run_full()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
