@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""check-csp-capabilities - G47 WebView CSP + Tauri capability structural lint (P0.3.2).
+
+The WebView is the entire T2 attack surface (§0.11). This gate STRUCTURALLY asserts the locked-down
+posture of spec §0.10 by PARSING (json, never regex) the Tauri config + capability allowlists, so a
+silent widening (a remote CSP origin, a capability grant beyond core/log/store, a re-enabled updater,
+devtools in a shipped build) fails the build instead of shipping. Assertions (§0.10 / §7.6 / §7.8.2):
+
+  CSP (`tauri.conf.json -> app.security.csp`): STRUCTURAL equality per directive against the locked
+    §0.10 object below — no extra directive, no missing one, no widened token (a remote origin).
+  Release-hardening keys absent/false: `app.withGlobalTauri`, `app.security.dangerousDisableAsset
+    CspModification`, `app.security.dangerousRemoteDomainIpcAccess`, `app.security.assetProtocol.
+    enable`, `bundle.createUpdaterArtifacts`, any `plugins.updater`/`bundle.updater`/`plugins.deep-link`,
+    any `app.windows[].devtools == true`.
+  `app.windows[].url` is a LOCAL/bundled URI (any `http(s)://` fails).
+  Capabilities (`src-tauri/capabilities/*.json` AND any inline `app.security.capabilities[]` /
+    `app.capabilities[]`): DENY-BY-DEFAULT — every permission must be `core:`/`log:`/`store:`
+    (§0.10 line 1125: "core, log, store — NO dialog, NO opener, NO shell-execute, NO fs"); an
+    allow-list, so `fs:`/`http:`/`opener:`/`dialog:`/`updater:` AND every `shell:` grant
+    (allow-execute/allow-spawn/default/sidecar — §3.3.3: the WebView starts no engine) AND any
+    unknown-dangerous future permission all FAIL. A capability `remote`/`urls` grant (the v2
+    remote-origin-IPC mechanism) collapses the T2 boundary and is denied outright.
+  `index.html`: a `<meta http-equiv="x-dns-prefetch-control" content="off">` element (matched as a
+    unit, either attribute order).
+  No custom URL-scheme registration in any `Info.plist`/`.desktop`/`.reg` under `src-tauri/`.
+
+POSTURE: the conf/capabilities/index.html land in P1 — until `tauri.conf.json` exists this gate
+SKIPS-WITH-WARNING (fail-open, the standard target-absent P0 posture), and is FAIL-CLOSED the moment
+it lands. The pure evaluate_*() functions are driven by the G24 self-test on fixtures. stdlib-only.
+L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+
+Usage: check-csp-capabilities [--conf <tauri.conf.json>] [--capabilities <dir>] [--index <index.html>]
+                              [--src-tauri <dir>]   (defaults: the real src-tauri/ tree)
+Exit:  0 = locked config OK / target-absent skip; 1 = a widening; 2 = unparseable config.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# the LITERAL locked §0.10 CSP object — structural equality per directive (no extra/missing/widened)
+LOCKED_CSP = {
+    "default-src": "'self'",
+    "script-src": "'self'",
+    "style-src": "'self' 'unsafe-inline'",
+    "img-src": "'self' data: blob:",
+    "font-src": "'self'",
+    "connect-src": "'self' ipc: http://ipc.localhost",
+    "media-src": "'self' blob:",
+    "object-src": "'none'",
+    "base-uri": "'self'",
+    "form-action": "'self'",
+    "webrtc": "'block'",
+    "frame-src": "'none'",
+    "frame-ancestors": "'none'",
+}
+# §0.10 deny-by-default: a WebView capability may grant ONLY these prefixes (line 1125). An ALLOW-list,
+# so fs:/http:/opener:/dialog:/updater:/shell:* AND any unknown-dangerous future permission all fail.
+ALLOWED_CAP_PREFIXES = ("core:", "log:", "store:")
+URL_SCHEME_GLOBS = ("**/*.plist", "**/*.desktop", "**/*.reg")  # custom-URL-scheme registration files
+# the dns-prefetch-control:off meta, matched as ONE element in either attribute order
+_DNS_META = (
+    re.compile(r'<meta\b[^>]*\bhttp-equiv\s*=\s*["\']x-dns-prefetch-control["\'][^>]*\bcontent\s*=\s*["\']off["\']', re.I),
+    re.compile(r'<meta\b[^>]*\bcontent\s*=\s*["\']off["\'][^>]*\bhttp-equiv\s*=\s*["\']x-dns-prefetch-control["\']', re.I),
+)
+
+
+def out(msg: str) -> None:
+    print(f"[G47] {msg}")
+
+
+def fail(msg: str) -> None:
+    print(f"[G47] FAIL: {msg}", file=sys.stderr)
+
+
+def _truthy_set(v: object) -> bool:
+    """A 'dangerous knob is ON' test: True for true / a non-empty list / a non-empty dict/str."""
+    if v is None or v is False:
+        return False
+    if isinstance(v, (list, dict, str)):
+        return len(v) > 0
+    return bool(v)
+
+
+def _permission_id(p: object) -> str:
+    """A capability permission is a string or an object {identifier: …}."""
+    if isinstance(p, str):
+        return p
+    if isinstance(p, dict):
+        return str(p.get("identifier", ""))
+    return ""
+
+
+# --- pure evaluators (fixture-testable) -------------------------------------------------------
+def evaluate_capability(cap: object, name: str = "?") -> list[str]:
+    """(structural) one capability (file OR inline) — deny-by-default, no remote-origin IPC grant."""
+    problems: list[str] = []
+    if not isinstance(cap, dict):
+        return [f"capability {name!r} is not an object — malformed (fail-closed)"]
+    # a remote-origin IPC grant (v2 `remote.urls` / a top-level `urls`) collapses the T2 boundary. A
+    # `remote` key present with ANY non-empty value (incl. an empty-urls dict) is flagged — for a
+    # local-only app any presence of the remote-IPC config key is anomalous, so we fail conservatively.
+    if _truthy_set(cap.get("remote")) or _truthy_set(cap.get("urls")):
+        problems.append(f"capability {name!r} carries a `remote`/`urls` grant — a remote origin must "
+                        "never reach IPC commands (§0.10 capability posture is windows-only)")
+    perms = cap.get("permissions")
+    if perms is not None and not isinstance(perms, list):
+        problems.append(f"capability {name!r} `permissions` is not a list — malformed (fail-closed)")
+        perms = []
+    for p in (perms or []):
+        pid = _permission_id(p)
+        if not any(pid.startswith(pre) for pre in ALLOWED_CAP_PREFIXES):
+            problems.append(f"capability {name!r} grants `{pid or p!r}` — only core:/log:/store: are "
+                            "permitted (§0.10 deny-by-default; no fs/http/opener/dialog/updater/shell)")
+    return problems
+
+
+def evaluate_conf(conf: dict) -> list[str]:
+    """(structural) the tauri.conf.json security posture, incl. any INLINE capabilities."""
+    problems: list[str] = []
+    app = conf.get("app") if isinstance(conf.get("app"), dict) else {}
+    sec = app.get("security") if isinstance(app.get("security"), dict) else {}
+
+    csp = sec.get("csp")
+    if not isinstance(csp, dict):
+        problems.append("app.security.csp is absent or not an object — the locked §0.10 CSP must be declared")
+    else:
+        for directive, tokens in LOCKED_CSP.items():
+            if csp.get(directive) != tokens:
+                problems.append(f"CSP `{directive}` = {csp.get(directive)!r}, must be exactly {tokens!r} (§0.10)")
+        for extra in set(csp) - set(LOCKED_CSP):
+            problems.append(f"CSP has an UNEXPECTED directive `{extra}` (not in the locked §0.10 object)")
+
+    if _truthy_set(app.get("withGlobalTauri")):
+        problems.append("app.withGlobalTauri must be absent/false (it exposes the full API on window.__TAURI__ — T2)")
+    if _truthy_set(sec.get("dangerousDisableAssetCspModification")):
+        problems.append("app.security.dangerousDisableAssetCspModification must be absent/false/[] (it can strip the CSP)")
+    if _truthy_set(sec.get("dangerousRemoteDomainIpcAccess")):
+        problems.append("app.security.dangerousRemoteDomainIpcAccess must be absent/empty (it grants a remote origin IPC)")
+    asset = sec.get("assetProtocol") if isinstance(sec.get("assetProtocol"), dict) else {}
+    if _truthy_set(asset.get("enable")):
+        problems.append("app.security.assetProtocol.enable must be absent/false (v1 renders no disk file in the WebView)")
+
+    bundle = conf.get("bundle") if isinstance(conf.get("bundle"), dict) else {}
+    if _truthy_set(bundle.get("createUpdaterArtifacts")):
+        problems.append("bundle.createUpdaterArtifacts must be absent/false (no auto-update; §7.6.1)")
+    if _truthy_set(bundle.get("updater")):
+        problems.append("bundle.updater present (updater pubkey/config) — no auto-update (§7.6.1)")
+    plugins = conf.get("plugins") if isinstance(conf.get("plugins"), dict) else {}
+    if "updater" in plugins:
+        problems.append("plugins.updater present — the updater plugin is absent by decision (§7.6.1)")
+    if "deep-link" in plugins:
+        problems.append("plugins.deep-link present — no custom URL scheme / deep-link surface (§0.10)")
+
+    for w in (app.get("windows") if isinstance(app.get("windows"), list) else []):
+        if not isinstance(w, dict):
+            continue
+        url = w.get("url")
+        if isinstance(url, str) and url.lower().startswith(("http://", "https://")):
+            problems.append(f"app.windows[].url = {url!r} — must be a LOCAL/bundled URI, never http(s) (§0.10)")
+        if w.get("devtools") is True:
+            problems.append("app.windows[].devtools must not be true in a shipped build (§0.10)")
+
+    # INLINE capabilities (Tauri v2 allows a CapabilityEntry object directly in the conf); a string
+    # entry is a file reference, already covered by the on-disk capabilities/*.json scan.
+    for where, container in (("app.security.capabilities", sec), ("app.capabilities", app)):
+        caps = container.get("capabilities")
+        for i, entry in enumerate(caps if isinstance(caps, list) else []):
+            if isinstance(entry, dict):
+                problems += evaluate_capability(entry, f"{where}[{i}]")
+    return problems
+
+
+def evaluate_index_html(html: str) -> list[str]:
+    """(textual) a single dns-prefetch-control:off meta ELEMENT must be present (either attr order)."""
+    if any(rx.search(html) for rx in _DNS_META):
+        return []
+    return ['index.html lacks `<meta http-equiv="x-dns-prefetch-control" content="off">` (§0.10)']
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G47 CSP + capability structural lint (P0.3.2)")
+    ap.add_argument("--conf", type=Path, default=ROOT / "src-tauri" / "tauri.conf.json")
+    ap.add_argument("--capabilities", type=Path, default=ROOT / "src-tauri" / "capabilities")
+    ap.add_argument("--index", type=Path, default=ROOT / "index.html")
+    ap.add_argument("--src-tauri", type=Path, default=ROOT / "src-tauri")
+    args = ap.parse_args(argv)
+
+    if not args.conf.is_file():
+        out(f"tauri.conf.json ({args.conf}) not present yet (lands in P1) — skipping (fail-open, P0 bootstrap); "
+            "fail-closed the moment it lands")
+        return 0
+
+    try:
+        conf = json.loads(args.conf.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        fail(f"{args.conf} is not valid JSON: {e}")
+        return 2
+
+    problems = evaluate_conf(conf)
+
+    if args.capabilities.is_dir():
+        for cap_file in sorted(args.capabilities.glob("*.json")):
+            try:
+                cap = json.loads(cap_file.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as e:
+                fail(f"{cap_file} is not valid JSON: {e}")
+                return 2
+            problems += evaluate_capability(cap, cap_file.name)
+
+    if args.index.is_file():
+        problems += evaluate_index_html(args.index.read_text(encoding="utf-8"))
+
+    # custom URL-scheme registration files under src-tauri/ (deep-link / scheme surface)
+    if args.src_tauri.is_dir():
+        for pat in URL_SCHEME_GLOBS:
+            for f in args.src_tauri.glob(pat):
+                txt = f.read_text(encoding="utf-8", errors="ignore").lower()
+                if "cfbundleurltypes" in txt or "cfbundleurlschemes" in txt or "x-scheme-handler/" in txt:
+                    try:
+                        shown = f.relative_to(ROOT)
+                    except ValueError:
+                        shown = f
+                    problems.append(f"{shown} registers a custom URL scheme — none permitted (§0.10)")
+
+    if problems:
+        for p in problems:
+            fail(p)
+        fail(f"G47: {len(problems)} CSP/capability widening(s) — FAILED")
+        return 1
+    out("G47: CSP + capabilities match the locked §0.10 posture")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

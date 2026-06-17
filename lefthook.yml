@@ -38,6 +38,8 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
       run: python3 scripts/run-gitleaks --staged
     gitleaks-allowlist:   # G2 - the allowlist/baseline cannot quietly widen to swallow a secret
       run: python3 scripts/check-gitleaks-allowlist
+    csp-capabilities:     # G47 - WebView CSP + Tauri capability lockdown (skips until P1's conf lands)
+      run: python3 scripts/check-csp-capabilities
     # L1 gate slots (filled by their boxes): plan-lint --quiet on the docs glob (P0.3.5) /
     # G8 new-marker (P0.3.4) / clippy diff + tsc diff (P0.4).
 

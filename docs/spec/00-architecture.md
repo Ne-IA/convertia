@@ -1511,6 +1511,39 @@ no remote origins (reinforces "no network"):*
     inspection/injection surface on the untrusted WebView. (Debug builds may enable it; the
     release profile must not.)
 
+**Four further by-construction knobs are ALSO asserted absent/false `[DECIDED]`** (each a real Tauri
+v2 `tauri.conf.json` field that silently widens the §0.11 T2 boundary if set; structurally enforced
+by **G47** in the same parse):
+  - **`app.security.dangerousRemoteDomainIpcAccess` absent/empty** — it lets a configured remote
+    origin invoke registered IPC commands directly, collapsing the no-remote CSP boundary. (The
+    field lives under `app.security`, **not** `app.windows[]`.)
+  - **`bundle.createUpdaterArtifacts` absent/false** — a bundle-side knob INDEPENDENT of
+    `plugins.updater`; when set, `tauri build` emits updater `.sig`/manifest artifacts, a signing
+    surface outside the minisign anchor, contradicting the §7.6.1 no-auto-update posture.
+  - **`bundle.updater` absent** (no updater endpoints/pubkey) and **`plugins.updater` absent** — the
+    updater plugin is absent by decision (§7.6.1); the only update path is a new full release.
+  - **`plugins.deep-link` absent + no custom URL-scheme registration** in any `Info.plist`/`.desktop`/
+    `.reg` under `src-tauri/` (§7.8.2 "no URL scheme"); and **`app.windows[].url` resolves to a
+    LOCAL/bundled URI** (any `http(s)` value fails — no startup dev-server origin).
+
+**Capability deny-by-default is an ALLOW-LIST `[DECIDED]`** — a WebView capability may grant ONLY
+`core:`/`log:`/`store:` permissions (the set above); `fs:`/`http:`/`opener:`/`dialog:`/`updater:` AND
+every `shell:` grant (execute/spawn/default/sidecar — §3.3.3) AND any unknown-dangerous future
+permission are denied by exclusion, not by an enumerated deny-list. A capability **`remote`/`urls`
+grant (the v2 remote-origin-IPC mechanism) is denied outright** (no capability carries it). G47
+evaluates capabilities both from `src-tauri/capabilities/*.json` **and** from any **inline**
+`app.security.capabilities[]` / `app.capabilities[]` object entry. The allow-list is checked at
+**PREFIX granularity** (any `core:`/`log:`/`store:` permission) `[DECIDED]`: every `core:` command is
+same-origin and CSP-bounded — a `core:webview:*`/`core:window:*` grant opens at most another
+same-origin, same-capability window with no FS/network/shell reach (a lateral nuisance, not a T2
+escalation). The locked manifest itself grants only `core:default`/`log:default`/`store:default`;
+**P1 MAY tighten the gate to that exact token set** once the real capability needs are fixed (an
+owner spec-decision — the Build-Loop does not self-narrow an L(-1) security posture).
+
+**DNS-prefetch:** the `index.html` shell carries `<meta http-equiv="x-dns-prefetch-control"
+content="off">` (WKWebView/WebKitGTK honour this meta — unlike `webrtc 'block'`), removing a DNS
+leak; G47 asserts the meta present.
+
 **Status `[DECIDED]`.** The allowlist shape **and** its concrete contents are now
 fixed: deny-by-default; **no** WebView FS; **no** network; **no `shell:allow-execute`**
 (engines spawn Rust-side per §3.3.3); **no `opener:*` WebView grant** (C9/C10 are
