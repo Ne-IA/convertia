@@ -77,6 +77,8 @@ jobs:
         run: python3 scripts/check-core-deps
       - name: 'G18c/G18d: JS/WebView supply-chain posture (.npmrc registry pin + lifecycle lockdown; pnpm-lock guard live P1)'
         run: python3 scripts/check-js-supply-chain
+      - name: 'G19: generated-artifact drift-check framework (regen + git diff --exit-code; targets registered in P1)'
+        run: python3 scripts/check-generated-drift
       # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
       #   G70 test-suppression (P0.3.14) |
       #   doc-graph G68 + struct-map G69 (P0.3.12/13) |

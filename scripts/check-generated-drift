@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""check-generated-drift - G19 generated-artifact drift-check framework (P0.3.9).
+
+A generated file (the tauri-specta + specta Rust->TS `bindings.ts`, a CLI `--help` capture, an asset
+manifest) must be BYTE-IDENTICAL to what its producer emits right now - otherwise a hand-edit or a stale
+checkout silently diverges the committed artifact from its source of truth. For each registered artifact
+this framework:
+
+  1. runs the artifact's REGEN command (the exact producer invocation - named, never a generic guess,
+     so the gate cannot pass on a stale file via a wrong codegen call);
+  2. asserts `git diff --exit-code <path>` is clean (regeneration produced no change = no drift);
+  3. runs a STRUCTURAL (parsed, not regex) non-empty sanity check on the file (a truncated/empty
+     generated file is a producer failure that a pure diff would miss when the committed copy is also
+     truncated).
+
+The ARTIFACTS registry is EMPTY in P0 - the codegen targets (bindings.ts, the CLI, the asset manifest)
+do not exist until P1; the framework + its validators + the self-test are authored now, and each
+artifact is registered (with its exact regen command + path + validator) when its producing code lands
+in P1. With an empty registry the gate is target-absent and skips with a notice. stdlib-only.
+
+Exit: 0 = no drift + all sanity checks pass (or target-absent); 1 = drift / a failed regen / a
+       structural-sanity failure; 2 = the framework is mis-configured (an artifact path missing after regen).
+"""
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def validate_json_nonempty(text: str) -> str | None:
+    """(pure) A generated JSON artifact must parse AND carry content (not `{}`/`[]`/`null`/empty)."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        return f"not valid JSON: {e}"
+    if data in ({}, [], None, ""):
+        return "parsed JSON is empty (no generated content)"
+    return None
+
+
+def validate_text_nonempty(text: str) -> str | None:
+    """(pure) A generated text artifact (a CLI --help capture) must be non-blank."""
+    return None if text.strip() else "generated text is empty/blank"
+
+
+def validate_ts_bindings(text: str) -> str | None:
+    """(pure) A tauri-specta bindings.ts must be non-blank AND actually expose the generated IPC surface
+    (an `export`-ed `commands`/binding) - a structural presence check, not a full TS parse (the P1
+    bindings gate adds `tsc --noEmit` over it; this catches a truncated/placeholder emit a diff misses)."""
+    if not text.strip():
+        return "generated bindings.ts is empty/blank"
+    if "export" not in text:
+        return "generated bindings.ts exposes no `export` (truncated / not a real binding emit)"
+    return None
+
+
+VALIDATORS = {
+    "json": validate_json_nonempty,
+    "text": validate_text_nonempty,
+    "ts-bindings": validate_ts_bindings,
+}
+
+# Each artifact: {"name", "regen": [argv...], "path": "<repo-relative>", "validator": <key>}. EMPTY in
+# P0 - populated in P1 as each producer lands (e.g. the `cargo xtask codegen` -> src/lib/bindings.ts
+# entry). A registered artifact whose `path` is missing after regen is a misconfiguration (exit 2).
+ARTIFACTS: list[dict] = []
+
+
+def _git_clean(path: str) -> bool:
+    r = subprocess.run(["git", "-C", str(ROOT), "diff", "--exit-code", "--", path],
+                       capture_output=True, text=True)
+    return r.returncode == 0
+
+
+def check_artifact(art: dict) -> tuple[int, str]:
+    """Regen + diff + structural sanity for one artifact. Returns (exit_code, message)."""
+    path = ROOT / art["path"]
+    regen = subprocess.run(art["regen"], cwd=ROOT, capture_output=True, text=True)
+    if regen.returncode != 0:
+        return 1, f"regen `{' '.join(art['regen'])}` failed: {regen.stderr or regen.stdout}"
+    if not path.is_file():
+        return 2, f"artifact `{art['path']}` does not exist after regen (misconfigured producer/path)"
+    # the artifact MUST be git-tracked: `git diff --exit-code` is blind to an untracked file (it would
+    # report no-drift for an uncommitted artifact that has no committed copy to be identical to)
+    tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", "--error-unmatch", "--", art["path"]],
+                             capture_output=True, text=True)
+    if tracked.returncode != 0:
+        return 2, (f"artifact `{art['path']}` is not git-tracked (never committed / misconfigured "
+                   "producer) - a generated artifact must be committed so drift is detectable")
+    if not _git_clean(art["path"]):
+        return 1, (f"`{art['path']}` DRIFTED - regeneration changed it (the committed copy is stale; "
+                   "re-run the producer and commit, never hand-edit a generated file)")
+    validator = VALIDATORS.get(art.get("validator", ""))
+    if validator is None:
+        return 2, f"artifact `{art['name']}` names unknown validator `{art.get('validator')}`"
+    problem = validator(path.read_text(encoding="utf-8", errors="replace"))
+    if problem is not None:
+        return 1, f"`{art['path']}` failed structural sanity: {problem}"
+    return 0, f"`{art['path']}` OK (no drift; {art['validator']} sanity)"
+
+
+def main() -> int:
+    if not ARTIFACTS:
+        print("[G19] no generated artifacts registered yet (the codegen targets land in P1) - "
+              "skipping the drift check; each artifact is registered with its exact regen command + "
+              "path + validator when its producer lands, then fail-closed by glob")
+        return 0
+    worst = 0
+    for art in ARTIFACTS:
+        code, msg = check_artifact(art)
+        worst = max(worst, code)
+        prefix = "OK" if code == 0 else "FAIL"
+        print(f"[G19] {prefix}: {msg}", file=sys.stderr if code else sys.stdout)
+    return worst
+
+
+if __name__ == "__main__":
+    sys.exit(main())

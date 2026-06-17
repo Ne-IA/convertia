@@ -76,5 +76,7 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/check-core-deps
     js-supply-chain: # G18c/G18d - JS registry pin + lifecycle lockdown (pnpm-lock URL guard live P1)
       run: python3 scripts/check-js-supply-chain
+    generated-drift: # G19 - regenerate codegen artifacts + git diff --exit-code (target-absent until P1)
+      run: python3 scripts/check-generated-drift
     # L2 gate slots (filled by their boxes):
     # G70 full-tree (P0.3.14) / clippy --all-targets + tsc project (P0.4).
