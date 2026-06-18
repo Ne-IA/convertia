@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""check-fuzz-contract - G48 in-core fuzz-harness layout + G16 per-numeric-IPC-arg overflow contract
+(P0.4.3). The in-core untrusted-byte fuzz plane (NOT the isolated engines - those are G26/§6.4.2).
+
+Two tiers, the P0.3.6 / P0.4.1 pattern:
+
+  STRUCTURAL FREEZE (live NOW, no harness needed): the G48 libFuzzer in-core target set, the IPC
+  proptest contracts (serde-boundary + the per-numeric-IPC-arg overflow boundary set), the mandatory
+  libFuzzer resource bounds, and the deterministic G16 bound-firing fixtures are pinned here as a
+  CONTRACT and cannot be silently gutted. The date-pinned nightly (`gate-tools.toml [toolchain]
+  fuzz_nightly`) must be `nightly-YYYY-MM-DD`, never a floating bare `+nightly`.
+
+  LIVE (target-absent until P3 lands fuzz/): each libFuzzer target is bound to a REAL artifact -
+  fuzz/fuzz_targets/<key>.rs that contains a `fuzz_target!` macro (comment-stripped, per-file, NO
+  bare-stem / substring / cross-file masking - the P0.4.1 deny-context lesson); each fixture to a
+  committed corpus FILE named by its id; each bound to a committed fuzz config (comment-stripped).
+  Skips-with-notice while fuzz/ is absent, fail-closes the moment it lands. The IPC proptest legs
+  (serde-boundary, numeric-overflow) land in P2 (tests/, NOT under fuzz/) so their LIVE assertion is
+  P2-scoped, not fuzz/-gated; their CONTRACT is frozen here.
+
+stdlib-only. L(-1) security-critical (matched by scripts/check-*).
+
+Usage: check-fuzz-contract [--full]   (--full accepted for wiring parity; the contract scan is identical)
+Exit:  0 = contract intact (or target-absent); 1 = a violation; 2 = a pinned config is missing/malformed.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+GATE_TOOLS = ROOT / "scripts" / "gate-tools.toml"
+FUZZ_DIR = ROOT / "fuzz"
+
+# --- the frozen G48 libFuzzer in-core target CONTRACT (build-gates §6 G48): untrusted-byte surfaces
+#     OUTSIDE the §2.12 boundary, each a `fuzz/fuzz_targets/<key>.rs` libFuzzer target. The BODIES land
+#     P3-P9 (the box activation note); the SET is frozen now. (key, spec-§). NOT the isolated engines.
+G48_FUZZ_TARGETS = [
+    ("detect", "crate::detect content-sniff on a hostile corpus (ZIP/OLE2/gzip/svgz/XML; ratio cap + XXE-off)"),
+    ("fs_guard_resolve_identity", "crate::fs_guard::resolve_identity on untrusted PATHs (null/overlong/symlink/..)"),
+    ("fs_guard_is_safe_output", "crate::fs_guard::is_safe_output (Windows device/reserved/drive-relative/UNC classes)"),
+    ("csv_tsv", "the in-core CSV/TSV native engine (§3.5.6 InProcessNative - gigabyte fields, recursive quoting, NUL)"),
+    ("zip_slip", "archive-entry-name (zip-slip): central-dir entry names with ../ / absolute / NUL / overlong-UTF-8"),
+    ("imgworker_ffi", "the imgworker Rust->FFI surface vs staged libvips/libheif/librsvg, ASAN on (boundary side only)"),
+]
+
+# --- the G16 IPC proptest contracts: the serde-boundary + the per-numeric-IPC-arg overflow legs land in
+#     P2 (P2.126, in tests/ as the C1-C13 commands land - NOT under fuzz/), so their LIVE assertion is
+#     P2-scoped, not part of the fuzz/-gated live tier here; the CONTRACT is frozen now. -------------
+IPC_PROPTEST_TARGETS = [
+    ("ipc_serde", "each #[tauri::command] serde boundary proptested with malformed serde_json -> structured Err (P2)"),
+    ("ipc_numeric_overflow", "each numeric IPC arg proptested at the boundary values -> structured Err (P2)"),
+]
+# the per-numeric-IPC-arg arithmetic-overflow boundary set (G16): every numeric IPC arg is proptested
+# against these so a structured Err (never a panic/wrap) is proven at the boundaries.
+NUMERIC_OVERFLOW_BOUNDARIES = ["u32::MAX", "i32::MIN", "0", "1", "65535"]  # 2^16-1
+
+# --- the mandatory libFuzzer resource bounds: an OOM/timeout MUST be a committed FINDING, never a
+#     silent runner kill. Every fuzz invocation must carry these (+ a G56 timeout-minutes). ----------
+LIBFUZZER_BOUNDS = ["-rss_limit_mb", "-max_len", "-timeout", "-max_total_time"]
+
+# --- the deterministic G16 bound-firing fixtures: "no crash" cannot prove a guard is REACHABLE, so each
+#     guard gets a committed corpus fixture that MUST fire it. (id, what it proves). -----------------
+REQUIRED_FIXTURES = [
+    ("nul_path", "a NUL-byte path MUST return Err on every platform (never Ok on a null-byte path - T7+T2a)"),
+    ("path_max_plus_1", "a PATH_MAX+1 path MUST return Err (the path-limit guard is reachable)"),
+    ("win_device", r"Windows device path (\\.\ , \\?\) MUST return Err"),
+    ("win_reserved", "Windows reserved name (CON/NUL/COM1-9/LPT1-9 with ANY extension) MUST return Err"),
+    ("win_drive_relative", "Windows drive-relative (C:foo vs C:\\foo) MUST return Err"),
+    ("win_unc", r"Windows UNC (\\server\share) MUST return Err"),
+    ("win_trailing", "Windows trailing dots/spaces MUST return Err"),
+    ("zip_slip_entry", "a ../../etc/passwd archive-entry-name fixture MUST be rejected (never escapes scratch)"),
+]
+
+# a DATE-pinned nightly: `nightly-YYYY-MM-DD` with a real month/day range (rustup rejects 99-99 too, but
+# the gate should not even accept a calendar-impossible date as "pinned").
+_NIGHTLY_RE = re.compile(r"nightly-\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])")
+
+
+def fail(msg: str) -> None:
+    print(f"[G48] FAIL: {msg}", file=sys.stderr)
+
+
+def _strip_rs(text: str) -> str:
+    """Rust text with string/raw-string literals + /* */ block + // line comments blanked (strings
+    first), so a `fuzz_target!` MENTIONED in a comment OR a string literal does not count as a real
+    harness (the P0.4.1 deny-context lesson - bare-token presence is not a real macro invocation)."""
+    text = re.sub(r'"(?:\\.|[^"\\])*"', " ", text, flags=re.S)        # regular/byte string literals
+    text = re.sub(r'r#*".*?"#*', " ", text, flags=re.S)              # raw strings (approx, over-blanks safe)
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)               # block comments
+    return "\n".join(re.sub(r"//.*$", "", ln) for ln in text.split("\n"))  # line comments
+
+
+# a REAL fuzz_target! is the macro INVOCATION (`fuzz_target!(` or `fuzz_target!{`), not the bare token
+# (a string/ident naming it does not define a harness).
+_FUZZ_TARGET_RE = re.compile(r"fuzz_target!\s*[({]")
+
+
+def _strip_cfg(text: str) -> str:
+    """Config/script text with `#`- and `//`-comments blanked (toml/sh/yaml use `#`, some use `//`)."""
+    return "\n".join(re.sub(r"(#|//).*$", "", ln) for ln in text.split("\n"))
+
+
+def freeze_contract() -> int:
+    """The contract sets must stay non-empty + well-formed (they cannot be silently gutted)."""
+    problems = 0
+    for name, val in (("G48_FUZZ_TARGETS", G48_FUZZ_TARGETS), ("IPC_PROPTEST_TARGETS", IPC_PROPTEST_TARGETS),
+                      ("LIBFUZZER_BOUNDS", LIBFUZZER_BOUNDS), ("REQUIRED_FIXTURES", REQUIRED_FIXTURES),
+                      ("NUMERIC_OVERFLOW_BOUNDARIES", NUMERIC_OVERFLOW_BOUNDARIES)):
+        if not val:
+            fail(f"the {name} contract is empty - the in-core fuzz/overflow policy is gone")
+            problems += 1
+    keys = {k for k, _ in G48_FUZZ_TARGETS}
+    for must in ("detect", "fs_guard_resolve_identity", "csv_tsv"):
+        if must not in keys:
+            fail(f"G48_FUZZ_TARGETS is missing the mandatory in-core target {must!r}")
+            problems += 1
+    if "ipc_numeric_overflow" not in {k for k, _ in IPC_PROPTEST_TARGETS}:
+        fail("IPC_PROPTEST_TARGETS is missing the per-numeric-IPC-arg overflow proptest")
+        problems += 1
+    return problems
+
+
+def freeze_nightly_pin() -> int:
+    """The fuzz nightly MUST be DATE-pinned (`nightly-YYYY-MM-DD`), never floating. stdlib tomllib."""
+    if not GATE_TOOLS.is_file():
+        fail(f"{GATE_TOOLS.name} is missing - the fuzz nightly pin cannot be verified")
+        return 2
+    try:
+        cfg = tomllib.loads(GATE_TOOLS.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError) as e:
+        fail(f"{GATE_TOOLS.name} is malformed/unreadable ({e})")
+        return 2
+    pin = cfg.get("toolchain", {}).get("fuzz_nightly")
+    if not pin:
+        fail("gate-tools.toml [toolchain] fuzz_nightly is absent - the G48 nightly is not pinned")
+        return 1
+    if not _NIGHTLY_RE.fullmatch(pin):
+        fail(f"fuzz_nightly {pin!r} is not a DATE-pinned `nightly-YYYY-MM-DD` channel (would float)")
+        return 1
+    return 0
+
+
+def assert_harness_live() -> int:
+    """P3: each libFuzzer target bound to a REAL fuzz_target! in its own file; each fixture to a
+    committed corpus file; each bound to a comment-stripped fuzz config. NO substring/stem masking."""
+    problems = 0
+
+    # 1. each G48 target = a fuzz/fuzz_targets/<key>.rs that contains a real (comment-stripped) fuzz_target!
+    targets_dir = FUZZ_DIR / "fuzz_targets"
+    for key, desc in G48_FUZZ_TARGETS:
+        f = targets_dir / f"{key}.rs"
+        if not f.is_file():
+            fail(f"G48 target {key!r} has no fuzz/fuzz_targets/{key}.rs harness ({desc})")
+            problems += 1
+        elif not _FUZZ_TARGET_RE.search(_strip_rs(f.read_text(encoding="utf-8", errors="replace"))):
+            fail(f"fuzz/fuzz_targets/{key}.rs is a hollow stub - no real fuzz_target!(…) invocation ({desc})")
+            problems += 1
+
+    # 2. each G16 bound-firing fixture = a committed corpus FILE named by its id (under corpus/ or crashes/)
+    corpus_names = {p.name for p in FUZZ_DIR.rglob("*") if p.is_file()}
+    for fid, what in REQUIRED_FIXTURES:
+        if fid not in corpus_names:
+            fail(f"G16 bound-firing fixture {fid!r} has no committed corpus file ({what})")
+            problems += 1
+
+    # 3. the libFuzzer resource bounds are configured in a COMMITTED fuzz config (comment-stripped, so a
+    #    bound named only in a comment does not count) - a .toml/.sh/.txt/.yml/.yaml under fuzz/ that the
+    #    fuzz invocation reads (auditable/version-controlled, not an ephemeral inline CLI arg).
+    cfg_text = "\n".join(_strip_cfg(p.read_text(encoding="utf-8", errors="replace"))
+                         for p in FUZZ_DIR.rglob("*")
+                         if p.is_file() and p.suffix in (".toml", ".sh", ".txt", ".yml", ".yaml"))
+    for bound in LIBFUZZER_BOUNDS:
+        if bound not in cfg_text:
+            fail(f"libFuzzer bound {bound} is not in a committed fuzz config "
+                 f"(an OOM/timeout must be a committed finding, not a runner kill)")
+            problems += 1
+    return problems
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G48 fuzz-harness + G16 overflow contract (P0.4.3)")
+    ap.add_argument("--full", action="store_true", help="accepted for wiring parity (scan is identical)")
+    ap.parse_args(argv)
+
+    nightly = freeze_nightly_pin()
+    if nightly == 2:                                # a missing/malformed pinned config is exit-2
+        return 2
+    total = freeze_contract() + nightly             # nightly is 0 or 1 here
+
+    if not FUZZ_DIR.is_dir():
+        if total:
+            print(f"[G48] {total} fuzz-contract violation(s)", file=sys.stderr)
+            return 1
+        print("[G48] in-core fuzz-harness + overflow contract frozen; no fuzz/ harness yet "
+              "(targets land in P3-P9; IPC proptests in P2) - live harness assertion skipped (target-absent)")
+        return 0
+
+    total += assert_harness_live()
+    if total:
+        print(f"[G48] {total} fuzz-contract violation(s)", file=sys.stderr)
+        return 1
+    print("[G48] in-core fuzz-harness + per-numeric-IPC-arg overflow contract OK")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
