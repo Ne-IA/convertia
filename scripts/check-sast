@@ -1,0 +1,366 @@
+#!/usr/bin/env python3
+"""check-sast - the Semgrep + shellcheck SAST gate driver (G29, P0.4.2).
+
+The L4 (CI `sast` job, ubuntu) companion to scripts/check-unsafe-policy. Semgrep is a CI-tier pip
+tool (requirements-ci.txt, --require-hashes), NOT a locally-installed binary, so this gate is
+CI-PRIMARY: when `semgrep` is absent (a local working tree) the Semgrep legs skip-with-notice; in
+the `sast` CI job semgrep is installed and every leg runs.
+
+Order (the G24/check-16 "self-test prelude" discipline - the armed canary runs FIRST, in the SAME
+CI job, immediately before the real scan):
+
+  1. `semgrep --validate scripts/semgrep-rules/`            - the vendored packs + project rules parse.
+  2. SELF-TEST PRELUDE: `semgrep --config scripts/semgrep-rules/project/ <fixtures>` - assert EVERY
+     project rule fires on its planted-positive. A rule that stops matching its own planted violation
+     FAILS, even on a clean run where no real code changed.
+  3. REAL SCAN: `semgrep --config scripts/semgrep-rules/ <app-source>` over src-tauri/src + src. The
+     net-ban findings (rules g/j) are filtered through the committed net-allow-list.txt (empty -> any
+     match fails; finding paths are normalised to repo-relative first). Target-absent -> skip; fail-closes when it lands.
+  4. T2c single-store-name COUNT (rule (e)'s call-site half): at most ONE Store::load/StoreBuilder::new/.store()
+     across the app source. Target-absent -> 0.
+  5. shellcheck over ALL committed *.sh (actionlint only shellchecks workflow `run:` steps, G49) — runs
+     AFTER the semgrep legs (it is semgrep-independent, so it also runs when semgrep is absent locally).
+  6. cargo-geiger - INFORMATIONAL only (a census, never a required green check); skipped until crates.
+
+`--config p/rust` (live registry fetch) is NEVER used - only the vendored `scripts/semgrep-rules/`.
+stdlib-only. L(-1) security-critical (matched by scripts/check-*).
+
+Usage: check-sast [--full]
+Exit:  0 = clean (or target-absent / semgrep-absent); 1 = a finding / canary miss; 2 = a tool error.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+RULES = ROOT / "scripts" / "semgrep-rules"
+PROJECT_RULES = RULES / "project"
+VENDOR_RULES = RULES / "vendor"
+FIXTURES = RULES / "fixtures"
+NET_ALLOW_LIST = RULES / "net-allow-list.txt"
+
+# the app-source trees the real scan targets (the §0.7 Rust core + the React/TS UI). Absent in P0.
+APP_SOURCE = ["src-tauri/src", "src"]
+# the project net-ban rules whose findings are filtered through net-allow-list.txt
+NET_BAN_RULE_IDS = {"convertia-net-ban-std-tokio", "convertia-net-ban-raw-socket-ffi"}
+
+# The contract a-j rule SET, pinned INDEPENDENTLY of the discovered YAML (a G1 P1 fix). project_rule_ids()
+# alone is self-referential — renaming/dropping a rule changes the required AND fired sets identically, so
+# a same-count swap passes silently. This frozen tag set is the external anchor: the `convertia-rule`
+# metadata tags declared across project/*.yaml MUST equal it, and every tag MUST fire on a planted-positive.
+EXPECTED_RULE_TAGS = frozenset({"a", "b1", "b2", "b3a", "b3b", "b4", "b5", "c", "d", "e", "f", "g", "h", "i", "j"})
+
+_ID_RE = re.compile(r"(?m)^\s*-\s*id:\s*(\S+)\s*$")
+_TAG_RE = re.compile(r'(?m)^\s*convertia-rule:\s*["\']?([a-z0-9]+)["\']?\s*$')
+# split a rules file into per-rule blocks at each top-level "- id:" line
+_RULE_SPLIT_RE = re.compile(r'(?m)^(?=\s*-\s*id:\s*\S)')
+
+
+def fail(msg: str) -> None:
+    print(f"[G29] FAIL: {msg}", file=sys.stderr)
+
+
+# -------------------------------------------------------------------------- pure, importable logic
+
+def project_rule_ids() -> set[str]:
+    """The set of project rule-ids (parsed from scripts/semgrep-rules/project/*.yaml). Auto-discovers,
+    so a NEW rule is automatically REQUIRED to fire in the self-test prelude (no hardcoded list)."""
+    ids: set[str] = set()
+    for f in sorted(PROJECT_RULES.glob("*.yaml")):
+        ids.update(_ID_RE.findall(f.read_text(encoding="utf-8")))
+    return ids
+
+
+def project_rule_id_tags() -> dict[str, str]:
+    """Map each project rule-id -> its `convertia-rule` metadata tag (a..j), parsed per-rule-block from
+    project/*.yaml. The tag set is checked against the frozen EXPECTED_RULE_TAGS so a renamed/dropped/
+    added rule fails the canary even when the rule COUNT is unchanged."""
+    out: dict[str, str] = {}
+    for f in sorted(PROJECT_RULES.glob("*.yaml")):
+        for block in _RULE_SPLIT_RE.split(f.read_text(encoding="utf-8")):
+            mid = re.search(r"(?m)^\s*-\s*id:\s*(\S+)", block)
+            mtag = _TAG_RE.search(block)
+            if mid and mtag:
+                out[mid.group(1)] = mtag.group(1)
+    return out
+
+
+def store_load_count(roots: list[Path]) -> int:
+    """T2c: count store-open call sites (Store::load / StoreBuilder::new / .store(...)) across the app
+    source. Exactly ONE is permitted (rule (e) forbids a second store the store:default capability would
+    otherwise grant). Target-absent (no app source) -> 0. Coarse by design; P1 refines against real code."""
+    pat = re.compile(r"\b(?:Store::load|StoreBuilder::new)\b|\.store\(")
+    n = 0
+    for t in roots:
+        for f in t.rglob("*.rs"):
+            n += len(pat.findall(f.read_text(encoding="utf-8", errors="replace")))
+    return n
+
+
+def _blank_rs_noncode(text: str) -> str:
+    """`text` with string/raw-string literals + block + line comments blanked (strings first), so a
+    Command::new MENTIONED in a comment/string does not count (the P0.4.1-proven idiom)."""
+    text = re.sub(r'"(?:\\.|[^"\\])*"', " ", text, flags=re.S)
+    text = re.sub(r'r#*".*?"#*', " ", text, flags=re.S)
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
+    return "\n".join(re.sub(r"//.*$", "", ln) for ln in text.split("\n"))
+
+
+# Belt-and-suspenders for Semgrep's Rust MATCHER gap (a G1-r4 P0): a `Command::new(...)` constructed
+# INSIDE a macro-invocation argument (`vec![Command::new(..)]`, `format!("{:?}", Command::new(..).output())`,
+# a custom builder macro) is NOT parsed into matchable AST, so it is INVISIBLE to EVERY G29 process/engine
+# rule — incl. the no-suppression catch-alls (c)/(d). semgrep cannot see it; grep (text) can. PROJECT
+# POLICY: a Command::new must be built at statement/expression level, never nested in a macro arg, so the
+# SAST rules can analyse every spawn. `\w+!\s*([|[|{ ... Command::new` before the next `;` = a violation.
+# (`println!`/`eprintln!`/`dbg!` macro forms are independently forbidden in production by G8.)
+# P0 covers the common expression-macro forms (vec!/format!/function-like) WITHOUT an internal `;`. A
+# Command::new preceded by a `;` inside a macro-argument block/closure (e.g. vec![{ let z=1; Command::new() }])
+# escapes both semgrep (matcher-blind to macro interiors) AND this grep (the `[^;]` class stops at the `;`)
+# — a DOCUMENTED, NOT silent, fail-OPEN closed by the P1 grep-every-Command::new vs rule-(d)-matched-set
+# RECONCILIATION (any text Command::new semgrep did not see is a gap), which cannot run target-absent.
+_MACRO_CMD_RE = re.compile(r"\b[A-Za-z_]\w*!\s*[(\[{][^;]*?\b(?:std::process::|tokio::process::)?Command::new", re.S)
+
+
+def macro_nested_commands(roots: list[Path]) -> list[tuple[str, int]]:
+    """Repo-relative (file, line) of every Command::new nested inside a macro arg — a SAST-matcher
+    blind spot that would let an unhardened/un-isolated spawn escape G29. Target-absent (no app source) -> []."""
+    hits: list[tuple[str, int]] = []
+    for t in roots:
+        for f in t.rglob("*.rs"):
+            code = _blank_rs_noncode(f.read_text(encoding="utf-8", errors="replace"))
+            try:
+                rel = f.resolve().relative_to(ROOT.resolve()).as_posix()
+            except (ValueError, OSError):
+                rel = f.as_posix()                       # outside ROOT (e.g. a self-test temp dir)
+            for m in _MACRO_CMD_RE.finditer(code):
+                hits.append((rel, code[: m.start()].count("\n") + 1))
+    return hits
+
+
+def parse_net_allow_list(text: str) -> set[str]:
+    """The committed net-ban allow-list: non-comment, non-blank lines are repo-relative POSIX paths."""
+    out = set()
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s and not s.startswith("#"):
+            out.add(s)
+    return out
+
+
+def rules_fired(results: list[dict]) -> set[str]:
+    """The set of rule-ids (last `.`-segment of check_id) present in a semgrep JSON result list."""
+    return {r.get("check_id", "").split(".")[-1] for r in results}
+
+
+def missing_canaries(results: list[dict], required: set[str]) -> set[str]:
+    """The required rule-ids that did NOT fire on the fixtures (the armed-canary failure set)."""
+    return required - rules_fired(results)
+
+
+def to_repo_rel(path: str) -> str:
+    """Normalise a semgrep-reported `path` to a repo-relative POSIX string. semgrep emits ABSOLUTE
+    paths when given absolute scan targets (real_scan does), while net-allow-list.txt stores
+    repo-relative POSIX paths — so the membership test MUST normalise first (a G1 P0 fix: the absolute
+    vs relative mismatch made the allow-list permanently inoperable). A path outside ROOT (or one that
+    cannot be resolved) is returned as POSIX-as-is, so it can never spuriously match an allow entry."""
+    p = Path(path)
+    try:
+        if p.is_absolute():
+            return p.resolve().relative_to(ROOT.resolve()).as_posix()
+        return p.as_posix()
+    except (ValueError, OSError):
+        return p.as_posix()
+
+
+def filter_net_findings(results: list[dict], allow: set[str]) -> list[dict]:
+    """Drop net-ban findings whose (repo-relative) file is in the allow-list; keep everything else."""
+    kept = []
+    for r in results:
+        rid = r.get("check_id", "").split(".")[-1]
+        if rid in NET_BAN_RULE_IDS and to_repo_rel(r.get("path", "")) in allow:
+            continue
+        kept.append(r)
+    return kept
+
+
+# ----------------------------------------------------------------------------- semgrep-backed legs
+
+def _semgrep() -> str | None:
+    return shutil.which("semgrep")
+
+
+def run_semgrep(config: Path, targets: list[str], extra: list[str] | None = None) -> tuple[int, list[dict]]:
+    """Run semgrep --json offline; return (returncode, results). rc 0 = no findings, 1 = findings,
+    >=2 = a semgrep error. NEVER fetches the registry (local --config only)."""
+    argv = ["semgrep", "--metrics", "off", "--disable-version-check", "--quiet", "--json",
+            "--config", str(config)] + (extra or []) + targets
+    try:
+        # encoding=utf-8/replace: semgrep emits UTF-8; the default Windows cp1252 reader crashes on it
+        p = subprocess.run(argv, cwd=str(ROOT), capture_output=True, encoding="utf-8", errors="replace")
+    except OSError as e:
+        fail(f"cannot invoke semgrep ({e})")
+        return 2, []
+    out = (p.stdout or "").strip()
+    try:
+        data = json.loads(out) if out else {"results": [], "errors": []}
+    except json.JSONDecodeError:
+        fail(f"semgrep produced non-JSON output (rc={p.returncode}): {(p.stderr or '')[:400]}")
+        return 2, []
+    if data.get("errors"):
+        # config/parse errors are fatal; a scan that merely found things is not
+        for e in data["errors"]:
+            if e.get("level") in ("error", "fatal") or e.get("type") == "Fatal error":
+                fail(f"semgrep error: {e.get('message', e)[:300]}")
+                return 2, data.get("results", [])
+    return p.returncode, data.get("results", [])
+
+
+def validate() -> int:
+    argv = ["semgrep", "--validate", "--metrics", "off", "--disable-version-check",
+            "--config", str(RULES)]
+    try:
+        p = subprocess.run(argv, cwd=str(ROOT), capture_output=True, encoding="utf-8", errors="replace")
+    except OSError as e:
+        fail(f"cannot invoke semgrep --validate ({e})")
+        return 2
+    if p.returncode != 0:
+        fail(f"semgrep --validate failed (rc={p.returncode}): {((p.stderr or '') or (p.stdout or ''))[:400]}")
+        return 1
+    print("[G29] semgrep --validate: ruleset valid (vendored packs + project rules)")
+    return 0
+
+
+def self_test_prelude() -> int:
+    """The armed canary: the contract a-j rule SET is intact AND every project rule fires on its
+    planted-positive fixture (a rule that stops matching its own violation FAILS)."""
+    required = project_rule_ids()
+    if not required:
+        fail("no project rules found under scripts/semgrep-rules/project/ - the ruleset is gone")
+        return 2
+    id_tags = project_rule_id_tags()
+    declared = set(id_tags.values())
+    if declared != EXPECTED_RULE_TAGS:
+        fail(f"project rule tag set {sorted(declared)} != the contract a-j set "
+             f"{sorted(EXPECTED_RULE_TAGS)} - a rule was renamed/dropped/added (the canary must not "
+             f"rely on rule COUNT alone)")
+        return 2
+    rc, results = run_semgrep(PROJECT_RULES, [str(FIXTURES)])
+    if rc >= 2:
+        return 2
+    missing = missing_canaries(results, required)
+    if missing:
+        fail(f"armed-canary FAILURE: project rule(s) stopped matching their planted-positive: "
+             f"{sorted(missing)} (a rule no longer catches its own violation)")
+        return 1
+    fired_tags = {id_tags[i] for i in rules_fired(results) if i in id_tags}
+    missing_tags = EXPECTED_RULE_TAGS - fired_tags
+    if missing_tags:
+        fail(f"armed-canary FAILURE: contract rule tag(s) {sorted(missing_tags)} did not fire on any "
+             f"planted-positive fixture")
+        return 1
+    print(f"[G29] self-test prelude: contract a-j set intact; all {len(required)} project rules fired")
+    return 0
+
+
+def real_scan() -> int:
+    targets = [str(ROOT / t) for t in APP_SOURCE if (ROOT / t).exists()]
+    if not targets:
+        print("[G29] real scan: no app source yet (src-tauri/src, src land in P1) - skipped (target-absent)")
+        return 0
+    rc, results = run_semgrep(RULES, targets, extra=["--exclude", "semgrep-rules"])
+    if rc >= 2:
+        return 2
+    allow = parse_net_allow_list(NET_ALLOW_LIST.read_text(encoding="utf-8")) if NET_ALLOW_LIST.is_file() else set()
+    findings = filter_net_findings(results, allow)
+    if findings:
+        for f_ in findings[:50]:
+            rid = f_.get("check_id", "").split(".")[-1]
+            loc = f_.get("path", "?") + ":" + str(f_.get("start", {}).get("line", "?"))
+            fail(f"{rid} at {loc}")
+        print(f"[G29] real scan: {len(findings)} SAST finding(s)", file=sys.stderr)
+        return 1
+    print("[G29] real scan: 0 findings over the app source")
+    return 0
+
+
+def shellcheck_scan() -> int:
+    try:
+        out = subprocess.run(["git", "ls-files", "*.sh", "*.bash"], cwd=str(ROOT),
+                             capture_output=True, encoding="utf-8", errors="replace")
+        files = [ln for ln in out.stdout.splitlines() if ln.strip()]
+    except OSError:
+        files = []
+    if not files:
+        print("[G29] shellcheck: no committed *.sh yet - skipped (target-absent)")
+        return 0
+    sc = shutil.which("shellcheck") or str(ROOT / ".gate-tools" / "bin" / ("shellcheck.exe" if sys.platform == "win32" else "shellcheck"))
+    if not Path(sc).is_file() and not shutil.which("shellcheck"):
+        print("[G29] shellcheck not installed (gate-tools.toml pin; install-gate-tools) - shell leg skipped")
+        return 0
+    try:
+        p = subprocess.run([sc, "--severity=style", *files], cwd=str(ROOT))
+    except OSError as e:
+        fail(f"cannot invoke shellcheck ({e})")
+        return 2
+    if p.returncode != 0:
+        fail(f"shellcheck reported issues in committed shell scripts (rc={p.returncode})")
+        return 1
+    print(f"[G29] shellcheck: {len(files)} shell script(s) clean")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Semgrep + shellcheck SAST gate (G29, P0.4.2)")
+    ap.add_argument("--full", action="store_true", help="accepted for wiring parity")
+    ap.parse_args(argv)
+
+    problems = 0
+
+    # The semgrep legs FIRST: validate -> armed-canary prelude -> real scan (the prelude runs before
+    # the real scan in the same job, G24/check-16). shellcheck + the T2c store count are
+    # semgrep-independent and run AFTER, so they still execute when semgrep is absent locally.
+    if _semgrep() is None:
+        print("[G29] semgrep not installed (CI pip tool, requirements-ci.txt --require-hashes) - "
+              "validate/self-test/scan run in the CI `sast` job; skipped here")
+    else:
+        problems += validate()
+        problems += self_test_prelude()
+        problems += real_scan()
+        # cargo-geiger is INFORMATIONAL only (never blocks) and needs crates (P1) - omitted in P0.
+
+    # These structural greps are semgrep-INDEPENDENT (text-based) and run regardless — they backstop
+    # semgrep's Rust matcher (target-absent -> no-op until P1 source).
+    app_roots = [ROOT / t for t in APP_SOURCE if (ROOT / t).exists()]
+
+    # T2c single-store-name: the call-site COUNT half of rule (e).
+    n_store = store_load_count(app_roots)
+    if n_store > 1:
+        fail(f"T2c: {n_store} store-open call sites in the app source - exactly ONE is allowed (rule (e))")
+        problems += 1
+
+    # G1-r4 matcher-gap backstop: a Command::new nested in a macro arg is invisible to every semgrep
+    # spawn rule -> grep flags it so no spawn escapes G29 by hiding inside vec![..]/format!(..)/a macro.
+    macro_cmds = macro_nested_commands(app_roots)
+    if macro_cmds:
+        for rel, ln in macro_cmds[:50]:
+            fail(f"Command::new nested in a macro arg at {rel}:{ln} is invisible to the SAST matcher - "
+                 f"build it at statement level so the G29 spawn rules can analyse it")
+        problems += 1
+
+    problems += shellcheck_scan()
+
+    if problems:
+        print(f"[G29] {problems} SAST gate problem(s)", file=sys.stderr)
+        return 1
+    print("[G29] SAST gate OK (validate + armed-canary + scan + single-store + shellcheck)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

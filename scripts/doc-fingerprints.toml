@@ -51,7 +51,7 @@ describes = [
   "CLAUDE.md §5 (the L(-1) anti-pattern bullet)",
   "the docs-only-fastpath L(-1) list (G10)",
 ]
-fingerprint = "sha256:745b0ea27d3a0eb461889d840308ca3df1ea203dc40d16cac5e2dfbfa9ee6bba"
+fingerprint = "sha256:b27d2c66c8880d7b7378fa9bef7d51f87ab564df13ba5c101e3f221c69ad0e6c"
 
 # (b) DORMANT until P1.64 — the spec §0.7 physical tree is the HIGHER source (SSOT > spec > docs); the
 #     CLAUDE.md §1a "Repo layout" map is its operational projection. This fingerprint is the freshness

@@ -50,7 +50,9 @@ manifest, license compliance).
   choices itself.
 - **L(-1) security-critical-file change-control (owner decision D1).** The files that
   carry the power to silently weaken an enforcement plane — gate scripts + their
-  self-tests, `lefthook.yml`, the CI workflows (`.github/**`), `deny.toml`,
+  self-tests, the G29 SAST rule corpus `scripts/semgrep-rules/**` (project rules +
+  vendored packs + the net-allow-list + the planted-positive fixtures),
+  `lefthook.yml`, the CI workflows (`.github/**`), `deny.toml`,
   `.gitleaks.toml` + allowlist/baseline, the pip gate-toolchain pin `requirements-ci.txt`
   (it reads CI secrets and emits findings, so a version bump is a trust-boundary event — r7),
   the JS supply-chain pin `.npmrc` (G18c/G18d registry pin + install-lifecycle lockdown),

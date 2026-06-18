@@ -1,0 +1,36 @@
+# ConvertIA project-local Semgrep rule — opener-egress constant-only (G29 rule (h)).
+#
+# The ONLY sanctioned network activity is the user-initiated About→Releases link, opened via
+# the opener plugin. G42's socket-based egress check structurally cannot see a Rust-side
+# opener::open of a WebView-supplied or computed URL — that would be an un-observed egress. So
+# every opener call MUST pass a COMPILE-TIME CONSTANT (a string literal or an ALL_CAPS const),
+# never a variable / computed / WebView-supplied value.
+#
+# → activated in P1 (targets the About→Releases opener call that lands in P1; positive lives now).
+rules:
+  - id: convertia-opener-egress-non-constant
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      An opener call (open_url / opener::open) is passed a non-constant URL. The only sanctioned
+      egress is the user-initiated About→Releases link, which MUST be a compile-time constant
+      (string literal or ALL_CAPS const) — never a WebView-supplied / computed value (un-observed
+      egress). G29 rule (h), threat T9a, CLAUDE.md §3.
+    metadata:
+      convertia-rule: "h"
+      threat: [T9a]
+      references: ["build-gates.md G29 (h)"]
+    patterns:
+      - pattern-either:
+          - pattern: opener::open($URL)
+          - pattern: opener::open($URL, ...)
+          - pattern: $O.open_url($URL)
+          - pattern: $O.open_url($URL, ...)
+          - pattern: OpenerExt::open_url($O, $URL, ...)
+      - metavariable-pattern:
+          metavariable: $URL
+          patterns:
+            - pattern-not: '"..."'
+      - metavariable-regex:
+          metavariable: $URL
+          regex: '^(?![A-Z][A-Z0-9_]*$)'

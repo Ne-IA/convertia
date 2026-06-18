@@ -1,0 +1,15 @@
+# scripts/semgrep-rules/net-allow-list.txt — the net-ban allow-list for G29 rules (g)+(j).
+#
+# ConvertIA is fully offline / zero-egress (CLAUDE.md §3). Rules (g) std::net/tokio::net and
+# (j) raw libc/nix socket FFI flag EVERY socket primitive in first-party Rust source. This file
+# is the ONLY escape hatch: a repo-relative file path (one per line) listed here is EXEMPT from
+# the net-ban — the gate driver (scripts/check-sast) drops net-ban findings whose file is listed.
+#
+# It is INITIALLY EMPTY on purpose: with no entries, ANY net-ban match is an UNCONDITIONAL fail.
+# Adding an entry permits a socket in that file and is therefore a security-relevant, owner-acked
+# change — this file is L(-1) (scripts/semgrep-rules/** in scripts/l-neg1-files.toml, G71).
+#
+# Format: blank lines and lines beginning with '#' are ignored; every other line is one
+# repo-relative POSIX path (forward slashes). The planted-positive fixtures under
+# scripts/semgrep-rules/fixtures/ are NEVER scanned by the real gate (it scans the app source
+# tree only), so they need no entry here.

@@ -1,0 +1,99 @@
+# ConvertIA project-local Semgrep rules — the subprocess-isolation rules (G29 (b1)+(c)+(d)).
+#
+# Untrusted bytes are decoded only in isolated subprocesses, never in the core (CLAUDE.md §3,
+# spec §2.12). Every engine spawn must (b1) scrub the environment so a poisoned parent env
+# cannot steer the child; (c) be constructed only inside crate::isolation (one choke point);
+# (d) on macOS, stage inputs into scratch BEFORE the spawn so the engine never first-touches a
+# TCC-protected path (T11, spec §3.5.0/§7.2.6).
+#
+# Semgrep-Rust note (G1-r3/r4): suppression is CHAIN-ANCHORED-ONLY — a builder is exempt only via its
+# OWN fluent chain `Command::new(...). ... .<HARDEN>()`, so no region/fn/sequence not-inside can swallow
+# a SIBLING or INTERLEAVED spawn (every such form fail-OPENED in review). KNOWN P1 residual (contrived):
+# a Command::new nested in an OUTER builder's `.arg(...)` subtree is still inside that outer chain, so the
+# hardening rules miss the inner spawn INSIDE crate::isolation (the catch-all (c) catches it outside
+# isolation); P1's per-receiver/taint dataflow closes it. (b1) env_clear: chain-only.
+# (d) macOS staging: NO suppression at all (stage_for_tcc is off-builder; any "preceded-by" form is a
+# fail-OPEN region) — it fails-SAFE OVER-STRICT, firing on every spawn until P1 adds per-path dataflow.
+# A Command::new nested in a macro arg is invisible to the matcher → backstopped by the grep in
+# scripts/check-sast (macro_nested_commands). module-path scoping binds via `paths:` in P1.
+#
+# → activated in P1 (targets first-party Rust source that lands in P1; positives live now).
+rules:
+  - id: convertia-command-missing-env-clear
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      A process::Command is built without .env_clear()/.envs([]) in its chain. Every engine
+      spawn MUST scrub the inherited environment (a poisoned parent env must not reach the
+      decoder). G29 rule (b), threat T9b, spec §2.12 / §3.5.x.
+    metadata:
+      convertia-rule: "b1"
+      threat: [T9b]
+      references: ["build-gates.md G29 (b)"]
+    patterns:
+      - pattern-either:
+          - pattern: Command::new($B)
+          - pattern: std::process::Command::new($B)
+          - pattern: tokio::process::Command::new($B)
+      # CHAIN-ANCHORED-ONLY suppression (the G1-r3 fix). Each spawn is judged by its OWN single-chain
+      # expression `Command::new(...). ... .env_clear()` — there is NO fn-scope / region / let-sequence
+      # not-inside, so an interleaved or sibling spawn can NEVER be swallowed (the r2 whole-fn form and
+      # the r3 let-sequence form both fail-OPENED on a foreign spawn placed inside their match region;
+      # a single-chain match has no region to span). Only a builder whose OWN fluent chain calls
+      # .env_clear()/.envs([]) is suppressed.
+      # RESIDUAL (fails-SAFE, P1): the SPLIT-builder clean form (`let mut c = Command::new(b);
+      # c.env_clear();`) is over-strict (it reddens) because the scrub is a separate statement, not on
+      # the new-expression chain — accepted as fails-safe (the isolation code uses the fluent form, or
+      # P1 adds value-flow/dataflow once the real module shape exists). NEVER fails-OPEN.
+      - pattern-not-inside: Command::new(...). ... .env_clear()
+      - pattern-not-inside: Command::new(...). ... .envs(...)
+      - pattern-not-inside: std::process::Command::new(...). ... .env_clear()
+      - pattern-not-inside: std::process::Command::new(...). ... .envs(...)
+      - pattern-not-inside: tokio::process::Command::new(...). ... .env_clear()
+      - pattern-not-inside: tokio::process::Command::new(...). ... .envs(...)
+
+  - id: convertia-command-outside-isolation
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      A process::Command is constructed outside crate::isolation. All subprocess spawning MUST
+      flow through the single crate::isolation choke point (so env-scrub / scratch-staging /
+      Job-Object kill are applied uniformly). G29 rule (c), threat T9b, spec §2.12.
+    metadata:
+      convertia-rule: "c"
+      threat: [T9b]
+      references: ["build-gates.md G29 (c)"]
+    paths:
+      exclude:
+        - "**/isolation/**"
+        - "**/isolation.rs"
+    patterns:
+      - pattern-either:
+          - pattern: Command::new($B)
+          - pattern: std::process::Command::new($B)
+          - pattern: tokio::process::Command::new($B)
+
+  - id: convertia-macos-command-missing-stage-for-tcc
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      A process::Command is spawned on macOS without a preceding stage_for_tcc() staging the input
+      into scratch — the engine must NOT first-touch a TCC-protected path. G29 rule (d), threat T11,
+      spec §3.5.0 / §7.2.6.
+    # G1-r3 fix: this rule has NO suppression. stage_for_tcc() is a standalone call (NOT a method on
+    # the Command builder), so the only Semgrep "preceded by" form is a whole-fn / region not-inside —
+    # which FAILS-OPEN (a fn that stages ONE path blanket-covers a spawn on a SECOND, unstaged path; r2/r3
+    # proved this class lets a spawn escape). Rather than ship a fail-OPEN, (d) is deliberately
+    # FAILS-SAFE OVER-STRICT: it fires on EVERY Command::new in scope (no not-inside). P1 replaces this
+    # with the precise per-path "stage_for_tcc precedes the spawn on the SAME path" DATAFLOW/taint check
+    # + the cfg(target_os="macos") scoping, once the real macOS isolation module + its path-flow exist.
+    # NEVER fails-OPEN; over-strict (every spawn reddens) until P1 — the safe direction.
+    metadata:
+      convertia-rule: "d"
+      threat: [T11]
+      references: ["build-gates.md G29 (d)"]
+    patterns:
+      - pattern-either:
+          - pattern: Command::new($B)
+          - pattern: std::process::Command::new($B)
+          - pattern: tokio::process::Command::new($B)

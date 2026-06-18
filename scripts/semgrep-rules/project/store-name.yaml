@@ -1,0 +1,32 @@
+# ConvertIA project-local Semgrep rule — single-store-name (G29 rule (e), threat T2c).
+#
+# The `store:default` capability would otherwise let an XSS / supply-chained second Store.load
+# open a SECOND store. Policy: every tauri_plugin_store / Store.load / app.store(...) call
+# references the SINGLE compile-time store-name constant, and there is exactly ONE load call
+# site. This rule flags a store opened by a STRING LITERAL (it must use the constant); the
+# "exactly ONE call site" half is enforced by scripts/check-sast's store_load_count over the app
+# source (Store::load / StoreBuilder::new / .store(...) — fails on >1; target-absent -> 0 until P1),
+# so this Semgrep rule + that count together close T2c.
+#
+# → activated in P1 (targets the store call site that lands in P1; positive lives now).
+rules:
+  - id: convertia-store-name-not-constant
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      A store is opened with a string-literal name. It MUST reference the single compile-time
+      store-name constant (so an XSS-injected second Store.load cannot open another store under
+      the store:default capability). G29 rule (e), threat T2c, spec §0.10.
+    metadata:
+      convertia-rule: "e"
+      threat: [T2c]
+      references: ["build-gates.md G29 (e)"]
+    patterns:
+      - pattern-either:
+          - pattern: Store::load($APP, $NAME)
+          - pattern: $APP.store($NAME)
+          - pattern: StoreBuilder::new($APP, $NAME)
+          - pattern: tauri_plugin_store::StoreBuilder::new($APP, $NAME)
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: '^".*"$'

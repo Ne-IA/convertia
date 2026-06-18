@@ -1,0 +1,60 @@
+# ConvertIA project-local Semgrep rules — the #[tauri::command] IPC-surface rules (G29 (a)+(f)).
+#
+# The generated bindings.ts is the single IPC door (§0.4.5). These two rules keep that door
+# sound: (a) every WebView-supplied path is validated by fs_guard before use (T2a/T2b — the
+# classic "forgot to validate"); (f) the registered IPC name always equals the Rust function
+# name, so plan-lint check 12's function-name diff is not silently defeated by a rename.
+#
+# Semgrep-Rust note: attribute ARGUMENTS (`(rename_all = ...)`) are not structurally
+# matchable in the pinned engine, so (f) uses pattern-regex; (a) uses the mirrored
+# pattern-not + statement-form `fs_guard(...);` idiom (proven to suppress the validated case).
+# Path-param coverage is the idiomatic PathBuf / &Path forms; P1 hardens against real handlers.
+#
+# → activated in P1 (targets the #[tauri::command] handlers that land in P1; positives live now).
+rules:
+  - id: convertia-tauri-command-missing-fs-guard
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      A #[tauri::command] takes a WebView-supplied path (PathBuf / &Path) but its body never
+      calls fs_guard() to validate it. Untrusted WebView paths MUST pass fs_guard before any
+      filesystem use (path-traversal / symlink escape). G29 rule (a), threats T2a/T2b, spec
+      §2.12 / §3.5.2.
+    metadata:
+      convertia-rule: "a"
+      threat: [T2a, T2b]
+      references: ["build-gates.md G29 (a)"]
+    patterns:
+      - pattern-either:
+          - pattern: |
+              #[tauri::command]
+              fn $F(..., $P: PathBuf, ...) { ... }
+          - pattern: |
+              #[tauri::command]
+              fn $F(..., $P: std::path::PathBuf, ...) { ... }
+          - pattern: |
+              #[tauri::command]
+              fn $F(..., $P: &Path, ...) { ... }
+          - pattern: |
+              #[tauri::command]
+              fn $F(..., $P: &std::path::Path, ...) { ... }
+      - pattern-not: |
+          #[tauri::command]
+          fn $F(...) { ... fs_guard(...); ... }
+      - pattern-not: |
+          #[tauri::command]
+          fn $F(...) { ... fs_guard(...)?; ... }
+
+  - id: convertia-tauri-command-name-rename-forbidden
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      A #[tauri::command] carries a `name`/`rename_all` override. Tauri allows it, but it makes
+      the registered IPC name differ from the Rust function name and silently defeats plan-lint
+      check 12's function-name diff. Project policy: the function name IS always the IPC name.
+      G29 rule (f).
+    metadata:
+      convertia-rule: "f"
+      references: ["build-gates.md G29 (f)", "plan-lint check 12"]
+    patterns:
+      - pattern-regex: '#\[\s*tauri::command\s*\([^)]*\b(?:name|rename_all)\s*='

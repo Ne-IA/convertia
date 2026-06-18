@@ -1,0 +1,57 @@
+# ConvertIA project-local Semgrep rules — the per-push Rust-source NET-BAN (G29 rules (g)+(j)).
+#
+# ConvertIA is fully offline / zero-egress (CLAUDE.md §3). G18's name-based [bans] is
+# defeated by a renamed/transitive crate reaching std::net directly; G47 is the Tauri-config
+# side; G42 is release-only. These two rules are the ONLY per-push, Rust-SOURCE-level proof
+# that first-party Rust opens no socket — by EITHER the std/tokio import path (g) OR the raw
+# libc/nix FFI path (j). Both consult the committed allow-list scripts/semgrep-rules/net-allow-list.txt
+# (initially EMPTY → ANY match is an unconditional fail); the allow-list post-filter lives in
+# the gate driver scripts/check-sast (Semgrep cannot read an external allow-list mid-rule).
+#
+# → activated in P1 (targets first-party Rust source that lands in P1; planted-positives live now).
+rules:
+  - id: convertia-net-ban-std-tokio
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      Forbidden network surface: a std::net / tokio::net import or fully-qualified reference
+      in first-party Rust. ConvertIA is zero-egress (CLAUDE.md §3); the only sanctioned egress
+      is the user-initiated About→Releases link. If a file legitimately needs this, add it to
+      scripts/semgrep-rules/net-allow-list.txt (owner-acked). G29 rule (g), threat T9a.
+    metadata:
+      convertia-rule: "g"
+      threat: [T9a]
+      references: ["build-gates.md G29 (g)"]
+    patterns:
+      - pattern-either:
+          - pattern: use std::net::$X;
+          - pattern: use tokio::net::$X;
+          - pattern: use std::net::$X as $Y;
+          - pattern: use tokio::net::$X as $Y;
+          - pattern: use std::net;
+          - pattern: use tokio::net;
+          - pattern: use std::net as $Y;
+          - pattern: use tokio::net as $Y;
+          - pattern: std::net::$X
+          - pattern: tokio::net::$X
+
+  - id: convertia-net-ban-raw-socket-ffi
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      Forbidden raw-socket FFI: a libc/nix socket primitive in first-party Rust. This closes the
+      rule-(g) gap — a crate (notably the imgworker's unsafe FFI surface) can open a socket via
+      the raw syscall path WITHOUT a std::net/tokio::net import. Zero-egress (CLAUDE.md §3). If a
+      file legitimately needs this, add it to scripts/semgrep-rules/net-allow-list.txt (owner-acked).
+      G29 rule (j), threat T9a.
+    metadata:
+      convertia-rule: "j"
+      threat: [T9a]
+      references: ["build-gates.md G29 (j)"]
+    patterns:
+      - pattern-either:
+          - pattern: libc::socket(...)
+          - pattern: libc::connect(...)
+          - pattern: libc::bind(...)
+          - pattern: nix::sys::socket::$F(...)
+          - pattern: use nix::sys::socket::$X;

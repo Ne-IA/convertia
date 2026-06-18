@@ -1,0 +1,37 @@
+# ConvertIA project-local Semgrep rule — the TS/WebView TAINT-mode ruleset (G29 rule (i)).
+#
+# The deepest threat class (T2) deserves a real verifying gate. The structural rules (a)/(f)
+# prove the SHAPE of the IPC door, not the inter-procedural FLOW. This taint rule closes that
+# gap: it follows a WebView-controlled value (an `invoke(...)` result, or a DOM `event` value)
+# into a dangerous DOM/eval sink or an IPC arg-marshalling site. It is the Semgrep equivalent
+# depth to CodeQL for the T2 surface (owner-decidable which ships; both not required).
+#
+# → activated in P1 (targets the React/TS WebView UI that lands in P1; positive lives now).
+rules:
+  - id: convertia-webview-taint-to-dom-sink
+    languages: [typescript]
+    severity: ERROR
+    mode: taint
+    message: >-
+      A WebView-controlled value (invoke() result or DOM event value) flows into a dangerous
+      DOM/eval sink (innerHTML / outerHTML / eval / Function / document.write) without
+      sanitization. This is the inter-procedural T2 taint the structural rules cannot reach.
+      G29 rule (i), threat T2, spec §0.10.
+    metadata:
+      convertia-rule: "i"
+      threat: [T2]
+      references: ["build-gates.md G29 (i)", "plan-lint check 21"]
+    pattern-sources:
+      - pattern: invoke(...)
+      - pattern: await invoke(...)
+      - pattern: $E.data
+    pattern-sinks:
+      - pattern: $EL.innerHTML = $SINK
+      - pattern: $EL.outerHTML = $SINK
+      - pattern: $EL.insertAdjacentHTML($POS, $SINK)
+      - pattern: eval($SINK)
+      - pattern: Function($SINK)
+      - pattern: document.write($SINK)
+      - pattern: document.writeln($SINK)
+      # React's XSS sink (the real UI is React 19): the inner object of dangerouslySetInnerHTML={{ __html: tainted }}
+      - pattern: "{ __html: $SINK }"

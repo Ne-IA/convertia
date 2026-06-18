@@ -1,0 +1,277 @@
+# VENDORED Semgrep registry ruleset: r/bash
+# Source: https://semgrep.dev/c/r/bash
+# Snapshot: 2026-06-18, for the pinned semgrep==1.167.0 (requirements-ci.txt).
+# Registry rulesets are NOT registry-versioned; this committed snapshot IS the pin
+# (G29: the rule-pack version is pinned by VENDORING, distinct from the Semgrep
+# BINARY version). Regenerated only on a deliberate, owner-acked bump - never
+# fetched live (`--config p/...` is forbidden; the gate uses `--config scripts/semgrep-rules/`).
+# DO NOT hand-edit; re-fetch from the source URL to update. This dir is L(-1).
+# NOTE: the G29 contract names `p/bash`, which does NOT exist in the Semgrep
+#       registry (HTTP 404); `r/bash` is the registry's bash ruleset and the
+#       faithful realization of the contract's bash-SAST intent (build-gates G29).
+rules:
+- id: bash.lang.best-practice.iteration-over-ls-output.iteration-over-ls-output
+  patterns:
+  - pattern: |
+      for $VAR in $LIST; do
+        ...
+      done
+  - pattern: |
+      $(ls ...)
+  message: Iterating over ls output is fragile. Use globs, e.g. 'dir/*' instead of
+    '$(ls dir)'.
+  metadata:
+    references:
+    - https://github.com/koalaman/shellcheck/wiki/SC2045
+    category: best-practice
+    technology:
+    - bash
+    license: Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license
+    source: https://semgrep.dev/r/bash.lang.best-practice.iteration-over-ls-output.iteration-over-ls-output
+    shortlink: https://sg.run/AXoB
+    semgrep.dev:
+      rule:
+        r_id: 14806
+        rv_id: 945158
+        rule_id: zdUYO9
+        version_id: JdTDy6W
+        url: https://semgrep.dev/playground/r/JdTDy6W/bash.lang.best-practice.iteration-over-ls-output.iteration-over-ls-output
+        origin: community
+  severity: WARNING
+  languages:
+  - bash
+- id: bash.lang.best-practice.useless-cat.useless-cat
+  pattern-either:
+  - pattern: |
+      cat | ...
+  - patterns:
+    - pattern: |
+        cat $ARG | ...
+    - pattern-not: |
+        cat ${$SEVERAL_FILES} | ...
+  - pattern: |
+      ... | cat
+  - pattern: |
+      ... | cat | ...
+  message: Useless call to 'cat' in a pipeline. Use '<' and '>' for any command to
+    read from a file or write to a file.
+  metadata:
+    references:
+    - https://github.com/koalaman/shellcheck/wiki/SC2002
+    category: best-practice
+    technology:
+    - bash
+    license: Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license
+    source: https://semgrep.dev/r/bash.lang.best-practice.useless-cat.useless-cat
+    shortlink: https://sg.run/pNDN
+    semgrep.dev:
+      rule:
+        r_id: 20118
+        rv_id: 945159
+        rule_id: X5UAkA
+        version_id: 5PT9OpX
+        url: https://semgrep.dev/playground/r/5PT9OpX/bash.lang.best-practice.useless-cat.useless-cat
+        origin: community
+  severity: WARNING
+  languages:
+  - bash
+- id: bash.curl.security.curl-eval.curl-eval
+  severity: WARNING
+  languages:
+  - bash
+  message: Data is being eval'd from a `curl` command. An attacker with control of
+    the server in the `curl` command could inject malicious code into the `eval`,
+    resulting in a system comrpomise. Avoid eval'ing untrusted data if you can. If
+    you must do this, consider checking the SHA sum of the content returned by the
+    server to verify its integrity.
+  metadata:
+    owasp:
+    - A03:2021 - Injection
+    - A05:2025 - Injection
+    cwe:
+    - 'CWE-95: Improper Neutralization of Directives in Dynamically Evaluated Code
+      (''Eval Injection'')'
+    category: security
+    technology:
+    - bash
+    - curl
+    confidence: MEDIUM
+    references:
+    - https://owasp.org/Top10/A03_2021-Injection
+    subcategory:
+    - vuln
+    likelihood: MEDIUM
+    impact: MEDIUM
+    license: Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license
+    vulnerability_class:
+    - Code Injection
+    source: https://semgrep.dev/r/bash.curl.security.curl-eval.curl-eval
+    shortlink: https://sg.run/0yqJ
+    semgrep.dev:
+      rule:
+        r_id: 14554
+        rv_id: 1262601
+        rule_id: KxU7Rq
+        version_id: JdTzxL2
+        url: https://semgrep.dev/playground/r/JdTzxL2/bash.curl.security.curl-eval.curl-eval
+        origin: community
+  mode: taint
+  pattern-sources:
+  - pattern: |
+      $(curl ...)
+  - pattern: |
+      `curl ...`
+  pattern-sinks:
+  - pattern: eval ...
+- id: bash.lang.security.ifs-tampering.ifs-tampering
+  languages:
+  - bash
+  severity: WARNING
+  message: The special variable IFS affects how splitting takes place when expanding
+    unquoted variables. Don't set it globally. Prefer a dedicated utility such as
+    'cut' or 'awk' if you need to split input data. If you must use 'read', set IFS
+    locally using e.g. 'IFS="," read -a my_array'.
+  pattern: IFS=...
+  metadata:
+    cwe:
+    - 'CWE-20: Improper Input Validation'
+    category: security
+    technology:
+    - bash
+    confidence: LOW
+    owasp:
+    - A03:2021 - Injection
+    - A05:2025 - Injection
+    references:
+    - https://owasp.org/Top10/A03_2021-Injection
+    cwe2022-top25: true
+    cwe2021-top25: true
+    subcategory:
+    - audit
+    likelihood: LOW
+    impact: LOW
+    license: Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license
+    vulnerability_class:
+    - Improper Validation
+    source: https://semgrep.dev/r/bash.lang.security.ifs-tampering.ifs-tampering
+    shortlink: https://sg.run/Q9pq
+    semgrep.dev:
+      rule:
+        r_id: 14842
+        rv_id: 1262603
+        rule_id: WAUy9q
+        version_id: GxTkerb
+        url: https://semgrep.dev/playground/r/GxTkerb/bash.lang.security.ifs-tampering.ifs-tampering
+        origin: community
+- id: bash.lang.correctness.unquoted-expansion.unquoted-variable-expansion-in-command
+  languages:
+  - bash
+  severity: INFO
+  message: Variable expansions must be double-quoted so as to prevent being split
+    into multiple pieces according to whitespace or whichever separator is specified
+    by the IFS variable. If you really wish to split the variable's contents, you
+    may use a variable that starts with an underscore e.g. $_X instead of $X, and
+    semgrep will ignore it. If what you need is an array, consider using a proper
+    bash array.
+  metadata:
+    category: correctness
+    technology:
+    - bash
+    license: Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license
+    source: https://semgrep.dev/r/bash.lang.correctness.unquoted-expansion.unquoted-variable-expansion-in-command
+    shortlink: https://sg.run/861Q
+    semgrep.dev:
+      rule:
+        r_id: 14840
+        rv_id: 945160
+        rule_id: BYUd5r
+        version_id: GxTP7zG
+        url: https://semgrep.dev/playground/r/GxTP7zG/bash.lang.correctness.unquoted-expansion.unquoted-variable-expansion-in-command
+        origin: community
+  patterns:
+  - pattern-either:
+    - pattern: |
+        ... ${$VAR} ...
+    - pattern: |
+        ... ...${$VAR}... ...
+  - metavariable-regex:
+      metavariable: $VAR
+      regex: '[*@0-9]|[A-Za-z].*'
+- id: bash.lang.correctness.unquoted-expansion.unquoted-command-substitution-in-command
+  languages:
+  - bash
+  severity: INFO
+  message: The result of command substitution $(...) or `...`, if unquoted, is split
+    on whitespace or other separators specified by the IFS variable. You should surround
+    it with double quotes to avoid splitting the result.
+  metadata:
+    category: correctness
+    technology:
+    - bash
+    license: Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license
+    source: https://semgrep.dev/r/bash.lang.correctness.unquoted-expansion.unquoted-command-substitution-in-command
+    shortlink: https://sg.run/gYK5
+    semgrep.dev:
+      rule:
+        r_id: 14841
+        rv_id: 945161
+        rule_id: DbU1JY
+        version_id: RGTAgqb
+        url: https://semgrep.dev/playground/r/RGTAgqb/bash.lang.correctness.unquoted-expansion.unquoted-command-substitution-in-command
+        origin: community
+  patterns:
+  - pattern-either:
+    - pattern: |
+        ... $(...) ...
+    - pattern: |
+        ... ...$(...)... ...
+  - pattern-regex: |
+      .*(\$\([^\(]|`).+([^\)]\)|`).*
+- id: bash.curl.security.curl-pipe-bash.curl-pipe-bash
+  languages:
+  - bash
+  severity: WARNING
+  message: Data is being piped into `bash` from a `curl` command. An attacker with
+    control of the server in the `curl` command could inject malicious code into the
+    pipe, resulting in a system compromise. Avoid piping untrusted data into `bash`
+    or any other shell if you can. If you must do this, consider checking the SHA
+    sum of the content returned by the server to verify its integrity.
+  metadata:
+    owasp:
+    - A03:2021 - Injection
+    - A05:2025 - Injection
+    cwe:
+    - 'CWE-95: Improper Neutralization of Directives in Dynamically Evaluated Code
+      (''Eval Injection'')'
+    category: security
+    technology:
+    - bash
+    - curl
+    confidence: LOW
+    references:
+    - https://owasp.org/Top10/A03_2021-Injection
+    subcategory:
+    - audit
+    likelihood: LOW
+    impact: LOW
+    license: Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license
+    vulnerability_class:
+    - Code Injection
+    source: https://semgrep.dev/r/bash.curl.security.curl-pipe-bash.curl-pipe-bash
+    shortlink: https://sg.run/KXz6
+    semgrep.dev:
+      rule:
+        r_id: 14555
+        rv_id: 1262602
+        rule_id: qNUXrw
+        version_id: 5PTo1Lx
+        url: https://semgrep.dev/playground/r/5PTo1Lx/bash.curl.security.curl-pipe-bash.curl-pipe-bash
+        origin: community
+  patterns:
+  - pattern-either:
+    - pattern: curl ... | ... bash ...
+    - pattern: curl ... | ... /bin/bash ...
+    - pattern: '... bash <(curl ...)'
+    - pattern: '... /bin/bash <(curl ...)'
+    - pattern: '... bash -c "$(curl ...)"'
+    - pattern: '... /bin/bash -c "$(curl ...)"'

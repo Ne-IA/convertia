@@ -26,6 +26,7 @@ patterns = [
   "scripts/setup-dev",            # patches the generated git hooks (a poisoned one silently no-ops the plane)
   "scripts/gate-selftests/**",    # every gate self-test (the planted-positive canaries)
   "tests/g53-fixture/**",         # the G53 negative fixture (a neutered planted-violation = false-green)
+  "scripts/semgrep-rules/**",     # G29 SAST corpus: project rules (enforcement logic) + vendored packs (trust) + net-allow-list.txt (socket escape hatch) + planted-positive fixtures (a neutered canary = false-green)
   "scripts/*.toml",               # gate-planes.toml + l-neg1-files.toml itself (cage cannot be silently narrowed)
 
   # --- the enforcement-plane config ---

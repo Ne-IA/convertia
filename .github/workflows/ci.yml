@@ -89,6 +89,8 @@ jobs:
         run: python3 scripts/check-test-suppression --full
       - name: 'G3/G4/G14/G17: Rust lint/format/test/audit contract (rustfmt/clippy policy frozen; live fmt/clippy/test/audit in P1)'
         run: python3 scripts/check-rust-lint-contract --full
+      - name: 'G29: unsafe-policy gate (#![deny(unsafe_code)] + one allow-listed FFI module; cross-platform, live deny/allow scan in P1)'
+        run: python3 scripts/check-unsafe-policy --full
       # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
       #   (G68 doc-graph + G69 struct-map run inside the plan-lint step above as checks 25/26.)
       #   G18a lockfile --locked + git diff --exit-code (Cargo.lock/pnpm-lock.yaml/imports.lock) +
@@ -133,3 +135,25 @@ jobs:
       # NOTE: the g24-*/g54-* self-tests for these gates (ci-supply-chain, release-tag-trust,
       # branch-protection) run in the gate-tooling job's G10 continuous-armed-canary prelude
       # (3-OS), not here — one auto-discovering runner is the single source of self-test truth.
+
+  sast:
+    name: sast
+    runs-on: ubuntu-22.04           # Semgrep is a Linux SAST source-scan (OS-independent findings); ubuntu-only saves macOS/Windows minutes (G56 cost discipline)
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+      - name: Install + verify the pinned SAST tools (Semgrep via pip --require-hashes; shellcheck pinned)
+        # --require-hashes installs Semgrep + its FULL transitive tree, every wheel hash-verified
+        # (requirements-ci.txt, G29/§0). shellcheck is the gate-tools.toml binary pin.
+        run: |
+          python3 -m pip install --require-hashes -r requirements-ci.txt
+          python3 scripts/install-gate-tools --tool shellcheck
+      - name: 'G29: SAST — armed-canary prelude (planted-positives) → semgrep --validate → scan (vendored rulesets, offline) → shellcheck'
+        run: python3 scripts/check-sast --full

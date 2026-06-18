@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""check-unsafe-policy - G29 unsafe-policy PRIMARY SAST gate (P0.4.2).
+
+The deterministic, cross-platform core of G29 (the Semgrep leg is scripts/check-sast). It proves
+the §2.12 "untrusted bytes are decoded only in isolated subprocesses, never in the core" boundary
+at the type-system level: NO `unsafe` outside a single, narrowly allow-listed FFI module per crate.
+
+Two tiers, the P0.3.6 / P0.4.1 pattern:
+
+  STRUCTURAL FREEZE (live NOW, no crates needed): the ALLOWED_UNSAFE_MODULES allow-list - the ONLY
+  module paths permitted to carry `#![allow(unsafe_code)]` - is pinned here and cannot be silently
+  broadened (no catch-all `*`/`**` entry; a change is an owner-acked L(-1) edit, G71).
+
+  LIVE (target-absent until the P1/P4 crates land): once a first-party crate root exists, assert
+    1. every first-party crate root carries `#![deny(unsafe_code)]` (or `#![forbid(unsafe_code)]`);
+    2. every `allow(unsafe_code)` site (module-inner `#![allow]` or item `#[allow]`) sits in an
+       ALLOWED_UNSAFE_MODULES file - an allow anywhere else FAILS (the "exactly the one allow-listed
+       module path" rule);
+    3. a `#![forbid(unsafe_code)]` crate has ZERO `allow(unsafe_code)` (forbid is un-overridable - an
+       FFI crate under forbid would not compile; forbid is reserved for a pure-logic zero-unsafe crate);
+    4. (best-effort) each `unsafe` block/extern in an allow-listed module has a nearby `// SAFETY:`
+       comment.
+  Skips-with-notice while no first-party crate root exists, fail-closes the moment one lands.
+
+stdlib-only. L(-1) security-critical (matched by scripts/check-*).
+
+Usage: check-unsafe-policy [--full]   (--full accepted for wiring parity; the scan is the same)
+Exit:  0 = policy intact (or target-absent); 1 = a violation; 2 = the allow-list contract is gutted.
+"""
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# --- the frozen allow-list (structural freeze): the ONLY module paths that may carry
+#     `allow(unsafe_code)`. Per the spec §0.7 physical tree, the core's unsafe FFI surface is the
+#     OS-primitive shim layer `crate::platform` (§2.1/§2.3 renameat2 / MoveFileExW /
+#     GetFileInformationByHandle + the §0.9 Job-Object kill), and the libvips image-worker
+#     (`convertia-imgworker`, a SEPARATE externalBin crate, §0.9/§3.5.5) carries the densest unsafe
+#     surface (the first Rust touching untrusted image bytes across a C/C++ FFI boundary).
+#     Each FFI module carries module-inner `#![allow(unsafe_code)]` INSIDE its own file (NOT a
+#     `#[allow(unsafe_code)] mod ffi;` declaration in the parent), so the allow lives at the
+#     allow-listed path. The EXACT per-crate FFI file is pinned (owner-acked L(-1) edit) as each
+#     crate lands in P1 (core) / P4 (imgworker); these globs are the §0.7-derived seed.
+#     fnmatch globs, repo-relative POSIX paths.
+ALLOWED_UNSAFE_MODULES = [
+    "src-tauri/src/platform/*.rs",        # core OS-primitive FFI shim (§2.14 / §7.7 / §2.1 / §2.3)
+    "src-tauri/src/platform/**/*.rs",
+    "crates/imgworker/src/ffi.rs",        # imgworker C-FFI module (libvips/libheif/…) - pinned in P4
+    "crates/imgworker/src/ffi/*.rs",
+]
+
+# directories that are NOT first-party Rust (never scanned): the negative fixtures + build output +
+# the vendored semgrep packs + this repo's own non-Rust trees.
+_SKIP_DIRS = {"target", ".git", "node_modules", "tests/g53-fixture", "scripts/semgrep-rules"}
+
+# A crate-root deny is the module-inner form `#![deny(unsafe_code)]` / `#![forbid(unsafe_code)]`.
+_DENY_RE = re.compile(r"(?m)^\s*#!\[\s*(deny|forbid)\s*\(([^\]]*)\)")
+# allow(unsafe_code): module-inner `#![allow(...)]` OR item-level `#[allow(...)]` (both must sit in an
+# allow-listed module). Captured separately only for the message; both are policed the same way.
+_ALLOW_RE = re.compile(r"#!?\[\s*allow\s*\(([^\]]*)\)")
+_UNSAFE_BLOCK_RE = re.compile(r"\bunsafe\b")
+_UNSAFE_TOKEN = re.compile(r"(?<!\w)unsafe_code(?!\w)")
+
+
+def fail(msg: str) -> None:
+    print(f"[G29] FAIL: {msg}", file=sys.stderr)
+
+
+def _strip_rs_noncode(text: str) -> str:
+    """`text` with string/raw-string literals + block + line comments BLANKED (strings first), so an
+    attribute token MENTIONED in a comment or a string does not count (the P0.4.1-proven idiom)."""
+    text = re.sub(r'"(?:\\.|[^"\\])*"', " ", text, flags=re.S)
+    text = re.sub(r'r#*".*?"#*', " ", text, flags=re.S)
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
+    return "\n".join(re.sub(r"//.*$", "", ln) for ln in text.split("\n"))
+
+
+# core modules that must NEVER carry unsafe - if any allow-list pattern matches one of these, the
+# allow-list has been broadened too far (a catch-all like `**/*.rs` or `src-tauri/**/*.rs` matches
+# main.rs and is rejected here). These are the spec §0.7 non-FFI core surfaces.
+_SENTINEL_NON_FFI = [
+    "src-tauri/src/main.rs",
+    "src-tauri/src/lib.rs",
+    "src-tauri/src/ipc/mod.rs",
+    "src-tauri/src/detection/mod.rs",
+    "src-tauri/src/engines/registry.rs",
+    "src-tauri/src/isolation/mod.rs",
+    # the imgworker is the densest-unsafe crate: its non-FFI roots must NOT be allow-listed, so a
+    # too-broad `crates/imgworker/**/*.rs` glob (unsafe anywhere in the highest-risk crate) is rejected.
+    "crates/imgworker/src/lib.rs",
+    "crates/imgworker/src/main.rs",
+]
+
+
+def freeze_contract() -> int:
+    """The allow-list must stay non-empty AND narrow: a catch-all entry would defeat the gate. Reject
+    it by proving the allow-list does NOT cover any known non-FFI core module (a `**/*.rs` /
+    `src-tauri/**/*.rs` broadening matches main.rs and is caught)."""
+    if not ALLOWED_UNSAFE_MODULES:
+        fail("ALLOWED_UNSAFE_MODULES is empty - the unsafe-policy allow-list contract is gone")
+        return 2
+    for sentinel in _SENTINEL_NON_FFI:
+        if _is_allow_listed(sentinel):
+            fail(f"ALLOWED_UNSAFE_MODULES covers the non-FFI core module {sentinel!r} - the allow-list "
+                 f"is too broad (unsafe must be confined to the one FFI module per crate)")
+            return 2
+    return 0
+
+
+def _rs_files() -> list[Path]:
+    """All first-party .rs files (excluding the negative fixtures / build output / vendored trees)."""
+    out = []
+    for p in ROOT.rglob("*.rs"):
+        rel = p.relative_to(ROOT).as_posix()
+        if any(rel == d or rel.startswith(d + "/") for d in _SKIP_DIRS):
+            continue
+        out.append(p)
+    return out
+
+
+def _crate_roots() -> list[Path]:
+    """First-party crate roots: each Cargo.toml's src/lib.rs + src/main.rs that exists (excluding the
+    negative fixtures / vendored trees)."""
+    roots = []
+    for manifest in ROOT.rglob("Cargo.toml"):
+        rel = manifest.relative_to(ROOT).as_posix()
+        if any(rel.startswith(d + "/") for d in _SKIP_DIRS):
+            continue
+        src = manifest.parent / "src"
+        for name in ("lib.rs", "main.rs"):
+            cand = src / name
+            if cand.is_file():
+                roots.append(cand)
+    return roots
+
+
+def _is_allow_listed(rel: str) -> bool:
+    return any(fnmatch.fnmatch(rel, pat) for pat in ALLOWED_UNSAFE_MODULES)
+
+
+def _crate_of(rel: str) -> str:
+    """A coarse crate key for the per-crate 'exactly one module' check: the dir holding src/."""
+    parts = rel.split("/")
+    return "/".join(parts[: parts.index("src")]) if "src" in parts else parts[0]
+
+
+def scan_live() -> int:
+    problems = 0
+    roots = _crate_roots()
+
+    # 1. every crate root denies (or forbids) unsafe_code
+    forbid_crates = set()
+    for root in roots:
+        rel = root.relative_to(ROOT).as_posix()
+        code = _strip_rs_noncode(root.read_text(encoding="utf-8", errors="replace"))
+        denied = forbidden = False
+        for kind, inner in _DENY_RE.findall(code):
+            if _UNSAFE_TOKEN.search(inner):
+                denied = True
+                if kind == "forbid":
+                    forbidden = True
+        if not denied:
+            fail(f"crate root {rel} does not carry `#![deny(unsafe_code)]` / `#![forbid(unsafe_code)]`")
+            problems += 1
+        if forbidden:
+            forbid_crates.add(_crate_of(rel))
+
+    # 2. + 3. every allow(unsafe_code) sits in an allow-listed module; a forbid crate has none
+    allow_files_by_crate: dict[str, set[str]] = {}
+    for p in _rs_files():
+        rel = p.relative_to(ROOT).as_posix()
+        code = _strip_rs_noncode(p.read_text(encoding="utf-8", errors="replace"))
+        if not any(_UNSAFE_TOKEN.search(inner) for inner in _ALLOW_RE.findall(code)):
+            continue
+        crate = _crate_of(rel)
+        allow_files_by_crate.setdefault(crate, set()).add(rel)
+        if not _is_allow_listed(rel):
+            fail(f"`allow(unsafe_code)` in {rel} is NOT an allow-listed FFI module "
+                 f"(ALLOWED_UNSAFE_MODULES) - unsafe is permitted only in the one FFI module per crate")
+            problems += 1
+        if crate in forbid_crates:
+            fail(f"crate {crate!r} uses `#![forbid(unsafe_code)]` yet {rel} has `allow(unsafe_code)` "
+                 f"- forbid is un-overridable (would not compile); forbid is for a zero-unsafe crate")
+            problems += 1
+
+    # exactly-ONE-module: per crate, all allow sites must live in a single module file
+    for crate, files in allow_files_by_crate.items():
+        if len(files) > 1:
+            fail(f"crate {crate!r} has `allow(unsafe_code)` in {sorted(files)} - exactly ONE FFI "
+                 f"module per crate may carry it")
+            problems += 1
+
+    # 4. best-effort: each `unsafe` in an allow-listed module needs a nearby `// SAFETY:` justification
+    for p in _rs_files():
+        rel = p.relative_to(ROOT).as_posix()
+        if not _is_allow_listed(rel):
+            continue
+        raw = p.read_text(encoding="utf-8", errors="replace")
+        lines = raw.split("\n")
+        for i, ln in enumerate(lines):
+            stripped = _strip_rs_noncode(ln)
+            if not _UNSAFE_BLOCK_RE.search(stripped):
+                continue
+            window = "\n".join(lines[max(0, i - 3): i + 1])
+            if "SAFETY:" not in window:
+                fail(f"{rel}:{i + 1} has an `unsafe` use without a `// SAFETY:` justification within 3 lines")
+                problems += 1
+    return problems
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G29 unsafe-policy primary SAST gate (P0.4.2)")
+    ap.add_argument("--full", action="store_true", help="accepted for wiring parity (scan is identical)")
+    ap.parse_args(argv)
+
+    structural = freeze_contract()
+    if structural:
+        return 2
+
+    if not _crate_roots():
+        print("[G29] unsafe-policy allow-list frozen; no first-party crate root yet "
+              "(core lands in P1, imgworker in P4) - deny/allow scan skipped (target-absent)")
+        return 0
+
+    problems = scan_live()
+    if problems:
+        print(f"[G29] {problems} unsafe-policy violation(s)", file=sys.stderr)
+        return 1
+    print("[G29] unsafe-policy OK (deny-at-root + allow only in the allow-listed FFI module)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,148 @@
+# ConvertIA project-local Semgrep rules — the per-engine argv/env safety rules (G29 (b)).
+#
+# Each bundled engine is spawned with a mandatory hardening flag/env so the §5 T9b/G42
+# "every spawn is sanitized" invariant is STRUCTURAL, not just the one unit-tested spawn.
+#
+# ENGINE IDENTITY (the G1-P0 fix): these rules are scoped by `paths:` to the spec §0.7 per-engine
+# module (engines/pandoc.rs, engines/libreoffice.rs, engines/ffmpeg.rs, engines/image.rs +
+# convertia-imgworker), NOT by a string-literal binary name. A bundled converter spawns its
+# sidecars by RESOLVED PATH — `Command::new(self.engines.ffmpeg())` / `Command::new(resolve_sidecar("soffice"))`
+# / an absolute path — so a `metavariable-regex $B '^"ffmpeg'` literal anchor would fire on the
+# unrealistic `Command::new("ffmpeg")` fixture (canary green forever) yet bind NOTHING on real P1
+# source. Path-scoping is binary-resolution-agnostic; the fixtures under fixtures/engines/<engine>.rs
+# use the RESOLVED-PATH form so the armed canary actually proves binding on the realistic spawn.
+#
+# Token-form coverage: pandoc value-rejection + soffice --accept key on the ARG (any binary form).
+# The absence checks require the engine's hardening token in the same fn: b4 `-protocol_whitelist`
+# and b5 `MAGICK_CONFIGURE_PATH` are STATIC string literals (literal not-inside suffices); b3b
+# `-env:UserInstallation=<scratch>` carries a dynamic value, so its not-inside set covers the literal,
+# the fluent + split `format!` forms, and the concat form. An exotic intermediate-variable form
+# (`let u = format!(...); c.arg(u);`) is a fails-SAFE over-strict residual hardened in P1.
+#
+# → activated in P1/P4 (targets the engine spawn sites that land in P4–P7; positives live now).
+rules:
+  - id: convertia-pandoc-unsafe-resource-path
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      pandoc --resource-path points at an absolute / home literal. It MUST resolve to the
+      per-job scratch variable, never `/`, `~`, `/home/…`, `%APPDATA%`, `%USERPROFILE%` —
+      otherwise pandoc reads out-of-input user data. G29 rule (b/pandoc), spec §3.5.4.
+    metadata:
+      convertia-rule: "b2"
+      threat: [T2b, T9b]
+      references: ["build-gates.md G29 (b)"]
+    paths:
+      include: ["**/engines/pandoc.rs", "**/engines/pandoc/*.rs"]
+    patterns:
+      - pattern-either:
+          - pattern: $C.arg("--resource-path").arg($V)
+          - pattern: $C.args(["--resource-path",$V])
+          - pattern: $C.args(["--resource-path",$V,...])
+      - metavariable-regex:
+          metavariable: $V
+          regex: '^"(/|~|/home/|/Users/|%APPDATA%|%USERPROFILE%|[A-Za-z]:[\\/]).*"$'
+
+  - id: convertia-soffice-accept-socket
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      A LibreOffice (soffice) spawn passes --accept, which opens the UNO loopback socket on
+      every machine. ConvertIA never uses --accept. G29 rule (b/soffice), threat T9a/T9b.
+    metadata:
+      convertia-rule: "b3a"
+      threat: [T9a, T9b]
+      references: ["build-gates.md G29 (b)"]
+    paths:
+      include: ["**/engines/libreoffice.rs", "**/engines/libreoffice/*.rs"]
+    patterns:
+      - pattern-either:
+          - pattern: $C.arg($A)
+          - pattern: $C.args([$A])
+          - pattern: $C.args([...,$A,...])
+      - metavariable-regex:
+          metavariable: $A
+          regex: '^"--accept'
+
+  - id: convertia-soffice-missing-user-installation
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      A LibreOffice (soffice) spawn does not set -env:UserInstallation=file://<per-job scratch>.
+      Without a disposable profile, soffice reuses the user's real profile. G29 rule (b/soffice),
+      spec §3.5.x.
+    metadata:
+      convertia-rule: "b3b"
+      threat: [T9b]
+      references: ["build-gates.md G29 (b)"]
+    paths:
+      include: ["**/engines/libreoffice.rs", "**/engines/libreoffice/*.rs"]
+    patterns:
+      - pattern-either:
+          - pattern: Command::new($B)
+          - pattern: std::process::Command::new($B)
+          - pattern: tokio::process::Command::new($B)
+      # CHAIN-ANCHORED-ONLY (G1-r3 fix): each spawn judged by its OWN fluent chain — no region/sequence
+      # not-inside (those fail-OPENED on an interleaved foreign spawn). The UserInstallation arg carries
+      # a dynamic scratch value, so cover the fluent format!/concat forms. RESIDUAL (fails-SAFE, P1): a
+      # split-builder soffice (`let mut c = ..; c.arg(format!(...))`) is over-strict (reddens); the
+      # isolation code uses the fluent form. NEVER fails-OPEN.
+      - pattern-not-inside: 'Command::new(...). ... .arg(format!("-env:UserInstallation=file://{}", ...))'
+      - pattern-not-inside: 'Command::new(...). ... .arg(format!("-env:UserInstallation={}", ...))'
+      - pattern-not-inside: 'Command::new(...). ... .arg("-env:UserInstallation=" + $S)'
+
+  - id: convertia-ffmpeg-missing-protocol-whitelist
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      An FFmpeg spawn does not set -protocol_whitelist file,pipe. Without it FFmpeg will follow
+      http/tcp/… protocols inside a crafted container (SSRF / egress). G29 rule (b/ffmpeg),
+      threat T9a/T9b.
+    metadata:
+      convertia-rule: "b4"
+      threat: [T9a, T9b]
+      references: ["build-gates.md G29 (b)"]
+    paths:
+      include: ["**/engines/ffmpeg.rs", "**/engines/ffmpeg/*.rs"]
+    patterns:
+      - pattern-either:
+          - pattern: Command::new($B)
+          - pattern: std::process::Command::new($B)
+          - pattern: tokio::process::Command::new($B)
+      # CHAIN-ANCHORED-ONLY (G1-r3 fix): each spawn judged by its OWN fluent chain — no region/sequence
+      # not-inside (those fail-OPENED on an interleaved foreign spawn). `-protocol_whitelist` is a static
+      # literal — cover the fluent .arg / .args-vec forms. RESIDUAL (fails-SAFE, P1): a split-builder
+      # ffmpeg is over-strict (reddens). NEVER fails-OPEN.
+      # NOTE: array not-inside patterns are whitespace-SENSITIVE in the pinned engine — the no-space
+      # `[...,"X",...]` form binds, `[..., "X", ...]` does not. Keep these dense.
+      - pattern-not-inside: 'Command::new(...). ... .arg("-protocol_whitelist")'
+      - pattern-not-inside: 'Command::new(...). ... .args([...,"-protocol_whitelist",...])'
+
+  - id: convertia-imgworker-missing-magick-configure-path
+    languages: [rust]
+    severity: ERROR
+    message: >-
+      An image-engine spawn does not set MAGICK_CONFIGURE_PATH (to the bundle policy dir).
+      MagickCore must read the bundled hardened policy.xml, not the system / no policy.
+      G29 rule (b/magick), spec §3.5.5 / G38.
+    metadata:
+      convertia-rule: "b5"
+      threat: [T9b]
+      references: ["build-gates.md G29 (b)"]
+    paths:
+      include:
+        - "**/engines/image.rs"
+        - "**/engines/image/*.rs"
+        - "**/imgworker/**/*.rs"
+    patterns:
+      - pattern-either:
+          - pattern: Command::new($B)
+          - pattern: std::process::Command::new($B)
+          - pattern: tokio::process::Command::new($B)
+      # CHAIN-ANCHORED-ONLY (G1-r3 fix): each spawn judged by its OWN fluent chain — no region/sequence
+      # not-inside (those fail-OPENED on an interleaved foreign spawn). MAGICK_CONFIGURE_PATH is a static
+      # env-key literal — cover the fluent .env/.envs chain. RESIDUAL (fails-SAFE, P1): a split-builder
+      # magick spawn is over-strict (reddens). NEVER fails-OPEN.
+      # array/env not-inside patterns are kept dense (no-space) — whitespace-sensitive in this engine.
+      - pattern-not-inside: 'Command::new(...). ... .env("MAGICK_CONFIGURE_PATH",...)'
+      - pattern-not-inside: 'Command::new(...). ... .envs([...,("MAGICK_CONFIGURE_PATH",$V),...])'

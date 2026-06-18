@@ -136,3 +136,23 @@ linux-aarch64  = { url = "https://github.com/editorconfig-checker/editorconfig-c
 macos-x86_64   = { url = "https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v3.7.0/editorconfig-checker-darwin-all.tar.gz",  sha256 = "1045b3c31216294a9ea47cc846c3522cd9a79d72670525c1575d6b8dc58dbe68" }
 macos-aarch64  = { url = "https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v3.7.0/editorconfig-checker-darwin-all.tar.gz",  sha256 = "1045b3c31216294a9ea47cc846c3522cd9a79d72670525c1575d6b8dc58dbe68" }
 windows-x86_64 = { url = "https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v3.7.0/editorconfig-checker-windows-amd64.zip",   sha256 = "3a57217fa4e132c797c7b07f0a9d31cf093455c0fa90843a51ab1c2cb190888f", asset_kind = "zip" }
+
+# --- shellcheck - the POSIX-sh/bash static analyzer for committed *.sh gate-scripts/hooks (G29,
+# P0.4.2). actionlint only shellchecks workflow `run:` steps (G49); the standalone scripts are
+# themselves code, so the SAST gate runs shellcheck over ALL committed .sh. Ships per-platform
+# ARCHIVE (tar.gz linux/macos, zip windows); the `shellcheck` binary lives in a versioned
+# `shellcheck-v0.11.0/` subdir in the tar.gz - the installer's RECURSIVE basename-match resolves it.
+# The archive sha256 is verified before extraction. ---
+[tools.shellcheck]
+version       = "0.11.0"
+origin        = "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/"
+bin_name      = "shellcheck"
+asset_kind    = "targz"   # default (linux/macos); the windows platform overrides to "zip"
+corroboration = "koalaman/shellcheck release v0.11.0 publishes NO checksums.txt and NO build-provenance attestation (`gh attestation verify --owner koalaman` -> HTTP 404), so each platform archive sha256 was computed from the official GitHub release download. 2nd INDEPENDENT origin: the ScoopInstaller/Main bucket records the IDENTICAL windows .zip sha256 (8a4e35ab..., version 0.11.0); Homebrew shellcheck stable also == 0.11.0 (version identity, builds from source). RESIDUAL (honest, same class as gitleaks/typos/editorconfig-checker): no attestation + no independent recording of the prebuilt linux/macos tar.gz BINARY archive hashes (Scoop records only the windows zip; Homebrew builds from source), so the unix-archive binary-hash trust rests on the official GitHub release; a future attested shellcheck release should be re-pinned via the attestation arm. Established 2026-06-18 by Co-Pilot (Build-Loop), owner-acked."
+
+[tools.shellcheck.platforms]
+linux-x86_64   = { url = "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.gz",  sha256 = "b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6" }
+linux-aarch64  = { url = "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.aarch64.tar.gz", sha256 = "68a8133197a50beb8803f8d42f9908d1af1c5540d4bb05fdfca8c1fa47decefc" }
+macos-x86_64   = { url = "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.darwin.x86_64.tar.gz", sha256 = "c2c15e08df0e8fbc374c335b230a7ee958c313fa5714817a59aa59f1aa594f51" }
+macos-aarch64  = { url = "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.darwin.aarch64.tar.gz", sha256 = "339b930feb1ea764467013cc1f72d09cd6b869ebf1013296ba9055ab2ffbd26f" }
+windows-x86_64 = { url = "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.zip",                  sha256 = "8a4e35ab0b331c85d73567b12f2a444df187f483e5079ceffa6bda1faa2e740e", asset_kind = "zip" }
