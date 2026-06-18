@@ -25,6 +25,7 @@ Exit:  0 = clean; 1 = >=1 finding; 2 = a required target is missing / a usage er
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import posixpath
@@ -997,12 +998,106 @@ def doc20_reviewer_family(ctx: Ctx) -> list[Finding]:
     return []
 
 
+# --- check 23 (the G68 sibling): the owner-decidable / informational-then-ratcheted gate-status ledger.
+# _OWNER_DECIDABLE_GATES is the canonical registry of gates whose required-vs-informational posture is an
+# OWNER decision (not a deterministic always-on Gnn). The KEY is matched case-insensitively as a WHOLE
+# delimited TOKEN in the ledger row's first column (via _key_binds, so `cargo-acl`/cackle and a back-ticked
+# `Kani` bind but a near-miss like `cargo-aclx` does NOT); the VALUE is the effective posture the ledger
+# row MUST agree with. INVARIANT: no key may be a substring of another. A flip edits BOTH the ledger row AND this
+# map in the SAME owner-acked L(-1) commit — the dual record that makes an informational<->required flip a
+# dated, auditable change, never an invisible drift (build-gates §6 check 23). Seeded with the P0.4.5
+# over-assurance contracts; later boxes APPEND their gate when authored (P0.5.10 cargo-mutants, P0.7.14 G64,
+# P0.7.15 G65, G17b) — each addition rides that box's commit, never a pre-emptive entry for absent code.
+_OWNER_DECIDABLE_GATES = {
+    "cargo-acl":     "informational",   # cackle dependency-graph capability cap (P0.4.5)
+    "kani":          "informational",   # bounded model checking of the numeric caps (P0.4.5)
+    "cargo-careful": "informational",   # runtime-UB / extra-assertion nightly wrapper (P0.4.5)
+    "cargo-geiger":  "informational",   # unsafe-usage census, informational-forever (P0.4.5)
+}
+_GATE_STATUSES = {"informational", "required", "decided"}
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _is_iso_calendar_date(s: str) -> bool:
+    """True iff `s` is a REAL calendar date — strictly stronger than the YYYY-MM-DD SHAPE regex, which
+    alone would accept impossible dates like 2026-13-99 / 2026-00-00. Used together with _ISO_DATE (the
+    regex enforces the dashed shape; this rejects an out-of-range month/day). Stdlib-only."""
+    try:
+        datetime.date.fromisoformat(s)
+        return True
+    except ValueError:
+        return False
+
+
+def _key_binds(key: str, name_lower: str) -> bool:
+    """True iff registry `key` appears in `name_lower` as a whole identifier token — delimited by
+    start/end or a non-[word-or-hyphen] char — so `cargo-acl` binds the ledger name `` `cargo-acl` / cackle ``
+    but NOT a near-miss like `cargo-aclx` or `cargo-acl-ng` (the P0.4.5 G1 P3 substring-footgun fix).
+    INVARIANT: no _OWNER_DECIDABLE_GATES key may be a substring of another (cargo-acl / kani /
+    cargo-careful / cargo-geiger all satisfy this), and a ledger name must contain the exact key token."""
+    return re.search(r"(?<![\w-])" + re.escape(key) + r"(?![\w-])", name_lower) is not None
+
+
+def _parse_status_rows(text: str) -> list[tuple[str, str, str, int]]:
+    """The data rows of the gate-status ledger table — (name_cell, status_lower, since, lineno). The
+    ledger table is the markdown table whose header row names BOTH a `Status` and a `Since` column; only
+    ITS data rows are parsed (any other table in the doc is ignored). Fence-aware; the all-dashes
+    separator row is skipped without ejecting the table."""
+    rows: list[tuple[str, str, str, int]] = []
+    in_table = False
+    for ln, raw in _strip_fenced(text):
+        line = raw.strip()
+        if not line.startswith("|"):
+            in_table = False
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        low = [c.lower() for c in cells]
+        if "status" in low and "since" in low:        # the ledger header row
+            in_table = True
+            continue
+        if set(line) <= set("|-: "):                  # the header separator row (---|---) — skip, keep table
+            continue
+        if in_table and len(cells) >= 3:
+            rows.append((cells[0], cells[1].lower(), cells[2], ln))
+    return rows
+
+
 def doc23_ratchet_log(ctx: Ctx) -> list[Finding]:
-    """Check 23: every §8-informational/owner-decidable gate has a dated docs/process/gate-status.md
-    entry whose status agrees with its effective posture."""
-    if "docs/process/gate-status.md" not in ctx.docs:
-        return []                          # gate-status.md lands in P0.6
-    return []
+    """Check 23: the owner-decidable / informational-then-ratcheted gate-status decision-log. Every gate
+    in _OWNER_DECIDABLE_GATES has a dated, well-formed `docs/process/gate-status.md` ledger row whose
+    status AGREES with its effective posture, and every parsed ledger row is itself well-formed — so a
+    posture flip is a dated committed line, never an invisible informational<->required change
+    (build-gates §6 check 23 / the G68 sibling). Target-absent: skips while the ledger is unauthored (it
+    lands in P0.4.5), fail-closed once it exists."""
+    F = "docs/process/gate-status.md"
+    text = ctx.docs.get(F, "")
+    if not text:
+        return []                          # the ledger lands in P0.4.5; the check fail-closes once present
+    out: list[Finding] = []
+    rows = _parse_status_rows(text)
+    # (1) every parsed row is well-formed — no malformed status / non-ISO date may hide in the ledger
+    for name, status, since, ln in rows:
+        if status not in _GATE_STATUSES:
+            out.append(Finding("23:ratchet-log", F, ln,
+                               f"ledger row {name!r}: status {status!r} is not one of {sorted(_GATE_STATUSES)}"))
+        if not _ISO_DATE.match(since) or not _is_iso_calendar_date(since):
+            out.append(Finding("23:ratchet-log", F, ln,
+                               f"ledger row {name!r}: 'Since' {since!r} is not a valid ISO YYYY-MM-DD date"))
+    # (2) every registered owner-decidable gate has a row whose status agrees with the effective posture
+    for key, expected in _OWNER_DECIDABLE_GATES.items():
+        matches = [r for r in rows if _key_binds(key, r[0].lower())]
+        if not matches:
+            out.append(Finding("23:ratchet-log", F, 0,
+                               f"owner-decidable gate {key!r} has no dated status row "
+                               f"(plan-lint check 23 / P1.62.10)"))
+            continue
+        for name, status, since, ln in matches:
+            if status in _GATE_STATUSES and status != expected:
+                out.append(Finding("23:ratchet-log", F, ln,
+                                   f"ledger row {name!r}: status {status!r} disagrees with the effective "
+                                   f"posture {expected!r} — a flip must edit BOTH the ledger row AND the "
+                                   f"check-23 _OWNER_DECIDABLE_GATES posture map in the same commit"))
+    return out
 
 
 def doc24_p0_completion(ctx: Ctx) -> list[Finding]:

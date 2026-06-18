@@ -628,13 +628,19 @@ Invariant checks (initial set; expanded during P0 review):
     the same commit. Stdlib-only.
 23. **Informational→required ratchet decision-log presence (r7 — a silent status flip is invisible).** The
     informational-then-ratcheted gates (`cargo-mutants` G15-leg, G17b, G64, G65, the owner-decidable `cargo-acl`/
-    Kani/`cargo-careful` contracts) transition informational→required via a ratchet/owner decision, but no check
+    Kani/`cargo-careful` contracts; plus `cargo-geiger`, which carries a ledger row too but is informational-forever
+    — a census tool that never ratchets to required) transition informational→required via a ratchet/owner decision,
+    but no check
     recorded the decision AT the transition — a silent informational→required flip (or the reverse) had no audit
     trail. This check asserts that **every §8-informational / owner-decidable gate has a dated status entry in a
     committed `docs/process/gate-status.md`** and that the entry's status agrees with the gate's effective
     required-vs-informational posture (mirroring the dual-review correlated-residual recorded-decision pattern and
     plan-lint check 17's cross-doc status agreement), so a status change is a dated committed line, never an
-    invisible flip. Stdlib-only.
+    invisible flip. **Delivered (P0.4.5):** the ledger lands (`docs/process/gate-status.md`) with the four
+    over-assurance contracts; `plan-lint` check 23 gains its real logic — `_OWNER_DECIDABLE_GATES` (the
+    effective-posture registry, seeded with the four, appended by later boxes) + the ledger-table parse +
+    presence/well-formedness/posture-agreement assertions; a flip edits BOTH the ledger row AND the registry in
+    one owner-acked commit. Stdlib-only.
 24. **P0-completion-record format (r7)** — once `docs/process/p0-completion.md`
     exists, assert its `run_url:` field matches
     `https://github.com/Ne-IA/convertia/actions/runs/<id>` (the immutable

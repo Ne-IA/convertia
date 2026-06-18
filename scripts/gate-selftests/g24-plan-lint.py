@@ -159,6 +159,45 @@ record("25 forward-allowlist: a dangling link to an UNREGISTERED target -> still
 record("25 code-span: a link inside an inline `code` span -> NOT flagged",
        not any("dangling" in f.msg for f in m.doc25_doc_graph(dctx({"docs/a.md": "example `[x](nope.md)` here\n"}))))
 
+# --- check 23: the owner-decidable / informational-then-ratcheted gate-status ledger (P0.4.5) --
+_GS = "docs/process/gate-status.md"
+_LEDGER_HEAD = "| Gate / tool | Status | Since | Activation | Contract |\n|---|---|---|---|---|\n"
+
+
+def _ledger(rows):                                   # rows: list of (name, status, since)
+    body = "".join(f"| {n} | {s} | {d} | P1 | x |\n" for (n, s, d) in rows)
+    return {_GS: "# Ledger doc\n\n## Ledger\n\n" + _LEDGER_HEAD + body}
+
+
+_FOUR = [("`cargo-acl`/cackle", "informational", "2026-06-18"),
+         ("`cargo-careful`", "informational", "2026-06-18"),
+         ("Kani", "informational", "2026-06-18"),
+         ("`cargo-geiger`", "informational", "2026-06-18")]
+record("23 gate-status: a clean 4-row ledger -> no finding",
+       m.doc23_ratchet_log(dctx(_ledger(_FOUR))) == [])
+record("23 gate-status: absent ledger -> skip (target-absent, not a finding)",
+       m.doc23_ratchet_log(dctx({})) == [])
+record("23 gate-status: a missing required gate (no Kani row) -> caught",
+       any("kani" in f.msg.lower() for f in m.doc23_ratchet_log(dctx(_ledger([r for r in _FOUR if r[0] != "Kani"])))))
+record("23 gate-status: a malformed status ('maybe') -> caught",
+       any("not one of" in f.msg for f in m.doc23_ratchet_log(
+           dctx(_ledger([("`cargo-acl`/cackle", "maybe", "2026-06-18")] + _FOUR[1:])))))
+record("23 gate-status: a non-ISO 'Since' date -> caught",
+       any("ISO" in f.msg for f in m.doc23_ratchet_log(
+           dctx(_ledger([("`cargo-acl`/cackle", "informational", "June 18")] + _FOUR[1:])))))
+record("23 gate-status: a status disagreeing with the effective posture -> caught",
+       any("disagrees" in f.msg for f in m.doc23_ratchet_log(
+           dctx(_ledger([("`cargo-acl`/cackle", "required", "2026-06-18")] + _FOUR[1:])))))
+record("23 gate-status: a table without a Status+Since header is ignored -> required rows still missing",
+       any("no dated status row" in f.msg for f in m.doc23_ratchet_log(
+           dctx({_GS: "# L\n\n| a | b |\n|---|---|\n| x | y |\n"}))))
+record("23 gate-status: a near-miss name (cargo-aclx) does NOT false-bind the cargo-acl key -> still missing",
+       any("'cargo-acl'" in f.msg and "no dated status row" in f.msg for f in m.doc23_ratchet_log(
+           dctx(_ledger([("`cargo-aclx`", "informational", "2026-06-18")] + _FOUR[1:])))))
+record("23 gate-status: an impossible-but-ISO-shaped 'Since' date (2026-13-99) -> caught",
+       any("valid ISO" in f.msg for f in m.doc23_ratchet_log(
+           dctx(_ledger([("`cargo-acl`/cackle", "informational", "2026-13-99")] + _FOUR[1:])))))
+
 # --- check 25 leg (c2): the per-source content-fingerprint freshness ledger (P0.3.12) ---------
 # Each leg drives the PURE m._freshness_fingerprints(entries, root, docs) so a synthetic source can be
 # supplied via the `docs` dict (no temp files): an entry whose `file` is in `docs` reads that content.
@@ -277,10 +316,13 @@ record("16 planted-positive: clean on the real repo (every built fail-closed §5
        m.doc16_planted_positive(_real) == [])
 record("21 t2-taint-xor: pending (neither CodeQL nor Semgrep live) -> skip []",
        m.doc21_taint_xor(_real) == [])
-# the target-absent stubs all skip today (their P0.6/P1 targets are unauthored)
-record("target-absent stubs (14/15/18/19/20/23/24) skip while their targets are absent",
+# the target-absent stubs all skip today (their P0.6/P1 targets are unauthored). NB check 23 is NO LONGER
+# here: P0.4.5 created docs/process/gate-status.md, so doc23 is now ACTIVE and is exercised by its own
+# dedicated legs above (the gate-status block) — keeping it in this "stubs skip" tuple would pass for the
+# wrong reason (the real ledger is clean, the active path) under a misleading label (P0.4.5 G1 P2 fix).
+record("target-absent stubs (14/15/18/19/20/24) skip while their targets are absent",
        all(fn(_real) == [] for fn in (m.doc14_dod_parity, m.doc15_hard_stop_parity, m.doc18_named_procedure,
-                                      m.doc19_reviewer_rubric, m.doc20_reviewer_family, m.doc23_ratchet_log,
+                                      m.doc19_reviewer_rubric, m.doc20_reviewer_family,
                                       m.doc24_p0_completion)))
 
 # --- check 26 (G69) structural-map integrity — the real logic, driven by pure fns (P0.3.13) ------

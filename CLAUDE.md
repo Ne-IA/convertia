@@ -317,6 +317,7 @@ In brief:
 - Build-loop (master prompt, DoD, hard-stops): [`docs/process/build-loop.md`](docs/process/build-loop.md)
 - Test strategy: [`docs/process/test-strategy.md`](docs/process/test-strategy.md)
 - Roles & escalation: [`docs/process/roles-and-escalation.md`](docs/process/roles-and-escalation.md)
+- Gate-status ledger (owner-decidable gate posture decision-log, `plan-lint` check 23): [`docs/process/gate-status.md`](docs/process/gate-status.md)
 - Vulnerability response (CVE → user, no-auto-update): [`docs/process/vuln-response.md`](docs/process/vuln-response.md)
   *(authored in P0.6; absent until P0 completes — see the §2 bootstrap note)*
 - Plan (executable TODO): [`docs/plan/README.md`](docs/plan/README.md) ·
