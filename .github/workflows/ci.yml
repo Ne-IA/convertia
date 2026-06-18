@@ -95,6 +95,8 @@ jobs:
         run: python3 scripts/check-fuzz-contract --full
       - name: 'G5/G6/G13: TypeScript lint/type-check/format/test contract (tsconfig strict + eslint no-any/fc.gen + prettier/stylelint/vitest frozen; live tsc/eslint/prettier/vitest in P1)'
         run: python3 scripts/check-ts-gate --full
+      - name: 'G57: Principle-11 English-only / string-ownership lint (no i18n-runtime import + strings/ui.ts non-empty + no inline literal; live in P1)'
+        run: python3 scripts/check-english-only --full
       # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
       #   (G68 doc-graph + G69 struct-map run inside the plan-lint step above as checks 25/26.)
       #   G18a lockfile --locked + git diff --exit-code (Cargo.lock/pnpm-lock.yaml/imports.lock) +

@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+"""check-english-only - G57 Principle-11 English-only / string-ownership lint contract (P0.4.6).
+
+ConvertIA v1 is English-ONLY with NO i18n runtime (SSOT Principle 11; spec §5.7/§6.10 row 23). This is
+the INVERSE of locale-key parity: rather than proving every locale has a translation, it proves NO
+locale-switching machinery ships AND every UI string is owned by `src/strings/ui.ts`. Spec §6.10's
+Principle-11 CI lint (docs/spec/05-ui-ux.md) names the load-bearing legs verbatim:
+"no locale-switching/i18n-library import ships; every strings/ui.ts key has a non-empty English value".
+
+Two tiers, the P0.4.1/P0.4.7 pattern:
+
+  STRUCTURAL FREEZE (live NOW): the banned-i18n-library set (BANNED_I18N_*), the required eslint-rule
+  contract (REQUIRED_ESLINT — the "config skeleton lives with the TS contract, P0.4.7" half), and the
+  spec-DECIDED pinned UI strings (PINNED_KEYS — the §6.10 drift check) are frozen non-empty. A relaxation
+  reddens the gate (an owner-acked L(-1) edit, G71).
+
+  TARGET-ABSENT live tier (each leg activates as its P1 target lands, fail-closed once present):
+    (a) NO i18n-library / locale-switch import ships — a banned lib in package.json deps (any tier), a
+        banned import in any src/**/*.{ts,tsx,mts,cts} (comment-stripped), OR the eslint flat config
+        missing the i18n `no-restricted-imports` restriction.
+    (b) every src/strings/ui.ts key has a NON-EMPTY value, AND each spec-DECIDED PINNED_KEYS key is
+        present with its exact pinned text (the §6.10 drift check — e.g. `idle_reassurance`).
+    (c) no inline user-facing literal in a component — enforced by the eslint `react/jsx-no-literals`
+        rule (the precise AST enforcement; check asserts the flat config carries it, rather than a
+        false-positive-prone JSX-text regex). [Build-Session-Entscheidung: P0.4.6]
+  Skips-with-notice while none of the P1 targets exist (package.json / src/ / the eslint config /
+  src/strings/ui.ts), fail-closes the moment each lands.
+
+stdlib-only. L(-1) security-critical (matched by scripts/check-*). "Red main" (Lane-A; §6.7.1).
+
+Usage: check-english-only [--full]   (--full is accepted for plane parity; the scan is whole-tree either way)
+Exit:  0 = clean (or target-absent); 1 = a violation; 2 = a required target is malformed/unreadable.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+PKG = ROOT / "package.json"
+SRC = ROOT / "src"
+STRINGS_MODULE = ROOT / "src" / "strings" / "ui.ts"
+
+# --- the frozen English-only CONTRACT (a relaxation = an enforcement-plane weakening, owner-acked) ----
+# i18n-runtime / locale-switch libraries that must NEVER ship (English-only, no i18n runtime). Canonical
+# published names + scoped/dashed prefixes. A deliberately renamed fork is out of scope for the name match
+# but still trips leg (b)/(c) (a non-English string / an un-owned literal); the dep scan + import grep key
+# on the real package names, the lightweight closure the spec's "by construction" posture relies on.
+BANNED_I18N_EXACT = {
+    "i18next", "react-i18next", "react-intl", "react-intl-universal", "vue-i18n", "svelte-i18n",
+    "next-i18next", "next-intl", "preact-i18n", "intl-messageformat", "node-polyglot", "polyglot",
+    "format-message", "globalize", "ttag", "fbt", "lingui", "i18n", "i18n-js", "i18nify",
+    "typesafe-i18n", "lit-localize", "@types/i18next",
+}
+BANNED_I18N_PREFIX = ("@lingui/", "@formatjs/", "i18next-", "@nuxtjs/i18n", "@angular/localize")
+
+# the G57 eslint-rule contract — the flat config MUST carry these once it lands ("the config skeleton
+# lives with the TS contract, P0.4.7"). The dep scan + import grep are the robust primary leg-(a); the
+# eslint no-restricted-imports is the belt-and-suspenders; react/jsx-no-literals is the precise leg-(c).
+REQUIRED_ESLINT = [
+    ("no-inline user-facing literal (G57 leg c — strings live in src/strings/ui.ts)", "react/jsx-no-literals"),
+    ("i18n import restriction (G57 leg a — belt-and-suspenders to the dep scan)", "no-restricted-imports"),
+]
+
+# spec-DECIDED named src/strings/ui.ts keys with PINNED verbatim text (the §6.10 Principle-11 drift check,
+# docs/spec/05-ui-ux.md). Frozen from the spec; P1 must author each EXACTLY (a spec text change + this
+# pin move together, SSOT > docs). The em-dash is U+2014 — the value is compared codepoint-exact.
+PINNED_KEYS = {
+    "idle_reassurance": "All conversion happens locally, on your machine — nothing is ever uploaded.",
+}
+
+_ESLINT_FLAT = ["eslint.config.js", "eslint.config.mjs", "eslint.config.cjs", "eslint.config.ts"]
+_SRC_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
+_DEP_KEYS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
+
+
+def fail(msg: str) -> None:
+    print(f"[G57] FAIL: {msg}", file=sys.stderr)
+
+
+def _banned(name: str) -> bool:
+    return name in BANNED_I18N_EXACT or name.startswith(BANNED_I18N_PREFIX)
+
+
+def freeze_contract() -> int:
+    """The contract sets must stay non-empty + well-formed (they cannot be silently gutted)."""
+    problems = 0
+    if not BANNED_I18N_EXACT and not BANNED_I18N_PREFIX:
+        fail("the banned-i18n set is empty — the no-i18n-runtime policy is gone")
+        problems += 1
+    if not REQUIRED_ESLINT or not any("jsx-no-literals" in tok for _, tok in REQUIRED_ESLINT):
+        fail("REQUIRED_ESLINT dropped react/jsx-no-literals — the inline-literal (leg c) policy is gone")
+        problems += 1
+    if not PINNED_KEYS:
+        fail("PINNED_KEYS is empty — the §6.10 spec-decided-string drift check is gone")
+        problems += 1
+    return problems
+
+
+def _strip_ts_comments(text: str) -> str:
+    """Blank /* */ + // comments while KEEPING string/template contents (a `//` inside a "…"/'…'/`…`
+    literal — a URL, an import path — is NOT a comment), so a commented-out `import` does not count and a
+    real `from "i18next"` is still seen."""
+    stash: list[str] = []
+
+    def _s(m: "re.Match[str]") -> str:
+        stash.append(m.group(0))
+        return f"\x00{len(stash) - 1}\x00"
+
+    p = re.sub(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`', _s, text, flags=re.S)
+    p = re.sub(r"/\*.*?\*/", " ", p, flags=re.S)
+    p = "\n".join(re.sub(r"//.*$", "", ln) for ln in p.split("\n"))
+    return re.sub(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], p)
+
+
+# an import/require SOURCE specifier: `from "X"`, `require("X")`, dynamic `import("X")`, AND a bare
+# side-effect `import "X";` (G1 P2 — the side-effect form has no `from`, so it needed its own alt).
+_IMPORT_SRC_RE = re.compile(r"""(?:\bfrom|\brequire\s*\(|\bimport\s*\(|\bimport\s+)\s*["']([^"']+)["']""")
+
+
+def scan_pkg_deps() -> int:
+    """(a) package.json declares no banned i18n library in any dependency tier. Target-absent until
+    package.json lands."""
+    if not PKG.is_file():
+        return 0
+    try:
+        pkg = json.loads(PKG.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError, ValueError) as e:
+        fail(f"package.json is malformed/unreadable ({e})")
+        return 2
+    problems = 0
+    for k in _DEP_KEYS:
+        block = pkg.get(k, {})
+        if isinstance(block, dict):
+            for dep in block:
+                if _banned(dep):
+                    fail(f"package.json {k} declares the banned i18n library {dep!r} "
+                         f"(v1 is English-only, NO i18n runtime — spec §6.10 row 23)")
+                    problems += 1
+    return problems
+
+
+def scan_src_imports() -> int:
+    """(a) no banned i18n library is imported in any src source file. Target-absent until src/ lands."""
+    if not SRC.is_dir():
+        return 0
+    problems = 0
+    for f in sorted(SRC.rglob("*")):
+        if not f.is_file() or f.suffix not in _SRC_EXTS:
+            continue
+        code = _strip_ts_comments(f.read_text(encoding="utf-8", errors="replace"))
+        for spec in _IMPORT_SRC_RE.findall(code):
+            # the imported bare-module name (strip a deep path: `i18next/foo` -> `i18next`; `@lingui/x` kept)
+            name = spec if spec.startswith("@") else spec.split("/", 1)[0]
+            if spec.startswith("@"):
+                parts = spec.split("/")
+                name = "/".join(parts[:2]) if len(parts) >= 2 else spec
+            if _banned(name) or _banned(spec):
+                rel = f.relative_to(ROOT).as_posix()
+                fail(f"{rel} imports the banned i18n library {spec!r} (English-only, NO i18n runtime)")
+                problems += 1
+    return problems
+
+
+def _eslint_config() -> Path | None:
+    for n in _ESLINT_FLAT:
+        if (ROOT / n).is_file():
+            return ROOT / n
+    return None
+
+
+# a rule severity switched OFF right after the rule key: `: "off"` / `: 'off'` / `: 0` / `: ["off"`. (The
+# same hardened detector the SIBLING gate check-ts-gate carries, reading the same flat config — G1 P2:
+# a token-presence-only check let a `"react/jsx-no-literals": "off"` pass, which would ship inline literals.)
+_OFF_RE = re.compile(r""":\s*\[?\s*(?:"off"|'off'|0\b)""")
+
+
+def _rule_is_off(text: str, token: str) -> bool:
+    """True iff the rule `token` is set to an OFF/0 severity. Scans from EACH occurrence of the token
+    across newlines up to the next rule key (`, "…"`) or a 200-char bound — so a formatter-wrapped
+    multi-line `"rule":\n["off"]` IS caught while an unrelated `: 0` on a shared line does not
+    cross-contaminate (mirrors check-ts-gate._rule_is_off)."""
+    for mt in re.finditer(re.escape(token), text):
+        win = text[mt.end():mt.end() + 200]
+        cut = re.search(r""",\s*["']""", win)
+        if cut:
+            win = win[:cut.start()]
+        if _OFF_RE.search(win):
+            return True
+    return False
+
+
+def assert_eslint_rules() -> int:
+    """(a)/(c) the eslint flat config carries the G57 rules ON (the precise per-literal + import
+    enforcement). Token-presence + not-switched-OFF over comment-stripped text (the rule name is a string
+    key, strings kept). Target-absent until the flat config lands. Over-strict is SAFE; the live eslint run
+    is the authoritative enforcement, this freeze guarantees the rule EXISTS + is not trivially disabled."""
+    cfg = _eslint_config()
+    if cfg is None:
+        return 0
+    text = _strip_ts_comments(cfg.read_text(encoding="utf-8", errors="replace"))
+    problems = 0
+    for desc, token in REQUIRED_ESLINT:
+        if token not in text:
+            fail(f"eslint flat config {cfg.name} is missing the G57 rule {desc} (token {token!r})")
+            problems += 1
+            continue
+        if _rule_is_off(text, token):
+            fail(f"eslint flat config {cfg.name}: the G57 rule {desc} ({token!r}) appears switched OFF")
+            problems += 1
+    # the i18n no-restricted-imports must actually name at least one banned lib (not a bare empty rule)
+    if "no-restricted-imports" in text and not any(b in text for b in (list(BANNED_I18N_EXACT) + list(BANNED_I18N_PREFIX))):
+        fail(f"eslint flat config {cfg.name}: no-restricted-imports is present but names no i18n library "
+             f"(the G57 leg-a restriction is empty)")
+        problems += 1
+    return problems
+
+
+# a strings/ui.ts object entry `key: "value"` — captures the key + its string literal. Anchored to an
+# object-entry boundary (`{` or `,` before the key), NOT line-start (G1 P1 — a line-start `(?m)^` anchor
+# captured only the FIRST entry per physical line, so a second-on-the-line / brace-line / minified entry
+# with an EMPTY value shipped undetected; the SOLE leg-(b) enforcement was bypassable by authoring style).
+# The `[{,]` boundary also reaches keys in a nested object literal. Value group: double / single /
+# template literals (no interpolation expected in a flat string table).
+_ENTRY_RE = re.compile(r"""[{,]\s*['"]?([A-Za-z_]\w*)['"]?\s*:\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`)""")
+
+
+def _unquote(lit: str) -> str:
+    """The codepoint content of a JS string/template literal, resolving the few escapes that matter for an
+    empty/text check (\\n \\t \\" \\' \\\\ \\u{...}/\\uXXXX). Over-approximate is fine — this feeds a
+    non-empty + exact-pinned-text comparison, not execution."""
+    body = lit[1:-1]
+    body = re.sub(r"\\u\{([0-9A-Fa-f]+)\}", lambda m: chr(int(m.group(1), 16)), body)
+    body = re.sub(r"\\u([0-9A-Fa-f]{4})", lambda m: chr(int(m.group(1), 16)), body)
+    return (body.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+            .replace("\\'", "'").replace("\\`", "`").replace("\\\\", "\\"))
+
+
+def assert_strings_values() -> int:
+    """(b) every src/strings/ui.ts key has a NON-EMPTY value, and each spec-DECIDED PINNED_KEYS key is
+    present with its exact pinned text (the §6.10 drift check). Target-absent until the module lands."""
+    if not STRINGS_MODULE.is_file():
+        return 0
+    text = _strip_ts_comments(STRINGS_MODULE.read_text(encoding="utf-8", errors="replace"))
+    problems = 0
+    found: dict[str, str] = {}
+    for key, lit in _ENTRY_RE.findall(text):
+        val = _unquote(lit)
+        found[key] = val
+        if val.strip() == "":
+            fail(f"src/strings/ui.ts key {key!r} has an EMPTY value (every key needs a non-empty "
+                 f"English value — spec §6.10)")
+            problems += 1
+    for key, pinned in PINNED_KEYS.items():
+        if key not in found:
+            fail(f"src/strings/ui.ts is missing the spec-DECIDED key {key!r} (the §6.10 pinned string)")
+            problems += 1
+        elif found[key] != pinned:
+            fail(f"src/strings/ui.ts key {key!r} text drifted from the spec-pinned value "
+                 f"(got {found[key]!r}, spec pins {pinned!r} — §6.10/§5.7, SSOT > code)")
+            problems += 1
+    return problems
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G57 Principle-11 English-only / string-ownership lint (P0.4.6)")
+    ap.add_argument("--full", action="store_true", help="whole-tree scan (plane parity; the scan is whole-tree either way)")
+    ap.parse_args(argv)
+
+    structural = freeze_contract()
+    any_target = PKG.is_file() or SRC.is_dir() or _eslint_config() is not None or STRINGS_MODULE.is_file()
+    if not any_target:
+        if structural:
+            print(f"[G57] {structural} contract violation(s)", file=sys.stderr)
+            return 1
+        print("[G57] English-only / string-ownership contract frozen; no frontend yet (package.json / "
+              "src/ / the eslint config / src/strings/ui.ts land in P1) — live legs skipped (target-absent)")
+        return 0
+
+    live = scan_pkg_deps() + scan_src_imports() + assert_eslint_rules() + assert_strings_values()
+    total = structural + live
+    if total:
+        print(f"[G57] {total} English-only / string-ownership violation(s)", file=sys.stderr)
+        return 1
+    print("[G57] English-only / string-ownership contract OK")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
