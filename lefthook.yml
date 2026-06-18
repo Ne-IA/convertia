@@ -16,8 +16,8 @@
 #
 # GATE SLOTS: each L1/L2/L3 gate is added to the slots below by the box that BUILDS
 # it (so a gate is wired only after it is built + self-tested). The P0.3/P0.4 contract set is wired
-# (plan-lint/G8/G70/rust-lint/unsafe-policy/fuzz-contract/ts-gate/english-only/coverage/lockfile-integrity/build-matrix —
-# P0.3.5/3.4/3.14/4.1/4.2/4.3/4.7/4.6/4.8/4.9/4.10); later-phase gates add their own slots as they are built.
+# (plan-lint/G8/G70/rust-lint/unsafe-policy/fuzz-contract/ts-gate/english-only/coverage/lockfile-integrity/build-matrix/completeness —
+# P0.3.5/3.4/3.14/4.1/4.2/4.3/4.7/4.6/4.8/4.9/4.10/4.11); later-phase gates add their own slots as they are built.
 # The G29 Semgrep + shellcheck SAST gate is L4-only (CI `sast` job; semgrep is a CI pip tool).
 #
 # Requires Python 3.11+ on PATH as `python3` (the stdlib-only gate scripts) and
@@ -74,6 +74,8 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
       run: python3 scripts/check-lockfile-integrity
     build-matrix:    # G30 - native-OS matrix + macOS-universal fat-Mach-O slice contract (sidecar slice-assertion target-absent until P1+)
       run: python3 scripts/check-build-matrix
+    completeness:    # G22/G23 - format membership-parity bijection + every-`convert_*`-has-a-test walk (target-absent until P3/P4 handlers+corpus)
+      run: python3 scripts/check-completeness
     # L1 gate slots: the P0.4 contract set is wired; later phases add their own gate slots.
     # NOTE: the G29 Semgrep + shellcheck SAST gate (check-sast) is L4-only (the CI `sast` job) -
     # Semgrep is a CI-tier pip tool (requirements-ci.txt --require-hashes), not a locally pinned binary.
@@ -124,4 +126,6 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/check-lockfile-integrity
     build-matrix:    # G30 - build-matrix contract: native-OS set freeze + macOS-universal fat-Mach-O both-slice assertion (target-absent until a universal sidecar is staged)
       run: python3 scripts/check-build-matrix
+    completeness:    # G22/G23 - schema/membership-parity bijection logic + every-`convert_*`-has-a-test git walk (target-absent until P3/P4)
+      run: python3 scripts/check-completeness
     # L2 gate slots: the P0.4 contract set is wired; later phases add their own gate slots.

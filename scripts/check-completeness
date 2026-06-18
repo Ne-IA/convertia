@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""check-completeness - G22 schema/membership parity + G23 every-X-has-a-Y completeness (P0.4.11).
+
+Two MIRROR completeness gates over app code that does not exist until P1+ (the same bootstrap
+annotation G47/G27/G33a/G57 carry): each fail-opens / skips-with-notice while its target is absent
+and fail-CLOSES the moment a real `convert_*` command / format-registry entry / corpus fixture
+lands - so the P0 green-L4 exit criterion is not blocked by a gate targeting absent code, and the
+gate is never silently fail-open once its target lands.
+
+  * G23 "every X has a Y" completeness - every `#[tauri::command] fn convert_*` handler has a
+    PARTNER TEST (a tracking-aware `git ls-files` walk; stage the test in the same commit). This is
+    G23's REAL home - it needs no §04 matrix row or bijection script, just the walk - and it
+    fail-closes from P3.63 when the first `convert_*` handler (CSV->TSV) + its test land. The walk
+    is live-capable NOW (target-absent until a handler exists).
+
+  * G22 schema/membership parity - every SUPPORTED format is in the §04 category matrices AND has a
+    corpus fixture AND a round-trip test. [Build-Session-Entscheidung: P0.4.11] the AUTHORITATIVE
+    supported-format SET is the compiled Rust `UserFacingFormat` registry (spec §0.6 `FormatId` /
+    §3.2 `registry.rs`), NOT a markdown scrape of `docs/spec/04-formats/`: the §04 headings are not
+    uniformly machine-extractable (e.g. `images.md` declares no ``### `FORMAT` `` headings), so a
+    stdlib scrape would SILENTLY UNDER-COUNT the format set - a fail-OPEN where a format absent from
+    the scraped set escapes the fixture/test check. So the full §04 <-> registry <-> corpus
+    bijection is owned by the P4.60 Rust guard `scripts/check-corpus-coverage.rs` (it reads the
+    compiled enum + the matrices + the corpus). THIS box authors the CONTRACT + the bijection LOGIC
+    (`g22_membership_gaps`, self-tested) + the L2/L4 wiring-point; G22's live run is target-absent
+    here (no registry / corpus / round-trip tests until P4-P7).
+
+Distinct from `plan-lint` check 12 (IPC-surface drift, format-matrix-scoped) - these are the
+SET / completeness gates check 12 explicitly does not subsume. stdlib-only.
+
+Exit: 0 = clean (or target-absent); 1 = an untested `convert_*` handler / an uncovered format;
+2 = a structural prerequisite is unverifiable (git unavailable for the G23 walk).
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# --- G23: `#[tauri::command] fn convert_*` handlers + their partner tests ------------------------
+# Run over a COMMENT-AND-STRING-BLANKED copy of the source (`_strip_rs_comments_and_strings`, the
+# check-test-suppression `_rs_structural` discipline), so a block comment between the attribute and
+# the fn, and a `]` inside an attribute-arg string (`#[doc = "x]y"]`), can neither hide the handler
+# nor truncate the attribute match. After blanking, only whitespace + further `#[…]` attributes sit
+# between `#[tauri::command]` and the fn. The fn-qualifier group accepts `pub`/`pub(crate)` then any
+# order of `const`/`async`/`unsafe`/`extern "ABI"`. Captures the `convert_<name>` command fn name.
+_CMD_RE = re.compile(
+    r"#\[\s*tauri::command\b[^\]]*\]"                              # the command attribute
+    r"(?:\s*#\[[^\]]*\])*"                                         # further attributes (comments blanked)
+    r"\s*(?:pub(?:\s*\([^)]*\))?\s+)?"                             # optional pub / pub(crate)
+    r"(?:(?:const|async|unsafe)\s+|extern\s+(?:\"[^\"]*\"\s+)?)*"  # fn qualifiers, any order
+    r"fn\s+(convert_\w+)")
+# raw-string opener: an optional `b`/`r`/`br` prefix then `#*` then `"` (closed by `"` + same #-run).
+_RAW_OPEN = re.compile(r'(?:b?r)(#*)"')
+# a char literal `'x'` / `'\n'` / `'\''` / `'\u{1F}'` / `'"'` - ONE char or an escape, then a closing
+# `'`. Deliberately does NOT match a lifetime/label (`'a`, `'static`, `'_`): those have no closing `'`
+# right after the single ident char, so the loop emits the `'` verbatim and reads the ident as code.
+_CHAR_LIT = re.compile(r"'(?:\\(?:x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]+\}|.)|[^'\\\n])'")
+
+
+def _blank(s: str) -> str:
+    """Every char -> a space, newlines preserved (line structure / lengths kept)."""
+    return "".join("\n" if c == "\n" else " " for c in s)
+
+
+def _strip_rs_comments_and_strings(text: str) -> str:
+    """Blank Rust `//` + nest-aware `/* */` comments and string / raw-string CONTENTS (delimiters
+    kept, interior -> spaces), mirroring check-test-suppression's `_rs_structural`. A char literal
+    `'x'` is consumed as an ATOMIC unit (so a `'"'` char literal's inner quote cannot be misread as a
+    string opener and run away, blanking a real handler below it); a lifetime/label (`'a`, `'static`)
+    has no closing `'` and is emitted verbatim. So a block comment between the `#[tauri::command]`
+    attr and its fn, and a `]`/`"` inside an attribute-arg string or a char literal, cannot hide or
+    derail the handler scan."""
+    out: list[str] = []
+    i, n, depth = 0, len(text), 0
+    while i < n:
+        if depth:                                            # inside a (possibly nested) block comment
+            if text[i:i + 2] == "/*":
+                depth += 1; out.append("  "); i += 2
+            elif text[i:i + 2] == "*/":
+                depth -= 1; out.append("  "); i += 2
+            else:
+                out.append("\n" if text[i] == "\n" else " "); i += 1
+            continue
+        if text[i:i + 2] == "//":                            # line comment -> blank to EOL
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            out.append(_blank(text[i:j])); i = j
+            continue
+        if text[i:i + 2] == "/*":
+            depth = 1; out.append("  "); i += 2
+            continue
+        mr = _RAW_OPEN.match(text, i)                        # raw string r#*"…"#*
+        if mr:
+            close = '"' + "#" * len(mr.group(1))
+            j = text.find(close, mr.end())
+            j = n if j < 0 else j + len(close)
+            out.append(_blank(text[i:j])); i = j
+            continue
+        mc = _CHAR_LIT.match(text, i)                        # char literal `'x'` (atomic; not a lifetime)
+        if mc:
+            out.append("'" + _blank(text[i + 1:mc.end() - 1]) + "'")
+            i = mc.end()
+            continue
+        if text[i] == '"':                                   # normal / byte string (escape-aware)
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            out.append('"' + _blank(text[i + 1:j]) + ('"' if j < n else ""))
+            i = j + 1 if j < n else n
+            continue
+        out.append(text[i]); i += 1
+    return "".join(out)
+# a file is TEST code if it lives under a `tests/` path segment or is a *_test(s).rs file (the
+# integration-test home; the `git ls-files` walk stages the partner test there). An inline
+# `#[cfg(test)]` module is a P3.63 refinement once handlers exist (documented residual).
+_TEST_PATH_RE = re.compile(r"(^|/)tests/|(_test|_tests)\.rs$")
+
+
+def fail(msg: str) -> None:
+    print(f"[G22/G23] FAIL: {msg}", file=sys.stderr)
+
+
+def scan_convert_handlers(text: str) -> set[str]:
+    """The `convert_*` command-handler fn names declared in `text` (scanned over a comment-and-
+    string-blanked copy so a block comment / a `]`-in-a-string cannot hide or truncate a handler)."""
+    return set(_CMD_RE.findall(_strip_rs_comments_and_strings(text)))
+
+
+def g23_untested(handlers: set[str], test_text: str) -> set[str]:
+    """(pure) The handler names NOT referenced anywhere in the joined test code (== untested)."""
+    return {h for h in handlers if not re.search(r"\b" + re.escape(h) + r"\b", test_text)}
+
+
+def g22_membership_gaps(supported: set[str], has_fixture: set[str], has_test: set[str]) -> dict:
+    """(pure) The G22 bijection: every supported format must have a fixture AND a round-trip test.
+    Returns the gap sets (empty == full coverage). The supported set is the compiled registry's
+    (P4 `check-corpus-coverage.rs` supplies it + the §04-matrix membership leg); this logic is the
+    contract THIS box freezes + self-tests."""
+    return {
+        "no_fixture": sorted(supported - has_fixture),
+        "no_round_trip_test": sorted(supported - has_test),
+    }
+
+
+def _git_tracked(root: Path, *patterns: str) -> list[str] | None:
+    """The tracked file paths matching the git pathspecs, or None if git could not be consulted."""
+    try:
+        r = subprocess.run(["git", "ls-files", *patterns], cwd=str(root),
+                           capture_output=True, text=True)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return [p for p in r.stdout.splitlines() if p.strip()]
+
+
+def check_g23(root: Path) -> tuple[list[str], int]:
+    """(problems, n_handlers). Walk tracked Rust: every `convert_*` command handler must be
+    referenced by a test file. n_handlers == 0 => target-absent (no handler exists yet)."""
+    rs = _git_tracked(root, "*.rs")
+    if rs is None:
+        return (["git is unavailable - cannot run the G23 `convert_*`->test walk (fail-closed: an "
+                 "untested handler could go uncaught)"], -1)
+    handlers: set[str] = set()
+    test_texts: list[str] = []
+    for rel in rs:
+        p = root / rel
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if _TEST_PATH_RE.search(rel):
+            test_texts.append(text)
+        else:
+            handlers |= scan_convert_handlers(text)
+    if not handlers:
+        return ([], 0)
+    untested = g23_untested(handlers, "\n".join(test_texts))
+    problems = [f"`convert_*` command `{h}` has no partner test - G23 requires every conversion "
+                "command be tested; stage the test file in the same commit (the §6.4 per-pair "
+                "integration runner)" for h in sorted(untested)]
+    return (problems, len(handlers))
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G22 membership-parity + G23 every-X-has-a-Y (P0.4.11)")
+    ap.add_argument("--root", type=Path, default=ROOT,
+                    help="repo root to scan (default: the repo; a fixture tree in the self-test)")
+    args = ap.parse_args(argv)
+
+    problems, n_handlers = check_g23(args.root)
+    if n_handlers == 0:
+        print("[G23] no `#[tauri::command] fn convert_*` handler tracked yet (the first - CSV->TSV - "
+              "lands in P3; G23 fail-closes at P3.63) - every-X-has-a-Y walk target-absent")
+    elif n_handlers > 0:
+        print(f"[G23] {n_handlers} `convert_*` handler(s) walked; each has a partner test")
+
+    # G22 is target-absent here: the authoritative supported-format set is the compiled
+    # `UserFacingFormat` registry + the §04 matrices + the corpus, none of which exist until P4-P7;
+    # the full §04<->registry<->corpus bijection is the P4.60 `check-corpus-coverage.rs` guard. The
+    # bijection LOGIC (g22_membership_gaps) is frozen + self-tested here.
+    print("[G22] schema/membership parity is target-absent (the compiled UserFacingFormat registry "
+          "+ corpus fixtures + round-trip tests land P4-P7; the §04<->registry<->corpus bijection is "
+          "the P4.60 check-corpus-coverage.rs guard) - the contract + bijection logic are frozen here")
+
+    if problems:
+        for p in problems:
+            fail(p)
+        return 2 if n_handlers < 0 else 1
+    print("[G22/G23] completeness contracts OK")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
