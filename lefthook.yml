@@ -16,8 +16,8 @@
 #
 # GATE SLOTS: each L1/L2/L3 gate is added to the slots below by the box that BUILDS
 # it (so a gate is wired only after it is built + self-tested). The P0.3/P0.4 contract set is wired
-# (plan-lint/G8/G70/rust-lint/unsafe-policy/fuzz-contract/ts-gate/english-only —
-# P0.3.5/3.4/3.14/4.1/4.2/4.3/4.7/4.6); later-phase gates add their own slots as they are built.
+# (plan-lint/G8/G70/rust-lint/unsafe-policy/fuzz-contract/ts-gate/english-only/coverage —
+# P0.3.5/3.4/3.14/4.1/4.2/4.3/4.7/4.6/4.8); later-phase gates add their own slots as they are built.
 # The G29 Semgrep + shellcheck SAST gate is L4-only (CI `sast` job; semgrep is a CI pip tool).
 #
 # Requires Python 3.11+ on PATH as `python3` (the stdlib-only gate scripts) and
@@ -68,6 +68,8 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
       run: python3 scripts/check-ts-gate
     english-only:    # G57 - Principle-11 English-only: no i18n-runtime import + strings/ui.ts non-empty + no inline literal (target-absent until P1)
       run: python3 scripts/check-english-only
+    coverage:        # G27/G28 - coverage-floor freeze + increase-only decrease-guard (vs HEAD); per-domain/diff live in P1
+      run: python3 scripts/check-coverage
     # L1 gate slots: the P0.4 contract set is wired; later phases add their own gate slots.
     # NOTE: the G29 Semgrep + shellcheck SAST gate (check-sast) is L4-only (the CI `sast` job) -
     # Semgrep is a CI-tier pip tool (requirements-ci.txt --require-hashes), not a locally pinned binary.
@@ -112,4 +114,6 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/check-ts-gate --full
     english-only:    # G57 - whole-tree Principle-11 English-only / string-ownership scan (target-absent until P1)
       run: python3 scripts/check-english-only --full
+    coverage:        # G27/G28 - coverage-floor freeze + decrease-guard; per-domain/diff live in P1 (authoritative ratchet leg is the L4 workflow-security check)
+      run: python3 scripts/check-coverage --full
     # L2 gate slots: the P0.4 contract set is wired; later phases add their own gate slots.

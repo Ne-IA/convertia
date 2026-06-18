@@ -49,6 +49,7 @@ patterns = [
   "rust-toolchain.toml",          # the pinned Rust compiler channel (a bump = trusted-build subversion)
   "rustfmt.toml",                 # the Rust format contract (G3); a relaxation weakens the format plane
   "clippy.toml",                  # the Rust lint config (G4/G14); a broad allow weakens the no-panic deny
+  "coverage-floors.toml",         # the G27 per-domain coverage-floor ratchet; lowering a floor weakens the coverage plane (increase-only)
   "src-tauri/capabilities/**",    # the locked Tauri capabilities / permissions allowlist
   "engines.lock",                 # the pinned bundled-engine digests
 

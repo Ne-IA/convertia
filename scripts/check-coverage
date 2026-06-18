@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""check-coverage - G27 per-domain coverage floors + G28 diff gate + the security-crate branch floor
+(P0.4.8). The coverage half of the test-quality plane.
+
+Three tiers:
+
+  STRUCTURAL FREEZE (live NOW): the committed `coverage-floors.toml` policy is pinned — `[meta].diff_floor`
+  (G28, == 80) and `[meta].target_line_floor` (the 50->70 ratchet destination) cannot be silently relaxed,
+  and the BRANCH_FLOOR_DOMAINS contract (the no-harm/detect kernel that MUST carry a branch floor once it
+  lands: crate::detect / crate::fs_guard / crate::isolation) is frozen here. A relaxation reddens the gate
+  (an owner-acked L(-1) edit — coverage-floors.toml is in the L(-1) cage, G71).
+
+  INCREASE-ONLY DECREASE-GUARD (live the moment any floor exists): the floors ratchet UP only. A commit
+  that LOWERS any [line]/[branch] floor vs the prior committed version FAILS (a raise is a deliberate
+  committed change). The prior version is read via `git show <base>:coverage-floors.toml` — `--base`
+  (CI passes `github.event.before`); local default HEAD. Fail-OPEN only if no base resolves (the L4 mirror
+  with the explicit base is fail-closed), the G8/G70 diff-base posture. Empty floors in P0 => no-op.
+
+  LIVE per-domain / diff tier (TARGET-ABSENT until P1): once a coverage report exists, assert EACH domain
+  is >= its own floor (NEVER averaged — G27), each BRANCH_FLOOR_DOMAINS crate's branch coverage >= its
+  branch floor, and the diff coverage >= diff_floor (G28). The per-crate (cargo-llvm-cov) / per-package
+  (vitest v8 json-summary) reports + the domain mapping land in P1; skipped-with-notice until then. Gate
+  scripts are excluded from the floors (they are tooling, not product).
+
+stdlib-only. L(-1) security-critical (matched by scripts/check-*; coverage-floors.toml is L(-1) too).
+
+Usage: check-coverage [--full] [--base <git-ref>]
+Exit:  0 = clean (or target-absent); 1 = a violation; 2 = coverage-floors.toml missing/malformed.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+FLOORS = ROOT / "coverage-floors.toml"
+
+# the no-harm / detect kernel that MUST carry a BRANCH-coverage floor once it lands (a guard rejecting
+# `../` but not `..\` is 100% LINE-covered by Unix-only tests yet misses the Windows branch). Frozen here,
+# not in the toml (the toml holds only numeric floors). §0.7 crate-module logical names.
+BRANCH_FLOOR_DOMAINS = ("crate::detect", "crate::fs_guard", "crate::isolation")
+DIFF_FLOOR = 80          # G28 — >= 80% on changed lines
+TARGET_LINE_FLOOR = 70   # the 50 -> 70 ratchet destination (informational target)
+
+# the P1 coverage reports the live tier reads (target-absent until P1 produces them).
+RUST_COV = ROOT / "target" / "llvm-cov" / "coverage.json"     # cargo llvm-cov --json
+TS_COV = ROOT / "coverage" / "coverage-summary.json"          # vitest v8 json-summary reporter
+
+
+def fail(msg: str) -> None:
+    print(f"[G27/G28] FAIL: {msg}", file=sys.stderr)
+
+
+def _load_floors(path: Path = FLOORS) -> tuple[dict, str | None]:
+    if not path.is_file():
+        return {}, "missing"
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8")), None
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError) as e:
+        return {}, f"malformed/unreadable ({e})"
+
+
+def freeze_floors() -> int:
+    """The committed coverage-floors.toml policy is pinned (G27/G28 cannot be silently relaxed)."""
+    cfg, err = _load_floors()
+    if err == "missing":
+        fail("coverage-floors.toml is missing — the coverage-floor contract is not pinned")
+        return 2
+    if err:
+        fail(f"coverage-floors.toml is {err} — the coverage policy cannot be verified")
+        return 2
+    meta = cfg.get("meta", {})
+    problems = 0
+    if meta.get("diff_floor") != DIFF_FLOOR:
+        fail(f"coverage-floors.toml [meta].diff_floor is {meta.get('diff_floor')!r}, must be {DIFF_FLOOR} "
+             f"(the G28 changed-lines floor)")
+        problems += 1
+    if meta.get("target_line_floor") != TARGET_LINE_FLOOR:
+        fail(f"coverage-floors.toml [meta].target_line_floor is {meta.get('target_line_floor')!r}, must be "
+             f"{TARGET_LINE_FLOOR} (the 50->70 ratchet destination)")
+        problems += 1
+    if not BRANCH_FLOOR_DOMAINS:
+        fail("the BRANCH_FLOOR_DOMAINS contract is empty — the security-crate branch-floor policy is gone")
+        problems += 1
+    # every [line]/[branch] floor must be a NUMBER — a retype to a string/bool is silently dropped from
+    # _floor_map and would escape the decrease-guard (retype-to-ungate, P0.4.8 G1 P2).
+    for kind in ("line", "branch"):
+        tbl = cfg.get(kind, {})
+        if isinstance(tbl, dict):
+            for dom, val in tbl.items():
+                if isinstance(val, bool) or not isinstance(val, (int, float)):
+                    fail(f"coverage-floors.toml [{kind}].{dom} is {val!r}, not a number — a non-numeric "
+                         f"floor is silently dropped from the ratchet (a retype-to-ungate relaxation)")
+                    problems += 1
+    return problems
+
+
+def _floor_map(cfg: dict) -> dict[str, float]:
+    """The flattened {('line'|'branch')+':'+domain: value} map, for the monotonic decrease comparison."""
+    out: dict[str, float] = {}
+    for kind in ("line", "branch"):
+        tbl = cfg.get(kind, {})
+        if isinstance(tbl, dict):
+            for dom, val in tbl.items():
+                if isinstance(val, (int, float)):
+                    out[f"{kind}:{dom}"] = float(val)
+    return out
+
+
+def _prior_floors(base: str) -> dict | None:
+    """The coverage-floors.toml as of `base` (git show), or None if it does not resolve (no prior /
+    git absent / file not in that ref) — fail-OPEN without a base, the G8/G70 diff-base posture."""
+    try:
+        r = subprocess.run(["git", "show", f"{base}:coverage-floors.toml"], cwd=str(ROOT),
+                           capture_output=True, text=True)
+    except OSError:
+        return None
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    try:
+        return tomllib.loads(r.stdout)
+    except (tomllib.TOMLDecodeError, ValueError):
+        return None
+
+
+def decrease_guard(base: str | None) -> int:
+    """INCREASE-ONLY: a [line]/[branch] floor that DECREASED — or was REMOVED (a key in prior, gone in cur:
+    un-gates the domain, equivalent to lowering to nothing) — vs the prior committed version fails (a raise
+    is fine). The prior is read via git show. No prior (first landing / no base) or BOTH empty (genuine P0)
+    => no-op (fail-open w/o a base, the G8/G70 diff-base posture). A genuinely retired domain's floor is
+    dropped in the SAME owner-acked commit that removes the domain (P0.4.8 G1 P2 — removal was a fail-open)."""
+    cfg, err = _load_floors()
+    if err:
+        return 0                                   # freeze_floors already reported it
+    cur = _floor_map(cfg)
+    refs = [base] if base else ["HEAD"]
+    prior_cfg = None
+    for ref in refs:
+        prior_cfg = _prior_floors(ref)
+        if prior_cfg is not None:
+            break
+    if prior_cfg is None:
+        return 0                                   # no prior to compare (first landing / no base) — fail-open
+    prior = _floor_map(prior_cfg)
+    if not prior and not cur:
+        return 0                                   # genuine P0 — both empty, nothing to ratchet yet
+    problems = 0
+    for key, prev in prior.items():
+        if key not in cur:
+            fail(f"coverage floor {key!r} was REMOVED (prior {prev}) — an increase-only ratchet cannot drop "
+                 f"a floor (it un-gates the domain); retire it only in the owner-acked commit removing the domain")
+            problems += 1
+        elif cur[key] < prev:
+            fail(f"coverage floor {key!r} LOWERED {prev} -> {cur[key]} (increase-only ratchet; a lowering "
+                 f"is an owner decision, not a build-loop edit)")
+            problems += 1
+    return problems
+
+
+def _read_report(path: Path) -> dict | None:
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError, ValueError):
+        return None
+
+
+def check_floor(measured: dict[str, float], floors: dict[str, float], kind: str) -> int:
+    """(pure) every domain with a floor meets it — NEVER averaged (G27). A measured domain BELOW its floor
+    fails; a domain with no floor yet is not gated (its row is added in P1)."""
+    problems = 0
+    for dom, floor in floors.items():
+        if dom in measured and measured[dom] < floor:
+            fail(f"{kind} coverage for {dom!r} is {measured[dom]:.1f}% < floor {floor}%")
+            problems += 1
+    return problems
+
+
+def run_live(cfg: dict) -> int:
+    """LIVE tier (P1): per-domain line + branch floors over the real cargo-llvm-cov / vitest reports.
+    Target-absent until a report exists. The per-crate/per-package domain extraction is wired in P1 with
+    the crate structure; here it activates the moment a report lands and the floors name a measured domain."""
+    if not RUST_COV.is_file() and not TS_COV.is_file():
+        print("[G27/G28] no coverage report yet (cargo-llvm-cov / vitest output lands in P1) — "
+              "per-domain + diff floors skipped (target-absent)")
+        return 0
+    # report present (P1): the line/branch floor maps are compared against the measured per-domain pcts.
+    # (The report->domain extraction lands with the P1 crate/package structure; the floor-comparison core
+    # check_floor + the branch-domain contract are exercised by g24 with synthetic reports.)
+    line_floors = {d: float(v) for d, v in cfg.get("line", {}).items() if isinstance(v, (int, float))}
+    branch_floors = {d: float(v) for d, v in cfg.get("branch", {}).items() if isinstance(v, (int, float))}
+    measured_line, measured_branch = _extract_measured()
+    problems = check_floor(measured_line, line_floors, "line") + check_floor(measured_branch, branch_floors, "branch")
+    for dom in BRANCH_FLOOR_DOMAINS:
+        if dom in measured_branch and dom not in branch_floors:
+            fail(f"branch-floor domain {dom!r} is measured but has no [branch] floor in coverage-floors.toml "
+                 f"(the security-crate branch-floor contract requires one once the crate lands)")
+            problems += 1
+    return problems
+
+
+def _extract_measured() -> tuple[dict[str, float], dict[str, float]]:
+    """The measured per-domain line / branch percentages from the P1 reports. The per-crate / per-package
+    mapping is completed in P1 with the real structure; this returns {} until then so the live tier is
+    inert-but-wired (an empty measured set gates nothing, the target-absent posture)."""
+    return {}, {}
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G27/G28 coverage floors + diff gate + branch floor (P0.4.8)")
+    ap.add_argument("--full", action="store_true", help="plane parity (the scan is whole-tree either way)")
+    ap.add_argument("--base", default=None, help="the prior git ref for the increase-only decrease-guard (CI: github.event.before)")
+    args = ap.parse_args(argv)
+
+    structural = freeze_floors()
+    if structural >= 2:
+        return 2
+    cfg, _ = _load_floors()
+    total = structural + decrease_guard(args.base) + run_live(cfg)
+    if total:
+        print(f"[G27/G28] {total} coverage-contract violation(s)", file=sys.stderr)
+        return 1
+    print("[G27/G28] coverage-floor contract OK")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,23 @@
+# coverage-floors.toml — the G27 per-domain coverage-floor ratchet (P0.4.8). L(-1).
+#
+# INCREASE-ONLY: a commit that LOWERS any floor FAILS (check-coverage diffs the committed values against
+# the prior commit's; a decrease reddens the build). A RAISE is a deliberate committed config change (the
+# ratchet 50 % -> 70 %). Floors are never AVERAGED — G27 fails if ANY single domain is below its own floor.
+#
+# Created at 0 % in P0 (no coverage data exists until the P1 crates/packages land). Per-domain rows are
+# ADDED as each Rust crate / TS package is authored in P1, each seeded at its first-measured floor and
+# ratcheted up toward [meta].target_line_floor. The BRANCH-floor DOMAIN SET (the no-harm/detect kernel) is
+# frozen in check-coverage (BRANCH_FLOOR_DOMAINS), not here — this file holds only the numeric floors.
+
+[meta]
+target_line_floor = 70    # the ratchet destination (start 50 -> 70); informational target, not a cap
+diff_floor = 80           # G28: >= 80 % coverage on changed lines (red `main`)
+
+# per-domain LINE-coverage floors — per-crate (Rust, cargo-llvm-cov) / per-package (TS, vitest v8).
+# Empty in P0; a row per domain is added in P1 (e.g. "convertia-core" = 0), increase-only thereafter.
+[line]
+
+# BRANCH-coverage floors (cargo-llvm-cov --branch) for the security-critical crates only — a guard that
+# rejects `../` but not `..\` is 100 % LINE-covered by Unix-only tests yet misses the Windows branch.
+# Empty in P0; the rows for crate::detect / crate::fs_guard / crate::isolation are added in P1.
+[branch]

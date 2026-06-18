@@ -97,6 +97,8 @@ jobs:
         run: python3 scripts/check-ts-gate --full
       - name: 'G57: Principle-11 English-only / string-ownership lint (no i18n-runtime import + strings/ui.ts non-empty + no inline literal; live in P1)'
         run: python3 scripts/check-english-only --full
+      - name: 'G27/G28: coverage-floor contract — per-domain floors + diff gate frozen (live per-domain/diff over cargo-llvm-cov/vitest in P1; the increase-only ratchet is the workflow-security leg)'
+        run: python3 scripts/check-coverage --full
       # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
       #   (G68 doc-graph + G69 struct-map run inside the plan-lint step above as checks 25/26.)
       #   G18a lockfile --locked + git diff --exit-code (Cargo.lock/pnpm-lock.yaml/imports.lock) +
@@ -138,6 +140,11 @@ jobs:
         env:
           BEFORE: ${{ github.event.before }}   # via env (not inline) to avoid template-injection (G50/zizmor)
         run: python3 scripts/check-dual-review --base "$BEFORE"
+      - name: 'G27: coverage-floor increase-only decrease-guard over the push range (the authoritative ratchet leg; needs full history)'
+        if: github.event_name == 'push'        # the floors are empty in P0 (no-op) + fail-closes the moment a floor lands in P1
+        env:
+          BEFORE: ${{ github.event.before }}   # via env (not inline) to avoid template-injection (G50/zizmor)
+        run: python3 scripts/check-coverage --base "$BEFORE"
       # NOTE: the g24-*/g54-* self-tests for these gates (ci-supply-chain, release-tag-trust,
       # branch-protection) run in the gate-tooling job's G10 continuous-armed-canary prelude
       # (3-OS), not here — one auto-discovering runner is the single source of self-test truth.
