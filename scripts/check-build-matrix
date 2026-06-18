@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""check-build-matrix - G30 cross-platform build-matrix contract (P0.4.10).
+
+The §6.1.3/§6.1.4 build contract: ConvertIA builds NATIVELY on Windows / macOS / Linux runners (no
+cross-compile), and the macOS artifact is a UNIVERSAL build. Tauri v2 reads each `externalBin`
+sidecar named `<name>-universal-apple-darwin` AS-IS and does NOT itself `lipo` it (verified vs Tauri
+v2 docs / tauri#3355, spec §6.1.3) - so `scripts/stage-engines` must `lipo -create` the per-arch
+(`aarch64-apple-darwin` + `x86_64-apple-darwin`) binaries into ONE fat Mach-O per sidecar BEFORE
+`tauri build`. THE SILENT-FAILURE CLASS G30 GUARDS: if stage-engines produces a SINGLE-arch binary
+yet names it `*-universal-apple-darwin`, Tauri bundles it without error and the user on the OTHER
+architecture gets an illegal-instruction crash - indistinguishable from a working build at CI level
+(neither Tauri nor the per-OS matrix surfaces it).
+
+So before `tauri build` on the macOS-universal leg, EVERY staged `*-universal-apple-darwin` sidecar
+must be a fat Mach-O carrying BOTH the arm64 AND the x86_64 slice; a single-arch (or thin, or
+non-Mach-O) fat-named binary HARD-FAILS. This gate is that assertion.
+
+[Build-Session-Entscheidung: P0.4.10] the G30 row names `lipo -info`, but `lipo` is a macOS-only
+Xcode tool while this gate runs on the 3-OS gate-tooling matrix (and the assertion must be
+self-testable on any runner). So the slice assertion is a PURE-stdlib fat-Mach-O fat-header parse
+(`struct`, cross-platform, dependency-free, deterministic) - it reads the same fat_arch cputypes
+`lipo -info` reports, on any OS, with no external binary. The fat header is ALWAYS stored big-endian
+on disk (the `0xCAFEBABE`/`0xCAFEBABF` magic); CPU_TYPE_X86_64 = 0x01000007, CPU_TYPE_ARM64 = 0x0100000C.
+
+Two-tier (the P0.4.x pattern): a STRUCTURAL FREEZE live NOW (the matrix-OS set + the required-arch
+set + the universal-sidecar suffix are frozen + internally consistent) + a TARGET-ABSENT live tier
+(no sidecar is staged until P1+ scaffolds the Tauri shell / stage-engines - so the slice assertion
+skips-with-notice now and fail-CLOSES the moment a `*-universal-apple-darwin` binary is staged). The
+native-per-OS matrix SHAPE is frozen here + spec §6.1.4; its 3-OS coverage is asserted against the
+release build job when that job lands (P10 assembles release.yml's matrix).
+
+stdlib-only. Exit: 0 = contract held (+ sidecars valid or target-absent); 1 = a violation
+(a single-arch/thin/corrupt universal sidecar, or a frozen-contract weakening); 2 = unverifiable.
+"""
+from __future__ import annotations
+
+import argparse
+import struct
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# --- frozen build-matrix contract (a change here is an L(-1) edit + a Co-Pilot review item) -------
+# the native build matrix builds on all three desktop OS, no cross-compile (spec §6.1.4).
+REQUIRED_NATIVE_OS = frozenset({"windows", "macos", "linux"})
+# the macOS universal artifact must carry BOTH slices; a sidecar missing either crashes on that arch.
+UNIVERSAL_ARCHES = frozenset({"arm64", "x86_64"})
+# Tauri's externalBin universal-target sidecar naming (spec §6.1.3); stage-engines lipo's into this.
+UNIVERSAL_SUFFIX = "-universal-apple-darwin"
+# where stage-engines stages sidecars/libs (spec §6.1.3: externalBin -> src-tauri/binaries/, support
+# libs -> src-tauri/resources/). Scanned for `*-universal-apple-darwin` files. None exist until P1+.
+STAGING_DIRS = ("src-tauri/binaries", "src-tauri/resources")
+
+# --- Mach-O fat-binary constants (the slice assertion) --------------------------------------------
+FAT_MAGIC = 0xCAFEBABE          # fat_header magic (32-bit offsets), big-endian on disk
+FAT_MAGIC_64 = 0xCAFEBABF       # fat_header_64 magic (64-bit offsets)
+CPU_TYPE_X86_64 = 0x01000007    # CPU_ARCH_ABI64 | CPU_TYPE_X86
+CPU_TYPE_ARM64 = 0x0100000C     # CPU_ARCH_ABI64 | CPU_TYPE_ARM
+_ARCH_NAME = {CPU_TYPE_X86_64: "x86_64", CPU_TYPE_ARM64: "arm64"}
+# a real fat binary has a handful of slices; this bound rejects a non-Mach-O whose bytes 4-7 happen to
+# read as a huge nfat_arch (a Java `.class` ALSO starts with the `0xCAFEBABE` magic - its "nfat" is the
+# class-file version; an out-of-range value => "not a fat Mach-O", and an in-range one yields no
+# recognized arch => the "both slices present" assertion still FAILS closed).
+_MAX_FAT_ARCH = 64
+
+
+def fail(msg: str) -> None:
+    print(f"[G30] FAIL: {msg}", file=sys.stderr)
+
+
+def fat_macho_arches(data: bytes) -> set[str] | None:
+    """The set of recognized CPU-arch names in a fat Mach-O `data`, or None if `data` is NOT a fat
+    Mach-O (a thin single-arch binary `MH_MAGIC*`, a non-Mach-O, or a truncated/implausible header).
+    A returned set may be empty (a fat binary of only unrecognized arches). The fat header is always
+    big-endian on disk."""
+    if len(data) < 8:
+        return None
+    magic, nfat = struct.unpack(">II", data[:8])
+    if magic not in (FAT_MAGIC, FAT_MAGIC_64):
+        return None
+    if not (1 <= nfat <= _MAX_FAT_ARCH):
+        return None
+    if magic == FAT_MAGIC:
+        entry, fmt = 20, ">IIIII"      # fat_arch: cputype, cpusubtype, offset, size, align
+    else:
+        entry, fmt = 32, ">IIQQII"     # fat_arch_64: cputype, cpusubtype, offset(8), size(8), align, reserved
+    arches: set[str] = set()
+    off = 8
+    for _ in range(nfat):
+        if off + entry > len(data):
+            return None                # truncated arch table - cannot be trusted
+        cputype = struct.unpack(fmt, data[off:off + entry])[0]
+        name = _ARCH_NAME.get(cputype)
+        if name:
+            arches.add(name)
+        off += entry
+    return arches
+
+
+def frozen_contract() -> list[str]:
+    """The frozen matrix/arch constants are internally consistent (a careless weakening is caught)."""
+    problems: list[str] = []
+    if REQUIRED_NATIVE_OS != {"windows", "macos", "linux"}:
+        problems.append(f"REQUIRED_NATIVE_OS is {set(REQUIRED_NATIVE_OS)} - the native build matrix "
+                        "must build on all three desktop OS (no cross-compile, §6.1.4)")
+    if UNIVERSAL_ARCHES != {"arm64", "x86_64"}:
+        problems.append(f"UNIVERSAL_ARCHES is {set(UNIVERSAL_ARCHES)} - the macOS universal artifact "
+                        "must carry BOTH arm64 AND x86_64 (a missing slice crashes on that arch)")
+    if set(_ARCH_NAME.values()) != UNIVERSAL_ARCHES:
+        problems.append("the Mach-O cputype->arch map does not cover exactly the required arch set - "
+                        "the slice assertion could not recognize a required arch")
+    if not UNIVERSAL_SUFFIX.endswith("-universal-apple-darwin"):
+        problems.append(f"UNIVERSAL_SUFFIX is {UNIVERSAL_SUFFIX!r} - must be Tauri's universal "
+                        "externalBin target triple suffix `-universal-apple-darwin`")
+    return problems
+
+
+def check_sidecar(path: Path, data: bytes) -> list[str]:
+    """A staged `*-universal-apple-darwin` binary must be a fat Mach-O carrying BOTH slices."""
+    arches = fat_macho_arches(data)
+    if arches is None:
+        return [f"{path}: named `*-universal-apple-darwin` but is NOT a fat Mach-O (a thin single-arch "
+                "or non-Mach-O binary) - Tauri would bundle it and the user on the other architecture "
+                "gets a silent illegal-instruction crash; stage-engines must `lipo -create` both arch "
+                "slices (§6.1.3)"]
+    missing = sorted(UNIVERSAL_ARCHES - arches)
+    if missing:
+        return [f"{path}: universal sidecar is missing the {', '.join(missing)} slice(s) (has: "
+                f"{sorted(arches) or 'none recognized'}) - a single-arch fat-named binary crashes "
+                "silently on the missing arch; lipo BOTH arm64 and x86_64 (§6.1.3)"]
+    return []
+
+
+def find_universal_sidecars(root: Path) -> list[Path]:
+    """Every staged file whose name carries the universal target suffix, across the staging dirs. The
+    match is a deliberately over-inclusive SUBSTRING (`in`), not `endswith`, so it FAILS SAFE: a
+    companion file that merely contains the suffix (a hypothetical `.sha256`/`.dSYM`) is read as a
+    non-Mach-O and hard-FAILS (over-strict) rather than slipping past - never a false-pass. (endswith
+    would conversely RISK a fail-OPEN by missing an extensioned universal lib like `*-darwin.dylib`.)
+    The exact staged-file set is co-designed with `scripts/stage-engines` when it lands in P1."""
+    out: list[Path] = []
+    for d in STAGING_DIRS:
+        base = root / d
+        if base.is_dir():
+            out += sorted(p for p in base.rglob("*") if p.is_file() and UNIVERSAL_SUFFIX in p.name)
+    return out
+
+
+def check_universal_sidecars(root: Path) -> tuple[list[str], int]:
+    """(problems, n_sidecars). n_sidecars == 0 => target-absent (no universal sidecar staged yet)."""
+    problems: list[str] = []
+    sidecars = find_universal_sidecars(root)
+    for p in sidecars:
+        try:
+            data = p.read_bytes()
+        except OSError as e:
+            problems.append(f"{p}: cannot read the staged sidecar to verify its arch slices ({e})")
+            continue
+        problems += check_sidecar(p, data)
+    return problems, len(sidecars)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G30 cross-platform build-matrix contract (P0.4.10)")
+    ap.add_argument("--root", type=Path, default=ROOT,
+                    help="repo root to scan (default: the repo; a fixture tree in the self-test)")
+    args = ap.parse_args(argv)
+
+    problems = list(frozen_contract())
+    sidecar_problems, n = check_universal_sidecars(args.root)
+    problems += sidecar_problems
+    if n == 0:
+        print("[G30] no `*-universal-apple-darwin` sidecar staged yet (the Tauri shell + stage-engines "
+              "land in P1+; the universal build matrix is assembled in P10) - the fat-Mach-O slice "
+              "assertion is target-absent; fail-closed the moment a universal sidecar is staged")
+
+    if problems:
+        for p in problems:
+            fail(p)
+        return 1
+    print(f"[G30] build-matrix contract OK (native OS {sorted(REQUIRED_NATIVE_OS)}; universal arches "
+          f"{sorted(UNIVERSAL_ARCHES)}; {n} universal sidecar(s) verified fat with both slices)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -101,6 +101,8 @@ jobs:
         run: python3 scripts/check-coverage --full
       - name: 'G18a: lockfile-integrity contract — drift-set freeze + --locked/--frozen-lockfile flag-scan + git diff --exit-code drift-guard (live drift-guard; CI flag-scan target-absent until P1 build commands land)'
         run: python3 scripts/check-lockfile-integrity
+      - name: 'G30: build-matrix contract — native-OS set freeze + macOS-universal fat-Mach-O both-slice assertion (stdlib fat-header parse; sidecar slice-assertion target-absent until P1+ stage-engines)'
+        run: python3 scripts/check-build-matrix
       # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
       #   (G68 doc-graph + G69 struct-map run inside the plan-lint step above as checks 25/26.)
       #   The structural-freeze contracts above (rust-lint / unsafe-policy / ts-gate / coverage /
