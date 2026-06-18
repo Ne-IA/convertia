@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""check-rust-lint-contract - G3/G4/G14/G17 Rust format / lint / test / dependency-audit contract
+(P0.4.1). The Rust half of the build-quality plane.
+
+Two tiers, the same pattern as the supply-chain skeleton (P0.3.6):
+
+  STRUCTURAL FREEZE (live NOW, no crates needed): the committed `rustfmt.toml` + `clippy.toml` policy
+  cannot be silently relaxed — the format edition/newline/width and the clippy test-allowance + MSRV
+  are pinned, and the no-panic / exhaustive-match / arithmetic-overflow deny-set CONTRACT (the crate
+  attributes the P1 crates must carry) is frozen here as REQUIRED_ATTRS. A relaxation reddens the gate
+  (and is an owner-acked L(-1) edit, G71).
+
+  LIVE (target-absent until the P1 crates land): once a workspace `Cargo.toml` exists, assert each
+  REQUIRED_ATTRS deny-set is present at its module root, then run `cargo fmt --check` (G3),
+  `cargo clippy -D warnings` / `--all-targets --all-features` (G4/G14), `cargo test`, and
+  `cargo audit` (G17 — PLAIN, no `--locked`; `--no-fetch` for the offline leg). Skips-with-notice
+  while no workspace manifest exists, fail-closes the moment one lands (the G47/G22/G23 bootstrap
+  posture). cargo-audit's binary pin + the live audit leg activate in P1 with the lockfile.
+
+stdlib-only. L(-1) security-critical (matched by scripts/check-*). The configs it freezes
+(rustfmt.toml / clippy.toml) are themselves L(-1).
+
+Usage: check-rust-lint-contract [--full]   (--full = the G14 whole-tree clippy leg, P1)
+Exit:  0 = contract intact (or target-absent); 1 = a violation; 2 = a config is missing/malformed.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+RUSTFMT = ROOT / "rustfmt.toml"
+CLIPPY = ROOT / "clippy.toml"
+
+# --- the frozen config policy (a relaxation here = an enforcement-plane weakening) ----------------
+# rustfmt.toml MUST pin these keys (value-checked where a drift would weaken a sibling gate).
+# (values are native parsed TOML scalars — tomllib returns str/bool/int, not raw text)
+RUSTFMT_REQUIRED = {
+    "newline_style": "Unix",       # LF everywhere — must agree with .editorconfig/.gitattributes (G52)
+    "edition": None,               # must be present (value confirmed against the P1 crate edition)
+    "max_width": None,
+}
+# clippy.toml MUST pin the test-allowances (so the no-panic deny set does not bleed into test code)
+# + the MSRV (so a toolchain bump cannot silently change lint behaviour without review).
+CLIPPY_REQUIRED = {
+    "allow-unwrap-in-tests": True,
+    "allow-expect-in-tests": True,
+    "msrv": None,
+}
+
+# --- the crate-attribute CONTRACT (build-gates §5 G4): the #![deny(...)] each module must carry,
+#     asserted once the module lands in P1. (logical target, path globs, required deny tokens). The
+#     module PATHS are the spec §0.7 physical tree (docs/spec/00-architecture.md §0.7 — the
+#     content-detection module is `detection/` NOT `detect/`; the IPC handlers `ipc/`; the engine
+#     registry `engines/registry.rs`; §0.7 is authoritative for the on-disk layout, SSOT > spec > code).
+#     The exhaustive-match deny is a CRATE-LEVEL lint (it governs every enum match), so it is asserted
+#     at the crate root (main.rs/lib.rs) where it is naturally authored — not duplicated per dispatch
+#     module. Each entry activates as its module is authored across P1–P3.
+REQUIRED_ATTRS = [
+    ("production-crate no-panic deny", ["src-tauri/src/lib.rs", "src-tauri/src/main.rs"],
+     ["clippy::unwrap_used", "clippy::expect_used", "clippy::panic"]),
+    ("crate::detection indexing/slicing deny (untrusted bytes outside the §2.12 boundary, T5)",
+     ["src-tauri/src/detection.rs", "src-tauri/src/detection/mod.rs"], ["clippy::indexing_slicing"]),
+    ("IPC command-handler arithmetic-overflow deny (T10)",
+     ["src-tauri/src/ipc.rs", "src-tauri/src/ipc/mod.rs"], ["clippy::arithmetic_side_effects"]),
+    ("dispatch exhaustive-match deny — crate-level (FormatId/EngineProgram/PatentDisposition: no `_ =>`)",
+     ["src-tauri/src/lib.rs", "src-tauri/src/main.rs"], ["clippy::wildcard_enum_match_arm"]),
+]
+
+
+def fail(msg: str) -> None:
+    print(f"[G4] FAIL: {msg}", file=sys.stderr)
+
+
+def freeze_config(path: Path, required: dict, label: str) -> int:
+    """Freeze a config file's policy keys, parsed with stdlib `tomllib` (Python 3.11+, the same reader
+    the P0.3.6 supply-chain gate uses). tomllib REJECTS duplicate keys — a hand-rolled last-wins reader
+    would let a `key="Windows"` then `key="Unix"` relaxation false-pass the freeze. Native scalar values
+    are compared directly (tomllib returns str/bool/int)."""
+    if not path.is_file():
+        fail(f"{label} config {path.name} is missing — the format/lint contract is not pinned")
+        return 2
+    try:
+        cfg = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError) as e:
+        fail(f"{label} config {path.name} is malformed/unreadable ({e}) — the policy cannot be verified")
+        return 2
+    problems = 0
+    for key, want in required.items():
+        if key not in cfg:
+            fail(f"{path.name} must pin `{key}` (the frozen {label} policy) — it is absent")
+            problems += 1
+        elif want is not None and cfg[key] != want:
+            fail(f"{path.name} `{key}` is {cfg[key]!r}, must be {want!r} (a relaxation of the {label} policy)")
+            problems += 1
+    return problems
+
+
+def freeze_contract() -> int:
+    """The REQUIRED_ATTRS contract itself must stay non-empty + well-formed (it cannot be silently
+    gutted to an empty deny policy)."""
+    if not REQUIRED_ATTRS:
+        fail("the REQUIRED_ATTRS deny-set contract is empty — the no-panic/exhaustive-match policy is gone")
+        return 1
+    problems = 0
+    for desc, globs, tokens in REQUIRED_ATTRS:
+        if not globs or not tokens:
+            fail(f"REQUIRED_ATTRS entry {desc!r} is malformed (empty globs or tokens)")
+            problems += 1
+    return problems
+
+
+def _workspace_manifest() -> Path | None:
+    """A real first-party Cargo.toml (NOT the tests/g53-fixture negative fixtures) — the P1 target."""
+    for cand in (ROOT / "Cargo.toml", ROOT / "src-tauri" / "Cargo.toml"):
+        if cand.is_file():
+            return cand
+    return None
+
+
+# The deny set is a MODULE-INNER attribute `#![deny(...)]` (it governs the whole crate/module). _DENY_RE
+# requires the inner-`!` form AND anchors to line-start (after indentation): a deny token mid-line (a
+# string/expression) is not a real in-force deny — missing a non-line-start deny is over-strict = SAFE
+# (G1-r2 string-literal false-pass closed; strings are also blanked by _strip_rs_noncode).
+# An allow DISQUALIFIES a module-wide deny when it is a module-inner `#![allow(...)]` ANYWHERE (incl. a
+# second attribute on the same line as the deny) OR a `#![cfg_attr(<cond>, allow(...))]` whose cond is
+# NOT exactly `test` (an always-on `all()`, a production-affecting `not(test)`, a feature gate all relax
+# production — G1-r3). An ITEM-level `#[allow(...)]` (no `!`, the build-gates G4 `// PANIC:` per-item
+# escape) and a test-only `#![cfg_attr(test, allow(...))]` do NOT disqualify (the legitimate cases).
+_DENY_RE = re.compile(r"(?m)^\s*#!\[\s*(?:deny|forbid)\s*\(([^\]]*)\)")
+_ALLOW_DIRECT_RE = re.compile(r"#!\[\s*allow\s*\(([^\]]*)\)")          # not line-anchored: catches a same-line allow
+# re.S so a rustfmt-wrapped multi-line `#![cfg_attr(\n all(),\n allow(...)\n)]` is still caught (G1-r3)
+_ALLOW_CFGATTR_RE = re.compile(r"#!\[\s*cfg_attr\s*\(\s*(.*?)\s*,\s*allow\s*\(([^)]*)\)", re.S)
+
+
+def _strip_rs_noncode(text: str) -> str:
+    """`text` with string/raw-string literals + /* */ block + // line comments BLANKED (strings first,
+    so a `//` or `/*` inside a "…" literal is not mis-stripped), so a deny token MENTIONED in a comment
+    or a STRING does not count as an in-force attribute (G1-r2)."""
+    text = re.sub(r'"(?:\\.|[^"\\])*"', " ", text, flags=re.S)        # regular / byte string literals
+    text = re.sub(r'r#*".*?"#*', " ", text, flags=re.S)              # raw strings r"…" / r#"…"# (approx, over-blanks safe)
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)               # block comments
+    return "\n".join(re.sub(r"//.*$", "", ln) for ln in text.split("\n"))  # line comments
+
+
+def _attrs_missing(text: str, tokens: list[str]) -> list[str]:
+    """(pure) the required deny tokens NOT in force in `text`. A token is SATISFIED only when it appears
+    (delimiter-bounded, so `clippy::panic` ≠ `clippy::panic_fmt`) inside a module-inner `#![deny(...)]` /
+    `#![forbid(...)]` attribute at line-start AND NOT inside a module-inner `#![allow(...)]` — over
+    string/comment-blanked text. Closes the G1 false-passes: a `#![allow]` relaxation, a `panic_fmt`
+    substring collision, a token in a comment, and a deny token sitting in a string literal."""
+    code = _strip_rs_noncode(text)
+    denied = " ".join(_DENY_RE.findall(code))
+    allowed_parts = list(_ALLOW_DIRECT_RE.findall(code))
+    for cond, inner in _ALLOW_CFGATTR_RE.findall(code):
+        if cond.strip() != "test":                  # a non-`test` cfg_attr(allow) relaxes production
+            allowed_parts.append(inner)
+    allowed = " ".join(allowed_parts)
+    # normalise whitespace around `::` (clippy's lexer ignores it): a `clippy :: unwrap_used` allow is a
+    # real relaxation, so it must match the no-space token (don't rely only on the G3 cargo-fmt backstop)
+    denied = re.sub(r"\s*::\s*", "::", denied)
+    allowed = re.sub(r"\s*::\s*", "::", allowed)
+    out = []
+    for t in tokens:
+        bound = re.escape(t) + r"(?!\w)"            # delimiter-bounded: `panic` must not match `panic_fmt`
+        if re.search(bound, denied) and not re.search(bound, allowed):
+            continue
+        out.append(t)
+    return out
+
+
+def assert_crate_attrs() -> int:
+    """P1: for each REQUIRED_ATTRS target whose module file exists, assert the deny tokens appear in it.
+    Each target activates independently as P1 authors it (target-absent until then)."""
+    problems = 0
+    for desc, globs, tokens in REQUIRED_ATTRS:
+        present = [ROOT / g for g in globs if (ROOT / g).is_file()]
+        if not present:
+            continue                                   # module not authored yet — target-absent
+        text = "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in present)
+        missing = _attrs_missing(text, tokens)
+        if missing:
+            fail(f"{desc}: {[p.name for p in present]} is missing the required deny(s) {missing}")
+            problems += 1
+    return problems
+
+
+def _run(label: str, argv: list[str]) -> int:
+    try:
+        r = subprocess.run(argv, cwd=str(ROOT))
+    except OSError as e:
+        fail(f"{label}: cannot invoke {argv[0]} ({e}) — the pinned toolchain/tool is not installed")
+        return 1
+    if r.returncode != 0:
+        fail(f"{label}: `{' '.join(argv)}` exited {r.returncode}")
+        return 1
+    return 0
+
+
+def run_live_tools(full: bool) -> int:
+    """P1: the live format/lint/test/audit invocations (guarded behind the workspace-present check)."""
+    problems = 0
+    problems += _run("G3 cargo fmt --check", ["cargo", "fmt", "--all", "--check"])
+    clippy = ["cargo", "clippy", "--all-targets", "--all-features"] if full else ["cargo", "clippy"]
+    problems += _run("G4/G14 clippy -D warnings", clippy + ["--", "-D", "warnings"])
+    problems += _run("cargo test", ["cargo", "test", "--all-targets"])
+    # G17: cargo audit is PLAIN (no --locked — not a cargo-audit flag); --no-fetch = the offline leg
+    try:
+        have_audit = subprocess.run(["cargo", "audit", "--version"], cwd=str(ROOT),
+                                    capture_output=True).returncode == 0
+    except OSError:
+        have_audit = False                          # cargo itself absent (guarded like _run)
+    if have_audit:
+        problems += _run("G17 cargo audit", ["cargo", "audit", "--no-fetch"])
+    else:
+        print("[G17] cargo-audit not installed yet (binary pin lands in P1) — audit leg skipped")
+    return problems
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G3/G4/G14/G17 Rust lint/format/test/audit contract (P0.4.1)")
+    ap.add_argument("--full", action="store_true", help="the G14 whole-tree clippy leg (P1, push)")
+    args = ap.parse_args(argv)
+
+    structural = (freeze_config(RUSTFMT, RUSTFMT_REQUIRED, "rustfmt") +
+                  freeze_config(CLIPPY, CLIPPY_REQUIRED, "clippy") +
+                  freeze_contract())
+    if structural >= 2 and not RUSTFMT.is_file():
+        return 2
+
+    manifest = _workspace_manifest()
+    if manifest is None:
+        if structural:
+            print(f"[G4] {structural} contract violation(s)", file=sys.stderr)
+            return 1
+        print("[G3/G4/G14/G17] Rust lint/format contract frozen; no workspace Cargo.toml yet "
+              "(crates land in P1) — live fmt/clippy/test/audit skipped (target-absent)")
+        return 0
+
+    live = assert_crate_attrs() + run_live_tools(args.full)
+    total = structural + live
+    if total:
+        print(f"[G4] {total} Rust lint-contract violation(s)", file=sys.stderr)
+        return 1
+    print("[G3/G4/G14/G17] Rust lint/format/test/audit contract OK")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

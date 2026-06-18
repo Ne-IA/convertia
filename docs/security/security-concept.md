@@ -57,7 +57,7 @@ manifest, license compliance).
   the EOL/charset policy `.editorconfig` (G52) + the prose-typo allowlist `.typos.toml` (G51),
   the `cargo-vet` exemption set + `imports.lock`,
   `.gitattributes`/`.lfsconfig`, the G56b SSH allowed-signers file, the
-  `rust-toolchain.toml` channel pin, the Tauri
+  `rust-toolchain.toml` channel pin, the `rustfmt.toml`/`clippy.toml` lint/format policy (G3/G4), the Tauri
   `capabilities`, `engines.lock`, the reviewer-rubric block, the security/process docs,
   and the authoritative glob list `scripts/l-neg1-files.toml` itself — are the **L(-1)
   security-critical-file set** (the cage the gates live in). **The autonomous Build-Loop

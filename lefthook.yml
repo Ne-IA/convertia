@@ -56,7 +56,9 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
       run: python3 scripts/check-editorconfig
     test-suppression: # G70 - NEW test-suppression markers in the staged test diff (fail-open w/o base)
       run: python3 scripts/check-test-suppression --diff
-    # L1 gate slots (filled by their boxes): clippy diff + tsc diff (P0.4).
+    rust-lint-contract: # G3/G4 - rustfmt/clippy contract freeze + live fmt/clippy/test (target-absent until P1)
+      run: python3 scripts/check-rust-lint-contract
+    # L1 gate slots (filled by their boxes): tsc diff (P0.4.7).
 
 commit-msg:        # L3 - fires at `git commit` (after pre-commit, before pre-push)
   commands:
@@ -88,4 +90,6 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/check-generated-drift
     test-suppression: # G70 - full-tree test-suppression-marker scan (fail-closed; no diff-base excuse)
       run: python3 scripts/check-test-suppression --full
-    # L2 gate slots (filled by their boxes): clippy --all-targets + tsc project (P0.4).
+    rust-lint-contract: # G14/G17 - whole-tree clippy --all-targets + cargo test + cargo audit (target-absent until P1)
+      run: python3 scripts/check-rust-lint-contract --full
+    # L2 gate slots (filled by their boxes): tsc project (P0.4.7).

@@ -46,6 +46,8 @@ patterns = [
 
   # --- the build artifacts' trust roots ---
   "rust-toolchain.toml",          # the pinned Rust compiler channel (a bump = trusted-build subversion)
+  "rustfmt.toml",                 # the Rust format contract (G3); a relaxation weakens the format plane
+  "clippy.toml",                  # the Rust lint config (G4/G14); a broad allow weakens the no-panic deny
   "src-tauri/capabilities/**",    # the locked Tauri capabilities / permissions allowlist
   "engines.lock",                 # the pinned bundled-engine digests
 

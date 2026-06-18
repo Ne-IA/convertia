@@ -1,0 +1,22 @@
+# clippy.toml — the pinned Rust LINT configuration (P0.4.1, G4/G14).
+#
+# `cargo clippy -D warnings` (G4, commit / changed-crate) + `clippy --all-targets --all-features -D
+# warnings` (G14, push / whole-tree) enforce the lints. The no-panic-sloppiness DENY SET itself
+# (clippy::unwrap_used / expect_used / panic / indexing_slicing, the exhaustive-match deny, and
+# clippy::arithmetic_side_effects on the IPC module) is set via CRATE/MODULE attributes in the P1
+# crates (build-gates §5 G4) — not here; this file configures clippy's BEHAVIOUR for those lints.
+#
+# This file is L(-1) security-critical (scripts/l-neg1-files.toml, G71): a relaxation of the lint
+# policy weakens the quality/DoS-prevention plane, so it needs the owner-ack trailer.
+
+# The no-panic deny set is allow-listed in TEST code (build-gates §5 G4: "allow-listed in #[cfg(test)]
+# with a `// PANIC:`-justified escape") — a unit test that asserts a panic / unwraps a known-good
+# fixture is legitimate. `panic`/`indexing_slicing` in tests are allowed via a per-crate
+# `#![cfg_attr(test, allow(...))]` (the crate-attribute half of the contract); these two cover the
+# common unwrap/expect case so individual tests need no manual `#[allow]`.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+# Lints are evaluated against the pinned toolchain (rust-toolchain.toml channel 1.96.0); pinning the
+# MSRV here keeps a future toolchain bump from silently changing lint behaviour without a review.
+msrv = "1.96.0"

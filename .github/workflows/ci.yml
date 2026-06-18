@@ -87,6 +87,8 @@ jobs:
         run: python3 scripts/check-editorconfig
       - name: 'G70: test-suppression-marker scan — full test tree (no green-by-rewrite; live over the committed fixture crates, grows from P1)'
         run: python3 scripts/check-test-suppression --full
+      - name: 'G3/G4/G14/G17: Rust lint/format/test/audit contract (rustfmt/clippy policy frozen; live fmt/clippy/test/audit in P1)'
+        run: python3 scripts/check-rust-lint-contract --full
       # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
       #   (G68 doc-graph + G69 struct-map run inside the plan-lint step above as checks 25/26.)
       #   G18a lockfile --locked + git diff --exit-code (Cargo.lock/pnpm-lock.yaml/imports.lock) +

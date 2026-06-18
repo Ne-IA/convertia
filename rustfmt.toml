@@ -1,0 +1,15 @@
+# rustfmt.toml — the pinned Rust FORMAT contract (P0.4.1, G3/G17 format leg).
+#
+# `cargo fmt --check` (G3, L1 diff-scoped / L2 whole-tree, check-only — NO auto-write) enforces this.
+# STABLE options only (the pinned 1.96.0 toolchain, rust-toolchain.toml) — an unstable/nightly-only
+# rustfmt option would make `cargo fmt --check` error on the pinned stable toolchain.
+#
+# This file is L(-1) security-critical (scripts/l-neg1-files.toml, G71): the format/quality policy is
+# part of the enforcement plane, so a silent relaxation needs the owner-ack trailer.
+#
+# `edition` matches the workspace crates' edition (the g53-fixture crates declare edition = "2021";
+# the P1 first-party crates are authored to match — confirmed when src-tauri/ lands).
+# [Build-Session-Entscheidung: P0.4.1]
+edition = "2021"
+newline_style = "Unix"      # LF everywhere (consistent with .editorconfig eol=lf / .gitattributes, G52)
+max_width = 100
