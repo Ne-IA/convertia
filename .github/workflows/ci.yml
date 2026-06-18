@@ -99,11 +99,15 @@ jobs:
         run: python3 scripts/check-english-only --full
       - name: 'G27/G28: coverage-floor contract — per-domain floors + diff gate frozen (live per-domain/diff over cargo-llvm-cov/vitest in P1; the increase-only ratchet is the workflow-security leg)'
         run: python3 scripts/check-coverage --full
+      - name: 'G18a: lockfile-integrity contract — drift-set freeze + --locked/--frozen-lockfile flag-scan + git diff --exit-code drift-guard (live drift-guard; CI flag-scan target-absent until P1 build commands land)'
+        run: python3 scripts/check-lockfile-integrity
       # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
       #   (G68 doc-graph + G69 struct-map run inside the plan-lint step above as checks 25/26.)
-      #   G18a lockfile --locked + git diff --exit-code (Cargo.lock/pnpm-lock.yaml/imports.lock) +
-      #   live cargo-deny check + cargo-vet --locked check + cargo-audit (P0.4.1) | clippy
-      #   --all-targets + tsc + eslint (P0.4, activated in P1 once the lockfiles exist).
+      #   The structural-freeze contracts above (rust-lint / unsafe-policy / ts-gate / coverage /
+      #   lockfile-integrity / supply-chain) become LIVE tool runs in P1 once the lockfiles + crates
+      #   exist: cargo-deny check + cargo-vet --locked check + cargo-audit + clippy --all-targets +
+      #   tsc + eslint (P0.4 contract set, activated in P1; the G18a flag-scan + drift-guard fail-close
+      #   the moment a build command / lockfile lands).
 
   workflow-security:
     name: workflow-security

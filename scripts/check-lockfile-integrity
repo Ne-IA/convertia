@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""check-lockfile-integrity - G18a lockfile-integrity contract (P0.4.9).
+
+The §3.8 pin-everything discipline for lockfiles: a CI build/test/install must re-resolve the
+EXACT committed dependency graph (the one cargo-vet audited + the SBOM was cut from), never a
+freshly-resolved different one, and a lockfile that drifted mid-run must redden the push rather
+than silently auto-resolve. Three responsibilities, mirroring the P0.4.x two-tier pattern (a
+structural freeze live NOW + a target-absent live tier that fail-closes the moment its P1 source
+lands):
+
+  (A) STRUCTURAL FREEZE (live) - the policy constants are frozen + internally consistent: the
+      lockfile DRIFT-SET is exactly {Cargo.lock, pnpm-lock.yaml, imports.lock} (imports.lock is IN
+      the set - the G18b-overlap guard: a silent `cargo vet sync`/`update` that refreshed the
+      committed trust DB must be caught as a drift, not just banned-as-a-command by G9 invariant
+      (e)), and the per-command pin-flag contract is well-formed. The freeze also asserts that
+      `cargo audit` (which has NO `--locked` flag - the G17 r7 tool-fact), `cargo deny`/`cargo vet`
+      (plugins that read the lock, they do not compile), and the lock-MUTATING commands
+      (`cargo update`/`generate-lockfile`) are NEVER in the pin-flag set, so the gate cannot drift
+      into demanding a flag a tool rejects or pinning a command meant to mutate the lock.
+  (B) CI-WORKFLOW FLAG-SCAN (target-absent until P1) - every cargo COMPILING/`fetch` command in
+      .github/workflows/ must carry `--locked` (or `--frozen`); every `pnpm install`/`pnpm i` must
+      carry `--frozen-lockfile`. No such command exists today (only the P1 CI build-step slot
+      comment in ci.yml) -> skip-with-notice; fail-CLOSED the moment a build command lands in P1.
+      cargo PLUGIN test-runners (`cargo nextest`/`cargo llvm-cov`) also pin via their own `--locked`
+      but are deliberately NOT in the built-in set: the box that wires the P1 CI test command
+      verifies the flag against the pinned `--help` and adds it then (the same tool-fact discipline
+      G17's r7 fix enforces), rather than baking an unverified plugin flag in now.
+  (C) DRIFT-GUARD (live) - `git diff --exit-code` over the drift-set lockfiles that exist, so a CI
+      build/install/cargo-vet step that mutated a tracked lockfile reddens the push. No-op (with a
+      notice) while no lockfile exists yet (the P0 posture); fail-CLOSED the moment one drifts or
+      git cannot be consulted.
+
+DEFENSE-IN-DEPTH SCOPE: the flag-scan reasons over the PLAIN block-form `run:` text of each
+workflow. Exotic YAML (anchors / aliases / merge keys / multi-document / flow-mappings that could
+hide a `run:` command from a line scan) is fail-CLOSED rejected for the SAME .github/** files by
+G56 (check-ci-supply-chain) + zizmor (G50) + actionlint (G49) on the same push, so a build command
+cannot be smuggled past this scan in a workflow that those gates accept.
+
+DISTINCT FROM: G18/G18b (check-supply-chain - the cargo-deny/cargo-vet POLICY freeze + the >=2
+import-source floor + exemption growth-guard) and G9 invariant (e) (check-repo-invariants - bans
+the `cargo vet update/sync/import` MUTATOR command in CI/scripts). G18a catches the missing pin
+flag (B) and the drifted-lockfile RESULT (C).
+
+stdlib-only. Exit: 0 = the contract holds (+ live checks pass or are target-absent); 1 = a
+violation; 2 = a structural prerequisite is missing/unverifiable.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# --- frozen policy expectations (a change here is an L(-1) edit + a Co-Pilot review item) -------
+# The LOGICAL lockfiles in the `git diff --exit-code` drift-set (G18a row). imports.lock is in the
+# set so a silent cargo-vet sync/update of the committed trust DB is caught as a drift.
+DRIFT_SET = ("Cargo.lock", "pnpm-lock.yaml", "imports.lock")
+# On-disk candidate LOCATIONS the live drift-guard diffs (spec §0.7 leaves Cargo.lock root-OR-member
+# until P1; pnpm-lock.yaml at the workspace root; the cargo-vet trust DB under supply-chain/).
+DRIFT_PATHS = (
+    "Cargo.lock", "src-tauri/Cargo.lock",
+    "pnpm-lock.yaml",
+    "supply-chain/imports.lock",
+)
+# cargo BUILT-IN subcommands that RESOLVE/read the dependency graph and so must pin to the committed
+# lock (the compiling set - each runs build.rs + proc-macros + codegen - plus `fetch`). EXCLUDES, by
+# design: `audit` (no --locked flag, G17 r7), `deny`/`vet` (plugins that read the lock, do not
+# compile; --locked there is owned by G18b's `cargo vet --locked check`), `metadata`/`tree` (read
+# only), and `update`/`generate-lockfile` (INTENTIONALLY mutate the lock). The freeze (A) asserts
+# none of the excluded set leaks in here.
+RUST_PINNED_SUBCOMMANDS = frozenset({
+    "build", "test", "run", "bench", "check", "clippy", "doc", "rustc", "miri",
+    "install", "package", "publish", "fetch",
+})
+# subcommands that must NEVER be in the pin-flag set (asserted by the freeze): plugins without a
+# guaranteed --locked, and the lock-mutating built-ins.
+FORBIDDEN_IN_PIN_SET = frozenset({"audit", "deny", "vet", "update", "generate-lockfile"})
+PIN_FLAGS = ("--locked", "--frozen")          # --frozen == --locked + --offline (a superset)
+PNPM_INSTALL_SUBCOMMANDS = frozenset({"install", "i"})
+PNPM_PIN_FLAG = "--frozen-lockfile"
+
+# cargo/pnpm global flags that CONSUME the following token (so the subcommand parser skips the value,
+# not mistakes it for the subcommand). `--flag=value` glued forms are handled separately.
+_CARGO_VALUE_FLAGS = frozenset({"--color", "--config", "-Z", "-C", "--manifest-path"})
+_PNPM_VALUE_FLAGS = frozenset({"--filter", "-C", "--dir", "--prefix", "--workspace-concurrency"})
+
+# one shell command segment ends at a newline / `;` / `&&` / `||` / `|` / `&`, a subshell or
+# brace-group boundary `( ) { }`, a redirect `< >` (so a glued `cargo build>log` still splits the
+# subcommand off `>log`), or a command-substitution backtick. This is a plain (non-shell-quote-aware)
+# split, so a `< > ( ) { }` ` `` ` ` CHARACTER inside a quoted flag value (`cargo build --config='x>y'
+# --locked`) over-splits and may over-flag a genuinely-pinned build - a fail-CLOSED over-rejection
+# (the safe direction; such chars in a CI cargo flag value are vanishingly rare), never a fail-open.
+_SEG_SPLIT = re.compile(r"[\n;<>(){}`]|&&|\|\||\||&")
+# transparent command prefixes: inline env-assignments (`FOO=bar`) + no-arg prefix words +
+# loop/conditional keywords, so `sudo cargo build` / `CARGO_NET_OFFLINE=true cargo build` lead with
+# `cargo`. DOCUMENTED fail-OPEN residuals (a build wrapped so the leading token is not cargo/pnpm;
+# all covered by the target-absent posture + G56/G50/G49 fail-closing exotic YAML for the same
+# files, and conventionally CI uses the bare `cargo build --locked` form): an ARG-bearing prefix
+# (`timeout 60 cargo build`, `xvfb-run cargo test`) and a command embedded in a quoted shell-wrapper
+# arg (`bash -c "cargo build"`, `sh -c 'cargo build'`) - the build hides inside a string the leading-
+# token scan does not parse into. (A subshell `( cargo build )` / brace-group / glued-redirect form
+# IS caught - _SEG_SPLIT above splits on those boundaries.)
+_PREFIX = re.compile(
+    r"^(?:\w+=\S*\s+|"
+    r"(?:time|nice|exec|command|sudo|env|nohup|setsid|doas|if|do|then|else|while|until|elif)\s+)*")
+
+
+def fail(msg: str) -> None:
+    print(f"[G18a] FAIL: {msg}", file=sys.stderr)
+
+
+def strip_comment(line: str) -> str:
+    """Drop a trailing YAML/shell `#` comment, respecting single/double quotes."""
+    q = None
+    for i, ch in enumerate(line):
+        if q:
+            if ch == q:
+                q = None
+        elif ch in "\"'":
+            q = ch
+        elif ch == "#" and (i == 0 or line[i - 1] in " \t"):
+            return line[:i].rstrip()
+    return line.rstrip()
+
+
+def _yaml_unquote_scalar(val: str) -> str:
+    """If `val` is a WHOLLY single- or double-quoted YAML flow scalar, return its decoded content;
+    otherwise return it unchanged. An inline `run: "cargo build"` / `run: 'cargo build'` step (plain,
+    non-exotic YAML that G56/zizmor/actionlint all pass) would otherwise reach the scanner WITH its
+    quotes, so the program token reads `"cargo`/`'cargo` and the unpinned build escapes the flag-scan
+    (a sole-enforcement false-negative). Only a balanced-and-wholly-quoted value is unwrapped, so a
+    command that merely CONTAINS quotes (`echo "hi" && cargo build`) is left intact."""
+    if len(val) >= 2 and val[0] == '"':
+        buf, i = [], 1
+        while i < len(val):
+            c = val[i]
+            if c == "\\" and i + 1 < len(val):
+                buf.append({"n": "\n", "t": "\t", '"': '"', "\\": "\\"}.get(val[i + 1], val[i + 1]))
+                i += 2
+                continue
+            if c == '"':
+                return "".join(buf) if val[i + 1:].strip() == "" else val
+            buf.append(c)
+            i += 1
+        return val
+    if len(val) >= 2 and val[0] == "'":
+        buf, i = [], 1
+        while i < len(val):
+            if val[i] == "'":
+                if val[i + 1:i + 2] == "'":              # YAML single-quote escape ('')
+                    buf.append("'")
+                    i += 2
+                    continue
+                return "".join(buf) if val[i + 1:].strip() == "" else val
+            buf.append(val[i])
+            i += 1
+        return val
+    return val
+
+
+def run_commands(raw_lines: list[str]) -> list[str]:
+    """The shell-command text of every `run:` step (inline `run: cmd` and block `run: |`/`>` bodies),
+    comment-stripped. Other YAML is ignored, so a step `name:`/`description:` scalar mentioning a
+    build command is never mistaken for one. The block-scalar body is the run-key-deeper-indented
+    region (the YAML rule), so a sibling step key (`with:`/`env:`) at the step's own indent ends it."""
+    stripped = [strip_comment(ln) for ln in raw_lines]
+    out: list[str] = []
+    i = 0
+    while i < len(stripped):
+        m = re.match(r"^(\s*(?:-\s+)?)run\s*:\s*(.*)$", stripped[i])
+        if not m:
+            i += 1
+            continue
+        run_col = len(m.group(1))
+        val = m.group(2).strip()
+        if re.fullmatch(r"[|>][+\-0-9]*", val):           # block scalar
+            body, j = [], i + 1
+            while j < len(stripped):
+                b = stripped[j]
+                if not b.strip():
+                    body.append("")
+                    j += 1
+                    continue
+                if (len(b) - len(b.lstrip())) > run_col:
+                    body.append(b)
+                    j += 1
+                else:
+                    break
+            out.append("\n".join(body))
+            i = j
+        else:                                              # inline `run: cmd` (YAML-unquoted)
+            out.append(_yaml_unquote_scalar(val))
+            i += 1
+    return out
+
+
+def _subcommand(tokens: list[str], value_flags: frozenset[str]) -> str | None:
+    """The first real subcommand token: skip a `+channel`, a `--flag=value` glued option, a
+    value-consuming global flag PLUS its value, and any other leading boolean flag."""
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t.startswith("+"):
+            i += 1
+            continue
+        if t.startswith("-") and "=" in t:                 # --flag=value (one token)
+            i += 1
+            continue
+        if t in value_flags:                               # --flag value (two tokens)
+            i += 2
+            continue
+        if t.startswith("-"):                              # a boolean global flag
+            i += 1
+            continue
+        return t.strip("\"'")                              # a shell-quoted subcommand (`cargo 'build'`)
+    return None
+
+
+def scan_workflow_flags(text: str, name: str) -> tuple[list[str], int]:
+    """(pure) Pin-flag violations in one workflow's run-command text. Returns (problems, n_found),
+    where n_found counts the cargo-compile/`fetch` + `pnpm install` commands seen (0 across all
+    workflows => the flag-scan is target-absent)."""
+    problems: list[str] = []
+    found = 0
+    for cmdtext in run_commands(text.splitlines()):
+        collapsed = re.sub(r"\\\n\s*", " ", cmdtext)       # join shell line-continuations
+        for seg in (s.strip() for s in _SEG_SPLIT.split(collapsed) if s.strip()):
+            rest = _PREFIX.sub("", seg)
+            toks = rest.split()
+            if not toks:
+                continue
+            prog = toks[0].strip("\"'")                     # strip a shell-quoted program token
+            # only flags BEFORE a bare `--` separator pin cargo/pnpm - tokens after `--` are passed
+            # to the BUILT binary (`cargo run -- --locked` does NOT pin dependency resolution).
+            relevant = toks[:toks.index("--")] if "--" in toks else toks
+            if prog == "cargo":
+                sub = _subcommand(toks[1:], _CARGO_VALUE_FLAGS)
+                if sub in RUST_PINNED_SUBCOMMANDS:
+                    found += 1
+                    if not any(f in relevant for f in PIN_FLAGS):
+                        problems.append(
+                            f"{name}: `cargo {sub}` runs without --locked/--frozen - it would "
+                            "re-resolve the dependency graph instead of the committed Cargo.lock "
+                            "(the audited/SBOM'd one); add --locked (§3.8 pin-everything)")
+            elif prog == "pnpm":
+                sub = _subcommand(toks[1:], _PNPM_VALUE_FLAGS)
+                if sub in PNPM_INSTALL_SUBCOMMANDS:
+                    found += 1
+                    if PNPM_PIN_FLAG not in relevant:
+                        problems.append(
+                            f"{name}: `pnpm {sub}` runs without --frozen-lockfile - it would "
+                            "re-resolve / update pnpm-lock.yaml instead of installing the committed "
+                            "graph; add --frozen-lockfile (§3.8 pin-everything)")
+    return problems, found
+
+
+def frozen_contract() -> list[str]:
+    """(A) The frozen constants are internally consistent (a careless future edit that weakened the
+    gate is caught here)."""
+    problems: list[str] = []
+    for lf in ("Cargo.lock", "pnpm-lock.yaml", "imports.lock"):
+        if lf not in DRIFT_SET:
+            problems.append(
+                f"the drift-set no longer includes `{lf}` - a {lf} drift would go uncaught"
+                + (" (imports.lock is the G18b overlap: a silent cargo-vet sync/update of the "
+                   "committed trust DB must fail as a drift)" if lf == "imports.lock" else ""))
+    if not RUST_PINNED_SUBCOMMANDS:
+        problems.append("the cargo pin-flag subcommand set is empty - no build command would be pinned")
+    leaked = sorted(FORBIDDEN_IN_PIN_SET & RUST_PINNED_SUBCOMMANDS)
+    for sub in leaked:
+        problems.append(
+            f"`cargo {sub}` must NOT be in the pin-flag set - it either has no --locked flag "
+            "(audit, G17 r7), is a lock-reading plugin (deny/vet), or intentionally MUTATES the lock "
+            "(update/generate-lockfile); demanding --locked there would hard-fail spuriously or pin a "
+            "mutation")
+    if "--locked" not in PIN_FLAGS:
+        problems.append("`--locked` must be an accepted cargo pin flag")
+    if PNPM_PIN_FLAG != "--frozen-lockfile":
+        problems.append(f"the pnpm pin flag must be `--frozen-lockfile` (is {PNPM_PIN_FLAG!r})")
+    return problems
+
+
+def _git_diff(root: Path, paths: list[str]) -> tuple[int | None, str]:
+    """Run `git diff --exit-code -- <paths>` in `root`. Returns (returncode, output); returncode is
+    None if git could not be invoked at all (fail-closed signal)."""
+    try:
+        r = subprocess.run(["git", "diff", "--exit-code", "--", *paths],
+                           cwd=str(root), capture_output=True, text=True)
+        return r.returncode, (r.stdout or "") + (r.stderr or "")
+    except (OSError, subprocess.SubprocessError):
+        return None, ""
+
+
+def drift_guard(root: Path, runner=_git_diff) -> list[str]:
+    """(C) `git diff --exit-code` over the existing drift-set lockfiles. No-op (with a notice) while
+    none exist (the P0 posture). Fail-CLOSED if a lockfile drifted or git cannot be consulted."""
+    present = [p for p in DRIFT_PATHS if (root / p).is_file()]
+    if not present:
+        print("[G18a] no lockfile exists yet (Cargo.lock/pnpm-lock.yaml/imports.lock land in P1) - "
+              "the drift-guard is a no-op; fail-closed the moment a lockfile drifts")
+        return []
+    rc, out = runner(root, present)
+    if rc == 0:
+        return []
+    if rc is None:
+        return [f"git is unavailable - cannot run the G18a lockfile drift-guard over {present} "
+                "(fail-closed: a lockfile drift could go uncaught)"]
+    if rc == 1:
+        return [f"lockfile drift: `git diff --exit-code` is non-clean over {present} - a "
+                "build/install/cargo-vet step mutated a committed lockfile (re-resolving a different "
+                "graph than the audited/SBOM'd one); commit the intended lockfile or pin the build "
+                f"(--locked / --frozen-lockfile).\n{out}".rstrip()]
+    return [f"`git diff --exit-code` over {present} exited {rc} (a git error, not a clean/drift "
+            f"verdict) - cannot verify lockfile integrity (fail-closed).\n{out}".rstrip()]
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G18a lockfile-integrity contract (P0.4.9)")
+    ap.add_argument("--root", type=Path, default=ROOT,
+                    help="repo root to check (default: the repo; a fixture tree in the self-test)")
+    args = ap.parse_args(argv)
+
+    problems = list(frozen_contract())
+
+    wfdir = args.root / ".github" / "workflows"
+    wfs = (sorted(wfdir.glob("*.yml")) + sorted(wfdir.glob("*.yaml"))) if wfdir.is_dir() else []
+    total_found = 0
+    for wf in wfs:
+        p, n = scan_workflow_flags(wf.read_text(encoding="utf-8", errors="replace"), wf.name)
+        problems += p
+        total_found += n
+    if total_found == 0:
+        print("[G18a] no cargo-compile/pnpm-install command in .github/workflows yet (only the P1 CI "
+              "build-step slot) - flag-scan target-absent; fail-closed the moment a build command lands")
+
+    problems += drift_guard(args.root)
+
+    if problems:
+        for p in problems:
+            fail(p)
+        return 1
+    print(f"[G18a] lockfile integrity OK (drift-set {DRIFT_SET}; {total_found} pinned "
+          "build/install command(s) scanned; live drift-guard clean)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
