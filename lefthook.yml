@@ -16,7 +16,8 @@
 #
 # GATE SLOTS: each L1/L2/L3 gate is added to the slots below by the box that BUILDS
 # it (so a gate is wired only after it is built + self-tested) - remaining:
-# tsc (P0.4.7). (plan-lint/G8/G70/rust-lint/unsafe-policy/fuzz-contract wired below — P0.3.5/3.4/3.14/4.1/4.2/4.3.)
+# English-only string-ownership (P0.4.6). (plan-lint/G8/G70/rust-lint/unsafe-policy/fuzz-contract/ts-gate
+# wired below — P0.3.5/3.4/3.14/4.1/4.2/4.3/4.7.)
 # The G29 Semgrep + shellcheck SAST gate is L4-only (CI `sast` job; semgrep is a CI pip tool).
 #
 # Requires Python 3.11+ on PATH as `python3` (the stdlib-only gate scripts) and
@@ -63,7 +64,9 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
       run: python3 scripts/check-unsafe-policy
     fuzz-contract:   # G48/G16 - in-core fuzz-harness layout + per-numeric-IPC-arg overflow contract (target-absent until P3)
       run: python3 scripts/check-fuzz-contract
-    # L1 gate slots (filled by their boxes): tsc diff (P0.4.7).
+    ts-gate:         # G5/G6/G13 - tsconfig strict + eslint flat (no-any, fc.gen) + prettier/stylelint/vitest contract (target-absent until P1)
+      run: python3 scripts/check-ts-gate
+    # L1 gate slots (filled by their boxes): English-only string-ownership (P0.4.6).
     # NOTE: the G29 Semgrep + shellcheck SAST gate (check-sast) is L4-only (the CI `sast` job) -
     # Semgrep is a CI-tier pip tool (requirements-ci.txt --require-hashes), not a locally pinned binary.
 
@@ -103,4 +106,6 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/check-unsafe-policy --full
     fuzz-contract:   # G48/G16 - whole-harness fuzz-target + fixture + bounds assertion (target-absent until P3)
       run: python3 scripts/check-fuzz-contract --full
-    # L2 gate slots (filled by their boxes): tsc project (P0.4.7).
+    ts-gate:         # G5/G6/G13 - whole-project tsc --noEmit + eslint/stylelint/prettier --check + vitest (target-absent until P1)
+      run: python3 scripts/check-ts-gate --full
+    # L2 gate slots (filled by their boxes): English-only string-ownership (P0.4.6).

@@ -93,6 +93,8 @@ jobs:
         run: python3 scripts/check-unsafe-policy --full
       - name: 'G48/G16: in-core fuzz-harness + per-numeric-IPC-arg overflow contract (frozen target/bounds/fixture set + date-pinned nightly; live harness in P3)'
         run: python3 scripts/check-fuzz-contract --full
+      - name: 'G5/G6/G13: TypeScript lint/type-check/format/test contract (tsconfig strict + eslint no-any/fc.gen + prettier/stylelint/vitest frozen; live tsc/eslint/prettier/vitest in P1)'
+        run: python3 scripts/check-ts-gate --full
       # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
       #   (G68 doc-graph + G69 struct-map run inside the plan-lint step above as checks 25/26.)
       #   G18a lockfile --locked + git diff --exit-code (Cargo.lock/pnpm-lock.yaml/imports.lock) +

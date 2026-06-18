@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+"""check-ts-gate - G5/G6/G13 TypeScript / React lint / type-check / format / test contract (P0.4.7).
+The TypeScript half of the build-quality plane (the Rust half is check-rust-lint-contract, P0.4.1).
+
+Two tiers, the same pattern as the Rust contract (P0.4.1) and the supply-chain skeleton (P0.3.6):
+
+  STRUCTURAL FREEZE (live NOW, no toolchain needed): the TS-gate CONTRACT cannot be silently gutted.
+  The required `tsconfig.json` strict-family flags (TSCONFIG_REQUIRED), the eslint flat-config
+  project-local rules the config MUST carry (ESLINT_REQUIRED_RULES — the no-`any` rule + the
+  `fc.gen()`-shrink-wrapper rule paired with G9 invariant (f), P0.3.10), and the set of tool scripts
+  the package manifest must wire (PKG_REQUIRED_SCRIPTS) are frozen here as non-empty contracts. A
+  relaxation reddens the gate (and is an owner-acked L(-1) edit, G71).
+
+  LIVE (target-absent until the P1 frontend lands): once a frontend `package.json` exists, assert the
+  `tsconfig.json` strict flags are set (G6/G13), the eslint flat config carries the project-local rules
+  (G5), the prettier / stylelint / vitest configs are present, and the manifest wires the tool scripts;
+  then RUN `tsc --noEmit` (G6 changed-scope at L1 / G13 whole-project at L2), `eslint` + `stylelint`
+  (G5), `prettier --check` (G5), and `vitest` — via the pinned pnpm toolchain (guarded: skipped with a
+  notice if pnpm/node is not installed, exactly as the Rust contract skips when cargo is absent).
+  Skips-with-notice while no `package.json` exists, fail-closes the moment one lands (the
+  G47/G22/G23/P0.4.1 bootstrap posture).
+
+WHY contract-only (no config files authored here): spec §0.7 homes `tsconfig.json` / `package.json` /
+`vite.config.ts` in the P1 FRONTEND BUILD, and the eslint/vitest configs import the (P1-installed)
+toolchain — so, unlike the Rust contract's standalone `rustfmt.toml`/`clippy.toml`, the TS config FILES
+land coherently in P1 (P1.29/P1.35/P1.64) and this gate freezes the CONTRACT they must satisfy. This
+mirrors P0.4.2 (which froze the unsafe/SAST contract but authored no crate roots).
+[Build-Session-Entscheidung: P0.4.7]
+
+The JS supply-chain config the P1 `pnpm install` honours (the `.npmrc` registry pin + lifecycle
+lockdown) is P0.3.8's check-js-supply-chain — this gate consumes that posture (it does not re-assert it).
+
+stdlib-only. L(-1) security-critical (matched by scripts/check-*).
+
+Usage: check-ts-gate [--full]   (--full = the G13 whole-project tsc + the whole-tree lint leg, L2/push)
+Exit:  0 = contract intact (or target-absent); 1 = a violation; 2 = a required config is missing/malformed.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# --- the frozen TS-gate CONTRACT (a relaxation here = an enforcement-plane weakening, owner-acked) ----
+# tsconfig.json compilerOptions that MUST be set true once tsconfig lands (G6/G13). `strict` is the
+# umbrella (the CLAUDE.md "no `any`" + spec §0.8 "TypeScript strict"); the three explicit extras are the
+# high-value flags `strict` does NOT imply: noUncheckedIndexedAccess (an array/record index yields
+# `T | undefined` — the TS analogue of the Rust `indexing_slicing` deny on untrusted data, so an
+# out-of-bounds read cannot be typed as defined), noImplicitOverride, and noFallthroughCasesInSwitch.
+TSCONFIG_REQUIRED = {
+    "strict": True,
+    "noUncheckedIndexedAccess": True,
+    "noImplicitOverride": True,
+    "noFallthroughCasesInSwitch": True,
+}
+# The eslint FLAT config (eslint.config.{js,mjs,cjs,ts}) MUST carry these project-local rule markers —
+# asserted by a delimiter-bounded text scan (a flat config is JS, not statically parseable with stdlib,
+# so we assert the rule TOKEN is present and NOT switched off to "off"/0). Each is a load-bearing rule:
+#   - the no-`any` rule (@typescript-eslint/no-explicit-any) — the CLAUDE.md hard rule + §0.4.5 (the
+#     generated bindings.ts is the only IPC door, no `any` at the boundary);
+#   - the fc.gen()-shrink-wrapper ban — `fc.gen(` outside the approved wrapper defeats property-test
+#     shrinking; G9 invariant (f) greps for it too (belt-and-suspenders), but the box pairs it with an
+#     eslint rule here (a no-restricted-syntax / no-restricted-properties rule naming `fc` `gen`).
+ESLINT_REQUIRED_RULES = [
+    ("no-explicit-any (CLAUDE.md no-`any` / §0.4.5 IPC boundary)", "@typescript-eslint/no-explicit-any"),
+    ("fc.gen() shrink-wrapper ban (paired with G9 invariant (f), P0.3.10)", "fc.gen"),
+]
+# package.json scripts the manifest MUST wire (so L4 CI + a contributor can run each gate). Matched as a
+# tool TOKEN appearing in the scripts block (e.g. a `tsc` script, an `eslint` script).
+PKG_REQUIRED_SCRIPTS = ["tsc", "eslint", "prettier", "vitest"]
+
+# candidate config locations (P1 authors exactly one of each; a presence check, the deep correctness is
+# the live tool run + the P1 G1 dual-review). vitest config may live in its own file OR in vite.config.
+_ESLINT_FLAT = ["eslint.config.js", "eslint.config.mjs", "eslint.config.cjs", "eslint.config.ts"]
+_PRETTIER = [".prettierrc", ".prettierrc.json", ".prettierrc.cjs", ".prettierrc.js", ".prettierrc.mjs",
+             ".prettierrc.yaml", ".prettierrc.yml", "prettier.config.js", "prettier.config.cjs",
+             "prettier.config.mjs"]
+_STYLELINT = [".stylelintrc", ".stylelintrc.json", ".stylelintrc.cjs", ".stylelintrc.js",
+              "stylelint.config.js", "stylelint.config.cjs", "stylelint.config.mjs"]
+_VITEST = ["vitest.config.ts", "vitest.config.js", "vitest.config.mjs"]
+_VITE = ["vite.config.ts", "vite.config.js", "vite.config.mjs"]
+
+
+def fail(msg: str) -> None:
+    print(f"[G5/G6/G13] FAIL: {msg}", file=sys.stderr)
+
+
+def freeze_contract() -> int:
+    """The contract constants must stay non-empty + well-formed — they cannot be silently gutted to an
+    empty policy (the same `freeze_contract` discipline as the Rust contract's REQUIRED_ATTRS)."""
+    problems = 0
+    if not TSCONFIG_REQUIRED or "strict" not in TSCONFIG_REQUIRED:
+        fail("TSCONFIG_REQUIRED is empty or dropped `strict` — the type-strictness policy is gone")
+        problems += 1
+    if not ESLINT_REQUIRED_RULES or not any("no-explicit-any" in tok for _, tok in ESLINT_REQUIRED_RULES):
+        fail("ESLINT_REQUIRED_RULES is empty or dropped no-explicit-any — the no-`any` policy is gone")
+        problems += 1
+    if not any("fc.gen" in tok for _, tok in ESLINT_REQUIRED_RULES):
+        fail("ESLINT_REQUIRED_RULES dropped the fc.gen ban — the shrink-wrapper policy (the G9 "
+             "invariant (f) pair) is gone (both named rules are guarded symmetrically per the docstring)")
+        problems += 1
+    if not PKG_REQUIRED_SCRIPTS:
+        fail("PKG_REQUIRED_SCRIPTS is empty — the tool-wiring contract is gone")
+        problems += 1
+    return problems
+
+
+def _frontend_manifest() -> Path | None:
+    """The first-party frontend package.json (the P1 target). v1 is a single front-end package, so the
+    root package.json is the manifest; a future multi-package workspace subdir is the P1 refinement."""
+    cand = ROOT / "package.json"
+    return cand if cand.is_file() else None
+
+
+def _read_jsonc(path: Path):
+    """Parse a tsconfig.json (JSONC: // + /* */ comments + trailing commas allowed). Strings are
+    protected first, so a `//` or `/*` inside a "…" value is not mis-stripped, then comments are blanked
+    and trailing commas removed, then stdlib json.loads. Returns (obj, None) or (None, error)."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        return None, f"unreadable ({e})"
+    # protect string literals (so // or /* inside a value survives), blank comments, restore strings
+    strings: list[str] = []
+
+    def _stash(m: "re.Match[str]") -> str:
+        strings.append(m.group(0))
+        return f"\x00{len(strings) - 1}\x00"
+
+    protected = re.sub(r'"(?:\\.|[^"\\])*"', _stash, raw)
+    protected = re.sub(r"/\*.*?\*/", " ", protected, flags=re.S)        # block comments
+    protected = "\n".join(re.sub(r"//.*$", "", ln) for ln in protected.split("\n"))  # line comments
+    protected = re.sub(r",(\s*[}\]])", r"\1", protected)                # trailing commas
+    restored = re.sub(r"\x00(\d+)\x00", lambda m: strings[int(m.group(1))], protected)
+    try:
+        return json.loads(restored), None
+    except (json.JSONDecodeError, ValueError) as e:
+        return None, f"malformed ({e})"
+
+
+def _tsconfig_options(path: Path, _seen: set | None = None) -> tuple[dict, str | None]:
+    """The effective compilerOptions of a tsconfig, following the local-file `extends` CHAIN (MULTI-level,
+    cycle-guarded by `_seen`) AND the TS5 `extends` ARRAY form (`["./a.json", "./b.json"]` — later entries
+    override earlier), so a strict flag set in a committed base (or grandparent base) is not a
+    false-negative (P0.4.7 G1 P2/P3). The one residual is a NON-local (npm-package / out-of-repo)
+    `extends` (e.g. `@tsconfig/strictest`), which cannot be read at gate time — it leaves the inherited
+    flags unverified and so reports them missing (over-strict / fail-CLOSED, never fail-open); resolving a
+    package extends from node_modules is the recorded P1 refinement. Returns (options, error)."""
+    _seen = _seen or set()
+    if str(path) in _seen:                              # cycle guard (a base that extends back)
+        return {}, None
+    _seen.add(str(path))
+    obj, err = _read_jsonc(path)
+    if err is not None:
+        return {}, err
+    if not isinstance(obj, dict):
+        return {}, "top-level is not an object"
+    opts: dict = {}
+    ext = obj.get("extends")
+    ext_list = ext if isinstance(ext, list) else ([ext] if isinstance(ext, str) else [])
+    for e in ext_list:                                  # local bases first (later overrides earlier, TS5)
+        if isinstance(e, str) and e.startswith("."):
+            base = (path.parent / e).resolve()
+            if base.suffix != ".json":
+                base = base.with_suffix(".json")
+            if base.is_file():
+                base_opts, _ = _tsconfig_options(base, _seen)
+                opts.update(base_opts)
+    co = obj.get("compilerOptions")
+    if isinstance(co, dict):
+        opts.update(co)
+    return opts, None
+
+
+def assert_tsconfig_strict() -> int:
+    """P1: once tsconfig.json lands, assert each TSCONFIG_REQUIRED flag is set to its required value in
+    the effective compilerOptions (G6/G13). Target-absent until tsconfig.json exists."""
+    tsconfig = ROOT / "tsconfig.json"
+    if not tsconfig.is_file():
+        return 0                                       # tsconfig lands in P1 — target-absent
+    opts, err = _tsconfig_options(tsconfig)
+    if err is not None:
+        fail(f"tsconfig.json is {err} — the strict policy cannot be verified")
+        return 2
+    problems = 0
+    for key, want in TSCONFIG_REQUIRED.items():
+        if opts.get(key) != want:
+            fail(f"tsconfig.json compilerOptions.{key} is {opts.get(key)!r}, must be {want!r} "
+                 f"(a relaxation of the frozen strict policy)")
+            problems += 1
+    return problems
+
+
+def _eslint_config() -> Path | None:
+    for name in _ESLINT_FLAT:
+        if (ROOT / name).is_file():
+            return ROOT / name
+    return None
+
+
+def _strip_js_comments(text: str) -> str:
+    """Blank /* */ and // comments while KEEPING string/template contents (a `//` inside a "…"/'…'/`…`
+    literal — a URL, a regex selector — is NOT a comment). Strings are stashed first, then comments are
+    blanked, then strings restored — so the eslint RULE NAME (itself a string key, e.g.
+    "@typescript-eslint/no-explicit-any") stays visible to the presence + off-detection scans, while a
+    commented-out rule line is correctly dropped."""
+    stash: list[str] = []
+
+    def _s(m: "re.Match[str]") -> str:
+        stash.append(m.group(0))
+        return f"\x00{len(stash) - 1}\x00"
+
+    protected = re.sub(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`', _s, text, flags=re.S)
+    protected = re.sub(r"/\*.*?\*/", " ", protected, flags=re.S)        # block comments
+    protected = "\n".join(re.sub(r"//.*$", "", ln) for ln in protected.split("\n"))  # line comments
+    return re.sub(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], protected)
+
+
+# a rule severity switched OFF immediately after the rule key: `: "off"` / `: 'off'` / `: 0` / `: ["off"`.
+# `\b` is anchored to the bare `0` only (so `0` ≠ `0xFF`) — the quoted forms end in `"`/`'` (a non-word
+# char), where a trailing `\b` would never hold.
+_OFF_RE = re.compile(r""":\s*\[?\s*(?:"off"|'off'|0\b)""")
+
+
+def _rule_is_off(text: str, token: str) -> bool:
+    """True iff the rule `token` is set to an OFF/0 severity. Scans from EACH occurrence of the token
+    ACROSS newlines up to the start of the NEXT rule key (`, "…"`) or a 200-char bound — so a
+    formatter-wrapped MULTI-line `"rule":\n["off"]` IS caught (the prior per-physical-line scan missed it,
+    P0.4.7 G1 P2), while an unrelated `: 0` / `["off"]` belonging to a DIFFERENT key sharing the same
+    physical line does NOT cross-contaminate (the window stops before the next key, P0.4.7 G1 P2)."""
+    for mt in re.finditer(re.escape(token), text):
+        win = text[mt.end():mt.end() + 200]            # this rule's value, spanning newlines
+        cut = re.search(r""",\s*["']""", win)          # stop before the next rule key's value
+        if cut:
+            win = win[:cut.start()]
+        if _OFF_RE.search(win):
+            return True
+    return False
+
+
+def assert_eslint_rules() -> int:
+    """P1: once the eslint flat config lands, assert each ESLINT_REQUIRED_RULES token is PRESENT in a
+    NON-comment position and not switched OFF (G5). A flat config is JS (not stdlib-parseable), so this
+    scans the COMMENT-stripped (strings-KEPT) text — the rule name is itself a string key, so it must
+    stay visible — for the rule token (it must appear at all) and for an off/0 severity on its line.
+    Over-strict (flags a rule it cannot fully prove is ON) is SAFE; the live eslint run is the real
+    enforcement, this freeze guarantees the RULE EXISTS + is not trivially disabled in the committed
+    config (and G9 invariant (f) is the belt-and-suspenders grep for the fc.gen case)."""
+    cfg = _eslint_config()
+    if cfg is None:
+        return 0                                       # eslint flat config lands in P1 — target-absent
+    text = _strip_js_comments(cfg.read_text(encoding="utf-8", errors="replace"))
+    problems = 0
+    for desc, token in ESLINT_REQUIRED_RULES:
+        if token not in text:                          # the rule token must appear (outside comments)
+            fail(f"eslint flat config {cfg.name} is missing the required rule {desc} (token {token!r})")
+            problems += 1
+            continue
+        if _rule_is_off(text, token):                  # token-proximity scan (multi-line + no cross-contam)
+            fail(f"eslint flat config {cfg.name}: rule {desc} ({token!r}) appears switched OFF")
+            problems += 1
+    return problems
+
+
+def _present(cands: list[str]) -> bool:
+    return any((ROOT / c).is_file() for c in cands)
+
+
+def assert_configs_present() -> int:
+    """P1: the prettier / stylelint / vitest configs exist (a presence check — the deep correctness is
+    the live run + the P1 G1 dual-review). vitest config may be its own file OR a `test` block inside a
+    vite.config.* — accept either."""
+    problems = 0
+    if not _present(_PRETTIER):
+        fail("no prettier config found (the G5 format contract is unwired)")
+        problems += 1
+    if not _present(_STYLELINT):
+        fail("no stylelint config found (the G5 CSS-lint contract is unwired)")
+        problems += 1
+    vitest_ok = _present(_VITEST) or any(
+        (ROOT / v).is_file() and re.search(r"(?m)^\s*test\s*:", (ROOT / v).read_text(encoding="utf-8", errors="replace"))
+        for v in _VITE)
+    if not vitest_ok:
+        fail("no vitest config found (neither vitest.config.* nor a `test:` block in vite.config.*)")
+        problems += 1
+    return problems
+
+
+def assert_pkg_scripts(manifest: Path) -> int:
+    """P1: package.json `scripts` wires each PKG_REQUIRED_SCRIPTS tool (so each gate is runnable in CI +
+    by a contributor). Matched as the tool token appearing anywhere in the scripts-block values."""
+    try:
+        pkg = json.loads(manifest.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError, ValueError) as e:
+        fail(f"package.json is malformed/unreadable ({e})")
+        return 2
+    scripts = pkg.get("scripts", {})
+    if not isinstance(scripts, dict):
+        fail("package.json `scripts` is not an object")
+        return 1
+    blob = " ".join(str(v) for v in scripts.values())
+    problems = 0
+    for tool in PKG_REQUIRED_SCRIPTS:
+        if not re.search(r"(?<![\w-])" + re.escape(tool) + r"(?![\w-])", blob):
+            fail(f"package.json scripts do not wire {tool!r} (the G5/G6/G13 tool is not runnable)")
+            problems += 1
+    return problems
+
+
+def _run(label: str, argv: list[str]) -> int:
+    try:
+        r = subprocess.run(argv, cwd=str(ROOT))
+    except OSError as e:
+        fail(f"{label}: cannot invoke {argv[0]} ({e}) — the pinned toolchain/tool is not installed")
+        return 1
+    if r.returncode != 0:
+        fail(f"{label}: `{' '.join(argv)}` exited {r.returncode}")
+        return 1
+    return 0
+
+
+def _have(tool: str) -> bool:
+    try:
+        return subprocess.run([tool, "--version"], cwd=str(ROOT), capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+
+def run_live_tools(full: bool) -> int:
+    """P1: the live type-check / lint / format / test invocations through the pinned pnpm toolchain,
+    guarded behind a pnpm-present check (skipped with a notice if node/pnpm is not yet installed — the
+    same posture as the Rust contract skipping when cargo is absent; the real runs happen in the P1 CI
+    once `pnpm install` has populated node_modules)."""
+    if not _have("pnpm"):
+        print("[G5/G6/G13] pnpm not installed yet (the toolchain pin lands in P1) — live "
+              "tsc/eslint/stylelint/prettier/vitest runs skipped (target-absent)")
+        return 0
+    problems = 0
+    # G6 (changed-scope at L1) / G13 (whole-project at L2/push) — tsc --noEmit either way
+    problems += _run("G6/G13 tsc --noEmit", ["pnpm", "exec", "tsc", "--noEmit"])
+    problems += _run("G5 eslint", ["pnpm", "exec", "eslint", "."])
+    problems += _run("G5 stylelint", ["pnpm", "exec", "stylelint", "**/*.css"])
+    problems += _run("G5 prettier --check", ["pnpm", "exec", "prettier", "--check", "."])
+    if full:
+        problems += _run("vitest run", ["pnpm", "exec", "vitest", "run"])
+    return problems
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G5/G6/G13 TypeScript lint/type-check/format/test contract (P0.4.7)")
+    ap.add_argument("--full", action="store_true", help="the G13 whole-project + the vitest leg (L2/push)")
+    args = ap.parse_args(argv)
+
+    structural = freeze_contract()
+
+    manifest = _frontend_manifest()
+    if manifest is None:
+        if structural:
+            print(f"[G5/G6/G13] {structural} contract violation(s)", file=sys.stderr)
+            return 1
+        print("[G5/G6/G13] TS-gate contract frozen; no frontend package.json yet (the workspace + TS "
+              "sources land in P1) — live tsc/eslint/stylelint/prettier/vitest skipped (target-absent)")
+        return 0
+
+    live = (assert_tsconfig_strict() + assert_eslint_rules() + assert_configs_present()
+            + assert_pkg_scripts(manifest) + run_live_tools(args.full))
+    # a `2` (missing/malformed config) from the strict/scripts asserts surfaces as a hard fail too
+    total = structural + live
+    if total:
+        print(f"[G5/G6/G13] {total} TS-gate contract violation(s)", file=sys.stderr)
+        return 1
+    print("[G5/G6/G13] TypeScript lint/type-check/format/test contract OK")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
