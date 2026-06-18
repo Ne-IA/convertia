@@ -56,13 +56,14 @@ fingerprint = "sha256:d99dfb835f5c2375dad35e630d9e893f064280e83e933e38972ab2c707
 # (b) DORMANT until P1.64 — the spec §0.7 physical tree is the HIGHER source (SSOT > spec > docs); the
 #     CLAUDE.md §1a "Repo layout" map is its operational projection. This fingerprint is the freshness
 #     companion to G69 check 26's projection bind: once §1a is authored at P1.64, a §0.7 tree edit not
-#     mirrored into §1a surfaces as stale. While CLAUDE.md still carries EITHER the "PLACEHOLDER" or the
-#     "P1.64" marker (§1a is the bootstrap stub), the binding is dormant — the EXACT OR-condition G69
-#     check 26 (doc26_struct_map) skips on, so the two gates activate together, never apart.
+#     mirrored into §1a surfaces as stale. While CLAUDE.md still carries the "PLACEHOLDER" stub marker
+#     (§1a is the bootstrap stub), the binding is dormant — keyed on the SAME "PLACEHOLDER" word G69
+#     check 26 (doc26_struct_map) skips on, so the two gates activate together. (We key on "PLACEHOLDER"
+#     NOT "P1.64": "P1.64" legitimately survives as a provenance link [`P1.64`](…) post-authoring, which
+#     would falsely pin both gates dormant forever — "PLACEHOLDER" appears ONLY in the §1a stub block.)
 #     The recorded hash is today's §0.7. **P1.64 OBLIGATION:** when §1a is authored, P1.64 MUST delete
-#     the whole bootstrap-status block so NEITHER "PLACEHOLDER" nor "P1.64" survives in CLAUDE.md §1a,
-#     AND re-bless this fingerprint in the same commit — otherwise this entry AND G69 check 26 both stay
-#     dormant forever (the shared latent risk of the marker-based dormancy, accepted + tracked here).
+#     the bootstrap-status block so "PLACEHOLDER" no longer appears in CLAUDE.md, AND re-bless this
+#     fingerprint in the same commit — else this entry AND G69 check 26 both stay dormant.
 [[source]]
 id = "spec-0.7-physical-tree"
 kind = "section"
@@ -70,4 +71,4 @@ file = "docs/spec/00-architecture.md"
 anchor = "0.7"
 describes = ["CLAUDE.md §1a Repo-layout map (the §0.7 projection)"]
 fingerprint = "sha256:1ac6a2d508d0c61fd52c10d58da20fee7109e7923e3a3f0c8109a7614382d80a"
-dormant = { file = "CLAUDE.md", contains = ["PLACEHOLDER", "P1.64"] }
+dormant = { file = "CLAUDE.md", contains = ["PLACEHOLDER"] }

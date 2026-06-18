@@ -277,11 +277,95 @@ record("16 planted-positive: clean on the real repo (every built fail-closed §5
        m.doc16_planted_positive(_real) == [])
 record("21 t2-taint-xor: pending (neither CodeQL nor Semgrep live) -> skip []",
        m.doc21_taint_xor(_real) == [])
-# the 13 target-absent stubs all skip today (their P0.6/P1 targets are unauthored)
-record("target-absent stubs (14/15/18/19/20/23/24/26) skip while their targets are absent",
+# the target-absent stubs all skip today (their P0.6/P1 targets are unauthored)
+record("target-absent stubs (14/15/18/19/20/23/24) skip while their targets are absent",
        all(fn(_real) == [] for fn in (m.doc14_dod_parity, m.doc15_hard_stop_parity, m.doc18_named_procedure,
                                       m.doc19_reviewer_rubric, m.doc20_reviewer_family, m.doc23_ratchet_log,
-                                      m.doc24_p0_completion, m.doc26_struct_map)))
+                                      m.doc24_p0_completion)))
+
+# --- check 26 (G69) structural-map integrity — the real logic, driven by pure fns (P0.3.13) ------
+# doc26 SKIPS while the §1a map is the P1.64 placeholder, so the active path is exercised via the pure
+# parser/relations fns + one synthetic-active doc26 run against the real repo tree.
+_TREE = [
+    "convertia/                  -> root",
+    "├── docs/                   -> docs",
+    "│   ├── spec/               -> spec",
+    "│   └── plan/               -> plan",
+    "├── src/                    -> ui",
+    "│   ├── lib/ipc/bindings.ts -> generated (embedded-path ancestors)",
+    "│   └── components/  hooks/  state/   -> siblings on one line",
+    "└── assets/                 -> assets",
+]
+_md = m._parse_tree_dirs(_TREE)
+record("26 parse: nested dirs reconstructed from indent (docs, docs/spec, docs/plan, assets)",
+       {"docs", "docs/spec", "docs/plan", "assets"} <= _md)
+record("26 parse: same-line sibling dirs all captured (src/components, src/hooks, src/state)",
+       {"src/components", "src/hooks", "src/state"} <= _md)
+record("26 parse: embedded-path ancestor dirs captured (src/lib, src/lib/ipc) but NOT the file",
+       {"src/lib", "src/lib/ipc"} <= _md and "src/lib/ipc/bindings.ts" not in _md)
+record("26 parse: the repo-root line (convertia/) is not itself a mapped dir",
+       "convertia" not in _md and "" not in _md)
+
+# the 3 relations (pure, set-only)
+record("26 rel: map==disk==§0.7 projection is clean",
+       m._struct_map_relations({"docs", "src"}, {"docs", "src"}, {"docs", "src", "extra"}) == [])
+record("26 rel: an on-disk dir absent from the map is caught (folder without a map row)",
+       ("disk-not-in-map", "newdir") in m._struct_map_relations({"docs"}, {"docs", "newdir"}, {"docs", "newdir"}))
+record("26 rel: a mapped dir not on disk is caught (stale map entry)",
+       ("map-not-on-disk", "gone") in m._struct_map_relations({"docs", "gone"}, {"docs"}, {"docs", "gone"}))
+record("26 rel: a §1a dir the §0.7 tree does not home is caught (projection bind)",
+       ("map-not-in-spec07", "invented") in m._struct_map_relations({"docs", "invented"}, {"docs", "invented"}, {"docs"}))
+
+# _dirs_from_files: every ancestor of a tracked path, minus the out-of-scope trees
+record("26 disk: ancestor dirs derived from tracked-file paths (a, a/b, scripts)",
+       m._dirs_from_files(["a/b/c.txt", "a/d.txt", "scripts/x", "top.md"]) == {"a", "a/b", "scripts"})
+record("26 disk: the out-of-scope trees (target/node_modules/dist/.git) are excluded",
+       m._dirs_from_files(["target/x/y", "node_modules/p/i.js", "dist/a", ".git/z", "src/m.rs"]) == {"src"})
+
+# _fenced_block_after: pulls the block under the named header, None when no fence
+_DOCT = "## 1a Map\n\n```\nconvertia/\n├── docs/\n```\n\n## 2 Next\n"
+record("26 fence: extracts the fenced block under the §1a header",
+       m._fenced_block_after(_DOCT, __import__("re").compile(r"^#{1,6}\s+1a\b")) == ["convertia/", "├── docs/"])
+record("26 fence: returns None when the header has no following fence",
+       m._fenced_block_after("## 1a\n\njust prose, no fence\n", __import__("re").compile(r"1a")) is None)
+
+# the skip signal is 'PLACEHOLDER' WITHIN the §1a section (not a whole-file scan) — G1 r1 hardening
+record("26 skip: the real repo skips today (the §1a section still carries 'PLACEHOLDER')",
+       m.doc26_struct_map(_real) == [])
+record("26 skip: a synthetic §1a section carrying 'PLACEHOLDER' skips even with a broken map",
+       m.doc26_struct_map(m.Ctx(root=ROOT, boxes=[], by_id={}, plan_files=[],
+                                docs={"CLAUDE.md": "## 1a Map\n\n> PLACEHOLDER stub\n\n```\nbogus/\n```\n"})) == [])
+record("26 skip: a bare 'P1.64' provenance mention with NO 'PLACEHOLDER' does NOT keep it dormant",
+       m.doc26_struct_map(m.Ctx(root=ROOT, boxes=[], by_id={}, plan_files=[],
+                                docs={"CLAUDE.md": "## 1a Map\n\nsee [P1.64](x)\n\n```\nconvertia/\n└── zzz/\n```\n",
+                                      "docs/spec/00-architecture.md": "### Physical tree\n```\nconvertia/\n└── zzz/\n```\n"})) != [])
+# doc26 ACTIVE end-to-end against the real tree: BOTH directions exercised through real git ls-files
+_active_claude = ("## 1a Repo layout\n\n```\nconvertia/\n├── docs/\n├── zzz-bogus/\n```\n\n## 2 x\n")
+_active = m.Ctx(root=ROOT, boxes=[], by_id={}, plan_files=[],
+                docs={"CLAUDE.md": _active_claude,
+                      "docs/spec/00-architecture.md": m.load_docs(ROOT).get("docs/spec/00-architecture.md", "")})
+_af = m.doc26_struct_map(_active)
+record("26 active: a map-only bogus dir is flagged (map->disk + map->§0.7 via find+parse+git+rel)",
+       any("zzz-bogus" in f.msg for f in _af))
+record("26 active: a real on-disk dir absent from the map IS flagged disk-not-in-map (disk->map via real git)",
+       any("scripts/gate-selftests" in f.msg and "absent from" in f.msg for f in _af))
+
+# active fail-CLOSED branches once the §1a section is placeholder-free (never a silent [])
+def _doc26(claude_text, arch_text=""):
+    return m.doc26_struct_map(m.Ctx(root=ROOT, boxes=[], by_id={}, plan_files=[],
+                                    docs={"CLAUDE.md": claude_text, "docs/spec/00-architecture.md": arch_text}))
+record("26 fail-closed: an active §1a with NO map fence -> Finding (not silent [])",
+       any("fenced block is absent" in f.msg for f in _doc26("## 1a Map\n\njust prose, no fence\n\n## 2 x\n")))
+record("26 fail-closed: an active map but a missing §0.7 Physical tree block -> Finding",
+       any("Physical tree" in f.msg for f in _doc26("## 1a\n```\nconvertia/\n└── docs/\n```\n", "no physical tree here\n")))
+
+# G1 r1 parser hardening: annotation prose / sibling embedded-paths cannot inject phantom dirs
+record("26 parse: a slash-word in an arrow/hash annotation is NOT mined as a dir (false-negative closed)",
+       m._parse_tree_dirs(["convertia/", "└── docs/   → moved to src-tauri/src/ipc"]) == {"docs"})
+record("26 parse: a same-line sibling must be a SIMPLE dir — an embedded-path sibling is not mined",
+       m._parse_tree_dirs(["convertia/", "├── a/  lib/ipc/"]) == {"a"})
+record("26 parse: a hash-annotation slash-word is not mined either (§0.7 # convention)",
+       m._parse_tree_dirs(["convertia/", "└── src/   # see config/secrets/ for details"]) == {"src"})
 
 # --- base-case golden invariant ---------------------------------------------------------------
 rc_real = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True).returncode

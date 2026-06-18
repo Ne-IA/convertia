@@ -29,6 +29,7 @@ import hashlib
 import json
 import posixpath
 import re
+import subprocess
 import sys
 import tomllib
 from dataclasses import dataclass, field
@@ -1017,13 +1018,192 @@ def doc24_p0_completion(ctx: Ctx) -> list[Finding]:
     return out
 
 
+# --- check 26 (G69): structural-map integrity — the §1a map <-> on-disk tree <-> §0.7 bind ---------
+# The map and the §0.7 physical tree are ASCII tree-art fenced blocks (├──/│/└── + → or # annotations,
+# variable connector width). _parse_tree_dirs reconstructs the repo-relative DIR set from one such block
+# using a width-agnostic indent STACK (the parent of a line is the nearest shallower-indented dir), and
+# additionally mines sibling dirs on one line (`a/  b/  c/`) and ancestor dirs implied by an embedded
+# path (`lib/ipc/x.ts` -> lib, lib/ipc). Files are ignored; only directories are asserted.
+_STRUCT_IGNORE = {"target", "node_modules", "dist", ".git"}   # the committed out-of-scope-tree ignore set
+_TREE_CHARS = "│├└─ \t"
+_NAME_TOKEN = re.compile(r"^[A-Za-z0-9._\-/]+/?$")
+_ANNOT_DELIM = re.compile(r"[→#(]")   # §1a annotates with →, §0.7 with #, and '(' opens a parenthetical
+
+
+def _name_tokens(stripped: str) -> list[str]:
+    """The path-name tokens of a tree line's NODE portion — everything LEFT of the first annotation
+    delimiter (→ / # / '('), so trailing prose can never contribute phantom dirs (the G1 r1 hardening).
+    Stops at the first token that is not a path name."""
+    head = _ANNOT_DELIM.split(stripped, 1)[0]
+    out = []
+    for tok in head.split():
+        if not _NAME_TOKEN.match(tok):
+            break
+        out.append(tok)
+    return out
+
+
+def _parse_tree_dirs(block_lines: list[str]) -> set[str]:
+    """Repo-relative DIR paths named in a tree-art block. The single indent-0 line (convertia/) is the
+    repo root (path ''); its descendants are mapped relative to it. Width-agnostic (an indent STACK, not
+    a fixed unit). Handles same-line sibling dirs and embedded-path ancestor dirs."""
+    stack: list[tuple[int, str]] = []        # (indent, dir-path) parent chain
+    dirs: set[str] = set()
+    for raw in block_lines:
+        stripped = raw.lstrip(_TREE_CHARS)
+        if not stripped:
+            continue
+        indent = len(raw) - len(stripped)
+        tokens = _name_tokens(stripped)
+        if not tokens:
+            continue
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        parent = stack[-1][1] if stack else ""
+        if indent == 0:                      # the repo-root line (convertia/) — not a mapped subdir
+            stack.append((0, ""))
+            continue
+        for j, tok in enumerate(tokens):
+            is_dir = tok.endswith("/")
+            segs = [s for s in tok.strip("/").split("/") if s]
+            if not segs:
+                continue
+            if j == 0:                       # the tree NODE — mine its embedded-path ancestor dirs
+                cur = parent
+                for k, s in enumerate(segs):
+                    cur = f"{cur}/{s}" if cur else s
+                    if k < len(segs) - 1 or is_dir:   # an intermediate path segment, or a final dir segment
+                        dirs.add(cur)
+            elif is_dir and len(segs) == 1:  # a same-line sibling — only a SIMPLE dir token, never an embedded path
+                dirs.add(f"{parent}/{segs[0]}" if parent else segs[0])
+        if tokens[0].endswith("/"):          # deeper following lines nest under the first token's dir
+            push = parent
+            for s in (s for s in tokens[0].strip("/").split("/") if s):
+                push = f"{push}/{s}" if push else s
+            stack.append((indent, push))
+    return dirs
+
+
+def _fenced_block_after(text: str, header_re: re.Pattern) -> list[str] | None:
+    """The lines of the first ``` / ~~~ fenced block AFTER the first line matching header_re (None if
+    no header or no fence)."""
+    lines = text.split("\n")
+    hdr = next((i for i, ln in enumerate(lines) if header_re.search(ln)), None)
+    if hdr is None:
+        return None
+    j = hdr + 1
+    while j < len(lines) and not lines[j].lstrip().startswith(("```", "~~~")):
+        j += 1
+    if j >= len(lines):
+        return None
+    fence = lines[j].lstrip()[:3]
+    start = j + 1
+    k = start
+    while k < len(lines) and not lines[k].lstrip().startswith(fence):
+        k += 1
+    return lines[start:k]
+
+
+def _section_text(text: str, header_re: re.Pattern) -> str:
+    """The text of the section opened by the first line matching header_re, up to the next heading of
+    the same or higher level ('' if no such header)."""
+    lines = text.split("\n")
+    start = next((i for i, ln in enumerate(lines) if header_re.search(ln)), None)
+    if start is None:
+        return ""
+    hm = re.match(r"^(#{1,6})", lines[start])
+    level = len(hm.group(1)) if hm else 2
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        h = re.match(r"^(#{1,6})\s", lines[j])
+        if h and len(h.group(1)) <= level:
+            end = j
+            break
+    return "\n".join(lines[start:end])
+
+
+def _dirs_from_files(files: list[str]) -> set[str]:
+    """Every ancestor dir of a tracked-file path (minus the out-of-scope top-level trees)."""
+    dirs: set[str] = set()
+    for f in files:
+        parts = [p for p in f.replace("\\", "/").split("/") if p]
+        for i in range(1, len(parts)):
+            d = "/".join(parts[:i])
+            if d.split("/")[0] not in _STRUCT_IGNORE:
+                dirs.add(d)
+    return dirs
+
+
+def _git_tracked_dirs(root: Path) -> set[str] | None:
+    """The on-disk DIR set from `git ls-files` (tracked files only, so untracked scratch never
+    false-fails). Uses `-c core.quotepath=false -z` so non-ASCII / space-bearing paths arrive as raw
+    UTF-8 with no octal-escaping or quoting (no mangled dir names). None if git is unavailable / errors
+    (the caller fails closed)."""
+    try:
+        r = subprocess.run(["git", "-c", "core.quotepath=false", "ls-files", "-z"],
+                           cwd=str(root), capture_output=True, text=True)
+    except OSError:
+        return None
+    if r.returncode != 0:
+        return None
+    return _dirs_from_files([f for f in r.stdout.split("\0") if f])
+
+
+def _struct_map_relations(map_dirs: set[str], disk_dirs: set[str], spec07_dirs: set[str]) -> list[tuple[str, str]]:
+    """The three bidirectional/projection violations as (kind, dir) tuples — pure, set-only (testable
+    without git or the filesystem)."""
+    out = []
+    out += [("disk-not-in-map", d) for d in sorted(disk_dirs - map_dirs)]
+    out += [("map-not-on-disk", d) for d in sorted(map_dirs - disk_dirs)]
+    out += [("map-not-in-spec07", d) for d in sorted(map_dirs - spec07_dirs)]
+    return out
+
+
+_STRUCT_MSG = {
+    "disk-not-in-map": "on-disk tracked dir '{d}' is absent from the CLAUDE.md §1a Repo-layout map "
+                       "(a folder exists with no map row — add it to §1a, and to spec §0.7 if missing)",
+    "map-not-on-disk": "the §1a map names '{d}' which is not a tracked on-disk dir (stale map entry — "
+                       "remove it, or the dir is empty/untracked)",
+    "map-not-in-spec07": "the §1a map names '{d}' which the spec §0.7 physical tree does not home (§1a "
+                         "may not invent a dir §0.7 lacks — the projection bind; §0.7 is the higher "
+                         "source, so fix §0.7 + §1a together)",
+}
+
+
 def doc26_struct_map(ctx: Ctx) -> list[Finding]:
-    """Check 26 (G69): the CLAUDE.md §1a Repo-layout map is bidirectional with the on-disk tree. The
-    map is a P1.64 PLACEHOLDER stub until P1-end -> skip until authoritative."""
+    """Check 26 (G69): the CLAUDE.md §1a Repo-layout map is BIDIRECTIONAL with the on-disk tree AND a
+    faithful projection of spec §0.7. **→ activated in P1:** the §1a map is the P1.64 PLACEHOLDER stub
+    until P1-end, so this SKIPS while the §1a section still carries 'PLACEHOLDER' (tolerant of the
+    interim docs/ + assets/ dirs) and fail-closes the moment the authoritative map lands. Once active:
+    (1) every git-tracked on-disk dir is in the map (a folder with no map row fails); (2) every mapped
+    dir is a tracked on-disk dir (a stale map entry fails); (3) every mapped dir is in the §0.7 physical
+    tree (the projection bind — §1a may not invent a dir §0.7 does not home). A missing/unparseable map
+    or §0.7 block, or an unavailable git, fails CLOSED (never a silent skip once active). The skip
+    signal is 'PLACEHOLDER' WITHIN the §1a section only (not a whole-file scan), so a provenance mention
+    of 'P1.64' elsewhere in CLAUDE.md cannot keep the gate permanently dormant after P1.64."""
     claude = ctx.docs.get("CLAUDE.md", "")
-    if "PLACEHOLDER" in claude or "P1.64" in claude:
-        return []                          # the §1a map is the P1.64 placeholder -> fail-closed once authored
-    return []                              # bidirectional §1a<->on-disk-tree diff activates at P1-end
+    sec1a = _section_text(claude, re.compile(r"^#{1,6}\s+1a\b"))
+    if not sec1a or "PLACEHOLDER" in sec1a:
+        return []                            # §1a is still the placeholder stub -> skip (→ activated in P1)
+    map_block = _fenced_block_after(claude, re.compile(r"^#{1,6}\s+1a\b"))
+    if map_block is None:
+        return [Finding("26:struct-map", "CLAUDE.md", 0,
+                        "the §1a Repo-layout map fenced block is absent/unparseable but the placeholder "
+                        "marker is gone — fail-closed")]
+    arch = ctx.docs.get("docs/spec/00-architecture.md", "")
+    spec_block = _fenced_block_after(arch, re.compile(r"^#{1,6}.*Physical tree"))
+    if spec_block is None:
+        return [Finding("26:struct-map", "docs/spec/00-architecture.md", 0,
+                        "the §0.7 Physical tree fenced block is absent/unparseable — cannot run the "
+                        "projection bind (fail-closed)")]
+    disk_dirs = _git_tracked_dirs(ctx.root)
+    if disk_dirs is None:
+        return [Finding("26:struct-map", ".", 0,
+                        "git ls-files failed — cannot derive the on-disk dir set (fail-closed)")]
+    map_dirs = _parse_tree_dirs(map_block)
+    spec07_dirs = _parse_tree_dirs(spec_block)
+    return [Finding("26:struct-map", "CLAUDE.md", 0, _STRUCT_MSG[kind].format(d=d))
+            for kind, d in _struct_map_relations(map_dirs, disk_dirs, spec07_dirs)]
 
 
 # =============================================================================================
