@@ -59,6 +59,16 @@ Assertions (after the file is known to be in plain, statically-analysable block 
   (7) cargo-fuzz toolchain pin (P0.2.10, G37) - every `cargo ... fuzz` invocation names the
       DATE-PINNED nightly channel (`cargo +nightly-YYYY-MM-DD fuzz`), never a bare/implicit
       +nightly (which would float off the pinned toolchain). Fail-open until a fuzz job lands.
+  (8) build.rs/proc-macro execution-isolation for the secret job (P0.4.4, §3.8) - a secret-reading
+      job that runs a COMPILING command (cargo build/test/run/bench/check/install/doc/publish/package/
+      clippy/rustc/miri, OR a `tauri build` wrapper - each executes build.rs + proc-macros = arbitrary
+      native code) must set `CARGO_NET_OFFLINE=true` AND carry an explicit `cargo fetch --locked`
+      BEFORE the build, so a build script cannot phone home to exfiltrate MINISIGN_SECRET_KEY (cargo-vet
+      is a trust signal, not an execution sandbox; harden-runner BLOCK in (6) is the network backstop;
+      the per-crate cap is the P0.4.5 cargo-acl upgrade). The compile scan is scoped to the `steps:`
+      section (a job-level env value embedding "cargo build" is not a phantom compile). Fail-open until
+      the P10 signing job lands. Spec §6.7.2 makes the secret-bearing signing job sign-only + disjoint
+      from the build job, so this binds only if that disjoint-job design is ever violated.
 
 fail-closed: any violation -> exit 1. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
 
@@ -742,6 +752,75 @@ def check_fuzz_pin(name: str, raw_lines: list[str]) -> int:
     return problems
 
 
+# (8) build.rs / proc-macro execution-isolation for the secret-bearing job. A COMPILING command runs
+# build scripts + proc-macros (arbitrary native code). That is (a) cargo's compiling subcommands -
+# build/test/run/bench/check + install/doc/publish/package/clippy/rustc/miri (NOT fetch/metadata/tree/
+# vendor/update, which do not compile); AND (b) the `tauri build` wrappers (which invoke `cargo build`):
+# `cargo tauri build` (matched by alt 1), `pnpm/npx/yarn/bunx tauri build`, a bare `tauri build`, and the
+# `tauri-apps/tauri-action` build step - so the "a compile in the secret-bearing job" anti-pattern is
+# caught regardless of whether the spec's disjoint sign-only job (§6.7.2) is ever violated cargo- OR
+# tauri-wrapper-side.
+_COMPILE_RE = re.compile(
+    r"\bcargo\s+(?:[^\n;|&]*\s)?(?:build|test|run|bench|check|install|doc|publish|package|clippy|rustc|miri)\b"
+    r"|\b(?:pnpm|npx|yarn|bunx)\s+(?:[^\n;|&]*\s)?tauri\s+(?:[^\n;|&]*\s)?build\b"
+    r"|(?:^|[\s;|&(){}`])tauri\s+build\b"
+    r"|tauri-apps/tauri-action")
+_CARGO_FETCH_LOCKED_RE = re.compile(r"\bcargo\s+fetch\b[^\n;|&]*--locked\b")
+# CARGO_NET_OFFLINE truthy as an env (`CARGO_NET_OFFLINE: "true"` / `: 1`) or inline (`CARGO_NET_OFFLINE=true cargo …`)
+_NET_OFFLINE_TRUE_RE = re.compile(r"CARGO_NET_OFFLINE\s*[:=]\s*[\"']?(?:true|1)\b", re.I)
+
+
+def check_secret_offline_build(name: str, lines: list[str], raw_lines: list[str]) -> int:
+    """(8) build.rs/proc-macro execution-isolation (P0.4.4, §3.8): `build.rs` + proc-macros run
+    arbitrary native code during `cargo build`/`test` in the SAME job that holds MINISIGN_SECRET_KEY,
+    with full network by default, and `cargo-vet` is a TRUST signal not an execution sandbox - so the
+    secret-bearing job must run cargo build/test with `CARGO_NET_OFFLINE=true` AFTER an explicit
+    `cargo fetch --locked` (the build then cannot phone home to exfiltrate the key). harden-runner BLOCK
+    (rule 6) is the network backstop; this is the cargo-level no-network-after-fetch invariant. The full
+    per-crate sandbox is the owner-decidable cargo-acl cap (P0.4.5). Fail-open until the P10 signing job
+    lands (no secret-bearing build job exists yet). Secret detection mirrors rule (6) (raw_lines, so a
+    secret in a multi-line run:/env: is seen)."""
+    problems = 0
+    _, top_env_raw = top_key(raw_lines, "env")
+    wf_env_secret = reads_secret("\n".join(top_env_raw))
+    struct = job_bodies(top_key(lines, "jobs")[1])
+    raw = job_bodies(top_key(raw_lines, "jobs")[1])
+    for jid in struct:
+        body = raw.get(jid, [])
+        if not (wf_env_secret or reads_secret("\n".join(body))):
+            continue                                          # no secret read -> nothing to assert
+        # collapse POSIX shell line-continuations so a `cargo \`<NL>`build` is one command (as rule 7).
+        text = re.sub(r"\\\n\s*", " ", "\n".join(body))
+        # CARGO_NET_OFFLINE may be set at the JOB-level env (before `steps:`), so scan the WHOLE body
+        # for it. The COMPILE + FETCH scan is scoped to the `steps:` section so a `cargo build` embedded
+        # in a job-level env VALUE / name: (a phantom match) is not mistaken for a real compile step.
+        # (Honest P10 residual: this is line/text-shape, not per-step env-resolution - a step-level
+        # `CARGO_NET_OFFLINE=false` inline override after a job-level `true` is NOT detected here; the
+        # harden-runner BLOCK egress allow-list (check 6) is the live backstop, and the per-crate cap is
+        # the P0.4.5 cargo-acl upgrade. A naive `=false`-reject would false-fail the legitimate
+        # fetch-step-overrides-false form, so it is deliberately not added.)
+        m_steps = re.search(r"(?m)^\s*steps\s*:", text)
+        scan = text[m_steps.start():] if m_steps else text
+        builds = list(_COMPILE_RE.finditer(scan))
+        if not builds:
+            continue                                          # no compile in this secret job's steps
+        fetch = _CARGO_FETCH_LOCKED_RE.search(scan)
+        if not fetch:
+            fail(f"{name}: secret-reading job '{jid}' runs a compiling command (cargo build/test/… or "
+                 "`tauri build`) but has no explicit `cargo fetch --locked` - a build script/proc-macro "
+                 "could fetch-and-exfiltrate MINISIGN_SECRET_KEY (fetch online FIRST, then build offline)")
+            problems += 1
+        if not _NET_OFFLINE_TRUE_RE.search(text):
+            fail(f"{name}: secret-reading job '{jid}' runs a compiling command without CARGO_NET_OFFLINE=true "
+                 "- a build script/proc-macro can phone home (set it after `cargo fetch --locked`)")
+            problems += 1
+        elif fetch and any(b.start() < fetch.start() for b in builds):
+            fail(f"{name}: secret-reading job '{jid}' runs a compiling command BEFORE its `cargo fetch "
+                 "--locked` - the pre-fetch must come first so every build runs offline")
+            problems += 1
+    return problems
+
+
 def check_workflow(path: Path) -> int:
     name = path.name
     raw = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -754,6 +833,7 @@ def check_workflow(path: Path) -> int:
     problems = precheck(name, lines)
     problems += check_runner_host(name, lines, stripped)
     problems += check_fuzz_pin(name, stripped)
+    problems += check_secret_offline_build(name, lines, stripped)
 
     # (5a) flow-style permissions anywhere (top-level OR per-job) cannot be statically
     # verified for contents-read / id-token - reject fail-closed. Empty `{}`/`{ }`

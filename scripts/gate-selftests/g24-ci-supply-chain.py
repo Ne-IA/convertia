@@ -796,6 +796,73 @@ leg("FP14 env VAR=val cargo-fuzz fails", "binary form",
 leg("FP15 nohup cargo-fuzz fails", "binary form",
     workflows={"ci.yml": _FUZZ.format(cmd="nohup cargo-fuzz run detect")})
 
+# ---------------------------------------------------------------------------
+# (8) build.rs/proc-macro execution-isolation for the secret job (P0.4.4) - import-based unit legs
+# (call check_secret_offline_build directly so rule 8 is isolated from rules 1-7).
+# ---------------------------------------------------------------------------
+import importlib.machinery
+import importlib.util
+
+_l = importlib.machinery.SourceFileLoader("ccsc", str(CHECK))
+_mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("ccsc", _l))
+_l.exec_module(_mod)
+
+
+def rule8(wf: str) -> int:
+    raw = wf.splitlines()
+    return _mod.check_secret_offline_build("t.yml", _mod.structural_lines(raw),
+                                           [_mod.strip_comment(x) for x in raw])
+
+
+_SEC = "${{ secrets.MINISIGN_SECRET_KEY }}"
+
+
+def sjob(steps: list[str], *, offline: bool, secret: bool = True, top_env_secret: bool = False) -> str:
+    out = []
+    if top_env_secret:
+        out += ["env:", f"  TOK: {_SEC}"]
+    out += ["jobs:", "  sign:", "    runs-on: ubuntu-22.04", "    timeout-minutes: 30", "    env:"]
+    if offline:
+        out.append('      CARGO_NET_OFFLINE: "true"')
+    if secret:
+        out.append(f"      KEY: {_SEC}")
+    if not offline and not secret:
+        out[-1:] = []  # drop the empty `env:` if nothing under it
+    out += ["    steps:"] + ["      - run: " + s for s in steps]
+    return "\n".join(out) + "\n"
+
+
+FETCH, BUILD = "cargo fetch --locked", "cargo build --release"
+record("(8) secret job: fetch --locked + offline + build AFTER fetch -> clean",
+       rule8(sjob([FETCH, BUILD], offline=True)) == 0)
+record("(8) secret job: cargo build with NO `cargo fetch --locked` is caught",
+       rule8(sjob([BUILD], offline=True)) >= 1)
+record("(8) secret job: cargo build without CARGO_NET_OFFLINE=true is caught",
+       rule8(sjob([FETCH, BUILD], offline=False)) >= 1)
+record("(8) secret job: a cargo build BEFORE the fetch is caught (ordering)",
+       rule8(sjob([BUILD, FETCH], offline=True)) >= 1)
+record("(8) secret job with NO compiling cargo command -> nothing to assert (clean)",
+       rule8(sjob(["echo signing"], offline=False)) == 0)
+record("(8) a NON-secret job running cargo build is unconstrained (fail-open until P10)",
+       rule8(sjob([BUILD], offline=False, secret=False)) == 0)
+record("(8) a workflow-LEVEL env secret makes the job secret-reading (build w/o offline caught)",
+       rule8(sjob([FETCH, BUILD], offline=False, secret=False, top_env_secret=True)) >= 1)
+# broadened compile detection (P0.4.4 G1 P2 fix): tauri-build wrappers + other build.rs-running subcommands
+record("(8) a `pnpm tauri build` in a secret job (no offline/fetch) is CAUGHT",
+       rule8(sjob(["pnpm tauri build"], offline=False)) >= 1)
+record("(8) a `cargo install <tool>` in a secret job (no offline/fetch) is CAUGHT",
+       rule8(sjob(["cargo install some-tool"], offline=False)) >= 1)
+record("(8) a toolchain-override `cargo +nightly build` is detected as a compile (no fetch -> caught)",
+       rule8(sjob(["cargo +nightly build --release"], offline=True)) >= 1)
+# the compile scan is scoped to the steps: section -> a 'cargo build' in a job-level env VALUE is not a
+# phantom compile (would otherwise fire a spurious ordering error before the real fetch).
+_PHANTOM = "\n".join(["jobs:", "  sign:", "    runs-on: ubuntu-22.04", "    timeout-minutes: 30",
+                      "    env:", '      CARGO_NET_OFFLINE: "true"',
+                      "      NOTE: rebuild the cargo build artifacts dir", f"      KEY: {_SEC}",
+                      "    steps:", "      - run: cargo fetch --locked", "      - run: cargo build --release"]) + "\n"
+record("(8) a 'cargo build' embedded in a job-level env VALUE is NOT a phantom compile (clean)",
+       rule8(_PHANTOM) == 0)
+
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-ci-supply-chain] {len(results) - len(failed)}/{len(results)} assertions passed.")
 sys.exit(1 if failed else 0)
