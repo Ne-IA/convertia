@@ -1,0 +1,425 @@
+#!/usr/bin/env python3
+"""check-test-suppression - G70 the test-suppression-marker gate, the "no green-by-rewrite" mechanical
+signal leg (P0.3.14). The G8-deferral analogue applied to TESTS.
+
+The catastrophic failure mode of an autonomous loop is a model that bluntly rewrites / relaxes a RED
+test until it goes green and HIDES a real regression. This gate is the cheap deterministic CANARY that
+makes every test-suppression VISIBLE so the G1 dual-review (the semantic judge) cannot miss it. It is
+the exact G8 <-> G1 split: G8 flags a deferral marker, G1 judges the design; here G70 flags a
+test-suppression, G1 judges whether the rewrite is legitimate or is swallowing a regression.
+
+It FLAGS + REQUIRES JUSTIFICATION, it does NOT forbid. A suppression is fine when it carries a
+[Test-Change] tag within +/-N lines documenting WHY:
+  - the changed-expectation form  [Test-Change: <box-id> - old-obsolete+new-correct, <ref>]
+        (the green-by-rewrite case: prove (1) the old expectation is obsolete (cite the spec) AND
+         (2) the new expectation is correct);
+  - the net-new form              [Test-Change: <box-id> - new-test:<reason>, <ref>]
+        (a brand-NEW test with no prior expectation to obsolete - a legitimate net-new #[should_panic]
+         panic-path test, a deliberately #[ignore]d not-yet-runnable harness scaffold).
+
+WHAT IT FLAGS (in a TEST file - *.test.*/*.spec.* or a *.rs under tests/ or a #[cfg(test)] block):
+  Rust markers:  #[ignore]  #[cfg(ignore)]  #[should_panic]
+  TS/JS markers: it.skip / describe.skip / test.skip / .only / xit( / xdescribe( / it.todo / xfail
+  Removed/commented-out assertion (DIFF-only): a `-` line that was an assertion (assert!/assert_eq!/
+    expect(/.toBe...), or a `+` line that COMMENTS OUT an assertion.
+
+PLANE / FAIL-MODE (identical to G8/G21):
+  --diff at L1 (a commit): scan the STAGED diff of changed test files for an ADDED marker or a removed/
+    commented assertion; FAIL-OPEN if there is no diff base (a fresh repo).
+  --full at L2 (pre-push) AND the L4 CI mirror: scan the whole tracked test tree for an UNJUSTIFIED
+    marker; "no diff base" is unreachable, FAIL-CLOSED. (The removed-assertion signal is inherently
+    diff-only - it does not exist in a static tree - so --full enforces marker-presence only.)
+
+The test files land from P1 onward, so --full finds none today and passes (target-absent; the same
+bootstrap posture as G8/G21/G22/G23). stdlib-only. L(-1) security-critical (scripts/l-neg1-files.toml,
+G71).
+
+Usage: check-test-suppression {--diff | --full}
+Exit:  0 = no unjustified suppression (or no test files yet); 1 = an unjustified suppression; 2 = bad invocation.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# --- test-file scope --------------------------------------------------------------------------
+TEST_TS_RE = re.compile(r"\.(?:test|spec)\.(?:ts|tsx|js|jsx|mjs|cjs)$")
+TESTS_DIR_RE = re.compile(r"(?:^|/)tests/")        # a *.rs under tests/ is wholly test code
+
+# --- suppression markers (CODE tokens, not prose) ---------------------------------------------
+RUST_MARKERS = [
+    ("#[ignore]", re.compile(r"#\[\s*ignore\b")),
+    ("#[cfg(ignore)]", re.compile(r"#\[\s*cfg\s*\(\s*ignore\s*\)")),
+    ("#[cfg(any())]", re.compile(r"#\[\s*cfg\s*\(\s*any\s*\(\s*\)\s*\)")),   # always-false cfg = a disabled test
+    ("#[cfg_attr(…, ignore)]", re.compile(r"#\[\s*cfg_attr\s*\([^\]]*\bignore\b")),
+    ("#[should_panic]", re.compile(r"#\[\s*should_panic\b")),
+]
+TS_MARKERS = [
+    (".skip", re.compile(r"\b(?:it|test|describe|context|suite|bench)\.skip\b")),
+    (".only", re.compile(r"\b(?:it|test|describe|context|suite|bench)\.only\b")),
+    (".skipIf/.runIf", re.compile(r"\b(?:it|test|describe)\.(?:skipIf|runIf)\b")),
+    ("xit/xdescribe", re.compile(r"\bx(?:it|describe|test)\s*\(")),
+    ("fit/fdescribe", re.compile(r"\bf(?:it|describe)\s*\(")),               # jasmine focus = disables the rest
+    (".todo", re.compile(r"\b(?:it|test)\.todo\b")),
+    ("xfail", re.compile(r"\bxfail\b")),
+]
+# an assertion (for the removed/commented-out-assertion DIFF signal). The identifier-form asserts carry a
+# leading \b; the `.`-prefixed matcher group does NOT (so a chained `.toBe(…)` on its own line — the
+# common Vitest/Jest style — is still caught), with a trailing \b instead. prop_assert!/assert_matches!/
+# ensure! are first-class in THIS project's property tests (test-strategy.md).
+ASSERT_RE = re.compile(
+    r"(?:\b(?:assert(?:_eq|_ne)?!|debug_assert(?:_eq|_ne)?!|prop_assert(?:_eq|_ne)?!|assert_matches!|"
+    r"ensure!|expect\s*\(|assert\s*\()|"
+    r"\.(?:toBe|toEqual|toStrictEqual|toMatch|toMatchObject|toContain|toThrow|toHaveBeenCalled|"
+    r"toHaveLength|toBeTruthy|toBeFalsy|toBeNull|toBeDefined)\b)")
+COMMENTED_ASSERT_RE = re.compile(r"^\s*(?://|/\*|\*)\s*.*" + ASSERT_RE.pattern)
+
+# the justification tag (within +/-WINDOW lines) — one of the two sanctioned shapes AND a real box-id
+# (a `P<n>…` token), so an un-traceable tag without a box-id does NOT suppress (the audit-link the
+# suppressor exists to establish; mirrors G8's non-empty SUPPRESS_TAG_RE, tightened to the box-id).
+TAG_RE = re.compile(r"\[Test-Change:\s*P\d[\w.]*[^\]]*?(?:old-obsolete\+new-correct|new-test:)[^\]]*\]")
+WINDOW = 6
+
+
+def _line_comment_stripped(line: str) -> str:
+    """The line with a trailing `//` line-comment removed (string-aware, so a `//` inside a "…"/'…'
+    literal — e.g. a URL — does NOT start a comment). A Rust `#[ignore]` attribute is NOT a comment and
+    survives. Block comments are left intact (a marker inside `/* */` is rare and over-flagging is the
+    safe direction for this gate)."""
+    i, n = 0, len(line)
+    while i < n:
+        c = line[i]
+        if c in "\"'`":
+            j, closed = i + 1, False
+            while j < n:
+                if line[j] == "\\":
+                    j += 2
+                    continue
+                if line[j] == c:
+                    closed = True
+                    break
+                j += 1
+            if closed:
+                i = j + 1
+                continue
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and line[i + 1] == "/":
+            return line[:i]
+        i += 1
+    return line
+
+
+_RS_RAWSTR_OPEN = re.compile(r'(?:b)?r(#*)"')           # r"…" / r#"…"# / br#"…"# raw-string opener
+_RS_CHARLIT = re.compile(r"'(?:\\.|[^'\\\n])'")          # a char literal '\n'/'x' (NOT a lifetime 'a)
+
+
+def _rs_structural(lines: list[str]) -> list[str]:
+    """Per input line, the version with string/char/raw-string literals and // + /* */ comments BLANKED
+    (their braces removed) so brace-depth counting sees only STRUCTURAL braces. State (inside a regular
+    string / a raw string with N hashes / a NEST-aware /* */ block comment — Rust block comments nest, so
+    a depth count is carried) persists ACROSS lines — the G8 `_comment_spans` discipline applied to Rust,
+    so a `}` in a multi-line snapshot string, a `}` between a nested `*/` and the outer `*/`, or a `{`
+    eaten by a lifetime can never miscount the #[cfg(test)] brace depth. A lone `'` followed by an
+    identifier is a LIFETIME and is left as plain text (it never opens a char literal)."""
+    state = None            # None | "str" | ("raw", n_hashes) | "block"
+    out: list[str] = []
+    for line in lines:
+        res: list[str] = []
+        i, n = 0, len(line)
+        while i < n:
+            if state is None:
+                c = line[i]
+                if c == "/" and i + 1 < n and line[i + 1] == "/":
+                    break                                # // line comment to EOL
+                if c == "/" and i + 1 < n and line[i + 1] == "*":
+                    state = ("block", 1)            # Rust block comments NEST -> carry a depth count
+                    i += 2
+                    continue
+                mr = _RS_RAWSTR_OPEN.match(line, i)
+                if mr:
+                    state = ("raw", len(mr.group(1)))
+                    i = mr.end()
+                    continue
+                if c == '"' or (c == "b" and i + 1 < n and line[i + 1] == '"'):
+                    state = "str"
+                    i += 2 if c == "b" else 1
+                    continue
+                if c == "'":
+                    mc = _RS_CHARLIT.match(line, i)
+                    if mc:
+                        i = mc.end()                     # a char literal — skip it
+                    else:
+                        res.append(c)                    # a lifetime ('a/'static) — plain text
+                        i += 1
+                    continue
+                res.append(c)
+                i += 1
+            elif state == "str":
+                if line[i] == "\\":
+                    i += 2
+                    continue
+                if line[i] == '"':
+                    state = None
+                i += 1
+            elif state[0] == "raw":                      # ("raw", n) — until "###… of n hashes
+                if line[i] == '"' and line[i + 1:i + 1 + state[1]] == "#" * state[1]:
+                    i += 1 + state[1]
+                    state = None
+                    continue
+                i += 1
+            else:                                        # ("block", depth) — NEST-aware until depth 0
+                depth = state[1]
+                o = line.find("/*", i)
+                cl = line.find("*/", i)
+                if cl == -1:
+                    i = n                                # whole rest of line still inside the comment
+                elif o != -1 and o < cl:
+                    state = ("block", depth + 1)         # an inner /* deepens the nesting
+                    i = o + 2
+                else:
+                    depth -= 1
+                    i = cl + 2
+                    state = None if depth == 0 else ("block", depth)
+        out.append("".join(res))
+    return out
+
+
+def _cfg_test_ranges(text: str) -> set[int]:
+    """1-based line numbers inside a `#[cfg(test)]` item (the attribute line through the brace-matched
+    body of the mod/fn it guards) in a Rust source file. Brace counting runs over _rs_structural (a
+    stateful pass that blanks multi-line strings / raw strings / NEST-aware block comments / char
+    literals and leaves lifetimes), so a `}` in a snapshot string, a `}` inside a nested block comment,
+    or a lifetime-eaten `{` never miscounts the depth. The `#[cfg(test)]` attribute itself is detected
+    over _rs_attr_joined, so even a line-wrapped `#[cfg(\n test\n)]` is scope-detected. Multiple blocks
+    supported; an unterminated block scopes to EOF (safe over-include)."""
+    lines = text.splitlines()
+    code = _rs_structural(lines)                          # literals/comments blanked -> structural braces
+    joined = _rs_attr_joined(lines)                       # multi-line attrs collapsed -> detect a wrapped #[cfg(test)]
+    out: set[int] = set()
+    i, n = 0, len(lines)
+    while i < n:
+        if re.search(r"#\[\s*cfg\s*\(\s*test\s*\)", joined[i]):   # the attr on real code (line-wrap tolerant)
+            j, depth, opened = i, 0, False
+            while j < n:
+                depth += code[j].count("{") - code[j].count("}")
+                if "{" in code[j]:
+                    opened = True
+                if opened and depth <= 0:
+                    out.update(range(i + 1, j + 2))      # attr line i+1 .. closer j+1 (1-based, inclusive)
+                    break
+                j += 1
+            else:
+                out.update(range(i + 1, n + 1))          # unterminated -> to EOF (safe over-include)
+            i = j + 1
+            continue
+        i += 1
+    return out
+
+
+def test_scope_lines(text: str, relpath: str) -> set[int] | None:
+    """The 1-based line numbers that are TEST code in this file, or None if the file is out of scope.
+    A *.test.*/*.spec.* or a *.rs under tests/ is wholly test code; another *.rs contributes only its
+    #[cfg(test)] block(s)."""
+    p = relpath.replace("\\", "/")
+    if TEST_TS_RE.search(p) or (p.endswith(".rs") and TESTS_DIR_RE.search(p)):
+        return set(range(1, len(text.splitlines()) + 1))
+    if p.endswith(".rs"):
+        return _cfg_test_ranges(text)
+    return None
+
+
+def _rs_attr_joined(lines: list[str]) -> list[str]:
+    """The per-physical-line text to run RUST marker regexes against, comment-stripped, with a multi-line
+    `#[ … ]` attribute COLLAPSED onto its opening line and its continuation lines blanked (one report, at
+    the opener). A Rust attribute may legally span lines — `#[\n ignore\n]`, or a rustfmt-wrapped
+    `#[cfg_attr(\n target_os = "x",\n ignore\n)]` (rustfmt emits this for a long predicate) — so a
+    per-line scan would MISS the marker. Bracket depth is tracked over _rs_structural'd code so a `]` in a
+    string/comment never mis-closes."""
+    code = _rs_structural(lines)                                  # for [ ] tracking only (literals blanked)
+    stripped = [_line_comment_stripped(ln) for ln in lines]      # the marker-match text
+    out = list(stripped)
+    n, i = len(lines), 0
+    while i < n:
+        pos = code[i].find("#[")
+        if pos == -1:
+            i += 1
+            continue
+        depth, j, col, end_line = 0, i, pos, None
+        while j < n:
+            row = code[j]
+            for idx in range(col if j == i else 0, len(row)):
+                if row[idx] == "[":
+                    depth += 1
+                elif row[idx] == "]":
+                    depth -= 1
+                    if depth == 0:
+                        end_line = j
+                        break
+            if end_line is not None:
+                break
+            j += 1
+        if end_line is not None and end_line > i:                # a multi-line attribute -> collapse it
+            out[i] = " ".join(stripped[i:end_line + 1])
+            for k in range(i + 1, end_line + 1):
+                out[k] = ""
+            i = end_line + 1
+        else:
+            i += 1
+    return out
+
+
+def _tag_near(lines: list[str], idx: int) -> bool:
+    lo, hi = max(0, idx - WINDOW), min(len(lines), idx + WINDOW + 1)
+    return bool(TAG_RE.search("\n".join(lines[lo:hi])))
+
+
+def scan_markers(text: str, relpath: str, only_lines: set[int] | None = None) -> list[tuple[int, str, str]]:
+    """(pure) [(lineno, marker, line)] for UNJUSTIFIED suppression markers inside the test scope.
+    `only_lines` (1-based) limits reporting (the L1 added-lines mode); None reports all (full mode).
+    For a `.rs` file the marker regexes run over _rs_attr_joined (multi-line attributes collapsed), so a
+    line-wrapped `#[ignore]`/`#[cfg_attr(…, ignore)]` is caught in the fail-closed --full plane."""
+    scope = test_scope_lines(text, relpath)
+    if not scope:
+        return []
+    lines = text.splitlines()
+    rust = relpath.replace("\\", "/").endswith(".rs")
+    markers = RUST_MARKERS if rust else TS_MARKERS
+    match_text = _rs_attr_joined(lines) if rust else [_line_comment_stripped(ln) for ln in lines]
+    out: list[tuple[int, str, str]] = []
+    for i, raw in enumerate(lines):
+        ln = i + 1
+        if ln not in scope:
+            continue
+        if only_lines is not None and ln not in only_lines:
+            continue
+        hits = [name for name, rx in markers if rx.search(match_text[i])]
+        if hits and not _tag_near(lines, i):
+            out.append((ln, ", ".join(hits), raw.strip()))
+    return out
+
+
+def git(*args: str) -> tuple[int, str]:
+    p = subprocess.run(["git", *args], capture_output=True, text=True)
+    return p.returncode, p.stdout
+
+
+def _candidate_test_files() -> list[str]:
+    rc, out = git("ls-files")
+    if rc != 0:
+        return []
+    files = []
+    for f in out.splitlines():
+        p = f.replace("\\", "/")
+        if TEST_TS_RE.search(p) or p.endswith(".rs"):     # any .rs may carry a #[cfg(test)] block
+            files.append(f)
+    return files
+
+
+def _scan_hunks(diff_text: str, relpath: str) -> list[str]:
+    """(pure) Violations from a unified diff (context=WINDOW) of one changed file: an ADDED suppression
+    marker, or a REMOVED / newly-commented-out assertion, that has NO [Test-Change] tag within +/-WINDOW
+    diff-lines in its hunk. Marker scope here is the file EXTENSION only (.rs -> Rust markers, else TS):
+    unlike --full's scan_markers, --diff does NOT filter a production .rs to its #[cfg(test)] blocks, so
+    a marker added in production .rs code is also flagged — an OVER-flag (the safe direction; an
+    #[ignore] on non-test code is meaningless anyway, and a tag clears it). The L1-broader-than-L2
+    asymmetry is deliberate (the introduction commit is always caught)."""
+    rust = relpath.replace("\\", "/").endswith(".rs")
+    markers = RUST_MARKERS if rust else TS_MARKERS
+    violations: list[str] = []
+    # split into hunks; within a hunk, index every body line so the +/-WINDOW tag window is precise
+    hunks = re.split(r"(?m)^(?=@@ )", diff_text)
+    for hunk in hunks:
+        body = [ln for ln in hunk.splitlines() if ln[:1] in (" ", "+", "-")]
+        if not body:
+            continue
+        flagged: list[tuple[int, str]] = []     # (body-index, label)
+        for k, bl in enumerate(body):
+            sign, content = bl[0], bl[1:]
+            if sign == "+":
+                code = _line_comment_stripped(content)
+                hits = [name for name, rx in markers if rx.search(code)]
+                if hits:
+                    flagged.append((k, "added marker " + ", ".join(hits)))
+                elif COMMENTED_ASSERT_RE.search(content):
+                    flagged.append((k, "commented-out assertion"))
+            elif sign == "-" and ASSERT_RE.search(content):
+                flagged.append((k, "removed assertion"))
+        for k, label in flagged:
+            lo, hi = max(0, k - WINDOW), min(len(body), k + WINDOW + 1)
+            if not TAG_RE.search("\n".join(b[1:] for b in body[lo:hi])):
+                violations.append(f"{label}: {body[k][1:].strip()[:80]}")
+    return violations
+
+
+def run_full() -> int:
+    files = _candidate_test_files()
+    scanned = 0
+    violations = []
+    for f in files:
+        text = (ROOT / f).read_text(encoding="utf-8", errors="replace")
+        scope = test_scope_lines(text, f)
+        if not scope:
+            continue
+        scanned += 1
+        for ln, marker, src in scan_markers(text, f):
+            violations.append(f"{f}:{ln}: {marker} — {src[:80]}")
+    if not scanned:
+        print("[G70] no test files yet (tests land in P1) — pass (target-absent)")
+        return 0
+    if violations:
+        for v in violations:
+            print(f"[G70] FAIL: {v}", file=sys.stderr)
+        print(f"[G70] {len(violations)} unjustified test-suppression marker(s) — full-tree, FAIL-CLOSED "
+              "(add a [Test-Change: <box-id> — old-obsolete+new-correct|new-test:<reason>, <ref>] tag)",
+              file=sys.stderr)
+        return 1
+    print(f"[G70] no unjustified test-suppression markers in {scanned} test file(s)")
+    return 0
+
+
+def run_diff() -> int:
+    rc, _ = git("rev-parse", "--verify", "--quiet", "HEAD")
+    if rc != 0:
+        print("[G70] no diff base (fresh repo) — pass (fail-open; the L2/L4 full-tree mirror is fail-closed)")
+        return 0
+    rc, out = git("diff", "--cached", "--name-only", "--diff-filter=ACMR")
+    changed = []
+    if rc == 0:
+        for f in out.splitlines():
+            p = f.replace("\\", "/")
+            if TEST_TS_RE.search(p) or p.endswith(".rs"):
+                changed.append(f)
+    violations = []
+    for f in changed:
+        rc, dt = git("diff", "--cached", f"--unified={WINDOW}", "--no-color", "--", f)
+        if rc != 0 or not dt:
+            continue
+        for v in _scan_hunks(dt, f):
+            violations.append(f"{f}: {v}")
+    if violations:
+        for v in violations:
+            print(f"[G70] FAIL: {v}", file=sys.stderr)
+        print(f"[G70] {len(violations)} new unjustified test-suppression(s) staged — add a "
+              "[Test-Change: …] tag within ±6 lines (or prove the change is legitimate)", file=sys.stderr)
+        return 1
+    print("[G70] no new unjustified test-suppression markers in the staged test diff")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G70 test-suppression-marker gate (P0.3.14)")
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--diff", action="store_true", help="L1: scan the staged test diff (fail-open)")
+    mode.add_argument("--full", action="store_true", help="L2/L4: scan the whole test tree (fail-closed)")
+    args = ap.parse_args(argv)
+    return run_diff() if args.diff else run_full()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

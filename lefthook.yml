@@ -16,7 +16,7 @@
 #
 # GATE SLOTS: each L1/L2/L3 gate is added to the slots below by the box that BUILDS
 # it (so a gate is wired only after it is built + self-tested) - remaining:
-# plan-lint (P0.3.5), G8 (P0.3.4), G70 (P0.3.14), clippy/tsc (P0.4).
+# clippy/tsc (P0.4). (plan-lint/G8/G70 are wired below — P0.3.5/3.4/3.14.)
 #
 # Requires Python 3.11+ on PATH as `python3` (the stdlib-only gate scripts) and
 # the pinned tools installed under .gate-tools/bin (scripts/install-gate-tools).
@@ -54,6 +54,8 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
       run: python3 scripts/run-typos
     editorconfig:    # G52 - EOL/charset/final-newline hygiene (editorconfig-checker + .editorconfig)
       run: python3 scripts/check-editorconfig
+    test-suppression: # G70 - NEW test-suppression markers in the staged test diff (fail-open w/o base)
+      run: python3 scripts/check-test-suppression --diff
     # L1 gate slots (filled by their boxes): clippy diff + tsc diff (P0.4).
 
 commit-msg:        # L3 - fires at `git commit` (after pre-commit, before pre-push)
@@ -84,5 +86,6 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/check-js-supply-chain
     generated-drift: # G19 - regenerate codegen artifacts + git diff --exit-code (target-absent until P1)
       run: python3 scripts/check-generated-drift
-    # L2 gate slots (filled by their boxes):
-    # G70 full-tree (P0.3.14) / clippy --all-targets + tsc project (P0.4).
+    test-suppression: # G70 - full-tree test-suppression-marker scan (fail-closed; no diff-base excuse)
+      run: python3 scripts/check-test-suppression --full
+    # L2 gate slots (filled by their boxes): clippy --all-targets + tsc project (P0.4).

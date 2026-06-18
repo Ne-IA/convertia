@@ -85,9 +85,10 @@ jobs:
         run: python3 scripts/run-typos
       - name: 'G52: EOL/charset/final-newline hygiene (editorconfig-checker + committed .editorconfig)'
         run: python3 scripts/check-editorconfig
+      - name: 'G70: test-suppression-marker scan — full test tree (no green-by-rewrite; live over the committed fixture crates, grows from P1)'
+        run: python3 scripts/check-test-suppression --full
       # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
-      #   G70 test-suppression (P0.3.14) |
-      #   doc-graph G68 + struct-map G69 (P0.3.12/13) |
+      #   (G68 doc-graph + G69 struct-map run inside the plan-lint step above as checks 25/26.)
       #   G18a lockfile --locked + git diff --exit-code (Cargo.lock/pnpm-lock.yaml/imports.lock) +
       #   live cargo-deny check + cargo-vet --locked check + cargo-audit (P0.4.1) | clippy
       #   --all-targets + tsc + eslint (P0.4, activated in P1 once the lockfiles exist).
