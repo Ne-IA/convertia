@@ -105,6 +105,8 @@ jobs:
         run: python3 scripts/check-build-matrix
       - name: 'G22/G23: completeness — format membership-parity bijection logic + every-`convert_*`-has-a-test git walk (target-absent until P3/P4 handlers+corpus; §04↔registry↔corpus bijection is the P4.60 Rust guard)'
         run: python3 scripts/check-completeness
+      - name: 'G24a: corpus / crash-fixture integrity — SHA-256 manifest + provenance/licence + bijection + LFS-resolution governance (.gitattributes/.lfsconfig); target-absent until the corpus fills P3-P7'
+        run: python3 scripts/check-corpus-integrity
       # --- L4 heavy-gate slots (mirror the local L1/L2 plane); each filled by its box ---
       #   (G68 doc-graph + G69 struct-map run inside the plan-lint step above as checks 25/26.)
       #   The structural-freeze contracts above (rust-lint / unsafe-policy / ts-gate / coverage /

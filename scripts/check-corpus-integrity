@@ -1,0 +1,381 @@
+#!/usr/bin/env python3
+"""check-corpus-integrity - G24a corpus / crash-fixture integrity + LFS-resolution governance (P0.4/P0.5.4).
+
+The adversarial/decompression-bomb fixtures + the LFS-backed large media are UNTRUSTED-INPUT files fed
+to the highest-privilege Lane-B C/C++ decoders: a poisoned/swapped fixture (or an LFS pointer redirected
+to a tampered object) is an unguarded path to feed a crafted exploit into the test runner, and a swapped
+crash-replay fixture silently masks a regression. So a committed SHA-256 manifest of every tracked corpus
+fixture is verified BEFORE the corpus runs, mirroring the `engines.lock` SHA discipline. This gate is
+that verification (+ the LFS-resolution governance the r7 hardening added).
+
+The authoritative manifest is the ONE root `tests/corpus/manifest.toml` (spec §6.4.5): one `[[file]]`
+row per fixture carrying `path` (relative to the corpus root), `sha256`, `licence`, `provenance` (and a
+`covers` pair-list the P4.60 bijection guard reads — NOT this gate's concern). G24a asserts, when the
+manifest exists:
+
+  (1) SHA-256 INTEGRITY - each row's `sha256` matches the file's content. An UNRESOLVED git-LFS pointer
+      on disk carries the object's `oid sha256:`, so the row is checked against THAT (so the gate is
+      correct whether or not `git lfs pull` has resolved the object).
+  (2) PROVENANCE + LICENCE (§6.4.5) - each row carries a non-empty `provenance` (a URL / generator-ref /
+      `self-produced`, so each licence declaration is human-auditable) AND a non-empty `licence` from the
+      REDISTRIBUTABLE allow-list (public-domain / CC0 / self-produced / synthetic) - a fixture of unknown
+      provenance is both a redistribution risk and an un-vouched untrusted input. (Byte-level licence
+      inference is not machine-decidable, so the gate enforces the auditable RECORD, not a content claim.)
+  (3) BIJECTION - every committed file under the corpus root has a manifest row (no un-manifested corpus
+      byte) AND every manifest `path` resolves to a real tracked file (no dangling row).
+  (4) LFS GOVERNANCE - an LFS-tier fixture (an on-disk LFS pointer, the redirect-able tier) is asserted to
+      be `filter=lfs`-tracked per the EFFECTIVE `git check-attr filter <path>` (a tampered `.gitattributes`
+      that un-tracks a path then surfaces as a manifest-vs-attribute MISMATCH, not a silent skip); and
+      `.lfsconfig` (if present) must name ONLY the canonical GitHub LFS endpoint (a repoint would make a
+      fresh Lane-B `git lfs pull` fetch tampered objects). `git lfs fsck` is the Lane-B object-integrity
+      leg (best-effort here; run by the Lane-B CI step). `.gitattributes` + `.lfsconfig` are L(-1).
+
+[Build-Session-Entscheidung: P0.5.4] (i) the in-repo small tier (real committed bytes under the corpus
+root, §3 "committed in-repo") is sha256-verified directly and is NOT required to be LFS-tracked; the
+LFS-tracking assertion (4) binds only the LFS tier (a file whose on-disk content is an LFS pointer) -
+reconciling the G24a row's "filter=lfs-tracked" (the pointer-redirect threat) with the §3 two-tier
+storage split. (ii) the gate scopes its bijection to the §6.4.5 ONE-root-manifest corpus root
+(`tests/corpus/`); the `fuzz/corpus/`+`fuzz/crashes/` fuzz-replay set's integrity is the P0.5.8 fuzz box's
+manifest concern (its files land in P3). (iii) the §6.4.5 ship-integrity leg (c) (corpus never in the app
+bundle) is the G35 test-asset-exclusion sub-check, NOT this gate.
+
+TARGET-ABSENT: no `tests/corpus/manifest.toml` exists until the corpus fills (P3-P7) -> skip-with-notice;
+fail-CLOSES the moment the manifest lands. The FREEZE (the allow-list / endpoint / required fields /
+corpus root) is live now. stdlib-only (tomllib + hashlib).
+
+Exit: 0 = clean (or target-absent); 1 = an integrity / provenance / licence / bijection / LFS violation;
+2 = the manifest is unparseable / a structural prerequisite is unverifiable.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import re
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# --- frozen policy (a change here is an L(-1)-adjacent review item) -----------------------------
+MANIFEST_REL = "tests/corpus/manifest.toml"
+CORPUS_ROOT_REL = "tests/corpus"                    # manifest `path`s are relative to here (§6.4.5)
+# the §6.4.5 redistributable allow-list - a corpus fixture's licence MUST be one of these.
+REDISTRIBUTABLE_LICENCES = frozenset({"public-domain", "CC0", "self-produced", "synthetic"})
+# the canonical GitHub LFS endpoint for this repo; a `.lfsconfig` may name ONLY this.
+CANONICAL_LFS_ENDPOINT = "https://github.com/Ne-IA/convertia.git/info/lfs"
+REQUIRED_FIELDS = ("path", "sha256", "licence", "provenance")
+# corpus-root-RELATIVE paths that are NOT fixtures (excluded from the bijection). Matched on the full
+# relative path, NOT the basename - so a real fixture named `sub/manifest.toml` is NOT excluded.
+NON_FIXTURE_PATHS = frozenset({"manifest.toml"})
+# a git-LFS pointer file: a small text blob whose first line is the LFS spec version.
+_LFS_POINTER_RE = re.compile(rb"\Aversion https://git-lfs\.github\.com/spec/v1\n")
+_LFS_OID_RE = re.compile(rb"(?m)^oid sha256:([0-9a-f]{64})\s*$")
+
+
+def fail(msg: str) -> None:
+    print(f"[G24a] FAIL: {msg}", file=sys.stderr)
+
+
+def frozen_contract() -> list[str]:
+    """The frozen policy constants are internally consistent (a careless weakening is caught)."""
+    problems: list[str] = []
+    if REDISTRIBUTABLE_LICENCES != {"public-domain", "CC0", "self-produced", "synthetic"}:
+        problems.append("REDISTRIBUTABLE_LICENCES drifted from the §6.4.5 allow-list "
+                        "{public-domain, CC0, self-produced, synthetic} - a non-redistributable corpus "
+                        "fixture could pass")
+    if not CANONICAL_LFS_ENDPOINT.startswith("https://github.com/Ne-IA/convertia"):
+        problems.append(f"CANONICAL_LFS_ENDPOINT {CANONICAL_LFS_ENDPOINT!r} is not the canonical GitHub "
+                        "LFS endpoint - a repointed .lfsconfig could fetch tampered Lane-B objects")
+    for f in ("path", "sha256", "licence", "provenance"):
+        if f not in REQUIRED_FIELDS:
+            problems.append(f"the required manifest field `{f}` is missing from REQUIRED_FIELDS - a "
+                            "fixture could be un-vouched / un-hashed")
+    return problems
+
+
+def parse_manifest(text: str) -> tuple[list[dict], str | None]:
+    """([[file]] rows, error). A non-list `file` / a non-table row is a structural error (exit 2)."""
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as e:
+        return [], f"manifest is not valid TOML: {e}"
+    files = data.get("file")
+    if files is None:
+        return [], None                              # an empty manifest (no [[file]]) is target-absent-ish
+    if not isinstance(files, list) or not all(isinstance(r, dict) for r in files):
+        return [], "manifest `[[file]]` is not an array of tables"
+    return files, None
+
+
+def check_row_fields(row: dict) -> list[str]:
+    """(2) required fields present + non-empty; licence ∈ the redistributable allow-list."""
+    problems: list[str] = []
+    pathv = row.get("path")
+    label = pathv if isinstance(pathv, str) and pathv else "<no path>"
+    for f in REQUIRED_FIELDS:
+        v = row.get(f)
+        if not isinstance(v, str) or not v.strip():
+            problems.append(f"corpus manifest row `{label}` has an empty/missing `{f}` - every fixture "
+                            "must carry a path + sha256 + non-empty provenance + redistributable licence "
+                            "(§6.4.5) before it is fed to the Lane-B decoders")
+    lic = row.get("licence")
+    if isinstance(lic, str) and lic.strip() and lic not in REDISTRIBUTABLE_LICENCES:
+        problems.append(f"corpus fixture `{label}` licence `{lic}` is not redistributable - allowed: "
+                        f"{sorted(REDISTRIBUTABLE_LICENCES)} (a fixture of unknown provenance is a "
+                        "redistribution risk + an un-vouched untrusted input)")
+    return problems
+
+
+def content_sha256(data: bytes) -> str:
+    """The fixture's content sha256: for an UNRESOLVED LFS pointer, the pointer's `oid sha256:` (the
+    object hash); otherwise the hash of the bytes themselves. So the integrity check is correct whether
+    or not `git lfs pull` has resolved the object."""
+    if _LFS_POINTER_RE.match(data):
+        m = _LFS_OID_RE.search(data)
+        if m:
+            return m.group(1).decode("ascii")
+        return ""                                    # a malformed pointer -> no oid -> caller flags mismatch
+    return hashlib.sha256(data).hexdigest()
+
+
+def is_lfs_pointer(data: bytes) -> bool:
+    return bool(_LFS_POINTER_RE.match(data))
+
+
+def verify_file(corpus_root: Path, row: dict) -> tuple[list[str], bool]:
+    """(1) sha256 integrity + existence. Returns (problems, is_lfs_tier). is_lfs_tier = the on-disk
+    content is an LFS pointer (the redirect-able tier that (4) then asserts is lfs-tracked)."""
+    p = row.get("path")
+    if not isinstance(p, str) or not p:
+        return [], False                             # already flagged by check_row_fields
+    f = corpus_root / p
+    if not f.is_file():
+        return ([f"corpus manifest row `{p}` does not resolve to a file under {corpus_root} - no "
+                 "dangling manifest rows (a missing fixture cannot be integrity-checked)"], False)
+    try:
+        data = f.read_bytes()
+    except OSError as e:
+        return ([f"corpus fixture `{p}` cannot be read for hashing ({e})"], False)
+    lfs = is_lfs_pointer(data)
+    want = row.get("sha256")
+    got = content_sha256(data)
+    problems: list[str] = []
+    if isinstance(want, str) and want.strip():
+        if got != want.strip().lower():
+            problems.append(f"corpus fixture `{p}` sha256 MISMATCH (manifest {want!r} != content "
+                            f"{got or '<no oid in LFS pointer>'!r}) - a poisoned/swapped fixture or a "
+                            "redirected LFS object; the change must be a reviewed manifest diff")
+    return problems, lfs
+
+
+def _git_check_attr_lfs(root: Path, path: str, runner) -> bool | None:
+    """True iff `git check-attr filter <path>` resolves to `lfs` (the EFFECTIVE attribute, so an
+    un-tracking .gitattributes edit surfaces). None if git could not be consulted."""
+    return runner(root, path)
+
+
+def _default_check_attr(root: Path, path: str) -> bool | None:
+    try:
+        r = subprocess.run(["git", "-c", "core.quotePath=false", "check-attr", "filter", "--", path],
+                           cwd=str(root), capture_output=True, text=True)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    # output: "<path>: filter: lfs" (the `: filter: <value>` suffix is path-quoting-independent)
+    return r.stdout.strip().endswith(": filter: lfs")
+
+
+def check_lfs_tracking(root: Path, corpus_rel: str, rel_path: str, runner) -> list[str]:
+    """(4) an LFS-tier fixture must be `filter=lfs`-tracked per the effective git attribute."""
+    repo_path = f"{corpus_rel}/{rel_path}"
+    tracked = _git_check_attr_lfs(root, repo_path, runner)
+    if tracked is None:
+        return [f"cannot resolve `git check-attr filter` for the LFS-tier fixture `{repo_path}` "
+                "(git unavailable) - cannot prove it is still lfs-tracked (fail-closed: a tampered "
+                ".gitattributes could silently un-track it)"]
+    if not tracked:
+        return [f"LFS-tier corpus fixture `{repo_path}` is NOT `filter=lfs`-tracked per the effective "
+                "`git check-attr filter` - a .gitattributes edit un-tracked it; its bytes are now a "
+                "plain blob `git lfs fsck` no longer inspects (the redirect-the-pointer threat, one "
+                "level up)"]
+    return []
+
+
+def _strip_config_comment(line: str) -> str:
+    """Drop a gitconfig `#`/`;` comment, respecting a double-quoted value."""
+    out, q = [], False
+    for ch in line:
+        if ch == '"':
+            q = not q
+            out.append(ch)
+        elif ch in "#;" and not q:
+            break
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _unquote_config(v: str) -> str:
+    v = v.strip()
+    if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
+        return v[1:-1]
+    return v
+
+
+def parse_lfsconfig_endpoints(text: str) -> list[str]:
+    """(pure) The LFS-server endpoint(s) a `.lfsconfig` sets via a DIRECTLY-named key (gitconfig syntax):
+    `lfs.url` / `lfs.pushurl` (under `[lfs]` / `[lfs "..."]`) AND `remote.<n>.lfsurl` /
+    `remote.<n>.lfspushurl` (under `[remote "..."]`). Section/quote/comment aware; a bare `url`/`pushurl`
+    under `[remote]` is the GIT remote (not an LFS endpoint) and is NOT collected. NB: an `[include]` /
+    `[includeIf]` directive (which git-lfs DOES honour, possibly into an un-committed file) cannot be
+    followed by this static parse - `check_lfsconfig` disallows it (a hard-fail) so the endpoint stays
+    statically verifiable."""
+    endpoints: list[str] = []
+    section: str | None = None
+    for raw in text.splitlines():
+        line = _strip_config_comment(raw).strip()
+        if not line:
+            continue
+        ms = re.match(r'^\[\s*([A-Za-z0-9.-]+)(?:\s+"(?:[^"\\]|\\.)*")?\s*\](.*)$', line)
+        if ms:
+            section = ms.group(1).lower()
+            rest = ms.group(2).strip()
+            if not rest:
+                continue
+            line = rest                              # `[section] key = val` on one line
+        if section is None:
+            continue
+        mk = re.match(r'^([A-Za-z][A-Za-z0-9-]*)\s*=\s*(.*)$', line)
+        if not mk:
+            continue
+        key, val = mk.group(1).lower(), _unquote_config(mk.group(2))
+        if section == "lfs" and key in ("url", "pushurl"):
+            endpoints.append(val)
+        elif section == "remote" and key in ("lfsurl", "lfspushurl"):
+            endpoints.append(val)
+    return endpoints
+
+
+def check_lfsconfig(root: Path) -> list[str]:
+    """(4) `.lfsconfig` (if present) names ONLY the canonical GitHub LFS endpoint, via ANY LFS-endpoint
+    key (so a `pushurl`/`remote.*.lfsurl` repoint cannot fetch tampered Lane-B objects unseen)."""
+    cfg = root / ".lfsconfig"
+    if not cfg.is_file():
+        return []                                    # absent is fine (default endpoint = the repo remote)
+    try:
+        text = cfg.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        return [f".lfsconfig cannot be read ({e})"]
+    problems: list[str] = []
+    # an [include]/[includeIf] pulls in config git-lfs honours but a static parse cannot follow (the
+    # included file may live OUTSIDE the reviewed tree - e.g. `path = .git/x` - so the malicious endpoint
+    # is invisible to the owner-ack diff review). Disallow it: the endpoint must be a directly-pinned,
+    # statically-verifiable `[lfs] url = <canonical>`.
+    if re.search(r"(?im)^\s*\[\s*include(?:if)?\b", text):
+        problems.append(".lfsconfig uses an `[include]`/`[includeIf]` directive - the LFS endpoint "
+                        "cannot be statically verified (git-lfs follows the include, possibly to an "
+                        "un-committed file outside the reviewed tree); pin it directly as "
+                        "`[lfs] url = <canonical endpoint>`")
+    for u in parse_lfsconfig_endpoints(text):
+        if u != CANONICAL_LFS_ENDPOINT:
+            problems.append(f".lfsconfig names LFS endpoint `{u}` != the canonical "
+                            f"`{CANONICAL_LFS_ENDPOINT}` - a repoint would make a fresh Lane-B "
+                            "`git lfs pull` fetch tampered objects")
+    return problems
+
+
+def _git_tracked(root: Path, pathspec: str, runner) -> list[str] | None:
+    return runner(root, pathspec)
+
+
+def _default_ls_files(root: Path, pathspec: str) -> list[str] | None:
+    # `-z` (NUL-delimited) + `core.quotePath=false` so a non-ASCII / control / backslash / quote in a
+    # fixture name is returned RAW, not C-quoted (a quoted line would fail the bijection `startswith` and
+    # silently let an un-manifested untrusted fixture escape).
+    try:
+        r = subprocess.run(["git", "-c", "core.quotePath=false", "ls-files", "-z", "--", pathspec],
+                           cwd=str(root), capture_output=True, text=True)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return [p for p in r.stdout.split("\0") if p.strip()]
+
+
+def check_bijection(root: Path, corpus_rel: str, manifest_paths: set[str], runner) -> list[str]:
+    """(3) every committed corpus fixture has a manifest row (no un-manifested byte); manifest paths
+    that don't resolve are caught per-row in verify_file."""
+    tracked = _git_tracked(root, f"{corpus_rel}/**", runner)
+    if tracked is None:
+        return [f"cannot list tracked files under {corpus_rel} (git unavailable) - cannot prove every "
+                "committed corpus fixture is manifested (fail-closed)"]
+    problems: list[str] = []
+    prefix = corpus_rel + "/"
+    for repo_path in tracked:
+        if not repo_path.startswith(prefix):
+            continue
+        rel = repo_path[len(prefix):]
+        if rel in NON_FIXTURE_PATHS:                 # exact corpus-root-relative path, NOT basename
+            continue
+        if rel not in manifest_paths:
+            problems.append(f"committed corpus fixture `{repo_path}` has NO manifest row - every "
+                            "untrusted corpus byte must be manifested + sha256-vouched before the "
+                            "Lane-B decoders see it (§6.4.5)")
+    return problems
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G24a corpus / crash-fixture integrity (P0.5.4)")
+    ap.add_argument("--root", type=Path, default=ROOT,
+                    help="repo root to check (default: the repo; a fixture tree in the self-test)")
+    args = ap.parse_args(argv)
+    root: Path = args.root
+
+    problems = list(frozen_contract())
+
+    manifest = root / MANIFEST_REL
+    if not manifest.is_file():
+        print(f"[G24a] no {MANIFEST_REL} yet (the corpus fills P3-P7) - corpus-integrity verification "
+              "target-absent; fail-closed the moment the manifest lands")
+        problems += check_lfsconfig(root)            # the endpoint guard is live whenever .lfsconfig exists
+        if problems:
+            for p in problems:
+                fail(p)
+            return 1
+        print("[G24a] corpus-integrity contract OK (target-absent; .lfsconfig endpoint clean)")
+        return 0
+
+    try:
+        rows, err = parse_manifest(manifest.read_text(encoding="utf-8"))
+    except OSError as e:
+        print(f"[G24a] {MANIFEST_REL} cannot be read: {e}", file=sys.stderr)
+        return 2
+    if err:
+        print(f"[G24a] {err}", file=sys.stderr)
+        return 2
+
+    corpus_root = root / CORPUS_ROOT_REL
+    manifest_paths = {r["path"] for r in rows if isinstance(r.get("path"), str) and r["path"]}
+    for row in rows:
+        problems += check_row_fields(row)
+        file_problems, is_lfs = verify_file(corpus_root, row)
+        problems += file_problems
+        if is_lfs and isinstance(row.get("path"), str) and row["path"]:
+            problems += check_lfs_tracking(root, CORPUS_ROOT_REL, row["path"], _default_check_attr)
+    problems += check_bijection(root, CORPUS_ROOT_REL, manifest_paths, _default_ls_files)
+    problems += check_lfsconfig(root)
+
+    if problems:
+        for p in problems:
+            fail(p)
+        return 1
+    print(f"[G24a] corpus integrity OK ({len(rows)} manifest fixture(s): sha256 + provenance + "
+          "redistributable licence + bijection + LFS-tracking verified)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
