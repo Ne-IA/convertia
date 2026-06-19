@@ -132,12 +132,14 @@ mode)**, host-isolated from the untrusted-corpus VPS leg — the rationale + the
 self-hosted-label ban live in spec **§6.7.2** + security-concept **§2 / principle 11**
 and the **G56** row; this doc points at them.
 
-## 5. The provisioning is owner-gated — the `[!extern]` owner-action list
+## 5. The owner-provisioning — completed (the runbook + the STOP backstop)
 
-Both boxes are **`[!extern]`** in the plan: the policy above is authored, but the
-provisioning is an **owner action the loop cannot take** (a signing key, GitHub repo
-config, the release secrets). Both are **STOP-enforced** at the release boundary, so
-the loop cannot mint a release until each is provisioned:
+Both boxes **were `[!extern]`** in the plan until provisioned — the policy is authored,
+but the provisioning was an **owner action the loop could not take** (a signing key,
+GitHub repo config, the release secrets); **both are now `[x]`** (provisioned in the
+owner-present P0 bootstrap session — see the P0.7.17/.18 Delivered notes). Both remain
+**STOP-enforced** at the release boundary (the durable backstop, now satisfied), so the
+loop cannot mint a release unless each stays provisioned:
 
 - **P0.7.18 — the `release` Environment STOP.** The release box **P10.6** carries
   `needs: P0.7.18`, so per [`../plan/_format.md`](../plan/_format.md) §2/§6 the loop
@@ -177,9 +179,11 @@ in place. The exact owner steps:
    (the key material is generated per [`minisign-key-custody.md`](minisign-key-custody.md)
    §2 — air-gapped, off the shared VPS).
 
-Each box flips `[!extern]` → `[x]` once its provisioning lands (for P0.7.17, the
-moment the real `.github/allowed_signers` is committed from the owner's public key and
-the ruleset exists; for P0.7.18, the moment the Environment + secrets exist).
+Each box flipped `[!extern]` → `[x]` when its provisioning landed (P0.7.17: the real
+`.github/allowed_signers` committed from the owner's public key + the `v*` and
+`required_signatures` rulesets, G56a verified GREEN against the live config; P0.7.18:
+the `release` Environment + the two secrets, the minisign keypair roundtrip-verified
+against `docs/minisign.pub`).
 
 ## 6. Change-control — this doc and `.github/allowed_signers` are L(-1)
 

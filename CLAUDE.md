@@ -323,7 +323,7 @@ In brief:
 - minisign key genesis & custody (the signing-key birth / backup / loss-recovery policy, L(-1)): [`docs/process/minisign-key-custody.md`](docs/process/minisign-key-custody.md)
   *(authored in P0.7.16)*
 - Release-pipeline trust (tag-protection ruleset + commit/tag signing + the approval-gated `release` Environment + token scope, L(-1)): [`docs/process/release-pipeline-trust.md`](docs/process/release-pipeline-trust.md)
-  *(authored in P0.7.17 / P0.7.18 — provisioning halves are `[!extern]` owner actions)*
+  *(authored in P0.7.17 / P0.7.18 — both provisioned + verified, boxes `[x]`)*
 - P0-completion record (the durable L4-green P0-exit proof, `plan-lint` check 24): [`docs/process/p0-completion.md`](docs/process/p0-completion.md)
   *(stubbed in P0.6.10; the `run_url` is filled at P0 exit)*
 - Plan (executable TODO): [`docs/plan/README.md`](docs/plan/README.md) ·
