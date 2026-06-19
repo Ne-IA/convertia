@@ -26,7 +26,7 @@ Each box that introduces such a gate appends its row in the **same commit**:
 - **P0.7.6** — **G59** (build-provenance attestation), a one-time **`decided`** adopt row — recorded here so the adopt is dated; NOT a ratcheting posture, so it is deliberately absent from the check-23 `_OWNER_DECIDABLE_GATES` map.
 - **P0.7.14** — **G64** (privilege-drop-tier ratchet) + the formal flip protocol.
 - **P0.7.15** — **G65** (engine-subprocess coverage-guided fuzz), appended when authored.
-- **G17b** — appended by its box.
+- **P0.7.7** — **G17b** (bundled-engine CVE awareness), `informational` per-push; owner flips →`required` via the CVSS ≥ 7-on-an-actively-exercised-§04-path release escalation.
 
 **Status values.** `informational` (runs, never blocks the build) · `required`
 (blocks the build) · `decided` (a one-time adopt/decline owner decision). **A flip edits
@@ -45,6 +45,7 @@ rather than an invisible drift.
 | `cargo-geiger` | informational | 2026-06-18 | P1 | `unsafe`-usage census over the dependency graph — informational-forever (a visibility tool; it never ratchets to `required`) |
 | `cargo-mutants` | informational | 2026-06-19 | P3 (P3.72) | scoped mutation testing over `crate::fs_guard`+`crate::detect`+`crate::outcome` (the no-harm/atomicity/no-misroute kernel), a **G15** sub-leg — line coverage proves a line RAN, not that a test would CATCH a regression there; owner flips `informational`→`required` once survived-mutants reach **0** for `crate::fs_guard`+`crate::detect` (the P3.72 first run + the decrease-only per-crate `max_survived_mutants.toml` ratchet) |
 | **G59** — build-provenance attestation (`actions/attest-build-provenance`) | decided | 2026-06-19 | P10 | a v1 OWNER DECISION (promoted from a post-v1 deferral): the one genuinely-free build-**ORIGIN** signal — binds the artifact to runner+workflow+commit, so a silently re-signed release from a poisoned shared VPS is detectable **even if the minisign key leaked**; additive to minisign, **NOT** binary code-signing; needs only `id-token: write` scoped to the release/attestation job. **VERIFIED, not just generated** — a release step runs `gh attestation verify` (fail-on-non-zero); the **Sigstore bundle + a paired `trusted_root.jsonl`** ship as named release assets for OFFLINE verify; both join the **G58** completeness enumeration. `decided` = a one-time adopt → NOT in the check-23 `_OWNER_DECIDABLE_GATES` posture map; §8/catalogue/box statuses agree (check 17: the §8 entry is PROMOTED, not a live deferral) |
+| **G17b** — bundled-engine CVE awareness (`osv-scanner`/`grype`) | informational | 2026-06-19 | P10 | informational per-push OSV/grype over the **PURL-keyed** `engines.lock` (a planted-positive — a known historical internal-FFmpeg-decoder CVE — guards the empty-report-masquerading-as-clean failure; the FFmpeg CPE `cpe:2.3:a:ffmpeg:ffmpeg:<ver>` is MANDATORY); emits a dated open-CVE report (recording the advisory-DB age) as an owner-signed-off release asset; offline-tolerant (vendored DB, refresh warn-only). Owner flips `informational`→`required` via the **CVSS ≥ 7 on an actively-exercised §04 path → release-blocking escalation** (recorded in `vuln-response.md` / `SECURITY.md`); the release-tier advisory-DB-staleness floor (`MAX_ADVISORY_DB_STALENESS`) is shared with **G17**. A flip edits BOTH this row AND the check-23 `_OWNER_DECIDABLE_GATES` map in the same owner-acked L(-1) commit |
 
 None of the four over-assurance backstops replaces **G48**'s fuzz; each is an
 **additive** proof/observation layer on top of the deterministic gates, which the
@@ -128,3 +129,21 @@ per-crate `max_survived_mutants.toml` initialised at the first-run count, **decr
 (authored by P3.72 — this box registers only the gate + its posture, mirroring the P3.67
 fuzz-replay activation pattern). The gate then ratchets decrease-only per crate as
 subsequent phases deepen the kernel test suites.
+
+## Bundled-engine CVE awareness — G17b (P0.7.7 · §3.4.3 §6.5 · G17b G17)
+
+An **informational per-push** OSV/grype scan of the **PURL-keyed** `engines.lock` (the full
+gate mechanics — the planted-positive, the MANDATORY FFmpeg CPE, the dated open-CVE report,
+the advisory-DB-staleness floor shared with **G17** — live in the **G17b build-gate row**;
+this ledger records only its **owner-decidable posture**). It honours SSOT §3.8 "engine
+currency is best-effort, not a gate": the per-push leg never blocks.
+
+**Owner decision (`informational`↔`required`).** Recorded `informational` here. The owner
+flips it to `required` via the **CVSS ≥ 7 on an engine code path ConvertIA actively exercises
+for a §04 format → release-blocking escalation** (the Build-Loop escalates to Co-Pilot and
+blocks the next release until bumped or triaged not-exercised; the threshold is stated in
+`SECURITY.md` so users know the effective turnaround, and a bump triggers the §6.5.4
+re-validation-on-engine-bump). A flip edits BOTH this ledger row (status + `Since`) AND the
+`plan-lint` check-23 `_OWNER_DECIDABLE_GATES` posture map in the same owner-acked L(-1) commit
+(the flip protocol above). G17b + **G55** are the two halves of the offline
+"audit-it-yourself" story (the dated open-CVE report + the embedded-SBOM auditable binary).

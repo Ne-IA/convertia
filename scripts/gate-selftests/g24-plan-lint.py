@@ -173,8 +173,9 @@ _SEEDED = [("`cargo-acl`/cackle", "informational", "2026-06-18"),
            ("`cargo-careful`", "informational", "2026-06-18"),
            ("Kani", "informational", "2026-06-18"),
            ("`cargo-geiger`", "informational", "2026-06-18"),
-           ("`cargo-mutants`", "informational", "2026-06-19")]   # P0.5.10 — the G15 mutation sub-leg
-record("23 gate-status: a clean 5-row ledger (all registered gates) -> no finding",
+           ("`cargo-mutants`", "informational", "2026-06-19"),   # P0.5.10 — the G15 mutation sub-leg
+           ("`G17b`", "informational", "2026-06-19")]            # P0.7.7 — bundled-engine CVE awareness
+record("23 gate-status: a clean 6-row ledger (all registered gates) -> no finding",
        m.doc23_ratchet_log(dctx(_ledger(_SEEDED))) == [])
 record("23 gate-status: absent ledger -> skip (target-absent, not a finding)",
        m.doc23_ratchet_log(dctx({})) == [])
@@ -200,12 +201,17 @@ record("23 gate-status: an impossible-but-ISO-shaped 'Since' date (2026-13-99) -
            dctx(_ledger([("`cargo-acl`/cackle", "informational", "2026-13-99")] + _SEEDED[1:])))))
 # P0.5.10: the cargo-mutants registration is enforced both ways — a missing row is caught, and a
 # posture flip away from `informational` without a matching _OWNER_DECIDABLE_GATES edit is caught.
+# [Test-Change: P0.7.7 — old-obsolete+new-correct, gate-status.md ledger] both legs filter cargo-mutants
+# out BY NAME (mirroring the Kani leg) instead of the old positional `_SEEDED[:-1]`: P0.7.7 appended the
+# G17b row to _SEEDED, so the last element is no longer cargo-mutants — the positional slice would drop
+# G17b and leave cargo-mutants present. The name-filter is robust to any future _SEEDED growth (G64/G65).
+_SEEDED_NO_MUTANTS = [r for r in _SEEDED if "cargo-mutants" not in r[0]]
 record("23 gate-status: a missing cargo-mutants row (P0.5.10) -> caught",
        any("cargo-mutants" in f.msg.lower() and "no dated status row" in f.msg
-           for f in m.doc23_ratchet_log(dctx(_ledger(_SEEDED[:-1])))))
+           for f in m.doc23_ratchet_log(dctx(_ledger(_SEEDED_NO_MUTANTS)))))
 record("23 gate-status: a cargo-mutants row flipped to 'required' (no registry edit) -> disagrees caught",
        any("cargo-mutants" in f.msg.lower() and "disagrees" in f.msg for f in m.doc23_ratchet_log(
-           dctx(_ledger(_SEEDED[:-1] + [("`cargo-mutants`", "required", "2026-06-19")])))))
+           dctx(_ledger(_SEEDED_NO_MUTANTS + [("`cargo-mutants`", "required", "2026-06-19")])))))
 
 # --- check 19: the G1 reviewer-rubric fenced block in build-loop.md (P0.6.2) -------------------
 _BL = "docs/process/build-loop.md"
