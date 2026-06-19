@@ -319,7 +319,7 @@ In brief:
 - Roles & escalation: [`docs/process/roles-and-escalation.md`](docs/process/roles-and-escalation.md)
 - Gate-status ledger (owner-decidable gate posture decision-log, `plan-lint` check 23): [`docs/process/gate-status.md`](docs/process/gate-status.md)
 - Vulnerability response (CVE → user, no-auto-update): [`docs/process/vuln-response.md`](docs/process/vuln-response.md)
-  *(authored in P0.6; absent until P0 completes — see the §2 bootstrap note)*
+  *(authored in P0.6.9 — see the §2 bootstrap note)*
 - Plan (executable TODO): [`docs/plan/README.md`](docs/plan/README.md) ·
   [`docs/plan/P0-build-and-security.md`](docs/plan/P0-build-and-security.md)
 

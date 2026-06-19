@@ -212,7 +212,7 @@ inside. Concretely:
   [build-gates.md](../security/build-gates.md), [build-loop.md](build-loop.md),
   [test-strategy.md](test-strategy.md), **this file**,
   [`docs/plan/_format.md`](../plan/_format.md), and
-  [vuln-response.md](vuln-response.md) *(authored in P0; absent until P0 completes)*.
+  [vuln-response.md](vuln-response.md) *(authored in P0.6.9)*.
   Until they exist, the canonical process rules
   + the DoD live in **P0.6 of**
   [`docs/plan/P0-build-and-security.md`](../plan/P0-build-and-security.md) (CLAUDE.md §2/§4).
@@ -310,8 +310,8 @@ scannable hand-off and Co-Pilot has an actionable item.
 - Working-model + dual-review-as-quality-amplifier + the recorded reviewer-family
   decision: [security-concept.md](../security/security-concept.md) §2.
 - The CVE → user escalation runbook (engine vuln → Build-Loop escalates → Co-Pilot →
-  release): [vuln-response.md](vuln-response.md) *(a P0 deliverable; does not exist
-  until P0 completes)*.
+  release): [vuln-response.md](vuln-response.md) *(a P0 deliverable, authored in
+  P0.6.9)*.
 - Plan home (P0 bootstrap clusters; P1..P11 range — the plan is exactly P0..P11):
   [`docs/plan/README.md`](../plan/README.md) ·
   [`docs/plan/P0-build-and-security.md`](../plan/P0-build-and-security.md) §P0.6.

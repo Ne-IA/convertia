@@ -719,5 +719,5 @@ surgery — `plan-lint` check 18 asserts a canonical phrase for this exists here
 - Roles & escalation: [`roles-and-escalation.md`](roles-and-escalation.md)
 - Test strategy: [`test-strategy.md`](test-strategy.md)
 - Vulnerability response (CVE → user, no auto-update): [`vuln-response.md`](vuln-response.md)
-  *(authored in P0.6; absent until P0 completes)*
+  *(authored in P0.6.9)*
 - SSOT (what & why): [`docs/SINGLE-SOURCE-OF-TRUTH.md`](../SINGLE-SOURCE-OF-TRUTH.md)
