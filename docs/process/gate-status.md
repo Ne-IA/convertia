@@ -14,11 +14,16 @@
 
 The deterministic gates — **every `Gnn` except G1** — are always-on and are **not**
 tracked here. This ledger tracks only the gates whose posture is an owner/ratchet
-decision (`informational` ↔ `required`), plus the purely-informational census tools.
+decision (`informational` ↔ `required`), the purely-informational census tools, plus
+one-time **`decided`** owner-adopt rows (a gate the owner adopted/declined once — e.g.
+**G59** build-provenance — recorded so the adopt is a dated committed line, not a buried
+catalogue footnote; a `decided` row carries no ratcheting posture, so it is **not** in the
+`plan-lint` check-23 `_OWNER_DECIDABLE_GATES` map).
 Each box that introduces such a gate appends its row in the **same commit**:
 
 - **P0.4.5** (this file's creator) — the four over-assurance behavioural backstops below.
 - **P0.5.10** — `cargo-mutants` (scoped mutation testing), the fifth ledger row (appended by this box).
+- **P0.7.6** — **G59** (build-provenance attestation), a one-time **`decided`** adopt row — recorded here so the adopt is dated; NOT a ratcheting posture, so it is deliberately absent from the check-23 `_OWNER_DECIDABLE_GATES` map.
 - **P0.7.14** — **G64** (privilege-drop-tier ratchet) + the formal flip protocol.
 - **P0.7.15** — **G65** (engine-subprocess coverage-guided fuzz), appended when authored.
 - **G17b** — appended by its box.
@@ -39,6 +44,7 @@ rather than an invisible drift.
 | Kani | informational | 2026-06-18 | P1 | bounded model checking that PROVES the small numeric caps (≤100× decompression ratio, `MAX_SVGZ_SNIFF` ≤64 KiB, the `fs_guard` predicates) rather than fuzzer-hoping them |
 | `cargo-geiger` | informational | 2026-06-18 | P1 | `unsafe`-usage census over the dependency graph — informational-forever (a visibility tool; it never ratchets to `required`) |
 | `cargo-mutants` | informational | 2026-06-19 | P3 (P3.72) | scoped mutation testing over `crate::fs_guard`+`crate::detect`+`crate::outcome` (the no-harm/atomicity/no-misroute kernel), a **G15** sub-leg — line coverage proves a line RAN, not that a test would CATCH a regression there; owner flips `informational`→`required` once survived-mutants reach **0** for `crate::fs_guard`+`crate::detect` (the P3.72 first run + the decrease-only per-crate `max_survived_mutants.toml` ratchet) |
+| **G59** — build-provenance attestation (`actions/attest-build-provenance`) | decided | 2026-06-19 | P10 | a v1 OWNER DECISION (promoted from a post-v1 deferral): the one genuinely-free build-**ORIGIN** signal — binds the artifact to runner+workflow+commit, so a silently re-signed release from a poisoned shared VPS is detectable **even if the minisign key leaked**; additive to minisign, **NOT** binary code-signing; needs only `id-token: write` scoped to the release/attestation job. **VERIFIED, not just generated** — a release step runs `gh attestation verify` (fail-on-non-zero); the **Sigstore bundle + a paired `trusted_root.jsonl`** ship as named release assets for OFFLINE verify; both join the **G58** completeness enumeration. `decided` = a one-time adopt → NOT in the check-23 `_OWNER_DECIDABLE_GATES` posture map; §8/catalogue/box statuses agree (check 17: the §8 entry is PROMOTED, not a live deferral) |
 
 None of the four over-assurance backstops replaces **G48**'s fuzz; each is an
 **additive** proof/observation layer on top of the deterministic gates, which the
