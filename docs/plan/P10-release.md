@@ -68,8 +68,9 @@
 ### Lane-B release pipeline skeleton & ordering
 
 - [ ] **P10.4** [CI] Build the tag-triggered Lane-B release workflow from the P0.2.5 skeleton — fill the empty stage slots · §6.7.2 · G58 G56
-  needs: P0.2.5, P0.2.9
+  needs: P0.2.5, P0.2.9, P0.7.17
   > take the `v*`-tag-triggered Lane-B skeleton (P0.2.5) + the P0.2.9 first-step trust assertion (tagged commit is an `origin/main` ancestor + main's required checks were green for that SHA + `git verify-tag`, abort **before** any secret is read) and fill the **seven ordered stages** §6.7.2 enumerates (each blocking the next): matrix build → reliability gate → SBOM+completeness → clearance → usability-floor evidence → integrity-hash+sign → publish. The stage *contents* are the boxes below; this box stands up the workflow shape + the strict stage ordering + the per-job `timeout-minutes`.
+  > **`needs: P0.7.17`** because the P0.2.9 `git verify-tag` first-step is only **fail-closed** (its G56b leg-3 target posture) once the committed **`.github/allowed_signers`** exists — so the loop must not stand up the release workflow until the owner has provisioned the SSH signing key (P0.7.17). This is the **tag-ref STOP**, symmetric with **P10.6's `needs: P0.7.18`** Environment STOP — together they guarantee no release is minted until both the signing key (tag trust) and the approval-gated secret (key custody) are provisioned (release-pipeline-trust.md §5).
 - [ ] **P10.5** [CI] Wire the Lane-B stage-ordering gate — each stage hard-blocks the next, no stage skips on a soft failure · §6.7.2 · G58
   needs: P10.4
   > assert the §6.7.2 "**in order, each blocking the next**" contract structurally: a failing earlier stage **aborts** the release (no `continue-on-error` on a release-blocking stage), and a stage cannot run before its predecessor's success. The release is all-or-nothing (one coordinated release, SSOT) — a partial publish is forbidden.

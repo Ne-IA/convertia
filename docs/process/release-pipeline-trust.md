@@ -81,8 +81,8 @@ gpg.ssh.allowedSignersFile` points at it. Two assertions ride on this one key:
   as-built P0.2.9 assertion is **fail-soft (skip-with-warning) until
   `.github/allowed_signers` lands** — a clean checkout cannot `git verify-tag` before
   that file exists — **then fail-closed**. So leg 3 is genuinely *enforced* only once
-  **P0.7.17** is provisioned (the asymmetry §5 spells out); until then legs 1 + 2 carry
-  the tag trust.
+  **P0.7.17** is provisioned (the P10.4 `needs: P0.7.17` STOP §5 spells out); until then
+  legs 1 + 2 carry the tag trust.
 - **Commit authenticity (G56a sub-check (g)).** The **same** key signs the loop's own
   `main` commits (`git config commit.gpgsign true`), so `main`'s ruleset
   **`required_signatures`** knob is *satisfiable* — closing the integrity axis a
@@ -136,24 +136,24 @@ and the **G56** row; this doc points at them.
 
 Both boxes are **`[!extern]`** in the plan: the policy above is authored, but the
 provisioning is an **owner action the loop cannot take** (a signing key, GitHub repo
-config, the release secrets). Their downstream enforcement is **asymmetric**, and this
-doc is precise about it:
+config, the release secrets). Both are **STOP-enforced** at the release boundary, so
+the loop cannot mint a release until each is provisioned:
 
-- **P0.7.18 is STOP-enforced.** The release box **P10.6** carries `needs: P0.7.18`, so
-  per [`../plan/_format.md`](../plan/_format.md) §2/§6 the loop **STOPs** rather than
-  minting a release until the `release` Environment is provisioned — the secret is
-  structurally unreachable without it.
-- **P0.7.17 is *not* downstream-STOP-enforced.** No box declares `needs: P0.7.17`, so
-  an un-provisioned P0.7.17 does **not** halt the loop — it leaves G56b **leg 3**
-  (`verify-tag`) **fail-soft (skip-with-warning)** per the P0.2.9 bootstrap window
-  (§3), degrading the *cheap belt-and-suspenders* rather than blocking. **Legs 1 + 2**
-  (the `v*` tag-protection ruleset + the ancestry/green-history abort) remain the
-  **load-bearing** tag-trust controls regardless. In practice the residual is bounded:
-  the same owner who must approve the STOP-enforced P0.7.18 `release` Environment (the
-  human-in-the-loop on every release) is the one who provisions the signing key, so a
-  release is not approved with leg 3 silently unprovisioned.
+- **P0.7.18 — the `release` Environment STOP.** The release box **P10.6** carries
+  `needs: P0.7.18`, so per [`../plan/_format.md`](../plan/_format.md) §2/§6 the loop
+  **STOPs** rather than minting a release until the `release` Environment is
+  provisioned — the secret is structurally unreachable without it.
+- **P0.7.17 — the tag-trust STOP.** The release-workflow box **P10.4** carries
+  `needs: P0.7.17`, so the loop **STOPs** before standing up the release workflow
+  until the SSH signing key is provisioned — because G56b **leg 3** (`verify-tag`) is
+  only **fail-closed** once the committed `.github/allowed_signers` exists (it is
+  **fail-soft / skip-with-warning** in the P0.2.9 bootstrap window until then, §3).
+  Until that STOP releases, **legs 1 + 2** (the `v*` tag-protection ruleset + the
+  ancestry/green-history abort) carry the tag trust.
 
-The exact owner steps:
+The two STOPs are **symmetric** — together they guarantee no release is minted until
+**both** the signing key (tag trust) and the approval-gated secret (key custody) are
+in place. The exact owner steps:
 
 **P0.7.17 — tag protection + signing key (planes 1 + 2):**
 1. **Generate an SSH signing key** on the build machine, e.g.
