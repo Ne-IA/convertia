@@ -1229,6 +1229,7 @@ _OWNER_DECIDABLE_GATES = {
     "cargo-mutants": "informational",   # scoped mutation testing of the fs_guard/detect/outcome kernel, G15 sub-leg (P0.5.10); owner flips ->required at 0 survived for fs_guard+detect (P3.72 ratchet)
     "g17b":          "informational",   # bundled-engine CVE awareness (osv-scanner/grype over the PURL-keyed engines.lock) (P0.7.7); owner flips ->required via the CVSS>=7-on-an-actively-exercised-section-04-path release-blocking escalation (vuln-response.md / SECURITY.md)
     "g64":           "informational",   # privilege-drop-tier ratchet over the §2.12.3 runtime containment (P0.7.14); decrease-guarded privilege-drop-coverage.toml; owner flips ->required once the tier matrix stabilises (informational while filled P4-P9)
+    "g65":           "informational",   # engine-subprocess coverage-guided fuzz, reserved-not-row id (P0.7.15); required-scheduled non-PR-blocking issue-opener now; owner flips ->required on the before-P10 also-per-push decision
 }
 _GATE_STATUSES = {"informational", "required", "decided"}
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")

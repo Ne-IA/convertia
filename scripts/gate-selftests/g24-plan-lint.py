@@ -175,8 +175,9 @@ _SEEDED = [("`cargo-acl`/cackle", "informational", "2026-06-18"),
            ("`cargo-geiger`", "informational", "2026-06-18"),
            ("`cargo-mutants`", "informational", "2026-06-19"),   # P0.5.10 — the G15 mutation sub-leg
            ("`G17b`", "informational", "2026-06-19"),            # P0.7.7 — bundled-engine CVE awareness
-           ("`G64`", "informational", "2026-06-19")]             # P0.7.14 — privilege-drop-tier ratchet
-record("23 gate-status: a clean 7-row ledger (all registered gates) -> no finding",
+           ("`G64`", "informational", "2026-06-19"),             # P0.7.14 — privilege-drop-tier ratchet
+           ("`G65`", "informational", "2026-06-19")]             # P0.7.15 — engine-subprocess coverage-guided fuzz
+record("23 gate-status: a clean 8-row ledger (all registered gates) -> no finding",
        m.doc23_ratchet_log(dctx(_ledger(_SEEDED))) == [])
 record("23 gate-status: absent ledger -> skip (target-absent, not a finding)",
        m.doc23_ratchet_log(dctx({})) == [])

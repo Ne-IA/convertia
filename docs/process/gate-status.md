@@ -25,7 +25,7 @@ Each box that introduces such a gate appends its row in the **same commit**:
 - **P0.5.10** — `cargo-mutants` (scoped mutation testing), the fifth ledger row (appended by this box).
 - **P0.7.6** — **G59** (build-provenance attestation), a one-time **`decided`** adopt row — recorded here so the adopt is dated; NOT a ratcheting posture, so it is deliberately absent from the check-23 `_OWNER_DECIDABLE_GATES` map.
 - **P0.7.14** — **G64** (privilege-drop-tier ratchet) + the formal flip protocol.
-- **P0.7.15** — **G65** (engine-subprocess coverage-guided fuzz), appended when authored.
+- **P0.7.15** — **G65** (engine-subprocess coverage-guided fuzz), a reserved-not-row id registered `informational`; owner flips →`required` on the before-P10 also-per-push decision.
 - **P0.7.7** — **G17b** (bundled-engine CVE awareness), `informational` per-push; owner flips →`required` via the CVSS ≥ 7-on-an-actively-exercised-§04-path release escalation.
 
 **Status values.** `informational` (runs, never blocks the build) · `required`
@@ -47,6 +47,7 @@ rather than an invisible drift.
 | **G59** — build-provenance attestation (`actions/attest-build-provenance`) | decided | 2026-06-19 | P10 | a v1 OWNER DECISION (promoted from a post-v1 deferral): the one genuinely-free build-**ORIGIN** signal — binds the artifact to runner+workflow+commit, so a silently re-signed release from a poisoned shared VPS is detectable **even if the minisign key leaked**; additive to minisign, **NOT** binary code-signing; needs only `id-token: write` scoped to the release/attestation job. **VERIFIED, not just generated** — a release step runs `gh attestation verify` (fail-on-non-zero); the **Sigstore bundle + a paired `trusted_root.jsonl`** ship as named release assets for OFFLINE verify; both join the **G58** completeness enumeration. `decided` = a one-time adopt → NOT in the check-23 `_OWNER_DECIDABLE_GATES` posture map; §8/catalogue/box statuses agree (check 17: the §8 entry is PROMOTED, not a live deferral) |
 | **G17b** — bundled-engine CVE awareness (`osv-scanner`/`grype`) | informational | 2026-06-19 | P10 | informational per-push OSV/grype over the **PURL-keyed** `engines.lock` (a planted-positive — a known historical internal-FFmpeg-decoder CVE — guards the empty-report-masquerading-as-clean failure; the FFmpeg CPE `cpe:2.3:a:ffmpeg:ffmpeg:<ver>` is MANDATORY); emits a dated open-CVE report (recording the advisory-DB age) as an owner-signed-off release asset; offline-tolerant (vendored DB, refresh warn-only). Owner flips `informational`→`required` via the **CVSS ≥ 7 on an actively-exercised §04 path → release-blocking escalation** (recorded in `vuln-response.md` / `SECURITY.md`); the release-tier advisory-DB-staleness floor (`MAX_ADVISORY_DB_STALENESS`) is shared with **G17**. A flip edits BOTH this row AND the check-23 `_OWNER_DECIDABLE_GATES` map in the same owner-acked L(-1) commit |
 | **G64** — privilege-drop-tier ratchet | informational | 2026-06-19 | P9 | records the achieved §2.12.3 privilege-drop tier **per platform** into a tracked `privilege-drop-coverage.toml`, **decrease-guarded** like the coverage floor / `max_survived_mutants.toml` (a commit lowering an achieved tier fails/escalates; raises are deliberate) — the §2.12.3 runtime containment of the untrusted C/C++ decoders is best-effort and silently degrades (the T1 honest residual), and G31 proves the tier FIRED on the runner but nothing tracked the TREND, so G64 makes a NET regression visible. Owner flips `informational`→`required` once the §2.12.3 tier matrix **stabilises** (informational while it is filled in P4–P9). A flip edits BOTH this row AND the check-23 `_OWNER_DECIDABLE_GATES` map in the same owner-acked L(-1) commit |
+| **G65** — engine-subprocess coverage-guided fuzz *(reserved id)* | informational | 2026-06-19 | P9/P10 | a **reserved-not-row** id (named in prose, never a `· G65` header ref): the engine-side T1 surface (bundled C/C++ decoders on untrusted bytes) is covered today only by a fixed fault-injected corpus (G26/G31) — G65 adds a **black-box mutational fuzz** of the **real G37-staged SHA-256-verified sidecar** (AFL++ binary-only/QEMU **OR** a `radamsa` harness through the §2.12 isolation wrapper; `zzuf` LD_PRELOAD for LibreOffice headless), reusing the §6.4.2 oracles (no-crash-escapes-boundary + no-egress + no-out-of-input-read via **G42b**), CI-host resource-bounded (cgroup/`ulimit`/`docker --memory` + the G56 `timeout-minutes`). Pre-committed to a **REQUIRED SCHEDULED non-PR-blocking** job (≥ weekly `radamsa`-through-the-isolation-wrapper that FILES AN ISSUE on a boundary-escaping crash, an issue-opener like G66). Owner flips `informational`→`required` on the BEFORE-P10 decision whether to ALSO make it per-push. A flip edits BOTH this row AND the check-23 `_OWNER_DECIDABLE_GATES` map in the same owner-acked L(-1) commit |
 
 None of the four over-assurance backstops replaces **G48**'s fuzz; each is an
 **additive** proof/observation layer on top of the deterministic gates, which the
@@ -167,3 +168,27 @@ once the matrix **stabilises**. A flip edits BOTH this ledger row (status + `Sin
 `plan-lint` check-23 `_OWNER_DECIDABLE_GATES` posture map in the same owner-acked L(-1) commit
 (the flip protocol above). G64 is the **TREND/ratchet** owner; the per-platform
 tier-APPLIED-per-spawn regression assertion stays a **G31** leg (P0.5.9).
+
+## Engine-subprocess coverage-guided fuzz — G65 (P0.7.15 · §6.4.2 §6.1.4 · G42b)
+
+The single biggest coverage asymmetry: the engine-side **T1** surface (the bundled C/C++
+decoders on untrusted bytes — the literal product premise) is covered today only by a fixed
+fault-injected corpus (**G26/G31**), while the lower-blast-radius in-core Rust detector gets
+real coverage-guided libFuzzer (**G48**). **G65** (a **reserved-not-row** id — named in prose,
+never a `· G65` header ref) adds a **black-box mutational fuzz of the real sidecar**: AFL++
+binary-only/QEMU **OR** a `radamsa` harness through the §2.12 isolation wrapper (`zzuf`
+LD_PRELOAD for LibreOffice headless), reusing the §6.4.2 oracles (no-crash-escapes-boundary +
+no-egress + no-out-of-input-read via **G42b**). **Constraint:** the harness MUST use the
+G37-staged, SHA-256-verified bundled engine binary, NOT a debug build. CI-host
+resource-bounded (cgroup / `ulimit` / `docker --memory` + the G56 `timeout-minutes`) so a
+corpus-induced host OOM/disk-fill is a contained finding, not a shared-VPS outage; the §6.1.4
+VPS runner is the host.
+
+**Owner decision (`informational`↔`required`).** Recorded `informational` here. It is
+**pre-committed to a REQUIRED SCHEDULED, non-PR-blocking** job (at minimum a weekly
+`radamsa`-through-the-isolation-wrapper run that FILES AN ISSUE on a boundary-escaping crash —
+an issue-opener like G66, so it can't wedge a half-built phase); the owner decides **before
+P10** whether to ALSO make it per-push, which is the `informational`→`required` flip. A flip
+edits BOTH this ledger row (status + `Since`) AND the `plan-lint` check-23
+`_OWNER_DECIDABLE_GATES` posture map in the same owner-acked L(-1) commit (the flip protocol
+above). The reserved id `G65` is held now so an adoption does not renumber.
