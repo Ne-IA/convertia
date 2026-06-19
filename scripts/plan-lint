@@ -1100,10 +1100,29 @@ def doc15_hard_stop_parity(ctx: Ctx) -> list[Finding]:
     return _bl_phrase(ctx, "15:hard-stop-parity", _HARDSTOP_PHRASES)
 
 
+# The canonical verbatim phrases for the two build-loop procedures check 18 pins present (build-gates §6
+# check 18: the crash-recovery procedure AND the dual-review divergence-resolution rule must exist in
+# build-loop.md, else a "currently absent" annotation could silently survive into the final docs). Each
+# procedure pins its HEADER + its load-bearing SUB-RULES, every phrase verified UNIQUE in build-loop.md
+# (the P0.6.3 lesson) — so a procedure cannot be gutted to a bare header while staying green. The
+# gate-quarantine procedure + the per-finding suppression ledger are authored in §6 (a P0.6.8 reconcile)
+# but lie OUTSIDE check 18's named set — the box and build-gates §6 both scope check 18 to these two.
+_NAMED_PROCEDURE_PHRASES = (
+    "Crash-recovery procedure",       # the §9 procedure header
+    "Committed-but-CI-red",           # case (b): a NEW fixing commit, never amend a pushed commit
+    "Push is idempotent on retry",    # case (d): a re-push of an already-pushed commit is a safe no-op
+    "Divergence-resolution rule",     # the §3 Step 5 rule header
+    "the stricter reviewer wins",     # the P0/P1 GO-vs-NOGO -> NOGO core of the divergence rule
+)
+
+
 def doc18_named_procedure(ctx: Ctx) -> list[Finding]:
-    """Check 18: every P0.6-named build-loop procedure (crash-recovery, divergence-resolution) exists
-    verbatim in build-loop.md."""
-    return _bl_phrase(ctx, "18:named-procedure", [])
+    """Check 18: the two P0.6-named build-loop procedures — the crash-recovery procedure (§9) and the
+    dual-review divergence-resolution rule (§3 Step 5) — exist VERBATIM in build-loop.md as canonical
+    phrases (build-gates §6 check 18), each pinned by its header + load-bearing sub-rules so it cannot be
+    silently gutted to a bare header. Target-absent until build-loop.md exists (P0.6-authored);
+    fail-closed once present (P0.6.8-activated)."""
+    return _bl_phrase(ctx, "18:named-procedure", _NAMED_PROCEDURE_PHRASES)
 
 
 def _extract_fenced_block(text: str, marker: str) -> str | None:

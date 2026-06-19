@@ -374,6 +374,39 @@ record("15 hard-stop: the >= 3 push-failures string reverted to 'gate-red pushes
 record("15 hard-stop: the REAL committed build-loop.md §6 thresholds pass (no finding)",
        m.doc15_hard_stop_parity(m.build_ctx(ROOT)) == [])
 
+# --- check 18: the two named build-loop procedures present verbatim in build-loop.md (P0.6.8) ----------
+# Each procedure (crash-recovery §9, divergence-resolution §3 Step 5) is pinned by its header + its
+# load-bearing sub-rules; dropping ANY canonical phrase (gutting a procedure to a bare header, or removing
+# its core rule) is CAUGHT — so "currently absent" cannot silently survive into the docs (build-gates §6
+# check 18). gate-quarantine + suppression-ledger are authored in §6 but lie outside check 18's named set.
+_NP_OK = ("# Build-Loop\n\n## 3. The loop\n\n"
+          "Divergence-resolution rule (canonical): a P0/P1 GO-vs-NOGO is NOGO — the stricter reviewer wins.\n\n"
+          "## 9. Crash-recovery\n\n"
+          "Crash-recovery procedure (a mid-box crash is recoverable):\n"
+          "- Committed-but-CI-red -> a NEW commit fixing it; never amend a pushed commit.\n"
+          "- Push is idempotent on retry — a re-push is a safe no-op.\n")
+record("18 named-proc: a build-loop.md with both procedures + their sub-rules -> no finding",
+       m.doc18_named_procedure(dctx({_BL: _NP_OK})) == [])
+record("18 named-proc: absent build-loop.md -> skip (target-absent, not a finding)",
+       m.doc18_named_procedure(dctx({})) == [])
+record("18 named-proc: the crash-recovery procedure header dropped -> caught",
+       any("Crash-recovery procedure" in f.msg for f in m.doc18_named_procedure(
+           dctx({_BL: _NP_OK.replace("Crash-recovery procedure", "Recovery steps")}))))
+record("18 named-proc: the crash-recovery case (b) Committed-but-CI-red dropped -> caught",
+       any("Committed-but-CI-red" in f.msg for f in m.doc18_named_procedure(
+           dctx({_BL: _NP_OK.replace("Committed-but-CI-red", "Committed but red")}))))
+record("18 named-proc: the crash-recovery case (d) push-idempotent dropped -> caught",
+       any("Push is idempotent on retry" in f.msg for f in m.doc18_named_procedure(
+           dctx({_BL: _NP_OK.replace("Push is idempotent on retry", "Re-push is safe")}))))
+record("18 named-proc: the divergence-resolution rule header dropped -> caught",
+       any("Divergence-resolution rule" in f.msg for f in m.doc18_named_procedure(
+           dctx({_BL: _NP_OK.replace("Divergence-resolution rule", "Divergence handling")}))))
+record("18 named-proc: the divergence 'stricter reviewer wins' core dropped -> caught",
+       any("the stricter reviewer wins" in f.msg for f in m.doc18_named_procedure(
+           dctx({_BL: _NP_OK.replace("the stricter reviewer wins", "the stricter one wins")}))))
+record("18 named-proc: the REAL committed build-loop.md procedures pass (no finding)",
+       m.doc18_named_procedure(m.build_ctx(ROOT)) == [])
+
 # --- check 25 leg (c2): the per-source content-fingerprint freshness ledger (P0.3.12) ---------
 # Each leg drives the PURE m._freshness_fingerprints(entries, root, docs) so a synthetic source can be
 # supplied via the `docs` dict (no temp files): an entry whose `file` is in `docs` reads that content.
@@ -499,14 +532,12 @@ record("21 t2-taint-xor: pending (neither CodeQL nor Semgrep live) -> skip []",
 # doc24's target (p0-completion.md) is still unauthored (P0.6.10) -> a GENUINE target-absent skip.
 record("24 p0-completion: target-absent skip while p0-completion.md is unauthored (P0.6.10) -> []",
        m.doc24_p0_completion(_real) == [])
-# doc18 remains DORMANT, not target-absent: build-loop.md EXISTS, but its named-procedure phrase-set stays
-# empty until P0.6.8 pins it, so it returns [] on the LIVE path (activated + given its own legs there).
-record("18 dormant: build-loop.md present but doc18's phrase-set is empty (activated P0.6.8) -> []",
-       m.doc18_named_procedure(_real) == [])
-# doc14/doc15/doc19/doc20 are now ACTIVE (build-loop.md exists) and clean on the real repo — each proven by
-# its OWN dedicated REAL-doc leg above. They are deliberately NOT in a "target-absent" tuple: that would
-# pass for the wrong reason under a misleading label — the P0.4.5-G1-P2 principle (see check 23 above),
-# applied to the four P0.6 activations (doc14/doc15 here; doc19/doc20 were left here in error by P0.6.2/P0.6.3).
+# doc14/doc15/doc18/doc19/doc20 are now ALL ACTIVE (build-loop.md exists) and clean on the real repo —
+# each proven by its OWN dedicated REAL-doc leg above. The only GENUINE target-absent skip left is doc24
+# (p0-completion.md unauthored until P0.6.10, its own leg above). None of the five active P0.6 checks sits
+# in a "target-absent" tuple — that would pass for the wrong reason under a misleading label (the
+# P0.4.5-G1-P2 principle, see check 23 above); all five (doc14/doc15/doc18 here; doc19/doc20 from
+# P0.6.2/P0.6.3) are live with dedicated real-doc legs.
 
 # --- check 26 (G69) structural-map integrity — the real logic, driven by pure fns (P0.3.13) ------
 # doc26 SKIPS while the §1a map is the P1.64 placeholder, so the active path is exercised via the pure
