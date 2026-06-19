@@ -320,6 +320,8 @@ In brief:
 - Gate-status ledger (owner-decidable gate posture decision-log, `plan-lint` check 23): [`docs/process/gate-status.md`](docs/process/gate-status.md)
 - Vulnerability response (CVE → user, no-auto-update): [`docs/process/vuln-response.md`](docs/process/vuln-response.md)
   *(authored in P0.6.9 — see the §2 bootstrap note)*
+- P0-completion record (the durable L4-green P0-exit proof, `plan-lint` check 24): [`docs/process/p0-completion.md`](docs/process/p0-completion.md)
+  *(stubbed in P0.6.10; the `run_url` is filled at P0 exit)*
 - Plan (executable TODO): [`docs/plan/README.md`](docs/plan/README.md) ·
   [`docs/plan/P0-build-and-security.md`](docs/plan/P0-build-and-security.md)
 

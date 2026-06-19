@@ -529,15 +529,30 @@ record("21 t2-taint-xor: pending (neither CodeQL nor Semgrep live) -> skip []",
 # here: P0.4.5 created docs/process/gate-status.md, so doc23 is now ACTIVE and is exercised by its own
 # dedicated legs above (the gate-status block) — keeping it in this "stubs skip" tuple would pass for the
 # wrong reason (the real ledger is clean, the active path) under a misleading label (P0.4.5 G1 P2 fix).
-# doc24's target (p0-completion.md) is still unauthored (P0.6.10) -> a GENUINE target-absent skip.
-record("24 p0-completion: target-absent skip while p0-completion.md is unauthored (P0.6.10) -> []",
+# --- check 24: p0-completion.md run_url is an immutable Actions-run URL (P0.6.10) --------------------
+# The stub is BORN-GREEN: run_url holds the pattern-valid placeholder run `0` until the P0-exit commit
+# fills the real run id. check 24 reddens ANY run_url: token that is not an Actions-run URL, so a non-URL
+# placeholder (or a stray "run_url:" colon in prose BEFORE the data line) would fail; the schema describes
+# the field as `run_url` (no colon) so the regex's FIRST match is the data line.
+_PC_OK = ("# ConvertIA — P0 Completion Record\n\n## Record\n\n"
+          "run_url: https://github.com/Ne-IA/convertia/actions/runs/0\ndate: 2026-01-01\n")
+_PC = "docs/process/p0-completion.md"
+record("24 p0-completion: a pattern-valid Actions-run URL (the runs/0 placeholder) -> no finding",
+       m.doc24_p0_completion(dctx({_PC: _PC_OK})) == [])
+record("24 p0-completion: absent p0-completion.md -> skip (target-absent, not a finding)",
+       m.doc24_p0_completion(dctx({})) == [])
+record("24 p0-completion: a non-URL placeholder token -> caught",
+       any("does not match" in f.msg for f in m.doc24_p0_completion(
+           dctx({_PC: _PC_OK.replace("https://github.com/Ne-IA/convertia/actions/runs/0", "<pending-at-exit>")}))))
+record("24 p0-completion: a filled real run id passes",
+       m.doc24_p0_completion(dctx({_PC: _PC_OK.replace("runs/0", "runs/27820505219")})) == [])
+record("24 p0-completion: the REAL committed p0-completion.md stub passes (born-green)",
        m.doc24_p0_completion(_real) == [])
-# doc14/doc15/doc18/doc19/doc20 are now ALL ACTIVE (build-loop.md exists) and clean on the real repo —
-# each proven by its OWN dedicated REAL-doc leg above. The only GENUINE target-absent skip left is doc24
-# (p0-completion.md unauthored until P0.6.10, its own leg above). None of the five active P0.6 checks sits
-# in a "target-absent" tuple — that would pass for the wrong reason under a misleading label (the
-# P0.4.5-G1-P2 principle, see check 23 above); all five (doc14/doc15/doc18 here; doc19/doc20 from
-# P0.6.2/P0.6.3) are live with dedicated real-doc legs.
+# With p0-completion.md authored (P0.6.10), doc24 is now ACTIVE too — so ALL SIX P0.6/P0.3.5 doc-checks
+# (14/15/18/19/20/24) are live with dedicated real-doc legs and NONE remains a target-absent skip under a
+# misleading label. The only target-absent skips that survive are the per-check synthetic dctx({}) probes
+# (each paired with its real-doc leg), never a real check passing for the wrong reason — the P0.4.5-G1-P2
+# principle (see check 23 above), now fully discharged across the P0.6 activations.
 
 # --- check 26 (G69) structural-map integrity — the real logic, driven by pure fns (P0.3.13) ------
 # doc26 SKIPS while the §1a map is the P1.64 placeholder, so the active path is exercised via the pure
