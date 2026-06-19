@@ -565,22 +565,25 @@ A change is **done** only when:
 **Token-Notbremse / cadence numbers (the ConvertIA v1 baselines — `plan-lint` check
 15 asserts these appear verbatim here):**
 
-- **Soft-stop ~8 boxes** in one session — pause and summarize for the owner.
-- **Hard-stop ~12 boxes** in one session — a new session is required.
+- **Soft-stop** — `soft-stop fires when committed-box-count >= 8` in one session;
+  pause and summarize for the owner.
+- **Hard-stop** — `hard-stop at == 12` committed boxes in one session; a new session
+  is required.
 - **Phase-change hard-stop** after ≥1 committed box of a new **top-level** phase
   (re-orient at a phase boundary) — this applies to any **top-level phase boundary
   (Pn→Pn+1)**, **NOT** the P0.1–P0.7 clusters; for this autonomous loop that always
   means a P1→P2…→P11 transition (the loop never reaches a P0.x boundary, §0
   bootstrap note). It does **NOT** fire if the box counter is **0** (all of the new
   phase's boxes so far were `[!extern]`/`[!]`-skipped).
-- **P0 cluster soft-stop** (bootstrap phase only, driven manually): fires **at a
-  P0.x cluster boundary once ≥5 boxes have been committed since the last soft-stop**
-  (a running counter that **resets at each soft-stop**; it pauses at the *next*
-  cluster boundary after the counter crosses 5). This number governs the **manual P0
+- **P0 cluster soft-stop** (bootstrap phase only, driven manually):
+  `cluster soft-stop at >= 5 committed boxes` — fires at a P0.x cluster boundary once
+  that many boxes have been committed since the last soft-stop (a running counter that
+  **resets at each soft-stop**; it pauses at the *next* cluster boundary after the
+  counter crosses 5). This number governs the **manual P0
   bootstrap** run; this autonomous loop never reaches a P0.x boundary (§0 bootstrap
   note) — it lives here only because `build-loop.md` is the single canonical home of
   every cadence number (`plan-lint` check 15).
-- **3 consecutive gate-red pushes = hard-stop + escalate.**
+- **`>= 3 consecutive push failures` = hard-stop + escalate.**
 
 The box counter **increments only on a COMMITTED box** — `[!extern]`/`[!]`-skipped
 boxes do **not** count (so a soft-stop cannot fire spuriously after 5 skips,

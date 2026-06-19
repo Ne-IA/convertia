@@ -1079,9 +1079,25 @@ def doc14_dod_parity(ctx: Ctx) -> list[Finding]:
     return out
 
 
+# The canonical operator-anchored hard-stop / token-Notbremse strings (build-gates §6 check 15). The loop
+# reads its OWN cadence from build-loop.md §6, so each threshold MUST appear as an EXACT integer with an
+# EXPLICIT comparison operator (r7 — NOT the "~8"/"≥5" prose forms the loop could misread as 5 or 15). Each
+# string is a specific operator-anchored form, verified UNIQUE in build-loop.md (the P0.6.3 unique-in-doc
+# lesson) — so a silent reword back to a fuzzy prose form trips the drift-guard. P0.6.7 tightened §6 to these.
+_HARDSTOP_PHRASES = (
+    "soft-stop fires when committed-box-count >= 8",
+    "hard-stop at == 12",
+    "cluster soft-stop at >= 5 committed boxes",
+    ">= 3 consecutive push failures",
+)
+
+
 def doc15_hard_stop_parity(ctx: Ctx) -> list[Finding]:
-    """Check 15: the P0.6 hard-stop/Notbremse numbers appear verbatim in build-loop.md."""
-    return _bl_phrase(ctx, "15:hard-stop-parity", [])   # the exact P0.6 strings are pinned once build-loop.md lands
+    """Check 15: the canonical hard-stop / token-Notbremse thresholds appear VERBATIM in build-loop.md §6
+    as exact operator-anchored strings (build-gates §6 check 15) — so the autonomous loop cannot silently
+    run on stale/fuzzy thresholds (read "~8" as 5 or 15). Target-absent until build-loop.md exists
+    (P0.6-authored); fail-closed once present (P0.6.7-activated)."""
+    return _bl_phrase(ctx, "15:hard-stop-parity", _HARDSTOP_PHRASES)
 
 
 def doc18_named_procedure(ctx: Ctx) -> list[Finding]:

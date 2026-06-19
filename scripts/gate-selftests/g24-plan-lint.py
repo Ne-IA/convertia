@@ -346,6 +346,34 @@ record("14 dod-parity: the G1 `Definition-of-Done.` bullet absent -> caught",
 record("14 dod-parity: the REAL committed docs (build-loop.md §5 / G1 bullet / P0.6.5 box) pass",
        m.doc14_dod_parity(m.build_ctx(ROOT)) == [])
 
+# --- check 15: the operator-anchored hard-stop / Notbremse thresholds in build-loop.md §6 (P0.6.7) ------
+# Each canonical string is an EXACT integer + EXPLICIT operator; reverting any one to a fuzzy prose form
+# (~8 / ~12 / ~5 / "3 consecutive gate-red pushes") drops the verbatim match and is CAUGHT — so the loop
+# cannot silently run on a threshold it could misread.
+_HS_OK = ("# Build-Loop\n\n## 6. Hard-stops\n\n"
+          "- soft-stop fires when committed-box-count >= 8 in one session.\n"
+          "- hard-stop at == 12 committed boxes in one session.\n"
+          "- cluster soft-stop at >= 5 committed boxes since the last soft-stop.\n"
+          "- >= 3 consecutive push failures = hard-stop + escalate.\n")
+record("15 hard-stop: a build-loop.md with all four operator-anchored thresholds -> no finding",
+       m.doc15_hard_stop_parity(dctx({_BL: _HS_OK})) == [])
+record("15 hard-stop: absent build-loop.md -> skip (target-absent, not a finding)",
+       m.doc15_hard_stop_parity(dctx({})) == [])
+record("15 hard-stop: the soft-stop >= 8 string reverted to the '~8' prose form -> caught",
+       any(">= 8" in f.msg for f in m.doc15_hard_stop_parity(
+           dctx({_BL: _HS_OK.replace("soft-stop fires when committed-box-count >= 8", "soft-stop ~8 boxes")}))))
+record("15 hard-stop: the hard-stop == 12 string reverted to '~12' -> caught",
+       any("== 12" in f.msg for f in m.doc15_hard_stop_parity(
+           dctx({_BL: _HS_OK.replace("hard-stop at == 12", "hard-stop ~12 boxes")}))))
+record("15 hard-stop: the cluster >= 5 string reverted to '~5' -> caught",
+       any(">= 5" in f.msg for f in m.doc15_hard_stop_parity(
+           dctx({_BL: _HS_OK.replace("cluster soft-stop at >= 5 committed boxes", "cluster soft-stop at ~5 boxes")}))))
+record("15 hard-stop: the >= 3 push-failures string reverted to 'gate-red pushes' -> caught",
+       any(">= 3 consecutive push failures" in f.msg for f in m.doc15_hard_stop_parity(
+           dctx({_BL: _HS_OK.replace(">= 3 consecutive push failures", "3 consecutive gate-red pushes")}))))
+record("15 hard-stop: the REAL committed build-loop.md §6 thresholds pass (no finding)",
+       m.doc15_hard_stop_parity(m.build_ctx(ROOT)) == [])
+
 # --- check 25 leg (c2): the per-source content-fingerprint freshness ledger (P0.3.12) ---------
 # Each leg drives the PURE m._freshness_fingerprints(entries, root, docs) so a synthetic source can be
 # supplied via the `docs` dict (no temp files): an entry whose `file` is in `docs` reads that content.
@@ -471,14 +499,14 @@ record("21 t2-taint-xor: pending (neither CodeQL nor Semgrep live) -> skip []",
 # doc24's target (p0-completion.md) is still unauthored (P0.6.10) -> a GENUINE target-absent skip.
 record("24 p0-completion: target-absent skip while p0-completion.md is unauthored (P0.6.10) -> []",
        m.doc24_p0_completion(_real) == [])
-# doc15/doc18 are DORMANT, not target-absent: build-loop.md EXISTS, but their canonical phrase-sets stay
-# empty until P0.6.7/P0.6.8 pin them, so they return [] on the LIVE path (activated + given legs there).
-record("15/18 dormant: build-loop.md present but the phrase-sets are empty (activated P0.6.7/P0.6.8) -> []",
-       m.doc15_hard_stop_parity(_real) == [] and m.doc18_named_procedure(_real) == [])
-# doc14/doc19/doc20 are now ACTIVE (build-loop.md exists) and clean on the real repo — each proven by its
-# OWN dedicated REAL-doc leg above. They are deliberately NOT in a "target-absent" tuple: that would pass
-# for the wrong reason under a misleading label — the P0.4.5-G1-P2 principle (see check 23 above), applied
-# to the three P0.6 activations (doc14 here; doc19/doc20 left here in error by P0.6.2/P0.6.3, now corrected).
+# doc18 remains DORMANT, not target-absent: build-loop.md EXISTS, but its named-procedure phrase-set stays
+# empty until P0.6.8 pins it, so it returns [] on the LIVE path (activated + given its own legs there).
+record("18 dormant: build-loop.md present but doc18's phrase-set is empty (activated P0.6.8) -> []",
+       m.doc18_named_procedure(_real) == [])
+# doc14/doc15/doc19/doc20 are now ACTIVE (build-loop.md exists) and clean on the real repo — each proven by
+# its OWN dedicated REAL-doc leg above. They are deliberately NOT in a "target-absent" tuple: that would
+# pass for the wrong reason under a misleading label — the P0.4.5-G1-P2 principle (see check 23 above),
+# applied to the four P0.6 activations (doc14/doc15 here; doc19/doc20 were left here in error by P0.6.2/P0.6.3).
 
 # --- check 26 (G69) structural-map integrity — the real logic, driven by pure fns (P0.3.13) ------
 # doc26 SKIPS while the §1a map is the P1.64 placeholder, so the active path is exercised via the pure
