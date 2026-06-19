@@ -1,0 +1,124 @@
+# tests/detect-kat.toml — the detection-layer Known-Answer Test (KAT).
+#
+# SOURCES: §6.4.1 + §1.2 (06-build-test-release / 00-architecture); doctrine home
+# test-strategy.md §1.1; read by gate G15 (the consumer); per-format completeness
+# enforced by the G15 peer gate P4.60.5.
+#
+# WHAT IT IS
+# ----------
+# A committed table that pins canonical / ambiguous input files to the EXACT result the
+# §1.2 magic-byte detector must produce for them — its `FormatId` for a recognized file,
+# or the specific non-recognized `DetectionOutcome` (a clean decline) otherwise. The G15
+# unit test (`crate::detect`, stood up in P3) reads every `[[case]]` and asserts that
+# `detect(file)` equals the pinned result, so a toolchain bump (e.g. a `quick-xml`
+# upgrade) or a detector refactor that SILENTLY changes the classification of an
+# ambiguous signature is caught at L2 (a fast unit test) — not only at L4 when the
+# per-pair corpus run happens to exercise that file. Detection feeds routing, so a silent
+# mis-detection is a no-misroute (§2) regression; this KAT is its tripwire.
+#
+# WHY A KAT (not only the corpus)
+# -------------------------------
+# The L4 corpus proves a CORRECTLY-detected file converts. It does NOT prove the DETECTOR
+# assigns each ambiguous signature its exact type: many distinct formats share a leading
+# magic and are disambiguated only by a deeper structural peek —
+#   • OLE2 / CFB `D0 CF 11 E0 …`  → DOC vs XLS vs PPT  (the CFB root stream directory)
+#   • OPC ZIP    `50 4B 03 04`    → DOCX vs XLSX vs PPTX vs ODF vs a bare `.zip`
+#                                   (`[Content_Types].xml` / the stored `mimetype` member)
+#   • ISO-BMFF   `… ftyp …`       → HEIC vs AVIF (image) / MP4 vs MOV vs M4V vs 3GP (video)
+#   • EBML       `1A 45 DF A3`    → MKV vs WEBM (the `DocType`)
+#   • Ogg        `OggS`           → Vorbis (OGG) vs Opus (`OpusHead`)
+#   • `ftyp` + `stsd`             → M4A-AAC vs ALAC
+# A pin on each such collision (and on misnamed-extension files, e.g. a `.jpg` that is
+# really PNG, a `.m4a` that is really ALAC) turns §6.4.1's prose claim into a
+# machine-enforced L2 assertion.
+#
+# SCHEMA  (one array-of-tables entry per pinned file)
+# ---------------------------------------------------
+#   [[case]]
+#   file     = "<path>"   REQUIRED. The fixture path, RELATIVE to the corpus root
+#                         `tests/corpus/` (the SAME convention as a §6.4.5
+#                         `manifest.toml` `path`), so a KAT fixture is always a
+#                         manifest-tracked, sha256-pinned (G24a) corpus byte — never an
+#                         ad-hoc file. P4.60.5 asserts every entry's `file` is
+#                         manifest-tracked.
+#   expect   = "<id>"     REQUIRED. EITHER an exact `FormatId` (= §0.6 `UserFacingFormat`
+#                         variant, PascalCase: `Doc` `Xls` `Ppt` `Png` `Csv` `Tsv` …) for a
+#                         `DetectionOutcome::Recognized`, OR a non-recognized
+#                         `DetectionOutcome` variant name — `UnsupportedType` (a real but
+#                         out-of-§04-scope file, a clean decline) / `Uncertain` (the
+#                         sniffer cannot decide) / `Empty` / `Unreadable`. The two name-sets
+#                         are DISJOINT today (no §0.6 `FormatId` variant equals an outcome
+#                         name), so the single field is unambiguous: the reader resolves
+#                         `expect` against the `FormatId` set FIRST, else the
+#                         `DetectionOutcome` set. INVARIANT (the P4.60.5 reader MUST assert,
+#                         fail-closed): the two sets stay disjoint — because resolution is
+#                         FormatId-first, a future format ever NAMED like an outcome (e.g. an
+#                         `Empty` format) would silently shadow that outcome assertion, a
+#                         no-misroute-class regression this KAT exists to prevent; P4.60.5's
+#                         `detect-kat.toml` reader fails if any `FormatId` name collides with
+#                         a `DetectionOutcome` name.
+#   detected = "<str>"    OPTIONAL, only with `expect = "UnsupportedType"`: the real format
+#                         the sniffer NAMES in the `UnsupportedType { detected }` payload
+#                         (informational — pins WHY it declines, never promotes it).
+#   misnamed = "<ext>"    OPTIONAL: the deliberately-misleading on-disk extension when the
+#                         fixture's name lies (a `.jpg` that is PNG → `misnamed = ".jpg"`,
+#                         `expect = "Png"`) — magic is authoritative over extension (§1.2).
+#   why      = "<prose>"  OPTIONAL but expected for every ambiguous / misnamed case: the
+#                         collision or lie this pin guards, so a future reader knows what a
+#                         regression here would mean.
+#
+# SCOPE OF THIS FILE (P0.5.7)
+# ---------------------------
+# This box authors the CONVENTION + this reference template. The FIRST LIVE entries —
+# canonical CSV/TSV, a `.csv` that is really TSV, an ambiguous → `Uncertain` — land with
+# the P3 walking-skeleton detector (P3.30, `needs: P3.29, P0.5.7`); each subsequent §1.2
+# signature box (P5 image / P6 audio+video / P7 office) adds its format's pin in the same
+# commit; and the P4.60.5 completeness gate fails CI if any §04 format ends up with zero
+# entries. So this file is intentionally live-entry-empty here (a valid, inert TOML table)
+# — it is the schema home the detector phases populate, not a place that pins an unstaged
+# fixture.
+#
+# NOT an L(-1) file. This is object-level detection ground-truth (like the §6.4.5 corpus
+# manifest, which is likewise un-caged) — the Build-Loop EXTENDS it routinely as each
+# detector lands (P3/P5/P6/P7), so it is NOT in the `scripts/l-neg1-files.toml` cage; its
+# integrity comes from the G15 test + the no-green-by-rewrite doctrine (test-strategy §8)
+# + its fixtures' G24a sha256 pins, not from owner-ack change-control. (Contrast the
+# `tests/g53-fixture/**` META-canary, which IS caged: neutering it false-greens a GATE.)
+
+# =======================================================================================
+# REFERENCE TEMPLATE — the exact shape the P3/P5/P6/P7 detector boxes follow. Commented
+# out because each fixture it names is staged WITH the box that adds the pin;
+# uncomment-and-fill rather than pinning a fixture before it has been staged here. Kept
+# as documentation, not as live assertions.
+# =======================================================================================
+#
+# # the headline OLE2 / CFB collision — one D0 CF 11 E0 leader, three formats:
+# [[case]]
+# file = "documents/canonical.doc"
+# expect = "Doc"
+# why = "DOC/XLS/PPT share the OLE2/CFB magic D0 CF 11 E0 A1 B1 1A E1; only the CFB root stream directory (WordDocument vs Workbook/Book vs PowerPoint Document) disambiguates — a detector refactor that regresses this misroutes a Word document to the spreadsheet engine"
+#
+# [[case]]
+# file = "spreadsheets/canonical.xls"
+# expect = "Xls"
+# why = "the same OLE2 leader as the .doc above; pinned so the Workbook/Book stream branch cannot silently collapse into the WordDocument branch"
+#
+# # a misnamed file — magic is authoritative over the lying extension (§1.2):
+# [[case]]
+# file = "images/png_named_jpg.jpg"
+# expect = "Png"
+# misnamed = ".jpg"
+# why = "the bytes are a PNG (89 50 4E 47 …) though the name says .jpg; §1.2 trusts magic over extension, so detection must return Png, never Jpg"
+#
+# # a real, well-formed file that is correctly OUT OF §04 SCOPE — a clean decline:
+# [[case]]
+# file = "misc/photoshop_sample.psd"
+# expect = "UnsupportedType"
+# detected = "PSD"
+# why = "a valid Photoshop file — a real image format that is NOT in the §04 supported set; the KAT pins a clean UnsupportedType decline (detected=PSD), never a mis-promotion to a supported image format"
+#
+# # an ambiguous / garbled file the sniffer must refuse to force:
+# [[case]]
+# file = "misc/ambiguous.bin"
+# expect = "Uncertain"
+# why = "leading bytes that match no signature with confidence; pinned so a future over-eager heuristic that forces a wrong FormatId is caught here, not shipped"
