@@ -49,6 +49,6 @@ status, not by check 24.
 
 ## Record
 
-run_url: https://github.com/Ne-IA/convertia/actions/runs/0
-date: (filled in the P0-exit-recording commit)
-box_state_at_exit: (filled in the P0-exit-recording commit)
+run_url: https://github.com/Ne-IA/convertia/actions/runs/27850148459
+date: 2026-06-19
+box_state_at_exit: P0 = 85/85 `[x]` (0 open `[ ]`, 0 `[!extern]`). The consolidated `[!extern]` owner-action list is **EMPTY** — every owner-provisioning was completed AND verified in this owner-present P0 bootstrap session, so P0 exits with no outstanding owner action. The release-signing chain is LIVE + proven: SSH ed25519 commit/tag signing (ssh-agent) with GitHub `verified=true`, the `main` `required_signatures` ruleset, the `v*` tag-protection ruleset, the `release` GitHub Environment (required-reviewer + `v*` deploy policy) holding `MINISIGN_SECRET_KEY`/`MINISIGN_PASSWORD`, and the minisign keypair roundtrip-verified against the committed `docs/minisign.pub` (`minisign -Vm` exit 0 = the exact G39 release check); G56a runs GREEN against the live repo config. Final P0.7 release-trust commits: `e653ae1` (policy docs, P0.7.16 `[x]` + .17/.18), `5b6cdee` (symmetric P10.4 STOP), `accebb8` (`.github/allowed_signers`), `8cd22d6` (P0.7.17/.18 provisioned + verified). Both enforcement planes (L1-L3 lefthook + L4 CI) green on `main`; the run_url above is the L4 run for `8cd22d6`.
