@@ -207,6 +207,38 @@ record("23 gate-status: a cargo-mutants row flipped to 'required' (no registry e
        any("cargo-mutants" in f.msg.lower() and "disagrees" in f.msg for f in m.doc23_ratchet_log(
            dctx(_ledger(_SEEDED[:-1] + [("`cargo-mutants`", "required", "2026-06-19")])))))
 
+# --- check 19: the G1 reviewer-rubric fenced block in build-loop.md (P0.6.2) -------------------
+_BL = "docs/process/build-loop.md"
+_RUBRIC_OK = ("# Build-Loop\n\n```text\n=== ConvertIA dual-review rubric (canonical) ===\n"
+              "Input: the STAGED diff (git diff --cached, inline).\n"
+              "1. COMPLETENESS  2. CORRECTNESS  3. SPEC-CONFORMANCE  4. SECURITY (does it open a network surface?)  5. TEST-INTEGRITY\n"
+              "is this SUPPRESSING A REAL REGRESSION? State convergence/divergence explicitly.\n"
+              "SPEC-CONTRADICTION is a finding CLASS ABOVE P0.\n```\n")
+record("_extract_fenced_block: returns the marked block's body",
+       (m._extract_fenced_block("a\n```text\nMARK here\nbody line\n```\nb\n", "MARK here") or "").strip().endswith("body line"))
+record("_extract_fenced_block: None when no fenced block carries the marker",
+       m._extract_fenced_block("```\nunrelated\n```\n", "MARK here") is None)
+record("19 reviewer-rubric: a complete fenced rubric block -> no finding",
+       m.doc19_reviewer_rubric(dctx({_BL: _RUBRIC_OK})) == [])
+record("19 reviewer-rubric: absent build-loop.md -> skip (target-absent, not a finding)",
+       m.doc19_reviewer_rubric(dctx({})) == [])
+record("19 reviewer-rubric: no fenced rubric block at all -> caught (absent/empty)",
+       any("absent or empty" in f.msg for f in m.doc19_reviewer_rubric(dctx({_BL: "# bl\n\nprose, no rubric\n"}))))
+record("19 reviewer-rubric: a rubric MISSING the SPEC-CONTRADICTION-above-P0 phrase -> caught",
+       any("SPEC-CONTRADICTION is a finding CLASS ABOVE P0" in f.msg for f in m.doc19_reviewer_rubric(
+           dctx({_BL: _RUBRIC_OK.replace("SPEC-CONTRADICTION is a finding CLASS ABOVE P0.", "")}))))
+record("19 reviewer-rubric: a rubric MISSING the test-integrity item -> caught",
+       any("SUPPRESSING A REAL REGRESSION" in f.msg for f in m.doc19_reviewer_rubric(
+           dctx({_BL: _RUBRIC_OK.replace("is this SUPPRESSING A REAL REGRESSION?", "")}))))
+# G1 P0.6.2 P3 hardening: the SECURITY dimension is pinned by its substance ("open a network surface"),
+# not the bare word "SECURITY" (which collides with "security-critical" in-block) — so renaming the
+# dimension away is now CAUGHT, the one phrase-drop the original legs did not exercise.
+record("19 reviewer-rubric: a rubric MISSING the SECURITY dimension (open-a-network-surface) -> caught",
+       any("open a network surface" in f.msg for f in m.doc19_reviewer_rubric(
+           dctx({_BL: _RUBRIC_OK.replace("open a network surface", "")}))))
+record("19 reviewer-rubric: the REAL committed build-loop.md rubric passes (no finding)",
+       m.doc19_reviewer_rubric(m.build_ctx(ROOT)) == [])
+
 # --- check 25 leg (c2): the per-source content-fingerprint freshness ledger (P0.3.12) ---------
 # Each leg drives the PURE m._freshness_fingerprints(entries, root, docs) so a synthetic source can be
 # supplied via the `docs` dict (no temp files): an entry whose `file` is in `docs` reads that content.

@@ -982,12 +982,63 @@ def doc18_named_procedure(ctx: Ctx) -> list[Finding]:
     return _bl_phrase(ctx, "18:named-procedure", [])
 
 
+def _extract_fenced_block(text: str, marker: str) -> str | None:
+    """The body (the inside lines, joined with '\\n') of the FIRST ``` / ~~~ fenced block whose content
+    contains `marker` (case-insensitively), or None if no such block. The inverse of _strip_fenced
+    (which drops fenced lines): used to assert a COMMITTED canonical block exists + carries its phrases
+    (e.g. the G1 reviewer rubric, P0.6.2). A block that never closes is treated as not-found (fail-closed)."""
+    fence = None
+    buf: list[str] = []
+    for line in _lf(text).split("\n"):
+        s = line.lstrip()
+        if fence is None:
+            if s.startswith("```") or s.startswith("~~~"):
+                fence, buf = s[:3], []
+            continue
+        if s.startswith(fence):                       # the closing fence
+            block = "\n".join(buf)
+            if marker.lower() in block.lower():
+                return block
+            fence, buf = None, []
+            continue
+        buf.append(line)
+    return None
+
+
+# The canonical G1 reviewer-rubric block lives as a fenced block in build-loop.md §3 Step 5 (P0.6.2).
+# _RUBRIC_MARKER identifies it; _RUBRIC_PHRASES are the load-bearing strings the box requires present so
+# the loop cannot silently under-specify its own review prompt: the five critique dimensions, the
+# no-green-by-rewrite test-integrity item, the divergence handling, and the SPEC-CONTRADICTION-above-P0
+# class. Matched case-insensitively as substrings WITHIN the extracted block (not the whole doc).
+_RUBRIC_MARKER = "ConvertIA dual-review rubric"
+_RUBRIC_PHRASES = (
+    "STAGED diff",                                     # staged-diff input (not a SHA)
+    "COMPLETENESS", "CORRECTNESS", "SPEC-CONFORMANCE", "TEST-INTEGRITY",  # 4 of the 5 critique dimensions
+    "open a network surface",                          # the SECURITY dimension's substance — pinned to the
+    #   critique line, NOT the bare word "SECURITY" (which collides with "security-critical file" elsewhere
+    #   in-block, so renaming the dimension away would slip through — G1 P0.6.2 P3 hardening)
+    "SUPPRESSING A REAL REGRESSION",                   # the test-integrity high-scrutiny (no-green-by-rewrite) item
+    "convergence/divergence",                          # divergence handling
+    "SPEC-CONTRADICTION is a finding CLASS ABOVE P0",  # the unconditional-hard-stop class above P0
+)
+
+
 def doc19_reviewer_rubric(ctx: Ctx) -> list[Finding]:
-    """Check 19: the G1 reviewer rubric is a committed fenced block in build-loop.md, non-empty."""
+    """Check 19: the G1 reviewer rubric is a committed, NON-EMPTY fenced block in build-loop.md carrying
+    the canonical critique dimensions + the SPEC-CONTRADICTION-above-P0 class + the divergence /
+    test-integrity phrases — so the loop cannot silently edit or under-specify its own review prompt
+    (P0.6.2). Target-absent until build-loop.md exists (P0.1.3-authored); fail-closed once present."""
     bl = _bl(ctx)
     if not bl:
-        return []                          # build-loop.md lands in P0.6
-    return []                              # the fenced-rubric presence + verbatim-source check activates then
+        return []                          # build-loop.md lands in P0.1.3/P0.6
+    F = "docs/process/build-loop.md"
+    block = _extract_fenced_block(bl, _RUBRIC_MARKER)
+    if block is None or not block.strip():
+        return [Finding("19:reviewer-rubric", F, 0,
+                        f"the canonical G1 reviewer-rubric fenced block (marker {_RUBRIC_MARKER!r}) is "
+                        f"absent or empty — the loop's review prompt is unpinned (P0.6.2)")]
+    return [Finding("19:reviewer-rubric", F, 0, f"reviewer-rubric canonical phrase absent: {p!r}")
+            for p in _RUBRIC_PHRASES if p.lower() not in block.lower()]
 
 
 def doc20_reviewer_family(ctx: Ctx) -> list[Finding]:
