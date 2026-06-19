@@ -18,7 +18,7 @@ decision (`informational` ↔ `required`), plus the purely-informational census 
 Each box that introduces such a gate appends its row in the **same commit**:
 
 - **P0.4.5** (this file's creator) — the four over-assurance behavioural backstops below.
-- **P0.5.10** — `cargo-mutants` (scoped mutation testing), appended when authored.
+- **P0.5.10** — `cargo-mutants` (scoped mutation testing), the fifth ledger row (appended by this box).
 - **P0.7.14** — **G64** (privilege-drop-tier ratchet) + the formal flip protocol.
 - **P0.7.15** — **G65** (engine-subprocess coverage-guided fuzz), appended when authored.
 - **G17b** — appended by its box.
@@ -38,9 +38,13 @@ rather than an invisible drift.
 | `cargo-careful` | informational | 2026-06-18 | P1 | nightly wrapper adding extra std debug assertions + runtime-UB checks on the untrusted-byte detect/`fs_guard` path (Principle 9) |
 | Kani | informational | 2026-06-18 | P1 | bounded model checking that PROVES the small numeric caps (≤100× decompression ratio, `MAX_SVGZ_SNIFF` ≤64 KiB, the `fs_guard` predicates) rather than fuzzer-hoping them |
 | `cargo-geiger` | informational | 2026-06-18 | P1 | `unsafe`-usage census over the dependency graph — informational-forever (a visibility tool; it never ratchets to `required`) |
+| `cargo-mutants` | informational | 2026-06-19 | P3 (P3.72) | scoped mutation testing over `crate::fs_guard`+`crate::detect`+`crate::outcome` (the no-harm/atomicity/no-misroute kernel), a **G15** sub-leg — line coverage proves a line RAN, not that a test would CATCH a regression there; owner flips `informational`→`required` once survived-mutants reach **0** for `crate::fs_guard`+`crate::detect` (the P3.72 first run + the decrease-only per-crate `max_survived_mutants.toml` ratchet) |
 
-None of the four replaces **G48**'s fuzz; each is an **additive** proof/observation
-layer on top of the deterministic gates, which the owner may adopt.
+None of the four over-assurance backstops replaces **G48**'s fuzz; each is an
+**additive** proof/observation layer on top of the deterministic gates, which the
+owner may adopt. `cargo-mutants` (the fifth row, P0.5.10) is likewise additive to
+G48 — fuzzing finds crashes on hostile input; mutation testing finds assertions the
+tests forgot to make. It is detailed in its own section below.
 
 ## Over-assurance behavioural backstops (P0.4.5 · §1.2 · G29 G48)
 
@@ -93,3 +97,28 @@ giving a visible census of where `unsafe` lives in third-party crates. It is **p
 informational — it never ratchets to `required`** (a visibility aid, not a pass/fail
 gate; the enforced `unsafe` policy is G29). It is recorded here so the decision to keep
 it informational-forever is itself a dated, auditable line.
+
+## Scoped mutation testing — `cargo-mutants` (P0.5.10 · §6.4 · G15)
+
+A **release-tier** mutation-testing sub-leg of **G15** over the safety kernel
+`crate::fs_guard` + `crate::detect` + `crate::outcome` (the no-harm / atomicity /
+no-misroute kernel). Line coverage proves a line **executed**; it does **not** prove a
+test would CATCH a regression there — `cargo-mutants` mutates the kernel's code and
+**fails if a mutation survives the test suite** (a gap a coverage percentage hides). It
+is **additive to G48**, not a replacement: G48's fuzz finds crashes on hostile input;
+mutation testing finds the assertion a test forgot to make on benign input.
+
+**Owner decision (required-vs-informational, like G17b).** Recorded `informational`
+here; the owner flips it to `required` once the survived-mutant count reaches **0** for
+`crate::fs_guard` + `crate::detect` (the two kernels whose silent regression breaks the
+no-harm / no-misroute guarantees). A flip edits BOTH this ledger row (status + `Since`)
+AND the `plan-lint` check-23 `_OWNER_DECIDABLE_GATES` posture map in the same owner-acked
+L(-1) commit (the flip protocol above).
+
+**Activation (the end-of-P3 [GATE] box `P3.72`, `needs: P0.5.10`).** The runnable first
+informational pass lands after the kernel crate bodies exist (the P3.6/P3.8/P3.18/P3.29
+kernel boxes): it emits a per-crate survived-mutant report, and the ratchet is a tracked
+per-crate `max_survived_mutants.toml` initialised at the first-run count, **decrease-only**
+(authored by P3.72 — this box registers only the gate + its posture, mirroring the P3.67
+fuzz-replay activation pattern). The gate then ratchets decrease-only per crate as
+subsequent phases deepen the kernel test suites.

@@ -1013,6 +1013,7 @@ _OWNER_DECIDABLE_GATES = {
     "kani":          "informational",   # bounded model checking of the numeric caps (P0.4.5)
     "cargo-careful": "informational",   # runtime-UB / extra-assertion nightly wrapper (P0.4.5)
     "cargo-geiger":  "informational",   # unsafe-usage census, informational-forever (P0.4.5)
+    "cargo-mutants": "informational",   # scoped mutation testing of the fs_guard/detect/outcome kernel, G15 sub-leg (P0.5.10); owner flips ->required at 0 survived for fs_guard+detect (P3.72 ratchet)
 }
 _GATE_STATUSES = {"informational", "required", "decided"}
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")

@@ -169,34 +169,43 @@ def _ledger(rows):                                   # rows: list of (name, stat
     return {_GS: "# Ledger doc\n\n## Ledger\n\n" + _LEDGER_HEAD + body}
 
 
-_FOUR = [("`cargo-acl`/cackle", "informational", "2026-06-18"),
-         ("`cargo-careful`", "informational", "2026-06-18"),
-         ("Kani", "informational", "2026-06-18"),
-         ("`cargo-geiger`", "informational", "2026-06-18")]
-record("23 gate-status: a clean 4-row ledger -> no finding",
-       m.doc23_ratchet_log(dctx(_ledger(_FOUR))) == [])
+_SEEDED = [("`cargo-acl`/cackle", "informational", "2026-06-18"),
+           ("`cargo-careful`", "informational", "2026-06-18"),
+           ("Kani", "informational", "2026-06-18"),
+           ("`cargo-geiger`", "informational", "2026-06-18"),
+           ("`cargo-mutants`", "informational", "2026-06-19")]   # P0.5.10 — the G15 mutation sub-leg
+record("23 gate-status: a clean 5-row ledger (all registered gates) -> no finding",
+       m.doc23_ratchet_log(dctx(_ledger(_SEEDED))) == [])
 record("23 gate-status: absent ledger -> skip (target-absent, not a finding)",
        m.doc23_ratchet_log(dctx({})) == [])
 record("23 gate-status: a missing required gate (no Kani row) -> caught",
-       any("kani" in f.msg.lower() for f in m.doc23_ratchet_log(dctx(_ledger([r for r in _FOUR if r[0] != "Kani"])))))
+       any("kani" in f.msg.lower() for f in m.doc23_ratchet_log(dctx(_ledger([r for r in _SEEDED if r[0] != "Kani"])))))
 record("23 gate-status: a malformed status ('maybe') -> caught",
        any("not one of" in f.msg for f in m.doc23_ratchet_log(
-           dctx(_ledger([("`cargo-acl`/cackle", "maybe", "2026-06-18")] + _FOUR[1:])))))
+           dctx(_ledger([("`cargo-acl`/cackle", "maybe", "2026-06-18")] + _SEEDED[1:])))))
 record("23 gate-status: a non-ISO 'Since' date -> caught",
        any("ISO" in f.msg for f in m.doc23_ratchet_log(
-           dctx(_ledger([("`cargo-acl`/cackle", "informational", "June 18")] + _FOUR[1:])))))
+           dctx(_ledger([("`cargo-acl`/cackle", "informational", "June 18")] + _SEEDED[1:])))))
 record("23 gate-status: a status disagreeing with the effective posture -> caught",
        any("disagrees" in f.msg for f in m.doc23_ratchet_log(
-           dctx(_ledger([("`cargo-acl`/cackle", "required", "2026-06-18")] + _FOUR[1:])))))
+           dctx(_ledger([("`cargo-acl`/cackle", "required", "2026-06-18")] + _SEEDED[1:])))))
 record("23 gate-status: a table without a Status+Since header is ignored -> required rows still missing",
        any("no dated status row" in f.msg for f in m.doc23_ratchet_log(
            dctx({_GS: "# L\n\n| a | b |\n|---|---|\n| x | y |\n"}))))
 record("23 gate-status: a near-miss name (cargo-aclx) does NOT false-bind the cargo-acl key -> still missing",
        any("'cargo-acl'" in f.msg and "no dated status row" in f.msg for f in m.doc23_ratchet_log(
-           dctx(_ledger([("`cargo-aclx`", "informational", "2026-06-18")] + _FOUR[1:])))))
+           dctx(_ledger([("`cargo-aclx`", "informational", "2026-06-18")] + _SEEDED[1:])))))
 record("23 gate-status: an impossible-but-ISO-shaped 'Since' date (2026-13-99) -> caught",
        any("valid ISO" in f.msg for f in m.doc23_ratchet_log(
-           dctx(_ledger([("`cargo-acl`/cackle", "informational", "2026-13-99")] + _FOUR[1:])))))
+           dctx(_ledger([("`cargo-acl`/cackle", "informational", "2026-13-99")] + _SEEDED[1:])))))
+# P0.5.10: the cargo-mutants registration is enforced both ways — a missing row is caught, and a
+# posture flip away from `informational` without a matching _OWNER_DECIDABLE_GATES edit is caught.
+record("23 gate-status: a missing cargo-mutants row (P0.5.10) -> caught",
+       any("cargo-mutants" in f.msg.lower() and "no dated status row" in f.msg
+           for f in m.doc23_ratchet_log(dctx(_ledger(_SEEDED[:-1])))))
+record("23 gate-status: a cargo-mutants row flipped to 'required' (no registry edit) -> disagrees caught",
+       any("cargo-mutants" in f.msg.lower() and "disagrees" in f.msg for f in m.doc23_ratchet_log(
+           dctx(_ledger(_SEEDED[:-1] + [("`cargo-mutants`", "required", "2026-06-19")])))))
 
 # --- check 25 leg (c2): the per-source content-fingerprint freshness ledger (P0.3.12) ---------
 # Each leg drives the PURE m._freshness_fingerprints(entries, root, docs) so a synthetic source can be
