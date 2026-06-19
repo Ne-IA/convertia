@@ -239,6 +239,31 @@ record("19 reviewer-rubric: a rubric MISSING the SECURITY dimension (open-a-netw
 record("19 reviewer-rubric: the REAL committed build-loop.md rubric passes (no finding)",
        m.doc19_reviewer_rubric(m.build_ctx(ROOT)) == [])
 
+# --- check 20: the reviewer-family owner decision + spot-audit cadence (P0.6.3) ----------------
+_FAM_OK = ("# Build-Loop\n\nRecorded reviewer-family decision: the two reviewers share model lineage, so\n"
+           "the correlated-lineage residual is explicitly ACCEPTED for v1 (the deterministic gates carry\n"
+           "the real security weight), WITH a Co-Pilot spot-audit at every phase boundary AND a random\n"
+           "1-in-10-box sample; the flip option remains open.\n")
+record("20 reviewer-family: a build-loop.md with the full decision + cadence -> no finding",
+       m.doc20_reviewer_family(dctx({_BL: _FAM_OK})) == [])
+record("20 reviewer-family: absent build-loop.md -> skip (target-absent, not a finding)",
+       m.doc20_reviewer_family(dctx({})) == [])
+record("20 reviewer-family: a build-loop.md MISSING the spot-audit cadence -> caught",
+       any("spot-audit" in f.msg for f in m.doc20_reviewer_family(dctx({_BL: _FAM_OK.replace("spot-audit", "review")}))))
+record("20 reviewer-family: a build-loop.md MISSING the explicit acceptance -> caught",
+       any("ACCEPTED for v1" in f.msg for f in m.doc20_reviewer_family(dctx({_BL: _FAM_OK.replace("ACCEPTED for v1", "left open")}))))
+record("20 reviewer-family: a build-loop.md MISSING the flip-option phrase -> caught",
+       any("flip option remains open" in f.msg for f in m.doc20_reviewer_family(
+           dctx({_BL: _FAM_OK.replace("the flip option remains open", "")}))))
+# G1 P0.6.3 P1: the cadence has TWO prongs (phase-boundary spot-audit + 1-in-10-box sample); dropping the
+# phase-boundary prong must be caught — the phrase is pinned to "at every phase boundary" (unique-in-doc),
+# not bare "phase boundary" (which collides with L571/L657 and let this prong be silently halved).
+record("20 reviewer-family: a build-loop.md MISSING the phase-boundary cadence prong -> caught",
+       any("at every phase boundary" in f.msg for f in m.doc20_reviewer_family(
+           dctx({_BL: _FAM_OK.replace("at every phase boundary", "per box")}))))
+record("20 reviewer-family: the REAL committed build-loop.md decision passes (no finding)",
+       m.doc20_reviewer_family(m.build_ctx(ROOT)) == [])
+
 # --- check 25 leg (c2): the per-source content-fingerprint freshness ledger (P0.3.12) ---------
 # Each leg drives the PURE m._freshness_fingerprints(entries, root, docs) so a synthetic source can be
 # supplied via the `docs` dict (no temp files): an entry whose `file` is in `docs` reads that content.

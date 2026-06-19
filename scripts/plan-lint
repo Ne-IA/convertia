@@ -1041,12 +1041,31 @@ def doc19_reviewer_rubric(ctx: Ctx) -> list[Finding]:
             for p in _RUBRIC_PHRASES if p.lower() not in block.lower()]
 
 
+# The reviewer-family owner decision (build-loop.md §3, P0.6.3): the two G1 reviewers share model lineage,
+# so "both GO, 0 findings" is a CORRELATED signal — the residual is explicitly ACCEPTED for v1 (the
+# deterministic gates carry the real security weight) WITH a concrete spot-audit cadence, and the flip to a
+# different reviewer family stays open. RULE (the P0.6.3-G1-P1 lesson, refining P0.6.2's): each phrase must
+# be UNIQUE in build-loop.md (not merely multi-word) — a multi-word phrase that ALSO occurs out-of-block
+# (e.g. bare "phase boundary" at L571/L657, bare "reviewer-family decision" in the §0 list at L7) lets that
+# decision element be silently removed while a stray occurrence keeps the check green. So pin each to a
+# form unique to the decision block; a legitimate reword then trips a SAFE drift-guard, never a false-green.
+_REVIEWER_FAMILY_PHRASES = (
+    "Recorded reviewer-family decision",  # the recorded owner call (the block header — unique; the bare form collides with the §0 procedure list)
+    "correlated-lineage residual",   # the shared-model-lineage correlated-signal rationale (the WHY)
+    "ACCEPTED for v1",               # the explicit acceptance of the correlated residual
+    "spot-audit",                    # the audit mechanism (both occurrences are in-block, no external collision)
+    "at every phase boundary",       # the cadence's phase-boundary prong — unique; the bare "phase boundary" collides with L571/L657
+    "1-in-10-box",                   # the cadence's random-sample prong
+    "flip option remains open",      # the different-family-reviewer flip kept open
+)
+
+
 def doc20_reviewer_family(ctx: Ctx) -> list[Finding]:
-    """Check 20: build-loop.md records the reviewer-family owner decision + a spot-audit cadence."""
-    bl = _bl(ctx)
-    if not bl:
-        return []                          # build-loop.md lands in P0.6
-    return []
+    """Check 20: build-loop.md records the reviewer-family owner decision (the explicit acceptance of the
+    correlated-lineage residual, or a different-family reviewer) AND its concrete spot-audit cadence — so
+    the loop cannot run G1 without the decision + cadence being present (P0.6.3). Target-absent until
+    build-loop.md exists (P0.1.3-authored); fail-closed once present."""
+    return _bl_phrase(ctx, "20:reviewer-family", _REVIEWER_FAMILY_PHRASES)
 
 
 # --- check 23 (the G68 sibling): the owner-decidable / informational-then-ratcheted gate-status ledger.
