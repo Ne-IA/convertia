@@ -50,7 +50,9 @@ manifest, license compliance).
   choices itself.
 - **L(-1) security-critical-file change-control (owner decision D1).** The files that
   carry the power to silently weaken an enforcement plane — gate scripts + their
-  self-tests, the G29 SAST rule corpus `scripts/semgrep-rules/**` (project rules +
+  self-tests (incl. the G24a corpus-manifest **generator** `scripts/stage-corpus`,
+  P0.5.11 — it writes the SHA-256 trust root G24a verifies, so a poisoned generator
+  could auto-vouch a swapped fixture), the G29 SAST rule corpus `scripts/semgrep-rules/**` (project rules +
   vendored packs + the net-allow-list + the planted-positive fixtures),
   `lefthook.yml`, the CI workflows (`.github/**`), `deny.toml`,
   `.gitleaks.toml` + allowlist/baseline, the pip gate-toolchain pin `requirements-ci.txt`

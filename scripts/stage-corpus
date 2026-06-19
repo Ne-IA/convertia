@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""stage-corpus - the SHA-256 + licence manifest generator (P0.5.11, G24a sub-tool).
+
+The corpus-staging helper every corpus-landing box (P3.61 / P5.48 / P6.30… / P7.49… / P9.31, each via
+its own `needs: P0.5.11` edge) invokes so the author NEVER hand-computes a fixture hash: given the
+committed `tests/corpus/manifest.toml`, it (re)computes the SHA-256 of every `[[file]]` row's fixture
+and writes it back into that row's `sha256` field, DETERMINISTICALLY + idempotently - so G24a's
+fail-closed `git diff --exit-code` staleness check (P0.5.4) becomes a one-step regenerate, not an
+error-prone manual sync. It ALSO field-validates the manifest: every `[[file]]` row must carry a
+non-empty `provenance` + a non-empty `licence` from the REDISTRIBUTABLE allow-list (CC0 / public-domain
+/ self-produced / synthetic) - turning the "each fixture is redistributable" prose every corpus box
+asserts into a fail-closed manifest assertion (mirroring the `engines.lock` SPDX discipline, G36).
+
+[Build-Session-Entscheidung: P0.5.11] the sha256 is written by a SURGICAL per-`[[file]]`-block edit
+(replace/insert the `sha256 = "…"` direct-key line), NOT a full canonical re-serialize - so the
+§6.4.5 schema is preserved EXACTLY (the `source`/`exercises`/`covers` arrays, the `[file.expect]`
+sub-table with its `"SOURCE→TARGET"` arrow-keys, the author's comments + row order), and the edit is
+idempotent (a re-run over an up-to-date manifest produces a byte-identical file → a clean `git diff`).
+The tool reads the §6.4.5 `[[file]]` schema (`tomllib`); it does not redefine it. Orphan detection
+(an un-manifested committed corpus byte) is G24a's bijection (P0.5.4), not this writer.
+
+Usage:
+  stage-corpus [--root DIR]       # regenerate: write the sha256s back + field-validate (exit 1 on a
+                                  #   licence/provenance/missing-file violation, AFTER writing the hashes)
+  stage-corpus --check [--root DIR]  # CI/pre-commit: do NOT write; FAIL if the manifest is stale (a
+                                  #   sha256 a regenerate would change) OR a field is invalid
+stdlib-only (tomllib + hashlib). Exit: 0 = clean (or target-absent); 1 = stale / a field violation;
+2 = the manifest is unparseable / a structural prerequisite is unverifiable.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import re
+import sys
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+MANIFEST_REL = "tests/corpus/manifest.toml"
+CORPUS_ROOT_REL = "tests/corpus"
+# the §6.4.5 redistributable allow-list (shared intent with check-corpus-integrity G24a).
+REDISTRIBUTABLE_LICENCES = frozenset({"public-domain", "CC0", "self-produced", "synthetic"})
+# a git-LFS pointer carries the object hash as its `oid sha256:`; hash that, not the pointer text.
+_LFS_POINTER_RE = re.compile(rb"\Aversion https://git-lfs\.github\.com/spec/v1\n")
+_LFS_OID_RE = re.compile(rb"(?m)^oid sha256:([0-9a-f]{64})\s*$")
+# a `[[file]]` array-of-tables header - bare or with a trailing `# comment` (both valid TOML). Any
+# OTHER header form tomllib accepts but this misses (a quoted key `[["file"]]`, an exotic spacing) is
+# caught fail-closed by the block-count-vs-tomllib cross-check in regenerate(), never silently dropped.
+_FILE_HEADER_RE = re.compile(r"^\s*\[\[\s*file\s*\]\]\s*(?:#.*)?$")
+
+
+def fail(msg: str) -> None:
+    print(f"[stage-corpus] {msg}", file=sys.stderr)
+
+
+def content_sha256(data: bytes) -> str | None:
+    """The fixture's content sha256: an unresolved LFS pointer's `oid sha256:`, else the byte hash.
+    None if the file is a malformed LFS pointer (no oid) - the caller flags it."""
+    if _LFS_POINTER_RE.match(data):
+        m = _LFS_OID_RE.search(data)
+        return m.group(1).decode("ascii") if m else None
+    return hashlib.sha256(data).hexdigest()
+
+
+def split_file_blocks(text: str) -> tuple[list[str], list[list[str]]]:
+    """(preamble lines, [block lines, ...]). A block is one `[[file]]` table: its header line through
+    the line before the next `[[file]]` header (so it includes the row's `[file.expect]` sub-table).
+    Returned as LINE LISTS so the manifest reconstructs byte-exactly (preamble ++ blocks) - no lost
+    separator, truly idempotent."""
+    lines = text.split("\n")
+    blocks: list[list[str]] = []
+    preamble: list[str] = []
+    cur: list[str] | None = None
+    for ln in lines:
+        if _FILE_HEADER_RE.match(ln):
+            if cur is not None:
+                blocks.append(cur)
+            cur = [ln]
+        elif cur is None:
+            preamble.append(ln)
+        else:
+            cur.append(ln)
+    if cur is not None:
+        blocks.append(cur)
+    return preamble, blocks
+
+
+def _direct_key_end(block: list[str]) -> int:
+    """The index just past the `[[file]]` table's DIRECT keys (i.e. the first sub-TABLE header line such
+    as `[file.expect]` / `[[file.variants]]`, or end-of-block). A `sha256` direct key lives before that.
+    A sub-table header is `[`/`[[` then an identifier (`[A-Za-z_]`) - NOT an ARRAY item like a multi-line
+    `covers = [ \\n ["A","B"], \\n ]` continuation line (`["A","B"]` starts `[` + a quote), so a multi-
+    line `covers` array does not falsely end the direct-key region (which would let a `sha256` placed
+    after it be missed + duplicated)."""
+    for i in range(1, len(block)):
+        if re.match(r"^\s*\[\[?\s*[A-Za-z_]", block[i]):
+            return i
+    return len(block)
+
+
+def set_block_sha256(block: list[str], sha: str) -> list[str]:
+    """Replace or insert the `sha256 = "<sha>"` DIRECT key of a `[[file]]` block (idempotent)."""
+    end = _direct_key_end(block)
+    line = f'sha256 = "{sha}"'
+    for i in range(1, end):
+        if re.match(r"^\s*sha256\s*=", block[i]):
+            new = block.copy()
+            new[i] = line
+            return new
+    # insert right after the `path = …` line (so sha256 sits next to path), else at the direct-key end
+    insert_at = end
+    for i in range(1, end):
+        if re.match(r"^\s*path\s*=", block[i]):
+            insert_at = i + 1
+            break
+    return block[:insert_at] + [line] + block[insert_at:]
+
+
+def parse_block(block: list[str]) -> dict | None:
+    """The `[[file]]` row dict (tomllib over the single block), or None if it does not parse."""
+    try:
+        data = tomllib.loads("\n".join(block))
+    except tomllib.TOMLDecodeError:
+        return None
+    files = data.get("file")
+    if isinstance(files, list) and files and isinstance(files[0], dict):
+        return files[0]
+    return None
+
+
+def regenerate(text: str, corpus_root: Path) -> tuple[str, list[str]]:
+    """(new manifest text, problems). Updates every block's sha256 from its fixture; validates the
+    licence/provenance/file-exists fields. The text is rebuilt deterministically (idempotent)."""
+    preamble_lines, blocks = split_file_blocks(text)
+    problems: list[str] = []
+    # Fail-closed cross-check: the block-splitter must see EXACTLY as many `[[file]]` tables as tomllib
+    # does. If a header form the splitter cannot match (a quoted key, an exotic header) collapses a row
+    # into the preamble, that row would be silently un-staged + un-validated (its sha256 never written,
+    # its licence never checked) - so we refuse to edit a manifest we cannot fully split, rather than
+    # report a false "clean".
+    try:
+        n_toml = len(tomllib.loads(text).get("file", []) or [])
+    except tomllib.TOMLDecodeError as e:
+        return text, [f"manifest is not valid TOML: {e}"]
+    if n_toml != len(blocks):
+        return text, [f"the manifest declares {n_toml} `[[file]]` table(s) but the block-splitter "
+                      f"resolved {len(blocks)} - a `[[file]]` header form stage-corpus cannot safely "
+                      "edit (e.g. a quoted key `[[\"file\"]]`); use a bare `[[file]]` header"]
+    out_blocks: list[list[str]] = []
+    for block in blocks:
+        row = parse_block(block)
+        if row is None:
+            problems.append("a `[[file]]` block is not valid TOML - cannot stage it")
+            out_blocks.append(block)
+            continue
+        path = row.get("path")
+        label = path if isinstance(path, str) and path else "<no path>"
+        # field validation (the redistributable-licence + auditable-provenance assertion)
+        lic = row.get("licence")
+        prov = row.get("provenance")
+        if not isinstance(lic, str) or not lic.strip():
+            problems.append(f"`{label}`: missing/empty `licence` (must be one of "
+                            f"{sorted(REDISTRIBUTABLE_LICENCES)})")
+        elif lic not in REDISTRIBUTABLE_LICENCES:
+            problems.append(f"`{label}`: licence `{lic}` is not redistributable - allowed: "
+                            f"{sorted(REDISTRIBUTABLE_LICENCES)}")
+        if not isinstance(prov, str) or not prov.strip():
+            problems.append(f"`{label}`: missing/empty `provenance` (a URL / generator-ref / "
+                            "`self-produced` makes the licence auditable)")
+        if not isinstance(path, str) or not path:
+            problems.append("a `[[file]]` block has no `path` - cannot hash it")
+            out_blocks.append(block)
+            continue
+        f = corpus_root / path
+        if not f.is_file():
+            problems.append(f"`{label}`: the fixture does not exist under {corpus_root} - cannot hash")
+            out_blocks.append(block)
+            continue
+        try:
+            sha = content_sha256(f.read_bytes())
+        except OSError as e:
+            problems.append(f"`{label}`: cannot read the fixture to hash ({e})")
+            out_blocks.append(block)
+            continue
+        if sha is None:
+            problems.append(f"`{label}`: malformed git-LFS pointer (no `oid sha256:`)")
+            out_blocks.append(block)
+            continue
+        out_blocks.append(set_block_sha256(block, sha))
+    # reconstruct byte-exactly: preamble lines ++ every block's lines, rejoined by the same `\n` that
+    # `text.split("\n")` removed (so an unchanged manifest round-trips identically - true idempotency).
+    out_lines = list(preamble_lines)
+    for b in out_blocks:
+        out_lines.extend(b)
+    return "\n".join(out_lines), problems
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="SHA-256 + licence corpus-manifest generator (P0.5.11)")
+    ap.add_argument("--root", type=Path, default=ROOT,
+                    help="repo root (default: the repo; a fixture tree in the self-test)")
+    ap.add_argument("--check", action="store_true",
+                    help="do not write; FAIL if the manifest is stale or a field is invalid (CI)")
+    args = ap.parse_args(argv)
+
+    manifest = args.root / MANIFEST_REL
+    if not manifest.is_file():
+        print(f"[stage-corpus] no {MANIFEST_REL} yet (the corpus fills P3-P7) - nothing to stage")
+        return 0
+    try:
+        text = manifest.read_text(encoding="utf-8")
+    except OSError as e:
+        fail(f"cannot read {MANIFEST_REL}: {e}")
+        return 2
+
+    corpus_root = args.root / CORPUS_ROOT_REL
+    new_text, problems = regenerate(text, corpus_root)
+    stale = new_text != text
+
+    if args.check:
+        if stale:
+            problems.append("the SHA-256 manifest is STALE - run `scripts/stage-corpus` and commit the "
+                            "regenerated `tests/corpus/manifest.toml` (a fixture changed but its hash "
+                            "was not re-staged)")
+        if problems:
+            for p in problems:
+                fail("FAIL: " + p)
+            return 1
+        print("[stage-corpus] manifest is up-to-date + every fixture carries a redistributable "
+              "licence + provenance")
+        return 0
+
+    # write mode: persist the regenerated hashes (so the author never hand-computes), THEN report any
+    # field violation (the row is written so the author can fill it, but the run fails).
+    if stale:
+        try:
+            manifest.write_text(new_text, encoding="utf-8", newline="\n")
+        except OSError as e:
+            fail(f"cannot write {MANIFEST_REL}: {e}")
+            return 2
+        print(f"[stage-corpus] regenerated {MANIFEST_REL} (sha256s updated)")
+    else:
+        print(f"[stage-corpus] {MANIFEST_REL} already up-to-date")
+    if problems:
+        for p in problems:
+            fail("FAIL: " + p)
+        return 1
+    print("[stage-corpus] every fixture carries a redistributable licence + provenance")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
