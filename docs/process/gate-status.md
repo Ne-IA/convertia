@@ -46,6 +46,7 @@ rather than an invisible drift.
 | `cargo-mutants` | informational | 2026-06-19 | P3 (P3.72) | scoped mutation testing over `crate::fs_guard`+`crate::detect`+`crate::outcome` (the no-harm/atomicity/no-misroute kernel), a **G15** sub-leg — line coverage proves a line RAN, not that a test would CATCH a regression there; owner flips `informational`→`required` once survived-mutants reach **0** for `crate::fs_guard`+`crate::detect` (the P3.72 first run + the decrease-only per-crate `max_survived_mutants.toml` ratchet) |
 | **G59** — build-provenance attestation (`actions/attest-build-provenance`) | decided | 2026-06-19 | P10 | a v1 OWNER DECISION (promoted from a post-v1 deferral): the one genuinely-free build-**ORIGIN** signal — binds the artifact to runner+workflow+commit, so a silently re-signed release from a poisoned shared VPS is detectable **even if the minisign key leaked**; additive to minisign, **NOT** binary code-signing; needs only `id-token: write` scoped to the release/attestation job. **VERIFIED, not just generated** — a release step runs `gh attestation verify` (fail-on-non-zero); the **Sigstore bundle + a paired `trusted_root.jsonl`** ship as named release assets for OFFLINE verify; both join the **G58** completeness enumeration. `decided` = a one-time adopt → NOT in the check-23 `_OWNER_DECIDABLE_GATES` posture map; §8/catalogue/box statuses agree (check 17: the §8 entry is PROMOTED, not a live deferral) |
 | **G17b** — bundled-engine CVE awareness (`osv-scanner`/`grype`) | informational | 2026-06-19 | P10 | informational per-push OSV/grype over the **PURL-keyed** `engines.lock` (a planted-positive — a known historical internal-FFmpeg-decoder CVE — guards the empty-report-masquerading-as-clean failure; the FFmpeg CPE `cpe:2.3:a:ffmpeg:ffmpeg:<ver>` is MANDATORY); emits a dated open-CVE report (recording the advisory-DB age) as an owner-signed-off release asset; offline-tolerant (vendored DB, refresh warn-only). Owner flips `informational`→`required` via the **CVSS ≥ 7 on an actively-exercised §04 path → release-blocking escalation** (recorded in `vuln-response.md` / `SECURITY.md`); the release-tier advisory-DB-staleness floor (`MAX_ADVISORY_DB_STALENESS`) is shared with **G17**. A flip edits BOTH this row AND the check-23 `_OWNER_DECIDABLE_GATES` map in the same owner-acked L(-1) commit |
+| **G64** — privilege-drop-tier ratchet | informational | 2026-06-19 | P9 | records the achieved §2.12.3 privilege-drop tier **per platform** into a tracked `privilege-drop-coverage.toml`, **decrease-guarded** like the coverage floor / `max_survived_mutants.toml` (a commit lowering an achieved tier fails/escalates; raises are deliberate) — the §2.12.3 runtime containment of the untrusted C/C++ decoders is best-effort and silently degrades (the T1 honest residual), and G31 proves the tier FIRED on the runner but nothing tracked the TREND, so G64 makes a NET regression visible. Owner flips `informational`→`required` once the §2.12.3 tier matrix **stabilises** (informational while it is filled in P4–P9). A flip edits BOTH this row AND the check-23 `_OWNER_DECIDABLE_GATES` map in the same owner-acked L(-1) commit |
 
 None of the four over-assurance backstops replaces **G48**'s fuzz; each is an
 **additive** proof/observation layer on top of the deterministic gates, which the
@@ -147,3 +148,22 @@ re-validation-on-engine-bump). A flip edits BOTH this ledger row (status + `Sinc
 `plan-lint` check-23 `_OWNER_DECIDABLE_GATES` posture map in the same owner-acked L(-1) commit
 (the flip protocol above). G17b + **G55** are the two halves of the offline
 "audit-it-yourself" story (the dated open-CVE report + the embedded-SBOM auditable binary).
+
+## Privilege-drop-tier ratchet — G64 (P0.7.14 · §2.12.3 · G64)
+
+The §2.12.3 runtime containment of the untrusted C/C++ decoders is **best-effort and silently
+degrades** (the T1 honest residual). **G31** proves the privilege-drop tier *fired* on the CI
+runner, but nothing tracked the tier as a **TREND** — a later P-phase change dropping a
+platform from a full tier to a cheap one would be an invisible NET regression. **G64** records
+the **exact tier achieved per platform** into a tracked **`privilege-drop-coverage.toml`**,
+**decrease-guarded** exactly like the coverage floor / `max_survived_mutants.toml`: a commit
+that lowers an achieved tier **fails / escalates** (raises are deliberate committed changes).
+The schema + the per-tier ratchet criteria are homed here; the `.toml` is populated as the
+§2.12.3 tier matrix fills in P4–P9.
+
+**Owner decision (`informational`↔`required`).** Recorded `informational` here — it stays so
+while the §2.12.3 tier matrix is still being filled (P4–P9); the owner flips it to `required`
+once the matrix **stabilises**. A flip edits BOTH this ledger row (status + `Since`) AND the
+`plan-lint` check-23 `_OWNER_DECIDABLE_GATES` posture map in the same owner-acked L(-1) commit
+(the flip protocol above). G64 is the **TREND/ratchet** owner; the per-platform
+tier-APPLIED-per-spawn regression assertion stays a **G31** leg (P0.5.9).
