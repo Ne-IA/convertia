@@ -264,6 +264,88 @@ record("20 reviewer-family: a build-loop.md MISSING the phase-boundary cadence p
 record("20 reviewer-family: the REAL committed build-loop.md decision passes (no finding)",
        m.doc20_reviewer_family(m.build_ctx(ROOT)) == [])
 
+# --- check 14: the 8-point DoD (a)-(h) tri-copy parity (P0.6.5) --------------------------------
+# Three synthetic copies, each carrying the ordered (a)-(h) run in its OWN shape: build-loop.md §5
+# (with the real doc's leading blockquote "item (c)'s" + trailing "Items (g) and (h)" noise — proving
+# the greedy parser ignores non-a-first letter refs), the build-gates G1 `- **Definition-of-Done.**`
+# bullet (preceded by an UNRELATED `- **G29 …**` (a)/(b) list AND followed by a `- **Skipped only**`
+# (a)/(b) bullet — proving the region-slice reads ONLY the DoD bullet), and the P0.6.5 box notes.
+_BL5_OK = ("# Build-Loop\n\n## 5. Definition of Done (canonical)\n\n"
+           "> check 14 holds the copies identical; output-validity lives inside item (c)'s bar.\n\n"
+           "A change is done only when:\n"
+           "- **(a)** spec ref\n- **(b)** spec synced\n- **(c)** tests green\n- **(d)** hard gates green\n"
+           "- **(e)** dual review\n- **(f)** decision tags\n- **(g)** engines.lock + SBOM\n"
+           "- **(h)** threat row. (Items (g) and (h) fire independently.)\n\n## 6. Next\n")
+_BG_OK = ("# Build gates\n\n## 1. L0\n\n"
+          "- **G29 plugin surface:** **(a)** the lockfile set; **(b)** every capability entry.\n"
+          "- **Definition-of-Done.** A box is done only when: (a) spec ref; (b) spec synced; "
+          "(c) tests green; (d) hard gates green; (e) dual review; (f) decision tags; "
+          "(g) engines.lock + SBOM row; (h) threat-class row.\n"
+          "- **Skipped only** for: (a) check-off commits; (b) `[!extern]` boxes.\n")
+_BOX_DOD = ("Conventional commit + the canonical 8-point DoD lives here: (a) spec ref; (b) spec synced; "
+            "(c) tests green; (d) hard gates green; (e) dual review; (f) decision tags; "
+            "(g) engines.lock+SBOM; (h) threat row. The 8-vs-9 derivation is recorded.")
+
+
+def _c14(bl=_BL5_OK, bg=_BG_OK, box_notes=_BOX_DOD, delivered=None, with_bl=True, with_box=True):
+    docs = {"docs/security/build-gates.md": bg}
+    if with_bl:
+        docs[_BL] = bl
+    notes = [box_notes] + ([delivered] if delivered else [])
+    boxes = [box(bid="P0.6.5", notes=notes)] if with_box else []
+    return m.Ctx(root=ROOT, boxes=boxes, by_id={b.box_id: b for b in boxes}, plan_files=[],
+                 docs=docs, gate_ids=set())
+
+
+# greedy-parser unit: noise-tolerant, ORDERED extraction (not a set)
+record("14 greedy: leading '(c)'s' + trailing '(g) and (h)' noise -> exactly a..h",
+       m._greedy_letters("item (c)'s bar; (a)(b)(c)(d)(e)(f)(g)(h); Items (g) and (h)") == list("abcdefgh"))
+record("14 greedy: a reorder (a)(c)(b)... -> NOT a..h (in-order, not the same SET)",
+       m._greedy_letters("(a)(c)(b)(d)(e)(f)(g)(h)") != list("abcdefgh"))
+record("14 greedy: an appended (i) -> 9 items (count drift visible)",
+       m._greedy_letters("(a)(b)(c)(d)(e)(f)(g)(h)(i)") == list("abcdefghi"))
+# region-slice unit: the G1 DoD bullet is read in ISOLATION from the neighbouring (a)/(b) lists
+record("14 region: the G1 DoD bullet reads a..h, NOT the G29 / Skipped-only (a)/(b)",
+       m._greedy_letters(m._gates_g1_dod_region(_BG_OK) or "") == list("abcdefgh"))
+record("14 region: absent DoD bullet -> None",
+       m._gates_g1_dod_region("# gates\n\n- **G1 row** only, no DoD bullet\n") is None)
+# G1 P0.6.5 P3#2: the end-anchor is indentation-symmetric with the lstrip()-based start, so an INDENTED
+# DoD bullet slices to its OWN next sibling — a following indented bullet (here carrying a stray (i)) is
+# excluded, not bled in (which under the old col-0-only end anchor would have yielded a..i).
+record("14 region: an INDENTED DoD bullet ends at its own sibling (a following indented (i)-bullet excluded)",
+       m._greedy_letters(m._gates_g1_dod_region(
+           "  - **Definition-of-Done.** (a) x;(b) x;(c) x;(d) x;(e) x;(f) x;(g) x;(h) x.\n"
+           "  - **Note:** a ninth item (i) does not belong here.\n") or "") == list("abcdefgh"))
+# integration: aligned -> clean; each source drifting -> caught; target-absent -> skip; real docs pass
+record("14 dod-parity: three aligned copies -> no finding", m.doc14_dod_parity(_c14()) == [])
+record("14 dod-parity: absent build-loop.md -> skip (target-absent, not a finding)",
+       m.doc14_dod_parity(_c14(with_bl=False)) == [])
+record("14 dod-parity: build-loop.md §5 dropping item (f) -> caught",
+       any("build-loop.md" in f.file and "!= canonical" in f.msg
+           for f in m.doc14_dod_parity(_c14(bl=_BL5_OK.replace("**(f)**", "**(x)**")))))
+record("14 dod-parity: build-gates G1 region reordering (d)/(e) -> caught",
+       any("build-gates" in f.file for f in m.doc14_dod_parity(
+           _c14(bg=_BG_OK.replace("(d) hard gates green", "(e) hard gates green").replace("(e) dual review", "(d) dual review")))))
+record("14 dod-parity: the P0.6.5 box dropping item (f) -> caught",
+       any(f.check == "14:dod-parity" and "P0.6.5" in f.msg
+           for f in m.doc14_dod_parity(_c14(box_notes=_BOX_DOD.replace("(f) decision tags; ", "")))))
+# G1 P0.6.5 P3#1: the box leg reads ONLY the spec description (up to the first "**Delivered" note). A
+# Delivered note carrying a full CONTIGUOUS a..h prose run must NOT re-acquire a letter dropped from the
+# real list (the greedy false-pass) — and its own (a)-(h)/(c) refs must NOT trip a false count-drift.
+record("14 dod-parity: a dropped (f) in the box list is NOT masked by a full a..h run in a Delivered note",
+       any(f.check == "14:dod-parity" and "P0.6.5" in f.msg for f in m.doc14_dod_parity(
+           _c14(box_notes=_BOX_DOD.replace("(f) decision tags; ", ""),
+                delivered="**Delivered (P0.6.5):** the DoD is (a)(b)(c)(d)(e)(f)(g)(h), all present."))))
+record("14 dod-parity: a Delivered note's own (a)-(h)/(c) refs are ignored (description-only) -> clean",
+       m.doc14_dod_parity(_c14(delivered="**Delivered (P0.6.5):** see (a)-(h), item (c), Items (g) and (h).")) == [])
+record("14 dod-parity: the P0.6.5 box absent (renumbered) -> caught",
+       any("re-point check 14" in f.msg for f in m.doc14_dod_parity(_c14(with_box=False))))
+record("14 dod-parity: the G1 `Definition-of-Done.` bullet absent -> caught",
+       any("prose bullet is absent" in f.msg for f in m.doc14_dod_parity(
+           _c14(bg="# gates\n\n## 1. L0\n\n- **G1 row** only\n"))))
+record("14 dod-parity: the REAL committed docs (build-loop.md §5 / G1 bullet / P0.6.5 box) pass",
+       m.doc14_dod_parity(m.build_ctx(ROOT)) == [])
+
 # --- check 25 leg (c2): the per-source content-fingerprint freshness ledger (P0.3.12) ---------
 # Each leg drives the PURE m._freshness_fingerprints(entries, root, docs) so a synthetic source can be
 # supplied via the `docs` dict (no temp files): an entry whose `file` is in `docs` reads that content.
@@ -386,10 +468,17 @@ record("21 t2-taint-xor: pending (neither CodeQL nor Semgrep live) -> skip []",
 # here: P0.4.5 created docs/process/gate-status.md, so doc23 is now ACTIVE and is exercised by its own
 # dedicated legs above (the gate-status block) — keeping it in this "stubs skip" tuple would pass for the
 # wrong reason (the real ledger is clean, the active path) under a misleading label (P0.4.5 G1 P2 fix).
-record("target-absent stubs (14/15/18/19/20/24) skip while their targets are absent",
-       all(fn(_real) == [] for fn in (m.doc14_dod_parity, m.doc15_hard_stop_parity, m.doc18_named_procedure,
-                                      m.doc19_reviewer_rubric, m.doc20_reviewer_family,
-                                      m.doc24_p0_completion)))
+# doc24's target (p0-completion.md) is still unauthored (P0.6.10) -> a GENUINE target-absent skip.
+record("24 p0-completion: target-absent skip while p0-completion.md is unauthored (P0.6.10) -> []",
+       m.doc24_p0_completion(_real) == [])
+# doc15/doc18 are DORMANT, not target-absent: build-loop.md EXISTS, but their canonical phrase-sets stay
+# empty until P0.6.7/P0.6.8 pin them, so they return [] on the LIVE path (activated + given legs there).
+record("15/18 dormant: build-loop.md present but the phrase-sets are empty (activated P0.6.7/P0.6.8) -> []",
+       m.doc15_hard_stop_parity(_real) == [] and m.doc18_named_procedure(_real) == [])
+# doc14/doc19/doc20 are now ACTIVE (build-loop.md exists) and clean on the real repo — each proven by its
+# OWN dedicated REAL-doc leg above. They are deliberately NOT in a "target-absent" tuple: that would pass
+# for the wrong reason under a misleading label — the P0.4.5-G1-P2 principle (see check 23 above), applied
+# to the three P0.6 activations (doc14 here; doc19/doc20 left here in error by P0.6.2/P0.6.3, now corrected).
 
 # --- check 26 (G69) structural-map integrity — the real logic, driven by pure fns (P0.3.13) ------
 # doc26 SKIPS while the §1a map is the P1.64 placeholder, so the active path is exercised via the pure

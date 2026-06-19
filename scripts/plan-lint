@@ -963,12 +963,120 @@ def _bl_phrase(ctx, check, phrases):
             for p in phrases if p.lower() not in bl.lower()]
 
 
+# The canonical 8-point DoD identifier sequence (a..h). The "8 vs 9 DoD points" derivation
+# (build-loop.md §5 / build-gates G1 / P0.6.5: prior nine-point − RLS/audit/migrations + the two
+# ConvertIA rows = 8) pins the COUNT at 8 and the ORDER at a..h; a deliberate DoD change is an L(-1)
+# edit that updates this tuple in the SAME commit as all three prose copies. Pinning to this constant
+# (not merely "the three agree") also catches an all-three-simultaneous drift — and (a)-(h) is the
+# sequence build-gates §6 check 14 names verbatim, so it is the faithful canonical target.
+_DOD_LETTERS = tuple("abcdefgh")
+_DOD_BOX = "P0.6.5"          # the plan box hosting the "P0.6 transcription" copy (build-gates §6 check 14)
+
+
+def _greedy_letters(text: str) -> list[str]:
+    """The longest in-order a,b,c,… run of single-letter `(x)` enumeration markers in `text`, built
+    greedily: scan every `(x)` in document order, append x only when it is the NEXT expected letter,
+    skip all others. This reads the DoD's ORDERED identifier sequence while ignoring incidental
+    letter refs that do not form an a-first in-order run — build-loop.md §5's leading blockquote
+    "item (c)'s …" and its trailing "Items (g) and (h) fire independently", and build-gates' very
+    next "*Skipped only* for: (a) … (b) …" bullet (excluded by region-slicing anyway). A reorder,
+    a dropped item or an added item all yield a sequence != the canonical a..h, so each is caught
+    (build-gates §6 check 14: "identical IN ORDER … not merely the same SET")."""
+    seq: list[str] = []
+    expected = ord("a")
+    for m in re.finditer(r"\(([a-z])\)", text):
+        if ord(m.group(1)) == expected:
+            seq.append(m.group(1))
+            expected += 1
+    return seq
+
+
+def _gates_g1_dod_region(gates: str) -> str | None:
+    """The build-gates G1 `- **Definition-of-Done.**` prose-contract bullet body, sliced from that
+    bullet's start to the next top-level `- ` list bullet — so the G1 DoD letters are read in
+    ISOLATION from build-gates' OTHER (a)-(h) enumerations (e.g. the G29 `(a)/(b)` plugin-surface
+    list, the §6 check descriptions) and from the immediately-following "*Skipped only* … (a) …
+    (b) …" bullet's own letters. Anchored on the bold bullet prefix (NOT a bare "Definition-of-Done"
+    substring, which also occurs in the §6 check-14 description) so the first match is the contract
+    bullet. None if the bullet is absent (fail-closed once build-loop.md exists)."""
+    lines = _lf(gates).split("\n")
+    start = indent = None
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("- **Definition-of-Done"):
+            start, indent = i, len(line) - len(line.lstrip())
+            break
+    if start is None:
+        return None
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        ln = lines[j]
+        # end at the next SIBLING-or-shallower `- ` bullet — anchored on the DoD bullet's OWN indent
+        # (symmetric with the lstrip()-based start), so an indented bullet slices to its own next
+        # sibling instead of bleeding past a following indented one (G1 P0.6.5 P3#2).
+        if ln.lstrip().startswith("- ") and (len(ln) - len(ln.lstrip())) <= indent:
+            end = j
+            break
+    return "\n".join(lines[start:end])
+
+
 def doc14_dod_parity(ctx: Ctx) -> list[Finding]:
-    """Check 14: the 8-point DoD (a)-(h) is order-identical in build-loop.md, the G1 bullet, P0.6."""
+    """Check 14: the canonical 8-point DoD identifier sequence (a..h) is item-count- AND
+    item-identifier-(in-order)-identical across its THREE copies — build-loop.md §5 (canonical),
+    the build-gates G1 `Definition-of-Done.` prose bullet (§1), and the P0.6.5 plan box ("the P0.6
+    transcription") — so the DoD cannot drift in one copy while the others stay stale (the "8 vs 9
+    DoD points" class). Each copy's ordered (a)-(h) run is extracted in ISOLATION (section-slice /
+    bullet-slice / box-notes) then asserted == the canonical a..h. Target-absent until build-loop.md
+    exists (P0.6-authored); fail-closed once present (build-gates §6 check 14)."""
     bl = _bl(ctx)
     if not bl:
-        return []                          # build-loop.md (the canonical DoD) lands in P0.6
-    return []                              # the ordered tri-copy DoD diff activates once build-loop.md exists
+        return []                          # build-loop.md (the canonical DoD home) lands in P0.6
+    expected = list(_DOD_LETTERS)
+    out: list[Finding] = []
+
+    # (1) build-loop.md §5 — the canonical copy.
+    BL = "docs/process/build-loop.md"
+    sec5 = _extract_section(bl, "5")
+    if sec5 is None:
+        out.append(Finding("14:dod-parity", BL, 0, "the canonical DoD section §5 is absent from build-loop.md"))
+    else:
+        seq = _greedy_letters(sec5)
+        if seq != expected:
+            out.append(Finding("14:dod-parity", BL, 0,
+                               f"build-loop.md §5 DoD identifiers {seq} != canonical {expected} (count/identifier/order drift)"))
+
+    # (2) build-gates.md G1 `Definition-of-Done.` prose bullet (§1).
+    BG = "docs/security/build-gates.md"
+    region = _gates_g1_dod_region(ctx.docs.get(BG, ""))
+    if region is None:
+        out.append(Finding("14:dod-parity", BG, 0,
+                           "the G1 `- **Definition-of-Done.**` prose bullet is absent from build-gates.md"))
+    else:
+        seq = _greedy_letters(region)
+        if seq != expected:
+            out.append(Finding("14:dod-parity", BG, 0,
+                               f"build-gates G1 DoD identifiers {seq} != canonical {expected} (drift vs build-loop.md §5)"))
+
+    # (3) the P0.6.5 plan box — "the P0.6 transcription". Read ONLY the box's spec DESCRIPTION
+    #     (the `>`-notes up to the first "**Delivered" note), NOT the joined notes: the Delivered
+    #     note is post-build commentary that itself cites (a)-(h)/(c)/(g)+(h) in prose, so feeding it
+    #     to the greedy scan would (a) be a self-referential parse and (b) let a contiguous a..h prose
+    #     run there re-acquire a letter dropped from the real list — masking a drift (G1 P0.6.5 P3#1).
+    #     Slicing to the description region-isolates this copy exactly like the other two.
+    box = ctx.by_id.get(_DOD_BOX)
+    if box is None:
+        out.append(Finding("14:dod-parity", "docs/plan/P0-build-and-security.md", 0,
+                           f"the DoD-host box {_DOD_BOX} is absent (renamed/renumbered — re-point check 14)"))
+    else:
+        desc: list[str] = []
+        for n in box.notes:
+            if n.lstrip().startswith("**Delivered"):
+                break                          # stop at the first Delivered note — commentary, not a DoD copy
+            desc.append(n)
+        seq = _greedy_letters("\n".join(desc))
+        if seq != expected:
+            out.append(Finding("14:dod-parity", box.file, box.lineno,
+                               f"{_DOD_BOX} DoD identifiers {seq} != canonical {expected} (drift vs build-loop.md §5)"))
+    return out
 
 
 def doc15_hard_stop_parity(ctx: Ctx) -> list[Finding]:
