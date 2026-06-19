@@ -138,7 +138,9 @@ retirement; the public, append-only commit history **is** the revocation record.
 To keep key **loss** from becoming an unrecoverable release-signing dead end, the
 signing key is held with an **offline, encrypted backup of the key + its passphrase**
 (stored separately from the key material, owner-held) so a lost working copy can be
-restored without minting a brand-new identity. Key custody, rotation, and the release
+restored without minting a brand-new identity — that backup is **established in
+[`minisign-key-custody.md`](minisign-key-custody.md) §3** (key genesis + custody), of
+which this revocation path is the USE-side companion. Key custody, rotation, and the release
 signing material are **owner-held** (roles-and-escalation §1) — a compromise or loss is
 an unconditional escalation to the owner.
 
