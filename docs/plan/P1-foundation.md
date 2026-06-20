@@ -41,6 +41,7 @@ target. The workspace + lockfiles come first because every language gate
 
 - [ ] **P1.1** [BUILD] Scaffold the §0.7 physical directory tree (`src-tauri/`, `src/`, `tests/`, `scripts/`, `docs/`) · §0.7
   > the canonical on-disk layout from the §0.7 "Physical tree" block — empty directories + `.gitkeep` placeholders where a tree must exist before its files land; the tree mirrors the logical-module decomposition so a later box drops a file into a pre-existing home.
+  > [Build-Session-Entscheidung: P1.1] `src-tauri/capabilities/` is omitted here — `src-tauri/capabilities/**` is L(-1)-caged (`scripts/l-neg1-files.toml`), so the autonomous loop must not create a placeholder there; the directory is owner-authored at P1.21 (which writes the L(-1) `main.json`), keeping all `capabilities/**` touches under owner control. The 18 cage-free §0.7 leaf dirs are scaffolded with `.gitkeep`.
 - [ ] **P1.2** [BUILD] Author the root `package.json` + the pnpm workspace definition · §0.7 §0.8 · G18d
   needs: P1.1
   > the repo-root `package.json` (name/private/scripts placeholders) + `pnpm-workspace.yaml` declaring the `src/`-rooted frontend package; pins the pnpm package-manager field to the §0.8 `pnpm@10.13.1` class and sets the `onlyBuiltDependencies` posture the P0 G18d lockdown asserts.
