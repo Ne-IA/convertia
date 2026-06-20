@@ -67,14 +67,14 @@ The `src-tauri/` Rust crate(s) compile from a clean checkout with the §0.7 modu
 decomposition as interface-only shells, so `clippy`/`cargo-deny`/the unsafe-policy
 gate have real crates to act on (activating P0.4.1/P0.3.6/P0.3.7/P0.4.2).
 
-- [ ] **P1.6** [RUST] Author the Cargo workspace root + the `src-tauri` core member · §0.7 §0.8 · G18a G53
+- [x] **P1.6** [RUST] Author the Cargo workspace root + the `src-tauri` core member · §0.7 §0.8 · G18a G53
   needs: P1.1
   > the workspace `Cargo.toml` (`[workspace]` members + resolver "2") with the `src-tauri` core crate as the first member; establishes the workspace-member graph the P0 G53 core-crate forbidden-dependency gate (P0.3.7) scopes its bans to, and the closure G18 (P0.3.6) bans the updater/HTTP-client family in.
-  - [ ] **P1.6.1** [RUST] Reserve the `convertia-imgworker` workspace member as an empty crate · §3.5.5 §0.7 · G53 G29
+  - [x] **P1.6.1** [RUST] Reserve the `convertia-imgworker` workspace member as an empty crate · §3.5.5 §0.7 · G53 G29
     > a compile-only stub member (`fn main`) so the workspace graph carries BOTH first-party crates the P0 G29 `#![deny(unsafe_code)]`-on-every-crate-root check + the G53 core-must-not-link-imgworker-libs rule address from P1; the libvips/libheif link work is P4/P5.
-  - [ ] **P1.6.2** [RUST] Reserve an `xtask` workspace member for codegen/coverage bins · §0.4.5 §6.7.1 · G19
+  - [x] **P1.6.2** [RUST] Reserve an `xtask` workspace member for codegen/coverage bins · §0.4.5 §6.7.1 · G19
     > the `xtask` crate that hosts the §0.4.5 codegen invocation + the §6.7.1 step-4/4a Rust xtask bins; named so the P0 G19 drift-check (P0.3.9) can point at a concrete `cargo xtask codegen` command rather than passing on a stale file via a wrong invocation.
-- [ ] **P1.7** [RUST] Generate + commit the initial `Cargo.lock` · §0.8 · G18a G18b
+- [x] **P1.7** [RUST] Generate + commit the initial `Cargo.lock` · §0.8 · G18a G18b
   needs: P1.6
   > the first resolved Rust lockfile so the P0 G18a `--locked`/`git diff --exit-code` contract + the P0.3.6 `cargo vet check`-on-the-initial-`Cargo.lock` exit gate + the `cargo-deny` advisory/license scan have a real lockfile (activates P0.4.9 / the P0.3.6 clean-`cargo vet check` exit for the Rust half).
 - [ ] **P1.8** [RUST] Apply the unsafe-policy crate attributes — `#![deny(unsafe_code)]` per first-party crate root · §2.12 §3.5.2 · G29
