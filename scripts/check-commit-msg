@@ -1,21 +1,31 @@
 #!/usr/bin/env python3
-"""check-commit-msg - G11 conventional-commit subject gate, at commit-msg (L3) (P0.3.3).
+"""check-commit-msg - G11 conventional-commit subject gate (P0.3.3).
 
-The commit-msg hook (L3, fires at `git commit`) validates the SUBJECT line is a conventional commit:
-`^(feat|fix|chore|docs|refactor|test|perf|ci|build)(\\(scope\\))?!?: <description>`. This keeps the
-single-`main` history machine-readable (changelog/release tooling) and is the L3 half of the commit
-hygiene plane; G12 (the Dual-Review trailer) is the L2 half. The solo-on-`main` rollback convention
-`chore(scope): roll back — <reason>` is a normal `chore(...)` subject, so it passes unchanged.
+Two modes, fail-CLOSED in BOTH planes (G11 needs no admin token / absent target, so no P0 fail-soft):
+  * L3 commit-msg hook (fires at `git commit`): `check-commit-msg <commit-msg-file>` validates the one
+    subject git is about to write (lefthook passes it as {1}).
+  * L4 CI mirror (fires after push): `check-commit-msg --base <ref> [--head <ref>]` re-validates EVERY
+    commit subject in the push range on a clean checkout, catching a local `--no-verify` bypass - the
+    L3 plane declares `mirror = "L3 + L4"` (scripts/gate-planes.toml), so the immutable CI net re-runs
+    it. Sibling range gates: check-l-neg1-ack (G71), check-dual-review (G12).
 
-Auto-generated merge/revert/fixup/squash subjects are accepted (git writes them; they are not box
-commits). stdlib-only. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+The SUBJECT line must be a conventional commit:
+`^(feat|fix|chore|docs|refactor|test|perf|ci|build)(\\(scope\\))?: <description>`. This keeps the
+single-`main` history machine-readable (changelog/release tooling). The solo-on-`main` rollback
+convention `chore(scope): roll back — <reason>` is a normal `chore(...)` subject, so it passes
+unchanged. Auto-generated merge/revert/fixup/squash subjects are accepted (git writes them; they are
+not box commits). stdlib-only. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
 
-Usage: check-commit-msg <path-to-commit-message-file>   (the commit-msg hook passes it as {1})
-Exit:  0 = a valid subject (or an accepted auto-subject); 1 = a non-conventional subject; 2 = bad invocation.
+Usage: check-commit-msg <commit-message-file>          (the L3 commit-msg hook; git passes it as {1})
+       check-commit-msg --base <ref> [--head <ref>]    (the L4 CI mirror over the push range;
+                                                         in CI pass --base "$GITHUB_EVENT_BEFORE")
+Exit:  0 = every subject valid (or an accepted auto-subject); 1 = a non-conventional subject; 2 = bad invocation.
 """
 from __future__ import annotations
 
+import argparse
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -49,12 +59,55 @@ def validate_subject(subject: str | None) -> str | None:
             "(e.g. `feat(gates): …`; rollback = `chore(scope): roll back — <reason>`)")
 
 
-def main(argv: list[str] | None = None) -> int:
-    argv = sys.argv[1:] if argv is None else argv
-    if len(argv) != 1:
-        print("[G11] FAIL: expected exactly one arg (the commit-message file path)", file=sys.stderr)
-        return 2
-    path = Path(argv[0])
+def validate_messages(messages: list[str]) -> list[tuple[int, str | None, str]]:
+    """(pure) the violations in a list of commit messages, as (index, subject, reason) per invalid one.
+    The L4 range-mirror's logic, split from the git I/O so it is unit-testable without a repo."""
+    violations: list[tuple[int, str | None, str]] = []
+    for i, message in enumerate(messages):
+        subject = subject_of(message)
+        err = validate_subject(subject)
+        if err:
+            violations.append((i, subject, err))
+    return violations
+
+
+def git(*args: str) -> tuple[int, str]:
+    p = subprocess.run(["git", *args], capture_output=True, text=True)
+    return p.returncode, p.stdout
+
+
+def _resolves(ref: str) -> bool:
+    # peel to ^{commit} so a well-formed-but-ABSENT 40-hex SHA (a rewritten/force-pushed
+    # github.event.before) returns rc!=0 and routes to the tip-only fallback, instead of
+    # `rev-parse --verify <40-hex>` rc=0 (git treats any full hex as already-resolved).
+    # Matches check-dual-review's P0.3.3 hardening; check-l-neg1-ack tolerates the unpeeled
+    # form only because it is fail-soft (this L4 mirror is fail-closed, so it must degrade).
+    return git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")[0] == 0
+
+
+def resolve_base(explicit: str | None) -> str | None:
+    """An explicit --base if it resolves, else the @{u}->origin/<branch>->origin/main->origin/HEAD
+    chain. None if none resolve (=> degrade to validating only the tip commit). Mirrors check-l-neg1-ack."""
+    if explicit:
+        # an all-zeros (new-ref push) base strips to "" -> tip-only; an absent SHA fails the
+        # peeled _resolves -> tip-only (check-dual-review's two-guard hardening, both copied).
+        return explicit if (explicit.strip("0") and _resolves(explicit)) else None
+    cands = ["@{u}"]
+    rc, b = git("rev-parse", "--abbrev-ref", "HEAD")
+    b = b.strip()
+    if rc == 0 and b and b != "HEAD":
+        cands.append(f"origin/{b}")
+    cands += ["origin/main", "origin/HEAD"]
+    return next((c for c in cands if _resolves(c)), None)
+
+
+def commits_in_range(base: str | None, head: str) -> list[str] | None:
+    rc, o = git("rev-list", "-1", head) if base is None else git("rev-list", f"{base}..{head}")
+    return o.split() if rc == 0 else None
+
+
+def check_file(path: Path) -> int:
+    """L3 mode: validate the single pending commit-message file."""
     if not path.is_file():
         print(f"[G11] FAIL: commit-message file not found: {path}", file=sys.stderr)
         return 2
@@ -64,6 +117,51 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print("[G11] conventional-commit subject OK")
     return 0
+
+
+def check_range(base_arg: str | None, head: str) -> int:
+    """L4 mode: validate every commit subject in base..head (the push range)."""
+    base = resolve_base(base_arg)
+    commits = commits_in_range(base, head)
+    if commits is None:
+        print(f"[G11] FAIL: could not compute the push range ({base}..{head})", file=sys.stderr)
+        return 2
+    if not commits:
+        print("[G11] no commits in range — nothing to validate")
+        return 0
+    if base is None:
+        print(f"[G11] no range base resolved — validating only the tip commit {commits[0][:12]} "
+              "(degraded; L3 has the full range)")
+    messages = [git("log", "-1", "--format=%B", sha)[1] for sha in commits]
+    violations = validate_messages(messages)
+    if violations:
+        for i, _subject, reason in violations:
+            print(f"[G11] FAIL: {commits[i][:12]} {reason}", file=sys.stderr)
+        return 1
+    print(f"[G11] conventional-commit subject OK over {len(commits)} commit(s) in range")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G11 conventional-commit subject gate (P0.3.3)")
+    ap.add_argument("msgfile", nargs="?",
+                    help="the pending commit-message file (the L3 commit-msg hook mode)")
+    ap.add_argument("--base", default=None,
+                    help="L4 CI mirror: range base (e.g. $GITHUB_EVENT_BEFORE)")
+    ap.add_argument("--head", default="HEAD", help="L4 CI mirror: range head (default HEAD)")
+    args = ap.parse_args(argv)
+
+    if args.base is not None or args.head != "HEAD":          # L4 range-mirror mode
+        if args.msgfile is not None:
+            print("[G11] FAIL: pass EITHER a commit-message file (L3) OR --base/--head (L4), not both",
+                  file=sys.stderr)
+            return 2
+        return check_range(args.base, args.head)
+    if args.msgfile is None:                                  # L3 hook mode needs the file
+        print("[G11] FAIL: expected a commit-message file (L3) or --base for the L4 range mirror",
+              file=sys.stderr)
+        return 2
+    return check_file(Path(args.msgfile))
 
 
 if __name__ == "__main__":

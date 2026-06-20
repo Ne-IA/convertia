@@ -150,6 +150,11 @@ jobs:
         env:
           BEFORE: ${{ github.event.before }}   # via env (not inline) to avoid template-injection (G50/zizmor)
         run: python3 scripts/check-dual-review --base "$BEFORE"
+      - name: 'G11: conventional-commit subject over the push range (L4 mirror of the L3 commit-msg gate)'
+        if: github.event_name == 'push'        # build-loop commits only; fork-PR subjects are squash-normalised on merge
+        env:
+          BEFORE: ${{ github.event.before }}   # via env (not inline) to avoid template-injection (G50/zizmor)
+        run: python3 scripts/check-commit-msg --base "$BEFORE"
       - name: 'G27: coverage-floor increase-only decrease-guard over the push range (the authoritative ratchet leg; needs full history)'
         if: github.event_name == 'push'        # the floors are empty in P0 (no-op) + fail-closes the moment a floor lands in P1
         env:
