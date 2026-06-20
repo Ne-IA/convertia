@@ -39,7 +39,7 @@ toolchain, so every later box has a home and the P0 lockfile/registry gates have
 target. The workspace + lockfiles come first because every language gate
 (`cargo-deny`/`clippy`/`tsc`) and every later module sits inside them.
 
-- [ ] **P1.1** [BUILD] Scaffold the §0.7 physical directory tree (`src-tauri/`, `src/`, `tests/`, `scripts/`, `docs/`) · §0.7
+- [x] **P1.1** [BUILD] Scaffold the §0.7 physical directory tree (`src-tauri/`, `src/`, `tests/`, `scripts/`, `docs/`) · §0.7
   > the canonical on-disk layout from the §0.7 "Physical tree" block — empty directories + `.gitkeep` placeholders where a tree must exist before its files land; the tree mirrors the logical-module decomposition so a later box drops a file into a pre-existing home.
   > [Build-Session-Entscheidung: P1.1] `src-tauri/capabilities/` is omitted here — `src-tauri/capabilities/**` is L(-1)-caged (`scripts/l-neg1-files.toml`), so the autonomous loop must not create a placeholder there; the directory is owner-authored at P1.21 (which writes the L(-1) `main.json`), keeping all `capabilities/**` touches under owner control. The 18 cage-free §0.7 leaf dirs are scaffolded with `.gitkeep`.
 - [ ] **P1.2** [BUILD] Author the root `package.json` + the pnpm workspace definition · §0.7 §0.8 · G18d
