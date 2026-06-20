@@ -77,7 +77,7 @@ gate have real crates to act on (activating P0.4.1/P0.3.6/P0.3.7/P0.4.2).
 - [x] **P1.7** [RUST] Generate + commit the initial `Cargo.lock` · §0.8 · G18a G18b
   needs: P1.6
   > the first resolved Rust lockfile so the P0 G18a `--locked`/`git diff --exit-code` contract + the P0.3.6 `cargo vet check`-on-the-initial-`Cargo.lock` exit gate + the `cargo-deny` advisory/license scan have a real lockfile (activates P0.4.9 / the P0.3.6 clean-`cargo vet check` exit for the Rust half).
-- [ ] **P1.8** [RUST] Apply the unsafe-policy crate attributes — `#![deny(unsafe_code)]` per first-party crate root · §2.12 §3.5.2 · G29
+- [x] **P1.8** [RUST] Apply the unsafe-policy crate attributes — `#![deny(unsafe_code)]` per first-party crate root · §2.12 §3.5.5 · G29
   needs: P1.6, P1.6.1
   > the crate-root `#![deny(unsafe_code)]` on the core AND `convertia-imgworker` + the single allow-listed FFI module placeholder (`#[allow(unsafe_code)]` appears on exactly one module) — the literal source-level target the P0.4.2 unsafe-policy primary SAST gate (G29) was authored against; FFI module is empty in P1 (filled P4/P5).
 - [ ] **P1.9** [RUST] Stand up the §0.7 tier-3 `domain` module shell + the §0.6 identity newtypes · §0.6 · G29
