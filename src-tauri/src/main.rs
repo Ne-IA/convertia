@@ -19,6 +19,7 @@
 #![deny(clippy::wildcard_enum_match_arm)]
 
 mod domain;
+mod outcome;
 
 // [Build-Session-Entscheidung: P1.6] minimal entry — the real Tauri `Builder` is built in P1.13.
 fn main() {}
