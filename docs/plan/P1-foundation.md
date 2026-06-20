@@ -83,7 +83,7 @@ gate have real crates to act on (activating P0.4.1/P0.3.6/P0.3.7/P0.4.2).
 - [x] **P1.9** [RUST] Stand up the §0.7 tier-3 `domain` module shell + the §0.6 identity newtypes · §0.6 · G29
   needs: P1.6
   > `crate::domain` with the §0.6 identity newtypes (`InstanceId`/`RunId`/`CollectedSetId`/`ItemId`/`CollectingId`) as compile-only `specta::Type`-deriving stubs — the lowest tier (depends on nothing); the full §0.6 type set is a P2 pipeline-contract task, so P1 lands only the identity spine the tree needs to compile.
-- [ ] **P1.10** [RUST] Stand up the §0.7 tier-3 `outcome` module shell (error-taxonomy home) · §2.8 · G29
+- [x] **P1.10** [RUST] Stand up the §0.7 tier-2 `outcome` module shell (error-taxonomy home) · §2.8 · G29
   needs: P1.9
   > `crate::outcome` (the renamed-from-`error` §0.7 module) as an interface-only home for the §2.8 taxonomy + the §0.4.3 `IpcError`/`ErrorKind` wire mirror; P1 lands the module + an empty placeholder so the tree compiles and §06's drift mechanism has a home — the full catalog/strings are P2/§02.
 - [ ] **P1.11** [RUST] Scaffold the 9 §0.7 Rust library module roots (grouping shell) · §0.7 · G29 G9
