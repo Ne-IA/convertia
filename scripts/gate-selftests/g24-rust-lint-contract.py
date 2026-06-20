@@ -3,11 +3,15 @@
 
 Proves the structural freeze CATCHES a relaxed rustfmt.toml/clippy.toml (a missing newline_style /
 test-allowance / MSRV / a wrong value) and that the deny-set CONTRACT is non-empty + the per-module
-crate-attr assertion flags a crate root missing its required deny. The live fmt/clippy/test/audit are
-target-absent today (no workspace Cargo.toml) so the real gate skips. stdlib-only. Exit 0 = all held.
+crate-attr assertion flags a crate root missing its required deny. Since P1.6 a real workspace
+Cargo.toml exists, so the real-gate legs pin the TARGET-PRESENT + cargo-absent-plane skip path
+(the GitHub ubuntu/windows runners ship a cargo, so keying liveness on which('cargo') is fooled —
+the cargo-absent skip is mocked explicitly) + the G17 audit-db-present/absent guard. stdlib-only.
+Exit 0 = all held.
 """
 import importlib.machinery
 import importlib.util
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -124,28 +128,64 @@ record("freeze: a duplicate allow-unwrap-in-tests (false-then-true) is REJECTED"
        freeze('allow-unwrap-in-tests = false\nallow-unwrap-in-tests = true\nallow-expect-in-tests = true\nmsrv = "1.96.0"\n', m.CLIPPY_REQUIRED) == 2)
 record("freeze: a malformed (non-TOML) config -> exit-2 signal", freeze("this is not = = toml [[\n", m.RUSTFMT_REQUIRED) == 2)
 
-# --- the REAL gate: configs freeze + target-absent skip (no workspace Cargo.toml today) -------
-record("real gate: structural freeze passes + skips live tools today (target-absent, rc 0)", m.main([]) == 0)
-record("real gate: --full also passes today (target-absent)", m.main(["--full"]) == 0)
-record("real configs: the committed rustfmt.toml + clippy.toml pass their freeze",
-       m.freeze_config(m.RUSTFMT, m.RUSTFMT_REQUIRED, "rustfmt") == 0 and
-       m.freeze_config(m.CLIPPY, m.CLIPPY_REQUIRED, "clippy") == 0)
-record("workspace: the tests/g53-fixture Cargo.tomls are NOT mistaken for the first-party workspace",
-       m._workspace_manifest() is None)
-
-# --- the P1-runway fix: cargo absent in this plane -> run_live_tools SKIPS (0), not a fmt/clippy fail -
-def _live_skip_when_cargo_absent() -> int:
+# --- the REAL gate: target-present (the P1.6 workspace) + cargo-absent-plane skip ---------------
+# Liveness must NOT be keyed on which('cargo') ALONE: the GitHub ubuntu/windows runners ship a cargo,
+# so the gate-tooling (L4-structural) plane would otherwise run the live tier (and `cargo audit
+# --no-fetch` would fail cold on the db-less runner). These legs pin the deterministic cargo-absent
+# skip path by mocking shutil.which, so they hold on every runner regardless of a pre-installed cargo
+# (the P1.6 self-test-staleness fix; live fmt/clippy/test enforce at L1/L2 + the equipped Rust CI job).
+def _with_cargo_absent(fn):
     saved = m.shutil.which
     m.shutil.which = lambda tool: None
     try:
-        return m.run_live_tools(False)
+        return fn()
     finally:
         m.shutil.which = saved
 
 
+def _with_no_manifest(fn):
+    saved = m._workspace_manifest
+    m._workspace_manifest = lambda: None
+    try:
+        return fn()
+    finally:
+        m._workspace_manifest = saved
+
+
+record("real gate: target-present + cargo-absent plane -> structural freeze + crate-attrs pass, live tools skip (rc 0)",
+       _with_cargo_absent(lambda: m.main([])) == 0)
+record("real gate: --full in the cargo-absent plane also passes (rc 0)",
+       _with_cargo_absent(lambda: m.main(["--full"])) == 0)
+record("real gate: the manifest-absent skip branch still returns 0 (defensive — the workspace could be removed)",
+       _with_no_manifest(lambda: m.main([])) == 0)
+record("real configs: the committed rustfmt.toml + clippy.toml pass their freeze",
+       m.freeze_config(m.RUSTFMT, m.RUSTFMT_REQUIRED, "rustfmt") == 0 and
+       m.freeze_config(m.CLIPPY, m.CLIPPY_REQUIRED, "clippy") == 0)
+record("workspace: _workspace_manifest() resolves the real first-party ROOT workspace (P1.6), "
+       "not None and not a tests/g53-fixture manifest",
+       m._workspace_manifest() == m.ROOT / "Cargo.toml")
+
+# --- run_live_tools: cargo absent in this plane -> SKIPS (0), not a fmt/clippy fail (P1-runway fix) -
 record("run_live_tools(): cargo absent in this plane -> SKIP (0), not a fmt/clippy fail "
-       "(P1-runway fix; live fmt/clippy/test enforce where cargo is present)",
-       _live_skip_when_cargo_absent() == 0)
+       "(live fmt/clippy/test enforce where cargo is present)",
+       _with_cargo_absent(lambda: m.run_live_tools(False)) == 0)
+
+# --- the G17 audit-db guard: `cargo audit --no-fetch` skips gracefully when the advisory-db is absent
+# (a fresh machine / clean CI runner that ships cargo-audit but never fetched the RustSec db) ----------
+with tempfile.TemporaryDirectory() as _td:
+    _saved_ch = os.environ.get("CARGO_HOME")
+    os.environ["CARGO_HOME"] = _td                  # a fresh CARGO_HOME with no advisory-db subdir
+    try:
+        record("audit-db: an absent advisory-db -> _advisory_db_present() False (the --no-fetch skip path arms)",
+               m._advisory_db_present() is False)
+        (Path(_td) / "advisory-db").mkdir()
+        record("audit-db: a present advisory-db -> _advisory_db_present() True (the audit leg is NOT silently disarmed)",
+               m._advisory_db_present() is True)
+    finally:
+        if _saved_ch is None:
+            os.environ.pop("CARGO_HOME", None)
+        else:
+            os.environ["CARGO_HOME"] = _saved_ch
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-rust-lint-contract] {len(results) - len(failed)}/{len(results)} assertions passed.")

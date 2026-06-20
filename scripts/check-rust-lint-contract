@@ -13,9 +13,10 @@ Two tiers, the same pattern as the supply-chain skeleton (P0.3.6):
   LIVE (target-absent until the P1 crates land): once a workspace `Cargo.toml` exists, assert each
   REQUIRED_ATTRS deny-set is present at its module root, then run `cargo fmt --check` (G3),
   `cargo clippy -D warnings` / `--all-targets --all-features` (G4/G14), `cargo test`, and
-  `cargo audit` (G17 — PLAIN, no `--locked`; `--no-fetch` for the offline leg). Skips-with-notice
-  while no workspace manifest exists, fail-closes the moment one lands (the G47/G22/G23 bootstrap
-  posture). cargo-audit's binary pin + the live audit leg activate in P1 with the lockfile.
+  `cargo audit` (G17 — PLAIN, no `--locked`; `--no-fetch` for the offline leg, skipped when the local
+  advisory-db is absent — a fresh machine / clean CI runner has none). Skips-with-notice while no
+  workspace manifest exists, fail-closes the moment one lands (the G47/G22/G23 bootstrap posture).
+  cargo-audit's binary pin + the live audit leg activate in P1 with the lockfile.
 
 stdlib-only. L(-1) security-critical (matched by scripts/check-*). The configs it freezes
 (rustfmt.toml / clippy.toml) are themselves L(-1).
@@ -26,6 +27,7 @@ Exit:  0 = contract intact (or target-absent); 1 = a violation; 2 = a config is 
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -123,6 +125,18 @@ def _workspace_manifest() -> Path | None:
     return None
 
 
+def _advisory_db_present() -> bool:
+    """The G17 `cargo audit --no-fetch` (offline) leg needs a LOCAL advisory database — the RustSec db
+    cloned under `$CARGO_HOME/advisory-db` (default `~/.cargo/advisory-db`). A fresh dev machine or a
+    clean CI runner that ships cargo-audit but never fetched the db has none, so `--no-fetch` would
+    error `failed to read directory .../advisory-db` and exit 1 — a WRONG-REASON failure, not a real
+    advisory hit. Absent → the audit leg skips-with-notice (it still enforces at L1/L2 where a dev's db
+    is warm + the equipped Rust CI audit leg that fetches the db first); the same skip-here / enforce-
+    there posture the cargo-deny / cargo-vet live legs already use when their binary is absent."""
+    cargo_home = Path(os.environ.get("CARGO_HOME") or (Path.home() / ".cargo"))
+    return (cargo_home / "advisory-db").is_dir()
+
+
 # The deny set is a MODULE-INNER attribute `#![deny(...)]` (it governs the whole crate/module). _DENY_RE
 # requires the inner-`!` form AND anchors to line-start (after indentation): a deny token mid-line (a
 # string/expression) is not a real in-force deny — missing a non-line-start deny is over-strict = SAFE
@@ -217,14 +231,22 @@ def run_live_tools(full: bool) -> int:
     clippy = ["cargo", "clippy", "--all-targets", "--all-features"] if full else ["cargo", "clippy"]
     problems += _run("G4/G14 clippy -D warnings", clippy + ["--", "-D", "warnings"])
     problems += _run("cargo test", ["cargo", "test", "--all-targets"])
-    # G17: cargo audit is PLAIN (no --locked — not a cargo-audit flag); --no-fetch = the offline leg
+    # G17: cargo audit is PLAIN (no --locked — not a cargo-audit flag); --no-fetch = the offline leg.
     try:
         have_audit = subprocess.run(["cargo", "audit", "--version"], cwd=str(ROOT),
                                     capture_output=True).returncode == 0
     except OSError:
         have_audit = False                          # cargo itself absent (guarded like _run)
-    if have_audit:
+    if have_audit and _advisory_db_present():
         problems += _run("G17 cargo audit", ["cargo", "audit", "--no-fetch"])
+    elif have_audit:
+        # cargo-audit is installed but the offline `--no-fetch` leg needs a local advisory-db that a
+        # fresh machine / clean CI runner does not have (it would error, not find an advisory). Skip
+        # WITH a notice (never silently): the audit enforces at L1/L2 where a dev's db is warm + the
+        # equipped Rust CI audit leg that fetches the db — same posture as the cargo-deny/vet legs.
+        print("[G17] cargo-audit present but no local advisory-db (~/.cargo/advisory-db) — the offline "
+              "`--no-fetch` audit needs a prior fetch; skipped here (enforces at L1/L2 + the equipped "
+              "Rust CI audit leg)")
     else:
         print("[G17] cargo-audit not installed yet (binary pin lands in P1) — audit leg skipped")
     return problems
