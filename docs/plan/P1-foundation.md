@@ -86,26 +86,26 @@ gate have real crates to act on (activating P0.4.1/P0.3.6/P0.3.7/P0.4.2).
 - [x] **P1.10** [RUST] Stand up the §0.7 tier-2 `outcome` module shell (error-taxonomy home) · §2.8 · G29
   needs: P1.9
   > `crate::outcome` (the renamed-from-`error` §0.7 module) as an interface-only home for the §2.8 taxonomy + the §0.4.3 `IpcError`/`ErrorKind` wire mirror; P1 lands the module + an empty placeholder so the tree compiles and §06's drift mechanism has a home — the full catalog/strings are P2/§02.
-- [ ] **P1.11** [RUST] Scaffold the 9 §0.7 Rust library module roots (grouping shell) · §0.7 · G29 G9
+- [x] **P1.11** [RUST] Scaffold the 9 §0.7 Rust library module roots (grouping shell) · §0.7 · G29 G9
   needs: P1.6, P1.9
   > the grouping parent for the nine §0.7 logical module roots, each a compile-only `mod` with its canonical path and dependencies pointing strictly downward, so the §0.7 architecture exists as code (not just a tree) and the P0 G9 repo-invariant greps (no `Command::new` outside `crate::isolation`, no `127.0.0.1` outside `#[cfg(test)]`) have their real module boundaries (activates the P0.3.10 invariants (b)/(c)). Each shell can fail to compile independently and is built + checked off on its own (the loop works the sub-boxes top-to-bottom; a broken `orchestrator` shell is unrelated to a broken `ipc` shell), mirroring the P3.1 three-root split. The parent is `[x]` only when all nine sub-boxes are `[x]` (_format.md §2). Downstream boxes that consume one module root `needs:` the specific sub-box (or P1.11 when they need the whole tree).
-  - [ ] **P1.11.1** [RUST] Scaffold the `crate::platform` module-root shell (the OS-abstraction leaf) · §0.7 · G29
+  - [x] **P1.11.1** [RUST] Scaffold the `crate::platform` module-root shell (the OS-abstraction leaf) · §0.7 · G29
     > compile-only `mod platform` with its canonical path, no dependency on any other §0.7 module (the lowest OS-abstraction leaf); the per-OS helpers later boxes fill (no body in P1).
-  - [ ] **P1.11.2** [RUST] Scaffold the `crate::fs_guard` module-root shell · §0.7 · G29 G9
+  - [x] **P1.11.2** [RUST] Scaffold the `crate::fs_guard` module-root shell · §0.7 · G29 G9
     > compile-only `mod fs_guard` (canonical path) — the §2.0 no-harm-kernel home P3.1.1 fills; downward-only deps; joins the P0 G9 grep scope.
-  - [ ] **P1.11.3** [RUST] Scaffold the `crate::run` module-root shell · §0.7 · G29
+  - [x] **P1.11.3** [RUST] Scaffold the `crate::run` module-root shell · §0.7 · G29
     > compile-only `mod run` (canonical path) — the §2.6 scratch/cleanup-lifecycle home P3.1.2 fills; downward-only deps.
-  - [ ] **P1.11.4** [RUST] Scaffold the `crate::detection` module-root shell · §0.7 · G29
+  - [x] **P1.11.4** [RUST] Scaffold the `crate::detection` module-root shell · §0.7 · G29
     > compile-only `mod detection` (canonical path) — the §1.2 layered-detection home P3.26 fills; downward-only deps.
-  - [ ] **P1.11.5** [RUST] Scaffold the `crate::engines` module-root shell · §0.7 · G29
+  - [x] **P1.11.5** [RUST] Scaffold the `crate::engines` module-root shell · §0.7 · G29
     > compile-only `mod engines` (canonical path) — the §3.2 engine-registry/`Engine`-trait home P4.1 fills; downward-only deps.
-  - [ ] **P1.11.6** [RUST] Scaffold the `crate::isolation` module-root shell · §0.7 · G29 G9
+  - [x] **P1.11.6** [RUST] Scaffold the `crate::isolation` module-root shell · §0.7 · G29 G9
     > compile-only `mod isolation` (canonical path) — the §2.12 decoder-isolation home P3.2 (shell) / P4.13 (real wrapper) fill; the sole legitimate `Command::new` site (P0 G9 invariant (b) scopes its grep to this module); downward-only deps.
-  - [ ] **P1.11.7** [RUST] Scaffold the `crate::pool` module-root shell · §0.7 · G29
+  - [x] **P1.11.7** [RUST] Scaffold the `crate::pool` module-root shell · §0.7 · G29
     > compile-only `mod pool` (canonical path) — the §0.9 subprocess-pool home P3.3 (shell) / P4.20 (real pool) fill; downward-only deps.
-  - [ ] **P1.11.8** [RUST] Scaffold the `crate::orchestrator` module-root shell · §0.7 · G29
+  - [x] **P1.11.8** [RUST] Scaffold the `crate::orchestrator` module-root shell · §0.7 · G29
     > compile-only `mod orchestrator` (canonical path) — the §1.9 batch/job-lifecycle home P3.46 fills; downward-only deps (calls into fs_guard/run/detection/engines/isolation/pool, never up).
-  - [ ] **P1.11.9** [RUST] Scaffold the `crate::ipc` module-root shell · §0.7 · G29 G9
+  - [x] **P1.11.9** [RUST] Scaffold the `crate::ipc` module-root shell · §0.7 · G29 G9
     > compile-only `mod ipc` (canonical path) — the §0.4 command/event surface home P2.21 fills; downward-only deps; joins the P0 G9 grep scope (no raw `127.0.0.1`/`localhost` outside `#[cfg(test)]`).
 
 ---
