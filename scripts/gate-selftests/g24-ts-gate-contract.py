@@ -3,9 +3,11 @@
 
 Proves the structural freeze CANNOT be gutted (the strict / no-`any` / tool-wiring contract stays
 non-empty) and that every LIVE-tier assertion CATCHES its planted violation once the P1 frontend lands:
-a relaxed tsconfig strict flag (G6/G13), a missing / switched-off eslint rule (G5), an absent
-prettier/stylelint/vitest config, a manifest not wiring a tool, plus the JSONC tolerance + the
-single-level `extends` follow + the comment/string-aware scans. The live tsc/eslint/prettier/vitest are
+a relaxed tsconfig strict flag (G6/G13), a missing / switched-off eslint rule (G5), and a HALF-WIRED
+tool — a config without its package.json script, or a script without its config (assert_toolchain_wiring,
+the per-tool config<->script agreement) — while a BARE manifest with neither is TOLERATED (the P1.2
+staggered-landing posture, the regression this gate-fix locks in). Plus the JSONC tolerance + the
+multi-level `extends` follow + the comment/string-aware scans. The live tsc/eslint/prettier/vitest are
 target-absent today (no package.json) so the real gate skips. stdlib-only. Exit 0 = all held.
 """
 import importlib.machinery
@@ -132,35 +134,85 @@ record("_strip_js_comments: a // inside a string is kept, a real // comment is d
        'http://keep/me' in m._strip_js_comments('const u = "http://keep/me"; // drop this fc.gen note')
        and 'drop this' not in m._strip_js_comments('const u = "http://keep/me"; // drop this fc.gen note'))
 
-# --- assert_configs_present (G5 prettier/stylelint + vitest) ----------------------------------
-_CFG_FILES = {".prettierrc": "{}", ".stylelintrc.json": "{}", "vitest.config.ts": "export default {}"}
-record("configs: prettier + stylelint + vitest present -> clean",
-       in_root(_CFG_FILES, m.assert_configs_present) == 0)
-record("configs: missing prettier -> caught",
-       in_root({".stylelintrc.json": "{}", "vitest.config.ts": "export default {}"}, m.assert_configs_present) >= 1)
-record("configs: vitest via a `test:` block in vite.config.ts -> accepted",
-       in_root({".prettierrc": "{}", ".stylelintrc.json": "{}",
-                "vite.config.ts": "export default {\n  test: { environment: 'jsdom' }\n}"},
-               m.assert_configs_present) == 0)
-
-# --- assert_pkg_scripts ------------------------------------------------------------------------
-_GOOD_PKG = ('{ "scripts": { "typecheck": "tsc --noEmit", "lint": "eslint . && stylelint **/*.css", '
+# --- assert_toolchain_wiring: per-tool config<->script AGREEMENT (the P1.2 staggered-landing fix) -----
+# Each tool's config presence and its package.json script must AGREE: NEITHER = target-absent (tolerated);
+# a config without its script, or a script without its config, = a half-wired tool (caught). The
+# stylelint config is coupled to the eslint flat config (they land together in P1.33).
+_FULL_PKG = ('{ "scripts": { "typecheck": "tsc --noEmit", "lint": "eslint . && stylelint **/*.css", '
              '"fmt": "prettier --check .", "test": "vitest run" } }')
-record("pkg-scripts: a manifest wiring all tools -> clean",
-       m.assert_pkg_scripts(tmp_file("package.json", _GOOD_PKG)) == 0)
-record("pkg-scripts: a manifest NOT wiring eslint -> caught",
-       m.assert_pkg_scripts(tmp_file("package.json",
-                                     '{ "scripts": { "typecheck": "tsc --noEmit", "fmt": "prettier -c .", "test": "vitest" } }')) >= 1)
-record("pkg-scripts: malformed package.json -> exit-2 signal",
-       m.assert_pkg_scripts(tmp_file("package.json", "{ not json")) == 2)
+_FULL_CFG = {".prettierrc": "{}", ".stylelintrc.json": "{}", "vitest.config.ts": "export default {}",
+             "tsconfig.json": _GOOD_TS, "eslint.config.js": _GOOD_ESLINT}
 
-# --- target-absent + a full synthetic frontend E2E (asserts only; live runs skip if pnpm absent) ---
+
+def _wiring(files):
+    return in_root(files, lambda: m.assert_toolchain_wiring(m.ROOT / "package.json"))
+
+
+# THE regression test for the P1.2 escalation: a BARE manifest (no toolchain configs, no toolchain
+# scripts -- only the `tauri` script P1.2.3 wires) is TOLERATED (0), not 7-violations-red as it was
+# before the fix (package.json alone armed the whole prettier/stylelint/vitest + scripts contract).
+record("wiring: a bare P1.2 manifest (no configs, no toolchain scripts) -> target-absent (0)",
+       _wiring({"package.json": '{ "scripts": { "tauri": "tauri" } }'}) == 0)
+record("wiring: an empty-scripts manifest -> target-absent (0)",
+       _wiring({"package.json": '{ "scripts": {} }'}) == 0)
+record("wiring: every tool config present + every script wired -> clean (0)",
+       _wiring(dict(_FULL_CFG, **{"package.json": _FULL_PKG})) == 0)
+# ARM proof 1: a config present but its script NOT wired -> caught (half-wired)
+record("wiring: prettier config present but no prettier script -> caught (half-wired)",
+       _wiring({".prettierrc": "{}", "package.json": '{ "scripts": { "tauri": "tauri" } }'}) >= 1)
+record("wiring: tsconfig present but no tsc script -> caught (half-wired)",
+       _wiring({"tsconfig.json": _GOOD_TS, "package.json": '{ "scripts": { "tauri": "tauri" } }'}) >= 1)
+# ARM proof 2: a script wired but its config absent -> caught (half-wired; ALSO the anti-gaming leg --
+# a wired script whose config is deleted does NOT silently open the gate, unlike a single-trigger fix)
+record("wiring: a vitest script wired but no vitest config -> caught (half-wired / anti-gaming)",
+       _wiring({"package.json": '{ "scripts": { "test": "vitest run" } }'}) >= 1)
+# stylelint coupling: eslint flat config present but no stylelint config -> caught
+record("wiring: eslint config present but stylelint config absent -> caught (stylelint coupled to eslint)",
+       _wiring({"eslint.config.js": _GOOD_ESLINT,
+                "package.json": '{ "scripts": { "lint": "eslint ." } }'}) >= 1)
+# stylelint coupling satisfied: eslint + stylelint both present -> no stylelint finding
+record("wiring: eslint + stylelint configs both present (lint script wired) -> clean for the lint layer",
+       _wiring({"eslint.config.js": _GOOD_ESLINT, ".stylelintrc.json": "{}",
+                "package.json": '{ "scripts": { "lint": "eslint . && stylelint **/*.css" } }'}) == 0)
+record("wiring: malformed package.json -> exit-2 signal",
+       _wiring({"package.json": "{ not json"}) == 2)
 record("manifest: no package.json -> target-absent (None)", in_root({}, m._frontend_manifest) is None)
-_FULL = dict(_CFG_FILES)
-_FULL.update({"package.json": _GOOD_PKG, "tsconfig.json": _GOOD_TS, "eslint.config.js": _GOOD_ESLINT})
-record("E2E: a complete synthetic frontend passes every static assertion (tsconfig+eslint+configs+scripts)",
+
+
+# detector-coverage: freeze_contract catches a PKG_REQUIRED_SCRIPTS tool with no _TOOL_CONFIG detector
+def _drift_detector():
+    saved = m.PKG_REQUIRED_SCRIPTS
+    m.PKG_REQUIRED_SCRIPTS = list(saved) + ["webpack"]
+    try:
+        return m.freeze_contract()
+    finally:
+        m.PKG_REQUIRED_SCRIPTS = saved
+
+
+record("freeze_contract: a PKG_REQUIRED_SCRIPTS tool with no _TOOL_CONFIG detector is caught (drift)",
+       _drift_detector() >= 1)
+
+
+# the drift guard must SHORT-CIRCUIT main() before the live tier: with the drift present AND a manifest
+# on disk, main() exits 1 cleanly via the early structural bail -- it does NOT reach (and KeyError-crash
+# in) the assert_toolchain_wiring loop (G1 dual-review P1 fix; without the early bail this leg crashes).
+def _drift_with_manifest():
+    saved = m.PKG_REQUIRED_SCRIPTS
+    m.PKG_REQUIRED_SCRIPTS = list(saved) + ["webpack"]
+    try:
+        return in_root({"package.json": '{ "scripts": {} }'}, lambda: m.main([]))
+    finally:
+        m.PKG_REQUIRED_SCRIPTS = saved
+
+
+record("main: contract/detector drift WITH a manifest present -> clean exit 1, not a KeyError crash",
+       _drift_with_manifest() == 1)
+
+# --- a full synthetic frontend E2E (static asserts only; live runs skip if pnpm absent) -------------
+_FULL = dict(_FULL_CFG, **{"package.json": _FULL_PKG})
+record("E2E: a complete synthetic frontend passes every static assertion (tsconfig+eslint+wiring)",
        in_root(_FULL, lambda: m.assert_tsconfig_strict() + m.assert_eslint_rules()
-               + m.assert_configs_present() + m.assert_pkg_scripts(m.ROOT / "package.json")) == 0)
+               + m.assert_toolchain_wiring(m.ROOT / "package.json")) == 0)
 
 # --- P0.4.7 G1 (volle Härte) P2/P3 fix legs ---------------------------------------------------
 # P2: a formatter-wrapped MULTI-line array-form disable (the per-physical-line scan missed it) is caught

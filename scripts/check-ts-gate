@@ -11,14 +11,18 @@ Two tiers, the same pattern as the Rust contract (P0.4.1) and the supply-chain s
   the package manifest must wire (PKG_REQUIRED_SCRIPTS) are frozen here as non-empty contracts. A
   relaxation reddens the gate (and is an owner-acked L(-1) edit, G71).
 
-  LIVE (target-absent until the P1 frontend lands): once a frontend `package.json` exists, assert the
-  `tsconfig.json` strict flags are set (G6/G13), the eslint flat config carries the project-local rules
-  (G5), the prettier / stylelint / vitest configs are present, and the manifest wires the tool scripts;
-  then RUN `tsc --noEmit` (G6 changed-scope at L1 / G13 whole-project at L2), `eslint` + `stylelint`
-  (G5), `prettier --check` (G5), and `vitest` — via the pinned pnpm toolchain (guarded: skipped with a
-  notice if pnpm/node is not installed, exactly as the Rust contract skips when cargo is absent).
-  Skips-with-notice while no `package.json` exists, fail-closes the moment one lands (the
-  G47/G22/G23/P0.4.1 bootstrap posture).
+  LIVE (per-tool, target-absent until each tool lands): once a frontend `package.json` exists, the
+  CONDITIONAL content checks fire as their target appears — the `tsconfig.json` strict flags (G6/G13)
+  once tsconfig lands, the eslint flat-config project-local rules (G5) once the flat config lands. The
+  per-tool WIRING contract (assert_toolchain_wiring) then requires each tool's config presence and its
+  package.json script to AGREE (a config with no runnable script, or a script with no config, is a
+  half-wired tool); a tool with NEITHER has not landed yet and is tolerated. Then RUN `tsc --noEmit`
+  (G6 changed-scope at L1 / G13 whole-project at L2), `eslint` + `stylelint` (G5), `prettier --check`
+  (G5), and `vitest` — via the pinned pnpm toolchain (guarded: skipped with a notice if pnpm/node is not
+  installed, exactly as the Rust contract skips when cargo is absent). The manifest lands in P1.2 but the
+  toolchain configs+scripts land STAGGERED across P1.30/P1.33/P1.34/P1.35 (each box wiring its config +
+  script together), so a bare manifest no longer arms the whole contract at once — the prior
+  package.json-arms-everything posture wrongly demanded the P1.30–P1.35 configs already at P1.2.
 
 WHY contract-only (no config files authored here): spec §0.7 homes `tsconfig.json` / `package.json` /
 `vite.config.ts` in the P1 FRONTEND BUILD, and the eslint/vitest configs import the (P1-installed)
@@ -106,6 +110,10 @@ def freeze_contract() -> int:
         problems += 1
     if not PKG_REQUIRED_SCRIPTS:
         fail("PKG_REQUIRED_SCRIPTS is empty — the tool-wiring contract is gone")
+        problems += 1
+    if any(t not in _TOOL_CONFIG for t in PKG_REQUIRED_SCRIPTS):
+        fail("a PKG_REQUIRED_SCRIPTS tool lacks a _TOOL_CONFIG detector — the per-tool config/script "
+             "agreement check (assert_toolchain_wiring) would crash on it (contract/detector drift)")
         problems += 1
     return problems
 
@@ -271,29 +279,40 @@ def _present(cands: list[str]) -> bool:
     return any((ROOT / c).is_file() for c in cands)
 
 
-def assert_configs_present() -> int:
-    """P1: the prettier / stylelint / vitest configs exist (a presence check — the deep correctness is
-    the live run + the P1 G1 dual-review). vitest config may be its own file OR a `test` block inside a
-    vite.config.* — accept either."""
-    problems = 0
-    if not _present(_PRETTIER):
-        fail("no prettier config found (the G5 format contract is unwired)")
-        problems += 1
-    if not _present(_STYLELINT):
-        fail("no stylelint config found (the G5 CSS-lint contract is unwired)")
-        problems += 1
-    vitest_ok = _present(_VITEST) or any(
-        (ROOT / v).is_file() and re.search(r"(?m)^\s*test\s*:", (ROOT / v).read_text(encoding="utf-8", errors="replace"))
+def _vitest_config_present() -> bool:
+    """A vitest config: its own `vitest.config.*` OR a `test:` block inside a `vite.config.*`."""
+    return _present(_VITEST) or any(
+        (ROOT / v).is_file()
+        and re.search(r"(?m)^\s*test\s*:", (ROOT / v).read_text(encoding="utf-8", errors="replace"))
         for v in _VITE)
-    if not vitest_ok:
-        fail("no vitest config found (neither vitest.config.* nor a `test:` block in vite.config.*)")
-        problems += 1
-    return problems
 
 
-def assert_pkg_scripts(manifest: Path) -> int:
-    """P1: package.json `scripts` wires each PKG_REQUIRED_SCRIPTS tool (so each gate is runnable in CI +
-    by a contributor). Matched as the tool token appearing anywhere in the scripts-block values."""
+# Per-script-tool config detector: its PRESENCE is coupled to the manifest script wiring by
+# assert_toolchain_wiring. (The CONTENT of the tsc / eslint configs is separately frozen by
+# assert_tsconfig_strict / assert_eslint_rules; here we only detect presence for the agreement check.)
+_TOOL_CONFIG = {
+    "tsc": lambda: (ROOT / "tsconfig.json").is_file(),
+    "eslint": lambda: _eslint_config() is not None,
+    "prettier": lambda: _present(_PRETTIER),
+    "vitest": _vitest_config_present,
+}
+
+
+def _script_wired(tool: str, blob: str) -> bool:
+    """True iff the tool token appears (whole-token) anywhere in the package.json scripts-block values."""
+    return bool(re.search(r"(?<![\w-])" + re.escape(tool) + r"(?![\w-])", blob))
+
+
+def assert_toolchain_wiring(manifest: Path) -> int:
+    """P1: the per-tool frontend toolchain-wiring contract. Each PKG_REQUIRED_SCRIPTS tool's CONFIG
+    presence and its package.json SCRIPT wiring must AGREE: a config with no runnable script, or a script
+    with no config, is a half-wired tool (a violation, G5/G6/G13). A tool with NEITHER has not landed yet
+    (target-absent, TOLERATED). This is the per-tool extension of the assert_tsconfig_strict /
+    assert_eslint_rules tolerance: the manifest lands in P1.2 but the toolchain configs+scripts land
+    STAGGERED (P1.30 tsc / P1.33 eslint+stylelint / P1.34 prettier / P1.35 vitest), each box wiring its
+    config + script together, so a bare P1.2 manifest must not arm the whole contract at once. The
+    stylelint config has no script token of its own in the contract; it lands WITH the eslint flat config
+    (P1.33), so its presence is coupled to eslint's. [Build-Session-Entscheidung: P0.4.7]"""
     try:
         pkg = json.loads(manifest.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError, ValueError) as e:
@@ -306,9 +325,22 @@ def assert_pkg_scripts(manifest: Path) -> int:
     blob = " ".join(str(v) for v in scripts.values())
     problems = 0
     for tool in PKG_REQUIRED_SCRIPTS:
-        if not re.search(r"(?<![\w-])" + re.escape(tool) + r"(?![\w-])", blob):
-            fail(f"package.json scripts do not wire {tool!r} (the G5/G6/G13 tool is not runnable)")
+        has_config = _TOOL_CONFIG[tool]()
+        has_script = _script_wired(tool, blob)
+        if has_config and not has_script:
+            fail(f"{tool!r} config is present but package.json scripts do not wire it "
+                 f"(a half-wired toolchain; the G5/G6/G13 tool is not runnable)")
             problems += 1
+        elif has_script and not has_config:
+            fail(f"package.json wires a {tool!r} script but its config is absent "
+                 f"(a half-wired toolchain; a script with no config)")
+            problems += 1
+        # NEITHER: the tool has not landed yet (target-absent, tolerated). BOTH: wired correctly.
+    # stylelint: coupled to the eslint flat config (they land together in P1.33).
+    if _eslint_config() is not None and not _present(_STYLELINT):
+        fail("eslint flat config is present but no stylelint config found "
+             "(the G5 CSS-lint contract is unwired; stylelint lands with eslint in P1.33)")
+        problems += 1
     return problems
 
 
@@ -357,22 +389,25 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     structural = freeze_contract()
+    if structural:
+        # A broken/gutted contract (e.g. a PKG_REQUIRED_SCRIPTS tool with no _TOOL_CONFIG detector) is
+        # FATAL before the live tier: the live asserts trust the contract to be well-formed (the
+        # assert_toolchain_wiring loop indexes _TOOL_CONFIG by each contract tool), so a contract defect
+        # short-circuits here rather than reaching a malformed-state crash downstream.
+        print(f"[G5/G6/G13] {structural} contract violation(s)", file=sys.stderr)
+        return 1
 
     manifest = _frontend_manifest()
     if manifest is None:
-        if structural:
-            print(f"[G5/G6/G13] {structural} contract violation(s)", file=sys.stderr)
-            return 1
         print("[G5/G6/G13] TS-gate contract frozen; no frontend package.json yet (the workspace + TS "
               "sources land in P1) — live tsc/eslint/stylelint/prettier/vitest skipped (target-absent)")
         return 0
 
-    live = (assert_tsconfig_strict() + assert_eslint_rules() + assert_configs_present()
-            + assert_pkg_scripts(manifest) + run_live_tools(args.full))
-    # a `2` (missing/malformed config) from the strict/scripts asserts surfaces as a hard fail too
-    total = structural + live
-    if total:
-        print(f"[G5/G6/G13] {total} TS-gate contract violation(s)", file=sys.stderr)
+    live = (assert_tsconfig_strict() + assert_eslint_rules() + assert_toolchain_wiring(manifest)
+            + run_live_tools(args.full))
+    # a `2` (missing/malformed config) from the strict/wiring asserts surfaces as a hard fail too
+    if live:
+        print(f"[G5/G6/G13] {live} TS-gate contract violation(s)", file=sys.stderr)
         return 1
     print("[G5/G6/G13] TypeScript lint/type-check/format/test contract OK")
     return 0
