@@ -1,0 +1,6 @@
+# pnpm workspace — the §0.7 layout: a single root frontend package (the React 19 / Vite UI,
+# sourced from src/). src-tauri/ is the Rust side (Cargo, not an npm package) and is NOT a member.
+# packageManager + onlyBuiltDependencies live in package.json (G18d posture, P0.3.8). Additional
+# members would be listed here if the workspace ever grows beyond the single root package.
+packages:
+  - '.'

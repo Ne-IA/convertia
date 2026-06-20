@@ -1,0 +1,15 @@
+{
+  "name": "convertia",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.13.1",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": []
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.3"
+  }
+}
