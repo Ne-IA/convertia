@@ -18,8 +18,17 @@
 #![deny(clippy::panic)]
 #![deny(clippy::wildcard_enum_match_arm)]
 
+mod detection;
 mod domain;
+mod engines;
+mod fs_guard;
+mod ipc;
+mod isolation;
+mod orchestrator;
 mod outcome;
+mod platform;
+mod pool;
+mod run;
 
 // [Build-Session-Entscheidung: P1.6] minimal entry — the real Tauri `Builder` is built in P1.13.
 fn main() {}
