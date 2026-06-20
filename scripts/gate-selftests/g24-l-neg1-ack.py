@@ -39,7 +39,7 @@ record("cage loaded (non-empty)", isinstance(REGEXES, list) and len(REGEXES) > 0
 for p in ("lefthook.yml", "scripts/check-l-neg1-ack", "scripts/check-branch-protection",
           "scripts/fastpath-docs-only", "scripts/run-gate-selftests", "scripts/install-gate-tools",
           "scripts/setup-dev", "scripts/gate-selftests/g24-l-neg1-ack.py", "scripts/gate-planes.toml",
-          "scripts/l-neg1-files.toml", ".github/workflows/ci.yml", ".github/allowed-signers",
+          "scripts/l-neg1-files.toml", ".github/workflows/ci.yml", ".github/allowed_signers",
           "deny.toml", ".gitleaks.toml", "supply-chain/config.toml", "supply-chain/imports.lock",
           ".gitattributes", ".lfsconfig", "requirements-ci.txt", "src-tauri/capabilities/default.json",
           "rust-toolchain.toml", "engines.lock", "docs/security/build-gates.md",

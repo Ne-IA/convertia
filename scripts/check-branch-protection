@@ -70,7 +70,7 @@ EXPECTED_REQUIRED_CHECKS = (
     "workflow-security",
     "sast",                       # G29 Semgrep + shellcheck SAST job (P0.4.2; owner adds it to branch protection)
 )
-DEFAULT_ALLOWED_SIGNERS = ".github/allowed-signers"  # provisioned in P0.7.17 (shared with G56b)
+DEFAULT_ALLOWED_SIGNERS = ".github/allowed_signers"  # provisioned in P0.7.17 (shared with G56b)
 DEFAULT_SEMGREP_DIR = "scripts/semgrep-rules"        # G29 rule-(i) taint ruleset home (P0.4)
 
 

@@ -42,7 +42,7 @@ from pathlib import Path
 
 # check-run conclusions that DO NOT block a release (a green/irrelevant outcome).
 OK_CONCLUSIONS = {"success", "neutral", "skipped"}
-DEFAULT_ALLOWED_SIGNERS = ".github/allowed-signers"  # provisioned in P0.7.17
+DEFAULT_ALLOWED_SIGNERS = ".github/allowed_signers"  # provisioned in P0.7.17
 
 
 def out(msg: str) -> None:
