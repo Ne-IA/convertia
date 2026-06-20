@@ -98,10 +98,10 @@ reason = "no secret-reading job and no cargo-fuzz invocation exist until the sig
 
 [[fail_open]]
 gate = "G56a"
-leg = "branch-protection / repo-config introspection"
+leg = "branch-protection / repo-config introspection — fork-PR only"
 fail_open_at = "L4"
-covered_by = "P1 --enforce + owner verification"
-reason = "the default CI GITHUB_TOKEN cannot read admin-scoped ruleset / repo config (GitHub exposes no `administration` token scope), and the config is owner-provisioned mid-P0; the gate runs fail-SOFT in CI on the default token and is owner-verified now, becoming fail-CLOSED at P1 via an admin-scoped PAT secret + --enforce (pattern c)"
+covered_by = "push + schedule --enforce (admin-read PAT)"
+reason = "on push + schedule G56a runs --enforce fail-CLOSED with the fine-grained REPO_ADMIN_READ_TOKEN secret (Administration: Read; the default CI GITHUB_TOKEN holds no `administration` scope); only on a fork pull_request does it fall back to fail-soft on the default token, because GitHub withholds secrets from fork-triggered runs (pattern a) — and this loses nothing: a code PR cannot alter the repo's rulesets/branch-protection, so the config-change path (every push to main) + the weekly schedule canary are the fail-closed net"
 
 [[fail_open]]
 gate = "G56b"

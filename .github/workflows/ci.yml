@@ -20,10 +20,11 @@ on:
   schedule:
     - cron: '17 3 * * 1'   # weekly UI-drift canary for G56a (branch-protection / repo-config), P0.2.8
 
-# Least privilege: read-only by default (G49/G56). Elevated per-job only where needed (none here:
-# G56a's branch-protection/repo-config reads need an ADMIN scope GITHUB_TOKEN cannot hold, so in
-# P0 it runs fail-soft on the default token and is owner-verified; a P1 admin-scoped PAT secret is
-# the hard-enforce path). Never set id-token on this push/PR workflow (P0.2.6).
+# Least privilege: the workflow GITHUB_TOKEN stays read-only (contents: read; G49/G56). G56a's
+# branch-protection/repo-config reads need an admin scope no GITHUB_TOKEN can hold, so on push +
+# schedule it runs --enforce with the separate fine-grained REPO_ADMIN_READ_TOKEN secret
+# (Administration: Read, fail-CLOSED); fork-PRs (secrets withheld) stay fail-soft on the default
+# token. Never set id-token on this push/PR workflow (P0.2.6).
 permissions:
   contents: read
 
@@ -120,6 +121,20 @@ jobs:
     runs-on: ubuntu-22.04           # OS-independent audit; Linux-only saves macOS minutes (G56 cost discipline)
     timeout-minutes: 10
     steps:
+      # This job reads the REPO_ADMIN_READ_TOKEN secret (G56a --enforce), so G56 requires an
+      # unconditional harden-runner in egress-BLOCK mode: a compromised step cannot exfiltrate the
+      # secret to an off-allowlist host. allowed-endpoints = checkout/gh-api + the GitHub release
+      # CDNs the pinned gate-tool binaries (actionlint/zizmor) + setup-python download from.
+      - name: 'Harden the runner — egress block (this job reads a secret; G56)'
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            codeload.github.com:443
+            github.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
@@ -137,7 +152,18 @@ jobs:
         run: .gate-tools/bin/zizmor --offline --persona regular .github/workflows/
       - name: 'G56: CI supply-chain config hygiene (dependabot 4-eco, id-token, concurrency polarity, timeouts, perms)'
         run: python3 scripts/check-ci-supply-chain
-      - name: 'G56a: branch-protection / repo-config assertion (fail-soft in P0; --enforce wired in P1)'
+      # G56a fail-CLOSED on trusted events (push + schedule) via the fine-grained admin-READ PAT
+      # (REPO_ADMIN_READ_TOKEN — the default GITHUB_TOKEN holds no admin scope); fork-PRs (GitHub
+      # withholds secrets from fork-triggered runs) stay fail-soft on the default token, which loses
+      # nothing — a code PR cannot alter the repo rulesets, and the config-change path (push to main)
+      # + the weekly schedule canary BOTH --enforce. (G56a CI path: fail-soft -> fail-closed.)
+      - name: 'G56a: branch-protection / repo-config — fail-CLOSED (push + schedule; admin-read PAT)'
+        if: github.event_name != 'pull_request'
+        run: python3 scripts/check-branch-protection --enforce
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ADMIN_READ_TOKEN }}
+      - name: 'G56a: branch-protection / repo-config — fail-soft (fork-PR; secrets withheld)'
+        if: github.event_name == 'pull_request'
         run: python3 scripts/check-branch-protection
         env:
           GH_TOKEN: ${{ github.token }}
