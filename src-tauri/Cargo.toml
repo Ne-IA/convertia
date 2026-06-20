@@ -1,0 +1,20 @@
+# src-tauri/Cargo.toml — the ConvertIA MIT core crate (the Tauri v2 host binary).
+#
+# Package name `convertia-core` is the name the G53 core-closure walk (scripts/check-core-deps,
+# CORE_CRATE_NAME) resolves + polices: its transitive Cargo dependency closure must NEVER contain the
+# image-worker copyleft C libs (libvips / libheif / libde265 / librsvg / libimagequant / ImageMagick),
+# which are linked ONLY by the separate `convertia-imgworker` binary — aggregation, not linkage into
+# the MIT core (spec §3.6.1, T6). At P1.6 the crate has no dependencies; the Tauri / tokio / plugin
+# deps land in P1.12–P1.14. It compiles to a minimal binary so the workspace, the live
+# G3/G4/G14/G53/G18 gates, and the committed Cargo.lock have a real target.
+[package]
+name = "convertia-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]

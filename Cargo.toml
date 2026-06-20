@@ -1,0 +1,28 @@
+# Cargo.toml — the ConvertIA Rust WORKSPACE root (virtual manifest).
+#
+# [Build-Session-Entscheidung: P1.6] spec §0.7 leaves the workspace manifest "root or member" open;
+# resolved to a REPO-ROOT VIRTUAL manifest — the conventional Cargo layout for a multi-crate
+# workspace, giving all members one root + one committed Cargo.lock (§3.8 pin-everything, G18a):
+#   * src-tauri/        — the MIT core crate `convertia-core` (the Tauri host binary, G53-policed)
+#   * crates/imgworker/ — the isolated libvips/libheif/librsvg image-worker externalBin
+#                         (pkg `convertia-imgworker`, §0.9/§2.12/§3.5.5); links the §3.6.1 copyleft
+#                         C libs by AGGREGATION, never into the MIT core (G53). Its dir is `crates/
+#                         imgworker/` because the G29 allow-list pins the FFI module at
+#                         `crates/imgworker/src/ffi.rs`.
+#   * xtask/            — the `cargo xtask` dev-bin (§0.4.5 codegen + §6.7.1 coverage, G19)
+# tests/g53-fixture/ is the G53 NEGATIVE fixture (its own nested [workspace]); excluded so its
+# deliberate planted copyleft-into-core violation can never enter the real workspace graph.
+[workspace]
+resolver = "2"
+members = ["src-tauri", "crates/imgworker", "xtask"]
+exclude = ["tests/g53-fixture"]
+
+# Shared package metadata inherited by every member (`version.workspace = true`, …). The exact patch
+# versions of dependencies are pinned in Cargo.lock + the SBOM, not here (spec §0.8 "pin everything").
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96.0"
+license = "MIT"
+repository = "https://github.com/Ne-IA/convertia"
+authors = ["Ne-IA and ConvertIA contributors"]

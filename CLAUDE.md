@@ -78,7 +78,11 @@ convertia/                  → repo root (Git, GitHub: Ne-IA/convertia)
 │   ├── process/            → build-loop.md, test-strategy.md, roles-and-escalation.md, vuln-response.md, gate-status.md, p0-completion.md
 │   └── plan/               → P0..P11 + README index + _format.md
 ├── assets/                 → static brand/design assets (exists)
-└── … (src-tauri/, src/, tests/, fuzz/, scripts/, .github/, bundle/, design/ — authored + mapped per dir by P1.64)
+├── Cargo.toml · Cargo.lock → the Rust workspace root (virtual manifest + committed lockfile, P1.6)
+├── src-tauri/              → the MIT core crate `convertia-core` (Tauri host binary)
+├── crates/imgworker/       → pkg `convertia-imgworker` — the isolated libvips image-worker (P1.6.1)
+├── xtask/                  → the `cargo xtask` dev-bin (codegen/coverage, P1.6.2)
+└── … (src/, tests/, fuzz/, scripts/, .github/, bundle/, design/ — authored + mapped per dir by P1.64; this §1a map is the projection of spec §0.7)
 ```
 
 ## 2. Working model — two sessions, one branch
