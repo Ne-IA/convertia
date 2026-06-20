@@ -95,6 +95,43 @@ with tempfile.TemporaryDirectory() as td:
 # --- main() target-absent today ---------------------------------------------------------------
 record("main() exits 0 today (empty ARTIFACTS registry -> target-absent until P1)", m.main() == 0)
 
+# --- the P1-runway fix: an artifact whose regen toolchain is absent in this plane -> check_artifact
+# SKIPS (0), not a FileNotFoundError crash (regen+diff enforces where the toolchain is present) ---------
+def _artifact_skip_when_toolchain_absent():
+    saved = m.shutil.which
+    m.shutil.which = lambda tool: None
+    try:
+        return m.check_artifact({"name": "b", "path": "x.ts", "regen": ["cargo", "xtask", "codegen"],
+                                 "validator": "ts-bindings"})
+    finally:
+        m.shutil.which = saved
+
+
+_gd_code, _gd_msg = _artifact_skip_when_toolchain_absent()
+record("check_artifact(): regen toolchain absent in this plane -> SKIP (0), not a FileNotFoundError "
+       "crash (P1-runway fix; regen+diff enforces where the toolchain is present)", _gd_code == 0)
+
+
+# the which-found-but-unrunnable anomaly (wrong arch / not executable / exec race) -> FAIL-CLOSED (1),
+# NOT a skip: a genuinely-absent tool is the which() pre-check's skip; an on-PATH-but-broken tool is a
+# real anomaly (G1 dual-review [P2]: the OSError path must fail-closed, not silently skip)
+def _artifact_fail_when_exec_anomaly():
+    saved = (m.shutil.which, m.subprocess.run)
+    m.shutil.which = lambda tool: "/usr/bin/" + tool          # the tool IS on PATH...
+    def _boom(*a, **k):
+        raise OSError("Exec format error")                    # ...but exec fails
+    m.subprocess.run = _boom
+    try:
+        return m.check_artifact({"name": "b", "path": "x.ts", "regen": ["cargo", "xtask"],
+                                 "validator": "ts-bindings"})
+    finally:
+        m.shutil.which, m.subprocess.run = saved
+
+
+_fc_code, _ = _artifact_fail_when_exec_anomaly()
+record("check_artifact(): regen tool on PATH but exec fails -> FAIL (1) fail-closed, not a skip "
+       "(the which-found-but-unrunnable anomaly; G1 review P2)", _fc_code == 1)
+
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-generated-drift] {len(results) - len(failed)}/{len(results)} assertions passed.")
 sys.exit(1 if failed else 0)

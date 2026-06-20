@@ -97,6 +97,27 @@ if shutil.which("cargo"):
 else:
     print("[g24-core-deps] cargo not installed - skipping the live fixture leg (P1 activates it)")
 
+# --- the P1-runway fix: a Cargo manifest present but cargo absent in this plane -> SKIP (0), not the
+# old hard FAIL (the live walk enforces at L1/L2 + the equipped Rust CI job; skip-here / enforce-there) -
+def _skip_when_cargo_absent() -> int:
+    import tempfile
+    saved = (m.ROOT, m.CARGO_TOML_CANDIDATES, m.shutil.which)
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "Cargo.toml").write_text('[package]\nname = "x"\n', encoding="utf-8")
+        m.ROOT = root
+        m.CARGO_TOML_CANDIDATES = (root / "Cargo.toml", root / "src-tauri" / "Cargo.toml")
+        m.shutil.which = lambda tool: None
+        try:
+            return m.main()
+        finally:
+            m.ROOT, m.CARGO_TOML_CANDIDATES, m.shutil.which = saved
+
+
+record("main(): Cargo manifest present but cargo absent in this plane -> SKIP (0), not the old fail "
+       "(P1-runway fix; the live walk enforces where cargo is present)",
+       _skip_when_cargo_absent() == 0)
+
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-core-deps] {len(results) - len(failed)}/{len(results)} assertions passed.")
 sys.exit(1 if failed else 0)

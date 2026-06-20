@@ -211,7 +211,9 @@ def _live_checks() -> list[str]:
         if r.returncode != 0:
             problems.append("`cargo deny check` failed:\n" + (r.stderr or r.stdout))
     else:
-        problems.append("a Cargo.lock exists but `cargo-deny` is not installed - the live G18 check cannot run")
+        print("[G18] a Cargo.lock exists but `cargo-deny` is not installed in this plane - the live "
+              "cargo-deny check is skipped here (the frozen deny.toml policy stays fail-closed; the live "
+              "binary enforces at L1/L2 + the equipped Rust CI supply-chain leg)")
     if shutil.which("cargo-vet"):
         r = subprocess.run(["cargo", "vet", "--locked", "check"], capture_output=True, text=True, cwd=manifest_dir)
         if r.returncode != 0:
@@ -220,7 +222,9 @@ def _live_checks() -> list[str]:
             problems.append("supply-chain/imports.lock is missing - the committed trust DB must exist "
                             "(no live-registry trust at gate time)")
     else:
-        problems.append("a Cargo.lock exists but `cargo-vet` is not installed - the live G18b check cannot run")
+        print("[G18b] a Cargo.lock exists but `cargo-vet` is not installed in this plane - the live "
+              "cargo-vet check is skipped here (the frozen supply-chain/config.toml policy stays "
+              "fail-closed; the live binary enforces at L1/L2 + the equipped Rust CI supply-chain leg)")
     return problems
 
 

@@ -133,6 +133,20 @@ record("real configs: the committed rustfmt.toml + clippy.toml pass their freeze
 record("workspace: the tests/g53-fixture Cargo.tomls are NOT mistaken for the first-party workspace",
        m._workspace_manifest() is None)
 
+# --- the P1-runway fix: cargo absent in this plane -> run_live_tools SKIPS (0), not a fmt/clippy fail -
+def _live_skip_when_cargo_absent() -> int:
+    saved = m.shutil.which
+    m.shutil.which = lambda tool: None
+    try:
+        return m.run_live_tools(False)
+    finally:
+        m.shutil.which = saved
+
+
+record("run_live_tools(): cargo absent in this plane -> SKIP (0), not a fmt/clippy fail "
+       "(P1-runway fix; live fmt/clippy/test enforce where cargo is present)",
+       _live_skip_when_cargo_absent() == 0)
+
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-rust-lint-contract] {len(results) - len(failed)}/{len(results)} assertions passed.")
 sys.exit(1 if failed else 0)

@@ -117,6 +117,25 @@ record("the REAL committed deny.toml evaluates clean", m.evaluate_deny(m._load(m
 record("the REAL committed supply-chain/config.toml evaluates clean", m.evaluate_vet(m._load(m.VET_CONFIG)) == [])
 record("main() exits 0 today (structural OK; live cargo-deny/vet target-absent until P1)", m.main() == 0)
 
+# --- the P1-runway fix: workspace ready but cargo-deny/cargo-vet absent in this plane -> the live tier
+# SKIPS (no binary-absent problems), not a fail (the frozen deny.toml/config.toml policy stays enforced) -
+def _live_skip_when_binaries_absent() -> list:
+    import tempfile
+    saved = (m.shutil.which, m._workspace_state)
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        m._workspace_state = lambda *a, **k: ("ready", root / "Cargo.toml", root / "Cargo.lock")
+        m.shutil.which = lambda tool: None
+        try:
+            return m._live_checks()
+        finally:
+            m.shutil.which, m._workspace_state = saved
+
+
+record("_live_checks(): workspace ready but cargo-deny/cargo-vet absent in this plane -> SKIP (no "
+       "binary-absent problems), not a fail (P1-runway fix; live binaries enforce where present)",
+       _live_skip_when_binaries_absent() == [])
+
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-supply-chain] {len(results) - len(failed)}/{len(results)} assertions passed.")
 sys.exit(1 if failed else 0)

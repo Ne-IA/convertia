@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -202,7 +203,15 @@ def _run(label: str, argv: list[str]) -> int:
 
 
 def run_live_tools(full: bool) -> int:
-    """P1: the live format/lint/test/audit invocations (guarded behind the workspace-present check)."""
+    """P1: the live format/lint/test/audit invocations (guarded behind the workspace-present check + a
+    cargo-present check). In a toolchain-light plane (e.g. the Python-only CI gate-tooling job) cargo is
+    absent: the live tier is skipped with a notice here, exactly as the G5/G6/G13 TS contract skips when
+    pnpm is absent — the frozen rustfmt/clippy contract is still enforced, and the live run enforces at
+    L1/L2 (cargo present) + the equipped Rust CI build job."""
+    if not shutil.which("cargo"):
+        print("[G3/G4/G14/G17] cargo not installed in this plane — live fmt/clippy/test/audit skipped "
+              "(target-present, toolchain-absent); the frozen rustfmt/clippy policy is still enforced")
+        return 0
     problems = 0
     problems += _run("G3 cargo fmt --check", ["cargo", "fmt", "--all", "--check"])
     clippy = ["cargo", "clippy", "--all-targets", "--all-features"] if full else ["cargo", "clippy"]

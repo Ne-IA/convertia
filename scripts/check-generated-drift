@@ -24,6 +24,7 @@ Exit: 0 = no drift + all sanity checks pass (or target-absent); 1 = drift / a fa
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -79,7 +80,18 @@ def _git_clean(path: str) -> bool:
 def check_artifact(art: dict) -> tuple[int, str]:
     """Regen + diff + structural sanity for one artifact. Returns (exit_code, message)."""
     path = ROOT / art["path"]
-    regen = subprocess.run(art["regen"], cwd=ROOT, capture_output=True, text=True)
+    tool = art["regen"][0] if art["regen"] else ""
+    if not shutil.which(tool):
+        return 0, (f"`{art['path']}` regen toolchain `{tool}` not installed in this plane - drift check "
+                   "skipped here (NOT silently: the framework + validators stay covered by the self-test, "
+                   "and regen+diff enforces at L1/L2 where the toolchain is present + the equipped CI "
+                   "build job)")
+    try:
+        regen = subprocess.run(art["regen"], cwd=ROOT, capture_output=True, text=True)
+    except OSError as e:
+        return 1, (f"`{art['path']}` regen `{tool}` is on PATH but could not be executed ({e}) - a real "
+                   "toolchain anomaly (wrong arch / not executable / exec race), NOT a target-absent "
+                   "skip; fail-closed (the which() pre-check already handles a genuinely-absent tool)")
     if regen.returncode != 0:
         return 1, f"regen `{' '.join(art['regen'])}` failed: {regen.stderr or regen.stdout}"
     if not path.is_file():
