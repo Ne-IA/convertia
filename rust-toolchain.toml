@@ -15,6 +15,11 @@
 
 [toolchain]
 channel = "1.96.0"
-components = ["rustfmt", "clippy"]
+components = ["rustfmt", "clippy", "llvm-tools-preview"]
+# llvm-tools-preview (added P1.3): the LLVM profiling/coverage instrumentation
+# `cargo-llvm-cov` (G27/G28 coverage, P0.4.8) needs to build + report coverage. It is a
+# host-side toolchain COMPONENT, not a compile target — pre-provisioned here so a clean
+# checkout can run the coverage leg the moment the Cargo workspace (P1.6) + the coverage
+# CI step (P1.54) land; harmless when unused.
 # Per-platform compile targets are added by the build matrix (P0.4.10); none are
 # forced here so a clean checkout installs only what the host needs.

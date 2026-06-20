@@ -18,3 +18,12 @@
 *.woff2 binary
 *.ttf  binary
 *.otf  binary
+
+# --- Corpus LFS tier (P1.4) -------------------------------------------------------------------
+# §6 "[DECIDED] corpus storage": the small synthetic + CC0 fixtures under `tests/corpus/` stay real
+# committed bytes (NOT LFS — the per-PR fast lane + the §6.4.3a bijection guard need them); the larger
+# real-world media tier is LFS-backed under `tests/corpus-large/`, fetched only for the full Lane-B run
+# (§6.7.2). The G24a corpus gate (P0.5.4) asserts every LFS-tier fixture is `filter=lfs`-tracked per the
+# effective `git check-attr filter` (a tampered un-tracking edit then surfaces as a manifest mismatch).
+# Reserved here; fixtures fill P3-P7 (exact homing reconciled against §0.7 as the corpus lands).
+tests/corpus-large/** filter=lfs diff=lfs merge=lfs -text

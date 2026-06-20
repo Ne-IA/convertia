@@ -52,12 +52,12 @@ target. The workspace + lockfiles come first because every language gate
   - [x] **P1.2.3** [BUILD] Add `@tauri-apps/cli` (the `tauri dev`/`tauri build` runner) to frontend devDependencies + the `tauri` pnpm scripts · §0.8 · G18a G18c
     needs: P1.2.2
     > add `@tauri-apps/cli` 2.x (matched to the §0.8 `tauri` 2.x pin) to the frontend `package.json` **devDependencies** — the tool that RUNS every `tauri dev` / `tauri build` invocation (P1.58 debug-build, P10.9 release-build, the P9.4/P11.5 AppImage consumers all depend on it existing + reproducible). The §0.8 dependency table (00-architecture.md) now lists `@tauri-apps/cli` under the Tauri v2 entry (escalated this round). Regenerate + commit `pnpm-lock.yaml` so the dep is locked, add the `tauri dev` / `tauri build` pnpm scripts (replacing P1.2's placeholders), and add `@tauri-apps/cli` to the P1.60 JS-tree §0.8 pinned-floor / G18c / G18d assertion set — mirroring exactly how P1.31.1 homes Zustand and P1.60 homes `vitest-axe`/WebdriverIO. Distinct from P0.2.10's digest-pin of the CLI/bundler in the CI IMAGE (release-trust): that hardens the toolchain that touches the minisigned bytes; THIS commits the CLI to the lockfile so `pnpm install` brings it and `tauri build` is invokable + reproducible at all.
-- [ ] **P1.3** [BUILD] Confirm `rust-toolchain.toml` (created in P0.2.1) + add `llvm-tools-preview` when `cargo-llvm-cov` is wired · §0.8 · G24
-  > `rust-toolchain.toml` is **created + committed in P0.2.1** (the gate-tool pin box) with the exact stable channel + `rustfmt`/`clippy`, validated not-floating by the P0.2.1 `install-gate-tools` toolchain check — so this box does **not** re-create it (the earlier "Commit rust-toolchain.toml" wording was reconciled when P0.2.1 landed the file). Here, once the Cargo workspace + the coverage gate (P0.4.8 `cargo-llvm-cov`) land, ADD the `llvm-tools-preview` component to the existing file and confirm the pinned stable channel still matches §0.8. (The date-pinned nightly for `cargo-fuzz` lives in `scripts/gate-tools.toml` `[toolchain].fuzz_nightly`, P0.2.1-owned; `rust-toolchain.toml` carries only the single stable channel.)
-- [ ] **P1.4** [BUILD] Author the root `.gitignore` + `.gitattributes` (text/EOL + LFS hooks) · §0.7 · G52 G24a
+- [x] **P1.3** [BUILD] Confirm `rust-toolchain.toml` (P0.2.1) + add the `llvm-tools-preview` component for cargo-llvm-cov coverage · §0.8 · G24
+  > `rust-toolchain.toml` is **created + committed in P0.2.1** (the gate-tool pin box) with the exact stable channel + `rustfmt`/`clippy`, validated not-floating by the P0.2.1 `install-gate-tools` toolchain check — so this box does **not** re-create it (the earlier "Commit rust-toolchain.toml" wording was reconciled when P0.2.1 landed the file). Here, the `llvm-tools-preview` component is ADDED to the existing file now (pre-provisioned — a host-side toolchain component, harmless when unused; the P1.54 coverage leg / `cargo-llvm-cov` consume it once the workspace lands — NOT deferred), and the pinned stable channel is confirmed to still match §0.8. [Co-Pilot, owner-acked L(-1) edit — `rust-toolchain.toml` is L(-1)] (The date-pinned nightly for `cargo-fuzz` lives in `scripts/gate-tools.toml` `[toolchain].fuzz_nightly`, P0.2.1-owned; `rust-toolchain.toml` carries only the single stable channel.)
+- [x] **P1.4** [BUILD] Author the root `.gitignore` + `.gitattributes` (text/EOL + LFS hooks) · §0.7 · G52 G24a
   > ignore `target/`, `node_modules/`, `dist/`, scratch/build outputs; `.gitattributes` normalises EOL (the P0 G52 editorconfig hygiene companion) and reserves the `filter=lfs` attribute lines the P0 G24a corpus-LFS gate (P0.5.4) keys on; `.gitattributes` joins the L(-1) security-critical-file set.
-- [ ] **P1.5** [DOC] Author the root `.editorconfig` for EOL/charset/final-newline · tooling-only
-  > the committed `.editorconfig` the P0 G52 `editorconfig-checker` consumes (its config target lands in P1); pure config with no spec-§/gate of its own beyond the P0-built gate that reads it.
+- [x] **P1.5** [DOC] Confirm the root `.editorconfig` (created P0.3.11) covers EOL/charset/final-newline · tooling-only
+  > the committed `.editorconfig` the P0 G52 `editorconfig-checker` consumes — created + committed in P0.3.11 (the editorconfig-checker pin box), so this box CONFIRMS it (it exists, is complete, and asserts UTF-8 / LF / final-newline / trailing-whitespace with the `.md` two-trailing-space + binary-asset carve-outs); no edit needed (the earlier "Author" wording predates P0.3.11 landing the file). `.editorconfig` is L(-1) — a content change would be a Co-Pilot edit, but none is required.
 
 ---
 
@@ -164,8 +164,9 @@ fail-open to fail-closed.
 - [ ] **P1.20** [BUILD] Encode the §0.10 locked CSP object in `tauri.conf.json → app.security.csp` · §0.10 · G47
   needs: P1.19
   > the exact §0.10 CSP directives (`default-src`/`script-src` `'self'`; `connect-src 'self' ipc: http://ipc.localhost`; `img-src`/`media-src` NO `asset:`; `object-src`/`frame-src`/`frame-ancestors 'none'`; `base-uri`/`form-action 'self'`; `webrtc 'block'`) — structurally equal per-directive to the locked object the P0 G47 lint asserts against (activates G47's CSP leg, P0.3.2).
-- [ ] **P1.21** [BUILD] Author `src-tauri/capabilities/main.json` — the §0.10 deny-by-default allowlist · §0.10 · G47
+- [!extern] **P1.21** [BUILD] Author `src-tauri/capabilities/main.json` — the §0.10 deny-by-default allowlist · §0.10 · G47
   needs: P1.19
+  > **[!extern] (L(-1)):** `src-tauri/capabilities/**` is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it. Cleared by the Co-Pilot session once P1.19 lands (no buildable box `needs:` it — the empty window boots without it).
   > the minimal capability set (`core:default`, `log:default`, `store:default`; NO `fs:`, NO `http:`, NO `shell:allow-execute`, NO `opener:*`, NO `dialog:allow-open`) for the `main` window — the literal allowlist the P0 G47 capability leg asserts (fails any `fs:`/`http:`/`shell`/`opener:`/`dialog:` grant).
 - [ ] **P1.22** [BUILD] Assert the three §0.10 release-hardening keys absent/false in `tauri.conf.json` · §0.10 · G47
   needs: P1.19
@@ -195,8 +196,9 @@ a concrete command + path, even though the C-command surface is empty until P2.
 - [ ] **P1.27** [UI] Author the `commands.ts`/`events.ts` typed-façade re-export shells · §5.1 §5.8
   needs: P1.26
   > `src/lib/ipc/commands.ts` + `events.ts` re-exporting the generated `bindings.ts` wrappers — the §5.1 hard-rule seam ("only `src/lib/ipc/**` imports `@tauri-apps/api`"); empty re-exports in P1 (feature code that consumes them is P2+), so the one-IPC-consumer discipline is lint-enforceable from the first commit.
-- [ ] **P1.28** [CI] Define the concrete `cargo xtask codegen` invocation for the G19 drift check · §0.4.5 · G19
+- [!extern] **P1.28** [CI] Define the concrete `cargo xtask codegen` invocation for the G19 drift check · §0.4.5 · G19
   needs: P1.6.2, P1.26
+  > **[!extern] (L(-1)):** registers the `bindings.ts` artifact (regen command + path + validator) in `scripts/check-generated-drift` (L(-1)) — Co-Pilot-authored under owner-ack (G71); the loop skips it. Cleared once P1.6.2 + P1.26 land.
   > the named `cargo xtask codegen` command (regenerates `bindings.ts` → the P0 G19 framework calls THIS, not a guessed invocation) so the gate cannot silently pass on a stale file via a wrong command; the §06-owned drift check (authored P0.3.9) binds to it here.
 
 ---
@@ -288,9 +290,11 @@ here.
   > the README skeleton: what it is, canonical-GitHub-Releases-only download, the verify-your-hash recipe SLOT (the literal `minisign -Vm SHA256SUMS -p docs/minisign.pub` recipe is authored/filled in P10 §6.2.4), as-is/no-warranty + best-effort posture, the §0.3.1 supported-OS floor, the unsigned-build first-launch note, and the Windows portable-zip WebView2 + Linux AppImage `libfuse2` prerequisite notes (§6.2.4). Skeleton now; release-gated completeness is P10.
 - [ ] **P1.48** [DOC] Author the `NOTICE` + `THIRD-PARTY-LICENSES.txt` generated-file placeholders · §6.8 §6.3.2
   > the placeholder NOTICE / THIRD-PARTY-LICENSES files (marked generated-from-`engines.lock`+SBOM, never hand-drifted) so the §6.8 set is structurally complete from P1; per-engine rows are populated P5–P7 and finalized P10 (the release-blocking completeness gate is P10).
-- [ ] **P1.49** [CI] Author the `.github/` issue templates (default new-format requests to Future-Ideas-Parked) · §6.8
+- [!extern] **P1.49** [CI] Author the `.github/` issue templates (default new-format requests to Future-Ideas-Parked) · §6.8
+  > **[!extern] (L(-1)):** `.github/**` is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it.
   > the issue templates defaulting new-format/feature requests to **Future Ideas (Parked)** per the SSOT inclusion test (§6.8 `.github/` policy row); a `.github/` config change, gate-clean (actionlint/zizmor over any embedded workflow is the P0 G49/G50 plane).
-- [ ] **P1.50** [CI] Author the `.github/` PR template (DCO/quality-bar reference) + private-advisory config · §6.8
+- [!extern] **P1.50** [CI] Author the `.github/` PR template (DCO/quality-bar reference) + private-advisory config · §6.8
+  > **[!extern] (L(-1)):** `.github/**` is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it.
   > the PR template referencing the DCO/quality bar + the private-advisory config wired to `SECURITY.md` (`.github/SECURITY` advisory routing) per the §6.8 table.
 
 ---
@@ -303,10 +307,12 @@ skeleton (P0.2.4) and binding the now-real language gates to the P1-scaffolded
 toolchain. Data-dependent guards (bijection §6.4.3a, defaults-registry §1.6) are
 ADDED by the phase that produces their input — NOT here.
 
-- [ ] **P1.51** [CI] Author the Lane-A workflow shell wired into the P0 L4 skeleton · §6.7.1 · G25 G49 G56
+- [!extern] **P1.51** [CI] Author the Lane-A workflow shell wired into the P0 L4 skeleton · §6.7.1 · G25 G49 G56
+  > **[!extern] (L(-1)):** `.github/workflows/**` is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it. The whole Lane-A CI cluster (P1.51–P1.61) is mine; cleared as its baubare prereqs land.
   > the `.github/workflows/` Lane-A workflow (push-on-`main` + fork-PR) plugged into the P0.2.4 clean-checkout matrix slot: top-level `permissions: contents: read`, per-job `timeout-minutes`, per-push `concurrency: {group, cancel-in-progress: true}`, SHA-pinned actions — the empty heavy-gate slots P0 left for P1 to fill; actionlint/zizmor-clean (P0 G49/G50). (No `needs:` on `dependabot.yml` — the workflow shell has no technical dependency on it; the logical "workflow exists before dependabot covers it" ordering is carried by P1.55's `needs: P1.51`.)
-- [ ] **P1.52** [CI] Wire the §6.7.1 step-1 lint/format legs (per-tool, gate-attributable) · §6.7.1 · G3 G4 G5 G6 G14
+- [!extern] **P1.52** [CI] Wire the §6.7.1 step-1 lint/format legs (per-tool, gate-attributable) · §6.7.1 · G3 G4 G5 G6 G14
   needs: P1.51
+  > **[!extern] (L(-1)):** `.github/workflows/**` is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it (+ its sub-boxes .1–.3).
   > the Lane-A lint/format step decomposed into per-tool legs (each carrying only the gates it directly satisfies, so the first CI failure is attributable without log-diving): the Rust leg (.1), the JS/TS leg (.2), the YAML/config leg (.3). Each sub-box wires its leg into the P1.51 Lane-A shell; the parent is `[x]` only when all sub-boxes are (_format.md §2). Activates the CI wiring-point of P0.4.1 (Rust) / P0.4.7 (TS).
   - [ ] **P1.52.1** [CI] Wire the Rust lint/format leg (`cargo fmt --check` + `cargo clippy -D warnings` + the no-panic-sloppiness deny set) · §6.7.1 · G3 G4 G14
     > the Rust leg: `cargo fmt --check` (G3) + `cargo clippy -D warnings` with the no-panic-sloppiness/exhaustive-match deny set (G4 diff-scoped, full `--all-targets --all-features` at G14) bound to the P1-scaffolded core crate; a clippy regression is attributable here, independent of the JS leg.
@@ -314,32 +320,41 @@ ADDED by the phase that produces their input — NOT here.
     > the JS/TS leg: `eslint` (flat config, the project-local no-`any`/`fc.gen()` rules) + `tsc --noEmit` (G6 diff-scoped, whole-project at G13/G14) + `prettier --check` (the G3 prettier leg over TS/CSS/JSON) bound to the P1 TS project; an eslint/tsc regression is attributable here.
   - [ ] **P1.52.3** [CI] Wire the YAML/config-hygiene leg (`yamllint` over `.github/`/config YAML) · §6.7.1
     > the YAML/config-hygiene leg: `yamllint` over the workflow + config YAML — distinct from the `actionlint` workflow-lint (P0 G49) and the `editorconfig-checker` EOL leg (P0 G52); it carries no Gnn of its own (a config-hygiene linter, not a catalogue gate), but it satisfies the at-least-one-ref rule via the §6.7.1 Lane-A home it wires into, so it carries `· §6.7.1` and is NOT `tooling-only` (a real ref and `tooling-only` are mutually exclusive, _format.md §3.1). A YAML drift is attributable here, never opaque behind the language gates.
-- [ ] **P1.53** [CI] Wire the §6.7.1 step-2 Rust↔TS type-drift check · §6.7.1 §0.4.5 · G19
+- [!extern] **P1.53** [CI] Wire the §6.7.1 step-2 Rust↔TS type-drift check · §6.7.1 §0.4.5 · G19
   needs: P1.51, P1.28
+  > **[!extern] (L(-1)):** `.github/workflows/**` is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it.
   > the Lane-A step running `cargo xtask codegen` + `git diff --exit-code` on `bindings.ts` (the P1.28 invocation) — fails on stale generated types; the concrete activation of the P0 G19 framework (P0.3.9).
-- [ ] **P1.54** [CI] Wire the §6.7.1 step-3 unit + property + fault-injection test leg (Rust + Vitest) · §6.7.1 §6.4.1 · G27 G28
+- [!extern] **P1.54** [CI] Wire the §6.7.1 step-3 unit + property + fault-injection test leg (Rust + Vitest) · §6.7.1 §6.4.1 · G27 G28
   needs: P1.51
+  > **[!extern] (L(-1)):** `.github/workflows/**` is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it.
   > the fast engine-light test leg (`cargo test` + Vitest) feeding the P0 coverage floors (G27 per-domain, G28 ≥80% diff) which were created at 0% in P0 and begin enforcing as P1 code lands; activates the coverage gate (P0.4.8) for the foundation crates.
-- [ ] **P1.55** [CI] Add `dependabot.yml` coverage for the P1-scaffolded ecosystems (github-actions, cargo, npm) · §6.7.2 · G56
+- [!extern] **P1.55** [CI] Add `dependabot.yml` coverage for the P1-scaffolded ecosystems (github-actions, cargo, npm) · §6.7.2 · G56
   needs: P1.51
+  > **[!extern] (L(-1)):** `.github/dependabot.yml` is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it.
   > extend/confirm `dependabot.yml` covers github-actions + cargo + npm now that the `Cargo.toml`/`package.json` exist — the presence the P0 G56 sub-assertion (P0.2.6) asserts; the pip ecosystem is the gate-tooling `requirements-ci.txt` (P0-owned). (`needs: P1.51` for the logical "the Lane-A workflow dependabot covers exists first" ordering; no technical build dependency.)
-- [ ] **P1.56** [CI] Wire the §6.7.1 step-4b automated-a11y (jsdom) leg · §6.7.1 §6.4.6a · G33a
+- [!extern] **P1.56** [CI] Wire the §6.7.1 step-4b automated-a11y (jsdom) leg · §6.7.1 §6.4.6a · G33a
   needs: P1.51, P1.35
+  > **[!extern] (L(-1)):** `.github/workflows/**` is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it.
   > the Lane-A `vitest-axe` jsdom step asserting ARIA-role/state validity + focus-order (NOT contrast — that is Lane-B, §6.4.6a) over the rendered React tree; activates the P0 G33a per-push leg with the P1.35 runner.
-- [ ] **P1.57** [CI] Wire the §6.7.1 Principle-11 English-only lint leg · §6.7.1 §6.10 · G57
+- [!extern] **P1.57** [CI] Wire the §6.7.1 Principle-11 English-only lint leg · §6.7.1 §6.10 · G57
   needs: P1.51, P1.38
+  > **[!extern] (L(-1)):** `.github/workflows/**` is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it.
   > the Lane-A step running the P0 G57 English-only / string-ownership lint over `strings/ui.ts` (every key non-empty English; no i18n-runtime import) — activates G57 (P0.4.6) against the P1.37 module.
-- [ ] **P1.58** [CI] Wire the §6.7.1 step-5 compile-sanity 3-OS matrix (`cargo check` + debug `tauri build`) · §6.7.1 §6.1.4 · G30
+- [!extern] **P1.58** [CI] Wire the §6.7.1 step-5 compile-sanity 3-OS matrix (`cargo check` + debug `tauri build`) · §6.7.1 §6.1.4 · G30
   needs: P1.51, P1.16, P1.2.3
+  > **[!extern] (L(-1)):** `.github/workflows/**` is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it.
   > the Win/macOS/Linux matrix running `cargo check` / a debug `tauri build` to catch platform-specific breakage early (no full corpus run) — the literal "empty window boots on 3 OS from clean checkout" CI proof; activates the P0 G30 cross-platform build-matrix contract (P0.4.10) for the debug shell (the universal-`lipo` sidecar leg binds when engines land in P4). (`needs: P1.2.3` — `tauri build` cannot run until `@tauri-apps/cli` is in the lockfile.)
-- [ ] **P1.59** [CI] Wire the §6.7.1 step-6 `cargo audit` + `cargo deny` supply-chain leg + the §0.8 pinned-floor assertion · §6.7.1 §6.3.4 §0.8 · G17 G18 G18a G18b G53
+- [!extern] **P1.59** [CI] Wire the §6.7.1 step-6 `cargo audit` + `cargo deny` supply-chain leg + the §0.8 pinned-floor assertion · §6.7.1 §6.3.4 §0.8 · G17 G18 G18a G18b G53
   needs: P1.51, P1.7
+  > **[!extern] (L(-1)):** `.github/workflows/**` (+ any `deny.toml` pinned-floor edit) is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it. **MUST run `scripts/check-core-deps` in this cargo-equipped job** (the §3.6 closure walk `cargo deny` cannot express — its CI clean-checkout plane, per the gate-runway commit 2895c0d).
   > the Lane-A advisory + license + bans + lockfile-integrity leg: `cargo audit` (plain, no `--locked`) + `cargo deny check` over the real `Cargo.lock` (P1.7) — activates the P0 `deny.toml`/`cargo-vet` skeleton (P0.3.6), the lockfile-integrity contract (P0.4.9), and the core-crate forbidden-dep gate (P0.3.7 G53) against the P1 workspace graph. **Plus the §0.8 pinned-floor assertion:** a small `cargo deny`-bans / lockfile check that the source-verified load-bearing §0.8 crates (`tauri-specta`, `specta`, `walkdir`, `csv`, `chardetng`, `tempfile`, `process-wrap`, `landlock`, the librsvg-≥2.56.3 binding floor, etc.) are present at **≥ their pinned floor** in `Cargo.lock` (not merely locked) — so a drift below a relied-upon API floor fails the gate here rather than surfacing when the API changed; the TS-side `vitest-axe@0.1.0` / WebdriverIO-v9 pins are asserted in the P1.60 JS leg.
-- [ ] **P1.60** [CI] Wire the JS-tree supply-chain Lane-A leg (resolution-URL + lifecycle-script + frontend license + the §0.8 JS pinned-floor) · §6.7.1 §6.3.4 §0.8 · G18c G18d G36b
+- [!extern] **P1.60** [CI] Wire the JS-tree supply-chain Lane-A leg (resolution-URL + lifecycle-script + frontend license + the §0.8 JS pinned-floor) · §6.7.1 §6.3.4 §0.8 · G18c G18d G36b
   needs: P1.51, P1.2.2, P1.2.3
+  > **[!extern] (L(-1)):** `.github/workflows/**` is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it.
   > the Lane-A step asserting the P0 G18c resolution-URL guard, G18d `onlyBuiltDependencies` lockdown, and G36b frontend GPL/AGPL deny over the real `pnpm-lock.yaml` (P1.2.2) — activates the P0.3.8 JS supply-chain config against the committed pnpm graph. **Plus the §0.8 JS pinned-floor assertion set:** `@tauri-apps/cli` 2.x (P1.2.3, matched to the `tauri` 2.x pin), `@tauri-apps/api` 2.x, `vitest-axe@0.1.0`, WebdriverIO v9 + `@axe-core/webdriverio`, `zustand` (P1.31.1), and `fast-check` (P1.35.1) are present at ≥ their pinned floor in `pnpm-lock.yaml` — the JS-side mirror of the P1.59 Rust pinned-floor leg.
-- [ ] **P1.61** [CI] Record the Lane-A required-status-check set for the §6.7.1 G56a branch-protection assertion · §6.7.1 · G56a
+- [!extern] **P1.61** [CI] Record the Lane-A required-status-check set for the §6.7.1 G56a branch-protection assertion · §6.7.1 · G56a
   needs: P1.52, P1.53, P1.54, P1.56, P1.57, P1.58, P1.59, P1.60
+  > **[!extern] (L(-1)):** `.github/workflows/**` (the required-status-check set) is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it.
   > enumerate the Lane-A jobs that must be required status checks on `main` (the set the P0 G56a branch-protection config assertion, P0.2.8, queries the ruleset API for) — so a red Lane-A actually blocks; the §6.7.1 single-branch direct-to-`main` enforcement made real now that Lane-A jobs exist.
 
 ---
@@ -350,8 +365,9 @@ The P0 `→ activated in P<n>` gates flip from skip-with-warning to fail-closed 
 stands their targets up; this section proves the flip actually happened (no gate
 silently stuck in its bootstrap skip state) and homes the contributor build-setup doc.
 
-- [ ] **P1.62** [GATE] Assert all P1-activated gates flipped to fail-CLOSED (grouping shell — a planted violation in each now-real target MUST fail its gate) · §6.7.1 · G24
+- [!extern] **P1.62** [GATE] Assert all P1-activated gates flipped to fail-CLOSED (grouping shell — a planted violation in each now-real target MUST fail its gate) · §6.7.1 · G24
   needs: P1.52, P1.53, P1.56, P1.57, P1.58, P1.59, P1.60, P1.20, P1.21, P1.18
+  > **[!extern] (L(-1)):** the gate self-tests (`scripts/gate-selftests/**`) + the flip records (`docs/process/gate-status.md`) are L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it (+ its sub-boxes .1–.10). Cleared once the activated gates' targets land.
   > the grouping parent closing the fail-open-until-activated loop: for each gate whose P0 box carries `→ activated in P1` and whose target P1 just stood up, run its **G24 negative self-test against the now-real target** — a planted violation MUST fail the gate, confirming it is **enforcing**, not stuck in its P0 bootstrap skip-with-warning state. Each gate (or closely-related cluster) is its own separately-faileable sub-box so a single failing gate's self-test is attributable in the build output (not opaque behind a 10-gate aggregate). Each sub-box records its flip in the existing `docs/process/gate-status.md` decision-log; the parent is `[x]` only when all sub-boxes are (_format.md §2). (The reverse `→ activated in P<n>` edges already exist on the P1 boxes; this box is the single owner that proves the activation closed the loop — mirrored as later phases produce gate targets, e.g. the P3–P7 format gates G22/G23.)
   - [ ] **P1.62.1** [GATE] G47 self-test — a mis-encoded CSP directive / an `fs:`/`http:`/`shell`/`opener:`/`dialog:` capability grant / a present updater block in the real `tauri.conf.json`/`capabilities/main.json` MUST fail · §0.10 · G24 G47
     needs: P1.20, P1.21, P1.18
@@ -387,8 +403,9 @@ everything lives, and the target that flips the P0 G69 structural-map gate from 
 P1 placeholder-stub skip to fail-closed. The final general CLAUDE.md accuracy pass
 follows, now that the structure, the language gates and the governance docs are real.
 
-- [ ] **P1.64** [BUILD,DOC] Establish the complete repository folder structure + author the CLAUDE.md "Repo layout" map · §0.7 · G69 G24
+- [!extern] **P1.64** [BUILD,DOC] Establish the complete repository folder structure + author the CLAUDE.md "Repo layout" map · §0.7 · G69 G24
   needs: P1.1, P1.6, P1.6.1, P1.6.2, P1.19.2, P1.29, P1.35, P1.51
+  > **[!extern] (L(-1)):** touches L(-1) dirs (`.github/`, `scripts/gate-selftests/`, `src-tauri/capabilities/`, `docs/process/`) + edits spec §0.7 + CLAUDE.md — Co-Pilot-authored under owner-ack (G71); the loop skips it. P1.65 (`[ ]`, buildable) `needs:` this → the loop STOPs there at P1-end (the correct hand-back point for the L(-1) finalization).
   > the box that **activates the P0 G69 structural-map gate (P0.3.13)** by standing up its target. Three deliverables: **(0) RECONCILE §0.7 FIRST (the higher source).** Spec §0.7 "Physical tree" is the authoritative structural source per **SSOT > spec > docs**; the CLAUDE.md §1a map is its operational projection (G69 check 26 asserts §1a ⊆ §0.7). So **before** authoring §1a, reconcile the full intended P1–P11 directory set against §0.7 and, for any dir the product genuinely needs that §0.7 does not yet home (e.g. the dirs §0.7's current tree omits — `src/strings/`, `src/a11y/`, the engine-staging `bundle/`, top-level `design/`, `scripts/gate-selftests/`, `scripts/semgrep-rules/`, `fuzz/`, `.github/`), **add it to the §0.7 physical tree in the SAME commit** (the freshness rule, G68 check 25) — never let §1a invent a dir §0.7 does not list. **(1)** create EVERY directory the product needs across P1–P11 so no later phase silently invents an unmapped folder — the §0.7 physical tree completed beyond P1.1's scaffold: `src-tauri/` (+ its tier modules `src-tauri/src/{ipc,orchestrator,detection,engines,fs_guard,run,outcome,isolation,pool,domain,platform}`, `src-tauri/binaries/`, `src-tauri/resources/`, `src-tauri/icons/` P1.19.2, `src-tauri/capabilities/`), `src/` (+ `src/lib/ipc/`, `src/components/`, `src/hooks/`, `src/state/`, `src/styles/`, `src/strings/`, `src/a11y/`), top-level `design/` (UI/design assets, a sibling of `src/` — the cleaner home than nesting under `src/`), the test dir(s) (`tests/`, `tests/corpus/`, `fuzz/corpus/`, `fuzz/crashes/`), the engine-staging tree (`bundle/` per the §6.1.3 stage-engines layout), `scripts/` (+ `scripts/gate-selftests/`, `scripts/semgrep-rules/`), `.github/` (+ `.github/workflows/`), `docs/` (exists), `assets/` (exists) — each with a `.gitkeep` where it must exist before its files land; **(2)** author the authoritative **CLAUDE.md "Repo layout" section** (the §0.7 projection) mapping EVERY directory → its purpose (replacing the standing placeholder map P1 ships from the first commit). This is the literal target the G69 bidirectional check (P0 build-gates §6 check 26) reads — once authored, G69 flips from skip-with-warning to fail-closed (the `→ activated in P1` flip, mirrored by P1.62 for the other P1-activated gates). **`needs:` the P1 scaffold boxes** so the structure being mapped already exists (P1.1 tree, P1.6/P1.6.1/P1.6.2 crates, P1.19.2 icons, P1.29/P1.35 frontend+test config, P1.51 `.github/workflows/`). Run the G69 G24 negative self-test against the now-real map (a planted on-disk dir absent from the map / a §1a dir absent from §0.7 MUST fail) and record the flip in `docs/process/gate-status.md` like P1.62's sub-boxes.
 - [ ] **P1.65** [DOC] Final CLAUDE.md review — general accuracy/completeness pass now the structure + gates + governance docs are real · §6.8 · G7 G68
   needs: P1.64, P1.62, P1.44, P1.45, P1.46
