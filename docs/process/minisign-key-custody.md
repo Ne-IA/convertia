@@ -99,6 +99,16 @@ passphrase**, with these properties:
 - **Owner-held, encrypted at rest.** Custody is the owner's
   ([`roles-and-escalation.md`](roles-and-escalation.md) §1); the backup is encrypted
   so a stolen backup medium is not itself a key leak.
+- **No standing plaintext on the genesis host.** Once the secret is injected into the
+  `release` Environment (§2 step 3) **and** the encrypted backup above is confirmed
+  restorable, the owner **securely deletes the plaintext `minisign.key` (and any
+  plaintext passphrase) from the generation host** — not merely to the recycle bin. The
+  only persistent copies that then remain are the **encrypted offline backup** and the
+  approval-gated **Environment secret**; a plaintext secret key left on a working/build
+  machine is precisely the standing leak surface the air-gapped genesis (§2) exists to
+  avoid. The deletion happens **after** the backup is confirmed, never before — the
+  backup is the survivability guarantee (§4), so the working copy is removed only once a
+  recoverable copy provably exists.
 
 ## 4. Loss-recovery — the decision path (restore vs rotate)
 
