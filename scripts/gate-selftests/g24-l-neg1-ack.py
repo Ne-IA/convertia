@@ -67,7 +67,7 @@ record("ack regex: inline (not line-start) -> no match",
 
 # --- end-to-end in a REAL temp git repo -------------------------------------------------------
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
                           check=True).stdout.strip()
 
 

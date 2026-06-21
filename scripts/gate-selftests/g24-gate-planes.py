@@ -36,12 +36,12 @@ def record(name: str, ok: bool, detail: str = "") -> None:
 def run(text: str | None) -> tuple[int, str]:
     """(rc, stderr) of check-gate-planes against a temp toml (text); None -> the real committed file."""
     if text is None:
-        p = subprocess.run([sys.executable, str(CHECK), str(REAL)], capture_output=True, text=True)
+        p = subprocess.run([sys.executable, str(CHECK), str(REAL)], capture_output=True, text=True, encoding="utf-8", errors="replace")
         return p.returncode, p.stderr
     with tempfile.TemporaryDirectory() as td:
         f = Path(td) / "gp.toml"
         f.write_text(text, encoding="utf-8")
-        p = subprocess.run([sys.executable, str(CHECK), str(f)], capture_output=True, text=True)
+        p = subprocess.run([sys.executable, str(CHECK), str(f)], capture_output=True, text=True, encoding="utf-8", errors="replace")
         return p.returncode, p.stderr
 
 

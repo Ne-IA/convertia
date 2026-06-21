@@ -88,7 +88,7 @@ def is_l_neg1(path: str, regexes: list[re.Pattern[str]]) -> bool:
 
 
 def git(*args: str) -> tuple[int, str]:
-    p = subprocess.run(["git", *args], capture_output=True, text=True)
+    p = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
     return p.returncode, p.stdout
 
 

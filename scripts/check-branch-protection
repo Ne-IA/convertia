@@ -244,7 +244,7 @@ def semgrep_taint_ruleset_present(semgrep_dir: Path) -> bool:
 # --- live gh api (owner/CI-verified) ----------------------------------------------------------
 def api_json(path: str) -> tuple[str, object, str]:
     """('ok', data, '') | ('notfound', None, err) | ('error', None, err)."""
-    p = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+    p = subprocess.run(["gh", "api", path], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if p.returncode == 0:
         try:
             return "ok", json.loads(p.stdout or "null"), ""

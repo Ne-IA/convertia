@@ -43,7 +43,7 @@ record("ts-bindings validator: empty -> caught", m.validate_ts_bindings("") is n
 
 # --- check_artifact over a real temp git repo -------------------------------------------------
 def _git(repo: Path, *a: str) -> None:
-    subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, check=True)
+    subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, encoding="utf-8", errors="replace", check=True)
 
 
 def _write_argv(path: str, content: str) -> list[str]:

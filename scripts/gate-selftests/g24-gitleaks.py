@@ -43,7 +43,7 @@ def scan(target: Path) -> list[dict]:
         report = Path(td) / "report.json"
         subprocess.run([GITLEAKS, "dir", str(target), "--config", str(CONFIG),
                         "--report-format", "json", "--report-path", str(report),
-                        "--no-banner", "--exit-code", "0"], capture_output=True, text=True)
+                        "--no-banner", "--exit-code", "0"], capture_output=True, text=True, encoding="utf-8", errors="replace")
         if not report.is_file():
             return []
         return json.loads(report.read_text(encoding="utf-8") or "[]")

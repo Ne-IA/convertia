@@ -73,7 +73,7 @@ ARTIFACTS: list[dict] = []
 
 def _git_clean(path: str) -> bool:
     r = subprocess.run(["git", "-C", str(ROOT), "diff", "--exit-code", "--", path],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
     return r.returncode == 0
 
 
@@ -87,7 +87,7 @@ def check_artifact(art: dict) -> tuple[int, str]:
                    "and regen+diff enforces at L1/L2 where the toolchain is present + the equipped CI "
                    "build job)")
     try:
-        regen = subprocess.run(art["regen"], cwd=ROOT, capture_output=True, text=True)
+        regen = subprocess.run(art["regen"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
     except OSError as e:
         return 1, (f"`{art['path']}` regen `{tool}` is on PATH but could not be executed ({e}) - a real "
                    "toolchain anomaly (wrong arch / not executable / exec race), NOT a target-absent "
@@ -99,7 +99,7 @@ def check_artifact(art: dict) -> tuple[int, str]:
     # the artifact MUST be git-tracked: `git diff --exit-code` is blind to an untracked file (it would
     # report no-drift for an uncommitted artifact that has no committed copy to be identical to)
     tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", "--error-unmatch", "--", art["path"]],
-                             capture_output=True, text=True)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace")
     if tracked.returncode != 0:
         return 2, (f"artifact `{art['path']}` is not git-tracked (never committed / misconfigured "
                    "producer) - a generated artifact must be committed so drift is detectable")

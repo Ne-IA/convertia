@@ -207,7 +207,7 @@ def _live_checks() -> list[str]:
     manifest_dir = manifest.parent
     if shutil.which("cargo-deny"):
         r = subprocess.run(["cargo", "deny", "--manifest-path", str(manifest), "check"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
         if r.returncode != 0:
             problems.append("`cargo deny check` failed:\n" + (r.stderr or r.stdout))
     else:
@@ -215,7 +215,7 @@ def _live_checks() -> list[str]:
               "cargo-deny check is skipped here (the frozen deny.toml policy stays fail-closed; the live "
               "binary enforces at L1/L2 + the equipped Rust CI supply-chain leg)")
     if shutil.which("cargo-vet"):
-        r = subprocess.run(["cargo", "vet", "--locked", "check"], capture_output=True, text=True, cwd=manifest_dir)
+        r = subprocess.run(["cargo", "vet", "--locked", "check"], capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=manifest_dir)
         if r.returncode != 0:
             problems.append("`cargo vet --locked check` failed:\n" + (r.stderr or r.stdout))
         if not VET_IMPORTS.is_file():

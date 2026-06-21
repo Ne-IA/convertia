@@ -89,7 +89,7 @@ record("tsconfig.json is NOT production (pure config)", not m.is_production_file
 
 # --- run_diff reads the STAGED blob, not the worktree (P2 fix) --------------------------------
 def _git(repo, *a):
-    subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, check=True)
+    subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, encoding="utf-8", errors="replace", check=True)
 
 
 with tempfile.TemporaryDirectory() as td:

@@ -69,7 +69,7 @@ record("baseline not a JSON array -> rejected",
        any("not a JSON array" in p for p in m.evaluate(base(), {"oops": 1})))
 
 # the REAL committed config + baseline must pass (exit 0)
-rc = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True).returncode
+rc = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True, encoding="utf-8", errors="replace").returncode
 record("committed .gitleaks.toml + baseline pass the growth-guard (exit 0)", rc == 0)
 
 failed = [n for n, ok in results if not ok]

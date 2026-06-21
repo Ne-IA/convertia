@@ -62,7 +62,7 @@ def tag_wf(cancel: bool = False) -> str:
 
 
 def run(td: str) -> tuple[int, str]:
-    p = subprocess.run([sys.executable, str(CHECK), "--root", td], capture_output=True, text=True)
+    p = subprocess.run([sys.executable, str(CHECK), "--root", td], capture_output=True, text=True, encoding="utf-8", errors="replace")
     return p.returncode, p.stdout + p.stderr
 
 

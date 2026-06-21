@@ -179,7 +179,7 @@ def _git_check_attr_lfs(root: Path, path: str, runner) -> bool | None:
 def _default_check_attr(root: Path, path: str) -> bool | None:
     try:
         r = subprocess.run(["git", "-c", "core.quotePath=false", "check-attr", "filter", "--", path],
-                           cwd=str(root), capture_output=True, text=True)
+                           cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace")
     except (OSError, subprocess.SubprocessError):
         return None
     if r.returncode != 0:
@@ -297,7 +297,7 @@ def _default_ls_files(root: Path, pathspec: str) -> list[str] | None:
     # silently let an un-manifested untrusted fixture escape).
     try:
         r = subprocess.run(["git", "-c", "core.quotePath=false", "ls-files", "-z", "--", pathspec],
-                           cwd=str(root), capture_output=True, text=True)
+                           cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace")
     except (OSError, subprocess.SubprocessError):
         return None
     if r.returncode != 0:

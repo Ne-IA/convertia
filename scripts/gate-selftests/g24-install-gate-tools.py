@@ -62,7 +62,7 @@ def run_installer(manifest_text: str, *extra: str) -> tuple[int, str]:
         man.write_text(manifest_text, encoding="utf-8")
         cmd = [sys.executable, str(INSTALLER), "--manifest", str(man),
                "--dest", str(Path(td) / "dest"), *extra]
-        p = subprocess.run(cmd, capture_output=True, text=True)
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         return p.returncode, p.stdout + p.stderr
 
 
@@ -144,7 +144,7 @@ def pip_leg() -> None:
             p = subprocess.run(
                 [sys.executable, "-m", "pip", "install", "--require-hashes", "--no-deps",
                  "-r", str(rq)],
-                capture_output=True, text=True, timeout=120,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             record("pip --require-hashes rejects hashless", True, f"SKIP ({type(e).__name__})")
@@ -179,8 +179,8 @@ else:
         man.write_text(manifest(SMALL_ASSET, real_sha()), encoding="utf-8")
         dest = Path(td) / "dest"
         cmd = [sys.executable, str(INSTALLER), "--manifest", str(man), "--dest", str(dest)]
-        p1 = subprocess.run(cmd, capture_output=True, text=True)
-        p2 = subprocess.run(cmd, capture_output=True, text=True)
+        p1 = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        p2 = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         ok = (p1.returncode == 0 and p2.returncode == 0
               and "already verified" in (p2.stdout + p2.stderr))
         record("install idempotent (2nd run = already verified)", ok, f"{p1.returncode}/{p2.returncode}")

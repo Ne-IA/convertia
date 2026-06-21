@@ -647,7 +647,7 @@ record("26 parse: a hash-annotation slash-word is not mined either (§0.7 # conv
        m._parse_tree_dirs(["convertia/", "└── src/   # see config/secrets/ for details"]) == {"src"})
 
 # --- base-case golden invariant ---------------------------------------------------------------
-rc_real = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True).returncode
+rc_real = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True, encoding="utf-8", errors="replace").returncode
 record("base-case: the REAL plan passes the format checks (exit 0)", rc_real == 0)
 broken = ctx([box(bid="P0.1", raw="X", tags=["NOPE"], title="bad.", refs="")])
 record("base-case: a deliberately-broken box yields findings (would exit 1)", len(m.run(broken)) >= 1)

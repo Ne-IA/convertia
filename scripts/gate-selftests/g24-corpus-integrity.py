@@ -211,7 +211,7 @@ def _git_unicode_uncovered():
         env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_GLOBAL": os.devnull}
         for a in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "x"]):
-            r = sp.run(["git", *a], cwd=td, env=env, capture_output=True, text=True)
+            r = sp.run(["git", *a], cwd=td, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
             if r.returncode != 0:
                 return None                          # git setup failed -> skip rather than false-fail
         return m.main(["--root", td])

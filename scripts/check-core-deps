@@ -104,7 +104,7 @@ def main() -> int:
         return 0
     proc = subprocess.run(
         ["cargo", "metadata", "--format-version", "1", "--locked", "--manifest-path", str(manifest)],
-        capture_output=True, text=True)
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         print(f"[G53] FAIL: `cargo metadata` failed:\n{proc.stderr}", file=sys.stderr)
         return 1

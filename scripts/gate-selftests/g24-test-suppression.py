@@ -159,7 +159,7 @@ record("--full passes on the real repo today (no unjustified markers)", m.main([
 
 # --- run_diff E2E in a real temp git repo (the staged-blob path + fail-open-without-base) ------
 def _git(repo, *a):
-    subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, check=True)
+    subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, encoding="utf-8", errors="replace", check=True)
 
 
 with tempfile.TemporaryDirectory() as td:

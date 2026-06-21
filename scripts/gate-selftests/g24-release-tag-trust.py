@@ -37,7 +37,7 @@ def record(name: str, ok: bool, detail: str = "") -> None:
 
 def g(cwd: str, *args: str) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True,
-                   capture_output=True, text=True)
+                   capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
 # --- tag_name_from_ref ------------------------------------------------------
@@ -101,7 +101,7 @@ with tempfile.TemporaryDirectory() as td:
     (Path(td) / "a.txt").write_text("1", encoding="utf-8")
     g(td, "add", "-A")
     g(td, "commit", "-m", "c1")
-    c1 = subprocess.run(["git", "rev-parse", "HEAD"], cwd=td, capture_output=True, text=True).stdout.strip()
+    c1 = subprocess.run(["git", "rev-parse", "HEAD"], cwd=td, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
     # origin/main := c1 (the released history)
     g(td, "update-ref", "refs/remotes/origin/main", c1)
     g(td, "tag", "v1")  # lightweight tag at c1 (on origin/main, unsigned)
@@ -110,7 +110,7 @@ with tempfile.TemporaryDirectory() as td:
     (Path(td) / "a.txt").write_text("2", encoding="utf-8")
     g(td, "add", "-A")
     g(td, "commit", "-m", "c2")
-    c2 = subprocess.run(["git", "rev-parse", "HEAD"], cwd=td, capture_output=True, text=True).stdout.strip()
+    c2 = subprocess.run(["git", "rev-parse", "HEAD"], cwd=td, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
 
     cwd = os.getcwd()
     os.chdir(td)

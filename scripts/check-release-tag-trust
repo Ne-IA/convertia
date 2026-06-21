@@ -54,7 +54,7 @@ def fail(msg: str) -> None:
 
 
 def git(*args: str) -> tuple[int, str]:
-    p = subprocess.run(["git", *args], capture_output=True, text=True)
+    p = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
     return p.returncode, (p.stdout + p.stderr).strip()
 
 
@@ -121,7 +121,7 @@ def leg_green_history(repo: str, sha: str) -> bool:
     p = subprocess.run(
         ["gh", "api", "--paginate", "--slurp",
          f"repos/{repo}/commits/{sha}/check-runs?per_page=100"],
-        capture_output=True, text=True)
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
     if p.returncode != 0:
         fail(f"`gh api .../commits/{sha[:12]}/check-runs` failed: {p.stderr.strip()}")
         return False

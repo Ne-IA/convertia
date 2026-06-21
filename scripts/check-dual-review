@@ -32,7 +32,7 @@ FINDINGS_MARKERS = re.compile(r"\b(review|findings?|NOGO|P[0-3]|verdict|skeptic)
 
 
 def git(*args: str) -> tuple[int, str]:
-    p = subprocess.run(["git", *args], capture_output=True, text=True)
+    p = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
     return p.returncode, p.stdout
 
 

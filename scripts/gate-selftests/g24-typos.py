@@ -41,7 +41,7 @@ def flagged_words(target: Path, use_config: bool) -> set[str]:
     if use_config:
         cmd += ["--config", str(CONFIG)]
     cmd.append(str(target))
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     words: set[str] = set()
     for line in r.stdout.splitlines():
         try:

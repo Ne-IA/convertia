@@ -80,7 +80,7 @@ record("has_findings_block: marker in the BODY (not the subject) -> True",
 
 # --- commit_shas range resolution (L4 --base) in real temp repos -----------------------------
 def git(repo, *a):
-    subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, check=True)
+    subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, encoding="utf-8", errors="replace", check=True)
 
 
 def in_repo(repo, fn):

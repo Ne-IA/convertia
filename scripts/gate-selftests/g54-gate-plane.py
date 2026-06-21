@@ -24,11 +24,11 @@ def record(name: str, ok: bool, detail: str = "") -> None:
 
 
 def git(repo: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
 def run_check(repo: Path, *extra: str) -> tuple[int, str]:
-    p = subprocess.run([sys.executable, str(CHECK), *extra], capture_output=True, text=True, cwd=str(repo))
+    p = subprocess.run([sys.executable, str(CHECK), *extra], capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(repo))
     return p.returncode, p.stdout + p.stderr
 
 

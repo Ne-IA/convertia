@@ -56,11 +56,11 @@ def is_docs_only(changed: list[str]) -> bool:
 
 def _resolves(ref: str) -> bool:
     return subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref],
-                          capture_output=True, text=True).returncode == 0
+                          capture_output=True, text=True, encoding="utf-8", errors="replace").returncode == 0
 
 
 def _current_branch() -> str | None:
-    p = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True)
+    p = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True, encoding="utf-8", errors="replace")
     b = p.stdout.strip()
     return b if p.returncode == 0 and b and b != "HEAD" else None
 
@@ -84,7 +84,7 @@ def changed_files(base: str, head: str) -> list[str] | None:
     changed then reverted across the range does not appear, which is correct - there is no net
     code to scan, so skipping the heavy gates stays safe (the G2 gitleaks range leg is never
     skipped regardless, as it scans history not the net tree)."""
-    p = subprocess.run(["git", "diff", "--name-only", f"{base}..{head}"], capture_output=True, text=True)
+    p = subprocess.run(["git", "diff", "--name-only", f"{base}..{head}"], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if p.returncode != 0:
         return None
     return [ln for ln in p.stdout.splitlines() if ln.strip()]

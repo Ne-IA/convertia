@@ -29,7 +29,7 @@ def record(name: str, ok: bool) -> None:
 
 
 def git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True)
+    subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, encoding="utf-8", errors="replace", check=True)
 
 
 def resolve_base_in(repo: Path):

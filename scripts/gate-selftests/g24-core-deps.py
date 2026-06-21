@@ -79,14 +79,21 @@ record("tests/g53-fixture workspace + core + libvips-sys crates exist",
 record("the fixture core crate declares the planted libvips-sys dependency",
        "libvips-sys" in core_toml.read_text(encoding="utf-8"))
 
-# --- main() is target-absent today (no repo-root/src-tauri workspace) -------------------------
-record("check-core-deps main() exits 0 today (no workspace yet -> target-absent skip)", m.main() == 0)
+# --- regression guard (P1.12): the live `cargo metadata` read MUST pin encoding="utf-8" -------
+# Once the tauri dep tree (~250 crates / ~900 KB metadata) landed, a non-ASCII byte in a crate
+# description cp1252-crashed check-core-deps on Windows (text=True without encoding). main()'s skip
+# path is covered by _skip_when_cargo_absent below + the live walk by the fixture leg below, so
+# main() is NOT re-run live here (heavy + plane-dependent on a real cargo).
+import inspect as _inspect
+record("regression: check-core-deps' live `cargo metadata` read pins encoding=\"utf-8\" "
+       "(a non-ASCII byte in the ~900 KB metadata must not cp1252-crash on Windows; P1.12)",
+       'encoding="utf-8"' in _inspect.getsource(m.main))
 
 # --- live: run the REAL fixture through cargo metadata when cargo is installed (P1) ------------
 if shutil.which("cargo"):
     proc = subprocess.run(
         ["cargo", "metadata", "--format-version", "1", "--manifest-path", str(FIXTURE / "Cargo.toml")],
-        capture_output=True, text=True)
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode == 0:
         live = json.loads(proc.stdout)
         record("LIVE fixture: cargo metadata core closure flags libvips-sys",

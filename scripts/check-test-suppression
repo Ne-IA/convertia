@@ -305,7 +305,7 @@ def scan_markers(text: str, relpath: str, only_lines: set[int] | None = None) ->
 
 
 def git(*args: str) -> tuple[int, str]:
-    p = subprocess.run(["git", *args], capture_output=True, text=True)
+    p = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
     return p.returncode, p.stdout
 
 

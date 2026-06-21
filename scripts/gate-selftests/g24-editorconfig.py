@@ -37,7 +37,7 @@ def ec_bin() -> str | None:
 
 
 def run_ec(workdir: Path) -> tuple[int, str]:
-    r = subprocess.run([EC], cwd=str(workdir), capture_output=True, text=True)
+    r = subprocess.run([EC], cwd=str(workdir), capture_output=True, text=True, encoding="utf-8", errors="replace")
     return r.returncode, r.stdout + r.stderr
 
 

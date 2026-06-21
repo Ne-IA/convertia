@@ -288,7 +288,7 @@ def _git_diff(root: Path, paths: list[str]) -> tuple[int | None, str]:
     None if git could not be invoked at all (fail-closed signal)."""
     try:
         r = subprocess.run(["git", "diff", "--exit-code", "--", *paths],
-                           cwd=str(root), capture_output=True, text=True)
+                           cwd=str(root), capture_output=True, text=True, encoding="utf-8", errors="replace")
         return r.returncode, (r.stdout or "") + (r.stderr or "")
     except (OSError, subprocess.SubprocessError):
         return None, ""

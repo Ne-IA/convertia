@@ -69,11 +69,11 @@ record("dispatch: both a file and --base -> bad invocation (exit 2)",
 #     degrade path is the security-critical leg (a fail-closed mirror must NOT exit-2-redden
 #     main on an initial-push / force-push); mirrors g24-dual-review.py's commit_shas legs. ---
 def _git(repo: Path, *a: str) -> None:
-    subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, check=True)
+    subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, encoding="utf-8", errors="replace", check=True)
 
 
 def _git_out(repo: Path, *a: str) -> str:
-    return subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, check=True).stdout.strip()
+    return subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True, encoding="utf-8", errors="replace", check=True).stdout.strip()
 
 
 def _in_repo(repo: Path, fn):
