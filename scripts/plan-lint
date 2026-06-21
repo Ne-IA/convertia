@@ -941,17 +941,55 @@ def doc12_ipc_surface_drift(ctx: Ctx) -> list[Finding]:
     return out
 
 
+# Check 13's §0.10 plugin-surface model. `_PLUGIN_ALLOW` = the plugins we deliberately REGISTER via
+# `.plugin()` (some Rust-side-only with no capability — dialog/opener/single-instance, §0.10).
+# `_PLUGIN_INERT` = forced-transitive deps a granted plugin drags into the closure but that are NEVER a
+# surface: tauri-plugin-fs is a mandatory transitive dep of tauri-plugin-dialog (dialog re-exports
+# tauri_plugin_fs::FilePath + uses FsExt across its picker API; not feature-disableable) — a TYPE library
+# only. §0.10 grants the WebView NO fs plugin, so fs is allowed in the closure ONLY while it stays inert:
+# asserted NOT `.plugin()`-registered here; its fs: CAPABILITY surface is independently denied by G47.
+_PLUGIN_ALLOW = frozenset({"single-instance", "dialog", "opener", "store", "log"})
+_PLUGIN_INERT = frozenset({"fs"})
+
+
+def _plugin_surface_drift(lock_text: str, src_text: str) -> list[str]:
+    """(pure) §0.10 plugin-surface problems: every `tauri-plugin-*` in the lock must be on the granted
+    allowlist, OR a documented forced-transitive-inert dep that is NOT `.plugin()`-registered in the
+    first-party Rust source. Returns problem messages (the capability surface is G47's, not checked here).
+    NB the registration scan is over raw source, so a `tauri_plugin_fs::init`/`.plugin(…fs…)` mention in a
+    comment or string literal fails CLOSED (over-strict, the safe direction) — accepted for a structural
+    gate (the first-party source carries zero fs references; a real one is a G1-review red flag anyway)."""
+    problems: list[str] = []
+    for mt in re.finditer(r'name = "tauri-plugin-([a-z-]+)"', lock_text):
+        name = mt.group(1)
+        if name in _PLUGIN_ALLOW:
+            continue
+        if name in _PLUGIN_INERT:
+            ident = "tauri_plugin_" + name.replace("-", "_")
+            if re.search(rf'{ident}::(?:init|Builder)\b', src_text) or re.search(rf'\.plugin\([^)]*{ident}', src_text):
+                problems.append(f"tauri-plugin-{name} is a forced-transitive INERT dep (§0.10 grants the WebView "
+                                f"no fs plugin) but is `.plugin()`-registered in src-tauri/src — it must stay a "
+                                f"type-only dep (never registered); its fs: capability surface is G47's job")
+            continue
+        problems.append(f"tauri-plugin-{name} is on neither the §0.10 granted allowlist {sorted(_PLUGIN_ALLOW)} "
+                        f"nor the documented forced-transitive-inert set {sorted(_PLUGIN_INERT)}")
+    return problems
+
+
 def doc13_plugin_surface_drift(ctx: Ctx) -> list[Finding]:
-    """Check 13: every tauri-plugin-* crate in Cargo.lock is on the §0.10 allowlist."""
+    """Check 13: every tauri-plugin-* crate in Cargo.lock is on the §0.10 GRANTED allowlist, or is a
+    documented forced-transitive-INERT dep (tauri-plugin-fs, pulled by tauri-plugin-dialog) that is never
+    `.plugin()`-registered (its capability surface is independently denied by G47)."""
     lock = ctx.root / "Cargo.lock"
     if not lock.is_file():
         return []                          # Cargo.lock lands in P1
-    allow = {"single-instance", "dialog", "opener", "store", "log"}
+    src_dir = ctx.root / "src-tauri" / "src"
+    src_text = ("".join(f.read_text(encoding="utf-8", errors="replace") for f in src_dir.rglob("*.rs"))
+                if src_dir.is_dir() else "")
     out = []
-    for m in re.finditer(r'name = "tauri-plugin-([a-z-]+)"', lock.read_text(encoding="utf-8", errors="replace")):
-        if m.group(1) not in allow:
-            out.append(Finding("13:plugin-surface-drift", "Cargo.lock", 0,
-                               f"tauri-plugin-{m.group(1)} is not on the §0.10 plugin allowlist {sorted(allow)}"))
+    for msg in _plugin_surface_drift(lock.read_text(encoding="utf-8", errors="replace"), src_text):
+        loc = "src-tauri/src" if "registered" in msg else "Cargo.lock"
+        out.append(Finding("13:plugin-surface-drift", loc, 0, msg))
     return out
 
 

@@ -509,14 +509,22 @@ Invariant checks (initial set; expanded during P0 review):
     equals an explicit committed allowlist (**single-instance, dialog, opener, store, log** —
     note that **dialog/opener/single-instance are deliberately Rust-side-ONLY with ZERO
     capability-file grants**, §0.10 lines 1359/1488: a `tauri-plugin-*` crate's presence in
-    `Cargo.lock` does NOT imply a WebView capability entry); any unlisted `tauri-plugin-*`
-    fails (the same deny-all-except-allowlist is also wired into `cargo-deny [bans]` at G18 so
-    it fails at L2 before a capability JSON exists, closing the `cargo add` → G47 window).
+    `Cargo.lock` does NOT imply a WebView capability entry); the one **forced-transitive-INERT
+    exception is `tauri-plugin-fs`** — a mandatory transitive dep of `tauri-plugin-dialog` (which
+    re-exports `tauri_plugin_fs::FilePath` + uses `FsExt` across its picker API, not feature-disableable):
+    a TYPE library only that §0.10 grants the WebView NO fs plugin, **allowed in the closure ONLY while it
+    stays inert — asserted NOT `.plugin()`-registered in `src-tauri/src`** (the fs: capability surface is
+    independently denied by G47, the §0.10 `no fs:default` posture). Any OTHER unlisted `tauri-plugin-*`
+    fails **plan-lint check 13** — the structural enforcer of the deny-all-except-allowlist (which
+    `cargo-deny [bans]` cannot express natively, having no deny-pattern-with-exceptions), failing at L2/push
+    before a capability JSON exists and closing the `cargo add` → G47 window; `cargo-deny [bans]` (G18)
+    *additionally* hard-blocks the two specifically-dangerous plugins (`-updater`/`-http`).
     **Two INDEPENDENT assertions (the prior single "`Cargo.lock` set == capability-file plugin
     blocks" cross-check was logically unsatisfiable — it would hard-fail every clean checkout,
     because only `log`/`store` of the five allowlisted plugins carry a capability block while
     dialog/opener/single-instance carry none by §0.10 decision):** **(a)** the `Cargo.lock`
-    `tauri-plugin-*` set == the committed allowlist (above); **(b)** every permission entry in
+    `tauri-plugin-*` set == the committed allowlist (above), modulo the `tauri-plugin-fs`
+    forced-transitive-inert exception (present-but-never-`.plugin()`-registered); **(b)** every permission entry in
     every `capabilities/*.json` references only a plugin on the committed allowlist (a
     capability granting an off-allowlist plugin fails). The two are checked separately so
     (b) closes no real threat the deny-all-except-allowlist doesn't already close, but it can
@@ -1009,7 +1017,7 @@ Invariant checks (initial set; expanded during P0 review):
   RFC-4180 CSV parse + CSV-injection assertion, and the macOS T11 first-accessor sub-test;
   **G46** gained the `QuarantinedByOs` sub-test; **G38** gained poppler-no-network +
   the mitigation census (`checksec`/`dumpbin`/`otool`); **G9** concretized with a non-empty
-  invariant list; **G18/check 13** added the Tauri plugin-surface deny-all-except-allowlist;
+  invariant list; **plan-lint check 13** added the Tauri plugin-surface deny-all-except-allowlist;
   **check 12** added IPC command-surface drift; **check 8** now **16** classes (T11);
   **check 9** treats the IPC command set as an explicit SET incl. C2a/C2b/C13.
 - **Two-plane / fail-mode crispness.** G21 deferral gate is full-tree + fail-closed at the

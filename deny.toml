@@ -93,9 +93,11 @@ deny = [
 ]
 # NOTE — the "deny EVERY tauri-plugin-* except the §0.10-granted allowlist {single-instance, dialog,
 # opener, store, log}" rule cannot be expressed natively in cargo-deny (it has no deny-pattern-with-
-# exceptions). It is enforced structurally instead: scripts/check-supply-chain + plan-lint check 13
-# assert that every `tauri-plugin-*` crate in Cargo.lock is on that allowlist (active in P1 when the
-# lock exists). The deny[] list above hard-blocks the two specifically-dangerous plugins regardless.
+# exceptions). It is enforced structurally instead: plan-lint check 13 asserts that every
+# `tauri-plugin-*` crate in Cargo.lock is on that allowlist — or is the forced-transitive-inert
+# `tauri-plugin-fs` (a mandatory TYPE-only dep of `tauri-plugin-dialog`, never `.plugin()`-registered; its
+# fs: capability surface is independently denied by G47) — active in P1 when the lock exists. The deny[]
+# list above hard-blocks the two specifically-dangerous plugins regardless.
 
 [sources]
 # the `sources` check is a no-op without an explicit allow-list, so populate it: only crates.io and an

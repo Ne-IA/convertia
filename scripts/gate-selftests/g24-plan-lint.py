@@ -159,6 +159,21 @@ record("25 forward-allowlist: a dangling link to an UNREGISTERED target -> still
 record("25 code-span: a link inside an inline `code` span -> NOT flagged",
        not any("dangling" in f.msg for f in m.doc25_doc_graph(dctx({"docs/a.md": "example `[x](nope.md)` here\n"}))))
 
+# --- check 13: §0.10 plugin-surface — granted allowlist + the forced-transitive-INERT fs handling -----
+record("13 plugin-surface: a granted plugin (dialog) -> clean",
+       m._plugin_surface_drift('name = "tauri-plugin-dialog"\n', "") == [])
+record("13 plugin-surface: tauri-plugin-fs present + NOT .plugin()-registered -> clean (forced-inert dialog dep)",
+       m._plugin_surface_drift('name = "tauri-plugin-dialog"\nname = "tauri-plugin-fs"\n',
+                               "fn main() { Builder::new().plugin(tauri_plugin_dialog::init()); }") == [])
+record("13 plugin-surface: tauri-plugin-fs present AND .plugin()-registered -> caught (must stay type-only)",
+       any("registered" in p for p in m._plugin_surface_drift(
+           'name = "tauri-plugin-fs"\n', ".plugin(tauri_plugin_fs::init())")))
+record("13 plugin-surface: fs registered via the Builder form -> caught (init|Builder both flagged)",
+       any("registered" in p for p in m._plugin_surface_drift(
+           'name = "tauri-plugin-fs"\n', "tauri_plugin_fs::Builder::new().build()")))
+record("13 plugin-surface: an UNLISTED plugin (http) -> caught (neither granted nor forced-inert)",
+       any("http" in p and "neither" in p for p in m._plugin_surface_drift('name = "tauri-plugin-http"\n', "")))
+
 # --- check 23: the owner-decidable / informational-then-ratcheted gate-status ledger (P0.4.5) --
 _GS = "docs/process/gate-status.md"
 _LEDGER_HEAD = "| Gate / tool | Status | Since | Activation | Contract |\n|---|---|---|---|---|\n"
