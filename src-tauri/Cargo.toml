@@ -4,9 +4,11 @@
 # CORE_CRATE_NAME) resolves + polices: its transitive Cargo dependency closure must NEVER contain the
 # image-worker copyleft C libs (libvips / libheif / libde265 / librsvg / libimagequant / ImageMagick),
 # which are linked ONLY by the separate `convertia-imgworker` binary — aggregation, not linkage into
-# the MIT core (spec §3.6.1, T6). At P1.6 the crate has no dependencies; the Tauri / tokio / plugin
-# deps land in P1.12–P1.14. It compiles to a minimal binary so the workspace, the live
-# G3/G4/G14/G53/G18 gates, and the committed Cargo.lock have a real target.
+# the MIT core (spec §3.6.1, T6). The Tauri host (`tauri`) + the §0.4.5 IPC type-gen (`tauri-specta`)
+# are wired across P1.12–P1.13, the §0.8 plugins in P1.14. The async runtime is the multi-threaded
+# tokio runtime Tauri manages (§0.8/§0.9), pinned transitively in `Cargo.lock`; it is added as a direct
+# dependency where in-crate `async` code first calls into it. The crate compiles to a minimal binary so
+# the workspace, the live G3/G4/G14/G53/G18 gates, and the committed Cargo.lock have a real target.
 [package]
 name = "convertia-core"
 version.workspace = true
@@ -21,6 +23,7 @@ publish = false
 serde = { version = "1.0.228", features = ["derive"] }
 specta = { version = "2.0.0-rc", features = ["derive", "uuid"] }
 tauri = "2.11.3"
+tauri-specta = { version = "=2.0.0-rc.25", features = ["derive"] }
 uuid = { version = "1.23.3", features = ["serde", "v4"] }
 
 [build-dependencies]

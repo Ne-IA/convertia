@@ -1,9 +1,11 @@
 //! ConvertIA core — the Tauri v2 host binary entry point.
 //!
-//! P1.6 establishes the minimal compiling entry so the workspace boots and the live Rust gates
-//! (G3/G4/G14 format/lint/test, G29 unsafe-policy, G53 core-closure) act on a real crate root. The
-//! Tauri `Builder` + the §7.2.1 startup spine are built in P1.13; the §0.7 logical-module roots
-//! (`domain`/`outcome`/`ipc`/…) in P1.9–P1.11.
+//! P1.13 stands up the Tauri v2 `Builder` entrypoint on Tauri's managed multi-threaded tokio async
+//! runtime (§0.4.0/§0.8/§0.9): the §0.4.5 tauri-specta codegen seam (empty `collect_commands!`/
+//! `collect_events!` — the C1..C13 commands and the E-series events are authored in P2), the
+//! empty-but-present `invoke_handler`, and the `mount_events` setup hook. The §0.7 logical-module
+//! roots (`domain`/`outcome`/`ipc`/…) were scaffolded in P1.9–P1.11; the §7.2.1 ordered startup spine
+//! is P2; the window frame is P1.16; `bindings.ts` codegen is the `cargo xtask` of P1.25/P1.26.
 
 // §2.12 / G29: the MIT core decodes no untrusted bytes in-process, so it carries zero `unsafe` —
 // denied at the crate root. The single allow-listed FFI shim is `crate::platform` (the OS-primitive
@@ -30,5 +32,29 @@ mod platform;
 mod pool;
 mod run;
 
-// [Build-Session-Entscheidung: P1.6] minimal entry — the real Tauri `Builder` is built in P1.13.
-fn main() {}
+fn main() -> tauri::Result<()> {
+    // §0.4.5 IPC codegen seam: the tauri-specta `Builder` is the single source `bindings.ts` is
+    // generated from (the `cargo xtask codegen` bin, P1.26) AND the runtime invoke/event registry.
+    // The command + event sets are EMPTY in P1 — the C1..C13 commands and the E-series events are
+    // authored in P2; `collect_types!` (so the §0.6 identity types do not generate as `any`) is added
+    // with the P1.25 tauri-specta-builder + export wiring.
+    let builder = tauri_specta::Builder::<tauri::Wry>::new()
+        .commands(tauri_specta::collect_commands![])
+        .events(tauri_specta::collect_events![]);
+
+    // [Build-Session-Entscheidung: P1.13] Async runtime: ConvertIA runs on Tauri v2's own managed
+    // multi-threaded tokio runtime — `tauri::async_runtime`'s default builds a `tokio::runtime::
+    // Runtime::new()` (multi-thread), exactly the §0.8/§0.9 "tokio (multi-thread)" choice. We
+    // deliberately do NOT wrap `main` in `#[tokio::main]` (a Tauri-v2 anti-pattern: a second runtime
+    // nested around the blocking event loop) nor re-register one via `async_runtime::set` (it would
+    // only duplicate Tauri's identical default and add a runtime-lifetime burden, for no functional
+    // gain). tokio is pinned transitively in `Cargo.lock` (§0.8 "exact") and is added as a DIRECT
+    // dependency where the first in-crate `async` command code calls into it (P2).
+    tauri::Builder::default()
+        .invoke_handler(builder.invoke_handler())
+        .setup(move |app| {
+            builder.mount_events(app);
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+}
