@@ -1136,6 +1136,7 @@ convertia/
 │  ├─ Cargo.toml                   # workspace MEMBER — the MIT core crate `convertia-core`; pinned versions §0.8
 │  ├─ tauri.conf.json              # bundle, CSP, externalBin, minimum-OS (§0.10, §0.3.1, §3.3)
 │  ├─ build.rs                     # tauri-build; (optionally) tauri-specta gen hook
+│  ├─ icons/                       # bundled app-icon set: placeholder logo → per-platform PNG/ICO/ICNS + Windows Square* tiles; wired to bundle.icon (§3.3; §6.9.3 final art) [P1.19.2]
 │  ├─ capabilities/
 │  │  └─ main.json                 # the §0.10 capability allowlist (core, log, store — NO dialog, NO opener, NO shell-execute, NO fs; dialog/opener are Rust-side-only, not WebView grants, §3.3.3)
 │  ├─ binaries/                    # bundled engine sidecars per platform (§3.3), externalBin targets
