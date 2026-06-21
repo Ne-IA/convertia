@@ -5,8 +5,13 @@ Proves the structural supply-chain growth-guard catches every way the policy cou
 WEAKENED: a forbidden crate un-denied, a copyleft license allow-listed, `yanked`/version downgraded,
 the license confidence floor lowered, a per-crate license exception slipped in, an advisory-ignore-set
 mismatch with cargo-audit, an unknown source allowed, crates.io dropped from the allow-list, the
-cargo-vet import sources dropped below 2, or an exemption added past the frozen count. Also confirms
-the REAL committed deny.toml + supply-chain/config.toml evaluate clean and main() is target-absent-OK.
+cargo-vet import sources dropped below 2, an exemption added past the frozen count, the deny.toml
+`[graph].targets` scope drifting from the frozen shipped desktop-triple set (a DROPPED shipped triple
+blinds cargo-deny to an on-that-triple dep = fail-OPEN; an ADDED non-shipped triple re-masks tauri's
+mobile-only reqwest/hyper into scope = spurious fail), or `[graph].all-features` flipped off (a banned
+crate reachable only via a non-default feature would escape [bans]). Also confirms the REAL committed
+deny.toml `[graph].targets` equals EXPECTED_GRAPH_TARGETS, and that the REAL committed deny.toml +
+supply-chain/config.toml evaluate clean and main() is target-absent-OK.
 stdlib-only. Exit 0 = all held; 1 = a self-test failed.
 """
 import copy
@@ -36,6 +41,7 @@ def good_deny() -> dict:
         "advisories": {"version": 2, "yanked": "deny", "ignore": []},
         "sources": {"unknown-registry": "deny", "unknown-git": "deny",
                     "allow-registry": ["https://github.com/rust-lang/crates.io-index"]},
+        "graph": {"targets": sorted(m.EXPECTED_GRAPH_TARGETS), "all-features": True},
     }
 
 
@@ -82,6 +88,25 @@ d = good_deny(); d["sources"]["unknown-registry"] = "allow"
 record("[sources].unknown-registry allowed -> caught", any("unknown-registry" in p for p in m.evaluate_deny(d, set())))
 d = good_deny(); d["sources"]["allow-registry"] = []
 record("crates.io dropped from allow-registry -> caught", any("crates.io" in p for p in m.evaluate_deny(d, set())))
+
+# --- [graph] freeze (P1.12 — the cargo-deny eval graph == the shipped graph: targets + all-features) ---
+d = good_deny(); d["graph"]["targets"] = [t for t in d["graph"]["targets"] if t != "x86_64-unknown-linux-gnu"]
+record("a SHIPPED desktop triple dropped from [graph].targets -> caught (fail-OPEN blind-spot to an "
+       "on-Linux network/copyleft dep)", any("graph].targets" in p for p in m.evaluate_deny(d, set())))
+d = good_deny(); d["graph"]["targets"] = d["graph"]["targets"] + ["aarch64-linux-android"]
+record("a NON-shipped (mobile) triple added to [graph].targets -> caught (re-masks tauri's mobile-only "
+       "reqwest/hyper back into scope)", any("graph].targets" in p for p in m.evaluate_deny(d, set())))
+d = good_deny(); d["graph"]["targets"] = [{"triple": t} for t in sorted(m.EXPECTED_GRAPH_TARGETS)]
+record("[graph].targets in the cargo-deny {triple=...} table form is parsed (equals frozen) -> clean",
+       m.evaluate_deny(d, set()) == [])
+d = good_deny(); d["graph"]["all-features"] = False
+record("[graph].all-features downgraded to false -> caught (a feature-gated banned dep would escape "
+       "[bans] eval)", any("all-features" in p for p in m.evaluate_deny(d, set())))
+d = good_deny(); del d["graph"]["all-features"]
+record("[graph].all-features removed entirely -> caught (default-features-only eval is the same "
+       "weakening)", any("all-features" in p for p in m.evaluate_deny(d, set())))
+record("the REAL committed deny.toml [graph].targets equals the frozen shipped-triple set (both entry "
+       "forms via _graph_targets)", m._graph_targets(m._load(m.DENY)) == m.EXPECTED_GRAPH_TARGETS)
 
 # --- cargo-vet config (G18b) ------------------------------------------------------------------
 v = good_vet(); v["imports"] = {"mozilla": {"url": "u1"}}

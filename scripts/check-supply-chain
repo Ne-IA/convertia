@@ -13,6 +13,10 @@ So the policy INTENT is FROZEN here (a stdlib TOML parse — no cargo-deny/cargo
   * deny.toml `[advisories]` is v2 with `yanked = "deny"`; its `ignore` set MUST equal the cargo-audit
     ignore set (the G18 two-scanner reconciliation - no advisory silenced in one tool but live in the other);
   * deny.toml `[sources]` denies unknown registry/git and allow-lists crates.io;
+  * deny.toml `[graph].targets` equals the SHIPPED desktop-triple set (EXPECTED_GRAPH_TARGETS) - no scope
+    WIDENING that re-masks a banned mobile-only dep into the eval graph, no NARROWING that blinds a
+    shipped triple to a real network/copyleft dep - AND `[graph].all-features` stays `true` (off would
+    let a banned crate reachable only via a non-default feature escape the [bans] eval);
   * supply-chain/config.toml declares >= 2 distinct import sources (one compromised audit DB cannot
     single-handedly vouch a crate) and its cargo-vet exemption set is growth-guarded (<= the frozen count);
   * the §0.10 tauri-plugin allowlist is intact (the deny-all-except set plan-lint check 13 enforces).
@@ -60,6 +64,21 @@ EXPECTED_LICENSE_ALLOW = frozenset({
     "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause",
     "ISC", "Unicode-3.0", "Unicode-DFS-2016", "Zlib", "CC0-1.0", "MPL-2.0",
 })
+# the FOUR desktop release triples ConvertIA ships (spec §03 "Target triples": Win x64 + macOS
+# universal {x86_64,aarch64} + Linux x64; Windows-ARM / Linux-musl are [DEFER], not v1). deny.toml's
+# [graph].targets MUST equal this set: a SUPERSET (a non-shipped triple, e.g. android) re-masks tauri's
+# mobile-only reqwest/hyper back INTO scope (spurious fail) AND a SUBSET (a shipped triple dropped)
+# BLINDS the live cargo-deny to a real on-that-triple network/copyleft dep (fail-OPEN). Frozen here so
+# the security-load-bearing [graph] scope cannot drift silently — an edit is an L(-1) review item with a
+# box-id + Dual-Review note, exactly like FORBIDDEN_CRATES. The egress guarantee does not rest on this
+# scope (G29 rule (g)/(j) ban std/tokio/libc sockets in first-party source); this freeze keeps the
+# cargo-deny EVALUATION graph equal to the SHIPPED graph.
+EXPECTED_GRAPH_TARGETS = frozenset({
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+})
 MIN_IMPORT_SOURCES = 2          # >=2 distinct audit DBs (Mozilla + Google baseline)
 MIN_CONFIDENCE = 0.8            # the license-detection confidence floor (we ship 0.93)
 EXPECTED_EXEMPTION_COUNT = 0    # cargo-vet exemptions accepted; a bump is reviewed HERE with a box-id
@@ -81,6 +100,20 @@ def _ignore_set(advisories: object) -> set[str]:
     return out
 
 
+def _graph_targets(cfg: object) -> set[str]:
+    """The set of target TRIPLES declared in deny.toml `[graph].targets`, robust to BOTH cargo-deny v2
+    entry forms: a plain triple string OR a `{ triple = "...", features = [...] }` table. Used by both
+    the live evaluate_deny check and the self-test so the two never diverge on the entry shape."""
+    graph = cfg.get("graph") if isinstance(cfg, dict) and isinstance(cfg.get("graph"), dict) else {}
+    out: set[str] = set()
+    for t in graph.get("targets") or []:
+        if isinstance(t, str):
+            out.add(t)
+        elif isinstance(t, dict) and isinstance(t.get("triple"), str):
+            out.add(t["triple"])
+    return out
+
+
 def evaluate_deny(cfg: object, audit_ignores: set[str]) -> list[str]:
     """(pure) Growth/relaxation problems in the parsed deny.toml `cfg`, reconciled against the
     cargo-audit ignore set."""
@@ -90,6 +123,7 @@ def evaluate_deny(cfg: object, audit_ignores: set[str]) -> list[str]:
     licenses = cfg.get("licenses") if isinstance(cfg.get("licenses"), dict) else {}
     advisories = cfg.get("advisories") if isinstance(cfg.get("advisories"), dict) else {}
     sources = cfg.get("sources") if isinstance(cfg.get("sources"), dict) else {}
+    graph = cfg.get("graph") if isinstance(cfg.get("graph"), dict) else {}
 
     # [bans]: every forbidden crate still denied; wildcards denied
     denied = set()
@@ -144,6 +178,30 @@ def evaluate_deny(cfg: object, audit_ignores: set[str]) -> list[str]:
     if "https://github.com/rust-lang/crates.io-index" not in (sources.get("allow-registry") or []):
         problems.append("[sources].allow-registry does not list crates.io - the sources check is a no-op "
                         "without a populated allow-list")
+
+    # [graph]: the cargo-deny EVALUATION graph must equal the SHIPPED graph, on TWO axes -
+    #   (1) `targets` == the shipped desktop-triple set (scoping prunes deps gated to no listed target;
+    #       it narrows ALL four cargo-deny checks - bans/advisories/licenses/sources - so a mobile-only
+    #       dep drops out of every one. That is correct for a desktop-only product (those deps ship in
+    #       zero artifacts) and CVE coverage of them is retained by cargo-audit, the G17 scanner that
+    #       reads the FULL Cargo.lock irrespective of [graph].targets - the two-scanner backstop);
+    #   (2) `all-features` stays true (off -> cargo-deny evaluates only DEFAULT features, so a banned
+    #       crate pulled in solely by a non-default feature would escape the [bans] egress check).
+    targets = _graph_targets(cfg)
+    if targets != EXPECTED_GRAPH_TARGETS:
+        missing = sorted(EXPECTED_GRAPH_TARGETS - targets)
+        extra = sorted(targets - EXPECTED_GRAPH_TARGETS)
+        problems.append(
+            f"[graph].targets must equal the frozen shipped desktop-triple set (spec §03 'Target "
+            f"triples') - missing {missing} (a DROPPED shipped triple blinds the live cargo-deny to an "
+            f"on-that-triple network/copyleft dep = fail-OPEN), extra {extra} (a NON-shipped triple "
+            f"re-masks tauri's mobile-only reqwest/hyper back into scope). The [graph] scope is "
+            f"security-load-bearing once `targets` is set; a change is an L(-1) edit with a box-id + "
+            f"Dual-Review note (like FORBIDDEN_CRATES)")
+    if graph.get("all-features") is not True:
+        problems.append("[graph].all-features must be `true` - with it off/absent cargo-deny evaluates "
+                        "only DEFAULT features, so a banned crate (reqwest/hyper/...) reachable only via "
+                        "a non-default feature would ESCAPE the [bans] egress check; frozen on (L(-1))")
     return problems
 
 

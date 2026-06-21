@@ -10,7 +10,34 @@
 # never linked into the core crate graph).
 
 [graph]
-# evaluate the policy over every target/feature we ship (no platform-specific escape)
+# Evaluate the policy over EXACTLY the dependency graph ConvertIA ships: the four desktop release
+# triples (spec §03 "Target triples" — Win x64 + macOS universal {x86_64,aarch64} + Linux x64; the
+# Windows-ARM / Linux-musl triples are [DEFER], not v1). WHY pinned, not target-agnostic: tauri 2.11
+# declares `reqwest` (→ `hyper`) ONLY under `cfg(any(target_os="android", apple-non-macos))`
+# (tauri-2.11.3/Cargo.toml; tauri's own `cargo-udeps.ignore normal = ["reqwest"]`) — mobile-only deps
+# that land in the target-agnostic Cargo.lock but compile into ZERO desktop artifacts (verified:
+# `cargo tree -i reqwest --target <each desktop triple>` = "nothing to print"). WITHOUT `targets`,
+# cargo-deny evaluates the UNION of all targets incl. android/ios and FALSE-flags these phantom mobile
+# deps against the [bans] list below. Scoping to the shipped triples is the CORRECT semantics, NOT a
+# carve-out: the [bans] guard stays fully effective for the shipped graph — an ungated / direct
+# app-level `reqwest` is target-agnostic, appears on the desktop triples, and is STILL denied; only a
+# dep gated to a NON-shipped target (which compiles into no artifact, so opens no egress) falls out of
+# scope. This `targets` set is FROZEN by scripts/check-supply-chain (EXPECTED_GRAPH_TARGETS) so it can
+# be neither silently WIDENED (re-masking a real banned dep) nor NARROWED (blinding a shipped triple);
+# the zero-egress guarantee itself does not rest on this scope — G29 rule (g)/(j) ban std/tokio/libc
+# sockets in first-party source regardless of deps. Note the scope narrows ALL cargo-deny checks, not
+# only [bans]: a mobile-only transitive crate also drops out of cargo-deny's [advisories]/[licenses]
+# evaluation — deliberate (it ships in zero artifacts), and its CVEs stay covered by cargo-audit (G17),
+# which reads the FULL Cargo.lock irrespective of [graph].targets (the two-scanner backstop).
+# [Build-Session-Entscheidung: P1.12]
+targets = [
+  "x86_64-pc-windows-msvc",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+]
+# frozen ON by check-supply-chain — off would let a banned crate reachable only via a non-default
+# feature escape the [bans] egress evaluation.
 all-features = true
 
 [advisories]
