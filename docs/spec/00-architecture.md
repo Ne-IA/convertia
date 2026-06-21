@@ -1054,39 +1054,42 @@ this model only fixes the *shapes and invariants* the whole system shares.
 ### Logical modules (the architecture — owned here)
 
 Dependencies point **downward only**; nothing below depends on anything above it
-(so the directory tree does not silently *become* the architecture). The
-**guarantees-fs** layer and the **engine-registry seam** are the two reuse hubs.
+(so the directory tree does not silently *become* the architecture). The **§2.0
+no-harm trust kernel** — the `fs_guard` / `run` / `outcome` / `isolation` peers,
+conceptually the "guarantees-fs" layer — and the **engine seam** (`engines`) are
+the reuse hubs.
 
 ```
-            ┌─────────────────────────────────────────────┐
-   tier 0   │  ipc  (Tauri command/event handlers, §0.4)  │  ← WebView talks only here
-            └───────────────┬─────────────────────────────┘
-                            │ depends on
-            ┌───────────────▼─────────────────────────────┐
-   tier 1   │  orchestrator  (queue, job lifecycle §1.9,   │
-            │   run registry + cancellation tokens §0.4.4, │
-            │   progress fan-out to the Channel)           │
-            └───────┬───────────────┬───────────────┬──────┘
-                    │               │               │
-        ┌───────────▼───┐  ┌────────▼───────┐  ┌────▼──────────────────┐
- tier 2 │  detection    │  │ engine-registry│  │  guarantees-fs        │
-        │  (§1.2)       │  │  seam (§3.2)   │  │  (no-clobber/atomic/   │
-        │               │  │  + invocation  │  │  resolved-id/frozen/   │
-        │               │  │  (§1.7) + args  │  │  cleanup/destination/  │
-        │               │  │  (§3.5) +       │  │  temp §2.1/2.3/2.4/    │
-        │               │  │  isolation seam │  │  2.6/2.7/2.14)         │
-        │               │  │  (calls §2.12)  │  │                        │
-        └───────┬───────┘  └────────┬───────┘  └───────────┬───────────┘
-                │                   │                       │
-        ┌───────▼───────────────────▼───────────────────────▼───────────┐
- tier 3 │  domain  (§0.6 types) + errors (§2.8 taxonomy)                │
-        │  + platform util (paths, volume detection §2.14, OS shims)    │
-        └──────────────────────────────────────────────────────────────┘
-            ┌─────────────────────────────────────────────┐
-   tier 3  │  subprocess pool  (§0.9) — used by engine-     │  (sibling of guarantees-fs;
-            │  registry invocation; owns concurrency degree │   depended on by tier 2 engine seam)
-            └─────────────────────────────────────────────┘
+  tier 0   ipc            command/event handlers (§0.4) — the WebView's only door
+             │ depends on
+  tier 1   orchestrator   queue + job lifecycle (§1.9), run registry + cancellation
+                          tokens (§0.4.4), progress fan-out to the Channel
+             ▼
+  tier 2   detection      content sniffing (§1.2)
+           engines        registry/seam (§3.2) + invocation (§1.7) + args (§3.5);
+                          routes every spawn through crate::isolation + the pool
+           fs_guard       atomic write / no-clobber / resolved-id / cross-volume (§2.1/§2.3/§2.14)
+           run            per-run / per-instance scratch ownership + cleanup (§2.4/§2.6)
+           isolation      the §2.12 decoder-isolation wrapper every engine spawn routes through
+           outcome        §2.8 taxonomy + message catalog + §2.9 lossy catalog → §0.4.3 IpcError
+                          ‡ tier [OPEN]
+             ▼
+  tier 3   domain         the §0.6 types (the identity spine today; the full model lands P2)
+           platform       paths / volume detection (§2.14) / OS shims
+           pool           the §0.9 subprocess pool + concurrency degree (used by the engine seam)
+                          — the leaves: they depend on nothing above
 ```
+
+‡ **`outcome`'s tier is `[OPEN → resolved at P2 type-homing]`.** It is placed at tier 2
+(matching the authoritative Physical tree + the built state — `crate::outcome` consumes the
+§0.6 `SkipReason` via `OutcomeMsg::Skipped`, so it depends downward on `domain`). But the
+reverse edge also exists — §0.6 `ItemResult.reason: Option<OutcomeMsg>` — so `domain` ↔
+`outcome` is a **type cycle** the strict downward-only rule cannot tier. The cycle is
+conceptual today (`crate::domain` holds only the §0.6 identity newtypes; the `SkipReason` /
+`ItemResult` / `OutcomeMsg` module homes are a **P2** task), so no code is built on the
+placement. **P2 type-homing must break the cycle** — e.g. home `ItemResult` (the §1.12
+summary type, assembled by `orchestrator`/`ipc`) above tier 3, leaving a clean `outcome` →
+`domain` edge — and finalise the tier then. Until then tier 2 is provisional.
 
 **Module responsibilities & who owns the behaviour:**
 
@@ -1098,20 +1101,30 @@ Dependencies point **downward only**; nothing below depends on anything above it
   *sequences* them.
 - **`detection`** — §1.2 content sniffing. First code to touch untrusted bytes;
   §1.2 owns whether header sniffing sits inside/outside the §2.12 boundary.
-- **`engine-registry seam`** — the §3.2 `Engine` trait + registry + selection, the
-  §1.7 generic invocation lifecycle, and §3.5 per-engine arg construction; every
-  spawn routes through the §2.12 isolation wrapper and the §0.9 pool. This is the
-  reusable engine home — adding a format pair is (mostly) a registry entry.
-- **`guarantees-fs`** — the **reusable home of the no-harm machinery**:
-  no-clobber/atomic write (§2.1), resolved-identity & link safety (§2.3), frozen
-  set (§2.4), cleanup/temp ownership (§2.6), destination/divert (§2.7), cross-
-  volume strategy (§2.14). Every output flows through here; **engines never write
-  the final file** — they write to a temp the guarantees-fs layer owns, which then
-  performs the atomic publish.
-- **`domain`** — the §0.6 types + §2.8 error taxonomy; depended on by everyone,
-  depends on nothing.
-- **`subprocess pool`** — §0.9; the concurrency-degree owner and the per-engine
-  parallelism rules (LibreOffice serialised).
+- **`engines`** — the §3.2 `Engine` trait + registry + selection, the §1.7 generic
+  invocation lifecycle, and §3.5 per-engine arg construction; every spawn routes
+  through the **separate `crate::isolation` module** (§1.7 calls it) and the §0.9
+  pool. This is the reusable engine home — adding a format pair is (mostly) a
+  registry entry.
+- **`fs_guard`** — the **reusable no-harm kernel** (conceptually the "guarantees-fs"
+  layer, now one of four §2.0 peers): no-clobber/atomic write (§2.1), resolved-
+  identity & link safety (§2.3), cross-volume strategy (§2.14). Every output flows
+  through here; **engines never write the
+  final file** — they write to a temp the kernel owns, which then performs the
+  atomic publish.
+- **`run`** — per-run / per-instance scratch ownership + cleanup (§2.4 / §2.6),
+  keyed on `RunId` / `InstanceId` (§7.1).
+- **`isolation`** — the §2.12 decoder-isolation wrapper every engine spawn routes
+  through (the sole `Command::new` site; §1.7 calls it, §3.5 builds args inside it).
+- **`outcome`** — the §2.8 conversion-outcome taxonomy + message catalog and the
+  §2.9 lossy-disclosure catalog, mirrored onto the wire as the §0.4.3
+  `IpcError`/`ErrorKind` (renamed from `error` — there is no `crate::error`); the
+  single source of every conversion-outcome string. (Tier `[OPEN]` — see the ‡ note.)
+- **`domain`** — the §0.6 types; depended on by everyone, depends on nothing (the
+  tier-3 identity spine today; the full §0.6 model is homed in P2).
+- **`platform`** — paths, volume detection (§2.14), OS shims (§7.7 reveal-in-folder).
+- **`pool`** — §0.9; the concurrency-degree owner and the per-engine parallelism
+  rules (LibreOffice serialised).
 
 ### Physical tree (mapping the logical modules onto disk)
 
@@ -1144,7 +1157,7 @@ convertia/
 │     │  ├─ ffmpeg.rs  libreoffice.rs  pandoc.rs  poppler.rs  image.rs  csv_native.rs
 │     ├─ fs_guard/                 # tier 2 — the reusable guarantees-fs layer; module path `crate::fs_guard` (§2.0); §2.1/2.3/2.14 atomic write/no-clobber/resolved-id/path-limit/cross-volume
 │     ├─ run/                      # tier 2 — `crate::run` (§2.0): per-run/instance scratch ownership + cleanup (§2.4/§2.6), keyed on RunId/InstanceId (§7.1)
-│     ├─ outcome/                  # tier 2 — `crate::outcome` (§2.0): the §2.8 error taxonomy + message catalog AND the §2.9 lossy catalog ↔ IpcError mirror (§0.4.3); the single source of every conversion-outcome string (was `error.rs` — RENAMED to match `crate::outcome` in §2.0; there is no `crate::error`)
+│     ├─ outcome/                  # tier 2 — `crate::outcome` (§2.0): the §2.8 error taxonomy + message catalog AND the §2.9 lossy catalog ↔ IpcError mirror (§0.4.3); the single source of every conversion-outcome string (was `error.rs` — RENAMED to match `crate::outcome` in §2.0; there is no `crate::error`). Tier 2 is PROVISIONAL — `[OPEN → P2 type-homing]`; see the §0.7 logical-modules ‡ note (a domain↔outcome type cycle the strict downward-only model cannot tier)
 │     ├─ isolation/                # tier 2 — `crate::isolation` (§2.0): the §2.12 decoder-isolation wrapper every engine spawn routes through (§1.7 calls it; §3.5 builds args inside it)
 │     ├─ pool/                     # tier 3 — subprocess pool, concurrency degree (§0.9)
 │     ├─ domain/                   # tier 3 — §0.6 types, derive specta::Type
