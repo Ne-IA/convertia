@@ -88,6 +88,38 @@ jobs:
         run: python3 scripts/check-editorconfig
       - name: 'G70: test-suppression-marker scan — full test tree (no green-by-rewrite; live over the committed fixture crates, grows from P1)'
         run: python3 scripts/check-test-suppression --full
+      # Tauri v2's gtk/webkit/soup/jsc/dbus `-sys` crates have build scripts that resolve their system
+      # libraries via pkg-config, so the Linux leg needs the matching `-dev` packages to COMPILE (the ubuntu
+      # leg first hit this once the P1.12 Tauri tree landed: "Package 'gdk-3.0' / 'pango' … not found").
+      # macOS/Windows have WKWebView/WebView2 natively, so ONLY the Linux leg of this matrix compiles the
+      # stack — this step is runner.os == 'Linux'-gated. The set is the EXACT compile closure, each package
+      # traced to its Cargo.lock build-script consumer via `cargo tree -i … --target x86_64-unknown-linux-gnu`:
+      #   libwebkit2gtk-4.1-dev        -> webkit2gtk-sys
+      #   libgtk-3-dev                 -> gtk-sys/gdk-sys/pango-sys/cairo/atk/glib/gio/gdk-pixbuf/x11/wayland
+      #   libsoup-3.0-dev              -> soup3-sys
+      #   libjavascriptcoregtk-4.1-dev -> javascriptcore-rs-sys
+      #   libdbus-1-dev                -> libdbus-sys (<- dbus <- tao)
+      # (libgtk-3-dev/libsoup-3.0-dev/libjavascriptcoregtk-4.1-dev are also apt-Depends of
+      # libwebkit2gtk-4.1-dev — named explicitly for robustness against upstream repackaging + the per-crate
+      # self-documentation above; libdbus-1-dev is the only one NOT pulled transitively.)
+      # This job only COMPILES + tests (clippy --all-targets + cargo test); it never bundles or runs the
+      # app, so the §6.1.4 release-runner's RUNTIME/BUNDLE deps (librsvg2-dev, patchelf, FUSE 2) and the
+      # dlopen'd tray (libappindicator-sys uses the libloading crate; x11-dl its own dlopen/libc wrapper —
+      # neither needs a build-time `-dev`) are deliberately NOT installed here. These are CI build-ENVIRONMENT deps, NOT shipped/trust-bearing (the portable
+      # AppImage bundles/locates its own WebKitGTK, §6.1/§0.3.1), so they track the runner image rather than
+      # the pinned gate-tool/engine set; webkit2gtk-4.1 = the §0.3.1 Ubuntu-22.04 floor. The Linux-CI
+      # analogue of the local MSVC/WebView2 dev runway. Must precede the rust-lint step below.
+      - name: 'Tauri v2 Linux compile deps (webkit2gtk-4.1 / gtk-3 / soup-3 / jsc-4.1 / dbus -sys stack)'
+        if: runner.os == 'Linux'
+        run: |
+          # retry apt-get update so a transient Ubuntu-mirror hiccup does not spuriously red `main`
+          for i in 1 2 3; do sudo apt-get update && break; echo "apt-get update failed; retry $i"; sleep 5; done
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libdbus-1-dev
       - name: 'G3/G4/G14/G17: Rust lint/format/test/audit contract (rustfmt/clippy policy frozen; live fmt/clippy/test/audit in P1)'
         run: python3 scripts/check-rust-lint-contract --full
       - name: 'G29: unsafe-policy gate (#![deny(unsafe_code)] + one allow-listed FFI module; cross-platform, live deny/allow scan in P1)'
