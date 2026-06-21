@@ -116,7 +116,7 @@ The Tauri v2 host builds and shows an empty window on all three OS from a clean
 checkout (the P1 goal proper), wiring the §0.8 plugins and the §7.2.1 ordered
 startup spine as far as the foundation allows.
 
-- [ ] **P1.12** [RUST] Author the `tauri-build` `build.rs` + the §0.4.5 codegen hook seam · §0.4.0 §0.4.5 · G19
+- [x] **P1.12** [RUST] Author the `tauri-build` `build.rs` + the §0.4.5 codegen hook seam · §0.4.0 §0.4.5 · G19
   needs: P1.6
   > `src-tauri/build.rs` running `tauri_build::build()` + the optional tauri-specta generation hook seam (the actual `bindings.ts` emission is P1.26); named so the P0 G19 drift framework (P0.3.9) binds to a concrete generated path + command.
 - [ ] **P1.13** [RUST] Stand up `main.rs` — the Tauri `Builder`, `tokio` runtime, empty `invoke_handler` + `collect_commands!`/`collect_events!` seam · §0.4.0 §0.4.5 §0.8
