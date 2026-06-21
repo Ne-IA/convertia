@@ -9,9 +9,11 @@ cargo-vet import sources dropped below 2, an exemption added past the frozen cou
 `[graph].targets` scope drifting from the frozen shipped desktop-triple set (a DROPPED shipped triple
 blinds cargo-deny to an on-that-triple dep = fail-OPEN; an ADDED non-shipped triple re-masks tauri's
 mobile-only reqwest/hyper into scope = spurious fail), or `[graph].all-features` flipped off (a banned
-crate reachable only via a non-default feature would escape [bans]). Also confirms the REAL committed
-deny.toml `[graph].targets` equals EXPECTED_GRAPH_TARGETS, and that the REAL committed deny.toml +
-supply-chain/config.toml evaluate clean and main() is target-absent-OK.
+crate reachable only via a non-default feature would escape [bans]), or an unexpected `tauri-plugin-*`
+entering Cargo.lock (the structural PRESENCE scan `_tauri_plugin_drift` — the 2nd enforcer beside plan-lint
+check 13 — accepts only the §0.10-granted set + the forced-transitive-inert `tauri-plugin-fs`). Also
+confirms the REAL committed deny.toml `[graph].targets` equals EXPECTED_GRAPH_TARGETS, and that the REAL
+committed deny.toml + supply-chain/config.toml evaluate clean and main() is target-absent-OK.
 stdlib-only. Exit 0 = all held; 1 = a self-test failed.
 """
 import copy
@@ -107,6 +109,19 @@ record("[graph].all-features removed entirely -> caught (default-features-only e
        "weakening)", any("all-features" in p for p in m.evaluate_deny(d, set())))
 record("the REAL committed deny.toml [graph].targets equals the frozen shipped-triple set (both entry "
        "forms via _graph_targets)", m._graph_targets(m._load(m.DENY)) == m.EXPECTED_GRAPH_TARGETS)
+
+# --- tauri-plugin presence scan (the 2nd structural enforcer beside plan-lint check 13; P1.14) -------
+record("tauri-plugin presence: a granted plugin (store) -> clean",
+       m._tauri_plugin_drift('name = "tauri-plugin-store"\n') == [])
+record("tauri-plugin presence: tauri-plugin-fs (forced-transitive-inert dialog dep) -> clean",
+       m._tauri_plugin_drift('name = "tauri-plugin-dialog"\nname = "tauri-plugin-fs"\n') == [])
+record("tauri-plugin presence: an UNLISTED plugin (http) -> caught (unexpected surface, T2/T2c)",
+       any("http" in p and "neither" in p for p in m._tauri_plugin_drift('name = "tauri-plugin-http"\n')))
+record("tauri-plugin presence: the 5 granted + forced-inert fs together -> clean",
+       m._tauri_plugin_drift("".join(f'name = "tauri-plugin-{n}"\n'
+                                     for n in sorted(m.TAURI_PLUGIN_ALLOWLIST | m.TAURI_PLUGIN_INERT))) == [])
+record("tauri-plugin presence: the granted allowlist + the forced-inert set are DISJOINT (fs is not granted)",
+       not (m.TAURI_PLUGIN_ALLOWLIST & m.TAURI_PLUGIN_INERT))
 
 # --- cargo-vet config (G18b) ------------------------------------------------------------------
 v = good_vet(); v["imports"] = {"mozilla": {"url": "u1"}}

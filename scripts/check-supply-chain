@@ -19,7 +19,11 @@ So the policy INTENT is FROZEN here (a stdlib TOML parse — no cargo-deny/cargo
     let a banned crate reachable only via a non-default feature escape the [bans] eval);
   * supply-chain/config.toml declares >= 2 distinct import sources (one compromised audit DB cannot
     single-handedly vouch a crate) and its cargo-vet exemption set is growth-guarded (<= the frozen count);
-  * the §0.10 tauri-plugin allowlist is intact (the deny-all-except set plan-lint check 13 enforces).
+  * the §0.10 tauri-plugin allowlist holds over Cargo.lock — every `tauri-plugin-*` is on the granted
+    allowlist OR the forced-transitive-inert set {fs}. This is the **2nd, independent structural
+    presence-enforcer** of the deny-all-except rule (beside plan-lint check 13; needs no cargo binary);
+    the `.plugin()`-registration surface is plan-lint check 13's (it reads `src-tauri/src`) and the fs:
+    capability surface is G47's — this scan guards LOCK PRESENCE only.
 
 Growing/relaxing any of these means editing the frozen expectation in THIS file - itself L(-1)
 (scripts/l-neg1-files.toml, G71), so the change carries the owner-ack + a Dual-Review note. The LIVE
@@ -31,6 +35,7 @@ Exit: 0 = the policy matches the frozen expectation (+ live checks pass or are t
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -54,8 +59,16 @@ FORBIDDEN_CRATES = {
     "tauri-plugin-updater", "tauri-plugin-http",
     "reqwest", "ureq", "hyper", "isahc", "curl", "curl-sys",
 }
-# the §0.10-granted tauri-plugin allowlist (shared intent with plan-lint check 13)
+# the §0.10-granted tauri-plugin allowlist — every `tauri-plugin-*` in Cargo.lock must be on this set OR
+# the forced-transitive-inert set below; the LIVE presence-scan `_tauri_plugin_checks` (the 2nd enforcer
+# beside plan-lint check 13) asserts it. These five are deliberately Rust-side-only (no fs/http/etc.).
 TAURI_PLUGIN_ALLOWLIST = {"single-instance", "dialog", "opener", "store", "log"}
+# forced-transitive-INERT plugins: dragged into the closure by a granted plugin but never a surface.
+# tauri-plugin-fs is a mandatory transitive dep of tauri-plugin-dialog (re-exports tauri_plugin_fs::FilePath
+# + uses FsExt) — a TYPE library only; §0.10 grants the WebView NO fs plugin. Its `.plugin()`-registration is
+# forbidden by plan-lint check 13 (reads src-tauri/src); its fs: capability by G47. This scan guards LOCK
+# PRESENCE only, so fs is allowed here.
+TAURI_PLUGIN_INERT = {"fs"}
 # the FROZEN permissive license allow-set: deny.toml [licenses].allow may contain ONLY these. Any other
 # license is flagged - every copyleft / network-copyleft / non-commercial family (GPL/AGPL/LGPL/EUPL/
 # OSL/CDDL/EPL/SSPL/CC-BY-NC) AND any unvetted permissive one - so a new entry forces a vetted addition
@@ -228,6 +241,33 @@ def evaluate_vet(cfg: object) -> list[str]:
     return problems
 
 
+def _tauri_plugin_drift(lock_text: str) -> list[str]:
+    """(pure) §0.10 plugin-surface PRESENCE check over Cargo.lock — the 2nd, independent structural
+    enforcer of the deny-all-tauri-plugins-except-allowlist rule (plan-lint check 13 is the 1st; this one
+    needs no cargo binary). Every `tauri-plugin-*` crate in the lock must be on the §0.10-granted allowlist
+    OR the forced-transitive-inert set. (The `.plugin()`-registration + fs: capability surfaces are
+    plan-lint check 13's and G47's respectively — not re-checked here; this guards LOCK PRESENCE only.)"""
+    problems: list[str] = []
+    for mt in re.finditer(r'name = "tauri-plugin-([a-z-]+)"', lock_text):
+        name = mt.group(1)
+        if name not in TAURI_PLUGIN_ALLOWLIST and name not in TAURI_PLUGIN_INERT:
+            problems.append(f"tauri-plugin-{name} is in Cargo.lock but on neither the §0.10 granted allowlist "
+                            f"{sorted(TAURI_PLUGIN_ALLOWLIST)} nor the forced-transitive-inert set "
+                            f"{sorted(TAURI_PLUGIN_INERT)} — an unexpected Tauri plugin surface (T2/T2c)")
+    return problems
+
+
+def _tauri_plugin_checks() -> list[str]:
+    """Run the structural tauri-plugin PRESENCE scan when a Cargo.lock exists (root OR src-tauri/);
+    skip-with-notice when no workspace yet (the P0 pre-P1 posture — plan-lint check 13 also skips then)."""
+    lock = next((p for p in CARGO_LOCK_CANDIDATES if p.is_file()), None)
+    if lock is None:
+        print("[G18] no Cargo.lock yet (lands in P1) - skipping the tauri-plugin presence scan "
+              "(plan-lint check 13 + this 2nd enforcer both fail-closed the moment the lock exists)")
+        return []
+    return _tauri_plugin_drift(lock.read_text(encoding="utf-8", errors="replace"))
+
+
 def _load(path: Path) -> object:
     return tomllib.loads(path.read_text(encoding="utf-8"))
 
@@ -305,14 +345,16 @@ def main() -> int:
             print(f"[G18] {AUDIT_TOML} is not valid TOML: {e}", file=sys.stderr)
             return 2
 
-    problems = evaluate_deny(deny_cfg, audit_ignores) + evaluate_vet(vet_cfg) + _live_checks()
+    problems = (evaluate_deny(deny_cfg, audit_ignores) + evaluate_vet(vet_cfg)
+                + _tauri_plugin_checks() + _live_checks())
     if problems:
         for p in problems:
             fail(p)
         return 1
     print(f"[G18] supply-chain policy OK ({len(FORBIDDEN_CRATES)} forbidden crates denied; copyleft "
           f"excluded; allow-list-only licenses; yanked=deny; >={MIN_IMPORT_SOURCES} cargo-vet import "
-          f"sources; <= {EXPECTED_EXEMPTION_COUNT} exemption(s))")
+          f"sources; <= {EXPECTED_EXEMPTION_COUNT} exemption(s); every tauri-plugin granted or "
+          f"forced-inert-fs)")
     return 0
 
 

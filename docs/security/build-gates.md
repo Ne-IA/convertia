@@ -515,10 +515,12 @@ Invariant checks (initial set; expanded during P0 review):
     a TYPE library only that §0.10 grants the WebView NO fs plugin, **allowed in the closure ONLY while it
     stays inert — asserted NOT `.plugin()`-registered in `src-tauri/src`** (the fs: capability surface is
     independently denied by G47, the §0.10 `no fs:default` posture). Any OTHER unlisted `tauri-plugin-*`
-    fails **plan-lint check 13** — the structural enforcer of the deny-all-except-allowlist (which
-    `cargo-deny [bans]` cannot express natively, having no deny-pattern-with-exceptions), failing at L2/push
-    before a capability JSON exists and closing the `cargo add` → G47 window; `cargo-deny [bans]` (G18)
-    *additionally* hard-blocks the two specifically-dangerous plugins (`-updater`/`-http`).
+    fails **two independent structural presence-enforcers — `check-supply-chain` (the supply-chain
+    guard's own Cargo.lock scan, no cargo binary) + plan-lint check 13** (the latter additionally forbidding
+    a forced-inert-`fs` `.plugin()` registration in `src-tauri/src`) — of the deny-all-except-allowlist
+    (which `cargo-deny [bans]` cannot express natively, having no deny-pattern-with-exceptions), failing at
+    L2/push before a capability JSON exists and closing the `cargo add` → G47 window; `cargo-deny [bans]`
+    (G18) *additionally* hard-blocks the two specifically-dangerous plugins (`-updater`/`-http`).
     **Two INDEPENDENT assertions (the prior single "`Cargo.lock` set == capability-file plugin
     blocks" cross-check was logically unsatisfiable — it would hard-fail every clean checkout,
     because only `log`/`store` of the five allowlisted plugins carry a capability block while
