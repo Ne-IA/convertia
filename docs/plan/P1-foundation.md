@@ -119,7 +119,7 @@ startup spine as far as the foundation allows.
 - [x] **P1.12** [RUST] Author the `tauri-build` `build.rs` + the §0.4.5 codegen hook seam · §0.4.0 §0.4.5 · G19
   needs: P1.6
   > `src-tauri/build.rs` running `tauri_build::build()` + the optional tauri-specta generation hook seam (the actual `bindings.ts` emission is P1.26); named so the P0 G19 drift framework (P0.3.9) binds to a concrete generated path + command.
-- [ ] **P1.13** [RUST] Stand up `main.rs` — the Tauri `Builder`, `tokio` runtime, empty `invoke_handler` + `collect_commands!`/`collect_events!` seam · §0.4.0 §0.4.5 §0.8
+- [x] **P1.13** [RUST] Stand up `main.rs` — the Tauri `Builder`, `tokio` runtime, empty `invoke_handler` + `collect_commands!`/`collect_events!` seam · §0.4.0 §0.4.5 §0.8
   needs: P1.11, P1.12
   > the minimal Tauri v2 entrypoint: the multi-thread `tokio` setup Tauri's async commands run on (§0.8), an empty-but-present `invoke_handler` + the `collect_commands![]`/`collect_events![]` macros (no C-commands yet — those are P2) so the codegen surface exists; the §0.10 capability covers the `main` window so a future command is invokable with no per-command entry.
 - [ ] **P1.14** [RUST] Register the §0.8 Tauri plugins in the Builder (single-instance, dialog, store, log, opener) · §0.8 §0.10
