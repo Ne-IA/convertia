@@ -760,7 +760,7 @@ and stub/real engines:
     read, the bounded `xl/workbook.xml`/ODS `content.xml` structural peeks) runs in the
     trust kernel, so a panic/OOM/UB there is in the core, not a contained subprocess.
     It carries a **coverage-guided `cargo-fuzz` (libFuzzer)** target over
-    `crate::detect`/sniff on a hostile ZIP/OLE2/gzip/svgz/XML corpus, asserting: **no
+    `crate::detection`/sniff on a hostile ZIP/OLE2/gzip/svgz/XML corpus, asserting: **no
     panic/abort**, the decompression-ratio cap (≤100×) and the `MAX_SVGZ_SNIFF`
     (≤64 KiB) bound **actually fire**, and the XML reader has **DTD/external-entity
     resolution disabled by construction** (a `quick-xml`/`roxmltree` reader with entity

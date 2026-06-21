@@ -9,7 +9,7 @@
 # A committed table that pins canonical / ambiguous input files to the EXACT result the
 # §1.2 magic-byte detector must produce for them — its `FormatId` for a recognized file,
 # or the specific non-recognized `DetectionOutcome` (a clean decline) otherwise. The G15
-# unit test (`crate::detect`, stood up in P3) reads every `[[case]]` and asserts that
+# unit test (`crate::detection`, stood up in P3) reads every `[[case]]` and asserts that
 # `detect(file)` equals the pinned result, so a toolchain bump (e.g. a `quick-xml`
 # upgrade) or a detector refactor that SILENTLY changes the classification of an
 # ambiguous signature is caught at L2 (a fast unit test) — not only at L4 when the

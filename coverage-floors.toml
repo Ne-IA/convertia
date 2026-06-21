@@ -19,5 +19,5 @@ diff_floor = 80           # G28: >= 80 % coverage on changed lines (red `main`)
 
 # BRANCH-coverage floors (cargo-llvm-cov --branch) for the security-critical crates only — a guard that
 # rejects `../` but not `..\` is 100 % LINE-covered by Unix-only tests yet misses the Windows branch.
-# Empty in P0; the rows for crate::detect / crate::fs_guard / crate::isolation are added in P1.
+# Empty in P0; the rows for crate::detection / crate::fs_guard / crate::isolation are added in P1.
 [branch]

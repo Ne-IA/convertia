@@ -59,15 +59,15 @@ record("freeze: a missing coverage-floors.toml -> exit-2 signal", _freeze_with({
 record("freeze: a non-numeric [line] floor (retype-to-ungate) is caught",
        _freeze_with({"meta": {"diff_floor": 80, "target_line_floor": 70}, "line": {"x": "lol"}}) >= 1)
 record("freeze: a [branch] floor retyped to a bool is caught",
-       _freeze_with({"meta": {"diff_floor": 80, "target_line_floor": 70}, "branch": {"crate::detect": True}}) >= 1)
+       _freeze_with({"meta": {"diff_floor": 80, "target_line_floor": 70}, "branch": {"crate::detection": True}}) >= 1)
 record("freeze: BRANCH_FLOOR_DOMAINS is the no-harm/detect kernel",
-       set(m.BRANCH_FLOOR_DOMAINS) == {"crate::detect", "crate::fs_guard", "crate::isolation"})
+       set(m.BRANCH_FLOOR_DOMAINS) == {"crate::detection", "crate::fs_guard", "crate::isolation"})
 
 # --- the increase-only decrease-guard ----------------------------------------------------------
 record("decrease-guard: a LOWERED line floor (70 -> 50) is caught",
        _dg({"line": {"convertia-core": 50}}, {"line": {"convertia-core": 70}}) >= 1)
 record("decrease-guard: a LOWERED branch floor (80 -> 79) is caught",
-       _dg({"branch": {"crate::detect": 79}}, {"branch": {"crate::detect": 80}}) >= 1)
+       _dg({"branch": {"crate::detection": 79}}, {"branch": {"crate::detection": 80}}) >= 1)
 record("decrease-guard: a RAISED floor (50 -> 70) is clean (raises are deliberate)",
        _dg({"line": {"convertia-core": 70}}, {"line": {"convertia-core": 50}}) == 0)
 record("decrease-guard: an unchanged floor is clean",

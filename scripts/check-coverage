@@ -7,7 +7,7 @@ Three tiers:
   STRUCTURAL FREEZE (live NOW): the committed `coverage-floors.toml` policy is pinned — `[meta].diff_floor`
   (G28, == 80) and `[meta].target_line_floor` (the 50->70 ratchet destination) cannot be silently relaxed,
   and the BRANCH_FLOOR_DOMAINS contract (the no-harm/detect kernel that MUST carry a branch floor once it
-  lands: crate::detect / crate::fs_guard / crate::isolation) is frozen here. A relaxation reddens the gate
+  lands: crate::detection / crate::fs_guard / crate::isolation) is frozen here. A relaxation reddens the gate
   (an owner-acked L(-1) edit — coverage-floors.toml is in the L(-1) cage, G71).
 
   INCREASE-ONLY DECREASE-GUARD (live the moment any floor exists): the floors ratchet UP only. A commit
@@ -42,7 +42,7 @@ FLOORS = ROOT / "coverage-floors.toml"
 # the no-harm / detect kernel that MUST carry a BRANCH-coverage floor once it lands (a guard rejecting
 # `../` but not `..\` is 100% LINE-covered by Unix-only tests yet misses the Windows branch). Frozen here,
 # not in the toml (the toml holds only numeric floors). §0.7 crate-module logical names.
-BRANCH_FLOOR_DOMAINS = ("crate::detect", "crate::fs_guard", "crate::isolation")
+BRANCH_FLOOR_DOMAINS = ("crate::detection", "crate::fs_guard", "crate::isolation")
 DIFF_FLOOR = 80          # G28 — >= 80% on changed lines
 TARGET_LINE_FLOOR = 70   # the 50 -> 70 ratchet destination (informational target)
 

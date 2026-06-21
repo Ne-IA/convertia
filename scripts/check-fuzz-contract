@@ -39,7 +39,7 @@ FUZZ_DIR = ROOT / "fuzz"
 #     OUTSIDE the §2.12 boundary, each a `fuzz/fuzz_targets/<key>.rs` libFuzzer target. The BODIES land
 #     P3-P9 (the box activation note); the SET is frozen now. (key, spec-§). NOT the isolated engines.
 G48_FUZZ_TARGETS = [
-    ("detect", "crate::detect content-sniff on a hostile corpus (ZIP/OLE2/gzip/svgz/XML; ratio cap + XXE-off)"),
+    ("detect", "crate::detection content-sniff on a hostile corpus (ZIP/OLE2/gzip/svgz/XML; ratio cap + XXE-off)"),
     ("fs_guard_resolve_identity", "crate::fs_guard::resolve_identity on untrusted PATHs (null/overlong/symlink/..)"),
     ("fs_guard_is_safe_output", "crate::fs_guard::is_safe_output (Windows device/reserved/drive-relative/UNC classes)"),
     ("csv_tsv", "the in-core CSV/TSV native engine (§3.5.6 InProcessNative - gigabyte fields, recursive quoting, NUL)"),

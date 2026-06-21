@@ -158,7 +158,7 @@ Each is the §6.4.1 contract made executable:
   string; the worker-thread panic boundary (`catch_unwind`) surfaces a clean
   per-item failure, not a poisoned pool (the **T5** core-fault leg).
 
-> **No-panic discipline is a compile-time invariant, not a test.** `crate::detect`
+> **No-panic discipline is a compile-time invariant, not a test.** `crate::detection`
 > runs untrusted bytes **outside** the §2.12 isolation boundary (security principle
 > 9), so a stray `.unwrap()` there is a guaranteed in-core DoS (**T1**). **G4/G14**
 > set `clippy::unwrap_used`/`expect_used`/`panic`/`indexing_slicing` to **deny** on
@@ -296,7 +296,7 @@ black-box engine-subprocess fuzz is the build-gates §8 forward item — **G65**
 miri`** leg over the pure-logic in-core paths (Miri covers the safe-Rust side; ASAN
 covers the FFI boundary):
 
-1. **`crate::detect`/sniff** on a hostile ZIP/OLE2/gzip/svgz/XML corpus — no
+1. **`crate::detection`/sniff** on a hostile ZIP/OLE2/gzip/svgz/XML corpus — no
    panic/abort; the §1.2 decompression-ratio cap (≤ 100×) and `MAX_SVGZ_SNIFF`
    (≤ 64 KiB) bounds **actually fire**; the XML reader has **DTD/external-entity
    resolution disabled by construction** (`quick-xml`/`roxmltree` with entity
@@ -630,7 +630,7 @@ Two **separate** coverage gates, both enforced; neither replaces the other.
   is the wrong metric where the consequence is a missed **branch**: a `fs_guard`
   path-traversal check that rejects `../` but not `..\` has 100% *line* coverage with
   only Unix tests yet leaves the Windows-separator branch untested. So
-  **`crate::detect`** (in-core untrusted bytes), **`crate::fs_guard`** (the no-harm
+  **`crate::detection`** (in-core untrusted bytes), **`crate::fs_guard`** (the no-harm
   kernel), and **`crate::isolation`** (the subprocess wrapper) carry a **branch**
   floor via `cargo-llvm-cov --branch`, ratcheting like the line floor — an untested
   platform/error branch in exactly the highest-consequence surfaces is a
@@ -746,13 +746,13 @@ property/integration tests on **G31** / **G15** / **G16**:
 
 > **Scoped mutation-testing (owner-decidable, build-gates §8 / homed P0.5):**
 > `cargo-mutants`
-> over `crate::fs_guard` + `crate::detect` + `crate::outcome` (the
+> over `crate::fs_guard` + `crate::detection` + `crate::outcome` (the
 > no-harm/atomicity/no-misroute kernel) as a release-tier informational-then-
 > ratcheted gate — *line* coverage proves a line ran, not that a test would CATCH a
 > regression there. The informational run outputs a survived-mutant report per
 > kernel crate; the ratchet is a tracked `max_survived_mutants.toml` per crate,
 > decrease-only; the owner flips informational→required when the count reaches **0**
-> for `crate::fs_guard` + `crate::detect`. Its status is tracked in the
+> for `crate::fs_guard` + `crate::detection`. Its status is tracked in the
 > informational→required decision log (gate-status; plan-lint check 23).
 
 ---
