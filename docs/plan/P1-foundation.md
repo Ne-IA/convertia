@@ -186,7 +186,7 @@ The §0.4.5 tauri-specta codegen pipeline emits the single tracked `bindings.ts`
 and CI can prove it non-stale — activating the P0 G19 drift framework (P0.3.9) with
 a concrete command + path, even though the C-command surface is empty until P2.
 
-- [ ] **P1.25** [RUST] Wire the §0.4.5 tauri-specta builder + the `collect_types!` registry seam · §0.4.5 §0.6
+- [x] **P1.25** [RUST] Wire the §0.4.5 tauri-specta builder + the `collect_types!` registry seam · §0.4.5 §0.6
   needs: P1.9, P1.13
   > the tauri-specta `Builder` configured with `collect_commands!`/`collect_events!`/`collect_types!` (the §0.6 identity types from P1.9 registered so they don't generate as `any`), emitting to the single tracked path — the codegen engine the §06 drift check guards; empty command set in P1 (C1–C13 are P2).
 - [ ] **P1.26** [UI] Generate + commit `src/lib/ipc/bindings.ts` at the single §0.7 tracked path · §0.4.5 §0.7 · G19
