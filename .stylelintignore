@@ -1,0 +1,10 @@
+# Not hand-authored CSS — generated build output (Vite dist + Cargo target), deps, and the pinned
+# gate-tool tree. stylelint lints only the section 5.1 hand-authored CSS (design/tokens.css +
+# src/styles/**); the gate's `stylelint "**/*.css"` glob would otherwise choke on the Tailwind v4
+# compiled bundle in dist/. Mirrors eslint.config.mjs `ignores` (P1.33). node_modules is a
+# stylelint default-ignore, listed here for explicitness.
+node_modules/
+dist/
+target/
+src-tauri/
+.gate-tools/

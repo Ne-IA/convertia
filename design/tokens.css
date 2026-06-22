@@ -18,14 +18,14 @@
  */
 :root {
   /* colour — semantic, not literal (§5.5) */
-  --bg: #ffffff;
+  --bg: #fff;
   --surface: #f6f6f7;
-  --surface-raised: #ffffff;
+  --surface-raised: #fff;
   --border: #e2e2e6;
   --text: #1a1a1e;
   --text-muted: #5c5c66;
   --accent: #3b5bdb;
-  --accent-contrast: #ffffff;
+  --accent-contrast: #fff;
   --success: #2f9e44;
   --warn: #b8860b;
   --danger: #e03131;
@@ -56,7 +56,7 @@
   --text-2xl: 2rem;
 
   /* font — system stack + a bundled-offline fallback (the concrete bundled face is P8) */
-  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-sans: system-ui, -apple-system, "Segoe UI", "Roboto", "Helvetica Neue", "Arial", sans-serif;
 
   /* font weights (§5.5) */
   --font-regular: 400;
