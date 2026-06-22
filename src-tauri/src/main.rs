@@ -401,3 +401,52 @@ mod window_model {
         }
     }
 }
+
+#[cfg(test)]
+mod no_updater_posture {
+    //! §7.6.1: the Tauri updater is explicitly absent — "its absence is the implementation". This
+    //! structural test asserts the no-updater posture BY CONSTRUCTION at the Rust level: the resolved
+    //! dependency graph carries no `tauri-plugin-updater` (direct or transitive), and the Builder
+    //! registers no updater plugin. It is the cargo-test-plane / co-located companion behind the live
+    //! enforcers — the G18 `cargo-deny` ban (deny.toml denies `tauri-plugin-updater`) and the G47 config
+    //! lint (no `updater`/pubkey block, no `createUpdaterArtifacts` in tauri.conf.json) — the same
+    //! defense-in-depth shape as P1.15.1's `boot_invariants` standing in for the Lane-B egress gate. The
+    //! config side (tauri.conf.json) is G47's; this owns the Cargo-graph + Builder side §7.6.1 names but
+    //! G47 (a conf-parse gate) cannot reach. [Build-Session-Entscheidung: P1.18]
+
+    /// The committed workspace `Cargo.lock` (repo root), resolved from this crate's compile-time
+    /// manifest dir so it is CWD-independent (the same pattern as `bindings_codegen::TRACKED_BINDINGS_PATH`).
+    const CARGO_LOCK_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../Cargo.lock");
+
+    // §7.6.1 / §6.4.1 unit (G15): `tauri-plugin-updater` is in the resolved dependency graph NOWHERE
+    // (direct or transitive) — its absence is the implementation. Scan the committed lock for a
+    // `[[package]]` of that name; the machine-generated `name = "…"` form is unambiguous (no
+    // false-positive from prose). The cargo-test-plane companion to the G18 cargo-deny ban (which fires
+    // only when cargo-deny actually runs). Needle via `concat!` so the token is not a literal in this
+    // scanned production file.
+    #[test]
+    fn no_updater_crate_in_dependency_graph() {
+        let lock = std::fs::read_to_string(CARGO_LOCK_PATH)
+            .expect("the committed Cargo.lock must exist — the §7.6.1 no-updater posture");
+        let needle = concat!("name = \"tauri-plugin-", "updater\"");
+        assert!(
+            !lock.contains(needle),
+            "§7.6.1: `tauri-plugin-updater` must be in the dependency graph nowhere — its absence is the implementation (denied by the G18 cargo-deny ban)"
+        );
+    }
+
+    // §7.6.1 / §6.4.1 unit (G15): the Builder registers no updater plugin. Scan the production boot
+    // source (the shared `boot_invariants` helper, truncated at the first `#[cfg(test)]`, so this
+    // needle can never self-match) for any updater plugin reference — `tauri_plugin_updater` contains
+    // `plugin_updater`, so the one needle catches the crate path and any `.plugin(...)` registration.
+    // Needle via `concat!` (the established self-match-avoidance).
+    #[test]
+    fn builder_registers_no_updater_plugin() {
+        let src = super::boot_invariants::production_boot_source();
+        let needle = concat!("plugin_", "updater");
+        assert!(
+            !src.contains(needle),
+            "§7.6.1: the Builder must register no updater plugin (`{needle}`) — the updater is explicitly absent"
+        );
+    }
+}
