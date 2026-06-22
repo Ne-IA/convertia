@@ -234,7 +234,7 @@ the per-push a11y leg (G33a) against real source.
 - [x] **P1.34** [UI] Author the Prettier config + the `prettier --check` posture · §5.1 · G3
   needs: P1.30
   > the committed Prettier config the P0 G3 format mirror (`prettier --check`, no auto-write) runs over the TS/CSS/JSON tree; activates the prettier leg of the P0 format gate.
-- [ ] **P1.35** [UI] Wire Vitest + `vitest-axe` with the jsdom environment · §5.1 §6.4.6a · G33a
+- [x] **P1.35** [UI] Wire Vitest + `vitest-axe` with the jsdom environment · §5.1 §6.4.6a · G33a
   needs: P1.31
   > the Vitest config (jsdom env) + `vitest-axe@0.1.0` so the P0 a11y per-push leg (G33a — ARIA/role/focus over the rendered React tree, NOT contrast) has a runner + a rendered tree to scan; activates G33a (the §6.4.6a jsdom leg) against the P1.31 mounted app.
   - [x] **P1.35.1** [UI] Add the `fast-check` TS property-test dependency + its §0.8 pinned-floor JS supply-chain assertion · §6.4.2 §0.8 · G18c G18d
