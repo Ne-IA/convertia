@@ -7,7 +7,8 @@
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "lint:css": "stylelint \"**/*.css\""
+    "lint:css": "stylelint \"**/*.css\"",
+    "format:check": "prettier --check ."
   },
   "pnpm": {
     "onlyBuiltDependencies": []
@@ -22,6 +23,7 @@
     "eslint-plugin-react": "7.37.5",
     "fast-check": "4.8.0",
     "globals": "17.7.0",
+    "prettier": "3.8.4",
     "stylelint": "17.13.0",
     "stylelint-config-standard": "40.0.0",
     "tailwindcss": "4.3.1",

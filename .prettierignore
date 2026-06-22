@@ -1,0 +1,36 @@
+# Prettier owns formatting for the hand-authored TS/CSS/JSON frontend tree only (section 5.1).
+# Everything below is out of scope: prettier neither reformats it nor fails --check on it.
+
+# Build output, deps, pinned gate tools
+node_modules/
+dist/
+target/
+.gate-tools/
+
+# The Rust side + Tauri config + the L(-1) capabilities allowlist (not prettier's domain)
+src-tauri/
+
+# L(-1) enforcement plane (the autonomous loop never reformats the gates' own cage):
+# CI workflows, the git-hook executor, the stdlib gate scripts.
+.github/
+lefthook.yml
+scripts/
+# the one L(-1) file prettier can format (JSON) that the dir-globs above do not cover; the rest of
+# the L(-1) cage is TOML / .npmrc / .editorconfig / .lock, none of which prettier touches.
+.gitleaks-baseline.json
+
+# Docs are hand-authored and checked by plan-lint / typos / editorconfig, not prettier
+**/*.md
+
+# YAML config is out of the section 5.1 "TS/CSS/JSON" prettier scope (pnpm-workspace.yaml,
+# any tool config); the L(-1) workflow YAML under .github/ + lefthook.yml are already excluded above.
+**/*.yaml
+**/*.yml
+
+# Generated / tool-managed (owned by their generator or package manager, not prettier)
+src/lib/ipc/bindings.ts
+pnpm-lock.yaml
+package.json
+
+# Static brand/design assets
+assets/

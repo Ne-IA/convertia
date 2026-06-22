@@ -19,7 +19,16 @@ import react from "eslint-plugin-react";
 export default tseslint.config(
   // Not source: build output (Vite + Cargo), the Rust side, deps, the pinned gate tools, and .d.ts
   // shims (src/vite-env.d.ts carries a triple-slash reference the recommended set would flag).
-  { ignores: ["dist/**", "target/**", "src-tauri/**", "node_modules/**", ".gate-tools/**", "**/*.d.ts"] },
+  {
+    ignores: [
+      "dist/**",
+      "target/**",
+      "src-tauri/**",
+      "node_modules/**",
+      ".gate-tools/**",
+      "**/*.d.ts",
+    ],
+  },
   ...tseslint.configs.recommended,
   {
     plugins: { react },
@@ -46,11 +55,26 @@ export default tseslint.config(
         "error",
         {
           paths: [
-            { name: "i18next", message: "English-only: no i18n runtime ships (section 5.7 / 6.10)." },
-            { name: "react-i18next", message: "English-only: no i18n runtime ships (section 5.7 / 6.10)." },
-            { name: "react-intl", message: "English-only: no i18n runtime ships (section 5.7 / 6.10)." },
-            { name: "next-intl", message: "English-only: no i18n runtime ships (section 5.7 / 6.10)." },
-            { name: "vue-i18n", message: "English-only: no i18n runtime ships (section 5.7 / 6.10)." },
+            {
+              name: "i18next",
+              message: "English-only: no i18n runtime ships (section 5.7 / 6.10).",
+            },
+            {
+              name: "react-i18next",
+              message: "English-only: no i18n runtime ships (section 5.7 / 6.10).",
+            },
+            {
+              name: "react-intl",
+              message: "English-only: no i18n runtime ships (section 5.7 / 6.10).",
+            },
+            {
+              name: "next-intl",
+              message: "English-only: no i18n runtime ships (section 5.7 / 6.10).",
+            },
+            {
+              name: "vue-i18n",
+              message: "English-only: no i18n runtime ships (section 5.7 / 6.10).",
+            },
           ],
           patterns: [
             {

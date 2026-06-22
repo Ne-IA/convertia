@@ -56,7 +56,8 @@
   --text-2xl: 2rem;
 
   /* font — system stack + a bundled-offline fallback (the concrete bundled face is P8) */
-  --font-sans: system-ui, -apple-system, "Segoe UI", "Roboto", "Helvetica Neue", "Arial", sans-serif;
+  --font-sans:
+    system-ui, -apple-system, "Segoe UI", "Roboto", "Helvetica Neue", "Arial", sans-serif;
 
   /* font weights (§5.5) */
   --font-regular: 400;
