@@ -255,7 +255,7 @@ English-only / string-ownership lint against a real `strings/ui.ts`.
 - [x] **P1.37** [UI] Stand up `src/strings/ui.ts` — the flat English UI-chrome string table (incl. the `idle_reassurance` §5.7 key) · §5.7 · G57
   needs: P1.31
   > the `strings/ui.ts` flat English key→value table (§5.7 ownership split: UI-chrome strings here, conversion-outcome strings owned by §02) — the module the P0 G57 lint asserts every key resolves to a non-empty English value over; activates G57 (P0.4.6) against a real target. No i18n runtime is added (the §5.7 by-construction Principle-11 enforcement). **Owns the `idle_reassurance` §5.7 named key** with its `[DECIDED]` fixed text `"All conversion happens locally, on your machine — nothing is ever uploaded."` as one of the module's initial keys (concrete-string treatment so the P0 G57 lint / drift check covers it — not free-form prose; validated by P9.10). **This is the SINGLE home of the key — P8.17 only REFERENCES it for the Idle empty-state, never re-defines it.**
-- [ ] **P1.38** [UI] Assert no i18n-runtime / locale-switch import ships (Principle-11 by construction) · §5.7 §6.10 · G57
+- [x] **P1.38** [UI] Assert no i18n-runtime / locale-switch import ships (Principle-11 by construction) · §5.7 §6.10 · G57
   needs: P1.37
   > the by-construction half of §5.7: no i18n framework / locale-negotiation / `Accept-Language`-driven selection is a dependency — the P0 G57 lint's "fail on any locale-switch/i18n-runtime import" leg; P1 establishes the no-i18n posture the gate enforces.
 - [ ] **P1.39** [UI] Stand up `src/a11y/announcer.ts` — the §5.6 ARIA-live announcement helper shell · §5.6
