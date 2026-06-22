@@ -261,7 +261,7 @@ English-only / string-ownership lint against a real `strings/ui.ts`.
 - [x] **P1.39** [UI] Stand up `src/a11y/announcer.ts` — the §5.6 ARIA-live announcement helper shell · §5.6
   needs: P1.31
   > the `announcer.ts` interface-only helper (an ARIA-live region announcer) the §5.6 screen-reader path + later focus/announce wiring consume — established here as structural scaffolding per the README P1 scope; the per-component wiring is P4/P8.
-- [ ] **P1.40** [UI] Stand up `src/a11y/keymap.ts` — the §5.10 canonical accelerator table shell · §5.10
+- [x] **P1.40** [UI] Stand up `src/a11y/keymap.ts` — the §5.10 canonical accelerator table shell · §5.10
   needs: P1.31
   > the `keymap.ts` single-source accelerator table (the §5.10 canonical map with `CmdOrCtrl` modifier handling) as a typed, mostly-empty table P5–P10 components reference rather than re-declaring shortcuts — established now so §5.10's "single source" rule holds from the first component.
 
