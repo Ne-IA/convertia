@@ -174,7 +174,7 @@ fail-open to fail-closed.
 - [x] **P1.23** [BUILD] Add the `index.html` shell with the `x-dns-prefetch-control:off` meta · §0.10 · G47
   needs: P1.19
   > the WebView entry `index.html` (Vite mount point) carrying the `<meta http-equiv="x-dns-prefetch-control" content="off">` the §0.10 / P0 G47 lint asserts present — closes the DNS-prefetch side channel CSP alone cannot.
-- [ ] **P1.24** [BUILD] Assert no custom URL scheme / no `deep-link` / no file-association in any bundle manifest · §0.10 §7.8.2 · G47
+- [x] **P1.24** [BUILD] Assert no custom URL scheme / no `deep-link` / no file-association in any bundle manifest · §0.10 §7.8.2 · G47
   needs: P1.19
   > no `plugins.deep-link` block and no custom URL-scheme in any `Info.plist`/`.desktop`/`.reg` under `src-tauri/` — the §7.8.2 explicit-negative posture the P0 G47 lint scans for; P1 lands the bundle config in the no-scheme shape (the §7.8 intake funnel itself is P2).
 
