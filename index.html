@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      §0.10 / G47: close the DNS-prefetch side channel the CSP cannot cover. WKWebView and
+      WebKitGTK honour this meta tag (unlike `webrtc 'block'`, which they ignore), so for a
+      zero-egress product it removes a DNS leak on e.g. the About -> Releases link hover. The
+      G47 lint asserts this exact element is PRESENT (either attribute order).
+    -->
+    <meta http-equiv="x-dns-prefetch-control" content="off" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ConvertIA</title>
+  </head>
+  <body>
+    <!--
+      [Build-Session-Entscheidung: P1.23] The WebView entry shell (the Vite root index.html).
+      `#root` is the §5.1 React 19 mount target; the `/src/main.tsx` module is the §0.4.0 Vite
+      entry that mounts into it (the React root + screen-state router are authored in P1.31). The
+      §0.10 CSP itself is injected by Tauri from `tauri.conf.json -> app.security.csp` (P1.20), not
+      declared here, so no CSP meta is needed; only the CSP-uncovered DNS-prefetch control is.
+    -->
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
