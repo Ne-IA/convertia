@@ -231,7 +231,7 @@ the per-push a11y leg (G33a) against real source.
   needs: P1.30, P1.35.1
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P1.35.1` points at the `fast-check` dependency defined later in document order — the project-local `fc.gen()`-shrink-wrapper rule lints `fast-check` usage, so DECISION C builds P1.35.1 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
   > the flat ESLint config + stylelint carrying the project-local rules the P0.4.7 contract names (no `any`, the §6.4.2 `fc.gen()`-shrink-wrapper rule paired with P0 G9 invariant (f)) — the config the P0 G5 lint leg consumes; activates the eslint half of P0.4.7. (`needs: P1.35.1` for the `fast-check` dependency the project-local `fc.gen()` rule presupposes; the rule lints `fast-check` usage so the dep is its prerequisite even though P1.35.1 sits later in document order.)
-- [ ] **P1.34** [UI] Author the Prettier config + the `prettier --check` posture · §5.1 · G3
+- [x] **P1.34** [UI] Author the Prettier config + the `prettier --check` posture · §5.1 · G3
   needs: P1.30
   > the committed Prettier config the P0 G3 format mirror (`prettier --check`, no auto-write) runs over the TS/CSS/JSON tree; activates the prettier leg of the P0 format gate.
 - [ ] **P1.35** [UI] Wire Vitest + `vitest-axe` with the jsdom environment · §5.1 §6.4.6a · G33a
