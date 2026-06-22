@@ -237,7 +237,7 @@ the per-push a11y leg (G33a) against real source.
 - [ ] **P1.35** [UI] Wire Vitest + `vitest-axe` with the jsdom environment · §5.1 §6.4.6a · G33a
   needs: P1.31
   > the Vitest config (jsdom env) + `vitest-axe@0.1.0` so the P0 a11y per-push leg (G33a — ARIA/role/focus over the rendered React tree, NOT contrast) has a runner + a rendered tree to scan; activates G33a (the §6.4.6a jsdom leg) against the P1.31 mounted app.
-  - [ ] **P1.35.1** [UI] Add the `fast-check` TS property-test dependency + its §0.8 pinned-floor JS supply-chain assertion · §6.4.2 §0.8 · G18c G18d
+  - [x] **P1.35.1** [UI] Add the `fast-check` TS property-test dependency + its §0.8 pinned-floor JS supply-chain assertion · §6.4.2 §0.8 · G18c G18d
     needs: P1.2.2
     > add `fast-check` (the P0.5.2 canonical TS property-test library — Rust uses `proptest`, TS uses `fast-check`, the language split) to the frontend `package.json` **devDependencies**, regenerate + commit `pnpm-lock.yaml`, and add it to the **P1.60 JS-tree §0.8 pinned-floor / resolution-URL / lifecycle-script assertion set** (G18c/G18d) so the new dep is covered by the same supply-chain leg as `zustand`/`vitest-axe`/WebdriverIO — mirroring exactly how P1.31.1 homes Zustand. This is the dep the P0.5.2 property-test doctrine, the P0.3.10 G9 invariant (f) (`fc.gen(` shrink-wrapper ban), and the P1.33 project-local `fc.gen()` eslint rule all presuppose; without this box `fast-check` is referenced everywhere but installed by no box. Dependency only; the first TS property test that USES it carries `needs: P1.35.1`.
 - [ ] **P1.36** [UI] Add the §5.1 lint rule enforcing the single-IPC-consumer boundary · §5.1 · G5
