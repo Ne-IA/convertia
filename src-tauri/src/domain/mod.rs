@@ -3,14 +3,17 @@
 //! P1.9 lands only the §0.6 IDENTITY spine the module tree needs to compile and the §0.4.5 IPC
 //! type-gen needs to mirror. The full §0.6 type set (the wire DTOs, `CollectedSet`, `UserFacingFormat`,
 //! …) is the P2 pipeline-contract task. Identity POLICY (when each id is minted, its lifecycle) is
-//! owned by §7.1; this module only defines the types.
+//! owned by §7.1; this module defines the types and their constructors (e.g. `InstanceId::mint`),
+//! never the minting *policy* (when/lifecycle), which stays with §7.1.
 
-// The §0.6 identity spine is forward-declared here for the §0.4.5 type-gen + the tier-3 module graph;
-// it is first constructed by the §01 pipeline contracts (P2). `expect` (not `allow`) auto-flags the
-// moment a type becomes used, so this annotation cannot silently outlive the scaffolding phase.
+// The §0.6 identity spine is forward-declared here for the §0.4.5 type-gen + the tier-3 module graph.
+// `InstanceId` is the first to be constructed — minted once at startup (§7.1.2 / the P1.15 `setup`
+// stage); the remaining ids are first constructed by the §01 pipeline contracts (P2). `expect` (not
+// `allow`) auto-flags the moment a type becomes fully used, so this annotation cannot silently
+// outlive the scaffolding phase.
 #![expect(
     dead_code,
-    reason = "§0.6 identity spine, forward-declared; first constructed by the P2 pipeline contracts"
+    reason = "§0.6 identity spine: InstanceId is minted at startup (P1.15); RunId/CollectedSetId/CollectingId/ItemId remain forward-declared, first constructed by the P2 pipeline contracts"
 )]
 
 use serde::{Deserialize, Serialize};
@@ -27,6 +30,17 @@ use uuid::Uuid;
 /// One per app launch (§7.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 pub struct InstanceId(Uuid);
+
+impl InstanceId {
+    /// Mint the per-launch instance id — §7.1.2: a random **v4** UUID, created once in the §7.2.1
+    /// `setup` stage (the P1.15 boot stage). Named `mint` (not `new`) per the §7.1 "minted"
+    /// vocabulary and to avoid `clippy::new_without_default` — a random `Default` would be a
+    /// surprising, non-deterministic default. [Build-Session-Entscheidung: P1.15]
+    #[must_use]
+    pub fn mint() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
 
 /// One per `start_conversion` run (§0.4 C6 / §7.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
@@ -48,3 +62,26 @@ pub struct ItemId(u32);
 
 /// §1.7/§1.8 call it `JobId`; it IS the `ItemId` of the job's item (§0.6).
 pub type JobId = ItemId;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // §6.4.1 unit (G15): the §7.1.2 InstanceId minting contract — a fresh, non-nil v4 per launch.
+    #[test]
+    fn instance_id_mint_is_unique_nonnil_v4() {
+        let a = InstanceId::mint();
+        let b = InstanceId::mint();
+        assert_ne!(a, b, "each launch mints a distinct InstanceId (§7.1.2)");
+        assert_ne!(
+            a.0,
+            Uuid::nil(),
+            "a minted InstanceId is never the nil UUID"
+        );
+        assert_eq!(
+            a.0.get_version_num(),
+            4,
+            "§7.1.2: InstanceId is a v4 (random) UUID"
+        );
+    }
+}
