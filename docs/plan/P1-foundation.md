@@ -209,7 +209,7 @@ The React 19 / TypeScript-strict / Tailwind / Vite frontend builds and mounts an
 empty app inside the WebView — activating the P0 TS gate contract (G5/G6/G13) and
 the per-push a11y leg (G33a) against real source.
 
-- [ ] **P1.29** [UI] Author `vite.config.ts` + the §0.3.1 cross-WebView build target · §5.1 §0.3.1
+- [x] **P1.29** [UI] Author `vite.config.ts` + the §0.3.1 cross-WebView build target · §5.1 §0.3.1
   needs: P1.2
   > the Vite config building the WebView bundle Tauri loads, with the build target set to the §0.3.1 intersection of WebView2/WKWebView/WebKitGTK (no bleeding-edge CSS/JS that drifts); the `dev` server + `build` outputs `tauri dev`/`tauri build` consume.
 - [ ] **P1.30** [UI] Author `tsconfig.json` — TypeScript strict, no `any` · §5.1 §0.4.5 · G5 G6 G13
