@@ -11,10 +11,12 @@
     "onlyBuiltDependencies": []
   },
   "devDependencies": {
+    "@tailwindcss/vite": "4.3.1",
     "@tauri-apps/cli": "^2.11.3",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react-swc": "4.3.1",
+    "tailwindcss": "4.3.1",
     "typescript": "5.9.3",
     "vite": "8.0.16"
   },

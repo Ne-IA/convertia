@@ -1,0 +1,29 @@
+/* src/styles/app.css — the WebView's Tailwind v4 CSS entry (§5.1 / §5.5).
+ *
+ * Imported once by src/main.tsx. It loads the §5.5 design tokens, pulls in Tailwind v4, and
+ * surfaces the semantic colour tokens to Tailwind via @theme so components use semantic utility
+ * classes (e.g. `bg-surface`, `text-text-muted`) rather than raw hex (§5.5 — and G9 invariant (a):
+ * the only hex lives in design/tokens.css). The component/utility layer is iterative P8 work; this
+ * file is the wiring contract. [Build-Session-Entscheidung: P1.32]
+ *
+ * @import order: tokens first (so :root vars exist), then Tailwind, then the @theme mapping. */
+@import "../../design/tokens.css";
+@import "tailwindcss";
+
+/* Map the §5.5 semantic colour tokens onto Tailwind v4 theme colours (CSS-first @theme), so a
+ * palette change in design/tokens.css flows through every `bg-*`/`text-*`/`border-*` utility and
+ * design/tokens.css stays the single source of colour (§5.5). */
+@theme {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-accent: var(--accent);
+  --color-accent-contrast: var(--accent-contrast);
+  --color-success: var(--success);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+}

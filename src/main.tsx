@@ -8,6 +8,8 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
+// The §5.5 Tailwind v4 entry + design tokens (P1.32); a global side-effect stylesheet import.
+import "./styles/app.css";
 
 const rootElement = document.getElementById("root");
 if (rootElement === null) {

@@ -1,5 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
+// [Build-Session-Entscheidung: P1.32] Tailwind v4 via its first-party Vite plugin (no PostCSS
+// config needed — the plugin owns the pipeline); the CSS entry is src/styles/app.css (§5.5).
+import tailwindcss from "@tailwindcss/vite";
 
 // ConvertIA frontend build config (§5.1) — the Vite bundle the Tauri WebView loads.
 //
@@ -16,7 +19,7 @@ import react from "@vitejs/plugin-react-swc";
 // chain / optional rolldown-babel/react-compiler peers), the lighter, more predictable Vite-8
 // choice per §5.1's lightweight principle.
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   // Tauri keeps its own console output visible — do not let Vite clear the screen.
   clearScreen: false,
   server: {

@@ -32,8 +32,10 @@ frontend therefore targets the **intersection** of those engines and avoids
 bleeding-edge CSS/JS that drifts across them (rendering-drift testing is §6.4).
 
 ### Component / folder structure `[DECIDED]`
-Frontend lives under the physical tree owned by **§0.7** (`src/`). Logical
-grouping inside it:
+Frontend code lives under the physical tree owned by **§0.7** (`src/`); the design
+**tokens/assets** home is the repo-root **`design/`** sibling (§5.5, *not* under
+`src/` — the §0.7 tree is completed to home it in P1.64, and it is the single colour
+home G9 invariant (a) exempts). Logical grouping:
 
 ```
 src/
@@ -67,14 +69,16 @@ src/
     AppFaultNotice.tsx         # state 12 — Channel-silent/core-fault recovery (§2.13/§5.8)
     AboutDialog.tsx            # presents §3.7 data
     primitives/                # Button, Dialog, Drawer, Tile, ProgressBar, Note…
-  design/
-    tokens.css                 # CSS custom properties (§5.5)
-    theme.ts                   # token typings, light/dark resolution
+  styles/
+    app.css                    # Tailwind v4 entry: @import "tailwindcss" + the @theme token map; loads ../../design/tokens.css (§5.5)
   a11y/
     announcer.ts               # ARIA-live announcement helper (§5.6)
     keymap.ts                  # the §5.10 accelerator table, single source
   strings/
     ui.ts                      # UI-chrome English strings (§5.7 ownership split)
+design/                        # repo-root SIBLING of src/ (UI/design tokens + assets, §0.7/§1a) — NOT under src/
+  tokens.css                   # CSS custom properties (§5.5); the single hardcoded-colour home G9 invariant (a) exempts
+  theme.ts                     # token typings, light/dark resolution
 ```
 
 **Hard rule:** only `src/lib/ipc/**` (the §0.7 path) imports `@tauri-apps/api`.
