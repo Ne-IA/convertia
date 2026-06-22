@@ -227,7 +227,7 @@ the per-push a11y leg (G33a) against real source.
 - [x] **P1.32** [UI] Author the Tailwind config + `design/tokens.css` token-file shell · §5.1 §5.5 · G9
   needs: P1.29
   > the Tailwind setup + an empty-but-present `design/tokens.css` (CSS custom properties) — the single home for colour tokens the P0 G9 invariant (a) ("no hardcoded colour outside `design/tokens.css`") scopes to (activates P0.3.10 invariant (a)); the real token values are P8 polish.
-- [ ] **P1.33** [UI] Author the flat ESLint + stylelint config (incl. project-local no-`any` / `fc.gen()` rules) · §5.1 · G5 G9
+- [x] **P1.33** [UI] Author the flat ESLint + stylelint config (incl. project-local no-`any` / `fc.gen()` rules) · §5.1 · G5 G9
   needs: P1.30, P1.35.1
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P1.35.1` points at the `fast-check` dependency defined later in document order — the project-local `fc.gen()`-shrink-wrapper rule lints `fast-check` usage, so DECISION C builds P1.35.1 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
   > the flat ESLint config + stylelint carrying the project-local rules the P0.4.7 contract names (no `any`, the §6.4.2 `fc.gen()`-shrink-wrapper rule paired with P0 G9 invariant (f)) — the config the P0 G5 lint leg consumes; activates the eslint half of P0.4.7. (`needs: P1.35.1` for the `fast-check` dependency the project-local `fc.gen()` rule presupposes; the rule lints `fast-check` usage so the dep is its prerequisite even though P1.35.1 sits later in document order.)
