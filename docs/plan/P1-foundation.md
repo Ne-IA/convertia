@@ -278,7 +278,7 @@ here.
   > MIT + the header `Copyright (c) 2026 Ne-IA and ConvertIA contributors` (inbound=outbound, no assignment) per the §6.8 table; the release gate (present + name matches §6.9 clearance) is P10.
 - [x] **P1.42** [DOC] Author `CONTRIBUTING.md` — inbound=outbound, no-CLA, optional DCO, the stated quality bar · §6.8
   > the §6.8 content: inbound=outbound under MIT, no CLA, optional `Signed-off-by` (requested not required), the inbound-warranty clause, how to run the §6.7.1 lanes, and the quality bar stated directly (no `any`/no `// TODO`/no `console.log` in prod/no inline CSS/production-ready) — NOT by reference to the private `CLAUDE.md`.
-- [ ] **P1.43** [DOC] Author `CODE_OF_CONDUCT.md` — Contributor-Covenant-class + enforcement contact · §6.8
+- [x] **P1.43** [DOC] Author `CODE_OF_CONDUCT.md` — Contributor-Covenant-class + enforcement contact · §6.8
   > a standard CoC with the SECURITY/maintainer enforcement contact per the §6.8 table.
 - [ ] **P1.44** [DOC] Author `SECURITY.md` — private-advisory channel, untrusted-decoder scope, no-SLA posture · §6.8 §0.11 · G51
   > private vulnerability reporting (GitHub private advisories + contact), the scope statement (ConvertIA opens untrusted files through third-party decoders) referencing the §0.11 threat map + §2.12 isolation, the no-SLA best-effort patch posture, and how a reporter includes a redacted (§7.5) log repro; the public-prose typo gate (P0 G51) covers it. The §0.11 map back-reference is back-filled by P4's threat-map assembly (plan README fill-note) — P1 authors `SECURITY.md` with the reference present.
