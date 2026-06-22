@@ -171,7 +171,7 @@ fail-open to fail-closed.
 - [x] **P1.22** [BUILD] Assert the three §0.10 release-hardening keys absent/false in `tauri.conf.json` · §0.10 · G47
   needs: P1.19
   > `app.withGlobalTauri` absent/false, `app.security.dangerousDisableAssetCspModification` absent/false/empty, release-profile `devtools` not enabled — the three by-construction T2-widening knobs the P0 G47 lint asserts absent (P0.3.2); P1 lands the conf in the asserted-clean shape.
-- [ ] **P1.23** [BUILD] Add the `index.html` shell with the `x-dns-prefetch-control:off` meta · §0.10 · G47
+- [x] **P1.23** [BUILD] Add the `index.html` shell with the `x-dns-prefetch-control:off` meta · §0.10 · G47
   needs: P1.19
   > the WebView entry `index.html` (Vite mount point) carrying the `<meta http-equiv="x-dns-prefetch-control" content="off">` the §0.10 / P0 G47 lint asserts present — closes the DNS-prefetch side channel CSP alone cannot.
 - [ ] **P1.24** [BUILD] Assert no custom URL scheme / no `deep-link` / no file-association in any bundle manifest · §0.10 §7.8.2 · G47
