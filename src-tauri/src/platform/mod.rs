@@ -57,7 +57,12 @@ pub(crate) fn ensure_executable(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(all(test, unix))]
+// Two separate cfg attributes (NOT `cfg(all(test, unix))`): clippy's `allow-expect-in-tests` only
+// recognises a STANDALONE `#[cfg(test)]` as a test context (its `is_cfg_test` matches a single-item
+// `cfg(test)`, not a compound `all(test, unix)`), so the compound form would wrongly trip the crate-root
+// `#![deny(clippy::expect_used)]` on the test's expect-calls. [Build-Session-Entscheidung: P1.17]
+#[cfg(test)]
+#[cfg(unix)]
 mod unix_tests {
     use super::ensure_executable;
     use std::os::unix::fs::PermissionsExt;
@@ -136,7 +141,10 @@ mod unix_tests {
     }
 }
 
-#[cfg(all(test, not(unix)))]
+// Two separate cfg attributes (NOT `cfg(all(test, not(unix)))`) — same clippy `is_cfg_test`
+// standalone-`cfg(test)` recognition reason as `unix_tests` above. [Build-Session-Entscheidung: P1.17]
+#[cfg(test)]
+#[cfg(not(unix))]
 mod windows_tests {
     use super::ensure_executable;
     use std::path::Path;
