@@ -51,6 +51,18 @@ fn main() -> tauri::Result<()> {
     // gain). tokio is pinned transitively in `Cargo.lock` (§0.8 "exact") and is added as a DIRECT
     // dependency where the first in-crate `async` command code calls into it (P2).
     tauri::Builder::default()
+        // [Build-Session-Entscheidung: P1.14] §0.8 plugin wiring (registration only; the handlers
+        // that USE these plugins are P2). single-instance is registered FIRST (§7.1) so a second
+        // launch is intercepted before the other plugins init; ConvertIA is desktop-only so no
+        // `#[cfg(desktop)]` guard is needed, and the callback is empty — the §7.8 launch-arg /
+        // second-instance intake hand-off (forward_launch_intake + the PendingIntake buffer) is P2.
+        // dialog + opener are called Rust-side (DialogExt/OpenerExt) so they take NO WebView grant
+        // (§0.10); store/log get store:default/log:default in capabilities/main.json (P1.21).
+        .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {}))
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_log::Builder::new().build())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);

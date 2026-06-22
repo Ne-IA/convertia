@@ -23,6 +23,11 @@ publish = false
 serde = { version = "1.0.228", features = ["derive"] }
 specta = { version = "2.0.0-rc", features = ["derive", "uuid"] }
 tauri = "2.11.3"
+tauri-plugin-dialog = "2.7.1"
+tauri-plugin-log = "2.8.0"
+tauri-plugin-opener = "2.5.4"
+tauri-plugin-single-instance = "2.4.2"
+tauri-plugin-store = "2.4.3"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive"] }
 uuid = { version = "1.23.3", features = ["serde", "v4"] }
 

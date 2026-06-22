@@ -122,7 +122,7 @@ startup spine as far as the foundation allows.
 - [x] **P1.13** [RUST] Stand up `main.rs` — the Tauri `Builder`, `tokio` runtime, empty `invoke_handler` + `collect_commands!`/`collect_events!` seam · §0.4.0 §0.4.5 §0.8
   needs: P1.11, P1.12
   > the minimal Tauri v2 entrypoint: the multi-thread `tokio` setup Tauri's async commands run on (§0.8), an empty-but-present `invoke_handler` + the `collect_commands![]`/`collect_events![]` macros (no C-commands yet — those are P2) so the codegen surface exists; the §0.10 capability covers the `main` window so a future command is invokable with no per-command entry.
-- [ ] **P1.14** [RUST] Register the §0.8 Tauri plugins in the Builder (single-instance, dialog, store, log, opener) · §0.8 §0.10
+- [x] **P1.14** [RUST] Register the §0.8 Tauri plugins in the Builder (single-instance, dialog, store, log, opener) · §0.8 §0.10
   needs: P1.13
   > `tauri_plugin_single_instance::init` / `tauri_plugin_dialog::init` / `tauri_plugin_store` / `tauri_plugin_log` / `tauri_plugin_opener` registered in the Builder — the crates §1.1/§0.4.1/§7.4/§7.5/§7.7 depend on; their WebView grants are §0.10 (dialog/opener are Rust-side-only, NOT WebView capabilities). Wiring only; the handlers that USE them are P2+.
 - [ ] **P1.15** [RUST] Stand up the minimal `setup` closure stages the empty window needs (NOT the §7.2.1 ordering) · §7.2.1 §7.2.2
