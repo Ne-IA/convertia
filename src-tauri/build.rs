@@ -8,10 +8,11 @@
 #![deny(unsafe_code)]
 
 // [Build-Session-Entscheidung: P1.12] The §0.4.5 tauri-specta `bindings.ts` codegen is NOT driven from
-// this build script: it is owned by the `cargo xtask codegen` bin (wired P1.26, registered with the
-// G19 generated-drift check at P1.28), emitting the single tracked `src/lib/ipc/bindings.ts`. This
-// build script is the §0.4.5 build-time generation seam — kept to `tauri_build::build()` alone because
-// ConvertIA drives codegen through xtask (one command, one tracked artifact), not a build-script hook.
+// this build script: it is owned by the xtask `codegen` task — `cargo run -p xtask -- codegen` (wired
+// P1.26, registered with the G19 generated-drift check at P1.28) — emitting the single tracked
+// `src/lib/ipc/bindings.ts`. This build script is the §0.4.5 build-time generation seam — kept to
+// `tauri_build::build()` alone because ConvertIA drives codegen through xtask (one command, one tracked
+// artifact), not a build-script hook.
 fn main() {
     tauri_build::build();
 }

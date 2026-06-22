@@ -606,6 +606,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "specta",
+ "specta-typescript",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -3481,6 +3482,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "specta-typescript"
+version = "0.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "639404ee95557f2f8b7e4cb773ffefd45304c7ab8ba21ac83b69051595e083c0"
+dependencies = [
+ "specta",
+]
+
+[[package]]
 name = "specta-util"
 version = "0.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3963,6 +3973,7 @@ dependencies = [
  "serde_json",
  "specta",
  "specta-serde",
+ "specta-typescript",
  "specta-util",
  "tauri",
  "tauri-specta-macros",

@@ -76,24 +76,32 @@ fn register_ipc_identity_types(types: specta::Types) -> specta::Types {
         .register::<ItemId>()
 }
 
-fn main() -> tauri::Result<()> {
-    // §0.4.5 IPC codegen seam: the tauri-specta `Builder` is the single source `bindings.ts` is
-    // generated from (the `cargo xtask codegen` bin, P1.26) AND the runtime invoke/event registry.
-    // The command + event sets are EMPTY in P1 — the C1..C13 commands and the E-series events are
-    // authored in P2.
-    //
-    // [Build-Session-Entscheidung: P1.25] §0.6 standalone-type registration. With the command set
-    // empty, the §0.6 identity newtypes are referenced by no command signature, so without an explicit
-    // registration tauri-specta omits them from `bindings.ts` (and a future C-arg that reaches one
-    // un-registered would emit `any` — §0.4.5 / the §0.6 "in collect_types![] or the drift check emits
-    // `any`" line). tauri-specta v2 has NO `collect_types!` macro; its canonical equivalent is
-    // `specta::Types::default().register::<T>()` chained per type, handed to `Builder::types(&types)`.
-    // Register the five P1.9 identity types so P1.26's generated bindings.ts carries them as named TS
-    // types from the first commit (the C1–C13 args that USE them are P2).
-    let builder = tauri_specta::Builder::<tauri::Wry>::new()
+/// [Build-Session-Entscheidung: P1.25/P1.26] The single tauri-specta `Builder` — the ONE source the
+/// generated `src/lib/ipc/bindings.ts` is produced from (the `bindings_codegen` export test, driven by
+/// `cargo run -p xtask -- codegen`, §0.4.5) AND the runtime invoke/event registry (`main`). Sharing one
+/// constructor is what guarantees the generated TS surface can never drift from the registered Rust
+/// surface. The command + event sets are EMPTY in P1 — the C1..C13 commands and the E-series events are
+/// authored in P2.
+///
+/// §0.6 standalone-type registration: with the command set empty the §0.6 identity newtypes are
+/// referenced by no command signature, so without an explicit registration tauri-specta omits them from
+/// `bindings.ts` (and a future C-arg reaching an un-registered one would emit `any` — §0.4.5 / the §0.6
+/// "in collect_types![] or the drift check emits `any`" line). tauri-specta v2 has NO `collect_types!`
+/// macro; its canonical equivalent is `specta::Types::default().register::<T>()` chained per type, handed
+/// to `Builder::types(&types)` — so the five P1.9 identity types emit as named TS types from the first
+/// `bindings.ts` commit (the C1–C13 args that USE them are P2).
+fn ipc_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
+    tauri_specta::Builder::<tauri::Wry>::new()
         .commands(tauri_specta::collect_commands![])
         .events(tauri_specta::collect_events![])
-        .types(&register_ipc_identity_types(specta::Types::default()));
+        .types(&register_ipc_identity_types(specta::Types::default()))
+}
+
+fn main() -> tauri::Result<()> {
+    // §0.4.5 IPC seam: the shared `ipc_specta_builder()` is BOTH the runtime invoke/event registry and
+    // the single source the generated `bindings.ts` is produced from (no drift between them). Empty
+    // command/event sets in P1 — the C1..C13 commands + the E-series events are authored in P2.
+    let builder = ipc_specta_builder();
 
     // [Build-Session-Entscheidung: P1.13] Async runtime: ConvertIA runs on Tauri v2's own managed
     // multi-threaded tokio runtime — `tauri::async_runtime`'s default builds a `tokio::runtime::
@@ -213,6 +221,84 @@ mod ipc_typegen {
             types.len(),
             6,
             "the five §0.6 identity types + their shared Uuid named type must register (§0.4.5/§0.6)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod bindings_codegen {
+    //! §0.4.5 IPC type-gen: the single tracked `src/lib/ipc/bindings.ts` (the frontend's only IPC door,
+    //! §0.7) is generated from the SAME `ipc_specta_builder()` the runtime uses, so the emitted TS
+    //! surface can never drift from the registered Rust surface. `regenerate_committed_bindings` is the
+    //! on-demand codegen ACTION (driven by `cargo run -p xtask -- codegen`); the hermetic
+    //! `bindings_export_is_nonempty_and_typed` test proves the codegen path succeeds + is typed without
+    //! touching a tracked file. Committed-file freshness is the G19 drift gate's job (regenerate +
+    //! `git diff --exit-code`, registered in P1.28). [Build-Session-Entscheidung: P1.26]
+    use super::*;
+    use specta_typescript::Typescript;
+    use uuid::Uuid;
+
+    /// The single tracked path (§0.7): `<repo>/src/lib/ipc/bindings.ts`, resolved from this crate's
+    /// compile-time manifest dir (`<repo>/src-tauri`) so it is independent of the process CWD.
+    const TRACKED_BINDINGS_PATH: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/ipc/bindings.ts");
+
+    // §0.4.5 codegen ACTION (not a behavioural assertion): regenerate the committed bindings.ts in place
+    // from the shared builder. `#[ignore]`d so the hermetic `cargo test` suite (G15) never mutates a
+    // tracked source file — it runs ON DEMAND via `cargo run -p xtask -- codegen` (`-- --ignored`), and
+    // committed-file freshness is the G19 drift gate's job (regenerate + `git diff --exit-code`, P1.28).
+    // [Test-Change: P1.26 — new-test:codegen side-effect run on demand via the xtask codegen task, never in the hermetic suite, §0.4.5]
+    #[test]
+    #[ignore = "codegen action; run via `cargo run -p xtask -- codegen`, not the hermetic suite (§0.4.5)"]
+    fn regenerate_committed_bindings() {
+        ipc_specta_builder()
+            .export(Typescript::default(), TRACKED_BINDINGS_PATH)
+            .expect("§0.4.5 bindings.ts codegen export failed");
+    }
+
+    // §6.4.1 unit (G15): the codegen path WORKS and produces a TYPED, non-empty bindings file — read
+    // back (the §0.2 read-the-output-back discipline applied to codegen). Hermetic: export to a fresh
+    // per-run temp path (a minted Uuid keeps parallel runs from colliding), never the tracked file, then
+    // read it back and assert it is non-empty, exposes the `export`-ed surface (the §0.4.5 / G19
+    // ts-bindings non-empty sanity), declares the five §0.6 identity newtypes as NAMED TS types, and
+    // carries no `any` escape. The temp file is removed on success.
+    #[test]
+    fn bindings_export_is_nonempty_and_typed() {
+        let out = std::env::temp_dir().join(format!("convertia-bindings-{}.ts", Uuid::new_v4()));
+        ipc_specta_builder()
+            .export(Typescript::default(), &out)
+            .expect("§0.4.5 bindings.ts export to a temp path failed");
+        let ts =
+            std::fs::read_to_string(&out).expect("read the freshly generated bindings.ts back");
+        let _ = std::fs::remove_file(&out);
+
+        assert!(
+            !ts.trim().is_empty(),
+            "generated bindings.ts must be non-empty (§0.4.5 / the G19 non-empty sanity)"
+        );
+        assert!(
+            ts.contains("export"),
+            "generated bindings.ts must expose the `export`-ed IPC surface (§0.4.5 / the G19 ts-bindings validator)"
+        );
+        for ty in [
+            "InstanceId",
+            "RunId",
+            "CollectedSetId",
+            "CollectingId",
+            "ItemId",
+        ] {
+            assert!(
+                ts.contains(ty),
+                "the §0.6 identity newtype `{ty}` must appear as a NAMED TS type in bindings.ts (§0.4.5/§0.6)"
+            );
+        }
+        // No IPC type may degrade to the TS `any` escape (§0.4.5 / CLAUDE §5 "no any"). The needle is
+        // assembled by `concat!` so the forbidden token never appears literally in this scanned
+        // production file — the same self-match-avoidance the `boot_invariants` test uses (G8).
+        let any_escape = concat!(":", " any");
+        assert!(
+            !ts.contains(any_escape),
+            "no IPC type may generate as the TS `any` escape — the §0.6 types must stay named (§0.4.5)"
         );
     }
 }

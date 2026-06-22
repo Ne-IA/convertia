@@ -31,5 +31,16 @@ tauri-plugin-store = "2.4.3"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive"] }
 uuid = { version = "1.23.3", features = ["serde", "v4"] }
 
+# [Build-Session-Entscheidung: P1.26] §0.4.5 IPC type-gen: the TypeScript exporter the `bindings_codegen`
+# test uses to emit the single tracked `src/lib/ipc/bindings.ts` (driven by `cargo run -p xtask --
+# codegen`). DEV-ONLY by design — `specta-typescript` + tauri-specta's `typescript` feature are needed
+# solely to RUN the codegen test; under resolver 2 a feature requested only by a dev-dependency is NOT
+# unified into the normal/release build, so the shipped MIT-core binary stays free of the TS-exporter
+# code (a leaner audited dependency closure for G53/the SBOM). `specta-typescript` is pinned to the
+# version compatible with the §0.8-locked specta `2.0.0-rc.25` (the same `0.0.12` line as `specta-util`).
+[dev-dependencies]
+specta-typescript = "=0.0.12"
+tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+
 [build-dependencies]
 tauri-build = "2.6.3"
