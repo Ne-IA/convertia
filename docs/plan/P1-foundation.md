@@ -193,7 +193,7 @@ a concrete command + path, even though the C-command surface is empty until P2.
   needs: P1.25, P1.29
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P1.29` points at the Vite config defined later in document order — the codegen + commit runs against that build config, so DECISION C builds P1.29 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
   > run the codegen and commit the generated `src/lib/ipc/bindings.ts` (the frontend's only IPC door) — the concrete file the P0 G19 drift check regenerates + `git diff --exit-code`s; activates G19 (P0.3.9) with a real generated target.
-- [ ] **P1.27** [UI] Author the `commands.ts`/`events.ts` typed-façade re-export shells · §5.1 §5.8
+- [x] **P1.27** [UI] Author the `commands.ts`/`events.ts` typed-façade re-export shells · §5.1 §5.8
   needs: P1.26
   > `src/lib/ipc/commands.ts` + `events.ts` re-exporting the generated `bindings.ts` wrappers — the §5.1 hard-rule seam ("only `src/lib/ipc/**` imports `@tauri-apps/api`"); empty re-exports in P1 (feature code that consumes them is P2+), so the one-IPC-consumer discipline is lint-enforceable from the first commit.
 - [!extern] **P1.28** [CI] Define the concrete `cargo xtask codegen` invocation for the G19 drift check · §0.4.5 · G19
