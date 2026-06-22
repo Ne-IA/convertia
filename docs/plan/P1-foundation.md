@@ -258,7 +258,7 @@ English-only / string-ownership lint against a real `strings/ui.ts`.
 - [x] **P1.38** [UI] Assert no i18n-runtime / locale-switch import ships (Principle-11 by construction) · §5.7 §6.10 · G57
   needs: P1.37
   > the by-construction half of §5.7: no i18n framework / locale-negotiation / `Accept-Language`-driven selection is a dependency — the P0 G57 lint's "fail on any locale-switch/i18n-runtime import" leg; P1 establishes the no-i18n posture the gate enforces.
-- [ ] **P1.39** [UI] Stand up `src/a11y/announcer.ts` — the §5.6 ARIA-live announcement helper shell · §5.6
+- [x] **P1.39** [UI] Stand up `src/a11y/announcer.ts` — the §5.6 ARIA-live announcement helper shell · §5.6
   needs: P1.31
   > the `announcer.ts` interface-only helper (an ARIA-live region announcer) the §5.6 screen-reader path + later focus/announce wiring consume — established here as structural scaffolding per the README P1 scope; the per-component wiring is P4/P8.
 - [ ] **P1.40** [UI] Stand up `src/a11y/keymap.ts` — the §5.10 canonical accelerator table shell · §5.10
