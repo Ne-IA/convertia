@@ -212,7 +212,7 @@ the per-push a11y leg (G33a) against real source.
 - [x] **P1.29** [UI] Author `vite.config.ts` + the §0.3.1 cross-WebView build target · §5.1 §0.3.1
   needs: P1.2
   > the Vite config building the WebView bundle Tauri loads, with the build target set to the §0.3.1 intersection of WebView2/WKWebView/WebKitGTK (no bleeding-edge CSS/JS that drifts); the `dev` server + `build` outputs `tauri dev`/`tauri build` consume.
-- [ ] **P1.30** [UI] Author `tsconfig.json` — TypeScript strict, no `any` · §5.1 §0.4.5 · G5 G6 G13
+- [x] **P1.30** [UI] Author `tsconfig.json` — TypeScript strict, no `any` · §5.1 §0.4.5 · G5 G6 G13
   needs: P1.2
   > the strict `tsconfig.json` (`strict: true`, `noImplicitAny`, the platform no-`any` rule) covering `src/**` incl. the generated `bindings.ts` — the project the P0 TS gates `tsc --noEmit` (G6 diff-scoped / G13 whole-project) act on (activates the P0.4.7 contract for the TS half).
 - [ ] **P1.31** [UI] Stand up `main.tsx` + `App.tsx` — React 19 root mount + empty screen-state router shell · §5.1 §5.2
