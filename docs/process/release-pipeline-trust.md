@@ -166,7 +166,14 @@ in place. The exact owner steps:
 2. **Wire git signing** on the build machine: `git config gpg.format ssh`;
    `git config user.signingkey ~/.ssh/convertia_sign.pub`;
    `git config commit.gpgsign true`; `git config tag.gpgsign true`;
-   `git config gpg.ssh.allowedSignersFile .github/allowed_signers`.
+   `git config gpg.ssh.allowedSignersFile .github/allowed_signers`. **On Windows,
+   also pin `git config gpg.ssh.program` to the native OpenSSH `ssh-keygen`**
+   (`%WINDIR%\System32\OpenSSH\ssh-keygen.exe`) — Git-for-Windows' bundled MSYS2
+   `ssh-keygen` cannot reach the Windows OpenSSH agent's named pipe and falls back to
+   the encrypted key file, so a **non-interactive signed commit hangs forever**
+   (it would wedge every autonomous Build-Loop commit). `scripts/setup-dev` (step 5)
+   applies this pin automatically on every Windows clone where the native OpenSSH
+   `ssh-keygen` is present.
 3. **Create the `v*` tag-protection ruleset** (Settings → Rules → Rulesets → new *tag*
    ruleset targeting `v*`, restrict *tag creations* to the owner, bypass-actor list
    minimal) so only the owner can create a release tag.
