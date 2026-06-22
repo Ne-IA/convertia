@@ -137,7 +137,7 @@ startup spine as far as the foundation allows.
 - [x] **P1.17** [RUST] Implement the §7.2.4 portable-build executable-permission setup (unix `+x` idempotent) · §7.2.4
   needs: P1.14
   > the `ensure_executable` unix helper (`0o111`-bit set idempotently on each launch) from §7.2.4 — load-bearing for the portable macOS/Linux artifact where extracted sidecars may lack `+x`; Windows is a no-op. P1 lands the helper only (no engines to chmod yet — exercised P4); its slot in the §7.2.1 step-4 sequence is wired by the P2 startup-ordering spine.
-- [ ] **P1.18** [RUST] Assert the §7.6.1 no-updater posture by construction · §7.6.1 §7.6 · G47
+- [x] **P1.18** [RUST] Assert the §7.6.1 no-updater posture by construction · §7.6.1 §7.6 · G47
   needs: P1.14
   > assert `tauri-plugin-updater` is absent from `Cargo.toml`/the Builder and no `updater`/pubkey/endpoint config exists — "its absence is the implementation" (§7.6.1); the structural form is the P0 G47 lint over `tauri.conf.json` (no `updater` block / no `createUpdaterArtifacts`), so this box names what the G47 target must NOT contain.
 
