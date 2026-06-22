@@ -1,0 +1,54 @@
+{
+  // ConvertIA frontend TypeScript project — strict, no `any` (§5.1 / §0.4.5).
+  //
+  // The single tsconfig the G5/G6/G13 gate (scripts/check-ts-gate) type-checks `src/**`
+  // with `tsc --noEmit` — including the generated `src/lib/ipc/bindings.ts`, the only IPC
+  // door (§0.4.5). Vite owns the actual transpile/emit (vite.config.ts, §0.3.1 target);
+  // tsc here is type-check-only (`noEmit`). The gate reads this file's effective
+  // `compilerOptions` (it follows `extends`, NOT `references`), so the frozen strict-family
+  // flags below live directly here and cannot be hidden behind a project reference.
+  "compilerOptions": {
+    // --- module / target: React 19 + Vite 8 bundler resolution; tsc never emits ---
+    // [Build-Session-Entscheidung: P1.30] target/lib = ES2021, aligned to the §0.3.1
+    // WebView intersection floor (macOS 11 / WKWebView ~= Safari 14), the same floor
+    // vite.config.ts `build.target: "safari14"` encodes (P1.29). ES2022 `lib` would
+    // type-admit runtime APIs Safari 14 lacks (`Array.prototype.at`, `Object.hasOwn` —
+    // Safari 15.4) that esbuild does NOT polyfill, silently drifting across WebViews
+    // (§5.1 "avoid bleeding-edge JS that drifts"); pinning the lib to ES2021 makes that
+    // floor checkable at type-check time, not only hoped.
+    "target": "ES2021",
+    "lib": ["ES2021", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    // `isolatedModules` + `verbatimModuleSyntax`: the per-file-transpile contract the
+    // SWC bundler (@vitejs/plugin-react-swc) needs, and the exact flags the P1.27
+    // `commands.ts` `export *` IPC-façade decision documents itself as legal under.
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+
+    // --- strictness: the frozen TSCONFIG_REQUIRED contract (check-ts-gate, G6/G13) ---
+    // `strict` is the no-`any` umbrella (CLAUDE.md hard rule + §0.8 "TypeScript strict");
+    // the three explicit extras are the high-value flags `strict` does NOT imply —
+    // `noUncheckedIndexedAccess` (an index read is `T | undefined`, the TS analogue of the
+    // Rust `indexing_slicing` deny), `noImplicitOverride`, `noFallthroughCasesInSwitch`.
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+
+    // --- dead-code hygiene (no `// TODO`-class debt; CLAUDE.md §5) ---
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  // §5.1 frontend scope: `src/**` (the React app + the generated IPC door). The root
+  // build config `vite.config.ts` is loaded/checked by Vite itself and needs a Node
+  // type context (`@types/node`), so it is intentionally out of this DOM-context project
+  // [Build-Session-Entscheidung: P1.30].
+  "include": ["src"]
+}
