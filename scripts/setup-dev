@@ -6,7 +6,8 @@ Does the whole local setup the gate plane needs:
      (python3 scripts/install-gate-tools)
   2. install the lefthook git-hook plane (pre-commit/pre-push)
   3. REPAIR lefthook's generated hooks so they work on ANY repo path, then
-  4. verify each generated hook parses under POSIX sh.
+  4. verify each generated hook parses under POSIX sh, and
+  5. on Windows, pin git's ssh-signing to the agent-reachable OpenSSH ssh-keygen.
 
 WHY step 3: lefthook embeds an UNQUOTED absolute path to its own binary in every
 generated hook. On a repo path containing spaces or parentheses (e.g.
@@ -15,11 +16,20 @@ breaks the whole hook, silently disabling local enforcement. This script quotes
 that path after `lefthook install`. On a clean path the quoting is a harmless
 no-op, so setup-dev is safe + identical everywhere.
 
+WHY step 5: with `gpg.format = ssh` + `commit.gpgsign`, git signs each commit by
+running `ssh-keygen -Y sign`. On Windows, Git-for-Windows may resolve its BUNDLED
+MSYS2 ssh-keygen, which CANNOT reach the Windows OpenSSH agent (a named pipe) - it
+then falls back to the passphrase-protected key FILE and, with no TTY, HANGS forever.
+A non-interactive `git commit -S` (every Build-Loop commit) would wedge silently. We
+pin `gpg.ssh.program` to the native Windows OpenSSH ssh-keygen, which talks to the
+agent's named pipe and signs without a prompt. Non-Windows: a harmless no-op.
+
 Idempotent. stdlib-only (Python 3.11+). Run:  python3 scripts/setup-dev
 Exit: 0 = ready; non-zero = a step failed (with a clear message).
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -44,14 +54,14 @@ def die(msg: str) -> None:
 
 
 def install_gate_tools() -> None:
-    step("1/4  install + verify pinned gate tools")
+    step("1/5  install + verify pinned gate tools")
     p = run([sys.executable, str(REPO / "scripts" / "install-gate-tools")])
     if p.returncode != 0:
         die("install-gate-tools failed (see output above)")
 
 
 def lefthook_install() -> None:
-    step("2/4  install the lefthook git-hook plane")
+    step("2/5  install the lefthook git-hook plane")
     if not LEFTHOOK.is_file():
         die(f"lefthook not found at {LEFTHOOK} - did step 1 install it?")
     p = run([str(LEFTHOOK), "install"], cwd=str(REPO))
@@ -71,7 +81,7 @@ def effective_hooks_dir() -> Path:
 
 
 def repair_hooks(hooks_dir: Path) -> None:
-    step("3/4  repair generated hooks (quote lefthook's embedded path)")
+    step("3/5  repair generated hooks (quote lefthook's embedded path)")
     embedded = LEFTHOOK.resolve().as_posix()        # the form lefthook writes (forward slashes)
     patched_any = False
     for hook in sorted(hooks_dir.glob("*")):
@@ -97,7 +107,7 @@ def repair_hooks(hooks_dir: Path) -> None:
 
 
 def verify_parse(hooks_dir: Path) -> None:
-    step("4/4  verify each generated hook parses under sh")
+    step("4/5  verify each generated hook parses under sh")
     # If no sh is on PATH we skip the parse check INTENTIONALLY (not an oversight):
     # git invokes the hook with its own bundled sh at runtime, and on a clean path
     # the generated hooks are valid regardless.
@@ -116,6 +126,21 @@ def verify_parse(hooks_dir: Path) -> None:
     print("  all generated hooks parse OK")
 
 
+def configure_ssh_signing() -> None:
+    step("5/5  pin git ssh-signing to the agent-reachable ssh-keygen (Windows)")
+    if not IS_WIN:
+        print("  non-Windows - the platform ssh-keygen reaches the agent natively; nothing to pin")
+        return
+    keygen = Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "OpenSSH" / "ssh-keygen.exe"
+    if not keygen.is_file():
+        print(f"  Windows OpenSSH ssh-keygen not found at {keygen} - skipping (no native signer to pin)")
+        return
+    p = run(["git", "config", "--local", "gpg.ssh.program", keygen.as_posix()], cwd=str(REPO))
+    if p.returncode != 0:
+        die("git config gpg.ssh.program failed (see output above)")
+    print(f"  gpg.ssh.program -> {keygen.as_posix()}")
+
+
 def main() -> int:
     print("setup-dev - ConvertIA developer bootstrap")
     install_gate_tools()
@@ -123,6 +148,7 @@ def main() -> int:
     hd = effective_hooks_dir()
     repair_hooks(hd)
     verify_parse(hd)
+    configure_ssh_signing()
     print("\n[setup-dev] ready - the gate plane is installed and the hooks parse. "
           "Commits/pushes now run the L1/L2/L3 gates.")
     return 0
