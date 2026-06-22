@@ -274,7 +274,7 @@ exist from the first commit (they gate contribution and have no build dependency
 the release-blocking governance-completeness GATE is P10, but the DOCS are authored
 here.
 
-- [ ] **P1.41** [DOC] Author `LICENSE` — MIT with the collective copyright notice · §6.8
+- [x] **P1.41** [DOC] Author `LICENSE` — MIT with the collective copyright notice · §6.8
   > MIT + the header `Copyright (c) 2026 Ne-IA and ConvertIA contributors` (inbound=outbound, no assignment) per the §6.8 table; the release gate (present + name matches §6.9 clearance) is P10.
 - [ ] **P1.42** [DOC] Author `CONTRIBUTING.md` — inbound=outbound, no-CLA, optional DCO, the stated quality bar · §6.8
   > the §6.8 content: inbound=outbound under MIT, no CLA, optional `Signed-off-by` (requested not required), the inbound-warranty clause, how to run the §6.7.1 lanes, and the quality bar stated directly (no `any`/no `// TODO`/no `console.log` in prod/no inline CSS/production-ready) — NOT by reference to the private `CLAUDE.md`.
