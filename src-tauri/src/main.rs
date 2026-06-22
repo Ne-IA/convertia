@@ -6,8 +6,8 @@
 //! standalone `.types(...)` registration of the §0.6 identity newtypes so they never generate as
 //! `any` — the empty-but-present `invoke_handler`, and the `mount_events` setup hook. The §0.7
 //! logical-module roots (`domain`/`outcome`/`ipc`/…) were scaffolded in P1.9–P1.11; the §7.2.1 ordered
-//! startup spine is P2; the window frame is P1.16; generating + committing `bindings.ts` from this
-//! builder is P1.26.
+//! startup spine is P2; the window MODEL is locked in P1.16 (the config-declared single `main` window;
+//! the rendered frame is P1.23+P1.31); generating + committing `bindings.ts` from this builder is P1.26.
 
 // §2.12 / G29: the MIT core decodes no untrusted bytes in-process, so it carries zero `unsafe` —
 // denied at the crate root. The single allow-listed FFI shim is `crate::platform` (the OS-primitive
@@ -149,8 +149,13 @@ fn main() -> tauri::Result<()> {
             };
             app.manage(startup);
 
-            // Stage 6 — window-create slot. The §7.3.1 main window + the empty WebView frame are
-            // the P1.16 deliverable; this named slot is where it lands. Intentionally empty here.
+            // Stage 6 — window-create slot. [Build-Session-Entscheidung: P1.16] §7.3.1 LOCKS the single
+            // `main` window as CONFIG-DECLARED (`tauri.conf.json -> app.windows[main]`, P1.19): Tauri
+            // auto-creates + shows it at startup ("created by Tauri at startup", §7.3.1), so the core
+            // adds no programmatic window-builder call here. This slot is therefore empty BY DESIGN, not
+            // unfinished; the §7.3.1 model is asserted structurally by the `window_model` test below. The
+            // loaded React frame arrives with P1.23 (`index.html`) + P1.31 (the React mount); the
+            // rendered-frame headed E2E is P9.
 
             Ok(())
         })
@@ -163,9 +168,10 @@ mod boot_invariants {
     //! guard (cargo-test plane) for the Lane-B-only egress gate (§2.11.4 / §7.2.2), pairing with the
     //! P0 G29 first-party no-socket rule (g) at the source plane. [Build-Session-Entscheidung: P1.15.1]
 
-    /// The production boot source = this binary's `main.rs` up to the `#[cfg(test)]` boundary, so the
-    /// sentinel needles declared in THIS module can never self-match the `include_str!` scan.
-    fn production_boot_source() -> &'static str {
+    /// The production boot source = this binary's `main.rs` up to the first `#[cfg(test)]` boundary, so
+    /// sentinel needles declared in a test module can never self-match the `include_str!` scan.
+    /// `pub(super)`: SHARED with the §7.3.1 `window_model` no-programmatic-window-builder scan (P1.16).
+    pub(super) fn production_boot_source() -> &'static str {
         let full = include_str!("main.rs");
         // Take the production prefix before this module's `#[cfg(test)]` attribute (the first such
         // marker), or the whole file if absent. `split_once` avoids the impossible-`None` dead
@@ -298,5 +304,100 @@ mod bindings_codegen {
             !ts.contains(any_escape),
             "no IPC type may generate as the TS `any` escape — the §0.6 types must stay named (§0.4.5)"
         );
+    }
+}
+
+#[cfg(test)]
+mod window_model {
+    //! §7.3.1 window model — the single `main` window is CONFIG-DECLARED in `tauri.conf.json`
+    //! (`app.windows[main]`, P1.19), created + shown by Tauri at startup; the core adds no programmatic
+    //! window-builder call. This structural L1/L2 test (no display) LOCKS the §7.3.1 model: exactly one
+    //! window labeled `main`, a sensible default size, not fullscreen, no secondary window, no tray. The
+    //! rendered frame is P1.23+P1.31; the headed-E2E is P9. [Build-Session-Entscheidung: P1.16]
+    use serde_json::Value;
+
+    /// The committed `src-tauri/tauri.conf.json` — the single home of the §7.3.1 window model (P1.19),
+    /// resolved from this crate's compile-time manifest dir so it is independent of the process CWD (the
+    /// same CWD-independent pattern as `bindings_codegen::TRACKED_BINDINGS_PATH`).
+    const TAURI_CONF_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.conf.json");
+
+    /// Parse the committed config. A malformed/absent file fails here loudly (the file's parse-validity
+    /// is independently guarded by the G47 CSP/capability lint + the live `generate_context!` in `main`;
+    /// this test owns the §7.3.1 MODEL content those do not assert).
+    fn tauri_conf() -> Value {
+        let raw = std::fs::read_to_string(TAURI_CONF_PATH).expect(
+            "the committed src-tauri/tauri.conf.json must exist — the §7.3.1 window model home (P1.19)",
+        );
+        serde_json::from_str(&raw).expect("tauri.conf.json must be valid JSON (§7.3.1 / G47)")
+    }
+
+    // §6.4.1 unit (G15): the §7.3.1 config-declared model — exactly ONE window, labeled `main`, with a
+    // sensible default size, not fullscreen (a foreground windowed tool; §7.3.1 "opens at a sensible
+    // default size each launch"). "No secondary windows in v1" = the array holds exactly one entry (the
+    // About screen is an in-app route, §5.9, not an OS window).
+    #[test]
+    fn single_main_window_with_default_size() {
+        let conf = tauri_conf();
+        let windows = conf["app"]["windows"]
+            .as_array()
+            .expect("§7.3.1: `app.windows` must be a declared array");
+        assert_eq!(
+            windows.len(),
+            1,
+            "§7.3.1: exactly one main window in v1 — no secondary windows (About is an in-app route, §5.9)"
+        );
+        let main = windows
+            .first()
+            .expect("§7.3.1: the single declared `main` window");
+        assert_eq!(
+            main["label"], "main",
+            "§7.3.1: the single window is labeled `main` (referenced by the §7.1.1 focus hand-off + §5)"
+        );
+        assert!(
+            main["width"].as_f64().is_some_and(|w| w > 0.0),
+            "§7.3.1/§7.4: a sensible default window width must be declared (opens at a default size each launch)"
+        );
+        assert!(
+            main["height"].as_f64().is_some_and(|h| h > 0.0),
+            "§7.3.1/§7.4: a sensible default window height must be declared (opens at a default size each launch)"
+        );
+        assert_ne!(
+            main["fullscreen"],
+            Value::Bool(true),
+            "§7.3.1: the foreground tool opens windowed at a default size, never fullscreen"
+        );
+    }
+
+    // §7.3.1 [REC]: no tray icon / no background-agent mode in v1 — ConvertIA is a foreground tool,
+    // closing the window quits the app (the §7.3.3 path). A declared `app.trayIcon` would model a tray
+    // resident — the §7.3.1 anti-pattern ("closer to an installed service").
+    #[test]
+    fn no_tray_icon_declared() {
+        let conf = tauri_conf();
+        assert!(
+            conf["app"].get("trayIcon").is_none(),
+            "§7.3.1: no tray icon in v1 — a foreground tool, closing the window quits it (not a tray resident)"
+        );
+    }
+
+    // §7.3.1: the single window is "created by Tauri at startup" from config — the core adds NO
+    // programmatic window builder. Scan the production boot source (the shared `boot_invariants` helper,
+    // truncated at the first `#[cfg(test)]`, so these needles can never self-match) for the Tauri v2
+    // programmatic window-creation constructors. Needles assembled by `concat!` for the same
+    // self-match-avoidance as the `boot_invariants` net-primitive scan.
+    #[test]
+    fn no_programmatic_window_builder() {
+        let src = super::boot_invariants::production_boot_source();
+        let builder_ctors = [
+            concat!("Window", "Builder"), // WebviewWindowBuilder / WindowBuilder (the builder types)
+            concat!("Webview", "Builder"), // WebviewBuilder (the lower-level builder type)
+            concat!("WebviewWindow", "::", "builder"), // WebviewWindow::builder() (the method ctor)
+        ];
+        for ctor in builder_ctors {
+            assert!(
+                !src.contains(ctor),
+                "§7.3.1: the `main` window is config-declared (P1.19) — the core must add no programmatic `{ctor}` window creation"
+            );
+        }
     }
 }
