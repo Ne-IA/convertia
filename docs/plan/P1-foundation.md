@@ -189,7 +189,7 @@ a concrete command + path, even though the C-command surface is empty until P2.
 - [x] **P1.25** [RUST] Wire the §0.4.5 tauri-specta builder + the `collect_types!` registry seam · §0.4.5 §0.6
   needs: P1.9, P1.13
   > the tauri-specta `Builder` configured with `collect_commands!`/`collect_events!`/`collect_types!` (the §0.6 identity types from P1.9 registered so they don't generate as `any`), emitting to the single tracked path — the codegen engine the §06 drift check guards; empty command set in P1 (C1–C13 are P2).
-- [ ] **P1.26** [UI] Generate + commit `src/lib/ipc/bindings.ts` at the single §0.7 tracked path · §0.4.5 §0.7 · G19
+- [x] **P1.26** [UI] Generate + commit `src/lib/ipc/bindings.ts` at the single §0.7 tracked path · §0.4.5 §0.7 · G19
   needs: P1.25, P1.29
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P1.29` points at the Vite config defined later in document order — the codegen + commit runs against that build config, so DECISION C builds P1.29 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
   > run the codegen and commit the generated `src/lib/ipc/bindings.ts` (the frontend's only IPC door) — the concrete file the P0 G19 drift check regenerates + `git diff --exit-code`s; activates G19 (P0.3.9) with a real generated target.
