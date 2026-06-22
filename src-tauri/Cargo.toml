@@ -48,6 +48,14 @@ uuid = { version = "1.23.3", features = ["serde", "v4"] }
 serde_json = "1.0.150"
 specta-typescript = "=0.0.12"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+# [Build-Session-Entscheidung: P1.17] §7.2.4 executable-permission test: the unix `ensure_executable`
+# test (crate::platform) needs a REAL temp filesystem (test-strategy §0.1: never mock the FS under test)
+# to chmod a fake sidecar and assert the +x / idempotency contract. `std::env::temp_dir()` is banned by
+# the vendored G29 p-rust temp-dir SAST rule, and `CARGO_TARGET_TMPDIR` is unset for unit tests, so
+# `tempfile` (RAII-cleaned, securely-named, the standard crate) is the right tool. DEV-ONLY + already
+# transitive via tauri (no newly-resolved package, single lock edge); caret-pinned to the lock-resolved
+# 3.27.0 (the normal-lib convention).
+tempfile = "3.27.0"
 
 [build-dependencies]
 tauri-build = "2.6.3"

@@ -616,6 +616,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-store",
  "tauri-specta",
+ "tempfile",
  "uuid",
 ]
 
