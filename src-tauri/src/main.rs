@@ -1,11 +1,13 @@
 //! ConvertIA core — the Tauri v2 host binary entry point.
 //!
 //! P1.13 stands up the Tauri v2 `Builder` entrypoint on Tauri's managed multi-threaded tokio async
-//! runtime (§0.4.0/§0.8/§0.9): the §0.4.5 tauri-specta codegen seam (empty `collect_commands!`/
-//! `collect_events!` — the C1..C13 commands and the E-series events are authored in P2), the
-//! empty-but-present `invoke_handler`, and the `mount_events` setup hook. The §0.7 logical-module
-//! roots (`domain`/`outcome`/`ipc`/…) were scaffolded in P1.9–P1.11; the §7.2.1 ordered startup spine
-//! is P2; the window frame is P1.16; `bindings.ts` codegen is the `cargo xtask` of P1.25/P1.26.
+//! runtime (§0.4.0/§0.8/§0.9): the §0.4.5 tauri-specta codegen seam — `collect_commands!`/
+//! `collect_events!` empty until the C1..C13 commands + E-series events of P2, plus the P1.25
+//! standalone `.types(...)` registration of the §0.6 identity newtypes so they never generate as
+//! `any` — the empty-but-present `invoke_handler`, and the `mount_events` setup hook. The §0.7
+//! logical-module roots (`domain`/`outcome`/`ipc`/…) were scaffolded in P1.9–P1.11; the §7.2.1 ordered
+//! startup spine is P2; the window frame is P1.16; generating + committing `bindings.ts` from this
+//! builder is P1.26.
 
 // §2.12 / G29: the MIT core decodes no untrusted bytes in-process, so it carries zero `unsafe` —
 // denied at the crate root. The single allow-listed FFI shim is `crate::platform` (the OS-primitive
@@ -36,7 +38,7 @@ use std::path::PathBuf;
 
 use tauri::Manager;
 
-use crate::domain::InstanceId;
+use crate::domain::{CollectedSetId, CollectingId, InstanceId, ItemId, RunId};
 
 /// [Build-Session-Entscheidung: P1.15] The §7.2.1 step-2 boot context: the per-launch identity plus
 /// the three resolved base dirs, held as the §7.1.2 app-managed singleton (`app.manage`). Its home is
@@ -60,15 +62,38 @@ struct StartupContext {
     log_dir: PathBuf,
 }
 
+/// [Build-Session-Entscheidung: P1.25] The single registration of the §0.6 standalone identity types
+/// into a tauri-specta/specta type collection (§0.4.5). Used by BOTH the live `Builder::types` call
+/// and the P1.25 type-gen test, so the registered set and its test assertion cannot drift. The C1–C13
+/// command/event signatures that reference these types (and thus pull them in automatically) are P2;
+/// until then this explicit registration is what keeps them out of `any` in `bindings.ts` (P1.26).
+fn register_ipc_identity_types(types: specta::Types) -> specta::Types {
+    types
+        .register::<InstanceId>()
+        .register::<RunId>()
+        .register::<CollectedSetId>()
+        .register::<CollectingId>()
+        .register::<ItemId>()
+}
+
 fn main() -> tauri::Result<()> {
     // §0.4.5 IPC codegen seam: the tauri-specta `Builder` is the single source `bindings.ts` is
     // generated from (the `cargo xtask codegen` bin, P1.26) AND the runtime invoke/event registry.
     // The command + event sets are EMPTY in P1 — the C1..C13 commands and the E-series events are
-    // authored in P2; `collect_types!` (so the §0.6 identity types do not generate as `any`) is added
-    // with the P1.25 tauri-specta-builder + export wiring.
+    // authored in P2.
+    //
+    // [Build-Session-Entscheidung: P1.25] §0.6 standalone-type registration. With the command set
+    // empty, the §0.6 identity newtypes are referenced by no command signature, so without an explicit
+    // registration tauri-specta omits them from `bindings.ts` (and a future C-arg that reaches one
+    // un-registered would emit `any` — §0.4.5 / the §0.6 "in collect_types![] or the drift check emits
+    // `any`" line). tauri-specta v2 has NO `collect_types!` macro; its canonical equivalent is
+    // `specta::Types::default().register::<T>()` chained per type, handed to `Builder::types(&types)`.
+    // Register the five P1.9 identity types so P1.26's generated bindings.ts carries them as named TS
+    // types from the first commit (the C1–C13 args that USE them are P2).
     let builder = tauri_specta::Builder::<tauri::Wry>::new()
         .commands(tauri_specta::collect_commands![])
-        .events(tauri_specta::collect_events![]);
+        .events(tauri_specta::collect_events![])
+        .types(&register_ipc_identity_types(specta::Types::default()));
 
     // [Build-Session-Entscheidung: P1.13] Async runtime: ConvertIA runs on Tauri v2's own managed
     // multi-threaded tokio runtime — `tauri::async_runtime`'s default builds a `tokio::runtime::
@@ -165,5 +190,29 @@ mod boot_invariants {
                  the startup sequence must open no socket (pairs with G29 rule (g))"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ipc_typegen {
+    //! §0.4.5 / §0.6: the IPC type-gen seam registers the §0.6 identity types so the generated
+    //! `bindings.ts` (P1.26) carries them as named TS types, never `any`. [Build-Session-Entscheidung: P1.25]
+    use super::*;
+
+    // §6.4.1 unit (G15): the five §0.6 identity newtypes register into the type collection (so none
+    // emits `any` in bindings.ts), pinned to the exact resolved set so a dropped/added registration
+    // reddens the build. Verified by read-back against the §0.8-pinned specta.
+    #[test]
+    fn identity_types_registered_for_typegen() {
+        let types = register_ipc_identity_types(specta::Types::default());
+        // 6 = the 5 identity newtypes (InstanceId/RunId/CollectedSetId/CollectingId/ItemId) registered
+        // as NAMED types + the single shared `Uuid` named type they pull in: with specta's `uuid`
+        // feature (§0.8) `Uuid` is itself a NAMED TS type, referenced by the four Uuid-newtypes and so
+        // registered exactly once; `ItemId`'s `u32` field inlines as a number primitive (not named).
+        assert_eq!(
+            types.len(),
+            6,
+            "the five §0.6 identity types + their shared Uuid named type must register (§0.4.5/§0.6)"
+        );
     }
 }
