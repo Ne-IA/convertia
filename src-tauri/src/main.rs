@@ -231,12 +231,11 @@ mod bindings_codegen {
     //! §0.7) is generated from the SAME `ipc_specta_builder()` the runtime uses, so the emitted TS
     //! surface can never drift from the registered Rust surface. `regenerate_committed_bindings` is the
     //! on-demand codegen ACTION (driven by `cargo run -p xtask -- codegen`); the hermetic
-    //! `bindings_export_is_nonempty_and_typed` test proves the codegen path succeeds + is typed without
-    //! touching a tracked file. Committed-file freshness is the G19 drift gate's job (regenerate +
+    //! `committed_bindings_are_nonempty_and_typed` test reads the committed artifact back and proves it
+    //! is non-empty + typed (no `any`). Committed-file freshness is the G19 drift gate's job (regenerate +
     //! `git diff --exit-code`, registered in P1.28). [Build-Session-Entscheidung: P1.26]
     use super::*;
     use specta_typescript::Typescript;
-    use uuid::Uuid;
 
     /// The single tracked path (§0.7): `<repo>/src/lib/ipc/bindings.ts`, resolved from this crate's
     /// compile-time manifest dir (`<repo>/src-tauri`) so it is independent of the process CWD.
@@ -256,29 +255,28 @@ mod bindings_codegen {
             .expect("§0.4.5 bindings.ts codegen export failed");
     }
 
-    // §6.4.1 unit (G15): the codegen path WORKS and produces a TYPED, non-empty bindings file — read
-    // back (the §0.2 read-the-output-back discipline applied to codegen). Hermetic: export to a fresh
-    // per-run temp path (a minted Uuid keeps parallel runs from colliding), never the tracked file, then
-    // read it back and assert it is non-empty, exposes the `export`-ed surface (the §0.4.5 / G19
-    // ts-bindings non-empty sanity), declares the five §0.6 identity newtypes as NAMED TS types, and
-    // carries no `any` escape. The temp file is removed on success.
+    // §6.4.1 unit (G15): the committed generated bindings.ts (the real shipped artifact) is non-empty
+    // and TYPED — read it back (the §0.2 read-the-output-back discipline applied to codegen) and assert
+    // it exposes the `export`-ed surface (the §0.4.5 / G19 ts-bindings non-empty sanity), declares the
+    // five §0.6 identity newtypes as named `export type` declarations, and carries no `any` escape.
+    // Hermetic: a read-only check of the tracked file — NO shared-OS-temp write (`std::env::temp_dir` is
+    // the §2.14.1 shared-temp anti-pattern the vendored G29 `temp-dir` lint forbids). The export CALL
+    // itself is exercised by `regenerate_committed_bindings` (the xtask codegen task) and, from P1.28, by
+    // the G19 regenerate-and-diff drift gate.
     #[test]
-    fn bindings_export_is_nonempty_and_typed() {
-        let out = std::env::temp_dir().join(format!("convertia-bindings-{}.ts", Uuid::new_v4()));
-        ipc_specta_builder()
-            .export(Typescript::default(), &out)
-            .expect("§0.4.5 bindings.ts export to a temp path failed");
-        let ts =
-            std::fs::read_to_string(&out).expect("read the freshly generated bindings.ts back");
-        let _ = std::fs::remove_file(&out);
+    fn committed_bindings_are_nonempty_and_typed() {
+        // [Test-Change: P1.26 — old-obsolete+new-correct, §0.4.5 (the prior temp-export form tripped the vendored G29 `temp-dir` lint; reading the committed artifact back is the correct hermetic check)]
+        let ts = std::fs::read_to_string(TRACKED_BINDINGS_PATH).expect(
+            "the committed src/lib/ipc/bindings.ts must exist — regenerate it via the xtask codegen task",
+        );
 
         assert!(
             !ts.trim().is_empty(),
-            "generated bindings.ts must be non-empty (§0.4.5 / the G19 non-empty sanity)"
+            "the committed bindings.ts must be non-empty (§0.4.5 / the G19 non-empty sanity)"
         );
         assert!(
             ts.contains("export"),
-            "generated bindings.ts must expose the `export`-ed IPC surface (§0.4.5 / the G19 ts-bindings validator)"
+            "the committed bindings.ts must expose the `export`-ed IPC surface (§0.4.5 / the G19 ts-bindings validator)"
         );
         for ty in [
             "InstanceId",
@@ -288,8 +286,8 @@ mod bindings_codegen {
             "ItemId",
         ] {
             assert!(
-                ts.contains(ty),
-                "the §0.6 identity newtype `{ty}` must appear as a NAMED TS type in bindings.ts (§0.4.5/§0.6)"
+                ts.contains(&format!("export type {ty}")),
+                "the §0.6 identity newtype `{ty}` must be declared as a named `export type` in the committed bindings.ts (§0.4.5/§0.6)"
             );
         }
         // No IPC type may degrade to the TS `any` escape (§0.4.5 / CLAUDE §5 "no any"). The needle is
