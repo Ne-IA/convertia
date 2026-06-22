@@ -125,10 +125,10 @@ startup spine as far as the foundation allows.
 - [x] **P1.14** [RUST] Register the §0.8 Tauri plugins in the Builder (single-instance, dialog, store, log, opener) · §0.8 §0.10
   needs: P1.13
   > `tauri_plugin_single_instance::init` / `tauri_plugin_dialog::init` / `tauri_plugin_store` / `tauri_plugin_log` / `tauri_plugin_opener` registered in the Builder — the crates §1.1/§0.4.1/§7.4/§7.5/§7.7 depend on; their WebView grants are §0.10 (dialog/opener are Rust-side-only, NOT WebView capabilities). Wiring only; the handlers that USE them are P2+.
-- [ ] **P1.15** [RUST] Stand up the minimal `setup` closure stages the empty window needs (NOT the §7.2.1 ordering) · §7.2.1 §7.2.2
+- [x] **P1.15** [RUST] Stand up the minimal `setup` closure stages the empty window needs (NOT the §7.2.1 ordering) · §7.2.1 §7.2.2
   needs: P1.14
   > the minimal `setup` closure the bootable empty window needs as named-but-mostly-empty stages: single-instance guard (real via the plugin), `InstanceId` + base-path resolution via `app.path()`, and the window-create slot. **P1 does NOT own the §7.2.1 step ORDER** — the §7.2.1 ordered startup-sequence spine (steps 1–8, the engine-presence / exec-permission / scratch-orphan-reclaim / launch-intake / WebView-absent-fault slots) is the **app-shell spine homed in P2's startup-sequence-ordering cluster** per the README P2 scope; P1 lands only the compile-and-boot stages, P2 establishes the ordering, later phases fill the bodies. The §7.2.1 ref is read-only context here (the ordered sequence is P2's box).
-  - [ ] **P1.15.1** [RUST] Assert §7.2.2 zero-startup-network as a boot invariant test · §7.2.2 §2.11 · G29
+  - [x] **P1.15.1** [RUST] Assert §7.2.2 zero-startup-network as a boot invariant test · §7.2.2 §2.11 · G29
     > a unit/property assertion that the boot path opens no socket (the §7.2.2 observable property + the Lane-A compensating guard for the Lane-B-only egress gate, §6.7.1); pairs with the P0 G29 `std::net` allow-list rule (rule (g)) which is initially empty.
 - [ ] **P1.16** [RUST] Create the §7.3.1 main window + show an empty WebView frame · §7.3.1 §0.3.1
   needs: P1.13, P1.20, P1.27
