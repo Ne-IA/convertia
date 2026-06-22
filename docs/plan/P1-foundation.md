@@ -240,7 +240,7 @@ the per-push a11y leg (G33a) against real source.
   - [x] **P1.35.1** [UI] Add the `fast-check` TS property-test dependency + its §0.8 pinned-floor JS supply-chain assertion · §6.4.2 §0.8 · G18c G18d
     needs: P1.2.2
     > add `fast-check` (the P0.5.2 canonical TS property-test library — Rust uses `proptest`, TS uses `fast-check`, the language split) to the frontend `package.json` **devDependencies**, regenerate + commit `pnpm-lock.yaml`, and add it to the **P1.60 JS-tree §0.8 pinned-floor / resolution-URL / lifecycle-script assertion set** (G18c/G18d) so the new dep is covered by the same supply-chain leg as `zustand`/`vitest-axe`/WebdriverIO — mirroring exactly how P1.31.1 homes Zustand. This is the dep the P0.5.2 property-test doctrine, the P0.3.10 G9 invariant (f) (`fc.gen(` shrink-wrapper ban), and the P1.33 project-local `fc.gen()` eslint rule all presuppose; without this box `fast-check` is referenced everywhere but installed by no box. Dependency only; the first TS property test that USES it carries `needs: P1.35.1`.
-- [ ] **P1.36** [UI] Add the §5.1 lint rule enforcing the single-IPC-consumer boundary · §5.1 · G5
+- [x] **P1.36** [UI] Add the §5.1 lint rule enforcing the single-IPC-consumer boundary · §5.1 · G5
   needs: P1.33, P1.27
   > an ESLint rule (or config restriction) failing any `@tauri-apps/api` import outside `src/lib/ipc/**` — the §5.1 "exactly one IPC consumer" discipline the spec requires be lint-enforceable; runs in the P0 G5 lint leg.
 
