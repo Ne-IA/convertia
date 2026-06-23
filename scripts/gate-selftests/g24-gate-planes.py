@@ -104,6 +104,33 @@ record("plain [fail_open] table fails cleanly (rc 1, no traceback)",
 
 leg("unparseable TOML -> exit 2", 'default_posture = "fail-closed"\n[[plane\n', 2)
 
+# --- posture_flag structural integrity (P1.66) ------------------------------------------------
+# The scheduled fail-soft -> fail-closed registry: each row must name a real script + real plane
+# files + a --flag + a P<n> phase. A malformed row (the structural half of the G71/P1 prevention)
+# must FAIL here; plan-lint check 27 does the phase-aware WIRING half. Paths resolve against the
+# REAL repo root, so positive legs name real files (check-l-neg1-ack / lefthook.yml / ci.yml).
+PF = ('[[posture_flag]]\ngate = "G71"\nscript = "scripts/check-l-neg1-ack"\n'
+      'enforce_flag = "--enforce"\nfail_closed_after_phase = "P1"\n'
+      'planes = ["lefthook.yml", ".github/workflows/ci.yml"]\nreason = "r"\n')
+VALID_PF = VALID + PF
+leg("a well-formed posture_flag row passes", VALID_PF, 0)
+leg("posture_flag missing a field (no enforce_flag) fails", VALID_PF.replace('enforce_flag = "--enforce"\n', ""), 1)
+leg("posture_flag enforce_flag without -- fails", VALID_PF.replace('enforce_flag = "--enforce"', 'enforce_flag = "enforce"'), 1)
+leg("posture_flag fail_closed_after_phase not a P<n> token fails",
+    VALID_PF.replace('fail_closed_after_phase = "P1"', 'fail_closed_after_phase = "phase-one"'), 1)
+leg("posture_flag planes = [] (empty) fails", VALID_PF.replace('planes = ["lefthook.yml", ".github/workflows/ci.yml"]', 'planes = []'), 1)
+leg("posture_flag script that does not exist fails (dead guard path)",
+    VALID_PF.replace('script = "scripts/check-l-neg1-ack"', 'script = "scripts/__nope__"'), 1)
+leg("posture_flag plane file that does not exist fails (dead guard path)",
+    VALID_PF.replace('".github/workflows/ci.yml"', '"nope/__missing__.yml"'), 1)
+leg("posture_flag unknown key fails", VALID_PF.replace('reason = "r"\n', 'reason = "r"\nbogus = "x"\n'), 1)
+# a plain [posture_flag] table (not array-of-tables) must FAIL cleanly (rc 1, no traceback)
+_pf_plain = VALID + ('[posture_flag]\ngate = "G71"\nscript = "scripts/check-l-neg1-ack"\n'
+                     'enforce_flag = "--enforce"\nfail_closed_after_phase = "P1"\nplanes = ["lefthook.yml"]\n')
+_rc2, _err2 = run(_pf_plain)
+record("plain [posture_flag] table fails cleanly (rc 1, no traceback)",
+       _rc2 == 1 and "Traceback" not in _err2, f"rc={_rc2}, traceback={'Traceback' in _err2}")
+
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-gate-planes] {len(results) - len(failed)}/{len(results)} assertions passed.")
 sys.exit(1 if failed else 0)

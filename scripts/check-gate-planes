@@ -17,6 +17,13 @@ gates slot into) - is well-formed and complete:
       plane-SHAPED `covered_by` token must resolve to a defined plane (no dangling "L99").
       `covered_by` MAY instead be a non-plane PHASE reference (e.g. "P10 / P3+ activation",
       "P0.7.17 provisioning") - then no plane self-cover is possible and only its presence is asserted.
+  (4) every [[posture_flag]] row is well-formed: a posture-flag gate (one whose enforcement depends on
+      a CLI flag with a SCHEDULED fail-soft -> fail-closed transition at a phase boundary) names its
+      `gate`, the `script` + the `enforce_flag`, the `fail_closed_after_phase` (a P<n> token), and the
+      `planes` (the plane FILES that must carry the flag). The script + every plane file MUST EXIST (a
+      dead path = a guard that can never bind). This validates STRUCTURE only; the phase-aware WIRING
+      assertion (was a DUE flip actually wired?) is plan-lint check 27 - the prevention for the G71/P1
+      defect class (a scheduled fail-soft -> fail-closed flip that was promised in prose but never wired).
 
 This is the plane-DEFINITION-integrity sibling of G54 (plane-EXECUTION integrity: hooks installed
 + not redirected). stdlib-only (tomllib, Python 3.11+). fail-closed: any defect -> exit 1.
@@ -32,11 +39,15 @@ import sys
 import tomllib
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]   # repo root (for posture_flag script/plane existence)
 REQUIRED_PLANES = ("L(-1)", "L0", "L1", "L2", "L3", "L4", "L5")
 PLANE_FIELDS = ("id", "name", "trigger", "enforcement", "mirror")
 PLANE_OPTIONAL = ("budget_seconds", "budget_kind")
 FAIL_OPEN_FIELDS = ("gate", "fail_open_at", "covered_by", "reason")
 FAIL_OPEN_OPTIONAL = ("leg",)
+POSTURE_FLAG_FIELDS = ("gate", "script", "enforce_flag", "fail_closed_after_phase", "planes")
+POSTURE_FLAG_OPTIONAL = ("reason", "leg")
+_PHASE_RE = re.compile(r"^P\d+$")
 
 # A token that LOOKS like a plane id ("L(-1)", "L0".."L5", or a bogus "L99"): used to catch a
 # dangling / self-covering plane reference in covered_by WITHOUT rejecting a legitimate non-plane
@@ -154,11 +165,54 @@ def main(argv: list[str] | None = None) -> int:
                          "fail_open_at - a plane cannot cover its own fail-open")
                     problems += 1
 
+    # (4) posture_flag rows: structural integrity of the scheduled fail-soft -> fail-closed registry.
+    # MUST be an array-of-tables; the field access below assumes dicts.
+    posture_flags = data.get("posture_flag", [])
+    if not isinstance(posture_flags, list) or not all(isinstance(x, dict) for x in posture_flags):
+        fail("`posture_flag` must be an array-of-tables ([[posture_flag]]), not a plain table or inline value")
+        return 1
+    allowed_pf_keys = set(POSTURE_FLAG_FIELDS) | set(POSTURE_FLAG_OPTIONAL)
+    for pf in posture_flags:
+        gate = pf.get("gate", "?")
+        for field in POSTURE_FLAG_FIELDS:
+            val = pf.get(field)
+            if field == "planes":
+                if not isinstance(val, list) or not val or not all(isinstance(p, str) and p.strip() for p in val):
+                    fail(f"posture_flag {gate!r} 'planes' must be a non-empty list of plane-file paths")
+                    problems += 1
+            elif not str(val if val is not None else "").strip():
+                fail(f"posture_flag {gate!r} lacks '{field}'")
+                problems += 1
+        for key in pf:
+            if key not in allowed_pf_keys:
+                fail(f"posture_flag {gate!r} has an unknown key {key!r}")
+                problems += 1
+        ef = str(pf.get("enforce_flag", "")).strip()
+        if ef and not ef.startswith("--"):
+            fail(f"posture_flag {gate!r} enforce_flag {ef!r} is not a --flag")
+            problems += 1
+        ph = str(pf.get("fail_closed_after_phase", "")).strip()
+        if ph and not _PHASE_RE.match(ph):
+            fail(f"posture_flag {gate!r} fail_closed_after_phase {ph!r} is not a P<n> phase token")
+            problems += 1
+        # the script + every plane file MUST EXIST - a dead path is a guard that can never bind.
+        script = str(pf.get("script", "")).strip()
+        if script and not (ROOT / script).is_file():
+            fail(f"posture_flag {gate!r} script {script!r} does not exist (dead guard path)")
+            problems += 1
+        planes_val = pf.get("planes")
+        if isinstance(planes_val, list):
+            for p in planes_val:
+                if isinstance(p, str) and p.strip() and not (ROOT / p.strip()).is_file():
+                    fail(f"posture_flag {gate!r} plane file {p!r} does not exist (dead guard path)")
+                    problems += 1
+
     if problems:
         print(f"[G54b] gate-plane config FAILED ({problems} problem(s)).", file=sys.stderr)
         return 1
     print(f"[G54b] gate-plane config OK ({len(planes)} planes, "
-          f"{len(fail_opens)} justified fail-open exception(s))")
+          f"{len(fail_opens)} justified fail-open exception(s), "
+          f"{len(posture_flags)} posture-flag gate(s))")
     return 0
 
 

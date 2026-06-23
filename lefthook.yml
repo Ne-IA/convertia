@@ -92,8 +92,8 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
   commands:
     gate-plane-integrity:
       run: python3 scripts/check-gate-plane --pre-push
-    l-neg1-ack:      # G71 - owner-ack on any L(-1)-touching commit in the push range (fail-soft in P0)
-      run: python3 scripts/check-l-neg1-ack
+    l-neg1-ack:      # G71 - owner-ack on any L(-1)-touching commit in the push range (fail-CLOSED from P1; --enforce wired P1.66)
+      run: python3 scripts/check-l-neg1-ack --enforce
     gitleaks:        # G2 - scan the unpushed range (the last local catch before a secret goes public)
       run: python3 scripts/run-gitleaks --range
     dual-review:     # G12 - the Dual-Review trailer on each unpushed non-check-off commit

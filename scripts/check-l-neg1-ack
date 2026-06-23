@@ -93,14 +93,21 @@ def git(*args: str) -> tuple[int, str]:
 
 
 def _resolves(ref: str) -> bool:
-    return git("rev-parse", "--verify", "--quiet", ref)[0] == 0
+    # Peel to ^{commit} so a well-formed-but-ABSENT 40-hex SHA (an all-zeros / rewritten
+    # github.event.before on a first push / force-push / recreated ref) returns rc!=0 and routes
+    # to the tip-only fallback, instead of `rev-parse --verify <40-hex>` rc=0 (git treats any full
+    # hex as already-resolved) -> a fatal `rev-list 0000..HEAD` that reds main under --enforce.
+    # Mirrors the sibling check-dual-review (the fail-CLOSED base resolution, not the old soft one).
+    return git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")[0] == 0
 
 
 def resolve_base(explicit: str | None) -> str | None:
     """An explicit --base if it resolves, else the @{u}->origin/<branch>->origin/main->origin/HEAD
     chain. None if none resolve (=> degrade to auditing only the tip commit)."""
     if explicit:
-        return explicit if _resolves(explicit) else None
+        # an all-zeros base (a brand-new ref's github.event.before) strips to empty -> None ->
+        # the tip-only fallback below (never a fatal `rev-list 0000..HEAD` under --enforce).
+        return explicit if (explicit.strip("0") and _resolves(explicit)) else None
     cands = ["@{u}"]
     rc, b = git("rev-parse", "--abbrev-ref", "HEAD")
     b = b.strip()

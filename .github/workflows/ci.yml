@@ -285,10 +285,10 @@ jobs:
         run: python3 scripts/check-branch-protection
         env:
           GH_TOKEN: ${{ github.token }}
-      - name: 'G71: L(-1)-ack change-control over the push range (fail-soft in P0; --enforce wired in P1)'
+      - name: 'G71: L(-1)-ack change-control over the push range (fail-CLOSED, P1.66; --enforce)'
         env:
           BEFORE: ${{ github.event.before }}   # via env (not inline) to avoid template-injection (G50/zizmor)
-        run: python3 scripts/check-l-neg1-ack --base "$BEFORE"
+        run: python3 scripts/check-l-neg1-ack --base "$BEFORE" --enforce
       - name: 'G12: Dual-Review trailer over the push range (L4 mirror of the L2 pre-push gate)'
         if: github.event_name == 'push'        # build-loop commits only; fork-PR commits carry no trailer
         env:

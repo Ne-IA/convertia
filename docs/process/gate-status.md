@@ -76,7 +76,12 @@ side. **G69** (the §1a structural-map ↔ on-disk bijection) activated at **P1.
 structure-establishment box — and its row is below. The remaining two `→ activated in P1`-annotated
 gates are NOT rows here yet, by design: **G22/G23** (the format membership/completeness mirror gates)
 activate when their §04-matrix / corpus / `convert_*` targets stand up in **P3–P7**, so they add their
-rows then. (The continuously-active scanners G8 / G29 / G71 are a different class — see the P1.62 plan note.)
+rows then. (The continuously-active scanners G8 / G29 are a different class — see the P1.62 plan note.
+**G71 was originally grouped here too — and that misclassification is exactly why its scheduled fail-soft
+→ fail-closed flip was missed through all of P1: it is NOT a continuously-active scanner but a
+posture-flag gate with a due P1 transition. P1.66 corrected it — the flip is wired and its row is below,
+now mechanically guarded by the `[[posture_flag]]` registry + plan-lint check 27 so it can never silently
+un-flip again.**)
 
 | Gate | Activated-in | Now-real target (P-box) | Negative self-test — a planted violation MUST fail | Flipped |
 |---|---|---|---|---|
@@ -90,6 +95,7 @@ rows then. (The continuously-active scanners G8 / G29 / G71 are a different clas
 | **G30** — cross-platform build-matrix | P1.62.8 | the 3-OS `compile-sanity` matrix (P1.58); the universal-sidecar fat-Mach-O slice assertion stays target-absent until the P10 release staging | **gate-logic self-test:** `g24-build-matrix` plants a single-arch fat-named Mach-O that MUST fail the slice-assertion. **Separate live CI enforcer (not the G30 gate script):** the P1.58 `compile-sanity` job reddens on a platform-specific compile break | 2026-06-23 |
 | **G18 / G18a–d** — supply-chain + lockfile integrity | P1.62.9 | `Cargo.lock` / `pnpm-lock.yaml` / `.npmrc` (P1.6 / P1.59 / P1.60) | `g24-supply-chain` + `g24-lockfile-integrity` + `g24-js-supply-chain` — a non-frozen lockfile / bad resolution URL / lifecycle-script-enabled dep / forbidden crate fails | 2026-06-23 |
 | **G69** — §1a structural-map ↔ on-disk-tree bijection | P1.64 | the CLAUDE.md §1a Repo-layout map + the spec §0.7 physical tree (§1a authored, §0.7 expanded to all 60 tracked dirs, the `PLACEHOLDER` stub removed → the skip lifted; the `spec-0.7-physical-tree` G68 fingerprint re-blessed same-commit) | `g24-plan-lint` check-26 — a planted on-disk dir absent from §1a (disk-not-in-map) / a §1a dir not on disk (map-not-on-disk) / a §1a dir §0.7 does not home (map-not-in-spec07) MUST fail | 2026-06-23 |
+| **G71** — L(-1) change-control cage (the missed fail-soft → fail-closed flip) | P1.66 (corrects the P1.62 exemption miss) | `scripts/check-l-neg1-ack --enforce` wired at L2 (`lefthook.yml`) + L4 (`.github/workflows/ci.yml`); the `[[fail_open]]` excuse removed from `gate-planes.toml` + a permanent `[[posture_flag]]` registry row added | `g24-plan-lint` check-27 — a DUE flip (phase complete) not wired with `--enforce`, or a stale `[[fail_open]]` excuse, MUST fail; + `g24-gate-planes` posture_flag structural legs | 2026-06-23 |
 
 The four **owner-decidable over-assurance contracts** (`cargo-acl`/cackle, Kani, `cargo-careful`,
 `cargo-geiger`) ALSO carry `→ activated in P1`, but — being `informational`-only, not fail-closed —

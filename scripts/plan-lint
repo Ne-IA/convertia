@@ -7,9 +7,9 @@ docs/process/, docs/plan/). It enforces TWO families of checks:
   * FORMAT checks (_format.md §7) — the plan-box grammar: marker validity, sub-box consistency,
     header well-formedness, tag validity, reference resolution, needs:-targets exist + acyclic,
     annotation pairing, numbering gap-freeness.
-  * DOC checks 1..26 (build-gates.md §6) — doc-wide consistency: cross-reference validity, heading
+  * DOC checks 1..27 (build-gates.md §6) — doc-wide consistency: cross-reference validity, heading
     hierarchy, gate-catalogue integrity, forbidden tokens, §0.11<->§5 threat parity, inventory
-    parity, the G68 doc-graph leg, the G69 struct-map leg, etc.
+    parity, the G68 doc-graph leg, the G69 struct-map leg, the check-27 gate-posture-transition leg, etc.
 
 Checks whose source-of-truth target does not exist yet SKIP-WITH-WARNING (the target-absent posture)
 and flip to fail-closed the moment the target lands — e.g. the P3–P7 format-membership /
@@ -17,7 +17,7 @@ corpus-completeness gates (G22 / G23 / G24a) stay target-absent until their phas
 handlers + `tests/corpus/`. This file is L(-1) security-critical (G71).
 
 Build status: foundation + the 8 FORMAT checks are implemented + self-tested. The doc-wide checks
-1..26 are added incrementally by P0.3.5 (each with its G24 negative fixture); until a doc check is
+1..27 are added incrementally by P0.3.5 (each with its G24 negative fixture); until a doc check is
 implemented it is listed in CHECKS as a NotImplemented placeholder that the meta-self-test asserts.
 
 Usage: plan-lint [--check <id>] [--json] [--quiet] [--max-per-check N] [--root <dir>]
@@ -348,7 +348,7 @@ def fmt_numbering_gap_free(ctx: Ctx) -> list[Finding]:
 
 
 # =============================================================================================
-#  DOC checks (build-gates.md §6, checks 1..26) — added incrementally; active-now ones first.
+#  DOC checks (build-gates.md §6, checks 1..27) — added incrementally; active-now ones first.
 # =============================================================================================
 _GATE_ROW_RE = re.compile(r"^\| \*\*G(\d+)\*\* \|", re.M)
 # the canonical §0.11 / §5 threat-class set (security-concept §5 table + the canonical list) — 17 classes
@@ -1557,8 +1557,99 @@ def doc26_struct_map(ctx: Ctx) -> list[Finding]:
             for kind, d in _struct_map_relations(map_dirs, disk_dirs, spec07_dirs)]
 
 
+def _completed_phases(boxes: list[Box]) -> set[str]:
+    """{'P<n>'} for every phase whose boxes are ALL marker=='x' (>=1 box, none open/blocked/extern).
+    Used by check 27 to know when a scheduled fail-soft -> fail-closed flip is DUE."""
+    done: set[str] = set()
+    for p in {b.phase for b in boxes}:
+        pboxes = [b for b in boxes if b.phase == p]
+        if pboxes and all(b.marker == "x" for b in pboxes):
+            done.add(f"P{p}")
+    return done
+
+
+def _posture_wired_in(text: str, script: str, flag: str) -> bool:
+    """True iff a NON-comment line invokes `script` (matched by basename) carrying `flag`. A full-line
+    `#` comment AND a trailing inline comment (` # ...`) are stripped first, so a flag mentioned only
+    in a comment (`run: ... # --enforce`) or in prose does NOT count as wired - the exact
+    'promised, not applied' shape this prevention targets. A missing/empty plane text is NOT wired."""
+    base = script.rsplit("/", 1)[-1]
+    for line in text.splitlines():
+        s = line.split(" #", 1)[0].strip()      # drop a trailing inline comment before the test
+        if not s or s.startswith("#"):
+            continue
+        if base in s and flag in s:
+            return True
+    return False
+
+
+def _gate_posture_findings(posture_rows: list, fail_open_gates: set[str],
+                           completed_phases: set[str], plane_texts: dict[str, str]) -> list[str]:
+    """Pure core of check 27. For each posture-flag gate: once `fail_closed_after_phase` is COMPLETE,
+    the gate MUST be invoked with `enforce_flag` in EVERY `plane` AND carry no [[fail_open]] excuse;
+    while the phase is INCOMPLETE the soft posture must be justified (a fail_open row) or already wired.
+    Returns a list of finding messages (empty = sound)."""
+    out: list[str] = []
+    for pf in posture_rows:
+        if not isinstance(pf, dict):
+            out.append("check 27: a [[posture_flag]] row is not a table (fail-closed)")
+            continue
+        gate = str(pf.get("gate", "?")).strip() or "?"
+        script = str(pf.get("script", "")).strip()
+        flag = str(pf.get("enforce_flag", "")).strip()
+        phase = str(pf.get("fail_closed_after_phase", "")).strip()
+        planes = [p for p in (pf.get("planes") or []) if isinstance(p, str) and p.strip()]
+        if not (script and flag and phase and planes):
+            out.append(f"check 27: posture_flag {gate!r} is under-specified "
+                       "(needs script/enforce_flag/fail_closed_after_phase/planes)")
+            continue
+        if phase in completed_phases:
+            if gate in fail_open_gates:
+                out.append(f"check 27: {gate} is due fail-CLOSED ({phase} complete) but a [[fail_open]] "
+                           "row still excuses its soft posture - remove the fail_open row")
+            for p in planes:
+                if not _posture_wired_in(plane_texts.get(p, ""), script, flag):
+                    out.append(f"check 27: {gate}'s scheduled fail-soft -> fail-closed flip is DUE "
+                               f"({phase} complete) but `{script} {flag}` is NOT wired in {p!r} - the "
+                               "posture transition was promised but never wired (the G71/P1 defect class)")
+        elif gate not in fail_open_gates and not all(
+                _posture_wired_in(plane_texts.get(p, ""), script, flag) for p in planes):
+            out.append(f"check 27: {gate} is fail-soft ({phase} not complete) but carries no [[fail_open]] "
+                       f"justification and is not wired enforcing - add a fail_open row or wire `{flag}`")
+    return out
+
+
+def doc27_gate_posture_transition(ctx: Ctx) -> list[Finding]:
+    """Check 27 (the G71/P1 prevention): every posture-flag gate's SCHEDULED fail-soft -> fail-closed
+    transition is mechanically honored. Reads the [[posture_flag]] registry in scripts/gate-planes.toml;
+    for each row, once its `fail_closed_after_phase` is COMPLETE (every plan box of that phase is [x]),
+    asserts the gate is actually invoked with its `enforce_flag` in every `plane` file AND no
+    [[fail_open]] row still excuses it. SKIPS (target-absent) only if gate-planes.toml is absent or
+    carries no [[posture_flag]] rows; fail-closed on a due-but-unwired flip (or unparseable config)."""
+    gp = ctx.root / "scripts" / "gate-planes.toml"
+    if not gp.is_file():
+        return []
+    try:
+        data = tomllib.loads(gp.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError:
+        return [Finding("27:gate-posture-transition", "scripts/gate-planes.toml", 0,
+                        "gate-planes.toml is unparseable - cannot verify posture-flag transitions (fail-closed)")]
+    posture_rows = data.get("posture_flag", [])
+    if not isinstance(posture_rows, list) or not posture_rows:
+        return []                                  # no posture-flag registry yet -> target-absent skip
+    fail_open_gates = {str(x.get("gate", "")).strip()
+                       for x in data.get("fail_open", []) if isinstance(x, dict)}
+    plane_paths = {p for pf in posture_rows if isinstance(pf, dict)
+                   for p in (pf.get("planes") or []) if isinstance(p, str) and p.strip()}
+    plane_texts = {p: ((ctx.root / p).read_text(encoding="utf-8", errors="replace")
+                       if (ctx.root / p).is_file() else "") for p in plane_paths}
+    return [Finding("27:gate-posture-transition", "scripts/gate-planes.toml", 0, msg)
+            for msg in _gate_posture_findings(posture_rows, fail_open_gates,
+                                              _completed_phases(ctx.boxes), plane_texts)]
+
+
 # =============================================================================================
-#  Check registry — FORMAT checks live; doc checks 1..26 added incrementally (P0.3.5).
+#  Check registry — FORMAT checks live; doc checks 1..27 added incrementally (P0.3.5 + P1.66).
 # =============================================================================================
 FORMAT_CHECKS = {
     "format:box-parse-completeness": fmt_box_parse_completeness,
@@ -1599,8 +1690,9 @@ DOC_CHECKS = {
     "23:ratchet-log": doc23_ratchet_log,
     "24:p0-completion-record": doc24_p0_completion,
     "26:struct-map": doc26_struct_map,
+    "27:gate-posture-transition": doc27_gate_posture_transition,
 }
-CHECKS = {**FORMAT_CHECKS, **DOC_CHECKS}   # remaining doc checks 1..26 inserted as built
+CHECKS = {**FORMAT_CHECKS, **DOC_CHECKS}   # remaining doc checks 1..27 inserted as built
 
 
 def run(ctx: Ctx, only: str | None = None, max_per_check: int | None = None) -> list[Finding]:

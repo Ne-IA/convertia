@@ -64,6 +64,14 @@ record("ack regex: wrong value 'L-neg1-ack: co-pilot' -> no match",
 record("ack regex: inline (not line-start) -> no match",
        not m.ACK_RE.search("see L-neg1-ack: owner here"))
 
+# --- base resolution hardening (P1.66): an all-zeros / absent github.event.before must route to the
+# tip-only fallback, NOT fatal-red under --enforce (the ^{commit}-peel + strip('0'), mirroring the
+# sibling check-dual-review). Unit here; proven end-to-end in the temp repo below.
+record("base: an all-zeros 40-hex base does NOT resolve (peeled to ^{commit})", m._resolves("0" * 40) is False)
+record("base: HEAD still resolves (the peel does not break a real ref)", m._resolves("HEAD") is True)
+record("base: resolve_base(all-zeros) -> None (strip('0') short-circuits before any rev-list)",
+       m.resolve_base("0" * 40) is None)
+
 
 # --- end-to-end in a REAL temp git repo -------------------------------------------------------
 def _git(repo: Path, *args: str) -> str:
@@ -141,6 +149,17 @@ with tempfile.TemporaryDirectory() as td:
     fake = _commit(repo, "lefthook.yml", "x: 4\n", "chore(todo): sneaky abgehakt")
     record("E2E: chore(todo) subject over lefthook.yml -> exit 1 (no check-off escape for L(-1))",
            run_gate(repo, rt, fake, enforce=True) == 1)
+
+    # an ALL-ZEROS base (a brand-new ref's github.event.before) must NOT fatal-red under --enforce: it
+    # routes to the tip-only fallback (the P1.66 ^{commit}-peel + strip('0')), not a fatal `rev-list
+    # 0000..HEAD` -> exit 1. With a CLEAN non-L(-1) tip -> exit 0; the fallback STILL audits the tip,
+    # so an L(-1) tip lacking the trailer -> exit 1 (not a blanket pass).
+    clean_tip = _commit(repo, "README.md", "# zzz\n", "docs: another readme tweak")
+    record("E2E: all-zeros base, clean tip, --enforce -> exit 0 (tip-only fallback, no rev-list 0000.. fatal)",
+           run_gate(repo, "0" * 40, clean_tip, enforce=True) == 0)
+    dirty_tip = _commit(repo, "lefthook.yml", "x: 9\n", "ci: hook tweak (no ack)")
+    record("E2E: all-zeros base, L(-1) tip, no trailer, --enforce -> exit 1 (the tip is still audited)",
+           run_gate(repo, "0" * 40, dirty_tip, enforce=True) == 1)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-l-neg1-ack] {len(results) - len(failed)}/{len(results)} assertions passed.")

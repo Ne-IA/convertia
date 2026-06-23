@@ -77,8 +77,12 @@ mirror = "CI only (assembled in P10)"
 #       fail-closed net (so a missed local diff cannot escape - L4 re-checks the whole tree);
 #   (b) a TARGET-ABSENT gate skips-with-warning while the artifact it inspects does not yet
 #       exist (the P0 "authored now, fail-closes when the target lands" bootstrap posture);
-#   (c) the L(-1)/G71 + G56a/G56b CONFIG-introspection gates are fail-SOFT during the P0
-#       bootstrap and fail-CLOSED from P1.
+#   (c) a gate with a SCHEDULED fail-soft -> fail-closed transition at a phase boundary
+#       (the CONFIG-introspection gates) is fail-SOFT during the P0 bootstrap and fail-CLOSED
+#       once its phase lands. Such a transition is NO LONGER a prose-only promise: it is bound
+#       to the [[posture_flag]] registry below + plan-lint check 27, which fails CLOSED if a due
+#       flip was not actually wired (the G71/P1 lesson — see the [[posture_flag]] note). G56a's
+#       fork-PR row is pattern (a); G56b's signed-tag leg is the live pattern-(c) case (flips at P10).
 # Rows are added by each gate's box as it is built (P0.3/P0.4+); the set below seeds the
 # already-built fail-open legs. Every row MUST name `covered_by` + `reason`.
 
@@ -110,9 +114,25 @@ fail_open_at = "L5"
 covered_by = "P0.7.17 provisioning"
 reason = "git verify-tag is skip-with-warning until the SSH allowed-signers file is provisioned in P0.7.17, then fail-CLOSED; legs 1/2 (ancestry, green-history) are fail-closed always (pattern c)"
 
-[[fail_open]]
+# (G71's former fail_open row was REMOVED when its scheduled P0->P1 flip was finally wired
+#  (P1.66): check-l-neg1-ack is now invoked WITH --enforce at both L2 (lefthook pre-push) and
+#  L4 (ci.yml), so the L(-1) cage is fail-CLOSED. Its [[posture_flag]] row below now GUARDS that
+#  state — re-removing --enforce, or re-adding a fail_open excuse, re-fails plan-lint check 27.)
+
+# --- posture-flag gates: a SCHEDULED fail-soft -> fail-closed transition, made MECHANICAL -----
+# A "posture-flag" gate is one whose enforcement depends on a CLI flag (e.g. `--enforce`) and that
+# is deliberately fail-soft during a bootstrap phase, due to flip fail-CLOSED once a named phase
+# completes. Historically that flip was a PROSE-ONLY obligation (G71's --enforce was "wired from P1"
+# per security-concept §2, this file's old fail_open row, and the ci.yml step name) that NO box owned
+# and NO check verified -> it silently never happened (the cage ran fail-soft through all of P1).
+# This registry closes that defect CLASS: plan-lint check 27 asserts that once `fail_closed_after_phase`
+# is complete (every plan box of that phase is [x]), the gate is actually invoked with `enforce_flag`
+# in EVERY `plane` file AND carries no fail_open excuse; check-gate-planes (G54b) validates this
+# section's shape. A row stays here PERMANENTLY so the guard also catches a later regression.
+[[posture_flag]]
 gate = "G71"
-leg = "L(-1)-ack pre-push"
-fail_open_at = "L2"
-covered_by = "owner/Co-Pilot manual drive during P0"
-reason = "fail-SOFT during the P0 bootstrap (the build itself edits L(-1) files under owner drive), fail-CLOSED from P1 (pattern c); wired P0.2.14 (L2 lefthook + the L4 CI mirror over github.event.before..HEAD)"
+script = "scripts/check-l-neg1-ack"
+enforce_flag = "--enforce"
+fail_closed_after_phase = "P1"
+planes = ["lefthook.yml", ".github/workflows/ci.yml"]
+reason = "the L(-1) change-control cage: fail-soft during the P0 bootstrap (the build itself edits L(-1) files under owner drive), fail-CLOSED from P1 (security-concept §2). The transition was unowned + unverified in P1 and silently never happened; this row + plan-lint check 27 make it self-healing-or-red."

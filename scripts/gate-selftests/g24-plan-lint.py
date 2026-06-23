@@ -663,6 +663,48 @@ record("26 parse: a same-line sibling must be a SIMPLE dir — an embedded-path 
 record("26 parse: a hash-annotation slash-word is not mined either (§0.7 # convention)",
        m._parse_tree_dirs(["convertia/", "└── src/   # see config/secrets/ for details"]) == {"src"})
 
+# --- check 27 (the G71/P1 prevention): posture-flag fail-soft -> fail-closed transition wiring -----
+# The pure core ARMS: a DUE-but-unwired flip / a DUE flip with a stale fail_open excuse / an
+# unjustified soft posture are each CAUGHT; and the REAL committed registry passes (G71 wired) yet
+# would FAIL if its wiring were stripped of --enforce (the exact original G71/P1 silent-no-flip). [P1.66]
+_PF_ROWS = [{"gate": "G71", "script": "scripts/check-l-neg1-ack", "enforce_flag": "--enforce",
+             "fail_closed_after_phase": "P1", "planes": ["lefthook.yml", ".github/workflows/ci.yml"]}]
+_PF_WIRED = {"lefthook.yml": "run: python3 scripts/check-l-neg1-ack --enforce\n",
+             ".github/workflows/ci.yml": 'run: python3 scripts/check-l-neg1-ack --base "$X" --enforce\n'}
+_PF_UNWIRED = {"lefthook.yml": "run: python3 scripts/check-l-neg1-ack\n",
+               ".github/workflows/ci.yml": 'run: python3 scripts/check-l-neg1-ack --base "$X" --enforce\n'}
+record("27 posture: DUE (phase complete) + wired everywhere + no fail_open -> clean",
+       m._gate_posture_findings(_PF_ROWS, set(), {"P1"}, _PF_WIRED) == [])
+record("27 posture: DUE + a plane NOT wired -> caught (the exact G71/P1 unwired-flip bug)",
+       any("NOT wired" in s for s in m._gate_posture_findings(_PF_ROWS, set(), {"P1"}, _PF_UNWIRED)))
+record("27 posture: DUE + a stale [[fail_open]] row still excusing it -> caught",
+       any("excuses" in s for s in m._gate_posture_findings(_PF_ROWS, {"G71"}, {"P1"}, _PF_WIRED)))
+record("27 posture: phase NOT complete + no fail_open + not wired -> caught (unjustified soft)",
+       any("fail-soft" in s for s in m._gate_posture_findings(_PF_ROWS, set(), set(), _PF_UNWIRED)))
+record("27 posture: phase NOT complete + a fail_open row justifies the soft posture -> clean",
+       m._gate_posture_findings(_PF_ROWS, {"G71"}, set(), _PF_UNWIRED) == [])
+record("27 posture: an under-specified row (empty planes) -> caught",
+       any("under-specified" in s for s in m._gate_posture_findings(
+           [{"gate": "Gx", "script": "s", "enforce_flag": "--e", "fail_closed_after_phase": "P1", "planes": []}],
+           set(), {"P1"}, {})))
+record("27 wired-in: a '#'-commented invocation is NOT counted as wired",
+       m._posture_wired_in("# run: scripts/check-l-neg1-ack --enforce\n", "scripts/check-l-neg1-ack", "--enforce") is False)
+record("27 wired-in: a TRAILING inline comment (' # --enforce') is NOT counted (promised, not applied)",
+       m._posture_wired_in("run: python3 scripts/check-l-neg1-ack  # --enforce\n", "scripts/check-l-neg1-ack", "--enforce") is False)
+record("27 wired-in: a real run-line invocation IS counted",
+       m._posture_wired_in("run: python3 scripts/check-l-neg1-ack --enforce\n", "scripts/check-l-neg1-ack", "--enforce") is True)
+record("27 phases: an open [ ] box blocks completion; an all-[x] phase is complete",
+       m._completed_phases([box(bid="P1.1", raw="x"), box(bid="P1.2", raw=" ")]) == set()
+       and m._completed_phases([box(bid="P1.1", raw="x")]) == {"P1"})
+record("27 doc27: the REAL repo passes (G71 wired, P1 complete, no fail_open excuse)",
+       m.doc27_gate_posture_transition(_real) == [])
+# the REAL committed registry ARMS: real posture rows + a wiring stripped of --enforce -> caught
+_gp27 = m.tomllib.loads((ROOT / "scripts" / "gate-planes.toml").read_text(encoding="utf-8"))
+_real_pf = _gp27.get("posture_flag", [])
+_stripped27 = {p: "run: python3 scripts/check-l-neg1-ack\n" for pf in _real_pf for p in pf.get("planes", [])}
+record("27 doc27: the REAL committed registry ARMS (real rows + stripped wiring -> caught)",
+       bool(_real_pf) and len(m._gate_posture_findings(_real_pf, set(), {"P1"}, _stripped27)) > 0)
+
 # --- base-case golden invariant ---------------------------------------------------------------
 rc_real = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True, encoding="utf-8", errors="replace").returncode
 record("base-case: the REAL plan passes the format checks (exit 0)", rc_real == 0)
