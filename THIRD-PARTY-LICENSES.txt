@@ -1,0 +1,18 @@
+ConvertIA -- Third-Party Licenses
+=================================
+
+ConvertIA's own code is licensed under the MIT License (see the LICENSE file).
+ConvertIA also bundles third-party conversion engines, each distributed under its
+own license and invoked as a separate binary. For every bundled component, this file
+records its name and version, its full license text, and -- for GPL/LGPL/AGPL
+components -- a written offer of corresponding source (the pinned upstream tag and
+the build recipe), honoring the project's copyleft obligations.
+
+GENERATED FILE -- DO NOT EDIT BY HAND.
+
+In a release build, this file is generated from engines.lock and the dependency SBOM
+(spec section 6.3.2) so it can never drift from what actually ships; the in-app About
+screen presents the same generated listing. This is a placeholder: no bundled engines
+are recorded yet. Per-engine sections are filled in as engines are integrated, and
+finalized for every release; a release cannot ship without the complete, accurate set
+(the release-blocking completeness gate, spec section 6.3.3).

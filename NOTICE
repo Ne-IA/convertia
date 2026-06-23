@@ -1,0 +1,22 @@
+ConvertIA
+Copyright (c) 2026 Ne-IA and ConvertIA contributors
+
+ConvertIA's own code is licensed under the MIT License (see the LICENSE file).
+
+ConvertIA bundles third-party conversion engines that are distributed under their
+own licenses -- including copyleft licenses such as the GPL, LGPL, and AGPL -- as
+separate, independently-invoked binaries. Those components are not covered by
+ConvertIA's MIT license. For every bundled engine, its name and version, its full
+license text, and (for GPL/LGPL/AGPL components) a written offer of corresponding
+source are listed in THIRD-PARTY-LICENSES.txt.
+
+------------------------------------------------------------------------------
+GENERATED FILE -- DO NOT EDIT BY HAND.
+
+In a release build, this NOTICE is generated from engines.lock and the dependency
+SBOM (spec section 6.3.2) so it can never drift from what actually ships. This is a
+placeholder: no bundled engines are recorded yet. Per-engine entries are filled in as
+the bundled engines are integrated, and finalized for every release; a release cannot
+ship without the complete, accurate listing (the release-blocking completeness gate,
+spec section 6.3.3).
+------------------------------------------------------------------------------
