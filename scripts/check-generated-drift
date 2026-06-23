@@ -13,10 +13,12 @@ this framework:
      generated file is a producer failure that a pure diff would miss when the committed copy is also
      truncated).
 
-The ARTIFACTS registry is EMPTY in P0 - the codegen targets (bindings.ts, the CLI, the asset manifest)
-do not exist until P1; the framework + its validators + the self-test are authored now, and each
-artifact is registered (with its exact regen command + path + validator) when its producing code lands
-in P1. With an empty registry the gate is target-absent and skips with a notice. stdlib-only.
+The framework + its validators + the self-test were authored in P0; each codegen target is registered
+in the ARTIFACTS registry (with its exact regen command + path + validator) when its producing code
+lands. Registered so far: the tauri-specta `bindings.ts` (P1.28); the CLI `--help` capture + the asset
+manifest register in their own producer boxes. With no artifact registered (or a registered artifact
+whose regen toolchain is absent in this plane) the gate skips with a notice; the live regen+diff
+enforces at L1/L2 + the equipped CI build job. stdlib-only.
 
 Exit: 0 = no drift + all sanity checks pass (or target-absent); 1 = drift / a failed regen / a
        structural-sanity failure; 2 = the framework is mis-configured (an artifact path missing after regen).
@@ -65,10 +67,25 @@ VALIDATORS = {
     "ts-bindings": validate_ts_bindings,
 }
 
-# Each artifact: {"name", "regen": [argv...], "path": "<repo-relative>", "validator": <key>}. EMPTY in
-# P0 - populated in P1 as each producer lands (e.g. the `cargo xtask codegen` -> src/lib/bindings.ts
-# entry). A registered artifact whose `path` is missing after regen is a misconfiguration (exit 2).
-ARTIFACTS: list[dict] = []
+# Each artifact: {"name", "regen": [argv...], "path": "<repo-relative>", "validator": <key>}. Populated
+# as each producer lands (the CLI `--help` capture + asset manifest register in their own producer boxes).
+# A registered artifact whose `path` is missing after regen is a misconfiguration (exit 2).
+ARTIFACTS: list[dict] = [
+    # P1.28: the §0.4.5 tauri-specta Rust->TS IPC bindings (producer: convertia-core's
+    # `regenerate_committed_bindings` codegen test, driven by the xtask `codegen` task). The G19
+    # framework runs THIS exact producer invocation, then asserts `git diff --exit-code` is clean.
+    # [Build-Session-Entscheidung: P1.28 — the regen is the explicit project-specific invocation
+    # `cargo run -p xtask -- codegen` (NOT a `cargo xtask` alias): build-gates G19 sanctions "the
+    # project-specific invocation", xtask/main.rs prescribes this exact form, and adding a
+    # `.cargo/config.toml` alias would introduce a supply-chain-config (source/registry-override)
+    # surface this security-minimalist repo otherwise avoids.]
+    {
+        "name": "ts-bindings",
+        "regen": ["cargo", "run", "-p", "xtask", "--", "codegen"],
+        "path": "src/lib/ipc/bindings.ts",
+        "validator": "ts-bindings",
+    },
+]
 
 
 def _git_clean(path: str) -> bool:
@@ -117,7 +134,7 @@ def check_artifact(art: dict) -> tuple[int, str]:
 
 def main() -> int:
     if not ARTIFACTS:
-        print("[G19] no generated artifacts registered yet (the codegen targets land in P1) - "
+        print("[G19] no generated artifacts registered (each registers when its producer lands) - "
               "skipping the drift check; each artifact is registered with its exact regen command + "
               "path + validator when its producer lands, then fail-closed by glob")
         return 0

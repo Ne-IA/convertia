@@ -73,7 +73,7 @@ gate have real crates to act on (activating P0.4.1/P0.3.6/P0.3.7/P0.4.2).
   - [x] **P1.6.1** [RUST] Reserve the `convertia-imgworker` workspace member as an empty crate · §3.5.5 §0.7 · G53 G29
     > a compile-only stub member (`fn main`) so the workspace graph carries BOTH first-party crates the P0 G29 `#![deny(unsafe_code)]`-on-every-crate-root check + the G53 core-must-not-link-imgworker-libs rule address from P1; the libvips/libheif link work is P4/P5.
   - [x] **P1.6.2** [RUST] Reserve an `xtask` workspace member for codegen/coverage bins · §0.4.5 §6.7.1 · G19
-    > the `xtask` crate that hosts the §0.4.5 codegen invocation + the §6.7.1 step-4/4a Rust xtask bins; named so the P0 G19 drift-check (P0.3.9) can point at a concrete `cargo xtask codegen` command rather than passing on a stale file via a wrong invocation.
+    > the `xtask` crate that hosts the §0.4.5 codegen invocation + the §6.7.1 step-4/4a Rust xtask bins; named so the P0 G19 drift-check (P0.3.9) can point at the project-specific `cargo run -p xtask -- codegen` invocation rather than passing on a stale file via a wrong invocation.
 - [x] **P1.7** [RUST] Generate + commit the initial `Cargo.lock` · §0.8 · G18a G18b
   needs: P1.6
   > the first resolved Rust lockfile so the P0 G18a `--locked`/`git diff --exit-code` contract + the P0.3.6 `cargo vet check`-on-the-initial-`Cargo.lock` exit gate + the `cargo-deny` advisory/license scan have a real lockfile (activates P0.4.9 / the P0.3.6 clean-`cargo vet check` exit for the Rust half).
@@ -195,10 +195,9 @@ a concrete command + path, even though the C-command surface is empty until P2.
 - [x] **P1.27** [UI] Author the `commands.ts`/`events.ts` typed-façade re-export shells · §5.1 §5.8
   needs: P1.26
   > `src/lib/ipc/commands.ts` + `events.ts` re-exporting the generated `bindings.ts` wrappers — the §5.1 hard-rule seam ("only `src/lib/ipc/**` imports `@tauri-apps/api`"); empty re-exports in P1 (feature code that consumes them is P2+), so the one-IPC-consumer discipline is lint-enforceable from the first commit.
-- [!extern] **P1.28** [CI] Define the concrete `cargo xtask codegen` invocation for the G19 drift check · §0.4.5 · G19
+- [x] **P1.28** [CI] Define the concrete `cargo run -p xtask -- codegen` invocation for the G19 drift check · §0.4.5 · G19
   needs: P1.6.2, P1.26
-  > **[!extern] (L(-1)):** registers the `bindings.ts` artifact (regen command + path + validator) in `scripts/check-generated-drift` (L(-1)) — Co-Pilot-authored under owner-ack (G71); the loop skips it. Cleared once P1.6.2 + P1.26 land.
-  > the named `cargo xtask codegen` command (regenerates `bindings.ts` → the P0 G19 framework calls THIS, not a guessed invocation) so the gate cannot silently pass on a stale file via a wrong command; the §06-owned drift check (authored P0.3.9) binds to it here.
+  > the concrete regen registered in `scripts/check-generated-drift` `ARTIFACTS` (regen `cargo run -p xtask -- codegen`, path `src/lib/ipc/bindings.ts`, validator `ts-bindings`) → the P0 G19 framework calls THIS exact invocation, not a guessed one, so the gate cannot silently pass on a stale file via a wrong command; the §06-owned drift check (authored P0.3.9) binds to it here. [Co-Pilot, owner-acked L(-1) edit — `scripts/check-generated-drift` + its self-test are L(-1); the regen is the explicit project-specific invocation (build-gates G19 "or the project-specific invocation"; no `.cargo` alias added — supply-chain-config minimalism); G19 armed against the real `bindings.ts` (exit 0, no drift), self-test 19/19 with a plane-independent populated-registry leg, dual-review opus=GO/sonnet=GO]
 
 ---
 
@@ -322,7 +321,7 @@ ADDED by the phase that produces their input — NOT here.
 - [!extern] **P1.53** [CI] Wire the §6.7.1 step-2 Rust↔TS type-drift check · §6.7.1 §0.4.5 · G19
   needs: P1.51, P1.28
   > **[!extern] (L(-1)):** `.github/workflows/**` is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it.
-  > the Lane-A step running `cargo xtask codegen` + `git diff --exit-code` on `bindings.ts` (the P1.28 invocation) — fails on stale generated types; the concrete activation of the P0 G19 framework (P0.3.9).
+  > the Lane-A step running the P1.28 G19 invocation (`cargo run -p xtask -- codegen`) + `git diff --exit-code` on `bindings.ts` — fails on stale generated types; the concrete activation of the P0 G19 framework (P0.3.9).
 - [!extern] **P1.54** [CI] Wire the §6.7.1 step-3 unit + property + fault-injection test leg (Rust + Vitest) · §6.7.1 §6.4.1 · G27 G28
   needs: P1.51
   > **[!extern] (L(-1)):** `.github/workflows/**` is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it.

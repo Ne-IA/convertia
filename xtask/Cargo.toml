@@ -1,7 +1,7 @@
 # xtask/Cargo.toml — the ConvertIA `cargo xtask` developer-bin workspace member.
 #
 # The standard `cargo xtask` pattern: a workspace member hosting the §0.4.5 IPC-codegen invocation
-# (the concrete `cargo xtask codegen` command the G19 generated-drift check binds to in P1.28) and the
+# (the §0.4.5 codegen task the G19 generated-drift check binds to in P1.28 via `cargo run -p xtask -- codegen`) and the
 # §6.7.1 coverage/build helper bins. A dev tool, never bundled into the shipped product — so the §1.2
 # in-core no-panic policy (G4) deliberately does NOT apply to it; G29 `#![deny(unsafe_code)]` does (it
 # is first-party). At P1.6 it is a compile-only stub member; the codegen/coverage bins are added by

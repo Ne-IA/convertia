@@ -4,8 +4,9 @@
 Proves the drift-check framework: the structural validators (json / text / ts-bindings) catch an empty
 or malformed generated artifact; and check_artifact (over a real temp git repo) returns 0 when
 regeneration leaves the committed file byte-identical, 1 when regeneration DRIFTS it / the regen command
-fails / structural sanity fails, and 2 when the artifact path is missing after regen. main() is
-target-absent (empty registry) today. stdlib-only. Exit 0 = all held; 1 = a self-test failed.
+fails / structural sanity fails, and 2 when the artifact path is missing after regen. main() over the
+populated registry (the ts-bindings artifact since P1.28) skips gracefully where the regen toolchain is
+absent in this plane (plane-independent). stdlib-only. Exit 0 = all held; 1 = a self-test failed.
 """
 import importlib.machinery
 import importlib.util
@@ -92,8 +93,24 @@ with tempfile.TemporaryDirectory() as td:
     finally:
         m.ROOT = orig_root
 
-# --- main() target-absent today ---------------------------------------------------------------
-record("main() exits 0 today (empty ARTIFACTS registry -> target-absent until P1)", m.main() == 0)
+# --- main() with the populated P1 registry: plane-independent (toolchain absent -> graceful skip) ----
+# Since P1.28 the ARTIFACTS registry is non-empty (the ts-bindings artifact). main()'s exit must not
+# depend on whether `cargo` happens to be installed in THIS plane (GitHub runners ship it, the L4
+# gate-tooling plane may not), so we force the regen-toolchain pre-check to skip and assert main()
+# still exits 0 — i.e. a populated registry skips gracefully where the toolchain is absent (the live
+# regen+diff enforces at L1/L2 + the equipped Rust CI leg; the planted-violation arming is P1.62.2).
+def _main_skips_when_toolchain_absent():
+    saved = m.shutil.which
+    m.shutil.which = lambda tool: None
+    try:
+        return m.main()
+    finally:
+        m.shutil.which = saved
+
+
+record("main() exits 0 when the registered artifacts' regen toolchain is absent in this plane "
+       "(populated ARTIFACTS registry since P1.28 -> graceful skip, plane-independent)",
+       _main_skips_when_toolchain_absent() == 0)
 
 # --- the P1-runway fix: an artifact whose regen toolchain is absent in this plane -> check_artifact
 # SKIPS (0), not a FileNotFoundError crash (regen+diff enforces where the toolchain is present) ---------
