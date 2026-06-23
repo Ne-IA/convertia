@@ -269,3 +269,54 @@ jobs:
           python3 scripts/install-gate-tools --tool shellcheck
       - name: 'G29: SAST — armed-canary prelude (planted-positives) → semgrep --validate → scan (vendored rulesets, offline) → shellcheck'
         run: python3 scripts/check-sast --full
+
+  # §6.7.1 step-5 compile-sanity (G30, P1.58): prove the app COMPILES + LINKS as a Tauri app on all three
+  # OS — the "empty window builds on 3 OS from clean checkout" proof. The live counterpart to the P0 G30
+  # build-matrix CONTRACT (check-build-matrix, in gate-tooling, which only FREEZES the native-OS/arch set);
+  # this job proves the set actually builds. Distinct from the gate-tooling gate-script mirror (which
+  # lint/test-COMPILES the crates via clippy --all-targets) — `tauri build` additionally embeds the Vite
+  # frontend (frontendDist: ../dist) + links the app binary, which clippy does not exercise. Its own job
+  # (not gate-tooling steps) because it needs pnpm on ALL 3 OS for the per-OS build, whereas gate-tooling's
+  # pnpm is Linux-only for the OS-agnostic JS lint. No secret is read → per G56 no harden-runner is needed
+  # (same posture as gate-tooling; the crates.io/npm fetch is dev-tooling, not a runtime/product egress).
+  compile-sanity:
+    name: compile-sanity
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25            # a debug tauri build compiles the ~382-crate Tauri tree per OS (cold)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14, windows-2022]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - name: 'Node/pnpm toolchain via corepack (all 3 OS — the per-OS tauri build needs the frontend)'
+        run: corepack enable pnpm
+      # The Tauri v2 gtk/webkit/soup/jsc/dbus `-sys` crates resolve their system libs via pkg-config, so the
+      # Linux leg needs the matching `-dev` packages to COMPILE (the same compile closure as gate-tooling;
+      # macOS/Windows have WKWebView/WebView2 natively). `--no-bundle` means the AppImage RUNTIME/bundle deps
+      # (librsvg/patchelf/FUSE) are NOT needed here.
+      - name: 'Tauri v2 Linux compile deps (webkit2gtk-4.1 / gtk-3 / soup-3 / jsc-4.1 / dbus -sys stack)'
+        if: runner.os == 'Linux'
+        run: |
+          for i in 1 2 3; do sudo apt-get update && break; echo "apt-get update failed; retry $i"; sleep 5; done
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libdbus-1-dev
+      - name: Install JS deps (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      # The debug `tauri build` embeds frontendDist: ../dist at compile time + has NO beforeBuildCommand, so
+      # the Vite build (-> ../dist) MUST run first. `--no-bundle` = compile + LINK the app binary (the
+      # compile-sanity proof), skipping the installer packaging (WiX/NSIS/dmg/AppImage) which is the
+      # P10/Lane-B release concern. The crate-level `cargo check` the §6.7.1 step names is already covered
+      # by the G3/G4 `clippy --all-targets` leg in gate-tooling; this step adds the Tauri app build clippy
+      # does not exercise. [Build-Session-Entscheidung: P1.58 — --no-bundle for compile-sanity scope.]
+      - name: 'P1.58 G30: compile-sanity — vite build + debug tauri build (compile + link, no installer)'
+        run: |
+          pnpm build
+          pnpm tauri build --debug --no-bundle

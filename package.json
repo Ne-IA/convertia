@@ -5,6 +5,7 @@
   "packageManager": "pnpm@10.13.1",
   "scripts": {
     "tauri": "tauri",
+    "build": "vite build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:css": "stylelint \"**/*.css\"",
