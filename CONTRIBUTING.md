@@ -50,8 +50,8 @@ The same checks run **locally** (git hooks, via lefthook) on every commit and pu
   and force-pushes to the default branch are not used.
 
 Per-OS development prerequisites (toolchains, the platform WebView runtime, system build
-dependencies) and how to obtain the bundled engine binaries for a local run are documented in the
-project's development setup notes.
+dependencies), the `tauri dev` / `tauri build` commands, and how to obtain the bundled engine
+binaries for a local run are documented in [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## How to contribute
 
