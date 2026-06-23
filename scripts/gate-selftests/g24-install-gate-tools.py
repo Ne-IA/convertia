@@ -136,6 +136,68 @@ def archive_leg() -> None:
 archive_leg()
 
 
+def retry_leg() -> None:
+    """Hermetic: download() retries a TRANSIENT failure (502) then succeeds, does NOT retry a PERMANENT
+    404, and re-raises after the final attempt - the shellcheck-502 transient hardening. urlopen +
+    time.sleep are monkeypatched (no real network, no real backoff)."""
+    import importlib.machinery
+    import importlib.util
+    import io
+    loader = importlib.machinery.SourceFileLoader("install_gate_tools_r", str(INSTALLER))
+    igt = importlib.util.module_from_spec(importlib.util.spec_from_loader("install_gate_tools_r", loader))
+    loader.exec_module(igt)
+    igt.time.sleep = lambda *_a, **_k: None             # no real backoff in the test
+    payload = b"ok-bytes\n"
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            self.close()
+            return False
+
+    def _make(seq):
+        """urlopen that raises each exception in seq in turn, then returns a fresh payload response."""
+        calls = {"n": 0}
+
+        def _open(_req, timeout=None):
+            i = calls["n"]
+            calls["n"] += 1
+            if i < len(seq):
+                raise seq[i]
+            return _Resp(payload)
+
+        return _open, calls
+
+    h502 = igt.urllib.error.HTTPError("u", 502, "Bad Gateway", {}, None)
+    h404 = igt.urllib.error.HTTPError("u", 404, "Not Found", {}, None)
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "o"
+        igt.urllib.request.urlopen, calls = _make([h502, h502])          # 2 transient then success
+        igt.download("https://x/y", out)
+        record("download retries a transient 502 then succeeds",
+               out.read_bytes() == payload and calls["n"] == 3)
+        igt.urllib.request.urlopen, calls = _make([h404, h404])          # permanent -> first attempt raises
+        raised = False
+        try:
+            igt.download("https://x/y", out)
+        except igt.urllib.error.HTTPError as e:
+            raised = e.code == 404
+        record("download does NOT retry a permanent 404", raised and calls["n"] == 1)
+        igt.urllib.request.urlopen, calls = _make([h502, h502, h502, h502])   # all attempts fail
+        raised = False
+        try:
+            igt.download("https://x/y", out)
+        except igt.urllib.error.HTTPError:
+            raised = True
+        record("download re-raises after all retries exhausted",
+               raised and calls["n"] == igt.RETRY_ATTEMPTS)
+
+
+retry_leg()
+
+
 def pip_leg() -> None:
     with tempfile.TemporaryDirectory() as td:
         rq = Path(td) / "reqs.txt"
@@ -156,7 +218,12 @@ def pip_leg() -> None:
 pip_leg()
 
 # --- network legs (run if online; --require-network turns an offline skip into a FAIL) ---
-if not online():
+# Probe connectivity ONCE and reuse it: online() does a HEAD that can flake between calls, and a
+# disagreement between the two network blocks (skip in one, run in the other) is what made the
+# idempotency leg fail for the wrong reason when GitHub was intermittently 502/rate-limiting. One
+# probe -> one decision for every network leg.
+_ONLINE = online()
+if not _ONLINE:
     ok = not args.require_network
     detail = "FAIL (offline, --require-network set)" if args.require_network else "SKIP (offline)"
     record("wrong checksum fails the install", ok, detail)
@@ -171,7 +238,7 @@ else:
 
 # Idempotency: a 2nd install of the same pinned source = a verified no-op via the
 # source-sha256 stamp (the path ARCHIVE tools rely on for re-runs + --offline).
-if not online():
+if not _ONLINE:
     record("install idempotent (2nd run skips)", True, "SKIP (offline)")
 else:
     with tempfile.TemporaryDirectory() as td:
