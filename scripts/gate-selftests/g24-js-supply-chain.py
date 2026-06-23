@@ -195,10 +195,11 @@ with tempfile.TemporaryDirectory() as _td:
     base = Path(_td)
     (base / ".npmrc").write_text("registry=https://registry.npmjs.org/\nenable-pre-post-scripts=false\n"
                                  "unsafe-perm=false\nfrozen-lockfile=true\n", encoding="utf-8")
-    _orig = (m.NPMRC, m.PNPM_LOCK, m.PNPM_WORKSPACE, m.PACKAGE_JSON, m.PNPMFILE_CANDIDATES)
+    _orig = (m.NPMRC, m.PNPM_LOCK, m.PNPM_WORKSPACE, m.PACKAGE_JSON, m.PNPMFILE_CANDIDATES, m.PINNED_FLOORS_JS)
     m.NPMRC, m.PNPM_LOCK = base / ".npmrc", base / "pnpm-lock.yaml"
     m.PNPM_WORKSPACE, m.PACKAGE_JSON = base / "pnpm-workspace.yaml", base / "package.json"
     m.PNPMFILE_CANDIDATES = (base / ".pnpmfile.cjs", base / "pnpmfile.cjs")
+    m.PINNED_FLOORS_JS = {}    # isolate the §0.8 floor from the synthetic-lock URL-guard integration legs
     try:
         (base / "package.json").write_text('{"name":"x"}', encoding="utf-8")     # manifest, NO lock
         rc_nolock = m.main()
@@ -212,7 +213,8 @@ with tempfile.TemporaryDirectory() as _td:
         rc_pnpmfile = m.main()
         (base / ".pnpmfile.cjs").unlink()
     finally:
-        m.NPMRC, m.PNPM_LOCK, m.PNPM_WORKSPACE, m.PACKAGE_JSON, m.PNPMFILE_CANDIDATES = _orig
+        (m.NPMRC, m.PNPM_LOCK, m.PNPM_WORKSPACE, m.PACKAGE_JSON, m.PNPMFILE_CANDIDATES,
+         m.PINNED_FLOORS_JS) = _orig
     record("main(): a pnpm manifest WITHOUT a lockfile -> FAIL (not a silent skip)", rc_nolock == 1)
     record("main(): a lockfile with a FOREIGN resolution URL -> FAIL", rc_foreign == 1)
     record("main(): a lockfile with only allowed-registry resolutions -> pass", rc_clean == 0)
@@ -222,7 +224,49 @@ with tempfile.TemporaryDirectory() as _td:
 # --- the REAL committed .npmrc + main() -------------------------------------------------------
 record("the REAL committed .npmrc evaluates clean",
        m.evaluate_npmrc(m.parse_npmrc(m.NPMRC.read_text(encoding="utf-8"))) == [])
-record("main() exits 0 today (.npmrc posture OK; lockfile/allowlist target-absent until P1)", m.main() == 0)
+record("main() exits 0 (.npmrc posture OK; lockfile resolution-URL + onlyBuilt + §0.8 floor live over the real lock)",
+       m.main() == 0)
+
+# --- §0.8 JS pinned-floor + its semver comparator (P1.60; mirrors g24-supply-chain) -----------
+record("_version_ge: equal -> True", m._version_ge("2.11.3", "2.11.3") is True)
+record("_version_ge: higher patch -> True", m._version_ge("2.11.4", "2.11.3") is True)
+record("_version_ge: lower patch -> False", m._version_ge("2.11.2", "2.11.3") is False)
+record("_version_ge: higher major -> True", m._version_ge("3.0.0", "2.11.3") is True)
+record("_version_ge: a release outranks a pre-release floor -> True", m._version_ge("1.0.0", "1.0.0-rc.1") is True)
+record("_version_ge: unparseable -> None (fail-closed)", m._version_ge("latest", "2.11.3") is None)
+record("_direct_dep_versions: strips the pnpm v9 peer-context parens",
+       m._direct_dep_versions("importers:\n\n  .:\n    dependencies:\n      zustand:\n        specifier: 5.0.14\n"
+                              "        version: 5.0.14(react@19.2.7)\n", {"zustand"}) == {"zustand": ["5.0.14"]})
+record("_pinned_floor_assertion(): the REAL pnpm-lock.yaml satisfies every §0.8 JS floor",
+       m._pinned_floor_assertion() == [])
+
+
+def _floor_with_temp_lock(body: str) -> list:
+    saved = (m.PNPM_LOCK, m.PINNED_FLOORS_JS)
+    with tempfile.TemporaryDirectory() as td:
+        lock = Path(td) / "pnpm-lock.yaml"
+        lock.write_text(body, encoding="utf-8")
+        m.PNPM_LOCK = lock
+        m.PINNED_FLOORS_JS = {"@tauri-apps/cli": "2.11.3", "zustand": "5.0.14"}
+        try:
+            return m._pinned_floor_assertion()
+        finally:
+            m.PNPM_LOCK, m.PINNED_FLOORS_JS = saved
+
+
+_imp = ("importers:\n\n  .:\n    dependencies:\n      zustand:\n        specifier: 5.0.14\n        version: {z}\n"
+        "    devDependencies:\n      '@tauri-apps/cli':\n        specifier: ^2.11.3\n        version: {c}\n")
+record("_pinned_floor_assertion(): both JS floor crates AT floor -> clean",
+       _floor_with_temp_lock(_imp.format(z="5.0.14", c="2.11.3")) == [])
+record("_pinned_floor_assertion(): zustand BELOW floor (4.0.0 < 5.0.14) -> caught",
+       any("zustand" in p and "below the relied-upon API floor" in p
+           for p in _floor_with_temp_lock(_imp.format(z="4.0.0", c="2.11.3"))))
+record("_pinned_floor_assertion(): a JS floor crate ABSENT from importers -> caught (relied-upon dep vanished)",
+       any("@tauri-apps/cli" in p and "not a direct dep" in p
+           for p in _floor_with_temp_lock("importers:\n\n  .:\n    dependencies:\n      zustand:\n"
+                                          "        specifier: 5.0.14\n        version: 5.0.14\n")))
+record("_pinned_floor_assertion(): a malformed resolved version (2.0) -> fail-closed (unparseable)",
+       any("unparseable" in p for p in _floor_with_temp_lock(_imp.format(z="2.0", c="2.11.3"))))
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-js-supply-chain] {len(results) - len(failed)}/{len(results)} assertions passed.")

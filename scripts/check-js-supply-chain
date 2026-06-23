@@ -14,11 +14,15 @@ freezes the JS supply-chain posture (stdlib only):
     (`onlyBuiltDependencies` / pnpm-11 `allowBuilds`) stays <= the frozen count, FAIL-CLOSED on a
     present-but-unparseable allowlist, and a committed manifest WITHOUT a committed lockfile FAILS
     (mirrors the Rust check-supply-chain workspace-state - never a silent skip on a real workspace);
-  * G36b (release-tier slot) - the frontend GPL/AGPL hard-fail runs over the cdxgen SBOM (G35), which
-    lands later - target-absent here.
+  * G36b (RELEASE-TIER slot) - the frontend GPL/AGPL hard-fail runs over the cdxgen SBOM (G35), NOT over
+    pnpm-lock.yaml (the lock carries no license data); it is release-tier per build-gates G36b and stays
+    target-absent here until G35 lands;
+  * §0.8 JS PINNED-FLOOR (P1.60) - each PINNED_FLOORS_JS dep (@tauri-apps/cli, zustand, fast-check,
+    vitest-axe) must be a DIRECT dep in pnpm-lock.yaml resolved at >= its floor - the JS mirror of the
+    Rust check-supply-chain pinned-floor leg.
 
-Scope note: the lockfile resolution scan + the onlyBuiltDependencies count activate in P1 (the lockfile/
-manifest are target-absent now); the `.npmrc` posture is enforced now. The covered surface is the
+Scope note: once pnpm-lock.yaml exists (P1.2.2) the lockfile resolution scan + the onlyBuiltDependencies
+count + the §0.8 floor are LIVE; the `.npmrc` posture is enforced regardless. The covered surface is the
 committed-config install/source-substitution surface of the PINNED pnpm (10.13.1, §0.8) - a pnpm
 major-version bump is itself a pinned-version change (security-concept §0 pin-and-verify) that triggers
 a re-audit of this gate against the new pnpm config surface. `.npmrc` is L(-1)
@@ -56,6 +60,19 @@ ALLOWED_REGISTRY = "https://registry.npmjs.org/"
 ALLOWED_HOST = "registry.npmjs.org"
 EXPECTED_ONLYBUILT_COUNT = 0          # the build-script allowlist; a bump is reviewed HERE with a box-id
 _UNCOUNTABLE = 10 ** 9                 # fail-closed sentinel: an allowlist that is present but unparseable
+
+# §0.8 JS pinned-floor (P1.60): the load-bearing JS deps the frontend/test surface relies on at a known
+# floor - the JS mirror of check-supply-chain's PINNED_FLOORS. Each MUST be a DIRECT dep in pnpm-lock.yaml
+# resolved at >= its floor (a drift below the relied-upon API fails HERE). Only crates ALREADY in the lock
+# are listed; the rest the box names (@tauri-apps/api, WebdriverIO v9 + @axe-core/webdriverio) activate
+# when their phase adds them - adding a row is normal growth, lowering a floor is an L(-1) review item.
+# [Build-Session-Entscheidung: P1.60 - reconcile to the present §0.8 JS deps; grow as the E2E/api land.]
+PINNED_FLOORS_JS = {
+    "@tauri-apps/cli": "2.11.3",   # §0.4 Tauri CLI, matched to the `tauri` 2.x core pin (P1.2.3)
+    "zustand":         "5.0.14",   # §0.4.6 UI state store (P1.31.1)
+    "fast-check":      "4.8.0",    # §6.4 property-based testing (P1.35.1)
+    "vitest-axe":      "0.1.0",    # §5.x a11y assertions in the vitest suite (P1.56)
+}
 
 # resolution tokens in a pnpm-lock.yaml: any scheme://... (incl. git+ssh / git+https / ssh / git /
 # file) OR a protocol-relative //host.tld/... (the leading-// guarded to a dotted host so a base64
@@ -352,6 +369,92 @@ def install_mutation_problems(pkg: dict, ws_text: str, patches_present: bool) ->
     return problems
 
 
+def _parse_ver(v: str):
+    """(release, pre) for 'X.Y.Z[-pre][+build]' by semver precedence; None if the release core is not
+    three ints (caller fails closed). Mirrors check-supply-chain's comparator (standalone gate scripts)."""
+    core = v.strip().split("+", 1)[0]
+    rel, _, pre = core.partition("-")
+    parts = rel.split(".")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        return None
+    pre_ids = [((0, int(i)) if i.isdigit() else (1, i)) for i in (pre.split(".") if pre else [])]
+    return (tuple(int(p) for p in parts), tuple(pre_ids))
+
+
+def _version_ge(have: str, floor: str):
+    """have >= floor by semver precedence; None if either is unparseable (caller fails closed)."""
+    a, b = _parse_ver(have), _parse_ver(floor)
+    if a is None or b is None:
+        return None
+    (arel, apre), (brel, bpre) = a, b
+    if arel != brel:
+        return arel > brel
+    if not apre and not bpre:
+        return True
+    if not apre:
+        return True
+    if not bpre:
+        return False
+    return apre >= bpre
+
+
+def _direct_dep_versions(lock_text: str, names: set[str]) -> dict[str, list[str]]:
+    """Resolved versions of each named DIRECT dependency from the pnpm-lock.yaml `importers` section (the
+    6-space dep-name key -> its 8-space `version:`; pnpm v9 peer-dep context in parens is stripped). A
+    crate may resolve more than once across importers, so each is a LIST. stdlib only (regex over YAML)."""
+    out: dict[str, list[str]] = {n: [] for n in names}
+    in_importers = False
+    current: str | None = None
+    for line in lock_text.splitlines():
+        if re.match(r"^importers:\s*$", line):
+            in_importers = True
+            continue
+        if in_importers and re.match(r"^\S", line):       # a new top-level key ends the importers block
+            break
+        if not in_importers:
+            continue
+        mk = re.match(r"^ {6}'?([^':]+)'?:\s*$", line)     # a 6-space dependency-name key
+        if mk:
+            current = mk.group(1) if mk.group(1) in out else None
+            continue
+        if current is not None:
+            mv = re.match(r"^ {8}version:\s*([0-9][^\s(]*)", line)   # 8-space version; strip peer-context
+            if mv:
+                out[current].append(mv.group(1))
+                current = None
+    return out
+
+
+def _pinned_floor_assertion() -> list[str]:
+    """§0.8 JS pinned-floor (P1.60): each PINNED_FLOORS_JS crate must be a DIRECT dep in pnpm-lock.yaml
+    resolved at >= its floor. A listed crate ABSENT from the importers is a FAIL (a relied-upon dep
+    vanished); an unparseable version is a FAIL (fail-closed). The floor is satisfied if ANY resolved copy
+    is >= floor. Target-absent (no lockfile yet) returns clean - the resolution-URL guard already
+    skip-noticed."""
+    if not PNPM_LOCK.is_file():
+        return []
+    found = _direct_dep_versions(PNPM_LOCK.read_text(encoding="utf-8"), set(PINNED_FLOORS_JS))
+    problems: list[str] = []
+    for crate, floor in sorted(PINNED_FLOORS_JS.items()):
+        have = found.get(crate) or []
+        if not have:
+            problems.append(f"§0.8 JS floor crate `{crate}` (>= {floor}) is not a direct dep in "
+                            "pnpm-lock.yaml - a relied-upon dependency vanished; restore it or remove the "
+                            "floor row HERE (L(-1)) with a box-id")
+            continue
+        ges = [_version_ge(v, floor) for v in have]
+        if any(g is True for g in ges):
+            continue
+        if any(g is None for g in ges):
+            problems.append(f"§0.8 JS floor crate `{crate}`: an unparseable version among {sorted(have)} "
+                            f"(floor {floor!r}) - failing closed")
+        else:
+            problems.append(f"§0.8 JS floor crate `{crate}` is present only at {sorted(have)} < its pinned "
+                            f"floor {floor} - a drift below the relied-upon API floor; bump the dep or lower "
+                            "the floor HERE (L(-1)) with a box-id + Dual-Review note")
+    return problems
+
+
 def main() -> int:
     if not NPMRC.is_file():
         print(f"[G18c/d] {NPMRC} missing", file=sys.stderr)
@@ -409,13 +512,21 @@ def main() -> int:
                         f"{EXPECTED_ONLYBUILT_COUNT} - a build-script allowlist growth must raise "
                         "EXPECTED_ONLYBUILT_COUNT here with a box-id + Dual-Review note (G18d)")
 
+    problems += _pinned_floor_assertion()                # §0.8 JS pinned-floor (P1.60)
+
     if problems:
         for p in problems:
             fail(p)
         return 1
+    if PNPM_LOCK.is_file():
+        lock_state = "live"
+        floor_state = f"{len(PINNED_FLOORS_JS)} §0.8 JS floor crate(s) >= floor"
+    else:
+        lock_state = "target-absent (no lockfile yet)"
+        floor_state = "§0.8 floor skipped (no lockfile yet)"
     print(f"[G18c/d] JS supply-chain posture OK (registry pinned to {ALLOWED_HOST}, no scoped override; "
-          "pre/post-scripts + unsafe-perm off; frozen-lockfile on; lockfile/allowlist checks "
-          "target-absent until P1)")
+          f"pre/post-scripts + unsafe-perm off; frozen-lockfile on; lockfile resolution-URL + "
+          f"onlyBuiltDependencies checks {lock_state}; {floor_state})")
     return 0
 
 
