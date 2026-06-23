@@ -40,3 +40,14 @@ updates:
     commit-message: { prefix: "deps(pip)" }
     open-pull-requests-limit: 5
     labels: ["bot:dependabot", "type:dependencies"]
+    # requirements-ci.txt is a FULLY hash-pinned, Semgrep-CONSTRAINED tree (`pip install
+    # --require-hashes`): Semgrep pins its transitive deps (opentelemetry-*, jsonschema, …) to exact
+    # ranges, so a single-TRANSITIVE bump is `ResolutionImpossible` — it breaks the Semgrep install
+    # (sast red), so such a PR is structurally un-mergeable. The ONLY coherent update is bumping
+    # `semgrep` itself, which regenerates the whole pinned tree; its transitives then follow. So allow
+    # ONLY semgrep here (a whitelist — everything else is ignored). [Co-Pilot — P1 Dependabot triage]
+    # TRIP-WIRE: semgrep is today the SOLE direct dep in requirements.in. If a SECOND top-level pip
+    # gate-tool is ever added there, add it to this allow-list in the SAME commit — else it would
+    # silently get no Dependabot bump/security PRs.
+    allow:
+      - dependency-name: "semgrep"
