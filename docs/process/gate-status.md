@@ -12,8 +12,13 @@
 
 ## Scope
 
-The deterministic gates — **every `Gnn` except G1** — are always-on and are **not**
-tracked here. This ledger tracks only the gates whose posture is an owner/ratchet
+The deterministic gates — **every `Gnn` except G1** — are always-on; their **posture** is
+not owner-decidable, so they are **not** in the ratchet ledger below. Their one-time
+**bootstrap-skip → fail-closed ACTIVATION** (a P0 `→ activated in P<n>` gate flipping the
+moment its target lands) is a distinct event class, logged in the **"P1 gate-activation
+flips"** section below (authored by P1.62) — that log carries **no `Status`/`Since` posture
+columns**, so `plan-lint` check 23 (which governs only the owner-decidable ratchet table)
+does not parse it. This ledger tracks only the gates whose posture is an owner/ratchet
 decision (`informational` ↔ `required`), the purely-informational census tools, plus
 one-time **`decided`** owner-adopt rows (a gate the owner adopted/declined once — e.g.
 **G59** build-provenance — recorded so the adopt is a dated committed line, not a buried
@@ -54,6 +59,41 @@ None of the four over-assurance backstops replaces **G48**'s fuzz; each is an
 owner may adopt. `cargo-mutants` (the fifth row, P0.5.10) is likewise additive to
 G48 — fuzzing finds crashes on hostile input; mutation testing finds assertions the
 tests forgot to make. It is detailed in its own section below.
+
+## P1 gate-activation flips (deterministic gates: bootstrap-skip → fail-closed)
+
+The P0 build authored a set of deterministic gates carrying a `→ activated in P<n>` annotation:
+each **fail-opens / skips-with-warning while its target is absent** (so the empty P0 tree neither
+wedges the green-L4 exit criterion nor leaves the gate silently fail-open once its target lands) and
+**fail-closes the moment its target exists**. **P1.62** is the single owner that proves the flip
+actually happened — for each gate, a planted violation in the now-real target MUST fail it (the gate
+is *enforcing*, not stuck in its bootstrap skip). This log records each flip as a dated committed
+line. Unlike the owner-decidable ratchet ledger above, these are **deterministic, one-time**
+activations (no `informational`↔`required` posture), so the table below deliberately carries **no
+`Status`/`Since` columns** (check 23 governs only the ratchet ledger). The reverse `→ activated in P<n>`
+edges live on the P0 gate rows in [build-gates.md](../security/build-gates.md); this is their closing
+side. Three other `→ activated in P1`-annotated gates are NOT rows here, by design: **G22/G23** (the
+format membership/completeness mirror gates) activate when their §04-matrix / corpus / `convert_*`
+targets stand up in **P3–P7**, so they add their rows then; **G69** (the §1a structural-map ↔ on-disk
+bijection) activates at **P1.64** — the P1-END structure-establishment box, after this box — and adds its
+row then. (The continuously-active scanners G8 / G29 / G71 are a different class — see the P1.62 plan note.)
+
+| Gate | Activated-in | Now-real target (P-box) | Negative self-test — a planted violation MUST fail | Flipped |
+|---|---|---|---|---|
+| **G47** — WebView CSP + Tauri capability lint | P1.62.1 | `tauri.conf.json` + `capabilities/main.json` (P1.18–P1.21) | `g24-csp-capabilities` — a mis-encoded CSP directive / an `fs:`/`http:`/`shell`/`opener:`/`dialog:` grant / a present updater block fails | 2026-06-23 |
+| **G19** — generated-artifact drift | P1.62.2 | `src/lib/ipc/bindings.ts` (P1.26 / regen wired P1.53) | `g24-generated-drift` — a stale / hand-edited / un-regenerated artifact fails the regen + `git diff --exit-code` | 2026-06-23 |
+| **G27** — per-domain coverage floors | P1.62.3 | `cargo llvm-cov` + Vitest v8 reports (P1.54) | `g24-coverage` — a measured domain below its `[line]` floor fails (never averaged) | 2026-06-23 |
+| **G28** — diff-coverage gate | P1.62.4 | the per-line lcov reports (P1.54) | `g24-coverage` — changed executable product lines < 80 % covered fails (`_diff_verdict`) | 2026-06-23 |
+| **G33a** — automated a11y (vitest-axe jsdom) | P1.62.5 | the rendered React tree (P1.35 / P1.56) | `src/a11y/g33a-canary.a11y.test.tsx` — axe MUST report ≥ 1 violation on a planted invalid ARIA role (the leg is armed) | 2026-06-23 |
+| **G57** — Principle-11 English-only lint | P1.62.6 | `src/strings/ui.ts` (P1.37) | `g24-english-only` — a non-English user-facing literal / an i18n-runtime import fails | 2026-06-23 |
+| **G53** — core-crate forbidden-dependency walk | P1.62.7 | the Cargo workspace `convertia-core` (P1.6) | `g24-core-deps` — a forbidden lib (updater / HTTP-client / imgworker C libs) in the core closure fails | 2026-06-23 |
+| **G30** — cross-platform build-matrix | P1.62.8 | the 3-OS `compile-sanity` matrix (P1.58); the universal-sidecar fat-Mach-O slice assertion stays target-absent until the P10 release staging | **gate-logic self-test:** `g24-build-matrix` plants a single-arch fat-named Mach-O that MUST fail the slice-assertion. **Separate live CI enforcer (not the G30 gate script):** the P1.58 `compile-sanity` job reddens on a platform-specific compile break | 2026-06-23 |
+| **G18 / G18a–d** — supply-chain + lockfile integrity | P1.62.9 | `Cargo.lock` / `pnpm-lock.yaml` / `.npmrc` (P1.6 / P1.59 / P1.60) | `g24-supply-chain` + `g24-lockfile-integrity` + `g24-js-supply-chain` — a non-frozen lockfile / bad resolution URL / lifecycle-script-enabled dep / forbidden crate fails | 2026-06-23 |
+
+The four **owner-decidable over-assurance contracts** (`cargo-acl`/cackle, Kani, `cargo-careful`,
+`cargo-geiger`) ALSO carry `→ activated in P1`, but — being `informational`-only, not fail-closed —
+their activation is the **presence** of their dated `informational` rows in the ratchet ledger above
+(P1.62.10, a check over those entries), NOT a planted-violation self-test.
 
 ## Over-assurance behavioural backstops (P0.4.5 · §1.2 · G29 G48)
 
