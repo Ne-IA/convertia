@@ -144,6 +144,18 @@ jobs:
         run: python3 scripts/check-ts-gate --full
       - name: 'G57: Principle-11 English-only / string-ownership lint (no i18n-runtime import + strings/ui.ts non-empty + no inline literal; live in P1)'
         run: python3 scripts/check-english-only --full
+      # P1.52.3 §6.7.1 step-1 YAML/config-hygiene leg: yamllint over .github/ + the root config YAML
+      # (structure / indentation / key-duplication; ruleset .yamllint). Distinct from actionlint (G49,
+      # workflow semantics), zizmor (G50, workflow security) and editorconfig-checker (G52, EOL/charset).
+      # Linux-only — YAML lint is OS-agnostic so it runs once; yamllint is hash-pinned in
+      # requirements-yamllint.txt (--require-hashes). No Gnn of its own (a config-hygiene linter).
+      # The scope is EXPLICIT paths (not a glob): it deliberately excludes the generated pnpm-lock.yaml
+      # and the vendored scripts/semgrep-rules/ Semgrep DSL (third-party, self-validated by Semgrep).
+      - name: 'P1.52.3 §6.7.1: yamllint — YAML/config-hygiene over .github/ + config YAML'
+        if: runner.os == 'Linux'
+        run: |
+          python3 -m pip install --require-hashes -r requirements-yamllint.txt
+          python3 -m yamllint -c .yamllint .github/ lefthook.yml pnpm-workspace.yaml .yamllint
       - name: 'G27/G28: coverage-floor contract — per-domain floors + diff gate frozen (live per-domain/diff over cargo-llvm-cov/vitest in P1; the increase-only ratchet is the workflow-security leg)'
         run: python3 scripts/check-coverage --full
       - name: 'G18a: lockfile-integrity contract — drift-set freeze + --locked/--frozen-lockfile flag-scan + git diff --exit-code drift-guard (live drift-guard; CI flag-scan target-absent until P1 build commands land)'

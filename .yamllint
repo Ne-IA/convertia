@@ -1,0 +1,26 @@
+# .yamllint — YAML config-hygiene ruleset for the §6.7.1 Lane-A YAML leg (P1.52.3).
+#
+# yamllint owns YAML STRUCTURE (indentation, key-duplication, document hygiene); it is
+# distinct from actionlint (G49, workflow semantics), zizmor (G50, workflow security) and
+# editorconfig-checker (G52, EOL/charset/final-newline). Width/EOL are editorconfig's job.
+extends: default
+rules:
+  # CI workflows carry long SHA-pinned-URL + self-documenting-comment lines by design;
+  # EOL/width hygiene is editorconfig's (G52), not yamllint's.
+  line-length: disable
+  # GitHub workflows + config YAML legitimately omit the `---` document-start marker.
+  document-start: disable
+  # Section comments are placed deliberately (column-aligned headers); editorconfig owns
+  # the real whitespace hygiene. This is a cosmetic-only warning otherwise.
+  comments-indentation: disable
+  comments:
+    min-spaces-from-content: 1
+  # Allow the readable single-spaced flow-mapping style `{ a: b }` (used in dependabot.yml);
+  # still catches `{  a  }` (2+ inner spaces). Not a weakening — a style allowance.
+  braces:
+    max-spaces-inside: 1
+  # GitHub Actions uses bareword keys (on:) + values yamllint's truthy rule would flag;
+  # restrict truthy to real boolean literals and don't police keys.
+  truthy:
+    allowed-values: ['true', 'false']
+    check-keys: false

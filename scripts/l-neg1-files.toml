@@ -39,12 +39,14 @@ patterns = [
   ".npmrc",                       # JS registry pin + install-lifecycle lockdown (G18c/G18d)
   ".editorconfig",                # EOL/charset/final-newline policy enforced by G52 (editorconfig-checker)
   ".typos.toml",                  # G51 prose-typo allowlist (a silently-allowlisted real typo = un-scanned)
+  ".yamllint",                    # yamllint YAML-hygiene ruleset for the §6.7.1 Lane-A YAML leg (P1.52.3)
   ".gitleaks.toml",               # gitleaks rules + allowlist (G2)
   ".gitleaks-baseline.json",      # the gitleaks one-time accepted-findings baseline (G2)
   "supply-chain/**",              # cargo-vet exemption set (config.toml) + the committed imports.lock
   ".gitattributes",               # LFS / EOL / merge attributes
   ".lfsconfig",                   # git-LFS endpoint
   "requirements-ci.txt",          # the pip gate-toolchain layer (Semgrep et al.) - reads CI secrets + emits findings (r7, P0.2.14)
+  "requirements-yamllint.txt",    # the pip-pinned yamllint linter for the §6.7.1 Lane-A YAML leg (P1.52.3)
 
   # --- the build artifacts' trust roots ---
   "rust-toolchain.toml",          # the pinned Rust compiler channel (a bump = trusted-build subversion)
