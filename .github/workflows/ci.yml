@@ -198,6 +198,9 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           export PATH="$PWD/.gate-tools/bin:$PATH"
+          # cargo llvm-cov report --output-path does NOT create the parent dir; create it first (the
+          # --no-report run only makes target/llvm-cov-target/, not the report dir target/llvm-cov/).
+          mkdir -p target/llvm-cov
           # --locked: the instrumented build must NOT re-resolve / mutate the committed Cargo.lock (the
           # G18a drift-guard runs right after — a mutated lockfile would red main; §0.8 pin-everything).
           cargo llvm-cov --workspace --locked --no-report
