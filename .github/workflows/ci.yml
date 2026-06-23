@@ -161,6 +161,15 @@ jobs:
         run: python3 scripts/check-fuzz-contract --full
       - name: 'G5/G6/G13: TypeScript lint/type-check/format/test contract (tsconfig strict + eslint no-any/fc.gen + prettier/stylelint/vitest frozen; live tsc/eslint/prettier/vitest in P1)'
         run: python3 scripts/check-ts-gate --full
+      # P1.56 §6.7.1 step-4b: the ATTRIBUTABLE automated-a11y (vitest-axe jsdom) leg (G33a) — asserts
+      # ARIA-role/state validity + focus-order over the rendered React tree (NOT colour contrast, which
+      # jsdom cannot compute — that is the Lane-B headed @axe-core/webdriverio leg, §6.4.6a). Its OWN step
+      # (running the *.a11y.test.* subset via vitest.a11y.config.ts, excluded from the general G5/G6/G13
+      # vitest run) so an a11y regression is a distinct, attributable G33a red. Linux-only — vitest is
+      # OS-agnostic + needs the Linux-gated node_modules (P1.51), like the other JS legs.
+      - name: 'G33a: automated a11y (vitest-axe jsdom; ARIA/role/state + focus-order, not contrast)'
+        if: runner.os == 'Linux'
+        run: pnpm run test:a11y
       - name: 'G57: Principle-11 English-only / string-ownership lint (no i18n-runtime import + strings/ui.ts non-empty + no inline literal; live in P1)'
         run: python3 scripts/check-english-only --full
       # P1.52.3 §6.7.1 step-1 YAML/config-hygiene leg: yamllint over .github/ + the root config YAML

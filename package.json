@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "lint:css": "stylelint \"**/*.css\"",
     "format:check": "prettier --check .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:a11y": "vitest run -c vitest.a11y.config.ts"
   },
   "pnpm": {
     "onlyBuiltDependencies": []
