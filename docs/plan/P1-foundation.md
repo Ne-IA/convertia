@@ -286,7 +286,7 @@ here.
   > the plain-language §2.11 restatement (fully offline, no network/telemetry/accounts/update-phone-home; the only network is the user-initiated open-project-page) + the OneDrive/iCloud/Dropbox cloud-sync caveat per the §6.8 table; G51 typo-covered.
 - [x] **P1.46** [DOC] Author `TRADEMARK.md` — name/logo grant boundary + nominative use · §6.8 · G51
   > the §6.8 content: MIT covers code not the "ConvertIA" name / Ne-IA logo; forks must rename and may not use the logo; nominative-use guidelines. G51 typo-covered; the §6.9 name-clearance GATE is P10.
-- [ ] **P1.47** [DOC] Author the `README.md` download/trust skeleton + per-platform prerequisite notes · §6.8 §6.2.4 §0.3.1 · G51
+- [x] **P1.47** [DOC] Author the `README.md` download/trust skeleton + per-platform prerequisite notes · §6.8 §6.2.4 §0.3.1 · G51
   > the README skeleton: what it is, canonical-GitHub-Releases-only download, the verify-your-hash recipe SLOT (the literal `minisign -Vm SHA256SUMS -p docs/minisign.pub` recipe is authored/filled in P10 §6.2.4), as-is/no-warranty + best-effort posture, the §0.3.1 supported-OS floor, the unsigned-build first-launch note, and the Windows portable-zip WebView2 + Linux AppImage `libfuse2` prerequisite notes (§6.2.4). Skeleton now; release-gated completeness is P10.
 - [ ] **P1.48** [DOC] Author the `NOTICE` + `THIRD-PARTY-LICENSES.txt` generated-file placeholders · §6.8 §6.3.2
   > the placeholder NOTICE / THIRD-PARTY-LICENSES files (marked generated-from-`engines.lock`+SBOM, never hand-drifted) so the §6.8 set is structurally complete from P1; per-engine rows are populated P5–P7 and finalized P10 (the release-blocking completeness gate is P10).
