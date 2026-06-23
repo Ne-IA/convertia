@@ -16,11 +16,23 @@ Three tiers:
   (CI passes `github.event.before`); local default HEAD. Fail-OPEN only if no base resolves (the L4 mirror
   with the explicit base is fail-closed), the G8/G70 diff-base posture. Empty floors in P0 => no-op.
 
-  LIVE per-domain / diff tier (TARGET-ABSENT until P1): once a coverage report exists, assert EACH domain
-  is >= its own floor (NEVER averaged — G27), each BRANCH_FLOOR_DOMAINS crate's branch coverage >= its
-  branch floor, and the diff coverage >= diff_floor (G28). The per-crate (cargo-llvm-cov) / per-package
-  (vitest v8 json-summary) reports + the domain mapping land in P1; skipped-with-notice until then. Gate
-  scripts are excluded from the floors (they are tooling, not product).
+  LIVE per-domain / diff tier (WIRED in P1.54): once a coverage report exists, assert EACH domain is >=
+  its own floor (NEVER averaged — G27), each BRANCH_FLOOR_DOMAINS crate's branch coverage >= its branch
+  floor, and the diff coverage >= diff_floor (G28). Two report shapes feed the two halves:
+    * PER-DOMAIN (G27) from the SUMMARY reports — Rust `cargo llvm-cov --json` (RUST_COV, per-file
+      lines.percent rolled up per CRATE by summing covered/count) + Vitest v8 `json-summary` (TS_COV,
+      per-file pct rolled up into the one `ui` package domain). Roll-up sums covered/count — it is never
+      an average of per-file percents (G27).
+    * DIFF (G28) from the PER-LINE lcov reports — `cargo llvm-cov --lcov` (RUST_COV_LCOV) + the Vitest
+      `lcov` reporter (TS_COV_LCOV): the changed new-side lines in `base..HEAD` that are EXECUTABLE
+      PRODUCT lines (present in the lcov DA map) must be >= diff_floor% covered.
+  TOOLING is excluded from the floors AND the diff: a Rust file maps to a product crate only if it lives
+  under `src-tauri/src/` (convertia-core) or `crates/imgworker/src/` (convertia-imgworker); the `xtask`
+  dev-bin + gate scripts are tooling, not product (_rust_domain -> None). BRANCH coverage needs nightly
+  (`-Z coverage-options=branch`); the pinned floor is stable, so Rust branch data is ABSENT in P1 (the
+  [branch] BRANCH_FLOOR_DOMAINS — crate::detection/fs_guard/isolation — are P2/P3 security-kernel modules
+  that land with the nightly branch-coverage run). TS branch coverage (Vitest v8) IS measured but is not
+  floored in P1 (no [branch] row). The live tier is skipped-with-notice on a leg with no report.
 
 stdlib-only. L(-1) security-critical (matched by scripts/check-*; coverage-floors.toml is L(-1) too).
 
@@ -31,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import tomllib
@@ -46,9 +59,24 @@ BRANCH_FLOOR_DOMAINS = ("crate::detection", "crate::fs_guard", "crate::isolation
 DIFF_FLOOR = 80          # G28 — >= 80% on changed lines
 TARGET_LINE_FLOOR = 70   # the 50 -> 70 ratchet destination (informational target)
 
-# the P1 coverage reports the live tier reads (target-absent until P1 produces them).
-RUST_COV = ROOT / "target" / "llvm-cov" / "coverage.json"     # cargo llvm-cov --json
-TS_COV = ROOT / "coverage" / "coverage-summary.json"          # vitest v8 json-summary reporter
+# the coverage reports the live tier reads (per the §6.7.1 step-3 leg, P1.54). The SUMMARY reports drive
+# the per-domain floors (G27); the per-line lcov reports drive the changed-lines diff floor (G28).
+RUST_COV = ROOT / "target" / "llvm-cov" / "coverage.json"     # cargo llvm-cov --json (per-domain summary)
+TS_COV = ROOT / "coverage" / "coverage-summary.json"          # vitest v8 json-summary (per-domain summary)
+RUST_COV_LCOV = ROOT / "target" / "llvm-cov" / "coverage.lcov"  # cargo llvm-cov --lcov (per-line, G28 diff)
+TS_COV_LCOV = ROOT / "coverage" / "lcov.info"                   # vitest lcov reporter (per-line, G28 diff)
+
+# the one TS product domain (the WebView UI package; all of src/** rolls up here). Rust product domains
+# are the CRATE names, derived from the file path by _rust_domain (tooling -> None).
+TS_DOMAIN = "ui"
+
+# the security-kernel module names behind BRANCH_FLOOR_DOMAINS (strip the `crate::` prefix) — used to map
+# a Rust file under src-tauri/src/<module>/ to its branch-floor domain. Branch data is nightly-only, so
+# this is inert in P1 (the modules are P2/P3 shells); the mapping is ready for when they land.
+SECURITY_BRANCH_MODULES = tuple(d.split("::", 1)[1] for d in BRANCH_FLOOR_DOMAINS)
+
+# a unified-diff hunk header: `@@ -a,b +c,d @@` — capture the new-side start (c) + optional length (d).
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
 def fail(msg: str) -> None:
@@ -170,6 +198,129 @@ def _read_report(path: Path) -> dict | None:
         return None
 
 
+def _rust_domain(path: str) -> str | None:
+    """(pure) the PRODUCT crate domain for a Rust source path, or None if it is tooling / non-product.
+    A file is product iff it lives under `src-tauri/src/` (convertia-core) or `crates/imgworker/src/`
+    (convertia-imgworker); the `xtask` dev-bin, gate fixtures + everything else are tooling — excluded
+    from BOTH the per-domain floors and the diff gate (the docstring's tooling-exclusion rule)."""
+    p = path.replace("\\", "/")
+    if "src-tauri/src/" in p:
+        return "convertia-core"
+    if "crates/imgworker/src/" in p:
+        return "convertia-imgworker"
+    return None
+
+
+def _rust_branch_domain(path: str) -> str | None:
+    """(pure) the `crate::<module>` BRANCH-floor domain for a Rust file under one of the security-kernel
+    modules (BRANCH_FLOOR_DOMAINS), else None. Inert in P1 (those modules are P2/P3 shells + Rust branch
+    data is nightly-only) — ready for when the security kernel + the nightly branch run land."""
+    p = path.replace("\\", "/")
+    if "src-tauri/src/" not in p:
+        return None
+    for mod in SECURITY_BRANCH_MODULES:
+        if f"src-tauri/src/{mod}/" in p or p.endswith(f"src-tauri/src/{mod}.rs"):
+            return f"crate::{mod}"
+    return None
+
+
+def _parse_lcov(text: str) -> dict[str, dict[int, int]]:
+    """(pure) {repo-relative-path: {line: max-hit-count}} from the SF/DA records of an lcov report.
+    Paths are normalised to forward slashes + made repo-relative (cargo-llvm-cov emits ABSOLUTE SF;
+    Vitest emits RELATIVE), so they match `git diff`'s repo-relative paths. TOOLING `.rs` files (a
+    None _rust_domain — e.g. xtask) are dropped so the diff gate never holds tooling to the product
+    floor; non-`.rs` (TS) files are all product (Vitest already excluded generated/entry/test files)."""
+    out: dict[str, dict[int, int]] = {}
+    roots = str(ROOT).replace("\\", "/")
+    cur: str | None = None
+    for raw in text.splitlines():
+        if raw.startswith("SF:"):
+            p = raw[3:].strip().replace("\\", "/")
+            if p.startswith(roots + "/"):
+                p = p[len(roots) + 1:]
+            if p.endswith(".rs") and _rust_domain(p) is None:
+                cur = None                 # tooling Rust file — excluded from the diff gate
+            else:
+                cur = p
+                out.setdefault(cur, {})
+        elif raw.startswith("DA:") and cur is not None:
+            body = raw[3:].split(",")
+            try:
+                ln, cnt = int(body[0]), int(body[1])
+            except (ValueError, IndexError):
+                continue
+            out[cur][ln] = max(out[cur].get(ln, 0), cnt)   # covered if ANY record hits the line
+        elif raw.startswith("end_of_record"):
+            cur = None
+    return out
+
+
+def _changed_lines(base: str) -> dict[str, set[int]] | None:
+    """The added/modified NEW-side line numbers per file in `base..HEAD`, or None if the range does not
+    resolve (git absent / an all-zeros or unknown base) — fail-OPEN without a base (the G8/G70 diff-base
+    posture). Repo-relative forward-slash paths (git's native form)."""
+    try:
+        # -c core.quotepath=false: show non-ASCII paths literally (UTF-8), unquoted, so the `+++ b/<path>`
+        # strip below never sees git's octal-escaped `"b/\xxx"` form. Product paths are ASCII module names
+        # (no quote/backslash/control chars, the only remaining quoting triggers), so a `+++` path is never
+        # quoted — the diff gate cannot silently miss a changed product file. [Build-Session-Entscheidung: P1.54]
+        r = subprocess.run(["git", "-c", "core.quotepath=false", "diff", "--unified=0", "--no-color", base, "HEAD"],
+                           cwd=str(ROOT), capture_output=True, text=True, encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if r.returncode != 0:
+        return None
+    out: dict[str, set[int]] = {}
+    cur: str | None = None
+    for line in r.stdout.splitlines():
+        if line.startswith("+++ "):
+            path = line[4:].strip()
+            if path == "/dev/null":
+                cur = None
+            else:
+                cur = (path[2:] if path.startswith("b/") else path).replace("\\", "/")
+                out.setdefault(cur, set())
+        elif line.startswith("@@") and cur is not None:
+            m = _HUNK_RE.match(line)
+            if m:
+                start = int(m.group(1))
+                length = int(m.group(2)) if m.group(2) else 1
+                out[cur].update(range(start, start + length))   # length 0 (pure deletion) => empty
+    return out
+
+
+def _diff_counts(changed: dict[str, set[int]], hits: dict[str, dict[int, int]]) -> tuple[int, int]:
+    """(pure) (covered, total) over changed lines that are EXECUTABLE PRODUCT lines (present in the
+    per-line lcov hit map). A changed line not in the hit map — a non-product file, a comment, a blank
+    line, a type-only line — is not counted: the diff gate measures executable product lines only."""
+    covered = total = 0
+    for path, lines in changed.items():
+        file_hits = hits.get(path)
+        if not file_hits:
+            continue
+        for ln in lines:
+            if ln in file_hits:
+                total += 1
+                if file_hits[ln] > 0:
+                    covered += 1
+    return covered, total
+
+
+def _diff_verdict(covered: int, total: int, floor: float) -> int:
+    """(pure) the G28 changed-lines verdict: 0 problems if there are no changed executable product lines
+    (vacuous) or coverage >= floor; 1 if below. Printed either way so the measured value is visible."""
+    if total == 0:
+        print("[G28] no changed executable product lines in range - diff floor n/a")
+        return 0
+    pct = covered / total * 100
+    print(f"[G28] diff coverage = {pct:.1f}% ({covered}/{total} changed executable product lines covered; "
+          f"floor {floor}%)")
+    if pct < floor:
+        fail(f"diff coverage {pct:.1f}% < floor {floor}% on changed product lines ({covered}/{total})")
+        return 1
+    return 0
+
+
 def check_floor(measured: dict[str, float], floors: dict[str, float], kind: str) -> int:
     """(pure) every domain with a floor meets it — NEVER averaged (G27). A measured domain BELOW its floor
     fails; a domain with no floor yet is not gated (its row is added in P1)."""
@@ -182,19 +333,21 @@ def check_floor(measured: dict[str, float], floors: dict[str, float], kind: str)
 
 
 def run_live(cfg: dict) -> int:
-    """LIVE tier (P1): per-domain line + branch floors over the real cargo-llvm-cov / vitest reports.
-    Target-absent until a report exists. The per-crate/per-package domain extraction is wired in P1 with
-    the crate structure; here it activates the moment a report lands and the floors name a measured domain."""
+    """LIVE per-domain tier (G27, P1.54): each measured domain's LINE coverage >= its [line] floor + each
+    measured security-kernel domain's BRANCH coverage >= its [branch] floor — NEVER averaged. Target-absent
+    (skip) on a leg with no summary report. The measured values are printed so the increase-only ratchet
+    can be set from the observed CI baseline."""
     if not RUST_COV.is_file() and not TS_COV.is_file():
-        print("[G27/G28] no coverage report yet (cargo-llvm-cov / vitest output lands in P1) — "
-              "per-domain + diff floors skipped (target-absent)")
+        print("[G27] no coverage report on this leg (the cargo-llvm-cov / vitest reports are generated on "
+              "the Linux Lane-A leg) — per-domain floors skipped (target-absent)")
         return 0
-    # report present (P1): the line/branch floor maps are compared against the measured per-domain pcts.
-    # (The report->domain extraction lands with the P1 crate/package structure; the floor-comparison core
-    # check_floor + the branch-domain contract are exercised by g24 with synthetic reports.)
     line_floors = {d: float(v) for d, v in cfg.get("line", {}).items() if isinstance(v, (int, float))}
     branch_floors = {d: float(v) for d, v in cfg.get("branch", {}).items() if isinstance(v, (int, float))}
     measured_line, measured_branch = _extract_measured()
+    for dom in sorted(measured_line):
+        print(f"[G27] line   {dom} = {measured_line[dom]:.1f}% (floor {line_floors.get(dom, 'none')})")
+    for dom in sorted(measured_branch):
+        print(f"[G27] branch {dom} = {measured_branch[dom]:.1f}% (floor {branch_floors.get(dom, 'none')})")
     problems = check_floor(measured_line, line_floors, "line") + check_floor(measured_branch, branch_floors, "branch")
     for dom in BRANCH_FLOOR_DOMAINS:
         if dom in measured_branch and dom not in branch_floors:
@@ -204,11 +357,75 @@ def run_live(cfg: dict) -> int:
     return problems
 
 
+def _accumulate(acc: dict[str, list[int]], domain: str, covered: int, count: int) -> None:
+    """Sum covered/count into acc[domain] = [covered, count] (the roll-up that makes a domain pct a true
+    covered/count ratio, NOT an average of per-file percents — G27)."""
+    slot = acc.setdefault(domain, [0, 0])
+    slot[0] += int(covered)
+    slot[1] += int(count)
+
+
 def _extract_measured() -> tuple[dict[str, float], dict[str, float]]:
-    """The measured per-domain line / branch percentages from the P1 reports. The per-crate / per-package
-    mapping is completed in P1 with the real structure; this returns {} until then so the live tier is
-    inert-but-wired (an empty measured set gates nothing, the target-absent posture)."""
-    return {}, {}
+    """The measured per-domain LINE / BRANCH percentages from the summary reports. Rust (`cargo llvm-cov
+    --json`, LLVM export): per-file `summary.lines`/`summary.branches` rolled up per product CRATE
+    (_rust_domain; tooling dropped) + per security-module for branch. TS (Vitest v8 `json-summary`): every
+    per-file entry rolled up into the one `ui` package domain. A domain with zero executable units (count
+    0) is omitted (an undefined ratio gates nothing) — so a missing report yields {} (target-absent)."""
+    line_acc: dict[str, list[int]] = {}
+    branch_acc: dict[str, list[int]] = {}
+
+    rust = _read_report(RUST_COV)
+    if isinstance(rust, dict):
+        for entry in rust.get("data", []):
+            for f in entry.get("files", []) if isinstance(entry, dict) else []:
+                fn = f.get("filename", "") if isinstance(f, dict) else ""
+                summ = f.get("summary", {}) if isinstance(f, dict) else {}
+                dom = _rust_domain(fn)
+                if dom:
+                    ln = summ.get("lines", {})
+                    _accumulate(line_acc, dom, ln.get("covered", 0), ln.get("count", 0))
+                bdom = _rust_branch_domain(fn)
+                if bdom:
+                    br = summ.get("branches", {})
+                    _accumulate(branch_acc, bdom, br.get("covered", 0), br.get("count", 0))
+
+    ts = _read_report(TS_COV)
+    if isinstance(ts, dict):
+        for path, summ in ts.items():
+            if path == "total" or not isinstance(summ, dict):
+                continue
+            ln = summ.get("lines", {})
+            _accumulate(line_acc, TS_DOMAIN, ln.get("covered", 0), ln.get("total", 0))
+            br = summ.get("branches", {})
+            _accumulate(branch_acc, TS_DOMAIN, br.get("covered", 0), br.get("total", 0))
+
+    measured_line = {d: c / n * 100 for d, (c, n) in line_acc.items() if n > 0}
+    measured_branch = {d: c / n * 100 for d, (c, n) in branch_acc.items() if n > 0}
+    return measured_line, measured_branch
+
+
+def run_diff(cfg: dict, base: str | None) -> int:
+    """LIVE diff tier (G28, P1.54): >= diff_floor% coverage on the changed EXECUTABLE PRODUCT lines in
+    base..HEAD, read from the per-line lcov reports. Needs BOTH a base AND a per-line report on this leg;
+    fail-OPEN otherwise (the report-bearing Linux leg passes --base; the no-report ratchet leg + a missing
+    base skip — the G8/G70 diff-base posture)."""
+    if base is None:
+        return 0
+    hits: dict[str, dict[int, int]] = {}
+    for p in (RUST_COV_LCOV, TS_COV_LCOV):
+        if p.is_file():
+            try:
+                hits.update(_parse_lcov(p.read_text(encoding="utf-8")))
+            except OSError:
+                pass
+    if not hits:
+        return 0                                   # no per-line report on this leg (target-absent)
+    changed = _changed_lines(base)
+    if changed is None:
+        return 0                                   # base did not resolve — fail-open
+    covered, total = _diff_counts(changed, hits)
+    floor = cfg.get("meta", {}).get("diff_floor", DIFF_FLOOR)
+    return _diff_verdict(covered, total, float(floor))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -221,7 +438,7 @@ def main(argv: list[str] | None = None) -> int:
     if structural >= 2:
         return 2
     cfg, _ = _load_floors()
-    total = structural + decrease_guard(args.base) + run_live(cfg)
+    total = structural + decrease_guard(args.base) + run_live(cfg) + run_diff(cfg, args.base)
     if total:
         print(f"[G27/G28] {total} coverage-contract violation(s)", file=sys.stderr)
         return 1

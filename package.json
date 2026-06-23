@@ -11,7 +11,8 @@
     "lint:css": "stylelint \"**/*.css\"",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "test:a11y": "vitest run -c vitest.a11y.config.ts"
+    "test:a11y": "vitest run -c vitest.a11y.config.ts",
+    "test:coverage": "vitest run -c vitest.coverage.config.ts --coverage"
   },
   "pnpm": {
     "onlyBuiltDependencies": []
@@ -24,6 +25,7 @@
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react-swc": "4.3.1",
+    "@vitest/coverage-v8": "4.1.9",
     "eslint": "9.39.4",
     "eslint-plugin-react": "7.37.5",
     "fast-check": "4.8.0",

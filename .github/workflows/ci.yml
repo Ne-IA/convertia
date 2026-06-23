@@ -38,7 +38,7 @@ jobs:
   gate-tooling:
     name: gate-tooling
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 30            # the P1.54 Linux coverage leg adds a SECOND (instrumented, separate target dir) Tauri-tree compile
     strategy:
       fail-fast: false
       matrix:
@@ -48,6 +48,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           persist-credentials: false
+          fetch-depth: 0          # full history so the P1.54 G28 diff-coverage leg can range github.event.before..HEAD
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
@@ -184,8 +185,36 @@ jobs:
         run: |
           python3 -m pip install --require-hashes -r requirements-yamllint.txt
           python3 -m yamllint -c .yamllint .github/ lefthook.yml pnpm-workspace.yaml .yamllint
-      - name: 'G27/G28: coverage-floor contract — per-domain floors + diff gate frozen (live per-domain/diff over cargo-llvm-cov/vitest in P1; the increase-only ratchet is the workflow-security leg)'
+      # P1.54 §6.7.1 step-3: generate the coverage reports the G27 per-domain + G28 diff live tiers read.
+      # Linux-only — §6.7.1 runs the OS-agnostic test leg on the Linux runner (only compile-sanity fans to
+      # the matrix), so coverage is measured once on Linux. cargo-llvm-cov is already on PATH (the bare
+      # install-gate-tools above installs every pinned tool) + llvm-tools-preview ships via
+      # rust-toolchain.toml (P1.3). `--no-report` runs the instrumented `cargo test` ONCE, then two cheap
+      # `report` passes emit the JSON (per-domain, G27) + lcov (per-line, G28 diff). Branch coverage needs
+      # nightly (`-Z coverage-options=branch`) so it is NOT requested here — Rust branch floors land in
+      # P2/P3 with the security kernel + the nightly run (the [branch] table is empty until then). The TS
+      # `test:coverage` script emits coverage/coverage-summary.json (per-domain) + coverage/lcov.info (diff).
+      - name: 'P1.54 §6.7.1 step-3: generate coverage reports (Rust cargo-llvm-cov + Vitest v8) — Linux'
+        if: runner.os == 'Linux'
+        run: |
+          export PATH="$PWD/.gate-tools/bin:$PATH"
+          # --locked: the instrumented build must NOT re-resolve / mutate the committed Cargo.lock (the
+          # G18a drift-guard runs right after — a mutated lockfile would red main; §0.8 pin-everything).
+          cargo llvm-cov --workspace --locked --no-report
+          cargo llvm-cov report --json --output-path target/llvm-cov/coverage.json
+          cargo llvm-cov report --lcov --output-path target/llvm-cov/coverage.lcov
+          pnpm run test:coverage
+      - name: 'G27: coverage-floor contract — freeze (all OS) + per-domain LINE floors live over cargo-llvm-cov/vitest (Linux, P1.54); the increase-only ratchet is the workflow-security leg'
         run: python3 scripts/check-coverage --full
+      # P1.54 G28: changed-lines diff coverage over the push range — Linux (the report-bearing leg) + push
+      # only (the build-loop's commits; the floors are empty-of-diff on a fork-PR / first push). Needs the
+      # full history (fetch-depth: 0 above) to range github.event.before..HEAD; fail-OPEN if the base does
+      # not resolve (all-zeros / force-push). BEFORE via env (not inline) to avoid template-injection (G50).
+      - name: 'G28: changed-lines diff coverage over the push range (Linux report-bearing leg, push only)'
+        if: runner.os == 'Linux' && github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: python3 scripts/check-coverage --base "$BEFORE"
       - name: 'G18a: lockfile-integrity contract — drift-set freeze + --locked/--frozen-lockfile flag-scan + git diff --exit-code drift-guard (live drift-guard; CI flag-scan target-absent until P1 build commands land)'
         run: python3 scripts/check-lockfile-integrity
       - name: 'G30: build-matrix contract — native-OS set freeze + macOS-universal fat-Mach-O both-slice assertion (stdlib fat-header parse; sidecar slice-assertion target-absent until P1+ stage-engines)'

@@ -6,6 +6,8 @@ node_modules/
 dist/
 target/
 .gate-tools/
+# Generated coverage reports (P1.54 §6.7.1 leg: vitest v8 + cargo-llvm-cov), gitignored, machine-read by G27/G28
+coverage/
 
 # The Rust side + Tauri config + the L(-1) capabilities allowlist (not prettier's domain)
 src-tauri/

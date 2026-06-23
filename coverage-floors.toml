@@ -13,11 +13,22 @@
 target_line_floor = 70    # the ratchet destination (start 50 -> 70); informational target, not a cap
 diff_floor = 80           # G28: >= 80 % coverage on changed lines (red `main`)
 
-# per-domain LINE-coverage floors — per-crate (Rust, cargo-llvm-cov) / per-package (TS, vitest v8).
-# Empty in P0; a row per domain is added in P1 (e.g. "convertia-core" = 0), increase-only thereafter.
+# per-domain LINE-coverage floors — per product CRATE (Rust, cargo-llvm-cov --json) / the one `ui`
+# package (TS, vitest v8 json-summary). Tooling (the `xtask` dev-bin, gate scripts) is EXCLUDED. Seeded
+# in P1.54 from the first measured baseline, CONSERVATIVELY below the measured value so the cross-platform
+# Linux Lane-A run (where the gate enforces) clears it with margin; the increase-only ratchet raises each
+# toward [meta].target_line_floor as real code + tests land (the live `[G27] line …` print shows the
+# observed CI value to ratchet from). Rows: convertia-core (the MIT host crate), convertia-imgworker (the
+# isolated image-worker; a P1 stub at 0 %, ratchets in P4/P5), ui (the WebView frontend package).
 [line]
+convertia-core = 70
+convertia-imgworker = 0
+ui = 90
 
-# BRANCH-coverage floors (cargo-llvm-cov --branch) for the security-critical crates only — a guard that
-# rejects `../` but not `..\` is 100 % LINE-covered by Unix-only tests yet misses the Windows branch.
-# Empty in P0; the rows for crate::detection / crate::fs_guard / crate::isolation are added in P1.
+# BRANCH-coverage floors for the security-critical crates only — a guard that rejects `../` but not `..\`
+# is 100 % LINE-covered by Unix-only tests yet misses the Windows branch. EMPTY in P1: Rust branch
+# coverage needs nightly (`-Z coverage-options=branch`) and the BRANCH_FLOOR_DOMAINS modules
+# (crate::detection / crate::fs_guard / crate::isolation) are P2/P3 security-kernel code — the rows are
+# added when those modules + the nightly branch-coverage run land (the mapping is already wired in
+# check-coverage). (TS branch coverage IS measured but is not floored here — no security-kernel TS.)
 [branch]

@@ -634,7 +634,11 @@ Two **separate** coverage gates, both enforced; neither replaces the other.
   kernel), and **`crate::isolation`** (the subprocess wrapper) carry a **branch**
   floor via `cargo-llvm-cov --branch`, ratcheting like the line floor — an untested
   platform/error branch in exactly the highest-consequence surfaces is a
-  deterministic failure, not a line-coverage false-green.
+  deterministic failure, not a line-coverage false-green. **Sequencing (P1.54):** the
+  branch metric needs **nightly** (`-Z coverage-options=branch`) and these three
+  modules are **P2/P3** security-kernel code, so the `[branch]` floors land then (with
+  the nightly branch run); the P1.54 **line** tier is live now over the foundation
+  crates. The `_rust_branch_domain` mapping is already wired.
 - **Gate scripts are EXCLUDED from the floors** — they are **G24**-self-tested
   instead (positive + negative). The exclusion glob (`scripts/` + `.github/`) is
   wired into the `cargo-llvm-cov` and vitest v8 invocations from first activation
@@ -650,13 +654,22 @@ is the per-push pressure that keeps each commit's *own* new lines tested; the fl
 ratchet is the long-run direction. A change can pass the floor (the tree is already
 high) yet fail the diff gate (its new lines are bare) — both must pass.
 
-### 5.3 Shard-merge determinism (G27)
+### 5.3 Single-leg (Lane A) measurement; 3-OS shard-merge is Lane-B `[Build-Session-Entscheidung: P1.54]`
 
-The integration + property suites run on the **3-OS matrix**, so coverage is
-sharded across legs. To avoid a last-writer-wins race: **each leg emits a NAMED
-partial report**, the partials are **merged in a FIXED order**, and the floor (5.1)
-is applied to the **merged report only** — never to a per-leg partial. The merge is
-deterministic regardless of which OS leg finishes first.
+The **per-push G27/G28 coverage is measured on the Linux leg only**: spec §6.7.1 runs
+the OS-agnostic step-3 unit/property/fault-injection test leg on the Linux runner (only
+compile-sanity fans to the 3-OS matrix), so the per-push floors read a **single Linux
+report** — there is no Lane-A shard-merge. (`check-coverage` reads one
+`cargo llvm-cov --json`/`--lcov` + one Vitest v8 `json-summary`/`lcov`; the per-domain
+roll-up sums covered/count, never averaging per-file percents.)
+
+The **3-OS shard-merge belongs to Lane B** (§6.7.2): the release reliability run
+exercises the integration + property + corpus suites on **all three** legs, where
+per-OS branch divergence matters. There, to avoid a last-writer-wins race, **each leg
+emits a NAMED partial report**, the partials are **merged in a FIXED order**, and the
+floor is applied to the **merged report only**. (Per-OS **branch** coverage of the
+security kernel — `crate::detection`/`fs_guard`/`isolation` — is the P2/P3 refinement
+that lands with those modules + the nightly branch run; see 5.1 bullet 3.)
 
 ---
 

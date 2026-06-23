@@ -193,3 +193,21 @@ linux-aarch64  = { url = "https://github.com/rustsec/rustsec/releases/download/c
 macos-x86_64   = { url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-apple-darwin-v0.22.2.tgz",        sha256 = "847831323de932155b226ab60ee4a180e13e5d007a019f0d4b7b4d89a6de2ab2" }
 macos-aarch64  = { url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-aarch64-apple-darwin-v0.22.2.tgz",       sha256 = "ec7ca4263769593df4d909be85b94a6b79efa2897be5d2bb8ebd516e823175af" }
 windows-x86_64 = { url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-pc-windows-msvc-v0.22.2.zip",      sha256 = "0a7316540862c13d954f648917ceacca593747baed6eec180fafa590be2710ab", asset_kind = "zip" }
+
+# --- cargo-llvm-cov - the LLVM source-based coverage runner over the workspace (G27/G28, P1.54). Invoked
+# as `cargo llvm-cov` (needs the llvm-tools-preview rustup component, in rust-toolchain.toml since P1.3).
+# All 5 platform assets are .tar.gz with the `cargo-llvm-cov` binary at the archive ROOT. The archive
+# sha256 is verified before extraction. ---
+[tools.cargo-llvm-cov]
+version       = "0.8.7"
+origin        = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.8.7/"
+bin_name      = "cargo-llvm-cov"
+asset_kind    = "targz"
+corroboration = "taiki-e/cargo-llvm-cov release v0.8.7 publishes NO checksums file and NO build-provenance attestation (`gh attestation verify --owner taiki-e` -> none), so each platform archive sha256 was computed from the official GitHub release download. 2nd origin (version identity): Homebrew cargo-llvm-cov stable == 0.8.7 (builds from the v0.8.7 source tag). RESIDUAL (honest, same class as cargo-audit/shellcheck): no independent recording of the prebuilt binary-archive hashes (Homebrew builds from source); a future attested cargo-llvm-cov release should be re-pinned via the attestation arm. Established 2026-06-23 by Co-Pilot (Build-Loop), owner-acked."
+
+[tools.cargo-llvm-cov.platforms]
+linux-x86_64   = { url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.8.7/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz",  sha256 = "967b5cc996c29d8baa52bbb4595ef1f53af35255af8e2036ddbc6468d7b523c7" }
+linux-aarch64  = { url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.8.7/cargo-llvm-cov-aarch64-unknown-linux-musl.tar.gz", sha256 = "b7bb2ad514166f3b19fc06874c577eefde0010e5ac571f9ae33ff45cd19a4785" }
+macos-x86_64   = { url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.8.7/cargo-llvm-cov-x86_64-apple-darwin.tar.gz",        sha256 = "288ce0cb976207a9a1ad5af4d7ec9a06c9af116727066fb2287df8d9d1026be9" }
+macos-aarch64  = { url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.8.7/cargo-llvm-cov-aarch64-apple-darwin.tar.gz",       sha256 = "3efee732ed7e9a653e20d96c930e0ec799901289cce90f46bb20f627e2c0d2e9" }
+windows-x86_64 = { url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.8.7/cargo-llvm-cov-x86_64-pc-windows-msvc.tar.gz",     sha256 = "56bce7aef6bf906af0fe025d2459f8be483d65ed4c105760671f9c92449c966d" }
