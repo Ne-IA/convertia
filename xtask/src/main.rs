@@ -2,7 +2,9 @@
 //!
 //! P1.6.2 reserved this as a compile-only workspace member so the §0.4.5 codegen + §6.7.1 coverage bins
 //! have a home and the G19 generated-drift check can bind to a concrete invocation (wired in P1.28)
-//! rather than a guessed one. P1.26 adds the `codegen` task; the coverage task is P1.54.
+//! rather than a guessed one. P1.26 adds the `codegen` task; line/diff coverage (G27/G28) is measured
+//! directly by `cargo-llvm-cov` in CI (P1.54), NOT an xtask task — a future coverage task here would be
+//! the §6.4.3a corpus-coverage bin (`check-corpus-coverage`, P3+), the §6.7.1 coverage home §0.7 reserves.
 //!
 //! Invoke from the workspace as `cargo run -p xtask -- <task>` (a `cargo xtask <task>` cargo-alias is an
 //! optional developer-ergonomics layer, not required for the task to run). Tasks:

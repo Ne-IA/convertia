@@ -126,7 +126,7 @@ convertia/                          → repo root (Git, GitHub: Ne-IA/convertia)
 │       ├── platform/               → tier 3 — path / volume / OS shims (§2.14, §7.7)
 │       ├── pool/                   → tier 3 — the §0.9 subprocess pool + concurrency degree
 │       └── run/                    → tier 2 — per-run/instance scratch ownership + cleanup (§2.4/§2.6)
-├── supply-chain/                   → the `cargo-vet` audit trust store (`config.toml` / `imports.lock`, G18b; L(-1))
+├── supply-chain/                   → the `cargo-vet` audit trust store (`config.toml` + `audits.toml`; `imports.lock` joins when the live cargo-vet run lands, G18b; L(-1))
 ├── tests/                          → Rust integration + corpus harness (§6.4)
 │   ├── corpus/                     → the §6.5 reliability corpus (manifest + fixtures, fills P3–P7)
 │   └── g53-fixture/                → the G53 NEGATIVE fixture (a planted copyleft-into-core violation; own nested workspace, excluded from the real graph)

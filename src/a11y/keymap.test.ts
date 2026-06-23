@@ -25,4 +25,20 @@ describe("keymap (section 5.10 accelerator table)", () => {
     const event = new KeyboardEvent("keydown", { key: "n", ctrlKey: true, altKey: true });
     expect(matchesAccelerator(event, keymap.startOver)).toBe(false);
   });
+
+  it("matches both About accelerators: F1 and the ? (Shift+/) help-key (section 5.10 'F1 / ?')", () => {
+    expect(matchesAccelerator(new KeyboardEvent("keydown", { key: "F1" }), keymap.about)).toBe(
+      true,
+    );
+    expect(
+      matchesAccelerator(
+        new KeyboardEvent("keydown", { key: "?", shiftKey: true }),
+        keymap.aboutAlt,
+      ),
+    ).toBe(true);
+    // a plain "/" without Shift is not the ? help-key
+    expect(matchesAccelerator(new KeyboardEvent("keydown", { key: "/" }), keymap.aboutAlt)).toBe(
+      false,
+    );
+  });
 });

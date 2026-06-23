@@ -293,7 +293,7 @@ record("(e/P2-r4) shell: a single (odd) trailing backslash STILL folds `cargo ve
        len(scan("e", "scripts/r.sh", "cargo vet \\\n    update\n")) == 1)
 
 # === live: the real repo is clean today =======================================================
-record("main() exits 0 today (live (e) over real workflows+scripts clean; a-d,f target-absent)", m.main() == 0)
+record("main() exits 0 today (all invariants a-f live over the real repo source; clean)", m.main() == 0)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-repo-invariants] {len(results) - len(failed)}/{len(results)} assertions passed.")

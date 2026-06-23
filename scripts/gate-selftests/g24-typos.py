@@ -10,6 +10,8 @@ Skips with a warning (exit 0) if the pinned typos binary is absent (a dev box th
 install-gate-tools); the L4 gate-tooling job installs it and runs this for real. stdlib-only.
 Exit 0 = all held / skipped; 1 = a self-test failed.
 """
+import importlib.machinery
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -52,6 +54,19 @@ def flagged_words(target: Path, use_config: bool) -> set[str]:
             words.add(obj.get("typo", ""))
     return words
 
+
+# --- SCOPE membership (binary-INDEPENDENT: runs even on a dev box without the typos binary) -------
+# The §5.7 user-facing string catalog MUST be in run-typos' scope (the P1.66 fix). A forgotten
+# catalog = an un-typo-scanned SHIPPED UI string. Hard-fail here, BEFORE the binary skip below, so
+# the regression is caught even where the pinned binary is absent.
+_rt_loader = importlib.machinery.SourceFileLoader("rt", str(ROOT / "scripts" / "run-typos"))
+_rt = importlib.util.module_from_spec(importlib.util.spec_from_loader("rt", _rt_loader))
+_rt_loader.exec_module(_rt)
+if "src/strings/ui.ts" not in _rt.SCOPE:
+    print("[g24-typos] FAIL - run-typos SCOPE is missing src/strings/ui.ts (the §5.7 user-facing "
+          "string catalog); a typo in a shipped UI string would go unscanned", file=sys.stderr)
+    sys.exit(1)
+print("[PASS] run-typos SCOPE includes src/strings/ui.ts (the §5.7 user-facing string catalog)")
 
 TYPOS = typos_bin()
 if TYPOS is None:

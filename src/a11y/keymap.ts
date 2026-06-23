@@ -29,7 +29,8 @@ export const keymap = {
   openOutputFile: { key: "Enter", cmdOrCtrl: true, shift: true }, // Ctrl/Cmd+Shift+Enter -- Summary
   backToConfirm: { key: "Backspace", cmdOrCtrl: true }, // Ctrl/Cmd+Backspace -- Targets/Destination
   startOver: { key: "n", cmdOrCtrl: true }, // Ctrl/Cmd+N -- Targets/Destination/Summary/AppFault
-  about: { key: "F1" }, // F1 -- any
+  about: { key: "F1" }, // F1 -- any (section 5.10 "About / legal-notices")
+  aboutAlt: { key: "?", shift: true }, // ? (Shift+/, where no text field is focused) -- the section 5.10 "F1 / ?" co-accelerator
 } as const satisfies Record<string, Accelerator>;
 
 const isMac = typeof navigator !== "undefined" && /Mac|iP(hone|ad|od)/.test(navigator.platform);

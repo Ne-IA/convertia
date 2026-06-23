@@ -1188,7 +1188,7 @@ convertia/
 │  ├─ security/                    # security-concept.md + build-gates.md (G1..Gnn)
 │  └─ spec/                        # the spec (how) — 00-architecture … 07-app-shell
 │     └─ 04-formats/               # the per-category §04 format matrices
-├─ supply-chain/                   # the cargo-vet audit trust store (config.toml / imports.lock, G18b)
+├─ supply-chain/                   # the cargo-vet audit trust store (config.toml + audits.toml; imports.lock joins when the live cargo-vet run lands, G18b)
 ├─ tests/                          # Rust integration + corpus harness (§6.4); guarantees property tests
 │  ├─ corpus/                      # the §6.5 reliability corpus (manifest + fixtures, fills P3–P7)
 │  └─ g53-fixture/                 # the G53 NEGATIVE fixture (planted copyleft-into-core; own nested workspace, excluded from the real graph)

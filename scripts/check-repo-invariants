@@ -518,16 +518,20 @@ def _f_in_scope(p: str) -> bool:
     return re.search(r"(?:^|/)__tests__/.*\.tsx?$", p) is not None
 
 
+# `live` is the human-facing status hint (main() scans EVERY invariant regardless). a-d,f flipped
+# True at P1.66 — their target source classes (Rust / TS test / CSS) all landed in P1, so the gate
+# IS armed over real files; the old `live=False` made the status line falsely claim "target-absent
+# until P1" while it was already enforcing (a green-but-blind-adjacent miss the P1.66 audit caught).
 INVARIANTS = [
-    Invariant("a", "hardcoded hex colour outside design/tokens.css", False, _a_in_scope, _a_scan),
-    Invariant("b", "process::Command::new outside crate::isolation", False, _b_in_scope,
+    Invariant("a", "hardcoded hex colour outside design/tokens.css", True, _a_in_scope, _a_scan),
+    Invariant("b", "process::Command::new outside crate::isolation", True, _b_in_scope,
               lambda rel, t: _line_hits(_code_no_comments(rel, t), SPAWN_RE)),
-    Invariant("c", "unsafe impl Send/Sync outside the FFI module", False, _c_in_scope,
+    Invariant("c", "unsafe impl Send/Sync outside the FFI module", True, _c_in_scope,
               lambda rel, t: _line_hits(_code_no_comments(rel, t), UNSAFE_IMPL_RE)),
-    Invariant("d", "raw 127.0.0.1/localhost outside #[cfg(test)] (LibreOffice carve-out)", False,
+    Invariant("d", "raw 127.0.0.1/localhost outside #[cfg(test)] (LibreOffice carve-out)", True,
               _d_in_scope, _d_scan),
     Invariant("e", "cargo vet update/sync/import in CI or scripts/", True, _e_in_scope, _e_scan),
-    Invariant("f", "fc.gen( outside the approved shrink-wrapper in TS test files", False, _f_in_scope,
+    Invariant("f", "fc.gen( outside the approved shrink-wrapper in TS test files", True, _f_in_scope,
               lambda rel, t: _line_hits(_code_no_comments(rel, t), FC_GEN_RE)),
 ]
 
@@ -554,8 +558,8 @@ def main() -> int:
         return 1
     live = ",".join(i.id for i in INVARIANTS if i.live)
     dormant = ",".join(i.id for i in INVARIANTS if not i.live)
-    print(f"[G9] {len(INVARIANTS)} repo-invariants OK (live now: {live}; "
-          f"target-absent until P1: {dormant})")
+    tail = f"; target-absent: {dormant}" if dormant else ""
+    print(f"[G9] {len(INVARIANTS)} repo-invariants OK (live now: {live}{tail})")
     return 0
 
 
