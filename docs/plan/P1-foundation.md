@@ -280,7 +280,7 @@ here.
   > the §6.8 content: inbound=outbound under MIT, no CLA, optional `Signed-off-by` (requested not required), the inbound-warranty clause, how to run the §6.7.1 lanes, and the quality bar stated directly (no `any`/no `// TODO`/no `console.log` in prod/no inline CSS/production-ready) — NOT by reference to the private `CLAUDE.md`.
 - [x] **P1.43** [DOC] Author `CODE_OF_CONDUCT.md` — Contributor-Covenant-class + enforcement contact · §6.8
   > a standard CoC with the SECURITY/maintainer enforcement contact per the §6.8 table.
-- [ ] **P1.44** [DOC] Author `SECURITY.md` — private-advisory channel, untrusted-decoder scope, no-SLA posture · §6.8 §0.11 · G51
+- [x] **P1.44** [DOC] Author `SECURITY.md` — private-advisory channel, untrusted-decoder scope, no-SLA posture · §6.8 §0.11 · G51
   > private vulnerability reporting (GitHub private advisories + contact), the scope statement (ConvertIA opens untrusted files through third-party decoders) referencing the §0.11 threat map + §2.12 isolation, the no-SLA best-effort patch posture, and how a reporter includes a redacted (§7.5) log repro; the public-prose typo gate (P0 G51) covers it. The §0.11 map back-reference is back-filled by P4's threat-map assembly (plan README fill-note) — P1 authors `SECURITY.md` with the reference present.
 - [ ] **P1.45** [DOC] Author `PRIVACY.md` — offline restatement of §2.11 + the cloud-sync caveat · §6.8 §2.11 · G51
   > the plain-language §2.11 restatement (fully offline, no network/telemetry/accounts/update-phone-home; the only network is the user-initiated open-project-page) + the OneDrive/iCloud/Dropbox cloud-sync caveat per the §6.8 table; G51 typo-covered.
