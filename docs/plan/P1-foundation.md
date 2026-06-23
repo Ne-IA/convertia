@@ -164,10 +164,9 @@ fail-open to fail-closed.
 - [x] **P1.20** [BUILD] Encode the §0.10 locked CSP object in `tauri.conf.json → app.security.csp` · §0.10 · G47
   needs: P1.19
   > the exact §0.10 CSP directives (`default-src`/`script-src` `'self'`; `connect-src 'self' ipc: http://ipc.localhost`; `img-src`/`media-src` NO `asset:`; `object-src`/`frame-src`/`frame-ancestors 'none'`; `base-uri`/`form-action 'self'`; `webrtc 'block'`) — structurally equal per-directive to the locked object the P0 G47 lint asserts against (activates G47's CSP leg, P0.3.2).
-- [!extern] **P1.21** [BUILD] Author `src-tauri/capabilities/main.json` — the §0.10 deny-by-default allowlist · §0.10 · G47
+- [x] **P1.21** [BUILD] Author `src-tauri/capabilities/main.json` — the §0.10 deny-by-default allowlist · §0.10 · G47
   needs: P1.19
-  > **[!extern] (L(-1)):** `src-tauri/capabilities/**` is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it. Cleared by the Co-Pilot session once P1.19 lands (no buildable box `needs:` it — the empty window boots without it).
-  > the minimal capability set (`core:default`, `log:default`, `store:default`; NO `fs:`, NO `http:`, NO `shell:allow-execute`, NO `opener:*`, NO `dialog:allow-open`) for the `main` window — the literal allowlist the P0 G47 capability leg asserts (fails any `fs:`/`http:`/`shell`/`opener:`/`dialog:` grant).
+  > the minimal capability set (`core:default`, `log:default`, `store:default`; NO `fs:`, NO `http:`, NO `shell:allow-execute`, NO `opener:*`, NO `dialog:allow-open`) for the `main` window — the literal allowlist the P0 G47 capability leg asserts (fails any `fs:`/`http:`/`shell`/`opener:`/`dialog:` grant). [Co-Pilot, owner-acked L(-1) edit — `src-tauri/capabilities/**` is L(-1); authored verbatim from spec §0.10 (00-architecture §0.10), dual-review opus=GO/sonnet=GO]
 - [x] **P1.22** [BUILD] Assert the three §0.10 release-hardening keys absent/false in `tauri.conf.json` · §0.10 · G47
   needs: P1.19
   > `app.withGlobalTauri` absent/false, `app.security.dangerousDisableAssetCspModification` absent/false/empty, release-profile `devtools` not enabled — the three by-construction T2-widening knobs the P0 G47 lint asserts absent (P0.3.2); P1 lands the conf in the asserted-clean shape.
