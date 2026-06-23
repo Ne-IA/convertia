@@ -11,7 +11,7 @@ SCOPE (build-gates.md G51) - the public-facing prose, NOT the whole repo (the pl
 domain terms that would false-positive). SCOPE is an EXPLICIT allowlist filtered to the files that
 EXIST: a LISTED file joins the scan when it appears on disk (SECURITY.md/PRIVACY.md/TRADEMARK.md), but
 a NEW prose class needs an explicit SCOPE entry (+ a g24 guard) - e.g. the §5.7 user-facing string
-catalog `src/strings/ui.ts`, added P1.66 (its g24-typos SCOPE-membership leg guards the entry).
+catalog `src/strings/ui.ts`, added P1.67 (its g24-typos SCOPE-membership leg guards the entry).
 
 stdlib-only. L(-1) security-critical (scripts/l-neg1-files.toml, G71). Exit: 0 = clean (or no scope
 file exists yet / binary absent on a dev box); 1 = a typo was found; 2 = bad invocation.
@@ -33,7 +33,7 @@ SCOPE = [
     "TRADEMARK.md",
     "docs/security/security-concept.md",
     "docs/security/build-gates.md",
-    "src/strings/ui.ts",   # P1.66: the §5.7 user-facing UI-chrome string catalog (landed P1.37) - a
+    "src/strings/ui.ts",   # P1.67: the §5.7 user-facing UI-chrome string catalog (landed P1.37) - a
                            # typo in a SHIPPED UI string is a user-visible defect; G51 now guards it
                            # (the P1 "added when it lands" promise, finally honoured + g24-test-guarded).
 ]

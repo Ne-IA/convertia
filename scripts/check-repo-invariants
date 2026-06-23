@@ -492,7 +492,7 @@ def _e_scan(relpath: str, text: str) -> list[tuple[int, str]]:
         # DATA/code languages (python/toml/extensionless): blank `#` comments AND every string, so the
         # gate's own pattern def, this self-test's fixtures, and other gates' prose all vanish (a real
         # python invocation is a subprocess LIST a contiguous regex can't match; the os.system-string
-        # residual is covered downstream by G18a's imports.lock-in-the-diff check once it lands in P1).
+        # residual is covered downstream by G18a's imports.lock-in-the-diff check once it lands (P10.59)).
         scannable = _blank_code(text)
     # match PER LOGICAL LINE - a genuine shell `\`-continuation / YAML folded-or-indented scalar body is
     # reconstructed into one line, but unrelated sibling lines + blanked comment lines stay separate, so
@@ -519,9 +519,9 @@ def _f_in_scope(p: str) -> bool:
 
 
 # `live` is the human-facing status hint (main() scans EVERY invariant regardless). a-d,f flipped
-# True at P1.66 — their target source classes (Rust / TS test / CSS) all landed in P1, so the gate
+# True at P1.67 — their target source classes (Rust / TS test / CSS) all landed in P1, so the gate
 # IS armed over real files; the old `live=False` made the status line falsely claim "target-absent
-# until P1" while it was already enforcing (a green-but-blind-adjacent miss the P1.66 audit caught).
+# until P1" while it was already enforcing (a green-but-blind-adjacent miss the P1.67 audit caught).
 INVARIANTS = [
     Invariant("a", "hardcoded hex colour outside design/tokens.css", True, _a_in_scope, _a_scan),
     Invariant("b", "process::Command::new outside crate::isolation", True, _b_in_scope,

@@ -299,8 +299,8 @@ def drift_guard(root: Path, runner=_git_diff) -> list[str]:
     none exist (the P0 posture). Fail-CLOSED if a lockfile drifted or git cannot be consulted."""
     present = [p for p in DRIFT_PATHS if (root / p).is_file()]
     if not present:
-        print("[G18a] no lockfile exists yet (Cargo.lock/pnpm-lock.yaml/imports.lock land in P1) - "
-              "the drift-guard is a no-op; fail-closed the moment a lockfile drifts")
+        print("[G18a] no lockfile exists yet (Cargo.lock/pnpm-lock.yaml land in P1; imports.lock at "
+              "P10.59) - the drift-guard is a no-op; fail-closed the moment a lockfile drifts")
         return []
     rc, out = runner(root, present)
     if rc == 0:

@@ -27,8 +27,9 @@ So the policy INTENT is FROZEN here (a stdlib TOML parse — no cargo-deny/cargo
 
 Growing/relaxing any of these means editing the frozen expectation in THIS file - itself L(-1)
 (scripts/l-neg1-files.toml, G71), so the change carries the owner-ack + a Dual-Review note. The LIVE
-`cargo deny check` / `cargo vet check --locked` run in P1 once the workspace Cargo.lock exists (this
-gate skips them with a notice until then - the target-absent P0 posture). stdlib-only (tomllib).
+`cargo deny check` runs in P1 (P1.59, once the workspace Cargo.lock exists); the LIVE
+`cargo vet check --locked` is the DEFERRED P10 run (P10.59, per P1.59 - cargo-vet is not yet pinned).
+This gate skips each with a notice until its tier lands. stdlib-only (tomllib).
 
 Exit: 0 = the policy matches the frozen expectation (+ live checks pass or are target-absent);
       1 = drift / a relaxation; 2 = a config file is missing or unparseable.
@@ -345,9 +346,10 @@ def _live_checks() -> list[str]:
             problems.append("supply-chain/imports.lock is missing - the committed trust DB must exist "
                             "(no live-registry trust at gate time)")
     else:
-        print("[G18b] a Cargo.lock exists but `cargo-vet` is not installed in this plane - the live "
-              "cargo-vet check is skipped here (the frozen supply-chain/config.toml policy stays "
-              "fail-closed; the live binary enforces at L1/L2 + the equipped Rust CI supply-chain leg)")
+        print("[G18b] `cargo-vet` is not installed in this plane - the live cargo-vet check is skipped. "
+              "cargo-vet is NOT yet pinned (gate-tools.toml), so its live binary runs in NO plane; the "
+              "live `cargo vet check` is the DEFERRED P10 run (P10.59, per P1.59). Only the frozen "
+              "supply-chain/config.toml policy (>=2 imports + the exemption growth-guard) is enforced here.")
     return problems
 
 

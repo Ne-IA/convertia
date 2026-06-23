@@ -289,3 +289,11 @@
 - [ ] **P10.58** [RELEASE] Wire the Lane-B publish stage to canonical GitHub Releases — one coordinated all-or-nothing release · §6.2.2 §6.7.2 · G58
   needs: P10.55, P10.27, P10.32, P10.19, P10.45, P10.56, P10.37
   > Lane-B stage 7: upload artifacts + `SHA256SUMS` + `.minisig` + `.sha256` files + SBOM (CycloneDX/SPDX) + `reliability-report.json` + `NOTICE`/`THIRD-PARTY-LICENSES.txt` + the attestation bundle as a **single coordinated release** (one large all-or-nothing v1, SSOT); the release body restates as-is/no-warranty + the verify recipe (P10.49) + the two-exception items (P10.57). No auto-update/phone-home publishing step (P10.1/P10.2). Runs only after every prior release-blocking stage is green.
+
+---
+
+### First-party crate-trust vetting (the deferred cargo-vet live run)
+
+- [ ] **P10.59** [GATE] Run the deferred cargo-vet first-party crate-trust live vetting — `init`/`import` (≥2 DBs) / `check --locked` over the full `Cargo.lock`, commit `imports.lock`, populate `audits.toml` · §3.8 · G18b G18a G9
+  needs: P1.7
+  > the live cargo-vet run that P0.3.6 authored the config/protocol for and **P1.59 deferred** ("a separate P10 vetting effort"): pin cargo-vet (`gate-tools.toml`), `cargo vet init`, `cargo vet import` the ≥2 declared DBs (Mozilla + Google, `supply-chain/config.toml`), `cargo vet suggest` then certify/exempt the full tree (~471 crates) with documented reasons, commit `supply-chain/imports.lock` (Co-Pilot-reviewed, never auto-fetched — G9 invariant (e) / G18a `--locked`), and populate `supply-chain/audits.toml`. This flips the G18b live tier from skip-with-warning to fail-closed (a clean `cargo vet check --locked` becomes release-blocking). **Authored as the owning box at P1.68** so the deferred work is plan-owned (the obligation-as-prose lesson the P1.66 G71 fix taught — an unowned, unverified deferral silently never happens). Runs in the P10 supply-chain stage, before P10.58 publish.

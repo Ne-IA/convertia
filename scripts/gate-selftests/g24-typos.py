@@ -56,7 +56,7 @@ def flagged_words(target: Path, use_config: bool) -> set[str]:
 
 
 # --- SCOPE membership (binary-INDEPENDENT: runs even on a dev box without the typos binary) -------
-# The §5.7 user-facing string catalog MUST be in run-typos' scope (the P1.66 fix). A forgotten
+# The §5.7 user-facing string catalog MUST be in run-typos' scope (the P1.67 fix). A forgotten
 # catalog = an un-typo-scanned SHIPPED UI string. Hard-fail here, BEFORE the binary skip below, so
 # the regression is caught even where the pinned binary is absent.
 _rt_loader = importlib.machinery.SourceFileLoader("rt", str(ROOT / "scripts" / "run-typos"))

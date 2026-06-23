@@ -112,7 +112,7 @@ gate = "G56b"
 leg = "signed-tag (leg 3)"
 fail_open_at = "L5"
 covered_by = "P0.7.17 provisioning"
-reason = "git verify-tag is skip-with-warning until the SSH allowed-signers file is provisioned in P0.7.17, then fail-CLOSED; legs 1/2 (ancestry, green-history) are fail-closed always (pattern c)"
+reason = "git verify-tag's leg 3 fail-opens at L5 only during the bootstrap; the SSH allowed-signers file it needs is now provisioned (P0.7.17, .github/allowed_signers present), so leg 3 fail-CLOSES on file presence once the L5 release pipeline + a real v* tag exist (P10, where this row is finalized); legs 1/2 (ancestry, green-history) are fail-closed always (pattern c)"
 
 # (G71's former fail_open row was REMOVED when its scheduled P0->P1 flip was finally wired
 #  (P1.66): check-l-neg1-ack is now invoked WITH --enforce at both L2 (lefthook pre-push) and

@@ -119,7 +119,7 @@ jobs:
         run: python3 scripts/check-deferral --full
       - name: 'G7/G20: plan-lint / spec-lint doc-consistency (35 checks, full)'
         run: python3 scripts/plan-lint
-      - name: 'G18/G18b: supply-chain policy growth-guard (cargo-deny/cargo-vet config; live checks land P1)'
+      - name: 'G18/G18b: supply-chain policy growth-guard (cargo-deny live P1.59; cargo-vet config now, live run deferred to P10.59)'
         run: python3 scripts/check-supply-chain
       - name: 'G53: core-crate forbidden-dependency walk (image-worker copyleft excluded from the MIT core; live P1)'
         run: python3 scripts/check-core-deps
@@ -127,7 +127,7 @@ jobs:
         run: python3 scripts/check-js-supply-chain
       - name: 'G19: generated-artifact drift-check framework (regen + git diff --exit-code; targets registered in P1)'
         run: python3 scripts/check-generated-drift
-      - name: 'G9: repo-invariant grep gate ((e) cargo-vet-mutator-in-CI/scripts LIVE; a-d,f target Rust/TS/CSS source in P1)'
+      - name: 'G9: repo-invariant grep gate (all invariants a-f LIVE over the real repo source since P1)'
         run: python3 scripts/check-repo-invariants
       - name: 'G51: prose typo gate (typos over the public-facing-prose scope; .typos.toml allowlist)'
         run: python3 scripts/run-typos

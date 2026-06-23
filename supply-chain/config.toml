@@ -1,7 +1,8 @@
 # supply-chain/config.toml — cargo-vet configuration (G18b first-party crate-trust audit). Authored
-# P0.3.6; `cargo vet init` / `import` / `suggest` / `check` run in P1 against the workspace Cargo.lock.
-# This file declares the import sources + criteria policy the P1 bootstrap uses. The fetched trust DB
-# (supply-chain/imports.lock) is committed in P1 and treated like a lockfile — a Co-Pilot-reviewed
+# P0.3.6; the live `cargo vet init` / `import` / `suggest` / `check` over the workspace Cargo.lock runs
+# in P10 (P10.59) — the live run was DEFERRED (P1.59: "a separate P10 vetting effort"). This file
+# declares the import sources + criteria policy that P10 run uses. The fetched trust DB
+# (supply-chain/imports.lock) is committed in P10 and treated like a lockfile — a Co-Pilot-reviewed
 # change, NEVER auto-fetched at gate time (G18a `--locked` discipline + G9 invariant (e): no
 # `cargo vet update`/`sync`/`import` in CI or scripts/). L(-1) (supply-chain/**, G71).
 #
@@ -19,7 +20,7 @@ url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 [imports.google]
 url = "https://raw.githubusercontent.com/google/supply-chain/main/audits.toml"
 
-# Criteria policy (applied per-crate by `cargo vet suggest` in P1):
+# Criteria policy (applied per-crate by `cargo vet suggest` in P10, P10.59):
 #   * build-only deps (incl. proc-macros) -> `safe-to-run`
 #   * runtime deps                        -> `safe-to-deploy`
 # A NEW unvetted dep requires certify-or-documented-exemption; the Build-Loop ESCALATES a block and
