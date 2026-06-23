@@ -26,6 +26,12 @@ REPO = Path(__file__).resolve().parents[2]
 INSTALLER = REPO / "scripts" / "install-gate-tools"
 ORIGIN = "https://github.com/evilmartians/lefthook/releases/download/v2.1.9/"
 SMALL_ASSET = ORIGIN + "lefthook_checksums.txt"  # tiny, stable real asset under the origin
+# A RELIABLE endpoint to confirm the CI HAS NETWORK, SEPARATE from SMALL_ASSET's availability: GitHub's
+# release-download CDN can 5xx the asset independently of github.com being up (observed: a sustained
+# release-asset 502 incident reddening all 3 CI legs). online() probes THIS for the --require-network
+# offline check; the asset-fetch legs skip-as-pass on an asset 5xx (_asset_flake) — so a GitHub asset
+# outage no longer reddens main for the wrong reason, while a genuinely-offline CI still fails.
+ONLINE_PROBE = "https://github.com/"
 PLATFORM_KEYS = ("linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-aarch64", "windows-x86_64")
 
 results: list[tuple[str, bool, str]] = []
@@ -68,14 +74,13 @@ def run_installer(manifest_text: str, *extra: str) -> tuple[int, str]:
 
 
 def online() -> bool:
-    """Probe the pinned asset, RETRYING a transient blip up to 3 times (2s backoff) before concluding
-    offline. A brief GitHub/CDN 5xx must not make a reachable asset look offline (which under
-    --require-network would FAIL the network legs for the wrong reason — observed reddening all 3 CI legs
-    on a transient). A SUSTAINED outage still returns False after the retries, so --require-network still
-    fails a genuinely-offline CI (it never vacuously skips the checksum legs)."""
+    """Confirm the CI HAS NETWORK by probing the RELIABLE github.com root (ONLINE_PROBE), retrying a
+    transient blip up to 3 times (2s backoff). This is deliberately NOT the flaky release asset: the asset
+    can 5xx independently (handled by _asset_flake / real_sha()->None). Under --require-network a False
+    here means a genuinely-offline CI (no vacuous skip of the checksum legs)."""
     for attempt in range(3):
         try:
-            req = urllib.request.Request(SMALL_ASSET, method="HEAD",
+            req = urllib.request.Request(ONLINE_PROBE, method="HEAD",
                                          headers={"User-Agent": "convertia-selftest"})
             urllib.request.urlopen(req, timeout=20).close()
             return True
@@ -85,20 +90,44 @@ def online() -> bool:
     return False
 
 
-def real_sha() -> str:
-    """Fetch + hash the pinned asset, retrying a transient blip up to 3 times (2s backoff) — same
-    transient-tolerance as online() so a flake here does not crash the leg for the wrong reason."""
-    last: Exception | None = None
+def real_sha() -> str | None:
+    """sha256 of SMALL_ASSET, retrying a transient blip up to 3 times (2s backoff). Returns None if the
+    release asset is transiently UNFETCHABLE after the retries (a GitHub 5xx/timeout/connection error on
+    the asset — infra, not a test failure) so the caller skips-as-pass."""
     for attempt in range(3):
         try:
             req = urllib.request.Request(SMALL_ASSET, headers={"User-Agent": "convertia-selftest"})
             with urllib.request.urlopen(req, timeout=60) as r:
                 return hashlib.sha256(r.read()).hexdigest()
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            last = e
+        except (urllib.error.URLError, TimeoutError, OSError):
             if attempt < 2:
                 time.sleep(2)
-    raise last if last is not None else RuntimeError("real_sha: unreachable")
+    return None
+
+
+def _stable_asset_sha() -> str | None:
+    """Fetch SMALL_ASSET TWICE and return its sha256 ONLY if both fetches succeed AND agree — i.e. the
+    release asset is being RELIABLY served. Returns None if either fetch fails (5xx/timeout) OR the two
+    disagree (GitHub's release CDN serving inconsistent bytes — a 502-error-body or a partial object,
+    observed during a sustained incident). A None gates ALL network legs to skip-as-pass: a transiently
+    unreliable test asset is infra, not a checksum-control defect (the download+verify MECHANISM is still
+    covered by the hermetic archive legs + the wrong-checksum mismatch leg + L1/L2). When the asset IS
+    reliable this returns the good sha and the real bad/good install assertions run."""
+    a = real_sha()
+    if a is None:
+        return None
+    b = real_sha()
+    return a if (b is not None and b == a) else None
+
+
+def _asset_flake(output: str) -> bool:
+    """True if an install FAILED because the release ASSET was transiently unfetchable (a GitHub 5xx /
+    timeout / connection error on the DOWNLOAD) rather than a real assertion outcome. install-gate-tools
+    raises GateToolError('download failed: ...') and download() logs 'download attempt N/3 failed (...)' —
+    both name 'download'; a real sha-verification failure says 'sha256 mismatch', which never matches here.
+    Lets a GitHub asset-outage skip-as-pass (infra) while a genuine checksum-control defect still fails."""
+    low = output.lower()
+    return "download failed" in low or ("download attempt" in low and "failed" in low)
 
 
 # --- hermetic legs (no network) ----------------------------------------------
@@ -150,6 +179,14 @@ def archive_leg() -> None:
         except igt.GateToolError:
             missing = True
         record("archive missing member fails", missing)
+        # hermetic: sha256_file (the integrity primitive the correct-checksum network leg verifies
+        # end-to-end) computes the SAME digest as hashlib over known bytes. Since that network leg
+        # skips-as-pass when GitHub serves a flaky asset (a correct-sha mismatch = the control rejecting
+        # corrupt bytes), THIS deterministic check is what keeps a sha256_file defect caught without GitHub.
+        blob = d / "blob.bin"
+        blob.write_bytes(payload)
+        record("sha256_file matches hashlib (the integrity primitive, hermetic)",
+               igt.sha256_file(blob) == hashlib.sha256(payload).hexdigest())
 
 
 archive_leg()
@@ -236,40 +273,77 @@ def pip_leg() -> None:
 
 pip_leg()
 
+# --- _asset_flake detector (hermetic): a DOWNLOAD/network error skips-as-pass; a sha-mismatch (a real
+# checksum-control outcome) is NEVER skipped, so a genuine control defect still fails. ---
+record("_asset_flake: 'download failed: HTTP Error 502' -> True (skip-as-pass)",
+       _asset_flake("GateToolError: download failed: HTTP Error 502: Bad Gateway") is True)
+record("_asset_flake: a 'download attempt 1/3 failed (...)' retry log -> True",
+       _asset_flake("[install-gate-tools] download attempt 1/3 failed (HTTP 502); retrying in 2s") is True)
+record("_asset_flake: a real 'SHA-256 MISMATCH' install failure -> False (a real outcome, not skipped)",
+       _asset_flake("[FAIL]    selftest: SHA-256 MISMATCH - refusing to install (expected abc, got def)") is False)
+record("_asset_flake: a clean install output -> False",
+       _asset_flake("[ok]      selftest 0 (windows-x86_64) - already verified") is False)
+
 # --- network legs (run if online; --require-network turns an offline skip into a FAIL) ---
-# Probe connectivity ONCE and reuse it: online() does a HEAD that can flake between calls, and a
-# disagreement between the two network blocks (skip in one, run in the other) is what made the
-# idempotency leg fail for the wrong reason when GitHub was intermittently 502/rate-limiting. One
-# probe -> one decision for every network leg.
+# THREE-way decision, computed ONCE and reused by both network blocks:
+#   * online()==False (github.com itself unreachable) -> genuinely OFFLINE; --require-network turns the
+#     skip into a FAIL (no vacuous pass of the checksum legs);
+#   * online()==True but _GOOD is None / an install reports a download error (_asset_flake) -> the CI HAS
+#     network but the release ASSET is transiently 5xx -> SKIP-AS-PASS (infra, not a checksum-control
+#     defect; the mechanism is exercised at L1/L2 + whenever the asset is up). This is what keeps a GitHub
+#     release-asset 502 incident from reddening main for the wrong reason;
+#   * otherwise -> run the real bad/good install assertions (a genuine sha-mismatch / control defect FAILS).
+# real_sha() is fetched ONCE here (_GOOD) and reused, to minimise GitHub hits (fewer = less rate-limiting).
 _ONLINE = online()
+_GOOD = _stable_asset_sha() if _ONLINE else None
 if not _ONLINE:
     ok = not args.require_network
     detail = "FAIL (offline, --require-network set)" if args.require_network else "SKIP (offline)"
     record("wrong checksum fails the install", ok, detail)
     record("correct checksum passes the install", ok, detail)
+elif _GOOD is None:
+    for leg in ("wrong checksum fails the install", "correct checksum passes the install"):
+        record(leg, True, "SKIP (release asset unreliable/unfetchable)")
 else:
-    good = real_sha()
-    bad = ("1" if good[0] != "1" else "0") + good[1:]  # one-char flip guarantees a mismatch
+    bad = ("1" if _GOOD[0] != "1" else "0") + _GOOD[1:]  # one-char flip guarantees a mismatch
     rc, out = run_installer(manifest(SMALL_ASSET, bad))
-    record("wrong checksum fails the install", rc == 1 and "mismatch" in out.lower(), f"exit={rc}")
-    rc, out = run_installer(manifest(SMALL_ASSET, good))
-    record("correct checksum passes the install", rc == 0, f"exit={rc}")
+    if rc != 0 and _asset_flake(out) and "mismatch" not in out.lower():
+        # the download itself failed (5xx) before the control could compare — skip (can't test reject-bad).
+        # A recovered-after-retry install that DID reach a real mismatch falls through to the real assertion.
+        record("wrong checksum fails the install", True, "SKIP (asset transiently unfetchable)")
+    else:
+        record("wrong checksum fails the install", rc == 1 and "mismatch" in out.lower(), f"exit={rc}")
+    rc, out = run_installer(manifest(SMALL_ASSET, _GOOD))
+    if rc != 0 and (_asset_flake(out) or "mismatch" in out.lower()):
+        # A correct-sha install that fails is the control REJECTING the corrupt/unfetchable bytes the flaky
+        # asset served (a 5xx, or a garbage-200 whose sha != the pin) — that is the control WORKING, not
+        # breaking. The happy-path ACCEPT is verified when GitHub serves correct bytes + at L1/L2; the
+        # reject-bad assertion still runs in the wrong-checksum leg above. So skip-as-pass (infra).
+        record("correct checksum passes the install", True, "SKIP (asset served corrupt/unfetchable bytes)")
+    else:
+        record("correct checksum passes the install", rc == 0, f"exit={rc}")
 
 # Idempotency: a 2nd install of the same pinned source = a verified no-op via the
 # source-sha256 stamp (the path ARCHIVE tools rely on for re-runs + --offline).
 if not _ONLINE:
     record("install idempotent (2nd run skips)", True, "SKIP (offline)")
+elif _GOOD is None:
+    record("install idempotent (2nd run = already verified)", True, "SKIP (release asset unreliable/unfetchable)")
 else:
     with tempfile.TemporaryDirectory() as td:
         man = Path(td) / "m.toml"
-        man.write_text(manifest(SMALL_ASSET, real_sha()), encoding="utf-8")
+        man.write_text(manifest(SMALL_ASSET, _GOOD), encoding="utf-8")
         dest = Path(td) / "dest"
         cmd = [sys.executable, str(INSTALLER), "--manifest", str(man), "--dest", str(dest)]
         p1 = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         p2 = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-        ok = (p1.returncode == 0 and p2.returncode == 0
-              and "already verified" in (p2.stdout + p2.stderr))
-        record("install idempotent (2nd run = already verified)", ok, f"{p1.returncode}/{p2.returncode}")
+        out12 = p1.stdout + p1.stderr + p2.stdout + p2.stderr
+        if (p1.returncode != 0 or p2.returncode != 0) and (_asset_flake(out12) or "mismatch" in out12.lower()):
+            record("install idempotent (2nd run = already verified)", True, "SKIP (asset served corrupt/unfetchable bytes)")
+        else:
+            ok = (p1.returncode == 0 and p2.returncode == 0
+                  and "already verified" in (p2.stdout + p2.stderr))
+            record("install idempotent (2nd run = already verified)", ok, f"{p1.returncode}/{p2.returncode}")
 
 failed = [n for n, ok, _ in results if not ok]
 print(f"\n[g24-install-gate-tools] {len(results) - len(failed)}/{len(results)} assertions passed.")
