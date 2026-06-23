@@ -1,0 +1,35 @@
+# audit.toml — cargo-audit (RustSec) configuration (G17). Authored P1.59; read by `cargo audit`
+# (check-rust-lint-contract's live G17 leg) AND by scripts/check-supply-chain, which asserts this
+# [advisories].ignore set is IDENTICAL to deny.toml's (the G18 two-scanner reconciliation — no advisory
+# may be silenced in one scanner but live in the other). L(-1) security-critical
+# (scripts/l-neg1-files.toml, G71): a silently-added ignore would blind both scanners to a real advisory.
+#
+# The 18 ids below MIRROR deny.toml [advisories].ignore EXACTLY — keep the two in lock-step. Every one is
+# confirmed `unmaintained`/`unsound` (NOT a vulnerability: `cargo audit` reports 0 vulnerabilities over
+# the full Cargo.lock), PURELY TRANSITIVE, with no reachable fix in the Tauri-v2.11.3-locked tree. The
+# per-id rationale lives in deny.toml; re-triage the whole set on any deliberate Tauri/dep bump.
+# [Build-Session-Entscheidung: P1.59]
+
+[advisories]
+ignore = [
+  # gtk-rs GTK3 bindings (LINUX-ONLY, transitive via Tauri v2's webkit2gtk-4.1; gtk 0.18.2 <- tauri 2.11.3)
+  "RUSTSEC-2024-0411",  # gdkwayland-sys
+  "RUSTSEC-2024-0412",  # gdk
+  "RUSTSEC-2024-0413",  # atk
+  "RUSTSEC-2024-0414",  # gdkx11-sys
+  "RUSTSEC-2024-0415",  # gtk
+  "RUSTSEC-2024-0416",  # atk-sys
+  "RUSTSEC-2024-0417",  # gdkx11
+  "RUSTSEC-2024-0418",  # gdk-sys
+  "RUSTSEC-2024-0419",  # gtk3-macros
+  "RUSTSEC-2024-0420",  # gtk-sys
+  "RUSTSEC-2024-0429",  # glib (unsound; patched >=0.20.0 unreachable under gtk 0.18 <- tauri 2.11.3)
+  # unmaintained build-time proc-macro + unicode transitive crates
+  "RUSTSEC-2024-0370",  # proc-macro-error
+  "RUSTSEC-2024-0436",  # paste
+  "RUSTSEC-2025-0075",  # unic-char-range
+  "RUSTSEC-2025-0080",  # unic-common
+  "RUSTSEC-2025-0081",  # unic-char-property
+  "RUSTSEC-2025-0098",  # unic-ucd-version
+  "RUSTSEC-2025-0100",  # unic-ucd-ident
+]

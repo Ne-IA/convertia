@@ -16,8 +16,8 @@
 # GROWTH: this manifest is seeded with the toolchain + lefthook (the L1/L2/L3
 # executor, needed first by P0.2.2). Each additional gate tool is pinned here BY THE
 # BOX THAT INTRODUCES IT, through the same mechanism — gitleaks (P0.3.1),
-# actionlint (P0.2.4 - CI workflow validator), zizmor (P0.2.6), typos/editorconfig-checker (P0.3.11), Syft/cargo-deny/
-# cargo-vet/cargo-fuzz/minisign/cyclonedx (their boxes). pip-installed tools
+# actionlint (P0.2.4 - CI workflow validator), zizmor (P0.2.6), typos/editorconfig-checker (P0.3.11),
+# cargo-deny + cargo-audit (P1.59), Syft/cargo-vet/cargo-fuzz/minisign/cyclonedx (their boxes). pip-installed tools
 # (Semgrep, P0.4.2) live in `requirements-ci.txt` (the --require-hashes leg), not
 # here. [Build-Session-Entscheidung: P0.2.1 — mechanism + first-tool pins now,
 # remaining tools pinned per-introducing-box; matches §0.8 "[DEFER: build] exact
@@ -156,3 +156,40 @@ linux-aarch64  = { url = "https://github.com/koalaman/shellcheck/releases/downlo
 macos-x86_64   = { url = "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.darwin.x86_64.tar.gz", sha256 = "c2c15e08df0e8fbc374c335b230a7ee958c313fa5714817a59aa59f1aa594f51" }
 macos-aarch64  = { url = "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.darwin.aarch64.tar.gz", sha256 = "339b930feb1ea764467013cc1f72d09cd6b869ebf1013296ba9055ab2ffbd26f" }
 windows-x86_64 = { url = "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.zip",                  sha256 = "8a4e35ab0b331c85d73567b12f2a444df187f483e5079ceffa6bda1faa2e740e", asset_kind = "zip" }
+
+# --- cargo-deny - the supply-chain bans/licenses/advisories/sources gate over Cargo.lock (G18, P1.59).
+# Invoked as the cargo subcommand `cargo deny check` (check-supply-chain's live tier prepends .gate-tools/bin
+# to PATH so cargo resolves it). All 5 platform assets are .tar.gz (incl. windows - NO zip override); the
+# `cargo-deny` binary sits in a versioned `cargo-deny-0.19.9-<triple>/` subdir the installer's recursive
+# basename-match resolves (like shellcheck). The archive sha256 is verified before extraction. ---
+[tools.cargo-deny]
+version       = "0.19.9"
+origin        = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.19.9/"
+bin_name      = "cargo-deny"
+asset_kind    = "targz"   # all 5 platforms incl. windows are .tar.gz (no zip override)
+corroboration = "EmbarkStudios/cargo-deny release 0.19.9 publishes a per-asset `.sha256` companion - each of the 5 pinned platform archives was downloaded from the official GitHub release AND verified EQUAL to its companion (all 5 MATCH; the windows companion records the SAME hash in uppercase hex). 2nd origin (version identity): Homebrew cargo-deny stable == 0.19.9 (builds from the 0.19.9 source tag). No build-provenance attestation (`gh attestation verify --owner EmbarkStudios` -> HTTP 404) and not in Scoop. RESIDUAL (honest, same class as editorconfig-checker): the publisher `.sha256` companions are the binary-hash trust anchor (Homebrew builds from source, records no prebuilt-binary hash); a future attested cargo-deny release should be re-pinned via the attestation arm. Established 2026-06-23 by Co-Pilot (Build-Loop), owner-acked."
+
+[tools.cargo-deny.platforms]
+linux-x86_64   = { url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.19.9/cargo-deny-0.19.9-x86_64-unknown-linux-musl.tar.gz",  sha256 = "f1f8eedc2a3ac297c540873f93785d4104b102c0079506b2a6b3221b7ec956af" }
+linux-aarch64  = { url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.19.9/cargo-deny-0.19.9-aarch64-unknown-linux-musl.tar.gz", sha256 = "32580dcc2bc13fbeeb7c50edc38ef99c3b9ce9569a1d07a96e11b3b941f3e72e" }
+macos-x86_64   = { url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.19.9/cargo-deny-0.19.9-x86_64-apple-darwin.tar.gz",        sha256 = "3336724665a3aef124a9e4c79cb59968df36d21bfcda5ae596abe2a7874b1938" }
+macos-aarch64  = { url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.19.9/cargo-deny-0.19.9-aarch64-apple-darwin.tar.gz",       sha256 = "be6fd555e910ac360e25cbef4f16ead47d87d2545fa07aa27223ef0f9af1a02c" }
+windows-x86_64 = { url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.19.9/cargo-deny-0.19.9-x86_64-pc-windows-msvc.tar.gz",     sha256 = "a0f2b3da55444f1a354fcbd20ce4b94981ab8193c1b674362d4761905f31ffd0" }
+
+# --- cargo-audit - the RustSec advisory scanner over Cargo.lock (G17, P1.59). Invoked as `cargo audit`
+# (check-rust-lint-contract's live tier; PLAIN, no --locked; --no-fetch offline once the advisory-db is
+# warm). .tgz (linux/macos) + .zip (windows); the `cargo-audit` binary sits in a versioned
+# `cargo-audit-<triple>-v0.22.2/` subdir. The archive sha256 is verified before extraction. ---
+[tools.cargo-audit]
+version       = "0.22.2"
+origin        = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/"
+bin_name      = "cargo-audit"
+asset_kind    = "targz"   # default (linux/macos .tgz); the windows platform overrides to "zip"
+corroboration = "rustsec/rustsec release cargo-audit/v0.22.2 publishes NO checksums file and NO build-provenance attestation (`gh attestation verify --owner rustsec` -> HTTP 404), so each platform archive sha256 was computed from the official GitHub release download. 2nd origin (version identity): Homebrew cargo-audit stable == 0.22.2 (builds from the v0.22.2 source tag). Not in Scoop. RESIDUAL (honest, same class as shellcheck/typos): no independent recording of the prebuilt binary-archive hashes (Homebrew builds from source), so binary-hash trust rests on the official rustsec GitHub release; a future attested cargo-audit release should be re-pinned via the attestation arm. Established 2026-06-23 by Co-Pilot (Build-Loop), owner-acked."
+
+[tools.cargo-audit.platforms]
+linux-x86_64   = { url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-unknown-linux-musl-v0.22.2.tgz",  sha256 = "7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428" }
+linux-aarch64  = { url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-aarch64-unknown-linux-gnu-v0.22.2.tgz",  sha256 = "c6603814ddaa45e51263dafd31c0ac98808f688d26f7395804f9670b0fd599dd" }
+macos-x86_64   = { url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-apple-darwin-v0.22.2.tgz",        sha256 = "847831323de932155b226ab60ee4a180e13e5d007a019f0d4b7b4d89a6de2ab2" }
+macos-aarch64  = { url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-aarch64-apple-darwin-v0.22.2.tgz",       sha256 = "ec7ca4263769593df4d909be85b94a6b79efa2897be5d2bb8ebd516e823175af" }
+windows-x86_64 = { url = "https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-pc-windows-msvc-v0.22.2.zip",      sha256 = "0a7316540862c13d954f648917ceacca593747baed6eec180fafa590be2710ab", asset_kind = "zip" }

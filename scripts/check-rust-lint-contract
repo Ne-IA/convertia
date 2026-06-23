@@ -39,6 +39,14 @@ ROOT = Path(__file__).resolve().parents[1]
 RUSTFMT = ROOT / "rustfmt.toml"
 CLIPPY = ROOT / "clippy.toml"
 
+# P1.59: the G17 leg invokes `cargo audit`, which resolves the `cargo-audit` SUBCOMMAND binary via PATH.
+# Prepend the pinned, checksum-verified .gate-tools/bin (install-gate-tools' dest) so cargo finds it
+# regardless of the ambient PATH - the same self-contained pinned-tool resolution check-sast/
+# check-supply-chain use. No-op when the dir is absent (a toolchain-light plane).
+_GATE_BIN = ROOT / ".gate-tools" / "bin"
+if _GATE_BIN.is_dir():
+    os.environ["PATH"] = str(_GATE_BIN) + os.pathsep + os.environ.get("PATH", "")
+
 # --- the frozen config policy (a relaxation here = an enforcement-plane weakening) ----------------
 # rustfmt.toml MUST pin these keys (value-checked where a drift would weaken a sibling gate).
 # (values are native parsed TOML scalars — tomllib returns str/bool/int, not raw text)

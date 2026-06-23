@@ -35,6 +35,7 @@ Exit: 0 = the policy matches the frozen expectation (+ live checks pass or are t
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -52,6 +53,15 @@ AUDIT_TOML = ROOT / "audit.toml"           # cargo-audit ignore config (G17; may
 # hard-coded path missed (a Cargo.toml-without-lock FAILS rather than skipping; see _workspace_state).
 CARGO_LOCK_CANDIDATES = (ROOT / "Cargo.lock", ROOT / "src-tauri" / "Cargo.lock")
 CARGO_TOML_CANDIDATES = (ROOT / "Cargo.toml", ROOT / "src-tauri" / "Cargo.toml")
+
+# P1.59: the live tier invokes `cargo deny check`, which resolves the `cargo-deny` SUBCOMMAND binary via
+# PATH. Prepend the pinned, checksum-verified .gate-tools/bin (install-gate-tools' dest) so cargo finds it
+# regardless of the ambient PATH - the same self-contained pinned-tool resolution check-sast/
+# check-editorconfig use. No-op when the dir is absent (a toolchain-light plane - the live tier then
+# skips-with-notice as before).
+_GATE_BIN = ROOT / ".gate-tools" / "bin"
+if _GATE_BIN.is_dir():
+    os.environ["PATH"] = str(_GATE_BIN) + os.pathsep + os.environ.get("PATH", "")
 
 # --- frozen policy expectations (a change here is an L(-1) edit + a Co-Pilot review item) -----------
 # every forbidden crate that MUST stay on deny.toml [bans].deny (un-denying one re-opens the egress surface)
@@ -95,6 +105,21 @@ EXPECTED_GRAPH_TARGETS = frozenset({
 MIN_IMPORT_SOURCES = 2          # >=2 distinct audit DBs (Mozilla + Google baseline)
 MIN_CONFIDENCE = 0.8            # the license-detection confidence floor (we ship 0.93)
 EXPECTED_EXEMPTION_COUNT = 0    # cargo-vet exemptions accepted; a bump is reviewed HERE with a box-id
+
+# §0.8 pinned-floor (P1.59): the load-bearing crates ConvertIA's OWN code relies on at a known API floor.
+# Each MUST be PRESENT in Cargo.lock at >= its floor, so a drift below a relied-upon API surface fails
+# HERE (deterministically) rather than as an opaque compile break later. Only crates ALREADY in the lock
+# are listed; the rest the box names (csv §1.5, chardetng §1.2, process-wrap §1.7, landlock §2.0; the
+# librsvg >=2.56.3 floor is a C-library binding, not a Cargo crate) activate when their phase adds them -
+# adding a row is the normal growth, lowering a floor is an L(-1) review item. Pre-release floors compare
+# by semver precedence (2.0.0 > 2.0.0-rc.25 > 2.0.0-rc.2). [Build-Session-Entscheidung: P1.59 - reconcile
+# to the present §0.8 deps; grow as P3/P4 land the rest.]
+PINNED_FLOORS = {
+    "tauri-specta": "2.0.0-rc.25",   # §0.4.5 IPC codegen (exact pin - the bindings.ts surface)
+    "specta":       "2.0.0-rc.25",   # §0.4.5 type introspection (coupled to tauri-specta)
+    "walkdir":      "2.5.0",         # §1.1 recursive intake (in the lock now; a direct dep from P3)
+    "tempfile":     "3.27.0",        # §0.8 owned-scratch atomic write (in the lock via dev-deps now)
+}
 
 
 def fail(msg: str) -> None:
@@ -326,6 +351,76 @@ def _live_checks() -> list[str]:
     return problems
 
 
+def _parse_ver(v: str):
+    """(release: tuple[int,int,int], pre: tuple) for a 'X.Y.Z[-pre][+build]' version, comparable so a
+    release outranks its pre-releases and numeric pre-segments sort numerically + below alphanumerics
+    (semver §11). None if the release core is not three ints (the caller fails closed)."""
+    core = v.strip().split("+", 1)[0]            # +build metadata does not affect precedence
+    rel, _, pre = core.partition("-")
+    parts = rel.split(".")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        return None
+    pre_ids = []
+    for ident in (pre.split(".") if pre else []):
+        pre_ids.append((0, int(ident)) if ident.isdigit() else (1, ident))  # numeric < alphanumeric
+    return (tuple(int(p) for p in parts), tuple(pre_ids))
+
+
+def _version_ge(have: str, floor: str):
+    """have >= floor by semver precedence; None if either is unparseable (caller fails closed)."""
+    a, b = _parse_ver(have), _parse_ver(floor)
+    if a is None or b is None:
+        return None
+    (arel, apre), (brel, bpre) = a, b
+    if arel != brel:
+        return arel > brel
+    if not apre and not bpre:
+        return True                  # equal release, neither a pre-release
+    if not apre:
+        return True                  # have is the release, floor is a pre -> have outranks
+    if not bpre:
+        return False                 # have is a pre, floor is the release -> have is lower
+    return apre >= bpre              # both pre-releases: semver tuple precedence
+
+
+def _pinned_floor_assertion() -> list[str]:
+    """§0.8 pinned-floor (P1.59): each PINNED_FLOORS crate must be in Cargo.lock at >= its floor. A listed
+    crate ABSENT from the lock is a FAIL (a relied-upon dep vanished); an unparseable version is a FAIL
+    (fail-closed). Target-absent (no lock yet) returns clean - the live tier already skip-noticed."""
+    lock = next((p for p in CARGO_LOCK_CANDIDATES if p.is_file()), None)
+    if lock is None:
+        return []
+    try:
+        data = tomllib.loads(lock.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as e:
+        return [f"Cargo.lock is not valid TOML ({e}) - cannot assert the §0.8 pinned floors (fail-closed)"]
+    versions: dict[str, list[str]] = {}
+    for pkg in data.get("package") or []:
+        if isinstance(pkg, dict) and isinstance(pkg.get("name"), str) and isinstance(pkg.get("version"), str):
+            versions.setdefault(pkg["name"], []).append(pkg["version"])
+    problems: list[str] = []
+    for crate, floor in sorted(PINNED_FLOORS.items()):
+        have = versions.get(crate)
+        if not have:
+            problems.append(f"§0.8 floor crate `{crate}` (>= {floor}) is not in Cargo.lock - a relied-upon "
+                            "dependency vanished; restore it or remove the floor row HERE (L(-1)) with a box-id")
+            continue
+        # Cargo.lock can carry MULTIPLE versions of one crate (deny.toml multiple-versions="warn"); the floor
+        # is satisfied if ANY present copy is >= floor (our code can resolve to it). Red only when EVERY copy
+        # is below floor (a genuine drift) - and fail closed if a version is unparseable.
+        ges = [_version_ge(v, floor) for v in have]
+        if any(g is True for g in ges):
+            continue
+        if any(g is None for g in ges):
+            problems.append(f"§0.8 floor crate `{crate}`: an unparseable version among {sorted(have)} (floor "
+                            f"{floor!r}) - failing closed (a floor that cannot be evaluated is not enforced)")
+        else:
+            problems.append(f"§0.8 floor crate `{crate}` is present only at {sorted(have)} < its pinned floor "
+                            f"{floor} - a drift below the relied-upon API floor; bump the dep or lower the "
+                            "floor HERE (L(-1)) with a box-id + Dual-Review note")
+    return problems
+
+
 def main() -> int:
     for path in (DENY, VET_CONFIG):
         if not path.is_file():
@@ -346,15 +441,16 @@ def main() -> int:
             return 2
 
     problems = (evaluate_deny(deny_cfg, audit_ignores) + evaluate_vet(vet_cfg)
-                + _tauri_plugin_checks() + _live_checks())
+                + _tauri_plugin_checks() + _live_checks() + _pinned_floor_assertion())
     if problems:
         for p in problems:
             fail(p)
         return 1
     print(f"[G18] supply-chain policy OK ({len(FORBIDDEN_CRATES)} forbidden crates denied; copyleft "
-          f"excluded; allow-list-only licenses; yanked=deny; >={MIN_IMPORT_SOURCES} cargo-vet import "
+          f"excluded; allow-list-only licenses; yanked=deny; {len(_ignore_set(deny_cfg.get('advisories')))} "
+          f"advisory ignore(s) reconciled with cargo-audit; >={MIN_IMPORT_SOURCES} cargo-vet import "
           f"sources; <= {EXPECTED_EXEMPTION_COUNT} exemption(s); every tauri-plugin granted or "
-          f"forced-inert-fs)")
+          f"forced-inert-fs; {len(PINNED_FLOORS)} §0.8 floor crate(s) >= floor)")
     return 0
 
 

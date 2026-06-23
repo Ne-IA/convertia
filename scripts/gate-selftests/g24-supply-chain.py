@@ -152,10 +152,16 @@ with tempfile.TemporaryDirectory() as _td:
     record("a src-tauri/Cargo.lock present -> 'ready' (found off-root; not the hard-coded path)",
            m._workspace_state(lc, tc)[0] == "ready")
 
-# --- the REAL committed configs evaluate clean + main() is target-absent OK --------------------
-record("the REAL committed deny.toml evaluates clean", m.evaluate_deny(m._load(m.DENY), set()) == [])
+# --- the REAL committed configs evaluate clean + main() is OK ----------------------------------
+_real_audit_ig = m._ignore_set(m._load(m.AUDIT_TOML).get("advisories")) if m.AUDIT_TOML.is_file() else set()
+record("the REAL committed deny.toml evaluates clean (reconciled vs the real audit.toml ignore set)",
+       m.evaluate_deny(m._load(m.DENY), _real_audit_ig) == [])
 record("the REAL committed supply-chain/config.toml evaluates clean", m.evaluate_vet(m._load(m.VET_CONFIG)) == [])
-record("main() exits 0 today (structural OK; live cargo-deny/vet target-absent until P1)", m.main() == 0)
+record("the REAL deny.toml + audit.toml advisory-ignore sets AGREE + are non-empty (G18 two-scanner "
+       "reconciliation; P1.59)",
+       m._ignore_set(m._load(m.DENY).get("advisories")) == _real_audit_ig and len(_real_audit_ig) > 0)
+record("main() exits 0 (structural OK + live cargo-deny/audit where present + §0.8 floor; binary-absent "
+       "legs skip-with-notice)", m.main() == 0)
 
 # --- the P1-runway fix: workspace ready but cargo-deny/cargo-vet absent in this plane -> the live tier
 # SKIPS (no binary-absent problems), not a fail (the frozen deny.toml/config.toml policy stays enforced) -
@@ -175,6 +181,53 @@ def _live_skip_when_binaries_absent() -> list:
 record("_live_checks(): workspace ready but cargo-deny/cargo-vet absent in this plane -> SKIP (no "
        "binary-absent problems), not a fail (P1-runway fix; live binaries enforce where present)",
        _live_skip_when_binaries_absent() == [])
+
+# --- §0.8 pinned-floor assertion + its semver comparator (P1.59) ------------------------------
+record("_version_ge: equal pre-releases (rc.25 >= rc.25) -> True", m._version_ge("2.0.0-rc.25", "2.0.0-rc.25") is True)
+record("_version_ge: a HIGHER pre-release (rc.26 >= rc.25) -> True", m._version_ge("2.0.0-rc.26", "2.0.0-rc.25") is True)
+record("_version_ge: a LOWER pre-release (rc.24 >= rc.25) -> False", m._version_ge("2.0.0-rc.24", "2.0.0-rc.25") is False)
+record("_version_ge: a release outranks its own pre-release (2.0.0 >= 2.0.0-rc.25) -> True", m._version_ge("2.0.0", "2.0.0-rc.25") is True)
+record("_version_ge: a pre-release is BELOW the release floor (2.0.0-rc.25 >= 2.0.0) -> False", m._version_ge("2.0.0-rc.25", "2.0.0") is False)
+record("_version_ge: a higher patch (2.5.1 >= 2.5.0) -> True", m._version_ge("2.5.1", "2.5.0") is True)
+record("_version_ge: a lower minor (2.4.0 >= 2.5.0) -> False", m._version_ge("2.4.0", "2.5.0") is False)
+record("_version_ge: a higher major (3.0.0 >= 2.5.0) -> True", m._version_ge("3.0.0", "2.5.0") is True)
+record("_version_ge: numeric pre-segments sort NUMERICALLY not lexically (rc.10 >= rc.2) -> True", m._version_ge("1.0.0-rc.10", "1.0.0-rc.2") is True)
+record("_version_ge: an unparseable version -> None (the caller fails closed)", m._version_ge("not.a.version", "2.5.0") is None)
+record("_pinned_floor_assertion(): the REAL Cargo.lock satisfies every §0.8 floor", m._pinned_floor_assertion() == [])
+
+
+def _floor_with_temp_lock(body: str) -> list:
+    saved = m.CARGO_LOCK_CANDIDATES
+    with tempfile.TemporaryDirectory() as td:
+        lock = Path(td) / "Cargo.lock"
+        lock.write_text(body, encoding="utf-8")
+        m.CARGO_LOCK_CANDIDATES = (lock,)
+        try:
+            return m._pinned_floor_assertion()
+        finally:
+            m.CARGO_LOCK_CANDIDATES = saved
+
+
+_all_at_floor = "".join(f'[[package]]\nname = "{c}"\nversion = "{v}"\n\n' for c, v in m.PINNED_FLOORS.items())
+record("_pinned_floor_assertion(): a temp lock with every §0.8 crate AT its floor -> clean",
+       _floor_with_temp_lock(_all_at_floor) == [])
+_below = _all_at_floor.replace('name = "specta"\nversion = "2.0.0-rc.25"', 'name = "specta"\nversion = "2.0.0-rc.2"')
+record("_pinned_floor_assertion(): specta DOWN to rc.2 (< the rc.25 floor) -> caught (below the API floor)",
+       any("specta" in p and "below the relied-upon API floor" in p for p in _floor_with_temp_lock(_below)))
+record("_pinned_floor_assertion(): a §0.8 floor crate MISSING from the lock -> caught (relied-upon dep vanished)",
+       any("walkdir" in p and "not in Cargo.lock" in p
+           for p in _floor_with_temp_lock('[[package]]\nname = "specta"\nversion = "2.0.0-rc.25"\n')))
+_garbage = _all_at_floor.replace('version = "2.5.0"', 'version = "garbage"')   # walkdir floor 2.5.0 -> unparseable
+record("_pinned_floor_assertion(): an unparseable lock version -> fail-closed (caught, not silently passed)",
+       any("unparseable" in p for p in _floor_with_temp_lock(_garbage)))
+# multi-version robustness (Cargo.lock may carry duplicate-version crates): pass if ANY copy >= floor.
+_multi_ok = _all_at_floor + '[[package]]\nname = "walkdir"\nversion = "2.4.0"\n\n'   # walkdir 2.5.0 (floor) + an older 2.4.0
+record("_pinned_floor_assertion(): a floor crate present at TWO versions (2.5.0 + older 2.4.0) -> clean (a copy >= floor)",
+       _floor_with_temp_lock(_multi_ok) == [])
+_multi_below = (_all_at_floor.replace('name = "walkdir"\nversion = "2.5.0"', 'name = "walkdir"\nversion = "2.3.0"')
+                + '[[package]]\nname = "walkdir"\nversion = "2.4.0"\n\n')   # both walkdir copies below the 2.5.0 floor
+record("_pinned_floor_assertion(): a floor crate present ONLY at versions below floor (2.3.0 + 2.4.0) -> caught",
+       any("walkdir" in p and "below the relied-upon API floor" in p for p in _floor_with_temp_lock(_multi_below)))
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-supply-chain] {len(results) - len(failed)}/{len(results)} assertions passed.")

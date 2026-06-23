@@ -36,6 +36,7 @@ patterns = [
 
   # --- supply-chain trust configs ---
   "deny.toml",                    # cargo-deny bans/licenses/advisories
+  "audit.toml",                   # cargo-audit advisory-ignore set (G17); reconciled with deny.toml (G18 two-scanner)
   ".npmrc",                       # JS registry pin + install-lifecycle lockdown (G18c/G18d)
   ".editorconfig",                # EOL/charset/final-newline policy enforced by G52 (editorconfig-checker)
   ".typos.toml",                  # G51 prose-typo allowlist (a silently-allowlisted real typo = un-scanned)

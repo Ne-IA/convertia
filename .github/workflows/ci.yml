@@ -134,6 +134,25 @@ jobs:
         run: python3 scripts/check-editorconfig
       - name: 'G70: test-suppression-marker scan — full test tree (no green-by-rewrite; live over the committed fixture crates, grows from P1)'
         run: python3 scripts/check-test-suppression --full
+      # P1.59 G17: warm the RustSec advisory-db so the `cargo audit --no-fetch` leg in the
+      # check-rust-lint-contract step below is LIVE (a clean runner ships the pinned cargo-audit but no db).
+      # Linux-only - the audit reads the OS-agnostic Cargo.lock, so it runs once (on macOS/Windows the db
+      # is absent and the G17 leg skips-with-notice). A fresh shallow clone each run pulls the latest
+      # advisories (a NEW one not in audit.toml then reddens the gate); the 18 accepted ids are reconciled
+      # across deny.toml + audit.toml (the G18 two-scanner check).
+      - name: 'P1.59 G17: warm the RustSec advisory-db (Linux; OS-agnostic over Cargo.lock)'
+        if: runner.os == 'Linux'
+        # 3-try retry (same convention as the apt-get step) so a transient GitHub/CDN hiccup does not
+        # spuriously red main; rm -rf before each attempt clears a partial clone; fail-CLOSED (exit 1) if
+        # all three fail, so the G17 leg never runs against an empty/partial db.
+        run: |
+          db="${CARGO_HOME:-$HOME/.cargo}/advisory-db"
+          for i in 1 2 3; do
+            rm -rf "$db"
+            git clone --depth 1 https://github.com/rustsec/advisory-db "$db" && exit 0
+            echo "advisory-db clone failed; retry $i"; sleep 5
+          done
+          echo "advisory-db clone failed after 3 attempts" >&2; exit 1
       - name: 'G3/G4/G14/G17: Rust lint/format/test/audit contract (rustfmt/clippy policy frozen; live fmt/clippy/test/audit in P1)'
         run: python3 scripts/check-rust-lint-contract --full
       - name: 'G29: unsafe-policy gate (#![deny(unsafe_code)] + one allow-listed FFI module; cross-platform, live deny/allow scan in P1)'

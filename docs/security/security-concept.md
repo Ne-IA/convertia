@@ -55,6 +55,7 @@ manifest, license compliance).
   could auto-vouch a swapped fixture), the G29 SAST rule corpus `scripts/semgrep-rules/**` (project rules +
   vendored packs + the net-allow-list + the planted-positive fixtures),
   `lefthook.yml`, the CI workflows (`.github/**`), `deny.toml`,
+  the cargo-audit advisory-ignore set `audit.toml` (G17; reconciled with `deny.toml`'s `[advisories].ignore` — the G18 two-scanner check),
   `.gitleaks.toml` + allowlist/baseline, the pip gate-toolchain pin `requirements-ci.txt`
   (it reads CI secrets and emits findings, so a version bump is a trust-boundary event — r7) +
   the §6.7.1 Lane-A yamllint pin `requirements-yamllint.txt` (P1.52.3),

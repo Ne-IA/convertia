@@ -42,11 +42,45 @@ all-features = true
 
 [advisories]
 # cargo-deny v2: vulnerability / unmaintained / unsound / notice all DENY by default; a yanked crate
-# is a hard fail; nothing is ignored. Any id added to `ignore` here MUST also be ignored in the
-# cargo-audit config (G18 two-scanner reconciliation) — check-supply-chain asserts the two sets agree.
+# is a hard fail. Any id added to `ignore` here MUST also be ignored in the cargo-audit config
+# (audit.toml; G18 two-scanner reconciliation) — check-supply-chain asserts the two sets agree.
 version = 2
 yanked = "deny"
-ignore = []
+# 18 advisories ACCEPTED below (P1.59) — every one confirmed by `cargo audit` to be `unmaintained` or
+# `unsound`, NOT a vulnerability (`cargo audit` reports 0 vulnerabilities over the full Cargo.lock), and
+# PURELY TRANSITIVE (ConvertIA depends on none directly) with NO reachable fix in the Tauri-v2.11.3-locked
+# tree. A NEW advisory not on this list STILL fails the gate (fail-closed); re-triage this whole set on any
+# deliberate Tauri/dep version bump (itself an L(-1) act). [Build-Session-Entscheidung: P1.59]
+ignore = [
+  # gtk-rs GTK3 bindings — unmaintained (gtk-rs moved to GTK4). LINUX-ONLY, transitive via Tauri v2's
+  # webkit2gtk-4.1 backend (gtk 0.18.2 <- tauri 2.11.3); absent from the Windows/macOS builds. No fix:
+  # gtk 0.18 is what Tauri v2.11 ships; the GTK4 migration is Tauri's to make.
+  "RUSTSEC-2024-0411",  # gdkwayland-sys
+  "RUSTSEC-2024-0412",  # gdk
+  "RUSTSEC-2024-0413",  # atk
+  "RUSTSEC-2024-0414",  # gdkx11-sys
+  "RUSTSEC-2024-0415",  # gtk
+  "RUSTSEC-2024-0416",  # atk-sys
+  "RUSTSEC-2024-0417",  # gdkx11
+  "RUSTSEC-2024-0418",  # gdk-sys
+  "RUSTSEC-2024-0419",  # gtk3-macros
+  "RUSTSEC-2024-0420",  # gtk-sys
+  # glib `unsound` (patched >=0.20.0) — UNREACHABLE: gtk 0.18.2 pins glib ^0.18 (<- tauri 2.11.3), so
+  # 0.20 cannot be selected without Tauri's GTK4 migration. `unsound` (an unsafe-API soundness note),
+  # not a vulnerability; LINUX-ONLY (the gtk-rs stack). NB: cargo-deny may report THIS id as an unmatched
+  # ignore (host/target-scope dependent) while cargo-audit flags glib — it is kept in BOTH sets to hold
+  # the G18 deny==audit reconciliation (an unmatched ignore silences nothing); re-triage on a Tauri/glib bump.
+  "RUSTSEC-2024-0429",  # glib
+  # unmaintained build-time proc-macro + unicode transitive crates — not vulnerabilities; the dep graph
+  # selects these versions (no maintained drop-in we can force without a transitive owner's update).
+  "RUSTSEC-2024-0370",  # proc-macro-error
+  "RUSTSEC-2024-0436",  # paste
+  "RUSTSEC-2025-0075",  # unic-char-range
+  "RUSTSEC-2025-0080",  # unic-common
+  "RUSTSEC-2025-0081",  # unic-char-property
+  "RUSTSEC-2025-0098",  # unic-ucd-version
+  "RUSTSEC-2025-0100",  # unic-ucd-ident
+]
 
 [licenses]
 # cargo-deny v2: ALLOW-LIST ONLY — anything not listed (incl. GPL/AGPL/LGPL and any unrecognised or
