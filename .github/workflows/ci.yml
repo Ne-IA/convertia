@@ -89,6 +89,17 @@ jobs:
             libsoup-3.0-dev \
             libjavascriptcoregtk-4.1-dev \
             libdbus-1-dev
+      # Node + pnpm via corepack (the runner ships Node; corepack activates the pinned pnpm@10.13.1 from
+      # package.json's packageManager). Linux-only: the §6.7.1 JS legs (tsc/eslint/stylelint/prettier/
+      # vitest + vitest-axe) are OS-agnostic, so they run ONCE on the Linux leg — populating node_modules
+      # here is what flips check-ts-gate's pnpm-guarded live tier from skip-with-notice to live (P1.51).
+      # No setup-node action: Node is runner-provided and no Node version is pinned (§0.8 pins only pnpm),
+      # so corepack + the runner Node is the minimal-surface choice (no new SHA-pinned Marketplace action).
+      - name: 'Node/pnpm toolchain via corepack (Linux — wakes the §6.7.1 JS live legs)'
+        if: runner.os == 'Linux'
+        run: |
+          corepack enable pnpm
+          pnpm install --frozen-lockfile
       # G10 continuous-armed-canary (P0.2.13): one auto-discovering prelude runs EVERY gate-script
       # self-test (the g24-*/g54-* planted-positives + the test-*-fastpath-pattern smoke tests) on
       # all three OS, so a pinned-tool bump that breaks a stable script's parsing - or a new gate

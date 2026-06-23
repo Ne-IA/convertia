@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -345,8 +346,15 @@ def assert_toolchain_wiring(manifest: Path) -> int:
 
 
 def _run(label: str, argv: list[str]) -> int:
+    # Resolve argv[0] via shutil.which so a Windows `.CMD`/`.BAT` shim (corepack's `pnpm.CMD`) is found and
+    # runnable by full path — a bare list-form `subprocess.run(["pnpm", ...])` on Windows cannot exec a
+    # `.CMD` (CreateProcess needs the resolved path). On POSIX this is a no-op (pnpm is a real binary). Mirrors _have.
+    exe = shutil.which(argv[0])
+    if exe is None:
+        fail(f"{label}: cannot invoke {argv[0]} — the pinned toolchain/tool is not on PATH")
+        return 1
     try:
-        r = subprocess.run(argv, cwd=str(ROOT))
+        r = subprocess.run([exe, *argv[1:]], cwd=str(ROOT))
     except OSError as e:
         fail(f"{label}: cannot invoke {argv[0]} ({e}) — the pinned toolchain/tool is not installed")
         return 1
@@ -357,10 +365,10 @@ def _run(label: str, argv: list[str]) -> int:
 
 
 def _have(tool: str) -> bool:
-    try:
-        return subprocess.run([tool, "--version"], cwd=str(ROOT), capture_output=True).returncode == 0
-    except OSError:
-        return False
+    # shutil.which resolves PATHEXT (Windows `.CMD`/`.BAT` shims like the corepack `pnpm.CMD`), which a bare
+    # `subprocess.run([tool, "--version"])` does NOT — without this the gate FALSELY reports "pnpm not
+    # installed" and skips the live tier on a Windows dev box where pnpm IS present (a green-but-blind skip).
+    return shutil.which(tool) is not None
 
 
 def run_live_tools(full: bool) -> int:
