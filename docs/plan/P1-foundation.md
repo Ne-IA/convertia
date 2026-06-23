@@ -288,12 +288,10 @@ here.
   > the README skeleton: what it is, canonical-GitHub-Releases-only download, the verify-your-hash recipe SLOT (the literal `minisign -Vm SHA256SUMS -p docs/minisign.pub` recipe is authored/filled in P10 §6.2.4), as-is/no-warranty + best-effort posture, the §0.3.1 supported-OS floor, the unsigned-build first-launch note, and the Windows portable-zip WebView2 + Linux AppImage `libfuse2` prerequisite notes (§6.2.4). Skeleton now; release-gated completeness is P10.
 - [x] **P1.48** [DOC] Author the `NOTICE` + `THIRD-PARTY-LICENSES.txt` generated-file placeholders · §6.8 §6.3.2
   > the placeholder NOTICE / THIRD-PARTY-LICENSES files (marked generated-from-`engines.lock`+SBOM, never hand-drifted) so the §6.8 set is structurally complete from P1; per-engine rows are populated P5–P7 and finalized P10 (the release-blocking completeness gate is P10).
-- [!extern] **P1.49** [CI] Author the `.github/` issue templates (default new-format requests to Future-Ideas-Parked) · §6.8
-  > **[!extern] (L(-1)):** `.github/**` is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it.
-  > the issue templates defaulting new-format/feature requests to **Future Ideas (Parked)** per the SSOT inclusion test (§6.8 `.github/` policy row); a `.github/` config change, gate-clean (actionlint/zizmor over any embedded workflow is the P0 G49/G50 plane).
-- [!extern] **P1.50** [CI] Author the `.github/` PR template (DCO/quality-bar reference) + private-advisory config · §6.8
-  > **[!extern] (L(-1)):** `.github/**` is L(-1)-caged — Co-Pilot-authored under owner-ack (G71); the loop skips it.
-  > the PR template referencing the DCO/quality bar + the private-advisory config wired to `SECURITY.md` (`.github/SECURITY` advisory routing) per the §6.8 table.
+- [x] **P1.49** [CI] Author the `.github/` issue templates (default new-format requests to Future-Ideas-Parked) · §6.8
+  > the issue templates defaulting new-format/feature requests to **Future Ideas (Parked)** per the SSOT inclusion test (§6.8 `.github/` policy row); a `.github/` config change, gate-clean (actionlint/zizmor over any embedded workflow is the P0 G49/G50 plane). [Co-Pilot, owner-acked L(-1) edit — `.github/**` is L(-1); 2 markdown issue templates (`bug_report.md` + `feature_or_format_request.md`), the canonical inclusion test quoted verbatim from SSOT §5, dual-review opus=GO/sonnet=GO]
+- [x] **P1.50** [CI] Author the `.github/` PR template (DCO/quality-bar reference) + private-advisory config · §6.8
+  > the PR template referencing the DCO/quality bar + the private-advisory config wired to `SECURITY.md` (`.github/SECURITY` advisory routing) per the §6.8 table. [Co-Pilot, owner-acked L(-1) edit — `.github/**` is L(-1); `PULL_REQUEST_TEMPLATE.md` (DCO `Signed-off-by` requested-not-required + the CONTRIBUTING quality bar + inbound=outbound MIT) + `ISSUE_TEMPLATE/config.yml` (`blank_issues_enabled: false` + the private-advisory contact_link to the GitHub Security advisory), dual-review opus=GO/sonnet=GO]
 
 ---
 

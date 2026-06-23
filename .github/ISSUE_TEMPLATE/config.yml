@@ -1,0 +1,10 @@
+# .github/ISSUE_TEMPLATE/config.yml — issue-template chooser config (P1.50).
+# Routes security reports to PRIVATE advisory reporting (never a public issue) and channels
+# everything else through the templates in this directory.
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/Ne-IA/convertia/security/advisories/new
+    about: >-
+      Do NOT open a public issue for security vulnerabilities. Use GitHub's private
+      vulnerability reporting (Security tab -> Report a vulnerability). See SECURITY.md.
