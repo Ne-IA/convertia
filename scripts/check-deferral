@@ -20,7 +20,7 @@ deferral and asserts it STILL FAILS).
 
 PLANE / FAIL-MODE: --diff at L1 (new added production lines only; FAIL-OPEN if no diff base). --full
 at L2 pre-push AND the L4 CI mirror (whole production tree; "no diff base" is unreachable; FAIL-CLOSED).
-The product source lands in P1 — until then --full finds no production files and passes (target-absent).
+Production source exists from P1 on; --full scans it and passes when it carries no unsuppressed deferral/dead markers (LIVE since P1; the same two-tier posture as G22/G23).
 stdlib-only. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
 
 Usage: check-deferral {--diff | --full}

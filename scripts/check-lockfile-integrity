@@ -17,10 +17,10 @@ lands):
       (plugins that read the lock, they do not compile), and the lock-MUTATING commands
       (`cargo update`/`generate-lockfile`) are NEVER in the pin-flag set, so the gate cannot drift
       into demanding a flag a tool rejects or pinning a command meant to mutate the lock.
-  (B) CI-WORKFLOW FLAG-SCAN (target-absent until P1) - every cargo COMPILING/`fetch` command in
+  (B) CI-WORKFLOW FLAG-SCAN (live since P1) - every cargo COMPILING/`fetch` command in
       .github/workflows/ must carry `--locked` (or `--frozen`); every `pnpm install`/`pnpm i` must
-      carry `--frozen-lockfile`. No such command exists today (only the P1 CI build-step slot
-      comment in ci.yml) -> skip-with-notice; fail-CLOSED the moment a build command lands in P1.
+      carry `--frozen-lockfile`. Live since the P1 build/install commands landed (the scan covers
+      them now) -> fail-CLOSED on a build command missing its pin-flag.
       cargo PLUGIN test-runners (`cargo nextest`/`cargo llvm-cov`) also pin via their own `--locked`
       but are deliberately NOT in the built-in set: the box that wires the P1 CI test command
       verifies the flag against the pinned `--help` and adds it then (the same tool-fact discipline

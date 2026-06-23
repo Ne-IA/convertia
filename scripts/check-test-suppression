@@ -30,8 +30,8 @@ PLANE / FAIL-MODE (identical to G8/G21):
     marker; "no diff base" is unreachable, FAIL-CLOSED. (The removed-assertion signal is inherently
     diff-only - it does not exist in a static tree - so --full enforces marker-presence only.)
 
-The test files land from P1 onward, so --full finds none today and passes (target-absent; the same
-bootstrap posture as G8/G21/G22/G23). stdlib-only. L(-1) security-critical (scripts/l-neg1-files.toml,
+Test files exist from P1 on; --full scans them and passes when they carry no unjustified suppression
+markers (LIVE since P1; the same two-tier posture as G8/G21/G22/G23). stdlib-only. L(-1) security-critical (scripts/l-neg1-files.toml,
 G71).
 
 Usage: check-test-suppression {--diff | --full}

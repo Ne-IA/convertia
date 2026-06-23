@@ -58,19 +58,19 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
       run: python3 scripts/check-editorconfig
     test-suppression: # G70 - NEW test-suppression markers in the staged test diff (fail-open w/o base)
       run: python3 scripts/check-test-suppression --diff
-    rust-lint-contract: # G3/G4 - rustfmt/clippy contract freeze + live fmt/clippy/test (target-absent until P1)
+    rust-lint-contract: # G3/G4 - rustfmt/clippy contract freeze + live fmt/clippy/test (live since P1)
       run: python3 scripts/check-rust-lint-contract
-    unsafe-policy:   # G29 - #![deny(unsafe_code)] at every crate root + the one allow-listed FFI module (target-absent until P1)
+    unsafe-policy:   # G29 - #![deny(unsafe_code)] at every crate root + the one allow-listed FFI module (live since P1)
       run: python3 scripts/check-unsafe-policy
     fuzz-contract:   # G48/G16 - in-core fuzz-harness layout + per-numeric-IPC-arg overflow contract (target-absent until P3)
       run: python3 scripts/check-fuzz-contract
-    ts-gate:         # G5/G6/G13 - tsconfig strict + eslint flat (no-any, fc.gen) + prettier/stylelint/vitest contract (target-absent until P1)
+    ts-gate:         # G5/G6/G13 - tsconfig strict + eslint flat (no-any, fc.gen) + prettier/stylelint/vitest contract (live since P1)
       run: python3 scripts/check-ts-gate
-    english-only:    # G57 - Principle-11 English-only: no i18n-runtime import + strings/ui.ts non-empty + no inline literal (target-absent until P1)
+    english-only:    # G57 - Principle-11 English-only: no i18n-runtime import + strings/ui.ts non-empty + no inline literal (live since P1)
       run: python3 scripts/check-english-only
     coverage:        # G27/G28 - coverage-floor freeze + increase-only decrease-guard (vs HEAD); per-domain/diff live in P1
       run: python3 scripts/check-coverage
-    lockfile-integrity: # G18a - lockfile drift-set freeze + --locked/--frozen-lockfile flag contract; live git-diff drift-guard (CI flag-scan target-absent until P1)
+    lockfile-integrity: # G18a - lockfile drift-set freeze + --locked/--frozen-lockfile flag contract; live git-diff drift-guard (CI flag-scan live since P1)
       run: python3 scripts/check-lockfile-integrity
     build-matrix:    # G30 - native-OS matrix + macOS-universal fat-Mach-O slice contract (sidecar slice-assertion target-absent until P1+)
       run: python3 scripts/check-build-matrix
@@ -108,23 +108,23 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/check-core-deps
     js-supply-chain: # G18c/G18d - JS registry pin + lifecycle lockdown (pnpm-lock URL guard live P1)
       run: python3 scripts/check-js-supply-chain
-    generated-drift: # G19 - regenerate codegen artifacts + git diff --exit-code (target-absent until P1)
+    generated-drift: # G19 - regenerate codegen artifacts + git diff --exit-code (live since P1)
       run: python3 scripts/check-generated-drift
     test-suppression: # G70 - full-tree test-suppression-marker scan (fail-closed; no diff-base excuse)
       run: python3 scripts/check-test-suppression --full
-    rust-lint-contract: # G14/G17 - whole-tree clippy --all-targets + cargo test + cargo audit (target-absent until P1)
+    rust-lint-contract: # G14/G17 - whole-tree clippy --all-targets + cargo test + cargo audit (live since P1)
       run: python3 scripts/check-rust-lint-contract --full
-    unsafe-policy:   # G29 - whole-tree #![deny(unsafe_code)] + exactly-one-FFI-module scan (target-absent until P1)
+    unsafe-policy:   # G29 - whole-tree #![deny(unsafe_code)] + exactly-one-FFI-module scan (live since P1)
       run: python3 scripts/check-unsafe-policy --full
     fuzz-contract:   # G48/G16 - whole-harness fuzz-target + fixture + bounds assertion (target-absent until P3)
       run: python3 scripts/check-fuzz-contract --full
-    ts-gate:         # G5/G6/G13 - whole-project tsc --noEmit + eslint/stylelint/prettier --check + vitest (target-absent until P1)
+    ts-gate:         # G5/G6/G13 - whole-project tsc --noEmit + eslint/stylelint/prettier --check + vitest (live since P1)
       run: python3 scripts/check-ts-gate --full
-    english-only:    # G57 - whole-tree Principle-11 English-only / string-ownership scan (target-absent until P1)
+    english-only:    # G57 - whole-tree Principle-11 English-only / string-ownership scan (live since P1)
       run: python3 scripts/check-english-only --full
     coverage:        # G27/G28 - coverage-floor freeze + decrease-guard; per-domain/diff live in P1 (authoritative ratchet leg is the L4 workflow-security check)
       run: python3 scripts/check-coverage --full
-    lockfile-integrity: # G18a - whole-tree lockfile-integrity contract: drift-set freeze + CI --locked/--frozen-lockfile flag-scan + git-diff drift-guard (target-absent until P1)
+    lockfile-integrity: # G18a - whole-tree lockfile-integrity contract: drift-set freeze + CI --locked/--frozen-lockfile flag-scan + git-diff drift-guard (live since P1)
       run: python3 scripts/check-lockfile-integrity
     build-matrix:    # G30 - build-matrix contract: native-OS set freeze + macOS-universal fat-Mach-O both-slice assertion (target-absent until a universal sidecar is staged)
       run: python3 scripts/check-build-matrix

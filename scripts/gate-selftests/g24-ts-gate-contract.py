@@ -8,7 +8,7 @@ tool — a config without its package.json script, or a script without its confi
 the per-tool config<->script agreement) — while a BARE manifest with neither is TOLERATED (the P1.2
 staggered-landing posture, the regression this gate-fix locks in). Plus the JSONC tolerance + the
 multi-level `extends` follow + the comment/string-aware scans. The live tsc/eslint/prettier/vitest are
-target-absent today (no package.json) so the real gate skips. stdlib-only. Exit 0 = all held.
+LIVE since P1 (package.json + the toolchain exist) so the real gate runs them. stdlib-only. Exit 0 = all held.
 """
 import importlib.machinery
 import importlib.util

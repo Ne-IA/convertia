@@ -161,8 +161,8 @@ with tempfile.TemporaryDirectory() as td:
     record("drift: the present-path list passed to git contains the existing Cargo.lock",
            m.drift_guard(root, runner=lambda r, p: (0, "") if "Cargo.lock" in p else (1, "wrong paths")) == [])
 
-# --- end-to-end over the real repo (target-absent today) ---------------------------------------
-record("main: the real repo passes (flag-scan target-absent + drift-guard no-op)", m.main([]) == 0)
+# --- end-to-end over the real repo (live since P1) ---------------------------------------------
+record("main: the real repo passes (flag-scan live over the build commands + drift-guard clean)", m.main([]) == 0)
 
 passed = sum(1 for _, ok in results if ok)
 print(f"\n[g24-lockfile-integrity] {passed}/{len(results)} assertions passed.")

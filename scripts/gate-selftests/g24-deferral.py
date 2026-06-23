@@ -109,8 +109,8 @@ with tempfile.TemporaryDirectory() as td:
         os.chdir(cwd)
     record("run_diff flags a STAGED production marker despite worktree divergence (P2)", rc == 1)
 
-# --- live --full passes today (no production source yet) --------------------------------------
-record("--full passes today (no production files — target-absent)", m.main(["--full"]) == 0)
+# --- live --full passes on the real repo (production source clean) ----------------------------
+record("--full passes on the real repo (production source carries no unsuppressed marker — LIVE since P1)", m.main(["--full"]) == 0)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-deferral] {len(results) - len(failed)}/{len(results)} assertions passed.")

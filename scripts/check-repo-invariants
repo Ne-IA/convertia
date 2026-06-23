@@ -74,9 +74,10 @@ when the real code lands in P1 - adjusting a carve-out is itself a reviewed L(-1
                                 `.../ffi.rs`).
   (f) the shrink-wrapper     -> the pinned allow-listed wrapper path(s) in FC_WRAPPER_PATHS.
 
-Invariants (a)/(b)/(c)/(d)/(f) target source absent until P1 (no `design/`, `src/`, `src-tauri/`,
-`bundle/` yet) - they scan no files today and pass (target-absent); the patterns + carve-outs are
-authored + self-tested NOW. Invariant (e) is LIVE over the existing workflows + `scripts/`.
+Invariants (a)-(f) are all LIVE since P1: their target source landed in P1 - `design/` (a, CSS),
+`src/` + `src-tauri/` (b/c/d Rust, f TS test files) - and (e) is live over the workflows + `scripts/`;
+they scan the real files now and pass when clean. (The P10-staged `bundle/` engine tree is the only
+deliberately-absent dir, CLAUDE.md §1a - no invariant targets it.) Self-tested by g24-repo-invariants.
 
 stdlib-only. L(-1) security-critical (matched by `scripts/check-*` in scripts/l-neg1-files.toml, G71).
 Exit: 0 = no invariant violated (or target-absent); 1 = a violation; 2 = bad invocation.

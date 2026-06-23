@@ -4,8 +4,8 @@
 Proves the structural freeze cannot be gutted and every LIVE-tier leg CATCHES its planted violation once
 the P1 frontend lands: a banned i18n dependency (package.json) / import (src) / missing eslint rule (a),
 an empty / missing / drifted strings/ui.ts value (b), and that the eslint react/jsx-no-literals rule is
-required (c). The live legs are target-absent today (no package.json/src/eslint/ui.ts) so the real gate
-skips. stdlib-only. Exit 0 = all held.
+required (c). The live legs are LIVE since P1 (package.json/src/eslint/ui.ts exist) so the real gate
+runs them. stdlib-only. Exit 0 = all held.
 """
 import importlib.machinery
 import importlib.util

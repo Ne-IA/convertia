@@ -153,8 +153,8 @@ record("#[cfg_attr(unix, ignore)] is flagged", len(mk("#[cfg_attr(unix, ignore)]
 record("jasmine fdescribe( is flagged", len(mk("fdescribe('x', () => {})\n", "src/a.spec.ts")) == 1)
 record("vitest it.skipIf( is flagged", len(mk("it.skipIf(cond)('x', () => {})\n", "src/a.test.ts")) == 1)
 
-# --- the live --full passes today (only the clean g53-fixture .rs files exist) ----------------
-record("--full passes on the real repo today (no unjustified markers)", m.main(["--full"]) == 0)
+# --- the live --full passes on the real repo (the test files carry no unjustified markers) ----
+record("--full passes on the real repo (test files clean — no unjustified markers)", m.main(["--full"]) == 0)
 
 
 # --- run_diff E2E in a real temp git repo (the staged-blob path + fail-open-without-base) ------

@@ -218,7 +218,7 @@ jobs:
         env:
           BEFORE: ${{ github.event.before }}
         run: python3 scripts/check-coverage --base "$BEFORE"
-      - name: 'G18a: lockfile-integrity contract — drift-set freeze + --locked/--frozen-lockfile flag-scan + git diff --exit-code drift-guard (live drift-guard; CI flag-scan target-absent until P1 build commands land)'
+      - name: 'G18a: lockfile-integrity contract — drift-set freeze + --locked/--frozen-lockfile flag-scan + git diff --exit-code drift-guard (live drift-guard; CI flag-scan live since P1 — build commands landed)'
         run: python3 scripts/check-lockfile-integrity
       - name: 'G30: build-matrix contract — native-OS set freeze + macOS-universal fat-Mach-O both-slice assertion (stdlib fat-header parse; sidecar slice-assertion target-absent until P1+ stage-engines)'
         run: python3 scripts/check-build-matrix
