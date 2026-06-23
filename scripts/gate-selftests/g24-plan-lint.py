@@ -578,8 +578,9 @@ record("24 p0-completion: the REAL committed p0-completion.md stub passes (born-
 # principle (see check 23 above), now fully discharged across the P0.6 activations.
 
 # --- check 26 (G69) structural-map integrity — the real logic, driven by pure fns (P0.3.13) ------
-# doc26 SKIPS while the §1a map is the P1.64 placeholder, so the active path is exercised via the pure
-# parser/relations fns + one synthetic-active doc26 run against the real repo tree.
+# P1.64 authored the §1a map (removed the PLACEHOLDER stub), so doc26 now ENFORCES on the real repo. The
+# logic is exercised via the pure parser/relations fns + ACTIVE doc26 runs against the real repo tree
+# (both directions); the synthetic-PLACEHOLDER legs still prove the skip BRANCH stays correct (defensive).
 _TREE = [
     "convertia/                  -> root",
     "├── docs/                   -> docs",
@@ -624,8 +625,9 @@ record("26 fence: returns None when the header has no following fence",
        m._fenced_block_after("## 1a\n\njust prose, no fence\n", __import__("re").compile(r"1a")) is None)
 
 # the skip signal is 'PLACEHOLDER' WITHIN the §1a section (not a whole-file scan) — G1 r1 hardening
-record("26 skip: the real repo skips today (the §1a section still carries 'PLACEHOLDER')",
-       m.doc26_struct_map(_real) == [])
+record("26 active: the real repo §1a is now placeholder-free (P1.64 authored the map) so doc26 ENFORCES - and the live bijection (§1a == on-disk tree, subset of §0.7) passes clean",
+       "PLACEHOLDER" not in m._section_text(_real.docs.get("CLAUDE.md", ""), __import__("re").compile(r"^#{1,6}\s+1a\b"))
+       and m.doc26_struct_map(_real) == [])
 record("26 skip: a synthetic §1a section carrying 'PLACEHOLDER' skips even with a broken map",
        m.doc26_struct_map(m.Ctx(root=ROOT, boxes=[], by_id={}, plan_files=[],
                                 docs={"CLAUDE.md": "## 1a Map\n\n> PLACEHOLDER stub\n\n```\nbogus/\n```\n"})) == [])

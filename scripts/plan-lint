@@ -11,9 +11,10 @@ docs/process/, docs/plan/). It enforces TWO families of checks:
     hierarchy, gate-catalogue integrity, forbidden tokens, §0.11<->§5 threat parity, inventory
     parity, the G68 doc-graph leg, the G69 struct-map leg, etc.
 
-Checks whose source-of-truth target does not exist yet (build-loop.md, p0-completion.md, the P1
-struct-map, generated manifests) SKIP-WITH-WARNING now (the target-absent posture) and flip to
-fail-closed the moment the target lands. This file is L(-1) security-critical (G71).
+Checks whose source-of-truth target does not exist yet SKIP-WITH-WARNING (the target-absent posture)
+and flip to fail-closed the moment the target lands — e.g. the P3–P7 format-membership /
+corpus-completeness gates (G22 / G23 / G24a) stay target-absent until their phase fills the §04
+handlers + `tests/corpus/`. This file is L(-1) security-critical (G71).
 
 Build status: foundation + the 8 FORMAT checks are implemented + self-tested. The doc-wide checks
 1..26 are added incrementally by P0.3.5 (each with its G24 negative fixture); until a doc check is

@@ -72,11 +72,11 @@ line. Unlike the owner-decidable ratchet ledger above, these are **deterministic
 activations (no `informational`↔`required` posture), so the table below deliberately carries **no
 `Status`/`Since` columns** (check 23 governs only the ratchet ledger). The reverse `→ activated in P<n>`
 edges live on the P0 gate rows in [build-gates.md](../security/build-gates.md); this is their closing
-side. Three other `→ activated in P1`-annotated gates are NOT rows here, by design: **G22/G23** (the
-format membership/completeness mirror gates) activate when their §04-matrix / corpus / `convert_*`
-targets stand up in **P3–P7**, so they add their rows then; **G69** (the §1a structural-map ↔ on-disk
-bijection) activates at **P1.64** — the P1-END structure-establishment box, after this box — and adds its
-row then. (The continuously-active scanners G8 / G29 / G71 are a different class — see the P1.62 plan note.)
+side. **G69** (the §1a structural-map ↔ on-disk bijection) activated at **P1.64** — the P1-END
+structure-establishment box — and its row is below. The remaining two `→ activated in P1`-annotated
+gates are NOT rows here yet, by design: **G22/G23** (the format membership/completeness mirror gates)
+activate when their §04-matrix / corpus / `convert_*` targets stand up in **P3–P7**, so they add their
+rows then. (The continuously-active scanners G8 / G29 / G71 are a different class — see the P1.62 plan note.)
 
 | Gate | Activated-in | Now-real target (P-box) | Negative self-test — a planted violation MUST fail | Flipped |
 |---|---|---|---|---|
@@ -89,6 +89,7 @@ row then. (The continuously-active scanners G8 / G29 / G71 are a different class
 | **G53** — core-crate forbidden-dependency walk | P1.62.7 | the Cargo workspace `convertia-core` (P1.6) | `g24-core-deps` — a forbidden lib (updater / HTTP-client / imgworker C libs) in the core closure fails | 2026-06-23 |
 | **G30** — cross-platform build-matrix | P1.62.8 | the 3-OS `compile-sanity` matrix (P1.58); the universal-sidecar fat-Mach-O slice assertion stays target-absent until the P10 release staging | **gate-logic self-test:** `g24-build-matrix` plants a single-arch fat-named Mach-O that MUST fail the slice-assertion. **Separate live CI enforcer (not the G30 gate script):** the P1.58 `compile-sanity` job reddens on a platform-specific compile break | 2026-06-23 |
 | **G18 / G18a–d** — supply-chain + lockfile integrity | P1.62.9 | `Cargo.lock` / `pnpm-lock.yaml` / `.npmrc` (P1.6 / P1.59 / P1.60) | `g24-supply-chain` + `g24-lockfile-integrity` + `g24-js-supply-chain` — a non-frozen lockfile / bad resolution URL / lifecycle-script-enabled dep / forbidden crate fails | 2026-06-23 |
+| **G69** — §1a structural-map ↔ on-disk-tree bijection | P1.64 | the CLAUDE.md §1a Repo-layout map + the spec §0.7 physical tree (§1a authored, §0.7 expanded to all 60 tracked dirs, the `PLACEHOLDER` stub removed → the skip lifted; the `spec-0.7-physical-tree` G68 fingerprint re-blessed same-commit) | `g24-plan-lint` check-26 — a planted on-disk dir absent from §1a (disk-not-in-map) / a §1a dir not on disk (map-not-on-disk) / a §1a dir §0.7 does not home (map-not-in-spec07) MUST fail | 2026-06-23 |
 
 The four **owner-decidable over-assurance contracts** (`cargo-acl`/cackle, Kani, `cargo-careful`,
 `cargo-geiger`) ALSO carry `→ activated in P1`, but — being `informational`-only, not fail-closed —

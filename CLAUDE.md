@@ -58,31 +58,84 @@ hard-stop + escalate** — the build is downstream of the spec and cannot pick a
 > clean logical separation, **update §0.7 AND this map in the SAME commit**
 > (gate-enforced).
 >
-> **Bootstrap status: this is a PLACEHOLDER stub, finalized by the P1-end box
-> [`P1.64`](docs/plan/P1-foundation.md)** ("Establish the complete repository folder
-> structure + author the CLAUDE.md Repo-layout map") — which creates every directory
-> the product needs across P1–P11 and completes this map (as the §0.7 projection) to
-> one row per dir, the event that flips `G69` from skip-with-warning to fail-closed.
-> Until P1.64, only the already-existing `docs/` and `assets/` trees are real; the rest
-> are authored as P1 scaffolds them.
+> **Authored at P1.64** (the P1-end structure box, `needs:` the P1 scaffold boxes): every
+> directory the product needs across P1–P11 now exists with exactly one row below, so no
+> later phase invents an unmapped folder. This flipped `G69` from skip-with-warning to
+> **fail-closed** — the bidirectional map ↔ on-disk-tree bijection (every git-tracked dir
+> is mapped ∧ every mapped dir is tracked) + the §1a ⊆ §0.7 projection bind now enforce
+> ([`build-gates.md`](docs/security/build-gates.md) §6 check 26). A new directory therefore
+> requires a row here **and** in §0.7 in the same commit (the standing rule above).
+> **Deliberately absent** (each created by its owning phase, which adds its §0.7 + §1a rows
+> then): `bundle/` — engines stage into `src-tauri/binaries/` + `src-tauri/resources/` per
+> §6.1.3, not a separate staging tree; `fuzz/` — the P3-owned `cargo-fuzz` tree, created
+> **with** its G48 harness (pre-creating its empty `corpus/`/`crashes/` would prematurely
+> activate the `check-fuzz-contract` live tier, which then requires the not-yet-built harness).
 
 ```
-convertia/                  → repo root (Git, GitHub: Ne-IA/convertia)
-├── CLAUDE.md               → this file — the repo's own rules + this map
-├── README.md               → download/trust page (user-facing)
-├── LICENSE                 → MIT + collective copyright
-├── docs/                   → all documentation (the doc graph G68 guards)
-│   ├── SINGLE-SOURCE-OF-TRUTH.md   → SSOT (what & why)
-│   ├── spec/               → the spec (how) — 00-architecture … 07-app-shell, 04-formats/
-│   ├── security/           → security-concept.md + build-gates.md (G1..Gnn)
-│   ├── process/            → build-loop.md, test-strategy.md, roles-and-escalation.md, vuln-response.md, gate-status.md, p0-completion.md
-│   └── plan/               → P0..P11 + README index + _format.md
-├── assets/                 → static brand/design assets (exists)
-├── Cargo.toml · Cargo.lock → the Rust workspace root (virtual manifest + committed lockfile, P1.6)
-├── src-tauri/              → the MIT core crate `convertia-core` (Tauri host binary)
-├── crates/imgworker/       → pkg `convertia-imgworker` — the isolated libvips image-worker (P1.6.1)
-├── xtask/                  → the `cargo xtask` dev-bin (codegen/coverage, P1.6.2)
-└── … (src/, tests/, fuzz/, scripts/, .github/, bundle/, design/ — authored + mapped per dir by P1.64; this §1a map is the projection of spec §0.7)
+convertia/                          → repo root (Git, GitHub: Ne-IA/convertia)
+├── CLAUDE.md  README.md  LICENSE   → repo rules + this map · download/trust page · MIT + collective copyright
+├── Cargo.toml  Cargo.lock          → the Rust workspace root (virtual manifest + committed lockfile, P1.6)
+├── index.html  package.json  tsconfig.json   → the frontend entry + npm manifest + TS config (+ vite/vitest/eslint config, .gitignore, .npmrc, …)
+├── .github/                        → CI + supply-chain automation (SHA-pinned actions; L(-1))
+│   ├── ISSUE_TEMPLATE/             → issue templates
+│   └── workflows/                  → Lane-A `ci.yml` + `release.yml` / `scorecard.yml` / `secrets-history.yml`
+├── assets/                         → static brand assets
+│   └── branding/                   → logo / brand source art
+├── crates/                         → non-core first-party Rust workspace members
+│   └── imgworker/                  → pkg `convertia-imgworker` — the isolated libvips/libheif/librsvg image-worker (§3.5.5, G53)
+│       └── src/                    → `ffi.rs` (the one allow-listed unsafe FFI surface, G29) + `main.rs`
+├── design/                         → UI / design assets (a sibling of `src/`, §0.7)
+├── docs/                           → all documentation (the doc graph G68 guards)
+│   ├── plan/                       → P0..P11 + README index + `_format.md`
+│   ├── process/                    → build-loop / test-strategy / roles-and-escalation / vuln-response / gate-status / p0-completion / minisign-key-custody / release-pipeline-trust
+│   ├── security/                   → `security-concept.md` + `build-gates.md` (G1..Gnn)
+│   └── spec/                       → the spec (how) — `00-architecture` … `07-app-shell`
+│       └── 04-formats/             → the per-category §04 format matrices
+├── scripts/                        → the stdlib gate scripts + pinned-tool installer + bundle/SBOM/checksum (§06, P0.2; L(-1))
+│   ├── gate-selftests/             → the G24 `g24-*`/`g54-*` planted-positive self-tests (the G10 canary)
+│   │   ├── gitleaks-fixtures/      → G2 gitleaks self-test fixtures
+│   │   └── typos-fixtures/         → G51 typos self-test fixtures
+│   └── semgrep-rules/              → the G29 SAST rule corpus (L(-1))
+│       ├── fixtures/               → planted-positive SAST fixtures
+│       │   └── engines/            → engine-arg SAST fixtures
+│       ├── project/                → first-party Semgrep rules
+│       └── vendor/                 → vendored Semgrep rule packs
+├── src/                            → the React 19 / TS / Tailwind / Vite UI (§05)
+│   ├── a11y/                       → the §5.6 a11y helpers (announcer / keymap) + the G33a leg
+│   ├── components/                 → presentational components (§5.x)
+│   ├── hooks/                      → React hooks (§5.x)
+│   ├── lib/                        → frontend library code
+│   │   └── ipc/                    → the generated `bindings.ts` (the only IPC door, §0.4.5) + the commands/events wrappers
+│   ├── state/                      → the zustand store (§5.x)
+│   ├── strings/                    → the §5.7 English-only `ui.ts` string catalog (G57)
+│   └── styles/                     → Tailwind / app CSS
+├── src-tauri/                      → the MIT core crate `convertia-core` (the Tauri host binary)
+│   ├── binaries/                   → bundled engine sidecars per platform (externalBin, §3.3)
+│   ├── capabilities/               → the §0.10 capability allowlist (`main.json`, G47; L(-1))
+│   ├── icons/                      → the bundled app-icon set (§3.3, P1.19.2)
+│   ├── resources/                  → bundled non-exe engine assets (LibreOffice profile, fonts, codec libs)
+│   └── src/                        → the core crate source (`main.rs` + the §0.7 tier modules):
+│       ├── detection/              → tier 2 — §1.2 content sniffing (first to touch untrusted bytes)
+│       ├── domain/                 → tier 3 — the §0.6 types (the identity spine)
+│       ├── engines/                → tier 2 — the §3.2 engine registry/seam + §1.7 invocation + §3.5 args
+│       ├── fs_guard/               → tier 2 — the §2.0 no-harm kernel (atomic write / no-clobber / resolved-id)
+│       ├── ipc/                    → tier 0 — the §0.4 command/event handlers (the WebView's only door)
+│       ├── isolation/              → tier 2 — the §2.12 decoder-isolation wrapper (the sole `Command::new`)
+│       ├── orchestrator/           → tier 1 — queue + job lifecycle (§1.9) + run registry + cancellation
+│       ├── outcome/                → tier 2 — the §2.8 taxonomy + message catalog → §0.4.3 IpcError
+│       ├── platform/               → tier 3 — path / volume / OS shims (§2.14, §7.7)
+│       ├── pool/                   → tier 3 — the §0.9 subprocess pool + concurrency degree
+│       └── run/                    → tier 2 — per-run/instance scratch ownership + cleanup (§2.4/§2.6)
+├── supply-chain/                   → the `cargo-vet` audit trust store (`config.toml` / `imports.lock`, G18b; L(-1))
+├── tests/                          → Rust integration + corpus harness (§6.4)
+│   ├── corpus/                     → the §6.5 reliability corpus (manifest + fixtures, fills P3–P7)
+│   └── g53-fixture/                → the G53 NEGATIVE fixture (a planted copyleft-into-core violation; own nested workspace, excluded from the real graph)
+│       ├── convertia-core/         → the fixture's fake core crate
+│       │   └── src/                → its source
+│       └── libvips-sys/            → the fixture's planted forbidden lib
+│           └── src/                → its source
+└── xtask/                          → the `cargo xtask` dev-bin (§0.4.5 codegen + §6.7.1 coverage, G19)
+    └── src/                        → the xtask source
 ```
 
 ## 2. Working model — two sessions, one branch

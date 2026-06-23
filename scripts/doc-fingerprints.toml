@@ -53,22 +53,18 @@ describes = [
 ]
 fingerprint = "sha256:5c691fcc3c015df3ad50140a1d8ba553e14b195c56197d51b99b71143425fa03"
 
-# (b) DORMANT until P1.64 — the spec §0.7 physical tree is the HIGHER source (SSOT > spec > docs); the
+# (b) LIVE since P1.64 — the spec §0.7 physical tree is the HIGHER source (SSOT > spec > docs); the
 #     CLAUDE.md §1a "Repo layout" map is its operational projection. This fingerprint is the freshness
-#     companion to G69 check 26's projection bind: once §1a is authored at P1.64, a §0.7 tree edit not
-#     mirrored into §1a surfaces as stale. While CLAUDE.md still carries the "PLACEHOLDER" stub marker
-#     (§1a is the bootstrap stub), the binding is dormant — keyed on the SAME "PLACEHOLDER" word G69
-#     check 26 (doc26_struct_map) skips on, so the two gates activate together. (We key on "PLACEHOLDER"
-#     NOT "P1.64": "P1.64" legitimately survives as a provenance link [`P1.64`](…) post-authoring, which
-#     would falsely pin both gates dormant forever — "PLACEHOLDER" appears ONLY in the §1a stub block.)
-#     The recorded hash is today's §0.7. **P1.64 OBLIGATION:** when §1a is authored, P1.64 MUST delete
-#     the bootstrap-status block so "PLACEHOLDER" no longer appears in CLAUDE.md, AND re-bless this
-#     fingerprint in the same commit — else this entry AND G69 check 26 both stay dormant.
+#     companion to G69 check 26's projection bind: a §0.7 tree edit not mirrored into §1a surfaces as
+#     stale here. P1.64 authored §1a (deleting the bootstrap "PLACEHOLDER" stub — which lifted BOTH this
+#     binding's former dormancy AND G69 check 26's skip, together), re-verified §1a as a faithful
+#     projection of the expanded §0.7 (the check-26 bijection §1a == on-disk-tree ⊆ §0.7 passes), and
+#     re-blessed the hash below in that commit. A later §0.7 tree edit not mirrored into §1a now fails
+#     check 25; the `dormant` key was removed when PLACEHOLDER ceased to exist (the binding is permanent).
 [[source]]
 id = "spec-0.7-physical-tree"
 kind = "section"
 file = "docs/spec/00-architecture.md"
 anchor = "0.7"
 describes = ["CLAUDE.md §1a Repo-layout map (the §0.7 projection)"]
-fingerprint = "sha256:1ac6a2d508d0c61fd52c10d58da20fee7109e7923e3a3f0c8109a7614382d80a"
-dormant = { file = "CLAUDE.md", contains = ["PLACEHOLDER"] }
+fingerprint = "sha256:ae9ea475e07ffcf7c5d0c1dd0a9531b1a7e339b818adccd7390dfa95025734c2"
