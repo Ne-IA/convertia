@@ -17,6 +17,7 @@ import hashlib
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -67,19 +68,37 @@ def run_installer(manifest_text: str, *extra: str) -> tuple[int, str]:
 
 
 def online() -> bool:
-    try:
-        req = urllib.request.Request(SMALL_ASSET, method="HEAD",
-                                     headers={"User-Agent": "convertia-selftest"})
-        urllib.request.urlopen(req, timeout=20).close()
-        return True
-    except (urllib.error.URLError, TimeoutError, OSError):
-        return False
+    """Probe the pinned asset, RETRYING a transient blip up to 3 times (2s backoff) before concluding
+    offline. A brief GitHub/CDN 5xx must not make a reachable asset look offline (which under
+    --require-network would FAIL the network legs for the wrong reason — observed reddening all 3 CI legs
+    on a transient). A SUSTAINED outage still returns False after the retries, so --require-network still
+    fails a genuinely-offline CI (it never vacuously skips the checksum legs)."""
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(SMALL_ASSET, method="HEAD",
+                                         headers={"User-Agent": "convertia-selftest"})
+            urllib.request.urlopen(req, timeout=20).close()
+            return True
+        except (urllib.error.URLError, TimeoutError, OSError):
+            if attempt < 2:
+                time.sleep(2)
+    return False
 
 
 def real_sha() -> str:
-    req = urllib.request.Request(SMALL_ASSET, headers={"User-Agent": "convertia-selftest"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return hashlib.sha256(r.read()).hexdigest()
+    """Fetch + hash the pinned asset, retrying a transient blip up to 3 times (2s backoff) — same
+    transient-tolerance as online() so a flake here does not crash the leg for the wrong reason."""
+    last: Exception | None = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(SMALL_ASSET, headers={"User-Agent": "convertia-selftest"})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return hashlib.sha256(r.read()).hexdigest()
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last = e
+            if attempt < 2:
+                time.sleep(2)
+    raise last if last is not None else RuntimeError("real_sha: unreachable")
 
 
 # --- hermetic legs (no network) ----------------------------------------------
