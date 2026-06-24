@@ -23,6 +23,8 @@
     )
 )]
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use uuid::Uuid;
@@ -254,6 +256,46 @@ pub enum ReadFailure {
     Locked,
     /// Any other OS read error.
     IoError,
+}
+
+// ─── §0.6 DroppedItem — one eligible item in the §1.1-frozen collected set ───────
+/// One eligible item in the §1.1-frozen collected set — the per-item record the pipeline carries
+/// from freeze through conversion (§0.6 / §1.2). It is a wire type: it reaches the WebView as
+/// `CollectedSet::Single.items` (P2.6), but on the wire `raw_path` is **DISPLAY-ONLY** — the §5.3
+/// BatchSummary derives sample basenames from the first few `items[].raw_path`, and the WebView
+/// NEVER re-submits it as intake. The only intake funnels are C1 (paths the native drop/launch
+/// gave) and C2a (paths the Rust-opened picker gave), both Rust-side; a frozen set's `raw_path`
+/// travelling back for display does not let the WebView feed an arbitrary path into a conversion
+/// (the §0.6 `raw_path` SCOPE `[DECIDED]` note). The §2.4 freeze de-duplicates by RESOLVED IDENTITY
+/// on `resolved_path` (owned by §2.3), so two paths reaching one real file are one `DroppedItem`.
+///
+/// [Build-Session-Entscheidung: P2.4] Wire policy mirrors the P2.2/P2.3/P2.15 §0.6 types: derives
+/// `specta::Type` + `Serialize`/`Deserialize` with `#[serde(rename_all = "camelCase")]` so it mirrors
+/// to `bindings.ts` in the §0.6 camelCase wire form (`raw_path` → `rawPath`, `resolved_path` →
+/// `resolvedPath`, `size_bytes` → `sizeBytes`). NOT `Copy` (it owns two `PathBuf`s + a `String`-bearing
+/// `DetectionOutcome`); NOT `Hash` (it is not a map key — the de-dup is by resolved identity on
+/// `resolved_path`, §2.3, not by hashing the whole record). `PartialEq`+`Eq` back the round-trip + the
+/// §6 property tests (`DetectionOutcome` is `Eq`, so the struct is). No explicit specta-`Builder`
+/// registration here — the same choice P2.15 made: the type auto-registers when its consuming command
+/// (C1's `CollectedSet` return, P2.22) is wired, so an early registration would emit it with no consumer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DroppedItem {
+    /// The §0.6 invariant-6 freeze-assigned id over the SINGLE id space (eligible + skipped). `items`
+    /// is a filtered VIEW that is NEVER re-indexed from 0, so each `DroppedItem` carries its own
+    /// `ItemId` (its position in `items` is NOT its id). Symmetric with `SkippedItem.item` (P2.5);
+    /// `ConversionJob.item` denormalizes it (P2.10).
+    pub item: ItemId,
+    /// The path as the OS handed it at drop/pick time. DISPLAY-ONLY on the wire (see the type doc).
+    pub raw_path: PathBuf,
+    /// The symlink/junction/alias-resolved real path (§2.3) — the identity the §2.4 freeze
+    /// de-duplicates on and the path the engine is ultimately pointed at.
+    pub resolved_path: PathBuf,
+    /// Size in bytes of the resolved file, recorded at the §2.4 freeze.
+    pub size_bytes: u64,
+    /// The single canonical §1.2 detection verdict for this item — §1.2 OWNS the type (P2.15), §0.6
+    /// references it. NOT a separate `DetectedFormat` (that earlier name is retired).
+    pub detected: DetectionOutcome,
 }
 
 #[cfg(test)]
@@ -625,6 +667,40 @@ mod tests {
         assert_eq!(
             back, result,
             "§1.2: DetectionResult round-trips through its wire form"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §0.6 `DroppedItem` record — the per-item frozen-set entry. Locks (a) the
+    // §0.4.3 camelCase wire form of all five fields (`item`/`rawPath`/`resolvedPath`/`sizeBytes`/
+    // `detected`) via a serialize→deserialize round-trip, and (b) the invariant-6 `item: ItemId` field's
+    // presence (the §0.6 contradiction-fix field — every eligible DroppedItem carries its own id over the
+    // single id space, never its position in `items`). The struct literal is itself the compile-time
+    // field-set lock: a removed/renamed field fails to build here. Bare filenames (no path separators)
+    // keep the `PathBuf` wire form platform-independent — a `C:\…` path would serialize differently on
+    // Windows, making the exact-JSON assertion non-portable.
+    #[test]
+    fn dropped_item_wire_form_is_camelcase_and_roundtrips() {
+        let dropped = DroppedItem {
+            item: ItemId(3),
+            raw_path: PathBuf::from("holiday.jpg"),
+            resolved_path: PathBuf::from("holiday.jpg"),
+            size_bytes: 2048,
+            detected: DetectionOutcome::Recognized {
+                format: UserFacingFormat::Jpg,
+                confidence: Confidence::High,
+                dims: Some((640, 480)),
+            },
+        };
+        let json = serde_json::to_string(&dropped).expect("DroppedItem serializes");
+        assert_eq!(
+            json,
+            r#"{"item":3,"rawPath":"holiday.jpg","resolvedPath":"holiday.jpg","sizeBytes":2048,"detected":{"recognized":{"format":"jpg","confidence":"high","dims":[640,480]}}}"#,
+            "§0.4.3/§0.6: DroppedItem is {{ item, rawPath, resolvedPath, sizeBytes, detected }} in camelCase wire form, item carrying the invariant-6 ItemId"
+        );
+        let back: DroppedItem = serde_json::from_str(&json).expect("DroppedItem round-trips");
+        assert_eq!(
+            back, dropped,
+            "§0.6: DroppedItem round-trips through its wire form"
         );
     }
 }
