@@ -229,6 +229,24 @@ _multi_below = (_all_at_floor.replace('name = "walkdir"\nversion = "2.5.0"', 'na
 record("_pinned_floor_assertion(): a floor crate present ONLY at versions below floor (2.3.0 + 2.4.0) -> caught",
        any("walkdir" in p and "below the relied-upon API floor" in p for p in _floor_with_temp_lock(_multi_below)))
 
+# --- cargo-deny transient-fetch retry classification (the spurious-red guard, G18) ------------
+# A transient advisory-db FETCH failure is retried before fail-closing; a real policy violation
+# (banned crate / disallowed license / a live advisory) is NOT a fetch error -> no transient match
+# -> it fails fast on the first run (and even if mis-matched it still fails-closed after the retries).
+record("deny transient: 'failed to fetch advisory database' (TLS timeout) -> retried",
+       bool(m._DENY_TRANSIENT_RE.search(
+           "error: failed to fetch advisory database https://github.com/RustSec/advisory-db: TLS handshake timeout")))
+record("deny transient: git 'could not read from remote' -> retried",
+       bool(m._DENY_TRANSIENT_RE.search("fatal: unable to access ...: could not read from remote repository")))
+record("deny transient: HTTP 503 -> retried",
+       bool(m._DENY_TRANSIENT_RE.search("error fetching index: HTTP 503 Service Unavailable")))
+record("deny NON-transient: a banned-crate violation -> NOT retried (fails fast)",
+       not m._DENY_TRANSIENT_RE.search("error[banned]: the crate 'reqwest' is explicitly banned"))
+record("deny NON-transient: a license violation -> NOT retried",
+       not m._DENY_TRANSIENT_RE.search("error[rejected]: crate 'foo' license 'GPL-3.0' is not in the allow list"))
+record("deny NON-transient: a live vulnerability advisory -> NOT retried",
+       not m._DENY_TRANSIENT_RE.search("error[vulnerability]: RUSTSEC-2024-1234 in crate foo 1.2.3"))
+
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-supply-chain] {len(results) - len(failed)}/{len(results)} assertions passed.")
 sys.exit(1 if failed else 0)

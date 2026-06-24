@@ -41,6 +41,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -314,6 +315,39 @@ def _workspace_state(lock_candidates=CARGO_LOCK_CANDIDATES, toml_candidates=CARG
     return ("absent",)
 
 
+# cargo-deny's `advisories` section FETCHES the RustSec advisory database over the network (the
+# deliberate G18 two-scanner backstop, reconciled with cargo-audit - deny.toml [advisories]). A
+# transient fetch failure (TLS/5xx/429/connection/git-remote/DNS) must not red main spuriously, so the
+# live `cargo deny check` retries on a transient before failing-closed (the same class as the
+# G56a/G56b/install-gate-tools fixes). A real POLICY violation (a banned crate, a disallowed license, a
+# live advisory) is NOT a fetch error: it produces no transient match -> it fails on the FIRST run (no
+# wasted retry); and even a mis-matched violation STILL fails-closed after the retries, so the retry can
+# NEVER turn a violation into a pass (no fail-OPEN path).
+_DENY_TRANSIENT_RE = re.compile(
+    r"failed to fetch|unable to (?:fetch|update)|error fetching|could not read from remote|"
+    r"connection (?:reset|refused|timed out)|timed out|timeout|TLS handshake|i/o timeout|"
+    r"temporary failure|network is unreachable|\b5\d\d\b|\b429\b",
+    re.IGNORECASE,
+)
+_DENY_BACKOFF_S = (2, 5)  # seconds slept before retry 2 and retry 3 (3 attempts total)
+
+
+def _run_cargo_deny(manifest: Path) -> subprocess.CompletedProcess:
+    """`cargo deny check` with a retry on a TRANSIENT advisory-db FETCH failure. A success or a real
+    policy violation returns on the first run; a transient that persists across all attempts returns the
+    last (failed) result -> the caller still fails-closed (the retry never weakens the verdict)."""
+    cmd = ["cargo", "deny", "--manifest-path", str(manifest), "check"]
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    for backoff in _DENY_BACKOFF_S:
+        if r.returncode == 0 or not _DENY_TRANSIENT_RE.search((r.stderr or "") + (r.stdout or "")):
+            return r  # success, or a non-transient failure (a real policy violation) -> no retry
+        print(f"[G18] `cargo deny check` hit a transient advisory-db fetch failure; retrying in {backoff}s",
+              file=sys.stderr)
+        time.sleep(backoff)
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return r  # a transient persisted across all attempts -> caller fails-closed
+
+
 def _live_checks() -> list[str]:
     """Run the LIVE cargo-deny / cargo-vet binaries once the workspace lock exists (root OR src-tauri/);
     target-absent + skipped until then, but FAIL-CLOSED if a manifest exists without a lock."""
@@ -330,8 +364,7 @@ def _live_checks() -> list[str]:
     problems: list[str] = []
     manifest_dir = manifest.parent
     if shutil.which("cargo-deny"):
-        r = subprocess.run(["cargo", "deny", "--manifest-path", str(manifest), "check"],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        r = _run_cargo_deny(manifest)
         if r.returncode != 0:
             problems.append("`cargo deny check` failed:\n" + (r.stderr or r.stdout))
     else:
