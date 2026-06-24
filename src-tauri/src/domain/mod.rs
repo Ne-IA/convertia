@@ -24,6 +24,7 @@
 )]
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -795,6 +796,78 @@ pub struct TargetOffer {
 /// transparently as its inner map (a JSON object keyed by the `OptionKey` slug strings).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct OptionValues(pub BTreeMap<OptionKey, OptionValue>);
+
+// ─── §0.6 destination / output-plan layer (DestinationChoice / OutputPlan / DivertReason, P2.9) ───
+// [Build-Session-Entscheidung: P2.9] The §0.6 destination + per-job output-plan vocabulary. `DestinationChoice`
+// (the C4/C5/C6 inbound `destination` arg, §0.4.1) and `DivertReason` (carried by the P2.11 wire DTOs
+// `OutputPlanPreview`/`DestinationResolved`) are WIRE types: each derives `specta::Type` + camelCase so it
+// mirrors to `bindings.ts` once its consumer registers it — NOT explicitly registered here, the established
+// P2.2-P2.8 defer pattern (the consuming command/DTO auto-registers the graph: C4/C5 at P2.26/P2.27, the
+// `OutputPlanPreview`/`DestinationResolved` DTOs at P2.11). The persisted `lastDestinationMode` string form
+// (`"beside-source"`/`"<path>"`, §5/§7.4) is a SEPARATE frontend-side store representation mapped to this enum
+// JS-side, NOT this type's wire form — so the uniform camelCase externally-tagged convention applies here.
+// `OutputPlan` is the EXCEPTION: it is an INTERNAL plan type (computed by §1.8, consumed by §2.1/§2.14 — never a
+// command return; the wire shows `OutputPlanPreview`/`DestinationResolved` instead, §0.6) and it holds `OsString`
+// `base_name`/`extension` that MUST preserve the source's exact OS-native bytes (§2.2 base-name-kept). `OsString`
+// has no cross-platform-stable JSON form — which is precisely why the plan stays off the wire — so it derives only
+// `Debug, Clone, PartialEq, Eq` (no `Serialize`/`Deserialize`/`Type`), unlike the wire types above.
+
+/// Where a batch's outputs are written (§0.6 / §2.7.1) — the C4/C5/C6 `destination` argument (§0.4.1).
+/// WebView-held, with no server-side store (§0.11 T2a): the no-harm machinery, not path provenance, is the bound.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DestinationChoice {
+    /// Beside each source in place — the §2.7.1 default; folder layout is preserved for free and per-location
+    /// divert (§2.7.2) still applies to any unwritable/ephemeral source.
+    BesideSource,
+    /// A single user-chosen root under which the dropped-selection-relative subtree is re-created (§2.7.1, not
+    /// flattened). A re-validated HINT, never a guarantee — §2.7.2 / §7.4.1 re-check writability + divert at use time.
+    ChosenRoot(PathBuf),
+}
+
+/// Why a single source's output was diverted away from its intended location (§0.6 / §2.7.2). Carried by the
+/// P2.11 wire DTOs (`OutputPlanPreview`/`DestinationResolved`); on `OutputPlan`, `None` = beside-source (no divert).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DivertReason {
+    /// The intended location could not be written — read-only USB / network share / restricted folder (§2.7.2).
+    Unwritable,
+    /// The intended location is a known-ephemeral OS temp place the OS may silently purge (§2.7.2) — writing a
+    /// result there would lose the user's output.
+    Ephemeral,
+    /// The destination filesystem accepts a create but offers NO atomic create-only no-clobber publish primitive
+    /// (FAT/exFAT-class: neither `RENAME_NOREPLACE`-class no-replace rename NOR hardlinks). Unix-only — Windows'
+    /// `MoveFileExW` is create-only on FAT/exFAT (§2.7.2 / §2.14.2).
+    NoAtomicPublish,
+}
+
+/// The per-job output plan (§0.6; §1.8 computes it, §2.1/§2.14 consume it). DIRECTORY-BASED by design: the exact
+/// final name + no-clobber numbering is resolved LAZILY at write time on the RESOLVED real file (§2.1 exclusive
+/// create) — there is deliberately NO pre-baked `final_path`/`temp_path` (a pre-numbered path would reintroduce the
+/// §2.1.2 TOCTOU race). Internal-only (not a wire type) — see the section note above for why it carries no serde/specta.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputPlan {
+    /// The job this plan is for — the item's `ItemId` (§0.6 names this the `JobId` alias, `pub type JobId = ItemId`;
+    /// the sibling §0.6 `ConversionJob.item` is likewise spelled `ItemId`). [Build-Session-Entscheidung: P2.9] spelled
+    /// as the underlying `ItemId` rather than the `JobId` alias: it is the SAME type, and `OutputPlan` is the alias's
+    /// first PRODUCTION user — referencing the (otherwise-dead) `JobId` alias here trips a rustc dead-code
+    /// lint-expectation interaction with this module's forward-declaration suppression (type aliases have incomplete
+    /// dead-code lint-expectation support), which using the concrete type avoids with no semantic change.
+    pub job: ItemId,
+    /// The resolved output directory — beside-source OR a §2.7 divert target.
+    pub final_dir: PathBuf,
+    /// `Some(reason)` if this item's location was diverted (§2.7.2); `None` = beside-source.
+    pub diverted: Option<DivertReason>,
+    /// The SOURCE base name, kept exactly (§2.2) — OS-native bytes preserved.
+    pub base_name: OsString,
+    /// The extension from the chosen TARGET (§2.2).
+    pub extension: OsString,
+    /// Where the kind-1 publish temp (`*.part`) lives — a uniquely-named sibling DOTFILE inside `final_dir`, on the
+    /// SAME volume as `final_dir` by construction, so the §2.1 publish is a true intra-volume atomic rename. EQUALS
+    /// `final_dir` in v1 (§2.14.1). (The kind-2 engine-working scratch root, §2.14.2, may be on another volume and is
+    /// NOT carried here.)
+    pub publish_temp_dir: PathBuf,
+}
 
 #[cfg(test)]
 mod tests {
@@ -1837,5 +1910,94 @@ mod tests {
             back, values,
             "§1.6: OptionValues round-trips through its wire form"
         );
+    }
+
+    // §6.4.1 unit (G15): the §0.6 destination / output-plan layer (P2.9). Locks the externally-tagged camelCase
+    // WIRE forms of `DestinationChoice` (the C4/C5/C6 arg, §0.4.1) and `DivertReason` (the §2.7.2 divert
+    // classification carried by the P2.11 DTOs) + round-trips both, and exercises the INTERNAL `OutputPlan`
+    // (Debug/Clone/Eq, the directory-based no-`final_path` shape, §1.8/§2.14.1). `OutputPlan` is deliberately
+    // NOT serialized — its `OsString` base_name/extension have no cross-platform JSON form (§0.6 / the section
+    // note) — so the test asserts its construction + value identity, never a wire shape.
+    #[test]
+    fn destination_output_plan_layer_wire_and_shape() {
+        // DestinationChoice — externally-tagged camelCase: BesideSource is a bare tag, ChosenRoot wraps the path.
+        assert_eq!(
+            serde_json::to_string(&DestinationChoice::BesideSource)
+                .expect("BesideSource serializes"),
+            r#""besideSource""#,
+            "§2.7.1: BesideSource is the bare camelCase tag (the default destination)"
+        );
+        let chosen = DestinationChoice::ChosenRoot(PathBuf::from("/dest"));
+        assert_eq!(
+            serde_json::to_string(&chosen).expect("ChosenRoot serializes"),
+            r#"{"chosenRoot":"/dest"}"#,
+            "§2.7.1: ChosenRoot carries the chosen root path (externally-tagged camelCase)"
+        );
+        for dc in [DestinationChoice::BesideSource, chosen.clone()] {
+            let json = serde_json::to_string(&dc).expect("DestinationChoice serializes");
+            let back: DestinationChoice =
+                serde_json::from_str(&json).expect("DestinationChoice round-trips");
+            assert_eq!(
+                back, dc,
+                "§0.6: DestinationChoice round-trips through its wire form"
+            );
+        }
+        fn destination_choice_exhaustive(d: &DestinationChoice) {
+            match d {
+                DestinationChoice::BesideSource | DestinationChoice::ChosenRoot(_) => {}
+            }
+        }
+        destination_choice_exhaustive(&chosen);
+
+        // DivertReason — all three §2.7.2 variants in their camelCase wire form, round-tripped.
+        for (reason, wire) in [
+            (DivertReason::Unwritable, r#""unwritable""#),
+            (DivertReason::Ephemeral, r#""ephemeral""#),
+            (DivertReason::NoAtomicPublish, r#""noAtomicPublish""#),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&reason).expect("DivertReason serializes"),
+                wire,
+                "§2.7.2: DivertReason is a bare camelCase tag"
+            );
+            let back: DivertReason = serde_json::from_str(wire).expect("DivertReason round-trips");
+            assert_eq!(back, reason, "§0.6: DivertReason round-trips");
+        }
+        fn divert_reason_exhaustive(r: DivertReason) {
+            match r {
+                DivertReason::Unwritable
+                | DivertReason::Ephemeral
+                | DivertReason::NoAtomicPublish => {}
+            }
+        }
+        divert_reason_exhaustive(DivertReason::Unwritable);
+
+        // OutputPlan — the internal directory-based plan: Clone + Eq, OsString base-name/extension kept exactly,
+        // publish_temp_dir == final_dir in v1 (the §2.14.1 same-volume sibling-dotfile rule). No wire assertion
+        // (OsString has no cross-platform JSON form, §0.6 / the section note). `job` is the item's ItemId.
+        let plan = OutputPlan {
+            job: ItemId(0),
+            final_dir: PathBuf::from("/dest/sub"),
+            diverted: Some(DivertReason::Unwritable),
+            base_name: OsString::from("report"),
+            extension: OsString::from("pdf"),
+            publish_temp_dir: PathBuf::from("/dest/sub"),
+        };
+        assert_eq!(plan.clone(), plan, "§0.6: OutputPlan is Clone + Eq");
+        assert_eq!(
+            plan.publish_temp_dir, plan.final_dir,
+            "§2.14.1: in v1 the publish temp is a sibling inside final_dir (same volume)"
+        );
+        assert_eq!(
+            plan.base_name,
+            OsString::from("report"),
+            "§2.2: the source base name is kept exactly"
+        );
+        assert_eq!(plan.diverted, Some(DivertReason::Unwritable));
+        let beside = OutputPlan {
+            diverted: None,
+            ..plan.clone()
+        };
+        assert_eq!(beside.diverted, None, "§0.6: None diverted = beside-source");
     }
 }
