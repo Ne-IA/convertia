@@ -1081,24 +1081,27 @@ the reuse hubs.
            run            per-run / per-instance scratch ownership + cleanup (§2.4/§2.6)
            isolation      the §2.12 decoder-isolation wrapper every engine spawn routes through
            outcome        §2.8 taxonomy + message catalog + §2.9 lossy catalog → §0.4.3 IpcError
-                          ‡ tier [OPEN]
+                          ‡ tier 2 (FINAL, resolved P2.10 — see the ‡ note)
              ▼
-  tier 3   domain         the §0.6 types (the identity spine today; the full model lands P2)
+  tier 3   domain         the §0.6 PURE types (identity/intake/detection/Target/destination/plan/JobStage); outcome-ref lifecycle/result types live in orchestrator (‡)
            platform       paths / volume detection (§2.14) / OS shims
            pool           the §0.9 subprocess pool + concurrency degree (used by the engine seam)
                           — the leaves: they depend on nothing above
 ```
 
-‡ **`outcome`'s tier is `[OPEN → resolved at P2 type-homing]`.** It is placed at tier 2
-(matching the authoritative Physical tree + the built state — `crate::outcome` consumes the
-§0.6 `SkipReason` via `OutcomeMsg::Skipped`, so it depends downward on `domain`). But the
-reverse edge also exists — §0.6 `ItemResult.reason: Option<OutcomeMsg>` — so `domain` ↔
-`outcome` is a **type cycle** the strict downward-only rule cannot tier. The cycle is
-conceptual today (`crate::domain` holds only the §0.6 identity newtypes; the `SkipReason` /
-`ItemResult` / `OutcomeMsg` module homes are a **P2** task), so no code is built on the
-placement. **P2 type-homing must break the cycle** — e.g. home `ItemResult` (the §1.12
-summary type, assembled by `orchestrator`/`ipc`) above tier 3, leaving a clean `outcome` →
-`domain` edge — and finalise the tier then. Until then tier 2 is provisional.
+‡ **`outcome`'s tier is `[RESOLVED at P2.10 type-homing → tier 2, FINAL]`.** It sits at tier 2:
+`crate::outcome` consumes the §0.6 `SkipReason` via `OutcomeMsg::Skipped`, depending downward on
+`domain`. The reverse edges — §0.6 `JobState::Failed(ErrorKind)`, `ItemResult.reason: Option<OutcomeMsg>`,
+`ItemOutcome::Failed { error: IpcError }`, `PreflightVerdict.up_front_fail: Option<ErrorKind>` — once made
+`domain` ↔ `outcome` a **type cycle** the strict downward-only rule could not tier. **P2.10 broke the
+cycle exactly as this note directed: the outcome-referencing lifecycle/result types are homed ABOVE tier 3
+in `crate::orchestrator` (tier 1)** — `Batch`/`ConversionJob`/`JobState` (P2.10) and `PreflightVerdict`
+(P2.11) / `RunResult`/`ItemResult`/`ItemOutcome` (P2.12) — which `orchestrator`/`ipc` assemble — leaving a
+clean one-way `outcome` → `domain` edge and `crate::domain` a pure leaf. **The durable principle (decided
+P2.10):** a §0.6 type that references `crate::outcome` (directly or transitively via `ErrorKind`/
+`OutcomeMsg`/`IpcError`) is homed in `orchestrator`/`ipc`, never in `domain`; a §0.6 type that references
+no outcome type (identity, intake, detection, `Target`, destination/plan, `JobStage`) stays in `domain`.
+Tier 2 is now FINAL, not provisional. [Build-Session-Entscheidung: P2.10 — owner-authorised tier-finalisation]
 
 **Module responsibilities & who owns the behaviour:**
 
@@ -1107,7 +1110,10 @@ summary type, assembled by `orchestrator`/`ipc`) above tier 3, leaving a clean `
 - **`orchestrator`** — the §01 pipeline conductor: builds the queue, drives
   `JobState`, holds the run registry + cancellation tokens (§0.4.4), and fans
   progress out to the Channel. Owns nothing the guarantees/engines own; it
-  *sequences* them.
+  *sequences* them. **Homes the §0.6 outcome-referencing lifecycle/result types it
+  assembles** — `Batch`/`ConversionJob`/`JobState` (P2.10), `PreflightVerdict` (P2.11),
+  `RunResult`/`ItemResult`/`ItemOutcome` (P2.12) — above tier 3 so the §0.6
+  `domain`↔`outcome` cycle stays broken (the ‡ note).
 - **`detection`** — §1.2 content sniffing. First code to touch untrusted bytes;
   §1.2 owns whether header sniffing sits inside/outside the §2.12 boundary.
 - **`engines`** — the §3.2 `Engine` trait + registry + selection, the §1.7 generic
@@ -1128,9 +1134,12 @@ summary type, assembled by `orchestrator`/`ipc`) above tier 3, leaving a clean `
 - **`outcome`** — the §2.8 conversion-outcome taxonomy + message catalog and the
   §2.9 lossy-disclosure catalog, mirrored onto the wire as the §0.4.3
   `IpcError`/`ErrorKind` (renamed from `error` — there is no `crate::error`); the
-  single source of every conversion-outcome string. (Tier `[OPEN]` — see the ‡ note.)
-- **`domain`** — the §0.6 types; depended on by everyone, depends on nothing (the
-  tier-3 identity spine today; the full §0.6 model is homed in P2).
+  single source of every conversion-outcome string. (Tier 2, FINAL — see the ‡ note.)
+- **`domain`** — the §0.6 **pure** types (identity, intake, detection, `Target`,
+  destination/plan, `JobStage`); depended on by everyone, depends on nothing (a true
+  tier-3 leaf). The §0.6 outcome-referencing lifecycle/result types
+  (`Batch`/`ConversionJob`/`JobState`, `PreflightVerdict`, `RunResult`/`ItemResult`/
+  `ItemOutcome`) are homed in `orchestrator`, NOT here (the ‡ note), so `domain` stays pure.
 - **`platform`** — paths, volume detection (§2.14), OS shims (§7.7 reveal-in-folder).
 - **`pool`** — §0.9; the concurrency-degree owner and the per-engine parallelism
   rules (LibreOffice serialised).
@@ -1159,7 +1168,7 @@ convertia/
 │  └─ src/
 │     ├─ main.rs                   # Tauri builder, invoke_handler (C1–C13), collect_commands!/collect_events! (§0.4.5)
 │     ├─ ipc/                      # tier 0 — §0.4 handlers, one file per command group
-│     ├─ orchestrator/             # tier 1 — queue, lifecycle (§1.9), run registry, cancellation (§0.4.4)
+│     ├─ orchestrator/             # tier 1 — queue, lifecycle (§1.9), run registry, cancellation (§0.4.4); homes the §0.6 outcome-referencing lifecycle/result types (Batch/ConversionJob/JobState + PreflightVerdict + RunResult/ItemResult/ItemOutcome — above tier 3 to break the domain↔outcome cycle, §0.7 ‡)
 │     ├─ detection/                # tier 2 — §1.2
 │     ├─ engines/                  # tier 2 — registry/seam (§3.2), invocation (§1.7), args (§3.5), per-engine modules
 │     │  ├─ registry.rs            #   Engine trait + selection (the §3.2 seam — candidate own crate)
@@ -1167,10 +1176,10 @@ convertia/
 │     │  ├─ ffmpeg.rs  libreoffice.rs  pandoc.rs  poppler.rs  image.rs  csv_native.rs
 │     ├─ fs_guard/                 # tier 2 — the reusable guarantees-fs layer; module path `crate::fs_guard` (§2.0); §2.1/2.3/2.14 atomic write/no-clobber/resolved-id/path-limit/cross-volume
 │     ├─ run/                      # tier 2 — `crate::run` (§2.0): per-run/instance scratch ownership + cleanup (§2.4/§2.6), keyed on RunId/InstanceId (§7.1)
-│     ├─ outcome/                  # tier 2 — `crate::outcome` (§2.0): the §2.8 error taxonomy + message catalog AND the §2.9 lossy catalog ↔ IpcError mirror (§0.4.3); the single source of every conversion-outcome string (was `error.rs` — RENAMED to match `crate::outcome` in §2.0; there is no `crate::error`). Tier 2 is PROVISIONAL — `[OPEN → P2 type-homing]`; see the §0.7 logical-modules ‡ note (a domain↔outcome type cycle the strict downward-only model cannot tier)
+│     ├─ outcome/                  # tier 2 — `crate::outcome` (§2.0): the §2.8 error taxonomy + message catalog AND the §2.9 lossy catalog ↔ IpcError mirror (§0.4.3); the single source of every conversion-outcome string (was `error.rs` — RENAMED to match `crate::outcome` in §2.0; there is no `crate::error`). Tier 2 is FINAL (resolved P2.10: the outcome-referencing §0.6 lifecycle/result types are homed in `crate::orchestrator`, breaking the domain↔outcome cycle; see the §0.7 logical-modules ‡ note)
 │     ├─ isolation/                # tier 2 — `crate::isolation` (§2.0): the §2.12 decoder-isolation wrapper every engine spawn routes through (§1.7 calls it; §3.5 builds args inside it)
 │     ├─ pool/                     # tier 3 — subprocess pool, concurrency degree (§0.9)
-│     ├─ domain/                   # tier 3 — §0.6 types, derive specta::Type
+│     ├─ domain/                   # tier 3 — the PURE §0.6 types (identity/intake/detection/Target/destination/plan/JobStage), derive specta::Type; the outcome-referencing lifecycle/result types live in orchestrator (§0.7 ‡)
 │     └─ platform/                 # tier 3 — path/volume/OS shims (§2.14, §7.7 reveal-in-folder)
 │
 ├─ crates/                         # additional first-party Rust workspace members (non-core)

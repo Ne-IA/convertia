@@ -1360,8 +1360,11 @@ new-item dispatch rather than thrash or freeze the UI.
 ## 1.12 End-of-batch summary `[DECIDED]`
 
 When every job has left `Pending`/`Running`, the pipeline emits the **`RunResult`**
-summary. **`RunResult`, `ItemResult`, `Totals` and `CleanupResidue` are the §0.6
-domain types — owned and defined there, referenced (never restated) here** (this
+summary. **`RunResult`, `ItemResult`, `Totals` and `CleanupResidue` are §0.6
+domain-MODEL types — their shape is owned and defined in §0.6, referenced (never
+restated) here** (their `crate` module home is `orchestrator`, not `crate::domain`,
+per the §0.7 ‡ tier-finalisation, since `RunResult`/`ItemResult`/`ItemOutcome`
+reference `crate::outcome`; this
 section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payload;
 §5.3 `ResultSummary` renders it). For reference, the §0.6 shape is:
 

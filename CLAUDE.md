@@ -116,12 +116,12 @@ convertia/                          → repo root (Git, GitHub: Ne-IA/convertia)
 │   ├── resources/                  → bundled non-exe engine assets (LibreOffice profile, fonts, codec libs)
 │   └── src/                        → the core crate source (`main.rs` + the §0.7 tier modules):
 │       ├── detection/              → tier 2 — §1.2 content sniffing (first to touch untrusted bytes)
-│       ├── domain/                 → tier 3 — the §0.6 types (the identity spine)
+│       ├── domain/                 → tier 3 — the PURE §0.6 types (identity / intake / detection / Target / destination/plan / JobStage), a true leaf; the outcome-referencing lifecycle/result types live in orchestrator (§0.7 ‡, P2.10)
 │       ├── engines/                → tier 2 — the §3.2 engine registry/seam + §1.7 invocation + §3.5 args
 │       ├── fs_guard/               → tier 2 — the §2.0 no-harm kernel (atomic write / no-clobber / resolved-id)
 │       ├── ipc/                    → tier 0 — the §0.4 command/event handlers (the WebView's only door)
 │       ├── isolation/              → tier 2 — the §2.12 decoder-isolation wrapper (the sole `Command::new`)
-│       ├── orchestrator/           → tier 1 — queue + job lifecycle (§1.9) + run registry + cancellation
+│       ├── orchestrator/           → tier 1 — queue + job lifecycle (§1.9) + run registry + cancellation; homes the §0.6 outcome-referencing lifecycle/result types (Batch/ConversionJob/JobState + PreflightVerdict + RunResult/ItemResult/ItemOutcome) above tier 3 (§0.7 ‡, P2.10)
 │       ├── outcome/                → tier 2 — the §2.8 taxonomy + message catalog → §0.4.3 IpcError
 │       ├── platform/               → tier 3 — path / volume / OS shims (§2.14, §7.7)
 │       ├── pool/                   → tier 3 — the §0.9 subprocess pool + concurrency degree
