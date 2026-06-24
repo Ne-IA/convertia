@@ -58,9 +58,10 @@
   needs: P2.1
 - [x] **P2.3** [RUST] Author `UserFacingFormat` (the single grouping key — the full SSOT *What It Converts* set) · §0.6 §1.3
   needs: P2.1
-- [ ] **P2.4** [RUST] Author `DroppedItem` (raw/resolved path, size, `DetectionOutcome` ref) + the display-only `raw_path` scope note · §0.6 §1.2
+- [ ] **P2.4** [RUST] Author `DroppedItem` (`item: ItemId`, raw/resolved path, size, `DetectionOutcome` ref) + the display-only `raw_path` scope note · §0.6 §1.2
   needs: P2.3, P2.15
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.15` points at the `DetectionOutcome` type box later in document order — `DroppedItem.detected: DetectionOutcome` (§0.6 / §1.2-owned) has no type to embed until `DetectionOutcome` (P2.15) exists, so DECISION C builds P2.15 first; the edge is acyclic and valid (P2.15 only `needs: P2.3`), the inversion documented at the `needs:` line.
+  > `item: ItemId` is the §0.6-invariant-6 freeze-assigned id every eligible `DroppedItem` carries (`ItemId` from P2.1, already `[x]` — no new `needs:` edge); symmetric with `SkippedItem.item` (P2.5). Added by the §0.6 contradiction fix (the 4-field literal had omitted it).
 - [ ] **P2.5** [RUST] Author `SkippedItem` + `SkipReason` { UnsupportedType, Uncertain, Empty, Unreadable } (id-disjoint over the single id space) · §0.6 §1.3
   needs: P2.4
 - [ ] **P2.6** [RUST] Author the `CollectedSet` enum — `Single`/`Mixed`/`Unsupported`/`Uncertain`/`Empty` (the C1/C2a return + unified §1.4 confirm-summary fields) + the `CollectedNote` type · §0.6 §1.1 §1.4
@@ -96,7 +97,7 @@
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.20` points at the `OutcomeMsg` box later in document order — `ItemResult.reason: Option<OutcomeMsg>` (§0.6; the documented domain↔outcome type pairing) has nowhere to land until `OutcomeMsg` (P2.20) exists, so DECISION C builds P2.20 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
 - [ ] **P2.13** [RUST] Author the engine-descriptor seam types — `EngineId`/`EngineDescriptor`/`EngineKind` (non-trait `FFprobe`/`ImageMagick` note) · §0.6 §3.2
   needs: P2.3
-- [ ] **P2.14** [TEST] Property-test the §0.6 normative invariants (one-Target-per-Batch, `count == items.len()`, frozen `items`, stable `ItemId`, same-volume publish-temp) · §0.6 · G22 G23
+- [ ] **P2.14** [TEST] Property-test the §0.6 normative invariants (one-Target-per-Batch, `count == items.len()`, `ConversionJob.item == source.item`, frozen `items`, stable `ItemId`, same-volume publish-temp) · §0.6 · G22 G23
   needs: P2.12, P2.13
 
 ## Detection-outcome contract (the §1.2 result type)

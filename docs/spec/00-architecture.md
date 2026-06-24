@@ -613,6 +613,11 @@ pub struct IntakePayload {                           // app://intake hand-off (�
 }
 
 pub struct DroppedItem {
+    pub item: ItemId,             // §0.6 invariant 6: the freeze-assigned id over the SINGLE
+                                  //   id space (eligible + skipped); `items` (below) is a
+                                  //   NOT-re-indexed filtered VIEW, so each DroppedItem carries
+                                  //   its own id (position in `items` != ItemId). Symmetric with
+                                  //   SkippedItem.item; ConversionJob.item denormalizes it.
     pub raw_path: PathBuf,        // as the OS handed it
     pub resolved_path: PathBuf,   // symlink/junction/alias-resolved (§2.3)
     pub size_bytes: u64,
@@ -790,7 +795,11 @@ pub enum DestinationChoice {
 }
 
 pub struct ConversionJob {
-    pub item: ItemId,
+    pub item: ItemId,                // == source.item, denormalized as the job's top-level key
+                                     //   (cheap addressing in §1.9 lifecycle + progress/finished
+                                     //   events without unwrapping source) — the same
+                                     //   duplicate-for-cheap-access pattern as count beside
+                                     //   items.len(); §6 property-test asserts item == source.item.
     pub source: DroppedItem,
     pub state: JobState,             // §1.9 owns the lifecycle transitions
     pub plan: Option<OutputPlan>,    // computed by §1.8 before write
