@@ -11,9 +11,19 @@
 // stage); the remaining ids are first constructed by the §01 pipeline contracts (P2). `expect` (not
 // `allow`) auto-flags the moment a type becomes fully used, so this annotation cannot silently
 // outlive the scaffolding phase.
-#![expect(
-    dead_code,
-    reason = "§0.6 identity spine: InstanceId is minted at startup (P1.15); RunId/CollectedSetId/CollectingId/ItemId remain forward-declared, first constructed by the P2 pipeline contracts"
+// [Test-Change: P2.1 — old-obsolete+new-correct, §0.6 — the module dead-code lint-expectation goes
+// from unconditional to not(test)-scoped: old is obsolete because the cfg(test) JobId alias-lock now
+// references JobId (the sole dead-code trigger); new is correct as JobId stays dead only in production]
+// [Build-Session-Entscheidung: P2.1] The spine stays forward-declared in the PRODUCTION build (JobId —
+// the §0.6 `type JobId = ItemId` alias — is the sole dead-code trigger; the others are type-used via
+// the §0.4.5 IPC registration / InstanceId via `mint`); the cfg(test) jobid_compiles_as_itemid_alias
+// contract-lock references JobId, which is why the dead-code expectation is scoped to non-test builds.
+#![cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "§0.6 identity spine forward-declared until first constructed by the P2 pipeline contracts; InstanceId is the exception (minted at startup, P1.15). JobId (the §0.6 alias) is unconstructed in production until the §1.7/§1.8 job pipeline of P2+."
+    )
 )]
 
 use serde::{Deserialize, Serialize};
@@ -82,6 +92,26 @@ mod tests {
             a.0.get_version_num(),
             4,
             "§7.1.2: InstanceId is a v4 (random) UUID"
+        );
+    }
+
+    // §6.4.1 unit (G15): lock the §0.6 `JobId = ItemId` alias contract. §1.7/§1.8 call the running
+    // job's id "JobId"; §0.6 fixes it as `pub type JobId = ItemId` — it IS the ItemId of the job's
+    // item, an ALIAS, not a distinct newtype. The `coerce` identity below moves a `JobId` into an
+    // `ItemId` with NO conversion, so it compiles ONLY while the two name the same type: a future
+    // split of `JobId` into its own newtype fails to compile here, forcing a §0.6-conscious decision
+    // rather than a silent divergence of the wire type (the project's anti-drift "lock the contract"
+    // discipline, cf. the P2.18.3 variant-count lock). [Build-Session-Entscheidung: P2.1]
+    #[test]
+    fn jobid_compiles_as_itemid_alias() {
+        fn coerce(id: JobId) -> ItemId {
+            id
+        }
+        let item = ItemId(7);
+        assert_eq!(
+            coerce(item),
+            item,
+            "§0.6: JobId IS ItemId (the alias contract)"
         );
     }
 }
