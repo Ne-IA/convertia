@@ -459,6 +459,72 @@ pub enum CollectedNoteKind {
     Other,
 }
 
+// ─── §0.6 wire DTOs for the C-commands + app:// hand-off (§0.4.1 / §0.4.2) ───────
+// [Build-Session-Entscheidung: P2.7] The §0.6 "Intake & detection" wire-DTO group. Each derives
+// `specta::Type` + camelCase per the §0.6 wire convention so it mirrors to `bindings.ts` as a named type;
+// registration is deferred to the consuming command/event (C2a/C9/app://intake/C1-onScan, P2.21+), the
+// established P2.2–P2.6 defer pattern. DIRECTION drives the derive set: the INBOUND command-arg enums
+// (`PickKind`/`OpenKind`) derive `Serialize`+`Deserialize` (round-trippable, fieldless → `Copy`); the
+// app:// event payload (`IntakePayload`) follows the round-trippable struct pattern (`Serialize`+
+// `Deserialize`, like `DroppedItem`); the Channel payload (`ScanProgress`) is OUTBOUND-ONLY per its §0.6
+// literal (`#[derive(Clone, Serialize, specta::Type)]`) — `Serialize` without `Deserialize`, since the
+// frontend RECEIVES but never sends it.
+
+/// The C2a `pick_for_intake` `kind` arg (§0.4.1) — pick files or a folder. Inbound (WebView → Rust).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum PickKind {
+    /// Pick one or more files.
+    Files,
+    /// Pick a folder (recursively collected at the §1.1 freeze).
+    Folder,
+}
+
+/// The C9 `open_path` `kind` arg (§0.4.1 / §7.7) — how to surface an output path. Inbound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum OpenKind {
+    /// Open the containing folder.
+    Folder,
+    /// Open the file itself in its default app.
+    File,
+    /// Reveal the file within its folder (highlight it).
+    RevealInFolder,
+}
+
+/// The `app://intake` hand-off payload (§0.4.2 / §7.8.1) — the launch-arg / second-instance paths drained
+/// through the §7.8.1 buffer-then-replay once the WebView is ready. `origin` is typed as the full
+/// `IntakeOrigin`, but only `LaunchArg` | `SecondInstance` ever travel on this event (`Drop`/`Picker`
+/// reach C1/C2a directly) — a §7.8.1 runtime invariant, not a type constraint.
+///
+/// [Build-Session-Entscheidung: P2.7] Follows the round-trippable struct pattern (`Serialize`+
+/// `Deserialize`, like `DroppedItem`); NOT `Copy` (owns a `Vec<PathBuf>`). camelCase wire form.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct IntakePayload {
+    /// The paths handed in (already resolved by the §7.8.1 funnel; frozen at C1).
+    pub paths: Vec<PathBuf>,
+    /// How the set entered intake — only `LaunchArg` | `SecondInstance` on this event (see the type doc).
+    pub origin: IntakeOrigin,
+}
+
+/// The C1 `ingest_paths` `onScan` Channel payload (§0.4.2) — a throttled (~2/s, coalesced) live count of
+/// files seen during the §1.1 recursive walk + §1.2 detection, so the §5.2 Collecting state can show
+/// "Scanning… N files so far". Best-effort, monotonic, dies with the C1 call.
+///
+/// [Build-Session-Entscheidung: P2.7] Honors the §0.6 literal's deliberate OUTBOUND-ONLY derive set
+/// (`#[derive(Clone, Serialize, specta::Type)]`): the frontend RECEIVES this Channel payload but never
+/// sends it, so no `Deserialize` (and no `PartialEq`/`Eq` — the contract is the serialized form, not a
+/// round-trip; `Debug` is a benign ergonomic add). `specta::Type` is MANDATORY (§0.6: a
+/// `Channel<ScanProgress>` without it is `any` in `bindings.ts`). camelCase for module uniformity (a
+/// no-op on the single-word `scanned`).
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanProgress {
+    /// The throttled, monotonic count of files seen so far.
+    pub scanned: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1085,5 +1151,89 @@ mod tests {
             }
         }
         exhaustive(&CollectedSet::Empty { skipped: vec![] });
+    }
+
+    // §6.4.1 unit (G15): the C2a `PickKind` arg — Files/Folder in the §0.4.3 camelCase wire form,
+    // round-tripped; the no-wildcard `exhaustive` arm locks membership.
+    #[test]
+    fn pick_kind_wire_form_is_camelcase_and_roundtrips() {
+        for (kind, wire) in [
+            (PickKind::Files, "\"files\""),
+            (PickKind::Folder, "\"folder\""),
+        ] {
+            let json = serde_json::to_string(&kind).expect("PickKind serializes");
+            assert_eq!(json, wire, "§0.4.1: PickKind wire casing is camelCase");
+            let back: PickKind =
+                serde_json::from_str(&json).expect("PickKind round-trips from its wire form");
+            assert_eq!(
+                back, kind,
+                "§0.6: PickKind round-trips through its wire form"
+            );
+        }
+        fn exhaustive(k: PickKind) {
+            match k {
+                PickKind::Files | PickKind::Folder => {}
+            }
+        }
+        exhaustive(PickKind::Files);
+    }
+
+    // §6.4.1 unit (G15): the C9 `OpenKind` arg — Folder/File/RevealInFolder in camelCase (`revealInFolder`
+    // is the multi-word lock), round-tripped; the no-wildcard `exhaustive` arm locks membership.
+    #[test]
+    fn open_kind_wire_form_is_camelcase_and_roundtrips() {
+        for (kind, wire) in [
+            (OpenKind::Folder, "\"folder\""),
+            (OpenKind::File, "\"file\""),
+            (OpenKind::RevealInFolder, "\"revealInFolder\""),
+        ] {
+            let json = serde_json::to_string(&kind).expect("OpenKind serializes");
+            assert_eq!(json, wire, "§0.4.1: OpenKind wire casing is camelCase");
+            let back: OpenKind =
+                serde_json::from_str(&json).expect("OpenKind round-trips from its wire form");
+            assert_eq!(
+                back, kind,
+                "§7.7: OpenKind round-trips through its wire form"
+            );
+        }
+        fn exhaustive(k: OpenKind) {
+            match k {
+                OpenKind::Folder | OpenKind::File | OpenKind::RevealInFolder => {}
+            }
+        }
+        exhaustive(OpenKind::File);
+    }
+
+    // §6.4.1 unit (G15): the app://intake `IntakePayload` — { paths, origin } in camelCase wire form
+    // (origin reusing the §0.6 `IntakeOrigin` camelCase, e.g. `launchArg`), round-tripped.
+    #[test]
+    fn intake_payload_wire_form_is_camelcase_and_roundtrips() {
+        let payload = IntakePayload {
+            paths: vec![PathBuf::from("a.jpg"), PathBuf::from("b.png")],
+            origin: IntakeOrigin::LaunchArg,
+        };
+        let json = serde_json::to_string(&payload).expect("IntakePayload serializes");
+        assert_eq!(
+            json, r#"{"paths":["a.jpg","b.png"],"origin":"launchArg"}"#,
+            "§0.4.2/§7.8.1: IntakePayload is {{ paths, origin }} in camelCase wire form"
+        );
+        let back: IntakePayload = serde_json::from_str(&json).expect("IntakePayload round-trips");
+        assert_eq!(
+            back, payload,
+            "§7.8.1: IntakePayload round-trips through its wire form"
+        );
+    }
+
+    // §6.4.1 unit (G15): the C1 onScan `ScanProgress` Channel payload — { scanned } wire form. It is
+    // OUTBOUND-ONLY (Serialize, no Deserialize per the §0.6 literal), so this locks the SERIALIZED form,
+    // not a round-trip — the frontend receives this throttled live count but never sends it back.
+    #[test]
+    fn scan_progress_serializes_to_scanned_count() {
+        let json =
+            serde_json::to_string(&ScanProgress { scanned: 42 }).expect("ScanProgress serializes");
+        assert_eq!(
+            json, r#"{"scanned":42}"#,
+            "§0.4.2: ScanProgress is {{ scanned }} on the wire (the throttled live count)"
+        );
     }
 }
