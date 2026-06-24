@@ -298,6 +298,55 @@ pub struct DroppedItem {
     pub detected: DetectionOutcome,
 }
 
+// ─── §0.6 SkippedItem / SkipReason — the id-disjoint ineligible-item view ────────
+/// An item present in the drop but NOT eligible for the batch — unsupported / uncertain / empty /
+/// unreadable at the §1.1 freeze (§0.6 / §1.3). Surfaced in the §1.4 confirm summary and the §1.12 run
+/// summary so a bad item is never silently dropped. `item` is drawn from the SAME single id space as the
+/// eligible `DroppedItem`s but is **id-DISJOINT** with them (§0.6 invariant 6 — the eligible
+/// `members`/`items` and the `skipped` ids are never-re-indexed filtered VIEWS over one space, so a
+/// `SkippedItem.item` can never collide with an eligible id). It stores a `SkipReason` (NOT an
+/// `ErrorKind`): every `SkippedItem` comes from a detection-INELIGIBLE outcome, all of which have a
+/// `SkipReason`, so the §1.12 `OutcomeMsg::Skipped` projection is a trivial copy (no undefined
+/// `ErrorKind → SkipReason` reverse map at the boundary).
+///
+/// [Build-Session-Entscheidung: P2.5] Wire policy mirrors `DroppedItem` / the P2.2/P2.3/P2.15 §0.6
+/// types: derives `specta::Type` + `Serialize`/`Deserialize` with `#[serde(rename_all = "camelCase")]`.
+/// NOT `Copy` (owns a `PathBuf`); `PartialEq`+`Eq` back the round-trip + §6 property tests. No explicit
+/// specta registration — auto-registers via its consuming command (the C1 `CollectedSet` return, P2.22).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SkippedItem {
+    /// The §0.6 invariant-6 freeze-assigned id — id-disjoint with the eligible items over the single id
+    /// space (never re-indexed from 0). Symmetric with `DroppedItem.item`.
+    pub item: ItemId,
+    /// The dropped path, for the §1.4 summary display.
+    pub source: PathBuf,
+    /// Why the item was skipped — a §0.6 `SkipReason`, NOT an `ErrorKind` (see the type doc).
+    pub reason: SkipReason,
+}
+
+/// Why a dropped item was skipped — the four detection-INELIGIBLE §1.2 outcome classes (§0.6 / §1.3).
+/// Carried on `SkippedItem.reason` as the canonical skip cause. The `DetectionOutcome → SkipReason`
+/// projection is P2.16, and the ONE-WAY forward `SkipReason → ErrorKind` projection (the non-invertible
+/// `Uncertain → Unrecognized`, §2.8.2) lives on the §1.12 helper (P2.20), never on this type. NOT
+/// `ErrorKind`: a skip is a freeze-time ineligibility, distinct from a conversion-time failure.
+///
+/// [Build-Session-Entscheidung: P2.5] Mirrors the sibling fieldless wire enums (`ReadFailure` /
+/// `Confidence`): `Copy` (fieldless) + the uniform `#[serde(rename_all = "camelCase")]` wire form
+/// (`unsupportedType` / `uncertain` / `empty` / `unreadable`). No `Hash` (not a map key).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SkipReason {
+    /// A real type we identified but do not convert (the ineligible `DetectionOutcome::UnsupportedType`).
+    UnsupportedType,
+    /// Sniffed but contradictory / below threshold — we declined to guess (`DetectionOutcome::Uncertain`).
+    Uncertain,
+    /// 0-byte / no bytes to read (`DetectionOutcome::Empty`).
+    Empty,
+    /// Could not read the bytes at all (`DetectionOutcome::Unreadable`).
+    Unreadable,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -701,6 +750,61 @@ mod tests {
         assert_eq!(
             back, dropped,
             "§0.6: DroppedItem round-trips through its wire form"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §0.6 `SkipReason` enum — the four detection-ineligible skip classes, each
+    // serializing in the §0.4.3 camelCase wire form (`unsupportedType`/`uncertain`/`empty`/`unreadable`),
+    // locked by a serialize→deserialize round-trip. The no-wildcard `exhaustive` arm locks MEMBERSHIP: an
+    // added/removed variant fails to compile here (the anti-drift "lock the contract" discipline).
+    #[test]
+    fn skip_reason_wire_form_is_camelcase_and_roundtrips() {
+        for (reason, wire) in [
+            (SkipReason::UnsupportedType, "\"unsupportedType\""),
+            (SkipReason::Uncertain, "\"uncertain\""),
+            (SkipReason::Empty, "\"empty\""),
+            (SkipReason::Unreadable, "\"unreadable\""),
+        ] {
+            let json = serde_json::to_string(&reason).expect("SkipReason serializes");
+            assert_eq!(json, wire, "§0.4.3: SkipReason wire casing is camelCase");
+            let back: SkipReason =
+                serde_json::from_str(&json).expect("SkipReason round-trips from its wire form");
+            assert_eq!(
+                back, reason,
+                "§0.6: SkipReason round-trips through its wire form"
+            );
+        }
+        fn exhaustive(r: SkipReason) {
+            match r {
+                SkipReason::UnsupportedType
+                | SkipReason::Uncertain
+                | SkipReason::Empty
+                | SkipReason::Unreadable => {}
+            }
+        }
+        exhaustive(SkipReason::Empty);
+    }
+
+    // §6.4.1 unit (G15): the §0.6 `SkippedItem` record — the id-disjoint ineligible-item view. Locks the
+    // §0.4.3 camelCase wire form of all three fields (`item`/`source`/`reason`) + a serialize→deserialize
+    // round-trip; the struct literal is the compile-time field-set lock. A bare filename keeps the
+    // `PathBuf` wire form platform-independent (no Windows backslash divergence).
+    #[test]
+    fn skipped_item_wire_form_is_camelcase_and_roundtrips() {
+        let skipped = SkippedItem {
+            item: ItemId(5),
+            source: PathBuf::from("notes.xyz"),
+            reason: SkipReason::UnsupportedType,
+        };
+        let json = serde_json::to_string(&skipped).expect("SkippedItem serializes");
+        assert_eq!(
+            json, r#"{"item":5,"source":"notes.xyz","reason":"unsupportedType"}"#,
+            "§0.4.3/§0.6: SkippedItem is {{ item, source, reason }} in camelCase wire form"
+        );
+        let back: SkippedItem = serde_json::from_str(&json).expect("SkippedItem round-trips");
+        assert_eq!(
+            back, skipped,
+            "§0.6: SkippedItem round-trips through its wire form"
         );
     }
 }
