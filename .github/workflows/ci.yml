@@ -117,7 +117,7 @@ jobs:
         run: python3 scripts/check-csp-capabilities
       - name: 'G21: deferral / dead-marker scan — full production tree (fail-closed)'
         run: python3 scripts/check-deferral --full
-      - name: 'G7/G20: plan-lint / spec-lint doc-consistency (35 checks, full)'
+      - name: 'G7/G20: plan-lint / spec-lint doc-consistency (all checks, full)'
         run: python3 scripts/plan-lint
       - name: 'G18/G18b: supply-chain policy growth-guard (cargo-deny live P1.59; cargo-vet config now, live run deferred to P10.59)'
         run: python3 scripts/check-supply-chain

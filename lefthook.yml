@@ -100,9 +100,9 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/check-dual-review
     deferral:        # G21 - full production-tree deferral/dead-marker scan (fail-closed; no diff-base excuse)
       run: python3 scripts/check-deferral --full
-    plan-lint:       # G7/G20 - full doc-consistency lint (all 35 checks, fail-closed)
+    plan-lint:       # G7/G20 - full doc-consistency lint (all checks, fail-closed)
       run: python3 scripts/plan-lint
-    supply-chain:    # G18/G18b - full supply-chain policy growth-guard + live cargo-deny/vet (P1)
+    supply-chain:    # G18/G18b - full supply-chain policy growth-guard (cargo-deny live P1.59; cargo-vet live run deferred P10.59)
       run: python3 scripts/check-supply-chain
     core-deps:       # G53 - core-crate forbidden-dependency walk (T6; live cargo metadata in P1)
       run: python3 scripts/check-core-deps
