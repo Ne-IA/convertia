@@ -164,6 +164,98 @@ pub enum UserFacingFormat {
     Odp,
 }
 
+// ─── §1.2 detection-result family `[DECIDED]` ───────────────────────────────────
+// [Build-Session-Entscheidung: P2.15] `DetectionResult`/`DetectionOutcome`/`Confidence`/`ReadFailure`
+// are authored together as the ONE §1.2 `[DECIDED]` type-family: `DetectionOutcome::Unreadable { reason:
+// ReadFailure }` embeds `ReadFailure`, so a separate `ReadFailure` box would force the otherwise-fatal
+// P2.15↔P2.17 needs-cycle (P2.17's `EmptyReport` embeds `DetectionResult`). §1.2 OWNS the family; §0.6
+// references it (`DroppedItem.detected: DetectionOutcome`). Wire policy mirrors the P2.2/P2.3 §0.6 enums:
+// each member derives `specta::Type` + `Serialize`/`Deserialize` and carries `#[serde(rename_all =
+// "camelCase")]` so it mirrors to `bindings.ts` in the §0.6 camelCase wire form. The enum-level attribute
+// renames the VARIANT names only — serde does NOT cascade it to a struct-variant's FIELDS, so each
+// field-bearing variant repeats it (this is what camelCases `Uncertain.best_guess` → `bestGuess`).
+// No specta-`Builder` registration is added here — the same choice P2.2/P2.3 made for `IntakeOrigin`/
+// `UserFacingFormat`: no command references the family, so an explicit registration would emit it with no
+// consumer; the family auto-registers when its consuming command (C1's `CollectedSet` return, P2.22) is
+// wired. `Confidence`/`ReadFailure` are fieldless ⇒ `Copy`; `DetectionOutcome` carries a `String` and
+// `DetectionResult` embeds it ⇒ neither is `Copy`. `PartialEq`+`Eq` back the round-trip + membership tests.
+
+/// One item's §1.2 detection verdict — the per-item output of the detection pass (§1.2 / §0.6).
+/// `item` ties the verdict to the §0.6 single id space (the §2.4 freeze assigns one `ItemId` over ALL
+/// dropped items — eligible + skipped — never re-indexed from 0); `outcome` is the canonical result.
+/// `EmptyReport.outcomes: Vec<DetectionResult>` (§1.3, authored in P2.17) is what lets `group()` project
+/// the SPECIFIC `CollectedSet` variant of an all-ineligible drop instead of a reason-less `Empty`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectionResult {
+    /// The §0.6 id of the item this verdict is for.
+    pub item: ItemId,
+    /// The canonical §1.2 outcome for that item.
+    pub outcome: DetectionOutcome,
+}
+
+/// The single canonical §1.2 detection outcome `[DECIDED]`. There is no separate
+/// `DetectedFormat`/`DetectionConfidence` pair — the earlier 3-valued confidence enum and the
+/// `Option<UserFacingFormat>` that collapsed Empty-vs-Unreadable are retired. An ineligible outcome
+/// (`UnsupportedType`/`Uncertain`/`Empty`/`Unreadable`) is NEVER offered a target list and NEVER
+/// silently extension-fallback-guessed (SSOT *Recognize files by content*); it is surfaced
+/// eligible=false with the exact §2.8 plain-language string (the projection to a `SkipReason` is P2.16).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DetectionOutcome {
+    /// A supported v1 source type, with confidence. `dims` carries the header-derived raster
+    /// width/height (JPEG SOF, PNG IHDR, …), read by the §1.2 bounded structural peek — `None` for a
+    /// non-raster type or where the header lacks them. It is the input the §1.10 cheap per-pixel size
+    /// estimate consumes, so the estimate never needs a decode.
+    #[serde(rename_all = "camelCase")]
+    Recognized {
+        format: UserFacingFormat,
+        confidence: Confidence,
+        dims: Option<(u32, u32)>,
+    },
+    /// A real type we identified but do not convert (SSOT "can't convert this type — detected: X").
+    /// `detected` carries the named type for the message.
+    #[serde(rename_all = "camelCase")]
+    UnsupportedType { detected: String },
+    /// Sniffed but the signal is contradictory or below threshold — name the best guess (or that we
+    /// can't tell) and decline clearly (SSOT). `Low` confidence never silently falls back to the
+    /// extension; a genuinely ambiguous file lands here, not in `Recognized`.
+    #[serde(rename_all = "camelCase")]
+    Uncertain { best_guess: Option<String> },
+    /// 0-byte / no bytes to read.
+    Empty,
+    /// Could not read the bytes at all — `reason` distinguishes gone / locked / permission / other.
+    #[serde(rename_all = "camelCase")]
+    Unreadable { reason: ReadFailure },
+}
+
+/// The §1.2 detection confidence — one name, two values, across §1.2 and §0.6 (the retired draft had a
+/// 3-valued enum). `Low` is a first-class outcome on `Recognized`, NOT a silent extension fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum Confidence {
+    /// The signal is unambiguous.
+    High,
+    /// Recognized, but the signal is weak — surfaced honestly, never extension-guessed.
+    Low,
+}
+
+/// Why a file's bytes could not be read at freeze/detect time (§1.2). Owned here; the §2.8 taxonomy
+/// projects these to a plain-language string. Distinct from a conversion-time failure (that is the §2.8
+/// `ConversionErrorKind`, mirrored as `ErrorKind` in P2.18).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ReadFailure {
+    /// Gone between drop and freeze (§2.4).
+    NotFound,
+    /// The OS denied the read.
+    PermissionDenied,
+    /// Exclusively locked by another process (esp. Windows).
+    Locked,
+    /// Any other OS read error.
+    IoError,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,5 +451,180 @@ mod tests {
             }
         }
         exhaustive(F::Jpg);
+    }
+
+    // §6.4.1 unit (G15): the §1.2 `ReadFailure` wire enum — every freeze/detect read-failure reason
+    // exists and serializes in the §0.4.3 camelCase wire form, locked by a serialize→deserialize
+    // round-trip (a silent rename would break the §2.8 projection + the frontend handling). The
+    // no-wildcard `exhaustive` arm locks set MEMBERSHIP: an added/removed variant fails to compile.
+    #[test]
+    fn read_failure_wire_form_is_camelcase_and_roundtrips() {
+        for (reason, wire) in [
+            (ReadFailure::NotFound, "\"notFound\""),
+            (ReadFailure::PermissionDenied, "\"permissionDenied\""),
+            (ReadFailure::Locked, "\"locked\""),
+            (ReadFailure::IoError, "\"ioError\""),
+        ] {
+            let json = serde_json::to_string(&reason).expect("ReadFailure serializes");
+            assert_eq!(json, wire, "§0.4.3: ReadFailure wire casing is camelCase");
+            let back: ReadFailure =
+                serde_json::from_str(&json).expect("ReadFailure round-trips from its wire form");
+            assert_eq!(
+                back, reason,
+                "§1.2: ReadFailure round-trips through its wire form"
+            );
+        }
+        fn exhaustive(r: ReadFailure) {
+            match r {
+                ReadFailure::NotFound
+                | ReadFailure::PermissionDenied
+                | ReadFailure::Locked
+                | ReadFailure::IoError => {}
+            }
+        }
+        exhaustive(ReadFailure::NotFound);
+    }
+
+    // §6.4.1 unit (G15): the §1.2 `Confidence` enum — the one confidence type (High/Low), camelCase on
+    // the wire and round-tripped; the no-wildcard `exhaustive` arm locks the two-value membership so a
+    // re-introduction of the retired 3-valued enum fails to compile here.
+    #[test]
+    fn confidence_wire_form_is_camelcase_and_roundtrips() {
+        for (confidence, wire) in [(Confidence::High, "\"high\""), (Confidence::Low, "\"low\"")] {
+            let json = serde_json::to_string(&confidence).expect("Confidence serializes");
+            assert_eq!(json, wire, "§0.4.3: Confidence wire casing is camelCase");
+            let back: Confidence =
+                serde_json::from_str(&json).expect("Confidence round-trips from its wire form");
+            assert_eq!(
+                back, confidence,
+                "§1.2: Confidence round-trips through its wire form"
+            );
+        }
+        fn exhaustive(c: Confidence) {
+            match c {
+                Confidence::High | Confidence::Low => {}
+            }
+        }
+        exhaustive(Confidence::High);
+    }
+
+    // §6.4.1 unit (G15): the §1.2 `DetectionOutcome` family — assert the §0.4.3 EXTERNALLY-TAGGED
+    // camelCase wire form of every variant (incl. the nested `bestGuess` field-rename, the `dims`
+    // tuple→array, and the `dims: None` → `null` case), each round-tripped. The no-wildcard `exhaustive`
+    // arm locks variant MEMBERSHIP so an added/removed variant fails to compile (the project's anti-drift
+    // "lock the contract" discipline, cf. the `UserFacingFormat` set lock above).
+    #[test]
+    fn detection_outcome_wire_forms_and_membership() {
+        // Recognized — `dims: Some` serializes as a 2-element JSON array (the §1.10 size-estimate input).
+        let recognized = DetectionOutcome::Recognized {
+            format: UserFacingFormat::Jpg,
+            confidence: Confidence::High,
+            dims: Some((640, 480)),
+        };
+        assert_eq!(
+            serde_json::to_string(&recognized).expect("Recognized serializes"),
+            r#"{"recognized":{"format":"jpg","confidence":"high","dims":[640,480]}}"#,
+            "§0.4.3: Recognized is externally-tagged camelCase with a tuple `dims` array"
+        );
+        // dims: None → JSON null (a non-raster or header-less Recognized).
+        let recognized_no_dims = DetectionOutcome::Recognized {
+            format: UserFacingFormat::Txt,
+            confidence: Confidence::Low,
+            dims: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&recognized_no_dims).expect("Recognized(None dims) serializes"),
+            r#"{"recognized":{"format":"txt","confidence":"low","dims":null}}"#,
+            "§1.2: a non-raster Recognized carries dims=null"
+        );
+        let unsupported = DetectionOutcome::UnsupportedType {
+            detected: "PostScript".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_string(&unsupported).expect("UnsupportedType serializes"),
+            r#"{"unsupportedType":{"detected":"PostScript"}}"#,
+            "§0.4.3: UnsupportedType names the detected type"
+        );
+        // Uncertain — the one multi-word field: `best_guess` MUST camelCase to `bestGuess` on the wire.
+        let uncertain = DetectionOutcome::Uncertain {
+            best_guess: Some("maybe a tiff".to_owned()),
+        };
+        assert_eq!(
+            serde_json::to_string(&uncertain).expect("Uncertain serializes"),
+            r#"{"uncertain":{"bestGuess":"maybe a tiff"}}"#,
+            "§0.6: the `best_guess` field camelCases to `bestGuess` on the wire"
+        );
+        // Empty — a fieldless variant serializes as a bare tag string (externally tagged).
+        assert_eq!(
+            serde_json::to_string(&DetectionOutcome::Empty).expect("Empty serializes"),
+            r#""empty""#,
+            "§1.2: the fieldless Empty variant is a bare camelCase tag"
+        );
+        let unreadable = DetectionOutcome::Unreadable {
+            reason: ReadFailure::Locked,
+        };
+        assert_eq!(
+            serde_json::to_string(&unreadable).expect("Unreadable serializes"),
+            r#"{"unreadable":{"reason":"locked"}}"#,
+            "§1.2: Unreadable carries its ReadFailure reason"
+        );
+
+        // Round-trip every representative variant (locks deserialize ↔ serialize symmetry).
+        for outcome in [
+            recognized,
+            recognized_no_dims,
+            unsupported,
+            uncertain,
+            DetectionOutcome::Empty,
+            unreadable,
+        ] {
+            let json = serde_json::to_string(&outcome).expect("DetectionOutcome serializes");
+            let back: DetectionOutcome =
+                serde_json::from_str(&json).expect("DetectionOutcome round-trips");
+            assert_eq!(
+                back, outcome,
+                "§1.2: DetectionOutcome round-trips through its wire form"
+            );
+        }
+
+        // Compiler-enforced membership: no wildcard arm (the crate denies wildcard_enum_match_arm), so a
+        // variant added without an arm here fails to compile rather than silently widening the contract.
+        fn exhaustive(o: &DetectionOutcome) {
+            match o {
+                DetectionOutcome::Recognized { .. }
+                | DetectionOutcome::UnsupportedType { .. }
+                | DetectionOutcome::Uncertain { .. }
+                | DetectionOutcome::Empty
+                | DetectionOutcome::Unreadable { .. } => {}
+            }
+        }
+        exhaustive(&DetectionOutcome::Empty);
+    }
+
+    // §6.4.1 unit (G15): `DetectionResult` pairs a §0.6 `ItemId` with its §1.2 outcome and round-trips on
+    // the wire (the type `EmptyReport.outcomes` carries, P2.17). The `ItemId` newtype inlines as a bare
+    // number and the struct fields `item`/`outcome` are camelCase.
+    #[test]
+    fn detection_result_pairs_item_with_outcome_and_roundtrips() {
+        let result = DetectionResult {
+            item: ItemId(3),
+            outcome: DetectionOutcome::Recognized {
+                format: UserFacingFormat::Png,
+                confidence: Confidence::High,
+                dims: Some((1, 1)),
+            },
+        };
+        let json = serde_json::to_string(&result).expect("DetectionResult serializes");
+        assert_eq!(
+            json,
+            r#"{"item":3,"outcome":{"recognized":{"format":"png","confidence":"high","dims":[1,1]}}}"#,
+            "§1.2/§0.6: DetectionResult is {{ item, outcome }} in camelCase wire form"
+        );
+        let back: DetectionResult =
+            serde_json::from_str(&json).expect("DetectionResult round-trips");
+        assert_eq!(
+            back, result,
+            "§1.2: DetectionResult round-trips through its wire form"
+        );
     }
 }
