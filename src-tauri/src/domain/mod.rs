@@ -96,6 +96,74 @@ pub enum IntakeOrigin {
     SecondInstance,
 }
 
+/// The single grouping key (§1.3): an individual user-facing format — NOT the six SSOT categories,
+/// NOT codec subtypes (`Jpg != Png`, `Mp4 != Mov`). The enumeration IS the SSOT *What It Converts*
+/// set; `04-formats/` owns each one's detection signature / targets / engine / options — this enum is
+/// just the key. Two dropped items group into one batch iff their `UserFacingFormat` is equal (§1.3).
+///
+/// [Build-Session-Entscheidung: P2.3] `#[serde(rename_all = "camelCase")]` per the §0.6 "camelCase on
+/// the wire" rule + the sibling `ErrorKind`/`IntakeOrigin` precedent (each variant lowercases its
+/// leading letter: `jpg`/`png`/…/`threeGp`/…/`odp`). Derive set: `PartialEq`+`Eq`+`Hash` because this
+/// is the §1.3 grouping/de-dup key; `Serialize`+`Deserialize`+`Type` because it crosses the wire both
+/// ways (the `CollectedSet`/`DetectionOutcome` returns outbound and the `FormatId = UserFacingFormat`
+/// C3+ target arg inbound, §0.6); `Copy` is free for a fieldless enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum UserFacingFormat {
+    // Images (§04/images)
+    Jpg,
+    Png,
+    Webp,
+    Gif,
+    Bmp,
+    Tiff,
+    Heic,
+    Avif,
+    Ico,
+    Svg,
+    // Audio (§04/audio)
+    Mp3,
+    Wav,
+    Flac,
+    Aac,
+    M4a,
+    Ogg,
+    Opus,
+    Wma,
+    Aiff,
+    Alac,
+    // Video (§04/video)
+    Mp4,
+    Mov,
+    Mkv,
+    Webm,
+    Avi,
+    Wmv,
+    Flv,
+    Mpeg,
+    M4v,
+    ThreeGp,
+    // Documents (§04/documents)
+    Pdf,
+    Docx,
+    Doc,
+    Odt,
+    Rtf,
+    Txt,
+    Md,
+    Html,
+    // Spreadsheets (§04/spreadsheets)
+    Xlsx,
+    Xls,
+    Ods,
+    Csv,
+    Tsv,
+    // Presentations (§04/presentations)
+    Pptx,
+    Ppt,
+    Odp,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +227,137 @@ mod tests {
                 "§7.8: IntakeOrigin round-trips through its wire form"
             );
         }
+    }
+
+    // §6.4.1 unit (G15): `UserFacingFormat` IS the §0.6 SSOT *What It Converts* set (the §1.3 grouping
+    // key). This locks (a) the §0.4.3 camelCase wire form of every variant via a serialize→deserialize
+    // round-trip, and (b) the set membership in BOTH directions — a REMOVED variant fails to compile in
+    // `all` below, and an ADDED variant fails to compile in the no-wildcard `exhaustive` match — so the
+    // SSOT set cannot silently drift away from §0.6.
+    #[test]
+    fn user_facing_format_is_the_ssot_set_with_camelcase_wire() {
+        use UserFacingFormat as F;
+        let all: &[(UserFacingFormat, &str)] = &[
+            (F::Jpg, "jpg"),
+            (F::Png, "png"),
+            (F::Webp, "webp"),
+            (F::Gif, "gif"),
+            (F::Bmp, "bmp"),
+            (F::Tiff, "tiff"),
+            (F::Heic, "heic"),
+            (F::Avif, "avif"),
+            (F::Ico, "ico"),
+            (F::Svg, "svg"),
+            (F::Mp3, "mp3"),
+            (F::Wav, "wav"),
+            (F::Flac, "flac"),
+            (F::Aac, "aac"),
+            (F::M4a, "m4a"),
+            (F::Ogg, "ogg"),
+            (F::Opus, "opus"),
+            (F::Wma, "wma"),
+            (F::Aiff, "aiff"),
+            (F::Alac, "alac"),
+            (F::Mp4, "mp4"),
+            (F::Mov, "mov"),
+            (F::Mkv, "mkv"),
+            (F::Webm, "webm"),
+            (F::Avi, "avi"),
+            (F::Wmv, "wmv"),
+            (F::Flv, "flv"),
+            (F::Mpeg, "mpeg"),
+            (F::M4v, "m4v"),
+            (F::ThreeGp, "threeGp"),
+            (F::Pdf, "pdf"),
+            (F::Docx, "docx"),
+            (F::Doc, "doc"),
+            (F::Odt, "odt"),
+            (F::Rtf, "rtf"),
+            (F::Txt, "txt"),
+            (F::Md, "md"),
+            (F::Html, "html"),
+            (F::Xlsx, "xlsx"),
+            (F::Xls, "xls"),
+            (F::Ods, "ods"),
+            (F::Csv, "csv"),
+            (F::Tsv, "tsv"),
+            (F::Pptx, "pptx"),
+            (F::Ppt, "ppt"),
+            (F::Odp, "odp"),
+        ];
+        assert_eq!(
+            all.len(),
+            46,
+            "§0.6: the SSOT set is 46 formats (10 image + 10 audio + 10 video + 8 doc + 5 sheet + 3 slide)"
+        );
+        for (fmt, wire) in all {
+            let json = serde_json::to_string(fmt).expect("UserFacingFormat serializes");
+            assert_eq!(
+                json,
+                format!("\"{wire}\""),
+                "§0.4.3: {fmt:?} wire form must be camelCase `{wire}`"
+            );
+            let back: UserFacingFormat = serde_json::from_str(&json)
+                .expect("UserFacingFormat round-trips from its wire form");
+            assert_eq!(
+                back, *fmt,
+                "§0.6: {fmt:?} round-trips through its wire form"
+            );
+        }
+
+        // Compiler-enforced membership (the ADD direction): a variant added to the enum without a row
+        // in `all` fails to compile here — no wildcard arm (the crate also denies
+        // wildcard_enum_match_arm), so the match is non-exhaustive until the new variant is listed.
+        fn exhaustive(f: UserFacingFormat) {
+            match f {
+                F::Jpg
+                | F::Png
+                | F::Webp
+                | F::Gif
+                | F::Bmp
+                | F::Tiff
+                | F::Heic
+                | F::Avif
+                | F::Ico
+                | F::Svg
+                | F::Mp3
+                | F::Wav
+                | F::Flac
+                | F::Aac
+                | F::M4a
+                | F::Ogg
+                | F::Opus
+                | F::Wma
+                | F::Aiff
+                | F::Alac
+                | F::Mp4
+                | F::Mov
+                | F::Mkv
+                | F::Webm
+                | F::Avi
+                | F::Wmv
+                | F::Flv
+                | F::Mpeg
+                | F::M4v
+                | F::ThreeGp
+                | F::Pdf
+                | F::Docx
+                | F::Doc
+                | F::Odt
+                | F::Rtf
+                | F::Txt
+                | F::Md
+                | F::Html
+                | F::Xlsx
+                | F::Xls
+                | F::Ods
+                | F::Csv
+                | F::Tsv
+                | F::Pptx
+                | F::Ppt
+                | F::Odp => {}
+            }
+        }
+        exhaustive(F::Jpg);
     }
 }
