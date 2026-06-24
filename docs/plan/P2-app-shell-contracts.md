@@ -62,7 +62,7 @@
   needs: P2.3, P2.15
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.15` points at the `DetectionOutcome` type box later in document order — `DroppedItem.detected: DetectionOutcome` (§0.6 / §1.2-owned) has no type to embed until `DetectionOutcome` (P2.15) exists, so DECISION C builds P2.15 first; the edge is acyclic and valid (P2.15 only `needs: P2.3`), the inversion documented at the `needs:` line.
   > `item: ItemId` is the §0.6-invariant-6 freeze-assigned id every eligible `DroppedItem` carries (`ItemId` from P2.1, already `[x]` — no new `needs:` edge); symmetric with `SkippedItem.item` (P2.5). Added by the §0.6 contradiction fix (the 4-field literal had omitted it).
-- [ ] **P2.5** [RUST] Author `SkippedItem` + `SkipReason` { UnsupportedType, Uncertain, Empty, Unreadable } (id-disjoint over the single id space) · §0.6 §1.3
+- [x] **P2.5** [RUST] Author `SkippedItem` + `SkipReason` { UnsupportedType, Uncertain, Empty, Unreadable } (id-disjoint over the single id space) · §0.6 §1.3
   needs: P2.4
 - [ ] **P2.6** [RUST] Author the `CollectedSet` enum — `Single`/`Mixed`/`Unsupported`/`Uncertain`/`Empty` (the C1/C2a return + unified §1.4 confirm-summary fields) + the `CollectedNote` type · §0.6 §1.1 §1.4
   needs: P2.5
