@@ -83,7 +83,7 @@
   - [x] **P2.8.4** [RUST] Author the composite layer — `Target`/`TargetOffer`/`OptionValues` (referencing the P2.8.3 scalars + P2.8.1 `OptionDecl` + P2.8.2 `LossyKind`) · §0.6 §1.5 §1.6
     needs: P2.8.3, P2.8.1, P2.8.2, P1.25
     > the §0.6 composite types that compose the scalars + the option/lossy families: `Target` (incl. the §1.5 `Target.lossy: Option<LossyKind>` field from P2.8.2 + `options: Vec<OptionDecl>` from P2.8.1), `TargetOffer` (the C3 return — the offered targets + the one pre-highlighted default), `OptionValues == BTreeMap<OptionKey, OptionValue>`; each deriving `specta::Type` so they mirror to `bindings.ts` as named types once consumed; **registration is DEFERRED to the C3 `get_targets` consumer (P2.25)** per the P2.2–P2.7 §0.6 defer pattern (`[Build-Session-Entscheidung: P2.8]`). Fails independently of the scalar layer (a malformed composite struct vs a missing leaf alias). (`needs: P2.8.3` for the scalars + `P2.8.1`/`P2.8.2` for the `OptionDecl`/`LossyKind` families the composites embed.)
-- [ ] **P2.9** [RUST] Author the destination/plan types — `DestinationChoice`/`OutputPlan`/`DivertReason` (directory-based, no pre-baked `final_path`) · §0.6 §2.7 §2.14.1
+- [x] **P2.9** [RUST] Author the destination/plan types — `DestinationChoice`/`OutputPlan`/`DivertReason` (directory-based, no pre-baked `final_path`) · §0.6 §2.7 §2.14.1
   needs: P2.6
 - [ ] **P2.10** [RUST] Author `Batch`/`ConversionJob`/`JobState`/`JobStage` · §0.6 §1.9
   needs: P2.8, P2.9, P2.18
