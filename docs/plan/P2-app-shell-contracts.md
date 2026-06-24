@@ -56,7 +56,7 @@
   > Delivered: the six §0.6 identity types + their `specta::Type` derives + the five-newtype tauri-specta registration already landed in P1.9/P1.15/P1.25 (`JobId` is the §0.6 `type JobId = ItemId` alias — it inherits `ItemId`'s derive + registration, never separately registered); this box adds the one previously-unguarded contract — the compile-time `JobId = ItemId` alias lock (`jobid_compiles_as_itemid_alias`) + scoping the module `dead_code` expectation to `not(test)`.
 - [x] **P2.2** [RUST] Author `IntakeOrigin` { Drop, Picker, LaunchArg, SecondInstance } · §0.6 §7.8
   needs: P2.1
-- [ ] **P2.3** [RUST] Author `UserFacingFormat` (the single grouping key — the full SSOT *What It Converts* set) · §0.6 §1.3
+- [x] **P2.3** [RUST] Author `UserFacingFormat` (the single grouping key — the full SSOT *What It Converts* set) · §0.6 §1.3
   needs: P2.1
 - [ ] **P2.4** [RUST] Author `DroppedItem` (raw/resolved path, size, `DetectionOutcome` ref) + the display-only `raw_path` scope note · §0.6 §1.2
   needs: P2.3
