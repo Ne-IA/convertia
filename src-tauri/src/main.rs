@@ -38,7 +38,7 @@ use std::path::PathBuf;
 
 use tauri::Manager;
 
-use crate::domain::{CollectedSetId, CollectingId, InstanceId, ItemId, RunId};
+use crate::domain::{CollectedSetId, CollectingId, InstanceId, ItemId, LossyKind, RunId};
 
 /// [Build-Session-Entscheidung: P1.15] The §7.2.1 step-2 boot context: the per-launch identity plus
 /// the three resolved base dirs, held as the §7.1.2 app-managed singleton (`app.manage`). Its home is
@@ -76,6 +76,18 @@ fn register_ipc_identity_types(types: specta::Types) -> specta::Types {
         .register::<ItemId>()
 }
 
+/// [Build-Session-Entscheidung: P2.8] The §2.8.2-mandated standalone wire-taxonomy registration. §2.8.2
+/// (line 1261) EXPLICITLY requires `LossyKind` (with `OutcomeMsg`/`ConversionErrorKind`, both P2.18/P2.20)
+/// derive `specta::Type` AND be registered in `collect_types![]` so `Target.lossy` / `OutcomeMsg.kind`
+/// never generate as `any` in `bindings.ts`. `LossyKind` lands here at P2.8 (when it is authored); the
+/// other two §2.8.2 types join when they are authored. This is a SPEC mandate — distinct from the other
+/// P2 §0.6 wire types (e.g. `CollectedSet`/`Target`), whose registration is deferred to their C-command
+/// consumer (the P2.2-P2.7 defer pattern). Kept as its own function (not folded into the identity set)
+/// so the two registration RATIONALES — identity-spine vs §2.8.2-taxonomy-mandate — stay legible.
+fn register_ipc_taxonomy_types(types: specta::Types) -> specta::Types {
+    types.register::<LossyKind>()
+}
+
 /// [Build-Session-Entscheidung: P1.25/P1.26] The single tauri-specta `Builder` — the ONE source the
 /// generated `src/lib/ipc/bindings.ts` is produced from (the `bindings_codegen` export test, driven by
 /// `cargo run -p xtask -- codegen`, §0.4.5) AND the runtime invoke/event registry (`main`). Sharing one
@@ -94,7 +106,9 @@ fn ipc_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::<tauri::Wry>::new()
         .commands(tauri_specta::collect_commands![])
         .events(tauri_specta::collect_events![])
-        .types(&register_ipc_identity_types(specta::Types::default()))
+        .types(&register_ipc_taxonomy_types(register_ipc_identity_types(
+            specta::Types::default(),
+        )))
 }
 
 fn main() -> tauri::Result<()> {
@@ -229,6 +243,20 @@ mod ipc_typegen {
             "the five §0.6 identity types + their shared Uuid named type must register (§0.4.5/§0.6)"
         );
     }
+
+    // §6.4.1 unit (G15): the §2.8.2-mandated `LossyKind` standalone registration. §2.8.2 (line 1261)
+    // requires LossyKind be registered in collect_types![] so `Target.lossy` never emits `any`; assert it
+    // registers as exactly ONE named type (a fieldless enum pulls in no extra named deps), pinned so a
+    // dropped registration reddens the build (the same anti-drift discipline as the identity set).
+    #[test]
+    fn taxonomy_types_registered_for_typegen() {
+        let types = register_ipc_taxonomy_types(specta::Types::default());
+        assert_eq!(
+            types.len(),
+            1,
+            "§2.8.2: LossyKind must register as one named type (fieldless → no pulled-in deps)"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -259,6 +287,23 @@ mod bindings_codegen {
         ipc_specta_builder()
             .export(Typescript::default(), TRACKED_BINDINGS_PATH)
             .expect("§0.4.5 bindings.ts codegen export failed");
+        // [Build-Session-Entscheidung: P2.8] `specta_typescript` emits TRAILING WHITESPACE on multi-line
+        // union types (`"a" | ` per line — first exposed by the P2.8 `LossyKind` enum; the prior identity
+        // types were single-line aliases) and a platform-dependent EOL. Normalise the generated artifact
+        // to the repo editorconfig (LF, no trailing whitespace, exactly one final newline) so the codegen
+        // output passes G52 deterministically — `bindings.ts` is `.prettierignore`d (G13 skips it), so the
+        // generator is its own formatter. Idempotent: re-running codegen yields byte-identical output, so
+        // the G19 regenerate-and-diff drift gate stays clean.
+        let raw = std::fs::read_to_string(TRACKED_BINDINGS_PATH)
+            .expect("re-read the freshly-exported bindings.ts for normalisation");
+        let body = raw
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let normalised = format!("{}\n", body.trim_end());
+        std::fs::write(TRACKED_BINDINGS_PATH, normalised)
+            .expect("write the normalised bindings.ts");
     }
 
     // §6.4.1 unit (G15): the committed generated bindings.ts (the real shipped artifact) is non-empty
@@ -303,6 +348,22 @@ mod bindings_codegen {
         assert!(
             !ts.contains(any_escape),
             "no IPC type may generate as the TS `any` escape — the §0.6 types must stay named (§0.4.5)"
+        );
+        // [Build-Session-Entscheidung: P2.8] The codegen normalises its output to the repo editorconfig
+        // (the `regenerate_committed_bindings` post-process): assert no line carries trailing whitespace
+        // and the artifact ends with exactly one final newline, so a codegen-normalisation regression is
+        // caught hermetically at L2 (the §0.2 read-the-output-back discipline) before G52 sees it at push.
+        for (n, line) in ts.lines().enumerate() {
+            assert_eq!(
+                line.trim_end(),
+                line,
+                "committed bindings.ts line {} carries trailing whitespace — the §0.4.5 codegen must normalise it",
+                n + 1
+            );
+        }
+        assert!(
+            ts.ends_with('\n') && !ts.ends_with("\n\n"),
+            "the committed bindings.ts must end with exactly one final newline (editorconfig / G52)"
         );
     }
 }

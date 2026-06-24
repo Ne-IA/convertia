@@ -23,6 +23,7 @@
     )
 )]
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -524,6 +525,276 @@ pub struct ScanProgress {
     /// The throttled, monotonic count of files seen so far.
     pub scanned: u32,
 }
+
+// ─── §1.6 OptionDecl family — the generic per-(source,target) option model (P2.8.1) ──
+// [Build-Session-Entscheidung: P2.8] The §1.6-owned option-declaration model. Each derives `specta::Type`
+// + camelCase; NOT explicitly registered — deferred to the C3 `get_targets` consumer (P2.25), the
+// established P2.2-P2.7 defer pattern (`Target.options: Vec<OptionDecl>` auto-registers the family then).
+// Types owning `String`/`Vec` are not `Copy`; the fieldless `Surface`/`Unit` are `Copy`. `OptionKey`
+// derives `Ord` (it is the `OptionValues` BTreeMap key + the §2.5 EquivKey). `OptionKey`/`LabelKey` are
+// transparent `String` newtypes (serde serializes a 1-tuple struct as its inner value → a bare string),
+// with a `pub` field since the §1.6 registry (P5-P7) constructs them from known slugs (no validation
+// invariant a public field could bypass).
+
+/// A UI surface tier for an option (§1.6) — Basic (materially changes a normal result) vs Advanced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum Surface {
+    /// The few switches that materially change a normal user's result.
+    Basic,
+    /// Power-user knobs, hidden by default.
+    Advanced,
+}
+
+/// Display unit for an `IntRange` option — purely for the §5 label, not semantic (§1.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum Unit {
+    Percent,
+    Kbps,
+    Px,
+    Dpi,
+    Fps,
+}
+
+/// A stable machine key for an option (e.g. "quality", "fps", "lossless"), §1.6. Used as the
+/// `OptionValues` BTreeMap key and in the §2.5 EquivKey canonicalisation, so it is a stable ASCII slug,
+/// never a UI label. Derives `Ord` for its BTreeMap-key role; serializes transparently as a bare string.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Type)]
+pub struct OptionKey(pub String);
+
+/// A UI-chrome label key (§1.6 / §5 / §2.10) — §5 resolves it to a localised string. NOT a user-facing
+/// string itself; keeps the domain model i18n-free (§2.8/§2.9 own surfaced strings). Bare-string wire form.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct LabelKey(pub String);
+
+/// A named preset choice inside an `Enum` option (e.g. MP3 "High"/"Standard"/"Small"), §1.6.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EnumChoice {
+    /// The stable id stored in `OptionValue::Enum` (never localised).
+    pub value: String,
+    /// The §5 UI-chrome label for the choice.
+    pub label: LabelKey,
+}
+
+/// The shape of an option control (§1.6). Externally tagged; the payload carries the bounds/choices.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum OptionKind {
+    /// A bounded integer (quality / CRF / compression level) with a range + optional display unit.
+    #[serde(rename_all = "camelCase")]
+    IntRange {
+        min: i64,
+        max: i64,
+        step: i64,
+        unit: Option<Unit>,
+    },
+    /// A small named preset set mapping to engine flags.
+    #[serde(rename_all = "camelCase")]
+    Enum { choices: Vec<EnumChoice> },
+    /// A boolean toggle (lossless on/off, progressive, BOM).
+    Toggle,
+    /// A pixel/size value (SVG width, GIF width).
+    #[serde(rename_all = "camelCase")]
+    Size { min: u32, max: u32 },
+    /// A colour (flatten background) — picker; default usually white.
+    Color,
+}
+
+/// One concrete, fully-resolved option value (§1.6). INVARIANT (§1.6): every variant is JSON-serialisable
+/// and round-trips through the §2.5 canonical form; no floats (no NaN/Inf), colours as `#RRGGBB(AA)`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum OptionValue {
+    /// An `IntRange` / `Size` resolved value.
+    Int(i64),
+    /// A `Toggle` value.
+    Bool(bool),
+    /// The chosen `EnumChoice.value` (the stable id, not the label).
+    Enum(String),
+    /// A `#RRGGBB` / `#RRGGBBAA` colour.
+    Color(String),
+}
+
+/// A declared option for a (source, target) pair (§1.6), supplied by the registry (concrete values in
+/// 04-formats). The pipeline renders/collects these generically; the §1.4 options panel (P4.64) renders
+/// it and P5-P7 register concrete declarations against it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct OptionDecl {
+    /// The stable machine key.
+    pub key: OptionKey,
+    /// The §5 UI-chrome label key (§2.10).
+    pub label: LabelKey,
+    /// Basic vs Advanced surface tier.
+    pub surface: Surface,
+    /// The control shape + bounds/choices.
+    pub kind: OptionKind,
+    /// The no-decision default (from 04-formats).
+    pub default: OptionValue,
+}
+
+// ─── §2.9 LossyKind — the predictable-loss catalog discriminant (P2.8.2) ─────────
+/// The predictable-loss kind keyed by the §2.9.1 catalog (the canonical English note lives in §2.9; this
+/// is the ONE canonical name). Carried by `Target.lossy: Option<LossyKind>` (the §1.5 offer-time SINGLE
+/// marker) and `OutcomeMsg::Lossy { kind }` (§2.8, P2.20). The §2.9.2 CO-APPLYING set (2-3 kinds rendered
+/// together at §5.7) is a SEPARATE render-time computation (P4.65), NOT this single offer marker — §1.5
+/// owns the wire field as `Option<LossyKind>`, §2.9.2/§5.7 own the rendered set (the box-note-flagged
+/// §1.5-vs-§2.9.2 distinction, surfaced for owner escalation and confirmed an offer-vs-render layering).
+///
+/// [Derived-Assumption: P2.8 — LossyKind wire form is snake_case (`image_lossy_codec`), derived from the
+/// §2.9.1 catalog + the 04-formats cross-references (images/spreadsheets/documents/presentations/audio),
+/// which all name the kind in snake_case as a stable cross-referenced catalog key. §0.4.3's camelCase rule
+/// governs FIELD names; LossyKind is a fieldless discriminant enum, so its snake_case is a per-catalog
+/// discriminant casing, not a §0.4.3 deviation.]
+///
+/// [Build-Session-Entscheidung: P2.8] Registered standalone in the P1.25 type registry — §2.8.2 (line
+/// 1261) EXPLICITLY mandates LossyKind (with OutcomeMsg/ConversionErrorKind) derive `specta::Type` + be
+/// registered in `collect_types![]` so `Target.lossy` / `OutcomeMsg.kind` never generate as `any`. Derives
+/// both `Serialize` + `Deserialize` (Copy, fieldless) so it round-trips AND embeds in the round-trippable
+/// `Target`; the §2.8 sibling enums are Serialize-only, but LossyKind's embedding in a `Deserialize`
+/// `Target` requires `Deserialize` here. Variant order matches the §2.9.1 catalog (audio_downmix last).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum LossyKind {
+    /// `→ JPG/WEBP(lossy)/HEIC/AVIF` from any source (images.md).
+    ImageLossyCodec,
+    /// `→ GIF` 256-colour reduction (images.md).
+    ImagePalette,
+    /// `→ ICO` multi-size icon assembly (images.md).
+    ImageDownscale,
+    /// alpha source `→ JPG/BMP` transparency flatten (images.md).
+    ImageAlphaFlatten,
+    /// animated source `→` still target (images.md).
+    ImageAnimationFlatten,
+    /// `SVG → raster` (images.md).
+    ImageSvgRaster,
+    /// `DOCX/DOC/ODT/RTF/MD → PDF` and `XLSX/XLS/ODS → PDF` reflow (documents.md / spreadsheets.md).
+    DocPdfReflow,
+    /// `PDF → TXT` (documents.md).
+    DocPdfToText,
+    /// `HTML → PDF` (documents.md).
+    DocHtmlRender,
+    /// `* → TXT` from rich sources (documents.md).
+    DocToText,
+    /// `* → MD/RTF` from rich sources (documents.md).
+    DocSimplified,
+    /// `XLSX/XLS/ODS → CSV/TSV` (spreadsheets.md).
+    SheetToDelimited,
+    /// `* → XLS` legacy format (spreadsheets.md).
+    XlsLegacyLimits,
+    /// `CSV/TSV → workbook/CSV` non-Unicode encoding (spreadsheets.md).
+    TextEncodingNarrowed,
+    /// `PPTX/PPT/ODP → PDF` (presentations.md).
+    SlidesToPdfFlatten,
+    /// ODF↔MS office round-trip + slide re-layout (presentations.md).
+    OfficeRoundtripApprox,
+    /// `PPTX → PPT` legacy downgrade (presentations.md).
+    PptxToPptLegacy,
+    /// `→ MP3/AAC/M4A/OGG/OPUS` (audio.md).
+    AudioLossyTarget,
+    /// lossy source `→` lossy target (audio.md).
+    AudioTranscode,
+    /// lossy source `→` lossless target (audio.md).
+    AudioLossyOrigin,
+    /// >16-bit source `→` default 16-bit WAV/AIFF (audio.md).
+    AudioBitdepth,
+    /// `→ AAC`, partly WAV/AIFF — tags dropped (audio.md).
+    AudioTagsDropped,
+    /// re-encode disposition (video.md / cross-cat).
+    VideoReencode,
+    /// WEBM(alpha) `→ MP4/H.264` (video.md).
+    VideoAlphaLost,
+    /// image/ASS subs `→ MP4` (video.md).
+    VideoSubsDropped,
+    /// `video → GIF` cross-category, unconditional (cross-category.md).
+    VideoToGif,
+    /// surround forced to stereo by codec (rare; audio.md).
+    AudioDownmix,
+}
+
+// ─── §0.6 target scalar/alias layer (the leaf vocabulary, P2.8.3) ────────────────
+// [Build-Session-Entscheidung: P2.8] The §0.6 scalar/alias leaf types the P2.8.4 composites key on. Each
+// derives specta::Type + camelCase; NOT explicitly registered — deferred to the C3 consumer (P2.25), the
+// P2.2-P2.7 defer pattern. Fieldless TargetId/CrossCatOp are Copy; Availability owns a String (not Copy).
+
+/// The offered-target identity (§0.6 / §1.5): a format target or a cross-category operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum TargetId {
+    /// A format target (e.g. `Format(Webp)`).
+    Format(FormatId),
+    /// A cross-category operation (`ExtractAudio` | `ToGif`).
+    Op(CrossCatOp),
+}
+
+/// A format target IS a user-facing format (§0.6) — the alias ties the §1.5 target vocabulary to the
+/// single §1.3 grouping key.
+pub type FormatId = UserFacingFormat;
+
+/// The closed set of cross-category operations (§0.6 / cross-category.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum CrossCatOp {
+    /// Extract the audio track from a video.
+    ExtractAudio,
+    /// Render to an animated GIF.
+    ToGif,
+}
+
+/// A target's per-platform availability (§0.6 / §3.4 patent disposition, resolved per platform).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum Availability {
+    /// Offered on this platform.
+    Available,
+    /// Honestly unavailable here (§3.4 / §5.2) — `reason` names why.
+    #[serde(rename_all = "camelCase")]
+    Unavailable { reason: String },
+}
+
+// ─── §0.6 target composite layer (Target / TargetOffer / OptionValues, P2.8.4) ───
+// [Build-Session-Entscheidung: P2.8] The §0.6 composites that compose the scalars + the option/lossy
+// families. Each derives specta::Type + camelCase; NOT explicitly registered — deferred to the C3
+// `get_targets` consumer (P2.25), which returns `TargetOffer` and auto-registers the whole graph then.
+
+/// An offered output choice for a source (§0.6 / §1.5). `lossy` is the §1.5 offer-time SINGLE
+/// predictable-loss marker (`Option<LossyKind>`, ≤1); the §2.9.2 co-applying render-set (2-3 kinds) is a
+/// SEPARATE render-time computation (P4.65), not this field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Target {
+    /// The target identity (e.g. `Format(Webp)` | `Op(ExtractAudio)` | `Op(ToGif)`).
+    pub id: TargetId,
+    /// The display label.
+    pub label: String,
+    /// The §1.5 offer-time single predictable-loss marker (§2.9 catalog key; the string lives in §2.9).
+    pub lossy: Option<LossyKind>,
+    /// Per-platform availability (from §3.4).
+    pub availability: Availability,
+    /// The §1.6 declared options model (concrete values in 04-formats).
+    pub options: Vec<OptionDecl>,
+}
+
+/// The C3 `get_targets` return (§0.6 / §1.5) — the offered targets for a collected set plus the
+/// exactly-one pre-highlighted default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetOffer {
+    /// The collected set these targets are offered for.
+    pub set: CollectedSetId,
+    /// The offered targets.
+    pub targets: Vec<Target>,
+    /// Exactly ONE pre-highlighted default (§1.5).
+    pub default_target: TargetId,
+}
+
+/// The effective, fully-defaulted-plus-overrides option set for a batch (§0.6; == §1.6 `EffectiveOptions`).
+/// The ONE wire/domain name for the resolved values, keyed by the stable `OptionKey`. Serializes
+/// transparently as its inner map (a JSON object keyed by the `OptionKey` slug strings).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct OptionValues(pub BTreeMap<OptionKey, OptionValue>);
 
 #[cfg(test)]
 mod tests {
@@ -1234,6 +1505,337 @@ mod tests {
         assert_eq!(
             json, r#"{"scanned":42}"#,
             "§0.4.2: ScanProgress is {{ scanned }} on the wire (the throttled live count)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §2.9 `LossyKind` catalog discriminant — every one of the 27 §2.9.1 kinds
+    // serializes in the SNAKE_CASE wire form the catalog + the 04-formats cross-refs name (NOT camelCase —
+    // §0.4.3 governs field names, this is a fieldless catalog-key enum), round-tripped. The no-wildcard
+    // `exhaustive` arm locks variant MEMBERSHIP: a kind added/removed (or a 04 matrix flag pointing at a
+    // missing kind) fails to compile here. Order matches the §2.9.1 catalog.
+    #[test]
+    fn lossy_kind_snake_case_wire_and_membership() {
+        let all: &[(LossyKind, &str)] = &[
+            (LossyKind::ImageLossyCodec, "image_lossy_codec"),
+            (LossyKind::ImagePalette, "image_palette"),
+            (LossyKind::ImageDownscale, "image_downscale"),
+            (LossyKind::ImageAlphaFlatten, "image_alpha_flatten"),
+            (LossyKind::ImageAnimationFlatten, "image_animation_flatten"),
+            (LossyKind::ImageSvgRaster, "image_svg_raster"),
+            (LossyKind::DocPdfReflow, "doc_pdf_reflow"),
+            (LossyKind::DocPdfToText, "doc_pdf_to_text"),
+            (LossyKind::DocHtmlRender, "doc_html_render"),
+            (LossyKind::DocToText, "doc_to_text"),
+            (LossyKind::DocSimplified, "doc_simplified"),
+            (LossyKind::SheetToDelimited, "sheet_to_delimited"),
+            (LossyKind::XlsLegacyLimits, "xls_legacy_limits"),
+            (LossyKind::TextEncodingNarrowed, "text_encoding_narrowed"),
+            (LossyKind::SlidesToPdfFlatten, "slides_to_pdf_flatten"),
+            (LossyKind::OfficeRoundtripApprox, "office_roundtrip_approx"),
+            (LossyKind::PptxToPptLegacy, "pptx_to_ppt_legacy"),
+            (LossyKind::AudioLossyTarget, "audio_lossy_target"),
+            (LossyKind::AudioTranscode, "audio_transcode"),
+            (LossyKind::AudioLossyOrigin, "audio_lossy_origin"),
+            (LossyKind::AudioBitdepth, "audio_bitdepth"),
+            (LossyKind::AudioTagsDropped, "audio_tags_dropped"),
+            (LossyKind::VideoReencode, "video_reencode"),
+            (LossyKind::VideoAlphaLost, "video_alpha_lost"),
+            (LossyKind::VideoSubsDropped, "video_subs_dropped"),
+            (LossyKind::VideoToGif, "video_to_gif"),
+            (LossyKind::AudioDownmix, "audio_downmix"),
+        ];
+        assert_eq!(all.len(), 27, "§2.9.1: the LossyKind catalog has 27 kinds");
+        for (kind, wire) in all {
+            let json = serde_json::to_string(kind).expect("LossyKind serializes");
+            assert_eq!(
+                json,
+                format!("\"{wire}\""),
+                "§2.9.1: {kind:?} wire form must be snake_case `{wire}`"
+            );
+            let back: LossyKind =
+                serde_json::from_str(&json).expect("LossyKind round-trips from its wire form");
+            assert_eq!(
+                back, *kind,
+                "§2.9: {kind:?} round-trips through its wire form"
+            );
+        }
+        // Compiler-enforced membership (no wildcard arm): a variant add/remove fails to compile here.
+        fn exhaustive(k: LossyKind) {
+            match k {
+                LossyKind::ImageLossyCodec
+                | LossyKind::ImagePalette
+                | LossyKind::ImageDownscale
+                | LossyKind::ImageAlphaFlatten
+                | LossyKind::ImageAnimationFlatten
+                | LossyKind::ImageSvgRaster
+                | LossyKind::DocPdfReflow
+                | LossyKind::DocPdfToText
+                | LossyKind::DocHtmlRender
+                | LossyKind::DocToText
+                | LossyKind::DocSimplified
+                | LossyKind::SheetToDelimited
+                | LossyKind::XlsLegacyLimits
+                | LossyKind::TextEncodingNarrowed
+                | LossyKind::SlidesToPdfFlatten
+                | LossyKind::OfficeRoundtripApprox
+                | LossyKind::PptxToPptLegacy
+                | LossyKind::AudioLossyTarget
+                | LossyKind::AudioTranscode
+                | LossyKind::AudioLossyOrigin
+                | LossyKind::AudioBitdepth
+                | LossyKind::AudioTagsDropped
+                | LossyKind::VideoReencode
+                | LossyKind::VideoAlphaLost
+                | LossyKind::VideoSubsDropped
+                | LossyKind::VideoToGif
+                | LossyKind::AudioDownmix => {}
+            }
+        }
+        exhaustive(LossyKind::ImageLossyCodec);
+    }
+
+    // §6.4.1 unit (G15): the §0.6 target scalar/alias layer — TargetId (externally-tagged Format/Op),
+    // CrossCatOp, Availability — in camelCase wire form, round-tripped, with no-wildcard membership locks.
+    #[test]
+    fn target_scalars_wire_forms_and_membership() {
+        // TargetId — externally tagged; Format wraps a FormatId (= UserFacingFormat), Op a CrossCatOp.
+        for (id, wire) in [
+            (
+                TargetId::Format(UserFacingFormat::Webp),
+                r#"{"format":"webp"}"#,
+            ),
+            (
+                TargetId::Op(CrossCatOp::ExtractAudio),
+                r#"{"op":"extractAudio"}"#,
+            ),
+            (TargetId::Op(CrossCatOp::ToGif), r#"{"op":"toGif"}"#),
+        ] {
+            let json = serde_json::to_string(&id).expect("TargetId serializes");
+            assert_eq!(json, wire, "§0.6: TargetId externally-tagged camelCase");
+            let back: TargetId = serde_json::from_str(&json).expect("TargetId round-trips");
+            assert_eq!(back, id, "§0.6: TargetId round-trips");
+        }
+        fn target_id_exhaustive(t: &TargetId) {
+            match t {
+                TargetId::Format(_) | TargetId::Op(_) => {}
+            }
+        }
+        target_id_exhaustive(&TargetId::Op(CrossCatOp::ToGif));
+        fn cross_cat_exhaustive(o: CrossCatOp) {
+            match o {
+                CrossCatOp::ExtractAudio | CrossCatOp::ToGif => {}
+            }
+        }
+        cross_cat_exhaustive(CrossCatOp::ExtractAudio);
+
+        // Availability — unit `Available` is a bare tag; `Unavailable { reason }` is externally tagged.
+        assert_eq!(
+            serde_json::to_string(&Availability::Available).expect("Available serializes"),
+            r#""available""#,
+            "§0.6/§3.4: Available is a bare camelCase tag"
+        );
+        let unavail = Availability::Unavailable {
+            reason: "patent-gapped on this platform".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_string(&unavail).expect("Unavailable serializes"),
+            r#"{"unavailable":{"reason":"patent-gapped on this platform"}}"#,
+            "§0.6/§3.4: Unavailable carries its reason"
+        );
+        let back: Availability =
+            serde_json::from_str(r#"{"unavailable":{"reason":"x"}}"#).expect("round-trips");
+        assert_eq!(
+            back,
+            Availability::Unavailable {
+                reason: "x".to_owned()
+            },
+            "§3.4: Availability round-trips"
+        );
+        fn availability_exhaustive(a: &Availability) {
+            match a {
+                Availability::Available | Availability::Unavailable { .. } => {}
+            }
+        }
+        availability_exhaustive(&Availability::Available);
+    }
+
+    // §6.4.1 unit (G15): the §1.6 option model — OptionKind (all 5 control shapes, externally-tagged
+    // camelCase incl. the multi-word `intRange` + the nested `IntRange` fields + the `Enum` EnumChoice),
+    // OptionValue (all 4 value shapes), Surface, Unit — each round-tripped, with no-wildcard membership
+    // locks. This references the OptionKey/LabelKey/EnumChoice/Unit/Surface leaves.
+    #[test]
+    fn option_model_wire_forms_and_membership() {
+        // OptionKind variants.
+        let int_range = OptionKind::IntRange {
+            min: 0,
+            max: 100,
+            step: 1,
+            unit: Some(Unit::Percent),
+        };
+        assert_eq!(
+            serde_json::to_string(&int_range).expect("IntRange serializes"),
+            r#"{"intRange":{"min":0,"max":100,"step":1,"unit":"percent"}}"#,
+            "§1.6: OptionKind::IntRange is externally-tagged camelCase with a nested unit"
+        );
+        let enum_kind = OptionKind::Enum {
+            choices: vec![EnumChoice {
+                value: "high".to_owned(),
+                label: LabelKey("opt.mp3.high".to_owned()),
+            }],
+        };
+        assert_eq!(
+            serde_json::to_string(&enum_kind).expect("Enum serializes"),
+            r#"{"enum":{"choices":[{"value":"high","label":"opt.mp3.high"}]}}"#,
+            "§1.6: OptionKind::Enum carries EnumChoice {{ value, label }} (LabelKey transparent)"
+        );
+        assert_eq!(
+            serde_json::to_string(&OptionKind::Toggle).expect("Toggle serializes"),
+            r#""toggle""#,
+            "§1.6: a fieldless OptionKind variant is a bare camelCase tag"
+        );
+        assert_eq!(
+            serde_json::to_string(&OptionKind::Size { min: 16, max: 512 })
+                .expect("Size serializes"),
+            r#"{"size":{"min":16,"max":512}}"#,
+            "§1.6: OptionKind::Size carries the pixel bounds"
+        );
+        for kind in [int_range, enum_kind, OptionKind::Toggle, OptionKind::Color] {
+            let json = serde_json::to_string(&kind).expect("OptionKind serializes");
+            let back: OptionKind = serde_json::from_str(&json).expect("OptionKind round-trips");
+            assert_eq!(back, kind, "§1.6: OptionKind round-trips");
+        }
+        fn option_kind_exhaustive(k: &OptionKind) {
+            match k {
+                OptionKind::IntRange { .. }
+                | OptionKind::Enum { .. }
+                | OptionKind::Toggle
+                | OptionKind::Size { .. }
+                | OptionKind::Color => {}
+            }
+        }
+        option_kind_exhaustive(&OptionKind::Color);
+
+        // OptionValue variants.
+        for (val, wire) in [
+            (OptionValue::Int(80), r#"{"int":80}"#),
+            (OptionValue::Bool(true), r#"{"bool":true}"#),
+            (OptionValue::Enum("high".to_owned()), r#"{"enum":"high"}"#),
+            (
+                OptionValue::Color("#ffffff".to_owned()),
+                r##"{"color":"#ffffff"}"##,
+            ),
+        ] {
+            let json = serde_json::to_string(&val).expect("OptionValue serializes");
+            assert_eq!(json, wire, "§1.6: OptionValue externally-tagged camelCase");
+            let back: OptionValue = serde_json::from_str(&json).expect("OptionValue round-trips");
+            assert_eq!(back, val, "§1.6: OptionValue round-trips");
+        }
+        fn option_value_exhaustive(v: &OptionValue) {
+            match v {
+                OptionValue::Int(_)
+                | OptionValue::Bool(_)
+                | OptionValue::Enum(_)
+                | OptionValue::Color(_) => {}
+            }
+        }
+        option_value_exhaustive(&OptionValue::Bool(false));
+
+        // Surface + Unit wire forms + membership.
+        for (s, wire) in [
+            (Surface::Basic, "\"basic\""),
+            (Surface::Advanced, "\"advanced\""),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&s).expect("Surface serializes"),
+                wire,
+                "§1.6: Surface camelCase"
+            );
+        }
+        fn surface_exhaustive(s: Surface) {
+            match s {
+                Surface::Basic | Surface::Advanced => {}
+            }
+        }
+        surface_exhaustive(Surface::Basic);
+        for (u, wire) in [
+            (Unit::Percent, "\"percent\""),
+            (Unit::Kbps, "\"kbps\""),
+            (Unit::Px, "\"px\""),
+            (Unit::Dpi, "\"dpi\""),
+            (Unit::Fps, "\"fps\""),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&u).expect("Unit serializes"),
+                wire,
+                "§1.6: Unit camelCase"
+            );
+        }
+        fn unit_exhaustive(u: Unit) {
+            match u {
+                Unit::Percent | Unit::Kbps | Unit::Px | Unit::Dpi | Unit::Fps => {}
+            }
+        }
+        unit_exhaustive(Unit::Px);
+    }
+
+    // §6.4.1 unit (G15): the §0.6 composite layer — a full `TargetOffer` (embedding a `Target` with its
+    // `lossy`/`availability`/`options: Vec<OptionDecl>`, the offer-time SINGLE `Option<LossyKind>` marker)
+    // and `OptionValues` (the BTreeMap keyed by `OptionKey` slugs). Locks the exact externally-tagged
+    // camelCase wire shape (incl. `defaultTarget`) + round-trips. `Uuid::nil()` keeps `set` deterministic.
+    #[test]
+    fn target_offer_option_values_composite_wire_forms() {
+        let decl = OptionDecl {
+            key: OptionKey("quality".to_owned()),
+            label: LabelKey("opt.quality".to_owned()),
+            surface: Surface::Basic,
+            kind: OptionKind::IntRange {
+                min: 0,
+                max: 100,
+                step: 1,
+                unit: Some(Unit::Percent),
+            },
+            default: OptionValue::Int(80),
+        };
+        let target = Target {
+            id: TargetId::Format(UserFacingFormat::Webp),
+            label: "WebP".to_owned(),
+            lossy: Some(LossyKind::ImageLossyCodec),
+            availability: Availability::Available,
+            options: vec![decl],
+        };
+        let offer = TargetOffer {
+            set: CollectedSetId(Uuid::nil()),
+            targets: vec![target],
+            default_target: TargetId::Format(UserFacingFormat::Webp),
+        };
+        assert_eq!(
+            serde_json::to_string(&offer).expect("TargetOffer serializes"),
+            r#"{"set":"00000000-0000-0000-0000-000000000000","targets":[{"id":{"format":"webp"},"label":"WebP","lossy":"image_lossy_codec","availability":"available","options":[{"key":"quality","label":"opt.quality","surface":"basic","kind":{"intRange":{"min":0,"max":100,"step":1,"unit":"percent"}},"default":{"int":80}}]}],"defaultTarget":{"format":"webp"}}"#,
+            "§0.6/§1.5: TargetOffer is the full externally-tagged camelCase target graph with defaultTarget"
+        );
+        let back: TargetOffer = serde_json::from_str(&serde_json::to_string(&offer).expect("ser"))
+            .expect("round-trips");
+        assert_eq!(
+            back, offer,
+            "§0.6: TargetOffer round-trips through its wire form"
+        );
+
+        // OptionValues — a transparent newtype over BTreeMap; BTreeMap orders keys (`lossless` < `quality`).
+        let mut map: BTreeMap<OptionKey, OptionValue> = BTreeMap::new();
+        map.insert(OptionKey("quality".to_owned()), OptionValue::Int(80));
+        map.insert(OptionKey("lossless".to_owned()), OptionValue::Bool(true));
+        let values = OptionValues(map);
+        assert_eq!(
+            serde_json::to_string(&values).expect("OptionValues serializes"),
+            r#"{"lossless":{"bool":true},"quality":{"int":80}}"#,
+            "§0.6/§1.6: OptionValues is a JSON object keyed by the OptionKey slugs, BTreeMap-ordered"
+        );
+        let back: OptionValues =
+            serde_json::from_str(r#"{"lossless":{"bool":true},"quality":{"int":80}}"#)
+                .expect("OptionValues round-trips");
+        assert_eq!(
+            back, values,
+            "§1.6: OptionValues round-trips through its wire form"
         );
     }
 }

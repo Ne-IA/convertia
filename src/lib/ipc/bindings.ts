@@ -14,6 +14,82 @@ export type InstanceId = string;
 /**  Stable item index within a run (§0.6). */
 export type ItemId = number;
 
+/**
+ *  The predictable-loss kind keyed by the §2.9.1 catalog (the canonical English note lives in §2.9; this
+ *  is the ONE canonical name). Carried by `Target.lossy: Option<LossyKind>` (the §1.5 offer-time SINGLE
+ *  marker) and `OutcomeMsg::Lossy { kind }` (§2.8, P2.20). The §2.9.2 CO-APPLYING set (2-3 kinds rendered
+ *  together at §5.7) is a SEPARATE render-time computation (P4.65), NOT this single offer marker — §1.5
+ *  owns the wire field as `Option<LossyKind>`, §2.9.2/§5.7 own the rendered set (the box-note-flagged
+ *  §1.5-vs-§2.9.2 distinction, surfaced for owner escalation and confirmed an offer-vs-render layering).
+ *
+ *  [Derived-Assumption: P2.8 — LossyKind wire form is snake_case (`image_lossy_codec`), derived from the
+ *  §2.9.1 catalog + the 04-formats cross-references (images/spreadsheets/documents/presentations/audio),
+ *  which all name the kind in snake_case as a stable cross-referenced catalog key. §0.4.3's camelCase rule
+ *  governs FIELD names; LossyKind is a fieldless discriminant enum, so its snake_case is a per-catalog
+ *  discriminant casing, not a §0.4.3 deviation.]
+ *
+ *  [Build-Session-Entscheidung: P2.8] Registered standalone in the P1.25 type registry — §2.8.2 (line
+ *  1261) EXPLICITLY mandates LossyKind (with OutcomeMsg/ConversionErrorKind) derive `specta::Type` + be
+ *  registered in `collect_types![]` so `Target.lossy` / `OutcomeMsg.kind` never generate as `any`. Derives
+ *  both `Serialize` + `Deserialize` (Copy, fieldless) so it round-trips AND embeds in the round-trippable
+ *  `Target`; the §2.8 sibling enums are Serialize-only, but LossyKind's embedding in a `Deserialize`
+ *  `Target` requires `Deserialize` here. Variant order matches the §2.9.1 catalog (audio_downmix last).
+ */
+export type LossyKind =
+/**  `→ JPG/WEBP(lossy)/HEIC/AVIF` from any source (images.md). */
+"image_lossy_codec" |
+/**  `→ GIF` 256-colour reduction (images.md). */
+"image_palette" |
+/**  `→ ICO` multi-size icon assembly (images.md). */
+"image_downscale" |
+/**  alpha source `→ JPG/BMP` transparency flatten (images.md). */
+"image_alpha_flatten" |
+/**  animated source `→` still target (images.md). */
+"image_animation_flatten" |
+/**  `SVG → raster` (images.md). */
+"image_svg_raster" |
+/**  `DOCX/DOC/ODT/RTF/MD → PDF` and `XLSX/XLS/ODS → PDF` reflow (documents.md / spreadsheets.md). */
+"doc_pdf_reflow" |
+/**  `PDF → TXT` (documents.md). */
+"doc_pdf_to_text" |
+/**  `HTML → PDF` (documents.md). */
+"doc_html_render" |
+/**  `* → TXT` from rich sources (documents.md). */
+"doc_to_text" |
+/**  `* → MD/RTF` from rich sources (documents.md). */
+"doc_simplified" |
+/**  `XLSX/XLS/ODS → CSV/TSV` (spreadsheets.md). */
+"sheet_to_delimited" |
+/**  `* → XLS` legacy format (spreadsheets.md). */
+"xls_legacy_limits" |
+/**  `CSV/TSV → workbook/CSV` non-Unicode encoding (spreadsheets.md). */
+"text_encoding_narrowed" |
+/**  `PPTX/PPT/ODP → PDF` (presentations.md). */
+"slides_to_pdf_flatten" |
+/**  ODF↔MS office round-trip + slide re-layout (presentations.md). */
+"office_roundtrip_approx" |
+/**  `PPTX → PPT` legacy downgrade (presentations.md). */
+"pptx_to_ppt_legacy" |
+/**  `→ MP3/AAC/M4A/OGG/OPUS` (audio.md). */
+"audio_lossy_target" |
+/**  lossy source `→` lossy target (audio.md). */
+"audio_transcode" |
+/**  lossy source `→` lossless target (audio.md). */
+"audio_lossy_origin" |
+/**  >16-bit source `→` default 16-bit WAV/AIFF (audio.md). */
+"audio_bitdepth" |
+/**  `→ AAC`, partly WAV/AIFF — tags dropped (audio.md). */
+"audio_tags_dropped" |
+/**  re-encode disposition (video.md / cross-cat). */
+"video_reencode" |
+/**  WEBM(alpha) `→ MP4/H.264` (video.md). */
+"video_alpha_lost" |
+/**  image/ASS subs `→ MP4` (video.md). */
+"video_subs_dropped" |
+/**  `video → GIF` cross-category, unconditional (cross-category.md). */
+"video_to_gif" |
+/**  surround forced to stereo by codec (rare; audio.md). */
+"audio_downmix";
+
 /**  One per `start_conversion` run (§0.4 C6 / §7.1). */
 export type RunId = string;
-
