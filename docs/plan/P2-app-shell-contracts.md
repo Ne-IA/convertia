@@ -113,11 +113,11 @@
 
 ## Error & outcome model contract (the §2.8 wire mirror)
 
-- [ ] **P2.18** [RUST] Author `ErrorKind` as a `type` alias of (or drift-locked mirror of) the §2.8 `ConversionErrorKind` in `crate::outcome` · §0.4.3 §2.8.1
+- [x] **P2.18** [RUST] Author `ErrorKind` as a `type` alias of (or drift-locked mirror of) the §2.8 `ConversionErrorKind` in `crate::outcome` · §0.4.3 §2.8.1
   needs: P1.10, P1.25
-  - [ ] **P2.18.1** [RUST] Enumerate the item-level `ErrorKind` variants byte-identical to the §2.8 catalog · §0.4.3 §2.8.1
-  - [ ] **P2.18.2** [RUST] Add the run/app-level kinds (`EngineMissing`/`WebviewFault`/`BundleDamaged`) + the mirror-only `MixedDrop` entry · §0.4.3 §2.13.1
-  - [ ] **P2.18.3** [TEST] Lock anti-drift — `static_assertions` variant-count + variant-name round-trip `#[test]` · §0.4.3 §2.8.2 · G23
+  - [x] **P2.18.1** [RUST] Enumerate the item-level `ErrorKind` variants byte-identical to the §2.8 catalog · §0.4.3 §2.8.1
+  - [x] **P2.18.2** [RUST] Add the run/app-level kinds (`EngineMissing`/`WebviewFault`/`BundleDamaged`) + the mirror-only `MixedDrop` entry · §0.4.3 §2.13.1
+  - [x] **P2.18.3** [TEST] Lock anti-drift — `static_assertions` variant-count + variant-name round-trip `#[test]` · §0.4.3 §2.8.2 · G23
 - [ ] **P2.19** [RUST] Author the `IpcError` shape (`kind`/`message`/`path`/`residue`, derives `specta::Type`, in `collect_types![]`) · §0.4.3 §2.8
   needs: P2.18
 - [ ] **P2.20** [RUST] Author `OutcomeMsg` + the `SkipReason → ErrorKind` forward (one-way, non-inverted) projection helper · §0.6 §2.8.2 §1.12
