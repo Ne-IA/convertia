@@ -91,6 +91,18 @@ record("flatten: single object (no pagination) -> runs preserved",
 record("flatten: empty list -> no runs (fail-closed downstream)",
        crt.evaluate_check_runs(crt.flatten_pages([]))[0] is False)
 
+# --- gh_api transient-retry classification (the spurious-red guard, G56b) ---
+# A transient gh/network failure (TLS/connection hiccup, 5xx/429) is retried before the gate
+# fails a release; a 404 / non-transient HTTP error (403/auth) is NOT (it returns on the first try).
+record("transient: TLS handshake timeout -> retried",
+       bool(crt._TRANSIENT_RE.search("Post https://api.github.com: net/http: TLS handshake timeout")))
+record("transient: 502 Bad Gateway -> retried", bool(crt._TRANSIENT_RE.search("HTTP 502: Bad Gateway")))
+record("transient: connection reset -> retried", bool(crt._TRANSIENT_RE.search("read tcp: connection reset by peer")))
+record("transient: 429 secondary rate limit -> retried",
+       bool(crt._TRANSIENT_RE.search("HTTP 429: too many requests (secondary rate limit)")))
+record("non-transient: 404 NOT retried", not crt._TRANSIENT_RE.search("HTTP 404: Not Found"))
+record("non-transient: 403 forbidden NOT retried", not crt._TRANSIENT_RE.search("HTTP 403: Forbidden"))
+
 # --- leg_ancestry + leg_signed_tag (real temp git repo) ---------------------
 with tempfile.TemporaryDirectory() as td:
     g(td, "init", "-b", "main")

@@ -171,6 +171,19 @@ with tempfile.TemporaryDirectory() as td:
            not m.semgrep_taint_ruleset_present(d))
 record("semgrep dir missing -> absent", not m.semgrep_taint_ruleset_present(Path(td) / "nope"))
 
+# --- api_json transient-retry classification (the spurious-red-main guard, G56a) --------------
+# A transient gh/network failure (TLS/connection hiccup, 5xx/429) is retried before the gate
+# fail-CLOSES; a 404 / non-transient HTTP error (403/auth) is NOT (it returns on the first try).
+record("transient: TLS handshake timeout -> retried",
+       bool(m._TRANSIENT_RE.search("Post https://api.github.com: net/http: TLS handshake timeout")))
+record("transient: 502 Bad Gateway -> retried", bool(m._TRANSIENT_RE.search("HTTP 502: Bad Gateway")))
+record("transient: 503 Service Unavailable -> retried", bool(m._TRANSIENT_RE.search("HTTP 503: Service Unavailable")))
+record("transient: connection reset -> retried", bool(m._TRANSIENT_RE.search("read tcp: connection reset by peer")))
+record("transient: 429 secondary rate limit -> retried",
+       bool(m._TRANSIENT_RE.search("HTTP 429: too many requests (secondary rate limit)")))
+record("non-transient: 404 NOT retried", not m._TRANSIENT_RE.search("HTTP 404: Not Found"))
+record("non-transient: 403 forbidden NOT retried", not m._TRANSIENT_RE.search("HTTP 403: Forbidden (token lacks scope)"))
+
 # --- main() posture on a missing repo (no network needed) -------------------------------------
 record("main no-repo, no --enforce -> fail-soft exit 0", m.main(["--repo", ""]) == 0)
 record("main no-repo, --enforce -> bad-invocation exit 2", m.main(["--repo", "", "--enforce"]) == 2)

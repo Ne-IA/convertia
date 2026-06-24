@@ -58,6 +58,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # The agreed required status-check contexts that MUST be present-and-required on `main`. Kept in
@@ -245,18 +246,46 @@ def semgrep_taint_ruleset_present(semgrep_dir: Path) -> bool:
 
 
 # --- live gh api (owner/CI-verified) ----------------------------------------------------------
+# Transient gh/network failures worth retrying BEFORE the gate fails-CLOSED: a TLS/connection
+# hiccup or a server-side 5xx/429 must not turn a one-off API stumble into a spurious red main
+# (the same transient class as the sast-502 shellcheck-download). A 404, a non-transient HTTP error
+# (403/auth), or a JSON parse error is NOT retried (retrying cannot help). A transient that persists
+# across all attempts still returns 'error', so --enforce stays fail-CLOSED: the retry absorbs a
+# hiccup, it NEVER weakens the posture.
+_TRANSIENT_RE = re.compile(
+    r"timeout|timed out|TLS handshake|connection reset|connection refused|EOF|no such host|"
+    r"temporary failure|i/o timeout|\b5\d\d\b|\b429\b|rate limit|secondary rate",
+    re.IGNORECASE,
+)
+_API_MAX_ATTEMPTS = 3
+_API_BACKOFF_S = (2, 5)  # seconds slept before retry 2 and retry 3
+
+
 def api_json(path: str) -> tuple[str, object, str]:
-    """('ok', data, '') | ('notfound', None, err) | ('error', None, err)."""
-    p = subprocess.run(["gh", "api", path], capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if p.returncode == 0:
-        try:
-            return "ok", json.loads(p.stdout or "null"), ""
-        except json.JSONDecodeError as e:
-            return "error", None, f"unparseable JSON from {path}: {e}"
-    err = p.stderr.strip() or p.stdout.strip()
-    if "404" in err or "Not Found" in err:
-        return "notfound", None, err
-    return "error", None, err
+    """('ok', data, '') | ('notfound', None, err) | ('error', None, err).
+
+    Retries a TRANSIENT failure (network/TLS hiccup, server 5xx/429) up to _API_MAX_ATTEMPTS with a
+    short backoff so a single API stumble does not fail-CLOSE the gate. A success, a 404 (a real
+    signal), a non-transient HTTP error (403/auth), or a parse error returns on its first occurrence;
+    a transient that persists across all attempts returns 'error', leaving the gate fail-CLOSED under
+    --enforce (the retry absorbs a hiccup, it never weakens the posture)."""
+    err = ""
+    for attempt in range(_API_MAX_ATTEMPTS):
+        if attempt:
+            time.sleep(_API_BACKOFF_S[attempt - 1])
+        p = subprocess.run(["gh", "api", path], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if p.returncode == 0:
+            try:
+                return "ok", json.loads(p.stdout or "null"), ""
+            except json.JSONDecodeError as e:
+                return "error", None, f"unparseable JSON from {path}: {e}"
+        err = p.stderr.strip() or p.stdout.strip()
+        if "404" in err or "Not Found" in err:
+            return "notfound", None, err
+        if not _TRANSIENT_RE.search(err):
+            return "error", None, err  # non-transient (403/auth/...): retrying cannot help
+        # transient: fall through to the next attempt after backoff (unless exhausted)
+    return "error", None, err  # a transient persisted across all attempts -> fail-closed
 
 
 def fetch_branch_rulesets(repo: str, branch: str) -> tuple[str, list[dict] | None, str]:
