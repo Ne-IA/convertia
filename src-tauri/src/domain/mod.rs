@@ -869,6 +869,34 @@ pub struct OutputPlan {
     pub publish_temp_dir: PathBuf,
 }
 
+// ─── §0.6 JobStage — the coarse per-item progress stage (P2.10) ───────────────────
+/// The coarse per-item progress stage (§0.6), carried by the §0.4.2 `ItemProgress` Channel event; §1.11
+/// owns the per-engine semantics, this is the shared/wire enum NAME. Homed in `crate::domain` (the tier-3
+/// leaf) because it references NO `crate::outcome` type (§0.7 ‡, P2.10) — unlike its sibling lifecycle
+/// types `Batch`/`ConversionJob`/`JobState`, which reference the §2.8 kind and so are homed in
+/// `crate::orchestrator` (tier 1).
+///
+/// [Build-Session-Entscheidung: P2.10] A WIRE enum: derives `specta::Type` (so `ItemProgress.stage`
+/// mirrors to `bindings.ts` as a named type, never `any`) + `Serialize` with `#[serde(rename_all =
+/// "camelCase")]` (`spawning`/`decoding`/`encoding`/`writing`). OUTBOUND-ONLY — the `ItemProgress` Channel
+/// event is sent Rust→WebView and never deserialized inbound, so NO `Deserialize` (mirroring the
+/// outbound-only `ScanProgress` (P2.7) + `ConversionErrorKind` (P2.18) derive choice). `Copy` (fieldless).
+/// Registration is DEFERRED to the C6 `ConversionEvent`/`ItemProgress` consumer (P2.37), the established
+/// P2.2-P2.9 defer pattern (the no-`any` guarantee is the `Type` derive, not an early consumer-less
+/// registration that would churn `bindings.ts` ahead of its event).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum JobStage {
+    /// The engine subprocess is being spawned (§1.7/§2.12).
+    Spawning,
+    /// The source is being decoded.
+    Decoding,
+    /// The target is being encoded.
+    Encoding,
+    /// The output is being written + atomically published (§2.1).
+    Writing,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1999,5 +2027,35 @@ mod tests {
             ..plan.clone()
         };
         assert_eq!(beside.diverted, None, "§0.6: None diverted = beside-source");
+    }
+
+    // §6.4.1 unit (G15): the §0.6/§0.4.2 `JobStage` wire enum (P2.10) — the four coarse progress stages
+    // carried by `ItemProgress.stage`, each in its camelCase wire form. JobStage is OUTBOUND-ONLY (no
+    // `Deserialize`), so this is a SERIALIZE pin (like `ConversionErrorKind`'s), not a round-trip. The
+    // `exhaustive` match is the COMPILE-TIME variant lock: a stage added/removed without updating it fails
+    // to compile, so the wire-name pins can never silently fall behind the enum.
+    #[test]
+    fn job_stage_wire_form_is_camelcase() {
+        for (stage, wire) in [
+            (JobStage::Spawning, r#""spawning""#),
+            (JobStage::Decoding, r#""decoding""#),
+            (JobStage::Encoding, r#""encoding""#),
+            (JobStage::Writing, r#""writing""#),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&stage).expect("JobStage serializes"),
+                wire,
+                "§0.4.2/§1.11: JobStage mirrors to its camelCase wire name (carried by ItemProgress)"
+            );
+        }
+        fn job_stage_exhaustive(s: JobStage) {
+            match s {
+                JobStage::Spawning
+                | JobStage::Decoding
+                | JobStage::Encoding
+                | JobStage::Writing => {}
+            }
+        }
+        job_stage_exhaustive(JobStage::Writing);
     }
 }
