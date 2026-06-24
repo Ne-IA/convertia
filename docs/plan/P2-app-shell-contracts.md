@@ -59,7 +59,8 @@
 - [x] **P2.3** [RUST] Author `UserFacingFormat` (the single grouping key — the full SSOT *What It Converts* set) · §0.6 §1.3
   needs: P2.1
 - [ ] **P2.4** [RUST] Author `DroppedItem` (raw/resolved path, size, `DetectionOutcome` ref) + the display-only `raw_path` scope note · §0.6 §1.2
-  needs: P2.3
+  needs: P2.3, P2.15
+  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.15` points at the `DetectionOutcome` type box later in document order — `DroppedItem.detected: DetectionOutcome` (§0.6 / §1.2-owned) has no type to embed until `DetectionOutcome` (P2.15) exists, so DECISION C builds P2.15 first; the edge is acyclic and valid (P2.15 only `needs: P2.3`), the inversion documented at the `needs:` line.
 - [ ] **P2.5** [RUST] Author `SkippedItem` + `SkipReason` { UnsupportedType, Uncertain, Empty, Unreadable } (id-disjoint over the single id space) · §0.6 §1.3
   needs: P2.4
 - [ ] **P2.6** [RUST] Author the `CollectedSet` enum — `Single`/`Mixed`/`Unsupported`/`Uncertain`/`Empty` (the C1/C2a return + unified §1.4 confirm-summary fields) + the `CollectedNote` type · §0.6 §1.1 §1.4
@@ -84,11 +85,15 @@
 - [ ] **P2.9** [RUST] Author the destination/plan types — `DestinationChoice`/`OutputPlan`/`DivertReason` (directory-based, no pre-baked `final_path`) · §0.6 §2.7 §2.14.1
   needs: P2.6
 - [ ] **P2.10** [RUST] Author `Batch`/`ConversionJob`/`JobState`/`JobStage` · §0.6 §1.9
-  needs: P2.8, P2.9
+  needs: P2.8, P2.9, P2.18
+  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.18` points at the `ErrorKind` type box later in document order — `JobState::Failed(ErrorKind)` (§0.6) has no type to land until `ErrorKind` (P2.18) exists in `crate::outcome`, so DECISION C builds P2.18 first; the edge is acyclic and valid (P2.18 needs only P1.10/P1.25), the inversion documented at the `needs:` line.
 - [ ] **P2.11** [RUST] Author the command-return DTOs — `OutputPlanPreview`/`RerunPrompt`/`RerunDecision`/`PreflightVerdict`/`DestinationResolved` · §0.6 §1.8 §1.10 §2.5
-  needs: P2.10
+  needs: P2.10, P2.18
+  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.18` points at the `ErrorKind` type box later in document order — `PreflightVerdict.up_front_fail: Option<ErrorKind>` (§0.6) has no type to land until `ErrorKind` (P2.18) exists, so DECISION C builds P2.18 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
 - [ ] **P2.12** [RUST] Author the result types — `RunResult`/`ItemResult`/`Totals`/`CleanupResidue`/`ItemOutcome` · §0.6 §1.12 §2.6
-  needs: P2.10
+  needs: P2.10, P2.19, P2.20
+  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.19` points at the `IpcError` shape box later in document order — the `ItemOutcome::Failed { error: IpcError }` variant (§0.6 / §0.4.3) has no payload type to land until `IpcError` (P2.19) exists, so DECISION C builds P2.19 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
+  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.20` points at the `OutcomeMsg` box later in document order — `ItemResult.reason: Option<OutcomeMsg>` (§0.6; the documented domain↔outcome type pairing) has nowhere to land until `OutcomeMsg` (P2.20) exists, so DECISION C builds P2.20 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
 - [ ] **P2.13** [RUST] Author the engine-descriptor seam types — `EngineId`/`EngineDescriptor`/`EngineKind` (non-trait `FFprobe`/`ImageMagick` note) · §0.6 §3.2
   needs: P2.3
 - [ ] **P2.14** [TEST] Property-test the §0.6 normative invariants (one-Target-per-Batch, `count == items.len()`, frozen `items`, stable `ItemId`, same-volume publish-temp) · §0.6 · G22 G23
@@ -96,12 +101,14 @@
 
 ## Detection-outcome contract (the §1.2 result type)
 
-- [ ] **P2.15** [RUST] Author `DetectionOutcome` (`Recognized`/`UnsupportedType`/`Uncertain`/`Empty`/`Unreadable`) + `Confidence` { High, Low } as the single canonical detection result · §1.2 §0.6
+- [ ] **P2.15** [RUST] Author `DetectionOutcome` (`Recognized`/`UnsupportedType`/`Uncertain`/`Empty`/`Unreadable`) + `Confidence` { High, Low } + `ReadFailure` { NotFound, PermissionDenied, Locked, IoError } as the single canonical §1.2 detection-result family · §1.2 §0.6
   needs: P2.3
+  > `ReadFailure` is folded in here (not its own box) because §1.2 defines `DetectionResult`/`DetectionOutcome`/`Confidence`/`ReadFailure` as one [DECIDED] type-family and `DetectionOutcome::Unreadable { reason: ReadFailure }` embeds it — authoring the family as one box avoids the otherwise-fatal P2.15↔P2.17 needs-cycle.
 - [ ] **P2.16** [RUST] Author the `DetectionOutcome → SkipReason` projection (ineligible-outcome → skip) · §1.2 §1.3 §0.6
   needs: P2.15, P2.5
-- [ ] **P2.17** [RUST] Author `ReadFailure`/`EmptyReport` contract types feeding the `Empty { skipped }` reason tally · §1.2 §0.6
+- [ ] **P2.17** [RUST] Author the `EmptyReport` contract type feeding the `Empty { skipped }` reason tally · §1.2 §0.6
   needs: P2.15
+  > the §1.2-cohesive `ReadFailure` is authored with `DetectionOutcome` in P2.15; this box authors only `EmptyReport` (the `Empty { skipped }` tally), which embeds `DetectionResult` — hence `needs: P2.15` is correct and acyclic.
 
 ## Error & outcome model contract (the §2.8 wire mirror)
 
@@ -113,16 +120,16 @@
 - [ ] **P2.19** [RUST] Author the `IpcError` shape (`kind`/`message`/`path`/`residue`, derives `specta::Type`, in `collect_types![]`) · §0.4.3 §2.8
   needs: P2.18
 - [ ] **P2.20** [RUST] Author `OutcomeMsg` + the `SkipReason → ErrorKind` forward (one-way, non-inverted) projection helper · §0.6 §2.8.2 §1.12
-  needs: P2.18, P2.16
+  needs: P2.18, P2.16, P2.8.2
 
 ## IPC command surface (C1–C13 contracts)
 
 - [ ] **P2.21** [RUST] Wire the `invoke_handler` + register C1–C13 on the Builder (handlers thin, delegate to orchestrator) · §0.4.0 §0.7
   needs: P1.11, P1.13, P1.25
 - [ ] **P2.22** [RUST] Author the C1 `ingest_paths` contract — frozen-set builder, `origin`, `collectingId`, `drainPending`, optional `onScan` Channel · §0.4.1 §1.1 §2.4
-  needs: P2.21, P2.6
+  needs: P2.21, P2.6, P2.2, P2.7
 - [ ] **P2.23** [RUST] Author the C2a `pick_for_intake` contract — Rust-side `DialogExt` picker funnelling into the C1 freeze, no raw path to WebView · §0.4.1 §1.1 §5.4
-  needs: P2.22, P1.14
+  needs: P2.22, P1.14, P2.7
 - [ ] **P2.24** [RUST] Author the C2b `pick_destination` contract — Rust-side folder picker returning the chosen `PathBuf` (the one write-path that transits the WebView) · §0.4.1 §0.10
   needs: P2.21, P1.14
 - [ ] **P2.25** [RUST] Author the C3 `get_targets` contract — pure function of detection → `TargetOffer` (one pre-highlighted default, no spawn) · §0.4.1 §1.5
@@ -134,17 +141,19 @@
 - [ ] **P2.28** [RUST] Encode the C4/C5 asymmetry as an enforced orchestrator lifecycle rule (C4 re-callable; C5 owns destination; C4 never overrides C5) · §0.4.1
   needs: P2.27
 - [ ] **P2.29** [RUST] Author the C6 `start_conversion` contract — mint `RunId`, enqueue, return immediately, stream over `onProgress` Channel; `destination` authoritative · §0.4.1 §1.9 §7.1.2
-  needs: P2.21, P2.10
+  needs: P2.21, P2.11, P2.37
+  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.37` points at the `ConversionEvent` Channel-enum box later in document order — the C6 `start_conversion` signature's `onProgress: Channel<ConversionEvent>` parameter (§0.4.1) has nowhere to land until `ConversionEvent` (P2.37) exists, so DECISION C builds P2.37 first; the edge is acyclic and valid (P2.37 → P2.12 → P2.10), the inversion documented at the `needs:` line.
 - [ ] **P2.30** [RUST] Author the C7 `cancel_run` contract — trip the `RunId` token (keep finished, discard in-progress) · §0.4.1 §0.4.4 §1.7
   needs: P2.29
 - [ ] **P2.31** [RUST] Author the C8 `get_run_summary` contract — idempotent re-fetch of the retained `RunResult` · §0.4.1 §0.4.4 §1.12
   needs: P2.29, P2.12
 - [ ] **P2.32** [RUST] Author the C9 `open_path` contract — Rust-side `OpenerExt` reveal/open with the §7.7.3 `RunResult` membership gate · §0.4.1 §7.7.1 §7.7.3
-  needs: P2.21, P1.14
+  needs: P2.21, P1.14, P2.7
 - [ ] **P2.33** [RUST] Author the C10 `open_project_page` contract — Rust handler opens a compiled-in canonical URL constant (no WebView URL arg) · §0.4.1 §7.6.2 §7.7.2
   needs: P2.21, P1.14
 - [ ] **P2.34** [RUST] Author the C11 `get_app_info` contract — `AppInfo` (version, build id, platform, third-party-notice) · §0.4.1 §7.2.3
-  needs: P2.21
+  needs: P2.21, P2.112
+  > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.112` points at the `AppInfo` type box later in document order — the C11 `get_app_info` contract returns `AppInfo` (§0.4.1 / §7.2.3), which has no definition to compile / type-share against until `AppInfo` (P2.112) exists, so DECISION C builds P2.112 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
 - [ ] **P2.35** [RUST] Author the C13 `cancel_ingest` contract — trip the `CollectingId` ingest-scoped token · §0.4.1 §1.1
   needs: P2.22
 - [ ] **P2.36** [GATE] Assert the C1–C13 IPC-surface set is complete + drift-free (no extra/missing command; plan-lint check 9/12 target) · §0.4.1 · G23
@@ -153,7 +162,7 @@
 ## IPC event / Channel surface (the three `app://` events + telemetry Channels)
 
 - [ ] **P2.37** [RUST] Author the `ConversionEvent` Channel enum + its payload structs (`RunStarted`/`ItemStarted`/`ItemProgress`/`ItemFinished`/`BatchProgress`/`RunFinished`) · §0.4.2 §1.11
-  needs: P2.12, P1.25
+  needs: P2.12, P2.10, P1.25
   - [ ] **P2.37.1** [RUST] Encode the `RunStarted.totalItems` = queued-eligible-only denominator rule · §0.4.2 §1.3
   - [ ] **P2.37.2** [RUST] Encode the conservative `willReencode` worst-case `bool` (always definite, never omitted) · §0.4.2 §2.9.2
   - [ ] **P2.37.3** [RUST] Encode the `BatchProgress.total` == `RunStarted.totalItems` (queued-only) invariant · §0.4.2 §1.11
@@ -353,11 +362,12 @@
 - [ ] **P2.110** [RUST] Author the `EngineStatus` type (`id`/`present`/`integrity_ok`/`runnable: Option<bool>`) · §7.2.3 §0.6
   needs: P2.13, P1.25
 - [ ] **P2.111** [RUST] Author the `EngineHealth` type (`engines`/`unavailable_targets`/`all_critical_ok`) — one row per registry-eligible engine · §7.2.3 §0.6
-  needs: P2.110
+  needs: P2.110, P2.8.3
   - [ ] **P2.111.1** [DOC] Record the non-trait-binary roll-up rule (`FFprobe`→FFmpeg, `ImageMagick`→`ImageCore`; no standalone `EngineStatus` row) · §7.2.3 §0.6
   - [ ] **P2.111.2** [DOC] Record the `NativeCsvTsv` synthesized always-available `EngineStatus` (appended after the loop, never from it) · §7.2.3 §3.5.6
 - [ ] **P2.112** [RUST] Author the `AppInfo` type (C11 return) — version/build_id/platform/third_party_notice · §7.2.3 §0.6
-  needs: P2.110
+  needs: P2.110, P4.3
+  > **Forward-ref note (DECISION-C cross-phase inversion):** `needs: P4.3` points at the §3.2 `Platform` enum owner in a later phase (the spec homes `Platform` in §3.2; P4.3 authors `Platform::{Win,MacOS,Linux}`) — `AppInfo.platform: Platform` (§7.2.3) has no type to land until P4.3 exists, so DECISION C builds P4.3 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
 - [ ] **P2.113** [RUST] Wire C12 `get_engine_health` to return the cached `EngineHealth` (the cache is populated by the P4 probe; contract type-shared now) · §0.4.1 §7.2.3
   needs: P2.111, P2.21
 - [ ] **P2.114** [UI] Author the typed `EngineHealth` → `unavailable_targets` store-selector seam (contract plumbing only; the visual disable-with-reason tiles are P4.70.2) · §7.2.3 §5.1
