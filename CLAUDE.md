@@ -121,7 +121,7 @@ convertia/                          → repo root (Git, GitHub: Ne-IA/convertia)
 │       ├── fs_guard/               → tier 2 — the §2.0 no-harm kernel (atomic write / no-clobber / resolved-id)
 │       ├── ipc/                    → tier 0 — the §0.4 command/event handlers (the WebView's only door)
 │       ├── isolation/              → tier 2 — the §2.12 decoder-isolation wrapper (the sole `Command::new`)
-│       ├── orchestrator/           → tier 1 — queue + job lifecycle (§1.9) + run registry + cancellation; homes the §0.6 outcome-referencing lifecycle/result types (Batch/ConversionJob/JobState + PreflightVerdict + RunResult/ItemResult/ItemOutcome) above tier 3 (§0.7 ‡, P2.10)
+│       ├── orchestrator/           → tier 1 — queue + job lifecycle (§1.9) + run registry + cancellation; homes the §0.6 outcome-referencing lifecycle/result types (Batch/ConversionJob/JobState + PreflightVerdict/OutputPlanPreview/DestinationResolved + RunResult/ItemResult/ItemOutcome) above tier 3 (§0.7 ‡, P2.10)
 │       ├── outcome/                → tier 2 — the §2.8 taxonomy + message catalog → §0.4.3 IpcError
 │       ├── platform/               → tier 3 — path / volume / OS shims (§2.14, §7.7)
 │       ├── pool/                   → tier 3 — the §0.9 subprocess pool + concurrency degree

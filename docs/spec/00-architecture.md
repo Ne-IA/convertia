@@ -1095,8 +1095,8 @@ the reuse hubs.
 `ItemOutcome::Failed { error: IpcError }`, `PreflightVerdict.up_front_fail: Option<ErrorKind>` — once made
 `domain` ↔ `outcome` a **type cycle** the strict downward-only rule could not tier. **P2.10 broke the
 cycle exactly as this note directed: the outcome-referencing lifecycle/result types are homed ABOVE tier 3
-in `crate::orchestrator` (tier 1)** — `Batch`/`ConversionJob`/`JobState` (P2.10) and `PreflightVerdict`
-(P2.11) / `RunResult`/`ItemResult`/`ItemOutcome` (P2.12) — which `orchestrator`/`ipc` assemble — leaving a
+in `crate::orchestrator` (tier 1)** — `Batch`/`ConversionJob`/`JobState` (P2.10), `PreflightVerdict`/`OutputPlanPreview`/`DestinationResolved`
+(P2.11 — the two previews embed `PreflightVerdict`, so they reference `crate::outcome` transitively), `RunResult`/`ItemResult`/`ItemOutcome` (P2.12) — which `orchestrator`/`ipc` assemble — leaving a
 clean one-way `outcome` → `domain` edge and `crate::domain` a pure leaf. **The durable principle (decided
 P2.10):** a §0.6 type that references `crate::outcome` (directly or transitively via `ErrorKind`/
 `OutcomeMsg`/`IpcError`) is homed in `orchestrator`/`ipc`, never in `domain`; a §0.6 type that references
@@ -1111,7 +1111,7 @@ Tier 2 is now FINAL, not provisional. [Build-Session-Entscheidung: P2.10 — own
   `JobState`, holds the run registry + cancellation tokens (§0.4.4), and fans
   progress out to the Channel. Owns nothing the guarantees/engines own; it
   *sequences* them. **Homes the §0.6 outcome-referencing lifecycle/result types it
-  assembles** — `Batch`/`ConversionJob`/`JobState` (P2.10), `PreflightVerdict` (P2.11),
+  assembles** — `Batch`/`ConversionJob`/`JobState` (P2.10), `PreflightVerdict`/`OutputPlanPreview`/`DestinationResolved` (P2.11),
   `RunResult`/`ItemResult`/`ItemOutcome` (P2.12) — above tier 3 so the §0.6
   `domain`↔`outcome` cycle stays broken (the ‡ note).
 - **`detection`** — §1.2 content sniffing. First code to touch untrusted bytes;
@@ -1138,7 +1138,8 @@ Tier 2 is now FINAL, not provisional. [Build-Session-Entscheidung: P2.10 — own
 - **`domain`** — the §0.6 **pure** types (identity, intake, detection, `Target`,
   destination/plan, `JobStage`); depended on by everyone, depends on nothing (a true
   tier-3 leaf). The §0.6 outcome-referencing lifecycle/result types
-  (`Batch`/`ConversionJob`/`JobState`, `PreflightVerdict`, `RunResult`/`ItemResult`/
+  (`Batch`/`ConversionJob`/`JobState`, `PreflightVerdict` + the `OutputPlanPreview`/`DestinationResolved`
+  DTOs that transitively embed it, `RunResult`/`ItemResult`/
   `ItemOutcome`) are homed in `orchestrator`, NOT here (the ‡ note), so `domain` stays pure.
 - **`platform`** — paths, volume detection (§2.14), OS shims (§7.7 reveal-in-folder).
 - **`pool`** — §0.9; the concurrency-degree owner and the per-engine parallelism
@@ -1168,7 +1169,7 @@ convertia/
 │  └─ src/
 │     ├─ main.rs                   # Tauri builder, invoke_handler (C1–C13), collect_commands!/collect_events! (§0.4.5)
 │     ├─ ipc/                      # tier 0 — §0.4 handlers, one file per command group
-│     ├─ orchestrator/             # tier 1 — queue, lifecycle (§1.9), run registry, cancellation (§0.4.4); homes the §0.6 outcome-referencing lifecycle/result types (Batch/ConversionJob/JobState + PreflightVerdict + RunResult/ItemResult/ItemOutcome — above tier 3 to break the domain↔outcome cycle, §0.7 ‡)
+│     ├─ orchestrator/             # tier 1 — queue, lifecycle (§1.9), run registry, cancellation (§0.4.4); homes the §0.6 outcome-referencing lifecycle/result types (Batch/ConversionJob/JobState + PreflightVerdict/OutputPlanPreview/DestinationResolved + RunResult/ItemResult/ItemOutcome — above tier 3 to break the domain↔outcome cycle, §0.7 ‡)
 │     ├─ detection/                # tier 2 — §1.2
 │     ├─ engines/                  # tier 2 — registry/seam (§3.2), invocation (§1.7), args (§3.5), per-engine modules
 │     │  ├─ registry.rs            #   Engine trait + selection (the §3.2 seam — candidate own crate)

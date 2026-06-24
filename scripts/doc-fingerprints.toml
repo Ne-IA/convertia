@@ -67,4 +67,4 @@ kind = "section"
 file = "docs/spec/00-architecture.md"
 anchor = "0.7"
 describes = ["CLAUDE.md §1a Repo-layout map (the §0.7 projection)"]
-fingerprint = "sha256:d6eb2d9611663b90a94c08da7c9d54dc63554f10369ae1282665a217d640c363"
+fingerprint = "sha256:6f82882e21e29d63c695274cd5122857ec7a1322bcbf7f0314b441420f8777b6"
