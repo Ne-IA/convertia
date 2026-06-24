@@ -347,6 +347,118 @@ pub enum SkipReason {
     Unreadable,
 }
 
+// ─── §0.6 CollectedSet — the frozen batch candidate (C1/C2a return + §1.4 confirm shape) ──
+/// The frozen collected-set the C1 `ingest_paths` / C2a `pick_for_intake` commands return and the §1.4 /
+/// §5.2 confirm gate renders (§0.6 / §1.1 / §1.4). `Single` carries the FULL confirm-summary field set,
+/// so the wire type IS the §1.4 `CollectedSummary` (unified — the mandatory confirm gate gets a real IPC
+/// path); the §0.4.4 collected-set registry stores this payload + its roots keyed by `CollectedSetId`
+/// for C3–C6 to resolve. The five variants are the §1.3 grouping outcomes: exactly one eligible format
+/// (`Single`), 2+ eligible formats (`Mixed` → pre-flight refusal), a lone real-but-unsupported /
+/// lone-uncertain item (`Unsupported` / `Uncertain`), or nothing eligible (`Empty`, carrying the
+/// per-item skip reasons so §5.2 state-10 is specific, not reason-less).
+///
+/// [Build-Session-Entscheidung: P2.6] Wire policy mirrors the P2.2/P2.3/P2.15/P2.4/P2.5 §0.6 types:
+/// derives `specta::Type` + `Serialize`/`Deserialize`; externally-tagged with `#[serde(rename_all =
+/// "camelCase")]` at the enum level (variant tags `single`/`mixed`/`unsupported`/`uncertain`/`empty`) AND
+/// repeated on every field-bearing variant (serde does NOT cascade the enum-level rename to a
+/// struct-variant's FIELDS, so `Single` needs it for `total_bytes`/`encoding_hint`/`delimiter_hint` →
+/// `totalBytes`/`encodingHint`/`delimiterHint`). NOT `Copy` (owns `Vec`/`String`/`PathBuf`);
+/// `PartialEq`+`Eq` back the round-trip tests. No explicit specta registration here — the WHOLE
+/// CollectedSet graph (`DroppedItem`/`SkippedItem`/`CollectedNote`/…) auto-registers together via its C1
+/// consumer (P2.22), the established defer pattern; deriving `specta::Type` is what guarantees it mirrors
+/// to `bindings.ts` as a NAMED type (never `any`) once consumed, so an early registration would only emit
+/// a consumer-less type and churn `bindings.ts` ahead of its command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum CollectedSet {
+    /// Exactly one eligible user-facing format across all readable items → a batch. Carries the full §1.4
+    /// confirm-summary field set (it IS the `CollectedSummary` wire shape). `items` is the eligible
+    /// filtered view + `skipped` the id-disjoint ineligible view over the §0.6-invariant-6 single id
+    /// space; the §1.4 confirm-summary FIELDS are COMPUTED in P3.27/P3.28 — this box homes the wire TYPE.
+    #[serde(rename_all = "camelCase")]
+    Single {
+        id: CollectedSetId,
+        instance: InstanceId,
+        format: UserFacingFormat,
+        items: Vec<DroppedItem>,
+        /// Shown in the confirm gate (§1.4). INVARIANT (§0.6): `count == items.len()`, set once at the
+        /// §1.1 freeze; kept separate so a wire consumer reading the tally never walks a 10k-file Vec (the
+        /// §6 property test asserts the equality so the duplication cannot drift).
+        count: usize,
+        skipped: Vec<SkippedItem>,
+        /// Size hint for the §1.10 pre-flight (§1.4).
+        total_bytes: u64,
+        /// The dropped root(s) → §2.7 subtree + open-folder.
+        roots: Vec<PathBuf>,
+        /// A detection-derived hint, e.g. CSV detected "Windows-1252" (per §04).
+        encoding_hint: Option<String>,
+        /// A detection-derived hint, e.g. CSV/TSV detected ";" (per §04).
+        delimiter_hint: Option<String>,
+        /// The §1.4-owned structural-peek notes (>1 sheet, animated source, …), PRODUCED by §1.2's
+        /// bounded peek — not invented here.
+        notes: Vec<CollectedNote>,
+    },
+    /// Two or more distinct eligible source formats → the §1.3 hard pre-flight refusal; `found` lists
+    /// each format with its count for the refusal message.
+    #[serde(rename_all = "camelCase")]
+    Mixed {
+        found: Vec<(UserFacingFormat, usize)>,
+    },
+    /// A lone item that is a real type we identified but do not convert (§1.2); `detected` names it.
+    #[serde(rename_all = "camelCase")]
+    Unsupported { detected: String },
+    /// A lone item we could not classify with confidence (§1.2); `note` carries the can't-tell text.
+    #[serde(rename_all = "camelCase")]
+    Uncertain { note: String },
+    /// Nothing eligible. `skipped` carries the per-item skip reasons (§1.3 projection from
+    /// `EmptyReport.outcomes`) so §5.2 state-10 shows "N files, none convertible (M unreadable, …)"
+    /// instead of a reason-less empty; `vec![]` for the genuinely-zero-items case (cancelled dialog /
+    /// drained `PendingIntake` / all files hidden-filtered).
+    #[serde(rename_all = "camelCase")]
+    Empty { skipped: Vec<SkippedItem> },
+}
+
+/// A §1.4-owned structural-peek note surfaced in the §1.4 confirm summary (`CollectedSet::Single.notes`),
+/// PRODUCED by §1.2's bounded structural peek (step 4) — spreadsheets.md / images.md / audio.md own the
+/// per-format peek, §1.2 owns running it. The `kind` is a stable discriminant → the §5 label catalogue
+/// (§2.10); any value (sheet count, encoding, …) rides `detail`, NOT the variant. Never a pre-localised
+/// sentence (§5 localises the `kind`).
+///
+/// [Build-Session-Entscheidung: P2.6] Same wire policy as the sibling §0.6 types: derives `specta::Type`,
+/// `Serialize`, `Deserialize` and `#[serde(rename_all = "camelCase")]`; NOT `Copy` (owns an
+/// `Option<String>`). Registration is deferred to the C1 consumer (P2.22) with the rest of the
+/// CollectedSet graph.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectedNote {
+    /// The stable discriminant → the §5 label catalogue (§2.10).
+    pub kind: CollectedNoteKind,
+    /// The optional value (e.g. "3 sheets", "Windows-1252").
+    pub detail: Option<String>,
+}
+
+/// The stable §1.4 note discriminant. The four typed variants each have a declared §1.2-step-4 producer;
+/// `Other` is a RESERVED forward-compatible catch-all emitted by no current (v1) engine — it carries its
+/// value in `CollectedNote.detail` and is never silently dropped.
+///
+/// [Build-Session-Entscheidung: P2.6] Fieldless wire enum like `SkipReason` / `ReadFailure`: `Copy` +
+/// `#[serde(rename_all = "camelCase")]` (`multipleSheets` / `animatedSource` / `multiSizeIcon` /
+/// `embeddedCoverArt` / `other`). No `Hash` (not a map key).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum CollectedNoteKind {
+    /// spreadsheets.md: the source holds >1 sheet, only one is exported.
+    MultipleSheets,
+    /// images.md: an animated source converted to a still target flattens.
+    AnimatedSource,
+    /// images.md: an ICO source holds >1 size.
+    MultiSizeIcon,
+    /// audio.md: cover art present.
+    EmbeddedCoverArt,
+    /// Reserved forward-compatible catch-all — no v1 producer; the value rides `detail`.
+    Other,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -806,5 +918,172 @@ mod tests {
             back, skipped,
             "§0.6: SkippedItem round-trips through its wire form"
         );
+    }
+
+    // §6.4.1 unit (G15): the §1.4 `CollectedNoteKind` discriminant — the four typed producers + the
+    // reserved `Other`, each serializing in the §0.4.3 camelCase wire form, round-tripped. The no-wildcard
+    // `exhaustive` arm locks MEMBERSHIP (an added/removed variant fails to compile).
+    #[test]
+    fn collected_note_kind_wire_form_is_camelcase_and_roundtrips() {
+        for (kind, wire) in [
+            (CollectedNoteKind::MultipleSheets, "\"multipleSheets\""),
+            (CollectedNoteKind::AnimatedSource, "\"animatedSource\""),
+            (CollectedNoteKind::MultiSizeIcon, "\"multiSizeIcon\""),
+            (CollectedNoteKind::EmbeddedCoverArt, "\"embeddedCoverArt\""),
+            (CollectedNoteKind::Other, "\"other\""),
+        ] {
+            let json = serde_json::to_string(&kind).expect("CollectedNoteKind serializes");
+            assert_eq!(
+                json, wire,
+                "§0.4.3: CollectedNoteKind wire casing is camelCase"
+            );
+            let back: CollectedNoteKind = serde_json::from_str(&json)
+                .expect("CollectedNoteKind round-trips from its wire form");
+            assert_eq!(
+                back, kind,
+                "§1.4: CollectedNoteKind round-trips through its wire form"
+            );
+        }
+        fn exhaustive(k: CollectedNoteKind) {
+            match k {
+                CollectedNoteKind::MultipleSheets
+                | CollectedNoteKind::AnimatedSource
+                | CollectedNoteKind::MultiSizeIcon
+                | CollectedNoteKind::EmbeddedCoverArt
+                | CollectedNoteKind::Other => {}
+            }
+        }
+        exhaustive(CollectedNoteKind::Other);
+    }
+
+    // §6.4.1 unit (G15): the §1.4 `CollectedNote` record — { kind, detail } in camelCase, with both the
+    // `detail: Some` and `detail: None` (→ JSON null) cases round-tripped.
+    #[test]
+    fn collected_note_wire_form_is_camelcase_and_roundtrips() {
+        let note = CollectedNote {
+            kind: CollectedNoteKind::MultipleSheets,
+            detail: Some("3 sheets".to_owned()),
+        };
+        assert_eq!(
+            serde_json::to_string(&note).expect("CollectedNote serializes"),
+            r#"{"kind":"multipleSheets","detail":"3 sheets"}"#,
+            "§1.4: CollectedNote is {{ kind, detail }} in camelCase wire form"
+        );
+        let bare = CollectedNote {
+            kind: CollectedNoteKind::AnimatedSource,
+            detail: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&bare).expect("CollectedNote(None) serializes"),
+            r#"{"kind":"animatedSource","detail":null}"#,
+            "§1.4: a value-less note carries detail=null"
+        );
+        for n in [note, bare] {
+            let json = serde_json::to_string(&n).expect("CollectedNote serializes");
+            let back: CollectedNote =
+                serde_json::from_str(&json).expect("CollectedNote round-trips");
+            assert_eq!(
+                back, n,
+                "§1.4: CollectedNote round-trips through its wire form"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15): the §0.6 `CollectedSet` enum — the C1/C2a return + §1.4 confirm shape. The
+    // `Single` variant locks the FULL confirm-summary wire shape incl. the camelCase
+    // `totalBytes`/`encodingHint`/`delimiterHint` field renames (serde does NOT cascade the enum-level
+    // rename to struct-variant fields, so the per-variant attr is load-bearing) and the externally-tagged
+    // `{"single":{…}}` form embedding a DroppedItem/SkippedItem/CollectedNote; the four simpler variants
+    // lock their own externally-tagged forms (incl. the Mixed tuple → `[fmt, count]` array). Every variant
+    // round-trips, and the no-wildcard `exhaustive` arm locks variant MEMBERSHIP. `Uuid::nil()` keeps the
+    // id fields deterministic.
+    #[test]
+    fn collected_set_wire_forms_and_membership() {
+        let single = CollectedSet::Single {
+            id: CollectedSetId(Uuid::nil()),
+            instance: InstanceId(Uuid::nil()),
+            format: UserFacingFormat::Csv,
+            items: vec![DroppedItem {
+                item: ItemId(0),
+                raw_path: PathBuf::from("data.csv"),
+                resolved_path: PathBuf::from("data.csv"),
+                size_bytes: 2048,
+                detected: DetectionOutcome::Recognized {
+                    format: UserFacingFormat::Csv,
+                    confidence: Confidence::High,
+                    dims: None,
+                },
+            }],
+            count: 1,
+            skipped: vec![SkippedItem {
+                item: ItemId(1),
+                source: PathBuf::from("notes.xyz"),
+                reason: SkipReason::UnsupportedType,
+            }],
+            total_bytes: 2048,
+            roots: vec![PathBuf::from("folder")],
+            encoding_hint: Some("Windows-1252".to_owned()),
+            delimiter_hint: Some(";".to_owned()),
+            notes: vec![CollectedNote {
+                kind: CollectedNoteKind::MultipleSheets,
+                detail: Some("3 sheets".to_owned()),
+            }],
+        };
+        assert_eq!(
+            serde_json::to_string(&single).expect("Single serializes"),
+            r#"{"single":{"id":"00000000-0000-0000-0000-000000000000","instance":"00000000-0000-0000-0000-000000000000","format":"csv","items":[{"item":0,"rawPath":"data.csv","resolvedPath":"data.csv","sizeBytes":2048,"detected":{"recognized":{"format":"csv","confidence":"high","dims":null}}}],"count":1,"skipped":[{"item":1,"source":"notes.xyz","reason":"unsupportedType"}],"totalBytes":2048,"roots":["folder"],"encodingHint":"Windows-1252","delimiterHint":";","notes":[{"kind":"multipleSheets","detail":"3 sheets"}]}}"#,
+            "§0.4.3/§0.6/§1.4: CollectedSet::Single is the full externally-tagged camelCase confirm-summary wire shape"
+        );
+        let mixed = CollectedSet::Mixed {
+            found: vec![(UserFacingFormat::Jpg, 3), (UserFacingFormat::Png, 2)],
+        };
+        assert_eq!(
+            serde_json::to_string(&mixed).expect("Mixed serializes"),
+            r#"{"mixed":{"found":[["jpg",3],["png",2]]}}"#,
+            "§1.3: Mixed lists each found (format, count) as a [tag, n] array"
+        );
+        let unsupported = CollectedSet::Unsupported {
+            detected: "PostScript".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_string(&unsupported).expect("Unsupported serializes"),
+            r#"{"unsupported":{"detected":"PostScript"}}"#,
+            "§1.2: Unsupported names the detected type"
+        );
+        let uncertain = CollectedSet::Uncertain {
+            note: "could be tiff or raw".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_string(&uncertain).expect("Uncertain serializes"),
+            r#"{"uncertain":{"note":"could be tiff or raw"}}"#,
+            "§1.2: Uncertain carries the can't-tell note"
+        );
+        let empty = CollectedSet::Empty { skipped: vec![] };
+        assert_eq!(
+            serde_json::to_string(&empty).expect("Empty serializes"),
+            r#"{"empty":{"skipped":[]}}"#,
+            "§1.3: a genuinely-zero-items Empty carries an empty skipped vec"
+        );
+
+        for set in [single, mixed, unsupported, uncertain, empty] {
+            let json = serde_json::to_string(&set).expect("CollectedSet serializes");
+            let back: CollectedSet = serde_json::from_str(&json).expect("CollectedSet round-trips");
+            assert_eq!(
+                back, set,
+                "§0.6: CollectedSet round-trips through its wire form"
+            );
+        }
+
+        // Compiler-enforced membership: no wildcard arm (the crate denies wildcard_enum_match_arm).
+        fn exhaustive(s: &CollectedSet) {
+            match s {
+                CollectedSet::Single { .. }
+                | CollectedSet::Mixed { .. }
+                | CollectedSet::Unsupported { .. }
+                | CollectedSet::Uncertain { .. }
+                | CollectedSet::Empty { .. } => {}
+            }
+        }
+        exhaustive(&CollectedSet::Empty { skipped: vec![] });
     }
 }
