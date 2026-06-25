@@ -1,10 +1,10 @@
 //! ConvertIA core — the Tauri v2 host binary entry point.
 //!
 //! P1.13 stands up the Tauri v2 `Builder` entrypoint on Tauri's managed multi-threaded tokio async
-//! runtime (§0.4.0/§0.8/§0.9): the §0.4.5 tauri-specta codegen seam — `collect_commands!`/
-//! `collect_events!` empty until the C1..C13 commands + E-series events of P2, plus the P1.25
-//! standalone `.types(...)` registration of the §0.6 identity newtypes so they never generate as
-//! `any` — the empty-but-present `invoke_handler`, and the `mount_events` setup hook. The §0.7
+//! runtime (§0.4.0/§0.8/§0.9): the §0.4.5 tauri-specta codegen seam — `collect_commands!` carries the
+//! C1..C13 §0.4.1 command surface from P2.21 (interface shells; `collect_events!` stays empty until the
+//! E-series events of P2.37), plus the P1.25 standalone `.types(...)` registration of the §0.6 identity
+//! newtypes so they never generate as `any` — the `invoke_handler`, and the `mount_events` setup hook. The §0.7
 //! logical-module roots (`domain`/`outcome`/`ipc`/…) were scaffolded in P1.9–P1.11; the §7.2.1 ordered
 //! startup spine is P2; the window MODEL is locked in P1.16 (the config-declared single `main` window;
 //! the rendered frame is P1.23+P1.31); generating + committing `bindings.ts` from this builder is P1.26.
@@ -108,19 +108,42 @@ fn register_ipc_taxonomy_types(types: specta::Types) -> specta::Types {
 /// generated `src/lib/ipc/bindings.ts` is produced from (the `bindings_codegen` export test, driven by
 /// `cargo run -p xtask -- codegen`, §0.4.5) AND the runtime invoke/event registry (`main`). Sharing one
 /// constructor is what guarantees the generated TS surface can never drift from the registered Rust
-/// surface. The command + event sets are EMPTY in P1 — the C1..C13 commands and the E-series events are
-/// authored in P2.
+/// surface. The C1..C13 §0.4.1 command set is registered from P2.21 (interface shells, each filled by its
+/// per-command fill-box); the E-series event set stays EMPTY until P2.37.
 ///
-/// §0.6 standalone-type registration: with the command set empty the §0.6 identity newtypes are
-/// referenced by no command signature, so without an explicit registration tauri-specta omits them from
-/// `bindings.ts` (and a future C-arg reaching an un-registered one would emit `any` — §0.4.5 / the §0.6
-/// "in collect_types![] or the drift check emits `any`" line). tauri-specta v2 has NO `collect_types!`
-/// macro; its canonical equivalent is `specta::Types::default().register::<T>()` chained per type, handed
-/// to `Builder::types(&types)` — so the five P1.9 identity types emit as named TS types from the first
-/// `bindings.ts` commit (the C1–C13 args that USE them are P2).
+/// §0.6 standalone-type registration: the §0.6 identity newtypes are still referenced by no command
+/// signature (the P2.21 shells are argument-/return-free), so without an explicit registration tauri-specta
+/// omits them from `bindings.ts` (and a future C-arg reaching an un-registered one would emit `any` —
+/// §0.4.5 / the §0.6 "in collect_types![] or the drift check emits `any`" line). tauri-specta v2 has NO
+/// `collect_types!` macro; its canonical equivalent is `specta::Types::default().register::<T>()` chained
+/// per type, handed to `Builder::types(&types)` — so the five P1.9 identity types emit as named TS types
+/// from the first `bindings.ts` commit (the C1–C13 args that USE them arrive with the per-command fill-boxes).
 fn ipc_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::<tauri::Wry>::new()
-        .commands(tauri_specta::collect_commands![])
+        // §0.4.1 command surface (P2.21): the C1–C13 handlers, one-file-per-command-group (§0.7),
+        // registered as interface shells — each command's full request/response contract + orchestrator
+        // delegation is authored by its named fill-box (see `crate::ipc`); the closed-set completeness +
+        // drift gate over this list is P2.36 (G23). The E-series events stay empty until P2.37.
+        .commands(tauri_specta::collect_commands![
+            // intake (§0.4.1 C1 / C2a / C13)
+            crate::ipc::intake::ingest_paths,
+            crate::ipc::intake::pick_for_intake,
+            crate::ipc::intake::cancel_ingest,
+            // planning (§0.4.1 C2b / C3 / C4 / C5)
+            crate::ipc::planning::pick_destination,
+            crate::ipc::planning::get_targets,
+            crate::ipc::planning::plan_output,
+            crate::ipc::planning::set_destination,
+            // conversion run lifecycle (§0.4.1 C6 / C7 / C8)
+            crate::ipc::conversion::start_conversion,
+            crate::ipc::conversion::cancel_run,
+            crate::ipc::conversion::get_run_summary,
+            // system / info (§0.4.1 C9 / C10 / C11 / C12)
+            crate::ipc::system::open_path,
+            crate::ipc::system::open_project_page,
+            crate::ipc::system::get_app_info,
+            crate::ipc::system::get_engine_health,
+        ])
         .events(tauri_specta::collect_events![])
         .types(&register_ipc_taxonomy_types(register_ipc_identity_types(
             specta::Types::default(),
@@ -129,8 +152,8 @@ fn ipc_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
 
 fn main() -> tauri::Result<()> {
     // §0.4.5 IPC seam: the shared `ipc_specta_builder()` is BOTH the runtime invoke/event registry and
-    // the single source the generated `bindings.ts` is produced from (no drift between them). Empty
-    // command/event sets in P1 — the C1..C13 commands + the E-series events are authored in P2.
+    // the single source the generated `bindings.ts` is produced from (no drift between them). The C1..C13
+    // §0.4.1 command surface is registered from P2.21 (interface shells); the E-series events join at P2.37.
     let builder = ipc_specta_builder();
 
     // [Build-Session-Entscheidung: P1.13] Async runtime: ConvertIA runs on Tauri v2's own managed
@@ -393,6 +416,48 @@ mod bindings_codegen {
             ts.ends_with('\n') && !ts.ends_with("\n\n"),
             "the committed bindings.ts must end with exactly one final newline (editorconfig / G52)"
         );
+    }
+
+    // §6.4.1 unit (G15): the §0.4.1 command SURFACE registered at P2.21. The C1–C13 handlers are registered
+    // as interface shells on the shared `ipc_specta_builder()`, so the committed bindings.ts (the frontend's
+    // only IPC door, §0.7) must expose all 14 commands. Read the committed artifact back (the §0.2
+    // read-the-output-back discipline applied to the IPC surface) and assert the `commands` export plus each
+    // canonical Tauri command id — so a dropped/renamed registration reddens L2 BEFORE the P2.36 closed-set
+    // drift gate (G23) sees it at push. (C1–C13 = 14 commands: §0.4.1's C2 splits into C2a `pick_for_intake`
+    // + C2b `pick_destination`.) PINNED BY NAME (not a bare count) so a drop/rename gives a legible diff.
+    #[test]
+    fn committed_bindings_expose_the_c1_c13_command_surface() {
+        let ts = std::fs::read_to_string(TRACKED_BINDINGS_PATH).expect(
+            "the committed src/lib/ipc/bindings.ts must exist — regenerate it via the xtask codegen task",
+        );
+        assert!(
+            ts.contains("export const commands"),
+            "the committed bindings.ts must expose the `commands` IPC surface (§0.4.1 / P2.21)"
+        );
+        // The canonical Tauri command ids = the snake_case `invoke(...)` names = the registered Rust fn
+        // names, one per §0.4.1 row C1..C13. The double-quoted form matches only the generated `invoke`
+        // call, never the back-ticked command name inside a doc comment.
+        for cmd in [
+            "ingest_paths",      // C1
+            "pick_for_intake",   // C2a
+            "pick_destination",  // C2b
+            "get_targets",       // C3
+            "plan_output",       // C4
+            "set_destination",   // C5
+            "start_conversion",  // C6
+            "cancel_run",        // C7
+            "get_run_summary",   // C8
+            "open_path",         // C9
+            "open_project_page", // C10
+            "get_app_info",      // C11
+            "get_engine_health", // C12
+            "cancel_ingest",     // C13
+        ] {
+            assert!(
+                ts.contains(&format!("\"{cmd}\"")),
+                "the §0.4.1 command `{cmd}` must be registered in the committed bindings.ts (the P2.21 surface)"
+            );
+        }
     }
 }
 
