@@ -260,6 +260,25 @@ pub enum ReadFailure {
     IoError,
 }
 
+// ─── §1.3 EmptyReport — the all-ineligible-drop report feeding the Empty { skipped } tally (P2.17) ──
+/// The §1.3 all-ineligible-drop report (§1.2 / §0.6) — carries every dropped item's §1.2 `DetectionResult`
+/// when `group()` (P3) finds NO eligible source, so the §1.3 `Empty(EmptyReport) → CollectedSet` projection
+/// can pick the SPECIFIC variant (a lone `Unsupported` / lone `Uncertain`, else `Empty { skipped }` with the
+/// per-item `SkipReason`s) instead of a reason-less empty. The per-item reasons come from the §1.2/§1.3
+/// `DetectionOutcome::skip_reason` projection (P2.16) over these `outcomes`.
+///
+/// [Build-Session-Entscheidung: P2.17] INTERNAL type (the §1.3 `Grouping` intermediate maps onto the wire
+/// `CollectedSet`, so this never crosses IPC — the same posture as `Batch` / `OutputPlan`), hence NO
+/// `serde`/`specta`. Derives `Debug, Clone, PartialEq, Eq` (the internal-type set); NOT `Copy` (owns a
+/// `Vec`). `Eq` holds (`DetectionResult` is `Eq`, P2.15). `pub outcomes` since `group()` (P3) constructs it
+/// and the projection reads it — no validation invariant a private field would protect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmptyReport {
+    /// Every dropped item's §1.2 detection result, in the §1.1 freeze order — all ineligible (there was no
+    /// eligible source); the §1.3 projection reads these to build the per-item `SkippedItem` reasons.
+    pub outcomes: Vec<DetectionResult>,
+}
+
 // ─── §0.6 DroppedItem — one eligible item in the §1.1-frozen collected set ───────
 /// One eligible item in the §1.1-frozen collected set — the per-item record the pipeline carries
 /// from freeze through conversion (§0.6 / §1.2). It is a wire type: it reaches the WebView as
@@ -1460,6 +1479,46 @@ mod tests {
             Some(SkipReason::Unreadable),
             "§1.2/§1.3: Unreadable → SkipReason::Unreadable (by name)"
         );
+    }
+
+    // §6.4.1 unit (G15): the §1.3/§0.6 `EmptyReport` contract (P2.17) — the all-ineligible-drop report
+    // carries every item's §1.2 `DetectionResult` (in freeze order) so the §1.3 projection can build the
+    // per-item skip reasons. INTERNAL type (no wire form): construction + field-access + the all-ineligible
+    // precondition (each outcome projects to a `SkipReason` via P2.16's `skip_reason`), no serde round-trip.
+    #[test]
+    fn empty_report_carries_the_per_item_detection_outcomes() {
+        let report = EmptyReport {
+            outcomes: vec![
+                DetectionResult {
+                    item: ItemId(0),
+                    outcome: DetectionOutcome::Empty,
+                },
+                DetectionResult {
+                    item: ItemId(1),
+                    outcome: DetectionOutcome::Unreadable {
+                        reason: ReadFailure::PermissionDenied,
+                    },
+                },
+            ],
+        };
+        assert_eq!(
+            report.outcomes.len(),
+            2,
+            "§1.3: EmptyReport holds every dropped item's detection result"
+        );
+        assert_eq!(
+            report.outcomes.first().map(|r| r.item),
+            Some(ItemId(0)),
+            "§0.6: the report preserves the single-id-space ids in freeze order"
+        );
+        // every carried outcome is ineligible (the all-ineligible-drop precondition) → each projects to a
+        // `SkipReason` (P2.16), which the §1.3 projection reads to build the `Empty { skipped }` tally.
+        for r in &report.outcomes {
+            assert!(
+                r.outcome.skip_reason().is_some(),
+                "§1.3: every EmptyReport outcome is ineligible, so it projects to a SkipReason"
+            );
+        }
     }
 
     // §6.4.1 unit (G15): the §0.6 `SkippedItem` record — the id-disjoint ineligible-item view. Locks the
