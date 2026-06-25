@@ -23,3 +23,38 @@ pub mod conversion;
 pub mod intake;
 pub mod planning;
 pub mod system;
+
+#[cfg(test)]
+mod command_surface {
+    //! §6.4.1 unit (G15): the §0.4.1 C1–C13 command surface — **14 handlers** (C2 splits into C2a
+    //! `pick_for_intake` + C2b `pick_destination`) — registered as shells at P2.21 are real, INVOCABLE
+    //! async commands, not merely registered symbols. The `main.rs` `bindings_codegen` read-back test proves
+    //! the generated TS surface lists all 14; this proves the Rust side: each registered handler is a live
+    //! `async fn` that runs to completion. Together they assert the command door is functional end-to-end.
+    //! The fill-boxes (P2.22+) replace each invocation here with that command's typed-contract test as they
+    //! author its real signature + `crate::orchestrator` delegation. [Build-Session-Entscheidung: P2.21]
+    use tauri::async_runtime::block_on;
+
+    // §6.4.1 unit (G15): invoke every §0.4.1 command shell so the registered surface is EXERCISED (the
+    // handler runs, not merely compiles + registers). Each empty shell body completes without panic — the
+    // contract an interface shell carries until its fill-box authors the typed body. All 14 invocations sit
+    // in ONE test fn so the Tauri async runtime is initialised once (no cross-test re-init). Listed in the
+    // §0.4.1 C1..C13 order (the 14 handlers: C2 = C2a `pick_for_intake` + C2b `pick_destination`).
+    #[test]
+    fn every_registered_command_shell_is_invocable() {
+        block_on(super::intake::ingest_paths()); // C1
+        block_on(super::intake::pick_for_intake()); // C2a
+        block_on(super::planning::pick_destination()); // C2b
+        block_on(super::planning::get_targets()); // C3
+        block_on(super::planning::plan_output()); // C4
+        block_on(super::planning::set_destination()); // C5
+        block_on(super::conversion::start_conversion()); // C6
+        block_on(super::conversion::cancel_run()); // C7
+        block_on(super::conversion::get_run_summary()); // C8
+        block_on(super::system::open_path()); // C9
+        block_on(super::system::open_project_page()); // C10
+        block_on(super::system::get_app_info()); // C11
+        block_on(super::system::get_engine_health()); // C12
+        block_on(super::intake::cancel_ingest()); // C13
+    }
+}
