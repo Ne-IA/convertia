@@ -39,7 +39,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 use crate::domain::{CollectedSetId, CollectingId, InstanceId, ItemId, LossyKind, RunId};
-use crate::outcome::IpcError;
+use crate::outcome::{IpcError, OutcomeMsg};
 
 /// [Build-Session-Entscheidung: P1.15] The §7.2.1 step-2 boot context: the per-launch identity plus
 /// the three resolved base dirs, held as the §7.1.2 app-managed singleton (`app.manage`). Its home is
@@ -90,9 +90,18 @@ fn register_ipc_identity_types(types: specta::Types) -> specta::Types {
 /// `Err` / `ItemOutcome::Failed.error` returns) joins here: §0.4.3 mandates it derive `specta::Type` AND
 /// be registered in `collect_types![]`, and registering it pulls its `kind: ConversionErrorKind` field
 /// into the export as a named type — satisfying the §2.8.2 `ConversionErrorKind` registration via its
-/// consumer (the P2.18 defer-to-IpcError/OutcomeMsg decision). `OutcomeMsg` joins at P2.20.
+/// consumer (the P2.18 defer-to-IpcError/OutcomeMsg decision).
+///
+/// [Build-Session-Entscheidung: P2.20] `OutcomeMsg` (§2.8.2 — the surfaced per-item `ItemResult.reason`
+/// line) joins here: §2.8.2 (line 1261) mandates it derive `specta::Type` AND be registered so
+/// `ItemResult.reason` mirrors as the named `OutcomeMsg`, not `any`; registering it pulls its referenced
+/// `SkipReason` (`OutcomeMsg::Skipped.reason`) into the export as a named type (the `ConversionErrorKind`/
+/// `LossyKind` it also references are already named via `IpcError` / the standalone `LossyKind`).
 fn register_ipc_taxonomy_types(types: specta::Types) -> specta::Types {
-    types.register::<LossyKind>().register::<IpcError>()
+    types
+        .register::<LossyKind>()
+        .register::<IpcError>()
+        .register::<OutcomeMsg>()
 }
 
 /// [Build-Session-Entscheidung: P1.25/P1.26] The single tauri-specta `Builder` — the ONE source the
@@ -251,15 +260,16 @@ mod ipc_typegen {
         );
     }
 
-    // §6.4.1 unit (G15): the §2.8.2 / §0.4.3 wire-taxonomy registration. §2.8.2 requires `LossyKind` and
-    // §0.4.3 requires `IpcError` be registered in collect_types![] so `Target.lossy` / every command `Err`
-    // never emit `any`. The registered set is PINNED BY NAME (not a bare count) so a dropped / added /
-    // renamed registration reddens the build with a legible diff (the anti-drift discipline).
-    // [Test-Change: P2.19 — old-obsolete: the P2.8 bare "len == 1" assertion is superseded once §0.4.3 adds
-    // the IpcError registration; new-correct: verified by read-back of the registered NAMES — LossyKind +
-    // IpcError + the three named types IpcError pulls in (`ConversionErrorKind` = kind, `PathBuf` =
-    // path/residue, `String` = message); PathBuf/String render inline as TS `string` but specta tracks them
-    // as named map entries, exactly as `Uuid` is for the identity set's count of 6, §0.4.3]
+    // §6.4.1 unit (G15): the §2.8.2 / §0.4.3 wire-taxonomy registration. §2.8.2 requires `LossyKind` +
+    // `OutcomeMsg` and §0.4.3 requires `IpcError` be registered in collect_types![] so `Target.lossy` /
+    // `ItemResult.reason` / every command `Err` never emit `any`. The registered set is PINNED BY NAME (not a
+    // bare count) so a dropped / added / renamed registration reddens the build with a legible diff.
+    // [Test-Change: P2.20 — old-obsolete+new-correct, §2.8.2] old: the P2.19 set lacked `OutcomeMsg`; new
+    // (verified by read-back of the registered NAMES): P2.20 adds `.register::<OutcomeMsg>()`, which also pulls
+    // in `SkipReason` (`OutcomeMsg::Skipped.reason`) as a named type — `ConversionErrorKind`/`LossyKind`/
+    // `PathBuf`/`String` were already named via `IpcError` / the standalone `LossyKind`. Net add: OutcomeMsg +
+    // SkipReason (PathBuf/String render inline as TS `string` but specta tracks them as named map entries,
+    // exactly as `Uuid` is for the identity set's count of 6, §0.4.3).
     #[test]
     fn taxonomy_types_registered_for_typegen() {
         let types = register_ipc_taxonomy_types(specta::Types::default());
@@ -270,9 +280,9 @@ mod ipc_typegen {
         names.sort();
         assert_eq!(
             names.join(","),
-            "ConversionErrorKind,IpcError,LossyKind,PathBuf,String",
-            "§2.8.2/§0.4.3: the wire-taxonomy registration is exactly LossyKind + IpcError + the 3 named \
-             types IpcError pulls in (ConversionErrorKind / PathBuf / String)"
+            "ConversionErrorKind,IpcError,LossyKind,OutcomeMsg,PathBuf,SkipReason,String",
+            "§2.8.2/§0.4.3: the wire-taxonomy registration is LossyKind + IpcError + OutcomeMsg + the named \
+             types they pull in (ConversionErrorKind / SkipReason / PathBuf / String)"
         );
     }
 }

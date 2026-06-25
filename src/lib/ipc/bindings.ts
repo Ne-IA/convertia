@@ -196,5 +196,75 @@ export type LossyKind =
 /**  surround forced to stereo by codec (rare; audio.md). */
 "audio_downmix";
 
+/**
+ *  The §2.8.2 surfaced per-item outcome — the *resolved, ready-to-show* line for one item, carried by the
+ *  §0.6 `ItemResult.reason: Option<OutcomeMsg>` (which rides the `RunFinished` Channel payload + the C8
+ *  return, §0.4.2/§1.12). It is **either** a §2.8 failure, a §2.9 lossy note, **or** a §1.1/§1.3 pre-flight
+ *  skip — three distinct variants so a consumer pattern-matching `OutcomeMsg` can tell skip from fail WITHOUT
+ *  also reading `ItemResult.state` (§0.6 keeps `Skipped`/`Failed` distinct, §1.12 `Totals` counts them
+ *  separately — "must not be conflated"). Each variant carries the stable discriminant (`kind`/`reason`) so
+ *  §5 may re-localise (§2.10) AND the resolved English `text` (the §2.8.2 catalog row / §2.9.1 note with its
+ *  `{x}` substitutions already applied), so the §5.3 Summary needs no second lookup.
+ *
+ *  [Build-Session-Entscheidung: P2.20] OUTBOUND-ONLY (it crosses the boundary inside the outbound
+ *  `RunResult`/`ItemResult`, never deserialized from the WebView) — `Serialize` + `Type` (the §2.8.2
+ *  wire-required pair so `ItemResult.reason` mirrors as the named `OutcomeMsg`, not `any`) + `Debug, Clone,
+ *  PartialEq, Eq` (ergonomics + the serialize-pin tests); NOT `Copy` (owns a `String` per variant); NO
+ *  `Deserialize` (outbound-only, mirroring `IpcError`/`ConversionErrorKind`). Adjacently tagged
+ *  (`tag = "type", content = "data"`) so each variant is a discriminated `{ type, data }` object on the wire.
+ *  Registered in the P1.25 type registry (§2.8.2 line 1261 mandate), which pulls its referenced `SkipReason`
+ *  (+ the already-registered `ConversionErrorKind`/`LossyKind`) into the export as named types. `Failure.kind`
+ *  is spelled with the CONCRETE `ConversionErrorKind`, NOT the `ErrorKind` alias — mirroring the P2.19
+ *  `IpcError.kind` decision (referencing the forward-declared alias from a production-dead item trips the
+ *  rustc dead-code-expectation/alias interaction; specta resolves the alias to the same wire type regardless).
+ */
+export type OutcomeMsg =
+/**
+ *  A §2.8 conversion FAILURE (the item entered the queue and failed) — `kind` is the §2.8.1 taxonomy code,
+ *  `text` the §2.8.2 catalog row with its substitutions applied.
+ */
+{ type: "failure"; data: {
+	kind: ConversionErrorKind,
+	text: string,
+} } |
+/**
+ *  A §2.9 predictable-LOSS note on an otherwise-successful conversion — `kind` is the §2.9.1 catalog key,
+ *  `text` the §2.9.1 note.
+ */
+{ type: "lossy"; data: {
+	kind: LossyKind,
+	text: string,
+} } |
+/**
+ *  A §1.1/§1.3 pre-flight SKIP (a detection-ineligible item that never entered the queue, projected into
+ *  `RunResult.items` at run-end, §1.12) — `reason` is the §0.6 `SkipReason`. A skip rides THIS skip-shaped
+ *  variant, NOT `Failure`, so skip ≠ fail at the type level (§1.12).
+ */
+{ type: "skipped"; data: {
+	reason: SkipReason,
+	text: string,
+} };
+
 /**  One per `start_conversion` run (§0.4 C6 / §7.1). */
 export type RunId = string;
+
+/**
+ *  Why a dropped item was skipped — the four detection-INELIGIBLE §1.2 outcome classes (§0.6 / §1.3).
+ *  Carried on `SkippedItem.reason` as the canonical skip cause. The `DetectionOutcome → SkipReason`
+ *  projection is P2.16, and the ONE-WAY forward `SkipReason → ErrorKind` projection (the non-invertible
+ *  `Uncertain → Unrecognized`, §2.8.2) lives on the §1.12 helper (P2.20), never on this type. NOT
+ *  `ErrorKind`: a skip is a freeze-time ineligibility, distinct from a conversion-time failure.
+ *
+ *  [Build-Session-Entscheidung: P2.5] Mirrors the sibling fieldless wire enums (`ReadFailure` /
+ *  `Confidence`): `Copy` (fieldless) + the uniform `#[serde(rename_all = "camelCase")]` wire form
+ *  (`unsupportedType` / `uncertain` / `empty` / `unreadable`). No `Hash` (not a map key).
+ */
+export type SkipReason =
+/**  A real type we identified but do not convert (the ineligible `DetectionOutcome::UnsupportedType`). */
+"unsupportedType" |
+/**  Sniffed but contradictory / below threshold — we declined to guess (`DetectionOutcome::Uncertain`). */
+"uncertain" |
+/**  0-byte / no bytes to read (`DetectionOutcome::Empty`). */
+"empty" |
+/**  Could not read the bytes at all (`DetectionOutcome::Unreadable`). */
+"unreadable";

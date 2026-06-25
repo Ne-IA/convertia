@@ -3,19 +3,23 @@
 //! (the §0.7 tier module renamed from `error`; there is no `crate::error`).
 //!
 //! P1 established the module so the §0.7 tree compiles and the §06 drift mechanism has a home. P2.18
-//! authors the §2.8.1 `ConversionErrorKind` taxonomy + its §0.4.3 `ErrorKind` wire alias here; the
-//! `IpcError` shape (P2.19), the `OutcomeMsg` surfaced-string type (P2.20), and the §2.8.2 message
-//! catalog land in their own P2 boxes (§02 owns the outcome strings).
+//! authored the §2.8.1 `ConversionErrorKind` taxonomy + its §0.4.3 `ErrorKind` wire alias here, P2.19 the
+//! `IpcError` shape, and P2.20 the `OutcomeMsg` surfaced-string type + the one-way `SkipReason → ErrorKind`
+//! §1.12 projection helper; only the §2.8.2 message CATALOG (the kind → resolved-string producer) lands in
+//! a later P2 box (§02 owns the outcome strings).
 
-// [Build-Session-Entscheidung: P2.18] The §2.8 taxonomy is forward-declared here before its P2.19/P2.20
-// IPC consumers (`IpcError`/`OutcomeMsg`) register it, so `ConversionErrorKind` is dead in the PRODUCTION
-// build until consumed; the cfg(test) anti-drift tests reference it, so the TEST build is dead-code-clean.
-// `expect` (not `allow`) auto-flags the moment the taxonomy becomes consumed — matching `crate::domain`.
+// [Build-Session-Entscheidung: P2.18/P2.20] The §2.8 wire-taxonomy (`ConversionErrorKind`/`ErrorKind`), the
+// §0.4.3 `IpcError`, the `OutcomeMsg` surfaced line, and the §1.12 `SkipReason → ErrorKind` helper are all
+// authored as CONTRACTS and registered for typegen (`collect_types![]`), but registration is a type-PARAMETER
+// reference, not a construction — and no production path CONSTRUCTS an outcome / calls the helper yet (the
+// pipeline that emits them is P3/P4+). So they are dead in the PRODUCTION build until then; the cfg(test)
+// anti-drift + wire-form tests reference them, so the TEST build is dead-code-clean. `expect` (not `allow`)
+// auto-flags the moment the first production constructor/caller lands — matching `crate::domain`.
 #![cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the §2.8.1 ConversionErrorKind taxonomy + the §0.4.3 ErrorKind alias are forward-declared before their P2.19/P2.20 IPC consumers register them, so they are dead in the production build until consumed."
+        reason = "the §2.8 taxonomy + IpcError + OutcomeMsg + the §1.12 SkipReason→ErrorKind helper are authored as contracts and registered for typegen, but no production path CONSTRUCTS an outcome / calls the helper until the P3/P4+ pipeline, so they are dead in the production build until then."
     )
 )]
 
@@ -23,6 +27,8 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 use specta::Type;
+
+use crate::domain::{LossyKind, SkipReason};
 
 // [Build-Session-Entscheidung: P2.18] Derive set: §0.4.3/§2.8.1 show the WIRE-required `Serialize` +
 // `specta::Type` (so the kind mirrors to `bindings.ts` rather than `any`); `Debug, Clone, Copy, PartialEq,
@@ -143,6 +149,71 @@ pub struct IpcError {
     /// The optional residue location when §2.6 cleanup could not complete — so the item is never reported
     /// as a clean success.
     pub residue: Option<PathBuf>,
+}
+
+// ─── §2.8.2 OutcomeMsg — the surfaced per-item outcome line (P2.20) ──
+/// The §2.8.2 surfaced per-item outcome — the *resolved, ready-to-show* line for one item, carried by the
+/// §0.6 `ItemResult.reason: Option<OutcomeMsg>` (which rides the `RunFinished` Channel payload + the C8
+/// return, §0.4.2/§1.12). It is **either** a §2.8 failure, a §2.9 lossy note, **or** a §1.1/§1.3 pre-flight
+/// skip — three distinct variants so a consumer pattern-matching `OutcomeMsg` can tell skip from fail WITHOUT
+/// also reading `ItemResult.state` (§0.6 keeps `Skipped`/`Failed` distinct, §1.12 `Totals` counts them
+/// separately — "must not be conflated"). Each variant carries the stable discriminant (`kind`/`reason`) so
+/// §5 may re-localise (§2.10) AND the resolved English `text` (the §2.8.2 catalog row / §2.9.1 note with its
+/// `{x}` substitutions already applied), so the §5.3 Summary needs no second lookup.
+///
+/// [Build-Session-Entscheidung: P2.20] OUTBOUND-ONLY (it crosses the boundary inside the outbound
+/// `RunResult`/`ItemResult`, never deserialized from the WebView) — `Serialize` + `Type` (the §2.8.2
+/// wire-required pair so `ItemResult.reason` mirrors as the named `OutcomeMsg`, not `any`) + `Debug, Clone,
+/// PartialEq, Eq` (ergonomics + the serialize-pin tests); NOT `Copy` (owns a `String` per variant); NO
+/// `Deserialize` (outbound-only, mirroring `IpcError`/`ConversionErrorKind`). Adjacently tagged
+/// (`tag = "type", content = "data"`) so each variant is a discriminated `{ type, data }` object on the wire.
+/// Registered in the P1.25 type registry (§2.8.2 line 1261 mandate), which pulls its referenced `SkipReason`
+/// (+ the already-registered `ConversionErrorKind`/`LossyKind`) into the export as named types. `Failure.kind`
+/// is spelled with the CONCRETE `ConversionErrorKind`, NOT the `ErrorKind` alias — mirroring the P2.19
+/// `IpcError.kind` decision (referencing the forward-declared alias from a production-dead item trips the
+/// rustc dead-code-expectation/alias interaction; specta resolves the alias to the same wire type regardless).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase", tag = "type", content = "data")]
+pub enum OutcomeMsg {
+    /// A §2.8 conversion FAILURE (the item entered the queue and failed) — `kind` is the §2.8.1 taxonomy code,
+    /// `text` the §2.8.2 catalog row with its substitutions applied.
+    Failure {
+        kind: ConversionErrorKind,
+        text: String,
+    },
+    /// A §2.9 predictable-LOSS note on an otherwise-successful conversion — `kind` is the §2.9.1 catalog key,
+    /// `text` the §2.9.1 note.
+    Lossy { kind: LossyKind, text: String },
+    /// A §1.1/§1.3 pre-flight SKIP (a detection-ineligible item that never entered the queue, projected into
+    /// `RunResult.items` at run-end, §1.12) — `reason` is the §0.6 `SkipReason`. A skip rides THIS skip-shaped
+    /// variant, NOT `Failure`, so skip ≠ fail at the type level (§1.12).
+    Skipped { reason: SkipReason, text: String },
+}
+
+// ─── §1.12 forward projection helper — SkipReason → ErrorKind (one-way, non-inverted) ──
+/// The §1.12 / §0.6 forward projection of a §0.6 `SkipReason` onto its §2.8.1 `ErrorKind` (== the concrete
+/// `ConversionErrorKind`). This is the ONE-WAY, non-invertible conversion the spec sanctions (§0.6 line 733 /
+/// §1.12): it is applied ONLY when a `Skipped` item must ALSO surface an `ErrorKind`-shaped display string —
+/// never to turn a skip into a failure (the `OutcomeMsg::Skipped` variant keeps skip ≠ fail; §1.12 "must not
+/// be conflated"). There is deliberately NO reverse `ErrorKind → SkipReason` map: `Uncertain → Unrecognized`
+/// is non-invertible (there is no `ErrorKind::Uncertain`), so the projection only ever runs forward.
+///
+/// [Build-Session-Entscheidung: P2.20] A NAMED helper, NOT a blanket `From<SkipReason> for ErrorKind` impl —
+/// an ambient `.into()` would make turning a skip into a failure-kind trivially available everywhere, blurring
+/// the §1.12 skip ≠ fail boundary the type system exists to keep. The explicit function keeps the one
+/// sanctioned forward projection greppable and intentional. The match is non-wildcard, so a new `SkipReason`
+/// variant fails to compile here — the helper is its own compile-time total-ness guard against the §0.6
+/// `SkipReason` set. Returns the concrete `ConversionErrorKind` (the `ErrorKind` alias's underlying type), the
+/// spelling consistent with `OutcomeMsg::Failure.kind` / `IpcError.kind`.
+pub fn skip_reason_to_error_kind(reason: SkipReason) -> ConversionErrorKind {
+    match reason {
+        SkipReason::UnsupportedType => ConversionErrorKind::UnsupportedType,
+        // The non-invertible one (§1.12): a freeze-time "couldn't confidently classify" maps to the
+        // conversion-time "couldn't tell what kind of file this is" — there is no `ErrorKind::Uncertain`.
+        SkipReason::Uncertain => ConversionErrorKind::Unrecognized,
+        SkipReason::Empty => ConversionErrorKind::Empty,
+        SkipReason::Unreadable => ConversionErrorKind::Unreadable,
+    }
 }
 
 #[cfg(test)]
@@ -273,6 +344,70 @@ mod tests {
             serde_json::to_string(&err).expect("IpcError serializes"),
             r#"{"kind":"writeFailed","message":"Could not write the output file.","path":"/out/report.pdf","residue":null}"#,
             "§0.4.3: IpcError is the single camelCase wire error shape (kind/message/path/residue)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §2.8.2 `OutcomeMsg` wire form (P2.20) — the surfaced per-item line carried by
+    // §0.6 `ItemResult.reason`, adjacently tagged (`type`/`data`) camelCase. OUTBOUND-ONLY, so a SERIALIZE
+    // pin (not a round-trip). One case per variant pins (1) the variant tag, (2) the embedded discriminant's
+    // wire casing — `ConversionErrorKind` camelCase, `LossyKind` snake_case (its §2.9.1-catalog casing),
+    // `SkipReason` camelCase — and (3) that a skip rides the `skipped` tag, NOT `failure` (§1.12 skip ≠ fail).
+    #[test]
+    fn outcome_msg_wire_form_is_adjacently_tagged_camelcase() {
+        let failure = OutcomeMsg::Failure {
+            kind: ConversionErrorKind::WriteFailed,
+            text: "ConvertIA couldn't save the converted file to that location.".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_string(&failure).expect("OutcomeMsg::Failure serializes"),
+            r#"{"type":"failure","data":{"kind":"writeFailed","text":"ConvertIA couldn't save the converted file to that location."}}"#,
+            "§2.8.2: Failure rides the `failure` tag with a camelCase ConversionErrorKind code"
+        );
+
+        let lossy = OutcomeMsg::Lossy {
+            kind: LossyKind::ImageLossyCodec,
+            text: "Some quality is lost saving to this format.".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_string(&lossy).expect("OutcomeMsg::Lossy serializes"),
+            r#"{"type":"lossy","data":{"kind":"image_lossy_codec","text":"Some quality is lost saving to this format."}}"#,
+            "§2.8.2/§2.9: Lossy rides the `lossy` tag with a snake_case LossyKind catalog key"
+        );
+
+        let skipped = OutcomeMsg::Skipped {
+            reason: SkipReason::Uncertain,
+            text: "ConvertIA couldn't tell what kind of file this is, so it can't convert it."
+                .to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_string(&skipped).expect("OutcomeMsg::Skipped serializes"),
+            r#"{"type":"skipped","data":{"reason":"uncertain","text":"ConvertIA couldn't tell what kind of file this is, so it can't convert it."}}"#,
+            "§1.12: a pre-flight skip rides the `skipped` tag (NOT `failure`), carrying a SkipReason"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §1.12 / §0.6 forward `SkipReason → ErrorKind` projection (P2.20). Pins the four
+    // one-way mappings — including the explicitly non-invertible `Uncertain → Unrecognized` (§1.12). The
+    // helper's own non-wildcard match is the COMPILE-TIME total-ness guard (a new SkipReason variant without a
+    // mapping fails to compile there), so the projection can never silently fall behind the §0.6 SkipReason set.
+    #[test]
+    fn skip_reason_projects_forward_to_error_kind() {
+        assert_eq!(
+            skip_reason_to_error_kind(SkipReason::UnsupportedType),
+            ConversionErrorKind::UnsupportedType
+        );
+        assert_eq!(
+            skip_reason_to_error_kind(SkipReason::Uncertain),
+            ConversionErrorKind::Unrecognized,
+            "§1.12: the non-invertible mapping — Uncertain has no same-named ErrorKind"
+        );
+        assert_eq!(
+            skip_reason_to_error_kind(SkipReason::Empty),
+            ConversionErrorKind::Empty
+        );
+        assert_eq!(
+            skip_reason_to_error_kind(SkipReason::Unreadable),
+            ConversionErrorKind::Unreadable
         );
     }
 }
