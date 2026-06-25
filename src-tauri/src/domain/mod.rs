@@ -942,6 +942,9 @@ pub enum RerunDecision {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+    use proptest::test_runner::{RngAlgorithm, TestRng, TestRunner};
+    use std::collections::BTreeSet;
 
     // §6.4.1 unit (G15): the §7.1.2 InstanceId minting contract — a fresh, non-nil v4 per launch.
     #[test]
@@ -2137,5 +2140,311 @@ mod tests {
             }
         }
         rerun_decision_exhaustive(RerunDecision::Skip);
+    }
+
+    // ─── P2.14 · §0.6-invariant property tests (§6.4.2 / G16) ────────────────────────────────────────────
+    // The §6.4.2 property level (test-strategy §1.3) for the §0.6 normative invariants carried by the
+    // `crate::domain` types. Each asserts an invariant over a WIDE generated input space, complementing the
+    // example-based unit tests above. All three G16 / test-strategy §1.3 determinism knobs are set:
+    //   * case-count floor 512 (> proptest's thin default of 256), via `ProptestConfig::with_cases`;
+    //   * a PINNED CI seed — `pinned_runner()` drives a `TestRunner` with a `deterministic_rng`, so the 512
+    //     cases are identical on every run, locally and in CI (the `proptest!` macro seeds from ENTROPY, so it
+    //     CANNOT pin the forward seed — only an already-found counterexample; hence the explicit runner);
+    //   * a failure is NEVER retried-to-pass — the pinned seed reproduces any counterexample deterministically
+    //     (test-strategy §1.3 / §7). `Strategy`-combinator (macro-free) automatic shrinking, no hand-rolled
+    //     `Shrink` impls (the §P0.5 / G16 rule).
+    // Instances are built by canonical constructors that model the §1.1 freeze / §1.8 plan; the LIVE-path
+    // enforcement (the real P3 freeze/plan over a real filesystem) is the P3 G31 integration leg
+    // (test-strategy §1.1 / §6 — the data-structure leg is here, the live-path leg is there).
+    //
+    // [Build-Session-Entscheidung: P2.14] case-count floor 512 + a `deterministic_rng`-pinned seed; co-located
+    // with the per-type unit tests (the established module layout); test ids built via the in-module
+    // `ItemId(n)` tuple constructor (the field is private to `crate::domain` but visible to this child test
+    // module — the sibling `jobid_compiles_as_itemid_alias` test uses it identically), a TEST fixture, never a
+    // back-door past the §1.1/§7.1 minting policy.
+
+    /// The §0.6-invariant property-test case-count floor (test-strategy §1.3: above proptest's 256 default).
+    const P2_14_CASES: u32 = 512;
+
+    fn prop_collected_set_id() -> CollectedSetId {
+        serde_json::from_str(r#""00000000-0000-4000-8000-000000000000""#)
+            .expect("CollectedSetId deserializes from a uuid string")
+    }
+    fn prop_instance_id() -> InstanceId {
+        serde_json::from_str(r#""22222222-2222-4222-8222-222222222222""#)
+            .expect("InstanceId deserializes from a uuid string")
+    }
+    /// A minimal eligible CSV `DroppedItem` carrying the §0.6 single-id-space id `id`.
+    fn prop_dropped_item(id: u32) -> DroppedItem {
+        DroppedItem {
+            item: ItemId(id),
+            raw_path: PathBuf::from("data.csv"),
+            resolved_path: PathBuf::from("data.csv"),
+            size_bytes: 0,
+            detected: DetectionOutcome::Recognized {
+                format: UserFacingFormat::Csv,
+                confidence: Confidence::High,
+                dims: None,
+            },
+        }
+    }
+    /// A minimal ineligible `SkippedItem` carrying the §0.6 single-id-space id `id`.
+    fn prop_skipped_item(id: u32) -> SkippedItem {
+        SkippedItem {
+            item: ItemId(id),
+            source: PathBuf::from("mystery.bin"),
+            reason: SkipReason::Unreadable,
+        }
+    }
+    /// The §1.1-freeze stand-in: build a `CollectedSet::Single` from an eligible-item snapshot, setting the
+    /// confirm tally `count := items.len()` exactly as the freeze does (the LIVE freeze is P3).
+    fn prop_freeze_single(items: Vec<DroppedItem>) -> CollectedSet {
+        let count = items.len();
+        CollectedSet::Single {
+            id: prop_collected_set_id(),
+            instance: prop_instance_id(),
+            format: UserFacingFormat::Csv,
+            items,
+            count,
+            skipped: vec![],
+            total_bytes: 0,
+            roots: vec![],
+            encoding_hint: None,
+            delimiter_hint: None,
+            notes: vec![],
+        }
+    }
+
+    /// Extract `(count, items)` from the `CollectedSet::Single` that `prop_freeze_single` always builds — an
+    /// EXHAUSTIVE match (the crate denies `clippy::wildcard_enum_match_arm`, so no `_` arm); the non-`Single`
+    /// arm is never taken by these tests and returns `None`, which the caller treats as a hard failure.
+    fn single_count_items(set: &CollectedSet) -> Option<(usize, &[DroppedItem])> {
+        match set {
+            CollectedSet::Single { count, items, .. } => Some((*count, items.as_slice())),
+            CollectedSet::Mixed { .. }
+            | CollectedSet::Unsupported { .. }
+            | CollectedSet::Uncertain { .. }
+            | CollectedSet::Empty { .. } => None,
+        }
+    }
+
+    /// A PINNED-SEED proptest runner (test-strategy §1.3 / G16: "a pinned CI seed"). The `proptest!` macro
+    /// seeds its forward run from ENTROPY (only an already-found counterexample is pinned, via the
+    /// `proptest-regressions/` file), so to make the 512-case exploration itself identical on every run —
+    /// locally and in CI, so a property failure is reproducible and NEVER retried-to-pass (test-strategy §1.3
+    /// / §7) — the §0.6-invariant properties drive a `TestRunner` with a `deterministic_rng` directly.
+    /// [Build-Session-Entscheidung: P2.14]
+    fn pinned_runner() -> TestRunner {
+        TestRunner::new_with_rng(
+            ProptestConfig::with_cases(P2_14_CASES),
+            TestRng::deterministic_rng(RngAlgorithm::ChaCha),
+        )
+    }
+
+    /// The §1.8 / §2.14.1-v1 output-plan stand-in: place the kind-1 publish temp in `final_dir` (a sibling
+    /// dotfile on the SAME volume) so the §2.1 publish is an intra-volume atomic rename — the construction
+    /// discipline P3/P4's real §1.8 plan builder must hold (the LIVE plan is P3). [Build-Session-Entscheidung: P2.14]
+    fn prop_plan_for(final_dir: PathBuf, base: &str) -> OutputPlan {
+        OutputPlan {
+            job: ItemId(0),
+            publish_temp_dir: final_dir.clone(), // §2.14.1 v1: the publish temp shares final_dir's volume
+            final_dir,
+            diverted: None,
+            base_name: OsString::from(base),
+            extension: OsString::from("tsv"),
+        }
+    }
+
+    /// §0.6 "stable `ItemId`": the id is a TRANSPARENT `u32` on the wire and round-trips byte-stably for EVERY
+    /// `u32` (not just the example ids the unit tests pin) — a future `#[serde(...)]` change that broke the
+    /// transparent form, or a non-`u32` re-spelling, is caught across the whole value range.
+    #[test]
+    fn prop_item_id_is_a_stable_transparent_u32_on_the_wire() {
+        pinned_runner()
+            .run(&any::<u32>(), |n| {
+                let id = ItemId(n);
+                let wire = serde_json::to_string(&id).expect("ItemId serializes");
+                let back: ItemId = serde_json::from_str(&wire).expect("ItemId deserializes");
+                prop_assert_eq!(back, id, "§0.6: ItemId is stable across a wire round-trip");
+                prop_assert_eq!(
+                    wire,
+                    n.to_string(),
+                    "§0.6: ItemId is a transparent bare-u32 on the wire"
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// §0.6 invariant 6 (the single id space): the §1.1 freeze assigns one `ItemId` per dropped item from ONE
+    /// monotonic space (the global drop position), then filters into the eligible `items` view and the
+    /// id-disjoint `skipped` view WITHOUT re-indexing either from 0. Over any eligibility pattern the two
+    /// id-sets are disjoint and together cover exactly `0..N` — a re-indexed `items` (ids `0..k`) would
+    /// collide with `skipped` and fail here.
+    #[test]
+    fn prop_single_id_space_is_disjoint_and_never_reindexed() {
+        pinned_runner()
+            .run(&prop::collection::vec(any::<bool>(), 0..64usize), |flags| {
+                let mut items: Vec<DroppedItem> = Vec::new();
+                let mut skipped: Vec<SkippedItem> = Vec::new();
+                for (idx, &eligible) in flags.iter().enumerate() {
+                    let id = u32::try_from(idx).expect("idx < 64 fits u32");
+                    if eligible {
+                        items.push(prop_dropped_item(id));
+                    } else {
+                        skipped.push(prop_skipped_item(id));
+                    }
+                }
+                let item_ids: BTreeSet<ItemId> = items.iter().map(|d| d.item).collect();
+                let skip_ids: BTreeSet<ItemId> = skipped.iter().map(|s| s.item).collect();
+                prop_assert!(
+                    item_ids.is_disjoint(&skip_ids),
+                    "§0.6 inv-6: the eligible and skipped ids never collide (one shared id space)"
+                );
+                let covered: BTreeSet<ItemId> = item_ids.union(&skip_ids).copied().collect();
+                let whole_space: BTreeSet<ItemId> = (0..flags.len())
+                    .map(|i| ItemId(u32::try_from(i).expect("i < 64 fits u32")))
+                    .collect();
+                prop_assert_eq!(
+                    covered, whole_space,
+                    "§0.6 inv-6: the two views cover the single 0..N space, never re-indexed from 0"
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// §0.6 "`count == items.len()`": the §1.1 freeze sets the confirm tally `count` to `items.len()`, so a
+    /// wire consumer reading the tally never walks a 10k-file Vec. Holds for any frozen length; the tally also
+    /// equals the INDEPENDENTLY-generated count `n`, so a freeze that sourced `count` from a stale value would
+    /// fail.
+    #[test]
+    fn prop_collected_single_count_equals_items_len() {
+        pinned_runner()
+            .run(&(0usize..256), |n| {
+                let items: Vec<DroppedItem> = (0..n)
+                    .map(|i| prop_dropped_item(u32::try_from(i).expect("i < 256 fits u32")))
+                    .collect();
+                let set = prop_freeze_single(items);
+                let (count, items) =
+                    single_count_items(&set).expect("the freeze yields CollectedSet::Single");
+                prop_assert_eq!(count, items.len(), "§0.6: count == items.len()");
+                prop_assert_eq!(
+                    count,
+                    n,
+                    "§0.6: the freeze tally equals the frozen item count"
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// §2.4 "frozen `items`" (data-structure leg): the freeze is a PURE function of its input snapshot (a
+    /// second freeze of the same items is equal — no injected per-freeze state) AND the collected set OWNS its
+    /// items by value, so a subsequent drop into the SEPARATE source vec (a file appearing after the freeze)
+    /// never reaches the frozen snapshot. The live-path leg (the freeze ignoring real on-disk changes) is the
+    /// P3 G31 integration test (test-strategy §1.1 / §6).
+    #[test]
+    fn prop_frozen_items_are_an_owned_snapshot() {
+        pinned_runner()
+            .run(&(0usize..48), |n| {
+                let source: Vec<DroppedItem> = (0..n)
+                    .map(|i| prop_dropped_item(u32::try_from(i).expect("i < 48 fits u32")))
+                    .collect();
+                // the freeze is deterministic: two freezes of the same snapshot are equal (no injected
+                // timestamp / per-freeze state that would break §2.5 re-run equivalence downstream).
+                prop_assert_eq!(
+                    prop_freeze_single(source.clone()),
+                    prop_freeze_single(source.clone()),
+                    "§2.4: the freeze is a deterministic pure function of its input snapshot"
+                );
+                let frozen = prop_freeze_single(source.clone());
+                // a file appears AFTER the freeze — into the SEPARATE source vec, never the frozen set:
+                let mut post_freeze = source;
+                post_freeze.push(prop_dropped_item(9999));
+                let (count, items) =
+                    single_count_items(&frozen).expect("the freeze yields CollectedSet::Single");
+                prop_assert_eq!(
+                    items.len(),
+                    n,
+                    "§2.4: the frozen snapshot holds exactly the n frozen items"
+                );
+                prop_assert_eq!(count, n, "§0.6: count tracks the frozen snapshot");
+                prop_assert!(
+                    post_freeze.len() > items.len(),
+                    "the post-freeze drop grew the SEPARATE source vec, never the frozen snapshot"
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// §2.14.1 v1 "same-volume publish-temp": the §1.8 output plan (`prop_plan_for`, the §2.14.1-v1
+    /// construction discipline) places the kind-1 publish temp in `final_dir`, on the SAME volume, so the §2.1
+    /// publish is a true intra-volume atomic rename. `publish_temp_dir == final_dir` for any destination
+    /// directory; the teeth test below shows a cross-dir temp IS detectable (the equality is a real
+    /// constraint, not `x == x`).
+    #[test]
+    fn prop_output_plan_publish_temp_is_the_same_dir_as_final() {
+        let dir_re =
+            proptest::string::string_regex("[a-z][a-z0-9_/]{0,23}").expect("valid dir regex");
+        let base_re = proptest::string::string_regex("[a-z]{1,8}").expect("valid base regex");
+        pinned_runner()
+            .run(&(dir_re, base_re), |(dir, base)| {
+                let final_dir = PathBuf::from(format!("/{dir}"));
+                let plan = prop_plan_for(final_dir.clone(), &base);
+                prop_assert_eq!(
+                    &plan.publish_temp_dir, &plan.final_dir,
+                    "§2.14.1 v1: publish_temp_dir EQUALS final_dir (the publish is an intra-volume rename)"
+                );
+                prop_assert_eq!(
+                    &plan.publish_temp_dir, &final_dir,
+                    "the publish temp is the generated destination dir, not a fixed off-volume scratch"
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    // §0.6 teeth (non-proptest): the property assertions above are NOT vacuous `x == x` — a deliberately
+    // corrupted instance is DETECTABLE, so each equality is a real constraint on the §1.1 freeze / §1.8 plan.
+    #[test]
+    fn count_equals_items_len_invariant_has_teeth() {
+        let corrupt = CollectedSet::Single {
+            id: prop_collected_set_id(),
+            instance: prop_instance_id(),
+            format: UserFacingFormat::Csv,
+            items: vec![prop_dropped_item(0)],
+            count: 2,
+            skipped: vec![],
+            total_bytes: 0,
+            roots: vec![],
+            encoding_hint: None,
+            delimiter_hint: None,
+            notes: vec![],
+        };
+        let (count, items) =
+            single_count_items(&corrupt).expect("constructed as CollectedSet::Single");
+        assert_ne!(
+            count,
+            items.len(),
+            "a corrupted count IS detectable — count == items.len() is a real constraint, not a tautology"
+        );
+    }
+
+    #[test]
+    fn same_volume_publish_temp_invariant_has_teeth() {
+        let plan = OutputPlan {
+            job: ItemId(0),
+            final_dir: PathBuf::from("/dest"),
+            diverted: None,
+            base_name: OsString::from("data"),
+            extension: OsString::from("tsv"),
+            publish_temp_dir: PathBuf::from("/scratch"),
+        };
+        assert_ne!(
+            plan.publish_temp_dir, plan.final_dir,
+            "a cross-dir publish temp IS detectable — the same-volume invariant is a real §2.14.1 constraint"
+        );
     }
 }

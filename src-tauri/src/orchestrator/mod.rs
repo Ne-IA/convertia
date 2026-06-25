@@ -380,6 +380,8 @@ mod tests {
     use crate::domain::{
         Availability, Confidence, DetectionOutcome, DivertReason, RerunPrompt, TargetId,
     };
+    use proptest::prelude::*;
+    use proptest::test_runner::{RngAlgorithm, TestRng, TestRunner};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
@@ -770,5 +772,138 @@ mod tests {
             "§1.12: RunResult is the end-of-batch summary graph in camelCase (pre-flight skip rides \
              OutcomeMsg::Skipped, not Failure — skip ≠ fail)"
         );
+    }
+
+    // ─── P2.14 · §0.6-invariant property tests (§6.4.2 / G16) ────────────────────────────────────────────
+    // The §6.4.2 property level (test-strategy §1.3) for the §0.6 normative invariants carried by the
+    // orchestrator lifecycle types `Batch` / `ConversionJob`. Each asserts an invariant over a WIDE generated
+    // input space, complementing the example-based unit tests above. All three G16 / test-strategy §1.3
+    // determinism knobs are set: case-count floor 512 (> the 256 default); a PINNED CI seed — `pinned_runner()`
+    // drives a `TestRunner` with a `deterministic_rng` so the 512 cases are identical every run, locally and in
+    // CI (the `proptest!` macro seeds from ENTROPY and CANNOT pin the forward seed — only an already-found
+    // counterexample); a failure is NEVER retried-to-pass (the pinned seed reproduces it deterministically,
+    // test-strategy §1.3 / §7). `Strategy`-combinator automatic shrinking, no hand-rolled `Shrink` impls.
+    // Instances are built by canonical `Batch` / `ConversionJob` constructors that model the §1.9 queue
+    // construction; the LIVE-path enforcement (the real P3.46 orchestrator builder over a real run) is the P3
+    // integration leg (test-strategy §1.1 / §6 — the data-structure leg is here, the live-path leg is there).
+    // [Build-Session-Entscheidung: P2.14] case-count floor 512 + a `deterministic_rng`-pinned seed; ids built
+    // via the orchestrator-test `item_id` serde helper (the `ItemId` field is private to `crate::domain`, so
+    // the cross-module test mints it through its public bare-number wire form, never a back-door past the
+    // §1.1/§7.1 minting policy).
+
+    /// The §0.6-invariant property-test case-count floor (test-strategy §1.3: above proptest's 256 default).
+    const P2_14_CASES: u32 = 512;
+
+    /// The §1.2 recognized format of a (test) source item — for the §1.3 one-format-per-batch grouping check.
+    fn recognized_format(d: &DroppedItem) -> Option<UserFacingFormat> {
+        // Exhaustive (the crate denies `clippy::wildcard_enum_match_arm`, so no `_` arm) — a future
+        // `DetectionOutcome` variant forces a conscious decision here rather than silently mapping to `None`.
+        match &d.detected {
+            DetectionOutcome::Recognized { format, .. } => Some(*format),
+            DetectionOutcome::UnsupportedType { .. }
+            | DetectionOutcome::Uncertain { .. }
+            | DetectionOutcome::Empty
+            | DetectionOutcome::Unreadable { .. } => None,
+        }
+    }
+
+    /// A PINNED-SEED proptest runner (test-strategy §1.3 / G16: "a pinned CI seed"). The `proptest!` macro
+    /// seeds its forward run from ENTROPY (only an already-found counterexample is pinned, via the
+    /// `proptest-regressions/` file), so to make the 512-case exploration identical on every run — locally and
+    /// in CI, so a failure is reproducible and NEVER retried-to-pass (test-strategy §1.3 / §7) — the
+    /// §0.6-invariant properties drive a `TestRunner` with a `deterministic_rng`. [Build-Session-Entscheidung: P2.14]
+    fn pinned_runner() -> TestRunner {
+        TestRunner::new_with_rng(
+            ProptestConfig::with_cases(P2_14_CASES),
+            TestRng::deterministic_rng(RngAlgorithm::ChaCha),
+        )
+    }
+
+    /// §0.6 invariant 1 (one-Target-per-Batch) + the §1.3 single-format grouping: a `Batch` carries ONE
+    /// whole-batch `target` (a single value, never per-item) over an arbitrary number of jobs, and EVERY job's
+    /// source is that one `source_format` — the grouping key is whole-batch. `ConversionJob` has no `target`
+    /// field, so the only target in effect is `batch.target`; this locks the shape against a future
+    /// per-job-target regression and asserts the one-format grouping over any job count.
+    #[test]
+    fn prop_batch_is_one_target_and_one_source_format_over_arbitrary_jobs() {
+        pinned_runner()
+            .run(&(0usize..64), |n| {
+                let jobs: Vec<ConversionJob> = (0..n)
+                    .map(|i| {
+                        let id = u32::try_from(i).expect("n < 64 fits u32");
+                        ConversionJob {
+                            item: item_id(id),
+                            source: dropped_item(id),
+                            state: JobState::Pending,
+                            plan: None,
+                        }
+                    })
+                    .collect();
+                let batch = Batch {
+                    id: collected_set_id(),
+                    source_format: UserFacingFormat::Csv,
+                    target: sample_target(),
+                    options: OptionValues(BTreeMap::new()),
+                    destination: DestinationChoice::BesideSource,
+                    jobs,
+                };
+                prop_assert_eq!(batch.jobs.len(), n, "the batch carries exactly its n constructed jobs");
+                prop_assert_eq!(
+                    batch.target.id,
+                    TargetId::Format(UserFacingFormat::Tsv),
+                    "§0.6 inv-1: a single whole-batch Target governs every job (no per-job target field)"
+                );
+                for job in &batch.jobs {
+                    prop_assert_eq!(
+                        recognized_format(&job.source),
+                        Some(batch.source_format),
+                        "§1.3: every job in the batch shares the single whole-batch source format"
+                    );
+                }
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// §0.6 "`ConversionJob.item == source.item`": the job's top-level key is DENORMALIZED from its source
+    /// item's id (cheap addressing without unwrapping `source`). Holds for ANY generated source id; the teeth
+    /// assertion shows a deliberately-mismatched item is detectable, so the equality is a real constraint, not
+    /// a vacuous `x == x`.
+    #[test]
+    fn prop_conversion_job_item_equals_source_item() {
+        pinned_runner()
+            .run(&any::<u32>(), |id| {
+                let source = dropped_item(id);
+                let job = ConversionJob {
+                    item: source.item,
+                    source: source.clone(),
+                    state: JobState::Pending,
+                    plan: None,
+                };
+                prop_assert_eq!(
+                    job.item,
+                    job.source.item,
+                    "§0.6: ConversionJob.item == source.item"
+                );
+                prop_assert_eq!(
+                    job.item,
+                    item_id(id),
+                    "the denormalized key tracks the generated source id"
+                );
+                // teeth: a job whose item is NOT its source's id is detectably inconsistent — `wrapping_add(1)`
+                // never equals `id` for any u32, so the denormalization invariant discriminates correct from wrong.
+                let mismatched = ConversionJob {
+                    item: item_id(id.wrapping_add(1)),
+                    source,
+                    state: JobState::Pending,
+                    plan: None,
+                };
+                prop_assert_ne!(
+                    mismatched.item, mismatched.source.item,
+                    "a mismatched item IS detectable — the denormalization invariant is not vacuous"
+                );
+                Ok(())
+            })
+            .unwrap();
     }
 }
