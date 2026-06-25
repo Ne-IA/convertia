@@ -110,7 +110,7 @@
 - [x] **P2.15** [RUST] Author `DetectionOutcome` (`Recognized`/`UnsupportedType`/`Uncertain`/`Empty`/`Unreadable`) + `Confidence` { High, Low } + `ReadFailure` { NotFound, PermissionDenied, Locked, IoError } as the single canonical §1.2 detection-result family · §1.2 §0.6
   needs: P2.3
   > `ReadFailure` is folded in here (not its own box) because §1.2 defines `DetectionResult`/`DetectionOutcome`/`Confidence`/`ReadFailure` as one [DECIDED] type-family and `DetectionOutcome::Unreadable { reason: ReadFailure }` embeds it — authoring the family as one box avoids the otherwise-fatal P2.15↔P2.17 needs-cycle.
-- [ ] **P2.16** [RUST] Author the `DetectionOutcome → SkipReason` projection (ineligible-outcome → skip) · §1.2 §1.3 §0.6
+- [x] **P2.16** [RUST] Author the `DetectionOutcome → SkipReason` projection (ineligible-outcome → skip) · §1.2 §1.3 §0.6
   needs: P2.15, P2.5
 - [ ] **P2.17** [RUST] Author the `EmptyReport` contract type feeding the `Empty { skipped }` reason tally · §1.2 §0.6
   needs: P2.15
