@@ -39,6 +39,16 @@ uuid = { version = "1.23.3", features = ["serde", "v4"] }
 # code (a leaner audited dependency closure for G53/the SBOM). `specta-typescript` is pinned to the
 # version compatible with the §0.8-locked specta `2.0.0-rc.25` (the same `0.0.12` line as `specta-util`).
 [dev-dependencies]
+# [Build-Session-Entscheidung: P2.128] §6.4.2 / test-strategy §1.3 property-test library: the Rust property
+# + fault-injection level uses `proptest` (macro-based shrinking, no hand-rolled `Shrink` impls — the §P0.5
+# / G16 "shrinking mandatory" rule; the TS sibling is `fast-check`). DEV-ONLY — property tests are
+# `#[cfg(test)]`, so under resolver 2 proptest never enters the shipped MIT-core closure (no SBOM/G53 row;
+# its transitive crates — rand / regex-syntax / rusty-fork / … — are all permissive, no socket or copyleft
+# dep, so G18/cargo-deny stays clean). First consumed by the P2.14 §0.6-invariant property tests;
+# caret-pinned to the lock-resolved 1.11.0 (the normal-lib convention the serde_json / tempfile dev-deps
+# use; `=`-exact is reserved for the codegen-coupled specta tools). §0.8 fixes the *choice* ("property
+# tests for guarantees"), not the digit; the §0.8 drift-FLOOR row is the separate L(-1) box P2.129.
+proptest = "1.11.0"
 # [Build-Session-Entscheidung: P1.16] §7.3.1 window-model structural test: the `window_model` test in
 # main.rs parses the committed `tauri.conf.json` to assert the config-declared model (exactly one
 # `main` window, a default size, no secondary window, no tray). DEV-ONLY — only the test parses JSON;
