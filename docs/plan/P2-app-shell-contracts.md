@@ -124,7 +124,8 @@
 - [x] **P2.19** [RUST] Author the `IpcError` shape (`kind`/`message`/`path`/`residue`, derives `specta::Type`, in `collect_types![]`) · §0.4.3 §2.8
   needs: P2.18
 - [ ] **P2.20** [RUST] Author `OutcomeMsg` + the `SkipReason → ErrorKind` forward (one-way, non-inverted) projection helper · §0.6 §2.8.2 §1.12
-  needs: P2.18, P2.16, P2.8.2
+  needs: P2.18, P2.5, P2.8.2
+  > **needs P2.5 not P2.16 (type-author edge):** P2.20 embeds the `SkipReason` TYPE (`OutcomeMsg::Skipped { reason: SkipReason }` + the `SkipReason → ErrorKind` helper input), authored at P2.5 — NOT the `DetectionOutcome → SkipReason` projection (P2.16), which P2.20 never consumes. (P2.16 is correctly a dependency of P2.67, the mid-walk skip rule that DOES call that projection.) Corrected from a wrong-author-box edge (the type was confused with its projection).
 
 ## IPC command surface (C1–C13 contracts)
 
