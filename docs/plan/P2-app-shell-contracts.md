@@ -112,7 +112,7 @@
   > `ReadFailure` is folded in here (not its own box) because §1.2 defines `DetectionResult`/`DetectionOutcome`/`Confidence`/`ReadFailure` as one [DECIDED] type-family and `DetectionOutcome::Unreadable { reason: ReadFailure }` embeds it — authoring the family as one box avoids the otherwise-fatal P2.15↔P2.17 needs-cycle.
 - [x] **P2.16** [RUST] Author the `DetectionOutcome → SkipReason` projection (ineligible-outcome → skip) · §1.2 §1.3 §0.6
   needs: P2.15, P2.5
-- [ ] **P2.17** [RUST] Author the `EmptyReport` contract type feeding the `Empty { skipped }` reason tally · §1.2 §0.6
+- [x] **P2.17** [RUST] Author the `EmptyReport` contract type feeding the `Empty { skipped }` reason tally · §1.2 §0.6
   needs: P2.15
   > the §1.2-cohesive `ReadFailure` is authored with `DetectionOutcome` in P2.15; this box authors only `EmptyReport` (the `Empty { skipped }` tally), which embeds `DetectionResult` — hence `needs: P2.15` is correct and acyclic.
 
