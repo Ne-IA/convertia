@@ -349,6 +349,32 @@ pub enum SkipReason {
     Unreadable,
 }
 
+// ─── §1.2/§1.3 DetectionOutcome → SkipReason projection (ineligible-outcome → skip cause, P2.16) ──
+/// [Build-Session-Entscheidung: P2.16] The §1.2/§1.3 projection is a METHOD on `DetectionOutcome` returning
+/// `Option<SkipReason>` — NOT a `From`/`TryFrom` impl: the map is a total function over all five outcomes but
+/// is partial onto `SkipReason` (the eligible `Recognized` outcome has no image), so `Option` models
+/// "eligible ⇒ no skip reason" cleanly where `From` would need a panic and `TryFrom` an error type for the
+/// eligible case. §1.3 `group()` (P3) calls it to fill `SkippedItem.reason` when building the
+/// `CollectedSet::Single.skipped` / `Empty { skipped }` views; the eligible `Recognized` outcome becomes a
+/// batch MEMBER, never a `SkippedItem`. The four INELIGIBLE outcomes project by IDENTICAL name (the §0.6
+/// `SkipReason` set is exactly those four), so the projection cannot silently mis-map. This is the §1.2-side
+/// projection; the inverse, one-way `SkipReason → ErrorKind` lives on the separate §1.12 helper (P2.20).
+impl DetectionOutcome {
+    /// Project this §1.2 detection outcome to its §0.6 `SkipReason` (§1.3) — `None` for the eligible
+    /// `Recognized` outcome (a batch member, never skipped), `Some(reason)` for each ineligible outcome,
+    /// by identical name (`UnsupportedType`/`Uncertain`/`Empty`/`Unreadable`).
+    #[must_use]
+    pub fn skip_reason(&self) -> Option<SkipReason> {
+        match self {
+            DetectionOutcome::Recognized { .. } => None,
+            DetectionOutcome::UnsupportedType { .. } => Some(SkipReason::UnsupportedType),
+            DetectionOutcome::Uncertain { .. } => Some(SkipReason::Uncertain),
+            DetectionOutcome::Empty => Some(SkipReason::Empty),
+            DetectionOutcome::Unreadable { .. } => Some(SkipReason::Unreadable),
+        }
+    }
+}
+
 // ─── §0.6 CollectedSet — the frozen batch candidate (C1/C2a return + §1.4 confirm shape) ──
 /// The frozen collected-set the C1 `ingest_paths` / C2a `pick_for_intake` commands return and the §1.4 /
 /// §5.2 confirm gate renders (§0.6 / §1.1 / §1.4). `Single` carries the FULL confirm-summary field set,
@@ -1378,6 +1404,62 @@ mod tests {
             }
         }
         exhaustive(SkipReason::Empty);
+    }
+
+    // §6.4.1 unit (G15): the §1.2/§1.3 `DetectionOutcome → SkipReason` projection (P2.16) — the eligible
+    // `Recognized` outcome has NO skip reason (`None`, it is a batch member), and each of the four INELIGIBLE
+    // outcomes projects to its identically-named §0.6 `SkipReason`. Exercises all five variants, so adding a
+    // `DetectionOutcome` variant (which would break the exhaustive match in `skip_reason`) is caught here too.
+    #[test]
+    fn detection_outcome_projects_to_skip_reason() {
+        // eligible: a Recognized outcome (High OR Low confidence) is a batch member, never skipped.
+        assert_eq!(
+            DetectionOutcome::Recognized {
+                format: UserFacingFormat::Csv,
+                confidence: Confidence::High,
+                dims: None,
+            }
+            .skip_reason(),
+            None,
+            "§1.3: an eligible High-confidence Recognized outcome has no skip reason"
+        );
+        assert_eq!(
+            DetectionOutcome::Recognized {
+                format: UserFacingFormat::Png,
+                confidence: Confidence::Low,
+                dims: Some((16, 16)),
+            }
+            .skip_reason(),
+            None,
+            "§1.2: a Low-confidence Recognized is still eligible (Low is a first-class Recognized, not a skip)"
+        );
+        // ineligible: each projects to its identically-named SkipReason.
+        assert_eq!(
+            DetectionOutcome::UnsupportedType {
+                detected: "PostScript".to_owned(),
+            }
+            .skip_reason(),
+            Some(SkipReason::UnsupportedType),
+            "§1.2/§1.3: UnsupportedType → SkipReason::UnsupportedType (by name)"
+        );
+        assert_eq!(
+            DetectionOutcome::Uncertain { best_guess: None }.skip_reason(),
+            Some(SkipReason::Uncertain),
+            "§1.2/§1.3: Uncertain → SkipReason::Uncertain (by name)"
+        );
+        assert_eq!(
+            DetectionOutcome::Empty.skip_reason(),
+            Some(SkipReason::Empty),
+            "§1.2/§1.3: Empty → SkipReason::Empty (by name)"
+        );
+        assert_eq!(
+            DetectionOutcome::Unreadable {
+                reason: ReadFailure::NotFound,
+            }
+            .skip_reason(),
+            Some(SkipReason::Unreadable),
+            "§1.2/§1.3: Unreadable → SkipReason::Unreadable (by name)"
+        );
     }
 
     // §6.4.1 unit (G15): the §0.6 `SkippedItem` record — the id-disjoint ineligible-item view. Locks the
