@@ -897,6 +897,48 @@ pub enum JobStage {
     Writing,
 }
 
+// ─── §0.6 re-run DTOs — the §2.5 batch-level prompt + decision (P2.11) ─────────────
+// [Build-Session-Entscheidung: P2.11] The two genuinely outcome-FREE §0.6 command-return DTOs of the §2.5
+// re-run flow stay in `crate::domain` (the tier-3 leaf): `RerunPrompt` (outbound prompt data) and
+// `RerunDecision` (the C6 inbound choice). Their outcome-referencing siblings — `OutputPlanPreview` /
+// `DestinationResolved` (embed `PreflightVerdict` → transitively reference `crate::outcome`) — are homed in
+// `crate::orchestrator` (§0.7 ‡ "directly OR transitively"; the orchestrator previews embed these two via a
+// downward `orchestrator`→`domain` edge). Each derives `specta::Type` + camelCase; registration rides
+// the consuming command (C4/C6, P2.26/P2.29), the established P2.2-P2.9 defer pattern.
+
+/// The one batch-level §2.5 re-run prompt's data (§0.6 / §2.5) — surfaced once per batch when the
+/// in-session ledger detects an equivalent prior run (same resolved source + target + effective settings,
+/// §2.5.1). OUTBOUND-ONLY: it is carried inside the C4/C5 `OutputPlanPreview` / `DestinationResolved`
+/// returns (Rust→WebView), never sent inbound — so `Serialize` + `Type` with NO `Deserialize` (mirroring
+/// the outbound-only `ScanProgress` (P2.7) derive choice). The user's RESPONSE is the separate inbound
+/// `RerunDecision`.
+///
+/// [Build-Session-Entscheidung: P2.11] NOT `Copy` (the established struct convention, like `ScanProgress`);
+/// `PartialEq` + `Eq` back the embedding `OutputPlanPreview` / `DestinationResolved` equality + the
+/// serialize pin. camelCase renames `equivalent_count` → `equivalentCount`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RerunPrompt {
+    /// How many items in the batch are flagged equivalent to a prior in-session run (§2.5).
+    pub equivalent_count: usize,
+}
+
+/// The C6 `start_conversion` re-run decision (§0.6 / §2.5) — the user's answer to the `RerunPrompt`.
+/// INBOUND (WebView → Rust, a C6 input), so it derives `Deserialize`. `Skip` is the SAFE DEFAULT (produce
+/// no new output for the equivalent items); `FreshCopy` makes fresh numbered copies (§2.5). Any change to
+/// target/settings is a new conversion using ordinary numbering, not a re-run decision.
+///
+/// [Build-Session-Entscheidung: P2.11] Round-trippable (`Serialize` + `Deserialize`) because it crosses IPC
+/// inbound (the C6 arg); `Copy` (fieldless enum); camelCase wire form (`skip` / `freshCopy`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum RerunDecision {
+    /// The safe default — produce no new output for the equivalent items (§2.5).
+    Skip,
+    /// Make fresh numbered copies of the equivalent items (§2.5).
+    FreshCopy,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2057,5 +2099,43 @@ mod tests {
             }
         }
         job_stage_exhaustive(JobStage::Writing);
+    }
+
+    // §6.4.1 unit (G15): the §0.6/§2.5 `RerunPrompt` + `RerunDecision` wire forms (P2.11). `RerunPrompt` is
+    // outbound-only (carried in the C4/C5 previews) → a serialize pin (camelCase `equivalentCount`).
+    // `RerunDecision` is the C6 INBOUND choice → round-trips (`skip`/`freshCopy`) + a compile-time variant
+    // lock so the closed set can't silently drift from §2.5.
+    #[test]
+    fn rerun_prompt_and_decision_wire_forms() {
+        assert_eq!(
+            serde_json::to_string(&RerunPrompt {
+                equivalent_count: 3
+            })
+            .expect("RerunPrompt serializes"),
+            r#"{"equivalentCount":3}"#,
+            "§2.5: RerunPrompt carries the equivalent-item count in camelCase"
+        );
+        for (decision, wire) in [
+            (RerunDecision::Skip, r#""skip""#),
+            (RerunDecision::FreshCopy, r#""freshCopy""#),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&decision).expect("RerunDecision serializes"),
+                wire,
+                "§2.5: RerunDecision is a bare camelCase tag (skip = safe default)"
+            );
+            let back: RerunDecision =
+                serde_json::from_str(wire).expect("RerunDecision round-trips");
+            assert_eq!(
+                back, decision,
+                "§0.6: RerunDecision round-trips (the C6 inbound arg)"
+            );
+        }
+        fn rerun_decision_exhaustive(d: RerunDecision) {
+            match d {
+                RerunDecision::Skip | RerunDecision::FreshCopy => {}
+            }
+        }
+        rerun_decision_exhaustive(RerunDecision::Skip);
     }
 }
