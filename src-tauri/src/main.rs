@@ -39,6 +39,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 use crate::domain::{CollectedSetId, CollectingId, InstanceId, ItemId, LossyKind, RunId};
+use crate::outcome::IpcError;
 
 /// [Build-Session-Entscheidung: P1.15] The §7.2.1 step-2 boot context: the per-launch identity plus
 /// the three resolved base dirs, held as the §7.1.2 app-managed singleton (`app.manage`). Its home is
@@ -84,8 +85,14 @@ fn register_ipc_identity_types(types: specta::Types) -> specta::Types {
 /// P2 §0.6 wire types (e.g. `CollectedSet`/`Target`), whose registration is deferred to their C-command
 /// consumer (the P2.2-P2.7 defer pattern). Kept as its own function (not folded into the identity set)
 /// so the two registration RATIONALES — identity-spine vs §2.8.2-taxonomy-mandate — stay legible.
+///
+/// [Build-Session-Entscheidung: P2.19] `IpcError` (§0.4.3 — the single wire error shape every command
+/// `Err` / `ItemOutcome::Failed.error` returns) joins here: §0.4.3 mandates it derive `specta::Type` AND
+/// be registered in `collect_types![]`, and registering it pulls its `kind: ConversionErrorKind` field
+/// into the export as a named type — satisfying the §2.8.2 `ConversionErrorKind` registration via its
+/// consumer (the P2.18 defer-to-IpcError/OutcomeMsg decision). `OutcomeMsg` joins at P2.20.
 fn register_ipc_taxonomy_types(types: specta::Types) -> specta::Types {
-    types.register::<LossyKind>()
+    types.register::<LossyKind>().register::<IpcError>()
 }
 
 /// [Build-Session-Entscheidung: P1.25/P1.26] The single tauri-specta `Builder` — the ONE source the
@@ -244,17 +251,28 @@ mod ipc_typegen {
         );
     }
 
-    // §6.4.1 unit (G15): the §2.8.2-mandated `LossyKind` standalone registration. §2.8.2 (line 1261)
-    // requires LossyKind be registered in collect_types![] so `Target.lossy` never emits `any`; assert it
-    // registers as exactly ONE named type (a fieldless enum pulls in no extra named deps), pinned so a
-    // dropped registration reddens the build (the same anti-drift discipline as the identity set).
+    // §6.4.1 unit (G15): the §2.8.2 / §0.4.3 wire-taxonomy registration. §2.8.2 requires `LossyKind` and
+    // §0.4.3 requires `IpcError` be registered in collect_types![] so `Target.lossy` / every command `Err`
+    // never emit `any`. The registered set is PINNED BY NAME (not a bare count) so a dropped / added /
+    // renamed registration reddens the build with a legible diff (the anti-drift discipline).
+    // [Test-Change: P2.19 — old-obsolete: the P2.8 bare "len == 1" assertion is superseded once §0.4.3 adds
+    // the IpcError registration; new-correct: verified by read-back of the registered NAMES — LossyKind +
+    // IpcError + the three named types IpcError pulls in (`ConversionErrorKind` = kind, `PathBuf` =
+    // path/residue, `String` = message); PathBuf/String render inline as TS `string` but specta tracks them
+    // as named map entries, exactly as `Uuid` is for the identity set's count of 6, §0.4.3]
     #[test]
     fn taxonomy_types_registered_for_typegen() {
         let types = register_ipc_taxonomy_types(specta::Types::default());
+        let mut names: Vec<String> = types
+            .into_unsorted_iter()
+            .map(|n| n.name.to_string())
+            .collect();
+        names.sort();
         assert_eq!(
-            types.len(),
-            1,
-            "§2.8.2: LossyKind must register as one named type (fieldless → no pulled-in deps)"
+            names.join(","),
+            "ConversionErrorKind,IpcError,LossyKind,PathBuf,String",
+            "§2.8.2/§0.4.3: the wire-taxonomy registration is exactly LossyKind + IpcError + the 3 named \
+             types IpcError pulls in (ConversionErrorKind / PathBuf / String)"
         );
     }
 }

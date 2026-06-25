@@ -8,8 +8,113 @@ export type CollectedSetId = string;
 /**  An ingest-scoped cancellation handle, minted by the frontend before a `RunId` exists (§0.4 C13). */
 export type CollectingId = string;
 
+/**
+ *  The §2.8.1 conversion-outcome taxonomy — the single owner of the failure-kind set (§2.8 owns the set +
+ *  their §2.8.2 strings; §0.4 owns the wire shape). Every engine / FS / detection failure maps to exactly
+ *  one variant — there is no "other/unknown" that leaks a raw error (an unmapped fault becomes
+ *  `InternalError`, §2.13). The §0.4.3 `ErrorKind` is its byte-identical wire mirror; see the `ErrorKind`
+ *  alias below (§2.8.2 option 1: one enum, nothing to drift). Outbound-only (no `Deserialize`, see note above).
+ */
+export type ConversionErrorKind =
+/**  Decoded but structurally invalid / truncated mid-stream. */
+"corrupt" |
+/**  0-byte or no decodable content. */
+"empty" |
+/**  Detection cannot identify the type at all (§1.2 uncertain/conflicting). */
+"unrecognized" |
+/**  Recognised but not an in-scope source (§1.2 "detected: X"). */
+"unsupportedType" |
+/**  In-scope source, but the target is not offered (defensive; the UI prevents it). */
+"unsupportedPair" |
+/**  Present at freeze, now unreadable: permission denied / exclusive lock. */
+"unreadable" |
+/**  Present at freeze, now missing: moved / deleted / removed media. */
+"gone" |
+/**  Encrypted / DRM source (PDF password, FairPlay, PlaysForSure) — ConvertIA never prompts/cracks. */
+"passwordProtected" |
+/**  Extract-audio asked of a source with no audio stream (cross-category.md / audio.md). */
+"noAudioTrack" |
+/**  Exceeds the §1.10 "too big" ceiling (pre-flight or mid-run). */
+"tooBig" |
+/**  `ENOSPC` while writing (§2.6 cleans the partial). */
+"outOfDisk" |
+/**  The output write/publish failed for a non-space reason (permission / IO at the destination, §2.1/§2.7). */
+"writeFailed" |
+/**  §2.2.3 — the name/extension would exceed the OS path limit (never truncated). */
+"pathTooLong" |
+/**  §2.1.2/§2.2 — the ~10,000-variant no-clobber cap was exhausted (a degenerate directory). */
+"tooManyCollisions" |
+/**  Subprocess killed by signal / nonzero abnormal exit (§1.7/§2.12). */
+"engineCrash" |
+/**  Exceeded the §1.7 timeout, killed (§2.12). */
+"engineHang" |
+/**  Subprocess clean nonzero exit with classifiable stderr (§3.5). */
+"engineError" |
+/**  Patent-gapped on this platform (§3.4) — honest "unavailable here". */
+"platformUnavailable" |
+/**
+ *  macOS Gatekeeper quarantined a bundled engine sidecar so it can't spawn (§7.2.3) — distinct from
+ *  `EngineMissing`/`BundleDamaged`.
+ */
+"quarantinedByOs" |
+/**  The item failed AND its partial couldn't be removed (§2.6.4) — the only kind that names a residue path. */
+"cleanupResidue" |
+/**  Catch-all for an unexpected internal fault (§2.13); no trace shown. */
+"internalError" |
+/**  A required bundled engine is absent / unrunnable at startup (§7.2). */
+"engineMissing" |
+/**  The WebView core disconnected / failed to load (§2.13/§5.8). */
+"webviewFault" |
+/**  The app bundle / resources failed their integrity check (§7.2). */
+"bundleDamaged" |
+/**
+ *  More than one source format in one drop — the §1.3 pre-flight refusal. Has NO IpcError producer:
+ *  it is the `CollectedSet::Mixed` SUCCESS return from C1 (§0.6) driving the §5.2 state-9 refusal.
+ *  Listed here ONLY to keep the enum byte-identical to the §0.4.3 wire mirror (no §2.13 producer).
+ */
+"mixedDrop";
+
 /**  One per app launch (§7.1). */
 export type InstanceId = string;
+
+/**
+ *  The §0.4.3 authoritative error shape — every command's `Err` and every `ItemOutcome::Failed.error` is
+ *  this ONE shape (§0.4.3 / §2.8). Homed in `crate::outcome` (the §2.8 taxonomy → §0.4.3 IpcError mirror
+ *  module, §0.7). OUTBOUND-ONLY (a `Result` `Err` / `ItemOutcome::Failed.error` return, never deserialized
+ *  from the WebView) — so `Serialize` + `Type`, NO `Deserialize` (mirroring the outbound-only
+ *  `ConversionErrorKind`/`ErrorKind`, P2.18). `message` is the §2.8.2 pre-localised plain English string
+ *  (NEVER a stack trace / raw engine stderr, SSOT *no stack traces*); the §2.8 message CATALOG that
+ *  produces it is a separate later box.
+ *
+ *  [Build-Session-Entscheidung: P2.19] `kind` is typed with the CONCRETE `ConversionErrorKind`, NOT the
+ *  §0.4.3-named `ErrorKind` ALIAS (`pub type ErrorKind = ConversionErrorKind`, P2.18) — the SAME type, but
+ *  referencing the forward-declared alias from this (production-dead-until-consumed) struct trips the rustc
+ *  dead-code-EXPECTATION/alias interaction with this module's forward-declaration suppression; the concrete
+ *  spelling avoids it (the P2.10 `JobState::Failed` / P2.9 `OutputPlan.job` precedent). specta resolves the
+ *  alias to the concrete type regardless, so the mirrored wire/bindings type is `ConversionErrorKind`
+ *  either way.
+ *
+ *  [Build-Session-Entscheidung: P2.19] Registered in the P1.25 type registry (§0.4.3 / §2.8: "both
+ *  IpcError and ErrorKind derive specta::Type and are registered in collect_types![]") so
+ *  `ItemOutcome::Failed.error` + every command `Err` mirror to `bindings.ts` as the named `IpcError`
+ *  rather than `any`; registering `IpcError` pulls its referenced `ConversionErrorKind` into the export as
+ *  a named type too (the §2.8.2 deferred-to-its-consumer registration, P2.18). Derive set: `Serialize` +
+ *  `Type` (the §0.4.3 wire-required pair) + `Debug, Clone, PartialEq, Eq` (ergonomics + the serialize-pin
+ *  test); NOT `Copy` (owns a `String` + two `PathBuf`s); NO `Deserialize` (outbound-only). camelCase wire.
+ */
+export type IpcError = {
+	/**  The stable machine code from the §2.8 taxonomy — drives the UI branching + i18n. */
+	kind: ConversionErrorKind,
+	/**  The §2.8.2 pre-localised plain-language English message; NEVER a stack trace / raw engine stderr. */
+	message: string,
+	/**  The optional path the error concerns (for the §1.12 summary's output→source map). */
+	path: string | null,
+	/**
+	 *  The optional residue location when §2.6 cleanup could not complete — so the item is never reported
+	 *  as a clean success.
+	 */
+	residue: string | null,
+};
 
 /**  Stable item index within a run (§0.6). */
 export type ItemId = number;

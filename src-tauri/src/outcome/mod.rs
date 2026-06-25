@@ -19,6 +19,8 @@
     )
 )]
 
+use std::path::PathBuf;
+
 use serde::Serialize;
 use specta::Type;
 
@@ -104,6 +106,44 @@ pub enum ConversionErrorKind {
 /// and strictly simpler — no `static_assertions` dependency. The remaining enum↔§2.8-catalog drift is
 /// locked by the anti-drift test below (exhaustive-match variant-count + per-variant wire-name pins).
 pub type ErrorKind = ConversionErrorKind;
+
+// ─── §0.4.3 IpcError — the single wire error shape every command Err returns (P2.19) ──
+/// The §0.4.3 authoritative error shape — every command's `Err` and every `ItemOutcome::Failed.error` is
+/// this ONE shape (§0.4.3 / §2.8). Homed in `crate::outcome` (the §2.8 taxonomy → §0.4.3 IpcError mirror
+/// module, §0.7). OUTBOUND-ONLY (a `Result` `Err` / `ItemOutcome::Failed.error` return, never deserialized
+/// from the WebView) — so `Serialize` + `Type`, NO `Deserialize` (mirroring the outbound-only
+/// `ConversionErrorKind`/`ErrorKind`, P2.18). `message` is the §2.8.2 pre-localised plain English string
+/// (NEVER a stack trace / raw engine stderr, SSOT *no stack traces*); the §2.8 message CATALOG that
+/// produces it is a separate later box.
+///
+/// [Build-Session-Entscheidung: P2.19] `kind` is typed with the CONCRETE `ConversionErrorKind`, NOT the
+/// §0.4.3-named `ErrorKind` ALIAS (`pub type ErrorKind = ConversionErrorKind`, P2.18) — the SAME type, but
+/// referencing the forward-declared alias from this (production-dead-until-consumed) struct trips the rustc
+/// dead-code-EXPECTATION/alias interaction with this module's forward-declaration suppression; the concrete
+/// spelling avoids it (the P2.10 `JobState::Failed` / P2.9 `OutputPlan.job` precedent). specta resolves the
+/// alias to the concrete type regardless, so the mirrored wire/bindings type is `ConversionErrorKind`
+/// either way.
+///
+/// [Build-Session-Entscheidung: P2.19] Registered in the P1.25 type registry (§0.4.3 / §2.8: "both
+/// IpcError and ErrorKind derive specta::Type and are registered in collect_types![]") so
+/// `ItemOutcome::Failed.error` + every command `Err` mirror to `bindings.ts` as the named `IpcError`
+/// rather than `any`; registering `IpcError` pulls its referenced `ConversionErrorKind` into the export as
+/// a named type too (the §2.8.2 deferred-to-its-consumer registration, P2.18). Derive set: `Serialize` +
+/// `Type` (the §0.4.3 wire-required pair) + `Debug, Clone, PartialEq, Eq` (ergonomics + the serialize-pin
+/// test); NOT `Copy` (owns a `String` + two `PathBuf`s); NO `Deserialize` (outbound-only). camelCase wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct IpcError {
+    /// The stable machine code from the §2.8 taxonomy — drives the UI branching + i18n.
+    pub kind: ConversionErrorKind,
+    /// The §2.8.2 pre-localised plain-language English message; NEVER a stack trace / raw engine stderr.
+    pub message: String,
+    /// The optional path the error concerns (for the §1.12 summary's output→source map).
+    pub path: Option<PathBuf>,
+    /// The optional residue location when §2.6 cleanup could not complete — so the item is never reported
+    /// as a clean success.
+    pub residue: Option<PathBuf>,
+}
 
 #[cfg(test)]
 mod tests {
@@ -214,6 +254,25 @@ mod tests {
             coerce(ErrorKind::InternalError),
             ConversionErrorKind::InternalError,
             "§2.8.2: ErrorKind is the ConversionErrorKind alias (the wire mirror is the same type)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §0.4.3 `IpcError` wire shape (P2.19) — the single error shape every command
+    // `Err` / `ItemOutcome::Failed.error` returns, in its camelCase wire form (kind/message/path/residue).
+    // OUTBOUND-ONLY (no `Deserialize`), so a SERIALIZE pin, not a round-trip. `path` Some / `residue` None
+    // exercises both `Option<PathBuf>` renderings; `kind` carries a §2.8 taxonomy code.
+    #[test]
+    fn ipc_error_wire_form_is_camelcase() {
+        let err = IpcError {
+            kind: ConversionErrorKind::WriteFailed,
+            message: "Could not write the output file.".to_owned(),
+            path: Some(PathBuf::from("/out/report.pdf")),
+            residue: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&err).expect("IpcError serializes"),
+            r#"{"kind":"writeFailed","message":"Could not write the output file.","path":"/out/report.pdf","residue":null}"#,
+            "§0.4.3: IpcError is the single camelCase wire error shape (kind/message/path/residue)"
         );
     }
 }
