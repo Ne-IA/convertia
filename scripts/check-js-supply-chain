@@ -64,11 +64,12 @@ _UNCOUNTABLE = 10 ** 9                 # fail-closed sentinel: an allowlist that
 # §0.8 JS pinned-floor (P1.60): the load-bearing JS deps the frontend/test surface relies on at a known
 # floor - the JS mirror of check-supply-chain's PINNED_FLOORS. Each MUST be a DIRECT dep in pnpm-lock.yaml
 # resolved at >= its floor (a drift below the relied-upon API fails HERE). Only crates ALREADY in the lock
-# are listed; the rest the box names (@tauri-apps/api, WebdriverIO v9 + @axe-core/webdriverio) activate
+# are listed; the rest the box names (WebdriverIO v9 + @axe-core/webdriverio) activate
 # when their phase adds them - adding a row is normal growth, lowering a floor is an L(-1) review item.
 # [Build-Session-Entscheidung: P1.60 - reconcile to the present §0.8 JS deps; grow as the E2E/api land.]
 PINNED_FLOORS_JS = {
     "@tauri-apps/cli": "2.11.3",   # §0.4 Tauri CLI, matched to the `tauri` 2.x core pin (P1.2.3)
+    "@tauri-apps/api": "2.11.1",   # §0.4 Tauri JS API the generated bindings.ts imports (P2.130 dep / P2.131 floor)
     "zustand":         "5.0.14",   # §0.4.6 UI state store (P1.31.1)
     "fast-check":      "4.8.0",    # §6.4 property-based testing (P1.35.1)
     "vitest-axe":      "0.1.0",    # §5.x a11y assertions in the vitest suite (P1.56)

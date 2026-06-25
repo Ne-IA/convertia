@@ -121,6 +121,7 @@ PINNED_FLOORS = {
     "specta":       "2.0.0-rc.25",   # §0.4.5 type introspection (coupled to tauri-specta)
     "walkdir":      "2.5.0",         # §1.1 recursive intake (in the lock now; a direct dep from P3)
     "tempfile":     "3.27.0",        # §0.8 owned-scratch atomic write (in the lock via dev-deps now)
+    "proptest":     "1.11.0",        # §6.4.2 Rust property-test lib (in the lock via dev-deps; P2.128 dep / P2.129 floor)
 }
 
 
