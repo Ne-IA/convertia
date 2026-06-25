@@ -3,24 +3,28 @@
 //! Channel. It sequences the guarantees / engines / detection layers; it owns none of their behaviour.
 //!
 //! The conducting BEHAVIOUR (queue construction at C6, the §1.9 transitions, the run registry +
-//! cancellation) is filled by P3.46. P2.10 homes here the §0.6 outcome-referencing lifecycle types this
-//! module assembles — `Batch` / `ConversionJob` / `JobState` — at tier 1, ABOVE the tier-3 `crate::domain`
-//! leaf, because `JobState::Failed(..)` references `crate::outcome` (the §2.8 kind). Homing them here is
-//! what keeps the §0.6 `domain` ↔ `outcome` type cycle broken and `crate::domain` a pure leaf (the §0.7 ‡
-//! note, the owner-decided P2.10 tier-finalisation). The sibling `JobStage` (no outcome ref) stays in
-//! `crate::domain`.
+//! cancellation) is filled by P3.46. This module homes the §0.6 outcome-referencing lifecycle/result types
+//! it assembles — `Batch`/`ConversionJob`/`JobState` (P2.10), the C4/C5 command-return DTOs
+//! `PreflightVerdict`/`OutputPlanPreview`/`DestinationResolved` (P2.11), and the §1.12 result types
+//! `RunResult`/`ItemResult`/`Totals`/`CleanupResidue`/`ItemOutcome` (P2.12) — at tier 1, ABOVE the tier-3
+//! `crate::domain` leaf, because each references `crate::outcome` (the §2.8 kind / `OutcomeMsg` / `IpcError`)
+//! directly or transitively. Homing them here keeps the §0.6 `domain` ↔ `outcome` type cycle broken and
+//! `crate::domain` a pure leaf (the §0.7 ‡ note, the owner-decided P2.10 tier-finalisation). The sibling
+//! `JobStage` (no outcome ref) stays in `crate::domain`.
 
-// [Build-Session-Entscheidung: P2.10] dead_code expect — `Batch`/`ConversionJob`/`JobState` are
-// forward-declared here (homed at P2.10 per §0.7 ‡; the orchestrator queue/lifecycle BEHAVIOUR that
-// constructs and drives them is P3.46), so each is dead in the PRODUCTION build until consumed; the
-// cfg(test) tests below construct the full graph, so the TEST build is dead-code-clean and needs no
-// expectation. `expect` (not `allow`) auto-flags the moment the conductor consumes them — matching
-// `crate::domain` / `crate::outcome`. Scoped to `not(test)` for that same reason.
+// [Build-Session-Entscheidung: P2.10/P2.11/P2.12] dead_code expect — the lifecycle/DTO/result types homed
+// here (Batch/ConversionJob/JobState, the C4/C5 DTOs, and the §1.12 RunResult/ItemResult/Totals/
+// CleanupResidue/ItemOutcome) are authored as CONTRACTS before their consumers exist: the orchestrator
+// queue/lifecycle BEHAVIOUR that constructs and drives them is P3.46, the DTO/result wire registration rides
+// the C4/C5/C8 + RunFinished/ItemFinished consumers (later P2/P3 boxes). So each is dead in the PRODUCTION
+// build until consumed; the cfg(test) tests below construct the full graphs, so the TEST build is
+// dead-code-clean and needs no expectation. `expect` (not `allow`) auto-flags the moment the conductor
+// consumes them — matching `crate::domain` / `crate::outcome`. Scoped to `not(test)` for that same reason.
 #![cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the §0.6 lifecycle types Batch/ConversionJob/JobState are homed here (§0.7 ‡, P2.10) before the P3.46 orchestrator queue/lifecycle behaviour constructs and drives them, so they are dead in the production build until consumed."
+        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12) are authored as contracts before the P3.46 orchestrator behaviour + the C4/C5/C8/RunFinished/ItemFinished wire consumers construct/register them, so they are dead in the production build until consumed."
     )
 )]
 
@@ -31,9 +35,9 @@ use specta::Type;
 
 use crate::domain::{
     CollectedSetId, DestinationChoice, DivertReason, DroppedItem, ItemId, OptionValues, OutputPlan,
-    RerunPrompt, SkipReason, Target, UserFacingFormat,
+    RerunPrompt, RunId, SkipReason, Target, UserFacingFormat,
 };
-use crate::outcome::ConversionErrorKind;
+use crate::outcome::{ConversionErrorKind, IpcError, OutcomeMsg};
 
 /// One same-source conversion batch (§0.6 / §1.9) — the queue the orchestrator builds at C6
 /// `start_conversion` from a frozen `CollectedSet::Single` and drives to a §1.12 summary. INTERNAL to the
@@ -89,10 +93,22 @@ pub struct ConversionJob {
 }
 
 /// The §1.9 job-lifecycle state (§0.6) — §1.9 owns the TRANSITIONS between these variants; this is the
-/// canonical state TYPE the orchestrator stores on each `ConversionJob`. `Failed` carries the §2.8 kind,
-/// NOT a full `IpcError` (the wire `IpcError` is assembled from the kind + path + message at the §1.12
-/// projection — storing just the kind keeps `JobState` cheap). INTERNAL (not a wire type; the wire sees
-/// the §1.12 `ItemOutcome` projection of this state).
+/// canonical state TYPE the orchestrator stores on each `ConversionJob` AND surfaces per-item in the §1.12
+/// `RunResult.items[].state` summary. `Failed` carries the §2.8 kind, NOT a full `IpcError` (the wire
+/// `IpcError` is assembled from the kind + path + message at the §1.12 projection — storing just the kind
+/// keeps `JobState` cheap and serde-stable, §0.6).
+///
+/// [Build-Session-Entscheidung: P2.12] `JobState` IS a WIRE type — it derives `Serialize` + `specta::Type`
+/// (added here, correcting the P2.10 "internal, not a wire type" note). The spec puts it on the wire: §0.6
+/// `ItemResult.state: JobState` is carried inside `RunResult`, which §0.4.2 emits as `RunFinished(RunResult)`
+/// and the C8 return, and §0.6's own JobState comment calls it "serde-stable". This is DISTINCT from the LIVE
+/// per-item `ItemFinished` event, which carries the richer terminal `ItemOutcome` projection — the §1.12
+/// summary's per-item state is `JobState`, the live terminal event is `ItemOutcome`; BOTH cross the wire,
+/// for two different surfaces (P2.10's note conflated them). OUTBOUND-ONLY (no `Deserialize` — it is only
+/// ever sent Rust→WebView in the summary, never deserialized), mirroring the §2.8 kinds it carries.
+/// Externally tagged with `#[serde(rename_all = "camelCase")]` (the §0.6 wire-enum convention, cf.
+/// `DetectionOutcome`/`CollectedSet`): unit variants serialize as `"pending"`…`"cancelled"`, the newtype
+/// variants as `{"failed":"corrupt"}` / `{"skipped":"empty"}`.
 ///
 /// [Build-Session-Entscheidung: P2.10] `Failed` is spelled with the CONCRETE `crate::outcome::
 /// ConversionErrorKind`, NOT the §0.6/§1.9-named `ErrorKind` ALIAS (`pub type ErrorKind =
@@ -100,12 +116,14 @@ pub struct ConversionJob {
 /// `ErrorKind` alias from this (production-dead) type trips the rustc dead-code lint-EXPECTATION
 /// interaction with `crate::outcome`'s forward-declaration suppression (type aliases have incomplete
 /// dead-code-expectation support); the concrete spelling avoids it with no semantic change — exactly the
-/// P2.9 `OutputPlan.job: ItemId`-not-`JobId` resolution.
+/// P2.9 `OutputPlan.job: ItemId`-not-`JobId` resolution. specta resolves the alias to the same wire type.
 ///
-/// [Build-Session-Entscheidung: P2.10] `Debug, Clone, Copy, PartialEq, Eq` — `Copy` because both payloads
-/// (`ConversionErrorKind` + `SkipReason`) are `Copy` fieldless enums, so the state is a cheap value to
-/// move through the lifecycle; NO `serde`/`specta` (internal). Variant order matches §0.6 exactly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// [Build-Session-Entscheidung: P2.10/P2.12] `Debug, Clone, Copy, PartialEq, Eq` — `Copy` because both
+/// payloads (`ConversionErrorKind` + `SkipReason`) are `Copy` fieldless enums, so the state is a cheap value
+/// to move through the lifecycle; PLUS `Serialize` + `Type` (P2.12, the wire pair above). Variant order
+/// matches §0.6 exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub enum JobState {
     /// Queued, not started (§1.9).
     Pending,
@@ -205,6 +223,157 @@ pub struct DestinationResolved {
     pub rerun: Option<RerunPrompt>,
 }
 
+// ─── §1.12 result types — the end-of-batch RunResult + the live ItemFinished outcome (P2.12) ──
+// [Build-Session-Entscheidung: P2.12] The §0.6 §1.12 result family homed in `crate::orchestrator` (tier 1,
+// "which §1.12 computes & references by name"): `RunResult`/`ItemResult`/`ItemOutcome` reference
+// `crate::outcome` (`OutcomeMsg`/`IpcError`) + the local `JobState` → orchestrator per the §0.7 ‡ rule. The
+// pure `Totals`/`CleanupResidue` (counts / §2.6 residue info, no outcome ref) are CO-HOMED here with
+// `RunResult` for result-family cohesion (the §0.7 ‡ box-note sanctions either domain or orchestrator —
+// `RunResult` embeds both, so co-homing keeps the family together via a downward `orchestrator`→`domain`
+// edge for `CleanupResidue.item: ItemId`; routine loop choice, not a cycle decision). All are WIRE types
+// (`RunResult` rides §0.4.2 `RunFinished` + the C8 return; `ItemOutcome` rides §0.4.2 `ItemFinished`):
+// `Serialize` + `Type`, NO `Deserialize` (outbound-only — a §0.4.2 event payload / command return is sent
+// Rust→WebView, never deserialized in Rust; the embedded outbound-only `OutcomeMsg`/`IpcError`/`JobState`
+// cascade this anyway). Registration rides the §0.4.2 event / C8 consumers, the established P2.2-P2.11
+// defer pattern. camelCase wire form throughout.
+
+/// The §1.12 end-of-batch summary (§0.6) — emitted as §0.4.2 `RunFinished(RunResult)` when every job has
+/// left `Pending`/`Running`, and idempotently re-served by C8 `get_run_summary` after a WebView reload
+/// (§0.4.4 run-registry retention). It is the §5.3 `ResultSummary`'s single source: per-item outcome +
+/// output→source map + residue warnings + the open-folder roots.
+///
+/// [Build-Session-Entscheidung: P2.12] `Serialize` + `Type` (wire), NO `Deserialize`; NOT `Copy` (owns
+/// `Vec`/`PathBuf` fields). camelCase wire form (`collectedSetId`/`runId`/`cleanupIncomplete`/`commonRoot`/
+/// `divertRoot`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RunResult {
+    /// The frozen collected-set this run summarises — `Batch.id` IS a `CollectedSetId` (§1.12), tying the
+    /// summary back to its §0.4.4 collected-set registry entry.
+    pub collected_set_id: CollectedSetId,
+    /// The run this summary is for (§7.1) — minted at C6 `start_conversion`.
+    pub run_id: RunId,
+    /// Per-item outcome + output→source mapping (§1.12). INCLUDES the freeze-time pre-flight `SkippedItem`s
+    /// (`CollectedSet::Single.skipped`) projected as `ItemResult { state: Skipped(reason), output: None,
+    /// reason: Some(OutcomeMsg::Skipped{ reason, .. }) }` — the skip rides the skip-shaped `OutcomeMsg`
+    /// variant (§2.8), NOT `Failure`, so skip ≠ fail at the type level (§1.12); counted in `totals.skipped`.
+    pub items: Vec<ItemResult>,
+    /// The succeeded / failed / cancelled / skipped tally (§1.12).
+    pub totals: Totals,
+    /// The §2.6 cleanup-incomplete warnings — items whose partial could not be removed, so the run is never
+    /// reported as a clean success (§2.6.4). Empty when every cleanup completed.
+    pub cleanup_incomplete: Vec<CleanupResidue>,
+    /// The "open folder" target for the BESIDE-SOURCE outputs — the dropped-selection common ancestor
+    /// (§2.7 / §7.7.3).
+    pub common_root: PathBuf,
+    /// `Some(Downloads/Documents/chosen)` when ANY item was diverted (§2.7.3) — a single `PathBuf` cannot
+    /// carry both the beside-source and divert roots, so the divert root is its own field; `None` when no
+    /// item diverted. Both are §7.7.3 open-folder targets; per-item diverted outputs are also reachable via
+    /// `ItemResult.output` (C9 `open_path`, `kind = RevealInFolder`).
+    pub divert_root: Option<PathBuf>,
+}
+
+/// One per-item row of the §1.12 summary (§0.6) — its source path (for output→source mapping), its terminal
+/// `JobState`, the output path (`Some` only when `Succeeded`), and the resolved surfaced line.
+///
+/// [Build-Session-Entscheidung: P2.12] `Serialize` + `Type` (wire — embedded in `RunResult`), NO
+/// `Deserialize`; NOT `Copy` (owns `PathBuf`/`OutcomeMsg`). camelCase. `state: JobState` is what forces
+/// `JobState` to be a wire type (see its doc) — the summary's per-item state, distinct from the live
+/// `ItemFinished`'s `ItemOutcome`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemResult {
+    /// The source path this row is for — the output→source mapping anchor (SSOT *How It Feels* 7).
+    pub source: PathBuf,
+    /// The terminal §1.9 lifecycle state for this item (§0.6) — at `RunFinished` always a terminal variant
+    /// (`Succeeded`/`Failed`/`Skipped`/`Cancelled`).
+    pub state: JobState,
+    /// The published output path — `Some(..)` ONLY when `state == Succeeded` (§1.12); `None` otherwise.
+    pub output: Option<PathBuf>,
+    /// The resolved, ready-to-show §2.8 failure / §2.9 lossy / §1.1 skip line (§2.8.2 `OutcomeMsg`); `None`
+    /// for a plain success with no lossy note.
+    pub reason: Option<OutcomeMsg>,
+}
+
+/// The §1.12 per-outcome tally (§0.6). The "all failed" condition is DERIVED (`all_failed()`), never a
+/// stored field — SSOT *Fail clearly*: a fully-failed batch is an explicit failure, not a quiet finish.
+///
+/// [Build-Session-Entscheidung: P2.12] `Serialize` + `Type` (wire — embedded in `RunResult`), NO
+/// `Deserialize`; NOT `Copy` (the §0.6 struct convention, cf. `PreflightVerdict`). camelCase. The
+/// `total()`/`all_failed()` helpers home the §1.12 derived condition so it is computed once, never
+/// re-derived inconsistently (and never stored as a field).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Totals {
+    /// Items that converted + published successfully (§2.1).
+    pub succeeded: u32,
+    /// Items that failed with a named §2.8 kind (the batch continued, §1.9).
+    pub failed: u32,
+    /// Items discarded by user cancel (§1.7/§1.11) — finished-before-cancel items stay in `succeeded`.
+    pub cancelled: u32,
+    /// Pre-flight detection-ineligible items projected into the summary (§1.3/§1.12) — never `failed`.
+    pub skipped: u32,
+}
+
+impl Totals {
+    /// The total item count — the sum of the four tallies (§1.12). Not stored; derived from the parts.
+    pub fn total(&self) -> u32 {
+        self.succeeded
+            .saturating_add(self.failed)
+            .saturating_add(self.cancelled)
+            .saturating_add(self.skipped)
+    }
+
+    /// The §1.12 "all failed" condition (`failed == total && total > 0`) — DERIVED, never stored. A
+    /// fully-failed batch is surfaced as an explicit failure, never a quiet finish (SSOT *Fail clearly*).
+    pub fn all_failed(&self) -> bool {
+        let total = self.total();
+        total > 0 && self.failed == total
+    }
+}
+
+/// A §2.6.4 cleanup-incomplete warning (§0.6) — one item whose partial could not be removed, naming WHERE
+/// the residue may remain so the summary never reports a clean success (§2.6 / §1.12).
+///
+/// [Build-Session-Entscheidung: P2.12] `Serialize` + `Type` (wire — embedded in `RunResult`), NO
+/// `Deserialize`; NOT `Copy` (owns a `PathBuf`). camelCase (`residuePath`). `item: ItemId` is the downward
+/// `orchestrator`→`domain` edge that co-homing this leaf here introduces (allowed).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupResidue {
+    /// The item whose cleanup did not complete (§2.6.4) — the stable §0.6 `ItemId`.
+    pub item: ItemId,
+    /// Where the residue may remain (§2.6.4) — the only place the summary names a residue path.
+    pub residue_path: PathBuf,
+}
+
+/// The terminal per-item outcome carried by the LIVE §0.4.2 `ItemFinished` event (§0.6) — the richer
+/// terminal projection the UI applies as each item finishes, distinct from the summary's `JobState`.
+/// `Failed` carries the full §0.4.3 `IpcError` (kind + message + path + residue) the live row needs;
+/// `Succeeded` the published output path; `Skipped` the §0.6 `SkipReason`; `Cancelled` is payload-free.
+///
+/// [Build-Session-Entscheidung: P2.12] `Serialize` + `Type` (wire — the `ItemFinished` payload), NO
+/// `Deserialize` (outbound-only — embeds the outbound-only `IpcError`); NOT `Copy` (`Failed` owns an
+/// `IpcError` with `String`/`PathBuf`). Externally tagged with `#[serde(rename_all = "camelCase")]` (the
+/// §0.6 wire-enum convention) + per-struct-variant `rename_all` (serde does not cascade the enum-level
+/// rename to a variant's fields, so `Succeeded`'s `output_path` → `outputPath` needs its own, cf.
+/// `CollectedSet`). Variant order matches §0.6 exactly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ItemOutcome {
+    /// Converted + atomically published (§2.1) — carries the final output path.
+    #[serde(rename_all = "camelCase")]
+    Succeeded { output_path: PathBuf },
+    /// A named §2.8 failure — carries the full §0.4.3 `IpcError` the live row renders.
+    #[serde(rename_all = "camelCase")]
+    Failed { error: IpcError },
+    /// A pre-flight detection-ineligible item (§1.2/§1.3) — carries the §0.6 `SkipReason` (skip ≠ fail).
+    #[serde(rename_all = "camelCase")]
+    Skipped { reason: SkipReason },
+    /// User-cancelled; nothing written (§1.7/§1.11). Not an `ErrorKind` (§0.4.3 note) — payload-free.
+    Cancelled,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,6 +395,10 @@ mod tests {
     fn collected_set_id() -> CollectedSetId {
         serde_json::from_str(r#""00000000-0000-4000-8000-000000000000""#)
             .expect("CollectedSetId deserializes from a uuid string")
+    }
+    fn run_id() -> RunId {
+        serde_json::from_str(r#""11111111-1111-4111-8111-111111111111""#)
+            .expect("RunId deserializes from a uuid string")
     }
 
     /// A minimal eligible CSV source item, for the job/batch shape tests.
@@ -427,6 +600,175 @@ mod tests {
             serde_json::to_string(&resolved).expect("DestinationResolved serializes"),
             r#"{"destination":"besideSource","diverted":null,"preflight":{"estTotalOutputBytes":4096,"estTotalScratchBytes":0,"upFrontFail":null},"rerun":null}"#,
             "§1.8/§2.14.4: DestinationResolved re-validates the destination; rerun carried through (§2.5.1)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §0.6/§1.9 `JobState` WIRE form (P2.12 — JobState is now a wire type, the §1.12
+    // summary's per-item state). Externally tagged camelCase: unit variants as bare strings, the newtype
+    // variants as `{"failed":<kind>}` / `{"skipped":<reason>}`. A SERIALIZE pin (JobState is outbound-only).
+    #[test]
+    fn job_state_wire_form_is_externally_tagged_camelcase() {
+        let cases: [(JobState, &str); 6] = [
+            (JobState::Pending, r#""pending""#),
+            (JobState::Running, r#""running""#),
+            (JobState::Succeeded, r#""succeeded""#),
+            (
+                JobState::Failed(ConversionErrorKind::Corrupt),
+                r#"{"failed":"corrupt"}"#,
+            ),
+            (
+                JobState::Skipped(SkipReason::Empty),
+                r#"{"skipped":"empty"}"#,
+            ),
+            (JobState::Cancelled, r#""cancelled""#),
+        ];
+        for (state, wire) in cases {
+            assert_eq!(
+                serde_json::to_string(&state).expect("JobState serializes"),
+                wire,
+                "§0.6/§1.12: JobState mirrors externally-tagged camelCase on the wire"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15): the §0.6/§0.4.2 `ItemOutcome` WIRE form (P2.12) — the live `ItemFinished` payload,
+    // externally tagged camelCase; `Succeeded`'s `output_path` → `outputPath` (per-variant rename), `Failed`
+    // carries the full §0.4.3 IpcError, `Cancelled` is payload-free. A SERIALIZE pin (outbound-only).
+    #[test]
+    fn item_outcome_wire_form_is_externally_tagged_camelcase() {
+        let succeeded = ItemOutcome::Succeeded {
+            output_path: PathBuf::from("/out/data.tsv"),
+        };
+        assert_eq!(
+            serde_json::to_string(&succeeded).expect("ItemOutcome::Succeeded serializes"),
+            r#"{"succeeded":{"outputPath":"/out/data.tsv"}}"#,
+            "§0.4.2: Succeeded carries the published outputPath"
+        );
+        let failed = ItemOutcome::Failed {
+            error: IpcError {
+                kind: ConversionErrorKind::EngineError,
+                message: "ConvertIA couldn't convert this file.".to_owned(),
+                path: Some(PathBuf::from("/src/bad.csv")),
+                residue: None,
+            },
+        };
+        assert_eq!(
+            serde_json::to_string(&failed).expect("ItemOutcome::Failed serializes"),
+            r#"{"failed":{"error":{"kind":"engineError","message":"ConvertIA couldn't convert this file.","path":"/src/bad.csv","residue":null}}}"#,
+            "§0.4.2/§0.4.3: Failed carries the full IpcError"
+        );
+        let skipped = ItemOutcome::Skipped {
+            reason: SkipReason::Uncertain,
+        };
+        assert_eq!(
+            serde_json::to_string(&skipped).expect("ItemOutcome::Skipped serializes"),
+            r#"{"skipped":{"reason":"uncertain"}}"#,
+            "§0.6: Skipped carries the SkipReason (skip ≠ fail)"
+        );
+        assert_eq!(
+            serde_json::to_string(&ItemOutcome::Cancelled)
+                .expect("ItemOutcome::Cancelled serializes"),
+            r#""cancelled""#,
+            "§0.4.3 note: Cancelled is payload-free, not an ErrorKind"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §1.12 `Totals` wire form + the DERIVED `all_failed()`/`total()` (P2.12) — the
+    // "all failed" condition is `failed == total && total > 0`, NEVER a stored field (SSOT *Fail clearly*).
+    #[test]
+    fn totals_wire_form_and_derived_all_failed() {
+        let mixed = Totals {
+            succeeded: 1,
+            failed: 2,
+            cancelled: 0,
+            skipped: 1,
+        };
+        assert_eq!(
+            serde_json::to_string(&mixed).expect("Totals serializes"),
+            r#"{"succeeded":1,"failed":2,"cancelled":0,"skipped":1}"#,
+            "§1.12: Totals is the four camelCase tallies"
+        );
+        assert_eq!(mixed.total(), 4, "§1.12: total() sums the four tallies");
+        assert!(
+            !mixed.all_failed(),
+            "§1.12: a partial batch is not all-failed"
+        );
+        let all_failed = Totals {
+            succeeded: 0,
+            failed: 3,
+            cancelled: 0,
+            skipped: 0,
+        };
+        assert!(
+            all_failed.all_failed(),
+            "§1.12: failed == total (>0) is the all-failed condition"
+        );
+        let empty = Totals {
+            succeeded: 0,
+            failed: 0,
+            cancelled: 0,
+            skipped: 0,
+        };
+        assert!(
+            !empty.all_failed(),
+            "§1.12: total == 0 is NOT all-failed (the total > 0 guard)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §1.12 `RunResult` wire form (P2.12) — the full nested camelCase graph the §5.3
+    // Summary renders, exercising `ItemResult` (a Succeeded row + a pre-flight Skipped row whose `reason`
+    // rides the adjacently-tagged `OutcomeMsg::Skipped`), `Totals`, `CleanupResidue`, and `divertRoot`
+    // Some(..). A SERIALIZE pin (RunResult is outbound-only — the §0.4.2 RunFinished payload / C8 return).
+    #[test]
+    fn run_result_wire_form_is_camelcase() {
+        let run = RunResult {
+            collected_set_id: collected_set_id(),
+            run_id: run_id(),
+            items: vec![
+                ItemResult {
+                    source: PathBuf::from("/src/data.csv"),
+                    state: JobState::Succeeded,
+                    output: Some(PathBuf::from("/src/data.tsv")),
+                    reason: None,
+                },
+                ItemResult {
+                    source: PathBuf::from("/src/mystery.bin"),
+                    state: JobState::Skipped(SkipReason::Uncertain),
+                    output: None,
+                    reason: Some(OutcomeMsg::Skipped {
+                        reason: SkipReason::Uncertain,
+                        text: "ConvertIA couldn't tell what kind of file this is, so it can't convert it."
+                            .to_owned(),
+                    }),
+                },
+            ],
+            totals: Totals {
+                succeeded: 1,
+                failed: 0,
+                cancelled: 0,
+                skipped: 1,
+            },
+            cleanup_incomplete: vec![CleanupResidue {
+                item: item_id(2),
+                residue_path: PathBuf::from("/src/.data.tsv.part"),
+            }],
+            common_root: PathBuf::from("/src"),
+            divert_root: Some(PathBuf::from("/Downloads")),
+        };
+        assert_eq!(
+            serde_json::to_string(&run).expect("RunResult serializes"),
+            concat!(
+                r#"{"collectedSetId":"00000000-0000-4000-8000-000000000000","#,
+                r#""runId":"11111111-1111-4111-8111-111111111111","#,
+                r#""items":[{"source":"/src/data.csv","state":"succeeded","output":"/src/data.tsv","reason":null},"#,
+                r#"{"source":"/src/mystery.bin","state":{"skipped":"uncertain"},"output":null,"#,
+                r#""reason":{"type":"skipped","data":{"reason":"uncertain","text":"ConvertIA couldn't tell what kind of file this is, so it can't convert it."}}}],"#,
+                r#""totals":{"succeeded":1,"failed":0,"cancelled":0,"skipped":1},"#,
+                r#""cleanupIncomplete":[{"item":2,"residuePath":"/src/.data.tsv.part"}],"#,
+                r#""commonRoot":"/src","divertRoot":"/Downloads"}"#
+            ),
+            "§1.12: RunResult is the end-of-batch summary graph in camelCase (pre-flight skip rides \
+             OutcomeMsg::Skipped, not Failure — skip ≠ fail)"
         );
     }
 }
