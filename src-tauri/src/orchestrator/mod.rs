@@ -223,6 +223,36 @@ pub struct DestinationResolved {
     pub rerun: Option<RerunPrompt>,
 }
 
+// ── §0.4.1 C4/C5 lifecycle asymmetry invariant (P2.28) ───────────────────────────────────────────
+// C4 `plan_output` and C5 `set_destination` take BYTE-IDENTICAL request payloads
+// ({ collectedSetId, target, options, destination }), so their signatures alone cannot distinguish them.
+// §0.4.1 ("C4 vs C5 — byte-identical payloads, different contract [DECIDED]") resolves the difference NOT
+// by a one-shot guard but BY LIFECYCLE — the rule this module's behaviour (P3.46) + the C4/C5 body boxes
+// (P2.44+) honor:
+//   1. C4 is RE-CALLABLE at any point in state 4 (eager on the 3→4 transition, then debounced ~150 ms on
+//      any target/option change, §5.8) — there is NO "fires exactly once" constraint.
+//   2. C5 OWNS the destination: once the user changes it (a C5 on a `collectedSetId`), a subsequent C4 on
+//      that same set CARRIES the C5-resolved destination in its `destination: DestinationChoice` argument
+//      (caller-passed) and NEVER resets it. There is NO server-side destination store — the destination is
+//      authoritative as the C6 argument (§0.4.1 C6 [DECIDED]); the "re-apply the retained C5 destination if
+//      C4 arrives carrying a stale default" (§0.4.1) is a P3.46 runtime stale-default REPAIR, NOT a P2 state
+//      structure.
+//   3. C4 COMPUTES `rerun` (§2.5 equivalence) + the §1.10 `preflight`; C5 NEVER recomputes `rerun` (the v1
+//      EquivKey is destination-independent, §2.5.1) — it CARRIES C4's `rerun` THROUGH UNCHANGED and
+//      re-evaluates ONLY the destination-volume `preflight` (§2.14.4). This is the ONLY ordering rule.
+//
+// [Build-Session-Entscheidung: P2.28] Structural + documented layer authored HERE; runtime asserts at P3.46.
+// The orchestrator BEHAVIOUR that enforces these at runtime (the re-callable C4 plan, the C5 destination
+// authority, the computed-vs-carried-through `rerun`) is the P3.46 conductor + the C4/C5 body boxes (P2.44+).
+// P2.28 encodes the two layers that exist at the contract stage: (i) this documented lifecycle invariant the
+// P3.46 conductor + the body boxes honor, and (ii) the structural ENABLERS the DTO shapes above already
+// guarantee — pinned by the `c4_c5_asymmetry_structural_enablers` test: `DestinationResolved` CARRIES a
+// `destination` (C5 owns it) while `OutputPlanPreview` carries only a `final_dir_preview` PREVIEW and NO
+// `DestinationChoice` field (C4 does not own the choice), and both carry the SAME `rerun: Option<RerunPrompt>`
+// type (so C5 carries C4's `rerun` through unchanged). This is the same contract-here / behaviour-at-P3.46
+// split as the C1–C6 shells, NOT a stub: the structure makes the lifecycle rule TYPE-POSSIBLE; P3.46 adds the
+// runtime enforcement.
+
 // ─── §1.12 result types — the end-of-batch RunResult + the live ItemFinished outcome (P2.12) ──
 // [Build-Session-Entscheidung: P2.12] The §0.6 §1.12 result family homed in `crate::orchestrator` (tier 1,
 // "which §1.12 computes & references by name"): `RunResult`/`ItemResult`/`ItemOutcome` reference
@@ -602,6 +632,71 @@ mod tests {
             serde_json::to_string(&resolved).expect("DestinationResolved serializes"),
             r#"{"destination":"besideSource","diverted":null,"preflight":{"estTotalOutputBytes":4096,"estTotalScratchBytes":0,"upFrontFail":null},"rerun":null}"#,
             "§1.8/§2.14.4: DestinationResolved re-validates the destination; rerun carried through (§2.5.1)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §0.4.1 C4/C5 lifecycle-asymmetry STRUCTURAL ENABLERS (P2.28). The runtime
+    // enforcement (C4 re-callable, C5 destination authority, C4 computes `rerun` while C5 carries it through)
+    // is the P3.46 conductor + the C4/C5 body boxes; this test pins the layer the DTO shapes guarantee NOW —
+    // the structure that makes the §0.4.1 "by lifecycle" rule TYPE-POSSIBLE (see the invariant block above the
+    // §1.12 section). [Build-Session-Entscheidung: P2.28]
+    #[test]
+    fn c4_c5_asymmetry_structural_enablers() {
+        let preflight = PreflightVerdict {
+            est_total_output_bytes: 0,
+            est_total_scratch_bytes: 0,
+            up_front_fail: None,
+        };
+
+        // (2) C5 OWNS the destination: `DestinationResolved` CARRIES a `destination: DestinationChoice`.
+        let resolved = DestinationResolved {
+            destination: DestinationChoice::BesideSource,
+            diverted: None,
+            preflight: preflight.clone(),
+            rerun: Some(RerunPrompt {
+                equivalent_count: 1,
+            }),
+        };
+        assert!(
+            matches!(resolved.destination, DestinationChoice::BesideSource),
+            "§0.4.1: C5 owns the destination — DestinationResolved carries a DestinationChoice"
+        );
+
+        // C4 does NOT own the destination choice: `OutputPlanPreview` carries a `final_dir_preview` PREVIEW
+        // and NO `DestinationChoice` field. This EXHAUSTIVE literal (all 5 fields, no `..`) PINS the field
+        // set — adding a `destination` field to `OutputPlanPreview` would make this fail to compile, so "C4
+        // has no settable destination" is gate-enforced here, not just prose (§0.4.1 "C4 never overrides C5").
+        let preview = OutputPlanPreview {
+            set: collected_set_id(),
+            final_dir_preview: PathBuf::from("/dest"),
+            diverted: None,
+            rerun: Some(RerunPrompt {
+                equivalent_count: 1,
+            }),
+            preflight: preflight.clone(),
+        };
+        let _: &PathBuf = &preview.final_dir_preview; // C4 shows a directory PREVIEW, never a settable destination
+
+        // (3) C5 CARRIES C4's `rerun` THROUGH UNCHANGED (§2.5.1): both DTOs carry the SAME
+        // `rerun: Option<RerunPrompt>` type, so the C4 value assigns verbatim into the C5 return.
+        let carried_from_c4: Option<RerunPrompt> = preview.rerun.clone();
+        let resolved_carrying = DestinationResolved {
+            destination: DestinationChoice::BesideSource,
+            diverted: None,
+            preflight: preflight.clone(),
+            rerun: carried_from_c4,
+        };
+        assert_eq!(
+            resolved_carrying.rerun, preview.rerun,
+            "§2.5.1: C5 re-evaluates only preflight and carries C4's rerun through unchanged (same \
+             Option<RerunPrompt> type)"
+        );
+
+        // both C4 and C5 returns carry the §1.10 `preflight: PreflightVerdict` (C4 computes it, C5 re-evaluates
+        // it for the new destination volume, §2.14.4) — the same type on both sides of the asymmetry.
+        assert_eq!(
+            preview.preflight, resolved.preflight,
+            "§1.8/§1.10: both the C4 and C5 returns carry a PreflightVerdict (C5 re-evaluates it, §2.14.4)"
         );
     }
 
