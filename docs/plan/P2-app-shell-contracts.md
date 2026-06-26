@@ -138,7 +138,7 @@
   needs: P2.21, P2.6, P2.2, P2.7
 - [x] **P2.23** [RUST] Author the C2a `pick_for_intake` contract — Rust-side `DialogExt` picker funnelling into the C1 freeze, no raw path to WebView · §0.4.1 §1.1 §5.4
   needs: P2.22, P1.14, P2.7
-- [ ] **P2.24** [RUST] Author the C2b `pick_destination` contract — Rust-side folder picker returning the chosen `PathBuf` (the one write-path that transits the WebView) · §0.4.1 §0.10
+- [x] **P2.24** [RUST] Author the C2b `pick_destination` contract — Rust-side folder picker returning the chosen `PathBuf` (the one write-path that transits the WebView) · §0.4.1 §0.10
   needs: P2.21, P1.14
 - [ ] **P2.25** [RUST] Author the C3 `get_targets` contract — pure function of detection → `TargetOffer` (one pre-highlighted default, no spawn) · §0.4.1 §1.5
   needs: P2.21, P2.8
