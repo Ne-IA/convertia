@@ -56,9 +56,10 @@ mod command_surface {
     // its line moves there.
     // [Test-Change: P2.24 — old-obsolete+new-correct, §0.4.1] old: this test invoked the bare-`()` C2b
     // `pick_destination` shell with no value assertion; new (verified by read-back — C2b now returns
-    // `Option<PathBuf>`, so the bare invocation no longer asserts the typed contract): C2b's typed contract is
-    // exercised by `planning::c2b_contract::c2b_pick_destination_contract_is_invocable_and_typed` (asserting the
-    // cancelled/no-pick `None`), so its line moves there and this test now covers the 11 still-bare C3..C13
+    // `Result<Option<PathBuf>, IpcError>` (the §0.4 universal error shape), so the bare invocation no longer
+    // asserts the typed contract): C2b's typed contract is exercised by
+    // `planning::c2b_contract::c2b_pick_destination_contract_is_invocable_and_typed` (asserting the
+    // cancelled/no-pick `Ok(None)`), so its line moves there and this test now covers the 11 still-bare C3..C13
     // shells. (The no-arg call still compiled, but C2b is no longer a bare `()` shell — moving it keeps the
     // one-typed-contract-test-per-filled-command pattern of C1/C2a.)
     #[test]

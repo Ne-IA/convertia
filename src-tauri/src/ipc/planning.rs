@@ -12,17 +12,24 @@
 
 use std::path::PathBuf;
 
+use crate::outcome::IpcError;
+
 /// **C2b `pick_destination`** (§0.4.1) — the Rust-side `DialogExt` destination-folder picker. This box (P2.24)
-/// authors the typed §0.4.1 wire CONTRACT — the `{} -> Option<PathBuf>` door — so the generated `bindings.ts`
-/// carries the C2b surface. Unlike the C2a intake picker, the **one chosen `PathBuf` it returns legitimately
-/// transits the WebView** into C5 `set_destination` (and then C6): it is a *write* destination, not a source
-/// path, so it can never harm an original or read anything (§0.10 / §2.1 / §0.11 T2). `None` = the user
-/// cancelled — a clean no-op; the held C4/C5 destination is unchanged.
+/// authors the typed §0.4.1 wire CONTRACT — the `{} -> Result<Option<PathBuf>, IpcError>` door — so the
+/// generated `bindings.ts` carries the C2b surface. Unlike the C2a intake picker, the **one chosen `PathBuf` it
+/// returns legitimately transits the WebView** into C5 `set_destination` (and then C6): it is a *write*
+/// destination, not a source path, so it can never harm an original or read anything (§0.10 / §2.1 / §0.11 T2).
+/// `Ok(None)` = the user cancelled — a clean no-op; the held C4/C5 destination is unchanged.
 ///
-/// [Build-Session-Entscheidung: P2.24] **`Option<PathBuf>` return, NO `IpcError` wrapper.** The §0.4.1 C2b
-/// output column is a bare `Option<PathBuf>` (not `Result<_, IpcError>` like C1/C2a): a folder pick has no
-/// user-facing failure mode — a cancel is `None`, not an error — so the contract carries no error arm. This is
-/// the spec literal, not a deviation.
+/// [Build-Session-Entscheidung: P2.24] **`Result<Option<PathBuf>, IpcError>` return — the §0.4 universal
+/// error-shape rule.** §0.4 "Error shape" is categorical: *every* command returns `Result<T, IpcError>`. The
+/// §0.4.1 table's `Option<PathBuf>` output column is the SUCCESS type `T`, wrapped in `Result<T, IpcError>` at
+/// the handler — exactly as C1's `CollectedSet` column maps to `Result<CollectedSet, IpcError>`. So the three
+/// boundary outcomes are: `Ok(Some(path))` = the user picked a folder; `Ok(None)` = the user cancelled (a clean
+/// no-op, the §5.4 cancelled-picker result); `Err(IpcError)` = the native dialog subsystem genuinely failed (a
+/// folder pick has no *user-facing* failure, but the boundary still honours the universal Result shape rather
+/// than panicking across it, §0.4 "No command ever panics across the boundary"). The wire/TS callsite is
+/// unchanged (`Result<T, E>` renders as `__TAURI_INVOKE<T>` + a thrown `IpcError`, like C1).
 ///
 /// [Build-Session-Entscheidung: P2.24] **Interface-shell body — the typed CONTRACT is the deliverable.**
 /// P2.24 authors the §0.4.1 wire signature; the native `DialogExt` folder-pick BODY (`app.dialog().file()
@@ -31,13 +38,13 @@ use std::path::PathBuf;
 /// the C2a *intake* picker, a distinct path; C2b is the *destination* picker). A native OS folder dialog is
 /// **not unit-testable** (it needs a real OS dialog /
 /// user interaction — the §6.6 walkthrough + the P9 E2E flow exercise it), so the testable P2 deliverable is
-/// the typed contract; the shell returns `None` — the genuine cancelled/no-pick result. This is the sanctioned
-/// compile-time interface-shell pattern (CLAUDE §5 / the P3 `crate::isolation` shells P4 expands), not a quiet
-/// deferral.
+/// the typed contract; the shell returns `Ok(None)` — the genuine cancelled/no-pick result. This is the
+/// sanctioned compile-time interface-shell pattern (CLAUDE §5 / the P3 `crate::isolation` shells P4 expands),
+/// not a quiet deferral.
 #[tauri::command]
 #[specta::specta]
-pub async fn pick_destination() -> Option<PathBuf> {
-    None
+pub async fn pick_destination() -> Result<Option<PathBuf>, IpcError> {
+    Ok(None)
 }
 
 /// **C3 `get_targets`** (§0.4.1) — a pure function of the detected source type to the offered targets + the
@@ -68,27 +75,30 @@ pub async fn set_destination() {}
 #[cfg(test)]
 mod c2b_contract {
     //! §6.4.1 unit (G15): the §0.4.1 C2b `pick_destination` typed CONTRACT (P2.24). Mirrors the C1/C2a
-    //! `*_contract` tests — the handler now carries its typed `-> Option<PathBuf>` signature, so the P2.21
-    //! all-shells `block_on(pick_destination())` invocation in `crate::ipc` (mod.rs) is REPLACED here by C2b's
-    //! own typed-contract test (the fill-box transition the P2.21 note schedules). The native folder-dialog
-    //! body is not unit-testable (it needs a real OS dialog) and lands at P3.56 (the DestinationBar "Change
-    //! destination" path); this asserts the typed contract returns the cancelled/no-pick `None`.
-    //! [Build-Session-Entscheidung: P2.24]
+    //! `*_contract` tests — the handler now carries its typed `-> Result<Option<PathBuf>, IpcError>` signature
+    //! (the §0.4 universal error shape), so the P2.21 all-shells `block_on(pick_destination())` invocation in
+    //! `crate::ipc` (mod.rs) is REPLACED here by C2b's own typed-contract test (the fill-box transition the
+    //! P2.21 note schedules). The native folder-dialog body is not unit-testable (it needs a real OS dialog) and
+    //! lands at P3.56 (the DestinationBar "Change destination" path); this asserts the typed contract returns
+    //! the cancelled/no-pick `Ok(None)`. [Build-Session-Entscheidung: P2.24]
     use super::*;
     use tauri::async_runtime::block_on;
 
-    // §6.4.1 unit (G15): the C2b contract is invocable and returns `Option<PathBuf>` (the wire door this box
-    // authors). The shell opens no dialog yet (the DialogExt body is P3.56, the DestinationBar "Change
-    // destination" path), so it returns `None` — which is ALSO the contract's genuine cancelled-dialog result
-    // (§0.4.1: `None` = the user cancelled); P3.56 replaces it with the real folder pick whose `Some(path)`
-    // carries into C5.
+    // §6.4.1 unit (G15): the C2b contract is invocable and returns `Result<Option<PathBuf>, IpcError>` (the wire
+    // door this box authors, in the §0.4 universal error shape). The shell opens no dialog yet (the DialogExt
+    // body is P3.56, the DestinationBar "Change destination" path), so it returns `Ok(None)` — which is ALSO the
+    // contract's genuine cancelled-dialog result (§0.4.1: `Ok(None)` = the user cancelled); P3.56 replaces it
+    // with the real folder pick whose `Ok(Some(path))` carries into C5, and an `Err(IpcError)` for a genuine
+    // dialog-subsystem failure.
     #[test]
     fn c2b_pick_destination_contract_is_invocable_and_typed() {
-        let out: Option<PathBuf> = block_on(pick_destination());
+        let out: Result<Option<PathBuf>, IpcError> = block_on(pick_destination());
         assert_eq!(
-            out, None,
-            "§0.4.1: the C2b contract shell opens no dialog yet (the DialogExt body is P3.56), so it returns \
-             None — also the cancelled-pick result; the typed Option<PathBuf> signature is the P2.24 deliverable"
+            out,
+            Ok(None),
+            "§0.4.1/§0.4: the C2b contract shell opens no dialog yet (the DialogExt body is P3.56), so it \
+             returns Ok(None) — also the §5.4 cancelled-pick result; the typed Result<Option<PathBuf>, \
+             IpcError> signature (the §0.4 universal error shape) is the P2.24 deliverable"
         );
     }
 }
