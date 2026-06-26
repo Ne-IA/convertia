@@ -12,7 +12,8 @@
 
 use std::path::PathBuf;
 
-use crate::outcome::IpcError;
+use crate::domain::{CollectedSetId, TargetOffer};
+use crate::outcome::{ConversionErrorKind, IpcError};
 
 /// **C2b `pick_destination`** (§0.4.1) — the Rust-side `DialogExt` destination-folder picker. This box (P2.24)
 /// authors the typed §0.4.1 wire CONTRACT — the `{} -> Result<Option<PathBuf>, IpcError>` door — so the
@@ -47,12 +48,39 @@ pub async fn pick_destination() -> Result<Option<PathBuf>, IpcError> {
     Ok(None)
 }
 
-/// **C3 `get_targets`** (§0.4.1) — a pure function of the detected source type to the offered targets + the
-/// one pre-highlighted default (§1.5); no engine spawned. Registered as the §0.4.1 interface shell (P2.21);
-/// the full `{ collectedSetId } -> TargetOffer` contract is authored by P2.25. [Build-Session-Entscheidung: P2.21]
-#[tauri::command]
+/// **C3 `get_targets`** (§0.4.1) — a pure function of the detected source type to the offered `Vec<Target>` +
+/// the one pre-highlighted default + per-target lossy/availability/options model (§1.5/§1.6); no engine spawned.
+/// This box (P2.25) authors the typed §0.4.1 wire CONTRACT — `{ collectedSetId } -> Result<TargetOffer,
+/// IpcError>` (the §0.4 universal error shape) — so the generated `bindings.ts` carries the C3 door, pulling the
+/// whole `TargetOffer` graph (`Target` / `TargetId` / `OptionValues` / …) into the bindings.
+///
+/// [Build-Session-Entscheidung: P2.25] **Shell returns `Err(IpcError{ kind: InternalError })` — the genuine
+/// pre-registry "set not resolvable" outcome, NOT a stub.** `TargetOffer` has no zero value (§1.5: it carries
+/// exactly one real `default_target`), so unlike C1/C2a (`CollectedSet::Empty`) / C2b (`Ok(None)`) there is no
+/// `Ok(empty)` to return. Until the §0.4.4 collected-set registry (P2.44) + the §1.5/§1.6 target-resolution
+/// logic land, **no** `collectedSetId` resolves — so the shell's honest result is exactly the `Err` the real
+/// body returns for an unresolvable id: `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })`.
+/// `InternalError` is spec-grounded — the §2.13 catch-all, matching the §3.2 `PlanError` "can't compute the
+/// plan" precedent (03-engines §3.2.1 `plan_encode` default `Err(PlanError{ InternalError })`).
+///
+/// Three things the named fill-boxes own (so this shell is a named, scheduled interface shell, CLAUDE §5):
+/// (a) the §2.8 **message catalog** owns the FINAL wording — the `message` below is a PROVISIONAL neutral
+/// English string — and must add a COMMAND-level string, because the current §2.8 catalog (02-guarantees
+/// §2.8.2) is ITEM-scoped ("…this file was skipped"), which does not fit a command-level failure; (b) the
+/// §0.4.4 registry resolve + the §0.6 SUCCESS path (a real `TargetOffer`) + any `kind` refinement belong to the
+/// body box (P2.44+); (c) the `kind` is spelled with the CONCRETE `ConversionErrorKind`, NOT the `ErrorKind`
+/// alias (the P2.19 convention against the rustc dead-code-EXPECTATION/alias interaction).
+#[tauri::command(rename_all = "camelCase")]
 #[specta::specta]
-pub async fn get_targets() {}
+pub async fn get_targets(collected_set_id: CollectedSetId) -> Result<TargetOffer, IpcError> {
+    let _ = collected_set_id;
+    Err(IpcError {
+        kind: ConversionErrorKind::InternalError,
+        message: "Could not prepare conversion options.".into(),
+        path: None,
+        residue: None,
+    })
+}
 
 /// **C4 `plan_output`** (§0.4.1) — computes the §1.8 output plan (resolved destination, divert preview,
 /// §2.5 re-run, §1.10 preflight) that drives the "will save to…" line before convert. Registered as the
@@ -99,6 +127,47 @@ mod c2b_contract {
             "§0.4.1/§0.4: the C2b contract shell opens no dialog yet (the DialogExt body is P3.56), so it \
              returns Ok(None) — also the §5.4 cancelled-pick result; the typed Result<Option<PathBuf>, \
              IpcError> signature (the §0.4 universal error shape) is the P2.24 deliverable"
+        );
+    }
+}
+
+#[cfg(test)]
+mod c3_contract {
+    //! §6.4.1 unit (G15): the §0.4.1 C3 `get_targets` typed CONTRACT (P2.25). The handler now carries its typed
+    //! `{ collectedSetId } -> Result<TargetOffer, IpcError>` signature, so the P2.21 all-shells
+    //! `block_on(get_targets())` invocation in `crate::ipc` (mod.rs) is REPLACED here by C3's own typed-contract
+    //! test. The §0.4.4 registry resolve + the §1.5/§1.6 target-build land at P2.44+; until then the shell
+    //! returns the genuine pre-registry `Err(InternalError)`. This test asserts the typed SHAPE — `Err` whose
+    //! `kind == InternalError` — and DELIBERATELY does NOT assert the provisional `message` (the §2.8 catalog
+    //! box owns the final string; asserting it would re-introduce the C2b-class "review the literal, not the
+    //! contract" trap). [Build-Session-Entscheidung: P2.25]
+    use super::*;
+    use tauri::async_runtime::block_on;
+
+    /// A `CollectedSetId` for the contract call — minted through its PUBLIC bare-uuid `Deserialize` wire form
+    /// (the frontend mints the id, §0.4.4), mirroring the `c1_contract`/`c2a_contract` helpers.
+    fn collected_set_id() -> CollectedSetId {
+        serde_json::from_str(r#""44444444-4444-4444-8444-444444444444""#)
+            .expect("CollectedSetId deserializes from a uuid string")
+    }
+
+    // §6.4.1 unit (G15): the C3 contract is invocable with its §0.4.1 typed arg and returns a
+    // `Result<TargetOffer, IpcError>` (the §0.4 universal error shape). The shell has no §0.4.4 registry yet
+    // (P2.44), so it returns the genuine pre-registry `Err(InternalError)` — the same Err the real body returns
+    // for an unresolvable id. SHAPE is asserted (kind == InternalError), NOT the provisional message (owned by
+    // the §2.8 catalog box); P2.44+ replaces the shell with the real resolve → §1.5/§1.6 TargetOffer.
+    #[test]
+    fn c3_get_targets_contract_is_invocable_and_typed() {
+        let out = block_on(get_targets(collected_set_id()));
+        let err = out.expect_err(
+            "§0.4.1/§0.4: the C3 shell has no registry yet (P2.44), so it returns the genuine pre-registry \
+             Err(InternalError); the typed Result<TargetOffer, IpcError> signature is the P2.25 deliverable",
+        );
+        assert_eq!(
+            err.kind,
+            ConversionErrorKind::InternalError,
+            "§2.13: the unresolvable-set shell outcome is the InternalError catch-all — SHAPE asserted, NOT \
+             the provisional message (the §2.8 catalog box owns the final string)"
         );
     }
 }

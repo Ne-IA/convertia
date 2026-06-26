@@ -120,11 +120,30 @@ export const commands = {
 	 */
 	pickDestination: () => __TAURI_INVOKE<string | null>("pick_destination"),
 	/**
-	 *  **C3 `get_targets`** (§0.4.1) — a pure function of the detected source type to the offered targets + the
-	 *  one pre-highlighted default (§1.5); no engine spawned. Registered as the §0.4.1 interface shell (P2.21);
-	 *  the full `{ collectedSetId } -> TargetOffer` contract is authored by P2.25. [Build-Session-Entscheidung: P2.21]
+	 *  **C3 `get_targets`** (§0.4.1) — a pure function of the detected source type to the offered `Vec<Target>` +
+	 *  the one pre-highlighted default + per-target lossy/availability/options model (§1.5/§1.6); no engine spawned.
+	 *  This box (P2.25) authors the typed §0.4.1 wire CONTRACT — `{ collectedSetId } -> Result<TargetOffer,
+	 *  IpcError>` (the §0.4 universal error shape) — so the generated `bindings.ts` carries the C3 door, pulling the
+	 *  whole `TargetOffer` graph (`Target` / `TargetId` / `OptionValues` / …) into the bindings.
+	 *
+	 *  [Build-Session-Entscheidung: P2.25] **Shell returns `Err(IpcError{ kind: InternalError })` — the genuine
+	 *  pre-registry "set not resolvable" outcome, NOT a stub.** `TargetOffer` has no zero value (§1.5: it carries
+	 *  exactly one real `default_target`), so unlike C1/C2a (`CollectedSet::Empty`) / C2b (`Ok(None)`) there is no
+	 *  `Ok(empty)` to return. Until the §0.4.4 collected-set registry (P2.44) + the §1.5/§1.6 target-resolution
+	 *  logic land, **no** `collectedSetId` resolves — so the shell's honest result is exactly the `Err` the real
+	 *  body returns for an unresolvable id: `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })`.
+	 *  `InternalError` is spec-grounded — the §2.13 catch-all, matching the §3.2 `PlanError` "can't compute the
+	 *  plan" precedent (03-engines §3.2.1 `plan_encode` default `Err(PlanError{ InternalError })`).
+	 *
+	 *  Three things the named fill-boxes own (so this shell is a named, scheduled interface shell, CLAUDE §5):
+	 *  (a) the §2.8 **message catalog** owns the FINAL wording — the `message` below is a PROVISIONAL neutral
+	 *  English string — and must add a COMMAND-level string, because the current §2.8 catalog (02-guarantees
+	 *  §2.8.2) is ITEM-scoped ("…this file was skipped"), which does not fit a command-level failure; (b) the
+	 *  §0.4.4 registry resolve + the §0.6 SUCCESS path (a real `TargetOffer`) + any `kind` refinement belong to the
+	 *  body box (P2.44+); (c) the `kind` is spelled with the CONCRETE `ConversionErrorKind`, NOT the `ErrorKind`
+	 *  alias (the P2.19 convention against the rustc dead-code-EXPECTATION/alias interaction).
 	 */
-	getTargets: () => __TAURI_INVOKE<void>("get_targets"),
+	getTargets: (collectedSetId: CollectedSetId) => __TAURI_INVOKE<TargetOffer>("get_targets", { collectedSetId }),
 	/**
 	 *  **C4 `plan_output`** (§0.4.1) — computes the §1.8 output plan (resolved destination, divert preview,
 	 *  §2.5 re-run, §1.10 preflight) that drives the "will save to…" line before convert. Registered as the
@@ -193,6 +212,15 @@ export const commands = {
 };
 
 /* Types */
+/**  A target's per-platform availability (§0.6 / §3.4 patent disposition, resolved per platform). */
+export type Availability =
+/**  Offered on this platform. */
+"available" |
+/**  Honestly unavailable here (§3.4 / §5.2) — `reason` names why. */
+{ unavailable: {
+	reason: string,
+} };
+
 /**
  *  A §1.4-owned structural-peek note surfaced in the §1.4 confirm summary (`CollectedSet::Single.notes`),
  *  PRODUCED by §1.2's bounded structural peek (step 4) — spreadsheets.md / images.md / audio.md own the
@@ -395,6 +423,13 @@ export type ConversionErrorKind =
  */
 "mixedDrop";
 
+/**  The closed set of cross-category operations (§0.6 / cross-category.md). */
+export type CrossCatOp =
+/**  Extract the audio track from a video. */
+"extractAudio" |
+/**  Render to an animated GIF. */
+"toGif";
+
 /**
  *  The single canonical §1.2 detection outcome `[DECIDED]`. There is no separate
  *  `DetectedFormat`/`DetectionConfidence` pair — the earlier 3-valued confidence enum and the
@@ -482,6 +517,14 @@ export type DroppedItem = {
 	detected: DetectionOutcome,
 };
 
+/**  A named preset choice inside an `Enum` option (e.g. MP3 "High"/"Standard"/"Small"), §1.6. */
+export type EnumChoice = {
+	/**  The stable id stored in `OptionValue::Enum` (never localised). */
+	value: string,
+	/**  The §5 UI-chrome label for the choice. */
+	label: LabelKey,
+};
+
 /**  One per app launch (§7.1). */
 export type InstanceId = string;
 
@@ -555,6 +598,12 @@ export type IpcError = {
 
 /**  Stable item index within a run (§0.6). */
 export type ItemId = number;
+
+/**
+ *  A UI-chrome label key (§1.6 / §5 / §2.10) — §5 resolves it to a localised string. NOT a user-facing
+ *  string itself; keeps the domain model i18n-free (§2.8/§2.9 own surfaced strings). Bare-string wire form.
+ */
+export type LabelKey = string;
 
 /**
  *  The predictable-loss kind keyed by the §2.9.1 catalog (the canonical English note lives in §2.9; this
@@ -632,6 +681,68 @@ export type LossyKind =
 "video_to_gif" |
 /**  surround forced to stereo by codec (rare; audio.md). */
 "audio_downmix";
+
+/**
+ *  A declared option for a (source, target) pair (§1.6), supplied by the registry (concrete values in
+ *  04-formats). The pipeline renders/collects these generically; the §1.4 options panel (P4.64) renders
+ *  it and P5-P7 register concrete declarations against it.
+ */
+export type OptionDecl = {
+	/**  The stable machine key. */
+	key: OptionKey,
+	/**  The §5 UI-chrome label key (§2.10). */
+	label: LabelKey,
+	/**  Basic vs Advanced surface tier. */
+	surface: Surface,
+	/**  The control shape + bounds/choices. */
+	kind: OptionKind,
+	/**  The no-decision default (from 04-formats). */
+	default: OptionValue,
+};
+
+/**
+ *  A stable machine key for an option (e.g. "quality", "fps", "lossless"), §1.6. Used as the
+ *  `OptionValues` BTreeMap key and in the §2.5 EquivKey canonicalisation, so it is a stable ASCII slug,
+ *  never a UI label. Derives `Ord` for its BTreeMap-key role; serializes transparently as a bare string.
+ */
+export type OptionKey = string;
+
+/**  The shape of an option control (§1.6). Externally tagged; the payload carries the bounds/choices. */
+export type OptionKind =
+/**  A bounded integer (quality / CRF / compression level) with a range + optional display unit. */
+({ intRange: {
+	min: number,
+	max: number,
+	step: number,
+	unit: Unit | null,
+} }) & { enum?: never; size?: never } |
+/**  A small named preset set mapping to engine flags. */
+({ enum: {
+	choices: EnumChoice[],
+} }) & { intRange?: never; size?: never } |
+/**  A boolean toggle (lossless on/off, progressive, BOM). */
+"toggle" |
+/**  A pixel/size value (SVG width, GIF width). */
+({ size: {
+	min: number,
+	max: number,
+} }) & { enum?: never; intRange?: never } |
+/**  A colour (flatten background) — picker; default usually white. */
+"color";
+
+/**
+ *  One concrete, fully-resolved option value (§1.6). INVARIANT (§1.6): every variant is JSON-serialisable
+ *  and round-trips through the §2.5 canonical form; no floats (no NaN/Inf), colours as `#RRGGBB(AA)`.
+ */
+export type OptionValue =
+/**  An `IntRange` / `Size` resolved value. */
+({ int: number }) & { bool?: never; color?: never; enum?: never } |
+/**  A `Toggle` value. */
+({ bool: boolean }) & { color?: never; enum?: never; int?: never } |
+/**  The chosen `EnumChoice.value` (the stable id, not the label). */
+({ enum: string }) & { bool?: never; color?: never; int?: never } |
+/**  A `#RRGGBB` / `#RRGGBBAA` colour. */
+({ color: string }) & { bool?: never; enum?: never; int?: never };
 
 /**
  *  The §2.8.2 surfaced per-item outcome — the *resolved, ready-to-show* line for one item, carried by the
@@ -772,6 +883,54 @@ export type SkippedItem = {
 	/**  Why the item was skipped — a §0.6 `SkipReason`, NOT an `ErrorKind` (see the type doc). */
 	reason: SkipReason,
 };
+
+/**  A UI surface tier for an option (§1.6) — Basic (materially changes a normal result) vs Advanced. */
+export type Surface =
+/**  The few switches that materially change a normal user's result. */
+"basic" |
+/**  Power-user knobs, hidden by default. */
+"advanced";
+
+/**
+ *  An offered output choice for a source (§0.6 / §1.5). `lossy` is the §1.5 offer-time SINGLE
+ *  predictable-loss marker (`Option<LossyKind>`, ≤1); the §2.9.2 co-applying render-set (2-3 kinds) is a
+ *  SEPARATE render-time computation (P4.65), not this field.
+ */
+export type Target = {
+	/**  The target identity (e.g. `Format(Webp)` | `Op(ExtractAudio)` | `Op(ToGif)`). */
+	id: TargetId,
+	/**  The display label. */
+	label: string,
+	/**  The §1.5 offer-time single predictable-loss marker (§2.9 catalog key; the string lives in §2.9). */
+	lossy: LossyKind | null,
+	/**  Per-platform availability (from §3.4). */
+	availability: Availability,
+	/**  The §1.6 declared options model (concrete values in 04-formats). */
+	options: OptionDecl[],
+};
+
+/**  The offered-target identity (§0.6 / §1.5): a format target or a cross-category operation. */
+export type TargetId =
+/**  A format target (e.g. `Format(Webp)`). */
+({ format: UserFacingFormat }) & { op?: never } |
+/**  A cross-category operation (`ExtractAudio` | `ToGif`). */
+({ op: CrossCatOp }) & { format?: never };
+
+/**
+ *  The C3 `get_targets` return (§0.6 / §1.5) — the offered targets for a collected set plus the
+ *  exactly-one pre-highlighted default.
+ */
+export type TargetOffer = {
+	/**  The collected set these targets are offered for. */
+	set: CollectedSetId,
+	/**  The offered targets. */
+	targets: Target[],
+	/**  Exactly ONE pre-highlighted default (§1.5). */
+	defaultTarget: TargetId,
+};
+
+/**  Display unit for an `IntRange` option — purely for the §5 label, not semantic (§1.6). */
+export type Unit = "percent" | "kbps" | "px" | "dpi" | "fps";
 
 /**
  *  The single grouping key (§1.3): an individual user-facing format — NOT the six SSOT categories,
