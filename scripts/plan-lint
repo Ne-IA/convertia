@@ -933,8 +933,14 @@ def doc12_ipc_surface_drift(ctx: Ctx) -> list[Finding]:
         return []                          # the command impls + the golden land in P1
     names = set()
     for f in st.rglob("*.rs"):
-        names.update(re.findall(r"#\[tauri::command\][^\n]*\n\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)",
-                                f.read_text(encoding="utf-8", errors="replace")))
+        # Match the bare `#[tauri::command]` AND the parenthesized `#[tauri::command(rename_all = …)]`
+        # form (G29 rule (f) permits `rename_all`, which only renames the camelCase ARG keys), tolerating
+        # interleaved attribute lines such as the mandatory `#[specta::specta]` that sits between the
+        # attribute and the `fn` — so no command can hide from the drift diff via either an attribute
+        # argument or a sibling attribute (the latent parens/attr-blind gap closed at P2.22).
+        names.update(re.findall(
+            r"#\[tauri::command(?:\([^)]*\))?\](?:\s*#\[[^\]]*\])*\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)",
+            f.read_text(encoding="utf-8", errors="replace")))
     want = set(golden.read_text(encoding="utf-8").split())
     out = []
     for extra in sorted(names - want):
