@@ -12,7 +12,8 @@
 
 use std::path::PathBuf;
 
-use crate::domain::{CollectedSetId, TargetOffer};
+use crate::domain::{CollectedSetId, DestinationChoice, OptionValues, TargetId, TargetOffer};
+use crate::orchestrator::OutputPlanPreview;
 use crate::outcome::{ConversionErrorKind, IpcError};
 
 /// **C2b `pick_destination`** (§0.4.1) — the Rust-side `DialogExt` destination-folder picker. This box (P2.24)
@@ -82,14 +83,39 @@ pub async fn get_targets(collected_set_id: CollectedSetId) -> Result<TargetOffer
     })
 }
 
-/// **C4 `plan_output`** (§0.4.1) — computes the §1.8 output plan (resolved destination, divert preview,
-/// §2.5 re-run, §1.10 preflight) that drives the "will save to…" line before convert. Registered as the
-/// §0.4.1 interface shell (P2.21); the full
-/// `{ collectedSetId, target, options, destination } -> OutputPlanPreview` contract is authored by P2.26.
-/// [Build-Session-Entscheidung: P2.21]
-#[tauri::command]
+/// **C4 `plan_output`** (§0.4.1) — computes the §1.8 output plan (resolved destination directory, per-location
+/// divert preview §2.7, §2.5 re-run prompt, §1.10 pre-flight verdict) that drives the "will save to…" line
+/// before convert. This box (P2.26) authors the typed §0.4.1 wire CONTRACT — `{ collectedSetId, target,
+/// options, destination } -> Result<OutputPlanPreview, IpcError>` (the §0.4 universal error shape) — so the
+/// generated `bindings.ts` carries the C4 door, pulling the `OutputPlanPreview` graph (`DivertReason` /
+/// `RerunPrompt` / `PreflightVerdict` / …) into the bindings.
+///
+/// [Build-Session-Entscheidung: P2.26] **Shell returns `Err(IpcError{ kind: InternalError })` — the same
+/// owner-approved interface-shell pattern as C3 (P2.25).** `OutputPlanPreview` has no zero value (it carries a
+/// resolved `final_dir_preview` + a `PreflightVerdict`), so there is no `Ok(empty)` to return; the genuine
+/// pre-registry outcome (the §0.4.4 collected-set registry, P2.44, is not yet built) is exactly the `Err` the
+/// real body returns for an unresolvable id: `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })`
+/// (§2.13 catch-all; the §3.2 `PlanError` `plan_encode` precedent). The named fill-boxes own the rest: (a) the
+/// §2.8 catalog box owns the FINAL message (the string below is provisional) and must add a COMMAND-level
+/// string (the §2.8 catalog is item-scoped); (b) the §0.4.4 registry resolve + the §1.8 `OutputPlan`
+/// computation (divert / §2.5 re-run / §1.10 pre-flight) + the §0.6 SUCCESS path belong to the body box
+/// (P2.44+); (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
+#[tauri::command(rename_all = "camelCase")]
 #[specta::specta]
-pub async fn plan_output() {}
+pub async fn plan_output(
+    collected_set_id: CollectedSetId,
+    target: TargetId,
+    options: OptionValues,
+    destination: DestinationChoice,
+) -> Result<OutputPlanPreview, IpcError> {
+    let _ = (collected_set_id, target, options, destination);
+    Err(IpcError {
+        kind: ConversionErrorKind::InternalError,
+        message: "Could not plan the output.".into(),
+        path: None,
+        residue: None,
+    })
+}
 
 /// **C5 `set_destination`** (§0.4.1) — re-validates writability/divert and re-evaluates the
 /// destination-dependent §2.14.4 preflight when the user changes the destination, carrying the §2.5 re-run
@@ -162,6 +188,50 @@ mod c3_contract {
         let err = out.expect_err(
             "§0.4.1/§0.4: the C3 shell has no registry yet (P2.44), so it returns the genuine pre-registry \
              Err(InternalError); the typed Result<TargetOffer, IpcError> signature is the P2.25 deliverable",
+        );
+        assert_eq!(
+            err.kind,
+            ConversionErrorKind::InternalError,
+            "§2.13: the unresolvable-set shell outcome is the InternalError catch-all — SHAPE asserted, NOT \
+             the provisional message (the §2.8 catalog box owns the final string)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod c4_contract {
+    //! §6.4.1 unit (G15): the §0.4.1 C4 `plan_output` typed CONTRACT (P2.26) — same interface-shell pattern as
+    //! C3 (`c3_contract`): the handler carries its typed `{ collectedSetId, target, options, destination } ->
+    //! Result<OutputPlanPreview, IpcError>` signature, so the P2.21 all-shells `block_on(plan_output())`
+    //! invocation in `crate::ipc` (mod.rs) moves here. The shell returns the genuine pre-registry
+    //! `Err(InternalError)`; SHAPE is asserted, NOT the provisional message (owned by the §2.8 catalog box).
+    //! [Build-Session-Entscheidung: P2.26]
+    use super::*;
+    use tauri::async_runtime::block_on;
+
+    fn collected_set_id() -> CollectedSetId {
+        serde_json::from_str(r#""55555555-5555-4555-8555-555555555555""#)
+            .expect("CollectedSetId deserializes from a uuid string")
+    }
+
+    // §6.4.1 unit (G15): the C4 contract is invocable with its full §0.4.1 typed arg set ({ collectedSetId,
+    // target, options, destination }) and returns a `Result<OutputPlanPreview, IpcError>` (the §0.4 universal
+    // error shape). The shell has no §0.4.4 registry yet (P2.44), so it returns the genuine pre-registry
+    // `Err(InternalError)`. SHAPE asserted (kind == InternalError), NOT the provisional message (owned by the
+    // §2.8 catalog box); P2.44+ replaces the shell with the real resolve → §1.8 OutputPlan computation.
+    #[test]
+    fn c4_plan_output_contract_is_invocable_and_typed() {
+        use crate::domain::FormatId;
+        use std::collections::BTreeMap;
+        let out = block_on(plan_output(
+            collected_set_id(),
+            TargetId::Format(FormatId::Png),
+            OptionValues(BTreeMap::new()),
+            DestinationChoice::BesideSource,
+        ));
+        let err = out.expect_err(
+            "§0.4.1/§0.4: the C4 shell has no registry yet (P2.44), so it returns the genuine pre-registry \
+             Err(InternalError); the typed Result<OutputPlanPreview, IpcError> signature is the P2.26 deliverable",
         );
         assert_eq!(
             err.kind,

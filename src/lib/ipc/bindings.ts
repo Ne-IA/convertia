@@ -145,13 +145,25 @@ export const commands = {
 	 */
 	getTargets: (collectedSetId: CollectedSetId) => __TAURI_INVOKE<TargetOffer>("get_targets", { collectedSetId }),
 	/**
-	 *  **C4 `plan_output`** (§0.4.1) — computes the §1.8 output plan (resolved destination, divert preview,
-	 *  §2.5 re-run, §1.10 preflight) that drives the "will save to…" line before convert. Registered as the
-	 *  §0.4.1 interface shell (P2.21); the full
-	 *  `{ collectedSetId, target, options, destination } -> OutputPlanPreview` contract is authored by P2.26.
-	 *  [Build-Session-Entscheidung: P2.21]
+	 *  **C4 `plan_output`** (§0.4.1) — computes the §1.8 output plan (resolved destination directory, per-location
+	 *  divert preview §2.7, §2.5 re-run prompt, §1.10 pre-flight verdict) that drives the "will save to…" line
+	 *  before convert. This box (P2.26) authors the typed §0.4.1 wire CONTRACT — `{ collectedSetId, target,
+	 *  options, destination } -> Result<OutputPlanPreview, IpcError>` (the §0.4 universal error shape) — so the
+	 *  generated `bindings.ts` carries the C4 door, pulling the `OutputPlanPreview` graph (`DivertReason` /
+	 *  `RerunPrompt` / `PreflightVerdict` / …) into the bindings.
+	 *
+	 *  [Build-Session-Entscheidung: P2.26] **Shell returns `Err(IpcError{ kind: InternalError })` — the same
+	 *  owner-approved interface-shell pattern as C3 (P2.25).** `OutputPlanPreview` has no zero value (it carries a
+	 *  resolved `final_dir_preview` + a `PreflightVerdict`), so there is no `Ok(empty)` to return; the genuine
+	 *  pre-registry outcome (the §0.4.4 collected-set registry, P2.44, is not yet built) is exactly the `Err` the
+	 *  real body returns for an unresolvable id: `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })`
+	 *  (§2.13 catch-all; the §3.2 `PlanError` `plan_encode` precedent). The named fill-boxes own the rest: (a) the
+	 *  §2.8 catalog box owns the FINAL message (the string below is provisional) and must add a COMMAND-level
+	 *  string (the §2.8 catalog is item-scoped); (b) the §0.4.4 registry resolve + the §1.8 `OutputPlan`
+	 *  computation (divert / §2.5 re-run / §1.10 pre-flight) + the §0.6 SUCCESS path belong to the body box
+	 *  (P2.44+); (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
 	 */
-	planOutput: () => __TAURI_INVOKE<void>("plan_output"),
+	planOutput: (collectedSetId: CollectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice) => __TAURI_INVOKE<OutputPlanPreview>("plan_output", { collectedSetId, target, options, destination }),
 	/**
 	 *  **C5 `set_destination`** (§0.4.1) — re-validates writability/divert and re-evaluates the
 	 *  destination-dependent §2.14.4 preflight when the user changes the destination, carrying the §2.5 re-run
@@ -431,6 +443,22 @@ export type CrossCatOp =
 "toGif";
 
 /**
+ *  Where a batch's outputs are written (§0.6 / §2.7.1) — the C4/C5/C6 `destination` argument (§0.4.1).
+ *  WebView-held, with no server-side store (§0.11 T2a): the no-harm machinery, not path provenance, is the bound.
+ */
+export type DestinationChoice =
+/**
+ *  Beside each source in place — the §2.7.1 default; folder layout is preserved for free and per-location
+ *  divert (§2.7.2) still applies to any unwritable/ephemeral source.
+ */
+"besideSource" |
+/**
+ *  A single user-chosen root under which the dropped-selection-relative subtree is re-created (§2.7.1, not
+ *  flattened). A re-validated HINT, never a guarantee — §2.7.2 / §7.4.1 re-check writability + divert at use time.
+ */
+{ chosenRoot: string };
+
+/**
  *  The single canonical §1.2 detection outcome `[DECIDED]`. There is no separate
  *  `DetectedFormat`/`DetectionConfidence` pair — the earlier 3-valued confidence enum and the
  *  `Option<UserFacingFormat>` that collapsed Empty-vs-Unreadable are retired. An ineligible outcome
@@ -471,6 +499,25 @@ export type DetectionOutcome =
 ({ unreadable: {
 	reason: ReadFailure,
 } }) & { recognized?: never; uncertain?: never; unsupportedType?: never };
+
+/**
+ *  Why a single source's output was diverted away from its intended location (§0.6 / §2.7.2). Carried by the
+ *  P2.11 wire DTOs (`OutputPlanPreview`/`DestinationResolved`); on `OutputPlan`, `None` = beside-source (no divert).
+ */
+export type DivertReason =
+/**  The intended location could not be written — read-only USB / network share / restricted folder (§2.7.2). */
+"unwritable" |
+/**
+ *  The intended location is a known-ephemeral OS temp place the OS may silently purge (§2.7.2) — writing a
+ *  result there would lose the user's output.
+ */
+"ephemeral" |
+/**
+ *  The destination filesystem accepts a create but offers NO atomic create-only no-clobber publish primitive
+ *  (FAT/exFAT-class: neither `RENAME_NOREPLACE`-class no-replace rename NOR hardlinks). Unix-only — Windows'
+ *  `MoveFileExW` is create-only on FAT/exFAT (§2.7.2 / §2.14.2).
+ */
+"noAtomicPublish";
 
 /**
  *  One eligible item in the §1.1-frozen collected set — the per-item record the pipeline carries
@@ -745,6 +792,13 @@ export type OptionValue =
 ({ color: string }) & { bool?: never; enum?: never; int?: never };
 
 /**
+ *  The effective, fully-defaulted-plus-overrides option set for a batch (§0.6; == §1.6 `EffectiveOptions`).
+ *  The ONE wire/domain name for the resolved values, keyed by the stable `OptionKey`. Serializes
+ *  transparently as its inner map (a JSON object keyed by the `OptionKey` slug strings).
+ */
+export type OptionValues = { [key in OptionKey]: OptionValue };
+
+/**
  *  The §2.8.2 surfaced per-item outcome — the *resolved, ready-to-show* line for one item, carried by the
  *  §0.6 `ItemResult.reason: Option<OutcomeMsg>` (which rides the `RunFinished` Channel payload + the C8
  *  return, §0.4.2/§1.12). It is **either** a §2.8 failure, a §2.9 lossy note, **or** a §1.1/§1.3 pre-flight
@@ -793,12 +847,64 @@ export type OutcomeMsg =
 	text: string,
 } };
 
+/**
+ *  The C4 `plan_output` return (§0.6 / §1.8) — drives the "will save to…" line shown before convert. Homed
+ *  in `crate::orchestrator` (it embeds `preflight: PreflightVerdict` → transitively references
+ *  `crate::outcome`, §0.7 ‡).
+ *
+ *  [Build-Session-Entscheidung: P2.11] `Serialize` + `Type`, NO `Deserialize` (embeds the Serialize-only
+ *  `PreflightVerdict`); NOT `Copy` (owns a `PathBuf`). camelCase wire form.
+ */
+export type OutputPlanPreview = {
+	/**  The collected set this preview is for (the §0.4.4 registry key). */
+	set: CollectedSetId,
+	/**
+	 *  The resolved destination DIRECTORY shown before convert (§1.8 / §2.7) — directory-based, never a
+	 *  pre-baked final file path (the numbered name is resolved at §2.1 write time).
+	 */
+	finalDirPreview: string,
+	/**  `Some(reason)` if a per-location divert was previewed (§2.7.2); `None` = beside-source / no divert. */
+	diverted: DivertReason | null,
+	/**
+	 *  `Some(..)` if the §2.5 in-session ledger detected an equivalent prior run (the one batch-level
+	 *  prompt's data); `None` = no re-run prompt.
+	 */
+	rerun: RerunPrompt | null,
+	/**  The §1.10 size/space estimate + any up-front whole-batch fail. */
+	preflight: PreflightVerdict,
+};
+
 /**  The C2a `pick_for_intake` `kind` arg (§0.4.1) — pick files or a folder. Inbound (WebView → Rust). */
 export type PickKind =
 /**  Pick one or more files. */
 "files" |
 /**  Pick a folder (recursively collected at the §1.1 freeze). */
 "folder";
+
+/**
+ *  The §1.10 resource pre-flight verdict surfaced before convert (§0.6 / §1.10) — the size/space estimate
+ *  plus any whole-batch up-front "too big" / "won't fit" fail. Carried by the C4/C5 `OutputPlanPreview` /
+ *  `DestinationResolved` returns. Homed in `crate::orchestrator` (it references `crate::outcome` DIRECTLY
+ *  via `up_front_fail`).
+ *
+ *  [Build-Session-Entscheidung: P2.11] `Serialize` + `Type` (a wire type), NO `Deserialize` (its
+ *  `up_front_fail: Option<ConversionErrorKind>` is outbound-only — `ConversionErrorKind`/`ErrorKind` have
+ *  no `Deserialize`, P2.18); NOT `Copy` (struct convention). `up_front_fail` spells the concrete
+ *  `ConversionErrorKind` (the `ErrorKind` alias's underlying type) against the P2.10 alias trap.
+ */
+export type PreflightVerdict = {
+	/**  Estimated total output + kind-1 publish-temp footprint across the batch (§1.10 / §2.14.1). */
+	estTotalOutputBytes: number,
+	/**  Estimated total kind-2 engine-working scratch footprint across the batch (§1.10 / §2.14.2). */
+	estTotalScratchBytes: number,
+	/**
+	 *  `Some(TooBig | OutOfDisk)` ONLY for the WHOLE-BATCH doomed case (the §5.2 disable-Convert-wholesale
+	 *  flag — per-physical-volume / aggregate, §1.10). A PER-ITEM too-big / out-of-disk is NOT carried here
+	 *  — it is enforced at write time as that item's `Failed(TooBig|OutOfDisk)` while the batch continues
+	 *  (§1.10 / §1.11). `None` = the batch is not up-front doomed.
+	 */
+	upFrontFail: ConversionErrorKind | null,
+};
 
 /**
  *  Why a file's bytes could not be read at freeze/detect time (§1.2). Owned here; the §2.8 taxonomy
@@ -814,6 +920,23 @@ export type ReadFailure =
 "locked" |
 /**  Any other OS read error. */
 "ioError";
+
+/**
+ *  The one batch-level §2.5 re-run prompt's data (§0.6 / §2.5) — surfaced once per batch when the
+ *  in-session ledger detects an equivalent prior run (same resolved source + target + effective settings,
+ *  §2.5.1). OUTBOUND-ONLY: it is carried inside the C4/C5 `OutputPlanPreview` / `DestinationResolved`
+ *  returns (Rust→WebView), never sent inbound — so `Serialize` + `Type` with NO `Deserialize` (mirroring
+ *  the outbound-only `ScanProgress` (P2.7) derive choice). The user's RESPONSE is the separate inbound
+ *  `RerunDecision`.
+ *
+ *  [Build-Session-Entscheidung: P2.11] NOT `Copy` (the established struct convention, like `ScanProgress`);
+ *  `PartialEq` + `Eq` back the embedding `OutputPlanPreview` / `DestinationResolved` equality + the
+ *  serialize pin. camelCase renames `equivalent_count` → `equivalentCount`.
+ */
+export type RerunPrompt = {
+	/**  How many items in the batch are flagged equivalent to a prior in-session run (§2.5). */
+	equivalentCount: number,
+};
 
 /**  One per `start_conversion` run (§0.4 C6 / §7.1). */
 export type RunId = string;
