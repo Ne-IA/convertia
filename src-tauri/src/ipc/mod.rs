@@ -32,17 +32,18 @@ mod command_surface {
     //! P2.21-scheduled transition); this test then exercises the REMAINING bare-`()` interface shells. The
     //! `main.rs` `bindings_codegen` read-back test still proves the generated TS surface lists all 14
     //! commands; this proves the Rust side: each remaining registered shell is a live `async fn` that runs to
-    //! completion. P2.22 filled C1 `ingest_paths` and P2.23 filled C2a `pick_for_intake` — their typed
-    //! contracts are tested in `crate::ipc::intake` (`c1_contract` / `c2a_contract`), so the 12 remaining
-    //! C2b..C13 shells are exercised here. [Build-Session-Entscheidung: P2.21]
+    //! completion. P2.22 filled C1 `ingest_paths` + P2.23 filled C2a `pick_for_intake` (tested in
+    //! `crate::ipc::intake`: `c1_contract` / `c2a_contract`), and P2.24 filled C2b `pick_destination` (tested
+    //! in `crate::ipc::planning`: `c2b_contract`), so the 11 remaining C3..C13 shells are exercised here.
+    //! [Build-Session-Entscheidung: P2.21]
     use tauri::async_runtime::block_on;
 
     // §6.4.1 unit (G15): invoke every still-bare §0.4.1 command shell so the registered surface is EXERCISED
     // (the handler runs, not merely compiles + registers). Each empty shell body completes without panic —
     // the contract an interface shell carries until its fill-box authors the typed body. The remaining
     // invocations sit in ONE test fn so the Tauri async runtime is initialised once (no cross-test re-init).
-    // Listed in §0.4.1 C2b..C13 order; C1 `ingest_paths` (P2.22) + C2a `pick_for_intake` (P2.23) are filled
-    // and tested in `crate::ipc::intake`.
+    // Listed in §0.4.1 C3..C13 order; C1 `ingest_paths` (P2.22) + C2a `pick_for_intake` (P2.23) are filled and
+    // tested in `crate::ipc::intake`, and C2b `pick_destination` (P2.24) in `crate::ipc::planning`.
     // [Test-Change: P2.22 — old-obsolete+new-correct, §0.4.1] old: the P2.21 all-shells test invoked the
     // bare-`()` C1 shell; new (verified by read-back — C1 now returns `Result<CollectedSet, IpcError>` over a
     // typed arg set, so the no-arg `()` invocation is obsolete and would no longer compile): C1's typed
@@ -52,10 +53,16 @@ mod command_surface {
     // `pick_for_intake` shell; new (verified by read-back — C2a now returns `Result<CollectedSet, IpcError>`
     // over a typed arg set, so the no-arg `()` invocation is obsolete and would no longer compile): C2a's typed
     // contract is exercised by `intake::c2a_contract::c2a_pick_for_intake_contract_is_invocable_and_typed`, so
-    // its line moves there and this test now covers the 12 still-bare C2b..C13 shells.
+    // its line moves there.
+    // [Test-Change: P2.24 — old-obsolete+new-correct, §0.4.1] old: this test invoked the bare-`()` C2b
+    // `pick_destination` shell with no value assertion; new (verified by read-back — C2b now returns
+    // `Option<PathBuf>`, so the bare invocation no longer asserts the typed contract): C2b's typed contract is
+    // exercised by `planning::c2b_contract::c2b_pick_destination_contract_is_invocable_and_typed` (asserting the
+    // cancelled/no-pick `None`), so its line moves there and this test now covers the 11 still-bare C3..C13
+    // shells. (The no-arg call still compiled, but C2b is no longer a bare `()` shell — moving it keeps the
+    // one-typed-contract-test-per-filled-command pattern of C1/C2a.)
     #[test]
     fn every_registered_command_shell_is_invocable() {
-        block_on(super::planning::pick_destination()); // C2b
         block_on(super::planning::get_targets()); // C3
         block_on(super::planning::plan_output()); // C4
         block_on(super::planning::set_destination()); // C5

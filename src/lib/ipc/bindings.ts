@@ -90,12 +90,30 @@ export const commands = {
 	 */
 	cancelIngest: () => __TAURI_INVOKE<void>("cancel_ingest"),
 	/**
-	 *  **C2b `pick_destination`** (§0.4.1) — the Rust-side `DialogExt` destination-folder picker; the one chosen
-	 *  `PathBuf` it returns is a *write* destination that legitimately transits the WebView into C5 (§0.10 /
-	 *  §2.1). Registered as the §0.4.1 interface shell (P2.21); the full `{} -> Option<PathBuf>` contract is
-	 *  authored by P2.24. [Build-Session-Entscheidung: P2.21]
+	 *  **C2b `pick_destination`** (§0.4.1) — the Rust-side `DialogExt` destination-folder picker. This box (P2.24)
+	 *  authors the typed §0.4.1 wire CONTRACT — the `{} -> Option<PathBuf>` door — so the generated `bindings.ts`
+	 *  carries the C2b surface. Unlike the C2a intake picker, the **one chosen `PathBuf` it returns legitimately
+	 *  transits the WebView** into C5 `set_destination` (and then C6): it is a *write* destination, not a source
+	 *  path, so it can never harm an original or read anything (§0.10 / §2.1 / §0.11 T2). `None` = the user
+	 *  cancelled — a clean no-op; the held C4/C5 destination is unchanged.
+	 *
+	 *  [Build-Session-Entscheidung: P2.24] **`Option<PathBuf>` return, NO `IpcError` wrapper.** The §0.4.1 C2b
+	 *  output column is a bare `Option<PathBuf>` (not `Result<_, IpcError>` like C1/C2a): a folder pick has no
+	 *  user-facing failure mode — a cancel is `None`, not an error — so the contract carries no error arm. This is
+	 *  the spec literal, not a deviation.
+	 *
+	 *  [Build-Session-Entscheidung: P2.24] **Interface-shell body — the typed CONTRACT is the deliverable.**
+	 *  P2.24 authors the §0.4.1 wire signature; the native `DialogExt` folder-pick BODY (`app.dialog().file()
+	 *  .pick_folder(..)`, opened async/`spawn_blocking` so it never blocks a Tokio worker, §7 app-shell) is wired
+	 *  end-to-end at P3.56 — the DestinationBar, whose "Change destination" affordance drives C2b → C5 (P3.54 wires
+	 *  the C2a *intake* picker, a distinct path; C2b is the *destination* picker). A native OS folder dialog is
+	 *  **not unit-testable** (it needs a real OS dialog /
+	 *  user interaction — the §6.6 walkthrough + the P9 E2E flow exercise it), so the testable P2 deliverable is
+	 *  the typed contract; the shell returns `None` — the genuine cancelled/no-pick result. This is the sanctioned
+	 *  compile-time interface-shell pattern (CLAUDE §5 / the P3 `crate::isolation` shells P4 expands), not a quiet
+	 *  deferral.
 	 */
-	pickDestination: () => __TAURI_INVOKE<void>("pick_destination"),
+	pickDestination: () => __TAURI_INVOKE<string | null>("pick_destination"),
 	/**
 	 *  **C3 `get_targets`** (§0.4.1) — a pure function of the detected source type to the offered targets + the
 	 *  one pre-highlighted default (§1.5); no engine spawned. Registered as the §0.4.1 interface shell (P2.21);
