@@ -146,7 +146,7 @@
   needs: P2.21, P2.11
 - [x] **P2.27** [RUST] Author the C5 `set_destination` contract — `DestinationResolved` (re-eval preflight, carry rerun through unchanged) · §0.4.1 §1.8 §2.14.4
   needs: P2.26
-- [ ] **P2.28** [RUST] Encode the C4/C5 asymmetry as an enforced orchestrator lifecycle rule (C4 re-callable; C5 owns destination; C4 never overrides C5) · §0.4.1
+- [x] **P2.28** [RUST] Encode the C4/C5 asymmetry as an enforced orchestrator lifecycle rule (C4 re-callable; C5 owns destination; C4 never overrides C5) · §0.4.1
   needs: P2.27
 - [ ] **P2.29** [RUST] Author the C6 `start_conversion` contract — mint `RunId`, enqueue, return immediately, stream over `onProgress` Channel; `destination` authoritative · §0.4.1 §1.9 §7.1.2
   needs: P2.21, P2.11, P2.37
