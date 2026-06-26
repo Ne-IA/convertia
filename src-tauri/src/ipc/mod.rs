@@ -26,23 +26,28 @@ pub mod system;
 
 #[cfg(test)]
 mod command_surface {
-    //! §6.4.1 unit (G15): the §0.4.1 C1–C13 command surface — **14 handlers** (C2 splits into C2a
-    //! `pick_for_intake` + C2b `pick_destination`) — registered as shells at P2.21 are real, INVOCABLE
-    //! async commands, not merely registered symbols. The `main.rs` `bindings_codegen` read-back test proves
-    //! the generated TS surface lists all 14; this proves the Rust side: each registered handler is a live
-    //! `async fn` that runs to completion. Together they assert the command door is functional end-to-end.
-    //! The fill-boxes (P2.22+) replace each invocation here with that command's typed-contract test as they
-    //! author its real signature + `crate::orchestrator` delegation. [Build-Session-Entscheidung: P2.21]
+    //! §6.4.1 unit (G15): the §0.4.1 command surface registered at P2.21 is real, INVOCABLE async commands,
+    //! not merely registered symbols. As each fill-box (P2.22+) authors its command's typed signature, that
+    //! command's invocation here is REPLACED by its own typed-contract test co-located with the command (the
+    //! P2.21-scheduled transition); this test then exercises the REMAINING bare-`()` interface shells. The
+    //! `main.rs` `bindings_codegen` read-back test still proves the generated TS surface lists all 14
+    //! commands; this proves the Rust side: each remaining registered shell is a live `async fn` that runs to
+    //! completion. P2.22 filled C1 `ingest_paths` — its typed contract is tested in `crate::ipc::intake`
+    //! (`c1_contract`), so the 13 remaining C2a..C13 shells are exercised here. [Build-Session-Entscheidung: P2.21]
     use tauri::async_runtime::block_on;
 
-    // §6.4.1 unit (G15): invoke every §0.4.1 command shell so the registered surface is EXERCISED (the
-    // handler runs, not merely compiles + registers). Each empty shell body completes without panic — the
-    // contract an interface shell carries until its fill-box authors the typed body. All 14 invocations sit
-    // in ONE test fn so the Tauri async runtime is initialised once (no cross-test re-init). Listed in the
-    // §0.4.1 C1..C13 order (the 14 handlers: C2 = C2a `pick_for_intake` + C2b `pick_destination`).
+    // §6.4.1 unit (G15): invoke every still-bare §0.4.1 command shell so the registered surface is EXERCISED
+    // (the handler runs, not merely compiles + registers). Each empty shell body completes without panic —
+    // the contract an interface shell carries until its fill-box authors the typed body. The remaining
+    // invocations sit in ONE test fn so the Tauri async runtime is initialised once (no cross-test re-init).
+    // Listed in §0.4.1 C2a..C13 order; C1 `ingest_paths` is filled (P2.22) and tested in `crate::ipc::intake`.
+    // [Test-Change: P2.22 — old-obsolete+new-correct, §0.4.1] old: the P2.21 all-shells test invoked the
+    // bare-`()` C1 shell; new (verified by read-back — C1 now returns `Result<CollectedSet, IpcError>` over a
+    // typed arg set, so the no-arg `()` invocation is obsolete and would no longer compile): C1's typed
+    // contract is exercised by `intake::c1_contract::c1_ingest_paths_contract_is_invocable_and_typed`, so its
+    // line moves there and this test now covers the 13 still-bare C2a..C13 shells.
     #[test]
     fn every_registered_command_shell_is_invocable() {
-        block_on(super::intake::ingest_paths()); // C1
         block_on(super::intake::pick_for_intake()); // C2a
         block_on(super::planning::pick_destination()); // C2b
         block_on(super::planning::get_targets()); // C3

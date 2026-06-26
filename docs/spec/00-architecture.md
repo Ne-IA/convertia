@@ -243,8 +243,8 @@ signatures; the TS side is generated (§0.4.5 codegen).
 
 | # | Command | Request | Response | Notes |
 |---|---------|---------|----------|-------|
-| C1 | `ingest_paths` | `{ paths: Vec<PathBuf>, origin: IntakeOrigin, collectingId: CollectingId, drainPending?: bool, onScan?: Channel<ScanProgress> }` | `CollectedSet` | Builds the **frozen source set** (§2.4): recurse folders (Rust), ignore hidden/system files, de-dup by resolved identity (§2.3), run detection (§1.2), group by user-facing format (§1.3). Returns the collected-summary (detected format + count) **or** a `MixedDrop` / `Unsupported` / `Uncertain` outcome. `origin` distinguishes drop / picker / launch-arg (§7.8). The frontend generates `collectingId` and passes it in so C13 can cancel this in-flight walk **before** C1's long await resolves (see note). **`drainPending` (first-launch drain) `[DECIDED]`:** the frontend cannot hold the buffered launch paths (they live in the Rust-side `State<PendingIntake>`, §7.8.1), so the first-launch drain is a C1 call with **`paths: []` + `drainPending: true`**: the handler, seeing the flag, **consumes `PendingIntake`** (using its stored `origin`, typically `LaunchArg`) and freezes THAT set, returning its `CollectedSet`; if `PendingIntake` is empty it returns `CollectedSet::Empty`. A normal intake call omits `drainPending` (or `false`) and uses its `paths`. The two are mutually exclusive (a `drainPending: true` call ignores any `paths`). | **Optional `onScan` Channel `[DECIDED]`:** carries a **throttled live scan count** (`ScanProgress { scanned: u32 }`, ~2/s, §0.6) so the §5.2 *Collecting* state can show "Scanning… N files so far" during a long recursive walk; it is a **run-telemetry-style Channel**, NOT one of the three `app://` events (the §0.4.2 "no other IPC events" invariant covers `app.emit` events, not Channels handed to a command). |
-| C2a | `pick_for_intake` | `{ kind: PickKind /* files \| folder */, collectingId: CollectingId, onScan?: Channel<ScanProgress> }` | `CollectedSet` | The **intake picker `[DECIDED]`.** Opens the native files/folder dialog **Rust-side via `DialogExt`** from this command's handler (so there is no `dialog:allow-open` WebView grant — §0.10). The picked paths are funnelled **straight into the C1 `ingest_paths` freeze Rust-side** and this command returns the **same `CollectedSet`** C1 returns — so **no raw FS path ever reaches the WebView** (the WebView only triggers the picker and receives the collected summary, never paths to re-submit). A **cancelled dialog is a clean no-op** that returns `CollectedSet::Empty` with no error and leaves the UI in Idle (§5.4). Takes the same `collectingId` + optional `onScan` as C1 so C13 can cancel the in-flight walk. |
+| C1 | `ingest_paths` | `{ paths: Vec<PathBuf>, origin: IntakeOrigin, collectingId: CollectingId, drainPending?: bool, onScan: Channel<ScanProgress> }` | `CollectedSet` | Builds the **frozen source set** (§2.4): recurse folders (Rust), ignore hidden/system files, de-dup by resolved identity (§2.3), run detection (§1.2), group by user-facing format (§1.3). Returns the collected-summary (detected format + count) **or** a `MixedDrop` / `Unsupported` / `Uncertain` outcome. `origin` distinguishes drop / picker / launch-arg (§7.8). The frontend generates `collectingId` and passes it in so C13 can cancel this in-flight walk **before** C1's long await resolves (see note). **`drainPending` (first-launch drain) `[DECIDED]`:** the frontend cannot hold the buffered launch paths (they live in the Rust-side `State<PendingIntake>`, §7.8.1), so the first-launch drain is a C1 call with **`paths: []` + `drainPending: true`**: the handler, seeing the flag, **consumes `PendingIntake`** (using its stored `origin`, typically `LaunchArg`) and freezes THAT set, returning its `CollectedSet`; if `PendingIntake` is empty it returns `CollectedSet::Empty`. A normal intake call omits `drainPending` (or `false`) and uses its `paths`. The two are mutually exclusive (a `drainPending: true` call ignores any `paths`). | **`onScan` Channel — NON-OPTIONAL `[DECIDED, forced]`:** carries a **throttled live scan count** (`ScanProgress { scanned: u32 }`, ~2/s, §0.6) so the §5.2 *Collecting* state can show "Scanning… N files so far" during a long recursive walk; it is a **run-telemetry-style Channel**, NOT one of the three `app://` events (the §0.4.2 "no other IPC events" invariant covers `app.emit` events, not Channels handed to a command). **The argument is non-optional** (`Channel<ScanProgress>`, not `Option<…>`): tauri's `Channel<T>` is `!Deserialize`, so `Option<Channel<T>>` cannot be a command argument (it routes through the `CommandArg for D: Deserialize` blanket impl → a compile error). **No behaviour is lost** — the frontend **always** hands a channel and realises the "optional" intent by **subscribing only for a long walk**, never by omitting the argument (the rejected alternative, a custom `OptionalChannel<T>` wrapper, replicates undocumented tauri channel internals and is version-fragile). C2a takes the same non-optional `onScan`. |
+| C2a | `pick_for_intake` | `{ kind: PickKind /* files \| folder */, collectingId: CollectingId, onScan: Channel<ScanProgress> }` | `CollectedSet` | The **intake picker `[DECIDED]`.** Opens the native files/folder dialog **Rust-side via `DialogExt`** from this command's handler (so there is no `dialog:allow-open` WebView grant — §0.10). The picked paths are funnelled **straight into the C1 `ingest_paths` freeze Rust-side** and this command returns the **same `CollectedSet`** C1 returns — so **no raw FS path ever reaches the WebView** (the WebView only triggers the picker and receives the collected summary, never paths to re-submit). A **cancelled dialog is a clean no-op** that returns `CollectedSet::Empty` with no error and leaves the UI in Idle (§5.4). Takes the same `collectingId` + the (non-optional, §0.4.1 C1 note) `onScan` as C1 so C13 can cancel the in-flight walk. |
 | C2b | `pick_destination` | `{}` | `Option<PathBuf>` | The **destination-folder picker `[DECIDED]`.** Opens the native folder dialog **Rust-side via `DialogExt`** (still no `dialog:allow-open` grant) and **returns the chosen folder `PathBuf` to the WebView**, which carries it into **C5 `set_destination`** (and then C6). **This one path DOES transit the WebView** — unavoidable, because the destination is a WebView-held choice (§5.10 "Change destination") — and is **acceptable**: it is a *write* destination, not a source path, bounded by the §2.1 non-destructive creates (a chosen destination can never harm an original or read anything; §0.11 T2). `None` = the user cancelled (no-op; the held C4/C5 destination is unchanged). The "picked paths never transit the WebView" claim is scoped to the **intake** picker (C2a) only. |
 | C3 | `get_targets` | `{ collectedSetId: CollectedSetId }` | `TargetOffer` | From the detected source type → the offered `Vec<Target>` + the **one pre-highlighted default** + per-target lossy flags + per-target availability (from §3.4) + the declared options model (§1.6). Pure function of detection; no engine spawned. |
 | C4 | `plan_output` | `{ collectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice }` | `OutputPlanPreview` | Computes the `OutputPlan` (§1.8): resolved destination, beside-source vs chosen-root subtree re-creation, per-location divert preview, **re-run/equivalent-output detection (§2.5)** → may return a `RerunPrompt`. Also returns the §1.10 pre-flight verdict (size/space estimate, any up-front "too big" fail). Drives the "will save to …" line (SSOT *output lands somewhere obvious*) **before** convert. |
@@ -368,8 +368,10 @@ pub struct BatchProgress{ pub run_id: RunId, pub done: u32, pub total: u32 }
 > Channel dies with the run — no cross-run leakage, no global listener cleanup
 > bug). This is the Tauri v2 recommended pattern for streamed Rust→frontend data.
 
-**Intake scan telemetry — `Channel<ScanProgress>`** (optional, handed to `ingest_paths`,
-C1). Same Channel pattern as run telemetry (NOT an `app://` event):
+**Intake scan telemetry — `Channel<ScanProgress>`** (handed to `ingest_paths`,
+C1; **non-optional** — see the §0.4.1 C1 `onScan` forced-deviation note: tauri's `Channel<T>`
+is `!Deserialize`, so `Option<Channel>` cannot be a command arg). Same Channel pattern as run
+telemetry (NOT an `app://` event):
 
 | Variant / payload | Meaning |
 |---|---|
@@ -527,6 +529,35 @@ backend; §5.1/§5.8 import from here and never call raw `invoke`). Generation r
 part of the debug build / a dedicated `cargo` step; **§06 owns a CI drift check**
 that fails if `bindings.ts` is stale vs the Rust source (regenerate +
 `git diff --exit-code`).
+
+**BigInt-style scalars on the wire `[DECIDED]`.** `specta-typescript` forbids exporting
+BigInt-style Rust scalars (`u64`/`usize`/`i64`/`u128`/`i128`) by default — a JS-f64
+safe-integer guard (ceiling 2^53). Every ConvertIA wire integer is a **capped magnitude**
+far below 2^53: file/item **counts** (`CollectedSet.count`/`Mixed.found`,
+`RerunPrompt.equivalent_count`), **byte sizes** (`DroppedItem.size_bytes`,
+`CollectedSet.total_bytes`, `PreflightVerdict.est_total_*_bytes` — `u64` precisely because a
+single file may exceed 4 GB), and the §1.6 option **ranges** (`OptionKind` min/max/step,
+`OptionValue::Int`). No hash / checksum / timestamp / full-range id ever crosses the wire (the
+§2.5 `EquivKey` is core-internal, never a wire type). So the **dev-only TS codegen applies
+`dangerously_cast_bigints_to_number()`** (the tauri-specta builder method, at the codegen
+export call only — not the shared runtime builder) and these fields emit as TS `number`. The
+Rust types stay correct (`u64` for sizes), and `specta-typescript` stays a **dev-only**
+dependency (no per-field `specta_typescript::Number` attribute, which would leak the exporter
+into the shipped MIT core). **Forward-guard:** a future wire-DTO field holding a *full-range*
+64-bit value (a hash, a large id, a checksum, a timestamp) must NOT ride this global cast — it
+overrides per-field with `#[specta(type = String)]` + a lossless `#[serde(with = …)]`. (First
+`u64`/`usize` export: the §0.6 `CollectedSet` graph at P2.22.)
+
+**Command error mode — `Throw` `[DECIDED, forced]`.** A `Result`-returning command's TS wrapper returns
+`Promise<T>` directly and the §0.4.3 `IpcError` is the **thrown rejection value**, not a
+`{ status: "ok" | "error" }` union (the dev-only codegen selects tauri-specta's
+`ErrorHandlingMode::Throw`). This is **forced by the no-`any` rule above**: tauri-specta's default
+`Result` mode emits a `typedError` runtime helper that unavoidably carries `any` (the default casts
+`e as any`; a custom `typed_error_impl` override only moves the `any` into a generated contract
+assertion), and the generated `bindings.ts` may carry no `any` (the rule is enforced on it — eslint
+`@typescript-eslint/no-explicit-any` + G8). C1 `ingest_paths` is the first `Result`-returning command,
+so the mode is fixed here; the §5.8 frontend `await commands.X(…)` examples carry no `{ status }`
+assumption, so this is spec-compatible.
 
 **Held-in-reserve fallback (not a v1 open question):** if tauri-specta v2 proves
 unstable against our pinned Tauri (§0.8), the documented fallback is **specta for the

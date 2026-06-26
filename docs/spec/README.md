@@ -426,8 +426,10 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **C6 destination authority** — **C6's `destination` argument is authoritative**; C4/C5
   are plan/preview + revalidation only, with **no separate server-side destination
   store** (the UI carries the last C5-resolved destination into C6). Owner: §0.4.1.
-- **Collecting live count** — fed by an **optional `onScan` `Channel<ScanProgress>`** on
-  C1 (≈2/s throttled), a run-telemetry-style Channel, **not** a 4th `app://` event (the
+- **Collecting live count** — fed by a **non-optional `onScan` `Channel<ScanProgress>`** on
+  C1 (≈2/s throttled; non-optional because tauri's `Channel<T>` is `!Deserialize` — the §0.4.1
+  forced-deviation note; the frontend realises "optional" by subscribing only for a long walk),
+  a run-telemetry-style Channel, **not** a 4th `app://` event (the
   three-event invariant covers `app.emit`, not command Channels). Owner: §0.4.1/§0.4.2.
 - **`crosses_volume` is reactive at the PUBLISH, not pre-planned as a field** — `OutputPlan`
   drops the `crosses_volume` field; `fs_guard::atomic_publish` detects cross-volume

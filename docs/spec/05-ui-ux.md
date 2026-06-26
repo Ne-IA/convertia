@@ -317,7 +317,8 @@ const unlisten = await getCurrentWindow().onDragDropEvent((e) => {
                     paths: e.payload.paths,
                     origin: 'drop',          // IntakeOrigin (REQUIRED, §0.4.1 C1)
                     collectingId,
-                    // onScan?: optional ScanProgress Channel (§5.8 intake telemetry)
+                    onScan,                  // ScanProgress Channel — ALWAYS passed (non-optional, §0.4.1);
+                                             // created per §5.8, the frontend subscribes only for a long walk
                   });                          // → §0.4 C1 ingest_paths
                   break;
   }
@@ -908,8 +909,10 @@ async function startRun(plan: StartArgs): Promise<void> {
 
 ### Intake scan telemetry subscription (Channel)
 Mirrors the progress-subscription lifecycle for the **`onScan` `Channel<ScanProgress>`**
-(§0.4.1 C1 / C2a, §0.4.2): the frontend **creates** the `onScan` Channel when it issues
-**C1 `ingest_paths`** (or **C2a `pick_for_intake`**), sets `ch.onmessage = (m) =>
+(§0.4.1 C1 / C2a, §0.4.2): the frontend **always creates and hands** the `onScan` Channel when it
+issues **C1 `ingest_paths`** (or **C2a `pick_for_intake`**) — it is a **non-optional** argument (§0.4.1;
+the "optional" intent is realised by **subscribing only when it wants the count**, not by omitting the
+arg) — and sets `ch.onmessage = (m) =>
 store.setScanCount(m.scanned)` so the §5.2 *Collecting* "Scanning… N files so far"
 display updates (≈2/s, throttled, coalesced into animation-frame updates like the
 progress map), and **drops** the Channel when C1/C2a resolves (the `CollectedSet` returns)
@@ -967,8 +970,9 @@ they do not count against the three-event invariant):
   above.
 - **`app://close-requested`** → render `QuitConfirm` (state 11), per §7.3.
 - **`app://intake` `{ paths, origin }`** (second-instance launch / Open-with hand-off,
-  §7.1/§7.8) → on receipt, call **`ingest_paths` (C1)** with `{ paths, origin }` and a
-  freshly-generated `collectingId` → enter `Collecting` (exactly like a native drop).
+  §7.1/§7.8) → on receipt, call **`ingest_paths` (C1)** with the event's `{ paths, origin }`, a
+  freshly-generated `collectingId`, the §5.8 `onScan` Channel, and `drainPending: null` → enter
+  `Collecting` (exactly like a native drop).
   **Primary gate is the core `[DECIDED]`:** the §7.1 single-instance callback is the
   authoritative refuse-busy point — when a batch is busy (not `Idle`/`Summary`) the
   **core does NOT emit `app://intake`** (the second-launch is refused core-side, §7.1).

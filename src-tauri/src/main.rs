@@ -321,6 +321,7 @@ mod bindings_codegen {
     //! `git diff --exit-code`, registered in P1.28). [Build-Session-Entscheidung: P1.26]
     use super::*;
     use specta_typescript::Typescript;
+    use tauri_specta::ErrorHandlingMode;
 
     /// The single tracked path (§0.7): `<repo>/src/lib/ipc/bindings.ts`, resolved from this crate's
     /// compile-time manifest dir (`<repo>/src-tauri`) so it is independent of the process CWD.
@@ -335,7 +336,35 @@ mod bindings_codegen {
     #[test]
     #[ignore = "codegen action; run via `cargo run -p xtask -- codegen`, not the hermetic suite (§0.4.5)"]
     fn regenerate_committed_bindings() {
+        // [Build-Session-Entscheidung: P2.22] §0.4.5 BigInt export policy. `specta-typescript` FORBIDS
+        // exporting BigInt-style Rust scalars (`u64`/`usize`/`i64`/`u128`/`i128`) by default — a JS-f64
+        // safe-integer guard (ceiling 2^53). The §0.6 `CollectedSet` graph is the FIRST exported type to
+        // carry such fields (P2.22 is its first consumer), so the export must declare a policy.
+        // `dangerously_cast_bigints_to_number()` (the tauri-specta builder method) casts every bigint-style
+        // field to TS `number`. It is an EXPORT-only concern kept HERE at the dev-only codegen call — NOT in
+        // the shared `ipc_specta_builder()` (there is one export path; the G19 regen uses exactly this call).
+        // SAFE because EVERY wire bigint is a CAPPED count / byte-size / option-range far below 2^53:
+        // `DroppedItem.size_bytes`, `CollectedSet.{count,total_bytes}` / `Mixed.found`,
+        // `RerunPrompt.equivalent_count`, `PreflightVerdict.est_total_*_bytes`, the §1.6 OptionKind
+        // min/max/step + `OptionValue::Int` (sizes are `u64` precisely BECAUSE a single file may exceed
+        // 4 GB). The §2.5 `EquivKey` (a hash-style full-range value) is core-internal and NEVER on the wire;
+        // there is no hash / checksum / timestamp / full-range id wire-bigint. FORWARD-GUARD: a FUTURE
+        // wire-DTO field holding a full-range 64-bit value MUST override per-field with
+        // `#[specta(type = String)]` + a lossless `#[serde(with = …)]`, never ride this global cast (§0.4.5).
+        // [Build-Session-Entscheidung: P2.22] §0.4.5 no-`any` in the GENERATED bindings drives the error mode.
+        // C1 is the first command to return a typed `Result<_, IpcError>`. tauri-specta's DEFAULT `Result`
+        // error mode wraps each such command in a `typedError<T, E>` runtime helper that is UNAVOIDABLY
+        // `any`-bearing — the default casts the caught rejection `e as any`, and a custom `typed_error_impl`
+        // only trades that for tauri-specta's generated `_assertTypedErrorFollowsContract: … => Promise<any>`
+        // check. Either form violates the platform's hard no-`any` rule (CLAUDE §5 / §0.4.5), which is ENFORCED
+        // on the generated `bindings.ts` (eslint `@typescript-eslint/no-explicit-any`, frozen by G5; plus G8).
+        // So the codegen selects `ErrorHandlingMode::Throw`: command wrappers return `Promise<T>` directly and
+        // the §0.4.3 `IpcError` is the THROWN rejection value (the §5.8 frontend `await commands.X(…)` examples
+        // carry no `{ status }` assumption, so this is spec-compatible). No `typedError` helper, no assertion,
+        // no `any`. Export-only concern, kept at the codegen call (like the bigint cast), not the shared builder.
         ipc_specta_builder()
+            .dangerously_cast_bigints_to_number()
+            .error_handling(ErrorHandlingMode::Throw)
             .export(Typescript::default(), TRACKED_BINDINGS_PATH)
             .expect("§0.4.5 bindings.ts codegen export failed");
         // [Build-Session-Entscheidung: P2.8] `specta_typescript` emits TRAILING WHITESPACE on multi-line

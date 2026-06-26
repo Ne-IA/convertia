@@ -134,7 +134,7 @@
 - [x] **P2.21** [RUST] Wire the `invoke_handler` + register C1–C13 on the Builder (handlers thin, delegate to orchestrator) · §0.4.0 §0.7
   needs: P1.11, P1.13, P1.25, P2.130
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.130` points at the `@tauri-apps/api` dep-add box later in document order — registering C1–C13 makes the generated `bindings.ts` import `@tauri-apps/api/core` (`invoke`), which has no installed package until P2.130, so `tsc --noEmit` (G6/G13) fails (TS2307) until then; DECISION C builds P2.130 first, the edge is acyclic (P2.130 `needs:` only the P1.2.2 lockfile), the inversion documented at the `needs:` line.
-- [ ] **P2.22** [RUST] Author the C1 `ingest_paths` contract — frozen-set builder, `origin`, `collectingId`, `drainPending`, optional `onScan` Channel · §0.4.1 §1.1 §2.4
+- [ ] **P2.22** [RUST] Author the C1 `ingest_paths` contract — frozen-set builder, `origin`, `collectingId`, `drainPending`, non-optional `onScan` Channel · §0.4.1 §1.1 §2.4
   needs: P2.21, P2.6, P2.2, P2.7
 - [ ] **P2.23** [RUST] Author the C2a `pick_for_intake` contract — Rust-side `DialogExt` picker funnelling into the C1 freeze, no raw path to WebView · §0.4.1 §1.1 §5.4
   needs: P2.22, P1.14, P2.7
