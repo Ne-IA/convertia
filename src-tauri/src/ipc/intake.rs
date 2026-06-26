@@ -1,9 +1,10 @@
 //! `crate::ipc::intake` — the §0.4.1 intake command group (C1 / C2a / C13): the single §2.4 freeze point
 //! for every intake origin (drop / picker / launch-arg) and the ingest-scoped cancel. P2.21 registered
 //! these as the §0.4.1 command-surface interface shells; C1's typed request/response CONTRACT is authored
-//! by P2.22 (this file), C2a's by P2.23 and C13's by P2.35. Each command's `crate::orchestrator` freeze
-//! BODY is its own named fill-box (the C1 freeze funnel is P2.62; the end-to-end walking-skeleton wiring is
-//! P3.49). Thin by design (§0.7): the handler validates, delegates, and maps the `Result` onto §0.4.3 `IpcError`.
+//! by P2.22 and C2a's by P2.23 (this file), C13's by P2.35. Each command's `crate::orchestrator` freeze
+//! BODY is its own named fill-box (the C1 freeze funnel is P2.62; C2a's native-dialog pick is P2.70/P2.71 +
+//! the `Picker`-origin stamp P2.63; the end-to-end walking-skeleton wiring is P3.49). Thin by design (§0.7):
+//! the handler validates, delegates, and maps the `Result` onto §0.4.3 `IpcError`.
 
 // §0.4 / T10: unchecked arithmetic on an untrusted wire field must be a compile error in every IPC handler
 // (the `crate::ipc` arithmetic-overflow deny cascades here; restated at the T10 boundary so this group's
@@ -15,7 +16,7 @@ use std::path::PathBuf;
 
 use tauri::ipc::Channel;
 
-use crate::domain::{CollectedSet, CollectingId, IntakeOrigin, ScanProgress};
+use crate::domain::{CollectedSet, CollectingId, IntakeOrigin, PickKind, ScanProgress};
 use crate::outcome::IpcError;
 
 /// **C1 `ingest_paths`** (§0.4.1) — the single §2.4 freeze point for every intake origin (drop / picker /
@@ -77,14 +78,47 @@ pub async fn ingest_paths(
     })
 }
 
-/// **C2a `pick_for_intake`** (§0.4.1) — the Rust-side `DialogExt` intake picker that funnels straight into
-/// the C1 freeze, so no raw FS path ever reaches the WebView (§0.10 / §5.4). Registered as the §0.4.1
-/// interface shell (P2.21); the full `{ kind, collectingId, onScan } -> CollectedSet` contract (non-optional
-/// `onScan` — the same C1 `Channel<T>` `!Deserialize` constraint, §0.4.1) is authored by P2.23.
-/// [Build-Session-Entscheidung: P2.21]
-#[tauri::command]
+/// **C2a `pick_for_intake`** (§0.4.1) — the Rust-side `DialogExt` intake picker. This box (P2.23) authors the
+/// typed §0.4.1 wire CONTRACT — the `{ kind, collectingId, onScan } -> CollectedSet` door — mirroring the C1
+/// surface so the picker shares C1's freeze return and **no raw FS path ever reaches the WebView** (the WebView
+/// only triggers the picker and receives the collected summary, §0.10 / §5.4).
+///
+/// - `kind` — the §0.6 `PickKind` (`Files` | `Folder`): open the native files-multiselect or the folder
+///   dialog; a folder pick is recursively collected at the §1.1 freeze.
+/// - `collecting_id` — the frontend-generated ingest-scoped cancel handle (§0.4.4), registered as the §1.1
+///   token **before the dialog opens** so C13 `cancel_ingest` can trip the in-flight pick/walk (P2.70).
+/// - `on_scan` — the throttled scan-telemetry Channel (§0.4.2 `ScanProgress`); **non-optional**, the *same*
+///   `Channel<T>` `!Deserialize` forced deviation the C1 `ingest_paths` handler documents above — C2a takes it
+///   identically (§0.4.1). The frontend always hands it and realises the "optional" intent by subscribing only
+///   for a long walk, never by omitting the argument.
+///
+/// C2a carries **no `origin` field**: the picked set's origin is `Picker`, **stamped by this handler itself**
+/// (P2.63), not supplied by the WebView (§1.1 / §5.4) — so a compromised WebView cannot forge the intake origin.
+///
+/// [Build-Session-Entscheidung: P2.23] **Interface-shell body — the typed CONTRACT is the deliverable.**
+/// P2.23 authors the §0.4.1 wire signature above so the generated `bindings.ts` carries the full C2a door
+/// (pulling `PickKind` into the bindings as a command-arg type). The native-dialog BODY is its own set of
+/// named, scheduled boxes — the async/`spawn_blocking` `DialogExt` pick with the ingest token registered
+/// before the dialog opens (P2.70), the token-drop-on-every-exit-branch rule (P2.71), and the `Picker`-origin
+/// stamp + funnel into the C1 `ingest_paths` freeze (P2.63 / P2.62). This is the sanctioned compile-time
+/// interface-shell pattern (CLAUDE §5 / the P3 `crate::isolation` shells P4 expands), NOT a quiet deferral: a
+/// shell that opens no dialog and freezes nothing returns the §0.6 zero-collection `CollectedSet::Empty {
+/// skipped: [] }` — which is **also the contract's genuine cancelled-dialog result** (a cancelled pick is a
+/// clean no-op that returns `Empty`, no error, the UI stays Idle, §5.4). The three contract args are accepted
+/// so the wire signature is complete and bound to `_` (no fabricated handling) until P2.70/P2.71/P2.63 consume
+/// them.
+#[tauri::command(rename_all = "camelCase")]
 #[specta::specta]
-pub async fn pick_for_intake() {}
+pub async fn pick_for_intake(
+    kind: PickKind,
+    collecting_id: CollectingId,
+    on_scan: Channel<ScanProgress>,
+) -> Result<CollectedSet, IpcError> {
+    let _ = (kind, collecting_id, on_scan);
+    Ok(CollectedSet::Empty {
+        skipped: Vec::new(),
+    })
+}
 
 /// **C13 `cancel_ingest`** (§0.4.1) — trips the ingest-scoped `CollectingId` token to cancel an in-flight
 /// C1/C2a walk before its long await resolves (§1.1). Registered as the §0.4.1 interface shell (P2.21); the
@@ -134,6 +168,50 @@ mod c1_contract {
             }),
             "§0.4.1: the C1 contract shell freezes nothing yet (the §2.4 funnel body is P2.62), so it \
              returns the zero-collection CollectedSet::Empty; the typed signature is the P2.22 deliverable"
+        );
+    }
+}
+
+#[cfg(test)]
+mod c2a_contract {
+    //! §6.4.1 unit (G15): the §0.4.1 C2a `pick_for_intake` typed CONTRACT (P2.23). Mirrors the C1
+    //! `c1_contract` test — the handler now carries its full typed signature, so the P2.21 all-shells
+    //! `block_on(pick_for_intake())` invocation in `crate::ipc` (mod.rs) is REPLACED here by C2a's own
+    //! typed-contract test (the fill-box transition the P2.21 note schedules). It invokes the contract with
+    //! the full typed arg set and asserts the shell-stage return; the native-dialog pick body + its real-pick
+    //! assertions land at P2.70/P2.71/P2.63. [Build-Session-Entscheidung: P2.23]
+    use super::*;
+    use tauri::async_runtime::block_on;
+
+    /// A `CollectingId` for the contract call — minted through its PUBLIC bare-uuid `Deserialize` wire form
+    /// (the inner `Uuid` is private to `crate::domain`; the frontend mints the id, §0.4 C13), never a
+    /// back-door constructor — mirroring the `c1_contract` helper.
+    fn collecting_id() -> CollectingId {
+        serde_json::from_str(r#""33333333-3333-4333-8333-333333333333""#)
+            .expect("CollectingId deserializes from a uuid string")
+    }
+
+    // §6.4.1 unit (G15): the C2a contract is invocable with its full §0.4.1 typed arg set (`kind`,
+    // `collectingId`, the non-optional `onScan` Channel) and returns a `CollectedSet` (the wire door this box
+    // authors). `on_scan` is a real `Channel::new(|_| Ok(()))` — the non-optional contract (there is no `None`
+    // arm; see the handler's forced-deviation note). The native dialog is not opened yet (P2.70), so the
+    // handler returns the zero-collection `CollectedSet::Empty` — which is ALSO the contract's §5.4
+    // cancelled-dialog no-op; P2.70/P2.71 replace it with the real DialogExt pick funnelled into the C1 freeze.
+    #[test]
+    fn c2a_pick_for_intake_contract_is_invocable_and_typed() {
+        let out = block_on(pick_for_intake(
+            PickKind::Files,
+            collecting_id(),
+            Channel::new(|_| Ok(())),
+        ));
+        assert_eq!(
+            out,
+            Ok(CollectedSet::Empty {
+                skipped: Vec::new()
+            }),
+            "§0.4.1: the C2a contract shell opens no dialog yet (the native-pick body is P2.70/P2.71), so it \
+             returns the zero-collection CollectedSet::Empty — also the §5.4 cancelled-dialog result; the \
+             typed signature is the P2.23 deliverable"
         );
     }
 }

@@ -52,13 +52,37 @@ export const commands = {
 	 */
 	ingestPaths: (paths: string[], origin: IntakeOrigin, collectingId: CollectingId, drainPending: boolean | null, onScan: Channel<ScanProgress>) => __TAURI_INVOKE<CollectedSet>("ingest_paths", { paths, origin, collectingId, drainPending, onScan }),
 	/**
-	 *  **C2a `pick_for_intake`** (§0.4.1) — the Rust-side `DialogExt` intake picker that funnels straight into
-	 *  the C1 freeze, so no raw FS path ever reaches the WebView (§0.10 / §5.4). Registered as the §0.4.1
-	 *  interface shell (P2.21); the full `{ kind, collectingId, onScan } -> CollectedSet` contract (non-optional
-	 *  `onScan` — the same C1 `Channel<T>` `!Deserialize` constraint, §0.4.1) is authored by P2.23.
-	 *  [Build-Session-Entscheidung: P2.21]
+	 *  **C2a `pick_for_intake`** (§0.4.1) — the Rust-side `DialogExt` intake picker. This box (P2.23) authors the
+	 *  typed §0.4.1 wire CONTRACT — the `{ kind, collectingId, onScan } -> CollectedSet` door — mirroring the C1
+	 *  surface so the picker shares C1's freeze return and **no raw FS path ever reaches the WebView** (the WebView
+	 *  only triggers the picker and receives the collected summary, §0.10 / §5.4).
+	 *
+	 *  - `kind` — the §0.6 `PickKind` (`Files` | `Folder`): open the native files-multiselect or the folder
+	 *    dialog; a folder pick is recursively collected at the §1.1 freeze.
+	 *  - `collecting_id` — the frontend-generated ingest-scoped cancel handle (§0.4.4), registered as the §1.1
+	 *    token **before the dialog opens** so C13 `cancel_ingest` can trip the in-flight pick/walk (P2.70).
+	 *  - `on_scan` — the throttled scan-telemetry Channel (§0.4.2 `ScanProgress`); **non-optional**, the *same*
+	 *    `Channel<T>` `!Deserialize` forced deviation the C1 `ingest_paths` handler documents above — C2a takes it
+	 *    identically (§0.4.1). The frontend always hands it and realises the "optional" intent by subscribing only
+	 *    for a long walk, never by omitting the argument.
+	 *
+	 *  C2a carries **no `origin` field**: the picked set's origin is `Picker`, **stamped by this handler itself**
+	 *  (P2.63), not supplied by the WebView (§1.1 / §5.4) — so a compromised WebView cannot forge the intake origin.
+	 *
+	 *  [Build-Session-Entscheidung: P2.23] **Interface-shell body — the typed CONTRACT is the deliverable.**
+	 *  P2.23 authors the §0.4.1 wire signature above so the generated `bindings.ts` carries the full C2a door
+	 *  (pulling `PickKind` into the bindings as a command-arg type). The native-dialog BODY is its own set of
+	 *  named, scheduled boxes — the async/`spawn_blocking` `DialogExt` pick with the ingest token registered
+	 *  before the dialog opens (P2.70), the token-drop-on-every-exit-branch rule (P2.71), and the `Picker`-origin
+	 *  stamp + funnel into the C1 `ingest_paths` freeze (P2.63 / P2.62). This is the sanctioned compile-time
+	 *  interface-shell pattern (CLAUDE §5 / the P3 `crate::isolation` shells P4 expands), NOT a quiet deferral: a
+	 *  shell that opens no dialog and freezes nothing returns the §0.6 zero-collection `CollectedSet::Empty {
+	 *  skipped: [] }` — which is **also the contract's genuine cancelled-dialog result** (a cancelled pick is a
+	 *  clean no-op that returns `Empty`, no error, the UI stays Idle, §5.4). The three contract args are accepted
+	 *  so the wire signature is complete and bound to `_` (no fabricated handling) until P2.70/P2.71/P2.63 consume
+	 *  them.
 	 */
-	pickForIntake: () => __TAURI_INVOKE<void>("pick_for_intake"),
+	pickForIntake: (kind: PickKind, collectingId: CollectingId, onScan: Channel<ScanProgress>) => __TAURI_INVOKE<CollectedSet>("pick_for_intake", { kind, collectingId, onScan }),
 	/**
 	 *  **C13 `cancel_ingest`** (§0.4.1) — trips the ingest-scoped `CollectingId` token to cancel an in-flight
 	 *  C1/C2a walk before its long await resolves (§1.1). Registered as the §0.4.1 interface shell (P2.21); the
@@ -634,6 +658,13 @@ export type OutcomeMsg =
 	reason: SkipReason,
 	text: string,
 } };
+
+/**  The C2a `pick_for_intake` `kind` arg (§0.4.1) — pick files or a folder. Inbound (WebView → Rust). */
+export type PickKind =
+/**  Pick one or more files. */
+"files" |
+/**  Pick a folder (recursively collected at the §1.1 freeze). */
+"folder";
 
 /**
  *  Why a file's bytes could not be read at freeze/detect time (§1.2). Owned here; the §2.8 taxonomy
