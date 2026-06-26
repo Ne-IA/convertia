@@ -140,7 +140,7 @@
   needs: P2.22, P1.14, P2.7
 - [x] **P2.24** [RUST] Author the C2b `pick_destination` contract — Rust-side folder picker returning the chosen `PathBuf` (the one write-path that transits the WebView) · §0.4.1 §0.10
   needs: P2.21, P1.14
-- [ ] **P2.25** [RUST] Author the C3 `get_targets` contract — pure function of detection → `TargetOffer` (one pre-highlighted default, no spawn) · §0.4.1 §1.5
+- [x] **P2.25** [RUST] Author the C3 `get_targets` contract — pure function of detection → `TargetOffer` (one pre-highlighted default, no spawn) · §0.4.1 §1.5
   needs: P2.21, P2.8
 - [ ] **P2.26** [RUST] Author the C4 `plan_output` contract — `OutputPlanPreview` (resolved dest, divert preview, §2.5 rerun, §1.10 preflight) · §0.4.1 §1.8 §2.5 §1.10
   needs: P2.21, P2.11
