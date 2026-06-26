@@ -166,12 +166,26 @@ export const commands = {
 	planOutput: (collectedSetId: CollectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice) => __TAURI_INVOKE<OutputPlanPreview>("plan_output", { collectedSetId, target, options, destination }),
 	/**
 	 *  **C5 `set_destination`** (§0.4.1) — re-validates writability/divert and re-evaluates the
-	 *  destination-dependent §2.14.4 preflight when the user changes the destination, carrying the §2.5 re-run
-	 *  verdict through unchanged (§2.5.1). Registered as the §0.4.1 interface shell (P2.21); the full
-	 *  `{ collectedSetId, target, options, destination } -> DestinationResolved` contract is authored by P2.27.
-	 *  [Build-Session-Entscheidung: P2.21]
+	 *  destination-dependent §2.14.4 pre-flight when the user changes the destination, carrying the §2.5 re-run
+	 *  verdict through UNCHANGED (§2.5.1 — the v1 EquivKey has no destination component, so C5 never recomputes
+	 *  `rerun`). This box (P2.27) authors the typed §0.4.1 wire CONTRACT — `{ collectedSetId, target, options,
+	 *  destination } -> Result<DestinationResolved, IpcError>` (the §0.4 universal error shape; the SAME request
+	 *  payload as C4 `plan_output`, the C4/C5 byte-identical-payload pair) — so the generated `bindings.ts` carries
+	 *  the C5 door, pulling the `DestinationResolved` graph into the bindings.
+	 *
+	 *  [Build-Session-Entscheidung: P2.27] **Shell returns `Err(IpcError{ kind: InternalError })` — the same
+	 *  owner-approved interface-shell pattern as C3/C4.** `DestinationResolved` has no zero value (it carries a
+	 *  re-evaluated `PreflightVerdict`), so there is no `Ok(empty)`; the genuine pre-registry outcome (the §0.4.4
+	 *  registry, P2.44, does not exist) is the `Err` the real body returns for an unresolvable id: `Err(IpcError{
+	 *  kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError` precedent). The named
+	 *  fill-boxes own the rest: (a) the §2.8 catalog box owns the FINAL message (the string below is provisional) +
+	 *  must add a COMMAND-level string (the §2.8 catalog is item-scoped); (b) the §0.4.4 registry resolve + the
+	 *  §1.8/§2.14.4 destination-change re-validation (re-eval pre-flight, carry `rerun` through) + the §0.6 SUCCESS
+	 *  path belong to the body box (P2.44+) — the C4/C5 lifecycle asymmetry (C4 re-callable; C5 owns the
+	 *  destination; C4 never overrides C5) is enforced by P2.28; (c) `kind` is the CONCRETE `ConversionErrorKind`,
+	 *  not the `ErrorKind` alias (the P2.19 convention).
 	 */
-	setDestination: () => __TAURI_INVOKE<void>("set_destination"),
+	setDestination: (collectedSetId: CollectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice) => __TAURI_INVOKE<DestinationResolved>("set_destination", { collectedSetId, target, options, destination }),
 	/**
 	 *  **C6 `start_conversion`** (§0.4.1) — mints the `RunId`, enqueues the batch (§1.9), and streams
 	 *  `ConversionEvent`s over the handed `onProgress` Channel; returns immediately (the run proceeds async).
@@ -457,6 +471,32 @@ export type DestinationChoice =
  *  flattened). A re-validated HINT, never a guarantee — §2.7.2 / §7.4.1 re-check writability + divert at use time.
  */
 { chosenRoot: string };
+
+/**
+ *  The C5 `set_destination` return (§0.6 / §1.8 / §2.14.4) — the re-validated destination after the user
+ *  changes it. Homed in `crate::orchestrator` (embeds `preflight: PreflightVerdict` → transitively
+ *  references `crate::outcome`, §0.7 ‡).
+ *
+ *  [Build-Session-Entscheidung: P2.11] `Serialize` + `Type`, NO `Deserialize` (embeds the Serialize-only
+ *  `PreflightVerdict`); NOT `Copy`. camelCase.
+ */
+export type DestinationResolved = {
+	/**  The (now chosen) destination (§0.6 / §2.7). */
+	destination: DestinationChoice,
+	/**  The recomputed per-location divert for the new destination (§2.7.2); `None` = no divert. */
+	diverted: DivertReason | null,
+	/**
+	 *  The preflight RE-EVALUATED for the new destination volume (§2.14.4 free-space) so the UI's held C4
+	 *  verdict never goes stale (§1.8).
+	 */
+	preflight: PreflightVerdict,
+	/**
+	 *  CARRIED THROUGH UNCHANGED from the C4 verdict — in v1 the §2.5 EquivKey has no destination
+	 *  component, so re-run is destination-INDEPENDENT (§2.5.1); C5 re-evaluates ONLY `preflight`, never
+	 *  recomputes `rerun`.
+	 */
+	rerun: RerunPrompt | null,
+};
 
 /**
  *  The single canonical §1.2 detection outcome `[DECIDED]`. There is no separate

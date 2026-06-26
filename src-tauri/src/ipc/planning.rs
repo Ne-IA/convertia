@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 
 use crate::domain::{CollectedSetId, DestinationChoice, OptionValues, TargetId, TargetOffer};
-use crate::orchestrator::OutputPlanPreview;
+use crate::orchestrator::{DestinationResolved, OutputPlanPreview};
 use crate::outcome::{ConversionErrorKind, IpcError};
 
 /// **C2b `pick_destination`** (§0.4.1) — the Rust-side `DialogExt` destination-folder picker. This box (P2.24)
@@ -118,13 +118,40 @@ pub async fn plan_output(
 }
 
 /// **C5 `set_destination`** (§0.4.1) — re-validates writability/divert and re-evaluates the
-/// destination-dependent §2.14.4 preflight when the user changes the destination, carrying the §2.5 re-run
-/// verdict through unchanged (§2.5.1). Registered as the §0.4.1 interface shell (P2.21); the full
-/// `{ collectedSetId, target, options, destination } -> DestinationResolved` contract is authored by P2.27.
-/// [Build-Session-Entscheidung: P2.21]
-#[tauri::command]
+/// destination-dependent §2.14.4 pre-flight when the user changes the destination, carrying the §2.5 re-run
+/// verdict through UNCHANGED (§2.5.1 — the v1 EquivKey has no destination component, so C5 never recomputes
+/// `rerun`). This box (P2.27) authors the typed §0.4.1 wire CONTRACT — `{ collectedSetId, target, options,
+/// destination } -> Result<DestinationResolved, IpcError>` (the §0.4 universal error shape; the SAME request
+/// payload as C4 `plan_output`, the C4/C5 byte-identical-payload pair) — so the generated `bindings.ts` carries
+/// the C5 door, pulling the `DestinationResolved` graph into the bindings.
+///
+/// [Build-Session-Entscheidung: P2.27] **Shell returns `Err(IpcError{ kind: InternalError })` — the same
+/// owner-approved interface-shell pattern as C3/C4.** `DestinationResolved` has no zero value (it carries a
+/// re-evaluated `PreflightVerdict`), so there is no `Ok(empty)`; the genuine pre-registry outcome (the §0.4.4
+/// registry, P2.44, does not exist) is the `Err` the real body returns for an unresolvable id: `Err(IpcError{
+/// kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError` precedent). The named
+/// fill-boxes own the rest: (a) the §2.8 catalog box owns the FINAL message (the string below is provisional) +
+/// must add a COMMAND-level string (the §2.8 catalog is item-scoped); (b) the §0.4.4 registry resolve + the
+/// §1.8/§2.14.4 destination-change re-validation (re-eval pre-flight, carry `rerun` through) + the §0.6 SUCCESS
+/// path belong to the body box (P2.44+) — the C4/C5 lifecycle asymmetry (C4 re-callable; C5 owns the
+/// destination; C4 never overrides C5) is enforced by P2.28; (c) `kind` is the CONCRETE `ConversionErrorKind`,
+/// not the `ErrorKind` alias (the P2.19 convention).
+#[tauri::command(rename_all = "camelCase")]
 #[specta::specta]
-pub async fn set_destination() {}
+pub async fn set_destination(
+    collected_set_id: CollectedSetId,
+    target: TargetId,
+    options: OptionValues,
+    destination: DestinationChoice,
+) -> Result<DestinationResolved, IpcError> {
+    let _ = (collected_set_id, target, options, destination);
+    Err(IpcError {
+        kind: ConversionErrorKind::InternalError,
+        message: "Could not update the destination.".into(),
+        path: None,
+        residue: None,
+    })
+}
 
 #[cfg(test)]
 mod c2b_contract {
@@ -232,6 +259,50 @@ mod c4_contract {
         let err = out.expect_err(
             "§0.4.1/§0.4: the C4 shell has no registry yet (P2.44), so it returns the genuine pre-registry \
              Err(InternalError); the typed Result<OutputPlanPreview, IpcError> signature is the P2.26 deliverable",
+        );
+        assert_eq!(
+            err.kind,
+            ConversionErrorKind::InternalError,
+            "§2.13: the unresolvable-set shell outcome is the InternalError catch-all — SHAPE asserted, NOT \
+             the provisional message (the §2.8 catalog box owns the final string)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod c5_contract {
+    //! §6.4.1 unit (G15): the §0.4.1 C5 `set_destination` typed CONTRACT (P2.27) — same interface-shell pattern
+    //! as C3/C4: the handler carries its typed `{ collectedSetId, target, options, destination } ->
+    //! Result<DestinationResolved, IpcError>` signature (the SAME request payload as C4), so the P2.21
+    //! all-shells `block_on(set_destination())` invocation in `crate::ipc` (mod.rs) moves here. The shell
+    //! returns the genuine pre-registry `Err(InternalError)`; SHAPE is asserted, NOT the provisional message
+    //! (owned by the §2.8 catalog box). [Build-Session-Entscheidung: P2.27]
+    use super::*;
+    use tauri::async_runtime::block_on;
+
+    fn collected_set_id() -> CollectedSetId {
+        serde_json::from_str(r#""66666666-6666-4666-8666-666666666666""#)
+            .expect("CollectedSetId deserializes from a uuid string")
+    }
+
+    // §6.4.1 unit (G15): the C5 contract is invocable with its full §0.4.1 typed arg set ({ collectedSetId,
+    // target, options, destination }) and returns a `Result<DestinationResolved, IpcError>` (the §0.4 universal
+    // error shape). The shell has no §0.4.4 registry (P2.44), so it returns the genuine pre-registry
+    // `Err(InternalError)`. SHAPE asserted (kind == InternalError), NOT the provisional message (owned by the
+    // §2.8 catalog box); P2.44+ replaces the shell with the real §1.8/§2.14.4 destination re-validation.
+    #[test]
+    fn c5_set_destination_contract_is_invocable_and_typed() {
+        use crate::domain::FormatId;
+        use std::collections::BTreeMap;
+        let out = block_on(set_destination(
+            collected_set_id(),
+            TargetId::Format(FormatId::Png),
+            OptionValues(BTreeMap::new()),
+            DestinationChoice::BesideSource,
+        ));
+        let err = out.expect_err(
+            "§0.4.1/§0.4: the C5 shell has no registry (P2.44), so it returns the genuine pre-registry \
+             Err(InternalError); the typed Result<DestinationResolved, IpcError> signature is the P2.27 deliverable",
         );
         assert_eq!(
             err.kind,
