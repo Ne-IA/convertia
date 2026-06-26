@@ -142,7 +142,7 @@
   needs: P2.21, P1.14
 - [x] **P2.25** [RUST] Author the C3 `get_targets` contract — pure function of detection → `TargetOffer` (one pre-highlighted default, no spawn) · §0.4.1 §1.5
   needs: P2.21, P2.8
-- [ ] **P2.26** [RUST] Author the C4 `plan_output` contract — `OutputPlanPreview` (resolved dest, divert preview, §2.5 rerun, §1.10 preflight) · §0.4.1 §1.8 §2.5 §1.10
+- [x] **P2.26** [RUST] Author the C4 `plan_output` contract — `OutputPlanPreview` (resolved dest, divert preview, §2.5 rerun, §1.10 preflight) · §0.4.1 §1.8 §2.5 §1.10
   needs: P2.21, P2.11
 - [ ] **P2.27** [RUST] Author the C5 `set_destination` contract — `DestinationResolved` (re-eval preflight, carry rerun through unchanged) · §0.4.1 §1.8 §2.14.4
   needs: P2.26
