@@ -153,7 +153,7 @@
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.37` points at the `ConversionEvent` Channel-enum box later in document order — the C6 `start_conversion` signature's `onProgress: Channel<ConversionEvent>` parameter (§0.4.1) has nowhere to land until `ConversionEvent` (P2.37) exists, so DECISION C builds P2.37 first; the edge is acyclic and valid (P2.37 → P2.12 → P2.10), the inversion documented at the `needs:` line.
 - [x] **P2.30** [RUST] Author the C7 `cancel_run` contract — trip the `RunId` token (keep finished, discard in-progress) · §0.4.1 §0.4.4 §1.7
   needs: P2.29
-- [ ] **P2.31** [RUST] Author the C8 `get_run_summary` contract — idempotent re-fetch of the retained `RunResult` · §0.4.1 §0.4.4 §1.12
+- [x] **P2.31** [RUST] Author the C8 `get_run_summary` contract — idempotent re-fetch of the retained `RunResult` · §0.4.1 §0.4.4 §1.12
   needs: P2.29, P2.12
 - [ ] **P2.32** [RUST] Author the C9 `open_path` contract — Rust-side `OpenerExt` reveal/open with the §7.7.3 `RunResult` membership gate · §0.4.1 §7.7.1 §7.7.3
   needs: P2.21, P1.14, P2.7
