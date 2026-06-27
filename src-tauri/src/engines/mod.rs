@@ -10,14 +10,16 @@
 // [Build-Session-Entscheidung: P2.13] dead_code expect — the §3.2 seam descriptor types are authored as
 // CONTRACTS before their consumers exist: the registry / `trait Engine` / selection is P4.1, the §0.9 pool
 // reads `EngineDescriptor.serialised_only` then, and `EngineId`'s wire registration rides the §7.2
-// `EngineHealth` (C12) consumer (a later P2 box). So each is dead in the PRODUCTION build until consumed;
-// the cfg(test) tests below construct them, so the TEST build is dead-code-clean. `expect` (not `allow`)
-// auto-flags the moment a consumer lands — matching `crate::domain`/`crate::outcome`/`crate::orchestrator`.
+// `EngineHealth` (C12) consumer (a later P2 box). The §3.2.2 `Platform` leaf (P2.132) joins them — it is
+// dead in production until its C11 `AppInfo` embedder (P2.112 authors the struct, P2.34 returns it from
+// `get_app_info`) constructs it. So each is dead in the PRODUCTION build until consumed; the cfg(test)
+// tests below construct them, so the TEST build is dead-code-clean. `expect` (not `allow`) auto-flags the
+// moment a consumer lands — matching `crate::domain`/`crate::outcome`/`crate::orchestrator`.
 #![cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor are authored as contracts before the P4.1 registry/trait/selection + the §0.9 pool + the §7.2 EngineHealth (C12) wire consumer construct/register them, so they are dead in the production build until consumed."
+        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §3.2.2 Platform leaf (P2.132) are authored as contracts before the P4.1 registry/trait/selection + the §0.9 pool + the §7.2 EngineHealth (C12) wire consumer + the C11 AppInfo embedder (P2.112/P2.34) construct/register them, so they are dead in the production build until consumed."
     )
 )]
 
@@ -108,6 +110,47 @@ pub struct EngineDescriptor {
     pub serialised_only: bool,
     /// Whether the engine runs as a `Subprocess` or `InProcessNative` (§0.6 / §3.2).
     pub kind: EngineKind,
+}
+
+// ─── §3.2.2 engine-layer leaf types referenced by the `Engine` trait (defined here, §3.2 is owner) ──
+// `Platform` is the SINGLE §3.2 leaf PULLED IN-PHASE to P2 (the rest — `Direction` / `EngineCapability` /
+// `PatentDisposition` / the `SourceFmt`/`TargetFmt` aliases — stay in P4.3 with the `Engine` trait): the C11
+// `AppInfo` contract embeds it (`AppInfo.platform: Platform`, §7.2.3 / P2.112), so it is authored here in
+// `crate::engines` — its §3.2.2/§0.7 home, NOT the `crate::platform` OS-primitive shim (a false-friend
+// name) — to keep the whole C1–C13 surface (and its G23 completeness gate P2.36) inside P2. From P4 the
+// `Engine` trait's `capabilities(platform: Platform, …)` and the §3.4 patent disposition consume it; the
+// dependency arrow runs Engine→Platform, so `Platform` has zero dependency on P4 and is freely authorable
+// now (§3.2.2).
+
+/// The running/target platform. Resolved at build/startup; drives both `capabilities()` and the §3.4
+/// patent disposition (§3.2.2). One variant per shipped desktop OS — Windows / macOS / Linux (§1: one
+/// artifact per platform; no mobile, web, or CLI build in v1).
+///
+/// [Build-Session-Entscheidung: P2.132] WIRE type — it rides `AppInfo.platform` into the C11 `get_app_info`
+/// return (§7.2.3), so it derives `Serialize` + `Type`; it is exported into `bindings.ts` ONLY
+/// TRANSITIVELY via that `AppInfo` embedder once C11 lands (P2.112/P2.34), with NO standalone
+/// `collect_types![]` registration — the established defer-to-consumer pattern (`EngineId` via C12,
+/// `ScanProgress`/`ConversionEvent` via their channels; `register_ipc_*_types` is only for the
+/// consumer-less universal types). OUTBOUND-ONLY — no command TAKES a `Platform` arg (C11 takes `{}`), so
+/// NO `Deserialize`, mirroring the outbound-only `EngineId`/`crate::orchestrator` wire types. `Copy` is free
+/// for a fieldless enum and the §3.2.2 trait passes it BY VALUE (`capabilities(platform: Platform, …)`);
+/// `PartialEq`/`Eq` for the §3.4 disposition branch + the wire-form test. NO `Hash` — nothing keys a map on
+/// it (unlike `EngineId`, the §0.9 `HashMap<EngineId, bool>` key).
+///
+/// [Build-Session-Entscheidung: P2.132] WIRE FORM `camelCase` — the §0.6 wire default (`win`/`macOS`/
+/// `linux`; 00-architecture §0.6 "camelCase on the wire") that `AppInfo` (its camelCase embedder) and every
+/// §0.6/§7.2 DTO carry. NOT `EngineId`'s `lowercase` deviation — that existed ONLY to stop `camelCase`
+/// mangling the FF-prefixed `FFmpeg`/`FFprobe` into `fFmpeg`/`fFprobe`; `Platform`'s variants have no such
+/// hazard, so the clean §0.6 default applies (`MacOS` → `macOS`, the canonical Apple spelling).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum Platform {
+    /// Windows — the Windows desktop build (§1).
+    Win,
+    /// macOS — the macOS desktop build (§1; the universal `lipo`-both-slices artifact, §6).
+    MacOS,
+    /// Linux — the Linux desktop build (§1).
+    Linux,
 }
 
 #[cfg(test)]
@@ -212,5 +255,45 @@ mod tests {
             "§3.5.6/§2.12.4: the native CSV/TSV engine is the sole InProcessNative"
         );
         assert!(!csv.serialised_only);
+    }
+
+    // §6.4.1 unit (G15): the §3.2.2 `Platform` WIRE form (P2.132) — the leaf rides `AppInfo.platform` in
+    // the C11 `get_app_info` return (§7.2.3). Pinned to its camelCase wire string per variant (the §0.6
+    // "camelCase on the wire" default its `AppInfo` embedder carries); the count == 3 + the exhaustive
+    // match below lock the set against §3.2.2 drift. A SERIALIZE pin (Platform is outbound-only — no
+    // round-trip).
+    #[test]
+    fn platform_wire_form_is_camel_case() {
+        let all: [(Platform, &str); 3] = [
+            (Platform::Win, "win"),
+            (Platform::MacOS, "macOS"),
+            (Platform::Linux, "linux"),
+        ];
+        assert_eq!(
+            all.len(),
+            3,
+            "§3.2.2: Platform is exactly the three shipped desktop OSes (no mobile/web/CLI build in v1)"
+        );
+        for (platform, wire) in all {
+            assert_eq!(
+                serde_json::to_string(&platform).expect("Platform serializes"),
+                format!("\"{wire}\""),
+                "§0.6/§3.2.2: each Platform serializes to its camelCase wire discriminant"
+            );
+        }
+    }
+
+    // The COMPILE-TIME variant lock (the established dependency-free exhaustive-match pattern, cf.
+    // `engine_id_exhaustive`): adding/removing a `Platform` variant without updating this match fails to
+    // compile, so the wire-form array above can never silently drift from §3.2.2.
+    fn platform_exhaustive(platform: &Platform) {
+        match platform {
+            Platform::Win | Platform::MacOS | Platform::Linux => {}
+        }
+    }
+
+    #[test]
+    fn platform_exhaustive_match_is_exercised() {
+        platform_exhaustive(&Platform::MacOS);
     }
 }
