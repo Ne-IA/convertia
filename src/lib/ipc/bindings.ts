@@ -403,6 +403,59 @@ export const commands = {
 
 /* Types */
 /**
+ *  The `app://fault` event payload (§0.4.2 / §2.13.1 / §2.13.3) — the **app-level** fault the §2.13.3
+ *  single calm screen renders: a startup engine-missing escalation, a WebView core disconnect (§5.8), a
+ *  damaged bundle. It is categorically distinct from a per-item `IpcError`: an app-level fault means the
+ *  WHOLE APP can't function (the §2.13.1 "App-level" class), not one item failing — so it is surfaced via
+ *  the §0.4.2 `app://fault` `app.emit` event (a Rust→WebView signal the §2.13.3 / §5.8 screen listens for),
+ *  NEVER as a §1.12 per-item summary row.
+ *
+ *  OUTBOUND-ONLY: the core `app.emit`s it Rust→WebView and the WebView `listen`s — it is never deserialized
+ *  core-side — so `Serialize` + `Type`, NO `Deserialize` (the identical outbound-only derive choice as the
+ *  sibling wire / event payloads `IpcError` (§0.4.3 above) and `ConversionEvent` / `ScanProgress` (§0.4.2)).
+ *  camelCase wire. Derive set mirrors `IpcError`'s: `Debug, Clone, PartialEq, Eq` (ergonomics + the
+ *  serialize-pin test) + `Serialize, Type`; NOT `Copy` (owns a `String`).
+ *
+ *  [Build-Session-Entscheidung: P2.39.1] `kind` is typed with the CONCRETE `ConversionErrorKind`, NOT the
+ *  §0.4.3 `ErrorKind` alias (`pub type ErrorKind = ConversionErrorKind`) — the SAME type, but referencing
+ *  the forward-declared alias from this production-dead-until-emitted struct trips the rustc
+ *  dead-code-EXPECTATION/alias interaction this module's `not(test)` forward-declaration dead-code
+ *  suppression relies on (the identical P2.19 `IpcError.kind` decision; specta resolves the alias to the
+ *  same wire type
+ *  regardless). Only the three §2.13 app-level variants {`EngineMissing`, `WebviewFault`, `BundleDamaged`}
+ *  ever travel on this event — a §2.13 RUNTIME invariant, NOT a type constraint (mirroring
+ *  `IntakePayload.origin`, typed as the full `IntakeOrigin` though only `LaunchArg`/`SecondInstance` ride
+ *  `app://intake`). `message` is the §2.13.3 pre-localised, plain-English, trace-free calm line (NEVER a
+ *  stack trace / raw engine stderr, SSOT *no stack traces*); the §2.13.3 / §7.2 strings that fill it are a
+ *  later box.
+ *
+ *  [Build-Session-Entscheidung: P2.39.1] Homed in `crate::outcome` (tier 2), NOT `crate::domain` (the
+ *  tier-3 leaf): it references `ConversionErrorKind`, which lives here, and a leaf type cannot depend on a
+ *  higher tier (§0.7). It is NOT an orchestrator lifecycle/result type (the §0.7 ‡ rule that homed
+ *  `ConversionEvent` at tier 1), so tier 2 — its lowest valid home, beside the `ConversionErrorKind` it
+ *  carries — is correct.
+ *
+ *  [Build-Session-Entscheidung: P2.39.1] The "register in collect_types![]" the §0.4.3 box-note calls for is
+ *  `main.rs`'s `register_ipc_event_types` `.types(register::<AppFault>())` (tauri-specta v2 has no
+ *  `collect_types!` macro). `app://fault` is a RAW `app.emit` / TS `listen` event (§0.4.2), NOT a
+ *  `collect_events!` typed event: tauri-specta rc.25's TS event codegen unconditionally emits a `makeEvent`
+ *  helper with an `any`-typed `payload` parameter, which would violate the no-`any` rule frozen on the
+ *  generated `bindings.ts` (G5/G8) — the same reason P2.22 chose `ErrorHandlingMode::Throw` over the
+ *  `any`-bearing `typedError` helper. The
+ *  `.types()` registration still exports `AppFault` as a NAMED `bindings.ts` type so `listen('app://fault')`
+ *  type-checks rather than mirroring `any`.
+ */
+export type AppFault = {
+	/**
+	 *  The app-level fault kind — only {`EngineMissing`, `WebviewFault`, `BundleDamaged`} per §2.13 (a
+	 *  RUNTIME invariant; the field type is the full mirror enum, see the struct doc).
+	 */
+	kind: ConversionErrorKind,
+	/**  The §2.13.3 pre-localised, plain-English, trace-free calm message. */
+	message: string,
+};
+
+/**
  *  **`AppInfo`** — the C11 `get_app_info` return (§7.2.3; §0.4.1 references it, §5.9 About screen displays
  *  it). The in-bundle About payload: app version, CI build id, running platform, and the §3.7
  *  third-party-licenses / NOTICE text. NO network — every field is gathered in-process by the C11 handler
@@ -887,6 +940,30 @@ export type IntakeOrigin =
  *  `argv`/cwd callback, or the macOS `RunEvent::Opened` while already running (§7.8).
  */
 "secondInstance";
+
+/**
+ *  The `app://intake` hand-off payload (§0.4.2 / §7.8.1) — the launch-arg / second-instance paths drained
+ *  through the §7.8.1 buffer-then-replay once the WebView is ready. `origin` is typed as the full
+ *  `IntakeOrigin`, but only `LaunchArg` | `SecondInstance` ever travel on this event (`Drop`/`Picker`
+ *  reach C1/C2a directly) — a §7.8.1 runtime invariant, not a type constraint.
+ *
+ *  [Build-Session-Entscheidung: P2.7] Follows the round-trippable struct pattern (`Serialize`+
+ *  `Deserialize`, like `DroppedItem`); NOT `Copy` (owns a `Vec<PathBuf>`). camelCase wire form.
+ *
+ *  [Build-Session-Entscheidung: P2.39] Registered EXPLICITLY in `main.rs`'s `register_ipc_event_types`
+ *  `.types()` chain now that its consumer — the `app://intake` event (§0.4.2 / §7.8.1) — is authored.
+ *  The P2.7 "deferred to its consuming command/event" note assumed an auto-pull, but `app://intake` is a
+ *  RAW `app.emit` / TS `listen` event (§0.4.2), not a command arg / `collect_events!` typed event, so it
+ *  does NOT auto-pull `IntakePayload` into `bindings.ts` — the explicit `.types()` registration is what
+ *  keeps `listen('app://intake')` typed against the named `IntakePayload` rather than `any` (the same
+ *  reason `collect_events!` is avoided — see `register_ipc_event_types`).
+ */
+export type IntakePayload = {
+	/**  The paths handed in (already resolved by the §7.8.1 funnel; frozen at C1). */
+	paths: string[],
+	/**  How the set entered intake — only `LaunchArg` | `SecondInstance` on this event (see the type doc). */
+	origin: IntakeOrigin,
+};
 
 /**
  *  The §0.4.3 authoritative error shape — every command's `Err` and every `ItemOutcome::Failed.error` is

@@ -2,8 +2,9 @@
 //!
 //! P1.13 stands up the Tauri v2 `Builder` entrypoint on Tauri's managed multi-threaded tokio async
 //! runtime (§0.4.0/§0.8/§0.9): the §0.4.5 tauri-specta codegen seam — `collect_commands!` carries the
-//! C1..C13 §0.4.1 command surface from P2.21 (interface shells; `collect_events!` stays empty until the
-//! §0.4.2 app:// events at P2.39 — the P2.37 `ConversionEvent` Channel payload joins via C6/P2.29, not here),
+//! C1..C13 §0.4.1 command surface from P2.21 (interface shells; `collect_events!` stays empty BY DECISION —
+//! the §0.4.2 app:// events are RAW `app.emit`/`listen` events whose payloads register via `.types()` at
+//! P2.39, and the P2.37 `ConversionEvent` Channel payload joins via C6/P2.29, neither via `collect_events!`),
 //! plus the P1.25 standalone `.types(...)` registration of the §0.6 identity
 //! newtypes so they never generate as `any` — the `invoke_handler`, and the `mount_events` setup hook. The §0.7
 //! logical-module roots (`domain`/`outcome`/`ipc`/…) were scaffolded in P1.9–P1.11; the §7.2.1 ordered
@@ -39,8 +40,10 @@ use std::path::PathBuf;
 
 use tauri::Manager;
 
-use crate::domain::{CollectedSetId, CollectingId, InstanceId, ItemId, LossyKind, RunId};
-use crate::outcome::{IpcError, OutcomeMsg};
+use crate::domain::{
+    CollectedSetId, CollectingId, InstanceId, IntakePayload, ItemId, LossyKind, RunId,
+};
+use crate::outcome::{AppFault, IpcError, OutcomeMsg};
 
 /// [Build-Session-Entscheidung: P1.15] The §7.2.1 step-2 boot context: the per-launch identity plus
 /// the three resolved base dirs, held as the §7.1.2 app-managed singleton (`app.manage`). Its home is
@@ -105,16 +108,38 @@ fn register_ipc_taxonomy_types(types: specta::Types) -> specta::Types {
         .register::<OutcomeMsg>()
 }
 
+/// [Build-Session-Entscheidung: P2.39] The §0.4.2 `app://` event-payload registration. The three app-wide
+/// events (`app://fault` / `app://intake` / `app://close-requested`, named in `crate::ipc::events`) are RAW
+/// `app.emit` / TS `listen` events (§0.4.2 "App-wide events — `app.emit` / TS `listen`"; §7.3.2 shows the
+/// raw `window.emit` for close-requested), NOT tauri-specta `collect_events!` typed events: tauri-specta
+/// rc.25's TS event codegen unconditionally emits a `makeEvent` helper with an `any`-typed `payload`
+/// parameter (`tauri-specta-2.0.0-rc.25/src/lang/js_ts.rs` MAKE_EVENT_IMPL_TS), which would violate the platform's
+/// hard no-`any` rule frozen on the generated `bindings.ts` (eslint `@typescript-eslint/no-explicit-any` /
+/// G5, plus G8) — the SAME class of decision P2.22 made when it chose `ErrorHandlingMode::Throw` to avoid
+/// the `any`-bearing `typedError` helper. So `collect_events![]` (below) stays EMPTY and THIS is the
+/// "register in collect_types![]" the §0.4.2/§0.4.3 box-notes call for (tauri-specta v2 has no
+/// `collect_types!` macro — `.types(register::<T>())` is its canonical equivalent): it exports each app://
+/// payload as a NAMED `bindings.ts` type so the TS `listen(<name>)` side type-checks rather than mirroring
+/// `any`. Two payload types register here — `AppFault` (app://fault, `crate::outcome`) and `IntakePayload`
+/// (app://intake, `crate::domain`); `app://close-requested` carries `()` (§0.4.2), so it has NO payload type
+/// to register. Kept as its own function (not folded into identity/taxonomy) so the three registration
+/// RATIONALES — identity-spine vs §2.8.2-taxonomy-mandate vs §0.4.2-event-payload — stay legible.
+fn register_ipc_event_types(types: specta::Types) -> specta::Types {
+    types.register::<AppFault>().register::<IntakePayload>()
+}
+
 /// [Build-Session-Entscheidung: P1.25/P1.26] The single tauri-specta `Builder` — the ONE source the
 /// generated `src/lib/ipc/bindings.ts` is produced from (the `bindings_codegen` export test, driven by
 /// `cargo run -p xtask -- codegen`, §0.4.5) AND the runtime invoke/event registry (`main`). Sharing one
 /// constructor is what guarantees the generated TS surface can never drift from the registered Rust
 /// surface. The C1..C13 §0.4.1 command set is registered from P2.21 (interface shells, each filled by its
-/// per-command fill-box). [Reconcile: P2.37 corrects this P1.25/P1.26 anticipation] `collect_events![]` (below)
-/// stays EMPTY until the §0.4.2 app:// emit events (`app://fault`/`intake`/`close-requested`) are authored at
-/// P2.39; the run-telemetry `ConversionEvent` (authored P2.37) is a CHANNEL payload, NOT a `collect_events!`
-/// event, so it joins `bindings.ts` via C6's `onProgress: Channel<ConversionEvent>` arg (P2.29) — the
-/// deferred-to-consumer pattern (like `ScanProgress` via C1), NOT registered here.
+/// per-command fill-box). [Reconcile: P2.39] `collect_events![]` (below) stays EMPTY BY DECISION: the §0.4.2
+/// app:// events (`app://fault`/`intake`/`close-requested`) are RAW `app.emit` / TS `listen` events whose
+/// payload types register via `register_ipc_event_types` (`.types()`), NOT tauri-specta typed events — a
+/// `collect_events!` entry would force an `any`-bearing `makeEvent` helper into `bindings.ts` (P2.39, see
+/// `register_ipc_event_types`). The run-telemetry `ConversionEvent` (authored P2.37) is a CHANNEL payload,
+/// NOT a `collect_events!` event, so it joins `bindings.ts` via C6's `onProgress: Channel<ConversionEvent>`
+/// arg (P2.29) — the deferred-to-consumer pattern (like `ScanProgress` via C1), NOT registered here.
 ///
 /// §0.6 standalone-type registration: the §0.6 identity newtypes are still referenced by no command
 /// signature (the P2.21 shells are argument-/return-free), so without an explicit registration tauri-specta
@@ -128,9 +153,11 @@ fn ipc_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         // §0.4.1 command surface (P2.21): the C1–C13 handlers, one-file-per-command-group (§0.7),
         // registered as interface shells — each command's full request/response contract + orchestrator
         // delegation is authored by its named fill-box (see `crate::ipc`); the closed-set completeness +
-        // drift gate over this list is P2.36 (G23). `collect_events![]` (below) stays empty until the §0.4.2
-        // app:// emit events land at P2.39; the C6 run-telemetry `ConversionEvent` (P2.37) is a Channel payload
-        // joining via C6's `onProgress` arg (P2.29), NOT a collect_events! event (P2.37 corrects the P1.25 note).
+        // drift gate over this list is P2.36 (G23). `collect_events![]` (below) stays empty BY DECISION
+        // (P2.39): the §0.4.2 app:// events are RAW `app.emit`/TS `listen` events whose payload types register
+        // via `register_ipc_event_types` (a `collect_events!` entry would force an `any`-bearing `makeEvent`
+        // helper into bindings.ts). The C6 run-telemetry `ConversionEvent` (P2.37) is a Channel payload joining
+        // via C6's `onProgress` arg (P2.29), NOT a collect_events! event.
         .commands(tauri_specta::collect_commands![
             // intake (§0.4.1 C1 / C2a / C13)
             crate::ipc::intake::ingest_paths,
@@ -151,9 +178,13 @@ fn ipc_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             crate::ipc::system::get_app_info,
             crate::ipc::system::get_engine_health,
         ])
+        // [Build-Session-Entscheidung: P2.39] Empty BY DECISION — the §0.4.2 app:// events are RAW
+        // `app.emit`/TS `listen` events registered via `.types()` below (`register_ipc_event_types`), never
+        // `collect_events!` typed events (which would force an `any`-bearing `makeEvent` helper into
+        // bindings.ts — the P2.22 Throw-to-avoid-any precedent applied to events).
         .events(tauri_specta::collect_events![])
-        .types(&register_ipc_taxonomy_types(register_ipc_identity_types(
-            specta::Types::default(),
+        .types(&register_ipc_event_types(register_ipc_taxonomy_types(
+            register_ipc_identity_types(specta::Types::default()),
         )))
 }
 
@@ -161,8 +192,9 @@ fn main() -> tauri::Result<()> {
     // §0.4.5 IPC seam: the shared `ipc_specta_builder()` is BOTH the runtime invoke/event registry and
     // the single source the generated `bindings.ts` is produced from (no drift between them). The C1..C13
     // §0.4.1 command surface is registered from P2.21 (interface shells); the run-telemetry `ConversionEvent`
-    // (P2.37) joins `bindings.ts` via C6's Channel arg (P2.29), the app:// `collect_events!` events at P2.39
-    // (P2.37 corrects the earlier "events join at P2.37" P1.25 note).
+    // (P2.37) joins `bindings.ts` via C6's Channel arg (P2.29); the §0.4.2 app:// event payloads (`AppFault`/
+    // `IntakePayload`) register via `register_ipc_event_types` (`.types()`) at P2.39, as RAW `app.emit`/
+    // `listen` events — `collect_events![]` stays empty (a typed event would force an `any` into bindings.ts).
     let builder = ipc_specta_builder();
 
     // [Build-Session-Entscheidung: P1.13] Async runtime: ConvertIA runs on Tauri v2's own managed
@@ -315,6 +347,32 @@ mod ipc_typegen {
             "ConversionErrorKind,IpcError,LossyKind,OutcomeMsg,PathBuf,SkipReason,String",
             "§2.8.2/§0.4.3: the wire-taxonomy registration is LossyKind + IpcError + OutcomeMsg + the named \
              types they pull in (ConversionErrorKind / SkipReason / PathBuf / String)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §0.4.2 app:// event-payload registration (P2.39). `register_ipc_event_types`
+    // puts the two raw-event payload types (AppFault §crate::outcome, IntakePayload §crate::domain) into the
+    // type collection so `listen('app://fault')` / `listen('app://intake')` mirror NAMED types, not `any`
+    // (`app://close-requested` carries `()`, so it has no payload type to register). PINNED BY NAME (not a
+    // bare count) so a dropped / added / renamed registration reddens with a legible diff. The referenced
+    // types are pulled in named too (verified by read-back of the registered names): `AppFault.kind` →
+    // ConversionErrorKind, `AppFault.message` → String, `IntakePayload.origin` → IntakeOrigin,
+    // `IntakePayload.paths: Vec<PathBuf>` → both the `Vec` container AND `PathBuf` element (specta tracks each
+    // as a named map entry, exactly as `Uuid` is for the identity set's count and `String`/`PathBuf` for the
+    // taxonomy set — the container `Vec` renders as TS `string[]`, not an `export type Vec`).
+    #[test]
+    fn event_payload_types_registered_for_typegen() {
+        let types = register_ipc_event_types(specta::Types::default());
+        let mut names: Vec<String> = types
+            .into_unsorted_iter()
+            .map(|n| n.name.to_string())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names.join(","),
+            "AppFault,ConversionErrorKind,IntakeOrigin,IntakePayload,PathBuf,String,Vec",
+            "§0.4.2: the app:// event-payload registration is AppFault + IntakePayload + the named types \
+             they pull in (ConversionErrorKind / IntakeOrigin / PathBuf / String / the Vec container)"
         );
     }
 }
@@ -537,6 +595,26 @@ mod bindings_codegen {
              plan-lint check 12 diffs the registered #[tauri::command] set against it, so a drifted golden \
              would silently weaken the closed-set IPC-surface gate (P2.36)"
         );
+    }
+
+    // §6.4.1 unit (G15): the §0.4.2 app:// event PAYLOADS (P2.39) mirror to the committed bindings.ts as
+    // named types so the TS `listen(<name>)` side type-checks rather than `any` — the raw-event registration
+    // via `register_ipc_event_types` (`collect_events!` is avoided; it would force an `any`-bearing
+    // `makeEvent` helper, the P2.22 Throw-to-avoid-any precedent). app://fault → AppFault, app://intake →
+    // IntakePayload (app://close-requested carries `()`, no payload type). Read the committed artifact back
+    // (the §0.2 read-the-output-back discipline). The CLOSED-SET "exactly three, no fourth" assertion is
+    // P2.41/G23's; this pins the two payload types are PRESENT + named.
+    #[test]
+    fn committed_bindings_expose_the_app_event_payloads() {
+        let ts = std::fs::read_to_string(TRACKED_BINDINGS_PATH).expect(
+            "the committed src/lib/ipc/bindings.ts must exist — regenerate it via the xtask codegen task",
+        );
+        for ty in ["AppFault", "IntakePayload"] {
+            assert!(
+                ts.contains(&format!("export type {ty}")),
+                "the §0.4.2 app:// event payload `{ty}` must be a named `export type` in the committed bindings.ts (P2.39)"
+            );
+        }
     }
 }
 

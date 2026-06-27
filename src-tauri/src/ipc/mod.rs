@@ -24,6 +24,52 @@ pub mod intake;
 pub mod planning;
 pub mod system;
 
+/// The §0.4.2 app-wide event NAMES — the closed `app://` event surface (P2.39). The three app-wide events
+/// flow Rust→WebView via raw `app.emit(<name>, payload)` / TS `listen(<name>)` (§0.4.2 "App-wide events —
+/// `app.emit` / TS `listen`"), NOT tauri-specta `collect_events!` typed events: rc.25's TS event codegen
+/// unconditionally emits a `makeEvent` helper with an `any`-typed `payload` parameter, which would violate the no-`any`
+/// rule frozen on the generated `bindings.ts` (G5/G8) — the same class of decision as P2.22's
+/// `ErrorHandlingMode::Throw` (see `main.rs` `register_ipc_event_types`). Their payload types are authored +
+/// `.types()`-registered (the §0.4.2 payloads: `AppFault` in `crate::outcome`, `IntakePayload` in
+/// `crate::domain`; `app://close-requested` carries `()` — no payload type) so the TS `listen` side
+/// type-checks. These constants are the SINGLE SOURCE of the names their emit sites (§2.13/§5.8,
+/// §7.8.1, §7.3.2) and the P2.41/G23 closed-set gate reference.
+pub mod events {
+    // The names are referenced by their emit sites (§2.13/§7.8.1/§7.3.2) + the P2.41/G23 closed-set
+    // gate; until those land they are dead in the PRODUCTION build, so `expect` (not `allow`) auto-flags the
+    // moment the first emit site uses them — matching `crate::domain` / `crate::outcome`.
+    #![cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the §0.4.2 app:// event-name constants are referenced by their emit sites (§2.13/§7.8.1/§7.3.2) + the P2.41/G23 closed-set gate, so they are dead in the production build until then."
+        )
+    )]
+
+    /// `app://fault` — the §2.13 app-level fault (payload `AppFault`). Emit sites: §2.13.3 / §5.8 / §7.2.
+    pub const APP_FAULT: &str = "app://fault";
+    /// `app://intake` — the §7.8.1 launch-arg / second-instance IDLE-path hand-off (payload `IntakePayload`).
+    pub const APP_INTAKE: &str = "app://intake";
+    /// `app://close-requested` — the §7.3.2 mid-run window-close intercept (payload `()`; §7.3.2 emits a
+    /// `serde_json::Value::Null`).
+    pub const APP_CLOSE_REQUESTED: &str = "app://close-requested";
+}
+
+#[cfg(test)]
+mod app_event_names {
+    //! §6.4.1 unit (G15): the §0.4.2 app:// event NAMES (P2.39) are pinned to their exact fixed strings, so a
+    //! typo / rename of an event name reddens at L2. The CLOSED-SET invariant (exactly these three, no fourth
+    //! `app://` event) is the P2.41/G23 gate's job; this pins each name's literal value.
+    use super::events;
+
+    #[test]
+    fn app_event_names_are_the_fixed_0_4_2_strings() {
+        assert_eq!(events::APP_FAULT, "app://fault");
+        assert_eq!(events::APP_INTAKE, "app://intake");
+        assert_eq!(events::APP_CLOSE_REQUESTED, "app://close-requested");
+    }
+}
+
 #[cfg(test)]
 mod command_surface {
     //! §6.4.1 unit (G15): the §0.4.1 command surface registered at P2.21 is real, INVOCABLE async commands,

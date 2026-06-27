@@ -412,11 +412,14 @@ pub enum ItemOutcome {
 // wire types — `Serialize` + `specta::Type`, NO `Deserialize` (a Channel payload is only ever sent
 // Rust→WebView) — the SAME derive set as the sibling Channel payload `ScanProgress` (§0.6). camelCase wire.
 //
-// REGISTRATION — deferred-to-consumer, NOT here. ConversionEvent is a CHANNEL payload, NOT a collect_events!
-// app.emit event: the §0.4.2 app:// events (app://fault/intake/close-requested) are P2.39's collect_events!
-// surface, distinct from the C6 onProgress Channel stream. It is NOT added to main.rs's register_ipc_*_types
-// chain (that chain is the §2.8.2-mandated universal types IpcError/OutcomeMsg/LossyKind — a Channel payload
-// belongs nowhere in it; ScanProgress is absent from it too). ConversionEvent + its 5 payloads + the whole
+// REGISTRATION — deferred-to-consumer, NOT here. ConversionEvent is a CHANNEL payload, NOT an app.emit
+// event: the §0.4.2 app:// events (app://fault/intake/close-requested) are RAW `app.emit`/`listen` events
+// whose payloads register via main.rs's `register_ipc_event_types` (`.types()`) at P2.39 (NOT collect_events!,
+// which would force an `any`-bearing `makeEvent` helper into bindings.ts) — distinct from the C6 onProgress
+// Channel stream. ConversionEvent is NOT added to main.rs's register_ipc_*_types chain (that chain holds the
+// §2.8.2-mandated universal types IpcError/OutcomeMsg/LossyKind + the §0.4.2 raw-app:// event payloads
+// AppFault/IntakePayload — a Channel payload belongs in neither; ScanProgress is absent from it too).
+// ConversionEvent + its 5 payloads + the whole
 // RunResult graph it carries via RunFinished JOIN bindings.ts at C6 (P2.29), when start_conversion registers
 // its `onProgress: Channel<ConversionEvent>` arg — exactly the ScanProgress-via-C1 deferred-to-consumer
 // pattern (bindings.ts P2.6/P2.15, which guards against consumer-less early registration). So P2.37 authors

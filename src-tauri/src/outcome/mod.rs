@@ -151,6 +151,58 @@ pub struct IpcError {
     pub residue: Option<PathBuf>,
 }
 
+// ─── §0.4.2 AppFault — the app://fault event payload (§2.13 app-level fault) (P2.39.1) ──
+/// The `app://fault` event payload (§0.4.2 / §2.13.1 / §2.13.3) — the **app-level** fault the §2.13.3
+/// single calm screen renders: a startup engine-missing escalation, a WebView core disconnect (§5.8), a
+/// damaged bundle. It is categorically distinct from a per-item `IpcError`: an app-level fault means the
+/// WHOLE APP can't function (the §2.13.1 "App-level" class), not one item failing — so it is surfaced via
+/// the §0.4.2 `app://fault` `app.emit` event (a Rust→WebView signal the §2.13.3 / §5.8 screen listens for),
+/// NEVER as a §1.12 per-item summary row.
+///
+/// OUTBOUND-ONLY: the core `app.emit`s it Rust→WebView and the WebView `listen`s — it is never deserialized
+/// core-side — so `Serialize` + `Type`, NO `Deserialize` (the identical outbound-only derive choice as the
+/// sibling wire / event payloads `IpcError` (§0.4.3 above) and `ConversionEvent` / `ScanProgress` (§0.4.2)).
+/// camelCase wire. Derive set mirrors `IpcError`'s: `Debug, Clone, PartialEq, Eq` (ergonomics + the
+/// serialize-pin test) + `Serialize, Type`; NOT `Copy` (owns a `String`).
+///
+/// [Build-Session-Entscheidung: P2.39.1] `kind` is typed with the CONCRETE `ConversionErrorKind`, NOT the
+/// §0.4.3 `ErrorKind` alias (`pub type ErrorKind = ConversionErrorKind`) — the SAME type, but referencing
+/// the forward-declared alias from this production-dead-until-emitted struct trips the rustc
+/// dead-code-EXPECTATION/alias interaction this module's `not(test)` forward-declaration dead-code
+/// suppression relies on (the identical P2.19 `IpcError.kind` decision; specta resolves the alias to the
+/// same wire type
+/// regardless). Only the three §2.13 app-level variants {`EngineMissing`, `WebviewFault`, `BundleDamaged`}
+/// ever travel on this event — a §2.13 RUNTIME invariant, NOT a type constraint (mirroring
+/// `IntakePayload.origin`, typed as the full `IntakeOrigin` though only `LaunchArg`/`SecondInstance` ride
+/// `app://intake`). `message` is the §2.13.3 pre-localised, plain-English, trace-free calm line (NEVER a
+/// stack trace / raw engine stderr, SSOT *no stack traces*); the §2.13.3 / §7.2 strings that fill it are a
+/// later box.
+///
+/// [Build-Session-Entscheidung: P2.39.1] Homed in `crate::outcome` (tier 2), NOT `crate::domain` (the
+/// tier-3 leaf): it references `ConversionErrorKind`, which lives here, and a leaf type cannot depend on a
+/// higher tier (§0.7). It is NOT an orchestrator lifecycle/result type (the §0.7 ‡ rule that homed
+/// `ConversionEvent` at tier 1), so tier 2 — its lowest valid home, beside the `ConversionErrorKind` it
+/// carries — is correct.
+///
+/// [Build-Session-Entscheidung: P2.39.1] The "register in collect_types![]" the §0.4.3 box-note calls for is
+/// `main.rs`'s `register_ipc_event_types` `.types(register::<AppFault>())` (tauri-specta v2 has no
+/// `collect_types!` macro). `app://fault` is a RAW `app.emit` / TS `listen` event (§0.4.2), NOT a
+/// `collect_events!` typed event: tauri-specta rc.25's TS event codegen unconditionally emits a `makeEvent`
+/// helper with an `any`-typed `payload` parameter, which would violate the no-`any` rule frozen on the
+/// generated `bindings.ts` (G5/G8) — the same reason P2.22 chose `ErrorHandlingMode::Throw` over the
+/// `any`-bearing `typedError` helper. The
+/// `.types()` registration still exports `AppFault` as a NAMED `bindings.ts` type so `listen('app://fault')`
+/// type-checks rather than mirroring `any`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AppFault {
+    /// The app-level fault kind — only {`EngineMissing`, `WebviewFault`, `BundleDamaged`} per §2.13 (a
+    /// RUNTIME invariant; the field type is the full mirror enum, see the struct doc).
+    pub kind: ConversionErrorKind,
+    /// The §2.13.3 pre-localised, plain-English, trace-free calm message.
+    pub message: String,
+}
+
 // ─── §2.8.2 OutcomeMsg — the surfaced per-item outcome line (P2.20) ──
 /// The §2.8.2 surfaced per-item outcome — the *resolved, ready-to-show* line for one item, carried by the
 /// §0.6 `ItemResult.reason: Option<OutcomeMsg>` (which rides the `RunFinished` Channel payload + the C8
@@ -409,5 +461,32 @@ mod tests {
             skip_reason_to_error_kind(SkipReason::Unreadable),
             ConversionErrorKind::Unreadable
         );
+    }
+
+    // §6.4.1 unit (G15): the §0.4.2 / §2.13 `AppFault` wire shape (P2.39.1) — the app://fault event payload,
+    // camelCase `{ kind, message }`. OUTBOUND-ONLY (no `Deserialize`), so a SERIALIZE pin, not a round-trip.
+    // Iterates the THREE §2.13 app-level `kind` variants the event ever carries ({EngineMissing, WebviewFault,
+    // BundleDamaged}) so each one's camelCase wire string is locked inside the AppFault envelope (a rename of
+    // an app-level variant changes a pin) — the runtime "only these three" invariant made checkable here.
+    #[test]
+    fn app_fault_wire_form_is_camelcase() {
+        for (kind, wire_kind) in [
+            (ConversionErrorKind::EngineMissing, "engineMissing"),
+            (ConversionErrorKind::WebviewFault, "webviewFault"),
+            (ConversionErrorKind::BundleDamaged, "bundleDamaged"),
+        ] {
+            let fault = AppFault {
+                kind,
+                message: "ConvertIA can't start because part of the app appears to be missing."
+                    .to_owned(),
+            };
+            assert_eq!(
+                serde_json::to_string(&fault).expect("AppFault serializes"),
+                format!(
+                    r#"{{"kind":"{wire_kind}","message":"ConvertIA can't start because part of the app appears to be missing."}}"#
+                ),
+                "§0.4.2/§2.13: AppFault is the camelCase app://fault payload ({{ kind, message }})"
+            );
+        }
     }
 }

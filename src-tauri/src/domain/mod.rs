@@ -546,6 +546,14 @@ pub enum OpenKind {
 ///
 /// [Build-Session-Entscheidung: P2.7] Follows the round-trippable struct pattern (`Serialize`+
 /// `Deserialize`, like `DroppedItem`); NOT `Copy` (owns a `Vec<PathBuf>`). camelCase wire form.
+///
+/// [Build-Session-Entscheidung: P2.39] Registered EXPLICITLY in `main.rs`'s `register_ipc_event_types`
+/// `.types()` chain now that its consumer — the `app://intake` event (§0.4.2 / §7.8.1) — is authored.
+/// The P2.7 "deferred to its consuming command/event" note assumed an auto-pull, but `app://intake` is a
+/// RAW `app.emit` / TS `listen` event (§0.4.2), not a command arg / `collect_events!` typed event, so it
+/// does NOT auto-pull `IntakePayload` into `bindings.ts` — the explicit `.types()` registration is what
+/// keeps `listen('app://intake')` typed against the named `IntakePayload` rather than `any` (the same
+/// reason `collect_events!` is avoided — see `register_ipc_event_types`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct IntakePayload {
