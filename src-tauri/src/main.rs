@@ -188,6 +188,107 @@ fn ipc_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         )))
 }
 
+/// [Build-Session-Entscheidung: P2.40] The §7.8.1 launch-intake logic, homed with the Tauri host (§0.7:
+/// `main.rs` homes the launch glue — the single-instance callback (§7.1.1), the macOS `RunEvent::Opened`
+/// handler, and `app.emit`). This box authors the §0.4.2 / §7.8.1 `app://intake` IDLE-path-only RULE as a
+/// pure disposition; the `forward_launch_intake` funnel + the per-OS argv / `RunEvent::Opened` wiring that
+/// CONSUME it join this home at P2.54+.
+mod launch_intake {
+    // The disposition rule is dead in the PRODUCTION build until the funnel wires it (the `Drop` arm at the
+    // P2.55 refuse-busy gate, the `Emit`/`Buffer` arms at the P2.59 ready-flag branch); the cfg(test)
+    // truth-table tests reference it, so the TEST build is dead-code-clean. `expect` (not `allow`) auto-flags
+    // the moment the funnel consumes it — matching `crate::ipc::events` / `crate::domain` / `crate::outcome`.
+    #![cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the §7.8.1 IDLE-path-only disposition rule is consumed by the forward_launch_intake funnel (the Drop arm at P2.55, the Emit/Buffer arms at P2.59), so it is dead in the production build until then."
+        )
+    )]
+
+    /// [Build-Session-Entscheidung: P2.40] The §0.4.2 / §7.8.1 `app://intake` disposition — the THREE
+    /// outcomes a launch-time path set can take. Encoding it as an enum makes the IDLE-path-only rule
+    /// STRUCTURAL: a `busy` state maps ONLY to `Drop` (see `intake_disposition`), so the funnel can never
+    /// emit/buffer ingestable paths mid-run — the §2.4 freeze + the §0.4.2 "never emits `app://intake` with
+    /// ingestable paths mid-run" contract become a property of the type, not a convention.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum IntakeDisposition {
+        /// §7.1.1 refuse-busy: a run is in flight — DROP the launch paths core-side (no `app://intake`
+        /// emit, no `PendingIntake` buffer), so the §2.4 frozen set is never mutated mid-run. Enforced in
+        /// the funnel at P2.55.
+        Drop,
+        /// Idle + the WebView `app://intake` listener is ready — emit `app://intake` so the frontend mirrors
+        /// a drop (§5.2/§1.1). Wired at P2.59.
+        Emit,
+        /// Idle but the WebView is not-yet-ready (the §7.8.1 first-launch listener race) — stash the paths in
+        /// `PendingIntake` for the drain-on-mount replay (P2.58/P2.60). Wired at P2.59.
+        Buffer,
+    }
+
+    /// [Build-Session-Entscheidung: P2.40] The §0.4.2 / §7.8.1 IDLE-path-only decision. `busy` is tested
+    /// FIRST and short-circuits to `Drop` regardless of `frontend_ready` — that ordering is what encodes
+    /// "never emit ingestable paths mid-run": this fn can return `Emit`/`Buffer` ONLY when `!busy`. The
+    /// `busy` / `frontend_ready` predicates are resolved by the funnel against the `AppHandle`
+    /// (`converter_is_busy`, §1.9 run-state, wired P2.55; the WebView-ready flag, §7.8.1, wired P2.59) and
+    /// PASSED IN, so the rule itself is pure and unit-tested in isolation.
+    pub(crate) fn intake_disposition(busy: bool, frontend_ready: bool) -> IntakeDisposition {
+        if busy {
+            IntakeDisposition::Drop
+        } else if frontend_ready {
+            IntakeDisposition::Emit
+        } else {
+            IntakeDisposition::Buffer
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        // §6.4.1 unit (G15): the §0.4.2 / §7.8.1 `app://intake` IDLE-path-only rule (P2.40) — the full
+        // busy x ready truth table. The load-bearing rows are the two busy ones: busy yields `Drop` in BOTH
+        // ready states (the "never emit ingestable paths mid-run" invariant — a mid-run launch / Open-with
+        // is dropped core-side, never emitted or buffered, §7.1.1 / §2.4).
+        #[test]
+        fn idle_path_only_rule_truth_table() {
+            assert_eq!(
+                intake_disposition(true, true),
+                IntakeDisposition::Drop,
+                "§7.1.1: busy drops even when the frontend is ready (never emit ingestable paths mid-run)"
+            );
+            assert_eq!(
+                intake_disposition(true, false),
+                IntakeDisposition::Drop,
+                "§7.1.1: busy drops even when the frontend is not ready (no buffer mid-run either)"
+            );
+            assert_eq!(
+                intake_disposition(false, true),
+                IntakeDisposition::Emit,
+                "§7.8.1: idle + ready emits app://intake"
+            );
+            assert_eq!(
+                intake_disposition(false, false),
+                IntakeDisposition::Buffer,
+                "§7.8.1: idle + not-ready buffers (the first-launch listener race)"
+            );
+        }
+
+        // §6.4.1 unit (G15): the IDLE-path-only INVARIANT made explicit — for a busy converter the
+        // disposition is `Drop` for EVERY readiness value, so the funnel can never emit/buffer ingestable
+        // paths mid-run by construction (§0.4.2 "never emits app://intake with ingestable paths mid-run").
+        #[test]
+        fn busy_never_emits_or_buffers() {
+            for ready in [true, false] {
+                assert_eq!(
+                    intake_disposition(true, ready),
+                    IntakeDisposition::Drop,
+                    "§0.4.2/§7.1.1: a busy converter always drops launch paths (ready={ready})"
+                );
+            }
+        }
+    }
+}
+
 fn main() -> tauri::Result<()> {
     // §0.4.5 IPC seam: the shared `ipc_specta_builder()` is BOTH the runtime invoke/event registry and
     // the single source the generated `bindings.ts` is produced from (no drift between them). The C1..C13
