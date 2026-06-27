@@ -286,12 +286,38 @@ export const commands = {
 	 */
 	getRunSummary: (runId: RunId) => __TAURI_INVOKE<RunResult>("get_run_summary", { runId }),
 	/**
-	 *  **C9 `open_path`** (§0.4.1) — the "one-click open/reveal" action; the handler validates `path` against the
-	 *  current `RunResult`'s recorded outputs (§7.7.3) before calling `OpenerExt` internally (no `opener:*`
-	 *  grant, §0.10). Registered as the §0.4.1 interface shell (P2.21); the full `{ kind, path } -> ()` contract
-	 *  is authored by P2.32. [Build-Session-Entscheidung: P2.21]
+	 *  **C9 `open_path`** (§0.4.1) — the DoD "one-click open-folder / open-file" action: reveal or open an output
+	 *  in the OS file manager / default app. The handler **validates `path` against the current §1.12 `RunResult`'s
+	 *  recorded outputs (file-launch) or roots (folder-browse) — the §7.7.3 membership gate** — then calls the
+	 *  opener plugin's `OpenerExt` internally (`reveal_item_in_dir` / `open_path`, §7.7.1); there is **no
+	 *  `opener:*` WebView capability** (§0.10) — the Rust-side membership check, not a static scope, is the real
+	 *  gate (§7.7.2: beside-source outputs routinely fall outside any OS-known root, so a glob scope could never
+	 *  cover them). This box (P2.32) authors the typed §0.4.1 wire CONTRACT — the `{ kind, path } -> Result<(),
+	 *  IpcError>` door (the §0.4 universal error shape) — so the generated `bindings.ts` mirrors the C9 surface
+	 *  (pulling `OpenKind` into the bindings as a command-arg type).
+	 *
+	 *  - `kind` — the §0.6 `OpenKind` (`RevealInFolder` | `Folder` | `File`) selecting the §7.7.1 `OpenerExt` op:
+	 *    reveal-with-select / open-containing-folder / open-file-in-default-app.
+	 *  - `path` — the path to open; the §7.7.3 gate admits an *output file* for `File` and a run *root* for the
+	 *    folder-browse kinds (`RevealInFolder`/`Folder`), refusing anything else (never a source, never an
+	 *    arbitrary WebView path).
+	 *
+	 *  [Build-Session-Entscheidung: P2.32] **Shell returns `Err(IpcError{ kind: InternalError })` — the
+	 *  C3/C4/C5/C6/C8 branch (the §7.7.3 gate refuses), NOT C7's `Ok(())` no-op branch.** Unlike C7's idempotent
+	 *  fire-and-forget cancel (whose `()` zero value makes a tripped-nothing a genuine no-op success), C9 is a
+	 *  **gated side-effect**: it opens `path` *only if* the §7.7.3 membership check passes, and a path not in the
+	 *  set is **refused** (§7.7.2/§7.7.3 — "a path not in that set is refused and logged"). A refusal is an error,
+	 *  not a successful no-op — returning `Ok(())` would falsely claim the open happened. The shell has no §1.12
+	 *  `RunResult` to validate against (the §0.4.4 retention registry is P2.43), so **every** path fails the
+	 *  membership check — exactly the `Err` the real body returns for a non-member path: `Err(IpcError{ kind:
+	 *  ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError` precedent C3/C4/C5 cite).
+	 *  The named fill-boxes own the rest: (a) the §2.8 catalog box owns the FINAL message — the string below is a
+	 *  PROVISIONAL neutral English one — and must add a COMMAND-level string (the §2.8 catalog is item-scoped); (b)
+	 *  the §7.7.3 membership resolve (against the P2.43 `RunResult` retention) + the §7.7.1 `OpenerExt` reveal/open
+	 *  call + the §7.5 refusal log + the §0.6 SUCCESS path (`Ok(())` on a validated open) belong to the body box
+	 *  P3.51; (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
 	 */
-	openPath: () => __TAURI_INVOKE<void>("open_path"),
+	openPath: (kind: OpenKind, path: string) => __TAURI_INVOKE<null>("open_path", { kind, path }),
 	/**
 	 *  **C10 `open_project_page`** (§0.4.1) — the only permitted, user-initiated network action: opens a fixed
 	 *  compiled-in canonical URL constant via `OpenerExt::open_url` (the WebView supplies no URL, §7.6.2 / §7.7.2).
@@ -1074,6 +1100,15 @@ export type LossyKind =
 "video_to_gif" |
 /**  surround forced to stereo by codec (rare; audio.md). */
 "audio_downmix";
+
+/**  The C9 `open_path` `kind` arg (§0.4.1 / §7.7) — how to surface an output path. Inbound. */
+export type OpenKind =
+/**  Open the containing folder. */
+"folder" |
+/**  Open the file itself in its default app. */
+"file" |
+/**  Reveal the file within its folder (highlight it). */
+"revealInFolder";
 
 /**
  *  A declared option for a (source, target) pair (§1.6), supplied by the registry (concrete values in
