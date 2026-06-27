@@ -164,7 +164,7 @@
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.112` points at the `AppInfo` type box later in document order — the C11 `get_app_info` contract returns `AppInfo` (§0.4.1 / §7.2.3), which has no definition to compile / type-share against until `AppInfo` (P2.112) exists, so DECISION C builds P2.112 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
 - [x] **P2.35** [RUST] Author the C13 `cancel_ingest` contract — trip the `CollectingId` ingest-scoped token · §0.4.1 §1.1
   needs: P2.22
-- [ ] **P2.36** [GATE] Assert the C1–C13 IPC-surface set is complete + drift-free (no extra/missing command; plan-lint check 9/12 target) · §0.4.1 · G23
+- [x] **P2.36** [GATE] Assert the C1–C13 IPC-surface set is complete + drift-free (no extra/missing command; plan-lint check 9/12 target) · §0.4.1 · G23
   needs: P2.35, P2.33, P2.34, P2.31, P2.32
 
 ## IPC event / Channel surface (the three `app://` events + telemetry Channels)
