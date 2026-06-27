@@ -7,7 +7,7 @@ docs/process/, docs/plan/). It enforces TWO families of checks:
   * FORMAT checks (_format.md §7) — the plan-box grammar: marker validity, sub-box consistency,
     header well-formedness, tag validity, reference resolution, needs:-targets exist + acyclic,
     annotation pairing, numbering gap-freeness.
-  * DOC checks 1..27 (build-gates.md §6) — doc-wide consistency: cross-reference validity, heading
+  * DOC checks 1..28 (build-gates.md §6) — doc-wide consistency: cross-reference validity, heading
     hierarchy, gate-catalogue integrity, forbidden tokens, §0.11<->§5 threat parity, inventory
     parity, the G68 doc-graph leg, the G69 struct-map leg, the check-27 gate-posture-transition leg, etc.
 
@@ -17,7 +17,7 @@ corpus-completeness gates (G22 / G23 / G24a) stay target-absent until their phas
 handlers + `tests/corpus/`. This file is L(-1) security-critical (G71).
 
 Build status: foundation + the 8 FORMAT checks are implemented + self-tested. The doc-wide checks
-1..27 are added incrementally by P0.3.5 (each with its G24 negative fixture); until a doc check is
+1..28 are added incrementally by P0.3.5 (each with its G24 negative fixture); until a doc check is
 implemented it is listed in CHECKS as a NotImplemented placeholder that the meta-self-test asserts.
 
 Usage: plan-lint [--check <id>] [--json] [--quiet] [--max-per-check N] [--root <dir>]
@@ -348,7 +348,7 @@ def fmt_numbering_gap_free(ctx: Ctx) -> list[Finding]:
 
 
 # =============================================================================================
-#  DOC checks (build-gates.md §6, checks 1..27) — added incrementally; active-now ones first.
+#  DOC checks (build-gates.md §6, checks 1..28) — added incrementally; active-now ones first.
 # =============================================================================================
 _GATE_ROW_RE = re.compile(r"^\| \*\*G(\d+)\*\* \|", re.M)
 # the canonical §0.11 / §5 threat-class set (security-concept §5 table + the canonical list) — 17 classes
@@ -998,6 +998,56 @@ def doc13_plugin_surface_drift(ctx: Ctx) -> list[Finding]:
         loc = "src-tauri/src" if "registered" in msg else "Cargo.lock"
         out.append(Finding("13:plugin-surface-drift", loc, 0, msg))
     return out
+
+
+# Check 28's §0.4.2 closed app:// event surface — the §0.4.1-command analog of check 12, for the §0.4.2
+# EVENT side. `_APP_EVENTS_ALLOWED` = the exactly-three app-wide event names §0.4.2 fixes, an INDEPENDENT
+# hardcoded list (NOT derived from the source) so a drifted const is caught too — the same independent-list
+# discipline check 12's golden uses. `_APP_EVENTS_MODULE` = the one file that DECLARES the
+# `crate::ipc::events` name constants; everywhere else the §0.4.2 names must be referenced via
+# `events::APP_*`, never re-spelled as a raw literal (the `#[expect(dead_code)]` reason in that file pins
+# exactly this — the constants are "referenced by their emit sites … + the P2.41/G23 closed-set gate").
+_APP_EVENTS_ALLOWED = frozenset({"app://fault", "app://intake", "app://close-requested"})
+_APP_EVENTS_MODULE = "src-tauri/src/ipc/mod.rs"
+# A DOUBLE-QUOTED `"app://…"` literal only — a backtick `app://…` doc-comment mention is prose, not a
+# literal, and is deliberately NOT matched (the §0.4.2 doc-comments use backticks throughout). The quote
+# must immediately precede `app://`, so a string that merely CONTAINS `app://` mid-text (an assert message)
+# is not matched; a `format!("app://{}", …)` dynamic name IS matched (value ∉ the allow-set → caught).
+_APP_EVENT_LIT_RE = re.compile(r'"(app://[^"]*)"')
+
+
+def _app_event_surface_drift(files: dict[str, str]) -> list[str]:
+    """(pure) §0.4.2 app:// event-surface problems. `files` = {relpath -> Rust source text}. Every
+    double-quoted `"app://…"` literal must (a) name one of the closed three events (no fourth app:// event),
+    AND (b) live in the events-constants module (no raw literal bypassing the `crate::ipc::events` const
+    SSOT). Returns problem messages; the in-core payload-registration / no-`any` side is P2.41's cfg(test)
+    cross-check, not checked here (the §0.4.1-command analog split check 12 uses against its golden)."""
+    problems: list[str] = []
+    for rel in sorted(files):
+        for mt in _APP_EVENT_LIT_RE.finditer(files[rel]):
+            val = mt.group(1)
+            if val not in _APP_EVENTS_ALLOWED:
+                problems.append(f'{rel}: app:// event "{val}" is not one of the closed §0.4.2 set '
+                                f'{sorted(_APP_EVENTS_ALLOWED)} — no fourth app:// event')
+            elif rel != _APP_EVENTS_MODULE:
+                problems.append(f'{rel}: raw app:// literal "{val}" bypasses the crate::ipc::events '
+                                f'constants — the §0.4.2 event names are referenced via events::APP_*, '
+                                f'declared only in {_APP_EVENTS_MODULE}')
+    return problems
+
+
+def doc28_app_event_surface_drift(ctx: Ctx) -> list[Finding]:
+    """Check 28: the §0.4.2 app:// event surface is the closed set {fault, intake, close-requested}, each
+    name a double-quoted literal living ONLY in the `crate::ipc::events` constants module — no fourth
+    app:// event, no raw literal bypassing the const SSOT (the §0.4.2-event analog of check 12's §0.4.1
+    command-surface drift). Target: src-tauri/src — lands in P1."""
+    src_dir = ctx.root / "src-tauri" / "src"
+    if not src_dir.is_dir():
+        return []                          # the core src lands in P1
+    files = {str(f.relative_to(ctx.root)).replace("\\", "/"): f.read_text(encoding="utf-8", errors="replace")
+             for f in src_dir.rglob("*.rs")}
+    return [Finding("28:app-event-surface-drift", "src-tauri/src", 0, msg)
+            for msg in _app_event_surface_drift(files)]
 
 
 def _bl_phrase(ctx, check, phrases):
@@ -1655,7 +1705,7 @@ def doc27_gate_posture_transition(ctx: Ctx) -> list[Finding]:
 
 
 # =============================================================================================
-#  Check registry — FORMAT checks live; doc checks 1..27 added incrementally (P0.3.5 + P1.66).
+#  Check registry — FORMAT checks live; doc checks 1..28 added incrementally (P0.3.5 + P1.66).
 # =============================================================================================
 FORMAT_CHECKS = {
     "format:box-parse-completeness": fmt_box_parse_completeness,
@@ -1688,6 +1738,7 @@ DOC_CHECKS = {
     "10:manifest-currency": doc10_manifest_currency,
     "12:ipc-surface-drift": doc12_ipc_surface_drift,
     "13:plugin-surface-drift": doc13_plugin_surface_drift,
+    "28:app-event-surface-drift": doc28_app_event_surface_drift,
     "14:dod-parity": doc14_dod_parity,
     "15:hard-stop-parity": doc15_hard_stop_parity,
     "18:named-procedure": doc18_named_procedure,
@@ -1698,7 +1749,7 @@ DOC_CHECKS = {
     "26:struct-map": doc26_struct_map,
     "27:gate-posture-transition": doc27_gate_posture_transition,
 }
-CHECKS = {**FORMAT_CHECKS, **DOC_CHECKS}   # remaining doc checks 1..27 inserted as built
+CHECKS = {**FORMAT_CHECKS, **DOC_CHECKS}   # remaining doc checks 1..28 inserted as built
 
 
 def run(ctx: Ctx, only: str | None = None, max_per_check: int | None = None) -> list[Finding]:

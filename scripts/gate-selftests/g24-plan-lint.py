@@ -3,7 +3,7 @@
 
 FORMAT-check coverage: for each of the 8 format checks, a CLEAN box yields no finding and a VIOLATING
 box IS flagged (so no check is green-by-vacuity). Plus the base-case golden invariant: the real plan
-passes (exit 0) and a deliberately-broken synthetic box-set exits non-empty. The doc-wide checks 1..26
+passes (exit 0) and a deliberately-broken synthetic box-set exits non-empty. The doc-wide checks 1..28
 get their own legs as they are built. stdlib-only. Exit 0 = all held; 1 = a self-test failed.
 """
 import hashlib
@@ -173,6 +173,25 @@ record("13 plugin-surface: fs registered via the Builder form -> caught (init|Bu
            'name = "tauri-plugin-fs"\n', "tauri_plugin_fs::Builder::new().build()")))
 record("13 plugin-surface: an UNLISTED plugin (http) -> caught (neither granted nor forced-inert)",
        any("http" in p and "neither" in p for p in m._plugin_surface_drift('name = "tauri-plugin-http"\n', "")))
+
+# --- check 28: §0.4.2 closed app:// event surface — exactly {fault,intake,close-requested}, const-homed ---
+_AE_MOD = "src-tauri/src/ipc/mod.rs"
+record("28 app-event: the three events declared in the events module -> clean",
+       m._app_event_surface_drift({_AE_MOD: 'pub const A: &str = "app://fault";\n'
+                                            'pub const B: &str = "app://intake";\n'
+                                            'pub const C: &str = "app://close-requested";\n'}) == [])
+record("28 app-event: a FOURTH app:// event -> caught (no fourth)",
+       any("no fourth" in p for p in m._app_event_surface_drift({_AE_MOD: 'const X: &str = "app://bogus";\n'})))
+record("28 app-event: a raw VALID literal OUTSIDE the events module -> caught (bypasses the const SSOT)",
+       any("bypasses" in p for p in m._app_event_surface_drift({"src-tauri/src/main.rs": 'app.emit("app://fault", x);\n'})))
+record("28 app-event: a backtick doc-comment mention (not a literal) -> NOT caught (negative cue)",
+       m._app_event_surface_drift({"src-tauri/src/x.rs": "/// the `app://fault` event is emitted here\n"}) == [])
+record("28 app-event: an assert message merely CONTAINING app:// mid-string -> NOT caught (negative cue)",
+       m._app_event_surface_drift({"src-tauri/src/x.rs": '    msg = "§0.4.2: AppFault is the app://fault payload";\n'}) == [])
+record("28 app-event: a dynamic format!(\"app://{}\") name -> caught (value not in the closed set)",
+       any("no fourth" in p for p in m._app_event_surface_drift({"src-tauri/src/x.rs": 'format!("app://{}", k)\n'})))
+record("28 app-event: the REAL committed src-tauri/src passes (the 6 literals are all const-homed + valid)",
+       m.doc28_app_event_surface_drift(m.build_ctx(ROOT)) == [])
 
 # --- check 23: the owner-decidable / informational-then-ratcheted gate-status ledger (P0.4.5) --
 _GS = "docs/process/gate-status.md"

@@ -723,6 +723,23 @@ Invariant checks (initial set; expanded during P0 review):
     check 27) does the phase-aware WIRING assertion. Stdlib-only; skip-with-warning
     while no `[[posture_flag]]` row exists, fail-closed on a due-but-unwired flip
     (or unparseable config). **(P1.66.)**
+28. **App-event-surface drift (the §0.4.2-event analog of check 12's §0.4.1 command-surface
+    drift)** *(glob-scoped to `src-tauri/src`)* — the set of `app://` event names that appear as
+    **double-quoted string literals** in `src-tauri/src` equals **exactly** the closed §0.4.2
+    three-event set (`app://fault`, `app://intake`, `app://close-requested`), and every such literal
+    lives **only** in the `crate::ipc::events` constants module (`src-tauri/src/ipc/mod.rs`) — so a
+    **fourth** `app://` event (the §0.4.2 events are a closed surface, the WebView's only Rust→WebView
+    signal channel) **OR** a **raw `app://` literal that bypasses the `events::APP_*` constants** is a
+    deterministic gate failure, not a dual-review-only catch. The allow-set is an **independent
+    hardcoded list** (not derived from the source), so a drifted const is caught too — the same
+    independent-list discipline check 12's golden uses. A backtick ``app://…`` doc-comment mention is
+    prose, not a literal, and is deliberately **not** matched (the §0.4.2 doc-comments use backticks
+    throughout); a `format!("app://{}", …)` dynamic name **is** matched (its value is not in the closed
+    set → caught). The IN-CORE payload-registration / no-`any` side (each event's §0.4.2 payload authored
+    + in `collect_types![]`) is **P2.41's `cfg(test)` cross-check** — the §0.4.1-command analog of the
+    Rust golden test check 12 pairs with. Under the loose **G23** completeness-family label the P2.41 box
+    uses (like check 12, this is a plan-lint check, not its own `Gnn` row). Stdlib-only; skip while
+    `src-tauri/src` is absent, fail-closed once it lands.
 
 ## 7. Reconciled during P0 review r1
 
