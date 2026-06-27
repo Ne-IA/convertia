@@ -85,10 +85,28 @@ export const commands = {
 	pickForIntake: (kind: PickKind, collectingId: CollectingId, onScan: Channel<ScanProgress>) => __TAURI_INVOKE<CollectedSet>("pick_for_intake", { kind, collectingId, onScan }),
 	/**
 	 *  **C13 `cancel_ingest`** (§0.4.1) — trips the ingest-scoped `CollectingId` token to cancel an in-flight
-	 *  C1/C2a walk before its long await resolves (§1.1). Registered as the §0.4.1 interface shell (P2.21); the
-	 *  full `{ collectingId } -> ()` contract is authored by P2.35. [Build-Session-Entscheidung: P2.21]
+	 *  C1/C2a walk **before** its long await resolves (§1.1): the frontend mints the `CollectingId`, hands it to
+	 *  C1/C2a, and names it here to abort a deep recursive collect that would otherwise run to completion. This
+	 *  box (P2.35) authors the typed §0.4.1 wire CONTRACT — the `{ collectingId } -> Result<(), IpcError>` door
+	 *  (the §0.4 universal error shape) — so the generated `bindings.ts` mirrors the C13 surface.
+	 *
+	 *  - `collecting_id` — the §0.4.4 frontend-generated ingest-scoped cancel handle (registered by C1/C2a at
+	 *    handler entry, P2.45) whose token to trip.
+	 *
+	 *  [Build-Session-Entscheidung: P2.35] **Shell returns `Ok(())` — the genuine idempotent no-op-cancel
+	 *  outcome, the C7 `cancel_run` "zero-valued result" branch of the interface-shell pattern, NOT the
+	 *  C3/C4/C5/C6/C8 `Err(InternalError)` branch.** C13 is the ingest-side mirror of C7: an idempotent
+	 *  fire-and-forget side-effect that trips a token and returns. Its success type `()` has a zero value, and a
+	 *  cancel of a non-existent / already-finished ingest is the desired "not collecting" end-state (§1.1) — so
+	 *  tripping *no* token (the shell has no §0.4.4 `CollectingId` registry — P2.45 — yet) is genuinely `Ok(())`,
+	 *  NOT a fabricated success: it claims nothing positive happened (unlike a fabricated C6 `Ok(RunId)`, which
+	 *  would lie that a run started). The cancel *effect* is observed by C1/C2a returning the §0.6 zero-collection
+	 *  `CollectedSet::Empty` once its token is tripped (§1.1), never C13's return. The real registry resolve +
+	 *  `.cancel()` wiring lands at P2.45 (the `CollectingId` → ingest-scoped token registry) / P2.69 (the
+	 *  cooperative ingest-cancellation poll) / P2.71 (the C2a token-drop-on-every-exit-branch); the contract is
+	 *  unchanged by it (cancel stays `Ok(())`).
 	 */
-	cancelIngest: () => __TAURI_INVOKE<void>("cancel_ingest"),
+	cancelIngest: (collectingId: CollectingId) => __TAURI_INVOKE<null>("cancel_ingest", { collectingId }),
 	/**
 	 *  **C2b `pick_destination`** (§0.4.1) — the Rust-side `DialogExt` destination-folder picker. This box (P2.24)
 	 *  authors the typed §0.4.1 wire CONTRACT — the `{} -> Result<Option<PathBuf>, IpcError>` door — so the

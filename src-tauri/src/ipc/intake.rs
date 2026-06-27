@@ -121,11 +121,32 @@ pub async fn pick_for_intake(
 }
 
 /// **C13 `cancel_ingest`** (§0.4.1) — trips the ingest-scoped `CollectingId` token to cancel an in-flight
-/// C1/C2a walk before its long await resolves (§1.1). Registered as the §0.4.1 interface shell (P2.21); the
-/// full `{ collectingId } -> ()` contract is authored by P2.35. [Build-Session-Entscheidung: P2.21]
-#[tauri::command]
+/// C1/C2a walk **before** its long await resolves (§1.1): the frontend mints the `CollectingId`, hands it to
+/// C1/C2a, and names it here to abort a deep recursive collect that would otherwise run to completion. This
+/// box (P2.35) authors the typed §0.4.1 wire CONTRACT — the `{ collectingId } -> Result<(), IpcError>` door
+/// (the §0.4 universal error shape) — so the generated `bindings.ts` mirrors the C13 surface.
+///
+/// - `collecting_id` — the §0.4.4 frontend-generated ingest-scoped cancel handle (registered by C1/C2a at
+///   handler entry, P2.45) whose token to trip.
+///
+/// [Build-Session-Entscheidung: P2.35] **Shell returns `Ok(())` — the genuine idempotent no-op-cancel
+/// outcome, the C7 `cancel_run` "zero-valued result" branch of the interface-shell pattern, NOT the
+/// C3/C4/C5/C6/C8 `Err(InternalError)` branch.** C13 is the ingest-side mirror of C7: an idempotent
+/// fire-and-forget side-effect that trips a token and returns. Its success type `()` has a zero value, and a
+/// cancel of a non-existent / already-finished ingest is the desired "not collecting" end-state (§1.1) — so
+/// tripping *no* token (the shell has no §0.4.4 `CollectingId` registry — P2.45 — yet) is genuinely `Ok(())`,
+/// NOT a fabricated success: it claims nothing positive happened (unlike a fabricated C6 `Ok(RunId)`, which
+/// would lie that a run started). The cancel *effect* is observed by C1/C2a returning the §0.6 zero-collection
+/// `CollectedSet::Empty` once its token is tripped (§1.1), never C13's return. The real registry resolve +
+/// `.cancel()` wiring lands at P2.45 (the `CollectingId` → ingest-scoped token registry) / P2.69 (the
+/// cooperative ingest-cancellation poll) / P2.71 (the C2a token-drop-on-every-exit-branch); the contract is
+/// unchanged by it (cancel stays `Ok(())`).
+#[tauri::command(rename_all = "camelCase")]
 #[specta::specta]
-pub async fn cancel_ingest() {}
+pub async fn cancel_ingest(collecting_id: CollectingId) -> Result<(), IpcError> {
+    let _ = collecting_id;
+    Ok(())
+}
 
 #[cfg(test)]
 mod c1_contract {
@@ -212,6 +233,42 @@ mod c2a_contract {
             "§0.4.1: the C2a contract shell opens no dialog yet (the native-pick body is P2.70/P2.71), so it \
              returns the zero-collection CollectedSet::Empty — also the §5.4 cancelled-dialog result; the \
              typed signature is the P2.23 deliverable"
+        );
+    }
+}
+
+#[cfg(test)]
+mod c13_contract {
+    //! §6.4.1 unit (G15): the §0.4.1 C13 `cancel_ingest` typed CONTRACT (P2.35). The handler now carries its
+    //! typed `{ collectingId } -> Result<(), IpcError>` signature, so the P2.21 all-shells
+    //! `block_on(cancel_ingest())` invocation in `crate::ipc` (mod.rs) is REPLACED here by C13's own
+    //! typed-contract test (the fill-box transition the P2.21 note schedules — the LAST such move, leaving only
+    //! C12 bare). The shell returns the genuine idempotent no-op-cancel `Ok(())` (the C7 `cancel_run` branch);
+    //! the §0.4.4 token registry resolve + `.cancel()` land at P2.45 / P2.69. [Build-Session-Entscheidung: P2.35]
+    use super::*;
+    use tauri::async_runtime::block_on;
+
+    /// A `CollectingId` for the contract call — minted through its PUBLIC bare-uuid `Deserialize` wire form
+    /// (the frontend mints the ingest id, §0.4.4), mirroring the `c1_contract`/`c2a_contract` helpers.
+    fn collecting_id() -> CollectingId {
+        serde_json::from_str(r#""44444444-4444-4444-8444-444444444444""#)
+            .expect("CollectingId deserializes from a uuid string")
+    }
+
+    // §6.4.1 unit (G15): the C13 contract is invocable with its §0.4.1 typed `collectingId` arg and returns a
+    // `Result<(), IpcError>` (the §0.4 universal error shape). The shell trips no token yet (no ingest registry
+    // — P2.45), so it returns the genuine idempotent no-op-cancel `Ok(())` (a cancel of a non-existent /
+    // finished ingest is the desired "not collecting" end-state, §1.1); P2.45/P2.69 wire the real registry
+    // resolve + cooperative-poll cancel.
+    #[test]
+    fn c13_cancel_ingest_contract_is_invocable_and_typed() {
+        let out = block_on(cancel_ingest(collecting_id()));
+        assert_eq!(
+            out,
+            Ok(()),
+            "§0.4.1/§0.4: the C13 contract shell trips no token yet (the §0.4.4 ingest registry is P2.45), so \
+             it returns the genuine idempotent no-op-cancel Ok(()); the typed Result<(), IpcError> signature \
+             is the P2.35 deliverable"
         );
     }
 }
