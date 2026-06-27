@@ -45,7 +45,7 @@ use crate::outcome::IpcError;
 /// P2.22 authors the §0.4.1 wire signature above so the generated `bindings.ts` carries the full C1 door;
 /// the §2.4 freeze BODY is its own set of named, scheduled boxes — the §1.1 recursive walk → §1.2 detect →
 /// §2.3 de-dup → §1.3 group freeze funnel (P2.62), the §0.4.4 `collecting_id` token registry (P2.45), the
-/// `drain_pending` `PendingIntake` drain (P2.60), and the `on_scan` scan-telemetry pump (P2.69) — wired
+/// `drain_pending` `PendingIntake` drain (P2.60), and the `on_scan` scan-telemetry emit (the throttled §0.4.2 `ScanProgress` count, part of the §1.1 walk P2.62/P2.64, owned by P3.49) — wired
 /// end-to-end into this handler by P3.49 "Implement C1 `ingest_paths`" (the CSV→TSV walking-skeleton slice)
 /// once those layers exist. This is the sanctioned compile-time interface-shell pattern (CLAUDE §5 / the P3
 /// `crate::isolation` shells P4 expands), NOT a quiet deferral: a shell that performs no freeze collects
