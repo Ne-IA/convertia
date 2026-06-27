@@ -257,12 +257,34 @@ export const commands = {
 	 */
 	cancelRun: (runId: RunId) => __TAURI_INVOKE<null>("cancel_run", { runId }),
 	/**
-	 *  **C8 `get_run_summary`** (§0.4.1) — the idempotent re-fetch of the retained §1.12 `RunResult` (also
-	 *  delivered as the terminal `RunFinished` event), e.g. after a WebView reload. Registered as the §0.4.1
-	 *  interface shell (P2.21); the full `{ runId } -> RunResult` contract is authored by P2.31.
-	 *  [Build-Session-Entscheidung: P2.21]
+	 *  **C8 `get_run_summary`** (§0.4.1) — the idempotent re-fetch of the retained §1.12 `RunResult` (the
+	 *  end-of-batch summary: per-item outcome + output→source map + residue warnings + the open-folder roots),
+	 *  also delivered once as the terminal `ConversionEvent::RunFinished`. C8 re-serves it from the §0.4.4
+	 *  run-registry retention (the `RunResult` is held process-local until the next run starts or the app exits,
+	 *  P2.43 — distinct from the cancellation token, which is dropped on `RunFinished`); the re-serve covers a
+	 *  fresh listener attaching *after* the run has terminated (e.g. a WebView reload — v1 does not claim macOS
+	 *  reload-mid-stream resilience, §0.4.4). This box (P2.31) authors the typed §0.4.1 wire CONTRACT — the
+	 *  `{ runId } -> Result<RunResult, IpcError>` door (the §0.4 universal error shape) — so the generated
+	 *  `bindings.ts` carries the C8 surface (the whole `RunResult` graph already mirrored via C6's `RunFinished`,
+	 *  P2.29).
+	 *
+	 *  - `run_id` — the §0.4.4 `RunId` (minted at C6) whose retained summary to re-serve.
+	 *
+	 *  [Build-Session-Entscheidung: P2.31] **Shell returns `Err(IpcError{ kind: InternalError })` — the C3/C4/C5/
+	 *  C6 interface-shell pattern (success type has no zero value), NOT the C7 `Ok(())` no-op branch.** `RunResult`
+	 *  carries a real summary (items / totals / roots) and has **no zero value**, so — like `TargetOffer`/
+	 *  `OutputPlanPreview`/`DestinationResolved`/`RunId`, unlike C7's `()` — there is no `Ok(empty)` to return, and
+	 *  fabricating one would invent a summary for a run that never happened (CLAUDE §5). Until the §0.4.4
+	 *  `RunResult` retention registry (P2.43) holds a terminal result, **no** `runId` resolves — so the shell's
+	 *  honest result is exactly the `Err` the real body returns for an unresolvable / not-yet-finished id:
+	 *  `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError`
+	 *  precedent C3/C4/C5 cite). The named fill-boxes own the rest: (a) the §2.8 catalog box owns the FINAL message
+	 *  — the string below is a PROVISIONAL neutral English one — and must add a COMMAND-level string (the §2.8
+	 *  catalog is item-scoped); (b) the §0.4.4 retention resolve + the §1.12 `RunResult` projection (incl. the
+	 *  pre-flight-skip projection + the batch-summary string) + the §0.6 SUCCESS path belong to the body box P3.50;
+	 *  (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
 	 */
-	getRunSummary: () => __TAURI_INVOKE<void>("get_run_summary"),
+	getRunSummary: (runId: RunId) => __TAURI_INVOKE<RunResult>("get_run_summary", { runId }),
 	/**
 	 *  **C9 `open_path`** (§0.4.1) — the "one-click open/reveal" action; the handler validates `path` against the
 	 *  current `RunResult`'s recorded outputs (§7.7.3) before calling `OpenerExt` internally (no `opener:*`

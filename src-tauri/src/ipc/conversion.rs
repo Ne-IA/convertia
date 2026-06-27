@@ -16,7 +16,7 @@ use tauri::ipc::Channel;
 use crate::domain::{
     CollectedSetId, DestinationChoice, OptionValues, RerunDecision, RunId, TargetId,
 };
-use crate::orchestrator::ConversionEvent;
+use crate::orchestrator::{ConversionEvent, RunResult};
 use crate::outcome::{ConversionErrorKind, IpcError};
 
 /// **C6 `start_conversion`** (§0.4.1) — mints the run's `RunId`, builds + enqueues the §1.9 batch from the
@@ -116,13 +116,43 @@ pub async fn cancel_run(run_id: RunId) -> Result<(), IpcError> {
     Ok(())
 }
 
-/// **C8 `get_run_summary`** (§0.4.1) — the idempotent re-fetch of the retained §1.12 `RunResult` (also
-/// delivered as the terminal `RunFinished` event), e.g. after a WebView reload. Registered as the §0.4.1
-/// interface shell (P2.21); the full `{ runId } -> RunResult` contract is authored by P2.31.
-/// [Build-Session-Entscheidung: P2.21]
-#[tauri::command]
+/// **C8 `get_run_summary`** (§0.4.1) — the idempotent re-fetch of the retained §1.12 `RunResult` (the
+/// end-of-batch summary: per-item outcome + output→source map + residue warnings + the open-folder roots),
+/// also delivered once as the terminal `ConversionEvent::RunFinished`. C8 re-serves it from the §0.4.4
+/// run-registry retention (the `RunResult` is held process-local until the next run starts or the app exits,
+/// P2.43 — distinct from the cancellation token, which is dropped on `RunFinished`); the re-serve covers a
+/// fresh listener attaching *after* the run has terminated (e.g. a WebView reload — v1 does not claim macOS
+/// reload-mid-stream resilience, §0.4.4). This box (P2.31) authors the typed §0.4.1 wire CONTRACT — the
+/// `{ runId } -> Result<RunResult, IpcError>` door (the §0.4 universal error shape) — so the generated
+/// `bindings.ts` carries the C8 surface (the whole `RunResult` graph already mirrored via C6's `RunFinished`,
+/// P2.29).
+///
+/// - `run_id` — the §0.4.4 `RunId` (minted at C6) whose retained summary to re-serve.
+///
+/// [Build-Session-Entscheidung: P2.31] **Shell returns `Err(IpcError{ kind: InternalError })` — the C3/C4/C5/
+/// C6 interface-shell pattern (success type has no zero value), NOT the C7 `Ok(())` no-op branch.** `RunResult`
+/// carries a real summary (items / totals / roots) and has **no zero value**, so — like `TargetOffer`/
+/// `OutputPlanPreview`/`DestinationResolved`/`RunId`, unlike C7's `()` — there is no `Ok(empty)` to return, and
+/// fabricating one would invent a summary for a run that never happened (CLAUDE §5). Until the §0.4.4
+/// `RunResult` retention registry (P2.43) holds a terminal result, **no** `runId` resolves — so the shell's
+/// honest result is exactly the `Err` the real body returns for an unresolvable / not-yet-finished id:
+/// `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError`
+/// precedent C3/C4/C5 cite). The named fill-boxes own the rest: (a) the §2.8 catalog box owns the FINAL message
+/// — the string below is a PROVISIONAL neutral English one — and must add a COMMAND-level string (the §2.8
+/// catalog is item-scoped); (b) the §0.4.4 retention resolve + the §1.12 `RunResult` projection (incl. the
+/// pre-flight-skip projection + the batch-summary string) + the §0.6 SUCCESS path belong to the body box P3.50;
+/// (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
+#[tauri::command(rename_all = "camelCase")]
 #[specta::specta]
-pub async fn get_run_summary() {}
+pub async fn get_run_summary(run_id: RunId) -> Result<RunResult, IpcError> {
+    let _ = run_id;
+    Err(IpcError {
+        kind: ConversionErrorKind::InternalError,
+        message: "Could not retrieve the conversion summary.".into(),
+        path: None,
+        residue: None,
+    })
+}
 
 #[cfg(test)]
 mod c6_contract {
@@ -207,6 +237,46 @@ mod c7_contract {
             "§0.4.1/§0.4: the C7 contract shell trips no token yet (the §0.4.4 registry is P2.42), so it \
              returns the genuine idempotent no-op-cancel Ok(()); the typed Result<(), IpcError> signature is \
              the P2.30 deliverable"
+        );
+    }
+}
+
+#[cfg(test)]
+mod c8_contract {
+    //! §6.4.1 unit (G15): the §0.4.1 C8 `get_run_summary` typed CONTRACT (P2.31) — same interface-shell pattern
+    //! as C3/C4/C5/C6: the handler carries its typed `{ runId } -> Result<RunResult, IpcError>` signature, so
+    //! the P2.21 all-shells `block_on(get_run_summary())` invocation in `crate::ipc` (mod.rs) is REPLACED here
+    //! by C8's own typed-contract test. The shell returns the genuine pre-retention `Err(InternalError)`; SHAPE
+    //! is asserted, NOT the provisional message (owned by the §2.8 catalog box). The §0.4.4 retention resolve +
+    //! the §1.12 RunResult projection land at P2.43 / P3.50. [Build-Session-Entscheidung: P2.31]
+    use super::*;
+    use tauri::async_runtime::block_on;
+
+    /// A `RunId` for the contract call — minted through its PUBLIC bare-uuid `Deserialize` wire form (the
+    /// frontend holds the C6-minted id, §0.4.4), mirroring the `c6_contract`/`c7_contract` helpers.
+    fn run_id() -> RunId {
+        serde_json::from_str(r#""99999999-9999-4999-8999-999999999999""#)
+            .expect("RunId deserializes from a uuid string")
+    }
+
+    // §6.4.1 unit (G15): the C8 contract is invocable with its §0.4.1 typed `runId` arg and returns a
+    // `Result<RunResult, IpcError>` (the §0.4 universal error shape). The shell has no §0.4.4 retention registry
+    // yet (P2.43), so it returns the genuine pre-retention `Err(InternalError)` — the same Err the real body
+    // returns for an unresolvable / not-yet-finished id. SHAPE asserted (kind == InternalError), NOT the
+    // provisional message (owned by the §2.8 catalog box); P3.50 replaces the shell with the real resolve →
+    // §1.12 RunResult projection.
+    #[test]
+    fn c8_get_run_summary_contract_is_invocable_and_typed() {
+        let out = block_on(get_run_summary(run_id()));
+        let err = out.expect_err(
+            "§0.4.1/§0.4: the C8 shell has no retention registry yet (P2.43), so it returns the genuine \
+             pre-retention Err(InternalError); the typed Result<RunResult, IpcError> signature is the P2.31 deliverable",
+        );
+        assert_eq!(
+            err.kind,
+            ConversionErrorKind::InternalError,
+            "§2.13: the unresolvable-run shell outcome is the InternalError catch-all — SHAPE asserted, NOT \
+             the provisional message (the §2.8 catalog box owns the final string)"
         );
     }
 }
