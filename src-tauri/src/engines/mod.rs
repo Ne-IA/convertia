@@ -6,20 +6,29 @@
 //! `EngineDescriptor` (§0.6) — ahead of the registry / `trait Engine` / selection BEHAVIOUR, which is
 //! filled by P4.1. The descriptor types are the seam vocabulary the P4.1 registry + the §0.9 pool + the
 //! §7.2 `EngineHealth` contract key on.
+//!
+//! This module is ALSO the §0.7 home of the §7.2.3 C-return DTO cluster — the app-info / engine-health wire
+//! types the C11 `get_app_info` / C12 `get_engine_health` handlers return: `Platform` (P2.132) and `AppInfo`
+//! (P2.112) here, `EngineStatus` / `EngineHealth` at P2.110 / P2.111. They are homed here because they EMBED
+//! the engine-layer leaves (`Platform` / `EngineId`) and so cannot sit in the tier-3 `domain` leaf (a §0.7
+//! tier-3 → tier-2 edge is forbidden), `crate::ipc` is thin and DEFINES no DTOs (every C-return type is
+//! imported there, never declared), and they are not the outcome-referencing lifecycle/result types
+//! `crate::orchestrator` homes (§0.7 ‡). [Build-Session-Entscheidung: P2.112]
 
 // [Build-Session-Entscheidung: P2.13] dead_code expect — the §3.2 seam descriptor types are authored as
 // CONTRACTS before their consumers exist: the registry / `trait Engine` / selection is P4.1, the §0.9 pool
 // reads `EngineDescriptor.serialised_only` then, and `EngineId`'s wire registration rides the §7.2
-// `EngineHealth` (C12) consumer (a later P2 box). The §3.2.2 `Platform` leaf (P2.132) joins them — it is
-// dead in production until its C11 `AppInfo` embedder (P2.112 authors the struct, P2.34 returns it from
-// `get_app_info`) constructs it. So each is dead in the PRODUCTION build until consumed; the cfg(test)
-// tests below construct them, so the TEST build is dead-code-clean. `expect` (not `allow`) auto-flags the
-// moment a consumer lands — matching `crate::domain`/`crate::outcome`/`crate::orchestrator`.
+// `EngineHealth` (C12) consumer (a later P2 box). The §3.2.2 `Platform` leaf (P2.132) and the §7.2.3
+// `AppInfo` DTO (P2.112, defined just below) join them — both dead in production until the C11
+// `get_app_info` contract (P2.34) constructs + returns `AppInfo` (which embeds `Platform`). So each is dead
+// in the PRODUCTION build until consumed; the cfg(test) tests below construct them, so the TEST build is
+// dead-code-clean. `expect` (not `allow`) auto-flags the moment a consumer lands — matching
+// `crate::domain`/`crate::outcome`/`crate::orchestrator`.
 #![cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §3.2.2 Platform leaf (P2.132) are authored as contracts before the P4.1 registry/trait/selection + the §0.9 pool + the §7.2 EngineHealth (C12) wire consumer + the C11 AppInfo embedder (P2.112/P2.34) construct/register them, so they are dead in the production build until consumed."
+        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §3.2.2 Platform leaf (P2.132) + the §7.2.3 AppInfo DTO (P2.112) are authored as contracts before the P4.1 registry/trait/selection + the §0.9 pool + the §7.2 EngineHealth (C12) wire consumer + the C11 get_app_info contract (P2.34) construct/register/return them, so they are dead in the production build until consumed."
     )
 )]
 
@@ -151,6 +160,33 @@ pub enum Platform {
     MacOS,
     /// Linux — the Linux desktop build (§1).
     Linux,
+}
+
+/// **`AppInfo`** — the C11 `get_app_info` return (§7.2.3; §0.4.1 references it, §5.9 About screen displays
+/// it). The in-bundle About payload: app version, CI build id, running platform, and the §3.7
+/// third-party-licenses / NOTICE text. NO network — every field is gathered in-process by the C11 handler
+/// (P2.34): `version` from `app.package_info()` / `CARGO_PKG_VERSION`, `build_id` from the §6 CI build id
+/// (deterministic dev fallback; the producer is P2.98), `platform` from the §3.2.2 `Platform` leaf, and
+/// `third_party_notice` from the bundled §3.7 THIRD-PARTY-LICENSES.txt resource.
+///
+/// [Build-Session-Entscheidung: P2.112] WIRE struct — the §0.6 outbound-wire convention shared by every
+/// §0.6/§7.2 DTO: `#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]` + `#[serde(rename_all =
+/// "camelCase")]` (cf. `PreflightVerdict`/`OutputPlanPreview`/`RunResult` in `crate::orchestrator`). NOT
+/// `Copy` (it owns `String` fields). OUTBOUND-ONLY — C11 takes `{}` and no command takes an `AppInfo` arg,
+/// so NO `Deserialize` (mirroring the outbound-only orchestrator result types). Registered into
+/// `bindings.ts` TRANSITIVELY via the C11 return once P2.34 lands, with NO standalone `collect_types![]` —
+/// the defer-to-consumer pattern its `Platform` field also rides.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInfo {
+    /// The app semver version, e.g. `"1.0.0"` — `app.package_info().version` / `CARGO_PKG_VERSION` (§7.2.3).
+    pub version: String,
+    /// The §6 CI build identifier (deterministic dev fallback; producer P2.98) — wire key `buildId`.
+    pub build_id: String,
+    /// The running/target platform (§3.2.2) — rides as its own camelCase discriminant under wire key `platform`.
+    pub platform: Platform,
+    /// The bundled §3.7 THIRD-PARTY-LICENSES.txt contents for the §5.9 About screen — wire key `thirdPartyNotice`.
+    pub third_party_notice: String,
 }
 
 #[cfg(test)]
@@ -295,5 +331,39 @@ mod tests {
     #[test]
     fn platform_exhaustive_match_is_exercised() {
         platform_exhaustive(&Platform::MacOS);
+    }
+
+    // §6.4.1 unit (G15): the §7.2.3 `AppInfo` WIRE form (P2.112) — the C11 `get_app_info` return. Pins the
+    // camelCase field keys (version / buildId / platform / thirdPartyNotice) + the nested `Platform`
+    // discriminant, the §0.6 "camelCase on the wire" convention every §0.6/§7.2 DTO carries; asserts the
+    // snake_case keys are ABSENT (only camelCase reaches the wire). A SERIALIZE pin (AppInfo is
+    // outbound-only — no round-trip); constructing the full 4-field struct keeps the TEST build
+    // dead-code-clean and locks the field set (a field add/remove breaks this constructor at compile time).
+    #[test]
+    fn app_info_wire_form_is_camelcase() {
+        let info = AppInfo {
+            version: "1.0.0".to_owned(),
+            build_id: "ci-0000000".to_owned(),
+            platform: Platform::MacOS,
+            third_party_notice: "Third-party licenses.".to_owned(),
+        };
+        let json = serde_json::to_value(&info).expect("AppInfo serializes");
+        assert_eq!(json["version"], "1.0.0", "§7.2.3: version rides verbatim");
+        assert_eq!(
+            json["buildId"], "ci-0000000",
+            "§0.6: build_id → camelCase buildId on the wire"
+        );
+        assert_eq!(
+            json["platform"], "macOS",
+            "§3.2.2: the nested Platform rides as its own camelCase discriminant"
+        );
+        assert_eq!(
+            json["thirdPartyNotice"], "Third-party licenses.",
+            "§0.6: third_party_notice → camelCase thirdPartyNotice on the wire"
+        );
+        assert!(
+            json.get("build_id").is_none() && json.get("third_party_notice").is_none(),
+            "§0.6: snake_case keys are NOT on the wire — camelCase only"
+        );
     }
 }
