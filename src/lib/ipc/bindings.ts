@@ -319,12 +319,31 @@ export const commands = {
 	 */
 	openPath: (kind: OpenKind, path: string) => __TAURI_INVOKE<null>("open_path", { kind, path }),
 	/**
-	 *  **C10 `open_project_page`** (§0.4.1) — the only permitted, user-initiated network action: opens a fixed
-	 *  compiled-in canonical URL constant via `OpenerExt::open_url` (the WebView supplies no URL, §7.6.2 / §7.7.2).
-	 *  Registered as the §0.4.1 interface shell (P2.21); the full `{} -> ()` contract is authored by P2.33.
-	 *  [Build-Session-Entscheidung: P2.21]
+	 *  **C10 `open_project_page`** (§0.4.1) — the **only** permitted, user-initiated network action: opens a fixed
+	 *  compiled-in canonical Ne-IA GitHub Releases URL in the default browser via `OpenerExt::open_url` (§7.6.2 /
+	 *  §7.7.1). The WebView supplies **no URL** — the handler opens a compiled-in constant, eliminating any
+	 *  URL-injection surface (§7.7.2); there is **no `opener:*` WebView capability** (§0.10), and no fetch/parse of
+	 *  the page itself (§7.6.1 no phone-home). This box (P2.33) authors the typed §0.4.1 wire CONTRACT — the `{} ->
+	 *  Result<(), IpcError>` door (the §0.4 universal error shape) — so the generated `bindings.ts` mirrors the C10
+	 *  surface.
+	 *
+	 *  [Build-Session-Entscheidung: P2.33] **Shell returns `Err(IpcError{ kind: InternalError })` — the
+	 *  deferred-body branch (C8/C9), NOT C7's `Ok(())` no-op.** C10 is a **side-effect** command (open a URL); its
+	 *  success type `()` has only one meaning — `Ok(())` = "the URL was opened". The real `OpenerExt::open_url`
+	 *  wiring is the body box **P2.104** (it adds the `AppHandle` + the compiled-in §7.6.2 URL constant); this
+	 *  contract shell performs no open, so returning `Ok(())` would **falsely claim the page opened** — the
+	 *  fabricated success CLAUDE §5 forbids. (Unlike C7's idempotent cancel, where tripping nothing genuinely *is*
+	 *  the desired "not running" state, an un-opened URL is *not* a desired state, so the C7 `Ok(())` no-op branch
+	 *  does not apply.) The honest shell outcome is the `Err` the operation yields when it cannot complete:
+	 *  `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError`
+	 *  precedent C3/C4/C5 cite). P2.104 replaces this with the real open — `Ok(())` on a successful shell-out,
+	 *  `Err` on a genuine `OpenerExt` failure (no browser / OS error). The named fill-boxes own the rest: (a) the
+	 *  §2.8 catalog box owns the FINAL message — the string below is a PROVISIONAL neutral English one — and must
+	 *  add a COMMAND-level string (the §2.8 catalog is item-scoped); (b) the compiled-in §7.6.2 URL constant + the
+	 *  §7.7.1 `OpenerExt::open_url` call + the `AppHandle` belong to the body box P2.104; (c) `kind` is the CONCRETE
+	 *  `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
 	 */
-	openProjectPage: () => __TAURI_INVOKE<void>("open_project_page"),
+	openProjectPage: () => __TAURI_INVOKE<null>("open_project_page"),
 	/**
 	 *  **C11 `get_app_info`** (§0.4.1) — version, build id, platform, and the third-party-licenses / NOTICE data
 	 *  for the §5.9 About screen (§7.2.3); no network. Registered as the §0.4.1 interface shell (P2.21); the full

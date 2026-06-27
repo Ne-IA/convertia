@@ -59,13 +59,39 @@ pub async fn open_path(kind: OpenKind, path: PathBuf) -> Result<(), IpcError> {
     })
 }
 
-/// **C10 `open_project_page`** (§0.4.1) — the only permitted, user-initiated network action: opens a fixed
-/// compiled-in canonical URL constant via `OpenerExt::open_url` (the WebView supplies no URL, §7.6.2 / §7.7.2).
-/// Registered as the §0.4.1 interface shell (P2.21); the full `{} -> ()` contract is authored by P2.33.
-/// [Build-Session-Entscheidung: P2.21]
+/// **C10 `open_project_page`** (§0.4.1) — the **only** permitted, user-initiated network action: opens a fixed
+/// compiled-in canonical Ne-IA GitHub Releases URL in the default browser via `OpenerExt::open_url` (§7.6.2 /
+/// §7.7.1). The WebView supplies **no URL** — the handler opens a compiled-in constant, eliminating any
+/// URL-injection surface (§7.7.2); there is **no `opener:*` WebView capability** (§0.10), and no fetch/parse of
+/// the page itself (§7.6.1 no phone-home). This box (P2.33) authors the typed §0.4.1 wire CONTRACT — the `{} ->
+/// Result<(), IpcError>` door (the §0.4 universal error shape) — so the generated `bindings.ts` mirrors the C10
+/// surface.
+///
+/// [Build-Session-Entscheidung: P2.33] **Shell returns `Err(IpcError{ kind: InternalError })` — the
+/// deferred-body branch (C8/C9), NOT C7's `Ok(())` no-op.** C10 is a **side-effect** command (open a URL); its
+/// success type `()` has only one meaning — `Ok(())` = "the URL was opened". The real `OpenerExt::open_url`
+/// wiring is the body box **P2.104** (it adds the `AppHandle` + the compiled-in §7.6.2 URL constant); this
+/// contract shell performs no open, so returning `Ok(())` would **falsely claim the page opened** — the
+/// fabricated success CLAUDE §5 forbids. (Unlike C7's idempotent cancel, where tripping nothing genuinely *is*
+/// the desired "not running" state, an un-opened URL is *not* a desired state, so the C7 `Ok(())` no-op branch
+/// does not apply.) The honest shell outcome is the `Err` the operation yields when it cannot complete:
+/// `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError`
+/// precedent C3/C4/C5 cite). P2.104 replaces this with the real open — `Ok(())` on a successful shell-out,
+/// `Err` on a genuine `OpenerExt` failure (no browser / OS error). The named fill-boxes own the rest: (a) the
+/// §2.8 catalog box owns the FINAL message — the string below is a PROVISIONAL neutral English one — and must
+/// add a COMMAND-level string (the §2.8 catalog is item-scoped); (b) the compiled-in §7.6.2 URL constant + the
+/// §7.7.1 `OpenerExt::open_url` call + the `AppHandle` belong to the body box P2.104; (c) `kind` is the CONCRETE
+/// `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
 #[tauri::command]
 #[specta::specta]
-pub async fn open_project_page() {}
+pub async fn open_project_page() -> Result<(), IpcError> {
+    Err(IpcError {
+        kind: ConversionErrorKind::InternalError,
+        message: "Could not open the project page.".into(),
+        path: None,
+        residue: None,
+    })
+}
 
 /// **C11 `get_app_info`** (§0.4.1) — version, build id, platform, and the third-party-licenses / NOTICE data
 /// for the §5.9 About screen (§7.2.3); no network. Registered as the §0.4.1 interface shell (P2.21); the full
@@ -116,6 +142,40 @@ mod c9_contract {
             ConversionErrorKind::InternalError,
             "§2.13: the non-member-path shell outcome is the InternalError catch-all — SHAPE asserted, NOT \
              the provisional message (the §2.8 catalog box owns the final string)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod c10_contract {
+    //! §6.4.1 unit (G15): the §0.4.1 C10 `open_project_page` typed CONTRACT (P2.33). The handler now returns
+    //! its typed `{} -> Result<(), IpcError>` (the §0.4 universal error shape), so the P2.21 all-shells
+    //! `block_on(open_project_page())` invocation in `crate::ipc` (mod.rs) MOVES here (the no-arg call still
+    //! compiles, but the bare invocation no longer asserts the typed contract — mirroring the C2b move). The
+    //! shell returns the genuine deferred-body `Err(InternalError)` (the real `OpenerExt::open_url` body is
+    //! P2.104); SHAPE is asserted, NOT the provisional message (owned by the §2.8 catalog box).
+    //! [Build-Session-Entscheidung: P2.33]
+    use super::*;
+    use tauri::async_runtime::block_on;
+
+    // §6.4.1 unit (G15): the C10 contract is invocable and returns `Result<(), IpcError>` (the §0.4 universal
+    // error shape). The shell opens no URL yet (the `OpenerExt::open_url` body is P2.104), so it returns the
+    // genuine deferred-body `Err(InternalError)` — returning `Ok(())` would falsely claim the page opened
+    // (§7.6.2/§7.7.2). SHAPE asserted (kind == InternalError), NOT the provisional message (owned by the §2.8
+    // catalog box); P2.104 replaces the shell with the real compiled-in-URL open.
+    #[test]
+    fn c10_open_project_page_contract_is_invocable_and_typed() {
+        let out: Result<(), IpcError> = block_on(open_project_page());
+        let err = out.expect_err(
+            "§0.4.1/§0.4: the C10 contract shell opens no URL yet (the OpenerExt::open_url body is P2.104), so \
+             it returns the genuine deferred-body Err(InternalError); the typed Result<(), IpcError> signature \
+             is the P2.33 deliverable",
+        );
+        assert_eq!(
+            err.kind,
+            ConversionErrorKind::InternalError,
+            "§2.13: the deferred-body shell outcome is the InternalError catch-all — SHAPE asserted, NOT the \
+             provisional message (the §2.8 catalog box owns the final string)"
         );
     }
 }
