@@ -497,6 +497,47 @@ mod bindings_codegen {
             );
         }
     }
+
+    // §6.4.1 unit (G15): the §0.4.1 closed-set IPC-surface drift gate's GOLDEN (P2.36). `plan-lint` check 12
+    // (the L2 `doc12_ipc_surface_drift`) diffs the registered `#[tauri::command]` fn set in `src-tauri/src`
+    // against the committed `src-tauri/ipc-commands.golden`, flagging any SPURIOUS WebView-reachable command
+    // (a registered fn absent from the golden — the `names - want` direction). This test pins the OTHER
+    // direction at the core level: the golden lists EXACTLY the §0.4.1 C1–C13 command set (the same 14 fn names
+    // the surface test above pins in the bindings + `collect_commands!` registers), so a golden that silently
+    // drifts (a missing entry — which would drop a real command from check 12's `want` set — or an extra /
+    // typo'd entry) reddens L1/L2 here. Together with check 12 (registered ⊆ golden) + the surface test
+    // (bindings ⊇ C1–C13), the IPC surface is asserted complete + drift-free (no extra, no missing).
+    // [Build-Session-Entscheidung: P2.36]
+    #[test]
+    fn golden_lists_exactly_the_c1_c13_command_surface() {
+        let golden = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ipc-commands.golden"))
+            .expect("src-tauri/ipc-commands.golden must exist — the P2.36 closed-set IPC-surface drift golden");
+        let listed: std::collections::BTreeSet<&str> = golden.split_whitespace().collect();
+        let expected: std::collections::BTreeSet<&str> = [
+            "ingest_paths",      // C1
+            "pick_for_intake",   // C2a
+            "pick_destination",  // C2b
+            "get_targets",       // C3
+            "plan_output",       // C4
+            "set_destination",   // C5
+            "start_conversion",  // C6
+            "cancel_run",        // C7
+            "get_run_summary",   // C8
+            "open_path",         // C9
+            "open_project_page", // C10
+            "get_app_info",      // C11
+            "get_engine_health", // C12
+            "cancel_ingest",     // C13
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            listed, expected,
+            "§0.4.1: the committed ipc-commands.golden must list EXACTLY the 14 C1–C13 command fn names — \
+             plan-lint check 12 diffs the registered #[tauri::command] set against it, so a drifted golden \
+             would silently weaken the closed-set IPC-surface gate (P2.36)"
+        );
+    }
 }
 
 #[cfg(test)]
