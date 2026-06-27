@@ -157,7 +157,7 @@
   needs: P2.29, P2.12
 - [x] **P2.32** [RUST] Author the C9 `open_path` contract — Rust-side `OpenerExt` reveal/open with the §7.7.3 `RunResult` membership gate · §0.4.1 §7.7.1 §7.7.3
   needs: P2.21, P1.14, P2.7
-- [ ] **P2.33** [RUST] Author the C10 `open_project_page` contract — Rust handler opens a compiled-in canonical URL constant (no WebView URL arg) · §0.4.1 §7.6.2 §7.7.2
+- [x] **P2.33** [RUST] Author the C10 `open_project_page` contract — Rust handler opens a compiled-in canonical URL constant (no WebView URL arg) · §0.4.1 §7.6.2 §7.7.2
   needs: P2.21, P1.14
 - [ ] **P2.34** [RUST] Author the C11 `get_app_info` contract — `AppInfo` (version, build id, platform, third-party-notice) · §0.4.1 §7.2.3
   needs: P2.21, P2.112
