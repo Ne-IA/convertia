@@ -169,12 +169,12 @@
 
 ## IPC event / Channel surface (the three `app://` events + telemetry Channels)
 
-- [ ] **P2.37** [RUST] Author the `ConversionEvent` Channel enum + its payload structs (`RunStarted`/`ItemStarted`/`ItemProgress`/`ItemFinished`/`BatchProgress`/`RunFinished`) · §0.4.2 §1.11
+- [x] **P2.37** [RUST] Author the `ConversionEvent` Channel enum + its payload structs (`RunStarted`/`ItemStarted`/`ItemProgress`/`ItemFinished`/`BatchProgress`/`RunFinished`) · §0.4.2 §1.11
   needs: P2.12, P2.10, P1.25
-  - [ ] **P2.37.1** [RUST] Encode the `RunStarted.totalItems` = queued-eligible-only denominator rule · §0.4.2 §1.3
-  - [ ] **P2.37.2** [RUST] Encode the conservative `willReencode` worst-case `bool` (always definite, never omitted) · §0.4.2 §2.9.2
-  - [ ] **P2.37.3** [RUST] Encode the `BatchProgress.total` == `RunStarted.totalItems` (queued-only) invariant · §0.4.2 §1.11
-  - [ ] **P2.37.4** [RUST] Encode the pre-flight-skip emission policy (no live `ItemFinished{Skipped}`; terminal projection only) · §0.4.2 §1.9 §1.12
+  - [x] **P2.37.1** [RUST] Encode the `RunStarted.totalItems` = queued-eligible-only denominator rule · §0.4.2 §1.3
+  - [x] **P2.37.2** [RUST] Encode the conservative `willReencode` worst-case `bool` (always definite, never omitted) · §0.4.2 §2.9.2
+  - [x] **P2.37.3** [RUST] Encode the `BatchProgress.total` == `RunStarted.totalItems` (queued-only) invariant · §0.4.2 §1.11
+  - [x] **P2.37.4** [RUST] Encode the pre-flight-skip emission policy (no live `ItemFinished{Skipped}`; terminal projection only) · §0.4.2 §1.9 §1.12
 - [ ] **P2.38** [RUST] Author the `ScanProgress { scanned }` intake-telemetry Channel payload (throttled, dies with C1) · §0.4.2 §1.1
   needs: P2.22
 - [ ] **P2.39** [RUST] Author the three `app://` events — `app://fault` (`AppFault`), `app://intake` (`IntakePayload`), `app://close-requested` (`()`) · §0.4.2 §2.13 §7.8.1 §7.3.2
