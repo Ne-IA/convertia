@@ -5,8 +5,10 @@
 //! The conducting BEHAVIOUR (queue construction at C6, the §1.9 transitions, the run registry +
 //! cancellation) is filled by P3.46. This module homes the §0.6 outcome-referencing lifecycle/result types
 //! it assembles — `Batch`/`ConversionJob`/`JobState` (P2.10), the C4/C5 command-return DTOs
-//! `PreflightVerdict`/`OutputPlanPreview`/`DestinationResolved` (P2.11), and the §1.12 result types
-//! `RunResult`/`ItemResult`/`Totals`/`CleanupResidue`/`ItemOutcome` (P2.12) — at tier 1, ABOVE the tier-3
+//! `PreflightVerdict`/`OutputPlanPreview`/`DestinationResolved` (P2.11), the §1.12 result types
+//! `RunResult`/`ItemResult`/`Totals`/`CleanupResidue`/`ItemOutcome` (P2.12), and the §0.4.2 `ConversionEvent`
+//! run-telemetry enum + its payloads `RunStarted`/`ItemStarted`/`ItemProgress`/`ItemFinished`/`BatchProgress`
+//! (P2.37) — at tier 1, ABOVE the tier-3
 //! `crate::domain` leaf, because each references `crate::outcome` (the §2.8 kind / `OutcomeMsg` / `IpcError`)
 //! directly or transitively. Homing them here keeps the §0.6 `domain` ↔ `outcome` type cycle broken and
 //! `crate::domain` a pure leaf (the §0.7 ‡ note, the owner-decided P2.10 tier-finalisation). The sibling
@@ -24,7 +26,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12) are authored as contracts before the P3.46 orchestrator behaviour + the C4/C5/C8/RunFinished/ItemFinished wire consumers construct/register them, so they are dead in the production build until consumed."
+        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37) are authored as contracts before the P3.46 orchestrator behaviour + the C4/C5/C8 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register them, so they are dead in the production build until consumed."
     )
 )]
 
@@ -34,8 +36,8 @@ use serde::Serialize;
 use specta::Type;
 
 use crate::domain::{
-    CollectedSetId, DestinationChoice, DivertReason, DroppedItem, ItemId, OptionValues, OutputPlan,
-    RerunPrompt, RunId, SkipReason, Target, UserFacingFormat,
+    CollectedSetId, DestinationChoice, DivertReason, DroppedItem, ItemId, JobStage, OptionValues,
+    OutputPlan, RerunPrompt, RunId, SkipReason, Target, TargetId, UserFacingFormat,
 };
 use crate::outcome::{ConversionErrorKind, IpcError, OutcomeMsg};
 
@@ -404,6 +406,134 @@ pub enum ItemOutcome {
     Cancelled,
 }
 
+// ─── §0.4.2 ConversionEvent — the C6 run-telemetry Channel<ConversionEvent> payload (P2.37) ──────────
+// [Build-Session-Entscheidung: P2.37] Homed in crate::orchestrator (ConversionEvent references RunResult +
+// ItemOutcome → outcome-referencing, §0.7 ‡), co-homed with the §1.12 result types it carries. OUTBOUND-ONLY
+// wire types — `Serialize` + `specta::Type`, NO `Deserialize` (a Channel payload is only ever sent
+// Rust→WebView) — the SAME derive set as the sibling Channel payload `ScanProgress` (§0.6). camelCase wire.
+//
+// REGISTRATION — deferred-to-consumer, NOT here. ConversionEvent is a CHANNEL payload, NOT a collect_events!
+// app.emit event: the §0.4.2 app:// events (app://fault/intake/close-requested) are P2.39's collect_events!
+// surface, distinct from the C6 onProgress Channel stream. It is NOT added to main.rs's register_ipc_*_types
+// chain (that chain is the §2.8.2-mandated universal types IpcError/OutcomeMsg/LossyKind — a Channel payload
+// belongs nowhere in it; ScanProgress is absent from it too). ConversionEvent + its 5 payloads + the whole
+// RunResult graph it carries via RunFinished JOIN bindings.ts at C6 (P2.29), when start_conversion registers
+// its `onProgress: Channel<ConversionEvent>` arg — exactly the ScanProgress-via-C1 deferred-to-consumer
+// pattern (bindings.ts P2.6/P2.15, which guards against consumer-less early registration). So P2.37 authors
+// the TYPES; P2.29 pulls them onto the wire. They are dead in the production build (the module-level
+// dead-code lint covers them) + exercised by the wire-form tests below.
+
+/// The §0.4.2 run-telemetry event — the adjacently-tagged (`{ type, data }`) enum streamed over the C6
+/// `start_conversion` `onProgress: Channel<ConversionEvent>` (§0.4.2 / §1.11): ordered, throughput-friendly,
+/// run-scoped (dies with the run — no cross-run leak). `RunFinished` carries the §1.12 `RunResult` (mirrors C8).
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase", tag = "type", content = "data")]
+pub enum ConversionEvent {
+    /// Batch accepted; the queue is built (§1.9).
+    RunStarted(RunStarted),
+    /// An item left `Pending` for `Running` (§1.9).
+    ItemStarted(ItemStarted),
+    /// Real per-item progress (§1.11 — never an indeterminate spinner).
+    ItemProgress(ItemProgress),
+    /// Terminal per item (§1.9).
+    ItemFinished(ItemFinished),
+    /// Aggregate queue progress for the batch bar (§1.11).
+    BatchProgress(BatchProgress),
+    /// Terminal for the run — the full §1.12 `RunResult` (mirrors C8).
+    RunFinished(RunResult),
+}
+
+/// `RunStarted` (§0.4.2) — the batch was accepted and the §1.9 queue built.
+///
+/// [Build-Session-Entscheidung: P2.37.1] **`total_items` = QUEUED (eligible) items only.** It equals the §1.3
+/// `CollectedSet::Single.count` (i.e. `items.len()` — NOT the internal `Grouping::Single.members`, never on the
+/// §0.6 wire), EXCLUDING pre-flight-skipped items (§1.1/§1.3, which never enter the §1.9 queue). It is the
+/// `BatchProgress.total` denominator (P2.37.3), so a skipped item never holds the bar below 100% — skips are
+/// reconciled only at the §1.12 Summary. The "= count" equality is a §1.9 RUNTIME emission rule the P3.46
+/// conductor enforces when it builds the queue; P2.37.1 fixes the FIELD + its documented denominator contract.
+///
+/// [Build-Session-Entscheidung: P2.37.2] **`will_reencode` is a non-optional `bool`, always definite.** A
+/// conservative source-container→target worst-case flag (§2.9.2 — re-encode *possible* ⇒ `true`), decided from
+/// the (source-container, target) pair BEFORE any `ffprobe` (inner codecs unknown at emit). The §2.9.2 emission
+/// rule is that the core ALWAYS emits a definite value — `false` for non-video / non-applicable batches, never
+/// omitted — so the Rust field is a plain `bool` (NOT `Option<bool>`) and the generated wire type is a
+/// non-optional `willReencode: boolean` with no third `undefined` state. The real per-item disposition is
+/// resolved at convert-time (§3.5); the §1.12 summary reflects the actual outcome.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RunStarted {
+    /// The run this telemetry belongs to (§0.4.4).
+    pub run_id: RunId,
+    /// QUEUED (eligible) items only — the P2.37.1 denominator (see the struct doc).
+    pub total_items: u32,
+    /// The conservative worst-case re-encode flag — always a definite `bool` (P2.37.2).
+    pub will_reencode: bool,
+}
+
+/// `ItemStarted` (§0.4.2) — an item left `Pending` for `Running` (§1.9).
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemStarted {
+    pub run_id: RunId,
+    pub item_id: ItemId,
+    /// The frozen resolved source path being converted (§2.4).
+    pub source_path: PathBuf,
+    /// The whole-batch target (§0.6 invariant 1) this item converts to.
+    pub target: TargetId,
+}
+
+/// `ItemProgress` (§0.4.2) — real per-item progress (§1.11; SSOT *not an indeterminate spinner*).
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemProgress {
+    pub run_id: RunId,
+    pub item_id: ItemId,
+    /// `0.0..=1.0`; `None` ONLY where truly indeterminate (LibreOffice, §1.11 — the frontend synthesises a
+    /// staged determinate-looking bar from `stage` there).
+    pub fraction: Option<f32>,
+    /// The §0.6/§1.11 coarse stage (`Spawning | Decoding | Encoding | Writing`).
+    pub stage: JobStage,
+}
+
+/// `ItemFinished` (§0.4.2) — terminal per item (§1.9). Carries the §0.6 `ItemOutcome` projection.
+///
+/// [Build-Session-Entscheidung: P2.37.4] **Pre-flight-skip emission policy — no LIVE `ItemFinished{Skipped}`.**
+/// Pre-flight-skipped items (§1.1/§1.3 — detection-ineligible; they never enter the §1.9 queue) are NOT emitted
+/// as a live `ItemFinished` carrying `ItemOutcome::Skipped`; they appear ONLY in the terminal
+/// `RunFinished → RunResult.items` projection (§1.12). `ItemOutcome::Skipped` is RESERVED for that terminal
+/// path (it is not dead wire code — it carries the projected pre-flight skips + any mid-run cooperative skip),
+/// so the conductor emits no live `ItemStarted`/`ItemFinished{Skipped}` for a freeze-time skip. The
+/// `ItemFinished.outcome` field structurally CAN carry `Skipped` (the SAME shared `ItemOutcome` type as the
+/// terminal `RunResult.items`), so the policy is a §1.9/§1.12 RUNTIME emission rule the P3.46 conductor honors,
+/// NOT a type-level prohibition; P2.37.4 fixes the documented policy + the structural enabler.
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemFinished {
+    pub run_id: RunId,
+    pub item_id: ItemId,
+    /// The terminal §0.6 outcome (`Succeeded | Failed | Skipped | Cancelled`).
+    pub outcome: ItemOutcome,
+}
+
+/// `BatchProgress` (§0.4.2) — aggregate queue progress for the batch bar (§1.11).
+///
+/// [Build-Session-Entscheidung: P2.37.3] **`total` == `RunStarted.total_items` (queued-only) invariant.**
+/// `total` counts ONLY items that entered the §1.9 queue — the SAME queued-eligible denominator as
+/// `RunStarted.total_items` (P2.37.1), EXCLUDING pre-flight-skipped items. If `total` counted dropped-but-
+/// skipped items the bar could never reach 100%; skips are reconciled only at the §1.12 Summary. The equality
+/// `BatchProgress.total == RunStarted.total_items` is a §1.11 RUNTIME emission invariant the P3.46 conductor
+/// holds (both read the same `CollectedSet::Single.count`); P2.37.3 fixes the shared-`u32`-denominator field +
+/// its documented invariant. `done` is the completed-item numerator (also queued-only).
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchProgress {
+    pub run_id: RunId,
+    /// Completed queued items (the numerator) — pre-flight skips excluded.
+    pub done: u32,
+    /// QUEUED (eligible) items only — equals `RunStarted.total_items` (P2.37.3).
+    pub total: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -697,6 +827,147 @@ mod tests {
         assert_eq!(
             preview.preflight, resolved.preflight,
             "§1.8/§1.10: both the C4 and C5 returns carry a PreflightVerdict (C5 re-evaluates it, §2.14.4)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §0.4.2 `ConversionEvent::RunStarted` wire form (P2.37) — the adjacently-tagged
+    // ({ type, data }) camelCase Channel payload. Also pins P2.37.2: `will_reencode` is a non-optional `bool`
+    // serialised in BOTH the false and true case (never omitted, never `undefined` — the §2.9.2 always-definite
+    // emission rule). A SERIALIZE pin (the event types are outbound-only, like ScanProgress — no round-trip).
+    #[test]
+    fn conversion_event_run_started_wire_form_and_definite_willreencode() {
+        let started = ConversionEvent::RunStarted(RunStarted {
+            run_id: run_id(),
+            total_items: 3,
+            will_reencode: false,
+        });
+        assert_eq!(
+            serde_json::to_string(&started).expect("ConversionEvent::RunStarted serializes"),
+            r#"{"type":"runStarted","data":{"runId":"11111111-1111-4111-8111-111111111111","totalItems":3,"willReencode":false}}"#,
+            "§0.4.2: ConversionEvent is adjacently tagged camelCase; RunStarted carries runId/totalItems/willReencode"
+        );
+        let reencode = ConversionEvent::RunStarted(RunStarted {
+            run_id: run_id(),
+            total_items: 1,
+            will_reencode: true,
+        });
+        assert!(
+            serde_json::to_string(&reencode)
+                .expect("serializes")
+                .contains(r#""willReencode":true"#),
+            "§2.9.2 / P2.37.2: willReencode is a definite non-optional bool — present in BOTH the false and true case"
+        );
+    }
+
+    // §6.4.1 unit (G15): the remaining §0.4.2 payloads in the adjacently-tagged `ConversionEvent` (P2.37),
+    // plus the P2.37.1/P2.37.3 queued-only-denominator + P2.37.4 skip-carriability structural enablers. Asserts
+    // via `serde_json::Value` (the nested TargetId/JobStage/ItemOutcome wire forms have their OWN pins — this
+    // pins the §0.4.2 envelope shape + field names, not those nested forms).
+    #[test]
+    fn conversion_event_item_and_batch_wire_forms() {
+        use crate::domain::{FormatId, JobStage};
+
+        // ItemStarted — runId / itemId / sourcePath / target, adjacently tagged camelCase.
+        let item_started = ConversionEvent::ItemStarted(ItemStarted {
+            run_id: run_id(),
+            item_id: item_id(1),
+            source_path: PathBuf::from("/in/a.csv"),
+            target: TargetId::Format(FormatId::Tsv),
+        });
+        let v = serde_json::to_value(&item_started).expect("ItemStarted serializes");
+        assert_eq!(v["type"], "itemStarted", "§0.4.2: adjacent tag");
+        assert_eq!(
+            v["data"]["sourcePath"], "/in/a.csv",
+            "§0.4.2: camelCase sourcePath"
+        );
+        assert_eq!(v["data"]["itemId"], 1, "§0.4.2: camelCase itemId");
+
+        // ItemProgress — `fraction: None` (the §1.11 truly-indeterminate LibreOffice case) + a JobStage.
+        let item_progress = ConversionEvent::ItemProgress(ItemProgress {
+            run_id: run_id(),
+            item_id: item_id(1),
+            fraction: None,
+            stage: JobStage::Encoding,
+        });
+        let v = serde_json::to_value(&item_progress).expect("ItemProgress serializes");
+        assert_eq!(v["type"], "itemProgress");
+        assert!(
+            v["data"]["fraction"].is_null(),
+            "§1.11: fraction is None where truly indeterminate"
+        );
+
+        // P2.37.4 structural enabler: ItemFinished CAN carry `ItemOutcome::Skipped` (the SAME shared type as the
+        // terminal `RunResult.items`). The POLICY — no LIVE ItemFinished{Skipped} for a pre-flight skip — is the
+        // P3.46 runtime emission rule documented on ItemFinished; this asserts only the structural carriability.
+        let item_finished = ConversionEvent::ItemFinished(ItemFinished {
+            run_id: run_id(),
+            item_id: item_id(2),
+            outcome: ItemOutcome::Skipped {
+                reason: SkipReason::Empty,
+            },
+        });
+        let v = serde_json::to_value(&item_finished).expect("ItemFinished serializes");
+        assert_eq!(v["type"], "itemFinished");
+        assert!(
+            !v["data"]["outcome"].is_null(),
+            "P2.37.4: ItemFinished structurally carries an ItemOutcome (here Skipped — the shared terminal type; \
+             the no-live-emit policy is the P3.46 runtime rule)"
+        );
+
+        // P2.37.1 + P2.37.3: BatchProgress.total and RunStarted.total_items are the SAME queued-only u32
+        // denominator. The RUNTIME equality is a P3.46 invariant; here both carry the same N on the wire.
+        let n: u32 = 5;
+        let started = RunStarted {
+            run_id: run_id(),
+            total_items: n,
+            will_reencode: false,
+        };
+        let batch = ConversionEvent::BatchProgress(BatchProgress {
+            run_id: run_id(),
+            done: 2,
+            total: n,
+        });
+        let bv = serde_json::to_value(&batch).expect("BatchProgress serializes");
+        assert_eq!(bv["type"], "batchProgress");
+        assert_eq!(
+            bv["data"]["total"].as_u64(),
+            Some(u64::from(started.total_items)),
+            "P2.37.1 / P2.37.3: BatchProgress.total uses the SAME queued-only denominator as RunStarted.total_items"
+        );
+        assert_eq!(
+            bv["data"]["done"], 2,
+            "§1.11: done is the completed-item numerator (queued-only)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §0.4.2 `ConversionEvent::RunFinished` variant (P2.37) wraps the §1.12 `RunResult`
+    // (it mirrors C8) — the terminal run event. A minimal RunResult here; the full RunResult wire form has its
+    // own pin (`run_result_wire_form_is_camelcase`). Also exercises the RunFinished variant in the test build.
+    #[test]
+    fn conversion_event_run_finished_wraps_run_result() {
+        let run = RunResult {
+            collected_set_id: collected_set_id(),
+            run_id: run_id(),
+            items: Vec::new(),
+            totals: Totals {
+                succeeded: 0,
+                failed: 0,
+                cancelled: 0,
+                skipped: 0,
+            },
+            cleanup_incomplete: Vec::new(),
+            common_root: PathBuf::from("/src"),
+            divert_root: None,
+        };
+        let finished = ConversionEvent::RunFinished(run);
+        let v = serde_json::to_value(&finished).expect("ConversionEvent::RunFinished serializes");
+        assert_eq!(
+            v["type"], "runFinished",
+            "§0.4.2: RunFinished is the terminal run event (mirrors C8)"
+        );
+        assert_eq!(
+            v["data"]["collectedSetId"], "00000000-0000-4000-8000-000000000000",
+            "§0.4.2/§1.12: RunFinished carries the full RunResult"
         );
     }
 

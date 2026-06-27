@@ -3,7 +3,8 @@
 //! P1.13 stands up the Tauri v2 `Builder` entrypoint on Tauri's managed multi-threaded tokio async
 //! runtime (§0.4.0/§0.8/§0.9): the §0.4.5 tauri-specta codegen seam — `collect_commands!` carries the
 //! C1..C13 §0.4.1 command surface from P2.21 (interface shells; `collect_events!` stays empty until the
-//! E-series events of P2.37), plus the P1.25 standalone `.types(...)` registration of the §0.6 identity
+//! §0.4.2 app:// events at P2.39 — the P2.37 `ConversionEvent` Channel payload joins via C6/P2.29, not here),
+//! plus the P1.25 standalone `.types(...)` registration of the §0.6 identity
 //! newtypes so they never generate as `any` — the `invoke_handler`, and the `mount_events` setup hook. The §0.7
 //! logical-module roots (`domain`/`outcome`/`ipc`/…) were scaffolded in P1.9–P1.11; the §7.2.1 ordered
 //! startup spine is P2; the window MODEL is locked in P1.16 (the config-declared single `main` window;
@@ -109,7 +110,11 @@ fn register_ipc_taxonomy_types(types: specta::Types) -> specta::Types {
 /// `cargo run -p xtask -- codegen`, §0.4.5) AND the runtime invoke/event registry (`main`). Sharing one
 /// constructor is what guarantees the generated TS surface can never drift from the registered Rust
 /// surface. The C1..C13 §0.4.1 command set is registered from P2.21 (interface shells, each filled by its
-/// per-command fill-box); the E-series event set stays EMPTY until P2.37.
+/// per-command fill-box). [Reconcile: P2.37 corrects this P1.25/P1.26 anticipation] `collect_events![]` (below)
+/// stays EMPTY until the §0.4.2 app:// emit events (`app://fault`/`intake`/`close-requested`) are authored at
+/// P2.39; the run-telemetry `ConversionEvent` (authored P2.37) is a CHANNEL payload, NOT a `collect_events!`
+/// event, so it joins `bindings.ts` via C6's `onProgress: Channel<ConversionEvent>` arg (P2.29) — the
+/// deferred-to-consumer pattern (like `ScanProgress` via C1), NOT registered here.
 ///
 /// §0.6 standalone-type registration: the §0.6 identity newtypes are still referenced by no command
 /// signature (the P2.21 shells are argument-/return-free), so without an explicit registration tauri-specta
@@ -123,7 +128,9 @@ fn ipc_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         // §0.4.1 command surface (P2.21): the C1–C13 handlers, one-file-per-command-group (§0.7),
         // registered as interface shells — each command's full request/response contract + orchestrator
         // delegation is authored by its named fill-box (see `crate::ipc`); the closed-set completeness +
-        // drift gate over this list is P2.36 (G23). The E-series events stay empty until P2.37.
+        // drift gate over this list is P2.36 (G23). `collect_events![]` (below) stays empty until the §0.4.2
+        // app:// emit events land at P2.39; the C6 run-telemetry `ConversionEvent` (P2.37) is a Channel payload
+        // joining via C6's `onProgress` arg (P2.29), NOT a collect_events! event (P2.37 corrects the P1.25 note).
         .commands(tauri_specta::collect_commands![
             // intake (§0.4.1 C1 / C2a / C13)
             crate::ipc::intake::ingest_paths,
@@ -153,7 +160,9 @@ fn ipc_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
 fn main() -> tauri::Result<()> {
     // §0.4.5 IPC seam: the shared `ipc_specta_builder()` is BOTH the runtime invoke/event registry and
     // the single source the generated `bindings.ts` is produced from (no drift between them). The C1..C13
-    // §0.4.1 command surface is registered from P2.21 (interface shells); the E-series events join at P2.37.
+    // §0.4.1 command surface is registered from P2.21 (interface shells); the run-telemetry `ConversionEvent`
+    // (P2.37) joins `bindings.ts` via C6's Channel arg (P2.29), the app:// `collect_events!` events at P2.39
+    // (P2.37 corrects the earlier "events join at P2.37" P1.25 note).
     let builder = ipc_specta_builder();
 
     // [Build-Session-Entscheidung: P1.13] Async runtime: ConvertIA runs on Tauri v2's own managed
