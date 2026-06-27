@@ -187,14 +187,49 @@ export const commands = {
 	 */
 	setDestination: (collectedSetId: CollectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice) => __TAURI_INVOKE<DestinationResolved>("set_destination", { collectedSetId, target, options, destination }),
 	/**
-	 *  **C6 `start_conversion`** (§0.4.1) — mints the `RunId`, enqueues the batch (§1.9), and streams
-	 *  `ConversionEvent`s over the handed `onProgress` Channel; returns immediately (the run proceeds async).
-	 *  The `destination` argument is authoritative (§0.4.1). Registered as the §0.4.1 interface shell (P2.21);
-	 *  the full
-	 *  `{ collectedSetId, target, options, destination, rerunDecision, onProgress } -> RunId` contract is
-	 *  authored by P2.29. [Build-Session-Entscheidung: P2.21]
+	 *  **C6 `start_conversion`** (§0.4.1) — mints the run's `RunId`, builds + enqueues the §1.9 batch from the
+	 *  frozen collected set, spawns the §0.9 workers, and streams `ConversionEvent`s over the handed `onProgress`
+	 *  Channel (the §0.4.2 E-series — `RunStarted` → per-item `ItemStarted`/`ItemProgress`/`ItemFinished` +
+	 *  `BatchProgress` → terminal `RunFinished`); it returns immediately with the `RunId` (the run proceeds async,
+	 *  the Channel carries all telemetry, §1.11). This box (P2.29) authors the typed §0.4.1 wire CONTRACT — the
+	 *  `{ collectedSetId, target, options, destination, rerunDecision, onProgress } -> Result<RunId, IpcError>`
+	 *  door (the §0.4 universal error shape) — so the generated `bindings.ts` mirrors the C6 surface and, **for
+	 *  the first time, pulls the whole `ConversionEvent` graph onto the wire** (the P2.37 enum + its `RunStarted`/
+	 *  `ItemStarted`/`ItemProgress`/`ItemFinished`/`BatchProgress` payloads + the `RunFinished` `RunResult` graph)
+	 *  via the `onProgress` arg — the §0.6 defer-registration-to-the-consumer pattern (the `crate::orchestrator`
+	 *  §0.4.2 note), exactly the `ScanProgress`-via-C1 precedent.
+	 *
+	 *  - `collected_set_id` — the frozen §0.4.4 collected-set handle (§2.4) the run is built from; resolved
+	 *    against the §0.4.4 registry (P2.44) to the `CollectedSet::Single` whose items become the queue.
+	 *  - `target` — the one whole-batch `TargetId` (§0.6 invariant 1 — one Target per Batch, never per item).
+	 *  - `options` — the effective whole-batch `OptionValues` (§0.6 invariant 2 / §2.5).
+	 *  - `destination` — **AUTHORITATIVE** (§0.4.1 C6 `[DECIDED]`): C4/C5 are plan/preview + revalidation only,
+	 *    there is no separate server-side destination store — the value the UI passes here (the last C5-resolved
+	 *    destination) is what the run writes to.
+	 *  - `rerun_decision` — the §0.6 `RerunDecision` (the user's answer to a C4 `RerunPrompt`, §2.5): `Skip` (the
+	 *    safe default — no new output for equivalent items) or `FreshCopy` (fresh numbered copies).
+	 *  - `on_progress` — the run-telemetry `Channel<ConversionEvent>` (§0.4.2): ordered, run-scoped (dies with
+	 *    the run — no cross-run leak, §1.11). Like C1's `onScan` it is **non-optional** (tauri's `Channel<T>` is
+	 *    `!Deserialize`, so `Option<Channel<T>>` cannot be a command arg — the same forced shape the C1
+	 *    `ingest_paths` handler documents; the §0.4.1 C6 row already specifies it non-optional).
+	 *
+	 *  [Build-Session-Entscheidung: P2.29] **Shell returns `Err(IpcError{ kind: InternalError })` — the same
+	 *  owner-approved interface-shell pattern as C3/C4/C5 (P2.25/P2.26/P2.27).** `RunId` is a non-nil v4-UUID
+	 *  newtype with no zero value (and no public constructor), so unlike C1/C2a (`CollectedSet::Empty`) / C2b
+	 *  (`Ok(None)`) there is no `Ok(empty)` to return — and fabricating an `Ok(RunId)` would be a LIE (it would
+	 *  claim a run started when nothing was enqueued and no `ConversionEvent` will ever fire on the Channel),
+	 *  exactly the fabricated handling the interface-shell pattern forbids (CLAUDE §5). Until the §0.4.4
+	 *  collected-set registry (P2.44) + the §1.9 queue / §0.9 workers land (P3.46), **no** `collectedSetId`
+	 *  resolves — so the shell's honest result is exactly the `Err` the real body returns for an unresolvable id:
+	 *  `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError`
+	 *  `plan_encode` precedent C3/C4/C5 cite). The named fill-boxes own the rest: (a) the §2.8 catalog box owns
+	 *  the FINAL message — the string below is a PROVISIONAL neutral English one — and must add a COMMAND-level
+	 *  string (the §2.8 catalog is item-scoped); (b) the §0.4.4 registry resolve + the §1.9 queue build / §0.9
+	 *  worker spawn / `ConversionEvent` emission + the §0.6 SUCCESS path (the minted `RunId`) belong to the body
+	 *  box (P3.46), and the RunId mint-point (at C6 accept, NOT the §2.4 freeze — §7.1.2) is fixed by P2.48;
+	 *  (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
 	 */
-	startConversion: () => __TAURI_INVOKE<void>("start_conversion"),
+	startConversion: (collectedSetId: CollectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice, rerunDecision: RerunDecision, onProgress: Channel<ConversionEvent>) => __TAURI_INVOKE<RunId>("start_conversion", { collectedSetId, target, options, destination, rerunDecision, onProgress }),
 	/**
 	 *  **C7 `cancel_run`** (§0.4.1) — trips the §0.4.4 cancellation token for the run (finished items kept, the
 	 *  in-progress item discarded cleanly, §2.1/§2.6). Registered as the §0.4.1 interface shell (P2.21); the
@@ -246,6 +281,40 @@ export type Availability =
 { unavailable: {
 	reason: string,
 } };
+
+/**
+ *  `BatchProgress` (§0.4.2) — aggregate queue progress for the batch bar (§1.11).
+ *
+ *  [Build-Session-Entscheidung: P2.37.3] **`total` == `RunStarted.total_items` (queued-only) invariant.**
+ *  `total` counts ONLY items that entered the §1.9 queue — the SAME queued-eligible denominator as
+ *  `RunStarted.total_items` (P2.37.1), EXCLUDING pre-flight-skipped items. If `total` counted dropped-but-
+ *  skipped items the bar could never reach 100%; skips are reconciled only at the §1.12 Summary. The equality
+ *  `BatchProgress.total == RunStarted.total_items` is a §1.11 RUNTIME emission invariant the P3.46 conductor
+ *  holds (both read the same `CollectedSet::Single.count`); P2.37.3 fixes the shared-`u32`-denominator field +
+ *  its documented invariant. `done` is the completed-item numerator (also queued-only).
+ */
+export type BatchProgress = {
+	runId: RunId,
+	/**  Completed queued items (the numerator) — pre-flight skips excluded. */
+	done: number,
+	/**  QUEUED (eligible) items only — equals `RunStarted.total_items` (P2.37.3). */
+	total: number,
+};
+
+/**
+ *  A §2.6.4 cleanup-incomplete warning (§0.6) — one item whose partial could not be removed, naming WHERE
+ *  the residue may remain so the summary never reports a clean success (§2.6 / §1.12).
+ *
+ *  [Build-Session-Entscheidung: P2.12] `Serialize` + `Type` (wire — embedded in `RunResult`), NO
+ *  `Deserialize`; NOT `Copy` (owns a `PathBuf`). camelCase (`residuePath`). `item: ItemId` is the downward
+ *  `orchestrator`→`domain` edge that co-homing this leaf here introduces (allowed).
+ */
+export type CleanupResidue = {
+	/**  The item whose cleanup did not complete (§2.6.4) — the stable §0.6 `ItemId`. */
+	item: ItemId,
+	/**  Where the residue may remain (§2.6.4) — the only place the summary names a residue path. */
+	residuePath: string,
+};
 
 /**
  *  A §1.4-owned structural-peek note surfaced in the §1.4 confirm summary (`CollectedSet::Single.notes`),
@@ -448,6 +517,25 @@ export type ConversionErrorKind =
  *  Listed here ONLY to keep the enum byte-identical to the §0.4.3 wire mirror (no §2.13 producer).
  */
 "mixedDrop";
+
+/**
+ *  The §0.4.2 run-telemetry event — the adjacently-tagged (`{ type, data }`) enum streamed over the C6
+ *  `start_conversion` `onProgress: Channel<ConversionEvent>` (§0.4.2 / §1.11): ordered, throughput-friendly,
+ *  run-scoped (dies with the run — no cross-run leak). `RunFinished` carries the §1.12 `RunResult` (mirrors C8).
+ */
+export type ConversionEvent =
+/**  Batch accepted; the queue is built (§1.9). */
+{ type: "runStarted"; data: RunStarted } |
+/**  An item left `Pending` for `Running` (§1.9). */
+{ type: "itemStarted"; data: ItemStarted } |
+/**  Real per-item progress (§1.11 — never an indeterminate spinner). */
+{ type: "itemProgress"; data: ItemProgress } |
+/**  Terminal per item (§1.9). */
+{ type: "itemFinished"; data: ItemFinished } |
+/**  Aggregate queue progress for the batch bar (§1.11). */
+{ type: "batchProgress"; data: BatchProgress } |
+/**  Terminal for the run — the full §1.12 `RunResult` (mirrors C8). */
+{ type: "runFinished"; data: RunResult };
 
 /**  The closed set of cross-category operations (§0.6 / cross-category.md). */
 export type CrossCatOp =
@@ -683,8 +771,184 @@ export type IpcError = {
 	residue: string | null,
 };
 
+/**
+ *  `ItemFinished` (§0.4.2) — terminal per item (§1.9). Carries the §0.6 `ItemOutcome` projection.
+ *
+ *  [Build-Session-Entscheidung: P2.37.4] **Pre-flight-skip emission policy — no LIVE `ItemFinished{Skipped}`.**
+ *  Pre-flight-skipped items (§1.1/§1.3 — detection-ineligible; they never enter the §1.9 queue) are NOT emitted
+ *  as a live `ItemFinished` carrying `ItemOutcome::Skipped`; they appear ONLY in the terminal
+ *  `RunFinished → RunResult.items` projection (§1.12). `ItemOutcome::Skipped` is RESERVED for that terminal
+ *  path (it is not dead wire code — it carries the projected pre-flight skips + any mid-run cooperative skip),
+ *  so the conductor emits no live `ItemStarted`/`ItemFinished{Skipped}` for a freeze-time skip. The
+ *  `ItemFinished.outcome` field structurally CAN carry `Skipped` (the SAME shared `ItemOutcome` type as the
+ *  terminal `RunResult.items`), so the policy is a §1.9/§1.12 RUNTIME emission rule the P3.46 conductor honors,
+ *  NOT a type-level prohibition; P2.37.4 fixes the documented policy + the structural enabler.
+ */
+export type ItemFinished = {
+	runId: RunId,
+	itemId: ItemId,
+	/**  The terminal §0.6 outcome (`Succeeded | Failed | Skipped | Cancelled`). */
+	outcome: ItemOutcome,
+};
+
 /**  Stable item index within a run (§0.6). */
 export type ItemId = number;
+
+/**
+ *  The terminal per-item outcome carried by the LIVE §0.4.2 `ItemFinished` event (§0.6) — the richer
+ *  terminal projection the UI applies as each item finishes, distinct from the summary's `JobState`.
+ *  `Failed` carries the full §0.4.3 `IpcError` (kind + message + path + residue) the live row needs;
+ *  `Succeeded` the published output path; `Skipped` the §0.6 `SkipReason`; `Cancelled` is payload-free.
+ *
+ *  [Build-Session-Entscheidung: P2.12] `Serialize` + `Type` (wire — the `ItemFinished` payload), NO
+ *  `Deserialize` (outbound-only — embeds the outbound-only `IpcError`); NOT `Copy` (`Failed` owns an
+ *  `IpcError` with `String`/`PathBuf`). Externally tagged with `#[serde(rename_all = "camelCase")]` (the
+ *  §0.6 wire-enum convention) + per-struct-variant `rename_all` (serde does not cascade the enum-level
+ *  rename to a variant's fields, so `Succeeded`'s `output_path` → `outputPath` needs its own, cf.
+ *  `CollectedSet`). Variant order matches §0.6 exactly.
+ */
+export type ItemOutcome =
+/**  Converted + atomically published (§2.1) — carries the final output path. */
+({ succeeded: {
+	outputPath: string,
+} }) & { failed?: never; skipped?: never } |
+/**  A named §2.8 failure — carries the full §0.4.3 `IpcError` the live row renders. */
+({ failed: {
+	error: IpcError,
+} }) & { skipped?: never; succeeded?: never } |
+/**  A pre-flight detection-ineligible item (§1.2/§1.3) — carries the §0.6 `SkipReason` (skip ≠ fail). */
+({ skipped: {
+	reason: SkipReason,
+} }) & { failed?: never; succeeded?: never } |
+/**  User-cancelled; nothing written (§1.7/§1.11). Not an `ErrorKind` (§0.4.3 note) — payload-free. */
+"cancelled";
+
+/**  `ItemProgress` (§0.4.2) — real per-item progress (§1.11; SSOT *not an indeterminate spinner*). */
+export type ItemProgress = {
+	runId: RunId,
+	itemId: ItemId,
+	/**
+	 *  `0.0..=1.0`; `None` ONLY where truly indeterminate (LibreOffice, §1.11 — the frontend synthesises a
+	 *  staged determinate-looking bar from `stage` there).
+	 */
+	fraction: number | null,
+	/**  The §0.6/§1.11 coarse stage (`Spawning | Decoding | Encoding | Writing`). */
+	stage: JobStage,
+};
+
+/**
+ *  One per-item row of the §1.12 summary (§0.6) — its source path (for output→source mapping), its terminal
+ *  `JobState`, the output path (`Some` only when `Succeeded`), and the resolved surfaced line.
+ *
+ *  [Build-Session-Entscheidung: P2.12] `Serialize` + `Type` (wire — embedded in `RunResult`), NO
+ *  `Deserialize`; NOT `Copy` (owns `PathBuf`/`OutcomeMsg`). camelCase. `state: JobState` is what forces
+ *  `JobState` to be a wire type (see its doc) — the summary's per-item state, distinct from the live
+ *  `ItemFinished`'s `ItemOutcome`.
+ */
+export type ItemResult = {
+	/**  The source path this row is for — the output→source mapping anchor (SSOT *How It Feels* 7). */
+	source: string,
+	/**
+	 *  The terminal §1.9 lifecycle state for this item (§0.6) — at `RunFinished` always a terminal variant
+	 *  (`Succeeded`/`Failed`/`Skipped`/`Cancelled`).
+	 */
+	state: JobState,
+	/**  The published output path — `Some(..)` ONLY when `state == Succeeded` (§1.12); `None` otherwise. */
+	output: string | null,
+	/**
+	 *  The resolved, ready-to-show §2.8 failure / §2.9 lossy / §1.1 skip line (§2.8.2 `OutcomeMsg`); `None`
+	 *  for a plain success with no lossy note.
+	 */
+	reason: OutcomeMsg | null,
+};
+
+/**  `ItemStarted` (§0.4.2) — an item left `Pending` for `Running` (§1.9). */
+export type ItemStarted = {
+	runId: RunId,
+	itemId: ItemId,
+	/**  The frozen resolved source path being converted (§2.4). */
+	sourcePath: string,
+	/**  The whole-batch target (§0.6 invariant 1) this item converts to. */
+	target: TargetId,
+};
+
+/**
+ *  The coarse per-item progress stage (§0.6), carried by the §0.4.2 `ItemProgress` Channel event; §1.11
+ *  owns the per-engine semantics, this is the shared/wire enum NAME. Homed in `crate::domain` (the tier-3
+ *  leaf) because it references NO `crate::outcome` type (§0.7 ‡, P2.10) — unlike its sibling lifecycle
+ *  types `Batch`/`ConversionJob`/`JobState`, which reference the §2.8 kind and so are homed in
+ *  `crate::orchestrator` (tier 1).
+ *
+ *  [Build-Session-Entscheidung: P2.10] A WIRE enum: derives `specta::Type` (so `ItemProgress.stage`
+ *  mirrors to `bindings.ts` as a named type, never `any`) + `Serialize` with `#[serde(rename_all =
+ *  "camelCase")]` (`spawning`/`decoding`/`encoding`/`writing`). OUTBOUND-ONLY — the `ItemProgress` Channel
+ *  event is sent Rust→WebView and never deserialized inbound, so NO `Deserialize` (mirroring the
+ *  outbound-only `ScanProgress` (P2.7) + `ConversionErrorKind` (P2.18) derive choice). `Copy` (fieldless).
+ *  Registration is DEFERRED to the C6 `ConversionEvent`/`ItemProgress` consumer (P2.37), the established
+ *  P2.2-P2.9 defer pattern (the no-`any` guarantee is the `Type` derive, not an early consumer-less
+ *  registration that would churn `bindings.ts` ahead of its event).
+ */
+export type JobStage =
+/**  The engine subprocess is being spawned (§1.7/§2.12). */
+"spawning" |
+/**  The source is being decoded. */
+"decoding" |
+/**  The target is being encoded. */
+"encoding" |
+/**  The output is being written + atomically published (§2.1). */
+"writing";
+
+/**
+ *  The §1.9 job-lifecycle state (§0.6) — §1.9 owns the TRANSITIONS between these variants; this is the
+ *  canonical state TYPE the orchestrator stores on each `ConversionJob` AND surfaces per-item in the §1.12
+ *  `RunResult.items[].state` summary. `Failed` carries the §2.8 kind, NOT a full `IpcError` (the wire
+ *  `IpcError` is assembled from the kind + path + message at the §1.12 projection — storing just the kind
+ *  keeps `JobState` cheap and serde-stable, §0.6).
+ *
+ *  [Build-Session-Entscheidung: P2.12] `JobState` IS a WIRE type — it derives `Serialize` + `specta::Type`
+ *  (added here, correcting the P2.10 "internal, not a wire type" note). The spec puts it on the wire: §0.6
+ *  `ItemResult.state: JobState` is carried inside `RunResult`, which §0.4.2 emits as `RunFinished(RunResult)`
+ *  and the C8 return, and §0.6's own JobState comment calls it "serde-stable". This is DISTINCT from the LIVE
+ *  per-item `ItemFinished` event, which carries the richer terminal `ItemOutcome` projection — the §1.12
+ *  summary's per-item state is `JobState`, the live terminal event is `ItemOutcome`; BOTH cross the wire,
+ *  for two different surfaces (P2.10's note conflated them). OUTBOUND-ONLY (no `Deserialize` — it is only
+ *  ever sent Rust→WebView in the summary, never deserialized), mirroring the §2.8 kinds it carries.
+ *  Externally tagged with `#[serde(rename_all = "camelCase")]` (the §0.6 wire-enum convention, cf.
+ *  `DetectionOutcome`/`CollectedSet`): unit variants serialize as `"pending"`…`"cancelled"`, the newtype
+ *  variants as `{"failed":"corrupt"}` / `{"skipped":"empty"}`.
+ *
+ *  [Build-Session-Entscheidung: P2.10] `Failed` is spelled with the CONCRETE `crate::outcome::
+ *  ConversionErrorKind`, NOT the §0.6/§1.9-named `ErrorKind` ALIAS (`pub type ErrorKind =
+ *  ConversionErrorKind`, P2.18) — it is the SAME type, but referencing the still-forward-declared
+ *  `ErrorKind` alias from this (production-dead) type trips the rustc dead-code lint-EXPECTATION
+ *  interaction with `crate::outcome`'s forward-declaration suppression (type aliases have incomplete
+ *  dead-code-expectation support); the concrete spelling avoids it with no semantic change — exactly the
+ *  P2.9 `OutputPlan.job: ItemId`-not-`JobId` resolution. specta resolves the alias to the same wire type.
+ *
+ *  [Build-Session-Entscheidung: P2.10/P2.12] `Debug, Clone, Copy, PartialEq, Eq` — `Copy` because both
+ *  payloads (`ConversionErrorKind` + `SkipReason`) are `Copy` fieldless enums, so the state is a cheap value
+ *  to move through the lifecycle; PLUS `Serialize` + `Type` (P2.12, the wire pair above). Variant order
+ *  matches §0.6 exactly.
+ */
+export type JobState =
+/**  Queued, not started (§1.9). */
+"pending" |
+/**  The engine has been invoked (§1.7). */
+"running" |
+/**  Output verified + atomically published (§2.1). */
+"succeeded" |
+/**
+ *  A named §2.8 failure kind; nothing was written for it (§2.1). The §1.9 Running→Failed transition
+ *  maps the internal kind to the wire kind via `ErrorKind::from` in `crate::run` (§2.8.2).
+ */
+({ failed: ConversionErrorKind }) & { skipped?: never } |
+/**
+ *  A detection-ineligible pre-flight item (§1.2/§1.3) — set at `Batch` construction, never queued,
+ *  terminal (§1.9). Carries the §0.6 `SkipReason` copied directly from the `SkippedItem`.
+ */
+({ skipped: SkipReason }) & { failed?: never } |
+/**  User cancel; nothing written for it (§1.7/§1.11). */
+"cancelled";
 
 /**
  *  A UI-chrome label key (§1.6 / §5 / §2.10) — §5 resolves it to a localised string. NOT a user-facing
@@ -962,6 +1226,21 @@ export type ReadFailure =
 "ioError";
 
 /**
+ *  The C6 `start_conversion` re-run decision (§0.6 / §2.5) — the user's answer to the `RerunPrompt`.
+ *  INBOUND (WebView → Rust, a C6 input), so it derives `Deserialize`. `Skip` is the SAFE DEFAULT (produce
+ *  no new output for the equivalent items); `FreshCopy` makes fresh numbered copies (§2.5). Any change to
+ *  target/settings is a new conversion using ordinary numbering, not a re-run decision.
+ *
+ *  [Build-Session-Entscheidung: P2.11] Round-trippable (`Serialize` + `Deserialize`) because it crosses IPC
+ *  inbound (the C6 arg); `Copy` (fieldless enum); camelCase wire form (`skip` / `freshCopy`).
+ */
+export type RerunDecision =
+/**  The safe default — produce no new output for the equivalent items (§2.5). */
+"skip" |
+/**  Make fresh numbered copies of the equivalent items (§2.5). */
+"freshCopy";
+
+/**
  *  The one batch-level §2.5 re-run prompt's data (§0.6 / §2.5) — surfaced once per batch when the
  *  in-session ledger detects an equivalent prior run (same resolved source + target + effective settings,
  *  §2.5.1). OUTBOUND-ONLY: it is carried inside the C4/C5 `OutputPlanPreview` / `DestinationResolved`
@@ -980,6 +1259,79 @@ export type RerunPrompt = {
 
 /**  One per `start_conversion` run (§0.4 C6 / §7.1). */
 export type RunId = string;
+
+/**
+ *  The §1.12 end-of-batch summary (§0.6) — emitted as §0.4.2 `RunFinished(RunResult)` when every job has
+ *  left `Pending`/`Running`, and idempotently re-served by C8 `get_run_summary` after a WebView reload
+ *  (§0.4.4 run-registry retention). It is the §5.3 `ResultSummary`'s single source: per-item outcome +
+ *  output→source map + residue warnings + the open-folder roots.
+ *
+ *  [Build-Session-Entscheidung: P2.12] `Serialize` + `Type` (wire), NO `Deserialize`; NOT `Copy` (owns
+ *  `Vec`/`PathBuf` fields). camelCase wire form (`collectedSetId`/`runId`/`cleanupIncomplete`/`commonRoot`/
+ *  `divertRoot`).
+ */
+export type RunResult = {
+	/**
+	 *  The frozen collected-set this run summarises — `Batch.id` IS a `CollectedSetId` (§1.12), tying the
+	 *  summary back to its §0.4.4 collected-set registry entry.
+	 */
+	collectedSetId: CollectedSetId,
+	/**  The run this summary is for (§7.1) — minted at C6 `start_conversion`. */
+	runId: RunId,
+	/**
+	 *  Per-item outcome + output→source mapping (§1.12). INCLUDES the freeze-time pre-flight `SkippedItem`s
+	 *  (`CollectedSet::Single.skipped`) projected as `ItemResult { state: Skipped(reason), output: None,
+	 *  reason: Some(OutcomeMsg::Skipped{ reason, .. }) }` — the skip rides the skip-shaped `OutcomeMsg`
+	 *  variant (§2.8), NOT `Failure`, so skip ≠ fail at the type level (§1.12); counted in `totals.skipped`.
+	 */
+	items: ItemResult[],
+	/**  The succeeded / failed / cancelled / skipped tally (§1.12). */
+	totals: Totals,
+	/**
+	 *  The §2.6 cleanup-incomplete warnings — items whose partial could not be removed, so the run is never
+	 *  reported as a clean success (§2.6.4). Empty when every cleanup completed.
+	 */
+	cleanupIncomplete: CleanupResidue[],
+	/**
+	 *  The "open folder" target for the BESIDE-SOURCE outputs — the dropped-selection common ancestor
+	 *  (§2.7 / §7.7.3).
+	 */
+	commonRoot: string,
+	/**
+	 *  `Some(Downloads/Documents/chosen)` when ANY item was diverted (§2.7.3) — a single `PathBuf` cannot
+	 *  carry both the beside-source and divert roots, so the divert root is its own field; `None` when no
+	 *  item diverted. Both are §7.7.3 open-folder targets; per-item diverted outputs are also reachable via
+	 *  `ItemResult.output` (C9 `open_path`, `kind = RevealInFolder`).
+	 */
+	divertRoot: string | null,
+};
+
+/**
+ *  `RunStarted` (§0.4.2) — the batch was accepted and the §1.9 queue built.
+ *
+ *  [Build-Session-Entscheidung: P2.37.1] **`total_items` = QUEUED (eligible) items only.** It equals the §1.3
+ *  `CollectedSet::Single.count` (i.e. `items.len()` — NOT the internal `Grouping::Single.members`, never on the
+ *  §0.6 wire), EXCLUDING pre-flight-skipped items (§1.1/§1.3, which never enter the §1.9 queue). It is the
+ *  `BatchProgress.total` denominator (P2.37.3), so a skipped item never holds the bar below 100% — skips are
+ *  reconciled only at the §1.12 Summary. The "= count" equality is a §1.9 RUNTIME emission rule the P3.46
+ *  conductor enforces when it builds the queue; P2.37.1 fixes the FIELD + its documented denominator contract.
+ *
+ *  [Build-Session-Entscheidung: P2.37.2] **`will_reencode` is a non-optional `bool`, always definite.** A
+ *  conservative source-container→target worst-case flag (§2.9.2 — re-encode *possible* ⇒ `true`), decided from
+ *  the (source-container, target) pair BEFORE any `ffprobe` (inner codecs unknown at emit). The §2.9.2 emission
+ *  rule is that the core ALWAYS emits a definite value — `false` for non-video / non-applicable batches, never
+ *  omitted — so the Rust field is a plain `bool` (NOT `Option<bool>`) and the generated wire type is a
+ *  non-optional `willReencode: boolean` with no third `undefined` state. The real per-item disposition is
+ *  resolved at convert-time (§3.5); the §1.12 summary reflects the actual outcome.
+ */
+export type RunStarted = {
+	/**  The run this telemetry belongs to (§0.4.4). */
+	runId: RunId,
+	/**  QUEUED (eligible) items only — the P2.37.1 denominator (see the struct doc). */
+	totalItems: number,
+	/**  The conservative worst-case re-encode flag — always a definite `bool` (P2.37.2). */
+	willReencode: boolean,
+};
 
 /**
  *  The C1 `ingest_paths` `onScan` Channel payload (§0.4.2) — a throttled (~2/s, coalesced) live count of
@@ -1090,6 +1442,26 @@ export type TargetOffer = {
 	targets: Target[],
 	/**  Exactly ONE pre-highlighted default (§1.5). */
 	defaultTarget: TargetId,
+};
+
+/**
+ *  The §1.12 per-outcome tally (§0.6). The "all failed" condition is DERIVED (`all_failed()`), never a
+ *  stored field — SSOT *Fail clearly*: a fully-failed batch is an explicit failure, not a quiet finish.
+ *
+ *  [Build-Session-Entscheidung: P2.12] `Serialize` + `Type` (wire — embedded in `RunResult`), NO
+ *  `Deserialize`; NOT `Copy` (the §0.6 struct convention, cf. `PreflightVerdict`). camelCase. The
+ *  `total()`/`all_failed()` helpers home the §1.12 derived condition so it is computed once, never
+ *  re-derived inconsistently (and never stored as a field).
+ */
+export type Totals = {
+	/**  Items that converted + published successfully (§2.1). */
+	succeeded: number,
+	/**  Items that failed with a named §2.8 kind (the batch continued, §1.9). */
+	failed: number,
+	/**  Items discarded by user cancel (§1.7/§1.11) — finished-before-cancel items stay in `succeeded`. */
+	cancelled: number,
+	/**  Pre-flight detection-ineligible items projected into the summary (§1.3/§1.12) — never `failed`. */
+	skipped: number,
 };
 
 /**  Display unit for an `IntRange` option — purely for the §5 label, not semantic (§1.6). */
