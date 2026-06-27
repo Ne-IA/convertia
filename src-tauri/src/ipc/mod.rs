@@ -38,19 +38,20 @@ mod command_surface {
     //! `crate::ipc::planning`: `c2b_contract` / `c3_contract` / `c4_contract` / `c5_contract`); P2.29 filled C6
     //! `start_conversion` + P2.30 filled C7 `cancel_run` + P2.31 filled C8 `get_run_summary` (tested in
     //! `crate::ipc::conversion`: `c6_contract` / `c7_contract` / `c8_contract`); P2.32 filled C9 `open_path` +
-    //! P2.33 filled C10 `open_project_page` (tested in `crate::ipc::system`: `c9_contract` / `c10_contract`), so
-    //! the 3 remaining C11..C13 shells are exercised here. [Build-Session-Entscheidung: P2.21]
+    //! P2.33 filled C10 `open_project_page` + P2.34 filled C11 `get_app_info` (tested in `crate::ipc::system`:
+    //! `c9_contract` / `c10_contract` / `c11_contract`), so the 2 remaining C12..C13 shells are exercised here.
+    //! [Build-Session-Entscheidung: P2.21]
     use tauri::async_runtime::block_on;
 
     // §6.4.1 unit (G15): invoke every still-bare §0.4.1 command shell so the registered surface is EXERCISED
     // (the handler runs, not merely compiles + registers). Each empty shell body completes without panic —
     // the contract an interface shell carries until its fill-box authors the typed body. The remaining
     // invocations sit in ONE test fn so the Tauri async runtime is initialised once (no cross-test re-init).
-    // Listed in §0.4.1 C11..C13 order; C1 `ingest_paths` (P2.22) + C2a `pick_for_intake` (P2.23) are filled and
+    // Listed in §0.4.1 C12..C13 order; C1 `ingest_paths` (P2.22) + C2a `pick_for_intake` (P2.23) are filled and
     // tested in `crate::ipc::intake`, C2b `pick_destination` (P2.24) + C3 `get_targets` (P2.25) + C4
     // `plan_output` (P2.26) + C5 `set_destination` (P2.27) in `crate::ipc::planning`, C6 `start_conversion`
     // (P2.29) + C7 `cancel_run` (P2.30) + C8 `get_run_summary` (P2.31) in `crate::ipc::conversion`, and C9
-    // `open_path` (P2.32) + C10 `open_project_page` (P2.33) in `crate::ipc::system`.
+    // `open_path` (P2.32) + C10 `open_project_page` (P2.33) + C11 `get_app_info` (P2.34) in `crate::ipc::system`.
     // [Test-Change: P2.22 — old-obsolete+new-correct, §0.4.1] old: the P2.21 all-shells test invoked the
     // bare-`()` C1 shell; new (verified by read-back — C1 now returns `Result<CollectedSet, IpcError>` over a
     // typed arg set, so the no-arg `()` invocation is obsolete and would no longer compile): C1's typed
@@ -118,11 +119,15 @@ mod command_surface {
     // `system::c10_contract::c10_open_project_page_contract_is_invocable_and_typed` (asserting the genuine
     // deferred-body `Err(InternalError)` SHAPE, not its provisional message), so its line moves there.
     // (The no-arg call still compiled, but C10 is no longer a bare `()` shell — moving it keeps the
-    // one-typed-contract-test-per-filled-command pattern, mirroring the C2b move.) This test now covers the
-    // 3 still-bare C11..C13 shells.
+    // one-typed-contract-test-per-filled-command pattern, mirroring the C2b move.)
+    // [Test-Change: P2.34 — old-obsolete+new-correct, §0.4.1] old: this test invoked the bare-`()` C11
+    // `get_app_info` shell; new (verified by read-back — C11 now returns `Result<AppInfo, IpcError>`, so the
+    // bare statement is an unused-`must_use` and no longer asserts the typed contract): C11's typed contract is
+    // exercised by `system::c11_contract::c11_get_app_info_contract_is_invocable_and_typed` (asserting the
+    // genuine deferred-body `Err(InternalError)` SHAPE, not its provisional message), so its line moves there.
+    // This test now covers the 2 still-bare C12..C13 shells.
     #[test]
     fn every_registered_command_shell_is_invocable() {
-        block_on(super::system::get_app_info()); // C11
         block_on(super::system::get_engine_health()); // C12
         block_on(super::intake::cancel_ingest()); // C13
     }

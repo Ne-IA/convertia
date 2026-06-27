@@ -18,17 +18,19 @@
 // [Build-Session-Entscheidung: P2.13] dead_code expect — the §3.2 seam descriptor types are authored as
 // CONTRACTS before their consumers exist: the registry / `trait Engine` / selection is P4.1, the §0.9 pool
 // reads `EngineDescriptor.serialised_only` then, and `EngineId`'s wire registration rides the §7.2
-// `EngineHealth` (C12) consumer (a later P2 box). The §3.2.2 `Platform` leaf (P2.132) and the §7.2.3
-// `AppInfo` DTO (P2.112, defined just below) join them — both dead in production until the C11
-// `get_app_info` contract (P2.34) constructs + returns `AppInfo` (which embeds `Platform`). So each is dead
-// in the PRODUCTION build until consumed; the cfg(test) tests below construct them, so the TEST build is
-// dead-code-clean. `expect` (not `allow`) auto-flags the moment a consumer lands — matching
-// `crate::domain`/`crate::outcome`/`crate::orchestrator`.
+// `EngineHealth` (C12) consumer (a later P2 box). The §3.2.2 `Platform` leaf (P2.132) joins them: its
+// embedder `AppInfo` is now referenced by the C11 `get_app_info` return (P2.34), so `AppInfo` ITSELF is LIVE
+// (and rides into `bindings.ts`), but the C11 SHELL returns `Err` — never CONSTRUCTING `AppInfo` — so
+// `Platform` is still never constructed; it goes live when P2.98 assembles a real `Ok(AppInfo)` + the P4
+// `capabilities(platform)` consumers build it (the `RunResult`-via-C8 precedent: a return-type reference
+// does not construct the type). So each LISTED type is dead in the PRODUCTION build until consumed; the
+// cfg(test) tests below construct them, so the TEST build is dead-code-clean. `expect` (not `allow`)
+// auto-flags the moment a consumer lands — matching `crate::domain`/`crate::outcome`/`crate::orchestrator`.
 #![cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §3.2.2 Platform leaf (P2.132) + the §7.2.3 AppInfo DTO (P2.112) are authored as contracts before the P4.1 registry/trait/selection + the §0.9 pool + the §7.2 EngineHealth (C12) wire consumer + the C11 get_app_info contract (P2.34) construct/register/return them, so they are dead in the production build until consumed."
+        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor (dead until the P4.1 registry/trait/selection + the §0.9 pool + the §7.2 EngineHealth (C12) consumer construct/register them) + the §3.2.2 Platform leaf (P2.132) (dead until P2.98 assembles a real Ok(AppInfo) + the P4 capabilities(platform) consumers construct it — the C11 get_app_info shell P2.34 returns Err, never constructing it) are dead in the production build until consumed. AppInfo (P2.112) is now LIVE — referenced by the C11 return (P2.34)."
     )
 )]
 

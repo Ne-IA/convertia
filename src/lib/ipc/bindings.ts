@@ -345,11 +345,35 @@ export const commands = {
 	 */
 	openProjectPage: () => __TAURI_INVOKE<null>("open_project_page"),
 	/**
-	 *  **C11 `get_app_info`** (§0.4.1) — version, build id, platform, and the third-party-licenses / NOTICE data
-	 *  for the §5.9 About screen (§7.2.3); no network. Registered as the §0.4.1 interface shell (P2.21); the full
-	 *  `{} -> AppInfo` contract is authored by P2.34. [Build-Session-Entscheidung: P2.21]
+	 *  **C11 `get_app_info`** (§0.4.1) — version, build id, platform, and the §3.7 third-party-licenses / NOTICE
+	 *  data for the §5.9 About screen (§7.2.3); no network — every field is gathered in-process / in-bundle. This
+	 *  box (P2.34) authors the typed §0.4.1 wire CONTRACT — the `{} -> Result<AppInfo, IpcError>` door (the §0.4
+	 *  universal error shape; the §0.4.1 table Response column `AppInfo` is the success `T`, wrapped in `Result`
+	 *  like every command) — so the generated `bindings.ts` mirrors the C11 surface and **pulls the §7.2.3
+	 *  `AppInfo` graph (and its embedded §3.2.2 `Platform`) onto the wire** via this return: the §0.6
+	 *  defer-registration-to-the-consumer pattern (the `EngineId`/`ScanProgress`/`ConversionEvent` precedent),
+	 *  the first consumer of the `AppInfo`/`Platform` types authored at P2.112/P2.132.
+	 *
+	 *  [Build-Session-Entscheidung: P2.34] **Shell returns `Err(IpcError{ kind: InternalError })` — the C3/C4/C5/
+	 *  C6/C8 interface-shell pattern (success type has no honest zero value), NOT the C7 `Ok(())` no-op branch.**
+	 *  `AppInfo` carries four real fields (`version`/`build_id`/`platform`/`third_party_notice`); the version +
+	 *  `build_id` data sources are the RELEASE-BLOCKING **P2.98 PRODUCER** (the `package_info()` version source +
+	 *  the §6 CI build id, neither of which may ship empty), assembled there, and `third_party_notice` is the
+	 *  bundled §3.7 THIRD-PARTY-LICENSES.txt resource (§3.7 generation). This contract box assembles none of
+	 *  them, so the shell cannot produce an HONEST `AppInfo` — fabricating an `Ok(AppInfo)` with empty
+	 *  `version`/`build_id` (or an invented notice) would LIE that real app info exists (CLAUDE §5; the §5.9
+	 *  About screen would render blanks). So the honest shell outcome is exactly the `Err` the operation yields
+	 *  when it cannot complete: `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all;
+	 *  the §3.2 `PlanError` precedent C3/C4/C5 cite). P2.98 replaces this with the real assembly —
+	 *  `Ok(AppInfo{ … })` gathered from `package_info()` (version), the §6 build-id producer, the §3.2.2
+	 *  `Platform`, and the §3.7 notice resource (a non-wire `AppHandle` param the body adds does NOT change the
+	 *  `{}` wire signature — Tauri injects it). The named fill-boxes own the rest: (a) the §2.8 catalog box owns
+	 *  the FINAL message — the string below is a PROVISIONAL neutral English one — and must add a COMMAND-level
+	 *  string (the §2.8 catalog is item-scoped); (b) the version / `build_id` producers + the §0.6 SUCCESS path
+	 *  belong to P2.98; (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19
+	 *  convention).
 	 */
-	getAppInfo: () => __TAURI_INVOKE<void>("get_app_info"),
+	getAppInfo: () => __TAURI_INVOKE<AppInfo>("get_app_info"),
 	/**
 	 *  **C12 `get_engine_health`** (§0.4.1) — the cached §7.2.3 startup self-check (which bundled engines are
 	 *  present/runnable, which §3.4 patent-gated targets are available), feeding §5.2. The `EngineHealth` type
@@ -360,6 +384,33 @@ export const commands = {
 };
 
 /* Types */
+/**
+ *  **`AppInfo`** — the C11 `get_app_info` return (§7.2.3; §0.4.1 references it, §5.9 About screen displays
+ *  it). The in-bundle About payload: app version, CI build id, running platform, and the §3.7
+ *  third-party-licenses / NOTICE text. NO network — every field is gathered in-process by the C11 handler
+ *  (P2.34): `version` from `app.package_info()` / `CARGO_PKG_VERSION`, `build_id` from the §6 CI build id
+ *  (deterministic dev fallback; the producer is P2.98), `platform` from the §3.2.2 `Platform` leaf, and
+ *  `third_party_notice` from the bundled §3.7 THIRD-PARTY-LICENSES.txt resource.
+ *
+ *  [Build-Session-Entscheidung: P2.112] WIRE struct — the §0.6 outbound-wire convention shared by every
+ *  §0.6/§7.2 DTO: `#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]` + `#[serde(rename_all =
+ *  "camelCase")]` (cf. `PreflightVerdict`/`OutputPlanPreview`/`RunResult` in `crate::orchestrator`). NOT
+ *  `Copy` (it owns `String` fields). OUTBOUND-ONLY — C11 takes `{}` and no command takes an `AppInfo` arg,
+ *  so NO `Deserialize` (mirroring the outbound-only orchestrator result types). Registered into
+ *  `bindings.ts` TRANSITIVELY via the C11 return once P2.34 lands, with NO standalone `collect_types![]` —
+ *  the defer-to-consumer pattern its `Platform` field also rides.
+ */
+export type AppInfo = {
+	/**  The app semver version, e.g. `"1.0.0"` — `app.package_info().version` / `CARGO_PKG_VERSION` (§7.2.3). */
+	version: string,
+	/**  The §6 CI build identifier (deterministic dev fallback; producer P2.98) — wire key `buildId`. */
+	buildId: string,
+	/**  The running/target platform (§3.2.2) — rides as its own camelCase discriminant under wire key `platform`. */
+	platform: Platform,
+	/**  The bundled §3.7 THIRD-PARTY-LICENSES.txt contents for the §5.9 About screen — wire key `thirdPartyNotice`. */
+	thirdPartyNotice: string,
+};
+
 /**  A target's per-platform availability (§0.6 / §3.4 patent disposition, resolved per platform). */
 export type Availability =
 /**  Offered on this platform. */
@@ -1280,6 +1331,36 @@ export type PickKind =
 "files" |
 /**  Pick a folder (recursively collected at the §1.1 freeze). */
 "folder";
+
+/**
+ *  The running/target platform. Resolved at build/startup; drives both `capabilities()` and the §3.4
+ *  patent disposition (§3.2.2). One variant per shipped desktop OS — Windows / macOS / Linux (§1: one
+ *  artifact per platform; no mobile, web, or CLI build in v1).
+ *
+ *  [Build-Session-Entscheidung: P2.132] WIRE type — it rides `AppInfo.platform` into the C11 `get_app_info`
+ *  return (§7.2.3), so it derives `Serialize` + `Type`; it is exported into `bindings.ts` ONLY
+ *  TRANSITIVELY via that `AppInfo` embedder once C11 lands (P2.112/P2.34), with NO standalone
+ *  `collect_types![]` registration — the established defer-to-consumer pattern (`EngineId` via C12,
+ *  `ScanProgress`/`ConversionEvent` via their channels; `register_ipc_*_types` is only for the
+ *  consumer-less universal types). OUTBOUND-ONLY — no command TAKES a `Platform` arg (C11 takes `{}`), so
+ *  NO `Deserialize`, mirroring the outbound-only `EngineId`/`crate::orchestrator` wire types. `Copy` is free
+ *  for a fieldless enum and the §3.2.2 trait passes it BY VALUE (`capabilities(platform: Platform, …)`);
+ *  `PartialEq`/`Eq` for the §3.4 disposition branch + the wire-form test. NO `Hash` — nothing keys a map on
+ *  it (unlike `EngineId`, the §0.9 `HashMap<EngineId, bool>` key).
+ *
+ *  [Build-Session-Entscheidung: P2.132] WIRE FORM `camelCase` — the §0.6 wire default (`win`/`macOS`/
+ *  `linux`; 00-architecture §0.6 "camelCase on the wire") that `AppInfo` (its camelCase embedder) and every
+ *  §0.6/§7.2 DTO carry. NOT `EngineId`'s `lowercase` deviation — that existed ONLY to stop `camelCase`
+ *  mangling the FF-prefixed `FFmpeg`/`FFprobe` into `fFmpeg`/`fFprobe`; `Platform`'s variants have no such
+ *  hazard, so the clean §0.6 default applies (`MacOS` → `macOS`, the canonical Apple spelling).
+ */
+export type Platform =
+/**  Windows — the Windows desktop build (§1). */
+"win" |
+/**  macOS — the macOS desktop build (§1; the universal `lipo`-both-slices artifact, §6). */
+"macOS" |
+/**  Linux — the Linux desktop build (§1). */
+"linux";
 
 /**
  *  The §1.10 resource pre-flight verdict surfaced before convert (§0.6 / §1.10) — the size/space estimate
