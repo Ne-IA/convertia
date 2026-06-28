@@ -45,20 +45,19 @@ use crate::domain::{
 };
 use crate::outcome::{AppFault, IpcError, OutcomeMsg};
 
-/// [Build-Session-Entscheidung: P1.15] The §7.2.1 step-2 boot context: the per-launch identity plus
-/// the three resolved base dirs, held as the §7.1.2 app-managed singleton (`app.manage`). Its home is
-/// the binary root for P1 because the §7.2.1 ordered startup-sequence MODULE is the P2 app-shell spine
-/// — §0.7 has no app-shell module yet and P1 must not add an unsanctioned folder (CLAUDE §1a / G69);
-/// P2 relocates this type into that spine. The fields are read by the P2 ordered spine + later phases
-/// (none of the dirs is created here — directory creation is §7.2.1 step 5).
+/// [Build-Session-Entscheidung: P1.15] The §7.2.1 step-2 boot context: the three resolved base dirs
+/// (config / local-data scratch / log), held as app-managed state (`app.manage`). Its home is the
+/// binary root for P1 because the §7.2.1 ordered startup-sequence MODULE is the P2 app-shell spine —
+/// §0.7 has no app-shell module yet and P1 must not add an unsanctioned folder (CLAUDE §1a / G69); P2
+/// relocates this type into that spine. The fields are read by the P2 ordered spine + subsequent phases
+/// (none of the dirs is created here — directory creation is §7.2.1 step 5). The per-launch InstanceId
+/// is NOT a field here: P2.47 promoted it to its own §7.1.2 app-managed singleton (`State<InstanceId>`).
 #[derive(Debug)]
 #[expect(
     dead_code,
-    reason = "§7.2.1 step-2 boot context; fields read by the P2 ordered startup spine + later phases (P1.15)"
+    reason = "§7.2.1 step-2 boot context — the three resolved base dirs (config/scratch/log); read by the P2 ordered startup spine + later phases (P1.15). The per-launch InstanceId is NO LONGER a field here: P2.47 promoted it to its own app-managed singleton (§7.1.2 'app-managed singleton via app.manage(...)')."
 )]
 struct StartupContext {
-    /// §7.1.2 per-launch identity — a random v4, minted once in `setup`.
-    instance_id: InstanceId,
     /// §7.2.1 step-2 config base dir (resolved, NOT created here).
     config_dir: PathBuf,
     /// §7.2.1 step-2 local-data / scratch base dir (§2.14; resolved, NOT created here).
@@ -331,13 +330,21 @@ fn main() -> tauri::Result<()> {
             // scratch-reclaim / launch-intake / WebView-fault stages are the P2 startup-sequence
             // cluster (later phases fill the bodies). Landed here: stage 2 + the stage-6 slot.
 
-            // Stage 2 — establish the per-launch InstanceId (§7.1.2: random v4) and resolve the
-            // three base dirs via app.path() (§7.2.1 step 2: config / local-data scratch §2.14 /
-            // log §7.5). NO directory is created here (creation is §7.2.1 step 5). Each call below
-            // touches only local uuid + filesystem primitives, so the boot path opens no socket
-            // (§7.2.2; proven by the P1.15.1 boot-invariant test + the G29 first-party rule (g)).
+            // Stage 2 — establish the per-launch InstanceId as an app-managed SINGLETON (§7.1.2: a
+            // random v4, the spec's "app-managed singleton via app.manage(...)"; process-local — never
+            // persisted, never networked, §2.11) and resolve the three base dirs via app.path() (§7.2.1
+            // step 2: config / local-data scratch §2.14 / log §7.5). NO directory is created here
+            // (creation is §7.2.1 step 5). Each call below touches only local uuid + filesystem
+            // primitives, so the boot path opens no socket (§7.2.2; G29 first-party rule (g) backstops
+            // the whole tree; the boot-invariant test covers the top-of-file import surface).
+            //
+            // [Build-Session-Entscheidung: P2.47] InstanceId is its OWN managed singleton (resolved as
+            // State<InstanceId> by the §2.14 scratch-naming / §2.6 cleanup consumers), NOT a
+            // StartupContext field — P1.15 bundled it in the boot-context scaffold; P2.47 promotes it to
+            // the §7.1.2 standalone form. The mint (random v4) is unit-tested in crate::domain; this
+            // establishment is pinned by `instance_identity` below.
+            app.manage(InstanceId::mint());
             let startup = StartupContext {
-                instance_id: InstanceId::mint(),
                 config_dir: app.path().app_config_dir()?,
                 scratch_base_dir: app.path().app_local_data_dir()?,
                 log_dir: app.path().app_log_dir()?,
@@ -399,6 +406,43 @@ mod boot_invariants {
                  the startup sequence must open no socket (pairs with G29 rule (g))"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod instance_identity {
+    //! §6.4.1 unit (G15): §7.1.2 — the per-launch `InstanceId` is established as an app-managed SINGLETON
+    //! (a random v4; process-local, never persisted/networked, §2.11). The §7.2.1-step-2 boot fact is
+    //! asserted at the SOURCE plane: the `setup` closure is not live-unit-testable here (this crate has no
+    //! `tauri::test` mock harness — the established boot-stage pattern, cf. `boot_invariants` / `window_model`).
+    //! The random-v4 MINT itself is unit-tested in `crate::domain` (`instance_id_mint_is_unique_nonnil_v4`);
+    //! never-NETWORKED is `boot_invariants::boot_path_opens_no_socket` + the whole-tree G29 rule (g);
+    //! never-PERSISTED is structural — the id is minted fresh each launch (random), never loaded from a
+    //! store/disk (no load / deserialize-from-persistence constructor exists). This module pins the SINGLETON
+    //! ESTABLISHMENT in `main()`'s `setup`, which `production_boot_source()` (truncated before the FIRST
+    //! `#[cfg(test)]`, ~line 244) does NOT reach — so it scans the FULL `main.rs`. [Build-Session-Entscheidung: P2.47]
+
+    // §7.1.2 / §2.11: the boot path mints the per-launch InstanceId (random v4) and hands it to
+    // app.manage, so the §2.14 scratch-naming / §2.6 cleanup consumers resolve it as State<InstanceId> — a
+    // standalone singleton, NOT a StartupContext field (P2.47 promoted it from the P1.15 scaffold).
+    #[test]
+    fn instance_id_minted_and_managed_as_a_singleton_in_setup() {
+        // Scan the WHOLE source (not production_boot_source(), which truncates before the setup closure).
+        // The needles are concat!-assembled — and the assert MESSAGES deliberately avoid the literal tokens —
+        // so the literal never appears in this test file (which include_str! would otherwise self-match,
+        // including via a message: a green-but-blind trap).
+        let src = include_str!("main.rs");
+        let mint = concat!("InstanceId", "::mint()");
+        let managed_singleton = concat!(".manage(", "InstanceId", "::mint())");
+        assert!(
+            src.contains(mint),
+            "§7.1.2: the boot path must mint the per-launch InstanceId as a random v4 (the mint constructor)"
+        );
+        assert!(
+            src.contains(managed_singleton),
+            "§7.1.2: the minted InstanceId must be established as an app-managed singleton (handed to \
+             app.manage) — so the §2.14/§2.6 consumers resolve it as State<InstanceId>, not via StartupContext"
+        );
     }
 }
 
