@@ -479,6 +479,85 @@ mod ipc_typegen {
 }
 
 #[cfg(test)]
+mod app_event_closed_set {
+    //! §6.4.1 unit (G15): the §0.4.2 app:// event CLOSED-SET + payload-registration cross-check (P2.41 — the
+    //! loose-`G23` closed-set gate's IN-CORE half). This is the §0.4.1-command analog of the Rust golden test
+    //! `bindings_codegen::golden_lists_exactly_the_c1_c13_command_surface` that `plan-lint` check 12 pairs
+    //! with: there, the L2 source scan (check 12) proves "no spurious registered command"; here, the L2 source
+    //! scan (`plan-lint` check 28 `app-event-surface-drift`, build-gates §6) proves no fourth app:// literal
+    //! exists anywhere in `src-tauri/src` and that every such literal lives only in `crate::ipc::events`, and
+    //! THIS cross-check pins the in-core side a text scan cannot reach: each §0.4.2 event's payload type is
+    //! authored and `.types()`-registered (via `register_ipc_event_types`), so the TS `listen(...)` side
+    //! mirrors a NAMED type, never the TS `any` escape (§0.4.2/§0.4.5, the no-`any` rule G5/G8).
+    //!
+    //! The set is keyed by the `crate::ipc::events` constants, NEVER by re-spelled app:// string literals —
+    //! check 28 forbids those outside `crate::ipc::events`, and the constants' literal VALUES are pinned there
+    //! by `crate::ipc::app_event_names` (P2.39), which this leans on. The close-requested event carries `()`
+    //! (§0.4.2 row), so it has — correctly — no payload type to register. Also leans on
+    //! `ipc_typegen::event_payload_types_registered_for_typegen` (the full registration name-list, P2.39).
+    //! [Build-Session-Entscheidung: P2.41]
+    use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    // §6.4.1 unit (G15): the §0.4.2 app:// event surface is the closed set {fault, intake, close-requested},
+    // each event's payload type authored + registered so none mirrors as the TS `any` escape. Pairs with
+    // plan-lint check 28 (the "no fourth literal" source scan) — this is the in-core registration side.
+    #[test]
+    fn app_event_closed_set_binds_each_event_to_its_registered_payload() {
+        use crate::ipc::events;
+
+        // The §0.4.2 closed app:// event set bound to its payload type, KEYED BY the `crate::ipc::events`
+        // constants (referencing them pins they are PRESENT — a removed/renamed constant fails to compile),
+        // NOT by re-spelled app:// literals (plan-lint check 28 forbids those here; their literal values are
+        // pinned by `app_event_names` in ipc/mod.rs). `None` = the event carries `()`, so it has no payload.
+        let closed_set: BTreeMap<&str, Option<&str>> = [
+            (events::APP_FAULT, Some("AppFault")), // §2.13 app-level fault
+            (events::APP_INTAKE, Some("IntakePayload")), // §7.8.1 idle launch-arg / second-instance hand-off
+            (events::APP_CLOSE_REQUESTED, None), // §7.3.2 mid-run close intercept — payload `()`
+        ]
+        .into_iter()
+        .collect();
+
+        // (A) Exactly three DISTINCT §0.4.2 events (the BTreeMap dedups by the constant value, so two
+        // constants sharing a value would also drop the count). The literal-value pin is `app_event_names`;
+        // the "no fourth literal in src-tauri/src" pin is check 28; this is the in-core cardinality leg.
+        assert_eq!(
+            closed_set.len(),
+            3,
+            "§0.4.2: the closed app:// event set is exactly three events {{fault, intake, close-requested}} \
+             (P2.41/G23, paired with plan-lint check 28's source scan)"
+        );
+
+        // (B) The payload-BEARING events carry EXACTLY {AppFault, IntakePayload}; close-requested carries `()`
+        // (None). A fourth payload-bearing event, a dropped payload, or close-requested sprouting a payload all
+        // redden here — the in-core "each event with its authored payload type" half of the box invariant.
+        let closed_payloads: BTreeSet<&str> = closed_set.values().copied().flatten().collect();
+        let expected_payloads: BTreeSet<&str> = ["AppFault", "IntakePayload"].into_iter().collect();
+        assert_eq!(
+            closed_payloads, expected_payloads,
+            "§0.4.2: exactly two of the three app:// events carry a payload type (AppFault for fault, \
+             IntakePayload for intake); close-requested carries `()` (P2.41/G23)"
+        );
+
+        // (C) The side a source scan cannot do: each payload-bearing event's type is authored +
+        // `.types()`-registered via the REAL `register_ipc_event_types`, so no app:// payload mirrors as the TS
+        // `any` escape (§0.4.2/§0.4.5). `register_ipc_event_types` registers the named payloads AND pulls in
+        // their field types, so its set is a SUPERSET — the load-bearing direction is closed-payloads ⊆ registered.
+        let registered: BTreeSet<String> = register_ipc_event_types(specta::Types::default())
+            .into_unsorted_iter()
+            .map(|n| n.name.to_string())
+            .collect();
+        for ty in &expected_payloads {
+            assert!(
+                registered.contains(*ty),
+                "§0.4.2: the app:// event payload `{ty}` must be authored + `.types()`-registered \
+                 (register_ipc_event_types) so the listen side mirrors a named type, never `any` (P2.41)"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod bindings_codegen {
     //! §0.4.5 IPC type-gen: the single tracked `src/lib/ipc/bindings.ts` (the frontend's only IPC door,
     //! §0.7) is generated from the SAME `ipc_specta_builder()` the runtime uses, so the emitted TS
