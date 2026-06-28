@@ -29,6 +29,12 @@ tauri-plugin-opener = "2.5.4"
 tauri-plugin-single-instance = "2.4.2"
 tauri-plugin-store = "2.4.3"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive"] }
+# [P2.133] §0.4.4/§1.7 cancellation primitive — `tokio_util::sync::CancellationToken` for the RunId/
+# CollectingId token registries (P2.42/P2.45). Caret-pinned to the lock-resolved 0.7.18 (the normal-lib
+# convention, not the `=`-exact codegen-coupled specta tools); NO extra features (CancellationToken is in
+# tokio-util's always-available `sync` module — default feature set empty). Already in Cargo.lock
+# transitively via `tauri`, so this is a direct-edge promotion (no newly-resolved package). §0.8 floor row: P2.134.
+tokio-util = "0.7.18"
 uuid = { version = "1.23.3", features = ["serde", "v4"] }
 
 # [Build-Session-Entscheidung: P1.26] §0.4.5 IPC type-gen: the TypeScript exporter the `bindings_codegen`
