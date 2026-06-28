@@ -212,7 +212,7 @@
   needs: P2.1, P1.14
 - [x] **P2.48** [RUST] Fix the `RunId` mint point — at C6 accept (NOT at the §2.4 freeze; the freeze yields `CollectedSetId`) · §7.1.2 §0.4.4
   needs: P2.29, P2.47
-- [ ] **P2.49** [RUST] Encode the `<InstanceId>.<pid>` scratch-root naming + `run-<RunId>/` subdir identity (PID = label, not liveness) · §7.1.2 §2.14
+- [x] **P2.49** [RUST] Encode the `<InstanceId>.<pid>` scratch-root naming + `run-<RunId>/` subdir identity (PID = label, not liveness) · §7.1.2 §2.14
   needs: P2.47
 - [ ] **P2.50** [DOC] Record the advisory-lock-is-authoritative liveness predicate (PID never used as the test; §2.6.3 owns the lock) · §7.1.2 §2.6.3
   needs: P2.49
