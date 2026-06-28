@@ -210,7 +210,7 @@
 
 - [x] **P2.47** [RUST] Establish the `InstanceId` app-managed singleton (random v4, never persisted/networked) · §7.1.2 §2.11
   needs: P2.1, P1.14
-- [ ] **P2.48** [RUST] Fix the `RunId` mint point — at C6 accept (NOT at the §2.4 freeze; the freeze yields `CollectedSetId`) · §7.1.2 §0.4.4
+- [x] **P2.48** [RUST] Fix the `RunId` mint point — at C6 accept (NOT at the §2.4 freeze; the freeze yields `CollectedSetId`) · §7.1.2 §0.4.4
   needs: P2.29, P2.47
 - [ ] **P2.49** [RUST] Encode the `<InstanceId>.<pid>` scratch-root naming + `run-<RunId>/` subdir identity (PID = label, not liveness) · §7.1.2 §2.14
   needs: P2.47
