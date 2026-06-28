@@ -2,8 +2,8 @@
 //! `JobState`, holds the run registry + cancellation tokens (§0.4.4), and fans progress out to the
 //! Channel. It sequences the guarantees / engines / detection layers; it owns none of their behaviour.
 //!
-//! The conducting BEHAVIOUR (queue construction at C6, the §1.9 transitions, the run registry +
-//! cancellation) is filled by P3.46. This module homes the §0.6 outcome-referencing lifecycle/result types
+//! The conducting BEHAVIOUR (queue construction at C6, the §1.9 transitions, the run-registry WIRING +
+//! the cancellation flow) is filled by P3.46. This module homes the §0.6 outcome-referencing lifecycle/result types
 //! it assembles — `Batch`/`ConversionJob`/`JobState` (P2.10), the C4/C5 command-return DTOs
 //! `PreflightVerdict`/`OutputPlanPreview`/`DestinationResolved` (P2.11), the §1.12 result types
 //! `RunResult`/`ItemResult`/`Totals`/`CleanupResidue`/`ItemOutcome` (P2.12), and the §0.4.2 `ConversionEvent`
@@ -13,6 +13,11 @@
 //! directly or transitively. Homing them here keeps the §0.6 `domain` ↔ `outcome` type cycle broken and
 //! `crate::domain` a pure leaf (the §0.7 ‡ note, the owner-decided P2.10 tier-finalisation). The sibling
 //! `JobStage` (no outcome ref) stays in `crate::domain`.
+//!
+//! It also homes the §0.4.4 `RunRegistry` (the `RunId` → `CancellationToken` run-cancellation-token registry,
+//! P2.42) — orchestrator State per §0.7, distinct from the outcome-referencing types above (it references no
+//! §0.6 / `crate::outcome` type); its register-at-C6 / cancel-at-C7 / drop-on-`RunFinished` WIRING is the
+//! P3.46 conductor.
 
 // [Build-Session-Entscheidung: P2.10/P2.11/P2.12] dead_code expect — the lifecycle/DTO/result types homed
 // here (Batch/ConversionJob/JobState, the C4/C5 DTOs, and the §1.12 RunResult/ItemResult/Totals/
@@ -26,14 +31,17 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37) are authored as contracts before the P3.46 orchestrator behaviour + the C4/C5/C8 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register them, so they are dead in the production build until consumed."
+        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the §0.4.4 RunRegistry P2.42) are authored as contracts before the P3.46 orchestrator behaviour + the C4/C5/C8 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so they are dead in the production build until consumed."
     )
 )]
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use serde::Serialize;
 use specta::Type;
+use tokio_util::sync::CancellationToken;
 
 use crate::domain::{
     CollectedSetId, DestinationChoice, DivertReason, DroppedItem, ItemId, JobStage, OptionValues,
@@ -537,6 +545,86 @@ pub struct BatchProgress {
     pub total: u32,
 }
 
+// ─── §0.4.4 run registry — the RunId → CancellationToken token store (P2.42) ─────────────────────────
+// [Build-Session-Entscheidung: P2.42] The §0.4.4 cancellation-token registry, homed in crate::orchestrator
+// per §0.7 ("orchestrator homes run registry + cancellation"). It owns the token's IDENTITY + LIFECYCLE
+// only (created in C6, tripped by C7, dropped on RunFinished) — §0.4.4 explicitly scopes THIS section to
+// identity/lifecycle: the §1.7 invocation layer wires the token to the engine subprocess for the
+// process-group kill, and cancellation is cooperative at the orchestrator level + forceful at the engine
+// level (reconciled by §1.7, built in P3/P4). Like the sibling lifecycle/result types, this is a CONTRACT
+// authored before its consumer: the C6/C7/RunFinished WIRING (the app-managed State + the conductor calls)
+// is the P3.46 behaviour, so the registry is dead in the production build until then (covered by the
+// module-level dead_code expect). The retained terminal RunResult (so C8 re-serves after a WebView reload,
+// §0.4.4) is a SEPARATE store — the P2.43 box — NOT this token registry.
+
+/// The §0.4.4 run registry — maps each in-flight `RunId` to its `tokio_util::sync::CancellationToken`. Held
+/// as a Tauri app-managed `State` (the wiring is the P3.46 conductor). The token's three §0.4.4 lifecycle
+/// points are this type's three methods: [`register`](RunRegistry::register) at C6 `start_conversion` (mint +
+/// store a fresh token), [`cancel`](RunRegistry::cancel) at C7 `cancel_run` (trip it — cooperative at the
+/// orchestrator level), and [`finish`](RunRegistry::finish) on `RunFinished` (drop it; the run's terminal
+/// `RunResult` out-lives the token in the separate P2.43 retention store). Interior-mutable behind a `Mutex`
+/// so the shared `&RunRegistry` (the `State` form) serves concurrent C6/C7 handlers; every critical section
+/// is a whole-map op that never holds the guard across an `.await`, so a plain `std::sync::Mutex` (not an
+/// async lock) is correct.
+///
+/// [Build-Session-Entscheidung: P2.42] `Default`-constructed empty (the app-startup form); `Debug` for parity
+/// with the sibling orchestrator state. NOT a wire type (no `serde`/`specta`) — it is pure core-internal
+/// State that never crosses IPC (the WebView drives cancellation through the C7 command, never sees a token).
+#[derive(Debug, Default)]
+pub struct RunRegistry {
+    /// The active `RunId` → `CancellationToken` map. A `RunId` is a unique per-run v4 (§7.1.2), inserted once
+    /// at C6 and removed once on `RunFinished`, so no key ever legitimately collides.
+    tokens: Mutex<HashMap<RunId, CancellationToken>>,
+}
+
+impl RunRegistry {
+    /// Lock the token map, recovering the guard from a poisoned lock rather than propagating the panic. The
+    /// critical sections are infallible whole-map ops that never panic (the in-core no-panic discipline,
+    /// G4/G14), so a poisoned lock is unreachable in practice; recovering keeps the registry usable AND avoids
+    /// an `unwrap`/`expect` on the no-panic path. [Build-Session-Entscheidung: P2.42]
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<RunId, CancellationToken>> {
+        self.tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Mint a fresh `CancellationToken` for `run_id` and store it (C6 `start_conversion`, §0.4.4). Returns a
+    /// clone for the conductor to hand to the run's workers: a `CancellationToken` is a cheap `Arc`-backed
+    /// handle, so the stored copy and the returned copy share ONE cancellation state (a `cancel` on either —
+    /// or via [`cancel`](RunRegistry::cancel) — trips all). A `RunId` is unique per run (§7.1.2), so this
+    /// never overwrites a live entry; a collision could only be a programming error and would merely drop the
+    /// stale token.
+    pub fn register(&self, run_id: RunId) -> CancellationToken {
+        let token = CancellationToken::new();
+        self.lock().insert(run_id, token.clone());
+        token
+    }
+
+    /// Trip the `run_id`'s token (C7 `cancel_run`, §0.4.4) — cooperative cancellation at the orchestrator
+    /// level. Returns `true` if a live token was found and tripped, `false` if `run_id` is unknown or already
+    /// finished — the §0.4.1 C7 idempotent no-op-cancel case (cancelling a completed/absent run is a clean
+    /// no-op, never an error). The token is left IN the map until [`finish`](RunRegistry::finish) (a worker may
+    /// still observe the cancel before its run reaches `RunFinished`). The token is cloned out before the
+    /// guard drops, so `.cancel()` runs without holding the lock.
+    pub fn cancel(&self, run_id: RunId) -> bool {
+        let token = self.lock().get(&run_id).cloned();
+        match token {
+            Some(token) => {
+                token.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Drop the `run_id`'s token on `RunFinished` (§0.4.4) — the run is terminal, so its token is no longer
+    /// needed. This is NOT a cancel — an outstanding worker clone is left un-cancelled (a normal finish), and
+    /// the run's terminal `RunResult` out-lives the token in the separate P2.43 retention store (§0.4.4).
+    pub fn finish(&self, run_id: RunId) {
+        self.lock().remove(&run_id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,6 +651,11 @@ mod tests {
     }
     fn run_id() -> RunId {
         serde_json::from_str(r#""11111111-1111-4111-8111-111111111111""#)
+            .expect("RunId deserializes from a uuid string")
+    }
+    /// A second, distinct `RunId` — for the §0.4.4 independent-token registry test (two live runs).
+    fn run_id_other() -> RunId {
+        serde_json::from_str(r#""22222222-2222-4222-8222-222222222222""#)
             .expect("RunId deserializes from a uuid string")
     }
 
@@ -1274,5 +1367,74 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    // §6.4.1 unit (G15): the §0.4.4 run-registry lifecycle (P2.42). `register` mints a LIVE token, `cancel`
+    // trips it + reports found, an unknown/finished `cancel` is the §0.4.1 C7 idempotent no-op, `finish`
+    // drops WITHOUT cancelling, and distinct runs hold independent tokens. No tokio runtime needed —
+    // `CancellationToken::new`/`cancel`/`is_cancelled` are synchronous atomic ops (only `.cancelled().await`
+    // would need a runtime, and nothing here awaits).
+    #[test]
+    fn run_registry_register_yields_a_live_token() {
+        let reg = RunRegistry::default();
+        let token = reg.register(run_id());
+        assert!(
+            !token.is_cancelled(),
+            "§0.4.4: a freshly registered run's token is live (not cancelled)"
+        );
+    }
+
+    #[test]
+    fn run_registry_cancel_trips_the_registered_token_and_reports_found() {
+        let reg = RunRegistry::default();
+        let token = reg.register(run_id());
+        assert!(
+            reg.cancel(run_id()),
+            "§0.4.4: cancelling a registered run reports the token was found"
+        );
+        assert!(
+            token.is_cancelled(),
+            "§0.4.4: cancel trips the run's token — the stored copy and the handed-out clone share one state"
+        );
+    }
+
+    #[test]
+    fn run_registry_cancel_unknown_run_is_the_idempotent_no_op() {
+        let reg = RunRegistry::default();
+        assert!(
+            !reg.cancel(run_id()),
+            "§0.4.1/§0.4.4: cancelling an unknown / already-finished run is a clean no-op returning false (C7 idempotent)"
+        );
+    }
+
+    #[test]
+    fn run_registry_finish_drops_the_token_without_cancelling() {
+        let reg = RunRegistry::default();
+        let token = reg.register(run_id());
+        reg.finish(run_id());
+        assert!(
+            !token.is_cancelled(),
+            "§0.4.4: finish (RunFinished) drops the registry entry but never cancels — a normal finish leaves an outstanding worker clone live"
+        );
+        assert!(
+            !reg.cancel(run_id()),
+            "§0.4.4: after finish the run is no longer registered, so a later cancel is a no-op"
+        );
+    }
+
+    #[test]
+    fn run_registry_distinct_runs_have_independent_tokens() {
+        let reg = RunRegistry::default();
+        let a = reg.register(run_id());
+        let b = reg.register(run_id_other());
+        assert!(
+            reg.cancel(run_id()),
+            "run A is registered, so its cancel is found"
+        );
+        assert!(a.is_cancelled(), "§0.4.4: cancelling run A trips A's token");
+        assert!(
+            !b.is_cancelled(),
+            "§0.4.4: run A's cancel does not touch run B's independent token"
+        );
     }
 }
