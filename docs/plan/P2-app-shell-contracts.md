@@ -200,7 +200,7 @@
   needs: P2.31, P2.42
 - [x] **P2.44** [RUST] Build the `CollectedSetId` → `FrozenCollectedSet` registry (created on C1/C2a freeze; resolved by C3/C4/C5/C6; evicted on run-start/supersede/exit) · §0.4.4 §2.4
   needs: P2.22, P2.6
-- [ ] **P2.45** [RUST] Build the `CollectingId` → ingest-scoped token registry (frontend-generated id, registered at handler entry, dropped on EVERY exit branch) · §0.4.4 §1.1
+- [x] **P2.45** [RUST] Build the `CollectingId` → ingest-scoped token registry (frontend-generated id, registered at handler entry, dropped on EVERY exit branch) · §0.4.4 §1.1
   needs: P2.35, P2.23, P2.133
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.133` — this ingest-scoped registry indexes a `tokio_util::sync::CancellationToken` (§0.4.4 / §1.1, the C13 `cancel_ingest` token), so like the P2.42 run-registry it directly names the `tokio-util` type and must build after the dep-add box (P2.133, later in doc order); acyclic. P2.42 (run) + P2.45 (ingest) are the two same-phase token-registry ROOTS carrying the explicit edge; their consumers (P2.69/P2.70/P2.71 via P2.45) reach P2.133 transitively.
 - [ ] **P2.46** [DOC] Record the macOS reload-during-run non-recovery scope (`[DECIDED]` post-terminal re-serve only) · §0.4.4
