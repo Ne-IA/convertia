@@ -14,14 +14,17 @@
 //! `crate::domain` a pure leaf (the §0.7 ‡ note, the owner-decided P2.10 tier-finalisation). The sibling
 //! `JobStage` (no outcome ref) stays in `crate::domain`.
 //!
-//! It also homes the three §0.4.4 orchestrator-State stores (per §0.7, under the §0.7 "(§0.4.4)" umbrella) —
+//! It also homes the four §0.4.4 orchestrator-State stores (per §0.7, under the §0.7 "(§0.4.4)" umbrella) —
 //! distinct from the outcome-referencing types above: the `RunRegistry` (the `RunId` → `CancellationToken`
 //! run-cancellation-token store, P2.42; its register-at-C6 / cancel-at-C7 / drop-on-`RunFinished` WIRING is the
 //! P3.46 conductor), its sibling the `RunResultStore` (the process-local terminal-`RunResult` retention for C8
 //! re-serve, P2.43; no on-disk persistence per §7.4, its retain-at-`RunFinished` / evict-at-C6 / get-at-C8
-//! WIRING likewise P3.46), and the `CollectedSetRegistry` (the `CollectedSetId` → `FrozenCollectedSet` resolve
+//! WIRING likewise P3.46), the `CollectedSetRegistry` (the `CollectedSetId` → `FrozenCollectedSet` resolve
 //! store, P2.44; so the bare-`collectedSetId` C3/C4/C5/C6 commands resolve the frozen detection result without
-//! a second walk, its register-at-C1/C2a-freeze / resolve-at-C3/C4/C5 / take-at-C6 WIRING likewise P3.46).
+//! a second walk, its register-at-C1/C2a-freeze / resolve-at-C3/C4/C5 / take-at-C6 WIRING likewise P3.46), and
+//! the `IngestRegistry` (the `CollectingId` → `CancellationToken` ingest-cancellation store, P2.45; the
+//! one-phase-earlier sibling of `RunRegistry`, so C13 `cancel_ingest` can trip an in-flight C1/C2a walk — its
+//! register-at-handler-entry / cancel-at-C13 / release-on-every-handler-exit WIRING is C1/C2a/C13 + P2.69-71).
 
 // [Build-Session-Entscheidung: P2.10/P2.11/P2.12] dead_code expect — the lifecycle/DTO/result types homed
 // here (Batch/ConversionJob/JobState, the C4/C5 DTOs, and the §1.12 RunResult/ItemResult/Totals/
@@ -35,7 +38,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the three §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44) are authored as contracts before the P3.46 orchestrator behaviour + the C1/C2a/C3/C4/C5/C6/C8 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so they are dead in the production build until consumed."
+        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) are authored as contracts before the P3.46 orchestrator behaviour + the C1/C2a/C3/C4/C5/C6/C7/C8/C13 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so they are dead in the production build until consumed."
     )
 )]
 
@@ -48,8 +51,8 @@ use specta::Type;
 use tokio_util::sync::CancellationToken;
 
 use crate::domain::{
-    CollectedSetId, DestinationChoice, DivertReason, DroppedItem, FrozenCollectedSet, ItemId,
-    JobStage, OptionValues, OutputPlan, RerunPrompt, RunId, SkipReason, Target, TargetId,
+    CollectedSetId, CollectingId, DestinationChoice, DivertReason, DroppedItem, FrozenCollectedSet,
+    ItemId, JobStage, OptionValues, OutputPlan, RerunPrompt, RunId, SkipReason, Target, TargetId,
     UserFacingFormat,
 };
 use crate::outcome::{ConversionErrorKind, IpcError, OutcomeMsg};
@@ -777,6 +780,94 @@ impl CollectedSetRegistry {
     /// / already-superseded id → the C6 §0.4.3 not-available error).
     pub fn take(&self, id: CollectedSetId) -> Option<Arc<FrozenCollectedSet>> {
         self.lock().remove(&id)
+    }
+}
+
+// ─── §0.4.4 ingest registry — the CollectingId → CancellationToken ingest-cancellation store (P2.45) ──
+// [Build-Session-Entscheidung: P2.45] The FOURTH §0.4.4 orchestrator-State store, the one-phase-EARLIER
+// sibling of the RunRegistry (P2.42): same RunId-token shape, but keyed by the frontend-generated
+// CollectingId (§0.4.4 / §1.1) so C13 cancel_ingest can trip an IN-FLIGHT C1 walk / C2a pick before its
+// long await resolves. Homed here under the same §0.7 "(§0.4.4) cancellation" umbrella as the RunRegistry
+// (no §0.7/§1a structural edit — the P2.43/P2.44 precedent). Like the sibling stores it is a CONTRACT
+// before its consumer: the register-at-handler-entry (C1 walk start / C2a BEFORE the dialog opens, §1.1) /
+// cancel-at-C13 / release-on-EVERY-handler-exit-branch WIRING is the C1/C2a/C13 handler bodies + the
+// walk-loop poll (P2.69/P2.70/P2.71) — the C13 shell (P2.35) already trips no token pending this store —
+// so it is dead in the production build until consumed (covered by the module-level dead_code expect).
+
+/// The §0.4.4 ingest registry — maps each in-flight `CollectingId` to its `tokio_util::sync::
+/// CancellationToken`, so C13 `cancel_ingest` can cooperatively cancel an in-flight C1 walk / C2a pick
+/// (§0.4.4 / §1.1). The one-phase-EARLIER sibling of [`RunRegistry`]: the `CollectingId` is minted by the
+/// frontend and handed to C1/C2a as an argument (so a C13 can target the ingest before any `RunId`
+/// exists). Held as a Tauri app-managed `State` (the wiring is the C1/C2a/C13 handlers). Its §0.4.4
+/// lifecycle is this type's three methods: [`register`](IngestRegistry::register) at handler entry (C1 at
+/// the start of the walk; C2a *before* the native dialog opens, §1.1, so a C13 during the modal is
+/// honoured), [`cancel`](IngestRegistry::cancel) at C13 `cancel_ingest` (trip it — cooperative), and
+/// [`release`](IngestRegistry::release) on **EVERY** handler exit branch (the normal walk-completes return,
+/// the C13-tripped return, AND the C2a cancelled-dialog → `CollectedSet::Empty` return — the spec's
+/// "the handler drops it explicitly, no token leak", §0.4.4). Interior-mutable behind a `Mutex` (the
+/// `State` form serves concurrent C1/C2a/C13 handlers); every critical section is a whole-map op that never
+/// holds the guard across an `.await`, so a plain `std::sync::Mutex` (not an async lock) is correct.
+///
+/// [Build-Session-Entscheidung: P2.45] `Default`-constructed empty; `Debug` for parity with the sibling
+/// stores. NOT a wire type (no `serde`/`specta`) — pure core-internal State that never crosses IPC (the
+/// WebView drives ingest cancellation through the C13 command + the minted `CollectingId`, never sees a
+/// token). The exit-drop method is named `release` (not the `RunRegistry`'s `finish`) because it fires on
+/// EVERY exit branch — cancelled / errored / completed alike — which "finish" would mis-describe.
+#[derive(Debug, Default)]
+pub struct IngestRegistry {
+    /// The active `CollectingId` → `CancellationToken` map. A `CollectingId` is a frontend-minted per-ingest
+    /// v4 (§0.4.4), registered once at handler entry and removed once on the handler's exit, so no key ever
+    /// legitimately collides.
+    tokens: Mutex<HashMap<CollectingId, CancellationToken>>,
+}
+
+impl IngestRegistry {
+    /// Lock the token map, recovering the guard from a poisoned lock rather than propagating the panic — the
+    /// in-core no-panic discipline (G4/G14: no `unwrap`/`expect`/`panic`), sound because the critical
+    /// sections are infallible whole-map ops that never panic. [Build-Session-Entscheidung: P2.45]
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<CollectingId, CancellationToken>> {
+        self.tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Register a fresh `CancellationToken` for `collecting_id` at handler entry (C1 walk start / C2a before
+    /// the dialog opens, §0.4.4 / §1.1) and store it. Returns a clone for the walk/pick to poll: a
+    /// `CancellationToken` is a cheap `Arc`-backed handle, so the stored copy and the returned copy share ONE
+    /// cancellation state (a C13 `cancel` trips all). A `CollectingId` is unique per ingest (§0.4.4), so this
+    /// never overwrites a live entry; a collision could only be a programming error and would merely drop the
+    /// stale token.
+    pub fn register(&self, collecting_id: CollectingId) -> CancellationToken {
+        let token = CancellationToken::new();
+        self.lock().insert(collecting_id, token.clone());
+        token
+    }
+
+    /// Trip the `collecting_id`'s token (C13 `cancel_ingest`, §0.4.4) — cooperative cancellation of the
+    /// in-flight ingest. Returns `true` if a live token was found and tripped, `false` if `collecting_id` is
+    /// unknown or already released — the §0.4.1 C13 idempotent no-op-cancel case (cancelling a
+    /// completed/absent ingest is a clean no-op the C13 handler maps to `Ok(())`, never an error). The token
+    /// is left IN the map until [`release`](IngestRegistry::release) (the walk may still observe the cancel
+    /// before the handler exits). The token is cloned out before the guard drops, so `.cancel()` runs without
+    /// holding the lock.
+    pub fn cancel(&self, collecting_id: CollectingId) -> bool {
+        let token = self.lock().get(&collecting_id).cloned();
+        match token {
+            Some(token) => {
+                token.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Drop the `collecting_id`'s token on a handler exit (§0.4.4) — called on **EVERY** exit branch of the
+    /// C1/C2a handler (normal walk-completes, C13-tripped, and the C2a cancelled-dialog → `Empty` return,
+    /// where the walk loop that would otherwise drop it never runs), so no token leaks. This is NOT a cancel
+    /// — an outstanding poll clone is left un-cancelled on the normal-completion branch. Idempotent:
+    /// releasing an unknown / already-released ingest is a no-op.
+    pub fn release(&self, collecting_id: CollectingId) {
+        self.lock().remove(&collecting_id);
     }
 }
 
@@ -1788,6 +1879,106 @@ mod tests {
         assert!(
             reg.resolve(live).is_some(),
             "§0.4.4: a mismatched take leaves the live set untouched (the id-keyed map guards it)"
+        );
+    }
+
+    /// A `CollectingId` for the §0.4.4 ingest-registry tests — built via its public bare-uuid wire form
+    /// (the inner `Uuid` is private to `crate::domain`), like the sibling id helpers.
+    fn collecting_id() -> CollectingId {
+        serde_json::from_str(r#""55555555-5555-4555-8555-555555555555""#)
+            .expect("CollectingId deserializes from a uuid string")
+    }
+    /// A second, distinct `CollectingId` — for the independent-token test (two in-flight ingests).
+    fn collecting_id_other() -> CollectingId {
+        serde_json::from_str(r#""66666666-6666-4666-8666-666666666666""#)
+            .expect("CollectingId deserializes from a uuid string")
+    }
+
+    // §6.4.1 unit (G15): the §0.4.4 ingest-registry lifecycle (P2.45) — the one-phase-earlier sibling of the
+    // run registry. `register` mints a LIVE token, `cancel` (C13) trips it + reports found, an unknown/released
+    // `cancel` is the §0.4.1 C13 idempotent no-op (→ Ok(()) at the handler), `release` drops WITHOUT cancelling
+    // and is idempotent on EVERY exit branch (incl. the C2a cancelled-dialog branch where the walk never ran),
+    // and distinct ingests hold independent tokens. No tokio runtime needed — `CancellationToken::new`/`cancel`/
+    // `is_cancelled` are synchronous atomic ops (only `.cancelled().await` would need a runtime).
+    #[test]
+    fn ingest_registry_register_yields_a_live_token() {
+        let reg = IngestRegistry::default();
+        let token = reg.register(collecting_id());
+        assert!(
+            !token.is_cancelled(),
+            "§0.4.4: a freshly registered ingest's token is live (not cancelled)"
+        );
+    }
+
+    #[test]
+    fn ingest_registry_cancel_trips_the_registered_token_and_reports_found() {
+        let reg = IngestRegistry::default();
+        let token = reg.register(collecting_id());
+        assert!(
+            reg.cancel(collecting_id()),
+            "§0.4.4: C13 cancelling a registered ingest reports the token was found"
+        );
+        assert!(
+            token.is_cancelled(),
+            "§0.4.4: cancel trips the ingest's token — the stored copy and the handed-out poll clone share one state"
+        );
+    }
+
+    #[test]
+    fn ingest_registry_cancel_unknown_ingest_is_the_idempotent_no_op() {
+        let reg = IngestRegistry::default();
+        assert!(
+            !reg.cancel(collecting_id()),
+            "§0.4.1/§0.4.4: C13 cancelling an unknown / already-released ingest is a clean no-op returning false (the handler maps it to Ok(()))"
+        );
+    }
+
+    #[test]
+    fn ingest_registry_release_drops_the_token_without_cancelling() {
+        let reg = IngestRegistry::default();
+        let token = reg.register(collecting_id());
+        reg.release(collecting_id());
+        assert!(
+            !token.is_cancelled(),
+            "§0.4.4: release (a handler exit branch) drops the registry entry but never cancels — the normal walk-completes branch leaves the poll clone live"
+        );
+        assert!(
+            !reg.cancel(collecting_id()),
+            "§0.4.4: after release the ingest is no longer registered, so a later C13 cancel is a no-op"
+        );
+    }
+
+    #[test]
+    fn ingest_registry_release_on_every_exit_branch_is_idempotent() {
+        let reg = IngestRegistry::default();
+        // The C2a cancelled-dialog → Empty branch: the handler explicitly releases even though the walk loop
+        // never ran. Releasing an id that was registered-then-not-walked, and double-releasing, are no-ops.
+        reg.register(collecting_id());
+        reg.release(collecting_id());
+        reg.release(collecting_id()); // double release (e.g. cancel-then-exit) — idempotent
+        reg.release(collecting_id_other()); // releasing a never-registered id — idempotent
+        assert!(
+            !reg.cancel(collecting_id()),
+            "§0.4.4: release on every exit branch is idempotent — no token leak, no panic, the entry is gone"
+        );
+    }
+
+    #[test]
+    fn ingest_registry_distinct_ingests_have_independent_tokens() {
+        let reg = IngestRegistry::default();
+        let a = reg.register(collecting_id());
+        let b = reg.register(collecting_id_other());
+        assert!(
+            reg.cancel(collecting_id()),
+            "ingest A is registered, so its C13 cancel is found"
+        );
+        assert!(
+            a.is_cancelled(),
+            "§0.4.4: cancelling ingest A trips A's token"
+        );
+        assert!(
+            !b.is_cancelled(),
+            "§0.4.4: ingest A's cancel does not touch ingest B's independent token"
         );
     }
 }
