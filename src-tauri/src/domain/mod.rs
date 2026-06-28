@@ -57,6 +57,20 @@ impl InstanceId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 pub struct RunId(Uuid);
 
+impl RunId {
+    /// Mint the per-run id — §7.1.2: a random **v4** UUID, minted **when C6 `start_conversion` ACCEPTS the
+    /// batch** (the convert-begins point, §0.4.1 C6 / §0.4.4), **NOT at the §2.4 freeze** — the freeze yields
+    /// the `CollectedSetId` (the pre-run identity), so a `RunId` (and thus the per-run scratch `run-<RunId>/`,
+    /// §2.6.1) never exists before convert begins. This box (P2.48) fixes the mint POINT + adds the mechanism;
+    /// the C6 BODY that calls it at accept is P3.46. Named `mint` (not `new`) per the §7.1 "minted" vocabulary
+    /// and to avoid `clippy::new_without_default` (a random `Default` would be a surprising, non-deterministic
+    /// default), mirroring `InstanceId::mint`. [Build-Session-Entscheidung: P2.48]
+    #[must_use]
+    pub fn mint() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
 /// The frozen collected-set handle the C3–C6 commands resolve (§0.4 / §0.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 pub struct CollectedSetId(Uuid);
@@ -1108,6 +1122,23 @@ mod tests {
             a.0.get_version_num(),
             4,
             "§7.1.2: InstanceId is a v4 (random) UUID"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §7.1.2 RunId minting contract — a fresh, non-nil v4 per run. The mint POINT is
+    // C6 `start_conversion` accept (NOT the §2.4 freeze, which yields the CollectedSetId — §0.4.4); this box
+    // (P2.48) fixes the point + adds the mechanism, the at-C6-accept call site is P3.46. Mirrors the
+    // InstanceId mint test.
+    #[test]
+    fn run_id_mint_is_unique_nonnil_v4() {
+        let a = RunId::mint();
+        let b = RunId::mint();
+        assert_ne!(a, b, "each run mints a distinct RunId (§7.1.2)");
+        assert_ne!(a.0, Uuid::nil(), "a minted RunId is never the nil UUID");
+        assert_eq!(
+            a.0.get_version_num(),
+            4,
+            "§7.1.2: RunId is a v4 (random) UUID"
         );
     }
 
