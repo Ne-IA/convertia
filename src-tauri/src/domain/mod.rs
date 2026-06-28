@@ -506,6 +506,100 @@ pub enum CollectedNoteKind {
     Other,
 }
 
+/// The §0.4.4 collected-set registry's stored value — the **frozen projection of a
+/// `CollectedSet::Single`** the core retains so the bare-`collectedSetId` C3 `get_targets` /
+/// C4 `plan_output` / C5 `set_destination` / C6 `start_conversion` commands resolve back to the
+/// detected format, the frozen `items`, the dropped `roots`, and the `skipped` view **without a
+/// second walk or re-detection** (§0.4.4). It carries the **FULL `Single` payload** (every field —
+/// §0.4.4 "store this payload + its roots"): C3 reads `format`, C4/C5 plan against `roots`, C6
+/// rebuilds the `Batch` from `items` (and §2.7 needs `roots` for subtree re-creation); the
+/// size/hints/notes are retained so a post-reload confirm re-render (§1.4) stays faithful.
+///
+/// Only a `CollectedSet::Single` yields a registrable entry — `Mixed`/`Unsupported`/`Uncertain`/
+/// `Empty` are terminal pre-flight states with no resolvable `CollectedSetId` (§0.4.4 / §0.6
+/// invariant 3), so the projection is fallible:
+/// [`from_collected`](FrozenCollectedSet::from_collected) returns `Some` ONLY for a `Single`. The
+/// store that holds these keyed by `CollectedSetId` is the `crate::orchestrator::CollectedSetRegistry`
+/// (the §0.4.4 State store, P2.44) — a downward `orchestrator`→`domain` edge, like the `RunRegistry`'s
+/// `RunId` key.
+///
+/// [Build-Session-Entscheidung: P2.44] Core-INTERNAL (NOT a wire type) — it never crosses IPC: C3–C6
+/// resolve it core-side and return their OWN §0.6 DTOs (`TargetOffer`/`OutputPlanPreview`/…), the
+/// WebView never sees a `FrozenCollectedSet`. So it derives NO `serde`/`specta` — only `Debug, Clone,
+/// PartialEq, Eq` (the internal-type set, like the orchestrator-internal `Batch`/`OutputPlan`); NOT
+/// `Copy` (owns `Vec`/`String`/`PathBuf` fields). Every field type is `Eq`, backing the projection test.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrozenCollectedSet {
+    /// The set's handle — the §0.4.4 registry key (also the C3–C6 `collectedSetId` argument). Kept
+    /// inside the value (mirroring the `Single` payload) so the registry insert is self-keyed off `id`.
+    pub id: CollectedSetId,
+    /// The instance that froze this set (§7.1.2) — carried through from `Single`.
+    pub instance: InstanceId,
+    /// The single eligible user-facing source format (§1.3 grouping key) — what C3 `get_targets` reads.
+    pub format: UserFacingFormat,
+    /// The frozen eligible items (§2.4) — what C6 rebuilds the `Batch` from (no second walk).
+    pub items: Vec<DroppedItem>,
+    /// The eligible-item tally (§1.4) — `count == items.len()` (the `Single` invariant, carried through).
+    pub count: usize,
+    /// The id-disjoint ineligible (pre-flight `Skipped`) view (§0.6 invariant 6) — projected into the
+    /// §1.12 summary; retained so C6 can carry the skips forward.
+    pub skipped: Vec<SkippedItem>,
+    /// The §1.10 pre-flight size hint (§1.4) — retained for the C4/C5 estimate.
+    pub total_bytes: u64,
+    /// The dropped root(s) (§2.7) — what C4/C5 plan against + the §2.7 subtree / open-folder anchor.
+    pub roots: Vec<PathBuf>,
+    /// A detection-derived encoding hint (e.g. CSV "Windows-1252", per §04) — retained for re-render.
+    pub encoding_hint: Option<String>,
+    /// A detection-derived delimiter hint (e.g. CSV/TSV ";", per §04) — retained for re-render.
+    pub delimiter_hint: Option<String>,
+    /// The §1.4 structural-peek notes — retained for a post-reload confirm re-render (§1.4).
+    pub notes: Vec<CollectedNote>,
+}
+
+impl FrozenCollectedSet {
+    /// Project a `CollectedSet` into a registrable `FrozenCollectedSet` (§0.4.4) — `Some` ONLY for a
+    /// `Single` (the only outcome with a resolvable `CollectedSetId`, §0.6 invariant 3); `None` for the
+    /// terminal `Mixed`/`Unsupported`/`Uncertain`/`Empty` pre-flight states, which the registry never
+    /// stores. Clones the `Single` payload (the wire copy C1/C2a returns is serialized then dropped;
+    /// this retained copy out-lives it). The **exhaustive `Single { .. }` destructure (NO `..`)** makes
+    /// a new `Single` field a COMPILE error here, so the frozen projection can never silently drift from
+    /// the `Single` payload it mirrors. [Build-Session-Entscheidung: P2.44]
+    #[must_use]
+    pub fn from_collected(set: &CollectedSet) -> Option<Self> {
+        match set {
+            CollectedSet::Single {
+                id,
+                instance,
+                format,
+                items,
+                count,
+                skipped,
+                total_bytes,
+                roots,
+                encoding_hint,
+                delimiter_hint,
+                notes,
+            } => Some(Self {
+                id: *id,
+                instance: *instance,
+                format: *format,
+                items: items.clone(),
+                count: *count,
+                skipped: skipped.clone(),
+                total_bytes: *total_bytes,
+                roots: roots.clone(),
+                encoding_hint: encoding_hint.clone(),
+                delimiter_hint: delimiter_hint.clone(),
+                notes: notes.clone(),
+            }),
+            CollectedSet::Mixed { .. }
+            | CollectedSet::Unsupported { .. }
+            | CollectedSet::Uncertain { .. }
+            | CollectedSet::Empty { .. } => None,
+        }
+    }
+}
+
 // ─── §0.6 wire DTOs for the C-commands + app:// hand-off (§0.4.1 / §0.4.2) ───────
 // [Build-Session-Entscheidung: P2.7] The §0.6 "Intake & detection" wire-DTO group. Each derives
 // `specta::Type` + camelCase per the §0.6 wire convention so it mirrors to `bindings.ts` as a named type;
@@ -1717,6 +1811,128 @@ mod tests {
             }
         }
         exhaustive(&CollectedSet::Empty { skipped: vec![] });
+    }
+
+    // §6.4.1 unit (G15): the §0.4.4 `FrozenCollectedSet::from_collected` projection (P2.44). A `Single`
+    // projects to `Some` carrying EVERY payload field verbatim (the registry stores the full Single
+    // payload so C3 reads `format`, C4/C5 plan against `roots`, C6 rebuilds from `items` — §0.4.4); each
+    // of the four terminal pre-flight outcomes (Mixed/Unsupported/Uncertain/Empty) projects to `None`
+    // (no resolvable CollectedSetId — §0.6 invariant 3 / §0.4.4 "only a Single yields a resolvable id").
+    // The non-trivial values in EVERY field (2 items, a skip, both hints Some, a note, populated roots)
+    // prove the projection copies each field, not just the easy ones.
+    #[test]
+    fn frozen_collected_set_projects_only_single_with_full_payload() {
+        let items = vec![
+            DroppedItem {
+                item: ItemId(0),
+                raw_path: PathBuf::from("a.csv"),
+                resolved_path: PathBuf::from("/abs/a.csv"),
+                size_bytes: 2048,
+                detected: DetectionOutcome::Recognized {
+                    format: UserFacingFormat::Csv,
+                    confidence: Confidence::High,
+                    dims: None,
+                },
+            },
+            DroppedItem {
+                item: ItemId(1),
+                raw_path: PathBuf::from("b.csv"),
+                resolved_path: PathBuf::from("/abs/b.csv"),
+                size_bytes: 4096,
+                detected: DetectionOutcome::Recognized {
+                    format: UserFacingFormat::Csv,
+                    confidence: Confidence::High,
+                    dims: None,
+                },
+            },
+        ];
+        let skipped = vec![SkippedItem {
+            item: ItemId(2),
+            source: PathBuf::from("notes.xyz"),
+            reason: SkipReason::UnsupportedType,
+        }];
+        let roots = vec![PathBuf::from("/abs")];
+        let notes = vec![CollectedNote {
+            kind: CollectedNoteKind::MultipleSheets,
+            detail: Some("3 sheets".to_owned()),
+        }];
+        let single = CollectedSet::Single {
+            id: CollectedSetId(Uuid::nil()),
+            instance: InstanceId(Uuid::nil()),
+            format: UserFacingFormat::Csv,
+            items: items.clone(),
+            count: 2,
+            skipped: skipped.clone(),
+            total_bytes: 6144,
+            roots: roots.clone(),
+            encoding_hint: Some("Windows-1252".to_owned()),
+            delimiter_hint: Some(";".to_owned()),
+            notes: notes.clone(),
+        };
+
+        let frozen = FrozenCollectedSet::from_collected(&single)
+            .expect("§0.4.4: a CollectedSet::Single projects to a FrozenCollectedSet");
+        assert_eq!(frozen.id, CollectedSetId(Uuid::nil()), "id carried through");
+        assert_eq!(
+            frozen.instance,
+            InstanceId(Uuid::nil()),
+            "instance carried through"
+        );
+        assert_eq!(
+            frozen.format,
+            UserFacingFormat::Csv,
+            "§0.4.4: format carried (C3 get_targets reads it)"
+        );
+        assert_eq!(
+            frozen.items, items,
+            "§0.4.4: frozen items carried (C6 rebuilds the Batch from them)"
+        );
+        assert_eq!(
+            frozen.count, 2,
+            "count carried (== items.len(), the Single invariant)"
+        );
+        assert_eq!(
+            frozen.skipped, skipped,
+            "§0.6: the id-disjoint skipped view carried"
+        );
+        assert_eq!(frozen.total_bytes, 6144, "§1.10: the size hint carried");
+        assert_eq!(
+            frozen.roots, roots,
+            "§2.7: the dropped roots carried (C4/C5 plan against them)"
+        );
+        assert_eq!(
+            frozen.encoding_hint.as_deref(),
+            Some("Windows-1252"),
+            "the encoding hint carried"
+        );
+        assert_eq!(
+            frozen.delimiter_hint.as_deref(),
+            Some(";"),
+            "the delimiter hint carried"
+        );
+        assert_eq!(
+            frozen.notes, notes,
+            "§1.4: the structural-peek notes carried"
+        );
+
+        // The four terminal pre-flight outcomes are NOT registrable — no resolvable CollectedSetId.
+        for terminal in [
+            CollectedSet::Mixed {
+                found: vec![(UserFacingFormat::Jpg, 2), (UserFacingFormat::Png, 1)],
+            },
+            CollectedSet::Unsupported {
+                detected: "PostScript".to_owned(),
+            },
+            CollectedSet::Uncertain {
+                note: "could be tiff or raw".to_owned(),
+            },
+            CollectedSet::Empty { skipped: vec![] },
+        ] {
+            assert!(
+                FrozenCollectedSet::from_collected(&terminal).is_none(),
+                "§0.4.4/§0.6 invariant 3: a non-Single outcome has no resolvable CollectedSetId, so it is never frozen"
+            );
+        }
     }
 
     // §6.4.1 unit (G15): the C2a `PickKind` arg — Files/Folder in the §0.4.3 camelCase wire form,

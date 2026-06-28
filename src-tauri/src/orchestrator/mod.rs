@@ -14,11 +14,14 @@
 //! `crate::domain` a pure leaf (the §0.7 ‡ note, the owner-decided P2.10 tier-finalisation). The sibling
 //! `JobStage` (no outcome ref) stays in `crate::domain`.
 //!
-//! It also homes the two §0.4.4 orchestrator-State stores (per §0.7) — distinct from the outcome-referencing
-//! types above: the `RunRegistry` (the `RunId` → `CancellationToken` run-cancellation-token store, P2.42; its
-//! register-at-C6 / cancel-at-C7 / drop-on-`RunFinished` WIRING is the P3.46 conductor) and its sibling the
-//! `RunResultStore` (the process-local terminal-`RunResult` retention for C8 re-serve, P2.43; no on-disk
-//! persistence per §7.4, its retain-at-`RunFinished` / evict-at-C6 / get-at-C8 WIRING likewise P3.46).
+//! It also homes the three §0.4.4 orchestrator-State stores (per §0.7, under the §0.7 "(§0.4.4)" umbrella) —
+//! distinct from the outcome-referencing types above: the `RunRegistry` (the `RunId` → `CancellationToken`
+//! run-cancellation-token store, P2.42; its register-at-C6 / cancel-at-C7 / drop-on-`RunFinished` WIRING is the
+//! P3.46 conductor), its sibling the `RunResultStore` (the process-local terminal-`RunResult` retention for C8
+//! re-serve, P2.43; no on-disk persistence per §7.4, its retain-at-`RunFinished` / evict-at-C6 / get-at-C8
+//! WIRING likewise P3.46), and the `CollectedSetRegistry` (the `CollectedSetId` → `FrozenCollectedSet` resolve
+//! store, P2.44; so the bare-`collectedSetId` C3/C4/C5/C6 commands resolve the frozen detection result without
+//! a second walk, its register-at-C1/C2a-freeze / resolve-at-C3/C4/C5 / take-at-C6 WIRING likewise P3.46).
 
 // [Build-Session-Entscheidung: P2.10/P2.11/P2.12] dead_code expect — the lifecycle/DTO/result types homed
 // here (Batch/ConversionJob/JobState, the C4/C5 DTOs, and the §1.12 RunResult/ItemResult/Totals/
@@ -32,21 +35,22 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the two §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43) are authored as contracts before the P3.46 orchestrator behaviour + the C4/C5/C8 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so they are dead in the production build until consumed."
+        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the three §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44) are authored as contracts before the P3.46 orchestrator behaviour + the C1/C2a/C3/C4/C5/C6/C8 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so they are dead in the production build until consumed."
     )
 )]
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use specta::Type;
 use tokio_util::sync::CancellationToken;
 
 use crate::domain::{
-    CollectedSetId, DestinationChoice, DivertReason, DroppedItem, ItemId, JobStage, OptionValues,
-    OutputPlan, RerunPrompt, RunId, SkipReason, Target, TargetId, UserFacingFormat,
+    CollectedSetId, DestinationChoice, DivertReason, DroppedItem, FrozenCollectedSet, ItemId,
+    JobStage, OptionValues, OutputPlan, RerunPrompt, RunId, SkipReason, Target, TargetId,
+    UserFacingFormat,
 };
 use crate::outcome::{ConversionErrorKind, IpcError, OutcomeMsg};
 
@@ -694,11 +698,93 @@ impl RunResultStore {
     }
 }
 
+// ─── §0.4.4 collected-set registry — the CollectedSetId → FrozenCollectedSet resolve store (P2.44) ────
+// [Build-Session-Entscheidung: P2.44] The THIRD §0.4.4 orchestrator-State store (after RunRegistry P2.42 +
+// RunResultStore P2.43), homed here under the same §0.7 "(§0.4.4)" umbrella RunResultStore set the precedent
+// for — a §0.4.4 State store added to orchestrator with NO §0.7/§1a structural edit (§0.7 attributes "(§0.4.4)"
+// State to orchestrator; it enumerates the outcome-referencing TYPES, not every store, so a third store under
+// the umbrella needs no fingerprint re-bless). It holds the frozen `CollectedSet::Single` payload (a
+// crate::domain FrozenCollectedSet, a downward orchestrator→domain edge like RunRegistry's RunId key) keyed by
+// CollectedSetId, so the bare-`collectedSetId` C3/C4/C5/C6 commands resolve back to the detected format /
+// frozen items / roots / skipped WITHOUT a second walk or re-detection (§0.4.4). Like the sibling stores it is
+// a CONTRACT before its consumer: the register-at-C1/C2a-freeze / resolve-at-C3/C4/C5 / take-at-C6 WIRING is
+// the P3.46 conductor + the C-command bodies, so it is dead in the production build until then (covered by the
+// module-level dead_code expect).
+
+/// The §0.4.4 collected-set registry — maps each frozen `CollectedSetId` to its `FrozenCollectedSet` (the
+/// `CollectedSet::Single` payload), held as a Tauri app-managed `State` so the bare-`collectedSetId` C3
+/// `get_targets` / C4 `plan_output` / C5 `set_destination` / C6 `start_conversion` commands resolve back to the
+/// frozen detection result without a second walk or re-detection (§0.4.4). Its §0.4.4 lifecycle is this type's
+/// methods: [`register`](CollectedSetRegistry::register) on a C1/C2a freeze (store the `Single` projection,
+/// SUPERSEDING any prior un-run set — §0.4.4 "a new C1/C2a supersedes it"),
+/// [`resolve`](CollectedSetRegistry::resolve) at C3/C4/C5 (a non-evicting read), and
+/// [`take`](CollectedSetRegistry::take) at C6 `start_conversion` (resolve + evict in one op — §0.4.4 "evicted
+/// when its run starts: C6 hands the frozen items to the Batch"). A process exit drops the store (no on-disk
+/// persistence, §7.4).
+///
+/// SUPERSEDE = at most one live entry: a new freeze clears any prior un-run set, so the registry never
+/// accumulates stale entries (§2.4.3 "a subsequent drop starts a NEW frozen set, never mutates an in-flight one";
+/// the in-flight set was already `take`n out by C6). The id-keyed map (not a single slot) is the §0.4.4 literal
+/// — it lets `resolve`/`take` reject a stale/superseded `collectedSetId` (→ `None` → the C-command's §0.4.3
+/// not-available error), never serving the wrong set for a mismatched id. Interior-mutable behind a `Mutex`
+/// (the `State` form serves concurrent C1/C3/C4/C5/C6 handlers); every critical section is a whole-map op that
+/// never holds the guard across an `.await`, so a plain `std::sync::Mutex` (not an async lock) is correct.
+///
+/// [Build-Session-Entscheidung: P2.44] Stores `Arc<FrozenCollectedSet>` (not a bare value): C4 is re-callable /
+/// debounced (~150 ms, §5.8) so the frozen set — a potentially-large `items` Vec — is READ MANY times per
+/// freeze; an `Arc` makes each `resolve`/`take` an O(1) handle clone instead of an O(n) deep copy (the
+/// read-many extension of the cheap-`CancellationToken`-clone the RunRegistry already relies on).
+/// `Default`-constructed empty; `Debug` for parity with the sibling stores. NOT a wire type (no
+/// `serde`/`specta`) — pure core-internal State that never crosses IPC (C3–C6 return their own §0.6 DTOs).
+#[derive(Debug, Default)]
+pub struct CollectedSetRegistry {
+    /// The live `CollectedSetId` → frozen-set map. At most one entry (the current un-run set): `register`
+    /// supersedes any prior, `take` (C6) removes it, a process exit drops the store.
+    sets: Mutex<HashMap<CollectedSetId, Arc<FrozenCollectedSet>>>,
+}
+
+impl CollectedSetRegistry {
+    /// Lock the set map, recovering the guard from a poisoned lock rather than propagating the panic — the
+    /// in-core no-panic discipline (G4/G14: no `unwrap`/`expect`/`panic`), sound because the critical
+    /// sections are infallible whole-map ops that never panic. [Build-Session-Entscheidung: P2.44]
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<CollectedSetId, Arc<FrozenCollectedSet>>> {
+        self.sets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Register the frozen set on a C1/C2a freeze (§0.4.4) — SUPERSEDES any prior un-run set (§0.4.4 "a new
+    /// C1/C2a supersedes it" + §2.4.3 "a subsequent drop starts a new frozen set"), so at most one entry is ever
+    /// live. Keyed by the set's own `id`. After this, C3/C4/C5 `resolve(id)` and C6 `take(id)` see it.
+    pub fn register(&self, frozen: FrozenCollectedSet) {
+        let id = frozen.id;
+        let mut sets = self.lock();
+        sets.clear();
+        sets.insert(id, Arc::new(frozen));
+    }
+
+    /// Resolve a `collectedSetId` to its frozen set (C3/C4/C5, §0.4.4) — a NON-evicting read (C3/C4/C5 may
+    /// each fire repeatedly; C4 is debounced-re-callable, §5.8). Returns the `Arc` clone iff `id` is the live
+    /// set; `None` if `id` is unknown or was superseded (→ the C-command's §0.4.3 not-available error). The
+    /// `Arc` is cloned out before the guard drops, so the lock is not held across the return.
+    pub fn resolve(&self, id: CollectedSetId) -> Option<Arc<FrozenCollectedSet>> {
+        self.lock().get(&id).map(Arc::clone)
+    }
+
+    /// Resolve AND evict the `collectedSetId` (C6 `start_conversion`, §0.4.4 "evicted when its run starts — C6
+    /// hands the frozen items to the Batch") — one op so the set leaves the registry exactly as its run
+    /// begins, never lingering to be re-run. Returns the `Arc` iff `id` was live; `None` otherwise (an unknown
+    /// / already-superseded id → the C6 §0.4.3 not-available error).
+    pub fn take(&self, id: CollectedSetId) -> Option<Arc<FrozenCollectedSet>> {
+        self.lock().remove(&id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::{
-        Availability, Confidence, DetectionOutcome, DivertReason, RerunPrompt, TargetId,
+        Availability, Confidence, DetectionOutcome, DivertReason, InstanceId, RerunPrompt, TargetId,
     };
     use proptest::prelude::*;
     use proptest::test_runner::{RngAlgorithm, TestRng, TestRunner};
@@ -1588,6 +1674,120 @@ mod tests {
             store.get(run_id()),
             None,
             "§0.4.4: evict (a new run starting) clears the retained result so a stale summary is not re-served"
+        );
+    }
+
+    /// A second, distinct `CollectedSetId` — for the §0.4.4 collected-set-registry stale/supersede tests.
+    fn collected_set_id_other() -> CollectedSetId {
+        serde_json::from_str(r#""33333333-3333-4333-8333-333333333333""#)
+            .expect("CollectedSetId deserializes from a uuid string")
+    }
+    /// A test `InstanceId` — the frozen set's owning instance (§7.1.2). Built via its public wire form, like
+    /// the id helpers above (the inner `Uuid` is private to `crate::domain`).
+    fn instance_id() -> InstanceId {
+        serde_json::from_str(r#""44444444-4444-4444-8444-444444444444""#)
+            .expect("InstanceId deserializes from a uuid string")
+    }
+    /// A minimal `FrozenCollectedSet` carrying `id` — empty payload, since the §0.4.4 registry's
+    /// register/resolve/take/supersede lifecycle is content-agnostic (the full-payload projection is tested
+    /// in `crate::domain::tests::frozen_collected_set_projects_only_single_with_full_payload`).
+    fn frozen_set(id: CollectedSetId) -> FrozenCollectedSet {
+        FrozenCollectedSet {
+            id,
+            instance: instance_id(),
+            format: UserFacingFormat::Csv,
+            items: vec![],
+            count: 0,
+            skipped: vec![],
+            total_bytes: 0,
+            roots: vec![],
+            encoding_hint: None,
+            delimiter_hint: None,
+            notes: vec![],
+        }
+    }
+
+    // §6.4.1 unit (G15): the §0.4.4 collected-set-registry lifecycle (P2.44). `register` stores the frozen
+    // set (keyed by its own id); `resolve` re-serves it for the matching `collectedSetId` WITHOUT evicting
+    // (C3/C4/C5 may each fire repeatedly); `take` (C6) resolves AND evicts in one op; `register` supersedes
+    // any prior un-run set (at most one live entry, §2.4.3); and a stale/mismatched id never resolves nor
+    // evicts the live set (the §0.4.3 not-available guard). `FrozenCollectedSet` is owned data, no runtime.
+    #[test]
+    fn collected_set_registry_register_then_resolve_returns_the_frozen_set() {
+        let reg = CollectedSetRegistry::default();
+        let id = collected_set_id();
+        reg.register(frozen_set(id));
+        assert_eq!(
+            reg.resolve(id).as_deref(),
+            Some(&frozen_set(id)),
+            "§0.4.4: a registered frozen set resolves for its own collectedSetId (C3/C4/C5/C6 read it)"
+        );
+    }
+
+    #[test]
+    fn collected_set_registry_resolve_unknown_id_is_none() {
+        let reg = CollectedSetRegistry::default();
+        assert!(
+            reg.resolve(collected_set_id()).is_none(),
+            "§0.4.4: an unknown collectedSetId resolves to None (the C-command maps it to its §0.4.3 not-available error)"
+        );
+    }
+
+    #[test]
+    fn collected_set_registry_resolve_does_not_evict() {
+        let reg = CollectedSetRegistry::default();
+        let id = collected_set_id();
+        reg.register(frozen_set(id));
+        assert!(reg.resolve(id).is_some(), "first resolve sees the set");
+        assert!(
+            reg.resolve(id).is_some(),
+            "§0.4.4: resolve is a NON-evicting read — C3/C4/C5 may each fire repeatedly (C4 is debounced-re-callable, §5.8)"
+        );
+    }
+
+    #[test]
+    fn collected_set_registry_take_resolves_and_evicts() {
+        let reg = CollectedSetRegistry::default();
+        let id = collected_set_id();
+        reg.register(frozen_set(id));
+        assert_eq!(
+            reg.take(id).as_deref(),
+            Some(&frozen_set(id)),
+            "§0.4.4: take (C6 start_conversion) resolves the frozen set the Batch is built from"
+        );
+        assert!(
+            reg.resolve(id).is_none(),
+            "§0.4.4: take EVICTS — once the run starts the set leaves the registry, never lingering to be re-run"
+        );
+    }
+
+    #[test]
+    fn collected_set_registry_register_supersedes_prior() {
+        let reg = CollectedSetRegistry::default();
+        reg.register(frozen_set(collected_set_id()));
+        reg.register(frozen_set(collected_set_id_other()));
+        assert!(
+            reg.resolve(collected_set_id()).is_none(),
+            "§0.4.4/§2.4.3: a new C1/C2a freeze supersedes the prior un-run set — the superseded id no longer resolves"
+        );
+        assert!(
+            reg.resolve(collected_set_id_other()).is_some(),
+            "§0.4.4: the latest frozen set is the one resolved (at most one live entry)"
+        );
+    }
+
+    #[test]
+    fn collected_set_registry_take_mismatched_id_does_not_evict_the_live_set() {
+        let reg = CollectedSetRegistry::default();
+        let live = collected_set_id();
+        reg.register(frozen_set(live));
+        assert!(
+            reg.take(collected_set_id_other()).is_none(),
+            "§0.4.4: taking an unknown / superseded id is a clean None, never the wrong set"
+        );
+        assert!(
+            reg.resolve(live).is_some(),
+            "§0.4.4: a mismatched take leaves the live set untouched (the id-keyed map guards it)"
         );
     }
 }
