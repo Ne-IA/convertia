@@ -193,7 +193,7 @@
 
 ## Registries & cancellation lifecycle (the orchestrator state)
 
-- [ ] **P2.42** [RUST] Build the `RunId` → `CancellationToken` run registry (created in C6, tripped by C7, dropped on `RunFinished`) · §0.4.4 §1.7
+- [x] **P2.42** [RUST] Build the `RunId` → `CancellationToken` run registry (created in C6, tripped by C7, dropped on `RunFinished`) · §0.4.4 §1.7
   needs: P2.29, P2.30, P2.133
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.133` points at the `tokio-util` dep-add box later in document order — the run registry indexes a `tokio_util::sync::CancellationToken` (§0.4.4 / §1.7), which has no crate to compile against until `tokio-util` is a direct dependency (P2.133), so DECISION C builds P2.133 first; the edge is acyclic and valid, the inversion documented at the `needs:` line (parity with the P2.34→P2.112 inversion). This run-registry (P2.42) and the ingest-registry (P2.45) are the **two same-phase token-registry ROOTS** that directly name the `tokio_util` type and carry the explicit `needs: P2.133` edge; their token consumers (P2.69/P2.70/P2.71 via P2.45, P2.83 via P2.42) reach P2.133 transitively, and the cross-phase consumers (P3.4/P3.43/P3.44/P3.52, P4.6) get `tokio-util` by phase order.
 - [ ] **P2.43** [RUST] Build the `RunResult` retention (process-local, until next run / app exit) for C8 re-serve · §0.4.4 §1.12 §7.4
