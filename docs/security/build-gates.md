@@ -456,15 +456,15 @@ Invariant checks (initial set; expanded during P0 review):
 7. **Generated-file structural sanity** — when validating a generated file, parse
    it (not regex) and assert non-empty/well-formed.
 8. **§0.11 ↔ §5 threat-map parity (bidirectional)** — every spec §0.11 class
-   (`T1, T2, T2a, T2b, T2c, T3, T3a, T4, T5, T6, T7, T8, T9a, T9b, T10, T11, T12` — **17**
-   classes (r3 added **T11** macOS engine-as-first-TCC-accessor; r15 added **T12** unsigned-distribution / download-MITM)) has
+   (`T1, T2, T2a, T2b, T2c, T3, T3a, T4, T5, T6, T7, T8, T9a, T9b, T10, T11, T12, T13` — **18**
+   classes (r3 added **T11** macOS engine-as-first-TCC-accessor; r15 added **T12** unsigned-distribution / download-MITM; P2.51 added **T13** macOS cross-user single-instance socket)) has
    exactly one row in security-concept.md §5, and every §5 threat row cites a `Gnn`
    that exists in this catalogue. Fails the build if a class loses its row or a row
    loses its gate (so the mapping can never silently drift). **The ONLY authoritative
    class enumeration is the §5 table + this check-8 canonical set (r7 — the security-concept
    §7 "FROZEN r1 14-class snapshot" is explicitly historical/superseded and a literal-string
    class scanner or a skimming fill-pass author could mis-read it as live):** this check reads
-   the class set ONLY from the §5 table and the canonical 17-class list here, NEVER from the §7
+   the class set ONLY from the §5 table and the canonical 18-class list here, NEVER from the §7
    frozen snapshot, so the superseded enumeration cannot leak into the parity check.
 9. **Inventory parity (membership checks)** — every IPC command named in prose ∈ the
    §0.4.1 **explicit enumerated set** (treated as a SET, **not** a contiguous `C1..C13`
@@ -789,7 +789,7 @@ Invariant checks (initial set; expanded during P0 review):
 - **T3a DLL/dylib side-loading (new §0.11 class).** Per-shared-object SHA-256 verify
   (G37), manifest-diff guard (G35), dynamic-dependency closure (G37b), bundle-only
   `PATH` on Windows. §0.11 → 15 classes (check 8 enumeration updated). *(r3 added T11 →
-  16 classes; r15 added T12 unsigned-distribution/download-MITM → **17 classes** (current);
+  16 classes; r15 added T12 unsigned-distribution/download-MITM → 17 classes; P2.51 added T13 macOS cross-user single-instance socket → **18 classes** (current);
   see §9 / §16 of security-concept.)*
 - **G2 secrets gate corrected.** The PEM-rule "catches a minisign key" claim was
   factually wrong (minisign keys have no `-----BEGIN-----` envelope) — a committed

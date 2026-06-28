@@ -40,7 +40,7 @@
 ### 7.1.1 Single-instance policy `[REC: single-instance, hand-off]`
 
 **Recommendation: ConvertIA runs as a single GUI instance per OS user session,**
-using the official **`tauri-plugin-single-instance`** (v2). Rationale:
+using the official **`tauri-plugin-single-instance`** (v2) (the per-OS-user scope holds on **Windows/Linux**; **macOS** is machine-global — see the macOS caveat below + §0.11 **T13**). Rationale:
 
 - The SSOT no-clobber guarantee is "absolute" and evaluated on the *resolved real
   file* with an exclusive create-new-or-fail final write (§2.1). That guarantee
@@ -91,7 +91,11 @@ follow in the same Builder chain. `tauri_plugin_dialog::init()` is **required** 
 - **Multi-user / fast-user-switching:** the lock is **per OS user**, not
   machine-global (the plugin's default lock scope), so two different logged-in
   users may each run their own instance — acceptable because their temp/scratch
-  (§2.14) and output locations are user-scoped anyway.
+  (§2.14) and output locations are user-scoped anyway. **macOS caveat `[DECIDED]`:**
+  this per-OS-user scope holds on **Windows** (per-Session `CreateMutexW`) and
+  **Linux** (session D-Bus) but is **NOT achievable on macOS** with this plugin (its
+  socket is machine-global `/tmp`) — see the accepted-limitation note below + the
+  §0.11 **T13** threat class.
 
 **`[DECIDED]` second-launch hand-off while mid-conversion = refuse-busy (option b).**
 When the primary instance is **mid-conversion**, a second launch's paths are
@@ -126,6 +130,26 @@ running instance, §7.8.1). v1 does **not** add defensive bundle-ID locking code
 this corner — it is recorded here so Phase 3 does not build unnecessary hardening for it.
 The §6.6 walkthrough confirms the normal one-`.app` path; the two-copies case is noted as a
 known limitation on the download page if it proves to matter.
+
+**macOS multi-user machine-global single-instance = accepted v1 limitation `[DECIDED]`.**
+`tauri-plugin-single-instance`'s macOS path hard-codes its single-instance socket at
+**`/tmp/{id}_si.sock`** (the plugin source; `/tmp` is world-writable + machine-global on
+macOS), so the **"per OS user, not machine-global" scope above is NOT achievable on macOS with
+this plugin** (Windows = per-Session `CreateMutexW`, Linux = session D-Bus, are per-user; macOS
+is the sole gap — the plugin exposes no API to relocate the socket). On a **multi-user Mac** two
+logged-in users share `/tmp/{id}_si.sock` (which carries the launch `cwd`+`argv`): the second
+user may not get their own instance, and the shared socket is a **local cross-user surface** (a
+different user can pre-bind to receive this user's launch paths, inject paths into the intake, or
+squat to break single-instance). **Accepted for v1, documented as threat class §0.11 T13 (not a
+code fix):** a local logged-in second macOS user is out of the offline-converter threat model;
+the injection half is bounded by the same §2.4 freeze re-validation as T2b (a substituted path
+only converts an A-readable file to an output beside it, no-clobber + link-safe); the leaked data
+is **user-visible launch PATHS**, not file contents; single-user Macs are the dominant config; and
+the **macOS PRIMARY single-instance path is the AppleEvent (§7.8)**, unaffected — the plugin's
+/tmp socket covers only direct-binary re-exec (the least-mature leg). v1 does **not** add a
+per-user-`$TMPDIR` macOS socket (the §0.11 T13 row records that option as the heavier path not
+taken); the §6.6 macOS walkthrough confirms the normal single-`.app` AppleEvent path is
+single-instance-correct.
 
 ### 7.1.2 `InstanceId` and `RunId` model `[DECIDED]`
 
