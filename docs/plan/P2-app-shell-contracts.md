@@ -203,7 +203,8 @@
 - [x] **P2.45** [RUST] Build the `CollectingId` → ingest-scoped token registry (frontend-generated id, registered at handler entry, dropped on EVERY exit branch) · §0.4.4 §1.1
   needs: P2.35, P2.23, P2.133
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.133` — this ingest-scoped registry indexes a `tokio_util::sync::CancellationToken` (§0.4.4 / §1.1, the C13 `cancel_ingest` token), so like the P2.42 run-registry it directly names the `tokio-util` type and must build after the dep-add box (P2.133, later in doc order); acyclic. P2.42 (run) + P2.45 (ingest) are the two same-phase token-registry ROOTS carrying the explicit edge; their consumers (P2.69/P2.70/P2.71 via P2.45) reach P2.133 transitively.
-- [ ] **P2.46** [DOC] Record the macOS reload-during-run non-recovery scope (`[DECIDED]` post-terminal re-serve only) · §0.4.4
+- [x] **P2.46** [DOC] Record the macOS reload-during-run non-recovery scope (`[DECIDED]` post-terminal re-serve only) · §0.4.4
+  > Reconciled: the `[DECIDED]` scope is already recorded in its authoritative home — spec [§0.4.4](../spec/00-architecture.md) (the "Reload-during-run is NOT a supported recovery path on macOS in v1" blockquote: post-terminal re-serve only; mid-run reload surfaces as `AppFault` via §5.8), authored at the docs-move `1f9ead0`. No new content — re-recording would violate one-home-per-fact; this `[DOC]` box confirms the record exists and the P2.43 `RunResultStore` (C8 re-serve) embodies it.
 
 ## Instance & run identity + single-instance policy (§7.1)
 
