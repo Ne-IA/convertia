@@ -51,6 +51,20 @@ impl InstanceId {
     pub fn mint() -> Self {
         Self(Uuid::new_v4())
     }
+
+    /// The per-instance scratch-root path SEGMENT — `<InstanceId>.<pid>` (§7.1.2 / §2.14): the central
+    /// per-run scratch dir is `…/convertia/scratch/<InstanceId>.<pid>/run-<RunId>/`. The `pid` (the OS
+    /// process id) is PASSED IN — this is a pure identity formatter, never an OS query — and is a
+    /// human-readable LABEL / fast pre-filter ONLY, **never the liveness predicate**: liveness is the
+    /// §2.6.3 advisory lock (PIDs are reused, so a PID alone is never a delete gate). The `.` separator
+    /// and this shape are what the §2.6.3 startup-sweep glob `convertia/scratch/<*>.<*>/run-*` matches.
+    /// The §2.14 path POLICY (the scratch base dir) + the §2.6 scratch lifecycle that assemble the full
+    /// path are `crate::run` (P3.1.2); this fixes only the §7.1.2 identity embedded in it.
+    /// [Build-Session-Entscheidung: P2.49]
+    #[must_use]
+    pub fn scratch_root_segment(self, pid: u32) -> String {
+        format!("{}.{}", self.0, pid)
+    }
 }
 
 /// One per `start_conversion` run (§0.4 C6 / §7.1).
@@ -68,6 +82,16 @@ impl RunId {
     #[must_use]
     pub fn mint() -> Self {
         Self(Uuid::new_v4())
+    }
+
+    /// The per-run scratch-subdir path SEGMENT — `run-<RunId>` (§7.1.2 / §2.14): the per-run working dir
+    /// `…/<InstanceId>.<pid>/run-<RunId>/` under the per-instance scratch root. The literal `run-` prefix
+    /// is what the §2.6.3 sweep glob `…/run-*` matches. The §2.14 path policy + the §2.6 scratch lifecycle
+    /// that assemble the full path are `crate::run` (P3.1.2); this fixes only the §7.1.2 identity embedded.
+    /// [Build-Session-Entscheidung: P2.49]
+    #[must_use]
+    pub fn run_subdir_segment(self) -> String {
+        format!("run-{}", self.0)
     }
 }
 
@@ -1139,6 +1163,25 @@ mod tests {
             a.0.get_version_num(),
             4,
             "§7.1.2: RunId is a v4 (random) UUID"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §7.1.2/§2.14 scratch-root identity SEGMENTS (P2.49) — the per-instance root is
+    // <InstanceId>.<pid> (the PID a human-readable LABEL, never the liveness gate — §2.6.3) and the per-run
+    // subdir is run-<RunId>; both shapes are exactly what the §2.6.3 startup-sweep glob
+    // `convertia/scratch/<*>.<*>/run-*` matches. The §2.14 path assembly + the §2.6 scratch lifecycle are
+    // crate::run (P3.1.2); this pins the identity embedding. The pid is PASSED IN (a pure formatter).
+    #[test]
+    fn scratch_root_and_run_subdir_identity_segments() {
+        assert_eq!(
+            InstanceId(Uuid::nil()).scratch_root_segment(12345),
+            "00000000-0000-0000-0000-000000000000.12345",
+            "§7.1.2/§2.14: the per-instance scratch root is <InstanceId>.<pid> (matches the §2.6.3 glob <*>.<*>)"
+        );
+        assert_eq!(
+            RunId(Uuid::nil()).run_subdir_segment(),
+            "run-00000000-0000-0000-0000-000000000000",
+            "§7.1.2/§2.14: the per-run subdir is run-<RunId> (matches the §2.6.3 glob run-*)"
         );
     }
 
