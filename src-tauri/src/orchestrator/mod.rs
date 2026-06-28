@@ -14,10 +14,11 @@
 //! `crate::domain` a pure leaf (the §0.7 ‡ note, the owner-decided P2.10 tier-finalisation). The sibling
 //! `JobStage` (no outcome ref) stays in `crate::domain`.
 //!
-//! It also homes the §0.4.4 `RunRegistry` (the `RunId` → `CancellationToken` run-cancellation-token registry,
-//! P2.42) — orchestrator State per §0.7, distinct from the outcome-referencing types above (it references no
-//! §0.6 / `crate::outcome` type); its register-at-C6 / cancel-at-C7 / drop-on-`RunFinished` WIRING is the
-//! P3.46 conductor.
+//! It also homes the two §0.4.4 orchestrator-State stores (per §0.7) — distinct from the outcome-referencing
+//! types above: the `RunRegistry` (the `RunId` → `CancellationToken` run-cancellation-token store, P2.42; its
+//! register-at-C6 / cancel-at-C7 / drop-on-`RunFinished` WIRING is the P3.46 conductor) and its sibling the
+//! `RunResultStore` (the process-local terminal-`RunResult` retention for C8 re-serve, P2.43; no on-disk
+//! persistence per §7.4, its retain-at-`RunFinished` / evict-at-C6 / get-at-C8 WIRING likewise P3.46).
 
 // [Build-Session-Entscheidung: P2.10/P2.11/P2.12] dead_code expect — the lifecycle/DTO/result types homed
 // here (Batch/ConversionJob/JobState, the C4/C5 DTOs, and the §1.12 RunResult/ItemResult/Totals/
@@ -31,7 +32,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the §0.4.4 RunRegistry P2.42) are authored as contracts before the P3.46 orchestrator behaviour + the C4/C5/C8 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so they are dead in the production build until consumed."
+        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the two §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43) are authored as contracts before the P3.46 orchestrator behaviour + the C4/C5/C8 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so they are dead in the production build until consumed."
     )
 )]
 
@@ -622,6 +623,74 @@ impl RunRegistry {
     /// the run's terminal `RunResult` out-lives the token in the separate P2.43 retention store (§0.4.4).
     pub fn finish(&self, run_id: RunId) {
         self.lock().remove(&run_id);
+    }
+}
+
+// ─── §0.4.4 RunResult retention — the process-local C8-re-serve store (P2.43) ─────────────────────────
+// [Build-Session-Entscheidung: P2.43] The §0.4.4 run-registry retention, homed in crate::orchestrator
+// alongside the sibling RunRegistry (the token store, P2.42) — both §0.4.4 orchestrator State (§0.7). This
+// is the SEPARATE store the P2.42 RunRegistry doc points at: "the cancellation token is dropped on
+// RunFinished" drops only the TOKEN; the terminal RunResult OUT-LIVES the token here so C8 get_run_summary
+// can idempotently re-serve the summary after a WebView reload (the exact §0.4.4 case C8 names). Retention is
+// IN-MEMORY + process-local, NO on-disk persistence — consistent with §7.4. The retained result lives "until
+// a new run starts or the app exits" (§0.4.4): a new run's start (C6) evicts the prior result, RunFinished
+// retains the new one, and a process exit drops the store. Like the sibling state, this is a CONTRACT before
+// its consumer: the retain-at-RunFinished / evict-at-C6 / get-at-C8 WIRING is the P3.46 behaviour (C8's
+// success path, the P2.31 shell note), so it is dead in the production build until then (covered by the
+// module-level dead_code expect).
+
+/// The §0.4.4 RunResult retention — the process-local, in-memory store of the most-recent terminal
+/// `RunResult`, kept so C8 `get_run_summary` can idempotently re-serve the §1.12 summary after a WebView
+/// reload. Holds AT MOST ONE result (the latest run's): [`retain`](RunResultStore::retain) on `RunFinished`
+/// stores it, [`evict`](RunResultStore::evict) on a new run's start (C6) clears the prior one (the §0.4.4
+/// "until a new run starts" eviction), and [`get`](RunResultStore::get) serves it back to C8 — matched by
+/// `RunId` so a stale/other run's result is never served for the wrong id. NO on-disk persistence (§7.4) — the
+/// store is dropped on process exit. Interior-mutable behind a `Mutex` (the `State` form serves concurrent
+/// C6/C8 handlers); the critical sections never hold the guard across an `.await`, so a `std::sync::Mutex` is
+/// correct.
+///
+/// [Build-Session-Entscheidung: P2.43] `Default`-constructed empty; `Debug` for parity with the sibling
+/// state. NOT a wire type (no `serde`/`specta`) — the `RunResult` it holds IS a wire type, but the STORE is
+/// pure core-internal State (C8 returns the resolved `RunResult`; the store itself never crosses IPC).
+#[derive(Debug, Default)]
+pub struct RunResultStore {
+    /// The retained terminal `RunResult` (the latest run's), or `None` between an `evict` and the next
+    /// `retain`. A single slot, not a per-`RunId` map: §0.4.4 retains only until the NEXT run starts.
+    result: Mutex<Option<RunResult>>,
+}
+
+impl RunResultStore {
+    /// Lock the slot, recovering a poisoned guard rather than propagating the panic — the in-core no-panic
+    /// discipline (G4/G14: no `unwrap`/`expect`/`panic`), sound because the critical sections never panic.
+    /// [Build-Session-Entscheidung: P2.43]
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<RunResult>> {
+        self.result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Retain `result` as the run's terminal summary (`RunFinished`, §0.4.4) — supersedes any prior retained
+    /// result (only the latest run's is kept). After this, C8 `get_run_summary(result.run_id)` re-serves it.
+    pub fn retain(&self, result: RunResult) {
+        *self.lock() = Some(result);
+    }
+
+    /// Re-serve the retained summary for `run_id` (C8 `get_run_summary`, §0.4.4) — returns a clone iff a
+    /// result is retained AND its `run_id` matches (so a superseded/other run's id never serves the wrong
+    /// summary). `None` = no retained result, or it belongs to a different run (the C8 caller maps that to its
+    /// §0.4.3 not-available error). The result is cloned out, so the guard is not held across the return.
+    pub fn get(&self, run_id: RunId) -> Option<RunResult> {
+        self.lock()
+            .as_ref()
+            .filter(|result| result.run_id == run_id)
+            .cloned()
+    }
+
+    /// Evict the retained result when a new run starts (C6, §0.4.4 "until a new run starts") — so a stale
+    /// prior summary is never re-served once the next run is in flight. Idempotent: evicting an already-empty
+    /// store is a no-op.
+    pub fn evict(&self) {
+        *self.lock() = None;
     }
 }
 
@@ -1435,6 +1504,90 @@ mod tests {
         assert!(
             !b.is_cancelled(),
             "§0.4.4: run A's cancel does not touch run B's independent token"
+        );
+    }
+
+    /// A minimal §1.12 `RunResult` for the §0.4.4 retention tests — one succeeded item, no residue.
+    fn sample_run_result(rid: RunId) -> RunResult {
+        RunResult {
+            collected_set_id: collected_set_id(),
+            run_id: rid,
+            items: vec![],
+            totals: Totals {
+                succeeded: 1,
+                failed: 0,
+                cancelled: 0,
+                skipped: 0,
+            },
+            cleanup_incomplete: vec![],
+            common_root: PathBuf::from("/out"),
+            divert_root: None,
+        }
+    }
+
+    // §6.4.1 unit (G15): the §0.4.4 RunResult-retention lifecycle (P2.43). `retain` stores the terminal
+    // summary; `get` re-serves it for the matching `RunId` (the C8 idempotent re-fetch); an empty / mismatched
+    // `get` is `None`; `retain` supersedes the prior result (only the latest is kept — §0.4.4 "until a new run
+    // starts"); and `evict` clears it (the new-run-start eviction). `RunResult` is owned data, no runtime.
+    #[test]
+    fn run_result_store_retain_then_get_matching_id_returns_the_result() {
+        let store = RunResultStore::default();
+        let result = sample_run_result(run_id());
+        store.retain(result.clone());
+        assert_eq!(
+            store.get(run_id()),
+            Some(result),
+            "§0.4.4: a retained terminal RunResult is re-served to C8 for its own RunId"
+        );
+    }
+
+    #[test]
+    fn run_result_store_get_on_empty_is_none() {
+        let store = RunResultStore::default();
+        assert_eq!(
+            store.get(run_id()),
+            None,
+            "§0.4.4: an empty store re-serves nothing (the C8 caller maps None to its §0.4.3 not-available error)"
+        );
+    }
+
+    #[test]
+    fn run_result_store_get_mismatched_id_is_none() {
+        let store = RunResultStore::default();
+        store.retain(sample_run_result(run_id()));
+        assert_eq!(
+            store.get(run_id_other()),
+            None,
+            "§0.4.4: a retained result is NEVER served for a different run's id (the RunId match guards it)"
+        );
+    }
+
+    #[test]
+    fn run_result_store_retain_supersedes_the_prior_result() {
+        let store = RunResultStore::default();
+        store.retain(sample_run_result(run_id()));
+        store.retain(sample_run_result(run_id_other()));
+        assert_eq!(
+            store.get(run_id()),
+            None,
+            "§0.4.4: only the latest run's result is retained — the superseded prior id no longer resolves"
+        );
+        assert_eq!(
+            store.get(run_id_other()),
+            Some(sample_run_result(run_id_other())),
+            "§0.4.4: the latest retained result is the one re-served"
+        );
+    }
+
+    #[test]
+    fn run_result_store_evict_clears_the_retained_result() {
+        let store = RunResultStore::default();
+        store.retain(sample_run_result(run_id()));
+        store.evict();
+        assert_eq!(
+            store.get(run_id()),
+            None,
+            "§0.4.4: evict (a new run starting) clears the retained result so a stale summary is not re-served"
         );
     }
 }
