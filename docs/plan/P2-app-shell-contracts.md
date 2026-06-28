@@ -214,8 +214,9 @@
   needs: P2.29, P2.47
 - [x] **P2.49** [RUST] Encode the `<InstanceId>.<pid>` scratch-root naming + `run-<RunId>/` subdir identity (PID = label, not liveness) · §7.1.2 §2.14
   needs: P2.47
-- [ ] **P2.50** [DOC] Record the advisory-lock-is-authoritative liveness predicate (PID never used as the test; §2.6.3 owns the lock) · §7.1.2 §2.6.3
+- [x] **P2.50** [DOC] Record the advisory-lock-is-authoritative liveness predicate (PID never used as the test; §2.6.3 owns the lock) · §7.1.2 §2.6.3
   needs: P2.49
+  > Reconciled: the advisory-lock-is-authoritative liveness predicate (PID = a label, never the test) is already recorded in its authoritative homes — spec [§7.1.2](../spec/07-app-shell.md) (the "Liveness predicate — the advisory lock is authoritative, the PID is a label" `[DECIDED]` blockquote, authored `1f9ead0`) + [§2.6.3](../spec/02-guarantees.md) (the held lock is the SOLE delete gate; an mtime/PID is never a delete predicate). No new content — re-recording would violate one-home-per-fact; the P2.49 `InstanceId::scratch_root_segment` doc already cross-references it (the PID is a label, liveness = the §2.6.3 lock).
 - [ ] **P2.51** [RUST] Encode the per-OS-user (not machine-global) single-instance lock scope · §7.1.1
   needs: P1.14
 - [ ] **P2.52** [RUST] Wire the single-instance callback — re-focus the "main" window + forward argv via `forward_launch_argv`, origin `SecondInstance` · §7.1.1 §7.8.1
