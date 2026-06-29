@@ -238,7 +238,7 @@
   needs: P2.54
   - [x] **P2.56.1** [DOC] Record the macOS-only Tauri-v2 fact (`RunEvent::Opened` never fires on Win/Linux; registered unconditionally for code simplicity) · §7.8.1
   - [x] **P2.56.2** [DOC] Record the NOT-`tauri-plugin-deep-link`/`on_open_url` decision (custom-scheme intent, never the open-documents AppleEvent) · §7.8.1 §7.8.2
-- [ ] **P2.57** [RUST] Wire the Windows-argv (`std::env::args_os` at first launch) + Linux `%F`/`%U` argv intake into `forward_launch_argv` · §7.8.1 §1.1
+- [x] **P2.57** [RUST] Wire the Windows-argv (`std::env::args_os` at first launch) + Linux `%F`/`%U` argv intake into `forward_launch_argv` · §7.8.1 §1.1
   needs: P2.54, P2.54.1
 - [x] **P2.58** [RUST] Build the `State<PendingIntake>` first-launch buffer (stash paths+origin when frontend not ready) · §7.8.1
   needs: P2.54
