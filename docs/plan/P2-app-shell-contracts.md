@@ -242,7 +242,7 @@
   needs: P2.54, P2.54.1
 - [x] **P2.58** [RUST] Build the `State<PendingIntake>` first-launch buffer (stash paths+origin when frontend not ready) · §7.8.1
   needs: P2.54
-- [ ] **P2.59** [RUST] Wire the ready-flag branch — emit `app://intake` if ready, else `buffer_pending_intake` · §7.8.1 §0.4.2
+- [x] **P2.59** [RUST] Wire the ready-flag branch — emit `app://intake` if ready, else `buffer_pending_intake` · §7.8.1 §0.4.2
   needs: P2.58, P2.40
 - [ ] **P2.60** [RUST] Build the `drainPending` drain path — C1 `paths: []` + `drainPending: true` consumes `PendingIntake` once (stored origin), returns its `CollectedSet` · §7.8.1 §0.4.1
   needs: P2.59, P2.22
