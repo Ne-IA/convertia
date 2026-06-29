@@ -1058,16 +1058,12 @@ impl FrontendReady {
 /// remain unbuilt the spine collects nothing, so the funnel returns the §0.6 zero-collection
 /// `CollectedSet::Empty { skipped: [] }` — the genuine result for an input that yields no eligible source
 /// (and the same zero-collection result the C1 / C2a shells already return for an empty/cancelled intake,
-/// §0.4.1 / §5.4). It has no production caller yet — the C1 `ingest_paths` handler wires it end-to-end at
-/// P3.49 (the CSV→TSV walking skeleton) and the C2a picker at P2.63 / P2.70 — so it is dead in the
-/// production build until consumed.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the §1.1/§2.4 single freeze funnel (P2.62); the C1 ingest_paths handler wires it at P3.49 and the C2a picker at P2.63/P2.70, so it is dead in the production build until consumed"
-    )
-)]
+/// §0.4.1 / §5.4). [Test-Change: P2.63 — old-obsolete+new-correct, §1.1] the P2.62 per-fn dead-code lint
+/// attribute on `ingest` is removed now the funnel is LIVE — its first production caller is the C2a
+/// `pick_for_intake` picker (P2.63, which stamps `Picker` and funnels its picked set here); keeping the
+/// attribute would error "unfulfilled expectation" under -D warnings (a production lint change, not a test
+/// suppression). The C1 `ingest_paths` handler wires it end-to-end at P3.49 (the CSV→TSV walking skeleton);
+/// the funnel returns the zero-collection `Empty` for every input until its §2.4.1 spine stages land (P2.64 / P3).
 #[must_use]
 pub fn ingest(paths: Vec<PathBuf>, origin: IntakeOrigin) -> CollectedSet {
     // §2.4.1 freeze spine: walk (P2.64) → detect (P3) → resolve-identity + de-dup (P2.74/P2.76) → assign

@@ -18,7 +18,7 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager};
 
 use crate::domain::{CollectedSet, CollectingId, IntakeOrigin, PickKind, ScanProgress};
-use crate::orchestrator::{FrontendReady, PendingIntake};
+use crate::orchestrator::{ingest, FrontendReady, PendingIntake};
 use crate::outcome::IpcError;
 
 /// **C1 `ingest_paths`** (§0.4.1) — the single §2.4 freeze point for every intake origin (drop / picker /
@@ -179,18 +179,20 @@ fn resolve_intake_source(
 /// C2a carries **no `origin` field**: the picked set's origin is `Picker`, **stamped by this handler itself**
 /// (P2.63), not supplied by the WebView (§1.1 / §5.4) — so a compromised WebView cannot forge the intake origin.
 ///
-/// [Build-Session-Entscheidung: P2.23] **Interface-shell body — the typed CONTRACT is the deliverable.**
+/// [Build-Session-Entscheidung: P2.23] **Interface-shell body — the typed CONTRACT is the P2.23 deliverable.**
 /// P2.23 authors the §0.4.1 wire signature above so the generated `bindings.ts` carries the full C2a door
-/// (pulling `PickKind` into the bindings as a command-arg type). The native-dialog BODY is its own set of
-/// named, scheduled boxes — the async/`spawn_blocking` `DialogExt` pick with the ingest token registered
-/// before the dialog opens (P2.70), the token-drop-on-every-exit-branch rule (P2.71), and the `Picker`-origin
-/// stamp + funnel into the C1 `ingest_paths` freeze (P2.63 / P2.62). This is the sanctioned compile-time
-/// interface-shell pattern (CLAUDE §5 / the P3 `crate::isolation` shells P4 expands), NOT a quiet deferral: a
-/// shell that opens no dialog and freezes nothing returns the §0.6 zero-collection `CollectedSet::Empty {
-/// skipped: [] }` — which is **also the contract's genuine cancelled-dialog result** (a cancelled pick is a
-/// clean no-op that returns `Empty`, no error, the UI stays Idle, §5.4). The three contract args are accepted
-/// so the wire signature is complete and bound to `_` (no fabricated handling) until P2.70/P2.71/P2.63 consume
-/// them.
+/// (pulling `PickKind` into the bindings as a command-arg type). The `Picker`-origin stamp + funnel into the
+/// single §1.1/§2.4 freeze (`crate::orchestrator::ingest`, P2.62) is now WIRED (P2.63 — see the body). The
+/// remaining native-dialog BODY is its own set of named, scheduled boxes — the async/`spawn_blocking`
+/// `DialogExt` pick with the ingest token registered before the dialog opens (P2.70) and the
+/// token-drop-on-every-exit-branch rule (P2.71). This is the sanctioned compile-time interface-shell pattern
+/// (CLAUDE §5 / the P3 `crate::isolation` shells P4 expands), NOT a quiet deferral: until the dialog (P2.70)
+/// produces paths the picker opens nothing and yields none, so the funnel collects nothing and the handler
+/// returns the §0.6 zero-collection `CollectedSet::Empty { skipped: [] }` — which is **also the contract's
+/// genuine cancelled-dialog result** (a cancelled pick is a clean no-op that returns `Empty`, no error, the
+/// UI stays Idle, §5.4). The `kind` / `collecting_id` / `on_scan` args stay accepted and bound to `_` (no
+/// fabricated handling) until the native-dialog body consumes them (P2.70 / P2.71 + the §0.4.4 token
+/// registry P2.45).
 #[tauri::command(rename_all = "camelCase")]
 #[specta::specta]
 pub async fn pick_for_intake(
@@ -198,10 +200,18 @@ pub async fn pick_for_intake(
     collecting_id: CollectingId,
     on_scan: Channel<ScanProgress>,
 ) -> Result<CollectedSet, IpcError> {
+    // [Build-Session-Entscheidung: P2.63] The C2a handler — NOT the WebView — stamps the §1.1 `Picker`
+    // origin and funnels the picked set into the single §1.1/§2.4 freeze (`crate::orchestrator::ingest`,
+    // P2.62). Stamping core-side is the load-bearing security property: the WebView only triggers the
+    // picker, so a compromised WebView cannot forge the intake origin (§1.1 / §5.4 / §0.10). The picked
+    // paths arrive from the native `DialogExt` dialog (P2.70); until that lands the picker opens nothing
+    // and yields no paths, so the funnel collects nothing → the §0.6 zero-collection `CollectedSet::Empty`
+    // — which is ALSO the §5.4 cancelled-dialog no-op result. `kind`/`collecting_id`/`on_scan` stay shell-
+    // accepted (`_`-bound) until the native-dialog body consumes them (P2.70/P2.71 + the §0.4.4 token
+    // registry P2.45). The §2.4.1 spine that turns picked paths into a real `CollectedSet` is P2.64/P3.
     let _ = (kind, collecting_id, on_scan);
-    Ok(CollectedSet::Empty {
-        skipped: Vec::new(),
-    })
+    let picked_paths: Vec<PathBuf> = Vec::new();
+    Ok(ingest(picked_paths, IntakeOrigin::Picker))
 }
 
 /// **C13 `cancel_ingest`** (§0.4.1) — trips the ingest-scoped `CollectingId` token to cancel an in-flight
@@ -416,8 +426,9 @@ mod c2a_contract {
     //! `c1_contract` test — the handler now carries its full typed signature, so the P2.21 all-shells
     //! `block_on(pick_for_intake())` invocation in `crate::ipc` (mod.rs) is REPLACED here by C2a's own
     //! typed-contract test (the fill-box transition the P2.21 note schedules). It invokes the contract with
-    //! the full typed arg set and asserts the shell-stage return; the native-dialog pick body + its real-pick
-    //! assertions land at P2.70/P2.71/P2.63. [Build-Session-Entscheidung: P2.23]
+    //! the full typed arg set and asserts the shell-stage return; the C2a handler also stamps the `Picker`
+    //! origin + funnels into the single freeze (`ingest`) here (P2.63); the native-dialog pick body + its
+    //! real-pick assertions land at P2.70/P2.71. [Build-Session-Entscheidung: P2.23]
     use super::*;
     use tauri::async_runtime::block_on;
 
@@ -432,9 +443,10 @@ mod c2a_contract {
     // §6.4.1 unit (G15): the C2a contract is invocable with its full §0.4.1 typed arg set (`kind`,
     // `collectingId`, the non-optional `onScan` Channel) and returns a `CollectedSet` (the wire door this box
     // authors). `on_scan` is a real `Channel::new(|_| Ok(()))` — the non-optional contract (there is no `None`
-    // arm; see the handler's forced-deviation note). The native dialog is not opened yet (P2.70), so the
-    // handler returns the zero-collection `CollectedSet::Empty` — which is ALSO the contract's §5.4
-    // cancelled-dialog no-op; P2.70/P2.71 replace it with the real DialogExt pick funnelled into the C1 freeze.
+    // arm; see the handler's forced-deviation note). The handler now stamps `Picker` + funnels into the single
+    // freeze (`ingest`, P2.63), but the native dialog (P2.70) produces no paths, so the funnel collects nothing
+    // and the handler returns the §0.6 zero-collection `CollectedSet::Empty` — which is ALSO the §5.4
+    // cancelled-dialog no-op result.
     #[test]
     fn c2a_pick_for_intake_contract_is_invocable_and_typed() {
         let out = block_on(pick_for_intake(
@@ -447,9 +459,33 @@ mod c2a_contract {
             Ok(CollectedSet::Empty {
                 skipped: Vec::new()
             }),
-            "§0.4.1: the C2a contract shell opens no dialog yet (the native-pick body is P2.70/P2.71), so it \
-             returns the zero-collection CollectedSet::Empty — also the §5.4 cancelled-dialog result; the \
-             typed signature is the P2.23 deliverable"
+            "§0.4.1/§1.1: the C2a handler stamps Picker + funnels into ingest (P2.63), but with no dialog \
+             paths (P2.70) the funnel returns the zero-collection CollectedSet::Empty — also the §5.4 \
+             cancelled-dialog result"
+        );
+    }
+
+    /// The production prefix of `intake.rs` (everything before the FIRST `#[cfg(test)]`), so a needle
+    /// declared in this test can never self-match — mirroring the `c1_contract` helper (each contract
+    /// module keeps its own copy, the established per-module test-helper pattern).
+    fn production_intake_source() -> &'static str {
+        let full = include_str!("intake.rs");
+        full.split_once(concat!("#[cfg", "(test)]"))
+            .map_or(full, |(prefix, _)| prefix)
+    }
+
+    // §6.4.1 unit (G15): the C2a handler stamps the §1.1 `Picker` origin CORE-SIDE (the handler, NOT the
+    // WebView, sets it) and funnels its picked set into the single freeze (`ingest`) — the §1.1
+    // anti-origin-forgery property (a compromised WebView cannot forge the intake origin, §5.4 / §0.10). The
+    // stamp is not result-observable while the funnel is an interface shell (any origin yields Empty, and the
+    // origin never appears in `CollectedSet`), so a source-scan pins it, mirroring the C1 dispatch source-scan.
+    // Needle concat!-assembled (self-match avoidance). [Build-Session-Entscheidung: P2.63]
+    #[test]
+    fn c2a_handler_stamps_picker_and_funnels_into_ingest() {
+        let src = production_intake_source();
+        assert!(
+            src.contains(concat!("ingest(picked_", "paths, IntakeOrigin::Picker)")),
+            "§1.1: the C2a handler must stamp Picker core-side and funnel the picked set into ingest"
         );
     }
 }

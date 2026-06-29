@@ -81,18 +81,20 @@ export const commands = {
 	 *  C2a carries **no `origin` field**: the picked set's origin is `Picker`, **stamped by this handler itself**
 	 *  (P2.63), not supplied by the WebView (§1.1 / §5.4) — so a compromised WebView cannot forge the intake origin.
 	 *
-	 *  [Build-Session-Entscheidung: P2.23] **Interface-shell body — the typed CONTRACT is the deliverable.**
+	 *  [Build-Session-Entscheidung: P2.23] **Interface-shell body — the typed CONTRACT is the P2.23 deliverable.**
 	 *  P2.23 authors the §0.4.1 wire signature above so the generated `bindings.ts` carries the full C2a door
-	 *  (pulling `PickKind` into the bindings as a command-arg type). The native-dialog BODY is its own set of
-	 *  named, scheduled boxes — the async/`spawn_blocking` `DialogExt` pick with the ingest token registered
-	 *  before the dialog opens (P2.70), the token-drop-on-every-exit-branch rule (P2.71), and the `Picker`-origin
-	 *  stamp + funnel into the C1 `ingest_paths` freeze (P2.63 / P2.62). This is the sanctioned compile-time
-	 *  interface-shell pattern (CLAUDE §5 / the P3 `crate::isolation` shells P4 expands), NOT a quiet deferral: a
-	 *  shell that opens no dialog and freezes nothing returns the §0.6 zero-collection `CollectedSet::Empty {
-	 *  skipped: [] }` — which is **also the contract's genuine cancelled-dialog result** (a cancelled pick is a
-	 *  clean no-op that returns `Empty`, no error, the UI stays Idle, §5.4). The three contract args are accepted
-	 *  so the wire signature is complete and bound to `_` (no fabricated handling) until P2.70/P2.71/P2.63 consume
-	 *  them.
+	 *  (pulling `PickKind` into the bindings as a command-arg type). The `Picker`-origin stamp + funnel into the
+	 *  single §1.1/§2.4 freeze (`crate::orchestrator::ingest`, P2.62) is now WIRED (P2.63 — see the body). The
+	 *  remaining native-dialog BODY is its own set of named, scheduled boxes — the async/`spawn_blocking`
+	 *  `DialogExt` pick with the ingest token registered before the dialog opens (P2.70) and the
+	 *  token-drop-on-every-exit-branch rule (P2.71). This is the sanctioned compile-time interface-shell pattern
+	 *  (CLAUDE §5 / the P3 `crate::isolation` shells P4 expands), NOT a quiet deferral: until the dialog (P2.70)
+	 *  produces paths the picker opens nothing and yields none, so the funnel collects nothing and the handler
+	 *  returns the §0.6 zero-collection `CollectedSet::Empty { skipped: [] }` — which is **also the contract's
+	 *  genuine cancelled-dialog result** (a cancelled pick is a clean no-op that returns `Empty`, no error, the
+	 *  UI stays Idle, §5.4). The `kind` / `collecting_id` / `on_scan` args stay accepted and bound to `_` (no
+	 *  fabricated handling) until the native-dialog body consumes them (P2.70 / P2.71 + the §0.4.4 token
+	 *  registry P2.45).
 	 */
 	pickForIntake: (kind: PickKind, collectingId: CollectingId, onScan: Channel<ScanProgress>) => __TAURI_INVOKE<CollectedSet>("pick_for_intake", { kind, collectingId, onScan }),
 	/**
