@@ -51,8 +51,10 @@ use crate::outcome::IpcError;
 /// end-to-end into this handler by P3.49 "Implement C1 `ingest_paths`" (the CSV→TSV walking-skeleton slice).
 /// This is the sanctioned compile-time interface-shell pattern (CLAUDE §5 / the P3 `crate::isolation` shells
 /// P4 expands), NOT a quiet deferral: a freeze seam that collects nothing returns the §0.6 zero-collection
-/// `CollectedSet::Empty { skipped: [] }` until P3.49 fills it. The freeze funnel's own §0.7 module home is
-/// P2.62's to fix (the §1.1/§2.4 freeze is not yet placed in the §0.7 tree), so it is not pre-created here.
+/// `CollectedSet::Empty { skipped: [] }` until P3.49 fills it. The freeze funnel is now homed in
+/// `crate::orchestrator::ingest` (P2.62 — the §0.7 §01-conductor's first act; no §0.7 tree edit, since
+/// `orchestrator` already homes it like the §7.8.1 `PendingIntake`/`FrontendReady` machinery), so it was
+/// not pre-created here.
 ///
 /// [Build-Session-Entscheidung: P2.60] **The §7.8.1 `drainPending` drain dispatch is now WIRED** (no longer
 /// an ignore-all-args shell). The handler binds an `AppHandle` (a Tauri-injected arg, NOT part of the §0.4.1

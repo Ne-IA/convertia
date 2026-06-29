@@ -52,9 +52,9 @@ use specta::Type;
 use tokio_util::sync::CancellationToken;
 
 use crate::domain::{
-    CollectedSetId, CollectingId, DestinationChoice, DivertReason, DroppedItem, FrozenCollectedSet,
-    IntakeOrigin, ItemId, JobStage, OptionValues, OutputPlan, RerunPrompt, RunId, SkipReason,
-    Target, TargetId, UserFacingFormat,
+    CollectedSet, CollectedSetId, CollectingId, DestinationChoice, DivertReason, DroppedItem,
+    FrozenCollectedSet, IntakeOrigin, ItemId, JobStage, OptionValues, OutputPlan, RerunPrompt,
+    RunId, SkipReason, Target, TargetId, UserFacingFormat,
 };
 use crate::outcome::{ConversionErrorKind, IpcError, OutcomeMsg};
 
@@ -1017,6 +1017,68 @@ impl FrontendReady {
     }
 }
 
+/// The §1.1 / §2.4 **intake-freeze funnel** — the single, exhaustive freeze point every intake entry
+/// point routes through (SSOT *Never harm the original*). All five §1.1 entry points reduce to this one
+/// Rust function: the C1 `ingest_paths` drop / launch-arg / second-instance set, and the C2a
+/// `pick_for_intake` picked set (origin stamped `Picker` by the C2a handler, §1.1) — so the §2.4 freeze
+/// and the §1.3 one-batch rule are enforced ONCE here, never duplicated per entry point. It builds the
+/// frozen source set **eagerly and once, before any conversion** (§2.4.1) and projects it to the §0.6
+/// `CollectedSet` the §1.4 confirm gate renders.
+///
+/// Homed in `crate::orchestrator` — §0.7's "the §01 pipeline conductor: builds the queue … sequences the
+/// guarantees / engines / detection layers": the freeze funnel BUILDS the frozen set that becomes that
+/// queue, so it is the conductor's first act, not a new architectural responsibility — the same placement
+/// (no §0.7 tree edit) the §7.8.1 `PendingIntake` / `FrontendReady` intake machinery already took here
+/// (P2.58 / P2.59). [Derived-Assumption: P2.62 — funnel homed in `crate::orchestrator`, anchored to §0.7's
+/// orchestrator-as-§01-conductor role + the P2.58/P2.59 §7.8.1-in-orchestrator precedent; §0.7 is a
+/// responsibility map, not an exhaustive per-§ enumeration, so this needs no §0.7 edit]
+///
+/// **The §2.4.1 freeze spine — built eagerly and once, then immutable for the run:**
+/// 1. **Walk / expand** — a dropped/picked folder is enumerated recursively in Rust (the WebView cannot
+///    list directories, §0.4); hidden/system files are filtered at freeze time → P2.64 (recursion) /
+///    P2.65 (ignore list) / P2.66 (dropped-root retention).
+/// 2. **Detect** — each candidate is classified by content (§1.2); an `Unreadable`/`Empty` item is
+///    skipped without aborting the walk → P3 (the §1.2 detection framework) / P2.67 (per-item skip) /
+///    P2.73 (intake-time `Empty`/`Unreadable` = pre-flight `Skipped`).
+/// 3. **Resolve identity + de-dup** — each entry is reduced to its §2.3 resolved identity and
+///    de-duplicated (§2.3.2 / §2.4.1) → P2.74 (the `resolve_identity` interface shell) / P2.76 (de-dup).
+/// 4. **Assign `ItemId`** over the single id space (eligible + skipped, never re-indexed, §0.6
+///    invariant 6) → P2.75.
+/// 5. **Group** the frozen snapshot into the §0.6 `CollectedSet` variant (`Single` / `Mixed` /
+///    `Unsupported` / `Uncertain` / `Empty`, §1.3) → P3 (`group()`).
+///
+/// The §2.4 idle-vs-in-flight gate that admits a set into this funnel (IDLE freezes a NEW set; in-flight
+/// refuses-busy, never mutating a frozen one) wraps it at P2.72; the `CollectingId` cooperative-cancel
+/// poll the walk runs is P2.69.
+///
+/// [Build-Session-Entscheidung: P2.62] **Interface-shell body — the SINGLE FUNNEL is the deliverable.**
+/// This box establishes the one canonical freeze funnel + its §2.4.1 spine; the stages are the named,
+/// scheduled fill-boxes above (the sanctioned compile-time interface-shell pattern, CLAUDE §5 / the P3
+/// `crate::isolation` shells P4 expands — NOT a quiet deferral). While the walk + detection + grouping
+/// remain unbuilt the spine collects nothing, so the funnel returns the §0.6 zero-collection
+/// `CollectedSet::Empty { skipped: [] }` — the genuine result for an input that yields no eligible source
+/// (and the same zero-collection result the C1 / C2a shells already return for an empty/cancelled intake,
+/// §0.4.1 / §5.4). It has no production caller yet — the C1 `ingest_paths` handler wires it end-to-end at
+/// P3.49 (the CSV→TSV walking skeleton) and the C2a picker at P2.63 / P2.70 — so it is dead in the
+/// production build until consumed.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the §1.1/§2.4 single freeze funnel (P2.62); the C1 ingest_paths handler wires it at P3.49 and the C2a picker at P2.63/P2.70, so it is dead in the production build until consumed"
+    )
+)]
+#[must_use]
+pub fn ingest(paths: Vec<PathBuf>, origin: IntakeOrigin) -> CollectedSet {
+    // §2.4.1 freeze spine: walk (P2.64) → detect (P3) → resolve-identity + de-dup (P2.74/P2.76) → assign
+    // `ItemId` (P2.75) → group (P3). While those stages are unbuilt the frozen snapshot is empty, so the
+    // §1.3 projection of a no-eligible-source freeze is the §0.6 zero-collection `Empty` (§0.4.1 / §5.4).
+    let _ = (paths, origin);
+    CollectedSet::Empty {
+        skipped: Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1074,6 +1136,55 @@ mod tests {
             lossy: None,
             availability: Availability::Available,
             options: vec![],
+        }
+    }
+
+    // §6.4.1 unit (G15): the §1.1/§2.4 `ingest` freeze funnel (P2.62) is the single, exhaustive freeze
+    // point every intake origin routes through, returning the §0.6 `CollectedSet`. While the §2.4.1 spine
+    // stages are unbuilt (walk P2.64 / detect P3 / de-dup P2.76 / group P3) the funnel collects nothing,
+    // so it returns the genuine zero-collection `CollectedSet::Empty { skipped: [] }` for EVERY origin and
+    // for both an empty and a non-empty path set — the seam contract, not an origin- or input-specific
+    // branch. This pins the §2.4.1 "all five entry points → one funnel" shape: one fn, every
+    // `IntakeOrigin`, one zero-collection contract.
+    #[test]
+    fn ingest_funnel_returns_zero_collection_for_every_origin() {
+        // Compile-time variant lock (the established `exhaustive`-match pattern, cf.
+        // `job_state_is_the_six_lifecycle_states`): a new `IntakeOrigin` variant breaks this match,
+        // forcing the `all` array below — the funnel's "all five entry points" coverage — to grow with it,
+        // so the test can never silently miss a new origin. [Build-Session-Entscheidung: P2.62]
+        fn exhaustive(o: IntakeOrigin) {
+            match o {
+                IntakeOrigin::Drop
+                | IntakeOrigin::Picker
+                | IntakeOrigin::LaunchArg
+                | IntakeOrigin::SecondInstance => {}
+            }
+        }
+        let zero = CollectedSet::Empty {
+            skipped: Vec::new(),
+        };
+        let all = [
+            IntakeOrigin::Drop,
+            IntakeOrigin::Picker,
+            IntakeOrigin::LaunchArg,
+            IntakeOrigin::SecondInstance,
+        ];
+        for origin in all {
+            exhaustive(origin);
+            assert_eq!(
+                ingest(Vec::new(), origin),
+                zero,
+                "§1.1/§2.4: an empty intake set yields the zero-collection Empty for every origin"
+            );
+            assert_eq!(
+                ingest(
+                    vec![PathBuf::from("/drop/data.csv"), PathBuf::from("/drop/pic.png")],
+                    origin,
+                ),
+                zero,
+                "§1.1/§2.4: the §2.4.1 spine collects nothing until the walk/detect/group fills land — the \
+                 zero-collection Empty, not an origin- or input-specific CollectedSet"
+            );
         }
     }
 
