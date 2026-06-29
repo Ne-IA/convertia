@@ -205,8 +205,9 @@ mod launch_intake {
     // `parse_path_args` + `intake_disposition` are all reachable from production — so the whole module is LIVE
     // and the former module-level `#![cfg_attr(not(test), …)]` dead-code suppression is REMOVED (with nothing
     // dead, that `dead_code` expectation would flip to "expectation unfulfilled" under `-D warnings`). The predicate
-    // fills are wired by P2.55 (`converter_is_busy` § run-state) / P2.58 (`PendingIntake` buffer) / P2.59 (the
-    // ready-flag branch); until then the fail-safe shell defaults hold (busy=true -> Drop).
+    // remaining predicate fills are P2.55 (`converter_is_busy` § run-state) / P2.59 (the ready-flag branch);
+    // the `PendingIntake` buffer arm (`buffer_pending_intake` -> `State<PendingIntake>`) is now real (P2.58),
+    // but unreached until P2.55 — the fail-safe `converter_is_busy` shell (`true`) short-circuits to Drop.
 
     use std::path::PathBuf;
 
@@ -214,6 +215,7 @@ mod launch_intake {
 
     use crate::domain::{IntakeOrigin, IntakePayload};
     use crate::ipc::events;
+    use crate::orchestrator::PendingIntake;
 
     /// [Build-Session-Entscheidung: P2.40] The §0.4.2 / §7.8.1 `app://intake` disposition — the THREE
     /// outcomes a launch-time path set can take. Encoding it as an enum makes the IDLE-path-only rule
@@ -364,13 +366,19 @@ mod launch_intake {
         false
     }
 
-    /// [Build-Session-Entscheidung: P2.54] INTERFACE SHELL for the §7.8.1 first-launch buffer — the real
-    /// `State<PendingIntake>` stash + drain is box P2.58 (build) / P2.59 (wire). A no-op shell here because
-    /// no `PendingIntake` state exists to stash into at P2.54. Unreachable in a production build: the
-    /// `converter_is_busy` fail-safe `true` short-circuits to `Drop` before the `Buffer` arm, and the
-    /// owner-confirmed build order lands P2.58 (buffer) BEFORE P2.55 (busy) so no real idle-and-not-ready
-    /// path ever routes through this shell during the build window.
-    fn buffer_pending_intake(_app: &AppHandle, _paths: Vec<PathBuf>, _origin: IntakeOrigin) {}
+    /// [Build-Session-Entscheidung: P2.58] The §7.8.1 first-launch `Buffer` arm — stash the idle-and-not-ready
+    /// launch set into the app-managed `State<PendingIntake>` (`crate::orchestrator`) for the C1 `drainPending`
+    /// replay (P2.60), closing the §7.8.1 first-launch listener race. AppHandle-coupled boot-glue (the §1.1a
+    /// boot-stage pattern — not cargo-test execution-testable; the stash LOGIC is unit-tested on
+    /// `PendingIntake`, this WIRING is source-scan-pinned + G28 boot-glue-exempt). `app.state::<PendingIntake>()`
+    /// is infallible by construction: `main()` registers the buffer in the Builder chain BEFORE the event loop
+    /// (so before any single-instance callback), so the resolve cannot fail at runtime — no panic despite the
+    /// crate-root `clippy::panic` deny. Still UNREACHED in production until P2.55 wires the real
+    /// `converter_is_busy` (its fail-safe `true` short-circuits to `Drop` before the `Buffer` arm); the
+    /// owner-confirmed order lands this (P2.58) BEFORE P2.55, so the buffer is real before idle-flow opens.
+    fn buffer_pending_intake(app: &AppHandle, paths: Vec<PathBuf>, origin: IntakeOrigin) {
+        app.state::<PendingIntake>().stash(paths, origin);
+    }
 
     #[cfg(test)]
     mod tests {
@@ -559,6 +567,30 @@ mod launch_intake {
                 "§7.8.1: an absolute launch path is kept as-is, never joined onto cwd"
             );
         }
+
+        // §6.4.1 unit (G15): the §7.8.1 `Buffer` arm is WIRED into the `State<PendingIntake>` stash (P2.58) —
+        // not the P2.54 no-op shell. `buffer_pending_intake` is AppHandle-coupled boot-glue (the §1.1a
+        // boot-stage pattern — not cargo-test execution-testable; the stash/take LOGIC is unit-tested on
+        // `crate::orchestrator::PendingIntake`), so a source-scan pins it resolves the managed buffer + stashes;
+        // a second scan pins `main()` REGISTERS the buffer (else the resolve would fail). Needles
+        // `concat!`-assembled (the established self-match avoidance). [Build-Session-Entscheidung: P2.58]
+        #[test]
+        fn buffer_arm_stashes_into_the_managed_pending_intake() {
+            let buffer_src = crate::boot_invariants::production_boot_source();
+            assert!(
+                buffer_src.contains(concat!("state::<Pending", "Intake>()")),
+                "§7.8.1: buffer_pending_intake must resolve the managed State<PendingIntake> (P2.58)"
+            );
+            assert!(
+                buffer_src.contains(concat!(".stash(", "paths, origin)")),
+                "§7.8.1: buffer_pending_intake must stash the launch set + origin (not the P2.54 no-op shell)"
+            );
+            let main_src = crate::boot_invariants::production_main_body();
+            assert!(
+                main_src.contains(concat!(".manage(crate::orchestrator::Pending", "Intake::default())")),
+                "§7.8.1: main() must register the State<PendingIntake> so the buffer-arm resolve cannot fail (P2.58)"
+            );
+        }
     }
 }
 
@@ -613,6 +645,13 @@ fn main() -> tauri::Result<()> {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_log::Builder::new().build())
+        // [Build-Session-Entscheidung: P2.58] §7.8.1 first-launch intake buffer — register the
+        // State<PendingIntake> in the Builder chain (compile-time Default, so registered BEFORE the event
+        // loop / any single-instance callback: the funnel's Buffer arm resolve is then infallible by
+        // construction, no panic under the crate-root clippy::panic deny). Writer = the launch funnel
+        // (buffer_pending_intake); reader = C1 drainPending (P2.60). Ahead of the P3.46-registered run stores
+        // because its live consumer — the P2 launch funnel — exists now.
+        .manage(crate::orchestrator::PendingIntake::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             // §0.4.5 IPC event-channel mount (the P1.13 tauri-specta seam).

@@ -52,8 +52,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::domain::{
     CollectedSetId, CollectingId, DestinationChoice, DivertReason, DroppedItem, FrozenCollectedSet,
-    ItemId, JobStage, OptionValues, OutputPlan, RerunPrompt, RunId, SkipReason, Target, TargetId,
-    UserFacingFormat,
+    IntakeOrigin, ItemId, JobStage, OptionValues, OutputPlan, RerunPrompt, RunId, SkipReason,
+    Target, TargetId, UserFacingFormat,
 };
 use crate::outcome::{ConversionErrorKind, IpcError, OutcomeMsg};
 
@@ -868,6 +868,85 @@ impl IngestRegistry {
     /// releasing an unknown / already-released ingest is a no-op.
     pub fn release(&self, collecting_id: CollectingId) {
         self.lock().remove(&collecting_id);
+    }
+}
+
+// ─── §7.8.1 first-launch intake buffer — the PendingIntake stash/drain store (P2.58) ─────────────────────
+// [Build-Session-Entscheidung: P2.58] The §7.8.1 first-launch buffer, homed here under the same §0.7 State
+// umbrella as the four §0.4.4 sibling stores (RunRegistry/RunResultStore/CollectedSetRegistry/IngestRegistry)
+// — a launch-intake State store added to orchestrator needs NO §0.7/§1a structural edit (§0.7 attributes the
+// app-managed State to orchestrator + enumerates the outcome-referencing TYPES, not every store; the
+// P2.43/P2.44/P2.45 precedent). It is the single-slot sibling of `RunResultStore` (a `Mutex<Option<…>>`): the
+// §7.8.1 launch funnel's `Buffer` arm (`buffer_pending_intake`, main.rs) STASHES the idle-and-not-ready launch
+// set here when the WebView's `app://intake` listener is not yet ready (the first-launch listener race), and
+// the C1 `drainPending` path (P2.60) TAKEs it once on root-shell mount and freezes it (§1.1). It differs from
+// the §0.4.4 run/ingest stores only in WHO drives it — the launch glue writes, C1 reads — but the State-store
+// shape + the contract-before-consumer discipline (the `take` reader is dead in the production build until
+// P2.60 wires C1, covered by the module-level dead_code expect) are identical.
+
+/// One buffered §7.8.1 first-launch intake — a launch path set + its §0.6 `IntakeOrigin`. Stashed by the
+/// launch funnel's `Buffer` arm when the WebView is not yet ready, drained once by C1 `drainPending` (P2.60).
+/// NOT a wire type: the C1 drain returns a `CollectedSet` (§0.4.1), never this buffer (pure core-internal
+/// State). [Build-Session-Entscheidung: P2.58]
+#[derive(Debug, Clone)]
+pub struct BufferedLaunchIntake {
+    /// The launch-time paths (already `parse_path_args`-classified, §7.8.1), accumulated across any repeat
+    /// stash in the same not-ready window (no-loss — see [`PendingIntake::stash`]).
+    pub paths: Vec<PathBuf>,
+    /// The §0.6 origin of the FIRST stash in this not-ready window (typically `LaunchArg`; §7.8.1 "its stored
+    /// origin"). A subsequent stash in the same window accumulates its paths but keeps this origin — the §1.1
+    /// freeze re-validates every path and is origin-agnostic, so one stored origin for the merged set is
+    /// correct.
+    pub origin: IntakeOrigin,
+}
+
+/// The §7.8.1 first-launch buffer (`State<PendingIntake>`) — holds at most one un-drained
+/// [`BufferedLaunchIntake`]. The single-slot sibling of [`RunResultStore`]: the launch funnel's `Buffer` arm
+/// stashes here when the WebView's `app://intake` listener is not yet ready (the first-launch listener race,
+/// §7.8.1), and C1 `drainPending` (P2.60) drains it exactly once on root-shell mount. Held as a Tauri
+/// app-managed `State` (registered in `main()`'s Builder chain). Interior-mutable behind a `Mutex` (the
+/// `State` form is shared across the launch hooks + the C1 handler); the critical sections are infallible
+/// slot ops that never hold the guard across an `.await`, so a `std::sync::Mutex` is correct.
+///
+/// [Build-Session-Entscheidung: P2.58] `Default`-constructed empty; `Debug` for parity with the sibling
+/// stores. NOT a wire type (no `serde`/`specta`) — pure core-internal State that never crosses IPC (the C1
+/// drain returns a `CollectedSet`, §0.4.1).
+#[derive(Debug, Default)]
+pub struct PendingIntake {
+    /// The single buffered launch set, or `None` when nothing is pending (never stashed, or already drained).
+    pending: Mutex<Option<BufferedLaunchIntake>>,
+}
+
+impl PendingIntake {
+    /// Lock the slot, recovering a poisoned guard rather than propagating the panic — the in-core no-panic
+    /// discipline (G4/G14: no `unwrap`/`expect`/`panic`), sound because the critical sections never panic.
+    /// [Build-Session-Entscheidung: P2.58]
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<BufferedLaunchIntake>> {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Stash a launch set from the §7.8.1 `Buffer` arm (idle + WebView not-yet-ready). NO-LOSS on a repeat
+    /// stash before the drain: a second launch event in the same not-ready window APPENDS its paths to the
+    /// pending set rather than superseding it — superseding would drop the earlier launch's paths, the very
+    /// loss this buffer exists to prevent (§7.8.1) — and keeps the FIRST origin (§7.8.1 "its stored origin").
+    /// The funnel only reaches this with a non-empty `paths` (it returns early on empty, §7.8.1), so no
+    /// empty-stash guard is needed. [Build-Session-Entscheidung: P2.58]
+    pub fn stash(&self, paths: Vec<PathBuf>, origin: IntakeOrigin) {
+        let mut slot = self.lock();
+        match slot.as_mut() {
+            Some(buffered) => buffered.paths.extend(paths),
+            None => *slot = Some(BufferedLaunchIntake { paths, origin }),
+        }
+    }
+
+    /// Take the buffered launch set, clearing the slot — the C1 `drainPending` consume-once drain (P2.60,
+    /// §7.8.1 "consumes `PendingIntake` exactly once"). Returns `None` when nothing is pending (the ordinary
+    /// first launch with no files → C1 returns `CollectedSet::Empty`, §0.4.1). Idempotent: a second drain is
+    /// `None`. [Build-Session-Entscheidung: P2.58]
+    pub fn take(&self) -> Option<BufferedLaunchIntake> {
+        self.lock().take()
     }
 }
 
@@ -1979,6 +2058,72 @@ mod tests {
         assert!(
             !b.is_cancelled(),
             "§0.4.4: ingest A's cancel does not touch ingest B's independent token"
+        );
+    }
+
+    // ── §7.8.1 PendingIntake first-launch buffer (P2.58) ──────────────────────────────────────────────
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names.iter().map(PathBuf::from).collect()
+    }
+
+    // §6.4.1 unit (G15): the §7.8.1 stash→drain round-trip — a buffered launch set is taken back with its
+    // paths + the stored origin, and the slot is cleared (the C1 drainPending consume-once, §7.8.1).
+    #[test]
+    fn pending_intake_stash_then_take_returns_the_set_and_clears() {
+        let buf = PendingIntake::default();
+        buf.stash(paths(&["a.png", "b.jpg"]), IntakeOrigin::LaunchArg);
+        let drained = buf.take().expect("§7.8.1: a stashed set is drained back");
+        assert_eq!(
+            drained.paths,
+            paths(&["a.png", "b.jpg"]),
+            "§7.8.1: the drained paths are exactly the stashed set"
+        );
+        assert_eq!(
+            drained.origin,
+            IntakeOrigin::LaunchArg,
+            "§7.8.1: the drain carries the stored origin (typically LaunchArg)"
+        );
+        assert!(
+            buf.take().is_none(),
+            "§7.8.1: the drain consumes exactly once — a second take is None (idempotent)"
+        );
+    }
+
+    // §6.4.1 unit (G15): an un-stashed buffer drains to None — the ordinary first launch with no files,
+    // which C1 maps to CollectedSet::Empty (§0.4.1 / §7.8.1).
+    #[test]
+    fn pending_intake_empty_take_is_none() {
+        let buf = PendingIntake::default();
+        assert!(
+            buf.take().is_none(),
+            "§7.8.1: a never-stashed buffer drains to None (first launch, no files)"
+        );
+    }
+
+    // §6.4.1 unit (G15): NO-LOSS on a repeat stash before the drain — a second launch event in the same
+    // not-ready window APPENDS its paths (never supersedes, which would drop the earlier launch's paths) and
+    // keeps the FIRST origin (§7.8.1 "its stored origin"). This is the property the path-loss-avoidance the
+    // owner-confirmed P2.58-before-P2.55 order rests on (every reachable launch set is preserved).
+    #[test]
+    fn pending_intake_repeat_stash_accumulates_paths_keeps_first_origin() {
+        let buf = PendingIntake::default();
+        buf.stash(paths(&["first.png"]), IntakeOrigin::LaunchArg);
+        buf.stash(
+            paths(&["second.jpg", "third.gif"]),
+            IntakeOrigin::SecondInstance,
+        );
+        let drained = buf
+            .take()
+            .expect("§7.8.1: the accumulated set is drained back");
+        assert_eq!(
+            drained.paths,
+            paths(&["first.png", "second.jpg", "third.gif"]),
+            "§7.8.1: a repeat stash APPENDS its paths (no-loss), never supersedes the earlier launch's set"
+        );
+        assert_eq!(
+            drained.origin,
+            IntakeOrigin::LaunchArg,
+            "§7.8.1: the FIRST stash's origin is kept across an accumulating second stash"
         );
     }
 }
