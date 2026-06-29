@@ -592,15 +592,19 @@ builder
     .build(tauri::generate_context!())?
     .run(|app, event| match event {
         RunEvent::ExitRequested { api, .. } => { /* belt-and-suspenders guard */ }
-        // Open-with: macOS-only in Tauri v2 [DECIDED] — RunEvent::Opened fires ONLY on
-        // macOS (and iOS), NEVER on Windows/Linux (their intake is argv/single-instance).
-        // The handler is registered unconditionally for code simplicity / forward-compat
-        // (one funnel, no per-OS cfg) and is simply not invoked off macOS — not a second
-        // cross-platform intake path. Distinct from the §7.1.1 argv callback. MUST route
-        // through the SAME funnel so the §7.1.1 refuse-busy gate is enforced here too (a
-        // mid-conversion Open-with otherwise bypasses the PRIMARY gate — it never goes
+        // Open-with [DECIDED] — RunEvent::Opened is a `#[cfg(any(target_os = "macos",
+        // target_os = "ios", target_os = "android"))]` enum VARIANT in Tauri v2: it does
+        // NOT exist on Windows/Linux (their intake is argv/single-instance). The `.run()`
+        // closure REGISTRATION is unconditional (one funnel), but the Opened match ARM
+        // carries the variant's SAME cfg — where the variant is absent it is compiled out
+        // (an unconditional arm would NOT compile on Win/Linux). Of ConvertIA's shipped
+        // DESKTOP triples (no mobile build) the arm is reachable only on macOS — not a
+        // second cross-platform intake path. Distinct from the §7.1.1 argv callback. MUST
+        // route through the SAME funnel so the §7.1.1 refuse-busy gate is enforced here too
+        // (a mid-conversion Open-with otherwise bypasses the PRIMARY gate — it never goes
         // through the argv callback on macOS). origin = LaunchArg on a first-launch Opened
         // (app not yet ready → buffered), SecondInstance otherwise.
+        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
         RunEvent::Opened { urls } => {
             let paths: Vec<PathBuf> = urls.iter().filter_map(|u| u.to_file_path().ok()).collect();
             let origin = if frontend_ready(app) { IntakeOrigin::SecondInstance } else { IntakeOrigin::LaunchArg };
@@ -996,15 +1000,18 @@ and one-batch-at-a-time (§1.3) rules apply identically. The entry points:
   (below), so the §7.1.1 refuse-busy gate is enforced on a mid-conversion Open-with too**
   — a macOS Open-with against a running, busy app is refused (paths dropped), not merged
   into the frozen set (§2.4). Without this, Open-with would bypass the PRIMARY gate on
-  macOS (it never goes through the argv callback there). **`RunEvent::Opened` is a macOS-only hook (Tauri-API fact) `[DECIDED]`:**
-  in Tauri v2 `RunEvent::Opened` is documented/implemented **only on macOS (and iOS)** —
-  it does **not** fire on Windows or Linux. **Win/Linux intake correctness rests entirely
-  on the argv / single-instance path**, never on `Opened`. The handler is registered
-  **unconditionally** (not `#[cfg(target_os = "macos")]`-gated) purely for **code
-  simplicity / forward-compatibility** (one funnel, no per-OS cfg around the registration);
-  it is simply never invoked off macOS, so this is a no-op there rather than a second
-  intake path. (There is **no** "may also fire cross-platform" claim — that would be a
-  wrong Tauri-v2 API fact.)
+  macOS (it never goes through the argv callback there). **`RunEvent::Opened` is a cfg-gated Tauri-v2 VARIANT (API fact) `[DECIDED]`:**
+  in Tauri v2 `RunEvent::Opened` is a **`#[cfg(any(target_os = "macos", target_os = "ios",
+  target_os = "android"))]` enum variant** — it does **not exist** on Windows or Linux. Of
+  ConvertIA's shipped **desktop** triples (macOS/Windows/Linux; no mobile build) it is
+  therefore reachable **only on macOS**, so **Win/Linux intake correctness rests entirely
+  on the argv / single-instance path**, never on `Opened`. The `App::run` **closure
+  registration is unconditional** (one funnel, no `cfg` around the `.run(...)` call), but
+  the **`RunEvent::Opened` match ARM carries the variant's same `cfg`** (the full
+  `target_os` triple above): an unconditional arm would **fail to compile** on
+  Win/Linux (the variant is absent), so where the variant is absent the arm is compiled out
+  — a no-op for Open-with rather than a second intake path. (There is **no** "may also fire
+  cross-platform" claim — that would be a wrong Tauri-v2 API fact.)
 - **Windows:** files passed as **`argv`** to the process. Captured in the
   single-instance callback (§7.1.1) for a second launch, and read at first launch
   in `setup` (`std::env::args_os`).

@@ -718,9 +718,10 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   the handler consumes `State<PendingIntake>` (its stored `origin`, `LaunchArg`) and freezes
   it, or returns `CollectedSet::Empty` if none; the frontend never holds the buffered paths.
   `PendingIntake` carries the real `origin` (`LaunchArg`), never a hard-coded
-  `SecondInstance`. Owner: §7.8.1 / §0.4.1 C1. **`RunEvent::Opened` is macOS-only in Tauri
-  v2** (NOT cross-platform — Win/Linux intake is argv/single-instance); the handler is
-  registered unconditionally only for code simplicity, never invoked off macOS. Owner: §7.8.1.
+  `SecondInstance`. Owner: §7.8.1 / §0.4.1 C1. **`RunEvent::Opened` is a `target_os`-gated variant (macOS/iOS/Android) in Tauri
+  v2** (reachable only on macOS among the desktop triples; NOT cross-platform — Win/Linux intake is
+  argv/single-instance); the `.run()` registration is unconditional, the Opened match arm is cfg-gated
+  to the variant (compiled out off macOS). Owner: §7.8.1.
 - **FFmpeg T9b covers BOTH halves structurally** — SSRF via `-protocol_whitelist file,pipe`
   + network-disabled build; **absolute-file LFR via concat `-safe 1` (never `-safe 0`) +
   curated demuxer set without playlist/manifest dereferencing demuxers** (§6.1.3 `-protocols`
@@ -942,9 +943,10 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **§6.4.4 cross-platform test corrected** — the `tauri-driver` WebDriver flow runs on
   Windows + Linux only; macOS WebView-drift is covered by the §6.4.6 degraded smoke test +
   §6.6 walkthrough (no macOS WKWebView driver). Owner: §6.4.4 / §6.4.6.
-- **`RunEvent::Opened` is macOS-only in Tauri v2** (NOT cross-platform) — Win/Linux intake
-  is argv/single-instance; handler registered unconditionally only for code simplicity,
-  never invoked off macOS. **First-launch drain = C1 with `paths:[]` + `drainPending:true`**
+- **`RunEvent::Opened` is a `target_os`-gated variant (macOS/iOS/Android) in Tauri v2** (reachable
+  only on macOS among ConvertIA's desktop triples; NOT cross-platform) — Win/Linux intake is
+  argv/single-instance; the `.run()` registration is unconditional but the Opened match ARM
+  is cfg-gated to the variant (absent → compiled out off macOS). **First-launch drain = C1 with `paths:[]` + `drainPending:true`**
   (consumes `State<PendingIntake>`; frontend never holds the buffered paths). Owner: §7.8.1 /
   §0.4.1 C1 / §7.3.2.
 - **`RotationStrategy::KeepOne` footprint re-verified at source = ~1× `max_file_size`** —

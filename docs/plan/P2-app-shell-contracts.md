@@ -236,7 +236,7 @@
   > **Forward-ref note (DECISION-C ordering inversion, owner-confirmed build order):** `needs: P2.58` points forward in document order — P2.55 makes `converter_is_busy` resolve the real §1.9 run-state, which OPENS the idle-flow branch through the funnel; were `buffer_pending_intake` still the P2.54 no-op interface shell (P2.58 unbuilt), an idle-and-not-ready launch set would route into it and be silently lost (path loss). Building P2.58 (the real `State<PendingIntake>` buffer) first closes that window, so DECISION C builds P2.58 before P2.55; the edge is acyclic (P2.55 → P2.58 → P2.54). This encodes the owner-confirmed order already recorded at the `buffer_pending_intake` shell in `src-tauri/src/main.rs` (P2.54). Only P2.55 opens idle-flow — P2.56/P2.57 route through the busy-shell Drop, so neither carries this edge.
 - [x] **P2.56** [RUST] Wire the macOS `RunEvent::Opened { urls }` handler — `Url::to_file_path()` → funnel, origin LaunchArg/SecondInstance by readiness · §7.8.1 §1.1
   needs: P2.54
-  - [x] **P2.56.1** [DOC] Record the macOS-only Tauri-v2 fact (`RunEvent::Opened` never fires on Win/Linux; registered unconditionally for code simplicity) · §7.8.1
+  - [x] **P2.56.1** [DOC] Record the Tauri-v2 fact (`RunEvent::Opened` is a `target_os`-gated VARIANT (macOS/iOS/Android) — absent on Win/Linux, reachable only on macOS among the desktop triples; the `.run()` registration unconditional, the matching ARM cfg-gated to the variant) · §7.8.1
   - [x] **P2.56.2** [DOC] Record the NOT-`tauri-plugin-deep-link`/`on_open_url` decision (custom-scheme intent, never the open-documents AppleEvent) · §7.8.1 §7.8.2
 - [x] **P2.57** [RUST] Wire the Windows-argv (`std::env::args_os` at first launch) + Linux `%F`/`%U` argv intake into `forward_launch_argv` · §7.8.1 §1.1
   needs: P2.54, P2.54.1
@@ -295,6 +295,7 @@
   needs: P2.78
 - [ ] **P2.82** [RUST] Route `RunEvent::Opened` through the funnel inside the `App::run` closure (the macOS Open-with hook, §7.8.1 refuse-busy enforced) · §7.3.2 §7.8.1
   needs: P2.81, P2.56
+  > the `RunEvent::Opened { urls }` arm MUST carry `#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]` — the variant's own gating (Tauri v2; the variant is absent on Win/Linux, so an unconditional arm would not compile) — and call `handle_opened` (P2.56). The §7.3.2/§7.8.1 spec fact was corrected ahead of this box (the `.run()` registration is unconditional, the Opened ARM is cfg-gated to the variant), so P2.82 only writes the cfg-gated arm.
 - [ ] **P2.83** [RUST] Establish the quit-while-converting contract — confirm → cancel-in-flight (§1.7) + §2.6 cleanup + exit = same path as in-UI Cancel; idle quits immediately · §7.3.3 §1.7 §2.6
   needs: P2.80, P2.42
 - [ ] **P2.84** [DOC] Record the no-persistent-queue / no-resume-across-launches `[DECIDED]` (in-memory queue only; re-drop on next launch) · §7.3.4 §7.4
