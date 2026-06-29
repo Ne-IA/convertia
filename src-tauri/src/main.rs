@@ -41,7 +41,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 use crate::domain::{
-    CollectedSetId, CollectingId, InstanceId, IntakePayload, ItemId, LossyKind, RunId,
+    CollectedSetId, CollectingId, InstanceId, IntakeOrigin, IntakePayload, ItemId, LossyKind, RunId,
 };
 use crate::outcome::{AppFault, IpcError, OutcomeMsg};
 
@@ -196,20 +196,17 @@ fn ipc_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
 /// the macOS `RunEvent::Opened` handler (P2.56), the first-launch argv reader (P2.57) — wire the funnel
 /// from P2.52 onward.
 mod launch_intake {
-    // The whole launch-intake module is dead in the PRODUCTION build until the first LIVE CALLER wires the
-    // funnel: the §7.1.1 single-instance callback (P2.52), the macOS `RunEvent::Opened` handler (P2.56), and
-    // the first-launch argv reader (P2.57). The funnel's own predicate fills land at P2.55 (`converter_is_busy`)
-    // / P2.58 (`PendingIntake`) / P2.59 (the ready-flag branch). The `cfg(test)` truth-table + the
-    // `parse_path_args` unit tests + the signature-pin reference every item, so the TEST build is
-    // dead-code-clean. `expect` (not `allow`) auto-flags the moment a live caller is wired — matching
-    // `crate::ipc::events` / `crate::domain` / `crate::outcome`.
-    #![cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the §7.8.1 launch-intake funnel (forward_launch_intake + the parse_path_args/forward_launch_argv classifier + the converter_is_busy/frontend_ready/buffer_pending_intake fill-shells) and the IDLE-path-only disposition rule are dead in the production build until the first live caller wires the funnel (the §7.1.1 single-instance callback P2.52, the macOS RunEvent::Opened handler P2.56, the first-launch argv reader P2.57)."
-        )
-    )]
+    // [Test-Change: P2.52 — old-obsolete+new-correct, §7.1.1] G70 flags the REMOVED module dead-code lint
+    // attribute (the `#![cfg_attr(not(test), …)]` above) as a "removed assertion" — a false positive (a LINT
+    // attribute, never a test assertion); the dead-code expectation is OBSOLETE now the §7.1.1 callback makes
+    // the module live, so removing it is CORRECT (keeping it errors "expectation unfulfilled"). No test changed.
+    // [Build-Session-Entscheidung: P2.52] The §7.1.1 single-instance callback in `main()` (below) is now the
+    // funnel's FIRST live caller — `forward_launch_argv` -> `forward_launch_intake` -> the predicate shells +
+    // `parse_path_args` + `intake_disposition` are all reachable from production — so the whole module is LIVE
+    // and the former module-level `#![cfg_attr(not(test), …)]` dead-code suppression is REMOVED (with nothing
+    // dead, that `dead_code` expectation would flip to "expectation unfulfilled" under `-D warnings`). The predicate
+    // fills are wired by P2.55 (`converter_is_busy` § run-state) / P2.58 (`PendingIntake` buffer) / P2.59 (the
+    // ready-flag branch); until then the fail-safe shell defaults hold (busy=true -> Drop).
 
     use std::path::PathBuf;
 
@@ -321,7 +318,13 @@ mod launch_intake {
     /// [Build-Session-Entscheidung: P2.54.1] The §7.8.1 `forward_launch_argv` wrapper — classify `argv` into
     /// paths (`parse_path_args`) and route them through the single funnel. The §7.1.1 single-instance
     /// callback (P2.52) and the Win/Linux first-launch argv reader (P2.57) both forward through this.
-    fn forward_launch_argv(app: &AppHandle, argv: &[String], cwd: &str, origin: IntakeOrigin) {
+    /// `pub(super)` [P2.52]: the funnel's argv door for `main()`'s single-instance callback (the first live caller).
+    pub(super) fn forward_launch_argv(
+        app: &AppHandle,
+        argv: &[String],
+        cwd: &str,
+        origin: IntakeOrigin,
+    ) {
         forward_launch_intake(app, parse_path_args(argv, cwd), origin);
     }
 
@@ -403,9 +406,10 @@ mod launch_intake {
         // §6.4.1 unit (G15): the §7.8.1 funnel + classifier exist with their spec'd signatures. The
         // AppHandle-coupled fns (the funnel, the wrapper, the three predicate/buffer shells) are not
         // call-tested — this crate has no `tauri::test` mock harness (the boot-stage pattern) — so this
-        // pins their SIGNATURES via fn-pointer coercion: a signature drift fails to compile, and the
-        // reference keeps each item USED in the TEST build (where the module's `not(test)` dead-code expect
-        // is OFF). [Build-Session-Entscheidung: P2.54]
+        // pins their SIGNATURES via fn-pointer coercion: a signature drift fails to compile. (From P2.52 the
+        // module is LIVE via the single-instance callback in `main()`, so this is now purely a signature pin —
+        // the former dead-code-suppression role ended when P2.52 removed that module suppression.)
+        // [Build-Session-Entscheidung: P2.54]
         #[test]
         fn launch_funnel_items_have_their_spec_signatures() {
             let _intake: fn(&AppHandle, Vec<PathBuf>, IntakeOrigin) = forward_launch_intake;
@@ -413,6 +417,30 @@ mod launch_intake {
             let _busy: fn(&AppHandle) -> bool = converter_is_busy;
             let _ready: fn(&AppHandle) -> bool = frontend_ready;
             let _buffer: fn(&AppHandle, Vec<PathBuf>, IntakeOrigin) = buffer_pending_intake;
+        }
+
+        // §6.4.1 unit (G15): the §7.1.1 single-instance callback (P2.52) is WIRED in `main()` — it re-focuses
+        // the `main` window AND forwards the second launch's argv through the §7.8.1 funnel as
+        // `SecondInstance`. The callback is AppHandle-coupled boot-glue (not execution-testable; the
+        // boot-stage pattern), so a source scan over `main()`'s body (the shared `production_main_body()`,
+        // every test module excluded so the needles can't self-match) pins the wiring so it can't silently
+        // drop. `forward_launch_argv(` appears only at the call site — its `pub(super) fn` definition lives in
+        // `launch_intake`, BEFORE `main()`, outside this slice. [Build-Session-Entscheidung: P2.52]
+        #[test]
+        fn single_instance_callback_wires_refocus_and_the_funnel() {
+            let src = crate::boot_invariants::production_main_body();
+            let needles = [
+                concat!("forward_launch_", "argv("), // forwards the second launch's argv through the funnel
+                concat!("IntakeOrigin::Second", "Instance"), // origin = SecondInstance (§7.8 / §0.6)
+                concat!("get_webview_", "window(\"main\")"), // looks up the main window
+                concat!("set_", "focus"), // re-focuses it (the §7.1.1 primary busy signal)
+            ];
+            for needle in needles {
+                assert!(
+                    src.contains(needle),
+                    "§7.1.1/§7.8.1: the single-instance callback must re-focus `main` + forward argv via the funnel (missing `{needle}`)"
+                );
+            }
         }
 
         // §6.4.1 unit (G15): the §7.8.1 funnel DISPATCHES via the pure P2.40 `intake_disposition` rule
@@ -532,13 +560,13 @@ fn main() -> tauri::Result<()> {
     // gain). tokio is pinned transitively in `Cargo.lock` (§0.8 "exact") and is added as a DIRECT
     // dependency where the first in-crate `async` command code calls into it (P2).
     tauri::Builder::default()
-        // [Build-Session-Entscheidung: P1.14] §0.8 plugin wiring (registration only; the handlers
-        // that USE these plugins are P2). single-instance is registered FIRST (§7.1) so a second
-        // launch is intercepted before the other plugins init; ConvertIA is desktop-only so no
-        // `#[cfg(desktop)]` guard is needed, and the callback is empty — the §7.8 launch-arg /
-        // second-instance intake hand-off (forward_launch_intake + the PendingIntake buffer) is P2.
-        // dialog + opener are called Rust-side (DialogExt/OpenerExt) so they take NO WebView grant
-        // (§0.10); store/log get store:default/log:default in capabilities/main.json (P1.21).
+        // [Build-Session-Entscheidung: P1.14] §0.8 plugin wiring. single-instance is registered FIRST (§7.1)
+        // so a second launch is intercepted before the other plugins init; ConvertIA is desktop-only so no
+        // `#[cfg(desktop)]` guard is needed. [Build-Session-Entscheidung: P2.52] the callback is now WIRED
+        // (was empty in P1.14): it re-focuses the `main` window + forwards the second launch's argv through
+        // the §7.8.1 funnel as `SecondInstance` (the §7.1.1 hand-off). dialog + opener are called Rust-side
+        // (DialogExt/OpenerExt) so they take NO WebView grant (§0.10); store/log get store:default/log:default
+        // in capabilities/main.json (P1.21).
         //
         // [Build-Session-Entscheidung: P2.51] §7.1.1 single-instance LOCK SCOPE — per-OS-user, NOT
         // machine-global. The PLUGIN owns the lock (this box adds no locking logic), so the scope is a
@@ -552,7 +580,19 @@ fn main() -> tauri::Result<()> {
         // socket covers only direct-binary re-exec, the least-mature leg). v1 adds NO per-user-`$TMPDIR`
         // macOS socket — T13 records that heavier path as the one not chosen. The per-platform scope mapping
         // is pinned structurally by the `single_instance_lock_scope` test module below.
-        .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {}))
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            // [Build-Session-Entscheidung: P2.52] §7.1.1 second-launch hand-off, running in the EXISTING
+            // primary instance (the second process has already exited). Re-focus the `main` window — the OS
+            // bringing ConvertIA forward IS the PRIMARY "we're busy" signal (§7.1.1) — then forward the
+            // launch-time argv through the SAME §7.8.1 funnel every launch source uses, origin
+            // `SecondInstance`; the funnel owns the §7.1.1 refuse-busy gate (a mid-run second launch is
+            // dropped, never merged into the §2.4 frozen set) and the emit/buffer disposition, so nothing is
+            // emitted here directly.
+            let _ = app.get_webview_window("main").map(|w| {
+                let _ = w.set_focus();
+            });
+            launch_intake::forward_launch_argv(app, &argv, &cwd, IntakeOrigin::SecondInstance);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
