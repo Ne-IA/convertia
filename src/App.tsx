@@ -13,6 +13,14 @@
 // P1 phase end-state assembled by P1.31 (this mount) + P1.23 (index.html) + P1.16 (window
 // model). The machine-state switch that selects a screen is wired when `state/machine.ts`
 // lands (P3.53). [Build-Session-Entscheidung: P1.31]
+//
+// P2.61 wires the §7.8.1 root-shell-mount first-launch drain trigger (`useLaunchDrain`) here at the root
+// shell. ORDERING (the §7.8.1 listener race): P2.120 inserts the three §5.8 `app://` listener-registration
+// effect BEFORE this call — the drain must run AFTER listener registration, so a future
+// `useAppEvents()` (P2.120) is placed above `useLaunchDrain()`. [Build-Session-Entscheidung: P2.61]
+import { useLaunchDrain } from "./hooks/useLaunchDrain";
+
 export function App() {
+  useLaunchDrain();
   return <main />;
 }

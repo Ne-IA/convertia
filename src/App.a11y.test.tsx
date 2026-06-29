@@ -1,6 +1,13 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { axe } from "vitest-axe";
+
+// P2.61: App now fires the §7.8.1 first-launch drain on mount (`useLaunchDrain`). Mock the §5.8 IPC helper so
+// this a11y render stays hermetic — jsdom has no Tauri runtime, so the real `Channel`/`invoke` throws. The
+// drain CALL is covered by `lib/ipc/events.test.ts`; here App just renders + the mount effect runs harmlessly.
+vi.mock("./lib/ipc/events", () => ({
+  drainPendingIntake: () => Promise.resolve({ empty: { skipped: [] } }),
+}));
 
 import { App } from "./App";
 
