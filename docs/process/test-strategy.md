@@ -166,6 +166,59 @@ Each is the §6.4.1 contract made executable:
 > the lint prevents the class, the **G48** fuzz finds the residue. Tests do not
 > have to *find* every panic; they have to *exercise the guards* (§4).
 
+### 1.1a Boot-stage / host-glue (AppHandle-coupled launch glue · source-scan + §1.6 E2E · G28 exemption)
+
+The **launch / host glue** — the §7.8.1 `forward_launch_intake` funnel, the §7.1.1
+single-instance callback, the macOS `RunEvent::Opened` handler, the AppHandle
+predicate/buffer shells (`converter_is_busy`/`frontend_ready`/`buffer_pending_intake`),
+and `fn main()` itself — is **AppHandle-coupled**: it cannot run under `cargo test`
+without a Tauri runtime, and **this crate ships no `tauri::test` mock harness BY
+DECISION** (a mock runtime would reverse this stance, add a test-feature dependency
+surface to the offline supply chain, and still leave the `app.emit`/window arms behind
+the runtime). The **boot-stage pattern** tests this glue at the level where it is real:
+
+- **Source-scan signature pins (L1/L2, `#[cfg(test)]`).** The glue's *shape* is pinned by
+  fn-pointer coercion (a signature drift fails to compile) — e.g. `launch_intake`'s
+  `launch_funnel_items_have_their_spec_signatures` — and its *boot invariants* by
+  whole-`main()`-body scans (`production_boot_source` / `production_full_boot_source`:
+  no-socket-on-boot, no programmatic window builder, no updater plugin). The dispatch
+  *logic* it routes through is the **pure, truth-table-tested** rule extracted beside it
+  (`intake_disposition`), so the only thing left un-executed is the AppHandle plumbing.
+- **§1.6 E2E real window + §6.6 walkthrough.** The glue's *runtime* behaviour (the emit
+  reaching the WebView, the window re-focus, Open-with) is exercised by the real built app
+  on the **G30** matrix and the human walkthrough — not by `cargo test`.
+
+**G28 consequence (the boot-glue diff exemption · owner decision A · P2.135).** Because
+execution coverage structurally cannot reach AppHandle-coupled glue, the **G28 diff floor
+exempts changed lines inside a fn whose signature references an `AppHandle` type** (parameter, return or
+bound — all equally runtime-coupled) — else
+the gate would fire "for the wrong reason" (the §1.2 no-panic-discipline anchor's sibling:
+a gate must not demand a proof the code's blessed test level does not produce). The
+exemption is **structural** (`check-coverage` `_apphandle_fn_ranges`, signature-based — not
+a marker the Build-Loop can self-apply), **fail-closed** (any parse ambiguity leaves the
+line counted), and the exempted lines **stay counted in the G27 per-domain floor** (the
+crate's headroom absorbs them; only the change-only diff gate, which a concentrated
+boot-glue diff uniquely breaks, exempts them). It is a G28 **scope** refinement, never a
+floor relaxation (`diff_floor` stays 80). Pure helpers homed beside the glue
+(`intake_disposition`, `parse_path_args` — no `AppHandle` in their signatures) are **not**
+exempt: they carry their full §1.1 / §1.3 unit + property bar.
+
+**`fn main()` is NOT reached by the exemption** (it binds no `AppHandle` parameter, so the
+signature scan does not match it). That is deliberate and consistent: `main`'s boot body is
+covered by the *whole-`main()` source-scans* (`production_full_boot_source` /
+`boot_invariants` / `instance_identity`) — the source-scan half of the boot-stage pattern
+above — not by the diff exemption. So new uncovered boot logic added directly in `main`'s
+`setup` closure is held by those scans, not waved through.
+
+**Residual abuse surface (bounded, documented).** Because the exemption is signature-keyed,
+a change could in principle bury genuinely-testable logic inside an `AppHandle`-signature fn
+to dodge the diff floor. This is **bounded, not eliminated**, by four independent backstops:
+(a) the **G27 per-domain floor still counts every exempted line** — uncovered logic drains
+the crate's headroom toward its 70 % floor and eventually reddens G27; (b) the exemption set
+is **logged every run** (`[G28] boot-glue exempt: …`), so the diff is auditable; (c) the
+**dual review** reads the glue; and (d) the **§0.7 architecture** homes real logic in the
+tier modules, not the host glue. The residual is accepted at this bound.
+
 ### 1.2 Unit — React (Vitest · §6.4.6 · G15 runs · G27 TS floor)
 
 Frontend utility functions, hooks, and presentational components under **Vitest**

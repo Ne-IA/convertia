@@ -196,6 +196,67 @@ record("_diff_verdict: no changed executable product lines (0/0) -> vacuous pass
 record("run_diff: no base -> fail-open skip (the G8/G70 diff-base posture)",
        m.run_diff({"meta": {"diff_floor": 80}}, None) == 0)
 
+# --- the boot-glue diff exemption (G28, P2.135): _strip_rust + _apphandle_fn_ranges + _boot_glue_exempt --
+# _strip_rust: comments/strings/chars are blanked so their `{`/`}`/`(` never miscount, length + newlines kept.
+record("_strip_rust: a `{` in a line comment is blanked", "{" not in m._strip_rust("x // {\n"))
+record("_strip_rust: a `}` in a block comment is blanked", "}" not in m._strip_rust("/* } */ y"))
+record("_strip_rust: a NESTED block comment is fully blanked (Rust allows nesting)",
+       "}" not in m._strip_rust("/* a /* b } */ c } */ x"))
+record("_strip_rust: braces in a normal string are blanked", "{" not in m._strip_rust('let s = "{}";'))
+record("_strip_rust: braces in a raw string are blanked", "{" not in m._strip_rust('let s = r#"a{b}c"#;'))
+record("_strip_rust: a `'{'` char literal is blanked", "{" not in m._strip_rust("let c = '{';"))
+record("_strip_rust: a `'a` lifetime + its real braces survive", m._strip_rust("fn f<'a>() {}").count("{") == 1)
+record("_strip_rust: length is preserved (offset-stable)",
+       len(m._strip_rust('a "str{}" // c\n/* b */ x')) == len('a "str{}" // c\n/* b */ x'))
+record("_strip_rust: newline count is preserved",
+       m._strip_rust('"a\nb" /* c\nd */\n').count("\n") == 3)
+
+# _apphandle_fn_ranges: a fn whose SIGNATURE binds AppHandle is a range; a pure fn / a comment-or-string
+# mention / a no-body decl is NOT (fail-closed). Generics + `-> T` + format!-braces never miscount.
+_PURE = "fn pure(busy: bool, ready: bool) -> X {\n    if busy { 1 } else { 2 }\n}\n"
+_GLUE = 'fn glue(app: &AppHandle, p: Vec<P>) {\n    let _ = format!("{}-{}", 1, 2);\n}\n'
+record("_apphandle_fn_ranges: an AppHandle fn is a range",
+       [n for n, _, _ in m._apphandle_fn_ranges(_GLUE)] == ["glue"])
+record("_apphandle_fn_ranges: a pure (non-AppHandle) fn is NOT a range",
+       m._apphandle_fn_ranges(_PURE) == [])
+record("_apphandle_fn_ranges: AppHandle only in a string/comment (not the sig) is NOT a range",
+       m._apphandle_fn_ranges('fn f() {\n    let _ = "AppHandle";  // AppHandle\n}\n') == [])
+record("_apphandle_fn_ranges: a generic `fn g<R: Runtime>(app: &AppHandle<R>)` is detected (parens, not angles)",
+       [n for n, _, _ in m._apphandle_fn_ranges("fn g<R: Runtime>(app: &AppHandle<R>) -> bool {\n    true\n}\n")] == ["g"])
+record("_apphandle_fn_ranges: a `;`-terminated decl (no body) is NOT a range (fail-closed)",
+       m._apphandle_fn_ranges("fn d(app: &AppHandle);\n") == [])
+record("_apphandle_fn_ranges: an unbalanced body is NOT a range (fail-closed)",
+       m._apphandle_fn_ranges("fn u(app: &AppHandle) {\n    if x {\n") == [])
+# a format!-brace body ends at its OWN close, so a following pure fn is not swallowed
+_TWO = _GLUE + _PURE
+_two_ranges = m._apphandle_fn_ranges(_TWO)
+record("_apphandle_fn_ranges: a format!-brace body ends correctly (the following pure fn is not swallowed)",
+       [n for n, _, _ in _two_ranges] == ["glue"] and _two_ranges[0][2] == 3)
+# the REAL main.rs: the 5 launch-funnel AppHandle fns are ranges; the pure helpers are NOT (the partition)
+_main_src = (m.ROOT / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+_main_fns = {n for n, _, _ in m._apphandle_fn_ranges(_main_src)}
+record("_apphandle_fn_ranges: real main.rs - the funnel + shells are exempt",
+       {"forward_launch_intake", "converter_is_busy", "frontend_ready", "buffer_pending_intake"} <= _main_fns)
+record("_apphandle_fn_ranges: real main.rs - the PURE helpers (intake_disposition/parse_path_args) are NOT exempt",
+       "intake_disposition" not in _main_fns and "parse_path_args" not in _main_fns)
+record("_apphandle_fn_ranges: real main.rs - fn main (no AppHandle in its sig) is NOT exempt (boot_invariants source-scan covers its body, not this diff exemption)",
+       "main" not in _main_fns)
+
+# _boot_glue_exempt: reads the HEAD tree; a product Rust file's AppHandle-fn lines are exempt, a non-product
+# file contributes nothing; _diff_counts honours the exempt set (an uncovered exempt line stops counting).
+_first = m._apphandle_fn_ranges(_main_src)[0]
+_inside = _first[1] + 1                                # a line inside the first AppHandle fn body
+_ex, _labels = m._boot_glue_exempt({"src-tauri/src/main.rs": {_inside}, "README.md": {1}})
+record("_boot_glue_exempt: a product Rust AppHandle-fn line is exempt",
+       _inside in _ex.get("src-tauri/src/main.rs", set()))
+record("_boot_glue_exempt: a non-product file contributes nothing + a label is logged",
+       "README.md" not in _ex and len(_labels) >= 1)
+_eh = {"f.rs": {10: 1, 11: 0, 12: 0}}
+record("_diff_counts: exempt=None is backward-compatible (an uncovered line still counts)",
+       m._diff_counts({"f.rs": {10, 11, 12}}, _eh) == (1, 3))
+record("_diff_counts: an uncovered EXEMPT boot-glue line stops counting (only the non-exempt line remains)",
+       m._diff_counts({"f.rs": {10, 11, 12}}, _eh, {"f.rs": {11, 12}}) == (1, 1))
+
 passed = sum(1 for _, ok in results if ok)
 print(f"\n[g24-coverage] {passed}/{len(results)} assertions passed.")
 sys.exit(0 if passed == len(results) else 1)

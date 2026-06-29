@@ -34,6 +34,22 @@ Three tiers:
   that land with the nightly branch-coverage run). TS branch coverage (Vitest v8) IS measured but is not
   floored in P1 (no [branch] row). The live tier is skipped-with-notice on a leg with no report.
 
+  BOOT-GLUE DIFF EXEMPTION (G28 only, P2.135 — owner decision A): an `AppHandle`-coupled fn (the launch /
+  host glue — the §7.8.1 forward_launch_intake funnel, the single-instance / RunEvent::Opened wiring, the
+  AppHandle predicate/buffer shells) CANNOT be reached by `cargo test` execution coverage: it needs a tauri
+  runtime, and this crate ships NO `tauri::test` mock harness BY DECISION — the established BOOT-STAGE
+  PATTERN tests such glue by SOURCE-SCAN (the fn-pointer signature pins, e.g. launch_intake's
+  `launch_funnel_items_have_their_spec_signatures`; production_boot_source) + the §1.6 E2E real-window run +
+  the §6.6 walkthrough, NOT by line-execution coverage (test-strategy §1.1a). So the G28 DIFF floor would
+  fire "for the wrong reason" on those lines. They are therefore EXCLUDED from the diff floor — identified
+  STRUCTURALLY (a fn whose SIGNATURE references an `AppHandle` type — parameter, return or bound, all
+  equally runtime-coupled; _apphandle_fn_ranges; NOT a loop-editable marker) and FAIL-CLOSED (a fn whose
+  body brace does not balance stays COUNTED). The lines
+  remain counted in the G27 per-domain floor (where the crate's headroom absorbs them) — only the
+  change-only diff gate, which a concentrated boot-glue diff would uniquely break, exempts them. The set is
+  LOGGED every run (no silent exemption). This is a G28 SCOPE refinement, not a floor relaxation: diff_floor
+  stays 80 (freeze_floors).
+
 stdlib-only. L(-1) security-critical (matched by scripts/check-*; coverage-floors.toml is L(-1) too).
 
 Usage: check-coverage [--full] [--base <git-ref>]
@@ -77,6 +93,10 @@ SECURITY_BRANCH_MODULES = tuple(d.split("::", 1)[1] for d in BRANCH_FLOOR_DOMAIN
 
 # a unified-diff hunk header: `@@ -a,b +c,d @@` — capture the new-side start (c) + optional length (d).
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+# the boot-glue diff exemption (G28, P2.135): a fn-signature start + the `AppHandle` parameter type marker.
+_FN_RE = re.compile(r"\bfn\s+\w+")
+_APPHANDLE_RE = re.compile(r"\bAppHandle\b")
 
 
 def fail(msg: str) -> None:
@@ -289,16 +309,164 @@ def _changed_lines(base: str) -> dict[str, set[int]] | None:
     return out
 
 
-def _diff_counts(changed: dict[str, set[int]], hits: dict[str, dict[int, int]]) -> tuple[int, int]:
+def _strip_rust(text: str) -> str:
+    """(pure) `text` with every COMMENT, STRING, CHAR and RAW-STRING body replaced by spaces (newlines
+    preserved), so a `{`/`}`/`(`/`)` inside a `"format {}"`, a `// comment {`, a `/* } */` or a `'{'` char
+    literal never miscounts in the brace/paren scan that finds AppHandle-fn bodies (the P2.135 boot-glue
+    exemption). SAME LENGTH + same newline positions as the input, so character offsets and line numbers
+    map 1:1. Conservative: anything it cannot classify stays as code (the consuming scan is fail-closed —
+    an un-found / unbalanced body brace simply does not exempt)."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\n":
+            out.append("\n"); i += 1
+        elif c == "/" and i + 1 < n and text[i + 1] == "/":            # line comment -> EOL
+            while i < n and text[i] != "\n":
+                out.append(" "); i += 1
+        elif c == "/" and i + 1 < n and text[i + 1] == "*":            # block comment (Rust allows NESTING)
+            out.append("  "); i += 2; depth = 1
+            while i < n and depth > 0:
+                if text[i] == "\n":
+                    out.append("\n"); i += 1
+                elif text[i] == "/" and i + 1 < n and text[i + 1] == "*":
+                    out.append("  "); i += 2; depth += 1
+                elif text[i] == "*" and i + 1 < n and text[i + 1] == "/":
+                    out.append("  "); i += 2; depth -= 1
+                else:
+                    out.append(" "); i += 1
+        elif c == "r" and i + 1 < n and (text[i + 1] == '"' or text[i + 1] == "#"):  # maybe a raw string
+            k = i + 1
+            while k < n and text[k] == "#":
+                k += 1
+            if k < n and text[k] == '"':
+                hashes = k - (i + 1)                                   # `#`s between the `r` and the `"`
+                out.append(" " * (k - i + 1)); i = k + 1
+                closer = '"' + "#" * hashes
+                while i < n:
+                    if text[i] == "\n":
+                        out.append("\n"); i += 1
+                    elif text.startswith(closer, i):
+                        out.append(" " * len(closer)); i += len(closer); break
+                    else:
+                        out.append(" "); i += 1
+            else:                                                       # an ident starting with `r`, not a raw string
+                out.append(c); i += 1
+        elif c == '"':                                                 # normal string
+            out.append(" "); i += 1
+            while i < n:
+                if text[i] == "\\" and i + 1 < n:
+                    out.append(" \n" if text[i + 1] == "\n" else "  "); i += 2
+                elif text[i] == '"':
+                    out.append(" "); i += 1; break
+                elif text[i] == "\n":
+                    out.append("\n"); i += 1
+                else:
+                    out.append(" "); i += 1
+        elif c == "'":                                                 # char literal vs lifetime
+            if i + 1 < n and text[i + 1] == "\\":                      # escaped char '\n' '\\' '\'' '\u{..}'
+                j = i + 2
+                while j < n and j < i + 12 and text[j] not in ("'", "\n"):
+                    j += 1
+                if j < n and text[j] == "'":
+                    out.append(" " * (j - i + 1)); i = j + 1
+                else:
+                    out.append("'"); i += 1
+            elif i + 2 < n and text[i + 2] == "'":                     # simple 'X' (incl. '{' '}')
+                out.append("   "); i += 3
+            else:                                                      # a lifetime 'a — leave as code
+                out.append("'"); i += 1
+        else:
+            out.append(c); i += 1
+    return "".join(out)
+
+
+def _apphandle_fn_ranges(text: str) -> list[tuple[str, int, int]]:
+    """(pure) [(fn_name, start_line, end_line)] for each fn whose SIGNATURE references an `AppHandle` type
+    (a parameter, a return, or a where-bound — all equally runtime-coupled) — the boot-glue the boot-stage
+    pattern (source-scan + §1.6 E2E + §6.6) tests
+    instead of cargo-test execution (this crate ships no tauri::test mock harness BY DECISION), so the G28
+    diff floor would fire "for the wrong reason" on it (test-strategy §1.1a). Scans `_strip_rust`'d text and
+    counts PARENS to find the body-opening `{` (angle brackets are IGNORED, so `-> T`, generics and
+    `AppHandle<R>` never miscount), then brace-matches the body. FAIL-CLOSED: a `;`-terminated declaration
+    (no body) or a body whose braces do not balance yields NO range — those lines stay COUNTED. The
+    signature, not a comment/string mention of AppHandle, must match (the strip guarantees it).
+    [owner decision A, P2.135 — the boot-glue diff-coverage exemption]"""
+    stripped = _strip_rust(text)
+    ranges: list[tuple[str, int, int]] = []
+    n = len(stripped)
+    for mt in _FN_RE.finditer(stripped):
+        name = mt.group().split()[-1]
+        i, pdepth, body_open = mt.end(), 0, None
+        while i < n:                                   # find the body `{` at paren-depth 0, or a `;` (no body)
+            ch = stripped[i]
+            if ch == "(":
+                pdepth += 1
+            elif ch == ")":
+                pdepth -= 1
+            elif pdepth == 0 and ch == ";":
+                break
+            elif pdepth == 0 and ch == "{":
+                body_open = i; break
+            i += 1
+        if body_open is None or not _APPHANDLE_RE.search(stripped[mt.start():body_open]):
+            continue
+        bdepth, j, body_close = 0, body_open, None
+        while j < n:                                   # brace-match the body
+            ch = stripped[j]
+            if ch == "{":
+                bdepth += 1
+            elif ch == "}":
+                bdepth -= 1
+                if bdepth == 0:
+                    body_close = j; break
+            j += 1
+        if body_close is None:
+            continue                                   # fail-closed: unbalanced body, do not exempt
+        ranges.append((name, stripped.count("\n", 0, mt.start()) + 1, stripped.count("\n", 0, body_close) + 1))
+    return ranges
+
+
+def _boot_glue_exempt(changed: dict[str, set[int]]) -> tuple[dict[str, set[int]], list[str]]:
+    """{path: exempt-line-set} for the AppHandle-coupled boot-glue fns in the CHANGED product Rust files,
+    plus a flat `path::fn` audit-log label list (G28, P2.135). Read from the HEAD working tree (the CI leg
+    checks out HEAD, so the diff's new-side line numbers match the on-disk source). A non-product / non-Rust
+    / unreadable file contributes nothing — fail-closed, its lines stay counted."""
+    exempt: dict[str, set[int]] = {}
+    labels: list[str] = []
+    for path in changed:
+        if not path.endswith(".rs") or _rust_domain(path) is None:
+            continue
+        try:
+            src = (ROOT / path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        lines: set[int] = set()
+        for name, start, end in _apphandle_fn_ranges(src):
+            lines.update(range(start, end + 1))
+            labels.append(f"{path}::{name}")
+        if lines:
+            exempt[path] = lines
+    return exempt, labels
+
+
+def _diff_counts(changed: dict[str, set[int]], hits: dict[str, dict[int, int]],
+                 exempt: dict[str, set[int]] | None = None) -> tuple[int, int]:
     """(pure) (covered, total) over changed lines that are EXECUTABLE PRODUCT lines (present in the
     per-line lcov hit map). A changed line not in the hit map — a non-product file, a comment, a blank
-    line, a type-only line — is not counted: the diff gate measures executable product lines only."""
+    line, a type-only line — is not counted: the diff gate measures executable product lines only. A
+    changed line inside an AppHandle-coupled boot-glue fn (in `exempt`) is ALSO skipped — the boot-stage
+    pattern (§1.6 E2E + source-scan) covers it, not cargo-test execution (G28 P2.135 exemption)."""
     covered = total = 0
     for path, lines in changed.items():
         file_hits = hits.get(path)
         if not file_hits:
             continue
+        ex = exempt.get(path) if exempt else None
         for ln in lines:
+            if ex and ln in ex:
+                continue
             if ln in file_hits:
                 total += 1
                 if file_hits[ln] > 0:
@@ -423,7 +591,13 @@ def run_diff(cfg: dict, base: str | None) -> int:
     changed = _changed_lines(base)
     if changed is None:
         return 0                                   # base did not resolve — fail-open
-    covered, total = _diff_counts(changed, hits)
+    exempt, labels = _boot_glue_exempt(changed)    # G28 P2.135: AppHandle boot-glue is source-scan-tested
+    if labels:
+        n_lines = sum(len(s) for s in exempt.values())
+        print(f"[G28] boot-glue exempt: {n_lines} changed line(s) in {len(labels)} AppHandle fn(s) excluded "
+              f"from the diff floor (boot-stage pattern, test-strategy 1.1a; still counted in G27): "
+              f"{', '.join(sorted(labels))}")
+    covered, total = _diff_counts(changed, hits, exempt)
     floor = cfg.get("meta", {}).get("diff_floor", DIFF_FLOOR)
     return _diff_verdict(covered, total, float(floor))
 
