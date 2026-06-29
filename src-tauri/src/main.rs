@@ -313,6 +313,19 @@ fn main() -> tauri::Result<()> {
         // second-instance intake hand-off (forward_launch_intake + the PendingIntake buffer) is P2.
         // dialog + opener are called Rust-side (DialogExt/OpenerExt) so they take NO WebView grant
         // (§0.10); store/log get store:default/log:default in capabilities/main.json (P1.21).
+        //
+        // [Build-Session-Entscheidung: P2.51] §7.1.1 single-instance LOCK SCOPE — per-OS-user, NOT
+        // machine-global. The PLUGIN owns the lock (this box adds no locking logic), so the scope is a
+        // property of `tauri-plugin-single-instance`'s per-platform mechanism, documented here in-core:
+        // Windows = a per-Session `CreateMutexW`, Linux = the session `D-Bus` — both PER-OS-USER (a second
+        // launch by the SAME user reaches THIS instance; two different logged-in OS users each get their own,
+        // acceptable since their §2.14 scratch + output locations are user-scoped anyway). macOS is the SOLE
+        // gap: the plugin hard-codes its socket at world-writable `/tmp/{id}_si.sock` (machine-global), so the
+        // per-OS-user scope is NOT achievable there — the accepted v1 limitation recorded as §0.11 threat
+        // class T13 (the macOS PRIMARY single-instance path is the §7.8 AppleEvent, unaffected; the /tmp
+        // socket covers only direct-binary re-exec, the least-mature leg). v1 adds NO per-user-`$TMPDIR`
+        // macOS socket — T13 records that heavier path as the one not chosen. The per-platform scope mapping
+        // is pinned structurally by the `single_instance_lock_scope` test module below.
         .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {}))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -983,5 +996,121 @@ mod no_updater_posture {
             !src.contains(needle),
             "§7.6.1: the Builder must register no updater plugin (`{needle}`) — the updater is explicitly absent"
         );
+    }
+}
+
+#[cfg(test)]
+mod single_instance_lock_scope {
+    //! §6.4.1 unit (G15): §7.1.1 — the single-instance LOCK SCOPE per platform. The scope is owned by
+    //! `tauri-plugin-single-instance` (this box adds no locking logic), so this is a STRUCTURAL encoding of
+    //! the per-platform fact, not a live test of the plugin: Windows (a per-Session `CreateMutexW`) + Linux
+    //! (the session `D-Bus`) are PER-OS-USER; macOS is MACHINE-GLOBAL (the plugin's world-writable
+    //! `/tmp/{id}_si.sock`) — the accepted v1 limitation, §0.11 threat class T13. The mapping is pinned as a
+    //! truth table (checkable on every CI leg), a current-target consistency assertion (each native §6.4.4
+    //! leg re-checks its own scope via `cfg!`), and a source scan that the production registration site
+    //! documents the scope in-core — so the §7.1.1 / T13 note cannot silently drop. The §7.1.1 mechanism is
+    //! the plugin's; this module makes the per-platform scope a checkable fact, not just prose.
+    //! [Build-Session-Entscheidung: P2.51]
+
+    /// The §7.1.1 single-instance lock scope a platform's `tauri-plugin-single-instance` mechanism yields.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum LockScope {
+        /// Per-OS-user: a second launch by the SAME user reaches the primary instance; two different
+        /// logged-in OS users each get their own. Windows (a per-Session `CreateMutexW`) + Linux (the
+        /// session `D-Bus`). §7.1.1.
+        PerOsUser,
+        /// Machine-global: the lock is shared across ALL logged-in users on the machine. macOS only — the
+        /// plugin hard-codes its socket at world-writable `/tmp/{id}_si.sock`. The accepted v1 limitation,
+        /// §0.11 threat class T13.
+        MachineGlobal,
+    }
+
+    /// The §7.1.1 per-platform lock-scope mapping for ConvertIA's three shipped desktop targets (§0.8).
+    /// `None` = a target ConvertIA does not ship (unclassified) — a future target must be classified here
+    /// explicitly, never silently defaulted to one scope or the other.
+    fn lock_scope_for_os(target_os: &str) -> Option<LockScope> {
+        match target_os {
+            "macos" => Some(LockScope::MachineGlobal),
+            "windows" | "linux" => Some(LockScope::PerOsUser),
+            _ => None,
+        }
+    }
+
+    // §6.4.1 unit (G15): the full §7.1.1 per-platform scope truth table over the three shipped targets. The
+    // load-bearing row is macOS = MachineGlobal (the T13 limitation) versus Windows / Linux = PerOsUser.
+    #[test]
+    fn per_platform_lock_scope_truth_table() {
+        assert_eq!(
+            lock_scope_for_os("windows"),
+            Some(LockScope::PerOsUser),
+            "§7.1.1: Windows single-instance is a per-Session CreateMutexW — per-OS-user"
+        );
+        assert_eq!(
+            lock_scope_for_os("linux"),
+            Some(LockScope::PerOsUser),
+            "§7.1.1: Linux single-instance is the session D-Bus — per-OS-user"
+        );
+        assert_eq!(
+            lock_scope_for_os("macos"),
+            Some(LockScope::MachineGlobal),
+            "§7.1.1 / §0.11 T13: macOS single-instance is the machine-global /tmp socket (accepted limitation)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the BUILT target is always one of the three shipped, classified scopes, and the
+    // table lookup for the current OS agrees with the `cfg!`-derived arm — so each native CI leg (§6.4.4)
+    // re-checks its own platform's scope, and an unclassified target (table `None`) reddens here.
+    #[test]
+    fn current_target_scope_is_classified_and_matches_cfg() {
+        let by_cfg = if cfg!(target_os = "macos") {
+            LockScope::MachineGlobal
+        } else {
+            // The only other shipped desktop targets are Windows + Linux, both per-OS-user (§7.1.1).
+            LockScope::PerOsUser
+        };
+        assert_eq!(
+            lock_scope_for_os(std::env::consts::OS),
+            Some(by_cfg),
+            "§7.1.1: the built target `{}` must be a classified single-instance lock scope matching its `cfg!` arm",
+            std::env::consts::OS
+        );
+    }
+
+    /// The production `main()` body — from the `fn main()` definition to the FIRST `#[cfg(test)]` module
+    /// after it (`boot_invariants`). `production_boot_source()` truncates at the FIRST `#[cfg(test)]` in the
+    /// whole file, which is inside `mod launch_intake` BEFORE `main()`, so it never reaches the
+    /// single-instance registration site; this slice does. Excluding every test module also means the
+    /// `registration_site_documents_the_per_platform_scope` needles can never self-match this file (the scan
+    /// is NOT blind to a dropped production comment — the same property `production_boot_source()` gives the
+    /// other source-scan tests).
+    fn production_main_body() -> &'static str {
+        let full = include_str!("main.rs");
+        let after_main = full.split_once("fn main()").map_or("", |(_, rest)| rest);
+        after_main
+            .split_once("#[cfg(test)]")
+            .map_or(after_main, |(prefix, _)| prefix)
+    }
+
+    // §6.4.1 unit (G15): the production registration site (main()'s Builder chain) DOCUMENTS the per-platform
+    // lock scope in-core — the §7.1.1 / T13 note is this box's deliverable, so a source scan pins it cannot
+    // silently drop. Scans `production_main_body()` (main() only, every test module excluded), so these
+    // needles — `concat!`-assembled for the same self-match-avoidance as `boot_invariants` — are never
+    // matched against this test file: a deleted production comment reddens here, it does not pass blindly.
+    #[test]
+    fn registration_site_documents_the_per_platform_scope() {
+        let src = production_main_body();
+        let needles = [
+            concat!("T", "13"), // the §0.11 accepted-limitation threat class (macOS machine-global)
+            concat!("machine", "-global"), // the macOS scope characterisation
+            concat!("per-OS-", "user"), // the Windows / Linux scope characterisation
+            concat!("CreateMutex", "W"), // the Windows per-Session mechanism
+            concat!("D-", "Bus"), // the Linux session mechanism
+        ];
+        for needle in needles {
+            assert!(
+                src.contains(needle),
+                "§7.1.1: the single-instance registration site must document the per-platform lock scope (missing `{needle}`)"
+            );
+        }
     }
 }
