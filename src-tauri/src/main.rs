@@ -41,7 +41,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 use crate::domain::{
-    CollectedSetId, CollectingId, InstanceId, IntakeOrigin, IntakePayload, ItemId, LossyKind, RunId,
+    CollectedSetId, CollectingId, InstanceId, IntakePayload, ItemId, LossyKind, RunId,
 };
 use crate::outcome::{AppFault, IpcError, OutcomeMsg};
 
@@ -210,7 +210,7 @@ mod launch_intake {
 
     use std::path::PathBuf;
 
-    use tauri::{AppHandle, Emitter};
+    use tauri::{AppHandle, Emitter, Manager};
 
     use crate::domain::{IntakeOrigin, IntakePayload};
     use crate::ipc::events;
@@ -328,6 +328,21 @@ mod launch_intake {
         forward_launch_intake(app, parse_path_args(argv, cwd), origin);
     }
 
+    /// [Build-Session-Entscheidung: P2.52] The §7.1.1 single-instance second-launch HANDLER — re-focus the
+    /// `main` window (the OS bringing ConvertIA forward IS the PRIMARY "busy" signal, §7.1.1) + forward the
+    /// second launch's argv through the §7.8.1 funnel as `SecondInstance`. The funnel owns the §7.1.1
+    /// refuse-busy gate + the emit/buffer disposition (a mid-run second launch is dropped, never merged into
+    /// the §2.4 frozen set), so nothing is emitted here. Homed as a NAMED `&AppHandle` fn (NOT an inline
+    /// `init` closure): the boot-stage pattern keeps AppHandle-coupled glue in named fns — `main()` passes it
+    /// to `tauri_plugin_single_instance::init` directly, and the P2.135 boot-glue G28 exemption (which is
+    /// AppHandle-fn-SIGNATURE-based) then covers it (an inline closure is NOT a fn, so it would not be exempt).
+    pub(super) fn on_second_instance(app: &AppHandle, argv: Vec<String>, cwd: String) {
+        let _ = app.get_webview_window("main").map(|w| {
+            let _ = w.set_focus();
+        });
+        forward_launch_argv(app, &argv, &cwd, IntakeOrigin::SecondInstance);
+    }
+
     /// [Build-Session-Entscheidung: P2.54] INTERFACE SHELL for the §1.9 run-state busy predicate — the real
     /// wiring is box P2.55 (which enforces the §7.1.1 PRIMARY refuse-busy gate inside the funnel). The
     /// fail-SAFE default is `true`: an unwired busy-check reports BUSY, so `intake_disposition` returns
@@ -419,28 +434,33 @@ mod launch_intake {
             let _buffer: fn(&AppHandle, Vec<PathBuf>, IntakeOrigin) = buffer_pending_intake;
         }
 
-        // §6.4.1 unit (G15): the §7.1.1 single-instance callback (P2.52) is WIRED in `main()` — it re-focuses
-        // the `main` window AND forwards the second launch's argv through the §7.8.1 funnel as
-        // `SecondInstance`. The callback is AppHandle-coupled boot-glue (not execution-testable; the
-        // boot-stage pattern), so a source scan over `main()`'s body (the shared `production_main_body()`,
-        // every test module excluded so the needles can't self-match) pins the wiring so it can't silently
-        // drop. `forward_launch_argv(` appears only at the call site — its `pub(super) fn` definition lives in
-        // `launch_intake`, BEFORE `main()`, outside this slice. [Build-Session-Entscheidung: P2.52]
+        // §6.4.1 unit (G15): the §7.1.1 single-instance second-launch HANDLER (P2.52). `on_second_instance`
+        // (in `launch_intake`, covered by `production_boot_source`) re-focuses `main` + forwards the argv as
+        // `SecondInstance`; `main()` (covered by `production_main_body`) WIRES it into the single-instance
+        // `init`. Both are AppHandle-coupled boot-glue (not execution-testable; the boot-stage pattern), so
+        // source scans pin them. The re-focus + `SecondInstance` needles appear only in `on_second_instance`'s
+        // body (`forward_launch_argv`'s signature carries `origin: IntakeOrigin`, not `::SecondInstance`), and
+        // the `on_second_instance` def lives in `launch_intake` (outside `production_main_body` = main()-only),
+        // so the wiring needle matches only the `init` call site — non-blind. Needles `concat!`-assembled, and
+        // every test module is excluded from both helpers. [Build-Session-Entscheidung: P2.52]
         #[test]
-        fn single_instance_callback_wires_refocus_and_the_funnel() {
-            let src = crate::boot_invariants::production_main_body();
-            let needles = [
-                concat!("forward_launch_", "argv("), // forwards the second launch's argv through the funnel
-                concat!("IntakeOrigin::Second", "Instance"), // origin = SecondInstance (§7.8 / §0.6)
-                concat!("get_webview_", "window(\"main\")"), // looks up the main window
+        fn single_instance_handler_refocuses_forwards_and_is_wired() {
+            let handler = crate::boot_invariants::production_boot_source();
+            for needle in [
+                concat!("get_webview_", "window(\"main\")"), // re-focus: looks up the main window
                 concat!("set_", "focus"), // re-focuses it (the §7.1.1 primary busy signal)
-            ];
-            for needle in needles {
+                concat!("IntakeOrigin::Second", "Instance"), // forwards as SecondInstance (§7.8 / §0.6)
+            ] {
                 assert!(
-                    src.contains(needle),
-                    "§7.1.1/§7.8.1: the single-instance callback must re-focus `main` + forward argv via the funnel (missing `{needle}`)"
+                    handler.contains(needle),
+                    "§7.1.1: on_second_instance must re-focus `main` + forward the argv as SecondInstance (missing `{needle}`)"
                 );
             }
+            assert!(
+                crate::boot_invariants::production_main_body()
+                    .contains(concat!("on_second_", "instance")),
+                "§7.1.1: main() must wire on_second_instance into the single-instance init"
+            );
         }
 
         // §6.4.1 unit (G15): the §7.8.1 funnel DISPATCHES via the pure P2.40 `intake_disposition` rule
@@ -580,19 +600,15 @@ fn main() -> tauri::Result<()> {
         // socket covers only direct-binary re-exec, the least-mature leg). v1 adds NO per-user-`$TMPDIR`
         // macOS socket — T13 records that heavier path as the one not chosen. The per-platform scope mapping
         // is pinned structurally by the `single_instance_lock_scope` test module below.
-        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
-            // [Build-Session-Entscheidung: P2.52] §7.1.1 second-launch hand-off, running in the EXISTING
-            // primary instance (the second process has already exited). Re-focus the `main` window — the OS
-            // bringing ConvertIA forward IS the PRIMARY "we're busy" signal (§7.1.1) — then forward the
-            // launch-time argv through the SAME §7.8.1 funnel every launch source uses, origin
-            // `SecondInstance`; the funnel owns the §7.1.1 refuse-busy gate (a mid-run second launch is
-            // dropped, never merged into the §2.4 frozen set) and the emit/buffer disposition, so nothing is
-            // emitted here directly.
-            let _ = app.get_webview_window("main").map(|w| {
-                let _ = w.set_focus();
-            });
-            launch_intake::forward_launch_argv(app, &argv, &cwd, IntakeOrigin::SecondInstance);
-        }))
+        // [Build-Session-Entscheidung: P2.52] §7.1.1 second-launch hand-off → the named
+        // `launch_intake::on_second_instance` handler (re-focus `main` + forward the second launch's argv
+        // through the §7.8.1 funnel as SecondInstance; the funnel owns the refuse-busy gate + emit/buffer).
+        // Passed as a fn ITEM, not an inline closure, so the AppHandle-coupled boot-glue lives in a NAMED fn
+        // — signature-pinned + G28-exempt (the P2.135 boot-glue exemption is AppHandle-fn-SIGNATURE-based; an
+        // inline closure would not be a fn and so would not be exempt).
+        .plugin(tauri_plugin_single_instance::init(
+            launch_intake::on_second_instance,
+        ))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
