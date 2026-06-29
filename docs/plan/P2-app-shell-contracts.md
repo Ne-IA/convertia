@@ -253,7 +253,7 @@
 
 - [x] **P2.62** [RUST] Implement the §1.1 single `ingest(paths, origin) -> CollectedSet` funnel (the exhaustive freeze point for all five entry points) · §1.1 §2.4
   needs: P2.22, P2.6
-- [ ] **P2.63** [RUST] Set the per-entry-point `origin` stamping (C1 from request; C2a handler stamps `Picker`; launch hooks stamp `LaunchArg`/`SecondInstance`) · §1.1 §0.6
+- [x] **P2.63** [RUST] Set the per-entry-point `origin` stamping (C1 from request; C2a handler stamps `Picker`; launch hooks stamp `LaunchArg`/`SecondInstance`) · §1.1 §0.6
   needs: P2.62, P2.23
 - [ ] **P2.64** [RUST] Implement Rust-side folder recursion (`walkdir`, depth-first, symlinked dirs not traversed) · §1.1 §0.8
   needs: P2.62
