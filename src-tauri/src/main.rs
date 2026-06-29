@@ -205,10 +205,11 @@ mod launch_intake {
     // `parse_path_args` + `intake_disposition` are all reachable from production — so the whole module is LIVE
     // and the former module-level `#![cfg_attr(not(test), …)]` dead-code suppression is REMOVED (with nothing
     // dead, that `dead_code` expectation would flip to "expectation unfulfilled" under `-D warnings`). The
-    // `converter_is_busy` predicate now reads the real §1.9 run-state via the RunRegistry (P2.55) and the
-    // `PendingIntake` buffer arm is real (P2.58); the remaining fill is P2.59 (the `frontend_ready` ready-flag
-    // branch). Until P3 populates runs the registry is empty (not busy), so an idle launch set routes — via
-    // `frontend_ready`'s shell `false` — to the real buffer, never lost.
+    // `converter_is_busy` predicate now reads the real §1.9 run-state via the RunRegistry (P2.55), the
+    // `PendingIntake` buffer arm is real (P2.58), and the `frontend_ready` ready-flag now reads the real
+    // `State<FrontendReady>` (P2.59). Until P3 populates runs the registry is empty (not busy), and until P2.60
+    // wires the C1 `drainPending` drain (which calls `mark_ready`) the flag stays `false`, so an idle launch set
+    // routes — via `frontend_ready`'s not-ready flag — to the real buffer, never lost.
 
     use std::path::PathBuf;
 
@@ -216,7 +217,7 @@ mod launch_intake {
 
     use crate::domain::{IntakeOrigin, IntakePayload};
     use crate::ipc::events;
-    use crate::orchestrator::{PendingIntake, RunRegistry};
+    use crate::orchestrator::{FrontendReady, PendingIntake, RunRegistry};
 
     /// [Build-Session-Entscheidung: P2.40] The §0.4.2 / §7.8.1 `app://intake` disposition — the THREE
     /// outcomes a launch-time path set can take. Encoding it as an enum makes the IDLE-path-only rule
@@ -230,10 +231,10 @@ mod launch_intake {
         /// the funnel at P2.55.
         Drop,
         /// Idle + the WebView `app://intake` listener is ready — emit `app://intake` so the frontend mirrors
-        /// a drop (§5.2/§1.1). Wired at P2.59.
+        /// a drop (§5.2/§1.1). Selected once the real `frontend_ready` flag (`State<FrontendReady>`, P2.59) is set.
         Emit,
         /// Idle but the WebView is not-yet-ready (the §7.8.1 first-launch listener race) — stash the paths in
-        /// `PendingIntake` for the drain-on-mount replay (P2.58/P2.60). Wired at P2.59.
+        /// `PendingIntake` for the drain-on-mount replay (P2.58/P2.60). The default until `frontend_ready` is set (P2.59).
         Buffer,
     }
 
@@ -445,16 +446,20 @@ mod launch_intake {
         app.state::<RunRegistry>().has_active_run()
     }
 
-    /// [Build-Session-Entscheidung: P2.54] INTERFACE SHELL for the §7.8.1 WebView-ready flag — the real
-    /// wiring is box P2.59 (the ready-flag branch). The fail-SAFE default is `false`: an unwired ready-check
-    /// reports NOT-ready, so `intake_disposition` returns `Buffer` rather than `Emit` — the funnel never
-    /// emits `app://intake` into a listener that may not exist (a dropped first-launch event, the §7.8.1
-    /// race). Buffered paths are stashed in `PendingIntake` (P2.58, real) and drained by C1 `drainPending`
-    /// (P2.60). REACHED from P2.55: with the run registry empty (pre-P3) `converter_is_busy` is `false`, so an
-    /// idle launch set reaches this shell → `Buffer` → the real `PendingIntake` stash (never lost); P2.59
-    /// replaces this `false` with the live WebView-ready flag so a ready listener gets `Emit` instead.
-    fn frontend_ready(_app: &AppHandle) -> bool {
-        false
+    /// [Build-Session-Entscheidung: P2.59] The §7.8.1 WebView-ready predicate — reads the real
+    /// `State<FrontendReady>` flag (`crate::orchestrator`, P2.59): `true` once the frontend has registered its
+    /// `app://intake` listener and run the C1 `drainPending` drain on root-shell mount (P2.60 calls
+    /// `mark_ready`). When ready, `intake_disposition` returns `Emit` (the funnel emits `app://intake`); when
+    /// not-ready it returns `Buffer`, so a first-launch set arriving before the listener exists is stashed in
+    /// `PendingIntake` (P2.58) instead of emitted into a listener that would drop it (the §7.8.1 race). The flag
+    /// is `false` at app start (the fail-safe default — buffer, never emit, until the listener is proven), so
+    /// while the run registry is empty (pre-P3) `converter_is_busy` is `false` and an idle launch set still
+    /// routes to the real `PendingIntake` buffer until P2.60 wires the `mark_ready` drain — this box makes the
+    /// `Emit` arm reachable. AppHandle-coupled boot-glue (§1.1a; G28 signature-exempt; the source-scan pins the
+    /// `FrontendReady` query). `app.state::<FrontendReady>()` is infallible by construction (registered in
+    /// main()'s Builder chain).
+    fn frontend_ready(app: &AppHandle) -> bool {
+        app.state::<FrontendReady>().is_ready()
     }
 
     /// [Build-Session-Entscheidung: P2.58] The §7.8.1 first-launch `Buffer` arm — stash the idle-and-not-ready
@@ -710,6 +715,33 @@ mod launch_intake {
             );
         }
 
+        // §6.4.1 unit (G15): the §7.8.1 WebView-ready predicate is WIRED to the real State<FrontendReady> flag
+        // (P2.59) — not the P2.54 fail-safe `false` shell. `frontend_ready` is AppHandle-coupled boot-glue (the
+        // §1.1a boot-stage pattern — not cargo-test execution-testable; the mark/is_ready LOGIC is unit-tested on
+        // `crate::orchestrator::FrontendReady`), so a source-scan pins it resolves the managed FrontendReady +
+        // reads is_ready; a second scan pins `main()` REGISTERS it (else the resolve would fail). Needles
+        // `concat!`-assembled (the established self-match avoidance). [Build-Session-Entscheidung: P2.59]
+        #[test]
+        fn ready_predicate_reads_the_managed_frontend_ready_flag() {
+            let boot_src = crate::boot_invariants::production_boot_source();
+            assert!(
+                boot_src.contains(concat!("state::<Frontend", "Ready>()")),
+                "§7.8.1: frontend_ready must resolve the managed State<FrontendReady> (P2.59)"
+            );
+            assert!(
+                boot_src.contains(concat!(".is_", "ready()")),
+                "§7.8.1: frontend_ready must read the real ready flag, not the P2.54 fail-safe `false`"
+            );
+            let main_src = crate::boot_invariants::production_main_body();
+            assert!(
+                main_src.contains(concat!(
+                    ".manage(crate::orchestrator::Frontend",
+                    "Ready::default())"
+                )),
+                "§7.8.1: main() must register the State<FrontendReady> so the frontend_ready resolve cannot fail (P2.59)"
+            );
+        }
+
         // §6.4.1 unit (G15): the §7.8.1 launch-origin decision (P2.56) — a first-launch Open-with (WebView not
         // ready) is LaunchArg (buffered + drained); a while-running Open-with is SecondInstance. The pure rule
         // beside the macOS Open-with glue (the §1.1a boot-stage pattern), unit-tested in isolation.
@@ -843,6 +875,13 @@ fn main() -> tauri::Result<()> {
         // register/finish calls). Builder chain (compile-time Default, before the event loop) → the busy-gate
         // resolve is infallible by construction.
         .manage(crate::orchestrator::RunRegistry::default())
+        // [Build-Session-Entscheidung: P2.59] §7.8.1 WebView-ready flag — register the State<FrontendReady>
+        // (crate::orchestrator) so the §7.8.1 funnel's `frontend_ready` predicate can read it. `false` at startup
+        // (buffer, never emit, until the frontend proves its `app://intake` listener) → the C1 `drainPending`
+        // drain (P2.60) flips it ready on root-shell mount via `mark_ready`. Builder chain (compile-time Default,
+        // before the event loop) → the `frontend_ready` resolve is infallible by construction (no panic under the
+        // crate-root clippy::panic deny). Its live consumer — the P2 launch funnel — exists now.
+        .manage(crate::orchestrator::FrontendReady::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             // §0.4.5 IPC event-channel mount (the P1.13 tauri-specta seam).

@@ -44,6 +44,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
@@ -961,6 +962,58 @@ impl PendingIntake {
     /// `None`. [Build-Session-Entscheidung: P2.58]
     pub fn take(&self) -> Option<BufferedLaunchIntake> {
         self.lock().take()
+    }
+}
+
+// ─── §7.8.1 WebView-ready flag — the FrontendReady emit-vs-buffer gate (P2.59) ────────────────────────────
+// [Build-Session-Entscheidung: P2.59] The §7.8.1 / §0.4.2 WebView-ready flag, homed here under the same §0.7
+// State umbrella as the launch-intake sibling PendingIntake (P2.58) + the four §0.4.4 stores — a launch-intake
+// State store added to orchestrator needs NO §0.7/§1a structural edit (the P2.58 precedent: §0.7 attributes the
+// app-managed State to orchestrator, not every store). It records whether the WebView's `app://intake` listener
+// is registered: the §7.8.1 launch funnel reads it (`frontend_ready`, main.rs) to choose the `Emit` arm (ready →
+// emit `app://intake`) versus the `Buffer` arm (not-ready → stash into PendingIntake, the §7.8.1 first-launch
+// listener race), and the C1 `drainPending` path (P2.60 — on root-shell mount, AFTER the listener registers)
+// marks it ready. MONOTONIC false→true: the `main` window lives for the whole session (§7.3.1 closing-quits) so
+// the listener never un-registers, hence the flag never resets — an `AtomicBool` is the right tool (no
+// Mutex/poison handling; the reader needs only the published boolean, no data is gated behind it). The
+// `mark_ready` writer is dead in the production build until P2.60 wires C1 (the contract-before-consumer
+// discipline — the PendingIntake `take`-reader precedent, covered by the module-level dead_code expect);
+// `is_ready` is LIVE from this box (the funnel's `frontend_ready` reads it).
+
+/// The §7.8.1 WebView-ready flag (`State<FrontendReady>`) — `true` once the frontend has registered its
+/// `app://intake` listener and run the C1 `drainPending` drain (P2.60) on root-shell mount. The §7.8.1 launch
+/// funnel reads it (`frontend_ready`, main.rs) to pick Emit-vs-Buffer: a launch set arriving BEFORE the
+/// listener exists (the first-launch race, §7.8.1) is buffered into [`PendingIntake`] rather than emitted into
+/// a listener that would drop it. Held as a Tauri app-managed `State` (registered in `main()`'s Builder chain,
+/// so the funnel's `frontend_ready` resolve is infallible by construction). A monotonic false→true flag, so an
+/// `AtomicBool` (no `Mutex`/poison handling) is the right shape.
+///
+/// [Build-Session-Entscheidung: P2.59] `Default`-constructed `false` (not-ready at app start — the funnel's
+/// fail-safe default: a launch set is buffered, never emitted, until the frontend proves its listener exists);
+/// `Debug` for parity with the sibling State stores. NOT a wire type (no `serde`/`specta`) — pure core-internal
+/// State that never crosses IPC.
+#[derive(Debug, Default)]
+pub struct FrontendReady {
+    /// `true` once the WebView's `app://intake` listener is live (set by the C1 `drainPending` drain, P2.60).
+    ready: AtomicBool,
+}
+
+impl FrontendReady {
+    /// Mark the frontend ready — the WebView has registered its `app://intake` listener and is draining
+    /// `PendingIntake` (the C1 `drainPending` path on root-shell mount, P2.60). Monotonic: once set it never
+    /// clears (the `main` window lives for the whole session, §7.3.1), so a repeat call is a harmless no-op.
+    /// `Release` publishes the write so a subsequent `is_ready` `Acquire` observes it.
+    /// [Build-Session-Entscheidung: P2.59]
+    pub fn mark_ready(&self) {
+        self.ready.store(true, Ordering::Release);
+    }
+
+    /// Read the §7.8.1 ready flag — `true` once [`mark_ready`](FrontendReady::mark_ready) has fired. The §7.8.1
+    /// launch funnel's `frontend_ready` predicate (main.rs) reads this to choose the `Emit` arm (ready) versus
+    /// the `Buffer` arm (not-ready, the first-launch race). `Acquire` pairs with `mark_ready`'s `Release`.
+    /// [Build-Session-Entscheidung: P2.59]
+    pub fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
     }
 }
 
@@ -2166,6 +2219,44 @@ mod tests {
             drained.origin,
             IntakeOrigin::LaunchArg,
             "§7.8.1: the FIRST stash's origin is kept across an accumulating second stash"
+        );
+    }
+
+    // ── §7.8.1 FrontendReady WebView-ready flag (P2.59) ────────────────────────────────────────────────
+
+    // §6.4.1 unit (G15): the §7.8.1 ready flag starts NOT-ready — the funnel's fail-safe default (a launch set
+    // is buffered, never emitted, until the frontend proves its `app://intake` listener exists, §7.8.1).
+    #[test]
+    fn frontend_ready_defaults_to_not_ready() {
+        let flag = FrontendReady::default();
+        assert!(
+            !flag.is_ready(),
+            "§7.8.1: FrontendReady starts not-ready (the funnel buffers until the listener is proven)"
+        );
+    }
+
+    // §6.4.1 unit (G15): mark_ready flips the flag false→true — once the WebView registers its listener (the C1
+    // drainPending drain, P2.60) the funnel switches from the Buffer arm to the Emit arm (§7.8.1).
+    #[test]
+    fn frontend_ready_mark_ready_sets_ready() {
+        let flag = FrontendReady::default();
+        flag.mark_ready();
+        assert!(
+            flag.is_ready(),
+            "§7.8.1: mark_ready makes the funnel emit app://intake instead of buffering"
+        );
+    }
+
+    // §6.4.1 unit (G15): mark_ready is MONOTONIC + idempotent — the `main` window lives the whole session
+    // (§7.3.1), so the listener never un-registers; a repeat mark stays ready (never resets to buffering).
+    #[test]
+    fn frontend_ready_mark_ready_is_idempotent() {
+        let flag = FrontendReady::default();
+        flag.mark_ready();
+        flag.mark_ready();
+        assert!(
+            flag.is_ready(),
+            "§7.8.1: the ready flag is monotonic — a repeat mark_ready keeps it ready (never resets)"
         );
     }
 }
