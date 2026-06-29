@@ -222,7 +222,8 @@
 - [x] **P2.52** [RUST] Wire the single-instance callback — re-focus the "main" window + forward argv via `forward_launch_argv`, origin `SecondInstance` · §7.1.1 §7.8.1
   needs: P1.14, P2.51, P2.54.1
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.54.1` points at the `parse_path_args` helper sub-box defined later in document order — `forward_launch_argv` forwards argv through that helper, so DECISION C builds P2.54.1 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
-- [ ] **P2.53** [DOC] Record the macOS edge cases — least-mature single-instance leg (§6.6 verification item) + the unsigned two-copies accepted-limitation · §7.1.1
+- [x] **P2.53** [DOC] Record the macOS edge cases — least-mature single-instance leg (§6.6 verification item) + the unsigned two-copies accepted-limitation · §7.1.1
+  > **RECONCILE (dup — no net-new deliverable):** both macOS edge cases this `[DOC]` box names are already authored in the spec, so there is nothing to record: the **least-mature single-instance leg** is in §7.1.1 as the `[REC]` "macOS single-instance behaviour is a §6.6 verification item", whose §6.6 home is the macOS **single-instance double-extract sub-test**; the **unsigned two-copies accepted-limitation** is in §7.1.1 as the `[DECIDED]` "macOS unsigned two-copies edge case = accepted v1 limitation". (The separate macOS multi-user machine-global `/tmp` single-instance-socket limitation is recorded as §0.11 T13 by P2.51.) Checked off with this transparent reconcile note per the dup-box protocol — box NOT removed/repurposed.
 
 ## OS-intake funnel (§7.8.1) — the launch/Open-with state machine
 
