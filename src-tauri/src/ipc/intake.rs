@@ -15,8 +15,10 @@
 use std::path::PathBuf;
 
 use tauri::ipc::Channel;
+use tauri::{AppHandle, Manager};
 
 use crate::domain::{CollectedSet, CollectingId, IntakeOrigin, PickKind, ScanProgress};
+use crate::orchestrator::{FrontendReady, PendingIntake};
 use crate::outcome::IpcError;
 
 /// **C1 `ingest_paths`** (§0.4.1) — the single §2.4 freeze point for every intake origin (drop / picker /
@@ -41,19 +43,29 @@ use crate::outcome::IpcError;
 ///   (non-optional — see the forced-deviation note below); the frontend realises the §0.4.1 "optional" intent
 ///   by subscribing only for a long walk, never by omitting the argument.
 ///
-/// [Build-Session-Entscheidung: P2.22] **Interface-shell body — the typed CONTRACT is the deliverable.**
-/// P2.22 authors the §0.4.1 wire signature above so the generated `bindings.ts` carries the full C1 door;
-/// the §2.4 freeze BODY is its own set of named, scheduled boxes — the §1.1 recursive walk → §1.2 detect →
-/// §2.3 de-dup → §1.3 group freeze funnel (P2.62), the §0.4.4 `collecting_id` token registry (P2.45), the
-/// `drain_pending` `PendingIntake` drain (P2.60), and the `on_scan` scan-telemetry emit (the throttled §0.4.2 `ScanProgress` count, part of the §1.1 walk P2.62/P2.64, owned by P3.49) — wired
-/// end-to-end into this handler by P3.49 "Implement C1 `ingest_paths`" (the CSV→TSV walking-skeleton slice)
-/// once those layers exist. This is the sanctioned compile-time interface-shell pattern (CLAUDE §5 / the P3
-/// `crate::isolation` shells P4 expands), NOT a quiet deferral: a shell that performs no freeze collects
-/// nothing, so it returns the §0.6 zero-collection `CollectedSet::Empty { skipped: [] }` (the genuinely-zero
-/// case — cancelled dialog / drained-empty `PendingIntake` / all-hidden-filtered). The five contract args
-/// are accepted so the wire signature is complete and bound to `_` to mark them shell-accepted (no
-/// fabricated handling) until their named boxes consume them. The freeze funnel's own §0.7 module home is
-/// P2.62's to fix (the §1.1/§2.4 freeze is not yet placed in the §0.7 tree), so P2.22 does not pre-create it.
+/// [Build-Session-Entscheidung: P2.22] **The typed CONTRACT is the P2.22 deliverable.** P2.22 authors the
+/// §0.4.1 wire signature above so the generated `bindings.ts` carries the full C1 door. The §2.4 freeze BODY
+/// is its own set of named, scheduled boxes — the §1.1 recursive walk → §1.2 detect → §2.3 de-dup → §1.3
+/// group freeze funnel (P2.62), the §0.4.4 `collecting_id` token registry (P2.45), and the `on_scan`
+/// scan-telemetry emit (the throttled §0.4.2 `ScanProgress` count, part of the §1.1 walk P2.62/P2.64) — wired
+/// end-to-end into this handler by P3.49 "Implement C1 `ingest_paths`" (the CSV→TSV walking-skeleton slice).
+/// This is the sanctioned compile-time interface-shell pattern (CLAUDE §5 / the P3 `crate::isolation` shells
+/// P4 expands), NOT a quiet deferral: a freeze seam that collects nothing returns the §0.6 zero-collection
+/// `CollectedSet::Empty { skipped: [] }` until P3.49 fills it. The freeze funnel's own §0.7 module home is
+/// P2.62's to fix (the §1.1/§2.4 freeze is not yet placed in the §0.7 tree), so it is not pre-created here.
+///
+/// [Build-Session-Entscheidung: P2.60] **The §7.8.1 `drainPending` drain dispatch is now WIRED** (no longer
+/// an ignore-all-args shell). The handler binds an `AppHandle` (a Tauri-injected arg, NOT part of the §0.4.1
+/// wire signature — the generated C1 command signature is unchanged) to reach the Rust-side `State<PendingIntake>` +
+/// `State<FrontendReady>` (P2.58/P2.59), and dispatches via the pure-state `resolve_intake_source` helper:
+/// a `drainPending: true` call MARKS the frontend ready (the §7.8.1 root-shell-mount readiness signal) and
+/// CONSUMES `PendingIntake` exactly once with its stored origin (empty buffer → `CollectedSet::Empty`, the
+/// ordinary first launch with no files); a normal intake passes its `paths` + `origin` through. The drained /
+/// passed-through `Freeze` source then enters the SAME §1.1/§2.4 freeze seam above (the shell until P3.49) —
+/// P2.60 owns the drain DISPATCH, P2.62 builds the freeze funnel, P3.49 wires it end-to-end. The `AppHandle`
+/// makes this handler AppHandle-coupled boot-glue (§1.1a; G28 signature-exempt): its drain LOGIC is
+/// unit-tested on `resolve_intake_source`, its WIRING is source-scan-pinned (this crate ships no `tauri::test`
+/// mock BY DECISION). `collecting_id`/`on_scan` remain shell-accepted (`_`-bound) until P2.45/P3.49.
 ///
 /// [Build-Session-Entscheidung: P2.22] **`on_scan` is NON-OPTIONAL — a FORCED deviation from the §0.4.1
 /// `onScan?` `[DECIDED]`.** tauri 2.11.3's `Channel<T>` is `!Deserialize` (it carries its own `CommandArg`
@@ -66,16 +78,86 @@ use crate::outcome::IpcError;
 #[tauri::command(rename_all = "camelCase")]
 #[specta::specta]
 pub async fn ingest_paths(
+    app: AppHandle,
     paths: Vec<PathBuf>,
     origin: IntakeOrigin,
     collecting_id: CollectingId,
     drain_pending: Option<bool>,
     on_scan: Channel<ScanProgress>,
 ) -> Result<CollectedSet, IpcError> {
-    let _ = (paths, origin, collecting_id, drain_pending, on_scan);
-    Ok(CollectedSet::Empty {
-        skipped: Vec::new(),
-    })
+    // §7.8.1 drain dispatch (P2.60): resolve what the §1.1/§2.4 freeze seam consumes. `app.state::<…>()` is
+    // infallible by construction — both stores are `.manage()`'d in main()'s Builder chain before the event
+    // loop (P2.58/P2.59), so no panic under the `crate::ipc` clippy::panic deny. `&State<T>` deref-coerces to
+    // the `&T` the pure helper takes, keeping the AppHandle resolution in this thin (G28-exempt) wrapper.
+    let pending = app.state::<PendingIntake>();
+    let ready = app.state::<FrontendReady>();
+    match resolve_intake_source(&pending, &ready, drain_pending, paths, origin) {
+        // §7.8.1: a `drainPending` call whose `PendingIntake` was empty (the ordinary first launch with no
+        // files) — the genuine §0.6 zero-collection result; the UI stays Idle (§0.4.1).
+        ResolvedIntake::Empty => Ok(CollectedSet::Empty {
+            skipped: Vec::new(),
+        }),
+        // The §1.1/§2.4 freeze seam — the single freeze funnel (P2.62), wired end-to-end into this handler by
+        // P3.49 (the CSV→TSV walking-skeleton slice). Until then the seam collects nothing, so a freezable
+        // source (a normal intake OR a non-empty drain) returns the shell's zero-collection
+        // `CollectedSet::Empty`; P2.60 owns the drain DISPATCH that selects this seam, not the freeze body.
+        ResolvedIntake::Freeze { paths, origin } => {
+            let _ = (paths, origin, collecting_id, on_scan);
+            Ok(CollectedSet::Empty {
+                skipped: Vec::new(),
+            })
+        }
+    }
+}
+
+/// The C1 intake source after the §7.8.1 drain dispatch (P2.60) — what the §1.1/§2.4 freeze seam consumes.
+/// INTERNAL (not a wire type): the handler maps it onto the §0.4.1 `CollectedSet` return.
+/// [Build-Session-Entscheidung: P2.60]
+#[derive(Debug, PartialEq, Eq)]
+enum ResolvedIntake {
+    /// Freeze this set with its origin — a normal intake, or a non-empty §7.8.1 first-launch drain (whose
+    /// paths + stored origin come from the `PendingIntake` buffer, not the passed args).
+    Freeze {
+        paths: Vec<PathBuf>,
+        origin: IntakeOrigin,
+    },
+    /// Nothing to freeze → the genuine §0.6 zero-collection `CollectedSet::Empty`: a `drainPending` call whose
+    /// `PendingIntake` buffer was empty (the ordinary first launch with no files, §7.8.1).
+    Empty,
+}
+
+/// [Build-Session-Entscheidung: P2.60] The §7.8.1 / §0.4.1 C1 drain dispatch — resolve what the §1.1 freeze
+/// seam consumes, handling the first-launch `drainPending` call. When `drain_pending == Some(true)` (the
+/// frontend's root-shell-mount drain, fired AFTER it registered its `app://intake` listener) two cohesive
+/// effects run: (1) MARK the frontend ready — the drain call IS the §7.8.1 readiness signal, so a subsequent
+/// launch intake EMITs `app://intake` instead of buffering (P2.59's `FrontendReady`) — and (2) CONSUME
+/// `PendingIntake` exactly once (§7.8.1 "consumes `PendingIntake` exactly once"), freezing THAT buffered set
+/// with its STORED origin (typically `LaunchArg`), or — if the buffer is empty — returning `Empty` (the
+/// ordinary first launch with no files → `CollectedSet::Empty`, §0.4.1). A normal intake (`drain_pending`
+/// `None` / `Some(false)`) passes its own `paths` + `origin` through unchanged and NEVER marks ready
+/// (readiness is the drain's signal alone). `drainPending` and a non-empty `paths` are mutually exclusive
+/// (§0.4.1 C1): a drain IGNORES the passed `paths`. Takes `&PendingIntake` / `&FrontendReady` (NOT the
+/// `AppHandle`) so it is fully unit-testable with real state — the AppHandle resolution stays in the thin
+/// command wrapper (the §1.1a boot-glue split, mirroring main.rs's `intake_disposition`).
+fn resolve_intake_source(
+    pending: &PendingIntake,
+    ready: &FrontendReady,
+    drain_pending: Option<bool>,
+    paths: Vec<PathBuf>,
+    origin: IntakeOrigin,
+) -> ResolvedIntake {
+    if drain_pending == Some(true) {
+        ready.mark_ready();
+        match pending.take() {
+            Some(buffered) => ResolvedIntake::Freeze {
+                paths: buffered.paths,
+                origin: buffered.origin,
+            },
+            None => ResolvedIntake::Empty,
+        }
+    } else {
+        ResolvedIntake::Freeze { paths, origin }
+    }
 }
 
 /// **C2a `pick_for_intake`** (§0.4.1) — the Rust-side `DialogExt` intake picker. This box (P2.23) authors the
@@ -150,46 +232,179 @@ pub async fn cancel_ingest(collecting_id: CollectingId) -> Result<(), IpcError> 
 
 #[cfg(test)]
 mod c1_contract {
-    //! §6.4.1 unit (G15): the §0.4.1 C1 `ingest_paths` typed CONTRACT (P2.22). The handler now carries its
-    //! full typed signature, so the P2.21 all-shells `block_on(ingest_paths())` invocation in `crate::ipc`
-    //! (mod.rs) is REPLACED here by C1's own typed-contract test — the fill-box transition the P2.21 note
-    //! schedules ("replace each invocation … with that command's typed-contract test"). It invokes the
-    //! contract with the full typed arg set and asserts the shell-stage return; the §2.4 freeze body + its
-    //! real-slice assertions land at P2.62 / P3.49. [Build-Session-Entscheidung: P2.22]
+    //! §6.4.1 unit (G15): the §0.4.1 C1 `ingest_paths` contract + the §7.8.1 `drainPending` drain dispatch
+    //! (P2.60). The handler gained an `AppHandle` (to reach the §7.8.1 `State<PendingIntake>` /
+    //! `State<FrontendReady>`), so it is now AppHandle-coupled boot-glue (the §1.1a pattern — NOT
+    //! cargo-test-invocable; this crate ships no `tauri::test` mock BY DECISION). Its drain LOGIC lives in the
+    //! `resolve_intake_source` helper (taking `&State`-deref refs, not the `AppHandle`), unit-tested here with
+    //! real `PendingIntake` / `FrontendReady`; the handler's WIRING (resolve the two States + dispatch via the
+    //! helper) is source-scan-pinned. The §0.4.1 typed wire surface stays asserted by the bindings.ts golden
+    //! (`bindings_codegen` in main.rs). [Build-Session-Entscheidung: P2.60]
+    //!
+    //! [Test-Change: P2.60 — old-obsolete+new-correct, §7.8.1/§0.4.1] the P2.22 direct-`block_on(ingest_paths(
+    //! …))` contract test is OBSOLETE — the handler now binds an `AppHandle`, so it is uninvocable without a
+    //! Tauri runtime (none in cargo-test, §1.1a). It is REPLACED by the executable `resolve_intake_source`
+    //! unit tests (the real drain logic, read back via real `PendingIntake`/`FrontendReady` state) + the
+    //! handler source-scan — the sanctioned boot-glue stratification, NOT a dropped assertion.
     use super::*;
-    use tauri::async_runtime::block_on;
 
-    /// A `CollectingId` for the contract call — minted through its PUBLIC bare-uuid `Deserialize` wire form
-    /// (the inner `Uuid` is private to `crate::domain`; the frontend mints the id, §0.4 C13), never a
-    /// back-door constructor — mirroring the `crate::orchestrator` test helpers.
-    fn collecting_id() -> CollectingId {
-        serde_json::from_str(r#""22222222-2222-4222-8222-222222222222""#)
-            .expect("CollectingId deserializes from a uuid string")
+    // [Test-Change: P2.60 — old-obsolete+new-correct, §7.8.1/§0.4.1] (rationale in the module doc above) —
+    // the removed P2.22 `collecting_id()` helper (its `.expect`) + the direct-`block_on(ingest_paths)`
+    // contract test are obsolete: the handler now binds an `AppHandle`, uninvocable without a Tauri runtime
+    // (none in cargo-test, §1.1a). Replaced by the `resolve_intake_source` unit tests + the handler source-scan.
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names.iter().map(PathBuf::from).collect()
     }
 
-    // §6.4.1 unit (G15): the C1 contract is invocable with its full §0.4.1 typed arg set and returns a
-    // `CollectedSet` (the wire door this box authors). `on_scan` is a real `Channel::new(|_| Ok(()))` — the
-    // non-optional contract (there is no `None` arm; see the handler's forced-deviation note); `drain_pending
-    // = None` is a normal intake. The freeze seam performs no walk yet (P2.62), so the handler returns the
-    // zero-collection `CollectedSet::Empty` — the shell-stage contract assertion P3.49 replaces with the real
-    // CSV→TSV walking-skeleton slice.
+    // §6.4.1 unit (G15): a NORMAL intake (`drain_pending = None`) passes its own paths + origin through to the
+    // freeze seam, NEVER marks the frontend ready (readiness is the drain's signal alone), and never touches
+    // `PendingIntake` (§7.8.1 / §0.4.1).
     #[test]
-    fn c1_ingest_paths_contract_is_invocable_and_typed() {
-        let out = block_on(ingest_paths(
-            vec![PathBuf::from("/drop/data.csv")],
-            IntakeOrigin::Drop,
-            collecting_id(),
+    fn resolve_passthrough_freezes_args_and_does_not_mark_ready() {
+        let pending = PendingIntake::default();
+        let ready = FrontendReady::default();
+        let out = resolve_intake_source(
+            &pending,
+            &ready,
             None,
-            Channel::new(|_| Ok(())),
-        ));
+            paths(&["/drop/data.csv"]),
+            IntakeOrigin::Drop,
+        );
         assert_eq!(
             out,
-            Ok(CollectedSet::Empty {
-                skipped: Vec::new()
-            }),
-            "§0.4.1: the C1 contract shell freezes nothing yet (the §2.4 funnel body is P2.62), so it \
-             returns the zero-collection CollectedSet::Empty; the typed signature is the P2.22 deliverable"
+            ResolvedIntake::Freeze {
+                paths: paths(&["/drop/data.csv"]),
+                origin: IntakeOrigin::Drop,
+            },
+            "§0.4.1: a normal intake freezes its own passed paths + origin"
         );
+        assert!(
+            !ready.is_ready(),
+            "§7.8.1: a normal intake never marks the frontend ready (readiness is the drainPending signal alone)"
+        );
+        assert!(
+            pending.take().is_none(),
+            "§7.8.1: a normal intake never touches PendingIntake"
+        );
+    }
+
+    // §6.4.1 unit (G15): `drainPending = Some(false)` is a NORMAL intake, not a drain — only `Some(true)`
+    // drains (§0.4.1: "omits drainPending (or false) and uses its paths").
+    #[test]
+    fn resolve_drain_false_is_passthrough() {
+        let pending = PendingIntake::default();
+        let ready = FrontendReady::default();
+        let out = resolve_intake_source(
+            &pending,
+            &ready,
+            Some(false),
+            paths(&["/drop/b.csv"]),
+            IntakeOrigin::Drop,
+        );
+        assert_eq!(
+            out,
+            ResolvedIntake::Freeze {
+                paths: paths(&["/drop/b.csv"]),
+                origin: IntakeOrigin::Drop,
+            },
+            "§0.4.1: drainPending=false is a normal intake (passes its paths), not a drain"
+        );
+        assert!(
+            !ready.is_ready(),
+            "§0.4.1: drainPending=false does not mark the frontend ready"
+        );
+    }
+
+    // §6.4.1 unit (G15): a `drainPending: true` drain of an EMPTY `PendingIntake` returns the genuine
+    // zero-collection `Empty` (the ordinary first launch with no files) AND marks the frontend ready — the
+    // drain call IS the §7.8.1 root-shell-mount readiness signal, which fires even when no files were buffered.
+    #[test]
+    fn resolve_drain_empty_buffer_is_empty_and_marks_ready() {
+        let pending = PendingIntake::default();
+        let ready = FrontendReady::default();
+        let out = resolve_intake_source(
+            &pending,
+            &ready,
+            Some(true),
+            Vec::new(),
+            IntakeOrigin::LaunchArg,
+        );
+        assert_eq!(
+            out,
+            ResolvedIntake::Empty,
+            "§7.8.1: a drain of an empty PendingIntake is the genuine zero-collection Empty (first launch, no files)"
+        );
+        assert!(
+            ready.is_ready(),
+            "§7.8.1: the drainPending call marks the frontend ready EVEN when the buffer is empty (the drain IS the readiness signal)"
+        );
+    }
+
+    // §6.4.1 unit (G15): a `drainPending: true` drain of a NON-empty `PendingIntake` freezes the BUFFERED set
+    // with its STORED origin (§7.8.1 "using its stored origin"), marks ready, and consumes the buffer exactly
+    // once. The passed `paths`/`origin` are IGNORED (§0.4.1 mutual exclusivity) — a decoy proves it.
+    #[test]
+    fn resolve_drain_nonempty_freezes_buffer_with_stored_origin_and_drains_once() {
+        let pending = PendingIntake::default();
+        pending.stash(
+            paths(&["/launch/x.png", "/launch/y.jpg"]),
+            IntakeOrigin::LaunchArg,
+        );
+        let ready = FrontendReady::default();
+        let out = resolve_intake_source(
+            &pending,
+            &ready,
+            Some(true),
+            paths(&["/decoy.csv"]),
+            IntakeOrigin::Drop,
+        );
+        assert_eq!(
+            out,
+            ResolvedIntake::Freeze {
+                paths: paths(&["/launch/x.png", "/launch/y.jpg"]),
+                origin: IntakeOrigin::LaunchArg,
+            },
+            "§7.8.1/§0.4.1: a drain freezes the BUFFERED set with its STORED origin, ignoring the passed args"
+        );
+        assert!(
+            ready.is_ready(),
+            "§7.8.1: the drain marks the frontend ready"
+        );
+        assert!(
+            pending.take().is_none(),
+            "§7.8.1: the drain consumed PendingIntake exactly once (the buffer is now empty)"
+        );
+    }
+
+    /// The production prefix of `intake.rs` — everything before the FIRST `#[cfg(test)]` module (this one), so
+    /// a sentinel needle declared here can never self-match the scan. Needle `concat!`-assembled so the literal
+    /// `#[cfg(test)]` does not appear in this file's test source.
+    fn production_intake_source() -> &'static str {
+        let full = include_str!("intake.rs");
+        full.split_once(concat!("#[cfg", "(test)]"))
+            .map_or(full, |(prefix, _)| prefix)
+    }
+
+    // §6.4.1 unit (G15): the C1 handler is now AppHandle-coupled boot-glue — a source-scan pins it binds an
+    // `AppHandle`, resolves the two §7.8.1 States, and DISPATCHES via `resolve_intake_source` (the testable
+    // drain logic), rather than the P2.22 ignore-all-args shell. The dispatch needle carries the call-site
+    // args (`&pending, &ready`) so it matches the CALL, not merely the fn definition (non-blind). Needles
+    // `concat!`-assembled (self-match avoidance). [Build-Session-Entscheidung: P2.60]
+    #[test]
+    fn ingest_paths_handler_dispatches_via_the_drain_resolver() {
+        let src = production_intake_source();
+        for needle in [
+            concat!("app: App", "Handle"),
+            concat!("state::<Pending", "Intake>()"),
+            concat!("state::<Frontend", "Ready>()"),
+            concat!("resolve_intake_", "source(&pending, &ready"),
+        ] {
+            assert!(
+                src.contains(needle),
+                "§7.8.1/§0.4.1: the C1 handler must bind an AppHandle, resolve the §7.8.1 States, and dispatch \
+                 via resolve_intake_source (missing `{needle}`)"
+            );
+        }
     }
 }
 

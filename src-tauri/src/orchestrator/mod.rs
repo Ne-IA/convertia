@@ -975,10 +975,10 @@ impl PendingIntake {
 // listener race), and the C1 `drainPending` path (P2.60 — on root-shell mount, AFTER the listener registers)
 // marks it ready. MONOTONIC false→true: the `main` window lives for the whole session (§7.3.1 closing-quits) so
 // the listener never un-registers, hence the flag never resets — an `AtomicBool` is the right tool (no
-// Mutex/poison handling; the reader needs only the published boolean, no data is gated behind it). The
-// `mark_ready` writer is dead in the production build until P2.60 wires C1 (the contract-before-consumer
-// discipline — the PendingIntake `take`-reader precedent, covered by the module-level dead_code expect);
-// `is_ready` is LIVE from this box (the funnel's `frontend_ready` reads it).
+// Mutex/poison handling; the reader needs only the published boolean, no data is gated behind it). Both
+// methods are LIVE: `mark_ready` is called by the C1 `drainPending` handler (`crate::ipc::intake::
+// resolve_intake_source`, P2.60 — the drain call is the §7.8.1 root-shell-mount readiness signal), and
+// `is_ready` is read by the §7.8.1 funnel's `frontend_ready` (P2.59, main.rs).
 
 /// The §7.8.1 WebView-ready flag (`State<FrontendReady>`) — `true` once the frontend has registered its
 /// `app://intake` listener and run the C1 `drainPending` drain (P2.60) on root-shell mount. The §7.8.1 launch

@@ -27,19 +27,29 @@ export const commands = {
 	 *    (non-optional — see the forced-deviation note below); the frontend realises the §0.4.1 "optional" intent
 	 *    by subscribing only for a long walk, never by omitting the argument.
 	 *
-	 *  [Build-Session-Entscheidung: P2.22] **Interface-shell body — the typed CONTRACT is the deliverable.**
-	 *  P2.22 authors the §0.4.1 wire signature above so the generated `bindings.ts` carries the full C1 door;
-	 *  the §2.4 freeze BODY is its own set of named, scheduled boxes — the §1.1 recursive walk → §1.2 detect →
-	 *  §2.3 de-dup → §1.3 group freeze funnel (P2.62), the §0.4.4 `collecting_id` token registry (P2.45), the
-	 *  `drain_pending` `PendingIntake` drain (P2.60), and the `on_scan` scan-telemetry emit (the throttled §0.4.2 `ScanProgress` count, part of the §1.1 walk P2.62/P2.64, owned by P3.49) — wired
-	 *  end-to-end into this handler by P3.49 "Implement C1 `ingest_paths`" (the CSV→TSV walking-skeleton slice)
-	 *  once those layers exist. This is the sanctioned compile-time interface-shell pattern (CLAUDE §5 / the P3
-	 *  `crate::isolation` shells P4 expands), NOT a quiet deferral: a shell that performs no freeze collects
-	 *  nothing, so it returns the §0.6 zero-collection `CollectedSet::Empty { skipped: [] }` (the genuinely-zero
-	 *  case — cancelled dialog / drained-empty `PendingIntake` / all-hidden-filtered). The five contract args
-	 *  are accepted so the wire signature is complete and bound to `_` to mark them shell-accepted (no
-	 *  fabricated handling) until their named boxes consume them. The freeze funnel's own §0.7 module home is
-	 *  P2.62's to fix (the §1.1/§2.4 freeze is not yet placed in the §0.7 tree), so P2.22 does not pre-create it.
+	 *  [Build-Session-Entscheidung: P2.22] **The typed CONTRACT is the P2.22 deliverable.** P2.22 authors the
+	 *  §0.4.1 wire signature above so the generated `bindings.ts` carries the full C1 door. The §2.4 freeze BODY
+	 *  is its own set of named, scheduled boxes — the §1.1 recursive walk → §1.2 detect → §2.3 de-dup → §1.3
+	 *  group freeze funnel (P2.62), the §0.4.4 `collecting_id` token registry (P2.45), and the `on_scan`
+	 *  scan-telemetry emit (the throttled §0.4.2 `ScanProgress` count, part of the §1.1 walk P2.62/P2.64) — wired
+	 *  end-to-end into this handler by P3.49 "Implement C1 `ingest_paths`" (the CSV→TSV walking-skeleton slice).
+	 *  This is the sanctioned compile-time interface-shell pattern (CLAUDE §5 / the P3 `crate::isolation` shells
+	 *  P4 expands), NOT a quiet deferral: a freeze seam that collects nothing returns the §0.6 zero-collection
+	 *  `CollectedSet::Empty { skipped: [] }` until P3.49 fills it. The freeze funnel's own §0.7 module home is
+	 *  P2.62's to fix (the §1.1/§2.4 freeze is not yet placed in the §0.7 tree), so it is not pre-created here.
+	 *
+	 *  [Build-Session-Entscheidung: P2.60] **The §7.8.1 `drainPending` drain dispatch is now WIRED** (no longer
+	 *  an ignore-all-args shell). The handler binds an `AppHandle` (a Tauri-injected arg, NOT part of the §0.4.1
+	 *  wire signature — the generated C1 command signature is unchanged) to reach the Rust-side `State<PendingIntake>` +
+	 *  `State<FrontendReady>` (P2.58/P2.59), and dispatches via the pure-state `resolve_intake_source` helper:
+	 *  a `drainPending: true` call MARKS the frontend ready (the §7.8.1 root-shell-mount readiness signal) and
+	 *  CONSUMES `PendingIntake` exactly once with its stored origin (empty buffer → `CollectedSet::Empty`, the
+	 *  ordinary first launch with no files); a normal intake passes its `paths` + `origin` through. The drained /
+	 *  passed-through `Freeze` source then enters the SAME §1.1/§2.4 freeze seam above (the shell until P3.49) —
+	 *  P2.60 owns the drain DISPATCH, P2.62 builds the freeze funnel, P3.49 wires it end-to-end. The `AppHandle`
+	 *  makes this handler AppHandle-coupled boot-glue (§1.1a; G28 signature-exempt): its drain LOGIC is
+	 *  unit-tested on `resolve_intake_source`, its WIRING is source-scan-pinned (this crate ships no `tauri::test`
+	 *  mock BY DECISION). `collecting_id`/`on_scan` remain shell-accepted (`_`-bound) until P2.45/P3.49.
 	 *
 	 *  [Build-Session-Entscheidung: P2.22] **`on_scan` is NON-OPTIONAL — a FORCED deviation from the §0.4.1
 	 *  `onScan?` `[DECIDED]`.** tauri 2.11.3's `Channel<T>` is `!Deserialize` (it carries its own `CommandArg`
