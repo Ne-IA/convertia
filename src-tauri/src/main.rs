@@ -400,6 +400,28 @@ mod launch_intake {
         forward_launch_intake(app, paths, launch_origin(frontend_ready(app)));
     }
 
+    /// [Build-Session-Entscheidung: P2.57] §7.8.1 the FIRST-launch argv reader — at THIS instance's own launch
+    /// (Windows `argv` / Linux `%F`/`%U` desktop-entry expansion → `argv`; the §7.1.1 single-instance callback
+    /// covers SECOND launches, this covers the FIRST), read `std::env::args_os` + the launching cwd and route
+    /// them through `forward_launch_argv` as `LaunchArg`. Reads `args_os` (NOT `args()`, which PANICS on a
+    /// non-UTF8 arg — the in-core no-panic policy); a non-UTF8 arg is `to_string_lossy`'d (the §1.1 freeze
+    /// re-validates the path + fails it clearly if the lossy form does not resolve, never a crash). `cwd` from
+    /// `current_dir()` (lossy; on error → "" so absolute args still resolve, relative ones fail clearly).
+    /// Unconditional (no per-OS `#[cfg]`): on macOS argv carries no file args (its launch files arrive via
+    /// `RunEvent::Opened`, P2.56), so `parse_path_args` yields none and the funnel is a no-op there.
+    /// AppHandle-coupled boot-glue (§1.1a; G28 signature-exempt); LIVE from `setup`, so the routing is
+    /// source-scan-pinned + the §1.6 launch-with-files E2E exercises it. (The §7.2.1 ordered spine P2.106
+    /// subsequently homes this call as step 7; here it is the launch-intake stage in `setup`.)
+    pub(super) fn forward_first_launch_argv(app: &AppHandle) {
+        let argv: Vec<String> = std::env::args_os()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        forward_launch_argv(app, &argv, &cwd, IntakeOrigin::LaunchArg);
+    }
+
     /// [Build-Session-Entscheidung: P2.55] The §7.1.1 PRIMARY refuse-busy predicate — reads the real §1.9
     /// run-level state (the same predicate §7.3.2's close-requested guard uses): a conversion run is in flight
     /// iff the `RunRegistry` (crate::orchestrator) holds an active token (registered at C6, dropped at
@@ -504,6 +526,7 @@ mod launch_intake {
             let _buffer: fn(&AppHandle, Vec<PathBuf>, IntakeOrigin) = buffer_pending_intake;
             let _opened: fn(&AppHandle, &[tauri::Url]) = handle_opened;
             let _origin: fn(bool) -> IntakeOrigin = launch_origin;
+            let _argvread: fn(&AppHandle) = forward_first_launch_argv;
         }
 
         // §6.4.1 unit (G15): the §7.1.1 single-instance second-launch HANDLER (P2.52). `on_second_instance`
@@ -717,6 +740,34 @@ mod launch_intake {
                 );
             }
         }
+
+        // §6.4.1 unit (G15): the §7.8.1 first-launch argv reader (P2.57). forward_first_launch_argv is
+        // AppHandle-coupled boot-glue (the §1.1a boot-stage pattern — runtime is the §6.4.6 launch-with-files
+        // E2E, not cargo-test), so a source-scan pins: it reads std::env::args_os (NOT the panic-on-non-UTF8
+        // args()) and routes through forward_launch_argv as LaunchArg; and setup() CALLS it (the launch-intake
+        // stage). Needles concat!-assembled. [Build-Session-Entscheidung: P2.57]
+        #[test]
+        fn first_launch_argv_reader_routes_through_the_funnel() {
+            let src = crate::boot_invariants::production_boot_source();
+            for needle in [
+                concat!("env::args_", "os()"),
+                concat!(
+                    "forward_launch_",
+                    "argv(app, &argv, &cwd, IntakeOrigin::Launch",
+                    "Arg)"
+                ),
+            ] {
+                assert!(
+                    src.contains(needle),
+                    "§7.8.1: forward_first_launch_argv must read args_os + route as LaunchArg (missing `{needle}`)"
+                );
+            }
+            let main_src = crate::boot_invariants::production_main_body();
+            assert!(
+                main_src.contains(concat!("forward_first_launch_", "argv(app.handle())")),
+                "§7.8.1: setup must call forward_first_launch_argv at first launch (the launch-intake stage, P2.57)"
+            );
+        }
     }
 }
 
@@ -824,6 +875,13 @@ fn main() -> tauri::Result<()> {
             // unfinished; the §7.3.1 model is asserted structurally by the `window_model` test below. The
             // loaded React frame arrives with P1.23 (`index.html`) + P1.31 (the React mount); the
             // rendered-frame headed E2E is P9.
+
+            // Stage 7 (launch-intake) — [Build-Session-Entscheidung: P2.57] process THIS instance's
+            // first-launch argv (Windows / Linux `%F`/`%U`) through the §7.8.1 funnel as `LaunchArg`. Placed
+            // in `setup` as the launch-intake stage; the §7.2.1 ordered spine (P2.106) subsequently orders it
+            // as step 7 (after the window-create step). On macOS argv carries no file args (Open-with arrives
+            // via `RunEvent::Opened`, P2.56), so this is a no-op there.
+            launch_intake::forward_first_launch_argv(app.handle());
 
             Ok(())
         })
