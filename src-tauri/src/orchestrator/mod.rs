@@ -38,7 +38,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) are authored as contracts before the P3.46 orchestrator behaviour + the C1/C2a/C3/C4/C5/C6/C7/C8/C13 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so they are dead in the production build until consumed."
+        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) are authored as contracts before the P3.46 orchestrator behaviour + the C1/C2a/C3/C4/C5/C6/C7/C8/C13 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so their as-yet-unwired methods are dead in the production build until consumed (`RunRegistry::has_active_run` is already consumed by the §7.1.1 `converter_is_busy` from P2.55, with `register`/`cancel`/`finish` staying dead until P3.46)."
     )
 )]
 
@@ -560,13 +560,16 @@ pub struct BatchProgress {
 // identity/lifecycle: the §1.7 invocation layer wires the token to the engine subprocess for the
 // process-group kill, and cancellation is cooperative at the orchestrator level + forceful at the engine
 // level (reconciled by §1.7, built in P3/P4). Like the sibling lifecycle/result types, this is a CONTRACT
-// authored before its consumer: the C6/C7/RunFinished WIRING (the app-managed State + the conductor calls)
-// is the P3.46 behaviour, so the registry is dead in the production build until then (covered by the
+// authored before its consumer — but PARTLY consumed from P2.55: `has_active_run` is the §7.1.1 refuse-busy
+// predicate `converter_is_busy` reads, and the `.manage(RunRegistry)` registration lives in main()'s Builder
+// chain (P2.55). The C6/C7/RunFinished token WIRING (the conductor's register/cancel/finish calls) is the
+// P3.46 behaviour, so those three methods stay dead in the production build until then (covered by the
 // module-level dead_code expect). The retained terminal RunResult (so C8 re-serves after a WebView reload,
 // §0.4.4) is a SEPARATE store — the P2.43 box — NOT this token registry.
 
 /// The §0.4.4 run registry — maps each in-flight `RunId` to its `tokio_util::sync::CancellationToken`. Held
-/// as a Tauri app-managed `State` (the wiring is the P3.46 conductor). The token's three §0.4.4 lifecycle
+/// as a Tauri app-managed `State` (the `.manage` is P2.55; the register/cancel/finish wiring is the P3.46
+/// conductor). The token's three §0.4.4 lifecycle
 /// points are this type's three methods: [`register`](RunRegistry::register) at C6 `start_conversion` (mint +
 /// store a fresh token), [`cancel`](RunRegistry::cancel) at C7 `cancel_run` (trip it — cooperative at the
 /// orchestrator level), and [`finish`](RunRegistry::finish) on `RunFinished` (drop it; the run's terminal
@@ -630,6 +633,17 @@ impl RunRegistry {
     /// the run's terminal `RunResult` out-lives the token in the separate P2.43 retention store (§0.4.4).
     pub fn finish(&self, run_id: RunId) {
         self.lock().remove(&run_id);
+    }
+
+    /// True iff a conversion run is in flight — the §1.9 run-level "Running" state the §7.1.1/§7.3.2
+    /// refuse-busy gate reads (`converter_is_busy`). A run's token is present from C6 `start_conversion` to
+    /// `RunFinished`, INCLUDING while a C7 cancel winds it down ([`cancel`](RunRegistry::cancel) trips the
+    /// token but leaves it until [`finish`](RunRegistry::finish)), so a cancelling-but-not-finished run still
+    /// reports busy — correct for refuse-busy (the §2.4 frozen set must not take new intake until the run is
+    /// fully terminal). The runs are POPULATED by the P3.46 conductor; until then the registry is empty, so
+    /// this is `false` (not busy) and the funnel's idle-flow is open. [Build-Session-Entscheidung: P2.55]
+    pub fn has_active_run(&self) -> bool {
+        !self.lock().is_empty()
     }
 }
 
@@ -1744,6 +1758,34 @@ mod tests {
         assert!(
             !reg.cancel(run_id()),
             "§0.4.4: after finish the run is no longer registered, so a later cancel is a no-op"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §7.1.1/§7.3.2 refuse-busy predicate (P2.55) — `has_active_run` is the §1.9
+    // "Running" signal `converter_is_busy` reads: false when empty (idle / the pre-P3 default), true once a
+    // run is registered (C6), and STILL true after a C7 cancel until `finish` (a cancelling run stays busy),
+    // then false after `finish` (RunFinished).
+    #[test]
+    fn run_registry_has_active_run_tracks_the_running_window() {
+        let reg = RunRegistry::default();
+        assert!(
+            !reg.has_active_run(),
+            "§7.1.1: an empty registry is not busy (idle — the pre-P3 default → idle-flow open)"
+        );
+        let _token = reg.register(run_id());
+        assert!(
+            reg.has_active_run(),
+            "§7.1.1: a registered run (C6) makes the converter busy → the funnel refuses mid-run intake"
+        );
+        reg.cancel(run_id());
+        assert!(
+            reg.has_active_run(),
+            "§7.1.1: a cancelling-but-not-finished run is STILL busy (the token lingers until finish)"
+        );
+        reg.finish(run_id());
+        assert!(
+            !reg.has_active_run(),
+            "§7.1.1: after finish (RunFinished) the run is terminal → not busy again"
         );
     }
 

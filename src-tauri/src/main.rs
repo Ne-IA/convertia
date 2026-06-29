@@ -201,13 +201,14 @@ mod launch_intake {
     // attribute, never a test assertion); the dead-code expectation is OBSOLETE now the §7.1.1 callback makes
     // the module live, so removing it is CORRECT (keeping it errors "expectation unfulfilled"). No test changed.
     // [Build-Session-Entscheidung: P2.52] The §7.1.1 single-instance callback in `main()` (below) is now the
-    // funnel's FIRST live caller — `forward_launch_argv` -> `forward_launch_intake` -> the predicate shells +
+    // funnel's FIRST live caller — `forward_launch_argv` -> `forward_launch_intake` -> the predicate fns +
     // `parse_path_args` + `intake_disposition` are all reachable from production — so the whole module is LIVE
     // and the former module-level `#![cfg_attr(not(test), …)]` dead-code suppression is REMOVED (with nothing
-    // dead, that `dead_code` expectation would flip to "expectation unfulfilled" under `-D warnings`). The predicate
-    // remaining predicate fills are P2.55 (`converter_is_busy` § run-state) / P2.59 (the ready-flag branch);
-    // the `PendingIntake` buffer arm (`buffer_pending_intake` -> `State<PendingIntake>`) is now real (P2.58),
-    // but unreached until P2.55 — the fail-safe `converter_is_busy` shell (`true`) short-circuits to Drop.
+    // dead, that `dead_code` expectation would flip to "expectation unfulfilled" under `-D warnings`). The
+    // `converter_is_busy` predicate now reads the real §1.9 run-state via the RunRegistry (P2.55) and the
+    // `PendingIntake` buffer arm is real (P2.58); the remaining fill is P2.59 (the `frontend_ready` ready-flag
+    // branch). Until P3 populates runs the registry is empty (not busy), so an idle launch set routes — via
+    // `frontend_ready`'s shell `false` — to the real buffer, never lost.
 
     use std::path::PathBuf;
 
@@ -215,7 +216,7 @@ mod launch_intake {
 
     use crate::domain::{IntakeOrigin, IntakePayload};
     use crate::ipc::events;
-    use crate::orchestrator::PendingIntake;
+    use crate::orchestrator::{PendingIntake, RunRegistry};
 
     /// [Build-Session-Entscheidung: P2.40] The §0.4.2 / §7.8.1 `app://intake` disposition — the THREE
     /// outcomes a launch-time path set can take. Encoding it as an enum makes the IDLE-path-only rule
@@ -345,23 +346,29 @@ mod launch_intake {
         forward_launch_argv(app, &argv, &cwd, IntakeOrigin::SecondInstance);
     }
 
-    /// [Build-Session-Entscheidung: P2.54] INTERFACE SHELL for the §1.9 run-state busy predicate — the real
-    /// wiring is box P2.55 (which enforces the §7.1.1 PRIMARY refuse-busy gate inside the funnel). The
-    /// fail-SAFE default is `true`: an unwired busy-check reports BUSY, so `intake_disposition` returns
-    /// `Drop` and the funnel can NEVER emit/buffer ingestable paths through a not-yet-wired predicate (§2.4 /
-    /// §7.1.1). The whole module has no live caller until P2.52, so this default is never exercised in a
-    /// production build before P2.55 fills it.
-    fn converter_is_busy(_app: &AppHandle) -> bool {
-        true
+    /// [Build-Session-Entscheidung: P2.55] The §7.1.1 PRIMARY refuse-busy predicate — reads the real §1.9
+    /// run-level state (the same predicate §7.3.2's close-requested guard uses): a conversion run is in flight
+    /// iff the `RunRegistry` (crate::orchestrator) holds an active token (registered at C6, dropped at
+    /// `RunFinished`; a cancelling run stays busy until `finish`). When busy, `intake_disposition` returns
+    /// `Drop`, so the funnel refuses a mid-run second-launch / Open-with — no `app://intake` emit, no
+    /// `PendingIntake` buffer — and the §2.4 frozen set is never mutated mid-run. AppHandle-coupled boot-glue
+    /// (§1.1a; G28 signature-exempt; the source-scan pins the RunRegistry query). `app.state::<RunRegistry>()`
+    /// is infallible by construction (registered in main()'s Builder chain). The runs are POPULATED by the
+    /// P3.46 conductor (register-at-C6 / finish-at-RunFinished), so until P3 the registry is empty → not busy →
+    /// the funnel's idle-flow is open (the buffer P2.58 made real catches an idle-and-not-ready set) — the
+    /// owner-confirmed P2.58-before-P2.55 order in effect.
+    fn converter_is_busy(app: &AppHandle) -> bool {
+        app.state::<RunRegistry>().has_active_run()
     }
 
     /// [Build-Session-Entscheidung: P2.54] INTERFACE SHELL for the §7.8.1 WebView-ready flag — the real
     /// wiring is box P2.59 (the ready-flag branch). The fail-SAFE default is `false`: an unwired ready-check
     /// reports NOT-ready, so `intake_disposition` returns `Buffer` rather than `Emit` — the funnel never
     /// emits `app://intake` into a listener that may not exist (a dropped first-launch event, the §7.8.1
-    /// race). Buffered paths drain via `PendingIntake` (P2.58). Unreachable in a production build before its
-    /// fill: `converter_is_busy`'s fail-safe `true` short-circuits to `Drop`, and there is no live caller
-    /// until P2.52.
+    /// race). Buffered paths are stashed in `PendingIntake` (P2.58, real) and drained by C1 `drainPending`
+    /// (P2.60). REACHED from P2.55: with the run registry empty (pre-P3) `converter_is_busy` is `false`, so an
+    /// idle launch set reaches this shell → `Buffer` → the real `PendingIntake` stash (never lost); P2.59
+    /// replaces this `false` with the live WebView-ready flag so a ready listener gets `Emit` instead.
     fn frontend_ready(_app: &AppHandle) -> bool {
         false
     }
@@ -373,9 +380,10 @@ mod launch_intake {
     /// `PendingIntake`, this WIRING is source-scan-pinned + G28 boot-glue-exempt). `app.state::<PendingIntake>()`
     /// is infallible by construction: `main()` registers the buffer in the Builder chain BEFORE the event loop
     /// (so before any single-instance callback), so the resolve cannot fail at runtime — no panic despite the
-    /// crate-root `clippy::panic` deny. Still UNREACHED in production until P2.55 wires the real
-    /// `converter_is_busy` (its fail-safe `true` short-circuits to `Drop` before the `Buffer` arm); the
-    /// owner-confirmed order lands this (P2.58) BEFORE P2.55, so the buffer is real before idle-flow opens.
+    /// crate-root `clippy::panic` deny. REACHED from P2.55: with the run registry empty (pre-P3)
+    /// `converter_is_busy` is `false`, so an idle-and-not-ready launch set now routes into this real stash —
+    /// the owner-confirmed order landed this buffer (P2.58) BEFORE P2.55 opened idle-flow, so no idle set
+    /// ever routed into a no-op.
     fn buffer_pending_intake(app: &AppHandle, paths: Vec<PathBuf>, origin: IntakeOrigin) {
         app.state::<PendingIntake>().stash(paths, origin);
     }
@@ -591,6 +599,29 @@ mod launch_intake {
                 "§7.8.1: main() must register the State<PendingIntake> so the buffer-arm resolve cannot fail (P2.58)"
             );
         }
+
+        // §6.4.1 unit (G15): the §7.1.1 refuse-busy predicate is WIRED to the real §1.9 run-state (P2.55) — not
+        // the P2.54 fail-safe `true` shell. `converter_is_busy` is AppHandle-coupled boot-glue (the §1.1a
+        // boot-stage pattern — not cargo-test execution-testable; the `has_active_run` LOGIC is unit-tested on
+        // `crate::orchestrator::RunRegistry`), so a source-scan pins it resolves the managed RunRegistry +
+        // queries it; a second scan pins `main()` REGISTERS it. Needles `concat!`-assembled. [Build-Session-Entscheidung: P2.55]
+        #[test]
+        fn busy_gate_reads_the_managed_run_registry() {
+            let buffer_src = crate::boot_invariants::production_boot_source();
+            assert!(
+                buffer_src.contains(concat!("state::<Run", "Registry>()")),
+                "§7.1.1: converter_is_busy must resolve the managed State<RunRegistry> (P2.55)"
+            );
+            assert!(
+                buffer_src.contains(concat!(".has_active_", "run()")),
+                "§7.1.1: converter_is_busy must read the real §1.9 run-state, not the P2.54 fail-safe `true`"
+            );
+            let main_src = crate::boot_invariants::production_main_body();
+            assert!(
+                main_src.contains(concat!(".manage(crate::orchestrator::Run", "Registry::default())")),
+                "§7.1.1: main() must register the State<RunRegistry> so the busy-gate resolve cannot fail (P2.55)"
+            );
+        }
     }
 }
 
@@ -652,6 +683,12 @@ fn main() -> tauri::Result<()> {
         // (buffer_pending_intake); reader = C1 drainPending (P2.60). Ahead of the P3.46-registered run stores
         // because its live consumer — the P2 launch funnel — exists now.
         .manage(crate::orchestrator::PendingIntake::default())
+        // [Build-Session-Entscheidung: P2.55] §7.1.1 refuse-busy run-state — register the RunRegistry (the
+        // §0.4.4 run-cancellation-token store, P2.42) so converter_is_busy can read it (the SAME registry the
+        // P3.46 conductor populates at C6 / drains at RunFinished — this box owns the .manage, P3 wires the
+        // register/finish calls). Builder chain (compile-time Default, before the event loop) → the busy-gate
+        // resolve is infallible by construction.
+        .manage(crate::orchestrator::RunRegistry::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             // §0.4.5 IPC event-channel mount (the P1.13 tauri-specta seam).
