@@ -413,6 +413,14 @@ mod launch_intake {
     /// source-scan-pinned + the §1.6 launch-with-files E2E exercises it. (The §7.2.1 ordered spine P2.106
     /// subsequently homes this call as step 7; here it is the launch-intake stage in `setup`.)
     pub(super) fn forward_first_launch_argv(app: &AppHandle) {
+        // [Build-Session-Entscheidung: P2.57] G29/SAST per-finding suppression — the vendored audit rule
+        // `rust.lang.security.args-os.args-os` ("don't rely on `args_os` for SECURITY") does NOT apply here:
+        // `argv` is read ONLY as the §7.8.1 launch-FILE source — `parse_path_args` SKIPS `argv[0]` (the only
+        // spoofable element the rule warns about) and the §1.1 freeze (canonicalise / resolve-identity /
+        // existence / detection) re-validates every path before any decode. No security decision is made on
+        // `argv`. The bare marker below carries only the rule-id (semgrep parses the rest of a `nosemgrep:`
+        // line as comma-separated rule-ids, so the rationale stays on these separate lines).
+        // nosemgrep: rust.lang.security.args-os.args-os
         let argv: Vec<String> = std::env::args_os()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
