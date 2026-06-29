@@ -346,6 +346,60 @@ mod launch_intake {
         forward_launch_argv(app, &argv, &cwd, IntakeOrigin::SecondInstance);
     }
 
+    /// [Build-Session-Entscheidung: P2.56] The §7.8.1 launch-origin decision for the macOS Open-with hook — a
+    /// pure rule extracted beside the AppHandle-coupled handler (the §1.1a boot-stage pattern): a first-launch
+    /// Open-with (the WebView listener is not ready → the set is buffered + drained, §7.8.1) is `LaunchArg`; a
+    /// while-running Open-with is `SecondInstance`. `handle_opened` resolves `frontend_ready(app)` and passes it
+    /// in, so the rule is pure + unit-tested in isolation. NO `dead_code` attr is needed: `handle_opened`'s body
+    /// has a call site to it, which rustc counts as a use even though `handle_opened` is itself un-wired/dead —
+    /// so only the un-wired `handle_opened` is flagged (until P2.82 wires the `App::run` Opened arm), not this.
+    fn launch_origin(frontend_ready: bool) -> IntakeOrigin {
+        if frontend_ready {
+            IntakeOrigin::SecondInstance
+        } else {
+            IntakeOrigin::LaunchArg
+        }
+    }
+
+    /// [Build-Session-Entscheidung: P2.56] §7.8.1 the macOS Open-with HANDLER — converts the `RunEvent::Opened`
+    /// `file://` URLs via `Url::to_file_path()` and routes them through the SAME §7.8.1 `forward_launch_intake`
+    /// funnel as the argv / single-instance paths, with the origin resolved by readiness (`launch_origin`). So
+    /// the §7.1.1 refuse-busy gate + the §1.1 freeze apply identically (a mid-conversion Open-with is refused,
+    /// never merged into the §2.4 frozen set — without this a macOS Open-with would BYPASS the PRIMARY gate,
+    /// since it never goes through the argv callback there). Takes the already-extracted `urls` (cfg-free —
+    /// `tauri::Url` exists on every target), so the Apple/Android-target gating of the `RunEvent::Opened`
+    /// variant lives on the P2.82 `App::run` ARM that calls this, NOT here.
+    /// AppHandle-coupled boot-glue (§1.1a; G28 signature-exempt; the routing is source-scan-pinned, the runtime
+    /// is the §6.4.6 macOS E2E smoke leg). Dead in the production build until P2.82 wires it (the `dead_code`
+    /// expectation is scoped to `not(test)` — the signature pin uses it in the test build).
+    ///
+    /// [Build-Session-Entscheidung: P2.56.1] **`RunEvent::Opened` is an Apple/Android-target variant (Tauri-v2
+    /// API fact).** In Tauri v2 it is a `#[cfg(any(target_os = "macos", target_os = "ios", target_os =
+    /// "android"))]` enum VARIANT — it does NOT exist on Windows/Linux, so launch intake there rests on the
+    /// argv / single-instance path (§7.8.1). Of ConvertIA's shipped DESKTOP triples (macOS/Linux/Windows;
+    /// CLAUDE.md §1, no mobile build) it is therefore reachable ONLY on macOS. The P2.82 `App::run` ARM that
+    /// matches it is cfg-gated accordingly, while the `App::run` handler *registration* stays unconditional
+    /// (one funnel): where the variant is absent the Opened arm is compiled out — a no-op for Open-with, not a
+    /// second intake path. (This handler is cfg-free because it takes the extracted `urls`, never the variant.)
+    ///
+    /// [Build-Session-Entscheidung: P2.56.2] **NOT `tauri-plugin-deep-link` / `on_open_url`.** That plugin
+    /// handles custom-scheme deep links (`myapp://…`), a DIFFERENT OS intent; it does NOT fire for the
+    /// Open-with / open-documents AppleEvent that delivers `file://` URLs, so using it for file intake would
+    /// silently never trigger. ConvertIA registers NO URL scheme (§7.8.2 negative), so `on_open_url` is
+    /// irrelevant — the open-documents AppleEvent surfaced as `RunEvent::Opened` is the sole macOS file-open
+    /// mechanism.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the macOS Open-with handler; the P2.82 App::run RunEvent::Opened arm wires it"
+        )
+    )]
+    fn handle_opened(app: &AppHandle, urls: &[tauri::Url]) {
+        let paths: Vec<PathBuf> = urls.iter().filter_map(|u| u.to_file_path().ok()).collect();
+        forward_launch_intake(app, paths, launch_origin(frontend_ready(app)));
+    }
+
     /// [Build-Session-Entscheidung: P2.55] The §7.1.1 PRIMARY refuse-busy predicate — reads the real §1.9
     /// run-level state (the same predicate §7.3.2's close-requested guard uses): a conversion run is in flight
     /// iff the `RunRegistry` (crate::orchestrator) holds an active token (registered at C6, dropped at
@@ -448,6 +502,8 @@ mod launch_intake {
             let _busy: fn(&AppHandle) -> bool = converter_is_busy;
             let _ready: fn(&AppHandle) -> bool = frontend_ready;
             let _buffer: fn(&AppHandle, Vec<PathBuf>, IntakeOrigin) = buffer_pending_intake;
+            let _opened: fn(&AppHandle, &[tauri::Url]) = handle_opened;
+            let _origin: fn(bool) -> IntakeOrigin = launch_origin;
         }
 
         // §6.4.1 unit (G15): the §7.1.1 single-instance second-launch HANDLER (P2.52). `on_second_instance`
@@ -621,6 +677,45 @@ mod launch_intake {
                 main_src.contains(concat!(".manage(crate::orchestrator::Run", "Registry::default())")),
                 "§7.1.1: main() must register the State<RunRegistry> so the busy-gate resolve cannot fail (P2.55)"
             );
+        }
+
+        // §6.4.1 unit (G15): the §7.8.1 launch-origin decision (P2.56) — a first-launch Open-with (WebView not
+        // ready) is LaunchArg (buffered + drained); a while-running Open-with is SecondInstance. The pure rule
+        // beside the macOS Open-with glue (the §1.1a boot-stage pattern), unit-tested in isolation.
+        #[test]
+        fn launch_origin_maps_readiness_to_intake_origin() {
+            assert_eq!(
+                launch_origin(false),
+                IntakeOrigin::LaunchArg,
+                "§7.8.1: a first-launch Open-with (frontend not ready) is LaunchArg (buffered + drained)"
+            );
+            assert_eq!(
+                launch_origin(true),
+                IntakeOrigin::SecondInstance,
+                "§7.8.1: a while-running Open-with (frontend ready) is SecondInstance"
+            );
+        }
+
+        // §6.4.1 unit (G15): the macOS Open-with handler logic (P2.56). `handle_opened` is AppHandle-coupled
+        // boot-glue (the §1.1a boot-stage pattern — its runtime is the §6.4.6 macOS E2E smoke leg, not
+        // cargo-test; it is wired into the App::run Opened arm by P2.82), so a source-scan pins it converts the
+        // urls via to_file_path and routes through forward_launch_intake with the launch_origin-resolved
+        // origin. Needles concat!-assembled. [Build-Session-Entscheidung: P2.56]
+        #[test]
+        fn opened_handler_routes_urls_through_the_funnel() {
+            let src = crate::boot_invariants::production_boot_source();
+            for needle in [
+                concat!("to_file_", "path()"),
+                concat!(
+                    "forward_launch_",
+                    "intake(app, paths, launch_origin(frontend_ready(app)))"
+                ),
+            ] {
+                assert!(
+                    src.contains(needle),
+                    "§7.8.1: handle_opened must convert Open-with urls → paths and route through the funnel (missing `{needle}`)"
+                );
+            }
         }
     }
 }
