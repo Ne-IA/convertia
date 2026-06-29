@@ -226,9 +226,9 @@
 
 ## OS-intake funnel (§7.8.1) — the launch/Open-with state machine
 
-- [ ] **P2.54** [RUST] Build the single `forward_launch_intake(app, paths, origin)` funnel (every launch-time path source routes here) · §7.8.1 §1.1
+- [x] **P2.54** [RUST] Build the single `forward_launch_intake(app, paths, origin)` funnel (every launch-time path source routes here) · §7.8.1 §1.1
   needs: P2.47, P2.39
-  - [ ] **P2.54.1** [RUST] Build `parse_path_args(argv, cwd) -> Vec<PathBuf>` — the §7.8.1 `forward_launch_argv` flag/path classifier · §7.8.1 §7.5.3 §1.1
+  - [x] **P2.54.1** [RUST] Build `parse_path_args(argv, cwd) -> Vec<PathBuf>` — the §7.8.1 `forward_launch_argv` flag/path classifier · §7.8.1 §7.5.3 §1.1
     > the named §7.8.1 helper `forward_launch_argv(app, argv, cwd, origin)` calls (`forward_launch_intake(app, parse_path_args(argv, cwd), origin)`): separate **flag tokens from file-path tokens** — strip the `--verbose`/env-flag launch switches (`--verbose` is a `[DECIDED]` launch flag, §7.5.3, so it MUST NOT become an ingestable path), skip `argv[0]` (the program path), resolve **relative** path args against the launching `cwd`, and handle Win-vs-Linux argv conventions; return `Vec<PathBuf>`. The §1.1 freeze re-validates every returned path (so this is classification, not a trust boundary) — but the flag-vs-path split + cwd-relative resolution are genuinely homed here. Consumed by the argv intake (P2.57) and the single-instance callback (P2.52, which forwards `argv` via `forward_launch_argv`).
 - [ ] **P2.55** [RUST] Enforce the §7.1.1 PRIMARY refuse-busy gate inside the funnel (mid-run: DROP paths, no emit, no buffer) · §7.8.1 §7.1.1 §2.4
   needs: P2.54, P2.40
