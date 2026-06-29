@@ -189,21 +189,34 @@ fn ipc_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
 
 /// [Build-Session-Entscheidung: P2.40] The §7.8.1 launch-intake logic, homed with the Tauri host (§0.7:
 /// `main.rs` homes the launch glue — the single-instance callback (§7.1.1), the macOS `RunEvent::Opened`
-/// handler, and `app.emit`). This box authors the §0.4.2 / §7.8.1 `app://intake` IDLE-path-only RULE as a
-/// pure disposition; the `forward_launch_intake` funnel + the per-OS argv / `RunEvent::Opened` wiring that
-/// CONSUME it join this home at P2.54+.
+/// handler, and `app.emit`). P2.40 authored the §0.4.2 / §7.8.1 `app://intake` IDLE-path-only RULE as a
+/// pure disposition; [Build-Session-Entscheidung: P2.54] adds the `forward_launch_intake` funnel that
+/// CONSUMES it (every launch-time path source routes here) + the §7.8.1 `parse_path_args` /
+/// `forward_launch_argv` argv classifier. The per-OS live callers — the single-instance callback (P2.52),
+/// the macOS `RunEvent::Opened` handler (P2.56), the first-launch argv reader (P2.57) — wire the funnel
+/// from P2.52 onward.
 mod launch_intake {
-    // The disposition rule is dead in the PRODUCTION build until the funnel wires it (the `Drop` arm at the
-    // P2.55 refuse-busy gate, the `Emit`/`Buffer` arms at the P2.59 ready-flag branch); the cfg(test)
-    // truth-table tests reference it, so the TEST build is dead-code-clean. `expect` (not `allow`) auto-flags
-    // the moment the funnel consumes it — matching `crate::ipc::events` / `crate::domain` / `crate::outcome`.
+    // The whole launch-intake module is dead in the PRODUCTION build until the first LIVE CALLER wires the
+    // funnel: the §7.1.1 single-instance callback (P2.52), the macOS `RunEvent::Opened` handler (P2.56), and
+    // the first-launch argv reader (P2.57). The funnel's own predicate fills land at P2.55 (`converter_is_busy`)
+    // / P2.58 (`PendingIntake`) / P2.59 (the ready-flag branch). The `cfg(test)` truth-table + the
+    // `parse_path_args` unit tests + the signature-pin reference every item, so the TEST build is
+    // dead-code-clean. `expect` (not `allow`) auto-flags the moment a live caller is wired — matching
+    // `crate::ipc::events` / `crate::domain` / `crate::outcome`.
     #![cfg_attr(
         not(test),
         expect(
             dead_code,
-            reason = "the §7.8.1 IDLE-path-only disposition rule is consumed by the forward_launch_intake funnel (the Drop arm at P2.55, the Emit/Buffer arms at P2.59), so it is dead in the production build until then."
+            reason = "the §7.8.1 launch-intake funnel (forward_launch_intake + the parse_path_args/forward_launch_argv classifier + the converter_is_busy/frontend_ready/buffer_pending_intake fill-shells) and the IDLE-path-only disposition rule are dead in the production build until the first live caller wires the funnel (the §7.1.1 single-instance callback P2.52, the macOS RunEvent::Opened handler P2.56, the first-launch argv reader P2.57)."
         )
     )]
+
+    use std::path::PathBuf;
+
+    use tauri::{AppHandle, Emitter};
+
+    use crate::domain::{IntakeOrigin, IntakePayload};
+    use crate::ipc::events;
 
     /// [Build-Session-Entscheidung: P2.40] The §0.4.2 / §7.8.1 `app://intake` disposition — the THREE
     /// outcomes a launch-time path set can take. Encoding it as an enum makes the IDLE-path-only rule
@@ -239,6 +252,107 @@ mod launch_intake {
             IntakeDisposition::Buffer
         }
     }
+
+    /// [Build-Session-Entscheidung: P2.54] The §7.8.1 single funnel — EVERY launch-time path source (the
+    /// §7.1.1 single-instance argv callback, the macOS `RunEvent::Opened` handler, the first-launch argv
+    /// reader) routes here, so the §7.1.1 refuse-busy gate and the §7.8.1 first-launch buffer-replay are
+    /// enforced ONCE, not duplicated per hook. The disposition is the pure `intake_disposition` rule (P2.40,
+    /// already truth-table-tested), NOT a re-inlined copy of the illustrative §7.8.1 if/else: the funnel
+    /// resolves the two run-time predicates against the `AppHandle` and dispatches on the result.
+    fn forward_launch_intake(app: &AppHandle, paths: Vec<PathBuf>, origin: IntakeOrigin) {
+        // §7.8.1: an empty path set (a bare relaunch with no files) is a no-op.
+        if paths.is_empty() {
+            return;
+        }
+        match intake_disposition(converter_is_busy(app), frontend_ready(app)) {
+            // §7.1.1 PRIMARY refuse-busy: a mid-run second launch / Open-with is dropped core-side — no
+            // `app://intake` emit, no `PendingIntake` buffer — so the §2.4 frozen set is never mutated mid-run.
+            IntakeDisposition::Drop => {}
+            // Idle + the WebView listener is ready: emit the §0.4.2 `app://intake` event (via the
+            // `crate::ipc::events` constant, never a re-spelled literal — plan-lint check 28) so the UI
+            // mirrors a drop (§5.2/§1.1). The payload is `{ paths, origin }` so the frontend re-calls C1
+            // with the right `IntakeOrigin`.
+            IntakeDisposition::Emit => {
+                app.emit(events::APP_INTAKE, IntakePayload { paths, origin })
+                    .ok();
+            }
+            // Idle but the WebView is not-yet-ready (the §7.8.1 first-launch listener race): stash the
+            // paths + origin for the drain-on-mount replay.
+            IntakeDisposition::Buffer => buffer_pending_intake(app, paths, origin),
+        }
+    }
+
+    /// [Build-Session-Entscheidung: P2.54.1] The §7.8.1 `argv` classifier — split launch FLAG tokens from
+    /// file-PATH tokens. `argv[0]` (the program path) is skipped; the §7.5.3 `--verbose` diagnostic switch
+    /// and any `-`/`--`-prefixed token are launch switches (never ingestable paths); a relative path
+    /// resolves against the launching `cwd`. The §1.1 freeze re-validates (canonicalises / resolve-identity
+    /// / detects) every returned path, so this is CLASSIFICATION, not a trust boundary — but the flag-vs-path
+    /// split + the cwd-relative resolution are genuinely homed here. `PathBuf` is platform-aware, so the
+    /// Win-vs-Linux separator / argv conventions are handled by construction.
+    fn parse_path_args(argv: &[String], cwd: &str) -> Vec<PathBuf> {
+        argv.iter()
+            .skip(1)
+            .filter(|tok| !is_launch_switch(tok))
+            .map(|tok| resolve_launch_path(tok, cwd))
+            .collect()
+    }
+
+    /// [Build-Session-Entscheidung: P2.54.1] A launch switch (never an ingestable path): the §7.5.3
+    /// `--verbose` flag and any `-`/`--`-prefixed token. A launcher / desktop-entry passes a file as an
+    /// OS-expanded path (absolute, or a plain relative name), never as a `-`-leading bare argument, so the
+    /// leading-`-` test cleanly separates switches from paths.
+    fn is_launch_switch(tok: &str) -> bool {
+        tok.starts_with('-')
+    }
+
+    /// [Build-Session-Entscheidung: P2.54.1] Resolve a launch path token: an absolute path is kept as-is; a
+    /// relative one is joined onto the launching `cwd` (§7.8.1). The §1.1 freeze canonicalises later, so a
+    /// plain join is the classification step. `PathBuf::is_absolute` is platform-aware (Win drive-letter vs
+    /// POSIX root), matching the native argv each OS delivers.
+    fn resolve_launch_path(tok: &str, cwd: &str) -> PathBuf {
+        let path = PathBuf::from(tok);
+        if path.is_absolute() {
+            path
+        } else {
+            PathBuf::from(cwd).join(path)
+        }
+    }
+
+    /// [Build-Session-Entscheidung: P2.54.1] The §7.8.1 `forward_launch_argv` wrapper — classify `argv` into
+    /// paths (`parse_path_args`) and route them through the single funnel. The §7.1.1 single-instance
+    /// callback (P2.52) and the Win/Linux first-launch argv reader (P2.57) both forward through this.
+    fn forward_launch_argv(app: &AppHandle, argv: &[String], cwd: &str, origin: IntakeOrigin) {
+        forward_launch_intake(app, parse_path_args(argv, cwd), origin);
+    }
+
+    /// [Build-Session-Entscheidung: P2.54] INTERFACE SHELL for the §1.9 run-state busy predicate — the real
+    /// wiring is box P2.55 (which enforces the §7.1.1 PRIMARY refuse-busy gate inside the funnel). The
+    /// fail-SAFE default is `true`: an unwired busy-check reports BUSY, so `intake_disposition` returns
+    /// `Drop` and the funnel can NEVER emit/buffer ingestable paths through a not-yet-wired predicate (§2.4 /
+    /// §7.1.1). The whole module has no live caller until P2.52, so this default is never exercised in a
+    /// production build before P2.55 fills it.
+    fn converter_is_busy(_app: &AppHandle) -> bool {
+        true
+    }
+
+    /// [Build-Session-Entscheidung: P2.54] INTERFACE SHELL for the §7.8.1 WebView-ready flag — the real
+    /// wiring is box P2.59 (the ready-flag branch). The fail-SAFE default is `false`: an unwired ready-check
+    /// reports NOT-ready, so `intake_disposition` returns `Buffer` rather than `Emit` — the funnel never
+    /// emits `app://intake` into a listener that may not exist (a dropped first-launch event, the §7.8.1
+    /// race). Buffered paths drain via `PendingIntake` (P2.58). Unreachable in a production build before its
+    /// fill: `converter_is_busy`'s fail-safe `true` short-circuits to `Drop`, and there is no live caller
+    /// until P2.52.
+    fn frontend_ready(_app: &AppHandle) -> bool {
+        false
+    }
+
+    /// [Build-Session-Entscheidung: P2.54] INTERFACE SHELL for the §7.8.1 first-launch buffer — the real
+    /// `State<PendingIntake>` stash + drain is box P2.58 (build) / P2.59 (wire). A no-op shell here because
+    /// no `PendingIntake` state exists to stash into at P2.54. Unreachable in a production build: the
+    /// `converter_is_busy` fail-safe `true` short-circuits to `Drop` before the `Buffer` arm, and the
+    /// owner-confirmed build order lands P2.58 (buffer) BEFORE P2.55 (busy) so no real idle-and-not-ready
+    /// path ever routes through this shell during the build window.
+    fn buffer_pending_intake(_app: &AppHandle, _paths: Vec<PathBuf>, _origin: IntakeOrigin) {}
 
     #[cfg(test)]
     mod tests {
@@ -284,6 +398,118 @@ mod launch_intake {
                     "§0.4.2/§7.1.1: a busy converter always drops launch paths (ready={ready})"
                 );
             }
+        }
+
+        // §6.4.1 unit (G15): the §7.8.1 funnel + classifier exist with their spec'd signatures. The
+        // AppHandle-coupled fns (the funnel, the wrapper, the three predicate/buffer shells) are not
+        // call-tested — this crate has no `tauri::test` mock harness (the boot-stage pattern) — so this
+        // pins their SIGNATURES via fn-pointer coercion: a signature drift fails to compile, and the
+        // reference keeps each item USED in the TEST build (where the module's `not(test)` dead-code expect
+        // is OFF). [Build-Session-Entscheidung: P2.54]
+        #[test]
+        fn launch_funnel_items_have_their_spec_signatures() {
+            let _intake: fn(&AppHandle, Vec<PathBuf>, IntakeOrigin) = forward_launch_intake;
+            let _argv: fn(&AppHandle, &[String], &str, IntakeOrigin) = forward_launch_argv;
+            let _busy: fn(&AppHandle) -> bool = converter_is_busy;
+            let _ready: fn(&AppHandle) -> bool = frontend_ready;
+            let _buffer: fn(&AppHandle, Vec<PathBuf>, IntakeOrigin) = buffer_pending_intake;
+        }
+
+        // §6.4.1 unit (G15): the §7.8.1 funnel DISPATCHES via the pure P2.40 `intake_disposition` rule
+        // (resolving both predicates against the AppHandle), NOT a re-inlined copy of the illustrative
+        // §7.8.1 if/else — the DRY property the owner confirmed. Scan the production source (the shared
+        // `boot_invariants` helper, truncated before the FIRST `cfg(test)` module = launch_intake's own
+        // tests, so the needle can never self-match this file); the call substring does not appear in
+        // `intake_disposition`'s own `fn` definition. Needle `concat!`-assembled (the established
+        // self-match-avoidance). [Build-Session-Entscheidung: P2.54]
+        #[test]
+        fn funnel_dispatches_via_the_pure_disposition_rule() {
+            let src = crate::boot_invariants::production_boot_source();
+            let dispatch = concat!("intake_disposition(converter_is_", "busy(app)");
+            assert!(
+                src.contains(dispatch),
+                "§7.8.1: forward_launch_intake must dispatch via the pure intake_disposition rule (P2.40), \
+                 resolving the predicates against the AppHandle — not a re-inlined if/else"
+            );
+        }
+
+        // §6.4.1 unit (G15): the §7.8.1 `parse_path_args` classifier (P2.54.1) — argv[0] skipped, relative
+        // paths cwd-resolved. Platform-robust: relative tokens only (PathBuf join is deterministic per
+        // platform), so the assertion holds identically on Win/Linux/macOS.
+        #[test]
+        fn parse_path_args_skips_argv0_and_resolves_relative() {
+            let cwd = "base-dir";
+            let argv = vec![
+                "convertia".to_string(),
+                "a.txt".to_string(),
+                "sub/b.png".to_string(),
+            ];
+            assert_eq!(
+                parse_path_args(&argv, cwd),
+                vec![
+                    PathBuf::from(cwd).join("a.txt"),
+                    PathBuf::from(cwd).join("sub/b.png"),
+                ],
+                "§7.8.1: argv[0] is skipped and relative paths resolve against the launching cwd"
+            );
+        }
+
+        // §6.4.1 unit (G15): the §7.5.3 `--verbose` diagnostic switch and any `-`/`--`-prefixed token are
+        // launch SWITCHES, never ingestable paths — stripped before the cwd resolution.
+        #[test]
+        fn parse_path_args_strips_launch_switches() {
+            let cwd = "base";
+            let argv = vec![
+                "convertia".to_string(),
+                "--verbose".to_string(),
+                "-x".to_string(),
+                "keep.txt".to_string(),
+            ];
+            assert_eq!(
+                parse_path_args(&argv, cwd),
+                vec![PathBuf::from(cwd).join("keep.txt")],
+                "§7.5.3/§7.8.1: --verbose and any -/-- launch switch is stripped, never an ingestable path"
+            );
+        }
+
+        // §6.4.1 unit (G15): empty / argv0-only / flags-only inputs yield NO paths (no panic, no spurious
+        // path). The empty-argv case also exercises `skip(1)` on an empty slice (no underflow).
+        #[test]
+        fn parse_path_args_yields_no_paths_for_empty_or_flags_only() {
+            let cwd = "base";
+            let empty: Vec<String> = Vec::new();
+            assert!(
+                parse_path_args(&empty, cwd).is_empty(),
+                "empty argv → no paths"
+            );
+            assert!(
+                parse_path_args(&["convertia".to_string()], cwd).is_empty(),
+                "argv0-only → no paths (the program path is never ingested)"
+            );
+            let flags_only = vec!["convertia".to_string(), "--verbose".to_string()];
+            assert!(
+                parse_path_args(&flags_only, cwd).is_empty(),
+                "flags-only → no paths"
+            );
+        }
+
+        // §6.4.1 unit (G15): an absolute launch path is kept as-is (NOT joined onto cwd); the relative case
+        // is covered above. `PathBuf::is_absolute` is platform-aware, so the absolute fixture is
+        // `cfg!`-selected to a native absolute path for the build target.
+        #[test]
+        fn parse_path_args_keeps_absolute_paths_unjoined() {
+            let cwd = "base";
+            let abs = if cfg!(windows) {
+                "C:\\abs\\f.txt"
+            } else {
+                "/abs/f.txt"
+            };
+            let argv = vec!["convertia".to_string(), abs.to_string()];
+            assert_eq!(
+                parse_path_args(&argv, cwd),
+                vec![PathBuf::from(abs)],
+                "§7.8.1: an absolute launch path is kept as-is, never joined onto cwd"
+            );
         }
     }
 }
@@ -383,23 +609,51 @@ mod boot_invariants {
     //! guard (cargo-test plane) for the Lane-B-only egress gate (§2.11.4 / §7.2.2), pairing with the
     //! P0 G29 first-party no-socket rule (g) at the source plane. [Build-Session-Entscheidung: P1.15.1]
 
-    /// The production boot source = this binary's `main.rs` up to the first `#[cfg(test)]` boundary, so
-    /// sentinel needles declared in a test module can never self-match the `include_str!` scan.
-    /// `pub(super)`: SHARED with the §7.3.1 `window_model` no-programmatic-window-builder scan (P1.16).
+    /// The production prefix = this binary's `main.rs` up to the FIRST `cfg(test)` module, so sentinel
+    /// needles declared in a test module can never self-match the `include_str!` scan. NOTE: since P2.40
+    /// that first `cfg(test)` module is `launch_intake`'s — BEFORE `main()` — so this prefix does NOT reach
+    /// `main()`; a scan needing `main()` uses `all_production_source()` (below). `pub(super)`: SHARED with
+    /// the §7.3.1 `window_model` scan (P1.16) + `all_production_source()`.
     pub(super) fn production_boot_source() -> &'static str {
         let full = include_str!("main.rs");
-        // Take the production prefix before this module's `#[cfg(test)]` attribute (the first such
-        // marker), or the whole file if absent. `split_once` avoids the impossible-`None` dead
-        // fallback an `unwrap_or` would carry (`str::split(..).next()` is always `Some`).
+        // Take the production prefix before the FIRST `cfg(test)` marker in the file, or the whole file if
+        // absent. `split_once` avoids the impossible-`None` dead fallback an `unwrap_or` would carry
+        // (`str::split(..).next()` is always `Some`).
         full.split_once("#[cfg(test)]")
             .map_or(full, |(prefix, _)| prefix)
     }
 
+    /// `main()`'s body — from the `main()` definition to the FIRST `cfg(test)` module after it (this one).
+    /// `production_boot_source()` stops inside `launch_intake` BEFORE `main()` (P2.40), so it never reaches
+    /// `main()`'s Builder chain / §7.2.1 startup spine; this slice does. `pub(super)`: SHARED with
+    /// `all_production_source()` + the §7.1.1 `single_instance_lock_scope` registration scan (P2.51).
+    /// [Build-Session-Entscheidung: P2.54]
+    pub(super) fn production_main_body() -> &'static str {
+        let full = include_str!("main.rs");
+        let after_main = full.split_once("fn main()").map_or("", |(_, rest)| rest);
+        after_main
+            .split_once("#[cfg(test)]")
+            .map_or(after_main, |(prefix, _)| prefix)
+    }
+
+    /// ALL production code a source-scan invariant must cover, every `cfg(test)` module excluded so
+    /// sentinel needles never self-match: the pre-test-module prefix PLUS `main()`'s body. Needed because
+    /// `production_boot_source()` alone stops at `launch_intake`'s test module — BEFORE `main()` — so a scan
+    /// over it is blind to `main()`'s Builder chain / startup spine (every item after `main()` is a
+    /// `cfg(test)` module, so prefix + main-body = all production code). [Build-Session-Entscheidung: P2.54]
+    /// — fixes a pre-existing P2.40 blindness in the `main()`-targeting scans (`boot_path_opens_no_socket`,
+    /// `no_programmatic_window_builder`, `builder_registers_no_updater_plugin`), which scanned only the prefix.
+    pub(super) fn all_production_source() -> String {
+        format!("{}\n{}", production_boot_source(), production_main_body())
+    }
+
     // §7.2.2 / §6.4.1 unit (G15): a structural assertion that the production boot path references no
-    // network primitive — the cargo-test companion to the G29 source rule (g), scoped to §7.2.2.
+    // network primitive — the cargo-test companion to the G29 source rule (g), scoped to §7.2.2. Scans
+    // `all_production_source()` (prefix + `main()` body) because the §7.2.1 startup spine lives in `main()`,
+    // which `production_boot_source()` alone does not reach (P2.54 — fixes the pre-existing P2.40 blindness).
     #[test]
     fn boot_path_opens_no_socket() {
-        let src = production_boot_source();
+        let src = all_production_source();
         // Needles assembled by `concat!` so the forbidden substrings never appear literally in this
         // test file (which `include_str!` would otherwise self-match through the production scan).
         let net_primitives = [
@@ -929,13 +1183,14 @@ mod window_model {
     }
 
     // §7.3.1: the single window is "created by Tauri at startup" from config — the core adds NO
-    // programmatic window builder. Scan the production boot source (the shared `boot_invariants` helper,
-    // truncated at the first `#[cfg(test)]`, so these needles can never self-match) for the Tauri v2
-    // programmatic window-creation constructors. Needles assembled by `concat!` for the same
-    // self-match-avoidance as the `boot_invariants` net-primitive scan.
+    // programmatic window builder. Scan `all_production_source()` (the shared `boot_invariants` helper:
+    // the pre-test-module prefix + `main()`'s body, every test module excluded so these needles can never
+    // self-match) for the Tauri v2 programmatic window-creation constructors. `main()`'s Builder/setup is
+    // where such a call would live, and `production_boot_source()` alone does not reach it (P2.54 — fixes
+    // the pre-existing P2.40 blindness). Needles `concat!`-assembled for self-match-avoidance.
     #[test]
     fn no_programmatic_window_builder() {
-        let src = super::boot_invariants::production_boot_source();
+        let src = super::boot_invariants::all_production_source();
         let builder_ctors = [
             concat!("Window", "Builder"), // WebviewWindowBuilder / WindowBuilder (the builder types)
             concat!("Webview", "Builder"), // WebviewBuilder (the lower-level builder type)
@@ -983,14 +1238,15 @@ mod no_updater_posture {
         );
     }
 
-    // §7.6.1 / §6.4.1 unit (G15): the Builder registers no updater plugin. Scan the production boot
-    // source (the shared `boot_invariants` helper, truncated at the first `#[cfg(test)]`, so this
-    // needle can never self-match) for any updater plugin reference — `tauri_plugin_updater` contains
-    // `plugin_updater`, so the one needle catches the crate path and any `.plugin(...)` registration.
-    // Needle via `concat!` (the established self-match-avoidance).
+    // §7.6.1 / §6.4.1 unit (G15): the Builder registers no updater plugin. Scan `all_production_source()`
+    // (the shared `boot_invariants` helper: the pre-test-module prefix + `main()`'s body, every test module
+    // excluded so this needle can never self-match) for any updater plugin reference — `tauri_plugin_updater`
+    // contains `plugin_updater`, so the one needle catches the crate path and any `.plugin(...)` registration.
+    // The `.plugin(...)` chain lives in `main()`, which `production_boot_source()` alone does not reach (P2.54
+    // — fixes the pre-existing P2.40 blindness). Needle via `concat!` (self-match-avoidance).
     #[test]
     fn builder_registers_no_updater_plugin() {
-        let src = super::boot_invariants::production_boot_source();
+        let src = super::boot_invariants::all_production_source();
         let needle = concat!("plugin_", "updater");
         assert!(
             !src.contains(needle),
@@ -1076,29 +1332,16 @@ mod single_instance_lock_scope {
         );
     }
 
-    /// The production `main()` body — from the `fn main()` definition to the FIRST `#[cfg(test)]` module
-    /// after it (`boot_invariants`). `production_boot_source()` truncates at the FIRST `#[cfg(test)]` in the
-    /// whole file, which is inside `mod launch_intake` BEFORE `main()`, so it never reaches the
-    /// single-instance registration site; this slice does. Excluding every test module also means the
-    /// `registration_site_documents_the_per_platform_scope` needles can never self-match this file (the scan
-    /// is NOT blind to a dropped production comment — the same property `production_boot_source()` gives the
-    /// other source-scan tests).
-    fn production_main_body() -> &'static str {
-        let full = include_str!("main.rs");
-        let after_main = full.split_once("fn main()").map_or("", |(_, rest)| rest);
-        after_main
-            .split_once("#[cfg(test)]")
-            .map_or(after_main, |(prefix, _)| prefix)
-    }
-
     // §6.4.1 unit (G15): the production registration site (main()'s Builder chain) DOCUMENTS the per-platform
     // lock scope in-core — the §7.1.1 / T13 note is this box's deliverable, so a source scan pins it cannot
-    // silently drop. Scans `production_main_body()` (main() only, every test module excluded), so these
-    // needles — `concat!`-assembled for the same self-match-avoidance as `boot_invariants` — are never
-    // matched against this test file: a deleted production comment reddens here, it does not pass blindly.
+    // silently drop. Scans the shared `crate::boot_invariants::production_main_body()` (main() only, every
+    // test module excluded — the `production_main_body` helper was promoted to `boot_invariants` at P2.54 so
+    // the `main()`-targeting scans share one source), so these needles — `concat!`-assembled for the same
+    // self-match-avoidance as `boot_invariants` — are never matched against this test file: a deleted
+    // production comment reddens here, it does not pass blindly.
     #[test]
     fn registration_site_documents_the_per_platform_scope() {
-        let src = production_main_body();
+        let src = crate::boot_invariants::production_main_body();
         let needles = [
             concat!("T", "13"), // the §0.11 accepted-limitation threat class (macOS machine-global)
             concat!("machine", "-global"), // the macOS scope characterisation
