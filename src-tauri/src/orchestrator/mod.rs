@@ -1083,7 +1083,7 @@ pub fn ingest(paths: Vec<PathBuf>, origin: IntakeOrigin) -> CollectedSet {
 /// skeleton); P2.64 authors it as the named step-1 primitive — the sanctioned compile-time interface-shell
 /// (CLAUDE §5): a complete, tested unit whose only pending step is its spine wiring.
 ///
-/// **§1.1 walk rules this box owns (recursion ONLY):**
+/// **§1.1 walk rules owned here (recursion P2.64 + the hidden/system filter P2.65):**
 /// - **Depth-first** traversal (`walkdir`, §0.8) — the §1.9 queue / §2.7 open-folder order reads it.
 /// - **Symlinked directories are NOT traversed** (`follow_links(false)`) — loop-safety against a symlink
 ///   cycle (the existing T7 link-redirection class); a discovered symlinked DIR is neither descended NOR a
@@ -1093,11 +1093,18 @@ pub fn ingest(paths: Vec<PathBuf>, origin: IntakeOrigin) -> CollectedSet {
 ///   "deterministic collected/traversal order" + §2.5 re-run equivalence hold across platforms (test-strategy
 ///   §7 determinism). [Build-Session-Entscheidung: P2.64 — sort the walk; walkdir's native order is
 ///   filesystem-dependent, which would make the §1.9 queue order non-reproducible.]
+/// - **Hidden/system files skipped** (`filter_entry`, P2.65) — a DISCOVERED entry that is a dotfile (name
+///   begins `.`, all platforms), one of the fixed sentinels (`.DS_Store`/`Thumbs.db`/`desktop.ini`), or
+///   carries a Windows hidden/system file-attribute is pruned: a hidden DIRECTORY is not descended AND a
+///   hidden FILE is skipped (§1.1, SSOT *How It Feels* 2). The dropped ROOT (`depth() == 0`, a hidden file OR
+///   folder dropped directly) is EXEMPT — the user chose it explicitly, and the §1.1 ignore-list governs
+///   RECURSION (a directly-dropped hidden folder is still expanded; only its DISCOVERED entries are filtered).
+///   See `name_is_hidden_or_sentinel` + `windows_attr_hidden`.
 ///
-/// **Deliberately NOT owned here (sibling §1.1 boxes):** the hidden/system-file ignore filter (P2.65 — a
-/// dotfile is still a candidate here), the dropped-root retention for §2.7 (P2.66), the per-entry
-/// read-failure → `SkippedItem` accounting (P2.67 — a per-entry error is silently skipped here, the skip ROW
-/// is P2.67's), the fatal-walk-root stop (P2.68), and the `CollectingId` cooperative-cancel poll (P2.69).
+/// **Deliberately NOT owned here (sibling §1.1 boxes):** the dropped-root retention for §2.7 (P2.66), the
+/// per-entry read-failure → `SkippedItem` accounting (P2.67 — a per-entry error is silently skipped here, the
+/// skip ROW is P2.67's), the fatal-walk-root stop (P2.68), and the `CollectingId` cooperative-cancel poll
+/// (P2.69).
 ///
 /// [Build-Session-Entscheidung: P2.64 — a symlink's TARGET type is classified by one link-following
 /// `std::fs::metadata` stat (a type check, NOT a content read and NOT §2.3 identity resolution): a
@@ -1120,8 +1127,16 @@ fn walk_intake_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     for root in roots {
         // `follow_links(false)`: a symlinked subdirectory is never descended (loop-safety). `sort_by_file_name`:
-        // a deterministic per-directory order (§1.9/§2.5). A dropped FILE root walks as a single entry.
-        for entry in WalkDir::new(root).follow_links(false).sort_by_file_name() {
+        // a deterministic per-directory order (§1.9/§2.5). `filter_entry` (P2.65): a §1.1 hidden/system
+        // DISCOVERED entry is pruned — a hidden DIR is not descended AND a hidden FILE is skipped — but the
+        // dropped ROOT (`depth() == 0`) is EXEMPT (the user chose it explicitly; the ignore-list governs
+        // RECURSION, §1.1). A dropped FILE root walks as a single entry.
+        let walk = WalkDir::new(root)
+            .follow_links(false)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_entry(|entry| entry.depth() == 0 || !entry_is_hidden_or_system(entry));
+        for entry in walk {
             // A per-entry read error (denied dir, vanished/dangling entry) skips and CONTINUES — one bad entry
             // never aborts the ingest (§1.1); its `SkippedItem` accounting is P2.67, the fatal-root split P2.68.
             let Ok(entry) = entry else { continue };
@@ -1142,14 +1157,67 @@ fn walk_intake_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
     candidates
 }
 
+/// The §1.1 fixed hidden/system-file sentinels (P2.65) — the NON-dotfile platform junk a folder walk skips
+/// by NAME. Dotfiles (any name beginning `.`, all platforms) are matched by rule, not by this list;
+/// `.DS_Store` is itself a dotfile but kept here for spec fidelity (§1.1 enumerates it). A FIXED constant —
+/// not user-config in v1 (§1.1 `[REC]`).
+const IGNORED_SENTINEL_NAMES: &[&str] = &[".DS_Store", "Thumbs.db", "desktop.ini"];
+
+/// Whether a walked entry's NAME is hidden/system per §1.1 (P2.65): a **dotfile** (its name begins `.`, all
+/// platforms) or one of the fixed [`IGNORED_SENTINEL_NAMES`] (case-insensitive — Windows filesystems
+/// case-fold). The leading-`.` test reads the OS-encoded first byte (`.` is ASCII, a single byte in
+/// UTF-8/WTF-8) so a non-UTF-8 name classifies without a lossy round-trip; the sentinel match lossily folds
+/// case (the sentinels are pure ASCII, so a real match is exact and a non-UTF-8 name simply never equals one).
+fn name_is_hidden_or_sentinel(name: &std::ffi::OsStr) -> bool {
+    if name.as_encoded_bytes().first() == Some(&b'.') {
+        return true;
+    }
+    let lossy = name.to_string_lossy();
+    IGNORED_SENTINEL_NAMES
+        .iter()
+        .any(|sentinel| lossy.eq_ignore_ascii_case(sentinel))
+}
+
+/// Whether a DISCOVERED walked entry is hidden/system per §1.1 (P2.65) — by NAME (cross-platform) OR, on
+/// Windows, by the hidden/system file-ATTRIBUTE. The dropped ROOT is exempted by the caller (the user chose
+/// it explicitly); this classifies discovered entries so a hidden directory is pruned (not descended) and a
+/// hidden file is skipped.
+fn entry_is_hidden_or_system(entry: &walkdir::DirEntry) -> bool {
+    name_is_hidden_or_sentinel(entry.file_name()) || windows_attr_hidden(entry)
+}
+
+/// The Windows hidden/system file-ATTRIBUTE leg of [`entry_is_hidden_or_system`] (§1.1, P2.65) — reads the
+/// entry's own `file_attributes()` (`walkdir` honours `follow_links(false)`, so it is the entry's word, not a
+/// target's) and tests the HIDDEN/SYSTEM bits. Thin platform glue (cf. the §2.14/§7.7 platform shims); a
+/// metadata error is treated as not-attribute-hidden (the entry is still classified by name above).
+#[cfg(windows)]
+fn windows_attr_hidden(entry: &walkdir::DirEntry) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x0000_0002;
+    const FILE_ATTRIBUTE_SYSTEM: u32 = 0x0000_0004;
+    entry
+        .metadata()
+        .map(|meta| meta.file_attributes() & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) != 0)
+        .unwrap_or(false)
+}
+
+/// Non-Windows: there is no hidden/system file-attribute, so the NAME rule (dotfiles + sentinels) is the whole
+/// §1.1 hidden-file policy — this is the constant-false OR-leg of [`entry_is_hidden_or_system`].
+#[cfg(not(windows))]
+fn windows_attr_hidden(_entry: &walkdir::DirEntry) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod walk_tests {
-    //! §6.4.1 unit (G15) for the §2.4.1 freeze-spine step-1 walk (P2.64), run against a REAL temp filesystem
-    //! (test-strategy §0.1: never mock the thing under test — the recursion IS what P2.64 proves, so it walks
-    //! real directories, never an in-memory fake). Covers: a dropped file root, a flat dir, depth-first
-    //! recursion across nested dirs, deterministic sorted order, an empty dir, multiple roots, the scope
-    //! boundary (hidden files NOT yet filtered — that is P2.65), and (unix) the symlinked-dir-not-traversed +
-    //! symlinked-file-IS-a-candidate rules. [Build-Session-Entscheidung: P2.64]
+    //! §6.4.1 unit (G15) for the §2.4.1 freeze-spine step-1 walk (P2.64 recursion + P2.65 hidden/system
+    //! filter), run against a REAL temp filesystem (test-strategy §0.1: never mock the thing under test — the
+    //! recursion + filtering ARE what these boxes prove, so they walk real directories, never an in-memory
+    //! fake). Covers: a dropped file root, a flat dir, depth-first recursion across nested dirs, deterministic
+    //! sorted order, an empty dir, multiple roots, the §1.1 hidden/system filter (dotfiles + the fixed
+    //! sentinels filtered, a hidden directory not descended, the directly-dropped-root exemption — P2.65), and
+    //! (unix) the symlinked-dir-not-traversed + symlinked-file-IS-a-candidate rules.
+    //! [Build-Session-Entscheidung: P2.64/P2.65]
     use super::*;
     use std::fs;
     use tempfile::tempdir;
@@ -1269,19 +1337,130 @@ mod walk_tests {
         );
     }
 
-    // Scope boundary (P2.64 ⊥ P2.65): P2.64 owns recursion ONLY, so a hidden/dotfile is STILL a candidate
-    // here — the §1.1 hidden/system-file ignore filter is the sibling box P2.65. This pins the boundary so
-    // P2.65's filter is a visible, justified addition (a `[Test-Change]` when it lands), not an assumed
-    // already-present behaviour. [Build-Session-Entscheidung: P2.64]
+    // §1.1 (P2.65): a DISCOVERED hidden file (a dotfile) is now FILTERED from the walk — the §1.1 ignore
+    // constant is active. The dotfile sits in `sub/` so it is a discovered entry (not the exempt root); a
+    // normal sibling in the same dir is still collected, proving the filter is selective, not a blanket drop.
+    // [Test-Change: P2.65 — old-obsolete+new-correct, §1.1] the P2.64 `walk_does_not_yet_filter_hidden_files`
+    // expectation (a dotfile IS a candidate) is OBSOLETE: it deliberately pinned the P2.64<->P2.65 scope
+    // boundary while the ignore filter was unbuilt. P2.65 activates the §1.1 fixed ignore constant, so the new
+    // correct expectation — verified by reading back the walk result (the dotfile absent, the normal sibling
+    // present) — is that a discovered dotfile is filtered.
     #[test]
-    fn walk_does_not_yet_filter_hidden_files() {
+    fn walk_filters_a_discovered_hidden_dotfile() {
         let tmp = tempdir().expect("tempdir");
-        let dot = touch(tmp.path(), ".hidden.csv");
+        let dot = touch(tmp.path(), "sub/.hidden.csv");
+        let normal = touch(tmp.path(), "sub/data.csv");
         let got = walk_intake_roots(&[tmp.path().to_path_buf()]);
         assert!(
-            got.contains(&dot),
-            "P2.64 owns recursion only — the hidden/system-file ignore filter is P2.65"
+            !got.contains(&dot),
+            "§1.1: a discovered dotfile is filtered (the P2.65 ignore constant)"
         );
+        assert!(
+            got.contains(&normal),
+            "a normal sibling file is still collected"
+        );
+    }
+
+    // §1.1 (P2.65): the fixed NON-dotfile platform sentinels (`.DS_Store` is also a dotfile, but
+    // `Thumbs.db`/`desktop.ini` are not) are filtered by NAME, case-insensitively; a normal file is kept.
+    #[test]
+    fn walk_filters_the_platform_sentinels() {
+        let tmp = tempdir().expect("tempdir");
+        let thumbs = touch(tmp.path(), "Thumbs.db");
+        let desktop = touch(tmp.path(), "DESKTOP.INI"); // case-insensitive match
+        let ds_store = touch(tmp.path(), ".DS_Store");
+        let keep = touch(tmp.path(), "report.csv");
+        let got = walk_intake_roots(&[tmp.path().to_path_buf()]);
+        for junk in [&thumbs, &desktop, &ds_store] {
+            assert!(
+                !got.contains(junk),
+                "§1.1: the platform sentinel is filtered: {junk:?}"
+            );
+        }
+        assert_eq!(
+            got,
+            vec![keep],
+            "only the normal file survives the §1.1 sentinel filter"
+        );
+    }
+
+    // §1.1 (P2.65): a hidden DIRECTORY is PRUNED — `filter_entry` declines to descend it, so its contents
+    // never reach the candidate list (a hidden dir like `.git` is junk, never walked); a normal dir IS walked.
+    #[test]
+    fn walk_does_not_descend_a_hidden_directory() {
+        let tmp = tempdir().expect("tempdir");
+        let buried = touch(tmp.path(), ".git/config.csv"); // inside a hidden dir — must be pruned
+        let visible = touch(tmp.path(), "data/keep.csv");
+        let got = walk_intake_roots(&[tmp.path().to_path_buf()]);
+        assert!(
+            !got.contains(&buried),
+            "§1.1: a hidden directory is not descended, so its files never become candidates"
+        );
+        assert_eq!(
+            got,
+            vec![visible],
+            "the file under the normal directory is collected"
+        );
+    }
+
+    // §1.1 (P2.65): the dropped ROOT is EXEMPT from the ignore filter — a user who explicitly drops a hidden
+    // file gets it converted (the ignore-list governs RECURSION, not the explicit choice). depth()==0 exempt.
+    // [Build-Session-Entscheidung: P2.65]
+    #[test]
+    fn walk_keeps_a_directly_dropped_hidden_file_root() {
+        let tmp = tempdir().expect("tempdir");
+        let dropped = touch(tmp.path(), ".hidden.csv");
+        let got = walk_intake_roots(std::slice::from_ref(&dropped));
+        assert_eq!(
+            got,
+            vec![dropped],
+            "§1.1: a directly-dropped hidden file ROOT is kept (the user chose it; depth-0 exemption)"
+        );
+    }
+
+    // §1.1 (P2.65): the depth-0 ROOT exemption applies to a directly-dropped hidden DIRECTORY too — a user who
+    // drops `.hidden_dir/` explicitly gets its (non-hidden) contents walked; the ignore-list governs the
+    // DISCOVERED entries inside, not the explicit root choice. Completes the file-OR-folder root exemption.
+    // [Build-Session-Entscheidung: P2.65]
+    #[test]
+    fn walk_descends_a_directly_dropped_hidden_dir_root() {
+        let tmp = tempdir().expect("tempdir");
+        let hidden_root = tmp.path().join(".hidden_dir");
+        let keep = touch(&hidden_root, "keep.csv");
+        let got = walk_intake_roots(std::slice::from_ref(&hidden_root));
+        assert_eq!(
+            got,
+            vec![keep],
+            "§1.1: a directly-dropped hidden DIRECTORY root is descended (depth-0 exemption); its normal \
+             contents are walked"
+        );
+    }
+
+    // §6.4.1: the pure §1.1 name classifier (P2.65) — dotfiles + the fixed sentinels (case-insensitive) are
+    // hidden; a normal name is not. Cross-platform (the Windows file-ATTRIBUTE leg is thin platform glue,
+    // exercised on a real Windows host).
+    #[test]
+    fn name_is_hidden_or_sentinel_classifies_dotfiles_and_sentinels() {
+        use std::ffi::OsStr;
+        for hidden in [
+            ".hidden.csv",
+            ".DS_Store",
+            ".git",
+            "Thumbs.db",
+            "thumbs.DB",
+            "desktop.ini",
+        ] {
+            assert!(
+                name_is_hidden_or_sentinel(OsStr::new(hidden)),
+                "§1.1: `{hidden}` is hidden/system"
+            );
+        }
+        for visible in ["report.csv", "data.txt", "thumbs.csv", "my.desktop.ini.csv"] {
+            assert!(
+                !name_is_hidden_or_sentinel(OsStr::new(visible)),
+                "§1.1: `{visible}` is a normal name"
+            );
+        }
     }
 
     // §1.1 (unix): a symlinked DIRECTORY is NOT traversed (loop-safety, T7), while a symlinked FILE IS a
