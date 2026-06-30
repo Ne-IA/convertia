@@ -269,7 +269,7 @@
   needs: P2.64, P2.45
 - [x] **P2.70** [RUST] Implement the C2a native-dialog-phase rules — async/`spawn_blocking` picker (never `blocking_pick_file` on a Tokio worker), token registered before dialog opens · §1.1 §0.4.1
   needs: P2.69, P2.23
-- [ ] **P2.71** [RUST] Implement the C2a token-drop-on-EVERY-exit-branch rule (cancelled-dialog → `Empty`, C13-tripped → `Empty`, normal walk-completes) · §1.1 §0.4.4
+- [x] **P2.71** [RUST] Implement the C2a token-drop-on-EVERY-exit-branch rule (cancelled-dialog → `Empty`, C13-tripped → `Empty`, normal walk-completes) · §1.1 §0.4.4
   needs: P2.70
 - [ ] **P2.72** [RUST] Implement the freeze idle-vs-in-flight gating — IDLE starts a new frozen set; in-flight refuses-busy (never mutate/merge a frozen set) · §1.1 §7.1.1 §2.4
   needs: P2.62, P2.55
