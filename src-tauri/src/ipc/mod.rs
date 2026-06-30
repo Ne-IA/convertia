@@ -175,9 +175,10 @@ mod command_surface {
     // [Test-Change: P2.35 — old-obsolete+new-correct, §0.4.1] old: this test invoked the bare-`()` C13
     // `cancel_ingest` shell; new (verified by read-back — C13 now takes a typed `collectingId` arg and returns
     // `Result<(), IpcError>`, so the no-arg `()` invocation is obsolete and would no longer compile): C13's
-    // typed contract is exercised by `intake::c13_contract::c13_cancel_ingest_contract_is_invocable_and_typed`
-    // (asserting the genuine idempotent no-op-cancel `Ok(())`), so its line moves there. This test now covers
-    // the 1 still-bare C12 shell.
+    // typed contract is exercised in the `intake::c13_contract` module (since P2.71 the AppHandle-bound handler
+    // trips the §0.4.4 token via `IngestRegistry::cancel`, the §1.1a boot-glue split — an end-to-end
+    // token-trip→`Empty` test + a handler source-scan), so its line moves there. This test now covers the 1
+    // still-bare C12 shell.
     #[test]
     fn every_registered_command_shell_is_invocable() {
         block_on(super::system::get_engine_health()); // C12

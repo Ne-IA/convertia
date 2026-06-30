@@ -111,18 +111,21 @@ export const commands = {
 	 *  - `collecting_id` — the §0.4.4 frontend-generated ingest-scoped cancel handle (registered by C1/C2a at
 	 *    handler entry, P2.45) whose token to trip.
 	 *
-	 *  [Build-Session-Entscheidung: P2.35] **Shell returns `Ok(())` — the genuine idempotent no-op-cancel
-	 *  outcome, the C7 `cancel_run` "zero-valued result" branch of the interface-shell pattern, NOT the
-	 *  C3/C4/C5/C6/C8 `Err(InternalError)` branch.** C13 is the ingest-side mirror of C7: an idempotent
-	 *  fire-and-forget side-effect that trips a token and returns. Its success type `()` has a zero value, and a
-	 *  cancel of a non-existent / already-finished ingest is the desired "not collecting" end-state (§1.1) — so
-	 *  tripping *no* token (the shell has no §0.4.4 `CollectingId` registry — P2.45 — yet) is genuinely `Ok(())`,
-	 *  NOT a fabricated success: it claims nothing positive happened (unlike a fabricated C6 `Ok(RunId)`, which
-	 *  would lie that a run started). The cancel *effect* is observed by C1/C2a returning the §0.6 zero-collection
-	 *  `CollectedSet::Empty` once its token is tripped (§1.1), never C13's return. The real registry resolve +
-	 *  `.cancel()` wiring lands at P2.45 (the `CollectingId` → ingest-scoped token registry) / P2.69 (the
-	 *  cooperative ingest-cancellation poll) / P2.71 (the C2a token-drop-on-every-exit-branch); the contract is
-	 *  unchanged by it (cancel stays `Ok(())`).
+	 *  [Build-Session-Entscheidung: P2.71] **The `.cancel()` trip is now WIRED** (no longer the P2.35 `Ok(())`
+	 *  shell). The handler binds an `AppHandle` (Tauri-injected — the §0.4.1 wire signature stays
+	 *  `{ collectingId }`) to reach the §0.4.4 `IngestRegistry` (`.manage`d in main, P2.70) and **trips the
+	 *  ingest-scoped token** via `IngestRegistry::cancel(collecting_id)`. The cancel EFFECT is then observed by
+	 *  the in-flight ingest — the §1.1 walk-loop poll (P2.69) returns `WalkAbort::Cancelled`, or the C2a
+	 *  post-dialog check (P2.70) reads the tripped token via its RAII guard — each yielding the §0.6
+	 *  zero-collection `CollectedSet::Empty` (§1.1); C13's own return never carries the effect. **Idempotent
+	 *  `Ok(())` `[DECIDED]`:** a cancel of an unknown / already-finished ingest finds no live token
+	 *  (`IngestRegistry::cancel` returns `false`) — the genuine "not collecting" end-state (§1.1), the C7
+	 *  `cancel_run` mirror — so the result is ALWAYS `Ok(())` (the §0.4.1 C13 idempotent contract), NEVER an
+	 *  `Err`. This handler is AppHandle-coupled boot-glue (§1.1a; G28 signature-exempt): the trip LOGIC is
+	 *  `IngestRegistry::cancel` (unit-tested at P2.45, + the end-to-end token-trip→guard→`Empty` chain proven in
+	 *  the C13 tests here), the WIRING source-scan-pinned. `app.state::<…>()` is infallible by construction (the
+	 *  registry is `.manage`d in main()'s Builder chain before the event loop, P2.70 — no panic under the
+	 *  `crate::ipc` clippy::panic deny).
 	 */
 	cancelIngest: (collectingId: CollectingId) => __TAURI_INVOKE<null>("cancel_ingest", { collectingId }),
 	/**
