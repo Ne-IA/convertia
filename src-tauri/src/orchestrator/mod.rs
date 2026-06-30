@@ -1076,6 +1076,29 @@ pub fn ingest(paths: Vec<PathBuf>, origin: IntakeOrigin) -> CollectedSet {
     }
 }
 
+/// The §2.4.1 freeze-spine step-1 intake-walk result (P2.66): the flat candidate file list
+/// ([`walk_intake_roots`], P2.64) PLUS the **dropped root(s) retained VERBATIM** for §2.7
+/// (relative-subtree re-creation + the "open folder" common-root anchor). §2.7 owns the common-root /
+/// relative-subtree COMPUTATION; this is plain §1.1 retention — the roots are carried through the walk so
+/// the P3.49 ingest funnel can freeze them onto `CollectedSet::Single.roots` (§0.6).
+/// [Build-Session-Entscheidung: P2.66]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P2.66 retains the dropped roots on the §2.4.1 freeze-spine step-1 result for §2.7; \
+                  produced by walk_intake_roots, frozen onto CollectedSet::Single.roots by the ingest \
+                  funnel at P3.49 — dead in the production build pending that wiring, read by the in-module \
+                  walk_tests below."
+    )
+)]
+struct IntakeWalk {
+    /// The flat candidate file paths (§1.1), depth-first deterministic order ([`walk_intake_roots`]).
+    files: Vec<PathBuf>,
+    /// The dropped root(s) retained verbatim (§1.1/§2.7) — the §2.7 subtree / "open folder" anchor.
+    roots: Vec<PathBuf>,
+}
+
 /// **Step 1 of the §2.4.1 freeze spine (P2.64)** — expand the dropped/picked intake roots into a flat,
 /// **depth-first** list of candidate file paths (the input the §1.2 detection stage classifies). The WebView
 /// cannot enumerate a directory (§0.4), so a dropped/picked FOLDER is walked recursively in Rust; a dropped
@@ -1101,7 +1124,9 @@ pub fn ingest(paths: Vec<PathBuf>, origin: IntakeOrigin) -> CollectedSet {
 ///   RECURSION (a directly-dropped hidden folder is still expanded; only its DISCOVERED entries are filtered).
 ///   See `name_is_hidden_or_sentinel` + `windows_attr_hidden`.
 ///
-/// **Deliberately NOT owned here (sibling §1.1 boxes):** the dropped-root retention for §2.7 (P2.66), the
+/// **Owned here additionally (P2.66):** the dropped root(s) are RETAINED verbatim on the returned
+/// [`IntakeWalk`] for §2.7 (relative-subtree re-creation + the "open folder" common-root anchor — §2.7 owns
+/// that computation; this is plain retention). **Deliberately NOT owned here (sibling §1.1 boxes):** the
 /// per-entry read-failure → `SkippedItem` accounting (P2.67 — a per-entry error is silently skipped here, the
 /// skip ROW is P2.67's), the fatal-walk-root stop (P2.68), and the `CollectingId` cooperative-cancel poll
 /// (P2.69).
@@ -1123,7 +1148,7 @@ pub fn ingest(paths: Vec<PathBuf>, origin: IntakeOrigin) -> CollectedSet {
                   carried (P2.62) before P2.63 consumed it."
     )
 )]
-fn walk_intake_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+fn walk_intake_roots(roots: &[PathBuf]) -> IntakeWalk {
     let mut candidates = Vec::new();
     for root in roots {
         // `follow_links(false)`: a symlinked subdirectory is never descended (loop-safety). `sort_by_file_name`:
@@ -1154,7 +1179,14 @@ fn walk_intake_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
             }
         }
     }
-    candidates
+    // §1.1 (P2.66): retain the dropped root(s) VERBATIM alongside the flat candidate list — the §2.7
+    // subtree / "open folder" anchor (§2.7 computes the common root; this is plain §1.1 retention). Every
+    // dropped root is kept, in input order, regardless of how many candidates it yielded (an empty folder
+    // still anchors "open folder").
+    IntakeWalk {
+        files: candidates,
+        roots: roots.to_vec(),
+    }
 }
 
 /// The §1.1 fixed hidden/system-file sentinels (P2.65) — the NON-dotfile platform junk a folder walk skips
@@ -1246,7 +1278,7 @@ mod walk_tests {
     fn walk_yields_a_dropped_file_root_directly() {
         let tmp = tempdir().expect("tempdir");
         let file = touch(tmp.path(), "lonely.csv");
-        let got = walk_intake_roots(std::slice::from_ref(&file));
+        let got = walk_intake_roots(std::slice::from_ref(&file)).files;
         assert_eq!(
             got,
             vec![file],
@@ -1260,7 +1292,7 @@ mod walk_tests {
         let tmp = tempdir().expect("tempdir");
         let a = touch(tmp.path(), "a.csv");
         let b = touch(tmp.path(), "b.txt");
-        let got = walk_intake_roots(&[tmp.path().to_path_buf()]);
+        let got = walk_intake_roots(&[tmp.path().to_path_buf()]).files;
         assert!(got.contains(&a) && got.contains(&b), "both files collected");
         assert_eq!(got.len(), 2, "only the two files, no directory entries");
     }
@@ -1278,7 +1310,7 @@ mod walk_tests {
         let top = touch(root, "top.csv");
         let mid = touch(root, "a/mid.csv");
         let deep = touch(root, "a/b/deep.csv");
-        let got = walk_intake_roots(&[root.to_path_buf()]);
+        let got = walk_intake_roots(&[root.to_path_buf()]).files;
         assert_eq!(
             got,
             vec![deep, mid, top],
@@ -1296,8 +1328,8 @@ mod walk_tests {
         for name in ["zebra.csv", "alpha.csv", "mango.csv"] {
             touch(root, name);
         }
-        let first = walk_intake_roots(&[root.to_path_buf()]);
-        let second = walk_intake_roots(&[root.to_path_buf()]);
+        let first = walk_intake_roots(&[root.to_path_buf()]).files;
+        let second = walk_intake_roots(&[root.to_path_buf()]).files;
         assert_eq!(
             first, second,
             "§2.5: the walk order is reproducible across runs"
@@ -1316,7 +1348,7 @@ mod walk_tests {
     #[test]
     fn walk_of_an_empty_dir_yields_nothing() {
         let tmp = tempdir().expect("tempdir");
-        let got = walk_intake_roots(&[tmp.path().to_path_buf()]);
+        let got = walk_intake_roots(&[tmp.path().to_path_buf()]).files;
         assert!(got.is_empty(), "an empty folder yields no candidates");
     }
 
@@ -1329,11 +1361,50 @@ mod walk_tests {
         let b = tempdir().expect("tempdir b");
         let fa = touch(a.path(), "from_a.csv");
         let fb = touch(b.path(), "sub/from_b.csv");
-        let got = walk_intake_roots(&[a.path().to_path_buf(), b.path().to_path_buf()]);
+        let got = walk_intake_roots(&[a.path().to_path_buf(), b.path().to_path_buf()]).files;
         assert_eq!(
             got,
             vec![fa, fb],
             "§1.1: candidates from every root, combined in dropped-root input order (a before b)"
+        );
+    }
+
+    // §1.1 (P2.66): the dropped root(s) are RETAINED verbatim on the walk result for §2.7 (relative-subtree
+    // re-creation + the "open folder" common root). §2.7 owns the common-root computation; the walk carries
+    // EVERY dropped root through, in input order, regardless of how many candidates it yielded — an empty
+    // dropped folder is still retained (it anchors "open folder"). [Build-Session-Entscheidung: P2.66]
+    #[test]
+    fn walk_retains_every_dropped_root_verbatim_in_input_order() {
+        let a = tempdir().expect("tempdir a");
+        let b = tempdir().expect("tempdir b (empty - yields no candidates)");
+        touch(a.path(), "x.csv");
+        let roots = vec![a.path().to_path_buf(), b.path().to_path_buf()];
+        let got = walk_intake_roots(&roots);
+        assert_eq!(got.files.len(), 1, "only a's one file is a candidate");
+        assert_eq!(
+            got.roots, roots,
+            "§2.7: every dropped root retained verbatim in input order - including the EMPTY folder b (the \
+             open-folder / subtree anchor is independent of yield)"
+        );
+    }
+
+    // §1.1 (P2.66): a dropped FILE root is retained too - its containing folder is the §2.7 "open folder"
+    // target; the retained root is the file path itself (verbatim), §2.7 derives the folder. The file is
+    // ALSO a candidate (the P2.64 direct-file rule), so `files` and `roots` are distinct projections.
+    #[test]
+    fn walk_retains_a_dropped_file_root_verbatim() {
+        let tmp = tempdir().expect("tempdir");
+        let file = touch(tmp.path(), "lonely.csv");
+        let got = walk_intake_roots(std::slice::from_ref(&file));
+        assert_eq!(
+            got.files,
+            vec![file.clone()],
+            "§1.1: the dropped file is a candidate"
+        );
+        assert_eq!(
+            got.roots,
+            vec![file],
+            "§2.7: the dropped FILE root is retained verbatim"
         );
     }
 
@@ -1350,7 +1421,7 @@ mod walk_tests {
         let tmp = tempdir().expect("tempdir");
         let dot = touch(tmp.path(), "sub/.hidden.csv");
         let normal = touch(tmp.path(), "sub/data.csv");
-        let got = walk_intake_roots(&[tmp.path().to_path_buf()]);
+        let got = walk_intake_roots(&[tmp.path().to_path_buf()]).files;
         assert!(
             !got.contains(&dot),
             "§1.1: a discovered dotfile is filtered (the P2.65 ignore constant)"
@@ -1370,7 +1441,7 @@ mod walk_tests {
         let desktop = touch(tmp.path(), "DESKTOP.INI"); // case-insensitive match
         let ds_store = touch(tmp.path(), ".DS_Store");
         let keep = touch(tmp.path(), "report.csv");
-        let got = walk_intake_roots(&[tmp.path().to_path_buf()]);
+        let got = walk_intake_roots(&[tmp.path().to_path_buf()]).files;
         for junk in [&thumbs, &desktop, &ds_store] {
             assert!(
                 !got.contains(junk),
@@ -1391,7 +1462,7 @@ mod walk_tests {
         let tmp = tempdir().expect("tempdir");
         let buried = touch(tmp.path(), ".git/config.csv"); // inside a hidden dir — must be pruned
         let visible = touch(tmp.path(), "data/keep.csv");
-        let got = walk_intake_roots(&[tmp.path().to_path_buf()]);
+        let got = walk_intake_roots(&[tmp.path().to_path_buf()]).files;
         assert!(
             !got.contains(&buried),
             "§1.1: a hidden directory is not descended, so its files never become candidates"
@@ -1410,7 +1481,7 @@ mod walk_tests {
     fn walk_keeps_a_directly_dropped_hidden_file_root() {
         let tmp = tempdir().expect("tempdir");
         let dropped = touch(tmp.path(), ".hidden.csv");
-        let got = walk_intake_roots(std::slice::from_ref(&dropped));
+        let got = walk_intake_roots(std::slice::from_ref(&dropped)).files;
         assert_eq!(
             got,
             vec![dropped],
@@ -1427,7 +1498,7 @@ mod walk_tests {
         let tmp = tempdir().expect("tempdir");
         let hidden_root = tmp.path().join(".hidden_dir");
         let keep = touch(&hidden_root, "keep.csv");
-        let got = walk_intake_roots(std::slice::from_ref(&hidden_root));
+        let got = walk_intake_roots(std::slice::from_ref(&hidden_root)).files;
         assert_eq!(
             got,
             vec![keep],
@@ -1480,7 +1551,7 @@ mod walk_tests {
         let file_target = touch(root, "files/real.csv");
         symlink(&file_target, root.join("dir/link_to_file.csv")).expect("symlink a file");
 
-        let got = walk_intake_roots(&[root.to_path_buf()]);
+        let got = walk_intake_roots(&[root.to_path_buf()]).files;
 
         assert!(got.contains(&nested), "the real nested file is walked");
         assert!(
@@ -1504,7 +1575,7 @@ mod walk_tests {
         let good = touch(root, "good.csv");
         symlink(root.join("nonexistent-target"), root.join("dangling.csv"))
             .expect("dangling symlink");
-        let got = walk_intake_roots(&[root.to_path_buf()]);
+        let got = walk_intake_roots(&[root.to_path_buf()]).files;
         assert_eq!(
             got,
             vec![good],
