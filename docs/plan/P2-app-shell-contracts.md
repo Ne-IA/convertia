@@ -257,7 +257,7 @@
   needs: P2.62, P2.23
 - [x] **P2.64** [RUST] Implement Rust-side folder recursion (`walkdir`, depth-first, symlinked dirs not traversed) · §1.1 §0.8
   needs: P2.62
-- [ ] **P2.65** [RUST] Encode the fixed hidden/system-file ignore constant (dotfiles, `.DS_Store`/`Thumbs.db`/`desktop.ini`, Win hidden/system attrs) · §1.1
+- [x] **P2.65** [RUST] Encode the fixed hidden/system-file ignore constant (dotfiles, `.DS_Store`/`Thumbs.db`/`desktop.ini`, Win hidden/system attrs) · §1.1
   needs: P2.64
 - [ ] **P2.66** [RUST] Retain the dropped root(s) on the frozen set (for §2.7 subtree re-creation + open-folder common root) · §1.1 §2.7
   needs: P2.64
