@@ -259,7 +259,7 @@
   needs: P2.62
 - [x] **P2.65** [RUST] Encode the fixed hidden/system-file ignore constant (dotfiles, `.DS_Store`/`Thumbs.db`/`desktop.ini`, Win hidden/system attrs) · §1.1
   needs: P2.64
-- [ ] **P2.66** [RUST] Retain the dropped root(s) on the frozen set (for §2.7 subtree re-creation + open-folder common root) · §1.1 §2.7
+- [x] **P2.66** [RUST] Retain the dropped root(s) on the frozen set (for §2.7 subtree re-creation + open-folder common root) · §1.1 §2.7
   needs: P2.64
 - [ ] **P2.67** [RUST] Implement the mid-walk per-item-failure-does-not-abort rule (per-item `Unreadable`/`Empty` → `SkippedItem`, walk continues) · §1.1 §1.2 §1.9
   needs: P2.64, P2.16
