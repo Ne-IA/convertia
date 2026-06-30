@@ -54,8 +54,8 @@ use walkdir::WalkDir;
 
 use crate::domain::{
     CollectedSet, CollectedSetId, CollectingId, DestinationChoice, DivertReason, DroppedItem,
-    FrozenCollectedSet, IntakeOrigin, ItemId, JobStage, OptionValues, OutputPlan, RerunPrompt,
-    RunId, SkipReason, Target, TargetId, UserFacingFormat,
+    FrozenCollectedSet, IntakeOrigin, ItemId, JobStage, OptionValues, OutputPlan, ReadFailure,
+    RerunPrompt, RunId, SkipReason, Target, TargetId, UserFacingFormat,
 };
 use crate::outcome::{ConversionErrorKind, IpcError, OutcomeMsg};
 
@@ -1117,6 +1117,26 @@ struct WalkSkip {
     reason: SkipReason,
 }
 
+/// A FATAL §1.1 walk-root error (P2.68) — the dropped/picked ROOT itself could not be read (a DEPTH-0
+/// `walkdir` error: the root is gone, or its directory cannot be listed), as opposed to a per-item read
+/// failure DISCOVERED *inside* a root (a depth > 0 error → an `Unreadable` [`WalkSkip`], P2.67, the walk
+/// CONTINUES). Per §1.1 the walk is STOPPED **only** by a C13 cancel (P2.69) or this fatal walk-root error:
+/// "a single bad file inside a thousand-file folder never sinks the whole ingest", but a bad ROOT does — so
+/// [`walk_intake_roots`] yields this as an `Err`, never a skipped row. The P3.49 freeze spine maps it to the
+/// §1.1 fatal-ingest surface; `cause` reuses the §0.6 [`ReadFailure`] taxonomy so that surfacing distinguishes
+/// "gone" (`NotFound`) from "unreadable" (`PermissionDenied`/`IoError`). It needs no dead-code suppression
+/// attribute: its derived impls make it "used" in the non-test build (the same reason its sibling
+/// [`WalkSkip`] needs none), so the only pending wiring is its production caller — the P3.49 ingest funnel
+/// that maps it to the fatal surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FatalWalkRoot {
+    /// The dropped/picked root that could not be read (for the §1.1 fatal-ingest message).
+    root: PathBuf,
+    /// Why the root could not be read — the §0.6 [`ReadFailure`] taxonomy reused here (gone vs denied/io), so
+    /// the P3.49 surfacing distinguishes "gone" (`NotFound`) from "unreadable".
+    cause: ReadFailure,
+}
+
 /// **Step 1 of the §2.4.1 freeze spine (P2.64)** — expand the dropped/picked intake roots into a flat,
 /// **depth-first** list of candidate file paths (the input the §1.2 detection stage classifies). The WebView
 /// cannot enumerate a directory (§0.4), so a dropped/picked FOLDER is walked recursively in Rust; a dropped
@@ -1156,12 +1176,19 @@ struct WalkSkip {
 /// outcome (detection reads the bytes, a 0-byte file yields none → `Empty`, the §1.1 "Zero-byte at intake"
 /// subsection / P2.73), so 0-byte files stay candidates at the walk and are classified at detect (P3).
 /// [Build-Session-Entscheidung: P2.67 — record only the walk-level `Unreadable` read failures; `Empty` and
-/// content-ineligibility defer to §1.2 detection (P3), the depth-0 fatal-walk-root to P2.68, and the `ItemId`
-/// to the freeze (P2.75).]
+/// content-ineligibility defer to §1.2 detection (P3) and the `ItemId` to the freeze (P2.75).]
 ///
-/// **Deliberately NOT owned here (sibling §1.1 boxes):** the **fatal-walk-root stop** (a DEPTH-0 root error —
-/// the dropped root itself unreadable/gone — is left unrecorded here; P2.68 makes it fatal), and the
-/// `CollectingId` cooperative-cancel poll (P2.69).
+/// **Fatal walk-root stop OWNED here (P2.68):** a DEPTH-0 `walkdir` error — the dropped/picked ROOT itself
+/// unreadable or gone — is a **fatal** error that **STOPS the walk** ([`walk_intake_roots`] returns
+/// `Err(`[`FatalWalkRoot`]`)`), distinct from the P2.67 per-item `Unreadable` skip that CONTINUES (§1.1: "the
+/// walk is stopped only by a C13 cancel or a fatal walk-root error … a single bad file never sinks the whole
+/// ingest"). A bad ROOT does sink it. Across multiple dropped roots the FIRST fatal root (in input order)
+/// stops the whole walk and its already-collected candidates are discarded — the `Err` is the abort, never a
+/// partial. [Derived-Assumption: P2.68 — multi-root: the first fatal root stops the WHOLE walk, from §1.1
+/// "the walk is stopped … a single bad file never sinks the ingest" (a root is not a per-item skip).]
+///
+/// **Deliberately NOT owned here (sibling §1.1 box):** the `CollectingId` cooperative-cancel poll (P2.69) —
+/// the other §1.1 walk-stopping cause.
 ///
 /// [Build-Session-Entscheidung: P2.64 — a symlink's TARGET type is classified by one link-following
 /// `std::fs::metadata` stat (a type check, NOT a content read and NOT §2.3 identity resolution): a
@@ -1180,7 +1207,7 @@ struct WalkSkip {
                   carried (P2.62) before P2.63 consumed it."
     )
 )]
-fn walk_intake_roots(roots: &[PathBuf]) -> IntakeWalk {
+fn walk_intake_roots(roots: &[PathBuf]) -> Result<IntakeWalk, FatalWalkRoot> {
     let mut candidates = Vec::new();
     let mut skipped = Vec::new();
     for root in roots {
@@ -1197,15 +1224,21 @@ fn walk_intake_roots(roots: &[PathBuf]) -> IntakeWalk {
         for entry in walk {
             let entry = match entry {
                 Ok(entry) => entry,
-                // P2.67: a per-item READ failure mid-walk does NOT abort the ingest (§1.1) — record it
-                // `Unreadable` + CONTINUE (one bad entry never sinks a thousand-file folder). A DEPTH-0 error
-                // is the dropped root itself unreadable/gone — the FATAL-walk-root case (P2.68), NOT a per-item
-                // skip, so it is left unrecorded here; a depth > 0 error is a discovered entry/subdir that
-                // could not be read.
                 Err(err) => {
-                    if err.depth() > 0 {
-                        record_unreadable(&mut skipped, err.path());
+                    // P2.68: a DEPTH-0 error is the dropped ROOT itself unreadable/gone — a FATAL walk-root
+                    // error that STOPS the walk (§1.1), distinct from the P2.67 per-item skip that CONTINUES.
+                    // It abandons any candidates collected from earlier roots (the multi-root short-circuit) —
+                    // a bad root sinks the ingest, a bad file never does. `cause` carries the gone-vs-unreadable
+                    // §0.6 `ReadFailure` for the P3.49 fatal-ingest message.
+                    if err.depth() == 0 {
+                        return Err(FatalWalkRoot {
+                            root: root.clone(),
+                            cause: classify_walk_root_failure(&err),
+                        });
                     }
+                    // P2.67: a depth > 0 error is a DISCOVERED entry/subdir that could not be read — record it
+                    // `Unreadable` + CONTINUE (one bad entry never sinks a thousand-file folder).
+                    record_unreadable(&mut skipped, err.path());
                     continue;
                 }
             };
@@ -1234,10 +1267,27 @@ fn walk_intake_roots(roots: &[PathBuf]) -> IntakeWalk {
     // subtree / "open folder" anchor (§2.7 computes the common root; this is plain §1.1 retention). Every
     // dropped root is kept, in input order, regardless of how many candidates it yielded (an empty folder
     // still anchors "open folder"). `skipped` carries the §1.1 per-item Unreadable read failures (P2.67).
-    IntakeWalk {
+    // Reaching here means no root was fatally unreadable/gone (P2.68 returns early on a DEPTH-0 error).
+    Ok(IntakeWalk {
         files: candidates,
         roots: roots.to_vec(),
         skipped,
+    })
+}
+
+/// Classify a DEPTH-0 [`walk_intake_roots`] `walkdir` error (the dropped/picked root itself unreadable/gone,
+/// P2.68) into the §0.6 [`ReadFailure`] taxonomy: a missing root → `NotFound` ("gone"), a denied read →
+/// `PermissionDenied`, anything else → `IoError`. The §0.6 `Locked` variant is **not** produced here — a
+/// directory-root sharing violation has no portable `io::ErrorKind`, and `Locked` is a conversion-time (§2.8)
+/// outcome, not an intake one; so the walk-root maps only the gone-vs-unreadable distinction the §1.1
+/// fatal-ingest message needs.
+/// [Build-Session-Entscheidung: P2.68 — map `io::ErrorKind` {NotFound, PermissionDenied} to the matching
+/// `ReadFailure`, everything else to `IoError`; `Locked` is conversion-time only (§2.8).]
+fn classify_walk_root_failure(err: &walkdir::Error) -> ReadFailure {
+    match err.io_error().map(std::io::Error::kind) {
+        Some(std::io::ErrorKind::NotFound) => ReadFailure::NotFound,
+        Some(std::io::ErrorKind::PermissionDenied) => ReadFailure::PermissionDenied,
+        _ => ReadFailure::IoError,
     }
 }
 
@@ -1314,9 +1364,11 @@ mod walk_tests {
     //! sorted order, an empty dir, multiple roots, the §1.1 hidden/system filter (dotfiles + the fixed
     //! sentinels filtered, a hidden directory not descended, the directly-dropped-root exemption — P2.65), the
     //! §1.1 per-item read-failure recording (a clean tree records no skips; (unix) a dangling symlink + an
-    //! unreadable subdir → `Unreadable` `WalkSkip`, walk continues — P2.67), and (unix) the
-    //! symlinked-dir-not-traversed + symlinked-file-IS-a-candidate rules.
-    //! [Build-Session-Entscheidung: P2.64/P2.65/P2.67]
+    //! unreadable subdir → `Unreadable` `WalkSkip`, walk continues — P2.67), the §1.1 FATAL walk-root stop (a
+    //! gone/unreadable dropped ROOT → `Err(FatalWalkRoot)`, distinct from the per-item skip; multi-root
+    //! short-circuit — P2.68), and (unix) the symlinked-dir-not-traversed + symlinked-file-IS-a-candidate
+    //! rules.
+    //! [Build-Session-Entscheidung: P2.64/P2.65/P2.67/P2.68]
     use super::*;
     use std::fs;
     use tempfile::tempdir;
@@ -1332,6 +1384,12 @@ mod walk_tests {
         p
     }
 
+    /// Walk roots that are all readable, unwrapping the P2.68 `Result` — the success-path call the
+    /// non-fatal-root tests use so the fatal-root `Err` (P2.68) is asserted only by the tests that mean to.
+    fn walk_ok(roots: &[PathBuf]) -> IntakeWalk {
+        walk_intake_roots(roots).expect("walk succeeds — every dropped root here is readable")
+    }
+
     fn file_names(paths: &[PathBuf]) -> Vec<std::ffi::OsString> {
         paths
             .iter()
@@ -1345,7 +1403,7 @@ mod walk_tests {
     fn walk_yields_a_dropped_file_root_directly() {
         let tmp = tempdir().expect("tempdir");
         let file = touch(tmp.path(), "lonely.csv");
-        let got = walk_intake_roots(std::slice::from_ref(&file)).files;
+        let got = walk_ok(std::slice::from_ref(&file)).files;
         assert_eq!(
             got,
             vec![file],
@@ -1359,7 +1417,7 @@ mod walk_tests {
         let tmp = tempdir().expect("tempdir");
         let a = touch(tmp.path(), "a.csv");
         let b = touch(tmp.path(), "b.txt");
-        let got = walk_intake_roots(&[tmp.path().to_path_buf()]).files;
+        let got = walk_ok(&[tmp.path().to_path_buf()]).files;
         assert!(got.contains(&a) && got.contains(&b), "both files collected");
         assert_eq!(got.len(), 2, "only the two files, no directory entries");
     }
@@ -1377,7 +1435,7 @@ mod walk_tests {
         let top = touch(root, "top.csv");
         let mid = touch(root, "a/mid.csv");
         let deep = touch(root, "a/b/deep.csv");
-        let got = walk_intake_roots(&[root.to_path_buf()]).files;
+        let got = walk_ok(&[root.to_path_buf()]).files;
         assert_eq!(
             got,
             vec![deep, mid, top],
@@ -1395,8 +1453,8 @@ mod walk_tests {
         for name in ["zebra.csv", "alpha.csv", "mango.csv"] {
             touch(root, name);
         }
-        let first = walk_intake_roots(&[root.to_path_buf()]).files;
-        let second = walk_intake_roots(&[root.to_path_buf()]).files;
+        let first = walk_ok(&[root.to_path_buf()]).files;
+        let second = walk_ok(&[root.to_path_buf()]).files;
         assert_eq!(
             first, second,
             "§2.5: the walk order is reproducible across runs"
@@ -1415,7 +1473,7 @@ mod walk_tests {
     #[test]
     fn walk_of_an_empty_dir_yields_nothing() {
         let tmp = tempdir().expect("tempdir");
-        let got = walk_intake_roots(&[tmp.path().to_path_buf()]).files;
+        let got = walk_ok(&[tmp.path().to_path_buf()]).files;
         assert!(got.is_empty(), "an empty folder yields no candidates");
     }
 
@@ -1428,7 +1486,7 @@ mod walk_tests {
         let b = tempdir().expect("tempdir b");
         let fa = touch(a.path(), "from_a.csv");
         let fb = touch(b.path(), "sub/from_b.csv");
-        let got = walk_intake_roots(&[a.path().to_path_buf(), b.path().to_path_buf()]).files;
+        let got = walk_ok(&[a.path().to_path_buf(), b.path().to_path_buf()]).files;
         assert_eq!(
             got,
             vec![fa, fb],
@@ -1446,7 +1504,7 @@ mod walk_tests {
         let b = tempdir().expect("tempdir b (empty - yields no candidates)");
         touch(a.path(), "x.csv");
         let roots = vec![a.path().to_path_buf(), b.path().to_path_buf()];
-        let got = walk_intake_roots(&roots);
+        let got = walk_ok(&roots);
         assert_eq!(got.files.len(), 1, "only a's one file is a candidate");
         assert_eq!(
             got.roots, roots,
@@ -1462,7 +1520,7 @@ mod walk_tests {
     fn walk_retains_a_dropped_file_root_verbatim() {
         let tmp = tempdir().expect("tempdir");
         let file = touch(tmp.path(), "lonely.csv");
-        let got = walk_intake_roots(std::slice::from_ref(&file));
+        let got = walk_ok(std::slice::from_ref(&file));
         assert_eq!(
             got.files,
             vec![file.clone()],
@@ -1488,7 +1546,7 @@ mod walk_tests {
         let tmp = tempdir().expect("tempdir");
         let dot = touch(tmp.path(), "sub/.hidden.csv");
         let normal = touch(tmp.path(), "sub/data.csv");
-        let got = walk_intake_roots(&[tmp.path().to_path_buf()]).files;
+        let got = walk_ok(&[tmp.path().to_path_buf()]).files;
         assert!(
             !got.contains(&dot),
             "§1.1: a discovered dotfile is filtered (the P2.65 ignore constant)"
@@ -1508,7 +1566,7 @@ mod walk_tests {
         let desktop = touch(tmp.path(), "DESKTOP.INI"); // case-insensitive match
         let ds_store = touch(tmp.path(), ".DS_Store");
         let keep = touch(tmp.path(), "report.csv");
-        let got = walk_intake_roots(&[tmp.path().to_path_buf()]).files;
+        let got = walk_ok(&[tmp.path().to_path_buf()]).files;
         for junk in [&thumbs, &desktop, &ds_store] {
             assert!(
                 !got.contains(junk),
@@ -1529,7 +1587,7 @@ mod walk_tests {
         let tmp = tempdir().expect("tempdir");
         let buried = touch(tmp.path(), ".git/config.csv"); // inside a hidden dir — must be pruned
         let visible = touch(tmp.path(), "data/keep.csv");
-        let got = walk_intake_roots(&[tmp.path().to_path_buf()]).files;
+        let got = walk_ok(&[tmp.path().to_path_buf()]).files;
         assert!(
             !got.contains(&buried),
             "§1.1: a hidden directory is not descended, so its files never become candidates"
@@ -1548,7 +1606,7 @@ mod walk_tests {
     fn walk_keeps_a_directly_dropped_hidden_file_root() {
         let tmp = tempdir().expect("tempdir");
         let dropped = touch(tmp.path(), ".hidden.csv");
-        let got = walk_intake_roots(std::slice::from_ref(&dropped)).files;
+        let got = walk_ok(std::slice::from_ref(&dropped)).files;
         assert_eq!(
             got,
             vec![dropped],
@@ -1565,7 +1623,7 @@ mod walk_tests {
         let tmp = tempdir().expect("tempdir");
         let hidden_root = tmp.path().join(".hidden_dir");
         let keep = touch(&hidden_root, "keep.csv");
-        let got = walk_intake_roots(std::slice::from_ref(&hidden_root)).files;
+        let got = walk_ok(std::slice::from_ref(&hidden_root)).files;
         assert_eq!(
             got,
             vec![keep],
@@ -1618,7 +1676,7 @@ mod walk_tests {
         let file_target = touch(root, "files/real.csv");
         symlink(&file_target, root.join("dir/link_to_file.csv")).expect("symlink a file");
 
-        let got = walk_intake_roots(&[root.to_path_buf()]).files;
+        let got = walk_ok(&[root.to_path_buf()]).files;
 
         assert!(got.contains(&nested), "the real nested file is walked");
         assert!(
@@ -1648,7 +1706,7 @@ mod walk_tests {
         let dangling = root.join("dangling.csv");
         symlink(root.join("nonexistent-target"), root.join("dangling.csv"))
             .expect("dangling symlink");
-        let result = walk_intake_roots(&[root.to_path_buf()]);
+        let result = walk_ok(&[root.to_path_buf()]);
         assert_eq!(
             result.files,
             vec![good],
@@ -1672,7 +1730,7 @@ mod walk_tests {
         let tmp = tempdir().expect("tempdir");
         touch(tmp.path(), "a.csv");
         touch(tmp.path(), "sub/b.csv");
-        let result = walk_intake_roots(&[tmp.path().to_path_buf()]);
+        let result = walk_ok(&[tmp.path().to_path_buf()]);
         assert!(
             result.skipped.is_empty(),
             "a fully-readable tree records no Unreadable skips"
@@ -1696,7 +1754,7 @@ mod walk_tests {
         touch(&denied, "secret.csv");
         fs::set_permissions(&denied, fs::Permissions::from_mode(0o000)).expect("chmod 000");
         let can_read_anyway = fs::read_dir(&denied).is_ok();
-        let result = walk_intake_roots(&[root.to_path_buf()]);
+        let result = walk_ok(&[root.to_path_buf()]);
         // restore perms so the tempdir cleanup can remove the subtree
         fs::set_permissions(&denied, fs::Permissions::from_mode(0o755)).ok();
         if can_read_anyway {
@@ -1716,6 +1774,80 @@ mod walk_tests {
                 .iter()
                 .any(|skip| skip.reason == SkipReason::Unreadable && skip.path.ends_with("denied")),
             "§1.1/P2.67: an unreadable discovered subdir is recorded as Unreadable, not silently dropped"
+        );
+    }
+
+    // §1.1 (P2.68): a dropped ROOT that is GONE (does not exist) is a FATAL walk-root error — the walk STOPS
+    // with `Err(FatalWalkRoot)`, NOT a per-item skip (which would continue and return `Ok`). The carried
+    // `root` is the offending dropped root verbatim and `cause` is `NotFound` ("gone") so the §1.1
+    // fatal-ingest message (P3.49) can say the dropped folder/file is gone.
+    #[test]
+    fn walk_stops_fatally_when_a_dropped_root_is_gone() {
+        let tmp = tempdir().expect("tempdir");
+        let gone = tmp.path().join("never-existed");
+        assert_eq!(
+            walk_intake_roots(std::slice::from_ref(&gone)).err(),
+            Some(FatalWalkRoot {
+                root: gone,
+                cause: ReadFailure::NotFound,
+            }),
+            "§1.1/P2.68: a gone dropped root STOPS the walk fatally (NotFound) — an Err, never an Ok with a \
+             per-item skip"
+        );
+    }
+
+    // §1.1 (P2.68): across MULTIPLE dropped roots the FIRST fatal root (input order) STOPS the whole walk and
+    // the candidates already collected from an earlier readable root are DISCARDED — the `Err` is the abort,
+    // never a partial `Ok`. This is the sharp contrast with the P2.67 per-item skip (which returns `Ok` + a
+    // skipped row): a bad FILE never sinks the ingest, a bad ROOT does.
+    #[test]
+    fn a_fatal_root_stops_the_whole_walk_discarding_earlier_candidates() {
+        let readable = tempdir().expect("readable root tempdir");
+        touch(readable.path(), "kept.csv");
+        let gone = readable.path().join("never-existed");
+        let roots = vec![readable.path().to_path_buf(), gone.clone()];
+        // The whole `Result` is `Err` — NOT an `Ok` carrying the readable root's `kept.csv` (which is what a
+        // per-item skip would leave). The fatal root (b) is reported; the earlier root's candidates discarded.
+        assert_eq!(
+            walk_intake_roots(&roots).err(),
+            Some(FatalWalkRoot {
+                root: gone,
+                cause: ReadFailure::NotFound,
+            }),
+            "§1.1/P2.68: the first fatal root STOPS the whole walk — an Err, not a partial Ok with the \
+             readable root's candidates (a per-item skip would have continued)"
+        );
+    }
+
+    // §1.1 (P2.68, unix): a dropped ROOT directory that cannot be LISTED (chmod 000) is a FATAL walk-root
+    // error (`PermissionDenied`) that STOPS the walk — unlike the P2.67 unreadable DISCOVERED subdir
+    // (depth > 0), which is a per-item skip that continues. Skipped when the process can read it anyway
+    // (running as root, where DAC is bypassed) rather than asserting a condition the environment cannot
+    // produce — the same guard the P2.67 unreadable-subdir test uses.
+    #[cfg(unix)]
+    #[test]
+    fn walk_stops_fatally_when_a_dropped_root_is_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempdir().expect("tempdir");
+        let denied = tmp.path().join("denied_root");
+        fs::create_dir(&denied).expect("mkdir denied_root");
+        touch(&denied, "inside.csv");
+        fs::set_permissions(&denied, fs::Permissions::from_mode(0o000)).expect("chmod 000");
+        let can_read_anyway = fs::read_dir(&denied).is_ok();
+        let result = walk_intake_roots(std::slice::from_ref(&denied));
+        // restore perms so the tempdir cleanup can remove the subtree
+        fs::set_permissions(&denied, fs::Permissions::from_mode(0o755)).ok();
+        if can_read_anyway {
+            return; // DAC bypassed (e.g. root) — the denied-read path cannot be exercised here
+        }
+        assert_eq!(
+            result.err(),
+            Some(FatalWalkRoot {
+                root: denied,
+                cause: ReadFailure::PermissionDenied,
+            }),
+            "§1.1/P2.68: an unreadable dropped ROOT stops the walk fatally (PermissionDenied), not a per-item \
+             skip"
         );
     }
 }

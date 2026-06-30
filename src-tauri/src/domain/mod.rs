@@ -282,9 +282,10 @@ pub enum Confidence {
     Low,
 }
 
-/// Why a file's bytes could not be read at freeze/detect time (§1.2). Owned here; the §2.8 taxonomy
-/// projects these to a plain-language string. Distinct from a conversion-time failure (that is the §2.8
-/// `ConversionErrorKind`, mirrored as `ErrorKind` in P2.18).
+/// Why a file or dropped root could not be read during intake — shared by the §1.2 detection read
+/// (`DetectionOutcome::Unreadable`) and the §1.1 fatal walk-root stop (the dropped root itself
+/// unreadable/gone, P2.68). Owned here; the §2.8 taxonomy projects these to a plain-language string. Distinct
+/// from a conversion-time failure (that is the §2.8 `ConversionErrorKind`, mirrored as `ErrorKind` in P2.18).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum ReadFailure {
