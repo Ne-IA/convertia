@@ -261,7 +261,7 @@
   needs: P2.64
 - [x] **P2.66** [RUST] Retain the dropped root(s) on the frozen set (for §2.7 subtree re-creation + open-folder common root) · §1.1 §2.7
   needs: P2.64
-- [ ] **P2.67** [RUST] Implement the mid-walk per-item-failure-does-not-abort rule (per-item `Unreadable`/`Empty` → `SkippedItem`, walk continues) · §1.1 §1.2 §1.9
+- [x] **P2.67** [RUST] Implement the mid-walk per-item-failure-does-not-abort rule (per-item `Unreadable`/`Empty` → `SkippedItem`, walk continues) · §1.1 §1.2 §1.9
   needs: P2.64, P2.16
 - [ ] **P2.68** [RUST] Encode the fatal-walk-root-error stop (dropped root itself unreadable/gone) distinct from per-item skip · §1.1
   needs: P2.67
