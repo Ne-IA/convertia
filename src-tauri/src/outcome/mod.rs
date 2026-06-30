@@ -5,11 +5,13 @@
 //! P1 established the module so the §0.7 tree compiles and the §06 drift mechanism has a home. P2.18
 //! authored the §2.8.1 `ConversionErrorKind` taxonomy + its §0.4.3 `ErrorKind` wire alias here, P2.19 the
 //! `IpcError` shape, and P2.20 the `OutcomeMsg` surfaced-string type + the one-way `SkipReason → ErrorKind`
-//! §1.12 projection helper; only the §2.8.2 message CATALOG (the kind → resolved-string producer) lands in
-//! a later P2 box (§02 owns the outcome strings).
+//! §1.12 projection helper, and P2.73 the §1.1 turn-time `ReadFailure → ErrorKind` projection helper; only
+//! the §2.8.2 message CATALOG (the kind → resolved-string producer) lands in a later P2 box (§02 owns the
+//! outcome strings).
 
-// [Build-Session-Entscheidung: P2.18/P2.20] The §2.8 wire-taxonomy (`ConversionErrorKind`/`ErrorKind`), the
-// §0.4.3 `IpcError`, the `OutcomeMsg` surfaced line, and the §1.12 `SkipReason → ErrorKind` helper are all
+// [Build-Session-Entscheidung: P2.18/P2.20/P2.73] The §2.8 wire-taxonomy (`ConversionErrorKind`/`ErrorKind`),
+// the §0.4.3 `IpcError`, the `OutcomeMsg` surfaced line, the §1.12 `SkipReason → ErrorKind` helper, and the
+// §1.1 turn-time `ReadFailure → ErrorKind` helper (P2.73) are all
 // authored as CONTRACTS and registered for typegen (`collect_types![]`), but registration is a type-PARAMETER
 // reference, not a construction — and no production path CONSTRUCTS an outcome / calls the helper yet (the
 // pipeline that emits them is P3/P4+). So they are dead in the PRODUCTION build until then; the cfg(test)
@@ -19,7 +21,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §2.8 taxonomy + IpcError + OutcomeMsg + the §1.12 SkipReason→ErrorKind helper are authored as contracts and registered for typegen, but no production path CONSTRUCTS an outcome / calls the helper until the P3/P4+ pipeline, so they are dead in the production build until then."
+        reason = "the §2.8 taxonomy + IpcError + OutcomeMsg + the §1.12 SkipReason→ErrorKind and §1.1 turn-time ReadFailure→ErrorKind helpers are authored as contracts and registered for typegen, but no production path CONSTRUCTS an outcome / calls either helper until the P3/P4+ pipeline, so they are dead in the production build until then."
     )
 )]
 
@@ -28,7 +30,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 use specta::Type;
 
-use crate::domain::{LossyKind, SkipReason};
+use crate::domain::{LossyKind, ReadFailure, SkipReason};
 
 // [Build-Session-Entscheidung: P2.18] Derive set: §0.4.3/§2.8.1 show the WIRE-required `Serialize` +
 // `specta::Type` (so the kind mirrors to `bindings.ts` rather than `any`); `Debug, Clone, Copy, PartialEq,
@@ -268,9 +270,111 @@ pub fn skip_reason_to_error_kind(reason: SkipReason) -> ConversionErrorKind {
     }
 }
 
+// ─── §1.1 turn-time read-failure → ErrorKind (the intake-Skipped vs turn-Failed non-conflation, P2.73) ──
+/// The §1.1 / §2.8 **turn-time** projection of a `ReadFailure` onto its §2.8.1 `ErrorKind` (== the concrete
+/// `ConversionErrorKind`) — the FAILURE half of the §1.1 zero-byte/unreadable classification. A file that was
+/// READABLE at the §2.4 freeze but is **unreadable/gone WHEN ITS TURN COMES** mid-run is a per-item
+/// **`Failed`** counted in the §1.12 `failed` total (§1.9 mid-run skip): now-missing (`NotFound`) →
+/// `Gone`; now-unreadable (permission / exclusive lock / other IO) → `Unreadable`.
+///
+/// **This is NOT the intake-time path** — §1.1 "these are different totals and must not be conflated". A read
+/// failure observed AT INTAKE is a pre-flight **Skip**: it lands in `DetectionOutcome::Unreadable { reason }`,
+/// projected by `DetectionOutcome::skip_reason` (P2.16) to `SkipReason::Unreadable` (a `JobState::Skipped`,
+/// never queued, counted in the §1.12 `skipped` total). The SAME underlying `ReadFailure` therefore
+/// classifies to a SKIP at intake and a FAILURE at turn-time. The range is exactly `{Gone, Unreadable}`,
+/// NEVER `Empty`: a 0-byte file is an INTAKE-only zero-byte skip (`DetectionOutcome::Empty` →
+/// `SkipReason::Empty`), never a turn-time read failure (the item was non-empty + readable at the freeze).
+///
+/// [Build-Session-Entscheidung: P2.73] A NAMED helper, NOT a `From<ReadFailure> for ConversionErrorKind`
+/// impl — the symmetric counterpart of the P2.20 `skip_reason_to_error_kind` decision: an ambient `.into()`
+/// would make turning a read condition into a failure-kind trivially available everywhere (incl. an
+/// intake-side caller that must instead produce a `SkipReason`), blurring the §1.1 skip ≠ fail boundary. The
+/// explicit fn keeps the one sanctioned turn-time projection greppable + intentional, and the non-wildcard
+/// match makes a new `ReadFailure` variant force an explicit turn-time classification rather than silently
+/// defaulting. Returns the concrete `ConversionErrorKind` (the `ErrorKind` alias's underlying type), the
+/// spelling consistent with `skip_reason_to_error_kind` / `IpcError.kind`.
+pub fn read_failure_to_error_kind(failure: ReadFailure) -> ConversionErrorKind {
+    match failure {
+        // Present at the freeze, now MISSING (moved / deleted / removed media) — §2.8 `Gone`.
+        ReadFailure::NotFound => ConversionErrorKind::Gone,
+        // Present at the freeze, now UNREADABLE (permission denied / exclusive lock / other IO) — §2.8
+        // `Unreadable`.
+        ReadFailure::PermissionDenied | ReadFailure::Locked | ReadFailure::IoError => {
+            ConversionErrorKind::Unreadable
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // §6.4.1 unit (G15): the §1.1 turn-time `ReadFailure → ErrorKind` projection (P2.73) — a file readable at
+    // the §2.4 freeze but unreadable/gone WHEN ITS TURN COMES mid-run is a per-item `Failed` (§1.9):
+    // now-missing (`NotFound`) → `Gone`; now-unreadable (permission / lock / other IO) → `Unreadable`. The
+    // turn-time range is exactly `{Gone, Unreadable}`, NEVER `Empty` (emptiness is an intake-only zero-byte
+    // skip, §1.1). The non-wildcard match makes a new `ReadFailure` variant force a turn-time classification.
+    #[test]
+    fn read_failure_to_error_kind_classifies_turn_time_failures() {
+        assert_eq!(
+            read_failure_to_error_kind(ReadFailure::NotFound),
+            ConversionErrorKind::Gone,
+            "§1.1/§2.8: a frozen file now MISSING at its turn is Failed(Gone)"
+        );
+        for failure in [
+            ReadFailure::PermissionDenied,
+            ReadFailure::Locked,
+            ReadFailure::IoError,
+        ] {
+            assert_eq!(
+                read_failure_to_error_kind(failure),
+                ConversionErrorKind::Unreadable,
+                "§1.1/§2.8: a frozen file now UNREADABLE at its turn is Failed(Unreadable)"
+            );
+        }
+        for failure in [
+            ReadFailure::NotFound,
+            ReadFailure::PermissionDenied,
+            ReadFailure::Locked,
+            ReadFailure::IoError,
+        ] {
+            assert_ne!(
+                read_failure_to_error_kind(failure),
+                ConversionErrorKind::Empty,
+                "§1.1: emptiness is an intake-only zero-byte skip — never a turn-time read-failure kind"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15): the §1.1 "must not be conflated" invariant — the SAME underlying read condition is a
+    // pre-flight SKIP at intake but a per-item FAILURE at turn-time. At intake a read failure lands in
+    // `DetectionOutcome::Unreadable` → `skip_reason` → `Some(SkipReason::Unreadable)` (a `JobState::Skipped`,
+    // never queued, §1.12 `skipped` total); the SAME `ReadFailure` at turn-time → `read_failure_to_error_kind`
+    // → a `ConversionErrorKind` (a `JobState::Failed`, §1.12 `failed` total). They are different result TYPES
+    // (`SkipReason` vs `ConversionErrorKind`), so the two §1.12 totals are structurally non-conflatable.
+    #[test]
+    fn intake_read_failure_is_a_skip_distinct_from_the_turn_time_failure() {
+        use crate::domain::DetectionOutcome;
+        for failure in [
+            ReadFailure::NotFound,
+            ReadFailure::PermissionDenied,
+            ReadFailure::Locked,
+            ReadFailure::IoError,
+        ] {
+            assert_eq!(
+                DetectionOutcome::Unreadable { reason: failure }.skip_reason(),
+                Some(SkipReason::Unreadable),
+                "§1.1: an intake-time read failure is Skipped(Unreadable) — pre-flight, never queued"
+            );
+            assert!(
+                matches!(
+                    read_failure_to_error_kind(failure),
+                    ConversionErrorKind::Gone | ConversionErrorKind::Unreadable
+                ),
+                "§1.1: the SAME read failure at turn-time is Failed(Gone|Unreadable), not a skip — the two §1.12 totals must not be conflated"
+            );
+        }
+    }
 
     // §6.4.1 unit (G15/G23): the §2.8.1 ↔ §0.4.3 byte-identical wire mirror (P2.18.3 anti-drift). Pins
     // every variant's exact camelCase wire string (a renamed/added/removed variant changes a pin) AND the
