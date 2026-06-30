@@ -50,6 +50,7 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use specta::Type;
 use tokio_util::sync::CancellationToken;
+use walkdir::WalkDir;
 
 use crate::domain::{
     CollectedSet, CollectedSetId, CollectingId, DestinationChoice, DivertReason, DroppedItem,
@@ -1072,6 +1073,264 @@ pub fn ingest(paths: Vec<PathBuf>, origin: IntakeOrigin) -> CollectedSet {
     let _ = (paths, origin);
     CollectedSet::Empty {
         skipped: Vec::new(),
+    }
+}
+
+/// **Step 1 of the §2.4.1 freeze spine (P2.64)** — expand the dropped/picked intake roots into a flat,
+/// **depth-first** list of candidate file paths (the input the §1.2 detection stage classifies). The WebView
+/// cannot enumerate a directory (§0.4), so a dropped/picked FOLDER is walked recursively in Rust; a dropped
+/// FILE is yielded directly. The [`ingest`] funnel's spine consumes this at P3.49 (the CSV→TSV walking
+/// skeleton); P2.64 authors it as the named step-1 primitive — the sanctioned compile-time interface-shell
+/// (CLAUDE §5): a complete, tested unit whose only pending step is its spine wiring.
+///
+/// **§1.1 walk rules this box owns (recursion ONLY):**
+/// - **Depth-first** traversal (`walkdir`, §0.8) — the §1.9 queue / §2.7 open-folder order reads it.
+/// - **Symlinked directories are NOT traversed** (`follow_links(false)`) — loop-safety against a symlink
+///   cycle (the existing T7 link-redirection class); a discovered symlinked DIR is neither descended NOR a
+///   candidate. The resolved-identity de-dup that handles file-level link aliasing is §2.3 (P2.74/P2.76),
+///   NOT here, so a symlinked FILE IS yielded as a §2.3-resolvable candidate (the T7 input-side-symlink case).
+/// - **Deterministic order** (`sort_by_file_name`) — a stable, OS-readdir-independent order so the §1.9
+///   "deterministic collected/traversal order" + §2.5 re-run equivalence hold across platforms (test-strategy
+///   §7 determinism). [Build-Session-Entscheidung: P2.64 — sort the walk; walkdir's native order is
+///   filesystem-dependent, which would make the §1.9 queue order non-reproducible.]
+///
+/// **Deliberately NOT owned here (sibling §1.1 boxes):** the hidden/system-file ignore filter (P2.65 — a
+/// dotfile is still a candidate here), the dropped-root retention for §2.7 (P2.66), the per-entry
+/// read-failure → `SkippedItem` accounting (P2.67 — a per-entry error is silently skipped here, the skip ROW
+/// is P2.67's), the fatal-walk-root stop (P2.68), and the `CollectingId` cooperative-cancel poll (P2.69).
+///
+/// [Build-Session-Entscheidung: P2.64 — a symlink's TARGET type is classified by one link-following
+/// `std::fs::metadata` stat (a type check, NOT a content read and NOT §2.3 identity resolution): a
+/// symlinked-file is kept, a symlinked-dir excluded, a dangling/denied target skipped — anchored to §1.1
+/// ("symlinked dirs not traversed … file-level aliasing handled by §2.3") + the T7 corpus expectation. A
+/// dropped symlinked-dir ROOT is followed (walkdir's `follow_root_links` default) — the user chose it
+/// explicitly; the no-traversal rule defends against cycles DISCOVERED mid-walk.]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P2.64 authors the §2.4.1 freeze-spine step-1 walk primitive (the §1.1 recursive folder \
+                  enumeration). Its production caller is the `ingest` funnel, consumed at P3.49 (the CSV→TSV \
+                  walking skeleton); dead in the production build pending that wiring, exercised by the \
+                  in-module walk_tests below — the same per-fn interface-shell attribute `ingest` itself \
+                  carried (P2.62) before P2.63 consumed it."
+    )
+)]
+fn walk_intake_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for root in roots {
+        // `follow_links(false)`: a symlinked subdirectory is never descended (loop-safety). `sort_by_file_name`:
+        // a deterministic per-directory order (§1.9/§2.5). A dropped FILE root walks as a single entry.
+        for entry in WalkDir::new(root).follow_links(false).sort_by_file_name() {
+            // A per-entry read error (denied dir, vanished/dangling entry) skips and CONTINUES — one bad entry
+            // never aborts the ingest (§1.1); its `SkippedItem` accounting is P2.67, the fatal-root split P2.68.
+            let Ok(entry) = entry else { continue };
+            let file_type = entry.file_type();
+            let is_candidate = if file_type.is_symlink() {
+                // Not descended (above). Kept ONLY if it targets a FILE — a symlinked DIR is excluded here, a
+                // symlinked FILE is a §2.3-resolvable candidate (T7). The stat is a type check, not a read.
+                std::fs::metadata(entry.path()).is_ok_and(|target| target.is_file())
+            } else {
+                // A real directory is descended by `walkdir` (not itself a candidate); a real file is a candidate.
+                file_type.is_file()
+            };
+            if is_candidate {
+                candidates.push(entry.into_path());
+            }
+        }
+    }
+    candidates
+}
+
+#[cfg(test)]
+mod walk_tests {
+    //! §6.4.1 unit (G15) for the §2.4.1 freeze-spine step-1 walk (P2.64), run against a REAL temp filesystem
+    //! (test-strategy §0.1: never mock the thing under test — the recursion IS what P2.64 proves, so it walks
+    //! real directories, never an in-memory fake). Covers: a dropped file root, a flat dir, depth-first
+    //! recursion across nested dirs, deterministic sorted order, an empty dir, multiple roots, the scope
+    //! boundary (hidden files NOT yet filtered — that is P2.65), and (unix) the symlinked-dir-not-traversed +
+    //! symlinked-file-IS-a-candidate rules. [Build-Session-Entscheidung: P2.64]
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    /// Create an empty file at `dir/rel`, materialising any parent directories — the corpus builder for the
+    /// real-FS walk tests.
+    fn touch(dir: &std::path::Path, rel: &str) -> PathBuf {
+        let p = dir.join(rel);
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).expect("create parent dirs");
+        }
+        fs::write(&p, b"").expect("write fixture file");
+        p
+    }
+
+    fn file_names(paths: &[PathBuf]) -> Vec<std::ffi::OsString> {
+        paths
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_owned()))
+            .collect()
+    }
+
+    // §6.4.1: a dropped FILE root is a candidate directly (no folder to walk) — `walkdir` yields a file path
+    // as a single entry (§1.1 "a dropped FILE is yielded directly").
+    #[test]
+    fn walk_yields_a_dropped_file_root_directly() {
+        let tmp = tempdir().expect("tempdir");
+        let file = touch(tmp.path(), "lonely.csv");
+        let got = walk_intake_roots(std::slice::from_ref(&file));
+        assert_eq!(
+            got,
+            vec![file],
+            "§1.1: a dropped FILE root is a candidate directly, no recursion"
+        );
+    }
+
+    // §6.4.1: a flat folder yields every file it directly contains.
+    #[test]
+    fn walk_yields_every_file_in_a_flat_dir() {
+        let tmp = tempdir().expect("tempdir");
+        let a = touch(tmp.path(), "a.csv");
+        let b = touch(tmp.path(), "b.txt");
+        let got = walk_intake_roots(&[tmp.path().to_path_buf()]);
+        assert!(got.contains(&a) && got.contains(&b), "both files collected");
+        assert_eq!(got.len(), 2, "only the two files, no directory entries");
+    }
+
+    // §6.4.1/§1.9: recursion reaches files at every depth; directory entries themselves are NOT candidates;
+    // and the GLOBAL cross-directory order is deterministic. Depth-first + per-directory sort means the `a/`
+    // subtree (`a` < `top.csv`) is fully emitted before `top.csv`, and within it the `b/` subtree
+    // (`b` < `mid.csv`) before `a/mid.csv` — so the exact sequence is `a/b/deep.csv`, `a/mid.csv`, `top.csv`.
+    // Asserting the exact ordered vec pins the cross-directory interleaving, not just membership (closes the
+    // flat-only-order gap). [Build-Session-Entscheidung: P2.64]
+    #[test]
+    fn walk_recurses_into_nested_directories_in_deterministic_global_order() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        let top = touch(root, "top.csv");
+        let mid = touch(root, "a/mid.csv");
+        let deep = touch(root, "a/b/deep.csv");
+        let got = walk_intake_roots(&[root.to_path_buf()]);
+        assert_eq!(
+            got,
+            vec![deep, mid, top],
+            "§1.9: depth-first, per-directory-sorted — a/b/deep.csv, then a/mid.csv, then top.csv; only the \
+             3 files (directory entries are descended, not yielded)"
+        );
+    }
+
+    // §1.9/§2.5: the walk order is DETERMINISTIC (sorted by file name) — reproducible across runs, never the
+    // platform's filesystem readdir order. Two runs over the same tree give the identical, sorted order.
+    #[test]
+    fn walk_yields_a_deterministic_sorted_order() {
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        for name in ["zebra.csv", "alpha.csv", "mango.csv"] {
+            touch(root, name);
+        }
+        let first = walk_intake_roots(&[root.to_path_buf()]);
+        let second = walk_intake_roots(&[root.to_path_buf()]);
+        assert_eq!(
+            first, second,
+            "§2.5: the walk order is reproducible across runs"
+        );
+        assert_eq!(
+            file_names(&first),
+            ["alpha.csv", "mango.csv", "zebra.csv"]
+                .into_iter()
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>(),
+            "§1.9: a deterministic, file-name-sorted traversal order"
+        );
+    }
+
+    // §6.4.1: an empty folder yields no candidates (not an error, just nothing).
+    #[test]
+    fn walk_of_an_empty_dir_yields_nothing() {
+        let tmp = tempdir().expect("tempdir");
+        let got = walk_intake_roots(&[tmp.path().to_path_buf()]);
+        assert!(got.is_empty(), "an empty folder yields no candidates");
+    }
+
+    // §1.1: candidates from EVERY dropped root are combined into the one frozen candidate list, in the
+    // dropped-root INPUT order (root a's candidates, then root b's) — a deterministic combination, not just
+    // a set. [Build-Session-Entscheidung: P2.64]
+    #[test]
+    fn walk_collects_across_multiple_roots_in_input_order() {
+        let a = tempdir().expect("tempdir a");
+        let b = tempdir().expect("tempdir b");
+        let fa = touch(a.path(), "from_a.csv");
+        let fb = touch(b.path(), "sub/from_b.csv");
+        let got = walk_intake_roots(&[a.path().to_path_buf(), b.path().to_path_buf()]);
+        assert_eq!(
+            got,
+            vec![fa, fb],
+            "§1.1: candidates from every root, combined in dropped-root input order (a before b)"
+        );
+    }
+
+    // Scope boundary (P2.64 ⊥ P2.65): P2.64 owns recursion ONLY, so a hidden/dotfile is STILL a candidate
+    // here — the §1.1 hidden/system-file ignore filter is the sibling box P2.65. This pins the boundary so
+    // P2.65's filter is a visible, justified addition (a `[Test-Change]` when it lands), not an assumed
+    // already-present behaviour. [Build-Session-Entscheidung: P2.64]
+    #[test]
+    fn walk_does_not_yet_filter_hidden_files() {
+        let tmp = tempdir().expect("tempdir");
+        let dot = touch(tmp.path(), ".hidden.csv");
+        let got = walk_intake_roots(&[tmp.path().to_path_buf()]);
+        assert!(
+            got.contains(&dot),
+            "P2.64 owns recursion only — the hidden/system-file ignore filter is P2.65"
+        );
+    }
+
+    // §1.1 (unix): a symlinked DIRECTORY is NOT traversed (loop-safety, T7), while a symlinked FILE IS a
+    // §2.3-resolvable candidate. The symlinked dir points OUTSIDE the walked tree, so its target's file is
+    // reachable ONLY via the link — if the walk descended it, `secret.csv` would appear; it must not.
+    #[cfg(unix)]
+    #[test]
+    fn walk_skips_a_symlinked_dir_but_keeps_a_symlinked_file() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempdir().expect("walked-root tempdir");
+        let ext = tempdir().expect("symlink-target tempdir (outside the walk)");
+        let root = tmp.path();
+
+        let nested = touch(root, "dir/a.csv"); // a real file — must be found
+        fs::write(ext.path().join("secret.csv"), b"").expect("write the out-of-tree target");
+        symlink(ext.path(), root.join("dir/link_to_ext")).expect("symlink a dir → ext");
+        let file_target = touch(root, "files/real.csv");
+        symlink(&file_target, root.join("dir/link_to_file.csv")).expect("symlink a file");
+
+        let got = walk_intake_roots(&[root.to_path_buf()]);
+
+        assert!(got.contains(&nested), "the real nested file is walked");
+        assert!(
+            !got.iter().any(|p| p.ends_with("secret.csv")),
+            "§1.1/T7: a symlinked directory is NOT traversed — its target's files stay unreachable via the link"
+        );
+        assert!(
+            file_names(&got).contains(&std::ffi::OsString::from("link_to_file.csv")),
+            "§1.1: a symlinked FILE IS a candidate (file-level aliasing resolved by §2.3 later)"
+        );
+    }
+
+    // §1.1 (unix): a DANGLING symlink (target removed) is skipped, not a panic and not a candidate — its
+    // `SkippedItem` accounting is P2.67; here the walk simply continues past it.
+    #[cfg(unix)]
+    #[test]
+    fn walk_skips_a_dangling_symlink_without_panicking() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempdir().expect("tempdir");
+        let root = tmp.path();
+        let good = touch(root, "good.csv");
+        symlink(root.join("nonexistent-target"), root.join("dangling.csv"))
+            .expect("dangling symlink");
+        let got = walk_intake_roots(&[root.to_path_buf()]);
+        assert_eq!(
+            got,
+            vec![good],
+            "a dangling symlink is skipped; the good file still collected"
+        );
     }
 }
 

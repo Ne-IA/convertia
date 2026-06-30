@@ -620,6 +620,7 @@ dependencies = [
  "tempfile",
  "tokio-util",
  "uuid",
+ "walkdir",
 ]
 
 [[package]]

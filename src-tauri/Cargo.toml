@@ -36,6 +36,15 @@ tauri-specta = { version = "=2.0.0-rc.25", features = ["derive"] }
 # transitively via `tauri`, so this is a direct-edge promotion (no newly-resolved package). §0.8 floor row: P2.134.
 tokio-util = "0.7.18"
 uuid = { version = "1.23.3", features = ["serde", "v4"] }
+# [P2.64] §1.1 recursive intake — the depth-first folder walk (`crate::orchestrator::walk_intake_roots`)
+# that expands a dropped/picked FOLDER into candidate file paths (the §2.4.1 freeze-spine step 1; the WebView
+# cannot enumerate a directory, §0.4). Caret-pinned to the lock-resolved 2.5.0 (the normal-lib convention
+# `serde`/`uuid`/`tokio-util` use; `=`-exact is reserved for the codegen-coupled specta tools); no extra
+# features. ALREADY in Cargo.lock transitively (via the dev/build graph), so this is a direct-edge promotion
+# (no newly-resolved package). The §0.8 drift-FLOOR row already exists in check-supply-chain's PINNED_FLOORS
+# (added at P1.59, reconcile-to-present), so — unlike tokio-util (P2.133 dep / P2.134 floor) — no paired
+# L(-1) floor box is needed: the floor is satisfied the moment this edge lands.
+walkdir = "2.5.0"
 
 # [Build-Session-Entscheidung: P1.26] §0.4.5 IPC type-gen: the TypeScript exporter the `bindings_codegen`
 # test uses to emit the single tracked `src/lib/ipc/bindings.ts` (driven by `cargo run -p xtask --
