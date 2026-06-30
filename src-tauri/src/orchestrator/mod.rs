@@ -1122,12 +1122,12 @@ struct WalkSkip {
 /// failure DISCOVERED *inside* a root (a depth > 0 error → an `Unreadable` [`WalkSkip`], P2.67, the walk
 /// CONTINUES). Per §1.1 the walk is STOPPED **only** by a C13 cancel (P2.69) or this fatal walk-root error:
 /// "a single bad file inside a thousand-file folder never sinks the whole ingest", but a bad ROOT does — so
-/// [`walk_intake_roots`] yields this as an `Err`, never a skipped row. The P3.49 freeze spine maps it to the
-/// §1.1 fatal-ingest surface; `cause` reuses the §0.6 [`ReadFailure`] taxonomy so that surfacing distinguishes
-/// "gone" (`NotFound`) from "unreadable" (`PermissionDenied`/`IoError`). It needs no dead-code suppression
-/// attribute: its derived impls make it "used" in the non-test build (the same reason its sibling
-/// [`WalkSkip`] needs none), so the only pending wiring is its production caller — the P3.49 ingest funnel
-/// that maps it to the fatal surface.
+/// [`walk_intake_roots`] yields this in the `Err(`[`WalkAbort`]`::FatalRoot)` arm, never a skipped row. The
+/// P3.49 freeze spine maps it to the §1.1 fatal-ingest surface; `cause` reuses the §0.6 [`ReadFailure`]
+/// taxonomy so that surfacing distinguishes "gone" (`NotFound`) from "unreadable"
+/// (`PermissionDenied`/`IoError`). It needs no dead-code suppression attribute: its derived impls make it
+/// "used" in the non-test build (the same reason its sibling [`WalkSkip`] needs none), so the only pending
+/// wiring is its production caller — the P3.49 ingest funnel that maps it to the fatal surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FatalWalkRoot {
     /// The dropped/picked root that could not be read (for the §1.1 fatal-ingest message).
@@ -1135,6 +1135,24 @@ struct FatalWalkRoot {
     /// Why the root could not be read — the §0.6 [`ReadFailure`] taxonomy reused here (gone vs denied/io), so
     /// the P3.49 surfacing distinguishes "gone" (`NotFound`) from "unreadable".
     cause: ReadFailure,
+}
+
+/// Why the §1.1 intake walk did NOT produce a freezable set — the `Err` of [`walk_intake_roots`]
+/// (P2.68/P2.69). Both arms mean "stop; there is nothing to freeze", so the P3.49 freeze spine never freezes a
+/// partial set; it maps each arm to its §1.1 surface: a `FatalRoot` to the fatal-ingest message, a `Cancelled`
+/// to the silent return-to-Idle / `CollectedSet::Empty`. A normal walk is the `Ok([`IntakeWalk`])` arm. It
+/// needs no dead-code suppression attribute: its derived impls make it "used" in the non-test build (the
+/// [`FatalWalkRoot`] / [`WalkSkip`] precedent); the only pending wiring is its production reader — the P3.49
+/// ingest funnel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WalkAbort {
+    /// The ingest was cooperatively CANCELLED mid-walk — C13 `cancel_ingest` (§0.4.1) tripped the
+    /// `CollectingId` token the walk polls (§1.1, P2.69). The partial, not-yet-frozen set is discarded; there
+    /// is NO cleanup obligation (nothing is written during the walk).
+    Cancelled,
+    /// The dropped/picked ROOT itself was unreadable/gone — a fatal walk-root error (§1.1, P2.68), distinct
+    /// from the P2.67 per-item `Unreadable` skip (which continues the walk).
+    FatalRoot(FatalWalkRoot),
 }
 
 /// **Step 1 of the §2.4.1 freeze spine (P2.64)** — expand the dropped/picked intake roots into a flat,
@@ -1178,17 +1196,20 @@ struct FatalWalkRoot {
 /// [Build-Session-Entscheidung: P2.67 — record only the walk-level `Unreadable` read failures; `Empty` and
 /// content-ineligibility defer to §1.2 detection (P3) and the `ItemId` to the freeze (P2.75).]
 ///
-/// **Fatal walk-root stop OWNED here (P2.68):** a DEPTH-0 `walkdir` error — the dropped/picked ROOT itself
-/// unreadable or gone — is a **fatal** error that **STOPS the walk** ([`walk_intake_roots`] returns
-/// `Err(`[`FatalWalkRoot`]`)`), distinct from the P2.67 per-item `Unreadable` skip that CONTINUES (§1.1: "the
-/// walk is stopped only by a C13 cancel or a fatal walk-root error … a single bad file never sinks the whole
-/// ingest"). A bad ROOT does sink it. Across multiple dropped roots the FIRST fatal root (in input order)
-/// stops the whole walk and its already-collected candidates are discarded — the `Err` is the abort, never a
-/// partial. [Derived-Assumption: P2.68 — multi-root: the first fatal root stops the WHOLE walk, from §1.1
-/// "the walk is stopped … a single bad file never sinks the ingest" (a root is not a per-item skip).]
-///
-/// **Deliberately NOT owned here (sibling §1.1 box):** the `CollectingId` cooperative-cancel poll (P2.69) —
-/// the other §1.1 walk-stopping cause.
+/// **Two walk-stopping outcomes OWNED here**, both returned in the `Err` arm ([`WalkAbort`]) so the P3.49
+/// freeze spine never freezes a partial set (§1.1: "the walk is stopped only by a C13 cancel or a fatal
+/// walk-root error … a single bad file never sinks the whole ingest"):
+/// - **Fatal walk-root stop (P2.68):** a DEPTH-0 `walkdir` error — the dropped/picked ROOT itself unreadable
+///   or gone — STOPS the walk (`Err(WalkAbort::FatalRoot(`[`FatalWalkRoot`]`))`), distinct from the P2.67
+///   per-item `Unreadable` skip that CONTINUES. A bad ROOT does sink the ingest. Across multiple dropped
+///   roots the FIRST fatal root (input order) stops the whole walk; its already-collected candidates are
+///   discarded. [Derived-Assumption: P2.68 — multi-root: the first fatal root stops the WHOLE walk, from §1.1
+///   "the walk is stopped … a single bad file never sinks the ingest" (a root is not a per-item skip).]
+/// - **Cooperative cancellation (P2.69):** the loop polls the ingest-scoped `cancel` token each entry; when
+///   C13 `cancel_ingest` trips it via the `CollectingId` (§1.1/§0.4.1, registered by the `IngestRegistry` at
+///   handler entry), the walk STOPS and returns `Err(WalkAbort::Cancelled)`, discarding the partial,
+///   not-yet-frozen set — NO cleanup obligation (nothing is written during the walk). The §1.2 detection-loop
+///   poll joins at P3 (detection is unbuilt); P2.69 owns the walk-loop poll.
 ///
 /// [Build-Session-Entscheidung: P2.64 — a symlink's TARGET type is classified by one link-following
 /// `std::fs::metadata` stat (a type check, NOT a content read and NOT §2.3 identity resolution): a
@@ -1207,7 +1228,10 @@ struct FatalWalkRoot {
                   carried (P2.62) before P2.63 consumed it."
     )
 )]
-fn walk_intake_roots(roots: &[PathBuf]) -> Result<IntakeWalk, FatalWalkRoot> {
+fn walk_intake_roots(
+    roots: &[PathBuf],
+    cancel: &CancellationToken,
+) -> Result<IntakeWalk, WalkAbort> {
     let mut candidates = Vec::new();
     let mut skipped = Vec::new();
     for root in roots {
@@ -1222,6 +1246,13 @@ fn walk_intake_roots(roots: &[PathBuf]) -> Result<IntakeWalk, FatalWalkRoot> {
             .into_iter()
             .filter_entry(|entry| entry.depth() == 0 || !entry_is_hidden_or_system(entry));
         for entry in walk {
+            // P2.69: poll the ingest-scoped cancellation token each entry — C13 `cancel_ingest` (§0.4.1) trips
+            // it via the `CollectingId`, and the §1.1 walk stops COOPERATIVELY, discarding the partial,
+            // not-yet-frozen set (the in-progress `candidates`/`skipped` are dropped on return) — there is NO
+            // cleanup obligation, nothing is written during the walk. The §1.2 detection-loop poll joins at P3.
+            if cancel.is_cancelled() {
+                return Err(WalkAbort::Cancelled);
+            }
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(err) => {
@@ -1231,10 +1262,10 @@ fn walk_intake_roots(roots: &[PathBuf]) -> Result<IntakeWalk, FatalWalkRoot> {
                     // a bad root sinks the ingest, a bad file never does. `cause` carries the gone-vs-unreadable
                     // §0.6 `ReadFailure` for the P3.49 fatal-ingest message.
                     if err.depth() == 0 {
-                        return Err(FatalWalkRoot {
+                        return Err(WalkAbort::FatalRoot(FatalWalkRoot {
                             root: root.clone(),
                             cause: classify_walk_root_failure(&err),
-                        });
+                        }));
                     }
                     // P2.67: a depth > 0 error is a DISCOVERED entry/subdir that could not be read — record it
                     // `Unreadable` + CONTINUE (one bad entry never sinks a thousand-file folder).
@@ -1267,7 +1298,8 @@ fn walk_intake_roots(roots: &[PathBuf]) -> Result<IntakeWalk, FatalWalkRoot> {
     // subtree / "open folder" anchor (§2.7 computes the common root; this is plain §1.1 retention). Every
     // dropped root is kept, in input order, regardless of how many candidates it yielded (an empty folder
     // still anchors "open folder"). `skipped` carries the §1.1 per-item Unreadable read failures (P2.67).
-    // Reaching here means no root was fatally unreadable/gone (P2.68 returns early on a DEPTH-0 error).
+    // Reaching here means no root was fatally unreadable/gone (P2.68 returns early on a DEPTH-0 error) and no
+    // cancel was observed (P2.69 returns early on a tripped token) — the walk completed into a freezable set.
     Ok(IntakeWalk {
         files: candidates,
         roots: roots.to_vec(),
@@ -1365,10 +1397,11 @@ mod walk_tests {
     //! sentinels filtered, a hidden directory not descended, the directly-dropped-root exemption — P2.65), the
     //! §1.1 per-item read-failure recording (a clean tree records no skips; (unix) a dangling symlink + an
     //! unreadable subdir → `Unreadable` `WalkSkip`, walk continues — P2.67), the §1.1 FATAL walk-root stop (a
-    //! gone/unreadable dropped ROOT → `Err(FatalWalkRoot)`, distinct from the per-item skip; multi-root
-    //! short-circuit — P2.68), and (unix) the symlinked-dir-not-traversed + symlinked-file-IS-a-candidate
-    //! rules.
-    //! [Build-Session-Entscheidung: P2.64/P2.65/P2.67/P2.68]
+    //! gone/unreadable dropped ROOT → `Err(WalkAbort::FatalRoot)`, distinct from the per-item skip; multi-root
+    //! short-circuit — P2.68), the §1.1 cooperative-cancel poll (a tripped `CollectingId` token →
+    //! `Err(WalkAbort::Cancelled)`, discarding the partial set — P2.69), and (unix) the
+    //! symlinked-dir-not-traversed + symlinked-file-IS-a-candidate rules.
+    //! [Build-Session-Entscheidung: P2.64/P2.65/P2.67/P2.68/P2.69]
     use super::*;
     use std::fs;
     use tempfile::tempdir;
@@ -1384,10 +1417,17 @@ mod walk_tests {
         p
     }
 
-    /// Walk roots that are all readable, unwrapping the P2.68 `Result` — the success-path call the
-    /// non-fatal-root tests use so the fatal-root `Err` (P2.68) is asserted only by the tests that mean to.
+    /// Walk roots that are all readable, with a fresh (never-cancelled) token, unwrapping the
+    /// `Result<IntakeWalk, WalkAbort>` — the success-path call the non-abort tests use so the abort arms
+    /// (`FatalRoot` P2.68 / `Cancelled` P2.69) are asserted only by the tests that mean to.
+    /// [Test-Change: P2.69 — old-obsolete+new-correct, §1.1] the prior single-arg
+    /// `walk_intake_roots(roots).expect("walk succeeds …")` is obsolete because P2.69 added the `cancel`
+    /// parameter; the new call passes a fresh un-cancelled token and the success assertion is UNCHANGED in
+    /// meaning (readable roots + a never-cancelled token always complete — the suite stays green), so this
+    /// adapts the signature, it does not relax the check.
     fn walk_ok(roots: &[PathBuf]) -> IntakeWalk {
-        walk_intake_roots(roots).expect("walk succeeds — every dropped root here is readable")
+        walk_intake_roots(roots, &CancellationToken::new())
+            .expect("walk succeeds — every dropped root here is readable, token never cancelled")
     }
 
     fn file_names(paths: &[PathBuf]) -> Vec<std::ffi::OsString> {
@@ -1786,11 +1826,11 @@ mod walk_tests {
         let tmp = tempdir().expect("tempdir");
         let gone = tmp.path().join("never-existed");
         assert_eq!(
-            walk_intake_roots(std::slice::from_ref(&gone)).err(),
-            Some(FatalWalkRoot {
+            walk_intake_roots(std::slice::from_ref(&gone), &CancellationToken::new()).err(),
+            Some(WalkAbort::FatalRoot(FatalWalkRoot {
                 root: gone,
                 cause: ReadFailure::NotFound,
-            }),
+            })),
             "§1.1/P2.68: a gone dropped root STOPS the walk fatally (NotFound) — an Err, never an Ok with a \
              per-item skip"
         );
@@ -1809,11 +1849,11 @@ mod walk_tests {
         // The whole `Result` is `Err` — NOT an `Ok` carrying the readable root's `kept.csv` (which is what a
         // per-item skip would leave). The fatal root (b) is reported; the earlier root's candidates discarded.
         assert_eq!(
-            walk_intake_roots(&roots).err(),
-            Some(FatalWalkRoot {
+            walk_intake_roots(&roots, &CancellationToken::new()).err(),
+            Some(WalkAbort::FatalRoot(FatalWalkRoot {
                 root: gone,
                 cause: ReadFailure::NotFound,
-            }),
+            })),
             "§1.1/P2.68: the first fatal root STOPS the whole walk — an Err, not a partial Ok with the \
              readable root's candidates (a per-item skip would have continued)"
         );
@@ -1834,7 +1874,7 @@ mod walk_tests {
         touch(&denied, "inside.csv");
         fs::set_permissions(&denied, fs::Permissions::from_mode(0o000)).expect("chmod 000");
         let can_read_anyway = fs::read_dir(&denied).is_ok();
-        let result = walk_intake_roots(std::slice::from_ref(&denied));
+        let result = walk_intake_roots(std::slice::from_ref(&denied), &CancellationToken::new());
         // restore perms so the tempdir cleanup can remove the subtree
         fs::set_permissions(&denied, fs::Permissions::from_mode(0o755)).ok();
         if can_read_anyway {
@@ -1842,12 +1882,46 @@ mod walk_tests {
         }
         assert_eq!(
             result.err(),
-            Some(FatalWalkRoot {
+            Some(WalkAbort::FatalRoot(FatalWalkRoot {
                 root: denied,
                 cause: ReadFailure::PermissionDenied,
-            }),
+            })),
             "§1.1/P2.68: an unreadable dropped ROOT stops the walk fatally (PermissionDenied), not a per-item \
              skip"
+        );
+    }
+
+    // §1.1 (P2.69): the walk polls the ingest-scoped `CollectingId` token and STOPS cooperatively when C13
+    // `cancel_ingest` has tripped it — returning `WalkAbort::Cancelled` and discarding the partial,
+    // not-yet-frozen set (no cleanup obligation, nothing is written during the walk). Pre-cancelling the
+    // token exercises the poll deterministically (it trips on the first entry); the contrast call with a
+    // fresh token over the SAME populated dir proves the token IS the cause — that dir collects both files
+    // normally, so the cancelled run's empty Err is the poll discarding the set, not an empty dir.
+    #[test]
+    fn a_cancelled_ingest_token_stops_the_walk_and_discards_the_partial_set() {
+        let tmp = tempdir().expect("tempdir");
+        touch(tmp.path(), "a.csv");
+        touch(tmp.path(), "b.csv");
+        let root = [tmp.path().to_path_buf()];
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert_eq!(
+            walk_intake_roots(&root, &cancelled).err(),
+            Some(WalkAbort::Cancelled),
+            "§1.1/P2.69: a tripped CollectingId token stops the walk (Cancelled) and discards the partial set \
+             — an Err, never an Ok with a partial candidate list"
+        );
+
+        // Contrast: the SAME populated dir with a fresh (un-cancelled) token completes with both files — so
+        // the cancelled run above stopped because of the poll, not because the dir was empty.
+        let fresh = CancellationToken::new();
+        let walk = walk_intake_roots(&root, &fresh)
+            .expect("a fresh token never trips — the walk completes");
+        assert_eq!(
+            walk.files.len(),
+            2,
+            "§1.1/P2.69: an un-cancelled token collects normally (the poll does not false-trip)"
         );
     }
 }
