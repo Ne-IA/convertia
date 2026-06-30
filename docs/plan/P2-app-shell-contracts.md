@@ -265,7 +265,7 @@
   needs: P2.64, P2.16
 - [x] **P2.68** [RUST] Encode the fatal-walk-root-error stop (dropped root itself unreadable/gone) distinct from per-item skip · §1.1
   needs: P2.67
-- [ ] **P2.69** [RUST] Implement cooperative ingest cancellation — poll the `CollectingId` token in the walk/detect loop, discard partial unfrozen set (no cleanup obligation) · §1.1 §0.4.1
+- [x] **P2.69** [RUST] Implement cooperative ingest cancellation — poll the `CollectingId` token in the walk/detect loop, discard partial unfrozen set (no cleanup obligation) · §1.1 §0.4.1
   needs: P2.64, P2.45
 - [ ] **P2.70** [RUST] Implement the C2a native-dialog-phase rules — async/`spawn_blocking` picker (never `blocking_pick_file` on a Tokio worker), token registered before dialog opens · §1.1 §0.4.1
   needs: P2.69, P2.23
