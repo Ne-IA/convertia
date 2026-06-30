@@ -102,13 +102,13 @@ mod command_surface {
     // [Test-Change: P2.22 — old-obsolete+new-correct, §0.4.1] old: the P2.21 all-shells test invoked the
     // bare-`()` C1 shell; new (verified by read-back — C1 now returns `Result<CollectedSet, IpcError>` over a
     // typed arg set, so the no-arg `()` invocation is obsolete and would no longer compile): C1's typed
-    // contract is exercised by `intake::c1_contract::c1_ingest_paths_contract_is_invocable_and_typed`, so its
-    // line moves there.
+    // contract is exercised in the `intake::c1_contract` module (since P2.60 the AppHandle-bound handler is the
+    // §1.1a boot-glue split — pure-helper unit tests + a handler source-scan), so its line moves there.
     // [Test-Change: P2.23 — old-obsolete+new-correct, §0.4.1] old: this test invoked the bare-`()` C2a
     // `pick_for_intake` shell; new (verified by read-back — C2a now returns `Result<CollectedSet, IpcError>`
     // over a typed arg set, so the no-arg `()` invocation is obsolete and would no longer compile): C2a's typed
-    // contract is exercised by `intake::c2a_contract::c2a_pick_for_intake_contract_is_invocable_and_typed`, so
-    // its line moves there.
+    // contract is exercised in the `intake::c2a_contract` module (since P2.70 the AppHandle-bound handler is the
+    // §1.1a boot-glue split — pure-helper unit tests + handler source-scans), so its line moves there.
     // [Test-Change: P2.24 — old-obsolete+new-correct, §0.4.1] old: this test invoked the bare-`()` C2b
     // `pick_destination` shell with no value assertion; new (verified by read-back — C2b now returns
     // `Result<Option<PathBuf>, IpcError>` (the §0.4 universal error shape), so the bare invocation no longer

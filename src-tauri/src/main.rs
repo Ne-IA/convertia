@@ -742,6 +742,24 @@ mod launch_intake {
             );
         }
 
+        // §6.4.1 unit (G15): main() REGISTERS the §0.4.4 IngestRegistry (P2.70) so the C2a `pick_for_intake`
+        // handler's `app.state::<IngestRegistry>()` resolve cannot fail — the store its RAII guard registers
+        // the `CollectingId` token in BEFORE opening the native dialog (§1.1). A source-scan on main()'s body
+        // (the `.manage` is boot-glue, not cargo-test-runnable; the registry LOGIC is unit-tested on
+        // `crate::orchestrator::IngestRegistry`). Needle `concat!`-assembled (self-match avoidance).
+        // [Build-Session-Entscheidung: P2.70]
+        #[test]
+        fn main_registers_the_managed_ingest_registry() {
+            let main_src = crate::boot_invariants::production_main_body();
+            assert!(
+                main_src.contains(concat!(
+                    ".manage(crate::orchestrator::Ingest",
+                    "Registry::default())"
+                )),
+                "§0.4.4/§1.1: main() must register the State<IngestRegistry> so the C2a register_guard resolve cannot fail (P2.70)"
+            );
+        }
+
         // §6.4.1 unit (G15): the §7.8.1 launch-origin decision (P2.56) — a first-launch Open-with (WebView not
         // ready) is LaunchArg (buffered + drained); a while-running Open-with is SecondInstance. The pure rule
         // beside the macOS Open-with glue (the §1.1a boot-stage pattern), unit-tested in isolation.
@@ -882,6 +900,13 @@ fn main() -> tauri::Result<()> {
         // before the event loop) → the `frontend_ready` resolve is infallible by construction (no panic under the
         // crate-root clippy::panic deny). Its live consumer — the P2 launch funnel — exists now.
         .manage(crate::orchestrator::FrontendReady::default())
+        // [Build-Session-Entscheidung: P2.70] §0.4.4 ingest-cancellation store — register the IngestRegistry
+        // (the CollectingId → token store, P2.45) so the C2a pick_for_intake handler can register the
+        // CollectingId token via its RAII guard BEFORE opening the native dialog (§1.1), and C13 cancel_ingest
+        // can trip it (P2.71). Builder chain (compile-time Default, before the event loop) → the handler's
+        // app.state::<IngestRegistry>() resolve is infallible by construction (no panic under the crate-root
+        // clippy::panic deny). Its first live consumer — the P2.70 C2a dialog handler — exists now.
+        .manage(crate::orchestrator::IngestRegistry::default())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             // §0.4.5 IPC event-channel mount (the P1.13 tauri-specta seam).

@@ -885,6 +885,55 @@ impl IngestRegistry {
     pub fn release(&self, collecting_id: CollectingId) {
         self.lock().remove(&collecting_id);
     }
+
+    /// Register `collecting_id`'s token (as [`register`](IngestRegistry::register)) and return an **RAII
+    /// guard** that [`release`](IngestRegistry::release)s it on **Drop** — the §1.1 "token drop on EVERY C2a
+    /// exit branch" realized **by construction** (P2.70). The C2a `pick_for_intake` handler binds the guard
+    /// **before opening the native dialog**, so every return path — the picked-and-funnelled branch, the
+    /// dialog-cancelled → `Empty` branch, the C13-tripped → `Empty` branch, and any `?` early-return — drops
+    /// the guard and de-registers the token; no branch can leak it (the §1.1 hazard: the walk loop that
+    /// normally drops the token never runs on a cancelled dialog). Registering before the modal also keeps
+    /// C13 honest: a `cancel_ingest` arriving while the dialog is up trips this token, which the handler reads
+    /// post-dialog via [`IngestGuard::is_cancelled`]. [Build-Session-Entscheidung: P2.70]
+    pub fn register_guard(&self, collecting_id: CollectingId) -> IngestGuard<'_> {
+        let token = self.register(collecting_id);
+        IngestGuard {
+            registry: self,
+            collecting_id,
+            token,
+        }
+    }
+}
+
+/// An RAII registration guard for an ingest-scoped `CollectingId` token (§1.1, P2.70) — returned by
+/// [`IngestRegistry::register_guard`]. Its [`Drop`] calls [`IngestRegistry::release`], so the §1.1 "drop on
+/// EVERY C2a exit branch" rule holds **structurally**: whichever way the C2a handler returns (picked,
+/// dialog-cancelled, C13-tripped, or an error `?`), the guard drops and the token is de-registered — no leak.
+/// It borrows the registry (not an `AppHandle`), so the guard's drop-on-every-branch behaviour is unit-tested
+/// against a real `IngestRegistry` with no Tauri runtime. [`is_cancelled`](IngestGuard::is_cancelled) exposes
+/// the token's state for the §1.1 post-dialog check.
+pub struct IngestGuard<'r> {
+    registry: &'r IngestRegistry,
+    collecting_id: CollectingId,
+    token: CancellationToken,
+}
+
+impl IngestGuard<'_> {
+    /// Whether a C13 `cancel_ingest` tripped this ingest's token while the C2a dialog was up (the §1.1
+    /// post-dialog check — on a trip the handler abandons the picked paths and yields `CollectedSet::Empty`
+    /// rather than walking them). A LIVE check: until P2.71 wires C13's `.cancel()` nothing trips the token,
+    /// so this reads `false` — a reachable-by-construction real read, not an inert no-op (no hole).
+    pub fn is_cancelled(&self) -> bool {
+        self.token.is_cancelled()
+    }
+}
+
+impl Drop for IngestGuard<'_> {
+    fn drop(&mut self) {
+        // §1.1 (P2.70): de-register the ingest token on the C2a handler's exit — fires on every return path
+        // (Rust drops the guard regardless of which branch returns), so the token can never leak.
+        self.registry.release(self.collecting_id);
+    }
 }
 
 // ─── §7.8.1 first-launch intake buffer — the PendingIntake stash/drain store (P2.58) ─────────────────────
@@ -3111,6 +3160,45 @@ mod tests {
         assert!(
             !b.is_cancelled(),
             "§0.4.4: ingest A's cancel does not touch ingest B's independent token"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §1.1 C2a RAII guard (P2.70) — `register_guard` registers a LIVE token (a C13
+    // cancel finds + trips it) AND the guard exposes the trip for the §1.1 post-dialog check
+    // (`is_cancelled()` becomes true once C13 trips the token while the dialog is up). No tokio runtime
+    // (synchronous atomic ops). [Build-Session-Entscheidung: P2.70]
+    #[test]
+    fn ingest_guard_registers_a_live_token_and_exposes_cancellation() {
+        let reg = IngestRegistry::default();
+        let guard = reg.register_guard(collecting_id());
+        assert!(
+            !guard.is_cancelled(),
+            "§1.1/P2.70: a freshly registered guard's token is live — the post-dialog check sees no C13 yet"
+        );
+        assert!(
+            reg.cancel(collecting_id()),
+            "§1.1/P2.70: register_guard truly registered the token, so a C13 cancel_ingest finds + trips it"
+        );
+        assert!(
+            guard.is_cancelled(),
+            "§1.1/P2.70: the guard observes the C13 trip — the §1.1 post-dialog check then abandons the pick (Empty)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §1.1 "drop on EVERY C2a exit branch" rule realized BY RAII (P2.70) — dropping the
+    // guard (any return path) de-registers the token, so a later C13 cancel finds nothing (released, NOT
+    // leaked). Borrowing the registry (not an AppHandle) is what makes this drop behaviour testable with no
+    // Tauri runtime. [Build-Session-Entscheidung: P2.70]
+    #[test]
+    fn ingest_guard_releases_the_token_on_drop() {
+        let reg = IngestRegistry::default();
+        {
+            let _guard = reg.register_guard(collecting_id());
+            // guard alive here; it de-registers when the block ends (mirroring a C2a handler return).
+        }
+        assert!(
+            !reg.cancel(collecting_id()),
+            "§1.1/P2.70: the guard's Drop released the token on exit — a later C13 cancel finds nothing (no leak)"
         );
     }
 

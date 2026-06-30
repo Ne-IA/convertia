@@ -81,20 +81,24 @@ export const commands = {
 	 *  C2a carries **no `origin` field**: the picked set's origin is `Picker`, **stamped by this handler itself**
 	 *  (P2.63), not supplied by the WebView (§1.1 / §5.4) — so a compromised WebView cannot forge the intake origin.
 	 *
-	 *  [Build-Session-Entscheidung: P2.23] **Interface-shell body — the typed CONTRACT is the P2.23 deliverable.**
-	 *  P2.23 authors the §0.4.1 wire signature above so the generated `bindings.ts` carries the full C2a door
-	 *  (pulling `PickKind` into the bindings as a command-arg type). The `Picker`-origin stamp + funnel into the
-	 *  single §1.1/§2.4 freeze (`crate::orchestrator::ingest`, P2.62) is now WIRED (P2.63 — see the body). The
-	 *  remaining native-dialog BODY is its own set of named, scheduled boxes — the async/`spawn_blocking`
-	 *  `DialogExt` pick with the ingest token registered before the dialog opens (P2.70) and the
-	 *  token-drop-on-every-exit-branch rule (P2.71). This is the sanctioned compile-time interface-shell pattern
-	 *  (CLAUDE §5 / the P3 `crate::isolation` shells P4 expands), NOT a quiet deferral: until the dialog (P2.70)
-	 *  produces paths the picker opens nothing and yields none, so the funnel collects nothing and the handler
-	 *  returns the §0.6 zero-collection `CollectedSet::Empty { skipped: [] }` — which is **also the contract's
-	 *  genuine cancelled-dialog result** (a cancelled pick is a clean no-op that returns `Empty`, no error, the
-	 *  UI stays Idle, §5.4). The `kind` / `collecting_id` / `on_scan` args stay accepted and bound to `_` (no
-	 *  fabricated handling) until the native-dialog body consumes them (P2.70 / P2.71 + the §0.4.4 token
-	 *  registry P2.45).
+	 *  [Build-Session-Entscheidung: P2.70] **Native-dialog phase — the body is now built.** The handler binds an
+	 *  `AppHandle` (a Tauri-injected arg, NOT part of the §0.4.1 wire signature — the generated C2a command stays
+	 *  `{ kind, collectingId, onScan }`) to open the native `DialogExt` picker and reach the §0.4.4
+	 *  `IngestRegistry`. Per §1.1: it registers the `CollectingId` token **before** the dialog opens — via the
+	 *  RAII `IngestGuard` (P2.70), so the token is de-registered on **every** exit branch by construction (the
+	 *  §1.1 "drop in every C2a return path"; the explicit per-branch + the C13 `.cancel()` trip are P2.71) — then
+	 *  opens the picker on a **dedicated blocking thread** (`spawn_blocking` + `blocking_pick_*`, never a
+	 *  synchronous `blocking_pick_*` on a Tokio worker), so the runtime stays free and a C13 during the modal is
+	 *  serviceable. After the dialog it runs the **AppHandle-free `resolve_pick_outcome`** decision (§1.1a split,
+	 *  unit-tested): a C13 trip during the modal **abandons** the pick → `Empty`; a user-dismissed dialog →
+	 *  `Empty` (§5.4 clean no-op); otherwise the picked paths are **`Picker`-stamped core-side** (a compromised
+	 *  WebView cannot forge the origin, §5.4 / §0.10) and funnelled into the single §1.1/§2.4 freeze
+	 *  (`crate::orchestrator::ingest`, the interface shell until P3.49 — so today the funnel still yields `Empty`,
+	 *  but the dialog→funnel path is real). The post-dialog token check is **live** (until P2.71 wires C13's
+	 *  `.cancel()` it reads `false` — reachable-by-construction, no hole). This handler is AppHandle-coupled
+	 *  boot-glue (§1.1a; G28 signature-exempt): the dialog open + the token registration are source-scan-pinned,
+	 *  the outcome decision is `resolve_pick_outcome` (unit-tested + G27-counted). `on_scan` belongs to the §1.1
+	 *  walk (the freeze funnel, P3.49), not the dialog phase, so it stays `_`-bound here.
 	 */
 	pickForIntake: (kind: PickKind, collectingId: CollectingId, onScan: Channel<ScanProgress>) => __TAURI_INVOKE<CollectedSet>("pick_for_intake", { kind, collectingId, onScan }),
 	/**

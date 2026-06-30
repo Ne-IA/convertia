@@ -168,7 +168,11 @@ cannot enumerate a directory (§0.4). Recursion:
     the §1.1 walk loop that normally drops the token does not run on a cancelled dialog, so
     the handler MUST drop it explicitly there too, or the token leaks in the registry. (A
     drop/launch-arg C1 has no dialog phase; the token covers the whole walk and is dropped
-    on the C1 return.)
+    on the C1 return.) **Realized via an RAII guard `[DECIDED]`:** the C2a handler binds the
+    registration as an **RAII guard whose `Drop` de-registers the token**, so "drop in every
+    C2a return path" holds **by construction** — every exit (picked-and-funnelled,
+    cancelled-dialog, C13-tripped, or an error early-return) drops the guard, so no branch can
+    leak it (the `IngestRegistry::register_guard` guard, P2.70).
 
 ### Freeze point `[DECIDED]`
 

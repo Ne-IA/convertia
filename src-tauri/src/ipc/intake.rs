@@ -16,10 +16,11 @@ use std::path::PathBuf;
 
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager};
+use tauri_plugin_dialog::{DialogExt, FilePath};
 
 use crate::domain::{CollectedSet, CollectingId, IntakeOrigin, PickKind, ScanProgress};
-use crate::orchestrator::{ingest, FrontendReady, PendingIntake};
-use crate::outcome::IpcError;
+use crate::orchestrator::{ingest, FrontendReady, IngestRegistry, PendingIntake};
+use crate::outcome::{ConversionErrorKind, IpcError};
 
 /// **C1 `ingest_paths`** (§0.4.1) — the single §2.4 freeze point for every intake origin (drop / picker /
 /// launch-arg / second-instance). This box (P2.22) authors the typed §0.4.1 wire CONTRACT — the
@@ -179,39 +180,116 @@ fn resolve_intake_source(
 /// C2a carries **no `origin` field**: the picked set's origin is `Picker`, **stamped by this handler itself**
 /// (P2.63), not supplied by the WebView (§1.1 / §5.4) — so a compromised WebView cannot forge the intake origin.
 ///
-/// [Build-Session-Entscheidung: P2.23] **Interface-shell body — the typed CONTRACT is the P2.23 deliverable.**
-/// P2.23 authors the §0.4.1 wire signature above so the generated `bindings.ts` carries the full C2a door
-/// (pulling `PickKind` into the bindings as a command-arg type). The `Picker`-origin stamp + funnel into the
-/// single §1.1/§2.4 freeze (`crate::orchestrator::ingest`, P2.62) is now WIRED (P2.63 — see the body). The
-/// remaining native-dialog BODY is its own set of named, scheduled boxes — the async/`spawn_blocking`
-/// `DialogExt` pick with the ingest token registered before the dialog opens (P2.70) and the
-/// token-drop-on-every-exit-branch rule (P2.71). This is the sanctioned compile-time interface-shell pattern
-/// (CLAUDE §5 / the P3 `crate::isolation` shells P4 expands), NOT a quiet deferral: until the dialog (P2.70)
-/// produces paths the picker opens nothing and yields none, so the funnel collects nothing and the handler
-/// returns the §0.6 zero-collection `CollectedSet::Empty { skipped: [] }` — which is **also the contract's
-/// genuine cancelled-dialog result** (a cancelled pick is a clean no-op that returns `Empty`, no error, the
-/// UI stays Idle, §5.4). The `kind` / `collecting_id` / `on_scan` args stay accepted and bound to `_` (no
-/// fabricated handling) until the native-dialog body consumes them (P2.70 / P2.71 + the §0.4.4 token
-/// registry P2.45).
+/// [Build-Session-Entscheidung: P2.70] **Native-dialog phase — the body is now built.** The handler binds an
+/// `AppHandle` (a Tauri-injected arg, NOT part of the §0.4.1 wire signature — the generated C2a command stays
+/// `{ kind, collectingId, onScan }`) to open the native `DialogExt` picker and reach the §0.4.4
+/// `IngestRegistry`. Per §1.1: it registers the `CollectingId` token **before** the dialog opens — via the
+/// RAII `IngestGuard` (P2.70), so the token is de-registered on **every** exit branch by construction (the
+/// §1.1 "drop in every C2a return path"; the explicit per-branch + the C13 `.cancel()` trip are P2.71) — then
+/// opens the picker on a **dedicated blocking thread** (`spawn_blocking` + `blocking_pick_*`, never a
+/// synchronous `blocking_pick_*` on a Tokio worker), so the runtime stays free and a C13 during the modal is
+/// serviceable. After the dialog it runs the **AppHandle-free `resolve_pick_outcome`** decision (§1.1a split,
+/// unit-tested): a C13 trip during the modal **abandons** the pick → `Empty`; a user-dismissed dialog →
+/// `Empty` (§5.4 clean no-op); otherwise the picked paths are **`Picker`-stamped core-side** (a compromised
+/// WebView cannot forge the origin, §5.4 / §0.10) and funnelled into the single §1.1/§2.4 freeze
+/// (`crate::orchestrator::ingest`, the interface shell until P3.49 — so today the funnel still yields `Empty`,
+/// but the dialog→funnel path is real). The post-dialog token check is **live** (until P2.71 wires C13's
+/// `.cancel()` it reads `false` — reachable-by-construction, no hole). This handler is AppHandle-coupled
+/// boot-glue (§1.1a; G28 signature-exempt): the dialog open + the token registration are source-scan-pinned,
+/// the outcome decision is `resolve_pick_outcome` (unit-tested + G27-counted). `on_scan` belongs to the §1.1
+/// walk (the freeze funnel, P3.49), not the dialog phase, so it stays `_`-bound here.
 #[tauri::command(rename_all = "camelCase")]
 #[specta::specta]
 pub async fn pick_for_intake(
+    app: AppHandle,
     kind: PickKind,
     collecting_id: CollectingId,
     on_scan: Channel<ScanProgress>,
 ) -> Result<CollectedSet, IpcError> {
-    // [Build-Session-Entscheidung: P2.63] The C2a handler — NOT the WebView — stamps the §1.1 `Picker`
-    // origin and funnels the picked set into the single §1.1/§2.4 freeze (`crate::orchestrator::ingest`,
-    // P2.62). Stamping core-side is the load-bearing security property: the WebView only triggers the
-    // picker, so a compromised WebView cannot forge the intake origin (§1.1 / §5.4 / §0.10). The picked
-    // paths arrive from the native `DialogExt` dialog (P2.70); until that lands the picker opens nothing
-    // and yields no paths, so the funnel collects nothing → the §0.6 zero-collection `CollectedSet::Empty`
-    // — which is ALSO the §5.4 cancelled-dialog no-op result. `kind`/`collecting_id`/`on_scan` stay shell-
-    // accepted (`_`-bound) until the native-dialog body consumes them (P2.70/P2.71 + the §0.4.4 token
-    // registry P2.45). The §2.4.1 spine that turns picked paths into a real `CollectedSet` is P2.64/P3.
-    let _ = (kind, collecting_id, on_scan);
-    let picked_paths: Vec<PathBuf> = Vec::new();
-    Ok(ingest(picked_paths, IntakeOrigin::Picker))
+    // §1.1 (P2.70): register the CollectingId token BEFORE the dialog opens, via the RAII guard so it is
+    // de-registered on EVERY exit branch (drop-by-construction; no branch can leak it). Registering before the
+    // modal keeps C13 honest — a cancel_ingest arriving while the dialog is up trips this token (its .cancel()
+    // wiring is P2.71), read back post-dialog via guard.is_cancelled().
+    let registry = app.state::<IngestRegistry>();
+    let guard = registry.register_guard(collecting_id);
+
+    // §1.1 (P2.70): open the native picker on a DEDICATED BLOCKING THREAD (spawn_blocking), never a synchronous
+    // blocking_pick_* on a Tokio worker — so the async runtime stays free and C13 remains serviceable while the
+    // modal is up. A spawn_blocking failure (the dialog thread panicked — should-never-happen) surfaces as an
+    // InternalError, never a silent no-op.
+    let dialog_app = app.clone();
+    let picked: Option<Vec<FilePath>> = tauri::async_runtime::spawn_blocking(move || match kind {
+        PickKind::Files => dialog_app.dialog().file().blocking_pick_files(),
+        PickKind::Folder => dialog_app
+            .dialog()
+            .file()
+            .blocking_pick_folder()
+            .map(|f| vec![f]),
+    })
+    .await
+    .map_err(|_| IpcError {
+        kind: ConversionErrorKind::InternalError,
+        message: "Could not open the file picker.".into(),
+        path: None,
+        residue: None,
+    })?;
+
+    // FilePath -> PathBuf (a desktop pick is always a real path; drop a non-path entry defensively). This
+    // conversion is the handler's boot-glue; the §1.1a pure decision is resolve_pick_outcome.
+    let picked_paths: Option<Vec<PathBuf>> = picked.map(|files| {
+        files
+            .into_iter()
+            .filter_map(|f| f.into_path().ok())
+            .collect()
+    });
+
+    let _ = on_scan;
+    // §1.1 (P2.70): the AppHandle-FREE post-dialog decision (§1.1a split, unit-tested). guard.is_cancelled() is
+    // LIVE (false until P2.71 wires C13's trip — no hole). The guard drops at fn end on EVERY branch below,
+    // de-registering the token.
+    match resolve_pick_outcome(picked_paths, guard.is_cancelled()) {
+        // §1.1/§5.4: a C13 trip during the modal OR a user-dismissed dialog → the genuine zero-collection
+        // Empty (the UI stays Idle), no error.
+        PickOutcome::Cancelled | PickOutcome::DialogCancelled => Ok(CollectedSet::Empty {
+            skipped: Vec::new(),
+        }),
+        // §1.1: the happy path — stamp Picker core-side + funnel the picked set into the single §1.1/§2.4
+        // freeze (`ingest`, the interface shell until P3.49).
+        PickOutcome::Picked(picked_paths) => Ok(ingest(picked_paths, IntakeOrigin::Picker)),
+    }
+}
+
+/// The C2a post-dialog outcome (§1.1a split, P2.70) — AppHandle-FREE so it is unit-tested + G27-counted (the
+/// dialog open + the token registration are the AppHandle-coupled boot-glue, source-scan-pinned). INTERNAL:
+/// the handler maps it onto the §0.4.1 `CollectedSet` return. [Build-Session-Entscheidung: P2.70]
+#[derive(Debug, PartialEq, Eq)]
+enum PickOutcome {
+    /// A C13 `cancel_ingest` tripped the ingest token while the dialog was up (§1.1) → the picked paths are
+    /// ABANDONED → `CollectedSet::Empty`. Distinct from `DialogCancelled` so the §1.1 per-branch matrix is
+    /// explicit (P2.71); both map to `Empty`.
+    Cancelled,
+    /// The user dismissed the native dialog (§5.4 clean no-op) → `CollectedSet::Empty`, the UI stays Idle.
+    DialogCancelled,
+    /// The user picked these paths → stamp `Picker` and funnel them into the §1.1/§2.4 freeze.
+    Picked(Vec<PathBuf>),
+}
+
+/// [Build-Session-Entscheidung: P2.70] The §1.1 C2a post-dialog decision — the §1.1a pure half of
+/// `pick_for_intake`. Given the dialog's picked paths (`None` = the user dismissed it) and whether a C13
+/// tripped the ingest token DURING the modal (`cancelled`), decide the outcome. Two §1.1 rules: (1) a C13 trip
+/// ABANDONS the result even if the user had already picked — §1.1: the handler "checks the token after the
+/// dialog returns and yields Empty rather than walking the picked paths" — so `cancelled` is tested FIRST;
+/// (2) a user-dismissed dialog is a clean no-op (§5.4). Otherwise the picked paths funnel (Picker-stamped).
+/// Takes already-converted `PathBuf`s (the `FilePath` -> `PathBuf` conversion is the handler's boot-glue), so
+/// it is fully unit-testable with no Tauri runtime — mirroring `resolve_intake_source`.
+fn resolve_pick_outcome(picked_paths: Option<Vec<PathBuf>>, cancelled: bool) -> PickOutcome {
+    if cancelled {
+        return PickOutcome::Cancelled;
+    }
+    match picked_paths {
+        None => PickOutcome::DialogCancelled,
+        Some(paths) => PickOutcome::Picked(paths),
+    }
 }
 
 /// **C13 `cancel_ingest`** (§0.4.1) — trips the ingest-scoped `CollectingId` token to cancel an in-flight
@@ -422,70 +500,137 @@ mod c1_contract {
 
 #[cfg(test)]
 mod c2a_contract {
-    //! §6.4.1 unit (G15): the §0.4.1 C2a `pick_for_intake` typed CONTRACT (P2.23). Mirrors the C1
-    //! `c1_contract` test — the handler now carries its full typed signature, so the P2.21 all-shells
-    //! `block_on(pick_for_intake())` invocation in `crate::ipc` (mod.rs) is REPLACED here by C2a's own
-    //! typed-contract test (the fill-box transition the P2.21 note schedules). It invokes the contract with
-    //! the full typed arg set and asserts the shell-stage return; the C2a handler also stamps the `Picker`
-    //! origin + funnels into the single freeze (`ingest`) here (P2.63); the native-dialog pick body + its
-    //! real-pick assertions land at P2.70/P2.71. [Build-Session-Entscheidung: P2.23]
+    //! §6.4.1 unit (G15): the §0.4.1 C2a `pick_for_intake` native-dialog phase (P2.70). The handler now binds
+    //! an `AppHandle` (to open the native `DialogExt` picker + reach the §0.4.4 `IngestRegistry`), so it is
+    //! AppHandle-coupled boot-glue (the §1.1a pattern — NOT cargo-test-invocable; this crate ships no
+    //! `tauri::test` mock BY DECISION, G28 signature-exempt). Its post-dialog OUTCOME logic lives in the
+    //! AppHandle-free `resolve_pick_outcome` helper, unit-tested here; the handler's WIRING (register the token
+    //! BEFORE the dialog, open it on a blocking thread, map the outcome) is source-scan-pinned. The §0.4.1
+    //! typed wire surface stays asserted by the bindings.ts golden (`bindings_codegen` in main.rs).
+    //! [Build-Session-Entscheidung: P2.70]
+    //!
+    //! [Test-Change: P2.70 — old-obsolete+new-correct, §1.1/§0.4.1] the P2.23 direct
+    //! `block_on(pick_for_intake(…))` contract test (+ its `collecting_id()` helper) is OBSOLETE — the handler
+    //! now binds an `AppHandle`, uninvocable without a Tauri runtime (none in cargo-test, §1.1a). It is
+    //! REPLACED by the executable `resolve_pick_outcome` unit tests (the real post-dialog decision, read back
+    //! directly) + the handler source-scans — the sanctioned boot-glue stratification (the C1 `ingest_paths` /
+    //! P2.60 precedent), NOT a dropped assertion.
     use super::*;
-    use tauri::async_runtime::block_on;
 
-    /// A `CollectingId` for the contract call — minted through its PUBLIC bare-uuid `Deserialize` wire form
-    /// (the inner `Uuid` is private to `crate::domain`; the frontend mints the id, §0.4 C13), never a
-    /// back-door constructor — mirroring the `c1_contract` helper.
-    fn collecting_id() -> CollectingId {
-        serde_json::from_str(r#""33333333-3333-4333-8333-333333333333""#)
-            .expect("CollectingId deserializes from a uuid string")
+    // [Test-Change: P2.70 — old-obsolete+new-correct, §1.1/§0.4.1] (rationale in the module doc above) — the
+    // removed P2.23 `collecting_id()` helper (its `.expect`) + the direct `block_on(pick_for_intake(…))`
+    // contract test are obsolete: the handler now binds an `AppHandle`, uninvocable without a Tauri runtime
+    // (none in cargo-test, §1.1a). Replaced by the `resolve_pick_outcome` unit tests + the handler source-scans.
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names.iter().map(PathBuf::from).collect()
     }
 
-    // §6.4.1 unit (G15): the C2a contract is invocable with its full §0.4.1 typed arg set (`kind`,
-    // `collectingId`, the non-optional `onScan` Channel) and returns a `CollectedSet` (the wire door this box
-    // authors). `on_scan` is a real `Channel::new(|_| Ok(()))` — the non-optional contract (there is no `None`
-    // arm; see the handler's forced-deviation note). The handler now stamps `Picker` + funnels into the single
-    // freeze (`ingest`, P2.63), but the native dialog (P2.70) produces no paths, so the funnel collects nothing
-    // and the handler returns the §0.6 zero-collection `CollectedSet::Empty` — which is ALSO the §5.4
-    // cancelled-dialog no-op result.
-    #[test]
-    fn c2a_pick_for_intake_contract_is_invocable_and_typed() {
-        let out = block_on(pick_for_intake(
-            PickKind::Files,
-            collecting_id(),
-            Channel::new(|_| Ok(())),
-        ));
-        assert_eq!(
-            out,
-            Ok(CollectedSet::Empty {
-                skipped: Vec::new()
-            }),
-            "§0.4.1/§1.1: the C2a handler stamps Picker + funnels into ingest (P2.63), but with no dialog \
-             paths (P2.70) the funnel returns the zero-collection CollectedSet::Empty — also the §5.4 \
-             cancelled-dialog result"
-        );
-    }
-
-    /// The production prefix of `intake.rs` (everything before the FIRST `#[cfg(test)]`), so a needle
-    /// declared in this test can never self-match — mirroring the `c1_contract` helper (each contract
-    /// module keeps its own copy, the established per-module test-helper pattern).
+    /// The production prefix of `intake.rs` (everything before the FIRST `#[cfg(test)]`), so a needle declared
+    /// in this test can never self-match — mirroring the `c1_contract` helper (each contract module keeps its
+    /// own copy, the established per-module test-helper pattern).
     fn production_intake_source() -> &'static str {
         let full = include_str!("intake.rs");
         full.split_once(concat!("#[cfg", "(test)]"))
             .map_or(full, |(prefix, _)| prefix)
     }
 
-    // §6.4.1 unit (G15): the C2a handler stamps the §1.1 `Picker` origin CORE-SIDE (the handler, NOT the
-    // WebView, sets it) and funnels its picked set into the single freeze (`ingest`) — the §1.1
-    // anti-origin-forgery property (a compromised WebView cannot forge the intake origin, §5.4 / §0.10). The
-    // stamp is not result-observable while the funnel is an interface shell (any origin yields Empty, and the
-    // origin never appears in `CollectedSet`), so a source-scan pins it, mirroring the C1 dispatch source-scan.
-    // Needle concat!-assembled (self-match avoidance). [Build-Session-Entscheidung: P2.63]
+    // §6.4.1 unit (G15): `resolve_pick_outcome` rule (1) — a C13 trip during the modal ABANDONS the result
+    // even if the user had already picked (§1.1: the handler checks the token AFTER the dialog and yields
+    // Empty rather than walking the picked paths), so `cancelled` is tested FIRST.
+    #[test]
+    fn resolve_pick_outcome_abandons_on_a_c13_trip_even_with_picked_paths() {
+        assert_eq!(
+            resolve_pick_outcome(Some(paths(&["/picked/a.png"])), true),
+            PickOutcome::Cancelled,
+            "§1.1: a C13 trip during the modal abandons even a successful pick (→ Empty), checked before the pick"
+        );
+        assert_eq!(
+            resolve_pick_outcome(None, true),
+            PickOutcome::Cancelled,
+            "§1.1: a C13 trip with no pick is also Cancelled"
+        );
+    }
+
+    // §6.4.1 unit (G15): `resolve_pick_outcome` rule (2) — a user-DISMISSED dialog (None, no C13) is a clean
+    // no-op → DialogCancelled (→ Empty, §5.4).
+    #[test]
+    fn resolve_pick_outcome_dialog_cancelled_when_user_dismisses() {
+        assert_eq!(
+            resolve_pick_outcome(None, false),
+            PickOutcome::DialogCancelled,
+            "§5.4: a user-dismissed dialog (None) with no C13 is a clean no-op → Empty"
+        );
+    }
+
+    // §6.4.1 unit (G15): `resolve_pick_outcome` happy path — a pick with no C13 funnels the picked paths
+    // (Picker-stamped at the handler).
+    #[test]
+    fn resolve_pick_outcome_picked_when_paths_and_no_cancel() {
+        assert_eq!(
+            resolve_pick_outcome(Some(paths(&["/picked/a.png", "/picked/b.jpg"])), false),
+            PickOutcome::Picked(paths(&["/picked/a.png", "/picked/b.jpg"])),
+            "§1.1: a successful pick (no C13) funnels the picked paths into the freeze"
+        );
+    }
+
+    // §6.4.1 unit (G15): the C2a handler registers the ingest token via the RAII guard BEFORE opening the
+    // dialog (§1.1: "registers the CollectingId token at handler entry — before opening the dialog"), so a C13
+    // during the modal is honoured. The source-scan pins the ORDER. Needles concat!-assembled (self-match
+    // avoidance).
+    #[test]
+    fn c2a_handler_registers_the_token_before_opening_the_dialog() {
+        let src = production_intake_source();
+        // Code-specific needles (the handler's DOC prose also names "spawn_blocking"/"register…", so match the
+        // literal call forms — `register_guard(collecting_id)` and `spawn_blocking(move` — which appear only in
+        // the body, never the prose, so the order check pins the real call sites).
+        let reg_at = src
+            .find(concat!("register_", "guard(collecting_id)"))
+            .expect("§1.1/P2.70: the handler registers the ingest token via register_guard");
+        let dialog_at = src
+            .find(concat!("spawn_", "blocking(move"))
+            .expect("§1.1/P2.70: the handler opens the native dialog on a blocking thread");
+        assert!(
+            reg_at < dialog_at,
+            "§1.1/P2.70: the CollectingId token is registered BEFORE the dialog opens (so a C13 during the modal is honoured)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the native picker opens on a DEDICATED BLOCKING THREAD (spawn_blocking +
+    // blocking_pick_*), never a synchronous blocking_pick_* on a Tokio worker (§1.1: the runtime stays free so
+    // C13 remains serviceable while the modal is up). Needles concat!-assembled.
+    #[test]
+    fn c2a_handler_opens_the_dialog_off_the_async_runtime() {
+        let src = production_intake_source();
+        for needle in [
+            concat!("spawn_", "blocking(move"),
+            concat!("blocking_pick_", "files"),
+            concat!("blocking_pick_", "folder"),
+        ] {
+            assert!(
+                src.contains(needle),
+                "§1.1/P2.70: the C2a dialog opens on a blocking thread (spawn_blocking + blocking_pick_*), never a Tokio worker (missing `{needle}`)"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15): the C2a handler dispatches the post-dialog decision via the AppHandle-free
+    // `resolve_pick_outcome`, then on the happy branch stamps the §1.1 `Picker` origin CORE-SIDE and funnels
+    // the picked set into the single freeze (`ingest`) — the §1.1 anti-origin-forgery property (a compromised
+    // WebView cannot forge the intake origin, §5.4 / §0.10). Needles concat!-assembled.
+    // [Build-Session-Entscheidung: P2.63/P2.70]
     #[test]
     fn c2a_handler_stamps_picker_and_funnels_into_ingest() {
         let src = production_intake_source();
         assert!(
+            src.contains(concat!(
+                "resolve_pick_",
+                "outcome(picked_paths, guard.is_cancelled())"
+            )),
+            "§1.1/P2.70: the handler dispatches the post-dialog decision via the AppHandle-free resolve_pick_outcome"
+        );
+        assert!(
             src.contains(concat!("ingest(picked_", "paths, IntakeOrigin::Picker)")),
-            "§1.1: the C2a handler must stamp Picker core-side and funnel the picked set into ingest"
+            "§1.1: the C2a handler stamps Picker core-side and funnels the picked set into ingest"
         );
     }
 }
