@@ -1097,9 +1097,14 @@ impl FrontendReady {
 /// 5. **Group** the frozen snapshot into the §0.6 `CollectedSet` variant (`Single` / `Mixed` /
 ///    `Unsupported` / `Uncertain` / `Empty`, §1.3) → P3 (`group()`).
 ///
-/// The §2.4 idle-vs-in-flight gate that admits a set into this funnel (IDLE freezes a NEW set; in-flight
-/// refuses-busy, never mutating a frozen one) wraps it at P2.72; the `CollectingId` cooperative-cancel
-/// poll the walk runs is P2.69.
+/// The §2.4 idle-vs-in-flight gating is **upstream-delegated, NOT a wrapper around this funnel** (Reading B,
+/// P2.72): the in-flight **refuse-busy** is owned by the §7.1.1 PRIMARY `forward_launch_intake` funnel
+/// (P2.55 — it DROPS a mid-run launch-intake before any freeze: no `app://intake` emit, no buffer) + the §5.8
+/// UI defence-in-depth, so a busy launch-intake never reaches this freeze; the IDLE "freeze a NEW set" is the
+/// [`register`](CollectedSetRegistry::register) supersede (P2.44) at the C1/C2a freeze, and "never
+/// mutate/merge a frozen one" is structural (§2.4.3 + the register-supersede + this funnel building a fresh
+/// snapshot each call). P2.72 ASSERTS that delegation (the orchestrator `freeze_gating_contract` tests); it
+/// adds NO core-side freeze gate around `ingest`. The `CollectingId` cooperative-cancel poll the walk runs is P2.69.
 ///
 /// [Build-Session-Entscheidung: P2.62] **Interface-shell body — the SINGLE FUNNEL is the deliverable.**
 /// This box establishes the one canonical freeze funnel + its §2.4.1 spine; the stages are the named,
@@ -1972,6 +1977,139 @@ mod walk_tests {
             2,
             "§1.1/P2.69: an un-cancelled token collects normally (the poll does not false-trip)"
         );
+    }
+}
+
+// ─── §1.1/§2.4 freeze idle-vs-in-flight GATING CONTRACT (P2.72) ────────────────────────────────────────
+// The §2.4 freeze-gating contract is **upstream-delegated, not a core-side wrapper** (Reading B — the
+// Co-Pilot 2026-06-30 scope DECISION on P2.72): §7.1.1 names exactly TWO refuse-busy layers — the PRIMARY
+// `forward_launch_intake` funnel (P2.55, which DROPS a mid-run launch-intake before any freeze) + the §5.8
+// UI defence-in-depth — so the orchestrator freeze (`ingest`) carries NO core-side busy gate; a third one
+// would be over-build (and would conflate "busy" with "nothing", both projecting to `CollectedSet::Empty`).
+// This module ASSERTS that contract from the orchestrator side; the delegation-DOC half is the `ingest` /
+// `CollectedSetRegistry::register` doc-comments. Its three legs + the structural Reading-B anchor:
+//   1. IDLE → a freeze starts a NEW set: `CollectedSetRegistry::register` SUPERSEDES the prior un-run set
+//      (§2.4.3: a subsequent drop starts a new frozen set, never mutating an in-flight one; §0.4.4).
+//   2. NEVER mutate/merge: a second freeze REPLACES — at most one live set, the new set's content is the
+//      freeze's OWN, never a merge of the prior (§2.4.3, structural via `register`'s clear-then-insert).
+//   3. The busy launch-intake is refused UPSTREAM (this freeze is never reached): the §7.1.1 PRIMARY rule
+//      `crate::launch_intake::intake_disposition` returns `Drop` for a busy converter in EVERY readiness
+//      state — no emit, no buffer — so no UI re-call / drain ever routes paths back into this freeze.
+//   + STRUCTURAL Reading-B anchor: `ingest`'s signature takes only `paths`+`origin` — no run-state / `busy`
+//     parameter — so a core-side freeze gate is impossible by construction (a drift would fail to compile).
+// [Build-Session-Entscheidung: P2.72] A DEDICATED, self-contained contract module (its own minimal id /
+// `frozen` helpers mirror the `crate::orchestrator::tests` registry helpers) so the §2.4 freeze-gating
+// contract reads standalone and its name is a stable, rename-safe MODULE anchor for the `ingest` /
+// P8.1.1 delegation doc-comments (the .rs-comment module-anchoring convention).
+#[cfg(test)]
+mod freeze_gating_contract {
+    use super::*;
+    use crate::domain::InstanceId;
+
+    /// A `CollectedSetId` from its public bare-uuid `Deserialize` wire form (the inner `Uuid` is private to
+    /// `crate::domain`; minting is §1.1/§7.1's, not a back-door constructor) — the
+    /// `crate::orchestrator::tests` id-helper precedent, kept local so this contract module is self-contained.
+    /// [Build-Session-Entscheidung: P2.72]
+    fn set_id(uuid: &str) -> CollectedSetId {
+        serde_json::from_str(&format!("\"{uuid}\""))
+            .expect("CollectedSetId deserializes from a uuid string")
+    }
+    fn instance() -> InstanceId {
+        serde_json::from_str(r#""44444444-4444-4444-8444-444444444444""#)
+            .expect("InstanceId deserializes from a uuid string")
+    }
+    /// A minimal `FrozenCollectedSet` carrying `id` + a content-distinguishing `count`/`total_bytes`, so the
+    /// never-merge leg asserts the resolved latest set is the freeze's OWN content (not a merge of a prior).
+    fn frozen(id: CollectedSetId, count: usize, total_bytes: u64) -> FrozenCollectedSet {
+        FrozenCollectedSet {
+            id,
+            instance: instance(),
+            format: UserFacingFormat::Csv,
+            items: vec![],
+            count,
+            skipped: vec![],
+            total_bytes,
+            roots: vec![],
+            encoding_hint: None,
+            delimiter_hint: None,
+            notes: vec![],
+        }
+    }
+
+    // Leg 1 — §6.4.1 unit (G15): an IDLE freeze starts a NEW set. A second `register` (a subsequent idle drop,
+    // §1.1) SUPERSEDES the prior un-run set, never mutating it (§2.4.3 / §0.4.4): the superseded id no longer
+    // resolves; the latest freeze is the one live set.
+    #[test]
+    fn idle_freeze_supersedes_the_prior_un_run_set() {
+        let reg = CollectedSetRegistry::default();
+        let prior = set_id("11111111-1111-4111-8111-111111111111");
+        let next = set_id("22222222-2222-4222-8222-222222222222");
+        reg.register(frozen(prior, 3, 30));
+        reg.register(frozen(next, 5, 50));
+        assert!(
+            reg.resolve(prior).is_none(),
+            "§1.1/§2.4.3: an idle freeze starts a NEW frozen set — the prior un-run set is superseded, never mutated"
+        );
+        assert_eq!(
+            reg.resolve(next).map(|s| s.count),
+            Some(5),
+            "§0.4.4: the latest freeze is the one live set (at most one un-run set)"
+        );
+    }
+
+    // Leg 2 — §6.4.1 unit (G15): a freeze REPLACES, it never merges. The resolved latest set is the freeze's
+    // OWN content (count/total_bytes), never a merge of a prior set; and a same-id re-freeze replaces rather
+    // than accumulates (§2.4.3, structural via `register`'s clear-then-insert).
+    #[test]
+    fn freeze_replaces_content_never_merges() {
+        let reg = CollectedSetRegistry::default();
+        let a = set_id("11111111-1111-4111-8111-111111111111");
+        let b = set_id("22222222-2222-4222-8222-222222222222");
+        reg.register(frozen(a, 3, 30));
+        reg.register(frozen(b, 5, 50));
+        let live = reg.resolve(b).expect("the latest freeze resolves");
+        assert_eq!(
+            (live.count, live.total_bytes),
+            (5, 50),
+            "§2.4.3: the new frozen set is the freeze's OWN content — never a merge of the prior set (a merge would be count 8 / bytes 80)"
+        );
+        // A same-id re-freeze (a re-drop minting the same logical id) REPLACES the snapshot, never accumulates.
+        reg.register(frozen(b, 7, 70));
+        assert_eq!(
+            reg.resolve(b).map(|s| (s.count, s.total_bytes)),
+            Some((7, 70)),
+            "§2.4.3: a re-freeze of the same id replaces the snapshot (clear-then-insert), never accumulates onto it"
+        );
+    }
+
+    // Leg 3 — §6.4.1 unit (G15): the busy launch-intake is refused UPSTREAM, so this freeze is never reached.
+    // The §7.1.1 PRIMARY rule `intake_disposition` (the funnel reads it, P2.55) returns `Drop` for a busy
+    // converter in EVERY readiness state — `Drop` emits no `app://intake` and buffers nothing, so neither the
+    // ready re-call (Emit) nor the first-launch drain (Buffer) ever routes paths back into the orchestrator
+    // freeze (`ingest`). This asserts the DELEGATION SEAM (refuse-busy is upstream, not in the freeze); the
+    // full busy x ready truth table is `crate::launch_intake::tests` (the pure rule's home).
+    // [Build-Session-Entscheidung: P2.72] The contract test reaches the `pub(crate)` upstream rule so the
+    // "freeze never reached" delegation is asserted end-to-end, not only documented.
+    #[test]
+    fn busy_launch_intake_is_refused_upstream_so_the_freeze_is_never_reached() {
+        use crate::launch_intake::{intake_disposition, IntakeDisposition};
+        for ready in [true, false] {
+            assert_eq!(
+                intake_disposition(true, ready),
+                IntakeDisposition::Drop,
+                "§7.1.1/§2.4: a busy converter DROPS the launch-intake upstream (ready={ready}) — no emit, no buffer, so the orchestrator freeze is never reached mid-run"
+            );
+        }
+    }
+
+    // Structural Reading-B anchor — §6.4.1 unit (G15): there is NO core-side freeze gate, BY CONSTRUCTION.
+    // `ingest`'s signature takes only the paths + origin; it carries no run-state / `busy` parameter, so it
+    // CANNOT refuse-busy — the refusal is necessarily upstream (Leg 3). A drift that bolted a core-side gate
+    // onto the freeze (an added `busy` / `&RunRegistry` parameter) would fail this fn-pointer coercion to
+    // compile — the signature pin is the structural guard the doc-comments delegate to.
+    #[test]
+    fn ingest_freeze_carries_no_core_side_busy_gate() {
+        let _freeze: fn(Vec<PathBuf>, IntakeOrigin) -> CollectedSet = ingest;
     }
 }
 
