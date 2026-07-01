@@ -321,10 +321,10 @@
 
 ## Persistence (§7.4) — the 3-key prefs blob
 
-- [ ] **P2.85** [RUST] Implement the 3-key `settings.json` prefs blob via `tauri-plugin-store` (`theme`/`lastDestinationMode`/`verboseLog`, defaults) · §7.4.1 §7.4.2
+- [x] **P2.85** [RUST] Implement the 3-key `settings.json` prefs blob via `tauri-plugin-store` (`theme`/`lastDestinationMode`/`verboseLog`, defaults) · §7.4.1 §7.4.2
   needs: P1.14
-  - [ ] **P2.85.1** [RUST] Resolve the per-OS config-dir location via `app.path().app_config_dir()` (`dev.ne-ia.convertia/settings.json`) · §7.4.2
-  - [ ] **P2.85.2** [RUST] Implement best-effort-never-load-bearing tolerance (unreadable/corrupt → log + run with defaults, never block a conversion) · §7.4.2
+  - [x] **P2.85.1** [RUST] Resolve the per-OS config-dir location via `app.path().app_config_dir()` (`dev.ne-ia.convertia/settings.json`) · §7.4.2
+  - [x] **P2.85.2** [RUST] Implement best-effort-never-load-bearing tolerance (unreadable/corrupt → log + run with defaults, never block a conversion) · §7.4.2
 - [ ] **P2.86** [RUST] Encode the single-store-name (T2c) convention — only `Store.load('settings.json')`, one call site · §7.4.2 §0.10 · G29
   needs: P2.85
   > **Reconcile note (Co-Pilot 2026-06-30 — the G29 gate half was pulled forward):** the T2c/G29 enforcement is already complete — the `check-sast` `store_load_count` "one call site" gate was refined (comment/string blanking + atomic-`.store(val, Ordering)` false-positive exclusion) as the P2.85-unblocking L(-1) fix (the coarse count wrongly flagged `orchestrator/mod.rs` `self.ready.store(true, Ordering::Release)` as a 2nd store-open), and the `convertia-store-name-not-constant` Semgrep name-rule already exists (green). The CODE-side convention is embodied by P2.85's SINGLE `app.store(&path)` site with `path` from the `SETTINGS_FILE` constant (no string literal). So P2.86 has no new build — when reached, **check it off `[x]` with this reconcile note** (dup with the delivered enforcement), OR, if a residual is wanted, add only a test asserting the single call site + constant name. Do NOT re-refine the gate (done + g24-covered).
