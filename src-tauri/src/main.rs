@@ -38,7 +38,7 @@ mod run;
 
 use std::path::PathBuf;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::domain::{
     CollectedSetId, CollectingId, InstanceId, IntakePayload, ItemId, LossyKind, RunId,
@@ -187,25 +187,42 @@ fn ipc_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         )))
 }
 
-/// [Build-Session-Entscheidung: P2.79] §7.3.2 the window-lifecycle event handler — the Tauri v2 two-arg
+/// [Build-Session-Entscheidung: P2.80] The §0.4.2 `app://close-requested` payload. The event carries no data
+/// (§0.4.2 "payload ()") — it is a pure signal to the §5.2 confirm UI. It is emitted as a `Serialize + Clone`
+/// unit struct (the §7.3.2-sanctioned alternative to `serde_json::Value::Null`, chosen because `serde_json`
+/// is a DEV-only dependency here while `serde` is in the production closure): serde serialises a unit struct
+/// to JSON `null` — the SAME wire form as `Value::Null`, and NOT the bare `()` literal §7.3.2 rules out. It is
+/// deliberately NOT `specta::Type` and NOT registered in `.types()`, so `bindings.ts` gains no type for it,
+/// keeping the §0.4.2 / P2.41 closed-set contract that `app://close-requested` carries `()` (no payload type)
+/// intact.
+#[derive(Clone, serde::Serialize)]
+struct CloseRequestedSignal;
+
+/// [Build-Session-Entscheidung: P2.79/P2.80] §7.3.2 the window-lifecycle event handler — the Tauri v2 two-arg
 /// `Builder::on_window_event(|window, event|)` hook (registered in `main()`) delegates every `WindowEvent`
 /// here with the resolved `&AppHandle`, and this fn intercepts `CloseRequested`. When a conversion run is in
-/// flight it calls `api.prevent_close()` so a mid-run window close cannot end the app ungracefully and
+/// flight it (1) calls `api.prevent_close()` so a mid-run window close cannot end the app ungracefully and
 /// truncate the in-flight output — the §7.3.3 "the core blocks the close" guarantee (the SSOT never-harm
-/// origin). It reuses the ONE §7.1.1 run-busy predicate (`launch_intake::converter_is_busy`, the §1.9
-/// `RunRegistry` read) — the spec mandates the launch refuse-busy gate and the close guard share the SAME
-/// predicate (§7.3.2). An idle converter is not busy, so the close proceeds and the app quits immediately
-/// (§7.3.3). Other `WindowEvent` variants are not intercepted (the single `main` window needs no per-event
-/// handling). The §5.2 confirm-UI `app://close-requested` emit is added by P2.80 (it consumes the P2.39
-/// event); this box lands the core safety guard. AppHandle-coupled boot-glue (the §1.1a boot-stage pattern —
-/// not `tauri::test`-mockable here; the routing is source-scan-pinned + the §6.4.6 window-close E2E leg
-/// exercises it, and the `AppHandle` signature makes it G28 diff-floor-exempt). `main()`'s closure is a thin
-/// delegation line (the established `.setup`/`.plugin` main-body pattern), so the interceptor logic lives in
-/// this exempt fn, not in `main()`.
+/// origin) — and (2) emits `app://close-requested` (via the `crate::ipc::events` constant, never a re-spelled
+/// literal — plan-lint check 28) so the §5.2 WebView confirm UI renders (§7.3.3). The core owns the busy
+/// decision; the JS side only renders, avoiding the §7.3.2-warned split-brain "is it converting?" check. It
+/// reuses the ONE §7.1.1 run-busy predicate (`launch_intake::converter_is_busy`, the §1.9 `RunRegistry` read)
+/// — the spec mandates the launch refuse-busy gate and the close guard share the SAME predicate (§7.3.2). An
+/// idle converter is not busy, so the close proceeds and the app quits immediately (§7.3.3). Other
+/// `WindowEvent` variants are not intercepted (the single `main` window needs no per-event handling).
+/// AppHandle-coupled boot-glue (the §1.1a boot-stage pattern — not `tauri::test`-mockable here; the routing is
+/// source-scan-pinned + the §6.4.6 window-close E2E leg exercises it, and the `AppHandle` signature makes it
+/// G28 diff-floor-exempt). `main()`'s closure is a thin delegation line (the established `.setup`/`.plugin`
+/// main-body pattern), so the interceptor logic lives in this exempt fn, not in `main()`.
 fn dispatch_window_event(app: &tauri::AppHandle, event: &tauri::WindowEvent) {
     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
         if launch_intake::converter_is_busy(app) {
             api.prevent_close();
+            app.emit(
+                crate::ipc::events::APP_CLOSE_REQUESTED,
+                CloseRequestedSignal,
+            )
+            .ok();
         }
     }
 }
@@ -941,8 +958,8 @@ fn main() -> tauri::Result<()> {
         // line, the established `.setup`/`.plugin` main-body pattern) — the interceptor logic lives in the
         // AppHandle-signatured `dispatch_window_event`, which is G28 diff-floor-exempt + source-scan-pinned.
         // It resolves the run-level `&AppHandle` (`window.app_handle()`, §1.9) and forwards the event so a
-        // mid-conversion `CloseRequested` is blocked (`prevent_close`), never truncating the in-flight output
-        // (§7.3.2/§7.3.3, never-harm). The §5.2 confirm-UI `app://close-requested` emit is P2.80's addition.
+        // mid-conversion `CloseRequested` is blocked (`prevent_close`) and the §5.2 confirm UI is signalled via
+        // the `app://close-requested` event (§7.3.2/§7.3.3, never-harm).
         .on_window_event(|window, event| dispatch_window_event(window.app_handle(), event))
         .setup(move |app| {
             // §0.4.5 IPC event-channel mount (the P1.13 tauri-specta seam).
@@ -1644,6 +1661,25 @@ mod window_lifecycle {
             assert!(
                 src.contains(needle),
                 "§7.3.2/§7.3.3: dispatch_window_event must block the close when busy (missing `{needle}`)"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15): when busy, `dispatch_window_event` ALSO emits the §0.4.2 `app://close-requested`
+    // signal so the §5.2 WebView confirm UI renders (§7.3.3). The event name comes from the
+    // `crate::ipc::events` constant (never a re-spelled literal — plan-lint check 28), and the payload is the
+    // `CloseRequestedSignal` unit struct (serialises to JSON `null` — the §7.3.2 null-payload form, not `()`).
+    // Source-scan (AppHandle-coupled boot-glue); needles `concat!`-assembled (self-match avoidance).
+    #[test]
+    fn close_requested_emits_the_confirm_signal_via_the_events_constant() {
+        let src = super::boot_invariants::all_production_source();
+        for needle in [
+            concat!("crate::ipc::events::APP_CLOSE_", "REQUESTED,"), // emits via the events constant, not a literal
+            concat!("CloseRequested", "Signal,"), // the null-payload unit struct (§7.3.2), not the bare `()`
+        ] {
+            assert!(
+                src.contains(needle),
+                "§7.3.2/§0.4.2: dispatch_window_event must emit app://close-requested with the null-payload signal (missing `{needle}`)"
             );
         }
     }
