@@ -103,6 +103,16 @@ impl LastDestinationMode {
 }
 
 /// The §7.4 3-key `settings.json` prefs blob — the only state ConvertIA persists (§7.4.1 `[DECIDED]`).
+///
+/// [Build-Session-Entscheidung: P2.88] Consumer map — Rust reads all three keys into this complete typed
+/// model (best-effort, §7.4.2), but only `verbose_log` is **Rust-consumed** (§7.5.3 `tauri-plugin-log` init,
+/// P2.94). `theme` (§5.5) and `last_destination_mode` (the C4 destination hint) are **frontend-consumed** —
+/// read JS-side from the store (05-ui-ux "Persisted `lastDestinationMode`"), never via Rust — modelled here
+/// for the complete-blob representation + its §7.4.2 tolerance. The `last_destination_mode`
+/// re-validate-as-writable / beside-source-fallback ENFORCEMENT lives in P3 (C4 §1.10 preflight + §2.7.2
+/// `location_status` + §2.7 divert), not here; a Rust `LastDestinationMode` → `DestinationChoice` mapping
+/// would have no Rust consumer (C4 receives the `DestinationChoice` already mapped JS-side, 05-ui-ux). The
+/// HINT-not-a-guarantee semantics are already encoded by the distinct `LastDestinationMode` type (P2.85).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Prefs {
     /// §7.4.1 `theme` — UI colour scheme (default `System`).
