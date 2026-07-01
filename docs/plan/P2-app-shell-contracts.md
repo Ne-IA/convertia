@@ -289,7 +289,7 @@
 
 ## Window & app lifecycle (§7.3)
 
-- [ ] **P2.77** [DOC] Record the no-tray / no-background-agent / closing-quits posture (portable, no system pollution) · §7.3.1
+- [x] **P2.77** [DOC] Record the no-tray / no-background-agent / closing-quits posture (portable, no system pollution) · §7.3.1
 - [ ] **P2.78** [RUST] Create the single "main" window at startup (no tray, no secondary windows, default size each launch) · §7.3.1 §7.4.1
   needs: P1.16, P2.77
 - [ ] **P2.79** [RUST] Wire `Builder::on_window_event` — v2 two-arg `(&Window, &WindowEvent)` `CloseRequested` handler · §7.3.2
