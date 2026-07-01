@@ -42,7 +42,7 @@
     )
 )]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -54,9 +54,11 @@ use walkdir::WalkDir;
 
 use crate::domain::{
     CollectedSet, CollectedSetId, CollectingId, DestinationChoice, DivertReason, DroppedItem,
-    FrozenCollectedSet, IntakeOrigin, ItemId, JobStage, OptionValues, OutputPlan, ReadFailure,
-    RerunPrompt, RunId, SkipReason, Target, TargetId, UserFacingFormat,
+    FrozenCollectedSet, IntakeOrigin, ItemId, ItemIdSpace, ItemSpaceExhausted, JobStage,
+    OptionValues, OutputPlan, ReadFailure, RerunPrompt, RunId, SkipReason, Target, TargetId,
+    UserFacingFormat,
 };
+use crate::fs_guard::FileIdentity;
 use crate::outcome::{ConversionErrorKind, IpcError, OutcomeMsg};
 
 /// One same-source conversion batch (§0.6 / §1.9) — the queue the orchestrator builds at C6
@@ -1091,7 +1093,9 @@ impl FrontendReady {
 ///    skipped without aborting the walk → P3 (the §1.2 detection framework) / P2.67 (per-item skip) /
 ///    P2.73 (intake-time `Empty`/`Unreadable` = pre-flight `Skipped`).
 /// 3. **Resolve identity + de-dup** — each entry is reduced to its §2.3 resolved identity and
-///    de-duplicated (§2.3.2 / §2.4.1) → P2.74 (the `resolve_identity` interface shell) / P2.76 (de-dup).
+///    de-duplicated (§2.3.2 / §2.4.1) → P2.74 (the pure `FileIdentity` resolved-identity type) / P3 (the IO/FFI
+///    `resolve_identity` producer that yields each identity — P3.1.1 shell / P3.6 body) / P2.76 (the pure de-dup
+///    fold over those identities, [`dedup_by_identity`]).
 /// 4. **Assign `ItemId`** over the single id space (eligible + skipped, never re-indexed, §0.6
 ///    invariant 6) → P2.75.
 /// 5. **Group** the frozen snapshot into the §0.6 `CollectedSet` variant (`Single` / `Mixed` /
@@ -1121,7 +1125,8 @@ impl FrontendReady {
 /// the funnel returns the zero-collection `Empty` for every input until its §2.4.1 spine stages land (P2.64 / P3).
 #[must_use]
 pub fn ingest(paths: Vec<PathBuf>, origin: IntakeOrigin) -> CollectedSet {
-    // §2.4.1 freeze spine: walk (P2.64) → detect (P3) → resolve-identity + de-dup (P2.74/P2.76) → assign
+    // §2.4.1 freeze spine: walk (P2.64) → detect (P3) → resolve-identity (P3, produces the P2.74
+    // `FileIdentity`) + de-dup (P2.76) → assign
     // `ItemId` (P2.75) → group (P3). While those stages are unbuilt the frozen snapshot is empty, so the
     // §1.3 projection of a no-eligible-source freeze is the §0.6 zero-collection `Empty` (§0.4.1 / §5.4).
     let _ = (paths, origin);
@@ -1439,6 +1444,255 @@ fn windows_attr_hidden(entry: &walkdir::DirEntry) -> bool {
 #[cfg(not(windows))]
 fn windows_attr_hidden(_entry: &walkdir::DirEntry) -> bool {
     false
+}
+
+/// One first-seen survivor of the §2.3.2 de-duplicated frozen set (P2.76) — the typed output row of
+/// [`dedup_by_identity`]. Carries its freeze-assigned [`ItemId`] (§0.6 invariant 6 — one per SURVIVOR,
+/// contiguous over the survivors, a dropped duplicate consumes none), the RETAINED first-seen
+/// [`FileIdentity`] (§2.3.2: identity is the de-dup key; `identity.canonical_path` is the first-seen
+/// representative path the P3.49 spine projects onto `DroppedItem.resolved_path`, §0.6, and the identity
+/// itself feeds §2.3.3 `is_safe_output`), and the abstract per-candidate `payload` the spine threads through
+/// un-inspected (detection is P3, so P2.76 never constructs a §0.6 `DroppedItem`/`SkippedItem`).
+///
+/// [Build-Session-Entscheidung: P2.76] Derives `Debug` ONLY — NOT `PartialEq`/`Eq`: those would leak a
+/// `P: PartialEq/Eq` bound onto every consumer, and a whole-struct `Eq` would be MISLEADING (`FileIdentity`'s
+/// `Eq` ignores `canonical_path`, so two rows with different first-seen paths but the same identity would
+/// compare equal). The §6.4.1 tests assert on the fields (`.id` / `.identity.canonical_path` / `.payload`)
+/// individually instead. Core-INTERNAL (never crosses IPC) → no `serde`/`specta`.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P2.76's §2.3.2 de-dup fold `dedup_by_identity` yields `DedupedMember<P>` (the id + \
+                  retained FileIdentity + payload survivor row). Its production reader is the `ingest` \
+                  freeze funnel's spine, wired at P3.49 (which resolves each candidate's FileIdentity, folds \
+                  it in, then projects each survivor into a §0.6 DroppedItem); dead in the production build \
+                  pending that wiring, constructed by the in-module dedup_tests below."
+    )
+)]
+#[derive(Debug)]
+struct DedupedMember<P> {
+    /// The freeze-assigned §0.6 `ItemId` — one per survivor (§0.6 invariant 6).
+    id: ItemId,
+    /// The retained first-seen §2.3.1 resolved identity (§2.3.2) — its `canonical_path` is the first-seen
+    /// representative path.
+    identity: FileIdentity,
+    /// The abstract per-candidate payload the P3.49 spine threads through (a `PathBuf` for the CSV→TSV
+    /// walking skeleton, or a richer detected candidate) — never inspected by the fold.
+    payload: P,
+}
+
+/// **Step 3 of the §2.4.1 freeze spine (P2.76)** — the PURE §2.3.2 resolved-identity de-dup fold. Over the
+/// walk candidates ALREADY paired with their resolved [`FileIdentity`] (§2.3.1; the IO/FFI `resolve_identity`
+/// that PRODUCES each identity is WHOLLY P3 and FEEDS this fold via the P3.49 spine — the fold performs NO
+/// I/O and is unit-tested with `FileIdentity` values directly), keep the FIRST-SEEN member per identity
+/// (§2.3.2) and drop every subsequent duplicate (a file reached via two paths, or a hardlink pair, collapses to
+/// ONE member → converted once, SSOT), minting exactly one [`ItemId`] per SURVIVOR over the single id space
+/// (§0.6 invariant 6 — a dropped duplicate consumes NO id). ORDER-preserving: survivors keep the walk's
+/// first-seen order, so their ids are contiguous from the cursor. `Err(`[`ItemSpaceExhausted`]`)` is
+/// `?`-propagated (never a panic/wrap, G4/G14); mapping it to the §1.1 fatal-ingest surface is the P3.49
+/// spine's job. The [`ItemIdSpace`] is passed by `&mut` (NOT owned): §0.6 invariant 6 is ONE space across
+/// the eligible survivors AND the §1.1 skips, so the P3.49 assembly owns the single space and threads it
+/// through — the skip ids (for `WalkSkip`s, which have no resolvable identity and are therefore NOT de-duped
+/// here) mint from the same cursor after this fold. [Build-Session-Entscheidung: P2.76]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P2.76 authors the §2.4.1 freeze-spine step-3 resolved-identity de-dup fold. Its production \
+                  caller is the `ingest` funnel's spine, wired at P3.49 (the CSV→TSV walking skeleton); dead \
+                  in the production build pending that wiring, exercised by the in-module dedup_tests below — \
+                  the same per-fn interface-shell attribute `walk_intake_roots` (P2.64) carries."
+    )
+)]
+fn dedup_by_identity<P>(
+    candidates: Vec<(FileIdentity, P)>,
+    ids: &mut ItemIdSpace,
+) -> Result<Vec<DedupedMember<P>>, ItemSpaceExhausted> {
+    let mut seen: HashSet<FileIdentity> = HashSet::with_capacity(candidates.len());
+    let mut survivors: Vec<DedupedMember<P>> = Vec::with_capacity(candidates.len());
+    for (identity, payload) in candidates {
+        // §2.3.2: identity — NOT the path string — is the de-dup key. `FileIdentity`'s hand-written Eq/Hash
+        // key ONLY on (dev, inode)/file-index, so a hardlink (same inode, different `canonical_path`)
+        // collapses here; the FIRST-seen candidate's identity is retained (its `canonical_path` = the §2.3.2
+        // first-seen representative path). `insert` clones the identity for the set key; the original moves
+        // into the survivor on the first-seen branch (or is dropped with a duplicate).
+        if seen.insert(identity.clone()) {
+            // First sighting of this resolved file → a SURVIVOR: mint one id over the single space. A repeat
+            // sighting takes the implicit `else` (does nothing) and mints NOTHING, consuming no id (§0.6
+            // invariant 6). The `?` propagates `ItemSpaceExhausted` without a panic (G4/G14).
+            let id = ids.mint()?;
+            survivors.push(DedupedMember {
+                id,
+                identity,
+                payload,
+            });
+        }
+    }
+    Ok(survivors)
+}
+
+#[cfg(test)]
+mod dedup_tests {
+    //! §6.4.1 unit (G15) for the §2.4.1 freeze-spine step-3 §2.3.2 resolved-identity de-dup fold
+    //! ([`dedup_by_identity`], P2.76), driven with `FileIdentity` values built DIRECTLY (the IO/FFI
+    //! `resolve_identity` that produces them is P3; test-strategy §0.1 — the thing under test is the pure
+    //! de-dup + mint logic, not the filesystem).
+    //!
+    //! Exhaustion (`ItemSpaceExhausted`): the fold `?`-propagates it with NO fold-specific error logic — a
+    //! bare `?`, no branch/cleanup (the partial `survivors` Vec is simply dropped on early return). The
+    //! ceiling→`Err` behaviour is owned + unit-tested at its source, `ItemIdSpace::mint`
+    //! (`domain::tests::item_id_space_reports_exhaustion_at_the_u32_ceiling`, P2.75); `ItemIdSpace` exposes
+    //! no near-ceiling constructor, so a fold-level ceiling test would need a test-only seam into the P2.75
+    //! type — deliberately NOT added (the successful `mint()?` path is exercised by every test below).
+    use super::*;
+
+    /// Build a `FileIdentity` tersely — mirrors fs_guard's own test helper (the fold keys on `(dev, inode)`,
+    /// so the path is free to vary to model a hardlink).
+    fn fid(path: &str, dev: u64, inode: u64) -> FileIdentity {
+        FileIdentity {
+            canonical_path: PathBuf::from(path),
+            dev_or_volserial: dev,
+            inode_or_fileindex: inode,
+        }
+    }
+
+    /// §2.3.2 / §2.3.4: a HARDLINK is two paths over ONE `(dev, inode)` — same identity, different
+    /// `canonical_path` — so the group collapses to ONE first-seen member (SSOT "converted once"), retaining
+    /// the FIRST path, and only ONE id is minted. (Different paths + one identity also proves the key is the
+    /// identity, not the path string.)
+    #[test]
+    fn hardlink_two_paths_collapse_to_one_first_seen_member() {
+        let mut ids = ItemIdSpace::new();
+        let candidates = vec![
+            (fid("/data/photo.jpg", 66, 1234), "first"),
+            (fid("/data/backup/photo-link.jpg", 66, 1234), "second"), // hardlink: same (dev, inode)
+        ];
+        let survivors = dedup_by_identity(candidates, &mut ids).expect("space not exhausted");
+        assert_eq!(
+            survivors.len(),
+            1,
+            "§2.3.2: two paths to one resolved file collapse to one member"
+        );
+        assert_eq!(
+            survivors[0].identity.canonical_path,
+            PathBuf::from("/data/photo.jpg"),
+            "§2.3.2: the FIRST-seen path is the retained representative"
+        );
+        assert_eq!(
+            survivors[0].id,
+            ItemId::from_index(0),
+            "§0.6 inv-6: the sole survivor gets id 0"
+        );
+    }
+
+    /// §2.3.2 (the retention half, isolated): the same identity reached via path A THEN path B retains A —
+    /// the first-seen `canonical_path` — not B.
+    #[test]
+    fn first_seen_representative_is_retained() {
+        let mut ids = ItemIdSpace::new();
+        let candidates = vec![
+            (fid("/first-seen", 66, 7), "A"),
+            (fid("/second-path", 66, 7), "B"),
+        ];
+        let survivors = dedup_by_identity(candidates, &mut ids).expect("space not exhausted");
+        assert_eq!(survivors.len(), 1, "same identity → one member");
+        assert_eq!(
+            survivors[0].identity.canonical_path,
+            PathBuf::from("/first-seen"),
+            "§2.3.2: the retained representative is the FIRST-seen path, not the repeat sighting"
+        );
+    }
+
+    /// §0.6 invariant 6: a dropped duplicate consumes NO id — `[A, dup(A), B]` yields 2 survivors with ids
+    /// `[0, 1]` (B is 1, NOT 2), and the shared space's cursor advanced exactly twice (its next mint is 2),
+    /// so the P3.49 skip ids continue at 2.
+    #[test]
+    fn duplicate_consumes_no_id() {
+        let mut ids = ItemIdSpace::new();
+        let candidates = vec![
+            (fid("/a", 66, 1), "A"),
+            (fid("/a-link", 66, 1), "dupA"), // duplicate of A (same identity)
+            (fid("/b", 66, 2), "B"),
+        ];
+        let survivors = dedup_by_identity(candidates, &mut ids).expect("space not exhausted");
+        let got: Vec<ItemId> = survivors.iter().map(|m| m.id).collect();
+        assert_eq!(
+            got,
+            vec![ItemId::from_index(0), ItemId::from_index(1)],
+            "§0.6 inv-6: B is id 1, not 2 — the duplicate consumed no id"
+        );
+        assert_eq!(
+            ids.mint().expect("space not exhausted"),
+            ItemId::from_index(2),
+            "§0.6 inv-6: the shared space advanced exactly twice (skip ids continue at 2)"
+        );
+    }
+
+    /// The fold preserves first-seen order — `[C, A, B]` (distinct, deliberately unsorted) yields survivors
+    /// C, A, B with ids 0, 1, 2; the fold never reorders.
+    #[test]
+    fn order_preserving_over_survivors() {
+        let mut ids = ItemIdSpace::new();
+        let candidates = vec![
+            (fid("/c", 66, 3), "C"),
+            (fid("/a", 66, 1), "A"),
+            (fid("/b", 66, 2), "B"),
+        ];
+        let survivors = dedup_by_identity(candidates, &mut ids).expect("space not exhausted");
+        let payloads: Vec<&str> = survivors.iter().map(|m| m.payload).collect();
+        assert_eq!(
+            payloads,
+            vec!["C", "A", "B"],
+            "the fold preserves first-seen order, never sorts"
+        );
+        let got_ids: Vec<ItemId> = survivors.iter().map(|m| m.id).collect();
+        assert_eq!(
+            got_ids,
+            (0u32..3).map(ItemId::from_index).collect::<Vec<_>>(),
+            "§0.6 inv-6: ids are contiguous 0,1,2 in survivor order"
+        );
+    }
+
+    /// §2.3.1: distinct identities all survive — including a same-INODE-different-DEV pair (proves `dev`
+    /// disambiguates, no over-collapse; mirrors fs_guard's `same_inode_different_volume_is_distinct`). N
+    /// distinct → N survivors, ids `0..N`.
+    #[test]
+    fn distinct_identities_all_survive() {
+        let mut ids = ItemIdSpace::new();
+        let candidates = vec![
+            (fid("/x", 66, 1), "x"),
+            (fid("/y", 66, 2), "y"),
+            (fid("/z", 99, 1), "z"), // same inode 1 as /x but different dev → a DISTINCT file
+        ];
+        let survivors = dedup_by_identity(candidates, &mut ids).expect("space not exhausted");
+        assert_eq!(
+            survivors.len(),
+            3,
+            "§2.3.1: same inode across different volumes is NOT a duplicate (dev disambiguates)"
+        );
+        let got_ids: Vec<ItemId> = survivors.iter().map(|m| m.id).collect();
+        assert_eq!(
+            got_ids,
+            (0u32..3).map(ItemId::from_index).collect::<Vec<_>>(),
+            "§0.6 inv-6: three survivors get ids 0,1,2"
+        );
+    }
+
+    /// An empty candidate list yields no survivors and does not touch the shared space (its next mint is
+    /// still 0) — a dropped/cancelled/all-duplicate intake mints nothing.
+    #[test]
+    fn empty_input_yields_no_survivors() {
+        let mut ids = ItemIdSpace::new();
+        let survivors = dedup_by_identity(Vec::<(FileIdentity, &str)>::new(), &mut ids)
+            .expect("space not exhausted");
+        assert!(survivors.is_empty(), "no candidates → no survivors");
+        assert_eq!(
+            ids.mint().expect("space not exhausted"),
+            ItemId::from_index(0),
+            "§0.6 inv-6: an empty fold mints nothing — the space is untouched (next mint is 0)"
+        );
+    }
 }
 
 #[cfg(test)]
