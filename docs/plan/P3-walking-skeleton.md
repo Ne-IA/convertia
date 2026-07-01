@@ -506,3 +506,19 @@ id (`.73`) rather than re-numbering the whole P3 sequence + every cross-phase re
 - [ ] **P3.73** [CI,TEST] Instantiate the P0.4.3 instrumented-nightly `cargo-fuzz` legs for `crate::fs_guard::resolve_identity`/`is_safe_output` + the in-core CSV/TSV transform (date-pinned nightly, pinned libFuzzer bounds, G56 `timeout-minutes`) · §6.4.2 §1.2 · G48 G56
   needs: P0.4.3, P3.6, P3.8, P3.41
   > the activation target for the P0.4.3 `→ activated in P3` in-core fuzz legs whose instrumented-nightly instantiation no box homed (P0.4.3 names `crate::detection` → activated as the instrumented-nightly leg in **P9.35**; the serde/IPC boundary → **P2.126**; the imgworker-FFI surface → **P4.35.1**; the zip-slip archive-entry-name target → **P7.50.1**; but `crate::fs_guard::resolve_identity`/`is_safe_output` and the in-core CSV/TSV transform had ONLY the stable-toolchain replay **P3.67** — explicitly `NO libFuzzer harness` — with no instrumented-nightly leg). Now that the real bodies exist (`crate::fs_guard` `resolve_identity`/`is_safe_output` P3.6/P3.8 incl. the Windows dangerous-path classes + NUL-path/`PATH_MAX`+1 bound-firing fixtures; the in-core CSV/TSV transform P3.41), wire `cargo +nightly-YYYY-MM-DD fuzz run crate_fs_guard_resolve_identity` / `crate_fs_guard_is_safe_output` / `csv_tsv_transform` into `.github/workflows` (Linux+macOS instrumented nightly; per-push = the P3.67 stable replay / saved-crash-corpus replay), **date-pinned nightly channel** + **pinned libFuzzer resource bounds** (`-rss_limit_mb`/`-max_len`/`-timeout`/`-max_total_time`, an OOM/timeout a committed FINDING never a runner kill) + **G56 `timeout-minutes`**; every crash minimized + committed under `fuzz/corpus/`+`fuzz/crashes/` (then replayed cross-platform by P3.67). This is the P3 box the P0.4.3 fs_guard + CSV/TSV instrumented-nightly edge points at (`needs: P0.4.3`, the harness contract `[x]` before the loop; the kernel-body boxes P3.6/P3.8/P3.41 for the real targets the instrumented run exercises). → activates the P0.4.3 fs_guard + CSV/TSV in-core fuzz legs.
+
+---
+
+### The `RunEvent::Exit` best-effort scratch-cleanup wiring — deferred from P2.81
+
+> P2.81 built the `App::run` lifecycle handlers (`ExitRequested` `prevent_exit` + `Exit` → `flush_logs` +
+> the `_ =>` non-exhaustive arm) but DEFERRED the `best_effort_scratch_cleanup` call inside the `Exit` arm:
+> §7.3.2 mandates it IS the §2.6 `cleanup_run` path (not a separate impl), which did not exist at P2.81
+> (shell P3.1.2 / body P3.22) — and nothing was created to clean then (no run-scratch until a conversion,
+> P3/P4). This box wires the `Exit` arm → `crate::run::cleanup_run` now that the §2.6 cluster is built.
+> Placed at end-of-phase (after P3.72/P3.73, the file's established convention) so it stays a single
+> gap-free id (`.74`) rather than re-numbering P3 + every cross-phase reference.
+
+- [ ] **P3.74** [RUST] Wire `best_effort_scratch_cleanup` (= the §2.6 `cleanup_run` path, §7.3.2 `[DECIDED]`) into the P2.81 `RunEvent::Exit` arm — best-effort + non-blocking, deferring a wedged `.part` to the §2.6.3 next-launch sweep · §7.3.2 §2.6
+  needs: P2.81, P3.22
+  > the one-call wiring the P2.81 Scope-DECISION deferred: inside the `RunEvent::Exit` arm call `crate::run::cleanup_run` (own-prefix-scoped, idempotent, P3.22) — remove the central `run-<RunId>/` dir + `*.part` in the recorded `final_dir` set — **best-effort and non-blocking** (must not stall app exit; §7.3.2). A wedged descendant still holding a `.part` (§1.7 group-kill timed out) is left to the §2.6.3 next-launch startup sweep (P3.23), never blocking exit. NOT a separate cleanup implementation (§7.3.2 `[DECIDED]`) — it invokes `cleanup_run`.
