@@ -1815,6 +1815,60 @@ mod run_lifecycle {
 }
 
 #[cfg(test)]
+mod quit_while_converting {
+    //! §7.3.3 the quit-while-converting contract — CLASSIFIED **contract-only** (the P2.81-review Co-Pilot
+    //! flag). §7.3.3 mandates that quitting while a run is in flight is "the SAME code path as an in-UI
+    //! Cancel": confirm → cancel the in-flight run (the §1.7 mechanism, surfaced via C7 `cancel_run`) → the
+    //! §2.6 cleanup → exit; the idle state quits immediately with no prompt. The cancel + cleanup MECHANISM is
+    //! the P3 §2.6/§1.7 kernel (C7 `cancel_run` body P3.52, §1.7 P3.44, cleanup P3.22), and §7.3.3 forbids a
+    //! SEPARATE implementation — so this box authors NO core cancel/cleanup and NO `cleanup_run` call
+    //! (contract-only, NOT deferred-invocation: no new P3 wiring box either, since the runtime is the frontend
+    //! §5.2 confirm → the shared C7 `cancel_run` → the window close → the §7.3.2 `RunEvent::Exit` sweep, P3.74,
+    //! reusing pieces that already exist as shells/hooks). It ASSERTS the contract-by-construction:
+    //!   (1) idle quits immediately — the SOLE close/quit prevent is busy-gated (`dispatch_window_event`'s
+    //!       `prevent_close` sits inside the `converter_is_busy` branch, P2.79; the `RunEvent::ExitRequested`
+    //!       arm is an empty belt-and-suspenders hook with no unconditional `prevent_exit`, P2.81), so an idle
+    //!       close/quit is never blocked;
+    //!   (2) a busy quit HANDS OFF to the §5.2 confirm UI (the `app://close-requested` emit, P2.80) rather than
+    //!       inlining a cancel — the actual cancel is the shared C7 `cancel_run` the frontend calls on confirm;
+    //!   (3) the core lifecycle inlines NO cancel/kill (delegated to C7), the "same path as in-UI Cancel"
+    //!       forward-guard.
+    //! Source-scan (AppHandle-coupled boot-glue; test-strategy §1.1a). [Build-Session-Entscheidung: P2.83]
+
+    // §6.4.1 unit (G15): §7.3.3 "the idle state quits immediately" — the sole close/quit prevent is busy-gated.
+    // `dispatch_window_event`'s `prevent_close` (the only prevent, P2.79) sits inside the `converter_is_busy`
+    // branch, so when the converter is idle the branch is skipped → the close proceeds → the app quits
+    // immediately (no prompt). Scans `all_production_source()`; needle `concat!`-assembled.
+    #[test]
+    fn idle_quits_immediately_the_sole_prevent_is_busy_gated() {
+        let src = super::boot_invariants::all_production_source();
+        assert!(
+            src.contains(concat!("if launch_intake::converter_is_", "busy(app) {")),
+            "§7.3.3: the sole close/quit prevent must sit inside the converter_is_busy branch — an idle close/quit is never prevented (idle quits immediately)"
+        );
+    }
+
+    // §6.4.1 unit (G15): §7.3.3 "the same code path as an in-UI Cancel" — a busy quit does NOT inline a core
+    // cancel/kill; it HANDS OFF to the §5.2 confirm UI (the `app://close-requested` emit, P2.80), and the
+    // actual cancel is the shared C7 `cancel_run` (§0.4.1) the frontend calls on confirm. Assert: the busy
+    // path emits the confirm event, AND the core lifecycle authors NO inline cancellation-token trip — the
+    // cancel machinery lives in `crate::ipc::conversion` (C7) / `crate::orchestrator`, never the main.rs
+    // lifecycle (`all_production_source()` is main.rs only). Needles `concat!`-assembled.
+    #[test]
+    fn busy_quit_hands_off_to_the_confirm_ui_and_inlines_no_cancel() {
+        let src = super::boot_invariants::all_production_source();
+        assert!(
+            src.contains(concat!("crate::ipc::events::APP_CLOSE_", "REQUESTED")),
+            "§7.3.3: a busy quit hands off to the §5.2 confirm UI via the app://close-requested emit (P2.80)"
+        );
+        assert!(
+            !src.contains(concat!(".can", "cel(")),
+            "§7.3.3: the quit path must delegate the cancel to the shared C7 cancel_run (the in-UI-Cancel path), not inline a cancel in the lifecycle"
+        );
+    }
+}
+
+#[cfg(test)]
 mod no_updater_posture {
     //! §7.6.1: the Tauri updater is explicitly absent — "its absence is the implementation". This
     //! structural test asserts the no-updater posture BY CONSTRUCTION at the Rust level: the resolved
