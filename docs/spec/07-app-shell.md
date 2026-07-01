@@ -544,6 +544,19 @@ equivalent; ordinary filesystem ACL denials map to the same §2.8 error kind.
   foreground tool: closing the window quits the app (it does not lurk in the
   tray). This matches "portable, no installation, no system pollution" — a tray
   resident is closer to an installed service. Closing → quit is the §7.3.3 path.
+- **Recorded posture (P2.77) `[DECIDED]`.** The *no-tray*, *no-background/agent*, and
+  *closing → quit* legs above are recorded as ONE standing v1 negative — the SSOT
+  *portable, no installation, no system pollution* posture — enforced by ABSENCE: the
+  v2 `app.trayIcon` config key is absent from `tauri.conf.json`, and no tray / agent /
+  login-item API is called anywhere in the codebase (there is no tray or
+  background-mode code to register on the Tauri `Builder`). The **P1.16 `window_model`
+  scan** structurally asserts the CONFIG side of this — exactly one `main` window,
+  `app.trayIcon` absent, and no programmatic window-builder in the production source
+  (the broader "no tray/agent API anywhere" is a plain code absence, not a positive
+  scan assertion). The closing → quit leg is the §7.3.2 `CloseRequested` → §7.3.3
+  confirm-guard → `RunEvent::Exit` lifecycle (P2.78–P2.82); the release-time
+  no-system-pollution proof is the §6.10 row-21 gate (P10). No box adds a tray, a
+  background/agent mode, a login-item, or a persisted window (§7.4) in the v1 line.
 - **Window size/position:** see §7.4 — **not** persisted in v1 `[REC]`; the window
   opens at a sensible default size each launch.
 
