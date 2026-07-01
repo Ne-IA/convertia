@@ -240,12 +240,19 @@ fn dispatch_window_event(app: &tauri::AppHandle, event: &tauri::WindowEvent) {
 /// exhaustive listing would be platform-fragile (clippy would demand a different variant set per OS); the
 /// item-level `#[allow(clippy::wildcard_enum_match_arm)]` is the gate-sanctioned per-item escape (it does NOT
 /// disqualify the crate-root deny — check-rust-lint-contract's item-allow allowance), so every other run
-/// event is a no-op. `_app`
-/// is unused at this box — the P3.74 scratch-cleanup call is its first use. AppHandle-coupled boot-glue (the
-/// §1.1a boot-stage pattern — not `tauri::test`-mockable here; source-scan-pinned + the §6.4.6 E2E leg; the
-/// `AppHandle` signature makes it G28 diff-floor-exempt).
+/// event is a no-op. On the Apple/mobile targets it ALSO matches the `#[cfg]`-gated `RunEvent::Opened` — the
+/// macOS Open-with hook (§7.8.1): its `file://` urls route through the SAME §7.8.1 funnel (`handle_opened`,
+/// P2.56) so the §7.1.1 refuse-busy gate + the §1.1 freeze apply, never bypassing the primary gate. `app` is
+/// used only by that Apple-target arm at this box (its first use; the P3.74 scratch-cleanup call is its next),
+/// so on Win/Linux — where the `Opened` arm is compiled out — a cfg-conditional `allow(unused_variables)`
+/// keeps it clean. AppHandle-coupled boot-glue (the §1.1a boot-stage pattern — not `tauri::test`-mockable
+/// here; source-scan-pinned + the §6.4.6 E2E leg; the `AppHandle` signature makes it G28 diff-floor-exempt).
 #[allow(clippy::wildcard_enum_match_arm)]
-fn dispatch_run_event(_app: &tauri::AppHandle, event: &tauri::RunEvent) {
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "ios", target_os = "android")),
+    allow(unused_variables)
+)]
+fn dispatch_run_event(app: &tauri::AppHandle, event: &tauri::RunEvent) {
     match event {
         // §7.3.2 belt-and-suspenders: the last `api.prevent_exit()` chance; the quit-while-converting guard is
         // the §7.3.3 contract, and the window-close path is `dispatch_window_event`'s `prevent_close`.
@@ -254,6 +261,12 @@ fn dispatch_run_event(_app: &tauri::AppHandle, event: &tauri::RunEvent) {
         tauri::RunEvent::Exit => {
             tauri_plugin_log::log::logger().flush();
         }
+        // §7.8.1 macOS Open-with: `RunEvent::Opened` is an Apple/mobile-target `#[cfg]`-gated variant (absent
+        // on Win/Linux, so the arm carries the SAME cfg — an unconditional arm would not compile there). Route
+        // the `file://` urls through the SAME §7.8.1 funnel (`handle_opened`, P2.56) so the §7.1.1 refuse-busy
+        // gate + the §1.1 freeze apply — a mid-conversion Open-with is refused, never bypassing the primary gate.
+        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+        tauri::RunEvent::Opened { urls } => launch_intake::handle_opened(app, urls),
         _ => {}
     }
 }
@@ -423,8 +436,9 @@ mod launch_intake {
     /// Open-with (the WebView listener is not ready → the set is buffered + drained, §7.8.1) is `LaunchArg`; a
     /// while-running Open-with is `SecondInstance`. `handle_opened` resolves `frontend_ready(app)` and passes it
     /// in, so the rule is pure + unit-tested in isolation. NO `dead_code` attr is needed: `handle_opened`'s body
-    /// has a call site to it, which rustc counts as a use even though `handle_opened` is itself un-wired/dead —
-    /// so only the un-wired `handle_opened` is flagged (until P2.82 wires the `App::run` Opened arm), not this.
+    /// has a call site to it, which rustc counts as a use even though `handle_opened` is itself dead on
+    /// Win/Linux (its `App::run` Opened arm is `#[cfg]`-gated to the Apple targets, P2.82) — so only
+    /// `handle_opened` is flagged there, not this.
     fn launch_origin(frontend_ready: bool) -> IntakeOrigin {
         if frontend_ready {
             IntakeOrigin::SecondInstance
@@ -442,8 +456,10 @@ mod launch_intake {
     /// `tauri::Url` exists on every target), so the Apple/Android-target gating of the `RunEvent::Opened`
     /// variant lives on the P2.82 `App::run` ARM that calls this, NOT here.
     /// AppHandle-coupled boot-glue (§1.1a; G28 signature-exempt; the routing is source-scan-pinned, the runtime
-    /// is the §6.4.6 macOS E2E smoke leg). Dead in the production build until P2.82 wires it (the `dead_code`
-    /// expectation is scoped to `not(test)` — the signature pin uses it in the test build).
+    /// is the §6.4.6 macOS E2E smoke leg). Wired by the P2.82 `App::run` Opened arm (itself `#[cfg]`-gated to
+    /// the Apple/mobile targets), so live there + in the test build (the signature pin); the `dead_code`
+    /// expectation is therefore scoped to `not(test)` AND the non-Apple targets, where the Opened arm is
+    /// compiled out.
     ///
     /// [Build-Session-Entscheidung: P2.56.1] **`RunEvent::Opened` is an Apple/Android-target variant (Tauri-v2
     /// API fact).** In Tauri v2 it is a `#[cfg(any(target_os = "macos", target_os = "ios", target_os =
@@ -461,13 +477,16 @@ mod launch_intake {
     /// irrelevant — the open-documents AppleEvent surfaced as `RunEvent::Opened` is the sole macOS file-open
     /// mechanism.
     #[cfg_attr(
-        not(test),
+        all(
+            not(test),
+            not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+        ),
         expect(
             dead_code,
-            reason = "the macOS Open-with handler; the P2.82 App::run RunEvent::Opened arm wires it"
+            reason = "the macOS Open-with handler — dead ONLY on Win/Linux, where the P2.82 App::run Opened arm that wires it is compiled out (the arm + the RunEvent::Opened variant are #[cfg]-gated to the Apple/mobile targets, where handle_opened is live); the test build uses it via the signature pin"
         )
     )]
-    fn handle_opened(app: &AppHandle, urls: &[tauri::Url]) {
+    pub(super) fn handle_opened(app: &AppHandle, urls: &[tauri::Url]) {
         let paths: Vec<PathBuf> = urls.iter().filter_map(|u| u.to_file_path().ok()).collect();
         forward_launch_intake(app, paths, launch_origin(frontend_ready(app)));
     }
@@ -1770,6 +1789,26 @@ mod run_lifecycle {
             assert!(
                 src.contains(needle),
                 "§7.3.2: dispatch_run_event must wire ExitRequested + Exit(flush) + the item allow (missing `{needle}`)"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15): the §7.8.1 macOS Open-with arm (P2.82) — `dispatch_run_event` routes the `#[cfg]`-gated
+    // `RunEvent::Opened` through the SAME §7.8.1 funnel via `handle_opened` (P2.56), so the §7.1.1 refuse-busy
+    // gate + the §1.1 freeze apply to a macOS Open-with too. The arm is `#[cfg]`-gated to the Apple/mobile
+    // targets (compiled out on Win/Linux) — but `include_str!` reads the raw TEXT, so this pins the wiring on
+    // EVERY platform; the arm's compile-correctness is the macos-14 compile-sanity leg. Needles
+    // `concat!`-assembled (self-match avoidance).
+    #[test]
+    fn run_event_handler_routes_opened_through_the_funnel() {
+        let src = super::boot_invariants::all_production_source();
+        for needle in [
+            concat!("RunEvent::Open", "ed { urls }"), // the macOS Open-with arm (§7.8.1)
+            concat!("launch_intake::handle_open", "ed(app, urls)"), // routes through the P2.56 funnel handler
+        ] {
+            assert!(
+                src.contains(needle),
+                "§7.8.1: dispatch_run_event must route RunEvent::Opened through handle_opened (missing `{needle}`)"
             );
         }
     }
