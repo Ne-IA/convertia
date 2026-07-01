@@ -304,7 +304,7 @@
   > P2.79–P2.82.
 - [x] **P2.79** [RUST] Wire `Builder::on_window_event` — v2 two-arg `(&Window, &WindowEvent)` `CloseRequested` handler · §7.3.2
   needs: P2.78
-- [ ] **P2.80** [RUST] Implement the close-requested decision in Rust — `converter_is_busy` → `api.prevent_close()` + emit `app://close-requested` (`serde_json::Value::Null` payload) · §7.3.2 §7.3.3
+- [x] **P2.80** [RUST] Implement the close-requested decision in Rust — `converter_is_busy` → `api.prevent_close()` + emit `app://close-requested` (`serde_json::Value::Null` payload) · §7.3.2 §7.3.3
   needs: P2.79, P2.39
 - [ ] **P2.81** [RUST] Wire the `App::run` `RunEvent::ExitRequested` (last `prevent_exit` chance) + `RunEvent::Exit` (flush logs, best-effort scratch cleanup) handlers · §7.3.2 §2.6
   needs: P2.78
