@@ -34,6 +34,7 @@ mod orchestrator;
 mod outcome;
 mod platform;
 mod pool;
+mod prefs;
 mod run;
 
 use std::path::PathBuf;
