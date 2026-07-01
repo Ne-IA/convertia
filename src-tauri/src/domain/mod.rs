@@ -109,8 +109,86 @@ pub struct CollectingId(Uuid);
 )]
 pub struct ItemId(u32);
 
+impl ItemId {
+    /// The §0.6-invariant-6 freeze constructor: an `ItemId` **IS** the zero-based positional INDEX of an item
+    /// in the §1.1 de-duplicated frozen `Vec` of ALL dropped items (eligible + skipped alike, §2.4), assigned
+    /// ONCE over the single id space. Named `from_index`, **NOT** `mint`: the sibling `InstanceId::mint` /
+    /// `RunId::mint` are random-v4-UUID mints whose value is opaque, whereas an `ItemId` is a DETERMINISTIC
+    /// position — so the name names the truth (an index, not a random mint) and keeps the two identity stories
+    /// visibly distinct. `const` — a pure `u32` wrap, usable in const / test contexts. It cannot overflow (its
+    /// argument already IS a `u32`); exhaustion of the single space is owned by [`ItemIdSpace::mint`], the one
+    /// place ids are handed out — it advances a `u32` cursor with `checked_add`, so this design performs NO
+    /// `usize → u32` narrowing anywhere (the cursor mints `u32`s directly, never indexes a `usize`-length `Vec`).
+    /// [Build-Session-Entscheidung: P2.75]
+    #[must_use]
+    pub const fn from_index(index: u32) -> Self {
+        Self(index)
+    }
+}
+
 /// §1.7/§1.8 call it `JobId`; it IS the `ItemId` of the job's item (§0.6).
 pub type JobId = ItemId;
+
+/// The §0.6-invariant-6 single `ItemId` space (§1.1 / §2.4) — the ONE monotonic source that hands out each
+/// `ItemId` **exactly once**, in strictly increasing order from `0`, never reset. At the §1.1 freeze both the
+/// eligible (`DroppedItem`) and the skipped (`SkippedItem`) views mint from the SAME space, so their ids are
+/// **id-disjoint by construction** and neither is ever re-indexed from 0 — the invariant made STRUCTURAL, not
+/// conventional (there is no public way to write `ItemId(0)` twice or reset the cursor). PURE (tier-3): a
+/// private `u32` cursor, no I/O and no `crate::outcome` reference, homed beside `ItemId`; the
+/// `crate::orchestrator` freeze spine constructs one per freeze and mints across it (the sanctioned downward
+/// `orchestrator → domain` edge). Core-INTERNAL — never crosses IPC, so no `serde`/`specta` (the internal-type
+/// posture of `FrozenCollectedSet`). The de-dup FOLD that mints one id per first-seen survivor is P2.76; the
+/// end-to-end wiring is the P3.49 spine. [Build-Session-Entscheidung: P2.75]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemIdSpace {
+    /// The index the NEXT [`mint`](ItemIdSpace::mint) hands out; `None` once the space is EXHAUSTED (the last
+    /// mint handed out `ItemId::from_index(u32::MAX)`), so `u32::MAX` IS a valid final id and only the
+    /// FOLLOWING mint fails — never a silent `as u32` wrap.
+    next: Option<u32>,
+}
+
+impl Default for ItemIdSpace {
+    /// A fresh space, identical to [`ItemIdSpace::new`] — its first mint is `ItemId::from_index(0)`.
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ItemIdSpace {
+    /// A fresh single id space whose first mint is `ItemId::from_index(0)` (§0.6 invariant 6). `const` so it can
+    /// seed a `const` context; equal to [`ItemIdSpace::default`]. [Build-Session-Entscheidung: P2.75]
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { next: Some(0) }
+    }
+
+    /// Mint the NEXT `ItemId` over this single space and advance the cursor — the ONE way an id is assigned at
+    /// the §1.1 freeze. The N-th mint yields `ItemId::from_index(N)` (order-preserving, contiguous from 0).
+    /// Returns `Err(`[`ItemSpaceExhausted`]`)` — **never** a silent `as u32` wrap or a panic (the in-core
+    /// no-panic discipline, G4/G14) — once the space is spent: `mint` reads the id at the current cursor THEN
+    /// advances via `checked_add`, so `ItemId::from_index(u32::MAX)` is a valid FINAL id and only the FOLLOWING
+    /// mint fails (the boundary the §1.10 resource bounds cap far below in practice; the code stays honest
+    /// regardless). The P2.76 de-dup fold mints INSIDE its first-seen branch — so a dropped duplicate consumes
+    /// no id — and propagates this `Err` so the freeze fails cleanly. [Build-Session-Entscheidung: P2.75]
+    pub fn mint(&mut self) -> Result<ItemId, ItemSpaceExhausted> {
+        match self.next {
+            Some(index) => {
+                let id = ItemId::from_index(index);
+                self.next = index.checked_add(1);
+                Ok(id)
+            }
+            None => Err(ItemSpaceExhausted),
+        }
+    }
+}
+
+/// The §0.6-invariant-6 `ItemId` space is EXHAUSTED — all `2^32` ids (`0..=u32::MAX`) have been minted, so no
+/// further `ItemId` can be assigned over the single id space (§0.6). Surfaced honestly, never a silent `as u32`
+/// wrap; the §1.10 resource bounds cap a real frozen set far below this, and the P3.49 freeze spine maps this to
+/// the §1.1 fatal-ingest surface (the §2.8 taxonomy), never a panic. A fieldless marker (the only failure mode
+/// is "ran out of `u32`"); core-INTERNAL, so no `serde`/`specta`. [Build-Session-Entscheidung: P2.75]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ItemSpaceExhausted;
 
 /// How a set of paths entered intake (§0.6 / §7.8). Every source is routed through the single §7.8.1
 /// funnel into the §1.1 intake state machine, so the §2.4 freeze + §1.3 one-batch rules apply
@@ -2752,6 +2830,124 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    // ─── §0.6 invariant-6 ItemId assignment: from_index + the single ItemIdSpace (P2.75) ───
+    // These lock the PRODUCTION id-source the P2.76 de-dup fold / P3.49 spine mint over. The disjoint/covers-0..N
+    // VIEW invariant is proven by `prop_single_id_space_is_disjoint_and_never_reindexed` (above) over ids-by-index;
+    // these prove `ItemIdSpace::mint` PRODUCES exactly that 0,1,2,… space — so the composition (freeze wires the
+    // minter to the views) is proven by the two together, and the wired fold itself is P2.76's test (not re-tested
+    // here — additive, so the existing property test is left untouched, no test-change). [Build-Session-Entscheidung: P2.75]
+
+    /// §6.4.1 unit (G15) / §0.6 invariant 6: `ItemId::from_index(n)` IS the item at index `n` — identical to the
+    /// in-crate `ItemId(n)` and to the transparent bare-`u32` wire form, across the boundary values (0, 1, MAX).
+    /// Locks that the freeze constructor introduces no offset / re-mapping.
+    #[test]
+    fn item_id_from_index_is_the_transparent_index() {
+        for n in [0u32, 1, 2, 41, u32::MAX] {
+            assert_eq!(
+                ItemId::from_index(n),
+                ItemId(n),
+                "§0.6: from_index(n) is the id at index n"
+            );
+            assert_eq!(
+                serde_json::to_string(&ItemId::from_index(n)).expect("ItemId serializes"),
+                n.to_string(),
+                "§0.6: from_index yields the transparent bare-u32 wire form"
+            );
+        }
+    }
+
+    /// §6.4.1 unit (G15): `ItemId::from_index` is `const` — usable in a `const` context. Locks const-ness so a
+    /// subsequent refactor to a non-const body (e.g. adding a runtime check) is a compile break, not a silent loss.
+    #[test]
+    fn item_id_from_index_is_const() {
+        const ID: ItemId = ItemId::from_index(7);
+        assert_eq!(
+            ID,
+            ItemId(7),
+            "§0.6: a const from_index equals the id at index 7"
+        );
+    }
+
+    /// §6.4.1 unit (G15) / §0.6 invariant 6: a fresh `ItemIdSpace` (via `new()` AND `default()`) first-mints
+    /// `ItemId::from_index(0)` — the single id space always starts at 0, never re-indexed; `new() == default()`.
+    #[test]
+    fn item_id_space_new_and_default_start_at_zero() {
+        assert_eq!(
+            ItemIdSpace::new(),
+            ItemIdSpace::default(),
+            "§0.6: new() and default() are the same fresh space"
+        );
+        let mut space = ItemIdSpace::new();
+        assert_eq!(
+            space.mint(),
+            Ok(ItemId::from_index(0)),
+            "§0.6 inv-6: the first mint is index 0"
+        );
+        let mut default_space = ItemIdSpace::default();
+        assert_eq!(
+            default_space.mint(),
+            Ok(ItemId::from_index(0)),
+            "§0.6 inv-6: default() also first-mints 0"
+        );
+    }
+
+    /// §6.4.1 unit (G15) / §0.6 invariant 6: consecutive mints yield `0, 1, 2, …` — strictly increasing,
+    /// contiguous, from 0 (order-preserving + never re-indexed). This is the property the P2.76 fold relies on to
+    /// give each first-seen survivor its stable freeze index.
+    #[test]
+    fn item_id_space_mints_monotonic_contiguous_from_zero() {
+        let mut space = ItemIdSpace::new();
+        let minted: Vec<ItemId> = (0..5)
+            .map(|_| space.mint().expect("a fresh space is not exhausted"))
+            .collect();
+        let expected: Vec<ItemId> = (0u32..5).map(ItemId::from_index).collect();
+        assert_eq!(minted, expected, "§0.6 inv-6: mints are 0,1,2,3,4 in order");
+    }
+
+    /// §6.4.1 unit (G15) / §0.6 invariant 6 (assign-once): N mints from one space produce N DISTINCT ids — no id
+    /// is ever handed out twice, so the eligible/skipped views drawn from this space can never collide.
+    #[test]
+    fn item_id_space_mints_no_duplicate_ids() {
+        let mut space = ItemIdSpace::new();
+        let n = 1000usize;
+        let ids: BTreeSet<ItemId> = (0..n)
+            .map(|_| space.mint().expect("a fresh space is not exhausted"))
+            .collect();
+        assert_eq!(
+            ids.len(),
+            n,
+            "§0.6 inv-6: each of N mints is unique (assign-once over one space)"
+        );
+    }
+
+    /// §6.4.1 unit (G15) / §0.6 invariant 6 (no-panic honesty): `u32::MAX` IS a valid FINAL id — the mint at the
+    /// ceiling hands out `from_index(u32::MAX)`, and only the FOLLOWING mint fails with `ItemSpaceExhausted`,
+    /// NEVER a silent `as u32` wrap (which would alias item 2^32 onto id 0 and break per-item addressing). The
+    /// ceiling is reached by constructing a space at the boundary directly (an in-crate `#[cfg(test)]` fixture),
+    /// not by 4e9 iterations. This is the mint-then-`checked_add` ordering leg — an increment-then-return
+    /// ordering would silently make `from_index(u32::MAX)` unreachable (an off-by-one capacity loss).
+    #[test]
+    fn item_id_space_reports_exhaustion_at_the_u32_ceiling() {
+        let mut space = ItemIdSpace {
+            next: Some(u32::MAX),
+        };
+        assert_eq!(
+            space.mint(),
+            Ok(ItemId::from_index(u32::MAX)),
+            "§0.6: u32::MAX is a valid final id (handed out, not skipped)"
+        );
+        assert_eq!(
+            space.mint(),
+            Err(ItemSpaceExhausted),
+            "§0.6: the FOLLOWING mint is exhausted, never a silent wrap"
+        );
+        assert_eq!(
+            space.mint(),
+            Err(ItemSpaceExhausted),
+            "§0.6: exhaustion is stable (stays Err)"
+        );
     }
 
     /// §0.6 "`count == items.len()`": the §1.1 freeze sets the confirm tally `count` to `items.len()`, so a
