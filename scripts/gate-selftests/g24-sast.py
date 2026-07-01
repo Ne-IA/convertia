@@ -112,6 +112,21 @@ try:
     record("store-count: two store-open call sites are counted (>1 -> the gate fails)", m.store_load_count([_td]) >= 2)
     (_td / "a.rs").write_text('let s = app.store(STORE);\n', encoding="utf-8")
     record("store-count: a single store-open call site -> 1 (allowed)", m.store_load_count([_td]) == 1)
+    # P2.85 refinement — an atomic `x.store(val, Ordering::…)` is NOT a Tauri store-open -> not counted:
+    (_td / "a.rs").write_text('self.ready.store(true, std::sync::atomic::Ordering::Release);\n', encoding="utf-8")
+    record("store-count: an atomic .store(val, Ordering) is NOT counted (the P2.85 false-positive fix)", m.store_load_count([_td]) == 0)
+    (_td / "a.rs").write_text('use std::sync::atomic::Ordering;\nself.f.store(1, Ordering::Relaxed);\n', encoding="utf-8")
+    record("store-count: a short-form atomic .store(val, Ordering::Relaxed) is NOT counted", m.store_load_count([_td]) == 0)
+    # a store-open MENTIONED in a comment/string is not counted (the _blank_rs_noncode blanking):
+    (_td / "a.rs").write_text('// app.store(STORE) in a comment\nlet x = "app.store(STORE) in a string";\n', encoding="utf-8")
+    record("store-count: a store-open in a comment/string is not counted (blanking)", m.store_load_count([_td]) == 0)
+    # the real store-open ALONGSIDE an atomic counts EXACTLY the real one (=1, still allowed) — no false-negative:
+    (_td / "a.rs").write_text('self.ready.store(true, Ordering::Release);\nlet s = app.store(&path);\n', encoding="utf-8")
+    record("store-count: a real store-open + an atomic -> 1 (the atomic is excluded, the real one still counts)", m.store_load_count([_td]) == 1)
+    # the marker is the specific `Ordering::` (not a bare `Ordering`), so a real store-open with a generic
+    # arg named Ordering STILL counts (no false-negative on this contrived-but-real form; G1-review-pinned):
+    (_td / "a.rs").write_text('let s = app.store(resolve::<Ordering>(&path));\n', encoding="utf-8")
+    record("store-count: a real store-open with a `<Ordering>` generic arg still counts (Ordering:: marker, not bare)", m.store_load_count([_td]) == 1)
 
     # --- 7. matcher-gap backstop: a Command::new nested in a macro arg (semgrep-invisible) is flagged ---
     record("macro-backstop: target-absent (no app source) -> []", m.macro_nested_commands([]) == [])

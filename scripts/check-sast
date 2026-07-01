@@ -93,13 +93,28 @@ def project_rule_id_tags() -> dict[str, str]:
 
 def store_load_count(roots: list[Path]) -> int:
     """T2c: count store-open call sites (Store::load / StoreBuilder::new / .store(...)) across the app
-    source. Exactly ONE is permitted (rule (e) forbids a second store the store:default capability would
-    otherwise grant). Target-absent (no app source) -> 0. Coarse by design; P1 refines against real code."""
-    pat = re.compile(r"\b(?:Store::load|StoreBuilder::new)\b|\.store\(")
+    source. At most ONE is permitted (rule (e) forbids a second store the store:default capability would
+    otherwise grant); the caller fails on `> 1`, so 0 (target-absent / no store yet) also passes.
+
+    Refined against real code at P2.85 (the first real store-open, `app.store(&path)`):
+    (1) source is `_blank_rs_noncode`'d first, so a `.store(` MENTIONED in a comment/string does not count
+        (the P0.4.1-proven idiom this check previously skipped); and
+    (2) an atomic `x.store(val, Ordering::…)` (`AtomicBool`/`AtomicUsize`::store) is EXCLUDED via its
+        `Ordering::` marker — an atomic store ALWAYS writes `Ordering::VARIANT`, and a Tauri store-open's
+        arg is a path (`&Path`/`&str`/`String`) that never contains `Ordering::`, so a real store-open
+        ALWAYS counts on any realistic store path (no false-negative — the security-dangerous direction).
+        The marker is the specific `\bOrdering::` (not a bare `Ordering` token), so a generic such as
+        `app.store(resolve::<Ordering>(&path))` still counts. Two heuristic residuals remain, both SAFE and
+        backstopped by the constant-name Semgrep rule (e) + the single-name convention: a missed atomic
+        (a `use`d bare variant `.store(v, Relaxed)`, or a value that is a nested paren'd call before the
+        `Ordering::`) merely over-counts = over-blocks; a real store-open whose arg literally contained
+        `Ordering::` would be missed — unreachable for a real path arg, and rule (e) backstops it."""
+    # `.store(` counts UNLESS `Ordering::` appears before the call's closing paren (an atomic store).
+    pat = re.compile(r"\b(?:Store::load|StoreBuilder::new)\b|\.store\((?![^)]*\bOrdering::)")
     n = 0
     for t in roots:
         for f in t.rglob("*.rs"):
-            n += len(pat.findall(f.read_text(encoding="utf-8", errors="replace")))
+            n += len(pat.findall(_blank_rs_noncode(f.read_text(encoding="utf-8", errors="replace"))))
     return n
 
 
