@@ -187,6 +187,29 @@ fn ipc_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         )))
 }
 
+/// [Build-Session-Entscheidung: P2.79] §7.3.2 the window-lifecycle event handler — the Tauri v2 two-arg
+/// `Builder::on_window_event(|window, event|)` hook (registered in `main()`) delegates every `WindowEvent`
+/// here with the resolved `&AppHandle`, and this fn intercepts `CloseRequested`. When a conversion run is in
+/// flight it calls `api.prevent_close()` so a mid-run window close cannot end the app ungracefully and
+/// truncate the in-flight output — the §7.3.3 "the core blocks the close" guarantee (the SSOT never-harm
+/// origin). It reuses the ONE §7.1.1 run-busy predicate (`launch_intake::converter_is_busy`, the §1.9
+/// `RunRegistry` read) — the spec mandates the launch refuse-busy gate and the close guard share the SAME
+/// predicate (§7.3.2). An idle converter is not busy, so the close proceeds and the app quits immediately
+/// (§7.3.3). Other `WindowEvent` variants are not intercepted (the single `main` window needs no per-event
+/// handling). The §5.2 confirm-UI `app://close-requested` emit is added by P2.80 (it consumes the P2.39
+/// event); this box lands the core safety guard. AppHandle-coupled boot-glue (the §1.1a boot-stage pattern —
+/// not `tauri::test`-mockable here; the routing is source-scan-pinned + the §6.4.6 window-close E2E leg
+/// exercises it, and the `AppHandle` signature makes it G28 diff-floor-exempt). `main()`'s closure is a thin
+/// delegation line (the established `.setup`/`.plugin` main-body pattern), so the interceptor logic lives in
+/// this exempt fn, not in `main()`.
+fn dispatch_window_event(app: &tauri::AppHandle, event: &tauri::WindowEvent) {
+    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+        if launch_intake::converter_is_busy(app) {
+            api.prevent_close();
+        }
+    }
+}
+
 /// [Build-Session-Entscheidung: P2.40] The §7.8.1 launch-intake logic, homed with the Tauri host (§0.7:
 /// `main.rs` homes the launch glue — the single-instance callback (§7.1.1), the macOS `RunEvent::Opened`
 /// handler, and `app.emit`). P2.40 authored the §0.4.2 / §7.8.1 `app://intake` IDLE-path-only RULE as a
@@ -442,7 +465,12 @@ mod launch_intake {
     /// P3.46 conductor (register-at-C6 / finish-at-RunFinished), so until P3 the registry is empty → not busy →
     /// the funnel's idle-flow is open (the buffer P2.58 made real catches an idle-and-not-ready set) — the
     /// owner-confirmed P2.58-before-P2.55 order in effect.
-    fn converter_is_busy(app: &AppHandle) -> bool {
+    ///
+    /// [Build-Session-Entscheidung: P2.79] Widened to `pub(super)` so the crate-root §7.3.2
+    /// `dispatch_window_event` close guard reuses this ONE run-busy predicate — the spec mandates the launch
+    /// refuse-busy gate (§7.1.1) and the close-requested guard (§7.3.2) share the SAME predicate, rather than
+    /// each re-reading the `RunRegistry`. Visibility-only change; the `has_active_run` read is unchanged.
+    pub(super) fn converter_is_busy(app: &AppHandle) -> bool {
         app.state::<RunRegistry>().has_active_run()
     }
 
@@ -908,6 +936,14 @@ fn main() -> tauri::Result<()> {
         // clippy::panic deny). Its first live consumer — the P2.70 C2a dialog handler — exists now.
         .manage(crate::orchestrator::IngestRegistry::default())
         .invoke_handler(builder.invoke_handler())
+        // [Build-Session-Entscheidung: P2.79] §7.3.2 window-lifecycle hook — the Tauri v2 two-arg
+        // `(&Window, &WindowEvent)` `on_window_event` closure. Thin BY DESIGN (a Builder-chain delegation
+        // line, the established `.setup`/`.plugin` main-body pattern) — the interceptor logic lives in the
+        // AppHandle-signatured `dispatch_window_event`, which is G28 diff-floor-exempt + source-scan-pinned.
+        // It resolves the run-level `&AppHandle` (`window.app_handle()`, §1.9) and forwards the event so a
+        // mid-conversion `CloseRequested` is blocked (`prevent_close`), never truncating the in-flight output
+        // (§7.3.2/§7.3.3, never-harm). The §5.2 confirm-UI `app://close-requested` emit is P2.80's addition.
+        .on_window_event(|window, event| dispatch_window_event(window.app_handle(), event))
         .setup(move |app| {
             // §0.4.5 IPC event-channel mount (the P1.13 tauri-specta seam).
             builder.mount_events(app);
@@ -1557,6 +1593,57 @@ mod window_model {
             assert!(
                 !src.contains(ctor),
                 "§7.3.1: the `main` window is config-declared (P1.19) — the core must add no programmatic `{ctor}` window creation"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod window_lifecycle {
+    //! §7.3.2 window lifecycle — the Tauri v2 `Builder::on_window_event` `CloseRequested` interceptor
+    //! (P2.79). When a conversion run is in flight the core blocks the window close (`prevent_close`) so an
+    //! ungraceful end can never truncate the in-flight output (§7.3.3; the SSOT never-harm origin). This is
+    //! AppHandle-coupled boot-glue: this crate ships no `tauri::test` mock harness (the boot-stage pattern,
+    //! test-strategy §1.1a), so the wiring is pinned by a SOURCE SCAN of the production source (the runtime
+    //! is the §6.4.6 window-close E2E leg), not cargo-test execution. Reusing the ONE §7.1.1 run-busy
+    //! predicate is the §7.3.2 mandate ("the same predicate the close guard uses"); the `has_active_run`
+    //! logic itself is unit-tested on `crate::orchestrator::RunRegistry`. [Build-Session-Entscheidung: P2.79]
+
+    // §6.4.1 unit (G15): `main()` WIRES the §7.3.2 `on_window_event` hook and delegates to the named
+    // `dispatch_window_event` with the resolved `&AppHandle` (the thin-main-closure pattern). Scans
+    // `all_production_source()` (prefix + `main()` body, every `cfg(test)` module excluded so these needles
+    // can never self-match). Needles `concat!`-assembled (the established self-match avoidance).
+    #[test]
+    fn main_wires_the_on_window_event_close_hook() {
+        let src = super::boot_invariants::all_production_source();
+        assert!(
+            src.contains(concat!(".on_window_", "event(|window, event|")),
+            "§7.3.2: main() must register the Tauri v2 on_window_event hook (the close-requested interceptor)"
+        );
+        assert!(
+            src.contains(concat!(
+                "dispatch_window_",
+                "event(window.app_handle(), event)"
+            )),
+            "§7.3.2: the on_window_event closure must resolve the run-level &AppHandle and delegate to dispatch_window_event"
+        );
+    }
+
+    // §6.4.1 unit (G15): `dispatch_window_event` intercepts `CloseRequested` and, when a run is in flight,
+    // blocks the close via the ONE shared §7.1.1 run-busy predicate (§7.3.2 "the same predicate") — the
+    // §7.3.3 core "blocks the close" guarantee. Source-scan (AppHandle-coupled boot-glue). Needles
+    // `concat!`-assembled.
+    #[test]
+    fn close_requested_guard_prevents_close_when_busy() {
+        let src = super::boot_invariants::all_production_source();
+        for needle in [
+            concat!("WindowEvent::Close", "Requested { api, .. }"), // intercepts the §7.3.2 close event
+            concat!("converter_is_", "busy(app)"), // reuses the ONE §7.1.1 run-busy predicate (§7.3.2)
+            concat!("api.prevent_", "close()"),    // §7.3.3: the core blocks the close mid-run
+        ] {
+            assert!(
+                src.contains(needle),
+                "§7.3.2/§7.3.3: dispatch_window_event must block the close when busy (missing `{needle}`)"
             );
         }
     }
