@@ -227,6 +227,37 @@ fn dispatch_window_event(app: &tauri::AppHandle, event: &tauri::WindowEvent) {
     }
 }
 
+/// [Build-Session-Entscheidung: P2.81] §7.3.2 the `App::run` run-event handler — registered on the BUILT
+/// `App` (`.build(ctx)?.run(|app, event| dispatch_run_event(app, &event))`, NOT the `Builder`) and owning the
+/// two §7.3.2 run-lifecycle events. `RunEvent::ExitRequested` is the last chance to `api.prevent_exit()` — the
+/// explicit hook site for the §7.3.3 quit-while-converting guard (no unconditional prevent here; the
+/// window-close path is guarded by `dispatch_window_event`'s §7.3.2 `CloseRequested` `prevent_close`).
+/// `RunEvent::Exit` is the final cleanup point: flush the plugin logger's buffered records before exit (via
+/// tauri-plugin-log's re-exported `log`). The best-effort scratch cleanup call joins at P3.74 (= the §2.6
+/// `cleanup_run` path, §7.3.2) — `crate::run::cleanup_run` is the P3 §2.6 kernel and nothing run-owned is
+/// created to clean at this box. `RunEvent` is an external `#[non_exhaustive]` enum whose known-variant set is
+/// PLATFORM-DEPENDENT (`Opened`/`Reopen`/`SceneRequested` are `#[cfg]`-gated to Apple/mobile targets), so an
+/// exhaustive listing would be platform-fragile (clippy would demand a different variant set per OS); the
+/// item-level `#[allow(clippy::wildcard_enum_match_arm)]` is the gate-sanctioned per-item escape (it does NOT
+/// disqualify the crate-root deny — check-rust-lint-contract's item-allow allowance), so every other run
+/// event is a no-op. `_app`
+/// is unused at this box — the P3.74 scratch-cleanup call is its first use. AppHandle-coupled boot-glue (the
+/// §1.1a boot-stage pattern — not `tauri::test`-mockable here; source-scan-pinned + the §6.4.6 E2E leg; the
+/// `AppHandle` signature makes it G28 diff-floor-exempt).
+#[allow(clippy::wildcard_enum_match_arm)]
+fn dispatch_run_event(_app: &tauri::AppHandle, event: &tauri::RunEvent) {
+    match event {
+        // §7.3.2 belt-and-suspenders: the last `api.prevent_exit()` chance; the quit-while-converting guard is
+        // the §7.3.3 contract, and the window-close path is `dispatch_window_event`'s `prevent_close`.
+        tauri::RunEvent::ExitRequested { .. } => {}
+        // §7.3.2 the final cleanup point — flush the plugin logger before the process exits.
+        tauri::RunEvent::Exit => {
+            tauri_plugin_log::log::logger().flush();
+        }
+        _ => {}
+    }
+}
+
 /// [Build-Session-Entscheidung: P2.40] The §7.8.1 launch-intake logic, homed with the Tauri host (§0.7:
 /// `main.rs` homes the launch glue — the single-instance callback (§7.1.1), the macOS `RunEvent::Opened`
 /// handler, and `app.emit`). P2.40 authored the §0.4.2 / §7.8.1 `app://intake` IDLE-path-only RULE as a
@@ -1010,7 +1041,15 @@ fn main() -> tauri::Result<()> {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
+        // [Build-Session-Entscheidung: P2.81] §7.3.2 the App::run event-loop handler is registered on the
+        // BUILT `App` (`.build(ctx)?.run(...)`), NOT the `Builder` — the run-event closure is an `App` method.
+        // Thin BY DESIGN (a main-body delegation line, the established `.setup`/`.on_window_event` pattern);
+        // the run-event logic lives in the AppHandle-signatured `dispatch_run_event` (G28 diff-floor-exempt +
+        // source-scan-pinned).
+        .build(tauri::generate_context!())?
+        .run(|app, event| dispatch_run_event(app, &event));
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1680,6 +1719,57 @@ mod window_lifecycle {
             assert!(
                 src.contains(needle),
                 "§7.3.2/§0.4.2: dispatch_window_event must emit app://close-requested with the null-payload signal (missing `{needle}`)"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod run_lifecycle {
+    //! §7.3.2 app run-event lifecycle — the `App::run` handler registered on the BUILT `App`
+    //! (`.build(ctx)?.run(|app, event| dispatch_run_event(app, &event))`, NOT the `Builder`), P2.81. It owns
+    //! `RunEvent::ExitRequested` (the last `prevent_exit` chance, the §7.3.3 quit-guard hook site) and
+    //! `RunEvent::Exit` (the final cleanup point — flush the plugin logger; the §2.6 best-effort scratch
+    //! cleanup call joins at P3.74). `RunEvent` is external `#[non_exhaustive]`, so the `_ =>` arm is
+    //! mandatory (the item-level `#[allow(clippy::wildcard_enum_match_arm)]` is the gate-sanctioned escape,
+    //! the known-variant set being platform-dependent). AppHandle-coupled boot-glue: the wiring is
+    //! source-scan-pinned (this crate ships no `tauri::test` mock harness — the boot-stage pattern,
+    //! test-strategy §1.1a), the runtime is the §6.4.6 E2E leg. [Build-Session-Entscheidung: P2.81]
+
+    // §6.4.1 unit (G15): main() registers the run-event handler on the BUILT App (the `.build(ctx)?.run(...)`
+    // refactor) and delegates to the named `dispatch_run_event`. Scans `all_production_source()` (prefix +
+    // main body, every `cfg(test)` module excluded so these needles can never self-match). Needles
+    // `concat!`-assembled (the established self-match avoidance).
+    #[test]
+    fn main_runs_the_event_handler_on_the_built_app() {
+        let src = super::boot_invariants::all_production_source();
+        for needle in [
+            concat!(".build(tauri::generate_", "context!())?"), // handler on the BUILT App, not the Builder
+            concat!(".run(|app, event| dispatch_run_", "event(app, &event))"), // the App::run closure delegates to the named exempt fn
+        ] {
+            assert!(
+                src.contains(needle),
+                "§7.3.2: main() must register the App::run handler on the built App + delegate (missing `{needle}`)"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15): `dispatch_run_event` wires the two §7.3.2 arms — `ExitRequested` (the empty
+    // belt-and-suspenders `prevent_exit` hook site) + `Exit` (flush the plugin logger, the final cleanup
+    // point) — plus the mandatory non-exhaustive wildcard via the item-level allow. Source-scan (AppHandle-
+    // coupled boot-glue). Needles `concat!`-assembled.
+    #[test]
+    fn run_event_handler_wires_exit_requested_hook_and_exit_flush() {
+        let src = super::boot_invariants::all_production_source();
+        for needle in [
+            concat!("RunEvent::Exit", "Requested { .. } => {}"), // the last prevent_exit chance (§7.3.2/§7.3.3)
+            concat!("RunEvent::Exit ", "=> {"), // the final cleanup point arm (§7.3.2)
+            concat!("log::logger().", "flush()"), // flush the plugin logger before exit (§7.5)
+            concat!("allow(clippy::wildcard_enum_", "match_arm)"), // the gate-sanctioned per-item escape
+        ] {
+            assert!(
+                src.contains(needle),
+                "§7.3.2: dispatch_run_event must wire ExitRequested + Exit(flush) + the item allow (missing `{needle}`)"
             );
         }
     }
