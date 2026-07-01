@@ -290,8 +290,18 @@
 ## Window & app lifecycle (§7.3)
 
 - [x] **P2.77** [DOC] Record the no-tray / no-background-agent / closing-quits posture (portable, no system pollution) · §7.3.1
-- [ ] **P2.78** [RUST] Create the single "main" window at startup (no tray, no secondary windows, default size each launch) · §7.3.1 §7.4.1
+- [x] **P2.78** [RUST] Create the single "main" window at startup (no tray, no secondary windows, default size each launch) · §7.3.1 §7.4.1
   needs: P1.16, P2.77
+  > **Reconcile (P2.78) — delivered by P1.16 + P1.19, no new code.** "Create the single `main` window at
+  > startup (no tray, no secondary windows, default size each launch)" is realized by the **config-declared**
+  > single `main` window (`tauri.conf.json` `app.windows[main]`, P1.19; Tauri auto-creates + shows it at
+  > startup, the core adds no programmatic window-builder) and LOCKED by the P1.16 `window_model` structural
+  > tests (exactly one `main` window + declared default size + not fullscreen + no secondary window + no
+  > `app.trayIcon` + no programmatic builder). The §7.4.1 "default size each launch" (no window-geometry
+  > persistence) holds by ABSENCE of any window-state plugin (`Cargo.toml` grants only
+  > dialog/log/opener/single-instance/store), gate-enforced by the `check-supply-chain` plugin-allowlist (an
+  > un-granted plugin trips it). No new code here; the §7.3 lifecycle WIRING (CloseRequested / RunEvent) is
+  > P2.79–P2.82.
 - [ ] **P2.79** [RUST] Wire `Builder::on_window_event` — v2 two-arg `(&Window, &WindowEvent)` `CloseRequested` handler · §7.3.2
   needs: P2.78
 - [ ] **P2.80** [RUST] Implement the close-requested decision in Rust — `converter_is_busy` → `api.prevent_close()` + emit `app://close-requested` (`serde_json::Value::Null` payload) · §7.3.2 §7.3.3
