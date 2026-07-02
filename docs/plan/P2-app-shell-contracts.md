@@ -343,7 +343,7 @@
   needs: P2.89
 - [x] **P2.91** [RUST] Configure rotation — `max_file_size(5_000_000)` + `RotationStrategy::KeepOne` (≈1× footprint, source-verified vs the pinned version) · §7.5.2
   needs: P2.89
-- [ ] **P2.92** [DOC] Record the `KeepOne == fs::remove_file` ≈1× footprint audit + the `[DEFER: verify-on-bump]` re-check trigger against the pinned commit · §7.5.2
+- [x] **P2.92** [DOC] Record the `KeepOne == fs::remove_file` ≈1× footprint audit + the `[DEFER: verify-on-bump]` re-check trigger against the pinned commit · §7.5.2
   needs: P2.91
 - [ ] **P2.93** [RUST] Implement the redaction stance — NEVER log file contents/bytes/full-paths at default level; structural facts + basename only · §7.5.3 §2.11 · G29
   needs: P2.89
