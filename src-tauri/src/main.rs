@@ -30,6 +30,7 @@ mod engines;
 mod fs_guard;
 mod ipc;
 mod isolation;
+mod log_redact;
 mod orchestrator;
 mod outcome;
 mod platform;
