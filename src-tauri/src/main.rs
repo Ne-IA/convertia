@@ -273,23 +273,38 @@ fn dispatch_run_event(app: &tauri::AppHandle, event: &tauri::RunEvent) {
     }
 }
 
+/// [Build-Session-Entscheidung: P2.90] §7.5.2 the persistence target: the OS-specific log DIRECTORY,
+/// resolved per-OS by Tauri's `app_log_dir()`. `tauri-plugin-log` resolves `TargetKind::LogDir` at runtime
+/// via `app_handle.path().app_log_dir()` (tauri-plugin-log 2.8.0 `lib.rs:628`), so this hard-codes NO path —
+/// the location tracks Tauri, not a fragile literal. Per-OS: Windows `%LOCALAPPDATA%\dev.ne-ia.convertia\logs`,
+/// macOS `~/Library/Logs/dev.ne-ia.convertia`, Linux `~/.config/dev.ne-ia.convertia/logs`. The Linux
+/// **config-dir** resolution (Tauri's `app_log_dir()` resolves via `$XDG_CONFIG_HOME`, deviating from strict
+/// XDG `$XDG_STATE_HOME`) and its rationale are the authoritative §7.5.2 `[DECIDED]` note — recorded there
+/// once, not duplicated here (one home per fact). `file_name: None` keeps the plugin's default log file name.
+/// `log_dir_target_resolves_via_app_log_dir` pins the `LogDir`-default-name choice (a regression to a
+/// hard-coded `Folder { path }` or a custom name — either of which would break the per-OS `app_log_dir()`
+/// resolution — fails it).
+fn log_dir_target() -> TargetKind {
+    TargetKind::LogDir { file_name: None }
+}
+
 /// [Build-Session-Entscheidung: P2.89] §7.5.2 log targets — the persistence + dev-console target set for
 /// `tauri-plugin-log`, made explicit as a pure, coverage-counted function so the §3 zero-egress control is
-/// TESTED, not implicit. The ONLY persistence target is the OS log directory (`LogDir`, the §7.5.2 primary
-/// rotating on-disk record); `Stderr` is added in dev builds only (§7.5.2 "stderr in dev"). It deliberately
-/// omits every non-local / arbitrary sink `TargetKind` offers — `Webview` (§7.5.2: the webview console is
-/// NOT a persistence target), `Dispatch` (an arbitrary `fern` sink that could route off the machine),
-/// `Folder`, `Stdout` — so NO network sink can ever reach the log (§7.5.1/§2.11 no-telemetry, §0.10
-/// allowlist). `log_targets_are_local_only` pins the whitelist. Rotation params (`max_file_size`/`KeepOne`,
-/// §7.5.2) are set by P2.91; the per-OS `app_log_dir()` location by P2.90 — this box configures the target
-/// KINDS + level only.
+/// TESTED, not implicit. The ONLY persistence target is the OS log directory (`log_dir_target()`, the §7.5.2
+/// primary rotating on-disk record, resolved per-OS via `app_log_dir()` — see that fn); `Stderr` is added in
+/// dev builds only (§7.5.2 "stderr in dev"). It deliberately omits every non-local / arbitrary sink
+/// `TargetKind` offers — `Webview` (§7.5.2: the webview console is NOT a persistence target), `Dispatch` (an
+/// arbitrary `fern` sink that could route off the machine), `Folder`, `Stdout` — so NO network sink can ever
+/// reach the log (§7.5.1/§2.11 no-telemetry, §0.10 allowlist). `log_targets_are_local_only` pins the
+/// whitelist. Rotation params (`max_file_size`/`KeepOne`, §7.5.2) are set by P2.91; this function configures
+/// the target KINDS + level only.
 fn log_targets() -> Vec<TargetKind> {
     // Release builds write the on-disk file exclusively (no console); dev builds add `Stderr`. Two cfg-gated
     // bindings (not a `mut` + conditional push) so neither profile trips clippy `unused_mut`.
     #[cfg(debug_assertions)]
-    let targets = vec![TargetKind::LogDir { file_name: None }, TargetKind::Stderr];
+    let targets = vec![log_dir_target(), TargetKind::Stderr];
     #[cfg(not(debug_assertions))]
-    let targets = vec![TargetKind::LogDir { file_name: None }];
+    let targets = vec![log_dir_target()];
     targets
 }
 
@@ -2069,8 +2084,21 @@ mod single_instance_lock_scope {
 
 #[cfg(test)]
 mod log_config {
-    use super::{log_plugin, log_targets};
+    use super::{log_dir_target, log_plugin, log_targets};
     use tauri_plugin_log::TargetKind;
+
+    // §7.5.2 (P2.90): the persistence target is the plugin's `LogDir` with the DEFAULT file name, whose
+    // runtime path the plugin resolves via Tauri's `app_handle.path().app_log_dir()` (tauri-plugin-log 2.8.0
+    // lib.rs:628) — the per-OS §7.5.2 location incl. the Linux config-dir deviation. Pinning
+    // `LogDir { file_name: None }` (NOT a hard-coded `Folder { path }`, NOT a custom file name) guarantees the
+    // per-OS resolution stays Tauri's `app_log_dir()`, not a literal that could drift from §7.5.2.
+    #[test]
+    fn log_dir_target_resolves_via_app_log_dir() {
+        assert!(
+            matches!(log_dir_target(), TargetKind::LogDir { file_name: None }),
+            "§7.5.2: the log dir must be the app_log_dir()-resolved LogDir target (default name), not a hard-coded path"
+        );
+    }
 
     // §7.5.2 / §3 zero-egress: the log target set is LOCAL-ONLY — exactly one on-disk persistence target
     // (`LogDir`) plus, in dev only, `Stderr`; NEVER `Webview`/`Dispatch`/`Folder`/`Stdout`, so no network
