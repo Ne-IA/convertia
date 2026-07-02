@@ -4,9 +4,10 @@
 # may be silenced in one scanner but live in the other). L(-1) security-critical
 # (scripts/l-neg1-files.toml, G71): a silently-added ignore would blind both scanners to a real advisory.
 #
-# The 18 ids below MIRROR deny.toml [advisories].ignore EXACTLY — keep the two in lock-step. Every one is
-# confirmed `unmaintained`/`unsound` (NOT a vulnerability: `cargo audit` reports 0 vulnerabilities over
-# the full Cargo.lock), PURELY TRANSITIVE, with no reachable fix in the Tauri-v2.11.3-locked tree. The
+# The 20 ids below MIRROR deny.toml [advisories].ignore EXACTLY — keep the two in lock-step. 18 (P1.59) are
+# confirmed `unmaintained`/`unsound`, NOT vulnerabilities; 2 are REAL vulnerability advisories (the quick-xml
+# DoS pair RUSTSEC-2026-0194/-0195, owner-acked — transitive, the runtime plist call site is dead in
+# ConvertIA). All are PURELY TRANSITIVE, with no reachable fix in the current Tauri/plist-locked tree. The
 # per-id rationale lives in deny.toml; re-triage the whole set on any deliberate Tauri/dep bump.
 # [Build-Session-Entscheidung: P1.59]
 
@@ -32,4 +33,13 @@ ignore = [
   "RUSTSEC-2025-0081",  # unic-char-property
   "RUSTSEC-2025-0098",  # unic-ucd-version
   "RUSTSEC-2025-0100",  # unic-ucd-ident
+  # quick-xml DoS advisories (RUSTSEC-2026-0194 quadratic attribute-dedup + -0195 NsReader namespace-alloc) —
+  # transitive: quick-xml 0.39.4 <- plist 1.9.0 <- tauri-utils (RUNTIME-linked into the shipped tauri, but the
+  # only runtime plist parse is tauri::process::restart_macos_app, macOS-only, TRUSTED Info.plist — DEAD in
+  # ConvertIA). NOT ConvertIA's §1.2 runtime untrusted-XML path (no direct dep; if ever added it MUST be
+  # >=0.41 + §0.8-floored — these graph-wide ids would otherwise mask it). No upstream fix (plist pins
+  # ^0.39.2, no plist 2.x, latest tauri 2.11.5 still resolves plist->1.9.0). MIRRORS deny.toml (G18 two-scanner
+  # lock-step); re-triage on a Tauri/plist bump that moves quick-xml >=0.41. Full rationale in deny.toml.
+  "RUSTSEC-2026-0194",  # quick-xml quadratic attribute-dedup DoS (transitive; runtime call site dead in ConvertIA)
+  "RUSTSEC-2026-0195",  # quick-xml NsReader namespace-alloc DoS (not reachable in plist's Reader path; both fixed >=0.41)
 ]

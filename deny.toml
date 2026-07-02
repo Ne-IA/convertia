@@ -46,11 +46,13 @@ all-features = true
 # (audit.toml; G18 two-scanner reconciliation) — check-supply-chain asserts the two sets agree.
 version = 2
 yanked = "deny"
-# 18 advisories ACCEPTED below (P1.59) — every one confirmed by `cargo audit` to be `unmaintained` or
-# `unsound`, NOT a vulnerability (`cargo audit` reports 0 vulnerabilities over the full Cargo.lock), and
-# PURELY TRANSITIVE (ConvertIA depends on none directly) with NO reachable fix in the Tauri-v2.11.3-locked
-# tree. A NEW advisory not on this list STILL fails the gate (fail-closed); re-triage this whole set on any
-# deliberate Tauri/dep version bump (itself an L(-1) act). [Build-Session-Entscheidung: P1.59]
+# 20 advisories ACCEPTED below — 18 (P1.59) confirmed by `cargo audit` as `unmaintained`/`unsound`, NOT
+# vulnerabilities (`cargo audit` reports 0 vulnerabilities among THOSE 18), PLUS 2 REAL vulnerability
+# advisories (the quick-xml DoS pair RUSTSEC-2026-0194/-0195, owner-acked; per-id rationale in the block
+# below). All are PURELY TRANSITIVE (ConvertIA depends on none directly) with NO reachable fix in the current
+# Tauri/plist-locked tree. A NEW advisory not on this list STILL fails the gate (fail-closed); re-triage this
+# whole set on any deliberate Tauri/dep version bump (itself an L(-1) act). [Build-Session-Entscheidung:
+# P1.59; the quick-xml pair added by Co-Pilot under owner ack]
 ignore = [
   # gtk-rs GTK3 bindings — unmaintained (gtk-rs moved to GTK4). LINUX-ONLY, transitive via Tauri v2's
   # webkit2gtk-4.1 backend (gtk 0.18.2 <- tauri 2.11.3); absent from the Windows/macOS builds. No fix:
@@ -80,6 +82,26 @@ ignore = [
   "RUSTSEC-2025-0081",  # unic-char-property
   "RUSTSEC-2025-0098",  # unic-ucd-version
   "RUSTSEC-2025-0100",  # unic-ucd-ident
+  # quick-xml DoS advisories (RUSTSEC-2026-0194 quadratic attribute-dedup + -0195 NsReader namespace-alloc)
+  # — REAL vulnerabilities. The ONLY path is TRANSITIVE: quick-xml 0.39.4 <- plist 1.9.0 <- tauri-utils,
+  # which links into the SHIPPED `tauri` crate at RUNTIME (not merely tauri-build/codegen). But the only
+  # place tauri parses a plist at runtime is `tauri::process::restart_macos_app` (macOS-only, reads the
+  # running app's OWN Info.plist — TRUSTED input, never untrusted XML), and that call site is DEAD in
+  # ConvertIA: neither ConvertIA (no `process::restart`/`current_binary` in src-tauri/src) nor any
+  # allow-listed plugin invokes it. (Also: plist uses `quick_xml::Reader`, never `NsReader`, so -0195 does
+  # not touch plist's code at all; only -0194 is theoretically reachable, and a plist's own tags never carry
+  # attacker-multipliable duplicate attributes.) So the DoS precondition — untrusted XML — is unmet. No
+  # upstream fix is reachable: plist 1.9.0 is the LATEST plist and pins `quick-xml = "^0.39.2"` (<0.40); no
+  # plist 2.x exists; the latest PUBLISHED tauri (2.11.5) still resolves plist->1.9.0 (the tree is locked at
+  # tauri 2.11.3). The fix is plist's/Tauri's to ship (advisory is ~2026-fresh). Re-triage: the ignore turns
+  # `advisory-not-detected` the moment a Tauri/plist bump moves quick-xml >=0.41 → remove it then.
+  # NB SCOPE: these are advisory-ID ignores → GRAPH-WIDE, not path/version-scoped. ConvertIA's §1.2 in-core
+  # untrusted-XML reader (spec §1.2; not built yet, no direct quick-xml dep) would, if ever added at <0.41,
+  # be a REAL runtime exposure that these same ids would SILENCE — and §1.2's entity-resolution-off mitigation
+  # does NOT stop these two DoS classes. So §1.2's reader MUST be floored `quick-xml >=0.41` in the §0.8 pins
+  # (enforced, not prose) and these ids removed the moment quick-xml exits the vulnerable range in the plist path.
+  "RUSTSEC-2026-0194",  # quick-xml quadratic attribute-dedup DoS (transitive, runtime call site dead in ConvertIA)
+  "RUSTSEC-2026-0195",  # quick-xml NsReader namespace-alloc DoS (not even reachable in plist's Reader path; both fixed >=0.41)
 ]
 
 [licenses]
