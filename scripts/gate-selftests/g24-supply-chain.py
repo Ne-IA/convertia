@@ -229,6 +229,42 @@ _multi_below = (_all_at_floor.replace('name = "walkdir"\nversion = "2.5.0"', 'na
 record("_pinned_floor_assertion(): a floor crate present ONLY at versions below floor (2.3.0 + 2.4.0) -> caught",
        any("walkdir" in p and "below the relied-upon API floor" in p for p in _floor_with_temp_lock(_multi_below)))
 
+# --- widened malformed-config guard (a NON-UTF-8 / unreadable config must FAIL-CLOSED, not crash with an
+# uncaught UnicodeDecodeError — it is a ValueError, NOT an OSError, so the old `except TOMLDecodeError` alone
+# let it through; mirrors freeze_config / check-rust-lint's _audit_ignores). ---------------------------------
+def _main_with_override(attr: str) -> int:
+    saved = getattr(m, attr)
+    with tempfile.TemporaryDirectory() as td:
+        bad = Path(td) / "bad.toml"
+        bad.write_bytes(b'\xff\xfe version = 2\n')          # non-UTF-8 -> UnicodeDecodeError, not TOMLDecodeError
+        setattr(m, attr, bad)
+        try:
+            return m.main()
+        finally:
+            setattr(m, attr, saved)
+
+
+record("guard: a NON-UTF-8 deny.toml -> main() returns 2 (fail-CLOSED, not an uncaught UnicodeDecodeError)",
+       _main_with_override("DENY") == 2)
+record("guard: a NON-UTF-8 audit.toml -> main() returns 2 (fail-CLOSED, not a crash)",
+       _main_with_override("AUDIT_TOML") == 2)
+
+
+def _floor_with_nonutf8_lock() -> list:
+    saved = m.CARGO_LOCK_CANDIDATES
+    with tempfile.TemporaryDirectory() as td:
+        lock = Path(td) / "Cargo.lock"
+        lock.write_bytes(b'\xff\xfe [[package]]\n')
+        m.CARGO_LOCK_CANDIDATES = (lock,)
+        try:
+            return m._pinned_floor_assertion()
+        finally:
+            m.CARGO_LOCK_CANDIDATES = saved
+
+
+record("guard: a NON-UTF-8 Cargo.lock -> _pinned_floor_assertion() fail-CLOSED (caught, not a crash)",
+       any("unreadable" in p or "UTF-8" in p for p in _floor_with_nonutf8_lock()))
+
 # --- cargo-deny transient-fetch retry classification (the spurious-red guard, G18) ------------
 # A transient advisory-db FETCH failure is retried before fail-closing; a real policy violation
 # (banned crate / disallowed license / a live advisory) is NOT a fetch error -> no transient match

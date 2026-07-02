@@ -429,8 +429,8 @@ def _pinned_floor_assertion() -> list[str]:
         return []
     try:
         data = tomllib.loads(lock.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError as e:
-        return [f"Cargo.lock is not valid TOML ({e}) - cannot assert the §0.8 pinned floors (fail-closed)"]
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError) as e:   # non-UTF-8 is UnicodeDecodeError (a ValueError, not OSError)
+        return [f"Cargo.lock is unreadable / not valid UTF-8 TOML ({e}) - cannot assert the §0.8 pinned floors (fail-closed)"]
     versions: dict[str, list[str]] = {}
     for pkg in data.get("package") or []:
         if isinstance(pkg, dict) and isinstance(pkg.get("name"), str) and isinstance(pkg.get("version"), str):
@@ -466,15 +466,15 @@ def main() -> int:
     try:
         deny_cfg = _load(DENY)
         vet_cfg = _load(VET_CONFIG)
-    except tomllib.TOMLDecodeError as e:
-        print(f"[G18] config is not valid TOML: {e}", file=sys.stderr)
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError) as e:   # non-UTF-8 = UnicodeDecodeError (a ValueError, not OSError); unreadable = OSError
+        print(f"[G18] a config (deny.toml / supply-chain config) is unreadable / not valid UTF-8 TOML: {e}", file=sys.stderr)
         return 2
     audit_ignores: set[str] = set()
     if AUDIT_TOML.is_file():
         try:
             audit_ignores = _ignore_set(_load(AUDIT_TOML).get("advisories"))
-        except tomllib.TOMLDecodeError as e:
-            print(f"[G18] {AUDIT_TOML} is not valid TOML: {e}", file=sys.stderr)
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError) as e:
+            print(f"[G18] {AUDIT_TOML} is unreadable / not valid UTF-8 TOML: {e}", file=sys.stderr)
             return 2
 
     problems = (evaluate_deny(deny_cfg, audit_ignores) + evaluate_vet(vet_cfg)
