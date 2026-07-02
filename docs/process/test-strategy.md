@@ -732,8 +732,9 @@ The security tests that don't belong to one format pair are homed here with thei
 gate refs; each activates in the phase that introduces its surface. They are mostly
 property/integration tests on **G31** / **G15** / **G16**:
 
-- **Log-redaction (§7.5 · G15):** a known secret-looking path stem fed through the
-  logger is **absent** from the log (no file contents, no full paths).
+- **Log-redaction (§7.5 · G15/G31):** a known secret-looking path stem fed through the
+  logger is **absent** from the log (no file contents, no full paths) — a `cargo test`
+  (G15 mirror) homed in G31's hosted security-assertion set, parallel to temp-ownership.
 - **Temp ownership + mode-bits (§2.14.1 · G15/G31):** `0o700` scratch root / `0o600`
   `.part` publish-temp **+ a Windows ACL leg** — POSIX mode bits are meaningless on
   Windows, so assert the scratch root's DACL grants access **only to the
