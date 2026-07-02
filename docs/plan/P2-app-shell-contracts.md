@@ -339,7 +339,7 @@
 
 - [x] **P2.89** [RUST] Configure `tauri-plugin-log` — rotating file + dev stderr, default level `warn`/`info`, no network sink · §7.5.1 §7.5.2
   needs: P1.14
-- [ ] **P2.90** [RUST] Resolve the per-OS log-dir via `app.path().app_log_dir()` + the Linux config-dir deviation note · §7.5.2
+- [x] **P2.90** [RUST] Resolve the per-OS log-dir via `app.path().app_log_dir()` + the Linux config-dir deviation note · §7.5.2
   needs: P2.89
 - [ ] **P2.91** [RUST] Configure rotation — `max_file_size(5_000_000)` + `RotationStrategy::KeepOne` (≈1× footprint, source-verified vs the pinned version) · §7.5.2
   needs: P2.89
