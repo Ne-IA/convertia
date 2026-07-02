@@ -20,11 +20,15 @@
 //! `crate::prefs` on a store fallback) is **not** a user file — §7.4.2 explicitly permits recording
 //! it — so it does not route through here. The stance covers *user* file paths only.
 //!
-//! **Verbose full paths are a subsequent, additive box.** The §7.5.3 verbose / diagnostic opt-in that
-//! *additionally* records full paths for reproduction (read once at startup, effective next launch)
-//! is **P2.94** (`needs: P2.93`). This box builds the basename-only default renderer only — there is
-//! deliberately no verbose branch here (it would be dead + untested until P2.94 lands the
-//! `--verbose` / `verboseLog` read).
+//! **Verbose full paths are the additive counterpart (P2.94 · §7.5.3 / §7.5.4).** The verbose /
+//! diagnostic opt-in raises the log level to `Debug` once at startup (`resolve_log_verbosity` in `main`,
+//! from `verboseLog || --verbose`). The §7.5.4 dev-diagnostic sites — engine argv, per-item timing,
+//! resolved scratch/temp paths — log at **`debug!` with FULL paths** (`p.display()`), so a full path
+//! surfaces ONLY in verbose mode; the default `info!`/`warn!` sites keep routing user paths through
+//! [`RedactedPath`] (basename). The verbose-vs-default split is therefore the LOG LEVEL, not the renderer:
+//! `RedactedPath` itself stays basename-only (no verbose branch in it). The actual §7.5.4 capture points
+//! are wired by their producers as they land (the engine argv/stderr in P4, the scratch/temp-path +
+//! output-plan captures in P3); this module owns the default-level redaction door they contrast with.
 //!
 //! **Home.** A binary-root LEAF module (a sibling of `main.rs`), like `crate::prefs`: §0.7 homes no
 //! §7.5 logging tier module — the log PLUGIN wiring lives in `main.rs` (`log_plugin`), and this is

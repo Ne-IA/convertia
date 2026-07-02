@@ -1097,8 +1097,8 @@ as-is/no-warranty). So Phase 3 has one exact render checklist, the AboutDialog *
   `[DECIDED]`:** `verboseLog` is the **3rd key in the §7.4 prefs blob** (alongside
   `theme` + `lastDestinationMode`), so the choice persists across launches; the
   earlier "if §7.4 ships" hedge is removed (§7.4 is `[DECIDED]`). **Effect timing
-  `[DECIDED]`:** because `tauri-plugin-log` sets verbosity at plugin-init (read once at
-  startup, §7.5.3), the toggle **takes effect on the next launch** — so it shows an
+  `[DECIDED]`:** because ConvertIA resolves the verbose level once at startup (the setup
+  stage, §7.5.3), the toggle **takes effect on the next launch** — so it shows an
   **"applies after restart"** hint next to the label. This is the §7.5.3
   surface; the toggle's *behaviour* is owned by §7.5.
 - **Opening:** reachable from a header/menu affordance and the **F1 / ?**

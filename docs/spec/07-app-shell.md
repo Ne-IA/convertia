@@ -821,8 +821,12 @@ structure). Stance:
   This is the deliberate, disclosed trade: privacy by default, full reproducibility
   on demand — and it never changes the no-network property.
   - **Effect timing `[DECIDED — read-at-startup, effective next launch]`:**
-    `tauri-plugin-log` fixes verbosity at **plugin-init**, so the `verboseLog` prefs key
-    (§7.4) and the `--verbose` flag are **read once at startup**; flipping the About §5.9
+    ConvertIA **resolves the verbose level once at startup** (the app's setup stage): the
+    `verboseLog` prefs key (§7.4) is read via `prefs::load` — the log plugin is registered on the
+    Builder before any AppHandle exists, so the persisted pref is applied in setup, not at the
+    plugin's own init — OR-combined with the `--verbose` flag and applied via `log::set_max_level`
+    (a `convertia_core`-scoped `Debug` `level_for` ceiling keeps verbose output to ConvertIA's own
+    records); flipping the About §5.9
     toggle persists the new value but **takes effect on the next launch**, consistent with
     the env-var / launch-flag framing. The About toggle therefore shows an **"applies after
     restart"** note (§5.9) so the user is never misled that mid-session logging changed.

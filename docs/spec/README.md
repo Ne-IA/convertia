@@ -532,7 +532,7 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **Verbose-log toggle persistence** — `verboseLog` is the **3rd §7.4 prefs key**
   (persisted across launches), not session-only; the earlier "if §7.4 ships" hedge is
   removed (§7.4 is `[DECIDED]`). **Effect timing = read-at-startup → effective next
-  launch** (tauri-plugin-log sets verbosity at plugin-init); the About toggle shows
+  launch** (ConvertIA resolves the verbose level once at startup, the setup stage); the About toggle shows
   "applies after restart". Owner: §7.4 / §5.9 / §7.5.
 - **Logging** — ship the **local on-disk log + verbose opt-in** (privacy-by-default,
   no network). Owner: §7.5.

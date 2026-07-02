@@ -123,7 +123,7 @@
 
 - [ ] **P8.16** [UI] Build the verbose-logging toggle in About with the "applies after restart" hint · §5.9 §7.4.2 · G57
   needs: P8.9, P2.85
-  > scope (i), ship-gating settings chrome. About checklist item 9: the "Detailed diagnostic log" labelled toggle (§7.5.3 mandate) with its disclosure notice (turning it on makes the LOCAL log additionally record file paths + engine command lines, still purely local — nothing sent, §2.11); off by default. Persists as the 3rd key (`verboseLog`) in the §7.4 prefs blob; takes effect on next launch (plugin-init reads it once) so it shows the "applies after restart" hint (§7.5.3). The toggle is the §7.5.3 SURFACE; logging behaviour is owned by §7.5. Labels are `strings/ui.ts` (G57). (`needs: P2.85` — the `tauri-plugin-store` 3-key prefs blob this `verboseLog` key persists into.)
+  > scope (i), ship-gating settings chrome. About checklist item 9: the "Detailed diagnostic log" labelled toggle (§7.5.3 mandate) with its disclosure notice (turning it on makes the LOCAL log additionally record file paths + engine command lines, still purely local — nothing sent, §2.11); off by default. Persists as the 3rd key (`verboseLog`) in the §7.4 prefs blob; takes effect on next launch (the setup stage resolves the verbose level once at startup) so it shows the "applies after restart" hint (§7.5.3). The toggle is the §7.5.3 SURFACE; logging behaviour is owned by §7.5. Labels are `strings/ui.ts` (G57). (`needs: P2.85` — the `tauri-plugin-store` 3-key prefs blob this `verboseLog` key persists into.)
 
 ### Cross-cutting error / edge-state copy refinement — scope (i)
 

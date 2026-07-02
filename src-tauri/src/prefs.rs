@@ -17,17 +17,14 @@
 //! §2.7.2), the `verboseLog` startup read (P2.89 / P2.94), `theme` (§5.5, frontend). The store PLUGIN is
 //! already registered on the Builder (`main.rs`); the structural one-store-name gate is P2.86.
 
-// The typed model + `load` are referenced only by their downstream readers (P2.88 / P2.89 / P2.94, §5.5)
-// and the §6.4.1 tests below, so every item is dead in the PRODUCTION (non-test) build until a reader is
-// wired — `expect` (not `allow`) auto-flags the moment the last one lands, matching `crate::domain` /
-// `crate::outcome` / the §0.4.2 event-name constants.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the §7.4 prefs model + tolerant `load` are referenced by their downstream readers (P2.88 lastDestinationMode, P2.89/P2.94 verboseLog, §5.5 theme) + the §6.4.1 tests, so they are dead in the production build until a reader is wired."
-    )
-)]
+// [Test-Change: P2.94 — old-obsolete+new-correct, §7.5.3] The former module-level
+// `#![cfg_attr(not(test), expect(dead_code, …))]` is REMOVED. P2.94's `resolve_log_verbosity` reads
+// `load(app).verbose_log` (§7.5.3) — the first PRODUCTION reader the model was waiting on — so `load` and
+// the whole 3-key model are now live in the non-test build (every field is read: `verbose_log` directly,
+// `theme`/`last_destination_mode` via the derived `PartialEq`/`Debug`). Were it kept, the `dead_code`
+// expectation would flip to "unfulfilled" — a hard error under `-D warnings`. G70 flags the removed
+// `#![… expect(dead_code) …]` as a "removed assertion": a FALSE POSITIVE — it is a LINT attribute, never a
+// test assertion, and the §6.4.1 tests below are entirely unchanged.
 
 use std::path::PathBuf;
 
@@ -105,8 +102,9 @@ impl LastDestinationMode {
 /// The §7.4 3-key `settings.json` prefs blob — the only state ConvertIA persists (§7.4.1 `[DECIDED]`).
 ///
 /// [Build-Session-Entscheidung: P2.88] Consumer map — Rust reads all three keys into this complete typed
-/// model (best-effort, §7.4.2), but only `verbose_log` is **Rust-consumed** (§7.5.3 `tauri-plugin-log` init,
-/// P2.94). `theme` (§5.5) and `last_destination_mode` (the C4 destination hint) are **frontend-consumed** —
+/// model (best-effort, §7.4.2), but only `verbose_log` is **Rust-consumed** (§7.5.3 — the P2.94
+/// `resolve_log_verbosity` startup read in `main`'s setup stage). `theme` (§5.5) and `last_destination_mode`
+/// (the C4 destination hint) are **frontend-consumed** —
 /// read JS-side from the store (05-ui-ux "Persisted `lastDestinationMode`"), never via Rust — modelled here
 /// for the complete-blob representation + its §7.4.2 tolerance. The `last_destination_mode`
 /// re-validate-as-writable / beside-source-fallback ENFORCEMENT lives in P3 (C4 §1.10 preflight + §2.7.2

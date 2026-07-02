@@ -325,8 +325,12 @@ const LOG_MAX_FILE_SIZE_BYTES: u128 = 5_000_000;
 /// kept ahead of it as the plugin's documented "ignore the defaults" idiom (a belt-and-suspenders marker so no
 /// default `Stdout` sink can leak in even if a future change makes `.targets()` append-style); then the level
 /// and the §7.5.2 rotation cap (5 MB / `KeepOne`, see `LOG_MAX_FILE_SIZE_BYTES`) are pinned. `info` is the
-/// §7.5.3 `info`/`warn` default that captures the structural diagnostic facts
-/// §7.5.4/§6.5 depend on. NOT `AppHandle`-coupled (no `&AppHandle` in the signature) → NOT the P2.135 G28
+/// §7.5.3 `info`/`warn` default that captures the structural diagnostic facts §7.5.4/§6.5 depend on.
+/// [Build-Session-Entscheidung: P2.94] the GLOBAL level stays `info`, and a `convertia_core`-scoped `Debug`
+/// `level_for` ceiling is added as the §7.5.3 verbose gateway: this crate's `debug!` records pass the plugin
+/// filter (dependency `debug!` never does — no wry/tao noise / third-party path leak), but only APPEAR once
+/// `resolve_log_verbosity` raises the runtime `log::max_level` to `Debug` at startup iff verbose is on. NOT
+/// `AppHandle`-coupled (no `&AppHandle` in the signature) → NOT the P2.135 G28
 /// boot-glue exemption → its lines COUNT in the diff floor, so `log_plugin_builds` executes it. `.build()`
 /// only constructs the plugin descriptor — the global logger is installed by the plugin's `setup` hook at app
 /// init, not by this call — so calling this outside `main()` (the test) installs no logger and is
@@ -336,12 +340,65 @@ fn log_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
         .clear_targets()
         .targets(log_targets().into_iter().map(Target::new))
         .level(LevelFilter::Info)
+        // [Build-Session-Entscheidung: P2.94] §7.5.3 verbose gateway — grant THIS crate a `Debug` ceiling
+        // (`module_path!()` at the crate root == "convertia_core", a fern PREFIX match over
+        // `convertia_core::*`; using `module_path!()` not a literal so a crate rename cannot silently
+        // un-scope it). The global level stays `info` above, so dependency `debug!` (wry/tao/…) never reaches
+        // the file — no noise, no third-party path leak. This ceiling only lets this crate's `debug!` records
+        // PASS the plugin's own filter; they still only APPEAR when the runtime `log::max_level` is raised to
+        // `Debug`, which `resolve_log_verbosity` does once at startup iff verbose. Necessary because
+        // `set_max_level(Debug)` ALONE emits nothing — the plugin's fern filter drops sub-global records
+        // regardless of the macro-level gate.
+        .level_for(module_path!(), LevelFilter::Debug)
         // [Build-Session-Entscheidung: P2.91] §7.5.2 rotation: cap the single file at 5 MB and KEEP ONE — the
         // `KeepOne` arm deletes (fs::remove_file) rather than renaming to a dated backup, so the on-disk
         // footprint stays ~1x the cap (the ≈1x source-audit vs the pinned plugin version lives in §7.5.2, P2.92).
         .max_file_size(LOG_MAX_FILE_SIZE_BYTES)
         .rotation_strategy(RotationStrategy::KeepOne)
         .build()
+}
+
+/// [Build-Session-Entscheidung: P2.94] §7.5.3 the `--verbose` launch-switch predicate — `true` iff argv
+/// carries the `--verbose` diagnostic flag (the launch-flag half of the §7.5.3 verbose opt-in; the other
+/// half is the persisted `verboseLog` pref, §7.4). Pure over the passed argv (the `args_os` read lives in
+/// the boot-glue `resolve_log_verbosity`), so the switch detection is unit-tested in isolation. Matches the
+/// EXACT `--verbose` token — `parse_path_args` already classifies it as a launch switch, never an ingestable
+/// path (P2.54.1) — and a bare `-v` / other spelling is deliberately NOT accepted (one canonical flag).
+fn argv_has_verbose(argv: &[String]) -> bool {
+    argv.iter().any(|token| token == "--verbose")
+}
+
+/// [Build-Session-Entscheidung: P2.94] §7.5.3 resolve the verbose log level ONCE at startup — the §7.5.3
+/// diagnostic opt-in. Verbose is on iff the persisted `verboseLog` pref (§7.4) is `true` OR the `--verbose`
+/// launch flag is present; when on, the runtime `log::set_max_level` is raised to `Debug` (else `Info`),
+/// which is what makes the `convertia_core`-scoped `Debug` ceiling in `log_plugin` actually emit this
+/// crate's `debug!` §7.5.4 verbose-diagnostic records. Called from `.setup()` — the first point the
+/// AppHandle is live, so `prefs::load` can resolve the config dir — because the log plugin is registered on
+/// the Builder BEFORE any AppHandle exists, so the persisted pref cannot be read at the plugin's own
+/// plugin-init `set_max_level`; this setup-stage read is the §7.5.3 "resolve the verbose level once at
+/// startup". A mid-session About-toggle only persists the new value — `setup` runs once — so it takes effect
+/// on the NEXT launch (§7.5.3 / §5.9 "applies after restart"). Best-effort: `prefs::load` never fails
+/// (§7.4.2), so an unreadable store simply yields the `false` default. AppHandle-coupled boot-glue (the
+/// §1.1a boot-stage pattern — not `tauri::test`-mockable; the decision is the pure unit-tested
+/// `argv_has_verbose` + the §7.4.2-tested `prefs::load`, so only this thin plumbing is un-executed; the
+/// `AppHandle` signature makes it G28 diff-floor-exempt, and it is signature- + wiring-source-scan-pinned).
+fn resolve_log_verbosity(app: &tauri::AppHandle) {
+    // [Build-Session-Entscheidung: P2.94] G29/SAST per-finding suppression — the vendored rule
+    // `rust.lang.security.args-os.args-os` ("don't rely on `args_os` for SECURITY") does NOT apply here:
+    // argv is read ONLY to detect the presence of the `--verbose` diagnostic switch (a bool), never for a
+    // security decision; a non-UTF8 arg is compared lossily and simply won't equal `--verbose`. The bare
+    // marker carries only the rule-id (semgrep parses the rest of a `nosemgrep:` line as comma-separated
+    // rule-ids), so the rationale stays on these separate lines.
+    // nosemgrep: rust.lang.security.args-os.args-os
+    let argv: Vec<String> = std::env::args_os()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let verbose = crate::prefs::load(app).verbose_log || argv_has_verbose(&argv);
+    tauri_plugin_log::log::set_max_level(if verbose {
+        LevelFilter::Debug
+    } else {
+        LevelFilter::Info
+    });
 }
 
 /// [Build-Session-Entscheidung: P2.40] The §7.8.1 launch-intake logic, homed with the Tauri host (§0.7:
@@ -1091,6 +1148,15 @@ fn main() -> tauri::Result<()> {
         .setup(move |app| {
             // §0.4.5 IPC event-channel mount (the P1.13 tauri-specta seam).
             builder.mount_events(app);
+
+            // [Build-Session-Entscheidung: P2.94] §7.5.3 resolve the verbose log level ONCE at startup
+            // (`verboseLog` pref || `--verbose` flag → raise `log::max_level` to `Debug`; else `Info`). Read
+            // here in setup — the first point the AppHandle is live, so `prefs::load` can resolve the config
+            // dir — because the log plugin is registered on the Builder before any AppHandle exists (§7.5.3).
+            // A mid-session About-toggle takes effect on the next launch (setup runs once). No `debug!` fires
+            // in the boot path before this line, so the tiny window after the plugin's own plugin-init
+            // set_max_level (which this overrides) records nothing verbose unintentionally.
+            resolve_log_verbosity(app.handle());
 
             // ── §7.2.1 startup stages the bootable empty window needs ─────────────────────
             // [Build-Session-Entscheidung: P1.15] P1 lands ONLY the compile-and-boot stages,
@@ -2100,7 +2166,10 @@ mod single_instance_lock_scope {
 
 #[cfg(test)]
 mod log_config {
-    use super::{log_dir_target, log_plugin, log_targets, LOG_MAX_FILE_SIZE_BYTES};
+    use super::{
+        argv_has_verbose, log_dir_target, log_plugin, log_targets, resolve_log_verbosity,
+        LOG_MAX_FILE_SIZE_BYTES,
+    };
     use tauri_plugin_log::TargetKind;
 
     // §7.5.2 (P2.91): the rotating-file cap is pinned to the spec's 5 MB (bytes). With KeepOne the on-disk
@@ -2172,5 +2241,70 @@ mod log_config {
     #[test]
     fn log_plugin_builds() {
         let _plugin = log_plugin();
+    }
+
+    // §6.4.1 unit (G15): the §7.5.3 `--verbose` launch-switch predicate (P2.94) — verbose iff the EXACT
+    // `--verbose` token is in argv; a bare filename, another flag, an empty argv, or a near-miss spelling
+    // (`-v` / `--Verbose`) is NOT verbose (one canonical flag). This is the launch-flag half of the verbose
+    // opt-in; the pref half is the §7.4.2-tested `verboseLog`.
+    #[test]
+    fn argv_has_verbose_matches_only_the_exact_flag() {
+        assert!(argv_has_verbose(&[
+            "convertia".to_string(),
+            "--verbose".to_string(),
+            "photo.png".to_string(),
+        ]));
+        assert!(!argv_has_verbose(&[
+            "convertia".to_string(),
+            "photo.png".to_string()
+        ]));
+        assert!(!argv_has_verbose(&[
+            "convertia".to_string(),
+            "-v".to_string()
+        ]));
+        assert!(!argv_has_verbose(&[
+            "convertia".to_string(),
+            "--Verbose".to_string()
+        ]));
+        let empty: [String; 0] = [];
+        assert!(!argv_has_verbose(&empty));
+    }
+
+    // §6.4.1 unit (G15): boot-stage signature pin (test-strategy §1.1a) — `resolve_log_verbosity` is
+    // `AppHandle`-coupled (it reads `prefs::load` + `args_os` and sets `log::max_level`; no `tauri::test`
+    // mock harness by decision), so it is verified by its fn-pointer SIGNATURE here + the §1.6 E2E run, not
+    // cargo-test execution — G28 exempts its body from the diff floor by this same `&AppHandle` signature.
+    #[test]
+    fn resolve_log_verbosity_has_its_boot_glue_signature() {
+        let _pinned: fn(&tauri::AppHandle) = resolve_log_verbosity;
+    }
+
+    // §6.4.1 unit (G15): the §7.5.3 verbose GATEWAY is wired end to end (P2.94). `log_plugin` grants this
+    // crate a `Debug` `level_for` ceiling (scoped so dependency `debug!` never reaches the file), and main()'s
+    // setup CALLS `resolve_log_verbosity`, which raises the runtime `log::max_level` via `set_max_level`. Both
+    // the ceiling and the setup call are AppHandle-adjacent boot glue not executable under cargo-test, so
+    // source-scan-pinned (needles `concat!`-assembled to avoid self-match). A regression dropping the ceiling
+    // or the setup call would silently make verbose mode a no-op — this catches it.
+    #[test]
+    fn verbose_gateway_is_wired() {
+        let boot = crate::boot_invariants::production_boot_source();
+        // Full call-site needles (NOT bare tokens): the short `level_for` / `set_max_level(` tokens ALSO
+        // appear in the nearby doc/inline COMMENTS in this source range, so a partial revert that dropped the
+        // real call but kept its comment would leave a bare-token scan falsely green — the exact regression
+        // this guard must fail on. These strings occur ONLY at the real call sites; `concat!`-split to avoid
+        // self-match against this test's own source.
+        assert!(
+            boot.contains(concat!(".level_", "for(module_path!(), LevelFilter::Debug)")),
+            "§7.5.3: log_plugin must grant this crate a Debug level_for ceiling (the verbose gateway)"
+        );
+        assert!(
+            boot.contains(concat!("set_max_", "level(if verbose")),
+            "§7.5.3: resolve_log_verbosity must raise the runtime log max level from the verbose flag"
+        );
+        assert!(
+            crate::boot_invariants::production_main_body()
+                .contains(concat!("resolve_log_", "verbosity(app.handle())")),
+            "§7.5.3: main()'s setup must call resolve_log_verbosity (read-once-at-startup)"
+        );
     }
 }
