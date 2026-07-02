@@ -187,6 +187,43 @@ with tempfile.TemporaryDirectory() as _td:
         else:
             os.environ["CARGO_HOME"] = _saved_ch
 
+# --- the G17 `--ignore` sourcing (the fix: cargo-audit does NOT auto-read a repo-root audit.toml — its
+# default config path is .cargo/audit.toml — so the live leg passes the ignore set on the CLI, sourced from
+# audit.toml (== deny.toml). Without this the audit leg is blind to the ignore set and a REAL, fatal
+# vulnerability advisory reddens G17 despite an owner-acked ignore — the quick-xml RUSTSEC-2026-0194/0195
+# incident. Tested on SYNTHETIC configs (data-independent — survives a re-triage of any real id) + a
+# real-file smoke.) --------------------------------------------------------------------------------------
+with tempfile.TemporaryDirectory() as _td:
+    _saved_at = m.AUDIT_TOML
+    try:
+        _syn = Path(_td) / "audit.toml"
+        _syn.write_text('[advisories]\nignore = ["RUSTSEC-2099-0001", "RUSTSEC-2099-0002"]\n', encoding="utf-8")
+        m.AUDIT_TOML = _syn
+        record("audit-ignore: _audit_ignores() reads [advisories].ignore verbatim",
+               m._audit_ignores() == ["RUSTSEC-2099-0001", "RUSTSEC-2099-0002"])
+        record("audit-argv: _audit_argv() = `cargo audit --no-fetch` + a `--ignore <id>` pair per ignore",
+               m._audit_argv() == ["cargo", "audit", "--no-fetch",
+                                   "--ignore", "RUSTSEC-2099-0001", "--ignore", "RUSTSEC-2099-0002"])
+        m.AUDIT_TOML = Path(_td) / "__absent__.toml"
+        record("audit-ignore: an ABSENT audit.toml -> [] + argv has NO --ignore (target-absent, graceful)",
+               m._audit_ignores() == [] and m._audit_argv() == ["cargo", "audit", "--no-fetch"])
+        _bad = Path(_td) / "bad.toml"; _bad.write_text("this = = not toml [[\n", encoding="utf-8")
+        m.AUDIT_TOML = _bad
+        record("audit-ignore: a MALFORMED audit.toml -> [] (tomllib guarded, not a crash)",
+               m._audit_ignores() == [])
+        _noadv = Path(_td) / "noadv.toml"; _noadv.write_text("[other]\nx = 1\n", encoding="utf-8")
+        m.AUDIT_TOML = _noadv
+        record("audit-ignore: an audit.toml with no [advisories].ignore -> [] (no KeyError)",
+               m._audit_ignores() == [])
+        _nonutf8 = Path(_td) / "nonutf8.toml"; _nonutf8.write_bytes(b'\xff\xfe [advisories]\nignore = ["RUSTSEC-2099-0001"]')
+        m.AUDIT_TOML = _nonutf8
+        record("audit-ignore: a NON-UTF-8 audit.toml -> [] (UnicodeDecodeError guarded, not a crash — mirrors freeze_config)",
+               m._audit_ignores() == [])
+    finally:
+        m.AUDIT_TOML = _saved_at
+record("audit-ignore: the REAL committed audit.toml -> non-empty set, every id passed as a --ignore value",
+       len(m._audit_ignores()) > 0 and all(a in m._audit_argv() for a in m._audit_ignores()))
+
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-rust-lint-contract] {len(results) - len(failed)}/{len(results)} assertions passed.")
 sys.exit(1 if failed else 0)

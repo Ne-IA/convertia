@@ -38,6 +38,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RUSTFMT = ROOT / "rustfmt.toml"
 CLIPPY = ROOT / "clippy.toml"
+AUDIT_TOML = ROOT / "audit.toml"   # the G17 cargo-audit ignore config (P1.59); read here so the live audit
+                                   # leg APPLIES its ignores via `--ignore` (cargo-audit does NOT auto-read a
+                                   # repo-root audit.toml — its default config path is `.cargo/audit.toml`)
 
 # P1.59: the G17 leg invokes `cargo audit`, which resolves the `cargo-audit` SUBCOMMAND binary via PATH.
 # Prepend the pinned, checksum-verified .gate-tools/bin (install-gate-tools' dest) so cargo finds it
@@ -145,6 +148,37 @@ def _advisory_db_present() -> bool:
     return (cargo_home / "advisory-db").is_dir()
 
 
+def _audit_ignores() -> list[str]:
+    """The `[advisories].ignore` advisory ids from the repo-root `audit.toml`, passed to `cargo audit` as
+    `--ignore <id>` so the live G17 leg actually APPLIES them. cargo-audit does NOT auto-read a repo-root
+    `audit.toml` (its default config path is `.cargo/audit.toml`, absent here), so a documented ignore
+    there is otherwise silently inert against a real VULNERABILITY — the 18 P1.59 ids are all
+    unmaintained/unsound (non-fatal warnings), which masked this until the fatal quick-xml
+    RUSTSEC-2026-0194/0195 vulnerabilities exposed it. audit.toml stays the single source of truth;
+    check-supply-chain keeps it == deny.toml (the G18 two-scanner reconciliation), so this makes cargo
+    audit apply exactly the same owner-acked ignore set cargo-deny already honours — a correctness fix, not
+    a relaxation. Absent / malformed / non-UTF-8 → no ids (graceful, fail-CLOSED: fewer ignores = stricter,
+    never masks more; a real deny.toml↔audit.toml divergence is caught separately by G18)."""
+    if not AUDIT_TOML.is_file():
+        return []
+    try:
+        cfg = tomllib.loads(AUDIT_TOML.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError):   # non-UTF-8 is UnicodeDecodeError (a ValueError, not OSError) — mirror freeze_config's guard
+        return []
+    advisories = cfg.get("advisories")
+    ignore = advisories.get("ignore") if isinstance(advisories, dict) else None
+    return [x for x in ignore if isinstance(x, str)] if isinstance(ignore, list) else []
+
+
+def _audit_argv() -> list[str]:
+    """(pure) the `cargo audit` argv: the offline `--no-fetch` leg + `--ignore <id>` for every audit.toml
+    ignore id (sourced via _audit_ignores, since cargo-audit does not auto-read a repo-root audit.toml)."""
+    argv = ["cargo", "audit", "--no-fetch"]
+    for adv_id in _audit_ignores():
+        argv += ["--ignore", adv_id]
+    return argv
+
+
 # The deny set is a MODULE-INNER attribute `#![deny(...)]` (it governs the whole crate/module). _DENY_RE
 # requires the inner-`!` form AND anchors to line-start (after indentation): a deny token mid-line (a
 # string/expression) is not a real in-force deny — missing a non-line-start deny is over-strict = SAFE
@@ -246,7 +280,9 @@ def run_live_tools(full: bool) -> int:
     except OSError:
         have_audit = False                          # cargo itself absent (guarded like _run)
     if have_audit and _advisory_db_present():
-        problems += _run("G17 cargo audit", ["cargo", "audit", "--no-fetch"])
+        # cargo-audit does not auto-read the repo-root audit.toml (default config path is .cargo/audit.toml),
+        # so the ignore set is applied on the CLI, sourced from audit.toml (the single source; == deny.toml).
+        problems += _run("G17 cargo audit", _audit_argv())
     elif have_audit:
         # cargo-audit is installed but the offline `--no-fetch` leg needs a local advisory-db that a
         # fresh machine / clean CI runner does not have (it would error, not find an advisory). Skip

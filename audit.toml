@@ -1,5 +1,7 @@
-# audit.toml — cargo-audit (RustSec) configuration (G17). Authored P1.59; read by `cargo audit`
-# (check-rust-lint-contract's live G17 leg) AND by scripts/check-supply-chain, which asserts this
+# audit.toml — cargo-audit (RustSec) advisory-ignore config (G17). Authored P1.59. NB cargo-audit does NOT
+# auto-read a repo-root audit.toml (its default config path is .cargo/audit.toml) — check-rust-lint-contract's
+# live G17 leg READS this file and passes each id to `cargo audit` via `--ignore`. It is ALSO read by
+# scripts/check-supply-chain, which asserts this
 # [advisories].ignore set is IDENTICAL to deny.toml's (the G18 two-scanner reconciliation — no advisory
 # may be silenced in one scanner but live in the other). L(-1) security-critical
 # (scripts/l-neg1-files.toml, G71): a silently-added ignore would blind both scanners to a real advisory.
