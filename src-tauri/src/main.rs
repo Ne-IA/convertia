@@ -40,6 +40,7 @@ mod run;
 use std::path::PathBuf;
 
 use tauri::{Emitter, Manager};
+use tauri_plugin_log::{log::LevelFilter, Target, TargetKind};
 
 use crate::domain::{
     CollectedSetId, CollectingId, InstanceId, IntakePayload, ItemId, LossyKind, RunId,
@@ -270,6 +271,46 @@ fn dispatch_run_event(app: &tauri::AppHandle, event: &tauri::RunEvent) {
         tauri::RunEvent::Opened { urls } => launch_intake::handle_opened(app, urls),
         _ => {}
     }
+}
+
+/// [Build-Session-Entscheidung: P2.89] §7.5.2 log targets — the persistence + dev-console target set for
+/// `tauri-plugin-log`, made explicit as a pure, coverage-counted function so the §3 zero-egress control is
+/// TESTED, not implicit. The ONLY persistence target is the OS log directory (`LogDir`, the §7.5.2 primary
+/// rotating on-disk record); `Stderr` is added in dev builds only (§7.5.2 "stderr in dev"). It deliberately
+/// omits every non-local / arbitrary sink `TargetKind` offers — `Webview` (§7.5.2: the webview console is
+/// NOT a persistence target), `Dispatch` (an arbitrary `fern` sink that could route off the machine),
+/// `Folder`, `Stdout` — so NO network sink can ever reach the log (§7.5.1/§2.11 no-telemetry, §0.10
+/// allowlist). `log_targets_are_local_only` pins the whitelist. Rotation params (`max_file_size`/`KeepOne`,
+/// §7.5.2) are set by P2.91; the per-OS `app_log_dir()` location by P2.90 — this box configures the target
+/// KINDS + level only.
+fn log_targets() -> Vec<TargetKind> {
+    // Release builds write the on-disk file exclusively (no console); dev builds add `Stderr`. Two cfg-gated
+    // bindings (not a `mut` + conditional push) so neither profile trips clippy `unused_mut`.
+    #[cfg(debug_assertions)]
+    let targets = vec![TargetKind::LogDir { file_name: None }, TargetKind::Stderr];
+    #[cfg(not(debug_assertions))]
+    let targets = vec![TargetKind::LogDir { file_name: None }];
+    targets
+}
+
+/// [Build-Session-Entscheidung: P2.89] §7.5.1/§7.5.2 the configured `tauri-plugin-log` plugin: the local
+/// on-disk rotating file (+ dev `Stderr`) from `log_targets()`, default level `info`, and NO default `Stdout`
+/// target. Thin glue over the `log_targets()` zero-egress control: `.targets(...)` fully REPLACES the
+/// plugin's default target set (`[Stdout, LogDir]`) with exactly `log_targets()`, and `.clear_targets()` is
+/// kept ahead of it as the plugin's documented "ignore the defaults" idiom (a belt-and-suspenders marker so no
+/// default `Stdout` sink can leak in even if a future change makes `.targets()` append-style); then the level
+/// is pinned. `info` is the §7.5.3 `info`/`warn` default that captures the structural diagnostic facts
+/// §7.5.4/§6.5 depend on. NOT `AppHandle`-coupled (no `&AppHandle` in the signature) → NOT the P2.135 G28
+/// boot-glue exemption → its lines COUNT in the diff floor, so `log_plugin_builds` executes it. `.build()`
+/// only constructs the plugin descriptor — the global logger is installed by the plugin's `setup` hook at app
+/// init, not by this call — so calling this outside `main()` (the test) installs no logger and is
+/// side-effect-free.
+fn log_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    tauri_plugin_log::Builder::new()
+        .clear_targets()
+        .targets(log_targets().into_iter().map(Target::new))
+        .level(LevelFilter::Info)
+        .build()
 }
 
 /// [Build-Session-Entscheidung: P2.40] The §7.8.1 launch-intake logic, homed with the Tauri host (§0.7:
@@ -975,7 +1016,11 @@ fn main() -> tauri::Result<()> {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
-        .plugin(tauri_plugin_log::Builder::new().build())
+        // [Build-Session-Entscheidung: P2.89] §7.5.1/§7.5.2 logging — the configured plugin (local rotating
+        // file + dev stderr, level `info`, no `Stdout`/network sink) from `log_plugin()`. The target
+        // whitelist + level live in that helper (`log_targets()` is the pure, tested §3 zero-egress control);
+        // this chain line is the single production registration site.
+        .plugin(log_plugin())
         // [Build-Session-Entscheidung: P2.58] §7.8.1 first-launch intake buffer — register the
         // State<PendingIntake> in the Builder chain (compile-time Default, so registered BEFORE the event
         // loop / any single-instance callback: the funnel's Buffer arm resolve is then infallible by
@@ -2019,5 +2064,57 @@ mod single_instance_lock_scope {
                 "§7.1.1: the single-instance registration site must document the per-platform lock scope (missing `{needle}`)"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod log_config {
+    use super::{log_plugin, log_targets};
+    use tauri_plugin_log::TargetKind;
+
+    // §7.5.2 / §3 zero-egress: the log target set is LOCAL-ONLY — exactly one on-disk persistence target
+    // (`LogDir`) plus, in dev only, `Stderr`; NEVER `Webview`/`Dispatch`/`Folder`/`Stdout`, so no network
+    // sink can ever reach the log (§7.5.1/§2.11 no-telemetry). This is the explicit test of the P2.89
+    // zero-egress control — the reason `log_targets` is a pure, coverage-counted function.
+    #[test]
+    fn log_targets_are_local_only() {
+        let targets = log_targets();
+
+        // exactly one persistence target: the OS log directory (the §7.5.2 primary rotating record).
+        let log_dirs = targets
+            .iter()
+            .filter(|t| matches!(t, TargetKind::LogDir { .. }))
+            .count();
+        assert_eq!(
+            log_dirs, 1,
+            "§7.5.2: the on-disk LogDir must be the single persistence target"
+        );
+
+        // every target is on the local-only whitelist — no off-machine / arbitrary sink is EVER present.
+        for t in &targets {
+            assert!(
+                matches!(t, TargetKind::LogDir { .. } | TargetKind::Stderr),
+                "§7.5.1/§2.11: only LogDir (persist) + dev Stderr are allowed — never Webview/Dispatch/Folder/Stdout (no network sink)"
+            );
+        }
+
+        // stderr is a DEV-ONLY console aid — a release build writes the on-disk file exclusively.
+        let has_stderr = targets.iter().any(|t| matches!(t, TargetKind::Stderr));
+        #[cfg(debug_assertions)]
+        assert!(has_stderr, "§7.5.2: dev builds add stderr");
+        #[cfg(not(debug_assertions))]
+        assert!(
+            !has_stderr,
+            "§7.5.2: release builds must not write to stderr"
+        );
+    }
+
+    // The `log_plugin()` glue is NOT AppHandle-coupled (no P2.135 G28 exemption), so its lines count in the
+    // diff floor and must be EXECUTED. `.build()` only constructs the plugin descriptor (the global logger is
+    // installed by the plugin's `setup` hook at app init, not by this call), so building it here installs no
+    // logger and is side-effect-free — safe to call outside `main()`.
+    #[test]
+    fn log_plugin_builds() {
+        let _plugin = log_plugin();
     }
 }
