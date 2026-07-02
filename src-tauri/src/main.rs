@@ -40,7 +40,7 @@ mod run;
 use std::path::PathBuf;
 
 use tauri::{Emitter, Manager};
-use tauri_plugin_log::{log::LevelFilter, Target, TargetKind};
+use tauri_plugin_log::{log::LevelFilter, RotationStrategy, Target, TargetKind};
 
 use crate::domain::{
     CollectedSetId, CollectingId, InstanceId, IntakePayload, ItemId, LossyKind, RunId,
@@ -296,8 +296,8 @@ fn log_dir_target() -> TargetKind {
 /// `TargetKind` offers — `Webview` (§7.5.2: the webview console is NOT a persistence target), `Dispatch` (an
 /// arbitrary `fern` sink that could route off the machine), `Folder`, `Stdout` — so NO network sink can ever
 /// reach the log (§7.5.1/§2.11 no-telemetry, §0.10 allowlist). `log_targets_are_local_only` pins the
-/// whitelist. Rotation params (`max_file_size`/`KeepOne`, §7.5.2) are set by P2.91; this function configures
-/// the target KINDS + level only.
+/// whitelist. Rotation (`max_file_size`/`KeepOne`, §7.5.2) is applied in `log_plugin()`; this function
+/// returns the target KINDS only (the level + the rotation cap live in `log_plugin()`).
 fn log_targets() -> Vec<TargetKind> {
     // Release builds write the on-disk file exclusively (no console); dev builds add `Stderr`. Two cfg-gated
     // bindings (not a `mut` + conditional push) so neither profile trips clippy `unused_mut`.
@@ -308,13 +308,22 @@ fn log_targets() -> Vec<TargetKind> {
     targets
 }
 
+/// [Build-Session-Entscheidung: P2.91] §7.5.2 `[DECIDED]` the rotating-file size cap: the single log file is
+/// bounded at 5 MB (bytes). Paired with `RotationStrategy::KeepOne`, whose rotation arm is `fs::remove_file`
+/// (it DELETES the old file, not renames it to a dated backup like `KeepAll`/`KeepSome`), so on reaching the
+/// cap the on-disk maximum stays ~1x this value — the "leave nothing behind / no system pollution" budget.
+/// The `KeepOne == fs::remove_file` ≈1x-footprint audit against the pinned plugin version is P2.92.
+/// `log_max_file_size_is_the_spec_cap` pins the value to §7.5.2's `5_000_000`.
+const LOG_MAX_FILE_SIZE_BYTES: u128 = 5_000_000;
+
 /// [Build-Session-Entscheidung: P2.89] §7.5.1/§7.5.2 the configured `tauri-plugin-log` plugin: the local
 /// on-disk rotating file (+ dev `Stderr`) from `log_targets()`, default level `info`, and NO default `Stdout`
 /// target. Thin glue over the `log_targets()` zero-egress control: `.targets(...)` fully REPLACES the
 /// plugin's default target set (`[Stdout, LogDir]`) with exactly `log_targets()`, and `.clear_targets()` is
 /// kept ahead of it as the plugin's documented "ignore the defaults" idiom (a belt-and-suspenders marker so no
 /// default `Stdout` sink can leak in even if a future change makes `.targets()` append-style); then the level
-/// is pinned. `info` is the §7.5.3 `info`/`warn` default that captures the structural diagnostic facts
+/// and the §7.5.2 rotation cap (5 MB / `KeepOne`, see `LOG_MAX_FILE_SIZE_BYTES`) are pinned. `info` is the
+/// §7.5.3 `info`/`warn` default that captures the structural diagnostic facts
 /// §7.5.4/§6.5 depend on. NOT `AppHandle`-coupled (no `&AppHandle` in the signature) → NOT the P2.135 G28
 /// boot-glue exemption → its lines COUNT in the diff floor, so `log_plugin_builds` executes it. `.build()`
 /// only constructs the plugin descriptor — the global logger is installed by the plugin's `setup` hook at app
@@ -325,6 +334,11 @@ fn log_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
         .clear_targets()
         .targets(log_targets().into_iter().map(Target::new))
         .level(LevelFilter::Info)
+        // [Build-Session-Entscheidung: P2.91] §7.5.2 rotation: cap the single file at 5 MB and KEEP ONE — the
+        // `KeepOne` arm deletes (fs::remove_file) rather than renaming to a dated backup, so the on-disk
+        // footprint stays ~1x the cap (the ≈1x source-audit vs the pinned plugin version is P2.92).
+        .max_file_size(LOG_MAX_FILE_SIZE_BYTES)
+        .rotation_strategy(RotationStrategy::KeepOne)
         .build()
 }
 
@@ -2084,8 +2098,19 @@ mod single_instance_lock_scope {
 
 #[cfg(test)]
 mod log_config {
-    use super::{log_dir_target, log_plugin, log_targets};
+    use super::{log_dir_target, log_plugin, log_targets, LOG_MAX_FILE_SIZE_BYTES};
     use tauri_plugin_log::TargetKind;
+
+    // §7.5.2 (P2.91): the rotating-file cap is pinned to the spec's 5 MB (bytes). With KeepOne the on-disk
+    // footprint stays ~1x this (the plugin deletes rather than renames on rotation); the ≈1x source audit is
+    // P2.92. This pins the value so a drift away from §7.5.2's 5_000_000 fails until the spec is updated too.
+    #[test]
+    fn log_max_file_size_is_the_spec_cap() {
+        assert_eq!(
+            LOG_MAX_FILE_SIZE_BYTES, 5_000_000,
+            "§7.5.2: the log rotation cap must be 5 MB (5_000_000 bytes)"
+        );
+    }
 
     // §7.5.2 (P2.90): the persistence target is the plugin's `LogDir` with the DEFAULT file name, whose
     // runtime path the plugin resolves via Tauri's `app_handle.path().app_log_dir()` (tauri-plugin-log 2.8.0
