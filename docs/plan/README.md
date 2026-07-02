@@ -168,7 +168,7 @@ this is a compile-time stub, not a forward dependency. P4 therefore does **not**
 build `crate::isolation`/the pool from scratch — it fills the shells P3 establishes.
 
 **Spec home:** 01-conversion-pipeline (incl. §1.2 detection, §1.7 dispatch stubs),
-02-guarantees (§2.1–§2.7 fs_guard incl. §2.2 output naming, §2.3 link-safety [T7],
+02-guarantees (§2.1–§2.7 the no-harm guarantees incl. §2.2 output naming, §2.3 link-safety [T7],
 §2.4 frozen set [T8], §2.5 re-run detection, §2.6 cleanup/temp-ownership),
 05-ui-ux (minimal).
 

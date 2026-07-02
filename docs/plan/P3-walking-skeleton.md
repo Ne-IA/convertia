@@ -9,8 +9,8 @@
 >
 > Derives from [01-conversion-pipeline](../spec/01-conversion-pipeline.md) (§1.2 layered
 > detection, §1.7 dispatch incl. the `InProcessNative` sub-case, §1.8–§1.12 the convert
-> spine), [02-guarantees](../spec/02-guarantees.md) (§2.0–§2.7 the `crate::fs_guard`
-> no-clobber atomic-publish kernel incl. §2.3 link-safety [T7], §2.4 frozen set [T8],
+> spine), [02-guarantees](../spec/02-guarantees.md) (§2.0–§2.7 the no-harm
+> guarantees: §2.3 link-safety [T7], §2.4 frozen set [T8],
 > §2.5 re-run detection, §2.6 cleanup/temp-ownership, §2.7 destination/divert incl. the
 > §2.1.2/§2.7.2 FAT/exFAT divert), [03-engines-and-bundling](../spec/03-engines-and-bundling.md)
 > (§3.5.6 native CSV/TSV engine, §3.2 the `Engine`/`Invocation`/`EngineProgram` seam),
@@ -224,18 +224,19 @@ P0.5.7 KAT convention and the P0.4.3 detect fuzz target.
 
 ---
 
-### `crate::fs_guard`: the §1.1/§2.4 freeze + §2.7 destination & per-location divert
+### The §1.1/§2.4 freeze (`crate::orchestrator`, §0.7 conductor) + §2.7 destination & per-location divert (`crate::fs_guard`)
 
 **Goal:** the frozen source set (§2.4), the recursive folder walk (§1.1), and the §2.7
 destination model incl. per-location writability/ephemeral/FAT-exFAT divert — so the walking
 skeleton can ingest a CSV folder and land output beside-source or diverted, on all 3 OS.
 
-- [ ] **P3.31** [RUST] Build the §1.1 recursive folder walk + hidden/system filter + per-item-failure-continues · §1.1 §2.4.1
+- [x] **P3.31** [RUST] Build the §1.1 recursive folder walk + hidden/system filter + per-item-failure-continues · §1.1 §2.4.1
+  needs: P2.64
+  > **Reconciled `[x]` — DUP of the already-built P2 walk (systemic §1.1 pass, Co-Pilot, owner-ratified):** the §1.1 recursive-walk PRIMITIVE (depth-first `walkdir`, symlinked-dirs-not-followed for loop-safety; the dotfiles + `.DS_Store`/`Thumbs.db`/`desktop.ini` + Windows hidden/system ignore constant; per-item read-failure → `SkippedItem`, walk CONTINUES; fatal-walk-root stop; retain dropped roots for §2.7) is ALREADY built + unit-tested in `crate::orchestrator` (`walk_intake_roots`, delivered by **P2.64/P2.65/P2.66/P2.67/P2.68**, all `[x]`, dead-code pending wiring). §0.7 homes §1.1 in orchestrator (the "§01 conductor builds the queue" role), NOT fs_guard — the walk is NOT re-homed (§0.7 > the plan-heading, owner-ratified). No distinct deliverable remains: the primitive is P2.64-68; the per-item-DETECT-failure + the end-to-end walk→detect→de-dup→freeze wiring is **P3.49** (which already references the P2.64 walk). `[Reconcile: systemic-§1.1-pass — dup-delivered-by-P2.64-68; orchestrator-home per §0.7]`
+- [ ] **P3.32** [RUST] Build the §2.4 freeze-point (eager immutable snapshot) in `crate::orchestrator` · §2.4.1 §2.4.2 §1.1
   needs: P3.7
-  > the Rust-side depth-first walk (`walkdir`; symlinked dirs not followed as a traversal step, loop-safety); ignore dotfiles + `.DS_Store`/`Thumbs.db`/`desktop.ini` + Windows hidden/system-attribute entries (fixed constant, §1.1); a per-item read/detect failure mid-walk yields a `SkippedItem` and the walk **CONTINUES** (only a `cancel_ingest`/fatal-walk-root error stops it). Retain dropped root(s) for §2.7 subtree re-creation + open-folder.
-- [ ] **P3.32** [RUST] Build the §2.4 freeze point + zero-byte/unreadable-at-intake = Skipped · §2.4.1 §2.4.2 §1.1
-  needs: P3.31
-  > snapshot the set **eagerly and once** into an immutable `Vec<DroppedItem>` (conversion iterates the snapshot, never re-reads the dir — the structural no-self-feeding defence, §2.4.2); de-dup by `FileIdentity` (P3.7). A 0-byte/unreadable-at-intake item → `Skipped(SkipReason::Empty|Unreadable)` in the §1.4 summary (NOT silently dropped, NOT counted `failed`) — distinct from the **turn-time** unreadable/gone = `Failed` (§1.1). Closes T8 (no self-feeding) at the freeze.
+  > snapshot the set **eagerly and once** into an immutable `Vec<DroppedItem>` (conversion iterates the snapshot, never re-reads the dir — the structural no-self-feeding defence, §2.4.2); de-dup by `FileIdentity` (P3.7); apply the P2.73 zero-byte/unreadable-at-intake → `Skipped(Empty|Unreadable)` classification at the snapshot (distinct from turn-time gone/unreadable = `Failed`). Closes T8 (no self-feeding) at the freeze. Homed in `crate::orchestrator` (§0.7 conductor — the frozen set becomes the queue), co-located with the P2.64-68 walk + the P2.76 de-dup, NOT fs_guard.
+  > **Reconcile (systemic §1.1 pass, owner-ratified):** re-scoped to the freeze-point PRIMITIVE. The zero-byte-at-intake = `Skipped` vs turn-time = `Failed` classification LOGIC is already built by **P2.73** (`[x]`) — dropped from the title (was a dup); this freeze APPLIES it. `needs:` redirected P3.31 → **P3.7** (the real-FS de-dup this freeze folds; P3.31 is the reconciled-out walk dup). The end-to-end walk→detect→de-dup→freeze wiring stays **P3.49**.
 - [ ] **P3.33** [RUST] Build `fs_guard::location_status` — writability + ephemeral classification (cached per-dir) · §2.7.2 · G31
   needs: P3.1
   > the **writable** test: `create_new` a throwaway probe file (`.convertia-<InstanceId>-probe-<rand>.part`, pre-RunId, §2.7.2) then remove it — confirms the dir accepts a create (NOT the §2.1 publish primitive; do not share the helper). Probe **lazily, cache per-directory** within the run. **Ephemeral** test: under `%TEMP%`/`GetTempPathW` (Win), `$TMPDIR`/`/tmp`/`/var/folders` (macOS), `$TMPDIR`/`/tmp`/`/var/tmp`/`/run/user/<uid>` (Linux) → divert. Probe-cleanup-failure → still **writable**, logged only, never a divert. The per-dir cache is a planning **hint**, not a commitment (P3.36 re-checks at write).
@@ -319,7 +320,7 @@ drop→convert round-trip runs through the typed IPC surface.
   needs: P3.46
   > C6 creates a `RunId`, enqueues the batch (§0.9), spawns the in-core worker, returns the `RunId` immediately, and streams `ConversionEvent`s: `RunStarted { totalItems = QUEUED-eligible count, willReencode: false }` (CSV/TSV is never re-encode), `ItemStarted`, `ItemProgress` (P3.43), `ItemFinished { outcome }`, `BatchProgress { done, total }` (denominator = queued items only, so a skip never holds the bar below 100%), terminal `RunFinished(RunResult)`. Pre-flight skips emit **no live** `ItemFinished{Skipped}` — terminal-projection only (§0.4.2).
 - [ ] **P3.49** [RUST] Implement C1 `ingest_paths` / C3 `get_targets` / C4 `plan_output` for the slice · §0.4.1 §1.3 §1.4 §1.5
-  needs: P3.32, P3.29, P3.40
+  needs: P3.32, P3.29, P3.40, P2.64
   > **C1** funnels drop/picker/launch-arg paths into the single freeze (P3.32), returns `CollectedSet` (`Single`/`Mixed`/`Unsupported`/`Uncertain`/`Empty`) projected per the §1.3 `group()` rule — incl. the lone-Unsupported / lone-Uncertain specificity + the `EmptyReport→skipped` projection. **C3** resolves the CSV/TSV `TargetOffer` (the offered set, the one pre-highlighted default = TSV for a CSV source, lossy flag, availability) from the registry (§1.5). **C4** computes the `OutputPlan` preview + `rerun` (P3.40) + the §1.10 preflight verdict; eager on `3→4`, debounced re-call on change (§0.4.1).
   > **§1.10-seam slice-stub note (DECIDED — mirrors the P3↔P4 UI-seam supersede model):** C4's §1.10 preflight verdict here is the **trivial walking-skeleton `PreflightVerdict`** (the CSV→TSV footprint is negligible ⇒ `up_front_fail: None` by construction) — NOT a real §1.10 estimator. The real §1.10 estimation+decision ENGINE is **P4.72** (which `needs: P4.20`, the real pool, so it cannot be DECISION-C-pulled into P3 without the forbidden P3→P4 inversion); P4.72 **SUPERSEDES** this stub behind the same C4 contract, exactly as the P4 UI primitives supersede the P3 slice renderers. The Build-Loop must NOT build a real §1.10 estimator in P3 (a double-build with P4.72) — P3's C4 returns the trivial verdict only.
   > **`on_scan` `ScanProgress` emit (§0.4.2) — runtime home `[Co-Pilot reconcile]`:** C1's throttled (~2/s, coalesced) `ScanProgress { scanned }` emit over the `on_scan` Channel during the §1.1 walk is realized HERE — the type is authored at P2.7, the `Channel<ScanProgress>` arg at P2.22, and the walk that produces the count at P2.62/P2.64; **no separate P2 box schedules the runtime emit/throttle**, so this C1 end-to-end box owns it (best-effort, monotonic, dies with the C1 call). This corrects the prior `on_scan`-pump mis-attribution to P2.69 (P2.69 is cooperative ingest cancellation, not the emit).
