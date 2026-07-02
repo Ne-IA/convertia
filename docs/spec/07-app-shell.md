@@ -793,7 +793,12 @@ record *what actually happened* without showing the user a stack trace.
   `KeepOne == fs::remove_file` (≈1× `max_file_size`) source-verification above is recorded
   against the **exact pinned `tauri-plugin-log` version/commit in the lockfile** — so the
   ~1×-footprint claim is auditable, and a version bump triggers a re-check of the `KeepOne`
-  rotation arm before the bound is re-asserted (`[DEFER: verify-on-bump]`).
+  rotation arm before the bound is re-asserted (`[DEFER: verify-on-bump]`). **Concrete audit
+  (P2.92):** the source-verification above was re-run against the lockfile-pinned
+  **`tauri-plugin-log` 2.8.0** — confirmed the `KeepOne` arm is `fs::remove_file(&self.path)?`
+  (a delete, not `rename_file_to_dated()`) and `max_file_size` is a `u128` byte cap, so the
+  ~1× single-file bound (≈5 MB) holds for this pin; the standing verify-on-bump trigger above
+  re-runs it on the next version bump.
 
 ### 7.5.3 Redaction stance — reconciling diagnostics with privacy `[DECIDED + REC]`
 

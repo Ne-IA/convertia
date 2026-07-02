@@ -312,7 +312,8 @@ fn log_targets() -> Vec<TargetKind> {
 /// bounded at 5 MB (bytes). Paired with `RotationStrategy::KeepOne`, whose rotation arm is `fs::remove_file`
 /// (it DELETES the old file, not renames it to a dated backup like `KeepAll`/`KeepSome`), so on reaching the
 /// cap the on-disk maximum stays ~1x this value — the "leave nothing behind / no system pollution" budget.
-/// The `KeepOne == fs::remove_file` ≈1x-footprint audit against the pinned plugin version is P2.92.
+/// The `KeepOne == fs::remove_file` ≈1x-footprint audit against the pinned plugin version lives in
+/// §7.5.2's `Audit trail` (the concrete audit vs the `tauri-plugin-log` 2.8.0 pin, P2.92).
 /// `log_max_file_size_is_the_spec_cap` pins the value to §7.5.2's `5_000_000`.
 const LOG_MAX_FILE_SIZE_BYTES: u128 = 5_000_000;
 
@@ -336,7 +337,7 @@ fn log_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
         .level(LevelFilter::Info)
         // [Build-Session-Entscheidung: P2.91] §7.5.2 rotation: cap the single file at 5 MB and KEEP ONE — the
         // `KeepOne` arm deletes (fs::remove_file) rather than renaming to a dated backup, so the on-disk
-        // footprint stays ~1x the cap (the ≈1x source-audit vs the pinned plugin version is P2.92).
+        // footprint stays ~1x the cap (the ≈1x source-audit vs the pinned plugin version lives in §7.5.2, P2.92).
         .max_file_size(LOG_MAX_FILE_SIZE_BYTES)
         .rotation_strategy(RotationStrategy::KeepOne)
         .build()
@@ -2102,8 +2103,9 @@ mod log_config {
     use tauri_plugin_log::TargetKind;
 
     // §7.5.2 (P2.91): the rotating-file cap is pinned to the spec's 5 MB (bytes). With KeepOne the on-disk
-    // footprint stays ~1x this (the plugin deletes rather than renames on rotation); the ≈1x source audit is
-    // P2.92. This pins the value so a drift away from §7.5.2's 5_000_000 fails until the spec is updated too.
+    // footprint stays ~1x this (the plugin deletes rather than renames on rotation); the ≈1x source audit
+    // lives in §7.5.2's `Audit trail` (the concrete audit vs the 2.8.0 pin, P2.92). This pins the value so a
+    // drift away from §7.5.2's 5_000_000 fails until the spec is updated too.
     #[test]
     fn log_max_file_size_is_the_spec_cap() {
         assert_eq!(
