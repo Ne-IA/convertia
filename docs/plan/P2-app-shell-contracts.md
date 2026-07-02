@@ -337,7 +337,7 @@
 
 ## Logging & diagnostics (§7.5) — local-only, no telemetry
 
-- [ ] **P2.89** [RUST] Configure `tauri-plugin-log` — rotating file + dev stderr, default level `warn`/`info`, no network sink · §7.5.1 §7.5.2
+- [x] **P2.89** [RUST] Configure `tauri-plugin-log` — rotating file + dev stderr, default level `warn`/`info`, no network sink · §7.5.1 §7.5.2
   needs: P1.14
 - [ ] **P2.90** [RUST] Resolve the per-OS log-dir via `app.path().app_log_dir()` + the Linux config-dir deviation note · §7.5.2
   needs: P2.89
