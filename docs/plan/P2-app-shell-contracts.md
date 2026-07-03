@@ -353,7 +353,7 @@
   - [x] **P2.94.1** [RUST] Wire the §7.5.4 dev-facing diagnostics set into verbose mode — per-engine spawned argv + persisted stderr, resolved scratch/temp paths, per-item timing, output-plan/divert decisions · §7.5.4 §2.14 §1.8 §3.5
     needs: P2.94
     > the §7.5.4 "makes §6.5 operable" capture set verbose mode ADDITIONALLY records beyond P2.94's full-paths/engine-argv (the diagnostic surface the §6.5 reliability gate operationally depends on): the **exact spawned argv per engine** (§3.5), **engine `stderr` persisted** (§2.13 captures-and-classifies; here also written to the log), the **resolved scratch/temp paths** (§2.14), **per-item timing**, and the **chosen output-plan decisions incl. per-location divert** (§1.8). The logging plumbing + the redaction-stance interaction are homed here; the actual capture points are wired by their producers as they land (the per-engine argv/stderr in P4 where the §2.12 spawn wrapper lands, the scratch/temp-path + output-plan/divert captures in P3 where `crate::run`/the §1.8 output-plan land) — each producer feeds this verbose-diagnostics sink. The P2.127 log-redaction property gate must prove the §7.5.4 full paths/scratch-paths added here still redact at default level (only verbose surfaces them).
-- [ ] **P2.95** [RUST] Add the JS-bridge so frontend errors land in the same log file · §7.5.1
+- [x] **P2.95** [UI] Add the JS-bridge so frontend errors land in the same log file · §7.5.1
   needs: P2.89, P1.27
 - [ ] **P2.96** [DOC] Record the no-automatic-upload-ever stance (the §6.8 bug-report flow attaches the log manually) · §7.5.3 §2.11
 
