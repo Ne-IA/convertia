@@ -359,7 +359,7 @@
 
 ## Update posture (§7.6) — no auto-updater (defense in depth)
 
-- [ ] **P2.97** [DOC] Record the no-startup/background version-check assertion (zero network calls at startup) · §7.6.1 §7.2.2
+- [x] **P2.97** [DOC] Record the no-startup/background version-check assertion (zero network calls at startup) · §7.6.1 §7.2.2
 - [ ] **P2.98** [RUST] Encode BOTH C11/About data sources — the version-display source (`app.package_info().version` / `CARGO_PKG_VERSION`) AND the `AppInfo.build_id` PRODUCER (§6 CI build id at build time + deterministic dev fallback) · §7.6.2 §7.2.3 · G19
   needs: P2.34, P2.112
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.112` points at the `AppInfo` type box later in document order — the `build_id`/`version` fields this box populates have nowhere to land until `AppInfo` (P2.112) exists, so DECISION C builds P2.112 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
