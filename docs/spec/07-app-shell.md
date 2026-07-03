@@ -876,6 +876,16 @@ Concrete spec items (each a Phase-3 checklist line, asserted by §6.5/§2.11):
 - **CSP / capabilities (§0.10)** allow **no remote origins** and the HTTP/updater
   permissions are not granted, so even an accidental fetch is blocked at the
   WebView boundary — defense in depth behind the policy decision.
+- **Recorded stance (P2.97) `[DECIDED]`.** Bullets 1–3 above are recorded as ONE standing
+  v1 negative — the SSOT *Local, private & offline* "does not check for updates or phone
+  home" posture applied to startup — enforced **structurally, by absence** (bullet 1's
+  missing updater dependency / endpoint / manifest / pubkey) behind the §0.10 CSP and the
+  ungranted HTTP/updater capabilities (bullet 3), not by policy. The **only** version
+  signal is the user-initiated About→Releases link (§7.6.2), a §7.7 shell-out ConvertIA
+  never fetches or parses itself. The observable proof is the §2.11.4/§6.7.3 offline-egress
+  gate run with zero-startup-network in the same window (a §6.5/§2.11 release gate, P9); the
+  §7.2.2 runtime zero-startup-network assertion is the P2.107 leg. A future opt-in check
+  stays parked, not present in v1 (§7.6.3).
 
 ### 7.6.2 How the user learns of a new release `[DECIDED]`
 
