@@ -903,6 +903,15 @@ If a future version ever adds an update check it must be **opt-in, disclosed, an
 visible** (SSOT). The §7.4 persistence design leaves room for a single future
 `updateCheckOptIn: boolean` key (default `false`); it is **not** present in v1.
 
+- **Recorded stance (P2.99) `[DECIDED]`.** The parked `updateCheckOptIn` is recorded as ONE standing
+  v1 negative — the SSOT "any future update check would be opt-in and disclosed, never silent" posture —
+  enforced **structurally, by absence**: the §7.4.1 persistence blob is a CLOSED 3-key set (`theme` /
+  `lastDestinationMode` / `verboseLog`), so no `updateCheckOptIn` key exists to read or toggle in v1 (a
+  4th key would break the §7.4.1 closed-3-key decision). It is the persisted-state companion to the P2.97
+  no-startup/background version-check stance (§7.6.1) and the §2.11.2 no-phone-home invariant: v1 has
+  **no** update-check surface at all, opt-in or otherwise. Adding the key later stays gated on the SSOT
+  opt-in/disclosed/visible bar — a deliberate future decision, not a v1 gap.
+
 ---
 
 ## 7.7 OS shell-out (open-folder / open-file / open project page) `[REC]`
