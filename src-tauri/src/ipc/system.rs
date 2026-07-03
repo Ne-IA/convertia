@@ -65,6 +65,43 @@ pub async fn open_path(kind: OpenKind, path: PathBuf) -> Result<(), IpcError> {
     })
 }
 
+/// The concrete §7.7.1 `OpenerExt` operation a C9 `OpenKind` maps to — a PURE descriptor that SELECTS the
+/// shell-out call without performing it. The live invocation (`app.opener()` + the `OpenerExt` method, the
+/// §0.10 no-`opener:*`-grant Rust-side path) is the P3.51 wire box; P2.100 owns only this mapping.
+///
+/// Two variants, because §7.7.1 has exactly two concrete methods: `reveal_item_in_dir` (reveal-with-select)
+/// and `open_path(_, None)` (open a file in its default app OR a directory in the file manager). `OpenKind::
+/// Folder` and `OpenKind::File` both map to `OpenPath` — the SAME `OpenerExt` call on a different subject (a
+/// run ROOT vs an output FILE); that source/root distinction is the §7.7.3 membership gate's job (P2.101–103),
+/// not the mapping's. (The type is referenced by `opener_op_for`'s signature so it is not itself dead; the
+/// mapping FN carries the dead-until-P3.51 `expect`.) [Build-Session-Entscheidung: P2.100]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum OpenerOp {
+    /// `OpenerExt::reveal_item_in_dir(path)` — open the OS file manager with `path` selected/highlighted.
+    RevealItemInDir(PathBuf),
+    /// `OpenerExt::open_path(path, None)` — open `path` (a file in its OS default app, or a directory in the
+    /// file manager) with no explicit program override.
+    OpenPath(PathBuf),
+}
+
+/// Map a C9 `OpenKind` + `path` to its concrete §7.7.1 `OpenerExt` operation (P2.100). PURE dispatch: it
+/// SELECTS the op, it does not invoke it — the live `OpenerExt` call is the P3.51 wire box. The `match` is
+/// wildcard-free, so a future `OpenKind` variant fails to compile here until it is mapped (the §0.6 / §0.7
+/// exhaustive-dispatch discipline). [Build-Session-Entscheidung: P2.100]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the §7.7.1 OpenKind→OpenerOp mapping is the pure C9 dispatch; its only production consumer is the P3.51 live-wire box (AppHandle + OpenerExt invoke — the build-vs-wire split), so it is dead in the production build until then (the §1.1-walk / §7.8.1-funnel dead-until pattern)."
+    )
+)]
+pub(crate) fn opener_op_for(kind: OpenKind, path: PathBuf) -> OpenerOp {
+    match kind {
+        OpenKind::RevealInFolder => OpenerOp::RevealItemInDir(path),
+        OpenKind::Folder | OpenKind::File => OpenerOp::OpenPath(path),
+    }
+}
+
 /// **C10 `open_project_page`** (§0.4.1) — the **only** permitted, user-initiated network action: opens a fixed
 /// compiled-in canonical Ne-IA GitHub Releases URL in the default browser via `OpenerExt::open_url` (§7.6.2 /
 /// §7.7.1). The WebView supplies **no URL** — the handler opens a compiled-in constant, eliminating any
@@ -167,6 +204,40 @@ mod c9_contract {
             ConversionErrorKind::InternalError,
             "§2.13: the non-member-path shell outcome is the InternalError catch-all — SHAPE asserted, NOT \
              the provisional message (the §2.8 catalog box owns the final string)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod c9_opener_op {
+    //! §6.4.1 unit (G15): the P2.100 §7.7.1 `OpenKind`→`OpenerOp` mapping — the pure C9 dispatch (mapping
+    //! only; no `OpenerExt` invoke — the live wire is P3.51). Pins each `OpenKind` variant to its §7.7.1 row
+    //! (`RevealInFolder`→`reveal_item_in_dir`; `Folder` and `File`→`open_path`) and that `path` is carried
+    //! through verbatim. The wildcard-free `match` in `opener_op_for` locks membership at compile time; this
+    //! test pins the per-variant target. [Build-Session-Entscheidung: P2.100]
+    use super::*;
+
+    // §6.4.1 unit (G15): every §0.6 `OpenKind` maps to its §7.7.1 `OpenerExt` op, and the `path` (here a
+    // non-trivial spaces+parens path) is moved into the op verbatim. `Folder` and `File` share `OpenPath` —
+    // the SAME §7.7.1 call on a different subject; the source/root distinction is the §7.7.3 membership gate's
+    // job (P2.101–103), not the mapping's.
+    #[test]
+    fn open_kind_maps_to_its_7_7_1_opener_op() {
+        let p = PathBuf::from("/runs/out (1)/data.tsv");
+        assert_eq!(
+            opener_op_for(OpenKind::RevealInFolder, p.clone()),
+            OpenerOp::RevealItemInDir(p.clone()),
+            "§7.7.1: RevealInFolder → OpenerExt::reveal_item_in_dir(path)"
+        );
+        assert_eq!(
+            opener_op_for(OpenKind::Folder, p.clone()),
+            OpenerOp::OpenPath(p.clone()),
+            "§7.7.1: Folder → OpenerExt::open_path(dir, None)"
+        );
+        assert_eq!(
+            opener_op_for(OpenKind::File, p.clone()),
+            OpenerOp::OpenPath(p.clone()),
+            "§7.7.1: File → OpenerExt::open_path(path, None)"
         );
     }
 }
