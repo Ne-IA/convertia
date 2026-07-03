@@ -352,9 +352,13 @@ export const commands = {
 	 *  ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError` precedent C3/C4/C5 cite).
 	 *  The named fill-boxes own the rest: (a) the §2.8 catalog box owns the FINAL message — the string below is a
 	 *  PROVISIONAL neutral English one — and must add a COMMAND-level string (the §2.8 catalog is item-scoped); (b)
-	 *  the §7.7.3 membership resolve (against the P2.43 `RunResult` retention) + the §7.7.1 `OpenerExt` reveal/open
-	 *  call + the §7.5 refusal log + the §0.6 SUCCESS path (`Ok(())` on a validated open) belong to the body box
-	 *  P3.51; (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
+	 *  the C9 LOGIC is built PURE in P2 (the P2↔P3 §7.7 build-vs-wire split, Co-Pilot-ratified): the
+	 *  `OpenKind`→`OpenerOp` mapping is P2.100, the §7.7.3 membership validate over the real P2.43 `RunResultStore`
+	 *  is P2.101, the two-rule split (file→output FILES / folder→run ROOTS) is P2.102, and the split-output
+	 *  two-targets rule is P2.103 — all pure, dead-until the wire box; only the LIVE WIRE — the `AppHandle`, the
+	 *  current-`RunResult` fetch from `State<RunResultStore>`, the §7.7.1 `OpenerExt` reveal/open call, the §7.5
+	 *  refusal log, and the §0.6 SUCCESS path (`Ok(())` on a validated open) — belongs to the wire box P3.51; (c)
+	 *  `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
 	 */
 	openPath: (kind: OpenKind, path: string) => __TAURI_INVOKE<null>("open_path", { kind, path }),
 	/**

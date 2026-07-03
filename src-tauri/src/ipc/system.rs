@@ -2,8 +2,9 @@
 //! open an output path, open the canonical project page, surface app info, and report engine health. P2.21
 //! registered these as the §0.4.1 command-surface interface shells; C9 `open_path`'s typed request/response
 //! CONTRACT is authored by P2.32 (this file), C10's by P2.33, C11's by P2.34, and C12's wired by P2.113. Each
-//! command's `crate::orchestrator`/`OpenerExt` delegation BODY is its own named fill-box (the C9
-//! membership-validate + `OpenerExt` reveal/open is P3.51). Thin by design (§0.7): the handler validates,
+//! command's `crate::orchestrator`/`OpenerExt` delegation BODY is its own named fill-box (for C9 the gate
+//! LOGIC — the `OpenKind`→`OpenerOp` mapping + the §7.7.3 membership-validate — is P2.100–103, and only the
+//! live `OpenerExt` reveal/open wire is P3.51). Thin by design (§0.7): the handler validates,
 //! delegates, and maps the `Result` onto the §0.4.3 `IpcError`. No `opener:*` WebView grant exists — every
 //! shell-out is Rust-side via `OpenerExt` (§0.10).
 
@@ -45,9 +46,13 @@ use crate::outcome::{ConversionErrorKind, IpcError};
 /// ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError` precedent C3/C4/C5 cite).
 /// The named fill-boxes own the rest: (a) the §2.8 catalog box owns the FINAL message — the string below is a
 /// PROVISIONAL neutral English one — and must add a COMMAND-level string (the §2.8 catalog is item-scoped); (b)
-/// the §7.7.3 membership resolve (against the P2.43 `RunResult` retention) + the §7.7.1 `OpenerExt` reveal/open
-/// call + the §7.5 refusal log + the §0.6 SUCCESS path (`Ok(())` on a validated open) belong to the body box
-/// P3.51; (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
+/// the C9 LOGIC is built PURE in P2 (the P2↔P3 §7.7 build-vs-wire split, Co-Pilot-ratified): the
+/// `OpenKind`→`OpenerOp` mapping is P2.100, the §7.7.3 membership validate over the real P2.43 `RunResultStore`
+/// is P2.101, the two-rule split (file→output FILES / folder→run ROOTS) is P2.102, and the split-output
+/// two-targets rule is P2.103 — all pure, dead-until the wire box; only the LIVE WIRE — the `AppHandle`, the
+/// current-`RunResult` fetch from `State<RunResultStore>`, the §7.7.1 `OpenerExt` reveal/open call, the §7.5
+/// refusal log, and the §0.6 SUCCESS path (`Ok(())` on a validated open) — belongs to the wire box P3.51; (c)
+/// `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
 #[tauri::command(rename_all = "camelCase")]
 #[specta::specta]
 pub async fn open_path(kind: OpenKind, path: PathBuf) -> Result<(), IpcError> {
@@ -135,7 +140,7 @@ mod c9_contract {
     //! P2.21 all-shells `block_on(open_path())` invocation in `crate::ipc` (mod.rs) is REPLACED here by C9's own
     //! typed-contract test. The shell returns the genuine §7.7.3-refused `Err(InternalError)` (no `RunResult` to
     //! validate against yet, P2.43); SHAPE is asserted, NOT the provisional message (owned by the §2.8 catalog
-    //! box). The §7.7.3 membership resolve + the §7.7.1 `OpenerExt` reveal/open land at P3.51.
+    //! box). The §7.7.3 membership resolve is P2.101–103; only the `OpenerExt` reveal/open wire lands at P3.51.
     //! [Build-Session-Entscheidung: P2.32]
     use super::*;
     use tauri::async_runtime::block_on;
@@ -144,8 +149,8 @@ mod c9_contract {
     // returns a `Result<(), IpcError>` (the §0.4 universal error shape). The shell has no §1.12 `RunResult` to
     // membership-check against yet (P2.43), so every path is refused — it returns the genuine §7.7.3-refused
     // `Err(InternalError)`, the same Err the real body returns for a non-member path. SHAPE asserted (kind ==
-    // InternalError), NOT the provisional message (owned by the §2.8 catalog box); P3.51 replaces the shell
-    // with the real membership validate → `OpenerExt` reveal/open.
+    // InternalError), NOT the provisional message (owned by the §2.8 catalog box); the P2.101–103 gate is the
+    // pure membership validate and P3.51 wires it live (RunResult fetch → gate → `OpenerExt` reveal/open).
     #[test]
     fn c9_open_path_contract_is_invocable_and_typed() {
         let out = block_on(open_path(
