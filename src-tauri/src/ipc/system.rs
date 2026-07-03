@@ -111,15 +111,18 @@ pub(crate) fn opener_op_for(kind: OpenKind, path: PathBuf) -> OpenerOp {
 /// - **File launch** (`OpenKind::File`) admits ONLY a recorded OUTPUT file (`RunResult.items[].output`, `Some`
 ///   iff that item succeeded, §1.12) — never a source, never an engine intermediate.
 /// - **Folder browse** (`OpenKind::Folder` / `RevealInFolder`) admits ONLY a run ROOT — `common_root`
-///   (beside-source) and, for a split-output batch, `divert_root` (§7.7.3).
+///   (beside-source) and, for a split-output batch, `divert_root` (§7.7.3). When a batch splits (§2.7.3), BOTH
+///   roots are members, so §5.3 `OpenActions` renders TWO open-folder buttons (§7.7.1); a `divert_root` of
+///   `None` leaves a single target.
 ///
 /// The two rules are DISJOINT (§7.7.3 "two distinct membership rules"): a `File` request for a ROOT, or a
 /// folder-browse request for an OUTPUT file, is REFUSED — the file-launch set and the folder-browse set never
 /// overlap (asserted by the P2.102 exclusivity tests). Membership is EXACT equality against the run's
 /// already-resolved recorded paths (`crate::fs_guard` writes the resolved real path, §2.3); the gate never
 /// canonicalizes the WebView-supplied `path` (a TOCTOU footgun), so a `..`-containing or symlinked input that
-/// would resolve INTO the recorded set is REFUSED, not admitted (Rust `Path` equality normalizes only an
-/// interior `.`, which denotes the same file — never a `..` or a link). [Build-Session-Entscheidung: P2.101]
+/// would resolve INTO the recorded set is REFUSED, not admitted (Rust `Path` equality normalizes benign
+/// lexical no-ops — an interior `.`, repeated separators, a trailing slash — each denoting the same file, but
+/// never a `..` or a link). [Build-Session-Entscheidung: P2.101]
 #[cfg_attr(
     not(test),
     expect(
@@ -382,6 +385,39 @@ mod c9_membership {
                 "§7.7.3: folder-browse refuses an output FILE — it admits only run ROOTS, not individual outputs"
             );
         }
+    }
+
+    // §6.4.1 unit (G15): the split-output two-targets contract (P2.103) — a DIVERTED run (§2.7.3) carries BOTH
+    // `common_root` AND `divert_root`, and folder-browse admits BOTH (§7.7.1 "two open-folder buttons" /
+    // §7.7.3); File-launch still admits only the recorded outputs, never either root. This exercises the
+    // `divert_root` disjunct of the folder-browse arm (untested until now — the P2.101 review flagged it).
+    // [Build-Session-Entscheidung: P2.103]
+    #[test]
+    fn split_output_folder_browse_admits_both_roots() {
+        let run = run_with(&["/out/data.tsv", "/dl/other.tsv"], "/out", Some("/dl"));
+        for kind in [OpenKind::Folder, OpenKind::RevealInFolder] {
+            assert!(
+                open_path_member(kind, Path::new("/out"), &run),
+                "§7.7.1/§7.7.3: a split-output run admits the beside-source common_root"
+            );
+            assert!(
+                open_path_member(kind, Path::new("/dl"), &run),
+                "§7.7.1/§7.7.3: a split-output run ALSO admits the divert_root (the second open-folder target)"
+            );
+            assert!(
+                !open_path_member(kind, Path::new("/nope"), &run),
+                "§7.7.3: a directory that is neither root is still refused"
+            );
+        }
+        // File-launch admits neither root even when split-output — only the recorded OUTPUT files (§7.7.3).
+        assert!(
+            !open_path_member(OpenKind::File, Path::new("/dl"), &run),
+            "§7.7.3: File launch refuses the divert_root — a directory root is never a launchable file"
+        );
+        assert!(
+            open_path_member(OpenKind::File, Path::new("/dl/other.tsv"), &run),
+            "§7.7.3: File launch admits the diverted item's recorded OUTPUT file"
+        );
     }
 }
 
