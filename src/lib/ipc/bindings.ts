@@ -393,24 +393,17 @@ export const commands = {
 	 *  defer-registration-to-the-consumer pattern (the `EngineId`/`ScanProgress`/`ConversionEvent` precedent),
 	 *  the first consumer of the `AppInfo`/`Platform` types authored at P2.112/P2.132.
 	 *
-	 *  [Build-Session-Entscheidung: P2.34] **Shell returns `Err(IpcError{ kind: InternalError })` — the C3/C4/C5/
-	 *  C6/C8 interface-shell pattern (success type has no honest zero value), NOT the C7 `Ok(())` no-op branch.**
-	 *  `AppInfo` carries four real fields (`version`/`build_id`/`platform`/`third_party_notice`); the version +
-	 *  `build_id` data sources are the RELEASE-BLOCKING **P2.98 PRODUCER** (the `package_info()` version source +
-	 *  the §6 CI build id, neither of which may ship empty), assembled there, and `third_party_notice` is the
-	 *  bundled §3.7 THIRD-PARTY-LICENSES.txt resource (§3.7 generation). This contract box assembles none of
-	 *  them, so the shell cannot produce an HONEST `AppInfo` — fabricating an `Ok(AppInfo)` with empty
-	 *  `version`/`build_id` (or an invented notice) would LIE that real app info exists (CLAUDE §5; the §5.9
-	 *  About screen would render blanks). So the honest shell outcome is exactly the `Err` the operation yields
-	 *  when it cannot complete: `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all;
-	 *  the §3.2 `PlanError` precedent C3/C4/C5 cite). P2.98 replaces this with the real assembly —
-	 *  `Ok(AppInfo{ … })` gathered from `package_info()` (version), the §6 build-id producer, the §3.2.2
-	 *  `Platform`, and the §3.7 notice resource (a non-wire `AppHandle` param the body adds does NOT change the
-	 *  `{}` wire signature — Tauri injects it). The named fill-boxes own the rest: (a) the §2.8 catalog box owns
-	 *  the FINAL message — the string below is a PROVISIONAL neutral English one — and must add a COMMAND-level
-	 *  string (the §2.8 catalog is item-scoped); (b) the version / `build_id` producers + the §0.6 SUCCESS path
-	 *  belong to P2.98; (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19
-	 *  convention).
+	 *  [Build-Session-Entscheidung: P2.34 → filled P2.98] **The body now assembles a real `Ok(AppInfo)`.** P2.34
+	 *  authored the typed `{} -> Result<AppInfo, IpcError>` contract with an honest `Err` shell — `AppInfo` has
+	 *  no honest zero value, so fabricating an `Ok(AppInfo)` with an empty `version`/`build_id` would LIE that
+	 *  real app info exists (CLAUDE §5; the §5.9 About screen would render blanks). **P2.98 replaced that shell**
+	 *  with `Ok(AppInfo::gather())` — the §7.2.3 producer in `crate::engines` gathering all four fields in-process
+	 *  / in-bundle with NO network (§2.11): `version` (`CARGO_PKG_VERSION`), `build_id` (the `build.rs` §6
+	 *  producer), `platform` (the running §3.2.2 target), and `third_party_notice` (the bundled §3.7 notice). C11
+	 *  stays `AppHandle`-free — `version` via `CARGO_PKG_VERSION` is identical to `app.package_info().version`
+	 *  (`tauri.conf.json` omits `version`, so Tauri inherits the Cargo version; §7.6.2 offers either) — so it
+	 *  remains a pure, unit-testable command. It cannot fail: `get_app_info` returns `Ok` unconditionally (the
+	 *  `Result` wrapper is the §0.4 universal command shape, not a runtime error path here).
 	 */
 	getAppInfo: () => __TAURI_INVOKE<AppInfo>("get_app_info"),
 	/**

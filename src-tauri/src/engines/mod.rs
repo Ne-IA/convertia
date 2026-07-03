@@ -18,19 +18,19 @@
 // [Build-Session-Entscheidung: P2.13] dead_code expect — the §3.2 seam descriptor types are authored as
 // CONTRACTS before their consumers exist: the registry / `trait Engine` / selection is P4.1, the §0.9 pool
 // reads `EngineDescriptor.serialised_only` then, and `EngineId`'s wire registration rides the §7.2
-// `EngineHealth` (C12) consumer (a later P2 box). The §3.2.2 `Platform` leaf (P2.132) joins them: its
-// embedder `AppInfo` is now referenced by the C11 `get_app_info` return (P2.34), so `AppInfo` ITSELF is LIVE
-// (and rides into `bindings.ts`), but the C11 SHELL returns `Err` — never CONSTRUCTING `AppInfo` — so
-// `Platform` is still never constructed; it goes live when P2.98 assembles a real `Ok(AppInfo)` + the P4
-// `capabilities(platform)` consumers build it (the `RunResult`-via-C8 precedent: a return-type reference
-// does not construct the type). So each LISTED type is dead in the PRODUCTION build until consumed; the
-// cfg(test) tests below construct them, so the TEST build is dead-code-clean. `expect` (not `allow`)
-// auto-flags the moment a consumer lands — matching `crate::domain`/`crate::outcome`/`crate::orchestrator`.
+// `EngineHealth` (C12) consumer (a later P2 box). So `EngineId`/`EngineKind`/`EngineDescriptor` are dead in
+// the PRODUCTION build until consumed; the cfg(test) tests below construct them, so the TEST build is
+// dead-code-clean. The §3.2.2 `Platform` leaf (P2.132) + its `AppInfo` (P2.112) embedder are now LIVE:
+// P2.98 wired the C11 `get_app_info` to assemble a real `Ok(AppInfo)` (`AppInfo::gather()` below), which
+// constructs `Platform` via `current_platform()` (and `AppInfo` rides into `bindings.ts`); the P4
+// `capabilities(platform)` consumers construct `Platform` further. `expect` (not `allow`) auto-flags the
+// moment the remaining seam types' consumers land — matching `crate::domain`/`crate::outcome`/
+// `crate::orchestrator`.
 #![cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor (dead until the P4.1 registry/trait/selection + the §0.9 pool + the §7.2 EngineHealth (C12) consumer construct/register them) + the §3.2.2 Platform leaf (P2.132) (dead until P2.98 assembles a real Ok(AppInfo) + the P4 capabilities(platform) consumers construct it — the C11 get_app_info shell P2.34 returns Err, never constructing it) are dead in the production build until consumed. AppInfo (P2.112) is now LIVE — referenced by the C11 return (P2.34)."
+        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the §7.2 EngineHealth (C12) consumer construct/register them. AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further."
     )
 )]
 
@@ -189,6 +189,60 @@ pub struct AppInfo {
     pub platform: Platform,
     /// The bundled §3.7 THIRD-PARTY-LICENSES.txt contents for the §5.9 About screen — wire key `thirdPartyNotice`.
     pub third_party_notice: String,
+}
+
+/// The §6 CI build identifier for the §7.2.3 `AppInfo.build_id`, injected by `build.rs` as a `rustc-env`
+/// (P2.98). Compile-time-guaranteed present (`env!`, never empty — §7.2.3 "neither field may silently ship
+/// empty"): `<short-sha>-<run-id>` in a GitHub Actions build, the literal `"dev"` locally.
+/// [Build-Session-Entscheidung: P2.98]
+const BUILD_ID: &str = env!("CONVERTIA_BUILD_ID");
+
+/// The bundled §3.7 third-party-licenses / NOTICE text for the §7.2.3 `AppInfo.third_party_notice`, embedded
+/// at compile time from the canonical repo-root `THIRD-PARTY-LICENSES.txt`. [Build-Session-Entscheidung: P2.98]
+/// `include_str!` (a compile-time embed IS "bundled", §7.2.3) of the §3.7/§6.3.2 GENERATED file — the release
+/// step regenerates its CONTENTS from `engines.lock` + the SBOM, so C11 needs no code change when the
+/// per-engine sections fill (P5-P7) / finalize (P10). **Ordering constraint:** because this is a compile-time
+/// embed, the About/embedded copy is frozen at compile, so the release must ensure it matches the shipped §3.7
+/// file — the constraint + its two fixes (assert embed == file in the §6.3.3 gate, or re-home the compile
+/// after notice generation) are recorded on the owning release box P10.18. In P2 this is the committed
+/// placeholder ("no bundled engines recorded yet" — the true state, no engines staged until P4+).
+const THIRD_PARTY_NOTICE: &str = include_str!("../../../THIRD-PARTY-LICENSES.txt");
+
+// [Build-Session-Entscheidung: P2.98] The running §3.2.2 platform, resolved from the compile target as a
+// `const` per `cfg(target_os)` (§7.2.3; one artifact per OS, §1). A target outside the shipped three fails
+// the build with a clear message, keeping the `Platform` enum and the buildable targets in lockstep.
+#[cfg(target_os = "windows")]
+const CURRENT_PLATFORM: Platform = Platform::Win;
+#[cfg(target_os = "macos")]
+const CURRENT_PLATFORM: Platform = Platform::MacOS;
+#[cfg(target_os = "linux")]
+const CURRENT_PLATFORM: Platform = Platform::Linux;
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+compile_error!(
+    "§1/§3.2.2: ConvertIA ships only Windows / macOS / Linux — no Platform for this target_os"
+);
+
+/// The running §3.2.2 `Platform` (§7.2.3), resolved from the compile target. [Build-Session-Entscheidung: P2.98]
+pub fn current_platform() -> Platform {
+    CURRENT_PLATFORM
+}
+
+impl AppInfo {
+    /// Assemble the real C11 `get_app_info` payload (§7.2.3, P2.98) — every field gathered in-process /
+    /// in-bundle, NO network (§2.11): `version` from the crate `CARGO_PKG_VERSION`; `build_id` from the
+    /// `build.rs` §6 producer; `platform` from the running target; `third_party_notice` from the bundled §3.7
+    /// notice. [Build-Session-Entscheidung: P2.98] `version` via `CARGO_PKG_VERSION` is identical to
+    /// `app.package_info().version` — `tauri.conf.json` omits `version`, so Tauri inherits it from `Cargo.toml`,
+    /// and §7.6.2 offers either; reading it here keeps C11 `AppHandle`-free, so `get_app_info` stays a pure,
+    /// unit-testable command (this crate ships no `tauri::test` mock harness by decision).
+    pub fn gather() -> Self {
+        AppInfo {
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            build_id: BUILD_ID.to_owned(),
+            platform: current_platform(),
+            third_party_notice: THIRD_PARTY_NOTICE.to_owned(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -366,6 +420,52 @@ mod tests {
         assert!(
             json.get("build_id").is_none() && json.get("third_party_notice").is_none(),
             "§0.6: snake_case keys are NOT on the wire — camelCase only"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §3.2.2 `current_platform()` producer (P2.98) resolves the running `Platform` from
+    // the compile target — the value that rides `AppInfo.platform` in the C11 `get_app_info` return (§7.2.3).
+    // Runs on all three native CI legs (§6.4.4), pinning the per-OS cfg→variant mapping.
+    #[test]
+    fn current_platform_matches_the_compile_target() {
+        let expected = if cfg!(target_os = "windows") {
+            Platform::Win
+        } else if cfg!(target_os = "macos") {
+            Platform::MacOS
+        } else {
+            Platform::Linux
+        };
+        assert_eq!(
+            current_platform(),
+            expected,
+            "§7.2.3/§3.2.2: current_platform() reflects the compile target (one artifact per OS, §1)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §7.2.3 `AppInfo::gather()` producer (P2.98) assembles the real C11 payload from
+    // in-process / in-bundle sources — the RELEASE-BLOCKING version + build_id (neither may ship empty) plus
+    // the running platform and the bundled §3.7 notice. Read-back proof (test-strategy §0.2): the four fields
+    // carry real values, not an empty shell.
+    #[test]
+    fn gather_assembles_the_real_appinfo_from_in_bundle_sources() {
+        let info = AppInfo::gather();
+        assert_eq!(
+            info.version,
+            env!("CARGO_PKG_VERSION"),
+            "§7.2.3: version is the crate CARGO_PKG_VERSION (== app.package_info().version)"
+        );
+        assert!(
+            !info.build_id.is_empty(),
+            "§7.2.3: build_id is the §6 build.rs producer, never empty (the \"dev\" fallback locally)"
+        );
+        assert_eq!(
+            info.platform,
+            current_platform(),
+            "§7.2.3: platform is the running compile target"
+        );
+        assert!(
+            info.third_party_notice.contains("ConvertIA"),
+            "§3.7: the bundled THIRD-PARTY-LICENSES.txt is embedded into thirdPartyNotice"
         );
     }
 }

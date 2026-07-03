@@ -170,8 +170,9 @@ mod command_surface {
     // [Test-Change: P2.34 — old-obsolete+new-correct, §0.4.1] old: this test invoked the bare-`()` C11
     // `get_app_info` shell; new (verified by read-back — C11 now returns `Result<AppInfo, IpcError>`, so the
     // bare statement is an unused-`must_use` and no longer asserts the typed contract): C11's typed contract is
-    // exercised by `system::c11_contract::c11_get_app_info_contract_is_invocable_and_typed` (asserting the
-    // genuine deferred-body `Err(InternalError)` SHAPE, not its provisional message), so its line moves there.
+    // exercised by `system::c11_contract::c11_get_app_info_contract_is_invocable_and_typed` (since P2.98 filled
+    // the body, asserting the assembled `Ok(AppInfo)` — version/build_id/platform/notice — not the former
+    // `Err` shell), so its line moves there.
     // [Test-Change: P2.35 — old-obsolete+new-correct, §0.4.1] old: this test invoked the bare-`()` C13
     // `cancel_ingest` shell; new (verified by read-back — C13 now takes a typed `collectingId` arg and returns
     // `Result<(), IpcError>`, so the no-arg `()` invocation is obsolete and would no longer compile): C13's

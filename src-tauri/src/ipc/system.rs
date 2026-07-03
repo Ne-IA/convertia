@@ -103,33 +103,21 @@ pub async fn open_project_page() -> Result<(), IpcError> {
 /// defer-registration-to-the-consumer pattern (the `EngineId`/`ScanProgress`/`ConversionEvent` precedent),
 /// the first consumer of the `AppInfo`/`Platform` types authored at P2.112/P2.132.
 ///
-/// [Build-Session-Entscheidung: P2.34] **Shell returns `Err(IpcError{ kind: InternalError })` — the C3/C4/C5/
-/// C6/C8 interface-shell pattern (success type has no honest zero value), NOT the C7 `Ok(())` no-op branch.**
-/// `AppInfo` carries four real fields (`version`/`build_id`/`platform`/`third_party_notice`); the version +
-/// `build_id` data sources are the RELEASE-BLOCKING **P2.98 PRODUCER** (the `package_info()` version source +
-/// the §6 CI build id, neither of which may ship empty), assembled there, and `third_party_notice` is the
-/// bundled §3.7 THIRD-PARTY-LICENSES.txt resource (§3.7 generation). This contract box assembles none of
-/// them, so the shell cannot produce an HONEST `AppInfo` — fabricating an `Ok(AppInfo)` with empty
-/// `version`/`build_id` (or an invented notice) would LIE that real app info exists (CLAUDE §5; the §5.9
-/// About screen would render blanks). So the honest shell outcome is exactly the `Err` the operation yields
-/// when it cannot complete: `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all;
-/// the §3.2 `PlanError` precedent C3/C4/C5 cite). P2.98 replaces this with the real assembly —
-/// `Ok(AppInfo{ … })` gathered from `package_info()` (version), the §6 build-id producer, the §3.2.2
-/// `Platform`, and the §3.7 notice resource (a non-wire `AppHandle` param the body adds does NOT change the
-/// `{}` wire signature — Tauri injects it). The named fill-boxes own the rest: (a) the §2.8 catalog box owns
-/// the FINAL message — the string below is a PROVISIONAL neutral English one — and must add a COMMAND-level
-/// string (the §2.8 catalog is item-scoped); (b) the version / `build_id` producers + the §0.6 SUCCESS path
-/// belong to P2.98; (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19
-/// convention).
+/// [Build-Session-Entscheidung: P2.34 → filled P2.98] **The body now assembles a real `Ok(AppInfo)`.** P2.34
+/// authored the typed `{} -> Result<AppInfo, IpcError>` contract with an honest `Err` shell — `AppInfo` has
+/// no honest zero value, so fabricating an `Ok(AppInfo)` with an empty `version`/`build_id` would LIE that
+/// real app info exists (CLAUDE §5; the §5.9 About screen would render blanks). **P2.98 replaced that shell**
+/// with `Ok(AppInfo::gather())` — the §7.2.3 producer in `crate::engines` gathering all four fields in-process
+/// / in-bundle with NO network (§2.11): `version` (`CARGO_PKG_VERSION`), `build_id` (the `build.rs` §6
+/// producer), `platform` (the running §3.2.2 target), and `third_party_notice` (the bundled §3.7 notice). C11
+/// stays `AppHandle`-free — `version` via `CARGO_PKG_VERSION` is identical to `app.package_info().version`
+/// (`tauri.conf.json` omits `version`, so Tauri inherits the Cargo version; §7.6.2 offers either) — so it
+/// remains a pure, unit-testable command. It cannot fail: `get_app_info` returns `Ok` unconditionally (the
+/// `Result` wrapper is the §0.4 universal command shape, not a runtime error path here).
 #[tauri::command]
 #[specta::specta]
 pub async fn get_app_info() -> Result<AppInfo, IpcError> {
-    Err(IpcError {
-        kind: ConversionErrorKind::InternalError,
-        message: "Could not retrieve the app info.".into(),
-        path: None,
-        residue: None,
-    })
+    Ok(AppInfo::gather())
 }
 
 /// **C12 `get_engine_health`** (§0.4.1) — the cached §7.2.3 startup self-check (which bundled engines are
@@ -214,37 +202,45 @@ mod c10_contract {
 
 #[cfg(test)]
 mod c11_contract {
-    //! §6.4.1 unit (G15): the §0.4.1 C11 `get_app_info` typed CONTRACT (P2.34). The handler now returns its
-    //! typed `{} -> Result<AppInfo, IpcError>` (the §0.4 universal error shape; `AppInfo` is the §0.4.1 Response
-    //! `T` pulled onto the wire via this return), so the P2.21 all-shells `block_on(get_app_info())` invocation
-    //! in `crate::ipc` (mod.rs) MOVES here (the now-`Result` return makes the bare statement an unused-`must_use`,
-    //! and the move keeps the one-typed-contract-test-per-filled-command pattern — mirroring the C2b/C10 move).
-    //! The shell returns the genuine deferred-body `Err(InternalError)` (the real version + §6 build-id assembly
-    //! is P2.98, the §3.7 notice resource is §3.7); SHAPE is asserted, NOT the provisional message (owned by the
-    //! §2.8 catalog box). [Build-Session-Entscheidung: P2.34]
+    //! §6.4.1 unit (G15): the §0.4.1 C11 `get_app_info` typed CONTRACT (P2.34) + its filled body (P2.98). The
+    //! handler returns `{} -> Result<AppInfo, IpcError>` (the §0.4 universal shape; `AppInfo` is the §0.4.1
+    //! Response `T` pulled onto the wire via this return), so the P2.21 all-shells `block_on(get_app_info())`
+    //! invocation in `crate::ipc` (mod.rs) lives here (mirroring the C2b/C10 move). P2.98 filled the body — it
+    //! now assembles a real `Ok(AppInfo)` — so this test asserts the assembled payload's four fields, not the
+    //! former `Err` shell. [Build-Session-Entscheidung: P2.34 → filled P2.98]
     use super::*;
     use tauri::async_runtime::block_on;
 
-    // §6.4.1 unit (G15): the C11 contract is invocable with no args ({}) and returns `Result<AppInfo, IpcError>`
-    // (the §0.4 universal error shape; AppInfo is the §0.4.1 Response T pulled onto the wire via this return).
-    // The shell cannot assemble an honest AppInfo yet — the version/build_id producers (P2.98) + the §3.7 notice
-    // resource are not wired — so it returns the genuine deferred-body `Err(InternalError)`; fabricating an
-    // Ok(AppInfo) with empty version/build_id would lie that real app info exists (CLAUDE §5). SHAPE asserted
-    // (kind == InternalError), NOT the provisional message (owned by the §2.8 catalog box); P2.98 replaces the
-    // shell with the real package_info/build-id/Platform/notice assembly.
+    // §6.4.1 unit (G15): the C11 contract is invocable with no args ({}) and, since P2.98 filled the body,
+    // returns a real `Ok(AppInfo)` (§7.2.3) — the four fields assembled by `AppInfo::gather()`. Read-back proof
+    // (test-strategy §0.2): version is CARGO_PKG_VERSION, build_id is the non-empty §6 build.rs id, platform is
+    // the running target, and the §3.7 notice is embedded. [Test-Change: P2.98 — the old Err-shell expectation
+    // is obsolete (P2.98 landed the real Ok(AppInfo) assembly per §7.2.3 / the P2.34 shell note), the new Ok
+    // expectation is correct (verified by reading back the four real fields), §7.2.3]
     #[test]
     fn c11_get_app_info_contract_is_invocable_and_typed() {
         let out: Result<AppInfo, IpcError> = block_on(get_app_info());
-        let err = out.expect_err(
-            "§0.4.1/§0.4: the C11 contract shell has no version/build_id producer (P2.98) or §3.7 notice yet, \
-             so it returns the genuine deferred-body Err(InternalError); the typed Result<AppInfo, IpcError> \
-             signature is the P2.34 deliverable",
+        let info = out.expect(
+            "§7.2.3/P2.98: C11 now assembles a real Ok(AppInfo) (version/build_id/platform/notice) — no \
+             AppHandle, so it cannot fail; the typed Result<AppInfo, IpcError> signature is the §0.4 shape",
         );
         assert_eq!(
-            err.kind,
-            ConversionErrorKind::InternalError,
-            "§2.13: the deferred-body shell outcome is the InternalError catch-all — SHAPE asserted, NOT the \
-             provisional message (the §2.8 catalog box owns the final string)"
+            info.version,
+            env!("CARGO_PKG_VERSION"),
+            "§7.2.3: version is the crate CARGO_PKG_VERSION (== app.package_info().version)"
+        );
+        assert!(
+            !info.build_id.is_empty(),
+            "§7.2.3: build_id is the §6 build.rs producer, never empty"
+        );
+        assert_eq!(
+            info.platform,
+            crate::engines::current_platform(),
+            "§7.2.3: platform is the running compile target"
+        );
+        assert!(
+            info.third_party_notice.contains("ConvertIA"),
+            "§3.7: the bundled notice rides thirdPartyNotice"
         );
     }
 }
