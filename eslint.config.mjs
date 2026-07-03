@@ -4,8 +4,9 @@
 //   check-english-only (G57) -> react/jsx-no-literals (no inline UI text; strings live in
 //                        src/strings/ui.ts, section 5.7) + a no-restricted-imports ban on the
 //                        i18n-runtime libraries (English-only, no i18n runtime; section 6.10).
-//   section 5.1 / G5 (P1.36) -> the single-IPC-consumer boundary: only src/lib/ipc/** may import
-//                        @tauri-apps/api; feature code talks to the typed facade.
+//   section 5.1 / G5 (P1.36) -> the single-IPC-consumer boundary: only src/lib/ipc/** may import the
+//                        Tauri IPC surface (@tauri-apps/api or a @tauri-apps/plugin-* package); feature
+//                        code talks to the typed facade.
 //
 // ESM (.mjs) on purpose: package.json declares no type=module, so a .js flat config with an
 // import statement would fail to load under the Node CommonJS default. eslint is pinned to the
@@ -35,12 +36,16 @@ const I18N_RESTRICTED = {
 };
 
 // The section 5.1 single-IPC-consumer boundary (P1.36, G5): only src/lib/ipc/** may import the Tauri
-// API; every other module talks to the typed facade (commands.ts / events.ts), so the IPC contract
-// has exactly one consumer and "no raw invoke in feature code" is lint-enforced.
-const TAURI_API_RESTRICTED_PATTERN = {
-  group: ["@tauri-apps/api", "@tauri-apps/api/*"],
+// IPC surface — @tauri-apps/api AND any @tauri-apps/plugin-* package (a plugin JS package is itself an
+// IPC consumer: it wraps a `plugin:<name>|…` invoke channel, e.g. the @tauri-apps/plugin-log error() call
+// issues `plugin:log|log`). Every other module talks to the typed facade (commands.ts / events.ts / log.ts), so
+// the IPC contract has exactly one consumer and "no raw invoke in feature code" is lint-enforced. The
+// plugin-* leg was added with the first plugin JS package, @tauri-apps/plugin-log (P2.95) — without it a
+// direct `@tauri-apps/plugin-log` import outside the facade would slip the api-only ban (green-but-blind).
+const TAURI_IPC_RESTRICTED_PATTERN = {
+  group: ["@tauri-apps/api", "@tauri-apps/api/*", "@tauri-apps/plugin-*", "@tauri-apps/plugin-*/*"],
   message:
-    "Only src/lib/ipc/** may import @tauri-apps/api; feature code uses the typed facade (section 5.1).",
+    "Only src/lib/ipc/** may import the Tauri IPC surface (@tauri-apps/api or a @tauri-apps/plugin-* package); feature code uses the typed facade (section 5.1).",
 };
 
 export default tseslint.config(
@@ -82,8 +87,9 @@ export default tseslint.config(
   },
   {
     // section 5.1 / G5 (P1.36): the single-IPC-consumer boundary. Applies to all frontend source
-    // EXCEPT src/lib/ipc/** (the sanctioned IPC door), overriding no-restricted-imports to ALSO ban
-    // @tauri-apps/api there; src/lib/ipc/** keeps the base i18n-only ban (it MAY import the Tauri API).
+    // EXCEPT src/lib/ipc/** (the sanctioned IPC door), overriding no-restricted-imports to ALSO ban the
+    // Tauri IPC surface (@tauri-apps/api + @tauri-apps/plugin-*) there; src/lib/ipc/** keeps the base
+    // i18n-only ban (it MAY import the Tauri API + plugin packages).
     files: ["src/**/*.{ts,tsx}"],
     ignores: ["src/lib/ipc/**"],
     rules: {
@@ -91,7 +97,7 @@ export default tseslint.config(
         "error",
         {
           paths: I18N_RESTRICTED.paths,
-          patterns: [...I18N_RESTRICTED.patterns, TAURI_API_RESTRICTED_PATTERN],
+          patterns: [...I18N_RESTRICTED.patterns, TAURI_IPC_RESTRICTED_PATTERN],
         },
       ],
     },

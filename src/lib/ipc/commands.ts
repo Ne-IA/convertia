@@ -2,9 +2,9 @@
 //
 // Re-exports the tauri-specta-generated command wrappers + DTO types from the single generated
 // `bindings.ts` (§0.4.5), so feature code imports its typed command-calling surface from HERE and never
-// touches raw `@tauri-apps/api` invoke — the §5.1 hard rule "only `src/lib/ipc/**` imports
-// `@tauri-apps/api`", the one-IPC-consumer discipline the P1.36 ESLint rule enforces from the first
-// commit. The C1..C13 wrappers are an EMPTY generated set in P1: `bindings.ts` currently exposes only
+// touches raw `@tauri-apps/api` invoke — the §5.1 one-IPC-consumer discipline (only `src/lib/ipc/**`
+// imports the Tauri IPC surface: `@tauri-apps/api` + any `@tauri-apps/plugin-*` package), enforced by the
+// P1.36/G5 ESLint rule from the first commit. The C1..C13 wrappers are an EMPTY generated set in P1: `bindings.ts` currently exposes only
 // the §0.6 identity types, so this re-export surfaces those today and picks up the generated `commands`
 // object automatically when P2 authors the `#[tauri::command]` handlers — with no edit here.
 //

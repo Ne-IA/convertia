@@ -1,8 +1,8 @@
 // src/lib/ipc/events.ts — the §5.8 Channel + event-subscription helper home (§0.4.2 / §5.4).
 //
-// The SINGLE place the WebView wires `@tauri-apps/api` Channel / window-event APIs — the §5.1 hard rule
-// "only `src/lib/ipc/**` imports `@tauri-apps/api`", the one-IPC-consumer discipline the P1.36 ESLint
-// rule enforces from the first commit. It is the named home for the hand-written subscription helpers
+// The SINGLE place the WebView wires `@tauri-apps/api` Channel / window-event APIs — the §5.1
+// one-IPC-consumer discipline (only `src/lib/ipc/**` imports the Tauri IPC surface: `@tauri-apps/api` +
+// any `@tauri-apps/plugin-*` package), enforced by the P1.36/G5 ESLint rule from the first commit. It is the named home for the hand-written subscription helpers
 // authored as P2 lands the §0.4.2 event contract + the §1.1 intake flow: the §5.4 native
 // `onDragDropEvent` intake wiring, the §5.8 `start_conversion` progress `Channel<ConversionEvent>`
 // lifecycle, the §0.4.1 C1/C2a `onScan` `Channel<ScanProgress>` telemetry, and the three §0.4.2 `app://`

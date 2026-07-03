@@ -81,10 +81,13 @@ design/                        # repo-root SIBLING of src/ (UI/design tokens + a
   theme.ts                     # token typings, light/dark resolution
 ```
 
-**Hard rule:** only `src/lib/ipc/**` (the §0.7 path) imports `@tauri-apps/api`.
-Components and state talk to a typed façade, so the IPC contract (§0.4) has exactly
-one consumer and the "no direct `fetch`/raw-`invoke` in feature code" discipline
-(platform auth-pattern analogue) is enforceable by lint.
+**Hard rule:** only `src/lib/ipc/**` (the §0.7 path) imports the Tauri IPC surface —
+`@tauri-apps/api` **or** any `@tauri-apps/plugin-*` JS package (a plugin package wraps a
+`plugin:<name>|…` invoke channel, so it is itself an IPC consumer — e.g. the §7.5.1
+`@tauri-apps/plugin-log` bridge homed in `src/lib/ipc/log.ts`). Components and state talk
+to a typed façade, so the IPC contract (§0.4) has exactly one consumer and the "no direct
+`fetch`/raw-`invoke` in feature code" discipline (platform auth-pattern analogue) is
+enforceable by lint (G5).
 
 ### State management choice `[DECIDED — Zustand, recommendation]`
 The app is a **single linear wizard with one batch in flight at a time** (the

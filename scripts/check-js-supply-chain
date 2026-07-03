@@ -17,9 +17,9 @@ freezes the JS supply-chain posture (stdlib only):
   * G36b (RELEASE-TIER slot) - the frontend GPL/AGPL hard-fail runs over the cdxgen SBOM (G35), NOT over
     pnpm-lock.yaml (the lock carries no license data); it is release-tier per build-gates G36b and stays
     target-absent here until G35 lands;
-  * §0.8 JS PINNED-FLOOR (P1.60) - each PINNED_FLOORS_JS dep (@tauri-apps/cli, zustand, fast-check,
-    vitest-axe) must be a DIRECT dep in pnpm-lock.yaml resolved at >= its floor - the JS mirror of the
-    Rust check-supply-chain pinned-floor leg.
+  * §0.8 JS PINNED-FLOOR (P1.60) - each PINNED_FLOORS_JS dep (@tauri-apps/cli, @tauri-apps/api,
+    @tauri-apps/plugin-log, zustand, fast-check, vitest-axe) must be a DIRECT dep in pnpm-lock.yaml
+    resolved at >= its floor - the JS mirror of the Rust check-supply-chain pinned-floor leg.
 
 Scope note: once pnpm-lock.yaml exists (P1.2.2) the lockfile resolution scan + the onlyBuiltDependencies
 count + the §0.8 floor are LIVE; the `.npmrc` posture is enforced regardless. The covered surface is the
@@ -70,6 +70,7 @@ _UNCOUNTABLE = 10 ** 9                 # fail-closed sentinel: an allowlist that
 PINNED_FLOORS_JS = {
     "@tauri-apps/cli": "2.11.3",   # §0.4 Tauri CLI, matched to the `tauri` 2.x core pin (P1.2.3)
     "@tauri-apps/api": "2.11.1",   # §0.4 Tauri JS API the generated bindings.ts imports (P2.130 dep / P2.131 floor)
+    "@tauri-apps/plugin-log": "2.8.0",  # §7.5.1 the JS log bridge (src/lib/ipc/log.ts façade; P2.95 dep-add, exact pin)
     "zustand":         "5.0.14",   # §0.4.6 UI state store (P1.31.1)
     "fast-check":      "4.8.0",    # §6.4 property-based testing (P1.35.1)
     "vitest-axe":      "0.1.0",    # §5.x a11y assertions in the vitest suite (P1.56)
