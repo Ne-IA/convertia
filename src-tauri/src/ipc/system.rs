@@ -13,10 +13,11 @@
 // handler below + the remaining C10/C11/C12 shells do no arithmetic; the deny bites the fill-bodies.
 #![deny(clippy::arithmetic_side_effects)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::domain::OpenKind;
 use crate::engines::AppInfo;
+use crate::orchestrator::RunResult;
 use crate::outcome::{ConversionErrorKind, IpcError};
 
 /// **C9 `open_path`** (§0.4.1) — the DoD "one-click open-folder / open-file" action: reveal or open an output
@@ -99,6 +100,40 @@ pub(crate) fn opener_op_for(kind: OpenKind, path: PathBuf) -> OpenerOp {
     match kind {
         OpenKind::RevealInFolder => OpenerOp::RevealItemInDir(path),
         OpenKind::Folder | OpenKind::File => OpenerOp::OpenPath(path),
+    }
+}
+
+/// Whether `path` is an allowed C9 open target for `kind` against the current run's §1.12 `RunResult` — the
+/// §7.7.2 Rust-side membership gate that REPLACES a static opener scope (§0.10 carries no `opener:*` grant, so
+/// a glob could never cover the §2.7 beside-source outputs). PURE validation over a borrowed `&RunResult`: no
+/// `AppHandle`, no filesystem touch, no `OpenerExt` invoke — the live wire (which fetches the `RunResult` from
+/// `State<RunResultStore>` and calls the mapped `OpenerOp`) is P3.51. The two §7.7.3 rules:
+/// - **File launch** (`OpenKind::File`) admits ONLY a recorded OUTPUT file (`RunResult.items[].output`, `Some`
+///   iff that item succeeded, §1.12) — never a source, never an engine intermediate.
+/// - **Folder browse** (`OpenKind::Folder` / `RevealInFolder`) admits ONLY a run ROOT — `common_root`
+///   (beside-source) and, for a split-output batch, `divert_root` (§7.7.3).
+///
+/// Membership is EXACT equality against the run's already-resolved recorded paths (`crate::fs_guard` writes the
+/// resolved real path, §2.3); the gate never canonicalizes the WebView-supplied `path` (a TOCTOU footgun) and
+/// so FAILS CLOSED on any non-canonical / `..` / symlinked input. [Build-Session-Entscheidung: P2.101]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the §7.7.2/§7.7.3 C9 membership gate is pure validation over a &RunResult; its only production consumer is the P3.51 live-wire box (AppHandle + RunResultStore fetch + OpenerExt invoke — the build-vs-wire split), so it is dead in the production build until then (the §1.1-walk / §7.8.1-funnel dead-until pattern)."
+    )
+)]
+pub(crate) fn open_path_member(kind: OpenKind, path: &Path, run: &RunResult) -> bool {
+    match kind {
+        // File launch: only a path in the run's recorded OUTPUT files (§7.7.3 — never a source/intermediate).
+        OpenKind::File => run
+            .items
+            .iter()
+            .any(|item| item.output.as_deref() == Some(path)),
+        // Folder browse: only a run ROOT — common_root, plus divert_root for a split-output batch (§7.7.3).
+        OpenKind::Folder | OpenKind::RevealInFolder => {
+            path == run.common_root.as_path() || run.divert_root.as_deref() == Some(path)
+        }
     }
 }
 
@@ -239,6 +274,79 @@ mod c9_opener_op {
             OpenerOp::OpenPath(p.clone()),
             "§7.7.1: File → OpenerExt::open_path(path, None)"
         );
+    }
+}
+
+#[cfg(test)]
+mod c9_membership {
+    //! §6.4.1 unit (G15): the P2.101 §7.7.2/§7.7.3 C9 `open_path_member` membership gate — pure validation over
+    //! a `&RunResult` (no AppHandle / FS / OpenerExt; the live wire is P3.51). Asserts the two §7.7.3 rules:
+    //! File-launch admits a recorded OUTPUT file; folder-browse admits a run ROOT (common_root / divert_root).
+    //! The two-rule EXCLUSIVITY negatives are P2.102 and the split-output two-targets are P2.103 — both add
+    //! cases to this module against the shared `run_with` builder. [Build-Session-Entscheidung: P2.101]
+    use super::*;
+    use crate::orchestrator::{ItemResult, JobState, Totals};
+
+    // A minimal terminal `RunResult` for the membership tests: one succeeded `ItemResult` per `outputs` entry,
+    // the given roots. Ids via the PUBLIC bare-uuid `Deserialize` wire form (§0.4.4), mirroring the
+    // orchestrator retention test's `sample_run_result`. `totals` is a fixed valid tally the gate never reads.
+    // Shared by the P2.101 / P2.102 / P2.103 cases in this module.
+    fn run_with(outputs: &[&str], common_root: &str, divert_root: Option<&str>) -> RunResult {
+        let items = outputs
+            .iter()
+            .map(|out| ItemResult {
+                source: PathBuf::from("/in/data.csv"),
+                state: JobState::Succeeded,
+                output: Some(PathBuf::from(out)),
+                reason: None,
+            })
+            .collect();
+        RunResult {
+            collected_set_id: serde_json::from_str(r#""aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa""#)
+                .expect("CollectedSetId deserializes from a uuid string"),
+            run_id: serde_json::from_str(r#""bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb""#)
+                .expect("RunId deserializes from a uuid string"),
+            items,
+            totals: Totals {
+                succeeded: 1,
+                failed: 0,
+                cancelled: 0,
+                skipped: 0,
+            },
+            cleanup_incomplete: vec![],
+            common_root: PathBuf::from(common_root),
+            divert_root: divert_root.map(PathBuf::from),
+        }
+    }
+
+    // §6.4.1 unit (G15): the §7.7.3 File-launch rule — File admits a recorded OUTPUT file, and only that.
+    #[test]
+    fn file_launch_admits_a_recorded_output() {
+        let run = run_with(&["/out/data.tsv"], "/out", None);
+        assert!(
+            open_path_member(OpenKind::File, Path::new("/out/data.tsv"), &run),
+            "§7.7.3: File launch admits a recorded output file"
+        );
+        assert!(
+            !open_path_member(OpenKind::File, Path::new("/out/other.tsv"), &run),
+            "§7.7.3: File launch refuses a path that is not a recorded output"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §7.7.3 folder-browse rule — Folder / RevealInFolder admit the run's common_root.
+    #[test]
+    fn folder_browse_admits_the_common_root() {
+        let run = run_with(&["/out/data.tsv"], "/out", None);
+        for kind in [OpenKind::Folder, OpenKind::RevealInFolder] {
+            assert!(
+                open_path_member(kind, Path::new("/out"), &run),
+                "§7.7.3: folder-browse admits the run's common_root"
+            );
+            assert!(
+                !open_path_member(kind, Path::new("/elsewhere"), &run),
+                "§7.7.3: folder-browse refuses a directory that is not a run root"
+            );
+        }
     }
 }
 
