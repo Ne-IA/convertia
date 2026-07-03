@@ -1304,7 +1304,7 @@ the corpus (§6.4) — engine bumps are best-effort posture (§3.8), not a gate.
 | Layer | Choice | Pin policy |
 |---|---|---|
 | Rust toolchain | stable (recommend a recent stable, e.g. `1.8x` class as of build) via `rust-toolchain.toml` | pinned channel |
-| Tauri | **v2** (`tauri` 2.x, `tauri-build`, `@tauri-apps/api` 2.x, **`@tauri-apps/cli` 2.x** — the devDependency that RUNS `tauri dev`/`tauri build`, matched to the `tauri` 2.x pin) | exact, lockfile |
+| Tauri | **v2** (`tauri` 2.x, `tauri-build`, `@tauri-apps/api` 2.x, **`@tauri-apps/cli` 2.x** — the devDependency that RUNS `tauri dev`/`tauri build`, matched to the `tauri` 2.x pin; **`@tauri-apps/plugin-log` 2.x** — the §7.5.1 JS-bridge companion to the `tauri-plugin-log` crate below, so WebView errors reach the same local log) | exact, lockfile |
 | Async runtime | **tokio** (multi-thread) — Tauri's async commands run on it; subprocess IO + Channel feed off it | exact |
 | IPC type-gen | **tauri-specta** + **specta** (§0.4.5, `[DECIDED]`) | exact |
 | Cancellation | **tokio-util** (`CancellationToken`) | exact |
@@ -1328,7 +1328,7 @@ the corpus (§6.4) — engine bumps are best-effort posture (§3.8), not a gate.
 | **tauri-plugin-single-instance** | §7.1 | single-instance policy + launch-arg hand-off |
 | **tauri-plugin-dialog** | §0.4.1 C2a/C2b, §1.1, §5.4 | native file/folder picker via `DialogExt` (`app.dialog().file().pick_file(..)` / `.pick_folder(..)`), called **Rust-side** from the C2a/C2b handlers — **no `dialog:allow-open` WebView grant** (the `dialog:*` capability is only for the JS guest bindings, which ConvertIA does not use). Registered via `tauri_plugin_dialog::init()` in the §7.x Builder. |
 | **tauri-plugin-store** | §7.4 | the single `settings.json` prefs blob (theme + lastDestinationMode + verboseLog) |
-| **tauri-plugin-log** | §7.5 | local-only rotating diagnostic log + JS bridge |
+| **tauri-plugin-log** | §7.5 | local-only rotating diagnostic log + JS bridge (its `@tauri-apps/plugin-log` companion — §0.8 Tauri row — forwards WebView errors to the same file, structural facts only per §7.5.3) |
 | **tauri-plugin-opener** | §7.7 | open-folder / open-file / open-url shell-out (the only OS shell-out) — called **Rust-side via `OpenerExt`** from the C9/C10 handlers (no WebView `opener:*` grant, §0.10/§7.7.1) |
 
 Concrete crate **versions are deliberately not hard-coded in this prose** (they go

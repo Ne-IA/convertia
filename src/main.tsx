@@ -10,6 +10,14 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 // The §5.5 Tailwind v4 entry + design tokens (P1.32); a global side-effect stylesheet import.
 import "./styles/app.css";
+// [Build-Session-Entscheidung: P2.95] §7.5.1 the frontend-error → log-file bridge, imported from the
+// src/lib/ipc/** façade — NEVER @tauri-apps/plugin-log directly (the §5.1 one-IPC-consumer discipline).
+import { installFrontendErrorLog } from "./lib/ipc/log";
+
+// [Build-Session-Entscheidung: P2.95] Install the §7.5.1 error bridge as early as possible — before the
+// mount — so a fault anywhere in the app (incl. the initial render) is recorded locally (§2.13), logging
+// only the Error TYPE + source location, never the message (§7.5.3 / §0.11 T2b).
+installFrontendErrorLog();
 
 const rootElement = document.getElementById("root");
 if (rootElement === null) {
