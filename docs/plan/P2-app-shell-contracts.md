@@ -372,8 +372,9 @@
   needs: P2.32
 - [x] **P2.101** [RUST] Implement the Rust-side `RunResult`-membership gate (no static opener scope) — reveal/open-path validated against recorded outputs + roots before `OpenerExt` · §7.7.2 §7.7.3
   needs: P2.100, P2.43
-- [ ] **P2.102** [RUST] Implement the two-membership-rule split — file-launch admits only output FILES; folder-browse admits run ROOTS (`common_root` + `divert_root`) · §7.7.3 §0.6
+- [x] **P2.102** [RUST] Implement the two-membership-rule split — file-launch admits only output FILES; folder-browse admits run ROOTS (`common_root` + `divert_root`) · §7.7.3 §0.6
   needs: P2.101
+  > **Delivered as a contract-assertion (P2↔P3 §7.7 build-vs-wire, Co-Pilot-ratified):** the atomic `open_path_member` gate LOGIC (the two-rule `match kind`) landed in P2.101 — the split cannot be half-built (an exhaustive `OpenKind` match needs all arms). This box added the two-rule EXCLUSIVITY negative tests (File rejects a root/source; folder-browse rejects an output file) + the §7.7.3 DISJOINT-sets doc — the P2.72 "a gating box may be a contract-assertion, not a new gate" pattern; both G1 reviewers validated the decomposition as SOUND.
 - [ ] **P2.103** [RUST] Implement the split-output two-open-folder-targets contract (`common_root` + `Some(divert_root)` both in the membership set) · §7.7.1 §7.7.3
   needs: P2.102, P2.12
 - [ ] **P2.104** [RUST] Implement C10 as a compiled-in canonical URL constant via `OpenerExt::open_url` (no URL-injection surface) · §7.7.2 §7.6.2
