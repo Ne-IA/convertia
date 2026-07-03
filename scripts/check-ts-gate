@@ -75,6 +75,16 @@ ESLINT_REQUIRED_RULES = [
     ("no-explicit-any (CLAUDE.md no-`any` / §0.4.5 IPC boundary)", "@typescript-eslint/no-explicit-any"),
     ("fc.gen() shrink-wrapper ban (paired with G9 invariant (f), P0.3.10)", "fc.gen"),
 ]
+# §5.1 / G5 single-IPC-consumer import-ban tokens the flat config MUST carry (frozen present, cage
+# option B — the JS lint-plane config is NOT in the L(-1) cage like its Rust peers rustfmt/clippy, so
+# WITHOUT this freeze the autonomous Build-Loop could silently delete the tauri IPC-surface ban in a
+# routine commit and the live `eslint .` run would stay green with no violation to catch). Presence in a
+# NON-comment position is the freeze: dropping the ban removes the token → FAIL. The live eslint run is
+# the real per-file enforcement; this guarantees the ban EXISTS in the committed config (P2.106 Co-Pilot).
+ESLINT_REQUIRED_IMPORT_BANS = [
+    ("the §5.1 @tauri-apps/api single-IPC-consumer ban (P1.36)", "@tauri-apps/api"),
+    ("the §5.1 @tauri-apps/plugin-* single-IPC-consumer ban (P2.95)", "@tauri-apps/plugin-*"),
+]
 # package.json scripts the manifest MUST wire (so L4 CI + a contributor can run each gate). Matched as a
 # tool TOKEN appearing in the scripts block (e.g. a `tsc` script, an `eslint` script).
 PKG_REQUIRED_SCRIPTS = ["tsc", "eslint", "prettier", "vitest"]
@@ -108,6 +118,11 @@ def freeze_contract() -> int:
     if not any("fc.gen" in tok for _, tok in ESLINT_REQUIRED_RULES):
         fail("ESLINT_REQUIRED_RULES dropped the fc.gen ban — the shrink-wrapper policy (the G9 "
              "invariant (f) pair) is gone (both named rules are guarded symmetrically per the docstring)")
+        problems += 1
+    if not any("@tauri-apps/api" in tok for _, tok in ESLINT_REQUIRED_IMPORT_BANS) or not any(
+            "@tauri-apps/plugin-*" in tok for _, tok in ESLINT_REQUIRED_IMPORT_BANS):
+        fail("ESLINT_REQUIRED_IMPORT_BANS dropped a §5.1 single-IPC-consumer ban token (@tauri-apps/api "
+             "and @tauri-apps/plugin-* are both required) — the cage-B freeze of the IPC-surface ban is gone")
         problems += 1
     if not PKG_REQUIRED_SCRIPTS:
         fail("PKG_REQUIRED_SCRIPTS is empty — the tool-wiring contract is gone")
@@ -213,21 +228,61 @@ def _eslint_config() -> Path | None:
 
 
 def _strip_js_comments(text: str) -> str:
-    """Blank /* */ and // comments while KEEPING string/template contents (a `//` inside a "…"/'…'/`…`
-    literal — a URL, a regex selector — is NOT a comment). Strings are stashed first, then comments are
-    blanked, then strings restored — so the eslint RULE NAME (itself a string key, e.g.
-    "@typescript-eslint/no-explicit-any") stays visible to the presence + off-detection scans, while a
-    commented-out rule line is correctly dropped."""
-    stash: list[str] = []
+    """Blank `//` and `/* */` comments while KEEPING string/template literals — so the eslint RULE NAME
+    (itself a string key, e.g. "@typescript-eslint/no-explicit-any") stays visible to the presence +
+    off-detection scans, while a commented-out rule line is correctly dropped.
 
-    def _s(m: "re.Match[str]") -> str:
-        stash.append(m.group(0))
-        return f"\x00{len(stash) - 1}\x00"
+    SINGLE-PASS scanner (strings AND comments recognized in ONE left-to-right walk): a quote INSIDE a
+    comment never opens a string, and a `//`/`/*` INSIDE a string never starts a comment. This replaces a
+    prior strings-FIRST regex that a lone apostrophe in a comment (a routine possessive/contraction, e.g.
+    ``the plugin's error()``) tripped — the unbalanced `'` opened a phantom cross-line single-quote span
+    (`re.S`) that stashed real rule-token text, so the presence scan wrongly reported both required rules
+    missing (P2.106 G1 Opus P0; the same fragility class fixed in check-repo-invariants). Comments collapse
+    to one space (a token boundary); strings are kept verbatim (with `\\` escapes honoured).
 
-    protected = re.sub(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`(?:\\.|[^`\\])*`', _s, text, flags=re.S)
-    protected = re.sub(r"/\*.*?\*/", " ", protected, flags=re.S)        # block comments
-    protected = "\n".join(re.sub(r"//.*$", "", ln) for ln in protected.split("\n"))  # line comments
-    return re.sub(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], protected)
+    LIMITATION — regex literals (HONEST residual, G1 Opus P2): a JS regex literal `/.../ ` is treated as
+    DIVISION, not a literal (regex-vs-division needs a full parse). This holds because an eslint flat config
+    uses STRING selectors and has NO regex literals — verified for the real `eslint.config.mjs`. Were a regex
+    literal containing a quote ever added (e.g. `/it's/`), that `'` WOULD open a phantom string span that
+    could swallow a FOLLOWING comment, keeping its tokens — a fail-open the live `eslint .` run does NOT
+    backstop (a regex-vs-string mislex, not a rule violation). It is not reachable by a routine config edit
+    (a ban deletion removes the tokens entirely → caught) and adding a regex literal is itself a reviewable
+    change; making the scanner fully regex-aware is out of proportion, so this is documented, not closed."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c in "\"'`":                                    # string / template literal — keep verbatim
+            quote = c
+            out.append(c)
+            i += 1
+            while i < n:
+                d = text[i]
+                out.append(d)
+                if d == "\\" and i + 1 < n:                # escape: the next char is literal, never a close
+                    out.append(text[i + 1])
+                    i += 2
+                    continue
+                i += 1
+                if d == quote:
+                    break
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":  # line comment → one space, keep the newline
+            i += 2
+            while i < n and text[i] != "\n":
+                i += 1
+            out.append(" ")
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":  # block comment → one space
+            i += 2
+            while i < n and not (text[i] == "*" and i + 1 < n and text[i + 1] == "/"):
+                i += 1
+            i += 2                                         # consume the closing */ (past EOF if unterminated)
+            out.append(" ")
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
 
 
 # a rule severity switched OFF immediately after the rule key: `: "off"` / `: 'off'` / `: 0` / `: ["off"`.
@@ -272,6 +327,21 @@ def assert_eslint_rules() -> int:
             continue
         if _rule_is_off(text, token):                  # token-proximity scan (multi-line + no cross-contam)
             fail(f"eslint flat config {cfg.name}: rule {desc} ({token!r}) appears switched OFF")
+            problems += 1
+    for desc, token in ESLINT_REQUIRED_IMPORT_BANS:    # §5.1 single-IPC-consumer ban tokens (frozen present)
+        # QUOTE-DELIMITED match, NOT a bare substring: the ban's own human-readable `message:` string
+        # legitimately NAMES the banned packages (e.g. "…may import the Tauri IPC surface (@tauri-apps/api or
+        # a @tauri-apps/plugin-* package)…"), so `token in text` would find the token in the MESSAGE even
+        # after the functional `group: [...]` array is gutted — a fail-open (G1 Sonnet P0). Requiring the
+        # token as its OWN quoted array element (`"<token>"` / `'<token>'`, matched quotes) hits the group
+        # entry but NOT the message embed. Precise residual (G1 Sonnet R2): the match is file-WIDE, not
+        # scoped to the `no-restricted-imports` group — so it guarantees a QUOTED occurrence of the token
+        # exists in non-comment text, which a purposeless decoy (`const x = "@tauri-apps/api"`) could also
+        # satisfy; but that is a conspicuous, functionally-pointless review diff (unlike the free message
+        # collision this closes), and the live `eslint .` run is the real per-file enforcement.
+        if not re.search(r'''(["'])''' + re.escape(token) + r'\1', text):
+            fail(f"eslint flat config {cfg.name} dropped {desc} (no quoted \"{token}\" ban element) — the "
+                 f"§5.1 single-IPC-consumer import ban must stay in the committed config")
             problems += 1
     return problems
 

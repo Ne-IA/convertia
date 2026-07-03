@@ -114,6 +114,7 @@ _GOOD_ESLINT = (
     'export default [{ rules: {\n'
     '  "@typescript-eslint/no-explicit-any": "error",\n'
     '  "no-restricted-syntax": ["error", { selector: "X", message: "fc.gen() needs a shrink wrapper" }],\n'
+    '  "no-restricted-imports": ["error", { patterns: [{ group: ["@tauri-apps/api", "@tauri-apps/plugin-*"] }] }],\n'
     '} }];\n')
 record("eslint: both required rules present + on -> clean",
        in_root({"eslint.config.js": _GOOD_ESLINT}, m.assert_eslint_rules) == 0)
@@ -133,6 +134,57 @@ record("eslint: absent -> target-absent skip (no finding)", in_root({}, m.assert
 record("_strip_js_comments: a // inside a string is kept, a real // comment is dropped",
        'http://keep/me' in m._strip_js_comments('const u = "http://keep/me"; // drop this fc.gen note')
        and 'drop this' not in m._strip_js_comments('const u = "http://keep/me"; // drop this fc.gen note'))
+# HARDENING (P2.106 G1 Opus P0): a lone possessive apostrophe/contraction in a comment must NOT open a
+# phantom quote span that swallows a later quoted rule token (the strings-first-regex bug). The single-pass
+# scanner recognizes the comment first, so the apostrophe inside it never opens a string.
+record("_strip_js_comments: a lone apostrophe in a comment does NOT corrupt a later quoted rule token",
+       '@typescript-eslint/no-explicit-any' in m._strip_js_comments(
+           "// the plugin's error() and the shell's cmd -- two contractions\n"
+           "const r = '@typescript-eslint/no-explicit-any';\n")
+       and "plugin" not in m._strip_js_comments(
+           "// the plugin's error() and the shell's cmd -- two contractions\n"
+           "const r = '@typescript-eslint/no-explicit-any';\n"))
+record("_strip_js_comments: a block comment /* it's */ with an apostrophe is dropped, later token kept",
+       '@typescript-eslint/no-explicit-any' in m._strip_js_comments(
+           "/* it's a note */ const r = '@typescript-eslint/no-explicit-any';")
+       and "note" not in m._strip_js_comments("/* it's a note */ const r = '@typescript-eslint/no-explicit-any';"))
+# CAGE-B FREEZE (P2.106): the §5.1 single-IPC-consumer import-ban tokens are frozen present.
+record("eslint: the two @tauri-apps IPC-surface ban tokens present -> clean (part of the _GOOD_ESLINT clean leg)",
+       in_root({"eslint.config.js": _GOOD_ESLINT}, m.assert_eslint_rules) == 0)
+record("eslint: the @tauri-apps/plugin-* IPC-ban token dropped -> caught",
+       in_root({"eslint.config.js": _GOOD_ESLINT.replace(', "@tauri-apps/plugin-*"', '')},
+               m.assert_eslint_rules) >= 1)
+record("eslint: the @tauri-apps/api IPC-ban token dropped -> caught",
+       in_root({"eslint.config.js": _GOOD_ESLINT.replace('"@tauri-apps/api", ', '')},
+               m.assert_eslint_rules) >= 1)
+# THE message-defeat regression (G1 Sonnet P0): the ban's `message:` string legitimately NAMES the banned
+# packages, so the prior bare-substring freeze passed even with the functional `group` array GUTTED. This
+# fixture mirrors the REAL config's redundancy (tokens in the array AND the message); the quote-delimited
+# freeze must still catch a gutted array. Both legs would have (wrongly) passed before the quote fix.
+_ESLINT_MSG_REDUNDANT = (
+    'export default [{ rules: {\n'
+    '  "@typescript-eslint/no-explicit-any": "error",\n'
+    '  "no-restricted-syntax": ["error", { message: "fc.gen wrap" }],\n'
+    '  "no-restricted-imports": ["error", { patterns: [{ group: ["@tauri-apps/api", "@tauri-apps/plugin-*"],\n'
+    '    message: "Only src/lib/ipc may import @tauri-apps/api or a @tauri-apps/plugin-* package" }] }],\n'
+    '} }];\n')
+record("eslint: tokens in BOTH the group array AND the message -> clean (the array element is present)",
+       in_root({"eslint.config.js": _ESLINT_MSG_REDUNDANT}, m.assert_eslint_rules) == 0)
+record("eslint: the group array GUTTED but the message still NAMES the packages -> STILL caught (no message-defeat)",
+       in_root({"eslint.config.js": _ESLINT_MSG_REDUNDANT.replace(
+           'group: ["@tauri-apps/api", "@tauri-apps/plugin-*"],', 'group: [],')},
+               m.assert_eslint_rules) >= 1)
+def _gutted_import_bans():
+    saved = m.ESLINT_REQUIRED_IMPORT_BANS
+    m.ESLINT_REQUIRED_IMPORT_BANS = [("x", "@tauri-apps/api")]  # plugin-* dropped
+    try:
+        return m.freeze_contract()
+    finally:
+        m.ESLINT_REQUIRED_IMPORT_BANS = saved
+
+
+record("freeze_contract: a gutted ESLINT_REQUIRED_IMPORT_BANS (plugin-* dropped) is caught",
+       _gutted_import_bans() >= 1)
 
 # --- assert_toolchain_wiring: per-tool config<->script AGREEMENT (the P1.2 staggered-landing fix) -----
 # Each tool's config presence and its package.json script must AGREE: NEITHER = target-absent (tolerated);
@@ -221,7 +273,7 @@ record("eslint: a multi-line `\"rule\":\\n[\"off\"]` disable -> caught (token-pr
                m.assert_eslint_rules) >= 1)
 # P2: an unrelated `: 0` for a DIFFERENT key on the same physical line does NOT cross-contaminate a valid rule
 record("eslint: an unrelated `: 0` sharing a line with a valid rule does NOT false-flag it OFF",
-       in_root({"eslint.config.js": 'export default [{ rules: { "@typescript-eslint/no-explicit-any": "error", "complexity": 0 }, settings: { note: "fc.gen" } }];'},
+       in_root({"eslint.config.js": 'export default [{ rules: { "@typescript-eslint/no-explicit-any": "error", "complexity": 0, "no-restricted-imports": ["error", { patterns: [{ group: ["@tauri-apps/api", "@tauri-apps/plugin-*"] }] }] }, settings: { note: "fc.gen" } }];'},
                m.assert_eslint_rules) == 0)
 # P2: the TS5 extends-ARRAY form is followed
 record("_tsconfig_options: the TS5 extends-ARRAY form is followed (no false-negative)",
