@@ -370,7 +370,7 @@
 
 - [x] **P2.100** [RUST] Map all three `OpenKind` variants to concrete `OpenerExt` calls (`RevealInFolder`→`reveal_item_in_dir`, `Folder`→`open_path`(dir), `File`→`open_path`) · §7.7.1 §0.6
   needs: P2.32
-- [ ] **P2.101** [RUST] Implement the Rust-side `RunResult`-membership gate (no static opener scope) — reveal/open-path validated against recorded outputs + roots before `OpenerExt` · §7.7.2 §7.7.3
+- [x] **P2.101** [RUST] Implement the Rust-side `RunResult`-membership gate (no static opener scope) — reveal/open-path validated against recorded outputs + roots before `OpenerExt` · §7.7.2 §7.7.3
   needs: P2.100, P2.43
 - [ ] **P2.102** [RUST] Implement the two-membership-rule split — file-launch admits only output FILES; folder-browse admits run ROOTS (`common_root` + `divert_root`) · §7.7.3 §0.6
   needs: P2.101
