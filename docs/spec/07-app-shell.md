@@ -1023,6 +1023,17 @@ is security-relevant (§0.11 maps this threat to §7.7). Constraints:
   folder" (reveal, which does **not** execute the file) is the safer primary
   action; "Open file" is offered but secondary. This keeps the common, safe path
   one click away while making the act-of-launching deliberate.
+- **Recorded stance (P2.105) `[DECIDED]`.** The open-file-safety constraints above are recorded
+  as ONE standing v1 posture — SSOT *How It Feels to Use* (one-click open-folder) balanced against
+  the §0.11 threat of launching an external app on a fresh, possibly-untrusted artifact (mapped to
+  §7.7): **(a) no auto-open** (explicit "Open file" click only, §5.3 — never at end-of-batch),
+  **(b) reveal-in-folder is the preferred/primary affordance `[REC]`** ("Open file" secondary),
+  and **(c) the OS picks the handler** (ConvertIA chooses no program except the C10 browser-for-URL
+  case, §7.7.1). Enforced by the §7.7.2/§7.7.3 Rust-side `RunResult` membership gate (C9,
+  P2.100–103, unit-tested G15 — file-launch admits only a recorded OUTPUT file, folder-browse only
+  a run ROOT); the no-auto-open behaviour + the affordance ordering are exercised by the §6.4.6 E2E
+  / §6.6 walkthrough. It is the open-side companion to the §7.6.1 no-phone-home stance: v1 launches
+  nothing the user did not just create and did not explicitly click.
 
 ---
 
