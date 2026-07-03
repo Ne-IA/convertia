@@ -833,6 +833,19 @@ structure). Stance:
 - **No automatic upload, ever.** The §6.8 `SECURITY`/bug-report flow asks the user
   to *attach* the log file **manually** to a report; ConvertIA neither reads it
   back nor transmits it. "Phone home" stays impossible (§2.11).
+- **Recorded stance (P2.96) `[DECIDED]`.** The *no automatic upload, ever* leg above is
+  recorded as ONE standing v1 negative — the SSOT *Local, private & offline* posture (§2.11)
+  applied to the diagnostic log — enforced **structurally, by absence**, not by policy:
+  ConvertIA's core opens no socket for any log or bug-report path (there is no upload /
+  transmit / "send report" code anywhere — the §2.11.1 **T9a** half), the WebView cannot
+  originate the request either (the §0.10 CSP `connect-src 'self' ipc:` + the capabilities
+  allowlist grant it no HTTP/fetch surface, §2.11.1), and no telemetry or crash-reporter
+  transmits (§2.11.2 — the local log is local-only and never sent). The §6.8 `SECURITY.md`
+  bug-report flow is therefore the user **manually attaching** a default-redacted (§7.5.3)
+  log to a private advisory; the frontend-error JS-bridge (P2.95) and verbose mode
+  (P2.94/P2.94.1) only *write* to that same local file, neither adds a transmit path. The
+  observable proof is the §2.11.4/§6.7.3 offline-egress gate — zero outbound packets across
+  a full conversion (P9); no box in the v1 line adds an upload, auto-attach, or transmit path.
 
 ### 7.5.4 Dev-facing diagnostics (makes §6.5 operable)
 
