@@ -15,6 +15,9 @@
 
 use std::path::{Path, PathBuf};
 
+use tauri::AppHandle;
+use tauri_plugin_opener::OpenerExt;
+
 use crate::domain::OpenKind;
 use crate::engines::AppInfo;
 use crate::orchestrator::RunResult;
@@ -144,38 +147,44 @@ pub(crate) fn open_path_member(kind: OpenKind, path: &Path, run: &RunResult) -> 
     }
 }
 
-/// **C10 `open_project_page`** (§0.4.1) — the **only** permitted, user-initiated network action: opens a fixed
-/// compiled-in canonical Ne-IA GitHub Releases URL in the default browser via `OpenerExt::open_url` (§7.6.2 /
-/// §7.7.1). The WebView supplies **no URL** — the handler opens a compiled-in constant, eliminating any
-/// URL-injection surface (§7.7.2); there is **no `opener:*` WebView capability** (§0.10), and no fetch/parse of
-/// the page itself (§7.6.1 no phone-home). This box (P2.33) authors the typed §0.4.1 wire CONTRACT — the `{} ->
-/// Result<(), IpcError>` door (the §0.4 universal error shape) — so the generated `bindings.ts` mirrors the C10
-/// surface.
+/// The compiled-in canonical Ne-IA GitHub Releases URL C10 opens in the default browser (§7.6.2 / §7.7.2) —
+/// the single authentic-builds origin (SSOT *Distribution & download trust*). Compiling the URL in, rather
+/// than taking one as a WebView argument, IS the §7.7.2 C10 gate: the command carries no `url` wire parameter,
+/// so there is no URL-injection surface — the one permitted, user-initiated network origin is this fixed
+/// `https` constant and nothing else. [Build-Session-Entscheidung: P2.104]
+const PROJECT_PAGE_URL: &str = "https://github.com/Ne-IA/convertia/releases";
+
+/// **C10 `open_project_page`** (§0.4.1) — the **only** permitted, user-initiated network action: opens the
+/// fixed compiled-in canonical Ne-IA GitHub Releases URL (the `PROJECT_PAGE_URL` constant, §7.6.2) in the
+/// default browser via `OpenerExt::open_url` (§7.7.1). The WebView supplies **no URL** — the handler opens the
+/// compiled-in constant, so there is no URL-injection surface (§7.7.2); there is **no `opener:*` WebView
+/// capability** (§0.10 — a Rust-internal `OpenerExt` call is not capability-gated), and no fetch/parse of the
+/// page itself (§7.6.1 no phone-home). The typed §0.4.1 wire CONTRACT (`{} -> Result<(), IpcError>`, the §0.4
+/// universal error shape) was authored by P2.33; the generated `bindings.ts` mirrors the **arg-less** C10
+/// surface — the `AppHandle` is a Tauri-injected arg, NOT part of the wire signature.
 ///
-/// [Build-Session-Entscheidung: P2.33] **Shell returns `Err(IpcError{ kind: InternalError })` — the
-/// deferred-body branch (C8/C9), NOT C7's `Ok(())` no-op.** C10 is a **side-effect** command (open a URL); its
-/// success type `()` has only one meaning — `Ok(())` = "the URL was opened". The real `OpenerExt::open_url`
-/// wiring is the body box **P2.104** (it adds the `AppHandle` + the compiled-in §7.6.2 URL constant); this
-/// contract shell performs no open, so returning `Ok(())` would **falsely claim the page opened** — the
-/// fabricated success CLAUDE §5 forbids. (Unlike C7's idempotent cancel, where tripping nothing genuinely *is*
-/// the desired "not running" state, an un-opened URL is *not* a desired state, so the C7 `Ok(())` no-op branch
-/// does not apply.) The honest shell outcome is the `Err` the operation yields when it cannot complete:
-/// `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError`
-/// precedent C3/C4/C5 cite). P2.104 replaces this with the real open — `Ok(())` on a successful shell-out,
-/// `Err` on a genuine `OpenerExt` failure (no browser / OS error). The named fill-boxes own the rest: (a) the
-/// §2.8 catalog box owns the FINAL message — the string below is a PROVISIONAL neutral English one — and must
-/// add a COMMAND-level string (the §2.8 catalog is item-scoped); (b) the compiled-in §7.6.2 URL constant + the
-/// §7.7.1 `OpenerExt::open_url` call + the `AppHandle` belong to the body box P2.104; (c) `kind` is the CONCRETE
-/// `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
+/// [Build-Session-Entscheidung: P2.33 → filled P2.104] **The body now performs the real shell-out.** P2.33
+/// authored the typed contract with an honest `Err(InternalError)` shell — returning `Ok(())` from a shell that
+/// opened nothing would falsely claim the page opened (the fabricated success CLAUDE §5 forbids). **P2.104
+/// replaces that shell** with the real open: the handler binds an `AppHandle`, so it is AppHandle-coupled
+/// boot-glue (§1.1a; G28 signature-exempt — its wiring is source-scan-pinned, this crate ships no `tauri::test`
+/// mock BY DECISION), and hands the compiled-in constant to the §7.7.1 opener — `Ok(())` on a successful
+/// shell-out, `Err(IpcError{ kind: InternalError, … })` on a genuine `OpenerExt` failure (no browser / OS
+/// error). Two facts stay owned by their named boxes: (a) the §2.8 catalog box owns the FINAL message — the
+/// string below is a PROVISIONAL neutral English one — and must add a COMMAND-level string (the §2.8 catalog is
+/// item-scoped); (b) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19
+/// convention).
 #[tauri::command]
 #[specta::specta]
-pub async fn open_project_page() -> Result<(), IpcError> {
-    Err(IpcError {
-        kind: ConversionErrorKind::InternalError,
-        message: "Could not open the project page.".into(),
-        path: None,
-        residue: None,
-    })
+pub async fn open_project_page(app: AppHandle) -> Result<(), IpcError> {
+    app.opener()
+        .open_url(PROJECT_PAGE_URL, None::<&str>)
+        .map_err(|_err| IpcError {
+            kind: ConversionErrorKind::InternalError,
+            message: "Could not open the project page.".into(),
+            path: None,
+            residue: None,
+        })
 }
 
 /// **C11 `get_app_info`** (§0.4.1) — version, build id, platform, and the §3.7 third-party-licenses / NOTICE
@@ -423,35 +432,68 @@ mod c9_membership {
 
 #[cfg(test)]
 mod c10_contract {
-    //! §6.4.1 unit (G15): the §0.4.1 C10 `open_project_page` typed CONTRACT (P2.33). The handler now returns
-    //! its typed `{} -> Result<(), IpcError>` (the §0.4 universal error shape), so the P2.21 all-shells
-    //! `block_on(open_project_page())` invocation in `crate::ipc` (mod.rs) MOVES here (the no-arg call still
-    //! compiles, but the bare invocation no longer asserts the typed contract — mirroring the C2b move). The
-    //! shell returns the genuine deferred-body `Err(InternalError)` (the real `OpenerExt::open_url` body is
-    //! P2.104); SHAPE is asserted, NOT the provisional message (owned by the §2.8 catalog box).
-    //! [Build-Session-Entscheidung: P2.33]
+    //! §6.4.1 unit (G15): the §0.4.1 C10 `open_project_page` shell-out body (P2.104). The handler now binds an
+    //! `AppHandle` (to reach the §7.7.1 opener and open the compiled-in URL), so it is AppHandle-coupled
+    //! boot-glue (the §1.1a pattern — NOT cargo-test-invocable; this crate ships no `tauri::test` mock BY
+    //! DECISION, G28 signature-exempt). The PURE part — the compiled-in `PROJECT_PAGE_URL` value — is
+    //! unit-tested here; the handler WIRING (bind the AppHandle, open the compiled-in constant via the opener)
+    //! is source-scan-pinned; the runtime open is the §1.6 E2E / §6.6 walkthrough. [Build-Session-Entscheidung: P2.104]
+    //!
+    //! [Test-Change: P2.104 — old-obsolete+new-correct, §7.7.2/§7.6.2] the P2.33 direct
+    //! `block_on(open_project_page())` contract test is OBSOLETE — P2.104 filled the body and the handler now
+    //! binds an `AppHandle`, uninvocable without a Tauri runtime (none in cargo-test, §1.1a). It is REPLACED by
+    //! the `PROJECT_PAGE_URL` constant unit test (the pure value, read back directly) + the handler source-scan
+    //! — the sanctioned boot-glue stratification (the C1 `ingest_paths` P2.60 / C13 `cancel_ingest` P2.71
+    //! precedent), NOT a dropped assertion.
     use super::*;
-    use tauri::async_runtime::block_on;
 
-    // §6.4.1 unit (G15): the C10 contract is invocable and returns `Result<(), IpcError>` (the §0.4 universal
-    // error shape). The shell opens no URL yet (the `OpenerExt::open_url` body is P2.104), so it returns the
-    // genuine deferred-body `Err(InternalError)` — returning `Ok(())` would falsely claim the page opened
-    // (§7.6.2/§7.7.2). SHAPE asserted (kind == InternalError), NOT the provisional message (owned by the §2.8
-    // catalog box); P2.104 replaces the shell with the real compiled-in-URL open.
+    /// The production prefix of `system.rs` (everything before the FIRST `#[cfg(test)]`), so a needle declared
+    /// in this test can never self-match — mirroring the intake.rs `c1_contract`/`c13_contract` helpers (each
+    /// contract module keeps its own copy, the established per-module test-helper pattern).
+    fn production_system_source() -> &'static str {
+        let full = include_str!("system.rs");
+        full.split_once(concat!("#[cfg", "(test)]"))
+            .map_or(full, |(prefix, _)| prefix)
+    }
+
+    // §6.4.1 unit (G15): the compiled-in §7.6.2 URL is the canonical Ne-IA GitHub Releases page over https — the
+    // single authentic-builds origin. Read-back proof (test-strategy §0.2): the exact literal is asserted, plus
+    // the two security invariants the §7.7.2 no-injection posture rests on — https (never a downgradeable http)
+    // and the canonical Ne-IA/convertia host (never an arbitrary origin).
     #[test]
-    fn c10_open_project_page_contract_is_invocable_and_typed() {
-        let out: Result<(), IpcError> = block_on(open_project_page());
-        let err = out.expect_err(
-            "§0.4.1/§0.4: the C10 contract shell opens no URL yet (the OpenerExt::open_url body is P2.104), so \
-             it returns the genuine deferred-body Err(InternalError); the typed Result<(), IpcError> signature \
-             is the P2.33 deliverable",
-        );
+    fn project_page_url_is_the_canonical_https_ne_ia_releases_page() {
         assert_eq!(
-            err.kind,
-            ConversionErrorKind::InternalError,
-            "§2.13: the deferred-body shell outcome is the InternalError catch-all — SHAPE asserted, NOT the \
-             provisional message (the §2.8 catalog box owns the final string)"
+            PROJECT_PAGE_URL, "https://github.com/Ne-IA/convertia/releases",
+            "§7.6.2: C10 opens the canonical Ne-IA GitHub Releases page"
         );
+        assert!(
+            PROJECT_PAGE_URL.starts_with("https://"),
+            "§7.7.2: the only permitted network action opens an https origin, never a downgradeable http one"
+        );
+        assert!(
+            PROJECT_PAGE_URL.starts_with("https://github.com/Ne-IA/convertia"),
+            "§7.6.2: the origin is the canonical Ne-IA/convertia GitHub project, not an arbitrary host"
+        );
+    }
+
+    // §6.4.1 unit (G15): the C10 handler is AppHandle-coupled boot-glue — a source-scan pins that it binds an
+    // `AppHandle` and opens the compiled-in `PROJECT_PAGE_URL` constant via `OpenerExt::open_url` (the §7.7.2
+    // no-WebView-URL / no-injection wiring), rather than the P2.33 `Err` shell. Needles `concat!`-assembled
+    // (self-match avoidance); the literal call form appears only in the handler body, never the doc prose, so
+    // the scan pins the CALL, not a comment. [Build-Session-Entscheidung: P2.104]
+    #[test]
+    fn open_project_page_handler_opens_the_compiled_in_url_via_the_opener() {
+        let src = production_system_source();
+        for needle in [
+            concat!("open_project_page(app: App", "Handle"),
+            concat!("open_", "url(PROJECT_PAGE_URL"),
+        ] {
+            assert!(
+                src.contains(needle),
+                "§7.7.1/§7.7.2: C10 must bind an AppHandle and open the compiled-in PROJECT_PAGE_URL via \
+                 OpenerExt::open_url (missing `{needle}`)"
+            );
+        }
     }
 }
 

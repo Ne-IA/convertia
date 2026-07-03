@@ -362,29 +362,26 @@ export const commands = {
 	 */
 	openPath: (kind: OpenKind, path: string) => __TAURI_INVOKE<null>("open_path", { kind, path }),
 	/**
-	 *  **C10 `open_project_page`** (§0.4.1) — the **only** permitted, user-initiated network action: opens a fixed
-	 *  compiled-in canonical Ne-IA GitHub Releases URL in the default browser via `OpenerExt::open_url` (§7.6.2 /
-	 *  §7.7.1). The WebView supplies **no URL** — the handler opens a compiled-in constant, eliminating any
-	 *  URL-injection surface (§7.7.2); there is **no `opener:*` WebView capability** (§0.10), and no fetch/parse of
-	 *  the page itself (§7.6.1 no phone-home). This box (P2.33) authors the typed §0.4.1 wire CONTRACT — the `{} ->
-	 *  Result<(), IpcError>` door (the §0.4 universal error shape) — so the generated `bindings.ts` mirrors the C10
-	 *  surface.
+	 *  **C10 `open_project_page`** (§0.4.1) — the **only** permitted, user-initiated network action: opens the
+	 *  fixed compiled-in canonical Ne-IA GitHub Releases URL (the `PROJECT_PAGE_URL` constant, §7.6.2) in the
+	 *  default browser via `OpenerExt::open_url` (§7.7.1). The WebView supplies **no URL** — the handler opens the
+	 *  compiled-in constant, so there is no URL-injection surface (§7.7.2); there is **no `opener:*` WebView
+	 *  capability** (§0.10 — a Rust-internal `OpenerExt` call is not capability-gated), and no fetch/parse of the
+	 *  page itself (§7.6.1 no phone-home). The typed §0.4.1 wire CONTRACT (`{} -> Result<(), IpcError>`, the §0.4
+	 *  universal error shape) was authored by P2.33; the generated `bindings.ts` mirrors the **arg-less** C10
+	 *  surface — the `AppHandle` is a Tauri-injected arg, NOT part of the wire signature.
 	 *
-	 *  [Build-Session-Entscheidung: P2.33] **Shell returns `Err(IpcError{ kind: InternalError })` — the
-	 *  deferred-body branch (C8/C9), NOT C7's `Ok(())` no-op.** C10 is a **side-effect** command (open a URL); its
-	 *  success type `()` has only one meaning — `Ok(())` = "the URL was opened". The real `OpenerExt::open_url`
-	 *  wiring is the body box **P2.104** (it adds the `AppHandle` + the compiled-in §7.6.2 URL constant); this
-	 *  contract shell performs no open, so returning `Ok(())` would **falsely claim the page opened** — the
-	 *  fabricated success CLAUDE §5 forbids. (Unlike C7's idempotent cancel, where tripping nothing genuinely *is*
-	 *  the desired "not running" state, an un-opened URL is *not* a desired state, so the C7 `Ok(())` no-op branch
-	 *  does not apply.) The honest shell outcome is the `Err` the operation yields when it cannot complete:
-	 *  `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError`
-	 *  precedent C3/C4/C5 cite). P2.104 replaces this with the real open — `Ok(())` on a successful shell-out,
-	 *  `Err` on a genuine `OpenerExt` failure (no browser / OS error). The named fill-boxes own the rest: (a) the
-	 *  §2.8 catalog box owns the FINAL message — the string below is a PROVISIONAL neutral English one — and must
-	 *  add a COMMAND-level string (the §2.8 catalog is item-scoped); (b) the compiled-in §7.6.2 URL constant + the
-	 *  §7.7.1 `OpenerExt::open_url` call + the `AppHandle` belong to the body box P2.104; (c) `kind` is the CONCRETE
-	 *  `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
+	 *  [Build-Session-Entscheidung: P2.33 → filled P2.104] **The body now performs the real shell-out.** P2.33
+	 *  authored the typed contract with an honest `Err(InternalError)` shell — returning `Ok(())` from a shell that
+	 *  opened nothing would falsely claim the page opened (the fabricated success CLAUDE §5 forbids). **P2.104
+	 *  replaces that shell** with the real open: the handler binds an `AppHandle`, so it is AppHandle-coupled
+	 *  boot-glue (§1.1a; G28 signature-exempt — its wiring is source-scan-pinned, this crate ships no `tauri::test`
+	 *  mock BY DECISION), and hands the compiled-in constant to the §7.7.1 opener — `Ok(())` on a successful
+	 *  shell-out, `Err(IpcError{ kind: InternalError, … })` on a genuine `OpenerExt` failure (no browser / OS
+	 *  error). Two facts stay owned by their named boxes: (a) the §2.8 catalog box owns the FINAL message — the
+	 *  string below is a PROVISIONAL neutral English one — and must add a COMMAND-level string (the §2.8 catalog is
+	 *  item-scoped); (b) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19
+	 *  convention).
 	 */
 	openProjectPage: () => __TAURI_INVOKE<null>("open_project_page"),
 	/**

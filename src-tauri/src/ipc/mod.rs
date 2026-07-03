@@ -159,14 +159,13 @@ mod command_surface {
     // typed contract is exercised by `system::c9_contract::c9_open_path_contract_is_invocable_and_typed`
     // (asserting the genuine §7.7.3-refused `Err(InternalError)` SHAPE, not its provisional message), so its
     // line moves there.
-    // [Test-Change: P2.33 — old-obsolete+new-correct, §0.4.1] old: this test invoked the bare-`()` C10
-    // `open_project_page` shell with no value assertion; new (verified by read-back — C10 now returns
-    // `Result<(), IpcError>` (the §0.4 universal error shape), so the bare invocation no longer asserts the
-    // typed contract): C10's typed contract is exercised by
-    // `system::c10_contract::c10_open_project_page_contract_is_invocable_and_typed` (asserting the genuine
-    // deferred-body `Err(InternalError)` SHAPE, not its provisional message), so its line moves there.
-    // (The no-arg call still compiled, but C10 is no longer a bare `()` shell — moving it keeps the
-    // one-typed-contract-test-per-filled-command pattern, mirroring the C2b move.)
+    // [Test-Change: P2.33 → updated P2.104 — old-obsolete+new-correct, §7.7.2/§7.6.2] old: this test invoked
+    // the bare-`()` C10 `open_project_page` shell with no value assertion; new (verified by read-back): C10 is
+    // no longer a bare `()` shell — P2.33 gave it the typed `Result<(), IpcError>` contract and P2.104 filled
+    // the body with the real `OpenerExt::open_url` shell-out, so the handler now binds an `AppHandle` and is
+    // uninvocable under cargo-test (no `tauri::test` mock, §1.1a). C10's contract is exercised in the
+    // `system::c10_contract` module — the compiled-in `PROJECT_PAGE_URL` read-back + the handler source-scan
+    // (the §1.1a boot-glue split) — so its line moved there.
     // [Test-Change: P2.34 — old-obsolete+new-correct, §0.4.1] old: this test invoked the bare-`()` C11
     // `get_app_info` shell; new (verified by read-back — C11 now returns `Result<AppInfo, IpcError>`, so the
     // bare statement is an unused-`must_use` and no longer asserts the typed contract): C11's typed contract is
