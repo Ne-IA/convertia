@@ -113,9 +113,13 @@ pub(crate) fn opener_op_for(kind: OpenKind, path: PathBuf) -> OpenerOp {
 /// - **Folder browse** (`OpenKind::Folder` / `RevealInFolder`) admits ONLY a run ROOT — `common_root`
 ///   (beside-source) and, for a split-output batch, `divert_root` (§7.7.3).
 ///
-/// Membership is EXACT equality against the run's already-resolved recorded paths (`crate::fs_guard` writes the
-/// resolved real path, §2.3); the gate never canonicalizes the WebView-supplied `path` (a TOCTOU footgun) and
-/// so FAILS CLOSED on any non-canonical / `..` / symlinked input. [Build-Session-Entscheidung: P2.101]
+/// The two rules are DISJOINT (§7.7.3 "two distinct membership rules"): a `File` request for a ROOT, or a
+/// folder-browse request for an OUTPUT file, is REFUSED — the file-launch set and the folder-browse set never
+/// overlap (asserted by the P2.102 exclusivity tests). Membership is EXACT equality against the run's
+/// already-resolved recorded paths (`crate::fs_guard` writes the resolved real path, §2.3); the gate never
+/// canonicalizes the WebView-supplied `path` (a TOCTOU footgun), so a `..`-containing or symlinked input that
+/// would resolve INTO the recorded set is REFUSED, not admitted (Rust `Path` equality normalizes only an
+/// interior `.`, which denotes the same file — never a `..` or a link). [Build-Session-Entscheidung: P2.101]
 #[cfg_attr(
     not(test),
     expect(
@@ -345,6 +349,37 @@ mod c9_membership {
             assert!(
                 !open_path_member(kind, Path::new("/elsewhere"), &run),
                 "§7.7.3: folder-browse refuses a directory that is not a run root"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15): the §7.7.3 two-rule EXCLUSIVITY (P2.102) — the file-launch and folder-browse sets are
+    // DISJOINT. A `File` request for a ROOT (or a SOURCE) is refused — never a source, never an intermediate,
+    // never a directory. This is the security-critical "never a source (file-launch)" half of §7.7.3.
+    // [Build-Session-Entscheidung: P2.102]
+    #[test]
+    fn file_launch_refuses_a_root_or_source() {
+        let run = run_with(&["/out/data.tsv"], "/out", None);
+        assert!(
+            !open_path_member(OpenKind::File, Path::new("/out"), &run),
+            "§7.7.3: File launch refuses the run's common_root — a directory root is never a launchable file"
+        );
+        assert!(
+            !open_path_member(OpenKind::File, Path::new("/in/data.csv"), &run),
+            "§7.7.3: File launch refuses a SOURCE path — never a source, never an engine intermediate"
+        );
+    }
+
+    // §6.4.1 unit (G15): the other half of the §7.7.3 EXCLUSIVITY (P2.102) — a folder-browse request
+    // (`Folder` / `RevealInFolder`) for an OUTPUT file is refused; folder-browse admits ONLY run ROOTS.
+    // [Build-Session-Entscheidung: P2.102]
+    #[test]
+    fn folder_browse_refuses_an_output_file() {
+        let run = run_with(&["/out/data.tsv"], "/out", None);
+        for kind in [OpenKind::Folder, OpenKind::RevealInFolder] {
+            assert!(
+                !open_path_member(kind, Path::new("/out/data.tsv"), &run),
+                "§7.7.3: folder-browse refuses an output FILE — it admits only run ROOTS, not individual outputs"
             );
         }
     }
