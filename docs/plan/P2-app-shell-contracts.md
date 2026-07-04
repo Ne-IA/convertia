@@ -416,7 +416,7 @@
 - [x] **P2.112** [RUST] Author the `AppInfo` type (C11 return) — version/build_id/platform/third_party_notice · §7.2.3 §0.6
   needs: P2.132
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.132` points at the `Platform` enum box later in document order — `AppInfo.platform: Platform` (§7.2.3; the spec homes `Platform` in §3.2) has no type to embed until `Platform` (P2.132) exists, so DECISION C builds P2.132 first; the edge is acyclic and valid (P2.132 only `needs: P1.25`), the inversion documented at the `needs:` line.
-- [ ] **P2.113** [RUST] Wire C12 `get_engine_health` to return the cached `EngineHealth` (the cache is populated by the P4 probe; contract type-shared now) · §0.4.1 §7.2.3
+- [x] **P2.113** [RUST] Wire C12 `get_engine_health` to return the cached `EngineHealth` (the cache is populated by the P4 probe; contract type-shared now) · §0.4.1 §7.2.3
   needs: P2.111, P2.21
 - [ ] **P2.114** [UI] Author the typed `EngineHealth` → `unavailable_targets` store-selector seam (contract plumbing only; the visual disable-with-reason tiles are P4.70.2) · §7.2.3 §5.1
   needs: P2.113, P1.27
