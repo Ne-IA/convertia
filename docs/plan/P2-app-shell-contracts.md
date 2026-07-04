@@ -397,8 +397,9 @@
   - [x] **P2.106.6** [RUST] Step 6 — WebView window create + frontend load (WebView-init fault where the core can observe it) · §7.2.1 §0.3.1
   - [x] **P2.106.7** [RUST] Step 7 — process launch-time intake feed (argv / PendingIntake drain → §1.1) · §7.2.1 §7.8.1
   - [x] **P2.106.8** [UI] Step 8 — hand to the UI empty/idle state · §7.2.1 §5.2
-- [ ] **P2.107** [RUST] Implement the §7.2.2 offline assertion at startup (the shell adds ZERO startup network activity) · §7.2.2 §2.11
+- [x] **P2.107** [RUST] Implement the §7.2.2 offline assertion at startup (the shell adds ZERO startup network activity) · §7.2.2 §2.11
   needs: P2.106
+  > **Delivered (402c039):** `boot_invariants::boot_shell_registers_no_network_plugin_or_client` — the plugin/client half of the §7.2.2/§2.11.1-T9a "shell adds zero startup network" assertion, complementing the P1.15.1 socket-primitive scan (`boot_path_opens_no_socket`) + `no_updater_posture`. Scans `all_production_source()` for any network-capable Tauri plugin (`tauri_plugin_http`/`upload`/`websocket`/`oauth`) or broader HTTP-client / websocket crate (`isahc`/`curl`/`surf`/`attohttpc`/`awc`/`tungstenite`) — the gap the socket scan misses (`.plugin(tauri_plugin_http::init())` registers an IPC HTTP client with no `reqwest` literal). Load-bearing enforcers stay G18 cargo-deny bans + the §0.10 CSP + G29 rule (g). No spec change, no new threat class. Both G1 reviewers GO (opus + sonnet each added one P3 needle — `tauri_plugin_oauth` + `tungstenite::`, both applied; no residual).
 - [ ] **P2.108** [DOC] Record the Windows-WebView2-absent honest-exception (loader fails before the core; download-page note, no in-app dialog) · §7.2.1 §0.3.1
 - [ ] **P2.109** [RUST] Surface a missing/old/broken macOS-WKWebView / Linux-WebKitGTK init as a §2.13/§7.2 startup fault (where the core observes it) · §7.2.1 §0.3.1 §2.13
   needs: P2.106.6, P2.39
