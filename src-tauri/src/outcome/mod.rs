@@ -13,15 +13,19 @@
 // the §0.4.3 `IpcError`, the `OutcomeMsg` surfaced line, the §1.12 `SkipReason → ErrorKind` helper, and the
 // §1.1 turn-time `ReadFailure → ErrorKind` helper (P2.73) are all
 // authored as CONTRACTS and registered for typegen (`collect_types![]`), but registration is a type-PARAMETER
-// reference, not a construction — and no production path CONSTRUCTS an outcome / calls the helper yet (the
-// pipeline that emits them is P3/P4+). So they are dead in the PRODUCTION build until then; the cfg(test)
-// anti-drift + wire-form tests reference them, so the TEST build is dead-code-clean. `expect` (not `allow`)
-// auto-flags the moment the first production constructor/caller lands — matching `crate::domain`.
+// reference, not a construction — and no production path CONSTRUCTS an item-level outcome / calls the helper
+// yet (the pipeline that emits them is P3/P4+). [P2.109] The one exception is the app-level `WebviewFault`
+// `AppFault`: the §7.2.1 step-6 boot-fault seam in `main.rs` (`webview_init_fault`) now CONSTRUCTS it — the
+// first production construction in this module — so `AppFault` + the `WebviewFault` variant are live; the
+// item-level §2.8 taxonomy / IpcError / OutcomeMsg / helpers stay dead, which keeps this module-level
+// expectation fulfilled. So the rest are dead in the PRODUCTION build until then; the cfg(test) anti-drift +
+// wire-form tests reference them, so the TEST build is dead-code-clean. `expect` (not `allow`) auto-flags the
+// moment the LAST covered item gains a production constructor/caller — matching `crate::domain`.
 #![cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the §2.8 taxonomy + IpcError + OutcomeMsg + the §1.12 SkipReason→ErrorKind and §1.1 turn-time ReadFailure→ErrorKind helpers are authored as contracts and registered for typegen, but no production path CONSTRUCTS an outcome / calls either helper until the P3/P4+ pipeline, so they are dead in the production build until then."
+        reason = "the item-level §2.8 taxonomy + IpcError + OutcomeMsg + the §1.12 SkipReason→ErrorKind and §1.1 turn-time ReadFailure→ErrorKind helpers are authored as contracts and registered for typegen, but no production path CONSTRUCTS an item-level outcome / calls either helper until the P3/P4+ pipeline, so they stay dead in the production build until then. (The app-level `WebviewFault` `AppFault` IS constructed by the P2.109 boot-fault seam in main.rs — the first production construction here — but the enumerated item-level items remain dead, keeping this expectation fulfilled.)"
     )
 )]
 

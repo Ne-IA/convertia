@@ -1786,6 +1786,22 @@ with a trace:
   §7.2 (link to §5.9 About / canonical releases). §2.13 fixes that these are
   **app-level** and **trace-free**; §7.2 owns the exact sequence and the strings
   shown at the boundary.
+
+  > **Presentation channel by WebView health `[DECIDED]` (P2.109).** *Which* surface a
+  > **startup** fault renders on is fixed by whether the WebView itself is alive.
+  > **`EngineMissing` / `BundleDamaged`** (a §7.2.1 readiness fault, steps 3–5) leave the
+  > WebView healthy → they present over the §0.4.2 `app://fault` event on the §5.8 WebView
+  > screen, replayed through a **`PendingFault`** buffer for the first-frame race (the
+  > `app://fault` emit + buffer body lands with the P4 readiness verifier bodies).
+  > **`WebviewFault`** *at startup* (§7.2.1 step 6 — `get_webview_window("main")` is `None`:
+  > a missing/old WKWebView / WebKitGTK, §0.3.1) makes an `app://fault`→WebView emit
+  > impossible, so it renders on a **native surface** (not the WebView; the concrete native
+  > mechanism is a P4 decision). Both route through the mechanism-independent
+  > `present_startup_fault` entry (§7.2.1), which records to the local log (§7.5) now; the
+  > two presentation bodies are P4. **P2.109 builds the `WebviewFault` detection + routing
+  > seam.** (A `WebviewFault` *mid-run* — the WebView was alive and lost the IPC channel —
+  > is the separate §5.8 disconnect bullet below, which may still render in the surviving
+  > WebView.)
 - **Mid-run core panic that escapes the item boundary** (should be impossible, but
   defended): a top-level handler shows *"Something went wrong and ConvertIA needs to
   recover. Your original files are safe and untouched."* (true by §2.1/§2.12 — no

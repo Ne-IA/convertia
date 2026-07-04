@@ -46,7 +46,7 @@ use tauri_plugin_log::{log::LevelFilter, RotationStrategy, Target, TargetKind};
 use crate::domain::{
     CollectedSetId, CollectingId, InstanceId, IntakePayload, ItemId, LossyKind, RunId,
 };
-use crate::outcome::{AppFault, IpcError, OutcomeMsg};
+use crate::outcome::{AppFault, ConversionErrorKind, IpcError, OutcomeMsg};
 
 /// [Build-Session-Entscheidung: P1.15] The §7.2.1 step-2 boot context: the three resolved base dirs
 /// (config / local-data scratch / log), held as app-managed state (`app.manage`). Its home is the
@@ -456,34 +456,75 @@ fn readiness_checks(app: &AppHandle) -> Result<(), AppFault> {
     Ok(())
 }
 
-/// [Build-Session-Entscheidung: P2.106.6] §7.2.1 step 6 — reveal the config-declared single `main` window
-/// (P1.16/P1.19, created HIDDEN via `visible: false` in `tauri.conf.json`) now that the readiness steps 3–5
-/// have passed. Showing it only here is the §7.2.1 "the window is only shown once they succeed" guarantee — a
-/// hard startup fault renders as a clean §2.13 fault screen, never a half-broken window. Resolving the window
-/// here is also the WebView-init fault observation point: `get_webview_window("main")` returning `None` means
-/// the WebView could not be created (a missing/old WKWebView / WebKitGTK, §0.3.1/§2.13); SURFACING that as an
-/// `app://fault` is P2.109 (which `needs:` this step), so this shell shows the window when present and P2.109
-/// fills the `None` arm. This is NOT a programmatic window builder — the window is config-declared (§7.3.1);
-/// this only shows the already-created one. AppHandle-coupled boot-glue (§1.1a; signature-pinned + G28-exempt).
+/// [Build-Session-Entscheidung: P2.106.6/P2.109] §7.2.1 step 6 — reveal the config-declared single `main`
+/// window (P1.16/P1.19, created HIDDEN via `visible: false` in `tauri.conf.json`) now that the readiness
+/// steps 3–5 have passed. Showing it only here is the §7.2.1 "the window is only shown once they succeed"
+/// guarantee — a hard startup fault renders as a clean §2.13 fault screen, never a half-broken window.
+/// Resolving the window here is ALSO the §0.3.1/§7.2.1 WebView-init fault observation point:
+/// `get_webview_window("main")` returning `None` means the OS WebView runtime could NOT create the view (a
+/// missing/old macOS WKWebView / Linux WebKitGTK; the Windows WebView2-absent case fails before the core runs
+/// and is the §0.3.1 honest exception, not this). [Build-Session-Entscheidung: P2.109] the `None` arm surfaces
+/// that as the §2.13 app-level `WebviewFault` (`webview_init_fault`) routed to `present_startup_fault`
+/// (§2.13.3) — a broken WebView cannot render an `app://fault` screen, so its presentation is NATIVE (body
+/// P4); this box builds the detection + routing seam. This is NOT a programmatic window builder — the window
+/// is config-declared (§7.3.1); this only shows the already-created one. [Build-Session-Entscheidung: P2.109]
+/// This fn returns `()` (internal routing, NOT a short-circuit signal — so `main()`'s setup is unchanged +
+/// G28-clean, not the `and_then` variant that would add uncovered lines to `main`), so the setup's step-7
+/// launch-intake feed (`forward_first_launch_argv`) still runs after a `None`/`WebviewFault`. That feed is
+/// INERT on this path — `frontend_ready` is `false` (no window ⇒ `mark_ready` is never called), so
+/// `intake_disposition` resolves to `Buffer` → `PendingIntake`, which is then never drained: no panic, no
+/// path loss. Whether a fatal boot fault should SKIP step 7 is a P4 decision that travels with the native
+/// presentation body (which owns what the app does after a `WebviewFault`). AppHandle-coupled boot-glue (§1.1a;
+/// signature-pinned + G28-exempt).
 fn reveal_main_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        window.show().ok();
+    match app.get_webview_window("main") {
+        // §7.2.1 step 6 ready path: the WebView was created — show the config-declared `main` window.
+        Some(window) => {
+            window.show().ok();
+        }
+        // §0.3.1/§2.13 WebView-init fault: no `main` WebView exists (missing/old WKWebView / WebKitGTK), so
+        // route the app-level `WebviewFault` to the §2.13.3 presentation. An `app://fault`→WebView emit is
+        // impossible here (there is no WebView), so the NATIVE presentation body (P4) owns HOW; P2.109 owns
+        // the detection + route.
+        None => present_startup_fault(app, webview_init_fault()),
     }
 }
 
-/// [Build-Session-Entscheidung: P2.106.3] §2.13.3 the app-level startup-fault presentation — the
-/// mechanism-INDEPENDENT shell the readiness gate routes a step fault to. It records the fault to the local log
+/// [Build-Session-Entscheidung: P2.109] §7.2.1 step 6 / §0.3.1 — construct the §2.13 app-level `WebviewFault`
+/// for a WebView-init failure (`get_webview_window("main") == None`: the OS WebView runtime — macOS WKWebView
+/// / Linux WebKitGTK — could not create the view). It is an `AppFault` (§2.13.1 "the app can't function"),
+/// NOT a per-item `IpcError`. PURE (no `AppHandle`) so it is unit-tested in isolation and its lines COUNT in
+/// the G28 diff floor — it is NOT the §1.1a boot-glue exemption (only the AppHandle-coupled `reveal_main_window`
+/// caller is). `kind` is the CONCRETE `ConversionErrorKind::WebviewFault`, never the §0.4.3 `ErrorKind` alias
+/// (the P2.39.1 dead-code-expectation/alias reason). `message` is the §2.13.3 pre-localised, plain-English,
+/// trace-free calm line pointing at the releases page (the §2.13.3 "download it again … official releases
+/// page" pattern; §0.3.1 pins the supported-OS/WebView floor); §7.2 owns the app-level startup strings and the
+/// NATIVE presentation of this line is the P4 body (a broken WebView cannot render an `app://fault` screen).
+fn webview_init_fault() -> AppFault {
+    AppFault {
+        kind: ConversionErrorKind::WebviewFault,
+        message: "ConvertIA couldn't start its window because your system's web view component is missing or out of date. See the official releases page for the supported systems."
+            .to_owned(),
+    }
+}
+
+/// [Build-Session-Entscheidung: P2.106.3/P2.109] §2.13.3 the app-level startup-fault presentation — the
+/// mechanism-INDEPENDENT entry point every startup fault routes through. It records the fault to the local log
 /// (§7.5; the §2.13 app-level fault is trace-free — the §2.13.3 `AppFault.message` is a pre-localised,
 /// trace-free calm line and `kind` is an enum, so this log line is redaction-safe) — a real action, never a
-/// silent drop. The user-facing
-/// PRESENTATION — the decided mechanism: emit the §0.4.2 `app://fault` event to the §5.8 WebView screen with a
-/// `PendingFault` buffer closing the first-frame race, a `WebviewFault` (where the WebView itself is the fault)
-/// falling back to a native surface — is the P2.109/P4 body; it is NOT emitted here, because emitting
-/// `app://fault` before the §5.8 listener is registered would lose it (the same race the buffer closes). `_app`
-/// is the handle the P2.109 presentation body emits/buffers through. Routed only from the readiness match's
-/// `Err` arm, which is runtime-dead until P4 fills the step-3–5 bodies (they return `Ok`), so no fault reaches
-/// this yet — no `AppFault` is constructed in production. AppHandle-coupled boot-glue (§1.1a; signature-pinned
-/// + G28-exempt).
+/// silent drop.
+///
+/// [Build-Session-Entscheidung: P2.109] **How the fault is PRESENTED splits by the WebView's own health
+/// (§7.2.1 / §2.13.3 design-of-record):** a readiness fault (steps 3–5) — `EngineMissing` / `BundleDamaged` —
+/// leaves the WebView healthy, so it is emitted over the §0.4.2 `app://fault` event to the §5.8 WebView screen,
+/// with a `PendingFault` buffer closing the first-frame race (emitting before the §5.8 listener is registered
+/// would lose it); a `WebviewFault` (step 6, the WebView itself failed to init) makes an `app://fault`→WebView
+/// emit impossible, so it presents on a NATIVE surface. BOTH presentation bodies are P4 — this shell records to
+/// the log only; `_app` is the handle they emit/buffer/native-present through. Reached from TWO routes: the
+/// readiness-gate `Err` arm (steps 3–5, runtime-dead until P4 fills those SLOT bodies — they return `Ok`) AND
+/// `reveal_main_window`'s `None` arm (the `WebviewFault` path, P2.109 — the sole `AppFault` CONSTRUCTED in
+/// production, fired only when the OS WebView runtime genuinely fails to init, which is not reproducible under
+/// `cargo test`). AppHandle-coupled boot-glue (§1.1a; signature-pinned + G28-exempt).
 fn present_startup_fault(_app: &AppHandle, fault: AppFault) {
     tauri_plugin_log::log::error!(
         "§2.13 app-level startup fault [{:?}]: {}",
@@ -2480,7 +2521,7 @@ mod startup_spine {
     //! [Build-Session-Entscheidung: P2.106]
     use tauri::AppHandle;
 
-    use crate::outcome::AppFault;
+    use crate::outcome::{AppFault, ConversionErrorKind};
 
     // §6.4.1 unit (G15): the §7.2.1 step 3–6 spine fns exist with their spec'd signatures — the three readiness
     // SLOTs + the gate return `Result<(), AppFault>` (a step fault is app-level, §2.13), `reveal_main_window`
@@ -2567,5 +2608,49 @@ mod startup_spine {
                 "§7.2.1 step 6: reveal_main_window must show the config-declared `main` window (missing `{needle}`)"
             );
         }
+    }
+
+    // §6.4.1 unit (G15): §7.2.1 step 6 / §0.3.1 — the WebView-init fault constructor builds the §2.13 app-level
+    // `WebviewFault` with a calm, trace-free message (§2.13.3). PURE (no `AppHandle`), so — unlike the
+    // AppHandle-coupled boot glue — it IS executed here and its lines count in the G28 diff floor. A WebView-init
+    // FAILURE itself cannot be forced under `cargo test` (no Tauri runtime — the §1.6 E2E / §6.6 walkthrough owns
+    // that); this pins the fault VALUE the step-6 `None` arm routes to `present_startup_fault`.
+    // [Build-Session-Entscheidung: P2.109]
+    #[test]
+    fn webview_init_fault_is_a_trace_free_webviewfault() {
+        let fault = super::webview_init_fault();
+        assert_eq!(
+            fault.kind,
+            ConversionErrorKind::WebviewFault,
+            "§2.13/§7.2.1 step 6: a WebView-init failure is the app-level WebviewFault"
+        );
+        assert!(
+            !fault.message.is_empty(),
+            "§2.13.3: the app-level fault carries a calm, plain user message"
+        );
+        // §2.13.3 trace-free: a calm line, never a stack trace / panic dump (SSOT *no stack traces*). Needles
+        // `concat!`-assembled so scanning THIS assertion's source can never self-match.
+        assert!(
+            !fault.message.contains("panic") && !fault.message.contains(concat!("thread", " '")),
+            "§2.13.3: the app-level fault message is trace-free"
+        );
+    }
+
+    // §6.4.1 unit (G15): §7.2.1 step 6 / §0.3.1 — `reveal_main_window`'s `None` arm (no `main` WebView: a
+    // missing/old WKWebView / WebKitGTK) routes the app-level `WebviewFault` to `present_startup_fault`. The
+    // AppHandle-coupled reveal is not `tauri::test`-executed (the boot-stage pattern §1.1a), so this source-scan
+    // pins the wiring: the `None` arm constructs the fault (`webview_init_fault()`) and hands it to
+    // `present_startup_fault`. Needle `concat!`-assembled (self-match avoidance). [Build-Session-Entscheidung: P2.109]
+    #[test]
+    fn reveal_routes_missing_webview_to_a_webviewfault() {
+        let src = crate::boot_invariants::all_production_source();
+        assert!(
+            src.contains(concat!(
+                "present_startup_",
+                "fault(app, webview_init_",
+                "fault())"
+            )),
+            "§7.2.1 step 6 / §2.13: reveal_main_window's None arm must route a WebviewFault to present_startup_fault"
+        );
     }
 }

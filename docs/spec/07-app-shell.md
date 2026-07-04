@@ -218,18 +218,37 @@ section only fixes the *identity* embedded in it.)
 8. Hand to UI empty/idle state (§5.2).
 
 Steps 3–5 run in the Rust core during `setup`/just after; the window is only shown
-once they succeed, so a hard fault is shown as a clean fault dialog (§2.13), never
-a half-broken UI. **Mechanism `[DECIDED]` (P2.106.6):** the single `main` window is
-config-declared **`visible: false`** in `tauri.conf.json` (created hidden, not by a
-programmatic builder — §7.3.1), and the core reveals it (`get_webview_window("main")`
-→ `.show()`) **only on the readiness-gate success path** (steps 3–5 `Ok`); a readiness
-fault instead skips this normal reveal and hands the app-level fault to the §2.13.3
-presentation, which owns *how* the fault surfaces at this boundary — the concrete
-mechanism (`app://fault`→WebView vs a native surface, and thus whether the window is
-shown to render the fault screen) is a subsequent box, not fixed here. `get_webview_window("main")`
+once they succeed, so a hard fault is shown as a clean fault screen (§2.13), never
+a half-broken UI. **Mechanism `[DECIDED]` (P2.106.6 / P2.109):** the single `main`
+window is config-declared **`visible: false`** in `tauri.conf.json` (created hidden,
+not by a programmatic builder — §7.3.1), and the core reveals it
+(`get_webview_window("main")` → `.show()`) **only on the readiness-gate success path**
+(steps 3–5 `Ok`); a readiness fault instead skips this normal reveal and hands the
+app-level `AppFault` to the §2.13.3 presentation. `get_webview_window("main")`
 returning `None` at step 6 is the core-observable WebView-init fault seam (missing/old
-WKWebView / WebKitGTK, §0.3.1); surfacing that as an app-level fault is a subsequent
-box (`needs:` step 6).
+WKWebView / WebKitGTK, §0.3.1) — **P2.109 builds that detection + routing** (the `None`
+arm constructs a `WebviewFault` `AppFault` and routes it to `present_startup_fault`).
+
+**Which surface a startup fault renders on is `[DECIDED]` by the WebView's own health
+(P2.109) — the fault channel splits in two:**
+
+- **Readiness faults (steps 3–5): `EngineMissing` / `BundleDamaged`** leave the WebView
+  itself healthy, so they present over the **built** §0.4.2 `app://fault` event → the
+  §5.8 WebView fault screen. Because such a fault can fire **before** the §5.8 listener
+  is registered (the same first-frame race the §7.8.1 launch-intake buffer closes), it
+  is replayed through a **`PendingFault` buffer** on listener-ready. The `app://fault`
+  emit + `PendingFault` buffer body lands with the step-3–5 verifier bodies (**P4**),
+  not P2.109.
+- **The WebView-init fault (step 6): `WebviewFault`** — the OS WebView runtime could not
+  create the view — makes an `app://fault`→WebView emit **impossible** (there is no
+  WebView to render it), so it presents on a **native surface** (not the WebView; the
+  concrete native mechanism is a P4 decision, §2.13.3). The Windows WebView2-*absent*
+  case is **not** this: it fails **before** the core runs (§0.3.1 honest exception), so
+  the core never observes it.
+
+`present_startup_fault` is the mechanism-independent §2.13.3 entry point both channels
+route through; it records the fault locally (§7.5) now, and the two presentation bodies
+above are P4.
 
 ### 7.2.2 Offline assertion at startup `[DECIDED]`
 
