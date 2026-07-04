@@ -20,7 +20,9 @@
 // reads `EngineDescriptor.serialised_only` then, and `EngineId`'s wire registration rides the §7.2
 // `EngineHealth` (C12) consumer (a later P2 box). So `EngineId`/`EngineKind`/`EngineDescriptor` are dead in
 // the PRODUCTION build until consumed; the cfg(test) tests below construct them, so the TEST build is
-// dead-code-clean. The §3.2.2 `Platform` leaf (P2.132) + its `AppInfo` (P2.112) embedder are now LIVE:
+// dead-code-clean. P2.110 adds the §7.2.3 `EngineStatus` wire DTO — likewise a CONTRACT dead until the C12
+// `EngineHealth` consumer (P2.111/P2.113) + the P4 startup probe CONSTRUCT it (its wire-form test below
+// constructs it, so the test build stays clean). The §3.2.2 `Platform` leaf (P2.132) + its `AppInfo` (P2.112) embedder are now LIVE:
 // P2.98 wired the C11 `get_app_info` to assemble a real `Ok(AppInfo)` (`AppInfo::gather()` below), which
 // constructs `Platform` via `current_platform()` (and `AppInfo` rides into `bindings.ts`); the P4
 // `capabilities(platform)` consumers construct `Platform` further. `expect` (not `allow`) auto-flags the
@@ -30,7 +32,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the §7.2 EngineHealth (C12) consumer construct/register them. AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further."
+        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus wire DTO (P2.110) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the §7.2 EngineHealth (C12) consumer + the P4 startup probe construct/register them. AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further."
     )
 )]
 
@@ -243,6 +245,39 @@ impl AppInfo {
             third_party_notice: THIRD_PARTY_NOTICE.to_owned(),
         }
     }
+}
+
+/// **`EngineStatus`** — one engine's row in the C12 `EngineHealth` return (§7.2.3; §0.4.1 C12 references
+/// `EngineHealth`, which embeds `Vec<EngineStatus>`). The cached result of the §7.2.3 startup presence /
+/// integrity / smoke probe for a single **registry-eligible** engine (FFmpeg, LibreOffice, Poppler, Pandoc,
+/// ImageCore, NativeCsvTsv). The non-trait delegate/probe binaries get NO standalone row — `FFprobe` rolls
+/// into `FFmpeg`, `ImageMagick` into `ImageCore` (§7.2.3); `NativeCsvTsv`'s row is SYNTHESIZED (always
+/// available in-core), not produced by the presence loop. This box authors the TYPE; the startup probe that
+/// POPULATES it (and the `EngineHealth` roll-up) is P4.
+///
+/// [Build-Session-Entscheidung: P2.110] WIRE struct — it rides `EngineHealth.engines` into the C12
+/// `get_engine_health` return (§7.2.3), so it derives `Serialize` + `Type` (the no-`any` guarantee), with the
+/// §0.6 `camelCase` wire default (`id`/`present`/`integrityOk`/`runnable`) shared by every §0.6/§7.2 DTO (cf.
+/// `AppInfo`). NOT `Copy` — the §0.6 struct convention (cf. `EngineDescriptor`/`PreflightVerdict`: a §0.6
+/// struct is not `Copy` even when every field is). OUTBOUND-ONLY — C12 takes `{}` and no command takes an
+/// `EngineStatus` arg, so NO `Deserialize` (mirroring `AppInfo`/`EngineId`/the outbound orchestrator types).
+/// Registration into `bindings.ts` is DEFERRED to the C12 `EngineHealth` consumer (P2.111/P2.113) — the
+/// established P2.2-P2.12 defer-to-consumer pattern its `id: EngineId` field also rides; nothing CONSTRUCTS an
+/// `EngineStatus` in production until the P4 startup probe, so it is dead in the production build until then
+/// (the module-level dead-code expectation covers it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineStatus {
+    /// Which engine this row describes (§0.6).
+    pub id: EngineId,
+    /// The engine binary resolved at its expected §3.3.1 path (the §7.2.3 out-of-band presence check).
+    pub present: bool,
+    /// The binary matched the build-time hash manifest (or the cheap warm size+magic check), §7.2.3 integrity
+    /// — wire key `integrityOk`.
+    pub integrity_ok: bool,
+    /// The §7.2.3 smoke-probe result: `Some(true|false)` if the probe ran, `None` if it was skipped (the
+    /// warm-launch fast path, or the macOS spawn deferred past the window). Wire: `true` / `false` / `null`.
+    pub runnable: Option<bool>,
 }
 
 #[cfg(test)]
@@ -466,6 +501,78 @@ mod tests {
         assert!(
             info.third_party_notice.contains("ConvertIA"),
             "§3.7: the bundled THIRD-PARTY-LICENSES.txt is embedded into thirdPartyNotice"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §7.2.3 `EngineStatus` WIRE form (P2.110) — one engine's row in the C12
+    // `EngineHealth` return. Pins the camelCase field keys (id / present / integrityOk / runnable) + the
+    // nested `EngineId` discriminant + the `runnable: Option<bool>` wire (Some → bool, None → null), the §0.6
+    // "camelCase on the wire" convention every §0.6/§7.2 DTO carries; asserts the snake_case `integrity_ok`
+    // key is ABSENT. A SERIALIZE pin (EngineStatus is outbound-only — no round-trip); constructing the full
+    // 4-field struct keeps the TEST build dead-code-clean and locks the field set (a field add/remove breaks
+    // this constructor at compile time).
+    #[test]
+    fn engine_status_wire_form_is_camelcase() {
+        let probed = EngineStatus {
+            id: EngineId::FFmpeg,
+            present: true,
+            integrity_ok: true,
+            runnable: Some(false),
+        };
+        let json = serde_json::to_value(&probed).expect("EngineStatus serializes");
+        assert_eq!(
+            json["id"], "ffmpeg",
+            "§0.6/§3.2: the nested EngineId rides as its lowercase discriminant"
+        );
+        assert_eq!(json["present"], true, "§7.2.3: present rides verbatim");
+        assert_eq!(
+            json["integrityOk"], true,
+            "§0.6: integrity_ok → camelCase integrityOk on the wire"
+        );
+        assert_eq!(
+            json["runnable"], false,
+            "§7.2.3: runnable Some(false) → false on the wire (the probe ran)"
+        );
+        assert!(
+            json.get("integrity_ok").is_none(),
+            "§0.6: snake_case integrity_ok is NOT on the wire — camelCase only"
+        );
+
+        // §7.2.3: a skipped smoke probe → runnable None → JSON null, distinct from Some(false).
+        let skipped = EngineStatus {
+            id: EngineId::LibreOffice,
+            present: true,
+            integrity_ok: true,
+            runnable: None,
+        };
+        let json = serde_json::to_value(&skipped).expect("EngineStatus serializes");
+        assert!(
+            json["runnable"].is_null(),
+            "§7.2.3: runnable None (probe skipped) → null on the wire, distinct from Some(false)"
+        );
+
+        // §7.2.3: the negative/`Some(true)` arm — a missing engine whose smoke probe ran and passed the
+        // binary check but is not runnable is impossible, but the field combination pins that `false` bools
+        // ride as bare `false` and `runnable: Some(true)` rides as bare `true` (the passthrough arms the two
+        // cases above don't cover).
+        let missing = EngineStatus {
+            id: EngineId::Poppler,
+            present: false,
+            integrity_ok: false,
+            runnable: Some(true),
+        };
+        let json = serde_json::to_value(&missing).expect("EngineStatus serializes");
+        assert_eq!(
+            json["present"], false,
+            "§7.2.3: present false rides as bare false"
+        );
+        assert_eq!(
+            json["integrityOk"], false,
+            "§7.2.3: integrity_ok false rides as bare false under the camelCase key"
+        );
+        assert_eq!(
+            json["runnable"], true,
+            "§7.2.3: runnable Some(true) → true on the wire"
         );
     }
 }
