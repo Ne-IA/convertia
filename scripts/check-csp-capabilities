@@ -22,7 +22,12 @@ devtools in a shipped build) fails the build instead of shipping. Assertions (§
     remote-origin-IPC mechanism) collapses the T2 boundary and is denied outright.
   `index.html`: a `<meta http-equiv="x-dns-prefetch-control" content="off">` element (matched as a
     unit, either attribute order).
-  No custom URL-scheme registration in any `Info.plist`/`.desktop`/`.reg` under `src-tauri/`.
+  `bundle.fileAssociations` absent + `bundle.macOS.minimumSystemVersion == "11.0"`: the §7.8.2 no-file-
+    association negative (Tauri generates no CFBundleDocumentTypes) + the §0.3.1 macOS OS-floor.
+  No custom URL-scheme (macOS `CFBundleURLTypes`, Linux `x-scheme-handler/`) OR file-association (macOS
+    `CFBundleDocumentTypes`, Linux `.desktop MimeType=`) registration in a hand-added manifest under
+    `src-tauri/` — a Windows `.reg` association has no manifest token (honest residual; the config-level
+    `bundle.fileAssociations` above is the cross-platform control).
 
 POSTURE: the conf/capabilities/index.html land in P1 — until `tauri.conf.json` exists this gate
 SKIPS-WITH-WARNING (fail-open, the standard target-absent P0 posture), and is FAIL-CLOSED the moment
@@ -62,7 +67,12 @@ LOCKED_CSP = {
 # §0.10 deny-by-default: a WebView capability may grant ONLY these prefixes (line 1125). An ALLOW-list,
 # so fs:/http:/opener:/dialog:/updater:/shell:* AND any unknown-dangerous future permission all fail.
 ALLOWED_CAP_PREFIXES = ("core:", "log:", "store:")
-URL_SCHEME_GLOBS = ("**/*.plist", "**/*.desktop", "**/*.reg")  # custom-URL-scheme registration files
+# §0.3.1 macOS OS-floor: bundle.macOS.minimumSystemVersion propagates to the generated Info.plist
+# LSMinimumSystemVersion. Frozen exact-match — a floor change updates spec §0.3.1 AND this constant.
+MACOS_MIN_SYSTEM_VERSION = "11.0"
+URL_SCHEME_GLOBS = ("**/*.plist", "**/*.desktop", "**/*.reg")  # bundle-manifest scan scope (URL-scheme + file-assoc)
+_URL_SCHEME_TOKENS = ("cfbundleurltypes", "cfbundleurlschemes", "x-scheme-handler/")  # custom URL scheme (§0.10/§7.8.2)
+_FILE_ASSOC_TOKENS = ("cfbundledocumenttypes",)  # macOS document-type / file-association manifest (§7.8.2 bullet 1)
 # the dns-prefetch-control:off meta, matched as ONE element in either attribute order
 _DNS_META = (
     re.compile(r'<meta\b[^>]*\bhttp-equiv\s*=\s*["\']x-dns-prefetch-control["\'][^>]*\bcontent\s*=\s*["\']off["\']', re.I),
@@ -94,6 +104,22 @@ def _permission_id(p: object) -> str:
     if isinstance(p, dict):
         return str(p.get("identifier", ""))
     return ""
+
+
+def _desktop_declares_file_assoc(txt_lower: str) -> bool:
+    """A `.desktop` `MimeType=` line declaring a FILE-type association — a non-`x-scheme-handler/…` MIME type
+    (a URL scheme is `x-scheme-handler/…`, already caught by `_URL_SCHEME_TOKENS`, so it is excluded here to
+    avoid a double report). Whitespace around the `=` is spec-legal (freedesktop Desktop Entry — GLib/GKeyFile
+    trims it), so the key is matched via `partition("=")` + `strip()`, not a `"mimetype="` prefix. Input is
+    already lower-cased."""
+    for line in txt_lower.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "mimetype":
+            for t in value.split(";"):
+                t = t.strip()
+                if t and not t.startswith("x-scheme-handler/"):
+                    return True
+    return False
 
 
 # --- pure evaluators (fixture-testable) -------------------------------------------------------
@@ -151,6 +177,18 @@ def evaluate_conf(conf: dict) -> list[str]:
         problems.append("bundle.createUpdaterArtifacts must be absent/false (no auto-update; §7.6.1)")
     if _truthy_set(bundle.get("updater")):
         problems.append("bundle.updater present (updater pubkey/config) — no auto-update (§7.6.1)")
+    # §7.8.2 no-file-association negative: bundle.fileAssociations is Tauri's single source that generates the
+    # macOS CFBundleDocumentTypes / Windows registry / Linux .desktop MimeType associations (all platforms) —
+    # a portable no-install tool claims NO handlers (§7.8.2 bullet 1). A non-empty array is a violation.
+    if _truthy_set(bundle.get("fileAssociations")):
+        problems.append("bundle.fileAssociations present — ConvertIA registers no file associations / "
+                        "default-handler claims (§7.8.2)")
+    # §0.3.1 macOS OS-floor: bundle.macOS.minimumSystemVersion must be the frozen floor (Tauri translates it to
+    # the Info.plist LSMinimumSystemVersion; absent → the 10.13 default sits BELOW the floor; null removes it).
+    macos = bundle.get("macOS") if isinstance(bundle.get("macOS"), dict) else {}
+    if macos.get("minimumSystemVersion") != MACOS_MIN_SYSTEM_VERSION:
+        problems.append(f"bundle.macOS.minimumSystemVersion = {macos.get('minimumSystemVersion')!r}, must be exactly "
+                        f"{MACOS_MIN_SYSTEM_VERSION!r} (§0.3.1 macOS OS-floor → Info.plist LSMinimumSystemVersion)")
     plugins = conf.get("plugins") if isinstance(conf.get("plugins"), dict) else {}
     if "updater" in plugins:
         problems.append("plugins.updater present — the updater plugin is absent by decision (§7.6.1)")
@@ -216,17 +254,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.index.is_file():
         problems += evaluate_index_html(args.index.read_text(encoding="utf-8"))
 
-    # custom URL-scheme registration files under src-tauri/ (deep-link / scheme surface)
+    # custom URL-scheme OR file-association (document-type) registration in any bundle manifest under src-tauri/
+    # (deep-link/scheme surface + the §7.8.2 no-file-association negative). The config-level bundle.fileAssociations
+    # check above covers the Tauri-GENERATED manifests for every platform; this catches a HAND-added manifest.
     if args.src_tauri.is_dir():
         for pat in URL_SCHEME_GLOBS:
             for f in args.src_tauri.glob(pat):
                 txt = f.read_text(encoding="utf-8", errors="ignore").lower()
-                if "cfbundleurltypes" in txt or "cfbundleurlschemes" in txt or "x-scheme-handler/" in txt:
-                    try:
-                        shown = f.relative_to(ROOT)
-                    except ValueError:
-                        shown = f
-                    problems.append(f"{shown} registers a custom URL scheme — none permitted (§0.10)")
+                try:
+                    shown = f.relative_to(ROOT)
+                except ValueError:
+                    shown = f
+                if any(t in txt for t in _URL_SCHEME_TOKENS):
+                    problems.append(f"{shown} registers a custom URL scheme — none permitted (§0.10 / §7.8.2)")
+                if any(t in txt for t in _FILE_ASSOC_TOKENS) or (f.suffix == ".desktop" and _desktop_declares_file_assoc(txt)):
+                    problems.append(f"{shown} registers a file association (document type) — none permitted (§7.8.2)")
 
     if problems:
         for p in problems:

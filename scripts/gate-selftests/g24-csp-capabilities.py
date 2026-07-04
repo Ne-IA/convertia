@@ -5,7 +5,9 @@ Proves the CSP/capability lint CATCHES every §0.10 widening (a remote CSP origi
 directive, a flipped dangerous key, a re-enabled updater, a remote window url, devtools, ANY capability
 grant beyond core/log/store — incl. shell:allow-spawn/default, fs:/opener:/dialog:/http:/updater:, a
 `remote`/`urls` grant, an INLINE conf capability — a missing/wrong dns-prefetch meta, a custom URL
-scheme) and PASSES the locked posture — plus the live main() over a temp fixture tree. stdlib-only.
+scheme, a `bundle.fileAssociations` / `CFBundleDocumentTypes` file-association, a wrong/absent
+`bundle.macOS.minimumSystemVersion` OS-floor) and PASSES the locked posture — plus the live main()
+over a temp fixture tree. stdlib-only.
 Exit 0 = all held; 1 = a self-test failed.
 """
 import importlib.machinery
@@ -36,7 +38,7 @@ def valid_conf() -> dict:
             "windows": [{"url": "index.html"}],
             "security": {"csp": dict(m.LOCKED_CSP), "assetProtocol": {"enable": False}},
         },
-        "bundle": {"createUpdaterArtifacts": False},
+        "bundle": {"createUpdaterArtifacts": False, "macOS": {"minimumSystemVersion": "11.0"}},
     }
 
 
@@ -78,6 +80,38 @@ record("plugins.updater present -> caught", any("plugins.updater" in p for p in 
 
 c = valid_conf(); c["plugins"] = {"deep-link": {"desktop": {"schemes": ["convertia"]}}}
 record("plugins.deep-link present -> caught", any("deep-link" in p for p in m.evaluate_conf(c)))
+
+# §7.8.2 no-file-association + §0.3.1 macOS OS-floor (each isolated: override ONLY the one constant it guards)
+c = valid_conf(); c["bundle"]["fileAssociations"] = [{"ext": ["pdf"], "mimeType": "application/pdf"}]
+record("bundle.fileAssociations present -> caught", any("fileAssociations" in p for p in m.evaluate_conf(c)))
+c = valid_conf(); c["bundle"]["fileAssociations"] = []
+record("bundle.fileAssociations EMPTY array -> not flagged (registers nothing)", m.evaluate_conf(c) == [])
+c = valid_conf(); del c["bundle"]["macOS"]
+record("bundle.macOS absent -> caught (minimumSystemVersion unset -> 10.13 default below the floor)",
+       any("minimumSystemVersion" in p for p in m.evaluate_conf(c)))
+c = valid_conf(); c["bundle"]["macOS"]["minimumSystemVersion"] = "10.13"
+record("minimumSystemVersion = 10.13 default (below the §0.3.1 floor) -> caught",
+       any("minimumSystemVersion" in p for p in m.evaluate_conf(c)))
+c = valid_conf(); c["bundle"]["macOS"]["minimumSystemVersion"] = "12.0"
+record("minimumSystemVersion drifted to 12.0 -> caught (frozen exact-match)",
+       any("minimumSystemVersion" in p for p in m.evaluate_conf(c)))
+
+# _desktop_declares_file_assoc: a .desktop file-type MimeType is a file-assoc; a pure x-scheme-handler is NOT
+# (the URL-scheme leg catches that) — each isolated so the x-scheme-handler exclusion can't silently rot
+record("_desktop_declares_file_assoc: a real MIME type -> True",
+       m._desktop_declares_file_assoc("[desktop entry]\nmimetype=application/pdf;") is True)
+record("_desktop_declares_file_assoc: x-scheme-handler only -> False (a URL scheme; caught by the URL leg)",
+       m._desktop_declares_file_assoc("[desktop entry]\nmimetype=x-scheme-handler/convertia;") is False)
+record("_desktop_declares_file_assoc: mixed scheme + file type -> True",
+       m._desktop_declares_file_assoc("[desktop entry]\nmimetype=x-scheme-handler/convertia;application/pdf;") is True)
+# freedesktop Desktop Entry allows whitespace around the `=` (GLib/GKeyFile trims it) — the spaced/tab forms
+# are spec-legal file-associations that MUST still be caught (the G1 re-review's exotic-input-form P1)
+record("_desktop_declares_file_assoc: SPACED 'mimetype = type' -> True (ws around = is spec-legal)",
+       m._desktop_declares_file_assoc("[desktop entry]\nmimetype = application/pdf;") is True)
+record("_desktop_declares_file_assoc: TAB 'mimetype\t= type' -> True",
+       m._desktop_declares_file_assoc("[desktop entry]\nmimetype\t= application/pdf;") is True)
+record("_desktop_declares_file_assoc: SPACED x-scheme-handler only -> False (exclusion is ws-robust)",
+       m._desktop_declares_file_assoc("[desktop entry]\nmimetype = x-scheme-handler/convertia;") is False)
 
 c = valid_conf(); c["app"]["windows"][0]["url"] = "https://app.example"
 record("window.url remote -> caught", any("windows[].url" in p for p in m.evaluate_conf(c)))
@@ -149,6 +183,30 @@ with tempfile.TemporaryDirectory() as d:
     (td / "Info.plist").write_text("<plist><dict><key>CFBundleURLTypes</key></dict></plist>", encoding="utf-8")
     record("main(): a CFBundleURLTypes plist under src-tauri -> exit 1 (no crash)", m.main(argv) == 1)
     (td / "Info.plist").unlink()
+
+    # a hand-added file-association manifest (CFBundleDocumentTypes) under --src-tauri -> exit 1 (§7.8.2)
+    write_tree(td, valid_conf(), ["core:default"], META)
+    (td / "Info.plist").write_text("<plist><dict><key>CFBundleDocumentTypes</key></dict></plist>", encoding="utf-8")
+    record("main(): a CFBundleDocumentTypes plist under src-tauri -> exit 1 (file-association)", m.main(argv) == 1)
+    (td / "Info.plist").unlink()
+
+    # the config-level file-association source (bundle.fileAssociations) via the live main() path -> exit 1
+    c = valid_conf(); c["bundle"]["fileAssociations"] = [{"ext": ["heic"]}]
+    write_tree(td, c, ["core:default"], META)
+    record("main(): bundle.fileAssociations in the conf -> exit 1 (file-association)", m.main(argv) == 1)
+
+    # a hand-added Linux .desktop declaring a FILE-type MimeType association -> exit 1 (§7.8.2)
+    write_tree(td, valid_conf(), ["core:default"], META)
+    (td / "convertia.desktop").write_text("[Desktop Entry]\nMimeType=application/pdf;image/heic;\n", encoding="utf-8")
+    record("main(): a .desktop MimeType file-association -> exit 1", m.main(argv) == 1)
+    (td / "convertia.desktop").unlink()
+
+    # a .desktop declaring ONLY a URL scheme (MimeType=x-scheme-handler) -> exit 1 via the URL-scheme leg
+    write_tree(td, valid_conf(), ["core:default"], META)
+    (td / "convertia.desktop").write_text("[Desktop Entry]\nMimeType=x-scheme-handler/convertia;\n", encoding="utf-8")
+    record("main(): a .desktop x-scheme-handler (URL scheme, not double-flagged as file-assoc) -> exit 1",
+           m.main(argv) == 1)
+    (td / "convertia.desktop").unlink()
 
     (td / "tauri.conf.json").write_text("{ not json", encoding="utf-8")
     record("main(): unparseable conf -> exit 2", m.main(argv) == 2)

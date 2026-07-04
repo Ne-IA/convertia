@@ -370,6 +370,25 @@ jobs:
             libdbus-1-dev
       - name: Install JS deps (frozen lockfile)
         run: pnpm install --frozen-lockfile
+      # Pre-fetch all workspace crates with a bounded retry so a transient crates.io/CDN hiccup during the
+      # debug `tauri build`'s crate fetch cannot spuriously red `main` (hit at P2.27: a `specta-macros`
+      # download 502'd mid-build). fail-CLOSED (exit 1) after 3 tries so a real registry outage still reds.
+      # `--locked`: never re-resolve the committed Cargo.lock (the G18a drift-guard would red a mutated lockfile).
+      # This warms ~/.cargo so the build step below hits the cache (no build-time network); we deliberately do
+      # NOT force CARGO_NET_OFFLINE — a warm cache is already network-free, and forcing offline would turn a
+      # missed straggler into a deterministic red, trading a rare flake for a hard failure. (The build is NOT
+      # retried — a compile error is not a transient, so a 3× retry would just burn the ~20-min build thrice.)
+      # `shell: bash` is REQUIRED: this runs on ALL 3 matrix OS (the build compiles on all 3, so the warm cache
+      # is wanted on all 3 — UNLIKE the Linux-gated apt/advisory-db retry steps), and the windows-2022 default
+      # `run:` shell is pwsh, which cannot parse `for … do … done`; git-bash ships on the GitHub Windows runner.
+      - name: 'G30: pre-fetch crates (retry — a transient crates.io hiccup must not spuriously red main)'
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            cargo fetch --locked && exit 0
+            echo "cargo fetch failed; retry $i"; sleep 5
+          done
+          echo "cargo fetch failed after 3 attempts" >&2; exit 1
       # The debug `tauri build` embeds frontendDist: ../dist at compile time + has NO beforeBuildCommand, so
       # the Vite build (-> ../dist) MUST run first. `--no-bundle` = compile + LINK the app binary (the
       # compile-sanity proof), skipping the installer packaging (WiX/NSIS/dmg/AppImage) which is the
