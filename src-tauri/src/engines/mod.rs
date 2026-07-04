@@ -20,9 +20,9 @@
 // reads `EngineDescriptor.serialised_only` then, and `EngineId`'s wire registration rides the §7.2
 // `EngineHealth` (C12) consumer (a later P2 box). So `EngineId`/`EngineKind`/`EngineDescriptor` are dead in
 // the PRODUCTION build until consumed; the cfg(test) tests below construct them, so the TEST build is
-// dead-code-clean. P2.110 adds the §7.2.3 `EngineStatus` wire DTO — likewise a CONTRACT dead until the C12
-// `EngineHealth` consumer (P2.111/P2.113) + the P4 startup probe CONSTRUCT it (its wire-form test below
-// constructs it, so the test build stays clean). The §3.2.2 `Platform` leaf (P2.132) + its `AppInfo` (P2.112) embedder are now LIVE:
+// dead-code-clean. P2.110/P2.111 add the §7.2.3 `EngineStatus` + `EngineHealth` wire DTOs — likewise
+// CONTRACTS dead until the C12 `get_engine_health` consumer (P2.113) + the P4 startup probe CONSTRUCT them
+// (their wire-form tests below construct them, so the test build stays clean). The §3.2.2 `Platform` leaf (P2.132) + its `AppInfo` (P2.112) embedder are now LIVE:
 // P2.98 wired the C11 `get_app_info` to assemble a real `Ok(AppInfo)` (`AppInfo::gather()` below), which
 // constructs `Platform` via `current_platform()` (and `AppInfo` rides into `bindings.ts`); the P4
 // `capabilities(platform)` consumers construct `Platform` further. `expect` (not `allow`) auto-flags the
@@ -32,12 +32,14 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus wire DTO (P2.110) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the §7.2 EngineHealth (C12) consumer + the P4 startup probe construct/register them. AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further."
+        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the C12 get_engine_health consumer (P2.113) + the P4 startup probe construct/register them. AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further."
     )
 )]
 
 use serde::Serialize;
 use specta::Type;
+
+use crate::domain::TargetId;
 
 /// The stable engine discriminant (§0.6 / §3.2) — used in logging / SBOM rows (§3.7), the §3.2.3
 /// `(SourceFmt,TargetFmt) → EngineId` registry, the §0.9 pool's `HashMap<EngineId, bool>` serialised-flag
@@ -278,6 +280,49 @@ pub struct EngineStatus {
     /// The §7.2.3 smoke-probe result: `Some(true|false)` if the probe ran, `None` if it was skipped (the
     /// warm-launch fast path, or the macOS spawn deferred past the window). Wire: `true` / `false` / `null`.
     pub runnable: Option<bool>,
+}
+
+/// **`EngineHealth`** — the C12 `get_engine_health` return (§7.2.3; §0.4.1 C12 references it). The cached
+/// result of the §7.2.3 startup presence / integrity / smoke probe over the whole engine set. It feeds §5.2
+/// (disable / omit unavailable targets) and the §7.2.4 startup-fault surface: a missing / corrupt /
+/// non-runnable **required** engine escalates to a §2.13 app-level fault (`EngineMissing` / `BundleDamaged`),
+/// not a per-item failure. This box authors the TYPE; the startup probe that POPULATES it is P4.
+///
+/// [Build-Session-Entscheidung: P2.111] WIRE struct — the C12 return, so `Serialize` + `Type` (the no-`any`
+/// guarantee) + the §0.6 `camelCase` wire default (`engines` / `unavailableTargets` / `allCriticalOk`) shared
+/// by every §0.6/§7.2 DTO. NOT `Copy` (owns two `Vec`s). OUTBOUND-ONLY — C12 takes `{}` and no command takes
+/// an `EngineHealth` arg, so NO `Deserialize` (mirroring `AppInfo`/`EngineStatus`/`EngineId`). Registration
+/// into `bindings.ts` is DEFERRED to the C12 `get_engine_health` consumer (P2.113), which pulls the whole
+/// graph (`EngineHealth` → `EngineStatus` → `EngineId`, + `TargetId`) into the export — the established
+/// P2.2-P2.12 defer-to-consumer pattern; nothing CONSTRUCTS an `EngineHealth` in production until the P4
+/// startup probe, so it is dead in the production build until then (the module-level dead-code expectation
+/// covers it). It embeds `crate::domain::TargetId` (a tier-3 leaf) — a downward §0.7 tier-2 → tier-3 edge,
+/// allowed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineHealth {
+    /// One `EngineStatus` per **registry-eligible** engine — FFmpeg, LibreOffice, Poppler, Pandoc, ImageCore,
+    /// NativeCsvTsv (§7.2.3). Two §7.2.3 `[DECIDED]` shaping rules govern this vector (the §7.2.3 spec is the
+    /// authoritative home; recorded here as the contract the P4 probe must honor):
+    ///
+    /// - **Non-trait roll-up (P2.111.1):** the non-trait delegate / probe binaries — `FFprobe` and
+    ///   `ImageMagick` (§0.6) — get **NO** standalone row. Their presence/integrity (checked by the §7.2.3
+    ///   out-of-band binary loop) is **rolled into the owning engine's** `EngineStatus`: `FFprobe` → `FFmpeg`
+    ///   (a missing/corrupt `ffprobe` makes FFmpeg's `runnable = Some(false)`, since no video job can probe),
+    ///   `ImageMagick` → `ImageCore` (a missing BMP delegate makes ImageCore's `runnable = Some(false)`,
+    ///   §7.2.3). Their `EngineId`s appear only in the §3.7 SBOM/NOTICE layer + that binary loop.
+    /// - **NativeCsvTsv synthesized (P2.111.2):** `NativeCsvTsv` is `InProcessNative` (§3.5.6) — **not** in
+    ///   the §3.3.1 binary list, so the §7.2.3 presence/integrity loop produces no row for it. Its
+    ///   `EngineStatus` is **SYNTHESIZED** `{ present: true, integrity_ok: true, runnable: Some(true) }`
+    ///   (always-available-in-core, pure-Rust, nothing to verify) and **appended after** the loop, never
+    ///   produced from it.
+    pub engines: Vec<EngineStatus>,
+    /// The §3.4 patent-gapped targets unavailable on THIS platform (→ `PlatformUnavailable`, §2.8) — the §5.2
+    /// disable/omit set. Wire key `unavailableTargets`. Populated from the §3.4 disposition matrix by P4.
+    pub unavailable_targets: Vec<TargetId>,
+    /// Derived — `true` iff every **required** engine is present + runnable (§7.2.3). A `false` here is what
+    /// the §7.2.4 startup sequence escalates to a §2.13 app-level fault. Wire key `allCriticalOk`.
+    pub all_critical_ok: bool,
 }
 
 #[cfg(test)]
@@ -573,6 +618,63 @@ mod tests {
         assert_eq!(
             json["runnable"], true,
             "§7.2.3: runnable Some(true) → true on the wire"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §7.2.3 `EngineHealth` WIRE form (P2.111) — the C12 get_engine_health return.
+    // Pins the camelCase field keys (engines / unavailableTargets / allCriticalOk) + the nested EngineStatus
+    // rows + the nested externally-tagged TargetId, the §0.6 "camelCase on the wire" convention; asserts the
+    // snake_case keys are ABSENT. Also exercises the §7.2.3 `[DECIDED]` NativeCsvTsv-synthesized row shape
+    // (P2.111.2: `{ present: true, integrity_ok: true, runnable: Some(true) }`). A SERIALIZE pin
+    // (EngineHealth is outbound-only — no round-trip); constructing the full struct locks the field set at
+    // compile time (a field add/remove breaks this constructor).
+    #[test]
+    fn engine_health_wire_form_is_camelcase() {
+        use crate::domain::UserFacingFormat;
+
+        let health = EngineHealth {
+            engines: vec![
+                EngineStatus {
+                    id: EngineId::FFmpeg,
+                    present: true,
+                    integrity_ok: true,
+                    runnable: Some(true),
+                },
+                // §7.2.3/P2.111.2: the synthesized NativeCsvTsv always-available row.
+                EngineStatus {
+                    id: EngineId::NativeCsvTsv,
+                    present: true,
+                    integrity_ok: true,
+                    runnable: Some(true),
+                },
+            ],
+            unavailable_targets: vec![TargetId::Format(UserFacingFormat::Webp)],
+            all_critical_ok: true,
+        };
+        let json = serde_json::to_value(&health).expect("EngineHealth serializes");
+        assert_eq!(
+            json["engines"][0]["id"], "ffmpeg",
+            "§7.2.3: engines[] carries the per-engine EngineStatus rows"
+        );
+        assert_eq!(
+            json["engines"][1]["id"], "nativecsvtsv",
+            "§7.2.3/P2.111.2: the synthesized NativeCsvTsv row rides in engines[]"
+        );
+        assert_eq!(
+            json["engines"][1]["runnable"], true,
+            "§7.2.3/P2.111.2: the synthesized NativeCsvTsv row is always-available (runnable Some(true))"
+        );
+        assert_eq!(
+            json["unavailableTargets"][0]["format"], "webp",
+            "§0.6: unavailable_targets → camelCase unavailableTargets, each an externally-tagged TargetId"
+        );
+        assert_eq!(
+            json["allCriticalOk"], true,
+            "§0.6: all_critical_ok → camelCase allCriticalOk on the wire"
+        );
+        assert!(
+            json.get("unavailable_targets").is_none() && json.get("all_critical_ok").is_none(),
+            "§0.6: snake_case keys are NOT on the wire — camelCase only"
         );
     }
 }
