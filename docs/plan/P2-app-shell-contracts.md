@@ -407,7 +407,7 @@
 
 ## The C12 `EngineHealth` contract (probe body is P4)
 
-- [ ] **P2.110** [RUST] Author the `EngineStatus` type (`id`/`present`/`integrity_ok`/`runnable: Option<bool>`) · §7.2.3 §0.6
+- [x] **P2.110** [RUST] Author the `EngineStatus` type (`id`/`present`/`integrity_ok`/`runnable: Option<bool>`) · §7.2.3 §0.6
   needs: P2.13, P1.25
 - [ ] **P2.111** [RUST] Author the `EngineHealth` type (`engines`/`unavailable_targets`/`all_critical_ok`) — one row per registry-eligible engine · §7.2.3 §0.6
   needs: P2.110, P2.8.3
