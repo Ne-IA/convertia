@@ -409,10 +409,10 @@
 
 - [x] **P2.110** [RUST] Author the `EngineStatus` type (`id`/`present`/`integrity_ok`/`runnable: Option<bool>`) · §7.2.3 §0.6
   needs: P2.13, P1.25
-- [ ] **P2.111** [RUST] Author the `EngineHealth` type (`engines`/`unavailable_targets`/`all_critical_ok`) — one row per registry-eligible engine · §7.2.3 §0.6
+- [x] **P2.111** [RUST] Author the `EngineHealth` type (`engines`/`unavailable_targets`/`all_critical_ok`) — one row per registry-eligible engine · §7.2.3 §0.6
   needs: P2.110, P2.8.3
-  - [ ] **P2.111.1** [DOC] Record the non-trait-binary roll-up rule (`FFprobe`→FFmpeg, `ImageMagick`→`ImageCore`; no standalone `EngineStatus` row) · §7.2.3 §0.6
-  - [ ] **P2.111.2** [DOC] Record the `NativeCsvTsv` synthesized always-available `EngineStatus` (appended after the loop, never from it) · §7.2.3 §3.5.6
+  - [x] **P2.111.1** [DOC] Record the non-trait-binary roll-up rule (`FFprobe`→FFmpeg, `ImageMagick`→`ImageCore`; no standalone `EngineStatus` row) · §7.2.3 §0.6
+  - [x] **P2.111.2** [DOC] Record the `NativeCsvTsv` synthesized always-available `EngineStatus` (appended after the loop, never from it) · §7.2.3 §3.5.6
 - [x] **P2.112** [RUST] Author the `AppInfo` type (C11 return) — version/build_id/platform/third_party_notice · §7.2.3 §0.6
   needs: P2.132
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.132` points at the `Platform` enum box later in document order — `AppInfo.platform: Platform` (§7.2.3; the spec homes `Platform` in §3.2) has no type to embed until `Platform` (P2.132) exists, so DECISION C builds P2.132 first; the edge is acyclic and valid (P2.132 only `needs: P1.25`), the inversion documented at the `needs:` line.
