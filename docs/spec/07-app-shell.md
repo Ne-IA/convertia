@@ -219,7 +219,17 @@ section only fixes the *identity* embedded in it.)
 
 Steps 3–5 run in the Rust core during `setup`/just after; the window is only shown
 once they succeed, so a hard fault is shown as a clean fault dialog (§2.13), never
-a half-broken UI.
+a half-broken UI. **Mechanism `[DECIDED]` (P2.106.6):** the single `main` window is
+config-declared **`visible: false`** in `tauri.conf.json` (created hidden, not by a
+programmatic builder — §7.3.1), and the core reveals it (`get_webview_window("main")`
+→ `.show()`) **only on the readiness-gate success path** (steps 3–5 `Ok`); a readiness
+fault instead skips this normal reveal and hands the app-level fault to the §2.13.3
+presentation, which owns *how* the fault surfaces at this boundary — the concrete
+mechanism (`app://fault`→WebView vs a native surface, and thus whether the window is
+shown to render the fault screen) is a subsequent box, not fixed here. `get_webview_window("main")`
+returning `None` at step 6 is the core-observable WebView-init fault seam (missing/old
+WKWebView / WebKitGTK, §0.3.1); surfacing that as an app-level fault is a subsequent
+box (`needs:` step 6).
 
 ### 7.2.2 Offline assertion at startup `[DECIDED]`
 
@@ -553,7 +563,10 @@ equivalent; ordinary filesystem ACL denials map to the same §2.8 error kind.
   scan** structurally asserts the CONFIG side of this — exactly one `main` window,
   `app.trayIcon` absent, and no programmatic window-builder in the production source
   (the broader "no tray/agent API anywhere" is a plain code absence, not a positive
-  scan assertion). The closing → quit leg is the §7.3.2 `CloseRequested` → §7.3.3
+  scan assertion). The same `window_model` module also carries the **§7.2.1-step-6
+  `visible: false` reveal-gating assertion** (P2.106.6) — a startup-sequence fact
+  (the window ships hidden and the core reveals it only after readiness), distinct
+  from this no-tray posture, homed there because both are config-declared window facts. The closing → quit leg is the §7.3.2 `CloseRequested` → §7.3.3
   confirm-guard → `RunEvent::Exit` lifecycle (P2.78–P2.82); the release-time
   no-system-pollution proof is the §6.10 row-21 gate (P10). No box adds a tray, a
   background/agent mode, a login-item, or a persisted window (§7.4) in the v1 line.

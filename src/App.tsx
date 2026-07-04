@@ -18,6 +18,13 @@
 // shell. ORDERING (the §7.8.1 listener race): P2.120 inserts the three §5.8 `app://` listener-registration
 // effect BEFORE this call — the drain must run AFTER listener registration, so a future
 // `useAppEvents()` (P2.120) is placed above `useLaunchDrain()`. [Build-Session-Entscheidung: P2.61]
+//
+// This root render IS §7.2.1 step 8 — "hand to UI empty/idle state (§5.2)": the terminal step of the ordered
+// startup sequence (src-tauri `main()`'s spine, P2.106). After the Rust core reveals the window (step 6) and
+// feeds launch intake (step 7), control passes to this React shell, which renders the §5.2 `Idle` empty state
+// (the `<main>` landmark; the §5.7 reassurance copy + the 12-state screens land P3–P8) AND completes the
+// readiness handshake — `useLaunchDrain` re-calls C1 `drainPending`, which flips the core `FrontendReady`
+// flag via `mark_ready` (P2.60) so buffered launch paths replay. [Build-Session-Entscheidung: P2.106.8]
 import { useLaunchDrain } from "./hooks/useLaunchDrain";
 
 export function App() {

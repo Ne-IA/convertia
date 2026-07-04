@@ -40,7 +40,7 @@ mod run;
 
 use std::path::PathBuf;
 
-use tauri::{Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_log::{log::LevelFilter, RotationStrategy, Target, TargetKind};
 
 use crate::domain::{
@@ -399,6 +399,97 @@ fn resolve_log_verbosity(app: &tauri::AppHandle) {
     } else {
         LevelFilter::Info
     });
+}
+
+// ── §7.2.1 ordered startup spine (steps 3–6 + the §2.13.3 fault presentation, P2.106) ──────────────────────
+// These are the AppHandle-coupled boot-glue fns the `main()` `setup` closure sequences into the §7.2.1 order.
+// The three readiness SLOTs (steps 3–5) return Ok now — their bodies are the P4 engine + §2.6 layer — so the
+// window is revealed (step 6) on the ready path; when the bodies land, a failing step yields an app-level
+// `AppFault` the setup match routes to `present_startup_fault` (§2.13.3), leaving the window hidden. Every fn
+// here carries an `AppHandle` in its signature (the P2.135 G28 boot-glue exemption is signature-based) and is
+// covered by the boot-stage pattern (source-scan + signature pins, not `tauri::test` execution — §1.1a),
+// because this crate ships no `tauri::test` mock harness.
+
+/// [Build-Session-Entscheidung: P2.106.3] §7.2.1 step 3 — the §7.2.3 engine presence + integrity verification
+/// SLOT. The verifier BODY — iterate the §3.3.1 externalBin binary list (`ffmpeg`/`ffprobe`/`soffice`/
+/// `pdftotext`/`pandoc`/`convertia-imgworker`, the bare runtime names + `.exe` on Windows), resolve each under
+/// the resource dir, and hash-on-first-launch against the bundled manifest with the cheap size/magic warm
+/// check (§7.2.3) — lands with the P4 engine layer; a missing/corrupt REQUIRED engine becomes an
+/// `EngineMissing`/`BundleDamaged` `AppFault` (§2.13) routed to `present_startup_fault`. Returning `Ok(())`
+/// wires the readiness gate structurally without asserting engines P2 has not staged. AppHandle-coupled
+/// boot-glue (§1.1a; signature-pinned + G28-exempt).
+fn verify_engine_presence(_app: &AppHandle) -> Result<(), AppFault> {
+    Ok(())
+}
+
+/// [Build-Session-Entscheidung: P2.106.4] §7.2.1 step 4 — the §7.2.4 executable-permission setup SLOT for the
+/// portable build. The BODY — on macOS/Linux ensure each bundled engine binary carries the execute bit
+/// (idempotent `+x`, §7.2.4; a no-op on Windows, where sidecar `.exe`s run as-is) — lands with the P4 engine
+/// layer; a permission failure is an app-level `AppFault`. Returning `Ok(())` wires the ordered gate; the
+/// engines it would `chmod` are staged in P4. AppHandle-coupled boot-glue (§1.1a; signature-pinned + G28-exempt).
+fn ensure_engine_permissions(_app: &AppHandle) -> Result<(), AppFault> {
+    Ok(())
+}
+
+/// [Build-Session-Entscheidung: P2.106.5] §7.2.1 step 5 — the §7.2.5 scratch + log dir creation SLOT with the
+/// §7.1.2 per-instance root, plus the §2.6 orphan-reclaim SLOT (remove a previous crashed run's residue, keyed
+/// by the §2.6.3 held-lock liveness predicate so a concurrent instance's live temp is never touched). The BODY
+/// — create the per-instance scratch root + log dir on first need and reclaim orphaned roots — is owned by the
+/// §2.6 kernel (P3) + the P4 engine layer; NO directory is created here (§7.2.1 step 2 only RESOLVED the base
+/// paths). Returning `Ok(())` wires the ordered gate. AppHandle-coupled boot-glue (§1.1a; signature-pinned +
+/// G28-exempt).
+fn prepare_scratch_and_log(_app: &AppHandle) -> Result<(), AppFault> {
+    Ok(())
+}
+
+/// [Build-Session-Entscheidung: P2.106] §7.2.1 the readiness gate — steps 3 → 4 → 5 in order, short-circuiting
+/// on the first `AppFault` via `?`: engine presence + integrity (3), executable-permission setup (4), scratch +
+/// log creation + orphan reclaim (5). The `main` window is revealed (step 6) ONLY when this returns `Ok` — the
+/// §7.2.1 "the window is only shown once they succeed" contract — so a hard startup fault is presented as a
+/// clean §2.13 screen, never a half-broken UI. Each step is a SLOT returning `Ok` now (bodies P3/P4), so the
+/// gate passes; when the bodies land, a failing step yields the app-level fault the `setup` match presents.
+/// AppHandle-coupled boot-glue (§1.1a; signature-pinned + G28-exempt).
+fn readiness_checks(app: &AppHandle) -> Result<(), AppFault> {
+    verify_engine_presence(app)?;
+    ensure_engine_permissions(app)?;
+    prepare_scratch_and_log(app)?;
+    Ok(())
+}
+
+/// [Build-Session-Entscheidung: P2.106.6] §7.2.1 step 6 — reveal the config-declared single `main` window
+/// (P1.16/P1.19, created HIDDEN via `visible: false` in `tauri.conf.json`) now that the readiness steps 3–5
+/// have passed. Showing it only here is the §7.2.1 "the window is only shown once they succeed" guarantee — a
+/// hard startup fault renders as a clean §2.13 fault screen, never a half-broken window. Resolving the window
+/// here is also the WebView-init fault observation point: `get_webview_window("main")` returning `None` means
+/// the WebView could not be created (a missing/old WKWebView / WebKitGTK, §0.3.1/§2.13); SURFACING that as an
+/// `app://fault` is P2.109 (which `needs:` this step), so this shell shows the window when present and P2.109
+/// fills the `None` arm. This is NOT a programmatic window builder — the window is config-declared (§7.3.1);
+/// this only shows the already-created one. AppHandle-coupled boot-glue (§1.1a; signature-pinned + G28-exempt).
+fn reveal_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        window.show().ok();
+    }
+}
+
+/// [Build-Session-Entscheidung: P2.106.3] §2.13.3 the app-level startup-fault presentation — the
+/// mechanism-INDEPENDENT shell the readiness gate routes a step fault to. It records the fault to the local log
+/// (§7.5; the §2.13 app-level fault is trace-free — the §2.13.3 `AppFault.message` is a pre-localised,
+/// trace-free calm line and `kind` is an enum, so this log line is redaction-safe) — a real action, never a
+/// silent drop. The user-facing
+/// PRESENTATION — the decided mechanism: emit the §0.4.2 `app://fault` event to the §5.8 WebView screen with a
+/// `PendingFault` buffer closing the first-frame race, a `WebviewFault` (where the WebView itself is the fault)
+/// falling back to a native surface — is the P2.109/P4 body; it is NOT emitted here, because emitting
+/// `app://fault` before the §5.8 listener is registered would lose it (the same race the buffer closes). `_app`
+/// is the handle the P2.109 presentation body emits/buffers through. Routed only from the readiness match's
+/// `Err` arm, which is runtime-dead until P4 fills the step-3–5 bodies (they return `Ok`), so no fault reaches
+/// this yet — no `AppFault` is constructed in production. AppHandle-coupled boot-glue (§1.1a; signature-pinned
+/// + G28-exempt).
+fn present_startup_fault(_app: &AppHandle, fault: AppFault) {
+    tauri_plugin_log::log::error!(
+        "§2.13 app-level startup fault [{:?}]: {}",
+        fault.kind,
+        fault.message
+    );
 }
 
 /// [Build-Session-Entscheidung: P2.40] The §7.8.1 launch-intake logic, homed with the Tauri host (§0.7:
@@ -1158,20 +1249,24 @@ fn main() -> tauri::Result<()> {
             // set_max_level (which this overrides) records nothing verbose unintentionally.
             resolve_log_verbosity(app.handle());
 
-            // ── §7.2.1 startup stages the bootable empty window needs ─────────────────────
-            // [Build-Session-Entscheidung: P1.15] P1 lands ONLY the compile-and-boot stages,
-            // NOT the §7.2.1 ordered spine: stage 1 (single-instance guard) is already real via
-            // the P1.14 plugin; the §7.2.1 step ORDER plus the engine-presence / exec-permission /
-            // scratch-reclaim / launch-intake / WebView-fault stages are the P2 startup-sequence
-            // cluster (later phases fill the bodies). Landed here: stage 2 + the stage-6 slot.
+            // ── §7.2.1 ordered startup sequence — the app-shell spine (steps 1–8, P2.106) ──────────────
+            // [Build-Session-Entscheidung: P2.106] P2.106 establishes the §7.2.1 order over the boot stages
+            // P1/P2 landed. Step 1 (single-instance guard) is registered FIRST on the Builder above (§7.1.1,
+            // P1.14/P2.51/P2.52) so it wins before any window. Steps 2–7 run here in order; the window is
+            // revealed (step 6) ONLY after the readiness steps 3–5 succeed (§7.2.1), so a hard startup fault
+            // renders as a clean §2.13 fault screen, never a half-broken UI; step 8 hands to the §5.2 Idle UI
+            // (the React root shell, P2.106.8). The step 3–5 readiness bodies are SLOTs the P4 engine + §2.6
+            // layer fill; a step fault is presented by `present_startup_fault` (the §2.13.3 mechanism, body
+            // P2.109/P4). The `mount_events` + `resolve_log_verbosity` calls above are the tauri-specta IPC
+            // seam + the §7.5.3 log level — infra the ordered §7.2.1 steps run after, not numbered steps.
 
-            // Stage 2 — establish the per-launch InstanceId as an app-managed SINGLETON (§7.1.2: a
+            // §7.2.1 step 2 — establish the per-launch InstanceId as an app-managed SINGLETON (§7.1.2: a
             // random v4, the spec's "app-managed singleton via app.manage(...)"; process-local — never
-            // persisted, never networked, §2.11) and resolve the three base dirs via app.path() (§7.2.1
-            // step 2: config / local-data scratch §2.14 / log §7.5). NO directory is created here
-            // (creation is §7.2.1 step 5). Each call below touches only local uuid + filesystem
-            // primitives, so the boot path opens no socket (§7.2.2; G29 first-party rule (g) backstops
-            // the whole tree; the boot-invariant test covers the top-of-file import surface).
+            // persisted, never networked, §2.11) and resolve the three base dirs via app.path() (config /
+            // local-data scratch §2.14 / log §7.5). NO directory is created here — directory creation is
+            // §7.2.1 step 5 (`prepare_scratch_and_log`). Each call below touches only local uuid + filesystem
+            // primitives, so the boot path opens no socket (§7.2.2; G29 first-party rule (g) backstops the
+            // whole tree; the boot-invariant test covers the top-of-file import surface).
             //
             // [Build-Session-Entscheidung: P2.47] InstanceId is its OWN managed singleton (resolved as
             // State<InstanceId> by the §2.14 scratch-naming / §2.6 cleanup consumers), NOT a
@@ -1186,20 +1281,29 @@ fn main() -> tauri::Result<()> {
             };
             app.manage(startup);
 
-            // Stage 6 — window-create slot. [Build-Session-Entscheidung: P1.16] §7.3.1 LOCKS the single
-            // `main` window as CONFIG-DECLARED (`tauri.conf.json -> app.windows[main]`, P1.19): Tauri
-            // auto-creates + shows it at startup ("created by Tauri at startup", §7.3.1), so the core
-            // adds no programmatic window-builder call here. This slot is therefore empty BY DESIGN, not
-            // unfinished; the §7.3.1 model is asserted structurally by the `window_model` test below. The
-            // loaded React frame arrives with P1.23 (`index.html`) + P1.31 (the React mount); the
-            // rendered-frame headed E2E is P9.
-
-            // Stage 7 (launch-intake) — [Build-Session-Entscheidung: P2.57] process THIS instance's
-            // first-launch argv (Windows / Linux `%F`/`%U`) through the §7.8.1 funnel as `LaunchArg`. Placed
-            // in `setup` as the launch-intake stage; the §7.2.1 ordered spine (P2.106) subsequently orders it
-            // as step 7 (after the window-create step). On macOS argv carries no file args (Open-with arrives
-            // via `RunEvent::Opened`, P2.56), so this is a no-op there.
-            launch_intake::forward_first_launch_argv(app.handle());
+            // §7.2.1 steps 3–7 — the readiness gate, the window reveal, and the launch-intake feed, in order.
+            // The three readiness SLOTs (engine presence + integrity 3 / exec-perm 4 / scratch + log + orphan
+            // reclaim 5) return `Ok` now (bodies P3/P4), so the ready path is taken; when P4 fills them a
+            // failing step yields an app-level `AppFault` the `Err` arm presents (§2.13.3) with the window
+            // still hidden. [Build-Session-Entscheidung: P2.106]
+            match readiness_checks(app.handle()) {
+                // §7.2.1 steps 3–5 passed → step 6: reveal the config-declared single `main` window (created
+                // HIDDEN via `visible: false`, P1.16/P1.19) — the "shown only after 3–5 succeed" rule (§7.2.1),
+                // so a hard fault is a clean §2.13 screen, never a half-broken UI — then step 7: feed THIS
+                // instance's first-launch argv (Windows / Linux `%F`/`%U`) through the §7.8.1 funnel as
+                // `LaunchArg` (P2.57; on macOS argv carries no file args — Open-with arrives via
+                // `RunEvent::Opened`, P2.56 — so a no-op there). §7.2.1 step 8 (hand to the §5.2 Idle UI) is
+                // then the WebView's: the React root shell (App.tsx) renders Idle + registers ready via the C1
+                // `drainPending` `mark_ready` handshake (P2.60/P2.61/P2.106.8).
+                Ok(()) => {
+                    reveal_main_window(app.handle());
+                    launch_intake::forward_first_launch_argv(app.handle());
+                }
+                // A readiness step faulted → present the §2.13.3 app-level startup fault (body P2.109/P4) and
+                // leave the window hidden — a clean fault screen, never a half-broken UI (§7.2.1). Runtime-dead
+                // until P4 fills the step-3–5 bodies (they return `Ok`), so no fault is lost meanwhile.
+                Err(fault) => present_startup_fault(app.handle(), fault),
+            }
 
             Ok(())
         })
@@ -1793,6 +1897,24 @@ mod window_model {
         );
     }
 
+    // §6.4.1 unit (G15): §7.2.1 step 6 — the `main` window is declared HIDDEN (`visible: false`) so the core
+    // reveals it (via `reveal_main_window`, P2.106.6) ONLY after the readiness steps 3–5 succeed ("the window
+    // is only shown once they succeed", §7.2.1). A regression dropping `visible: false` would show a
+    // half-broken window before readiness — exactly the §7.2.1 anti-pattern. [Build-Session-Entscheidung: P2.106.6]
+    #[test]
+    fn main_window_declared_hidden_until_readiness() {
+        let conf = tauri_conf();
+        let main = conf["app"]["windows"]
+            .as_array()
+            .and_then(|windows| windows.first())
+            .expect("§7.3.1: the single declared `main` window");
+        assert_eq!(
+            main["visible"],
+            Value::Bool(false),
+            "§7.2.1 step 6: the `main` window must be declared `visible: false` — shown only after readiness (steps 3–5, P2.106.6)"
+        );
+    }
+
     // §7.3.1: the single window is "created by Tauri at startup" from config — the core adds NO
     // programmatic window builder. Scan `all_production_source()` (the shared `boot_invariants` helper:
     // the pre-test-module prefix + `main()`'s body, every test module excluded so these needles can never
@@ -2306,5 +2428,106 @@ mod log_config {
                 .contains(concat!("resolve_log_", "verbosity(app.handle())")),
             "§7.5.3: main()'s setup must call resolve_log_verbosity (read-once-at-startup)"
         );
+    }
+}
+
+#[cfg(test)]
+mod startup_spine {
+    //! §7.2.1 ordered startup sequence — the app-shell spine (P2.106). Steps 3–5 are readiness SLOTs
+    //! (`Result<(), AppFault>`, `Ok` now — bodies P3/P4), step 6 reveals the config-declared window ONLY after
+    //! 3–5 succeed, step 7 feeds the launch intake, step 8 hands to the §5.2 Idle UI. AppHandle-coupled
+    //! boot-glue: this crate ships no `tauri::test` mock harness (the boot-stage pattern, test-strategy §1.1a),
+    //! so the spine is pinned by SIGNATURE coercion (a drift fails to compile) + a SOURCE SCAN of the
+    //! production `setup` ORDER (the runtime is the §1.6 launch-with-files E2E + the §6.4.6 window-shown leg).
+    //! [Build-Session-Entscheidung: P2.106]
+    use tauri::AppHandle;
+
+    use crate::outcome::AppFault;
+
+    // §6.4.1 unit (G15): the §7.2.1 step 3–6 spine fns exist with their spec'd signatures — the three readiness
+    // SLOTs + the gate return `Result<(), AppFault>` (a step fault is app-level, §2.13), `reveal_main_window`
+    // takes the `&AppHandle` (step 6), `present_startup_fault` takes the `&AppHandle` + the `AppFault` it
+    // presents (§2.13.3). A signature drift fails to compile — the boot-stage signature pin (these fns are not
+    // `tauri::test`-executed). [Build-Session-Entscheidung: P2.106]
+    #[test]
+    fn startup_spine_fns_have_their_spec_signatures() {
+        let _verify: fn(&AppHandle) -> Result<(), AppFault> = super::verify_engine_presence;
+        let _perm: fn(&AppHandle) -> Result<(), AppFault> = super::ensure_engine_permissions;
+        let _scratch: fn(&AppHandle) -> Result<(), AppFault> = super::prepare_scratch_and_log;
+        let _gate: fn(&AppHandle) -> Result<(), AppFault> = super::readiness_checks;
+        let _reveal: fn(&AppHandle) = super::reveal_main_window;
+        let _present: fn(&AppHandle, AppFault) = super::present_startup_fault;
+    }
+
+    // §6.4.1 unit (G15): the §7.2.1 readiness gate chains steps 3 → 4 → 5 in order (short-circuiting on the
+    // first `AppFault` via `?`). Scans `all_production_source()` (prefix + main body, every `cfg(test)` module
+    // excluded so these needles can never self-match). Needles `concat!`-assembled (self-match avoidance).
+    #[test]
+    fn readiness_gate_chains_steps_3_4_5_in_order() {
+        let src = crate::boot_invariants::all_production_source();
+        let step3 = src
+            .find(concat!("verify_engine_", "presence(app)?"))
+            .expect("§7.2.1: the readiness gate must run step 3 (engine presence + integrity)");
+        let step4 = src
+            .find(concat!("ensure_engine_", "permissions(app)?"))
+            .expect("§7.2.1: the readiness gate must run step 4 (executable-permission setup)");
+        let step5 = src
+            .find(concat!("prepare_scratch_and_", "log(app)?"))
+            .expect(
+            "§7.2.1: the readiness gate must run step 5 (scratch + log creation + orphan reclaim)",
+        );
+        assert!(
+            step3 < step4 && step4 < step5,
+            "§7.2.1: the readiness gate must chain steps 3 → 4 → 5 in that order"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §7.2.1 window-reveal ordering — `setup` reveals the window (step 6) and feeds the
+    // launch intake (step 7) ONLY on the `Ok` arm of the readiness gate (steps 3–5), so the window is "shown
+    // only after 3–5 succeed" (§7.2.1); a readiness fault routes to `present_startup_fault` (§2.13.3) with the
+    // window still hidden. Source-scan over `all_production_source()` (AppHandle-coupled boot-glue). Needles
+    // `concat!`-assembled. The `.find` offsets all land in `main()`'s body (the fn DEFS carry `(app:
+    // &AppHandle)`, only the setup CALL sites carry `(app.handle())`), so the ordering is over the setup calls.
+    #[test]
+    fn window_revealed_only_after_readiness_then_intake_fed() {
+        let src = crate::boot_invariants::all_production_source();
+        let gate = src
+            .find(concat!("match readiness_", "checks(app.handle())"))
+            .expect("§7.2.1: setup must gate on the readiness checks (steps 3–5)");
+        let reveal = src
+            .find(concat!("reveal_main_", "window(app.handle())"))
+            .expect("§7.2.1 step 6: setup must reveal the window after readiness");
+        let intake = src
+            .find(concat!("forward_first_launch_", "argv(app.handle())"))
+            .expect("§7.2.1 step 7: setup must feed the launch intake after the window reveal");
+        let present = src
+            .find(concat!("present_startup_", "fault(app.handle(), fault)"))
+            .expect("§2.13.3: a readiness fault must route to present_startup_fault");
+        assert!(
+            gate < reveal && reveal < intake,
+            "§7.2.1: the window reveal (step 6) + intake feed (step 7) must come AFTER the readiness gate, in order"
+        );
+        assert!(
+            gate < present,
+            "§2.13.3: the fault-presentation arm is part of the readiness match (window stays hidden on a fault)"
+        );
+    }
+
+    // §6.4.1 unit (G15): §7.2.1 step 6 — `reveal_main_window` SHOWS the config-declared `main` window (never a
+    // programmatic builder; `no_programmatic_window_builder` in `window_model` guards the negative, and
+    // `main_window_declared_hidden_until_readiness` pins the `visible: false` config). Pins that its body
+    // resolves the `main` window and calls `.show()`. Needles `concat!`-assembled (self-match avoidance).
+    #[test]
+    fn reveal_main_window_shows_the_config_declared_window() {
+        let src = crate::boot_invariants::all_production_source();
+        for needle in [
+            concat!("get_webview_", "window(\"main\")"), // resolves the config-declared window (§7.3.1)
+            concat!(".show", "()"), // shows it — step 6 reveal, unique to reveal_main_window
+        ] {
+            assert!(
+                src.contains(needle),
+                "§7.2.1 step 6: reveal_main_window must show the config-declared `main` window (missing `{needle}`)"
+            );
+        }
     }
 }
