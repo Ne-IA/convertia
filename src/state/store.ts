@@ -10,9 +10,10 @@
 // shell, not a quiet gap):
 //   - the §5.2 reducer finite-state machine that DRIVES `machine` is `state/machine.ts`
 //     (P3.53 slice subset → P4.80 all 12 states); this store only HOLDS the state value.
-//   - the live-progress wiring (the §5.8 `Channel<ConversionEvent>` → an `applyConvertEvent`
-//     reducer) and the `pendingVideoReencodeNote` population from `RunStarted.willReencode`
-//     are filled by P2.120's async model — so this shell carries NO actions yet.
+//   - the live-progress wiring — the §5.8 `Channel<ConversionEvent>` → the `applyConvertEvent`
+//     reducer (the per-item `progress` map) + the `pendingVideoReencodeNote` keep/clear from
+//     `RunStarted.willReencode` — is LANDED by P2.120 (the store's first action, the pure
+//     `reduceConvertEvent` below); the §5.2 `machine` reducer dispatch stays P3.53's.
 //   - the per-feature shell types below are minimal P1 seams the named boxes expand;
 //     §0.6 is the Rust source of truth for the domain model, mirrored to the WebView via the
 //     §0.4.5 generated `bindings.ts` (the typed IPC door), which is empty of these DTOs until
@@ -21,7 +22,7 @@
 // this is the in-memory frontend app store. [Build-Session-Entscheidung: P1.31]
 import { create } from "zustand";
 
-import type { EngineHealth, ItemId, TargetId } from "../lib/ipc/commands";
+import type { ConversionEvent, EngineHealth, ItemId, TargetId } from "../lib/ipc/commands";
 
 // ─── shell domain types (expanded/replaced by the named owning boxes) ───────────────
 
@@ -48,7 +49,9 @@ export type ItemProgress = { readonly fraction: number | null; readonly done: bo
 
 // ─── the store shape ───────────────────────────────────────────────────────────────────────
 
-export interface AppStore {
+/** The DATA slice of the §5.1 store (state only). Split from the full {@link AppStore} so the pure
+ *  `reduceConvertEvent` can take/return it without depending on the actions. */
+export interface AppState {
   /** Current §5.2 screen state (driven by the P3.53 reducer once it lands). */
   readonly machine: ScreenState;
   /** The frozen collected batch, or `null` before intake. */
@@ -72,7 +75,18 @@ export interface AppStore {
   readonly engineHealth: EngineHealth | null;
 }
 
-const initialAppState: AppStore = {
+/** The §5.1 shared app store = the {@link AppState} data + the state-mutating actions its owning boxes add.
+ *  P1 held only data; P2.120 lands the first action (`applyConvertEvent`); the §5.2 `machine` reducer dispatch
+ *  is added by P3.53. Subscribe with a SELECTOR (§1.10). */
+export interface AppStore extends AppState {
+  /** [P2.120] Reduce one §0.4.2 `ConversionEvent` — the §5.8 `start_conversion` `Channel<ConversionEvent>`
+   *  stream — into the store: the per-item `progress` map from `itemStarted`/`itemProgress`/`itemFinished`,
+   *  and the §5.8 keep/clear of `pendingVideoReencodeNote` on `runStarted.willReencode`. It writes NO other
+   *  field (the §1.11 aggregate batch bar + the §1.12 terminal `RunResult` are the P3.53 machine's, §5.8). */
+  readonly applyConvertEvent: (event: ConversionEvent) => void;
+}
+
+const initialAppState: AppState = {
   machine: { tag: "idle" },
   batch: null,
   chosenTarget: null,
@@ -82,12 +96,58 @@ const initialAppState: AppStore = {
   engineHealth: null,
 };
 
-/** The §5.1 shared app store. Subscribe with a SELECTOR — `useAppStore((s) => s.machine)` —
- *  so a component re-renders only when its selected slice changes (§1.10 selector granularity),
- *  never on every store write. P1 is a read-only shell: the state-mutating actions (the §5.2
- *  reducer dispatch, the §5.8 `applyConvertEvent`) are added by their owning boxes (P3.53 /
- *  P2.120), which expand `AppStore` with their action signatures. */
-export const useAppStore = create<AppStore>()(() => ({ ...initialAppState }));
+/** The §5.1 shared app store. Subscribe with a SELECTOR — `useAppStore((s) => s.machine)` — so a component
+ *  re-renders only when its selected slice changes (§1.10 selector granularity), never on every store write.
+ *  P2.120 adds the first action, `applyConvertEvent` (a thin `set` over the pure `reduceConvertEvent`); the
+ *  §5.2 `machine` reducer dispatch is added by P3.53. */
+export const useAppStore = create<AppStore>()((set) => ({
+  ...initialAppState,
+  applyConvertEvent: (event) => set((state) => reduceConvertEvent(state, event)),
+}));
+
+/** The pure §5.8 progress reducer behind `applyConvertEvent` — `(state, event) → changed slice` so it is
+ *  unit-testable without a live store (zustand `set` merges the returned partial). Exhaustive over the six
+ *  §0.4.2 `ConversionEvent` variants; the two the P2 store holds no field for (`batchProgress`, `runFinished`)
+ *  return an empty slice with their real consumer named. [Build-Session-Entscheidung: P2.120] */
+export function reduceConvertEvent(state: AppState, event: ConversionEvent): Partial<AppState> {
+  switch (event.type) {
+    case "runStarted":
+      // §5.8: `willReencode` KEEPS the step-4 `pendingVideoReencodeNote` (whose text P4.65 sets) or CLEARS it
+      // when the run took the lossless remux path. The per-run `progress` reset on Converting-entry is the
+      // P3.53 machine's job, not this reducer.
+      return event.data.willReencode ? {} : { pendingVideoReencodeNote: null };
+    case "itemStarted":
+      // §1.9 Pending→Running: a determinate row, no fraction reported.
+      return {
+        progress: { ...state.progress, [event.data.itemId]: { fraction: null, done: false } },
+      };
+    case "itemProgress":
+      return {
+        progress: {
+          ...state.progress,
+          [event.data.itemId]: { fraction: event.data.fraction, done: false },
+        },
+      };
+    case "itemFinished":
+      // §1.9 terminal per item: the row is done. The OUTCOME (Succeeded/Failed/Skipped/Cancelled) is surfaced
+      // by the §1.12 Summary/RunResult (P3.53 machine), not this minimal live bar.
+      return { progress: { ...state.progress, [event.data.itemId]: { fraction: 1, done: true } } };
+    case "batchProgress":
+      // §1.11 aggregate batch bar — no §5.1 store field; its render is the P3.53 ProgressList's. No store effect.
+      return {};
+    case "runFinished":
+      // §1.12 terminal RunResult → Summary (state 8) is the P3.53 machine + the C8 re-fetch. No §5.1 store field.
+      return {};
+    default:
+      return assertNever(event);
+  }
+}
+
+/** Exhaustiveness guard: a new `ConversionEvent` variant reaching here fails to compile (`event: never`), so
+ *  `reduceConvertEvent` can never silently drop an event. Unreachable by construction. */
+function assertNever(event: never): never {
+  throw new Error(`unhandled ConversionEvent variant: ${String(event)}`);
+}
 
 /** A module-level stable-empty sentinel: the `engineHealth === null` branch of
  *  `selectUnavailableTargets` MUST return a referentially-stable `[]`. A fresh `[]` literal per call

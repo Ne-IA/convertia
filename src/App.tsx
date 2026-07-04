@@ -14,10 +14,10 @@
 // model). The machine-state switch that selects a screen is wired when `state/machine.ts`
 // lands (P3.53). [Build-Session-Entscheidung: P1.31]
 //
-// P2.61 wires the §7.8.1 root-shell-mount first-launch drain trigger (`useLaunchDrain`) here at the root
-// shell. ORDERING (the §7.8.1 listener race): P2.120 inserts the three §5.8 `app://` listener-registration
-// effect BEFORE this call — the drain must run AFTER listener registration, so a future
-// `useAppEvents()` (P2.120) is placed above `useLaunchDrain()`. [Build-Session-Entscheidung: P2.61]
+// P2.61 wired the §7.8.1 root-shell-mount first-launch drain trigger (`useLaunchDrain`); P2.120 adds
+// `useAppEvents()` — the three §5.8 `app://` listener registrations — ABOVE it, because the drain must run
+// AFTER the `app://intake` listener exists (the §7.8.1 listener race). ORDERING is load-bearing: keep
+// `useAppEvents()` before `useLaunchDrain()`. [Build-Session-Entscheidung: P2.120]
 //
 // This root render IS §7.2.1 step 8 — "hand to UI empty/idle state (§5.2)": the terminal step of the ordered
 // startup sequence (src-tauri `main()`'s spine, P2.106). After the Rust core reveals the window (step 6) and
@@ -25,9 +25,11 @@
 // (the `<main>` landmark; the §5.7 reassurance copy + the 12-state screens land P3–P8) AND completes the
 // readiness handshake — `useLaunchDrain` re-calls C1 `drainPending`, which flips the core `FrontendReady`
 // flag via `mark_ready` (P2.60) so buffered launch paths replay. [Build-Session-Entscheidung: P2.106.8]
+import { useAppEvents } from "./hooks/useAppEvents";
 import { useLaunchDrain } from "./hooks/useLaunchDrain";
 
 export function App() {
+  useAppEvents();
   useLaunchDrain();
   return <main />;
 }

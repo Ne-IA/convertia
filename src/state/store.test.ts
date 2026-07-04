@@ -1,8 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 
-import type { EngineHealth } from "../lib/ipc/commands";
+import type { ConversionEvent, EngineHealth, RunResult } from "../lib/ipc/commands";
 
-import { selectUnavailableTargets, useAppStore, type AppStore } from "./store";
+import { reduceConvertEvent, selectUnavailableTargets, useAppStore, type AppStore } from "./store";
 
 // §6.4.6 unit (G15): the P2.114 `EngineHealth` → `unavailableTargets` store-selector seam (§7.2.3 / §5.1).
 // The store holds the FULL cached C12 `EngineHealth`; `selectUnavailableTargets` is the §1.10 read-seam the
@@ -46,5 +46,114 @@ describe("selectUnavailableTargets (P2.114 §7.2.3 store-selector seam)", () => 
     const health: EngineHealth = { engines: [], unavailableTargets: [], allCriticalOk: true };
     const state: AppStore = { ...useAppStore.getState(), engineHealth: health };
     expect(selectUnavailableTargets(state)).toEqual([]);
+  });
+});
+
+// §6.4.6 unit (G15): the P2.120 `applyConvertEvent` progress reducer (§5.8 / §0.4.2). `reduceConvertEvent` is
+// the pure `(state, event) → changed slice` behind the store action, tested directly for every ConversionEvent
+// variant; one integration test drives the live store action. [Build-Session-Entscheidung: P2.120]
+describe("reduceConvertEvent (P2.120 §5.8 ConversionEvent reducer)", () => {
+  // A clean data baseline independent of test order (the pure reducer never mutates the store).
+  const pristine = (): AppStore => ({
+    ...useAppStore.getState(),
+    progress: {},
+    pendingVideoReencodeNote: null,
+  });
+
+  it("clears pendingVideoReencodeNote on runStarted when willReencode is false (§5.8 lossless remux path)", () => {
+    const state: AppStore = { ...pristine(), pendingVideoReencodeNote: "will re-encode video" };
+    const event: ConversionEvent = {
+      type: "runStarted",
+      data: { runId: "r1", totalItems: 2, willReencode: false },
+    };
+    expect(reduceConvertEvent(state, event)).toEqual({ pendingVideoReencodeNote: null });
+  });
+
+  it("keeps pendingVideoReencodeNote on runStarted when willReencode is true (worst-case note stands)", () => {
+    const state: AppStore = { ...pristine(), pendingVideoReencodeNote: "will re-encode video" };
+    const event: ConversionEvent = {
+      type: "runStarted",
+      data: { runId: "r1", totalItems: 2, willReencode: true },
+    };
+    // keep = the reducer returns a slice that does not touch the field.
+    expect(reduceConvertEvent(state, event)).toEqual({});
+  });
+
+  it("adds a determinate no-fraction row on itemStarted", () => {
+    const event: ConversionEvent = {
+      type: "itemStarted",
+      data: { runId: "r1", itemId: 1, sourcePath: "/a.csv", target: { format: "tsv" } },
+    };
+    expect(reduceConvertEvent(pristine(), event)).toEqual({
+      progress: { 1: { fraction: null, done: false } },
+    });
+  });
+
+  it("upserts the live fraction on itemProgress, merging with prior rows", () => {
+    const state: AppStore = { ...pristine(), progress: { 0: { fraction: 1, done: true } } };
+    const event: ConversionEvent = {
+      type: "itemProgress",
+      data: { runId: "r1", itemId: 1, fraction: 0.5, stage: "encoding" },
+    };
+    expect(reduceConvertEvent(state, event)).toEqual({
+      progress: { 0: { fraction: 1, done: true }, 1: { fraction: 0.5, done: false } },
+    });
+  });
+
+  it("preserves a null (indeterminate) fraction on itemProgress (§1.11 LibreOffice)", () => {
+    const event: ConversionEvent = {
+      type: "itemProgress",
+      data: { runId: "r1", itemId: 1, fraction: null, stage: "decoding" },
+    };
+    expect(reduceConvertEvent(pristine(), event)).toEqual({
+      progress: { 1: { fraction: null, done: false } },
+    });
+  });
+
+  it("marks the row done on itemFinished (any terminal outcome)", () => {
+    const event: ConversionEvent = {
+      type: "itemFinished",
+      data: { runId: "r1", itemId: 1, outcome: "cancelled" },
+    };
+    expect(reduceConvertEvent(pristine(), event)).toEqual({
+      progress: { 1: { fraction: 1, done: true } },
+    });
+  });
+
+  it("makes no store change on batchProgress (the §1.11 aggregate bar has no P2 store field)", () => {
+    const event: ConversionEvent = {
+      type: "batchProgress",
+      data: { runId: "r1", done: 1, total: 2 },
+    };
+    expect(reduceConvertEvent(pristine(), event)).toEqual({});
+  });
+
+  it("makes no store change on runFinished (the §1.12 Summary is the P3.53 machine + C8)", () => {
+    const runResult: RunResult = {
+      collectedSetId: "cs1",
+      runId: "r1",
+      items: [],
+      totals: { succeeded: 0, failed: 0, cancelled: 0, skipped: 0 },
+      cleanupIncomplete: [],
+      commonRoot: "/out",
+      divertRoot: null,
+    };
+    const event: ConversionEvent = { type: "runFinished", data: runResult };
+    expect(reduceConvertEvent(pristine(), event)).toEqual({});
+  });
+});
+
+describe("applyConvertEvent (P2.120 live store action)", () => {
+  afterEach(() => {
+    // reset the singleton's reducer-touched fields so tests stay isolated.
+    useAppStore.setState({ progress: {}, pendingVideoReencodeNote: null });
+  });
+
+  it("drives the live store — an itemProgress tick lands in the progress map", () => {
+    useAppStore.getState().applyConvertEvent({
+      type: "itemProgress",
+      data: { runId: "r1", itemId: 1, fraction: 0.25, stage: "writing" },
+    });
+    expect(useAppStore.getState().progress).toEqual({ 1: { fraction: 0.25, done: false } });
   });
 });

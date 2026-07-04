@@ -2,11 +2,14 @@ import { describe, it, expect, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { axe } from "vitest-axe";
 
-// P2.61: App now fires the §7.8.1 first-launch drain on mount (`useLaunchDrain`). Mock the §5.8 IPC helper so
-// this a11y render stays hermetic — jsdom has no Tauri runtime, so the real `Channel`/`invoke` throws. The
-// drain CALL is covered by `lib/ipc/events.test.ts`; here App just renders + the mount effect runs harmlessly.
+// P2.61/P2.120: App fires two §5.8 IPC mount effects — `useLaunchDrain` (first-launch drain) and
+// `useAppEvents` (the three `app://` listener registrations). Mock the §5.8 IPC façade so this a11y render
+// stays hermetic — jsdom has no Tauri runtime, so the real `Channel`/`invoke`/`listen` throws. The behaviour
+// of each helper is covered in `lib/ipc/events.test.ts`; here App just renders + both mount effects run
+// harmlessly. [Build-Session-Entscheidung: P2.120]
 vi.mock("./lib/ipc/events", () => ({
   drainPendingIntake: () => Promise.resolve({ empty: { skipped: [] } }),
+  subscribeAppEvents: () => Promise.resolve(() => {}),
 }));
 
 import { App } from "./App";
