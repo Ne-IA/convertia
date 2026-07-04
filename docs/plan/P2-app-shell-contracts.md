@@ -424,12 +424,17 @@
 
 ## §7.8.2 explicit negatives (DoD gate 20)
 
-- [ ] **P2.115** [DOC] Record the no-file-association / no-default-handler-claim negative (no `.heic`/`.docx` handler registration) · §7.8.2
-- [ ] **P2.116** [DOC] Record the no-URL-scheme / no-deep-link negative (no `convertia://`, no deep-link plugin) · §7.8.2
-- [ ] **P2.117** [DOC] Record the no-drag-out / no-clipboard-export negative (parked under Future Ideas; WebView cannot originate a real path drag) · §7.8.2
-- [ ] **P2.118** [DOC] Record the no-service / no-login-item / no-shell-extension negative (no Explorer/Quick-Action integration) · §7.8.2
-- [ ] **P2.119** [GATE] Assert the §7.8.2 negatives structurally (no deep-link block, no URL-scheme registration under `src-tauri/`) — the DoD-gate-20 enforcement · §7.8.2 §0.10 · G47
+- [x] **P2.115** [DOC] Record the no-file-association / no-default-handler-claim negative (no `.heic`/`.docx` handler registration) · §7.8.2
+  > **Reconcile (P2.114-session):** delivered — recorded in spec §7.8.2 (07-app-shell.md, `[DECIDED]`) bullet 1 "Register any file associations / default-handler claims", authored in the spec-fill (6199a5f) ahead of this box. Spec > plan: nothing to re-author; box closed as a dup.
+- [x] **P2.116** [DOC] Record the no-URL-scheme / no-deep-link negative (no `convertia://`, no deep-link plugin) · §7.8.2
+  > **Reconcile (P2.114-session):** delivered — recorded in spec §7.8.2 bullet 2 "Register any URL scheme / deep link" (no `convertia://`, no deep-linking plugin; single-instance is dedup/hand-off only), authored in the spec-fill (6199a5f). Spec > plan: nothing to re-author; box closed as a dup.
+- [x] **P2.117** [DOC] Record the no-drag-out / no-clipboard-export negative (parked under Future Ideas; WebView cannot originate a real path drag) · §7.8.2
+  > **Reconcile (P2.114-session):** delivered — recorded in spec §7.8.2 bullets 3+4 (drag-out parked under *Future Ideas*, the WebView cannot originate a real filesystem-path drag; no clipboard export of results), authored in the spec-fill (6199a5f). Spec > plan: nothing to re-author; box closed as a dup.
+- [x] **P2.118** [DOC] Record the no-service / no-login-item / no-shell-extension negative (no Explorer/Quick-Action integration) · §7.8.2
+  > **Reconcile (P2.114-session):** delivered — recorded in spec §7.8.2 bullet 5 "Run as a service / login item / scheduled task / shell-extension" (no Explorer context-menu, no Quick Action), authored in the spec-fill (6199a5f). Spec > plan: nothing to re-author; box closed as a dup.
+- [x] **P2.119** [GATE] Assert the §7.8.2 negatives structurally (no deep-link block, no URL-scheme registration under `src-tauri/`) — the DoD-gate-20 enforcement · §7.8.2 §0.10 · G47
   needs: P1.24, P2.116
+  > **Reconcile (P2.114-session):** delivered — this box's scope (no `plugins.deep-link` block + no custom URL-scheme registration in `Info.plist`/`.desktop`/`.reg` under `src-tauri/`) is already enforced by G47 `check-csp-capabilities` with its `g24-csp-capabilities.py` self-test, delivered P0.3.2. Scope is deep-link + URL-scheme ONLY; the file-association-absence / macOS-OS-floor legs added in 4ba805e belong to P1.19.4/P1.24, not this box. Nothing to build; box closed as a dup.
 
 ## Shell-level a11y, English-only, UI-async & IPC-responsiveness contracts
 
