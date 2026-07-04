@@ -386,16 +386,17 @@
 
 ## Startup sequence ordering (§7.2.1) — the app-shell spine
 
-- [ ] **P2.106** [RUST] Establish the §7.2.1 ordered startup sequence as the shell spine (steps 1–8, window shown only after steps 3–5 succeed) · §7.2.1 §2.13
+- [x] **P2.106** [RUST] Establish the §7.2.1 ordered startup sequence as the shell spine (steps 1–8, window shown only after steps 3–5 succeed) · §7.2.1 §2.13
   needs: P1.15, P2.51, P2.78, P2.81
-  - [ ] **P2.106.1** [RUST] Step 1 — single-instance guard registered first (second launch hands off + exits) · §7.2.1 §7.1.1
-  - [ ] **P2.106.2** [RUST] Step 2 — establish `InstanceId` + resolve base paths (config/scratch/log) via `app.path()`, no dir created yet · §7.2.1 §7.1.2
-  - [ ] **P2.106.3** [RUST] Step 3 — engine presence+integrity verification SLOT (app-level fault on failure; verifier body P4) · §7.2.1 §7.2.3
-  - [ ] **P2.106.4** [RUST] Step 4 — executable-permission setup SLOT on the engine binaries (portable build; body P4) · §7.2.1 §7.2.4
-  - [ ] **P2.106.5** [RUST] Step 5 — scratch + log dir creation with the per-instance root + orphan-reclaim SLOT (mechanism §2.6, body P3/P4) · §7.2.1 §7.2.5 §2.6
-  - [ ] **P2.106.6** [RUST] Step 6 — WebView window create + frontend load (WebView-init fault where the core can observe it) · §7.2.1 §0.3.1
-  - [ ] **P2.106.7** [RUST] Step 7 — process launch-time intake feed (argv / PendingIntake drain → §1.1) · §7.2.1 §7.8.1
-  - [ ] **P2.106.8** [UI] Step 8 — hand to the UI empty/idle state · §7.2.1 §5.2
+  > **Delivered (cbf3ef8):** the §7.2.1 ordered spine in `main()`'s `setup` — step 2 (InstanceId singleton + base-path resolve, no dir created), the readiness gate `readiness_checks` {steps 3–5 named `&AppHandle` SLOTs → `Result<(), AppFault>`, `Ok` now, bodies P3/P4}, step 6 `reveal_main_window` (config-declared `visible: false` + `.show()` on the `Ok` arm only), step 7 launch-intake feed, step 8 the §5.2 Idle handoff (`App.tsx`). `present_startup_fault` = the mechanism-independent §2.13.3 shell (records the fault locally now, §7.5; the app://fault→WebView + PendingFault-buffer / native presentation is the P2.109/P4 body). Boot-stage tests (§1.1a): `startup_spine` signature-coercion + ordering source-scan pins, `window_model` asserts `visible: false`; `App.test.tsx` pins the step-8 Idle landmark + ready-drain. Spec-synced §7.2.1 (the reveal mechanism) + §7.3.1 (the `window_model` enumeration). Both G1 reviewers GO — fixed: opus P2 spec-sync + the §7.2.1 window-surface over-commitment (softened to defer to P2.109), sonnet P3 `present_startup_fault` §2.13.2→§7.5 citation; residual for P2.109: record the decided app://fault→WebView mechanism (Y) in §7.2.1/§2.13.3 + align the code comment (SSOT>spec>code).
+  - [x] **P2.106.1** [RUST] Step 1 — single-instance guard registered first (second launch hands off + exits) · §7.2.1 §7.1.1
+  - [x] **P2.106.2** [RUST] Step 2 — establish `InstanceId` + resolve base paths (config/scratch/log) via `app.path()`, no dir created yet · §7.2.1 §7.1.2
+  - [x] **P2.106.3** [RUST] Step 3 — engine presence+integrity verification SLOT (app-level fault on failure; verifier body P4) · §7.2.1 §7.2.3
+  - [x] **P2.106.4** [RUST] Step 4 — executable-permission setup SLOT on the engine binaries (portable build; body P4) · §7.2.1 §7.2.4
+  - [x] **P2.106.5** [RUST] Step 5 — scratch + log dir creation with the per-instance root + orphan-reclaim SLOT (mechanism §2.6, body P3/P4) · §7.2.1 §7.2.5 §2.6
+  - [x] **P2.106.6** [RUST] Step 6 — WebView window create + frontend load (WebView-init fault where the core can observe it) · §7.2.1 §0.3.1
+  - [x] **P2.106.7** [RUST] Step 7 — process launch-time intake feed (argv / PendingIntake drain → §1.1) · §7.2.1 §7.8.1
+  - [x] **P2.106.8** [UI] Step 8 — hand to the UI empty/idle state · §7.2.1 §5.2
 - [ ] **P2.107** [RUST] Implement the §7.2.2 offline assertion at startup (the shell adds ZERO startup network activity) · §7.2.2 §2.11
   needs: P2.106
 - [ ] **P2.108** [DOC] Record the Windows-WebView2-absent honest-exception (loader fails before the core; download-page note, no in-app dialog) · §7.2.1 §0.3.1
