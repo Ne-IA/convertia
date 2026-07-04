@@ -21,7 +21,7 @@
 // this is the in-memory frontend app store. [Build-Session-Entscheidung: P1.31]
 import { create } from "zustand";
 
-import type { ItemId } from "../lib/ipc/commands";
+import type { EngineHealth, ItemId, TargetId } from "../lib/ipc/commands";
 
 // ─── shell domain types (expanded/replaced by the named owning boxes) ───────────────
 
@@ -64,6 +64,12 @@ export interface AppStore {
    *  `Target.lossy` at the Targets step (4), carried 4→7, then kept or cleared (`null`) by
    *  `RunStarted.willReencode`. `null` when no worst-case re-encode note applies. */
   readonly pendingVideoReencodeNote: string | null;
+  /** The cached C12 `EngineHealth` (§7.2.3), or `null` before the §7.2.3 startup probe (P4.45) has
+   *  populated it. The FULL health object is held — not only the target-id set — so P4.70.2's
+   *  disable-with-REASON FormatPicker tiles derive BOTH the unavailable set AND its per-target reason
+   *  from this one field. Read through `selectUnavailableTargets` (§1.10 selector granularity).
+   *  [Build-Session-Entscheidung: P2.114] */
+  readonly engineHealth: EngineHealth | null;
 }
 
 const initialAppState: AppStore = {
@@ -73,6 +79,7 @@ const initialAppState: AppStore = {
   destination: null,
   progress: {},
   pendingVideoReencodeNote: null,
+  engineHealth: null,
 };
 
 /** The §5.1 shared app store. Subscribe with a SELECTOR — `useAppStore((s) => s.machine)` —
@@ -81,3 +88,21 @@ const initialAppState: AppStore = {
  *  reducer dispatch, the §5.8 `applyConvertEvent`) are added by their owning boxes (P3.53 /
  *  P2.120), which expand `AppStore` with their action signatures. */
 export const useAppStore = create<AppStore>()(() => ({ ...initialAppState }));
+
+/** A module-level stable-empty sentinel: the `engineHealth === null` branch of
+ *  `selectUnavailableTargets` MUST return a referentially-stable `[]`. A fresh `[]` literal per call
+ *  defeats zustand's `Object.is` slice-equality, so a `useAppStore(selectUnavailableTargets)` subscriber
+ *  would re-render on EVERY unrelated store write (e.g. the §5.8 progress ticks) across the whole
+ *  `engineHealth === null` pre-probe window — breaking the §1.10 selector-granularity guarantee this seam
+ *  exists to uphold. [Build-Session-Entscheidung: P2.114] */
+const NO_UNAVAILABLE_TARGETS: TargetId[] = [];
+
+/** §5.2 read-seam (§1.10 selector) — the §3.4 patent-gapped / platform-unavailable target set the
+ *  FormatPicker disables or omits, read from the cached C12 `EngineHealth.unavailableTargets`
+ *  (§7.2.3). Returns the stable-empty `NO_UNAVAILABLE_TARGETS` while `engineHealth` is `null` (the cache
+ *  carries no backing data until the §7.2.3 startup probe, P4.45, populates the store) — so the shape is
+ *  live from P2 while the data arrives with the P4 probe, and `useAppStore(selectUnavailableTargets)` stays
+ *  referentially stable across unrelated writes. This is the typed read-seam P4.70.2's disable-with-reason
+ *  tiles bind against. [Build-Session-Entscheidung: P2.114] */
+export const selectUnavailableTargets = (s: AppStore): TargetId[] =>
+  s.engineHealth?.unavailableTargets ?? NO_UNAVAILABLE_TARGETS;
