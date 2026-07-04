@@ -1320,9 +1320,12 @@ fn main() -> tauri::Result<()> {
 
 #[cfg(test)]
 mod boot_invariants {
-    //! §7.2.2 boot invariant — the startup path opens no socket. The §6.7.1 Lane-A compensating
-    //! guard (cargo-test plane) for the Lane-B-only egress gate (§2.11.4 / §7.2.2), pairing with the
-    //! P0 G29 first-party no-socket rule (g) at the source plane. [Build-Session-Entscheidung: P1.15.1]
+    //! §7.2.2 boot invariant — the startup path opens no socket (`boot_path_opens_no_socket`, P1.15.1) and,
+    //! now that the §7.2.1 ordered spine registers the full plugin set, the boot shell registers no
+    //! network-capable plugin/client (`boot_shell_registers_no_network_plugin_or_client`, P2.107). The §6.7.1
+    //! Lane-A compensating guard (cargo-test plane) for the Lane-B-only egress gate (§2.11.4 / §7.2.2), pairing
+    //! with the P0 G29 first-party no-socket rule (g) at the source plane + the G18 `cargo-deny` dependency
+    //! bans. [Build-Session-Entscheidung: P1.15.1]
 
     /// The production prefix = this binary's `main.rs` up to the FIRST `cfg(test)` module, so sentinel
     /// needles declared in a test module can never self-match the `include_str!` scan. NOTE: since P2.40
@@ -1386,6 +1389,41 @@ mod boot_invariants {
                 !src.contains(primitive),
                 "§7.2.2 zero-startup-network violated: the boot path references `{primitive}` — \
                  the startup sequence must open no socket (pairs with G29 rule (g))"
+            );
+        }
+    }
+
+    // §7.2.2 / §2.11.1 (T9a) / §6.4.1 unit (G15): the SHELL adds ZERO startup network — the plugin/client
+    // half that `boot_path_opens_no_socket` (the socket-primitive scan above) and `no_updater_posture` (the
+    // updater) do not cover. Now that the §7.2.1 ordered spine (P2.106) registers the full Builder plugin
+    // set, assert the boot shell registers NO network-CAPABLE Tauri plugin and pulls in NO broader
+    // HTTP-client crate. This closes a real gap: `.plugin(tauri_plugin_http::init())` registers an
+    // IPC-accessible HTTP client (CLAUDE §5 anti-pattern / G18) yet contains no `reqwest` literal, so the
+    // socket scan above would miss it. The load-bearing enforcers stay the G18 `cargo-deny [bans]`
+    // (dependency level) + the §0.10 CSP (WebView fetch) + G29 rule (g); this is their cargo-test-plane
+    // companion scoped to the boot shell — the same defense-in-depth shape as `boot_path_opens_no_socket` /
+    // `no_updater_posture`. Needles `concat!`-assembled so the tokens are not literals in this scanned
+    // production file. [Build-Session-Entscheidung: P2.107]
+    #[test]
+    fn boot_shell_registers_no_network_plugin_or_client() {
+        let src = all_production_source();
+        let network_surfaces = [
+            concat!("tauri_plugin_", "http"), // wraps reqwest, registers an IPC-accessible HTTP client
+            concat!("tauri_plugin_", "upload"), // network upload/download plugin
+            concat!("tauri_plugin_", "websocket"), // websocket client plugin
+            concat!("tauri_plugin_", "oauth"), // binds a LOCAL HTTP server to catch OAuth redirects (same no-literal gap as http)
+            concat!("isahc", "::"),            // libcurl-backed HTTP client
+            concat!("curl", "::"),             // libcurl bindings
+            concat!("surf", "::"),             // async HTTP client
+            concat!("attohttpc", "::"),        // blocking HTTP client
+            concat!("awc", "::"),              // the actix-web HTTP client
+            concat!("tungstenite", "::"), // websocket client — the substring also catches `tokio_tungstenite::`
+        ];
+        for surface in network_surfaces {
+            assert!(
+                !src.contains(surface),
+                "§7.2.2 zero-startup-network violated: the boot shell references `{surface}` — a \
+                 network-capable plugin/client the shell must not register (pairs with G18 bans + the §0.10 CSP)"
             );
         }
     }
