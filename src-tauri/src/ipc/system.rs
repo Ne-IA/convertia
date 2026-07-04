@@ -19,7 +19,7 @@ use tauri::AppHandle;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::domain::OpenKind;
-use crate::engines::AppInfo;
+use crate::engines::{AppInfo, EngineHealth};
 use crate::orchestrator::RunResult;
 use crate::outcome::{ConversionErrorKind, IpcError};
 
@@ -214,12 +214,37 @@ pub async fn get_app_info() -> Result<AppInfo, IpcError> {
 }
 
 /// **C12 `get_engine_health`** (§0.4.1) — the cached §7.2.3 startup self-check (which bundled engines are
-/// present/runnable, which §3.4 patent-gated targets are available), feeding §5.2. The `EngineHealth` type
-/// is authored at P2.111 and the cache is populated by the P4 probe. Registered as the §0.4.1 interface
-/// shell (P2.21); the full `{} -> EngineHealth` contract is wired by P2.113. [Build-Session-Entscheidung: P2.21]
+/// present/runnable, which §3.4 patent-gated targets are available on this platform), feeding §5.2
+/// (disable/omit unavailable targets) and the §7.2.4 startup-fault surface. This box (P2.113) WIRES the typed
+/// §0.4.1 wire CONTRACT — the `{} -> Result<EngineHealth, IpcError>` door (the §0.4 universal error shape; the
+/// §0.4.1 table Response column `EngineHealth` is the success `T`, wrapped in `Result` like every command) —
+/// so the generated `bindings.ts` mirrors the C12 surface and **pulls the §7.2.3 `EngineHealth` graph
+/// (`EngineHealth` → `EngineStatus` → `EngineId`, + the embedded §0.6 `TargetId`) onto the wire** via this
+/// return: the §0.6 defer-registration-to-the-consumer pattern (the `AppInfo`/`Platform`-via-C11 precedent),
+/// this being the first consumer of the `EngineStatus`/`EngineHealth` types authored at P2.110/P2.111.
+///
+/// [Build-Session-Entscheidung: P2.113] **Honest `Err` shell — the C3/C4/C5/C6/C8/C9 shell branch, NOT a
+/// fabricated `Ok`.** The cached `EngineHealth` is produced by the §7.2.3 startup ENGINE PROBE, which is P4.45
+/// (the §7.2.1 step-3 verifier body); with no probe having populated the cache, there is no honestly-probed
+/// `EngineHealth` to return — fabricating an `Ok(EngineHealth{ … })` here would CLAIM a startup self-check
+/// result that never ran (the fabricated success CLAUDE §5 forbids; the identical reason C11's P2.34 shell
+/// returned `Err` before P2.98 assembled the real `AppInfo`). So the shell returns the genuine
+/// `Err(IpcError{ kind: InternalError, … })` (§2.13 catch-all, the C9 shell precedent), and **P4.45 replaces
+/// this shell with the real cached `Ok(EngineHealth)`** (populate the C12 contract from the startup probe —
+/// the build-vs-wire split, the C9 → P3.51 precedent). Two facts stay owned by their named boxes: (a) the §2.8
+/// catalog box owns the FINAL message — the string below is a PROVISIONAL neutral English one — and must add a
+/// COMMAND-level string (the §2.8 catalog is item-scoped); (b) `kind` is the CONCRETE `ConversionErrorKind`,
+/// not the `ErrorKind` alias (the P2.19 convention).
 #[tauri::command]
 #[specta::specta]
-pub async fn get_engine_health() {}
+pub async fn get_engine_health() -> Result<EngineHealth, IpcError> {
+    Err(IpcError {
+        kind: ConversionErrorKind::InternalError,
+        message: "Engine health is unavailable.".into(),
+        path: None,
+        residue: None,
+    })
+}
 
 #[cfg(test)]
 mod c9_contract {
@@ -538,6 +563,52 @@ mod c11_contract {
         assert!(
             info.third_party_notice.contains("ConvertIA"),
             "§3.7: the bundled notice rides thirdPartyNotice"
+        );
+    }
+}
+
+#[cfg(test)]
+mod c12_contract {
+    //! §6.4.1 unit (G15): the §0.4.1 C12 `get_engine_health` typed CONTRACT (P2.113). The handler returns
+    //! `{} -> Result<EngineHealth, IpcError>` (the §0.4 universal shape; `EngineHealth` is the §0.4.1 Response
+    //! `T` pulled onto the wire via this return, registering the §7.2.3 `EngineHealth`/`EngineStatus`/`EngineId`
+    //! graph (plus the embedded `TargetId`) into `bindings.ts`), so the P2.21 all-shells
+    //! `block_on(get_engine_health())` invocation in `crate::ipc` (the now-removed `command_surface` mod — C12
+    //! was its last bare shell) is
+    //! REPLACED here by C12's own typed-contract test, completing the P2.21-scheduled per-command move. The
+    //! shell returns the genuine §7.2.3 pre-probe `Err(InternalError)` (no populated cache to read — the §7.2.1
+    //! step-3 probe is P4.45); SHAPE is asserted, NOT the provisional message (owned by the §2.8 catalog box);
+    //! P4.45 replaces the shell with the real cached `Ok(EngineHealth)`. [Build-Session-Entscheidung: P2.113]
+    //!
+    //! [Test-Change: P2.113 — old-obsolete+new-correct, §0.4.1] the P2.21 `command_surface` all-shells
+    //! `every_registered_command_shell_is_invocable` exerciser is REMOVED: it existed to invoke the still-bare
+    //! `()` interface shells, and with C12 filled here there are ZERO bare shells left (all 14 commands carry
+    //! their own typed-contract test — the P2.22–P2.35/P2.98/P2.104 per-command moves), so the all-bare-shells
+    //! exerciser is obsolete (old-obsolete). Its invocability coverage is fully subsumed by the 14 per-command
+    //! contract tests (new-correct — verified: C12's line moves here). Not a dropped assertion — the removed
+    //! test carried a bare `block_on(...)` statement, no assertion.
+    use super::*;
+    use tauri::async_runtime::block_on;
+
+    // §6.4.1 unit (G15): the C12 contract is invocable with no args ({}) and returns a `Result<EngineHealth,
+    // IpcError>` (the §0.4 universal error shape). The shell has no populated §7.2.3 cache to read (the step-3
+    // startup probe is P4.45), so it returns the genuine pre-probe `Err(InternalError)` — the same honest-shell
+    // branch as C3/C4/C5/C6/C8/C9 (no fabricated Ok). SHAPE asserted (kind == InternalError), NOT the
+    // provisional message (owned by the §2.8 catalog box); P4.45 replaces the shell with the real cached
+    // `Ok(EngineHealth)`. [Build-Session-Entscheidung: P2.113]
+    #[test]
+    fn c12_get_engine_health_contract_is_invocable_and_typed() {
+        let out: Result<EngineHealth, IpcError> = block_on(get_engine_health());
+        let err = out.expect_err(
+            "§0.4.1/§7.2.3: the C12 shell has no populated cache to read (the step-3 startup probe is P4.45), \
+             so the §7.2.3 self-check returns the genuine pre-probe Err(InternalError); the typed \
+             Result<EngineHealth, IpcError> signature is the P2.113 deliverable",
+        );
+        assert_eq!(
+            err.kind,
+            ConversionErrorKind::InternalError,
+            "§2.13: the pre-probe shell outcome is the InternalError catch-all — SHAPE asserted, NOT the \
+             provisional message (the §2.8 catalog box owns the final string)"
         );
     }
 }

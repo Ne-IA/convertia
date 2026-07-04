@@ -20,9 +20,11 @@
 // reads `EngineDescriptor.serialised_only` then, and `EngineId`'s wire registration rides the §7.2
 // `EngineHealth` (C12) consumer (a later P2 box). So `EngineId`/`EngineKind`/`EngineDescriptor` are dead in
 // the PRODUCTION build until consumed; the cfg(test) tests below construct them, so the TEST build is
-// dead-code-clean. P2.110/P2.111 add the §7.2.3 `EngineStatus` + `EngineHealth` wire DTOs — likewise
-// CONTRACTS dead until the C12 `get_engine_health` consumer (P2.113) + the P4 startup probe CONSTRUCT them
-// (their wire-form tests below construct them, so the test build stays clean). The §3.2.2 `Platform` leaf (P2.132) + its `AppInfo` (P2.112) embedder are now LIVE:
+// dead-code-clean. P2.110/P2.111 added the §7.2.3 `EngineStatus` + `EngineHealth` wire DTOs; P2.113 wired the
+// C12 `get_engine_health` return `Result<EngineHealth, IpcError>`, which REGISTERS the whole graph into
+// `bindings.ts` — but its honest `Err` shell CONSTRUCTS neither, so they stay dead (fields never read) until
+// the P4.45 startup probe assembles the real `Ok(EngineHealth)` (their wire-form tests below construct them,
+// so the test build stays clean). The §3.2.2 `Platform` leaf (P2.132) + its `AppInfo` (P2.112) embedder are now LIVE:
 // P2.98 wired the C11 `get_app_info` to assemble a real `Ok(AppInfo)` (`AppInfo::gather()` below), which
 // constructs `Platform` via `current_platform()` (and `AppInfo` rides into `bindings.ts`); the P4
 // `capabilities(platform)` consumers construct `Platform` further. `expect` (not `allow`) auto-flags the
@@ -32,7 +34,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the C12 get_engine_health consumer (P2.113) + the P4 startup probe construct/register them. AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further."
+        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further."
     )
 )]
 

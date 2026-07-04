@@ -409,11 +409,29 @@ export const commands = {
 	getAppInfo: () => __TAURI_INVOKE<AppInfo>("get_app_info"),
 	/**
 	 *  **C12 `get_engine_health`** (§0.4.1) — the cached §7.2.3 startup self-check (which bundled engines are
-	 *  present/runnable, which §3.4 patent-gated targets are available), feeding §5.2. The `EngineHealth` type
-	 *  is authored at P2.111 and the cache is populated by the P4 probe. Registered as the §0.4.1 interface
-	 *  shell (P2.21); the full `{} -> EngineHealth` contract is wired by P2.113. [Build-Session-Entscheidung: P2.21]
+	 *  present/runnable, which §3.4 patent-gated targets are available on this platform), feeding §5.2
+	 *  (disable/omit unavailable targets) and the §7.2.4 startup-fault surface. This box (P2.113) WIRES the typed
+	 *  §0.4.1 wire CONTRACT — the `{} -> Result<EngineHealth, IpcError>` door (the §0.4 universal error shape; the
+	 *  §0.4.1 table Response column `EngineHealth` is the success `T`, wrapped in `Result` like every command) —
+	 *  so the generated `bindings.ts` mirrors the C12 surface and **pulls the §7.2.3 `EngineHealth` graph
+	 *  (`EngineHealth` → `EngineStatus` → `EngineId`, + the embedded §0.6 `TargetId`) onto the wire** via this
+	 *  return: the §0.6 defer-registration-to-the-consumer pattern (the `AppInfo`/`Platform`-via-C11 precedent),
+	 *  this being the first consumer of the `EngineStatus`/`EngineHealth` types authored at P2.110/P2.111.
+	 *
+	 *  [Build-Session-Entscheidung: P2.113] **Honest `Err` shell — the C3/C4/C5/C6/C8/C9 shell branch, NOT a
+	 *  fabricated `Ok`.** The cached `EngineHealth` is produced by the §7.2.3 startup ENGINE PROBE, which is P4.45
+	 *  (the §7.2.1 step-3 verifier body); with no probe having populated the cache, there is no honestly-probed
+	 *  `EngineHealth` to return — fabricating an `Ok(EngineHealth{ … })` here would CLAIM a startup self-check
+	 *  result that never ran (the fabricated success CLAUDE §5 forbids; the identical reason C11's P2.34 shell
+	 *  returned `Err` before P2.98 assembled the real `AppInfo`). So the shell returns the genuine
+	 *  `Err(IpcError{ kind: InternalError, … })` (§2.13 catch-all, the C9 shell precedent), and **P4.45 replaces
+	 *  this shell with the real cached `Ok(EngineHealth)`** (populate the C12 contract from the startup probe —
+	 *  the build-vs-wire split, the C9 → P3.51 precedent). Two facts stay owned by their named boxes: (a) the §2.8
+	 *  catalog box owns the FINAL message — the string below is a PROVISIONAL neutral English one — and must add a
+	 *  COMMAND-level string (the §2.8 catalog is item-scoped); (b) `kind` is the CONCRETE `ConversionErrorKind`,
+	 *  not the `ErrorKind` alias (the P2.19 convention).
 	 */
-	getEngineHealth: () => __TAURI_INVOKE<void>("get_engine_health"),
+	getEngineHealth: () => __TAURI_INVOKE<EngineHealth>("get_engine_health"),
 };
 
 /* Types */
@@ -914,6 +932,139 @@ export type DroppedItem = {
 	 *  references it. NOT a separate `DetectedFormat` (that earlier name is retired).
 	 */
 	detected: DetectionOutcome,
+};
+
+/**
+ *  **`EngineHealth`** — the C12 `get_engine_health` return (§7.2.3; §0.4.1 C12 references it). The cached
+ *  result of the §7.2.3 startup presence / integrity / smoke probe over the whole engine set. It feeds §5.2
+ *  (disable / omit unavailable targets) and the §7.2.4 startup-fault surface: a missing / corrupt /
+ *  non-runnable **required** engine escalates to a §2.13 app-level fault (`EngineMissing` / `BundleDamaged`),
+ *  not a per-item failure. This box authors the TYPE; the startup probe that POPULATES it is P4.
+ *
+ *  [Build-Session-Entscheidung: P2.111] WIRE struct — the C12 return, so `Serialize` + `Type` (the no-`any`
+ *  guarantee) + the §0.6 `camelCase` wire default (`engines` / `unavailableTargets` / `allCriticalOk`) shared
+ *  by every §0.6/§7.2 DTO. NOT `Copy` (owns two `Vec`s). OUTBOUND-ONLY — C12 takes `{}` and no command takes
+ *  an `EngineHealth` arg, so NO `Deserialize` (mirroring `AppInfo`/`EngineStatus`/`EngineId`). Registration
+ *  into `bindings.ts` is DEFERRED to the C12 `get_engine_health` consumer (P2.113), which pulls the whole
+ *  graph (`EngineHealth` → `EngineStatus` → `EngineId`, + `TargetId`) into the export — the established
+ *  P2.2-P2.12 defer-to-consumer pattern; nothing CONSTRUCTS an `EngineHealth` in production until the P4
+ *  startup probe, so it is dead in the production build until then (the module-level dead-code expectation
+ *  covers it). It embeds `crate::domain::TargetId` (a tier-3 leaf) — a downward §0.7 tier-2 → tier-3 edge,
+ *  allowed.
+ */
+export type EngineHealth = {
+	/**
+	 *  One `EngineStatus` per **registry-eligible** engine — FFmpeg, LibreOffice, Poppler, Pandoc, ImageCore,
+	 *  NativeCsvTsv (§7.2.3). Two §7.2.3 `[DECIDED]` shaping rules govern this vector (the §7.2.3 spec is the
+	 *  authoritative home; recorded here as the contract the P4 probe must honor):
+	 *
+	 *  - **Non-trait roll-up (P2.111.1):** the non-trait delegate / probe binaries — `FFprobe` and
+	 *    `ImageMagick` (§0.6) — get **NO** standalone row. Their presence/integrity (checked by the §7.2.3
+	 *    out-of-band binary loop) is **rolled into the owning engine's** `EngineStatus`: `FFprobe` → `FFmpeg`
+	 *    (a missing/corrupt `ffprobe` makes FFmpeg's `runnable = Some(false)`, since no video job can probe),
+	 *    `ImageMagick` → `ImageCore` (a missing BMP delegate makes ImageCore's `runnable = Some(false)`,
+	 *    §7.2.3). Their `EngineId`s appear only in the §3.7 SBOM/NOTICE layer + that binary loop.
+	 *  - **NativeCsvTsv synthesized (P2.111.2):** `NativeCsvTsv` is `InProcessNative` (§3.5.6) — **not** in
+	 *    the §3.3.1 binary list, so the §7.2.3 presence/integrity loop produces no row for it. Its
+	 *    `EngineStatus` is **SYNTHESIZED** `{ present: true, integrity_ok: true, runnable: Some(true) }`
+	 *    (always-available-in-core, pure-Rust, nothing to verify) and **appended after** the loop, never
+	 *    produced from it.
+	 */
+	engines: EngineStatus[],
+	/**
+	 *  The §3.4 patent-gapped targets unavailable on THIS platform (→ `PlatformUnavailable`, §2.8) — the §5.2
+	 *  disable/omit set. Wire key `unavailableTargets`. Populated from the §3.4 disposition matrix by P4.
+	 */
+	unavailableTargets: TargetId[],
+	/**
+	 *  Derived — `true` iff every **required** engine is present + runnable (§7.2.3). A `false` here is what
+	 *  the §7.2.4 startup sequence escalates to a §2.13 app-level fault. Wire key `allCriticalOk`.
+	 */
+	allCriticalOk: boolean,
+};
+
+/**
+ *  The stable engine discriminant (§0.6 / §3.2) — used in logging / SBOM rows (§3.7), the §3.2.3
+ *  `(SourceFmt,TargetFmt) → EngineId` registry, the §0.9 pool's `HashMap<EngineId, bool>` serialised-flag
+ *  map, and the §7.2 `EngineHealth` presence-check. One variant per bundled engine; Ghostscript is NOT
+ *  shipped v1 (§3.1).
+ *
+ *  **Two variants are NON-TRAIT** (no `EngineProgram`, no §3.2.3 registry entry, no `trait Engine` impl) —
+ *  they exist as an `EngineId` ONLY for SBOM/NOTICE attribution (§3.7), the §7.2 `EngineHealth` presence
+ *  check, and (for `FFprobe`) the sidecar-path resolver:
+ *  - `ImageMagick` is a bundled DELEGATE inside the image-worker (libvips `magicksave`/`magickload` for
+ *    BMP+ICO, §3.5.5), NOT a registry-eligible engine: no `(source,target)` pair maps to it (BMP/ICO route
+ *    through `ImageCore` = the image-worker). Its presence here prevents a spurious `Engine` impl / row.
+ *  - `FFprobe` is the video two-phase PROBE binary (`binaries/ffprobe`, §3.3.1), spawned as the §3.5.1
+ *    probe sub-invocation OF the FFmpeg engine (the FFmpeg `trait Engine` impl owns the pair + returns the
+ *    ffprobe `Invocation`); its `EngineId` exists so the sidecar-path resolver can locate `binaries/ffprobe`
+ *    (distinct from `binaries/ffmpeg`) and for SBOM + the §7.2 presence-check.
+ *
+ *  [Build-Session-Entscheidung: P2.13] WIRE type — it rides `EngineStatus.id` inside the C12 `EngineHealth`
+ *  return (§7.2), so it derives `Serialize` + `Type`; OUTBOUND-ONLY (no command takes an `EngineId` arg —
+ *  C12 takes `{}`), so NO `Deserialize` (mirroring the outbound-only `crate::outcome`/`crate::orchestrator`
+ *  wire types). `Hash` because §0.9 keys a `HashMap<EngineId, bool>` on it (cf. `UserFacingFormat`, also a
+ *  registry key); `Copy` is free for a fieldless enum. Registration in `collect_types![]` is DEFERRED to
+ *  the §7.2 `EngineHealth` (C12) consumer, the established P2.2-P2.12 defer pattern.
+ *
+ *  [Derived-Assumption: P2.13 — the wire form is `rename_all = "lowercase"` (`ffmpeg`/`ffprobe`/
+ *  `libreoffice`/…), derived from the §3.2 `Engine::id()` doc examples ("ffmpeg", "libreoffice", "vips");
+ *  `camelCase` (the other §0.6 enums' rule) would mangle the FF-prefixed variants to `fFmpeg`/`fFprobe`, so
+ *  lowercase is both spec-faithful and clean for a stable discriminant.]
+ */
+export type EngineId =
+/**  FFmpeg — the audio/video engine (§3.5.1); sidecar `binaries/ffmpeg`. */
+"ffmpeg" |
+/**  FFprobe — the §3.5.1 probe binary (`binaries/ffprobe`). NON-TRAIT (see above). */
+"ffprobe" |
+/**  LibreOffice headless — the office engine (§3.5.2); `serialised_only` (§0.9). */
+"libreoffice" |
+/**  poppler — the PDF text/image engine (§3.5.3). */
+"poppler" |
+/**  pandoc — the markup engine (§3.5.4). */
+"pandoc" |
+/**  ImageMagick — NON-TRAIT delegate inside the image-worker (§3.5.5; see above). */
+"imagemagick" |
+/**  The libvips image-worker (`convertia-imgworker`, §3.5.5) — the registry-eligible image engine. */
+"imagecore" |
+/**  ConvertIA's own MIT in-core CSV/TSV engine (§3.5.6) — `InProcessNative`, no sidecar. */
+"nativecsvtsv";
+
+/**
+ *  **`EngineStatus`** — one engine's row in the C12 `EngineHealth` return (§7.2.3; §0.4.1 C12 references
+ *  `EngineHealth`, which embeds `Vec<EngineStatus>`). The cached result of the §7.2.3 startup presence /
+ *  integrity / smoke probe for a single **registry-eligible** engine (FFmpeg, LibreOffice, Poppler, Pandoc,
+ *  ImageCore, NativeCsvTsv). The non-trait delegate/probe binaries get NO standalone row — `FFprobe` rolls
+ *  into `FFmpeg`, `ImageMagick` into `ImageCore` (§7.2.3); `NativeCsvTsv`'s row is SYNTHESIZED (always
+ *  available in-core), not produced by the presence loop. This box authors the TYPE; the startup probe that
+ *  POPULATES it (and the `EngineHealth` roll-up) is P4.
+ *
+ *  [Build-Session-Entscheidung: P2.110] WIRE struct — it rides `EngineHealth.engines` into the C12
+ *  `get_engine_health` return (§7.2.3), so it derives `Serialize` + `Type` (the no-`any` guarantee), with the
+ *  §0.6 `camelCase` wire default (`id`/`present`/`integrityOk`/`runnable`) shared by every §0.6/§7.2 DTO (cf.
+ *  `AppInfo`). NOT `Copy` — the §0.6 struct convention (cf. `EngineDescriptor`/`PreflightVerdict`: a §0.6
+ *  struct is not `Copy` even when every field is). OUTBOUND-ONLY — C12 takes `{}` and no command takes an
+ *  `EngineStatus` arg, so NO `Deserialize` (mirroring `AppInfo`/`EngineId`/the outbound orchestrator types).
+ *  Registration into `bindings.ts` is DEFERRED to the C12 `EngineHealth` consumer (P2.111/P2.113) — the
+ *  established P2.2-P2.12 defer-to-consumer pattern its `id: EngineId` field also rides; nothing CONSTRUCTS an
+ *  `EngineStatus` in production until the P4 startup probe, so it is dead in the production build until then
+ *  (the module-level dead-code expectation covers it).
+ */
+export type EngineStatus = {
+	/**  Which engine this row describes (§0.6). */
+	id: EngineId,
+	/**  The engine binary resolved at its expected §3.3.1 path (the §7.2.3 out-of-band presence check). */
+	present: boolean,
+	/**
+	 *  The binary matched the build-time hash manifest (or the cheap warm size+magic check), §7.2.3 integrity
+	 *  — wire key `integrityOk`.
+	 */
+	integrityOk: boolean,
+	/**
+	 *  The §7.2.3 smoke-probe result: `Some(true|false)` if the probe ran, `None` if it was skipped (the
+	 *  warm-launch fast path, or the macOS spawn deferred past the window). Wire: `true` / `false` / `null`.
+	 */
+	runnable: boolean | null,
 };
 
 /**  A named preset choice inside an `Enum` option (e.g. MP3 "High"/"Standard"/"Small"), §1.6. */
