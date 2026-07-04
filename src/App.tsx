@@ -17,7 +17,8 @@
 // P2.61 wired the §7.8.1 root-shell-mount first-launch drain trigger (`useLaunchDrain`); P2.120 adds
 // `useAppEvents()` — the three §5.8 `app://` listener registrations — ABOVE it, because the drain must run
 // AFTER the `app://intake` listener exists (the §7.8.1 listener race). ORDERING is load-bearing: keep
-// `useAppEvents()` before `useLaunchDrain()`. [Build-Session-Entscheidung: P2.120]
+// `useAppEvents()` before `useLaunchDrain()`. P2.121 adds `useNativeDragDrop()` (the §5.4 native file-drop) —
+// order-independent of the drain (a live drop is never a buffered launch path). [Build-Session-Entscheidung: P2.121]
 //
 // This root render IS §7.2.1 step 8 — "hand to UI empty/idle state (§5.2)": the terminal step of the ordered
 // startup sequence (src-tauri `main()`'s spine, P2.106). After the Rust core reveals the window (step 6) and
@@ -27,9 +28,11 @@
 // flag via `mark_ready` (P2.60) so buffered launch paths replay. [Build-Session-Entscheidung: P2.106.8]
 import { useAppEvents } from "./hooks/useAppEvents";
 import { useLaunchDrain } from "./hooks/useLaunchDrain";
+import { useNativeDragDrop } from "./hooks/useNativeDragDrop";
 
 export function App() {
   useAppEvents();
+  useNativeDragDrop();
   useLaunchDrain();
   return <main />;
 }

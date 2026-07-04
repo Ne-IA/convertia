@@ -9,6 +9,16 @@ const invoke = vi.fn<(cmd: string, args: Record<string, unknown>) => Promise<unk
 const listen =
   vi.fn<(event: string, handler: (e: { payload: unknown }) => void) => Promise<() => void>>();
 
+// P2.121: the §5.4 native window drag-drop event. The mock records the handler so a test can fire each
+// DragDropEvent phase (enter/over/leave/drop) and assert the drag-active visual + the drop→C1 intake.
+type DragPayload =
+  | { type: "enter"; paths: string[] }
+  | { type: "over" }
+  | { type: "drop"; paths: string[] }
+  | { type: "leave" };
+const onDragDropEvent =
+  vi.fn<(handler: (e: { payload: DragPayload }) => void) => Promise<() => void>>();
+
 // The mock `Channel` records instances + carries `onmessage`, so a test can fire a `ConversionEvent` through
 // the `start_conversion` progress Channel and assert it reaches the store's `applyConvertEvent`. Hoisted
 // because it is referenced eagerly in the `vi.mock` factory (unlike the lazily-called `invoke`/`listen`).
@@ -30,14 +40,21 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/api/event", () => ({
   listen: (event: string, handler: (e: { payload: unknown }) => void) => listen(event, handler),
 }));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    onDragDropEvent: (handler: (e: { payload: DragPayload }) => void) => onDragDropEvent(handler),
+  }),
+}));
 
 import { useAppStore } from "../../state/store";
 
 import {
   drainPendingIntake,
+  ingestFromDrop,
   ingestFromIntakeEvent,
   startConversionRun,
   subscribeAppEvents,
+  subscribeNativeDragDrop,
 } from "./events";
 
 describe("drainPendingIntake (§7.8.1 first-launch drain)", () => {
@@ -170,6 +187,88 @@ describe("ingestFromIntakeEvent (P2.120 app://intake → C1)", () => {
       expect.objectContaining({
         paths: ["/a.png", "/b.png"],
         origin: "launchArg",
+        drainPending: null,
+        collectingId: expect.any(String),
+      }),
+    );
+  });
+});
+
+describe("subscribeNativeDragDrop (P2.121 §5.4 native file-drop)", () => {
+  beforeEach(() => {
+    onDragDropEvent.mockReset();
+    invoke.mockReset();
+    onDragDropEvent.mockResolvedValue(() => {});
+    invoke.mockResolvedValue({ empty: { skipped: [] } });
+  });
+
+  const handler = () => onDragDropEvent.mock.calls[0]?.[0];
+
+  it("toggles drag-active on enter/over/leave (§5.4 visual affordance only — no C1 call)", async () => {
+    const onDragActiveChange = vi.fn();
+    await subscribeNativeDragDrop({ onDragActiveChange });
+    handler()?.({ payload: { type: "enter", paths: ["/a"] } });
+    handler()?.({ payload: { type: "over" } });
+    handler()?.({ payload: { type: "leave" } });
+    expect(onDragActiveChange.mock.calls).toEqual([[true], [true], [false]]);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("on drop: clears drag-active and hands the paths to C1 with origin 'drop' + drainPending null", async () => {
+    const onDragActiveChange = vi.fn();
+    await subscribeNativeDragDrop({ onDragActiveChange });
+    handler()?.({ payload: { type: "drop", paths: ["/a.png", "/b.png"] } });
+    await Promise.resolve(); // let the fire-and-forget C1 call land
+    expect(onDragActiveChange).toHaveBeenLastCalledWith(false);
+    expect(invoke).toHaveBeenCalledWith(
+      "ingest_paths",
+      expect.objectContaining({ paths: ["/a.png", "/b.png"], origin: "drop", drainPending: null }),
+    );
+  });
+
+  it("de-dups the dropped paths by set before C1 (§5.4 — native events can duplicate)", async () => {
+    await subscribeNativeDragDrop();
+    handler()?.({ payload: { type: "drop", paths: ["/a.png", "/a.png", "/b.png"] } });
+    await Promise.resolve();
+    expect(invoke).toHaveBeenCalledWith(
+      "ingest_paths",
+      expect.objectContaining({ paths: ["/a.png", "/b.png"] }),
+    );
+  });
+
+  it("a drop with no onDragActiveChange handler still ingests (the visual seam is inert in P2)", async () => {
+    await subscribeNativeDragDrop();
+    expect(() => handler()?.({ payload: { type: "enter", paths: ["/a"] } })).not.toThrow();
+    handler()?.({ payload: { type: "drop", paths: ["/a.png"] } });
+    await Promise.resolve();
+    expect(invoke).toHaveBeenCalledWith(
+      "ingest_paths",
+      expect.objectContaining({ origin: "drop" }),
+    );
+  });
+
+  it("returns the unlisten from onDragDropEvent", async () => {
+    const unlisten = vi.fn();
+    onDragDropEvent.mockResolvedValue(unlisten);
+    const cleanup = await subscribeNativeDragDrop();
+    cleanup();
+    expect(unlisten).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ingestFromDrop (P2.121 drop → C1)", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue({ empty: { skipped: [] } });
+  });
+
+  it("calls C1 ingest_paths with origin 'drop', a fresh collectingId, drainPending null, an onScan Channel", async () => {
+    await ingestFromDrop(["/x.png"]);
+    expect(invoke).toHaveBeenCalledWith(
+      "ingest_paths",
+      expect.objectContaining({
+        paths: ["/x.png"],
+        origin: "drop",
         drainPending: null,
         collectingId: expect.any(String),
       }),

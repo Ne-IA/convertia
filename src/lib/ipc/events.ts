@@ -6,15 +6,16 @@
 // authored as P2 lands the §0.4.2 event contract + the §1.1 intake flow: the §5.4 native
 // `onDragDropEvent` intake wiring, the §5.8 `start_conversion` progress `Channel<ConversionEvent>`
 // lifecycle, the §0.4.1 C1/C2a `onScan` `Channel<ScanProgress>` telemetry, and the three §0.4.2 `app://`
-// listeners — all wired by P2.120's frontend async model.
+// listeners — wired incrementally as P2 lands each (see P2.61 / P2.120 / P2.121 below).
 //
 // P2.61 landed the FIRST hand-written helper: the §7.8.1 first-launch DRAIN (`drainPendingIntake`). P2.120
-// lands the async model: `subscribeAppEvents` (the three §0.4.2 `app://` listeners, on-mount) + the
-// `start_conversion` `Channel<ConversionEvent>` lifecycle (`startConversionRun` → the store's
-// `applyConvertEvent`). The §5.4 native `onDragDropEvent` hover affordance is P2.121.
+// landed the async model: `subscribeAppEvents` (the three §0.4.2 `app://` listeners) + the `start_conversion`
+// `Channel<ConversionEvent>` lifecycle (`startConversionRun`). P2.121 lands `subscribeNativeDragDrop` — the
+// §5.4 native `onDragDropEvent` hover affordance + drop→C1 intake (never the DOM drop, a §0.4.0 boundary fact).
 // [Build-Session-Entscheidung: P2.61]
 import { Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { useAppStore } from "../../state/store";
 import {
@@ -153,4 +154,63 @@ export async function subscribeAppEvents(handlers: AppEventHandlers = {}): Promi
       unlisten();
     }
   };
+}
+
+// ─── P2.121: the §5.4 native file-drop (the §0.4.0 boundary fact — Tauri's window onDragDropEvent, NOT DOM) ───
+
+/**
+ * [Build-Session-Entscheidung: P2.121] The optional drag-active visual callback. `subscribeNativeDragDrop`
+ * fires it `true` on `enter`/`over` and `false` on `leave`/`drop` (§5.4 "visual affordance only"). It is UNSET
+ * in P2.121 — the §5.3 `DropZone` component that consumes the `dragActive` flag is P3+, so this is a typed
+ * seam (like the {@link AppEventHandlers} fault/close callbacks), not a `dragActive` store field: per the
+ * §5.1-store-shape discipline a store field is homed by the P1.31.2 shell, not ad-hoc-minted mid-phase.
+ */
+export interface NativeDragDropHandlers {
+  readonly onDragActiveChange?: (active: boolean) => void;
+}
+
+/**
+ * [Build-Session-Entscheidung: P2.121] Wire the §5.4 native file-drop — Tauri v2's window `onDragDropEvent`,
+ * NOT the DOM `drop` event (HTML5 DnD in a WebView never exposes real filesystem paths — the §0.4.0 boundary
+ * fact). This is the ONLY place it is wired (§0.7). `enter`/`over` → drag-active `true`, `leave` → `false`
+ * (the hover affordance, routed to the UNSET-in-P2 `onDragActiveChange` seam — its §5.3 `DropZone` consumer is
+ * P3+). On `drop`: drag-active `false`, then hand the absolute paths to C1 `ingest_paths` with `origin: 'drop'`
+ * (`ingestFromDrop`, live) — folders arrive as directory paths + recurse Rust-side (§1.1). Paths are de-duped
+ * by SET per drop (§5.4: native events can duplicate across platforms/patch versions); the backend frozen-set
+ * de-dup (§2.4) is the authority — the frontend never assumes uniqueness. The `Idle → Collecting` transition
+ * the drop drives is the P3.53 machine's (mirrors `app://intake` / `drainPendingIntake`). Returns the unlisten.
+ */
+export async function subscribeNativeDragDrop(
+  handlers: NativeDragDropHandlers = {},
+): Promise<() => void> {
+  return getCurrentWindow().onDragDropEvent((event) => {
+    switch (event.payload.type) {
+      case "enter":
+      case "over":
+        handlers.onDragActiveChange?.(true);
+        break;
+      case "leave":
+        handlers.onDragActiveChange?.(false);
+        break;
+      case "drop": {
+        handlers.onDragActiveChange?.(false);
+        const paths = [...new Set(event.payload.paths)];
+        void ingestFromDrop(paths);
+        break;
+      }
+    }
+  });
+}
+
+/**
+ * [Build-Session-Entscheidung: P2.121] The §5.4 native-drop → C1 handler: hand the dropped absolute paths to
+ * C1 `ingest_paths` with `origin: 'drop'`, a fresh §0.4.4 `collectingId`, the §0.4.1 `onScan` Channel (a bare
+ * sink here — the "Scanning… N" display subscribes it when the §5.2 Collecting screen lands, P3.53), and
+ * `drainPending: null`. Returns the frozen `CollectedSet`; the §5.2 `Collecting` transition that consumes it
+ * is the P3.53 machine's (mirrors `ingestFromIntakeEvent`).
+ */
+export async function ingestFromDrop(paths: string[]): Promise<CollectedSet> {
+  const collectingId = crypto.randomUUID();
+  const onScan = new Channel<ScanProgress>();
+  return commands.ingestPaths(paths, "drop", collectingId, null, onScan);
 }

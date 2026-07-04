@@ -12,22 +12,25 @@ import { render } from "@testing-library/react";
 // handshake fires). [Build-Session-Entscheidung: P2.106.8]
 const drainPendingIntake = vi.fn(() => Promise.resolve({ empty: { skipped: [] } }));
 const subscribeAppEvents = vi.fn(() => Promise.resolve(() => {}));
+const subscribeNativeDragDrop = vi.fn(() => Promise.resolve(() => {}));
 vi.mock("./lib/ipc/events", () => ({
   drainPendingIntake: () => drainPendingIntake(),
   subscribeAppEvents: () => subscribeAppEvents(),
+  subscribeNativeDragDrop: () => subscribeNativeDragDrop(),
 }));
 
 import { App } from "./App";
 
 describe("App — §7.2.1 step 8 (hand to the §5.2 Idle UI)", () => {
-  it("renders the §5.2 Idle `main` landmark and fires both §5.8 mount effects", () => {
+  it("renders the §5.2 Idle `main` landmark and fires all three §5.4/§5.8 mount effects", () => {
     const { container } = render(<App />);
     // §5.2 Idle empty-state: the `<main>` landmark boots (the step-8 handoff surface; the §5.7 reassurance copy
     // + the per-state screens land P3–P8, so the landmark is the P2 contract).
     expect(container.querySelector("main")).not.toBeNull();
-    // §5.8: App subscribes the three `app://` listeners (P2.120) BEFORE it fires the §7.8.1 readiness drain
-    // (P2.60/P2.61) — both exactly once on mount.
+    // §5.4/§5.8: App subscribes the three `app://` listeners (P2.120) + the native file-drop (P2.121), and
+    // fires the §7.8.1 readiness drain (P2.60/P2.61) — each exactly once on mount.
     expect(subscribeAppEvents).toHaveBeenCalledTimes(1);
+    expect(subscribeNativeDragDrop).toHaveBeenCalledTimes(1);
     expect(drainPendingIntake).toHaveBeenCalledTimes(1);
     // …and in THAT order: the listener MUST register before the drain (the §7.8.1 listener-before-drain race,
     // P2.61). Pin the RELATIVE call order so a future swap of the two mount hooks in App.tsx reddens this test.
