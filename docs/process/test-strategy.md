@@ -355,26 +355,18 @@ covers the FFI boundary):
    resolution disabled by construction** (`quick-xml`/`roxmltree` with entity
    resolution off — defeats XXE / billion-laughs in the `xl/workbook.xml` / ODS
    `content.xml` peek).
-2. **`crate::fs_guard::resolve_identity`/`is_safe_output`** on untrusted PATHS
-   (null bytes, overlong UTF-8, max-length, symlink chains, `..`) — no panic,
-   structured `Err`, **never `Ok` on a null-byte path** (**T7+T2a**).
-3. **the in-core CSV/TSV native engine** (§3.5.6 — memory-safe ≠ panic/OOM-safe:
+2. **`crate::fs_guard::resolve_identity`** on untrusted PATHS (null bytes,
+   overlong UTF-8, max-length, symlink chains, `..`) — no panic, structured
+   `Err`, **never `Ok` on a null-byte path** (**T7+T2a**).
+3. **`crate::fs_guard::is_safe_output`** (Windows device / reserved-name /
+   drive-relative / UNC classes) — no panic, structured `Err`.
+4. **the in-core CSV/TSV native engine** (§3.5.6 — memory-safe ≠ panic/OOM-safe:
    gigabyte quoted fields, recursive quoting, NUL bytes) — no panic, bounded output
    relative to input, clear failure beyond a column floor.
-4. **archive-entry-name (zip-slip) target** — a crafted OPC/ODF/ZIP whose
+5. **archive-entry-name (zip-slip) target** — a crafted OPC/ODF/ZIP whose
    central-directory entry names carry `../`, absolute paths, NUL/overlong-UTF-8:
    the in-core peek never resolves or writes outside its bounded buffer and never
    escapes the per-job scratch root.
-5. **each `#[tauri::command]` handler's serde boundary** — malformed `serde_json`
-   (null-byte strings, `MAX_USIZE` arrays, deeply-nested JSON, NaN/Inf) → a
-   structured `Err`, **never a panic**. This is the WebView→Rust type boundary the
-   **G29** *structural* Semgrep cannot reach (it proves the shape, not the runtime
-   deserialization). Paired with **per-numeric-IPC-argument** `proptest` boundary-
-   value tests (`u32::MAX`, `i32::MIN`, 0, 1, 2^16−1) asserting a structured `Err`,
-   not a panic/overflow — a `MAX_USIZE` integer field is valid JSON that
-   deserializes then can overflow a `width*height*bpp` preflight (**T10**), so
-   `#![deny(clippy::arithmetic_side_effects)]` on the IPC-handler module makes
-   unchecked arithmetic a compile warning before any fuzz runs.
 6. **`convertia-imgworker`'s own Rust→FFI surface** linked against the staged
    `libvips`/`libheif`/`librsvg`, **ASAN on** — the densest unsafe surface in the
    product (the first Rust touching untrusted image bytes across the C/C++
@@ -385,6 +377,24 @@ covers the FFI boundary):
    fuzz (that is **G65**). A full-internals fuzz would need a from-source
    ASAN build asserted same-version as the `engines.lock` pin (owner-decidable — the
    reserved **G65** full-internals track, build-gates §8).
+
+**The IPC boundary is a `proptest` contract (G16), NOT a libFuzzer target.** It is the
+TRUSTED WebView→Rust type door (the app's own bundled, CSP-locked, no-network frontend
+feeding structured JSON through **derived safe-Rust `Deserialize`**), so a `proptest`
+for robustness is the correct level — malformed input is a `Result::Err` by construction,
+not a panic/UB, and there is no unsafe path for coverage-feedback to reach; coverage-guided
+libFuzzer stays reserved for the six untrusted-byte surfaces above. Both IPC legs are the
+P0.4.3 `IPC_PROPTEST_TARGETS`, in `tests/`, **NOT** under `fuzz/`: **(a)** each
+`#[tauri::command]` handler's serde boundary — malformed `serde_json` (null-byte strings,
+`MAX_USIZE` arrays, deeply-nested JSON, NaN/Inf) → a structured `Err`, **never a panic**
+(the WebView→Rust boundary the **G29** *structural* Semgrep cannot reach — it proves the
+shape, not the runtime deserialization); **(b)** **per-numeric-IPC-argument** boundary-value
+tests (`u32::MAX`, `i32::MIN`, 0, 1, 2^16−1) → a structured `Err`, not a panic/overflow — a
+`MAX_USIZE` integer field is valid JSON that deserializes then can overflow a
+`width*height*bpp` preflight (**T10**), so `#![deny(clippy::arithmetic_side_effects)]` on the
+IPC-handler module makes unchecked arithmetic a compile warning. *(If a future command ever
+ships a hand-written `Deserialize` with non-trivial logic — none exists in v1's derived-serde
+IPC — that specific deserializer could merit its own fuzz target.)*
 
 **Bound-firing is STRUCTURALLY proven, not fuzzer-hoped.** libFuzzer "no crash"
 cannot distinguish "cap fired" from "cap code never reached", so deterministic
@@ -976,9 +986,11 @@ mechanical:
    never "the engine returned no error". Add the corpus file + `manifest.toml`
    entry (the §6.4.3a guard then enumerates it automatically).
 4. **An in-core untrusted-byte surface** (`detect`, `fs_guard`, the in-core
-   CSV/TSV engine, a `#[tauri::command]` serde boundary, the imgworker FFI shim) →
-   add/extend a **`cargo-fuzz`** target (§1.5) **and** a deterministic bound-firing
-   fixture.
+   CSV/TSV engine, the imgworker FFI shim) → add/extend a **`cargo-fuzz`** target
+   (§1.5) **and** a deterministic bound-firing fixture. *(The `#[tauri::command]`
+   serde boundary is NOT an untrusted-byte surface — it is the trusted WebView→Rust
+   door — so it takes a **G16 `proptest`** in `tests/`, never a `cargo-fuzz` target;
+   §1.5.)*
 5. **A UI flow** → the **E2E** §5.2 walkthrough (§1.6) on the platforms the driver
    supports; **a component/hook** → **Vitest** (§1.2); **anything rendered** → the
    **axe** a11y level (§1.7).

@@ -517,7 +517,7 @@ load-bearing security guarantees with their own gates):
   provenance (G35/G36/G36b); mandatory FFmpeg CPE + internal-decoder planted-positive (G17b);
   from-source signing-key verification with `gpg`/`sq` against pinned keys + committed
   cargo-vet `imports.lock` (G37/G18b); G48 gained the fs_guard Windows dangerous-path classes,
-  NUL/`PATH_MAX`+1 + zip-slip bound-firing fixtures, the IPC-handler serde-boundary target, and
+  NUL/`PATH_MAX`+1 + zip-slip bound-firing fixtures, the IPC-handler serde-boundary `proptest`, and
   the imgworker FFI target; the OWASP Semgrep pack (G29); the broadened deferral vocabulary
   (G8); the G54 push-from-stale-base guard; the per-finding suppression ledger + the L4
   self-test-prelude (G24); macOS `otool -l` LC_RPATH (G37b); the process-scoped Windows
