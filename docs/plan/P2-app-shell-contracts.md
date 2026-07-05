@@ -443,7 +443,7 @@
   > the §5.8 async wiring populates the §5.1 store (typed shape homed in P1.31.2): the live-progress map from the `ConversionEvent::ItemProgress` Channel, and the **`pendingVideoReencodeNote`** field from the `RunStarted.willReencode` signal (§0.4.2/§5.8) — the worst-case `video_reencode` ConvertingNote banner P8.20 reads + P4.65 surfaces. P1.31.2 owns the typed field; this box owns the population.
 - [x] **P2.121** [UI] Wire the native drag-drop affordance (hover/visual only; paths arrive over the native event → C1, never the DOM drop) · §5.4 §0.4.0
   needs: P2.120, P2.22
-- [ ] **P2.122** [UI] Establish the app-chrome a11y baseline (ARIA roles/focus order on the shell — the per-push `vitest-axe` target) · §5.5 · G33a
+- [x] **P2.122** [UI] Establish the app-chrome a11y baseline (ARIA roles/focus order on the shell — the per-push `vitest-axe` target) · §5.5 · G33a
   needs: P2.120
 - [ ] **P2.123** [UI] Enforce English-only / string-ownership on the shell (every user-facing literal in `strings/ui.ts`, no i18n-runtime import) · §5.5 · G57
   needs: P1.37, P2.120
