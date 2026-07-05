@@ -12,6 +12,8 @@
 // landed the async model: `subscribeAppEvents` (the three §0.4.2 `app://` listeners) + the `start_conversion`
 // `Channel<ConversionEvent>` lifecycle (`startConversionRun`). P2.121 lands `subscribeNativeDragDrop` — the
 // §5.4 native `onDragDropEvent` hover affordance + drop→C1 intake (never the DOM drop, a §0.4.0 boundary fact).
+// P2.124 adds the §5.8/§2.13.3 backend-disconnect fault seam (`ConversionRunHandlers.onRunFault`) on the
+// `startConversionRun` lifecycle — a mid-run app-level fault routes to AppFault (state 12), never a per-item outcome.
 // [Build-Session-Entscheidung: P2.61]
 import { Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -63,14 +65,37 @@ export async function drainPendingIntake(): Promise<CollectedSet> {
 // ─── P2.120: the §5.8 frontend async model (Channel<ConversionEvent> lifecycle + the three app:// listeners) ───
 
 /**
- * [Build-Session-Entscheidung: P2.120] The §5.8 `start_conversion` progress lifecycle: create the run-scoped,
- * ordered `Channel<ConversionEvent>`, route every event into the store's `applyConvertEvent` reducer (§5.8
- * `ch.onmessage = (m) => store.applyConvertEvent(m)` — the per-item `progress` map + the
- * `pendingVideoReencodeNote` keep/clear), then fire C6 `start_conversion` (§0.4.1), which returns quickly with
- * the minted `RunId` while progress streams over the Channel (the §5.8 "respond immediately, stream the rest"
- * posture). The Channel dies with the run (§0.4.2) — a fresh one is minted per call. This wires the
- * Channel→store path; the CALLER (the §5.2 Convert transition, P3.53) invokes it once the batch/target/
- * destination are chosen (mirrors `drainPendingIntake`, whose consumption also lands with the state machine).
+ * [Build-Session-Entscheidung: P2.124] The §5.8/§2.13.3 backend-disconnect fault seam for the conversion-run
+ * lifecycle. `onRunFault` fires when a mid-run backend disconnect is detected — an **app-level** fault (§2.13.1:
+ * the core panicked, the IPC channel dropped), NOT a per-item `ItemFinished{Failed}` — so the UI can route to
+ * the AppFault surface (state 12) and stop the run **without fabricating outcomes for items it never heard back
+ * about** (§5.8). It is a DISTINCT fault from the `app://fault` `AppFault` DTO ({@link AppEventHandlers.onFault}),
+ * whose kinds ({EngineMissing, WebviewFault, BundleDamaged}) are the §7.2 STARTUP faults. UNSET in P2: the P3.53
+ * FSM supplies it (dispatch → state 12 / `AppFaultNotice`, P3.60→P8) and adds the §5.8 mid-run **channel-silence**
+ * watchdog (the per-engine wall-clock watchdog is P3.44/P4.12); this box wires the SEAM + the buildable-now
+ * `start_conversion`-rejection detection SOURCE.
+ */
+export interface ConversionRunHandlers {
+  /** §5.8/§2.13.3 mid-run backend-disconnect → AppFault (state 12). UNSET in P2 (P3.53 supplies it). */
+  readonly onRunFault?: () => void;
+}
+
+/**
+ * [Build-Session-Entscheidung: P2.120/P2.124] The §5.8 `start_conversion` progress lifecycle: create the
+ * run-scoped, ordered `Channel<ConversionEvent>`, route every event into the store's `applyConvertEvent` reducer
+ * (§5.8 — the per-item `progress` map + the `pendingVideoReencodeNote` keep/clear), then fire C6
+ * `start_conversion` (§0.4.1), which returns quickly with the minted `RunId` while progress streams over the
+ * Channel (the §5.8 "respond immediately, stream the rest" posture). The Channel dies with the run (§0.4.2) — a
+ * fresh one is minted per call.
+ *
+ * **P2.124 fault wiring:** the `start_conversion` rejection is CLASSIFIED (§5.8 "command Promise rejects
+ * **unexpectedly**"). A structured §0.4.3 `IpcError` (Throw-mode surfaces a business `Err(IpcError)` as a
+ * rejection — a documented, EXPECTED error, e.g. a stale `CollectedSetId`) is **not** app-level: it re-throws
+ * unsignalled for the caller to route (the §5.3 `CommandError`, P3.53). An OPAQUE (non-`IpcError`) rejection is
+ * the "core panic / IPC drop" case → `onRunFault` (→ AppFault, state 12). Either way the rejection is
+ * **re-thrown** — the seam NOTIFIES, it never swallows the failure. The CALLER (the §5.2 Convert transition,
+ * P3.53) invokes this once the batch/target/destination are chosen and supplies `onRunFault` (mirrors
+ * `drainPendingIntake`, whose consumption also lands with the state machine).
  */
 export async function startConversionRun(
   collectedSetId: CollectedSetId,
@@ -78,18 +103,47 @@ export async function startConversionRun(
   options: OptionValues,
   destination: DestinationChoice,
   rerunDecision: RerunDecision,
+  handlers: ConversionRunHandlers = {},
 ): Promise<RunId> {
   const onProgress = new Channel<ConversionEvent>();
   onProgress.onmessage = (event) => {
     useAppStore.getState().applyConvertEvent(event);
   };
-  return commands.startConversion(
-    collectedSetId,
-    target,
-    options,
-    destination,
-    rerunDecision,
-    onProgress,
+  try {
+    return await commands.startConversion(
+      collectedSetId,
+      target,
+      options,
+      destination,
+      rerunDecision,
+      onProgress,
+    );
+  } catch (fault) {
+    // §5.8: only an UNEXPECTED rejection is an app-level fault. A structured §0.4.3 `IpcError` (Throw-mode
+    // surfaces a business `Err(IpcError)` as a rejection) is the DOCUMENTED error contract, NOT a disconnect,
+    // so it re-throws unsignalled for the caller to route (the §5.3 `CommandError`, P3.53). An OPAQUE
+    // (non-`IpcError`) rejection is the "core panic / IPC drop" case → `onRunFault` (AppFault, state 12).
+    if (!isIpcError(fault)) {
+      handlers.onRunFault?.();
+    }
+    throw fault;
+  }
+}
+
+/**
+ * [Build-Session-Entscheidung: P2.124] Discriminate a structured §0.4.3 `IpcError` (the documented business
+ * error contract — Throw-mode throws a Rust `Err(IpcError)` as this shape) from an OPAQUE transport/panic
+ * rejection: only the latter is the §5.8 "rejects unexpectedly (core panic, IPC drop)" app-level fault. An
+ * `IpcError` always carries a string `kind` (the §2.8 taxonomy code); a transport error is a bare `Error` /
+ * string with none, so the shape check is the sound, minimal discriminator (an unknown shape falls through to
+ * the app-fault path — the safe default, never a silent misroute).
+ */
+function isIpcError(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    typeof (value as { kind: unknown }).kind === "string"
   );
 }
 

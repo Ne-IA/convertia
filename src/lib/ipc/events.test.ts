@@ -172,6 +172,50 @@ describe("startConversionRun (P2.120 §5.8 Channel<ConversionEvent> → store)",
     });
     expect(useAppStore.getState().progress).toEqual({ 1: { fraction: 0.5, done: false } });
   });
+
+  it("signals onRunFault + re-throws on an OPAQUE rejection (P2.124 §5.8 core-panic / IPC-drop)", async () => {
+    // A bare Error (no `kind`) is the "rejects unexpectedly (core panic, IPC drop)" case → app-level fault.
+    // The seam NOTIFIES (→ AppFault state 12) AND re-throws — it never swallows the failure (P2.124).
+    const fault = new Error("ipc drop");
+    invoke.mockRejectedValueOnce(fault);
+    const onRunFault = vi.fn();
+    await expect(
+      startConversionRun("cs1", { format: "tsv" }, {}, "besideSource", "skip", { onRunFault }),
+    ).rejects.toBe(fault);
+    expect(onRunFault).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-throws a structured IpcError WITHOUT firing onRunFault (a business Err is not app-level, §5.8)", async () => {
+    // Throw-mode surfaces a Rust `Err(IpcError)` (§0.4.3 — e.g. a stale CollectedSetId) as a structured
+    // rejection: the DOCUMENTED error contract, NOT a disconnect. It re-throws for the caller (§5.3
+    // CommandError, P3.53) but MUST NOT route to the app-level AppFault state.
+    const businessErr = {
+      kind: "internalError",
+      message: "no such batch",
+      path: null,
+      residue: null,
+    };
+    invoke.mockRejectedValueOnce(businessErr);
+    const onRunFault = vi.fn();
+    await expect(
+      startConversionRun("cs1", { format: "tsv" }, {}, "besideSource", "skip", { onRunFault }),
+    ).rejects.toBe(businessErr);
+    expect(onRunFault).not.toHaveBeenCalled();
+  });
+
+  it("does not signal onRunFault on a successful start (only an app-level fault routes to state 12)", async () => {
+    const onRunFault = vi.fn();
+    await startConversionRun("cs1", { format: "tsv" }, {}, "besideSource", "skip", { onRunFault });
+    expect(onRunFault).not.toHaveBeenCalled();
+  });
+
+  it("a start_conversion rejection with no onRunFault handler still throws (the P2 inert seam)", async () => {
+    const fault = new Error("core panic");
+    invoke.mockRejectedValueOnce(fault);
+    await expect(
+      startConversionRun("cs1", { format: "tsv" }, {}, "besideSource", "skip"),
+    ).rejects.toBe(fault);
+  });
 });
 
 describe("ingestFromIntakeEvent (P2.120 app://intake → C1)", () => {
