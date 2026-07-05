@@ -448,7 +448,7 @@
 - [x] **P2.123** [UI] Enforce English-only / string-ownership on the shell (every user-facing literal in `strings/ui.ts`, no i18n-runtime import) · §5.5 · G57
   needs: P1.37, P2.120
   > **Reconcile (P2.123 build session):** delivered — English-only + string-ownership on the shell is already enforced continuously over `src/**` (the shell included) by G57's three legs: (a) the i18n-runtime import ban (`eslint` `no-restricted-imports` `I18N_RESTRICTED` + the `ui.test.ts` flat-map unit leg, P1.38); (b) every `ui.ts` key resolving to a non-empty English value + the `idle_reassurance` exact-text drift check (`check-english-only` + the `ui.ts` home, P1.37); (c) the no-inline-user-facing-literal rule (`eslint` `react/jsx-no-literals`, P0.4.6) — all live and G24-self-tested (P1.62.6). The P2 shell (`App.tsx` = `<main/>` + the P2.120/P2.121 mount hooks) carries no user-facing literal and imports no i18n runtime; there is no `src/components/` chrome (that is P8) to move strings from. Verified this session: `eslint` + `check-english-only` green over HEAD. Nothing to build; box closed as a dup (spec/gate machinery > plan).
-- [ ] **P2.124** [UI] Wire the backend-disconnect / mid-run IPC-drop handling to `AppFault` (the §5.8 app-fault surface) · §5.8 §2.13
+- [x] **P2.124** [UI] Wire the backend-disconnect / mid-run IPC-drop handling to `AppFault` (the §5.8 app-fault surface) · §5.8 §2.13
   needs: P2.120, P2.39
 - [ ] **P2.125** [TEST,RUST] Assert the IPC-responsiveness invariant — no synchronous C-command blocks the WebView past a bound (grouping shell) · §0.4 §1.1 §1.11
   needs: P2.36, P2.38
