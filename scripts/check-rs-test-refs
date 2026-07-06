@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""check-rs-test-refs - G73 .rs test-fn-reference staleness gate (P2.136).
+
+The `.rs` analogue of the G68 doc-graph `.md` cross-resolution leg (scripts/plan-lint doc25). Each time
+a C-command IPC contract handler is converted to AppHandle-coupled boot-glue, the named test breadcrumb
+in an `ipc/` comment (the `…_contract` / `…_contract_is_invocable_and_typed` reference that pins which
+test module/fn exercises the surface) can go stale — the test is renamed while the prose reference is
+not. The doc-graph freshness gate (G68) guards `.md` cross-resolution only; this gate is its `.rs`
+sibling: it FAILS CLOSED when a contract-test reference in an `ipc/` comment names a `mod`/`fn` that is
+defined nowhere under `src-tauri/src/ipc/**`.
+
+WHAT IT SCANS: every git-tracked `src-tauri/src/ipc/**/*.rs` file. It collects the tree-wide set of
+DEFINED symbols (`mod <name>` + `fn <name>`, every visibility/async/const/unsafe/extern form) over a
+`_strip_rust`'d code projection (so a `mod`/`fn` token inside a comment / string / raw-string body is
+never a phantom definition) and, from COMMENT text only (a stateful, string-aware extractor, so a
+`_contract`-shaped token inside a string literal or a production identifier is never read as a
+reference), every contract-test-family REFERENCE token — a
+`(module::)*name_contract[_is_invocable_and_typed]` identifier. A reference RESOLVES iff its
+FINAL `::` segment is in the defined set (the box's "a mod/fn defined anywhere in ipc/**" wording — the
+`module::` qualifier is captured for the message but not separately bound). An unresolved reference is a
+violation.
+
+WHY A >=1-CHAR PREFIX BEFORE `_contract`: the family GLOB `*_contract` appears in a doc comment
+(planning.rs "Mirrors the C1/C2a `*_contract` tests"). REF_RE mandates >=1 identifier char immediately
+before the literal `_contract` (`[A-Za-z_][A-Za-z0-9_]*_contract`), so the bare `_contract` residue of
+that glob is never tokenised — a naive `\\w*_contract` / `endswith('_contract')` would tokenise it, find
+no symbol named `_contract`, and red the tree. `re.ASCII` keeps `\\w`-class semantics byte-identical
+across the 3-OS CI matrix (Rust identifiers are ASCII).
+
+PLANE / FAIL-MODE: a single WHOLE-TREE fail-closed invocation. Resolution inherently needs the whole
+definition set — a reference cannot be resolved from a diff — so there is no `--diff`/`--full` split and
+no "no diff base" fail-open hole. Runs at L2 pre-push AND the L4 CI mirror. Passes (target-absent) when
+no `ipc/**` source exists yet. stdlib-only. L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+
+Usage: check-rs-test-refs
+Exit:  0 = every ipc/** contract-test reference resolves (or no ipc source yet); 1 = an unresolved
+       reference (FAIL-CLOSED); 2 = bad invocation.
+"""
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+IPC_PREFIX = "src-tauri/src/ipc/"
+
+# The contract-test reference family: (module::)* name_contract [_is_invocable_and_typed], with a
+# MANDATORY >=1-char identifier prefix before `_contract` (the anti-glob guard — see the module
+# docstring) and a trailing non-word boundary (so prose plurals/suffixes `_contracts` / `_contract_v2`
+# do not match). re.ASCII so the class semantics are identical on win/mac/linux.
+REF_RE = re.compile(
+    r"(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*_contract(?:_is_invocable_and_typed)?(?![A-Za-z0-9_])",
+    re.ASCII,
+)
+
+# A Rust `fn`/`mod` DEFINITION, matched LINE-ANCHORED over the `_strip_rust`'d code projection (comment /
+# string / raw-string / char bodies blanked, length + newlines preserved) — so a `fn`/`mod` token inside a
+# `/* … */` block-comment body or a multi-line raw-string body is NOT a phantom def that could mask a
+# genuine rename-strand (the G1 dual-review fail-open fix). The strip makes the immunity total; the
+# line-anchor is the belt-and-suspenders residue guard.
+DEF_RE = re.compile(
+    r"^\s*(?:pub(?:\s*\([^)]*\))?\s+)?"
+    r"(?:(?:async|unsafe|const|extern(?:\s+\"[^\"]*\")?)\s+)*"
+    r"(?:fn|mod)\s+([A-Za-z_][A-Za-z0-9_]*)",
+    re.ASCII | re.MULTILINE,
+)
+
+
+def _comment_spans(line: str, in_block: bool) -> tuple[str, bool]:
+    """The comment text of `line` given the prior block-comment state, plus the new state. STATEFUL
+    (so a `/* … */` body line with no leading `*` is still comment) and STRING-AWARE (so a `//` or
+    `/*` inside a "…"/'…'/`…` literal — e.g. a URL "http://x" — is NOT a comment start). Returns
+    (comment_text, in_block_after). Adapted verbatim from scripts/check-deferral's `_comment_spans`
+    (P0.3.4); the stdlib gate scripts are self-contained and do not import one another."""
+    if in_block:
+        end = line.find("*/")
+        if end == -1:
+            return line, True                          # whole line still inside the block
+        rest_c, nb = _comment_spans(line[end + 2:], False)
+        return line[:end] + "\n" + rest_c, nb
+    i, n = 0, len(line)
+    while i < n:
+        c = line[i]
+        if c in "\"'`":                                 # a quote — a string span ONLY if it closes here
+            j, closed = i + 1, False
+            while j < n:
+                if line[j] == "\\":
+                    j += 2
+                    continue
+                if line[j] == c:
+                    closed = True
+                    break
+                j += 1
+            if closed:
+                i = j + 1                               # skip the whole string literal (e.g. a URL)
+                continue
+            # no closing quote on the line: an apostrophe (e.g. in a regex /don't/) or an
+            # unterminated string (invalid code) — NOT a string span. Treat the quote as a plain
+            # char so a following // or /* comment is still detected.
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and line[i + 1] == "/":
+            return line[i + 2:], False                  # // line comment to EOL
+        if c == "/" and i + 1 < n and line[i + 1] == "*":
+            end = line.find("*/", i + 2)
+            if end == -1:
+                return line[i + 2:], True               # /* opens a block to EOL
+            rest_c, nb = _comment_spans(line[end + 2:], False)
+            return line[i + 2:end] + "\n" + rest_c, nb
+        i += 1
+    return "", False
+
+
+def _strip_rust(text: str) -> str:
+    """(pure) `text` with every COMMENT, STRING, CHAR and RAW-STRING body replaced by spaces (newlines
+    preserved), so a `fn`/`mod` token inside a `// comment`, a `/* … */` body (Rust allows nesting), a
+    `"…"`/`r#"…"#` string body or a `'x'` char literal is never mistaken for a definition. SAME LENGTH +
+    same newline positions as the input, so the LINE-ANCHORED `DEF_RE` still maps 1:1. Conservative:
+    anything it cannot classify stays as code. Adapted verbatim from scripts/check-coverage's
+    `_strip_rust` (P2.135); the stdlib gate scripts are self-contained and do not import one another."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\n":
+            out.append("\n"); i += 1
+        elif c == "/" and i + 1 < n and text[i + 1] == "/":            # line comment -> EOL
+            while i < n and text[i] != "\n":
+                out.append(" "); i += 1
+        elif c == "/" and i + 1 < n and text[i + 1] == "*":            # block comment (Rust allows NESTING)
+            out.append("  "); i += 2; depth = 1
+            while i < n and depth > 0:
+                if text[i] == "\n":
+                    out.append("\n"); i += 1
+                elif text[i] == "/" and i + 1 < n and text[i + 1] == "*":
+                    out.append("  "); i += 2; depth += 1
+                elif text[i] == "*" and i + 1 < n and text[i + 1] == "/":
+                    out.append("  "); i += 2; depth -= 1
+                else:
+                    out.append(" "); i += 1
+        elif c == "r" and i + 1 < n and (text[i + 1] == '"' or text[i + 1] == "#"):  # maybe a raw string
+            k = i + 1
+            while k < n and text[k] == "#":
+                k += 1
+            if k < n and text[k] == '"':
+                hashes = k - (i + 1)                                   # `#`s between the `r` and the `"`
+                out.append(" " * (k - i + 1)); i = k + 1
+                closer = '"' + "#" * hashes
+                while i < n:
+                    if text[i] == "\n":
+                        out.append("\n"); i += 1
+                    elif text.startswith(closer, i):
+                        out.append(" " * len(closer)); i += len(closer); break
+                    else:
+                        out.append(" "); i += 1
+            else:                                                       # an ident starting with `r`, not a raw string
+                out.append(c); i += 1
+        elif c == '"':                                                 # normal string
+            out.append(" "); i += 1
+            while i < n:
+                if text[i] == "\\" and i + 1 < n:
+                    out.append(" \n" if text[i + 1] == "\n" else "  "); i += 2
+                elif text[i] == '"':
+                    out.append(" "); i += 1; break
+                elif text[i] == "\n":
+                    out.append("\n"); i += 1
+                else:
+                    out.append(" "); i += 1
+        elif c == "'":                                                 # char literal vs lifetime
+            if i + 1 < n and text[i + 1] == "\\":                      # escaped char '\n' '\\' '\'' '\u{..}'
+                j = i + 2
+                while j < n and j < i + 12 and text[j] not in ("'", "\n"):
+                    j += 1
+                if j < n and text[j] == "'":
+                    out.append(" " * (j - i + 1)); i = j + 1
+                else:
+                    out.append("'"); i += 1
+            elif i + 2 < n and text[i + 2] == "'":                     # simple 'X' (incl. '{' '}')
+                out.append("   "); i += 3
+            else:                                                      # a lifetime 'a — leave as code
+                out.append("'"); i += 1
+        else:
+            out.append(c); i += 1
+    return "".join(out)
+
+
+def collect_defs(text: str) -> set[str]:
+    """(pure) the `mod`/`fn` names DEFINED in `text` — one pooled set (the box resolves 'a mod/fn
+    defined anywhere in ipc/**', so no mod-vs-fn discrimination). Collected over the `_strip_rust`'d code
+    projection, so a `mod`/`fn` token inside a comment/string/raw-string body is never a phantom def that
+    could mask a genuine rename-strand (the G1 dual-review fail-open fix)."""
+    return {m.group(1) for m in DEF_RE.finditer(_strip_rust(text))}
+
+
+def scan_refs(text: str) -> list[tuple[int, str]]:
+    """(pure) [(lineno, token)] for every contract-test-family reference in COMMENT text of `text`;
+    block-comment state threaded across every line so `/* … */` bodies are covered. 1-based lines."""
+    out: list[tuple[int, str]] = []
+    in_block = False
+    for i, line in enumerate(text.splitlines()):
+        comment, in_block = _comment_spans(line, in_block)
+        if comment:
+            for token in REF_RE.findall(comment):
+                out.append((i + 1, token))
+    return out
+
+
+def unresolved_in_texts(texts: list[str]) -> list[str]:
+    """(pure) the reference TOKENS (across all `texts`, defs pooled tree-wide) whose final `::` segment
+    resolves to no defined `mod`/`fn`. The self-test's synthetic driver."""
+    defs: set[str] = set()
+    for t in texts:
+        defs |= collect_defs(t)
+    bad: list[str] = []
+    for t in texts:
+        for _ln, token in scan_refs(t):
+            if token.rsplit("::", 1)[-1] not in defs:
+                bad.append(token)
+    return bad
+
+
+def _git(*args: str) -> tuple[int, str]:
+    p = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return p.returncode, p.stdout
+
+
+def _ipc_files() -> list[str]:
+    rc, out = _git("ls-files")
+    if rc != 0:
+        return []
+    return sorted(
+        f for f in out.splitlines()
+        if f.replace("\\", "/").startswith(IPC_PREFIX) and f.endswith(".rs")
+    )
+
+
+def run() -> int:
+    files = _ipc_files()
+    if not files:
+        print(f"[G73] no {IPC_PREFIX}**/*.rs source yet — pass (target-absent)")
+        return 0
+    texts = {f: (ROOT / f).read_text(encoding="utf-8", errors="replace") for f in files}
+    defs: set[str] = set()
+    for t in texts.values():
+        defs |= collect_defs(t)
+    violations: list[str] = []
+    total_refs = 0
+    for f, t in texts.items():
+        for ln, token in scan_refs(t):
+            total_refs += 1
+            if token.rsplit("::", 1)[-1] not in defs:
+                violations.append(
+                    f"{f}:{ln}: contract-test reference `{token}` resolves to no `mod`/`fn` defined "
+                    f"under {IPC_PREFIX}** (a rename likely stranded it — re-anchor it to the current "
+                    f"test module, or fix the name)"
+                )
+    if violations:
+        for v in violations:
+            print(f"[G73] FAIL: {v}", file=sys.stderr)
+        print(
+            f"[G73] {len(violations)} unresolved contract-test reference(s) in ipc/** comments "
+            f"— FAIL-CLOSED (the .rs analogue of the G68 doc-graph cross-resolution net)",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"[G73] {total_refs} contract-test reference(s) across {len(files)} ipc file(s) all resolve to a defined mod/fn")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv:
+        print(f"[G73] usage: check-rs-test-refs (no arguments); got {argv!r}", file=sys.stderr)
+        return 2
+    return run()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -135,6 +135,8 @@ jobs:
         run: python3 scripts/check-editorconfig
       - name: 'G70: test-suppression-marker scan — full test tree (no green-by-rewrite; live over the committed fixture crates, grows from P1)'
         run: python3 scripts/check-test-suppression --full
+      - name: 'G73: .rs contract-test-fn reference resolution over ipc/** (fail-closed; the .rs analogue of the G68 doc-graph cross-resolution net; live since P2)'
+        run: python3 scripts/check-rs-test-refs
       # P1.59 G17: warm the RustSec advisory-db so the `cargo audit --no-fetch` leg in the
       # check-rust-lint-contract step below is LIVE (a clean runner ships the pinned cargo-audit but no db).
       # Linux-only - the audit reads the OS-agnostic Cargo.lock, so it runs once (on macOS/Windows the db

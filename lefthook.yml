@@ -112,6 +112,8 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/check-generated-drift
     test-suppression: # G70 - full-tree test-suppression-marker scan (fail-closed; no diff-base excuse)
       run: python3 scripts/check-test-suppression --full
+    rs-test-refs:    # G73 - ipc/** contract-test-fn reference resolution (.rs analogue of G68; whole-tree, fail-closed)
+      run: python3 scripts/check-rs-test-refs
     rust-lint-contract: # G14/G17 - whole-tree clippy --all-targets + cargo test + cargo audit (live since P1)
       run: python3 scripts/check-rust-lint-contract --full
     unsafe-policy:   # G29 - whole-tree #![deny(unsafe_code)] + exactly-one-FFI-module scan (live since P1)

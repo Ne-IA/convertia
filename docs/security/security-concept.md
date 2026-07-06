@@ -778,7 +778,7 @@ thematic, dual-reviewed commits to `main`; this section logs them.
   the one **ownership control above the deterministic gates** — the trailer records an owner decision;
   the gate audits its presence, not the intent.
 - **New gate this round:** **G71** (L(-1)-ack pre-push gate) — a `| **G71** |` L2 *(mirror)* row (max(Gnn)
-  when Stage 1 shipped; **now below `max(Gnn) == G72`** after the Stage-3a G72 row); the "Vacated / reserved gate IDs" blockquote records it for navigational completeness
+  when Stage 1 shipped; **now below `max(Gnn) == G73`** after the Stage-3a G72 + P2.136 G73 rows); the "Vacated / reserved gate IDs" blockquote records it for navigational completeness
   (plan-lint check 22 sees it as a row). **Fail-soft during the P0 bootstrap, fail-closed from P1**
   (the G56a pattern — the P0 build itself edits L(-1) files under owner drive). New P0 box **P0.2.14**
   (wire G71 + author `scripts/l-neg1-files.toml` + the G24 self-test). The G24a `.gitattributes`/
@@ -802,7 +802,7 @@ thematic, dual-reviewed commits to `main`; this section logs them.
   resilience:** the push-wait / `gh run watch` are bounded-retried with backoff, an API unreachable
   mid-session is a hard-stop + escalate (NOT a fail-open — distinct from the step-0 startup health
   check), and the loop emits a periodic liveness heartbeat (build-loop §3 step 6 + §6, roles §6,
-  P0.6.6). (b) **New gate G72** (engines.lock-bump corpus re-validation) — now `max(Gnn)`: a
+  P0.6.6). (b) **New gate G72** (engines.lock-bump corpus re-validation) — then `max(Gnn)` (now below `max(Gnn) == G73`): a
   CVE/Dependabot engine bump must carry a regenerated-green pair-status-ledger proof before it lands;
   **fail-soft P1–P3** (the §6.5 machinery does not exist until P4 — the bump is HELD as a Co-Pilot
   item, roles §5a) **then fail-closed from P4** (wired in P4.61). (c) **New threat class T12**
