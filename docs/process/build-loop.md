@@ -23,7 +23,7 @@
 | Session | Role |
 |---|---|
 | **Build-Loop** (this file) | Autonomous. Builds the plan box by box (**P1 onward**), writes tests, runs every gate + the dual review, commits **directly to `main`** + pushes. The gates are the protection — **no second branch, no merge step**. |
-| **Co-Pilot** | Escalation & clarification target; strategic / cross-phase decisions; high-level review. Works with the owner. The Build-Loop escalates *to* Co-Pilot; it never merges or rewrites history on its own. |
+| **Co-Pilot** | Escalation & clarification target; strategic / cross-phase decisions; high-level review. Works with the owner. Executes the standing **phase-end hardening sweep** box that closes every phase `P2`..`P11` ([test-strategy §11](test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)). The Build-Loop escalates *to* Co-Pilot; it never merges or rewrites history on its own. |
 
 This is a **single-branch (`main`), GitHub + GitHub-Actions** model. There are **no
 worktrees, no parallel branches, no push-lock coordination, no separate
@@ -671,7 +671,7 @@ on an unreachable GitHub API is the §6 **mid-session hard-stop**, not a silent 
 ## 9. Convergence & crash-recovery
 
 **Convergence report (zero open boxes / end of session):** boxes completed + their
-commit SHAs + the **consolidated `[!extern]` list = the owner's action list**, so the
+commit SHAs + the **consolidated `[!extern]` list = the owner/Co-Pilot action list** (the owner rules it; the standing test-strategy §11 phase-end sweep boxes on it are Co-Pilot-executed), so the
 owner has one scannable hand-off. Never loop forever; on zero open boxes, report and
 stop.
 

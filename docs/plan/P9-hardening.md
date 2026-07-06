@@ -55,6 +55,7 @@
 ### Headed-E2E infrastructure (§6.4.6 — the scaffolding that produces the validations)
 
 - [ ] **P9.1** [TEST] Pin WebdriverIO v9 + `@axe-core/webdriverio` + the E2E client deps in the pnpm workspace · §6.4.6 §6.4.6a · G18c G18d
+  needs: P8.28
   > add **WebdriverIO v9** (the W3C-WebDriver-only major, aligned with `tauri-driver`'s W3C session model) and **`@axe-core/webdriverio`** to the §0.8 dependency set, pinned in `pnpm-lock.yaml`; the contrast session (P9.16) reuses the same driver session as the flow E2E, so the JS client is mandatory (the Rust `webdriver`/`fantoccini` crate is rejected — `@axe-core/webdriverio` is JS-only, §6.4.6). Honours the P0.3.8 registry-pin + lifecycle-script lockdown (G18c/G18d).
 - [ ] **P9.2** [TEST] Install + pin the `tauri-driver` binary (Windows + Linux only) via the gate-tool fetch-and-verify mechanism · §6.4.6 · G24
   needs: P9.1
@@ -248,4 +249,16 @@
 ### Owner / external infrastructure (the off-repo §6.1.4 self-hosted runner)
 
 - [!extern] **P9.47** [CI] Provision + record the §6.1.4 Lane-B self-hosted VPS runner (kernel ≥ 5.13 Landlock / SYS_PTRACE) into `reference_self_hosted_ci_runner.md` · §6.1.4 §6.4.2
-  > **owner action (the loop cannot build off-repo infrastructure):** provision the Ne-IA org-standard self-hosted IONOS VPS runner (the §6.1.4 `[DECIDED — record at setup]` item) and RECORD into `reference_self_hosted_ci_runner.md` / §6.1.4 the runner's actual `lsb_release` + **kernel version** and WHICH §6.4.2 fs-audit enforcement path it uses — native **Landlock** (kernel ≥ 5.13, the org-standard Ubuntu floor) or **`SYS_PTRACE` inside `--cap-add SYS_PTRACE` Docker** (the alternative if the kernel is < 5.13). This is the precondition the P9.27.2 net-namespace assertion, the P9.33.1/.2/.3 fs-audit substrate, and the P9.36 scheduled engine-fuzz job assert AGAINST, and the P10.7 Lane-B corpus/release-confirmation job runs ON. **NOT a hard `needs:` of those boxes** — they degrade to GitHub-hosted runners (`--cap-add SYS_PTRACE` / `--network=none`, P9.27.4/P9.33.1) so the loop is not STOPped, but a self-hosted Lane-B leg cannot run until this owner action records the runner. Collected into the consolidated `[!extern]` owner-action list (build-loop.md §9).
+  > **owner action (the loop cannot build off-repo infrastructure):** provision the Ne-IA org-standard self-hosted IONOS VPS runner (the §6.1.4 `[DECIDED — record at setup]` item) and RECORD into `reference_self_hosted_ci_runner.md` / §6.1.4 the runner's actual `lsb_release` + **kernel version** and WHICH §6.4.2 fs-audit enforcement path it uses — native **Landlock** (kernel ≥ 5.13, the org-standard Ubuntu floor) or **`SYS_PTRACE` inside `--cap-add SYS_PTRACE` Docker** (the alternative if the kernel is < 5.13). This is the precondition the P9.27.2 net-namespace assertion, the P9.33.1/.2/.3 fs-audit substrate, and the P9.36 scheduled engine-fuzz job assert AGAINST, and the P10.7 Lane-B corpus/release-confirmation job runs ON. **NOT a hard `needs:` of those boxes** — they degrade to GitHub-hosted runners (`--cap-add SYS_PTRACE` / `--network=none`, P9.27.4/P9.33.1) so the loop is not STOPped, but a self-hosted Lane-B leg cannot run until this owner action records the runner. Collected into the consolidated `[!extern]` owner/Co-Pilot action list (build-loop.md §9).
+
+---
+
+### The phase-end Co-Pilot hardening sweep — the standing phase-close box
+
+> The standing test-strategy §11 phase-close box (owner directive, recorded 2026-07-06):
+> Co-Pilot-executed — never the Build-Loop; mandate, level and evidence rules in
+> [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep).
+
+- [!extern] **P9.48** [TEST] Run the phase-end Co-Pilot hardening sweep over the whole P9 delivery — adversarial re-test at the hardest technically-possible level · §6.4
+  > **[!extern] (Co-Pilot-executed — the standing test-strategy §11 phase-close sweep, never the Build-Loop):** runs once every other P9 box is `[x]`; the phase's whole delivery is adversarially re-tested at the hardest technically-possible level with unrestricted session tooling (Docker, WebDriver/Playwright, property/fuzz/mutation probes, real-OS live runs); findings are fixed with tests as normal dual-reviewed commits before this box flips `[x]`.
+  > **Boundary stop:** P10.1 carries `needs:` on this box — a `[!extern]` prerequisite of a non-extern box is a loop STOP (`_format.md` §2/§6), so the loop hard-stops at the P9→P10 boundary and hands off to the Co-Pilot until the sweep is `[x]`.

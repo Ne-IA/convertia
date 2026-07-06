@@ -28,6 +28,14 @@
   built once and then exercised across the pairs that share it; each pair still gets its
   own backing so no pair hides in a group). This is intentional, not inconsistency — the
   P5–P7 per-pair-test split is **finer**, not coarser, than P2's per-type split.
+- **Every phase `P2`..`P11` closes with a standing `[!extern]` phase-end Co-Pilot
+  hardening-sweep box** ([test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)):
+  once every other box of the phase is `[x]`, the Co-Pilot session — never the
+  Build-Loop — adversarially re-tests the phase's whole delivery at the hardest
+  technically-possible level. The **next phase's first box carries a `needs:` on
+  the sweep box** (the RC sign-off `P11.33` carries it for `P11`), so the loop
+  hard-stops at each phase boundary until the sweep is `[x]`
+  ([`_format.md`](_format.md) §2 / §6).
 - This file currently holds the **logical phase skeleton only**. The atomic
   `[ ]` steps are added in a later fill pass — **after** this structure is
   reviewed and signed off (and after P0 content is supplied by the owner).

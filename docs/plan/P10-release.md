@@ -54,7 +54,7 @@
 ### No-update posture (assert the updater is absent)
 
 - [ ] **P10.1** [GATE] Wire the `tauri-plugin-updater`-absent structural assertion into the release lint · §7.6.1 §0.10 · G47
-  needs: P0.3.2
+  needs: P0.3.2, P9.48
   > extend the G47 CSP/capability structural lint (P0.3.2) so the **release plane** re-asserts §7.6.1's "absence is the implementation": **no** `tauri-plugin-updater` in `Cargo.toml`/the Builder, **no** `updater` bundle block / `bundle.createUpdaterArtifacts` / updater pubkey in `tauri.conf.json`, **no** update endpoint/manifest, **no** remote origin in any CSP directive or capability — fail-closed at release. The §6.7.1 "verified by the type/config checks" claim, asserted at the release tier (not only per-push).
 - [ ] **P10.2** [RELEASE] Assert no background/startup version-check + no "you're up to date" surface ships · §7.6.1 §7.6.2 · G44
   needs: P10.1
@@ -298,3 +298,15 @@
 - [ ] **P10.59** [GATE] Run the deferred cargo-vet first-party crate-trust live vetting — `init`/`import` (≥2 DBs) / `check --locked` over the full `Cargo.lock`, commit `imports.lock`, populate `audits.toml` · §3.8 · G18b G18a G9
   needs: P1.7
   > the live cargo-vet run that P0.3.6 authored the config/protocol for and **P1.59 deferred** ("a separate P10 vetting effort"): pin cargo-vet (`gate-tools.toml`), `cargo vet init`, `cargo vet import` the ≥2 declared DBs (Mozilla + Google, `supply-chain/config.toml`), `cargo vet suggest` then certify/exempt the full tree (~471 crates) with documented reasons, commit `supply-chain/imports.lock` (Co-Pilot-reviewed, never auto-fetched — G9 invariant (e) / G18a `--locked`), and populate `supply-chain/audits.toml`. This flips the G18b live tier from skip-with-warning to fail-closed (a clean `cargo vet check --locked` becomes release-blocking). **Authored as the owning box at P1.68** so the deferred work is plan-owned (the obligation-as-prose lesson the P1.66 G71 fix taught — an unowned, unverified deferral silently never happens). Runs in the P10 supply-chain stage, before P10.58 publish.
+
+---
+
+### The phase-end Co-Pilot hardening sweep — the standing phase-close box
+
+> The standing test-strategy §11 phase-close box (owner directive, recorded 2026-07-06):
+> Co-Pilot-executed — never the Build-Loop; mandate, level and evidence rules in
+> [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep).
+
+- [!extern] **P10.60** [TEST] Run the phase-end Co-Pilot hardening sweep over the whole P10 delivery — adversarial re-test at the hardest technically-possible level · §6.4
+  > **[!extern] (Co-Pilot-executed — the standing test-strategy §11 phase-close sweep, never the Build-Loop):** runs once every other P10 box is `[x]`; the phase's whole delivery is adversarially re-tested at the hardest technically-possible level with unrestricted session tooling (Docker, WebDriver/Playwright, property/fuzz/mutation probes, real-OS live runs); findings are fixed with tests as normal dual-reviewed commits before this box flips `[x]`.
+  > **Boundary stop:** P11.1 carries `needs:` on this box — a `[!extern]` prerequisite of a non-extern box is a loop STOP (`_format.md` §2/§6), so the loop hard-stops at the P10→P11 boundary and hands off to the Co-Pilot until the sweep is `[x]`.

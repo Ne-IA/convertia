@@ -43,7 +43,7 @@
 ## Engine-registry seam & the `Engine` trait
 
 - [ ] **P4.1** [RUST] Define the `Engine` trait — id/descriptor/capabilities/plan/plan_encode/classify_failure · §3.2.2 · G29
-  needs: P3.4
+  needs: P3.4, P3.75
   > the §3.2.2 trait shape + semantics in `engines/registry.rs`: `fn id() -> EngineId`, `fn descriptor() -> EngineDescriptor`, `fn capabilities(Platform, &PatentDisposition) -> Vec<EngineCapability>`, `fn plan(&job, &out_tmp) -> Result<Invocation, PlanError>`, the two-phase `fn plan_encode(&job, &out_tmp, &ProbeOutput)` default-impl returning the `InternalError` PlanError, `fn classify_failure(ExitStatus, &str) -> ConversionErrorKind`. NO `progress_model()` method (progress is per-Invocation). `Send + Sync`. (Build-order: expands the P3 §1.7 dispatch-stub interface shell P3.4 established — `needs: P3.4`, the cross-phase edge wired here per the P4.77 reconciliation obligation.)
 - [ ] **P4.2** [RUST] Define the engine-layer supporting types — `Invocation`/`EngineProgram`/`StdinPlan`/`TempPath`/`PlanError`/`ProbeOutput` · §3.2.2 · G29
   needs: P4.1
@@ -438,3 +438,13 @@
 - [ ] **P4.80** [TEST] Verify the P4 proof-of-life exit criterion (imgworker boots + isolated round-trip + populated EngineHealth + first reliability report) · §3.5.5 §2.12 §7.2.3 §6.4.3 · G46 G31
   needs: P4.38, P4.45, P4.60, P4.61, P4.79
   > the consolidated P4 exit gate (README P4 proof-of-life): `convertia-imgworker` boots, a round-trip invocation succeeds through the §2.12 isolation boundary (P4.38), the §7.2.3 startup verifier reports a populated `EngineHealth` (P4.45), the §6.4.3 runner + §6.5.2 pair-status ledger + §6.4.3a bijection guard produce their first report (P4.59–P4.61), AND the UX-harness leg (P4.79) passes — the full P4 "done" predicate.
+
+## The phase-end Co-Pilot hardening sweep — the standing phase-close box
+
+> The standing test-strategy §11 phase-close box (owner directive, recorded 2026-07-06):
+> Co-Pilot-executed — never the Build-Loop; mandate, level and evidence rules in
+> [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep).
+
+- [!extern] **P4.81** [TEST] Run the phase-end Co-Pilot hardening sweep over the whole P4 delivery — adversarial re-test at the hardest technically-possible level · §6.4
+  > **[!extern] (Co-Pilot-executed — the standing test-strategy §11 phase-close sweep, never the Build-Loop):** runs once every other P4 box is `[x]`; the phase's whole delivery is adversarially re-tested at the hardest technically-possible level with unrestricted session tooling (Docker, WebDriver/Playwright, property/fuzz/mutation probes, real-OS live runs); findings are fixed with tests as normal dual-reviewed commits before this box flips `[x]`.
+  > **Boundary stop:** P5.1 carries `needs:` on this box — a `[!extern]` prerequisite of a non-extern box is a loop STOP (`_format.md` §2/§6), so the loop hard-stops at the P4→P5 boundary and hands off to the Co-Pilot until the sweep is `[x]`.

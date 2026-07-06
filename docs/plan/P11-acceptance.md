@@ -53,6 +53,7 @@
 > the **same** git tag — never a drifting working tree.
 
 - [ ] **P11.1** [RELEASE] Cut the RC tag and trigger the Lane-B release pipeline against it · §6.7.2 · G56b
+  needs: P10.60
   > create the signed annotated `v*` RC tag on a green `main`, push it, and confirm the §6.7.2 Lane-B release workflow starts against that exact SHA (the G56b ancestry/green-history first-step abort proves the tag is an ancestor of `origin/main` with main's required checks green). This box defines the single RC SHA every P11 verification box asserts against. → the Lane-B pipeline itself is built in P10; this box only triggers it.
 - [ ] **P11.2** [RELEASE] Collect the per-platform RC artifacts + `reliability-report.json` as the verification inputs · §6.1.2 §6.5.2 · G30 G31
   needs: P11.1
@@ -203,6 +204,21 @@
 
 ---
 
+## The phase-end Co-Pilot hardening sweep — the standing phase-close box
+
+> The standing test-strategy §11 phase-close box (owner directive, recorded 2026-07-06):
+> Co-Pilot-executed — never the Build-Loop; mandate, level and evidence rules in
+> [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep).
+> Numbered `.34` (appended at end-of-phase max+1, the plan-edit convention) but placed
+> before the RC sign-off in document order — the sign-off is the plan's terminal box and
+> carries `needs:` on this sweep, so the RC cannot sign off over an unswept P11.
+
+- [!extern] **P11.34** [TEST] Run the phase-end Co-Pilot hardening sweep over the whole P11 delivery — adversarial re-test at the hardest technically-possible level · §6.4
+  > **[!extern] (Co-Pilot-executed — the standing test-strategy §11 phase-close sweep, never the Build-Loop):** runs once every other P11 box except the P11.33 RC sign-off is `[x]`; the phase's whole delivery is adversarially re-tested at the hardest technically-possible level with unrestricted session tooling (Docker, WebDriver/Playwright, property/fuzz/mutation probes, real-OS live runs); findings are fixed with tests as normal dual-reviewed commits before this box flips `[x]`.
+  > **Boundary stop:** P11.33 (the RC sign-off, the plan's terminal box) carries `needs:` on this box — the RC cannot be signed off until the final sweep is `[x]`; there is no successor phase (plan convergence follows the sign-off).
+
+---
+
 ## RC sign-off
 
 > The terminal box of the entire plan: once every P11 verification box above is `[x]`
@@ -210,5 +226,5 @@
 > auditable acceptance decision.
 
 - [ ] **P11.33** [RELEASE] Sign off the RC — every DoD gate green, every §6.6 sub-gate passed, evidence indexed · §6.10 §6.5 · G58
-  needs: P11.31, P11.32
+  needs: P11.31, P11.32, P11.34
   > the RC sign-off: assert that the P11.3 acceptance manifest shows **all** of — the cross-platform E2E matrix complete + green (P11.7), all six §6.6 usability-floor sub-gates passed (P11.14), every §6.10 in-scope DoD gate verified green on the RC (P11.15–P11.29: reliability §6.5, startup-integrity §7.2.3, offline-egress, ≤400 MB size, no-system-pollution, governance/clearance/artifact-completeness), the DoD-traceability completeness (P11.30) + the non-gate exclusions (P11.31), and the engine-set/continuity check (P11.32) — then record the dated sign-off line against the RC tag. This is the SSOT *v1 DoD* satisfied end-to-end; the release may publish. → the final acceptance box of P1–P11.

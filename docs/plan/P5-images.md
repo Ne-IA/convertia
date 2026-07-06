@@ -62,7 +62,7 @@
 > but no relocation leg — the absence is decided here, mirroring the P4.30 note.
 
 - [ ] **P5.1** [BUILD] Stage the libvips raster core into the image-worker (no copyleft PDF loader) · §3.1 §3.5.5 §6.1.3 · G37 G37b
-  needs: P4.27, P0.7.3
+  needs: P4.27, P0.7.3, P4.81
   > the bundled libvips configured **without** the poppler/PDF + MuPDF + any GPL/AGPL loader (so the worker stays LGPL-only, §3.1/§3.6.1); pinned by version+SHA-256 in `engines.lock` per the P0.7.3/P0.7.4 acquisition policy, staged by `scripts/stage-engines`, dynamic-dependency-closure asserted (G37b). The from-source no-PDF-loader COMPILE (the curated build the P5.2 assertion tests against — a distro libvips often enables poppler-glib PDF) is the sub-box P5.1.1 below. (`needs: P0.7.3` for the from-source acquisition + engine-source-allow-list policy this anchors against; the cross-phase edge carried via the P5.74 reconciliation box.)
   - [ ] **P5.1.1** [BUILD] Compile libvips from source with the curated no-PDF-loader configure flags via the P4.28.1 harness (fills the libvips configure-flag manifest seam) · §6.1.3 §3.1 §3.6.1 · G37
     needs: P4.28.1
@@ -429,3 +429,15 @@
 - [ ] **P5.77** [TEST] Assert the per-source default-target table over C3 `get_targets` — exactly one pre-highlighted default per image source (JPG→WEBP, PNG→WEBP, WEBP→JPG, GIF→PNG, BMP→PNG, TIFF→PNG, HEIC→JPG, AVIF→JPG, ICO→PNG, SVG→PNG) · §1.5 §6.4.3 · G31
   needs: P5.49, P5.50, P5.51, P5.65
   > the image peer of P6.28/P6.54/P7.60: assert that C3 `get_targets` (the pure §1.5 detection→`TargetOffer` function, no spawn) returns for EACH of the 10 image sources **exactly one** `pre-highlighted default` target matching the images.md "Per-source default target" table (JPG→WEBP, PNG→WEBP, WEBP→JPG, GIF→PNG, BMP→PNG, TIFF→PNG, HEIC→JPG, AVIF→JPG, ICO→PNG, SVG→PNG) — the SSOT *How It Feels* 4 zero-click promise (drop → one default already highlighted → convert, no choice required), and the deliberate asymmetry (into modern → WEBP, out of modern → JPG; AVIF/HEIC NEVER a default target). Fails if any image source offers zero or >1 pre-highlighted default, or a default not in the table. Distinct from the P4.60.2 G61 OPTION-default guard (which asserts every declared option carries a default, a different property) — this is the per-source default-TARGET gate the richest zero-click image surface otherwise lacked. (`needs: P5.49/P5.50/P5.51` for the →WEBP/→JPG/→PNG saver tests the defaults route to + `P5.65` so the assertion runs once the image pairs are reliable.)
+
+---
+
+### The phase-end Co-Pilot hardening sweep — the standing phase-close box
+
+> The standing test-strategy §11 phase-close box (owner directive, recorded 2026-07-06):
+> Co-Pilot-executed — never the Build-Loop; mandate, level and evidence rules in
+> [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep).
+
+- [!extern] **P5.78** [TEST] Run the phase-end Co-Pilot hardening sweep over the whole P5 delivery — adversarial re-test at the hardest technically-possible level · §6.4
+  > **[!extern] (Co-Pilot-executed — the standing test-strategy §11 phase-close sweep, never the Build-Loop):** runs once every other P5 box is `[x]`; the phase's whole delivery is adversarially re-tested at the hardest technically-possible level with unrestricted session tooling (Docker, WebDriver/Playwright, property/fuzz/mutation probes, real-OS live runs); findings are fixed with tests as normal dual-reviewed commits before this box flips `[x]`.
+  > **Boundary stop:** P6.1 carries `needs:` on this box — a `[!extern]` prerequisite of a non-extern box is a loop STOP (`_format.md` §2/§6), so the loop hard-stops at the P5→P6 boundary and hands off to the Co-Pilot until the sweep is `[x]`.

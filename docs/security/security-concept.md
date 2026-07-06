@@ -31,7 +31,7 @@ manifest, license compliance).
 | Session | Role |
 |---|---|
 | **Build-Loop session** | Autonomous. Builds the plan box by box, writes tests, runs every gate + the dual review, commits directly to `main`. The gates are the protection — there is no second branch and no merge step. |
-| **Co-Pilot session** (the owner's partner) | Escalation & clarification target for the Build-Loop session; strategic decisions; high-level review. Works with the owner. |
+| **Co-Pilot session** (the owner's partner) | Escalation & clarification target for the Build-Loop session; strategic decisions; high-level review. Works with the owner. Executes the standing phase-end hardening sweep box that closes every phase `P2`..`P11` ([test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)). |
 
 - **Single branch (`main`), GitHub, GitHub Actions.** No worktrees, no parallel
   branches, no push-lock coordination, no separate feedback/sniping sessions, **no

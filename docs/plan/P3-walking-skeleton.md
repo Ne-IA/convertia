@@ -79,6 +79,7 @@ reaches the `InProcessNative` branch — with `crate::isolation` and the §0.9 p
 **compile-time interface shells** so the in-core path compiles without spawning anything.
 
 - [ ] **P3.1** [RUST] Scaffold the `crate::fs_guard` / `crate::run` / `crate::outcome` module roots with their public surface · §2.0 §0.7
+  needs: P2.137
   > stand up the three §2.0 trust-kernel leaf-module roots (no dependency on UI/IPC/engine-registry; the layer never calls back up, §2.0 dependency direction) as three INDEPENDENT sub-boxes — they have no mutual dependency at scaffold time, so each is worked + checked off on its own (the loop works them top-to-bottom; a body issue in one root does not couple to the others). `#![deny(unsafe_code)]` at the crate root (no FFI in any P3 module). Downstream boxes that consume one root `needs: P3.1` (the parent gates on all three roots existing — each downstream box needs only the root it names in its own body).
   - [ ] **P3.1.1** [RUST] Scaffold the `crate::fs_guard` module root + its public function shells · §2.0 §0.7
     > `src-tauri/src/fs_guard/` with public shells only (`atomic_publish`, `output_name`, `resolve_identity`, `is_safe_output`, `check_path_limit`, `location_status`) wired so the later `fs_guard` boxes (P3.6–P3.19, P3.31–P3.40) fill the bodies.
@@ -525,3 +526,15 @@ id (`.73`) rather than re-numbering the whole P3 sequence + every cross-phase re
 - [ ] **P3.74** [RUST] Wire `best_effort_scratch_cleanup` (= the §2.6 `cleanup_run` path, §7.3.2 `[DECIDED]`) into the P2.81 `RunEvent::Exit` arm — best-effort + non-blocking, deferring a wedged `.part` to the §2.6.3 next-launch sweep · §7.3.2 §2.6
   needs: P2.81, P3.22
   > the one-call wiring the P2.81 Scope-DECISION deferred: inside the `RunEvent::Exit` arm call `crate::run::cleanup_run` (own-prefix-scoped, idempotent, P3.22) — remove the central `run-<RunId>/` dir + `*.part` in the recorded `final_dir` set — **best-effort and non-blocking** (must not stall app exit; §7.3.2). A wedged descendant still holding a `.part` (§1.7 group-kill timed out) is left to the §2.6.3 next-launch startup sweep (P3.23), never blocking exit. NOT a separate cleanup implementation (§7.3.2 `[DECIDED]`) — it invokes `cleanup_run`.
+
+---
+
+### The phase-end Co-Pilot hardening sweep — the standing phase-close box
+
+> The standing test-strategy §11 phase-close box (owner directive, recorded 2026-07-06):
+> Co-Pilot-executed — never the Build-Loop; mandate, level and evidence rules in
+> [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep).
+
+- [!extern] **P3.75** [TEST] Run the phase-end Co-Pilot hardening sweep over the whole P3 delivery — adversarial re-test at the hardest technically-possible level · §6.4
+  > **[!extern] (Co-Pilot-executed — the standing test-strategy §11 phase-close sweep, never the Build-Loop):** runs once every other P3 box is `[x]`; the phase's whole delivery is adversarially re-tested at the hardest technically-possible level with unrestricted session tooling (Docker, WebDriver/Playwright, property/fuzz/mutation probes, real-OS live runs); findings are fixed with tests as normal dual-reviewed commits before this box flips `[x]`.
+  > **Boundary stop:** P4.1 carries `needs:` on this box — a `[!extern]` prerequisite of a non-extern box is a loop STOP (`_format.md` §2/§6), so the loop hard-stops at the P3→P4 boundary and hands off to the Co-Pilot until the sweep is `[x]`.

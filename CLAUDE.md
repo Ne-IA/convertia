@@ -143,7 +143,7 @@ convertia/                          → repo root (Git, GitHub: Ne-IA/convertia)
 | Session | Role |
 |---|---|
 | **Build-Loop** | Autonomous. Builds the plan box by box (**P1 onward**), writes tests, runs every gate + the dual review, commits directly to `main`. The gates are the protection — no second branch, no merge step. |
-| **Co-Pilot** | Escalation & clarification target for the Build-Loop; strategic decisions; high-level review. Works with the owner. |
+| **Co-Pilot** | Escalation & clarification target for the Build-Loop; strategic decisions; high-level review. Works with the owner. Executes the standing phase-end hardening sweep box that closes every phase `P2`..`P11` ([test-strategy §11](docs/process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)). |
 
 - **Single branch (`main`), GitHub, GitHub Actions.** No worktrees, no parallel
   branches, no merge step. Enforcement = **CI green on `main` + required status

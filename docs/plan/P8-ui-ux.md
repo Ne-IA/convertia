@@ -64,6 +64,7 @@
 ### App chrome (AppHeader / BrandLogo / ThemeToggle) — scope (i) ship-gating
 
 - [ ] **P8.1** [UI] Build the persistent slim AppHeader chrome frame · §5.3 §5.5
+  needs: P7.78
   > scope (i). The single persistent `AppHeader` present in every §5.2 state — slim, calm, never a second navigation model — laying out the three otherwise-homeless surfaces: BrandLogo (left), ThemeToggle + About/`?` trigger (right), with the BusyNotice Banner slot just under it (top of workspace). Renders identically across all 12 states.
   - [ ] **P8.1.1** [UI] Build the BusyNotice passive Banner (the §5.8 defence-in-depth leaked-`app://intake`-while-busy path) + its auto-dismiss rule · §5.3 §7.1.1 §5.8 · G57 G33a
     needs: P8.1, P2.39, P1.37
@@ -174,3 +175,15 @@
 - [ ] **P8.27** [UI] Add the restrained empty-state eye-candy to Idle + Summary · §5.2 §5.5
   needs: P8.8, P8.17
   > scope (ii) — NON-BLOCKING, may trail the P11 RC (SSOT marks "modern/eye-candy" polish non-blocking). The restrained empty-state visual flourish on `Idle` (1) (around the drop invitation + reassurance line) and the `Summary` (8) outcome screen — uncluttered, a little eye candy, never busy; honours `prefers-reduced-motion` (P8.8). The functional copy/states are owned by scope-(i) boxes; this is the decorative layer only.
+
+---
+
+### The phase-end Co-Pilot hardening sweep — the standing phase-close box
+
+> The standing test-strategy §11 phase-close box (owner directive, recorded 2026-07-06):
+> Co-Pilot-executed — never the Build-Loop; mandate, level and evidence rules in
+> [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep).
+
+- [!extern] **P8.28** [TEST] Run the phase-end Co-Pilot hardening sweep over the whole P8 delivery — adversarial re-test at the hardest technically-possible level · §6.4
+  > **[!extern] (Co-Pilot-executed — the standing test-strategy §11 phase-close sweep, never the Build-Loop):** runs once every other P8 box is `[x]`; the phase's whole delivery is adversarially re-tested at the hardest technically-possible level with unrestricted session tooling (Docker, WebDriver/Playwright, property/fuzz/mutation probes, real-OS live runs); findings are fixed with tests as normal dual-reviewed commits before this box flips `[x]`.
+  > **Boundary stop:** P9.1 carries `needs:` on this box — a `[!extern]` prerequisite of a non-extern box is a loop STOP (`_format.md` §2/§6), so the loop hard-stops at the P8→P9 boundary and hands off to the Co-Pilot until the sweep is `[x]`.

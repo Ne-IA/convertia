@@ -48,7 +48,7 @@
 > of the P0.7-policy / P4-framework gates for FFmpeg specifically.
 
 - [ ] **P6.1** [BUILD] Stage the FFmpeg + FFprobe sidecar per-OS (cache-keyed, target-triple-suffixed) · §6.1.3 §3.3 · G37
-  needs: P4.27, P0.7.3
+  needs: P4.27, P0.7.3, P5.78
   > `scripts/stage-engines` restores the `actions/cache`-hosted `ffmpeg-<ver>-<triple>` engine-asset cache (checksum-verified pinned-URL fetch on a miss; the from-source curated-build populate path is P6.1.1), places the FFmpeg + FFprobe sidecars under `src-tauri/binaries/` target-triple-suffixed (`ffmpeg-x86_64-pc-windows-msvc.exe`, …), and declares them in `tauri.conf.json` `bundle.externalBin`. The single GPL-2.0+ binary serves audio/video/cross-category. → executes the P0.7.3/P0.7.4 acquisition+staging policy for FFmpeg (`needs: P0.7.3` for the from-source acquisition + engine-source-allow-list policy this anchors against; the cross-phase edge carried via the P6.92 reconciliation box).
   - [ ] **P6.1.1** [BUILD] Compile FFmpeg from source as the curated `--enable-gpl --disable-network --disable-everything --enable-…` network-absent build via the P4.28.1 harness (fills the FFmpeg configure-flag manifest seam) · §6.1.3 §3.5.1 §3.6.1 · G37 G38
     needs: P4.28.1
@@ -476,3 +476,15 @@
 - [ ] **P6.92** [GATE] Wire the deferred P6→P4 harness reconciliation `needs:` edges — isolation boundary, §1.7 lifecycle/probe/progress/kill, per-pair runner + ledger + bijection, TCC staging, options-panel shell · §3.5.1 · G7 G20
   needs: P4.13, P4.14, P4.8, P4.9, P4.10, P4.11, P4.25, P4.30, P4.43, P4.49, P4.59, P4.60, P4.61, P4.64, P4.74, P4.28.1, P0.7.3, P0.7.4
   > the P6 instance of the cross-phase reconciliation obligation (the master plan-lint forbidden-string check is P4.77; reciprocal of P3.70/P5.74/P7.77/P9.46): declare the load-bearing P6→P4 + P6→P0 edges the FFmpeg-family boxes consume — the FFmpeg staging executes the **P0.7.3 engine-acquisition + allow-list policy** (P6.1) and the per-engine §6.1.3 assertions execute the **P0.7.4 build-assertion policy** (P6.3–P6.7); the from-source curated FFmpeg compile (P6.1.1) fills the **P4.28.1 from-source compilation harness** configure-flag manifest seam (the network-absent `--disable-network` build the P6.3/P6.6/P6.7 §6.1.3 assertions can only pass against — the prebuilt branch cannot); the FFmpeg beside-the-exe dynamic-library relocation (P6.1.2) drives the **P4.30 generic rpath/install_name rewrite mechanism** so the five component libs resolve inside the bundle (the post-relocation G37b closure asserted in P6.1.2); FFmpeg routes through the **P4.13/P4.14 §2.12 isolation wrapper** (P6.8); probe-then-encode + progress + classify + cancel/kill ride the **P4.8/P4.9/P4.10/P4.11/P4.49 §1.7 lifecycle** (P6.10–P6.13); macOS TCC staging is **P4.25** (P6.79); the per-engine availability row populates the **P4.43 verifier framework** (P6.14); every per-pair test runs on the **P4.59 §6.4.3 runner** (the audio per-output-format tests P6.32–P6.41, the video per-container tests P6.59–P6.63, the cross-category tests P6.76) and the phase gate drives the **P4.60 bijection guard + P4.61 ledger generator** (P6.80); every advanced-option DECLARATION box (the audio declarations P6.84–P6.91, the video P6.50.1, the extract-audio P6.69.1, the to-GIF P6.71.1/P6.71.2/P6.72.1) renders against the **P4.64 OptionsPanel widget dispatch + the P4.74 AdvancedDrawer**. `needs:` these P4 harness boxes here so the §6 selection builds the P4 mechanism first (P4 is `[x]` before the loop reaches P6 — the edges must RESOLVE, not dangle; the inline engine edges on P6.8–P6.80 carry the per-box dependency, this box is the auditable single owner). No P6 box `>`-note defers a `needs:` with the P4.77-forbidden phrasing.
+
+---
+
+## The phase-end Co-Pilot hardening sweep — the standing phase-close box
+
+> The standing test-strategy §11 phase-close box (owner directive, recorded 2026-07-06):
+> Co-Pilot-executed — never the Build-Loop; mandate, level and evidence rules in
+> [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep).
+
+- [!extern] **P6.93** [TEST] Run the phase-end Co-Pilot hardening sweep over the whole P6 delivery — adversarial re-test at the hardest technically-possible level · §6.4
+  > **[!extern] (Co-Pilot-executed — the standing test-strategy §11 phase-close sweep, never the Build-Loop):** runs once every other P6 box is `[x]`; the phase's whole delivery is adversarially re-tested at the hardest technically-possible level with unrestricted session tooling (Docker, WebDriver/Playwright, property/fuzz/mutation probes, real-OS live runs); findings are fixed with tests as normal dual-reviewed commits before this box flips `[x]`.
+  > **Boundary stop:** P7.1 carries `needs:` on this box — a `[!extern]` prerequisite of a non-extern box is a loop STOP (`_format.md` §2/§6), so the loop hard-stops at the P6→P7 boundary and hands off to the Co-Pilot until the sweep is `[x]`.

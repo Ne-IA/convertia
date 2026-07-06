@@ -1013,7 +1013,77 @@ build-loop.md), do not improvise a weaker test.
 
 ---
 
-## 11. References
+## 11. The phase-end Co-Pilot hardening sweep
+
+Every phase **`P2`..`P11` closes with one standing box** — the **phase-end
+Co-Pilot hardening sweep** (`[!extern]`, `[TEST]`, the last work box of its
+phase; owner directive, recorded 2026-07-06): once every other box of the phase
+is `[x]`, the **Co-Pilot session — never the Build-Loop — adversarially re-tests
+the phase's whole delivery at the hardest technically-possible level**, with
+whatever tooling that takes.
+
+### 11.1 Why a phase-level pass exists
+
+The per-box bar (DoD item (c), §10) proves each box at its own highest sensible
+level; **nobody owns the phase as a system**. The sweep attacks exactly the
+residue the per-box bar structurally leaves behind:
+
+- **cross-box seams** — two boxes each correct, their composition untested;
+- **whole-surface properties** — the accumulated contract surface (every IPC
+  command, every event, the full state machine) exercised as one system rather
+  than per-contract;
+- **assumptions no single box owned** — environment, ordering, concurrency,
+  platform behaviour *between* boxes;
+- **the live half of structurally-untestable glue** — e.g. the §1.1a
+  AppHandle-coupled boot glue, whose runtime behaviour no `cargo test` reaches,
+  is exercised **live** here ahead of the scheduled §1.6 E2E infrastructure.
+
+It is a **quality amplifier in the G1 family, not a gate** — it carries **no
+`Gnn`** (judgment work a deterministic gate cannot encode; the deterministic
+gates stay the only security controls), and it **composes with** the
+phase-boundary G1 spot-audit cadence (security-concept §2): same boundary,
+different object — the spot-audit reads review *evidence*, the sweep attacks the
+delivered *system*.
+
+### 11.2 Mandate
+
+- **Scope: everything the phase delivered** that exists at sweep time — code,
+  contracts, tests, gates the phase authored. A box still `[!]`-blocked at the
+  boundary is outside the sweep's scope; it is swept by the phase whose work
+  unlocks it.
+- **Level: the hardest technically possible** — deliberately **above** the
+  per-box "highest technically sensible" bar. Session tooling is
+  **unrestricted**: Docker, WebDriver/Playwright, property/fuzz/mutation probes
+  (`cargo-mutants`, extended `proptest` runs), real-OS live runs, packet capture
+  — whatever the phase's delivery demands. **Session-local tooling is not repo
+  tooling:** nothing un-pinned enters the repo; a probe that becomes a
+  *permanent* test lands as normal code under the existing gates and the
+  pin-and-verify discipline (security-concept §0).
+- **Findings are fixed, with tests, before the box flips `[x]`** — as normal
+  dual-reviewed commits (the full 8-point DoD + G1 apply; the §8
+  no-green-by-rewrite rule applies unchanged). A finding the sweep cannot fix (a
+  genuine fork, a spec contradiction) escalates on the normal path
+  (roles-and-escalation §4).
+- **Evidence:** what was attacked, with what tooling, what was found, what
+  landed — recorded in the sweep's evidence-commit bodies; the box check-off
+  itself stays a bare marker flip.
+- **Who:** the Co-Pilot session (roles-and-escalation §1); an L(-1) surface
+  touched by a fix follows the normal owner-ack path (G71).
+
+### 11.3 The mechanical boundary stop
+
+**The next phase's first box carries a `needs:` on the sweep box** (for the
+final phase, the RC sign-off box `P11.33` carries it). A `[!extern]`
+prerequisite of a non-extern box is a **STOP** for the loop
+([`_format.md`](../plan/_format.md) §2 marker table / §6 rule 4;
+roles-and-escalation §4(d)) — so the loop **mechanically hard-stops at every
+phase boundary until the sweep is `[x]`**, with no new loop mechanics. A
+DECISION-C early build of a *single* later-phase prerequisite box is **not**
+gated by the boundary stop — that box is swept by its owning phase's sweep.
+
+---
+
+## 12. References
 
 - Technical home (the pipeline + corpus + reliability ledger):
   [spec §6.4](../spec/06-build-test-release.md) (`§6.4.1`–`§6.4.6a`), §6.5, §6.6.
@@ -1032,6 +1102,9 @@ build-loop.md), do not improvise a weaker test.
   T9b, T10, T11).
 - The loop that applies this doctrine: [build-loop.md](build-loop.md) §3 step 4,
   §5 (DoD item (c)).
+- Roles the §11 phase-end sweep binds (Co-Pilot executes it; the loop stops at
+  the boundary): [roles-and-escalation.md](roles-and-escalation.md) §1, §4(d);
+  the box marker + stop semantics: [`_format.md`](../plan/_format.md) §2, §6.
 - Plan home: [docs/plan/P0-build-and-security.md](../plan/P0-build-and-security.md)
   §P0.5.
 - Owner's core rule (completeness > pragmatism): [CLAUDE.md](../../CLAUDE.md) §6.

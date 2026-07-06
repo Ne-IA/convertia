@@ -550,3 +550,13 @@
 - [x] **P2.136** [GATE] Add a `.rs` test-fn-reference staleness check — fail when a `…_contract_is_invocable_and_typed`-style test-fn reference in an `ipc/` source comment names a `fn` that does not exist (the `.rs` analogue of the doc-graph `.md` cross-resolution gate) · tooling-only
   > **[!extern] (L(-1), Co-Pilot-built, low-priority):** a new gate script + its planted-positive/negative self-test are L(-1)-caged (`scripts/check-*`, `scripts/gate-selftests/**`) — the Build-Loop NEVER edits the cage, so this is Co-Pilot-authored under owner-ack; the loop **skips + collects** it (no box `needs:` it → no hard-stop). Surfaced by the recurring P2.60/P2.70/P2.71 boot-glue-conversion class.
   > **Scope when built:** a gate script scanning `src-tauri/src/ipc/**` (widen to `src-tauri/src/**` if the class recurs elsewhere) for the documented test-fn-reference form, FAIL-CLOSED when a referenced `fn` name is absent; + a new build-gate row (its gate id assigned at build time) + the planted-positive/negative self-test (a renamed fn MUST red it). Until then the module-anchor convention (above) is the interim mitigation.
+
+## The phase-end Co-Pilot hardening sweep — the standing phase-close box
+
+> The standing test-strategy §11 phase-close box (owner directive, recorded 2026-07-06):
+> Co-Pilot-executed — never the Build-Loop; mandate, level and evidence rules in
+> [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep).
+
+- [!extern] **P2.137** [TEST] Run the phase-end Co-Pilot hardening sweep over the whole P2 delivery — adversarial re-test at the hardest technically-possible level · §6.4
+  > **[!extern] (Co-Pilot-executed — the standing test-strategy §11 phase-close sweep, never the Build-Loop):** runs once every other P2 box is `[x]`; the phase's whole delivery is adversarially re-tested at the hardest technically-possible level with unrestricted session tooling (Docker, WebDriver/Playwright, property/fuzz/mutation probes, real-OS live runs); findings are fixed with tests as normal dual-reviewed commits before this box flips `[x]`.
+  > **Boundary stop:** P3.1 carries `needs:` on this box — a `[!extern]` prerequisite of a non-extern box is a loop STOP (`_format.md` §2/§6), so the loop hard-stops at the P2→P3 boundary and hands off to the Co-Pilot until the sweep is `[x]`.

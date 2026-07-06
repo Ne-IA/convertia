@@ -58,7 +58,7 @@ other bracketed token at a box position — a stray `[X]`, `[-]`, `[~]`, `[wip]`
 | `[ ]` | **open / buildable** | Not yet built. The unit of work. | The selection target (§6) — built when it is the next one and its `needs:` are all `[x]`. |
 | `[x]` | **done** | Built, tested, dual-reviewed, committed, gates green. | Skipped (already done); may **unlock** a `[!]` box via `unlocked-by:` (§5). |
 | `[!]` | **blocked-with-note** | Cannot be built **and is not a dependency to follow** — it waits on something the loop genuinely cannot produce. **Rare.** | **Skip + report** at the phase end; read the `>`-note under it. May be auto-flipped to `[ ]` by an `unlocked-by:` dep going `[x]` (§5). |
-| `[!extern]` | **needs something external** | Waits on an **owner / external** action the loop cannot take (an off-repo asset, a human decision, an external dependency). **Very rare** for a fully-offline OSS app. | **Skip + collect** into the consolidated `[!extern]` list (the owner's action list, `build-loop.md` §9). **STOP** instead of skipping if a *non-extern* box names this one as a `needs:` prerequisite. |
+| `[!extern]` | **needs something external** | Waits on an **owner / external** action the loop cannot take (an off-repo asset, a human decision, an external dependency — plus the **standing per-phase Co-Pilot hardening-sweep box**, [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep)). **Rare outside the standing sweep boxes** for a fully-offline OSS app. | **Skip + collect** into the consolidated `[!extern]` list (the owner/Co-Pilot action list, `build-loop.md` §9). **STOP** instead of skipping if a *non-extern* box names this one as a `needs:` prerequisite. |
 
 > **`[!]` is the exception, not the tool of first resort — prefer dependency-
 > following (DECISION C, §5).** When the next box needs an *unbuilt but buildable*
@@ -293,7 +293,7 @@ this format so a box author knows exactly how their box will be picked:
    `needs:` dep not yet `[x]`** (but **buildable**) → **DECISION C:** build that
    prerequisite first (recurse on *its* `needs:`), then **return** to the target.
    Never skip, never hole.
-4. **`[!extern]`** → skip + collect into the owner's action list; **STOP** if a
+4. **`[!extern]`** → skip + collect into the owner/Co-Pilot action list; **STOP** if a
    non-extern box hard-requires it. **`[!]`** → read the `>`-note, skip, mention at
    the phase end.
 5. **Sub-boxes** are worked top to bottom under their parent before the parent is
