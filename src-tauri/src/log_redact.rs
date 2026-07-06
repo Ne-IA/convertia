@@ -20,6 +20,15 @@
 //! `crate::prefs` on a store fallback) is **not** a user file — §7.4.2 explicitly permits recording
 //! it — so it does not route through here. The stance covers *user* file paths only.
 //!
+//! **Directory-path inputs — the dir-leaf contract (P2.137).** Call sites pass FILE paths (§7.5.3's
+//! subject is "a user file"). For a directory-leaf input — a trailing-separator path, or a plain path
+//! that names a directory — `Path::file_name` yields the LAST real component, so the renderer discloses
+//! exactly ONE component: the leaf directory's NAME (`secret-project`, never
+//! `/home/alice/secret-project`), and never the parent chain. That single-component disclosure is
+//! accepted as consistent with §7.5.3's basename-only door (the leaf name IS the path's basename; the
+//! chain stays unreachable by construction) — a call site that must name a directory at the default
+//! level therefore discloses its leaf name and nothing more. [Build-Session-Entscheidung: P2.137]
+//!
 //! **Verbose full paths are the additive counterpart (P2.94 · §7.5.3 / §7.5.4).** The verbose /
 //! diagnostic opt-in raises the log level to `Debug` once at startup (`resolve_log_verbosity` in `main`,
 //! from `verboseLog || --verbose`). The §7.5.4 dev-diagnostic sites — engine argv, per-item timing,
@@ -64,7 +73,8 @@ const NO_BASENAME_FALLBACK: &str = "<no-basename>";
 /// `vacation.jpg`, never `/home/alice/secret-project/vacation.jpg`. Making the redaction a *type* is
 /// what turns the §7.5.3 convention structural: a value of this type cannot yield the full path
 /// through any standard formatting, so a default-level user-path log site that routes through it
-/// cannot leak the directory by construction (the §2.11 privacy invariant).
+/// cannot leak the directory CHAIN by construction (the §2.11 privacy invariant; a directory-leaf
+/// input discloses at most its leaf name — the module doc's dir-leaf contract).
 ///
 /// `Debug` is written by hand to also render the basename: a `#[derive(Debug)]` would print the
 /// wrapped `&Path` in full (`RedactedPath("/home/alice/…")`) and so re-open the exact leak this type
@@ -203,6 +213,51 @@ mod tests {
         assert_eq!(
             RedactedPath::new(&parent_terminated).to_string(),
             NO_BASENAME_FALLBACK
+        );
+    }
+
+    // §6.4.1 unit (G15): the P2.137 dir-leaf contract (module doc) — a DIRECTORY-leaf input (here a
+    // trailing-separator path) renders exactly ONE component, the leaf directory's NAME, never the parent
+    // chain: `Path::file_name` ignores a trailing separator, so the renderer stays a single-component door
+    // even when a call site passes a directory path instead of the FILE paths §7.5.3 prescribes.
+    #[test]
+    fn trailing_separator_directory_path_renders_the_leaf_name_only() {
+        // `join("")` materialises a trailing platform separator (`home/alice/secret-project/`).
+        let dir_path = Path::new("home")
+            .join("alice")
+            .join("secret-project")
+            .join("");
+        let shown = RedactedPath::new(&dir_path).to_string();
+        assert_eq!(
+            shown, "secret-project",
+            "P2.137 dir-leaf contract: a trailing-separator directory path renders its leaf name only"
+        );
+        for parent in ["home", "alice"] {
+            assert!(
+                !shown.contains(parent),
+                "§7.5.3/§2.11: the parent chain never renders (leaked `{parent}`)"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15, unix): a NON-UTF-8 basename renders LOSSILY (U+FFFD) per the `write_basename` doc —
+    // the NAME degrades, never the directory (§7.5.3/§2.11: the privacy invariant is unaffected by the
+    // encoding). Unix-only: the invalid component is built from raw bytes via `OsStrExt` (Windows paths are
+    // WTF-16; std offers no byte-level constructor for the equivalent unpaired-surrogate probe).
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_basename_renders_lossily_never_the_directory() {
+        use std::os::unix::ffi::OsStrExt;
+        let name = std::ffi::OsStr::from_bytes(b"vacation-\xff-photo.jpg");
+        let p = Path::new("home").join("alice").join(name);
+        let shown = RedactedPath::new(&p).to_string();
+        assert_eq!(
+            shown, "vacation-\u{FFFD}-photo.jpg",
+            "§7.5.3: the non-UTF-8 basename renders lossily (U+FFFD), the rest of the name intact"
+        );
+        assert!(
+            !shown.contains("alice") && !shown.contains("home"),
+            "§2.11: lossy rendering never falls back to the directory"
         );
     }
 }

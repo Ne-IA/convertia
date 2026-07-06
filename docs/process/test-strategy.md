@@ -180,7 +180,7 @@ the runtime). The **boot-stage pattern** tests this glue at the level where it i
 - **Source-scan signature pins (L1/L2, `#[cfg(test)]`).** The glue's *shape* is pinned by
   fn-pointer coercion (a signature drift fails to compile) — e.g. `launch_intake`'s
   `launch_funnel_items_have_their_spec_signatures` — and its *boot invariants* by
-  whole-`main()`-body scans (`production_boot_source` / `production_full_boot_source`:
+  whole-`main()`-body scans (`production_boot_source` / `all_production_source`:
   no-socket-on-boot, no programmatic window builder, no updater plugin). The dispatch
   *logic* it routes through is the **pure, truth-table-tested** rule extracted beside it
   (`intake_disposition`), so the only thing left un-executed is the AppHandle plumbing.
@@ -205,7 +205,7 @@ exempt: they carry their full §1.1 / §1.3 unit + property bar.
 
 **`fn main()` is NOT reached by the exemption** (it binds no `AppHandle` parameter, so the
 signature scan does not match it). That is deliberate and consistent: `main`'s boot body is
-covered by the *whole-`main()` source-scans* (`production_full_boot_source` /
+covered by the *whole-`main()` source-scans* (`all_production_source` /
 `boot_invariants` / `instance_identity`) — the source-scan half of the boot-stage pattern
 above — not by the diff exemption. So new uncovered boot logic added directly in `main`'s
 `setup` closure is held by those scans, not waved through.

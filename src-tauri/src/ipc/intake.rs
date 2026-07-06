@@ -150,8 +150,10 @@ fn resolve_intake_source(
     origin: IntakeOrigin,
 ) -> ResolvedIntake {
     if drain_pending == Some(true) {
-        ready.mark_ready();
-        match pending.take() {
+        // The two cohesive drain effects — mark-ready + consume-once — run FUSED under the pending-slot
+        // Mutex (`take_marking_ready`, P2.137): no §7.8.1 Buffer-arm stash can land between them, so a
+        // launch set is either observed by this drain or re-routed to a live emit (the no-loss closure).
+        match pending.take_marking_ready(ready) {
             Some(buffered) => ResolvedIntake::Freeze {
                 paths: buffered.paths,
                 origin: buffered.origin,
@@ -381,7 +383,7 @@ mod c1_contract {
             "§7.8.1: a normal intake never marks the frontend ready (readiness is the drainPending signal alone)"
         );
         assert!(
-            pending.take().is_none(),
+            pending.take_marking_ready(&ready).is_none(),
             "§7.8.1: a normal intake never touches PendingIntake"
         );
     }
@@ -443,12 +445,15 @@ mod c1_contract {
     // once. The passed `paths`/`origin` are IGNORED (§0.4.1 mutual exclusivity) — a decoy proves it.
     #[test]
     fn resolve_drain_nonempty_freezes_buffer_with_stored_origin_and_drains_once() {
+        // [Test-Change: P2.137 — old-obsolete+new-correct, §7.8.1] `stash`/`take` fused into
+        // `stash_or_route`/`take_marking_ready` (the no-loss closure); same assertions, fused API.
         let pending = PendingIntake::default();
-        pending.stash(
+        let ready = FrontendReady::default();
+        pending.stash_or_route(
+            &ready,
             paths(&["/launch/x.png", "/launch/y.jpg"]),
             IntakeOrigin::LaunchArg,
         );
-        let ready = FrontendReady::default();
         let out = resolve_intake_source(
             &pending,
             &ready,
@@ -469,7 +474,7 @@ mod c1_contract {
             "§7.8.1: the drain marks the frontend ready"
         );
         assert!(
-            pending.take().is_none(),
+            pending.take_marking_ready(&ready).is_none(),
             "§7.8.1: the drain consumed PendingIntake exactly once (the buffer is now empty)"
         );
     }

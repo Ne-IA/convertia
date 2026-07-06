@@ -636,7 +636,16 @@ Two complementary hooks own the lifecycle (per Tauri v2):
 builder
     .build(tauri::generate_context!())?
     .run(|app, event| match event {
-        RunEvent::ExitRequested { api, .. } => { /* belt-and-suspenders guard */ }
+        // §7.3.3 QUIT-leg guard [DECIDED]: busy-gated prevent_exit + the SAME confirm signal as the
+        // window-close guard above (macOS app-menu Quit / Cmd+Q raises ExitRequested with NO per-window
+        // CloseRequested, so the window-close guard alone under-delivers there). `code: None` only —
+        // a PROGRAMMATIC `app.exit(code)` is never blocked (see the §7.3.3 programmatic-exit exemption).
+        RunEvent::ExitRequested { api, code, .. } if code.is_none() => {
+            if converter_is_busy(app) {
+                api.prevent_exit();
+                app.emit("app://close-requested", serde_json::Value::Null).ok();
+            }
+        }
         // Open-with [DECIDED] — RunEvent::Opened is a `#[cfg(any(target_os = "macos",
         // target_os = "ios", target_os = "android"))]` enum VARIANT in Tauri v2: it does
         // NOT exist on Windows/Linux (their intake is argv/single-instance). The `.run()`
@@ -682,6 +691,15 @@ atomic-write contract (write-to-temp → atomic rename) means the visible output
 never a truncated file; whatever was mid-flight is at most an orphaned temp under
 the per-run scratch dir, reclaimed by §7.2.5. **`[REC]`** the idle state quits
 immediately with no prompt (nothing to lose).
+
+**Programmatic-exit exemption `[DECIDED]`:** the §7.3.2 quit-leg guard applies only
+to the **user/OS quit request** (`RunEvent::ExitRequested { code: None }` — app-menu
+Quit, Cmd+Q, an OS shutdown request). A **programmatic** `app.exit(code)` (which
+raises `ExitRequested` with `code: Some(..)`) is **never blocked** — it is exactly
+the sanctioned exit step 2's confirmed quit performs after the cancel + cleanup, so
+the confirm flow can never deadlock against its own guard. Both guard legs
+(window-close `prevent_close`, quit-leg `prevent_exit`) share the ONE §7.3.2 busy
+predicate and the ONE `app://close-requested` confirm signal.
 
 ### 7.3.4 In-flight queue on close `[DECIDED]`
 
@@ -1135,15 +1153,26 @@ fn forward_launch_intake(app: &AppHandle, paths: Vec<PathBuf>, origin: IntakeOri
     // frontend can re-call C1 ingest_paths with the correct IntakeOrigin (§0.6).
     // The ready-flag branch (emit-if-ready vs buffer-into-PendingIntake) is below.
     if frontend_ready(app) {
-        app.emit("app://intake", IntakePayload { paths, origin }).ok(); // UI mirrors a drop (§5.2/§1.1)
+        emit_intake(app, paths, origin);            // UI mirrors a drop (§5.2/§1.1)
     } else {
-        buffer_pending_intake(app, paths, origin);  // first-launch race fix (below)
+        // first-launch race fix (below). The stash RE-CHECKS the ready flag under the
+        // pending-slot lock (`stash_or_route`) and hands the set BACK for a live emit when
+        // the C1 drain won the race between the ready-read above and this stash — the
+        // no-loss atomicity clause below.
+        if let StashOutcome::RouteToEmit(set) = buffer_pending_intake(app, paths, origin) {
+            emit_intake(app, set.paths, set.origin);
+        }
     }
 }
 
 // Caller at the single-instance hook (§7.1.1) resolves argv → paths, origin = SecondInstance;
 // the first-launch setup reader uses origin = LaunchArg; the macOS RunEvent::Opened handler
 // converts urls → paths and uses LaunchArg (first launch) / SecondInstance (already running).
+// parse_path_args classification rules [DECIDED]: argv[0] is skipped; a `-`-leading token is
+// a launch switch (never a path); an EMPTY token is DROPPED (never cwd-joined — a join would
+// make the launching directory itself an ingest root); a Windows drive-relative token
+// (`C:file.txt`) passes through unchanged and resolves against the per-drive cwd at freeze
+// time, where a missing file fails clearly (§2.8).
 fn forward_launch_argv(app: &AppHandle, argv: &[String], cwd: &str, origin: IntakeOrigin) {
     forward_launch_intake(app, parse_path_args(argv, cwd), origin);
 }
@@ -1174,7 +1203,20 @@ pitfall). The launch funnel therefore **distinguishes the two cases**:
   invariant holds). This guarantees a launch-with-files is never lost to a listener race. (`forward_launch_intake` consults the
   ready-flag: emit if ready, else buffer — and `PendingIntake` carries the real `origin`,
   **never** a hard-coded `SecondInstance`; a first-launch buffered set drains as
-  `LaunchArg`.)
+  `LaunchArg`.) **No-loss atomicity `[DECIDED]`:** the funnel's ready-read and its stash are
+  two steps, so the C1 drain could interleave between them (mark-ready + take-nothing) and
+  strand a stashed set for the whole session (the flag is monotonic; the frontend drains once
+  per mount). Both critical sections therefore serialize on the **same pending-slot lock**:
+  the drain's two effects are **fused** (mark-ready THEN take, under the lock —
+  `take_marking_ready`), and the Buffer arm's stash **re-checks the ready flag under that
+  lock** (`stash_or_route`), handing the set back for a live `app://intake` emit when the
+  drain already ran — every launch set is either consumed by the drain or emitted, never
+  stranded. **Frontend ordering:** the root-shell mount fires the `drainPending` call only
+  after the `app://intake` listener registration has **settled** (the drain awaits the
+  subscription — completion, not merely call order), so the emit-if-ready arm never targets
+  an unregistered listener; the drain still fires when the subscription fails (the buffered
+  set returns via the C1 command **response**, not via an event, so nothing depends on the
+  listener for the drain itself).
 
 **Interaction with single-instance + freeze (§7.1.1 / §2.4):** at first launch the
 paths seed the idle state as if dropped (via the buffer-then-replay above). A *second*

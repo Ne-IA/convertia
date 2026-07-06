@@ -14,11 +14,16 @@
 // model). The machine-state switch that selects a screen is wired when `state/machine.ts`
 // lands (P3.53). [Build-Session-Entscheidung: P1.31]
 //
-// P2.61 wired the §7.8.1 root-shell-mount first-launch drain trigger (`useLaunchDrain`); P2.120 adds
-// `useAppEvents()` — the three §5.8 `app://` listener registrations — ABOVE it, because the drain must run
-// AFTER the `app://intake` listener exists (the §7.8.1 listener race). ORDERING is load-bearing: keep
-// `useAppEvents()` before `useLaunchDrain()`. P2.121 adds `useNativeDragDrop()` (the §5.4 native file-drop) —
-// order-independent of the drain (a live drop is never a buffered launch path). [Build-Session-Entscheidung: P2.121]
+// [Build-Session-Entscheidung: P2.137] P2.61 wired the §7.8.1 root-shell-mount first-launch drain trigger
+// (`useLaunchDrain`); P2.120 added `useAppEvents()` — the three §5.8 `app://` listener registrations. P2.137
+// hardened the drain gate from mount ORDER to registration COMPLETION: §7.8.1 mandates the drain fire "later
+// than listener-registration, so it closes the race" (07-app-shell.md §7.8.1), and order alone let the drain's
+// synchronous-flush C1 invoke overtake the three async `listen` registrations — the core would flip
+// `FrontendReady` into a window where a second launch is emitted into an unregistered listener and dropped.
+// `useAppEvents()` returns the per-mount registration-completion promise; `useLaunchDrain(eventsReady)` drains
+// only once it SETTLES (both legs — the drained set returns via the C1 response, so a failed subscribe loses
+// nothing). P2.121 adds `useNativeDragDrop()` (the §5.4 native file-drop) — independent of the drain gate (a
+// live drop is never a buffered launch path).
 //
 // This root render IS §7.2.1 step 8 — "hand to UI empty/idle state (§5.2)": the terminal step of the ordered
 // startup sequence (src-tauri `main()`'s spine, P2.106). After the Rust core reveals the window (step 6) and
@@ -31,8 +36,8 @@ import { useLaunchDrain } from "./hooks/useLaunchDrain";
 import { useNativeDragDrop } from "./hooks/useNativeDragDrop";
 
 export function App() {
-  useAppEvents();
+  const eventsReady = useAppEvents();
   useNativeDragDrop();
-  useLaunchDrain();
+  useLaunchDrain(eventsReady);
   return <main />;
 }

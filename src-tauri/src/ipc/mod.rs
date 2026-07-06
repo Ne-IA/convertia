@@ -71,6 +71,76 @@ mod app_event_names {
 }
 
 #[cfg(test)]
+mod c_surface_scan {
+    //! Shared test-support for the STRUCTURAL C-surface scans (`responsiveness_contract`,
+    //! `error_shape_contract`, `camel_case_wire_contract`, and the `ipc_boundary_proptest` completeness
+    //! bind): ONE handler table + ONE set of production-prefix source readers, so the legs can never drift
+    //! apart on what the §0.4.1 surface IS. Hoisted verbatim out of `responsiveness_contract` (P2.125)
+    //! when P2.137 added the sibling legs — the assertions those helpers feed are unchanged.
+    //! [Build-Session-Entscheidung: P2.137]
+
+    /// A per-file production-source reader (one of the `*_src` fns below) — aliased so the handler table's
+    /// element type stays simple (clippy::type_complexity).
+    pub(super) type SrcFn = fn() -> &'static str;
+
+    /// Everything before a scanned file's first `#[cfg(test)]`, so a needle can never match a test's own
+    /// source. `concat!`-split so the literal marker is absent from this scanning module too.
+    pub(super) fn production_prefix(full: &'static str) -> &'static str {
+        full.split_once(concat!("#[cfg", "(test)]"))
+            .map_or(full, |(prefix, _)| prefix)
+    }
+
+    pub(super) fn intake_src() -> &'static str {
+        production_prefix(include_str!("intake.rs"))
+    }
+    pub(super) fn planning_src() -> &'static str {
+        production_prefix(include_str!("planning.rs"))
+    }
+    pub(super) fn conversion_src() -> &'static str {
+        production_prefix(include_str!("conversion.rs"))
+    }
+    pub(super) fn system_src() -> &'static str {
+        production_prefix(include_str!("system.rs"))
+    }
+
+    /// The complete §0.4.1 C1–C13 command surface — every handler name paired with its file's
+    /// production-prefix reader (14 handlers: C2 splits into C2a/C2b). The single table every structural
+    /// leg iterates; a new command must join this table to be covered by the legs (the registration-side
+    /// closed set is the P2.36/G23 gate's job).
+    pub(super) const HANDLERS: [(&str, SrcFn); 14] = [
+        ("get_targets", planning_src),
+        ("plan_output", planning_src),
+        ("set_destination", planning_src),
+        ("pick_destination", planning_src),
+        ("ingest_paths", intake_src),
+        ("pick_for_intake", intake_src),
+        ("cancel_ingest", intake_src),
+        ("start_conversion", conversion_src),
+        ("cancel_run", conversion_src),
+        ("get_run_summary", conversion_src),
+        ("open_path", system_src),
+        ("open_project_page", system_src),
+        ("get_app_info", system_src),
+        ("get_engine_health", system_src),
+    ];
+
+    /// Everything between `pub async fn {name}(` and the body's opening `{` — the remainder of the
+    /// handler's signature (multi-line arg list + return type; no C-handler signature carries an interior
+    /// `{`). Slicing the signature out means a scan needle can only ever match the declaration itself,
+    /// never a doc-comment mention of the same tokens. [Build-Session-Entscheidung: P2.137]
+    pub(super) fn signature_rest_of(name: &str, src: &'static str) -> &'static str {
+        let marker = format!("pub async fn {name}(");
+        let (_, after) = src
+            .split_once(marker.as_str())
+            .expect("every §0.4.1 handler declaration is present in its file's production prefix");
+        let (sig_rest, _) = after
+            .split_once('{')
+            .expect("a handler signature terminates at its body's opening brace");
+        sig_rest
+    }
+}
+
+#[cfg(test)]
 mod responsiveness_contract {
     //! §6.4.1 unit (G15): the §0.4/§1.11 C-command-surface RESPONSIVENESS CONTRACT — the WebView-side analogue
     //! of the per-engine watchdog (which is P3.44/P4.12). A STRUCTURAL (source-scan) assertion that no
@@ -91,29 +161,10 @@ mod responsiveness_contract {
     //! signature invariant pinned here is present + stable now, so a sync/blocking regression on the C-surface
     //! reddens the moment it is introduced — the early guard the assert-now half exists to give.
 
-    /// A per-file production-source reader (one of the `*_src` fns below) — aliased so the handler table's
-    /// element type stays simple (clippy::type_complexity).
-    type SrcFn = fn() -> &'static str;
-
-    /// Everything before a scanned file's first `#[cfg(test)]`, so a needle can never match a test's own
-    /// source. `concat!`-split so the literal marker is absent from this scanning module too.
-    fn production_prefix(full: &'static str) -> &'static str {
-        full.split_once(concat!("#[cfg", "(test)]"))
-            .map_or(full, |(prefix, _)| prefix)
-    }
-
-    fn intake_src() -> &'static str {
-        production_prefix(include_str!("intake.rs"))
-    }
-    fn planning_src() -> &'static str {
-        production_prefix(include_str!("planning.rs"))
-    }
-    fn conversion_src() -> &'static str {
-        production_prefix(include_str!("conversion.rs"))
-    }
-    fn system_src() -> &'static str {
-        production_prefix(include_str!("system.rs"))
-    }
+    // The per-file production-prefix readers + the 14-handler table live in the shared `c_surface_scan`
+    // support module (hoisted verbatim at P2.137 for the sibling structural legs — `error_shape_contract`,
+    // `camel_case_wire_contract`, the `ipc_boundary_proptest` completeness bind; assertions unchanged).
+    use super::c_surface_scan::{conversion_src, intake_src, HANDLERS};
 
     // P2.125.1 — the STREAMING-SEAM leg. The long-running commands carry a `Channel<T>` seam + are async, so
     // their work streams rather than blocking the WebView on one end-of-call Promise: C1 `ingest_paths` + C2a
@@ -157,26 +208,11 @@ mod responsiveness_contract {
     // to the whole surface (§1.11). Names the planning commands C3 `get_targets` / C4 `plan_output` / C5
     // `set_destination` explicitly (the re-scoped Reading-B structural residuum of the bounded-budget leg) and
     // scans the entire C-surface so a future sync handler ANYWHERE reddens. The runtime bounded-budget-under-a-
-    // real-§1.10-preflight test is P3.49 (C3/C4 slice bodies) / P4.72 (the §1.10 estimator).
+    // real-§1.10-preflight test is P3.49 (C3/C4 slice bodies) / P4.72 (the §1.10 estimator). (The handler
+    // table is the shared `c_surface_scan::HANDLERS` as of P2.137.)
     #[test]
     fn every_c_command_handler_is_async() {
-        let handlers: [(&str, SrcFn); 14] = [
-            ("get_targets", planning_src),
-            ("plan_output", planning_src),
-            ("set_destination", planning_src),
-            ("pick_destination", planning_src),
-            ("ingest_paths", intake_src),
-            ("pick_for_intake", intake_src),
-            ("cancel_ingest", intake_src),
-            ("start_conversion", conversion_src),
-            ("cancel_run", conversion_src),
-            ("get_run_summary", conversion_src),
-            ("open_path", system_src),
-            ("open_project_page", system_src),
-            ("get_app_info", system_src),
-            ("get_engine_health", system_src),
-        ];
-        for (name, src) in handlers {
+        for (name, src) in HANDLERS {
             let s = src();
             assert!(
                 s.contains(&format!("pub async fn {name}(")),
@@ -187,6 +223,128 @@ mod responsiveness_contract {
                 "§0.4/§1.11: C-command `{name}` must NOT be a synchronous `pub fn` (it would block the WebView thread)"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod error_shape_contract {
+    //! §6.4.1 unit (G15): the §0.4 UNIVERSAL ERROR SHAPE over the whole C-surface — "every command returns
+    //! `Result<T, IpcError>`" (§0.4 "Error shape"; the §0.4.1 table's Response column lists only the
+    //! success `T`). A STRUCTURAL (source-scan) leg beside `responsiveness_contract`, over the SAME
+    //! `c_surface_scan` 14-handler table + per-file production-prefix sources: each handler's signature
+    //! carries `-> Result<` and its return type terminates in `IpcError>`. This class ALREADY SHIPPED once
+    //! — C2b `pick_destination` landed returning a bare `Option<PathBuf>` (no `Result`, no `IpcError`; both
+    //! G1 reviewers missed it) and was fixed at fb685df — so the universal shape is pinned structurally: a
+    //! new or regressed handler returning a bare `T` reds at L2 before `bindings.ts` can mirror the wrong
+    //! door. [Build-Session-Entscheidung: P2.137]
+
+    use super::c_surface_scan::{signature_rest_of, HANDLERS};
+
+    // §6.4.1 unit (G15): every §0.4.1 C1–C13 handler signature carries the `-> Result<` opener AND ends in
+    // `IpcError>` — the two needles that together pin `-> Result<T, IpcError>` (the §0.4.3 error arm is the
+    // fixed tail; `T` varies per the §0.4.1 Response column). The signature slice runs to the body's
+    // opening brace, so the tail check sees the full return type and nothing of the body.
+    #[test]
+    fn every_c_command_returns_result_t_ipc_error() {
+        for (name, src) in HANDLERS {
+            let sig = signature_rest_of(name, src());
+            assert!(
+                sig.contains("-> Result<"),
+                "§0.4: C-command `{name}` must return the universal `Result<T, IpcError>` shape — its \
+                 signature carries no `-> Result<` (the C2b bare-`Option` class, fixed fb685df)"
+            );
+            assert!(
+                sig.trim_end().ends_with("IpcError>"),
+                "§0.4: C-command `{name}`'s return type must terminate in `IpcError>` (the §0.4.3 error \
+                 arm of the universal shape); signature rest: `{sig}`"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod camel_case_wire_contract {
+    //! §6.4.1 unit (G15): the §0.4.1 camelCase WIRE-KEY invariant over the C-surface ("field naming is
+    //! `camelCase` on the wire", §0.4.1). tauri-specta rc.25 camelCases the generated invoke keys
+    //! UNCONDITIONALLY, while tauri itself resolves each command arg by its Rust snake_case name unless the
+    //! handler carries `#[tauri::command(rename_all = "camelCase")]` — so a multi-word arg without the
+    //! attribute type-checks, generates clean `bindings.ts`, AND compiles, then fails only at RUNTIME as an
+    //! invalid-args invoke error (the d832698 C1/C2a/C13 incident). That runtime-only failure mode is
+    //! exactly why this STRUCTURAL scan exists: every handler whose signature carries an
+    //! underscore-bearing WIRE arg must carry the rename_all attribute form directly above its
+    //! `pub async fn`.
+    //!
+    //! [Build-Session-Entscheidung: P2.137] WIRE args here = every deserialized arg INCLUDING `Channel<T>`
+    //! (the channel id rides the invoke payload under the arg's key, so `on_scan`/`on_progress` are renamed
+    //! too); only the runtime-injected `AppHandle` is excluded (tauri supplies it — it has no wire key).
+    //! This widens the sweep-finding's AppHandle+Channel exclusion on the DETECTION side: excluding Channel
+    //! args could leave a handler whose only snake_case arg is a channel unguarded, and admitting them
+    //! costs nothing (today's required handler set is identical either way).
+
+    use super::c_surface_scan::{signature_rest_of, HANDLERS};
+
+    /// The underscore-bearing wire-arg names of a handler's signature rest (`args…) -> ret`): each
+    /// `name: Type` pair except an `AppHandle`-typed one. The identifier filter skips any fragment a comma
+    /// split could produce inside a hypothetical multi-parameter generic type.
+    fn snake_case_wire_args(sig_rest: &str) -> Vec<String> {
+        let (params, _ret) = sig_rest
+            .split_once("->")
+            .expect("a C-handler signature carries a return arrow");
+        let (args, _) = params
+            .rsplit_once(')')
+            .expect("the arg list closes before the return arrow");
+        args.split(',')
+            .filter_map(|part| {
+                let (name, ty) = part.split_once(':')?;
+                let name = name.trim();
+                if ty.contains("AppHandle") {
+                    return None;
+                }
+                (!name.is_empty()
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && name.contains('_'))
+                .then(|| name.to_owned())
+            })
+            .collect()
+    }
+
+    // §6.4.1 unit (G15): every snake_case-wire-arg handler carries the rename_all attribute directly above
+    // its declaration — the LAST `#[tauri::command` occurrence before the `pub async fn` is the handler's
+    // own attribute (attributes sit immediately above their item). Needles `concat!`-split so this
+    // scanning module never self-matches.
+    #[test]
+    fn every_snake_case_wire_arg_handler_carries_the_rename_all_attribute() {
+        let attr_form = concat!("#[tauri::command(rename_all = ", "\"camelCase\")]");
+        let attr_start = concat!("#[tauri::", "command");
+        let mut covered: Vec<&str> = Vec::new();
+        for (name, src) in HANDLERS {
+            let s = src();
+            let snake = snake_case_wire_args(signature_rest_of(name, s));
+            if snake.is_empty() {
+                continue;
+            }
+            covered.push(name);
+            let marker = format!("pub async fn {name}(");
+            let (before, _) = s.split_once(marker.as_str()).expect(
+                "every §0.4.1 handler declaration is present in its file's production prefix",
+            );
+            let own_attr_at = before
+                .rfind(attr_start)
+                .expect("every C-handler carries a #[tauri::command] attribute");
+            assert!(
+                before[own_attr_at..].starts_with(attr_form),
+                "§0.4.1: C-command `{name}` carries snake_case wire arg(s) {snake:?} but its \
+                 #[tauri::command] attribute is not the rename_all = \"camelCase\" form — tauri-specta \
+                 camelCases the invoke keys unconditionally, so the mismatch fails only at runtime (the \
+                 d832698 incident class)"
+            );
+        }
+        // The scan must actually bite: the surface carries 9 snake-arg handlers (C1/C2a/C13, C3/C4/C5,
+        // C6/C7/C8) — a parser regression that silently matched none would leave the invariant unasserted.
+        assert!(
+            covered.len() >= 9,
+            "§0.4.1: the snake_case wire-arg scan covered fewer handlers than the known surface: {covered:?}"
+        );
     }
 }
 
@@ -222,7 +380,9 @@ mod ipc_boundary_proptest {
     //! [Build-Session-Entscheidung: P2.126] Co-located with `responsiveness_contract` in the IPC module root
     //! (the P2.125 sibling home for IPC-surface contracts); the runner replicates the P2.14 pinned-seed /
     //! 512-case pattern; the enumerated inbound-type list models tauri's per-arg `from_value` boundary, so a
-    //! new inbound arg type must be added here to stay covered.
+    //! new inbound arg type must be added here to stay covered — structurally ENFORCED since P2.137 by the
+    //! completeness bind below: the pinned `INBOUND_WIRE_ARG_TYPES` list is held set-equal to the real
+    //! handler signatures AND to both feed-helper bodies.
 
     use crate::domain::{
         CollectedSetId, CollectingId, DestinationChoice, IntakeOrigin, OpenKind, OptionValue,
@@ -271,10 +431,35 @@ mod ipc_boundary_proptest {
         })
     }
 
+    /// The CLOSED SET of §0.4.1 wire-DESERIALIZED inbound arg types across the C1–C13 surface
+    /// (whitespace-normalized; the runtime-supplied `AppHandle` / `Channel<T>` args are never deserialized
+    /// and are excluded, per the leg-(a) module docs). This single pinned list is what BOTH
+    /// `feed_every_ipc_input_type_*` legs enumerate. Rust generics are monomorphized at compile time, so
+    /// the feed helpers cannot literally iterate a name list; instead the two P2.137 completeness tests
+    /// below bind (a) the real handler signatures to this list and (b) this list to the feed-helper bodies
+    /// — so an inbound arg type added to any handler reds at L2 until BOTH feed legs cover it.
+    /// [Build-Session-Entscheidung: P2.137]
+    const INBOUND_WIRE_ARG_TYPES: [&str; 13] = [
+        "CollectedSetId",
+        "CollectingId",
+        "DestinationChoice",
+        "IntakeOrigin",
+        "OpenKind",
+        "Option<bool>",
+        "OptionValues",
+        "PathBuf",
+        "PickKind",
+        "RerunDecision",
+        "RunId",
+        "TargetId",
+        "Vec<PathBuf>",
+    ];
+
     /// Deserialize the given JSON `Value` into EVERY §0.4.1 C1–C13 inbound argument type — the exact per-arg
     /// `serde_json::from_value` step tauri runs at the command boundary. The runtime-injected `AppHandle` /
     /// `Channel<T>` args are supplied by tauri, never deserialized, so they are absent here. Each result is
-    /// discarded — the property under exercise is that none of these calls PANICS.
+    /// discarded — the property under exercise is that none of these calls PANICS. Enumerates exactly the
+    /// pinned `INBOUND_WIRE_ARG_TYPES` (the P2.137 completeness bind holds it to that list).
     fn feed_every_ipc_input_type_from_value(v: &serde_json::Value) {
         // C1 ingest_paths — paths / origin / collectingId / drainPending
         let _ = serde_json::from_value::<Vec<PathBuf>>(v.clone());
@@ -299,7 +484,8 @@ mod ipc_boundary_proptest {
 
     /// The `from_str` twin of `feed_every_ipc_input_type_from_value` — exercises the raw-parse path (an
     /// arbitrary, possibly syntactically-malformed string) into every C1–C13 inbound arg type. Same property:
-    /// a structured `Result`, never a panic.
+    /// a structured `Result`, never a panic. Enumerates exactly the pinned `INBOUND_WIRE_ARG_TYPES` (the
+    /// P2.137 completeness bind holds it to that list).
     fn feed_every_ipc_input_type_from_str(s: &str) {
         let _ = serde_json::from_str::<Vec<PathBuf>>(s);
         let _ = serde_json::from_str::<IntakeOrigin>(s);
@@ -314,6 +500,94 @@ mod ipc_boundary_proptest {
         let _ = serde_json::from_str::<RunId>(s);
         let _ = serde_json::from_str::<OpenKind>(s);
         let _ = serde_json::from_str::<PathBuf>(s);
+    }
+
+    /// The body of one of the two module-level feed helpers: from its `fn …(` marker to its
+    /// 4-space-indented closing brace (the helpers nest no braced blocks, so the first `\n    }` is the
+    /// helper's own close). [Build-Session-Entscheidung: P2.137]
+    fn fn_body_of<'a>(src: &'a str, marker: &str) -> &'a str {
+        let (_, after) = src
+            .split_once(marker)
+            .expect("the feed-helper declaration is present in this module");
+        let (body, _) = after
+            .split_once("\n    }")
+            .expect("the feed helper closes at 4-space indent");
+        body
+    }
+
+    /// P2.137 completeness bind, SIGNATURE side: the wire-deserialized arg types extracted from the four
+    /// handler files' production-prefix signatures (via the shared `c_surface_scan` table) are EXACTLY the
+    /// pinned `INBOUND_WIRE_ARG_TYPES` set. Extraction mirrors tauri's boundary: every `name: Type` arg
+    /// except the runtime-supplied `AppHandle` / `Channel<T>`, whitespace-normalized — so an arg type added
+    /// to any §0.4.1 handler without extending the pinned list (and with it both feed legs) reds here.
+    #[test]
+    fn handler_signatures_carry_exactly_the_pinned_inbound_arg_types() {
+        use super::c_surface_scan::{signature_rest_of, HANDLERS};
+        use std::collections::BTreeSet;
+        let mut extracted: BTreeSet<String> = BTreeSet::new();
+        for (name, src) in HANDLERS {
+            let sig_rest = signature_rest_of(name, src());
+            let (params, _ret) = sig_rest
+                .split_once("->")
+                .expect("a C-handler signature carries a return arrow");
+            let (args, _) = params
+                .rsplit_once(')')
+                .expect("the arg list closes before the return arrow");
+            for part in args.split(',') {
+                let Some((_arg, ty)) = part.split_once(':') else {
+                    continue;
+                };
+                let ty: String = ty.chars().filter(|c| !c.is_whitespace()).collect();
+                if ty.is_empty() || ty.contains("AppHandle") || ty.contains("Channel<") {
+                    continue;
+                }
+                extracted.insert(ty);
+            }
+        }
+        let pinned: BTreeSet<String> = INBOUND_WIRE_ARG_TYPES
+            .iter()
+            .map(|t| (*t).to_owned())
+            .collect();
+        assert_eq!(
+            extracted, pinned,
+            "§1.5/§0.4.1: the C-surface's deserialized arg types and the pinned proptest feed list must be \
+             the same closed set — extend INBOUND_WIRE_ARG_TYPES AND both feed_every_ipc_input_type_* legs \
+             in the same change"
+        );
+    }
+
+    /// P2.137 completeness bind, FEED side: each feed-helper body enumerates EXACTLY the pinned list —
+    /// every pinned type appears as a deserialize call, and the per-helper call COUNT equals the list
+    /// length (so an extra un-pinned feed line reds too). Scans this file in FULL (the helpers live inside
+    /// this `#[cfg(test)]` module, past the production-prefix cut); needles are `concat!`-split so this
+    /// test's own source never matches.
+    #[test]
+    fn feed_helpers_enumerate_exactly_the_pinned_inbound_arg_types() {
+        let src = include_str!("mod.rs");
+        let value_body = fn_body_of(src, concat!("fn feed_every_ipc_input_type_", "from_value("));
+        let str_body = fn_body_of(src, concat!("fn feed_every_ipc_input_type_", "from_str("));
+        let value_call = concat!("serde_json::from_value", "::<");
+        let str_call = concat!("serde_json::from_str", "::<");
+        for ty in INBOUND_WIRE_ARG_TYPES {
+            assert!(
+                value_body.contains(&format!("{value_call}{ty}>")),
+                "the from_value feed leg must exercise the pinned inbound type `{ty}`"
+            );
+            assert!(
+                str_body.contains(&format!("{str_call}{ty}>")),
+                "the from_str feed leg must exercise the pinned inbound type `{ty}`"
+            );
+        }
+        assert_eq!(
+            value_body.matches(value_call).count(),
+            INBOUND_WIRE_ARG_TYPES.len(),
+            "the from_value feed leg must enumerate EXACTLY the pinned list — no extra un-pinned line"
+        );
+        assert_eq!(
+            str_body.matches(str_call).count(),
+            INBOUND_WIRE_ARG_TYPES.len(),
+            "the from_str feed leg must enumerate EXACTLY the pinned list — no extra un-pinned line"
+        );
     }
 
     /// Leg (a) `ipc_serde`: over arbitrary structurally-valid JSON (the tauri invoke-payload shape),

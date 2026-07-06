@@ -214,6 +214,9 @@ mod c7_contract {
     //! invocation in `crate::ipc` (mod.rs) is REPLACED here by C7's own typed-contract test (the fill-box
     //! transition the P2.21 note schedules). The shell returns the genuine idempotent no-op-cancel `Ok(())`;
     //! the §0.4.4 token registry resolve + `.cancel()` land at P2.42 / P3.46. [Build-Session-Entscheidung: P2.30]
+    //! P2.137 (phase-end hardening) adds the shell-body source-scan beside the contract test — the
+    //! mutation-hardening leg: the cargo-mutants replace-body-with-`Ok(())` mutant survived the pure
+    //! `Ok(())` contract check, because a zero-effect documented shell offers no state change to observe.
     use super::*;
     use tauri::async_runtime::block_on;
 
@@ -237,6 +240,46 @@ mod c7_contract {
             "§0.4.1/§0.4: the C7 contract shell trips no token yet (the §0.4.4 registry is P2.42), so it \
              returns the genuine idempotent no-op-cancel Ok(()); the typed Result<(), IpcError> signature is \
              the P2.30 deliverable"
+        );
+    }
+
+    /// The production prefix of `conversion.rs` (everything before the FIRST `#[cfg(test)]`), so a needle
+    /// declared in this test can never self-match — the per-module copy of the system.rs `c10_contract`
+    /// helper (each contract module keeps its own copy, the established per-module test-helper pattern).
+    fn production_conversion_source() -> &'static str {
+        let full = include_str!("conversion.rs");
+        full.split_once(concat!("#[cfg", "(test)]"))
+            .map_or(full, |(prefix, _)| prefix)
+    }
+
+    // §6.4.1 unit (G15): the C7 shell BODY form (P2.137) — a source-scan pinning that `cancel_run` still
+    // binds its `run_id` before the documented no-op `Ok(())`. The shell is a DOCUMENTED zero-effect
+    // contract (it trips no token — the registry dispatch is the named fill-box, per the handler doc), so
+    // there is no observable state change a behavioural test could observe; the cargo-mutants
+    // replace-body-with-`Ok(())` mutant is instead killed HERE: mutating the body drops the `run_id`
+    // binding line, and this scan reds. When the fill-box lands the real `.cancel()` dispatch, this scan
+    // is superseded by a behavioural token-tripped check (a [Test-Change] at that box).
+    // [Build-Session-Entscheidung: P2.137]
+    #[test]
+    fn c7_shell_body_binds_run_id_before_the_no_op_ok() {
+        let src = production_conversion_source();
+        let (_, after) = src
+            .split_once(concat!("pub async fn cancel_", "run("))
+            .expect("the C7 handler declaration is present in the production prefix");
+        let (body, _) = after.split_once('}').expect("the C7 handler body closes");
+        let bind = concat!("let _ = run_", "id;");
+        assert!(
+            body.contains(bind),
+            "§0.4.1 C7: the shell body must bind its `runId` arg (the P2.30 documented no-op form) — a \
+             body-replaced mutant drops this line"
+        );
+        let (_, after_bind) = body
+            .split_once(bind)
+            .expect("the run_id binding precedes the no-op Ok");
+        assert!(
+            after_bind.contains("Ok(())"),
+            "§0.4.1 C7: the documented idempotent no-op `Ok(())` terminates the shell body, after the \
+             `runId` binding"
         );
     }
 }

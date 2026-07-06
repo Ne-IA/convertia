@@ -69,6 +69,21 @@ describe("reduceConvertEvent (P2.120 §5.8 ConversionEvent reducer)", () => {
     expect(reduceConvertEvent(state, event)).toEqual({ pendingVideoReencodeNote: null });
   });
 
+  it("treats an absent/undefined willReencode as FALSE — clears the note (§5.8 wire-drift robustness)", () => {
+    // §5.8 (05-ui-ux.md, "RunStarted.willReencode consumption"): the bindings.ts type is non-optional
+    // `boolean` (the Rust field is `bool`) and the core always emits a definite value — yet the spec
+    // mandates the UI "treats absent/`undefined` as `false`". The double cast below is the deliberate
+    // §5.8 wire-drift simulation the spec mandates despite the non-optional bindings type (never `any`):
+    // an undefined that slipped through the wire must CLEAR the pre-shown worst-case note, exactly like
+    // `false`, never keep it. [P2.137]
+    const state: AppStore = { ...pristine(), pendingVideoReencodeNote: "will re-encode video" };
+    const event: ConversionEvent = {
+      type: "runStarted",
+      data: { runId: "r1", totalItems: 2, willReencode: undefined as unknown as boolean },
+    };
+    expect(reduceConvertEvent(state, event)).toEqual({ pendingVideoReencodeNote: null });
+  });
+
   it("keeps pendingVideoReencodeNote on runStarted when willReencode is true (worst-case note stands)", () => {
     const state: AppStore = { ...pristine(), pendingVideoReencodeNote: "will re-encode video" };
     const event: ConversionEvent = {

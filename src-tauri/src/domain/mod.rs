@@ -2975,11 +2975,20 @@ mod tests {
             .unwrap();
     }
 
-    /// §2.4 "frozen `items`" (data-structure leg): the freeze is a PURE function of its input snapshot (a
-    /// second freeze of the same items is equal — no injected per-freeze state) AND the collected set OWNS its
-    /// items by value, so a subsequent drop into the SEPARATE source vec (a file appearing after the freeze)
-    /// never reaches the frozen snapshot. The live-path leg (the freeze ignoring real on-disk changes) is the
-    /// P3 G31 integration test (test-strategy §1.1 / §6).
+    /// §2.4 "frozen `items`" (data-structure leg): the freeze is a PURE, deterministic function of its input
+    /// snapshot — two freezes of the same snapshot are EQUAL — and that equality is DISCRIMINATING, so the
+    /// determinism assertion is a real constraint: a set frozen from a snapshot that GREW after the freeze
+    /// (a file appearing late, §2.4) compares UNEQUAL, and a set frozen from a snapshot whose reachable item
+    /// was MUTATED in place compares UNEQUAL too — the equality inspects the owned item payloads, not just
+    /// the length. Together: the frozen value provably cannot co-vary with post-snapshot changes to its
+    /// source. The live-path leg (the freeze ignoring real on-disk changes) is the P3 G31 integration test
+    /// (test-strategy §1.1 / §6).
+    /// [Test-Change: P2.137 — old-obsolete+new-correct, §0.6] the prior ownership leg asserted that pushing
+    /// into the SEPARATE source vec leaves the frozen set's length unchanged — a Rust move-semantics
+    /// tautology no generated input could falsify (the two vecs are distinct values by construction). The
+    /// new legs are falsifiable: each `prop_assert_ne` fails the moment `CollectedSet`'s equality (or the
+    /// freeze) stops discriminating post-snapshot growth/mutation, verified against the §2.4/§0.6
+    /// frozen-set contract.
     #[test]
     fn prop_frozen_items_are_an_owned_snapshot() {
         pinned_runner()
@@ -2987,17 +2996,10 @@ mod tests {
                 let source: Vec<DroppedItem> = (0..n)
                     .map(|i| prop_dropped_item(u32::try_from(i).expect("i < 48 fits u32")))
                     .collect();
-                // the freeze is deterministic: two freezes of the same snapshot are equal (no injected
-                // timestamp / per-freeze state that would break §2.5 re-run equivalence downstream).
-                prop_assert_eq!(
-                    prop_freeze_single(source.clone()),
-                    prop_freeze_single(source.clone()),
-                    "§2.4: the freeze is a deterministic pure function of its input snapshot"
-                );
+                // [Test-Change: P2.137 — old-obsolete+new-correct, §0.6] (legs reordered/teethed; see doc)
+                // the still-valid P2.14 shape leg, retained verbatim: the freeze yields Single with
+                // exactly the n frozen items and a tracking count (§0.6/§2.4).
                 let frozen = prop_freeze_single(source.clone());
-                // a file appears AFTER the freeze — into the SEPARATE source vec, never the frozen set:
-                let mut post_freeze = source;
-                post_freeze.push(prop_dropped_item(9999));
                 let (count, items) =
                     single_count_items(&frozen).expect("the freeze yields CollectedSet::Single");
                 prop_assert_eq!(
@@ -3006,13 +3008,43 @@ mod tests {
                     "§2.4: the frozen snapshot holds exactly the n frozen items"
                 );
                 prop_assert_eq!(count, n, "§0.6: count tracks the frozen snapshot");
-                prop_assert!(
-                    post_freeze.len() > items.len(),
-                    "the post-freeze drop grew the SEPARATE source vec, never the frozen snapshot"
+                // [Test-Change: P2.137 — old-obsolete+new-correct, §0.6] the removed leg below this point
+                // was the move-semantics tautology (push into the SEPARATE source vec, then compare
+                // lengths); the replacement legs are falsifiable.
+                // the freeze is deterministic: two freezes of the same snapshot are equal (no injected
+                // timestamp / per-freeze state that would break §2.5 re-run equivalence downstream).
+                prop_assert_eq!(
+                    prop_freeze_single(source.clone()),
+                    frozen,
+                    "§2.4: the freeze is a deterministic pure function of its input snapshot"
                 );
+                // teeth 1: post-snapshot GROWTH is detectable — a file appearing after the snapshot freezes
+                // to a DIFFERENT set (count + items diverge), so the equality above is no vacuous `x == x`.
+                // [Test-Change: P2.137 — old-obsolete+new-correct, §0.6]
+                let mut grown = source.clone();
+                grown.push(prop_dropped_item(9999));
+                prop_assert_ne!(
+                    prop_freeze_single(source.clone()),
+                    prop_freeze_single(grown),
+                    "§2.4/§0.6: a snapshot grown post-freeze freezes to a DETECTABLY different set"
+                );
+                // teeth 2: an IN-PLACE mutation of a reachable item is detectable — the equality inspects
+                // the owned item payloads (an empty snapshot has no item to mutate; teeth 1 covers n == 0).
+                if !source.is_empty() {
+                    let mut mutated = source.clone();
+                    let first = mutated
+                        .first_mut()
+                        .expect("a non-empty snapshot has a first item");
+                    first.size_bytes = first.size_bytes.wrapping_add(1);
+                    prop_assert_ne!(
+                        prop_freeze_single(source.clone()),
+                        prop_freeze_single(mutated),
+                        "§2.4/§0.6: a mutated reachable item yields a DETECTABLY different frozen set"
+                    );
+                }
                 Ok(())
             })
-            .unwrap();
+            .expect("the pinned 512-case exploration holds the §2.4 frozen-snapshot invariants");
     }
 
     /// §2.14.1 v1 "same-volume publish-temp": the §1.8 output plan (`prop_plan_for`, the §2.14.1-v1

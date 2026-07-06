@@ -118,4 +118,26 @@ describe("installFrontendErrorLog (§7.5.1 bridge — structural facts only)", (
     expect(loggedText()).not.toContain(SECRET_PATH);
     expect(loggedText()).not.toContain("alice");
   });
+
+  // P2.137: exercise safeLog's load-bearing `.catch(() => undefined)` (log.ts). Outside the Tauri shell
+  // `invoke` always rejects; a bare `void logError(...)` whose rejection escaped would itself become an
+  // unhandledrejection, which this module's own listener re-consumes — the self-feeding loop the §7.4.2
+  // best-effort contract forbids. Vitest fails the test file on an escaped rejection, so with the `.catch`
+  // removed this test reds; with it present the rejection is swallowed inside the drained microtasks below.
+  it("swallows a REJECTING logError — no escaped rejection, no self-feeding second log call (§7.4.2)", async () => {
+    logError.mockRejectedValueOnce(new Error("outside tauri"));
+    window.dispatchEvent(
+      new ErrorEvent("error", {
+        error: new TypeError("boom"),
+        filename: "http://tauri.localhost/assets/index.js",
+        lineno: 3,
+      }),
+    );
+    // Drain microtasks so the mocked rejection AND safeLog's catch handler settle INSIDE this test body.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    // Exactly ONE bridge call: the rejection was swallowed, never re-entered the bridge as a second error.
+    expect(logError).toHaveBeenCalledTimes(1);
+  });
 });

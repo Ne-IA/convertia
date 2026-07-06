@@ -216,6 +216,28 @@ describe("startConversionRun (P2.120 §5.8 Channel<ConversionEvent> → store)",
       startConversionRun("cs1", { format: "tsv" }, {}, "besideSource", "skip"),
     ).rejects.toBe(fault);
   });
+
+  // P2.137: adversarial rejection shapes over `isIpcError`'s documented fall-through default (§5.8 / P2.124
+  // — "an unknown shape falls through to the app-fault path — the safe default, never a silent misroute").
+  // Only a string `kind` marks the documented business `IpcError`; every other shape — including a
+  // NUMERIC `kind` — is the opaque core-panic / IPC-drop case: onRunFault fires exactly once AND the
+  // rejection re-throws verbatim (the seam notifies, it never swallows).
+  it.each([
+    ["a plain string", "engine exploded"],
+    ["a number", 42],
+    ["null", null],
+    ["an object whose kind is not a string", { kind: 42 }],
+  ] as const)(
+    "routes an adversarial rejection shape — %s — to the app-fault path and re-throws (§5.8)",
+    async (_label, fault) => {
+      invoke.mockRejectedValueOnce(fault);
+      const onRunFault = vi.fn();
+      await expect(
+        startConversionRun("cs1", { format: "tsv" }, {}, "besideSource", "skip", { onRunFault }),
+      ).rejects.toBe(fault);
+      expect(onRunFault).toHaveBeenCalledTimes(1);
+    },
+  );
 });
 
 describe("ingestFromIntakeEvent (P2.120 app://intake → C1)", () => {

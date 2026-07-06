@@ -325,8 +325,13 @@ mod c9_membership {
     //! File-launch admits a recorded OUTPUT file; folder-browse admits a run ROOT (common_root / divert_root).
     //! The two-rule EXCLUSIVITY negatives are P2.102 and the split-output two-targets are P2.103 — both add
     //! cases to this module against the shared `run_with` builder. [Build-Session-Entscheidung: P2.101]
+    //! P2.137 (phase-end hardening) adds the §7.7.3 ANTI-TRAVERSAL legs against the same builder: the
+    //! `..`-perturbation negatives, the benign-lexical-no-op pins (each grounded on std `Path` equality
+    //! first), and a §6.4.2 (G16) pinned-seed 512-case perturbation property.
     use super::*;
     use crate::orchestrator::{ItemResult, JobState, Totals};
+    use proptest::prelude::*;
+    use proptest::test_runner::{RngAlgorithm, TestRng, TestRunner};
 
     // A minimal terminal `RunResult` for the membership tests: one succeeded `ItemResult` per `outputs` entry,
     // the given roots. Ids via the PUBLIC bare-uuid `Deserialize` wire form (§0.4.4), mirroring the
@@ -452,6 +457,143 @@ mod c9_membership {
             open_path_member(OpenKind::File, Path::new("/dl/other.tsv"), &run),
             "§7.7.3: File launch admits the diverted item's recorded OUTPUT file"
         );
+    }
+
+    // §6.4.1 unit (G15): the §7.7.3 ANTI-TRAVERSAL negatives (P2.137) — the gate never canonicalizes the
+    // WebView-supplied path (the TOCTOU footgun the P2.101 doc bans), and Rust `Path` equality PRESERVES a
+    // `..` component (components() drops only `.` / repeated separators — no other normalization), so a
+    // `..`-perturbed query is REFUSED even when it lexically resolves to a recorded member.
+    // [Build-Session-Entscheidung: P2.137]
+    #[test]
+    fn dot_dot_perturbed_member_paths_are_refused() {
+        let run = run_with(&["/out/data.tsv"], "/out", None);
+        assert!(
+            !open_path_member(OpenKind::File, Path::new("/out/../out/data.tsv"), &run),
+            "§7.7.3: a `..`-perturbed File query is refused even though it lexically resolves to the \
+             recorded output — membership is exact component equality, never canonicalization"
+        );
+        for kind in [OpenKind::Folder, OpenKind::RevealInFolder] {
+            assert!(
+                !open_path_member(kind, Path::new("/out/x/.."), &run),
+                "§7.7.3: a `..`-perturbed folder-browse query is refused even though it lexically resolves \
+                 to the run root — a `..` component never survives the membership gate"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15): the BENIGN lexical no-ops the P2.101 doc names — an interior `.`, a repeated
+    // separator, a trailing slash — each denote the same file/dir under Rust `Path` component equality, so
+    // the gate ADMITS them. Each std semantic is grounded on `Path` equality directly first (read-back
+    // proof, test-strategy §0.2), then the gate is held to it: components() drops an interior `.` and a
+    // repeated interior separator and ignores a trailing slash, but NEVER a `..`.
+    // [Build-Session-Entscheidung: P2.137]
+    #[test]
+    fn benign_lexical_no_ops_are_admitted_by_component_equality() {
+        assert_eq!(
+            Path::new("/out/./data.tsv"),
+            Path::new("/out/data.tsv"),
+            "std: components() drops an interior `.`"
+        );
+        assert_eq!(
+            Path::new("/out//data.tsv"),
+            Path::new("/out/data.tsv"),
+            "std: components() drops a repeated interior separator"
+        );
+        assert_eq!(
+            Path::new("/out/"),
+            Path::new("/out"),
+            "std: a trailing slash does not change the component sequence"
+        );
+        assert_ne!(
+            Path::new("/out/../out/data.tsv"),
+            Path::new("/out/data.tsv"),
+            "std: a `..` component is PRESERVED — no lexical resolution"
+        );
+        let run = run_with(&["/out/data.tsv"], "/out", None);
+        assert!(
+            open_path_member(OpenKind::File, Path::new("/out/./data.tsv"), &run),
+            "§7.7.3: an interior-`.` no-op of a recorded output stays a File-launch member"
+        );
+        assert!(
+            open_path_member(OpenKind::File, Path::new("/out//data.tsv"), &run),
+            "§7.7.3: a repeated-separator no-op of a recorded output stays a File-launch member"
+        );
+        for kind in [OpenKind::Folder, OpenKind::RevealInFolder] {
+            assert!(
+                open_path_member(kind, Path::new("/out/"), &run),
+                "§7.7.3: a trailing-slash no-op of the run root stays a folder-browse member"
+            );
+        }
+    }
+
+    /// The §7.7.3 anti-traversal property case-count floor (test-strategy §1.3 / G16: above proptest's 256
+    /// default; matches the P2.126 `crate::ipc` boundary floor). [Build-Session-Entscheidung: P2.137]
+    const P2_137_CASES: u32 = 512;
+
+    /// A PINNED-SEED proptest runner — the per-module copy of the `crate::ipc` `ipc_boundary_proptest`
+    /// P2.126 runner (test-strategy §1.3 / G16): `proptest!` seeds its forward run from entropy, so the
+    /// perturbation exploration drives a `TestRunner` with a `deterministic_rng` directly — all 512 cases
+    /// identical every run, a counterexample reproducible and never retried-to-pass.
+    /// [Build-Session-Entscheidung: P2.137]
+    fn pinned_runner() -> TestRunner {
+        TestRunner::new_with_rng(
+            ProptestConfig::with_cases(P2_137_CASES),
+            TestRng::deterministic_rng(RngAlgorithm::ChaCha),
+        )
+    }
+
+    /// Build a query path from the member's two segments (`/out/data.tsv`) with `infix` inserted as an
+    /// extra component at slot `at` (0 = before `out`, 1 = between, 2 = after `data.tsv`).
+    fn inject(infix: &str, at: usize) -> String {
+        let mut parts = vec!["out", "data.tsv"];
+        parts.insert(at, infix);
+        format!("/{}", parts.join("/"))
+    }
+
+    /// A lexical perturbation of the member path `/out/data.tsv`, paired with its GROUND-TRUTH membership
+    /// verdict derived from the perturbation's CONSTRUCTION (not from `Path` equality — that is the gate
+    /// under test): a `..`-injecting perturbation must be REFUSED (components() preserves `..` — even one
+    /// that lexically resolves straight back to the member), while a pure lexical no-op (interior `.`,
+    /// repeated interior separator, trailing slash) stays a member. The repeated-separator case doubles
+    /// only an INTERIOR separator — a leading `//` is a UNC prefix on Windows, a genuinely different path,
+    /// not a no-op. [Build-Session-Entscheidung: P2.137]
+    fn perturbed_member() -> impl Strategy<Value = (String, bool)> {
+        let up_detour = ("[a-z0-9]{1,8}", 0usize..=2usize)
+            .prop_map(|(seg, at)| (inject(&format!("{seg}/.."), at), false));
+        let raw_parent = (0usize..=2usize).prop_map(|at| (inject("..", at), false));
+        let cur_dir = (0usize..=2usize).prop_map(|at| (inject(".", at), true));
+        let benign = prop_oneof![
+            Just(("/out//data.tsv".to_owned(), true)),
+            Just(("/out/data.tsv/".to_owned(), true)),
+        ];
+        prop_oneof![up_detour, raw_parent, cur_dir, benign]
+    }
+
+    // §6.4.2 property (G16): the pinned-seed 512-case anti-traversal sweep (P2.137) — over `..`-injected
+    // and no-op lexical perturbations of a recorded output, the File-launch gate refuses every perturbation
+    // UNLESS it is a pure lexical no-op. The expected verdict comes from the perturbation's construction,
+    // so the property is not a tautology over the same `Path` equality the gate itself uses.
+    // [Build-Session-Entscheidung: P2.137]
+    #[test]
+    fn traversal_perturbations_are_refused_unless_pure_lexical_no_ops() {
+        let run = run_with(&["/out/data.tsv"], "/out", None);
+        assert!(
+            open_path_member(OpenKind::File, Path::new("/out/data.tsv"), &run),
+            "§7.7.3: the unperturbed recorded output is a File-launch member (the property's baseline)"
+        );
+        pinned_runner()
+            .run(&perturbed_member(), |(query, expect_member)| {
+                let admitted = open_path_member(OpenKind::File, Path::new(&query), &run);
+                prop_assert_eq!(
+                    admitted,
+                    expect_member,
+                    "§7.7.3: `{}` — a `..`-injected perturbation must be refused (exact component \
+                     equality, no canonicalization); a pure lexical no-op stays a member",
+                    query
+                );
+                Ok(())
+            })
+            .expect("§7.7.3: the pinned-seed anti-traversal property holds over all 512 cases");
     }
 }
 

@@ -1228,7 +1228,10 @@ export type ItemProgress = {
 	itemId: ItemId,
 	/**
 	 *  `0.0..=1.0`; `None` ONLY where truly indeterminate (LibreOffice, §1.11 — the frontend synthesises a
-	 *  staged determinate-looking bar from `stage` there).
+	 *  staged determinate-looking bar from `stage` there). A NON-FINITE `Some` (NaN/±∞ — never a valid
+	 *  §1.11 fraction) has no JSON number form and collapses on the wire to the SAME `null` as the
+	 *  deliberate indeterminate `None` — the fail-safe pinned as contract by the §6.4.1 serialize test
+	 *  below. [Build-Session-Entscheidung: P2.137]
 	 */
 	fraction: number | null,
 	/**  The §0.6/§1.11 coarse stage (`Spawning | Decoding | Encoding | Writing`). */

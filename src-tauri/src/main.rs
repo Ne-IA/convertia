@@ -233,8 +233,11 @@ fn dispatch_window_event(app: &tauri::AppHandle, event: &tauri::WindowEvent) {
 /// [Build-Session-Entscheidung: P2.81] §7.3.2 the `App::run` run-event handler — registered on the BUILT
 /// `App` (`.build(ctx)?.run(|app, event| dispatch_run_event(app, &event))`, NOT the `Builder`) and owning the
 /// two §7.3.2 run-lifecycle events. `RunEvent::ExitRequested` is the last chance to `api.prevent_exit()` — the
-/// explicit hook site for the §7.3.3 quit-while-converting guard (no unconditional prevent here; the
-/// window-close path is guarded by `dispatch_window_event`'s §7.3.2 `CloseRequested` `prevent_close`).
+/// §7.3.3 quit-while-converting guard's QUIT leg (busy-gated, never unconditional; user/OS quits only — a
+/// programmatic `app.exit(code)` passes so a confirmed-quit flow can exit; the window-close path is guarded
+/// by `dispatch_window_event`'s §7.3.2 `CloseRequested` `prevent_close`, and both legs share the ONE §7.3.2
+/// busy predicate + the ONE `app://close-requested` confirm signal — the P2.137 sweep closed the quit leg
+/// the macOS app-menu Quit / Cmd+Q path needs, which never raises a per-window `CloseRequested`).
 /// `RunEvent::Exit` is the final cleanup point: flush the plugin logger's buffered records before exit (via
 /// tauri-plugin-log's re-exported `log`). The best-effort scratch cleanup call joins at P3.74 (= the §2.6
 /// `cleanup_run` path, §7.3.2) — `crate::run::cleanup_run` is the P3 §2.6 kernel and nothing run-owned is
@@ -246,20 +249,31 @@ fn dispatch_window_event(app: &tauri::AppHandle, event: &tauri::WindowEvent) {
 /// event is a no-op. On the Apple/mobile targets it ALSO matches the `#[cfg]`-gated `RunEvent::Opened` — the
 /// macOS Open-with hook (§7.8.1): its `file://` urls route through the SAME §7.8.1 funnel (`handle_opened`,
 /// P2.56) so the §7.1.1 refuse-busy gate + the §1.1 freeze apply, never bypassing the primary gate. `app` is
-/// used only by that Apple-target arm at this box (its first use; the P3.74 scratch-cleanup call is its next),
-/// so on Win/Linux — where the `Opened` arm is compiled out — a cfg-conditional `allow(unused_variables)`
-/// keeps it clean. AppHandle-coupled boot-glue (the §1.1a boot-stage pattern — not `tauri::test`-mockable
-/// here; source-scan-pinned + the §6.4.6 E2E leg; the `AppHandle` signature makes it G28 diff-floor-exempt).
+/// used unconditionally since P2.137 (the `ExitRequested` busy read), so the former Win/Linux
+/// `allow(unused_variables)` shim is gone. AppHandle-coupled boot-glue (the §1.1a boot-stage pattern — not
+/// `tauri::test`-mockable here; source-scan-pinned + the §6.4.6 E2E leg; the `AppHandle` signature makes it
+/// G28 diff-floor-exempt).
 #[allow(clippy::wildcard_enum_match_arm)]
-#[cfg_attr(
-    not(any(target_os = "macos", target_os = "ios", target_os = "android")),
-    allow(unused_variables)
-)]
 fn dispatch_run_event(app: &tauri::AppHandle, event: &tauri::RunEvent) {
     match event {
-        // §7.3.2 belt-and-suspenders: the last `api.prevent_exit()` chance; the quit-while-converting guard is
-        // the §7.3.3 contract, and the window-close path is `dispatch_window_event`'s `prevent_close`.
-        tauri::RunEvent::ExitRequested { .. } => {}
+        // §7.3.2/§7.3.3 the QUIT-path busy guard — the "last chance to `api.prevent_exit()`": a mid-run quit
+        // that never traverses the window-close path (macOS app-menu Quit / Cmd+Q raises `ExitRequested`
+        // directly, with no per-window `CloseRequested`) is blocked and routed to the SAME §5.2 confirm
+        // signal as the window-close guard — the one §7.3.2 busy predicate, the one `app://close-requested`
+        // event. A PROGRAMMATIC exit (`app.exit(code)` → `code: Some(..)`) is never blocked: that is the
+        // sanctioned exit a confirmed-quit flow uses (its §5.2 QuitConfirm edge is the P4.67 box), so the
+        // guard applies only to the OS/user quit request (`code: None`). An idle converter is not busy, so
+        // the quit proceeds immediately (§7.3.3). [Build-Session-Entscheidung: P2.137]
+        tauri::RunEvent::ExitRequested { api, code, .. } if code.is_none() => {
+            if launch_intake::converter_is_busy(app) {
+                api.prevent_exit();
+                app.emit(
+                    crate::ipc::events::APP_CLOSE_REQUESTED,
+                    CloseRequestedSignal,
+                )
+                .ok();
+            }
+        }
         // §7.3.2 the final cleanup point — flush the plugin logger before the process exits.
         tauri::RunEvent::Exit => {
             tauri_plugin_log::log::logger().flush();
@@ -393,12 +407,21 @@ fn resolve_log_verbosity(app: &tauri::AppHandle) {
     let argv: Vec<String> = std::env::args_os()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
-    let verbose = crate::prefs::load(app).verbose_log || argv_has_verbose(&argv);
+    let verbose = verbose_opt_in(crate::prefs::load(app).verbose_log, argv_has_verbose(&argv));
     tauri_plugin_log::log::set_max_level(if verbose {
         LevelFilter::Debug
     } else {
         LevelFilter::Info
     });
+}
+
+/// §7.5.3 the verbose opt-in DECISION — a pure rule extracted from the boot glue (the §1.1a
+/// decision-pure/glue-thin split): verbose logging is on when the persisted §5.9 About toggle OR the
+/// `--verbose` launch switch asks for it (either source alone suffices; the OR is the §7.5.3 contract, so it
+/// is truth-table-pinned rather than living un-executed inside the G28-exempt `resolve_log_verbosity`
+/// plumbing). [Build-Session-Entscheidung: P2.137]
+fn verbose_opt_in(pref_verbose: bool, argv_verbose: bool) -> bool {
+    pref_verbose || argv_verbose
 }
 
 // ── §7.2.1 ordered startup spine (steps 3–6 + the §2.13.3 fault presentation, P2.106) ──────────────────────
@@ -615,18 +638,34 @@ mod launch_intake {
             // §7.1.1 PRIMARY refuse-busy: a mid-run second launch / Open-with is dropped core-side — no
             // `app://intake` emit, no `PendingIntake` buffer — so the §2.4 frozen set is never mutated mid-run.
             IntakeDisposition::Drop => {}
-            // Idle + the WebView listener is ready: emit the §0.4.2 `app://intake` event (via the
-            // `crate::ipc::events` constant, never a re-spelled literal — plan-lint check 28) so the UI
-            // mirrors a drop (§5.2/§1.1). The payload is `{ paths, origin }` so the frontend re-calls C1
-            // with the right `IntakeOrigin`.
-            IntakeDisposition::Emit => {
-                app.emit(events::APP_INTAKE, IntakePayload { paths, origin })
-                    .ok();
-            }
+            // Idle + the WebView listener is ready: emit the §0.4.2 `app://intake` event so the UI mirrors
+            // a drop (§5.2/§1.1).
+            IntakeDisposition::Emit => emit_intake(app, paths, origin),
             // Idle but the WebView is not-yet-ready (the §7.8.1 first-launch listener race): stash the
-            // paths + origin for the drain-on-mount replay.
-            IntakeDisposition::Buffer => buffer_pending_intake(app, paths, origin),
+            // paths + origin for the drain-on-mount replay — or, when the C1 drain won the race between
+            // the disposition snapshot above and the stash (the §7.8.1 no-loss closure, P2.137:
+            // `stash_or_route` re-checks readiness under the pending-slot lock), take the set back and
+            // emit it live instead — nothing is ever stranded.
+            IntakeDisposition::Buffer => {
+                if let crate::orchestrator::StashOutcome::RouteToEmit(set) =
+                    buffer_pending_intake(app, paths, origin)
+                {
+                    emit_intake(app, set.paths, set.origin);
+                }
+            }
         }
+    }
+
+    /// The single §0.4.2 `app://intake` emit site — the payload is `{ paths, origin }` so the frontend
+    /// re-calls C1 with the right `IntakeOrigin` (§5.2/§1.1); the event name via the `crate::ipc::events`
+    /// constant, never a re-spelled literal (plan-lint check 28). Extracted so the emit surface has exactly
+    /// ONE production `emit(events::APP_INTAKE` call site (both funnel arms route through it; the
+    /// `launch_intake::tests` cardinality scan pins that closed surface — a second emit site would bypass
+    /// the §7.1.1 refuse-busy gate). AppHandle-coupled boot-glue (§1.1a; G28 signature-exempt).
+    /// [Build-Session-Entscheidung: P2.137]
+    fn emit_intake(app: &AppHandle, paths: Vec<PathBuf>, origin: IntakeOrigin) {
+        app.emit(events::APP_INTAKE, IntakePayload { paths, origin })
+            .ok();
     }
 
     /// [Build-Session-Entscheidung: P2.54.1] The §7.8.1 `argv` classifier — split launch FLAG tokens from
@@ -637,9 +676,13 @@ mod launch_intake {
     /// split + the cwd-relative resolution are genuinely homed here. `PathBuf` is platform-aware, so the
     /// Win-vs-Linux separator / argv conventions are handled by construction.
     fn parse_path_args(argv: &[String], cwd: &str) -> Vec<PathBuf> {
+        // An EMPTY token (a buggy wrapper script / desktop-entry quoting artifact, e.g. `convertia ""`) is
+        // dropped: cwd-joining it would resolve to the launching DIRECTORY itself, silently turning the
+        // user's whole cwd into a recursively-walked ingest root (§7.8.1 classifies, it never invents a
+        // path the user did not name). [Build-Session-Entscheidung: P2.137]
         argv.iter()
             .skip(1)
-            .filter(|tok| !is_launch_switch(tok))
+            .filter(|tok| !tok.is_empty() && !is_launch_switch(tok))
             .map(|tok| resolve_launch_path(tok, cwd))
             .collect()
     }
@@ -656,6 +699,12 @@ mod launch_intake {
     /// relative one is joined onto the launching `cwd` (§7.8.1). The §1.1 freeze canonicalises later, so a
     /// plain join is the classification step. `PathBuf::is_absolute` is platform-aware (Win drive-letter vs
     /// POSIX root), matching the native argv each OS delivers.
+    ///
+    /// [Build-Session-Entscheidung: P2.137] A **Windows drive-relative** token (`C:file.txt` — a prefix but
+    /// no root, so `is_absolute() == false`) passes through effectively UNCHANGED: `Path::join` with a
+    /// prefix-bearing right side REPLACES the base (documented `std::path::PathBuf::push` semantics), so the
+    /// token resolves against the primary instance's per-drive cwd at freeze time, where a missing file
+    /// fails clearly (§2.8) — classification never rewrites a drive-qualified token the user passed.
     fn resolve_launch_path(tok: &str, cwd: &str) -> PathBuf {
         let path = PathBuf::from(tok);
         if path.is_absolute() {
@@ -749,8 +798,23 @@ mod launch_intake {
         )
     )]
     pub(super) fn handle_opened(app: &AppHandle, urls: &[tauri::Url]) {
-        let paths: Vec<PathBuf> = urls.iter().filter_map(|u| u.to_file_path().ok()).collect();
-        forward_launch_intake(app, paths, launch_origin(frontend_ready(app)));
+        forward_launch_intake(
+            app,
+            opened_urls_to_paths(urls),
+            launch_origin(frontend_ready(app)),
+        );
+    }
+
+    /// §7.8.1 the Open-with URL→path conversion — the pure rule extracted beside `handle_opened` (the §1.1a
+    /// pure-rule/glue split, the `launch_origin` sibling): each `file://` URL converts via
+    /// `Url::to_file_path()` — the spec's own prescribed `filter_map` form (§7.8.1) — and an unconvertible
+    /// URL (non-`file` scheme, a host-bearing form with no local mapping) is dropped: ConvertIA registers NO
+    /// URL scheme (§7.8.2 negative), so a non-file URL can only be a stray AppleEvent, never a supported
+    /// intake. Percent-encoding is decoded by `to_file_path` (unit-pinned). NO `dead_code` attr is needed:
+    /// `handle_opened`'s body calls it, which rustc counts as a use even where `handle_opened` is itself
+    /// dead (the `launch_origin` precedent). [Build-Session-Entscheidung: P2.137]
+    fn opened_urls_to_paths(urls: &[tauri::Url]) -> Vec<PathBuf> {
+        urls.iter().filter_map(|u| u.to_file_path().ok()).collect()
     }
 
     /// [Build-Session-Entscheidung: P2.57] §7.8.1 the FIRST-launch argv reader — at THIS instance's own launch
@@ -830,8 +894,14 @@ mod launch_intake {
     /// `converter_is_busy` is `false`, so an idle-and-not-ready launch set now routes into this real stash —
     /// the owner-confirmed order landed this buffer (P2.58) BEFORE P2.55 opened idle-flow, so no idle set
     /// ever routed into a no-op.
-    fn buffer_pending_intake(app: &AppHandle, paths: Vec<PathBuf>, origin: IntakeOrigin) {
-        app.state::<PendingIntake>().stash(paths, origin);
+    fn buffer_pending_intake(
+        app: &AppHandle,
+        paths: Vec<PathBuf>,
+        origin: IntakeOrigin,
+    ) -> crate::orchestrator::StashOutcome {
+        let pending = app.state::<PendingIntake>();
+        let ready = app.state::<FrontendReady>();
+        pending.stash_or_route(ready.inner(), paths, origin)
     }
 
     #[cfg(test)]
@@ -893,7 +963,13 @@ mod launch_intake {
             let _argv: fn(&AppHandle, &[String], &str, IntakeOrigin) = forward_launch_argv;
             let _busy: fn(&AppHandle) -> bool = converter_is_busy;
             let _ready: fn(&AppHandle) -> bool = frontend_ready;
-            let _buffer: fn(&AppHandle, Vec<PathBuf>, IntakeOrigin) = buffer_pending_intake;
+            // [Test-Change: P2.137 — old-obsolete+new-correct, §7.8.1] the Buffer arm now returns the fused
+            // no-loss `StashOutcome` (stash-or-route), so the signature pin follows the new return type.
+            let _buffer: fn(
+                &AppHandle,
+                Vec<PathBuf>,
+                IntakeOrigin,
+            ) -> crate::orchestrator::StashOutcome = buffer_pending_intake;
             let _opened: fn(&AppHandle, &[tauri::Url]) = handle_opened;
             let _origin: fn(bool) -> IntakeOrigin = launch_origin;
             let _argvread: fn(&AppHandle) = forward_first_launch_argv;
@@ -903,28 +979,37 @@ mod launch_intake {
         // (in `launch_intake`, covered by `production_boot_source`) re-focuses `main` + forwards the argv as
         // `SecondInstance`; `main()` (covered by `production_main_body`) WIRES it into the single-instance
         // `init`. Both are AppHandle-coupled boot-glue (not execution-testable; the boot-stage pattern), so
-        // source scans pin them. The re-focus + `SecondInstance` needles appear only in `on_second_instance`'s
-        // body (`forward_launch_argv`'s signature carries `origin: IntakeOrigin`, not `::SecondInstance`), and
-        // the `on_second_instance` def lives in `launch_intake` (outside `production_main_body` = main()-only),
-        // so the wiring needle matches only the `init` call site — non-blind. Needles `concat!`-assembled, and
-        // every test module is excluded from both helpers. [Build-Session-Entscheidung: P2.52]
+        // source scans pin them — with FULL-CALL-SITE needles (the `c2a_contract` / `verbose_gateway`
+        // discipline), because the P2.52 bare tokens went ALIASED as later boxes landed: bare
+        // `IntakeOrigin::SecondInstance` also matches `launch_origin` (P2.56) and bare
+        // `get_webview_window("main")` also matches `reveal_main_window` (P2.106.6), so a wrong-origin or
+        // deleted-forward regression stayed green. [Test-Change: P2.137 — old-obsolete+new-correct, §7.1.1]
+        // the old needles' uniqueness claim was stale; the full-call forms below match only
+        // `on_second_instance`'s body / the `init` registration. [Build-Session-Entscheidung: P2.52]
         #[test]
         fn single_instance_handler_refocuses_forwards_and_is_wired() {
             let handler = crate::boot_invariants::production_boot_source();
             for needle in [
-                concat!("get_webview_", "window(\"main\")"), // re-focus: looks up the main window
-                concat!("set_", "focus"), // re-focuses it (the §7.1.1 primary busy signal)
-                concat!("IntakeOrigin::Second", "Instance"), // forwards as SecondInstance (§7.8 / §0.6)
+                concat!("w.set_", "focus()"), // re-focus: unique to on_second_instance's .map(|w| …) body
+                concat!(
+                    "forward_launch_",
+                    "argv(app, &argv, &cwd, IntakeOrigin::SecondInstance)"
+                ), // the FULL forward call — a wrong-origin regression cannot alias via launch_origin
             ] {
                 assert!(
                     handler.contains(needle),
                     "§7.1.1: on_second_instance must re-focus `main` + forward the argv as SecondInstance (missing `{needle}`)"
                 );
             }
+            let main_body = crate::boot_invariants::production_main_body();
             assert!(
-                crate::boot_invariants::production_main_body()
-                    .contains(concat!("on_second_", "instance")),
-                "§7.1.1: main() must wire on_second_instance into the single-instance init"
+                main_body.contains(concat!("tauri_plugin_single_", "instance::init(")),
+                "§7.1.1: main() must register the single-instance plugin"
+            );
+            assert!(
+                main_body.contains(concat!("launch_intake::on_second_", "instance,")),
+                "§7.1.1: main() must pass on_second_instance as the init handler (the fn-item code form, \
+                 not a doc mention)"
             );
         }
 
@@ -1025,6 +1110,146 @@ mod launch_intake {
             );
         }
 
+        // §6.4.1 unit (G15, P2.137): an EMPTY argv token (a buggy wrapper script / desktop-entry quoting
+        // artifact, `convertia ""`) is DROPPED — cwd-joining it would resolve to the launching DIRECTORY
+        // itself and silently turn the user's whole cwd into a recursively-walked ingest root (§1.1 folder
+        // recursion). The classifier never invents a path the user did not name (§7.8.1).
+        #[test]
+        fn parse_path_args_drops_empty_tokens() {
+            let cwd = "base";
+            let argv = vec![
+                "convertia".to_string(),
+                String::new(),
+                "keep.txt".to_string(),
+            ];
+            let parsed = parse_path_args(&argv, cwd);
+            assert_eq!(
+                parsed,
+                vec![PathBuf::from(cwd).join("keep.txt")],
+                "§7.8.1: an empty token yields NO path (never the launching cwd itself)"
+            );
+            assert!(
+                !parsed.contains(&PathBuf::from(cwd)),
+                "§7.8.1: the bare launching cwd never appears as an ingestable path"
+            );
+        }
+
+        // §6.4.1 unit (G15, P2.137): the documented Windows drive-relative posture — a `C:file.txt` token
+        // (prefix, no root → not absolute) passes through effectively UNCHANGED (`Path::join` with a
+        // prefix-bearing right side REPLACES the base, documented std semantics): it resolves against the
+        // per-drive cwd at freeze time, where a missing file fails clearly (§2.8); classification never
+        // rewrites a drive-qualified token.
+        #[cfg(windows)]
+        #[test]
+        fn parse_path_args_passes_drive_relative_tokens_through() {
+            let argv = vec!["convertia".to_string(), "C:file.txt".to_string()];
+            assert_eq!(
+                parse_path_args(&argv, "base"),
+                vec![PathBuf::from("C:file.txt")],
+                "§7.8.1: a drive-relative token passes through unchanged (the documented posture)"
+            );
+        }
+
+        /// The §6.4.2/G16 case-count floor + pinned-seed runner for this module's classifier property (the
+        /// P2.14 / P2.126 / P2.127 discipline). [Build-Session-Entscheidung: P2.137]
+        fn pinned_classifier_runner() -> proptest::test_runner::TestRunner {
+            use proptest::test_runner::{RngAlgorithm, TestRng, TestRunner};
+            TestRunner::new_with_rng(
+                proptest::prelude::ProptestConfig::with_cases(512),
+                TestRng::deterministic_rng(RngAlgorithm::ChaCha),
+            )
+        }
+
+        // §6.4.2 property (G16, P2.137): the §7.8.1 classifier invariants over arbitrary token vectors —
+        // every returned path is exactly the cwd-join of a non-switch, non-empty token after argv[0]
+        // (relative tokens; the absolute/drive-relative arms have their own example pins), the returned
+        // count equals the count of such tokens, and the bare launching cwd never appears (the empty-token
+        // guard). Pinned seed, 512 cases (test-strategy §1.3).
+        #[test]
+        fn parse_path_args_classification_invariants_hold_for_arbitrary_argv() {
+            use proptest::prelude::*;
+            let token = prop_oneof![
+                Just(String::new()),                                  // the empty-token artifact
+                "-{1,2}[a-z]{1,6}".prop_map(|s| s),                   // launch switches
+                "[a-z][a-z0-9]{0,7}(\\.[a-z]{1,3})?".prop_map(|s| s), // relative path names
+            ];
+            pinned_classifier_runner()
+                .run(&proptest::collection::vec(token, 0..12), |tokens| {
+                    let cwd = "prop-base";
+                    let mut argv = vec!["convertia".to_string()];
+                    argv.extend(tokens.iter().cloned());
+                    let parsed = parse_path_args(&argv, cwd);
+                    let expected: Vec<PathBuf> = tokens
+                        .iter()
+                        .filter(|t| !t.is_empty() && !t.starts_with('-'))
+                        .map(|t| PathBuf::from(cwd).join(t))
+                        .collect();
+                    prop_assert_eq!(
+                        &parsed,
+                        &expected,
+                        "§7.8.1: exactly the non-switch, non-empty tokens classify as paths"
+                    );
+                    prop_assert!(
+                        !parsed.contains(&PathBuf::from(cwd)),
+                        "§7.8.1: the bare launching cwd is never an ingestable path"
+                    );
+                    Ok(())
+                })
+                .expect("§7.8.1: the classifier property must hold (pinned seed, 512 cases)");
+        }
+
+        // §6.4.1 unit (G15, P2.137): the §7.8.1 empty-SET no-op guard is WIRED — the funnel returns early on
+        // an empty path set, so a bare flags-only relaunch never occupies the PendingIntake slot (whose
+        // `stash_or_route` waives its own empty guard on this one) and never emits a spurious `app://intake`
+        // against the §0.4.2 row semantics.
+        #[test]
+        fn funnel_returns_early_on_an_empty_path_set() {
+            let src = crate::boot_invariants::production_boot_source();
+            assert!(
+                src.contains(concat!("if paths.is_", "empty() {")),
+                "§7.8.1: forward_launch_intake must no-op an empty path set BEFORE the disposition dispatch"
+            );
+        }
+
+        // §6.4.1 unit (G15, P2.137): the §0.4.2 `app://intake` emit surface is CLOSED — exactly ONE
+        // production emit call site exists (`emit_intake`; both funnel arms route through it), so a future
+        // box adding a second emit — which would bypass the §7.1.1 refuse-busy gate and the §2.4 freeze
+        // protection — reds here. Walks every crate source file, each stripped at its first test-module
+        // boundary (the established per-file production-prefix discipline); the needles carry the leading
+        // `.` of the method call so `emit_intake`'s own doc prose never aliases.
+        #[test]
+        fn app_intake_has_exactly_one_production_emit_site() {
+            fn collect_production_sources(dir: &std::path::Path, out: &mut String) {
+                let entries = std::fs::read_dir(dir).expect("crate src dir is readable");
+                for entry in entries {
+                    let path = entry.expect("dir entry is readable").path();
+                    if path.is_dir() {
+                        collect_production_sources(&path, out);
+                    } else if path.extension().is_some_and(|e| e == "rs") {
+                        let full = std::fs::read_to_string(&path).expect("source file is readable");
+                        let prefix = full
+                            .split_once(concat!("#[cfg", "(test)]"))
+                            .map_or(full.as_str(), |(p, _)| p);
+                        out.push_str(prefix);
+                    }
+                }
+            }
+            let mut src = String::new();
+            collect_production_sources(
+                std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
+                &mut src,
+            );
+            let count = src.matches(concat!(".emit(events::APP_", "INTAKE")).count()
+                + src
+                    .matches(concat!(".emit(crate::ipc::events::APP_", "INTAKE"))
+                    .count();
+            assert_eq!(
+                count, 1,
+                "§0.4.2/§7.1.1: exactly ONE production app://intake emit site (emit_intake) — a second \
+                 site would bypass the refuse-busy gate + the §2.4 freeze protection"
+            );
+        }
+
         // §6.4.1 unit (G15): the §7.8.1 `Buffer` arm is WIRED into the `State<PendingIntake>` stash (P2.58) —
         // not the P2.54 no-op shell. `buffer_pending_intake` is AppHandle-coupled boot-glue (the §1.1a
         // boot-stage pattern — not cargo-test execution-testable; the stash/take LOGIC is unit-tested on
@@ -1038,9 +1263,12 @@ mod launch_intake {
                 buffer_src.contains(concat!("state::<Pending", "Intake>()")),
                 "§7.8.1: buffer_pending_intake must resolve the managed State<PendingIntake> (P2.58)"
             );
+            // [Test-Change: P2.137 — old-obsolete+new-correct, §7.8.1] the P2.58 `.stash(` call form was
+            // fused into `stash_or_route` (the no-loss closure); the needle follows the new sole call form.
             assert!(
-                buffer_src.contains(concat!(".stash(", "paths, origin)")),
-                "§7.8.1: buffer_pending_intake must stash the launch set + origin (not the P2.54 no-op shell)"
+                buffer_src.contains(concat!(".stash_or_route(", "ready.inner(), paths, origin)")),
+                "§7.8.1: buffer_pending_intake must stash-or-route the launch set + origin under the fused \
+                 no-loss protocol (P2.137; not the P2.54 no-op shell)"
             );
             let main_src = crate::boot_invariants::production_main_body();
             assert!(
@@ -1136,24 +1364,63 @@ mod launch_intake {
 
         // §6.4.1 unit (G15): the macOS Open-with handler logic (P2.56). `handle_opened` is AppHandle-coupled
         // boot-glue (the §1.1a boot-stage pattern — its runtime is the §6.4.6 macOS E2E smoke leg, not
-        // cargo-test; it is wired into the App::run Opened arm by P2.82), so a source-scan pins it converts the
-        // urls via to_file_path and routes through forward_launch_intake with the launch_origin-resolved
-        // origin. Needles concat!-assembled. [Build-Session-Entscheidung: P2.56]
+        // cargo-test; it is wired into the App::run Opened arm by P2.82), so a source-scan pins it converts
+        // the urls via the extracted pure `opened_urls_to_paths` rule (unit-tested below, P2.137) and routes
+        // through forward_launch_intake with the launch_origin-resolved origin. Needles concat!-assembled.
+        // [Test-Change: P2.137 — old-obsolete+new-correct, §7.8.1] the inline `to_file_path()` filter moved
+        // into the extracted `opened_urls_to_paths` (the §1.1a pure-rule split); the needles follow the new
+        // sole call form, and the CONVERSION semantics are now behaviourally unit-tested, not needle-only.
+        // [Build-Session-Entscheidung: P2.56]
         #[test]
         fn opened_handler_routes_urls_through_the_funnel() {
             let src = crate::boot_invariants::production_boot_source();
             for needle in [
-                concat!("to_file_", "path()"),
-                concat!(
-                    "forward_launch_",
-                    "intake(app, paths, launch_origin(frontend_ready(app)))"
-                ),
+                concat!("opened_urls_to_", "paths(urls)"),
+                concat!("launch_origin(frontend_", "ready(app)),"),
             ] {
                 assert!(
                     src.contains(needle),
                     "§7.8.1: handle_opened must convert Open-with urls → paths and route through the funnel (missing `{needle}`)"
                 );
             }
+        }
+
+        // §6.4.1 unit (G15, P2.137): the §7.8.1 Open-with URL→path conversion — behavioural tests on the
+        // extracted pure rule (`opened_urls_to_paths`): a percent-encoded `file://` URL decodes to the real
+        // path, a non-`file` scheme is DROPPED while its siblings survive (§7.8.2 registers no URL scheme),
+        // and on Windows the `file://host/share` UNC form maps to the UNC path.
+        #[test]
+        fn opened_urls_convert_percent_encoding_and_drop_non_file_schemes() {
+            // A drive-letter file URL converts on EVERY target (Windows `to_file_path` requires the drive;
+            // on POSIX it maps to the literal `/C:/…` path) — one fixture, both platforms.
+            let urls = [
+                tauri::Url::parse("file:///C:/tmp/with%20space.csv").expect("test URL parses"),
+                tauri::Url::parse("https://example.invalid/not-a-file.csv")
+                    .expect("test URL parses"),
+            ];
+            let paths = opened_urls_to_paths(&urls);
+            assert_eq!(
+                paths.len(),
+                1,
+                "§7.8.1/§7.8.2: the non-file scheme is dropped, the file URL survives"
+            );
+            assert!(
+                paths[0].to_string_lossy().ends_with("with space.csv"),
+                "§7.8.1: percent-encoding is decoded by Url::to_file_path (got {:?})",
+                paths[0]
+            );
+        }
+
+        #[cfg(windows)]
+        #[test]
+        fn opened_urls_map_host_bearing_file_urls_to_unc_on_windows() {
+            let urls = [tauri::Url::parse("file://server/share/doc.csv").expect("test URL parses")];
+            let paths = opened_urls_to_paths(&urls);
+            assert_eq!(
+                paths,
+                vec![PathBuf::from(r"\\server\share\doc.csv")],
+                "§7.8.1: a host-bearing file URL maps to the UNC form on Windows"
+            );
         }
 
         // §6.4.1 unit (G15): the §7.8.1 first-launch argv reader (P2.57). forward_first_launch_argv is
@@ -1406,13 +1673,30 @@ mod boot_invariants {
         format!("{}\n{}", production_boot_source(), production_main_body())
     }
 
+    /// EVERYTHING the §7.2.1 boot path transitively EXECUTES, for the §7.2.2 zero-startup-network scans:
+    /// `all_production_source()` PLUS the production prefixes of the module files the setup path reaches —
+    /// `prefs.rs` (P2.94: `resolve_log_verbosity` → `crate::prefs::load` runs at boot). Without this, a
+    /// socket opened inside a boot-reached module passed the ENTIRE cargo-test plane (the G29 SAST companion
+    /// is CI-only), under-delivering the module docstring's "the startup path opens no socket" claim.
+    /// Per-file production-prefix split (the established discipline). [Build-Session-Entscheidung: P2.137]
+    pub(super) fn boot_reachable_source() -> String {
+        let prefs = include_str!("prefs.rs");
+        let prefs_prefix = prefs
+            .split_once(concat!("#[cfg", "(test)]"))
+            .map_or(prefs, |(prefix, _)| prefix);
+        format!("{}\n{}", all_production_source(), prefs_prefix)
+    }
+
     // §7.2.2 / §6.4.1 unit (G15): a structural assertion that the production boot path references no
     // network primitive — the cargo-test companion to the G29 source rule (g), scoped to §7.2.2. Scans
     // `all_production_source()` (prefix + `main()` body) because the §7.2.1 startup spine lives in `main()`,
     // which `production_boot_source()` alone does not reach (P2.54 — fixes the pre-existing P2.40 blindness).
+    // [Test-Change: P2.137 — old-obsolete+new-correct, §7.2.2] corpus widened from `all_production_source()`
+    // (main.rs only) to `boot_reachable_source()` (+ the boot-executed `prefs.rs` production prefix) — the
+    // old corpus was blind to a socket in a boot-reached module; strictly stricter, same needles.
     #[test]
     fn boot_path_opens_no_socket() {
-        let src = all_production_source();
+        let src = boot_reachable_source();
         // Needles assembled by `concat!` so the forbidden substrings never appear literally in this
         // test file (which `include_str!` would otherwise self-match through the production scan).
         let net_primitives = [
@@ -1445,9 +1729,11 @@ mod boot_invariants {
     // companion scoped to the boot shell — the same defense-in-depth shape as `boot_path_opens_no_socket` /
     // `no_updater_posture`. Needles `concat!`-assembled so the tokens are not literals in this scanned
     // production file. [Build-Session-Entscheidung: P2.107]
+    // [Test-Change: P2.137 — old-obsolete+new-correct, §7.2.2] corpus widened to `boot_reachable_source()`
+    // (see `boot_path_opens_no_socket` above) — strictly stricter, same needles.
     #[test]
     fn boot_shell_registers_no_network_plugin_or_client() {
-        let src = all_production_source();
+        let src = boot_reachable_source();
         let network_surfaces = [
             concat!("tauri_plugin_", "http"), // wraps reqwest, registers an IPC-accessible HTTP client
             concat!("tauri_plugin_", "upload"), // network upload/download plugin
@@ -2085,6 +2371,22 @@ mod window_lifecycle {
             );
         }
     }
+
+    // §6.4.1 unit (G15, P2.137): the §7.3.2 wire form is EXECUTED, not comment-only — `CloseRequestedSignal`
+    // is a unit struct precisely because serde serialises it to JSON `null` (the §7.3.2-sanctioned form; a
+    // braced `struct CloseRequestedSignal {}` would silently ship `{}` instead, with every needle green).
+    // The one piece of this emit that IS cargo-testable (pure serde, no AppHandle); `serde_json` is the
+    // established dev-dependency (the P2.80 doc comment names exactly this check).
+    #[test]
+    fn close_requested_signal_serialises_to_json_null() {
+        let wire = serde_json::to_value(super::CloseRequestedSignal)
+            .expect("§7.3.2: the close-requested signal serialises");
+        assert_eq!(
+            wire,
+            serde_json::Value::Null,
+            "§7.3.2/§0.4.2: app://close-requested carries JSON null (the unit-struct wire form), never {{}}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2117,22 +2419,33 @@ mod run_lifecycle {
         }
     }
 
-    // §6.4.1 unit (G15): `dispatch_run_event` wires the two §7.3.2 arms — `ExitRequested` (the empty
-    // belt-and-suspenders `prevent_exit` hook site) + `Exit` (flush the plugin logger, the final cleanup
-    // point) — plus the mandatory non-exhaustive wildcard via the item-level allow. Source-scan (AppHandle-
-    // coupled boot-glue). Needles `concat!`-assembled.
+    // §6.4.1 unit (G15): `dispatch_run_event` wires the two §7.3.2 arms — `ExitRequested` (the busy-gated
+    // §7.3.3 QUIT guard: `prevent_exit` + the `app://close-requested` confirm signal, sharing the ONE
+    // §7.3.2 busy predicate with the window-close guard; user/OS quits only — a programmatic
+    // `app.exit(code)` is never blocked) + `Exit` (flush the plugin logger, the final cleanup point) — plus
+    // the mandatory non-exhaustive wildcard via the item-level allow. Source-scan (AppHandle-coupled
+    // boot-glue). Needles `concat!`-assembled.
+    // [Test-Change: P2.137 — old-obsolete+new-correct, §7.3.2/§7.3.3] the old needle pinned the EMPTY
+    // `ExitRequested { .. } => {}` arm — implementation-mirroring, and stale against §7.3.2's own
+    // "last chance to `api.prevent_exit()`" + §7.3.3's block-quit-while-busy mandate (the macOS app-menu
+    // Quit / Cmd+Q path never raises a per-window CloseRequested, so the window-close guard alone
+    // under-delivered). The new needles pin the spec contract: the busy predicate, the prevent, the signal.
     #[test]
     fn run_event_handler_wires_exit_requested_hook_and_exit_flush() {
         let src = super::boot_invariants::all_production_source();
         for needle in [
-            concat!("RunEvent::Exit", "Requested { .. } => {}"), // the last prevent_exit chance (§7.3.2/§7.3.3)
+            concat!(
+                "RunEvent::Exit",
+                "Requested { api, code, .. } if code.is_none()"
+            ), // the §7.3.3 QUIT leg (user/OS quits only)
+            concat!("api.prevent_", "exit();"), // the busy-gated block (§7.3.2 "last chance")
             concat!("RunEvent::Exit ", "=> {"), // the final cleanup point arm (§7.3.2)
             concat!("log::logger().", "flush()"), // flush the plugin logger before exit (§7.5)
             concat!("allow(clippy::wildcard_enum_", "match_arm)"), // the gate-sanctioned per-item escape
         ] {
             assert!(
                 src.contains(needle),
-                "§7.3.2: dispatch_run_event must wire ExitRequested + Exit(flush) + the item allow (missing `{needle}`)"
+                "§7.3.2/§7.3.3: dispatch_run_event must wire the busy-gated ExitRequested quit guard + Exit(flush) + the item allow (missing `{needle}`)"
             );
         }
     }
@@ -2169,26 +2482,59 @@ mod quit_while_converting {
     //! (contract-only, NOT deferred-invocation: no new P3 wiring box either, since the runtime is the frontend
     //! §5.2 confirm → the shared C7 `cancel_run` → the window close → the §7.3.2 `RunEvent::Exit` sweep, P3.74,
     //! reusing pieces that already exist as shells/hooks). It ASSERTS the contract-by-construction:
-    //!   (1) idle quits immediately — the SOLE close/quit prevent is busy-gated (`dispatch_window_event`'s
+    //!   (1) idle quits immediately — EVERY close/quit prevent is busy-gated (`dispatch_window_event`'s
     //!       `prevent_close` sits inside the `converter_is_busy` branch, P2.79; the `RunEvent::ExitRequested`
-    //!       arm is an empty belt-and-suspenders hook with no unconditional `prevent_exit`, P2.81), so an idle
-    //!       close/quit is never blocked;
+    //!       quit leg's `prevent_exit` sits inside the SAME busy branch, P2.137 — and a programmatic
+    //!       `app.exit(code)` is never blocked), so an idle close/quit is never blocked;
     //!   (2) a busy quit HANDS OFF to the §5.2 confirm UI (the `app://close-requested` emit, P2.80) rather than
     //!       inlining a cancel — the actual cancel is the shared C7 `cancel_run` the frontend calls on confirm;
     //!   (3) the core lifecycle inlines NO cancel/kill (delegated to C7), the "same path as in-UI Cancel"
     //!       forward-guard.
     //! Source-scan (AppHandle-coupled boot-glue; test-strategy §1.1a). [Build-Session-Entscheidung: P2.83]
 
-    // §6.4.1 unit (G15): §7.3.3 "the idle state quits immediately" — the sole close/quit prevent is busy-gated.
-    // `dispatch_window_event`'s `prevent_close` (the only prevent, P2.79) sits inside the `converter_is_busy`
-    // branch, so when the converter is idle the branch is skipped → the close proceeds → the app quits
-    // immediately (no prompt). Scans `all_production_source()`; needle `concat!`-assembled.
+    // §6.4.1 unit (G15): §7.3.3 "the idle state quits immediately" — EVERY close/quit prevent is busy-gated.
+    // Both prevents (`prevent_close` on the window path, P2.79; `prevent_exit` on the quit leg, P2.137) sit
+    // inside a `converter_is_busy` branch, so when the converter is idle the branches are skipped → the
+    // close/quit proceeds immediately (no prompt). The CARDINALITY pin (exactly two busy branches, exactly
+    // two prevents) makes an added UN-gated prevent red this test, not just a removed one. Scans
+    // `all_production_source()`; needles `concat!`-assembled.
+    // [Test-Change: P2.137 — old-obsolete+new-correct, §7.3.2/§7.3.3] the old single-needle contains() was
+    // written against the one-prevent P2.79 world; P2.137 added the spec-mandated quit leg, so the pin is
+    // now a two-leg cardinality assertion.
     #[test]
-    fn idle_quits_immediately_the_sole_prevent_is_busy_gated() {
+    fn idle_quits_immediately_every_prevent_is_busy_gated() {
         let src = super::boot_invariants::all_production_source();
-        assert!(
-            src.contains(concat!("if launch_intake::converter_is_", "busy(app) {")),
-            "§7.3.3: the sole close/quit prevent must sit inside the converter_is_busy branch — an idle close/quit is never prevented (idle quits immediately)"
+        // [Test-Change: P2.137 — old-obsolete+new-correct, §7.3.2/§7.3.3] (see the test doc above)
+        let busy_branches = src
+            .matches(concat!("if launch_intake::converter_is_", "busy(app) {"))
+            .count();
+        assert_eq!(
+            busy_branches, 2,
+            "§7.3.3: exactly the two close/quit prevents (window close + quit leg) gate on converter_is_busy"
+        );
+        assert_eq!(
+            src.matches(concat!("api.prevent_", "close();")).count(),
+            1,
+            "§7.3.2: exactly one prevent_close — inside the busy-gated window-close branch"
+        );
+        assert_eq!(
+            src.matches(concat!("api.prevent_", "exit();")).count(),
+            1,
+            "§7.3.2/§7.3.3: exactly one prevent_exit — inside the busy-gated quit-leg branch (P2.137)"
+        );
+    }
+
+    // §6.4.1 unit (G15, P2.137): the two guard legs emit the SAME §5.2 confirm signal — exactly TWO
+    // `CloseRequestedSignal` emit sites exist (window-close, P2.80; quit leg, P2.137), so a leg silently
+    // dropping its hand-off (or a third, un-reviewed emit site appearing) reds here. Needle
+    // `concat!`-assembled (the struct name in prose would otherwise alias).
+    #[test]
+    fn both_guard_legs_emit_the_one_confirm_signal() {
+        let src = super::boot_invariants::all_production_source();
+        assert_eq!(
+            src.matches(concat!("CloseRequested", "Signal,")).count(),
+            2,
+            "§7.3.2/§7.3.3: exactly two emit sites hand off to the §5.2 confirm UI — the window-close leg and the quit leg"
         );
     }
 
@@ -2369,7 +2715,7 @@ mod single_instance_lock_scope {
 mod log_config {
     use super::{
         argv_has_verbose, log_dir_target, log_plugin, log_targets, resolve_log_verbosity,
-        LOG_MAX_FILE_SIZE_BYTES,
+        verbose_opt_in, LOG_MAX_FILE_SIZE_BYTES,
     };
     use tauri_plugin_log::TargetKind;
 
@@ -2507,6 +2853,61 @@ mod log_config {
                 .contains(concat!("resolve_log_", "verbosity(app.handle())")),
             "§7.5.3: main()'s setup must call resolve_log_verbosity (read-once-at-startup)"
         );
+        // P2.137: the opt-in DECISION is the pure `verbose_opt_in` rule (truth-table-tested below), and the
+        // glue must actually derive `verbose` through it — a regression re-inlining a (possibly wrong)
+        // composition drops this call form.
+        assert!(
+            boot.contains(concat!(
+                "verbose_opt_",
+                "in(crate::prefs::load(app).verbose_log, argv_has_verbose(&argv))"
+            )),
+            "§7.5.3: resolve_log_verbosity must derive the flag via the pure verbose_opt_in rule (P2.137)"
+        );
+    }
+
+    // §6.4.1 unit (G15, P2.137): the §7.5.3 verbose opt-in DECISION — the full truth table of the pure
+    // `verbose_opt_in` rule (either source alone suffices; only both-off stays default). Extracted from the
+    // G28-exempt boot glue precisely so this OR is EXECUTED, not needle-only: an `||`→`&&` regression (which
+    // silently breaks the §5.9 About toggle's next-launch effect and the §7.5.3 reproduction path) reds the
+    // second and third rows.
+    #[test]
+    fn verbose_opt_in_truth_table() {
+        assert!(
+            !verbose_opt_in(false, false),
+            "§7.5.3: both off → default level"
+        );
+        assert!(
+            verbose_opt_in(true, false),
+            "§7.5.3: the persisted §5.9 toggle alone enables verbose"
+        );
+        assert!(
+            verbose_opt_in(false, true),
+            "§7.5.3: the --verbose launch switch alone enables verbose"
+        );
+        assert!(verbose_opt_in(true, true), "§7.5.3: both on is verbose");
+    }
+
+    // §6.4.1 unit (G15, P2.137): the §7.5.1/§7.5.2 log-plugin CONFIG CHAIN is wired — the pure ingredients
+    // (`log_targets`, `LOG_MAX_FILE_SIZE_BYTES`) are value-tested elsewhere, but nothing forced the builder
+    // to CONSUME them: dropping `.targets(...)` reinstates the plugin's default Stdout sink, `.level(Info)`→
+    // `Debug` lets third-party debug records (which can carry full user paths) reach the file at verbose,
+    // and a dropped cap/rotation silently unwires the §7.5.2 disk bound — all previously green. Full
+    // call-site needles over the boot source (the `verbose_gateway_is_wired` discipline).
+    #[test]
+    fn log_plugin_config_chain_is_wired() {
+        let boot = crate::boot_invariants::production_boot_source();
+        for needle in [
+            concat!(".clear_", "targets()"), // drop the plugin default target set first (§7.5.1)
+            concat!(".targets(log_", "targets("), // …then install exactly the local-only set (§7.5.1)
+            concat!(".level(LevelFilter::", "Info)"), // the GLOBAL Info ceiling (third-party debug! stays out, §7.5.3)
+            concat!(".max_file_size(LOG_MAX_FILE_SIZE_", "BYTES)"), // the §7.5.2 size cap is CONSUMED, not just defined
+            concat!(".rotation_strategy(RotationStrategy::", "KeepOne)"), // the §7.5.2 ~1x disk bound
+        ] {
+            assert!(
+                boot.contains(needle),
+                "§7.5.1/§7.5.2: log_plugin's builder chain must consume the pinned config (missing `{needle}`)"
+            );
+        }
     }
 }
 
@@ -2704,10 +3105,13 @@ mod log_redaction_gate {
         )
     }
 
-    // §6.4.2 (G31/G15): the PROPERTY-gate breadth — over an arbitrary user path (its directory chain includes
-    // arbitrary long, opaque, secret-shaped components), the §7.5.3 default door renders EXACTLY the basename,
-    // so no directory stem (secret-shaped or not) can survive it. The wide-input complement to the fixed
-    // facade-driven test above and the example-based `crate::log_redact` unit tests.
+    // §6.4.2 (G31/G15): the PROPERTY-gate breadth — over an arbitrary user FILE path (its directory chain
+    // includes arbitrary long, opaque, secret-shaped components), the §7.5.3 default door renders EXACTLY
+    // the basename, so no DIRECTORY-CHAIN stem (secret-shaped or not) can survive it. The proven domain is
+    // file-leaf inputs — the door's call-site contract (§7.5.3); a directory-LEAF input renders its own
+    // final component (the documented single-component disclosure, pinned by the sibling property below —
+    // P2.137 closed the former dir-leaf domain hole in this gate's claim). The wide-input complement to the
+    // fixed facade-driven test above and the example-based `crate::log_redact` unit tests.
     #[test]
     fn the_default_door_renders_exactly_the_basename_for_any_directory_chain() {
         pinned_runner()
@@ -2735,6 +3139,36 @@ mod log_redaction_gate {
                 },
             )
             .unwrap();
+    }
+
+    // §6.4.2 (G31/G15, P2.137): the DIRECTORY-LEAF domain the file-leaf property above cannot reach — for a
+    // trailing-separator / directory path, `Path::file_name` yields the LAST directory component, so the
+    // door renders AT MOST that one component and NEVER an earlier chain element (the pinned
+    // single-component-disclosure contract, decided + documented in `crate::log_redact` — call sites pass
+    // FILE paths per §7.5.3; a stray directory input discloses one leaf name, not the chain). The former
+    // gate claim silently excluded this input class from its generative space.
+    #[test]
+    fn the_default_door_renders_at_most_the_final_component_for_directory_leaf_inputs() {
+        pinned_runner()
+            .run(
+                &prop::collection::vec("[A-Za-z0-9_-]{1,40}", 2..6),
+                |dirs| {
+                    // Build a trailing-separator directory path (`a/b/c/`) — the dir-leaf input class.
+                    let joined = format!("{}/", dirs.join("/"));
+                    let rendered = RedactedPath::new(Path::new(&joined)).to_string();
+                    let leaf = dirs.last().expect("2..6 components").clone();
+                    // EXACT leaf equality IS the whole property: the rendered form being precisely the
+                    // final component proves no earlier chain element survived (a substring check would
+                    // false-positive when an earlier component is a substring of the leaf, e.g. `-` ⊂ `-a`).
+                    prop_assert_eq!(
+                        &rendered,
+                        &leaf,
+                        "§7.5.3: a directory-leaf input renders exactly its final component, never the chain"
+                    );
+                    Ok(())
+                },
+            )
+            .expect("§7.5.3: the dir-leaf property must hold (pinned seed, 512 cases)");
     }
 }
 
@@ -2817,6 +3251,69 @@ mod startup_spine {
         assert!(
             gate < present,
             "§2.13.3: the fault-presentation arm is part of the readiness match (window stays hidden on a fault)"
+        );
+    }
+
+    // §6.4.1 unit (G15, P2.137): §7.2.1 step 1 — the single-instance guard is "registered FIRST": its
+    // `.plugin(` registration is the FIRST plugin registration in `main()`'s Builder chain (a registration
+    // behind another plugin would open a window in which a second launch's argv is not forwarded). The old
+    // pins covered only steps 3–7; steps 1–2 were order-asserted nowhere.
+    #[test]
+    fn single_instance_plugin_is_registered_first() {
+        let main_body = crate::boot_invariants::production_main_body();
+        let first_plugin = main_body
+            .find(".plugin(")
+            .expect("§7.2.1 step 1: main() registers plugins");
+        let single_instance = main_body
+            .find(concat!(".plugin(tauri_plugin_single_", "instance::init("))
+            .expect("§7.2.1 step 1: main() registers the single-instance plugin");
+        assert_eq!(
+            first_plugin, single_instance,
+            "§7.2.1 step 1: the single-instance guard must be the FIRST plugin registration"
+        );
+    }
+
+    // §6.4.1 unit (G15, P2.137): §7.2.1 step 2 — the InstanceId mint + StartupContext resolution happen
+    // BEFORE the step 3–5 readiness gate (their consumers resolve them as managed State; a hoisted gate
+    // faults at boot the moment the P4-filled `prepare_scratch_and_log` body reads them, §7.2.5/§7.1.2).
+    #[test]
+    fn instance_identity_and_startup_context_precede_the_readiness_gate() {
+        let main_body = crate::boot_invariants::production_main_body();
+        let mint = main_body
+            .find(concat!("app.manage(InstanceId::", "mint())"))
+            .expect("§7.2.1 step 2: setup must mint + manage the InstanceId");
+        let ctx = main_body
+            .find(concat!("let startup = Startup", "Context {"))
+            .expect("§7.2.1 step 2: setup must resolve the StartupContext");
+        let gate = main_body
+            .find(concat!("match readiness_", "checks(app.handle())"))
+            .expect("§7.2.1: setup must gate on the readiness checks");
+        assert!(
+            mint < gate && ctx < gate,
+            "§7.2.1: step 2 (identity + context) must precede the step 3–5 readiness gate"
+        );
+    }
+
+    // §6.4.1 unit (G15, P2.137): §7.2.1 step 6/7 EXCLUSIVITY — the window reveal and the intake feed each
+    // have exactly ONE call site (the `Ok` arm of the readiness match). The order pin above proves only
+    // FIRST-occurrence order; this cardinality pin excludes a second reveal on the `Err` arm / after the
+    // match (the "half-broken UI" §7.2.1 anti-pattern: a window revealed on a readiness fault). The P4
+    // fault-presentation body may legitimately add a fault-path window show — that change updates this pin
+    // with its own [Test-Change] rationale, which is exactly the review moment the pin forces.
+    #[test]
+    fn reveal_and_intake_feed_have_exactly_one_call_site_each() {
+        let src = crate::boot_invariants::all_production_source();
+        assert_eq!(
+            src.matches(concat!("reveal_main_", "window(app.handle())"))
+                .count(),
+            1,
+            "§7.2.1 step 6: exactly one reveal call site — the readiness Ok arm (never the fault path)"
+        );
+        assert_eq!(
+            src.matches(concat!("forward_first_launch_", "argv(app.handle())"))
+                .count(),
+            1,
+            "§7.2.1 step 7: exactly one intake-feed call site — the readiness Ok arm"
         );
     }
 

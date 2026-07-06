@@ -369,18 +369,23 @@ pub struct Totals {
 
 impl Totals {
     /// The total item count — the sum of the four tallies (§1.12). Not stored; derived from the parts.
-    pub fn total(&self) -> u32 {
-        self.succeeded
-            .saturating_add(self.failed)
-            .saturating_add(self.cancelled)
-            .saturating_add(self.skipped)
+    /// Returns `u64`: the sum of four `u32`s is always exact in `u64`, so the derived §1.12 condition can
+    /// never be distorted by saturation (a saturated "total" equal to `failed` would make `all_failed` lie
+    /// at the `u32` ceiling — the silent-saturation class `ItemIdSpace`'s `checked_add` discipline rejects).
+    /// Derived-helper-only (never serialized), so the wire shape is unchanged.
+    /// [Build-Session-Entscheidung: P2.137]
+    pub fn total(&self) -> u64 {
+        u64::from(self.succeeded)
+            + u64::from(self.failed)
+            + u64::from(self.cancelled)
+            + u64::from(self.skipped)
     }
 
     /// The §1.12 "all failed" condition (`failed == total && total > 0`) — DERIVED, never stored. A
     /// fully-failed batch is surfaced as an explicit failure, never a quiet finish (SSOT *Fail clearly*).
     pub fn all_failed(&self) -> bool {
         let total = self.total();
-        total > 0 && self.failed == total
+        total > 0 && u64::from(self.failed) == total
     }
 }
 
@@ -512,7 +517,10 @@ pub struct ItemProgress {
     pub run_id: RunId,
     pub item_id: ItemId,
     /// `0.0..=1.0`; `None` ONLY where truly indeterminate (LibreOffice, §1.11 — the frontend synthesises a
-    /// staged determinate-looking bar from `stage` there).
+    /// staged determinate-looking bar from `stage` there). A NON-FINITE `Some` (NaN/±∞ — never a valid
+    /// §1.11 fraction) has no JSON number form and collapses on the wire to the SAME `null` as the
+    /// deliberate indeterminate `None` — the fail-safe pinned as contract by the §6.4.1 serialize test
+    /// below. [Build-Session-Entscheidung: P2.137]
     pub fraction: Option<f32>,
     /// The §0.6/§1.11 coarse stage (`Spawning | Decoding | Encoding | Writing`).
     pub stage: JobStage,
@@ -955,10 +963,10 @@ impl Drop for IngestGuard<'_> {
 /// launch funnel's `Buffer` arm when the WebView is not yet ready, drained once by C1 `drainPending` (P2.60).
 /// NOT a wire type: the C1 drain returns a `CollectedSet` (§0.4.1), never this buffer (pure core-internal
 /// State). [Build-Session-Entscheidung: P2.58]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BufferedLaunchIntake {
     /// The launch-time paths (already `parse_path_args`-classified, §7.8.1), accumulated across any repeat
-    /// stash in the same not-ready window (no-loss — see [`PendingIntake::stash`]).
+    /// stash in the same not-ready window (no-loss — see [`PendingIntake::stash_or_route`]).
     pub paths: Vec<PathBuf>,
     /// The §0.6 origin of the FIRST stash in this not-ready window (typically `LaunchArg`; §7.8.1 "its stored
     /// origin"). A subsequent stash in the same window accumulates its paths but keeps this origin — the §1.1
@@ -994,27 +1002,67 @@ impl PendingIntake {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Stash a launch set from the §7.8.1 `Buffer` arm (idle + WebView not-yet-ready). NO-LOSS on a repeat
-    /// stash before the drain: a second launch event in the same not-ready window APPENDS its paths to the
-    /// pending set rather than superseding it — superseding would drop the earlier launch's paths, the very
-    /// loss this buffer exists to prevent (§7.8.1) — and keeps the FIRST origin (§7.8.1 "its stored origin").
-    /// The funnel only reaches this with a non-empty `paths` (it returns early on empty, §7.8.1), so no
-    /// empty-stash guard is needed. [Build-Session-Entscheidung: P2.58]
-    pub fn stash(&self, paths: Vec<PathBuf>, origin: IntakeOrigin) {
+    /// Stash a launch set from the §7.8.1 `Buffer` arm (idle + WebView not-yet-ready) — UNLESS the frontend
+    /// proved ready in the meantime, in which case the set is handed BACK for the `Emit` arm
+    /// ([`StashOutcome::RouteToEmit`]). NO-LOSS on a repeat stash before the drain: a second launch event in
+    /// the same not-ready window APPENDS its paths to the pending set rather than superseding it —
+    /// superseding would drop the earlier launch's paths, the very loss this buffer exists to prevent
+    /// (§7.8.1) — and keeps the FIRST origin (§7.8.1 "its stored origin"). The funnel only reaches this with
+    /// a non-empty `paths` (it returns early on empty, §7.8.1), so no empty-stash guard is needed.
+    /// [Build-Session-Entscheidung: P2.58]
+    ///
+    /// **The §7.8.1 no-loss closure (the stash-vs-drain interleaving, P2.137):** the funnel's ready-read
+    /// (`intake_disposition`'s snapshot) and this stash are two steps, so the C1 drain
+    /// ([`take_marking_ready`](PendingIntake::take_marking_ready)) can run BETWEEN them — mark-ready +
+    /// take(`None`) — after which a plain stash would strand the set for the whole session (`FrontendReady`
+    /// is monotonic and the frontend drains once per mount). Both critical sections therefore serialize on
+    /// the SAME pending-slot `Mutex`, and this op RE-CHECKS the ready flag under that lock: every launch set
+    /// is either stashed strictly before the drain's fused mark+take (so the drain observes it) or re-routed
+    /// to a live `app://intake` emit. Proven by `state_stores::stash_after_drain_reroutes_to_emit` (+ the
+    /// two-thread stress leg). [Build-Session-Entscheidung: P2.137]
+    pub fn stash_or_route(
+        &self,
+        ready: &FrontendReady,
+        paths: Vec<PathBuf>,
+        origin: IntakeOrigin,
+    ) -> StashOutcome {
         let mut slot = self.lock();
+        if ready.is_ready() {
+            return StashOutcome::RouteToEmit(BufferedLaunchIntake { paths, origin });
+        }
         match slot.as_mut() {
             Some(buffered) => buffered.paths.extend(paths),
             None => *slot = Some(BufferedLaunchIntake { paths, origin }),
         }
+        StashOutcome::Stashed
     }
 
-    /// Take the buffered launch set, clearing the slot — the C1 `drainPending` consume-once drain (P2.60,
-    /// §7.8.1 "consumes `PendingIntake` exactly once"). Returns `None` when nothing is pending (the ordinary
-    /// first launch with no files → C1 returns `CollectedSet::Empty`, §0.4.1). Idempotent: a second drain is
-    /// `None`. [Build-Session-Entscheidung: P2.58]
-    pub fn take(&self) -> Option<BufferedLaunchIntake> {
-        self.lock().take()
+    /// Mark the frontend ready AND take the buffered launch set — the C1 `drainPending` drain's two cohesive
+    /// effects (P2.60, §7.8.1 "consumes `PendingIntake` exactly once") FUSED under the pending-slot `Mutex`
+    /// so no [`stash_or_route`](PendingIntake::stash_or_route) can land between them (the §7.8.1 no-loss
+    /// closure — see `stash_or_route`; P2.137). Mark-BEFORE-take inside the lock: a stash serialized after
+    /// this section observes `ready == true` and re-routes to the `Emit` arm. Returns `None` when nothing is
+    /// pending (the ordinary first launch with no files → C1 returns `CollectedSet::Empty`, §0.4.1).
+    /// Idempotent: a second drain is `None`. [Build-Session-Entscheidung: P2.137]
+    pub fn take_marking_ready(&self, ready: &FrontendReady) -> Option<BufferedLaunchIntake> {
+        let mut slot = self.lock();
+        ready.mark_ready();
+        slot.take()
     }
+}
+
+/// The §7.8.1 `Buffer`-arm outcome of [`PendingIntake::stash_or_route`] — either the set is buffered for the
+/// C1 drain replay, or the drain already ran (`FrontendReady` flipped between the funnel's disposition
+/// snapshot and the stash) and the set is handed back so the caller emits `app://intake` instead: nothing is
+/// ever stranded (§7.8.1 "a launch-with-files is never lost"). Core-internal (not a wire type — no
+/// `serde`/`specta`). [Build-Session-Entscheidung: P2.137]
+#[derive(Debug, PartialEq, Eq)]
+pub enum StashOutcome {
+    /// The set is buffered; the C1 `drainPending` drain will consume it (§7.8.1).
+    Stashed,
+    /// The drain already consumed the buffer and marked the frontend ready — the set is handed back for a
+    /// live `app://intake` emit (the §7.8.1 no-loss re-route).
+    RouteToEmit(BufferedLaunchIntake),
 }
 
 // ─── §7.8.1 WebView-ready flag — the FrontendReady emit-vs-buffer gate (P2.59) ────────────────────────────
@@ -1028,9 +1076,10 @@ impl PendingIntake {
 // marks it ready. MONOTONIC false→true: the `main` window lives for the whole session (§7.3.1 closing-quits) so
 // the listener never un-registers, hence the flag never resets — an `AtomicBool` is the right tool (no
 // Mutex/poison handling; the reader needs only the published boolean, no data is gated behind it). Both
-// methods are LIVE: `mark_ready` is called by the C1 `drainPending` handler (`crate::ipc::intake::
-// resolve_intake_source`, P2.60 — the drain call is the §7.8.1 root-shell-mount readiness signal), and
-// `is_ready` is read by the §7.8.1 funnel's `frontend_ready` (P2.59, main.rs).
+// methods are LIVE: `mark_ready` is driven by the C1 `drainPending` handler via the fused
+// [`PendingIntake::take_marking_ready`] (P2.137; `crate::ipc::intake::resolve_intake_source` calls it —
+// the drain call is the §7.8.1 root-shell-mount readiness signal), and `is_ready` is read by the §7.8.1
+// funnel's `frontend_ready` (P2.59, main.rs) plus the stash's under-lock re-check (`stash_or_route`).
 
 /// The §7.8.1 WebView-ready flag (`State<FrontendReady>`) — `true` once the frontend has registered its
 /// `app://intake` listener and run the C1 `drainPending` drain (P2.60) on root-shell mount. The §7.8.1 launch
@@ -2232,6 +2281,111 @@ mod walk_tests {
             "§1.1/P2.69: an un-cancelled token collects normally (the poll does not false-trip)"
         );
     }
+
+    // §6.4.1 unit (P2.67): the shared `record_unreadable` recorder's OBSERVABLE contract, driven directly —
+    // a present path is RECORDED as a §1.1 `Unreadable` `WalkSkip` (kept for the §1.4 summary, never
+    // silently dropped) and a `None` path (a walkdir error with no associated path) records NOTHING (no
+    // item to attribute). Both walk arms that call it are exercised on a real filesystem above; this pins
+    // the push itself, so an accidentally-inert recorder is caught on every platform.
+    // [Build-Session-Entscheidung: P2.137]
+    #[test]
+    fn record_unreadable_records_a_present_path_and_drops_a_pathless_error() {
+        let mut skipped: Vec<WalkSkip> = Vec::new();
+        record_unreadable(&mut skipped, Some(std::path::Path::new("locked.csv")));
+        assert_eq!(
+            skipped,
+            vec![WalkSkip {
+                path: PathBuf::from("locked.csv"),
+                reason: SkipReason::Unreadable,
+            }],
+            "§1.1/P2.67: a per-item read failure is RECORDED as an Unreadable skip"
+        );
+        record_unreadable(&mut skipped, None);
+        assert_eq!(
+            skipped.len(),
+            1,
+            "§1.1/P2.67: a path-less walkdir error has no item to attribute — nothing is recorded"
+        );
+    }
+
+    // §1.1 (P2.68, windows): the PermissionDenied FATAL-root mapping on Windows — a dropped ROOT directory
+    // whose LISTING is ACL-denied stops the walk fatally with `ReadFailure::PermissionDenied`, never the
+    // `IoError` fallback (the unix sibling P2.68 unreadable-root test proves
+    // the same arm via a chmod-000 root). std exposes no ACL editing and subprocess use is confined to
+    // `crate::isolation` (G29 rule (c)), so the test walks the volume's `System Volume Information`
+    // directory — present on every NTFS system drive and list-denied to every non-SYSTEM principal by
+    // default — GUARDED like the unix DAC-bypass guard: it asserts only when the probe read actually
+    // reports PermissionDenied (a SYSTEM-account runner, or a drive without the folder, cannot produce the
+    // condition and returns early). [Build-Session-Entscheidung: P2.137]
+    #[cfg(windows)]
+    #[test]
+    fn walk_stops_fatally_with_permission_denied_on_a_list_denied_root() {
+        let denied = PathBuf::from(r"C:\System Volume Information");
+        match fs::read_dir(&denied) {
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {}
+            Ok(_) | Err(_) => return, // privileged runner / absent folder — the condition is not producible
+        }
+        assert_eq!(
+            walk_intake_roots(std::slice::from_ref(&denied), &CancellationToken::new()).err(),
+            Some(WalkAbort::FatalRoot(FatalWalkRoot {
+                root: denied,
+                cause: ReadFailure::PermissionDenied,
+            })),
+            "§1.1/P2.68: a list-denied dropped ROOT maps io PermissionDenied → \
+             ReadFailure::PermissionDenied (the specific arm, never the IoError fallback)"
+        );
+    }
+
+    // §1.1 (P2.65, windows): the Windows hidden/system file-ATTRIBUTE leg of the ignore filter — a TRUTH
+    // TABLE over the real FILE_ATTRIBUTE_HIDDEN (0x2) / FILE_ATTRIBUTE_SYSTEM (0x4) bits (the constants
+    // `windows_attr_hidden` tests), on real files created WITH those attributes via std's
+    // `OpenOptionsExt::attributes`: neither → false (a plain new file carries OTHER bits, e.g. ARCHIVE,
+    // which must not trip the mask), hidden-only → true, system-only → true, both → true. Each row kills a
+    // distinct fault class: constant-true (the neither row), constant-false (the hidden/system rows), and a
+    // broken HIDDEN|SYSTEM mask (a zeroed mask fails the single-bit rows).
+    // [Build-Session-Entscheidung: P2.137]
+    #[cfg(windows)]
+    #[test]
+    fn windows_attr_hidden_truth_table_over_the_attribute_bits() {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Mirrors the fn-local constants of `windows_attr_hidden` (§1.1/P2.65).
+        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x0000_0002;
+        const FILE_ATTRIBUTE_SYSTEM: u32 = 0x0000_0004;
+        let tmp = tempdir().expect("tempdir");
+        let entry_for = |name: &str, attrs: u32| -> walkdir::DirEntry {
+            let p = tmp.path().join(name);
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            if attrs != 0 {
+                options.attributes(attrs);
+            }
+            options
+                .open(&p)
+                .expect("create the attributed fixture file");
+            WalkDir::new(&p)
+                .into_iter()
+                .next()
+                .expect("a file root yields exactly one entry")
+                .expect("the fixture entry is readable")
+        };
+        let rows: [(&str, u32, bool); 4] = [
+            ("plain.csv", 0, false),
+            ("hidden.csv", FILE_ATTRIBUTE_HIDDEN, true),
+            ("system.csv", FILE_ATTRIBUTE_SYSTEM, true),
+            (
+                "both.csv",
+                FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM,
+                true,
+            ),
+        ];
+        for (name, attrs, expected) in rows {
+            assert_eq!(
+                windows_attr_hidden(&entry_for(name, attrs)),
+                expected,
+                "§1.1/P2.65: attribute bits {attrs:#06x} on `{name}` classify as hidden/system = {expected}"
+            );
+        }
+    }
 }
 
 // ─── §1.1/§2.4 freeze idle-vs-in-flight GATING CONTRACT (P2.72) ────────────────────────────────────────
@@ -2401,19 +2555,25 @@ mod tests {
             .expect("RunId deserializes from a uuid string")
     }
 
-    /// A minimal eligible CSV source item, for the job/batch shape tests.
-    fn dropped_item(id: u32) -> DroppedItem {
+    /// A minimal eligible source item of the given §1.2 recognized `format` — the format-generative sibling
+    /// of `dropped_item` for the P2.137 grouping property. [Build-Session-Entscheidung: P2.137]
+    fn dropped_item_with(id: u32, format: UserFacingFormat) -> DroppedItem {
         DroppedItem {
             item: item_id(id),
             raw_path: PathBuf::from("data.csv"),
             resolved_path: PathBuf::from("data.csv"),
             size_bytes: 12,
             detected: DetectionOutcome::Recognized {
-                format: UserFacingFormat::Csv,
+                format,
                 confidence: Confidence::High,
                 dims: None,
             },
         }
+    }
+
+    /// A minimal eligible CSV source item, for the job/batch shape tests.
+    fn dropped_item(id: u32) -> DroppedItem {
+        dropped_item_with(id, UserFacingFormat::Csv)
     }
 
     /// A minimal CSV→TSV target, for the batch shape test.
@@ -2827,6 +2987,29 @@ mod tests {
         );
     }
 
+    // §6.4.1 unit (G15): a NON-FINITE `ItemProgress.fraction` (NaN / ±∞ — a malformed engine-progress
+    // computation, never a valid §1.11 value) serializes to the SAME wire `null` as the DELIBERATE
+    // indeterminate `None` (JSON has no NaN/Infinity number form; serde_json emits `null` for a non-finite
+    // float). Pinned as the §0.4.2 wire contract: the fail-safe collapse means the WebView can never receive
+    // a NaN/∞ that would poison the §1.11 bar arithmetic — it sees the indeterminate form instead.
+    // [Build-Session-Entscheidung: P2.137]
+    #[test]
+    fn item_progress_non_finite_fraction_serializes_as_null() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let progress = ItemProgress {
+                run_id: run_id(),
+                item_id: item_id(1),
+                fraction: Some(bad),
+                stage: JobStage::Encoding,
+            };
+            let v = serde_json::to_value(&progress).expect("ItemProgress serializes");
+            assert!(
+                v["fraction"].is_null(),
+                "§0.4.2/§1.11: a non-finite fraction ({bad}) collapses to the indeterminate wire null"
+            );
+        }
+    }
+
     // §6.4.1 unit (G15): the §0.4.2 `ConversionEvent::RunFinished` variant (P2.37) wraps the §1.12 `RunResult`
     // (it mirrors C8) — the terminal run event. A minimal RunResult here; the full RunResult wire form has its
     // own pin (`run_result_wire_form_is_camelcase`). Also exercises the RunFinished variant in the test build.
@@ -2928,6 +3111,64 @@ mod tests {
         );
     }
 
+    // §6.4.1 unit (G15): `ItemOutcome` is EXACTLY the four §0.6 terminal outcomes — the no-wildcard
+    // `exhaustive` match is the COMPILE-TIME membership lock (the established dependency-free pattern, cf.
+    // the `JobState` six-state lock above / the domain per-enum `exhaustive` fns): a variant added or
+    // removed without updating it fails to compile, so the closed live-wire enum can never silently drift
+    // from §0.6. The runtime leg pins the four externally-tagged wire TAGS as an ordered set, complementing
+    // the per-variant payload pins above. [Build-Session-Entscheidung: P2.137]
+    #[test]
+    fn item_outcome_is_the_four_terminal_variants() {
+        fn exhaustive(o: &ItemOutcome) {
+            match o {
+                ItemOutcome::Succeeded { .. }
+                | ItemOutcome::Failed { .. }
+                | ItemOutcome::Skipped { .. }
+                | ItemOutcome::Cancelled => {}
+            }
+        }
+        let all = [
+            ItemOutcome::Succeeded {
+                output_path: PathBuf::from("/out/data.tsv"),
+            },
+            ItemOutcome::Failed {
+                error: IpcError {
+                    kind: ConversionErrorKind::EngineError,
+                    message: "ConvertIA couldn't convert this file.".to_owned(),
+                    path: None,
+                    residue: None,
+                },
+            },
+            ItemOutcome::Skipped {
+                reason: SkipReason::Empty,
+            },
+            ItemOutcome::Cancelled,
+        ];
+        let tags: Vec<String> = all
+            .iter()
+            .map(|outcome| {
+                exhaustive(outcome);
+                // The externally-tagged §0.6 wire form is a single-key object (payload variants) or a bare
+                // string (Cancelled); any other JSON shape yields an empty tag the assertion below rejects.
+                match serde_json::to_value(outcome).expect("ItemOutcome serializes") {
+                    serde_json::Value::Object(map) => {
+                        map.keys().cloned().collect::<Vec<_>>().join(",")
+                    }
+                    serde_json::Value::String(tag) => tag,
+                    serde_json::Value::Null
+                    | serde_json::Value::Bool(_)
+                    | serde_json::Value::Number(_)
+                    | serde_json::Value::Array(_) => String::new(),
+                }
+            })
+            .collect();
+        assert_eq!(
+            tags,
+            ["succeeded", "failed", "skipped", "cancelled"],
+            "§0.6/§0.4.2: exactly the four terminal wire tags, in §0.6 order"
+        );
+    }
+
     // §6.4.1 unit (G15): the §1.12 `Totals` wire form + the DERIVED `all_failed()`/`total()` (P2.12) — the
     // "all failed" condition is `failed == total && total > 0`, NEVER a stored field (SSOT *Fail clearly*).
     #[test]
@@ -2967,6 +3208,31 @@ mod tests {
         assert!(
             !empty.all_failed(),
             "§1.12: total == 0 is NOT all-failed (the total > 0 guard)"
+        );
+    }
+
+    // §6.4.1 unit (G15): `total()` is EXACT `u64` arithmetic at the `u32` ceiling (the P2.137 widened
+    // return): `succeeded: 1, failed: u32::MAX` sums PAST `u32::MAX` without saturation, and `all_failed()`
+    // stays false (`failed != total`). A `u32`/saturating total would freeze at `u32::MAX == failed` here
+    // and make the derived §1.12 all-failed condition lie at the ceiling — the silent-saturation class the
+    // `ItemIdSpace` checked_add discipline rejects (see `Totals::total`'s doc).
+    // [Build-Session-Entscheidung: P2.137]
+    #[test]
+    fn totals_total_is_exact_u64_at_the_u32_boundary() {
+        let boundary = Totals {
+            succeeded: 1,
+            failed: u32::MAX,
+            cancelled: 0,
+            skipped: 0,
+        };
+        assert_eq!(
+            boundary.total(),
+            u64::from(u32::MAX) + 1,
+            "§1.12: total() sums the four u32 tallies exactly, past the u32 ceiling"
+        );
+        assert!(
+            !boundary.all_failed(),
+            "§1.12: one success among u32::MAX failures is NOT all-failed (no saturated-total lie)"
         );
     }
 
@@ -3072,29 +3338,55 @@ mod tests {
         )
     }
 
-    /// §0.6 invariant 1 (one-Target-per-Batch) + the §1.3 single-format grouping: a `Batch` carries ONE
-    /// whole-batch `target` (a single value, never per-item) over an arbitrary number of jobs, and EVERY job's
-    /// source is that one `source_format` — the grouping key is whole-batch. `ConversionJob` has no `target`
-    /// field, so the only target in effect is `batch.target`; this locks the shape against a future
-    /// per-job-target regression and asserts the one-format grouping over any job count.
+    /// A small cross-category palette of §0.6 formats — the GENERATIVE format axis for the grouping property
+    /// below (any two distinct entries make the §1.3 grouping key falsifiable; the full 46-variant set
+    /// MEMBERSHIP is `crate::domain`'s own compile-time lock and is not re-policed here).
+    /// [Build-Session-Entscheidung: P2.137]
+    const P2_137_FORMAT_PALETTE: [UserFacingFormat; 8] = [
+        UserFacingFormat::Csv,
+        UserFacingFormat::Tsv,
+        UserFacingFormat::Png,
+        UserFacingFormat::Jpg,
+        UserFacingFormat::Mp3,
+        UserFacingFormat::Mp4,
+        UserFacingFormat::Pdf,
+        UserFacingFormat::Docx,
+    ];
+
+    /// §0.6 invariant 1 (one-Target-per-Batch) + the §1.3 single-format grouping — GENERATIVE over the
+    /// format axis: for ANY generated batch format and job count, a batch built to the grouping rule has
+    /// every job's recognized source format equal to the single whole-batch `source_format` (and carries ONE
+    /// whole-batch `target` — `ConversionJob` has no target field, so the single value governs by shape).
+    /// The invariant has TEETH: a planted format-INTRUDER job (a different generated format) is DETECTABLE
+    /// via `recognized_format(&job.source) != Some(batch.source_format)`, so the grouping key is a real
+    /// constraint a §1.3-violating queue would fail — not a fixture echo.
+    /// [Test-Change: P2.137 — old-obsolete+new-correct, §0.6] the prior generator varied only the job COUNT
+    /// over a hardcoded-Csv fixture, so no generated input could falsify the format equality (a fixture
+    /// tautology). The new axes (an arbitrary palette format + a planted intruder of a guaranteed-different
+    /// format) make both directions falsifiable, verified against the §0.6 inv-1 / §1.3 grouping contract.
     #[test]
     fn prop_batch_is_one_target_and_one_source_format_over_arbitrary_jobs() {
+        let palette_len = P2_137_FORMAT_PALETTE.len();
         pinned_runner()
-            .run(&(0usize..64), |n| {
+            .run(&(0..palette_len, 0..palette_len - 1, 0usize..64), |(fi, off, n)| {
+                let batch_format = P2_137_FORMAT_PALETTE[fi];
+                // Always a DIFFERENT palette entry: offsets 1..len around the ring from fi, so the
+                // intruder's format never equals the batch format (no filtering, fully deterministic).
+                let intruder_format = P2_137_FORMAT_PALETTE[(fi + 1 + off) % palette_len];
                 let jobs: Vec<ConversionJob> = (0..n)
                     .map(|i| {
                         let id = u32::try_from(i).expect("n < 64 fits u32");
                         ConversionJob {
                             item: item_id(id),
-                            source: dropped_item(id),
+                            source: dropped_item_with(id, batch_format),
                             state: JobState::Pending,
                             plan: None,
                         }
                     })
                     .collect();
-                let batch = Batch {
+                let mut batch = Batch {
                     id: collected_set_id(),
-                    source_format: UserFacingFormat::Csv,
+                    source_format: batch_format,
                     target: sample_target(),
                     options: OptionValues(BTreeMap::new()),
                     destination: DestinationChoice::BesideSource,
@@ -3113,9 +3405,29 @@ mod tests {
                         "§1.3: every job in the batch shares the single whole-batch source format"
                     );
                 }
+                // [Test-Change: P2.137 — old-obsolete+new-correct, §0.6] teeth: plant a format-intruder
+                // job and prove the grouping key DETECTS it (the old fixture-only generator could not
+                // falsify the format equality; the still-true shape assertions above are retained verbatim).
+                let intruder_id = u32::try_from(n).expect("n < 64 fits u32");
+                batch.jobs.push(ConversionJob {
+                    item: item_id(intruder_id),
+                    source: dropped_item_with(intruder_id, intruder_format),
+                    state: JobState::Pending,
+                    plan: None,
+                });
+                prop_assert_eq!(
+                    batch
+                        .jobs
+                        .iter()
+                        .filter(|job| recognized_format(&job.source) != Some(batch.source_format))
+                        .count(),
+                    1,
+                    "§1.3 teeth: exactly the planted intruder violates the single-format grouping — the \
+                     key discriminates, it is not a fixture echo"
+                );
                 Ok(())
             })
-            .unwrap();
+            .expect("the pinned 512-case exploration holds the §0.6 inv-1 / §1.3 grouping invariant");
     }
 
     /// §0.6 "`ConversionJob.item == source.item`": the job's top-level key is DENORMALIZED from its source
@@ -3158,6 +3470,90 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    /// §0.6 invariant 6 — the dedup×mint×skip COMPOSITION over ONE shared id space (§2.3.2 + §1.1): run the
+    /// REAL P2.76 `dedup_by_identity` fold over an arbitrary eligible/ineligible candidate mix (identity
+    /// classes WITH repeats — 8 classes over up to 64 candidates force duplicates), then mint one id per
+    /// ineligible item from the SAME `ItemIdSpace` cursor — the documented P3.49 assembly order (survivors
+    /// first, then the §1.1 skips). Over any generated mix: survivor ids and skip ids are DISJOINT, together
+    /// they cover EXACTLY the contiguous `0..(survivors + skips)` space, one survivor exists per DISTINCT
+    /// eligible identity class (each duplicate consumed NO id), and the cursor's next mint is exactly
+    /// `survivors + skips` — the property-level composition the `dedup_tests` single-example units pin
+    /// pointwise. [Build-Session-Entscheidung: P2.137]
+    #[test]
+    fn prop_dedup_and_skip_minting_compose_over_one_contiguous_id_space() {
+        use std::collections::BTreeSet;
+        // One §2.3.1 identity per CLASS index — the fold keys on (dev, inode), so equal class indexes model
+        // a duplicate (hardlink / re-reached file) and distinct indexes distinct resolved files.
+        fn class_fid(class: u8) -> FileIdentity {
+            FileIdentity {
+                canonical_path: PathBuf::from(format!("/gen/class-{class}.csv")),
+                dev_or_volserial: 77,
+                inode_or_fileindex: u64::from(class),
+            }
+        }
+        pinned_runner()
+            .run(
+                &prop::collection::vec((0u8..8, any::<bool>()), 0..64usize),
+                |entries| {
+                    let mut ids = ItemIdSpace::new();
+                    let eligible: Vec<(FileIdentity, usize)> = entries
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (_, eligible))| *eligible)
+                        .map(|(pos, (class, _))| (class_fid(*class), pos))
+                        .collect();
+                    let survivors = dedup_by_identity(eligible, &mut ids)
+                        .expect("at most 64 candidates never exhaust the u32 id space");
+                    // One id per generated INELIGIBLE item, from the SAME shared cursor (assembly order).
+                    let skip_ids: BTreeSet<ItemId> = entries
+                        .iter()
+                        .filter(|(_, eligible)| !eligible)
+                        .map(|_| {
+                            ids.mint()
+                                .expect("at most 64 skip mints never exhaust the u32 id space")
+                        })
+                        .collect();
+                    let survivor_ids: BTreeSet<ItemId> = survivors.iter().map(|m| m.id).collect();
+                    prop_assert!(
+                        survivor_ids.is_disjoint(&skip_ids),
+                        "§0.6 inv-6: survivor and skip ids never collide (one shared space)"
+                    );
+                    let minted = survivor_ids.len() + skip_ids.len();
+                    let covered: BTreeSet<ItemId> =
+                        survivor_ids.union(&skip_ids).copied().collect();
+                    let expected: BTreeSet<ItemId> = (0..minted)
+                        .map(|i| item_id(u32::try_from(i).expect("minted < 64 fits u32")))
+                        .collect();
+                    prop_assert_eq!(
+                        covered,
+                        expected,
+                        "§0.6 inv-6: the two views together cover exactly the contiguous 0..(survivors+skips)"
+                    );
+                    let distinct_eligible_classes = entries
+                        .iter()
+                        .filter(|(_, eligible)| *eligible)
+                        .map(|(class, _)| *class)
+                        .collect::<BTreeSet<u8>>()
+                        .len();
+                    prop_assert_eq!(
+                        survivors.len(),
+                        distinct_eligible_classes,
+                        "§2.3.2: one survivor per distinct identity class — each duplicate consumed NO id"
+                    );
+                    let next = ids
+                        .mint()
+                        .expect("the space is nowhere near the u32 ceiling here");
+                    prop_assert_eq!(
+                        next,
+                        item_id(u32::try_from(minted).expect("minted < 64 fits u32")),
+                        "§0.6 inv-6: the shared cursor advanced once per survivor + skip, never for a duplicate"
+                    );
+                    Ok(())
+                },
+            )
+            .expect("the pinned 512-case exploration holds §0.6 invariant 6 across the composition");
     }
 
     // §6.4.1 unit (G15): the §0.4.4 run-registry lifecycle (P2.42). `register` mints a LIVE token, `cancel`
@@ -3599,13 +3995,28 @@ mod tests {
         names.iter().map(PathBuf::from).collect()
     }
 
+    // [Test-Change: P2.137 — old-obsolete+new-correct, §7.8.1] The P2.58 `stash`/`take` pair was fused into
+    // `stash_or_route`/`take_marking_ready` (the §7.8.1 no-loss closure: both critical sections share the
+    // pending-slot Mutex and the stash re-checks readiness under it) — the P2.58 assertions below are the
+    // SAME contracts driven through the fused API (a not-ready stash routes to `Stashed`; the drain fuses
+    // mark-ready + take), verified against §7.8.1's consume-once + stored-origin + no-loss prose.
+
     // §6.4.1 unit (G15): the §7.8.1 stash→drain round-trip — a buffered launch set is taken back with its
-    // paths + the stored origin, and the slot is cleared (the C1 drainPending consume-once, §7.8.1).
+    // paths + the stored origin, and the slot is cleared (the C1 drainPending consume-once, §7.8.1); the
+    // drain marks the frontend ready in the same fused step (P2.137).
     #[test]
     fn pending_intake_stash_then_take_returns_the_set_and_clears() {
         let buf = PendingIntake::default();
-        buf.stash(paths(&["a.png", "b.jpg"]), IntakeOrigin::LaunchArg);
-        let drained = buf.take().expect("§7.8.1: a stashed set is drained back");
+        // [Test-Change: P2.137 — old-obsolete+new-correct, §7.8.1] (fused-API rewrite; see block header)
+        let ready = FrontendReady::default();
+        assert_eq!(
+            buf.stash_or_route(&ready, paths(&["a.png", "b.jpg"]), IntakeOrigin::LaunchArg),
+            StashOutcome::Stashed,
+            "§7.8.1: a not-ready stash buffers (the Buffer arm's normal case)"
+        );
+        let drained = buf
+            .take_marking_ready(&ready)
+            .expect("§7.8.1: a stashed set is drained back");
         assert_eq!(
             drained.paths,
             paths(&["a.png", "b.jpg"]),
@@ -3617,19 +4028,29 @@ mod tests {
             "§7.8.1: the drain carries the stored origin (typically LaunchArg)"
         );
         assert!(
-            buf.take().is_none(),
+            ready.is_ready(),
+            "§7.8.1/P2.137: the fused drain marked the frontend ready in the same critical section"
+        );
+        assert!(
+            buf.take_marking_ready(&ready).is_none(),
             "§7.8.1: the drain consumes exactly once — a second take is None (idempotent)"
         );
     }
 
     // §6.4.1 unit (G15): an un-stashed buffer drains to None — the ordinary first launch with no files,
-    // which C1 maps to CollectedSet::Empty (§0.4.1 / §7.8.1).
+    // which C1 maps to CollectedSet::Empty (§0.4.1 / §7.8.1) — and still marks ready (the drain call IS the
+    // §7.8.1 readiness signal, files or not).
     #[test]
     fn pending_intake_empty_take_is_none() {
         let buf = PendingIntake::default();
+        let ready = FrontendReady::default();
         assert!(
-            buf.take().is_none(),
+            buf.take_marking_ready(&ready).is_none(),
             "§7.8.1: a never-stashed buffer drains to None (first launch, no files)"
+        );
+        assert!(
+            ready.is_ready(),
+            "§7.8.1: the empty drain still marks ready — readiness is the drain's signal, not the files'"
         );
     }
 
@@ -3640,13 +4061,15 @@ mod tests {
     #[test]
     fn pending_intake_repeat_stash_accumulates_paths_keeps_first_origin() {
         let buf = PendingIntake::default();
-        buf.stash(paths(&["first.png"]), IntakeOrigin::LaunchArg);
-        buf.stash(
+        let ready = FrontendReady::default();
+        buf.stash_or_route(&ready, paths(&["first.png"]), IntakeOrigin::LaunchArg);
+        buf.stash_or_route(
+            &ready,
             paths(&["second.jpg", "third.gif"]),
             IntakeOrigin::SecondInstance,
         );
         let drained = buf
-            .take()
+            .take_marking_ready(&ready)
             .expect("§7.8.1: the accumulated set is drained back");
         assert_eq!(
             drained.paths,
@@ -3658,6 +4081,89 @@ mod tests {
             IntakeOrigin::LaunchArg,
             "§7.8.1: the FIRST stash's origin is kept across an accumulating second stash"
         );
+    }
+
+    // §6.4.1 unit (G15): the §7.8.1 no-loss closure, deterministic interleaving (P2.137) — the exact TOCTOU
+    // the fused API exists to close: the funnel snapshots ready=false (its `intake_disposition` read), the C1
+    // drain then runs its fused mark-ready+take (finding nothing), and only THEN does the funnel's Buffer arm
+    // reach the stash. A plain stash would strand the set for the session (ready is monotonic, the drain
+    // fires once per mount); `stash_or_route` re-checks readiness under the pending-slot lock and hands the
+    // set BACK for a live emit instead.
+    #[test]
+    fn stash_after_drain_reroutes_to_emit() {
+        let buf = PendingIntake::default();
+        let ready = FrontendReady::default();
+        // The funnel's disposition snapshot: idle + not-ready → it WILL pick the Buffer arm.
+        assert!(
+            !ready.is_ready(),
+            "precondition: the snapshot read not-ready"
+        );
+        // The drain interleaves before the stash lands: fused mark-ready + take (nothing pending yet).
+        assert!(buf.take_marking_ready(&ready).is_none());
+        // The funnel's stale Buffer arm now stashes — and MUST be re-routed, not stranded.
+        let outcome = buf.stash_or_route(&ready, paths(&["late.png"]), IntakeOrigin::LaunchArg);
+        assert!(
+            matches!(outcome, StashOutcome::RouteToEmit(_)),
+            "§7.8.1/P2.137: a stash after the drain must RE-ROUTE to Emit — a plain Stashed here is the \
+             stranded-set loss the fused API exists to prevent"
+        );
+        let StashOutcome::RouteToEmit(set) = outcome else {
+            return; // proven RouteToEmit by the assert above
+        };
+        assert_eq!(
+            set.paths,
+            paths(&["late.png"]),
+            "§7.8.1/P2.137: the re-routed set carries the full stale-stash payload"
+        );
+        assert_eq!(set.origin, IntakeOrigin::LaunchArg);
+        assert!(
+            buf.take_marking_ready(&ready).is_none(),
+            "§7.8.1: nothing may remain buffered after the re-route (the set went to the Emit arm)"
+        );
+    }
+
+    // §6.4.2 stress leg (G15; bounded, deterministic INVARIANT — not timing-dependent asserts): under a real
+    // two-thread race between the Buffer-arm stash and the C1 drain, every outcome pair satisfies the §7.8.1
+    // no-loss invariant — `Stashed` implies the drain observed the set (its take returned it), and a drain
+    // that took nothing implies the stash re-routed to Emit. No interleaving may strand a set.
+    #[test]
+    fn stash_vs_drain_race_never_strands_a_set() {
+        for _ in 0..100 {
+            let buf = std::sync::Arc::new(PendingIntake::default());
+            let ready = std::sync::Arc::new(FrontendReady::default());
+            let (b1, r1) = (std::sync::Arc::clone(&buf), std::sync::Arc::clone(&ready));
+            let stasher = std::thread::spawn(move || {
+                b1.stash_or_route(
+                    &r1,
+                    vec![PathBuf::from("race.png")],
+                    IntakeOrigin::LaunchArg,
+                )
+            });
+            let (b2, r2) = (std::sync::Arc::clone(&buf), std::sync::Arc::clone(&ready));
+            let drainer = std::thread::spawn(move || b2.take_marking_ready(&r2));
+            let stash_outcome = stasher
+                .join()
+                .expect("§7.8.1/P2.137: the stasher thread must not panic");
+            let drained = drainer
+                .join()
+                .expect("§7.8.1/P2.137: the drainer thread must not panic");
+            // The residue a LATE drain (serialized after the stash) would still find:
+            let residue = buf.take_marking_ready(&ready);
+            let observed = drained.is_some() || residue.is_some();
+            match stash_outcome {
+                StashOutcome::Stashed => assert!(
+                    observed,
+                    "§7.8.1/P2.137 no-loss: a Stashed set must be observable by a drain (never stranded)"
+                ),
+                StashOutcome::RouteToEmit(set) => {
+                    assert_eq!(set.paths, vec![PathBuf::from("race.png")]);
+                    assert!(
+                        drained.is_none() && residue.is_none(),
+                        "§7.8.1/P2.137: a re-routed set is emitted, never ALSO buffered (no duplicate)"
+                    );
+                }
+            }
+        }
     }
 
     // ── §7.8.1 FrontendReady WebView-ready flag (P2.59) ────────────────────────────────────────────────
