@@ -557,6 +557,6 @@
 > Co-Pilot-executed — never the Build-Loop; mandate, level and evidence rules in
 > [test-strategy §11](../process/test-strategy.md#11-the-phase-end-co-pilot-hardening-sweep).
 
-- [!extern] **P2.137** [TEST] Run the phase-end Co-Pilot hardening sweep over the whole P2 delivery — adversarial re-test at the hardest technically-possible level · §6.4
+- [x] **P2.137** [TEST] Run the phase-end Co-Pilot hardening sweep over the whole P2 delivery — adversarial re-test at the hardest technically-possible level · §6.4
   > **[!extern] (Co-Pilot-executed — the standing test-strategy §11 phase-close sweep, never the Build-Loop):** runs once every other P2 box is `[x]`; the phase's whole delivery is adversarially re-tested at the hardest technically-possible level with unrestricted session tooling (Docker, WebDriver/Playwright, property/fuzz/mutation probes, real-OS live runs); findings are fixed with tests as normal dual-reviewed commits before this box flips `[x]`.
   > **Boundary stop:** P3.1 carries `needs:` on this box — a `[!extern]` prerequisite of a non-extern box is a loop STOP (`_format.md` §2/§6), so the loop hard-stops at the P2→P3 boundary and hands off to the Co-Pilot until the sweep is `[x]`.
