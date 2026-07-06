@@ -329,7 +329,8 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   recorded + enforcement path (§6.1.4/§6.4.2); §7.2.3 warm-launch magic-bytes check; LGPL §6
   relink obligation (§3.6.2); libimagequant landmine cross-ref (images.md); WMA decode-only
   (§3.1); fs-audit `::error::` annotation (§6.4.2); §5.x cluster (RerunPrompt state-vs-modal,
-  MixedDropRefusal Esc focus, file-picker split, `raw_path` display-only, BusyNotice re-focus).
+  MixedDropRefusal Esc focus, file-picker split, `raw_path` display-only — itself superseded
+  2026-07-06 by core-owned paths (`display_name`, no path on the wire) — BusyNotice re-focus).
 
 ### Resolved this convergence pass `[DECIDED]`
 - **Name/trademark clearance verdict = `clear`** — both "ConvertIA" and the public
@@ -713,10 +714,12 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   is promoted into the shared `forward_launch_intake` funnel both launch hooks call
   (argv callback AND `RunEvent::Opened`), so a mid-conversion Open-with is refused on macOS
   too (no longer bypasses the PRIMARY §7.1.1 gate). Owner: §7.8.1 / §7.1.1.
-- **First-launch macOS drain mechanism = C1 re-use on root-shell mount with a concrete
-  `drainPending: true` + `paths: []` call** (no dedicated command, no 4th `app://` event);
-  the handler consumes `State<PendingIntake>` (its stored `origin`, `LaunchArg`) and freezes
-  it, or returns `CollectedSet::Empty` if none; the frontend never holds the buffered paths.
+- **First-launch macOS drain mechanism = the C1 `drain_intake` completion door on
+  root-shell mount** (revised per the 2026-07-06 core-owned-paths ruling: the former
+  `drainPending: true` + `paths: []` C1 shape is superseded — every C1 call drains; no
+  dedicated command, no 4th `app://` event); the handler consumes `State<PendingIntake>`
+  (its stored `origin`, `LaunchArg`) and freezes it, or returns `CollectedSet::Empty` if
+  none; the frontend never holds the buffered paths.
   `PendingIntake` carries the real `origin` (`LaunchArg`), never a hard-coded
   `SecondInstance`. Owner: §7.8.1 / §0.4.1 C1. **`RunEvent::Opened` is a `target_os`-gated variant (macOS/iOS/Android) in Tauri
   v2** (reachable only on macOS among the desktop triples; NOT cross-platform — Win/Linux intake is
@@ -744,7 +747,9 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   changed, no longer a spec relaxation. Owner: §6.6 / SSOT §9.
 - **`RunResult.divert_root: Option<PathBuf>`** added — `common_root` (beside-source) + a
   separate `divert_root` cover split outputs (one PathBuf can't carry both); §7.7.3
-  membership covers both. Owner: §0.6 / §1.12 / §7.7.3.
+  membership covers both — both fields themselves superseded 2026-07-06 by core-owned
+  paths (`common_root_display`/`divert_root_display`, real roots in `RunResultStore`).
+  Owner: §0.6 / §1.12 / §7.7.3.
 - **C4 vs C5 asymmetry enforced** — C4 is callable at any point in state 4 (eager initial
   call with the pre-highlighted default, then re-callable/debounced ~150 ms on any
   target/option change, §5.8) and computes `rerun` + the §1.10 `preflight` verdict; C5
@@ -883,15 +888,20 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   probe output (carried into `plan_encode`), NOT mutated on a prior struct. The §3.5.1
   "sets progress.duration_us" in-place-mutation sentence is removed. Owner: §3.2.1 / §1.7
   / §3.5.1.
-- **`lastDestinationMode` read/inject flow** — on startup the frontend reads
-  `lastDestinationMode` from `tauri-plugin-store`; it is the default destination arg on
-  C4's first Targets-entry call; a stored absolute path is a re-validated "preferred" hint
-  (§7.4.1), falling back to beside-source on failure. Owner: §5.8 / §5.5 / §7.4.
-- **OpenKind = three variants with full §7.7.1 mapping; Summary split-divert two buttons**
-  — `OpenKind { Folder, File, RevealInFolder }` each maps to a concrete OpenerExt call
-  (§7.7.1); when `RunResult.divert_root` is `Some`, §5.3 OpenActions renders TWO
-  open-folder buttons (beside-source `common_root` + the divert root), both via
-  `RevealInFolder`. Owner: §5.3 / §5.2 / §0.6 / §7.7.1.
+- **`lastDestinationMode` read/inject flow** (revised per the 2026-07-06
+  core-owned-paths ruling) — the persisted value is read CORE-side (`crate::prefs`);
+  the frontend passes only a mode INTENT on C4's first Targets-entry call and the core
+  resolves the stored absolute path into a `DestinationId`; a stored path is a
+  re-validated "preferred" hint (§7.4.1), falling back to beside-source on failure —
+  the WebView never touches the stored path. Owner: §5.8 / §5.5 / §7.4.
+- **C9 open target = a run-scoped ID form with full §7.7.1 mapping; Summary
+  split-divert two buttons** (revised per the 2026-07-06 core-owned-paths ruling:
+  the former `OpenKind { Folder, File, RevealInFolder }` path form is superseded) —
+  `OpenTarget { CommonRoot, DivertRoot, Item(ItemId), Residue(ItemId) }` resolves
+  core-side against `State<RunResultStore>` to a concrete OpenerExt call (§7.7.1);
+  when `RunResult.divert_root_display` is `Some`, §5.3 OpenActions renders TWO
+  open-folder buttons (beside-source common root + the divert root), both
+  reveal-in-folder targets. Owner: §5.3 / §5.2 / §0.6 / §7.7.1.
 - **UnsupportedNotice = full-screen state, not a modal** — removed from the
   `role=alertdialog` lists; `aria-live=assertive` heading on entry, focus → DropZone on
   dismiss, its own §5.10 Esc row. AboutDialog moved to `role=dialog` + `aria-modal=true`
@@ -946,8 +956,10 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **`RunEvent::Opened` is a `target_os`-gated variant (macOS/iOS/Android) in Tauri v2** (reachable
   only on macOS among ConvertIA's desktop triples; NOT cross-platform) — Win/Linux intake is
   argv/single-instance; the `.run()` registration is unconditional but the Opened match ARM
-  is cfg-gated to the variant (absent → compiled out off macOS). **First-launch drain = C1 with `paths:[]` + `drainPending:true`**
-  (consumes `State<PendingIntake>`; frontend never holds the buffered paths). Owner: §7.8.1 /
+  is cfg-gated to the variant (absent → compiled out off macOS). **First-launch drain = the C1
+  `drain_intake` completion door** (revised 2026-07-06: every C1 call drains — the former
+  `paths:[]` + `drainPending:true` shape is superseded; consumes `State<PendingIntake>`;
+  frontend never holds the buffered paths). Owner: §7.8.1 /
   §0.4.1 C1 / §7.3.2.
 - **`RotationStrategy::KeepOne` footprint re-verified at source = ~1× `max_file_size`** —
   the `KeepOne` arm is `fs::remove_file` (deletes, no `.bak`); the lens's ~2x rename-to-backup

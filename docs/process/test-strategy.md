@@ -473,8 +473,9 @@ vacant range — the same rule §9 states for the vacated G34.)
 
 **What automation cannot synthesise (kept honest):** the OS-level **native
 file-drop** (§5.4) is **not** automatable by WebDriver, so the automated E2E uses
-the **file-picker path** (C2a `pick_for_intake`, which funnels into the *same* C1
-`ingest_paths` as a drop); the native drop is validated in the **§6.6 human
+the **file-picker path** (C2a `pick_for_intake`, which fills the *same* §7.8.1
+funnel → `PendingIntake` → C1 `drain_intake` completion door as a drop); the
+native drop is validated in the **§6.6 human
 walkthrough**. **macOS TCC** prompts cannot be answered headlessly, so the smoke
 leg writes only to a `TMPDIR` (no prompt fires); the TCC exercise is **§6.6**. Plain
 **Playwright cannot drive a Tauri WebView** (it is not a CDP target) and is not the

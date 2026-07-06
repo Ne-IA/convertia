@@ -216,9 +216,10 @@ ripples to §01, §05, §0.4.5 codegen, and §06's drift check.
 - **Error shape** = every command returns `Result<T, IpcError>` where `IpcError`
   is a `serde`-serialised enum (§0.4 error shape below). No command ever panics
   across the boundary: the **convert** loop is caught at the per-item worker boundary
-  (§2.13.2) and the **intake/detection** path (C1 `ingest_paths` / C2a
-  `pick_for_intake` — the §1.1 walk + §1.2 detection, the first code to touch untrusted
-  bytes) is caught at its own per-path + whole-walk `catch_unwind` boundary (§2.13.2
+  (§2.13.2) and the **intake/detection** path (C1 `drain_intake` — the §1.1 walk +
+  §1.2 detection over the drained §7.8.1 buffer, the first code to touch untrusted
+  bytes; every intake source funnels into it) is caught at its own per-path +
+  whole-walk `catch_unwind` boundary (§2.13.2
   "Intake/detection panic boundary"); both surface as a calm `IpcError`/failure outcome,
   never a blank window.
 - **Cancellation** = a process-wide cancellation primitive keyed by `RunId`
@@ -228,12 +229,13 @@ ripples to §01, §05, §0.4.5 codegen, and §06's drift check.
 
 **Boundary fact — native file-drop `[DECIDED]`.** In a Tauri WebView, HTML5
 drag-and-drop does **not** expose real filesystem paths. Intake therefore uses
-**Tauri's native file-drop event** (the window `onDragDropEvent` / `DragDrop`
-payload carries real `PathBuf`s) and the native **dialog** picker; **folder
-recursion runs in Rust** (§1.1), because the WebView cannot enumerate a directory.
-This constrains §1.1 (intake) and §5.4 (DnD UI). The frontend's DnD handler exists
-only to drive hover/visual affordance; the *paths* arrive over the native event,
-not the DOM drop.
+**Tauri's native file-drop event, handled Rust-side** (the `WindowEvent::DragDrop`
+payload carries real `PathBuf`s straight into the §7.8.1 `PendingIntake` funnel —
+never into the WebView `[DECIDED 2026-07-06]`) and the native **dialog** picker;
+**folder recursion runs in Rust** (§1.1), because the WebView cannot enumerate a
+directory. This constrains §1.1 (intake) and §5.4 (DnD UI). The frontend's DnD
+handler exists only to drive hover/visual affordance; the *paths* arrive over the
+native Rust-side event and stay core-side — the DOM drop carries nothing.
 
 ### 0.4.1 Command enumeration (authoritative)
 
@@ -245,47 +247,51 @@ signatures; the TS side is generated (§0.4.5 codegen).
 type.** Per the §0.4 universal error-shape rule, **every command's handler returns
 `Result<T, IpcError>`**; the table omits the uniform `Result<…, IpcError>` wrapper from
 each row for brevity and lists only the `Ok` payload `T` (e.g. C1's `CollectedSet`
-column is the handler's `Result<CollectedSet, IpcError>`; C2b's `Option<PathBuf>` column
-its `Result<Option<PathBuf>, IpcError>` — `Ok(None)` = the cancelled pick; a
+column is the handler's `Result<CollectedSet, IpcError>`; C2b's `Option<DestinationPicked>`
+column its `Result<Option<DestinationPicked>, IpcError>` — `Ok(None)` = the cancelled pick; a
 status-only command such as C7 is `Result<(), IpcError>`). The `Err` arm is always the
 §0.4.3 `IpcError` and is what tauri-specta renders as a thrown rejection on the TS side
 (the generated binding's type parameter is `T`, never the `Result`).
 
 | # | Command | Request | Response | Notes |
 |---|---------|---------|----------|-------|
-| C1 | `ingest_paths` | `{ paths: Vec<PathBuf>, origin: IntakeOrigin, collectingId: CollectingId, drainPending?: bool, onScan: Channel<ScanProgress> }` | `CollectedSet` | Builds the **frozen source set** (§2.4): recurse folders (Rust), ignore hidden/system files, de-dup by resolved identity (§2.3), run detection (§1.2), group by user-facing format (§1.3). Returns the collected-summary (detected format + count) **or** a `MixedDrop` / `Unsupported` / `Uncertain` outcome. `origin` distinguishes drop / picker / launch-arg (§7.8). The frontend generates `collectingId` and passes it in so C13 can cancel this in-flight walk **before** C1's long await resolves (see note). **`drainPending` (first-launch drain) `[DECIDED]`:** the frontend cannot hold the buffered launch paths (they live in the Rust-side `State<PendingIntake>`, §7.8.1), so the first-launch drain is a C1 call with **`paths: []` + `drainPending: true`**: the handler, seeing the flag, **consumes `PendingIntake`** (using its stored `origin`, typically `LaunchArg`) and freezes THAT set, returning its `CollectedSet`; if `PendingIntake` is empty it returns `CollectedSet::Empty`. A normal intake call omits `drainPending` (or `false`) and uses its `paths`. The two are mutually exclusive (a `drainPending: true` call ignores any `paths`). | **`onScan` Channel — NON-OPTIONAL `[DECIDED, forced]`:** carries a **throttled live scan count** (`ScanProgress { scanned: u32 }`, ~2/s, §0.6) so the §5.2 *Collecting* state can show "Scanning… N files so far" during a long recursive walk; it is a **run-telemetry-style Channel**, NOT one of the three `app://` events (the §0.4.2 "no other IPC events" invariant covers `app.emit` events, not Channels handed to a command). **The argument is non-optional** (`Channel<ScanProgress>`, not `Option<…>`): tauri's `Channel<T>` is `!Deserialize`, so `Option<Channel<T>>` cannot be a command argument (it routes through the `CommandArg for D: Deserialize` blanket impl → a compile error). **No behaviour is lost** — the frontend **always** hands a channel and realises the "optional" intent by **subscribing only for a long walk**, never by omitting the argument (the rejected alternative, a custom `OptionalChannel<T>` wrapper, replicates undocumented tauri channel internals and is version-fragile). C2a takes the same non-optional `onScan`. |
-| C2a | `pick_for_intake` | `{ kind: PickKind /* files \| folder */, collectingId: CollectingId, onScan: Channel<ScanProgress> }` | `CollectedSet` | The **intake picker `[DECIDED]`.** Opens the native files/folder dialog **Rust-side via `DialogExt`** from this command's handler (so there is no `dialog:allow-open` WebView grant — §0.10). The picked paths are funnelled **straight into the C1 `ingest_paths` freeze Rust-side** and this command returns the **same `CollectedSet`** C1 returns — so **no raw FS path ever reaches the WebView** (the WebView only triggers the picker and receives the collected summary, never paths to re-submit). A **cancelled dialog is a clean no-op** that returns `CollectedSet::Empty` with no error and leaves the UI in Idle (§5.4). Takes the same `collectingId` + the (non-optional, §0.4.1 C1 note) `onScan` as C1 so C13 can cancel the in-flight walk. |
-| C2b | `pick_destination` | `{}` | `Option<PathBuf>` | The **destination-folder picker `[DECIDED]`.** Opens the native folder dialog **Rust-side via `DialogExt`** (still no `dialog:allow-open` grant) and **returns the chosen folder `PathBuf` to the WebView**, which carries it into **C5 `set_destination`** (and then C6). **This one path DOES transit the WebView** — unavoidable, because the destination is a WebView-held choice (§5.10 "Change destination") — and is **acceptable**: it is a *write* destination, not a source path, bounded by the §2.1 non-destructive creates (a chosen destination can never harm an original or read anything; §0.11 T2). `None` = the user cancelled (no-op; the held C4/C5 destination is unchanged). The "picked paths never transit the WebView" claim is scoped to the **intake** picker (C2a) only. |
+| C1 | `drain_intake` | `{ collectingId: CollectingId, onScan: Channel<ScanProgress> }` | `CollectedSet` | **The universal intake-completion door `[DECIDED 2026-07-06]`:** consumes the core-side §7.8.1 `State<PendingIntake>` buffer — the SINGLE hand-off buffer **every** intake source fills (the Rust `WindowEvent::DragDrop` native drop, the C2a picker, launch-arg / second-instance / Open-with — §7.8) — and runs the §1.1 walk + the §2.4 **frozen-source-set** build on the buffered paths entirely core-side: recurse folders (Rust), ignore hidden/system files, de-dup by resolved identity (§2.3), run detection (§1.2), group by user-facing format (§1.3). Returns the collected-summary (detected format + count) **or** a `MixedDrop` / `Unsupported` / `Uncertain` outcome. **Every call drains:** an empty buffer (a raced/duplicate drain) returns `CollectedSet::Empty` — there is no `paths` argument to fall back to, and **no FS path crosses this wire in either direction** (§2.10.1). The intake `origin` travels **inside the buffer** (core-side `IntakeOrigin`), never on the wire. The frontend generates `collectingId` and passes it in so C13 can cancel this in-flight walk **before** C1's long await resolves (see note). **Rename note:** the `ingest_paths` → `drain_intake` fn-name + signature change ships in the scheduled wire-revision plan box together with the code, the command golden file and the regenerated `bindings.ts` in one commit; this table documents the target contract. (SUPERSEDED `[DECIDED 2026-07-06 owner ruling]`: the former `ingest_paths { paths, origin, collectingId, drainPending?, onScan }` shape — WebView-supplied `Vec<PathBuf>` + the first-launch `drainPending` flag — is retired: ALL intake is core-originated through `PendingIntake`, so the drain is the only mode and `drainPending` is subsumed by "every call drains".) | **`onScan` Channel — NON-OPTIONAL `[DECIDED, forced]`:** carries a **throttled live scan count** (`ScanProgress { scanned: u32 }`, ~2/s, §0.6) so the §5.2 *Collecting* state can show "Scanning… N files so far" during a long recursive walk; it is a **run-telemetry-style Channel**, NOT one of the three `app://` events (the §0.4.2 "no other IPC events" invariant covers `app.emit` events, not Channels handed to a command). **The argument is non-optional** (`Channel<ScanProgress>`, not `Option<…>`): tauri's `Channel<T>` is `!Deserialize`, so `Option<Channel<T>>` cannot be a command argument (it routes through the `CommandArg for D: Deserialize` blanket impl → a compile error). **No behaviour is lost** — the frontend **always** hands a channel and realises the "optional" intent by **subscribing only for a long walk**, never by omitting the argument (the rejected alternative, a custom `OptionalChannel<T>` wrapper, replicates undocumented tauri channel internals and is version-fragile). (SUPERSEDED `[DECIDED 2026-07-06 owner ruling]`: "C2a takes the same non-optional `onScan`" — C2a no longer walks, so C1 is the only `onScan` carrier.) |
+| C2a | `pick_for_intake` | `{ kind: PickKind /* files \| folder */ }` | `()` | The **intake picker `[DECIDED]`.** Opens the native files/folder dialog **Rust-side via `DialogExt`** from this command's handler (so there is no `dialog:allow-open` WebView grant — §0.10). The picked paths are routed **core-side through the §7.8.1 funnel exactly like every other intake source** (uniform §7.1.1 refuse-busy → `State<PendingIntake>` with `origin: Picker` → the payload-less `app://intake` nudge, §0.4.2), and the WebView completes the intake with **C1 `drain_intake`** — so **no raw FS path ever reaches the WebView**. A **cancelled dialog is a clean no-op**: nothing is buffered, no nudge is emitted, the command returns `()` and the UI stays Idle (§5.4). (SUPERSEDED `[DECIDED 2026-07-06 owner ruling]`: the former shape took `collectingId` + `onScan` and ran the walk/freeze inside this handler, returning the `CollectedSet` directly, with the `CancellationToken` registered before the dialog opened; the walk, the freeze, `collectingId`, `onScan` and the `CollectedSet` return all live on C1 `drain_intake` — during the modal there is no walk, so a C13-during-modal has nothing to cancel.) |
+| C2b | `pick_destination` | `{}` | `Option<DestinationPicked>` | The **destination-folder picker `[DECIDED]`.** Opens the native folder dialog **Rust-side via `DialogExt`** (still no `dialog:allow-open` grant). **The picked folder's `PathBuf` stays core-side `[DECIDED 2026-07-06]`:** the handler mints a `DestinationId`, stores the pair in the **session-scoped picked-roots registry** (§0.4.4), and returns `DestinationPicked { destination: DestinationId, display: String }` — the id the WebView carries into C4/C5/C6 as `DestinationChoice::ChosenRoot(id)` (§5.10 "Change destination") + a lossy **display-only** string for the "will save to …" line (§2.10.1). `None` = the user cancelled (no-op; the held C4/C5 destination is unchanged). (SUPERSEDED `[DECIDED 2026-07-06 owner ruling]`: "This one path DOES transit the WebView — unavoidable, acceptable" is reversed — **no** FS path transits the WebView in either direction; the destination is a core-held picked root the WebView references by id, and the old caveat scoping the "picked paths never transit the WebView" claim to the intake picker only is retired with it — the claim is universal.) |
 | C3 | `get_targets` | `{ collectedSetId: CollectedSetId }` | `TargetOffer` | From the detected source type → the offered `Vec<Target>` + the **one pre-highlighted default** + per-target lossy flags + per-target availability (from §3.4) + the declared options model (§1.6). Pure function of detection; no engine spawned. |
 | C4 | `plan_output` | `{ collectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice }` | `OutputPlanPreview` | Computes the `OutputPlan` (§1.8): resolved destination, beside-source vs chosen-root subtree re-creation, per-location divert preview, **re-run/equivalent-output detection (§2.5)** → may return a `RerunPrompt`. Also returns the §1.10 pre-flight verdict (size/space estimate, any up-front "too big" fail). Drives the "will save to …" line (SSOT *output lands somewhere obvious*) **before** convert. |
 | C5 | `set_destination` | `{ collectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice }` | `DestinationResolved` | User changes the destination before convert; revalidates writability/divert **and re-evaluates the destination-dependent preflight** — the §2.14.4 free-space check on the new volume — returning a refreshed `PreflightVerdict` so the UI's held C4 verdict never goes stale (§1.8 destination-change re-validation). The §2.5 re-run verdict is **destination-INDEPENDENT in v1** (EquivKey has no destination component, §2.5.1) and is **carried through unchanged** from C4 — C5 does **not** recompute `rerun`. |
-| C6 | `start_conversion` | `{ collectedSetId, target, options, destination, rerunDecision: RerunDecision, onProgress: Channel<ConversionEvent> }` | `RunId` | Creates a `RunId`, enqueues the batch (§1.9), spawns workers (§0.9), and **streams `ConversionEvent`s over the Channel** (E-series below). Returns immediately with the `RunId` (the run proceeds async; the Channel carries all telemetry). **C6's `destination` argument is AUTHORITATIVE `[DECIDED]`:** C4/C5 are plan/preview + revalidation only — there is **no separate server-side destination store**; the value the UI passes to C6 is what the run uses (the UI carries the last C5-resolved destination into C6). |
+| C6 | `start_conversion` | `{ collectedSetId, target, options, destination, rerunDecision: RerunDecision, onProgress: Channel<ConversionEvent> }` | `RunId` | Creates a `RunId`, enqueues the batch (§1.9), spawns workers (§0.9), and **streams `ConversionEvent`s over the Channel** (E-series below). Returns immediately with the `RunId` (the run proceeds async; the Channel carries all telemetry). **C6's `destination` argument is AUTHORITATIVE as the CHOICE `[DECIDED]`:** C4/C5 are plan/preview + revalidation only; the value the UI passes to C6 is what the run uses (the UI carries the last C5-resolved destination into C6) — the `DestinationChoice` names beside-source or **which** picked root (`ChosenRoot(DestinationId)`), and the core resolves that id to its real `PathBuf` against the §0.4.4 picked-roots registry at plan/run time. (SUPERSEDED `[DECIDED 2026-07-06 owner ruling]`: the "no separate server-side destination store" clause — the core now keeps the minimal session-scoped picked-roots registry (§0.4.4). The CHOICE still travels client-side and C6's argument remains authoritative; the PATH never travels.) |
 | C7 | `cancel_run` | `{ runId: RunId }` | `()` | Trips the §0.4 cancellation token for that run. The actual in-flight engine kill is §1.7's mechanism. Already-finished items are kept (SSOT *cancellable*); the in-progress item is discarded cleanly (§2.1/§2.6). |
 | C8 | `get_run_summary` | `{ runId: RunId }` | `RunResult` | The end-of-batch summary (§1.12): per-item success/fail/skip + reasons + output→source map + residue warnings (§2.6). Also delivered as the terminal `ConversionEvent::RunFinished`; this command is the idempotent re-fetch (e.g. after a WebView reload). |
-| C9 | `open_path` | `{ kind: OpenKind /* folder | file | revealInFolder */, path: PathBuf }` | `()` | The DoD "one-click open-folder/open-file" action. The Rust handler **validates `path` against the current `RunResult`'s recorded outputs (or their common root)** (§7.7.3 — the real, sufficient gate; works for arbitrary beside-source destinations) and then calls the opener plugin's `OpenerExt` (reveal/open) **internally**. **How** it shells out per OS is owned by §7.7; **which** path is allowed is the §7.7.3 RunResult check; there is **no `opener:*` WebView capability** (§0.10). |
+| C9 | `open_path` | `{ target: OpenTarget }` | `()` | The DoD "one-click open-folder/open-file" action — **ID-keyed `[DECIDED 2026-07-06]`:** the WebView names an `OpenTarget` (`CommonRoot \| DivertRoot \| Item(ItemId) \| Residue(ItemId)`, §0.6), **never a filesystem path**. The Rust handler **resolves the target against the core-side `State<RunResultStore>`** (§0.4.4) — membership IS successful resolution; an absent/unresolvable target is the §7.7.3 refusal — and then calls the opener plugin's `OpenerExt` (reveal/open) **internally**. **How** it shells out per OS (and the per-variant open-vs-reveal mechanics) is owned by §7.7; **which** location is allowed is the §7.7.3 ID-resolution check; there is **no `opener:*` WebView capability** (§0.10). (SUPERSEDED `[DECIDED 2026-07-06 owner ruling]`: the former `{ kind: OpenKind, path: PathBuf }` shape — a WebView-supplied path validated for RunResult membership — is retired; the WebView can no longer NAME a path at all, so the validate-a-given-path gate becomes resolve-an-id.) |
 | C10 | `open_project_page` | `{}` | `()` | The **only** permitted network action — user-initiated open of the canonical GitHub project/releases URL in the default browser (SSOT *Local/private/offline* "only network activity is user-initiated"). The Rust handler opens a **fixed URL constant** via `OpenerExt::open_url` internally; the WebView supplies no URL, so this single origin is the only reachable one (§7.6). No `opener:*` WebView grant (§0.10). |
 | C11 | `get_app_info` | `{}` | `AppInfo` | Version, build id, and the **third-party-licenses / NOTICE** data for the About screen (data generated by §3.7; displayed by §5.9). No network. |
 | C12 | `get_engine_health` | `{}` | `EngineHealth` | Startup self-check result: which bundled engines are present/runnable, which §3.4 patent-gated targets are available on this platform. Feeds §5.2 (disable/omit unavailable targets) and §7.2 (startup faults). Cached from the §7.2 startup probe; cheap to call. |
-| C13 | `cancel_ingest` | `{ collectingId: CollectingId }` | `()` | Cancels an **in-flight** `ingest_paths` (C1) — the recursive walk/detection of a thousands-file folder (§1.10) can run long enough that the §5.2 *Collecting* state's cancel-collect control must have a backing command. Trips an **ingest-scoped `CancellationToken`** keyed by the pre-`RunId` `CollectingId` (§0.6) that the **frontend generated and passed to C1** (see note) — so C13 can name the in-flight walk even though C1's own response hasn't returned yet. The §1.1 walkdir/detection loop polls it and stops cooperatively, discarding the partial (un-frozen) set — **no cleanup obligation** (no temp is written during ingest). Keyboard: §5.10. |
+| C13 | `cancel_ingest` | `{ collectingId: CollectingId }` | `()` | Cancels an **in-flight** `drain_intake` (C1) — the recursive walk/detection of a thousands-file folder (§1.10) can run long enough that the §5.2 *Collecting* state's cancel-collect control must have a backing command. Trips an **ingest-scoped `CancellationToken`** keyed by the pre-`RunId` `CollectingId` (§0.6) that the **frontend generated and passed to C1** (see note) — so C13 can name the in-flight walk even though C1's own response hasn't returned yet. The §1.1 walkdir/detection loop polls it and stops cooperatively, discarding the partial (un-frozen) set — **no cleanup obligation** (no temp is written during ingest). Keyboard: §5.10. |
 
 **Notes binding to other owners:**
 
-- `ingest_paths` is the single freeze point (§2.4) for **all** intake origins
-  (drop, picker, launch args / second-instance hand-off — §7.1/§7.8).
+- `drain_intake` is the single freeze point (§2.4) for **all** intake origins
+  (drop, picker, launch args / second-instance hand-off — §7.1/§7.8): every source
+  funnels core-side into the §7.8.1 `PendingIntake` buffer, and only the C1 drain
+  runs the §1.1 walk — no source-specific freeze path exists `[DECIDED 2026-07-06]`.
 - **Ingest cancellation handle `[DECIDED]`.** So C13 `cancel_ingest` can target an
-  in-flight ingest (a drop's **C1** *or* the intake picker's **C2a**, which funnels
-  through the same C1 freeze), the **frontend generates the `CollectingId` and passes it
-  as a C1/C2a argument** (the single-funnel option). The Rust core registers the
-  ingest-scoped `CancellationToken` under that id at handler entry (for **C2a**, *before*
-  the native dialog opens — §1.1, so a C13 during the modal is honoured; for **C1**, at the
-  start of the walk), trips it on C13, and **drops it on EVERY handler exit branch** — the
-  normal walk-completes return, the C13-tripped return, **and** the C2a cancelled-dialog →
-  `CollectedSet::Empty` return (the walk loop that normally drops it never runs there, so
-  the handler drops it explicitly — no token leak). This mirrors the §0.4.4 `RunId` token
-  lifecycle, one phase earlier.
+  in-flight ingest walk, the **frontend generates the `CollectingId` and passes it
+  as the C1 `drain_intake` argument** (the single-funnel option). The Rust core
+  registers the ingest-scoped `CancellationToken` under that id at handler entry (the
+  start of the walk), trips it on C13, and **drops it on EVERY handler exit branch** —
+  the normal walk-completes return, the C13-tripped return, **and** the empty-buffer
+  `CollectedSet::Empty` return (the walk loop that normally drops it never runs there,
+  so the handler drops it explicitly — no token leak). This mirrors the §0.4.4 `RunId`
+  token lifecycle, one phase earlier. (SUPERSEDED `[DECIDED 2026-07-06 owner ruling]`:
+  the former C2a leg — registering the token *before* the native dialog opened so a
+  C13 during the modal was honoured — is retired with C2a's walk: the dialog wait has
+  no walk to cancel; only the C1 drain does.)
   This keeps a single freeze point **and** keeps the §0.4.2 "no other IPC events"
   invariant true — there is **no** `collecting-started` event (an earlier draft
-  proposed emitting one; rejected so the event enumeration stays closed).
+  proposed emitting one; rejected so the event enumeration stays closed; the
+  payload-less `app://intake` nudge is one of the same three events, not a fourth).
 - `get_targets`/`plan_output`/`start_conversion` together realise the SSOT flow
   *drop → pick target → (see destination) → convert*; the **pipeline that runs
   inside `start_conversion` is owned entirely by §01** — this contract only fixes
@@ -333,9 +339,9 @@ C6). A `#[serde(tag = "type", content = "data")]` enum, ordered delivery:
 | Variant | Payload | Meaning |
 |---|---|---|
 | `RunStarted` | `{ runId, totalItems, willReencode: bool }` | Batch accepted; queue built. **`totalItems` = QUEUED (eligible) items only** (= `CollectedSet::Single.count`, i.e. `CollectedSet::Single.items.len()` — `members` is the INTERNAL §1.3 `Grouping::Single` field, never on the §0.6 wire), **excluding pre-flight-skipped items** (§1.1/§1.3 — they never enter the queue); it is the `BatchProgress.total` denominator, so a skipped item never holds the bar below 100% (skips reconciled only at the §1.12 Summary) `[DECIDED]`. `willReencode` is a **conservative source-container → target-pair worst-case** flag (**re-encode *possible* ⇒ `true`**), **NOT a header/inner-codec inspection** — `RunStarted` is emitted right after C6, **before any `ffprobe`** (§1.7/§1.10 defer `ffprobe` to convert-time), so the inner codecs of MKV/MOV are **unknown** at emission and the flag is decided purely from the (source-container, target) pair (§2.9.2): `true` ⇒ at least one item *may* re-encode → video shows the worst-case lossy note ("may be re-encoded"). A pair whose only possible path is remux-verbatim is `false`; any pair that *could* re-encode is `true`. **Emission rule `[DECIDED]`:** for non-video / non-applicable batches the core emits **`willReencode: false`** (never omitted) so the field always carries a definite value. **The Rust struct field is non-optional `bool` (line below), so the GENERATED `bindings.ts` type is non-optional `willReencode: boolean`** — there is no third `undefined` state. (Hand-written docs/comments elsewhere sometimes show `willReencode?` purely as a decode-tolerance convenience — consumers still treat any absent/`undefined` as `false`, §5.8 — but the generated binding is non-optional.) The exact per-item disposition is resolved at convert-time (§3.5); the summary (§1.12) reflects the actual outcome. |
-| `ItemStarted` | `{ runId, itemId, sourcePath, target }` | An item left `Pending` for `Running` (§1.9). |
+| `ItemStarted` | `{ runId, itemId, sourceDisplay, target }` | An item left `Pending` for `Running` (§1.9). `sourceDisplay` is the core-produced lossy display of the item's source (last-step `to_string_lossy`, §2.10.1) — display-only, never a re-submittable path `[DECIDED 2026-07-06]`. |
 | `ItemProgress` | `{ runId, itemId, fraction: Option<f32> /* 0.0..1.0; None only where truly indeterminate (LibreOffice, §1.11) */, stage: JobStage }` | **Real per-item progress** (SSOT *not an indeterminate spinner*). Denominator is engine-specific (e.g. video = source duration from `ffprobe`, §3.5/video.md). `stage` is the §0.6/§1.11 `JobStage` (`Spawning \| Decoding \| Encoding \| Writing`); for the `None`-fraction LibreOffice case the frontend synthesises a staged determinate-looking bar from `stage` transitions (§1.11/§5.3). |
-| `ItemFinished` | `{ runId, itemId, outcome: ItemOutcome }` | Terminal per item: `Succeeded { outputPath } \| Failed { error: IpcError } \| Skipped { reason } \| Cancelled`. **Pre-flight-skip emission policy `[DECIDED]`:** pre-flight-skipped items (§1.1/§1.3 — never entered the queue, §1.9) are **NOT** emitted as live `ItemFinished{Skipped}` Channel events; they appear **only** in the terminal `RunFinished → RunResult.items` projection (§1.12). The `ItemOutcome::Skipped` variant is **reserved for that terminal-projection path** (it is not dead wire code — it carries the projected pre-flight skips and any mid-run cooperative skip), so the orchestrator emits **no live `ItemStarted`/`ItemFinished{Skipped}`** for a freeze-time skip; the ProgressList shows skipped rows only once the run reaches `Summary`. (Chosen over a post-`RunStarted` batch flush: pre-flight skips have no queue presence and no per-item work, so surfacing them once, terminally, is simpler and matches §1.9's "never enter the queue".) |
+| `ItemFinished` | `{ runId, itemId, outcome: ItemOutcome }` | Terminal per item: `Succeeded { outputDisplay } \| Failed { error: IpcError } \| Skipped { reason } \| Cancelled`. **Pre-flight-skip emission policy `[DECIDED]`:** pre-flight-skipped items (§1.1/§1.3 — never entered the queue, §1.9) are **NOT** emitted as live `ItemFinished{Skipped}` Channel events; they appear **only** in the terminal `RunFinished → RunResult.items` projection (§1.12). The `ItemOutcome::Skipped` variant is **reserved for that terminal-projection path** (it is not dead wire code — it carries the projected pre-flight skips and any mid-run cooperative skip), so the orchestrator emits **no live `ItemStarted`/`ItemFinished{Skipped}`** for a freeze-time skip; the ProgressList shows skipped rows only once the run reaches `Summary`. (Chosen over a post-`RunStarted` batch flush: pre-flight skips have no queue presence and no per-item work, so surfacing them once, terminally, is simpler and matches §1.9's "never enter the queue".) |
 | `BatchProgress` | `{ runId, done, total }` | Aggregate queue progress for the batch bar (§1.11). **Denominator = QUEUED (eligible) items only `[DECIDED]`:** `total` counts only items that entered the queue (= `CollectedSet::Single.count`, i.e. `CollectedSet::Single.items.len()` — NOT the internal §1.3 `members`), **excluding** pre-flight-skipped items (§1.1/§1.3 — they never enter the queue, emit no live `ItemStarted`/`ItemFinished`, and §1.11's numerator excludes them). If `total` counted dropped-but-skipped items the bar could never reach 100%. Skips are reconciled **only** at the §1.12 Summary ("N converted, M skipped"). `total == RunStarted.totalItems`. |
 | `RunFinished` | `RunResult` | Terminal for the run; mirrors C8. Carries the full summary incl. residue warnings (§2.6). |
 
@@ -362,7 +368,9 @@ pub struct RunStarted   { pub run_id: RunId, pub total_items: u32, pub will_reen
 // which never enter the queue). This is the BatchProgress.total denominator; skips reconciled
 // only at the §1.12 Summary. [DECIDED]
 #[derive(Clone, Serialize, specta::Type)] #[serde(rename_all = "camelCase")]
-pub struct ItemStarted  { pub run_id: RunId, pub item_id: ItemId, pub source_path: PathBuf, pub target: TargetId }
+pub struct ItemStarted  { pub run_id: RunId, pub item_id: ItemId, pub source_display: String, pub target: TargetId }
+// source_display = the core-produced lossy DISPLAY string (last-step to_string_lossy, §2.10.1) —
+// no PathBuf crosses the wire in either direction [DECIDED 2026-07-06]
 #[derive(Clone, Serialize, specta::Type)] #[serde(rename_all = "camelCase")]
 pub struct ItemProgress { pub run_id: RunId, pub item_id: ItemId, pub fraction: Option<f32>, pub stage: JobStage }
 #[derive(Clone, Serialize, specta::Type)] #[serde(rename_all = "camelCase")]
@@ -378,7 +386,7 @@ pub struct BatchProgress{ pub run_id: RunId, pub done: u32, pub total: u32 }
 > Channel dies with the run — no cross-run leakage, no global listener cleanup
 > bug). This is the Tauri v2 recommended pattern for streamed Rust→frontend data.
 
-**Intake scan telemetry — `Channel<ScanProgress>`** (handed to `ingest_paths`,
+**Intake scan telemetry — `Channel<ScanProgress>`** (handed to `drain_intake`,
 C1; **non-optional** — see the §0.4.1 C1 `onScan` forced-deviation note: tauri's `Channel<T>`
 is `!Deserialize`, so `Option<Channel>` cannot be a command arg). Same Channel pattern as run
 telemetry (NOT an `app://` event):
@@ -392,7 +400,7 @@ telemetry (NOT an `app://` event):
 | Event | Payload | Meaning |
 |---|---|---|
 | `app://fault` | `AppFault` | An **app-level** fault (§2.13): WebView core disconnect, a startup engine-missing escalation, damaged bundle. The UI shows a plain, no-stack-trace message (§5.8 backend-disconnect handling). |
-| `app://intake` | `{ paths, origin }` | The OS handed the running (single) instance new paths via a **second-instance launch / Open-with** (§7.1/§7.8), **and the app was IDLE**. **IDLE-path only `[DECIDED]`:** the refuse-busy check is **core-side** in `forward_launch_intake` (§7.8.1) **before** the freeze — while a run is in flight the core **refuses-busy and DROPS the paths core-side**, so it does **NOT** emit `app://intake` with ingestable paths mid-run (the only mid-run UI surface is `BusyNotice`, §5.3, driven by window re-focus, not this event). On the idle path the core emits `app://intake` and the frontend reacts by calling C1 `ingest_paths`. `origin` is only ever `LaunchArg` / `SecondInstance` here (drop & picker go via C1/C2a directly, never through this event — so a frontend `app://intake` handler needs no `Drop`/`Picker` branch). Cross-ref §1.1. |
+| `app://intake` | `()` | **The payload-less intake nudge `[DECIDED 2026-07-06]`:** a path set is pending in the core-side §7.8.1 `PendingIntake` buffer — the SINGLE hand-off buffer **every** intake source fills (the Rust `WindowEvent::DragDrop` native drop, the C2a picker, second-instance launch / Open-with / launch-arg — §7.1/§7.8) — and the frontend reacts by calling C1 `drain_intake` (the §1.1 walk + §2.4 freeze run there). The event carries **no paths and no origin**: `origin` travels inside the buffer, core-side, never on the wire. **IDLE-path only `[DECIDED]`:** the refuse-busy check stays **core-side** in the §7.8.1 funnel (uniform §7.1.1) **before** buffering — while a run is in flight the core **refuses-busy and DROPS the paths core-side**, so no nudge fires mid-run (the only mid-run UI surface is `BusyNotice`, §5.3, driven by window re-focus, not this event). (SUPERSEDED `[DECIDED 2026-07-06 owner ruling]`: the former `{ paths, origin }` payload — the `IntakePayload` echo the WebView re-submitted to C1, the §0.11 T2b trust-boundary crossing — is retired, as is the "drop & picker never route through this event" carve-out: every source now nudges, and the handler needs no origin branch at all because the event is payload-less.) Cross-ref §1.1. |
 | `app://close-requested` | `()` | The OS window-close was intercepted **while a run is in flight** (§7.3.2): the core called `prevent_close` and asks the frontend to show the quit-while-converting confirm (§5.2/§7.3.3). The emit/intercept mechanism is owned by §7.3; the event name is fixed here. |
 
 Apart from these three (`app://fault`, `app://intake`, `app://close-requested`),
@@ -412,11 +420,14 @@ pub struct IpcError {
     /// Pre-localised plain-language English message (the §2.8 catalog string).
     /// NEVER a stack trace, never raw engine stderr (SSOT *no stack traces*).
     pub message: String,
-    /// Optional path the error concerns (for the summary's output→source map).
-    pub path: Option<PathBuf>,
-    /// Optional residue location when cleanup could not complete (§2.6) — so the
-    /// item is never reported as a clean success.
-    pub residue: Option<PathBuf>,
+    /// Optional DISPLAY form of the path the error concerns (for the summary's
+    /// output→source map) — a core-produced lossy display string (last-step
+    /// to_string_lossy, §2.10.1), never a re-submittable path [DECIDED 2026-07-06].
+    pub path_display: Option<String>,
+    /// Optional DISPLAY form of the residue location when cleanup could not
+    /// complete (§2.6) — so the item is never reported as a clean success; the
+    /// real residue PathBuf stays core-side (RunResultStore, §0.4.4).
+    pub residue_display: Option<String>,
 }
 
 #[derive(Serialize, specta::Type)]   // generated into bindings.ts; in collect_types![] (§2.8)
@@ -485,9 +496,14 @@ pub enum ErrorKind {
 registry retains the terminal **`RunResult` in memory** (process-local, no on-disk
 persistence — consistent with §7.4) **until a new run starts or the app exits**, so
 **C8 `get_run_summary` can idempotently re-serve** the summary after a WebView
-reload (the exact case C8 names). "The cancellation token is dropped on
-`RunFinished`" (above) drops only the *token*, **not** the `RunResult` — the result
-outlives the token for re-fetch.
+reload (the exact case C8 names). **The retained record is the core-side
+`RunResultStore` entry `[DECIDED 2026-07-06]`:** the wire `RunResult` (IDs + display
+strings, §0.6) **plus its off-wire path table** — the per-item real output
+`PathBuf`s, the real common/divert roots and any residue paths — which C9
+`open_path` resolves its `OpenTarget` against (§7.7.3): the wire carries only
+display strings, so the openable REAL paths live here and nowhere else. "The
+cancellation token is dropped on `RunFinished`" (above) drops only the *token*,
+**not** the `RunResult` — the result outlives the token for re-fetch.
 
 > **Reload-during-run is NOT a supported recovery path on macOS in v1 `[DECIDED]`.**
 > There is a **known still-open macOS Tauri crash when the WebView reloads while an async
@@ -504,19 +520,34 @@ outlives the token for re-fetch.
 **Collected-set registry (so C3/C4/C5/C6 can resolve a `CollectedSetId`) `[DECIDED]`.**
 C3 `get_targets`, C4 `plan_output`, C5 `set_destination` and C6 `start_conversion`
 each take only a `collectedSetId` and must resolve it to the **frozen `CollectedSet`**
-(detected format, frozen `items`, dropped `roots`, `skipped`) — C3 reads the stored
+(detected format, frozen `items`, the real dropped roots, `skipped`) — C3 reads the stored
 source format, C4/C5 plan against the stored roots, C6 rebuilds the `Batch` from the
 stored frozen items (§2.7 needs the roots for subtree re-creation). The core therefore
 holds a **collected-set registry**: a `State<'_, T>` map **`CollectedSetId →
-FrozenCollectedSet`** (the `CollectedSet::Single` payload + its `roots`), mirroring the
-`RunId`-token / `CollectingId`-token lifecycle pattern. **Lifecycle:** an entry is
-**created when C1/C2a returns** a `CollectedSet::Single` (the freeze, §2.4), **retained
-through C3/C4/C5/C6**, and **evicted** when its run starts (C6 hands the frozen items to
-the `Batch`), or when a new C1/C2a supersedes it, or at app exit. C3 is thus a **pure
+FrozenCollectedSet`** (the `CollectedSet::Single` wire payload **plus its off-wire path
+table `[DECIDED 2026-07-06]`** — the per-item real `raw_path`/`resolved_path` pairs, the
+§2.3 identity evidence, and the real dropped-root `PathBuf`s; the wire carries only the
+`display_name`/`roots_display` strings, §0.6), mirroring the `RunId`-token /
+`CollectingId`-token lifecycle pattern. **Lifecycle:** an entry is **created when C1
+returns** a `CollectedSet::Single` (the freeze, §2.4), **retained through
+C3/C4/C5/C6**, and **evicted** when its run starts (C6 hands the frozen items to
+the `Batch`), or when a new C1 drain supersedes it, or at app exit. C3 is thus a **pure
 function of the stored detection result** and C6 builds the `Batch` from the **stored
-frozen items** — no second walk, no re-detection. (`Mixed`/`Unsupported`/`Uncertain`/
+frozen items + path table** (the engines receive real `OsString` paths that never
+crossed the wire) — no second walk, no re-detection. (`Mixed`/`Unsupported`/`Uncertain`/
 `Empty` outcomes are terminal pre-flight states and are **not** registered — only a
 `Single` yields a resolvable `CollectedSetId`, §0.6 invariant 3.)
+
+**Picked-destination registry (so C4/C5/C6 can resolve a `DestinationId`)
+`[DECIDED 2026-07-06]`.** The third ID-keyed registry, following the same `State`-map
+precedent: a minimal **session-scoped** map **`DestinationId → PathBuf`**. C2b
+`pick_destination` mints the id and stores the Rust-picked folder on every successful
+pick; C4/C5/C6 resolve `DestinationChoice::ChosenRoot(id)` against it (an
+unknown/unresolvable id is refused as a §0.4.3 `IpcError` — the WebView can only
+*select among* user-picked roots, never name a path). **Lifecycle:** entries live for
+the app session (they survive across collected sets, so switching batches never forces
+a re-pick) and die at app exit — nothing is persisted (§7.4). The wire never carries
+the `PathBuf`; the WebView holds only the id + the `DestinationPicked.display` string.
 
 ### 0.4.5 Rust↔TS type-sharing strategy `[DECIDED — tauri-specta]`
 
@@ -565,7 +596,7 @@ overrides per-field with `#[specta(type = String)]` + a lossless `#[serde(with =
 `Result` mode emits a `typedError` runtime helper that unavoidably carries `any` (the default casts
 `e as any`; a custom `typed_error_impl` override only moves the `any` into a generated contract
 assertion), and the generated `bindings.ts` may carry no `any` (the rule is enforced on it — eslint
-`@typescript-eslint/no-explicit-any` + G8). C1 `ingest_paths` is the first `Result`-returning command,
+`@typescript-eslint/no-explicit-any` + G8). C1 `drain_intake` is the first `Result`-returning command,
 so the mode is fixed here; the §5.8 frontend `await commands.X(…)` examples carry no `{ status }`
 assumption, so this is spec-compatible.
 
@@ -584,8 +615,9 @@ both `[DECIDED]`.
 > authoritative; it shows where the IPC commands (§0.4) hook into the §01 stages.
 
 ```
- drop / picker / launch-arg
-        │  (C1 ingest_paths / C2a pick_for_intake)   §1.1 intake → §2.4 freeze
+ drop (Rust DragDrop) / picker (C2a) / launch-arg
+        │  → §7.8.1 PendingIntake buffer + app://intake nudge
+        │  (C1 drain_intake)                         §1.1 intake → §2.4 freeze
         ▼
  content detection (§1.2) ──► group by user-facing format (§1.3)
         │                                            mixed → MixedDrop refusal
@@ -622,6 +654,9 @@ illustrative-but-concrete; invariants are normative.
 pub struct InstanceId(Uuid);   // one per app launch (§7.1)
 pub struct RunId(Uuid);        // one per start_conversion (§0.4 C6 / §7.1)
 pub struct CollectedSetId(Uuid);
+pub struct DestinationId(Uuid); // a C2b-picked destination root, named BY ID on the wire; resolved
+                                //   core-side against the session-scoped picked-roots registry
+                                //   (§0.4.4) [DECIDED 2026-07-06]
 pub struct ItemId(u32);        // stable within a run
 pub type JobId = ItemId;       // §1.7/§1.8 say "JobId"; it IS the ItemId of the job's item
 #[derive(Clone, Copy, Serialize, Deserialize, specta::Type)] // crosses IPC as a C1 arg (frontend-
@@ -637,21 +672,31 @@ pub struct CollectingId(Uuid); // ingest-scoped cancellation handle, pre-RunId (
 pub struct ScanProgress { pub scanned: u32 } // C1 onScan Channel payload (§0.4.2), throttled live count
 
 // ─── Intake & detection ─────────────────────────────────────────────────────
-pub enum IntakeOrigin { Drop, Picker, LaunchArg, SecondInstance } // §7.8
+pub enum IntakeOrigin { Drop, Picker, LaunchArg, SecondInstance } // §7.8 — CORE-SIDE ONLY
+                                                     //   [DECIDED 2026-07-06]: travels inside the
+                                                     //   §7.8.1 PendingIntake buffer, never on the
+                                                     //   wire (app://intake is payload-less, §0.4.2)
 
-// ─── Wire DTOs for the C-commands + app:// hand-off (derive specta::Type; in
-//     collect_types!). Defined here so every C1–C13 + app:// shape has one typed
-//     home (no inline-comment-only types). camelCase on the wire. ─────────────
+// ─── Wire DTOs for the C-commands (derive specta::Type; in collect_types!).
+//     Defined here so every C1–C13 wire shape has one typed home (no
+//     inline-comment-only types); the three app:// events carry `()` or the §2.13
+//     AppFault — no path-bearing hand-off shape exists [DECIDED 2026-07-06].
+//     camelCase on the wire. ─────────────
 pub enum PickKind { Files, Folder }                 // C2a pick_for_intake `kind`
-pub enum OpenKind { Folder, File, RevealInFolder }  // C9 open_path `kind` (§7.7)
-pub struct IntakePayload {                           // app://intake hand-off (§7.8.1)
-    pub paths: Vec<PathBuf>,
-    pub origin: IntakeOrigin,                        // only LaunchArg | SecondInstance ever
-                                                     //   appear in app://intake (§0.4.2 row):
-                                                     //   Drop/Picker reach C1/C2a directly,
-                                                     //   never via this event — a frontend
-                                                     //   handler needs no Drop/Picker branch
-}
+pub enum OpenTarget {                                // C9 open_path — ID-keyed [DECIDED 2026-07-06]
+    CommonRoot,                                      //   the RunResult common root (open folder)
+    DivertRoot,                                      //   the divert root, when any item diverted (§2.7.3)
+    Item(ItemId),                                    //   that item's written output (reveal-in-folder)
+    Residue(ItemId),                                 //   that item's §2.6 cleanup residue (reveal)
+}                                                    // resolved core-side against RunResultStore
+                                                     //   (§0.4.4/§7.7.3); §7.7 owns the per-variant
+                                                     //   open-vs-reveal mechanics
+// (SUPERSEDED [DECIDED 2026-07-06 owner ruling]: the former C9 shape `OpenKind { Folder, File,
+// RevealInFolder }` + `path: PathBuf` is retired — the WebView can no longer NAME a filesystem
+// path; it selects an OpenTarget the core resolves. The former `IntakePayload { paths, origin }`
+// app://intake hand-off struct is likewise retired — `app://intake` is a PAYLOAD-LESS nudge
+// (§0.4.2); paths + origin live core-side in the §7.8.1 PendingIntake buffer and never cross
+// the wire in either direction.)
 
 pub struct DroppedItem {
     pub item: ItemId,             // §0.6 invariant 6: the freeze-assigned id over the SINGLE
@@ -659,8 +704,16 @@ pub struct DroppedItem {
                                   //   NOT-re-indexed filtered VIEW, so each DroppedItem carries
                                   //   its own id (position in `items` != ItemId). Symmetric with
                                   //   SkippedItem.item; ConversionJob.item denormalizes it.
-    pub raw_path: PathBuf,        // as the OS handed it
-    pub resolved_path: PathBuf,   // symlink/junction/alias-resolved (§2.3)
+    pub display_name: String,     // the core-produced lossy DISPLAY basename (last-step
+                                  //   to_string_lossy, §2.10.1) — display-only, never a
+                                  //   re-submittable path [DECIDED 2026-07-06]
+    pub rel_path_display: Option<String>, // display-only root-relative subpath for a folder-drop
+                                  //   member (the §2.7 subtree preview); None for a top-level item
+    // (SUPERSEDED [DECIDED 2026-07-06 owner ruling]: `raw_path` ("as the OS handed it") and
+    // `resolved_path` (symlink/junction/alias-resolved, §2.3) are OFF the wire — they live
+    // core-side as per-item fields of the §0.4.4 FrozenCollectedSet path table, keyed by `item`;
+    // the §1.7 invocation and the §2.x fs_guard operate on those real OsString paths, which
+    // never crossed the WebView.)
     pub size_bytes: u64,
     pub detected: DetectionOutcome, // §1.2 OWNS this type (the single canonical
                                   //   detection result); defined in §1.2, mirrored
@@ -699,18 +752,17 @@ pub enum CollectedSet {
                                      //   its ItemId from the SINGLE id space over ALL dropped items
                                      //   (eligible + skipped); `items` is the ELIGIBLE filtered view
                                      //   — NOT re-indexed from 0 (§0.6 invariant 6).
-                                     // raw_path SCOPE `[DECIDED]`: DroppedItem.raw_path IS on this
-                                     //   wire type and reaches the WebView — but DISPLAY-ONLY (the
-                                     //   §5.3 BatchSummary derives "e.g. holiday.jpg, cat.jpg"
-                                     //   sample basenames from the first few items[].raw_path). It
-                                     //   is NEVER re-submitted by the WebView as intake: the only
-                                     //   intake funnels are C1 (paths the native drop/launch gave)
-                                     //   and C2a (paths the Rust-opened picker gave), both
-                                     //   Rust-side. The C2a "no raw FS path reaches the WebView"
-                                     //   claim is scoped to the INTAKE-PICKER funnel (the WebView
-                                     //   never SUPPLIES a path to re-ingest); a frozen set's
-                                     //   raw_path travelling back for display does not let the
-                                     //   WebView feed an arbitrary path into a conversion.
+                                     // (SUPERSEDED [DECIDED 2026-07-06 owner ruling]: the former
+                                     //   raw_path SCOPE note — "raw_path IS on this wire type,
+                                     //   DISPLAY-ONLY" — is superseded by its own generalisation:
+                                     //   NO PathBuf/OsString-derived bytes cross the wire in
+                                     //   EITHER direction (§2.10.1). The §5.3 BatchSummary derives
+                                     //   its "e.g. holiday.jpg, cat.jpg" sample basenames from
+                                     //   items[].display_name — core-produced lossy DISPLAY
+                                     //   strings. The WebView never holds a re-submittable path:
+                                     //   every intake source is core-originated (§7.8.1
+                                     //   PendingIntake → C1 drain_intake), so there is no path
+                                     //   for it to echo, substitute, or feed into a conversion.)
         count: usize,                // shown in the confirm gate (§1.4). INVARIANT `[DECIDED]`:
                                      //   count == items.len(), set ONCE at construction (the
                                      //   §1.1 freeze) and NEVER mutated independently. Kept as a
@@ -728,7 +780,11 @@ pub enum CollectedSet {
         //   wire shape (the two are unified so the mandatory confirm gate has a real IPC
         //   path; §1.4 is the display/projection view of exactly these fields):
         total_bytes: u64,               // size hint / §1.10 pre-flight (§1.4)
-        roots: Vec<PathBuf>,            // dropped root(s) → §2.7 subtree + open-folder
+        roots_display: Vec<String>,     // display-only dropped root(s) (§2.10.1)
+                                        //   [DECIDED 2026-07-06]; the REAL root PathBufs are
+                                        //   off-wire FrozenCollectedSet fields (§0.4.4) feeding
+                                        //   §2.7 subtree re-creation + the C9
+                                        //   OpenTarget::CommonRoot resolution
         encoding_hint: Option<String>,  // e.g. CSV detected "Windows-1252" (per 04)
         delimiter_hint: Option<String>, // e.g. CSV/TSV detected ";" (per 04)
         notes: Vec<CollectedNote>,      // §1.4-owned; PRODUCED by §1.2's bounded peek
@@ -748,13 +804,14 @@ pub enum CollectedSet {
                                                       //   become SkippedItems (so an all-hidden drop
                                                       //   is Empty { skipped: vec![] }).
                                                       //   Empty-vec for the genuinely-zero-items case
-                                                      //   (cancelled dialog / drained PendingIntake /
+                                                      //   (an empty/raced PendingIntake drain /
                                                       //   all files hidden-filtered).
 }
 // `CollectedSet::Single` carries the FULL confirm-summary field set, so it IS the wire
-// shape C1/C2a return and the confirm gate (§1.4/§5.2) renders. `CollectedNote` is the
+// shape C1 returns and the confirm gate (§1.4/§5.2) renders. `CollectedNote` is the
 // §1.4-owned type (referenced here). The collected-set registry (§0.4.4) stores this
-// payload + its roots keyed by `CollectedSetId` for C3/C4/C5/C6 to resolve.
+// payload + its off-wire path table (the per-item real raw/resolved paths + the real
+// roots, [DECIDED 2026-07-06]) keyed by `CollectedSetId` for C3/C4/C5/C6 to resolve.
 
 // An item present in the drop but NOT eligible for the batch (unsupported / uncertain
 // / empty / unreadable at freeze). Surfaced in the §1.4 confirm summary and the §1.12
@@ -762,7 +819,9 @@ pub enum CollectedSet {
 // and §1.4 CollectedSummary.
 pub struct SkippedItem {
     pub item: ItemId,                // stable within the collected set / run
-    pub source: PathBuf,             // the dropped path, for the summary display
+    pub source_display: String,      // display-only lossy form of the dropped path (§2.10.1) for
+                                     //   the summary display [DECIDED 2026-07-06]; the real path
+                                     //   stays core-side (FrozenCollectedSet path table, §0.4.4)
     pub reason: SkipReason,          // §0.6 SkipReason (UnsupportedType | Uncertain | Empty | Unreadable)
                                      //   — NOT ErrorKind. Every SkippedItem comes from a
                                      //   detection-INELIGIBLE outcome (§1.3), all of which have
@@ -832,7 +891,18 @@ pub struct Batch {
 
 pub enum DestinationChoice {
     BesideSource,                    // default (§2.7); per-location divert applies
-    ChosenRoot(PathBuf),             // re-creates relative subtree (§2.7)
+    ChosenRoot(DestinationId),       // a C2b-picked root, named BY ID [DECIDED 2026-07-06]; the
+                                     //   core resolves it against the §0.4.4 picked-roots registry
+                                     //   (unknown id → §0.4.3 refusal); re-creates relative
+                                     //   subtree (§2.7)
+}
+// (SUPERSEDED [DECIDED 2026-07-06 owner ruling]: `ChosenRoot(PathBuf)` is retired — the WebView
+// names WHICH user-picked root, never a path; the real PathBuf lives core-side in the
+// session-scoped picked-roots registry, §0.4.4.)
+pub struct DestinationPicked {       // C2b pick_destination success payload (§0.4.1)
+    pub destination: DestinationId,  // the freshly-minted id of the picked root
+    pub display: String,             // display-only lossy form of the picked folder (§2.10.1),
+                                     //   for the "will save to …" line
 }
 
 pub struct ConversionJob {
@@ -841,7 +911,10 @@ pub struct ConversionJob {
                                      //   events without unwrapping source) — the same
                                      //   duplicate-for-cheap-access pattern as count beside
                                      //   items.len(); §6 property-test asserts item == source.item.
-    pub source: DroppedItem,
+    pub source: DroppedItem,         // wire-shape metadata; the item's REAL raw/resolved paths
+                                     //   live in the §0.4.4 FrozenCollectedSet path table (keyed
+                                     //   by `item`) — the §1.7 invocation resolves them there
+                                     //   [DECIDED 2026-07-06]
     pub state: JobState,             // §1.9 owns the lifecycle transitions
     pub plan: Option<OutputPlan>,    // computed by §1.8 before write
 }
@@ -950,7 +1023,10 @@ pub enum DivertReason { Unwritable, Ephemeral, NoAtomicPublish }  // §2.7.2 cla
 // ─── Command return DTOs (the wire shapes C4/C5/C6 return — §0.4.1) ──────────
 pub struct OutputPlanPreview {       // C4 plan_output → drives the "will save to…" line
     pub set: CollectedSetId,
-    pub final_dir_preview: PathBuf,  // resolved destination shown before convert (§1.8/§2.7)
+    pub final_dir_display: String,   // display-only lossy form (§2.10.1) of the resolved
+                                     //   destination shown before convert (§1.8/§2.7)
+                                     //   [DECIDED 2026-07-06]; the real per-item dirs are
+                                     //   computed core-side by §1.8 and never cross the wire
     pub diverted: Option<DivertReason>, // any per-location divert previewed (§2.7)
     pub rerun: Option<RerunPrompt>,  // Some(..) if §2.5 detected an equivalent prior run
     pub preflight: PreflightVerdict, // §1.10 size/space estimate + any up-front "too big" fail
@@ -993,6 +1069,10 @@ pub struct PreflightVerdict {        // §1.10 (owner) summary surfaced before c
 
 pub struct DestinationResolved {     // C5 set_destination → revalidated destination
     pub destination: DestinationChoice,
+    pub final_dir_display: String,   // the refreshed display-only "will save to …" form for the
+                                     //   new destination (mirrors
+                                     //   OutputPlanPreview.final_dir_display, §2.10.1)
+                                     //   [DECIDED 2026-07-06]
     pub diverted: Option<DivertReason>, // recomputed per-location divert (§2.7)
     pub preflight: PreflightVerdict, // RE-EVALUATED for the new destination volume
                                      //   (§2.14.4 free-space targets the destination;
@@ -1012,42 +1092,69 @@ pub struct RunResult {               // canonical shape; §1.12 computes & refer
     pub items: Vec<ItemResult>,      // per-item outcome + output→source mapping (§1.12).
                                      //   INCLUDES the freeze-time pre-flight SkippedItems
                                      //   (CollectedSet.skipped) projected as ItemResult
-                                     //   { state: Skipped(reason), output: None,
-                                     //     reason: Some(OutcomeMsg::Skipped{ reason, .. }) } —
-                                     //   skip rides the skip-shaped OutcomeMsg variant (§2.8),
+                                     //   { item, output_display: None,
+                                     //     state: JobState::Skipped(reason),
+                                     //     reason: Some(OutcomeMsg::Skipped{ .. }) } —
+                                     //   skip rides the skip-shaped OutcomeMsg variant,
                                      //   NOT Failure, so skip != fail at the type level —
                                      //   §1.12 `[DECIDED]`; Totals.skipped counts them.
     pub totals: Totals,              // succeeded / failed / cancelled / skipped (§1.12)
     pub cleanup_incomplete: Vec<CleanupResidue>, // §2.6 cleanup-incomplete warnings
-    pub common_root: PathBuf,        // "open folder" target for the BESIDE-SOURCE outputs
-                                     //   (the dropped-selection common ancestor, §2.7 / §7.7)
-    pub divert_root: Option<PathBuf>,// Some(Downloads/Documents/chosen) when ANY item was
-                                     //   diverted (§2.7.3) — a SINGLE PathBuf cannot carry both
-                                     //   roots, so the divert root is its own field. None when no
-                                     //   item diverted. Both roots are §7.7.3 open-folder targets;
-                                     //   per-item diverted outputs are also reachable via
-                                     //   ItemResult.output (C9 open_path, kind=RevealInFolder,
-                                     //   via OpenerExt::reveal_item_in_dir). (§1.12 / §7.7.3)
+    pub common_root_display: String, // display-only (§2.10.1) "open folder" label for the
+                                     //   BESIDE-SOURCE outputs (the dropped-selection common
+                                     //   ancestor, §2.7 / §7.7) [DECIDED 2026-07-06]; the REAL
+                                     //   root PathBuf lives in the core-side RunResultStore
+                                     //   (§0.4.4), opened via C9 OpenTarget::CommonRoot
+    pub divert_root_display: Option<String>, // display-only divert root (Downloads/Documents/
+                                     //   chosen) when ANY item was diverted (§2.7.3) — a single
+                                     //   field cannot carry both roots, so the divert root is its
+                                     //   own field. None when no item diverted. Both REAL roots
+                                     //   are §7.7.3 open-folder targets resolved core-side (C9
+                                     //   OpenTarget::DivertRoot); a per-item diverted output is
+                                     //   reachable via C9 OpenTarget::Item(ItemId), via
+                                     //   OpenerExt::reveal_item_in_dir. (§1.12 / §7.7.3)
 }
 
 pub struct ItemResult {              // §1.12
-    pub source: PathBuf,             // for output→source mapping
-    pub state: JobState,
-    pub output: Option<PathBuf>,     // Some(..) only when Succeeded
-    pub reason: Option<OutcomeMsg>,  // §2.8 failure string OR §2.9 lossy note (link)
+    pub item: ItemId,                // ID-keyed output→source mapping [DECIDED 2026-07-06]: the
+                                     //   source is named for display via the CollectedSet's
+                                     //   DroppedItem.display_name; the REAL paths live in
+                                     //   FrozenCollectedSet / RunResultStore (§0.4.4), where C9
+                                     //   resolves OpenTarget::Item(item)
+    pub output_display: Option<String>, // Some(..) only when Succeeded — the display-only lossy
+                                     //   form of the written output (§2.10.1); the REAL output
+                                     //   PathBuf is RunResultStore-side, opened via C9
+                                     //   OpenTarget::Item(item)
+    pub state: JobState,             // terminal per-item state (§1.9 — Succeeded / Failed /
+                                     //   Skipped / Cancelled), unchanged by the wire revision
+    pub reason: Option<OutcomeMsg>,  // the §2.8-resolved, ready-to-show line (failure string /
+                                     //   §2.9 lossy note on a SUCCEEDED item / skip text) —
+                                     //   OutcomeMsg's shape + wire rationale are §2.8's
+                                     //   `[DECIDED]` and are NOT changed by the path revision
+                                     //   (OutcomeMsg carries kind + text, never a path)
 }
+// (SUPERSEDED [DECIDED 2026-07-06 owner ruling]: ONLY the two path fields are retired —
+// `source: PathBuf` → `item: ItemId` (display via DroppedItem.display_name; real paths in
+// FrozenCollectedSet / RunResultStore) and `output: Option<PathBuf>` → `output_display:
+// Option<String>`. The `state`/`reason` pair stays exactly as §1.12/§2.8 define it — the
+// per-item terminal vocabulary and the OutcomeMsg display channel are untouched by the
+// core-owned-paths ruling.)
 
 pub struct Totals { pub succeeded: u32, pub failed: u32, pub cancelled: u32, pub skipped: u32 }
 // `all_failed` is DERIVED (failed == total && total > 0), not a stored field.
 
 pub struct CleanupResidue {          // §2.6.4 residue-may-remain case
     pub item: ItemId,
-    pub residue_path: PathBuf,
+    pub residue_display: String,     // display-only (§2.10.1) [DECIDED 2026-07-06]; the REAL
+                                     //   residue PathBuf lives in the core-side RunResultStore
+                                     //   (§0.4.4) — C9 OpenTarget::Residue(item) reveals it
 }
 
-// The terminal per-item outcome carried by ItemFinished (§0.4.2).
+// The terminal per-item outcome carried by the ItemFinished event (§0.4.2); ItemResult (§1.12)
+// carries the same terminal vocabulary as its `state`/`reason` pair.
 pub enum ItemOutcome {
-    Succeeded { output_path: PathBuf },
+    Succeeded { output_display: String }, // display-only (§2.10.1) [DECIDED 2026-07-06]; the real
+                                     //   output PathBuf lives in RunResultStore (§0.4.4)
     Failed { error: IpcError },      // §0.4.3
     Skipped { reason: SkipReason },
     Cancelled,
@@ -1467,13 +1574,14 @@ need:
     //   origin never applies: ConvertIA serves only the bundled local app.)
     // C2a pick_for_intake / C2b pick_destination: BOTH native pickers are opened
     //   RUST-SIDE via DialogExt from their handlers `[DECIDED]` — so there is **NO
-    //   `dialog:allow-open` grant**. The INTAKE picker (C2a) funnels picked paths
-    //   straight into the C1 freeze and returns a CollectedSet, so intake paths never
-    //   transit the untrusted WebView (mirrors the opener model). The DESTINATION
-    //   picker (C2b) returns the chosen folder PathBuf to the WebView for C5 — that
-    //   one WRITE-destination path does transit the WebView (acceptable: §0.11 T2,
-    //   bounded by §2.1 non-destructive creates). A Rust-internal DialogExt call is
-    //   not capability-gated either way.
+    //   `dialog:allow-open` grant**. BOTH pickers keep the picked paths CORE-SIDE
+    //   [DECIDED 2026-07-06]: the INTAKE picker (C2a) funnels picked paths into the
+    //   §7.8.1 PendingIntake buffer (drained by C1 drain_intake), and the DESTINATION
+    //   picker (C2b) stores the picked root in the §0.4.4 picked-roots registry and
+    //   returns only { DestinationId, display }. (SUPERSEDED [DECIDED 2026-07-06
+    //   owner ruling]: C2b formerly returned the chosen folder PathBuf to the WebView
+    //   for C5 — no FS path transits the WebView in either direction anymore.) A
+    //   Rust-internal DialogExt call is not capability-gated either way.
     // file-system: the core does the FS work in Rust; the WEBVIEW gets NO fs plugin
     //   scope at all (no fs:default) — it cannot read/write files directly.
     // NO shell:allow-execute — engines spawn Rust-side only (§3.3.3 [DECIDED]); the
@@ -1493,11 +1601,12 @@ need:
     //   the source (Desktop, USB, arbitrary project folders — routinely outside
     //   $DOWNLOAD/$DOCUMENT), a $DOWNLOAD/$DOCUMENT-scoped grant would SILENTLY
     //   BREAK the one-click open-folder/open-file DoD gate for the common case.
-    //   The real, sufficient gate is the Rust-side RunResult-membership check
-    //   (§7.7.3): C9 opens a path only if it is in the current run's recorded
-    //   outputs (or their common root) — which works for arbitrary beside-source
-    //   destinations. C10 is locked to the compiled-in project URL constant in Rust
-    //   (no WebView-supplied URL). See §0.4.1 C9/C10, §7.7.2/§7.7.3.
+    //   The real, sufficient gate is the Rust-side ID-resolution check (§7.7.3)
+    //   [DECIDED 2026-07-06]: C9 takes an OpenTarget (never a path) and opens only
+    //   what that id resolves to in the core-held RunResultStore — the current run's
+    //   recorded outputs / roots / residues — which works for arbitrary
+    //   beside-source destinations. C10 is locked to the compiled-in project URL
+    //   constant in Rust (no WebView-supplied URL). See §0.4.1 C9/C10, §7.7.2/§7.7.3.
     "log:default",                        // §7.5.1 JS→Rust log bridge (frontend errors → same local file)
     "store:default"                       // §7.4.2 the single settings.json prefs blob (theme + lastDestinationMode + verboseLog)
   ]
@@ -1525,10 +1634,12 @@ Notes / deliberate exclusions:
   C10 (open project page) are ConvertIA's own typed IPC commands; their Rust handlers
   call the opener plugin's `OpenerExt` (reveal / open-path / open-url) **internally**.
   A Rust-internal `OpenerExt` call is not capability-gated, so the manifest carries
-  **no `opener:allow-*` permission**. The authoritative gate is Rust-side: C9 validates
-  the requested path against the current `RunResult`'s recorded outputs (or their common
-  root) before opening (§7.7.3 — works for arbitrary beside-source destinations, which a
-  static `$DOWNLOAD/$DOCUMENT` scope could never cover), and C10 opens only the
+  **no `opener:allow-*` permission**. The authoritative gate is Rust-side: C9 resolves
+  the requested `OpenTarget` id against the core-held `RunResultStore` — the current
+  run's recorded outputs, roots and residues — before opening (§7.7.3; the WebView never
+  names a path `[DECIDED 2026-07-06]`, and ID-resolution works for arbitrary
+  beside-source destinations, which a static `$DOWNLOAD/$DOCUMENT` scope could never
+  cover), and C10 opens only the
   compiled-in canonical project URL (no WebView-supplied URL, §7.6). `reveal-item-in-dir`
   is the safer primary "open folder" affordance (it does not execute the file); open-path
   is secondary. (Rationale for dropping the static scope: a capability allow-list is an
@@ -1581,17 +1692,23 @@ no remote origins (reinforces "no network"):*
   that degrades silently to the cheap tier, **not** the load-bearing guarantee). The CSP
   is the observable WebView-side form of
   *Local/private/offline* (verified in §2.11 / §6.4); the §2.11.4 packet gate is the
-  load-bearing proof. **Accepted residual `[DECIDED]` (honest bound):** the `webrtc 'block'` no-op on 2
-  of 3 WebView engines is an **explicitly-accepted residual** — even if a WKWebView/
-  WebKitGTK WebRTC channel could be opened, the WebView has **no filesystem read access**
-  (no `asset:`, no `fs:` plugin, it cannot read **file bytes** from disk). It does, however,
-  hold **path STRINGS + conversion METADATA** — the §0.6 `DroppedItem.raw_path` basenames it
-  derives the BatchSummary preview from, the C2b destination `PathBuf`, and per-item
-  outcome/format data. So the **honest worst-case leak over an exotic WebRTC channel is
-  filenames/paths + conversion metadata, NOT file contents** (a far smaller surface than "the
-  disk"). The real bound is the **no-WebView-FS-read model + §3.3.4 nothing-to-fetch + the
-  §2.11.4 packet gate**, not the CSP directive; the residual is bounded to path/metadata
-  strings and is not chased with a per-engine workaround.
+  load-bearing proof. **Accepted residual `[DECIDED]` (honest bound — SHRUNK by the 2026-07-06 owner
+  ruling):** the `webrtc 'block'` no-op on 2 of 3 WebView engines is an
+  **explicitly-accepted residual** — even if a WKWebView/WebKitGTK WebRTC channel could
+  be opened, the WebView has **no filesystem read access** (no `asset:`, no `fs:` plugin,
+  it cannot read **file bytes** from disk). It holds only **lossy DISPLAY strings +
+  conversion METADATA** — the §0.6 `DroppedItem.display_name` basenames the BatchSummary
+  preview renders, the C2b `DestinationPicked.display` string, the `*_display` outcome
+  fields, and per-item outcome/format data; it holds **no real path** (no
+  `PathBuf`/`OsString`-derived bytes cross the wire in either direction, §2.10.1).
+  (SUPERSEDED `[DECIDED 2026-07-06 owner ruling]`: the former bound — "path STRINGS +
+  metadata: the `raw_path` basenames + the C2b destination `PathBuf`" — the residual
+  SHRINKS to display-name strings + metadata.) So the **honest worst-case leak over an
+  exotic WebRTC channel is display filenames + conversion metadata, NOT file contents and
+  NOT real filesystem paths** (a far smaller surface than "the disk"). The real bound is
+  the **no-WebView-FS-read model + §3.3.4 nothing-to-fetch + the §2.11.4 packet gate**,
+  not the CSP directive; the residual is bounded to display/metadata strings and is not
+  chased with a per-engine workaround.
 - **No `asset:` protocol.** `asset:` is dropped from `img-src`/`media-src`: v1 renders
   **no** user file from disk in the WebView (there is no preview feature in §05), it
   would contradict the no-WebView-FS model, and the asset protocol would additionally
@@ -1662,19 +1779,23 @@ ConvertIA's own commands whose Rust handlers call `OpenerExt` internally — not
 capability-gated — and the real gate is the Rust-side §7.7.3 RunResult-membership
 check, which works for arbitrary beside-source outputs a static scope could not);
 **no `dialog:allow-open` WebView grant** `[DECIDED]` (both C2 pickers are opened
-Rust-side via `DialogExt`: the **intake** picker C2a funnels picked paths into the C1
-freeze and returns a `CollectedSet`, so **intake** paths never transit the WebView;
-the **destination** picker C2b returns the chosen write-destination `PathBuf` to the
-WebView for C5, which is acceptable per §0.11 T2). **Scope note — the "WebView never
-sees raw FS paths" claim is precise, not absolute:** it holds for the *picker* intake
-surface, but the **primary intake (drag-and-drop) structurally delivers raw paths to
-the WebView** via Tauri's native `onDragDropEvent` Drop payload (§1.1/§5.4), and the
-**OS launch-arg / `app://intake`** path emits `Vec<PathBuf>` to the WebView that it
-echoes back to C1. The real mitigation is **not** "no path ever reaches the WebView"
-but that the **core treats every WebView-supplied path (drop, launch-arg, and a C5
-destination) as untrusted input re-validated at the §1.1 freeze / §2.3.3 write-target
-check** (canonicalise / resolve-identity / existence / detection); the DialogExt
-picker simply avoids *one extra* such surface and the `dialog:allow-open` grant.
+Rust-side via `DialogExt`: the **intake** picker C2a funnels picked paths into the
+§7.8.1 `PendingIntake` buffer drained by C1 `drain_intake`; the **destination** picker
+C2b stores the picked root in the §0.4.4 picked-roots registry and returns only
+`{ DestinationId, display }`). **Scope note — the "WebView never sees raw FS paths"
+claim is ABSOLUTE, in BOTH directions `[DECIDED 2026-07-06]`:** the native drop is
+handled by the Rust `WindowEvent::DragDrop` handler routing through the §7.8.1 funnel
+(§1.1/§5.4 — the WebView's DnD surface drives hover/visual affordance only),
+`app://intake` is a payload-less nudge, and every wire shape carries only IDs +
+core-produced lossy display strings (§2.10.1) — no `PathBuf`/`OsString`-derived bytes
+cross the IPC wire or an `app://` event in either direction. (SUPERSEDED `[DECIDED
+2026-07-06 owner ruling]`: the former "precise, not absolute" scope note — the
+drag-and-drop `onDragDropEvent` raw paths in the WebView, the `app://intake`
+`Vec<PathBuf>` echo to C1, and the C5 WebView-held destination path — is reversed;
+those WebView-held-path surfaces are eliminated by construction. The core-side
+freeze-time re-validation at the §1.1 freeze / §2.3.3 write-target check
+(canonicalise / resolve-identity / existence / detection) stays as defence-in-depth
+for core-side sources.)
 `log:default` + `store:default` for the §7.5 local log
 bridge and the §7.4 prefs blob. The image-core runs as a **separate image-worker
 process** `[DECIDED]` (§0.7/§2.12/§3.5.5) — a raw Rust spawn, so it adds **no**
@@ -1695,12 +1816,12 @@ The `SECURITY` policy (§6.8) references this map.
 |---|---|---|---|---|
 | T1 | **Untrusted decoder input** | A crafted/corrupt/malicious file (image bomb, malformed MP4, hostile SVG, macro-laden DOCX) exploits or hangs a decoder | **§2.12** decoder isolation (separate subprocess for **every** engine including the image core — the image-worker process `[DECIDED]` §0.7/§3.5.5; contained crash/hang/exploit fails one item) + **§1.7** invocation lifecycle (timeout/kill) + **§0.9** pool bounds + **§1.2** detection security note (first code on untrusted bytes). **v1 ships no rely-on-OS decode path**; any future rely-on-OS untrusted-decode must pass the **§3.4.4** re-evaluation gate before counting as T1-covered. | covered |
 | T2 | **Malicious / compromised WebView content** | XSS-style injection or a supply-chained frontend dep tries to read the disk or call out | **§0.10** capability allowlist (no WebView `fs`, no network) + CSP (no remote origins, `object-src 'none'`) | covered |
-| T2a | **WebView steers writes to an attacker-chosen path** | A compromised WebView supplies an arbitrary `DestinationChoice::ChosenRoot(PathBuf)` to C5/C6 (the destination is WebView-held, with no server-side store — §0.4.1 C6) to write outputs somewhere unexpected | **§2.1** writes are always **non-destructive creates** (never overwrite) + **§2.3.3** write-target link-safety (a chosen destination that resolves onto / inside a frozen source is rejected and diverted) + **§2.7** divert rules. A chosen destination is honoured only as a *write* location: it **cannot harm an original** (no-clobber + link-safe) and **cannot read anything** — so an arbitrary writable ChosenRoot is bounded harm (a converted copy lands in an odd-but-writable folder), accepted in v1. The C2b destination picker is Rust-opened, but C5/C6 still accept a WebView-supplied `ChosenRoot` string; the no-harm machinery — not path provenance — is the bound. | covered |
-| T2b | **WebView re-submits an attacker-chosen SOURCE path** | On the idle launch/Open-with path the core emits `app://intake` carrying the full `Vec<PathBuf>` to the (untrusted) WebView, which echoes those paths back to **C1 `ingest_paths`** — a trust-boundary crossing (the WebView holds source paths it then re-submits). A compromised WebView could substitute an arbitrary readable path before re-submission. | **Accepted bounded harm (same posture as T2a).** The only harm a substituted source path can cause is "**convert an attacker-named readable file to an output beside it**" — it **cannot overwrite or harm any original** (§2.1 no-clobber + §2.3 link-safety bound the *write*) and produces only a converted copy. The bound is the **freeze-time §1.1 re-validation** (canonicalise / resolve-identity / existence / detection at the §2.4 freeze), **not** path provenance: every path C1 receives — regardless of whether it came from a native drop, the Rust picker, or a WebView `app://intake` echo — is re-validated at the freeze before any engine touches it. (The C2a **intake-picker** funnel keeps source paths Rust-side entirely; this T2b row covers only the launch-arg/`app://intake` echo, which is unavoidable because the OS hands the launch paths to the running instance and the idle UI drives C1.) | covered |
+| T2a | **WebView steers writes to an attacker-chosen path** | A compromised WebView supplies a `DestinationChoice` to C5/C6 to steer where outputs land | **Bounded FURTHER by the 2026-07-06 owner ruling:** the destination vocabulary is core-picked — `ChosenRoot` carries a **`DestinationId`** resolved core-side against the §0.4.4 picked-roots registry (only a root the user picked via the Rust-opened C2b dialog this session resolves; an unknown id is refused), so the WebView **cannot NAME an arbitrary filesystem path at all** — it can only *select among* user-picked roots. The no-harm machinery stays the backstop (defence-in-depth): **§2.1** writes are always **non-destructive creates** (never overwrite) + **§2.3.3** write-target link-safety (a chosen destination that resolves onto / inside a frozen source is rejected and diverted) + **§2.7** divert rules — a maliciously-*selected* picked root is still only a *write* location that **cannot harm an original** and **cannot read anything** (a converted copy lands in a user-picked folder). (SUPERSEDED `[DECIDED 2026-07-06 owner ruling]`: the former posture — "C5/C6 accept a WebView-supplied `ChosenRoot(PathBuf)` string; the no-harm machinery, not path provenance, is the bound" — provenance is now ALSO enforced by construction, with no-harm as the backstop.) | covered |
+| T2b | **WebView re-submits an attacker-chosen SOURCE path** | The pre-ruling design echoed launch/Open-with source paths to the (untrusted) WebView via `app://intake { paths, origin }` for re-submission to C1 — a trust-boundary crossing in which a compromised WebView could substitute an arbitrary readable path before re-submission | **Eliminated by construction `[DECIDED 2026-07-06]`.** No FS path crosses the IPC wire or an `app://` event in either direction: `app://intake` is a payload-less nudge, paths live core-side in the §7.8.1 `PendingIntake` buffer, and C1 `drain_intake` consumes the buffer without taking a `paths` argument — the WebView cannot substitute a source path because it never holds one and has no wire field to supply one. **Residual: none.** The freeze-time §1.1 re-validation (canonicalise / resolve-identity / existence / detection at the §2.4 freeze) stays as **defence-in-depth for core-side sources** (drop / picker / launch-arg / second-instance — e.g. the T13 macOS socket leg). (The row is retained so the class stays named in the coverage map: named, closed, not orphaned.) | closed by construction (2026-07-06 ruling; row retained — no wire path in either direction) |
 | T2c | **WebView plugin-write surface (`store:default` + `log:default`)** | The WebView is granted `store:default` (the 3-key prefs blob, §7.4.2) and `log:default` (§7.5) — the ONE place it can cause a *write*, so the "no WebView fs" claim in T2 is not absolute and must be named or it is an orphan class | **Bounded to the OS config dir, no user-file contents, no exfil `[DECIDED]`.** The store writes only the 3 fixed prefs keys (`theme`/`lastDestinationMode`/`verboseLog`) and the log writes only diagnostic lines — **never user file CONTENTS**, never to an arbitrary path: both are confined to `app_config_dir()` (`~/.config/dev.ne-ia.convertia/…`). The store **name is a compiled-in constant** (the WebView supplies no store filename), so it **cannot traverse out of `config_dir`** via a `../`-style name in the pinned `tauri-plugin-store` version (a §6.1.3/§0.10 assertion confirms the plugin version cannot escape `config_dir`; if a future plugin version ever could, the prefs writes move Rust-side). The worst-case harm is corrupting the local prefs/log (a clean reset recovers), never reading or exfiltrating user data — so this write surface is bounded and named, not orphaned. | covered |
 | T3 | **Bundled-binary supply chain** | A tampered/backdoored engine binary ships in the build | **§3.8** engine pinning + **§6.2** integrity hashes + **§6.3** SBOM (every binary enumerated, verifiable). **Build-time** the pinned-checksum + SBOM gate catches a swapped engine; the trust anchor is the published **SHA256SUMS + minisign signature verified BEFORE first run (§6.2)**. **Runtime caveat:** the §7.2.3 startup check verifies engines against a hash manifest shipped **inside the same bundle**, so it detects **corruption/integrity** (truncation, AV-gutting, partial extract) but provides **no runtime tamper-resistance** — an attacker who can replace a binary can replace the in-bundle manifest too; runtime tamper detection is **out of scope** (unsigned portable build, SSOT). | covered (corruption/integrity only; runtime has no tamper-resistance — trust anchor is the §6.2 SHA256SUMS + minisign verified before first run) |
 | T3a | **DLL/dylib/`.so` side-loading of a bundled codec shared object** | ConvertIA stages dynamically-loaded codec shared objects beside its engine executables (`libmp3lame.dll`/`libvorbis`/`libopus`/`libvpx` beside FFmpeg on Windows — §3.6.1 carve-out i; the image-worker codec stack as resources). A portable zip extracted into an attacker-controlled directory, or a directory pre-seeded with a matching-named malicious `.dll`, exploits the OS DLL/dylib search order so the engine subprocess loads the attacker's library | **Every staged `.dll`/`.dylib`/`.so` is individually enumerated in `engines.lock` with its SHA-256 (§3.7.2) and verified before staging (§6.1.3, the T3 checksum gate extended per-shared-object); the staging manifest-diff hard-fails on a staged shared object not matching its `engines.lock` row; a staging-time dynamic-dependency-closure check (`ldd`/`readelf` Linux · `otool -L` macOS · `dumpbin /dependents` Windows) asserts every non-system dependency resolves INSIDE the bundle; on Windows engines are spawned with a minimal explicit `PATH` (the bundle dir only) so the search starts inside the bundle, composing with the §3.5 loader-injection-var strip (`LD_PRELOAD`/`LD_LIBRARY_PATH`/`DYLD_*` cleared). | covered |
-| T4 | **Open-file launch of a fresh artifact** | C9 "open file" hands a just-written, possibly-still-untrusted output to an external app | **§7.7** open-file safety (reveal-in-folder, no auto-open, the artifact is *our* output not the untrusted source) + **§7.7.3** Rust-side `RunResult`-membership check (only a path that is a member of the current run's results may be opened). (Note: §0.10/§7.7.2 deliberately grant **no** `opener:*` path scope — beside-source outputs legitimately write outside `$DOWNLOAD`/`$DOCUMENT` — so the gate is the membership check, not a capability path-scope.) | covered |
+| T4 | **Open-file launch of a fresh artifact** | C9 "open file" hands a just-written, possibly-still-untrusted output to an external app | **§7.7** open-file safety (reveal-in-folder, no auto-open, the artifact is *our* output not the untrusted source) + **§7.7.3** — **strengthened to an ID-resolution gate `[DECIDED 2026-07-06]`:** C9 takes an `OpenTarget` (`CommonRoot \| DivertRoot \| Item(ItemId) \| Residue(ItemId)`, §0.6), resolved Rust-side against the core-held `State<RunResultStore>` (§0.4.4); membership IS successful resolution (an absent/unresolvable target is the §7.7.3 refusal), and the **WebView cannot NAME a filesystem path at all** — only select among the current run's recorded outputs/roots/residues. (Note: §0.10/§7.7.2 deliberately grant **no** `opener:*` path scope — beside-source outputs legitimately write outside `$DOWNLOAD`/`$DOCUMENT` — so the gate is the ID-resolution check, not a capability path-scope.) | covered |
 | T5 | **Core panic / app fault** | A Rust panic, WebView load failure, missing/corrupt engine at startup, damaged bundle | **§2.13** app-level fault model (`catch_unwind` worker boundary, no-stack-trace surfacing) + **§7.2** startup faults + **§0.3.1** WebView-absent handling | covered |
 | T6 | **Copyleft aggregation boundary** | Accidentally linking a GPL/LGPL engine into the MIT core (licence contamination) | **§3.6** copyleft isolation (separate invoked binaries, aggregation not linking) — architecturally enforced by the §0.3 subprocess model + §0.7 (engines are sidecars, never linked) | covered |
 | T7 | **Path / link redirection** | A symlink/junction/alias makes an output resolve onto a source, or a TOCTOU race redirects the final write | **§2.3** resolved-identity & link safety + **§2.1** exclusive create-new-or-fail (the no-clobber guarantee is evaluated on the resolved real file) | covered |
@@ -1710,7 +1831,7 @@ The `SECURITY` policy (§6.8) references this map.
 | T10 | **Resource exhaustion / DoS-by-input** | A tiny SVG asked to render at 50 000 px, a 90-min→GIF, a thousands-file batch exhausting RAM/disk/handles | **§1.10** resource pre-flight & budgets + **§0.9** pool/handle bounds + the to-GIF guardrail (cross-category.md) | covered |
 | T11 | **macOS engine-as-first-TCC-accessor (silent-deny)** `[DECIDED — P0 review r3]` | On macOS the source frequently sits in a TCC-protected location (Desktop/Documents/Downloads/removable). If a spawned engine were the FIRST process to touch such a path, a TCC responsible-process chain-break triggers an **invisible denial / wrong-process prompt** that defeats the conversion — and it is **silent on CI** (which runs from `TMPDIR`, where no TCC prompt fires), so a P4/P5 refactor that drops the pre-copy passes CI yet fails for real users on Desktop. **§3.5.0/§7.2.6 call this load-bearing for every macOS engine read.** | **§3.5.0 / §7.2.6 macOS TCC source staging:** the Rust core (which holds the TCC grant, having read the path at §1.1 freeze) copies the source into a **per-job kind-2 scratch path** (§2.14.2) **before** spawning, and hands the sidecar the **scratch path** — so the engine is **never the first process to touch a protected path**. Verifying gate: **G31** macOS sub-test (the Rust core, not the engine PID, is the first accessor; the engine receives a kind-2 scratch path) **and** a **G29** Semgrep rule (every `Command::new` in `crate::isolation` under `cfg(target_os="macos")` is preceded by the stage-for-TCC call). | covered |
 | T12 | **Unsigned distribution / download-MITM** | An attacker tampers with the artifact / `SHA256SUMS` between our GitHub release and the user (binary code-signing is out of scope — no OS-level signature to verify) | **§6.2** minisign-signed `SHA256SUMS` + per-file SHA-256 + the published verify recipe + an **out-of-band pubkey-fingerprint** anchor (the in-repo pubkey TOFU is otherwise circular), verified BEFORE first run; the unsigned-build OS friction (SmartScreen/Gatekeeper) is documented at **§6.2.4** | covered (verify-before-run; no runtime tamper-resistance — accepted residual, SSOT *Out of Scope*) |
-| T13 | **Cross-user single-instance socket (macOS, machine-global)** `[DECIDED — accepted v1 limitation]` | On a **multi-user macOS** machine `tauri-plugin-single-instance`'s macOS path hard-codes its single-instance Unix socket at **world-writable `/tmp/{id}_si.sock`** (machine-global, **not** per-OS-user — §7.1.1) and the socket carries the second launch's `cwd` + `argv` (file paths). A different logged-in OS user can then **(i) pre-bind** the path to receive this user's launch paths (confidentiality), **(ii) inject** paths into this user's intake (integrity), or **(iii) squat** the path to break single-instance (DoS). Win/Linux are per-OS-user by construction (session namespace / session D-Bus); macOS is the sole gap (the plugin exposes no API to relocate the socket). | **Accepted v1 limitation (§7.1.1 `[DECIDED]`).** The injection half (ii) is bounded by the **same provenance-independent §2.4 freeze re-validation as T2b** — every path C1 receives, including one arriving via the macOS single-instance socket, is canonicalised / resolve-identity / existence / detection-re-validated at the freeze, and a substituted path can only "convert an A-readable file to an output beside it" (no-clobber + link-safety bound the *write*). The confidentiality (i) + DoS (iii) halves are **accepted residual** (named, not implied-covered): a local logged-in second macOS user is **out of the offline-converter threat model**, the leaked data is **user-visible launch PATHS** (never file contents), single-user Macs are the dominant config, and the **macOS PRIMARY single-instance path is the AppleEvent (§7.8)** — unaffected (the /tmp socket covers only direct-binary re-exec, the "least-mature leg", §7.1.1). | accepted (injection→T2b-bounded; leak/DoS→documented residual) |
+| T13 | **Cross-user single-instance socket (macOS, machine-global)** `[DECIDED — accepted v1 limitation]` | On a **multi-user macOS** machine `tauri-plugin-single-instance`'s macOS path hard-codes its single-instance Unix socket at **world-writable `/tmp/{id}_si.sock`** (machine-global, **not** per-OS-user — §7.1.1) and the socket carries the second launch's `cwd` + `argv` (file paths). A different logged-in OS user can then **(i) pre-bind** the path to receive this user's launch paths (confidentiality), **(ii) inject** paths into this user's intake (integrity), or **(iii) squat** the path to break single-instance (DoS). Win/Linux are per-OS-user by construction (session namespace / session D-Bus); macOS is the sole gap (the plugin exposes no API to relocate the socket). | **Accepted v1 limitation (§7.1.1 `[DECIDED]`).** The injection half (ii) is bounded by the **provenance-independent §2.4 freeze re-validation** — the defence-in-depth control the T2b row retains for **core-side sources** (T2b's former WebView wire-echo leg is closed by construction under the 2026-07-06 ruling; this /tmp-socket leg is CORE-side argv intake, unchanged by the wire ruling: paths arriving over the socket enter the §7.8.1 `PendingIntake` funnel and never touch the WebView). Every path the funnel hands the C1 `drain_intake` walk, including one arriving via the macOS single-instance socket, is canonicalised / resolve-identity / existence / detection-re-validated at the freeze, and a substituted path can only "convert an A-readable file to an output beside it" (no-clobber + link-safety bound the *write*). The confidentiality (i) + DoS (iii) halves are **accepted residual** (named, not implied-covered): a local logged-in second macOS user is **out of the offline-converter threat model**, the leaked data is **user-visible launch PATHS** (never file contents), single-user Macs are the dominant config, and the **macOS PRIMARY single-instance path is the AppleEvent (§7.8)** — unaffected (the /tmp socket covers only direct-binary re-exec, the "least-mature leg", §7.1.1). | accepted (injection→bounded by the freeze re-validation T2b retains as defence-in-depth; leak/DoS→documented residual) |
 
 **No orphan classes.** Every box above points at a section that owns the
 mechanism; this file invents none of them. If a new threat class is identified

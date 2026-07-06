@@ -1373,14 +1373,20 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
 §5.3 `ResultSummary` renders it). For reference, the §0.6 shape is:
 
 - `RunResult { collected_set_id, run_id, items: Vec<ItemResult>, totals: Totals,
-  cleanup_incomplete: Vec<CleanupResidue>, common_root, divert_root: Option<PathBuf> }`
-  (`common_root` = beside-source open-folder target; `divert_root` = `Some(..)` when any
-  item diverted, §0.6 / §2.7.4 — a single field cannot carry both roots)
-- `ItemResult { source, state: JobState, output: Option<PathBuf>, reason:
-  Option<OutcomeMsg> }`
+  cleanup_incomplete: Vec<CleanupResidue>, common_root_display, divert_root_display:
+  Option<String> }` (`common_root_display` = the beside-source open-folder target's
+  display form; `divert_root_display` = `Some(..)` when any item diverted, §0.6 /
+  §2.7.4 — a single field cannot carry both roots; the REAL root `PathBuf`s live in
+  the core-side `RunResultStore` the C9 `OpenTarget` resolution reads, §0.4.4 —
+  `[DECIDED 2026-07-06]` core-owned paths)
+- `ItemResult { item, output_display: Option<String>, state: JobState, reason:
+  Option<OutcomeMsg> }` (per-item terminal state + the §2.8-resolved display line +
+  the output's display form; `item` keys the output→source mapping against the
+  CollectedSet, and the real output `PathBuf` is `RunResultStore`-side, opened via
+  C9 `Item(ItemId)`)
 - `Totals { succeeded, failed, cancelled, skipped }` — the "all failed" condition is
   **derived** (`failed == total && total > 0`), not a stored field.
-- `CleanupResidue { item, residue_path }` (§2.6.4).
+- `CleanupResidue { item, residue_display }` (§2.6.4; reveal via C9 `Residue(ItemId)`).
 
 - **Per-item success/failure with reasons** and **output locations**; every output
   is **mapped back to its source** (SSOT How It Feels 7 — the completion summary
@@ -1391,12 +1397,15 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
   is **never reported as a clean success** — the summary says residue may remain and
   **where** (`cleanup_incomplete`).
 - **Completion actions** (one-click "open folder" / "open file" — SSOT How It Feels
-  8) are rendered by §5.3 `OpenActions` and executed by §7.7; "open folder" opens
-  `common_root` (the beside-source root), and — when `divert_root` is `Some(..)` (a
-  split-output batch) — a second "open Downloads/Documents" affordance opens the
-  `divert_root`. Per-item diverted outputs are also reachable via each `ItemResult.output`
-  (C9 `open_path` with `kind = RevealInFolder`, whose Rust handler calls
-  `OpenerExt::reveal_item_in_dir`). The summary is the data; the buttons are §5/§7.7.
+  8) are rendered by §5.3 `OpenActions` and executed by §7.7; "open folder" fires C9
+  `open_path { target: OpenTarget::CommonRoot }` (labelled by `common_root_display`),
+  and — when `divert_root_display` is `Some(..)` (a split-output batch) — a second
+  "open Downloads/Documents" affordance fires `OpenTarget::DivertRoot`. Per-item
+  diverted outputs are also reachable via C9 `OpenTarget::Item(ItemId)` — resolved
+  core-side against `State<RunResultStore>` to the recorded output `PathBuf` (the
+  Rust handler calls `OpenerExt::reveal_item_in_dir`; the WebView names a run-scoped
+  target, never a path — the 2026-07-06 core-owned-paths ruling). The summary is the
+  data; the buttons are §5/§7.7.
 - **Re-run prompt linkage:** if §2.5 detected an equivalent prior output **before**
   CONVERT, the one batch-level skip/fresh-copy prompt (§5.2) already resolved it;
   the summary reflects whichever the user chose (skipped items appear as a distinct
@@ -1405,7 +1414,7 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
   `SkippedItem`s held in `CollectedSet::Single.skipped` (the unsupported / uncertain /
   empty / unreadable-at-intake items that **never entered the queue**, §1.1/§1.3) are
   **projected into `RunResult.items` at run-end** as
-  `ItemResult { source, state: JobState::Skipped(reason), output: None, reason: Some(OutcomeMsg::Skipped{ reason, .. }) }`
+  `ItemResult { item, state: JobState::Skipped(reason), output_display: None, reason: Some(OutcomeMsg::Skipped{ reason, .. }) }`
   — a **trivial copy** of `SkippedItem.reason` (a `SkipReason`, §0.6: `UnsupportedType` /
   `Uncertain` / `Empty` / `Unreadable`) into the same-typed `JobState::Skipped(SkipReason)`
   and `OutcomeMsg::Skipped{ reason: SkipReason }` (§2.8) — **no lossy ErrorKind→SkipReason

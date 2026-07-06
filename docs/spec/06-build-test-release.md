@@ -1118,7 +1118,8 @@ half of the DoD **core-UX-flow** gate; the human half is §6.6. Frontend compone
 - **Native file-drop is NOT automatable** by `tauri-driver` (the OS-level
   native drag-drop event §5.4 cannot be synthesised by a WebDriver). So the
   **automated E2E uses the file-picker path** (C2a `pick_for_intake` via the §5.10
-  accelerator, which funnels into the *same* C1 `ingest_paths` as a drop, §1.1) to
+  accelerator, which fills the *same* §7.8.1 funnel → `PendingIntake` → C1
+  `drain_intake` completion door as a drop, §1.1) to
   reach Collecting; the **native drop itself is validated in the human walkthrough**
   (§6.6), where a real person drags a real file. This split keeps the automated gate
   honest about what it can and cannot synthesise.

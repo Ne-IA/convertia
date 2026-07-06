@@ -53,7 +53,7 @@
   reliability runner and **no** deferred P4-harness edges, so it carries the
   cross-phase reconciliation obligation (P4.77; reciprocal of P3.70/P5.74/P6.92/
   P7.77/P9.46) **inline on each box** rather than in a dedicated reconciliation box:
-  P8.1.1→P2.39/P1.37 (`app://intake` + strings), P8.3/P8.16→P2.85 (`tauri-plugin-store`
+  P8.1.1→P2.39/P1.37 (the payload-less `app://intake` nudge + strings), P8.3/P8.16→P2.85 (`tauri-plugin-store`
   prefs blob), P8.10/P8.12→P2.34 (C11 `get_app_info`), P8.15→P2.33 (C10
   `open_project_page`), P8.19→P3.68 (§2.8.2 catalog), P8.20→P1.31.2/P3.69 (§5.1 store +
   §2.9.1 catalog). No P8 box `>`-note defers a `needs:` with the P4.77-forbidden
@@ -68,7 +68,7 @@
   > scope (i). The single persistent `AppHeader` present in every §5.2 state — slim, calm, never a second navigation model — laying out the three otherwise-homeless surfaces: BrandLogo (left), ThemeToggle + About/`?` trigger (right), with the BusyNotice Banner slot just under it (top of workspace). Renders identically across all 12 states.
   - [ ] **P8.1.1** [UI] Build the BusyNotice passive Banner (the §5.8 defence-in-depth leaked-`app://intake`-while-busy path) + its auto-dismiss rule · §5.3 §7.1.1 §5.8 · G57 G33a
     needs: P8.1, P2.39, P1.37
-    > scope (i). The `BusyNotice.tsx` passive non-modal Banner in the AppHeader slot, fired **ONLY** on the §5.8 defence-in-depth path — a leaked `app://intake` arriving while not Idle/Summary (NOT the primary refuse-busy path, which the core handles core-side with no emit at the §7.1.1 PRIMARY `forward_launch_intake` funnel, P2.55 — P2.72 asserts that upstream delegation, it adds no separate core-side freeze gate); carries the §7.1.1 "ConvertIA is busy…" `strings/ui.ts` string (English-only, G57). Auto-dismiss rule: it persists across the Converting family (7→7a Cancelling does **NOT** dismiss it) and clears on **leaving** the Converting family (→ Summary(8) / AppFault(12)). Passive (never modal, never forces a choice — `role` is a status Banner, not `alertdialog`), the per-push `vitest-axe` ARIA target (G33a). (Build-order: `needs: P2.39` for the `app://intake` event binding + `P1.37` for the `strings/ui.ts` scaffold the §7.1.1 string lands in, per the P8 boundary note — the cross-phase edges declared, not deferred.)
+    > scope (i). The `BusyNotice.tsx` passive non-modal Banner in the AppHeader slot, fired **ONLY** on the §5.8 defence-in-depth path — a leaked `app://intake` nudge arriving while not Idle/Summary (the nudge is payload-less, `[DECIDED 2026-07-06]` core-owned paths — it carries no paths, so a leaked emit can never inject or swap intake; the BusyNotice stays the not-Idle affordance, a UX courtesy rather than a security boundary; NOT the primary refuse-busy path, which the core handles core-side with no emit at the §7.1.1 PRIMARY `forward_launch_intake` funnel, P2.55 — P2.72 asserts that upstream delegation, it adds no separate core-side freeze gate); carries the §7.1.1 "ConvertIA is busy…" `strings/ui.ts` string (English-only, G57). Auto-dismiss rule: it persists across the Converting family (7→7a Cancelling does **NOT** dismiss it) and clears on **leaving** the Converting family (→ Summary(8) / AppFault(12)). Passive (never modal, never forces a choice — `role` is a status Banner, not `alertdialog`), the per-push `vitest-axe` ARIA target (G33a). (Build-order: `needs: P2.39` for the `app://intake` event binding + `P1.37` for the `strings/ui.ts` scaffold the §7.1.1 string lands in, per the P8 boundary note — the cross-phase edges declared, not deferred.)
 - [ ] **P8.2** [UI] Build the BrandLogo primitive reading the bundled offline placeholder SVG · §5.5
   needs: P8.1
   > scope (i) (ship-gating: the header is a ship surface; the *final mark* is scope-(ii) branding). A single `<BrandLogo>` primitive reading a bundled-local placeholder SVG (offline, no CDN, §2.11) so the owner can swap the final Ne-IA mark without touching layout; the logo + "ConvertIA"/"Ne-IA" names are NOT MIT-granted (SSOT Trademark) — placeholder stand-in only.
@@ -118,7 +118,7 @@
 
 - [ ] **P8.15** [UI] Build the user-initiated "Open Releases page" About link via C10 `open_project_page` · §5.9 §7.6.2 · G44
   needs: P8.9, P2.33
-  > scope (i), ship-gating. About checklist item 7: a user-initiated link to the canonical Ne-IA GitHub Releases page (C10 `open_project_page` → the §7.7 `open_url` shell-out, the ONLY permitted, explicitly-user-triggered network action). NEVER an automatic check, no fetch/parse of the page itself (§7.6.1 no phone-home). The frontend calls C10 as an opaque typed RPC via `src/lib/ipc/**`; the no-`OpenKind` C10 row (§7.7.1) is the wiring point. (`needs: P2.33` — the C10 `open_project_page` contract this link invokes.)
+  > scope (i), ship-gating. About checklist item 7: a user-initiated link to the canonical Ne-IA GitHub Releases page (C10 `open_project_page` → the §7.7 `open_url` shell-out, the ONLY permitted, explicitly-user-triggered network action). NEVER an automatic check, no fetch/parse of the page itself (§7.6.1 no phone-home). The frontend calls C10 as an opaque typed RPC via `src/lib/ipc/**`; the no-`OpenTarget` C10 row (§7.7.1) is the wiring point. (`needs: P2.33` — the C10 `open_project_page` contract this link invokes.)
 
 ### Settings chrome (verbose-log toggle) — scope (i)
 

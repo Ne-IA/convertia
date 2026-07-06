@@ -104,17 +104,21 @@ first" note (rather than silently queued as a deferred drop). This keeps the fre
 point (§2.4) and the one-batch-at-a-time model (§1.3) unambiguous and avoids a hidden
 queue the user can't see. (Adopting the standing [REC].) When **idle**, a second
 launch's paths start a fresh drop normally. **The single-instance callback is the
-PRIMARY refuse-busy gate `[DECIDED]`:** when busy it shows the busy note and **does NOT
-emit `app://intake`** — so the paths never reach the UI mid-run. The §5.8 UI guard
-(ignore `app://intake` outside `Idle`/`Summary`) is **defence-in-depth**, not the
-primary gate. **UI surface = the `BusyNotice` Banner (§5.3), rendered under the
+PRIMARY refuse-busy gate `[DECIDED]`:** when busy the hand-off dies at the §7.8.1
+funnel — **no `PendingIntake` stash, no `app://intake` nudge** (and per the 2026-07-06
+owner ruling (core-owned paths) the event is a **payload-less nudge** in any case: it
+never carries paths, busy or idle, so no path can ever reach the UI). The §5.8 UI
+guard (a nudge arriving in a state that cannot take fresh intake renders the
+`BusyNotice`, §5.4) is **defence-in-depth**, not the primary gate. **UI surface = the `BusyNotice` Banner (§5.3), rendered under the
 `AppHeader`** when that defence-in-depth guard fires (§5.5 app-chrome layout); it is a
 passive non-modal notice, never a modal. **The primary busy SIGNAL is the window
 re-focus itself `[DECIDED]`:** the single-instance callback **re-focuses the running
 window** (the OS brings ConvertIA forward) — that re-focus, landing the user back on the
-live `Converting` screen, IS the sufficient primary "we're busy" feedback. **The
-`BusyNotice` text is shown ONLY on the defence-in-depth path** (if/when an `app://intake`
-somehow reaches the UI mid-run despite the core-side gate). A Phase-3 dev must **not** add
+live `Converting` screen, IS the sufficient primary "we're busy" feedback. **Mid-run, the
+`BusyNotice` text is shown ONLY on the defence-in-depth path** (if/when a nudge somehow
+reaches the UI mid-run despite the core-side gate — and it carries nothing, so it could
+not set-swap even then; the §5.4 non-intake states outside a run have their own Banner
+trigger, §5.8). A Phase-3 dev must **not** add
 a new event/toast to announce busy-ness — re-focus + the (rare) defence-in-depth Banner
 are the whole surface, so the §0.4.2 three-`app://`-event invariant is not expanded.
 
@@ -214,7 +218,8 @@ section only fixes the *identity* embedded in it.)
    the loader fails before the core runs, so there is no in-app fault to show and the
    "fail clearly" substitute is the §6.2.4 download-page prerequisite note, not a dialog.
 7. **Process launch-time intake** (§7.8): if the app was opened *with* file paths
-   (OS open-doc / argv), feed them through §1.1 once the window is ready.
+   (OS open-doc / argv), feed them through the §7.8.1 funnel (stashed core-side; the
+   frontend's mount-time C1 drain collects them into §1.1 once the window is ready).
 8. Hand to UI empty/idle state (§5.2).
 
 Steps 3–5 run in the Rust core during `setup`/just after; the window is only shown
@@ -982,36 +987,41 @@ commands (C9/C10, §0.4.1), and their **Rust handlers call the plugin's `OpenerE
 methods internally**. A Rust-internal `OpenerExt` call is **not** capability-gated
 (capabilities gate only what the WebView may invoke), so the §0.10 manifest carries
 **no `opener:*` grant** at all. Three operations (canonical command names/payloads
-enumerated by §0.4 — listed here by the `OpenerExt` method the Rust handler calls):
+enumerated by §0.4 — **C9 takes an `OpenTarget` id, never a path** (the 2026-07-06
+owner ruling, core-owned paths); its Rust handler **resolves the id against the run's
+`RunResultStore`** — the core-side registry holding the terminal run's recorded real
+paths (§1.12) — then calls the `OpenerExt` method on the resolved path):
 
-All three §0.6 `OpenKind` variants map to a concrete `OpenerExt` call (the C9 `kind`
-argument selects the row; no `OpenKind` is undefined):
+Every `OpenTarget` variant maps to a concrete resolution + `OpenerExt` call (the C9
+`target` argument selects the row; no `OpenTarget` is undefined):
 
-| C9 `OpenKind` / C10 | `OpenerExt` method (Rust, called internally) | Behaviour | Used by |
+| C9 `OpenTarget` / C10 | Resolves to (`RunResultStore`, §1.12) | `OpenerExt` method (Rust, called internally) | Used by |
 |-----------|-----------|-----------|---------|
-| **`OpenKind::RevealInFolder`** | `app.opener().reveal_item_in_dir(path)` (JS API name `revealItemInDir`) | Opens the OS file manager **with the file selected/highlighted**: Explorer `/select,` on Windows, Finder reveal on macOS, best-effort folder-open on Linux. **This is the primary "Open folder" affordance** (§5.3 OpenActions) — safer than open-file (it does not execute the artifact, §7.7.3). | C9 → "Open folder" (§5.3) |
-| **`OpenKind::Folder`** | `app.opener().open_path(dir, None)` on the **containing directory** (JS API name `openPath`) | Opens the containing folder itself **without** selecting a file (used where there is no single subject file to highlight, e.g. opening a divert root with many outputs, or the Linux fallback where reveal-with-select is unreliable). | C9 → folder open where reveal-select is N/A |
-| **`OpenKind::File`** | `app.opener().open_path(path, None)` (JS API name `openPath`) | Opens the converted **file** in the OS default app for its type (single-output "Open file"). | C9 → "Open file" (§5.3) |
-| **(C10, no `OpenKind`)** | `app.opener().open_url(URL, None)` (JS API name `openUrl`) | Opens the canonical Ne-IA URL in the default browser | C10 → About link (§5.9 / §7.6.2) |
+| **`OpenTarget::CommonRoot`** | the run's recorded `common_root` (the beside-source root, §2.7) | folder browse: `app.opener().reveal_item_in_dir(..)` (JS API name `revealItemInDir`) where a single subject output exists to highlight — Explorer `/select,` on Windows, Finder reveal on macOS — else `open_path(dir, None)` (JS API name `openPath`) on the root itself; Linux falls back to the plain folder-open (no reliable cross-distro select). **The primary "Open folder" affordance** (§5.3 OpenActions) — safer than a file launch (nothing is executed, §7.7.3). | C9 → "Open folder" / "Open source folder" (§5.3) |
+| **`OpenTarget::DivertRoot`** | the run's recorded `divert_root` (present only for a split-output batch, §1.12) | the same folder-browse call on the divert root (typically the many-outputs case → `open_path(dir, None)`) | C9 → "Open saved-to folder" (§5.3) |
+| **`OpenTarget::Item(ItemId)`** | that item's recorded OUTPUT file | `app.opener().open_path(path, None)` (JS API name `openPath`) — opens the converted **file** in the OS default app for its type (single-output "Open file") | C9 → "Open file" (§5.3) |
+| **`OpenTarget::Residue(ItemId)`** | that item's recorded cleanup-residue location (§2.6.4) | `app.opener().reveal_item_in_dir(residue)` — reveal only, never a launch | C9 → the "reveal residue" link (§5.3 ResultSummary) |
+| **(C10, no `OpenTarget`)** | — (no resolution; the URL is a compiled-in constant) | `app.opener().open_url(URL, None)` (JS API name `openUrl`) — opens the canonical Ne-IA URL in the default browser | C10 → About link (§5.9 / §7.6.2) |
 
-**"Open folder" target (per SSOT *How It Feels* 8):** opens the **common root of
-the dropped selection** (the mapping is owned by §1.12/§2.7); for the beside-source
-default that is the dropped folder, for a chosen-destination it is that
-destination root. On Windows/macOS the reveal API additionally highlights the
-specific output when a single file is the subject; Linux file managers vary, so
-the **`[REC]`** fallback is "open the containing directory" (no reliable
-cross-distro select).
+**"Open folder" target (per SSOT *How It Feels* 8):** `OpenTarget::CommonRoot`
+resolves to the **common root of the dropped selection** (the mapping is owned by
+§1.12/§2.7); for the beside-source default that is the dropped folder, for a
+chosen-destination it is that destination root. On Windows/macOS the reveal API
+additionally highlights the specific output when a single file is the subject; Linux
+file managers vary, so the **`[REC]`** fallback is "open the containing directory"
+(no reliable cross-distro select).
 
 **Split-output (divert) → TWO open-folder targets `[DECIDED]`.** When a batch's
-outputs split between beside-source and a divert root, `RunResult` carries **both**
-`common_root` (beside-source) **and** `divert_root: Some(..)` (§0.6/§1.12), and the
-§7.7.3 membership set covers both. The §5.3 `OpenActions` therefore renders **two
-open-folder buttons** in that case — "Open [beside-source]" → C9 `{ kind:
-RevealInFolder, path: common_root }` and "Open [Downloads/Documents]" → C9 `{ kind:
-RevealInFolder, path: divert_root }`; when `divert_root` is `None` it renders only the
-single `common_root` button. A single `PathBuf` cannot represent both roots, which is
-exactly why §0.6 splits them — a one-button Summary would leave a returning-to-Downloads
-user with no navigation to the diverted half.
+outputs split between beside-source and a divert root, the `RunResultStore` records
+**both** roots and the wire `RunResult` mirrors them as **`commonRootDisplay`** +
+**`divertRootDisplay?`** (§0.6/§1.12); the §7.7.3 resolution set covers both. The §5.3
+`OpenActions` therefore renders **two open-folder buttons** in that case — "Open
+[beside-source]" → C9 `{ target: OpenTarget::CommonRoot }` and "Open
+[Downloads/Documents]" → C9 `{ target: OpenTarget::DivertRoot }`; when
+`divertRootDisplay` is absent it renders only the single common-root button. A single
+root target could not represent both roots, which is exactly why the model splits
+them — a one-button Summary would leave a returning-to-Downloads user with no
+navigation to the diverted half.
 
 ### 7.7.2 Where the gate lives (no static opener scope) `[DECIDED]`
 
@@ -1023,46 +1033,56 @@ output **beside the source** (Desktop, USB, arbitrary project folders), routinel
 **never** cover the common case — it would only silently break the open-folder/open-file
 DoD gate. The **real, sufficient gate is Rust-side**:
 
-- **Reveal / open-path (C9):** the Rust handler **validates the requested path against
-  the current `RunResult`'s recorded outputs** (or their roots — both `common_root` AND,
-  for a split-output batch, `divert_root`, §1.12/§7.7.3) **before** calling `OpenerExt` —
-  works for *arbitrary* beside-source destinations, not just OS roots. A path not in that
-  set is refused (and logged, §7.5). This is a membership check, which a static glob cannot
-  express. (When outputs split between beside-source and a divert root, **both** roots are
-  open-folder targets and **both** are in the membership set — a single `common_root` could
-  not represent the diverted half, §0.6.)
+- **Open-target resolution (C9):** the WebView **cannot name a path at all** — C9's
+  argument is an **`OpenTarget` id** (the 2026-07-06 owner ruling, core-owned paths),
+  and the Rust handler **resolves it against the current run's `RunResultStore`**
+  (recorded outputs + roots + residue locations, §1.12/§7.7.3) **before** calling
+  `OpenerExt` — works for *arbitrary* beside-source destinations, not just OS roots.
+  An id that does not resolve is refused (and logged, §7.5): an unknown `ItemId`, no
+  terminal run, `DivertRoot` on an undiverted run, `Residue` on a residue-free item.
+  Membership is **total by construction** — an id can only ever denote something the
+  run recorded — so the pre-revision "validate the WebView-supplied path against the
+  recorded set" check, and its compare-two-paths anti-TOCTOU/canonicalization
+  questions, dissolve: no WebView path exists to validate, canonicalize or race; the
+  only path in play is the core's own recorded one. A membership rule like this is
+  exactly what a static glob could never express. (When outputs split between
+  beside-source and a divert root, **both** roots are open-folder targets and **both**
+  resolve — a single `common_root` could not represent the diverted half, §0.6.)
 - **Open-url (C10):** the command takes **no URL argument** from the WebView; the Rust
   handler opens a **compiled-in canonical Ne-IA URL constant**, eliminating any
   URL-injection surface. (A capability allow-list, even if present, can only
   further-restrict an outer bound applied *before* the handler — it could never widen
   to cover beside-source outputs, which is exactly why the load-bearing check is the
-  Rust-side `RunResult` membership test, not a manifest scope.)
+  Rust-side `RunResultStore` id-resolution, not a manifest scope.)
 
 ### 7.7.3 Open-file safety `[DECIDED + REC]`
 
 Launching an **external** application on a **fresh, possibly-untrusted** artifact
 is security-relevant (§0.11 maps this threat to §7.7). Constraints:
 
-- **Per-FILE launch vs per-ROOT folder-browse — two distinct membership rules
-  `[DECIDED]`.** The "never a source" claim is scoped to the **file-launch** path, not
-  the folder-browse path:
-  - **File launch** (`OpenKind::File` — hand the artifact to its OS default app):
-    **only a path in the current `RunResult`'s recorded OUTPUT files** (§1.12) is
-    allowed — never an arbitrary WebView path, never a *source* file, never an engine
-    intermediate. A path not in the output set is refused (and logged, §7.5). This makes
-    *file launch* structurally unable to **execute/hand-off** anything other than a file
-    the user just chose to create.
-  - **Folder browse** (`OpenKind::Folder` / `RevealInFolder` — open the OS file manager):
-    the allowed targets are the run's **roots** — `common_root` (beside-source) and, for a
-    split-output batch, `divert_root` (§1.12/§7.7.3). **Opening a root is intentionally
-    allowed even though, on a beside-source batch, `common_root` is a directory that
-    *contains the user's sources*** — this is a folder *browse*, **no handler is executed
-    on any file** (the OS just shows the directory, with an output highlighted for
-    `RevealInFolder`), so it cannot launch a source. The membership check therefore admits
-    a *root* for folder-browse kinds and an *output file* for the file-launch kind; it does
-    **not** treat the source-containing root as forbidden. "Never a source" means **no
-    source file is ever handed to a default app**, not "the folder holding sources is
-    never browsable".
+- **Per-FILE launch vs per-ROOT folder-browse — two distinct resolution rules
+  `[DECIDED]`.** The "never a source" claim is scoped to the **file-launch** target,
+  not the folder-browse targets:
+  - **File launch** (`OpenTarget::Item(ItemId)` — hand the artifact to its OS default
+    app): the id resolves **only into the current `RunResultStore`'s recorded OUTPUT
+    files** (§1.12) — never an arbitrary WebView-named path (none exists on this wire,
+    2026-07-06 owner ruling), never a *source* file, never an engine intermediate
+    (neither is in the resolvable output set). An id that does not resolve is refused
+    (and logged, §7.5). This makes *file launch* structurally unable to
+    **execute/hand-off** anything other than a file the user just chose to create.
+  - **Folder browse** (`OpenTarget::CommonRoot` / `OpenTarget::DivertRoot` /
+    `OpenTarget::Residue(ItemId)` — open/reveal in the OS file manager): these resolve
+    to the run's **roots** — `common_root` (beside-source) and, for a split-output
+    batch, `divert_root` (§1.12/§7.7.3) — or to the item's recorded cleanup-residue
+    location (§2.6.4). **Opening a root is intentionally allowed even though, on a
+    beside-source batch, `common_root` is a directory that *contains the user's
+    sources*** — this is a folder *browse*, **no handler is executed on any file**
+    (the OS just shows the directory, with an output highlighted where the reveal API
+    supports it), so it cannot launch a source. The resolution rule therefore admits a
+    *root / residue location* for the browse targets and an *output file* for the
+    file-launch target; it does **not** treat the source-containing root as forbidden.
+    "Never a source" means **no source file is ever handed to a default app**, not
+    "the folder holding sources is never browsable".
 - **It hands off to the OS default app** (we do not pick the program, except the
   browser-for-URL case) — ConvertIA is not in the business of choosing handlers;
   the output's *type* is one the user explicitly converted *to*, so opening it is
@@ -1084,6 +1104,15 @@ is security-relevant (§0.11 maps this threat to §7.7). Constraints:
   a run ROOT); the no-auto-open behaviour + the affordance ordering are exercised by the §6.4.6 E2E
   / §6.6 walkthrough. It is the open-side companion to the §7.6.1 no-phone-home stance: v1 launches
   nothing the user did not just create and did not explicitly click.
+  - **Supersede-note `[the 2026-07-06 owner ruling (core-owned paths)]`.** The
+    P2.105-recorded gate above was formulated as a **path-membership** test (a
+    WebView-supplied C9 `path` validated against the run's recorded set — built
+    P2.100–103, G15-unit-tested). The ruling re-cuts the C9 wire to **`OpenTarget` ids
+    resolved against the `RunResultStore`** (§7.7.1/§7.7.2): identical force — only
+    what the run recorded can be opened, legs (a)–(c) unchanged — in a simpler form
+    (no WebView path exists, so the validate/canonicalize/compare surface is gone).
+    The P3 wire-revision boxes own the code change; the P2.100–103 mapping + gate
+    LOGIC carry over as the membership core of the id resolution.
 
 ---
 
@@ -1132,38 +1161,58 @@ and one-batch-at-a-time (§1.3) rules apply identically. The entry points:
   in `setup` (`std::env::args_os`).
 - **Linux:** the desktop-entry **`%F`/`%U`** field expansion → `argv`, handled the
   same as Windows.
+- **Native window drop (all platforms) `[DECIDED — the 2026-07-06 owner ruling
+  (core-owned paths)]`:** the §5.4 drop — **`WindowEvent::DragDrop`** on the main
+  window, handled **core-side** (the WebView renders drag-over styling from DOM drag
+  events only; the dropped paths never enter it). Not a *launch* entry point, but it
+  **joins this same funnel** (origin `Drop`), so the refuse-busy gate, the
+  `PendingIntake` stash and the `app://intake` nudge are ONE mechanism for every
+  intake source — drop, launch-arg, second-instance, Open-with, and the C2a picker's
+  picked set (§0.4.1 C2a).
 
 ```rust
-// One funnel for EVERY launch-time path source → §1.1 frozen-set builder. Both the
-// single-instance argv/cwd callback (§7.1.1) AND the macOS RunEvent::Opened handler
-// (below) call THIS, so the refuse-busy gate (§7.1.1) and the buffer-then-replay race
-// fix are enforced once, at the single funnel — not duplicated per hook.
+// One funnel for EVERY intake source → the core-side PendingIntake buffer. The
+// single-instance argv/cwd callback (§7.1.1), the macOS RunEvent::Opened handler
+// (§7.3.2), the native window drop (WindowEvent::DragDrop, §5.4) and the C2a picker
+// all call THIS, so the refuse-busy gate (§7.1.1), the stash and the nudge are
+// enforced once, at the single funnel — not duplicated per hook.
 fn forward_launch_intake(app: &AppHandle, paths: Vec<PathBuf>, origin: IntakeOrigin) {
     if paths.is_empty() { return; }
-    // §7.1.1 PRIMARY refuse-busy gate, enforced HERE for BOTH launch hooks: a
-    // mid-conversion second-launch / Open-with must NOT reach §1.1 (it would violate
-    // the §2.4 freeze). When busy: DROP the paths — do not emit app://intake, do not
-    // buffer into PendingIntake. (No new app:// event: the §0.4.2 three-event invariant
-    // holds. The §5.8 BusyNotice Banner is the defence-in-depth surface if app://intake
-    // ever leaks; the primary gate's job is to never let it leak — incl. via Opened.)
+    // §7.1.1 PRIMARY refuse-busy gate, enforced HERE for ALL intake hooks: a
+    // mid-conversion hand-off / drop must NOT reach §1.1 (it would violate the §2.4
+    // freeze). When busy: DROP the paths — no stash, no nudge. (No new app:// event:
+    // the §0.4.2 three-event invariant holds. The §5.8 BusyNotice Banner is the
+    // defence-in-depth surface if a nudge ever leaks mid-run; the primary gate's job
+    // is to never let it leak — incl. via Opened and the drop.)
     if converter_is_busy(app) {                  // run-level state (§1.9), same predicate as §7.3.2
         return;
     }
-    // §0.4.2 `app://intake` payload is { paths, origin } (NOT bare paths) so the
-    // frontend can re-call C1 ingest_paths with the correct IntakeOrigin (§0.6).
-    // The ready-flag branch (emit-if-ready vs buffer-into-PendingIntake) is below.
+    // Not busy: ALWAYS stash. PendingIntake is the single hand-off buffer for every
+    // source; the real PathBufs + the IntakeOrigin stay HERE, core-side — no path
+    // ever crosses the wire or an app:// event (the 2026-07-06 owner ruling). A
+    // stash over a still-undrained set APPENDS to it and keeps the FIRST stash's
+    // origin (the P2.58 no-loss accumulation — a superseding replace would drop
+    // the earlier launch's paths; prose below). ORDER MATTERS
+    // (no-loss): stash BEFORE reading the ready flag — paired with the drain's
+    // mark-ready-BEFORE-take, every stash is either taken by a drain or sees
+    // ready == true and nudges (prose below).
+    stash_pending_intake(app, paths, origin);
+    // Nudge iff the frontend is ready: `app://intake` is PAYLOAD-LESS — a pure
+    // "come and drain" signal (§0.4.2). Not-ready (first launch): no nudge required —
+    // the root-shell mount ALWAYS drains once (§5.8), which collects this stash.
     if frontend_ready(app) {
-        emit_intake(app, paths, origin);            // UI mirrors a drop (§5.2/§1.1)
-    } else {
-        // first-launch race fix (below). The stash RE-CHECKS the ready flag under the
-        // pending-slot lock (`stash_or_route`) and hands the set BACK for a live emit when
-        // the C1 drain won the race between the ready-read above and this stash — the
-        // no-loss atomicity clause below.
-        if let StashOutcome::RouteToEmit(set) = buffer_pending_intake(app, paths, origin) {
-            emit_intake(app, set.paths, set.origin);
-        }
+        app.emit("app://intake", serde_json::Value::Null).ok();
     }
 }
+
+// The native drop enters the SAME funnel (§5.4): the WebView renders drag-over
+// styling from DOM drag events only and never sees the dropped paths.
+.on_window_event(|window, event| {
+    if let WindowEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event {
+        forward_launch_intake(window.app_handle(), paths.clone(), IntakeOrigin::Drop);
+    }
+    // (the §7.3.2 CloseRequested arm lives in this same handler)
+})
 
 // Caller at the single-instance hook (§7.1.1) resolves argv → paths, origin = SecondInstance;
 // the first-launch setup reader uses origin = LaunchArg; the macOS RunEvent::Opened handler
@@ -1178,48 +1227,56 @@ fn forward_launch_argv(app: &AppHandle, argv: &[String], cwd: &str, origin: Inta
 }
 ```
 
-**First-launch `Opened` buffer-then-replay (macOS pitfall) `[DECIDED]`.** A
-**first-launch** `RunEvent::Opened` (Open-with that *starts* the app) commonly fires
-**before the WebView has registered its `app://intake` listener**, so a bare
-`app.emit("app://intake", …)` at that moment is **dropped** (a documented Tauri timing
-pitfall). The launch funnel therefore **distinguishes the two cases**:
-- **App already running** (second-instance hand-off, or a mid-session `Opened`): the
-  WebView listener exists → `app.emit("app://intake", IntakePayload{..})` as shown.
-- **First launch / app not-yet-ready**: **stash the resolved paths + origin in a managed
-  `State<PendingIntake>`** instead of emitting. **Drain mechanism `[DECIDED]` — ONE path,
-  C1 re-use with a concrete `drainPending` flag (no dedicated command, no
-  `take_pending_intake` accessor):** the frontend, **on root-shell mount** (later than
-  listener-registration, so it closes the race), **ALWAYS re-calls C1 `ingest_paths` with
-  `paths: []` + `drainPending: true`** (a fresh `collectingId`). C1's handler, seeing
-  `drainPending`, **consumes `PendingIntake` exactly once** using its stored `origin`
-  (typically `LaunchArg`) and freezes that buffered set, returning its `CollectedSet`; if
-  `PendingIntake` is empty (the ordinary first launch with no files) it returns
-  `CollectedSet::Empty` and the UI stays Idle. The frontend never needs to *hold* the
-  buffered paths (it can't — they are Rust-side), so the trigger is deterministic and the
-  empty-paths + flag convention makes "first-launch-with-files" and "first-launch-empty"
-  both well-defined. There is **no separate `take_pending_intake` command/accessor**, so
-  the canonical C1–C13 IPC table (§0.4.1) stays complete and the codegen/drift check covers
-  the whole drain path; **no 4th `app://` event** is added (the §0.4.2 three-event
-  invariant holds). This guarantees a launch-with-files is never lost to a listener race. (`forward_launch_intake` consults the
-  ready-flag: emit if ready, else buffer — and `PendingIntake` carries the real `origin`,
-  **never** a hard-coded `SecondInstance`; a first-launch buffered set drains as
-  `LaunchArg`.) **No-loss atomicity `[DECIDED]`:** the funnel's ready-read and its stash are
-  two steps, so the C1 drain could interleave between them (mark-ready + take-nothing) and
-  strand a stashed set for the whole session (the flag is monotonic; the frontend drains once
-  per mount). Both critical sections therefore serialize on the **same pending-slot lock**:
-  the drain's two effects are **fused** (mark-ready THEN take, under the lock —
-  `take_marking_ready`), and the Buffer arm's stash **re-checks the ready flag under that
-  lock** (`stash_or_route`), handing the set back for a live `app://intake` emit when the
-  drain already ran — every launch set is either consumed by the drain or emitted, never
-  stranded. **Frontend ordering:** the root-shell mount fires the `drainPending` call only
-  after the `app://intake` listener registration has **settled** (the drain awaits the
-  subscription — completion, not merely call order), so the emit-if-ready arm never targets
-  an unregistered listener; the drain still fires when the subscription fails (the buffered
-  set returns via the C1 command **response**, not via an event, so nothing depends on the
-  listener for the drain itself).
+**`PendingIntake` — the single hand-off buffer; `app://intake` — a payload-less nudge
+`[DECIDED — the 2026-07-06 owner ruling (core-owned paths)]`.** Every non-busy intake —
+drop, launch-arg, second-instance, Open-with, the C2a-picked set — lands in the managed
+`State<PendingIntake>` (real `PathBuf`s + the stored `IntakeOrigin`, held core-side; no
+path ever crosses the wire), and `app://intake` carries **nothing** — a pure "come and
+drain" signal. The consumption is **C1 `drain_intake { collectingId, onScan } →
+CollectedSet`** (§0.4.1): the handler **consumes `PendingIntake` exactly once per call**
+using the stored `origin` (the real one — a first-launch buffered set drains as
+`LaunchArg`, never a hard-coded `SecondInstance`), freezes the buffered set (§1.1/§2.4)
+and returns its `CollectedSet`; a drain that finds **nothing pending** returns
+`CollectedSet::Empty` and the UI stays put — a clean no-op (the ordinary no-files mount
+drain, or a nudge whose stash a concurrent drain already consumed). The frontend issues
+the drain **on every `app://intake` nudge and once on root-shell mount** — the mount
+drain fires only after the `app://intake` listener registration has **settled**
+(completion, not merely call order) and collects a first-launch / Open-with set that was
+buffered before any listener existed (the documented Tauri first-frame timing pitfall a
+bare emit would lose); the buffered set returns via the C1 command **response**, never
+via an event, so nothing depends on the listener for the drain itself. The drain
+therefore runs **multiple times per session** (once per nudge + once on mount);
+**consume-once per CALL still holds**. **No-loss ordering — two rules replace the former
+lock dance:** the funnel **stashes before it reads the ready flag**, and the drain
+**marks ready before it takes** — so every stash either precedes a take (consumed by
+that drain) or follows the mark (its ready-read sees `true` and emits the nudge that
+triggers its own drain); a nudge that races an already-run drain merely produces a
+harmless empty drain. A stash over a still-undrained set **APPENDS** to it and keeps the
+FIRST stash's `origin` (the P2.58 no-loss accumulation — a superseding replace would
+silently drop the earlier launch's paths, the exact loss this section's guarantee
+forbids); the next drain consumes the merged set. There is **no
+separate `take_pending_intake` command/accessor**, so the canonical C1–C13 IPC table
+(§0.4.1) stays complete and the codegen/drift check covers the whole drain path; **no
+4th `app://` event** is added (the §0.4.2 three-event invariant holds).
+
+> **Supersede-note `[the 2026-07-06 owner ruling (core-owned paths)]`.** The
+> pre-revision funnel split **Emit-vs-Buffer** — emit `app://intake { paths, origin }`
+> when frontend-ready, else buffer into `PendingIntake` — and closed the first-launch
+> listener race with the P2.137 `stash_or_route`/`RouteToEmit` no-loss re-route (the
+> fused `take_marking_ready` + the stash's under-lock ready re-check, recorded
+> 2026-07-06). Both **collapse into stash+nudge**: with no payload-carrying emit arm
+> there is nothing to hand back for a "live emit", so `RouteToEmit` and the
+> pending-slot lock dance are structurally unnecessary — the residual interleavings
+> are covered by the two-rule no-loss ordering above, and the worst outcome of any
+> race is a harmless empty drain, never a stranded or double-ingested set. The former
+> drain-once-per-mount framing (a monotonic ready flag guarding a single drain) widens
+> to **drain-per-nudge + drain-on-mount** (consume-once per call unchanged; the
+> `drainPending: true` C1 flag is retired with the `ingest_paths` shape — every
+> `drain_intake` call IS a drain, §0.4.1). The P3 wire-revision boxes own the code
+> change.
 
 **Interaction with single-instance + freeze (§7.1.1 / §2.4):** at first launch the
-paths seed the idle state as if dropped (via the buffer-then-replay above). A *second*
+paths seed the idle state as if dropped (via the stash + mount-drain above). A *second*
 launch's paths arrive via the single-instance callback; if the primary instance is
 mid-conversion, the §7.1.1 `[REC]` (refuse with "busy") applies — the new paths are
 **not** silently merged into the frozen set of a running batch (that would violate §2.4

@@ -1392,11 +1392,21 @@ encoding/delimiters come through **intact, not mangled**.
 ### 2.10.1 Filenames `[DECIDED]`
 
 - **Paths are OS-native opaque strings, not assumed-UTF-8.** Rust represents them as
-  `PathBuf`/`OsString`. ConvertIA **never** lossily converts a path to `String`
-  (no `to_string_lossy()` for any *operation* — only for *display* to the WebView,
-  and even then via `to_string_lossy()` only at the very last step so a rare
-  non-UTF-8 name is shown with the replacement char but still **operated on**
-  losslessly via the original `OsString`).
+  `PathBuf`/`OsString`. ConvertIA **never** lossily converts a path to `String` for
+  any *operation* — operations are **`OsStr`-lossless end-to-end** (freeze, identity,
+  plan, engine argv, write all use the original `OsString`).
+  **No real path bytes cross the WebView wire at all `[DECIDED 2026-07-06 owner
+  ruling]`:** the IPC wire and the `app://` events carry only **IDs + core-produced
+  display strings** (§0.4.1/§0.4.2 — the real `PathBuf`s live in the core-side
+  registries, §0.4.4), and lossy conversion exists **only** in producing those
+  display strings — `to_string_lossy()` at the very last step, display-only (the
+  §0.6 `display_name`/`*_display` fields). This is forced as well as chosen: JSON
+  strings are UTF-8-only, so a serde `Path`/`PathBuf` serialisation cannot represent
+  a non-UTF-8 name losslessly — keeping paths off the wire is what keeps this
+  guarantee airtight rather than best-effort. **Consequence for a non-UTF-8 name:**
+  such a file converts **flawlessly** (every operation runs on the original
+  `OsString`, core-side); only its on-screen NAME renders with U+FFFD (the
+  replacement character).
   - **Windows** paths are UTF-16 (`OsStr` = WTF-8 internally) — emoji, CJK, combining
     marks survive round-trip.
   - **Unix** paths are arbitrary bytes — ConvertIA preserves the exact bytes.
@@ -1753,16 +1763,18 @@ of poisoning the pool:
   `catch_unwind` works; `panic = "abort"` is **not** used for the app binary
   (it would turn a recoverable per-item bug into a whole-app crash). Engines are
   separate processes, so their abort behaviour is irrelevant to this.
-- **Intake/detection panic boundary (C1 `ingest_paths` / C2a `pick_for_intake`)
-  `[DECIDED]`.** The §2.13.2 per-item boundary above covers the *convert* loop, but the
+- **Intake/detection panic boundary (C1 `drain_intake`) `[DECIDED]`.** The §2.13.2
+  per-item boundary above covers the *convert* loop, but the
   **§1.1 walk + §1.2 detection** (the magic sniff, the `.svgz` bounded inflate, chardetng,
   the Rust ZIP central-directory / OLE peeks — the **first** code to touch **untrusted
-  bytes**) runs **inside the C1/C2a command handler**, *before* any conversion item exists.
+  bytes**) runs **inside the C1 `drain_intake` command handler** (every intake source
+  funnels into it via the §7.8.1 `PendingIntake` buffer `[DECIDED 2026-07-06]`; C2a
+  only opens the picker and buffers), *before* any conversion item exists.
   That code is therefore **also wrapped in `catch_unwind`**, at two granularities:
   - **Per-path:** the detection of **one** path runs inside `catch_unwind`; a panic
     decoding one file's header becomes that path's `DetectionOutcome::Uncertain` (it does
     **not** abort the whole walk) — the walk continues to the next path.
-  - **Whole-walk:** the C1/C2a handler's outer body is itself wrapped so a panic that
+  - **Whole-walk:** the C1 handler's outer body is itself wrapped so a panic that
     escapes the per-path boundary (e.g. in the recursion/dedup bookkeeping) is converted
     to a **calm `IpcError`** returned from the command (a `CollectedSet`-level failure the
     §5.2 *Collecting* state renders as "couldn't read these files", **never a blank
