@@ -1143,7 +1143,7 @@ impl FrontendReady {
 ///    P2.73 (intake-time `Empty`/`Unreadable` = pre-flight `Skipped`).
 /// 3. **Resolve identity + de-dup** — each entry is reduced to its §2.3 resolved identity and
 ///    de-duplicated (§2.3.2 / §2.4.1) → P2.74 (the pure `FileIdentity` resolved-identity type) / P3 (the IO/FFI
-///    `resolve_identity` producer that yields each identity — P3.1.1 shell / P3.6 body) / P2.76 (the pure de-dup
+///    `resolve_identity` producer that yields each identity — P3.1.1 surface / P3.6 body) / P2.76 (the pure de-dup
 ///    fold over those identities, [`dedup_by_identity`]).
 /// 4. **Assign `ItemId`** over the single id space (eligible + skipped, never re-indexed, §0.6
 ///    invariant 6) → P2.75.

@@ -4,10 +4,35 @@
 //!
 //! P1 established the module so the §0.7 tree compiles and the §06 drift mechanism has a home. P2.18
 //! authored the §2.8.1 `ConversionErrorKind` taxonomy + its §0.4.3 `ErrorKind` wire alias here, P2.19 the
-//! `IpcError` shape, and P2.20 the `OutcomeMsg` surfaced-string type + the one-way `SkipReason → ErrorKind`
-//! §1.12 projection helper, and P2.73 the §1.1 turn-time `ReadFailure → ErrorKind` projection helper; only
-//! the §2.8.2 message CATALOG (the kind → resolved-string producer) lands in a later P2 box (§02 owns the
-//! outcome strings).
+//! `IpcError` shape, P2.20 the `OutcomeMsg` surfaced-string type + the one-way `SkipReason → ErrorKind`
+//! §1.12 projection helper, P2.39.1 the `AppFault` `app://fault` payload, and P2.73 the §1.1 turn-time
+//! `ReadFailure → ErrorKind` projection helper.
+//!
+//! ## P3.1.3 reconcile — the taxonomy root is type-complete; the string TABLES + render seam remain
+//! [Build-Session-Entscheidung: P3.1.3] The §2.8 taxonomy ROOT already homes the full item-/app-level
+//! kind set + `ErrorKind` / `IpcError` / `AppFault` / `OutcomeMsg` + both projection helpers (above), so
+//! this box authors NO new type or impl; it records the root as scaffolded and maps the string TABLES +
+//! the surfacing leg owned by the scheduled boxes:
+//!  - the §2.8.2 `ConversionErrorKind → canonical-English` message catalog — **P3.68** (a P3 box; this
+//!    commit corrects the header's earlier attribution of the catalog to a P2 box).
+//!  - the §2.9.1 `LossyKind → canonical-English` lossy-note catalog — **P3.69**.
+//!  - the Running→Failed render seam turning an internal `ConversionErrorKind` into the surfaced
+//!    `OutcomeMsg::Failure { text }` through the P3.68 catalog — **P3.46**.
+//!
+//! [Build-Session-Entscheidung: P3.1.3] The `From<ConversionErrorKind>` projection seam is VACUOUS under
+//! the §2.8.2 option-1 alias (`pub type ErrorKind = ConversionErrorKind`, P2.18): `ErrorKind::from(kind)`
+//! for `kind: ConversionErrorKind` is the std reflexive `From<T> for T` — already present, the identity;
+//! a first-party `impl From<ConversionErrorKind> for ConversionErrorKind` conflicts with the std blanket
+//! (E0119) and cannot be written. So NO `From` impl is authored here, and the P3.46.2 internal-to-wire
+//! projection IS the identity — its real work is rendering the kind through the P3.68 catalog, not a type
+//! conversion. (The `error_kind_is_the_conversion_error_kind_alias` test below pins the alias this rests on.)
+//!
+//! [Build-Session-Entscheidung: P3.1.3] `CleanupResidue` is NOT authored here. The
+//! `CleanupResidue { item: ItemId, residue_path }` STRUCT is a §1.12 result-family type homed in
+//! `crate::orchestrator` (tier 1, co-homed with `RunResult.cleanup_incomplete`, P2.12); `crate::outcome`
+//! (tier 2) cannot reference a tier-1 type (§0.7), so its "string home" role is only the §2.8.2 catalog
+//! ROW for the existing `ConversionErrorKind::CleanupResidue` variant + the §2.6.4 "With residue" tail —
+//! both P3.68 strings, surfaced by P3.25.
 
 // [Build-Session-Entscheidung: P2.18/P2.20/P2.73] The §2.8 wire-taxonomy (`ConversionErrorKind`/`ErrorKind`),
 // the §0.4.3 `IpcError`, the `OutcomeMsg` surfaced line, the §1.12 `SkipReason → ErrorKind` helper, and the

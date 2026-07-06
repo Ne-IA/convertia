@@ -1,11 +1,31 @@
 //! `crate::fs_guard` — the §2.0 no-harm kernel: atomic, exclusive, no-clobber publish on the resolved
 //! real file, link-safety + resolved-identity, the frozen source set, path-limit handling and the
-//! cross-volume strategy (§2.1 / §2.3 / §2.14). Every output flows through here; engines never write
-//! the final file.
+//! cross-volume strategy (§2.1 / §2.2 / §2.3 / §2.14). Every output flows through here; engines never
+//! write the final file. A §0.7 tier-2 trust-kernel LEAF: it depends DOWN only (on `crate::domain`),
+//! never up on IPC / orchestrator / the engine registry (§2.0 dependency direction). Unsafe-free — the
+//! crate-root `#![deny(unsafe_code)]` (main.rs) covers it; the per-OS handle FFI the identity/publish
+//! primitives require is homed in the single allow-listed `crate::platform` shim (§0.7 / P3.6 / P3.9).
 //!
-//! P2.74 lands the pure §2.3.1 resolved-identity TYPE (`FileIdentity`) — the §2.3.2 de-dup key. Its
-//! IO/FFI producer `fs_guard::resolve_identity` (canonicalize + per-OS file identity) and the rest of the
-//! kernel (`is_safe_output`, `atomic_publish`, the frozen source set) are filled at P3.1.1 / P3.6.
+//! P2.74 lands the pure §2.3.1 resolved-identity TYPE (`FileIdentity`) — the §2.3.2 de-dup key (below).
+//!
+//! ## P3.1.1 public-surface contract map — bodies authored by the named fill-boxes
+//! [Build-Session-Entscheidung: P3.1.1] The §2.0 kernel's public functions are declared here as a
+//! documented CONTRACT MAP — the title's "function shells" are the public SURFACE, not callable bodies.
+//! No honest minimal value exists for any of them, so each signature AND body land together in its named
+//! fill-box below (the P2.74 ruling — author the `FileIdentity` TYPE, never a `resolve_identity`
+//! half-body — applied across the whole surface; and `crate::isolation` / `crate::pool` likewise carry
+//! only a documented root at scaffold time, their own interface landing at P3.2 / P3.3). It costs no
+//! compile-time reach: every P3 caller `needs:` the function's own fill-box,
+//! never P3.1.
+//!  - `resolve_identity(path) -> io::Result<FileIdentity>` — canonicalize + per-OS `(dev, inode)` /
+//!    file-index identity (§2.3.1 / §2.3.4) — **P3.6** (the TYPE is P2.74).
+//!  - `is_safe_output` — write-target link-safety vs the frozen source set (§2.3.3) — **P3.8**, over the
+//!    **P3.9** TOCTOU-closed parent-dir-handle primitive.
+//!  - `output_name` — verbatim-stem + `stem (n).ext` lazy no-clobber candidates (§2.2.1 / §2.10.1) — **P3.10**.
+//!  - `check_path_limit` — per-OS component + total path-length validation, fail-never-truncate (§2.2.3) — **P3.11**.
+//!  - `atomic_publish(parent_handle, tmp, leaf)` — per-OS create-only exclusive publish + the §2.14.3
+//!    cross-volume fallback (§2.1 / §2.3.3 / §2.14.3) — **P3.9 / P3.12-P3.18**.
+//!  - `location_status` — per-location writability + ephemeral classification, cached per-dir (§2.7.2) — **P3.33**.
 
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
@@ -13,7 +33,7 @@ use std::path::PathBuf;
 // [Build-Session-Entscheidung: P2.74] The §2.3.1 resolved-identity TYPE only (option A "split IO-vs-pure",
 // Co-Pilot 2026-06-30, owner-ratified): the `resolve_identity` FUNCTION that POPULATES it
 // (`std::fs::canonicalize` + `dunce::canonicalize` + the per-OS metadata read = IO/FFI, needs `dunce`) is
-// wholly P3 — its shell at P3.1.1, its body at P3.6 — so there is NO half-built function shell and NO
+// wholly P3 — its contract-map entry at P3.1.1, its body at P3.6 — so there is NO half-built function shell and NO
 // tagged-`Err` placeholder here (a placeholder with no honest value is the rejected quiet-stub, CLAUDE §5).
 //
 // Derive / identity choices (the §0.6 sibling types fix the house style):
