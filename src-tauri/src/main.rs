@@ -2511,6 +2511,234 @@ mod log_config {
 }
 
 #[cfg(test)]
+mod log_redaction_gate {
+    //! §6.4.2 (G31/G15): the §7.5.3 log-redaction PROPERTY GATE (P2.127) — the *behavioural* proof
+    //! `crate::log_redact` names ("a secret-looking path stem is absent from the log output ... the separate
+    //! P2.127 property gate"), and the P2 activation target of the P0.5.9 §7.5 log-redaction home
+    //! (test-strategy §6 / §1.3: "a known secret-looking path stem fed through the logger is absent from the
+    //! log — no file contents, no full paths").
+    //!
+    //! **Fed through the real `log` facade.** The redaction is applied at the CALL SITE — a user file path
+    //! routes through [`RedactedPath`] (basename only) at the default `info!`/`warn!` level, and full paths
+    //! surface only at the verbose `debug!` level via `p.display()` (§7.5.3 / §7.5.4). The configured
+    //! `tauri-plugin-log` logger (`log_plugin`) applies NO format-level redaction — it is a verified
+    //! pass-through — so the emitted record's content IS what the call site rendered. This gate drives the
+    //! SAME `log` facade the app uses (`tauri_plugin_log::log`) through a capturing sink + the SAME runtime
+    //! level gate `resolve_log_verbosity` flips (`log::set_max_level`), so it exercises the actual
+    //! default(`info`/`warn`)-vs-verbose(`debug`) filter + the `RedactedPath` door + the `p.display` verbose
+    //! form end to end. The plugin's own on-disk file target is `AppHandle`-coupled (no `tauri::test` mock by
+    //! decision, §1.1a) — its real file output is the §6.6 walkthrough / §1.6 E2E; this proves the redaction
+    //! the configured logger's call sites produce, which is the whole of the record content it writes.
+    //!
+    //! [Build-Session-Entscheidung: P2.127] Homed beside `log_config` (the §7.5 logging test home); the log
+    //! facade is driven through a single test-scoped capturing `log::Log` (no other test in this crate
+    //! installs a logger, so the one install Ok's and the buffer captures only this gate's records); the
+    //! `RedactedPath` breadth is a pinned-seed 512-case proptest (the P2.14 / P2.126 G16 runner).
+    //!
+    //! [Derived-Assumption: P2.127 — WHAT THIS GATE PROVES, PRECISELY. The DEFAULT `info!`/`warn!` sites render
+    //! a user path through `RedactedPath` (basename), and that door has NO verbose branch, so a default-level
+    //! site stays basename-only at EVERY runtime level — PROVEN here: flipping verbose never makes a default
+    //! site leak the stem. VERBOSE adds separate `debug!` `p.display` sites that disclose full paths (§7.5.4) —
+    //! the opted-in reproducibility trade — PROVEN here against a diagnostic scratch path. Derived from §7.5.3
+    //! (privacy by default, full paths on opt-in) + `crate::log_redact` (the renderer split), not picked
+    //! arbitrarily.
+    //! **OPEN — NOT closed by this gate, flagged for P4:** §7.5.4 verbose ALSO logs the exact engine argv,
+    //! which on Win/Linux carries the user's RESOLVED SOURCE path (staging the source into scratch before the
+    //! engine sees it is only the macOS T11 case, §3.5.0/§7.2.6). So once the P4 §7.5.4 argv-diagnostic sites
+    //! land, a secret-shaped DIRECTORY component of a user source path COULD surface at verbose unless that P4
+    //! site redacts the argv paths (or relies on staging). This gate does NOT prove that away — P4's argv-log
+    //! site owns it. And the box's "a secret is never logged at any level" is the SEPARATE structural fact that
+    //! ConvertIA has no credential-VALUE log site at all — an absence of a code path, not a value this
+    //! path-redaction gate can feed through the logger and assert on; it is therefore out of this gate's
+    //! behavioural scope (§6.7.3 offline-egress + the absence of any credential-logging site carry it).]
+
+    use crate::log_redact::RedactedPath;
+    use proptest::prelude::*;
+    use proptest::test_runner::{RngAlgorithm, TestRng, TestRunner};
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use tauri_plugin_log::log::{self, LevelFilter};
+
+    /// A test-scoped capturing `log::Log`: records each emitted record's rendered `[LEVEL] message`, so the
+    /// gate can read exactly what the configured logger's call sites write. This is the ONE logger installed in
+    /// this crate's test binary — no production log site runs under `cargo test` (§1.1a boot glue) and no other
+    /// test installs a logger; a future `main.rs` test that must assert on log output has to REUSE this fixture
+    /// rather than install a second logger (there is one `log::Log` per process).
+    struct CaptureLogger {
+        lines: Mutex<Vec<String>>,
+    }
+
+    static CAPTURE: CaptureLogger = CaptureLogger {
+        lines: Mutex::new(Vec::new()),
+    };
+
+    impl log::Log for CaptureLogger {
+        fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+            // The macro's `max_level` gate already filtered by level before this is reached; accept the rest
+            // so the capture reflects exactly what passed the runtime level filter.
+            true
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if let Ok(mut lines) = self.lines.lock() {
+                lines.push(format!("[{}] {}", record.level(), record.args()));
+            }
+        }
+        fn flush(&self) {}
+    }
+
+    /// Install the capturing logger (idempotent — one `log::Log` per process; the first call Ok's).
+    fn install_capture() {
+        let _ = log::set_logger(&CAPTURE);
+    }
+    /// Clear the capture buffer before a capture window.
+    fn reset() {
+        CAPTURE.lines.lock().expect("capture buffer lock").clear();
+    }
+    /// Read the captured records as one string.
+    fn dump() -> String {
+        CAPTURE
+            .lines
+            .lock()
+            .expect("capture buffer lock")
+            .join("\n")
+    }
+
+    /// A minisign-secret-key-SHAPED directory stem, assembled at RUNTIME from harmless word fragments so no
+    /// gitleaks-matching literal (G2) sits in this source (the boot-scan `concat!`-avoids-self-match idiom).
+    /// Synthetic, never a real key: `RW` + a ≥180-char base64-charset body, so it matches the `.gitleaks.toml`
+    /// minisign shape (`RW[A-Za-z0-9+/]{180,}`) as a RUNTIME value (the source holds only the short fragments),
+    /// standing in for a long, opaque, sensitive-looking path component the §7.5.3 default door must strip.
+    fn secret_shaped_stem() -> String {
+        // 6x a 36-char letters-only fragment (⊂ the base64 charset) = 216 chars after `RW` (≥180); the source
+        // literals `"RW"` and the fragment never adjoin, so no minisign-shaped literal exists to trip G2.
+        format!("RW{}", "SyntheticBase64ShapedBodyNotARealKey".repeat(6))
+    }
+
+    // §6.4.2 (G31/G15): the core §7.5.3 behavioural proof, fed through the real `log` facade. A user file
+    // path carrying a secret-shaped directory stem is logged through the DEFAULT door (`RedactedPath`) and a
+    // ConvertIA diagnostic path through the VERBOSE `debug!` form; the runtime level gate is the real
+    // `log::set_max_level` (what `resolve_log_verbosity` sets). All level transitions live in this ONE
+    // function so the global level + shared buffer are mutated sequentially, never raced.
+    #[test]
+    fn secret_looking_path_stem_is_absent_when_fed_through_the_logger() {
+        install_capture();
+
+        let secret = secret_shaped_stem();
+        // A USER file path whose directory carries the secret-shaped stem — only its basename may ever surface.
+        let user_path = Path::new("home")
+            .join("alice")
+            .join(&secret)
+            .join("vacation.jpg");
+        // A ConvertIA DIAGNOSTIC path (§7.5.4 scratch/temp) — its full path is the verbose reproducibility
+        // disclosure; it carries no user secret.
+        let scratch_path = Path::new("tmp")
+            .join("convertia")
+            .join("run-abcdef")
+            .join("job-0.part");
+
+        // ── DEFAULT level (info/warn), verbose OFF ──────────────────────────────────────────────────────
+        reset();
+        log::set_max_level(LevelFilter::Info);
+        // a default-level user-path log site routes through the basename-only door
+        log::warn!("could not write output {}", RedactedPath::new(&user_path));
+        // a verbose §7.5.4 diagnostic site — MUST be filtered out at the default level
+        log::debug!("scratch path {}", scratch_path.display());
+        let default_out = dump();
+
+        assert!(
+            default_out.contains("vacation.jpg"),
+            "§7.5.3: the basename is logged at the default level"
+        );
+        assert!(
+            !default_out.contains(&secret),
+            "§7.5.3/§2.11: the secret-shaped path stem is ABSENT from the default-level log output"
+        );
+        assert!(
+            !default_out.contains("alice"),
+            "§7.5.3: no directory component (no full path) surfaces at the default level"
+        );
+        assert!(
+            !default_out.contains("run-abcdef"),
+            "§7.5.3: a verbose debug! diagnostic site is filtered out at the default level"
+        );
+
+        // ── VERBOSE level (debug): the disclosed §7.5.3 reproducibility trade ────────────────────────────
+        reset();
+        log::set_max_level(LevelFilter::Debug);
+        // the verbose diagnostic site now fires and DISCLOSES the full diagnostic path (the §7.5.3 trade)
+        log::debug!("scratch path {}", scratch_path.display());
+        // the default door is level-independent — a user path via RedactedPath is STILL basename-only
+        log::warn!("could not write output {}", RedactedPath::new(&user_path));
+        let verbose_out = dump();
+
+        assert!(
+            verbose_out.contains("vacation.jpg"),
+            "verbose still logs the basename via the default door"
+        );
+        assert!(
+            verbose_out.contains("run-abcdef"),
+            "§7.5.3/§7.5.4: verbose DISCLOSES the full diagnostic path (the reproducibility trade)"
+        );
+        assert!(
+            !verbose_out.contains(&secret),
+            "§7.5.3: the RedactedPath default door is level-INDEPENDENT — a default-level info!/warn! site \
+             stays basename-only even when verbose raises the runtime level, so flipping verbose never makes \
+             the DEFAULT sites leak the stem (verbose's disclosure is the separate debug! p.display sites)"
+        );
+
+        // leave the global level at the benign default so no subsequent reader inherits verbose
+        log::set_max_level(LevelFilter::Info);
+    }
+
+    /// The §0.6-invariant property-test case-count floor (test-strategy §1.3 / G16: above proptest's 256
+    /// default; the P2.14 / P2.126 floor). [Build-Session-Entscheidung: P2.127]
+    const P2_127_CASES: u32 = 512;
+
+    /// A PINNED-SEED proptest runner (test-strategy §1.3 / G16) — replicates the P2.14 runner so the 512-case
+    /// exploration is identical every run and a counterexample is reproducible, never retried-to-pass (§7).
+    /// [Build-Session-Entscheidung: P2.127]
+    fn pinned_runner() -> TestRunner {
+        TestRunner::new_with_rng(
+            ProptestConfig::with_cases(P2_127_CASES),
+            TestRng::deterministic_rng(RngAlgorithm::ChaCha),
+        )
+    }
+
+    // §6.4.2 (G31/G15): the PROPERTY-gate breadth — over an arbitrary user path (its directory chain includes
+    // arbitrary long, opaque, secret-shaped components), the §7.5.3 default door renders EXACTLY the basename,
+    // so no directory stem (secret-shaped or not) can survive it. The wide-input complement to the fixed
+    // facade-driven test above and the example-based `crate::log_redact` unit tests.
+    #[test]
+    fn the_default_door_renders_exactly_the_basename_for_any_directory_chain() {
+        pinned_runner()
+            .run(
+                &(
+                    // directory components: 1..6 long alnum tokens (covers secret-shaped opaque stems)
+                    prop::collection::vec("[A-Za-z0-9_-]{1,40}", 1..6),
+                    // a `name.ext` basename (a real final component, so file_name() is Some)
+                    "[A-Za-z0-9_-]{1,24}\\.[a-z]{1,5}",
+                ),
+                |(dirs, basename)| {
+                    let mut path = PathBuf::new();
+                    for d in &dirs {
+                        path.push(d);
+                    }
+                    path.push(&basename);
+                    // EXACT basename: if the rendered form equals only the basename, no directory content
+                    // (secret-shaped or otherwise) can have leaked — the strongest form of "no full path".
+                    prop_assert_eq!(
+                        RedactedPath::new(&path).to_string(),
+                        basename.clone(),
+                        "§7.5.3: the default door renders exactly the basename, never a directory stem"
+                    );
+                    Ok(())
+                },
+            )
+            .unwrap();
+    }
+}
+
+#[cfg(test)]
 mod startup_spine {
     //! §7.2.1 ordered startup sequence — the app-shell spine (P2.106). Steps 3–5 are readiness SLOTs
     //! (`Result<(), AppFault>`, `Ok` now — bodies P3/P4), step 6 reveals the config-declared window ONLY after
