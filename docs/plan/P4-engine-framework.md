@@ -60,9 +60,10 @@
 
 ## Generic invocation lifecycle (§1.7)
 
-- [ ] **P4.6** [RUST] Build the `EngineInvocation` dispatch envelope + `InvocationResult` · §1.7 · G29
-  needs: P4.2
+- [ ] **P4.6** [RUST] Reconcile the §1.7 `EngineInvocation` envelope + `InvocationResult` against their P3.4 authoring + wire the P4 consumers · §1.7 · G29
+  needs: P4.2, P3.4
   > the §1.7 dispatch envelope `EngineInvocation { job: JobId, engine: EngineId, plan: Invocation, cancel: CancellationToken }` (wraps the §3.2.2 `Invocation`, re-declares no argv/cwd/env); `InvocationResult::{Succeeded, Failed(ConversionErrorKind), Cancelled}`. NOT a second plan type.
+  > **[Reconcile: P4.6 ↔ P3.4 — cross-phase type-authoring overlap, resolved 2026-07-07 (Co-Pilot; the P3.31/d601837 dup-box class)]** P3.4 AUTHORS both §1.7 types at their spec-fixed FULL shape (the envelope literal + `InvocationResult::{Succeeded, Failed(ConversionErrorKind), Cancelled}` are §1.7 `[DECIDED]` literals; `ConversionErrorKind` exists since P2.18, and P3.4's dispatch arms already return `InvocationResult`). This box is therefore the P4-side RECONCILE seat, not a second authoring: verify the P3.4-authored types match §1.7 verbatim (field set, no argv/cwd/env re-declaration, the not-a-second-plan-type rule) and that the P4 consumers (P4.7 via `needs: P4.6`) wire against them; with zero residual delta, flip `[x]` with a RECONCILE note — never author a duplicate envelope.
 - [ ] **P4.7** [RUST] Build the generic spawn lifecycle state machine (spawn→Running→exit/timeout/cancel/spawn-error) · §1.7 §2.12 · G29 G31
   needs: P4.6, P4.13
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P4.13` points at the §2.12 isolation wrapper defined later in document order — this lifecycle machine routes every spawn THROUGH that wrapper, so DECISION C builds P4.13 first; the edge is acyclic and valid, the inversion documented at the `needs:` line.
