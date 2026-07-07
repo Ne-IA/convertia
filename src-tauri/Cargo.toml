@@ -39,6 +39,19 @@ tauri-plugin-opener = "2.5.4"
 tauri-plugin-single-instance = "2.4.2"
 tauri-plugin-store = "2.4.3"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive"] }
+# [P3.4] §3.2.2 `TempPath = tempfile::TempPath` — the publish-temp type the `Invocation.out_tmp` engine-output
+# field holds (a path whose file is deleted on drop, matching §2.1 "deleted on drop / never a placeholder").
+# The §1.7 `EngineInvocation` envelope P3.4 authors transitively embeds `Invocation`, so `TempPath` enters
+# PRODUCTION here — a direct-edge DEV→PROD promotion. tempfile 3.27.0 is ALREADY in `Cargo.lock` via the DEV
+# graph (proptest → rusty-fork + the former dev edge; NOT via `tauri` — `tauri` has no tempfile edge), so this
+# adds NO newly-resolved package (`Cargo.lock` unchanged). tempfile does newly enter the shipped MIT-core PROD
+# closure here, but it + its transitives (fastrand, rustix/windows-sys) are all permissive with no
+# copyleft/image libs, so G53 stays green and the release-time SBOM enumerates the live prod closure (no
+# committed SBOM row to add here). §0.8 already lists tempfile (the "FS guarantees … exact" row) and the
+# `check-supply-chain` PINNED_FLOORS row exists since P1.59 (the walkdir reconcile-to-present precedent), so NO
+# §0.8 floor box is needed (the P3.4 ↔ P4.2/P4.3 reconcile). Still used by the §7.2.4 `ensure_executable` unix
+# test (now via this prod edge). Caret-pinned to the lock-resolved 3.27.0 (the normal-lib convention).
+tempfile = "3.27.0"
 # [P3.3] §0.9/§1.7 in-core permit lane: `tokio::sync::Semaphore` (the global-degree permit) +
 # `tokio::task::spawn_blocking` + `JoinError` (run the synchronous native CSV/TSV loop on a dedicated worker
 # thread so it never blocks the Tauri-managed multi-thread tokio runtime driving the subprocess engines +
@@ -93,14 +106,5 @@ tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 # `macros`/`tokio-macros` stay out of the production closure (the tauri-specta normal-`derive` /
 # dev-`typescript` split precedent). Same 1.52.3 pin as the prod `[dependencies]` tokio edge.
 tokio = { version = "1.52.3", features = ["macros"] }
-# [Build-Session-Entscheidung: P1.17] §7.2.4 executable-permission test: the unix `ensure_executable`
-# test (crate::platform) needs a REAL temp filesystem (test-strategy §0.1: never mock the FS under test)
-# to chmod a fake sidecar and assert the +x / idempotency contract. `std::env::temp_dir()` is banned by
-# the vendored G29 p-rust temp-dir SAST rule, and `CARGO_TARGET_TMPDIR` is unset for unit tests, so
-# `tempfile` (RAII-cleaned, securely-named, the standard crate) is the right tool. DEV-ONLY + already
-# transitive via tauri (no newly-resolved package, single lock edge); caret-pinned to the lock-resolved
-# 3.27.0 (the normal-lib convention).
-tempfile = "3.27.0"
-
 [build-dependencies]
 tauri-build = "2.6.3"

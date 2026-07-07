@@ -14,6 +14,13 @@
 //! tier-3 → tier-2 edge is forbidden), `crate::ipc` is thin and DEFINES no DTOs (every C-return type is
 //! imported there, never declared), and they are not the outcome-referencing lifecycle/result types
 //! `crate::orchestrator` homes (§0.7 ‡). [Build-Session-Entscheidung: P2.112]
+//!
+//! P3.4 additionally homes the §1.7 invocation-dispatch cluster + its transitively-embedded §3.2.2 plan-seam
+//! hull (the P3.4 ↔ P4.2/P4.3/P4.6 reconcile): the `EngineInvocation` envelope + `InvocationResult` (§1.7),
+//! the `Invocation`/`EngineProgram`/`StdinPlan`/`TempPath`/`PlanError`/`ProgressModel` plan-seam types
+//! (§3.2.2 — `ProbeOutput` stays P4.2), and the `dispatch` fn (the exhaustive `EngineProgram` routing). All
+//! are core-INTERNAL (no `serde`/`specta`): the §1.9 FSM maps `InvocationResult` onto the wire `ErrorKind`
+//! at P3.46, so nothing in this cluster crosses the IPC door.
 
 // [Build-Session-Entscheidung: P2.13] dead_code expect — the §3.2 seam descriptor types are authored as
 // CONTRACTS before their consumers exist: the registry / `trait Engine` / selection is P4.1, the §0.9 pool
@@ -34,14 +41,19 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further."
+        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn are authored ahead of their consumers — P3.5 constructs the first Invocation via Engine::plan(), P3.43-P3.45 rewrite the dispatch InProcessNative arm and P4.13 the subprocess arms — so they stay dead in the production build until then (the cfg(test) tests below construct + exercise them, so the test build is dead-code-clean)."
     )
 )]
 
+use std::ffi::OsString;
+use std::path::PathBuf;
+
 use serde::Serialize;
 use specta::Type;
+use tokio_util::sync::CancellationToken;
 
-use crate::domain::TargetId;
+use crate::domain::{JobId, TargetId};
+use crate::outcome::ConversionErrorKind;
 
 /// The stable engine discriminant (§0.6 / §3.2) — used in logging / SBOM rows (§3.7), the §3.2.3
 /// `(SourceFmt,TargetFmt) → EngineId` registry, the §0.9 pool's `HashMap<EngineId, bool>` serialised-flag
@@ -325,6 +337,193 @@ pub struct EngineHealth {
     /// Derived — `true` iff every **required** engine is present + runnable (§7.2.3). A `false` here is what
     /// the §7.2.4 startup sequence escalates to a §2.13 app-level fault. Wire key `allCriticalOk`.
     pub all_critical_ok: bool,
+}
+
+// ─── §3.2.2 plan-seam hull + §1.7 dispatch envelope/result + the dispatch (P3.4) ──
+// The §1.7 `EngineInvocation` envelope transitively embeds the §3.2.2 `Invocation` (via `plan`), and the
+// dispatch matches `Invocation.program` (reading `Invocation.progress` is the §1.11 concern P4.8 wires) — so
+// P3.4 authors the whole transitive hull here at its §3.2.2/§1.7 literal shape (the P3.4 ↔ P4.2/P4.3/P4.6
+// reconcile). `ProbeOutput` stays P4.2 — the §3.2.1 two-phase probe leg is P4-only, referenced by neither the
+// envelope nor P3.5's `plan()`. All hull types are core-INTERNAL (no `serde`/`specta`): the §1.9 FSM maps
+// `InvocationResult` onto the wire `ErrorKind` at P3.46, the ONE conversion. [Build-Session-Entscheidung: P3.4]
+
+/// How the Rust core locates the bundled program to run for one [`Invocation`] (§3.2.2). Engines are spawned
+/// Rust-side (§3.3.3), never via the WebView shell. `InProcessNative` is the ONLY non-subprocess variant —
+/// ConvertIA's own MIT in-core CSV/TSV engine (§3.5.6); there is NO in-process path for any decoder of
+/// untrusted third-party bytes (§2.12.4 absolute). §3.2.2 has **no `Subprocess` variant** — that name is the
+/// §0.6 [`EngineKind`] (above); the two subprocess-class programs are `Sidecar` + `ResourceBin`.
+///
+/// [Build-Session-Entscheidung: P3.4] INTERNAL (a field of the internal [`Invocation`], never on the wire) —
+/// `Debug, Clone, PartialEq, Eq`; NOT `Copy` (`ResourceBin.rel: PathBuf` is not `Copy`); no `serde`/`specta`
+/// (mirroring the internal `EngineKind`/`EngineDescriptor`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineProgram {
+    /// An `externalBin` sidecar (§3.3.1) resolved beside the app exe via `current_exe().parent()` (§3.3.3) —
+    /// FFmpeg / FFprobe + the libvips image-worker (a separate short-lived subprocess, §3.5.5). The `EngineId`
+    /// resolves the bare `<name>[.exe]` Tauri strips the staged triple to at bundle time.
+    Sidecar(EngineId),
+    /// A binary inside a bundled resources tree (§3.3.1), e.g. LibreOffice `soffice` — `engine` identifies it,
+    /// `rel` is its path relative to the resources root.
+    ResourceBin { engine: EngineId, rel: PathBuf },
+    /// ConvertIA's own MIT in-core Rust engine — native CSV/TSV ONLY (§3.5.6). No spawn, no third-party native
+    /// code; the one `EngineKind::InProcessNative` program.
+    InProcessNative(EngineId),
+}
+
+/// How the engine's stdin is supplied (§3.2.2 / §3.5) — pandoc sometimes reads source bytes on stdin.
+/// [Build-Session-Entscheidung: P3.4] INTERNAL, fieldless — `Debug, Clone, Copy, PartialEq, Eq`, no `serde`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StdinPlan {
+    /// The engine reads its input from a path argument (the common case).
+    None,
+    /// The core pipes the source bytes to the engine's stdin (§3.5).
+    PipeBytes,
+}
+
+/// The per-invocation progress model (§3.2.2). Progress is a **per-invocation** property, NOT a per-engine
+/// constant — the one video FFmpeg engine emits a `CoarseSpawnDone` probe `Invocation` and an
+/// `FfmpegKeyValue` encode `Invocation` — so the §1.7 dispatch reads it from `Invocation.progress` and §1.11
+/// normalises it (no `progress_model()` trait method).
+///
+/// [Build-Session-Entscheidung: P3.4] INTERNAL — `Debug, Clone, Copy, PartialEq, Eq` (every variant is
+/// `Copy`), no `serde`. The per-variant stdout/stderr-handling dispatch is P4.8; P3's live value is
+/// `InProcessFraction` (the native CSV/TSV self-reported fraction, §3.5.6, wired P3.43).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressModel {
+    /// FFmpeg `-progress` key=value stream; the denominator is the ffprobe `duration_us` (video.md).
+    FfmpegKeyValue { duration_us: u64 },
+    /// The image-worker marshals libvips' eval-progress callback to stdout `progress=<0..100>` key=value lines
+    /// across the worker's process boundary (§3.5.5), parsed by the §1.7 same line reader as `FfmpegKeyValue`.
+    VipsStdout,
+    /// LibreOffice / pandoc / poppler (and the video PROBE sub-invocation): 0% → spin → 100%, no streamed
+    /// fraction — §1.7 dispatches it through the coarse spawn→done path, never the line reader.
+    CoarseSpawnDone,
+    /// The one in-process engine (`EngineProgram::InProcessNative`, the native CSV/TSV transform, §3.5.6): no
+    /// stdout to line-read — it self-reports a real `bytes_processed / source_size` fraction per N-KB chunk
+    /// (§1.11) over an in-process `mpsc::Sender<f32>` (the §1.7 `InProcessNative` sub-case, wired P3.43).
+    InProcessFraction,
+}
+
+/// The §3.2.2 publish-temp the engine writes its output to — `tempfile::TempPath` (a path whose file is
+/// deleted on drop, matching the §2.1 "path deleted on drop / never a placeholder" semantics). Picked by
+/// `crate::run` inside the destination volume (§2.14.4) and owned by the §1.7 invocation; the §2.1 atomic
+/// publish consumes it on item success, so drop is a no-op then. [Build-Session-Entscheidung: P3.4] the §3.2.2
+/// named type — this box promotes `tempfile` dev→prod for it (already in `Cargo.lock`, no new package).
+pub type TempPath = tempfile::TempPath;
+
+/// The fully-constructed plan for one engine invocation (§3.2.2) — argv / cwd / env / stdin / progress-model /
+/// output-temp, the single source of the spawn's shape. Built PURE by `Engine::plan()` (§3.2.2, P3.5), then
+/// submitted to the §1.7 lifecycle wrapped in an [`EngineInvocation`]; §3.5 constructs `args`/`env` inside
+/// `crate::isolation`. `out_tmp` is `Some` for every ENCODE invocation (the §2.1 publish artifact) and `None`
+/// for a read-only sub-invocation with no publish artifact — the video PROBE (`ffprobe`, §3.2.1): §1.7
+/// atomic-publishes ONLY when `out_tmp.is_some()`.
+///
+/// [Build-Session-Entscheidung: P3.4] INTERNAL — no `serde`/`specta` (argv / env / a live `TempPath` are
+/// core-only, never on the wire). Derives only `Debug`: `out_tmp` holds a `tempfile::TempPath`, which is
+/// neither `Clone` nor `PartialEq` (it owns a unique on-disk temp deleted on drop — cloning/comparing it would
+/// be wrong), so `Invocation` is moved, never cloned (the `crate::pool::Pool` precedent).
+#[derive(Debug)]
+pub struct Invocation {
+    /// The resolved bundled program to run (§3.2.2).
+    pub program: EngineProgram,
+    /// The fully-constructed argument vector (§3.5), built inside `crate::isolation`.
+    pub args: Vec<OsString>,
+    /// The working directory — a per-run scratch dir (§2.14), or `None` to inherit.
+    pub cwd: Option<PathBuf>,
+    /// The isolated / minimal environment (§3.5 / §2.12) — never the inherited parent env.
+    pub env: Vec<(OsString, OsString)>,
+    /// How stdin is supplied (§3.5).
+    pub stdin: StdinPlan,
+    /// The per-invocation progress model (§1.11) the §1.7 dispatch reads.
+    pub progress: ProgressModel,
+    /// The publish-temp the engine writes to — `Some` for an encode, `None` for the read-only probe (§3.2.2);
+    /// the §2.1 atomic publish consumes it on item success (drop is a no-op then). Typed with the §3.2.2
+    /// `TempPath` alias (= `tempfile::TempPath`) — the alias references an EXTERNAL type, so it does not trip
+    /// the P2.19 within-module forward-declared-alias dead-code interaction.
+    pub out_tmp: Option<TempPath>,
+}
+
+/// A PURE planning error (§3.2.2, no I/O): `Engine::plan()`/`plan_encode()` cannot build an [`Invocation`] for
+/// this job (e.g. an option value out of range). The §1.7 lifecycle maps `kind` (a §2.8 [`ConversionErrorKind`],
+/// typically `InternalError`/`UnsupportedPair`) onto the per-item outcome; distinct from a runtime failure.
+///
+/// [Build-Session-Entscheidung: P3.4] INTERNAL — `Debug, Clone, PartialEq, Eq`; NOT `Copy` (owns a `String`);
+/// no `serde` (never on the wire — `kind` is projected onto the wire `ErrorKind` at the §1.9 boundary).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanError {
+    /// The §2.8.1 taxonomy kind this planning failure maps to (§3.2.2).
+    pub kind: ConversionErrorKind,
+    /// A short internal detail for the §7.5 log — NEVER surfaced raw to the user (SSOT *no stack traces*).
+    pub detail: String,
+}
+
+/// The §1.7 dispatch ENVELOPE — NOT a second plan type. It wraps `(JobId, EngineId, Invocation,
+/// CancellationToken)` and adds nothing the §3.2.2 [`Invocation`] already carries (no argv/cwd/env
+/// re-declaration): the §1.7 lifecycle submits it to the §0.9 pool, dispatches on `plan.program`, and honours
+/// `cancel` for the §1.7 group-kill / cooperative cancel.
+///
+/// [Build-Session-Entscheidung: P3.4] SOLE author of this §1.7 type (the P3.4 ↔ P4.6 reconcile; P4.6 is the
+/// P4-side reconcile seat). INTERNAL — no `serde`; derives only `Debug` (embeds the `Debug`-only [`Invocation`]
+/// + a `CancellationToken`, which is not `PartialEq`).
+#[derive(Debug)]
+pub struct EngineInvocation {
+    /// The job this invocation runs (§0.6 `JobId` == the item's `ItemId`).
+    pub job: JobId,
+    /// The engine resolved for the job's pair (§3.2.3) — the §0.6 stable discriminant.
+    pub engine: EngineId,
+    /// The §3.2.2 plan artifact (program / args / cwd / env / stdin / progress / out_tmp).
+    pub plan: Invocation,
+    /// The §0.4.4 cancellation handle — tripped by C7 `cancel_run` (a cheap `Arc`-backed clone of the run's token).
+    pub cancel: CancellationToken,
+}
+
+/// The terminal result of one §1.7 invocation (§1.7). `Failed` carries the Rust-internal §2.8
+/// [`ConversionErrorKind`]; the orchestrator (`crate::run`) maps it to the wire `ErrorKind` via
+/// `ErrorKind::from(kind)` at the §1.9 Running→Failed transition (the identity under the §2.8.2 option-1
+/// alias) and again at the §0.4.3 IPC boundary — one conversion.
+///
+/// [Build-Session-Entscheidung: P3.4] SOLE author of this §1.7 type. INTERNAL — no `serde`; `Debug, PartialEq,
+/// Eq` (the caller matches/maps it, never clones — the `crate::pool::LaneError` precedent); `Succeeded` /
+/// `Cancelled` are unit variants.
+#[derive(Debug, PartialEq, Eq)]
+pub enum InvocationResult {
+    /// The invocation exited cleanly and its output verified (§1.7).
+    Succeeded,
+    /// The invocation failed — the §2.8 kind (spawn error / nonzero exit / hang / internal fault).
+    Failed(ConversionErrorKind),
+    /// The invocation was cancelled (user cancel → §1.7 group-kill / cooperative cancel).
+    Cancelled,
+}
+
+/// The §1.7 dispatch — routes an [`EngineInvocation`] to its execution lane by `Invocation.program` and
+/// returns the [`InvocationResult`]. The exhaustive match over [`EngineProgram`] is deny-gated (no `_ =>`
+/// catch-all — the `clippy::wildcard_enum_match_arm` deny at the crate root, G4/G14/G29) so a future engine
+/// program cannot be silently dropped.
+///
+/// **P3 walking-skeleton state (the honest seam).** Every arm returns the honest
+/// `InvocationResult::Failed(InternalError)` (§2.13, the P2.25 unreachable-outcome precedent): no execution
+/// lane is wired at P3.4. The `InProcessNative` lane's native §1.7 lifecycle is authored across P3.43
+/// (self-reported progress) / P3.44 (cooperative cancel) / P3.45 (wall-clock timeout), which rewrite that arm
+/// to run the CSV/TSV transform on `crate::pool::run_in_core`; the subprocess lanes are
+/// unreachable-by-construction in the walking skeleton (no subprocess engine is registered — the registry +
+/// engines land at P4.4) and P4.13 rewrites them to route through `crate::isolation::run_confined`.
+/// [Build-Session-Entscheidung: P3.4]
+#[must_use]
+pub fn dispatch(invocation: &EngineInvocation) -> InvocationResult {
+    match &invocation.plan.program {
+        // The one walking-skeleton lane — the native CSV/TSV engine (§3.5.6). P3.43/P3.44/P3.45 rewrite this
+        // arm to run the §1.7 InProcessNative lifecycle on crate::pool::run_in_core; the honest InternalError
+        // seam holds meanwhile (§2.13, P2.25).
+        EngineProgram::InProcessNative(_) => {
+            InvocationResult::Failed(ConversionErrorKind::InternalError)
+        }
+        // Subprocess lanes — unreachable-by-construction in the P3 walking skeleton (no subprocess engine is
+        // registered; the registry + engines land at P4.4). P4.13 authors crate::isolation::run_confined and
+        // rewrites these arms to route through it; the honest InternalError seam holds meanwhile (§2.13, P2.25).
+        EngineProgram::Sidecar(_) | EngineProgram::ResourceBin { .. } => {
+            InvocationResult::Failed(ConversionErrorKind::InternalError)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -678,5 +877,238 @@ mod tests {
             json.get("unavailable_targets").is_none() && json.get("all_critical_ok").is_none(),
             "§0.6: snake_case keys are NOT on the wire — camelCase only"
         );
+    }
+
+    // ─── P3.4: §3.2.2 plan-seam hull + §1.7 dispatch envelope/result + the dispatch ──
+    //
+    // The not(test) module dead-code expectation does NOT cover cfg(test), so a never-read field/variant would
+    // red the TEST build under -D warnings — these tests read every field of every hull type (directly, or via
+    // a derived `PartialEq` that reads all fields), so the test build stays dead-code-clean while the hull
+    // remains dead in the production build until P3.5/P3.43-46/P4.13 construct + wire it.
+
+    // A canonical InProcessNative native-CSV/TSV `Invocation` — every field set (read by
+    // `invocation_holds_the_seven_plan_seam_fields`).
+    fn native_csv_invocation() -> Invocation {
+        Invocation {
+            program: EngineProgram::InProcessNative(EngineId::NativeCsvTsv),
+            args: vec![OsString::from("--delimiter"), OsString::from("tab")],
+            cwd: Some(PathBuf::from("scratch/run-0")),
+            env: vec![(OsString::from("LC_ALL"), OsString::from("C"))],
+            stdin: StdinPlan::None,
+            progress: ProgressModel::InProcessFraction,
+            out_tmp: None,
+        }
+    }
+
+    // Wrap an arbitrary `EngineProgram` in a full `EngineInvocation` for the dispatch tests.
+    fn engine_invocation(program: EngineProgram) -> EngineInvocation {
+        EngineInvocation {
+            job: JobId::from_index(0),
+            engine: EngineId::NativeCsvTsv,
+            plan: Invocation {
+                program,
+                args: Vec::new(),
+                cwd: None,
+                env: Vec::new(),
+                stdin: StdinPlan::None,
+                progress: ProgressModel::InProcessFraction,
+                out_tmp: None,
+            },
+            cancel: CancellationToken::new(),
+        }
+    }
+
+    // §6.4.1 unit (G15): the §3.2.2 `Invocation` holds its seven plan-seam fields (P3.4). Pins the §3.2.2
+    // shape — InProcessNative program, argv, scratch cwd, isolated env, no-stdin, self-reported progress, and
+    // `out_tmp: None` (the read-only shape; an encode carries `Some(TempPath)`) — and reads every field so the
+    // test build is dead-code-clean.
+    #[test]
+    fn invocation_holds_the_seven_plan_seam_fields() {
+        let inv = native_csv_invocation();
+        assert!(
+            matches!(
+                inv.program,
+                EngineProgram::InProcessNative(EngineId::NativeCsvTsv)
+            ),
+            "§3.2.2: the native CSV/TSV plan carries the InProcessNative program"
+        );
+        assert_eq!(
+            inv.args,
+            vec![OsString::from("--delimiter"), OsString::from("tab")]
+        );
+        assert_eq!(inv.cwd, Some(PathBuf::from("scratch/run-0")));
+        assert_eq!(
+            inv.env,
+            vec![(OsString::from("LC_ALL"), OsString::from("C"))]
+        );
+        assert_eq!(inv.stdin, StdinPlan::None);
+        assert_eq!(inv.progress, ProgressModel::InProcessFraction);
+        assert!(
+            inv.out_tmp.is_none(),
+            "§3.2.2: the read-only shape carries out_tmp None; an encode Invocation carries Some(TempPath)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §3.2.2 `EngineProgram` models exactly the three program classes (P3.4) — the two
+    // subprocess-class programs (`Sidecar` externalBin, `ResourceBin` inside the resources tree) + the one
+    // `InProcessNative`. The equality comparisons read the inner `EngineId`/`rel` via the derived `PartialEq`.
+    // There is NO `Subprocess` variant (that name is the §0.6 `EngineKind`).
+    #[test]
+    fn engine_program_models_the_three_program_classes() {
+        assert_eq!(
+            EngineProgram::Sidecar(EngineId::FFmpeg),
+            EngineProgram::Sidecar(EngineId::FFmpeg)
+        );
+        assert_eq!(
+            EngineProgram::ResourceBin {
+                engine: EngineId::LibreOffice,
+                rel: PathBuf::from("program/soffice"),
+            },
+            EngineProgram::ResourceBin {
+                engine: EngineId::LibreOffice,
+                rel: PathBuf::from("program/soffice"),
+            },
+            "§3.2.2: ResourceBin carries its owning EngineId + the resources-relative path"
+        );
+        assert!(matches!(
+            EngineProgram::InProcessNative(EngineId::NativeCsvTsv),
+            EngineProgram::InProcessNative(EngineId::NativeCsvTsv)
+        ));
+        assert_ne!(
+            EngineProgram::Sidecar(EngineId::FFmpeg),
+            EngineProgram::InProcessNative(EngineId::FFmpeg),
+            "§3.2.2: the program CLASS is part of the identity (Sidecar != InProcessNative for one EngineId)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §3.2.2 `ProgressModel` carries its four per-invocation variants (P3.4).
+    // Comparing two `FfmpegKeyValue` values reads the `duration_us` field (the §1.11 denominator); the four
+    // variants are pairwise distinct.
+    #[test]
+    fn progress_model_carries_all_four_variants() {
+        assert_ne!(
+            ProgressModel::FfmpegKeyValue { duration_us: 1 },
+            ProgressModel::FfmpegKeyValue { duration_us: 2 },
+            "§3.2.2: duration_us is part of the FfmpegKeyValue identity (the §1.11 progress denominator)"
+        );
+        let variants = [
+            ProgressModel::FfmpegKeyValue { duration_us: 0 },
+            ProgressModel::VipsStdout,
+            ProgressModel::CoarseSpawnDone,
+            ProgressModel::InProcessFraction,
+        ];
+        for (i, a) in variants.iter().enumerate() {
+            for (j, b) in variants.iter().enumerate() {
+                assert_eq!(
+                    i == j,
+                    a == b,
+                    "§3.2.2: the four ProgressModel variants are pairwise distinct"
+                );
+            }
+        }
+    }
+
+    // §6.4.1 unit (G15): the §3.2.2 `StdinPlan` has exactly the path-arg (`None`) and pipe-bytes cases (P3.4).
+    #[test]
+    fn stdin_plan_has_none_and_pipe_bytes() {
+        assert_ne!(
+            StdinPlan::None,
+            StdinPlan::PipeBytes,
+            "§3.5: reading a path arg (None) is distinct from piping source bytes to stdin (pandoc)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §3.2.2 `PlanError` carries a §2.8 kind + an internal detail (P3.4). The
+    // equality comparison reads both fields via the derived `PartialEq`.
+    #[test]
+    fn plan_error_carries_its_kind_and_detail() {
+        assert_eq!(
+            PlanError {
+                kind: ConversionErrorKind::UnsupportedPair,
+                detail: "no engine for this pair".to_owned(),
+            },
+            PlanError {
+                kind: ConversionErrorKind::UnsupportedPair,
+                detail: "no engine for this pair".to_owned(),
+            },
+            "§3.2.2: a plan error maps a planning failure to its §2.8 kind + an internal detail string"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §1.7 `EngineInvocation` wraps `(JobId, EngineId, Invocation, CancellationToken)`
+    // and adds nothing the §3.2.2 Invocation already carries (P3.4). Reads every field, and exercises the
+    // §0.4.4 cancel handle (un-cancelled → tripped).
+    #[test]
+    fn engine_invocation_wraps_job_engine_plan_and_cancel() {
+        let invocation = engine_invocation(EngineProgram::InProcessNative(EngineId::NativeCsvTsv));
+        assert_eq!(
+            invocation.job,
+            JobId::from_index(0),
+            "§1.7: the envelope carries the job's ItemId (§0.6 JobId == ItemId)"
+        );
+        assert_eq!(
+            invocation.engine,
+            EngineId::NativeCsvTsv,
+            "§1.7: and the resolved EngineId for the pair"
+        );
+        assert!(
+            matches!(
+                invocation.plan.program,
+                EngineProgram::InProcessNative(EngineId::NativeCsvTsv)
+            ),
+            "§1.7: the envelope wraps the §3.2.2 Invocation (no argv/cwd/env re-declaration)"
+        );
+        assert!(
+            !invocation.cancel.is_cancelled(),
+            "§0.4.4: a fresh cancel token starts un-cancelled"
+        );
+        invocation.cancel.cancel();
+        assert!(
+            invocation.cancel.is_cancelled(),
+            "§0.4.4: tripping the token cancels the invocation (the C7 cancel_run path)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §1.7 `InvocationResult` has the three terminal variants (P3.4); `Failed` carries
+    // the Rust-internal §2.8 `ConversionErrorKind`.
+    #[test]
+    fn invocation_result_has_succeeded_failed_and_cancelled() {
+        assert_eq!(InvocationResult::Succeeded, InvocationResult::Succeeded);
+        assert_eq!(InvocationResult::Cancelled, InvocationResult::Cancelled);
+        assert_eq!(
+            InvocationResult::Failed(ConversionErrorKind::EngineCrash),
+            InvocationResult::Failed(ConversionErrorKind::EngineCrash),
+            "§1.7: Failed carries the §2.8 kind the §1.9 FSM maps to the wire ErrorKind at P3.46"
+        );
+        assert_ne!(
+            InvocationResult::Failed(ConversionErrorKind::EngineCrash),
+            InvocationResult::Failed(ConversionErrorKind::EngineHang),
+            "§1.7: the carried kind is part of the Failed identity"
+        );
+        assert_ne!(InvocationResult::Succeeded, InvocationResult::Cancelled);
+    }
+
+    // §6.4.1 unit (G15): the §1.7 dispatch — the P3 walking-skeleton contract. No execution lane is wired at
+    // P3.4, so the exhaustive `EngineProgram` match returns the honest `Failed(InternalError)` seam (§2.13,
+    // P2.25) for EVERY program. P3.43/P3.44/P3.45 rewrite the InProcessNative arm to run the native CSV/TSV
+    // §1.7 lifecycle on crate::pool::run_in_core; P4.13 rewrites the subprocess arms via run_confined — each
+    // updates this test alongside the code. This locks the exhaustive routing + the current seam value.
+    #[test]
+    fn dispatch_returns_the_honest_internal_error_seam_for_every_program() {
+        for program in [
+            EngineProgram::InProcessNative(EngineId::NativeCsvTsv),
+            EngineProgram::Sidecar(EngineId::FFmpeg),
+            EngineProgram::ResourceBin {
+                engine: EngineId::LibreOffice,
+                rel: PathBuf::from("program/soffice"),
+            },
+        ] {
+            let invocation = engine_invocation(program);
+            assert_eq!(
+                dispatch(&invocation),
+                InvocationResult::Failed(ConversionErrorKind::InternalError),
+                "§1.7/§2.13: the P3.4 dispatch returns the honest InternalError seam for every program (no lane wired yet)"
+            );
+        }
     }
 }
