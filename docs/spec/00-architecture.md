@@ -1418,7 +1418,7 @@ the corpus (§6.4) — engine bumps are best-effort posture (§3.8), not a gate.
 | Cancellation | **tokio-util** (`CancellationToken`) | exact |
 | Error plumbing | **thiserror** (core error enums) → mapped to `IpcError` (§0.4.3); `serde` for wire | exact |
 | Detection | content-sniffing crate(s) — `infer` and/or hand-rolled magic tables; §1.2 owns the strategy | exact |
-| FS guarantees | `tempfile` (owned scratch), `same-file`/`dunce` (resolved-identity, Windows path canonicalisation), `fs2`/platform calls (free-space), atomic rename via std + §2.14 cross-volume fallback | exact |
+| FS guarantees | `tempfile` (owned scratch), `winapi-util`/`dunce` (resolved-identity via the safe `GetFileInformationByHandle` wrapper + Windows path canonicalisation; replaces the earlier `same-file` listing — same-file exposes no Windows identity numbers, §2.3.1 `[CORRECTED 2026-07-07]`), `fs2`/platform calls (free-space), atomic rename via std + §2.14 cross-volume fallback | exact |
 | Frontend | **React 19**, **TypeScript** (strict, no `any`), **Vite** (per platform CLAUDE.md, current major), **Tailwind CSS** | exact, lockfile |
 | Frontend state | lightweight store (recommend **Zustand**) + the generated `bindings.ts`; §5.1 owns the final choice | §5.1 |
 | Package mgr | **pnpm** (`pnpm@10.13.1` class per platform standard) | pinned |

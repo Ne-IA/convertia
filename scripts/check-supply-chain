@@ -124,6 +124,8 @@ PINNED_FLOORS = {
     "proptest":     "1.11.0",        # §6.4.2 Rust property-test lib (in the lock via dev-deps; P2.128 dep / P2.129 floor)
     "tokio-util":   "0.7.18",        # §0.4.4/§1.7 CancellationToken (direct dep from P2.133; P2.133 dep / P2.134 floor)
     "tokio":        "1.52.3",        # §0.9/§1.7 Semaphore + spawn_blocking permit lane (direct dep from P3.3; P3.3 dep / P3.82 floor)
+    "dunce":        "1.0.5",         # §2.3.1 \\?\-prefix display normalisation (direct dep from P3.6; P3.6 dep / P3.83 floor)
+    "winapi-util":  "0.1.11",        # §2.3.1 Windows file-identity - safe GetFileInformationByHandle wrapper (cfg(windows) direct dep from P3.6; P3.6 dep / P3.83 floor)
 }
 
 

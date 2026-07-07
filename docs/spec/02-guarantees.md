@@ -422,9 +422,23 @@ by `fs_guard::resolve_identity(path) -> FileIdentity`:
     **hardlinks** (which `canonicalize` cannot, since hardlinks share no link to
     follow — two distinct paths, one inode).
   - **Windows:** the **`(volumeSerialNumber, fileIndexHigh, fileIndexLow)`** from
-    `GetFileInformationByHandle` (via `std::os::windows::fs::MetadataExt`
-    `volume_serial_number()` / `file_index()`, available on recent Rust, else the
-    `windows` crate). Equal triple ⇒ same file ⇒ catches **hardlinks** and
+    `GetFileInformationByHandle` — obtained via **`winapi-util`**
+    (`file::information(handle)` → `volume_serial_number()` / `file_index()`, both
+    `u64`), the safe wrapper around that syscall already in the dependency graph
+    (it is `same-file`'s engine, pulled by `walkdir`; §0.8 FS-guarantees row).
+    `[CORRECTED 2026-07-07 — the P3.6 hard-stop]` The earlier "via
+    `std::os::windows::fs::MetadataExt` `volume_serial_number()` / `file_index()`,
+    available on recent Rust, else the `windows` crate" was factually wrong twice:
+    those std methods are nightly-gated (`windows_by_handle`, rust-lang #63010 —
+    E0658 on the pinned stable toolchain), and a raw `windows`-crate call would be
+    an `unsafe` FFI site in the core, which the unsafe policy forbids outside the
+    image-worker's allow-listed module. `same-file` itself exposes no Windows
+    identity numbers (`Handle::dev()`/`ino()` are Unix-only), so `winapi-util` is
+    the direct dependency. (The G29/`crate::platform` raw-FFI primitive lists still
+    name `GetFileInformationByHandle` — after this correction that listing rests
+    solely on the §2.3.3/P3.9 dir-handle publish primitive, that box's concern; the
+    IDENTITY use here is the safe wrapper, no raw call in the core.) Equal triple ⇒
+    same file ⇒ catches **hardlinks** and
     **junctions** that point at the same backing file.
   - **macOS:** same `(st_dev, st_ino)` as Unix; **Finder aliases** (the classic
     `.alias` bookmark) are *data files*, not filesystem links — they are **not**
