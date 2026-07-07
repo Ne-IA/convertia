@@ -120,7 +120,7 @@ PINNED_FLOORS = {
     "tauri-specta": "2.0.0-rc.25",   # §0.4.5 IPC codegen (exact pin - the bindings.ts surface)
     "specta":       "2.0.0-rc.25",   # §0.4.5 type introspection (coupled to tauri-specta)
     "walkdir":      "2.5.0",         # §1.1 recursive intake (direct dep from P2.64; P2.64 dep / floor reconciled here)
-    "tempfile":     "3.27.0",        # §0.8 owned-scratch atomic write (in the lock via dev-deps now)
+    "tempfile":     "3.27.0",        # §0.8 owned-scratch atomic write (direct dep from P3.4; P1.59 floor reconciled-to-present)
     "proptest":     "1.11.0",        # §6.4.2 Rust property-test lib (in the lock via dev-deps; P2.128 dep / P2.129 floor)
     "tokio-util":   "0.7.18",        # §0.4.4/§1.7 CancellationToken (direct dep from P2.133; P2.133 dep / P2.134 floor)
     "tokio":        "1.52.3",        # §0.9/§1.7 Semaphore + spawn_blocking permit lane (direct dep from P3.3; P3.3 dep / P3.82 floor)
