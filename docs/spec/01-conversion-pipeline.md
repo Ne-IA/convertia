@@ -768,7 +768,19 @@ spawn ─▶ Running ──(progress events)──▶ ...
 **`EngineInvocation` is the dispatch envelope, NOT a second plan type.** `[DECIDED]`
 The plan-time artifact is the §3.2.2 **`Invocation`** returned by `Engine::plan()` (it
 owns `program`/`args`/`cwd`/`env`/`stdin`/`progress`/`out_tmp` — the single source of
-the argv/cwd/env). `EngineInvocation` (this section) is only the **dispatch envelope**
+the argv/cwd/env). **`out_tmp` population `[DECIDED 2026-07-07 — the plan-seam
+ruling]`:** the encode output `TempPath` is picked and OWNED §1.7-side (`crate::run`
+picks it inside the destination volume, §2.14.4; the §3.2.2 `TempPath` lifecycle
+block) — `Engine::plan()`/`plan_encode()` only BORROW it (`&TempPath`, argv embedding)
+and construct `out_tmp: None`; §1.7 populates `out_tmp = Some(temp)` on the ENCODE
+`Invocation` right after the plan call returns (holding the temp across the probe leg
+for a probe engine), so from dispatch onward the `Invocation` is the single holder of
+the temp's lifetime (drop-on-cancel below; §2.1 publish-on-success). (This is NOT the
+§3.2.1-banned struct mutation (§3.5.1's "no placeholder-then-mutate") — that ban
+protects an ENGINE-computed fact, `duration_us`; `out_tmp` is §1.7's OWN resource, so
+no engine fact is patched — §3.2.2 `fn plan` states the boundary.) `Engine::plan()`
+returns **`PlanOutcome::{Encode, Probe}`** (§3.2.2) — the discriminator this section
+sequences on. `EngineInvocation` (this section) is only the **dispatch envelope**
 the §1.7 lifecycle submits to the §0.9 pool: it wraps `(JobId, EngineId, Invocation,
 CancellationToken)` and adds nothing the §3.2 `Invocation` already carries. It does
 **not** re-declare argv/work_dir/env (those live in the wrapped `Invocation`):
@@ -818,17 +830,21 @@ enum InvocationResult {
   sub-invocations of the one FFmpeg engine** — `ffprobe` then `ffmpeg` — **not** a format
   chain (§3.2.1). Because `Engine::plan()` is **Pure** (no I/O) but the encode argv depends
   on the probe's inner-codec result, §1.7 uses the §3.2.1/§3.2.2 **two-phase trait
-  contract**: it **calls `Engine::plan()` (which returns the `ffprobe` sub-invocation),
-  spawns it, parses its stdout into a typed `ProbeOutput` (inner codecs + `duration_us` +
-  rotation + interlace), then calls `Engine::plan_encode(job, out_tmp, &probe)` to get the
-  finalised encode `Invocation`, then spawns the `ffmpeg` encode**. The encode's
+  contract**: it **calls `Engine::plan()` (which returns the `ffprobe` sub-invocation as
+  `PlanOutcome::Probe`, §3.2.2), spawns it, parses its stdout into a typed `ProbeOutput`
+  (inner codecs + `duration_us` + rotation + interlace), then calls
+  `Engine::plan_encode(item, target, input, out_tmp, &probe)` (the tier-3 plan params,
+  §3.2.2) to get the finalised encode `Invocation`, populates its `out_tmp = Some(temp)`
+  (the temp §1.7 held across the probe leg — the §3.2.2 ownership contract), then spawns
+  the `ffmpeg` encode**. The encode's
   `ProgressModel::FfmpegKeyValue { duration_us }` is built **from `probe.duration_us`
   inside `plan_encode`** — **not** mutated onto a pre-probe `progress` struct (§3.5.1). So
   for video, `plan()` is the probe and `plan_encode(probe)` is the encode; the encode argv
   is never fixed before the probe. Both sub-invocations are bounded by the same §1.7
   cancel/timeout/group-kill machinery. **Probe Invocation has NO publish artifact
   `[DECIDED]`:** the `ffprobe` sub-invocation carries **`out_tmp: None`** (§3.2.2 —
-  ffprobe writes only stdout JSON) and **`progress: ProgressModel::CoarseSpawnDone`** (not
+  ffprobe writes only stdout JSON; §1.7 never populates the probe leg — the held temp
+  goes to the ENCODE `Invocation`) and **`progress: ProgressModel::CoarseSpawnDone`** (not
   the FfmpegKeyValue line-reader). So §1.7 **does NOT run the §2.1 atomic-publish or any
   temp cleanup for the probe** — it publishes/cleans **only** for an Invocation whose
   `out_tmp.is_some()` (the encode). The probe's only output is the parsed `ProbeOutput`

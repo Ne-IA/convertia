@@ -131,17 +131,21 @@ scratch on the §2.14 volume, per-step progress §1.11, step-attributed errors
 > the probe result, the **two-phase contract is `[DECIDED]` as a second trait method**
 > (option b — a `plan_encode(ProbeOutput) -> Invocation`, NOT struct mutation, NOT a
 > stored closure):
-> - `plan()` returns the **probe `Invocation`** (the `ffprobe` sub-invocation) for a
+> - `plan()` returns the **probe `Invocation`** (the `ffprobe` sub-invocation, wrapped as
+>   **`PlanOutcome::Probe`** — §3.2.2, the 2026-07-07 plan-seam ruling) for a
 >   probe-requiring engine (video FFmpeg); for non-probe engines `plan()` returns the
->   single encode `Invocation` directly and `plan_encode` is never called. **The probe
+>   single encode `Invocation` directly (as **`PlanOutcome::Encode`**) and `plan_encode`
+>   is never called. **The probe
 >   `Invocation` `[DECIDED]`** carries **`program: EngineProgram::Sidecar(EngineId::FFprobe)`**
 >   (resolves `binaries/ffprobe`, distinct from `binaries/ffmpeg`; §0.6 / §3.3.1),
 >   **`out_tmp: None`** (the probe writes only stdout JSON — no publish artifact; §1.7
 >   runs no publish/cleanup for it), and **`progress: ProgressModel::CoarseSpawnDone`**
 >   (a short read, not a streaming `-progress` source — §1.7 dispatches it through the
 >   coarse spawn→done path, never the FfmpegKeyValue line-reader).
-> - the §3.2.2 `Engine` trait gains **`fn plan_encode(&self, job: &ConversionJob,
->   out_tmp: &TempPath, probe: &ProbeOutput) -> Result<Invocation, PlanError>`** — §1.7 runs
+> - the §3.2.2 `Engine` trait gains **`fn plan_encode(&self, item: &DroppedItem,
+>   target: TargetId, input: &Path, out_tmp: &TempPath, probe: &ProbeOutput) ->
+>   Result<Invocation, PlanError>`** (the tier-3 plan params — §3.2.2, the 2026-07-07
+>   plan-seam ruling) — §1.7 runs
 >   the probe sub-invocation, parses its stdout into a typed **`ProbeOutput`** (inner codecs
 >   + `duration_us` + rotation + interlace), then calls `plan_encode(.., &probe)` to get the
 >   finalised encode `Invocation`, which §1.7 then spawns.
@@ -182,26 +186,53 @@ pub trait Engine: Send + Sync {
         -> Vec<EngineCapability>;      // named struct (defined below): {source, target, direction}
 
     /// Build the concrete invocation plan for one job. Pure (no I/O, no spawn):
-    /// returns argv / env / cwd / progress-parser kind / temp-output path shape.
-    /// The actual spawn/cancel/timeout is owned by §1.7; this only *describes* it.
-    /// For a PROBE-requiring engine (video FFmpeg, §3.2.1) this returns the **probe
-    /// sub-invocation** (`ffprobe`) whose `Invocation.out_tmp` is `None` (the probe has
-    /// no publish artifact); the `out_tmp` PASSED IN is the ENCODE output temp, which
-    /// `plan()` of a probe engine ignores and `plan_encode` consumes for the encode.
-    /// For a single-step engine it returns the encode `Invocation` directly (with
-    /// `out_tmp: Some(..)` built from the passed temp).
-    fn plan(&self, job: &ConversionJob, out_tmp: &TempPath)
-        -> Result<Invocation, PlanError>;
+    /// returns argv / env / cwd / progress-parser kind. The actual spawn/cancel/
+    /// timeout is owned by §1.7; this only *describes* it.
+    /// **Params are the job's tier-3 projection (the 2026-07-07 plan-seam ruling):**
+    /// the §0.6 `DroppedItem` (detection + size) + `TargetId` + the effective input
+    /// path — NOT the tier-1 `ConversionJob` (§0.7: `crate::engines` is tier 2 and
+    /// cannot reference an orchestrator-homed type; §1.7, the caller, owns the job
+    /// and projects these out of it). `input` is the path the engine reads — the
+    /// §2.3-resolved source, or the §3.5.0 core-staged scratch copy where one was
+    /// staged (macOS TCC / §2.14 cross-volume); argv embeds `input`, NEVER a path
+    /// derived from `item` (the §3.5.0 plumbing contract expressed at the type seam).
+    /// **`out_tmp` ownership (the `TempPath` lifecycle block below):** the encode
+    /// output temp is BORROWED — the borrow exists ONLY so argv can embed its path —
+    /// and the returned `Invocation` carries `out_tmp: None` at construction (a
+    /// borrow cannot yield the owned `TempPath`). §1.7 OWNS the temp and populates
+    /// `out_tmp = Some(temp)` on the ENCODE invocation after the call returns
+    /// (single-step: after `plan()`; probe engine: §1.7 HOLDS the temp across the
+    /// probe leg — the probe `Invocation` stays `None` — and populates after
+    /// `plan_encode()`). A by-value `out_tmp` param would be dropped (file deleted)
+    /// by a probe engine's `plan()` before `plan_encode` needs it — the borrow is
+    /// what lets ONE trait signature serve both shapes. This owner-populates step is
+    /// NOT the §3.2.1-banned struct mutation (§3.5.1's "no placeholder-then-mutate"):
+    /// that ban protects an ENGINE-computed fact (`duration_us` — the engine provides it at the right
+    /// time via `plan_encode`; no other layer patches it on), whereas `out_tmp` is a
+    /// §1.7-OWNED resource the engine never holds (the `TempPath` lifecycle block
+    /// below) — the owner attaching its own resource to the dispatch-ready
+    /// `Invocation` corrects no engine fact, and the engine's returned plan (whose
+    /// argv already embeds the temp's path) is untouched.
+    /// The return names which shape was produced: `PlanOutcome::Probe` (the `ffprobe`
+    /// sub-invocation of a probe-requiring engine — video FFmpeg, §3.2.1) or
+    /// `PlanOutcome::Encode` (the single-step encode) — the discriminator §1.7
+    /// sequences on (both shapes construct `out_tmp: None`, so `out_tmp.is_some()`
+    /// cannot mark the probe at plan time).
+    fn plan(&self, item: &DroppedItem, target: TargetId, input: &Path,
+            out_tmp: &TempPath) -> Result<PlanOutcome, PlanError>;
 
     /// Two-phase encode plan `[DECIDED §3.2.1]`. Called by §1.7 ONLY for an engine whose
-    /// `plan()` returned a probe sub-invocation: §1.7 runs the probe, parses its stdout
-    /// into `ProbeOutput`, then calls this to finalise the encode `Invocation` (with
-    /// `out_tmp: Some(..)`). The progress denominator (`duration_us`) is taken FROM
-    /// `probe` here — never mutated onto a previously-returned struct. Default impl
-    /// returns a `ConversionErrorKind::InternalError` PlanError with the detail string
-    /// below (single-step engines never reach it — §1.7 only calls `plan_encode` after a
-    /// probe Invocation). Pure (no I/O, no spawn).
-    fn plan_encode(&self, _job: &ConversionJob, _out_tmp: &TempPath, _probe: &ProbeOutput)
+    /// `plan()` returned `PlanOutcome::Probe`: §1.7 runs the probe, parses its stdout
+    /// into `ProbeOutput`, then calls this to finalise the encode `Invocation`
+    /// (constructed with `out_tmp: None` like every plan-time `Invocation`; §1.7 then
+    /// populates `out_tmp = Some(temp)` — the ownership contract on `plan()` above).
+    /// The progress denominator (`duration_us`) is taken FROM `probe` here — never
+    /// mutated onto a previously-returned struct. Default impl returns a
+    /// `ConversionErrorKind::InternalError` PlanError with the detail string below
+    /// (single-step engines never reach it — §1.7 only calls `plan_encode` after a
+    /// `PlanOutcome::Probe`). Pure (no I/O, no spawn).
+    fn plan_encode(&self, _item: &DroppedItem, _target: TargetId, _input: &Path,
+                   _out_tmp: &TempPath, _probe: &ProbeOutput)
         -> Result<Invocation, PlanError> {
         Err(PlanError { kind: ConversionErrorKind::InternalError,
                         detail: "engine has no probe/encode two-phase plan".into() })
@@ -240,7 +271,12 @@ pub struct Invocation {
     pub stdin: StdinPlan,         // how stdin is fed (below) — see §3.5
     pub progress: ProgressModel,
     pub out_tmp: Option<TempPath>, // engine writes here; §2.1 atomic-publishes on success.
-                                   //   `Some` for every ENCODE invocation (the publish artifact).
+                                   //   `Some` for every ENCODE invocation (the publish artifact)
+                                   //   AT SPAWN TIME — POPULATED BY §1.7 (the temp's owner, the
+                                   //   `TempPath` lifecycle block below) after `plan()`/
+                                   //   `plan_encode()` returns; `plan()` is Pure and constructs
+                                   //   the struct with `None`, borrowing the temp only to embed
+                                   //   its path in `args` (the 2026-07-07 plan-seam ruling).
                                    //   `None` for a READ-ONLY sub-invocation that produces no
                                    //   publish artifact — the video PROBE (`ffprobe`, §3.2.1):
                                    //   ffprobe writes only stdout JSON, so there is NO output
@@ -248,6 +284,24 @@ pub struct Invocation {
                                    //   atomic-publishes ONLY when `out_tmp.is_some()`; for a
                                    //   `None` invocation §1.7 parses stdout and runs no publish/
                                    //   cleanup step (§1.7 cleanup table). [DECIDED]
+}
+
+/// What `plan()` produced — the §3.2.1 two-shape return, named at the type level
+/// (the 2026-07-07 plan-seam ruling). The discriminator §1.7 sequences on: under the
+/// `out_tmp` ownership contract every plan-time `Invocation` constructs `out_tmp:
+/// None`, so `out_tmp.is_some()` cannot mark the probe. Probe-ness is per-JOB, not
+/// per-engine (the same FFmpeg engine encodes audio single-step and probes video),
+/// so it cannot be an `EngineDescriptor` flag — the engine names it on the value
+/// `plan()` returns. Engine-layer-internal, like `Invocation`; matched exhaustively
+/// (no `_ =>` catch-all — the §1.2/G29 dispatch-enum discipline).
+pub enum PlanOutcome {
+    /// A single-step engine's encode plan: §1.7 populates `out_tmp = Some(temp)` and
+    /// dispatches it directly; `plan_encode` is never called.
+    Encode(Invocation),
+    /// A probe-requiring engine's `ffprobe` sub-invocation (§3.2.1): `out_tmp` stays
+    /// `None` for the whole probe leg (no publish artifact); §1.7 holds the temp,
+    /// runs the probe, parses `ProbeOutput`, then calls `plan_encode`.
+    Probe(Invocation),
 }
 
 /// How the Rust core locates the program to spawn. Engines are spawned Rust-side

@@ -786,6 +786,8 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   `ProbeOutput`, then calls `Engine::plan_encode(job, out_tmp, &probe)` (a second trait
   method) to build the encode `Invocation` with `duration_us` taken FROM the probe — NO
   in-place `progress.duration_us` struct mutation. Owner: §3.2.1 / §1.7 / §3.5.1.
+  (Call shape revised per the 2026-07-07 plan-seam ruling: tier-3 params
+  `(item, target, input, out_tmp)` + the `PlanOutcome` return — §3.2.2.)
 - **`PPTX → PPT` is `✓~` lossy (`pptx_to_ppt_legacy`)** — legacy BIFF8 can't hold SmartArt
   / modern charts / Morph; **`PPT → PPTX` (modernizing) stays plain `✓`**. New §2.9
   LossyKind added. Owner: presentations.md / §2.9.
@@ -887,7 +889,9 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   `plan_encode(&self, probe: ProbeOutput) -> Invocation`; `duration_us` is provided BY the
   probe output (carried into `plan_encode`), NOT mutated on a prior struct. The §3.5.1
   "sets progress.duration_us" in-place-mutation sentence is removed. Owner: §3.2.1 / §1.7
-  / §3.5.1.
+  / §3.5.1. (Revised per the 2026-07-07 plan-seam ruling: `plan()` returns
+  `PlanOutcome::{Encode, Probe}`; `plan_encode` takes the tier-3 plan params +
+  `&ProbeOutput` — §3.2.2.)
 - **`lastDestinationMode` read/inject flow** (revised per the 2026-07-06
   core-owned-paths ruling) — the persisted value is read CORE-side (`crate::prefs`);
   the frontend passes only a mode INTENT on C4's first Targets-entry call and the core

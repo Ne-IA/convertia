@@ -958,7 +958,8 @@ pub enum EngineId { FFmpeg, FFprobe, LibreOffice, Poppler, Pandoc, ImageMagick, 
 // PROBE binary (`binaries/ffprobe`, §3.3.1), spawned as the §3.5.1 probe sub-invocation
 // of the FFmpeg engine — NOT a registry-eligible engine in its own right (no
 // (source,target) pair maps to it; the FFmpeg `trait Engine` impl owns the pair and its
-// `plan()` returns the ffprobe `Invocation`). It has **no `EngineProgram`**, **no §3.2.3
+// `plan()` returns the ffprobe `Invocation` as `PlanOutcome::Probe`, §3.2.2). It has
+// **no `EngineProgram`**, **no §3.2.3
 // registry entry**, and **no `trait Engine` impl**; its `EngineId` exists so the
 // sidecar-path resolver can locate `binaries/ffprobe` (distinct from `binaries/ffmpeg`,
 // §3.3.1), for SBOM/NOTICE attribution (§3.7), and for the §7.2 EngineHealth
