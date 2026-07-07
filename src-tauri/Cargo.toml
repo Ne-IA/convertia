@@ -39,6 +39,16 @@ tauri-plugin-opener = "2.5.4"
 tauri-plugin-single-instance = "2.4.2"
 tauri-plugin-store = "2.4.3"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive"] }
+# [P3.3] §0.9/§1.7 in-core permit lane: `tokio::sync::Semaphore` (the global-degree permit) +
+# `tokio::task::spawn_blocking` + `JoinError` (run the synchronous native CSV/TSV loop on a dedicated worker
+# thread so it never blocks the Tauri-managed multi-thread tokio runtime driving the subprocess engines +
+# IPC). Called DIRECTLY, not via `tauri::async_runtime::spawn_blocking`: the §0.7 tier-3 leaf must not depend
+# up on the tauri host. FIRST direct tokio edge; ALREADY in Cargo.lock transitively via `tauri`, so this is a
+# direct-edge promotion (no newly-resolved package, no SBOM/G53 row). Caret-pinned to the lock-resolved
+# 1.52.3 (the normal-lib convention serde_json/tokio-util/uuid use; `=`-exact is for the specta codegen
+# tools). Features `rt` (spawn_blocking + JoinError) + `sync` (Semaphore) — NOT `net` (no socket, so the G29
+# rule (g)/(j) + cargo-deny [bans] no-network surface stays intact). §0.8 floor row: the paired L(-1) box P3.82.
+tokio = { version = "1.52.3", features = ["rt", "sync"] }
 # [P2.133] §0.4.4/§1.7 cancellation primitive — `tokio_util::sync::CancellationToken` for the RunId/
 # CollectingId token registries (P2.42/P2.45). Caret-pinned to the lock-resolved 0.7.18 (the normal-lib
 # convention, not the `=`-exact codegen-coupled specta tools); NO extra features (CancellationToken is in
@@ -76,6 +86,13 @@ walkdir = "2.5.0"
 proptest = "1.11.0"
 specta-typescript = "=0.0.12"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+# [P3.3] The §6.4.x `crate::pool` tests need `#[tokio::test]` (the `macros` feature) only — the
+# permit-bounding test uses a std `Barrier` (the concurrency is on the blocking pool, so no
+# `rt-multi-thread`), and the off-runtime / panic-release / degree-clamp tests use no timers (no `time`).
+# DEV-ONLY — under resolver 2 a dev-dep feature never unifies into the shipped MIT-core build, so
+# `macros`/`tokio-macros` stay out of the production closure (the tauri-specta normal-`derive` /
+# dev-`typescript` split precedent). Same 1.52.3 pin as the prod `[dependencies]` tokio edge.
+tokio = { version = "1.52.3", features = ["macros"] }
 # [Build-Session-Entscheidung: P1.17] §7.2.4 executable-permission test: the unix `ensure_executable`
 # test (crate::platform) needs a REAL temp filesystem (test-strategy §0.1: never mock the FS under test)
 # to chmod a fake sidecar and assert the +x / idempotency contract. `std::env::temp_dir()` is banned by

@@ -1461,6 +1461,14 @@ pool** governs how many engine processes run at once. **This number lives here;
   responsive and the machine usable. A sensible everyday default is **2–4**; the
   cap of 4 prevents a 16-core machine from spawning 16 FFmpeg re-encodes and
   thrashing.
+  > **`[DECIDED: P3.3]` resolution — `available_parallelism`, not a raw physical-core count.** v1 resolves
+  > the core count via **`std::thread::available_parallelism()`** (std-native, no added dependency; it
+  > respects OS affinity / cgroup limits, which serves the "keep the machine usable" intent). `std` exposes
+  > **no physical-core API**, so the `physical_cores` literal above is the *intent*, not a callable
+  > primitive; the clamp to `[1,4]` + the per-engine caps (the table below, P4.21) keep heavy engines
+  > conservative regardless of the logical-vs-physical difference. The formula is owned by
+  > `crate::pool::clamp_global_degree` (P3.3, `clamp(cores − 1, 1, 4)`) and reused verbatim by P4.20.
+  > Physical-core precision (a dedicated crate) is an unadopted refinement.
 - **Per-engine parallelism overrides the global degree where correctness or
   resource pressure demands:**
 
