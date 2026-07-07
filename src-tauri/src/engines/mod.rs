@@ -41,18 +41,18 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn are authored ahead of their consumers — P3.5 constructs the first Invocation via Engine::plan(), P3.43-P3.45 rewrite the dispatch InProcessNative arm and P4.13 the subprocess arms — so they stay dead in the production build until then (the cfg(test) tests below construct + exercise them, so the test build is dead-code-clean)."
+        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the P3.5 minimal Engine trait, the PlanOutcome return, and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.1 §3.2.3 registry constructs the native engine, P3.41 runs its planned transform, P3.43-P3.45 rewrite the dispatch InProcessNative arm, and P4.13 the subprocess arms — so they stay dead in the production build until then (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean)."
     )
 )]
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use specta::Type;
 use tokio_util::sync::CancellationToken;
 
-use crate::domain::{JobId, TargetId};
+use crate::domain::{DroppedItem, FormatId, JobId, TargetId};
 use crate::outcome::ConversionErrorKind;
 
 /// The stable engine discriminant (§0.6 / §3.2) — used in logging / SBOM rows (§3.7), the §3.2.3
@@ -414,9 +414,13 @@ pub type TempPath = tempfile::TempPath;
 /// The fully-constructed plan for one engine invocation (§3.2.2) — argv / cwd / env / stdin / progress-model /
 /// output-temp, the single source of the spawn's shape. Built PURE by `Engine::plan()` (§3.2.2, P3.5), then
 /// submitted to the §1.7 lifecycle wrapped in an [`EngineInvocation`]; §3.5 constructs `args`/`env` inside
-/// `crate::isolation`. `out_tmp` is `Some` for every ENCODE invocation (the §2.1 publish artifact) and `None`
-/// for a read-only sub-invocation with no publish artifact — the video PROBE (`ffprobe`, §3.2.1): §1.7
-/// atomic-publishes ONLY when `out_tmp.is_some()`.
+/// `crate::isolation`. **`out_tmp` is populated by §1.7 at spawn time, never by `plan()`** (the 2026-07-07
+/// plan-seam ruling): `Engine::plan()`/`plan_encode()` are Pure and construct the struct with `out_tmp: None`,
+/// borrowing the temp only to embed its path in argv; §1.7 — the temp's owner (the §3.2.2 `TempPath`
+/// lifecycle) — populates `out_tmp = Some(temp)` on the ENCODE invocation after the call returns. So the
+/// SPAWN-TIME shape is `Some` for every encode (the §2.1 publish artifact) and `None` for a read-only
+/// sub-invocation with no publish artifact — the video PROBE (`ffprobe`, §3.2.1), which stays `None` for its
+/// whole leg; §1.7 atomic-publishes ONLY when `out_tmp.is_some()`.
 ///
 /// [Build-Session-Entscheidung: P3.4] INTERNAL — no `serde`/`specta` (argv / env / a live `TempPath` are
 /// core-only, never on the wire). Derives only `Debug`: `out_tmp` holds a `tempfile::TempPath`, which is
@@ -436,10 +440,12 @@ pub struct Invocation {
     pub stdin: StdinPlan,
     /// The per-invocation progress model (§1.11) the §1.7 dispatch reads.
     pub progress: ProgressModel,
-    /// The publish-temp the engine writes to — `Some` for an encode, `None` for the read-only probe (§3.2.2);
-    /// the §2.1 atomic publish consumes it on item success (drop is a no-op then). Typed with the §3.2.2
-    /// `TempPath` alias (= `tempfile::TempPath`) — the alias references an EXTERNAL type, so it does not trip
-    /// the P2.19 within-module forward-declared-alias dead-code interaction.
+    /// The publish-temp the engine writes to. **Constructed `None` at plan time and populated `Some(temp)` by
+    /// §1.7 at spawn time** (the temp's owner; the 2026-07-07 plan-seam ruling) — so the spawn-time shape is
+    /// `Some` for an encode, `None` for the read-only probe (§3.2.2); the §2.1 atomic publish consumes it on
+    /// item success (drop is a no-op then). Typed with the §3.2.2 `TempPath` alias (= `tempfile::TempPath`) —
+    /// the alias references an EXTERNAL type, so it does not trip the P2.19 within-module forward-declared-alias
+    /// dead-code interaction.
     pub out_tmp: Option<TempPath>,
 }
 
@@ -455,6 +461,29 @@ pub struct PlanError {
     pub kind: ConversionErrorKind,
     /// A short internal detail for the §7.5 log — NEVER surfaced raw to the user (SSOT *no stack traces*).
     pub detail: String,
+}
+
+/// What `Engine::plan()` produced — the §3.2.1 two-shape return, named at the type level (the 2026-07-07
+/// plan-seam ruling). The discriminator §1.7 sequences on: under the `out_tmp` ownership contract every
+/// plan-time [`Invocation`] constructs `out_tmp: None`, so `out_tmp.is_some()` cannot mark the probe.
+/// Probe-ness is per-JOB, not per-engine (the same FFmpeg engine encodes audio single-step and probes video),
+/// so it is NOT an [`EngineDescriptor`] flag — the engine names the shape on the value it returns.
+///
+/// [Build-Session-Entscheidung: P3.5] SOLE author (§3.2.2 owns the shape; the P3.5 minimal-trait box). INTERNAL
+/// — no `serde`/`specta` (it wraps the core-only [`Invocation`], never on the wire). Derives only `Debug`:
+/// [`Invocation`] is itself `Debug`-only (it owns a live `TempPath`), so `PlanOutcome` is moved, never cloned.
+/// §1.7 matches it EXHAUSTIVELY (no `_ =>` catch-all — the §1.2/G29 dispatch-enum discipline the crate-root
+/// `clippy::wildcard_enum_match_arm` deny enforces).
+#[derive(Debug)]
+pub enum PlanOutcome {
+    /// A single-step engine's encode plan (the native CSV/TSV engine, and every image/office/pdf pair from P4
+    /// on): §1.7 populates `out_tmp = Some(temp)` and dispatches it directly; `plan_encode` (a P4.1 trait
+    /// method) is never called.
+    Encode(Invocation),
+    /// A probe-requiring engine's `ffprobe` sub-invocation (video FFmpeg, §3.2.1): `out_tmp` stays `None` for
+    /// the whole probe leg (no publish artifact); §1.7 holds the temp, runs the probe, parses `ProbeOutput`,
+    /// then calls `plan_encode`. No P3 engine produces it — the walking skeleton's one engine is single-step.
+    Probe(Invocation),
 }
 
 /// The §1.7 dispatch ENVELOPE — NOT a second plan type. It wraps `(JobId, EngineId, Invocation,
@@ -526,10 +555,109 @@ pub fn dispatch(invocation: &EngineInvocation) -> InvocationResult {
     }
 }
 
+// ─── §3.2 Engine trait (minimal walking-skeleton) + the native CSV/TSV engine (P3.5) ──
+// P3.5 authors the §3.2.2 `Engine` registry-seam trait in its MINIMAL form — just `plan()` — together with the
+// one walking-skeleton engine that impls it: the native CSV/TSV transform (§3.5.6). P4.1 EXPANDS the SAME trait
+// (never a second one) to the full §3.2.2 surface — `descriptor()` / `capabilities()` / `plan_encode()` /
+// `classify_failure()` — when the §3.2.3 registry + the subprocess engines land. [Build-Session-Entscheidung: P3.5]
+
+/// A bundled conversion engine (§3.2.2) — one impl per engine binary/lib. The registry seam: §3.2.3 selection
+/// resolves a job's `(source, target)` pair to one `Engine`, and §1.7 calls `plan()` to get the dispatch-ready
+/// [`Invocation`]. **Minimal walking-skeleton surface (P3.5): `plan()` only.** P4.1 adds the `descriptor()` /
+/// `capabilities()` / `plan_encode()` / `classify_failure()` methods to THIS trait (§3.2.2). `Send + Sync`
+/// because the §3.2.3 registry stores engines behind a shared handle and §1.7 dispatches them across the §0.9
+/// worker pool.
+pub trait Engine: Send + Sync {
+    /// Build the concrete, dispatch-ready plan for one job — **Pure: no I/O, no spawn** (§3.2.2). It only
+    /// *describes* the invocation (program / argv / cwd / env / stdin / progress); §1.7 owns the actual
+    /// spawn / cancel / timeout and populates `out_tmp` at spawn time.
+    ///
+    /// **Params are the job's tier-3 projection (the 2026-07-07 plan-seam ruling):** the §0.6 [`DroppedItem`]
+    /// (detection + size) + [`TargetId`] + the effective read `input` path §1.7 hands in — NOT the tier-1
+    /// orchestrator-homed `ConversionJob` (§0.7: `crate::engines` is tier 2 and cannot reference it). `input`
+    /// is the §2.3-resolved source (or the §3.5.0 core-staged scratch copy from P4 on); argv embeds `input`,
+    /// NEVER a path derived from `item`. `out_tmp` is BORROWED only so argv can embed its path — `plan()`
+    /// constructs the returned [`Invocation`] with `out_tmp: None`; §1.7 owns the temp and populates
+    /// `Some(temp)` on the ENCODE invocation after this call returns.
+    ///
+    /// Returns [`PlanOutcome::Encode`] (single-step) or [`PlanOutcome::Probe`] (a probe-requiring engine's
+    /// `ffprobe` sub-invocation — §3.2.1) — the shape §1.7 sequences on. A pure planning failure (an option
+    /// value out of range, an unexpected target) is a [`PlanError`] carrying its §2.8 kind.
+    fn plan(
+        &self,
+        item: &DroppedItem,
+        target: TargetId,
+        input: &Path,
+        out_tmp: &TempPath,
+    ) -> Result<PlanOutcome, PlanError>;
+}
+
+/// ConvertIA's own MIT in-core CSV/TSV engine (§3.5.6) — the ONE `EngineProgram::InProcessNative` engine and
+/// the single engine the P3 walking skeleton runs. It decodes NO third-party bytes (pure memory-safe Rust), so
+/// it is the sole sanctioned in-core conversion path (§2.12.4 absolute). The §3.2.3 registry (P4.1) holds one
+/// instance.
+///
+/// [Build-Session-Entscheidung: P3.5] a fieldless unit struct — the engine carries no per-instance state (the
+/// transform's parameters come from the job via `plan()`), so there is nothing to store.
+pub struct NativeCsvTsvEngine;
+
+impl Engine for NativeCsvTsvEngine {
+    /// Plan the native CSV↔TSV transform (§3.5.6). Pure: maps the chosen `target` to its output format token
+    /// and builds the dispatch-ready [`Invocation`] — no I/O, no spawn. Single-step, so it always returns
+    /// [`PlanOutcome::Encode`]; `plan_encode` (a P4.1 trait method) is never reached.
+    ///
+    /// **`args` carries the transform's two runtime parameters** [Build-Session-Entscheidung: P3.5]: the
+    /// effective read `input` path (`args[0]`, embedded per the §3.2.2 ownership contract — the transform reads
+    /// THIS path, never one derived from `item`) and the **target format token** (`args[1]` ∈ {`csv`, `tsv`},
+    /// the canonical §0.6 lowercase name). The P3.41 streamed transform reads `args[0]` as the source path and
+    /// `args[1]` as the output format, applying that format's RFC-4180 delimiter + re-quoting rules; the
+    /// P3.43-P3.45 executor forwards the same `Invocation`. [Derived-Assumption: P3.5 — the in-core engine
+    /// carries `input` in argv like every subprocess engine (§3.2.2 "argv embeds input"), since [`Invocation`]
+    /// has no dedicated input field and the §1.7 dispatch envelope holds only the `Invocation`.]
+    ///
+    /// `item`/`out_tmp` are unused here: the source delimiter is detected at RUNTIME by the transform
+    /// (P3.27/P3.28), not planned, and the output temp is read from the `Invocation.out_tmp` §1.7 populates —
+    /// not embedded in this in-core engine's argv (unlike a subprocess engine, whose argv names its output path).
+    fn plan(
+        &self,
+        _item: &DroppedItem,
+        target: TargetId,
+        input: &Path,
+        _out_tmp: &TempPath,
+    ) -> Result<PlanOutcome, PlanError> {
+        // Map the chosen target FORMAT to its canonical token; the P3.41 transform applies that format's
+        // RFC-4180 delimiter + re-quoting rules. CSV↔TSV only — the §3.2.3 registry routes no other pair to
+        // this engine, so an unexpected target is an InternalError (a mis-routed selection), not a user fault.
+        // Compared by value (TargetId is Copy + Eq) rather than matched, to stay off the crate-root
+        // `clippy::wildcard_enum_match_arm` deny without spelling out every §0.6 FormatId variant.
+        let target_token = if target == TargetId::Format(FormatId::Tsv) {
+            "tsv"
+        } else if target == TargetId::Format(FormatId::Csv) {
+            "csv"
+        } else {
+            return Err(PlanError {
+                kind: ConversionErrorKind::InternalError,
+                detail: "native CSV/TSV engine planned for a non-CSV/TSV target".to_owned(),
+            });
+        };
+        Ok(PlanOutcome::Encode(Invocation {
+            program: EngineProgram::InProcessNative(EngineId::NativeCsvTsv),
+            args: vec![input.as_os_str().to_owned(), OsString::from(target_token)],
+            cwd: None,
+            env: Vec::new(),
+            stdin: StdinPlan::None,
+            progress: ProgressModel::InProcessFraction,
+            out_tmp: None,
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    use crate::domain::{Confidence, DetectionOutcome, ItemId};
 
     // §6.4.1 unit (G15): the §0.6/§3.2 `EngineId` WIRE form (P2.13) — the stable discriminant rides
     // `EngineStatus.id` in the C12 `EngineHealth` return (§7.2). Pinned to its lowercase wire string per
@@ -920,8 +1048,8 @@ mod tests {
 
     // §6.4.1 unit (G15): the §3.2.2 `Invocation` holds its seven plan-seam fields (P3.4). Pins the §3.2.2
     // shape — InProcessNative program, argv, scratch cwd, isolated env, no-stdin, self-reported progress, and
-    // `out_tmp: None` (the read-only shape; an encode carries `Some(TempPath)`) — and reads every field so the
-    // test build is dead-code-clean.
+    // `out_tmp: None` (every plan-time Invocation constructs None; §1.7 populates Some(temp) at spawn time for
+    // an encode — the 2026-07-07 plan-seam ruling) — and reads every field so the test build is dead-code-clean.
     #[test]
     fn invocation_holds_the_seven_plan_seam_fields() {
         let inv = native_csv_invocation();
@@ -945,7 +1073,7 @@ mod tests {
         assert_eq!(inv.progress, ProgressModel::InProcessFraction);
         assert!(
             inv.out_tmp.is_none(),
-            "§3.2.2: the read-only shape carries out_tmp None; an encode Invocation carries Some(TempPath)"
+            "§3.2.2: every plan-time Invocation constructs out_tmp None; §1.7 populates Some(temp) at spawn time for an encode (the 2026-07-07 plan-seam ruling)"
         );
     }
 
@@ -1108,6 +1236,164 @@ mod tests {
                 dispatch(&invocation),
                 InvocationResult::Failed(ConversionErrorKind::InternalError),
                 "§1.7/§2.13: the P3.4 dispatch returns the honest InternalError seam for every program (no lane wired yet)"
+            );
+        }
+    }
+
+    // ─── P3.5: the §3.2 Engine trait (minimal) + the native CSV/TSV engine's plan() ──
+
+    // A minimal eligible CSV `DroppedItem` for the native-engine plan() tests. plan() ignores `item` (the
+    // source delimiter is detected at RUNTIME by the transform, not planned), so any well-formed item serves.
+    fn csv_dropped_item() -> DroppedItem {
+        DroppedItem {
+            item: ItemId::from_index(0),
+            raw_path: PathBuf::from("data.csv"),
+            resolved_path: PathBuf::from("data.csv"),
+            size_bytes: 12,
+            detected: DetectionOutcome::Recognized {
+                format: FormatId::Csv,
+                confidence: Confidence::High,
+                dims: None,
+            },
+        }
+    }
+
+    // A throwaway publish-temp for the plan() tests. plan() ignores `out_tmp` (the native engine reads the temp
+    // §1.7 populates onto `Invocation.out_tmp`, not its argv), so any live TempPath serves; it is deleted on
+    // drop at the end of the test. Rooted in the system temp dir here (a test-only convenience — production
+    // picks it in the destination volume, §2.14.4).
+    fn throwaway_temp_path() -> TempPath {
+        tempfile::NamedTempFile::new()
+            .expect("create a temp file for the plan() test")
+            .into_temp_path()
+    }
+
+    // §6.4.1 unit (G15): the P3.5 native CSV/TSV `Engine::plan()` — Pure, maps a Tsv target to a single-step
+    // encode Invocation carrying the InProcessNative program, self-reported InProcessFraction progress, no cwd/
+    // env/stdin (an in-core engine spawns nothing), out_tmp None (§1.7 populates at spawn time), and args
+    // [input, "tsv"] (the §3.5.6 transform's two runtime params). A Pure, no-I/O logic test (test-strategy §10.1).
+    #[test]
+    fn native_engine_plans_a_tsv_target_as_a_single_step_encode() {
+        let engine = NativeCsvTsvEngine;
+        let item = csv_dropped_item();
+        let temp = throwaway_temp_path();
+        let input = Path::new("/data/report.csv");
+
+        let outcome = engine
+            .plan(&item, TargetId::Format(FormatId::Tsv), input, &temp)
+            .expect("native CSV/TSV plan() succeeds for a TSV target");
+        let inv = match outcome {
+            PlanOutcome::Encode(inv) => inv,
+            // unreachable-by-construction: the single-step native engine plans a single encode and never a
+            // probe (§3.2.1) — reaching this arm is a real bug. Allowed in #[cfg(test)] (CLAUDE.md anti-patterns).
+            // [Build-Session-Entscheidung: P3.5]
+            PlanOutcome::Probe(_) => {
+                unreachable!(
+                    "§3.2.2: the single-step native CSV/TSV engine returns Encode, never Probe"
+                )
+            }
+        };
+
+        assert!(
+            matches!(
+                inv.program,
+                EngineProgram::InProcessNative(EngineId::NativeCsvTsv)
+            ),
+            "§3.5.6: the native engine's program is InProcessNative(NativeCsvTsv)"
+        );
+        assert_eq!(
+            inv.progress,
+            ProgressModel::InProcessFraction,
+            "§3.2.2/§3.5.6: it self-reports a bytes_processed/source_size fraction"
+        );
+        assert!(
+            inv.out_tmp.is_none(),
+            "§3.2.2: plan() constructs out_tmp None; §1.7 populates Some(temp) at spawn time"
+        );
+        assert_eq!(
+            inv.stdin,
+            StdinPlan::None,
+            "§3.5.6: the native engine reads the input path, never stdin"
+        );
+        assert_eq!(
+            inv.cwd, None,
+            "§3.5.6: an in-core engine spawns no subprocess, so it needs no working directory"
+        );
+        assert!(
+            inv.env.is_empty(),
+            "§3.5.6: an in-core engine spawns no subprocess, so it carries no env"
+        );
+        assert_eq!(
+            inv.args,
+            vec![OsString::from("/data/report.csv"), OsString::from("tsv")],
+            "§3.2.2/§3.5.6: args carry the embedded input path + the target format token"
+        );
+    }
+
+    // §6.4.1 unit (G15): the P3.5 native `plan()` maps a Csv target to the args token "csv", and REJECTS any
+    // non-CSV/TSV target with an InternalError PlanError — a mis-routed §3.2.3 selection (the registry never
+    // sends a non-CSV/TSV pair here), a bug rather than a user fault.
+    #[test]
+    fn native_engine_plans_csv_and_rejects_a_foreign_target() {
+        let engine = NativeCsvTsvEngine;
+        let item = csv_dropped_item();
+        let temp = throwaway_temp_path();
+        let input = Path::new("/data/report.tsv");
+
+        let outcome = engine
+            .plan(&item, TargetId::Format(FormatId::Csv), input, &temp)
+            .expect("native plan() succeeds for a CSV target");
+        let inv = match outcome {
+            PlanOutcome::Encode(inv) => inv,
+            // unreachable-by-construction (see the TSV test); allowed in #[cfg(test)].
+            // [Build-Session-Entscheidung: P3.5]
+            PlanOutcome::Probe(_) => {
+                unreachable!(
+                    "§3.2.2: the single-step native CSV/TSV engine returns Encode, never Probe"
+                )
+            }
+        };
+        assert_eq!(
+            inv.args,
+            vec![OsString::from("/data/report.tsv"), OsString::from("csv")],
+            "§3.5.6: a CSV target sets the format token to \"csv\""
+        );
+
+        // A foreign target (an image format) is a mis-routed selection → an InternalError PlanError. `.err()`
+        // extracts the error without requiring PlanOutcome to be PartialEq (it wraps a live TempPath).
+        let rejected = engine.plan(&item, TargetId::Format(FormatId::Webp), input, &temp);
+        assert_eq!(
+            rejected.err(),
+            Some(PlanError {
+                kind: ConversionErrorKind::InternalError,
+                detail: "native CSV/TSV engine planned for a non-CSV/TSV target".to_owned(),
+            }),
+            "§3.2.2: a non-CSV/TSV target yields an InternalError PlanError, not a wrong Invocation"
+        );
+    }
+
+    // §6.4.1 unit (G15): the P3.5 `PlanOutcome` names both plan shapes — Encode (single-step) and Probe (the
+    // §3.2.1 ffprobe sub-invocation). Constructing + reading both keeps the test build dead-code-clean; no P3
+    // engine returns Probe, so it is dead in the production build (the module-level dead-code expectation
+    // covers it).
+    #[test]
+    fn plan_outcome_names_the_encode_and_probe_shapes() {
+        let shapes = [
+            PlanOutcome::Encode(native_csv_invocation()),
+            PlanOutcome::Probe(native_csv_invocation()),
+        ];
+        for shape in shapes {
+            // Both variants wrap the plan Invocation; read its program via an or-pattern (exhaustive, no
+            // wildcard) so both variants and the wrapped field are exercised.
+            let program = match shape {
+                PlanOutcome::Encode(inv) | PlanOutcome::Probe(inv) => inv.program,
+            };
+            assert!(
+                matches!(
+                    program,
+                    EngineProgram::InProcessNative(EngineId::NativeCsvTsv)
+                ),
+                "§3.2.2: both PlanOutcome shapes wrap the plan Invocation"
             );
         }
     }
