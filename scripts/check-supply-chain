@@ -123,6 +123,7 @@ PINNED_FLOORS = {
     "tempfile":     "3.27.0",        # §0.8 owned-scratch atomic write (in the lock via dev-deps now)
     "proptest":     "1.11.0",        # §6.4.2 Rust property-test lib (in the lock via dev-deps; P2.128 dep / P2.129 floor)
     "tokio-util":   "0.7.18",        # §0.4.4/§1.7 CancellationToken (direct dep from P2.133; P2.133 dep / P2.134 floor)
+    "tokio":        "1.52.3",        # §0.9/§1.7 Semaphore + spawn_blocking permit lane (direct dep from P3.3; P3.3 dep / P3.82 floor)
 }
 
 
