@@ -606,6 +606,7 @@ version = "0.1.0"
 dependencies = [
  "dunce",
  "proptest",
+ "rustix",
  "serde",
  "serde_json",
  "specta",

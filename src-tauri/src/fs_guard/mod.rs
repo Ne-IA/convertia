@@ -9,10 +9,12 @@
 //! ALREADY-OPEN dir handle (P3.9, `winapi_util::file::information(&dir_file)` — `GetFileInformationByHandle` on
 //! the pinned handle, `winapi-util`'s `AsHandleRef for File`) — comes through `winapi-util`'s SAFE wrapper
 //! (with `dunce` for the canonical-path `\\?\`-normalisation), and the Unix side is std `MetadataExt` — no
-//! `unsafe` in the core (§2.3.1 `[CORRECTED 2026-07-07]`). The remaining RAW per-OS handle FFI — the
-//! §2.1.2/§2.3.3 create-only dir-relative PUBLISH primitives (Linux `renameat2` / macOS `renameatx_np` /
-//! Windows `NtSetInformationFile(FileRenameInformationEx)`, P3.12/P3.13/P3.14) — is homed in the single
-//! allow-listed `crate::platform` shim (§0.7).
+//! `unsafe` in the core (§2.3.1 `[CORRECTED 2026-07-07]`). The §2.1.2/§2.3.3 create-only dir-relative PUBLISH
+//! primitives split by OS `[re-cut by the P3.12 ruling, 2026-07-07]`: the **Unix** side (Linux `renameat2` /
+//! macOS `renameatx_np`, P3.12/P3.13; the §2.14.3 copy fallback P3.17; the durability fsync P3.16/P3.18) rides
+//! `rustix`'s SAFE API and lands HERE in `crate::fs_guard` with ZERO `unsafe` (the crate-root deny holds); the
+//! **Windows** side (`NtSetInformationFile(FileRenameInformationEx)`, P3.14) is the FIRST — and only — RAW
+//! per-OS handle FFI, homed in the single allow-listed `crate::platform` shim (§0.7) with `windows-sys`.
 //!
 //! P2.74 lands the pure §2.3.1 resolved-identity TYPE (`FileIdentity`) — the §2.3.2 de-dup key (below).
 //!
@@ -751,6 +753,90 @@ pub fn check_path_limit(final_path: &Path) -> Result<(), PathTooLong> {
     match total_incl_nul {
         Some(units) if units <= MAX_TOTAL_UNITS_INCL_NUL => Ok(()),
         Some(_) | None => Err(PathTooLong::Total),
+    }
+}
+
+/// The §2.1.2 outcome of one no-replace publish attempt ([`publish_noreplace`]). Unix-only — the Windows
+/// dir-handle publish (P3.14) has its own outcome (a `FileRenameInformationEx` NT-status), and the composite
+/// `atomic_publish` (P3.15+) unifies them.
+// [Build-Session-Entscheidung: P3.12] Gated `any(linux, macos)` — the SHIPPED unix desktops (§1) — NOT a bare
+// `cfg(unix)`: `rustix::fs::renameat_with` is `cfg(any(apple, linux_kernel, redox))`, so a bare `cfg(unix)`
+// would build-break a non-shipped unix (FreeBSD/illumos/…) of this public MIT repo with an unresolved import.
+// (Distinct from the module's other `cfg(unix)` sites, which use std APIs available on ALL unix.)
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.1.2 publish_noreplace's outcome type (P3.12), constructed only by that fn — whose consumer \
+                  is the §2.2.2 numbering loop / §2.1.1 write sequence (P3.15 / P3.38) — so it is dead-at-runtime \
+                  during the P3 wiring window; `allow` (permissive) covers the ambiguous dead-ness (cf. \
+                  OutputSafety). Exercised by publish_noreplace_tests."
+    )
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishAttempt {
+    /// The exclusive no-replace rename succeeded — `leaf` now names the completed output; `tmp` was MOVED (no
+    /// copy; a 0-byte `final` is never created, §2.1.2).
+    Published,
+    /// `leaf` already exists (`EEXIST`) — the no-replace rename did NOT clobber it (the SSOT never-harm
+    /// guarantee); the §2.2.2 numbering loop (P3.15) re-picks the next `stem (n).ext` candidate, `tmp` untouched.
+    NameTaken,
+    /// The filesystem does not support the single-call no-replace primitive (`EINVAL` on Linux / `ENOTSUP` /
+    /// `EOPNOTSUPP` on macOS — a FAT/exFAT-class volume) — the caller falls back to the §2.1.2 `link`+`unlink`
+    /// primitive (P3.13); `tmp` untouched.
+    Unsupported,
+}
+
+/// §2.1.2 the Unix single-call, create-only exclusive publish primitive (never a 0-byte `final`): atomically rename the
+/// completed `tmp` onto `leaf` RELATIVE to the P3.9-verified parent dir handle, failing rather than replacing
+/// if `leaf` already exists. rustix's `renameat_with(…, RenameFlags::NOREPLACE)` maps to Linux
+/// `renameat2(RENAME_NOREPLACE)` and macOS `renameatx_np(RENAME_EXCL)` — BOTH box spellings behind ONE SAFE
+/// dirfd-relative call, so this lands with NO `unsafe` in the core (the crate root `#![deny(unsafe_code)]`
+/// holds; the P3.12 ruling rejected raw `libc`). Because the destination resolves through the VERIFIED handle
+/// (not a re-parsed path string), the parent cannot be link-swapped between the §2.3.3 verify and this publish
+/// (the §2.3.3 TOCTOU-closure); NOREPLACE means it either creates `leaf` fresh or fails `EEXIST` — it NEVER
+/// clobbers an existing file (the SSOT never-harm guarantee).
+///
+/// **Errno mapping (no panic, G4/G14):** `EEXIST` → [`PublishAttempt::NameTaken`] (re-pick, P3.15);
+/// `EINVAL`/`ENOTSUP`/`EOPNOTSUPP` → [`PublishAttempt::Unsupported`] (fall back to `link`+`unlink`, P3.13);
+/// everything else — INCLUDING `EXDEV` (cross-volume, handled by the §2.14.3 copy fallback, P3.17) — surfaces
+/// as a §2.8 `io::Error` the caller maps. [Build-Session-Entscheidung: P3.12] `tmp` is renamed FROM `CWD` (it
+/// is a full path our own code produced, on the destination volume); only the DESTINATION side is
+/// dirfd-relative — that is the TOCTOU-critical side (the source `tmp` is ours, not an attacker's).
+// [Build-Session-Entscheidung: P3.12] `any(linux, macos)` (the shipped unix desktops), NOT a bare `cfg(unix)`
+// — `rustix::fs::renameat_with` is `cfg(any(apple, linux_kernel, redox))`; a bare `cfg(unix)` would build-break
+// a non-shipped unix (FreeBSD/…) for this public MIT repo. See the `PublishAttempt` note above.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "§2.1.2 publish_noreplace (P3.12) — the Unix no-replace publish primitive. Its production \
+                  caller is the §2.2.2 numbering loop / §2.1.1 write sequence (P3.15 / P3.38); statically unused \
+                  in the production build until that wiring lands (`expect` auto-flags the moment it does), \
+                  exercised by the in-module publish_noreplace_tests."
+    )
+)]
+pub fn publish_noreplace(
+    parent: &VerifiedParentDir,
+    tmp: &Path,
+    leaf: &std::ffi::OsStr,
+) -> io::Result<PublishAttempt> {
+    use rustix::fs::{renameat_with, RenameFlags, CWD};
+    use rustix::io::Errno;
+    // Rename (CWD, tmp) → (verified parent handle, leaf) with RENAME_NOREPLACE / RENAME_EXCL. The destination
+    // dirfd is the pinned P3.9 handle (`&File: AsFd`), so a post-verify parent path swap cannot redirect it.
+    match renameat_with(CWD, tmp, parent.dir_handle(), leaf, RenameFlags::NOREPLACE) {
+        Ok(()) => Ok(PublishAttempt::Published),
+        // `EEXIST`: `leaf` is taken — NOREPLACE refused to clobber it (no-harm); re-pick (§2.2.2, P3.15).
+        Err(e) if e == Errno::EXIST => Ok(PublishAttempt::NameTaken),
+        // `EINVAL` (Linux) / `ENOTSUP` / `EOPNOTSUPP` (macOS): the FS lacks the flag — fall back (§2.1.2, P3.13).
+        Err(e) if e == Errno::INVAL || e == Errno::NOTSUP || e == Errno::OPNOTSUPP => {
+            Ok(PublishAttempt::Unsupported)
+        }
+        // Anything else (incl. `EXDEV` cross-volume → §2.14.3 copy fallback, P3.17) is a genuine §2.8 error.
+        Err(other) => Err(io::Error::from(other)),
     }
 }
 
@@ -1863,6 +1949,85 @@ mod check_path_limit_windows_tests {
             check_path_limit(Path::new(&over)),
             Err(PathTooLong::Component),
             "§2.2.3: 256 UTF-16 units (128 emoji) breaches 255 — measured in UTF-16 units, not chars"
+        );
+    }
+}
+
+// §6.4.1/§6.4.3 real-FS unix (G15/G31) for the §2.1.2 single-call no-replace publish primitive
+// ([`publish_noreplace`], P3.12). Never mock the FS under test (test-strategy §0.1): a REAL temp dir + a REAL
+// rustix rename. TWO STACKED cfg attrs (`#[cfg(test)]` then the `any(linux, macos)` predicate matching the
+// primitive's own cfg) — NOT a compound `all(test, …)` (the P1.17 compound-cfg trap). The `Unsupported`
+// (EINVAL/ENOTSUP) arm is not unit-tested here (it needs a FAT/exFAT-class volume that lacks the flag) — it is
+// exercised by the P3.13 link+unlink fallback + the §6.5 FAT-divert corpus (P3.65).
+#[cfg(test)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod publish_noreplace_tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    /// The P3.9 verified parent handle for `dir` (empty frozen set → always Verified); binds via
+    /// match→Option→`expect` (never a hard-fail macro the deferral gate flags).
+    fn verified(dir: &Path) -> VerifiedParentDir {
+        match open_verified_parent_dir(dir, &[]).expect("open the dest dir") {
+            ParentDirVerdict::Verified(v) => Some(v),
+            ParentDirVerdict::ResolvesOntoSource => None,
+        }
+        .expect("a real dir with an empty frozen set verifies")
+    }
+
+    // §2.1.2 (G15/G31): a fresh `leaf` publishes — the tmp is renamed onto `leaf` (create-only), the content
+    // lands byte-exact in the verified parent dir, and the tmp is GONE (moved, not copied — no residual, never
+    // a 0-byte `final`).
+    #[test]
+    fn a_fresh_leaf_publishes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let tmp = dir.path().join("out.part");
+        std::fs::write(&tmp, b"converted bytes").expect("write the tmp");
+        let outcome = publish_noreplace(&parent, &tmp, OsStr::new("out.tsv")).expect("publish");
+        assert_eq!(
+            outcome,
+            PublishAttempt::Published,
+            "§2.1.2: a fresh leaf publishes"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("out.tsv")).expect("read the published file"),
+            b"converted bytes",
+            "§2.1.2: the leaf is published relative to the verified parent dir, carrying the tmp's exact bytes"
+        );
+        assert!(
+            !tmp.exists(),
+            "§2.1.2: the tmp was renamed (moved), never left behind"
+        );
+    }
+
+    // §2.1.2 THE NO-HARM PROOF (G15/G31): publishing onto an EXISTING `leaf` returns NameTaken and NEVER
+    // clobbers it — the existing file is byte-identical afterward, and the tmp is untouched (the §2.2.2 loop
+    // re-picks the next candidate). The SSOT never-harm guarantee at the publish primitive.
+    #[test]
+    fn a_collision_never_clobbers_the_existing_target() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let existing = dir.path().join("taken.tsv");
+        std::fs::write(&existing, b"PRE-EXISTING must survive").expect("write the existing target");
+        let tmp = dir.path().join("out.part");
+        std::fs::write(&tmp, b"new bytes").expect("write the tmp");
+        let outcome =
+            publish_noreplace(&parent, &tmp, OsStr::new("taken.tsv")).expect("publish attempt");
+        assert_eq!(
+            outcome,
+            PublishAttempt::NameTaken,
+            "§2.1.2: an existing leaf is NameTaken (EEXIST), never replaced"
+        );
+        assert_eq!(
+            std::fs::read(&existing).expect("read the existing target"),
+            b"PRE-EXISTING must survive",
+            "§2.1.2 no-harm: the existing target is byte-identical — the no-replace rename NEVER clobbered it"
+        );
+        assert_eq!(
+            std::fs::read(&tmp).expect("read the tmp"),
+            b"new bytes",
+            "§2.1.2: the tmp is untouched on collision (the §2.2.2 loop re-picks the next candidate)"
         );
     }
 }

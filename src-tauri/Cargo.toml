@@ -86,6 +86,17 @@ walkdir = "2.5.0"
 # NO L(-1) work in this box (the P3.6 hard-stop resolution).
 dunce = "1.0.5"
 
+# [P3.12] §2.1.1/§2.1.2 Unix single-call no-replace publish primitive for `fs_guard::publish_noreplace` — the
+# SAFE `rustix::fs::renameat_with(olddirfd, tmp, dirfd, leaf, RenameFlags::NOREPLACE)` maps to Linux
+# `renameat2(RENAME_NOREPLACE)` and macOS `renameatx_np(RENAME_EXCL)`, BOTH box spellings behind ONE safe
+# dirfd-relative call (`AsFd`, fits the P3.9 verified parent handle) with NO `unsafe` in the core (the crate
+# root `#![deny(unsafe_code)]` holds; `libc` was rejected — raw `unsafe` per call site). Unix-only, so it rides
+# `[target.'cfg(unix)'.dependencies]`. Feature `fs` gates `rustix::fs`; default `std` gives `From<Errno> for
+# io::Error`. ALREADY in Cargo.lock via `tempfile`, so no newly-resolved package; §0.8 floor row landed at
+# P3.84 (the P3.12 Co-Pilot ruling). Cargo.toml is not L(-1) — this promotion is the Loop's per the ruling.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", features = ["fs"] }
+
 # [P3.6] §2.3.1 Windows file-identity for `fs_guard::resolve_identity` — the SAFE `GetFileInformationByHandle`
 # wrapper (`winapi_util::file::information` → `volume_serial_number()` / `file_index()`, both `u64`; NO
 # `unsafe` in the core). Windows-only (the crate is `cfg(windows)`-empty elsewhere), so it rides
