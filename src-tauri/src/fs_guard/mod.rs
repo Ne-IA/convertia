@@ -38,6 +38,9 @@
 //!  - `check_path_limit` — per-OS component + total path-length validation, fail-never-truncate (§2.2.3) — **P3.11**.
 //!  - `atomic_publish(verified_parent, tmp, leaf)` — per-OS create-only exclusive publish, rooted at the P3.9
 //!    `VerifiedParentDir`, + the §2.14.3 cross-volume fallback (§2.1 / §2.3.3 / §2.14.3) — **P3.12-P3.18**.
+//!  - `publish_numbered(verified_parent, parent_dir, tmp, candidates)` — the §2.2.2 numbering ↔ no-clobber retry
+//!    loop: drive `output_name`'s lazy candidates through the create-only publish, bumping `(n)` on each
+//!    collision, capped at ~10 000 variants (§2.1.2 / §2.2) — **P3.15**.
 //!  - `location_status` — per-location writability + ephemeral classification, cached per-dir (§2.7.2) — **P3.33**.
 
 use std::ffi::OsString;
@@ -723,14 +726,18 @@ fn os_str_units(s: &std::ffi::OsStr) -> usize {
 /// (`units + 1 > LIMIT`), matching §2.2.3's "MAX_PATH 260 … (drive + dirs + name + NUL)" — a path that fills
 /// the buffer to the ceiling leaves no room for the terminator the OS APIs require, so 259 wide chars is the
 /// Windows usable max.
+// [Test-Change: P3.15 — old-obsolete+new-correct, §2.2.3] `expect`→`allow` (a production lint change, NOT a
+// test suppression; cf. P3.7/P3.8): P3.15's `publish_numbered_capped` now calls `check_path_limit`, so the
+// P3.11 DEAD assertion errors as unfulfilled under -D warnings — but that consumer is itself unwired until the
+// §2.1.1 write sequence (P3.38), so the fn's dead-ness is ambiguous and `allow` (permissive) is correct.
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "§2.2.3 check_path_limit (P3.11) — the per-OS path-length gate. Its production caller is the \
-                  §2.1.1 write sequence (P3.38, which maps PathTooLong to §2.8); statically unused in the \
-                  production build until that wiring lands (`expect` auto-flags the moment it does), exercised \
-                  by the in-module check_path_limit_tests."
+        reason = "§2.2.3 check_path_limit (P3.11) — the per-OS path-length gate. Called by P3.15's \
+                  publish_numbered_capped (still unwired until the §2.1.1 write sequence, P3.38, which maps \
+                  PathTooLong to §2.8), so it is dead-at-runtime but no longer statically unused; `allow` \
+                  (permissive) covers the ambiguous dead-ness. Exercised by the in-module check_path_limit_tests."
     )
 )]
 pub fn check_path_limit(final_path: &Path) -> Result<(), PathTooLong> {
@@ -808,14 +815,18 @@ pub enum PublishAttempt {
 // — `rustix::fs::renameat_with` is `cfg(any(apple, linux_kernel, redox))`; a bare `cfg(unix)` would build-break
 // a non-shipped unix (FreeBSD/…) for this public MIT repo. See the `PublishAttempt` note above.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+// [Test-Change: P3.15 — old-obsolete+new-correct, §2.1.2] `expect`→`allow` (a production lint change, NOT a
+// test suppression; cf. P3.7/P3.8): P3.15's `publish_once` now calls `publish_noreplace`, so the P3.12 DEAD
+// assertion errors as unfulfilled under -D warnings — but that consumer (via publish_numbered) is unwired until
+// the §2.1.1 write sequence (P3.38), so the fn's dead-ness is ambiguous and `allow` (permissive) is correct.
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "§2.1.2 publish_noreplace (P3.12) — the Unix no-replace publish primitive. Its production \
-                  caller is the §2.2.2 numbering loop / §2.1.1 write sequence (P3.15 / P3.38); statically unused \
-                  in the production build until that wiring lands (`expect` auto-flags the moment it does), \
-                  exercised by the in-module publish_noreplace_tests."
+        reason = "§2.1.2 publish_noreplace (P3.12) — the Unix no-replace publish primitive. Called by P3.15's \
+                  publish_once (still unwired via publish_numbered until the §2.1.1 write sequence, P3.38), so it \
+                  is dead-at-runtime but no longer statically unused; `allow` (permissive) covers the ambiguous \
+                  dead-ness. Exercised by the in-module publish_noreplace_tests."
     )
 )]
 pub fn publish_noreplace(
@@ -917,14 +928,18 @@ pub enum LinkPublishAttempt {
 /// side (the source `tmp` is ours, not an attacker's), mirroring [`publish_noreplace`].
 // [Build-Session-Entscheidung: P3.13] `any(linux, macos)` to match the cluster — see the `LinkPublishAttempt` note.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+// [Test-Change: P3.15 — old-obsolete+new-correct, §2.1.2] `expect`→`allow` (a production lint change, NOT a
+// test suppression; cf. P3.7/P3.8): P3.15's `publish_once` now calls `publish_link_fallback`, so the P3.13 DEAD
+// assertion errors as unfulfilled under -D warnings — but that consumer (via publish_numbered) is unwired until
+// the §2.1.1 write sequence (P3.38), so the fn's dead-ness is ambiguous and `allow` (permissive) is correct.
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
         reason = "§2.1.2 publish_link_fallback (P3.13) — the Unix `link`+`unlink` fallback publish primitive. \
-                  Its production caller is the P3.15 composite `atomic_publish` / §2.1.1 write sequence (P3.38); \
-                  statically unused in the production build until that wiring lands (`expect` auto-flags the \
-                  moment it does), exercised by the in-module publish_link_fallback_tests."
+                  Called by P3.15's publish_once (still unwired via publish_numbered until the §2.1.1 write \
+                  sequence, P3.38), so it is dead-at-runtime but no longer statically unused; `allow` \
+                  (permissive) covers the ambiguous dead-ness. Exercised by the in-module publish_link_fallback_tests."
     )
 )]
 pub fn publish_link_fallback(
@@ -995,14 +1010,18 @@ pub enum WindowsPublishAttempt {
 /// `Retryable` (a transient AV/indexer lock) is retried a small bounded number of times with a doubling
 /// backoff, then surfaces as a §2.8 `WriteFailed` `io::Error`; any other (terminal) error surfaces immediately.
 #[cfg(windows)]
+// [Test-Change: P3.15 — old-obsolete+new-correct, §2.1.2] `expect`→`allow` (a production lint change, NOT a
+// test suppression; cf. P3.7/P3.8): P3.15's `publish_once` now calls `publish_rename_windows`, so the P3.14
+// DEAD assertion errors as unfulfilled under -D warnings — but that consumer (via publish_numbered) is unwired
+// until the §2.1.1 write sequence (P3.38), so the fn's dead-ness is ambiguous and `allow` (permissive) is correct.
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "§2.1.2 publish_rename_windows (P3.14) — the Windows create-only publish primitive. Its \
-                  production caller is the P3.15 composite `atomic_publish` / §2.1.1 write sequence (P3.38); \
-                  statically unused until that wiring lands (`expect` auto-flags the moment it does), \
-                  exercised by publish_rename_windows_tests."
+        reason = "§2.1.2 publish_rename_windows (P3.14) — the Windows create-only publish primitive. Called by \
+                  P3.15's publish_once (still unwired via publish_numbered until the §2.1.1 write sequence, \
+                  P3.38), so it is dead-at-runtime but no longer statically unused; `allow` (permissive) covers \
+                  the ambiguous dead-ness. Exercised by publish_rename_windows_tests."
     )
 )]
 pub fn publish_rename_windows(
@@ -1039,6 +1058,292 @@ pub fn publish_rename_windows(
             }
         }
     }
+}
+
+/// The unified outcome of ONE create-only publish attempt at a single candidate `leaf`, folding the per-OS
+/// primitives (Unix [`PublishAttempt`]/[`LinkPublishAttempt`], Windows [`WindowsPublishAttempt`]) into the one
+/// shape the §2.2.2 numbering loop ([`publish_numbered`]) drives. Private — the seed of the module-doc
+/// `atomic_publish` single-attempt composite (P3.16 adds the §2.1.1 durability fsync, P3.17 the §2.14.3 EXDEV
+/// cross-volume fallback).
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.1.2 the unified single-attempt publish outcome (P3.15), constructed only by publish_once — \
+                  driven by publish_numbered, whose production caller is the §2.1.1 write sequence (P3.38) — so \
+                  it is dead-at-runtime during the P3 wiring window; `allow` (permissive) covers the ambiguous \
+                  dead-ness (cf. PublishAttempt)."
+    )
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SinglePublish {
+    /// Published — `residual_tmp` marks the §2.1.3 Unix `link`+`unlink` success-window sub-state (a `*.part`
+    /// may remain for the §2.6.4 sweep); the single-call Unix path and the Windows path never set it.
+    Published { residual_tmp: bool },
+    /// `leaf` is taken — the no-clobber refusal (`EEXIST` / `ERROR_ALREADY_EXISTS`); the loop re-picks the
+    /// next `stem (n).ext` candidate (§2.2.2), `tmp` untouched.
+    NameTaken,
+    /// The destination filesystem supports NEITHER the no-replace rename NOR hardlinks (FAT/exFAT-class, Unix
+    /// only) — no mechanised atomic no-clobber publish here (§2.1.2 third fallback); the §2.7.2 divert trigger
+    /// (P3.18). Windows never produces it (`MoveFileExW`-without-`REPLACE` is create-only on FAT/exFAT too).
+    // Unix-only: only the `any(linux, macos)` publish_once statically constructs this arm, so on the Windows
+    // `cfg(test)` leg (where the enum-level `not(test)` allow is inactive) it is never constructed — a variant
+    // `allow(dead_code)` covers that platform-conditional dead-ness (harmless/no-op on the Unix legs, where the
+    // link-fallback path constructs it). [Build-Session-Entscheidung: P3.15]
+    #[allow(dead_code)]
+    NoAtomicPublishSupport,
+}
+
+/// §2.1.2 one create-only publish attempt at `leaf`, rooted at the P3.9-verified parent dir handle (Unix): try
+/// the single-call no-replace primitive ([`publish_noreplace`]) first, and on an FS that lacks the flag
+/// ([`PublishAttempt::Unsupported`] — `EINVAL`/`ENOTSUP`) fall back to the portable `link`+`unlink`
+/// ([`publish_link_fallback`], §2.1.2); only if THAT is also unsupported (FAT/exFAT — no hardlinks) is there no
+/// atomic no-clobber publish here ([`SinglePublish::NoAtomicPublishSupport`], the §2.7.2 divert trigger). The
+/// Unix seed of the module-doc `atomic_publish` per-OS composite (P3.16/P3.17 expand it). No panic (G4/G14) —
+/// every branch is a structured value or the primitives' propagated `io::Error`. [Build-Session-Entscheidung: P3.15]
+// [Build-Session-Entscheidung: P3.15] `any(linux, macos)` — the shipped unix desktops (§1) — matching the
+// `publish_noreplace`/`publish_link_fallback` cfg it composes (both `any(linux, macos)`, gated so a non-shipped
+// unix of this public MIT repo does not build-break on the `rustix::fs::renameat_with` import). See P3.12.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.1.2 the Unix single-attempt publish dispatch (P3.15) — called only by publish_numbered_capped \
+                  (driven by publish_numbered, unwired until the §2.1.1 write sequence, P3.38) — so it is \
+                  dead-at-runtime during the P3 wiring window; `allow` (permissive) covers the ambiguous \
+                  dead-ness (cf. identity_matches_a_source)."
+    )
+)]
+fn publish_once(
+    parent: &VerifiedParentDir,
+    tmp: &Path,
+    leaf: &std::ffi::OsStr,
+) -> io::Result<SinglePublish> {
+    match publish_noreplace(parent, tmp, leaf)? {
+        PublishAttempt::Published => Ok(SinglePublish::Published {
+            residual_tmp: false,
+        }),
+        PublishAttempt::NameTaken => Ok(SinglePublish::NameTaken),
+        // The single-call no-replace flag is unsupported on this FS — fall back to the portable `link`+`unlink`
+        // primitive (§2.1.2). This branch is reached only on a FAT/exFAT-class destination, which §2.7.2 diverts
+        // up front (P3.18), so it is exercised by the §6.5 FAT-divert corpus (P3.65), not a per-push unit test —
+        // the same "needs a FAT/exFAT volume" limitation the publish_noreplace/publish_link_fallback tests note.
+        PublishAttempt::Unsupported => match publish_link_fallback(parent, tmp, leaf)? {
+            LinkPublishAttempt::Published => Ok(SinglePublish::Published {
+                residual_tmp: false,
+            }),
+            LinkPublishAttempt::PublishedResidualTmp => {
+                Ok(SinglePublish::Published { residual_tmp: true })
+            }
+            LinkPublishAttempt::NameTaken => Ok(SinglePublish::NameTaken),
+            // Neither no-replace rename NOR hardlinks (FAT/exFAT) — the §2.7.2 divert trigger (P3.18).
+            LinkPublishAttempt::Unsupported => Ok(SinglePublish::NoAtomicPublishSupport),
+        },
+    }
+}
+
+/// §2.1.2 one create-only publish attempt at `leaf`, rooted at the P3.9-verified parent dir handle (Windows):
+/// the `FileRenameInformationEx` no-replace move + its bounded AV-retry ([`publish_rename_windows`]). Windows
+/// has NO FAT/exFAT divert (`MoveFileExW`-without-`REPLACE` is create-only there too, §2.1.2), so it yields only
+/// `Published` / `NameTaken` (or a §2.8 `io::Error`), NEVER [`SinglePublish::NoAtomicPublishSupport`]. The
+/// Windows seed of the module-doc `atomic_publish` composite. No panic (G4/G14). [Build-Session-Entscheidung: P3.15]
+#[cfg(windows)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.1.2 the Windows single-attempt publish dispatch (P3.15) — called only by \
+                  publish_numbered_capped (driven by publish_numbered, unwired until the §2.1.1 write sequence, \
+                  P3.38) — so it is dead-at-runtime during the P3 wiring window; `allow` (permissive) covers the \
+                  ambiguous dead-ness (cf. identity_matches_a_source)."
+    )
+)]
+fn publish_once(
+    parent: &VerifiedParentDir,
+    tmp: &Path,
+    leaf: &std::ffi::OsStr,
+) -> io::Result<SinglePublish> {
+    match publish_rename_windows(parent, tmp, leaf)? {
+        WindowsPublishAttempt::Published => Ok(SinglePublish::Published {
+            residual_tmp: false,
+        }),
+        WindowsPublishAttempt::NameTaken => Ok(SinglePublish::NameTaken),
+    }
+}
+
+/// The non-failure outcome of the §2.2.2 numbering ↔ no-clobber publish loop ([`publish_numbered`], P3.15) —
+/// either the output was published (at the winning candidate name), or the destination cannot host an atomic
+/// no-clobber publish and the caller must divert (§2.7.2). The hard failures (path-too-long, collision-cap, an
+/// OS error) are the [`PublishError`] `Err` side. A §0.7 tier-2 LEAF verdict: `crate::fs_guard` does NOT depend
+/// up on `crate::domain`'s `DivertReason`, so it returns its own outcome and the §2.1.1 write sequence (P3.38,
+/// tier 1) maps [`Self::NoAtomicPublishSupport`] to a §2.7.2 `DivertReason::NoAtomicPublish` re-divert.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.2.2 publish_numbered's success/divert outcome (P3.15), constructed only by publish_numbered \
+                  — whose production caller is the §2.1.1 write sequence (P3.38) — so it is dead-at-runtime \
+                  during the P3 wiring window; `allow` (permissive) covers the ambiguous dead-ness (cf. \
+                  OutputSafety)."
+    )
+)]
+#[derive(Debug, PartialEq, Eq)]
+pub enum PublishOutcome {
+    /// The output was published — `leaf` is the winning candidate name (the base `stem.ext`, or the first free
+    /// `stem (n).ext`) and the file now exists in the verified parent dir carrying `tmp`'s exact bytes.
+    /// `residual_tmp` marks the §2.1.3 Unix `link`+`unlink` success-window sub-state (a `*.part` may remain for
+    /// the §2.6.4 sweep, P3.25); the single-call Unix path and the Windows path never set it.
+    Published { leaf: OsString, residual_tmp: bool },
+    /// The destination filesystem supports NEITHER the no-replace rename NOR hardlinks (FAT/exFAT-class, Unix
+    /// only) — no mechanised atomic no-clobber publish here (§2.1.2 third fallback). §2.7.2 detects this UP
+    /// FRONT at `location_status` time and diverts BEFORE publish, so this is a defensive fall-through the
+    /// §2.1.1 caller (P3.38) maps to a §2.7.2 `DivertReason::NoAtomicPublish` re-divert — the guarantee is
+    /// never silently weakened. Windows never returns it (§2.1.2).
+    NoAtomicPublishSupport,
+}
+
+/// The hard-failure verdict of the §2.2.2 numbering ↔ no-clobber publish loop ([`publish_numbered`], P3.15). A
+/// §0.7 tier-2 LEAF verdict — the §2.1.1 write sequence (P3.38, tier 1) maps it to §2.8 `ConversionErrorKind`
+/// (`PathTooLong` / `TooManyCollisions` / `WriteFailed`); `crate::fs_guard` never depends up on `crate::outcome`,
+/// so it returns its own verdict here. Not `PartialEq` (it carries an `io::Error`) — callers `match` on it.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.2.2 publish_numbered's failure verdict (P3.15), returned only by publish_numbered — whose \
+                  production caller is the §2.1.1 write sequence (P3.38, which maps it to §2.8) — so it is \
+                  dead-at-runtime during the P3 wiring window; `allow` (permissive) covers the ambiguous \
+                  dead-ness (cf. PathTooLong)."
+    )
+)]
+#[derive(Debug)]
+pub enum PublishError {
+    /// A candidate breached the §2.2.3 per-OS path limit (the base name, or the point at which appending
+    /// `(n)` / the new extension would overflow) — fail clearly, NEVER truncate (§2.2.3 / SSOT). Maps to §2.8
+    /// `PathTooLong`; carries which ceiling ([`PathTooLong`]) was breached.
+    PathTooLong(PathTooLong),
+    /// The ~10 000-variant no-clobber cap was exhausted — a degenerate destination directory already holding
+    /// every candidate name (§2.1.2/§2.2). Maps to §2.8 `TooManyCollisions`.
+    TooManyCollisions,
+    /// A genuine OS error from a publish attempt (a permission error, or `EXDEV` cross-volume before the
+    /// §2.14.3 fallback P3.17 intercepts it). Maps to §2.8 `WriteFailed` (or routes to the §2.14.3 cross-volume
+    /// copy fallback for `EXDEV`, P3.17).
+    Io(io::Error),
+}
+
+/// §2.2.2 the numbering ↔ no-clobber retry loop with an INJECTABLE attempt `cap` — the testable core of
+/// [`publish_numbered`]. Drives `output_name`'s lazy `candidates` through the create-only dir-handle publish
+/// ([`publish_once`], rooted at the P3.9-verified `parent`): validate each candidate's resolved final-path
+/// length (§2.2.3), attempt the exclusive publish, and on the no-clobber refusal ([`SinglePublish::NameTaken`])
+/// bump to the next `stem (n).ext` candidate — so §2.2 numbering and the absolute no-clobber guarantee are the
+/// SAME loop (§2.2.2), decided by the kernel's exclusive create, never a stale directory scan. The §2.2.2
+/// optional cheap `symlink_metadata` low-number pre-check is deliberately omitted — correctness rests solely on
+/// the kernel's exclusive publish (the authority), and a pre-scan would add a TOCTOU-adjacent read for a
+/// walking-skeleton optimisation that is not needed. [Build-Session-Entscheidung: P3.15]
+///
+/// `cap` bounds the total attempts; the public [`publish_numbered`] passes the ~10 000 production cap, and the
+/// tests inject a small `cap` to exercise the `TooManyCollisions` exhaustion WITHOUT materialising ~10 000
+/// files (a bound injected for testability, NOT a mock of the FS/publish under test — the real temp FS + real
+/// publish primitive still run, test-strategy §0.1). `parent_dir` is the RESOLVED destination directory the
+/// `parent` handle was opened from (§2.3.3): the per-candidate §2.2.3 check measures `parent_dir.join(leaf)`,
+/// the user-facing resolved final path. No panic (G4/G14) — every failure is a structured `Err`, the `cap`
+/// makes the loop total, and the counter is `saturating`. [Build-Session-Entscheidung: P3.15]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.2.2 the injectable-cap numbering-loop core (P3.15) — called only by publish_numbered \
+                  (unwired until the §2.1.1 write sequence, P3.38) and the tests — so it is dead-at-runtime \
+                  during the P3 wiring window; `allow` (permissive) covers the ambiguous dead-ness."
+    )
+)]
+fn publish_numbered_capped(
+    parent: &VerifiedParentDir,
+    parent_dir: &Path,
+    tmp: &Path,
+    candidates: OutputNameCandidates,
+    cap: u64,
+) -> Result<PublishOutcome, PublishError> {
+    let mut attempts: u64 = 0;
+    for leaf in candidates {
+        // §2.1.2/§2.2: the ~10 000-variant cap — a degenerate dir already holding every candidate fails
+        // TooManyCollisions rather than looping unboundedly (never a panic, never a silent success).
+        if attempts >= cap {
+            return Err(PublishError::TooManyCollisions);
+        }
+        attempts = attempts.saturating_add(1);
+
+        // §2.2.3: validate the resolved final-path length BEFORE the exclusive create — a candidate whose `(n)`
+        // suffix / new extension would overflow the OS limit fails clearly, NEVER truncates (§2.2.3 / SSOT).
+        // `parent_dir.join(leaf)` is the resolved final path (parent_dir is the verified destination dir).
+        let final_path = parent_dir.join(&leaf);
+        if let Err(too_long) = check_path_limit(&final_path) {
+            return Err(PublishError::PathTooLong(too_long));
+        }
+
+        // §2.2.2: the kernel's exclusive create decides — NameTaken → the next candidate; Published → done;
+        // NoAtomicPublishSupport → the §2.7.2 divert (P3.18). A genuine OS error is the §2.8 `Io` verdict.
+        match publish_once(parent, tmp, &leaf).map_err(PublishError::Io)? {
+            SinglePublish::Published { residual_tmp } => {
+                return Ok(PublishOutcome::Published { leaf, residual_tmp });
+            }
+            SinglePublish::NameTaken => continue,
+            SinglePublish::NoAtomicPublishSupport => {
+                return Ok(PublishOutcome::NoAtomicPublishSupport);
+            }
+        }
+    }
+    // The lazy candidate iterator is exhausted only at the `u64` ceiling — unreachable in practice (the `cap`
+    // fires far below), but treat it as TooManyCollisions so the loop is total (never a panic).
+    Err(PublishError::TooManyCollisions)
+}
+
+/// §2.2.2 the numbering ↔ no-clobber retry loop: hand `output_name`'s lazy `candidates` to the create-only
+/// dir-handle publish one at a time — bumping the `stem (n).ext` counter on each no-clobber collision — so §2.2
+/// numbering and the absolute no-clobber guarantee are the SAME bounded loop (§2.1.2/§2.2.2), decided by the
+/// kernel's exclusive create at the instant of publish, never a stale directory scan. Returns the winning
+/// [`PublishOutcome::Published`] `{ leaf, residual_tmp }`, or [`PublishOutcome::NoAtomicPublishSupport`] on a
+/// FAT/exFAT-class destination (Unix; the §2.7.2 divert trigger). Fails [`PublishError::PathTooLong`] when a
+/// candidate would overflow the §2.2.3 OS path limit (never truncates), [`PublishError::TooManyCollisions`]
+/// when the ~10 000-variant cap is exhausted, or [`PublishError::Io`] on a genuine OS error.
+///
+/// `parent` is the P3.9-verified, pinned parent-dir handle (the publish roots its dir-relative rename at it,
+/// TOCTOU-closed, so the numbering retries all target the SAME verified directory); `parent_dir` is the
+/// resolved destination directory it was opened from (for the §2.2.3 path-limit measurement); `tmp` is the
+/// completed engine output to publish; `candidates` come from [`output_name`] (the caller maps a no-stem
+/// `None` to §2.8 before calling). No panic (G4/G14) — this runs on untrusted destination paths outside the
+/// §2.12 boundary; every failure is a structured `Err` and the cap makes the loop total.
+///
+/// **Caller contract (§2.2.3, for the P3.38 wiring):** `parent_dir` MUST be the SAME directory `parent` was
+/// opened from — pass the literal `(parent_dir, parent)` pair from one [`open_verified_parent_dir`] call — and,
+/// on Windows, the §2.3.1 `dunce`-normalised **non-`\\?\`** resolved form (the user-facing path
+/// [`check_path_limit`] measures, §2.2.3), never the verbatim-`\\?\` `std::fs::canonicalize` output (which
+/// over-counts the 4-char prefix). A mismatch fails SAFE (it can only over-reject on length, never admit an
+/// over-limit path or misdirect the handle-relative publish), but the pair-from-one-call form is the contract.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "§2.2.2 publish_numbered (P3.15) — the numbering ↔ no-clobber retry loop. Its production caller \
+                  is the §2.1.1 per-item write sequence (P3.38); statically unused in the production build until \
+                  that wiring lands (`expect` auto-flags the moment it does), exercised by publish_numbered_tests."
+    )
+)]
+pub fn publish_numbered(
+    parent: &VerifiedParentDir,
+    parent_dir: &Path,
+    tmp: &Path,
+    candidates: OutputNameCandidates,
+) -> Result<PublishOutcome, PublishError> {
+    // The ~10 000-variant no-clobber cap (§2.1.2/§2.2): a degenerate destination dir already holding every
+    // candidate name fails TooManyCollisions rather than looping unboundedly. Counts total attempts (the base
+    // `stem.ext` + the numbered variants); the spec's "~10 000" realised as the round 10 000.
+    // [Build-Session-Entscheidung: P3.15]
+    const MAX_PUBLISH_CANDIDATES: u64 = 10_000;
+    publish_numbered_capped(parent, parent_dir, tmp, candidates, MAX_PUBLISH_CANDIDATES)
 }
 
 #[cfg(test)]
@@ -2530,6 +2835,213 @@ mod publish_rename_windows_tests {
         assert!(
             !tmp.exists(),
             "§2.1.2: the tmp was moved by the recovered publish"
+        );
+    }
+}
+
+// §6.4.1/§6.4.3 real-FS (G15/G31) for the §2.2.2 numbering ↔ no-clobber publish loop ([`publish_numbered`],
+// P3.15) — the whole drop→publish naming/no-clobber contract driven end-to-end over a REAL temp dir + the REAL
+// per-OS create-only publish (never mock the FS/publish under test, test-strategy §0.1). Runs on every shipped
+// platform (the loop dispatches per-OS via publish_once, so the happy path + numbering assertions hold on
+// Win/macOS/Linux alike). TWO STACKED cfg attrs (`#[cfg(test)]` then the shipped-platforms predicate) — NOT a
+// compound `all(test, …)` (the P1.17 compound-cfg clippy::expect_used trap). The Unix-only FAT/exFAT
+// `NoAtomicPublishSupport` arm needs a FAT/exFAT volume that lacks hardlinks, so — like the underlying
+// publish_noreplace/publish_link_fallback `Unsupported` arms — it is exercised by the §6.5 FAT-divert corpus
+// (P3.65), not a per-push unit test.
+#[cfg(test)]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod publish_numbered_tests {
+    use super::*;
+
+    /// The P3.9 verified parent handle for `dir` (empty frozen set → always Verified); binds via
+    /// match→Option→`expect` (never a hard-fail macro the deferral gate flags).
+    fn verified(dir: &Path) -> VerifiedParentDir {
+        match open_verified_parent_dir(dir, &[]).expect("open the dest dir") {
+            ParentDirVerdict::Verified(v) => Some(v),
+            ParentDirVerdict::ResolvesOntoSource => None,
+        }
+        .expect("a real dir with an empty frozen set verifies")
+    }
+
+    // §2.2.1/§2.2.2 (G15/G31): a FREE base name publishes UNNUMBERED at `stem.ext` — the tmp is moved (gone),
+    // the published file carries its exact bytes, and no residual (the single-call Unix / Windows path).
+    #[test]
+    fn a_free_base_name_publishes_unnumbered() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let tmp = dir.path().join(".convertia-tmp.part");
+        std::fs::write(&tmp, b"converted bytes").expect("write the tmp");
+        let candidates = output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem");
+        let outcome = publish_numbered(&parent, dir.path(), &tmp, candidates).expect("publish");
+        assert_eq!(
+            outcome,
+            PublishOutcome::Published {
+                leaf: OsString::from("data.tsv"),
+                residual_tmp: false,
+            },
+            "§2.2.1/§2.2.2: a free base name publishes unnumbered at stem.ext, no residual"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("data.tsv")).expect("read the published file"),
+            b"converted bytes",
+            "§2.2.2: the published file carries the tmp's exact bytes"
+        );
+        assert!(
+            !tmp.exists(),
+            "§2.1.2: the tmp was moved (published), never left behind"
+        );
+    }
+
+    // §2.2.2 THE NO-HARM + NUMBERING PROOF (G15/G31): when the base name is already TAKEN, the loop numbers away
+    // to the first free `stem (1).ext` and NEVER clobbers the pre-existing file — the taken file is
+    // byte-identical afterward, the numbered output carries the tmp's bytes. The headline P3.15 assertion.
+    #[test]
+    fn a_collision_numbers_away_and_never_clobbers() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let taken = dir.path().join("data.tsv");
+        std::fs::write(&taken, b"PRE-EXISTING must survive").expect("write the taken base name");
+        let tmp = dir.path().join(".convertia-tmp.part");
+        std::fs::write(&tmp, b"new bytes").expect("write the tmp");
+        let candidates = output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem");
+        let outcome = publish_numbered(&parent, dir.path(), &tmp, candidates).expect("publish");
+        assert_eq!(
+            outcome,
+            PublishOutcome::Published {
+                leaf: OsString::from("data (1).tsv"),
+                residual_tmp: false,
+            },
+            "§2.2.2: the taken base name numbers away to the first free stem (1).ext"
+        );
+        assert_eq!(
+            std::fs::read(&taken).expect("read the pre-existing base name"),
+            b"PRE-EXISTING must survive",
+            "§2.2.2 no-harm: the pre-existing base name is byte-identical — the no-replace publish NEVER clobbered it"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("data (1).tsv")).expect("read the numbered output"),
+            b"new bytes",
+            "§2.2.2: the output lands at the numbered candidate carrying the tmp's exact bytes"
+        );
+        assert!(
+            !tmp.exists(),
+            "§2.1.2: the tmp was moved on the winning publish"
+        );
+    }
+
+    // §2.2.2 (G15/G31): with the base + first two numbered names ALL taken, the loop advances to the first free
+    // number `stem (3).ext` — the numbering is driven by the kernel's exclusive create, one candidate at a time.
+    #[test]
+    fn multiple_collisions_pick_the_first_free_number() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        for name in ["data.tsv", "data (1).tsv", "data (2).tsv"] {
+            std::fs::write(dir.path().join(name), b"taken").expect("write a taken name");
+        }
+        let tmp = dir.path().join(".convertia-tmp.part");
+        std::fs::write(&tmp, b"new bytes").expect("write the tmp");
+        let candidates = output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem");
+        let outcome = publish_numbered(&parent, dir.path(), &tmp, candidates).expect("publish");
+        assert_eq!(
+            outcome,
+            PublishOutcome::Published {
+                leaf: OsString::from("data (3).tsv"),
+                residual_tmp: false,
+            },
+            "§2.2.2: with base + (1) + (2) taken, the loop publishes at the first free (3)"
+        );
+        assert!(
+            dir.path().join("data (3).tsv").exists(),
+            "§2.2.2: the output published at the first free number"
+        );
+    }
+
+    // §2.1.2/§2.2 (G15/G31): exhausting the collision cap fails `TooManyCollisions` (never an unbounded loop,
+    // never a clobber). Uses the injectable-cap core with cap=3 + three taken names, so the exhaustion is
+    // deterministic WITHOUT materialising ~10 000 files (the real temp FS + real publish still run).
+    #[test]
+    fn the_collision_cap_is_bounded_to_too_many_collisions() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        for name in ["data.tsv", "data (1).tsv", "data (2).tsv"] {
+            std::fs::write(dir.path().join(name), b"taken").expect("write a taken name");
+        }
+        let tmp = dir.path().join(".convertia-tmp.part");
+        std::fs::write(&tmp, b"new bytes").expect("write the tmp");
+        let candidates = output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem");
+        let err = publish_numbered_capped(&parent, dir.path(), &tmp, candidates, 3)
+            .expect_err("all candidates within the cap are taken → TooManyCollisions");
+        assert!(
+            matches!(err, PublishError::TooManyCollisions),
+            "§2.1.2/§2.2: exhausting the (injected) collision cap fails TooManyCollisions, never loops unboundedly"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("data.tsv")).expect("read a taken name"),
+            b"taken",
+            "§2.2.2 no-harm: a collision-cap failure never clobbered any existing file"
+        );
+        assert_eq!(
+            std::fs::read(&tmp).expect("read the tmp"),
+            b"new bytes",
+            "§2.1.2: the tmp (our source) is untouched on the failed loop"
+        );
+    }
+
+    // §2.2.3 (G15/G31): a candidate whose name COMPONENT exceeds the 255-unit per-name ceiling fails
+    // `PathTooLong::Component` — fail clearly, NEVER truncate (§2.2.3 / SSOT). A 256-unit ASCII stem → the leaf
+    // `<256>.tsv` is a 260-unit component (1 char == 1 UTF-16 unit == 1 byte for ASCII, so it breaches on every
+    // OS), rejected BEFORE any publish attempt (nothing published, the tmp untouched).
+    #[test]
+    fn an_over_limit_candidate_fails_path_too_long_never_truncates() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let tmp = dir.path().join(".convertia-tmp.part");
+        std::fs::write(&tmp, b"bytes").expect("write the tmp");
+        let long_stem = "a".repeat(256);
+        let source = format!("{long_stem}.csv");
+        let candidates = output_name(Path::new(&source), "tsv").expect("a real path has a stem");
+        let err = publish_numbered(&parent, dir.path(), &tmp, candidates)
+            .expect_err("an over-limit candidate fails clearly, never truncates");
+        assert!(
+            matches!(err, PublishError::PathTooLong(PathTooLong::Component)),
+            "§2.2.3: a candidate whose component exceeds 255 units fails PathTooLong::Component, never truncated"
+        );
+        assert!(
+            !dir.path().join(format!("{long_stem}.tsv")).exists(),
+            "§2.2.3: nothing was published on a path-limit failure"
+        );
+        assert!(
+            tmp.exists(),
+            "§2.2.3: the tmp is untouched when the candidate is rejected pre-publish"
+        );
+    }
+
+    // §2.8/G4/G14 (G15/G31): a genuine OS error during publish (here a MISSING `tmp` source) surfaces as a
+    // structured `PublishError::Io` — NEVER a panic (this runs on untrusted destination paths outside the §2.12
+    // boundary) and NEVER a silent success. The §2.1.1 caller (P3.38) maps it to §2.8 `WriteFailed`.
+    #[test]
+    fn an_os_error_during_publish_surfaces_as_io_never_a_panic() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        // A tmp source that does NOT exist — the publish primitive hits a genuine OS error (missing source).
+        let missing_tmp = dir.path().join(".convertia-does-not-exist.part");
+        let candidates = output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem");
+        let err = publish_numbered(&parent, dir.path(), &missing_tmp, candidates)
+            .expect_err("a missing tmp source cannot publish → a clean Io error, never a panic");
+        assert!(
+            matches!(err, PublishError::Io(_)),
+            "§2.8: a missing publish source surfaces as PublishError::Io (never PathTooLong / TooManyCollisions)"
+        );
+        if let PublishError::Io(e) = &err {
+            assert_eq!(
+                e.kind(),
+                io::ErrorKind::NotFound,
+                "§2.8: the OS error is surfaced faithfully — a missing source is NotFound (read from the Io payload)"
+            );
+        }
+        assert!(
+            !dir.path().join("data.tsv").exists(),
+            "§2.1.2 no-harm: nothing was published on the OS-error path"
         );
     }
 }
