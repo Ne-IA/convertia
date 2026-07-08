@@ -36,11 +36,12 @@
 //!    the `VerifiedParentDir` it returns is the handle the P3.12–P3.18 publish roots its dir-relative rename at.
 //!  - `output_name` — verbatim-stem + `stem (n).ext` lazy no-clobber candidates (§2.2.1 / §2.10.1) — **P3.10**.
 //!  - `check_path_limit` — per-OS component + total path-length validation, fail-never-truncate (§2.2.3) — **P3.11**.
-//!  - `atomic_publish(verified_parent, tmp, leaf)` — per-OS create-only exclusive publish, rooted at the P3.9
-//!    `VerifiedParentDir`, + the §2.14.3 cross-volume fallback (§2.1 / §2.3.3 / §2.14.3) — **P3.12-P3.18**.
 //!  - `publish_numbered(verified_parent, parent_dir, tmp, candidates)` — the §2.2.2 numbering ↔ no-clobber retry
 //!    loop: drive `output_name`'s lazy candidates through the create-only publish, bumping `(n)` on each
 //!    collision, capped at ~10 000 variants (§2.1.2 / §2.2) — **P3.15**.
+//!  - `atomic_publish(verified_parent, parent_dir, tmp, candidates)` — the §2.1.1 per-item write composite:
+//!    step-3 `sync_all(tmp)` durability → the `publish_numbered` loop → step-6 parent-dir fsync on success
+//!    (Unix; no-op Windows) — **P3.16**; P3.17 adds the §2.14.3 EXDEV cross-volume fallback branch inside it.
 //!  - `location_status` — per-location writability + ephemeral classification, cached per-dir (§2.7.2) — **P3.33**.
 
 use std::ffi::OsString;
@@ -1323,13 +1324,18 @@ fn publish_numbered_capped(
 /// over-counts the 4-char prefix). A mismatch fails SAFE (it can only over-reject on length, never admit an
 /// over-limit path or misdirect the handle-relative publish), but the pair-from-one-call form is the contract.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+// [Test-Change: P3.16 — old-obsolete+new-correct, §2.1.1] `expect`→`allow` (a production lint change, NOT a
+// test suppression; cf. P3.15's four flips): P3.16's `atomic_publish` now calls `publish_numbered`, so the
+// P3.15 DEAD assertion errors as unfulfilled under -D warnings — but that consumer is itself unwired until the
+// §2.1.1 write sequence (P3.38), so the fn's dead-ness is ambiguous and `allow` (permissive) is correct.
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "§2.2.2 publish_numbered (P3.15) — the numbering ↔ no-clobber retry loop. Its production caller \
-                  is the §2.1.1 per-item write sequence (P3.38); statically unused in the production build until \
-                  that wiring lands (`expect` auto-flags the moment it does), exercised by publish_numbered_tests."
+        reason = "§2.2.2 publish_numbered (P3.15) — the numbering ↔ no-clobber retry loop. Called by P3.16's \
+                  atomic_publish (still unwired until the §2.1.1 write sequence, P3.38), so it is dead-at-runtime \
+                  but no longer statically unused; `allow` (permissive) covers the ambiguous dead-ness. Exercised \
+                  by publish_numbered_tests."
     )
 )]
 pub fn publish_numbered(
@@ -1344,6 +1350,126 @@ pub fn publish_numbered(
     // [Build-Session-Entscheidung: P3.15]
     const MAX_PUBLISH_CANDIDATES: u64 = 10_000;
     publish_numbered_capped(parent, parent_dir, tmp, candidates, MAX_PUBLISH_CANDIDATES)
+}
+
+/// §2.1.1 step 3 durability: fsync the completed `tmp`'s bytes to disk BEFORE the publish, so the atomic
+/// name-update never exposes a durable NAME over unflushed DATA (atomic-name-update ≠ durable-data). Re-opens
+/// `tmp` for WRITE — `sync_all` is `fsync` on Unix (works on any fd) but `FlushFileBuffers` on Windows REQUIRES
+/// the `GENERIC_WRITE` access right, so a read-only handle would fail there — and `sync_all`s it; `write(true)`
+/// (no `create`, no `truncate`) opens the EXISTING file without altering a byte, purely to obtain a flushable
+/// handle. `fsync` is per-INODE, so it flushes whatever the (separate-process) engine wrote and closed, not
+/// just this handle's writes. No panic (G4/G14): a missing/locked `tmp` is a clean `io::Error` the caller maps.
+/// [Build-Session-Entscheidung: P3.16] the re-open form is used because the engine that wrote `tmp` is a
+/// separate process (§3.5) whose write handle the core never holds; the in-core CSV engine's own handle is
+/// already closed by the time the §2.1.1 sequence reaches step 3.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.1.1 sync_tmp_bytes (P3.16) — the step-3 durability fsync — called only by atomic_publish \
+                  (unwired until the §2.1.1 write sequence, P3.38); dead-at-runtime during the P3 wiring window, \
+                  `allow` (permissive) covers the ambiguous dead-ness. Exercised by atomic_publish_tests."
+    )
+)]
+fn sync_tmp_bytes(tmp: &Path) -> io::Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(tmp)?
+        .sync_all()
+}
+
+/// §2.1.1 step 6 durability (Unix): after a successful publish, fsync `final`'s containing DIRECTORY so the new
+/// dentry (the renamed/hard-linked `final` name) survives a crash — a rename/link is atomic but NOT durable
+/// without the directory fsync (LWN/evanjones durability findings). The file BYTES are already durable via
+/// [`sync_tmp_bytes`] (step 3; on the `link` path the new dentry shares that already-fsync'd inode, so only the
+/// dentry needs this dir-fsync — §2.1.1). Takes the P3.9-verified parent dir handle the publish rooted its
+/// rename at. No panic (G4/G14). [Build-Session-Entscheidung: P3.16]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.1.1 fsync_parent_dir (P3.16, Unix) — the step-6 dentry-durability dir-fsync — called only by \
+                  atomic_publish (unwired until the §2.1.1 write sequence, P3.38); dead-at-runtime during the P3 \
+                  wiring window, `allow` (permissive) covers the ambiguous dead-ness. Exercised by atomic_publish_tests."
+    )
+)]
+fn fsync_parent_dir(parent: &VerifiedParentDir) -> io::Result<()> {
+    // `File::sync_all` on the pinned directory fd = `fsync(dirfd)`, which flushes the directory's dentries
+    // (the new `final` name) to disk. The handle is the same one the publish rooted its dir-relative rename at.
+    parent.dir_handle().sync_all()
+}
+
+/// §2.1.1 step 6 durability (Windows): a NO-OP. On Windows the new dentry's durability rests on NTFS metadata
+/// journaling, not an explicit directory flush; `MOVEFILE_WRITE_THROUGH` on the create-only move is a
+/// best-effort metadata flush (its documented effect is for the cross-volume copy-and-delete form), and the
+/// §2.1.3 atomicity invariant does NOT depend on it (§2.1.1). The file bytes are still made durable by the
+/// step-3 [`sync_tmp_bytes`] `FlushFileBuffers` as on Unix. [Build-Session-Entscheidung: P3.16]
+#[cfg(windows)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.1.1 fsync_parent_dir (P3.16, Windows no-op) — called only by atomic_publish (unwired until \
+                  the §2.1.1 write sequence, P3.38); dead-at-runtime during the P3 wiring window, `allow` covers \
+                  the ambiguous dead-ness. Exercised by atomic_publish_tests."
+    )
+)]
+fn fsync_parent_dir(_parent: &VerifiedParentDir) -> io::Result<()> {
+    Ok(())
+}
+
+/// §2.1.1 the atomic, durable, no-clobber publish — the per-output-item write composite: make the completed
+/// `tmp`'s bytes durable (step 3, [`sync_tmp_bytes`]), publish it through the §2.2.2 numbering ↔ no-clobber loop
+/// (step 5, [`publish_numbered`]), and on a successful publish fsync the containing directory so the new dentry
+/// is durable (step 6, [`fsync_parent_dir`] — Unix; a no-op on Windows). This is the module-doc `atomic_publish`
+/// composite; P3.17 adds the §2.14.3 EXDEV cross-volume fallback branch inside it.
+///
+/// Returns the [`PublishOutcome`] / [`PublishError`] of the numbering loop unchanged — the durability steps add
+/// no new outcome, only `io::Error`s (surfaced as [`PublishError::Io`], mapped to §2.8 `WriteFailed` by the
+/// §2.1.1 caller, P3.38). On [`PublishOutcome::NoAtomicPublishSupport`] (the FAT/exFAT §2.7.2 divert signal) NO
+/// dentry was created, so the dir-fsync is correctly skipped. **Atomicity + no-clobber come SOLELY from the
+/// create-only exclusive publish (§2.1.2/§2.1.3); the fsyncs add DURABILITY, never atomicity** — a lost fsync
+/// degrades to "the write may not survive a power cut", never to a clobber or a truncated `final`.
+///
+/// `parent` / `parent_dir` / `tmp` / `candidates` carry the same meaning + the same caller contract as
+/// [`publish_numbered`] (the `(parent_dir, parent)` pair from one [`open_verified_parent_dir`] call, Windows
+/// non-`\\?\` form). No panic (G4/G14) — every failure is a structured `Err`.
+///
+/// **Caller contract (§2.1.1 step 7, for the P3.38 write sequence):** a [`PublishError::Io`] from the STEP-3
+/// sync means `final` was never created (the publish never ran — nothing on disk to reconcile), but an `Io`
+/// from the STEP-6 dir-fsync means the publish ALREADY SUCCEEDED (`final` EXISTS, only its dentry-durability is
+/// uncertain). These two are indistinguishable from the return value, so P3.38's step-7 handling must NOT
+/// assume `final` is absent on an `Io` error — it reconciles residues via the §2.6 sweep, never a blind remove,
+/// and a step-6 failure never means the original was harmed (no-clobber held; only crash-durability degraded).
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "§2.1.1 atomic_publish (P3.16) — the atomic/durable/no-clobber per-item publish composite. Its \
+                  production caller is the §2.1.1 write sequence (P3.38, extended with the §2.14.3 EXDEV branch \
+                  in P3.17); statically unused in the production build until that wiring lands (`expect` \
+                  auto-flags the moment it does), exercised by atomic_publish_tests."
+    )
+)]
+pub fn atomic_publish(
+    parent: &VerifiedParentDir,
+    parent_dir: &Path,
+    tmp: &Path,
+    candidates: OutputNameCandidates,
+) -> Result<PublishOutcome, PublishError> {
+    // §2.1.1 step 3: the bytes are durable BEFORE the rename — a name-update is atomic but not durable-data.
+    sync_tmp_bytes(tmp).map_err(PublishError::Io)?;
+    // §2.1.1 step 5: the numbering ↔ no-clobber publish (P3.15).
+    let outcome = publish_numbered(parent, parent_dir, tmp, candidates)?;
+    // §2.1.1 step 6: on a successful publish, fsync the containing dir so the new dentry is crash-durable
+    // (Unix; a no-op on Windows). NoAtomicPublishSupport created no `final`, so there is no dentry to flush.
+    if matches!(outcome, PublishOutcome::Published { .. }) {
+        fsync_parent_dir(parent).map_err(PublishError::Io)?;
+    }
+    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -3042,6 +3168,157 @@ mod publish_numbered_tests {
         assert!(
             !dir.path().join("data.tsv").exists(),
             "§2.1.2 no-harm: nothing was published on the OS-error path"
+        );
+    }
+}
+
+// §6.4.1/§6.4.3 real-FS (G15/G31) for the §2.1.1 atomic/durable/no-clobber publish composite ([`atomic_publish`]
+// + the [`sync_tmp_bytes`] step-3 / [`fsync_parent_dir`] step-6 durability primitives, P3.16). Never mock the FS
+// under test (test-strategy §0.1): a REAL temp dir + the REAL fsync/publish. The composite's crash-DURABILITY
+// (that the fsync'd state actually survives a power loss) is the §2.1.3 fault-injection test (P3.19.1, kill in
+// the post-`sync_all`-pre-rename window) — here we prove the sequence RUNS correctly (bytes published, no-harm
+// held, the durability steps neither corrupt nor fail on the happy path). Runs on every shipped platform. TWO
+// STACKED cfg attrs (`#[cfg(test)]` then the shipped-platforms predicate) — NOT a compound `all(test, …)` (the
+// P1.17 compound-cfg clippy::expect_used trap).
+#[cfg(test)]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod atomic_publish_tests {
+    use super::*;
+
+    /// The P3.9 verified parent handle for `dir` (empty frozen set → always Verified); binds via
+    /// match→Option→`expect` (never a hard-fail macro the deferral gate flags).
+    fn verified(dir: &Path) -> VerifiedParentDir {
+        match open_verified_parent_dir(dir, &[]).expect("open the dest dir") {
+            ParentDirVerdict::Verified(v) => Some(v),
+            ParentDirVerdict::ResolvesOntoSource => None,
+        }
+        .expect("a real dir with an empty frozen set verifies")
+    }
+
+    // §2.1.1 (G15/G31): the whole composite publishes a fresh name — step-3 sync_all, the numbering publish, and
+    // step-6 dir-fsync all succeed, the file lands byte-exact, and the tmp is moved (gone). The happy-path proof
+    // that the durability steps neither break nor corrupt the publish.
+    #[test]
+    fn atomic_publish_publishes_a_fresh_name_durably() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let tmp = dir.path().join(".convertia-tmp.part");
+        std::fs::write(&tmp, b"converted bytes").expect("write the tmp");
+        let candidates = output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem");
+        let outcome = atomic_publish(&parent, dir.path(), &tmp, candidates).expect("publish");
+        assert_eq!(
+            outcome,
+            PublishOutcome::Published {
+                leaf: OsString::from("data.tsv"),
+                residual_tmp: false,
+            },
+            "§2.1.1: the durable composite publishes a free base name at stem.ext"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("data.tsv")).expect("read the published file"),
+            b"converted bytes",
+            "§2.1.1: the published file carries the tmp's exact bytes after the durability sequence"
+        );
+        assert!(
+            !tmp.exists(),
+            "§2.1.2: the tmp was moved (published), never left behind"
+        );
+    }
+
+    // §2.1.1/§2.2.2 THE NO-HARM PROOF THROUGH THE COMPOSITE (G15/G31): a taken base name numbers away and the
+    // pre-existing file is byte-identical — the durability wrapper does not weaken the no-clobber guarantee.
+    #[test]
+    fn atomic_publish_numbers_away_and_never_clobbers() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let taken = dir.path().join("data.tsv");
+        std::fs::write(&taken, b"PRE-EXISTING must survive").expect("write the taken base name");
+        let tmp = dir.path().join(".convertia-tmp.part");
+        std::fs::write(&tmp, b"new bytes").expect("write the tmp");
+        let candidates = output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem");
+        let outcome = atomic_publish(&parent, dir.path(), &tmp, candidates).expect("publish");
+        assert_eq!(
+            outcome,
+            PublishOutcome::Published {
+                leaf: OsString::from("data (1).tsv"),
+                residual_tmp: false,
+            },
+            "§2.2.2: the composite numbers away from the taken base to the first free stem (1).ext"
+        );
+        assert_eq!(
+            std::fs::read(&taken).expect("read the pre-existing base name"),
+            b"PRE-EXISTING must survive",
+            "§2.2.2 no-harm: the pre-existing file is byte-identical — the durable composite NEVER clobbered it"
+        );
+    }
+
+    // §2.1.1 step 3 (G15/G31): sync_tmp_bytes fsyncs a real tmp AND preserves its content byte-for-byte — the
+    // `write(true)` (no `truncate`) re-open obtains a flushable handle without altering a byte. Kills a mutant
+    // that opened with truncate (which would zero the file the engine just wrote — a silent data-loss bug).
+    #[test]
+    fn sync_tmp_bytes_fsyncs_and_preserves_content() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tmp = dir.path().join(".convertia-tmp.part");
+        std::fs::write(&tmp, b"engine-written bytes").expect("write the tmp");
+        sync_tmp_bytes(&tmp).expect("§2.1.1: fsync a real completed tmp");
+        assert_eq!(
+            std::fs::read(&tmp).expect("read the tmp back"),
+            b"engine-written bytes",
+            "§2.1.1: sync_tmp_bytes obtains a flushable handle WITHOUT truncating — content is byte-identical"
+        );
+    }
+
+    // §2.8/G4/G14 (G15): sync_tmp_bytes on a MISSING tmp is a clean Err (NotFound), never a panic — the re-open
+    // fails and is surfaced (this in-core durability step runs outside the §2.12 boundary).
+    #[test]
+    fn sync_tmp_bytes_on_a_missing_file_is_err() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let missing = dir.path().join(".convertia-missing.part");
+        let err = sync_tmp_bytes(&missing).expect_err("a missing tmp cannot be fsync'd");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::NotFound,
+            "§2.8: a missing tmp is a clean NotFound Err, never a panic"
+        );
+    }
+
+    // §2.1.1 step 6 (G15/G31): fsync_parent_dir succeeds on the real P3.9-verified dir handle — the Unix
+    // fsync(dirfd) flushes the directory's dentries; on Windows it is the documented no-op (NTFS journaling).
+    // Ok on every shipped platform.
+    #[test]
+    fn fsync_parent_dir_on_a_verified_dir_is_ok() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        fsync_parent_dir(&parent).expect(
+            "§2.1.1: fsync the verified parent dir handle (Unix real fsync / Windows no-op)",
+        );
+    }
+
+    // §2.1.1/§2.8 (G15/G31): the durability sequence is ORDERED sync-BEFORE-publish — a missing tmp fails at the
+    // step-3 sync_all with a clean Io(NotFound), and NOTHING is published (no leaf created, the loop never ran).
+    // Proves step 3 gates the publish (a non-durable/absent source never reaches the exclusive create).
+    #[test]
+    fn atomic_publish_on_a_missing_tmp_fails_at_the_sync_step() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let missing_tmp = dir.path().join(".convertia-does-not-exist.part");
+        let candidates = output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem");
+        let err = atomic_publish(&parent, dir.path(), &missing_tmp, candidates)
+            .expect_err("a missing tmp fails at the step-3 sync, before any publish");
+        assert!(
+            matches!(err, PublishError::Io(_)),
+            "§2.8: a missing tmp surfaces as PublishError::Io (the step-3 sync failure)"
+        );
+        if let PublishError::Io(e) = &err {
+            assert_eq!(
+                e.kind(),
+                io::ErrorKind::NotFound,
+                "§2.8: the step-3 sync failure is surfaced faithfully (NotFound)"
+            );
+        }
+        assert!(
+            !dir.path().join("data.tsv").exists(),
+            "§2.1.1: sync runs BEFORE publish — a failed sync publishes NOTHING (no leaf created)"
         );
     }
 }
