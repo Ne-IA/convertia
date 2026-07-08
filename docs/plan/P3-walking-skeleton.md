@@ -158,7 +158,7 @@ two-state crash invariant. This is the heart of what the walking skeleton proves
 - [x] **P3.15** [RUST] Build the numbering ↔ no-clobber retry loop (one bounded loop) · §2.1.2 §2.2.2
   needs: P3.12, P3.13, P3.14, P3.10
   > the single bounded loop where §2.2 numbering and the absolute no-clobber guarantee are the SAME thing: hand each lazy `output_name` candidate to the dir-handle-relative exclusive publish; on the exists-error bump the `(n)` suffix and yield the next candidate; cap ≈10 000 variants → too-many-collisions/`PathTooLong` failure (§2.8). The directory's real state at the instant of the kernel publish decides — not a stale scan (an optional cheap `symlink_metadata` pre-check may skip obviously-taken low numbers, but the **authority is always the kernel publish**, §2.2.2).
-- [ ] **P3.16** [RUST] Build the durability sequence — `sync_all` + post-publish directory fsync · §2.1.1
+- [x] **P3.16** [RUST] Build the durability sequence — `sync_all` + post-publish directory fsync · §2.1.1
   needs: P3.15
   > step 3 `tmp.sync_all()` (`fsync`/`FlushFileBuffers`) so bytes are durable **before** the rename; step 6 on Unix **fsync the containing directory** after the rename (and on the `link`+`unlink` path after `link`, the same dir-fsync — bytes already durable via the shared inode); Windows dir-fsync is a no-op (NTFS journaling), `MOVEFILE_WRITE_THROUGH` is best-effort metadata flush only. Atomicity does NOT depend on `WRITE_THROUGH` (§2.1.1).
 - [ ] **P3.17** [RUST] Build the §2.14.3 EXDEV cross-volume fallback inside `fs_guard::atomic_publish` (copy-exactly-once → same-volume exclusive publish) · §2.14.3 §2.1.2 §2.8 · G48 G31
