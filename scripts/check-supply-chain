@@ -126,6 +126,8 @@ PINNED_FLOORS = {
     "tokio":        "1.52.3",        # §0.9/§1.7 Semaphore + spawn_blocking permit lane (direct dep from P3.3; P3.3 dep / P3.82 floor)
     "dunce":        "1.0.5",         # §2.3.1 \\?\-prefix display normalisation (direct dep from P3.6; P3.6 dep / P3.83 floor)
     "winapi-util":  "0.1.11",        # §2.3.1 Windows file-identity - safe GetFileInformationByHandle wrapper (cfg(windows) direct dep from P3.6; P3.6 dep / P3.83 floor)
+    "rustix":       "1.1.4",         # §2.1.1/§2.1.2 Unix publish primitives - safe renameat_with(NOREPLACE)=renameat2/renameatx_np + linkat/unlinkat/fstatvfs (cfg(unix) direct dep from P3.12; P3.12 dep / P3.84 floor)
+    "windows-sys":  "0.61.2",        # §2.1.2 Windows publish/free-space externs - FileRenameInfoEx-class no-replace move + GetDiskFreeSpaceExW (cfg(windows) direct dep from P3.14; P3.14 dep / P3.84 floor)
 }
 
 

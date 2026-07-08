@@ -629,7 +629,10 @@ being updated in the same change):
 - **Static-security / unsafe policy** (build-gates **G29**): `#![deny(unsafe_code)]`
   at the crate root of **every** first-party Rust crate (the core AND
   `convertia-imgworker`), with a **single narrowly allow-listed FFI module** carrying
-  `#[allow(unsafe_code)]` (the core's §2.1/§2.3 OS primitives + the §0.9 Job-Object kill;
+  `#[allow(unsafe_code)]` (the core's §2.1.2 Windows-only `windows-sys` externs — the
+  `FileRenameInfoEx`-class no-replace move + `GetDiskFreeSpaceExW`; the Unix renames ride
+  safe `rustix`, the §2.3 identity reads ride safe `winapi-util`, the §0.9 kill rides
+  `process-wrap` — example list corrected 2026-07-07, the P3.12 ruling;
   the imgworker's libvips/libheif/libde265/librsvg/libimagequant FFI). The gate is "no new
   `unsafe` outside the allow-listed FFI module", enforced by deny-at-root **plus** a check
   that `#[allow(unsafe_code)]` appears on exactly the one allow-listed module path.

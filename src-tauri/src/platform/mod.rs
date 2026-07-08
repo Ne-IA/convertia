@@ -1,8 +1,11 @@
 //! `crate::platform` — the §0.7 OS-abstraction leaf (depends on no other module): path handling,
 //! volume detection (§2.14), the OS shims (§7.7 reveal-in-folder), and the §7.2.4 portable-build
 //! executable-permission helper (`ensure_executable`, landed P1.17). The one allow-listed `unsafe`
-//! FFI surface (the §2.1/§2.3 `renameat2` / `MoveFileExW` / `GetFileInformationByHandle` primitives +
-//! the §0.9 Job-Object kill) + the remaining per-OS helpers are authored by their consuming boxes (P3+).
+//! FFI surface is the §2.1.2 Windows-only `windows-sys` extern set (the `FileRenameInfoEx`-class
+//! no-replace move + `GetDiskFreeSpaceExW`, arriving with P3.14) — the Unix renames ride safe
+//! `rustix`, the §2.3 identity reads ride safe `winapi-util`, the §0.9 kill rides `process-wrap`
+//! (example list corrected 2026-07-07, the P3.12 ruling); the remaining per-OS helpers are authored
+//! by their consuming boxes (P3+).
 
 use std::io;
 use std::path::Path;

@@ -443,15 +443,18 @@ not this — a frozen source exists at drop):
     an `unsafe` FFI site in the core, which the unsafe policy forbids outside the
     image-worker's allow-listed module. `same-file` itself exposes no Windows
     identity numbers (`Handle::dev()`/`ino()` are Unix-only), so `winapi-util` is
-    the direct dependency. (The G29/`crate::platform` FFI-surface lists still name
-    `GetFileInformationByHandle` among the primitives the core MAY link raw, but
-    `[CORRECTED — P3.9]` NO core path calls it raw: the §2.3.1 identity read here AND
-    the §2.3.3 P3.9 dir-handle verify BOTH use `winapi-util`'s safe
-    `information(&handle)` wrapper (P3.9 reads the ALREADY-OPEN dir handle via
-    `winapi-util`'s `AsHandleRef for File`). The genuine raw per-OS handle FFI homed in
-    `crate::platform` is the §2.1.2/§2.3.3 PUBLISH primitives — Linux `renameat2` /
-    macOS `renameatx_np` / Windows `NtSetInformationFile(FileRenameInformationEx)`,
-    P3.12/P3.13/P3.14 — none of which is `GetFileInformationByHandle`.) Equal triple ⇒
+    the direct dependency. (The G29/`crate::platform` FFI-surface example lists NAMED
+    `GetFileInformationByHandle` among the primitives the core MAY link raw until the
+    2026-07-07 P3.12 ruling corrected them; `[CORRECTED — P3.9]` NO core path calls it
+    raw: the §2.3.1 identity read here AND the §2.3.3 P3.9 dir-handle verify BOTH use
+    `winapi-util`'s safe `information(&handle)` wrapper (P3.9 reads the ALREADY-OPEN
+    dir handle via `winapi-util`'s `AsHandleRef for File`). The genuine raw per-OS
+    handle FFI homed in `crate::platform` is `[re-cut by the P3.12 ruling]` the
+    §2.1.2 **Windows-only** `windows-sys` extern set (the `FileRenameInfoEx`-class
+    no-replace move, P3.14, + `GetDiskFreeSpaceExW`) — the Unix publish primitives
+    (Linux `renameat2` / macOS `renameatx_np`, P3.12/P3.13) ride safe
+    `rustix::fs::renameat_with(NOREPLACE)` with ZERO `unsafe` in the core — and none
+    of it is `GetFileInformationByHandle`.) Equal triple ⇒
     same file ⇒ catches **hardlinks** and
     **junctions** that point at the same backing file.
   - **macOS:** same `(st_dev, st_ino)` as Unix; **Finder aliases** (the classic

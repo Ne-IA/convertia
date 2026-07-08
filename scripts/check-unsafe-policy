@@ -39,8 +39,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # --- the frozen allow-list (structural freeze): the ONLY module paths that may carry
 #     `allow(unsafe_code)`. Per the spec §0.7 physical tree, the core's unsafe FFI surface is the
-#     OS-primitive shim layer `crate::platform` (§2.1/§2.3 renameat2 / MoveFileExW /
-#     GetFileInformationByHandle + the §0.9 Job-Object kill), and the libvips image-worker
+#     OS-primitive shim layer `crate::platform` (the §2.1.2 Windows-only `windows-sys` externs:
+#     the FileRenameInfoEx-class no-replace move + GetDiskFreeSpaceExW; the Unix renames ride
+#     safe rustix, the §2.3 identity reads safe winapi-util (P3.6), the §0.9 kill process-wrap
+#     (P4.10) - example list corrected 2026-07-07, the P3.12 ruling), and the libvips image-worker
 #     (`convertia-imgworker`, a SEPARATE externalBin crate, §0.9/§3.5.5) carries the densest unsafe
 #     surface (the first Rust touching untrusted image bytes across a C/C++ FFI boundary).
 #     Each FFI module carries module-inner `#![allow(unsafe_code)]` INSIDE its own file (NOT a
