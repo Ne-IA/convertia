@@ -148,11 +148,17 @@ impl Hash for FileIdentity {
 /// [Build-Session-Entscheidung: P3.6] the identity is read from `path` (not from `canonical_path`): both
 /// `std::fs::metadata` and `Handle::from_path_any` follow to the same real file, so the pair is identical
 /// either way, and reading `path` mirrors what the §6.4.1 per-OS mutant-killer tests read directly.
+// [Test-Change: P3.7 — old-obsolete+new-correct, §2.4.1] `expect`→`allow` (a production lint change, NOT a
+// test suppression; cf. P2.63): P3.7's `crate::orchestrator::resolve_and_dedup` now references this fn, so the
+// P3.6 assertion that it is DEAD would error as unfulfilled under -D warnings — but that consumer is itself
+// unwired until P3.49, so the fn's dead-ness is ambiguous and `allow` (permissive) is the correct attribute.
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "§2.3.1 resolve_identity (the IO/FFI producer of FileIdentity) is authored at P3.6; its first PRODUCTION consumer is the P3.7 resolved-identity de-dup fold / the P3.49 spine, so it is dead in the production build until then (the cfg(test) real-FS tests below exercise it — the test build is dead-code-clean)."
+        reason = "§2.3.1 resolve_identity (the IO/FFI producer of FileIdentity, P3.6). Referenced by P3.7's \
+                  `resolve_and_dedup` (still unwired until the P3.49 spine), so it is dead-at-runtime but no \
+                  longer statically unused; the cfg(test) real-FS tests below exercise it."
     )
 )]
 pub fn resolve_identity(path: &Path) -> io::Result<FileIdentity> {

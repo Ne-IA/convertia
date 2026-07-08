@@ -1144,7 +1144,8 @@ impl FrontendReady {
 /// 3. **Resolve identity + de-dup** — each entry is reduced to its §2.3 resolved identity and
 ///    de-duplicated (§2.3.2 / §2.4.1) → P2.74 (the pure `FileIdentity` resolved-identity type) / P3 (the IO/FFI
 ///    `resolve_identity` producer that yields each identity — P3.1.1 surface / P3.6 body) / P2.76 (the pure de-dup
-///    fold over those identities, [`dedup_by_identity`]).
+///    fold over those identities, [`dedup_by_identity`]) / P3.7 (the real-FS composition that resolves each
+///    candidate then folds — [`resolve_and_dedup`], the spine's step-3 call).
 /// 4. **Assign `ItemId`** over the single id space (eligible + skipped, never re-indexed, §0.6
 ///    invariant 6) → P2.75.
 /// 5. **Group** the frozen snapshot into the §0.6 `CollectedSet` variant (`Single` / `Mixed` /
@@ -1544,14 +1545,17 @@ struct DedupedMember<P> {
 /// the eligible survivors AND the §1.1 skips, so the P3.49 assembly owns the single space and threads it
 /// through — the skip ids (for `WalkSkip`s, which have no resolvable identity and are therefore NOT de-duped
 /// here) mint from the same cursor after this fold. [Build-Session-Entscheidung: P2.76]
+// [Test-Change: P3.7 — old-obsolete+new-correct, §2.4.1] `expect`→`allow` (a production lint change, NOT a
+// test suppression; cf. P2.63): P3.7's `resolve_and_dedup` (below) now references this fold, so the P2.76
+// assertion that it is DEAD would error as unfulfilled under -D warnings — but `resolve_and_dedup` is itself
+// unwired until P3.49, so the fold's dead-ness is ambiguous and `allow` (permissive) is the correct attribute.
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "P2.76 authors the §2.4.1 freeze-spine step-3 resolved-identity de-dup fold. Its production \
-                  caller is the `ingest` funnel's spine, wired at P3.49 (the CSV→TSV walking skeleton); dead \
-                  in the production build pending that wiring, exercised by the in-module dedup_tests below — \
-                  the same per-fn interface-shell attribute `walk_intake_roots` (P2.64) carries."
+        reason = "The §2.4.1 freeze-spine step-3 resolved-identity de-dup fold (P2.76). Referenced by P3.7's \
+                  `resolve_and_dedup` (still unwired until the P3.49 spine), so it is dead-at-runtime but no \
+                  longer statically unused; the in-module dedup_tests exercise it directly."
     )
 )]
 fn dedup_by_identity<P>(
@@ -1579,6 +1583,263 @@ fn dedup_by_identity<P>(
         }
     }
     Ok(survivors)
+}
+
+/// The §2.4.1 freeze-spine step-3 output (P3.7) — the real-FS resolved-identity de-dup over walk candidate
+/// PATHS. Carries the first-seen SURVIVORS (the P2.76 [`dedup_by_identity`] fold's rows, ids minted over the
+/// threaded space) PLUS the `unresolved` per-item read failures (a candidate whose `resolve_identity` failed —
+/// it vanished / became unreadable between the §1.1 walk and this resolve step). The `unresolved` rows are
+/// §1.1 `Unreadable` [`WalkSkip`]s WITHOUT an `ItemId` — the P3.49 spine mints their ids from the same cursor
+/// after the survivors (the P2.76 `&mut ItemIdSpace` contract) — so this step never silently drops a candidate
+/// (§1.1: recorded, never dropped) and never lets a single vanished file sink the ingest.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P3.7's real-FS resolve+de-dup step yields `ResolvedDedup<P>` (the first-seen survivors + the \
+                  unresolved read-failure skips). Its production reader is the `ingest` freeze funnel's spine, \
+                  wired at P3.49 (the CSV→TSV walking skeleton); dead in the production build pending that \
+                  wiring, constructed by the in-module resolve_dedup tests below."
+    )
+)]
+#[derive(Debug)]
+struct ResolvedDedup<P> {
+    /// The de-duplicated first-seen survivors ([`dedup_by_identity`], P2.76) — one per resolved file, ids
+    /// minted `0..` over the threaded space in first-seen order (§0.6 invariant 6).
+    survivors: Vec<DedupedMember<P>>,
+    /// The candidates whose `resolve_identity` failed — §1.1 `Unreadable` [`WalkSkip`]s, PRE-`ItemId` (the
+    /// P3.49 spine mints their ids after the survivors). Empty in the normal all-resolvable case.
+    unresolved: Vec<WalkSkip>,
+}
+
+/// **Step 3 of the §2.4.1 freeze spine, the real-FS half (P3.7)** — resolve each walk candidate PATH to its
+/// §2.3.1 [`FileIdentity`] via the IO/FFI [`crate::fs_guard::resolve_identity`] (P3.6), then de-duplicate by
+/// identity through the pure P2.76 [`dedup_by_identity`] fold. This is the box's real-FS integration — the
+/// hardlink / two-paths-to-one-inode collapse to ONE first-seen survivor (§2.3.2 "converted once", SSOT) that
+/// a synthetic-`FileIdentity` unit cannot exercise, keyed on the authoritative (dev, inode)/file-index
+/// identity `canonicalize` alone misses (§2.3.4).
+///
+/// The per-candidate `payload` `P` is threaded un-inspected onto the survivor (a `PathBuf` for the CSV→TSV
+/// walking skeleton, or a richer detected candidate) — the fold keys ONLY on identity. `ids: &mut ItemIdSpace`
+/// is threaded, not owned: §0.6 invariant 6 is ONE space across the survivors AND the §1.1 skips, so the P3.49
+/// spine owns the space and mints the `unresolved` skip ids from the same cursor after this step (the P2.76
+/// contract). `Err(`[`ItemSpaceExhausted`]`)` is `?`-propagated, never a panic (G4/G14); the P3.49 spine maps
+/// it to the §1.1 fatal-ingest surface.
+///
+/// A candidate whose `resolve_identity` FAILS is surfaced on `unresolved` as an `Unreadable` [`WalkSkip`] and
+/// the de-dup proceeds over the resolvable rest — see the `Err` arm.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P3.7 authors the §2.4.1 freeze-spine step-3 real-FS resolve+de-dup step. Its production \
+                  caller is the `ingest` funnel's spine, wired at P3.49 (the CSV→TSV walking skeleton); dead \
+                  in the production build pending that wiring, exercised by the in-module resolve_dedup tests \
+                  below — the same per-fn interface-shell attribute `dedup_by_identity` (P2.76) carries."
+    )
+)]
+fn resolve_and_dedup<P>(
+    candidates: Vec<(PathBuf, P)>,
+    ids: &mut ItemIdSpace,
+) -> Result<ResolvedDedup<P>, ItemSpaceExhausted> {
+    let mut resolved: Vec<(FileIdentity, P)> = Vec::with_capacity(candidates.len());
+    let mut unresolved: Vec<WalkSkip> = Vec::new();
+    for (path, payload) in candidates {
+        match crate::fs_guard::resolve_identity(&path) {
+            Ok(identity) => resolved.push((identity, payload)),
+            // §2.3.1 `resolve_identity` is fallible: a source that existed at the §1.1 walk can vanish/lock
+            // between walk and freeze (TOCTOU), so a failure here is a per-item read failure, NOT a fatal
+            // ingest error — it is recorded and the de-dup continues (never a panic, G4/G14; never silently
+            // dropped, §1.1). [Derived-Assumption: P3.7 — a resolve-time read failure maps to the §1.1
+            //  `Unreadable` `WalkSkip` class P2.67 records for a walk-level read failure, anchored to §1.1
+            //  ("a per-item failure is recorded, never dropped, and the walk continues — one bad file never
+            //  sinks the ingest") + §2.3.1 ("a missing source is a clean `Err` the caller maps").]
+            // [Build-Session-Entscheidung: P3.7 — reuse the module's `WalkSkip` / `SkipReason::Unreadable` for
+            //  a resolve-time failure rather than a parallel type; both are pre-`ItemId` per-item `Unreadable`
+            //  read failures the freeze accounts for identically (§1.4 summary).]
+            Err(_) => unresolved.push(WalkSkip {
+                path,
+                reason: SkipReason::Unreadable,
+            }),
+        }
+    }
+    // §2.3.2 first-seen de-dup over the resolved identities (P2.76): a hardlink / symlink pair collapses to
+    // one member, ids minted over the shared space; the `?` propagates `ItemSpaceExhausted` (P3.49 maps it,
+    // and its u32-ceiling source is unit-tested at `ItemIdSpace::mint`, P2.75 — no fold-level ceiling seam).
+    let survivors = dedup_by_identity(resolved, ids)?;
+    Ok(ResolvedDedup {
+        survivors,
+        unresolved,
+    })
+}
+
+#[cfg(test)]
+mod resolve_dedup_realfs_tests {
+    //! §6.4.1/§6.4.3 real-FS (G15/G31) for the §2.4.1 freeze-spine step-3 REAL-FS resolved-identity de-dup
+    //! ([`resolve_and_dedup`], P3.7). Never mock the FS under test (test-strategy §0.1): these drive the real
+    //! `resolve_identity` (P3.6) over real temp files / hardlinks — the hardlink two-paths→one-member collapse
+    //! the synthetic-`FileIdentity` `dedup_tests` unit (P2.76) can only assert by construction, proven here on
+    //! a real filesystem (§2.3.2 "converted once", SSOT). The symlink-follow half is the unix module below.
+    use super::*;
+
+    // §2.3.2/§2.3.4 (G15/G31): the HEADLINE real-FS proof — two names over ONE (dev, inode)/file-index (a
+    // hardlink) collapse to ONE first-seen survivor, keyed on the identity `canonicalize` alone misses. The
+    // FIRST-seen path + payload are retained; exactly one id is minted; nothing is unresolved.
+    #[test]
+    fn hardlink_two_real_paths_collapse_to_one_first_seen_survivor() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let original = dir.path().join("original.csv");
+        std::fs::write(&original, b"a,b\n1,2\n").expect("write the original");
+        let link = dir.path().join("backup-link.csv");
+        // A no-hardlink volume (FAT/exFAT, §2.3.4) reports Unsupported/PermissionDenied — skip only THAT; any
+        // other error is a real failure (this is the sole real-FS proof of the §2.3.2 hardlink de-dup collapse
+        // at the composition level). Real temp dirs are NTFS/ext4/APFS, so the skip does not fire in practice.
+        // [Build-Session-Entscheidung: P3.7 — mirror fs_guard's own hardlink-test skip guard.]
+        let linked = std::fs::hard_link(&original, &link);
+        if matches!(&linked, Err(e) if matches!(e.kind(), std::io::ErrorKind::Unsupported | std::io::ErrorKind::PermissionDenied))
+        {
+            return;
+        }
+        linked.expect("create the hardlink (a non-unsupported error is a real failure)");
+
+        let mut ids = ItemIdSpace::new();
+        let candidates = vec![
+            (original.clone(), "first"),
+            (link, "second"), // hardlink: same (dev, inode), different path
+        ];
+        let out = resolve_and_dedup(candidates, &mut ids).expect("space not exhausted");
+        assert_eq!(
+            out.survivors.len(),
+            1,
+            "§2.3.2: two real paths to one inode collapse to one first-seen survivor"
+        );
+        assert_eq!(
+            out.survivors[0].payload, "first",
+            "§2.3.2: the FIRST-seen candidate (original) is the retained survivor, not the hardlink"
+        );
+        assert_eq!(
+            out.survivors[0].id,
+            ItemId::from_index(0),
+            "§0.6 inv-6: the sole survivor gets id 0"
+        );
+        assert!(
+            out.unresolved.is_empty(),
+            "both real paths resolved — nothing is unresolved"
+        );
+        // §2.3.2: the retained representative's canonical path is the ORIGINAL's resolved path, not the
+        // hardlink's (canonicalize cannot follow a hardlink, §2.3.4) — first-seen wins.
+        let original_id =
+            crate::fs_guard::resolve_identity(&original).expect("resolve the original directly");
+        assert_eq!(
+            out.survivors[0].identity.canonical_path, original_id.canonical_path,
+            "§2.3.2: the retained representative is the first-seen (original) resolved path"
+        );
+    }
+
+    // §2.3.1 (G15/G31): two genuinely distinct real files do NOT collapse — 2 survivors, ids 0,1, nothing
+    // unresolved. The over-collapse control (kills a mutant keying on something coarser than the identity).
+    #[test]
+    fn two_distinct_real_files_both_survive() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let one = dir.path().join("one.csv");
+        let two = dir.path().join("two.csv");
+        std::fs::write(&one, b"x").expect("write one");
+        std::fs::write(&two, b"y").expect("write two");
+        let mut ids = ItemIdSpace::new();
+        let out = resolve_and_dedup(vec![(one, "one"), (two, "two")], &mut ids)
+            .expect("space not exhausted");
+        assert_eq!(
+            out.survivors.len(),
+            2,
+            "§2.3.1: two distinct real files both survive (no over-collapse)"
+        );
+        let got_ids: Vec<ItemId> = out.survivors.iter().map(|m| m.id).collect();
+        assert_eq!(
+            got_ids,
+            vec![ItemId::from_index(0), ItemId::from_index(1)],
+            "§0.6 inv-6: two survivors get ids 0,1"
+        );
+        assert!(out.unresolved.is_empty(), "both files resolved");
+    }
+
+    // §2.8/§1.1 (G15/G31): a candidate that does NOT exist (vanished between the §1.1 walk and this resolve
+    // step) surfaces as an `Unreadable` skip on `unresolved` — never a panic (G4/G14) and never silently
+    // dropped (§1.1) — while the resolvable candidate still survives and mints its id. The Err arm end-to-end.
+    #[test]
+    fn a_vanished_candidate_surfaces_as_unresolved_not_a_survivor() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let real = dir.path().join("real.csv");
+        std::fs::write(&real, b"z").expect("write the real file");
+        // Doubly-missing (no parent) so `resolve_identity`'s canonicalize is Err regardless of any retry.
+        let missing = dir.path().join("gone").join("missing.csv");
+        let mut ids = ItemIdSpace::new();
+        let out = resolve_and_dedup(vec![(real, "real"), (missing.clone(), "missing")], &mut ids)
+            .expect("space not exhausted");
+        assert_eq!(
+            out.survivors.len(),
+            1,
+            "only the resolvable candidate survives the resolve step"
+        );
+        assert_eq!(out.survivors[0].payload, "real");
+        assert_eq!(
+            out.unresolved.len(),
+            1,
+            "§1.1: the vanished candidate is recorded, never silently dropped"
+        );
+        assert_eq!(
+            out.unresolved[0].path, missing,
+            "§1.1: the unresolved skip carries the failed candidate's path"
+        );
+        assert_eq!(
+            out.unresolved[0].reason,
+            SkipReason::Unreadable,
+            "§2.3.1/§1.1: a resolve-time read failure is an Unreadable skip"
+        );
+        // §0.6 inv-6: only the survivor consumed an id — the shared space's next mint is 1 (the vanished
+        // candidate minted nothing; the P3.49 spine assigns the skip's id from here).
+        assert_eq!(
+            ids.mint().expect("space not exhausted"),
+            ItemId::from_index(1),
+            "§0.6 inv-6: only the survivor consumed an id (next mint is 1)"
+        );
+    }
+}
+
+// §6.4.3 real-FS unix (G15/G31): the symlink-follow half of the §2.4.1 step-3 de-dup ([`resolve_and_dedup`],
+// P3.7) — a symlink + its target collapse to one survivor (canonicalize FOLLOWS a symlink, §2.3.4). TWO
+// STACKED cfg attributes (`#[cfg(test)]` then `#[cfg(unix)]`), NOT the compound `#[cfg(all(test, unix))]` —
+// the P1.17 trap (else the tests' `expect` calls trip clippy::expect_used on the ubuntu/macOS legs). Windows
+// symlink creation needs the SeCreateSymbolicLink privilege (fs_guard gates that leg); the cross-platform
+// hardlink test above proves real-FS collapse on every OS.
+#[cfg(test)]
+#[cfg(unix)]
+mod resolve_dedup_unix_realfs_tests {
+    use super::*;
+
+    // §2.3.4: a symlink and its target resolve to ONE identity (canonicalize follows the link), so the two
+    // dropped paths collapse to one first-seen survivor — the follow-symlink counterpart to the hardlink test.
+    #[test]
+    fn symlink_and_target_collapse_to_one_first_seen_survivor() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let target = dir.path().join("target.csv");
+        std::fs::write(&target, b"a\n").expect("write the target");
+        let link = dir.path().join("alias.csv");
+        std::os::unix::fs::symlink(&target, &link).expect("create a unix symlink");
+        let mut ids = ItemIdSpace::new();
+        // Target seen FIRST, then the symlink — both canonicalize to the target's real path (§2.3.4).
+        let out = resolve_and_dedup(vec![(target, "target"), (link, "link")], &mut ids)
+            .expect("space not exhausted");
+        assert_eq!(
+            out.survivors.len(),
+            1,
+            "§2.3.4: a symlink and its target resolve to one identity — one survivor"
+        );
+        assert_eq!(
+            out.survivors[0].payload, "target",
+            "§2.3.2: the first-seen (target) is retained, not the alias"
+        );
+        assert!(out.unresolved.is_empty(), "both paths resolved");
+    }
 }
 
 #[cfg(test)]
