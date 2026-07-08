@@ -653,6 +653,107 @@ pub fn output_name(source: &Path, ext: &str) -> Option<OutputNameCandidates> {
     OutputNameCandidates::new(source, ext)
 }
 
+/// The §2.2.3 path-limit violation [`check_path_limit`] reports — which OS ceiling the resolved final path
+/// would breach. The §2.1.1 write-sequence caller (P3.38) maps it to the §2.8 `ConversionErrorKind::PathTooLong`;
+/// `crate::fs_guard` is a §0.7 tier-2 LEAF (it does NOT depend up on `crate::outcome`), so it returns its own
+/// verdict here, never a `ConversionErrorKind`. Truncation is NEVER the escape hatch (§2.2.3 / SSOT).
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.2.3 check_path_limit's verdict type (P3.11), constructed only by check_path_limit — whose \
+                  consumer is the §2.1.1 write sequence (P3.38, which maps it to §2.8 PathTooLong) — so it is \
+                  dead-at-runtime during the P3 wiring window; `allow` (permissive) covers the ambiguous \
+                  dead-ness (cf. OutputSafety). Exercised by check_path_limit_tests."
+    )
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathTooLong {
+    /// A single path COMPONENT (a file / dir name) exceeds the 255-unit per-name ceiling — NTFS 255 UTF-16
+    /// code units (Windows) / APFS + ext4 255 UTF-8 bytes (macOS / Linux), §2.2.3.
+    Component,
+    /// The TOTAL resolved path (+ its NUL terminator) exceeds the per-OS ceiling — Windows `MAX_PATH` 260
+    /// (the conservative non-long-path-aware limit), macOS `PATH_MAX` 1024, Linux `PATH_MAX` 4096 (§2.2.3).
+    Total,
+}
+
+/// The 255-unit per-COMPONENT ceiling (a single file / dir name) — NTFS UTF-16 code units / APFS + ext4 UTF-8
+/// bytes; identical numeral on all three, measured in the per-OS unit by [`os_str_units`] (§2.2.3).
+const MAX_COMPONENT_UNITS: usize = 255;
+
+/// The per-OS TOTAL-path ceiling INCLUDING the NUL terminator (§2.2.3): the resolved path's units + 1 must fit
+/// it. Windows `MAX_PATH` (the portable build does NOT assume the long-path-aware opt-in, §2.2.3); macOS /
+/// Linux `PATH_MAX`. ConvertIA ships only Win / macOS / Linux (§1); the `all(unix, not(macos))` arm is Linux.
+#[cfg(windows)]
+const MAX_TOTAL_UNITS_INCL_NUL: usize = 260;
+#[cfg(target_os = "macos")]
+const MAX_TOTAL_UNITS_INCL_NUL: usize = 1024;
+#[cfg(all(unix, not(target_os = "macos")))]
+const MAX_TOTAL_UNITS_INCL_NUL: usize = 4096;
+
+/// The length of `s` in the per-OS filesystem UNIT the §2.2.3 limits are stated in: **UTF-16 code units** on
+/// Windows (NTFS / `MAX_PATH` count wide chars) and **UTF-8 bytes** on Unix (`NAME_MAX` / `PATH_MAX` count
+/// bytes). Measuring in the wrong unit would mis-bound a multi-byte name (an emoji is 1 char but 2 UTF-16
+/// units / 4 UTF-8 bytes), so the per-OS unit is load-bearing.
+#[cfg(windows)]
+fn os_str_units(s: &std::ffi::OsStr) -> usize {
+    use std::os::windows::ffi::OsStrExt;
+    s.encode_wide().count()
+}
+#[cfg(unix)]
+fn os_str_units(s: &std::ffi::OsStr) -> usize {
+    use std::os::unix::ffi::OsStrExt;
+    s.as_bytes().len()
+}
+
+/// §2.2.3: validate the **resolved final path** length against the per-OS ceilings BEFORE the §2.1 exclusive
+/// create — each NORMAL component ≤ 255 units, and the whole path (+ NUL) ≤ the per-OS total. On breach it
+/// returns [`PathTooLong`] (which the §2.1.1 caller maps to §2.8) — **truncation is NEVER the escape hatch**
+/// (§2.2.3 / SSOT). Because it runs on the fully-resolved path INCLUDING any §2.7 divert, the divert path
+/// enjoys the identical guarantee. On Windows the input is the **user-facing** (non-`\\?\`) resolved form
+/// (the `dunce`-normalised §2.3.1 path) — the `\\?\` prefix is ConvertIA's internal syscall mitigation, not
+/// what the user/Explorer must open (§2.2.3).
+///
+/// PURE (no FS access): it only MEASURES the path — `Path::components` and the per-OS unit count are pure, so
+/// there is no panic surface here beyond arithmetic, which is `checked_add`-bounded (G4/G14). It appends
+/// nothing; the caller feeds it each §2.2 candidate (base then `stem (n).ext`) and stops numbering when a
+/// candidate would breach the limit. [Build-Session-Entscheidung: P3.11] the total ceiling is NUL-INCLUSIVE
+/// (`units + 1 > LIMIT`), matching §2.2.3's "MAX_PATH 260 … (drive + dirs + name + NUL)" — a path that fills
+/// the buffer to the ceiling leaves no room for the terminator the OS APIs require, so 259 wide chars is the
+/// Windows usable max.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "§2.2.3 check_path_limit (P3.11) — the per-OS path-length gate. Its production caller is the \
+                  §2.1.1 write sequence (P3.38, which maps PathTooLong to §2.8); statically unused in the \
+                  production build until that wiring lands (`expect` auto-flags the moment it does), exercised \
+                  by the in-module check_path_limit_tests."
+    )
+)]
+pub fn check_path_limit(final_path: &Path) -> Result<(), PathTooLong> {
+    // Per-COMPONENT: every NORMAL component (a real file / dir name) ≤ 255 units. The Prefix (a Windows drive /
+    // UNC root) and RootDir are not filenames and carry no 255-name ceiling, so only `Component::Normal` is
+    // checked (§2.2.3).
+    for component in final_path.components() {
+        if let std::path::Component::Normal(name) = component {
+            if os_str_units(name) > MAX_COMPONENT_UNITS {
+                return Err(PathTooLong::Component);
+            }
+        }
+    }
+
+    // Per-TOTAL: the whole resolved path + its NUL terminator ≤ the per-OS ceiling. `checked_add(1)` guards the
+    // (unreachable) `usize` overflow → treated as too long (a path that long is definitionally over-limit),
+    // never a panic (G4/G14).
+    let total_incl_nul = os_str_units(final_path.as_os_str()).checked_add(1);
+    // Explicit `Some(_) | None` (never a `_` wildcard) — the crate root denies clippy::wildcard_enum_match_arm.
+    match total_incl_nul {
+        Some(units) if units <= MAX_TOTAL_UNITS_INCL_NUL => Ok(()),
+        Some(_) | None => Err(PathTooLong::Total),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1595,6 +1696,173 @@ mod output_name_unix_tests {
             numbered.as_bytes(),
             &b"a\xff\xfez (1).webp"[..],
             "§2.10.1: the non-UTF-8 stem bytes are preserved verbatim in the numbered candidate"
+        );
+    }
+}
+
+#[cfg(test)]
+mod check_path_limit_tests {
+    //! §6.4.1 unit (G15/G48) for the §2.2.3 per-OS path-limit gate ([`check_path_limit`], P3.11): the 255-unit
+    //! per-component ceiling + the per-OS NUL-inclusive total ceiling, fail-never-truncate. Pure logic, no FS.
+    //! The per-OS UNIT (UTF-16 vs bytes) is exercised by whichever `os_str_units` branch this CI leg compiles;
+    //! the bytes-not-chars distinction is pinned by the unix module below.
+    use super::*;
+
+    // §2.2.3 (G15): a normal short path is within every per-OS limit → Ok.
+    #[test]
+    fn a_normal_path_is_within_limits() {
+        assert_eq!(
+            check_path_limit(Path::new("dir/subdir/photo.webp")),
+            Ok(()),
+            "§2.2.3: a normal short path is within every per-OS limit"
+        );
+    }
+
+    // §2.2.3 (G15): the empty path has no components and zero length → Ok (a degenerate but valid input).
+    #[test]
+    fn an_empty_path_is_ok() {
+        assert_eq!(
+            check_path_limit(Path::new("")),
+            Ok(()),
+            "§2.2.3: the empty path breaches no limit"
+        );
+    }
+
+    // §2.2.3 (G15): a component of EXACTLY 255 units fits; 256 breaches the per-name ceiling →
+    // PathTooLong::Component (the boundary — kills an off-by-one mutant). ASCII, so 1 char == 1 unit on both OS.
+    #[test]
+    fn the_component_ceiling_is_255_units() {
+        assert_eq!(
+            check_path_limit(Path::new(&"a".repeat(255))),
+            Ok(()),
+            "§2.2.3: a 255-unit component fits the per-name ceiling"
+        );
+        assert_eq!(
+            check_path_limit(Path::new(&"a".repeat(256))),
+            Err(PathTooLong::Component),
+            "§2.2.3: a 256-unit component breaches the 255 per-name ceiling → PathTooLong::Component"
+        );
+    }
+
+    // §2.2.3 (G15/G48): a path far over the per-OS total ceiling → PathTooLong::Total. Many 1-unit components
+    // (each under the component ceiling), so it is the TOTAL check that fires — truncation is never the escape.
+    #[test]
+    fn a_path_far_over_the_total_ceiling_is_too_long() {
+        let long = "a/".repeat(MAX_TOTAL_UNITS_INCL_NUL); // ~2× the ceiling; each component "a" is 1 unit
+        assert_eq!(
+            check_path_limit(Path::new(&long)),
+            Err(PathTooLong::Total),
+            "§2.2.3: a path over the per-OS total ceiling fails PathTooLong::Total (never truncated)"
+        );
+    }
+
+    /// An ASCII path of EXACTLY `n` chars (so `os_str_units == n` on every OS), every component ≤ 200 (< 255),
+    /// so a LENGTH test exercises the TOTAL check, not the component check.
+    fn ascii_path_of_len(n: usize) -> String {
+        let mut s = String::with_capacity(n);
+        while s.len() < n {
+            if !s.is_empty() {
+                s.push('/');
+                if s.len() == n {
+                    break;
+                }
+            }
+            let seg = (n - s.len()).min(200);
+            for _ in 0..seg {
+                s.push('a');
+            }
+        }
+        s
+    }
+
+    // §2.2.3 (G15): the total ceiling is NUL-INCLUSIVE — a path of exactly `MAX-1` units fits (units + NUL ==
+    // MAX) → Ok, and `MAX` units breaches it (units + NUL == MAX+1) → Total. Proves the `+ 1` NUL term
+    // ([Build-Session-Entscheidung: P3.11]); kills a mutant that drops it.
+    #[test]
+    fn the_total_ceiling_is_nul_inclusive() {
+        let at_limit = ascii_path_of_len(MAX_TOTAL_UNITS_INCL_NUL - 1);
+        assert_eq!(
+            at_limit.len(),
+            MAX_TOTAL_UNITS_INCL_NUL - 1,
+            "precondition: the built path is exactly MAX-1 ASCII chars"
+        );
+        assert_eq!(
+            check_path_limit(Path::new(&at_limit)),
+            Ok(()),
+            "§2.2.3: a path of MAX-1 units fits (units + NUL == the per-OS ceiling)"
+        );
+        let over = ascii_path_of_len(MAX_TOTAL_UNITS_INCL_NUL);
+        assert_eq!(
+            over.len(),
+            MAX_TOTAL_UNITS_INCL_NUL,
+            "precondition: the built path is exactly MAX ASCII chars"
+        );
+        assert_eq!(
+            check_path_limit(Path::new(&over)),
+            Err(PathTooLong::Total),
+            "§2.2.3: a path of MAX units breaches the NUL-inclusive ceiling → PathTooLong::Total"
+        );
+    }
+}
+
+// §6.4.1 unix (G15): the §2.2.3 component ceiling is measured in BYTES on Unix (NAME_MAX), not chars — a
+// multi-byte name that is few CHARS but many BYTES is bounded correctly. TWO STACKED cfg attrs (`#[cfg(test)]`
+// then `#[cfg(unix)]`), NOT `all(test, unix)` — the P1.17 compound-cfg clippy::expect_used trap.
+#[cfg(test)]
+#[cfg(unix)]
+mod check_path_limit_unix_tests {
+    use super::*;
+
+    // §2.2.3 (G15): 63 emoji = 63 chars but 252 BYTES (≤255) → fits; 64 emoji = 64 chars but 256 BYTES (>255)
+    // → Component. Proves the ceiling counts BYTES, not chars (a char-count would pass both).
+    #[test]
+    fn the_component_ceiling_is_bytes_not_chars_on_unix() {
+        let within = "🎉".repeat(63); // 63 chars, 252 bytes
+        assert_eq!(
+            within.len(),
+            252,
+            "precondition: 63 emoji is 252 UTF-8 bytes"
+        );
+        assert_eq!(
+            check_path_limit(Path::new(&within)),
+            Ok(()),
+            "§2.2.3: 252 bytes (63 emoji) is within the 255-BYTE per-component ceiling"
+        );
+        let over = "🎉".repeat(64); // 64 chars, 256 bytes
+        assert_eq!(over.len(), 256, "precondition: 64 emoji is 256 UTF-8 bytes");
+        assert_eq!(
+            check_path_limit(Path::new(&over)),
+            Err(PathTooLong::Component),
+            "§2.2.3: 256 bytes (64 emoji) breaches the 255-BYTE ceiling — measured in bytes, not chars"
+        );
+    }
+}
+
+// §6.4.1 windows (G15): the §2.2.3 component ceiling is measured in UTF-16 CODE UNITS on Windows (NTFS /
+// MAX_PATH count wide chars), not chars and not WTF-8 bytes — a supplementary-plane char is 2 UTF-16 units.
+// TWO STACKED cfg attrs (`#[cfg(test)]` then `#[cfg(windows)]`) — the P1.17 compound-cfg trap sibling.
+#[cfg(test)]
+#[cfg(windows)]
+mod check_path_limit_windows_tests {
+    use super::*;
+
+    // §2.2.3 (G15): '🎉' (U+1F389, supplementary plane) = 2 UTF-16 code units (a surrogate pair), 4 UTF-8
+    // bytes, 1 char. 127 emoji = 254 UTF-16 units (≤255) → Ok — proves it is NOT counting the 508 WTF-8 bytes
+    // (a byte-count would breach). 128 emoji = 256 UTF-16 units (>255) → Component — proves it is NOT counting
+    // the 128 chars (a char-count would fit). Together they pin UTF-16-unit counting, not chars, not bytes.
+    #[test]
+    fn the_component_ceiling_is_utf16_code_units_on_windows() {
+        let within = "🎉".repeat(127); // 127 chars, 254 UTF-16 units, 508 bytes
+        assert_eq!(
+            check_path_limit(Path::new(&within)),
+            Ok(()),
+            "§2.2.3: 254 UTF-16 units (127 emoji) fits — NOT the 508 bytes a byte-count would see"
+        );
+        let over = "🎉".repeat(128); // 128 chars, 256 UTF-16 units
+        assert_eq!(
+            check_path_limit(Path::new(&over)),
+            Err(PathTooLong::Component),
+            "§2.2.3: 256 UTF-16 units (128 emoji) breaches 255 — measured in UTF-16 units, not chars"
         );
     }
 }

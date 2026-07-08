@@ -379,9 +379,13 @@ validates the **resolved final path length** against the OS limit:
   dunce crate's inverse" was a fiction — `dunce` has no prefix-adding API.) But a **final
   output path that
   the user/Explorer cannot then open** is still surfaced as a failure rather than a
-  silent success. The check is: would the *user-facing* (non-`\\?\`) form exceed
-  260? → fail clearly. Individual path **component** limit is **255** UTF-16 code
-  units (NTFS) — also checked.
+  silent success. The check is: would the *user-facing* (non-`\\?\`) form **plus its
+  NUL terminator** exceed `MAX_PATH` (260)? → fail clearly. `[CLARIFIED — P3.11]` The
+  260 budget is **NUL-INCLUSIVE** (per this section's opening: "260 chars … drive +
+  dirs + name + NUL"), so the usable user-facing length is **259** UTF-16 code units
+  — a 260-unit path leaves no room for the terminator the Win32/CRT APIs append, so
+  `check_path_limit` rejects `units + 1 > 260` (259 usable). Individual path
+  **component** limit is **255** UTF-16 code units (NTFS) — also checked.
 - **macOS (APFS/HFS+):** per-component limit **255 UTF-8 bytes** (NFC/NFD nuance,
   §2.10); total path is effectively bounded by `PATH_MAX` (1024) for many APIs.
 - **Linux:** per-component **255 bytes** (`NAME_MAX`), total **4096** (`PATH_MAX`).
