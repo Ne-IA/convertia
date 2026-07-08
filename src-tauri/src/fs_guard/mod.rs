@@ -38,6 +38,7 @@
 //!    `VerifiedParentDir`, + the §2.14.3 cross-volume fallback (§2.1 / §2.3.3 / §2.14.3) — **P3.12-P3.18**.
 //!  - `location_status` — per-location writability + ephemeral classification, cached per-dir (§2.7.2) — **P3.33**.
 
+use std::ffi::OsString;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io;
@@ -552,6 +553,104 @@ pub fn open_verified_parent_dir(
     } else {
         Ok(ParentDirVerdict::Verified(VerifiedParentDir { handle }))
     }
+}
+
+/// The §2.2.1 output-name candidate generator ([`output_name`]): a LAZY iterator over the output file NAMES
+/// for one (source, target-extension), yielding the base `stem.ext` first, then `stem (1).ext`,
+/// `stem (2).ext`, … The §2.2.2 exclusive-publish loop (P3.15) consumes these one at a time — trying each with
+/// the create-only dir-handle publish until one wins — so numbering is decided by the kernel's exclusive
+/// create, NEVER by a directory-list max+1 pre-scan (itself a TOCTOU race, §2.2.2). It yields NAMES only (an
+/// `OsString` file name); the destination directory is prepended by the §1.8 `OutputPlan` (P3.37).
+///
+/// The stem is the source's `file_stem` taken **byte-for-byte** (`OsString`, no `to_string_lossy` — §2.10.1:
+/// operations are `OsStr`-lossless, so emoji / CJK / RTL / non-UTF-8 names survive), and the extension is the
+/// TARGET's canonical lowercase extension regardless of the source's true-vs-claimed extension (§2.2.1). The
+/// numbering suffix is the SSOT **space-paren** shape (a space, then `(n)`, then the extension) — never
+/// `stem_1` / `stem-1` / a hash. Only ASCII digits are appended, so byte-preservation of the stem holds.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.2.1 output_name's candidate-iterator type (P3.10), constructed only by `output_name` — \
+                  whose consumer is the §2.2.2 numbering ↔ exclusive-publish loop (P3.15) / the §1.8 OutputPlan \
+                  (P3.37) — so it is dead-at-runtime during the P3 wiring window; `allow` (permissive) covers \
+                  the ambiguous dead-ness (cf. OutputSafety). Exercised by output_name_tests."
+    )
+)]
+#[derive(Debug, Clone)]
+pub struct OutputNameCandidates {
+    /// The source's verbatim `file_stem` (byte-for-byte `OsString`, §2.10.1) — the invariant part of every
+    /// candidate.
+    stem: OsString,
+    /// The TARGET's canonical lowercase extension (bare, no leading dot — e.g. `tsv` / `csv` / `webp`, §2.2.1).
+    ext: OsString,
+    /// The next numbering index to yield: `Some(0)` → the base `stem.ext`; `Some(n)` (n ≥ 1) → `stem (n).ext`;
+    /// `None` → exhausted at the `u64` ceiling (unreachable — the §2.2.2 publish loop caps retries far below).
+    next_n: Option<u64>,
+}
+
+impl OutputNameCandidates {
+    /// §2.2.1: build the candidate generator from the SOURCE path (its verbatim `file_stem`, §2.10.1) and the
+    /// TARGET's bare canonical lowercase extension. Returns `None` iff `source` has no file name / stem (a
+    /// `.` / `..` / root path) — the §2.8 caller maps that; a frozen SOURCE always has a stem, so `None` is the
+    /// "not a real file path" edge, never a normal outcome. [Build-Session-Entscheidung: P3.10] `ext` is the
+    /// bare canonical extension (no leading dot); the caller passes the format registry's value.
+    fn new(source: &Path, ext: &str) -> Option<Self> {
+        // `file_stem` is a PURE path operation (no FS access): `photo.jpg` → `photo`; the multi-dot
+        // `my.report.final.docx` → `my.report.final` (only the LAST extension is dropped, §2.2.1); the dotfile
+        // `.bashrc` → `.bashrc`. Taken as an `OsString` — no lossy conversion (§2.10.1).
+        let stem = source.file_stem()?.to_os_string();
+        Some(Self {
+            stem,
+            ext: OsString::from(ext),
+            next_n: Some(0),
+        })
+    }
+}
+
+impl Iterator for OutputNameCandidates {
+    type Item = OsString;
+
+    fn next(&mut self) -> Option<OsString> {
+        let n = self.next_n?;
+        // Build the candidate for `n` on the verbatim stem — `OsString::push` appends without any lossy
+        // re-encode, and the digits / separators are ASCII, so the stem's exact bytes are preserved (§2.10.1).
+        let mut name = self.stem.clone();
+        if n == 0 {
+            // The base candidate `stem.ext` (the §2.5 re-run / same-format case collides here and the publish
+            // loop falls through to the numbered variants below, §2.2.1).
+            name.push(".");
+            name.push(&self.ext);
+        } else {
+            // The SSOT space-paren numbered variant `stem (n).ext` (never `stem_n` / `stem-n` / a hash, §2.2.1).
+            name.push(" (");
+            name.push(n.to_string());
+            name.push(").");
+            name.push(&self.ext);
+        }
+        // Advance; `checked_add` stops at the `u64` ceiling rather than overflow-panic (the in-core no-panic
+        // policy, G4/G14) — unreachable in practice (the §2.2.2 publish loop caps retries far below).
+        self.next_n = n.checked_add(1);
+        Some(name)
+    }
+}
+
+/// §2.2.1 the output-name candidate generator: given a SOURCE path and the TARGET's bare canonical lowercase
+/// extension, yield the LAZY [`OutputNameCandidates`] the §2.2.2 exclusive-publish loop (P3.15) consumes —
+/// `stem.ext`, then `stem (1).ext`, `stem (2).ext`, … on the verbatim source stem (§2.10.1). Returns `None`
+/// iff `source` has no file stem (a `.` / `..` / root path); a frozen source always has one.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "§2.2.1 output_name (P3.10) — the lazy candidate generator. Its production consumer is the \
+                  §2.2.2 numbering ↔ exclusive-publish loop (P3.15) / the §1.8 OutputPlan (P3.37); statically \
+                  unused in the production build until that wiring lands (`expect` auto-flags the moment it \
+                  does), exercised by the in-module output_name_tests."
+    )
+)]
+pub fn output_name(source: &Path, ext: &str) -> Option<OutputNameCandidates> {
+    OutputNameCandidates::new(source, ext)
 }
 
 #[cfg(test)]
@@ -1283,6 +1382,219 @@ mod open_verified_parent_dir_unix_tests {
             handle_now,
             (decoy_id.dev_or_volserial, decoy_id.inode_or_fileindex),
             "§2.3.3: the handle is NOT redirected to the decoy the swapped path now points at"
+        );
+    }
+}
+
+#[cfg(test)]
+mod output_name_tests {
+    //! §6.4.1 unit (G15) for the §2.2.1 output-name candidate generator ([`output_name`], P3.10). Pure logic,
+    //! no FS: the verbatim byte-preserving stem (§2.10.1), the SSOT space-paren numbering shape, and the
+    //! target-extension-wins rule — the naming contract made executable. The `for ANY stem` byte-exactness
+    //! invariant is the sibling property module.
+    use super::*;
+
+    /// The first `count` candidate NAMES of `output_name(source, ext)`.
+    fn first_candidates(source: &str, ext: &str, count: usize) -> Vec<OsString> {
+        output_name(Path::new(source), ext)
+            .expect("a real file path has a stem")
+            .take(count)
+            .collect()
+    }
+
+    // §2.2.1 (G15): base + the first numbered candidates — `photo.jpg` → webp yields `photo.webp`, then the
+    // SSOT space-paren `photo (1).webp`, `photo (2).webp`.
+    #[test]
+    fn base_then_space_paren_numbering() {
+        assert_eq!(
+            first_candidates("photo.jpg", "webp", 3),
+            vec![
+                OsString::from("photo.webp"),
+                OsString::from("photo (1).webp"),
+                OsString::from("photo (2).webp"),
+            ],
+            "§2.2.1: base `stem.ext`, then the SSOT space-paren `stem (n).ext` (never `_n`/`-n`/a hash)"
+        );
+    }
+
+    // §2.2.1 (G15): the extension is the TARGET's regardless of the source's true-vs-claimed extension — a
+    // misnamed `.jpg`-that-is-PNG converted to webp → `misnamed.webp`.
+    #[test]
+    fn extension_is_the_target_not_the_source() {
+        assert_eq!(
+            first_candidates("misnamed.jpg", "webp", 1),
+            vec![OsString::from("misnamed.webp")],
+            "§2.2.1: the output extension is the target's canonical ext, never the source's"
+        );
+    }
+
+    // §2.2.1/§2.10.1 (G15): a MULTI-DOT stem is preserved verbatim — only the LAST extension is replaced
+    // (`my.report.final.docx` → `my.report.final.pdf`), never split at the first dot.
+    #[test]
+    fn multi_dot_stem_preserved_verbatim() {
+        assert_eq!(
+            first_candidates("my.report.final.docx", "pdf", 2),
+            vec![
+                OsString::from("my.report.final.pdf"),
+                OsString::from("my.report.final (1).pdf"),
+            ],
+            "§2.2.1: the multi-dot stem is kept whole; only the last extension changes"
+        );
+    }
+
+    // §2.2.1/§2.5 (G15): the SAME-FORMAT re-encode case — `photo.jpg` → jpg yields `photo.jpg` first (which
+    // collides with the source in the §2.2.2 publish loop, then numbers away to `photo (1).jpg`), never
+    // overwriting the original.
+    #[test]
+    fn same_format_yields_base_then_numbered() {
+        assert_eq!(
+            first_candidates("photo.jpg", "jpg", 2),
+            vec![OsString::from("photo.jpg"), OsString::from("photo (1).jpg")],
+            "§2.2.1: same-format re-encode still starts at `stem.ext`; the publish loop numbers away from the source"
+        );
+    }
+
+    // §2.10.1 (G15): a DOTFILE (`.bashrc`) has no trailing extension, so its whole name is the stem —
+    // `.bashrc` → txt yields `.bashrc.txt`, `.bashrc (1).txt`.
+    #[test]
+    fn dotfile_whole_name_is_the_stem() {
+        assert_eq!(
+            first_candidates(".bashrc", "txt", 2),
+            vec![
+                OsString::from(".bashrc.txt"),
+                OsString::from(".bashrc (1).txt"),
+            ],
+            "§2.10.1: a leading-dot file has no extension — the whole name is the stem"
+        );
+    }
+
+    // §2.10.1 (G15): a Unicode / emoji / RTL stem survives byte-for-byte — no transliteration / ASCII-fold /
+    // emoji-strip (the §2.10.1 verbatim-preservation invariant, the reason operations stay `OsStr`-lossless).
+    #[test]
+    fn unicode_emoji_rtl_stem_preserved() {
+        assert_eq!(
+            first_candidates("café_مرحبا_🎉.png", "webp", 2),
+            vec![
+                OsString::from("café_مرحبا_🎉.webp"),
+                OsString::from("café_مرحبا_🎉 (1).webp"),
+            ],
+            "§2.10.1: Unicode/emoji/RTL stems are preserved verbatim (no fold/strip)"
+        );
+    }
+
+    // §2.2.1 (G15): a path with no file stem (`..`) → None (the §2.8 caller maps it); never a panic.
+    #[test]
+    fn a_path_without_a_stem_is_none() {
+        assert!(
+            output_name(Path::new(".."), "txt").is_none(),
+            "§2.2.1: a path with no file stem yields None (the §2.8 caller maps it), never a panic"
+        );
+    }
+
+    // §2.2.2 (G15): the candidates are DISTINCT and LAZY-unbounded — the first 50 are all different (the
+    // publish loop can retry as far as it needs, no directory pre-scan).
+    #[test]
+    fn candidates_are_distinct() {
+        use std::collections::HashSet;
+        let got: HashSet<OsString> = first_candidates("data.csv", "tsv", 50)
+            .into_iter()
+            .collect();
+        assert_eq!(
+            got.len(),
+            50,
+            "§2.2.2: every candidate in the lazy sequence is distinct"
+        );
+    }
+
+    // §2.2.1 (G15): a name that is ONLY an extension-looking token (`mp4`, no dot at all) keeps the WHOLE name
+    // as the stem (`file_stem` of a dotless name is the whole name, the dotfile code path) — `mp4` → webp
+    // yields `mp4.webp`, `mp4 (1).webp`. The §2.2.1 "names that are only an extension-looking token" case.
+    #[test]
+    fn extension_looking_token_name_keeps_whole_name_as_stem() {
+        assert_eq!(
+            first_candidates("mp4", "webp", 2),
+            vec![OsString::from("mp4.webp"), OsString::from("mp4 (1).webp")],
+            "§2.2.1: a dotless extension-looking name is preserved whole as the stem"
+        );
+    }
+}
+
+#[cfg(test)]
+mod output_name_property_tests {
+    //! §6.4.2 property (G16) — the §2.2.1/§2.10.1 byte-preservation + shape invariants over adversarial stems
+    //! (arbitrary Unicode: emoji, RTL, spaces, dots), shrinking mandatory (proptest, test-strategy §1.3).
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        // §2.10.1: for ANY stem + canonical extension, the BASE candidate is EXACTLY `stem.ext` byte-for-byte
+        // (the stem's bytes are preserved; only `.ext` is appended) and the n-th is EXACTLY `stem (n).ext`.
+        // The stem is recovered from a `stem.srcext` source; the prop_assume filters the (rare) file_stem
+        // edge inputs (trailing-dot / dot-only), keeping the property about the CANDIDATE SHAPE, not
+        // file_stem's own contract (which the unit tests pin).
+        #[test]
+        fn candidate_is_exactly_stem_dot_ext_byte_for_byte(
+            stem in any::<String>().prop_filter(
+                "no path separator / NUL / empty",
+                |s| !s.is_empty() && !s.contains('/') && !s.contains('\\') && !s.contains('\0'),
+            ),
+            ext in "[a-z0-9]{1,6}",
+            n in 1u64..1000,
+        ) {
+            let source = format!("{stem}.srcext");
+            prop_assume!(Path::new(&source).file_stem() == Some(std::ffi::OsStr::new(&stem)));
+
+            let candidates = output_name(Path::new(&source), &ext).expect("a `stem.srcext` path has a stem");
+
+            let base = candidates.clone().next().expect("the base candidate");
+            let mut expected_base = OsString::from(&stem);
+            expected_base.push(".");
+            expected_base.push(&ext);
+            prop_assert_eq!(base, expected_base, "the base candidate is exactly `stem.ext` byte-for-byte");
+
+            let nth = candidates.take((n as usize) + 1).last().expect("the n-th candidate");
+            let mut expected_nth = OsString::from(&stem);
+            expected_nth.push(" (");
+            expected_nth.push(n.to_string());
+            expected_nth.push(").");
+            expected_nth.push(&ext);
+            prop_assert_eq!(nth, expected_nth, "the n-th candidate is exactly `stem (n).ext` byte-for-byte");
+        }
+    }
+}
+
+// §6.4.1 real-bytes unix (G15): the §2.10.1 "Unix paths are arbitrary bytes — preserved exactly" leg. A
+// non-UTF-8 stem is the ONE §2.10.1 category the UTF-8 `String` unit tests + the `any::<String>()` proptest
+// structurally cannot reach (a Rust `String` is always valid UTF-8), yet it is exactly what the fn doc +
+// §2.10.1 promise "survives". Mirrors the log_redact.rs non-UTF-8 precedent. TWO STACKED cfg attrs
+// (`#[cfg(test)]` then `#[cfg(unix)]`), NOT `all(test, unix)` — the P1.17 compound-cfg clippy::expect_used trap.
+#[cfg(test)]
+#[cfg(unix)]
+mod output_name_unix_tests {
+    use super::*;
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    // §2.10.1 (G15): a NON-UTF-8 stem (`a\xff\xfez`, bytes that are never valid UTF-8) is preserved
+    // byte-for-byte in both the base and numbered candidates — no lossy re-encode, no U+FFFD substitution.
+    #[test]
+    fn a_non_utf8_unix_stem_is_preserved_byte_for_byte() {
+        // Source `a\xff\xfez.src`: the stem `a\xff\xfez` is not valid UTF-8 (0xFF/0xFE never appear in UTF-8).
+        let source = Path::new(OsStr::from_bytes(b"a\xff\xfez.src"));
+        let mut candidates =
+            output_name(source, "webp").expect("a non-UTF-8 source still has a file_stem");
+
+        let base = candidates.next().expect("the base candidate");
+        assert_eq!(
+            base.as_bytes(),
+            &b"a\xff\xfez.webp"[..],
+            "§2.10.1: the non-UTF-8 stem bytes are preserved verbatim in the base candidate"
+        );
+        let numbered = candidates.next().expect("the first numbered candidate");
+        assert_eq!(
+            numbered.as_bytes(),
+            &b"a\xff\xfez (1).webp"[..],
+            "§2.10.1: the non-UTF-8 stem bytes are preserved verbatim in the numbered candidate"
         );
     }
 }
