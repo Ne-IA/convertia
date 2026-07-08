@@ -69,9 +69,12 @@ use std::path::{Path, PathBuf};
 /// (authoritative); the canonical path is a fast pre-filter and the retained first-seen representative, NOT
 /// part of the identity (the §2.3.4 hardlink case: same inode, different path). Produced by
 /// `fs_guard::resolve_identity` — the IO/FFI canonicalize + per-OS metadata read, authored in P3.
+// [Test-Change: P3.8 — old-obsolete+new-correct, §2.3.3] `expect`→`allow`: P3.8's `is_safe_output` field-reads
+// `FileIdentity` and P3.7's `resolve_and_dedup` moves it, so the P2.74 DEAD assertion would error as
+// unfulfilled under -D warnings — both consumers unwired until P3.38/P3.49; `allow` fits (cf. P2.63).
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
         reason = "§2.3.1 FileIdentity is forward-declared at P2.74 (the pure de-dup-key type); its production producer `resolve_identity` (IO/FFI) and its first consumer (the P2.76 de-dup fold, wired into the P3.49 spine) are P3, so it is dead in the production build until those land."
     )
@@ -191,6 +194,131 @@ pub fn resolve_identity(path: &Path) -> io::Result<FileIdentity> {
         dev_or_volserial,
         inode_or_fileindex,
     })
+}
+
+/// The §2.3.3 write-target link-safety verdict — whether publishing to a candidate output path would land
+/// on (clobber) a frozen SOURCE file, directly or through a symlink / junction / hardlink (§2.3). Returned
+/// by [`is_safe_output`].
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.3.3 is_safe_output's verdict type (P3.8), constructed only by is_safe_output — itself \
+                  unwired until the §2.1.1 write sequence (P3.38) — so its dead-ness is ambiguous during the \
+                  P3 wiring window; `allow` (permissive) covers it. Exercised by the is_safe_output_tests."
+    )
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputSafety {
+    /// The write does not resolve onto any frozen source file — publishing here is safe (§2.3.3).
+    Safe,
+    /// The write would land on / through a frozen source FILE (a clobber — directly, or via a symlink /
+    /// junction / hardlink) — the caller MUST divert (§2.7 / P3.34), never publish here (§2.3.3 rule 2).
+    ResolvesOntoSource,
+}
+
+/// The §2.3.3 no-harm guard: does publishing to `final_path` resolve onto a frozen SOURCE file (SSOT —
+/// "never write onto an original")? The pipeline calls this before §2.1's exclusive publish and, on
+/// [`OutputSafety::ResolvesOntoSource`], DIVERTS (§2.7) instead of writing. Because it compares the RESOLVED
+/// real identity (§2.3.1), an output path that is a symlink resolving back onto a source, and a hardlink
+/// whose inode is a source, are both caught where a raw path-string compare misses them (§2.3.4).
+///
+/// `frozen_sources` are the resolved [`FileIdentity`] of the frozen source FILES (§2.3.2 / §2.4.1 — the P3.7
+/// de-dup survivors); the frozen set holds FILES only (§0.6 invariant 4), so landing beside-source INSIDE a
+/// dropped folder is the normal case and is NOT rejected — the guard is "would this write resolve onto an
+/// ORIGINAL FILE?", never "is this path under a dropped folder?" (§2.3.3). Path/identity EQUALITY with a
+/// source is the reject; ANCESTOR containment (a source sitting under the output directory) is not.
+///
+/// **Fallible (`io::Result`), never a panic** (G4/G14 — this runs on untrusted candidate paths): a genuine
+/// resolve failure is a clean `Err` the §2.8 caller maps, NEVER silently treated as Safe. The COMMON case is
+/// that `final_path` does not exist yet (§2.1 picks a non-existent name): `canonicalize` fails `NotFound` (the
+/// absent leaf) — or `NotADirectory` when a parent component is itself a FILE (an output-dir symlink onto a
+/// source file) — and ONLY those two kinds take the §2.3.3 fallback that resolves the PARENT (a non-existent
+/// leaf cannot itself be a link, but its parent can be a symlink into a source tree). Any OTHER resolve
+/// failure — an interior-NUL path (`InvalidInput`; the G48 "never `Ok` on a null-byte path" T7+T2a contract),
+/// a permission error — is surfaced as `Err`, never `Ok(Safe)`. The parent is presumed to EXIST here (§2.7.1
+/// create-only ancestor creation runs first for a chosen-root subtree); a missing parent is `Err`. A source
+/// AT the would-be path would mean the leaf EXISTS → the existing-target branch handles it, so the fallback
+/// needs only the parent-resolves-onto-a-source check. (On a case-insensitive FS a case-variant of a source
+/// resolves to the source's real inode and is caught by that existing-target identity check — no residual gap.)
+///
+/// P3.8 is the path-based verdict; the §2.3.3 TOCTOU-closed dir-handle publish (P3.9) roots the *write* at a
+/// verified parent handle so the parent cannot be swapped between this check and the publish — this function
+/// yields the verdict, that primitive enforces it atomically.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "§2.3.3 is_safe_output (P3.8) — the write-target link-safety verdict. Its production caller \
+                  is the §2.1.1 per-item write sequence (P3.38), which diverts on ResolvesOntoSource; dead in \
+                  the production build pending that wiring, exercised by the in-module is_safe_output_tests \
+                  below."
+    )
+)]
+pub fn is_safe_output(
+    final_path: &Path,
+    frozen_sources: &[FileIdentity],
+) -> io::Result<OutputSafety> {
+    // Whether ANY frozen source resolves to the same file as `id` — by (dev, inode)/file-index identity
+    // (`FileIdentity`'s Eq, catching a hardlink whose canonical path differs, §2.3.4) OR by canonical path
+    // (a source reached at exactly this resolved path). Either is a clobber onto an original.
+    let matches_a_source = |id: &FileIdentity| {
+        frozen_sources
+            .iter()
+            .any(|src| src == id || src.canonical_path == id.canonical_path)
+    };
+
+    // §2.3.3 step 1: resolve the target. `final_path` normally does NOT exist yet, so `canonicalize` fails
+    // (NotFound — the absent leaf; or NotADirectory — a parent component is a FILE, e.g. an output-dir
+    // symlink onto a source file) and the sanctioned fallback resolves the PARENT.
+    match resolve_identity(final_path) {
+        Ok(target) => {
+            // The (rare) already-existing target: its resolved identity is authoritative — a hardlink to a
+            // source shares the (dev, inode) even with a different canonical path (§2.3.4), a symlink is
+            // followed onto the source it points at, and an existing NON-source file is Safe (§2.2 no-clobber
+            // numbering, NOT this guard, reacts to a pre-existing non-source name).
+            Ok(if matches_a_source(&target) {
+                OutputSafety::ResolvesOntoSource
+            } else {
+                OutputSafety::Safe
+            })
+        }
+        // §2.3.3 fallback — ONLY for "the leaf does not resolve as a file": NotFound (the absent leaf, the
+        // normal §2.1 case) or NotADirectory (a parent component is a FILE — e.g. an output-dir symlink onto a
+        // source file, the ENOTDIR that must reach the parent check). [Build-Session-Entscheidung: P3.8 — gate
+        // the fallback on exactly these two kinds so an interior-NUL path (InvalidInput) / permission error is
+        // surfaced as `Err`, never `Ok(Safe)`: the G48 "never Ok on a null-byte path" (T7+T2a) contract + the
+        // no-harm default that an unresolvable target is never silently safe.]
+        Err(final_err)
+            if matches!(
+                final_err.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            // Resolve the PARENT (which must exist, §2.7.1). The non-existent leaf cannot itself be a link, so
+            // the only §2.3.3 risk is the PARENT resolving onto a source FILE (an output-dir symlink pointing
+            // back at a source). A NORMAL directory that merely CONTAINS sources is a distinct (dev, inode)/
+            // path from any source FILE, so beside-source writing there is correctly Safe (§0.6 invariant 4 —
+            // the frozen set holds files, not the container). [Build-Session-Entscheidung: P3.8 — the §2.3.3
+            // "resolved-parent + leaf == source" case is omitted as provably unreachable HERE: a source at the
+            // would-be path means the leaf EXISTS, which lands in the Ok(target) branch above, never here.] If
+            // the parent ALSO cannot be resolved, surface the ORIGINAL error (§2.8), never a silent Safe.
+            match final_path.parent() {
+                Some(parent) => match resolve_identity(parent) {
+                    Ok(parent_id) => Ok(if matches_a_source(&parent_id) {
+                        OutputSafety::ResolvesOntoSource
+                    } else {
+                        OutputSafety::Safe
+                    }),
+                    Err(_) => Err(final_err),
+                },
+                None => Err(final_err),
+            }
+        }
+        // Any OTHER resolve failure (InvalidInput — an interior-NUL / dangerous path; PermissionDenied; …) is a
+        // genuine error the §2.8 caller maps — NEVER Ok(Safe) (the G48 null-byte contract + no-harm default).
+        Err(final_err) => Err(final_err),
+    }
 }
 
 #[cfg(test)]
@@ -490,6 +618,213 @@ mod windows_realfs_tests {
             id.inode_or_fileindex,
             info.file_index(),
             "§2.3.1: inode_or_fileindex is the Windows fileIndex"
+        );
+    }
+}
+
+#[cfg(test)]
+mod is_safe_output_tests {
+    //! §6.4.1/§6.4.3 real-FS (G15/G31/G48) for the §2.3.3 write-target link-safety verdict
+    //! ([`is_safe_output`], P3.8) — the no-harm guard that never lets a conversion write onto an original
+    //! source (SSOT). Never mock the FS under test (test-strategy §0.1): real temp files / hardlinks, driving
+    //! the real `resolve_identity` (P3.6). The identity (NOT path-string) comparison is what catches a
+    //! hardlink to a source a naive path compare misses (§2.3.4). The symlink legs are the unix module below.
+    use super::*;
+
+    /// The frozen source identities for a set of real paths (the P3.7 de-dup produces these; here built
+    /// directly from real files).
+    fn sources(paths: &[&Path]) -> Vec<FileIdentity> {
+        paths
+            .iter()
+            .map(|p| resolve_identity(p).expect("resolve a source"))
+            .collect()
+    }
+
+    // §2.3.3 (G15/G31): the NORMAL case — a new output beside a source, inside the same (dropped) folder, is
+    // SAFE. The frozen set holds the source FILE, not the container dir, so writing a sibling is not a clobber.
+    #[test]
+    fn a_new_output_beside_a_source_is_safe() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let src = dir.path().join("data.csv");
+        std::fs::write(&src, b"a,b\n1,2\n").expect("write the source");
+        let frozen = sources(&[&src]);
+        let out = dir.path().join("data.tsv"); // a non-existent sibling output name
+        assert_eq!(
+            is_safe_output(&out, &frozen).expect("resolve the parent"),
+            OutputSafety::Safe,
+            "§2.3.3: writing a new file beside a source (same folder) is the normal, safe case"
+        );
+    }
+
+    // §2.3.3 rule 2 (G15/G31): writing directly ONTO an existing source path is rejected (a clobber).
+    #[test]
+    fn writing_onto_an_existing_source_is_rejected() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let src = dir.path().join("original.csv");
+        std::fs::write(&src, b"payload").expect("write the source");
+        let frozen = sources(&[&src]);
+        assert_eq!(
+            is_safe_output(&src, &frozen).expect("resolve the existing target"),
+            OutputSafety::ResolvesOntoSource,
+            "§2.3.3: the output path IS a frozen source — reject, never clobber"
+        );
+    }
+
+    // §2.3.2/§2.3.4 (G15/G31): a HARDLINK to a source (same (dev, inode), DIFFERENT path) is rejected — the
+    // identity check catches it where a path-string compare would not. The headline no-harm proof for P3.8.
+    #[test]
+    fn a_hardlink_to_a_source_is_rejected() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let src = dir.path().join("source.csv");
+        std::fs::write(&src, b"payload").expect("write the source");
+        let link = dir.path().join("elsewhere.csv");
+        // FAT/exFAT (no hardlinks, §2.3.4) → Unsupported/PermissionDenied → skip only THAT; a real temp dir
+        // is NTFS/ext4/APFS, so the skip does not fire in practice. [Build-Session-Entscheidung: P3.8 — mirror
+        // the P3.6/P3.7 hardlink-test skip guard.]
+        let linked = std::fs::hard_link(&src, &link);
+        if matches!(&linked, Err(e) if matches!(e.kind(), std::io::ErrorKind::Unsupported | std::io::ErrorKind::PermissionDenied))
+        {
+            return;
+        }
+        linked.expect("create the hardlink (a non-unsupported error is a real failure)");
+        let frozen = sources(&[&src]); // only the ORIGINAL path is frozen
+        assert_eq!(
+            is_safe_output(&link, &frozen).expect("resolve the hardlink"),
+            OutputSafety::ResolvesOntoSource,
+            "§2.3.4: a hardlink shares the source's (dev, inode) — writing onto it clobbers the original"
+        );
+    }
+
+    // §2.3.3 (G15/G31): a genuinely unrelated new output (a different file, under no source) is SAFE — the
+    // over-reject control.
+    #[test]
+    fn an_unrelated_new_output_is_safe() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let src = dir.path().join("source.csv");
+        std::fs::write(&src, b"x").expect("write the source");
+        let frozen = sources(&[&src]);
+        let other = tempfile::tempdir().expect("a second, unrelated temp dir");
+        let out = other.path().join("output.tsv");
+        assert_eq!(
+            is_safe_output(&out, &frozen).expect("resolve the parent"),
+            OutputSafety::Safe,
+            "§2.3.3: an output unrelated to any source is safe"
+        );
+    }
+
+    // §2.3.3 (G15): with NO frozen sources, every resolvable output is Safe (nothing to clobber) — the empty
+    // set is a valid input, not a special case.
+    #[test]
+    fn no_frozen_sources_means_every_output_is_safe() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let out = dir.path().join("out.tsv");
+        assert_eq!(
+            is_safe_output(&out, &[]).expect("resolve the parent"),
+            OutputSafety::Safe,
+            "§2.3.3: no frozen sources → nothing to clobber → Safe"
+        );
+    }
+
+    // §2.8/G4/G14 (G15/G48): a target whose PARENT does not exist is a clean Err, never a panic — the no-harm
+    // default (an unresolvable target is surfaced, not silently Safe). Exercises the fallible resolve on this
+    // in-core untrusted-path surface (the G48 no-panic contract).
+    #[test]
+    fn a_missing_parent_directory_is_err_not_a_panic() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let missing = dir.path().join("no_such_dir").join("out.tsv"); // parent does not exist
+        assert!(
+            is_safe_output(&missing, &[]).is_err(),
+            "§2.8: an output whose parent cannot be resolved is a clean Err, never a panic"
+        );
+    }
+
+    // §2.3.3 (G15/G31): an EXISTING output file that is NOT a frozen source is Safe — §2.2 no-clobber
+    // numbering (not this guard) reacts to a pre-existing non-source name. Exercises the Ok(target)-not-a-
+    // source arm (a mutant returning ResolvesOntoSource there would otherwise survive the suite).
+    #[test]
+    fn an_existing_non_source_output_is_safe() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let src = dir.path().join("source.csv");
+        std::fs::write(&src, b"payload").expect("write the source");
+        let frozen = sources(&[&src]);
+        let existing_output = dir.path().join("leftover.tsv");
+        std::fs::write(&existing_output, b"a prior, non-source file")
+            .expect("write a pre-existing output");
+        assert_eq!(
+            is_safe_output(&existing_output, &frozen).expect("resolve the existing target"),
+            OutputSafety::Safe,
+            "§2.3.3: an existing output that is not a frozen source is Safe (no-clobber numbering handles it)"
+        );
+    }
+
+    // §2.8/G48 (G15): an interior-NUL output path is a clean Err, NEVER Ok(Safe) — the G48 "never Ok on a
+    // null-byte path" (T7+T2a) contract. `std` rejects an interior NUL (`InvalidInput`) BEFORE touching the
+    // FS, and the fallback is gated to NotFound/NotADirectory so `is_safe_output` surfaces it rather than
+    // resolving the (real) parent to a false Safe.
+    #[test]
+    fn a_null_byte_output_path_is_err_never_safe() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        // A NUL-bearing leaf UNDER a real, resolvable parent — the fallback must NOT swallow this to Safe.
+        let nul_path = dir.path().join("a\0b.tsv");
+        assert!(
+            is_safe_output(&nul_path, &[]).is_err(),
+            "§2.8/G48: an interior-NUL output path is a clean Err, never Ok(Safe) (T7+T2a)"
+        );
+    }
+}
+
+// §6.4.3 real-FS unix (G15/G31): the symlink legs of §2.3.3 ([`is_safe_output`], P3.8). TWO STACKED cfg attrs
+// (`#[cfg(test)]` then `#[cfg(unix)]`), NOT `all(test, unix)` — the P1.17 compound-cfg clippy::expect_used
+// trap. Windows symlink creation needs privilege (fs_guard's resolve_identity tests gate that leg); the
+// cross-platform hardlink test above proves the identity-based reject on every OS.
+#[cfg(test)]
+#[cfg(unix)]
+mod is_safe_output_unix_tests {
+    use super::*;
+
+    fn sources(paths: &[&Path]) -> Vec<FileIdentity> {
+        paths
+            .iter()
+            .map(|p| resolve_identity(p).expect("resolve a source"))
+            .collect()
+    }
+
+    // §2.3.3 rule 2: an output that IS a symlink onto a source is rejected — `canonicalize` follows the link
+    // to the source's identity (§2.3.4). Exercises the existing-target reject branch via a followed symlink.
+    #[test]
+    fn an_output_symlink_onto_a_source_is_rejected() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let src = dir.path().join("source.csv");
+        std::fs::write(&src, b"payload").expect("write the source");
+        let alias = dir.path().join("alias.csv");
+        std::os::unix::fs::symlink(&src, &alias).expect("create a unix symlink");
+        let frozen = sources(&[&src]);
+        assert_eq!(
+            is_safe_output(&alias, &frozen).expect("resolve the symlink"),
+            OutputSafety::ResolvesOntoSource,
+            "§2.3.4: an output symlink is followed onto the source it points at — reject"
+        );
+    }
+
+    // §2.3.3 "the output dir is a symlink that resolves back onto a source file": a NON-existent leaf under a
+    // parent that symlinks onto a source FILE is rejected — exercises the fallback's parent-resolves-onto-a-
+    // source branch (the `final_path` resolve fails, the parent resolves onto the source's identity).
+    #[test]
+    fn a_new_leaf_under_a_parent_symlinked_onto_a_source_is_rejected() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let src = dir.path().join("source.csv");
+        std::fs::write(&src, b"payload").expect("write the source");
+        // `bad_parent` is a symlink pointing at the source FILE; a would-be leaf "under" it resolves the
+        // parent onto the source.
+        let bad_parent = dir.path().join("bad_parent");
+        std::os::unix::fs::symlink(&src, &bad_parent)
+            .expect("symlink a dir-name onto a source file");
+        let frozen = sources(&[&src]);
+        let out = bad_parent.join("new.tsv"); // non-existent leaf under a symlink-to-a-file parent
+        assert_eq!(
+            is_safe_output(&out, &frozen).expect("resolve the parent"),
+            OutputSafety::ResolvesOntoSource,
+            "§2.3.3: an output-dir path resolving onto a source file is rejected (fallback parent check)"
         );
     }
 }
