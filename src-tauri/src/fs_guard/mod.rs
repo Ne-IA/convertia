@@ -2165,6 +2165,7 @@ mod publish_noreplace_tests {
 mod publish_link_fallback_tests {
     use super::*;
     use std::ffi::OsStr;
+    use std::os::unix::fs::PermissionsExt;
 
     /// The P3.9 verified parent handle for `dir` (empty frozen set → always Verified); binds via
     /// match→Option→`expect` (never a hard-fail macro the deferral gate flags).
@@ -2176,14 +2177,11 @@ mod publish_link_fallback_tests {
         .expect("a real dir with an empty frozen set verifies")
     }
 
-    /// Restore write permission on `dir` so the `TempDir` Drop can `remove_dir_all` it (a read-only dir blocks
-    /// removal). Best-effort — a restore failure must not itself abort the test's cleanup.
+    /// Restore owner rwx on `dir` so the `TempDir` Drop can `remove_dir_all` it (the read-only dir we set to
+    /// force the unlink failure blocks removal). An explicit `0o700` mode — clippy forbids the ambiguous
+    /// `set_readonly(false)`. Best-effort: a restore failure must not itself abort the test's cleanup.
     fn restore_writable(dir: &Path) {
-        if let Ok(md) = std::fs::metadata(dir) {
-            let mut perms = md.permissions();
-            perms.set_readonly(false);
-            let _ = std::fs::set_permissions(dir, perms);
-        }
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
     }
 
     // §2.1.2 (G15/G31): the fallback publishes a fresh `leaf` by hard-linking the tmp onto it, then reaps the
