@@ -132,7 +132,7 @@ kernel functions (P0.4.8) and `cargo-mutants` targets (P0.5.10).
 - [x] **P3.10** [RUST] Build `fs_guard::output_name` — verbatim-stem + space-paren numbering candidates · §2.2.1 §2.10.1
   needs: P3.1
   > `output_name`: `stem` taken **byte-for-byte** (§2.10.1 — `OsString`, no `to_string_lossy` for any operation, no transliteration/ASCII-fold/emoji-strip), `ext` = target's canonical lowercase extension (`tsv`/`csv`); first candidate `stem.ext`, then `stem (n).ext` (n=1,2,3…) — the SSOT space-paren shape, never `_1`/`-1`/a hash; multi-dot stems preserved (`my.report.final` → `…final.tsv`). Candidates produced **lazily** for the §2.2.2 exclusive-publish loop (P3.15), never a directory-list max+1 pre-scan.
-- [ ] **P3.11** [RUST] Build `fs_guard::check_path_limit` — per-OS component + total limits, fail-never-truncate · §2.2.3 §2.10.1 · G48
+- [x] **P3.11** [RUST] Build `fs_guard::check_path_limit` — per-OS component + total limits, fail-never-truncate · §2.2.3 §2.10.1 · G48
   needs: P3.10
   > validate the **resolved final** path length before the exclusive create: **Windows** total ≤ 260 (`MAX_PATH`, no long-path-aware assumption) + component ≤ 255 UTF-16; **macOS** component ≤ 255 UTF-8 bytes, total ≈ `PATH_MAX` 1024; **Linux** component ≤ 255 (`NAME_MAX`), total ≤ 4096 (`PATH_MAX`). When appending `(n)`/swapping the extension would overflow → emit `PathTooLong` (§2.8), **never truncate**. Windows: prepend `\\?\` manually for constructed numbered candidates (no "dunce inverse" — `dunce` only strips), but a user-facing path > 260 still fails clearly. Runs on the fully-resolved path **including any §2.7 divert** (P3.6). A G48 in-core fuzz target (NUL-path / `PATH_MAX`+1 bound-firing fixtures, P0.4.3).
 
