@@ -3,11 +3,16 @@
 //! cross-volume strategy (§2.1 / §2.2 / §2.3 / §2.14). Every output flows through here; engines never
 //! write the final file. A §0.7 tier-2 trust-kernel LEAF: it depends DOWN only (on `crate::domain`),
 //! never up on IPC / orchestrator / the engine registry (§2.0 dependency direction). Unsafe-free — the
-//! crate-root `#![deny(unsafe_code)]` (main.rs) covers it. The §2.3.1 resolved-IDENTITY read (P3.6) needs
-//! NO in-core FFI: the Windows `(volumeSerialNumber, fileIndex)` comes through `winapi-util`'s SAFE
-//! `GetFileInformationByHandle` wrapper (with `dunce` for the canonical-path `\\?\`-normalisation) — no
-//! `unsafe` in the core (§2.3.1 `[CORRECTED 2026-07-07]`). The remaining per-OS handle FFI — the §2.3.3/§2.1
-//! publish dir-handle primitive (P3.9) — is homed in the single allow-listed `crate::platform` shim (§0.7).
+//! crate-root `#![deny(unsafe_code)]` (main.rs) covers it. The §2.3.1 resolved-IDENTITY read (P3.6) AND the
+//! §2.3.3 TOCTOU-closed parent-dir-handle verify (P3.9) both need NO in-core FFI: the Windows
+//! `(volumeSerialNumber, fileIndex)` — read from a PATH (P3.6, `winapi-util`'s `from_path_any`) or from the
+//! ALREADY-OPEN dir handle (P3.9, `winapi_util::file::information(&dir_file)` — `GetFileInformationByHandle` on
+//! the pinned handle, `winapi-util`'s `AsHandleRef for File`) — comes through `winapi-util`'s SAFE wrapper
+//! (with `dunce` for the canonical-path `\\?\`-normalisation), and the Unix side is std `MetadataExt` — no
+//! `unsafe` in the core (§2.3.1 `[CORRECTED 2026-07-07]`). The remaining RAW per-OS handle FFI — the
+//! §2.1.2/§2.3.3 create-only dir-relative PUBLISH primitives (Linux `renameat2` / macOS `renameatx_np` /
+//! Windows `NtSetInformationFile(FileRenameInformationEx)`, P3.12/P3.13/P3.14) — is homed in the single
+//! allow-listed `crate::platform` shim (§0.7).
 //!
 //! P2.74 lands the pure §2.3.1 resolved-identity TYPE (`FileIdentity`) — the §2.3.2 de-dup key (below).
 //!
@@ -22,14 +27,18 @@
 //! never P3.1.
 //!  - `resolve_identity(path) -> io::Result<FileIdentity>` — canonicalize + per-OS `(dev, inode)` /
 //!    file-index identity (§2.3.1 / §2.3.4) — **P3.6** (the TYPE is P2.74).
-//!  - `is_safe_output` — write-target link-safety vs the frozen source set (§2.3.3) — **P3.8**, over the
-//!    **P3.9** TOCTOU-closed parent-dir-handle primitive.
+//!  - `is_safe_output` — write-target link-safety vs the frozen source set (§2.3.3) — **P3.8**, the path-based
+//!    verdict; the **P3.9** `open_verified_parent_dir` below roots the *write* at a verified handle.
+//!  - `open_verified_parent_dir(parent, frozen) -> ParentDirVerdict` — §2.3.3 open the parent dir as a PINNED
+//!    handle + verify its identity (read FROM the handle) is not a frozen source (TOCTOU-closed) — **P3.9**;
+//!    the `VerifiedParentDir` it returns is the handle the P3.12–P3.18 publish roots its dir-relative rename at.
 //!  - `output_name` — verbatim-stem + `stem (n).ext` lazy no-clobber candidates (§2.2.1 / §2.10.1) — **P3.10**.
 //!  - `check_path_limit` — per-OS component + total path-length validation, fail-never-truncate (§2.2.3) — **P3.11**.
-//!  - `atomic_publish(parent_handle, tmp, leaf)` — per-OS create-only exclusive publish + the §2.14.3
-//!    cross-volume fallback (§2.1 / §2.3.3 / §2.14.3) — **P3.9 / P3.12-P3.18**.
+//!  - `atomic_publish(verified_parent, tmp, leaf)` — per-OS create-only exclusive publish, rooted at the P3.9
+//!    `VerifiedParentDir`, + the §2.14.3 cross-volume fallback (§2.1 / §2.3.3 / §2.14.3) — **P3.12-P3.18**.
 //!  - `location_status` — per-location writability + ephemeral classification, cached per-dir (§2.7.2) — **P3.33**.
 
+use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -217,6 +226,31 @@ pub enum OutputSafety {
     ResolvesOntoSource,
 }
 
+/// The shared §2.3.3 "resolves onto an original?" membership test: whether `id` resolves to the same file
+/// as one of the frozen SOURCEs — by (dev, inode)/file-index identity ([`FileIdentity`]'s `Eq`, catching a hardlink
+/// whose canonical path differs, §2.3.4) OR by canonical path (a source reached at exactly this resolved
+/// path). Used by BOTH [`is_safe_output`] (the path-based verdict, P3.8) and [`open_verified_parent_dir`]
+/// (the TOCTOU-closed handle verify, P3.9), so the two §2.3.3 checks apply one identical rule — a change to
+/// "what counts as clobbering an original" cannot silently diverge between the path check and the handle check.
+///
+/// §2.3.3 states this membership test as resolved-identity / canonical-path EQUALITY (NOT an ancestor-path
+/// prefix test): the frozen set holds FILES only (§0.6 invariant 4), so a candidate can be "inside the frozen
+/// set" ONLY by resolving ONTO a source file (equality) — a literal path-PREFIX reject would reject the normal
+/// beside-source case §2.3.3 explicitly permits ("NOT the container … beside-source is the normal, correct
+/// case"). [Build-Session-Entscheidung: P3.9]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.3.3 shared membership helper — called only by is_safe_output (P3.8) + open_verified_parent_dir (P3.9), both unwired until the §2.1.1 write sequence (P3.12+ / P3.38); dead-at-runtime during the P3 wiring window, exercised by the in-module tests. `allow` (permissive) covers the ambiguous dead-ness (cf. OutputSafety)."
+    )
+)]
+fn identity_matches_a_source(id: &FileIdentity, frozen_sources: &[FileIdentity]) -> bool {
+    frozen_sources
+        .iter()
+        .any(|src| src == id || src.canonical_path == id.canonical_path)
+}
+
 /// The §2.3.3 no-harm guard: does publishing to `final_path` resolve onto a frozen SOURCE file (SSOT —
 /// "never write onto an original")? The pipeline calls this before §2.1's exclusive publish and, on
 /// [`OutputSafety::ResolvesOntoSource`], DIVERTS (§2.7) instead of writing. Because it compares the RESOLVED
@@ -259,14 +293,11 @@ pub fn is_safe_output(
     final_path: &Path,
     frozen_sources: &[FileIdentity],
 ) -> io::Result<OutputSafety> {
-    // Whether ANY frozen source resolves to the same file as `id` — by (dev, inode)/file-index identity
-    // (`FileIdentity`'s Eq, catching a hardlink whose canonical path differs, §2.3.4) OR by canonical path
-    // (a source reached at exactly this resolved path). Either is a clobber onto an original.
-    let matches_a_source = |id: &FileIdentity| {
-        frozen_sources
-            .iter()
-            .any(|src| src == id || src.canonical_path == id.canonical_path)
-    };
+    // Whether ANY frozen source resolves to the same file as `id` — the shared §2.3.3 membership test
+    // ([`identity_matches_a_source`]), extracted so this path-based verdict and the P3.9 TOCTOU-closed
+    // `open_verified_parent_dir` handle verify apply the IDENTICAL "resolves onto an original?" rule and
+    // cannot drift. [Build-Session-Entscheidung: P3.9]
+    let matches_a_source = |id: &FileIdentity| identity_matches_a_source(id, frozen_sources);
 
     // §2.3.3 step 1: resolve the target. `final_path` normally does NOT exist yet, so `canonicalize` fails
     // (NotFound — the absent leaf; or NotADirectory — a parent component is a FILE, e.g. an output-dir
@@ -318,6 +349,208 @@ pub fn is_safe_output(
         // Any OTHER resolve failure (InvalidInput — an interior-NUL / dangerous path; PermissionDenied; …) is a
         // genuine error the §2.8 caller maps — NEVER Ok(Safe) (the G48 null-byte contract + no-harm default).
         Err(final_err) => Err(final_err),
+    }
+}
+
+/// The §2.3.3 verdict of [`open_verified_parent_dir`] — either the verified, pinned parent-directory handle
+/// the write is rooted at, or the divert signal (mirrors [`OutputSafety`], but carries the handle on the safe
+/// path).
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.3.3 open_verified_parent_dir's verdict type (P3.9), constructed only by that fn — itself \
+                  unwired until the P3.12–P3.18 dir-relative publish / the §2.1.1 write sequence (P3.38) — so \
+                  its dead-ness is ambiguous during the P3 wiring window; `allow` (permissive) covers it (cf. \
+                  OutputSafety). Exercised by open_verified_parent_dir_tests."
+    )
+)]
+#[derive(Debug)]
+pub enum ParentDirVerdict {
+    /// The parent directory opened, is a real directory, and its resolved identity is NOT a frozen source —
+    /// the [`VerifiedParentDir`] handle the §2.1.2 create-only publish (P3.12–P3.14) roots its dir-relative
+    /// rename at (§2.3.3). Because the identity was read FROM this open handle, a subsequent path swap of the
+    /// parent cannot redirect the write.
+    Verified(VerifiedParentDir),
+    /// The opened parent resolves onto a frozen SOURCE file (a clobber — directly or via a symlink / junction /
+    /// hardlink) — the caller MUST divert (§2.7 / P3.34), never publish here (§2.3.3 rule 2).
+    ResolvesOntoSource,
+}
+
+/// A parent directory opened as a PINNED OS handle whose resolved identity has been verified NOT to be a
+/// frozen source (§2.3.3) — the TOCTOU-closing root the §2.1.2 dir-handle-relative create-only publish
+/// (P3.12–P3.14) renames the leaf against. The handle is pinned to the directory inode at open, so a
+/// post-open path swap of the parent (to a symlink into a source tree) cannot redirect the publish: the rename
+/// resolves `leaf` THROUGH this handle, not by re-parsing a path string (§2.3.3 "Parent-directory safety is
+/// made atomic via a directory-handle, not a path").
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.3.3 the verified parent-dir handle (P3.9), constructed only by open_verified_parent_dir; \
+                  its consumer is the P3.12–P3.18 dir-relative publish (unwired until then), so it is \
+                  dead-at-runtime in the P3 wiring window; `allow` (permissive) covers the ambiguous dead-ness \
+                  (cf. OutputSafety). Exercised by open_verified_parent_dir_tests."
+    )
+)]
+#[derive(Debug)]
+pub struct VerifiedParentDir {
+    /// The open directory handle — Unix `File::open` (a directory opens read-only; the is-a-directory check on
+    /// the OPEN handle is the `O_DIRECTORY`-equivalent) / Windows `FILE_FLAG_BACKUP_SEMANTICS` (required to open
+    /// a directory handle). The P3.12–P3.14 publish primitives rename `leaf` RELATIVE to this handle
+    /// (`renameat2`/`renameatx_np` on its `as_raw_fd()`; `FileRenameInformationEx` with its `RootDirectory`), so
+    /// the parent cannot be link-redirected between the verify and the write (§2.3.3).
+    handle: File,
+}
+
+impl VerifiedParentDir {
+    /// The pinned directory handle the §2.1.2 dir-relative create-only publish (P3.12–P3.14) roots its rename
+    /// at: on Unix the caller reads `as_raw_fd()` for `renameat2(…, newdirfd, leaf, RENAME_NOREPLACE)`; on
+    /// Windows `as_raw_handle()` for `FILE_RENAME_INFORMATION_EX.RootDirectory` (§2.3.3).
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "§2.3.3 accessor for the P3.12–P3.18 dir-relative publish (unwired until then); \
+                      dead-at-runtime in the P3 wiring window, exercised by open_verified_parent_dir_tests; \
+                      `allow` covers the ambiguous dead-ness (cf. the VerifiedParentDir it belongs to)."
+        )
+    )]
+    pub fn dir_handle(&self) -> &File {
+        &self.handle
+    }
+}
+
+/// The §2.3.3 TOCTOU-closed parent-directory-handle safety primitive: open `parent` as a PINNED directory
+/// handle, then verify — from the OPEN handle, not a re-resolved path — that its resolved identity is not a
+/// frozen SOURCE. Returns the verified handle ([`ParentDirVerdict::Verified`]) the §2.1.2 create-only publish
+/// (P3.12–P3.14) renames the leaf against, or the divert signal ([`ParentDirVerdict::ResolvesOntoSource`]).
+///
+/// This closes the parent-swap TOCTOU that a path-only [`is_safe_output`] (P3.8) leaves open (§2.3.3
+/// "Parent-directory safety is made atomic via a directory-handle, not a path"): even if `parent` is swapped
+/// to a symlink into a source tree AFTER this call, the handle stays pinned to the directory inode opened
+/// here, and the publish renames `leaf` THROUGH this handle — so the write lands in the verified directory,
+/// never a redirected one.
+///
+/// **Fallible (`io::Result`), never a panic** (G4/G14 — this runs on untrusted candidate paths OUTSIDE the
+/// §2.12 boundary): a genuine failure is a clean `Err` the §2.8 caller maps, NEVER silently treated as
+/// verified. Specifically —
+/// - `parent` does not exist / cannot be `stat`'d → `Err` (e.g. `NotFound`).
+/// - `parent` is not a directory — a regular file, a **FIFO / device / socket**, or a symlink resolving onto
+///   any of those (incl. onto a source FILE) → `Err(NotADirectory)`. A fast `stat` TYPE PRE-CHECK rejects it
+///   BEFORE the open, so `File::open` — which on a Unix FIFO blocks indefinitely waiting for a writer (an
+///   in-core DoS an adversary could plant at the parent path, worse than the panic the no-panic policy forbids)
+///   — is never reached on a non-directory; the fstat on the OPEN handle then re-verifies dir-ness.
+/// - an interior-NUL / dangerous path → `Err(InvalidInput)` (the G48 "never `Ok` on a null-byte path" T7+T2a
+///   contract): `std` rejects it before the FS is touched.
+///
+/// The type pre-check is a `stat` (never blocks), so a **pre-existing** FIFO / device parent can never hang the
+/// open. A narrow residual remains only if `parent` is swapped dir→FIFO in the µs window between the pre-check
+/// `stat` and the open — a negligible local-race liveness edge (a hang, recoverable), NOT a no-harm violation:
+/// the identity (the no-harm-critical key) is still read from the pinned handle. A fully race-free open would
+/// need `O_DIRECTORY|O_NONBLOCK` via a `libc` edge — deliberately avoided to keep this module std-only.
+///
+/// The identity used for the verify is read FROM the pinned handle (Unix `fstat` via `MetadataExt`; Windows
+/// `GetFileInformationByHandle` on the open handle via `winapi_util::file::information`), so it is the
+/// authoritative "same file?" key AT open time — the TOCTOU-closing property. `canonical_path` is the
+/// best-effort representative (re-resolved via `dunce::canonicalize`); a swap between open and that resolve can
+/// only make the canonical-path leg over-match (→ divert, the no-harm direction), never under-match, so safety
+/// rests on the handle-read identity. [Build-Session-Entscheidung: P3.9]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "§2.3.3 open_verified_parent_dir (P3.9) — the TOCTOU-closed parent-dir-handle primitive. Its \
+                  production caller is the §2.1.1 write sequence (P3.38) via the P3.12–P3.18 publish; statically \
+                  unused in the production build until that wiring lands (`expect` auto-flags the moment it \
+                  does), exercised by the in-module open_verified_parent_dir_tests."
+    )
+)]
+pub fn open_verified_parent_dir(
+    parent: &Path,
+    frozen_sources: &[FileIdentity],
+) -> io::Result<ParentDirVerdict> {
+    // §2.3.3 — FAST TYPE PRE-CHECK before opening: `stat` the resolved target (follows symlinks, does NOT
+    // open, so it never blocks). This rejects a non-directory parent — critically a **FIFO / device / socket**
+    // — up front, so the subsequent open cannot hang: `File::open` on a Unix FIFO blocks indefinitely waiting
+    // for a writer (an in-core DoS an adversary could plant at the parent path). A `stat` never blocks; a NUL
+    // path / missing parent still surface here as `InvalidInput` / `NotFound`. The authoritative dir-verify is
+    // still the fstat on the OPEN handle below — this pre-check is LIVENESS, not the trust boundary; the
+    // no-harm-critical identity is read from the pinned handle. [Build-Session-Entscheidung: P3.9]
+    if !std::fs::metadata(parent)?.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "§2.3.3: the output parent path is not a directory (pre-open type check)",
+        ));
+    }
+
+    // §2.3.3 step 1 — open the parent dir handle FIRST, pinning the directory inode. Any open failure
+    // (NotFound; InvalidInput on an interior-NUL path — the G48 T7+T2a "never Ok on a null-byte path" contract;
+    // PermissionDenied) surfaces as `Err`, never a silent verify. Per-OS cfg'd let-blocks (the resolve_identity
+    // idiom): exactly one compiles per target.
+    #[cfg(unix)]
+    let handle = {
+        // Unix: `File::open` opens a directory read-only; a symlink is FOLLOWED to the resolved real dir
+        // (§2.3.4), matching `resolve_identity`. Dir-ness is enforced by the is-a-directory check on the OPEN
+        // handle below — the `O_DIRECTORY`-equivalent, without pulling in `libc` for the arch-specific flag
+        // constant. [Build-Session-Entscheidung: P3.9]
+        File::open(parent)?
+    };
+    #[cfg(windows)]
+    let handle = {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Windows: a directory handle requires FILE_FLAG_BACKUP_SEMANTICS (0x02000000) — `File::open` alone
+        // fails on a directory. This is the same flag `winapi-util`'s `from_path_any` opens directories with
+        // (Win32 CreateFile docs). [Build-Session-Entscheidung: P3.9]
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(parent)?
+    };
+
+    // §2.3.3 — the handle must be a DIRECTORY. `metadata()` reads the OPEN handle (fstat / dir-handle
+    // GetFileInformationByHandle), so this reflects the pinned inode, never a re-resolved path. A non-dir
+    // handle (a file, or a symlink resolving onto a source FILE) → `NotADirectory` (the §2.8 divert-or-fail
+    // path), mirroring `is_safe_output`'s NotADirectory fallback — the "output dir symlinked onto a source
+    // file" reject, closed here at OPEN time.
+    let meta = handle.metadata()?;
+    if !meta.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "§2.3.3: the output parent path is not a directory",
+        ));
+    }
+
+    // §2.3.3 step 2 — build the handle's identity FROM the pinned handle (the TOCTOU-closing read) and verify
+    // it is not a frozen source. `canonical_path` is the best-effort representative; the authoritative
+    // "same file?" key is the (dev, inode)/file-index read from the handle.
+    let canonical_path = dunce::canonicalize(parent)?;
+    #[cfg(unix)]
+    let (dev_or_volserial, inode_or_fileindex) = {
+        use std::os::unix::fs::MetadataExt;
+        // `fstat` on the open fd (`handle.metadata()` above) — the identity of the pinned directory.
+        (meta.dev(), meta.ino())
+    };
+    #[cfg(windows)]
+    let (dev_or_volserial, inode_or_fileindex) = {
+        // GetFileInformationByHandle on the ALREADY-OPEN dir handle via `winapi-util`'s SAFE `AsHandleRef for
+        // File` wrapper — no re-open (a fresh `from_path_any` would reintroduce the parent-swap TOCTOU), no
+        // `unsafe` in the core. Both accessors are `u64` (winapi-util 0.1.11).
+        let info = winapi_util::file::information(&handle)?;
+        (info.volume_serial_number(), info.file_index())
+    };
+    let identity = FileIdentity {
+        canonical_path,
+        dev_or_volserial,
+        inode_or_fileindex,
+    };
+
+    // On reject → divert (§2.7); on pass → hand back the verified, pinned handle for the P3.12–P3.18 publish.
+    if identity_matches_a_source(&identity, frozen_sources) {
+        Ok(ParentDirVerdict::ResolvesOntoSource)
+    } else {
+        Ok(ParentDirVerdict::Verified(VerifiedParentDir { handle }))
     }
 }
 
@@ -825,6 +1058,231 @@ mod is_safe_output_unix_tests {
             is_safe_output(&out, &frozen).expect("resolve the parent"),
             OutputSafety::ResolvesOntoSource,
             "§2.3.3: an output-dir path resolving onto a source file is rejected (fallback parent check)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod open_verified_parent_dir_tests {
+    //! §6.4.1/§6.4.3 real-FS (G15/G31/G48) for the §2.3.3 TOCTOU-closed parent-dir-handle primitive
+    //! ([`open_verified_parent_dir`], P3.9) — opens the parent as a PINNED handle and verifies its identity
+    //! (read FROM the handle) is not a frozen source. Never mock the FS under test (test-strategy §0.1): real
+    //! temp dirs / files, driving the real per-OS open + handle identity read. The symlink legs are the unix
+    //! module below (Windows symlink creation needs privilege — the P3.6 resolve_identity tests gate that leg).
+    use super::*;
+
+    /// The frozen source identities for a set of real paths (the P3.7 de-dup produces these; here built
+    /// directly from real files).
+    fn sources(paths: &[&Path]) -> Vec<FileIdentity> {
+        paths
+            .iter()
+            .map(|p| resolve_identity(p).expect("resolve a source"))
+            .collect()
+    }
+
+    // §2.3.3 (G15/G31): the NORMAL case — a real directory with an empty frozen set opens and VERIFIES, and
+    // the returned handle is a genuine OPEN directory (metadata read back from the pinned handle). Also the
+    // no-frozen-sources leg (nothing to clobber).
+    #[test]
+    fn a_real_directory_opens_and_verifies() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let verdict = open_verified_parent_dir(dir.path(), &[]).expect("open the parent dir");
+        assert!(
+            matches!(&verdict, ParentDirVerdict::Verified(_)),
+            "§2.3.3: an empty frozen set verifies the parent (nothing to clobber)"
+        );
+        if let ParentDirVerdict::Verified(verified) = &verdict {
+            assert!(
+                verified
+                    .dir_handle()
+                    .metadata()
+                    .expect("stat the pinned dir handle")
+                    .is_dir(),
+                "§2.3.3: the verified handle is an OPEN directory (the publish roots its rename at it)"
+            );
+        }
+    }
+
+    // §2.3.3 (G15/G31): the beside-source NORMAL case — a directory that CONTAINS a frozen source FILE is
+    // VERIFIED, not rejected. The frozen set holds FILES (§0.6 invariant 4), so landing beside-source inside
+    // the container is the correct case (the guard is "resolves onto an original FILE?", not "under a folder
+    // holding sources?"). The load-bearing over-reject control for P3.9.
+    #[test]
+    fn a_directory_containing_a_source_is_verified_not_rejected() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let src = dir.path().join("data.csv");
+        std::fs::write(&src, b"a,b\n1,2\n").expect("write the source file inside the dir");
+        let frozen = sources(&[&src]);
+        let verdict = open_verified_parent_dir(dir.path(), &frozen).expect("open the parent dir");
+        assert!(
+            matches!(verdict, ParentDirVerdict::Verified(_)),
+            "§2.3.3: a directory that merely CONTAINS a source is verified — beside-source is the normal case"
+        );
+    }
+
+    // §2.3.3 (G15/G31): the verify FIRES — a parent directory whose OWN resolved identity is in the frozen set
+    // is rejected to ResolvesOntoSource (kills an always-Verified mutant). In production the frozen set holds
+    // FILES, so this is unreachable for a real directory; the test exercises the verification branch by
+    // construction (the dir's own identity used as a synthetic "source").
+    #[test]
+    fn a_parent_whose_identity_is_a_frozen_source_is_rejected() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let dir_id = resolve_identity(dir.path()).expect("resolve the dir's own identity");
+        let verdict = open_verified_parent_dir(dir.path(), &[dir_id]).expect("open the parent dir");
+        assert!(
+            matches!(verdict, ParentDirVerdict::ResolvesOntoSource),
+            "§2.3.3: a parent whose own identity IS a frozen source is rejected — the handle verify fires"
+        );
+    }
+
+    // §2.8/G4/G14 (G15/G48): a non-existent parent is a clean Err, never a panic — the open fails and is
+    // surfaced (never a silent verify).
+    #[test]
+    fn a_nonexistent_parent_is_err() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let missing = dir.path().join("no_such_dir");
+        assert!(
+            open_verified_parent_dir(&missing, &[]).is_err(),
+            "§2.8: a parent that cannot be opened is a clean Err (the §2.8 caller maps it), never a panic"
+        );
+    }
+
+    // §2.3.3/§2.8 (G15/G31): a plain FILE used as the parent is rejected to Err(NotADirectory) — opening it
+    // yields a file handle, and the is-a-directory check on the OPEN handle rejects it (the ENOTDIR case the
+    // path check reaches via its NotADirectory fallback). The "parent resolves onto a source file" reject,
+    // closed at OPEN time by the handle approach.
+    #[test]
+    fn a_file_used_as_a_parent_is_not_a_directory_err() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let file = dir.path().join("iam_a_file.bin");
+        std::fs::write(&file, b"x").expect("write a plain file");
+        let err = open_verified_parent_dir(&file, &[]).expect_err("a file parent must be an Err");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::NotADirectory,
+            "§2.3.3: a non-directory parent handle is rejected as NotADirectory"
+        );
+    }
+
+    // §2.8/G48 (G15): an interior-NUL parent path is a clean Err, NEVER a panic and never Ok — the G48 "never
+    // Ok on a null-byte path" (T7+T2a) contract. `std` rejects the interior NUL (InvalidInput) at open, before
+    // the FS is touched.
+    #[test]
+    fn a_null_byte_parent_path_is_err_never_a_panic() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let nul_path = dir.path().join("a\0b");
+        assert!(
+            open_verified_parent_dir(&nul_path, &[]).is_err(),
+            "§2.8/G48: an interior-NUL parent path is a clean Err, never Ok / never a panic (T7+T2a)"
+        );
+    }
+}
+
+// §6.4.3 real-FS unix (G15/G31): the symlink legs of §2.3.3's parent-dir-handle primitive
+// ([`open_verified_parent_dir`], P3.9). TWO STACKED cfg attrs (`#[cfg(test)]` then `#[cfg(unix)]`), NOT
+// `all(test, unix)` — the P1.17 compound-cfg clippy::expect_used trap. Windows symlink creation needs
+// privilege (fs_guard's resolve_identity tests gate that leg), so the follow-symlink legs are unix-homed;
+// the cross-platform NotADirectory + reject tests above cover the non-symlink cases on every OS.
+#[cfg(test)]
+#[cfg(unix)]
+mod open_verified_parent_dir_unix_tests {
+    use super::*;
+
+    // §2.3.4: a parent that is a symlink to a real DIRECTORY is FOLLOWED — the handle pins the resolved target
+    // dir and it verifies (the resolved dir is not a source). The follow-symlink counterpart to the
+    // reject-a-symlink-onto-a-file case below (canonicalize + File::open both follow the link, §2.3.4).
+    #[test]
+    fn a_parent_symlink_to_a_directory_is_followed_and_verified() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let real_dir = dir.path().join("real_out");
+        std::fs::create_dir(&real_dir).expect("create the real target dir");
+        let link = dir.path().join("link_out");
+        std::os::unix::fs::symlink(&real_dir, &link).expect("symlink a dir name onto the real dir");
+        let verdict = open_verified_parent_dir(&link, &[]).expect("open through the symlink");
+        assert!(
+            matches!(verdict, ParentDirVerdict::Verified(_)),
+            "§2.3.4: a parent symlink to a directory is followed to the resolved dir and verified"
+        );
+    }
+
+    // §2.3.3: a parent that is a symlink onto a SOURCE FILE is rejected as NotADirectory — opening it follows
+    // the link to the file, and the is-a-directory check on the OPEN handle rejects it. Exactly the "the output
+    // dir is a symlink that resolves back onto a source file" case (§2.3.3), closed at OPEN time — so it is
+    // rejected regardless of the frozen set (the structural is_dir gate fires before the identity verify).
+    #[test]
+    fn a_parent_symlink_onto_a_source_file_is_not_a_directory_err() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let src = dir.path().join("source.csv");
+        std::fs::write(&src, b"payload").expect("write the source file");
+        let bad_parent = dir.path().join("bad_parent");
+        std::os::unix::fs::symlink(&src, &bad_parent)
+            .expect("symlink a dir name onto a source file");
+        let err = open_verified_parent_dir(&bad_parent, &[])
+            .expect_err("a parent symlinked onto a file must be an Err");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::NotADirectory,
+            "§2.3.3: a parent resolving onto a source FILE is rejected (NotADirectory), never published into"
+        );
+    }
+
+    // §2.3.3 THE HEADLINE TOCTOU-CLOSING PROPERTY (G15/G31): the pinned handle's identity SURVIVES a post-open
+    // path swap of `parent`. Open through a symlink to a real dir, then re-point the symlink at a DECOY dir; the
+    // handle still reports the ORIGINAL dir's inode (it was pinned to that inode AT open), while the PATH now
+    // resolves to the decoy — so the P3.12–P3.18 publish, rooted at this handle, can never be redirected by a
+    // swap. Deterministic (no thread race — the OS pins the handle at open time). This proves by TEST what the
+    // path-based `is_safe_output` (P3.8) cannot: the central claim of the primitive, not just an assertion.
+    #[test]
+    fn the_pinned_handle_survives_a_post_open_parent_path_swap() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let real_dir = dir.path().join("real");
+        let decoy_dir = dir.path().join("decoy");
+        std::fs::create_dir(&real_dir).expect("create the real dir");
+        std::fs::create_dir(&decoy_dir).expect("create the decoy dir");
+        let link = dir.path().join("parent_link");
+        std::os::unix::fs::symlink(&real_dir, &link).expect("symlink parent → real dir");
+
+        // Bind the owned verified handle; a non-Verified verdict fails the test explicitly via `expect`
+        // (test-allowed) rather than a hard-fail macro the deferral gate flags.
+        let verified = match open_verified_parent_dir(&link, &[]).expect("open through the symlink") {
+            ParentDirVerdict::Verified(v) => Some(v),
+            ParentDirVerdict::ResolvesOntoSource => None,
+        }
+        .expect("precondition: a real dir with an empty frozen set verifies, never ResolvesOntoSource");
+
+        let real_id = resolve_identity(&real_dir).expect("resolve the real dir");
+        let decoy_id = resolve_identity(&decoy_dir).expect("resolve the decoy dir");
+
+        // Swap the PATH after open: re-point the symlink at the decoy dir.
+        std::fs::remove_file(&link).expect("remove the original symlink");
+        std::os::unix::fs::symlink(&decoy_dir, &link).expect("re-point the symlink → decoy dir");
+
+        // The PATH now resolves to the decoy — the post-open swap took effect (the precondition).
+        let path_now = resolve_identity(&link).expect("resolve the swapped path");
+        assert_eq!(
+            (path_now.dev_or_volserial, path_now.inode_or_fileindex),
+            (decoy_id.dev_or_volserial, decoy_id.inode_or_fileindex),
+            "precondition: the post-open path swap took effect (the symlink now resolves to the decoy)"
+        );
+
+        // …but the PINNED HANDLE still reports the ORIGINAL dir's inode — the TOCTOU-closing property.
+        let handle_now = {
+            let m = verified
+                .dir_handle()
+                .metadata()
+                .expect("fstat the pinned handle after the swap");
+            (m.dev(), m.ino())
+        };
+        assert_eq!(
+            handle_now,
+            (real_id.dev_or_volserial, real_id.inode_or_fileindex),
+            "§2.3.3: the pinned handle keeps the ORIGINAL dir's identity across a post-open path swap"
+        );
+        assert_ne!(
+            handle_now,
+            (decoy_id.dev_or_volserial, decoy_id.inode_or_fileindex),
+            "§2.3.3: the handle is NOT redirected to the decoy the swapped path now points at"
         );
     }
 }

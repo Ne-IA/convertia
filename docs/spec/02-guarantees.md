@@ -439,10 +439,15 @@ not this — a frozen source exists at drop):
     an `unsafe` FFI site in the core, which the unsafe policy forbids outside the
     image-worker's allow-listed module. `same-file` itself exposes no Windows
     identity numbers (`Handle::dev()`/`ino()` are Unix-only), so `winapi-util` is
-    the direct dependency. (The G29/`crate::platform` raw-FFI primitive lists still
-    name `GetFileInformationByHandle` — after this correction that listing rests
-    solely on the §2.3.3/P3.9 dir-handle publish primitive, that box's concern; the
-    IDENTITY use here is the safe wrapper, no raw call in the core.) Equal triple ⇒
+    the direct dependency. (The G29/`crate::platform` FFI-surface lists still name
+    `GetFileInformationByHandle` among the primitives the core MAY link raw, but
+    `[CORRECTED — P3.9]` NO core path calls it raw: the §2.3.1 identity read here AND
+    the §2.3.3 P3.9 dir-handle verify BOTH use `winapi-util`'s safe
+    `information(&handle)` wrapper (P3.9 reads the ALREADY-OPEN dir handle via
+    `winapi-util`'s `AsHandleRef for File`). The genuine raw per-OS handle FFI homed in
+    `crate::platform` is the §2.1.2/§2.3.3 PUBLISH primitives — Linux `renameat2` /
+    macOS `renameatx_np` / Windows `NtSetInformationFile(FileRenameInformationEx)`,
+    P3.12/P3.13/P3.14 — none of which is `GetFileInformationByHandle`.) Equal triple ⇒
     same file ⇒ catches **hardlinks** and
     **junctions** that point at the same backing file.
   - **macOS:** same `(st_dev, st_ino)` as Unix; **Finder aliases** (the classic
@@ -484,9 +489,11 @@ Before §2.1's exclusive create, `fs_guard::is_safe_output(final, frozen_set)`:
    exist yet" ambiguity for the subtree path.
 2. **Reject if** the resolved `final` (or its resolved-parent + leaf) has a
    `FileIdentity` equal to **any** frozen **source FILE**, **or** its resolved parent
-   **resolves onto / into a frozen source FILE's resolved path** (e.g. the output dir is a
-   symlink that resolves back onto a source file, or onto a path the source file sits
-   inside). **NOT** the dropped-root container itself: the frozen set holds **files only**
+   **resolves onto a frozen source FILE's resolved path** (e.g. the output dir is a
+   symlink that resolves back onto a source file — a link chain cannot smuggle the write
+   onto an original). `[CLARIFIED — P3.9]` This is resolved-identity / canonical-path
+   **EQUALITY** with a source FILE, **not** an ancestor-prefix / "under a source's
+   directory" test. **NOT** the dropped-root container itself: the frozen set holds **files only**
    (§0.6 invariant 4 — a dropped folder is recursed into files; the container directory is
    **not** a frozen-set source item), so landing beside-source **inside the dropped folder
    is the normal, correct case** and must **not** be rejected. The guard is "would this
@@ -515,7 +522,12 @@ handle**, not a re-resolved path string:
 1. **Open the parent dir handle first** (`O_DIRECTORY` on Unix via `std::fs::File::open`
    on the dir; `NtCreateFile`/`CreateFile2` with a dir handle on Windows).
 2. **Verify the open dir handle's identity** (`FileIdentity`, §2.3.1) is **not**
-   inside the frozen set (canonical-prefix containment on the *handle's* real path).
+   inside the frozen set — by the **resolved-identity / canonical-path EQUALITY** of
+   step 2 above ("resolves onto an *original file*?"), read from the OPEN handle,
+   **NOT** an ancestor-path-prefix test (`[CLARIFIED — P3.9]`: the frozen set holds
+   **files only** (§0.6 invariant 4), so a directory handle is "inside the frozen set"
+   only if it resolves **onto** a source file; a literal path-prefix / containment test
+   would wrongly reject the beside-source container step 2 explicitly permits).
 3. **Publish the leaf *relative to that same open dir handle*** — and the publish is
    the **no-placeholder, create-only exclusive-rename of §2.1.2** (NOT an
    `openat(...O_CREAT|O_EXCL)` placeholder, which would create the rejected 0-byte
