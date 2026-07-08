@@ -105,6 +105,18 @@ rustix = { version = "1.1.4", features = ["fs"] }
 # ALREADY in Cargo.lock via `walkdir`→`same-file`, so no newly-resolved package; §0.8 floor row landed at P3.83.
 [target.'cfg(windows)'.dependencies]
 winapi-util = "0.1.11"
+# [P3.14] §2.1.2/§2.3.3 the Windows dir-handle-relative create-only publish — the FileRenameInformationEx-class
+# no-replace move. This is the core's FIRST `unsafe` FFI (the one allow-listed surface `crate::platform`, G29).
+# ALREADY in Cargo.lock via many transitive users, so no newly-resolved package; the §0.8 drift-floor row +
+# `check-supply-chain` PINNED_FLOORS landed at P3.84. [Build-Session-Entscheidung: P3.14] the NT
+# `NtSetInformationFile(FileRenameInformationEx)` route (ntdll) per spec §2.3.3 — the Win32
+# `SetFileInformationByHandle` alternative the box note offered CANNOT do the required RootDirectory-HANDLE-
+# relative move (verified locally: it returns ERROR_INVALID_PARAMETER on a non-NULL RootDirectory), so the
+# §2.3.3 TOCTOU-closing dir-handle-relative publish needs the NT API. Features: `Wdk_Storage_FileSystem`
+# (NtSetInformationFile / FILE_RENAME_INFORMATION / FileRenameInformationEx), `Win32_Foundation` (HANDLE /
+# NTSTATUS / STATUS_* / RtlNtStatusToDosError), `Win32_Storage_FileSystem` (DELETE / SYNCHRONIZE), and
+# `Win32_System_IO` (IO_STATUS_BLOCK).
+windows-sys = { version = "0.61.2", features = ["Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
 # [Build-Session-Entscheidung: P1.26] §0.4.5 IPC type-gen: the TypeScript exporter the `bindings_codegen`
 # test uses to emit the single tracked `src/lib/ipc/bindings.ts` (driven by `cargo run -p xtask --

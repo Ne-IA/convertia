@@ -961,6 +961,86 @@ pub fn publish_link_fallback(
     }
 }
 
+/// The §2.1.2 Windows outcome of one create-only publish ([`publish_rename_windows`], P3.14). Windows-only —
+/// its own outcome type (like the Unix [`PublishAttempt`] / [`LinkPublishAttempt`]), unified by the composite
+/// `atomic_publish` (P3.15+). The Windows create-only move consumes `tmp` atomically (no residual, unlike the
+/// Unix `link`+`unlink` fallback), so there is no `PublishedResidualTmp`-style arm.
+#[cfg(windows)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.1.2 publish_rename_windows's outcome type (P3.14), constructed only by that fn — whose \
+                  consumer is the P3.15 composite `atomic_publish` / §2.1.1 write sequence (P3.38) — so it is \
+                  dead-at-runtime during the P3 wiring window; `allow` (permissive) covers the ambiguous \
+                  dead-ness. Exercised by publish_rename_windows_tests."
+    )
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsPublishAttempt {
+    /// The create-only move committed — `leaf` names the completed output; `tmp` was moved (never a 0-byte
+    /// `final`).
+    Published,
+    /// `leaf` already exists — it was NOT clobbered (the SSOT never-harm guarantee); the §2.2.2 numbering loop
+    /// (P3.15) re-picks, `tmp` untouched.
+    NameTaken,
+}
+
+/// §2.1.2/§2.3.3 the Windows create-only publish primitive: move the completed `tmp` onto `leaf` relative to
+/// the P3.9-verified parent dir handle via the platform FFI ([`crate::platform::rename_noreplace_at`]), with
+/// the §2.1.2 bounded short-backoff AV-retry. The `unsafe` FFI is confined to `crate::platform` (the one
+/// allow-listed unsafe surface, G29); this kernel primitive stays memory-safe (the crate root
+/// `#![deny(unsafe_code)]` holds) and owns only the retry POLICY. The platform primitive's `TargetExists` →
+/// [`WindowsPublishAttempt::NameTaken`] (the SSOT never-harm no-clobber guarantee; re-pick, P3.15); its
+/// `Retryable` (a transient AV/indexer lock) is retried a small bounded number of times with a doubling
+/// backoff, then surfaces as a §2.8 `WriteFailed` `io::Error`; any other (terminal) error surfaces immediately.
+#[cfg(windows)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "§2.1.2 publish_rename_windows (P3.14) — the Windows create-only publish primitive. Its \
+                  production caller is the P3.15 composite `atomic_publish` / §2.1.1 write sequence (P3.38); \
+                  statically unused until that wiring lands (`expect` auto-flags the moment it does), \
+                  exercised by publish_rename_windows_tests."
+    )
+)]
+pub fn publish_rename_windows(
+    parent: &VerifiedParentDir,
+    tmp: &Path,
+    leaf: &std::ffi::OsStr,
+) -> io::Result<WindowsPublishAttempt> {
+    use crate::platform::{rename_noreplace_at, WindowsRenameOutcome};
+    use std::os::windows::io::AsRawHandle;
+    // §2.1.2 bounded AV-retry: a handful of short, doubling backoffs (a transient AV/indexer lock clears in
+    // milliseconds), then give up to §2.8 WriteFailed — never an unbounded wait.
+    const MAX_RETRIES: u32 = 5;
+    const BACKOFF_START: std::time::Duration = std::time::Duration::from_millis(8);
+    const BACKOFF_CAP: std::time::Duration = std::time::Duration::from_millis(64);
+    let root = parent.dir_handle().as_raw_handle();
+    let mut retries_left = MAX_RETRIES;
+    let mut backoff = BACKOFF_START;
+    loop {
+        // A terminal error propagates immediately (`?`); the classified outcomes are matched below.
+        match rename_noreplace_at(root, tmp, leaf)? {
+            WindowsRenameOutcome::Renamed => return Ok(WindowsPublishAttempt::Published),
+            WindowsRenameOutcome::TargetExists => return Ok(WindowsPublishAttempt::NameTaken),
+            WindowsRenameOutcome::Retryable => {
+                if retries_left == 0 {
+                    // The transient AV/indexer lock persisted through every retry → §2.8 WriteFailed.
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "output publish blocked by a persistent lock (AV/indexer) after bounded retries",
+                    ));
+                }
+                retries_left = retries_left.saturating_sub(1);
+                std::thread::sleep(backoff);
+                backoff = backoff.saturating_mul(2).min(BACKOFF_CAP);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2292,6 +2372,164 @@ mod publish_link_fallback_tests {
         assert!(
             tmp.exists(),
             "§2.1.3: the residual *.part remains for the §2.6.4 sweep to reclaim"
+        );
+    }
+}
+
+// §6.4.1/§6.4.3 real-FS Windows (G15/G31) for the §2.1.2/§2.3.3 Windows create-only publish primitive
+// ([`publish_rename_windows`], P3.14) — the FileRenameInformationEx no-replace move + its §2.1.2 bounded AV-retry.
+// Never mock the FS under test (test-strategy §0.1): a REAL temp dir + the REAL `NtSetInformationFile`
+// FFI (via crate::platform). TWO STACKED cfg attrs (`#[cfg(test)]` then `#[cfg(windows)]`) — NOT a compound
+// `all(test, windows)` (the P1.17 compound-cfg clippy `is_cfg_test` trap).
+#[cfg(test)]
+#[cfg(windows)]
+mod publish_rename_windows_tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    /// The P3.9 verified parent handle for `dir` (empty frozen set → always Verified); binds via
+    /// match→Option→`expect` (never a hard-fail macro the deferral gate flags).
+    fn verified(dir: &Path) -> VerifiedParentDir {
+        match open_verified_parent_dir(dir, &[]).expect("open the dest dir") {
+            ParentDirVerdict::Verified(v) => Some(v),
+            ParentDirVerdict::ResolvesOntoSource => None,
+        }
+        .expect("a real dir with an empty frozen set verifies")
+    }
+
+    // §2.1.2 (G15/G31): a fresh `leaf` publishes — the create-only move renames the tmp onto `leaf` relative to
+    // the verified parent handle, the bytes land exact, and the tmp is GONE (moved, no residual — Windows
+    // consumes tmp atomically, never a 0-byte final).
+    #[test]
+    fn a_fresh_leaf_publishes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let tmp = dir.path().join("out.part");
+        std::fs::write(&tmp, b"converted bytes").expect("write the tmp");
+        let outcome =
+            publish_rename_windows(&parent, &tmp, OsStr::new("out.tsv")).expect("publish");
+        assert_eq!(
+            outcome,
+            WindowsPublishAttempt::Published,
+            "§2.1.2: a fresh leaf publishes"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("out.tsv")).expect("read the published file"),
+            b"converted bytes",
+            "§2.1.2: the leaf is published relative to the verified parent dir, carrying the tmp's exact bytes"
+        );
+        assert!(
+            !tmp.exists(),
+            "§2.1.2: the tmp was moved (create-only), never left behind"
+        );
+    }
+
+    // §2.1.2 THE NO-HARM PROOF (G15/G31): publishing onto an EXISTING `leaf` returns NameTaken and NEVER
+    // clobbers it — the existing file is byte-identical afterward, the tmp is untouched (the §2.2.2 loop
+    // re-picks). The SSOT never-harm guarantee at the Windows publish primitive.
+    #[test]
+    fn a_collision_never_clobbers_the_existing_target() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let existing = dir.path().join("taken.tsv");
+        std::fs::write(&existing, b"PRE-EXISTING must survive").expect("write the existing target");
+        let tmp = dir.path().join("out.part");
+        std::fs::write(&tmp, b"new bytes").expect("write the tmp");
+        let outcome = publish_rename_windows(&parent, &tmp, OsStr::new("taken.tsv"))
+            .expect("publish attempt");
+        assert_eq!(
+            outcome,
+            WindowsPublishAttempt::NameTaken,
+            "§2.1.2: an existing leaf is NameTaken (ERROR_ALREADY_EXISTS), never replaced"
+        );
+        assert_eq!(
+            std::fs::read(&existing).expect("read the existing target"),
+            b"PRE-EXISTING must survive",
+            "§2.1.2 no-harm: the existing target is byte-identical — the no-replace move NEVER clobbered it"
+        );
+        assert_eq!(
+            std::fs::read(&tmp).expect("read the tmp"),
+            b"new bytes",
+            "§2.1.2: the tmp is untouched on collision (the §2.2.2 loop re-picks the next candidate)"
+        );
+    }
+
+    // §2.1.2/§2.8 AV-RETRY EXHAUSTION (G15/G31): a PERSISTENT lock on the tmp (a second handle NOT sharing
+    // DELETE, exactly as an AV scanner / indexer would hold) makes every DELETE-access open raise
+    // SHARING_VIOLATION; the bounded AV-retry loop exhausts and surfaces a §2.8 WriteFailed `Err` — NOT a
+    // panic, NOT a clobber, and the original tmp is untouched.
+    #[test]
+    fn a_persistent_lock_exhausts_the_av_retry_to_writefailed() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let tmp = dir.path().join("out.part");
+        std::fs::write(&tmp, b"converted bytes").expect("write the tmp");
+        // Hold the tmp open WITHOUT FILE_SHARE_DELETE → the publish's DELETE-access open persistently hits
+        // ERROR_SHARING_VIOLATION (never released), so the bounded AV-retry exhausts to WriteFailed.
+        let blocker = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&tmp)
+            .expect("hold a no-delete-share handle on the tmp");
+        let result = publish_rename_windows(&parent, &tmp, OsStr::new("out.tsv"));
+        drop(blocker);
+        assert!(
+            result.is_err(),
+            "§2.1.2/§2.8: a persistent SHARING_VIOLATION exhausts the bounded AV-retry → WriteFailed Err, not a panic"
+        );
+        assert!(
+            !dir.path().join("out.tsv").exists(),
+            "§2.1.2 no-harm: no leaf was published on the failed path"
+        );
+        assert_eq!(
+            std::fs::read(&tmp).expect("read the tmp"),
+            b"converted bytes",
+            "§2.1.2: the tmp (our source) is byte-identical when the publish fails"
+        );
+    }
+
+    // §2.1.2 AV-RETRY RECOVERY (G15/G31): a lock that CLEARS mid-retry (a background thread releasing the
+    // no-delete-share handle well within the ~184ms bounded-retry budget) lets an early retry fail but a
+    // subsequent one SUCCEED — the core value of the bounded-retry design. Asserting Published never spuriously
+    // fails
+    // (it holds whichever attempt wins), so this is a real-FS exercise of the recovery path, not a flaky race.
+    #[test]
+    fn the_av_retry_recovers_when_the_lock_clears_mid_retry() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let tmp = dir.path().join("out.part");
+        std::fs::write(&tmp, b"converted bytes").expect("write the tmp");
+        // Held at the call's start (acquired synchronously here), then released ~40ms in — before the bounded
+        // budget exhausts — so the early attempts hit SHARING_VIOLATION and a subsequent one succeeds.
+        let blocker = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&tmp)
+            .expect("hold a no-delete-share handle on the tmp");
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            drop(blocker);
+        });
+        let outcome = publish_rename_windows(&parent, &tmp, OsStr::new("out.tsv"))
+            .expect("the publish RECOVERS once the transient lock clears (not an Err)");
+        releaser.join().expect("the releaser thread");
+        assert_eq!(
+            outcome,
+            WindowsPublishAttempt::Published,
+            "§2.1.2: the bounded AV-retry RECOVERS to a successful publish once the transient lock clears"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("out.tsv")).expect("read the published file"),
+            b"converted bytes",
+            "§2.1.2: the recovered publish carries the tmp's exact bytes"
+        );
+        assert!(
+            !tmp.exists(),
+            "§2.1.2: the tmp was moved by the recovered publish"
         );
     }
 }
