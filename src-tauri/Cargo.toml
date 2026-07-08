@@ -78,6 +78,22 @@ uuid = { version = "1.23.3", features = ["serde", "v4"] }
 # (added at P1.59, reconcile-to-present), so — unlike tokio-util (P2.133 dep / P2.134 floor) — no paired
 # L(-1) floor box is needed: the floor is satisfied the moment this edge lands.
 walkdir = "2.5.0"
+# [P3.6] §2.3.1 `\\?\`-prefix display normalisation for `fs_guard::resolve_identity`'s canonical path
+# (`dunce::canonicalize`; off-Windows a `std::fs::canonicalize` passthrough, so it is called uniformly). Caret-
+# pinned to the lock-resolved 1.0.5 (the normal-lib convention). ALREADY in Cargo.lock via `tauri`, so this
+# direct-edge promotion adds NO newly-resolved package; permissive (`CC0-1.0 OR MIT-0 OR Apache-2.0`) so
+# G53/cargo-deny stay green. §0.8 drift-floor row landed at P3.83 (`dunce = 1.0.5`, reconcile-to-present) —
+# NO L(-1) work in this box (the P3.6 hard-stop resolution).
+dunce = "1.0.5"
+
+# [P3.6] §2.3.1 Windows file-identity for `fs_guard::resolve_identity` — the SAFE `GetFileInformationByHandle`
+# wrapper (`winapi_util::file::information` → `volume_serial_number()` / `file_index()`, both `u64`; NO
+# `unsafe` in the core). Windows-only (the crate is `cfg(windows)`-empty elsewhere), so it rides
+# `[target.'cfg(windows)'.dependencies]`; the std `MetadataExt` equivalents are nightly-gated
+# (`windows_by_handle`, §2.3.1 `[CORRECTED 2026-07-07]`) and `same-file` exposes no Windows identity numbers.
+# ALREADY in Cargo.lock via `walkdir`→`same-file`, so no newly-resolved package; §0.8 floor row landed at P3.83.
+[target.'cfg(windows)'.dependencies]
+winapi-util = "0.1.11"
 
 # [Build-Session-Entscheidung: P1.26] §0.4.5 IPC type-gen: the TypeScript exporter the `bindings_codegen`
 # test uses to emit the single tracked `src/lib/ipc/bindings.ts` (driven by `cargo run -p xtask --

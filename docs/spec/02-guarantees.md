@@ -407,7 +407,12 @@ once). No-clobber is evaluated on the **resolved real file**.
 ### 2.3.1 Canonical identity of a path `[DECIDED]`
 
 Every source and every candidate output path is reduced to a **canonical identity**
-by `fs_guard::resolve_identity(path) -> FileIdentity`:
+by `fs_guard::resolve_identity(path) -> io::Result<FileIdentity>` (**fallible**
+`[CORRECTED 2026-07-07 — the P3.6 build]`: `canonicalize` fails on a path that does
+not exist, so a missing source is a clean `Err` the §2.8 caller maps, never a panic
+— the earlier `-> FileIdentity` was the infallible shorthand. The §2.3.2
+retry-on-the-parent-when-absent is `is_safe_output`'s §2.3.3 OUTPUT-target concern,
+not this — a frozen source exists at drop):
 
 - Primary: **`std::fs::canonicalize`** (Unix `realpath`-equivalent; resolves all
   symlinks and `.`/`..`). On Windows `canonicalize` returns a **verbatim `\\?\`

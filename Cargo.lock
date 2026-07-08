@@ -604,6 +604,7 @@ dependencies = [
 name = "convertia-core"
 version = "0.1.0"
 dependencies = [
+ "dunce",
  "proptest",
  "serde",
  "serde_json",
@@ -622,6 +623,7 @@ dependencies = [
  "tokio-util",
  "uuid",
  "walkdir",
+ "winapi-util",
 ]
 
 [[package]]
