@@ -840,6 +840,127 @@ pub fn publish_noreplace(
     }
 }
 
+/// The §2.1.2 outcome of one `link`+`unlink` fallback publish attempt ([`publish_link_fallback`], P3.13).
+/// Unix-only — the portable POSIX fallback reached when [`publish_noreplace`] returned
+/// [`PublishAttempt::Unsupported`] (the destination FS lacks the single-call no-replace flag). Its own outcome
+/// type (like [`PublishAttempt`], and — on Windows — the P3.14 `FileRenameInformationEx` NT-status), unified by
+/// the composite `atomic_publish` (P3.15+). It differs from [`PublishAttempt`] by the [`Self::PublishedResidualTmp`]
+/// arm: the link path has a §2.1.3 success-window sub-state the single-call path (which consumes `tmp`
+/// atomically) does not.
+// [Build-Session-Entscheidung: P3.13] Gated `any(linux, macos)` to MATCH the primitive it falls back FROM
+// ([`publish_noreplace`], `any(linux, macos)` for the `renameat_with` cfg): the fallback is only ever reached
+// when that returned `Unsupported`, and the P3.15 composite `atomic_publish` that chains them is the same
+// shipped-desktops surface (§1). Unlike `renameat_with`, `rustix::fs::{linkat, unlink}` are available on ALL
+// unix (`cfg(not(any(espidf, redox)))`), so this is a deliberate cluster-consistency gate, not a
+// build-availability one (cf. the `PublishAttempt` cfg note above).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.1.2 publish_link_fallback's outcome type (P3.13), constructed only by that fn — whose \
+                  consumer is the P3.15 composite `atomic_publish` / §2.1.1 write sequence (P3.38) — so it is \
+                  dead-at-runtime during the P3 wiring window; `allow` (permissive) covers the ambiguous \
+                  dead-ness (cf. PublishAttempt). Exercised by publish_link_fallback_tests."
+    )
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkPublishAttempt {
+    /// `link(tmp, leaf)` created `leaf` fresh AND `unlink(tmp)` then reaped the source — `leaf` names the
+    /// completed output and NO residual `*.part` remains (the clean success path; never a 0-byte `final`).
+    Published,
+    /// `link(tmp, leaf)` created `leaf` fresh (complete + durable — Success, §2.1.3) BUT the subsequent
+    /// `unlink(tmp)` FAILED — the leftover `tmp` `*.part` is the §2.1.3 link-form success-window residual,
+    /// reclaimed (annotated as residue, NOT an item failure) by the §2.6.4 sweep (P3.25). The output IS
+    /// published; the signal is advisory (the sweep reconciles the actual on-disk state).
+    PublishedResidualTmp,
+    /// `leaf` already exists (`link` → `EEXIST`) — it was NOT clobbered (the SSOT never-harm guarantee); the
+    /// §2.2.2 numbering loop (P3.15) re-picks the next `stem (n).ext` candidate, `tmp` untouched. Also the NFS
+    /// ambiguous-result case (§2.1.2): a retransmitted `link` RPC may report `EEXIST` though it committed — so
+    /// re-pick, never assume success.
+    NameTaken,
+    /// The destination FS supports NEITHER the single-call no-replace primitive NOR hardlinks (`link` →
+    /// `EPERM`/`ENOTSUP`/`EOPNOTSUPP` — the FAT/exFAT-class, §2.1.2 "third fallback"): there is no mechanised
+    /// atomic no-clobber publish here, so the caller diverts at §2.7.2 (P3.18 `DivertReason::NoAtomicPublish`);
+    /// `tmp` untouched.
+    Unsupported,
+}
+
+/// §2.1.2 the Unix portable `link`+`unlink` fallback publish primitive (never a 0-byte `final`, so no empty
+/// name a crash could leave behind): the create-only publish for a destination whose filesystem lacks the
+/// single-call no-replace primitive ([`publish_noreplace`] returned [`PublishAttempt::Unsupported`]).
+/// Hard-`link`s the completed `tmp`
+/// onto `leaf` RELATIVE to the P3.9-verified parent dir handle (`linkat`, failing `EEXIST` rather than
+/// clobbering an existing `leaf` — the SSOT never-harm no-clobber guarantee, one atomic create), then
+/// `unlink`s the now-superfluous source `tmp`. rustix's `linkat`/`unlink` are SAFE, so this lands with NO
+/// `unsafe` in the core (the crate root `#![deny(unsafe_code)]` holds; the P3.12 ruling rejected raw `libc`).
+/// Because the DESTINATION resolves through the VERIFIED handle (not a re-parsed path string), the parent
+/// cannot be link-swapped between the §2.3.3 verify and this publish (the §2.3.3 TOCTOU-closure); only the
+/// source `tmp` side is path-based — it is our own file, not an attacker's (the same source-is-ours split as
+/// [`publish_noreplace`]).
+///
+/// **The §2.1.3 success-window residual.** Unlike the single-call primitive (which consumes `tmp` atomically),
+/// the link path has a brief window after `link` commits but before `unlink` where BOTH `leaf` and the `tmp`
+/// `*.part` exist. `leaf` is already complete + durable (Success); if the `unlink` then fails, the leftover
+/// `*.part` is a discardable, run-owned residual reclaimed by the §2.6.4 sweep — [`LinkPublishAttempt::PublishedResidualTmp`],
+/// NOT an item failure (the output is published). The residual signal is advisory: the sweep reconciles the
+/// actual on-disk state, so a benign already-removed `tmp` (e.g. a concurrent sweep) surfacing as a residual
+/// signal is harmless.
+///
+/// **Errno mapping (no panic, G4/G14):** `link` `EEXIST` → [`LinkPublishAttempt::NameTaken`] (re-pick, P3.15;
+/// ALSO the NFS ambiguous-result case — treat name-may-be-taken and re-pick, never assume success, §2.1.2);
+/// `EPERM`/`ENOTSUP`/`EOPNOTSUPP` (the FS supports NEITHER no-replace rename NOR hardlinks — FAT/exFAT-class) →
+/// [`LinkPublishAttempt::Unsupported`], the §2.7.2 divert trigger (P3.18); everything else — INCLUDING `EXDEV`
+/// (cross-volume, handled by the §2.14.3 copy fallback, P3.17) — surfaces as a §2.8 `io::Error` the caller maps.
+/// [Build-Session-Entscheidung: P3.13] `tmp` is `link`ed/`unlink`ed by path (from `CWD`) — it is a full path our
+/// own code produced on the destination volume; only the DESTINATION side is dirfd-relative, the TOCTOU-critical
+/// side (the source `tmp` is ours, not an attacker's), mirroring [`publish_noreplace`].
+// [Build-Session-Entscheidung: P3.13] `any(linux, macos)` to match the cluster — see the `LinkPublishAttempt` note.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "§2.1.2 publish_link_fallback (P3.13) — the Unix `link`+`unlink` fallback publish primitive. \
+                  Its production caller is the P3.15 composite `atomic_publish` / §2.1.1 write sequence (P3.38); \
+                  statically unused in the production build until that wiring lands (`expect` auto-flags the \
+                  moment it does), exercised by the in-module publish_link_fallback_tests."
+    )
+)]
+pub fn publish_link_fallback(
+    parent: &VerifiedParentDir,
+    tmp: &Path,
+    leaf: &std::ffi::OsStr,
+) -> io::Result<LinkPublishAttempt> {
+    use rustix::fs::{linkat, unlink, AtFlags, CWD};
+    use rustix::io::Errno;
+    // Hard-link (CWD, tmp) → (verified parent handle, leaf), no-follow (`tmp` is our own regular file). The
+    // destination dirfd is the pinned P3.9 handle (`&File: AsFd`), so a post-verify parent path swap cannot
+    // redirect the new link (§2.3.3 TOCTOU-closure). `link` fails `EEXIST` rather than clobbering `leaf`.
+    match linkat(CWD, tmp, parent.dir_handle(), leaf, AtFlags::empty()) {
+        Ok(()) => {
+            // `leaf` is now a complete, durable name for the output (§2.1.3 Success). Reap the source `tmp`.
+            // A failed `unlink` is NOT an item failure — `leaf` is published; the leftover `*.part` is the
+            // §2.1.3 success-window residual, reclaimed (annotated, not failed) by the §2.6.4 sweep (P3.25).
+            match unlink(tmp) {
+                Ok(()) => Ok(LinkPublishAttempt::Published),
+                Err(_) => Ok(LinkPublishAttempt::PublishedResidualTmp),
+            }
+        }
+        // `EEXIST`: `leaf` is taken — `link` refused to clobber it (no-harm); re-pick (§2.2.2, P3.15). Also the
+        // NFS ambiguous-result case: treat name-may-be-taken → re-pick (never assume success), §2.1.2.
+        Err(e) if e == Errno::EXIST => Ok(LinkPublishAttempt::NameTaken),
+        // `EPERM`/`ENOTSUP`/`EOPNOTSUPP`: the FS supports neither no-replace rename NOR hardlinks
+        // (FAT/exFAT-class) — no mechanised atomic no-clobber publish here; the caller diverts at §2.7.2
+        // (P3.18 `DivertReason::NoAtomicPublish`); `tmp` untouched.
+        Err(e) if e == Errno::PERM || e == Errno::NOTSUP || e == Errno::OPNOTSUPP => {
+            Ok(LinkPublishAttempt::Unsupported)
+        }
+        // Anything else (incl. `EXDEV` cross-volume → §2.14.3 copy fallback, P3.17) is a genuine §2.8 error.
+        Err(other) => Err(io::Error::from(other)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2028,6 +2149,151 @@ mod publish_noreplace_tests {
             std::fs::read(&tmp).expect("read the tmp"),
             b"new bytes",
             "§2.1.2: the tmp is untouched on collision (the §2.2.2 loop re-picks the next candidate)"
+        );
+    }
+}
+
+// §6.4.1/§6.4.3 real-FS unix (G15/G31) for the §2.1.2 `link`+`unlink` fallback publish primitive
+// ([`publish_link_fallback`], P3.13) + its §2.1.3 success-window residual handling. Never mock the FS under
+// test (test-strategy §0.1): a REAL temp dir + a REAL rustix `linkat`/`unlink`. TWO STACKED cfg attrs
+// (`#[cfg(test)]` then the `any(linux, macos)` predicate matching the primitive's own cfg) — NOT a compound
+// `all(test, …)` (the P1.17 compound-cfg trap). The `Unsupported` (EPERM/ENOTSUP on a FAT/exFAT-class volume
+// that lacks hardlinks) arm is not unit-tested here (it needs such a volume) — it is exercised by the §6.5
+// FAT-divert corpus (P3.65).
+#[cfg(test)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod publish_link_fallback_tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    /// The P3.9 verified parent handle for `dir` (empty frozen set → always Verified); binds via
+    /// match→Option→`expect` (never a hard-fail macro the deferral gate flags).
+    fn verified(dir: &Path) -> VerifiedParentDir {
+        match open_verified_parent_dir(dir, &[]).expect("open the dest dir") {
+            ParentDirVerdict::Verified(v) => Some(v),
+            ParentDirVerdict::ResolvesOntoSource => None,
+        }
+        .expect("a real dir with an empty frozen set verifies")
+    }
+
+    /// Restore write permission on `dir` so the `TempDir` Drop can `remove_dir_all` it (a read-only dir blocks
+    /// removal). Best-effort — a restore failure must not itself abort the test's cleanup.
+    fn restore_writable(dir: &Path) {
+        if let Ok(md) = std::fs::metadata(dir) {
+            let mut perms = md.permissions();
+            perms.set_readonly(false);
+            let _ = std::fs::set_permissions(dir, perms);
+        }
+    }
+
+    // §2.1.2 (G15/G31): the fallback publishes a fresh `leaf` by hard-linking the tmp onto it, then reaps the
+    // tmp — `leaf` carries the exact bytes and NO residual `*.part` remains (the clean success path, no §2.1.3
+    // success-window leftover).
+    #[test]
+    fn a_fresh_leaf_publishes_via_link_and_reaps_the_tmp() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let tmp = dir.path().join("out.part");
+        std::fs::write(&tmp, b"converted bytes").expect("write the tmp");
+        let outcome = publish_link_fallback(&parent, &tmp, OsStr::new("out.tsv")).expect("publish");
+        assert_eq!(
+            outcome,
+            LinkPublishAttempt::Published,
+            "§2.1.2: a fresh leaf publishes via link+unlink"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("out.tsv")).expect("read the published file"),
+            b"converted bytes",
+            "§2.1.2: the leaf is hard-linked relative to the verified parent dir, carrying the tmp's exact bytes"
+        );
+        assert!(
+            !tmp.exists(),
+            "§2.1.2: the source tmp is reaped (unlinked) on the clean path — no residual"
+        );
+    }
+
+    // §2.1.2 THE NO-HARM PROOF (G15/G31): `link` onto an EXISTING `leaf` returns NameTaken (EEXIST) and NEVER
+    // clobbers it — the existing file is byte-identical afterward, the tmp is untouched (the §2.2.2 loop
+    // re-picks). The SSOT never-harm guarantee via the portable fallback, matching the single-call primitive.
+    #[test]
+    fn a_collision_never_clobbers_the_existing_target_via_link() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let existing = dir.path().join("taken.tsv");
+        std::fs::write(&existing, b"PRE-EXISTING must survive").expect("write the existing target");
+        let tmp = dir.path().join("out.part");
+        std::fs::write(&tmp, b"new bytes").expect("write the tmp");
+        let outcome =
+            publish_link_fallback(&parent, &tmp, OsStr::new("taken.tsv")).expect("publish attempt");
+        assert_eq!(
+            outcome,
+            LinkPublishAttempt::NameTaken,
+            "§2.1.2: an existing leaf is NameTaken (EEXIST), never replaced"
+        );
+        assert_eq!(
+            std::fs::read(&existing).expect("read the existing target"),
+            b"PRE-EXISTING must survive",
+            "§2.1.2 no-harm: the existing target is byte-identical — `link` NEVER clobbered it"
+        );
+        assert_eq!(
+            std::fs::read(&tmp).expect("read the tmp"),
+            b"new bytes",
+            "§2.1.2: the tmp is untouched on collision (the §2.2.2 loop re-picks the next candidate)"
+        );
+    }
+
+    // §2.1.3 THE SUCCESS-WINDOW RESIDUAL (G15/G31): when `link` commits but `unlink(tmp)` then FAILS, the
+    // publish is STILL a success — `leaf` is complete + durable — and the leftover tmp `*.part` is signalled as
+    // a residual for the §2.6.4 sweep (PublishedResidualTmp), NOT returned as an item failure. Forced on a real
+    // FS by placing the tmp in its OWN read-only dir (so removing it is denied) while `link` INTO the writable
+    // dest dir still succeeds; in production the tmp is a sibling of `leaf` (§2.1.1) — the residual DECISION
+    // exercised is identical.
+    #[test]
+    fn a_failed_unlink_leaves_a_residual_part_not_an_item_failure() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        // The tmp lives in its OWN subdir; making that subdir read-only denies `unlink(tmp)` (unlink needs
+        // write on the tmp's PARENT dir) while `link` INTO the writable dest dir still succeeds (both are on
+        // the one temp volume, so the hardlink is intra-volume).
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir(&src_dir).expect("create the tmp's own dir");
+        let tmp = src_dir.join("out.part");
+        std::fs::write(&tmp, b"converted bytes").expect("write the tmp");
+        let readonly = {
+            let mut perms = std::fs::metadata(&src_dir)
+                .expect("stat the src dir")
+                .permissions();
+            perms.set_readonly(true);
+            perms
+        };
+        std::fs::set_permissions(&src_dir, readonly).expect("make the tmp's dir read-only");
+        // Skip ONLY where the read-only chmod is not enforced against us (running as root, or a permission-less
+        // FS): probe by trying to create a file in the now-read-only dir; if that succeeds we cannot force the
+        // unlink failure this leg needs, so restore + skip (never a false pass — the same 'skip only THAT'
+        // discipline as the hardlink-unsupported-volume test). Linux/macOS CI runners run non-root, so the
+        // residual leg is exercised there.
+        if std::fs::File::create(src_dir.join(".probe")).is_ok() {
+            let _ = std::fs::remove_file(src_dir.join(".probe"));
+            restore_writable(&src_dir);
+            return;
+        }
+        let outcome = publish_link_fallback(&parent, &tmp, OsStr::new("out.tsv"));
+        // Restore write BEFORE asserting so the TempDir Drop can clean up even if an assertion fails.
+        restore_writable(&src_dir);
+        let outcome = outcome.expect("publish (a failed reap is NOT an error)");
+        assert_eq!(
+            outcome,
+            LinkPublishAttempt::PublishedResidualTmp,
+            "§2.1.3: link committed but unlink failed → PublishedResidualTmp (success + a residual), not a failure"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("out.tsv")).expect("read the published file"),
+            b"converted bytes",
+            "§2.1.3: the leaf is complete + durable even though the reap failed"
+        );
+        assert!(
+            tmp.exists(),
+            "§2.1.3: the residual *.part remains for the §2.6.4 sweep to reclaim"
         );
     }
 }
