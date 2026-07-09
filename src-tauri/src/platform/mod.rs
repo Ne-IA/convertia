@@ -3,7 +3,8 @@
 //! executable-permission helper (`ensure_executable`, landed P1.17). The one allow-listed `unsafe`
 //! FFI surface is the §2.1.2 Windows-only `windows-sys` extern set: the `FileRenameInformationEx`-class
 //! no-replace move (`rename_noreplace_at`, P3.14) via `NtSetInformationFile` (ntdll), and the §2.6.3
-//! run-lock `LockFileEx` exclusive advisory-lock acquire (`acquire_exclusive_lock`, P3.21); the §2.14.4
+//! run-lock `LockFileEx` exclusive advisory-lock acquire (`acquire_exclusive_lock`, P3.21) + its
+//! non-blocking startup-sweep liveness probe (`try_acquire_exclusive_lock`, P3.23); the §2.14.4
 //! `GetDiskFreeSpaceExW` free-space read joins at its own §2.14 box. The Unix renames **and the §2.6.3
 //! run-lock** ride safe `rustix` (`flock`), the §2.3 identity reads ride safe `winapi-util`, the §0.9
 //! kill rides `process-wrap` (example list corrected 2026-07-07, the P3.12 ruling); the remaining per-OS
@@ -98,6 +99,41 @@ pub(crate) fn acquire_exclusive_lock(file: &std::fs::File) -> io::Result<()> {
     rustix::fs::flock(file, rustix::fs::FlockOperation::LockExclusive).map_err(io::Error::from)
 }
 
+/// §2.6.3 startup-sweep NON-BLOCKING liveness probe (Unix) — the try-lock the sweep (`crate::run::sweep_stale`,
+/// P3.23) probes a FOREIGN run's `.lock` with. Unlike the blocking [`acquire_exclusive_lock`] (which a run
+/// holds for its whole lifetime), this attempts an **immediate** exclusive `flock(LOCK_EX | LOCK_NB)` and
+/// reports the outcome WITHOUT ever blocking (the app must stay responsive at startup, §2.6.3):
+/// **`Ok(true)`** = the lock was FREE and is now momentarily held by this probe ⇒ the owning run is
+/// **dead/crashed** ⇒ its scratch is reclaimable; **`Ok(false)`** = the non-blocking acquire was REFUSED
+/// (`EWOULDBLOCK`) ⇒ a live owner still holds it ⇒ **keep** the scratch. The held lock is the SOLE §2.6.3
+/// delete gate — never mtime/PID. The caller drops `file` immediately after, releasing any momentarily-taken
+/// lock (so the sweep can then remove the dead dir). Safe `rustix` — no `unsafe` on Unix (the crate-root deny
+/// holds). [Build-Session-Entscheidung: P3.23]
+#[cfg(unix)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.6.3 startup-sweep non-blocking try-lock; its only caller is the P3.23 \
+                  `crate::run::sweep_stale` liveness probe — itself dead in the production build until the \
+                  §7.2 startup sequence wires the sweep — so rustc walks that dead-but-present caller and \
+                  marks this callee used; `allow` (permissive) covers the transitive dead-ness through the P3 \
+                  wiring window (the `acquire_exclusive_lock` pattern)."
+    )
+)]
+pub(crate) fn try_acquire_exclusive_lock(file: &std::fs::File) -> io::Result<bool> {
+    use rustix::fs::{flock, FlockOperation};
+    use rustix::io::Errno;
+    // Non-blocking exclusive acquire: success ⇒ the lock was free ⇒ the owning run is dead (reclaimable);
+    // `EWOULDBLOCK` ⇒ a live owner holds it ⇒ keep. Any other errno is a genuine I/O failure, propagated so
+    // the caller can decide conservatively (never delete on a guess).
+    match flock(file, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(true),
+        Err(e) if e == Errno::WOULDBLOCK => Ok(false),
+        Err(e) => Err(io::Error::from(e)),
+    }
+}
+
 /// §2.6.3 run-lifecycle EXCLUSIVE advisory-lock acquire (Windows leg of [`acquire_exclusive_lock`]).
 /// `LockFileEx` with `LOCKFILE_EXCLUSIVE_LOCK` (blocking, no `LOCKFILE_FAIL_IMMEDIATELY`) over the entire
 /// possible byte range — a whole-file exclusive lock held until the owning `File` handle closes (Windows
@@ -145,6 +181,60 @@ pub(crate) fn acquire_exclusive_lock(file: &std::fs::File) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// §2.6.3 startup-sweep NON-BLOCKING liveness probe (Windows leg of [`try_acquire_exclusive_lock`]).
+/// `LockFileEx` with `LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY` (the immediate-fail flag the P3.21
+/// blocking acquire deliberately omits) over the whole possible byte range: success ⇒ **`Ok(true)`** (the lock
+/// was free ⇒ the owning run is dead ⇒ reclaimable); an immediate **`ERROR_LOCK_VIOLATION`** ⇒ **`Ok(false)`**
+/// (a live owner holds it ⇒ keep). Any other OS error is propagated. The caller drops `file` immediately
+/// after, releasing any momentarily-taken lock (Windows releases a handle's locks on close). The held lock is
+/// the SOLE §2.6.3 delete gate — never mtime/PID. [Build-Session-Entscheidung: P3.23]
+#[cfg(windows)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.6.3 startup-sweep non-blocking try-lock (Windows); its only caller is the P3.23 \
+                  `crate::run::sweep_stale` liveness probe — itself dead in the production build until the \
+                  §7.2 startup sequence wires the sweep — so rustc walks that dead-but-present caller and \
+                  marks this callee used; `allow` (permissive) covers the transitive dead-ness through the P3 \
+                  wiring window (the `acquire_exclusive_lock` pattern)."
+    )
+)]
+pub(crate) fn try_acquire_exclusive_lock(file: &std::fs::File) -> io::Result<bool> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION;
+    use windows_sys::Win32::Storage::FileSystem::{
+        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+    };
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+
+    let handle = file.as_raw_handle();
+    // A default (all-zero) OVERLAPPED locks the whole u64 range from offset 0 (Low|High = u32::MAX), the
+    // canonical whole-file lock valid even on the 0-byte `.lock`. SAFE construction (no `mem::zeroed`).
+    let mut overlapped = OVERLAPPED::default();
+    // SAFETY: `handle` is the live file-owned OS handle (outlives the call); `&mut overlapped` is the default
+    // `OVERLAPPED` above, valid for the call; `LockFileEx` touches only them (immediate-fail exclusive lock).
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let ok = unsafe {
+        LockFileEx(
+            handle,
+            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0,
+            u32::MAX,
+            u32::MAX,
+            &mut overlapped,
+        )
+    };
+    if ok != 0 {
+        return Ok(true);
+    }
+    let err = io::Error::last_os_error();
+    if err.raw_os_error() == Some(ERROR_LOCK_VIOLATION as i32) {
+        return Ok(false);
+    }
+    Err(err)
 }
 
 /// §2.1.2/§2.3.3 the outcome of one Windows dir-handle-relative no-replace publish attempt

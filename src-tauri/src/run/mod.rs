@@ -23,7 +23,11 @@
 //!    down the `run-<RunId>/` dir, returning the residue paths it could not remove. The `CleanupResidue`
 //!    honesty leg — mapping that residue into `RunResult.cleanup_incomplete` (§2.6.4) — is **P3.25**.
 //!  - `sweep_stale` — startup sweep, the held lock as the SOLE delete gate, non-blocking try-lock
-//!    (§2.6.3) — **P3.23** (the opportunistic destination-resident `*.part` reclaim is **P3.24**).
+//!    (§2.6.3) — **P3.23 (built below)**: globs `convertia/scratch/<*>.<*>/run-*` across all instance dirs,
+//!    probes each `run-<RunId>/.lock` via the [`crate::platform`] non-blocking try-lock, and removes only DEAD
+//!    dirs (free lock, or a stale lockless dir past the create-then-not-yet-locked grace window) — a live
+//!    (held-lock) or just-starting run is left untouched. The opportunistic destination-resident `*.part`
+//!    reclaim (§2.6.3 (b)) is **P3.24**.
 //!  - the publish-temp naming + ownership model — [`PublishTemp`]
 //!    (`.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part`, a dotfile SIBLING on `final`'s volume,
 //!    §2.6.1 / §2.14.1 / §3.5.6) is **P3.20 (built below)**: `create_in` allocates the kind-1 publish temp,
@@ -271,6 +275,25 @@ impl PublishTemp {
 const SCRATCH_NAMESPACE: &str = "convertia";
 const SCRATCH_SUBDIR: &str = "scratch";
 
+/// The `run-` dir-name prefix of a per-run scratch dir (`run-<RunId>`, [`RunId::run_subdir_segment`] /
+/// §2.14) — what the §2.6.3 sweep (`sweep_stale`, P3.23) matches under each `<InstanceId>.<pid>` instance dir.
+const RUN_DIR_PREFIX: &str = "run-";
+/// The per-run advisory-lock filename inside `run-<RunId>/` — the SINGLE home of the literal the writer
+/// ([`RunScratch::acquire`], P3.21) and the §2.6.3 sweeper ([`sweep_stale`], P3.23) must agree on, so they
+/// can never drift on which file carries the run's liveness lock (a drift would silently break the sweep's
+/// held-lock delete gate).
+const RUN_LOCK_FILE: &str = ".lock";
+/// §2.6.3 create-then-not-yet-locked grace window: a **lockless** run dir younger than this is treated as a
+/// just-starting run whose `.lock` is still absent (the tiny window between `mkdir run-<RunId>/` and the
+/// lock-before-part acquire) and is LEFT for a subsequent sweep; older-and-lockless is a crash before that
+/// step ⇒ dead ⇒ reclaimable. This window governs ONLY the not-held case — a dir with a HELD `.lock` is decided
+/// by the held lock, the SOLE delete gate (§2.6.3), never by mtime. The **10 s** value is a build-session
+/// choice — §2.6.3 specifies only "a short grace window / created in the last few seconds"; 10 s comfortably
+/// covers the sub-millisecond `mkdir → open(.lock) → OS-lock` acquire window with ample margin for a slow /
+/// loaded disk, while a stale crashed run (minutes/hours old by the next launch) is far past it and reclaimed.
+/// [Build-Session-Entscheidung: P3.23]
+const LOCKLESS_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// §2.6.3 run-lifecycle: a LIVE, LOCK-HELD run's scratch home — the structural encoding of the
 /// **lock-before-part ordering**. Constructing one ([`acquire`](Self::acquire)) performs the run-start
 /// sequence strictly in order: (1) create the per-run scratch dir
@@ -374,7 +397,7 @@ impl RunScratch {
             .write(true)
             .create(true)
             .truncate(false)
-            .open(dir.join(".lock"))?;
+            .open(dir.join(RUN_LOCK_FILE))?;
         crate::platform::acquire_exclusive_lock(&lock)?;
         Ok(Self {
             instance,
@@ -566,6 +589,205 @@ fn remove_own_temps_in(dir: &Path, own_prefix: &str, residue: &mut Vec<PathBuf>)
     if enumeration_incomplete {
         residue.push(dir.to_path_buf());
     }
+}
+
+/// §2.6.3 liveness of a run dir's `.lock`, as read by the non-blocking try-lock probe ([`probe_lock`]). The
+/// three-state split (vs a bare bool) is a build-session decomposition so [`sweep_verdict`] can apply the
+/// §2.6.3 (b) grace window to BOTH the `Free` and `Absent` not-held cases. [Build-Session-Entscheidung: P3.23]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "P3.23 — the §2.6.3 sweep's liveness enum; constructed only by `probe_lock` and read only by \
+                  `sweep_verdict`, both reached solely from `sweep_stale` (dead in production until the §7.2 \
+                  startup wiring), which rustc walks as present callers marking these variants used — `allow` \
+                  covers the transitive dead-ness through the P3 wiring window (the `create_in` pattern)."
+    )
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LockState {
+    /// `.lock` opened, the non-blocking exclusive acquire was REFUSED — a live owner holds it (LIVE).
+    Held,
+    /// `.lock` opened, the non-blocking acquire SUCCEEDED (free/stale) — the owning run is DEAD.
+    Free,
+    /// `.lock` is ABSENT (never created, or the run crashed before the lock-before-part step).
+    Absent,
+}
+
+/// §2.6.3 per-run-dir sweep decision — the output of the pure [`sweep_verdict`] rule.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "P3.23 — the §2.6.3 sweep verdict enum; produced by `sweep_verdict` and consumed by \
+                  `sweep_stale` (dead in production until the §7.2 startup wiring), which rustc walks as a \
+                  present caller marking these variants used — `allow` covers the transitive dead-ness \
+                  through the P3 wiring window."
+    )
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SweepVerdict {
+    /// Keep the dir — a live owner (held lock), a just-starting run (lockless within grace), or an
+    /// un-probeable dir (never delete on a guess).
+    Keep,
+    /// Reclaim the dir — a dead run (free lock) or a crashed-before-lock stale lockless dir.
+    Remove,
+}
+
+/// §2.6.3 PURE liveness decision (no I/O, so exhaustively unit-testable): the **held lock is the SOLE delete
+/// gate** — a `Held` lock ⇒ `Keep`, independent of mtime. Whenever the lock is **not held** — the `.lock` is
+/// `Free` (acquirable) OR `Absent` — the **create-then-not-yet-locked grace window (§2.6.3 (b))** applies,
+/// because a young dir may be a run mid-`acquire`: its `.lock` file just created but **still unlocked** (⇒
+/// `Free`), or the dir created but its `.lock` **still absent** (⇒ `Absent`). Both must be kept while young —
+/// so a dir younger than `grace` ⇒ `Keep`, and only a STALE (mtime past `grace`) not-held dir ⇒ `Remove`,
+/// reclaimed on a subsequent sweep (§2.6.3: "a lockless very-recent dir is left for next time"). A `None`
+/// `dir_age` (unreadable mtime / clock skew) is a conservative `Keep` — mtime is never a delete gate on its
+/// own (§2.6.3), so an unknown age never removes. [Build-Session-Entscheidung: P3.23]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "P3.23 — the pure §2.6.3 sweep rule; its only caller is `sweep_stale` (dead in production \
+                  until the §7.2 startup wiring), which rustc walks as a present caller marking this used — \
+                  `allow` covers the transitive dead-ness through the P3 wiring window."
+    )
+)]
+fn sweep_verdict(
+    lock: LockState,
+    dir_age: Option<std::time::Duration>,
+    grace: std::time::Duration,
+) -> SweepVerdict {
+    match lock {
+        // A HELD lock ⇒ live ⇒ keep — the SOLE delete gate (§2.6.3), independent of mtime.
+        LockState::Held => SweepVerdict::Keep,
+        // No HELD lock (`.lock` FREE/acquirable, or ABSENT): potentially a dead/crashed run, BUT a YOUNG dir
+        // may be a run mid-`acquire` (the `.lock` just created but still unlocked ⇒ `Free`, or still absent
+        // ⇒ `Absent`). The §2.6.3 (b) grace window keeps a young such dir and reclaims only a STALE one.
+        LockState::Free | LockState::Absent => match dir_age {
+            Some(age) if age < grace => SweepVerdict::Keep,
+            Some(_) => SweepVerdict::Remove,
+            None => SweepVerdict::Keep,
+        },
+    }
+}
+
+/// §2.6.3 non-blocking liveness probe of a run dir's `.lock`: open it, attempt a NON-BLOCKING exclusive
+/// acquire via the [`crate::platform`] try-lock, and return the [`LockState`] — dropping the file handle (and
+/// any momentarily-taken lock) before returning, so the sweep can then remove a dead dir (on Windows an open
+/// handle inside the dir would block its delete). `NotFound` ⇒ `Absent`; any other open error, or a probe I/O
+/// error, maps conservatively to `Held` (keep — liveness could not be established, and the held lock is the
+/// sole delete gate). Panic-free (crate no-panic deny, G4). [Build-Session-Entscheidung: P3.23]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "P3.23 — the §2.6.3 sweep's per-dir lock probe; its only caller is `sweep_stale` (dead in \
+                  production until the §7.2 startup wiring), which rustc walks as a present caller marking \
+                  this used — `allow` covers the transitive dead-ness through the P3 wiring window."
+    )
+)]
+fn probe_lock(lock_path: &Path) -> LockState {
+    let file = match OpenOptions::new().read(true).write(true).open(lock_path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return LockState::Absent,
+        // Cannot open the lock (a permission flip, etc.): liveness is unknown, so keep (never delete blind).
+        Err(_) => return LockState::Held,
+    };
+    match crate::platform::try_acquire_exclusive_lock(&file) {
+        Ok(true) => LockState::Free,  // acquired ⇒ dead
+        Ok(false) => LockState::Held, // refused ⇒ live
+        Err(_) => LockState::Held,    // probe I/O error ⇒ conservative keep
+    }
+    // `file` drops here: releases any acquired lock + closes the handle so a subsequent `remove_dir_all` can
+    // delete the run dir on Windows (where a still-open handle inside the dir blocks the recursive remove).
+}
+
+/// The age of `dir` (now − mtime), or `None` if the mtime is unreadable or in the future (a clock skew ⇒
+/// unknown ⇒ conservative keep). Used ONLY for the §2.6.3 lockless grace window — never as a delete gate for a
+/// dir that has a `.lock`. Panic-free (crate no-panic deny, G4): every step is a fallible `Option`.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "P3.23 — the §2.6.3 lockless-grace mtime read; its only caller is `sweep_stale` (dead in \
+                  production until the §7.2 startup wiring), which rustc walks as a present caller marking \
+                  this used — `allow` covers the transitive dead-ness through the P3 wiring window."
+    )
+)]
+fn dir_age(dir: &Path) -> Option<std::time::Duration> {
+    let mtime = std::fs::metadata(dir).ok()?.modified().ok()?;
+    std::time::SystemTime::now().duration_since(mtime).ok()
+}
+
+/// §2.6.3 startup sweep: reclaim the discardable central `run-<RunId>/` scratch dirs of DEAD prior runs across
+/// ALL instance dirs — the held lock is the SOLE delete gate (never mtime/PID alone). Globs
+/// `<scratch_base>/convertia/scratch/<*>.<*>/run-*` (every `<InstanceId>.<pid>` dir, so a crashed FOREIGN
+/// instance's stale runs are reclaimed too), probes each `run-<RunId>/.lock` with the non-blocking try-lock
+/// ([`probe_lock`]), and removes a dir only on a [`SweepVerdict::Remove`] ([`sweep_verdict`]): a **not-held**
+/// dir (`.lock` free or absent) whose mtime is **past** the create-then-not-yet-locked grace window (a
+/// dead/crashed run). A HELD lock (live run) and a **just-created not-held** dir (a run mid-`acquire`) are
+/// LEFT UNTOUCHED — the sweep never races a just-starting run, never hangs on a live one (the try-lock is
+/// non-blocking). Best-effort + panic-free (crate no-panic deny, G4): an unreadable scratch root / instance
+/// dir / run dir is skipped, never a crash. Returns the run dirs actually REMOVED (for the §7.2 startup
+/// caller's observability). The destination-resident `*.part` reclaim (§2.6.3 (b), a different location
+/// entirely) is P3.24, not this central-scratch sweep. [Build-Session-Entscheidung: P3.23]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P3.23 — the §2.6.3 startup sweep entry; the production caller is the §7.2 startup sequence \
+                  wiring — unused in the production build until that lands."
+    )
+)]
+pub fn sweep_stale(scratch_base: &Path) -> Vec<PathBuf> {
+    sweep_stale_within(scratch_base, LOCKLESS_GRACE)
+}
+
+/// The §2.6.3 sweep body, parameterised on the grace window so a test can drive the reclaim path with a
+/// zero/large `grace` without fragile directory-mtime aging. `sweep_stale` calls it with [`LOCKLESS_GRACE`];
+/// the logic is otherwise identical. [Build-Session-Entscheidung: P3.23]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "P3.23 — the §2.6.3 sweep body; its only caller is `sweep_stale` (dead in production until \
+                  the §7.2 startup wiring), which rustc walks as a present caller marking this used — `allow` \
+                  covers the transitive dead-ness through the P3 wiring window."
+    )
+)]
+fn sweep_stale_within(scratch_base: &Path, grace: std::time::Duration) -> Vec<PathBuf> {
+    let scratch_root = scratch_base.join(SCRATCH_NAMESPACE).join(SCRATCH_SUBDIR);
+    let mut removed = Vec::new();
+    // No scratch root yet (first-ever run) or an unreadable one — nothing to sweep.
+    let Ok(instance_dirs) = std::fs::read_dir(&scratch_root) else {
+        return removed;
+    };
+    for instance_entry in instance_dirs.flatten() {
+        // A non-dir entry / an unreadable instance dir yields no run dirs — skip it.
+        let Ok(run_dirs) = std::fs::read_dir(instance_entry.path()) else {
+            continue;
+        };
+        for run_entry in run_dirs.flatten() {
+            let name = run_entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !name.starts_with(RUN_DIR_PREFIX) {
+                continue;
+            }
+            let run_dir = run_entry.path();
+            let verdict = sweep_verdict(
+                probe_lock(&run_dir.join(RUN_LOCK_FILE)),
+                dir_age(&run_dir),
+                grace,
+            );
+            // A stray `run-*` FILE (not a dir) cannot be `remove_dir_all`'d, so `.is_ok()` naturally skips it.
+            if verdict == SweepVerdict::Remove && std::fs::remove_dir_all(&run_dir).is_ok() {
+                removed.push(run_dir);
+            }
+        }
+    }
+    removed
 }
 
 #[cfg(test)]
@@ -1139,5 +1361,199 @@ mod cleanup_tests {
             residue.is_empty(),
             "§2.6.2: a genuinely-absent recorded dir has nothing to reclaim — no residue, got {residue:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod sweep_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn scratch_root(base: &Path) -> PathBuf {
+        base.join(SCRATCH_NAMESPACE).join(SCRATCH_SUBDIR)
+    }
+
+    /// Plant an EMPTY per-run scratch dir `…/convertia/scratch/<instance>.<pid>/run-<run>/` (no `.lock`),
+    /// returning its path — the shape the §2.6.3 sweep globs. Real temp FS, never mocked (test-strategy §0.1).
+    fn plant_run_dir(base: &Path, instance: InstanceId, pid: u32, run: RunId) -> PathBuf {
+        let dir = scratch_root(base)
+            .join(instance.scratch_root_segment(pid))
+            .join(run.run_subdir_segment());
+        std::fs::create_dir_all(&dir).expect("plant a run dir");
+        dir
+    }
+
+    // §6.4.1 unit (G15) / §2.6.3: the pure verdict rule — the HELD lock is the SOLE delete gate (keep, any
+    // age); every NOT-HELD case (`Free` OR `Absent`) is governed by the create-then-not-yet-locked grace
+    // window (young ⇒ keep, stale ⇒ remove, unknown age ⇒ conservative keep). Both not-held cases behave
+    // identically — the fix for the "`.lock` created but still unlocked" race (a young `Free` must be kept).
+    #[test]
+    fn sweep_verdict_covers_every_liveness_branch() {
+        let grace = Duration::from_secs(10);
+        let young = Some(Duration::from_secs(1));
+        let stale = Some(Duration::from_secs(100));
+        // A HELD lock keeps the dir regardless of age — the SOLE delete gate.
+        assert_eq!(
+            sweep_verdict(LockState::Held, stale, grace),
+            SweepVerdict::Keep,
+            "§2.6.3: a HELD lock ⇒ live ⇒ keep (mtime irrelevant, even when stale)"
+        );
+        // Both NOT-HELD states go through the grace window identically.
+        for lock in [LockState::Free, LockState::Absent] {
+            assert_eq!(
+                sweep_verdict(lock, young, grace),
+                SweepVerdict::Keep,
+                "§2.6.3 (b): not-held + young ⇒ a run mid-acquire ⇒ keep ({lock:?})"
+            );
+            assert_eq!(
+                sweep_verdict(lock, stale, grace),
+                SweepVerdict::Remove,
+                "§2.6.3: not-held + stale (past grace) ⇒ dead ⇒ reclaim ({lock:?})"
+            );
+            assert_eq!(
+                sweep_verdict(lock, None, grace),
+                SweepVerdict::Keep,
+                "§2.6.3: not-held + unreadable mtime ⇒ conservative keep, mtime never a delete gate ({lock:?})"
+            );
+        }
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.3: a DEAD run — its `run-<RunId>/.lock` exists but is UNHELD (a crashed run's
+    // lock is released on process exit) and its dir is PAST the grace window — is reclaimed: the non-blocking
+    // probe acquires the free lock ⇒ Free ⇒ (stale) ⇒ Remove. Driven with `grace = ZERO` so the just-planted
+    // dir counts as stale WITHOUT fragile directory-mtime aging. Read the real FS back: the run dir is gone.
+    #[test]
+    fn sweep_removes_a_dead_run_with_a_free_lock() {
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        let dead = plant_run_dir(base.path(), InstanceId::mint(), 4242, RunId::mint());
+        // An UNHELD `.lock` file (a dead run left it behind, lock released on exit).
+        std::fs::write(dead.join(RUN_LOCK_FILE), b"").expect("plant an unheld .lock");
+
+        let removed = sweep_stale_within(base.path(), Duration::ZERO);
+
+        assert!(
+            !dead.exists(),
+            "§2.6.3: a dead run's scratch dir (free lock, past grace) is reclaimed"
+        );
+        assert_eq!(removed, vec![dead], "§2.6.3: the reclaimed dir is reported");
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.3 CRITICAL: a LIVE run holding its `.lock` is NEVER swept — the non-blocking
+    // probe is REFUSED (would-block) ⇒ Held ⇒ keep. Driven with `grace = ZERO` to prove the HELD LOCK ALONE
+    // (not the grace window) is the delete gate: even when mtime offers no protection, the live run survives.
+    // Real held lock via RunScratch::acquire; read the real FS back.
+    #[test]
+    fn sweep_never_removes_a_live_run_even_at_zero_grace() {
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        let live = RunScratch::acquire(
+            base.path(),
+            InstanceId::mint(),
+            std::process::id(),
+            RunId::mint(),
+        )
+        .expect("acquire a live locked run");
+        let live_dir = live.dir().to_path_buf();
+
+        let removed = sweep_stale_within(base.path(), Duration::ZERO);
+
+        assert!(
+            live_dir.is_dir(),
+            "§2.6.3: a live run holding its lock is NEVER swept (held lock is the SOLE gate, even at zero grace)"
+        );
+        assert!(
+            removed.is_empty(),
+            "§2.6.3: nothing is reclaimed while the only run is live, got {removed:?}"
+        );
+        drop(live); // release the lock only after the sweep has run
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.3 (b) — the create-then-not-yet-locked RACE regression: a run that has
+    // created its `.lock` FILE but has NOT OS-locked it (the window inside RunScratch::acquire between
+    // open(.lock) and the flock/LockFileEx) must NOT be reclaimed by a concurrent startup sweep. The probe
+    // sees the `.lock` as FREE (acquirable), but the dir is YOUNG ⇒ the grace window KEEPS it. Real public
+    // sweep_stale (the live 10 s grace). Without the fix (unconditional Free ⇒ Remove) this run is destroyed
+    // mid-start.
+    #[test]
+    fn sweep_never_removes_a_just_starting_run_with_an_unlocked_lock() {
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        let starting = plant_run_dir(base.path(), InstanceId::mint(), 9, RunId::mint());
+        // The `.lock` file exists but is NOT locked — the mid-acquire window.
+        std::fs::write(starting.join(RUN_LOCK_FILE), b"")
+            .expect("plant an unlocked .lock (mid-acquire)");
+
+        let removed = sweep_stale(base.path());
+
+        assert!(
+            starting.is_dir(),
+            "§2.6.3 (b): a just-starting run whose `.lock` is created but still unlocked is KEPT (grace), never reclaimed mid-acquire"
+        );
+        assert!(removed.is_empty(), "nothing reclaimed, got {removed:?}");
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.3 create-then-not-yet-locked window: a LOCKLESS run dir that was JUST
+    // created (mtime within the grace window) is a just-starting run whose `.lock` is still absent — it is
+    // LEFT UNTOUCHED, never raced. Real public sweep_stale (live grace). Read the real FS back.
+    #[test]
+    fn sweep_keeps_a_just_created_lockless_run_dir() {
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        // Freshly created, no `.lock` — its mtime is well within LOCKLESS_GRACE.
+        let fresh = plant_run_dir(base.path(), InstanceId::mint(), 7, RunId::mint());
+
+        let removed = sweep_stale(base.path());
+
+        assert!(
+            fresh.is_dir(),
+            "§2.6.3: a just-created lockless run dir is left for a subsequent sweep (grace window), not deleted"
+        );
+        assert!(removed.is_empty(), "nothing reclaimed, got {removed:?}");
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.3: the sweep globs across ALL `<InstanceId>.<pid>` instance dirs — a crashed
+    // FOREIGN instance's dead runs are reclaimed too. Two dead runs under two DISTINCT instances are both
+    // removed (driven with `grace = ZERO` so the just-planted dead dirs count as stale). Read the real FS back.
+    #[test]
+    fn sweep_reclaims_dead_runs_across_all_instance_dirs() {
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        let dead_a = plant_run_dir(base.path(), InstanceId::mint(), 100, RunId::mint());
+        std::fs::write(dead_a.join(RUN_LOCK_FILE), b"").expect("unheld .lock A");
+        let dead_b = plant_run_dir(base.path(), InstanceId::mint(), 200, RunId::mint());
+        std::fs::write(dead_b.join(RUN_LOCK_FILE), b"").expect("unheld .lock B");
+
+        let removed = sweep_stale_within(base.path(), Duration::ZERO);
+
+        assert!(!dead_a.exists(), "§2.6.3: instance A's dead run reclaimed");
+        assert!(
+            !dead_b.exists(),
+            "§2.6.3: instance B's dead run reclaimed (cross-instance glob)"
+        );
+        assert_eq!(removed.len(), 2, "both dead runs reported, got {removed:?}");
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.3: robustness — a NON-`run-` entry under an instance dir is ignored, and a
+    // sweep over an ABSENT scratch root is a clean no-op (no panic, empty result). Panic-free (G4).
+    #[test]
+    fn sweep_ignores_non_run_entries_and_an_absent_root() {
+        // Absent scratch root (first-ever run): clean no-op.
+        let empty_base = tempfile::tempdir().expect("a base with no scratch root yet");
+        assert!(
+            sweep_stale(empty_base.path()).is_empty(),
+            "§2.6.3: an absent scratch root sweeps to nothing, no panic"
+        );
+
+        // A non-`run-` sibling under an instance dir is left untouched.
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        let instance_dir =
+            scratch_root(base.path()).join(InstanceId::mint().scratch_root_segment(5));
+        std::fs::create_dir_all(&instance_dir).expect("instance dir");
+        let not_a_run = instance_dir.join("not-a-run-dir");
+        std::fs::create_dir(&not_a_run).expect("a non-run- sibling");
+
+        let removed = sweep_stale(base.path());
+
+        assert!(
+            not_a_run.is_dir(),
+            "§2.6.3: a non-`run-` entry is never swept"
+        );
+        assert!(removed.is_empty(), "nothing reclaimed, got {removed:?}");
     }
 }
