@@ -1593,6 +1593,19 @@ pub fn atomic_publish(
 ) -> Result<PublishOutcome, PublishError> {
     // §2.1.1 step 3: the bytes are durable BEFORE the rename — a name-update is atomic but not durable-data.
     sync_tmp_bytes(tmp).map_err(PublishError::Io)?;
+    // §2.1.3 fault-injection seam (P3.19.1) — `#[cfg(test)]` ONLY, so the not(test) PRODUCTION build is
+    // byte-identical (this statement compiles out entirely). When a test arms `kill_after_sync`, the publish
+    // "dies" HERE — in the post-`sync_all`-pre-rename window — so the crash/power-loss two-state-invariant test
+    // can inspect the on-disk state (§2.1.3 state-2: a durable but UNPUBLISHED `*.part`, no `final`). No real
+    // process can be killed at this exact instant from outside, so the seam is the only way to prove the
+    // invariant dynamically (unlike the §2.1.2 AV-retry, which a real lock triggers). [Build-Session-Entscheidung: P3.19.1]
+    #[cfg(test)]
+    if kill_after_sync::armed() {
+        return Err(PublishError::Io(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "P3.19.1 fault-injection: killed in the post-sync-pre-rename window",
+        )));
+    }
     // The §2.14.3 EXDEV fallback re-runs the numbering loop over a same-volume COPY, so keep a candidate clone
     // for it: the direct attempt below consumes `candidates`, and on a cross-device failure it errored at the
     // FIRST attempt (a cross-volume source fails EXDEV regardless of the target name), so the fallback needs a
@@ -1626,6 +1639,47 @@ pub fn atomic_publish(
         // Any other publish error (PathTooLong / TooManyCollisions / a genuine non-cross-device Io) surfaces
         // unchanged — the §2.14.3 fallback fires ONLY on a real cross-device failure.
         Err(other) => Err(other),
+    }
+}
+
+/// §2.1.3 crash/power-loss fault-injection kill switch (P3.19.1) — `#[cfg(test)]` ONLY. A **thread-local** flag
+/// [`atomic_publish`] checks in the post-`sync_all`-pre-rename window; when armed, the publish "dies" there so
+/// the two-state-invariant test can inspect the on-disk state. Thread-local (cargo runs each `#[test]` on its
+/// own thread, so an armed kill never leaks into a parallel test) + a RAII [`Armed`] guard that disarms on drop
+/// (so an early test panic still disarms). The not(test) build has NEITHER this module NOR the fence — the
+/// production `atomic_publish` is byte-identical. [Build-Session-Entscheidung: P3.19.1]
+#[cfg(test)]
+mod kill_after_sync {
+    use std::cell::Cell;
+
+    thread_local! {
+        static ARMED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// True iff the current thread has an [`Armed`] kill guard live — read by the [`super::atomic_publish`]
+    /// `#[cfg(test)]` fence.
+    pub(super) fn armed() -> bool {
+        ARMED.with(Cell::get)
+    }
+
+    /// RAII: arm the post-`sync_all`-pre-rename kill for the current thread; **disarm on drop** (even on a test
+    /// panic), so no armed state can leak past the test's scope.
+    pub(super) struct Armed;
+
+    impl Armed {
+        #[must_use = "the returned Armed guard disarms the kill switch on Drop; discarding it (a bare \
+                      `Armed::arm();` or `let _ = …`) would disarm IMMEDIATELY, silently defeating the \
+                      fault injection — bind it to a named `_kill` for the intended scope"]
+        pub(super) fn arm() -> Self {
+            ARMED.with(|a| a.set(true));
+            Armed
+        }
+    }
+
+    impl Drop for Armed {
+        fn drop(&mut self) {
+            ARMED.with(|a| a.set(false));
+        }
     }
 }
 
@@ -3428,6 +3482,105 @@ mod atomic_publish_tests {
             std::fs::read(&taken).expect("read the pre-existing base name"),
             b"PRE-EXISTING must survive",
             "§2.2.2 no-harm: the pre-existing file is byte-identical — the durable composite NEVER clobbered it"
+        );
+    }
+
+    // §2.1.3 (G15/G31) THE CRASH / POWER-LOSS TWO-STATE INVARIANT — a kill in the post-`sync_all`-pre-rename
+    // window (all shipped OS). With the P3.19.1 `#[cfg(test)]` kill-fence ARMED, atomic_publish "dies" right
+    // after the durability sync, before the rename (a simulated crash), and the on-disk state is EXACTLY §2.1.3
+    // state-2: `final` does NOT exist and the durable tmp (*.part) remains (a discardable run-owned artifact) —
+    // NEVER a truncated/0-byte `final`. Disarming and re-publishing then reaches §2.1.3 state-1 (`final` springs
+    // into existence COMPLETE at the atomic rename), so the invariant holds across the boundary. A real process
+    // cannot be killed at this exact instant from outside, so the `#[cfg(test)]` fence is the only way to prove
+    // it dynamically (unlike the §2.1.2 AV-retry, which a real lock triggers). [Build-Session-Entscheidung: P3.19.1]
+    #[test]
+    fn a_kill_between_sync_and_rename_leaves_no_final_only_a_discardable_part() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let tmp = dir.path().join(".convertia-out.part");
+        std::fs::write(&tmp, b"converted bytes").expect("write the tmp");
+        let final_name = dir.path().join("data.tsv");
+
+        // ── §2.1.3 STATE-2: a crash in the post-sync-pre-rename window ──
+        {
+            let _kill = kill_after_sync::Armed::arm(); // RAII: disarmed on scope exit (even on a panic)
+            let candidates =
+                output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem");
+            let killed = atomic_publish(
+                &parent,
+                dir.path(),
+                &tmp,
+                candidates,
+                &dir.path().join(".convertia-xvol.part"),
+            );
+            assert!(
+                killed.is_err(),
+                "§2.1.3: the armed fence returns in the post-sync-pre-rename window (nothing published)"
+            );
+        }
+        // §2.1.3: NO `final` exists — the rename never committed, so there is never a truncated/0-byte `final`.
+        assert!(
+            !final_name.exists(),
+            "§2.1.3 state-2: after a kill before the rename NO `final` exists — never a truncated/0-byte final"
+        );
+        // The durable tmp (*.part) remains, byte-identical — a discardable run-owned artifact (§2.6 reclaims it).
+        assert_eq!(
+            std::fs::read(&tmp).expect("read the tmp"),
+            b"converted bytes",
+            "§2.1.3 state-2: the durable *.part remains byte-identical after the kill (unpublished, discardable)"
+        );
+
+        // ── §2.1.3 STATE-1: the un-armed publish completes atomically ──
+        let candidates = output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem");
+        let outcome = atomic_publish(
+            &parent,
+            dir.path(),
+            &tmp,
+            candidates,
+            &dir.path().join(".convertia-xvol.part"),
+        )
+        .expect("§2.1.3: the un-armed publish completes");
+        assert!(
+            matches!(outcome, PublishOutcome::Published { .. }),
+            "§2.1.3 state-1: with the fence disarmed the publish reaches state-1 (final complete)"
+        );
+        assert_eq!(
+            std::fs::read(&final_name).expect("read the final"),
+            b"converted bytes",
+            "§2.1.3 state-1: `final` sprang into existence COMPLETE — the two-state invariant holds end to end"
+        );
+    }
+
+    // §2.1.3 NO-HARM UNDER A CRASH (G31 source-unchanged leg): a kill in the post-sync-pre-rename window NEVER
+    // touches a PRE-EXISTING file at the target name — the crash lands before the (no-clobber) rename is even
+    // attempted, so a same-named original is byte-identical afterwards (never harmed, never clobbered).
+    #[test]
+    fn a_kill_between_sync_and_rename_never_touches_a_pre_existing_target() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let pre_existing = dir.path().join("data.tsv");
+        std::fs::write(&pre_existing, b"PRE-EXISTING must survive the crash")
+            .expect("write the original");
+        let tmp = dir.path().join(".convertia-out.part");
+        std::fs::write(&tmp, b"converted bytes").expect("write the tmp");
+
+        let _kill = kill_after_sync::Armed::arm();
+        let candidates = output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem");
+        let killed = atomic_publish(
+            &parent,
+            dir.path(),
+            &tmp,
+            candidates,
+            &dir.path().join(".convertia-xvol.part"),
+        );
+        assert!(
+            killed.is_err(),
+            "§2.1.3: the kill returns before any rename is attempted"
+        );
+        assert_eq!(
+            std::fs::read(&pre_existing).expect("read the pre-existing target"),
+            b"PRE-EXISTING must survive the crash",
+            "§2.1.3 no-harm: a same-named original is byte-identical after a crash before the rename — never touched"
         );
     }
 
