@@ -189,7 +189,7 @@ item leaves nothing (or surfaces the residue). Activation target for P0.5.9 temp
 - [x] **P3.20** [RUST] Build the publish-temp naming + ownership model (`InstanceId`+`RunId`-encoded) · §2.6.1 §2.14.1 §3.5.6
   needs: P3.1
   > the kind-1 publish temp is a uniquely-named **sibling dotfile** in the destination dir — `…/<dest_dir>/.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part` (`tempfile::NamedTempFile::new_in(final_dir)` / a `TempPath` rooted in `final_dir`), on `final`'s volume by construction (§2.14.1), **never** a system-temp file (§3.5.6 — the native engine's `out_tmp` is this dest-dir temp). `InstanceId`+`RunId` encode ownership so cleanup can tell its own temps from a concurrent instance's and resolve the exact owning lock (§2.6.1).
-- [ ] **P3.21** [RUST] Build the lock-before-part run-lifecycle ordering invariant · §2.6.3 §2.14.1
+- [x] **P3.21** [RUST] Build the lock-before-part run-lifecycle ordering invariant · §2.6.3 §2.14.1
   needs: P3.20
   > `crate::run` at run start: mint `RunId` → create `run-<RunId>/` under the central scratch root → acquire + OS-lock `.lock` → **only then** write the first `*.part`. This is the premise that makes "absent lock ⇒ dead ⇒ reclaimable" SAFE (so a concurrent sweeper never deletes a live foreign `*.part`, §2.6.3) — a §6 property-test target.
 - [ ] **P3.22** [RUST] Build `crate::run::cleanup_item` / `cleanup_run` — own-prefix-scoped cleanup on every exit path · §2.6.2 · G31
