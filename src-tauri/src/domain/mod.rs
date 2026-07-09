@@ -65,6 +65,28 @@ impl InstanceId {
     pub fn scratch_root_segment(self, pid: u32) -> String {
         format!("{}.{}", self.0, pid)
     }
+
+    /// The wrapped v4 UUID (§7.1.2). `pub(crate)` — the P3.20 publish-temp naming model (`crate::run`)
+    /// renders it into the `.convertia-<InstanceId>-…-.part` sibling name (§2.14.1) and the §2.6.3
+    /// cross-instance sweep addresses the owning lock `…/scratch/<InstanceId>.*/…` by it. NOT a wire
+    /// accessor — the IPC form stays the derived serde Uuid string; this is a crate-internal render of the
+    /// identity `crate::run` assembles the path from (the P3.1.2 seam: domain fixes the embedded identity,
+    /// `crate::run` assembles). [Build-Session-Entscheidung: P3.20]
+    #[must_use]
+    pub(crate) const fn as_uuid(self) -> Uuid {
+        self.0
+    }
+
+    /// Reconstruct an `InstanceId` from a UUID PARSED out of a publish-temp / lock path (§2.6.1 / §2.6.3),
+    /// the inverse of [`as_uuid`](Self::as_uuid). Unlike [`mint`](Self::mint) it does NOT generate a fresh
+    /// v4 and does NOT re-assert v4-ness: it re-reads an identifier another (possibly foreign) run already
+    /// minted — the owner of a sibling `.convertia-…​.part` — so any well-formed UUID is a valid
+    /// reconstruction. `pub(crate)` — a crate-internal reconstructor for the P3.20 naming model, never a
+    /// wire constructor. [Build-Session-Entscheidung: P3.20]
+    #[must_use]
+    pub(crate) const fn from_uuid(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
 }
 
 /// One per `start_conversion` run (§0.4 C6 / §7.1).
@@ -92,6 +114,25 @@ impl RunId {
     #[must_use]
     pub fn run_subdir_segment(self) -> String {
         format!("run-{}", self.0)
+    }
+
+    /// The wrapped v4 UUID (§7.1.2), mirroring [`InstanceId::as_uuid`]. `pub(crate)` — the P3.20
+    /// publish-temp naming model renders it into the `<RunId>` segment of
+    /// `.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part` (§2.14.1) and the §2.6.3 sweep addresses the
+    /// exact owning lock `…/run-<RunId>/.lock` by it. NOT a wire accessor. [Build-Session-Entscheidung: P3.20]
+    #[must_use]
+    pub(crate) const fn as_uuid(self) -> Uuid {
+        self.0
+    }
+
+    /// Reconstruct a `RunId` from a UUID PARSED out of a publish-temp / lock path (§2.6.1 / §2.6.3), the
+    /// inverse of [`as_uuid`](Self::as_uuid) and the mirror of [`InstanceId::from_uuid`]. Re-reads a
+    /// possibly-foreign run's already-minted id (does NOT mint a fresh v4 / re-assert v4-ness); `pub(crate)`
+    /// — a crate-internal reconstructor for the P3.20 naming model, never a wire constructor.
+    /// [Build-Session-Entscheidung: P3.20]
+    #[must_use]
+    pub(crate) const fn from_uuid(uuid: Uuid) -> Self {
+        Self(uuid)
     }
 }
 
@@ -123,6 +164,15 @@ impl ItemId {
     #[must_use]
     pub const fn from_index(index: u32) -> Self {
         Self(index)
+    }
+
+    /// The wrapped zero-based index (§0.6 invariant 6), the inverse of [`from_index`](Self::from_index).
+    /// `pub(crate)` — the P3.20 publish-temp naming model renders it into the `<jobId>` segment of
+    /// `.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part` (§2.6.1). NOT a wire accessor. `const` — a pure
+    /// `u32` read, usable in const/test contexts like its `from_index` inverse. [Build-Session-Entscheidung: P3.20]
+    #[must_use]
+    pub(crate) const fn as_u32(self) -> u32 {
+        self.0
     }
 }
 
@@ -1261,6 +1311,40 @@ mod tests {
             RunId(Uuid::nil()).run_subdir_segment(),
             "run-00000000-0000-0000-0000-000000000000",
             "§7.1.2/§2.14: the per-run subdir is run-<RunId> (matches the §2.6.3 glob run-*)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the P3.20 crate-internal id accessors/reconstructors the publish-temp naming
+    // model composes (§2.6.1 / §2.14.1) — `as_uuid`/`from_uuid` (InstanceId, RunId) and `as_u32` (ItemId)
+    // are exact inverses, so a `(InstanceId, RunId, JobId)` triple survives a render→parse round-trip
+    // (the `.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part` ownership encoding `crate::run` reads back
+    // to resolve the §2.6.3 owning lock). `from_uuid` does NOT re-assert v4-ness — it reconstructs a
+    // possibly-foreign, arbitrary UUID (here the nil UUID, which is not v4) verbatim.
+    #[test]
+    fn publish_temp_id_accessors_round_trip() {
+        let inst = InstanceId::mint();
+        assert_eq!(
+            InstanceId::from_uuid(inst.as_uuid()),
+            inst,
+            "§2.6.1: InstanceId survives as_uuid → from_uuid unchanged"
+        );
+        let run = RunId::mint();
+        assert_eq!(
+            RunId::from_uuid(run.as_uuid()),
+            run,
+            "§2.6.1: RunId survives as_uuid → from_uuid unchanged"
+        );
+        assert_eq!(
+            ItemId::from_index(ItemId::from_index(4_294_967_295).as_u32()),
+            ItemId::from_index(u32::MAX),
+            "§0.6: ItemId survives from_index → as_u32 unchanged, incl. the u32::MAX boundary"
+        );
+        // `from_uuid` reconstructs an arbitrary (non-v4, here nil) UUID verbatim — it re-reads a foreign
+        // owner, it does not mint (§2.6.1): the reconstruction is exactly the parsed identifier.
+        assert_eq!(
+            InstanceId::from_uuid(Uuid::nil()).as_uuid(),
+            Uuid::nil(),
+            "§2.6.1: from_uuid re-reads a foreign/non-v4 identifier verbatim (no v4 re-assertion)"
         );
     }
 
