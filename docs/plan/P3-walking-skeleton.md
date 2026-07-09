@@ -192,7 +192,7 @@ item leaves nothing (or surfaces the residue). Activation target for P0.5.9 temp
 - [x] **P3.21** [RUST] Build the lock-before-part run-lifecycle ordering invariant · §2.6.3 §2.14.1
   needs: P3.20
   > `crate::run` at run start: mint `RunId` → create `run-<RunId>/` under the central scratch root → acquire + OS-lock `.lock` → **only then** write the first `*.part`. This is the premise that makes "absent lock ⇒ dead ⇒ reclaimable" SAFE (so a concurrent sweeper never deletes a live foreign `*.part`, §2.6.3) — a §6 property-test target.
-- [ ] **P3.22** [RUST] Build `crate::run::cleanup_item` / `cleanup_run` — own-prefix-scoped cleanup on every exit path · §2.6.2 · G31
+- [x] **P3.22** [RUST] Build `crate::run::cleanup_item` / `cleanup_run` — own-prefix-scoped cleanup on every exit path · §2.6.2 · G31
   needs: P3.20
   > the per-exit-path cleanup table (§2.6.2): item-success (single-call → nothing to remove; link-fallback → `unlink(tmp)`); item-failure → remove that `tmp`; out-of-disk → remove partial + `OutOfDisk` (§2.8), batch continues; run-end → remove the recorded `final_dir` set's temps **by exact own prefix `.convertia-<thisInstanceId>-<thisRunId>-*.part`**, **never a bare `*.part` glob** (which would delete a concurrent foreign instance's live temp — SSOT). Recording the actual `final_dir` per written item (incl. divert/cross-volume) is what makes run-end enumerate every dir a temp landed in.
 - [ ] **P3.23** [RUST] Build `crate::run::sweep_stale` — startup sweep with held-lock as the sole delete gate · §2.6.3
