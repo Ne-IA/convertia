@@ -195,7 +195,7 @@ item leaves nothing (or surfaces the residue). Activation target for P0.5.9 temp
 - [x] **P3.22** [RUST] Build `crate::run::cleanup_item` / `cleanup_run` — own-prefix-scoped cleanup on every exit path · §2.6.2 · G31
   needs: P3.20
   > the per-exit-path cleanup table (§2.6.2): item-success (single-call → nothing to remove; link-fallback → `unlink(tmp)`); item-failure → remove that `tmp`; out-of-disk → remove partial + `OutOfDisk` (§2.8), batch continues; run-end → remove the recorded `final_dir` set's temps **by exact own prefix `.convertia-<thisInstanceId>-<thisRunId>-*.part`**, **never a bare `*.part` glob** (which would delete a concurrent foreign instance's live temp — SSOT). Recording the actual `final_dir` per written item (incl. divert/cross-volume) is what makes run-end enumerate every dir a temp landed in.
-- [ ] **P3.23** [RUST] Build `crate::run::sweep_stale` — startup sweep with held-lock as the sole delete gate · §2.6.3
+- [x] **P3.23** [RUST] Build `crate::run::sweep_stale` — startup sweep with held-lock as the sole delete gate · §2.6.3
   needs: P3.21
   > on startup glob `convertia/scratch/<*>.<*>/run-*` across ALL instance dirs; liveness via a **NON-BLOCKING try-lock** (Unix `flock(LOCK_EX|LOCK_NB)`/`fcntl(F_SETLK)`; Windows `LockFileEx` with `LOCKFILE_FAIL_IMMEDIATELY|LOCKFILE_EXCLUSIVE_LOCK` — bare forms BLOCK, wrong here). Would-block ⇒ LIVE ⇒ untouched; immediate-acquire ⇒ DEAD ⇒ removed (then release). Held-lock is the **sole** delete predicate — never mtime/PID alone (PIDs are reused, §7.1.2). Close the create-then-not-yet-locked window: skip lockless run dirs within a short mtime grace window.
 - [ ] **P3.24** [RUST] Build the opportunistic destination-resident `*.part` reclaim (cross-instance lock-addressable) · §2.6.3
