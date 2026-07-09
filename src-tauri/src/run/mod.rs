@@ -26,8 +26,13 @@
 //!    (§2.6.3) — **P3.23 (built below)**: globs `convertia/scratch/<*>.<*>/run-*` across all instance dirs,
 //!    probes each `run-<RunId>/.lock` via the [`crate::platform`] non-blocking try-lock, and removes only DEAD
 //!    dirs (free lock, or a stale lockless dir past the create-then-not-yet-locked grace window) — a live
-//!    (held-lock) or just-starting run is left untouched. The opportunistic destination-resident `*.part`
-//!    reclaim (§2.6.3 (b)) is **P3.24**.
+//!    (held-lock) or just-starting run is left untouched.
+//!  - `reclaim_dest_parts_in` — the §2.6.3 (b) opportunistic destination-resident `*.part` reclaim
+//!    (cross-instance lock-addressable) — **P3.24 (built below)**: for each sibling `.convertia-*.part` in a
+//!    dest dir, resolve the owning lock from the ids in the name (a run temp → `<InstanceId>.*/run-<RunId>/`;
+//!    a pre-RunId probe residue → the `InstanceId`'s any-live-lock) and remove it only when that owner is DEAD
+//!    (held ⇒ keep; a name that parses as neither shape ⇒ untouched). The §2.7.2 probe-residue CREATOR that
+//!    mints the reclaimed shape is **P3.36** (this box forward-declares the shared `-probe-` grammar).
 //!  - the publish-temp naming + ownership model — [`PublishTemp`]
 //!    (`.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part`, a dotfile SIBLING on `final`'s volume,
 //!    §2.6.1 / §2.14.1 / §3.5.6) is **P3.20 (built below)**: `create_in` allocates the kind-1 publish temp,
@@ -61,6 +66,12 @@ const PUBLISH_TEMP_SUFFIX: &str = ".part";
 /// A hyphenated UUID is exactly 36 ASCII chars (`8-4-4-4-12`) — the fixed width [`PublishTemp::parse`]
 /// splits the two UUID fields by, since the UUIDs' own internal hyphens make a naive `-`-split ambiguous.
 const HYPHENATED_UUID_LEN: usize = 36;
+/// The infix marking a **pre-RunId probe residue** — the §2.7.2 C4 writability-probe leftover
+/// `.convertia-<InstanceId>-probe-<rand>.part` (no `RunId`/`jobId`), whose liveness is resolved by
+/// `InstanceId` alone (§2.6.3). This constant is the SINGLE home of the `-probe-` grammar so the P3.24
+/// reclaim recogniser ([`PublishTemp::parse_probe_residue`]) and the future §2.7.2 probe CREATOR (P3.36) bind
+/// to the same literal and cannot drift — exactly as `PUBLISH_TEMP_PREFIX` is shared by `create_in`/`parse`.
+const PROBE_RESIDUE_INFIX: &str = "-probe-";
 
 /// The ownership identity encoded in a kind-1 publish temp's NAME (§2.6.1 / §2.14.1): a uniquely-named
 /// dotfile SIBLING of `final` in the destination directory,
@@ -194,13 +205,18 @@ impl PublishTemp {
     /// UUIDs' own internal hyphens; the `<jobId>-<rand>` tail splits on its FIRST `-` (the `<jobId>` is
     /// digits-only, so it carries none). The `<rand>` is discarded — ownership IS the triple.
     /// [Build-Session-Entscheidung: P3.20]
+    // [Test-Change: P3.24 - old-obsolete+new-correct, §2.6.3] flip to allow: P3.24's `reclaim_dest_parts_in`
+    // now calls `parse` (reading a sibling `.part`'s owner), so rustc walks that dead-but-present caller and
+    // marks this callee USED — the old dead-code EXPECTATION is obsolete and allow is correct (a lint-attribute
+    // flip, not a real assertion change — the G70 signal FPs on the changed dead_code line).
     #[cfg_attr(
         not(test),
-        expect(
+        allow(
             dead_code,
-            reason = "P3.20 — the production caller is the §2.6.3 cross-instance opportunistic reclaim \
-                      (P3.24) that reads a sibling `.part`'s owning (InstanceId, RunId); unused in \
-                      production until then."
+            reason = "P3.20 — now called by P3.24's `reclaim_dest_parts_in` (itself dead in production until \
+                      its §2.1 before-write / run-end wiring); rustc walks that dead-but-present caller and \
+                      marks this callee used, so `allow` covers the transitive dead-ness through the P3 \
+                      wiring window (the `create_in` pattern)."
         )
     )]
     #[must_use]
@@ -222,14 +238,54 @@ impl PublishTemp {
         Some(Self { instance, run, job })
     }
 
-    /// The owning launch instance (§2.6.1) — the §2.6.3 reclaim addresses `…/scratch/<InstanceId>.*/…` by
-    /// it. [Build-Session-Entscheidung: P3.20]
+    /// Recognise a **pre-RunId probe residue** name `.convertia-<InstanceId>-probe-<rand>.part` (§2.7.2 C4
+    /// writability probe, §2.6.3) and return its owning `InstanceId`, `None` if the name is not that shape.
+    /// Unlike a run publish temp (`<InstanceId>-<RunId>-<jobId>-<rand>`, [`parse`](Self::parse)), a probe
+    /// residue is minted **before** any `RunId` exists, so it carries only the `InstanceId` + the `-probe-`
+    /// marker + a random tail — and the §2.6.3 opportunistic reclaim (P3.24) resolves its liveness by
+    /// `InstanceId` alone. **Panic-free** (the crate no-panic deny, G4): every step is a fallible
+    /// `Option`/`Result` short-circuit, so a hostile or foreign sibling name yields `None`, never a panic —
+    /// the "non-matching ⇒ never our delete" safety this reclaim depends on when it touches USER destination
+    /// dirs. The fixed-width `InstanceId` UUID field disambiguates the UUID's own internal hyphens; the
+    /// `-probe-` infix + a non-empty random tail must both be present. [Build-Session-Entscheidung: P3.24]
     #[cfg_attr(
         not(test),
-        expect(
+        allow(
             dead_code,
-            reason = "P3.20 — read by the §2.6.3 cross-instance reclaim's lock addressing (P3.24); unused \
-                      in production until then."
+            reason = "P3.24 — the pre-RunId probe-residue recogniser; its production caller is the §2.6.3 \
+                      opportunistic dest-`.part` reclaim (`reclaim_dest_parts_in`), dead in production until \
+                      its §2.1 before-write / run-end wiring lands, so `allow` covers the transitive \
+                      dead-ness through the P3 wiring window."
+        )
+    )]
+    fn parse_probe_residue(file_name: &OsStr) -> Option<InstanceId> {
+        let name = file_name.to_str()?;
+        let body = name
+            .strip_prefix(PUBLISH_TEMP_PREFIX)?
+            .strip_suffix(PUBLISH_TEMP_SUFFIX)?;
+        let instance_str = body.get(..HYPHENATED_UUID_LEN)?;
+        // After the InstanceId UUID must come the exact `-probe-` marker, then a non-empty random tail.
+        let rand = body
+            .get(HYPHENATED_UUID_LEN..)?
+            .strip_prefix(PROBE_RESIDUE_INFIX)?;
+        if rand.is_empty() {
+            return None;
+        }
+        Some(InstanceId::from_uuid(Uuid::parse_str(instance_str).ok()?))
+    }
+
+    /// The owning launch instance (§2.6.1) — the §2.6.3 reclaim addresses `…/scratch/<InstanceId>.*/…` by
+    /// it. [Build-Session-Entscheidung: P3.20]
+    // [Test-Change: P3.24 - old-obsolete+new-correct, §2.6.3] flip to allow: P3.24's `reclaim_dest_parts_in`
+    // now reads `owner.instance()`, so rustc marks this callee USED and the old dead-code EXPECTATION is
+    // obsolete; allow is correct (a lint-attribute flip, not a real assertion change).
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "P3.20 — now read by P3.24's `reclaim_dest_parts_in` lock addressing (dead in production \
+                      until its §2.1 wiring); rustc walks that dead-but-present caller and marks this used, so \
+                      `allow` covers the transitive dead-ness through the P3 wiring window."
         )
     )]
     #[must_use]
@@ -239,12 +295,16 @@ impl PublishTemp {
 
     /// The owning run (§2.6.1) — the §2.6.3 reclaim addresses the exact `…/run-<RunId>/.lock` by it.
     /// [Build-Session-Entscheidung: P3.20]
+    // [Test-Change: P3.24 - old-obsolete+new-correct, §2.6.3] flip to allow: P3.24's `reclaim_dest_parts_in`
+    // now reads `owner.run()`, so rustc marks this callee USED and the old dead-code EXPECTATION is obsolete;
+    // allow is correct (a lint-attribute flip, not a real assertion change).
     #[cfg_attr(
         not(test),
-        expect(
+        allow(
             dead_code,
-            reason = "P3.20 — read by the §2.6.3 cross-instance reclaim's lock addressing (P3.24); unused \
-                      in production until then."
+            reason = "P3.20 — now read by P3.24's `reclaim_dest_parts_in` lock addressing (dead in production \
+                      until its §2.1 wiring); rustc walks that dead-but-present caller and marks this used, so \
+                      `allow` covers the transitive dead-ness through the P3 wiring window."
         )
     )]
     #[must_use]
@@ -614,6 +674,31 @@ enum LockState {
     Absent,
 }
 
+impl LockState {
+    /// §2.6.3 deadness of the owning run: a `Held` lock ⇒ ALIVE (keep); a `Free` (acquirable) or `Absent`
+    /// lock ⇒ DEAD/reclaimable ("an absent lock is not 'uncertain' — it is dead", §2.6.3). An **exhaustive
+    /// `match`** — never a `!= Held` — is deliberate: this is the single delete-gate predicate of the
+    /// SAFETY-CRITICAL P3.24 dest-dir reclaim (which deletes files in USER dirs), so a future `LockState`
+    /// variant must force a compile-time re-examination here (the G4/G14 exhaustive-dispatch discipline),
+    /// not silently fall into "dead". [Build-Session-Entscheidung: P3.24]
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "P3.24 — the §2.6.3 deadness predicate; its callers are `reclaim_dest_parts_in` / \
+                      `instance_has_live_lock` (dead in production until the §2.1 reclaim wiring), which rustc \
+                      walks as present callers marking this used — `allow` covers the transitive dead-ness \
+                      through the P3 wiring window."
+        )
+    )]
+    fn is_dead(self) -> bool {
+        match self {
+            LockState::Held => false,
+            LockState::Free | LockState::Absent => true,
+        }
+    }
+}
+
 /// §2.6.3 per-run-dir sweep decision — the output of the pure [`sweep_verdict`] rule.
 #[cfg_attr(
     not(test),
@@ -788,6 +873,162 @@ fn sweep_stale_within(scratch_base: &Path, grace: std::time::Duration) -> Vec<Pa
         }
     }
     removed
+}
+
+/// §2.6.3 resolve the liveness of the run that owns a destination `.part`, addressing its EXACT lock
+/// `<scratch_base>/convertia/scratch/<InstanceId>.*/run-<RunId>/.lock` cross-instance from the `(InstanceId,
+/// RunId)` embedded in the temp's name. The `<pid>` suffix of the instance dir is unknown, so each
+/// `<InstanceId>.*` dir is checked; the first that carries this run's `.lock` decides via [`probe_lock`]
+/// (`Held` ⇒ live; `Free` ⇒ dead). If NO `<InstanceId>.*/run-<RunId>/.lock` exists anywhere, the owning run
+/// is `Absent` ⇒ dead (§2.6.3: "free/stale/**absent** ⇒ dead"). Best-effort + panic-free (G4).
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "P3.24 — the §2.6.3 cross-instance run-lock resolver; its only caller is \
+                  `reclaim_dest_parts_in` (dead in production until its §2.1 before-write / run-end wiring), \
+                  which rustc walks as a present caller marking this used — `allow` covers the transitive \
+                  dead-ness through the P3 wiring window."
+    )
+)]
+fn resolve_run_lock_state(scratch_base: &Path, instance: InstanceId, run: RunId) -> LockState {
+    let scratch_root = scratch_base.join(SCRATCH_NAMESPACE).join(SCRATCH_SUBDIR);
+    let instance_dir_prefix = format!("{}.", instance.as_uuid());
+    let Ok(entries) = std::fs::read_dir(&scratch_root) else {
+        return LockState::Absent;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(&instance_dir_prefix) {
+            continue;
+        }
+        let lock_path = entry
+            .path()
+            .join(run.run_subdir_segment())
+            .join(RUN_LOCK_FILE);
+        // `Absent` here only means "this run's lock is not in THIS `<InstanceId>.<pid>` dir" — keep looking;
+        // only a genuinely missing lock across ALL of the instance's dirs is the overall `Absent`.
+        match probe_lock(&lock_path) {
+            LockState::Absent => continue,
+            state @ (LockState::Held | LockState::Free) => return state,
+        }
+    }
+    LockState::Absent
+}
+
+/// §2.6.3 is the launch INSTANCE alive — does ANY run of `instance` currently hold a lock? Resolves the
+/// liveness of a pre-RunId probe residue (`.convertia-<InstanceId>-probe-<rand>.part`), which carries no
+/// `RunId`: glob every `<InstanceId>.*/run-*/.lock` and return `true` if any is `Held`. No held lock anywhere
+/// for that instance ⇒ dead ⇒ its probe residue is reclaimable. Best-effort + panic-free (G4).
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "P3.24 — the §2.6.3 instance-liveness resolver for probe residue; its only caller is \
+                  `reclaim_dest_parts_in` (dead in production until its §2.1 before-write / run-end wiring), \
+                  which rustc walks as a present caller marking this used — `allow` covers the transitive \
+                  dead-ness through the P3 wiring window."
+    )
+)]
+fn instance_has_live_lock(scratch_base: &Path, instance: InstanceId) -> bool {
+    let scratch_root = scratch_base.join(SCRATCH_NAMESPACE).join(SCRATCH_SUBDIR);
+    let instance_dir_prefix = format!("{}.", instance.as_uuid());
+    let Ok(entries) = std::fs::read_dir(&scratch_root) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(&instance_dir_prefix) {
+            continue;
+        }
+        let Ok(run_dirs) = std::fs::read_dir(entry.path()) else {
+            continue;
+        };
+        for run_entry in run_dirs.flatten() {
+            let run_name = run_entry.file_name();
+            let Some(run_name) = run_name.to_str() else {
+                continue;
+            };
+            if !run_name.starts_with(RUN_DIR_PREFIX) {
+                continue;
+            }
+            // Any NON-dead lock (currently `Held`) means a run of this instance is alive ⇒ the instance is
+            // alive. Routing through `is_dead` keeps the deadness classification exhaustive + single-sourced.
+            if !probe_lock(&run_entry.path().join(RUN_LOCK_FILE)).is_dead() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// §2.6.3 (b) opportunistic destination-resident `*.part` reclaim (cross-instance lock-addressable). Kind-1
+/// publish temps live in DESTINATION dirs (not the central scratch root), and §7.4 persists no destination
+/// set — so a post-restart central-scratch sweep ([`sweep_stale`]) cannot find them. Instead, before any
+/// subsequent write into a dest dir (and at run-end / same-session retry), this removes a sibling stale
+/// `.convertia-*.part` **only when its owning run is DEAD**, resolving the exact owning lock cross-instance
+/// from the ids embedded in the name:
+///  - a **run publish temp** (`<InstanceId>-<RunId>-<jobId>-<rand>`, [`PublishTemp::parse`]) → dead iff its
+///    `<InstanceId>.*/run-<RunId>/.lock` is **not `Held`** (free/absent), via [`resolve_run_lock_state`];
+///  - a **pre-RunId probe residue** (`<InstanceId>-probe-<rand>`, [`PublishTemp::parse_probe_residue`]) → dead
+///    iff the owning INSTANCE holds no live lock anywhere, via [`instance_has_live_lock`].
+///
+/// **Foreign-file safety** (the SSOT "cleanup never removes another instance's in-progress file"), CRITICAL
+/// here because this touches USER destination dirs: a `Held` lock ⇒ live ⇒ the `.part` is KEPT; a
+/// `.convertia-*.part` that parses as NEITHER shape (a foreign/future name, or a user's own file) is LEFT
+/// UNTOUCHED — never a bare `*.part` glob, never a delete on a guess. Best-effort + panic-free (crate
+/// no-panic deny, G4): an unreadable dest dir is skipped. Returns the reclaimed paths (for the caller's
+/// observability). The central-scratch `run-<RunId>/` sweep is [`sweep_stale`] (P3.23); this is its
+/// destination-dir sibling. [Build-Session-Entscheidung: P3.24]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P3.24 — the §2.6.3 (b) opportunistic dest-`.part` reclaim entry; the production callers are \
+                  the §2.1 before-write path and run-end / same-session retry — unused in the production \
+                  build until that wiring lands."
+    )
+)]
+pub fn reclaim_dest_parts_in(dest_dir: &Path, scratch_base: &Path) -> Vec<PathBuf> {
+    let mut reclaimed = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dest_dir) else {
+        return reclaimed;
+    };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        // Only `.convertia-*.part` siblings are ever candidates.
+        if !name.starts_with(PUBLISH_TEMP_PREFIX) || !name.ends_with(PUBLISH_TEMP_SUFFIX) {
+            continue;
+        }
+        let owning_run_dead = if let Some(owner) = PublishTemp::parse(&file_name) {
+            // A run publish temp: dead iff its owning run's lock is not held (free/absent), via the exhaustive
+            // `LockState::is_dead` gate (never a `!= Held`).
+            resolve_run_lock_state(scratch_base, owner.instance(), owner.run()).is_dead()
+        } else if let Some(instance) = PublishTemp::parse_probe_residue(&file_name) {
+            // A pre-RunId probe residue: dead iff the owning instance holds no live lock anywhere.
+            !instance_has_live_lock(scratch_base, instance)
+        } else {
+            // A `.convertia-*.part` that is NEITHER shape (a foreign/future name / a user file) — never our
+            // judgment; leave it untouched.
+            continue;
+        };
+        if owning_run_dead {
+            let path = entry.path();
+            if std::fs::remove_file(&path).is_ok() {
+                reclaimed.push(path);
+            }
+        }
+    }
+    reclaimed
 }
 
 #[cfg(test)]
@@ -1555,5 +1796,235 @@ mod sweep_tests {
             "§2.6.3: a non-`run-` entry is never swept"
         );
         assert!(removed.is_empty(), "nothing reclaimed, got {removed:?}");
+    }
+}
+
+#[cfg(test)]
+mod reclaim_tests {
+    use super::*;
+
+    /// Plant a real file named `name` in `dir` (real temp FS, never mocked — test-strategy §0.1).
+    fn plant(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, b"partial output bytes").expect("plant a file");
+        path
+    }
+
+    /// A run publish-temp NAME for `(instance, run, job)` — `.convertia-<InstanceId>-<RunId>-<job>-<rand>.part`
+    /// (what `PublishTemp::parse` reads back). Built from the shared `run_prefix` grammar.
+    fn run_part_name(instance: InstanceId, run: RunId, job: u32) -> String {
+        format!("{}{job}-rnd.part", PublishTemp::run_prefix(instance, run))
+    }
+
+    /// A pre-RunId probe-residue NAME for `instance` — `.convertia-<InstanceId>-probe-<rand>.part` (what
+    /// `PublishTemp::parse_probe_residue` reads back). Built from the shared `-probe-` grammar const.
+    fn probe_residue_name(instance: InstanceId) -> String {
+        format!(
+            "{PUBLISH_TEMP_PREFIX}{}{PROBE_RESIDUE_INFIX}rnd{PUBLISH_TEMP_SUFFIX}",
+            instance.as_uuid()
+        )
+    }
+
+    /// Plant a FREE (unlocked) `run-<RunId>/.lock` under `<scratch>/convertia/scratch/<instance>.<pid>/` — a
+    /// dead run's residue (its lock was released on process exit), so `resolve_run_lock_state` sees `Free`.
+    fn plant_free_run_lock(scratch_base: &Path, instance: InstanceId, pid: u32, run: RunId) {
+        let dir = scratch_base
+            .join(SCRATCH_NAMESPACE)
+            .join(SCRATCH_SUBDIR)
+            .join(instance.scratch_root_segment(pid))
+            .join(run.run_subdir_segment());
+        std::fs::create_dir_all(&dir).expect("plant a run dir");
+        std::fs::write(dir.join(RUN_LOCK_FILE), b"").expect("plant an unlocked .lock");
+    }
+
+    // §6.4.1 unit (G15) / §2.6.3 / §2.7.2: `parse_probe_residue` recognises a well-formed pre-RunId probe
+    // residue and REJECTS everything else (a run publish temp, a bad UUID, an empty random tail, a plain
+    // file, a missing suffix) — the "non-matching ⇒ never our delete" safety this reclaim rests on.
+    #[test]
+    fn parse_probe_residue_recognises_and_rejects() {
+        use std::ffi::OsStr;
+        let instance = InstanceId::mint();
+        let good = probe_residue_name(instance);
+        assert_eq!(
+            PublishTemp::parse_probe_residue(OsStr::new(&good)),
+            Some(instance),
+            "§2.7.2: a well-formed probe residue recovers its owning InstanceId"
+        );
+        // A run publish temp is NOT a probe residue (it has no `-probe-` marker).
+        let run_temp = run_part_name(instance, RunId::mint(), 3);
+        // `-probe-` present but the random tail is empty — rejected (a probe residue always has a tail).
+        let empty_rand = format!(
+            "{PUBLISH_TEMP_PREFIX}{}{PROBE_RESIDUE_INFIX}{PUBLISH_TEMP_SUFFIX}",
+            instance.as_uuid()
+        );
+        // A well-formed body with the `.part` suffix dropped — the suffix is part of the grammar.
+        let missing_suffix = probe_residue_name(instance).replace(PUBLISH_TEMP_SUFFIX, "");
+        for bad in [
+            run_temp.as_str(),
+            "vacation.jpg",                       // a plain user file
+            ".convertia-not-a-uuid-probe-r.part", // ill-formed UUID
+            empty_rand.as_str(),
+            missing_suffix.as_str(),
+        ] {
+            assert!(
+                PublishTemp::parse_probe_residue(OsStr::new(bad)).is_none(),
+                "§2.6.3: a non-probe-residue name must NOT parse: {bad:?}"
+            );
+        }
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.3 (b): a DEAD run's destination `.part` (its `run-<RunId>/.lock` exists but
+    // is FREE — released on process exit) is reclaimed. Read the real FS back: the `.part` is gone.
+    #[test]
+    fn reclaim_removes_a_dead_runs_dest_part() {
+        let scratch = tempfile::tempdir().expect("a real scratch base dir");
+        let dest = tempfile::tempdir().expect("a real destination dir");
+        let instance = InstanceId::mint();
+        let run = RunId::mint();
+        plant_free_run_lock(scratch.path(), instance, 4242, run);
+        let part = plant(dest.path(), &run_part_name(instance, run, 1));
+
+        let reclaimed = reclaim_dest_parts_in(dest.path(), scratch.path());
+
+        assert!(
+            !part.exists(),
+            "§2.6.3 (b): a dead run's dest `.part` is reclaimed"
+        );
+        assert_eq!(
+            reclaimed,
+            vec![part],
+            "§2.6.3: the reclaimed path is reported"
+        );
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.3: a DEAD run whose lock is ENTIRELY ABSENT — no `<InstanceId>.*/run-<RunId>/
+    // .lock` exists anywhere (an UNRELATED instance's run dir is present, so the resolver's loop completes
+    // without a match ⇒ `Absent`) — is reclaimed. §2.6.3 DECIDED: "an absent lock is not 'uncertain' — it is
+    // dead". Distinct from the `Free` (unlocked-lock-present) case above.
+    #[test]
+    fn reclaim_removes_a_dead_run_whose_lock_is_entirely_absent() {
+        let scratch = tempfile::tempdir().expect("a real scratch base dir");
+        let dest = tempfile::tempdir().expect("a real destination dir");
+        // The scratch root exists and holds an UNRELATED instance's run dir, but nothing for our owner.
+        plant_free_run_lock(scratch.path(), InstanceId::mint(), 111, RunId::mint());
+        let part = plant(
+            dest.path(),
+            &run_part_name(InstanceId::mint(), RunId::mint(), 2),
+        );
+
+        let reclaimed = reclaim_dest_parts_in(dest.path(), scratch.path());
+
+        assert!(
+            !part.exists(),
+            "§2.6.3: a run temp whose lock is entirely absent is DEAD ⇒ reclaimed (absent ≠ uncertain)"
+        );
+        assert_eq!(
+            reclaimed,
+            vec![part],
+            "§2.6.3: the reclaimed path is reported"
+        );
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.3 (b) CRITICAL: a LIVE run's destination `.part` is NEVER removed — the
+    // owning `run-<RunId>/.lock` is HELD (via RunScratch::acquire), so the reclaim keeps it. This is the SSOT
+    // "cleanup never removes another instance's in-progress file", enforced where it matters most: a USER dir.
+    #[test]
+    fn reclaim_never_removes_a_live_runs_dest_part() {
+        let scratch = tempfile::tempdir().expect("a real scratch base dir");
+        let dest = tempfile::tempdir().expect("a real destination dir");
+        let instance = InstanceId::mint();
+        let run = RunId::mint();
+        let live = RunScratch::acquire(scratch.path(), instance, std::process::id(), run)
+            .expect("acquire a live locked run");
+        let part = plant(dest.path(), &run_part_name(instance, run, 5));
+
+        let reclaimed = reclaim_dest_parts_in(dest.path(), scratch.path());
+
+        assert!(
+            part.exists(),
+            "§2.6.3 (b): a LIVE run's dest `.part` is NEVER reclaimed (its lock is held)"
+        );
+        assert!(reclaimed.is_empty(), "nothing reclaimed, got {reclaimed:?}");
+        drop(live); // release the lock only after the reclaim has run
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.3 (b) CRITICAL: a `.convertia-*.part` that parses as NEITHER a run temp NOR
+    // a probe residue (a foreign/future name), a non-`.convertia` `.part`, and a plain user file are ALL left
+    // untouched — never a bare `*.part` glob, never a delete on a guess (this touches USER dirs).
+    #[test]
+    fn reclaim_never_removes_an_unrecognized_or_user_part() {
+        let scratch = tempfile::tempdir().expect("a real scratch base dir");
+        let dest = tempfile::tempdir().expect("a real destination dir");
+        let foreign = plant(dest.path(), ".convertia-garbage-not-a-temp.part"); // `.convertia-*.part`, unparseable
+        let other_dot_part = plant(dest.path(), "some-editor-swap.part"); // a `.part` that is not ours
+        let user_file = plant(dest.path(), "vacation.jpg"); // a real user file
+
+        let reclaimed = reclaim_dest_parts_in(dest.path(), scratch.path());
+
+        assert!(reclaimed.is_empty(), "nothing reclaimed, got {reclaimed:?}");
+        assert!(
+            foreign.exists(),
+            "an unparseable `.convertia-*.part` is left untouched"
+        );
+        assert!(
+            other_dot_part.exists(),
+            "a non-`.convertia` `.part` is left untouched"
+        );
+        assert!(user_file.exists(), "a plain user file is never touched");
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.3 / §2.7.2: a pre-RunId probe residue of a DEAD instance (no live lock
+    // anywhere under `<InstanceId>.*/`) is reclaimed by InstanceId-only liveness. Read the real FS back.
+    #[test]
+    fn reclaim_removes_a_dead_instances_probe_residue() {
+        let scratch = tempfile::tempdir().expect("a real scratch base dir");
+        let dest = tempfile::tempdir().expect("a real destination dir");
+        let dead_instance = InstanceId::mint(); // no scratch locks exist for it
+        let residue = plant(dest.path(), &probe_residue_name(dead_instance));
+
+        let reclaimed = reclaim_dest_parts_in(dest.path(), scratch.path());
+
+        assert!(
+            !residue.exists(),
+            "§2.6.3: a dead instance's probe residue is reclaimed"
+        );
+        assert_eq!(
+            reclaimed,
+            vec![residue],
+            "§2.6.3: the reclaimed path is reported"
+        );
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.3 / §2.7.2 CRITICAL: a probe residue of a LIVE instance (any run of it holds
+    // a lock) is NEVER removed — InstanceId-only liveness keeps it. Real held lock via RunScratch::acquire.
+    #[test]
+    fn reclaim_never_removes_a_live_instances_probe_residue() {
+        let scratch = tempfile::tempdir().expect("a real scratch base dir");
+        let dest = tempfile::tempdir().expect("a real destination dir");
+        let instance = InstanceId::mint();
+        // A LIVE run of `instance` holds a lock ⇒ the instance is alive.
+        let live = RunScratch::acquire(scratch.path(), instance, std::process::id(), RunId::mint())
+            .expect("acquire a live locked run");
+        let residue = plant(dest.path(), &probe_residue_name(instance));
+
+        let reclaimed = reclaim_dest_parts_in(dest.path(), scratch.path());
+
+        assert!(
+            residue.exists(),
+            "§2.6.3: a LIVE instance's probe residue is NEVER reclaimed (it holds a live lock)"
+        );
+        assert!(reclaimed.is_empty(), "nothing reclaimed, got {reclaimed:?}");
+        drop(live);
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.3 (b): an unreadable/absent dest dir is a clean no-op (no panic). Panic-free (G4).
+    #[test]
+    fn reclaim_over_an_absent_dest_dir_is_a_clean_noop() {
+        let scratch = tempfile::tempdir().expect("a real scratch base dir");
+        let absent = scratch.path().join("never-created-dest");
+        assert!(
+            reclaim_dest_parts_in(&absent, scratch.path()).is_empty(),
+            "§2.6.3 (b): an absent dest dir reclaims nothing, no panic"
+        );
     }
 }
