@@ -17,8 +17,11 @@
 //! lifecycle, and no caller reaches these ahead of their fill-box (`cleanup_run` wires at P3.74, the
 //! sweep at startup with P3.23). Signature AND body land together in each fill-box:
 //!  - `cleanup_item` / `cleanup_run` — own-prefix-scoped cleanup on every exit path
-//!    (`.convertia-<thisInstanceId>-<thisRunId>-*.part`, never a bare `*.part` glob, §2.6.2) — **P3.22**
-//!    (the `CleanupResidue` honesty leg is **P3.25**).
+//!    (`.convertia-<thisInstanceId>-<thisRunId>-*.part`, never a bare `*.part` glob, §2.6.2) — **P3.22
+//!    (built below)**: `cleanup_item` removes one item's `.part` on the failure / out-of-disk / link-fallback
+//!    exit paths; `cleanup_run` removes the run's OWN-prefix temps in every recorded `final_dir` then tears
+//!    down the `run-<RunId>/` dir, returning the residue paths it could not remove. The `CleanupResidue`
+//!    honesty leg — mapping that residue into `RunResult.cleanup_incomplete` (§2.6.4) — is **P3.25**.
 //!  - `sweep_stale` — startup sweep, the held lock as the SOLE delete gate, non-blocking try-lock
 //!    (§2.6.3) — **P3.23** (the opportunistic destination-resident `*.part` reclaim is **P3.24**).
 //!  - the publish-temp naming + ownership model — [`PublishTemp`]
@@ -34,6 +37,7 @@
 //!    exclusive lock, and its `publish_temp` is the SOLE lock-after `.part` mint, so a `.part` is
 //!    structurally unreachable before the lock is held.
 
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -152,12 +156,18 @@ impl PublishTemp {
     /// (which would delete a concurrent foreign instance's LIVE temp — the §2.6.2 CRITICAL rule). It is
     /// job-INDEPENDENT (an associated fn of `(instance, run)`, not `&self`) because run-end cleanup spans
     /// every job of the run. [Build-Session-Entscheidung: P3.20]
+    // [Test-Change: P3.22 - old-obsolete+new-correct, §2.6.2] flip to allow: P3.22's `cleanup_run` now calls
+    // run_prefix (its own-prefix match), so rustc walks that dead-but-present caller and marks this callee
+    // USED — the old dead-code EXPECTATION is obsolete and allow is correct (a lint-attribute flip, not a real
+    // assertion change — the G70 signal FPs on the changed dead_code line).
     #[cfg_attr(
         not(test),
-        expect(
+        allow(
             dead_code,
-            reason = "P3.20 — the production caller is `cleanup_run`'s own-prefix match (P3.22); unused in \
-                      production until then."
+            reason = "P3.20 — now called by P3.22's `cleanup_run` own-prefix match (itself dead in production \
+                      until the P3.74 run-lifecycle wiring); rustc walks that dead-but-present caller and \
+                      marks this callee used, so `allow` (permissive) covers the transitive dead-ness through \
+                      the P3 wiring window (the `create_in` pattern)."
         )
     )]
     #[must_use]
@@ -404,6 +414,157 @@ impl RunScratch {
     )]
     pub fn publish_temp(&self, dest_dir: &Path, job: JobId) -> io::Result<TempPath> {
         PublishTemp::new(self.instance, self.run, job).create_in(dest_dir)
+    }
+}
+
+/// §2.6.2 item-exit cleanup: explicitly remove ONE item's kind-1 publish temp on an item-level exit path.
+/// **Item failure** (engine error / corrupt input), **out-of-disk mid-write** (the partial `tmp`), and the
+/// **`link`+`unlink` success fallback** (the hardlink published `tmp→final`, so the `*.part` original is
+/// removed) all reduce to "remove this item's `.part`". The **single-call success path does NOT call this**
+/// (the atomic rename already CONSUMED the temp — nothing remains, §2.6.2 "Item success" row). Consuming the
+/// [`TempPath`] and removing it EXPLICITLY — never a silent drop, which swallows the `io::Error` — is what
+/// lets the §2.6.4 honesty leg (P3.25) surface a `CleanupResidue`: an `Err` here means the `.part` residue
+/// remains at the caller-held path (a lock held by AV software, a permission flip), so the caller reports the
+/// item honestly rather than as a clean success. An already-absent temp (`NotFound`) is a **clean, idempotent
+/// success** — a double call or an externally-vanished temp is not a spurious failure. Panic-free (the crate
+/// no-panic deny, G4): every step is a fallible `Result` short-circuit. [Build-Session-Entscheidung: P3.22]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P3.22 — the item-exit cleanup entry; the production caller is the §2.1.1 write sequence \
+                  (item failure / out-of-disk / link-fallback success, P3.38) and the §3.5.6 native-engine \
+                  out_tmp path (P3.43) — unused in the production build until that wiring lands."
+    )
+)]
+pub fn cleanup_item(tmp: TempPath) -> io::Result<()> {
+    match tmp.close() {
+        Ok(()) => Ok(()),
+        // Already gone (a double cleanup, or an externally-removed temp) is a clean, idempotent success —
+        // there is no residue to report (§2.6.4).
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// §2.6.2 run-end cleanup: at run end (any reason) remove this run's OWN leftover kind-1 publish temps in
+/// every RECORDED `final_dir`, then tear down the central `run-<RunId>/` scratch dir.
+///
+/// **CRITICAL — own-prefix scope, never a bare `*.part` glob (§2.6.2 "Run end" row):** a recorded `final_dir`
+/// can be SHARED with a concurrent foreign instance writing beside the same sources, so this removes **only**
+/// files whose name carries this run's exact own prefix `.convertia-<thisInstanceId>-<thisRunId>-` plus the
+/// `.part` suffix. A foreign instance's / foreign run's live in-progress `.part` (a different `InstanceId` or
+/// `RunId`) is NEVER matched, honouring the SSOT *"cleanup never removes another instance's in-progress
+/// file"*. A non-matching `.convertia-*.part` is left **untouched** here — its dead-foreign opportunistic
+/// reclaim under the §2.6.3 held-lock guard is P3.24, not run-end.
+///
+/// `recorded_final_dirs` is the union of every DISTINCT `final_dir` an output actually landed in this run —
+/// incl. §2.7.2 late-divert targets and §2.14.3 cross-volume intermediates, which can sit in dirs that are
+/// neither a drop root nor the chosen destination. Recording it per written item is the caller's job (the
+/// P3.74 run-lifecycle teardown); this fn only CONSUMES the set.
+///
+/// Run-end consumes the [`RunScratch`], **releasing its held `.lock` BEFORE** the `run-<RunId>/` tree is
+/// removed — on Windows a still-open handle inside a dir blocks its recursive delete, and releasing the lock
+/// first also lets a concurrent sweeper (§2.6.3, P3.23) see this run as dead. Returns the **residue**: the
+/// paths whose removal FAILED — never a silent clean success; the §2.6.4 honesty leg (P3.25) maps these into
+/// `CleanupResidue`. An empty return = a fully clean run-end. Panic-free (the crate no-panic deny, G4).
+/// [Build-Session-Entscheidung: P3.22]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P3.22 — the run-end cleanup entry; the production caller is the P3.74 run-lifecycle \
+                  teardown — unused in the production build until that wiring lands."
+    )
+)]
+pub fn cleanup_run(scratch: RunScratch, recorded_final_dirs: &BTreeSet<PathBuf>) -> Vec<PathBuf> {
+    let RunScratch {
+        instance,
+        run,
+        dir,
+        _lock: lock,
+    } = scratch;
+    let own_prefix = PublishTemp::run_prefix(instance, run);
+    let mut residue = Vec::new();
+
+    // (1) Remove this run's OWN publish temps in every recorded destination dir — own-prefix scoped, never a
+    // bare `*.part` glob (§2.6.2 CRITICAL). The run is still lock-held here; the destination temps live in
+    // the destination dirs (not the scratch dir), so this is unaffected by the lock, which step (2) releases.
+    for final_dir in recorded_final_dirs {
+        remove_own_temps_in(final_dir, &own_prefix, &mut residue);
+    }
+
+    // (2) Release the held advisory lock, THEN remove the now-discardable central `run-<RunId>/` tree. The
+    // lock `File` MUST drop before the delete: on Windows a still-open handle inside the dir blocks the
+    // recursive remove; releasing it first also lets a concurrent sweeper (§2.6.3) see the run as dead.
+    drop(lock);
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => {}
+        // Already gone (a crash-recovery sweep raced us, or a prior partial teardown) is a clean success.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => residue.push(dir),
+    }
+    residue
+}
+
+/// Remove every kind-1 publish temp in `dir` whose name carries this run's exact `own_prefix`
+/// (`.convertia-<InstanceId>-<RunId>-`) AND the `.part` suffix — the §2.6.2 own-prefix match. A foreign
+/// instance's / foreign run's `.part` never matches this prefix, so it is never removed here (the SSOT
+/// foreign-file safety). A removal that FAILS (a permission flip, a held lock) is recorded in `residue`; an
+/// already-absent entry is skipped (idempotent).
+///
+/// **Cleanup-honesty on an un-enumerable dir (§2.6.4):** a `NotFound` `dir` is genuinely gone — its contents
+/// went with it, so there is nothing to reclaim and nothing to report. But a `dir` that exists yet cannot be
+/// LISTED (a permission flip, a read-only volume that went away) may still hold an own `.part` that is now
+/// undeletable-because-unlistable, and a per-entry enumeration error means an own `.part` could be silently
+/// skipped — §2.6.3 sanctions only a *crash* or a *wedged cancel* as silent lingering carve-outs, not this,
+/// so both are surfaced by pushing `dir` itself into `residue` (never a silent clean success), mirroring the
+/// `cleanup_item` / `remove_dir_all` `NotFound`-vs-other split. Panic-free (the crate no-panic deny, G4).
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "P3.22 — the run-end own-prefix removal helper; its only caller is `cleanup_run` (itself \
+                  dead in production until the P3.74 wiring), which rustc walks as a present caller and marks \
+                  this callee used, so `allow` (permissive) covers the transitive dead-ness through the P3 \
+                  wiring window (the `PublishTemp::create_in` pattern)."
+    )
+)]
+fn remove_own_temps_in(dir: &Path, own_prefix: &str, residue: &mut Vec<PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        // Genuinely gone — no contents to reclaim, nothing to report.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return,
+        // Exists but un-listable (permission flip / read-only volume gone): an own `.part` may linger here,
+        // undeletable-because-unlistable — surface the dir as residue (§2.6.4), never a silent clean success.
+        Err(_) => {
+            residue.push(dir.to_path_buf());
+            return;
+        }
+    };
+    let mut enumeration_incomplete = false;
+    for entry in entries {
+        let Ok(entry) = entry else {
+            // A per-entry read error: we cannot read this entry's name to tell whether it is ours, so an own
+            // `.part` could be silently skipped — flag the dir as residue once, after the loop.
+            enumeration_incomplete = true;
+            continue;
+        };
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if name.starts_with(own_prefix) && name.ends_with(PUBLISH_TEMP_SUFFIX) {
+            let path = entry.path();
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(_) => residue.push(path),
+            }
+        }
+    }
+    if enumeration_incomplete {
+        residue.push(dir.to_path_buf());
     }
 }
 
@@ -697,6 +858,286 @@ mod run_scratch_tests {
         assert!(
             flock(&probe, FlockOperation::NonBlockingLockExclusive).is_ok(),
             "§2.6.3: dropping the run releases the lock (absent/free ⇒ dead ⇒ reclaimable)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+
+    /// Plant a real file named `name` in `dir` (real temp FS, never mocked — test-strategy §0.1), returning
+    /// its path. Used to seat own-prefix and foreign `.part` siblings the cleanup must (or must not) remove.
+    fn plant(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, b"partial output bytes").expect("plant a file");
+        path
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.2 "Item failure"/"Out-of-disk": `cleanup_item` removes the item's kind-1
+    // publish temp (the failure / out-of-disk / link-fallback exit paths all reduce to "remove this .part"),
+    // verified by reading the REAL temp FS back — the temp is GONE.
+    #[test]
+    fn cleanup_item_removes_the_items_publish_temp() {
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        let dest = tempfile::tempdir().expect("a real destination dir");
+        let scratch = RunScratch::acquire(
+            base.path(),
+            InstanceId::mint(),
+            std::process::id(),
+            RunId::mint(),
+        )
+        .expect("acquire the locked run scratch");
+        let temp = scratch
+            .publish_temp(dest.path(), JobId::from_index(3))
+            .expect("mint the publish temp");
+        let path = temp.to_path_buf();
+        assert!(
+            path.exists(),
+            "the minted publish temp exists before cleanup"
+        );
+
+        cleanup_item(temp).expect("§2.6.2: cleanup removes the item's publish temp");
+        assert!(
+            !path.exists(),
+            "§2.6.2 item-exit: the item's `.part` is gone after cleanup_item"
+        );
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.4: `cleanup_item` is idempotent — an already-vanished temp (a double call,
+    // or an externally-removed temp) is a clean success, never a spurious failure.
+    #[test]
+    fn cleanup_item_is_idempotent_when_the_temp_already_vanished() {
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        let dest = tempfile::tempdir().expect("a real destination dir");
+        let scratch = RunScratch::acquire(
+            base.path(),
+            InstanceId::mint(),
+            std::process::id(),
+            RunId::mint(),
+        )
+        .expect("acquire");
+        let temp = scratch
+            .publish_temp(dest.path(), JobId::from_index(0))
+            .expect("mint the publish temp");
+        let path = temp.to_path_buf();
+        std::fs::remove_file(&path).expect("externally remove the temp before cleanup");
+
+        cleanup_item(temp)
+            .expect("§2.6.4: an already-absent temp is a clean, idempotent success, not a failure");
+        assert!(!path.exists(), "the temp remains gone");
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.2 "Run end": `cleanup_run` removes this run's own-prefix temps in EVERY
+    // recorded `final_dir` (incl. a second dir, modelling a late-divert / cross-volume target), and reports
+    // no residue on a clean run-end. Read the real FS back — all own temps GONE.
+    #[test]
+    fn cleanup_run_removes_own_prefix_temps_in_every_recorded_dir() {
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        let dest_a = tempfile::tempdir().expect("recorded final_dir A");
+        let dest_b =
+            tempfile::tempdir().expect("recorded final_dir B (a divert/cross-volume target)");
+        let instance = InstanceId::mint();
+        let run = RunId::mint();
+        let scratch =
+            RunScratch::acquire(base.path(), instance, std::process::id(), run).expect("acquire");
+        let prefix = PublishTemp::run_prefix(instance, run);
+        let own = [
+            plant(dest_a.path(), &format!("{prefix}1-r1.part")),
+            plant(dest_a.path(), &format!("{prefix}2-r2.part")),
+            plant(dest_b.path(), &format!("{prefix}3-r3.part")),
+        ];
+
+        let mut recorded = BTreeSet::new();
+        recorded.insert(dest_a.path().to_path_buf());
+        recorded.insert(dest_b.path().to_path_buf());
+        let residue = cleanup_run(scratch, &recorded);
+
+        assert!(
+            residue.is_empty(),
+            "§2.6.4: a clean run-end reports no residue, got {residue:?}"
+        );
+        for p in &own {
+            assert!(
+                !p.exists(),
+                "§2.6.2 run-end: this run's own-prefix temp is removed: {p:?}"
+            );
+        }
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.2 CRITICAL own-prefix scope: `cleanup_run` NEVER removes a concurrent
+    // foreign instance's live `.part`, a foreign RUN's `.part` (same instance, different run), or a plain
+    // user file — only this run's own-prefix temps in the SHARED dir. This is the SSOT "cleanup never removes
+    // another instance's in-progress file" — proven by reading the real FS back (never a bare `*.part` glob).
+    #[test]
+    fn cleanup_run_never_removes_a_foreign_or_unrelated_part() {
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        let shared =
+            tempfile::tempdir().expect("a dest dir shared with a concurrent foreign instance");
+        let instance = InstanceId::mint();
+        let run = RunId::mint();
+        let scratch =
+            RunScratch::acquire(base.path(), instance, std::process::id(), run).expect("acquire");
+
+        let ours = plant(
+            shared.path(),
+            &format!("{}5-mine.part", PublishTemp::run_prefix(instance, run)),
+        );
+        // A concurrent FOREIGN INSTANCE's live in-progress `.part` in the SAME dir (different InstanceId+RunId).
+        let foreign_instance = plant(
+            shared.path(),
+            &format!(
+                "{}5-theirs.part",
+                PublishTemp::run_prefix(InstanceId::mint(), RunId::mint())
+            ),
+        );
+        // A foreign RUN of the SAME instance (a different run of us / another live run) — still not our run.
+        let foreign_run = plant(
+            shared.path(),
+            &format!(
+                "{}5-otherrun.part",
+                PublishTemp::run_prefix(instance, RunId::mint())
+            ),
+        );
+        // A real user file that merely happens to sit beside the temps — never a `.part`, never touched.
+        let user_file = plant(shared.path(), "vacation.jpg");
+
+        let mut recorded = BTreeSet::new();
+        recorded.insert(shared.path().to_path_buf());
+        let residue = cleanup_run(scratch, &recorded);
+
+        assert!(residue.is_empty(), "clean run-end, got residue {residue:?}");
+        assert!(!ours.exists(), "§2.6.2: our own-prefix temp IS removed");
+        assert!(
+            foreign_instance.exists(),
+            "SSOT: a concurrent foreign INSTANCE's live `.part` is NEVER removed (own-prefix scope, not a bare `*.part` glob)"
+        );
+        assert!(
+            foreign_run.exists(),
+            "§2.6.2: a foreign RUN's `.part` (same instance, different run) is not ours — kept"
+        );
+        assert!(
+            user_file.exists(),
+            "a non-`.part` user file is never touched"
+        );
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.2 "Run end": `cleanup_run` tears down the central `run-<RunId>/` scratch
+    // dir and releases the held lock (the remove_dir_all SUCCEEDS, which on Windows requires the `.lock`
+    // handle already closed) — proven by reading the real FS back: the run dir is gone.
+    #[test]
+    fn cleanup_run_removes_the_run_scratch_dir() {
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        let scratch = RunScratch::acquire(
+            base.path(),
+            InstanceId::mint(),
+            std::process::id(),
+            RunId::mint(),
+        )
+        .expect("acquire");
+        let run_dir = scratch.dir().to_path_buf();
+        assert!(
+            run_dir.is_dir(),
+            "the run scratch dir exists before cleanup"
+        );
+
+        let residue = cleanup_run(scratch, &BTreeSet::new());
+        assert!(residue.is_empty(), "clean run-end, got residue {residue:?}");
+        assert!(
+            !run_dir.exists(),
+            "§2.6.2 run-end: the central run-<RunId>/ scratch dir is torn down (lock released first)"
+        );
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.4: an own-prefix entry that CANNOT be removed is surfaced as residue —
+    // never a silent clean success. Forced deterministically, cross-platform, and root-safe by planting the
+    // own-prefix name as a DIRECTORY: `std::fs::remove_file` refuses a directory (`EISDIR` on POSIX /
+    // `ERROR_ACCESS_DENIED` on Windows) on every OS and even as root, standing in for the §2.6.4 real cases
+    // (a lock held by AV software, a read-only scratch, a permission flip) without a root-fragile chmod.
+    #[test]
+    fn cleanup_run_reports_an_unremovable_own_temp_as_residue() {
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        let dest = tempfile::tempdir().expect("a real destination dir");
+        let instance = InstanceId::mint();
+        let run = RunId::mint();
+        let scratch =
+            RunScratch::acquire(base.path(), instance, std::process::id(), run).expect("acquire");
+        // An own-prefix entry `remove_file` cannot remove — it is a directory, not a file.
+        let stuck = dest.path().join(format!(
+            "{}1-x.part",
+            PublishTemp::run_prefix(instance, run)
+        ));
+        std::fs::create_dir(&stuck).expect("plant an own-prefix entry as a directory");
+
+        let mut recorded = BTreeSet::new();
+        recorded.insert(dest.path().to_path_buf());
+        let residue = cleanup_run(scratch, &recorded);
+
+        assert_eq!(
+            residue,
+            vec![stuck.clone()],
+            "§2.6.4: an own entry that could not be removed is surfaced as residue, never a silent clean success"
+        );
+        assert!(
+            stuck.exists(),
+            "the un-removable residue really remains on disk"
+        );
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.4: a recorded `final_dir` that exists but CANNOT be enumerated (a
+    // permission flip / a read-only volume that went away) may still hide an own `.part` — so it is surfaced
+    // as residue, never a silent clean success. Forced deterministically, cross-platform, and root-safe by
+    // recording a path that is a FILE, not a directory: `std::fs::read_dir` fails with a non-`NotFound` error
+    // (`ENOTDIR` on POSIX / `ERROR_DIRECTORY` on Windows) on every OS and even as root.
+    #[test]
+    fn cleanup_run_surfaces_an_unlistable_recorded_dir_as_residue() {
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        let host = tempfile::tempdir().expect("a real host dir");
+        let scratch = RunScratch::acquire(
+            base.path(),
+            InstanceId::mint(),
+            std::process::id(),
+            RunId::mint(),
+        )
+        .expect("acquire");
+        // A recorded "final_dir" that is actually a FILE — read_dir on it fails (not NotFound).
+        let not_a_dir = host.path().join("this-is-a-file-not-a-dir");
+        std::fs::write(&not_a_dir, b"x").expect("plant a file where a dir is recorded");
+
+        let mut recorded = BTreeSet::new();
+        recorded.insert(not_a_dir.clone());
+        let residue = cleanup_run(scratch, &recorded);
+
+        assert_eq!(
+            residue,
+            vec![not_a_dir.clone()],
+            "§2.6.4: a recorded dir that could not be enumerated is surfaced as residue, never a silent clean success"
+        );
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.2: a recorded `final_dir` that is genuinely ABSENT (NotFound) at run-end —
+    // its contents went with it — has nothing to reclaim and nothing to report: a clean, empty residue. This
+    // is the `NotFound`-vs-other split's clean side (distinct from the un-listable case above).
+    #[test]
+    fn cleanup_run_treats_an_absent_recorded_dir_as_clean() {
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        let host = tempfile::tempdir().expect("a real host dir");
+        let scratch = RunScratch::acquire(
+            base.path(),
+            InstanceId::mint(),
+            std::process::id(),
+            RunId::mint(),
+        )
+        .expect("acquire");
+        let absent = host.path().join("never-created-subdir");
+
+        let mut recorded = BTreeSet::new();
+        recorded.insert(absent);
+        let residue = cleanup_run(scratch, &recorded);
+
+        assert!(
+            residue.is_empty(),
+            "§2.6.2: a genuinely-absent recorded dir has nothing to reclaim — no residue, got {residue:?}"
         );
     }
 }
