@@ -2,11 +2,13 @@
 //! volume detection (§2.14), the OS shims (§7.7 reveal-in-folder), and the §7.2.4 portable-build
 //! executable-permission helper (`ensure_executable`, landed P1.17). The one allow-listed `unsafe`
 //! FFI surface is the §2.1.2 Windows-only `windows-sys` extern set: the `FileRenameInformationEx`-class
-//! no-replace move (`rename_noreplace_at`, P3.14) via `NtSetInformationFile` (ntdll), and the §2.6.3
+//! no-replace move (`rename_noreplace_at`, P3.14) via `NtSetInformationFile` (ntdll), the §2.6.3
 //! run-lock `LockFileEx` exclusive advisory-lock acquire (`acquire_exclusive_lock`, P3.21) + its
-//! non-blocking startup-sweep liveness probe (`try_acquire_exclusive_lock`, P3.23); the §2.14.4
-//! `GetDiskFreeSpaceExW` free-space read joins at its own §2.14 box. The Unix renames **and the §2.6.3
-//! run-lock** ride safe `rustix` (`flock`), the §2.3 identity reads ride safe `winapi-util`, the §0.9
+//! non-blocking startup-sweep liveness probe (`try_acquire_exclusive_lock`, P3.23), and the §2.14.3
+//! cross-volume free-space re-check `GetDiskFreeSpaceExW` (`available_bytes`, P3.17 — built at its
+//! §2.14.3 first-need, consumed by the §1.10/§2.14.4 preflight P4.72/P4.73 in a subsequent phase). The Unix renames
+//! **and the §2.6.3 run-lock** ride safe `rustix` (`flock`; the §2.14.3 free-space read rides safe
+//! `rustix::fs::statvfs`), the §2.3 identity reads ride safe `winapi-util`, the §0.9
 //! kill rides `process-wrap` (example list corrected 2026-07-07, the P3.12 ruling); the remaining per-OS
 //! helpers are authored by their consuming boxes (P3+).
 //!
@@ -391,6 +393,71 @@ pub fn rename_noreplace_at(
     }
 }
 
+/// §2.14.3/§2.14.4 the volume free-space read: the bytes still available to the CALLING user on the
+/// filesystem that hosts `dir` (respecting per-user quotas where the OS enforces them). The §2.14.3 EXDEV
+/// cross-volume fallback (`fs_guard::atomic_publish`, P3.17) calls this to re-check `final`'s volume against
+/// the ~output-sized intermediate BEFORE the copy — that copy makes the output's bytes exist a SECOND time on
+/// `final`'s volume (peak ~2× output), which the §1.10/§2.14.4 up-front preflight does NOT model, so this
+/// at-use re-check is the bound (mirroring §2.7.2's late-divert "never assume it fits"). It is the SAME
+/// primitive the §1.10 resource pre-flight & budgets engine (P4.72/P4.73, §2.14.4) reads for its
+/// per-physical-volume grouping — built HERE at its §2.14.3 first-need, consumed there by that subsequent-phase
+/// engine, so the free-space read has ONE home (the `crate::platform` OS-shim, the module doc). [Build-Session-Entscheidung: P3.17]
+///
+/// Per OS: Unix `statvfs(dir)` → `f_bavail × f_frsize` (blocks available to a non-privileged process × the
+/// fragment size) via SAFE `rustix::fs::statvfs` (no `unsafe`); Windows `GetDiskFreeSpaceExW(dir, &free, …)` →
+/// `lpFreeBytesAvailableToCaller` (the one `unsafe` FFI, this module's allow-listed surface, G29). No panic
+/// (G4/G14) — a bad path / OS failure is a clean `io::Error` the §2.8 caller maps (never a silently-assumed
+/// "fits"). `saturating_mul` on the Unix product never overflow-panics: a `u64 × u64` byte count on a real
+/// volume is far below the ceiling, and saturation is the total-order-preserving cap (a would-be overflow reads
+/// as "effectively unlimited free space", the safe direction for a "does it fit?" gate).
+///
+/// No `dead_code` attribute (the `rename_noreplace_at` pattern): its only in-crate caller is
+/// `fs_guard::atomic_publish`'s §2.14.3 branch — itself dead-code-suppressed until the §2.1.1 write sequence
+/// (P3.38) — and rustc walks an allow/expect-dead fn's body, marking this callee USED, so a `dead_code`
+/// expectation here would be unfulfilled. Exercised directly by `available_bytes_tests`.
+#[cfg(unix)]
+pub(crate) fn available_bytes(dir: &Path) -> io::Result<u64> {
+    // SAFE `rustix::fs::statvfs` (feature `fs`, already enabled for the P3.12 publish primitive) — no `unsafe`
+    // on Unix (the crate-root `#![deny(unsafe_code)]` holds; this module's `allow(unsafe_code)` is inert on the
+    // Unix leg). `f_bavail` is the blocks available to an UNPRIVILEGED process (NOT `f_bfree`, which counts the
+    // root-reserved reserve a normal user cannot use); `f_frsize` is the fragment size. Their product is the
+    // usable free bytes. [Build-Session-Entscheidung: P3.17]
+    let vfs = rustix::fs::statvfs(dir).map_err(io::Error::from)?;
+    Ok(vfs.f_bavail.saturating_mul(vfs.f_frsize))
+}
+
+/// Windows leg of [`available_bytes`] — `GetDiskFreeSpaceExW` reports `lpFreeBytesAvailableToCaller`, the free
+/// bytes available to the calling user on `dir`'s volume (respecting disk quotas), exactly what the §2.14.3
+/// re-check needs. See the Unix leg's doc for the full contract. [Build-Session-Entscheidung: P3.17]
+#[cfg(windows)]
+pub(crate) fn available_bytes(dir: &Path) -> io::Result<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    // A wide, NUL-TERMINATED path (`GetDiskFreeSpaceExW` takes a `PCWSTR`). `dir` is our own resolved
+    // destination dir (§2.3.1), not untrusted input.
+    let wide: Vec<u16> = dir
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut free_to_caller: u64 = 0;
+    // SAFETY: `wide` is a valid NUL-terminated UTF-16 buffer that outlives the call; `&mut free_to_caller` is a
+    // valid `u64` out-param; the two total-size out-params are null; `GetDiskFreeSpaceExW` writes only through it.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free_to_caller,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(free_to_caller)
+}
+
 // Two separate cfg attributes (NOT `cfg(all(test, unix))`): clippy's `allow-expect-in-tests` only
 // recognises a STANDALONE `#[cfg(test)]` as a test context (its `is_cfg_test` matches a single-item
 // `cfg(test)`, not a compound `all(test, unix)`), so the compound form would wrongly trip the crate-root
@@ -598,6 +665,47 @@ mod rename_noreplace_at_tests {
         assert!(
             !dir.path().join("out.tsv").exists(),
             "§2.1.2 no-harm: nothing was published on the retryable path"
+        );
+    }
+}
+
+// §2.14.3/§2.14.4 free-space read (G15) — cross-OS (`available_bytes` compiles on both). A STANDALONE
+// `#[cfg(test)]` mod (clippy `is_cfg_test` recognises the test context, so the crate-root expect_used deny is
+// lifted for the test's expect-calls); the per-OS behaviour is exercised on a REAL temp filesystem + a REAL
+// statvfs/GetDiskFreeSpaceExW read (never mock the FS under test, test-strategy §0.1).
+#[cfg(test)]
+mod available_bytes_tests {
+    use super::available_bytes;
+
+    // §2.14.3/§2.14.4 (G15): the free-space read returns a plausible POSITIVE byte count for a real temp dir on a
+    // real volume — so the §2.14.3 re-check has a live number to compare the intermediate against. A real writable
+    // temp dir always has SOME free space; a 0 would signal the statvfs/GetDiskFreeSpaceExW read is broken (e.g.
+    // f_bavail × f_frsize mis-multiplied, or the wrong out-param read on Windows).
+    #[test]
+    fn available_bytes_on_a_real_dir_is_positive() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let free = available_bytes(dir.path()).expect("§2.14.3: read the volume's free space");
+        assert!(
+            free > 0,
+            "§2.14.3: a real writable temp dir reports a positive free-byte count (statvfs/GetDiskFreeSpaceExW)"
+        );
+    }
+
+    // §2.8/G4/G14 (G15): a missing path is a clean Err (never a panic) — the §2.8 caller maps it, never a
+    // silently-assumed "fits". Unix-gated: `statvfs(missing)` deterministically fails `ENOENT`; the Windows leg's
+    // error path (`GetDiskFreeSpaceExW` → `last_os_error`) is a trivial map covered by the positive test's success
+    // path + the §6.4.4 cross-OS matrix (a bare-metal `GetDiskFreeSpaceExW` on a nonexistent dir is not portably
+    // deterministic — some builds resolve to the volume root — so it is not asserted per-push). The individual
+    // `#[cfg(unix)]` fn inside a STANDALONE `#[cfg(test)]` mod keeps clippy's test-context recognition (only the
+    // MODULE-level compound `cfg(all(test, unix))` trips `is_cfg_test`, the P1.17 trap). [Build-Session-Entscheidung: P3.17]
+    #[cfg(unix)]
+    #[test]
+    fn available_bytes_on_a_missing_path_is_err() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let missing = dir.path().join("no-such-subdir");
+        assert!(
+            available_bytes(&missing).is_err(),
+            "§2.8: a missing path is a clean Err (the §2.8 caller maps it), never a panic"
         );
     }
 }

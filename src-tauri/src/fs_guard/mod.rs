@@ -39,9 +39,11 @@
 //!  - `publish_numbered(verified_parent, parent_dir, tmp, candidates)` — the §2.2.2 numbering ↔ no-clobber retry
 //!    loop: drive `output_name`'s lazy candidates through the create-only publish, bumping `(n)` on each
 //!    collision, capped at ~10 000 variants (§2.1.2 / §2.2) — **P3.15**.
-//!  - `atomic_publish(verified_parent, parent_dir, tmp, candidates)` — the §2.1.1 per-item write composite:
-//!    step-3 `sync_all(tmp)` durability → the `publish_numbered` loop → step-6 parent-dir fsync on success
-//!    (Unix; no-op Windows) — **P3.16**; P3.17 adds the §2.14.3 EXDEV cross-volume fallback branch inside it.
+//!  - `atomic_publish(verified_parent, parent_dir, tmp, candidates, same_volume_intermediate)` — the
+//!    §2.1.1/§2.14.3 per-item write composite: step-3 `sync_all(tmp)` durability → the `publish_numbered` loop →
+//!    step-6 parent-dir fsync on success (Unix; no-op Windows) — **P3.16**; with the §2.14.3 EXDEV cross-volume
+//!    fallback (a cross-device publish → free-space re-check → copy-exactly-once into the caller-provided
+//!    same-volume `.part` → exclusive publish) wired inside it — **P3.17**.
 //!  - `location_status` — per-location writability + ephemeral classification, cached per-dir (§2.7.2) — **P3.33**.
 
 use std::ffi::OsString;
@@ -1227,9 +1229,16 @@ pub enum PublishError {
     /// The ~10 000-variant no-clobber cap was exhausted — a degenerate destination directory already holding
     /// every candidate name (§2.1.2/§2.2). Maps to §2.8 `TooManyCollisions`.
     TooManyCollisions,
-    /// A genuine OS error from a publish attempt (a permission error, or `EXDEV` cross-volume before the
-    /// §2.14.3 fallback P3.17 intercepts it). Maps to §2.8 `WriteFailed` (or routes to the §2.14.3 cross-volume
-    /// copy fallback for `EXDEV`, P3.17).
+    /// The §2.14.3 EXDEV cross-volume fallback's pre-copy free-space re-check failed: `final`'s volume cannot
+    /// host the ~output-sized intermediate the copy would place there (the ~2× destination-volume peak the
+    /// §1.10/§2.14.4 preflight does NOT model — "never assume it fits", mirroring §2.7.2's late-divert). Maps to
+    /// §2.8 `OutOfDisk`; the item fails clearly and the batch continues (§1.9). Only the cross-volume path
+    /// produces it (the direct intra-volume publish never copies). [Build-Session-Entscheidung: P3.17]
+    OutOfDisk,
+    /// A genuine OS error from a publish attempt (a permission error). Maps to §2.8 `WriteFailed`. `EXDEV`
+    /// (Unix) / `ERROR_NOT_SAME_DEVICE` (Windows) is NOT surfaced here — `atomic_publish` (P3.17) intercepts a
+    /// cross-device publish failure and routes it to the §2.14.3 copy-into-dest-volume fallback, so an `Io` that
+    /// escapes to the §2.1.1 caller (P3.38) is a real write failure, never a cross-volume one.
     Io(io::Error),
 }
 
@@ -1420,22 +1429,143 @@ fn fsync_parent_dir(_parent: &VerifiedParentDir) -> io::Result<()> {
     Ok(())
 }
 
-/// §2.1.1 the atomic, durable, no-clobber publish — the per-output-item write composite: make the completed
-/// `tmp`'s bytes durable (step 3, [`sync_tmp_bytes`]), publish it through the §2.2.2 numbering ↔ no-clobber loop
-/// (step 5, [`publish_numbered`]), and on a successful publish fsync the containing directory so the new dentry
-/// is durable (step 6, [`fsync_parent_dir`] — Unix; a no-op on Windows). This is the module-doc `atomic_publish`
-/// composite; P3.17 adds the §2.14.3 EXDEV cross-volume fallback branch inside it.
+/// §2.14.3: is `e` the CROSS-DEVICE publish failure the EXDEV fallback intercepts (as opposed to a genuine §2.8
+/// write error)? Unix `EXDEV` from a cross-volume `renameat`/`linkat`; Windows `ERROR_NOT_SAME_DEVICE` from the
+/// `crate::platform::rename_noreplace_at` NT move. Every OTHER `io::Error` is a real write failure the caller
+/// surfaces unchanged, so a non-cross-device error can never silently trigger the (more expensive, though still
+/// no-harm) copy fallback — the classifier is exact to keep the common path's §2.8 error mapping faithful.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.14.3 the cross-device classifier (P3.17) — called only by atomic_publish's EXDEV routing \
+                  (unwired until the §2.1.1 write sequence, P3.38) — so it is dead-at-runtime during the P3 \
+                  wiring window; `allow` (permissive) covers the ambiguous dead-ness (the publish_once pattern). \
+                  Exercised by is_cross_device_tests."
+    )
+)]
+fn is_cross_device(e: &io::Error) -> bool {
+    // The cross-device publish-failure errno, per OS — exactly one `let` compiles per target (the
+    // `resolve_identity` per-OS-`let` idiom, no block-tail ambiguity). Unix: POSIX `EXDEV` = 18 (identical on
+    // Linux + macOS `errno.h`), preserved through `io::Error::from(rustix::io::Errno)` by
+    // `publish_noreplace`/`publish_link_fallback`. Windows: `ERROR_NOT_SAME_DEVICE` (17), the Win32 code
+    // `RtlNtStatusToDosError` maps `STATUS_NOT_SAME_DEVICE` to inside `crate::platform::rename_noreplace_at`.
+    // [Build-Session-Entscheidung: P3.17]
+    #[cfg(unix)]
+    let cross_device_errno: i32 = 18;
+    #[cfg(windows)]
+    let cross_device_errno: i32 = windows_sys::Win32::Foundation::ERROR_NOT_SAME_DEVICE as i32;
+    e.raw_os_error() == Some(cross_device_errno)
+}
+
+/// §2.14.3 the EXDEV cross-volume fallback CORE, with an INJECTABLE `avail_bytes` free-space value — the
+/// testable seat (mirroring `publish_numbered_capped`'s injectable `cap`; the real path reads
+/// [`crate::platform::available_bytes`], the tests inject a value so both sides of the free-space gate are
+/// deterministic without a constrained FS). Given the completed engine output `cross_volume_tmp` sitting on a
+/// DIFFERENT volume than `final` (the direct intra-volume publish already failed cross-device), preserve
+/// atomicity WITHIN `final`'s volume by copying it into a same-volume intermediate and exclusively publishing
+/// THAT. The §2.14.3 order:
 ///
-/// Returns the [`PublishOutcome`] / [`PublishError`] of the numbering loop unchanged — the durability steps add
-/// no new outcome, only `io::Error`s (surfaced as [`PublishError::Io`], mapped to §2.8 `WriteFailed` by the
-/// §2.1.1 caller, P3.38). On [`PublishOutcome::NoAtomicPublishSupport`] (the FAT/exFAT §2.7.2 divert signal) NO
-/// dentry was created, so the dir-fsync is correctly skipped. **Atomicity + no-clobber come SOLELY from the
-/// create-only exclusive publish (§2.1.2/§2.1.3); the fsyncs add DURABILITY, never atomicity** — a lost fsync
+/// - **(c) pre-copy free-space re-check** — the copy makes the output's bytes exist a SECOND time on `final`'s
+///   volume (peak ~2× output), which the §1.10/§2.14.4 preflight does NOT model; if `avail_bytes` (the caller's
+///   [`crate::platform::available_bytes`] read of `final`'s volume) is below the intermediate's size (≈ the
+///   `cross_volume_tmp` byte length), fail [`PublishError::OutOfDisk`] BEFORE writing a byte ("never assume it
+///   fits", §2.7.2).
+/// - **(d) copy EXACTLY ONCE** — `std::fs::copy(cross_volume_tmp, same_volume_intermediate)` places the bytes on
+///   `final`'s volume. `same_volume_intermediate` is the caller-provided (P3.38, via `crate::run`) run-owned
+///   `.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part` sibling of `final` — a NAMED, swept home (§2.6.3),
+///   never an anonymous `$TMPDIR` temp. `fs_guard` is a §0.7 tier-2 LEAF (it does not know the `crate::run`
+///   naming), so the intermediate PATH is passed in, not minted here.
+/// - **sync** the copied intermediate durable ([`sync_tmp_bytes`], §2.1.1 step 3).
+/// - **(e) publish** the intermediate → `final` via the §2.2.2 numbering ↔ no-clobber loop
+///   ([`publish_numbered`]). The COPY is OUTSIDE this loop, so a name collision re-renames the SAME
+///   already-copied intermediate to the next `stem (n).ext` — the expensive cross-volume copy happens EXACTLY
+///   ONCE, only the cheap intra-volume exclusive-rename loops (§2.14.3).
+/// - **(f) dir-fsync** the destination directory on success ([`fsync_parent_dir`], Unix; Windows no-op).
+///
+/// `cross_volume_tmp` is COPIED, never moved — it stays on its own volume for the §2.6 run-scope cleanup
+/// (`crate::run::cleanup_item` reclaims it by the recorded `final_dir` set); only the same-volume intermediate is
+/// consumed by the publish. No panic (G4/G14) — every failure is a structured `Err`. [Build-Session-Entscheidung: P3.17]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.14.3 the cross-volume fallback core (P3.17) — called only by atomic_publish's EXDEV routing \
+                  + the tests (unwired until the §2.1.1 write sequence, P3.38) — so it is dead-at-runtime during \
+                  the P3 wiring window; `allow` (permissive) covers the ambiguous dead-ness (the \
+                  publish_numbered_capped pattern). Exercised by publish_cross_volume_tests."
+    )
+)]
+fn publish_cross_volume_checked(
+    parent: &VerifiedParentDir,
+    parent_dir: &Path,
+    cross_volume_tmp: &Path,
+    candidates: OutputNameCandidates,
+    same_volume_intermediate: &Path,
+    avail_bytes: u64,
+) -> Result<PublishOutcome, PublishError> {
+    // (c) §2.14.3 pre-copy free-space re-check: the intermediate is ≈ the output size (= the cross-volume tmp's
+    // byte length). Fail OutOfDisk BEFORE writing a byte if `final`'s volume cannot host it (never assume it
+    // fits, §2.7.2). A genuine `metadata` failure on our own tmp is a §2.8 `Io`.
+    let need = std::fs::metadata(cross_volume_tmp)
+        .map_err(PublishError::Io)?
+        .len();
+    if avail_bytes < need {
+        return Err(PublishError::OutOfDisk);
+    }
+    // (d) §2.14.3 copy EXACTLY ONCE — place the output's bytes on `final`'s volume in the caller's run-owned
+    // `.part` intermediate. `std::fs::copy` is the documented `EXDEV` remedy (copy into the destination volume,
+    // then rename); the intermediate carries a fresh unique `.part` name (§2.14.1), so this never clobbers user
+    // data. On the cross-device path the source `cross_volume_tmp` is LEFT for the §2.6 cleanup (copied, not
+    // moved).
+    std::fs::copy(cross_volume_tmp, same_volume_intermediate).map_err(PublishError::Io)?;
+    // §2.1.1 step 3: the copied intermediate's bytes are durable BEFORE the rename.
+    sync_tmp_bytes(same_volume_intermediate).map_err(PublishError::Io)?;
+    // (e) §2.14.3/§2.2.2 publish the SAME already-copied intermediate through the numbering loop — a collision
+    // re-renames it to the next candidate (copy-exactly-once; only the cheap intra-volume rename loops).
+    let outcome = publish_numbered(parent, parent_dir, same_volume_intermediate, candidates)?;
+    // (f) §2.1.1 step 6: on a successful publish, fsync the containing dir so the new dentry is crash-durable
+    // (Unix; a no-op on Windows). NoAtomicPublishSupport created no `final`, so there is no dentry to flush.
+    if matches!(outcome, PublishOutcome::Published { .. }) {
+        fsync_parent_dir(parent).map_err(PublishError::Io)?;
+    }
+    Ok(outcome)
+}
+
+/// §2.1.1/§2.14.3 the atomic, durable, no-clobber publish — the per-output-item write composite: make the
+/// completed `tmp`'s bytes durable (step 3, [`sync_tmp_bytes`]), publish it through the §2.2.2 numbering ↔
+/// no-clobber loop (step 5, [`publish_numbered`]), and on a successful publish fsync the containing directory so
+/// the new dentry is durable (step 6, [`fsync_parent_dir`] — Unix; a no-op on Windows). This is the module-doc
+/// `atomic_publish` composite, with the §2.14.3 EXDEV cross-volume fallback (P3.17) wired inside it.
+///
+/// **The §2.14.3 cross-volume fallback (P3.17).** In the rare case where `tmp` did not land on `final`'s volume
+/// (§2.14.1's same-volume placement could not be guaranteed — a quirky mount, a scratch dir the destination FS
+/// disallows), the direct publish fails CROSS-DEVICE (`EXDEV` / `ERROR_NOT_SAME_DEVICE`, [`is_cross_device`]).
+/// `atomic_publish` intercepts exactly that, reads `final`'s volume free space
+/// ([`crate::platform::available_bytes`]), and hands off to [`publish_cross_volume_checked`], which re-checks
+/// free space, copies `tmp` into `same_volume_intermediate` EXACTLY ONCE, and exclusively publishes THAT within
+/// `final`'s volume. Callers see the same [`PublishOutcome`] / [`PublishError`] whether the publish went direct
+/// or via the fallback (§2.14.3 "callers never see the distinction"). **On the fallback path `tmp` is COPIED,
+/// not moved — it is left on its own volume for the §2.6 run-scope cleanup** (unlike the direct path, whose
+/// rename consumes `tmp`); this is why P3.38 records every `final_dir` (incl. cross-volume) for `cleanup_run`.
+///
+/// Returns the [`PublishOutcome`] / [`PublishError`] of the (direct or fallback) numbering loop — the durability
+/// steps add no new outcome, only `io::Error`s (surfaced as [`PublishError::Io`] → §2.8 `WriteFailed`), plus the
+/// fallback's [`PublishError::OutOfDisk`] (→ §2.8 `OutOfDisk`) when `final`'s volume can't host the ~output-sized
+/// copy. On [`PublishOutcome::NoAtomicPublishSupport`] (the FAT/exFAT §2.7.2 divert signal) NO dentry was
+/// created, so the dir-fsync is correctly skipped. **Atomicity + no-clobber come SOLELY from the create-only
+/// exclusive publish (§2.1.2/§2.1.3); the fsyncs add DURABILITY, never atomicity, and the cross-volume path's
+/// ONLY rename is intra-volume + exclusive** (the copy is never a cross-volume rename, §2.14.3) — a lost fsync
 /// degrades to "the write may not survive a power cut", never to a clobber or a truncated `final`.
 ///
 /// `parent` / `parent_dir` / `tmp` / `candidates` carry the same meaning + the same caller contract as
 /// [`publish_numbered`] (the `(parent_dir, parent)` pair from one [`open_verified_parent_dir`] call, Windows
-/// non-`\\?\` form). No panic (G4/G14) — every failure is a structured `Err`.
+/// non-`\\?\` form). `same_volume_intermediate` is the caller-provided (P3.38, via `crate::run`) run-owned
+/// `.convertia-…-.part` sibling of `final` used ONLY on the §2.14.3 fallback path (a cheap path the caller
+/// always computes; unused — never created — on the common direct path). No panic (G4/G14) — every failure is a
+/// structured `Err`.
 ///
 /// **Caller contract (§2.1.1 step 7, for the P3.38 write sequence):** a [`PublishError::Io`] from the STEP-3
 /// sync means `final` was never created (the publish never ran — nothing on disk to reconcile), but an `Io`
@@ -1448,10 +1578,10 @@ fn fsync_parent_dir(_parent: &VerifiedParentDir) -> io::Result<()> {
     not(test),
     expect(
         dead_code,
-        reason = "§2.1.1 atomic_publish (P3.16) — the atomic/durable/no-clobber per-item publish composite. Its \
-                  production caller is the §2.1.1 write sequence (P3.38, extended with the §2.14.3 EXDEV branch \
-                  in P3.17); statically unused in the production build until that wiring lands (`expect` \
-                  auto-flags the moment it does), exercised by atomic_publish_tests."
+        reason = "§2.1.1/§2.14.3 atomic_publish (P3.16, EXDEV fallback P3.17) — the atomic/durable/no-clobber \
+                  per-item publish composite. Its production caller is the §2.1.1 write sequence (P3.38); \
+                  statically unused in the production build until that wiring lands (`expect` auto-flags the \
+                  moment it does), exercised by atomic_publish_tests."
     )
 )]
 pub fn atomic_publish(
@@ -1459,17 +1589,44 @@ pub fn atomic_publish(
     parent_dir: &Path,
     tmp: &Path,
     candidates: OutputNameCandidates,
+    same_volume_intermediate: &Path,
 ) -> Result<PublishOutcome, PublishError> {
     // §2.1.1 step 3: the bytes are durable BEFORE the rename — a name-update is atomic but not durable-data.
     sync_tmp_bytes(tmp).map_err(PublishError::Io)?;
-    // §2.1.1 step 5: the numbering ↔ no-clobber publish (P3.15).
-    let outcome = publish_numbered(parent, parent_dir, tmp, candidates)?;
-    // §2.1.1 step 6: on a successful publish, fsync the containing dir so the new dentry is crash-durable
-    // (Unix; a no-op on Windows). NoAtomicPublishSupport created no `final`, so there is no dentry to flush.
-    if matches!(outcome, PublishOutcome::Published { .. }) {
-        fsync_parent_dir(parent).map_err(PublishError::Io)?;
+    // The §2.14.3 EXDEV fallback re-runs the numbering loop over a same-volume COPY, so keep a candidate clone
+    // for it: the direct attempt below consumes `candidates`, and on a cross-device failure it errored at the
+    // FIRST attempt (a cross-volume source fails EXDEV regardless of the target name), so the fallback needs a
+    // FRESH iterator. Cheap — two `OsString`s + a counter. [Build-Session-Entscheidung: P3.17]
+    let fallback_candidates = candidates.clone();
+    // §2.1.1 step 5: try the DIRECT intra-volume numbering ↔ no-clobber publish (P3.15) — the common path
+    // (`tmp` is on `final`'s volume, §2.14.1).
+    match publish_numbered(parent, parent_dir, tmp, candidates) {
+        Ok(outcome) => {
+            // §2.1.1 step 6: on a successful direct publish, fsync the containing dir (Unix; no-op Windows).
+            if matches!(outcome, PublishOutcome::Published { .. }) {
+                fsync_parent_dir(parent).map_err(PublishError::Io)?;
+            }
+            Ok(outcome)
+        }
+        // §2.14.3: the direct publish hit a CROSS-DEVICE failure (`tmp` landed on a different volume than
+        // `final` — the rare case §2.14.1's same-volume placement could not guarantee). Fall back to
+        // copy-into-`final`'s-volume-then-exclusive-publish. Read `final`'s volume free space HERE — lazily, so
+        // there is NO free-space read on the common direct path — and hand it to the testable fallback core.
+        Err(PublishError::Io(e)) if is_cross_device(&e) => {
+            let avail = crate::platform::available_bytes(parent_dir).map_err(PublishError::Io)?;
+            publish_cross_volume_checked(
+                parent,
+                parent_dir,
+                tmp,
+                fallback_candidates,
+                same_volume_intermediate,
+                avail,
+            )
+        }
+        // Any other publish error (PathTooLong / TooManyCollisions / a genuine non-cross-device Io) surfaces
+        // unchanged — the §2.14.3 fallback fires ONLY on a real cross-device failure.
+        Err(other) => Err(other),
     }
-    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -3205,7 +3362,18 @@ mod atomic_publish_tests {
         let tmp = dir.path().join(".convertia-tmp.part");
         std::fs::write(&tmp, b"converted bytes").expect("write the tmp");
         let candidates = output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem");
-        let outcome = atomic_publish(&parent, dir.path(), &tmp, candidates).expect("publish");
+        // [Test-Change: P3.17 — old-obsolete+new-correct, §2.14.3] mechanical call-arity update: the 4-arg
+        // atomic_publish call is obsolete (P3.17 added the `same_volume_intermediate` 5th param, §2.14.3); the
+        // 5-arg form is correct. The Published-outcome EXPECTATION asserted below is UNCHANGED — no assertion
+        // was relaxed/removed; the intermediate arg is unused on this direct (non-cross-device) path.
+        let outcome = atomic_publish(
+            &parent,
+            dir.path(),
+            &tmp,
+            candidates,
+            &dir.path().join(".convertia-xvol.part"),
+        )
+        .expect("publish");
         assert_eq!(
             outcome,
             PublishOutcome::Published {
@@ -3236,7 +3404,18 @@ mod atomic_publish_tests {
         let tmp = dir.path().join(".convertia-tmp.part");
         std::fs::write(&tmp, b"new bytes").expect("write the tmp");
         let candidates = output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem");
-        let outcome = atomic_publish(&parent, dir.path(), &tmp, candidates).expect("publish");
+        // [Test-Change: P3.17 — old-obsolete+new-correct, §2.14.3] mechanical call-arity update: the 4-arg
+        // atomic_publish call is obsolete (P3.17 added the `same_volume_intermediate` 5th param, §2.14.3); the
+        // 5-arg form is correct. The Published-outcome EXPECTATION asserted below is UNCHANGED — no assertion
+        // was relaxed/removed; the intermediate arg is unused on this direct (non-cross-device) path.
+        let outcome = atomic_publish(
+            &parent,
+            dir.path(),
+            &tmp,
+            candidates,
+            &dir.path().join(".convertia-xvol.part"),
+        )
+        .expect("publish");
         assert_eq!(
             outcome,
             PublishOutcome::Published {
@@ -3303,8 +3482,14 @@ mod atomic_publish_tests {
         let parent = verified(dir.path());
         let missing_tmp = dir.path().join(".convertia-does-not-exist.part");
         let candidates = output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem");
-        let err = atomic_publish(&parent, dir.path(), &missing_tmp, candidates)
-            .expect_err("a missing tmp fails at the step-3 sync, before any publish");
+        let err = atomic_publish(
+            &parent,
+            dir.path(),
+            &missing_tmp,
+            candidates,
+            &dir.path().join(".convertia-xvol.part"),
+        )
+        .expect_err("a missing tmp fails at the step-3 sync, before any publish");
         assert!(
             matches!(err, PublishError::Io(_)),
             "§2.8: a missing tmp surfaces as PublishError::Io (the step-3 sync failure)"
@@ -3319,6 +3504,193 @@ mod atomic_publish_tests {
         assert!(
             !dir.path().join("data.tsv").exists(),
             "§2.1.1: sync runs BEFORE publish — a failed sync publishes NOTHING (no leaf created)"
+        );
+    }
+
+    // §2.14.3 (G15): the cross-device classifier recognises the per-OS cross-volume errno (Unix `EXDEV` = 18 /
+    // Windows `ERROR_NOT_SAME_DEVICE` = 17) and NOTHING else — so ONLY a real cross-device publish failure
+    // triggers the §2.14.3 copy fallback, and a genuine write error (permission, NotFound) surfaces unchanged
+    // as §2.8. Kills a mutant that classified every `io::Error` as cross-volume (which would copy-fallback on a
+    // permission error) or none (which would never take the fallback).
+    #[test]
+    fn is_cross_device_recognises_only_the_cross_volume_errno() {
+        #[cfg(unix)]
+        let cross = io::Error::from_raw_os_error(18); // POSIX EXDEV (Linux + macOS)
+        #[cfg(windows)]
+        let cross = io::Error::from_raw_os_error(17); // ERROR_NOT_SAME_DEVICE
+        assert!(
+            is_cross_device(&cross),
+            "§2.14.3: the per-OS cross-device errno is classified as cross-volume"
+        );
+        assert!(
+            !is_cross_device(&io::Error::from(io::ErrorKind::PermissionDenied)),
+            "§2.14.3: a permission error is a real §2.8 write failure, never the copy-fallback trigger"
+        );
+        assert!(
+            !is_cross_device(&io::Error::from(io::ErrorKind::NotFound)),
+            "§2.14.3: a NotFound (no raw_os_error) is not a cross-device failure"
+        );
+    }
+
+    // §2.14.3 (G15/G31): the cross-volume fallback core copies the (simulated cross-volume) tmp into the
+    // same-volume intermediate, publishes THAT to the fresh base name byte-exact, CONSUMES the intermediate, and
+    // leaves the SOURCE tmp UNTOUCHED (copied, not moved — copy-exactly-once; the source stays on its own volume
+    // for §2.6 cleanup). `avail_bytes` is injected ABOVE the need so the free-space gate passes (the
+    // `publish_numbered_capped` injectable-value idiom; the real temp FS + real publish primitive still run).
+    #[test]
+    fn cross_volume_publishes_a_copy_and_leaves_the_source() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let src = dir.path().join(".convertia-src-xvol.part");
+        std::fs::write(&src, b"cross-volume bytes").expect("write the (cross-volume) source tmp");
+        let intermediate = dir.path().join(".convertia-intermediate.part");
+        let candidates = output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem");
+        let outcome = publish_cross_volume_checked(
+            &parent,
+            dir.path(),
+            &src,
+            candidates,
+            &intermediate,
+            u64::MAX, // free space far above the need → the §2.14.3 (c) gate passes
+        )
+        .expect("§2.14.3: the cross-volume fallback publishes");
+        assert_eq!(
+            outcome,
+            PublishOutcome::Published {
+                leaf: OsString::from("data.tsv"),
+                residual_tmp: false,
+            },
+            "§2.14.3: the copied intermediate publishes at the fresh base name"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("data.tsv")).expect("read the published file"),
+            b"cross-volume bytes",
+            "§2.14.3: the published file carries the source tmp's exact bytes (copied across the volume once)"
+        );
+        assert!(
+            !intermediate.exists(),
+            "§2.14.3: the same-volume intermediate was consumed by the exclusive rename"
+        );
+        assert_eq!(
+            std::fs::read(&src).expect("read the source tmp"),
+            b"cross-volume bytes",
+            "§2.14.3 copy-exactly-once: the source tmp is COPIED not moved — left untouched for §2.6 cleanup"
+        );
+    }
+
+    // §2.14.3/§2.2.2 (G15/G31): a taken base name numbers away on the same-volume intermediate — the COPY
+    // happens ONCE (outside the numbering loop), then the cheap intra-volume rename re-targets the SAME
+    // intermediate to data (1).tsv. The pre-existing file is byte-identical (no-harm) and the source tmp is
+    // untouched — proving the expensive cross-volume copy does not re-run per numbering attempt (§2.14.3).
+    #[test]
+    fn cross_volume_numbers_away_copying_once_and_never_clobbers() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let taken = dir.path().join("data.tsv");
+        std::fs::write(&taken, b"PRE-EXISTING must survive").expect("write the taken base name");
+        let src = dir.path().join(".convertia-src-xvol.part");
+        std::fs::write(&src, b"new xvol bytes").expect("write the (cross-volume) source tmp");
+        let intermediate = dir.path().join(".convertia-intermediate.part");
+        let candidates = output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem");
+        let outcome = publish_cross_volume_checked(
+            &parent,
+            dir.path(),
+            &src,
+            candidates,
+            &intermediate,
+            u64::MAX,
+        )
+        .expect("publish");
+        assert_eq!(
+            outcome,
+            PublishOutcome::Published {
+                leaf: OsString::from("data (1).tsv"),
+                residual_tmp: false,
+            },
+            "§2.14.3/§2.2.2: the fallback numbers away from the taken base to the first free stem (1).ext"
+        );
+        assert_eq!(
+            std::fs::read(&taken).expect("read the pre-existing base name"),
+            b"PRE-EXISTING must survive",
+            "§2.2.2 no-harm: the pre-existing file is byte-identical — the cross-volume publish NEVER clobbered it"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("data (1).tsv")).expect("read the numbered output"),
+            b"new xvol bytes",
+            "§2.14.3: the numbered output carries the copied bytes"
+        );
+        assert_eq!(
+            std::fs::read(&src).expect("read the source tmp"),
+            b"new xvol bytes",
+            "§2.14.3 copy-exactly-once: the source is untouched even when the publish numbers away"
+        );
+    }
+
+    // §2.14.3 step (c) / §2.8 (G15/G31): the pre-copy free-space re-check FAILS OutOfDisk when `final`'s volume
+    // can't host the ~output-sized intermediate — BEFORE writing a byte (`avail_bytes` injected BELOW the need).
+    // No intermediate is created, nothing is published, and the source tmp is untouched — "never assume it fits"
+    // (§2.7.2), fail clearly. Kills a mutant that copied first and space-checked second (a wasted ~output write).
+    #[test]
+    fn cross_volume_out_of_disk_fails_before_the_copy() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let src = dir.path().join(".convertia-src-xvol.part");
+        std::fs::write(&src, b"a non-empty output that will not fit")
+            .expect("write the source tmp");
+        let intermediate = dir.path().join(".convertia-intermediate.part");
+        let candidates = output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem");
+        let err = publish_cross_volume_checked(
+            &parent,
+            dir.path(),
+            &src,
+            candidates,
+            &intermediate,
+            0, // zero free space on `final`'s volume → the intermediate cannot fit
+        )
+        .expect_err("§2.14.3: the pre-copy free-space re-check fails OutOfDisk when it won't fit");
+        assert!(
+            matches!(err, PublishError::OutOfDisk),
+            "§2.8: the cross-volume free-space re-check maps to OutOfDisk (not a generic Io)"
+        );
+        assert!(
+            !intermediate.exists(),
+            "§2.14.3: OutOfDisk fires BEFORE the copy — no intermediate byte was written"
+        );
+        assert!(
+            !dir.path().join("data.tsv").exists(),
+            "§2.14.3: nothing was published on the OutOfDisk path"
+        );
+        assert_eq!(
+            std::fs::read(&src).expect("read the source tmp"),
+            b"a non-empty output that will not fit",
+            "§2.14.3: the source tmp is untouched when the free-space gate refuses"
+        );
+    }
+
+    // §2.2.3/§2.8/§2.14.3 (G15): a §2.2.3 path-limit breach from the direct publish flows through
+    // `atomic_publish`'s non-cross-device Err arm UNCHANGED — the §2.14.3 fallback fires ONLY on a real
+    // cross-device failure, NEVER on PathTooLong (or any other §2.8 write error), and it never creates the
+    // cross-volume intermediate on such a path. (The cross-device routing arm itself needs a genuine 2-volume
+    // setup and is exercised at the §6.5 cross-volume integration level, P3.65.)
+    #[test]
+    fn atomic_publish_passes_through_a_non_crossdevice_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let tmp = dir.path().join(".convertia-tmp.part");
+        std::fs::write(&tmp, b"bytes").expect("write the tmp");
+        // A 300-char stem → the base candidate breaches the 255-unit per-component limit (§2.2.3).
+        let source = format!("{}.csv", "a".repeat(300));
+        let intermediate = dir.path().join(".convertia-xvol.part");
+        let candidates = output_name(Path::new(&source), "tsv").expect("a real path has a stem");
+        let err = atomic_publish(&parent, dir.path(), &tmp, candidates, &intermediate)
+            .expect_err("a §2.2.3 path-limit breach is a hard failure");
+        assert!(
+            matches!(err, PublishError::PathTooLong(_)),
+            "§2.8: a §2.2.3 path-limit breach flows through atomic_publish unchanged (not swallowed by the EXDEV arm)"
+        );
+        assert!(
+            !intermediate.exists(),
+            "§2.14.3: the cross-volume intermediate is never created on a non-cross-device error"
         );
     }
 }
