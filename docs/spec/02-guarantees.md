@@ -789,7 +789,10 @@ volume rule are owned by §2.14.2 (referenced here, not re-decided):
 
 - **Kind-2 engine working files** (LibreOffice profile, FFmpeg internal temp, etc.)
   live under the **central per-run scratch dir** named with the `RunId` (§7.1):
-  `…/convertia/<InstanceId>.<pid>/run-<RunId>/` under the §2.14 scratch root.
+  `…/convertia/scratch/<InstanceId>.<pid>/run-<RunId>/` under the §2.14 scratch root
+  (the `scratch/` component the §2.6.3 sweep glob `convertia/scratch/<*>.<*>/run-*` and
+  the `crate::run` P3.21 assembly both use — the full path is
+  `<app_local_data_dir>/convertia/scratch/<InstanceId>.<pid>/run-<RunId>/`).
 - **The kind-1 publish temp (`*.part`)** does **not** live in the central scratch
   root — its location is **deferred entirely to §2.14**, which puts it on
   **`final`'s volume** (the destination dir) so the §2.1 publish is a true
@@ -1980,7 +1983,7 @@ the whole batch (which would over-count and falsely trip `OutOfDisk`).
 
 **Staged-copy lifecycle — created AFTER the run-lock, reclaimed unconditionally
 `[DECIDED]`.** The macOS staged **source** copy is a kind-2 file under the **per-run
-scratch root** `convertia/<InstanceId>.<pid>/run-<RunId>/`, and it is created **after the
+scratch root** `convertia/scratch/<InstanceId>.<pid>/run-<RunId>/`, and it is created **after the
 `run-<RunId>/.lock` is acquired** — the same **lock-before-part ordering invariant**
 (§2.6.3 / §2.14.1) that covers `.part` files therefore covers the staged source copy too,
 so the §2.6.3 startup sweep reclaims it on the next launch after a crash (**absent lock ⇒
@@ -2025,7 +2028,7 @@ move-equivalent **inside** that volume:
    **copy + fsync + exclusive-publish-within-destination-volume**. **The intermediate
    cross-volume temp has a named, swept home `[DECIDED]`:** that "other-volume" temp is
    **NOT** an anonymous `tempfile` in an arbitrary `$TMPDIR` — it lives under the **per-run
-   central scratch root** (`convertia/<InstanceId>.<pid>/run-<RunId>/`, the kind-2 root
+   central scratch root** (`convertia/scratch/<InstanceId>.<pid>/run-<RunId>/`, the kind-2 root
    covered by the run-lock and swept by §2.6.3 step 1), **or**, if it must sit elsewhere on
    that volume, it carries the **same `InstanceId`+`RunId` `.convertia-<InstanceId>-<RunId>-
    <jobId>-<rand>.part` naming** as a kind-1 publish temp (so the §2.6.3 per-file
