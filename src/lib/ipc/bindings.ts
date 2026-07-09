@@ -1137,8 +1137,8 @@ export type IntakePayload = {
  *  module, §0.7). OUTBOUND-ONLY (a `Result` `Err` / `ItemOutcome::Failed.error` return, never deserialized
  *  from the WebView) — so `Serialize` + `Type`, NO `Deserialize` (mirroring the outbound-only
  *  `ConversionErrorKind`/`ErrorKind`, P2.18). `message` is the §2.8.2 pre-localised plain English string
- *  (NEVER a stack trace / raw engine stderr, SSOT *no stack traces*); the §2.8 message CATALOG that
- *  produces it is a separate later box.
+ *  (NEVER a stack trace / raw engine stderr, SSOT *no stack traces*); the §2.8 message CATALOG that produces
+ *  it is `conversion_message_template` / `conversion_failure` below (P3.68).
  *
  *  [Build-Session-Entscheidung: P2.19] `kind` is typed with the CONCRETE `ConversionErrorKind`, NOT the
  *  §0.4.3-named `ErrorKind` ALIAS (`pub type ErrorKind = ConversionErrorKind`, P2.18) — the SAME type, but

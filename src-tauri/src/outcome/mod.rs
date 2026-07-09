@@ -13,8 +13,10 @@
 //! kind set + `ErrorKind` / `IpcError` / `AppFault` / `OutcomeMsg` + both projection helpers (above), so
 //! this box authors NO new type or impl; it records the root as scaffolded and maps the string TABLES +
 //! the surfacing leg owned by the scheduled boxes:
-//!  - the §2.8.2 `ConversionErrorKind → canonical-English` message catalog — **P3.68** (a P3 box; this
-//!    commit corrects the header's earlier attribution of the catalog to a P2 box).
+//!  - the §2.8.2 `ConversionErrorKind → canonical-English` message catalog — **P3.68 (built below):**
+//!    `conversion_message_template` (the single-home 21-row table + `None` for the 4 kinds homed elsewhere),
+//!    `conversion_failure` (the `{detected}`/`{platform}`/`{path}`-substituting `OutcomeMsg::Failure`
+//!    producer), and the 5 batch-summary strings (`BatchSummary` + `WITH_RESIDUE_TAIL`).
 //!  - the §2.9.1 `LossyKind → canonical-English` lossy-note catalog — **P3.69**.
 //!  - the Running→Failed render seam turning an internal `ConversionErrorKind` into the surfaced
 //!    `OutcomeMsg::Failure { text }` through the P3.68 catalog — **P3.46**.
@@ -150,8 +152,8 @@ pub type ErrorKind = ConversionErrorKind;
 /// module, §0.7). OUTBOUND-ONLY (a `Result` `Err` / `ItemOutcome::Failed.error` return, never deserialized
 /// from the WebView) — so `Serialize` + `Type`, NO `Deserialize` (mirroring the outbound-only
 /// `ConversionErrorKind`/`ErrorKind`, P2.18). `message` is the §2.8.2 pre-localised plain English string
-/// (NEVER a stack trace / raw engine stderr, SSOT *no stack traces*); the §2.8 message CATALOG that
-/// produces it is a separate later box.
+/// (NEVER a stack trace / raw engine stderr, SSOT *no stack traces*); the §2.8 message CATALOG that produces
+/// it is `conversion_message_template` / `conversion_failure` below (P3.68).
 ///
 /// [Build-Session-Entscheidung: P2.19] `kind` is typed with the CONCRETE `ConversionErrorKind`, NOT the
 /// §0.4.3-named `ErrorKind` ALIAS (`pub type ErrorKind = ConversionErrorKind`, P2.18) — the SAME type, but
@@ -333,6 +335,148 @@ pub fn read_failure_to_error_kind(failure: ReadFailure) -> ConversionErrorKind {
         }
     }
 }
+
+// ─── §2.8.2 the conversion-outcome message catalog — the single home of the canonical English strings ──
+/// The §2.8.2 canonical-English message TEMPLATE for a conversion-outcome kind — the raw string with any
+/// `{detected}` / `{platform}` / `{path}` slot still literal. This is the **single home** of the §2.8.2
+/// strings (§2.8 owns the set): `crate::orchestrator` (P3.46) maps an `ErrorKind` into it, `crate::run` (P3.25)
+/// reads the `CleanupResidue` row, §1.12 (P3.50) reads it for the summary projection, and the UI (P4.69/P8.19)
+/// render the resolved text verbatim — no consumer ever re-authors a string. Tone: plain, calm, never blaming,
+/// never technical (SSOT *Fail clearly*); English-only (G57).
+///
+/// Returns `None` for the four `ConversionErrorKind` variants §2.8.2 does NOT home: the three §2.13 app-level
+/// faults (`EngineMissing` / `WebviewFault` / `BundleDamaged`) render via the §2.13.3 `app://fault` catalog,
+/// and `MixedDrop` is the §1.3 pre-flight refusal surfaced by the §5.2 UI — each a different home, so this
+/// per-item conversion-outcome table returns `None` rather than duplicating them (one string, one home). The
+/// match is EXHAUSTIVE (G4/G14): a new `ConversionErrorKind` variant forces a compile-time decision here.
+/// [Build-Session-Entscheidung: P3.68]
+pub fn conversion_message_template(kind: ConversionErrorKind) -> Option<&'static str> {
+    let text = match kind {
+        ConversionErrorKind::Corrupt => "This file looks damaged and couldn't be converted.",
+        ConversionErrorKind::Empty => "This file is empty — there's nothing to convert.",
+        ConversionErrorKind::Unrecognized => {
+            "ConvertIA couldn't tell what kind of file this is, so it can't convert it."
+        }
+        ConversionErrorKind::UnsupportedType => {
+            "ConvertIA can't convert this type of file — it looks like {detected}."
+        }
+        ConversionErrorKind::UnsupportedPair => "That conversion isn't available.",
+        ConversionErrorKind::Unreadable => {
+            "ConvertIA couldn't open this file — it may be in use by another program, or you don't have permission to read it."
+        }
+        ConversionErrorKind::Gone => {
+            "This file is no longer there — it may have been moved, renamed, or its drive removed."
+        }
+        ConversionErrorKind::PasswordProtected => {
+            "This file is password-protected or copy-protected, so ConvertIA can't read it."
+        }
+        ConversionErrorKind::NoAudioTrack => "This file has no audio to extract.",
+        ConversionErrorKind::TooBig => {
+            "This file is too large for ConvertIA to convert on this computer."
+        }
+        ConversionErrorKind::OutOfDisk => {
+            "There isn't enough free disk space to finish this conversion."
+        }
+        ConversionErrorKind::WriteFailed => {
+            "ConvertIA couldn't save the converted file to that location."
+        }
+        ConversionErrorKind::PathTooLong => {
+            "The output name would be too long for this system, so this file was skipped. Try a shorter folder or file name."
+        }
+        ConversionErrorKind::TooManyCollisions => {
+            "There are already too many files with this name in that folder, so this one couldn't be saved. Try a different folder."
+        }
+        ConversionErrorKind::EngineCrash => {
+            "Something went wrong while converting this file, so it was skipped."
+        }
+        ConversionErrorKind::EngineHang => "This file took too long to convert and was stopped.",
+        ConversionErrorKind::EngineError => "ConvertIA couldn't convert this file.",
+        ConversionErrorKind::PlatformUnavailable => {
+            "This conversion isn't available on {platform} because the required format support can't be included here."
+        }
+        ConversionErrorKind::QuarantinedByOs => {
+            "macOS is blocking one of ConvertIA's built-in tools with a security check. Open System Settings → Privacy & Security and choose \"Open Anyway\", then try again."
+        }
+        ConversionErrorKind::CleanupResidue => {
+            "This file couldn't be converted, and a temporary file may remain at {path}."
+        }
+        ConversionErrorKind::InternalError => {
+            "Something unexpected went wrong, so this file was skipped. The rest of your files will continue."
+        }
+        // Homed elsewhere — not a §2.8.2 per-item conversion-outcome string (one string, one home):
+        // {EngineMissing, WebviewFault, BundleDamaged} render via the §2.13.3 app://fault catalog, MixedDrop
+        // via the §5.2 pre-flight UI. This per-item table returns None rather than duplicating them.
+        ConversionErrorKind::EngineMissing
+        | ConversionErrorKind::WebviewFault
+        | ConversionErrorKind::BundleDamaged
+        | ConversionErrorKind::MixedDrop => return None,
+    };
+    Some(text)
+}
+
+/// Build the §2.8.2 [`OutcomeMsg::Failure`] for a conversion-outcome `kind`, filling the kind's single `{x}`
+/// slot from `arg`: the friendly detected type for `UnsupportedType`, the platform name for
+/// `PlatformUnavailable`, the residue path display for `CleanupResidue` — ignored (pass `""`) for the majority
+/// with no slot. Returns `None` for a kind §2.8.2 does not home (see [`conversion_message_template`]).
+/// Panic-free (a single `str::replace`, no formatting fallibility). Substitutes ONLY the one slot the template
+/// carries — never a chain of three replaces — so `arg`'s own content can never be re-scanned into a second
+/// substitution even if it happens to contain another slot token (a user residue path literally reading
+/// `{platform}`, say); `str::replace` never re-matches its own output. [Build-Session-Entscheidung: P3.68]
+pub fn conversion_failure(kind: ConversionErrorKind, arg: &str) -> Option<OutcomeMsg> {
+    let template = conversion_message_template(kind)?;
+    let text = if template.contains("{detected}") {
+        template.replace("{detected}", arg)
+    } else if template.contains("{platform}") {
+        template.replace("{platform}", arg)
+    } else if template.contains("{path}") {
+        template.replace("{path}", arg)
+    } else {
+        // No slot in this template — `arg` is ignored (the majority of kinds).
+        template.to_owned()
+    };
+    Some(OutcomeMsg::Failure { kind, text })
+}
+
+/// The §2.8.2 batch-level summary situations — the run-end line §1.12 assembles from the run `Totals`.
+/// Fieldful so the `{n}` / `{ok}` / `{fail}` counts are typed, not stringly-substituted. The "With residue"
+/// tail is [`WITH_RESIDUE_TAIL`] (appended, not a situation). Derive set matches the file convention (`Debug,
+/// Clone, Copy, PartialEq, Eq` — all-`usize` fields, so `Copy` is free); NO wire derives — this is a
+/// core-internal string source assembled into an already-wire `RunResult` line, not itself a wire type.
+/// [Build-Session-Entscheidung: P3.68]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchSummary {
+    /// "All {n} files converted."
+    AllSucceeded { n: usize },
+    /// "{ok} of {n} files converted. {fail} couldn't be converted — see details."
+    Partial { ok: usize, n: usize, fail: usize },
+    /// "None of the {n} files could be converted." — an explicit failure, never a quiet finish (SSOT).
+    AllFailed { n: usize },
+    /// "Stopped. {ok} files were already converted and kept; the rest were not started."
+    Cancelled { ok: usize },
+}
+
+impl BatchSummary {
+    /// The §2.8.2 canonical-English summary line for this situation, counts substituted (English-only, G57).
+    /// [Build-Session-Entscheidung: P3.68]
+    #[must_use]
+    pub fn text(&self) -> String {
+        match *self {
+            BatchSummary::AllSucceeded { n } => format!("All {n} files converted."),
+            BatchSummary::Partial { ok, n, fail } => {
+                format!("{ok} of {n} files converted. {fail} couldn't be converted — see details.")
+            }
+            BatchSummary::AllFailed { n } => format!("None of the {n} files could be converted."),
+            BatchSummary::Cancelled { ok } => {
+                format!("Stopped. {ok} files were already converted and kept; the rest were not started.")
+            }
+        }
+    }
+}
+
+/// The §2.8.2 "With residue" tail — appended (after a space) to a [`BatchSummary`] line when temporary files
+/// may remain (§2.6.4). Its own `const` so the §1.12 assembler and the §2.6.4 residue path (P3.25) share the
+/// one string. [Build-Session-Entscheidung: P3.68]
+pub const WITH_RESIDUE_TAIL: &str = "Some temporary files may remain — see details.";
 
 #[cfg(test)]
 mod tests {
@@ -621,5 +765,231 @@ mod tests {
                 "§0.4.2/§2.13: AppFault is the camelCase app://fault payload ({{ kind, message }})"
             );
         }
+    }
+
+    // §6.4.1 unit (G15) / §2.8.2 / G23 completeness: EVERY ConversionErrorKind is homed — the 21 §2.8.2
+    // conversion-outcome kinds each carry a non-empty catalog row, and the 4 non-conversion kinds
+    // ({EngineMissing, WebviewFault, BundleDamaged} → §2.13.3 app-fault; MixedDrop → §5.2 pre-flight) return
+    // None (homed elsewhere — one string, one home), NOT an unhomed kind. The exhaustive match in
+    // conversion_message_template is the compile-time guard; this asserts the current 25 are correctly split.
+    #[test]
+    fn every_conversion_kind_is_homed() {
+        use ConversionErrorKind as K;
+        let conversion = [
+            K::Corrupt,
+            K::Empty,
+            K::Unrecognized,
+            K::UnsupportedType,
+            K::UnsupportedPair,
+            K::Unreadable,
+            K::Gone,
+            K::PasswordProtected,
+            K::NoAudioTrack,
+            K::TooBig,
+            K::OutOfDisk,
+            K::WriteFailed,
+            K::PathTooLong,
+            K::TooManyCollisions,
+            K::EngineCrash,
+            K::EngineHang,
+            K::EngineError,
+            K::PlatformUnavailable,
+            K::QuarantinedByOs,
+            K::CleanupResidue,
+            K::InternalError,
+        ];
+        assert_eq!(
+            conversion.len(),
+            21,
+            "§2.8.2 defines 21 conversion-outcome rows"
+        );
+        for kind in conversion {
+            let row = conversion_message_template(kind);
+            assert!(
+                matches!(row, Some(s) if !s.is_empty()),
+                "§2.8.2: {kind:?} must have a non-empty catalog row, got {row:?}"
+            );
+        }
+        for kind in [
+            K::EngineMissing,
+            K::WebviewFault,
+            K::BundleDamaged,
+            K::MixedDrop,
+        ] {
+            assert_eq!(
+                conversion_message_template(kind),
+                None,
+                "§2.8.2: {kind:?} is homed elsewhere (§2.13.3 / §5.2), not in this per-item catalog"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15) / §2.8.2: PIN every one of the 21 catalog rows to its EXACT canonical-English string
+    // (templates carry the literal `{x}` slot for the 3 substituting kinds). This is an independent second
+    // transcription of the §2.8.2 table, so a single-character/word mutation to any catalog string (the whole
+    // deliverable of this box) fails here — closing the mutation-survival gap the non-empty check leaves.
+    #[test]
+    fn catalog_rows_match_the_exact_canonical_english() {
+        use ConversionErrorKind as K;
+        let expected: [(ConversionErrorKind, &str); 21] = [
+            (K::Corrupt, "This file looks damaged and couldn't be converted."),
+            (K::Empty, "This file is empty — there's nothing to convert."),
+            (
+                K::Unrecognized,
+                "ConvertIA couldn't tell what kind of file this is, so it can't convert it.",
+            ),
+            (
+                K::UnsupportedType,
+                "ConvertIA can't convert this type of file — it looks like {detected}.",
+            ),
+            (K::UnsupportedPair, "That conversion isn't available."),
+            (
+                K::Unreadable,
+                "ConvertIA couldn't open this file — it may be in use by another program, or you don't have permission to read it.",
+            ),
+            (
+                K::Gone,
+                "This file is no longer there — it may have been moved, renamed, or its drive removed.",
+            ),
+            (
+                K::PasswordProtected,
+                "This file is password-protected or copy-protected, so ConvertIA can't read it.",
+            ),
+            (K::NoAudioTrack, "This file has no audio to extract."),
+            (
+                K::TooBig,
+                "This file is too large for ConvertIA to convert on this computer.",
+            ),
+            (
+                K::OutOfDisk,
+                "There isn't enough free disk space to finish this conversion.",
+            ),
+            (
+                K::WriteFailed,
+                "ConvertIA couldn't save the converted file to that location.",
+            ),
+            (
+                K::PathTooLong,
+                "The output name would be too long for this system, so this file was skipped. Try a shorter folder or file name.",
+            ),
+            (
+                K::TooManyCollisions,
+                "There are already too many files with this name in that folder, so this one couldn't be saved. Try a different folder.",
+            ),
+            (
+                K::EngineCrash,
+                "Something went wrong while converting this file, so it was skipped.",
+            ),
+            (
+                K::EngineHang,
+                "This file took too long to convert and was stopped.",
+            ),
+            (K::EngineError, "ConvertIA couldn't convert this file."),
+            (
+                K::PlatformUnavailable,
+                "This conversion isn't available on {platform} because the required format support can't be included here.",
+            ),
+            (
+                K::QuarantinedByOs,
+                "macOS is blocking one of ConvertIA's built-in tools with a security check. Open System Settings → Privacy & Security and choose \"Open Anyway\", then try again.",
+            ),
+            (
+                K::CleanupResidue,
+                "This file couldn't be converted, and a temporary file may remain at {path}.",
+            ),
+            (
+                K::InternalError,
+                "Something unexpected went wrong, so this file was skipped. The rest of your files will continue.",
+            ),
+        ];
+        for (kind, text) in expected {
+            assert_eq!(
+                conversion_message_template(kind),
+                Some(text),
+                "§2.8.2: {kind:?} must match its exact canonical-English row"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15) / §2.8.2: the three substituting kinds fill their single `{x}` slot from `arg`
+    // (pinned to the exact substituted string — proving no slot leaks and the wiring is applied).
+    #[test]
+    fn conversion_failure_substitutes_the_single_slot() {
+        assert_eq!(
+            conversion_failure(ConversionErrorKind::UnsupportedType, "a ZIP archive"),
+            Some(OutcomeMsg::Failure {
+                kind: ConversionErrorKind::UnsupportedType,
+                text: "ConvertIA can't convert this type of file — it looks like a ZIP archive."
+                    .to_owned(),
+            }),
+            "§2.8.2: {{detected}} is substituted"
+        );
+        assert_eq!(
+            conversion_failure(ConversionErrorKind::PlatformUnavailable, "Linux"),
+            Some(OutcomeMsg::Failure {
+                kind: ConversionErrorKind::PlatformUnavailable,
+                text: "This conversion isn't available on Linux because the required format support can't be included here.".to_owned(),
+            }),
+            "§2.8.2: {{platform}} is substituted"
+        );
+        assert_eq!(
+            conversion_failure(ConversionErrorKind::CleanupResidue, "C:/out/file.tmp"),
+            Some(OutcomeMsg::Failure {
+                kind: ConversionErrorKind::CleanupResidue,
+                text: "This file couldn't be converted, and a temporary file may remain at C:/out/file.tmp."
+                    .to_owned(),
+            }),
+            "§2.6.4/§2.8.2: {{path}} is substituted — the only failure that names a residue path"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.8.2: a kind with NO slot ignores `arg` (verbatim), and a non-§2.8.2 kind
+    // yields None (homed elsewhere).
+    #[test]
+    fn conversion_failure_verbatim_for_plain_kinds_and_none_for_non_conversion() {
+        assert_eq!(
+            conversion_failure(ConversionErrorKind::Corrupt, "ignored"),
+            Some(OutcomeMsg::Failure {
+                kind: ConversionErrorKind::Corrupt,
+                text: "This file looks damaged and couldn't be converted.".to_owned(),
+            }),
+            "§2.8.2: a slot-free kind renders verbatim, ignoring arg"
+        );
+        assert_eq!(
+            conversion_failure(ConversionErrorKind::EngineMissing, "x"),
+            None,
+            "§2.8.2: a non-conversion kind is not produced as a per-item OutcomeMsg::Failure"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.8.2: the five batch-level summary strings (§1.12 assembles them) + the residue
+    // tail, pinned to their exact canonical English with counts substituted.
+    #[test]
+    fn batch_summary_strings_are_canonical() {
+        assert_eq!(
+            BatchSummary::AllSucceeded { n: 5 }.text(),
+            "All 5 files converted."
+        );
+        assert_eq!(
+            BatchSummary::Partial {
+                ok: 3,
+                n: 5,
+                fail: 2
+            }
+            .text(),
+            "3 of 5 files converted. 2 couldn't be converted — see details."
+        );
+        assert_eq!(
+            BatchSummary::AllFailed { n: 4 }.text(),
+            "None of the 4 files could be converted."
+        );
+        assert_eq!(
+            BatchSummary::Cancelled { ok: 2 }.text(),
+            "Stopped. 2 files were already converted and kept; the rest were not started."
+        );
+        assert_eq!(
+            WITH_RESIDUE_TAIL,
+            "Some temporary files may remain — see details."
+        );
     }
 }
