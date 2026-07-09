@@ -6,9 +6,13 @@
 //! run-lock `LockFileEx` exclusive advisory-lock acquire (`acquire_exclusive_lock`, P3.21) + its
 //! non-blocking startup-sweep liveness probe (`try_acquire_exclusive_lock`, P3.23), and the §2.14.3
 //! cross-volume free-space re-check `GetDiskFreeSpaceExW` (`available_bytes`, P3.17 — built at its
-//! §2.14.3 first-need, consumed by the §1.10/§2.14.4 preflight P4.72/P4.73 in a subsequent phase). The Unix renames
+//! §2.14.3 first-need, consumed by the §1.10/§2.14.4 preflight P4.72/P4.73 in a subsequent phase), and the
+//! §2.7.2 FAT/exFAT-class "no-atomic-publish" detection (`lacks_atomic_publish_primitive`, P3.18 — the
+//! proactive per-location divert heuristic §2.7.2 `location_status` folds in; Unix `statfs`, a Windows no-op).
+//! The Unix renames
 //! **and the §2.6.3 run-lock** ride safe `rustix` (`flock`; the §2.14.3 free-space read rides safe
-//! `rustix::fs::statvfs`), the §2.3 identity reads ride safe `winapi-util`, the §0.9
+//! `rustix::fs::statvfs`; the §2.7.2 FAT/exFAT detection rides safe `rustix::fs::statfs`), the §2.3 identity
+//! reads ride safe `winapi-util`, the §0.9
 //! kill rides `process-wrap` (example list corrected 2026-07-07, the P3.12 ruling); the remaining per-OS
 //! helpers are authored by their consuming boxes (P3+).
 //!
@@ -458,6 +462,141 @@ pub(crate) fn available_bytes(dir: &Path) -> io::Result<u64> {
     Ok(free_to_caller)
 }
 
+/// §2.1.2/§2.7.2 the FAT/exFAT-class "no atomic-publish primitive" detector (Unix; a Windows no-op) — the
+/// PROACTIVE per-location planning heuristic that §2.7.2 `fs_guard::location_status` (P3.33) folds into its
+/// verdict so §1.8 output planning (P3.37) can DIVERT a source whose destination filesystem offers NEITHER a
+/// `RENAME_NOREPLACE`-class no-replace rename NOR hardlinks (`link()` → `EPERM`/`ENOTSUP`) — the canonical case
+/// being FAT32/exFAT (the §2.14.2 portable-USB destination). On such a volume neither half of the §2.1 publish
+/// has a mechanised implementation, so the item's output diverts to the hardlink-capable system disk (§2.7.3)
+/// where the full §2.1 chain holds; the divert there carries `DivertReason::NoAtomicPublish` (§0.6), mapped by
+/// the higher planning tier — NOT here. This leaf returns only the boolean signal, keeping `crate::platform`
+/// (a §0.7 tier-3 leaf) free of any `crate::domain` dependency, exactly as the REACTIVE §2.1.2 third-fallback
+/// arm returns `fs_guard::PublishOutcome::NoAtomicPublishSupport` and defers the `DivertReason` mapping upward.
+///
+/// **READ-ONLY detection [Decision: P3.18, 2026-07-07 — the `statfs`-class realization]:** a `statfs`-class
+/// query that WRITES NO FILE, so it leaves no unreclaimable probe residue (the defect of the discarded
+/// write-probe alternative). Per OS:
+///  - **Linux:** `rustix::fs::statfs(dir)` → `StatFs.f_type` (the superblock magic) is classified by
+///    [`is_fat_class_magic`] against { `MSDOS_SUPER_MAGIC` `0x4d44` — the FAT driver reports one magic for
+///    FAT12/16/32 incl. vfat, `EXFAT_SUPER_MAGIC` `0x2011_BAB0` }. Both are PROJECT constants (see their defs):
+///    rustix exposes only `PROC`/`NFS_SUPER_MAGIC`, and `libc` is not a direct dependency — a raw magic value
+///    needs no crate.
+///  - **macOS:** `rustix::fs::statfs(dir)` → `StatFs` = `libc::statfs`, whose public `f_fstypename: [c_char; 16]`
+///    is classified by `is_fat_class_name` (plain code-span, not an intra-doc link — that classifier is
+///    `#[cfg(target_os = "macos")]`, absent from this Linux-gated doc's compilation) against { `"msdos"`
+///    (uniform for FAT12/16/32), `"exfat"` } — read THROUGH the rustix `StatFs` alias, so `libc` is never named.
+///  - **Windows (and any other target): `Ok(false)`** — `MoveFileExW`-without-`MOVEFILE_REPLACE_EXISTING`
+///    (§2.1.2) is a true create-only move on FAT/exFAT too, so a Windows FAT/exFAT destination keeps the §2.1
+///    guarantee and is NEVER diverted for this reason (§2.7.2). The leg exists (mirroring [`ensure_executable`])
+///    only so `location_status` can call this unconditionally without a per-OS `cfg`.
+///
+/// `Err` = the `statfs` read itself failed (a missing / vanished directory). The §2.7.2 caller (P3.33) treats
+/// an `Err` as "heuristic indeterminate → do NOT proactively divert" (logged, §7.5), because the REACTIVE
+/// §2.1.2 third-fallback publish arm (`PublishOutcome::NoAtomicPublishSupport`) remains the correctness
+/// backstop for any FAT/exFAT this magic/name list misses (Decision P3.18 "list-miss honesty" — the `statfs`
+/// list is the proactive heuristic, not the backstop). SAFE `rustix` on Unix — no `unsafe` (the crate-root
+/// `#![deny(unsafe_code)]` holds); no panic (G4/G14). [Build-Session-Entscheidung: P3.18]
+#[cfg(target_os = "linux")]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "§2.7.2 proactive FAT/exFAT-class detector (P3.18); its first caller is the P3.33 \
+                  `fs_guard::location_status` divert classification (which folds it with the writable/ephemeral \
+                  tests) — unbuilt in the production build until then — so it is dead-at-runtime during the P3 \
+                  wiring window; `expect` auto-flags (unfulfilled) the moment P3.33 wires it (the \
+                  `ensure_executable` scaffolding pattern)."
+    )
+)]
+pub(crate) fn lacks_atomic_publish_primitive(dir: &Path) -> io::Result<bool> {
+    // SAFE `rustix::fs::statfs` (feature `fs`, already enabled for the P3.17 free-space read) — no `unsafe` on
+    // Unix. `f_type` is the superblock magic; cast to `u64` for an arch-independent magic compare (`f_type` is
+    // `c_long` — i64 on the shipped x86_64 Linux target — so this is a real i64→u64 cast, never a lint-tripping
+    // identity cast). READ-ONLY: `statfs` writes nothing (Decision P3.18).
+    let sfs = rustix::fs::statfs(dir).map_err(io::Error::from)?;
+    Ok(is_fat_class_magic(sfs.f_type as u64))
+}
+
+/// macOS leg of [`lacks_atomic_publish_primitive`] — classify by `f_fstypename` (the fs type NAME), not a
+/// superblock magic (BSD `statfs` carries the name; the Decision rules the name the reliable macOS signal). See
+/// the Linux leg's doc for the full contract. [Build-Session-Entscheidung: P3.18]
+#[cfg(target_os = "macos")]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "§2.7.2 proactive FAT/exFAT-class detector (P3.18, macOS); its first caller is the P3.33 \
+                  `fs_guard::location_status` divert classification — unbuilt until then — so it is dead-at-runtime \
+                  during the P3 wiring window; `expect` auto-flags when P3.33 wires it (the `ensure_executable` \
+                  scaffolding pattern)."
+    )
+)]
+pub(crate) fn lacks_atomic_publish_primitive(dir: &Path) -> io::Result<bool> {
+    let sfs = rustix::fs::statfs(dir).map_err(io::Error::from)?;
+    // `f_fstypename: [c_char; 16]` read THROUGH the rustix `StatFs` alias (= `libc::statfs`; `libc` never named).
+    // NUL-terminated C string → `&str` WITHOUT `unsafe`: take bytes up to the first NUL, reinterpret each
+    // `c_char` (ASCII fs-type names) to `u8`, and lossily map an invalid-UTF-8 name to `""` (no panic — the
+    // crate-root `#![deny(clippy::unwrap_used)]` holds). READ-ONLY: `statfs` writes nothing (Decision P3.18).
+    let bytes: Vec<u8> = sfs
+        .f_fstypename
+        .iter()
+        .take_while(|&&c| c != 0)
+        .map(|&c| c as u8)
+        .collect();
+    let name = std::str::from_utf8(&bytes).unwrap_or("");
+    Ok(is_fat_class_name(name))
+}
+
+/// Windows (and any non-Linux/macOS target) leg of [`lacks_atomic_publish_primitive`]: always `Ok(false)`.
+/// Windows' `MoveFileExW`-without-`MOVEFILE_REPLACE_EXISTING` (§2.1.2) is a true create-only move on FAT/exFAT,
+/// so a Windows FAT/exFAT destination keeps the §2.1 guarantee and is NEVER diverted for `NoAtomicPublish`
+/// (§2.7.2). Present (the [`ensure_executable`] precedent) only so `location_status` (P3.33) can call this
+/// unconditionally without a per-OS `cfg`. [Build-Session-Entscheidung: P3.18]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "§2.7.2 FAT/exFAT-class detector (P3.18, Windows no-op); its first caller is the P3.33 \
+                  `fs_guard::location_status` divert classification — unbuilt until then — so it is dead-at-runtime \
+                  during the P3 wiring window; `expect` auto-flags when P3.33 wires it (the `ensure_executable` \
+                  scaffolding pattern)."
+    )
+)]
+pub(crate) fn lacks_atomic_publish_primitive(_dir: &Path) -> io::Result<bool> {
+    Ok(false)
+}
+
+/// The Linux FAT/exFAT superblock magics — PROJECT constants (rustix exposes only `PROC`/`NFS_SUPER_MAGIC`;
+/// `libc` is not a direct dependency, so the raw values are inlined with their kernel-header citation).
+/// `MSDOS_SUPER_MAGIC` = `0x4d44` (`include/uapi/linux/magic.h` — the FAT driver reports one magic for
+/// FAT12/16/32, so vfat is covered); `EXFAT_SUPER_MAGIC` = `0x2011_BAB0` (`fs/exfat/exfat_fs.h`).
+/// [Build-Session-Entscheidung: P3.18]
+#[cfg(target_os = "linux")]
+const MSDOS_SUPER_MAGIC: u64 = 0x4d44;
+#[cfg(target_os = "linux")]
+const EXFAT_SUPER_MAGIC: u64 = 0x2011_BAB0;
+
+/// PURE §2.7.2 classifier (the testable core of the Linux [`lacks_atomic_publish_primitive`] leg + the G48
+/// magic-boundary bound-firing target): is a `statfs` superblock magic one of the FAT/exFAT-class values that
+/// lack BOTH a no-replace rename AND hardlinks? A real FAT/exFAT volume cannot be mounted on the CI runners, so
+/// the classification boundary is proven HERE on the magic value directly (Decision P3.18). No I/O, no panic.
+/// [Build-Session-Entscheidung: P3.18]
+#[cfg(target_os = "linux")]
+fn is_fat_class_magic(f_type: u64) -> bool {
+    f_type == MSDOS_SUPER_MAGIC || f_type == EXFAT_SUPER_MAGIC
+}
+
+/// PURE §2.7.2 classifier (the testable core of the macOS [`lacks_atomic_publish_primitive`] leg + the G48
+/// name-boundary bound-firing target): is a `statfs` `f_fstypename` one of the FAT/exFAT-class NAMES? `"msdos"`
+/// is the uniform macOS name for FAT12/16/32; `"exfat"` is exFAT (case-sensitive — the kernel reports
+/// lowercase). Proven at its boundaries in the tests (Decision P3.18). No I/O, no panic.
+/// [Build-Session-Entscheidung: P3.18]
+#[cfg(target_os = "macos")]
+fn is_fat_class_name(fstype: &str) -> bool {
+    matches!(fstype, "msdos" | "exfat")
+}
+
 // Two separate cfg attributes (NOT `cfg(all(test, unix))`): clippy's `allow-expect-in-tests` only
 // recognises a STANDALONE `#[cfg(test)]` as a test context (its `is_cfg_test` matches a single-item
 // `cfg(test)`, not a compound `all(test, unix)`), so the compound form would wrongly trip the crate-root
@@ -706,6 +845,130 @@ mod available_bytes_tests {
         assert!(
             available_bytes(&missing).is_err(),
             "§2.8: a missing path is a clean Err (the §2.8 caller maps it), never a panic"
+        );
+    }
+}
+
+// §2.1.2/§2.7.2 FAT/exFAT-class detection (G15/G48 bound-firing, P3.18) — the pure magic/name classifiers
+// proven at their BOUNDARIES + the impure `statfs` read smoke-tested on the REAL CI temp filesystem (ext4 on
+// Linux, APFS on macOS, NTFS on Windows — none FAT/exFAT-class → `Ok(false)`). A real FAT/exFAT volume cannot
+// be mounted on the CI runners, so the classification boundary is proven on the magic value / name directly
+// (Decision P3.18 "magic/name-list boundary fixtures instead of probe-error fixtures"), and the read is
+// exercised end-to-end on a real temp dir (never mock the FS under test, test-strategy §0.1). STANDALONE
+// `#[cfg(test)]` (clippy `is_cfg_test` recognition, P1.17).
+#[cfg(test)]
+mod lacks_atomic_publish_primitive_tests {
+    use super::lacks_atomic_publish_primitive;
+
+    // §2.7.2 (G48 magic bound-firing): the Linux superblock-magic classifier fires ON exactly the FAT/exFAT
+    // magics and off every neighbour + common non-FAT filesystem — so a real FAT/exFAT volume would divert and
+    // an ext4/btrfs volume never spuriously would.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_magic_classifier_matches_only_fat_and_exfat() {
+        use super::{is_fat_class_magic, EXFAT_SUPER_MAGIC, MSDOS_SUPER_MAGIC};
+        // The two in-class magics fire (both via the named constant and its literal value).
+        assert!(
+            is_fat_class_magic(MSDOS_SUPER_MAGIC),
+            "§2.7.2: MSDOS/vfat (0x4d44) is FAT-class"
+        );
+        assert!(
+            is_fat_class_magic(EXFAT_SUPER_MAGIC),
+            "§2.7.2: exFAT (0x2011BAB0) is FAT-class"
+        );
+        assert_eq!(
+            MSDOS_SUPER_MAGIC, 0x4d44,
+            "the MSDOS magic constant is 0x4d44"
+        );
+        assert_eq!(
+            EXFAT_SUPER_MAGIC, 0x2011_BAB0,
+            "the exFAT magic constant is 0x2011BAB0"
+        );
+        // Off-by-one boundaries + common non-FAT magics are NOT FAT-class (never a spurious divert).
+        assert!(
+            !is_fat_class_magic(0x4d43),
+            "boundary: 0x4d43 (one below MSDOS) is not FAT-class"
+        );
+        assert!(
+            !is_fat_class_magic(0x4d45),
+            "boundary: 0x4d45 (one above MSDOS) is not FAT-class"
+        );
+        assert!(
+            !is_fat_class_magic(0x2011_BAB1),
+            "boundary: one above exFAT is not FAT-class"
+        );
+        assert!(
+            !is_fat_class_magic(0xEF53),
+            "ext2/3/4 (0xEF53) is not FAT-class"
+        );
+        assert!(
+            !is_fat_class_magic(0x9123_683E),
+            "btrfs (0x9123683E) is not FAT-class"
+        );
+        assert!(!is_fat_class_magic(0), "a zero magic is not FAT-class");
+    }
+
+    // §2.7.2 (G48 name bound-firing): the macOS `f_fstypename` classifier fires ON exactly the FAT/exFAT names
+    // and off every neighbour + common macOS filesystem, case-sensitively (the kernel reports lowercase).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_name_classifier_matches_only_msdos_and_exfat() {
+        use super::is_fat_class_name;
+        assert!(
+            is_fat_class_name("msdos"),
+            "§2.7.2: 'msdos' (FAT12/16/32) is FAT-class"
+        );
+        assert!(is_fat_class_name("exfat"), "§2.7.2: 'exfat' is FAT-class");
+        // Boundaries + common macOS filesystems are NOT FAT-class.
+        assert!(!is_fat_class_name("apfs"), "APFS is not FAT-class");
+        assert!(!is_fat_class_name("hfs"), "HFS+ is not FAT-class");
+        assert!(!is_fat_class_name(""), "an empty name is not FAT-class");
+        assert!(
+            !is_fat_class_name("msdo"),
+            "boundary: a truncated 'msdo' is not FAT-class"
+        );
+        assert!(
+            !is_fat_class_name("exfatx"),
+            "boundary: 'exfatx' is not FAT-class"
+        );
+        assert!(
+            !is_fat_class_name("MSDOS"),
+            "case-sensitive: uppercase 'MSDOS' is not the kernel name"
+        );
+    }
+
+    // §2.7.2 (G15/G31): the impure `statfs` read on the REAL CI temp filesystem (ext4/APFS/NTFS — none
+    // FAT/exFAT-class) is a clean `Ok(false)`: the proactive heuristic does NOT fire. READ-ONLY (Decision P3.18):
+    // the detection wrote nothing, so the temp dir is still empty afterwards.
+    #[test]
+    fn real_temp_dir_is_not_fat_class_and_writes_nothing() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let lacks = lacks_atomic_publish_primitive(dir.path())
+            .expect("§2.7.2: the statfs read on a real temp dir succeeds");
+        assert!(
+            !lacks,
+            "§2.7.2: a normal CI temp filesystem (ext4/APFS/NTFS) is NOT FAT/exFAT-class → no proactive divert"
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path())
+                .expect("read the temp dir")
+                .count(),
+            0,
+            "Decision P3.18: the statfs detection is READ-ONLY — it left no probe residue"
+        );
+    }
+
+    // §2.8/G4/G14: a missing directory is a clean `Err` (the §2.7.2 caller treats it as heuristic-indeterminate
+    // and does not divert), never a panic. Unix-gated: `statfs(missing)` deterministically fails `ENOENT`; the
+    // Windows leg is a const `Ok(false)` with no read to fail (its no-op contract is the positive test above).
+    #[cfg(unix)]
+    #[test]
+    fn missing_dir_is_err_not_panic() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let missing = dir.path().join("no-such-subdir");
+        assert!(
+            lacks_atomic_publish_primitive(&missing).is_err(),
+            "§2.8: a missing directory is a clean Err (heuristic-indeterminate), never a panic"
         );
     }
 }
