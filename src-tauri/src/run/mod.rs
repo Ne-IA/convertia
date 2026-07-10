@@ -33,8 +33,10 @@
 //!    (cross-instance lock-addressable) — **P3.24 (built below)**: for each sibling `.convertia-*.part` in a
 //!    dest dir, resolve the owning lock from the ids in the name (a run temp → `<InstanceId>.*/run-<RunId>/`;
 //!    a pre-RunId probe residue → the `InstanceId`'s any-live-lock) and remove it only when that owner is DEAD
-//!    (held ⇒ keep; a name that parses as neither shape ⇒ untouched). The §2.7.2 probe-residue CREATOR that
-//!    mints the reclaimed shape is **P3.36** (this box forward-declares the shared `-probe-` grammar).
+//!    (held ⇒ keep; a name that parses as neither shape ⇒ untouched). The §2.7.2 probe-residue-NAME creator
+//!    that mints the reclaimed shape is [`PublishTemp::probe_name`] (**P3.33** — the naming grammar; the
+//!    §2.7.2 `fs_guard::location_status` writability probe CREATES the file, re-run on the late-divert path at
+//!    P3.36; P3.24 here forward-declares the shared `-probe-` grammar the creator + recogniser both bind to).
 //!  - the publish-temp naming + ownership model — [`PublishTemp`]
 //!    (`.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part`, a dotfile SIBLING on `final`'s volume,
 //!    §2.6.1 / §2.14.1 / §3.5.6) is **P3.20 (built below)**: `create_in` allocates the kind-1 publish temp,
@@ -49,7 +51,7 @@
 //!    structurally unreachable before the lock is held.
 
 use std::collections::BTreeSet;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -71,8 +73,9 @@ const HYPHENATED_UUID_LEN: usize = 36;
 /// The infix marking a **pre-RunId probe residue** — the §2.7.2 C4 writability-probe leftover
 /// `.convertia-<InstanceId>-probe-<rand>.part` (no `RunId`/`jobId`), whose liveness is resolved by
 /// `InstanceId` alone (§2.6.3). This constant is the SINGLE home of the `-probe-` grammar so the P3.24
-/// reclaim recogniser ([`PublishTemp::parse_probe_residue`]) and the future §2.7.2 probe CREATOR (P3.36) bind
-/// to the same literal and cannot drift — exactly as `PUBLISH_TEMP_PREFIX` is shared by `create_in`/`parse`.
+/// reclaim recogniser ([`PublishTemp::parse_probe_residue`]) and the §2.7.2 probe-name creator
+/// ([`PublishTemp::probe_name`], P3.33) bind to the same literal and cannot drift — exactly as
+/// `PUBLISH_TEMP_PREFIX` is shared by `create_in`/`parse`.
 const PROBE_RESIDUE_INFIX: &str = "-probe-";
 
 /// The ownership identity encoded in a kind-1 publish temp's NAME (§2.6.1 / §2.14.1): a uniquely-named
@@ -274,6 +277,40 @@ impl PublishTemp {
             return None;
         }
         Some(InstanceId::from_uuid(Uuid::parse_str(instance_str).ok()?))
+    }
+
+    /// Build the §2.7.2 C4 writability-probe file NAME `.convertia-<InstanceId>-probe-<rand>.part` — the
+    /// **pre-RunId probe-residue grammar creator**, bound to the same [`PROBE_RESIDUE_INFIX`] /
+    /// `PUBLISH_TEMP_PREFIX` / `PUBLISH_TEMP_SUFFIX` SINGLE-home constants the reclaim recogniser
+    /// ([`parse_probe_residue`](Self::parse_probe_residue)) reads, so creator and recogniser cannot drift.
+    /// The §2.7.2 writability test (P3.33 `fs_guard::location_status`) exclusive-creates a file by this name
+    /// in a candidate destination dir then removes it: `fs_guard` (a §0.7 tier-2 LEAF) PERFORMS the create,
+    /// this module OWNS the naming grammar (the P3.18 read-only-`statfs` decision) — so the caller builds the
+    /// name HERE and passes it in, and `fs_guard` never depends on `crate::run`. The `<rand>` is a fresh v4
+    /// UUID in the hyphen-free `simple` form, mirroring [`create_in`](Self::create_in)'s hyphen-free
+    /// `tempfile` random component, so two probes of the same instance never collide; a leftover probe (its
+    /// remove failed — §2.7.2 "cleanup-failure ⇒ still writable") is reclaimed by the §2.6.3
+    /// `InstanceId`-liveness sweep via `parse_probe_residue`. **Pre-`RunId`** (the probe runs at C4, before
+    /// the C6 `RunId` mint, §7.1.2), so it is keyed on the `InstanceId` alone — an associated fn, not
+    /// `&self`. [Build-Session-Entscheidung: P3.33]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "P3.33 — the §2.7.2 probe-residue NAME creator; its production caller is the §1.8/C4 \
+                      destination planning that calls `fs_guard::location_status` (P3.34+) and passes this \
+                      name into the fs_guard-leaf probe — unbuilt until then, so dead in the production build \
+                      during the P3 wiring window; the round-trip test below exercises it (creator → \
+                      `parse_probe_residue` → same InstanceId). `expect` auto-flags when P3.34 wires it."
+        )
+    )]
+    #[must_use]
+    pub fn probe_name(instance: InstanceId) -> OsString {
+        OsString::from(format!(
+            "{PUBLISH_TEMP_PREFIX}{}{PROBE_RESIDUE_INFIX}{}{PUBLISH_TEMP_SUFFIX}",
+            instance.as_uuid(),
+            Uuid::new_v4().simple()
+        ))
     }
 
     /// The owning launch instance (§2.6.1) — the §2.6.3 reclaim addresses `…/scratch/<InstanceId>.*/…` by
@@ -1203,6 +1240,32 @@ mod publish_temp_tests {
         assert_eq!(
             mode, 0o600,
             "§2.14.1: the kind-1 publish temp is owner-only 0o600 on POSIX"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.7.2 / §2.6.3: the pre-RunId probe-NAME creator round-trips through the reclaim
+    // recogniser — `probe_name(instance)` mints `.convertia-<InstanceId>-probe-<rand>.part`, which
+    // `parse_probe_residue` reads back to the SAME `InstanceId` (so a leftover probe the §2.6.3 sweep finds
+    // resolves to its owning instance via the shared single-home `-probe-` grammar). The probe grammar is
+    // DISJOINT from the three-id run publish-temp grammar (neither parses as the other), and each call gets a
+    // distinct random tail (no collision).
+    #[test]
+    fn probe_name_round_trips_through_parse_probe_residue() {
+        let instance = InstanceId::mint();
+        let name = PublishTemp::probe_name(instance);
+        assert_eq!(
+            PublishTemp::parse_probe_residue(&name),
+            Some(instance),
+            "§2.7.2/§2.6.3: creator + recogniser share the single `-probe-` grammar — a probe residue resolves to its owning InstanceId"
+        );
+        assert!(
+            PublishTemp::parse(&name).is_none(),
+            "§2.6.1: a pre-RunId probe residue is NOT a well-formed run publish temp (no RunId/jobId)"
+        );
+        assert_ne!(
+            PublishTemp::probe_name(instance),
+            name,
+            "§2.7.2: each probe name gets a fresh random tail — two probes of one instance never collide"
         );
     }
 }

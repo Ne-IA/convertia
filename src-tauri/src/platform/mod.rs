@@ -8,7 +8,9 @@
 //! cross-volume free-space re-check `GetDiskFreeSpaceExW` (`available_bytes`, P3.17 — built at its
 //! §2.14.3 first-need, consumed by the §1.10/§2.14.4 preflight P4.72/P4.73 in a subsequent phase), and the
 //! §2.7.2 FAT/exFAT-class "no-atomic-publish" detection (`lacks_atomic_publish_primitive`, P3.18 — the
-//! proactive per-location divert heuristic §2.7.2 `location_status` folds in; Unix `statfs`, a Windows no-op).
+//! proactive per-location divert heuristic §2.7.2 `location_status` folds in; Unix `statfs`, a Windows no-op),
+//! and the §2.7.2 ephemeral-output classification (`is_ephemeral_output_dir`, P3.33 — the known-temp-dir
+//! divert heuristic `location_status` folds in beside the FAT test; per-OS well-known temp roots).
 //! The Unix renames
 //! **and the §2.6.3 run-lock** ride safe `rustix` (`flock`; the §2.14.3 free-space read rides safe
 //! `rustix::fs::statvfs`; the §2.7.2 FAT/exFAT detection rides safe `rustix::fs::statfs`), the §2.3 identity
@@ -23,7 +25,7 @@
 #![allow(unsafe_code)]
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// §7.2.4 portable-build executable-permission setup (Unix). Files extracted from a portable archive
 /// (the macOS `.zip` / the Linux AppImage) may lack the execute bit, and a bundled sidecar that is not
@@ -497,15 +499,18 @@ pub(crate) fn available_bytes(dir: &Path) -> io::Result<u64> {
 /// list is the proactive heuristic, not the backstop). SAFE `rustix` on Unix — no `unsafe` (the crate-root
 /// `#![deny(unsafe_code)]` holds); no panic (G4/G14). [Build-Session-Entscheidung: P3.18]
 #[cfg(target_os = "linux")]
+// [Test-Change: P3.33 — old-obsolete+new-correct, §2.7.2] `expect`→`allow`: P3.33's `location_status` now
+// calls this detector, so the P3.18 dead-code EXPECTATION is obsolete; `allow` (permissive) is correct — a
+// lint-attribute flip, not a real assertion change.
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "§2.7.2 proactive FAT/exFAT-class detector (P3.18); its first caller is the P3.33 \
+        reason = "§2.7.2 proactive FAT/exFAT-class detector (P3.18); now CALLED by P3.33's \
                   `fs_guard::location_status` divert classification (which folds it with the writable/ephemeral \
-                  tests) — unbuilt in the production build until then — so it is dead-at-runtime during the P3 \
-                  wiring window; `expect` auto-flags (unfulfilled) the moment P3.33 wires it (the \
-                  `ensure_executable` scaffolding pattern)."
+                  tests) — itself unbuilt in production until §1.8/C4 wiring (P3.34+), so `allow` covers the \
+                  transitive dead-ness through the P3 wiring window (the `ensure_executable` pattern); the \
+                  magic_tests below exercise the classifier boundary."
     )
 )]
 pub(crate) fn lacks_atomic_publish_primitive(dir: &Path) -> io::Result<bool> {
@@ -521,14 +526,17 @@ pub(crate) fn lacks_atomic_publish_primitive(dir: &Path) -> io::Result<bool> {
 /// superblock magic (BSD `statfs` carries the name; the Decision rules the name the reliable macOS signal). See
 /// the Linux leg's doc for the full contract. [Build-Session-Entscheidung: P3.18]
 #[cfg(target_os = "macos")]
+// [Test-Change: P3.33 — old-obsolete+new-correct, §2.7.2] `expect`→`allow`: P3.33's `location_status` now
+// calls this detector, so the P3.18 dead-code EXPECTATION is obsolete; `allow` (permissive) is correct — a
+// lint-attribute flip, not a real assertion change.
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "§2.7.2 proactive FAT/exFAT-class detector (P3.18, macOS); its first caller is the P3.33 \
-                  `fs_guard::location_status` divert classification — unbuilt until then — so it is dead-at-runtime \
-                  during the P3 wiring window; `expect` auto-flags when P3.33 wires it (the `ensure_executable` \
-                  scaffolding pattern)."
+        reason = "§2.7.2 proactive FAT/exFAT-class detector (P3.18, macOS); now CALLED by P3.33's \
+                  `fs_guard::location_status` divert classification — itself unbuilt until §1.8/C4 wiring \
+                  (P3.34+), so `allow` covers the transitive dead-ness through the P3 wiring window (the \
+                  `ensure_executable` pattern)."
     )
 )]
 pub(crate) fn lacks_atomic_publish_primitive(dir: &Path) -> io::Result<bool> {
@@ -553,14 +561,17 @@ pub(crate) fn lacks_atomic_publish_primitive(dir: &Path) -> io::Result<bool> {
 /// (§2.7.2). Present (the [`ensure_executable`] precedent) only so `location_status` (P3.33) can call this
 /// unconditionally without a per-OS `cfg`. [Build-Session-Entscheidung: P3.18]
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+// [Test-Change: P3.33 — old-obsolete+new-correct, §2.7.2] `expect`→`allow`: P3.33's `location_status` now
+// calls this detector, so the P3.18 dead-code EXPECTATION is obsolete; `allow` (permissive) is correct — a
+// lint-attribute flip, not a real assertion change.
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "§2.7.2 FAT/exFAT-class detector (P3.18, Windows no-op); its first caller is the P3.33 \
-                  `fs_guard::location_status` divert classification — unbuilt until then — so it is dead-at-runtime \
-                  during the P3 wiring window; `expect` auto-flags when P3.33 wires it (the `ensure_executable` \
-                  scaffolding pattern)."
+        reason = "§2.7.2 FAT/exFAT-class detector (P3.18, Windows no-op); now CALLED by P3.33's \
+                  `fs_guard::location_status` divert classification — itself unbuilt until §1.8/C4 wiring \
+                  (P3.34+), so `allow` covers the transitive dead-ness through the P3 wiring window (the \
+                  `ensure_executable` pattern)."
     )
 )]
 pub(crate) fn lacks_atomic_publish_primitive(_dir: &Path) -> io::Result<bool> {
@@ -595,6 +606,142 @@ fn is_fat_class_magic(f_type: u64) -> bool {
 #[cfg(target_os = "macos")]
 fn is_fat_class_name(fstype: &str) -> bool {
     matches!(fstype, "msdos" | "exfat")
+}
+
+/// §2.7.2 ephemeral-output classification: is `dir` inside a KNOWN-EPHEMERAL OS temp location the OS may
+/// silently purge? Writing a conversion RESULT into such a place would silently lose the user's output, so
+/// §2.7.2 treats an ephemeral destination like an unwritable one → **divert** (`DivertReason::Ephemeral` —
+/// the §2.7.2 `location_status`, P3.33, folds this in beside the FAT/writable tests). Reading a SOURCE from a
+/// temp dir is fine; only the OUTPUT diverts. The per-OS ephemeral roots (§2.7.2): every platform's
+/// `std::env::temp_dir()` (Windows `GetTempPathW`, Unix `$TMPDIR`-or-`/tmp`) PLUS — Windows `%TEMP%`/`%TMP%`;
+/// macOS `$TMPDIR` / `/tmp` / `/var/folders`; Linux `$TMPDIR` / `/tmp` / `/var/tmp` / `/run/user` (XDG
+/// runtime). A dir is ephemeral iff its resolved path is at-or-under one of those roots (COMPONENT-wise
+/// `starts_with`, so `/tmpfoo` is not under `/tmp`). Best-effort canonicalisation resolves a symlinked root
+/// (macOS `/tmp` → `/private/tmp`); an absent/unreadable dir or root falls back to a LEXICAL compare —
+/// `location_status` is a planning HINT, not a commitment (P3.36 re-checks at the real write). Panic-free
+/// (the crate no-panic deny, G4/G14). [Build-Session-Entscheidung: P3.33]
+pub(crate) fn is_ephemeral_output_dir(dir: &Path) -> bool {
+    let target = canonical_or_lexical(dir);
+    ephemeral_roots()
+        .iter()
+        .any(|root| target.starts_with(canonical_or_lexical(root)))
+}
+
+/// Best-effort canonical form of `p` for the §2.7.2 ephemeral prefix compare. Uses **`dunce::canonicalize`**
+/// (the `fs_guard::resolve_identity` §2.3.1 choice — off-Windows a `std::fs::canonicalize` passthrough; on
+/// Windows it strips the verbatim `\\?\` UNC prefix to the most-compatible NON-UNC form) so a canonicalised
+/// EXISTING dir and the lexical fallback for a NOT-YET-CREATED one compare in the SAME form — a bare
+/// `std::fs::canonicalize` returns the `\\?\`-verbatim form for the existing roots, whose `Path` prefix
+/// component (`VerbatimDisk`) never `starts_with`-matches a plain-`Disk` lexical target.
+///
+/// **Not-yet-created dir (the correctness-critical case):** a §2.7.1 mode-2 user-chosen-root SUBTREE dir does
+/// not exist at §1.8/C4 planning time, so `canonicalize(p)` fails. Falling straight back to the fully-lexical
+/// `p` would MISS a temp subtree whose ancestor is symlinked (macOS `/tmp` → `/private/tmp`) or whose root
+/// canonicalises differently — a false "not ephemeral" that lets a result be written into a purgeable dir the
+/// P3.36 late-divert (write-FAILURE-only) can never rescue → silent data loss. So the nearest EXISTING
+/// ANCESTOR is canonicalised and the not-yet-created tail re-appended, resolving to the SAME form the
+/// canonicalised ephemeral roots use. No panic — every step is a fallible short-circuit, the fully-lexical
+/// `p` the final fallback. [Build-Session-Entscheidung: P3.33]
+fn canonical_or_lexical(p: &Path) -> PathBuf {
+    if let Ok(real) = dunce::canonicalize(p) {
+        return real;
+    }
+    // `p` does not exist yet (a not-yet-created subtree): canonicalise the nearest EXISTING ancestor + re-append
+    // the not-yet-created tail, so a symlinked ancestor / verbatim-prefix root still matches the roots' form.
+    for ancestor in p.ancestors().skip(1) {
+        if let Ok(real) = dunce::canonicalize(ancestor) {
+            return match p.strip_prefix(ancestor) {
+                Ok(tail) => real.join(tail),
+                Err(_) => real,
+            };
+        }
+    }
+    p.to_path_buf()
+}
+
+/// The §2.7.2 per-OS known-ephemeral temp roots (see [`is_ephemeral_output_dir`]). `std::env::temp_dir()` is
+/// always included (the OS primary temp); the rest are the platform-specific well-known roots the primary
+/// may not cover. Env-derived roots (`%TEMP%`/`%TMP%`/`$TMPDIR`) are read via `var_os` so a non-UTF-8 temp
+/// path is kept verbatim, never lossily dropped. Only Win/macOS/Linux ship (§1), so exactly one cfg block is
+/// active per build and `roots` is always mutated (no `unused_mut`). [Build-Session-Entscheidung: P3.33]
+fn ephemeral_roots() -> Vec<PathBuf> {
+    let mut roots = vec![std::env::temp_dir()];
+    #[cfg(windows)]
+    for var in ["TEMP", "TMP"] {
+        if let Some(v) = std::env::var_os(var) {
+            roots.push(PathBuf::from(v));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(v) = std::env::var_os("TMPDIR") {
+            roots.push(PathBuf::from(v));
+        }
+        roots.push(PathBuf::from("/tmp"));
+        roots.push(PathBuf::from("/var/folders"));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(v) = std::env::var_os("TMPDIR") {
+            roots.push(PathBuf::from(v));
+        }
+        for r in ["/tmp", "/var/tmp", "/run/user"] {
+            roots.push(PathBuf::from(r));
+        }
+    }
+    roots
+}
+
+#[cfg(test)]
+mod ephemeral_tests {
+    use super::is_ephemeral_output_dir;
+    use std::path::Path;
+
+    // §6.4.1 unit (G15) / §2.7.2: a real subdir of the OS temp root IS ephemeral — a writability-passing temp
+    // destination §2.7.2 diverts so a silent OS purge never loses the user's output. Real-FS
+    // (test-strategy §0.1): a real dir under `std::env::temp_dir()` gives the canonicalising prefix compare a
+    // real target (and is exactly why `location_status`'s writable/unwritable legs use a NON-temp dir).
+    #[test]
+    fn a_temp_dir_subdir_is_classified_ephemeral() {
+        let dir = tempfile::tempdir().expect("a real temp dir under the OS temp root");
+        assert!(
+            is_ephemeral_output_dir(dir.path()),
+            "§2.7.2: a dir under the OS temp root ({:?}) is ephemeral → divert",
+            dir.path()
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.7.2: a dir NOT under any known temp root is NOT ephemeral — the crate source
+    // root (`CARGO_MANIFEST_DIR`) is a real, canonicalisable, non-temp path (the CI workspace is never under
+    // the OS temp root), so the negative branch is proven against a real directory, not a fabricated one.
+    #[test]
+    fn a_non_temp_dir_is_not_ephemeral() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert!(
+            !is_ephemeral_output_dir(manifest),
+            "§2.7.2: the crate source root ({manifest:?}) is not under any OS temp root → not ephemeral"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.7.2 + §2.7.1 mode-2 (REGRESSION guard): a user-chosen-root SUBTREE dir that does
+    // NOT exist yet at §1.8/C4 planning time must STILL classify ephemeral when it is under an OS temp root —
+    // else a result written there is silently purged (the P3.36 late-divert only catches write FAILURES, not
+    // OS purges). This is the nearest-existing-ancestor canonicalisation: without it, a bare `canonicalize` of
+    // the existing temp root returns a form (Windows `\\?\`-verbatim / macOS `/private/tmp`-symlink) that the
+    // fully-lexical not-yet-created target never `starts_with`-matches — a false "not ephemeral" data-loss class.
+    #[test]
+    fn a_not_yet_created_subtree_under_the_temp_root_is_still_ephemeral() {
+        let base = tempfile::tempdir().expect("a real temp dir under the OS temp root");
+        let not_yet_created = base.path().join("sub").join("dir"); // never created on disk
+        assert!(
+            !not_yet_created.exists(),
+            "precondition: the nested subtree dir does not exist yet"
+        );
+        assert!(
+            is_ephemeral_output_dir(&not_yet_created),
+            "§2.7.2: a not-yet-created subtree dir under the OS temp root ({not_yet_created:?}) is STILL ephemeral (nearest-existing-ancestor resolution)"
+        );
+    }
 }
 
 // Two separate cfg attributes (NOT `cfg(all(test, unix))`): clippy's `allow-expect-in-tests` only

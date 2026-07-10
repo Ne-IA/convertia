@@ -44,13 +44,21 @@
 //!    step-6 parent-dir fsync on success (Unix; no-op Windows) — **P3.16**; with the §2.14.3 EXDEV cross-volume
 //!    fallback (a cross-device publish → free-space re-check → copy-exactly-once into the caller-provided
 //!    same-volume `.part` → exclusive publish) wired inside it — **P3.17**.
-//!  - `location_status` — per-location writability + ephemeral classification, cached per-dir (§2.7.2) — **P3.33**.
+//!  - `location_status` / [`LocationStatus`] / [`LocationCache`] — the §2.7.2 per-location destination
+//!    classifier (**P3.33**): ephemeral (temp-dir) → writable (exclusive-create + remove a `crate::run`-grammar
+//!    probe) → FAT/exFAT no-atomic-publish (Unix), folding the `crate::platform` `is_ephemeral_output_dir` +
+//!    `lacks_atomic_publish_primitive` heuristics into a `Writable`/`Divert(reason)` verdict, memoised per-dir
+//!    within a run (a planning hint — the §2.1 publish re-checks at P3.36). `fs_guard` is a LEAF: the caller
+//!    (§1.8/C4, P3.34+) passes the `crate::run::PublishTemp::probe_name` name in (that module owns the grammar).
 
-use std::ffi::OsString;
+use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
+
+use crate::domain::DivertReason;
 
 // [Build-Session-Entscheidung: P2.74] The §2.3.1 resolved-identity TYPE only (option A "split IO-vs-pure",
 // Co-Pilot 2026-06-30, owner-ratified): the `resolve_identity` FUNCTION that POPULATES it
@@ -1640,6 +1648,279 @@ pub fn atomic_publish(
         // Any other publish error (PathTooLong / TooManyCollisions / a genuine non-cross-device Io) surfaces
         // unchanged — the §2.14.3 fallback fires ONLY on a real cross-device failure.
         Err(other) => Err(other),
+    }
+}
+
+/// The §2.7.2 per-location destination classification verdict ([`location_status`], P3.33): whether a
+/// candidate output directory can hold a conversion RESULT, or must **divert** (with the §0.6 reason). The
+/// §1.8/C4 destination planning reads it — `Writable` → publish beside-source / under the chosen root;
+/// `Divert(r)` → the §2.7.3 divert-target resolution (P3.35) with `r` ∈ {`Ephemeral`, `Unwritable`,
+/// `NoAtomicPublish`}. A planning HINT, never a commitment — the real §2.1 publish re-checks (P3.36 late
+/// divert on a post-probe writability flip). [Build-Session-Entscheidung: P3.33]
+///
+/// No `dead_code` attribute: it is `location_status`'s return type + `LocationCache`'s stored verdict, so
+/// rustc marks it USED even while its §1.8/C4 reader (P3.34+) is unbuilt (unlike `location_status` /
+/// `LocationCache`, which are statically unreferenced in the production build until then).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocationStatus {
+    /// The dir accepts a create AND is neither ephemeral nor atomic-publish-incapable — publish here.
+    Writable,
+    /// The dir must be diverted (§2.7.2), carrying the §0.6 `DivertReason` (`Ephemeral`/`Unwritable`/
+    /// `NoAtomicPublish`) the §2.7.3 resolution + the §1.12 summary read.
+    Divert(DivertReason),
+}
+
+/// **The §2.7.2 per-location writability & ephemerality classifier (P3.33)** — classify a candidate output
+/// `dir` into a [`LocationStatus`] the §1.8/C4 planning uses to decide beside-source-vs-divert. Three tests,
+/// short-circuiting in order (cheapest + most-specific first):
+///
+/// 1. **Ephemeral** (§2.7.2, `crate::platform::is_ephemeral_output_dir`): under a known OS temp root the OS
+///    may silently purge? → `Divert(Ephemeral)`, WITHOUT writing a probe (no probe residue left in a temp dir).
+/// 2. **Writable** (§2.7.2): does the dir accept a create? Exclusive-create the caller-supplied `probe_name`
+///    (`.convertia-<InstanceId>-probe-<rand>.part`, the `crate::run` grammar — this §0.7 tier-2 LEAF module
+///    PERFORMS the create, `crate::run` OWNS the name, the P3.18 decision) then remove it. ANY create failure
+///    (PermissionDenied / ReadOnly / network / gone) → `Divert(Unwritable)`. A create SUCCESS whose remove
+///    FAILS is still **writable** (the create is the test); the leftover probe residue is reclaimed by the
+///    §2.6.3 `InstanceId`-liveness sweep (P3.24), never a divert.
+/// 3. **No atomic publish** (§2.7.2, Unix-only, `crate::platform::lacks_atomic_publish_primitive`): a
+///    FAT/exFAT-class FS that accepts a create yet offers no atomic no-clobber publish → `Divert(NoAtomicPublish)`.
+///    A `statfs` read error is treated as NOT FAT-class (the reactive §2.1.2 publish-time backstop catches a
+///    missed one — the P3.18 "list-miss honesty"), never an error. Windows FAT is a true create-only move
+///    (§2.1.2), so its detector is a no-op → never diverted here.
+///
+/// **Infallible** — every failure maps to a `LocationStatus`, never an `Err`: the caller reads a definitive
+/// verdict. Panic-free (the crate no-panic deny, G4/G14) — the probe create/remove and the `statfs` are all
+/// fallible ops whose errors map to a verdict. `fs_guard` is a §0.7 tier-2 LEAF: the `crate::run`-grammar
+/// `probe_name` is passed IN (never a `crate::run` dependency here). [Build-Session-Entscheidung: P3.33]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "P3.33 — the §2.7.2 per-location classifier; its production caller is the §1.8/C4 destination \
+                  planning (P3.34+, which passes the crate::run::PublishTemp::probe_name grammar name in) — \
+                  it is also called by the dead-but-present `LocationCache::classify` below, so `allow` \
+                  (permissive) covers the transitive dead-ness through the P3 wiring window (the PublishTemp \
+                  pattern); the location_status_tests below exercise it directly."
+    )
+)]
+pub fn location_status(dir: &Path, probe_name: &OsStr) -> LocationStatus {
+    // 1. Ephemeral first — short-circuit BEFORE the writable probe so no probe residue is written into a temp
+    //    dir the OS may purge, and it is the cheapest + most-specific classification (§2.7.2).
+    if crate::platform::is_ephemeral_output_dir(dir) {
+        return LocationStatus::Divert(DivertReason::Ephemeral);
+    }
+    // 2. Writable probe: exclusive-create the pre-RunId probe then remove it (§2.7.2). ANY create failure means
+    //    "the dir does not accept a create" → unwritable (a UUID-rand-collision `AlreadyExists` is astronomically
+    //    unlikely, and a spurious divert is SAFE — it never loses data). The file handle is dropped BEFORE the
+    //    remove (Windows cannot remove an open file). A cleanup (remove) failure leaves the residue for the
+    //    §2.6.3 sweep and is NOT a divert — the create succeeded, which is the test.
+    //    [Build-Session-Entscheidung: P3.33] §2.7.2's diagnostic "the failure is logged locally (§7.5)" is
+    //    DEFERRED — `fs_guard` is a §0.7 non-logging tier-2 leaf (no `log::`/`tracing::` here), and the residue
+    //    is NAMED (`-probe-` grammar) for the §2.6.3 InstanceId-liveness sweep (P3.24), which IS the observable
+    //    reclaim. The load-bearing §2.7.2 half — "still writable, never a divert" — is honored here; the §7.5
+    //    diagnostic log, if wanted, is the §1.8/C4 caller's (P3.34+), not this leaf's. §2.7.2 records this.
+    let probe_path = dir.join(probe_name);
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe_path)
+    {
+        Ok(file) => {
+            drop(file);
+            let _ = std::fs::remove_file(&probe_path);
+        }
+        Err(_) => return LocationStatus::Divert(DivertReason::Unwritable),
+    }
+    // 3. FAT/exFAT-class no-atomic-publish (Unix-only; a Windows no-op). A `statfs` error ⇒ treat as NOT
+    //    FAT-class (the reactive §2.1.2 backstop covers a missed one — the P3.18 list-miss honesty).
+    if crate::platform::lacks_atomic_publish_primitive(dir).unwrap_or(false) {
+        return LocationStatus::Divert(DivertReason::NoAtomicPublish);
+    }
+    LocationStatus::Writable
+}
+
+/// A per-directory memo of [`location_status`] verdicts within a run — the §2.7.2 "cache per-directory"
+/// planning hint: a 10 000-file batch dropping into ONE folder probes it ONCE, not 10 000 times. Keyed by the
+/// candidate output dir PATH (a hint, so two aliased paths to one dir get separate entries — harmless: the
+/// real §2.1 publish P3.36 re-checks). Owned by the §1.8/C4 planning pass and threaded across it.
+/// [Build-Session-Entscheidung: P3.33]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "P3.33 — the §2.7.2 per-dir location-status memo; its production owner is the §1.8/C4 \
+                  destination planning (P3.34+) that threads it across the plan pass — constructed only by \
+                  the dead-but-present `new`/`Default` + `classify` below until then, so `allow` (permissive) \
+                  covers the transitive dead-ness through the P3 wiring window; the location_status_tests \
+                  below exercise it."
+    )
+)]
+#[derive(Debug, Default)]
+pub struct LocationCache {
+    seen: HashMap<PathBuf, LocationStatus>,
+}
+
+impl LocationCache {
+    /// A fresh empty cache. [Build-Session-Entscheidung: P3.33]
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "P3.33 — its production caller is the §1.8/C4 planning (P3.34+); dead in the production \
+                      build until then, exercised by the location_status_tests below."
+        )
+    )]
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            seen: HashMap::new(),
+        }
+    }
+
+    /// Classify `dir` (§2.7.2), MEMOISED per-dir. On a cache HIT the stored verdict is returned and NO probe
+    /// runs; on a MISS `probe_name()` supplies a fresh `crate::run`-grammar probe name — a `FnOnce`, so it is
+    /// built ONLY on a real probe, which keeps `fs_guard` a LEAF (the caller wires it to
+    /// `crate::run::PublishTemp::probe_name`) — [`location_status`] classifies, and the verdict is cached.
+    /// [Build-Session-Entscheidung: P3.33]
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "P3.33 — the §2.7.2 memoised classify entry; its production caller is the §1.8/C4 \
+                      planning (P3.34+), which threads the cache across the plan pass; dead in the production \
+                      build until then (it calls the dead-but-present `location_status`), exercised by the \
+                      location_status_tests below."
+        )
+    )]
+    pub fn classify(
+        &mut self,
+        dir: &Path,
+        probe_name: impl FnOnce() -> OsString,
+    ) -> LocationStatus {
+        if let Some(&status) = self.seen.get(dir) {
+            return status;
+        }
+        let status = location_status(dir, &probe_name());
+        self.seen.insert(dir.to_path_buf(), status);
+        status
+    }
+}
+
+#[cfg(test)]
+mod location_status_tests {
+    use super::*;
+
+    // A real temp dir under the crate source root (`CARGO_MANIFEST_DIR`) — a NON-ephemeral writable base, so
+    // the §2.7.2 writable / unwritable / FAT legs are reachable. A plain `tempfile::tempdir()` lives under the
+    // OS temp root, which `location_status` classifies `Ephemeral` FIRST (short-circuiting those legs), so the
+    // non-ephemeral legs need a non-temp base. `None` on the pathological env where the crate root is itself
+    // under an OS temp root (a clean skip, never a false pass). Real FS — never mocked (test-strategy §0.1).
+    fn non_ephemeral_tempdir() -> Option<tempfile::TempDir> {
+        let dir = tempfile::Builder::new()
+            .prefix("convertia-locstat-")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .expect("create a temp dir in the crate source root");
+        (!crate::platform::is_ephemeral_output_dir(dir.path())).then_some(dir)
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.2: a writable, non-ephemeral, non-FAT dir → `Writable`, and the throwaway
+    // writability probe is REMOVED (no residue in the destination).
+    #[test]
+    fn a_writable_non_ephemeral_dir_is_writable_and_leaves_no_probe() {
+        let Some(dir) = non_ephemeral_tempdir() else {
+            return;
+        };
+        let probe = OsStr::new(".convertia-locstat-probe-writable.part");
+        assert_eq!(
+            location_status(dir.path(), probe),
+            LocationStatus::Writable,
+            "§2.7.2: a writable, non-ephemeral, non-FAT dir accepts a create → Writable"
+        );
+        assert!(
+            !dir.path().join(probe).exists(),
+            "§2.7.2: the throwaway probe is removed on the writable path — no residue in the destination"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.2: a dir under the OS temp root → `Divert(Ephemeral)`, and NO probe is
+    // written — ephemeral short-circuits BEFORE the writable probe, so a purgeable temp dir gets no residue.
+    #[test]
+    fn a_temp_dir_diverts_ephemeral_without_probing() {
+        let dir = tempfile::tempdir().expect("a real temp dir under the OS temp root");
+        let probe = OsStr::new(".convertia-locstat-probe-ephemeral.part");
+        assert_eq!(
+            location_status(dir.path(), probe),
+            LocationStatus::Divert(DivertReason::Ephemeral),
+            "§2.7.2: a dir under the OS temp root diverts (Ephemeral) — a result there could be silently purged"
+        );
+        assert!(
+            !dir.path().join(probe).exists(),
+            "§2.7.2: ephemeral short-circuits BEFORE the writable probe — no probe residue in a temp dir"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.2: a read-only non-ephemeral dir does NOT accept a create → `Divert(Unwritable)`.
+    // Mirrors the publish tests' read-only pattern: skip where the platform/FS won't enforce read-only (root, a
+    // permissive FS), restoring writability so the TempDir cleanup succeeds.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_dir_diverts_unwritable() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(dir) = non_ephemeral_tempdir() else {
+            return;
+        };
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500))
+            .expect("make the dir read-only (r-x, no write)");
+        // Skip where read-only is not enforced (e.g. running as root) — a create would still succeed.
+        if std::fs::File::create(dir.path().join(".probe-check")).is_ok() {
+            let _ = std::fs::remove_file(dir.path().join(".probe-check"));
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("restore writability for cleanup");
+            return;
+        }
+        let verdict = location_status(dir.path(), OsStr::new(".convertia-locstat-probe-ro.part"));
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("restore writability so the TempDir cleanup succeeds");
+        assert_eq!(
+            verdict,
+            LocationStatus::Divert(DivertReason::Unwritable),
+            "§2.7.2: a dir that does not accept a create → Divert(Unwritable)"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.2: the per-dir cache MEMOISES — a second `classify` of the same dir returns
+    // the stored verdict WITHOUT re-probing (the `FnOnce` probe-name factory runs exactly ONCE), so a
+    // 10 000-file batch dropping into one folder probes it once. Both calls return the same verdict.
+    #[test]
+    fn classify_memoises_per_dir_and_probes_once() {
+        use std::cell::Cell;
+        let Some(dir) = non_ephemeral_tempdir() else {
+            return;
+        };
+        let mut cache = LocationCache::new();
+        let calls = Cell::new(0usize);
+        let first = cache.classify(dir.path(), || {
+            calls.set(calls.get() + 1);
+            OsString::from(".convertia-loccache-probe-a.part")
+        });
+        let second = cache.classify(dir.path(), || {
+            calls.set(calls.get() + 1);
+            OsString::from(".convertia-loccache-probe-b.part")
+        });
+        assert_eq!(
+            first, second,
+            "§2.7.2: the cache returns the same verdict for the same dir"
+        );
+        assert_eq!(
+            first,
+            LocationStatus::Writable,
+            "§2.7.2: a writable non-ephemeral dir classifies Writable"
+        );
+        assert_eq!(
+            calls.get(),
+            1,
+            "§2.7.2: the second classify is a cache HIT — the probe-name factory ran exactly once (no re-probe)"
+        );
     }
 }
 

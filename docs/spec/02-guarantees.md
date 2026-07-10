@@ -1028,7 +1028,12 @@ For each source, §1.8 classifies its **intended** output location via
     liveness** (any live lock under `convertia/scratch/<InstanceId>.*` ⇒ the instance is
     alive ⇒ keep; no live instance lock ⇒ dead ⇒ reclaim) — **not** a `run-<RunId>/.lock`
     that never existed for a probe. The failure is logged locally (§7.5) only. We never
-    divert *solely* because probe-cleanup failed.
+    divert *solely* because probe-cleanup failed. **[IMPL, P3.33]** `fs_guard::location_status`
+    is a §0.7 non-logging tier-2 leaf (no `log::`/`tracing::` inside `fs_guard`), so it **defers**
+    this diagnostic §7.5 log — the leaf's observability of a leftover probe is the **named**
+    (`-probe-` grammar) residue the §2.6.3 sweep reclaims; the §1.8/C4 caller (P3.34+) may emit the
+    §7.5 log if wanted. The load-bearing half — **still writable, never a divert** — is honored in
+    the leaf, so this is a diagnostic-placement note, not a behavioral change.
   - **The per-directory writability cache is a planning *hint*, not a commitment
     `[DECIDED]`.** A location can flip read-only *between* the probe and the actual
     write (USB pulled, share dropped, permission changed mid-run). When the real
