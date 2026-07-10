@@ -36,6 +36,8 @@
 
 use std::io::{self, Read};
 
+use encoding_rs::{Encoding, UTF_8};
+
 use crate::domain::{Confidence, DetectionOutcome, UserFacingFormat};
 
 /// The §1.2 bounded header window — detection reads at most the first **4 KiB** (§1.2 step 1: "recommended
@@ -151,6 +153,97 @@ pub fn detect(header: &[u8]) -> DetectionOutcome {
     DetectionOutcome::Uncertain { best_guess: None }
 }
 
+/// §1.2 step-3 text-encoding classification — decide whether the bounded `header` decodes as text and, if so,
+/// WHICH encoding, **detected from content, never assumed from the extension** (§2.10.2). The order is §1.2
+/// step 3's "BOM → strict UTF-8 → single-byte codepage fallback" (§2.10.2's "declared charset" step — `<meta>`
+/// / XML-decl / RTF code page — is format-specific and §04/engine-owned, so it is not a step here; the
+/// magic-less TEXT formats TXT/MD/CSV/TSV carry no declared charset):
+///
+/// 0. **UTF-32 declines** — encoding_rs has no UTF-32 support and its `for_bom` would alias a UTF-32LE BOM
+///    (`FF FE 00 00`) to UTF-16LE, a confidently-WRONG result §2.10.2 forbids ("mixed/invalid → fail clearly");
+///    ConvertIA does not support UTF-32 (WHATWG omits it), so a UTF-32 BOM returns `None` (the dispatcher's
+///    `Uncertain`), never mis-mapped.
+/// 1. **BOM** is authoritative for the supported encodings (`Encoding::for_bom` — UTF-8 / UTF-16 LE|BE only).
+/// 2. **Binary guard:** a NUL byte means these are not one of the magic-less TEXT formats (TXT / MD / CSV / TSV
+///    / SVG are NUL-free); BOM-less UTF-16 (which is NUL-bearing) is the caught-by-BOM common case, so a
+///    residual NUL ⇒ not text ⇒ `None` (the dispatcher's `Uncertain`).
+/// 3. **strict UTF-8** — the modern default (§2.10.2 output default): valid UTF-8, *allowing a multi-byte char
+///    truncated at the [`MAX_HEADER_WINDOW`] boundary* (that is an incomplete final char, not invalid bytes).
+/// 4. **single-byte codepage fallback** via `chardetng` (§2.10.2 "heuristic UTF-8 → Windows-1252/Latin-1 →
+///    broader") — a pure-Rust bounded heuristic over the window; it always yields a best-guess encoding for
+///    NUL-free non-UTF-8 bytes.
+///
+/// In-core, bounded (works over the already-bounded header window), memory-safe Rust — `chardetng` +
+/// `encoding_rs` are pure Rust with no third-party C/C++ decoder (§2.12.4). Index-free / panic-free.
+/// [Build-Session-Entscheidung: P3.27]
+pub fn classify_encoding(header: &[u8]) -> Option<&'static Encoding> {
+    // (0) UTF-32 is unsupported: encoding_rs has no UTF-32, and its `for_bom` would alias a UTF-32LE BOM
+    //     `FF FE 00 00` to UTF-16LE (a confidently-wrong result, §2.10.2). Decline both UTF-32 BOMs to None
+    //     BEFORE for_bom so UTF-32 is an honest "can't handle", never mis-mapped. (The BE BOM `00 00 FE FF`
+    //     would also be caught by the NUL guard below; declining it here keeps the UTF-32 handling explicit +
+    //     symmetric.)
+    const UTF32_LE_BOM: &[u8] = &[0xFF, 0xFE, 0x00, 0x00];
+    const UTF32_BE_BOM: &[u8] = &[0x00, 0x00, 0xFE, 0xFF];
+    if header.starts_with(UTF32_LE_BOM) || header.starts_with(UTF32_BE_BOM) {
+        return None;
+    }
+    // (1) An explicit UTF-8 / UTF-16 BOM is authoritative (§2.10.2).
+    if let Some((encoding, _bom_len)) = Encoding::for_bom(header) {
+        return Some(encoding);
+    }
+    // (2) Binary guard: a NUL byte ⇒ not a magic-less TEXT format ⇒ not text.
+    if header.contains(&0) {
+        return None;
+    }
+    // (3) strict UTF-8, tolerating a window-boundary-truncated trailing multi-byte char.
+    if is_valid_utf8_allowing_truncation(header) {
+        return Some(UTF_8);
+    }
+    // (4) chardetng single-byte codepage fallback (a bounded pure-Rust heuristic; always yields a guess).
+    //     Iso2022JpDetection::Deny — the security-conservative choice for a non-script file detector (chardetng
+    //     doc: only email-class decoders should Allow the stateful escape-based encoding); Utf8Detection::Deny —
+    //     step 3 already ruled out valid UTF-8, so the codepage fallback must never re-guess UTF-8.
+    let mut detector = chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Deny);
+    detector.feed(header, /* last = */ true);
+    Some(detector.guess(/* tld = */ None, chardetng::Utf8Detection::Deny))
+}
+
+/// Valid UTF-8, **allowing a trailing multi-byte char truncated at the [`MAX_HEADER_WINDOW`] boundary** — the
+/// 4-KiB read can cut a source mid-character, and `Utf8Error::error_len()` is `None` exactly for that
+/// "unexpected end of input" case (vs `Some(n)` for a genuinely invalid byte sequence).
+///
+/// The trailing-incomplete-char tolerance is gated on the header FILLING the window (`len >=
+/// MAX_HEADER_WINDOW`): only then is the incomplete char a genuine window cut of a longer UTF-8 stream. When
+/// the whole (shorter) source fit in the window, a trailing incomplete char is the ACTUAL file end — a real
+/// UTF-8 file never ends mid-character — so it is genuinely-invalid UTF-8 and declines here, falling to the
+/// codepage heuristic (so e.g. a short Windows-1252 `"café"` ending in a lone `0xE9` is NOT mis-read as a
+/// truncated-UTF-8 false positive). Real mid-stream mojibake (`error_len() == Some`) always declines (§2.10.2
+/// "mixed/invalid → fail clearly"). Panic-free / index-free. [Build-Session-Entscheidung: P3.27]
+fn is_valid_utf8_allowing_truncation(header: &[u8]) -> bool {
+    match std::str::from_utf8(header) {
+        Ok(_) => true,
+        Err(e) => e.error_len().is_none() && header.len() >= MAX_HEADER_WINDOW,
+    }
+}
+
+/// The §1.4 `CollectedSummary.encoding_hint` projection — the encoding name for a NON-default detected
+/// encoding, or `None` for **UTF-8** (the §2.10.2 assumed default needs no hint) and for a non-text input.
+/// Fed from [`classify_encoding`].
+///
+/// **The emitted string is `encoding_rs`'s canonical WHATWG label** (`"windows-1252"`, `"Shift_JIS"`,
+/// `"ISO-8859-2"`, …) — the honest, standard encoding identity. The §2.10.2 / plan examples spell it
+/// `"Windows-1252"` (capitalised), but those are **illustrative** (the plan writes *"e.g. Windows-1252"*), not
+/// a normative string contract — the WHATWG canonical is lowercase only for the `windows-*` family. Any
+/// prettier user-facing display casing is a §5 UI presentation concern (surfaced as a Co-Pilot note), not the
+/// detection layer's — this layer produces the canonical machine identity. [Build-Session-Entscheidung: P3.27]
+pub fn encoding_hint(encoding: &'static Encoding) -> Option<String> {
+    if encoding == UTF_8 {
+        None
+    } else {
+        Some(encoding.name().to_owned())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +348,127 @@ mod tests {
             sniff_magic(b"not a match", registry),
             None,
             "§1.2: a header matching no signature recognizes nothing (never extension-guessed)"
+        );
+    }
+
+    // §6.4.1 unit (G15): §1.2/§2.10.2 BOM handling — a supported BOM is authoritative and wins over the binary
+    // guard (UTF-8; UTF-16 LE|BE, whose NUL bytes would otherwise trip the guard, because BOM is checked
+    // first). A UTF-32 BOM is UNSUPPORTED and DECLINES to None — never mis-mapped to UTF-16LE (encoding_rs's
+    // `for_bom` would alias the UTF-32LE BOM `FF FE 00 00` to UTF-16LE; §2.10.2 "mixed/invalid → fail clearly").
+    #[test]
+    fn classify_encoding_honours_supported_boms_and_declines_utf32() {
+        assert_eq!(
+            classify_encoding(b"\xEF\xBB\xBFid,name\n"),
+            Some(UTF_8),
+            "§2.10.2: a UTF-8 BOM is detected as UTF-8"
+        );
+        assert_eq!(
+            classify_encoding(b"\xFF\xFEi\0d\0"),
+            Some(encoding_rs::UTF_16LE),
+            "§2.10.2: a UTF-16LE BOM wins over the NUL binary guard (BOM checked first)"
+        );
+        assert_eq!(
+            classify_encoding(b"\xFE\xFF\0i\0d"),
+            Some(encoding_rs::UTF_16BE),
+            "§2.10.2: a UTF-16BE BOM is detected as UTF-16BE (also over the NUL guard)"
+        );
+        assert_eq!(
+            classify_encoding(b"\xFF\xFE\0\0a\0\0\0"),
+            None,
+            "§2.10.2: a UTF-32LE BOM is UNSUPPORTED → None, NEVER mis-mapped to UTF-16LE (the for_bom alias trap)"
+        );
+        assert_eq!(
+            classify_encoding(b"\0\0\xFE\xFFabcd"),
+            None,
+            "§2.10.2: a UTF-32BE BOM is UNSUPPORTED → None"
+        );
+    }
+
+    // §6.4.1 unit (G15): a BOM-less valid-UTF-8 body is UTF-8 (the §2.10.2 default). Truncation tolerance is
+    // gated on FILLING the window: a full-window source whose final byte is a cut multi-byte lead stays UTF-8,
+    // but a SHORT source ending in a lone high byte is the real file end (a codepage), not truncated-UTF-8.
+    #[test]
+    fn classify_encoding_defaults_to_utf8_and_gates_truncation_on_a_full_window() {
+        assert_eq!(
+            classify_encoding(b"id,name\n1,alpha\n"),
+            Some(UTF_8),
+            "§2.10.2: BOM-less valid ASCII/UTF-8 is UTF-8"
+        );
+        // A FULL window (len == MAX_HEADER_WINDOW) whose last byte is 0xC3 (a 2-byte 'é' lead cut by the
+        // boundary): the source continues past the window → a genuine truncation → still UTF-8.
+        let mut full_window = vec![b'a'; MAX_HEADER_WINDOW - 1];
+        full_window.push(0xC3);
+        assert_eq!(
+            classify_encoding(&full_window),
+            Some(UTF_8),
+            "§2.10.2/§1.2: a multi-byte char cut at the FULL 4-KiB window boundary stays UTF-8"
+        );
+        // A SHORT source ("café" in Windows-1252, ending in a lone 0xE9) FITS the window — its trailing
+        // incomplete char is the real end, NOT a window cut, so it is a codepage, never a truncated-UTF-8 guess.
+        let short_latin1 = classify_encoding(b"caf\xE9");
+        assert!(
+            short_latin1.is_some_and(|enc| enc != UTF_8),
+            "§2.10.2: a short source ending in a lone high byte is a codepage, not a truncated-UTF-8 false positive"
+        );
+    }
+
+    // §6.4.1 unit (G15): genuinely-invalid-UTF-8 (a lead byte followed by a non-continuation, NOT a boundary
+    // truncation) falls to the chardetng single-byte codepage heuristic → a NON-UTF-8 text encoding, and that
+    // surfaces a §1.4 encoding_hint (a NON-default encoding is named). Asserts the *class* (Some, non-UTF-8,
+    // hinted), not chardetng's exact codepage guess (statistical, not pinned here).
+    #[test]
+    fn classify_encoding_falls_back_to_a_codepage_for_invalid_utf8() {
+        // 0xE9 (Windows-1252 'é') is a UTF-8 3-byte lead; the following space is not a continuation → invalid
+        // MID-stream (not a boundary truncation), so the UTF-8 branch declines and chardetng guesses.
+        let detected = classify_encoding(b"caf\xE9 latte for the whole office today");
+        assert!(
+            detected.is_some_and(|enc| enc != UTF_8),
+            "§2.10.2: invalid UTF-8 (non-truncation) is classified via the codepage heuristic, not UTF-8"
+        );
+        assert!(
+            detected.and_then(encoding_hint).is_some(),
+            "§1.4: a non-default detected encoding surfaces an encoding_hint"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §1.2 "confirm bytes decode as text" gate — a NUL byte (no BOM) means binary, so
+    // classification declines (None → the dispatcher's Uncertain), never a false text guess.
+    #[test]
+    fn classify_encoding_rejects_binary_with_a_nul_byte() {
+        assert_eq!(
+            classify_encoding(b"noise\0\x01\x02\x03here"),
+            None,
+            "§1.2/§2.10.2: a NUL byte (no BOM) is binary, not text — classification declines"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §1.4 encoding_hint projection — UTF-8 (the §2.10.2 default) needs no hint (None); a
+    // non-default encoding is named with its canonical label.
+    #[test]
+    fn encoding_hint_is_none_for_utf8_and_named_otherwise() {
+        assert_eq!(
+            encoding_hint(UTF_8),
+            None,
+            "§1.4/§2.10.2: UTF-8 is the assumed default — no hint"
+        );
+        assert_eq!(
+            encoding_hint(encoding_rs::WINDOWS_1252),
+            Some("windows-1252".to_owned()),
+            "§1.4: a non-default encoding surfaces its canonical WHATWG name as the hint"
+        );
+    }
+
+    // §6.4.1 unit (G15): the degenerate empty-slice edge — a DIRECT `classify_encoding(&[])` reads as trivial
+    // (vacuously valid) UTF-8. This path is NOT how an empty FILE is classified: `detect` short-circuits a
+    // 0-byte header to `DetectionOutcome::Empty` (P3.26) before any text step runs, so the empty-vs-Empty
+    // outcome is owned upstream (P3.26 detect / the P3.29 outcome rules), not here. Pinned so the behaviour is
+    // explicit rather than an accident.
+    #[test]
+    fn classify_encoding_on_an_empty_slice_is_trivially_utf8() {
+        assert_eq!(
+            classify_encoding(&[]),
+            Some(UTF_8),
+            "§1.2: an empty slice is vacuously valid UTF-8 here; the empty-FILE outcome is detect's Empty (P3.26)"
         );
     }
 }

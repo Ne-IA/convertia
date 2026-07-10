@@ -85,6 +85,27 @@ walkdir = "2.5.0"
 # G53/cargo-deny stay green. §0.8 drift-floor row landed at P3.83 (`dunce = 1.0.5`, reconcile-to-present) —
 # NO L(-1) work in this box (the P3.6 hard-stop resolution).
 dunce = "1.0.5"
+# [P3.27] §1.2 step-3 / §2.10.2 text-encoding detection for the magic-less formats — the
+# `crate::detection::classify_encoding` heuristic (BOM → strict UTF-8 → single-byte codepage fallback), a
+# pure-Rust bounded in-core detector so the §2.12.4 "no third-party C/C++ decoder in-core" absolute holds.
+# Unlike every prior dep row (all direct-edge promotions of an already-locked transitive), chardetng is the
+# FIRST GENUINELY-NEW package: it + its transitive `encoding_rs` 0.8.35 are newly-resolved into Cargo.lock and
+# the shipped MIT-core PROD closure. Both are permissive (chardetng `Apache-2.0 OR MIT`; encoding_rs
+# `(Apache-2.0 OR MIT) AND BSD-3-Clause`) and pure Rust with no socket/copyleft/image-C-lib edge, so G53
+# core-closure + cargo-deny [licenses]/[bans] + cargo-audit stay green (verified: 479-crate closure OK, no
+# forbidden crate). Default features only (the `multithreading`/`rayon` features are NOT enabled — only 2
+# packages locked, no rayon). Caret-pinned to the lock-resolved 1.0.0 (the normal-lib convention). §0.8 lists
+# chardetng (the "Additional crates … chardetng §1.2" row); the paired `check-supply-chain` PINNED_FLOORS §0.8
+# drift-floor row is L(-1) (G71) — the Co-Pilot follow-up box, mirroring the tokio P3.82 / rustix P3.84 split
+# (a new direct dep ABSENT from PINNED_FLOORS does not red G18: the floor is a present-crate check, P3.82).
+chardetng = "1.0.0"
+# [P3.27] encoding_rs is a DIRECT dep too (not only chardetng's transitive): `classify_encoding` names its
+# `Encoding` / `UTF_8` types + calls `Encoding::for_bom` (BOM detection) and `Encoding::name` (the §1.4
+# encoding_hint), and chardetng::guess returns a `&'static encoding_rs::Encoding`. Already in Cargo.lock at
+# 0.8.35 via chardetng, so this direct edge adds NO newly-resolved package. Default features only (NO
+# `simd-accel`/`serde`/fast-*-encode). Caret-pinned to the lock-resolved 0.8.35. Its §0.8 PINNED_FLOORS row
+# rides the same P3.27 Co-Pilot L(-1) follow-up as chardetng (both first-new packages of this box).
+encoding_rs = "0.8.35"
 
 # [P3.12] §2.1.1/§2.1.2 Unix single-call no-replace publish primitive for `fs_guard::publish_noreplace` — the
 # SAFE `rustix::fs::renameat_with(olddirfd, tmp, dirfd, leaf, RenameFlags::NOREPLACE)` maps to Linux

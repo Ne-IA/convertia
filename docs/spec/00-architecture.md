@@ -1432,6 +1432,7 @@ the corpus (§6.4) — engine bumps are best-effort posture (§3.8), not a gate.
 | **process-wrap** | §1.7 | cross-platform process-group / Job-Object spawn+group-kill (engine tree teardown) |
 | **walkdir** | §1.1 | ergonomic recursive folder enumeration (Rust-side intake) |
 | **chardetng** | §1.2 | text-encoding detection for the magic-less formats |
+| **encoding_rs** | §1.2 | chardetng's return-type vocabulary — the `Encoding` type, `Encoding::for_bom` (BOM detection) + `Encoding::name` (the §1.4 `encoding_hint` label) for the §1.2 text-encoding classification; pure Rust, no C/C++ decoder (§2.12.4) |
 | **flate2** (`rust_backend`/miniz_oxide feature ONLY — pure safe Rust, NO zlib/zlib-ng C backend) | §1.2 | bounded in-core `.svgz` (1F-8B) inflate for content detection (≤64 KiB + ≤100× ratio cap); pure-Rust so the §2.12.4 "no third-party C/C++ decoder in-core" absolute holds |
 | **tauri-plugin-single-instance** | §7.1 | single-instance policy + launch-arg hand-off |
 | **tauri-plugin-dialog** | §0.4.1 C2a/C2b, §1.1, §5.4 | native file/folder picker via `DialogExt` (`app.dialog().file().pick_file(..)` / `.pick_folder(..)`), called **Rust-side** from the C2a/C2b handlers — **no `dialog:allow-open` WebView grant** (the `dialog:*` capability is only for the JS guest bindings, which ConvertIA does not use). Registered via `tauri_plugin_dialog::init()` in the §7.x Builder. |
