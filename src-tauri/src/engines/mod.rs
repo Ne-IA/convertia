@@ -1247,8 +1247,8 @@ mod tests {
     fn csv_dropped_item() -> DroppedItem {
         DroppedItem {
             item: ItemId::from_index(0),
-            raw_path: PathBuf::from("data.csv"),
-            resolved_path: PathBuf::from("data.csv"),
+            display_name: "data.csv".to_string(),
+            rel_path_display: None,
             size_bytes: 12,
             detected: DetectionOutcome::Recognized {
                 format: FormatId::Csv,

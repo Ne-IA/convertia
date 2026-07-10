@@ -1820,12 +1820,13 @@ mod ipc_typegen {
     // `OutcomeMsg` and §0.4.3 requires `IpcError` be registered in collect_types![] so `Target.lossy` /
     // `ItemResult.reason` / every command `Err` never emit `any`. The registered set is PINNED BY NAME (not a
     // bare count) so a dropped / added / renamed registration reddens the build with a legible diff.
-    // [Test-Change: P2.20 — old-obsolete+new-correct, §2.8.2] old: the P2.19 set lacked `OutcomeMsg`; new
-    // (verified by read-back of the registered NAMES): P2.20 adds `.register::<OutcomeMsg>()`, which also pulls
-    // in `SkipReason` (`OutcomeMsg::Skipped.reason`) as a named type — `ConversionErrorKind`/`LossyKind`/
-    // `PathBuf`/`String` were already named via `IpcError` / the standalone `LossyKind`. Net add: OutcomeMsg +
-    // SkipReason (PathBuf/String render inline as TS `string` but specta tracks them as named map entries,
-    // exactly as `Uuid` is for the identity set's count of 6, §0.4.3).
+    // [Test-Change: P3.76 — old-obsolete+new-correct, §2.10.1/§0.4.3] old: the set carried `PathBuf` (named via
+    // `IpcError`'s former `path`/`residue: Option<PathBuf>` fields); new (verified by read-back of the
+    // registered NAMES below): P3.76 re-types those fields to `path_display`/`residue_display: Option<String>`
+    // (the 2026-07-06 core-owned-paths ruling — no `PathBuf` crosses the wire, §2.10.1), so `IpcError` no
+    // longer references `PathBuf` and it drops out of the registered set. `String` remains (the display
+    // fields + `message`). Net removal: `PathBuf` — a correct consequence of the re-typing, not a dropped
+    // registration.
     #[test]
     fn taxonomy_types_registered_for_typegen() {
         let types = register_ipc_taxonomy_types(specta::Types::default());
@@ -1836,9 +1837,10 @@ mod ipc_typegen {
         names.sort();
         assert_eq!(
             names.join(","),
-            "ConversionErrorKind,IpcError,LossyKind,OutcomeMsg,PathBuf,SkipReason,String",
+            "ConversionErrorKind,IpcError,LossyKind,OutcomeMsg,SkipReason,String",
             "§2.8.2/§0.4.3: the wire-taxonomy registration is LossyKind + IpcError + OutcomeMsg + the named \
-             types they pull in (ConversionErrorKind / SkipReason / PathBuf / String)"
+             types they pull in (ConversionErrorKind / SkipReason / String — no PathBuf after the P3.76 \
+             display-string re-typing, §2.10.1)"
         );
     }
 

@@ -56,8 +56,6 @@
     )
 )]
 
-use std::path::PathBuf;
-
 use serde::Serialize;
 use specta::Type;
 
@@ -169,7 +167,13 @@ pub type ErrorKind = ConversionErrorKind;
 /// rather than `any`; registering `IpcError` pulls its referenced `ConversionErrorKind` into the export as
 /// a named type too (the §2.8.2 deferred-to-its-consumer registration, P2.18). Derive set: `Serialize` +
 /// `Type` (the §0.4.3 wire-required pair) + `Debug, Clone, PartialEq, Eq` (ergonomics + the serialize-pin
-/// test); NOT `Copy` (owns a `String` + two `PathBuf`s); NO `Deserialize` (outbound-only). camelCase wire.
+/// test); NOT `Copy` (owns a `String` + two `Option<String>`s); NO `Deserialize` (outbound-only). camelCase wire.
+///
+/// [Build-Session-Entscheidung: P3.76] The path fields `path`/`residue` are RE-TYPED from `Option<PathBuf>`
+/// to the display projections `path_display`/`residue_display` (`Option<String>`) — **no `PathBuf` crosses
+/// the wire in either direction** (§0.4.3 / §2.10.1 / the 2026-07-06 core-owned-paths ruling). The real
+/// residue `PathBuf` stays core-side in the `RunResultStore` off-wire table (the C9 `OpenTarget::Residue`
+/// reveal resolves it there, P3.79); a display string here is never re-submitted as input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct IpcError {
@@ -177,11 +181,13 @@ pub struct IpcError {
     pub kind: ConversionErrorKind,
     /// The §2.8.2 pre-localised plain-language English message; NEVER a stack trace / raw engine stderr.
     pub message: String,
-    /// The optional path the error concerns (for the §1.12 summary's output→source map).
-    pub path: Option<PathBuf>,
-    /// The optional residue location when §2.6 cleanup could not complete — so the item is never reported
-    /// as a clean success.
-    pub residue: Option<PathBuf>,
+    /// The optional core-produced lossy DISPLAY form of the path the error concerns (for the §1.12
+    /// summary's output→source map) — last-step `to_string_lossy` (§2.10.1); never a re-submittable path.
+    pub path_display: Option<String>,
+    /// The optional DISPLAY form of the residue location when §2.6 cleanup could not complete — so the
+    /// item is never reported as a clean success; the real residue `PathBuf` stays core-side
+    /// (`RunResultStore`, §0.4.4).
+    pub residue_display: Option<String>,
 }
 
 // ─── §0.4.2 AppFault — the app://fault event payload (§2.13 app-level fault) (P2.39.1) ──
@@ -657,22 +663,23 @@ mod tests {
         );
     }
 
-    // §6.4.1 unit (G15): the §0.4.3 `IpcError` wire shape (P2.19) — the single error shape every command
-    // `Err` / `ItemOutcome::Failed.error` returns, in its camelCase wire form (kind/message/path/residue).
-    // OUTBOUND-ONLY (no `Deserialize`), so a SERIALIZE pin, not a round-trip. `path` Some / `residue` None
-    // exercises both `Option<PathBuf>` renderings; `kind` carries a §2.8 taxonomy code.
+    // §6.4.1 unit (G15): the §0.4.3 `IpcError` wire shape (P2.19 → P3.76) — the single error shape every command
+    // `Err` / `ItemOutcome::Failed.error` returns, in its camelCase wire form (kind/message/pathDisplay/
+    // residueDisplay). OUTBOUND-ONLY (no `Deserialize`), so a SERIALIZE pin, not a round-trip. `pathDisplay`
+    // Some / `residueDisplay` None exercises both `Option<String>` renderings; `kind` carries a §2.8 taxonomy
+    // code. No `PathBuf` on the wire (2026-07-06 ruling, §2.10.1 — display-only lossy strings).
     #[test]
     fn ipc_error_wire_form_is_camelcase() {
         let err = IpcError {
             kind: ConversionErrorKind::WriteFailed,
             message: "Could not write the output file.".to_owned(),
-            path: Some(PathBuf::from("/out/report.pdf")),
-            residue: None,
+            path_display: Some("/out/report.pdf".to_string()),
+            residue_display: None,
         };
         assert_eq!(
             serde_json::to_string(&err).expect("IpcError serializes"),
-            r#"{"kind":"writeFailed","message":"Could not write the output file.","path":"/out/report.pdf","residue":null}"#,
-            "§0.4.3: IpcError is the single camelCase wire error shape (kind/message/path/residue)"
+            r#"{"kind":"writeFailed","message":"Could not write the output file.","pathDisplay":"/out/report.pdf","residueDisplay":null}"#,
+            "§0.4.3: IpcError is the single camelCase wire error shape (kind/message/pathDisplay/residueDisplay)"
         );
     }
 

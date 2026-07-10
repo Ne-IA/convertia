@@ -193,7 +193,7 @@ export const commands = {
 	 *
 	 *  [Build-Session-Entscheidung: P2.26] **Shell returns `Err(IpcError{ kind: InternalError })` — the same
 	 *  owner-approved interface-shell pattern as C3 (P2.25).** `OutputPlanPreview` has no zero value (it carries a
-	 *  resolved `final_dir_preview` + a `PreflightVerdict`), so there is no `Ok(empty)` to return; the genuine
+	 *  resolved `final_dir_display` + a `PreflightVerdict`), so there is no `Ok(empty)` to return; the genuine
 	 *  pre-registry outcome (the §0.4.4 collected-set registry, P2.44, is not yet built) is exactly the `Err` the
 	 *  real body returns for an unresolvable id: `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })`
 	 *  (§2.13 catch-all; the §3.2 `PlanError` `plan_encode` precedent). The named fill-boxes own the rest: (a) the
@@ -547,15 +547,24 @@ export type BatchProgress = {
  *  A §2.6.4 cleanup-incomplete warning (§0.6) — one item whose partial could not be removed, naming WHERE
  *  the residue may remain so the summary never reports a clean success (§2.6 / §1.12).
  *
- *  [Build-Session-Entscheidung: P2.12] `Serialize` + `Type` (wire — embedded in `RunResult`), NO
- *  `Deserialize`; NOT `Copy` (owns a `PathBuf`). camelCase (`residuePath`). `item: ItemId` is the downward
- *  `orchestrator`→`domain` edge that co-homing this leaf here introduces (allowed).
+ *  [Build-Session-Entscheidung: P2.12 → P3.76] `Serialize` + `Type` (wire — embedded in `RunResult`), NO
+ *  `Deserialize`; NOT `Copy` (owns a `String`). camelCase (`residueDisplay`). `item: ItemId` is the
+ *  downward `orchestrator`→`domain` edge that co-homing this leaf here introduces (allowed). P3.76 re-types
+ *  `residue_path: PathBuf` → the display-only `residue_display: String` (2026-07-06 ruling, §2.10.1); the
+ *  real residue `PathBuf` stays core-side in the `RunResultStore` off-wire table (`RunResultPaths.
+ *  item_residues`), revealed via C9 `OpenTarget::Residue(item)` (P3.79).
  */
 export type CleanupResidue = {
-	/**  The item whose cleanup did not complete (§2.6.4) — the stable §0.6 `ItemId`. */
+	/**
+	 *  The item whose cleanup did not complete (§2.6.4) — the stable §0.6 `ItemId` (also the off-wire
+	 *  `RunResultPaths.item_residues` key where the real residue `PathBuf` lives).
+	 */
 	item: ItemId,
-	/**  Where the residue may remain (§2.6.4) — the only place the summary names a residue path. */
-	residuePath: string,
+	/**
+	 *  The display-only lossy form of where the residue may remain (§2.6.4, last-step `to_string_lossy`,
+	 *  §2.10.1) — the only place the summary names a residue; never a re-submittable path.
+	 */
+	residueDisplay: string,
 };
 
 /**
@@ -641,8 +650,13 @@ export type CollectedSet =
 	skipped: SkippedItem[],
 	/**  Size hint for the §1.10 pre-flight (§1.4). */
 	totalBytes: number,
-	/**  The dropped root(s) → §2.7 subtree + open-folder. */
-	roots: string[],
+	/**
+	 *  The dropped root(s) as core-produced lossy DISPLAY strings (last-step `to_string_lossy`,
+	 *  §2.10.1) — display-only [DECIDED 2026-07-06]. The REAL root `PathBuf`s stay OFF the wire in
+	 *  `FrozenCollectedSet.roots`, feeding §2.7 subtree re-creation + the C9 `OpenTarget::CommonRoot`
+	 *  resolution; a display root is never re-submitted as input.
+	 */
+	rootsDisplay: string[],
 	/**  A detection-derived hint, e.g. CSV detected "Windows-1252" (per §04). */
 	encodingHint: string | null,
 	/**  A detection-derived hint, e.g. CSV/TSV detected ";" (per §04). */
@@ -807,12 +821,21 @@ export type DestinationChoice =
  *  changes it. Homed in `crate::orchestrator` (embeds `preflight: PreflightVerdict` → transitively
  *  references `crate::outcome`, §0.7 ‡).
  *
- *  [Build-Session-Entscheidung: P2.11] `Serialize` + `Type`, NO `Deserialize` (embeds the Serialize-only
- *  `PreflightVerdict`); NOT `Copy`. camelCase.
+ *  [Build-Session-Entscheidung: P2.11 → P3.76] `Serialize` + `Type`, NO `Deserialize` (embeds the
+ *  Serialize-only `PreflightVerdict`); NOT `Copy`. camelCase. P3.76 ADDS the `final_dir_display` lossy
+ *  display `String` (mirroring `OutputPlanPreview.final_dir_display`, §2.10.1) so the refreshed
+ *  "will save to …" line has a display projection with no `PathBuf` on the wire. (`destination:
+ *  DestinationChoice` still carries a raw `ChosenRoot(PathBuf)` until P3.80 re-keys it to a
+ *  `DestinationId` — the phased P3.76→P3.80 split; this box owns only the display projections.)
  */
 export type DestinationResolved = {
-	/**  The (now chosen) destination (§0.6 / §2.7). */
+	/**  The (now chosen) destination (§0.6 / §2.7). Re-keyed to `ChosenRoot(DestinationId)` at P3.80. */
 	destination: DestinationChoice,
+	/**
+	 *  The refreshed display-only "will save to …" form for the new destination (mirrors
+	 *  `OutputPlanPreview.final_dir_display`, last-step `to_string_lossy`, §2.10.1) [DECIDED 2026-07-06].
+	 */
+	finalDirDisplay: string,
 	/**  The recomputed per-location divert for the new destination (§2.7.2); `None` = no divert. */
 	diverted: DivertReason | null,
 	/**
@@ -892,39 +915,46 @@ export type DivertReason =
 /**
  *  One eligible item in the §1.1-frozen collected set — the per-item record the pipeline carries
  *  from freeze through conversion (§0.6 / §1.2). It is a wire type: it reaches the WebView as
- *  `CollectedSet::Single.items` (P2.6), but on the wire `raw_path` is **DISPLAY-ONLY** — the §5.3
- *  BatchSummary derives sample basenames from the first few `items[].raw_path`, and the WebView
- *  NEVER re-submits it as intake. The only intake funnels are C1 (paths the native drop/launch
- *  gave) and C2a (paths the Rust-opened picker gave), both Rust-side; a frozen set's `raw_path`
- *  travelling back for display does not let the WebView feed an arbitrary path into a conversion
- *  (the §0.6 `raw_path` SCOPE `[DECIDED]` note). The §2.4 freeze de-duplicates by RESOLVED IDENTITY
- *  on `resolved_path` (owned by §2.3), so two paths reaching one real file are one `DroppedItem`.
+ *  `CollectedSet::Single.items` (P2.6), carrying **only core-produced lossy DISPLAY strings + its
+ *  `ItemId`** — **no `PathBuf` crosses the wire in either direction** (§2.10.1 / the 2026-07-06
+ *  core-owned-paths ruling). The real per-item paths (the OS-handed `raw_path` + the
+ *  symlink/junction/alias-resolved `resolved_path`, §2.3 — the identity the §2.4 freeze de-duplicates
+ *  on and the path the engine is ultimately pointed at) live OFF the wire in the §0.4.4
+ *  `FrozenCollectedSet.item_paths` table, keyed by this `item`; the WebView cannot name a path, so a
+ *  `display_name` travelling back for display can never feed an arbitrary path into a conversion.
  *
- *  [Build-Session-Entscheidung: P2.4] Wire policy mirrors the P2.2/P2.3/P2.15 §0.6 types: derives
- *  `specta::Type` + `Serialize`/`Deserialize` with `#[serde(rename_all = "camelCase")]` so it mirrors
- *  to `bindings.ts` in the §0.6 camelCase wire form (`raw_path` → `rawPath`, `resolved_path` →
- *  `resolvedPath`, `size_bytes` → `sizeBytes`). NOT `Copy` (it owns two `PathBuf`s + a `String`-bearing
- *  `DetectionOutcome`); NOT `Hash` (it is not a map key — the de-dup is by resolved identity on
- *  `resolved_path`, §2.3, not by hashing the whole record). `PartialEq`+`Eq` back the round-trip + the
- *  §6 property tests (`DetectionOutcome` is `Eq`, so the struct is). No explicit specta-`Builder`
- *  registration here — the same choice P2.15 made: the type auto-registers when its consuming command
- *  (C1's `CollectedSet` return, P2.22) is wired, so an early registration would emit it with no consumer.
+ *  [Build-Session-Entscheidung: P3.76] The path fields `raw_path`/`resolved_path` are RETIRED off the
+ *  wire (moved to the `FrozenCollectedSet` off-wire path table) and REPLACED by the display projections
+ *  `display_name` / `rel_path_display`. Wire policy is otherwise unchanged from P2.4: derives
+ *  `specta::Type` + `Serialize`/`Deserialize` with `#[serde(rename_all = "camelCase")]` so it mirrors to
+ *  `bindings.ts` in the §0.6 camelCase wire form (`display_name` → `displayName`, `rel_path_display` →
+ *  `relPathDisplay`, `size_bytes` → `sizeBytes`); `Deserialize` is retained (a display `String` is not a
+ *  re-submittable path, and no command accepts a `DroppedItem` inbound, so the ruling holds regardless);
+ *  NOT `Copy` (owns `String`s + a `String`-bearing `DetectionOutcome`); NOT `Hash` (not a map key — the
+ *  de-dup is by resolved identity on the off-wire `resolved_path`, §2.3). `PartialEq`+`Eq` back the
+ *  round-trip + the §6 property tests. Registration auto-rides its consuming command (C1's `CollectedSet`
+ *  return, P2.22), the P2.15 defer pattern.
  */
 export type DroppedItem = {
 	/**
 	 *  The §0.6 invariant-6 freeze-assigned id over the SINGLE id space (eligible + skipped). `items`
 	 *  is a filtered VIEW that is NEVER re-indexed from 0, so each `DroppedItem` carries its own
 	 *  `ItemId` (its position in `items` is NOT its id). Symmetric with `SkippedItem.item` (P2.5);
-	 *  `ConversionJob.item` denormalizes it (P2.10).
+	 *  `ConversionJob.item` denormalizes it (P2.10). Also the key into the off-wire
+	 *  `FrozenCollectedSet.item_paths` table where this item's real `raw_path`/`resolved_path` live.
 	 */
 	item: ItemId,
-	/**  The path as the OS handed it at drop/pick time. DISPLAY-ONLY on the wire (see the type doc). */
-	rawPath: string,
 	/**
-	 *  The symlink/junction/alias-resolved real path (§2.3) — the identity the §2.4 freeze
-	 *  de-duplicates on and the path the engine is ultimately pointed at.
+	 *  The core-produced lossy DISPLAY basename (last-step `to_string_lossy`, §2.10.1) — display-only,
+	 *  never a re-submittable path (the real `resolved_path` stays off-wire in `item_paths`). A
+	 *  non-UTF-8 name renders with U+FFFD here yet converts flawlessly core-side (§2.10.1).
 	 */
-	resolvedPath: string,
+	displayName: string,
+	/**
+	 *  A display-only root-relative subpath for a folder-drop member (the §2.7 subtree preview);
+	 *  `None` for a top-level item. Lossy (`to_string_lossy`, §2.10.1) — never re-submitted as input.
+	 */
+	relPathDisplay: string | null,
 	/**  Size in bytes of the resolved file, recorded at the §2.4 freeze. */
 	sizeBytes: number,
 	/**
@@ -1154,20 +1184,30 @@ export type IntakePayload = {
  *  rather than `any`; registering `IpcError` pulls its referenced `ConversionErrorKind` into the export as
  *  a named type too (the §2.8.2 deferred-to-its-consumer registration, P2.18). Derive set: `Serialize` +
  *  `Type` (the §0.4.3 wire-required pair) + `Debug, Clone, PartialEq, Eq` (ergonomics + the serialize-pin
- *  test); NOT `Copy` (owns a `String` + two `PathBuf`s); NO `Deserialize` (outbound-only). camelCase wire.
+ *  test); NOT `Copy` (owns a `String` + two `Option<String>`s); NO `Deserialize` (outbound-only). camelCase wire.
+ *
+ *  [Build-Session-Entscheidung: P3.76] The path fields `path`/`residue` are RE-TYPED from `Option<PathBuf>`
+ *  to the display projections `path_display`/`residue_display` (`Option<String>`) — **no `PathBuf` crosses
+ *  the wire in either direction** (§0.4.3 / §2.10.1 / the 2026-07-06 core-owned-paths ruling). The real
+ *  residue `PathBuf` stays core-side in the `RunResultStore` off-wire table (the C9 `OpenTarget::Residue`
+ *  reveal resolves it there, P3.79); a display string here is never re-submitted as input.
  */
 export type IpcError = {
 	/**  The stable machine code from the §2.8 taxonomy — drives the UI branching + i18n. */
 	kind: ConversionErrorKind,
 	/**  The §2.8.2 pre-localised plain-language English message; NEVER a stack trace / raw engine stderr. */
 	message: string,
-	/**  The optional path the error concerns (for the §1.12 summary's output→source map). */
-	path: string | null,
 	/**
-	 *  The optional residue location when §2.6 cleanup could not complete — so the item is never reported
-	 *  as a clean success.
+	 *  The optional core-produced lossy DISPLAY form of the path the error concerns (for the §1.12
+	 *  summary's output→source map) — last-step `to_string_lossy` (§2.10.1); never a re-submittable path.
 	 */
-	residue: string | null,
+	pathDisplay: string | null,
+	/**
+	 *  The optional DISPLAY form of the residue location when §2.6 cleanup could not complete — so the
+	 *  item is never reported as a clean success; the real residue `PathBuf` stays core-side
+	 *  (`RunResultStore`, §0.4.4).
+	 */
+	residueDisplay: string | null,
 };
 
 /**
@@ -1196,20 +1236,25 @@ export type ItemId = number;
 /**
  *  The terminal per-item outcome carried by the LIVE §0.4.2 `ItemFinished` event (§0.6) — the richer
  *  terminal projection the UI applies as each item finishes, distinct from the summary's `JobState`.
- *  `Failed` carries the full §0.4.3 `IpcError` (kind + message + path + residue) the live row needs;
- *  `Succeeded` the published output path; `Skipped` the §0.6 `SkipReason`; `Cancelled` is payload-free.
+ *  `Failed` carries the full §0.4.3 `IpcError` (kind + message + path/residue DISPLAY) the live row needs;
+ *  `Succeeded` the display-only output form; `Skipped` the §0.6 `SkipReason`; `Cancelled` is payload-free.
  *
- *  [Build-Session-Entscheidung: P2.12] `Serialize` + `Type` (wire — the `ItemFinished` payload), NO
+ *  [Build-Session-Entscheidung: P2.12 → P3.76] `Serialize` + `Type` (wire — the `ItemFinished` payload), NO
  *  `Deserialize` (outbound-only — embeds the outbound-only `IpcError`); NOT `Copy` (`Failed` owns an
- *  `IpcError` with `String`/`PathBuf`). Externally tagged with `#[serde(rename_all = "camelCase")]` (the
- *  §0.6 wire-enum convention) + per-struct-variant `rename_all` (serde does not cascade the enum-level
- *  rename to a variant's fields, so `Succeeded`'s `output_path` → `outputPath` needs its own, cf.
- *  `CollectedSet`). Variant order matches §0.6 exactly.
+ *  `IpcError` with `String`s). Externally tagged with `#[serde(rename_all = "camelCase")]` (the §0.6
+ *  wire-enum convention) + per-struct-variant `rename_all` (serde does not cascade the enum-level rename to
+ *  a variant's fields, so `Succeeded`'s `output_display` → `outputDisplay` needs its own, cf.
+ *  `CollectedSet`). Variant order matches §0.6 exactly. P3.76 re-types `Succeeded { output_path: PathBuf }`
+ *  → `Succeeded { output_display: String }` — no `PathBuf` on the wire (2026-07-06 ruling, §2.10.1); the
+ *  real output `PathBuf` lives in `RunResultStore` (`RunResultPaths.item_outputs`).
  */
 export type ItemOutcome =
-/**  Converted + atomically published (§2.1) — carries the final output path. */
+/**
+ *  Converted + atomically published (§2.1) — carries the display-only output form (last-step
+ *  `to_string_lossy`, §2.10.1); the real output `PathBuf` is `RunResultStore`-side.
+ */
 ({ succeeded: {
-	outputPath: string,
+	outputDisplay: string,
 } }) & { failed?: never; skipped?: never } |
 /**  A named §2.8 failure — carries the full §0.4.3 `IpcError` the live row renders. */
 ({ failed: {
@@ -1239,24 +1284,37 @@ export type ItemProgress = {
 };
 
 /**
- *  One per-item row of the §1.12 summary (§0.6) — its source path (for output→source mapping), its terminal
- *  `JobState`, the output path (`Some` only when `Succeeded`), and the resolved surfaced line.
+ *  One per-item row of the §1.12 summary (§0.6) — its `ItemId` (the output→source mapping anchor; the
+ *  source is named for display via the `CollectedSet`'s `DroppedItem.display_name`), its terminal
+ *  `JobState`, the display-only output form (`Some` only when `Succeeded`), and the resolved surfaced line.
  *
- *  [Build-Session-Entscheidung: P2.12] `Serialize` + `Type` (wire — embedded in `RunResult`), NO
- *  `Deserialize`; NOT `Copy` (owns `PathBuf`/`OutcomeMsg`). camelCase. `state: JobState` is what forces
+ *  [Build-Session-Entscheidung: P2.12 → P3.76] `Serialize` + `Type` (wire — embedded in `RunResult`), NO
+ *  `Deserialize`; NOT `Copy` (owns `String`/`OutcomeMsg`). camelCase. `state: JobState` is what forces
  *  `JobState` to be a wire type (see its doc) — the summary's per-item state, distinct from the live
- *  `ItemFinished`'s `ItemOutcome`.
+ *  `ItemFinished`'s `ItemOutcome`. P3.76 retires the two path fields off the wire (2026-07-06 ruling,
+ *  §2.10.1): `source: PathBuf` → `item: ItemId` (display via `DroppedItem.display_name`; real paths in
+ *  `FrozenCollectedSet`/`RunResultStore`) and `output: Option<PathBuf>` → `output_display: Option<String>`
+ *  (the real output `PathBuf` is `RunResultStore`-side, opened via C9 `OpenTarget::Item(item)`). The
+ *  `state`/`reason` pair is unchanged (`OutcomeMsg` carries kind + text, never a path).
  */
 export type ItemResult = {
-	/**  The source path this row is for — the output→source mapping anchor (SSOT *How It Feels* 7). */
-	source: string,
+	/**
+	 *  The ID-keyed output→source mapping anchor (§1.12) — the source is named for display via the
+	 *  `CollectedSet`'s `DroppedItem.display_name`; the REAL paths live in `FrozenCollectedSet` /
+	 *  `RunResultStore` (§0.4.4), where C9 resolves `OpenTarget::Item(item)`.
+	 */
+	item: ItemId,
+	/**
+	 *  The display-only lossy form of the published output (last-step `to_string_lossy`, §2.10.1) —
+	 *  `Some(..)` ONLY when `state == Succeeded` (§1.12); `None` otherwise. The REAL output `PathBuf` is
+	 *  `RunResultStore`-side, opened via C9 `OpenTarget::Item(item)`.
+	 */
+	outputDisplay: string | null,
 	/**
 	 *  The terminal §1.9 lifecycle state for this item (§0.6) — at `RunFinished` always a terminal variant
 	 *  (`Succeeded`/`Failed`/`Skipped`/`Cancelled`).
 	 */
 	state: JobState,
-	/**  The published output path — `Some(..)` ONLY when `state == Succeeded` (§1.12); `None` otherwise. */
-	output: string | null,
 	/**
 	 *  The resolved, ready-to-show §2.8 failure / §2.9 lossy / §1.1 skip line (§2.8.2 `OutcomeMsg`); `None`
 	 *  for a plain success with no lossy note.
@@ -1264,12 +1322,21 @@ export type ItemResult = {
 	reason: OutcomeMsg | null,
 };
 
-/**  `ItemStarted` (§0.4.2) — an item left `Pending` for `Running` (§1.9). */
+/**
+ *  `ItemStarted` (§0.4.2) — an item left `Pending` for `Running` (§1.9).
+ *
+ *  [Build-Session-Entscheidung: P3.76] `source_path: PathBuf` → the display-only `source_display: String`
+ *  (last-step `to_string_lossy`, §2.10.1) — no `PathBuf` crosses the wire (2026-07-06 ruling); the real
+ *  resolved source path stays core-side in `FrozenCollectedSet.item_paths` (keyed by `item_id`).
+ */
 export type ItemStarted = {
 	runId: RunId,
 	itemId: ItemId,
-	/**  The frozen resolved source path being converted (§2.4). */
-	sourcePath: string,
+	/**
+	 *  The core-produced lossy DISPLAY of the item's source being converted (§2.4 frozen resolved source,
+	 *  last-step `to_string_lossy`, §2.10.1) — display-only, never a re-submittable path.
+	 */
+	sourceDisplay: string,
 	/**  The whole-batch target (§0.6 invariant 1) this item converts to. */
 	target: TargetId,
 };
@@ -1567,17 +1634,21 @@ export type OutcomeMsg =
  *  in `crate::orchestrator` (it embeds `preflight: PreflightVerdict` → transitively references
  *  `crate::outcome`, §0.7 ‡).
  *
- *  [Build-Session-Entscheidung: P2.11] `Serialize` + `Type`, NO `Deserialize` (embeds the Serialize-only
- *  `PreflightVerdict`); NOT `Copy` (owns a `PathBuf`). camelCase wire form.
+ *  [Build-Session-Entscheidung: P2.11 → P3.76] `Serialize` + `Type`, NO `Deserialize` (embeds the
+ *  Serialize-only `PreflightVerdict`); NOT `Copy` (owns a `String`). camelCase wire form. P3.76 re-types
+ *  the directory PREVIEW field from `PathBuf` to a lossy display `String` (`final_dir_display`) — no
+ *  `PathBuf` crosses the wire (§2.10.1 / 2026-07-06 ruling); the real per-item dirs are computed core-side
+ *  by §1.8 and never leave the core.
  */
 export type OutputPlanPreview = {
 	/**  The collected set this preview is for (the §0.4.4 registry key). */
 	set: CollectedSetId,
 	/**
-	 *  The resolved destination DIRECTORY shown before convert (§1.8 / §2.7) — directory-based, never a
-	 *  pre-baked final file path (the numbered name is resolved at §2.1 write time).
+	 *  The resolved destination DIRECTORY shown before convert (§1.8 / §2.7) as a core-produced lossy
+	 *  display `String` (last-step `to_string_lossy`, §2.10.1) — directory-based, never a pre-baked final
+	 *  file path (the numbered name is resolved at §2.1 write time), never a re-submittable path.
 	 */
-	finalDirPreview: string,
+	finalDirDisplay: string,
 	/**  `Some(reason)` if a per-location divert was previewed (§2.7.2); `None` = beside-source / no divert. */
 	diverted: DivertReason | null,
 	/**
@@ -1708,9 +1779,12 @@ export type RunId = string;
  *  (§0.4.4 run-registry retention). It is the §5.3 `ResultSummary`'s single source: per-item outcome +
  *  output→source map + residue warnings + the open-folder roots.
  *
- *  [Build-Session-Entscheidung: P2.12] `Serialize` + `Type` (wire), NO `Deserialize`; NOT `Copy` (owns
- *  `Vec`/`PathBuf` fields). camelCase wire form (`collectedSetId`/`runId`/`cleanupIncomplete`/`commonRoot`/
- *  `divertRoot`).
+ *  [Build-Session-Entscheidung: P2.12 → P3.76] `Serialize` + `Type` (wire), NO `Deserialize`; NOT `Copy`
+ *  (owns `Vec`/`String` fields). camelCase wire form (`collectedSetId`/`runId`/`cleanupIncomplete`/
+ *  `commonRootDisplay`/`divertRootDisplay`). P3.76 re-types the two root fields from `PathBuf`/
+ *  `Option<PathBuf>` to lossy display `String`s — **no `PathBuf` crosses the wire** (§2.10.1 / 2026-07-06
+ *  ruling); the REAL common/divert roots (and the per-item output/residue `PathBuf`s) live in the
+ *  `RunResultStore` OFF-WIRE table (`RunResultPaths`), which C9 resolves its `OpenTarget` against (P3.79).
  */
 export type RunResult = {
 	/**
@@ -1722,8 +1796,8 @@ export type RunResult = {
 	runId: RunId,
 	/**
 	 *  Per-item outcome + output→source mapping (§1.12). INCLUDES the freeze-time pre-flight `SkippedItem`s
-	 *  (`CollectedSet::Single.skipped`) projected as `ItemResult { state: Skipped(reason), output: None,
-	 *  reason: Some(OutcomeMsg::Skipped{ reason, .. }) }` — the skip rides the skip-shaped `OutcomeMsg`
+	 *  (`CollectedSet::Single.skipped`) projected as `ItemResult { item, output_display: None,
+	 *  state: Skipped(reason), reason: Some(OutcomeMsg::Skipped{ reason, .. }) }` — the skip rides the skip-shaped `OutcomeMsg`
 	 *  variant (§2.8), NOT `Failure`, so skip ≠ fail at the type level (§1.12); counted in `totals.skipped`.
 	 */
 	items: ItemResult[],
@@ -1735,17 +1809,20 @@ export type RunResult = {
 	 */
 	cleanupIncomplete: CleanupResidue[],
 	/**
-	 *  The "open folder" target for the BESIDE-SOURCE outputs — the dropped-selection common ancestor
-	 *  (§2.7 / §7.7.3).
+	 *  The display-only "open folder" LABEL for the BESIDE-SOURCE outputs — the dropped-selection common
+	 *  ancestor (§2.7 / §7.7.3) as a lossy display `String` (last-step `to_string_lossy`, §2.10.1)
+	 *  [DECIDED 2026-07-06]. The REAL root `PathBuf` lives in the `RunResultStore` off-wire table
+	 *  (`RunResultPaths.common_root`), opened via C9 `OpenTarget::CommonRoot`.
 	 */
-	commonRoot: string,
+	commonRootDisplay: string,
 	/**
-	 *  `Some(Downloads/Documents/chosen)` when ANY item was diverted (§2.7.3) — a single `PathBuf` cannot
-	 *  carry both the beside-source and divert roots, so the divert root is its own field; `None` when no
-	 *  item diverted. Both are §7.7.3 open-folder targets; per-item diverted outputs are also reachable via
-	 *  `ItemResult.output` (C9 `open_path`, `kind = RevealInFolder`).
+	 *  `Some(display)` when ANY item was diverted (§2.7.3) — a single field cannot carry both the
+	 *  beside-source and divert roots, so the divert root is its own display field; `None` when no item
+	 *  diverted. Both REAL roots are §7.7.3 open-folder targets resolved core-side (C9
+	 *  `OpenTarget::DivertRoot`, from `RunResultPaths.divert_root`); a per-item diverted output is reachable
+	 *  via C9 `OpenTarget::Item(ItemId)` (its real path in `RunResultPaths.item_outputs`).
 	 */
-	divertRoot: string | null,
+	divertRootDisplay: string | null,
 };
 
 /**
@@ -1824,19 +1901,27 @@ export type SkipReason =
  *  `SkipReason`, so the §1.12 `OutcomeMsg::Skipped` projection is a trivial copy (no undefined
  *  `ErrorKind → SkipReason` reverse map at the boundary).
  *
- *  [Build-Session-Entscheidung: P2.5] Wire policy mirrors `DroppedItem` / the P2.2/P2.3/P2.15 §0.6
- *  types: derives `specta::Type` + `Serialize`/`Deserialize` with `#[serde(rename_all = "camelCase")]`.
- *  NOT `Copy` (owns a `PathBuf`); `PartialEq`+`Eq` back the round-trip + §6 property tests. No explicit
- *  specta registration — auto-registers via its consuming command (the C1 `CollectedSet` return, P2.22).
+ *  [Build-Session-Entscheidung: P3.76] Wire policy mirrors `DroppedItem`: the path field `source` is
+ *  RETIRED off the wire (the real dropped path moves to the §0.4.4 `FrozenCollectedSet.item_paths` table,
+ *  keyed by this `item`, the 2026-07-06 core-owned-paths ruling / §2.10.1) and REPLACED by the display
+ *  projection `source_display`. Otherwise unchanged from P2.5: derives `specta::Type` +
+ *  `Serialize`/`Deserialize` with `#[serde(rename_all = "camelCase")]`; `Deserialize` retained (a display
+ *  `String` is not a re-submittable path); NOT `Copy` (owns a `String`); `PartialEq`+`Eq` back the
+ *  round-trip + §6 property tests. Registration auto-rides its consuming command (the C1 `CollectedSet`
+ *  return, P2.22).
  */
 export type SkippedItem = {
 	/**
 	 *  The §0.6 invariant-6 freeze-assigned id — id-disjoint with the eligible items over the single id
-	 *  space (never re-indexed from 0). Symmetric with `DroppedItem.item`.
+	 *  space (never re-indexed from 0). Symmetric with `DroppedItem.item`; also the key into the off-wire
+	 *  `FrozenCollectedSet.item_paths` table where this item's real dropped path lives.
 	 */
 	item: ItemId,
-	/**  The dropped path, for the §1.4 summary display. */
-	source: string,
+	/**
+	 *  The core-produced lossy DISPLAY form of the dropped path (last-step `to_string_lossy`, §2.10.1),
+	 *  for the §1.4 summary display — display-only, never a re-submittable path.
+	 */
+	sourceDisplay: string,
 	/**  Why the item was skipped — a §0.6 `SkipReason`, NOT an `ErrorKind` (see the type doc). */
 	reason: SkipReason,
 };

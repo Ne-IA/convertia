@@ -20,7 +20,7 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::domain::OpenKind;
 use crate::engines::{AppInfo, EngineHealth};
-use crate::orchestrator::RunResult;
+use crate::orchestrator::RunResultPaths;
 use crate::outcome::{ConversionErrorKind, IpcError};
 
 /// **C9 `open_path`** (§0.4.1) — the DoD "one-click open-folder / open-file" action: reveal or open an output
@@ -64,8 +64,8 @@ pub async fn open_path(kind: OpenKind, path: PathBuf) -> Result<(), IpcError> {
     Err(IpcError {
         kind: ConversionErrorKind::InternalError,
         message: "Could not open the requested location.".into(),
-        path: None,
-        residue: None,
+        path_display: None,
+        residue_display: None,
     })
 }
 
@@ -106,13 +106,15 @@ pub(crate) fn opener_op_for(kind: OpenKind, path: PathBuf) -> OpenerOp {
     }
 }
 
-/// Whether `path` is an allowed C9 open target for `kind` against the current run's §1.12 `RunResult` — the
-/// §7.7.2 Rust-side membership gate that REPLACES a static opener scope (§0.10 carries no `opener:*` grant, so
-/// a glob could never cover the §2.7 beside-source outputs). PURE validation over a borrowed `&RunResult`: no
-/// `AppHandle`, no filesystem touch, no `OpenerExt` invoke — the live wire (which fetches the `RunResult` from
-/// `State<RunResultStore>` and calls the mapped `OpenerOp`) is P3.51. The two §7.7.3 rules:
-/// - **File launch** (`OpenKind::File`) admits ONLY a recorded OUTPUT file (`RunResult.items[].output`, `Some`
-///   iff that item succeeded, §1.12) — never a source, never an engine intermediate.
+/// Whether `path` is an allowed C9 open target for `kind` against the current run's OFF-WIRE
+/// `RunResultPaths` — the §7.7.2 Rust-side membership gate that REPLACES a static opener scope (§0.10 carries
+/// no `opener:*` grant, so a glob could never cover the §2.7 beside-source outputs). PURE validation over a
+/// borrowed `&RunResultPaths` (the real `PathBuf`s the display-only wire `RunResult` shed, 2026-07-06 ruling
+/// / §2.10.1): no `AppHandle`, no filesystem touch, no `OpenerExt` invoke — the live wire (which fetches the
+/// paths from `State<RunResultStore>::paths` and calls the mapped `OpenerOp`) is P3.51/P3.79. The two §7.7.3
+/// rules:
+/// - **File launch** (`OpenKind::File`) admits ONLY a recorded OUTPUT file (`RunResultPaths.item_outputs` — a
+///   succeeded item's real published path, §1.12/§2.1) — never a source, never an engine intermediate.
 /// - **Folder browse** (`OpenKind::Folder` / `RevealInFolder`) admits ONLY a run ROOT — `common_root`
 ///   (beside-source) and, for a split-output batch, `divert_root` (§7.7.3). When a batch splits (§2.7.3), BOTH
 ///   roots are members, so §5.3 `OpenActions` renders TWO open-folder buttons (§7.7.1); a `divert_root` of
@@ -130,19 +132,17 @@ pub(crate) fn opener_op_for(kind: OpenKind, path: PathBuf) -> OpenerOp {
     not(test),
     expect(
         dead_code,
-        reason = "the §7.7.2/§7.7.3 C9 membership gate is pure validation over a &RunResult; its only production consumer is the P3.51 live-wire box (AppHandle + RunResultStore fetch + OpenerExt invoke — the build-vs-wire split), so it is dead in the production build until then (the §1.1-walk / §7.8.1-funnel dead-until pattern)."
+        reason = "the §7.7.2/§7.7.3 C9 membership gate is pure validation over a &RunResultPaths; its only production consumer is the P3.51/P3.79 live-wire box (AppHandle + RunResultStore::paths fetch + OpenerExt invoke — the build-vs-wire split), so it is dead in the production build until then (the §1.1-walk / §7.8.1-funnel dead-until pattern)."
     )
 )]
-pub(crate) fn open_path_member(kind: OpenKind, path: &Path, run: &RunResult) -> bool {
+pub(crate) fn open_path_member(kind: OpenKind, path: &Path, paths: &RunResultPaths) -> bool {
     match kind {
         // File launch: only a path in the run's recorded OUTPUT files (§7.7.3 — never a source/intermediate).
-        OpenKind::File => run
-            .items
-            .iter()
-            .any(|item| item.output.as_deref() == Some(path)),
+        // The real output PathBufs live off-wire in RunResultPaths.item_outputs (2026-07-06 ruling, §2.10.1).
+        OpenKind::File => paths.item_outputs.values().any(|out| out.as_path() == path),
         // Folder browse: only a run ROOT — common_root, plus divert_root for a split-output batch (§7.7.3).
         OpenKind::Folder | OpenKind::RevealInFolder => {
-            path == run.common_root.as_path() || run.divert_root.as_deref() == Some(path)
+            path == paths.common_root.as_path() || paths.divert_root.as_deref() == Some(path)
         }
     }
 }
@@ -182,8 +182,8 @@ pub async fn open_project_page(app: AppHandle) -> Result<(), IpcError> {
         .map_err(|_err| IpcError {
             kind: ConversionErrorKind::InternalError,
             message: "Could not open the project page.".into(),
-            path: None,
-            residue: None,
+            path_display: None,
+            residue_display: None,
         })
 }
 
@@ -241,8 +241,8 @@ pub async fn get_engine_health() -> Result<EngineHealth, IpcError> {
     Err(IpcError {
         kind: ConversionErrorKind::InternalError,
         message: "Engine health is unavailable.".into(),
-        path: None,
-        residue: None,
+        path_display: None,
+        residue_display: None,
     })
 }
 
@@ -321,47 +321,44 @@ mod c9_opener_op {
 #[cfg(test)]
 mod c9_membership {
     //! §6.4.1 unit (G15): the P2.101 §7.7.2/§7.7.3 C9 `open_path_member` membership gate — pure validation over
-    //! a `&RunResult` (no AppHandle / FS / OpenerExt; the live wire is P3.51). Asserts the two §7.7.3 rules:
-    //! File-launch admits a recorded OUTPUT file; folder-browse admits a run ROOT (common_root / divert_root).
+    //! the off-wire `&RunResultPaths` (no AppHandle / FS / OpenerExt; the live wire is P3.51/P3.79). Asserts the
+    //! two §7.7.3 rules: File-launch admits a recorded OUTPUT file; folder-browse admits a run ROOT
+    //! (common_root / divert_root).
     //! The two-rule EXCLUSIVITY negatives are P2.102 and the split-output two-targets are P2.103 — both add
     //! cases to this module against the shared `run_with` builder. [Build-Session-Entscheidung: P2.101]
     //! P2.137 (phase-end hardening) adds the §7.7.3 ANTI-TRAVERSAL legs against the same builder: the
     //! `..`-perturbation negatives, the benign-lexical-no-op pins (each grounded on std `Path` equality
     //! first), and a §6.4.2 (G16) pinned-seed 512-case perturbation property.
     use super::*;
-    use crate::orchestrator::{ItemResult, JobState, Totals};
+    use crate::domain::ItemId;
+    use crate::orchestrator::RunResultPaths;
     use proptest::prelude::*;
     use proptest::test_runner::{RngAlgorithm, TestRng, TestRunner};
+    use std::collections::BTreeMap;
 
-    // A minimal terminal `RunResult` for the membership tests: one succeeded `ItemResult` per `outputs` entry,
-    // the given roots. Ids via the PUBLIC bare-uuid `Deserialize` wire form (§0.4.4), mirroring the
-    // orchestrator retention test's `sample_run_result`. `totals` is a fixed valid tally the gate never reads.
-    // Shared by the P2.101 / P2.102 / P2.103 cases in this module.
-    fn run_with(outputs: &[&str], common_root: &str, divert_root: Option<&str>) -> RunResult {
-        let items = outputs
+    // A minimal OFF-WIRE `RunResultPaths` for the membership tests: one recorded output `PathBuf` per
+    // `outputs` entry (keyed by a synthetic `ItemId`), the given real roots, no residues. This IS what C9
+    // resolves against post-2026-07-06-ruling — the display-only wire `RunResult` shed its paths (§2.10.1),
+    // so the gate reads only these real paths and the wire summary is not needed here. The prior `run_with`
+    // built a full wire `RunResult` with uuid-deserialized `collected_set_id`/`run_id` — those ids (+ their
+    // uuid-deserialization lines) are gone because C9 now reads `RunResultPaths`, not the wire `RunResult`;
+    // that removal is obsolete fixture plumbing, NOT a suppressed assertion (the §7.7.3 cases below assert
+    // membership verbatim). Shared by the P2.101 / P2.102 / P2.103 / P2.137 cases in this module.
+    fn run_with(outputs: &[&str], common_root: &str, divert_root: Option<&str>) -> RunResultPaths {
+        let item_outputs = outputs
             .iter()
-            .map(|out| ItemResult {
-                source: PathBuf::from("/in/data.csv"),
-                state: JobState::Succeeded,
-                output: Some(PathBuf::from(out)),
-                reason: None,
+            .enumerate()
+            .map(|(i, out)| {
+                let id = ItemId::from_index(u32::try_from(i).expect("test output index fits u32"));
+                (id, PathBuf::from(out))
             })
+            // [Test-Change: P3.76 — old-obsolete+new-correct, §2.10.1] the prior wire-`RunResult` fixture's removed uuid-deserialization lines are obsolete plumbing (see the fn doc above), not suppressed assertions.
             .collect();
-        RunResult {
-            collected_set_id: serde_json::from_str(r#""aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa""#)
-                .expect("CollectedSetId deserializes from a uuid string"),
-            run_id: serde_json::from_str(r#""bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb""#)
-                .expect("RunId deserializes from a uuid string"),
-            items,
-            totals: Totals {
-                succeeded: 1,
-                failed: 0,
-                cancelled: 0,
-                skipped: 0,
-            },
-            cleanup_incomplete: vec![],
+        RunResultPaths {
             common_root: PathBuf::from(common_root),
             divert_root: divert_root.map(PathBuf::from),
+            item_outputs,
+            item_residues: BTreeMap::new(),
         }
     }
 

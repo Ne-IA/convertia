@@ -140,6 +140,28 @@ impl RunId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 pub struct CollectedSetId(Uuid);
 
+/// A C2b-picked destination root, named **by id on the wire** and resolved core-side against the
+/// session-scoped picked-roots registry (`crate::orchestrator::DestinationRegistry`, §0.4.4) — the real
+/// `PathBuf` NEVER crosses the wire in either direction (§2.10.1 / the 2026-07-06 core-owned-paths ruling).
+/// C2b `pick_destination` mints one per successful pick and returns it (paired with a lossy display string)
+/// as the `DestinationChoice::ChosenRoot(DestinationId)` the WebView carries into C4/C5/C6; the picker
+/// wiring + the `ChosenRoot(DestinationId)` re-key are P3.80 (this box only stands up the id + its
+/// registry). [Build-Session-Entscheidung: P3.76]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+pub struct DestinationId(Uuid);
+
+impl DestinationId {
+    /// Mint a fresh destination-root id — a random **v4** UUID minted by C2b `pick_destination` on a
+    /// successful folder pick (P3.80), stored in the §0.4.4 picked-roots registry against the picked
+    /// `PathBuf`. Named `mint` per the §7.1 "minted" identity vocabulary (mirroring `RunId::mint` /
+    /// `InstanceId::mint`); a random `Default` would be a surprising, non-deterministic default
+    /// (`clippy::new_without_default`). [Build-Session-Entscheidung: P3.76]
+    #[must_use]
+    pub fn mint() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
 /// An ingest-scoped cancellation handle, minted by the frontend before a `RunId` exists (§0.4 C13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 pub struct CollectingId(Uuid);
@@ -449,41 +471,61 @@ pub struct EmptyReport {
 // ─── §0.6 DroppedItem — one eligible item in the §1.1-frozen collected set ───────
 /// One eligible item in the §1.1-frozen collected set — the per-item record the pipeline carries
 /// from freeze through conversion (§0.6 / §1.2). It is a wire type: it reaches the WebView as
-/// `CollectedSet::Single.items` (P2.6), but on the wire `raw_path` is **DISPLAY-ONLY** — the §5.3
-/// BatchSummary derives sample basenames from the first few `items[].raw_path`, and the WebView
-/// NEVER re-submits it as intake. The only intake funnels are C1 (paths the native drop/launch
-/// gave) and C2a (paths the Rust-opened picker gave), both Rust-side; a frozen set's `raw_path`
-/// travelling back for display does not let the WebView feed an arbitrary path into a conversion
-/// (the §0.6 `raw_path` SCOPE `[DECIDED]` note). The §2.4 freeze de-duplicates by RESOLVED IDENTITY
-/// on `resolved_path` (owned by §2.3), so two paths reaching one real file are one `DroppedItem`.
+/// `CollectedSet::Single.items` (P2.6), carrying **only core-produced lossy DISPLAY strings + its
+/// `ItemId`** — **no `PathBuf` crosses the wire in either direction** (§2.10.1 / the 2026-07-06
+/// core-owned-paths ruling). The real per-item paths (the OS-handed `raw_path` + the
+/// symlink/junction/alias-resolved `resolved_path`, §2.3 — the identity the §2.4 freeze de-duplicates
+/// on and the path the engine is ultimately pointed at) live OFF the wire in the §0.4.4
+/// `FrozenCollectedSet.item_paths` table, keyed by this `item`; the WebView cannot name a path, so a
+/// `display_name` travelling back for display can never feed an arbitrary path into a conversion.
 ///
-/// [Build-Session-Entscheidung: P2.4] Wire policy mirrors the P2.2/P2.3/P2.15 §0.6 types: derives
-/// `specta::Type` + `Serialize`/`Deserialize` with `#[serde(rename_all = "camelCase")]` so it mirrors
-/// to `bindings.ts` in the §0.6 camelCase wire form (`raw_path` → `rawPath`, `resolved_path` →
-/// `resolvedPath`, `size_bytes` → `sizeBytes`). NOT `Copy` (it owns two `PathBuf`s + a `String`-bearing
-/// `DetectionOutcome`); NOT `Hash` (it is not a map key — the de-dup is by resolved identity on
-/// `resolved_path`, §2.3, not by hashing the whole record). `PartialEq`+`Eq` back the round-trip + the
-/// §6 property tests (`DetectionOutcome` is `Eq`, so the struct is). No explicit specta-`Builder`
-/// registration here — the same choice P2.15 made: the type auto-registers when its consuming command
-/// (C1's `CollectedSet` return, P2.22) is wired, so an early registration would emit it with no consumer.
+/// [Build-Session-Entscheidung: P3.76] The path fields `raw_path`/`resolved_path` are RETIRED off the
+/// wire (moved to the `FrozenCollectedSet` off-wire path table) and REPLACED by the display projections
+/// `display_name` / `rel_path_display`. Wire policy is otherwise unchanged from P2.4: derives
+/// `specta::Type` + `Serialize`/`Deserialize` with `#[serde(rename_all = "camelCase")]` so it mirrors to
+/// `bindings.ts` in the §0.6 camelCase wire form (`display_name` → `displayName`, `rel_path_display` →
+/// `relPathDisplay`, `size_bytes` → `sizeBytes`); `Deserialize` is retained (a display `String` is not a
+/// re-submittable path, and no command accepts a `DroppedItem` inbound, so the ruling holds regardless);
+/// NOT `Copy` (owns `String`s + a `String`-bearing `DetectionOutcome`); NOT `Hash` (not a map key — the
+/// de-dup is by resolved identity on the off-wire `resolved_path`, §2.3). `PartialEq`+`Eq` back the
+/// round-trip + the §6 property tests. Registration auto-rides its consuming command (C1's `CollectedSet`
+/// return, P2.22), the P2.15 defer pattern.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DroppedItem {
     /// The §0.6 invariant-6 freeze-assigned id over the SINGLE id space (eligible + skipped). `items`
     /// is a filtered VIEW that is NEVER re-indexed from 0, so each `DroppedItem` carries its own
     /// `ItemId` (its position in `items` is NOT its id). Symmetric with `SkippedItem.item` (P2.5);
-    /// `ConversionJob.item` denormalizes it (P2.10).
+    /// `ConversionJob.item` denormalizes it (P2.10). Also the key into the off-wire
+    /// `FrozenCollectedSet.item_paths` table where this item's real `raw_path`/`resolved_path` live.
     pub item: ItemId,
-    /// The path as the OS handed it at drop/pick time. DISPLAY-ONLY on the wire (see the type doc).
-    pub raw_path: PathBuf,
-    /// The symlink/junction/alias-resolved real path (§2.3) — the identity the §2.4 freeze
-    /// de-duplicates on and the path the engine is ultimately pointed at.
-    pub resolved_path: PathBuf,
+    /// The core-produced lossy DISPLAY basename (last-step `to_string_lossy`, §2.10.1) — display-only,
+    /// never a re-submittable path (the real `resolved_path` stays off-wire in `item_paths`). A
+    /// non-UTF-8 name renders with U+FFFD here yet converts flawlessly core-side (§2.10.1).
+    pub display_name: String,
+    /// A display-only root-relative subpath for a folder-drop member (the §2.7 subtree preview);
+    /// `None` for a top-level item. Lossy (`to_string_lossy`, §2.10.1) — never re-submitted as input.
+    pub rel_path_display: Option<String>,
     /// Size in bytes of the resolved file, recorded at the §2.4 freeze.
     pub size_bytes: u64,
     /// The single canonical §1.2 detection verdict for this item — §1.2 OWNS the type (P2.15), §0.6
     /// references it. NOT a separate `DetectedFormat` (that earlier name is retired).
     pub detected: DetectionOutcome,
+}
+
+/// The §0.4.4 OFF-WIRE per-item path pair — the real `raw_path`/`resolved_path` a `DroppedItem`/
+/// `SkippedItem` shed off the wire (the 2026-07-06 core-owned-paths ruling, §2.10.1). Stored in the
+/// `FrozenCollectedSet.item_paths` table keyed by `ItemId`, it is the identity the §2.4 freeze
+/// de-duplicates on and the path the §1.7 invocation ultimately points the engine at. Core-INTERNAL:
+/// derives NO `serde`/`specta` (it NEVER crosses IPC — the same posture as `FrozenCollectedSet` itself);
+/// `PartialEq`+`Eq` back the projection tests. [Build-Session-Entscheidung: P3.76]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemPaths {
+    /// The path as the OS handed it at drop/pick time (the former wire `DroppedItem.raw_path`).
+    pub raw_path: PathBuf,
+    /// The symlink/junction/alias-resolved real path (§2.3, the former wire `DroppedItem.resolved_path`)
+    /// — the §2.4 de-dup identity and the engine's ultimate target.
+    pub resolved_path: PathBuf,
 }
 
 // ─── §0.6 SkippedItem / SkipReason — the id-disjoint ineligible-item view ────────
@@ -497,18 +539,24 @@ pub struct DroppedItem {
 /// `SkipReason`, so the §1.12 `OutcomeMsg::Skipped` projection is a trivial copy (no undefined
 /// `ErrorKind → SkipReason` reverse map at the boundary).
 ///
-/// [Build-Session-Entscheidung: P2.5] Wire policy mirrors `DroppedItem` / the P2.2/P2.3/P2.15 §0.6
-/// types: derives `specta::Type` + `Serialize`/`Deserialize` with `#[serde(rename_all = "camelCase")]`.
-/// NOT `Copy` (owns a `PathBuf`); `PartialEq`+`Eq` back the round-trip + §6 property tests. No explicit
-/// specta registration — auto-registers via its consuming command (the C1 `CollectedSet` return, P2.22).
+/// [Build-Session-Entscheidung: P3.76] Wire policy mirrors `DroppedItem`: the path field `source` is
+/// RETIRED off the wire (the real dropped path moves to the §0.4.4 `FrozenCollectedSet.item_paths` table,
+/// keyed by this `item`, the 2026-07-06 core-owned-paths ruling / §2.10.1) and REPLACED by the display
+/// projection `source_display`. Otherwise unchanged from P2.5: derives `specta::Type` +
+/// `Serialize`/`Deserialize` with `#[serde(rename_all = "camelCase")]`; `Deserialize` retained (a display
+/// `String` is not a re-submittable path); NOT `Copy` (owns a `String`); `PartialEq`+`Eq` back the
+/// round-trip + §6 property tests. Registration auto-rides its consuming command (the C1 `CollectedSet`
+/// return, P2.22).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SkippedItem {
     /// The §0.6 invariant-6 freeze-assigned id — id-disjoint with the eligible items over the single id
-    /// space (never re-indexed from 0). Symmetric with `DroppedItem.item`.
+    /// space (never re-indexed from 0). Symmetric with `DroppedItem.item`; also the key into the off-wire
+    /// `FrozenCollectedSet.item_paths` table where this item's real dropped path lives.
     pub item: ItemId,
-    /// The dropped path, for the §1.4 summary display.
-    pub source: PathBuf,
+    /// The core-produced lossy DISPLAY form of the dropped path (last-step `to_string_lossy`, §2.10.1),
+    /// for the §1.4 summary display — display-only, never a re-submittable path.
+    pub source_display: String,
     /// Why the item was skipped — a §0.6 `SkipReason`, NOT an `ErrorKind` (see the type doc).
     pub reason: SkipReason,
 }
@@ -602,8 +650,11 @@ pub enum CollectedSet {
         skipped: Vec<SkippedItem>,
         /// Size hint for the §1.10 pre-flight (§1.4).
         total_bytes: u64,
-        /// The dropped root(s) → §2.7 subtree + open-folder.
-        roots: Vec<PathBuf>,
+        /// The dropped root(s) as core-produced lossy DISPLAY strings (last-step `to_string_lossy`,
+        /// §2.10.1) — display-only [DECIDED 2026-07-06]. The REAL root `PathBuf`s stay OFF the wire in
+        /// `FrozenCollectedSet.roots`, feeding §2.7 subtree re-creation + the C9 `OpenTarget::CommonRoot`
+        /// resolution; a display root is never re-submitted as input.
+        roots_display: Vec<String>,
         /// A detection-derived hint, e.g. CSV detected "Windows-1252" (per §04).
         encoding_hint: Option<String>,
         /// A detection-derived hint, e.g. CSV/TSV detected ";" (per §04).
@@ -677,10 +728,13 @@ pub enum CollectedNoteKind {
 /// `CollectedSet::Single`** the core retains so the bare-`collectedSetId` C3 `get_targets` /
 /// C4 `plan_output` / C5 `set_destination` / C6 `start_conversion` commands resolve back to the
 /// detected format, the frozen `items`, the dropped `roots`, and the `skipped` view **without a
-/// second walk or re-detection** (§0.4.4). It carries the **FULL `Single` payload** (every field —
-/// §0.4.4 "store this payload + its roots"): C3 reads `format`, C4/C5 plan against `roots`, C6
-/// rebuilds the `Batch` from `items` (and §2.7 needs `roots` for subtree re-creation); the
-/// size/hints/notes are retained so a post-reload confirm re-render (§1.4) stays faithful.
+/// second walk or re-detection** (§0.4.4). It carries the display `Single` payload (`items`/`skipped`
+/// display metadata, hints, notes) **PLUS its OFF-WIRE path table** (2026-07-06 core-owned-paths ruling,
+/// §2.10.1): the real dropped-root `PathBuf`s in `roots` and the per-item real `raw_path`/`resolved_path`
+/// in `item_paths` (keyed by `ItemId`) — the wire `CollectedSet::Single` carries only the
+/// `display_name`/`roots_display` strings. C3 reads `format`, C4/C5 plan against the real `roots`, C6
+/// rebuilds the `Batch` from `items` + `item_paths` (and §2.7 needs the real `roots` for subtree
+/// re-creation); the size/hints/notes are retained so a post-reload confirm re-render (§1.4) stays faithful.
 ///
 /// Only a `CollectedSet::Single` yields a registrable entry — `Mixed`/`Unsupported`/`Uncertain`/
 /// `Empty` are terminal pre-flight states with no resolvable `CollectedSetId` (§0.4.4 / §0.6
@@ -713,7 +767,9 @@ pub struct FrozenCollectedSet {
     pub skipped: Vec<SkippedItem>,
     /// The §1.10 pre-flight size hint (§1.4) — retained for the C4/C5 estimate.
     pub total_bytes: u64,
-    /// The dropped root(s) (§2.7) — what C4/C5 plan against + the §2.7 subtree / open-folder anchor.
+    /// The REAL dropped root `PathBuf`s (§2.7) — the OFF-WIRE roots the wire `CollectedSet::Single`
+    /// carries only as `roots_display` strings (§2.10.1 / 2026-07-06 ruling). What C4/C5 plan against, the
+    /// §2.7 subtree re-creation anchor, and the C9 `OpenTarget::CommonRoot` open-folder target.
     pub roots: Vec<PathBuf>,
     /// A detection-derived encoding hint (e.g. CSV "Windows-1252", per §04) — retained for re-render.
     pub encoding_hint: Option<String>,
@@ -721,18 +777,31 @@ pub struct FrozenCollectedSet {
     pub delimiter_hint: Option<String>,
     /// The §1.4 structural-peek notes — retained for a post-reload confirm re-render (§1.4).
     pub notes: Vec<CollectedNote>,
+    /// The §0.4.4 OFF-WIRE per-item path table (2026-07-06 core-owned-paths ruling, §2.10.1) — the real
+    /// `raw_path`/`resolved_path` every wire `DroppedItem`/`SkippedItem` shed, keyed by `ItemId` over the
+    /// SINGLE §0.6-invariant-6 id space (so BOTH eligible and skipped items resolve). The §1.7 invocation
+    /// points the engine at `item_paths[item].resolved_path`; the WebView never sees any of these paths.
+    /// Populated by the §1.1 freeze that builds this set (P3.78); this box homes the structure.
+    pub item_paths: BTreeMap<ItemId, ItemPaths>,
 }
 
 impl FrozenCollectedSet {
-    /// Project a `CollectedSet` into a registrable `FrozenCollectedSet` (§0.4.4) — `Some` ONLY for a
-    /// `Single` (the only outcome with a resolvable `CollectedSetId`, §0.6 invariant 3); `None` for the
-    /// terminal `Mixed`/`Unsupported`/`Uncertain`/`Empty` pre-flight states, which the registry never
-    /// stores. Clones the `Single` payload (the wire copy C1/C2a returns is serialized then dropped;
-    /// this retained copy out-lives it). The **exhaustive `Single { .. }` destructure (NO `..`)** makes
-    /// a new `Single` field a COMPILE error here, so the frozen projection can never silently drift from
-    /// the `Single` payload it mirrors. [Build-Session-Entscheidung: P2.44]
+    /// Project a `CollectedSet` + its OFF-WIRE real paths into a registrable `FrozenCollectedSet`
+    /// (§0.4.4) — `Some` ONLY for a `Single` (the only outcome with a resolvable `CollectedSetId`, §0.6
+    /// invariant 3); `None` for the terminal `Mixed`/`Unsupported`/`Uncertain`/`Empty` pre-flight states,
+    /// which the registry never stores. The wire `Single` payload is display-only (2026-07-06
+    /// core-owned-paths ruling, §2.10.1), so the caller — the §1.1 freeze that has the real paths — passes
+    /// the real `roots` and the per-item `item_paths` table alongside; this joins them with the cloned
+    /// display payload. The **exhaustive `Single { .. }` destructure (NO `..`)** makes a new `Single` field
+    /// a COMPILE error here, so the frozen projection can never silently drift from the `Single` payload it
+    /// mirrors (the wire display `roots_display` is destructured-and-ignored — the REAL roots are the
+    /// `roots` arg). [Build-Session-Entscheidung: P3.76]
     #[must_use]
-    pub fn from_collected(set: &CollectedSet) -> Option<Self> {
+    pub fn from_collected(
+        set: &CollectedSet,
+        roots: Vec<PathBuf>,
+        item_paths: BTreeMap<ItemId, ItemPaths>,
+    ) -> Option<Self> {
         match set {
             CollectedSet::Single {
                 id,
@@ -742,7 +811,8 @@ impl FrozenCollectedSet {
                 count,
                 skipped,
                 total_bytes,
-                roots,
+                // the wire display roots; the REAL roots are the `roots` arg (off-wire, §2.10.1)
+                roots_display: _,
                 encoding_hint,
                 delimiter_hint,
                 notes,
@@ -754,10 +824,11 @@ impl FrozenCollectedSet {
                 count: *count,
                 skipped: skipped.clone(),
                 total_bytes: *total_bytes,
-                roots: roots.clone(),
+                roots,
                 encoding_hint: encoding_hint.clone(),
                 delimiter_hint: delimiter_hint.clone(),
                 notes: notes.clone(),
+                item_paths,
             }),
             CollectedSet::Mixed { .. }
             | CollectedSet::Unsupported { .. }
@@ -1699,19 +1770,19 @@ mod tests {
     }
 
     // §6.4.1 unit (G15): the §0.6 `DroppedItem` record — the per-item frozen-set entry. Locks (a) the
-    // §0.4.3 camelCase wire form of all five fields (`item`/`rawPath`/`resolvedPath`/`sizeBytes`/
+    // §0.4.3 camelCase wire form of all five fields (`item`/`displayName`/`relPathDisplay`/`sizeBytes`/
     // `detected`) via a serialize→deserialize round-trip, and (b) the invariant-6 `item: ItemId` field's
     // presence (the §0.6 contradiction-fix field — every eligible DroppedItem carries its own id over the
     // single id space, never its position in `items`). The struct literal is itself the compile-time
-    // field-set lock: a removed/renamed field fails to build here. Bare filenames (no path separators)
-    // keep the `PathBuf` wire form platform-independent — a `C:\…` path would serialize differently on
-    // Windows, making the exact-JSON assertion non-portable.
+    // field-set lock: a removed/renamed field fails to build here. The path fields are DISPLAY-ONLY lossy
+    // strings (the 2026-07-06 core-owned-paths ruling, §2.10.1 — the real paths live off-wire in
+    // `FrozenCollectedSet.item_paths`); a bare filename display keeps the exact-JSON assertion portable.
     #[test]
     fn dropped_item_wire_form_is_camelcase_and_roundtrips() {
         let dropped = DroppedItem {
             item: ItemId(3),
-            raw_path: PathBuf::from("holiday.jpg"),
-            resolved_path: PathBuf::from("holiday.jpg"),
+            display_name: "holiday.jpg".to_string(),
+            rel_path_display: None,
             size_bytes: 2048,
             detected: DetectionOutcome::Recognized {
                 format: UserFacingFormat::Jpg,
@@ -1722,8 +1793,8 @@ mod tests {
         let json = serde_json::to_string(&dropped).expect("DroppedItem serializes");
         assert_eq!(
             json,
-            r#"{"item":3,"rawPath":"holiday.jpg","resolvedPath":"holiday.jpg","sizeBytes":2048,"detected":{"recognized":{"format":"jpg","confidence":"high","dims":[640,480]}}}"#,
-            "§0.4.3/§0.6: DroppedItem is {{ item, rawPath, resolvedPath, sizeBytes, detected }} in camelCase wire form, item carrying the invariant-6 ItemId"
+            r#"{"item":3,"displayName":"holiday.jpg","relPathDisplay":null,"sizeBytes":2048,"detected":{"recognized":{"format":"jpg","confidence":"high","dims":[640,480]}}}"#,
+            "§0.4.3/§0.6: DroppedItem is {{ item, displayName, relPathDisplay, sizeBytes, detected }} in camelCase wire form, item carrying the invariant-6 ItemId"
         );
         let back: DroppedItem = serde_json::from_str(&json).expect("DroppedItem round-trips");
         assert_eq!(
@@ -1861,20 +1932,21 @@ mod tests {
     }
 
     // §6.4.1 unit (G15): the §0.6 `SkippedItem` record — the id-disjoint ineligible-item view. Locks the
-    // §0.4.3 camelCase wire form of all three fields (`item`/`source`/`reason`) + a serialize→deserialize
-    // round-trip; the struct literal is the compile-time field-set lock. A bare filename keeps the
-    // `PathBuf` wire form platform-independent (no Windows backslash divergence).
+    // §0.4.3 camelCase wire form of all three fields (`item`/`sourceDisplay`/`reason`) + a
+    // serialize→deserialize round-trip; the struct literal is the compile-time field-set lock. `sourceDisplay`
+    // is a DISPLAY-ONLY lossy string (2026-07-06 ruling, §2.10.1 — the real dropped path lives off-wire in
+    // `FrozenCollectedSet.item_paths`); a bare filename keeps the exact-JSON assertion portable.
     #[test]
     fn skipped_item_wire_form_is_camelcase_and_roundtrips() {
         let skipped = SkippedItem {
             item: ItemId(5),
-            source: PathBuf::from("notes.xyz"),
+            source_display: "notes.xyz".to_string(),
             reason: SkipReason::UnsupportedType,
         };
         let json = serde_json::to_string(&skipped).expect("SkippedItem serializes");
         assert_eq!(
-            json, r#"{"item":5,"source":"notes.xyz","reason":"unsupportedType"}"#,
-            "§0.4.3/§0.6: SkippedItem is {{ item, source, reason }} in camelCase wire form"
+            json, r#"{"item":5,"sourceDisplay":"notes.xyz","reason":"unsupportedType"}"#,
+            "§0.4.3/§0.6: SkippedItem is {{ item, sourceDisplay, reason }} in camelCase wire form"
         );
         let back: SkippedItem = serde_json::from_str(&json).expect("SkippedItem round-trips");
         assert_eq!(
@@ -1968,8 +2040,8 @@ mod tests {
             format: UserFacingFormat::Csv,
             items: vec![DroppedItem {
                 item: ItemId(0),
-                raw_path: PathBuf::from("data.csv"),
-                resolved_path: PathBuf::from("data.csv"),
+                display_name: "data.csv".to_string(),
+                rel_path_display: None,
                 size_bytes: 2048,
                 detected: DetectionOutcome::Recognized {
                     format: UserFacingFormat::Csv,
@@ -1980,11 +2052,11 @@ mod tests {
             count: 1,
             skipped: vec![SkippedItem {
                 item: ItemId(1),
-                source: PathBuf::from("notes.xyz"),
+                source_display: "notes.xyz".to_string(),
                 reason: SkipReason::UnsupportedType,
             }],
             total_bytes: 2048,
-            roots: vec![PathBuf::from("folder")],
+            roots_display: vec!["folder".to_string()],
             encoding_hint: Some("Windows-1252".to_owned()),
             delimiter_hint: Some(";".to_owned()),
             notes: vec![CollectedNote {
@@ -1994,7 +2066,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_string(&single).expect("Single serializes"),
-            r#"{"single":{"id":"00000000-0000-0000-0000-000000000000","instance":"00000000-0000-0000-0000-000000000000","format":"csv","items":[{"item":0,"rawPath":"data.csv","resolvedPath":"data.csv","sizeBytes":2048,"detected":{"recognized":{"format":"csv","confidence":"high","dims":null}}}],"count":1,"skipped":[{"item":1,"source":"notes.xyz","reason":"unsupportedType"}],"totalBytes":2048,"roots":["folder"],"encodingHint":"Windows-1252","delimiterHint":";","notes":[{"kind":"multipleSheets","detail":"3 sheets"}]}}"#,
+            r#"{"single":{"id":"00000000-0000-0000-0000-000000000000","instance":"00000000-0000-0000-0000-000000000000","format":"csv","items":[{"item":0,"displayName":"data.csv","relPathDisplay":null,"sizeBytes":2048,"detected":{"recognized":{"format":"csv","confidence":"high","dims":null}}}],"count":1,"skipped":[{"item":1,"sourceDisplay":"notes.xyz","reason":"unsupportedType"}],"totalBytes":2048,"rootsDisplay":["folder"],"encodingHint":"Windows-1252","delimiterHint":";","notes":[{"kind":"multipleSheets","detail":"3 sheets"}]}}"#,
             "§0.4.3/§0.6/§1.4: CollectedSet::Single is the full externally-tagged camelCase confirm-summary wire shape"
         );
         let mixed = CollectedSet::Mixed {
@@ -2062,8 +2134,8 @@ mod tests {
         let items = vec![
             DroppedItem {
                 item: ItemId(0),
-                raw_path: PathBuf::from("a.csv"),
-                resolved_path: PathBuf::from("/abs/a.csv"),
+                display_name: "a.csv".to_string(),
+                rel_path_display: None,
                 size_bytes: 2048,
                 detected: DetectionOutcome::Recognized {
                     format: UserFacingFormat::Csv,
@@ -2073,8 +2145,8 @@ mod tests {
             },
             DroppedItem {
                 item: ItemId(1),
-                raw_path: PathBuf::from("b.csv"),
-                resolved_path: PathBuf::from("/abs/b.csv"),
+                display_name: "b.csv".to_string(),
+                rel_path_display: None,
                 size_bytes: 4096,
                 detected: DetectionOutcome::Recognized {
                     format: UserFacingFormat::Csv,
@@ -2085,10 +2157,35 @@ mod tests {
         ];
         let skipped = vec![SkippedItem {
             item: ItemId(2),
-            source: PathBuf::from("notes.xyz"),
+            source_display: "notes.xyz".to_string(),
             reason: SkipReason::UnsupportedType,
         }];
         let roots = vec![PathBuf::from("/abs")];
+        // The OFF-WIRE per-item real paths (raw/resolved) the display items shed (2026-07-06 ruling,
+        // §2.10.1) — keyed over the single §0.6-invariant-6 id space (eligible items 0/1 + skipped item 2).
+        let item_paths: BTreeMap<ItemId, ItemPaths> = BTreeMap::from([
+            (
+                ItemId(0),
+                ItemPaths {
+                    raw_path: PathBuf::from("a.csv"),
+                    resolved_path: PathBuf::from("/abs/a.csv"),
+                },
+            ),
+            (
+                ItemId(1),
+                ItemPaths {
+                    raw_path: PathBuf::from("b.csv"),
+                    resolved_path: PathBuf::from("/abs/b.csv"),
+                },
+            ),
+            (
+                ItemId(2),
+                ItemPaths {
+                    raw_path: PathBuf::from("notes.xyz"),
+                    resolved_path: PathBuf::from("/abs/notes.xyz"),
+                },
+            ),
+        ]);
         let notes = vec![CollectedNote {
             kind: CollectedNoteKind::MultipleSheets,
             detail: Some("3 sheets".to_owned()),
@@ -2101,13 +2198,13 @@ mod tests {
             count: 2,
             skipped: skipped.clone(),
             total_bytes: 6144,
-            roots: roots.clone(),
+            roots_display: vec!["/abs".to_string()],
             encoding_hint: Some("Windows-1252".to_owned()),
             delimiter_hint: Some(";".to_owned()),
             notes: notes.clone(),
         };
 
-        let frozen = FrozenCollectedSet::from_collected(&single)
+        let frozen = FrozenCollectedSet::from_collected(&single, roots.clone(), item_paths.clone())
             .expect("§0.4.4: a CollectedSet::Single projects to a FrozenCollectedSet");
         assert_eq!(frozen.id, CollectedSetId(Uuid::nil()), "id carried through");
         assert_eq!(
@@ -2135,7 +2232,11 @@ mod tests {
         assert_eq!(frozen.total_bytes, 6144, "§1.10: the size hint carried");
         assert_eq!(
             frozen.roots, roots,
-            "§2.7: the dropped roots carried (C4/C5 plan against them)"
+            "§2.7: the REAL off-wire dropped roots carried (C4/C5 plan against them)"
+        );
+        assert_eq!(
+            frozen.item_paths, item_paths,
+            "§0.4.4: the off-wire per-item real paths carried (the §1.7 invocation points the engine at them)"
         );
         assert_eq!(
             frozen.encoding_hint.as_deref(),
@@ -2166,7 +2267,7 @@ mod tests {
             CollectedSet::Empty { skipped: vec![] },
         ] {
             assert!(
-                FrozenCollectedSet::from_collected(&terminal).is_none(),
+                FrozenCollectedSet::from_collected(&terminal, vec![], BTreeMap::new()).is_none(),
                 "§0.4.4/§0.6 invariant 3: a non-Single outcome has no resolvable CollectedSetId, so it is never frozen"
             );
         }
@@ -2780,8 +2881,8 @@ mod tests {
     fn prop_dropped_item(id: u32) -> DroppedItem {
         DroppedItem {
             item: ItemId(id),
-            raw_path: PathBuf::from("data.csv"),
-            resolved_path: PathBuf::from("data.csv"),
+            display_name: "data.csv".to_string(),
+            rel_path_display: None,
             size_bytes: 0,
             detected: DetectionOutcome::Recognized {
                 format: UserFacingFormat::Csv,
@@ -2794,7 +2895,7 @@ mod tests {
     fn prop_skipped_item(id: u32) -> SkippedItem {
         SkippedItem {
             item: ItemId(id),
-            source: PathBuf::from("mystery.bin"),
+            source_display: "mystery.bin".to_string(),
             reason: SkipReason::Unreadable,
         }
     }
@@ -2810,7 +2911,7 @@ mod tests {
             count,
             skipped: vec![],
             total_bytes: 0,
-            roots: vec![],
+            roots_display: vec![],
             encoding_hint: None,
             delimiter_hint: None,
             notes: vec![],
@@ -3170,7 +3271,7 @@ mod tests {
             count: 2,
             skipped: vec![],
             total_bytes: 0,
-            roots: vec![],
+            roots_display: vec![],
             encoding_hint: None,
             delimiter_hint: None,
             notes: vec![],

@@ -232,8 +232,8 @@ pub async fn pick_for_intake(
     .map_err(|_| IpcError {
         kind: ConversionErrorKind::InternalError,
         message: "Could not open the file picker.".into(),
-        path: None,
-        residue: None,
+        path_display: None,
+        residue_display: None,
     })?;
 
     // FilePath -> PathBuf (a desktop pick is always a real path; drop a non-path entry defensively). This

@@ -78,8 +78,8 @@ pub async fn get_targets(collected_set_id: CollectedSetId) -> Result<TargetOffer
     Err(IpcError {
         kind: ConversionErrorKind::InternalError,
         message: "Could not prepare conversion options.".into(),
-        path: None,
-        residue: None,
+        path_display: None,
+        residue_display: None,
     })
 }
 
@@ -92,7 +92,7 @@ pub async fn get_targets(collected_set_id: CollectedSetId) -> Result<TargetOffer
 ///
 /// [Build-Session-Entscheidung: P2.26] **Shell returns `Err(IpcError{ kind: InternalError })` — the same
 /// owner-approved interface-shell pattern as C3 (P2.25).** `OutputPlanPreview` has no zero value (it carries a
-/// resolved `final_dir_preview` + a `PreflightVerdict`), so there is no `Ok(empty)` to return; the genuine
+/// resolved `final_dir_display` + a `PreflightVerdict`), so there is no `Ok(empty)` to return; the genuine
 /// pre-registry outcome (the §0.4.4 collected-set registry, P2.44, is not yet built) is exactly the `Err` the
 /// real body returns for an unresolvable id: `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })`
 /// (§2.13 catch-all; the §3.2 `PlanError` `plan_encode` precedent). The named fill-boxes own the rest: (a) the
@@ -112,8 +112,8 @@ pub async fn plan_output(
     Err(IpcError {
         kind: ConversionErrorKind::InternalError,
         message: "Could not plan the output.".into(),
-        path: None,
-        residue: None,
+        path_display: None,
+        residue_display: None,
     })
 }
 
@@ -148,8 +148,8 @@ pub async fn set_destination(
     Err(IpcError {
         kind: ConversionErrorKind::InternalError,
         message: "Could not update the destination.".into(),
-        path: None,
-        residue: None,
+        path_display: None,
+        residue_display: None,
     })
 }
 

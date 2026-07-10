@@ -81,8 +81,8 @@ pub async fn start_conversion(
     Err(IpcError {
         kind: ConversionErrorKind::InternalError,
         message: "Could not start the conversion.".into(),
-        path: None,
-        residue: None,
+        path_display: None,
+        residue_display: None,
     })
 }
 
@@ -149,8 +149,8 @@ pub async fn get_run_summary(run_id: RunId) -> Result<RunResult, IpcError> {
     Err(IpcError {
         kind: ConversionErrorKind::InternalError,
         message: "Could not retrieve the conversion summary.".into(),
-        path: None,
-        residue: None,
+        path_display: None,
+        residue_display: None,
     })
 }
 

@@ -97,7 +97,7 @@ describe("reduceConvertEvent (P2.120 §5.8 ConversionEvent reducer)", () => {
   it("adds a determinate no-fraction row on itemStarted", () => {
     const event: ConversionEvent = {
       type: "itemStarted",
-      data: { runId: "r1", itemId: 1, sourcePath: "/a.csv", target: { format: "tsv" } },
+      data: { runId: "r1", itemId: 1, sourceDisplay: "/a.csv", target: { format: "tsv" } },
     };
     expect(reduceConvertEvent(pristine(), event)).toEqual({
       progress: { 1: { fraction: null, done: false } },
@@ -150,8 +150,8 @@ describe("reduceConvertEvent (P2.120 §5.8 ConversionEvent reducer)", () => {
       items: [],
       totals: { succeeded: 0, failed: 0, cancelled: 0, skipped: 0 },
       cleanupIncomplete: [],
-      commonRoot: "/out",
-      divertRoot: null,
+      commonRootDisplay: "/out",
+      divertRootDisplay: null,
     };
     const event: ConversionEvent = { type: "runFinished", data: runResult };
     expect(reduceConvertEvent(pristine(), event)).toEqual({});

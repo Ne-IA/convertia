@@ -60,10 +60,11 @@ use std::path::{Path, PathBuf};
 // tagged-`Err` placeholder here (a placeholder with no honest value is the rejected quiet-stub, CLAUDE §5).
 //
 // Derive / identity choices (the §0.6 sibling types fix the house style):
-//  - Core-INTERNAL: `FileIdentity` never crosses IPC — the §2.3.2 de-dup runs core-side and the wire
-//    carries `DroppedItem.resolved_path` (§0.6), not this identity — so it derives NO `serde`/`specta`,
-//    only `Debug` + `Clone` (it owns a `PathBuf`, hence NOT `Copy`), the internal-type set
-//    `FrozenCollectedSet` / `Batch` use.
+//  - Core-INTERNAL: `FileIdentity` never crosses IPC — the §2.3.2 de-dup runs core-side and NO path
+//    crosses the wire (§2.10.1 / the 2026-07-06 core-owned-paths ruling); the real `resolved_path` lives
+//    OFF-WIRE in `FrozenCollectedSet.item_paths` (`ItemPaths`), not this identity — so it derives NO
+//    `serde`/`specta`, only `Debug` + `Clone` (it owns a `PathBuf`, hence NOT `Copy`), the internal-type
+//    set `FrozenCollectedSet` / `Batch` use.
 //  - `dev_or_volserial` / `inode_or_fileindex` are both `u64`: Unix `st_dev`/`st_ino` are `u64`; the Windows
 //    `winapi-util` accessors `volume_serial_number()` / `file_index()` are BOTH already `u64` (0.1.11, no
 //    widening — the std `MetadataExt` `Option<u32>`/`Option<u64>` forms are the nightly-gated ones we do NOT

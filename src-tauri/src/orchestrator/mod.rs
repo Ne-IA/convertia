@@ -42,7 +42,7 @@
     )
 )]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -53,10 +53,10 @@ use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
 use crate::domain::{
-    CollectedSet, CollectedSetId, CollectingId, DestinationChoice, DivertReason, DroppedItem,
-    FrozenCollectedSet, IntakeOrigin, ItemId, ItemIdSpace, ItemSpaceExhausted, JobStage,
-    OptionValues, OutputPlan, ReadFailure, RerunPrompt, RunId, SkipReason, Target, TargetId,
-    UserFacingFormat,
+    CollectedSet, CollectedSetId, CollectingId, DestinationChoice, DestinationId, DivertReason,
+    DroppedItem, FrozenCollectedSet, IntakeOrigin, ItemId, ItemIdSpace, ItemSpaceExhausted,
+    JobStage, OptionValues, OutputPlan, ReadFailure, RerunPrompt, RunId, SkipReason, Target,
+    TargetId, UserFacingFormat,
 };
 use crate::fs_guard::FileIdentity;
 use crate::outcome::{ConversionErrorKind, IpcError, OutcomeMsg};
@@ -204,16 +204,20 @@ pub struct PreflightVerdict {
 /// in `crate::orchestrator` (it embeds `preflight: PreflightVerdict` → transitively references
 /// `crate::outcome`, §0.7 ‡).
 ///
-/// [Build-Session-Entscheidung: P2.11] `Serialize` + `Type`, NO `Deserialize` (embeds the Serialize-only
-/// `PreflightVerdict`); NOT `Copy` (owns a `PathBuf`). camelCase wire form.
+/// [Build-Session-Entscheidung: P2.11 → P3.76] `Serialize` + `Type`, NO `Deserialize` (embeds the
+/// Serialize-only `PreflightVerdict`); NOT `Copy` (owns a `String`). camelCase wire form. P3.76 re-types
+/// the directory PREVIEW field from `PathBuf` to a lossy display `String` (`final_dir_display`) — no
+/// `PathBuf` crosses the wire (§2.10.1 / 2026-07-06 ruling); the real per-item dirs are computed core-side
+/// by §1.8 and never leave the core.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputPlanPreview {
     /// The collected set this preview is for (the §0.4.4 registry key).
     pub set: CollectedSetId,
-    /// The resolved destination DIRECTORY shown before convert (§1.8 / §2.7) — directory-based, never a
-    /// pre-baked final file path (the numbered name is resolved at §2.1 write time).
-    pub final_dir_preview: PathBuf,
+    /// The resolved destination DIRECTORY shown before convert (§1.8 / §2.7) as a core-produced lossy
+    /// display `String` (last-step `to_string_lossy`, §2.10.1) — directory-based, never a pre-baked final
+    /// file path (the numbered name is resolved at §2.1 write time), never a re-submittable path.
+    pub final_dir_display: String,
     /// `Some(reason)` if a per-location divert was previewed (§2.7.2); `None` = beside-source / no divert.
     pub diverted: Option<DivertReason>,
     /// `Some(..)` if the §2.5 in-session ledger detected an equivalent prior run (the one batch-level
@@ -227,13 +231,20 @@ pub struct OutputPlanPreview {
 /// changes it. Homed in `crate::orchestrator` (embeds `preflight: PreflightVerdict` → transitively
 /// references `crate::outcome`, §0.7 ‡).
 ///
-/// [Build-Session-Entscheidung: P2.11] `Serialize` + `Type`, NO `Deserialize` (embeds the Serialize-only
-/// `PreflightVerdict`); NOT `Copy`. camelCase.
+/// [Build-Session-Entscheidung: P2.11 → P3.76] `Serialize` + `Type`, NO `Deserialize` (embeds the
+/// Serialize-only `PreflightVerdict`); NOT `Copy`. camelCase. P3.76 ADDS the `final_dir_display` lossy
+/// display `String` (mirroring `OutputPlanPreview.final_dir_display`, §2.10.1) so the refreshed
+/// "will save to …" line has a display projection with no `PathBuf` on the wire. (`destination:
+/// DestinationChoice` still carries a raw `ChosenRoot(PathBuf)` until P3.80 re-keys it to a
+/// `DestinationId` — the phased P3.76→P3.80 split; this box owns only the display projections.)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DestinationResolved {
-    /// The (now chosen) destination (§0.6 / §2.7).
+    /// The (now chosen) destination (§0.6 / §2.7). Re-keyed to `ChosenRoot(DestinationId)` at P3.80.
     pub destination: DestinationChoice,
+    /// The refreshed display-only "will save to …" form for the new destination (mirrors
+    /// `OutputPlanPreview.final_dir_display`, last-step `to_string_lossy`, §2.10.1) [DECIDED 2026-07-06].
+    pub final_dir_display: String,
     /// The recomputed per-location divert for the new destination (§2.7.2); `None` = no divert.
     pub diverted: Option<DivertReason>,
     /// The preflight RE-EVALUATED for the new destination volume (§2.14.4 free-space) so the UI's held C4
@@ -269,7 +280,7 @@ pub struct DestinationResolved {
 // P2.28 encodes the two layers that exist at the contract stage: (i) this documented lifecycle invariant the
 // P3.46 conductor + the body boxes honor, and (ii) the structural ENABLERS the DTO shapes above already
 // guarantee — pinned by the `c4_c5_asymmetry_structural_enablers` test: `DestinationResolved` CARRIES a
-// `destination` (C5 owns it) while `OutputPlanPreview` carries only a `final_dir_preview` PREVIEW and NO
+// `destination` (C5 owns it) while `OutputPlanPreview` carries only a `final_dir_display` PREVIEW and NO
 // `DestinationChoice` field (C4 does not own the choice), and both carry the SAME `rerun: Option<RerunPrompt>`
 // type (so C5 carries C4's `rerun` through unchanged). This is the same contract-here / behaviour-at-P3.46
 // split as the C1–C6 shells, NOT a stub: the structure makes the lifecycle rule TYPE-POSSIBLE; P3.46 adds the
@@ -294,9 +305,12 @@ pub struct DestinationResolved {
 /// (§0.4.4 run-registry retention). It is the §5.3 `ResultSummary`'s single source: per-item outcome +
 /// output→source map + residue warnings + the open-folder roots.
 ///
-/// [Build-Session-Entscheidung: P2.12] `Serialize` + `Type` (wire), NO `Deserialize`; NOT `Copy` (owns
-/// `Vec`/`PathBuf` fields). camelCase wire form (`collectedSetId`/`runId`/`cleanupIncomplete`/`commonRoot`/
-/// `divertRoot`).
+/// [Build-Session-Entscheidung: P2.12 → P3.76] `Serialize` + `Type` (wire), NO `Deserialize`; NOT `Copy`
+/// (owns `Vec`/`String` fields). camelCase wire form (`collectedSetId`/`runId`/`cleanupIncomplete`/
+/// `commonRootDisplay`/`divertRootDisplay`). P3.76 re-types the two root fields from `PathBuf`/
+/// `Option<PathBuf>` to lossy display `String`s — **no `PathBuf` crosses the wire** (§2.10.1 / 2026-07-06
+/// ruling); the REAL common/divert roots (and the per-item output/residue `PathBuf`s) live in the
+/// `RunResultStore` OFF-WIRE table (`RunResultPaths`), which C9 resolves its `OpenTarget` against (P3.79).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RunResult {
@@ -306,8 +320,8 @@ pub struct RunResult {
     /// The run this summary is for (§7.1) — minted at C6 `start_conversion`.
     pub run_id: RunId,
     /// Per-item outcome + output→source mapping (§1.12). INCLUDES the freeze-time pre-flight `SkippedItem`s
-    /// (`CollectedSet::Single.skipped`) projected as `ItemResult { state: Skipped(reason), output: None,
-    /// reason: Some(OutcomeMsg::Skipped{ reason, .. }) }` — the skip rides the skip-shaped `OutcomeMsg`
+    /// (`CollectedSet::Single.skipped`) projected as `ItemResult { item, output_display: None,
+    /// state: Skipped(reason), reason: Some(OutcomeMsg::Skipped{ reason, .. }) }` — the skip rides the skip-shaped `OutcomeMsg`
     /// variant (§2.8), NOT `Failure`, so skip ≠ fail at the type level (§1.12); counted in `totals.skipped`.
     pub items: Vec<ItemResult>,
     /// The succeeded / failed / cancelled / skipped tally (§1.12).
@@ -315,33 +329,45 @@ pub struct RunResult {
     /// The §2.6 cleanup-incomplete warnings — items whose partial could not be removed, so the run is never
     /// reported as a clean success (§2.6.4). Empty when every cleanup completed.
     pub cleanup_incomplete: Vec<CleanupResidue>,
-    /// The "open folder" target for the BESIDE-SOURCE outputs — the dropped-selection common ancestor
-    /// (§2.7 / §7.7.3).
-    pub common_root: PathBuf,
-    /// `Some(Downloads/Documents/chosen)` when ANY item was diverted (§2.7.3) — a single `PathBuf` cannot
-    /// carry both the beside-source and divert roots, so the divert root is its own field; `None` when no
-    /// item diverted. Both are §7.7.3 open-folder targets; per-item diverted outputs are also reachable via
-    /// `ItemResult.output` (C9 `open_path`, `kind = RevealInFolder`).
-    pub divert_root: Option<PathBuf>,
+    /// The display-only "open folder" LABEL for the BESIDE-SOURCE outputs — the dropped-selection common
+    /// ancestor (§2.7 / §7.7.3) as a lossy display `String` (last-step `to_string_lossy`, §2.10.1)
+    /// [DECIDED 2026-07-06]. The REAL root `PathBuf` lives in the `RunResultStore` off-wire table
+    /// (`RunResultPaths.common_root`), opened via C9 `OpenTarget::CommonRoot`.
+    pub common_root_display: String,
+    /// `Some(display)` when ANY item was diverted (§2.7.3) — a single field cannot carry both the
+    /// beside-source and divert roots, so the divert root is its own display field; `None` when no item
+    /// diverted. Both REAL roots are §7.7.3 open-folder targets resolved core-side (C9
+    /// `OpenTarget::DivertRoot`, from `RunResultPaths.divert_root`); a per-item diverted output is reachable
+    /// via C9 `OpenTarget::Item(ItemId)` (its real path in `RunResultPaths.item_outputs`).
+    pub divert_root_display: Option<String>,
 }
 
-/// One per-item row of the §1.12 summary (§0.6) — its source path (for output→source mapping), its terminal
-/// `JobState`, the output path (`Some` only when `Succeeded`), and the resolved surfaced line.
+/// One per-item row of the §1.12 summary (§0.6) — its `ItemId` (the output→source mapping anchor; the
+/// source is named for display via the `CollectedSet`'s `DroppedItem.display_name`), its terminal
+/// `JobState`, the display-only output form (`Some` only when `Succeeded`), and the resolved surfaced line.
 ///
-/// [Build-Session-Entscheidung: P2.12] `Serialize` + `Type` (wire — embedded in `RunResult`), NO
-/// `Deserialize`; NOT `Copy` (owns `PathBuf`/`OutcomeMsg`). camelCase. `state: JobState` is what forces
+/// [Build-Session-Entscheidung: P2.12 → P3.76] `Serialize` + `Type` (wire — embedded in `RunResult`), NO
+/// `Deserialize`; NOT `Copy` (owns `String`/`OutcomeMsg`). camelCase. `state: JobState` is what forces
 /// `JobState` to be a wire type (see its doc) — the summary's per-item state, distinct from the live
-/// `ItemFinished`'s `ItemOutcome`.
+/// `ItemFinished`'s `ItemOutcome`. P3.76 retires the two path fields off the wire (2026-07-06 ruling,
+/// §2.10.1): `source: PathBuf` → `item: ItemId` (display via `DroppedItem.display_name`; real paths in
+/// `FrozenCollectedSet`/`RunResultStore`) and `output: Option<PathBuf>` → `output_display: Option<String>`
+/// (the real output `PathBuf` is `RunResultStore`-side, opened via C9 `OpenTarget::Item(item)`). The
+/// `state`/`reason` pair is unchanged (`OutcomeMsg` carries kind + text, never a path).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemResult {
-    /// The source path this row is for — the output→source mapping anchor (SSOT *How It Feels* 7).
-    pub source: PathBuf,
+    /// The ID-keyed output→source mapping anchor (§1.12) — the source is named for display via the
+    /// `CollectedSet`'s `DroppedItem.display_name`; the REAL paths live in `FrozenCollectedSet` /
+    /// `RunResultStore` (§0.4.4), where C9 resolves `OpenTarget::Item(item)`.
+    pub item: ItemId,
+    /// The display-only lossy form of the published output (last-step `to_string_lossy`, §2.10.1) —
+    /// `Some(..)` ONLY when `state == Succeeded` (§1.12); `None` otherwise. The REAL output `PathBuf` is
+    /// `RunResultStore`-side, opened via C9 `OpenTarget::Item(item)`.
+    pub output_display: Option<String>,
     /// The terminal §1.9 lifecycle state for this item (§0.6) — at `RunFinished` always a terminal variant
     /// (`Succeeded`/`Failed`/`Skipped`/`Cancelled`).
     pub state: JobState,
-    /// The published output path — `Some(..)` ONLY when `state == Succeeded` (§1.12); `None` otherwise.
-    pub output: Option<PathBuf>,
     /// The resolved, ready-to-show §2.8 failure / §2.9 lossy / §1.1 skip line (§2.8.2 `OutcomeMsg`); `None`
     /// for a plain success with no lossy note.
     pub reason: Option<OutcomeMsg>,
@@ -392,35 +418,43 @@ impl Totals {
 /// A §2.6.4 cleanup-incomplete warning (§0.6) — one item whose partial could not be removed, naming WHERE
 /// the residue may remain so the summary never reports a clean success (§2.6 / §1.12).
 ///
-/// [Build-Session-Entscheidung: P2.12] `Serialize` + `Type` (wire — embedded in `RunResult`), NO
-/// `Deserialize`; NOT `Copy` (owns a `PathBuf`). camelCase (`residuePath`). `item: ItemId` is the downward
-/// `orchestrator`→`domain` edge that co-homing this leaf here introduces (allowed).
+/// [Build-Session-Entscheidung: P2.12 → P3.76] `Serialize` + `Type` (wire — embedded in `RunResult`), NO
+/// `Deserialize`; NOT `Copy` (owns a `String`). camelCase (`residueDisplay`). `item: ItemId` is the
+/// downward `orchestrator`→`domain` edge that co-homing this leaf here introduces (allowed). P3.76 re-types
+/// `residue_path: PathBuf` → the display-only `residue_display: String` (2026-07-06 ruling, §2.10.1); the
+/// real residue `PathBuf` stays core-side in the `RunResultStore` off-wire table (`RunResultPaths.
+/// item_residues`), revealed via C9 `OpenTarget::Residue(item)` (P3.79).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CleanupResidue {
-    /// The item whose cleanup did not complete (§2.6.4) — the stable §0.6 `ItemId`.
+    /// The item whose cleanup did not complete (§2.6.4) — the stable §0.6 `ItemId` (also the off-wire
+    /// `RunResultPaths.item_residues` key where the real residue `PathBuf` lives).
     pub item: ItemId,
-    /// Where the residue may remain (§2.6.4) — the only place the summary names a residue path.
-    pub residue_path: PathBuf,
+    /// The display-only lossy form of where the residue may remain (§2.6.4, last-step `to_string_lossy`,
+    /// §2.10.1) — the only place the summary names a residue; never a re-submittable path.
+    pub residue_display: String,
 }
 
 /// The terminal per-item outcome carried by the LIVE §0.4.2 `ItemFinished` event (§0.6) — the richer
 /// terminal projection the UI applies as each item finishes, distinct from the summary's `JobState`.
-/// `Failed` carries the full §0.4.3 `IpcError` (kind + message + path + residue) the live row needs;
-/// `Succeeded` the published output path; `Skipped` the §0.6 `SkipReason`; `Cancelled` is payload-free.
+/// `Failed` carries the full §0.4.3 `IpcError` (kind + message + path/residue DISPLAY) the live row needs;
+/// `Succeeded` the display-only output form; `Skipped` the §0.6 `SkipReason`; `Cancelled` is payload-free.
 ///
-/// [Build-Session-Entscheidung: P2.12] `Serialize` + `Type` (wire — the `ItemFinished` payload), NO
+/// [Build-Session-Entscheidung: P2.12 → P3.76] `Serialize` + `Type` (wire — the `ItemFinished` payload), NO
 /// `Deserialize` (outbound-only — embeds the outbound-only `IpcError`); NOT `Copy` (`Failed` owns an
-/// `IpcError` with `String`/`PathBuf`). Externally tagged with `#[serde(rename_all = "camelCase")]` (the
-/// §0.6 wire-enum convention) + per-struct-variant `rename_all` (serde does not cascade the enum-level
-/// rename to a variant's fields, so `Succeeded`'s `output_path` → `outputPath` needs its own, cf.
-/// `CollectedSet`). Variant order matches §0.6 exactly.
+/// `IpcError` with `String`s). Externally tagged with `#[serde(rename_all = "camelCase")]` (the §0.6
+/// wire-enum convention) + per-struct-variant `rename_all` (serde does not cascade the enum-level rename to
+/// a variant's fields, so `Succeeded`'s `output_display` → `outputDisplay` needs its own, cf.
+/// `CollectedSet`). Variant order matches §0.6 exactly. P3.76 re-types `Succeeded { output_path: PathBuf }`
+/// → `Succeeded { output_display: String }` — no `PathBuf` on the wire (2026-07-06 ruling, §2.10.1); the
+/// real output `PathBuf` lives in `RunResultStore` (`RunResultPaths.item_outputs`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum ItemOutcome {
-    /// Converted + atomically published (§2.1) — carries the final output path.
+    /// Converted + atomically published (§2.1) — carries the display-only output form (last-step
+    /// `to_string_lossy`, §2.10.1); the real output `PathBuf` is `RunResultStore`-side.
     #[serde(rename_all = "camelCase")]
-    Succeeded { output_path: PathBuf },
+    Succeeded { output_display: String },
     /// A named §2.8 failure — carries the full §0.4.3 `IpcError` the live row renders.
     #[serde(rename_all = "camelCase")]
     Failed { error: IpcError },
@@ -499,13 +533,18 @@ pub struct RunStarted {
 }
 
 /// `ItemStarted` (§0.4.2) — an item left `Pending` for `Running` (§1.9).
+///
+/// [Build-Session-Entscheidung: P3.76] `source_path: PathBuf` → the display-only `source_display: String`
+/// (last-step `to_string_lossy`, §2.10.1) — no `PathBuf` crosses the wire (2026-07-06 ruling); the real
+/// resolved source path stays core-side in `FrozenCollectedSet.item_paths` (keyed by `item_id`).
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemStarted {
     pub run_id: RunId,
     pub item_id: ItemId,
-    /// The frozen resolved source path being converted (§2.4).
-    pub source_path: PathBuf,
+    /// The core-produced lossy DISPLAY of the item's source being converted (§2.4 frozen resolved source,
+    /// last-step `to_string_lossy`, §2.10.1) — display-only, never a re-submittable path.
+    pub source_display: String,
     /// The whole-batch target (§0.6 invariant 1) this item converts to.
     pub target: TargetId,
 }
@@ -672,55 +711,102 @@ impl RunRegistry {
 // success path, the P2.31 shell note), so it is dead in the production build until then (covered by the
 // module-level dead_code expect).
 
+/// The §0.4.4 OFF-WIRE path table retained alongside a terminal `RunResult` (2026-07-06 core-owned-paths
+/// ruling, §2.10.1) — the real `PathBuf`s the wire `RunResult` shed. The wire `RunResult` carries only
+/// display strings (`common_root_display`/`divert_root_display`, each `ItemResult.output_display`, each
+/// `CleanupResidue.residue_display`); the REAL paths live HERE, and C9 resolves its `OpenTarget` against
+/// this table (P3.79): the roots for `CommonRoot`/`DivertRoot`, `item_outputs` for `Item(ItemId)`,
+/// `item_residues` for `Residue(ItemId)`. Core-INTERNAL: NO `serde`/`specta` (it never crosses IPC — the
+/// same store posture as `RunResultStore` itself). [Build-Session-Entscheidung: P3.76]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunResultPaths {
+    /// The REAL beside-source common-ancestor root (§2.7 / §7.7.3) — C9 `OpenTarget::CommonRoot`.
+    pub common_root: PathBuf,
+    /// The REAL divert root when any item diverted (§2.7.3), else `None` — C9 `OpenTarget::DivertRoot`.
+    pub divert_root: Option<PathBuf>,
+    /// Each succeeded item's REAL published output `PathBuf` (§2.1), keyed by `ItemId` — the C9
+    /// `OpenTarget::Item(item)` file-launch membership target.
+    pub item_outputs: BTreeMap<ItemId, PathBuf>,
+    /// Each cleanup-incomplete item's REAL residue `PathBuf` (§2.6.4), keyed by `ItemId` — the C9
+    /// `OpenTarget::Residue(item)` reveal target.
+    pub item_residues: BTreeMap<ItemId, PathBuf>,
+}
+
+/// The retained terminal run — the wire `RunResult` (display strings) PLUS its off-wire `RunResultPaths`
+/// (real paths). `RunResultStore` holds at most one (the latest run's, §0.4.4). Core-internal, no serde.
+/// [Build-Session-Entscheidung: P3.76]
+#[derive(Debug)]
+struct RetainedRun {
+    result: RunResult,
+    paths: RunResultPaths,
+}
+
 /// The §0.4.4 RunResult retention — the process-local, in-memory store of the most-recent terminal
-/// `RunResult`, kept so C8 `get_run_summary` can idempotently re-serve the §1.12 summary after a WebView
-/// reload. Holds AT MOST ONE result (the latest run's): [`retain`](RunResultStore::retain) on `RunFinished`
-/// stores it, [`evict`](RunResultStore::evict) on a new run's start (C6) clears the prior one (the §0.4.4
-/// "until a new run starts" eviction), and [`get`](RunResultStore::get) serves it back to C8 — matched by
-/// `RunId` so a stale/other run's result is never served for the wrong id. NO on-disk persistence (§7.4) — the
-/// store is dropped on process exit. Interior-mutable behind a `Mutex` (the `State` form serves concurrent
-/// C6/C8 handlers); the critical sections never hold the guard across an `.await`, so a `std::sync::Mutex` is
-/// correct.
+/// `RunResult` **plus its off-wire `RunResultPaths`**, kept so C8 `get_run_summary` can idempotently
+/// re-serve the §1.12 summary after a WebView reload and so C9 `open_path` can resolve its `OpenTarget`
+/// against the real paths (P3.79). Holds AT MOST ONE run (the latest): [`retain`](RunResultStore::retain)
+/// on `RunFinished` stores it, [`evict`](RunResultStore::evict) on a new run's start (C6) clears the prior
+/// one (the §0.4.4 "until a new run starts" eviction), [`get`](RunResultStore::get) serves the wire result
+/// back to C8, and [`paths`](RunResultStore::paths) serves the off-wire paths to C9 — each matched by
+/// `RunId` so a stale/other run is never served for the wrong id. NO on-disk persistence (§7.4) — the store
+/// is dropped on process exit. Interior-mutable behind a `Mutex` (the `State` form serves concurrent
+/// C6/C8/C9 handlers); the critical sections never hold the guard across an `.await`, so a `std::sync::Mutex`
+/// is correct.
 ///
-/// [Build-Session-Entscheidung: P2.43] `Default`-constructed empty; `Debug` for parity with the sibling
-/// state. NOT a wire type (no `serde`/`specta`) — the `RunResult` it holds IS a wire type, but the STORE is
-/// pure core-internal State (C8 returns the resolved `RunResult`; the store itself never crosses IPC).
+/// [Build-Session-Entscheidung: P2.43 → P3.76] `Default`-constructed empty; `Debug` for parity with the
+/// sibling state. NOT a wire type (no `serde`/`specta`) — the `RunResult` it holds IS a wire type, but the
+/// STORE (and its off-wire `RunResultPaths`) is pure core-internal State that never crosses IPC.
 #[derive(Debug, Default)]
 pub struct RunResultStore {
-    /// The retained terminal `RunResult` (the latest run's), or `None` between an `evict` and the next
-    /// `retain`. A single slot, not a per-`RunId` map: §0.4.4 retains only until the NEXT run starts.
-    result: Mutex<Option<RunResult>>,
+    /// The retained terminal run (wire result + off-wire paths, the latest run's), or `None` between an
+    /// `evict` and the next `retain`. A single slot, not a per-`RunId` map: §0.4.4 retains only until the
+    /// NEXT run starts.
+    retained: Mutex<Option<RetainedRun>>,
 }
 
 impl RunResultStore {
     /// Lock the slot, recovering a poisoned guard rather than propagating the panic — the in-core no-panic
     /// discipline (G4/G14: no `unwrap`/`expect`/`panic`), sound because the critical sections never panic.
     /// [Build-Session-Entscheidung: P2.43]
-    fn lock(&self) -> std::sync::MutexGuard<'_, Option<RunResult>> {
-        self.result
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<RetainedRun>> {
+        self.retained
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Retain `result` as the run's terminal summary (`RunFinished`, §0.4.4) — supersedes any prior retained
-    /// result (only the latest run's is kept). After this, C8 `get_run_summary(result.run_id)` re-serves it.
-    pub fn retain(&self, result: RunResult) {
-        *self.lock() = Some(result);
+    /// Retain the run's terminal summary + its off-wire real paths (`RunFinished`, §0.4.4) — supersedes any
+    /// prior retained run (only the latest is kept). After this, C8 `get(result.run_id)` re-serves the wire
+    /// summary and C9 `paths(result.run_id)` resolves its `OpenTarget` against the real paths (P3.79).
+    /// [Build-Session-Entscheidung: P3.76] `paths` is the sibling off-wire `RunResultPaths` (the real roots +
+    /// per-item output/residue `PathBuf`s the display-only wire `RunResult` shed, §2.10.1).
+    pub fn retain(&self, result: RunResult, paths: RunResultPaths) {
+        *self.lock() = Some(RetainedRun { result, paths });
     }
 
-    /// Re-serve the retained summary for `run_id` (C8 `get_run_summary`, §0.4.4) — returns a clone iff a
-    /// result is retained AND its `run_id` matches (so a superseded/other run's id never serves the wrong
-    /// summary). `None` = no retained result, or it belongs to a different run (the C8 caller maps that to its
+    /// Re-serve the retained wire summary for `run_id` (C8 `get_run_summary`, §0.4.4) — returns a clone iff a
+    /// run is retained AND its `run_id` matches (so a superseded/other run's id never serves the wrong
+    /// summary). `None` = no retained run, or it belongs to a different run (the C8 caller maps that to its
     /// §0.4.3 not-available error). The result is cloned out, so the guard is not held across the return.
     pub fn get(&self, run_id: RunId) -> Option<RunResult> {
         self.lock()
             .as_ref()
-            .filter(|result| result.run_id == run_id)
-            .cloned()
+            .filter(|retained| retained.result.run_id == run_id)
+            .map(|retained| retained.result.clone())
     }
 
-    /// Evict the retained result when a new run starts (C6, §0.4.4 "until a new run starts") — so a stale
-    /// prior summary is never re-served once the next run is in flight. Idempotent: evicting an already-empty
+    /// Re-serve the retained OFF-WIRE `RunResultPaths` for `run_id` (C9 `open_path`, §0.4.4 / §7.7.3, P3.79)
+    /// — the real roots + per-item output/residue `PathBuf`s the wire `RunResult` shed (§2.10.1). Returns a
+    /// clone iff a run is retained AND its `run_id` matches; `None` otherwise (→ the C9 §7.7.3 refusal). The
+    /// paths are cloned out, so the guard is not held across the return. [Build-Session-Entscheidung: P3.76]
+    pub fn paths(&self, run_id: RunId) -> Option<RunResultPaths> {
+        self.lock()
+            .as_ref()
+            .filter(|retained| retained.result.run_id == run_id)
+            .map(|retained| retained.paths.clone())
+    }
+
+    /// Evict the retained run when a new run starts (C6, §0.4.4 "until a new run starts") — so a stale prior
+    /// summary/paths are never re-served once the next run is in flight. Idempotent: evicting an already-empty
     /// store is a no-op.
     pub fn evict(&self) {
         *self.lock() = None;
@@ -806,6 +892,72 @@ impl CollectedSetRegistry {
     /// / already-superseded id → the C6 §0.4.3 not-available error).
     pub fn take(&self, id: CollectedSetId) -> Option<Arc<FrozenCollectedSet>> {
         self.lock().remove(&id)
+    }
+}
+
+// ─── §0.4.4 picked-destination registry — the DestinationId → PathBuf session store (P3.76) ────────────
+// [Build-Session-Entscheidung: P3.76] The FIFTH §0.4.4 orchestrator-State store — the session-scoped
+// picked-roots registry the 2026-07-06 core-owned-paths ruling introduces so a C2b-picked destination PATH
+// never crosses the wire: C2b mints a DestinationId, stores the Rust-picked folder here, and returns the id
+// (+ a display string); C4/C5/C6 resolve DestinationChoice::ChosenRoot(id) core-side against it (§0.4.4).
+// Homed here under the same §0.7 "(§0.4.4)" State umbrella as the four sibling stores (no §0.7/§1a
+// structural edit — the P2.43/P2.44/P2.45 precedent). Unlike the SUPERSEDING CollectedSetRegistry, this
+// ACCUMULATES: §0.4.4 "entries live for the app session (they survive across collected sets, so switching
+// batches never forces a re-pick) and die at app exit; nothing is persisted (§7.4)". Like the sibling
+// stores it is a CONTRACT before its consumer: the C2b register + the C4/C5/C6 resolve + the `.manage`
+// registration are the P3.80 destination-legs box, so it is dead in the production build until then
+// (covered by the module-level dead_code expect).
+
+/// The §0.4.4 picked-destination registry — maps each C2b-minted `DestinationId` to its Rust-picked root
+/// `PathBuf`, held as a Tauri app-managed `State` so a picked destination PATH never crosses the wire
+/// (2026-07-06 core-owned-paths ruling, §2.10.1): C2b `pick_destination` mints an id + stores the folder
+/// ([`register`](DestinationRegistry::register)); C4/C5/C6 resolve `DestinationChoice::ChosenRoot(id)`
+/// against it ([`resolve`](DestinationRegistry::resolve)) — an unknown id is refused as a §0.4.3 error, so
+/// the WebView can only *select among* user-picked roots, never name a path. SESSION-SCOPED: entries
+/// accumulate and survive across collected sets (switching batches never forces a re-pick, §0.4.4) and die
+/// at app exit — nothing is persisted (§7.4). Interior-mutable behind a `Mutex` (the `State` form serves
+/// concurrent C2b/C4/C5/C6 handlers); every critical section is a whole-map op that never holds the guard
+/// across an `.await`, so a plain `std::sync::Mutex` is correct.
+///
+/// [Build-Session-Entscheidung: P3.76] `Default`-constructed empty; `Debug` for parity with the sibling
+/// stores. NOT a wire type (no `serde`/`specta`) — pure core-internal State that never crosses IPC (the
+/// wire carries only the `DestinationId` + the C2b display string, §0.6). The C2b register + C4/C5/C6
+/// resolve WIRING is the P3.80 box, so it is dead in the production build until then (the module-level
+/// dead_code expect covers it, the P2.44 `CollectedSetRegistry` precedent).
+#[derive(Debug, Default)]
+pub struct DestinationRegistry {
+    /// The session's `DestinationId` → picked-root map. ACCUMULATES across the session (unlike the
+    /// superseding `CollectedSetRegistry`): every successful C2b pick adds an entry; a process exit drops
+    /// the store; nothing is persisted (§7.4).
+    roots: Mutex<HashMap<DestinationId, PathBuf>>,
+}
+
+impl DestinationRegistry {
+    /// Lock the root map, recovering the guard from a poisoned lock rather than propagating the panic — the
+    /// in-core no-panic discipline (G4/G14: no `unwrap`/`expect`/`panic`), sound because the critical
+    /// sections are infallible whole-map ops that never panic. [Build-Session-Entscheidung: P3.76]
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<DestinationId, PathBuf>> {
+        self.roots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Register a C2b-picked destination root (§0.4.4) — mints a fresh `DestinationId`, stores `path` against
+    /// it, and returns the id (which C2b returns to the WebView paired with a display string; the PATH never
+    /// crosses the wire). ACCUMULATES: prior entries are retained so switching batches never forces a re-pick
+    /// (§0.4.4). [Build-Session-Entscheidung: P3.76]
+    pub fn register(&self, path: PathBuf) -> DestinationId {
+        let id = DestinationId::mint();
+        self.lock().insert(id, path);
+        id
+    }
+
+    /// Resolve a `DestinationId` to its picked-root `PathBuf` (C4/C5/C6 `ChosenRoot(id)`, §0.4.4) — returns a
+    /// clone iff `id` is a live picked root; `None` if unknown (→ the C-command's §0.4.3 not-available /
+    /// refusal error — the WebView cannot name a path the user never picked). The `PathBuf` is cloned out
+    /// before the guard drops, so the lock is not held across the return. [Build-Session-Entscheidung: P3.76]
+    pub fn resolve(&self, id: DestinationId) -> Option<PathBuf> {
+        self.lock().get(&id).cloned()
     }
 }
 
@@ -1500,8 +1652,10 @@ fn windows_attr_hidden(_entry: &walkdir::DirEntry) -> bool {
 /// [`dedup_by_identity`]. Carries its freeze-assigned [`ItemId`] (§0.6 invariant 6 — one per SURVIVOR,
 /// contiguous over the survivors, a dropped duplicate consumes none), the RETAINED first-seen
 /// [`FileIdentity`] (§2.3.2: identity is the de-dup key; `identity.canonical_path` is the first-seen
-/// representative path the P3.49 spine projects onto `DroppedItem.resolved_path`, §0.6, and the identity
-/// itself feeds §2.3.3 `is_safe_output`), and the abstract per-candidate `payload` the spine threads through
+/// representative path the P3.49 spine projects onto the off-wire `FrozenCollectedSet.item_paths[item].
+/// resolved_path` (an `ItemPaths`, §2.10.1 — no path crosses the wire; the wire `DroppedItem` carries only
+/// `display_name`), and the identity itself feeds §2.3.3 `is_safe_output`), and the abstract per-candidate
+/// `payload` the spine threads through
 /// un-inspected (detection is P3, so P2.76 never constructs a §0.6 `DroppedItem`/`SkippedItem`).
 ///
 /// [Build-Session-Entscheidung: P2.76] Derives `Debug` ONLY — NOT `PartialEq`/`Eq`: those would leak a
@@ -2702,6 +2856,7 @@ mod freeze_gating_contract {
             encoding_hint: None,
             delimiter_hint: None,
             notes: vec![],
+            item_paths: BTreeMap::new(),
         }
     }
 
@@ -2821,8 +2976,8 @@ mod tests {
     fn dropped_item_with(id: u32, format: UserFacingFormat) -> DroppedItem {
         DroppedItem {
             item: item_id(id),
-            raw_path: PathBuf::from("data.csv"),
-            resolved_path: PathBuf::from("data.csv"),
+            display_name: "data.csv".to_string(),
+            rel_path_display: None,
             size_bytes: 12,
             detected: DetectionOutcome::Recognized {
                 format,
@@ -3027,13 +3182,14 @@ mod tests {
     }
 
     // §6.4.1 unit (G15): the §0.6/§1.8 `OutputPlanPreview` wire form (P2.11) — the C4 `plan_output` return,
-    // the full nested camelCase graph (set / finalDirPreview / diverted / rerun / preflight). A SERIALIZE
+    // the full nested camelCase graph (set / finalDirDisplay / diverted / rerun / preflight). A SERIALIZE
     // pin (the embedded `PreflightVerdict` is outbound-only, so `OutputPlanPreview` does not round-trip).
+    // `finalDirDisplay` is a lossy display string (2026-07-06 ruling, §2.10.1 — no `PathBuf` on the wire).
     #[test]
     fn output_plan_preview_wire_form_is_camelcase() {
         let preview = OutputPlanPreview {
             set: collected_set_id(),
-            final_dir_preview: PathBuf::from("/dest"),
+            final_dir_display: "/dest".to_string(),
             diverted: Some(DivertReason::Unwritable),
             rerun: Some(RerunPrompt {
                 equivalent_count: 2,
@@ -3046,7 +3202,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_string(&preview).expect("OutputPlanPreview serializes"),
-            r#"{"set":"00000000-0000-4000-8000-000000000000","finalDirPreview":"/dest","diverted":"unwritable","rerun":{"equivalentCount":2},"preflight":{"estTotalOutputBytes":1024,"estTotalScratchBytes":256,"upFrontFail":null}}"#,
+            r#"{"set":"00000000-0000-4000-8000-000000000000","finalDirDisplay":"/dest","diverted":"unwritable","rerun":{"equivalentCount":2},"preflight":{"estTotalOutputBytes":1024,"estTotalScratchBytes":256,"upFrontFail":null}}"#,
             "§1.8: OutputPlanPreview is the C4 'will save to…' graph in camelCase"
         );
     }
@@ -3058,6 +3214,7 @@ mod tests {
     fn destination_resolved_wire_form_is_camelcase() {
         let resolved = DestinationResolved {
             destination: DestinationChoice::BesideSource,
+            final_dir_display: "/dest".to_string(),
             diverted: None,
             preflight: PreflightVerdict {
                 est_total_output_bytes: 4096,
@@ -3068,7 +3225,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_string(&resolved).expect("DestinationResolved serializes"),
-            r#"{"destination":"besideSource","diverted":null,"preflight":{"estTotalOutputBytes":4096,"estTotalScratchBytes":0,"upFrontFail":null},"rerun":null}"#,
+            r#"{"destination":"besideSource","finalDirDisplay":"/dest","diverted":null,"preflight":{"estTotalOutputBytes":4096,"estTotalScratchBytes":0,"upFrontFail":null},"rerun":null}"#,
             "§1.8/§2.14.4: DestinationResolved re-validates the destination; rerun carried through (§2.5.1)"
         );
     }
@@ -3089,6 +3246,7 @@ mod tests {
         // (2) C5 OWNS the destination: `DestinationResolved` CARRIES a `destination: DestinationChoice`.
         let resolved = DestinationResolved {
             destination: DestinationChoice::BesideSource,
+            final_dir_display: "/dest".to_string(),
             diverted: None,
             preflight: preflight.clone(),
             rerun: Some(RerunPrompt {
@@ -3100,26 +3258,27 @@ mod tests {
             "§0.4.1: C5 owns the destination — DestinationResolved carries a DestinationChoice"
         );
 
-        // C4 does NOT own the destination choice: `OutputPlanPreview` carries a `final_dir_preview` PREVIEW
+        // C4 does NOT own the destination choice: `OutputPlanPreview` carries a `final_dir_display` PREVIEW
         // and NO `DestinationChoice` field. This EXHAUSTIVE literal (all 5 fields, no `..`) PINS the field
         // set — adding a `destination` field to `OutputPlanPreview` would make this fail to compile, so "C4
         // has no settable destination" is gate-enforced here, not just prose (§0.4.1 "C4 never overrides C5").
         let preview = OutputPlanPreview {
             set: collected_set_id(),
-            final_dir_preview: PathBuf::from("/dest"),
+            final_dir_display: "/dest".to_string(),
             diverted: None,
             rerun: Some(RerunPrompt {
                 equivalent_count: 1,
             }),
             preflight: preflight.clone(),
         };
-        let _: &PathBuf = &preview.final_dir_preview; // C4 shows a directory PREVIEW, never a settable destination
+        let _: &String = &preview.final_dir_display; // C4 shows a directory PREVIEW, never a settable destination
 
         // (3) C5 CARRIES C4's `rerun` THROUGH UNCHANGED (§2.5.1): both DTOs carry the SAME
         // `rerun: Option<RerunPrompt>` type, so the C4 value assigns verbatim into the C5 return.
         let carried_from_c4: Option<RerunPrompt> = preview.rerun.clone();
         let resolved_carrying = DestinationResolved {
             destination: DestinationChoice::BesideSource,
+            final_dir_display: "/dest".to_string(),
             diverted: None,
             preflight: preflight.clone(),
             rerun: carried_from_c4,
@@ -3175,18 +3334,18 @@ mod tests {
     fn conversion_event_item_and_batch_wire_forms() {
         use crate::domain::{FormatId, JobStage};
 
-        // ItemStarted — runId / itemId / sourcePath / target, adjacently tagged camelCase.
+        // ItemStarted — runId / itemId / sourceDisplay / target, adjacently tagged camelCase.
         let item_started = ConversionEvent::ItemStarted(ItemStarted {
             run_id: run_id(),
             item_id: item_id(1),
-            source_path: PathBuf::from("/in/a.csv"),
+            source_display: "/in/a.csv".to_string(),
             target: TargetId::Format(FormatId::Tsv),
         });
         let v = serde_json::to_value(&item_started).expect("ItemStarted serializes");
         assert_eq!(v["type"], "itemStarted", "§0.4.2: adjacent tag");
         assert_eq!(
-            v["data"]["sourcePath"], "/in/a.csv",
-            "§0.4.2: camelCase sourcePath"
+            v["data"]["sourceDisplay"], "/in/a.csv",
+            "§0.4.2: camelCase sourceDisplay (a lossy display string, §2.10.1)"
         );
         assert_eq!(v["data"]["itemId"], 1, "§0.4.2: camelCase itemId");
 
@@ -3287,8 +3446,8 @@ mod tests {
                 skipped: 0,
             },
             cleanup_incomplete: Vec::new(),
-            common_root: PathBuf::from("/src"),
-            divert_root: None,
+            common_root_display: "/src".to_string(),
+            divert_root_display: None,
         };
         let finished = ConversionEvent::RunFinished(run);
         let v = serde_json::to_value(&finished).expect("ConversionEvent::RunFinished serializes");
@@ -3330,30 +3489,31 @@ mod tests {
         }
     }
 
-    // §6.4.1 unit (G15): the §0.6/§0.4.2 `ItemOutcome` WIRE form (P2.12) — the live `ItemFinished` payload,
-    // externally tagged camelCase; `Succeeded`'s `output_path` → `outputPath` (per-variant rename), `Failed`
-    // carries the full §0.4.3 IpcError, `Cancelled` is payload-free. A SERIALIZE pin (outbound-only).
+    // §6.4.1 unit (G15): the §0.6/§0.4.2 `ItemOutcome` WIRE form (P2.12 → P3.76) — the live `ItemFinished`
+    // payload, externally tagged camelCase; `Succeeded`'s `output_display` → `outputDisplay` (per-variant
+    // rename), `Failed` carries the full §0.4.3 IpcError (`pathDisplay`/`residueDisplay`), `Cancelled` is
+    // payload-free. A SERIALIZE pin (outbound-only). No `PathBuf` on the wire (2026-07-06 ruling, §2.10.1).
     #[test]
     fn item_outcome_wire_form_is_externally_tagged_camelcase() {
         let succeeded = ItemOutcome::Succeeded {
-            output_path: PathBuf::from("/out/data.tsv"),
+            output_display: "/out/data.tsv".to_string(),
         };
         assert_eq!(
             serde_json::to_string(&succeeded).expect("ItemOutcome::Succeeded serializes"),
-            r#"{"succeeded":{"outputPath":"/out/data.tsv"}}"#,
-            "§0.4.2: Succeeded carries the published outputPath"
+            r#"{"succeeded":{"outputDisplay":"/out/data.tsv"}}"#,
+            "§0.4.2: Succeeded carries the published outputDisplay (a lossy display string, §2.10.1)"
         );
         let failed = ItemOutcome::Failed {
             error: IpcError {
                 kind: ConversionErrorKind::EngineError,
                 message: "ConvertIA couldn't convert this file.".to_owned(),
-                path: Some(PathBuf::from("/src/bad.csv")),
-                residue: None,
+                path_display: Some("/src/bad.csv".to_string()),
+                residue_display: None,
             },
         };
         assert_eq!(
             serde_json::to_string(&failed).expect("ItemOutcome::Failed serializes"),
-            r#"{"failed":{"error":{"kind":"engineError","message":"ConvertIA couldn't convert this file.","path":"/src/bad.csv","residue":null}}}"#,
+            r#"{"failed":{"error":{"kind":"engineError","message":"ConvertIA couldn't convert this file.","pathDisplay":"/src/bad.csv","residueDisplay":null}}}"#,
             "§0.4.2/§0.4.3: Failed carries the full IpcError"
         );
         let skipped = ItemOutcome::Skipped {
@@ -3390,14 +3550,14 @@ mod tests {
         }
         let all = [
             ItemOutcome::Succeeded {
-                output_path: PathBuf::from("/out/data.tsv"),
+                output_display: "/out/data.tsv".to_string(),
             },
             ItemOutcome::Failed {
                 error: IpcError {
                     kind: ConversionErrorKind::EngineError,
                     message: "ConvertIA couldn't convert this file.".to_owned(),
-                    path: None,
-                    residue: None,
+                    path_display: None,
+                    residue_display: None,
                 },
             },
             ItemOutcome::Skipped {
@@ -3497,10 +3657,12 @@ mod tests {
         );
     }
 
-    // §6.4.1 unit (G15): the §1.12 `RunResult` wire form (P2.12) — the full nested camelCase graph the §5.3
-    // Summary renders, exercising `ItemResult` (a Succeeded row + a pre-flight Skipped row whose `reason`
-    // rides the adjacently-tagged `OutcomeMsg::Skipped`), `Totals`, `CleanupResidue`, and `divertRoot`
-    // Some(..). A SERIALIZE pin (RunResult is outbound-only — the §0.4.2 RunFinished payload / C8 return).
+    // §6.4.1 unit (G15): the §1.12 `RunResult` wire form (P2.12 → P3.76) — the full nested camelCase graph the
+    // §5.3 Summary renders, exercising `ItemResult` (a Succeeded row + a pre-flight Skipped row whose `reason`
+    // rides the adjacently-tagged `OutcomeMsg::Skipped`), `Totals`, `CleanupResidue`, and `divertRootDisplay`
+    // Some(..). A SERIALIZE pin (RunResult is outbound-only — the §0.4.2 RunFinished payload / C8 return). Every
+    // path field is a lossy DISPLAY string (2026-07-06 ruling, §2.10.1 — the real paths live off-wire in
+    // `RunResultStore`); `ItemResult` is ID-keyed (`item`), the output→source mapping via `DroppedItem.display_name`.
     #[test]
     fn run_result_wire_form_is_camelcase() {
         let run = RunResult {
@@ -3508,15 +3670,15 @@ mod tests {
             run_id: run_id(),
             items: vec![
                 ItemResult {
-                    source: PathBuf::from("/src/data.csv"),
+                    item: item_id(0),
+                    output_display: Some("/src/data.tsv".to_string()),
                     state: JobState::Succeeded,
-                    output: Some(PathBuf::from("/src/data.tsv")),
                     reason: None,
                 },
                 ItemResult {
-                    source: PathBuf::from("/src/mystery.bin"),
+                    item: item_id(1),
+                    output_display: None,
                     state: JobState::Skipped(SkipReason::Uncertain),
-                    output: None,
                     reason: Some(OutcomeMsg::Skipped {
                         reason: SkipReason::Uncertain,
                         text: "ConvertIA couldn't tell what kind of file this is, so it can't convert it."
@@ -3532,22 +3694,22 @@ mod tests {
             },
             cleanup_incomplete: vec![CleanupResidue {
                 item: item_id(2),
-                residue_path: PathBuf::from("/src/.data.tsv.part"),
+                residue_display: "/src/.data.tsv.part".to_string(),
             }],
-            common_root: PathBuf::from("/src"),
-            divert_root: Some(PathBuf::from("/Downloads")),
+            common_root_display: "/src".to_string(),
+            divert_root_display: Some("/Downloads".to_string()),
         };
         assert_eq!(
             serde_json::to_string(&run).expect("RunResult serializes"),
             concat!(
                 r#"{"collectedSetId":"00000000-0000-4000-8000-000000000000","#,
                 r#""runId":"11111111-1111-4111-8111-111111111111","#,
-                r#""items":[{"source":"/src/data.csv","state":"succeeded","output":"/src/data.tsv","reason":null},"#,
-                r#"{"source":"/src/mystery.bin","state":{"skipped":"uncertain"},"output":null,"#,
+                r#""items":[{"item":0,"outputDisplay":"/src/data.tsv","state":"succeeded","reason":null},"#,
+                r#"{"item":1,"outputDisplay":null,"state":{"skipped":"uncertain"},"#,
                 r#""reason":{"type":"skipped","data":{"reason":"uncertain","text":"ConvertIA couldn't tell what kind of file this is, so it can't convert it."}}}],"#,
                 r#""totals":{"succeeded":1,"failed":0,"cancelled":0,"skipped":1},"#,
-                r#""cleanupIncomplete":[{"item":2,"residuePath":"/src/.data.tsv.part"}],"#,
-                r#""commonRoot":"/src","divertRoot":"/Downloads"}"#
+                r#""cleanupIncomplete":[{"item":2,"residueDisplay":"/src/.data.tsv.part"}],"#,
+                r#""commonRootDisplay":"/src","divertRootDisplay":"/Downloads"}"#
             ),
             "§1.12: RunResult is the end-of-batch summary graph in camelCase (pre-flight skip rides \
              OutcomeMsg::Skipped, not Failure — skip ≠ fail)"
@@ -3914,7 +4076,8 @@ mod tests {
         );
     }
 
-    /// A minimal §1.12 `RunResult` for the §0.4.4 retention tests — one succeeded item, no residue.
+    /// A minimal §1.12 `RunResult` for the §0.4.4 retention tests — one succeeded item, no residue. Its path
+    /// fields are display strings (2026-07-06 ruling); the real paths are the sibling `sample_run_paths`.
     fn sample_run_result(rid: RunId) -> RunResult {
         RunResult {
             collected_set_id: collected_set_id(),
@@ -3927,8 +4090,21 @@ mod tests {
                 skipped: 0,
             },
             cleanup_incomplete: vec![],
+            common_root_display: "/out".to_string(),
+            divert_root_display: None,
+        }
+    }
+
+    /// The off-wire `RunResultPaths` sibling of `sample_run_result` — the REAL common root the wire result's
+    /// `common_root_display` shed (2026-07-06 ruling, §2.10.1); no per-item outputs/residues (the retention
+    /// tests exercise the wire re-serve + the `paths()` re-serve, not C9 membership).
+    /// [Build-Session-Entscheidung: P3.76]
+    fn sample_run_paths() -> RunResultPaths {
+        RunResultPaths {
             common_root: PathBuf::from("/out"),
             divert_root: None,
+            item_outputs: BTreeMap::new(),
+            item_residues: BTreeMap::new(),
         }
     }
 
@@ -3940,11 +4116,37 @@ mod tests {
     fn run_result_store_retain_then_get_matching_id_returns_the_result() {
         let store = RunResultStore::default();
         let result = sample_run_result(run_id());
-        store.retain(result.clone());
+        store.retain(result.clone(), sample_run_paths());
         assert_eq!(
             store.get(run_id()),
             Some(result),
             "§0.4.4: a retained terminal RunResult is re-served to C8 for its own RunId"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §0.4.4 OFF-WIRE `RunResultPaths` re-serve (P3.76) — `retain` stores the real
+    // paths alongside the wire result; `paths` re-serves them for the matching `RunId` (the C9 `OpenTarget`
+    // resolution source, P3.79), and mismatched/empty is `None` (the C9 §7.7.3 refusal). This is the off-wire
+    // half of the retention contract the display-only wire `RunResult` depends on (§2.10.1).
+    #[test]
+    fn run_result_store_paths_re_serves_the_off_wire_paths_for_matching_id() {
+        let store = RunResultStore::default();
+        store.retain(sample_run_result(run_id()), sample_run_paths());
+        assert_eq!(
+            store.paths(run_id()),
+            Some(sample_run_paths()),
+            "§0.4.4/§7.7.3: the off-wire RunResultPaths is re-served to C9 for its own RunId"
+        );
+        assert_eq!(
+            store.paths(run_id_other()),
+            None,
+            "§0.4.4: the off-wire paths are NEVER served for a different run's id (the RunId match guards it)"
+        );
+        store.evict();
+        assert_eq!(
+            store.paths(run_id()),
+            None,
+            "§0.4.4: evict clears the off-wire paths too (no stale real path survives a new run start)"
         );
     }
 
@@ -3961,7 +4163,7 @@ mod tests {
     #[test]
     fn run_result_store_get_mismatched_id_is_none() {
         let store = RunResultStore::default();
-        store.retain(sample_run_result(run_id()));
+        store.retain(sample_run_result(run_id()), sample_run_paths());
         assert_eq!(
             store.get(run_id_other()),
             None,
@@ -3972,8 +4174,8 @@ mod tests {
     #[test]
     fn run_result_store_retain_supersedes_the_prior_result() {
         let store = RunResultStore::default();
-        store.retain(sample_run_result(run_id()));
-        store.retain(sample_run_result(run_id_other()));
+        store.retain(sample_run_result(run_id()), sample_run_paths());
+        store.retain(sample_run_result(run_id_other()), sample_run_paths());
         assert_eq!(
             store.get(run_id()),
             None,
@@ -3989,12 +4191,45 @@ mod tests {
     #[test]
     fn run_result_store_evict_clears_the_retained_result() {
         let store = RunResultStore::default();
-        store.retain(sample_run_result(run_id()));
+        store.retain(sample_run_result(run_id()), sample_run_paths());
         store.evict();
         assert_eq!(
             store.get(run_id()),
             None,
             "§0.4.4: evict (a new run starting) clears the retained result so a stale summary is not re-served"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §0.4.4 picked-destination registry lifecycle (P3.76) — `register` mints a
+    // `DestinationId` + stores the picked root (the PATH never crosses the wire, §2.10.1); `resolve` re-serves
+    // it (C4/C5/C6 `ChosenRoot(id)`), an unknown id is `None` (the WebView cannot name a path it never picked);
+    // and — unlike the SUPERSEDING `CollectedSetRegistry` — it ACCUMULATES: a second pick does not evict the
+    // first (§0.4.4 "entries survive across collected sets, so switching batches never forces a re-pick"). The
+    // C2b register + C4/C5/C6 resolve wiring is P3.80; this pins the store contract now (the sibling of the
+    // RunRegistry / RunResultStore / CollectedSetRegistry lifecycle pins).
+    #[test]
+    fn destination_registry_register_resolve_and_accumulate() {
+        let reg = DestinationRegistry::default();
+        let a = reg.register(PathBuf::from("/home/me/Documents"));
+        let b = reg.register(PathBuf::from("/home/me/Downloads"));
+        assert_ne!(
+            a, b,
+            "§0.4.4: each pick mints a fresh, distinct DestinationId"
+        );
+        assert_eq!(
+            reg.resolve(a),
+            Some(PathBuf::from("/home/me/Documents")),
+            "§0.4.4: a picked root resolves back to its real PathBuf (C4/C5/C6 ChosenRoot(id) → the real path)"
+        );
+        assert_eq!(
+            reg.resolve(b),
+            Some(PathBuf::from("/home/me/Downloads")),
+            "§0.4.4: the second pick ACCUMULATES — registering b did not evict a (switching batches never re-picks)"
+        );
+        assert_eq!(
+            reg.resolve(DestinationId::mint()),
+            None,
+            "§0.4.4/§0.4.3: an unknown id resolves to None — the WebView cannot name a path the user never picked"
         );
     }
 
@@ -4025,6 +4260,7 @@ mod tests {
             encoding_hint: None,
             delimiter_hint: None,
             notes: vec![],
+            item_paths: BTreeMap::new(),
         }
     }
 
