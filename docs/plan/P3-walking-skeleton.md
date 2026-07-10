@@ -224,7 +224,7 @@ P0.5.7 KAT convention and the P0.4.3 detect fuzz target.
 - [x] **P3.27** [RUST] Build the text/encoding classification (BOM → UTF-8 → codepage fallback) · §1.2 §2.10.2
   needs: P3.26
   > confirm bytes decode as text (BOM → strict UTF-8 → single-byte codepage fallback, e.g. `chardetng`); the encoding heuristic stays **in-core** (memory-safe, bounded, no C/C++ decoder, §2.12.4). Produces `CollectedSummary.encoding_hint` (e.g. "Windows-1252") for the §1.4 summary line. Text encoding is detected, **never assumed from the extension** (§2.10.2).
-- [ ] **P3.28** [RUST] Build CSV-vs-TSV delimiter detection (content over name) · §1.2 §2.10.2
+- [x] **P3.28** [RUST] Build CSV-vs-TSV delimiter detection (content over name) · §1.2 §2.10.2
   needs: P3.27
   > delimiter sniff over the bounded sample: a consistent tab-delimited file is **TSV** even if named `.csv` (content over name, §1.2/spreadsheets.md); a consistent comma file is CSV; produce `CollectedSummary.delimiter_hint`. Ambiguous (no consistent delimiter) → `Uncertain` (never silently extension-fall-back). Grouping keys on the resulting **`UserFacingFormat`** (CSV ≠ TSV, delimiter-determined, §1.3).
 - [ ] **P3.29** [RUST] Populate the `DetectionOutcome` result model + outcome rules · §1.2
