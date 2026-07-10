@@ -218,7 +218,7 @@ classification scaffolding) and classifies the walking-skeleton types — enough
 drop→detect→group. P5–P7 later add only per-format signatures. Activation target for the
 P0.5.7 KAT convention and the P0.4.3 detect fuzz target.
 
-- [ ] **P3.26** [RUST] Build the layered-detection dispatcher skeleton (magic → container → text → structural-peek) · §1.2 §2.12.4 · G29
+- [x] **P3.26** [RUST] Build the layered-detection dispatcher skeleton (magic → container → text → structural-peek) · §1.2 §2.12.4 · G29
   needs: P3.1
   > the §1.2 strategy order as a dispatcher: (1) magic-byte/signature sniff on a bounded **first-4-KiB** header window; (2) container introspection seam (ZIP/OLE/`ftyp`/gzip — stubbed for P3, filled by P5–P7); (3) text classification; (4) bounded structural-peek for `notes`/`dims`. All steps are bounded reads in **memory-safe Rust** with no third-party C/C++ decoder, so detection runs **in-core** (§2.12.4 absolute satisfied) — no isolation subprocess for a sniff. Only the text-classification path needed for CSV/TSV is live in P3; the rest are typed seams.
 - [ ] **P3.27** [RUST] Build the text/encoding classification (BOM → UTF-8 → codepage fallback) · §1.2 §2.10.2
