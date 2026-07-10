@@ -230,7 +230,7 @@ P0.5.7 KAT convention and the P0.4.3 detect fuzz target.
 - [x] **P3.29** [RUST] Populate the `DetectionOutcome` result model + outcome rules · §1.2
   needs: P3.28
   > emit `DetectionOutcome::Recognized { format, confidence: Confidence, dims: None }` for CSV/TSV (non-raster → `dims: None`); `UnsupportedType { detected }` / `Uncertain { best_guess }` / `Empty` / `Unreadable { reason: ReadFailure }` for the others. Outcome rules: unsupported/uncertain/empty/unreadable are **never** offered a target list and never extension-fall-back (§1.2); a `.csv`-that-is-really-TSV converts as its **detected** type. `Confidence { High, Low }` — `Low` never silently falls back to the extension.
-- [ ] **P3.30** [TEST] Stand up the §1.2 detection KAT first entries (CSV/TSV) · §1.2 §6.4.1 · G15
+- [x] **P3.30** [TEST] Stand up the §1.2 detection KAT first entries (CSV/TSV) · §1.2 §6.4.1 · G15
   needs: P3.29, P0.5.7
   > add the first `tests/detect-kat.toml` entries pinning canonical CSV/TSV (and a `.csv`-that-is-TSV, an ambiguous→`Uncertain`) files to their exact `FormatId`, read by the G15 unit test so §6.4.1's claim is machine-enforced at L2. This is the P3 box the P0.5.7 `→ activated in P3` KAT-convention edge points at (`needs: P0.5.7`, the P0 home is `[x]` before the loop, mirroring the P3.67 `needs: P0.5.8` activation-target pattern). A pure-Rust detection-fuzz target on `crate::detection` is the P0.4.3/G48 leg (registered there).
 
