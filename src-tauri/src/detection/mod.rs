@@ -112,9 +112,9 @@ fn sniff_magic(
 /// 1. **magic / signature sniff** ([`sniff_magic`]) — live framework; per-format signature rows added P5–P7.
 /// 2. **container introspection** (ZIP / OLE2 / `ftyp` / gzip disambiguation) — a typed seam filled by P5–P7
 ///    (each a bounded member read; §2.12.4).
-/// 3. **text classification** (TXT / MD / CSV / TSV / SVG) — the walking-skeleton path filled by **P3.27**
-///    (BOM → UTF-8 → codepage encoding confirmation) + **P3.28** (CSV-vs-TSV delimiter sniff), which return
-///    `Recognized { Csv | Tsv }`.
+/// 3. **text classification** (TXT / MD / CSV / TSV / SVG) — the walking-skeleton path: **P3.27** (BOM →
+///    UTF-8 → codepage encoding confirmation) + **P3.28** (CSV-vs-TSV delimiter sniff), **wired here by P3.29**
+///    to return `Recognized { Csv | Tsv }` for a consistent delimiter (TXT / MD / SVG are a subsequent-phase fill).
 /// 4. **bounded structural-peek** — reads the raster `dims` that augment a `Recognized` outcome **at each
 ///    site where one is constructed** (the step-1/2/3 recognition points, not as a tail step), and the §1.4
 ///    `notes` that land on `CollectedSet::Single` downstream (not a `Recognized` field); a typed seam filled
@@ -122,11 +122,13 @@ fn sniff_magic(
 ///
 /// A 0-byte header is [`DetectionOutcome::Empty`]; an input that no step recognizes is
 /// [`DetectionOutcome::Uncertain`] with no best guess — **never** an extension-fallback guess (SSOT
-/// *Recognize files by content*). The full §1.2 eligibility / `UnsupportedType` / `Confidence` outcome rules
-/// are refined by **P3.29**. This dispatcher is pure bounded-read safe Rust with no third-party C/C++ decoder,
-/// so it runs in-core (§2.12.4 absolute satisfied). [Build-Session-Entscheidung: P3.26]
+/// *Recognize files by content*). The §1.2 eligibility / `Confidence` outcome rules are applied here by
+/// **P3.29** (a consistent CSV/TSV delimiter ⇒ `Recognized … High`; text-but-not-delimited or non-text ⇒
+/// `Uncertain`; `UnsupportedType` needs a magic/container match to name the type, so no P3 input reaches it).
+/// This dispatcher is pure bounded-read safe Rust with no third-party C/C++ decoder, so it runs in-core
+/// (§2.12.4 absolute satisfied). [Build-Session-Entscheidung: P3.26]
 pub fn detect(header: &[u8]) -> DetectionOutcome {
-    // §1.2: a 0-byte source has no bytes to classify → Empty (clear-cut; P3.29 refines the other outcome rules).
+    // §1.2: a 0-byte source has no bytes to classify → Empty (clear-cut; the other outcome rules follow below).
     if header.is_empty() {
         return DetectionOutcome::Empty;
     }
@@ -145,11 +147,35 @@ pub fn detect(header: &[u8]) -> DetectionOutcome {
     }
     // §1.2 step 2 — container introspection (ZIP / OLE2 / ftyp / gzip) inserts its bounded member-read peek
     //   here (P5–P7); a match builds (and step-4-augments) a Recognized outcome as above.
-    // §1.2 step 3 — text classification fills the CSV/TSV walking-skeleton path here: P3.27 (encoding) +
-    //   P3.28 (delimiter) build (and step-4-augment) Recognized { Csv | Tsv } as above. A magic-less input
-    //   falls through to it.
-    // §1.2 / SSOT: an input no step recognizes is Uncertain, NEVER an extension-fallback guess. P3.29 refines
-    //   this (a recognized-but-unconvertible type → UnsupportedType, the eligibility split, the Confidence rule).
+    // §1.2 step 3 — text classification (P3.29 wires the walking-skeleton CSV/TSV path). Confirm the bytes
+    //   decode as text (P3.27 `classify_encoding`: BOM → UTF-8 → codepage); if so, sniff the delimiter (P3.28
+    //   `classify_delimiter`) and, on a consistent CSV/TSV delimiter, build the `Recognized { Csv | Tsv }`
+    //   outcome. `detect` is EXTENSION-FREE (it classifies bytes, not names — §1.2 "never trusting the
+    //   extension"), so the delimiter tie-break gets NO extension hint here (`None`); the extension is only a
+    //   last-resort tie-breaker the end-to-end wiring (P3.49) threads if it gives `detect` a path, so the
+    //   content decides on its own here. [Build-Session-Entscheidung: P3.29]
+    if let Some(encoding) = classify_encoding(header) {
+        if let DelimiterClass::Detected(delimiter) = classify_delimiter(header, encoding, None) {
+            // §1.2 step 4: CSV/TSV are non-raster, so the structural-peek `dims` are None. Confidence is High —
+            //   P3.28 returns `Detected` only on a strict-majority CONSISTENT delimiter across ≥ 2 records, an
+            //   unambiguous content signal (the peer of a magic hit's High); `Confidence::Low` is reserved for a
+            //   genuinely-weak signal a subsequent detection path may surface, which a strict-majority delimiter is not.
+            //   [Build-Session-Entscheidung: P3.29]
+            return DetectionOutcome::Recognized {
+                format: delimiter.user_facing_format(),
+                confidence: Confidence::High,
+                dims: None,
+            };
+        }
+        // Confirmed text but NOT a consistent CSV/TSV — an ambiguous delimiter, or a non-delimited text format
+        //   (TXT / MD / SVG) whose classification is a subsequent-phase fill — falls through to Uncertain in the P3
+        //   walking skeleton, never a wrong CSV/TSV guess.
+    }
+    // §1.2 / SSOT outcome rule: an input no step recognizes — non-text/binary with no magic, or confirmed text
+    //   with no consistent CSV/TSV delimiter — is `Uncertain { best_guess: None }`, surfaced eligible=false and
+    //   NEVER extension-fallback-guessed. An `UnsupportedType` (a real type we identify but do not convert)
+    //   needs a magic/container match to NAME the type, so the empty P3 registry never reaches it; the §1.3
+    //   projection maps this `Uncertain` to `SkipReason::Uncertain`. [Build-Session-Entscheidung: P3.29]
     DetectionOutcome::Uncertain { best_guess: None }
 }
 
@@ -1161,6 +1187,63 @@ mod tests {
             sniff_delimiter(inch_marks, None),
             DelimiterClass::Detected(Delimiter::Comma),
             "RFC-4180: a non-field-initial \" is literal — the records stay split and the comma is the delimiter"
+        );
+    }
+
+    // ─── P3.29 — detect() text-classification wiring + §1.2 outcome rules ───────────────────────────────
+
+    // §6.4.1 unit (G15): P3.29 wires detect's step 3 — a consistent comma text body is Recognized as CSV with
+    // High confidence and no dims (non-raster), produced by content alone (detect is extension-free).
+    #[test]
+    fn detect_recognizes_csv_text_as_recognized_csv_high() {
+        assert_eq!(
+            detect(b"id,name,city\n1,alpha,berlin\n2,beta,munich"),
+            DetectionOutcome::Recognized {
+                format: UserFacingFormat::Csv,
+                confidence: Confidence::High,
+                dims: None,
+            },
+            "§1.2/P3.29: a consistent comma text body detects as CSV (High confidence, non-raster dims None)"
+        );
+    }
+
+    // §6.4.1 unit (G15): a consistent tab body is Recognized as TSV — content over name (detect sees no
+    // extension, so the tab content alone determines TSV; a `.csv`-named tab file would detect identically).
+    #[test]
+    fn detect_recognizes_tab_text_as_recognized_tsv() {
+        assert_eq!(
+            detect(b"a\tb\tc\nd\te\tf\ng\th\ti"),
+            DetectionOutcome::Recognized {
+                format: UserFacingFormat::Tsv,
+                confidence: Confidence::High,
+                dims: None,
+            },
+            "§1.2/P3.29: a consistent tab body detects as TSV — delimiter-determined, content over name"
+        );
+    }
+
+    // §6.4.1 unit (G15): a semicolon-CSV (European Excel) is Recognized as CSV (a semicolon winner → CSV, P3.28).
+    #[test]
+    fn detect_recognizes_semicolon_csv_as_csv() {
+        assert_eq!(
+            detect(b"name;price;note\nfoo;1,50;cheap\nbar;2,30;fair"),
+            DetectionOutcome::Recognized {
+                format: UserFacingFormat::Csv,
+                confidence: Confidence::High,
+                dims: None,
+            },
+            "§1.2/P3.29: a consistent semicolon body detects as CSV"
+        );
+    }
+
+    // §6.4.1 unit (G15): confirmed TEXT with NO consistent delimiter (prose) is Uncertain — text but not a
+    // supported P3 delimited format — never a false CSV/TSV and never extension-fallback (§1.2 outcome rules).
+    #[test]
+    fn detect_maps_non_delimited_text_to_uncertain() {
+        assert_eq!(
+            detect(b"the quick brown fox jumps over the lazy dog\nand keeps on running here"),
+            DetectionOutcome::Uncertain { best_guess: None },
+            "§1.2/P3.29: text with no consistent delimiter is Uncertain, not a false CSV/TSV guess"
         );
     }
 }
