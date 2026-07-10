@@ -38,7 +38,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) are authored as contracts before the P3.46 orchestrator behaviour + the C1/C2a/C3/C4/C5/C6/C7/C8/C13 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so their as-yet-unwired methods are dead in the production build until consumed (`RunRegistry::has_active_run` is already consumed by the §7.1.1 `converter_is_busy` from P2.55, with `register`/`cancel`/`finish` staying dead until P3.46)."
+        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) are authored as contracts before the P3.46 orchestrator behaviour + the C1/C2a/C3/C4/C5/C6/C7/C8/C13 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so their as-yet-unwired methods are dead in the production build until consumed (`RunRegistry::has_active_run` is already consumed by the §7.1.1 `converter_is_busy` from P2.55, with `register`/`cancel`/`finish` staying dead until P3.46). The P3.25 §2.6.4 cleanup-honesty leg (ResidueRecord/ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) is likewise dead until the P3.50 §1.12 projection + the P3.38 write-sequence consume it."
     )
 )]
 
@@ -463,6 +463,145 @@ pub enum ItemOutcome {
     Skipped { reason: SkipReason },
     /// User-cancelled; nothing written (§1.7/§1.11). Not an `ErrorKind` (§0.4.3 note) — payload-free.
     Cancelled,
+}
+
+// ─── §2.6.4 cleanup-failure honesty — the `CleanupResidue` surfacing leg (P3.25) ─────────────────────
+// [Build-Session-Entscheidung: P3.25] Homed HERE in crate::orchestrator (the §1.12 result family), NOT in
+// crate::run: this leg PRODUCES the orchestrator wire type `CleanupResidue` and records the real residue
+// `PathBuf` for `RunResultPaths.item_residues`, but `crate::run` is a §0.7 tier-2 domain-only LEAF (it
+// depends DOWN only on crate::domain, never UP on orchestrator, run/mod.rs §0.7 note) — so the residue→
+// `RunResult` mapping cannot live there without an illegal upward edge. The division of labour: `crate::run`'s
+// `cleanup_item`/`cleanup_run` (P3.22) surface the RAW residue paths on the cleanup exit paths; THIS leg maps
+// each into the honest §1.12 projection — the wire `CleanupResidue` (display-only) + the off-wire real
+// `PathBuf` + the per-item §2.8.2 reason override + the "With residue" batch tail. The §2.8.2 strings it reads
+// (the `CleanupResidue` catalog row + `WITH_RESIDUE_TAIL`) are crate::outcome's (P3.68). It is a pure primitive
+// here — the P3.50 §1.12 run-end projection and the P3.38 write-sequence CALL it, so it is dead in the
+// production build until then (the module-level dead_code expect covers it); unit-tested in
+// `cleanup_honesty_tests`. (Per the conflict order spec §0.7 > code doc-comment, this corrects the stale
+// forward-reference in `crate::outcome`'s catalog doc, which said `crate::run` reads the row — fixed in the
+// same commit, DoD (b) / G68.)
+
+/// One item's §2.6.4 cleanup-incomplete record — the item + the REAL residue `PathBuf` (retained for
+/// [`RunResultPaths::item_residues`], the C9 `OpenTarget::Residue(item)` reveal target). The wire
+/// [`CleanupResidue`] (display-only, folded into [`RunResult::cleanup_incomplete`]) is DERIVED on demand via
+/// [`ResidueRecord::warning`] — NOT stored — so the SINGLE source of truth is the real path and the wire
+/// display can never desync from the off-wire path it names (§2.10.1 / 2026-07-06 core-owned-paths ruling).
+///
+/// [Build-Session-Entscheidung: P3.25] Core-INTERNAL (no `serde`/`specta`) — it holds the off-wire real
+/// `PathBuf`; only its DERIVED `warning` half ever crosses IPC. `Debug, Clone, PartialEq, Eq` (the
+/// internal-type set, like [`RunResultPaths`]); NOT `Copy` (owns a `PathBuf`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResidueRecord {
+    /// The item whose cleanup did not complete (§2.6.4) — the [`RunResultPaths::item_residues`] key and the
+    /// derived wire [`CleanupResidue::item`].
+    pub item: ItemId,
+    /// The REAL residue `PathBuf` — the SINGLE source of both the off-wire `item_residues` entry AND (via
+    /// [`ResidueRecord::warning`]) the wire `residue_display`. Never crosses the wire directly (§2.10.1).
+    pub real_path: PathBuf,
+}
+
+impl ResidueRecord {
+    /// Record one item whose cleanup did not complete (§2.6.4), retaining the byte-verbatim real residue path
+    /// as the single source of truth (the wire display is derived, not stored — see [`ResidueRecord::warning`]).
+    /// [Build-Session-Entscheidung: P3.25]
+    pub fn new(item: ItemId, residue: PathBuf) -> Self {
+        Self {
+            item,
+            real_path: residue,
+        }
+    }
+
+    /// The DERIVED wire [`CleanupResidue`] for this record — `residue_display` is the §2.10.1 last-step
+    /// `to_string_lossy` of the real residue path (the ONLY place the summary names a residue, never a
+    /// re-submittable path). Derived on demand from `real_path`, so the wire display can NEVER desync from the
+    /// off-wire path it names. Panic-free (a single lossy projection, no fallibility).
+    /// [Build-Session-Entscheidung: P3.25]
+    pub fn warning(&self) -> CleanupResidue {
+        CleanupResidue {
+            item: self.item,
+            residue_display: self.real_path.to_string_lossy().into_owned(),
+        }
+    }
+}
+
+/// The §2.6.4 terminal disposition of an item whose cleanup left residue — which of §2.6.4's three cases
+/// applies, so the §1.12 projection carries the item HONESTLY (never a silent clean success). The residue
+/// itself is surfaced IDENTICALLY in all three cases (a [`ResidueRecord`] folded into `cleanup_incomplete` +
+/// the "With residue" batch tail); the disposition governs only the per-item `reason` OVERRIDE
+/// ([`residue_item_reason`]):
+///
+/// - `Succeeded` (case 1) and `Cancelled` (case 3): the item's terminal `state` already carries the meaning,
+///   so the residue does NOT rewrite the per-item reason — it is surfaced via `cleanup_incomplete` (+ the tail)
+///   alone. The two coincide in the reason override **by design, not by accident**: `state` (not the message)
+///   is what distinguishes a kept success from a stopped cancel, and neither is a failure, so neither adopts
+///   the §2.8.2 `CleanupResidue` *failure* string.
+/// - `Failed` (case 2): the item is reported `Failed` WITH the combined §2.8.2 `CleanupResidue` message
+///   ("This file couldn't be converted, and a temporary file may remain at {path}.") — never a clean success.
+///
+/// [Build-Session-Entscheidung: P3.25] The three variants mirror the item's terminal `JobState` (§1.9) — the
+/// state the residue attaches to — so a `ResidueDisposition::Failed` names exactly the `JobState::Failed` case.
+/// `Debug, Clone, Copy, PartialEq, Eq` (a fieldless enum, so `Copy` is free); NO wire derives (core-internal —
+/// it drives the projection, never crosses IPC). The exhaustive match in [`residue_item_reason`] (G4/G14) makes
+/// a fourth §2.6.4 case a COMPILE-TIME decision, so the honesty rule can never silently fall behind the spec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResidueDisposition {
+    /// §2.6.4 case 1 — the output published but its temp couldn't be removed; the item stays `Succeeded`.
+    Succeeded,
+    /// §2.6.4 case 2 — the item failed AND its partial couldn't be cleaned; reported `Failed` with residue.
+    Failed,
+    /// §2.6.4 case 3 — a cancelled item's publish temp survived the §1.7 group-kill wait; stays `Cancelled`.
+    Cancelled,
+}
+
+/// The per-item §2.8.2 `reason` OVERRIDE a residue imposes for the given §2.6.4 disposition, read from the
+/// crate::outcome catalog (P3.68): the combined `CleanupResidue` message for `Failed` (never a clean
+/// success — §2.6.4 case 2), and `None` for `Succeeded`/`Cancelled` (the terminal `state` carries the meaning;
+/// the residue is surfaced via `cleanup_incomplete` + the batch tail). `residue_display` is the same §2.10.1
+/// display string carried in the item's [`ResidueRecord::warning`], substituted into the row's `{path}` slot.
+/// Because the §2.8.2 `CleanupResidue` row IS homed ([`crate::outcome::conversion_failure`] returns `Some` for
+/// it), `Failed` always yields `Some`; the exhaustive match forces a fourth §2.6.4 case to decide its reason
+/// explicitly. Panic-free. [Build-Session-Entscheidung: P3.25]
+pub fn residue_item_reason(
+    disposition: ResidueDisposition,
+    residue_display: &str,
+) -> Option<OutcomeMsg> {
+    match disposition {
+        ResidueDisposition::Failed => {
+            crate::outcome::conversion_failure(ConversionErrorKind::CleanupResidue, residue_display)
+        }
+        ResidueDisposition::Succeeded | ResidueDisposition::Cancelled => None,
+    }
+}
+
+/// Split a run's §2.6.4 residue records into the §1.12 projection's two honest halves: the WIRE
+/// `Vec<CleanupResidue>` for [`RunResult::cleanup_incomplete`] and the OFF-WIRE `BTreeMap<ItemId, PathBuf>` for
+/// [`RunResultPaths::item_residues`] — the ONE place the §2.10.1 wire↔off-wire split is applied, so the P3.50
+/// projection cannot leak a residue path onto the wire. Order-preserving for the wire list (it mirrors what the
+/// user sees); a repeated `ItemId` keeps the LAST real path in the off-wire map while retaining EVERY warning.
+/// Panic-free. [Build-Session-Entscheidung: P3.25]
+pub fn split_residue_records(
+    records: Vec<ResidueRecord>,
+) -> (Vec<CleanupResidue>, BTreeMap<ItemId, PathBuf>) {
+    let mut warnings = Vec::with_capacity(records.len());
+    let mut real_paths = BTreeMap::new();
+    for record in records {
+        warnings.push(record.warning());
+        real_paths.insert(record.item, record.real_path);
+    }
+    (warnings, real_paths)
+}
+
+/// Append the §2.8.2 "With residue" tail to a §1.12 batch-summary line iff the run left any residue
+/// (`has_residue` = `cleanup_incomplete` non-empty) — the run-level honesty that "temporary files may remain"
+/// is always stated, never dropped (§2.6.4, esp. the case-3 wedged-cancel gap). Reads crate::outcome's
+/// [`WITH_RESIDUE_TAIL`](crate::outcome::WITH_RESIDUE_TAIL) (P3.68); a residue-free run returns the line
+/// verbatim. Panic-free. [Build-Session-Entscheidung: P3.25]
+pub fn append_residue_tail(summary_line: String, has_residue: bool) -> String {
+    if has_residue {
+        format!("{summary_line} {}", crate::outcome::WITH_RESIDUE_TAIL)
+    } else {
+        summary_line
+    }
 }
 
 // ─── §0.4.2 ConversionEvent — the C6 run-telemetry Channel<ConversionEvent> payload (P2.37) ──────────
@@ -4698,6 +4837,201 @@ mod tests {
         assert!(
             flag.is_ready(),
             "§7.8.1: the ready flag is monotonic — a repeat mark_ready keeps it ready (never resets)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod cleanup_honesty_tests {
+    //! §6.4.1 unit (G15) for the P3.25 §2.6.4 cleanup-failure honesty leg — the `CleanupResidue` surfacing
+    //! that guarantees a cleanup which could not complete is NEVER a silent clean success. This is pure
+    //! projection logic (no FS, no engine); the real cleanup-on-fault fault-injection is the G31 hosted
+    //! integration assertion (P3.71's temp-ownership box). Here we pin the §2.10.1 wire↔off-wire split, the
+    //! three §2.6.4 dispositions, and the §2.8.2 "With residue" batch tail.
+    use super::*;
+    use std::path::PathBuf;
+
+    // §6.4.1 (G15): `ResidueRecord::new` projects the display string (§2.10.1 last-step `to_string_lossy`) onto
+    // the wire warning while RETAINING the real `PathBuf` byte-verbatim off-wire (the 2026-07-06 core-owned-
+    // paths split) — the real path is never mutated into its lossy display.
+    #[test]
+    fn residue_record_projects_display_and_retains_real_path() {
+        let item = ItemId::from_index(0);
+        let residue = PathBuf::from("/src/.convertia-i-r-j.tsv.part");
+        let record = ResidueRecord::new(item, residue.clone());
+
+        assert_eq!(
+            record.warning(),
+            CleanupResidue {
+                item,
+                residue_display: residue.to_string_lossy().into_owned(),
+            },
+            "§2.6.4/§2.10.1: the DERIVED wire CleanupResidue carries the item + the last-step lossy display of the residue"
+        );
+        assert_eq!(
+            record.real_path, residue,
+            "§2.10.1: the real residue PathBuf is retained byte-verbatim off-wire (RunResultPaths.item_residues), never re-derived from the lossy display"
+        );
+    }
+
+    // §6.4.1 (G15): the §2.10.1 lossy-vs-real distinction is REAL, not vacuous — a non-UTF-8 residue path keeps
+    // its exact bytes in `real_path` while `residue_display` is the U+FFFD-replaced lossy form. Unix-only (only
+    // there can a `PathBuf` hold non-UTF-8 bytes portably); the cross-platform contract (display =
+    // `to_string_lossy`, real = verbatim) is already pinned by the test above.
+    #[cfg(unix)]
+    #[test]
+    fn residue_record_display_is_lossy_while_real_path_is_byte_exact() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let raw_bytes: &[u8] = b"/src/.conv-\xFF\xFE.part";
+        let residue = PathBuf::from(OsStr::from_bytes(raw_bytes));
+        let record = ResidueRecord::new(ItemId::from_index(3), residue.clone());
+
+        assert_eq!(
+            record.real_path.as_os_str().as_bytes(),
+            raw_bytes,
+            "§2.10.1: the invalid bytes survive verbatim in the real residue path"
+        );
+        assert!(
+            record.warning().residue_display.contains('\u{FFFD}'),
+            "§2.10.1: the DERIVED display is the LOSSY projection (invalid bytes → U+FFFD), distinct from the byte-exact real path"
+        );
+    }
+
+    // §6.4.1 (G15): the §2.6.4 THREE-CASE honesty — only `Failed` (case 2) rewrites the per-item reason to
+    // the combined §2.8.2 `CleanupResidue` message ("never a clean success"); `Succeeded` (case 1) and
+    // `Cancelled` (case 3) impose NO reason override (the terminal state carries the meaning; the residue rides
+    // `cleanup_incomplete` + the tail). The machine-checkable "never a silent clean success" guard.
+    #[test]
+    fn residue_item_reason_rewrites_only_the_failure_case() {
+        let display = "/src/.residue.tsv.part";
+
+        let failed = residue_item_reason(ResidueDisposition::Failed, display);
+        assert_eq!(
+            failed,
+            crate::outcome::conversion_failure(ConversionErrorKind::CleanupResidue, display),
+            "§2.6.4 case 2: Failed yields exactly the §2.8.2 CleanupResidue catalog message — no re-authored string"
+        );
+        assert!(
+            matches!(
+                &failed,
+                Some(OutcomeMsg::Failure { kind: ConversionErrorKind::CleanupResidue, text })
+                    if text.contains(display) && !text.contains("{path}")
+            ),
+            "§2.6.4/§2.8.2: a failed-with-residue item is Failed(CleanupResidue) with the {{path}} slot substituted — never a clean success"
+        );
+
+        assert_eq!(
+            residue_item_reason(ResidueDisposition::Succeeded, display),
+            None,
+            "§2.6.4 case 1: a success-with-residue item keeps its Succeeded state — no failure reason override"
+        );
+        assert_eq!(
+            residue_item_reason(ResidueDisposition::Cancelled, display),
+            None,
+            "§2.6.4 case 3: a cancelled-with-residue item stays Cancelled — no failure reason override"
+        );
+    }
+
+    // §6.4.1 (G15): `split_residue_records` is the ONE §2.10.1 wire↔off-wire fork — the wire list mirrors the
+    // records in order (what the user sees), the off-wire map keys each item to its REAL `PathBuf`.
+    #[test]
+    fn split_residue_records_forks_wire_and_off_wire() {
+        let item0 = ItemId::from_index(0);
+        let item1 = ItemId::from_index(1);
+        let path0 = PathBuf::from("/a/.x.part");
+        let path1 = PathBuf::from("/b/.y.part");
+        let records = vec![
+            ResidueRecord::new(item0, path0.clone()),
+            ResidueRecord::new(item1, path1.clone()),
+        ];
+
+        let (warnings, real_paths) = split_residue_records(records);
+
+        assert_eq!(
+            warnings,
+            vec![
+                CleanupResidue {
+                    item: item0,
+                    residue_display: path0.to_string_lossy().into_owned(),
+                },
+                CleanupResidue {
+                    item: item1,
+                    residue_display: path1.to_string_lossy().into_owned(),
+                },
+            ],
+            "§1.12: cleanup_incomplete mirrors the records in order (display-only)"
+        );
+        assert_eq!(
+            real_paths.get(&item0),
+            Some(&path0),
+            "§0.4.4: item_residues keys the real residue PathBuf for the C9 reveal"
+        );
+        assert_eq!(
+            real_paths.get(&item1),
+            Some(&path1),
+            "§0.4.4: item_residues keys the real residue PathBuf for the C9 reveal"
+        );
+        assert_eq!(
+            real_paths.len(),
+            2,
+            "§0.4.4: one off-wire entry per distinct item"
+        );
+    }
+
+    // §6.4.1 (G15): a repeated `ItemId` keeps the LAST real path off-wire while retaining EVERY warning (the
+    // wire list is what the user sees; the C9 reveal resolves to the latest recorded residue for that item).
+    #[test]
+    fn split_residue_records_dedups_off_wire_but_keeps_every_warning() {
+        let item = ItemId::from_index(7);
+        let first = PathBuf::from("/a/.first.part");
+        let last = PathBuf::from("/a/.last.part");
+        let records = vec![
+            ResidueRecord::new(item, first.clone()),
+            ResidueRecord::new(item, last.clone()),
+        ];
+
+        let (warnings, real_paths) = split_residue_records(records);
+
+        assert_eq!(
+            warnings.len(),
+            2,
+            "§1.12: every residue warning is retained on the wire list"
+        );
+        assert_eq!(
+            real_paths.len(),
+            1,
+            "§0.4.4: the off-wire map is keyed by ItemId — one entry per item"
+        );
+        assert_eq!(
+            real_paths.get(&item),
+            Some(&last),
+            "§0.4.4: the LAST recorded real residue path wins for the reveal"
+        );
+    }
+
+    // §6.4.1 (G15): the §2.8.2 "With residue" tail is appended IFF the run left residue — the run-level honesty
+    // that residue may remain (esp. the §2.6.4 case-3 wedged-cancel gap). A residue-free run's line is returned
+    // verbatim (no spurious tail).
+    #[test]
+    fn append_residue_tail_fires_only_with_residue() {
+        let base = crate::outcome::BatchSummary::Cancelled { ok: 2 }.text();
+
+        let with = append_residue_tail(base.clone(), true);
+        assert_eq!(
+            with,
+            format!("{base} {}", crate::outcome::WITH_RESIDUE_TAIL),
+            "§2.6.4 case 3 / §2.8.2: a cancelled run with a wedged-cancel residue gets the 'With residue' tail"
+        );
+        assert!(
+            with.ends_with(crate::outcome::WITH_RESIDUE_TAIL),
+            "§2.8.2: the tail is the final clause of the summary line"
+        );
+
+        assert_eq!(
+            append_residue_tail(base.clone(), false),
+            base,
+            "§2.8.2: a residue-free run's summary line is unchanged — no spurious tail"
         );
     }
 }

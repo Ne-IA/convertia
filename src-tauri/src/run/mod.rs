@@ -21,7 +21,9 @@
 //!    (built below)**: `cleanup_item` removes one item's `.part` on the failure / out-of-disk / link-fallback
 //!    exit paths; `cleanup_run` removes the run's OWN-prefix temps in every recorded `final_dir` then tears
 //!    down the `run-<RunId>/` dir, returning the residue paths it could not remove. The `CleanupResidue`
-//!    honesty leg — mapping that residue into `RunResult.cleanup_incomplete` (§2.6.4) — is **P3.25**.
+//!    honesty leg — mapping that raw residue into `RunResult.cleanup_incomplete` (§2.6.4) — is **P3.25**, homed
+//!    in `crate::orchestrator` (the §1.12 result family): this leaf surfaces the RAW paths, orchestrator maps
+//!    them into the wire `CleanupResidue` (a tier-2 leaf cannot produce the tier-1 orchestrator type, §0.7).
 //!  - `sweep_stale` — startup sweep, the held lock as the SOLE delete gate, non-blocking try-lock
 //!    (§2.6.3) — **P3.23 (built below)**: globs `convertia/scratch/<*>.<*>/run-*` across all instance dirs,
 //!    probes each `run-<RunId>/.lock` via the [`crate::platform`] non-blocking try-lock, and removes only DEAD

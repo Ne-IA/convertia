@@ -30,8 +30,9 @@
 //! conversion. (The `error_kind_is_the_conversion_error_kind_alias` test below pins the alias this rests on.)
 //!
 //! [Build-Session-Entscheidung: P3.1.3] `CleanupResidue` is NOT authored here. The
-//! `CleanupResidue { item: ItemId, residue_path }` STRUCT is a §1.12 result-family type homed in
-//! `crate::orchestrator` (tier 1, co-homed with `RunResult.cleanup_incomplete`, P2.12); `crate::outcome`
+//! `CleanupResidue { item: ItemId, residue_display }` STRUCT is a §1.12 result-family type homed in
+//! `crate::orchestrator` (tier 1, co-homed with `RunResult.cleanup_incomplete`, P2.12; P3.76 re-typed its
+//! path field `residue_path` → the display-only `residue_display: String`); `crate::outcome`
 //! (tier 2) cannot reference a tier-1 type (§0.7), so its "string home" role is only the §2.8.2 catalog
 //! ROW for the existing `ConversionErrorKind::CleanupResidue` variant + the §2.6.4 "With residue" tail —
 //! both P3.68 strings, surfaced by P3.25.
@@ -345,8 +346,10 @@ pub fn read_failure_to_error_kind(failure: ReadFailure) -> ConversionErrorKind {
 // ─── §2.8.2 the conversion-outcome message catalog — the single home of the canonical English strings ──
 /// The §2.8.2 canonical-English message TEMPLATE for a conversion-outcome kind — the raw string with any
 /// `{detected}` / `{platform}` / `{path}` slot still literal. This is the **single home** of the §2.8.2
-/// strings (§2.8 owns the set): `crate::orchestrator` (P3.46) maps an `ErrorKind` into it, `crate::run` (P3.25)
-/// reads the `CleanupResidue` row, §1.12 (P3.50) reads it for the summary projection, and the UI (P4.69/P8.19)
+/// strings (§2.8 owns the set): `crate::orchestrator` (P3.46) maps an `ErrorKind` into it, its §2.6.4
+/// cleanup-honesty leg (P3.25) reads the `CleanupResidue` row (homed in `crate::orchestrator`, not
+/// `crate::run` — the tier-2 domain-only leaf cannot produce the orchestrator `CleanupResidue`/`RunResult`,
+/// §0.7), §1.12 (P3.50) reads it for the summary projection, and the UI (P4.69/P8.19)
 /// render the resolved text verbatim — no consumer ever re-authors a string. Tone: plain, calm, never blaming,
 /// never technical (SSOT *Fail clearly*); English-only (G57).
 ///
