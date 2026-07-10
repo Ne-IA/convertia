@@ -43,7 +43,7 @@
 )]
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -53,10 +53,10 @@ use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
 use crate::domain::{
-    CollectedSet, CollectedSetId, CollectingId, DestinationChoice, DestinationId, DivertReason,
-    DroppedItem, FrozenCollectedSet, IntakeOrigin, ItemId, ItemIdSpace, ItemSpaceExhausted,
-    JobStage, OptionValues, OutputPlan, ReadFailure, RerunPrompt, RunId, SkipReason, Target,
-    TargetId, UserFacingFormat,
+    CollectedSet, CollectedSetId, CollectingId, DestinationChoice, DestinationId, DetectionOutcome,
+    DivertReason, DroppedItem, FrozenCollectedSet, IntakeOrigin, ItemId, ItemIdSpace, ItemPaths,
+    ItemSpaceExhausted, JobStage, OptionValues, OutputPlan, ReadFailure, RerunPrompt, RunId,
+    SkipReason, SkippedItem, Target, TargetId, UserFacingFormat,
 };
 use crate::fs_guard::FileIdentity;
 use crate::outcome::{ConversionErrorKind, IpcError, OutcomeMsg};
@@ -1437,10 +1437,13 @@ impl FrontendReady {
 ///    `resolve_identity` producer that yields each identity — P3.1.1 surface / P3.6 body) / P2.76 (the pure de-dup
 ///    fold over those identities, [`dedup_by_identity`]) / P3.7 (the real-FS composition that resolves each
 ///    candidate then folds — [`resolve_and_dedup`], the spine's step-3 call).
-/// 4. **Assign `ItemId`** over the single id space (eligible + skipped, never re-indexed, §0.6
-///    invariant 6) → P2.75.
+/// 4. **Partition + assign `ItemId` + materialise** — the resolved + de-duped survivors are partitioned by
+///    detection verdict (eligible `DroppedItem` / pre-flight `SkippedItem`, P2.73) and each is assigned one
+///    `ItemId` over the single id space (eligible + skipped, never re-indexed, §0.6 invariant 6), then the
+///    whole set is materialised EAGERLY and ONCE into the immutable [`FrozenSnapshot`] → P2.75 (the id space) /
+///    P3.32 (the [`freeze_snapshot`] freeze-point that assembles it).
 /// 5. **Group** the frozen snapshot into the §0.6 `CollectedSet` variant (`Single` / `Mixed` /
-///    `Unsupported` / `Uncertain` / `Empty`, §1.3) → P3 (`group()`).
+///    `Unsupported` / `Uncertain` / `Empty`, §1.3) → P3.49 (`group()`).
 ///
 /// The §2.4 idle-vs-in-flight gating is **upstream-delegated, NOT a wrapper around this funnel** (Reading B,
 /// P2.72): the in-flight **refuse-busy** is owned by the §7.1.1 PRIMARY `forward_launch_intake` funnel
@@ -1467,9 +1470,10 @@ impl FrontendReady {
 #[must_use]
 pub fn ingest(paths: Vec<PathBuf>, origin: IntakeOrigin) -> CollectedSet {
     // §2.4.1 freeze spine: walk (P2.64) → detect (P3) → resolve-identity (P3, produces the P2.74
-    // `FileIdentity`) + de-dup (P2.76) → assign
-    // `ItemId` (P2.75) → group (P3). While those stages are unbuilt the frozen snapshot is empty, so the
-    // §1.3 projection of a no-eligible-source freeze is the §0.6 zero-collection `Empty` (§0.4.1 / §5.4).
+    // `FileIdentity`) + de-dup (P2.76) → freeze/materialise the immutable snapshot + assign
+    // `ItemId` (P3.32 [`freeze_snapshot`] / P2.75) → group (P3.49). While those stages are unwired here the
+    // frozen snapshot is empty, so the §1.3 projection of a no-eligible-source freeze is the §0.6
+    // zero-collection `Empty` (§0.4.1 / §5.4).
     let _ = (paths, origin);
     CollectedSet::Empty {
         skipped: Vec::new(),
@@ -1802,15 +1806,19 @@ fn windows_attr_hidden(_entry: &walkdir::DirEntry) -> bool {
 /// `Eq` ignores `canonical_path`, so two rows with different first-seen paths but the same identity would
 /// compare equal). The §6.4.1 tests assert on the fields (`.id` / `.identity.canonical_path` / `.payload`)
 /// individually instead. Core-INTERNAL (never crosses IPC) → no `serde`/`specta`.
+// [Test-Change: P3.32 — old-obsolete+new-correct, §2.4.1] `expect`→`allow` (a production lint change, NOT a
+// test suppression; cf. P3.7): P3.32's `freeze_snapshot` (below) now destructures this survivor row, so the
+// P2.76 assertion that it is DEAD would error as unfulfilled — but `freeze_snapshot` is itself unwired until
+// P3.49, so the row's dead-ness is ambiguous and `allow` (permissive) is the correct attribute.
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
         reason = "P2.76's §2.3.2 de-dup fold `dedup_by_identity` yields `DedupedMember<P>` (the id + \
-                  retained FileIdentity + payload survivor row). Its production reader is the `ingest` \
-                  freeze funnel's spine, wired at P3.49 (which resolves each candidate's FileIdentity, folds \
-                  it in, then projects each survivor into a §0.6 DroppedItem); dead in the production build \
-                  pending that wiring, constructed by the in-module dedup_tests below."
+                  retained FileIdentity + payload survivor row). Referenced by P3.32's `freeze_snapshot` \
+                  (which resolves+de-dups, folds each survivor in, then projects it into a §0.6 DroppedItem / \
+                  SkippedItem), still unwired until the P3.49 spine — so it is dead-at-runtime but no longer \
+                  statically unused; the in-module dedup_tests construct it directly."
     )
 )]
 #[derive(Debug)]
@@ -1885,14 +1893,19 @@ fn dedup_by_identity<P>(
 /// §1.1 `Unreadable` [`WalkSkip`]s WITHOUT an `ItemId` — the P3.49 spine mints their ids from the same cursor
 /// after the survivors (the P2.76 `&mut ItemIdSpace` contract) — so this step never silently drops a candidate
 /// (§1.1: recorded, never dropped) and never lets a single vanished file sink the ingest.
+// [Test-Change: P3.32 — old-obsolete+new-correct, §2.4.1] `expect`→`allow` (a production lint change, NOT a
+// test suppression; cf. P3.7): P3.32's `freeze_snapshot` (below) now destructures this result (`survivors` /
+// `unresolved`), so the P3.7 assertion that it is DEAD would error as unfulfilled — but `freeze_snapshot` is
+// itself unwired until P3.49, so its dead-ness is ambiguous and `allow` (permissive) is correct.
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
         reason = "P3.7's real-FS resolve+de-dup step yields `ResolvedDedup<P>` (the first-seen survivors + the \
-                  unresolved read-failure skips). Its production reader is the `ingest` freeze funnel's spine, \
-                  wired at P3.49 (the CSV→TSV walking skeleton); dead in the production build pending that \
-                  wiring, constructed by the in-module resolve_dedup tests below."
+                  unresolved read-failure skips). Referenced by P3.32's `freeze_snapshot` (which materialises \
+                  the §2.4.1 frozen snapshot from it), still unwired until the P3.49 spine — so it is \
+                  dead-at-runtime but no longer statically unused; the in-module resolve_dedup tests construct \
+                  it directly."
     )
 )]
 #[derive(Debug)]
@@ -1921,14 +1934,18 @@ struct ResolvedDedup<P> {
 ///
 /// A candidate whose `resolve_identity` FAILS is surfaced on `unresolved` as an `Unreadable` [`WalkSkip`] and
 /// the de-dup proceeds over the resolvable rest — see the `Err` arm.
+// [Test-Change: P3.32 — old-obsolete+new-correct, §2.4.1] `expect`→`allow` (a production lint change, NOT a
+// test suppression; cf. P3.7): P3.32's `freeze_snapshot` (below) now CALLS this step, so the P3.7 assertion
+// that it is DEAD would error as unfulfilled — but `freeze_snapshot` is itself unwired until P3.49, so its
+// dead-ness is ambiguous and `allow` (permissive) is correct.
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "P3.7 authors the §2.4.1 freeze-spine step-3 real-FS resolve+de-dup step. Its production \
-                  caller is the `ingest` funnel's spine, wired at P3.49 (the CSV→TSV walking skeleton); dead \
-                  in the production build pending that wiring, exercised by the in-module resolve_dedup tests \
-                  below — the same per-fn interface-shell attribute `dedup_by_identity` (P2.76) carries."
+        reason = "P3.7 authors the §2.4.1 freeze-spine step-3 real-FS resolve+de-dup step. Called by P3.32's \
+                  `freeze_snapshot` (the §2.4.1 freeze-point that materialises the frozen snapshot from its \
+                  survivors), still unwired until the P3.49 spine — so it is dead-at-runtime but no longer \
+                  statically unused; the in-module resolve_dedup tests exercise it directly."
     )
 )]
 fn resolve_and_dedup<P>(
@@ -1964,6 +1981,213 @@ fn resolve_and_dedup<P>(
         survivors,
         unresolved,
     })
+}
+
+/// A single **detected** §1.1 walk candidate feeding the §2.4.1 freeze ([`freeze_snapshot`], P3.32) — one
+/// file the §1.1 walk (P2.64) yielded and §1.2 detection (P3.26–P3.29) classified, PRE-freeze: no `ItemId`
+/// yet, not yet resolved to a `FileIdentity` (§2.3) nor de-duplicated (§2.3.2). The freeze folds it in —
+/// resolve + de-dup its `raw_path` (P3.7), mint its single-space `ItemId` (P2.75), and PARTITION it by the
+/// P2.73 intake rule: a `Recognized` verdict becomes an eligible §0.6 `DroppedItem`, an ineligible one
+/// (`Empty`/`Unreadable`/`UnsupportedType`/`Uncertain`) a pre-flight `SkippedItem`.
+///
+/// [Build-Session-Entscheidung: P3.32] `size_bytes` + `rel_path_display` are freeze INPUTS (read/computed
+/// UPSTREAM at the P3.49 walk/detect read — which already stats the file and holds the §2.7 root context),
+/// NOT re-derived here: the freeze does no second stat and owns no §2.7 root logic; it merely RECORDS them
+/// into the frozen `DroppedItem` (`DroppedItem.size_bytes` doc: "recorded at the §2.4 freeze" = the value the
+/// freeze lands in the item). The lossy §2.10.1 `display_name` (basename) / `source_display` (path)
+/// projections, by contrast, ARE produced here from `raw_path` (the freeze is the core-side birthplace of the
+/// wire DTOs). The freeze owns the STRUCTURAL snapshot (dedup + classification + the single id space), not the
+/// §2.7 subtree / §1.10 sizing.
+struct DetectedCandidate {
+    /// The path as the OS handed it at drop/pick (§2.10.1) — the resolve input + the off-wire
+    /// `ItemPaths.raw_path`, and the source of the lossy `display_name` / `source_display`.
+    raw_path: PathBuf,
+    /// The single §1.2 detection verdict (P3.26–P3.29) — the freeze partition key (via `skip_reason`, P2.16).
+    detected: DetectionOutcome,
+    /// The resolved file size in bytes (read upstream at the detect stat) — recorded into `DroppedItem.size_bytes`.
+    size_bytes: u64,
+    /// The §2.7 root-relative subpath preview for a folder-drop member (upstream; `None` for a top-level item).
+    rel_path_display: Option<String>,
+}
+
+/// The §2.4.1 **frozen snapshot** ([`freeze_snapshot`], P3.32) — the eager, once-materialised, IMMUTABLE
+/// image of the drop the run iterates and NEVER re-derives (the structural T8 no-self-feeding defence,
+/// §2.4.2 defence 1: the walk already happened and produced a fixed list, so a file written into a source
+/// folder AFTER the freeze is simply not in it). Carries the §0.6-invariant-6 SINGLE id space split into two
+/// id-DISJOINT views — the eligible `items` (`DroppedItem`) and the ineligible `skipped` (`SkippedItem`) —
+/// plus the OFF-WIRE per-item `item_paths` table (§0.4.4 / §2.10.1, keyed by `ItemId` over BOTH views) and
+/// the retained dropped `roots` (§1.1 / §2.7, P2.66). The P3.49 ingest spine calls this, then projects the
+/// snapshot through §1.3 `group()` into the wire `CollectedSet` and registers a `FrozenCollectedSet` (P3.76)
+/// — this box homes the snapshot primitive; P3.49 wires it.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P3.32 authors the §2.4.1 frozen snapshot (the eager immutable Vec<DroppedItem> \
+                  materialisation). Its production reader is the `ingest` funnel's spine, wired at P3.49 (the \
+                  CSV→TSV walking skeleton — which projects it through §1.3 group() into the wire CollectedSet); \
+                  its fields are read only by the in-module freeze_tests until then, so it is dead in the \
+                  production build — the same interface-shell attribute IntakeWalk (P2.66) / ResolvedDedup (P3.7) \
+                  carry."
+    )
+)]
+#[derive(Debug)]
+struct FrozenSnapshot {
+    /// The eligible frozen members (§2.4) — the immutable `Vec<DroppedItem>` the run iterates, in first-seen
+    /// (walk) order, ids drawn from the single space (§0.6 invariant 6).
+    items: Vec<DroppedItem>,
+    /// The id-disjoint ineligible view (§0.6 invariant 6) — the pre-flight `Skipped`s: the detect-ineligible
+    /// (`Empty`/`Unreadable`/`UnsupportedType`/`Uncertain`) survivors AND the §1.1 read-failure skips
+    /// (walk-level P2.67 + resolve-time P3.7 `unresolved`), the read-failure ids minted AFTER the survivors.
+    skipped: Vec<SkippedItem>,
+    /// The §0.4.4 OFF-WIRE per-item path table (§2.10.1) — the real `raw_path`/`resolved_path` keyed by
+    /// `ItemId` over the single space, so BOTH the eligible and the skipped items resolve their real path.
+    item_paths: BTreeMap<ItemId, ItemPaths>,
+    /// The dropped root(s) retained VERBATIM (§1.1 / §2.7, P2.66) — the §2.7 subtree / open-folder anchor.
+    roots: Vec<PathBuf>,
+}
+
+/// **The §2.4.1 freeze-point (P3.32)** — materialise the §1.1 walk's DETECTED candidates EAGERLY and ONCE
+/// into an IMMUTABLE [`FrozenSnapshot`] (§2.4). This is the structural T8 no-self-feeding defence: the drop
+/// becomes a fixed `Vec` here and the run iterates that snapshot, NEVER re-reading the directory (§2.4.2
+/// defence 1), so an output landing in a source folder afterward is invisible to the run.
+///
+/// The freeze folds the three freeze-spine steps this box owns the ASSEMBLY of (the walk P2.64 and detection
+/// P3.26–P3.29 run UPSTREAM; the end-to-end `ingest` wiring is P3.49):
+/// 1. **Resolve + de-dup (P3.7 / P2.76).** Each candidate's `raw_path` is resolved to its §2.3.1
+///    `FileIdentity` and the set de-duplicated by identity ([`resolve_and_dedup`]) — a hardlink / two-paths
+///    pair collapses to ONE first-seen survivor ("converted once", SSOT §2.3.2). One `ItemId` is minted per
+///    SURVIVOR over the single space (§0.6 invariant 6); a candidate whose resolve FAILS (vanished/locked
+///    between walk and freeze, TOCTOU) is surfaced `unresolved` as a §1.1 `Unreadable` skip, never dropped.
+/// 2. **Classify (P2.73 / P2.16).** Each survivor is PARTITIONED by its detection verdict's
+///    [`skip_reason`](DetectionOutcome::skip_reason): a `Recognized` verdict (`None`) becomes an eligible
+///    `DroppedItem`; an ineligible one (`Empty`/`Unreadable`/`UnsupportedType`/`Uncertain`) a pre-flight
+///    `SkippedItem` — the intake-time `Skipped` half of the P2.73 intake-`Skipped` vs turn-time-`Failed`
+///    non-conflation (a turn-time gone/unreadable is a `Failed`, not a `Skipped`).
+/// 3. **Materialise.** The eligible `items`, the ineligible `skipped` (the §1.1 read-failure skips —
+///    walk-level P2.67 then resolve-time `unresolved` — minted AFTER the survivors from the SAME cursor, the
+///    P2.76 single-space contract), the OFF-WIRE `item_paths` pair for every id, and the retained `roots`.
+///
+/// Fallible only on `ItemSpaceExhausted` (`?`-propagated, never a panic — G4/G14; the §1.10 bounds cap a real
+/// frozen set far below `2^32`); the P3.49 spine maps it to the §1.1 fatal-ingest surface. The lossy §2.10.1
+/// `display_name` (basename) / `source_display` (path) projections are produced here from `raw_path`; the §2.7
+/// `rel_path_display` + the `size_bytes` are carried through from the candidate (see [`DetectedCandidate`]).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "P3.32 authors the §2.4.1 freeze-point primitive. Its production caller is the `ingest` \
+                  funnel's spine, wired at P3.49 (the CSV→TSV walking skeleton); dead in the production build \
+                  pending that wiring, exercised by the in-module freeze_tests below — the same interface-shell \
+                  attribute walk_intake_roots (P2.64) / resolve_and_dedup (P3.7) carry."
+    )
+)]
+fn freeze_snapshot(
+    candidates: Vec<DetectedCandidate>,
+    walk_skips: Vec<WalkSkip>,
+    roots: Vec<PathBuf>,
+) -> Result<FrozenSnapshot, ItemSpaceExhausted> {
+    // §0.6 invariant 6: ONE monotonic id space across the eligible members AND every skip (never re-indexed),
+    // constructed once per freeze and threaded so the two views are id-disjoint BY CONSTRUCTION (P2.75).
+    let mut ids = ItemIdSpace::new();
+
+    // Step 1 (P3.7 / P2.76): resolve each candidate to its §2.3.1 FileIdentity and de-dup by identity, minting
+    // one survivor id per first-seen resolved file over the single space. The `DetectedCandidate` rides as the
+    // threaded payload (its `raw_path` is cloned in as the resolve target; the payload keeps its own copy for
+    // `ItemPaths.raw_path` + the §2.10.1 display). A resolve failure lands on `unresolved` (§1.1 `Unreadable`).
+    let resolve_input: Vec<(PathBuf, DetectedCandidate)> = candidates
+        .into_iter()
+        .map(|candidate| (candidate.raw_path.clone(), candidate))
+        .collect();
+    let ResolvedDedup {
+        survivors,
+        unresolved,
+    } = resolve_and_dedup(resolve_input, &mut ids)?;
+
+    let mut items: Vec<DroppedItem> = Vec::with_capacity(survivors.len());
+    let mut skipped: Vec<SkippedItem> = Vec::new();
+    let mut item_paths: BTreeMap<ItemId, ItemPaths> = BTreeMap::new();
+
+    // Step 2 (P2.73 / P2.16): PARTITION each first-seen survivor by its detection verdict. The survivor already
+    // carries its single-space `id` (minted in step 1) and its §2.3.1 `identity` (canonical resolved path).
+    for DedupedMember {
+        id,
+        identity,
+        payload,
+    } in survivors
+    {
+        let DetectedCandidate {
+            raw_path,
+            detected,
+            size_bytes,
+            rel_path_display,
+        } = payload;
+        // §0.4.4 / §2.10.1 off-wire path pair: `raw` = the as-dropped path, `resolved` = the §2.3 canonical
+        // identity (the §1.7 engine target). Keyed by the item's id over the single space so BOTH views resolve.
+        item_paths.insert(
+            id,
+            ItemPaths {
+                raw_path: raw_path.clone(),
+                resolved_path: identity.canonical_path,
+            },
+        );
+        match detected.skip_reason() {
+            // `Recognized` → an eligible frozen member. The lossy §2.10.1 display basename is produced here.
+            None => items.push(DroppedItem {
+                item: id,
+                display_name: display_basename(&raw_path),
+                rel_path_display,
+                size_bytes,
+                detected,
+            }),
+            // Ineligible (`Empty`/`Unreadable`/`UnsupportedType`/`Uncertain`) → a pre-flight `Skipped` (the
+            // P2.73 intake half; a turn-time read failure is a `Failed`, not this).
+            Some(reason) => skipped.push(SkippedItem {
+                item: id,
+                source_display: raw_path.to_string_lossy().into_owned(),
+                reason,
+            }),
+        }
+    }
+
+    // Step 3 (§1.1): the read-failure skips — the walk-level `Unreadable`s (P2.67) then the resolve-time
+    // `unresolved` (P3.7) — have NO resolvable identity, so they mint their ids AFTER the survivors from the
+    // same cursor (the P2.76 single-space contract) and their off-wire pair uses the dropped path for both
+    // sides. Recorded, never dropped (§1.1: one bad file never sinks the ingest).
+    // [Build-Session-Entscheidung: P3.32 — order the read-failure skips walk-level THEN resolve-time
+    //  (pipeline-discovery order); §0.6 invariant 6 constrains only disjoint-contiguous ids, not the skip order.]
+    for WalkSkip { path, reason } in walk_skips.into_iter().chain(unresolved) {
+        let id = ids.mint()?;
+        item_paths.insert(
+            id,
+            ItemPaths {
+                raw_path: path.clone(),
+                resolved_path: path.clone(),
+            },
+        );
+        skipped.push(SkippedItem {
+            item: id,
+            source_display: path.to_string_lossy().into_owned(),
+            reason,
+        });
+    }
+
+    Ok(FrozenSnapshot {
+        items,
+        skipped,
+        item_paths,
+        roots,
+    })
+}
+
+/// The lossy §2.10.1 DISPLAY basename for a `DroppedItem.display_name` (last-step `to_string_lossy`) — the
+/// file's own name, produced core-side at the §2.4 freeze. Falls back to the whole lossy path for the
+/// nameless-tail case (a path ending in `..` / a bare root) so the display is never empty; a real dropped
+/// file always has a `file_name`. [Build-Session-Entscheidung: P3.32]
+fn display_basename(path: &Path) -> String {
+    path.file_name()
+        .map_or_else(|| path.to_string_lossy(), std::ffi::OsStr::to_string_lossy)
+        .into_owned()
 }
 
 #[cfg(test)]
@@ -2132,6 +2356,440 @@ mod resolve_dedup_unix_realfs_tests {
             "§2.3.2: the first-seen (target) is retained, not the alias"
         );
         assert!(out.unresolved.is_empty(), "both paths resolved");
+    }
+}
+
+#[cfg(test)]
+mod freeze_tests {
+    //! §6.4.1 unit (G15) + §6.4.2 property (G16) for the §2.4.1 freeze-point ([`freeze_snapshot`], P3.32) —
+    //! the eager, once, IMMUTABLE snapshot materialisation (the structural T8 no-self-feeding defence,
+    //! §2.4.2 defence 1). Real-FS, never mocked (test-strategy §0.1): the freeze folds the REAL
+    //! `resolve_and_dedup` (P3.7) over real temp files, so its resolve/de-dup half runs against a real
+    //! filesystem; the P2.73 partition + the single-id-space assembly (§0.6 invariant 6) are asserted on the
+    //! resulting snapshot. The pure id-space composition (dedup × mint × skip) is additionally property-tested
+    //! at the fold level in `mod tests`
+    //! (`prop_dedup_and_skip_minting_compose_over_one_contiguous_id_space`, P2.137); the property here covers
+    //! the FREEZE's end-to-end partition + `item_paths` completeness over a generated detected-outcome mix.
+    use super::*;
+    use crate::domain::Confidence;
+    use proptest::prelude::*;
+    use proptest::test_runner::{RngAlgorithm, TestRng, TestRunner};
+    use std::collections::BTreeSet;
+
+    /// The eligible detection verdict (a recognized CSV) — projects to `None` skip reason ⇒ a `DroppedItem`.
+    fn recognized() -> DetectionOutcome {
+        DetectionOutcome::Recognized {
+            format: UserFacingFormat::Csv,
+            confidence: Confidence::High,
+            dims: None,
+        }
+    }
+
+    /// Write a real temp file `name` in `dir` and return a `DetectedCandidate` for it with the given verdict
+    /// (size 4, no §2.7 rel-path). Real-FS so the freeze's `resolve_identity` fold has a real inode to key on.
+    fn write_candidate(dir: &Path, name: &str, detected: DetectionOutcome) -> DetectedCandidate {
+        let raw_path = dir.join(name);
+        std::fs::write(&raw_path, b"data").expect("write a real temp source");
+        DetectedCandidate {
+            raw_path,
+            detected,
+            size_bytes: 4,
+            rel_path_display: None,
+        }
+    }
+
+    // §6.4.1 (G15): the empty freeze — no candidates, no walk skips → an empty snapshot; the dropped roots are
+    // still retained VERBATIM (§1.1/§2.7, P2.66) so "open folder" anchors even when nothing is eligible.
+    #[test]
+    fn an_empty_intake_freezes_an_empty_snapshot_but_retains_the_roots() {
+        let roots = vec![PathBuf::from("/drop/one"), PathBuf::from("/drop/two")];
+        let snap =
+            freeze_snapshot(vec![], vec![], roots.clone()).expect("no ids minted, no exhaustion");
+        assert!(snap.items.is_empty(), "no candidates → no eligible members");
+        assert!(
+            snap.skipped.is_empty(),
+            "no candidates + no walk skips → no skips"
+        );
+        assert!(
+            snap.item_paths.is_empty(),
+            "no items → an empty off-wire path table"
+        );
+        assert_eq!(
+            snap.roots, roots,
+            "§1.1/§2.7 (P2.66): the dropped roots are retained VERBATIM in input order, even when nothing is eligible"
+        );
+    }
+
+    // §6.4.1 (G15): a recognized candidate → an eligible frozen member carrying id 0, its lossy §2.10.1 display
+    // basename, the carried-through §2.7 rel-path + size, and its §2.3 resolved identity in the off-wire table.
+    #[test]
+    fn a_recognized_candidate_becomes_an_eligible_member_with_its_resolved_identity() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let raw = dir.path().join("data.csv");
+        std::fs::write(&raw, b"a,b\n1,2\n").expect("write the source");
+        let candidate = DetectedCandidate {
+            raw_path: raw.clone(),
+            detected: recognized(),
+            size_bytes: 8,
+            rel_path_display: Some("sub/data.csv".to_string()),
+        };
+        let snap = freeze_snapshot(vec![candidate], vec![], vec![dir.path().to_path_buf()])
+            .expect("no exhaustion");
+        assert_eq!(snap.items.len(), 1, "the recognized candidate is eligible");
+        assert!(snap.skipped.is_empty(), "nothing ineligible → no skips");
+        let item = &snap.items[0];
+        assert_eq!(
+            item.item,
+            ItemId::from_index(0),
+            "§0.6 inv-6: the sole eligible member gets id 0"
+        );
+        assert_eq!(
+            item.display_name, "data.csv",
+            "§2.10.1: display_name is the lossy basename, produced core-side at the freeze"
+        );
+        assert_eq!(
+            item.rel_path_display.as_deref(),
+            Some("sub/data.csv"),
+            "the §2.7 subtree preview is carried through the freeze"
+        );
+        assert_eq!(
+            item.size_bytes, 8,
+            "the upstream-read size is recorded verbatim"
+        );
+        assert!(matches!(item.detected, DetectionOutcome::Recognized { .. }));
+        let paths = snap
+            .item_paths
+            .get(&item.item)
+            .expect("§0.4.4: every eligible id has an off-wire path entry");
+        assert_eq!(paths.raw_path, raw, "raw_path = the as-dropped path");
+        let resolved = crate::fs_guard::resolve_identity(&raw)
+            .expect("resolve the source directly")
+            .canonical_path;
+        assert_eq!(
+            paths.resolved_path, resolved,
+            "§2.3: resolved_path = the canonical identity path (the §1.7 engine target)"
+        );
+    }
+
+    // §6.4.1 (G15) · P2.73 intake half: an intake-time `Empty` / `Unreadable` verdict is a pre-flight
+    // `Skipped`, NEVER an eligible member (distinct from a turn-time gone/unreadable, which is a `Failed`).
+    #[test]
+    fn intake_empty_and_unreadable_verdicts_are_skipped_never_members() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let empty = write_candidate(dir.path(), "empty.dat", DetectionOutcome::Empty);
+        let unreadable = write_candidate(
+            dir.path(),
+            "denied.dat",
+            DetectionOutcome::Unreadable {
+                reason: ReadFailure::PermissionDenied,
+            },
+        );
+        let snap = freeze_snapshot(vec![empty, unreadable], vec![], vec![]).expect("no exhaustion");
+        assert!(
+            snap.items.is_empty(),
+            "P2.73: an intake `Empty`/`Unreadable` verdict is a pre-flight `Skipped`, never eligible"
+        );
+        let reasons: Vec<SkipReason> = snap.skipped.iter().map(|s| s.reason).collect();
+        assert_eq!(
+            reasons,
+            vec![SkipReason::Empty, SkipReason::Unreadable],
+            "the §1.2 verdict projects to the matching `SkipReason` (P2.16), in first-seen order"
+        );
+    }
+
+    // §6.4.1 (G15): the other two ineligible verdicts (`UnsupportedType`/`Uncertain`) are likewise skipped.
+    #[test]
+    fn unsupported_and_uncertain_verdicts_are_skipped() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let unsupported = write_candidate(
+            dir.path(),
+            "movie.xyz",
+            DetectionOutcome::UnsupportedType {
+                detected: "XYZ".to_string(),
+            },
+        );
+        let uncertain = write_candidate(
+            dir.path(),
+            "mystery.bin",
+            DetectionOutcome::Uncertain { best_guess: None },
+        );
+        let snap =
+            freeze_snapshot(vec![unsupported, uncertain], vec![], vec![]).expect("no exhaustion");
+        assert!(snap.items.is_empty(), "neither is a real convertible type");
+        let reasons: Vec<SkipReason> = snap.skipped.iter().map(|s| s.reason).collect();
+        assert_eq!(
+            reasons,
+            vec![SkipReason::UnsupportedType, SkipReason::Uncertain]
+        );
+    }
+
+    // §6.4.1 (G15) · §0.6 invariant 6: a mixed intake shares ONE id space — eligible members and skips keep
+    // their first-seen ids (id-disjoint, never re-indexed from 0), and `item_paths` keys exactly that space.
+    #[test]
+    fn a_mixed_intake_shares_one_disjoint_contiguous_id_space() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        // First-seen order: recognized, empty, recognized, unsupported → ids 0,1,2,3.
+        let candidates = vec![
+            write_candidate(dir.path(), "a.csv", recognized()),
+            write_candidate(dir.path(), "b.dat", DetectionOutcome::Empty),
+            write_candidate(dir.path(), "c.csv", recognized()),
+            write_candidate(
+                dir.path(),
+                "d.xyz",
+                DetectionOutcome::UnsupportedType {
+                    detected: "XYZ".to_string(),
+                },
+            ),
+        ];
+        let snap = freeze_snapshot(candidates, vec![], vec![]).expect("no exhaustion");
+        assert_eq!(
+            snap.items.iter().map(|d| d.item).collect::<Vec<_>>(),
+            vec![ItemId::from_index(0), ItemId::from_index(2)],
+            "the eligible members keep their first-seen ids (0 and 2)"
+        );
+        assert_eq!(
+            snap.skipped.iter().map(|s| s.item).collect::<Vec<_>>(),
+            vec![ItemId::from_index(1), ItemId::from_index(3)],
+            "the skips keep their first-seen ids (1 and 3), id-disjoint from the members"
+        );
+        let all: BTreeSet<ItemId> = snap
+            .items
+            .iter()
+            .map(|d| d.item)
+            .chain(snap.skipped.iter().map(|s| s.item))
+            .collect();
+        let expected: BTreeSet<ItemId> = (0u32..4).map(ItemId::from_index).collect();
+        assert_eq!(
+            all, expected,
+            "§0.6 inv-6: eligible ⊎ skipped = the contiguous single id space 0..N"
+        );
+        assert_eq!(
+            snap.item_paths.keys().copied().collect::<BTreeSet<_>>(),
+            expected,
+            "§0.4.4: item_paths covers EXACTLY every id (eligible + skipped)"
+        );
+    }
+
+    // §6.4.1 (G15) · §1.1: the read-failure skips — a walk-level `Unreadable` (P2.67) then a resolve-time
+    // `unresolved` (a candidate whose path vanished before the freeze, P3.7) — mint their ids AFTER the
+    // survivors, walk-level before resolve-time; an unresolved item's off-wire pair is raw == resolved.
+    #[test]
+    fn read_failures_mint_ids_after_the_survivors() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let good = write_candidate(dir.path(), "ok.csv", recognized()); // survivor → id 0
+        let gone = dir.path().join("gone.csv"); // never written → resolve fails → unresolved
+        let vanished = DetectedCandidate {
+            raw_path: gone.clone(),
+            detected: recognized(),
+            size_bytes: 1,
+            rel_path_display: None,
+        };
+        let walk_skip = WalkSkip {
+            path: dir.path().join("denied-subdir"),
+            reason: SkipReason::Unreadable,
+        };
+        let snap =
+            freeze_snapshot(vec![good, vanished], vec![walk_skip], vec![]).expect("no exhaustion");
+        assert_eq!(
+            snap.items.len(),
+            1,
+            "only the resolvable recognized file is an eligible member"
+        );
+        assert_eq!(snap.items[0].item, ItemId::from_index(0));
+        assert_eq!(
+            snap.skipped.iter().map(|s| s.item).collect::<Vec<_>>(),
+            vec![ItemId::from_index(1), ItemId::from_index(2)],
+            "§1.1: the read-failure skips mint AFTER the survivor — walk-level (id 1) before resolve-time (id 2)"
+        );
+        assert!(
+            snap.skipped
+                .iter()
+                .all(|s| s.reason == SkipReason::Unreadable),
+            "a walk-level or resolve-time read failure is `Unreadable`"
+        );
+        let vanished_paths = snap
+            .item_paths
+            .get(&ItemId::from_index(2))
+            .expect("the unresolved item still has an off-wire path entry");
+        assert_eq!(
+            vanished_paths.raw_path, vanished_paths.resolved_path,
+            "an unresolved item has no canonical identity — raw == resolved (the dropped path)"
+        );
+        assert_eq!(vanished_paths.raw_path, gone);
+    }
+
+    // §6.4.1 (G15) · §2.3.2 / T8 at the freeze: two paths to ONE inode (a hardlink) collapse to ONE frozen
+    // member ("converted once", SSOT) — the real-FS collapse a synthetic-`FileIdentity` unit can only assert
+    // by construction. Skipped only on a no-hardlink volume (FAT/exFAT, §2.3.4).
+    #[test]
+    fn hardlinked_candidates_collapse_to_one_frozen_member() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let original = dir.path().join("original.csv");
+        std::fs::write(&original, b"a,b\n").expect("write the original");
+        let link = dir.path().join("hardlink.csv");
+        let linked = std::fs::hard_link(&original, &link);
+        if matches!(&linked, Err(e) if matches!(e.kind(), std::io::ErrorKind::Unsupported | std::io::ErrorKind::PermissionDenied))
+        {
+            return; // FAT/exFAT — no hardlinks; the collapse is asserted on a linking volume only.
+        }
+        linked.expect("create the hardlink (a non-unsupported error is a real failure)");
+        let candidates = vec![
+            DetectedCandidate {
+                raw_path: original,
+                detected: recognized(),
+                size_bytes: 4,
+                rel_path_display: None,
+            },
+            DetectedCandidate {
+                raw_path: link,
+                detected: recognized(),
+                size_bytes: 4,
+                rel_path_display: None,
+            },
+        ];
+        let snap = freeze_snapshot(candidates, vec![], vec![]).expect("no exhaustion");
+        assert_eq!(
+            snap.items.len(),
+            1,
+            "§2.3.2/T8: two paths to one inode collapse to ONE frozen member (converted once)"
+        );
+        assert_eq!(
+            snap.items[0].display_name, "original.csv",
+            "§2.3.2: the FIRST-seen path is the retained member, not the hardlink"
+        );
+        assert_eq!(
+            snap.item_paths.len(),
+            1,
+            "the dropped duplicate consumes no id and no path entry"
+        );
+    }
+
+    // §6.4.1 (G15): `size_bytes` is the upstream-read value RECORDED at the freeze, not a re-stat — the freeze
+    // does no second `metadata` call (the file is 2 bytes on disk; the frozen item reports the declared 4096).
+    #[test]
+    fn the_recorded_size_is_the_upstream_value_not_a_refreeze_stat() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let raw = dir.path().join("small.csv");
+        std::fs::write(&raw, b"ab").expect("write a 2-byte file");
+        let candidate = DetectedCandidate {
+            raw_path: raw,
+            detected: recognized(),
+            size_bytes: 4096,
+            rel_path_display: None,
+        };
+        let snap = freeze_snapshot(vec![candidate], vec![], vec![]).expect("no exhaustion");
+        assert_eq!(
+            snap.items[0].size_bytes, 4096,
+            "the freeze records the upstream-read size verbatim — it does NOT re-stat (which would read 2)"
+        );
+    }
+
+    /// The §0.6-invariant property-test case-count floor (test-strategy §1.3: above proptest's 256 default).
+    /// [Build-Session-Entscheidung: P3.32]
+    const FREEZE_CASES: u32 = 512;
+
+    /// A PINNED-SEED runner (test-strategy §1.3 / G16): the `proptest!` macro seeds its forward run from
+    /// ENTROPY, so drive a `TestRunner` with a `deterministic_rng` for a reproducible 512-case exploration —
+    /// a failure reproduces deterministically and is NEVER retried-to-pass (§7). Local to this module (the
+    /// sibling `mod tests` `pinned_runner` is module-private). [Build-Session-Entscheidung: P3.32]
+    fn pinned_runner() -> TestRunner {
+        TestRunner::new_with_rng(
+            ProptestConfig::with_cases(FREEZE_CASES),
+            TestRng::deterministic_rng(RngAlgorithm::ChaCha),
+        )
+    }
+
+    // §6.4.2 property (G16) · §2.4.1 / §0.6 invariant 6: the FREEZE's end-to-end partition + single-id-space
+    // completeness over an arbitrary detected-outcome mix + walk-skip count, on real DISTINCT temp files (so
+    // every candidate resolves — the de-dup collapse is the hardlink unit above; here N distinct files → N
+    // survivors). For any mix: every candidate lands in EXACTLY ONE view by its `skip_reason` (Recognized →
+    // items, ineligible → skipped), the walk-skips join `skipped`, the two views' ids are DISJOINT and cover
+    // EXACTLY the contiguous `0..(N + M)`, and `item_paths` keys that same space.
+    #[test]
+    fn prop_freeze_partitions_a_mixed_intake_over_one_contiguous_id_space() {
+        // 0 = Recognized (eligible); 1..=4 = the four ineligible verdicts.
+        fn verdict(choice: u8) -> DetectionOutcome {
+            match choice % 5 {
+                0 => DetectionOutcome::Recognized {
+                    format: UserFacingFormat::Csv,
+                    confidence: Confidence::High,
+                    dims: None,
+                },
+                1 => DetectionOutcome::Empty,
+                2 => DetectionOutcome::Unreadable {
+                    reason: ReadFailure::PermissionDenied,
+                },
+                3 => DetectionOutcome::UnsupportedType {
+                    detected: "XYZ".to_string(),
+                },
+                _ => DetectionOutcome::Uncertain { best_guess: None },
+            }
+        }
+        pinned_runner()
+            .run(
+                &(prop::collection::vec(0u8..5, 0..6usize), 0..4usize),
+                |(choices, walk_skip_count)| {
+                    let dir = tempfile::tempdir().expect("create a real temp dir");
+                    let candidates: Vec<DetectedCandidate> = choices
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &choice)| {
+                            let raw_path = dir.path().join(format!("f{i}.dat"));
+                            std::fs::write(&raw_path, b"x")
+                                .expect("write a distinct real temp source");
+                            DetectedCandidate {
+                                raw_path,
+                                detected: verdict(choice),
+                                size_bytes: 1,
+                                rel_path_display: None,
+                            }
+                        })
+                        .collect();
+                    let walk_skips: Vec<WalkSkip> = (0..walk_skip_count)
+                        .map(|j| WalkSkip {
+                            path: dir.path().join(format!("skip{j}")),
+                            reason: SkipReason::Unreadable,
+                        })
+                        .collect();
+                    let eligible = choices.iter().filter(|&&c| c % 5 == 0).count();
+                    let n = choices.len();
+                    let m = walk_skip_count;
+                    let snap = freeze_snapshot(candidates, walk_skips, vec![])
+                        .expect("at most 10 ids — nowhere near the u32 ceiling, no exhaustion");
+                    prop_assert_eq!(
+                        snap.items.len(),
+                        eligible,
+                        "every Recognized candidate is an eligible member — nothing else"
+                    );
+                    prop_assert_eq!(
+                        snap.skipped.len(),
+                        (n - eligible) + m,
+                        "every ineligible candidate + every walk-skip is a `Skipped`"
+                    );
+                    let member_ids: BTreeSet<ItemId> = snap.items.iter().map(|d| d.item).collect();
+                    let skip_ids: BTreeSet<ItemId> = snap.skipped.iter().map(|s| s.item).collect();
+                    prop_assert!(
+                        member_ids.is_disjoint(&skip_ids),
+                        "§0.6 inv-6: the eligible and skipped id views never collide (one shared space)"
+                    );
+                    let all: BTreeSet<ItemId> = member_ids.union(&skip_ids).copied().collect();
+                    let expected: BTreeSet<ItemId> = (0..u32::try_from(n + m).expect("n + m < u32::MAX"))
+                        .map(ItemId::from_index)
+                        .collect();
+                    prop_assert_eq!(
+                        all,
+                        expected.clone(),
+                        "§0.6 inv-6: eligible ⊎ skipped = the contiguous 0..(N+M)"
+                    );
+                    prop_assert_eq!(
+                        snap.item_paths.keys().copied().collect::<BTreeSet<_>>(),
+                        expected,
+                        "§0.4.4: item_paths keys EXACTLY the single id space (both views resolve)"
+                    );
+                    Ok(())
+                },
+            )
+            .expect("the pinned 512-case exploration holds the §2.4.1 freeze partition + §0.6 invariant 6");
     }
 }
 
