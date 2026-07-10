@@ -227,7 +227,7 @@ P0.5.7 KAT convention and the P0.4.3 detect fuzz target.
 - [x] **P3.28** [RUST] Build CSV-vs-TSV delimiter detection (content over name) · §1.2 §2.10.2
   needs: P3.27
   > delimiter sniff over the bounded sample: a consistent tab-delimited file is **TSV** even if named `.csv` (content over name, §1.2/spreadsheets.md); a consistent comma file is CSV; produce `CollectedSummary.delimiter_hint`. Ambiguous (no consistent delimiter) → `Uncertain` (never silently extension-fall-back). Grouping keys on the resulting **`UserFacingFormat`** (CSV ≠ TSV, delimiter-determined, §1.3).
-- [ ] **P3.29** [RUST] Populate the `DetectionOutcome` result model + outcome rules · §1.2
+- [x] **P3.29** [RUST] Populate the `DetectionOutcome` result model + outcome rules · §1.2
   needs: P3.28
   > emit `DetectionOutcome::Recognized { format, confidence: Confidence, dims: None }` for CSV/TSV (non-raster → `dims: None`); `UnsupportedType { detected }` / `Uncertain { best_guess }` / `Empty` / `Unreadable { reason: ReadFailure }` for the others. Outcome rules: unsupported/uncertain/empty/unreadable are **never** offered a target list and never extension-fall-back (§1.2); a `.csv`-that-is-really-TSV converts as its **detected** type. `Confidence { High, Low }` — `Low` never silently falls back to the extension.
 - [ ] **P3.30** [TEST] Stand up the §1.2 detection KAT first entries (CSV/TSV) · §1.2 §6.4.1 · G15
