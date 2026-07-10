@@ -244,6 +244,345 @@ pub fn encoding_hint(encoding: &'static Encoding) -> Option<String> {
     }
 }
 
+// ─── P3.28 — §1.2 step-3 CSV-vs-TSV delimiter sniff (content over name, spreadsheets.md) ──────────────
+
+/// The number of leading NON-EMPTY records the delimiter sniff samples — spreadsheets.md "Delimiter
+/// detection policy" ("the most consistent field-count across the sample (default first **20** non-empty
+/// lines)"). A bounded sample over the already-bounded [`MAX_HEADER_WINDOW`] header window, never the whole
+/// file. [Build-Session-Entscheidung: P3.28]
+const DELIMITER_SNIFF_SAMPLE_LINES: usize = 20;
+
+/// A delimiter candidate the §1.2 CSV/TSV sniff probes — spreadsheets.md "Candidates probed: comma `,`,
+/// semicolon `;`, tab `\t`, pipe `|`". All four are ASCII, so the sniff is **encoding-independent** once
+/// the header is decoded to text (a comma is one `,` whether the source was UTF-8, UTF-16, or a
+/// Windows-1252 codepage — [`classify_delimiter`] decodes first). The [`CANDIDATES`](Delimiter::CANDIDATES)
+/// declaration order IS the final deterministic tie-break order — comma first (spreadsheets.md "then
+/// comma"). [Build-Session-Entscheidung: P3.28]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delimiter {
+    Comma,
+    Semicolon,
+    Tab,
+    Pipe,
+}
+
+impl Delimiter {
+    /// The four candidates in tie-break priority order — comma first (spreadsheets.md "then comma"), then a
+    /// fixed order that keeps a beyond-comma tie deterministic. Each entry's position is the [`RecordCounts`]
+    /// slot [`candidate_index`] maps its char to (a G15 test locks the alignment).
+    const CANDIDATES: [Delimiter; 4] = [
+        Delimiter::Comma,
+        Delimiter::Semicolon,
+        Delimiter::Tab,
+        Delimiter::Pipe,
+    ];
+
+    /// The literal character this candidate splits on.
+    const fn as_char(self) -> char {
+        match self {
+            Delimiter::Comma => ',',
+            Delimiter::Semicolon => ';',
+            Delimiter::Tab => '\t',
+            Delimiter::Pipe => '|',
+        }
+    }
+
+    /// The §1.3 user-facing format a file with this dominant delimiter groups under — **tab ⇒ TSV**, every
+    /// other delimiter ⇒ **CSV** (spreadsheets.md "A tab winner reclassifies the file as TSV"; a semicolon-
+    /// or pipe-separated file stays CSV). Content over name: this is the SNIFFED delimiter's format, never
+    /// the extension's (§1.3 grouping key, CSV ≠ TSV delimiter-determined). [Build-Session-Entscheidung: P3.28]
+    const fn user_facing_format(self) -> UserFacingFormat {
+        match self {
+            Delimiter::Tab => UserFacingFormat::Tsv,
+            Delimiter::Comma | Delimiter::Semicolon | Delimiter::Pipe => UserFacingFormat::Csv,
+        }
+    }
+}
+
+/// The extension's delimiter SUGGESTION — used ONLY as the §1.2 tie-break between two content
+/// interpretations that are EQUALLY consistent (spreadsheets.md "a tie-break preferring the extension hint
+/// then comma"), NEVER as a primary or fallback signal. Content always decides the winner when there is a
+/// clear one: a `.csv` whose bytes are consistently tab-separated is **TSV** (content over name), and a
+/// `.csv` with NO consistent delimiter is [`Ambiguous`](DelimiterClass::Ambiguous) → `Uncertain` (never
+/// rescued to comma by the extension — the "never silently extension-fall-back" rule, §1.2). The extension
+/// only disambiguates a genuine tie between ≥ 2 equally-consistent delimiters. [Build-Session-Entscheidung: P3.28]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtensionDelimiterHint {
+    /// A `.csv` extension → prefer comma on a genuine tie.
+    Comma,
+    /// A `.tsv` / `.tab` extension → prefer tab on a genuine tie.
+    Tab,
+}
+
+impl ExtensionDelimiterHint {
+    /// Derive the tie-break hint from a file's (dot-less, any-case) extension — `csv` ⇒ [`Comma`](Self::Comma),
+    /// `tsv` / `tab` ⇒ [`Tab`](Self::Tab) (the extensions spreadsheets.md names for CSV/TSV), `None` for any
+    /// other extension (which lends no tie-break signal). The raw path → extension extraction is the P3.49
+    /// caller's concern; this maps an already-extracted extension string. [Build-Session-Entscheidung: P3.28]
+    pub fn from_extension(extension: &str) -> Option<Self> {
+        match extension.to_ascii_lowercase().as_str() {
+            "csv" => Some(ExtensionDelimiterHint::Comma),
+            "tsv" | "tab" => Some(ExtensionDelimiterHint::Tab),
+            _ => None,
+        }
+    }
+
+    /// The delimiter this extension hint prefers on a tie.
+    const fn preferred(self) -> Delimiter {
+        match self {
+            ExtensionDelimiterHint::Comma => Delimiter::Comma,
+            ExtensionDelimiterHint::Tab => Delimiter::Tab,
+        }
+    }
+}
+
+/// The result of the §1.2 CSV-vs-TSV delimiter sniff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DelimiterClass {
+    /// A dominant delimiter was found consistently across the sample — the file is delimited text; the
+    /// [`Delimiter`] decides CSV vs TSV ([`user_facing_format`](DelimiterClass::user_facing_format)) and the
+    /// [`delimiter_hint`].
+    Detected(Delimiter),
+    /// No candidate delimiter produced a consistent multi-field split across the sample — the sniff declines
+    /// (the §1.2 dispatcher maps this to `Uncertain`), **never** an extension fallback (§1.2 / SSOT
+    /// *Recognize files by content*: a `.csv` with no consistent delimiter is declined, not assumed comma).
+    Ambiguous,
+}
+
+impl DelimiterClass {
+    /// The §1.3 grouping key this classification yields — `Some(Csv | Tsv)` for a detected delimiter, `None`
+    /// when [`Ambiguous`](DelimiterClass::Ambiguous) (→ the dispatcher's `Uncertain`). CSV ≠ TSV is
+    /// delimiter-determined here, the §1.3 content-over-name key. [Build-Session-Entscheidung: P3.28]
+    pub fn user_facing_format(self) -> Option<UserFacingFormat> {
+        match self {
+            DelimiterClass::Detected(delimiter) => Some(delimiter.user_facing_format()),
+            DelimiterClass::Ambiguous => None,
+        }
+    }
+}
+
+/// The §1.4 `CollectedSummary.delimiter_hint` projection — the display delimiter for a **non-obvious**
+/// separator, or `None` when the delimiter is the format's canonical default (**comma** for CSV, **tab** for
+/// TSV — mirroring [`encoding_hint`]'s `None`-for-UTF-8) and for an ambiguous sniff. It surfaces the
+/// **semicolon** (European-Excel `;`-CSV, where a comma is a decimal point) and **pipe** cases so the §1.4
+/// confirm summary can show the detected separator (spreadsheets.md "The detected delimiter is surfaced in
+/// the collected summary") — a CSV whose delimiter is the expected comma, and a TSV (tab is definitional to
+/// the format label), need no disclosure. Any prettier display casing is a §5 UI concern, like the
+/// [`encoding_hint`] casing note. [Build-Session-Entscheidung: P3.28]
+pub fn delimiter_hint(class: DelimiterClass) -> Option<String> {
+    match class {
+        DelimiterClass::Detected(Delimiter::Semicolon) => Some(";".to_owned()),
+        DelimiterClass::Detected(Delimiter::Pipe) => Some("|".to_owned()),
+        DelimiterClass::Detected(Delimiter::Comma | Delimiter::Tab) | DelimiterClass::Ambiguous => {
+            None
+        }
+    }
+}
+
+/// §1.2 step 3 (CSV/TSV) — sniff the dominant delimiter over the decoded, bounded header and classify the
+/// file as CSV or TSV **by content, never by extension** (spreadsheets.md "Delimiter detection policy";
+/// §2.10.2 "CSV encoding + delimiter … are detected and preserved … never silently re-delimited").
+///
+/// `encoding` is the P3.27-detected text encoding — this step runs ONLY on confirmed text (i.e.
+/// [`classify_encoding`] returned `Some`) — and the header is decoded through it so the ASCII delimiters are
+/// counted correctly even for UTF-16, where a comma is the two bytes `2C 00`. `ext_hint` is the OPTIONAL
+/// §1.2 tie-break; the extension-free [`detect`] path passes `None` and gets the "then comma" secondary
+/// tie-break.
+///
+/// Algorithm (spreadsheets.md): over the first [`DELIMITER_SNIFF_SAMPLE_LINES`] non-empty records a
+/// candidate is *viable* iff a **strict majority of at least two records** share the SAME occurrence count
+/// `≥ 1` (a consistent, repeated ≥ 2-field split — one incidental delimiter in a single prose line does not
+/// count); the winner is the viable candidate the most records agree on, ties broken by `ext_hint` → comma →
+/// the [`Delimiter::CANDIDATES`] order. No viable candidate (single-column text, prose,
+/// empty) ⇒ [`DelimiterClass::Ambiguous`], a clear decline. Counting is RFC-4180 quote-aware (a delimiter
+/// inside a `"…"` field is literal, so a `;`-CSV with a `1,50` decimal is not mis-split on the comma,
+/// §2.10.2). Bounded, in-core, memory-safe Rust — no third-party C/C++ decoder (§2.12.4); index-free /
+/// panic-free under the module `indexing_slicing` deny. [Build-Session-Entscheidung: P3.28]
+pub fn classify_delimiter(
+    header: &[u8],
+    encoding: &'static Encoding,
+    ext_hint: Option<ExtensionDelimiterHint>,
+) -> DelimiterClass {
+    let (text, _, _) = encoding.decode(header);
+    sniff_delimiter(&text, ext_hint)
+}
+
+/// The pure-text core of [`classify_delimiter`] (unit-tested directly with `&str`): sample the leading
+/// non-empty records and pick the most-consistent viable delimiter with the §1.2 tie-break. Split out so the
+/// sniff logic is tested without a decode round-trip. [Build-Session-Entscheidung: P3.28]
+fn sniff_delimiter(text: &str, ext_hint: Option<ExtensionDelimiterHint>) -> DelimiterClass {
+    let sample = sample_record_counts(text);
+    // (candidate, agreement) for every VIABLE candidate, in CANDIDATES (comma-first) order.
+    let viable: Vec<(Delimiter, usize)> = Delimiter::CANDIDATES
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, candidate)| {
+            viable_agreement(&sample, index).map(|agreement| (candidate, agreement))
+        })
+        .collect();
+    let Some(best_agreement) = viable.iter().map(|&(_, agreement)| agreement).max() else {
+        return DelimiterClass::Ambiguous;
+    };
+    // Tie-break among the best-agreement candidates: the ext_hint's preferred delimiter if it is one of them,
+    // else the first in CANDIDATES order (comma-first → "then comma"). `viable` is already in CANDIDATES
+    // order, so the fallback `find` yields comma-first on a tie.
+    let preferred = ext_hint.map(ExtensionDelimiterHint::preferred);
+    let winner = viable
+        .iter()
+        .filter(|&&(_, agreement)| agreement == best_agreement)
+        .find(|&&(candidate, _)| Some(candidate) == preferred)
+        .or_else(|| {
+            viable
+                .iter()
+                .find(|&&(_, agreement)| agreement == best_agreement)
+        })
+        .map(|&(candidate, _)| candidate);
+    // `winner` is always `Some` here (best_agreement came from a non-empty `viable`); the total match keeps
+    // the selection panic-free even if that invariant ever changes.
+    match winner {
+        Some(candidate) => DelimiterClass::Detected(candidate),
+        None => DelimiterClass::Ambiguous,
+    }
+}
+
+/// Per-record occurrence counts of the four [`Delimiter::CANDIDATES`] OUTSIDE quoted regions — index `i` is
+/// `CANDIDATES[i]`.
+type RecordCounts = [usize; 4];
+
+/// Scan `text` into per-record delimiter counts in ONE RFC-4180 quote-aware pass: a `\n` outside quotes ends
+/// a record; a candidate delimiter outside quotes increments its slot; everything inside a `"…"` field (with
+/// `""` an escaped quote) is literal and counts nothing. Returns the counts for the first
+/// [`DELIMITER_SNIFF_SAMPLE_LINES`] records that carry any non-whitespace content (blank lines skipped —
+/// spreadsheets.md "non-empty lines"). Counting during the split (rather than re-scanning record strings)
+/// keeps the quote structure authoritative and allocates no per-record strings.
+///
+/// **Field-position-aware quoting (RFC-4180).** A `"` opens a quoted field ONLY when it is the FIRST
+/// character of a field (`at_field_start` — set at input start and after each unquoted delimiter/newline); a
+/// `"` anywhere else is a literal field character, NOT a quote toggle. Without this a bare mid-field quote
+/// (an inch mark `5' 10"`, an informal quote) would open a spurious quoted region that swallows a real
+/// `\n`/delimiter and merges records, skewing the sniff toward a wrong or `Ambiguous` result. Index-free
+/// (`.get_mut` only) / panic-free (`saturating_add`). [Build-Session-Entscheidung: P3.28]
+fn sample_record_counts(text: &str) -> Vec<RecordCounts> {
+    let mut records: Vec<RecordCounts> = Vec::new();
+    let mut counts: RecordCounts = [0; 4];
+    let mut has_content = false;
+    let mut in_quotes = false;
+    // RFC-4180: a `"` opens a quoted field only at the start of a field — true at input start and after each
+    // unquoted delimiter/record boundary, false once any field content has been seen.
+    let mut at_field_start = true;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if in_quotes {
+            if ch == '"' {
+                if chars.peek() == Some(&'"') {
+                    let _ = chars.next(); // RFC-4180 escaped "" — consume, stay quoted
+                } else {
+                    in_quotes = false; // closing quote; the next char is expected to be a delimiter/newline
+                }
+            }
+            has_content = true;
+            continue;
+        }
+        match ch {
+            // a field-initial `"` opens a quoted field; a `"` mid-field falls through to `_` as a literal.
+            '"' if at_field_start => {
+                in_quotes = true;
+                has_content = true;
+                at_field_start = false;
+            }
+            '\n' => {
+                if has_content {
+                    records.push(counts);
+                    if records.len() >= DELIMITER_SNIFF_SAMPLE_LINES {
+                        return records;
+                    }
+                }
+                counts = [0; 4];
+                has_content = false;
+                at_field_start = true;
+            }
+            '\r' => {} // the CR of a CRLF — ignored, not content, does not move the field position
+            _ => {
+                if let Some(index) = candidate_index(ch) {
+                    if let Some(slot) = counts.get_mut(index) {
+                        *slot = slot.saturating_add(1);
+                    }
+                    has_content = true;
+                    at_field_start = true; // a new field begins after an unquoted delimiter
+                } else {
+                    if !ch.is_whitespace() {
+                        has_content = true;
+                    }
+                    // a plain space lends no content (a spaces-only line stays "empty"), but ANY non-delimiter
+                    // char — space, letter, or a non-field-initial `"` — is field body, so the next `"` is literal.
+                    at_field_start = false;
+                }
+            }
+        }
+    }
+    if has_content {
+        records.push(counts);
+    }
+    records.truncate(DELIMITER_SNIFF_SAMPLE_LINES);
+    records
+}
+
+/// The [`Delimiter::CANDIDATES`] slot a delimiter char occupies, or `None` — the counting inverse of
+/// [`Delimiter::as_char`]. Kept in lock-step with `CANDIDATES` by a G15 test. [Build-Session-Entscheidung: P3.28]
+const fn candidate_index(ch: char) -> Option<usize> {
+    match ch {
+        ',' => Some(0),
+        ';' => Some(1),
+        '\t' => Some(2),
+        '|' => Some(3),
+        _ => None,
+    }
+}
+
+/// Is the candidate at [`RecordCounts`] slot `index` a *viable* delimiter over `sample`, and if so how many
+/// records agree with its modal split? Viable ⇔ some occurrence count `k ≥ 1` is shared by a **strict
+/// majority of at least TWO records** (`agreement ≥ 2 ∧ 2 · agreement > len`) — a consistent ≥ 2-field split
+/// that is genuinely repeated (spreadsheets.md "the most consistent field-count across the sample").
+///
+/// **Consistency is a cross-line property.** The `agreement ≥ 2` floor is load-bearing: a single line with
+/// one incidental delimiter (prose — `"Hello, world"`, a log line with a comma) is NOT a consistent split
+/// and must **decline** (§1.2 / spreadsheets.md "ambiguous → decline clearly … never a wrong split"), never
+/// classify as CSV off one unverifiable observation. So the sniff needs at least two records that AGREE on
+/// the same `k ≥ 1` split, and those must be a strict majority — a delimiter present in only some rows
+/// (`"Hello, world\nGoodbye"`, comma count `[1, 0]`) is inconsistent and declines. Returns that `agreement`
+/// (the ranking score) or `None` for the "no consistent delimiter" decline. Among counts with equal
+/// agreement the smaller `k` is tracked for determinism; only the agreement is returned. Index-free /
+/// panic-free. [Build-Session-Entscheidung: P3.28]
+fn viable_agreement(sample: &[RecordCounts], index: usize) -> Option<usize> {
+    let mut best: Option<(usize, usize)> = None; // (count k ≥ 1, agreement — records with exactly k)
+    for record in sample {
+        let Some(&k) = record.get(index) else {
+            continue;
+        };
+        if k == 0 {
+            continue;
+        }
+        let agreement = sample
+            .iter()
+            .filter(|other| other.get(index) == Some(&k))
+            .count();
+        best = Some(match best {
+            None => (k, agreement),
+            Some((best_k, best_agreement))
+                if agreement > best_agreement || (agreement == best_agreement && k < best_k) =>
+            {
+                (k, agreement)
+            }
+            Some(current) => current,
+        });
+    }
+    let (_, agreement) = best?;
+    // A strict majority of ≥ 2 records: at least two records agree (`agreement >= 2`, so a lone incidental
+    // delimiter cannot classify) AND they are more than half the sample (`2·agreement > len`, so a delimiter
+    // missing from some rows is inconsistent and declines).
+    (agreement >= 2 && agreement.saturating_mul(2) > sample.len()).then_some(agreement)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,6 +808,359 @@ mod tests {
             classify_encoding(&[]),
             Some(UTF_8),
             "§1.2: an empty slice is vacuously valid UTF-8 here; the empty-FILE outcome is detect's Empty (P3.26)"
+        );
+    }
+
+    // ─── P3.28 — §1.2 CSV-vs-TSV delimiter sniff (spreadsheets.md "Delimiter detection policy") ─────────
+
+    // §6.4.1 unit (G15): the P3.28 headline — a CONSISTENTLY tab-delimited file is TSV **even named `.csv`**
+    // (content over name, §1.2/spreadsheets.md). The `.csv` extension hint (Comma) does NOT override a clear
+    // content winner — the hint only breaks a genuine TIE, and tab is the sole viable delimiter here.
+    #[test]
+    fn classify_delimiter_tab_content_beats_a_csv_extension() {
+        let tsv = sniff_delimiter(
+            "a\tb\tc\nd\te\tf\ng\th\ti",
+            Some(ExtensionDelimiterHint::Comma),
+        );
+        assert_eq!(
+            tsv,
+            DelimiterClass::Detected(Delimiter::Tab),
+            "§1.2/spreadsheets.md: a consistent tab file is TSV even with a .csv extension hint (content over name)"
+        );
+        assert_eq!(
+            tsv.user_facing_format(),
+            Some(UserFacingFormat::Tsv),
+            "§1.3: a tab winner groups as TSV (CSV ≠ TSV, delimiter-determined)"
+        );
+    }
+
+    // §6.4.1 unit (G15): a consistent comma file is CSV; comma is the default → no delimiter_hint.
+    #[test]
+    fn classify_delimiter_comma_is_csv_with_no_hint() {
+        let csv = sniff_delimiter("id,name,city\n1,alpha,berlin\n2,beta,munich", None);
+        assert_eq!(csv, DelimiterClass::Detected(Delimiter::Comma));
+        assert_eq!(csv.user_facing_format(), Some(UserFacingFormat::Csv));
+        assert_eq!(
+            delimiter_hint(csv),
+            None,
+            "§1.4: comma is the CSV default — no delimiter_hint (mirrors encoding_hint's None-for-UTF-8)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §2.10.2 semicolon-CSV property — a European-Excel `;`-separated file with a
+    // `1,50` DECIMAL comma is detected as CSV on the SEMICOLON (not mis-split on the literal comma inside
+    // `1,50`), and the non-obvious `;` surfaces as the delimiter_hint. The header line `name;price;note`
+    // carries no comma, so comma's per-line consistency breaks and semicolon wins by agreement.
+    #[test]
+    fn classify_delimiter_semicolon_csv_is_not_missplit_on_decimal_comma() {
+        let semi = sniff_delimiter("name;price;note\nfoo;1,50;cheap\nbar;2,30;fair", None);
+        assert_eq!(
+            semi,
+            DelimiterClass::Detected(Delimiter::Semicolon),
+            "§2.10.2: a ;-separated file with a 1,50 decimal is CSV-on-semicolon, not mis-split on the comma"
+        );
+        assert_eq!(semi.user_facing_format(), Some(UserFacingFormat::Csv));
+        assert_eq!(
+            delimiter_hint(semi),
+            Some(";".to_owned()),
+            "§1.4/spreadsheets.md: the non-obvious semicolon delimiter is surfaced in the summary"
+        );
+    }
+
+    // §6.4.1 unit (G15): a pipe-delimited file is CSV with the pipe surfaced as the hint.
+    #[test]
+    fn classify_delimiter_pipe_is_csv_with_a_pipe_hint() {
+        let pipe = sniff_delimiter("a|b|c\nd|e|f\ng|h|i", None);
+        assert_eq!(pipe, DelimiterClass::Detected(Delimiter::Pipe));
+        assert_eq!(pipe.user_facing_format(), Some(UserFacingFormat::Csv));
+        assert_eq!(delimiter_hint(pipe), Some("|".to_owned()));
+    }
+
+    // §6.4.1 unit (G15): NO consistent delimiter (single-column text / prose) → Ambiguous → the dispatcher's
+    // Uncertain — a clear decline, NEVER an extension fallback (a .csv hint does NOT rescue it to comma).
+    #[test]
+    fn classify_delimiter_single_column_is_ambiguous_never_extension_fallback() {
+        let prose = sniff_delimiter(
+            "alpha\nbeta\ngamma\ndelta",
+            Some(ExtensionDelimiterHint::Comma),
+        );
+        assert_eq!(
+            prose,
+            DelimiterClass::Ambiguous,
+            "§1.2/SSOT: no consistent delimiter → Uncertain, never extension-fall-back to comma"
+        );
+        assert_eq!(
+            prose.user_facing_format(),
+            None,
+            "§1.3: an ambiguous sniff yields no grouping format"
+        );
+        assert_eq!(delimiter_hint(prose), None);
+    }
+
+    // §6.4.1 unit (G15): empty and whitespace-only text carry no non-empty records → Ambiguous (no false guess).
+    #[test]
+    fn classify_delimiter_empty_and_blank_are_ambiguous() {
+        assert_eq!(sniff_delimiter("", None), DelimiterClass::Ambiguous);
+        assert_eq!(
+            sniff_delimiter("   \n  \n    ", None),
+            DelimiterClass::Ambiguous,
+            "§1.2: whitespace-only text has no non-empty records → Ambiguous, not a false guess"
+        );
+    }
+
+    // §6.4.1 unit (G15): a GENUINE tie — every line is consistently splittable by BOTH comma and tab (each
+    // yields 2 fields) — is broken by the §1.2 tie-break: the extension hint decides (.csv → CSV, .tsv →
+    // TSV), and with NO hint the "then comma" secondary tie-break yields CSV (comma-first).
+    #[test]
+    fn classify_delimiter_genuine_tie_is_broken_by_the_extension_then_comma() {
+        let tie = "a,b\tc\nd,e\tf\ng,h\ti"; // comma → 2 fields/line; tab → 2 fields/line (both consistent)
+        assert_eq!(
+            sniff_delimiter(tie, Some(ExtensionDelimiterHint::Comma)),
+            DelimiterClass::Detected(Delimiter::Comma),
+            "spreadsheets.md: a .csv extension breaks the comma/tab tie toward comma → CSV"
+        );
+        assert_eq!(
+            sniff_delimiter(tie, Some(ExtensionDelimiterHint::Tab)),
+            DelimiterClass::Detected(Delimiter::Tab),
+            "spreadsheets.md: a .tsv extension breaks the same tie toward tab → TSV (content-consistent both ways)"
+        );
+        assert_eq!(
+            sniff_delimiter(tie, None),
+            DelimiterClass::Detected(Delimiter::Comma),
+            "spreadsheets.md: with no extension hint the tie-break falls to comma (comma-first CANDIDATES order)"
+        );
+    }
+
+    // §6.4.1 unit (G15): RFC-4180 quote-awareness — a delimiter INSIDE a "…" field is literal and does not
+    // count, so a tab-delimited file whose first field is a quoted string CONTAINING commas is still TSV (the
+    // commas are quoted; the tab is the real separator). The §2.10.2 "not mis-split" guard at the sniff layer.
+    #[test]
+    fn classify_delimiter_is_quote_aware() {
+        let quoted = "\"a,b,c\"\tx\n\"d,e,f\"\ty"; // 3 commas inside quotes/line; 1 real tab/line
+        assert_eq!(
+            sniff_delimiter(quoted, None),
+            DelimiterClass::Detected(Delimiter::Tab),
+            "RFC-4180: commas inside a quoted field are literal — the tab is the delimiter → TSV"
+        );
+    }
+
+    // §6.4.1 unit (G15): a quoted field spanning an EMBEDDED NEWLINE does not split a record — the two
+    // physical lines are one logical record, so a comma file with an embedded newline still sniffs as CSV.
+    #[test]
+    fn classify_delimiter_handles_an_embedded_quoted_newline() {
+        // record 1: `1,"multi\nline",x` (2 commas, one embedded newline inside quotes); record 2: `2,plain,y`.
+        let embedded = "1,\"multi\nline\",x\n2,plain,y";
+        assert_eq!(
+            sniff_delimiter(embedded, None),
+            DelimiterClass::Detected(Delimiter::Comma),
+            "RFC-4180: a newline inside a quoted field does not end the record — still comma-CSV"
+        );
+    }
+
+    // §6.4.1 unit (G15): ragged rows (uneven field counts, spreadsheets.md edge case) do not defeat the
+    // sniff — a comma file where MOST lines agree on the field count still classifies as comma-CSV via the
+    // majority rule, even with one short row.
+    #[test]
+    fn classify_delimiter_tolerates_a_ragged_row() {
+        // three 3-field lines + one short 2-field line: comma count [2,2,2,1] → modal 2 on 3 of 4 → majority.
+        let ragged = "a,b,c\nd,e,f\ng,h,i\nj,k";
+        assert_eq!(
+            sniff_delimiter(ragged, None),
+            DelimiterClass::Detected(Delimiter::Comma),
+            "spreadsheets.md: a ragged short row does not defeat the majority-consistency comma sniff"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §1.4 delimiter_hint projection — None for the canonical defaults (comma on CSV,
+    // tab on TSV), Some for the non-obvious semicolon / pipe.
+    #[test]
+    fn delimiter_hint_names_only_the_non_obvious_delimiters() {
+        assert_eq!(
+            delimiter_hint(DelimiterClass::Detected(Delimiter::Comma)),
+            None
+        );
+        assert_eq!(
+            delimiter_hint(DelimiterClass::Detected(Delimiter::Tab)),
+            None
+        );
+        assert_eq!(
+            delimiter_hint(DelimiterClass::Detected(Delimiter::Semicolon)),
+            Some(";".to_owned())
+        );
+        assert_eq!(
+            delimiter_hint(DelimiterClass::Detected(Delimiter::Pipe)),
+            Some("|".to_owned())
+        );
+        assert_eq!(delimiter_hint(DelimiterClass::Ambiguous), None);
+    }
+
+    // §6.4.1 unit (G15): the §1.3 grouping-key mapping — tab ⇒ TSV, comma/semicolon/pipe ⇒ CSV, ambiguous ⇒ None.
+    #[test]
+    fn delimiter_class_maps_to_the_grouping_format() {
+        assert_eq!(
+            DelimiterClass::Detected(Delimiter::Tab).user_facing_format(),
+            Some(UserFacingFormat::Tsv)
+        );
+        assert_eq!(
+            DelimiterClass::Detected(Delimiter::Comma).user_facing_format(),
+            Some(UserFacingFormat::Csv)
+        );
+        assert_eq!(
+            DelimiterClass::Detected(Delimiter::Semicolon).user_facing_format(),
+            Some(UserFacingFormat::Csv)
+        );
+        assert_eq!(
+            DelimiterClass::Detected(Delimiter::Pipe).user_facing_format(),
+            Some(UserFacingFormat::Csv)
+        );
+        assert_eq!(DelimiterClass::Ambiguous.user_facing_format(), None);
+    }
+
+    // §6.4.1 unit (G15): the extension tie-break hint derives case-insensitively from the spreadsheets.md
+    // CSV/TSV extensions (.csv → Comma, .tsv/.tab → Tab), None otherwise — the ONLY place the extension
+    // enters delimiter detection, and only as a tie-break input.
+    #[test]
+    fn extension_delimiter_hint_from_extension() {
+        assert_eq!(
+            ExtensionDelimiterHint::from_extension("csv"),
+            Some(ExtensionDelimiterHint::Comma)
+        );
+        assert_eq!(
+            ExtensionDelimiterHint::from_extension("CSV"),
+            Some(ExtensionDelimiterHint::Comma),
+            "the extension hint is case-insensitive"
+        );
+        assert_eq!(
+            ExtensionDelimiterHint::from_extension("tsv"),
+            Some(ExtensionDelimiterHint::Tab)
+        );
+        assert_eq!(
+            ExtensionDelimiterHint::from_extension("tab"),
+            Some(ExtensionDelimiterHint::Tab)
+        );
+        assert_eq!(ExtensionDelimiterHint::from_extension("txt"), None);
+        assert_eq!(ExtensionDelimiterHint::from_extension(""), None);
+    }
+
+    // §6.4.1 unit (G15): the byte-level entry point decodes through the P3.27 encoding before sniffing — a
+    // UTF-8 comma file classifies as CSV.
+    #[test]
+    fn classify_delimiter_decodes_utf8_bytes() {
+        let csv = classify_delimiter(b"a,b,c\nd,e,f", UTF_8, None);
+        assert_eq!(csv, DelimiterClass::Detected(Delimiter::Comma));
+    }
+
+    // §6.4.1 unit (G15): the decode is REQUIRED, not cosmetic — in UTF-16LE a comma is the two bytes `2C 00`,
+    // so a byte-level sniff would miscount. `classify_delimiter` decodes via the detected encoding first, so a
+    // UTF-16LE comma file still classifies as CSV. (This is why the sniff takes bytes + encoding, not text.)
+    #[test]
+    fn classify_delimiter_decodes_utf16le_bytes() {
+        let utf16le: Vec<u8> = "a,b,c\nd,e,f"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(
+            classify_delimiter(&utf16le, encoding_rs::UTF_16LE, None),
+            DelimiterClass::Detected(Delimiter::Comma),
+            "§1.2: the ASCII delimiter is counted correctly only after decoding UTF-16 to text"
+        );
+    }
+
+    // §6.4.1 unit (G15): the counting inverse `candidate_index` stays in lock-step with the `CANDIDATES`
+    // declaration order — `candidate_index(CANDIDATES[i].as_char()) == Some(i)` for every candidate — so a
+    // future reorder of CANDIDATES can never silently mis-address a RecordCounts slot.
+    #[test]
+    fn candidate_index_matches_candidates_order() {
+        for (index, candidate) in Delimiter::CANDIDATES.into_iter().enumerate() {
+            assert_eq!(
+                candidate_index(candidate.as_char()),
+                Some(index),
+                "candidate_index must map each CANDIDATES char back to its slot index"
+            );
+        }
+        assert_eq!(
+            candidate_index('x'),
+            None,
+            "a non-delimiter char occupies no slot"
+        );
+    }
+
+    // §6.4.1 unit (G15): RFC-4180 escaped quotes (`""` inside a quoted field) do not toggle the quote state,
+    // so a comma file whose first field contains an escaped quote (`"a""b"`) is still comma-CSV (the `""` is
+    // a literal quote character, the following comma is the real delimiter).
+    #[test]
+    fn classify_delimiter_handles_escaped_quotes() {
+        let escaped = "\"a\"\"b\",c\n\"d\"\"e\",f"; // field `a"b` then `c`; field `d"e` then `f`
+        assert_eq!(
+            sniff_delimiter(escaped, None),
+            DelimiterClass::Detected(Delimiter::Comma),
+            "RFC-4180: an escaped \"\" stays inside the quoted field — the real comma is the delimiter → CSV"
+        );
+    }
+
+    // §6.4.1 unit (G15): CRLF line endings — the `\r` of a `\r\n` is ignored (not content, not a delimiter),
+    // so a Windows-authored comma file with CRLF endings still classifies as comma-CSV.
+    #[test]
+    fn classify_delimiter_handles_crlf_line_endings() {
+        let crlf = "id,name\r\n1,alpha\r\n2,beta\r\n";
+        assert_eq!(
+            sniff_delimiter(crlf, None),
+            DelimiterClass::Detected(Delimiter::Comma),
+            "§1.2: CRLF endings do not disturb the delimiter sniff — the \\r is ignored"
+        );
+    }
+
+    // §6.4.1 unit (G15): the sample is bounded to DELIMITER_SNIFF_SAMPLE_LINES records — a file with far more
+    // lines than the cap still classifies from the bounded sample (the sniff never walks the whole file, the
+    // §1.2/§2.12.4 bounded-read property), and the majority rule holds over the capped window.
+    #[test]
+    fn classify_delimiter_samples_only_the_bounded_leading_records() {
+        let many_lines: String = (0..DELIMITER_SNIFF_SAMPLE_LINES + 5)
+            .map(|row| format!("a{row},b{row},c{row}\n"))
+            .collect();
+        assert_eq!(
+            sniff_delimiter(&many_lines, None),
+            DelimiterClass::Detected(Delimiter::Comma),
+            "§1.2/§2.12.4: a >sample-cap file classifies from the bounded leading records, comma-CSV"
+        );
+    }
+
+    // §6.4.1 unit (G15): a single PROSE line with one INCIDENTAL delimiter is NOT CSV — consistency is a
+    // cross-line property, so one comma in one sentence declines to Ambiguous (§1.2/spreadsheets.md "ambiguous
+    // → decline clearly … never a wrong split"), never a false CSV off a lone unverifiable observation. The
+    // `.csv` extension hint cannot rescue it (never silently extension-fall-back).
+    #[test]
+    fn classify_delimiter_prose_with_an_incidental_delimiter_is_ambiguous() {
+        assert_eq!(
+            sniff_delimiter("Hello, world", Some(ExtensionDelimiterHint::Comma)),
+            DelimiterClass::Ambiguous,
+            "§1.2: one incidental comma in a single prose line is not a consistent split → Ambiguous, not CSV"
+        );
+        // A single line of genuine delimited text is still one unverifiable observation → decline (need ≥ 2
+        // agreeing records to establish consistency).
+        assert_eq!(
+            sniff_delimiter("a,b,c", None),
+            DelimiterClass::Ambiguous,
+            "§1.2: a lone line cannot establish a consistent field-count across the sample → Ambiguous"
+        );
+        // Two records where the delimiter appears in only one (count [1, 0]) is not a strict majority → decline.
+        assert_eq!(
+            sniff_delimiter("Hello, world\nGoodbye", None),
+            DelimiterClass::Ambiguous,
+            "§1.2: a delimiter present in only some rows is inconsistent → Ambiguous, not CSV"
+        );
+    }
+
+    // §6.4.1 unit (G15): RFC-4180 field-position-aware quoting — a bare `"` MID-FIELD (an inch mark `5' 10"`,
+    // an informal quote) is a literal character, NOT a quote opener, so it does not spuriously swallow the
+    // following `\n`/delimiter and merge records. A comma file carrying mid-field inch marks stays comma-CSV.
+    #[test]
+    fn classify_delimiter_treats_a_mid_field_quote_as_literal() {
+        let inch_marks = "Alice,5' 10\" tall\nBob,6' 1\" short";
+        assert_eq!(
+            sniff_delimiter(inch_marks, None),
+            DelimiterClass::Detected(Delimiter::Comma),
+            "RFC-4180: a non-field-initial \" is literal — the records stay split and the comma is the delimiter"
         );
     }
 }
