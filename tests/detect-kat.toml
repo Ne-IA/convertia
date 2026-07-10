@@ -86,6 +86,36 @@
 # `tests/g53-fixture/**` META-canary, which IS caged: neutering it false-greens a GATE.)
 
 # =======================================================================================
+# LIVE ENTRIES
+# =======================================================================================
+#
+# P3.30 — the §1.2 walking-skeleton CSV/TSV detection pins (needs: P3.29, P0.5.7). Each `file` is a
+# `tests/corpus/`-relative fixture (manifest-tracked + G24a-sha256-pinned); the G15 KAT test asserts
+# `detect(file)` equals the pinned result. `detect` is content-based (§1.2), so a lying extension never
+# decides the type — the two `.csv`-named-but-not-CSV cases below are the content-over-name proof.
+
+[[case]]
+file = "canonical.csv"
+expect = "Csv"
+why = "canonical comma-CSV — the walking-skeleton positive case: a consistent comma body detects as Csv (a strict-majority delimiter, §1.2 content detection)"
+
+[[case]]
+file = "canonical.tsv"
+expect = "Tsv"
+why = "canonical tab-TSV — a consistent tab body detects as Tsv (delimiter-determined; CSV != TSV group on the resulting UserFacingFormat, §1.3)"
+
+[[case]]
+file = "tsv_as_csv.csv"
+expect = "Tsv"
+misnamed = ".csv"
+why = "tab-delimited bytes named .csv — content over name (§1.2): the magic-less text is classified by its dominant tab delimiter as Tsv, never by the lying .csv extension"
+
+[[case]]
+file = "ambiguous.csv"
+expect = "Uncertain"
+why = "single-column text (no consistent delimiter) named .csv — the sniffer declines to Uncertain (§1.2 'decline clearly, never a wrong split'), never forced to Csv by the .csv name or an incidental separator"
+
+# =======================================================================================
 # REFERENCE TEMPLATE — the exact shape the P3/P5/P6/P7 detector boxes follow. Commented
 # out because each fixture it names is staged WITH the box that adds the pin;
 # uncomment-and-fill rather than pinning a fixture before it has been staged here. Kept

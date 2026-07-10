@@ -1247,3 +1247,178 @@ mod tests {
         );
     }
 }
+
+// ─── P3.30 — the §1.2 detection KAT (tests/detect-kat.toml), machine-enforced at L2 (G15) ────────────
+//
+// The Known-Answer-Test reader is `#[cfg(test)]`-only: it reads the committed `tests/detect-kat.toml` +
+// each `tests/corpus/` fixture it pins and asserts `detect()` reproduces the pinned §1.2 outcome, turning
+// §6.4.1's prose claim into an L2 tripwire — a detector refactor that silently mis-classifies an
+// ambiguous/misnamed signature fails here (a fast unit test), not only at the L4 corpus. Both files live at
+// the WORKSPACE root (`../tests/` from this crate's `src-tauri/` manifest dir). The reader stays index-free
+// under the module `indexing_slicing` deny (`.get`/`split_once`/`find`, no `[]`), and surfaces a missing
+// fixture as a test failure rather than through `panic!`, which has no test exception in this crate.
+// [Build-Session-Entscheidung: P3.30]
+#[cfg(test)]
+mod kat_tests {
+    use std::path::{Path, PathBuf};
+
+    use super::{detect, read_header};
+    use crate::domain::{DetectionOutcome, UserFacingFormat};
+
+    /// The workspace-root `tests/` dir — this crate's manifest dir is `src-tauri/`, so `tests/` is `../tests`.
+    fn tests_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests")
+    }
+
+    /// One pinned KAT case: the corpus-relative fixture `file` and its `expect` (a FormatId or an outcome name).
+    struct KatCase {
+        file: String,
+        expect: String,
+    }
+
+    /// Parse the `[[case]]` blocks of `detect-kat.toml` — a minimal reader over the KAT's controlled subset
+    /// (non-comment `[[case]]` headers + `key = "value"` lines), collecting `file` + `expect` per case. It
+    /// deliberately pulls in NO general TOML parser (no `toml` dev-dep — which would need a §0.8 floor row):
+    /// the KAT is a small hand-authored format, so a purpose-built line reader keeps the test self-contained.
+    /// Comment lines (`#…`, incl. the reference template) contribute no case; a case missing either field is
+    /// dropped (the count/coverage asserts then flag the loss).
+    fn parse_cases(text: &str) -> Vec<KatCase> {
+        let mut cases: Vec<KatCase> = Vec::new();
+        let mut file: Option<String> = None;
+        let mut expect: Option<String> = None;
+        let mut in_case = false;
+        for raw in text.lines() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if line == "[[case]]" {
+                if let (Some(f), Some(e)) = (file.take(), expect.take()) {
+                    cases.push(KatCase { file: f, expect: e });
+                }
+                in_case = true;
+                continue;
+            }
+            if !in_case {
+                continue;
+            }
+            if let Some((key, value)) = parse_kv(line) {
+                match key {
+                    "file" => file = Some(value),
+                    "expect" => expect = Some(value),
+                    _ => {}
+                }
+            }
+        }
+        if let (Some(f), Some(e)) = (file.take(), expect.take()) {
+            cases.push(KatCase { file: f, expect: e });
+        }
+        cases
+    }
+
+    /// `key = "value"` → `(key, value)` for a KAT line: the value is the content between the first and last
+    /// double-quote after the `=`. `None` for a non-`key = "value"` line. Index-free (`split_once`/`find`/
+    /// `rfind`/`.get`).
+    fn parse_kv(line: &str) -> Option<(&str, String)> {
+        let (key, rest) = line.split_once('=')?;
+        let open = rest.find('"')?;
+        let after = rest.get(open + 1..)?;
+        let close = after.rfind('"')?;
+        let value = after.get(..close)?;
+        Some((key.trim(), value.to_owned()))
+    }
+
+    /// Resolve a KAT `expect` PascalCase FormatId (`"Csv"`) to a `UserFacingFormat` via serde — the §0.6
+    /// wire form is camelCase (`"csv"`), so lowercasing the leading char yields the serde token (`"ThreeGp"`
+    /// → `"threeGp"`). `None` when `expect` is an outcome name (`"Uncertain"` / …), which then resolves
+    /// against the `DetectionOutcome` set — FormatId FIRST, the disjoint-sets resolution order the KAT
+    /// convention mandates.
+    fn format_of(expect: &str) -> Option<UserFacingFormat> {
+        let mut chars = expect.chars();
+        let camel: String = chars
+            .next()
+            .map(|c| c.to_ascii_lowercase())
+            .into_iter()
+            .chain(chars)
+            .collect();
+        serde_json::from_str::<UserFacingFormat>(&format!("\"{camel}\"")).ok()
+    }
+
+    /// Does `outcome` satisfy the KAT `expect`? A FormatId expect requires `Recognized { format == that }`
+    /// (the KAT pins the FormatId, not the confidence/dims); an outcome-name expect requires that variant.
+    fn matches_expect(expect: &str, outcome: &DetectionOutcome) -> bool {
+        if let Some(fmt) = format_of(expect) {
+            return matches!(outcome, DetectionOutcome::Recognized { format, .. } if *format == fmt);
+        }
+        match expect {
+            "Uncertain" => matches!(outcome, DetectionOutcome::Uncertain { .. }),
+            "UnsupportedType" => matches!(outcome, DetectionOutcome::UnsupportedType { .. }),
+            "Empty" => matches!(outcome, DetectionOutcome::Empty),
+            "Unreadable" => matches!(outcome, DetectionOutcome::Unreadable { .. }),
+            _ => false,
+        }
+    }
+
+    /// Read `detect-kat.toml` from the workspace-root `tests/` dir (a committed test asset).
+    fn read_kat() -> String {
+        let path = tests_dir().join("detect-kat.toml");
+        std::fs::read_to_string(&path).expect("the detect-kat.toml KAT is a committed test asset")
+    }
+
+    // §6.4.1 unit (G15): the §1.2 detection KAT — every `tests/detect-kat.toml` `[[case]]` pins a corpus
+    // fixture to its exact detection result; assert `detect(fixture)` reproduces it, so a detector refactor
+    // that silently mis-classifies an ambiguous/misnamed signature is caught at L2, not only at the L4 corpus.
+    #[test]
+    fn detect_kat_cases_all_hold() {
+        let cases = parse_cases(&read_kat());
+        assert!(
+            !cases.is_empty(),
+            "§6.4.1: the detection KAT must pin at least one case (an empty KAT is a no-op tripwire)"
+        );
+        let corpus = tests_dir().join("corpus");
+        for case in &cases {
+            let fixture = corpus.join(&case.file);
+            let read = std::fs::read(&fixture);
+            assert!(
+                read.is_ok(),
+                "§6.4.1 KAT: fixture `{}` must be a committed tests/corpus/ file ({:?})",
+                case.file,
+                read.as_ref().err()
+            );
+            let bytes = read.expect("the fixture read is Ok per the assert above");
+            let header = read_header(bytes.as_slice()).expect("reading a byte slice never fails");
+            let outcome = detect(&header);
+            assert!(
+                matches_expect(&case.expect, &outcome),
+                "§1.2 KAT: detect(`{}`) = {outcome:?}, but the KAT pins `{}` (a silent mis-detection is a \
+                 no-misroute regression, §2)",
+                case.file,
+                case.expect
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15): the KAT is ARMED — the P3.30 walking-skeleton cases are present and every `expect`
+    // resolves (a FormatId via serde, or a known outcome name), so the tripwire is not a silent no-op and a
+    // future dangling `expect` token is caught here.
+    #[test]
+    fn detect_kat_covers_the_walking_skeleton_and_the_expect_vocabulary() {
+        let cases = parse_cases(&read_kat());
+        let expects: Vec<&str> = cases.iter().map(|c| c.expect.as_str()).collect();
+        assert!(
+            expects.contains(&"Csv") && expects.contains(&"Tsv") && expects.contains(&"Uncertain"),
+            "§1.2/P3.30: the KAT pins the walking-skeleton CSV, TSV and Uncertain cases (found {expects:?})"
+        );
+        for case in &cases {
+            assert!(
+                format_of(&case.expect).is_some()
+                    || matches!(
+                        case.expect.as_str(),
+                        "Uncertain" | "UnsupportedType" | "Empty" | "Unreadable"
+                    ),
+                "§6.4.1: KAT expect `{}` resolves to neither a FormatId nor a DetectionOutcome name",
+                case.expect
+            );
+        }
+    }
+}
