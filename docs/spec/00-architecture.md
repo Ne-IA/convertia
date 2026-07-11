@@ -528,7 +528,17 @@ FrozenCollectedSet`** (the `CollectedSet::Single` wire payload **plus its off-wi
 table `[DECIDED 2026-07-06]`** — the per-item real `raw_path`/`resolved_path` pairs, the
 §2.3 identity evidence, and the real dropped-root `PathBuf`s; the wire carries only the
 `display_name`/`roots_display` strings, §0.6), mirroring the `RunId`-token /
-`CollectingId`-token lifecycle pattern. **Lifecycle:** an entry is **created when C1
+`CollectingId`-token lifecycle pattern. `[CLARIFIED 2026-07-07 — the P3.40 ruling]`
+The **§2.3 identity evidence** is carried as an **orchestrator-side table beside the
+domain `FrozenCollectedSet`** within the same registry record — `ItemId → FileIdentity`
+over every **resolved** survivor, eligible and detect-ineligible skipped alike (the
+§0.6-invariant-6 frozen membership: "ALL dropped items — eligible AND skipped alike").
+A walk/resolve-FAILURE skip has no identity to retain (its `resolve_identity` failed);
+an existing such file remains protected by the §2.1 exclusive-create like any
+pre-existing file. `FileIdentity` is a tier-2 `fs_guard` type, so the tier-3 `domain`
+struct cannot embed it (§0.7); it is the registered VALUE as a whole that carries
+everything this list names, and the §2.3.3 write-time comparison set is drawn from the
+full table (§2.3's "any source in the frozen set" — no eligibility carve-out). **Lifecycle:** an entry is **created when C1
 returns** a `CollectedSet::Single` (the freeze, §2.4), **retained through
 C3/C4/C5/C6**, and **evicted** when its run starts (C6 hands the frozen items to
 the `Batch`), or when a new C1 drain supersedes it, or at app exit. C3 is thus a **pure
