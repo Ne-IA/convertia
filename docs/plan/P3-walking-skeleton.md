@@ -255,7 +255,7 @@ skeleton can ingest a CSV folder and land output beside-source or diverted, on a
 - [x] **P3.34** [RUST] Build the §2.7 destination modes — beside-source + user-chosen-root subtree re-creation (create-only, ancestor-by-ancestor) · §2.7.1 §1.8
   needs: P3.9, P3.33
   > **beside-source (default):** output in the source's parent dir. **User-chosen root `D`:** re-create the dropped-root-relative subtree `D/sub/dir/file.<tgt>` (never flattened); each missing ancestor created **create-only** (`mkdir`, never `mkdir -p`-that-accepts-an-existing-file), ancestor-by-ancestor, then the deepest-created dir's handle is opened + link-safety-verified (P3.9) before the leaf publish (§2.7.1 / §2.3.3 ordering). The common root = deepest dir containing all frozen sources (computed at freeze).
-- [ ] **P3.35** [RUST] Build the §2.7.3 divert target resolution + re-test of the divert root · §2.7.3 §2.7.4
+- [x] **P3.35** [RUST] Build the §2.7.3 divert target resolution + re-test of the divert root · §2.7.3 §2.7.4
   needs: P3.33
   > on an unwritable/ephemeral/`NoAtomicPublish` location, divert that source's output (per-location, not whole-batch) to **Downloads → Documents fallback** via `PathResolver` (`download_dir()`/`document_dir()`), overridable by the user-chosen root. The divert target is itself run through `location_status` (incl. the FAT/exFAT test, P3.18) — if it too is ephemeral/unwritable/FAT-exFAT → fail clearly `WriteFailed` (§2.8), never divert onto a purgeable/another-FAT volume. Diverted outputs de-collided by the same §2.2 numbering; summary maps each output to its source (§2.7.4).
 - [ ] **P3.36** [RUST] Build the late-divert path — post-probe read-only flip re-runs the full safety chain · §2.7.2 §2.7.5 · G31
