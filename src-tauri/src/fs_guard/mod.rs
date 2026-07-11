@@ -2115,14 +2115,18 @@ pub fn resolve_divert_target(
 /// a kind it OVER-includes at most attempts a divert that itself fails → `WriteFailed` anyway. So the set errs
 /// toward the documented common cases (§2.7.2:writable-probe classification) without risking a wrong outcome.
 /// [Build-Session-Entscheidung: P3.36]
+// [Test-Change: P3.38 — old-obsolete+new-correct, §2.7.2] `expect`→`allow`: P3.38's `write_item` calls
+// `is_write_divert_trigger` on a primary-publish writability failure, so the P3.36 DEAD assertion errors as
+// unfulfilled under -D warnings — but `write_item` is unwired until the P3.46/P3.48 conductor, so the dead-ness
+// is ambiguous and `allow` (permissive) is correct (cf. P3.16/P3.35/P3.36).
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "§2.7.2 is_write_divert_trigger (P3.36) — the late-divert trigger classifier. Its production \
-                  caller is the §2.1.1 write sequence (P3.38), which late-diverts on a writability publish \
-                  failure; statically unused in the production build until that wiring lands (`expect` \
-                  auto-flags the moment it does), exercised by the late_divert_tests."
+        reason = "§2.7.2 is_write_divert_trigger (P3.36) — the late-divert trigger classifier. Called by P3.38's \
+                  write_item (the §2.1.1 write sequence) on a writability publish failure, still unwired via the \
+                  P3.46/P3.48 conductor, so it is dead-at-runtime but no longer statically unused; `allow` \
+                  (permissive) covers the ambiguous dead-ness. Exercised by the late_divert_tests."
     )
 )]
 pub fn is_write_divert_trigger(err: &PublishError) -> bool {
@@ -2198,14 +2202,18 @@ fn recheck_divert_free_space(divert_dir: &Path, needed_bytes: u64) -> Result<(),
 /// `same_volume_intermediate` is the run-owned §2.14.3 `.part` sibling of the divert final on the DIVERT volume
 /// (passed in — the LEAF does not mint the `crate::run` name). [Build-Session-Entscheidung: P3.36]
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+// [Test-Change: P3.38 — old-obsolete+new-correct, §2.7.5] `expect`→`allow`: P3.38's `write_item` now calls
+// `publish_to_divert` after a writability publish failure / FAT-exFAT NoAtomicPublishSupport, so the P3.36 DEAD
+// assertion errors as unfulfilled under -D warnings — but `write_item` is itself unwired until the P3.46/P3.48
+// conductor, so the fn's dead-ness is ambiguous and `allow` (permissive) is correct (cf. P3.16/P3.35/P3.36).
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "§2.7.2/§2.7.5 publish_to_divert (P3.36) — the late-divert publish. Its production caller is \
-                  the §2.1.1 write sequence (P3.38), which invokes it after a writability publish failure; \
-                  statically unused in the production build until that wiring lands (`expect` auto-flags the \
-                  moment it does), exercised by the late_divert_tests."
+        reason = "§2.7.2/§2.7.5 publish_to_divert (P3.36) — the late-divert publish. Called by P3.38's write_item \
+                  (the §2.1.1 write sequence) after a writability publish failure, still unwired via the \
+                  P3.46/P3.48 conductor, so it is dead-at-runtime but no longer statically unused; `allow` \
+                  (permissive) covers the ambiguous dead-ness. Exercised by the late_divert_tests."
     )
 )]
 pub fn publish_to_divert(

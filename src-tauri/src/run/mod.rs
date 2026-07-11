@@ -170,6 +170,39 @@ impl PublishTemp {
         Ok(file.into_temp_path())
     }
 
+    /// The §2.14.1 kind-1 publish-temp PATH — the `.convertia-<InstanceId>-<RunId>-<jobId>-<rand>.part` sibling
+    /// name inside `dest_dir`, **computed but NOT created** (no `O_EXCL`, no inode reserved). This is the
+    /// "caller computes; never created on the common path" companion to [`create_in`](Self::create_in) for the
+    /// §2.14.3 `same_volume_intermediate` (P3.38 / `fs_guard::atomic_publish`): the write sequence hands a
+    /// run-owned sibling of `final` to `atomic_publish`, which **materialises** it (via `std::fs::copy`) ONLY on
+    /// the EXDEV cross-volume fallback — on the common same-volume publish it stays a bare name, so the §2.7.2
+    /// writability-flip late-divert is never blocked by an eager mint and no per-item temp is wasted. The fresh
+    /// v4-`simple` `<rand>` (mirroring `create_in`'s hyphen-free `tempfile` component) makes it collision-free;
+    /// its run-grammar name is [`parse`](Self::parse)-able, so a mid-copy crash leftover is reclaimed by the
+    /// §2.6.2 own-prefix / §2.6.3 sweep exactly like a `create_in` temp. [Build-Session-Entscheidung: P3.38]
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "P3.38 — the name-only §2.14.3 intermediate PATH; called by RunScratch::publish_temp_path \
+                      (the §2.1.1 write sequence's same_volume_intermediate), itself dead in production until \
+                      the P3.46/P3.48 conductor wires write_item; rustc walks the dead-but-present caller and \
+                      marks this used, so `allow` (permissive) covers the transitive dead-ness (the create_in \
+                      pattern)."
+        )
+    )]
+    #[must_use]
+    fn path_in(&self, dest_dir: &Path) -> PathBuf {
+        let name = format!(
+            "{PUBLISH_TEMP_PREFIX}{}-{}-{}-{}{PUBLISH_TEMP_SUFFIX}",
+            self.instance.as_uuid(),
+            self.run.as_uuid(),
+            self.job.as_u32(),
+            Uuid::new_v4().simple()
+        );
+        dest_dir.join(name)
+    }
+
     /// The §2.6.2 run-scoped own-prefix `.convertia-<InstanceId>-<RunId>-` — every `<jobId>` publish temp
     /// of ONE run shares it. `cleanup_run` (P3.22) removes a run's own temps by matching this prefix + the
     /// `.part` suffix in each RECORDED `final_dir`, **never** a bare `*.part` / `.convertia-*.part` glob
@@ -525,17 +558,45 @@ impl RunScratch {
     /// happens AFTER the run lock is held (the §2.6.3 lock-before-part ordering, made structural).
     /// Delegates to the P3.20 naming model ([`PublishTemp::create_in`]), stamping this run's §2.6.1
     /// ownership. [Build-Session-Entscheidung: P3.21]
+    // [Test-Change: P3.38 — old-obsolete+new-correct, §2.1.1] `expect`→`allow`: P3.38's `write_item` now calls
+    // `publish_temp` (step 1 + the §2.14.3 intermediate), so the P3.21 DEAD assertion errors as unfulfilled under
+    // -D warnings — but `write_item` is itself unwired until the P3.46/P3.48 conductor, so the dead-ness is
+    // ambiguous and `allow` (permissive) is correct (the P3.16/P3.35/P3.36 fs_guard precedent).
     #[cfg_attr(
         not(test),
-        expect(
+        allow(
             dead_code,
-            reason = "P3.21 — the sole lock-after publish-temp entry; the production caller is the §2.1.1 \
-                      write sequence (P3.38) / §3.5.6 native-engine out_tmp (P3.43) — unused in production \
-                      until then."
+            reason = "P3.21 — the sole lock-after publish-temp entry; called by P3.38's write_item (§2.1.1 step 1 \
+                      + the §2.14.3 intermediate) / the §3.5.6 native-engine out_tmp (P3.43), still unwired via \
+                      the P3.46/P3.48 conductor — dead-at-runtime but no longer statically unused; `allow` \
+                      (permissive) covers the ambiguous dead-ness."
         )
     )]
     pub fn publish_temp(&self, dest_dir: &Path, job: JobId) -> io::Result<TempPath> {
         PublishTemp::new(self.instance, self.run, job).create_in(dest_dir)
+    }
+
+    /// The §2.14.3 `same_volume_intermediate` PATH for `job` in `dest_dir` — the **name-only** companion to
+    /// [`Self::publish_temp`]: it computes a run-owned `.part` sibling of `final` WITHOUT creating a file
+    /// (delegates to [`PublishTemp::path_in`]), for the P3.38 §2.1.1 write sequence to hand to
+    /// `fs_guard::atomic_publish`. atomic_publish materialises it (via `std::fs::copy`) ONLY on the §2.14.3 EXDEV
+    /// cross-volume path; on the common same-volume publish it is never created — so a mid-write §2.7.2
+    /// writability flip of `final`'s dir reaches the publish (which then late-diverts) instead of failing an
+    /// eager intermediate mint first, and no per-item temp is wasted. Infallible (no FS op). Ownership is still
+    /// stamped into the name, so a rare cross-volume-crash leftover is §2.6.3-reclaimable. [Build-Session-Entscheidung: P3.38]
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "P3.38 — the name-only §2.14.3 intermediate PATH entry; called by write_item (the §2.1.1 \
+                      write sequence), itself dead in production until the P3.46/P3.48 conductor — dead-at-runtime \
+                      but no longer statically unused; `allow` (permissive) covers the ambiguous dead-ness (the \
+                      publish_temp pattern)."
+        )
+    )]
+    #[must_use]
+    pub fn publish_temp_path(&self, dest_dir: &Path, job: JobId) -> PathBuf {
+        PublishTemp::new(self.instance, self.run, job).path_in(dest_dir)
     }
 }
 
@@ -550,13 +611,18 @@ impl RunScratch {
 /// item honestly rather than as a clean success. An already-absent temp (`NotFound`) is a **clean, idempotent
 /// success** — a double call or an externally-vanished temp is not a spurious failure. Panic-free (the crate
 /// no-panic deny, G4): every step is a fallible `Result` short-circuit. [Build-Session-Entscheidung: P3.22]
+// [Test-Change: P3.38 — old-obsolete+new-correct, §2.6.2] `expect`→`allow`: P3.38's `write_item` now calls
+// `cleanup_item` (step 7 on failure + the §2.6.2 leftover sweep on success), so the P3.22 DEAD assertion errors
+// as unfulfilled under -D warnings — but `write_item` is itself unwired until the P3.46/P3.48 conductor, so the
+// dead-ness is ambiguous and `allow` (permissive) is correct (the P3.16/P3.35/P3.36 fs_guard precedent).
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "P3.22 — the item-exit cleanup entry; the production caller is the §2.1.1 write sequence \
-                  (item failure / out-of-disk / link-fallback success, P3.38) and the §3.5.6 native-engine \
-                  out_tmp path (P3.43) — unused in the production build until that wiring lands."
+        reason = "P3.22 — the item-exit cleanup entry; called by P3.38's write_item (step 7 item failure / \
+                  out-of-disk / link-fallback + the §2.6.2 success-leftover sweep) and the §3.5.6 native-engine \
+                  out_tmp path (P3.43), still unwired via the P3.46/P3.48 conductor — dead-at-runtime but no \
+                  longer statically unused; `allow` (permissive) covers the ambiguous dead-ness."
     )
 )]
 pub fn cleanup_item(tmp: TempPath) -> io::Result<()> {
@@ -1108,6 +1174,37 @@ mod publish_temp_tests {
         assert!(
             name.ends_with(PUBLISH_TEMP_SUFFIX),
             "§2.14.1: the publish temp carries the `.part` suffix, got {name}"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.14.3: `path_in` COMPUTES the same-volume-intermediate name as a sibling inside the
+    // destination dir WITHOUT creating a file (the name-only companion to `create_in`), and its run-grammar name
+    // round-trips through `parse` — so a rare cross-volume-crash materialisation stays §2.6.3-reclaimable.
+    #[test]
+    fn path_in_computes_a_parseable_sibling_name_without_creating_a_file() {
+        let dir = tempfile::tempdir().expect("a real temp destination dir");
+        let instance = InstanceId::mint();
+        let run = RunId::mint();
+        let job = JobId::from_index(5);
+        let path = PublishTemp::new(instance, run, job).path_in(dir.path());
+
+        assert_eq!(
+            path.parent(),
+            Some(dir.path()),
+            "§2.14.3: the intermediate name is a sibling inside the destination dir (final's volume)"
+        );
+        assert!(
+            !path.exists(),
+            "§2.14.3: path_in RESERVES no inode — the intermediate is never created on the common path"
+        );
+        let name = path.file_name().expect("the path has a file name");
+        let owner = PublishTemp::parse(name).expect("the name round-trips to its ownership triple");
+        assert_eq!(owner.instance(), instance);
+        assert_eq!(owner.run(), run);
+        assert_eq!(owner.job(), job);
+        assert!(
+            name.to_string_lossy().ends_with(PUBLISH_TEMP_SUFFIX),
+            "§2.14.3: the intermediate carries the `.part` suffix"
         );
     }
 

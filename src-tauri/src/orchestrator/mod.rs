@@ -43,12 +43,14 @@
 )]
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use specta::Type;
+use tempfile::TempPath;
 use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
@@ -58,8 +60,13 @@ use crate::domain::{
     ItemSpaceExhausted, JobStage, OptionValues, OutputPlan, ReadFailure, RerunPrompt, RunId,
     SkipReason, SkippedItem, Target, TargetId, UserFacingFormat,
 };
-use crate::fs_guard::FileIdentity;
+use crate::fs_guard::{
+    atomic_publish, is_write_divert_trigger, open_verified_parent_dir, output_name,
+    publish_to_divert, resolve_divert_target, DivertTarget, FileIdentity, LocationCache,
+    ParentDirVerdict, PublishError, PublishOutcome,
+};
 use crate::outcome::{ConversionErrorKind, IpcError, OutcomeMsg};
+use crate::run::{cleanup_item, RunScratch};
 
 /// One same-source conversion batch (§0.6 / §1.9) — the queue the orchestrator builds at C6
 /// `start_conversion` from a frozen `CollectedSet::Single` and drives to a §1.12 summary. INTERNAL to the
@@ -602,6 +609,366 @@ pub fn append_residue_tail(summary_line: String, has_residue: bool) -> String {
     } else {
         summary_line
     }
+}
+
+// ─── §2.1.1 per-item write sequence (P3.38) ──────────────────────────────────────────────────────────
+// [Build-Session-Entscheidung: P3.38] Homed HERE in crate::orchestrator (tier 1) per the 2026-07-07 home
+// ruling (§0.7 > the plan-cluster heading): the sequence COMPOSES `crate::run` (temp/cleanup) + `crate::fs_guard`
+// (publish/divert) + the engine step — three tier-2 leaves + the engine seam — and ONLY the tier-1 orchestrator
+// may compose all three (`fs_guard` depends DOWN only; `run`/`fs_guard` are mutually-independent siblings, so a
+// deliberate `run`→`fs_guard` edge is rejected, §0.7). The §2.1.1 steps 3-6 (sync → resolve-late → exclusive
+// publish → dir-fsync + the §2.14.3 EXDEV fallback + the §2.2.2 numbering ↔ no-clobber loop) all live INSIDE
+// `fs_guard::atomic_publish` (P3.15/P3.16/P3.17); this box wires step 1 (`run::publish_temp`, P3.20), step 2 (the
+// engine seam), the §1.7 exit-verification, and step 7 (`run::cleanup_item`, P3.22) around it.
+//
+// The engine step is a CALLABLE SEAM (a `FnOnce` writing into the temp) — the real native CSV/TSV engine binds
+// at P3.41/P3.48, so `needs:` correctly excludes P3.41. Because the seam is honest-now (a caller supplies the
+// bytes), the G32(a) source-unchanged leg binds with THIS box; the G31 output-validity structural readers bind
+// when the real engine + corpus land (P3.41 → P3.62/P3.63), per the home ruling.
+//
+// The §2.7.2/§2.7.5 LATE-DIVERT is composed here (not merely surfaced): a §2.1.1 sequence that failed an item on
+// a mid-write writability flip / FAT-exFAT `NoAtomicPublishSupport` instead of diverting would DEGRADE the §2.7.5
+// "not a degraded path" guarantee (SSOT Principle-5). P3.17/P3.35/P3.36 authored `atomic_publish` /
+// `resolve_divert_target` / `is_write_divert_trigger` / `publish_to_divert` with THIS box named as their
+// production caller (P3.35/P3.36 are earlier `[x]` boxes, so no explicit `needs:` edge is required — the §04
+// divert primitives are already built). One divert per item (§2.7.3) — a failed divert is terminal, never
+// re-diverted. The whole surface is dead in the production build until the P3.46/P3.48 conductor calls
+// `write_item` (the module-level `not(test)` dead_code expect covers it).
+
+/// The terminal disposition of one §2.1.1 per-item write ([`write_item`]) — the output published (the real
+/// path, retained core-side for `RunResultPaths.item_outputs` + the §1.12 display projection) or a named §2.8
+/// failure (one item failed, the batch continues, §1.9). Core-INTERNAL (holds the real output `PathBuf`, never a
+/// wire type); the §1.9 FSM (P3.46) projects it onto the wire `JobState`/`ItemOutcome`.
+///
+/// [Build-Session-Entscheidung: P3.38] `Debug, Clone, PartialEq, Eq` — the internal-type set (no `serde`/
+/// `specta`, like `OutputPlan`/`ResidueRecord`); NOT `Copy` (owns a `PathBuf`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteDisposition {
+    /// Converted + atomically published (§2.1) — the real output path (the §2.2 no-clobber name resolved LAZILY
+    /// at write time, `final_dir.join(leaf)`), retained core-side for `RunResultPaths.item_outputs`.
+    Published { output: PathBuf },
+    /// A named §2.8 failure — one item failed, the batch continues (§1.9). The `kind` is the §2.8 taxonomy code
+    /// the FSM renders via the P3.68 catalog.
+    Failed { kind: ConversionErrorKind },
+}
+
+/// The full result of one §2.1.1 per-item write ([`write_item`]) — the terminal [`WriteDisposition`], whether the
+/// output DIVERTED (§2.7.3, so the run's `divert_root_display` is set), and any §2.6.4 cleanup residue (a temp
+/// that could not be removed, so the item is never reported as a silent clean success — the P3.25 honesty leg).
+/// Core-INTERNAL (a [`ResidueRecord`] holds the off-wire real `PathBuf`).
+///
+/// [Build-Session-Entscheidung: P3.38] `Debug, Clone, PartialEq, Eq`; NOT `Copy` (embeds a `WriteDisposition` +
+/// an `Option<ResidueRecord>`, both owning `PathBuf`s). The §1.9 FSM (P3.46) maps `(disposition, residue)` onto
+/// the §2.6.4 [`ResidueDisposition`] (a `Published` → case 1; a `Failed` → case 2) via [`residue_item_reason`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteOutcome {
+    /// Published(real path) or Failed(§2.8 kind).
+    pub disposition: WriteDisposition,
+    /// `true` when the output landed on the §2.7.3 DIVERT root — a proactively-diverted plan (`OutputPlan.
+    /// diverted.is_some()`) that published, OR a write-time late-divert. Drives `RunResult.divert_root_display`.
+    /// `false` on a beside-source publish or any failure.
+    pub diverted: bool,
+    /// `Some` when §2.6 cleanup left a temp behind (§2.6.4) — recorded for `cleanup_incomplete` + the off-wire
+    /// residue table so the summary never reports a clean success. `None` when every temp was removed.
+    pub residue: Option<ResidueRecord>,
+}
+
+impl WriteOutcome {
+    /// A failure with no temp to reconcile (a pre-write step failed before any `.part` existed) — no residue.
+    /// [Build-Session-Entscheidung: P3.38]
+    fn failed(kind: ConversionErrorKind) -> Self {
+        Self {
+            disposition: WriteDisposition::Failed { kind },
+            diverted: false,
+            residue: None,
+        }
+    }
+}
+
+/// The borrowed per-item inputs the §2.1.1 write sequence threads through its steps (a bundle, not eight
+/// re-passed args) — the per-job plan/source/ext + the frozen-source identities (§2.3.3 link-safety) + the
+/// §2.7.3 divert candidate roots + the live run handle (§2.6 temp ownership). The mutable `LocationCache` and the
+/// `crate::run`-grammar `probe_name` factory (both needed only on the divert path) travel separately.
+/// [Build-Session-Entscheidung: P3.38]
+struct WriteInputs<'a> {
+    plan: &'a OutputPlan,
+    /// The §2.3-resolved read path (the output base name comes from its verbatim stem, §2.2.1; §1.7 hands it in).
+    source: &'a Path,
+    /// The target's bare canonical extension (`tsv`/`csv`) — ASCII by construction (§04).
+    ext: &'a str,
+    /// The frozen source-file identities (§2.4) the §2.3.3 link-safety re-check runs against.
+    frozen_sources: &'a [FileIdentity],
+    /// The §2.7.3 divert candidate roots (caller-resolved AppHandle-side, the P3.35 contract), tried in order.
+    divert_candidates: &'a [PathBuf],
+    /// The live run handle (§2.6.3 lock-before-part) — mints the run-owned `.part` temps + names the cleanup.
+    scratch: &'a RunScratch,
+}
+
+/// **§2.1.1 the per-item write sequence (P3.38)** — pick-temp → engine-writes → sync → resolve-late → publish →
+/// dir-fsync → cleanup-on-error, with the §2.7.2/§2.7.5 late-divert. Consumes the §1.8 [`OutputPlan`] (P3.37) and
+/// an engine-write SEAM (`engine_write`, a `FnOnce` the real native CSV/TSV engine replaces at P3.41/P3.48),
+/// producing the terminal [`WriteOutcome`] the §1.9 FSM (P3.46) projects onto `JobState`/`ItemOutcome`.
+///
+/// The seven §2.1.1 steps: **(1)** pick the publish temp on `final`'s volume ([`RunScratch::publish_temp`], P3.20);
+/// **(2)** the engine writes into `tmp` (the seam — never `final`, §3.5); **(3-6)** sync → resolve-late + §2.3.3
+/// link-safety → the §2.2.2 numbering ↔ no-clobber exclusive publish → dir-fsync, all inside
+/// [`atomic_publish`] (P3.15/P3.16, with the §2.14.3 EXDEV fallback P3.17); **(7)** on any error in 3-6 remove
+/// `tmp` — `final` was never created ([`cleanup_item`], P3.22). The §1.7 EXIT-VERIFICATION gates step 3: success
+/// ONLY if the temp output exists and is non-empty (a 0-byte output is a §2.8 `Empty` failure, never a clean
+/// success of an empty file).
+///
+/// **Late-divert (§2.7.2/§2.7.5).** A `ResolvesOntoSource` parent (§2.3.3), a FAT/exFAT `NoAtomicPublishSupport`
+/// (§2.7.2, Unix), or a writability publish failure ([`is_write_divert_trigger`] — USB pulled / share dropped /
+/// permission flip) routes the completed `tmp` to the §2.7.3 divert target ([`resolve_divert_target`] →
+/// [`publish_to_divert`]) — the FULL safety chain, not a degraded path (§2.7.5). ONE divert per item (§2.7.3): a
+/// plan already diverted, or a failed divert, is terminal (§2.8 `WriteFailed`), never re-diverted.
+///
+/// No panic (the crate no-panic deny, G4/G14) — every failure is a structured [`WriteOutcome`]; the source bytes
+/// are never touched (the no-harm G32(a) invariant the tests assert). [Build-Session-Entscheidung: P3.38]
+#[allow(clippy::too_many_arguments)]
+// [Build-Session-Entscheidung: P3.38] Each arg is a DISTINCT §2.1.1 input (the plan/source/frozen-set/divert
+// roots/run handle/cache/probe-name factory/engine seam) — the `compute_output_plan` (P3.37) precedent; a
+// mechanical bundle struct would group them without semantic value (and the two closures cannot live in one).
+pub fn write_item(
+    plan: &OutputPlan,
+    source: &Path,
+    frozen_sources: &[FileIdentity],
+    divert_candidates: &[PathBuf],
+    scratch: &RunScratch,
+    cache: &mut LocationCache,
+    probe_name: impl Fn() -> OsString,
+    engine_write: impl FnOnce(&Path) -> Result<(), ConversionErrorKind>,
+) -> WriteOutcome {
+    let item = plan.job;
+    // The target's canonical extension is ASCII (§04); a non-UTF-8 ext is an internal fault, never user-facing.
+    let Some(ext) = plan.extension.to_str() else {
+        return WriteOutcome::failed(ConversionErrorKind::InternalError);
+    };
+    let inputs = WriteInputs {
+        plan,
+        source,
+        ext,
+        frozen_sources,
+        divert_candidates,
+        scratch,
+    };
+
+    // §2.1.1 step 1: pick the publish temp (P3.20) — the run-owned `.convertia-…-.part` sibling on `final`'s
+    // volume (§2.14.1). A create failure (permission / IO at the destination) fails the item clearly; nothing
+    // was written.
+    let Ok(tmp) = scratch.publish_temp(&plan.publish_temp_dir, item) else {
+        return WriteOutcome::failed(ConversionErrorKind::WriteFailed);
+    };
+
+    // §2.1.1 step 2: the engine writes into `tmp` (the callable seam — never `final`, §3.5; the real native
+    // CSV/TSV engine binds P3.41, dispatch wiring P3.48). On engine failure: §2.1.1 step 7 removes `tmp`
+    // (`final` was never created).
+    if let Err(kind) = engine_write(tmp.as_ref()) {
+        return fail_cleanup(item, [tmp], kind);
+    }
+
+    // §1.7 exit & output verification: success ONLY if the temp output exists and is non-empty — a "success exit
+    // but empty/zero output" is a §2.8 failure, never a clean success of an empty file.
+    match std::fs::metadata(&*tmp) {
+        Ok(meta) if meta.len() > 0 => {}
+        // Present but 0-byte → §2.8 `Empty` (§1.7).
+        Ok(_) => return fail_cleanup(item, [tmp], ConversionErrorKind::Empty),
+        // Gone after a "successful" seam → the engine broke its non-empty-output contract → §2.13 InternalError.
+        Err(_) => return fail_cleanup(item, [tmp], ConversionErrorKind::InternalError),
+    }
+
+    // §2.1.1 steps 3-6 (+ the §2.7.2/§2.7.5 late-divert).
+    publish_completed(&inputs, cache, &probe_name, tmp)
+}
+
+/// §2.1.1 steps 4-6 over the completed `tmp`, with the §2.7 divert routing (P3.38). The §2.3.3 link-safety +
+/// no-clobber decision is resolved AS LATE AS POSSIBLE (immediately before the create, to shrink the TOCTOU
+/// window); [`atomic_publish`] then runs steps 3/5/6 (sync → exclusive publish → dir-fsync + the §2.14.3
+/// cross-volume fallback). [Build-Session-Entscheidung: P3.38]
+fn publish_completed(
+    inputs: &WriteInputs,
+    cache: &mut LocationCache,
+    probe_name: &impl Fn() -> OsString,
+    tmp: TempPath,
+) -> WriteOutcome {
+    let item = inputs.plan.job;
+    let final_dir = &inputs.plan.final_dir;
+    // §2.1.1 step 4: resolve the no-clobber decision + §2.3.3 link-safety AS LATE AS POSSIBLE — open `final_dir`
+    // as a TOCTOU-closed pinned handle whose resolved identity is not a frozen source (P3.9).
+    let parent = match open_verified_parent_dir(final_dir, inputs.frozen_sources) {
+        Ok(ParentDirVerdict::Verified(parent)) => parent,
+        // §2.3.3 rule 2: `final_dir` resolves onto a frozen source → never publish there → §2.7 divert (P3.8).
+        Ok(ParentDirVerdict::ResolvesOntoSource) => {
+            return divert_completed(inputs, cache, probe_name, tmp);
+        }
+        // The parent could not be opened / verified (gone / not a directory) → §2.8 WriteFailed.
+        Err(_) => return fail_cleanup(item, [tmp], ConversionErrorKind::WriteFailed),
+    };
+    // The §2.14.3 EXDEV intermediate — a run-owned same-volume `.part` sibling of `final`, COMPUTED NAME-ONLY
+    // (never created here). `atomic_publish` materialises it (via `std::fs::copy`) ONLY on the cross-volume
+    // fallback; on the common same-volume publish — §2.14.1, where `tmp` IS a same-volume sibling of `final`, so
+    // the rename is intra-volume and EXDEV cannot fire — it stays a bare name. Name-only BY DECISION: an EAGER
+    // mint in `final_dir` would (a) FAIL, pre-empting the §2.7.2 writability-flip late-divert below, if `final`'s
+    // dir flipped read-only DURING the seconds-long engine write, and (b) waste a create+unlink per item. A rare
+    // cross-volume-crash materialisation is §2.6.3-sweep-reclaimable via its run-grammar name.
+    let intermediate = inputs.scratch.publish_temp_path(final_dir, item);
+    // §2.2.1: the lazy candidate names from the SOURCE stem + the target ext (a frozen source always has a stem —
+    // a stemless source is an internal fault here, never a panic).
+    let Some(candidates) = output_name(inputs.source, inputs.ext) else {
+        return fail_cleanup(item, [tmp], ConversionErrorKind::InternalError);
+    };
+    // §2.1.1 steps 3/5/6: sync → the §2.2.2 numbering ↔ no-clobber exclusive publish → dir-fsync (all inside
+    // atomic_publish, with the §2.14.3 cross-volume fallback).
+    match atomic_publish(&parent, final_dir, tmp.as_ref(), candidates, &intermediate) {
+        // Published beside-source — the same-volume publish renamed `tmp` onto `final` (the name-only
+        // `intermediate` was never materialised), so `tmp` is the sole leftover (already consumed → `cleanup_item`
+        // NotFound → Ok). Clean it explicitly (§2.6.2).
+        Ok(PublishOutcome::Published { leaf, .. }) => finish_published(
+            item,
+            final_dir.join(leaf),
+            inputs.plan.diverted.is_some(),
+            [tmp],
+        ),
+        // §2.7.2 FAT/exFAT (Unix): no create-only atomic publish here → divert (one divert per item). The
+        // name-only `intermediate` was never created, so there is nothing to clean.
+        Ok(PublishOutcome::NoAtomicPublishSupport) => {
+            divert_completed(inputs, cache, probe_name, tmp)
+        }
+        // §2.7.2 late-divert on a writability flip (USB pulled / share dropped / permission flip after the cached
+        // probe); any other publish error maps straight to §2.8 (never a divert, §2.7.2). The name-only
+        // `intermediate` was never created on this failed same-volume publish, so only `tmp` needs cleaning.
+        Err(err) => {
+            if inputs.plan.diverted.is_none() && is_write_divert_trigger(&err) {
+                divert_completed(inputs, cache, probe_name, tmp)
+            } else {
+                fail_cleanup(item, [tmp], map_publish_error(&err))
+            }
+        }
+    }
+}
+
+/// §2.7.2/§2.7.5 the late-divert (P3.38) — resolve the §2.7.3 divert ROOT ([`resolve_divert_target`], P3.35) and
+/// re-publish the completed `tmp` there through the FULL safety chain ([`publish_to_divert`], P3.36). ONE divert
+/// per item (§2.7.3): a plan already diverted, or a failed divert, is terminal `WriteFailed` — never re-diverted.
+/// [Build-Session-Entscheidung: P3.38]
+fn divert_completed(
+    inputs: &WriteInputs,
+    cache: &mut LocationCache,
+    probe_name: &impl Fn() -> OsString,
+    tmp: TempPath,
+) -> WriteOutcome {
+    let item = inputs.plan.job;
+    // §2.7.3 one divert per item: a plan whose beside-source location ALREADY diverted at C4 does not divert a
+    // second time at write — a further failure is terminal (§2.8 WriteFailed).
+    if inputs.plan.diverted.is_some() {
+        return fail_cleanup(item, [tmp], ConversionErrorKind::WriteFailed);
+    }
+    // §2.7.3 resolve the divert ROOT — the first §2.7.2-writable candidate; none usable → §2.8 WriteFailed
+    // (never divert onto a purgeable / another-FAT volume).
+    let divert_dir = match resolve_divert_target(inputs.divert_candidates, cache, probe_name) {
+        DivertTarget::Resolved(dir) => dir,
+        DivertTarget::Unavailable => {
+            return fail_cleanup(item, [tmp], ConversionErrorKind::WriteFailed)
+        }
+    };
+    // The §2.14.3 intermediate for the divert publish — a run-owned `.part` sibling on the DIVERT volume. The
+    // divert `tmp` sits on the ORIGINAL volume, so a divert onto a DIFFERENT volume crosses volumes and USES it
+    // (the divert `tmp` is `std::fs::copy`'d into it). Minted REAL (not name-only): `divert_dir` was just
+    // §2.7.2-verified WRITABLE by `resolve_divert_target`, so the mint cannot block, and a real [`TempPath`] is
+    // cleaned by `cleanup_item` on every divert exit (§2.6.2) — the cross-volume case DOES create a file here.
+    let Ok(intermediate) = inputs.scratch.publish_temp(&divert_dir, item) else {
+        return fail_cleanup(item, [tmp], ConversionErrorKind::WriteFailed);
+    };
+    // §2.7.2/§2.7.5 the late-divert publish — re-runs the FULL safety chain (link-safety + §2.14.4 free-space +
+    // §2.2.2 numbering + the exclusive publish, incl. the §2.14.3 cross-volume copy) on the divert target. NOT a
+    // degraded path (§2.7.5).
+    match publish_to_divert(
+        &divert_dir,
+        inputs.frozen_sources,
+        inputs.source,
+        inputs.ext,
+        tmp.as_ref(),
+        intermediate.as_ref(),
+    ) {
+        // Diverted output published — on the cross-volume path `tmp` was COPIED (left on the original volume) and
+        // `intermediate` renamed onto `final`; on a same-volume divert `tmp` was renamed and `intermediate` is an
+        // unused 0-byte sibling. Either way clean BOTH leftovers explicitly (§2.6.2). `diverted = true` (§2.7.3).
+        Ok(PublishOutcome::Published { leaf, .. }) => {
+            finish_published(item, divert_dir.join(leaf), true, [tmp, intermediate])
+        }
+        // The divert target is ALSO atomic-publish-incapable — `resolve_divert_target` already excludes those,
+        // so this is defensive; never a second divert (§2.7.3) → §2.8 WriteFailed. Clean both temps (§2.6.2).
+        Ok(PublishOutcome::NoAtomicPublishSupport) => {
+            fail_cleanup(item, [tmp, intermediate], ConversionErrorKind::WriteFailed)
+        }
+        // A divert leg failed (link-safety / free-space / publish) — the ONE item fails clearly; no re-divert.
+        // Clean both temps (§2.6.2) so a divert-volume leftover surfaces, never a silent drop.
+        Err(err) => fail_cleanup(item, [tmp, intermediate], map_publish_error(&err)),
+    }
+}
+
+/// Map a `crate::fs_guard` [`PublishError`] to its §2.8 [`ConversionErrorKind`] — the tier-1 boundary where the
+/// leaf verdict becomes the wire taxonomy (§2.8; `crate::fs_guard` never depends up on `crate::outcome`). A
+/// generic `Io` is a non-space destination write failure (§2.1/§2.7). [Build-Session-Entscheidung: P3.38]
+fn map_publish_error(err: &PublishError) -> ConversionErrorKind {
+    match err {
+        PublishError::PathTooLong(_) => ConversionErrorKind::PathTooLong,
+        PublishError::TooManyCollisions => ConversionErrorKind::TooManyCollisions,
+        PublishError::OutOfDisk => ConversionErrorKind::OutOfDisk,
+        PublishError::Io(_) => ConversionErrorKind::WriteFailed,
+    }
+}
+
+/// §2.1.1 step 7 — a failed item removes EVERY temp it minted ([`cleanup_item`], P3.22); a removal failure is
+/// surfaced as a §2.6.4 [`ResidueRecord`] (case 2, `Failed`-with-residue) so the item is never a silent clean
+/// success. `temps` is ALL the item's real [`TempPath`]s (the publish temp + any divert intermediate) — passing
+/// them explicitly rather than dropping them is what lets a genuine removal failure surface (§2.6.4), never a
+/// silent delete-on-drop. [Build-Session-Entscheidung: P3.38]
+fn fail_cleanup(
+    item: ItemId,
+    temps: impl IntoIterator<Item = TempPath>,
+    kind: ConversionErrorKind,
+) -> WriteOutcome {
+    WriteOutcome {
+        disposition: WriteDisposition::Failed { kind },
+        diverted: false,
+        residue: cleanup_leftovers(item, temps),
+    }
+}
+
+/// A successful publish — clean EVERY leftover temp explicitly (§2.6.2) and record any §2.6.4 residue (case 1,
+/// `Succeeded`-with-residue). `temps` carries every real [`TempPath`] the item minted (the publish temp + any
+/// divert intermediate): the one the publish renamed is already gone (`cleanup_item` idempotent-NotFound → Ok),
+/// the rest are removed. [Build-Session-Entscheidung: P3.38]
+fn finish_published(
+    item: ItemId,
+    output: PathBuf,
+    diverted: bool,
+    temps: impl IntoIterator<Item = TempPath>,
+) -> WriteOutcome {
+    WriteOutcome {
+        disposition: WriteDisposition::Published { output },
+        diverted,
+        residue: cleanup_leftovers(item, temps),
+    }
+}
+
+/// §2.6.2/§2.6.4: remove each leftover publish-temp EXPLICITLY (never a silent delete-on-drop — a real removal
+/// failure must surface, §2.6.4). The temp the publish renamed is already gone (`cleanup_item` treats NotFound as
+/// idempotent success); a genuine failure is recorded as the item's [`ResidueRecord`] so it is never a silent
+/// clean success. Returns the FIRST unremovable path. Panic-free. [Build-Session-Entscheidung: P3.38]
+fn cleanup_leftovers(
+    item: ItemId,
+    leftovers: impl IntoIterator<Item = TempPath>,
+) -> Option<ResidueRecord> {
+    let mut residue = None;
+    for leftover in leftovers {
+        let path = leftover.to_path_buf();
+        if cleanup_item(leftover).is_err() && residue.is_none() {
+            residue = Some(ResidueRecord::new(item, path));
+        }
+    }
+    residue
 }
 
 // ─── §0.4.2 ConversionEvent — the C6 run-telemetry Channel<ConversionEvent> payload (P2.37) ──────────
@@ -5690,6 +6057,670 @@ mod cleanup_honesty_tests {
             append_residue_tail(base.clone(), false),
             base,
             "§2.8.2: a residue-free run's summary line is unchanged — no spurious tail"
+        );
+    }
+}
+
+#[cfg(test)]
+mod write_sequence_tests {
+    //! §6.4.1 unit + real-FS integration (G15/G32(a)) for the P3.38 §2.1.1 per-item write sequence — the
+    //! composition of `crate::run` (temp/cleanup) + `crate::fs_guard` (publish/divert) + an engine-write SEAM.
+    //! The engine is a caller-supplied `FnOnce` (the real native CSV/TSV engine binds P3.41/P3.48), so these
+    //! run against a REAL temp filesystem (test-strategy §0.1 — never mock the FS under test); the G31
+    //! output-VALIDITY structural readers bind with the real engine + corpus (P3.62/P3.63). Here we pin: the
+    //! atomic beside-source publish + the no-harm G32(a) source-unchanged invariant, no-clobber numbering, the
+    //! §1.7 exit-verification (empty / vanished output), step-7 cleanup-on-error, the §2.7.2/§2.7.5 late-divert
+    //! wiring, and the one-divert-per-item rule.
+    use super::*;
+    use crate::domain::InstanceId;
+    use crate::fs_guard::{resolve_identity, PathTooLong};
+
+    /// A real-FS fixture: a live run handle, a real source file (with its frozen identity), and a writable
+    /// destination dir — every leg exercises the real primitives, nothing mocked (test-strategy §0.1).
+    struct Fixture {
+        _scratch_base: tempfile::TempDir,
+        scratch: RunScratch,
+        _src_dir: tempfile::TempDir,
+        source: PathBuf,
+        frozen: Vec<FileIdentity>,
+        dest: tempfile::TempDir,
+        cache: LocationCache,
+    }
+
+    impl Fixture {
+        fn new(source_bytes: &[u8]) -> Self {
+            let scratch_base = tempfile::tempdir().expect("a real scratch base dir");
+            let scratch = RunScratch::acquire(
+                scratch_base.path(),
+                InstanceId::mint(),
+                std::process::id(),
+                RunId::mint(),
+            )
+            .expect("acquire the run scratch (lock held)");
+            let src_dir = tempfile::tempdir().expect("a real source dir");
+            let source = src_dir.path().join("data.csv");
+            std::fs::write(&source, source_bytes).expect("write the source file");
+            let frozen = vec![resolve_identity(&source).expect("resolve the source identity")];
+            let dest = tempfile::tempdir().expect("a real destination dir");
+            Self {
+                _scratch_base: scratch_base,
+                scratch,
+                _src_dir: src_dir,
+                source,
+                frozen,
+                dest,
+                cache: LocationCache::new(),
+            }
+        }
+
+        /// A beside-source plan writing into `dir` (both `final_dir` and the same-volume `publish_temp_dir`).
+        fn plan_in(&self, dir: &Path) -> OutputPlan {
+            OutputPlan {
+                job: ItemId::from_index(0),
+                final_dir: dir.to_path_buf(),
+                diverted: None,
+                base_name: OsString::from("data"),
+                extension: OsString::from("tsv"),
+                publish_temp_dir: dir.to_path_buf(),
+            }
+        }
+    }
+
+    /// A `crate::run`-shaped probe name for the §2.7.2 writability probe (created + removed by `location_status`).
+    fn probe() -> impl Fn() -> OsString {
+        || OsString::from(".convertia-test-probe.part")
+    }
+
+    /// The `.part` sibling names in `dir` — the leftover-temp assertion (a clean publish leaves none).
+    fn part_files(dir: &Path) -> Vec<OsString> {
+        std::fs::read_dir(dir)
+            .expect("read the dir")
+            .filter_map(Result::ok)
+            .map(|e| e.file_name())
+            .filter(|n| n.to_string_lossy().contains(".part"))
+            .collect()
+    }
+
+    /// A writable, NON-ephemeral temp dir (under the crate source root, not `%TEMP%`) — a valid §2.7.3 divert
+    /// TARGET, since `resolve_divert_target` rejects an ephemeral candidate (§2.7.2). `None` when the crate root
+    /// is itself under an OS temp root (a clean skip, never a false pass — the fs_guard `non_ephemeral_tempdir`
+    /// pattern). Real FS (test-strategy §0.1).
+    fn non_ephemeral_dir() -> Option<tempfile::TempDir> {
+        let dir = tempfile::Builder::new()
+            .prefix("convertia-p338-")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .expect("create a temp dir in the crate source root");
+        (!crate::platform::is_ephemeral_output_dir(dir.path())).then_some(dir)
+    }
+
+    #[test]
+    fn a_completed_write_publishes_beside_source_and_leaves_the_source_byte_identical() {
+        let mut f = Fixture::new(b"a,b\n1,2\n");
+        let before = std::fs::read(&f.source).expect("read source before");
+        let plan = f.plan_in(f.dest.path());
+
+        let out = write_item(
+            &plan,
+            &f.source,
+            &f.frozen,
+            &[],
+            &f.scratch,
+            &mut f.cache,
+            probe(),
+            |tmp: &Path| {
+                std::fs::write(tmp, b"a\tb\n1\t2\n").map_err(|_| ConversionErrorKind::WriteFailed)
+            },
+        );
+
+        // §2.1: published at the beside-source name `data.tsv`, carrying the seam's bytes.
+        let output = f.dest.path().join("data.tsv");
+        assert_eq!(
+            out.disposition,
+            WriteDisposition::Published {
+                output: output.clone()
+            }
+        );
+        assert_eq!(
+            std::fs::read(&output).expect("read output"),
+            b"a\tb\n1\t2\n",
+            "the published file is exactly what the engine seam wrote"
+        );
+        assert!(!out.diverted, "a beside-source publish is not diverted");
+        assert!(out.residue.is_none(), "a clean publish leaves no residue");
+        // G32(a): the source bytes are untouched (no-harm).
+        assert_eq!(
+            std::fs::read(&f.source).expect("read source after"),
+            before,
+            "G32(a): the source file is byte-identical after the conversion"
+        );
+        // §2.6.2: no leftover `.part` — the renamed publish temp is cleaned (idempotent NotFound) and the
+        // name-only EXDEV intermediate was never created on this same-volume publish.
+        assert!(
+            part_files(f.dest.path()).is_empty(),
+            "no `.part` residue expected, found {:?}",
+            part_files(f.dest.path())
+        );
+    }
+
+    #[test]
+    fn a_name_collision_publishes_the_next_numbered_variant_without_clobbering() {
+        let mut f = Fixture::new(b"x\n");
+        // A file already at the target name — the no-clobber publish must NEVER overwrite it.
+        std::fs::write(f.dest.path().join("data.tsv"), b"pre-existing")
+            .expect("seed the collision");
+        let plan = f.plan_in(f.dest.path());
+
+        let out = write_item(
+            &plan,
+            &f.source,
+            &f.frozen,
+            &[],
+            &f.scratch,
+            &mut f.cache,
+            probe(),
+            |tmp: &Path| {
+                std::fs::write(tmp, b"fresh").map_err(|_| ConversionErrorKind::WriteFailed)
+            },
+        );
+
+        // §2.2.2: the collision bumps to the space-paren numbered variant, never a replace.
+        let output = f.dest.path().join("data (1).tsv");
+        assert_eq!(
+            out.disposition,
+            WriteDisposition::Published {
+                output: output.clone()
+            }
+        );
+        assert_eq!(std::fs::read(&output).expect("read output"), b"fresh");
+        assert_eq!(
+            std::fs::read(f.dest.path().join("data.tsv")).expect("read the pre-existing file"),
+            b"pre-existing",
+            "no-clobber: the pre-existing file is untouched"
+        );
+    }
+
+    #[test]
+    fn an_engine_error_fails_the_item_removes_the_temp_and_never_creates_final() {
+        let mut f = Fixture::new(b"src\n");
+        let before = std::fs::read(&f.source).expect("read source before");
+        let plan = f.plan_in(f.dest.path());
+
+        let out = write_item(
+            &plan,
+            &f.source,
+            &f.frozen,
+            &[],
+            &f.scratch,
+            &mut f.cache,
+            probe(),
+            |_tmp: &Path| Err(ConversionErrorKind::Corrupt),
+        );
+
+        // §2.1.1 step 7: the item fails with the engine's kind; `final` was never created.
+        assert_eq!(
+            out.disposition,
+            WriteDisposition::Failed {
+                kind: ConversionErrorKind::Corrupt
+            }
+        );
+        assert!(
+            out.residue.is_none(),
+            "the temp was removed cleanly — no residue"
+        );
+        assert!(
+            !f.dest.path().join("data.tsv").exists(),
+            "no `final` on an engine failure"
+        );
+        assert!(
+            part_files(f.dest.path()).is_empty(),
+            "the temp is removed on failure, found {:?}",
+            part_files(f.dest.path())
+        );
+        assert_eq!(
+            std::fs::read(&f.source).expect("read source after"),
+            before,
+            "G32(a): a failed item never touches the source"
+        );
+    }
+
+    #[test]
+    fn an_empty_output_is_a_failure_not_a_clean_success() {
+        let mut f = Fixture::new(b"src\n");
+        let plan = f.plan_in(f.dest.path());
+
+        // The seam "succeeds" but writes nothing — the §1.7 exit-verification rejects the empty output.
+        let out = write_item(
+            &plan,
+            &f.source,
+            &f.frozen,
+            &[],
+            &f.scratch,
+            &mut f.cache,
+            probe(),
+            |_tmp: &Path| Ok(()),
+        );
+
+        assert_eq!(
+            out.disposition,
+            WriteDisposition::Failed {
+                kind: ConversionErrorKind::Empty
+            },
+            "§1.7: a success exit with zero output is a §2.8 Empty failure, never a clean success"
+        );
+        assert!(
+            !f.dest.path().join("data.tsv").exists(),
+            "no `final` for an empty output"
+        );
+    }
+
+    #[test]
+    fn a_vanished_output_after_a_successful_seam_is_an_internal_error() {
+        let mut f = Fixture::new(b"src\n");
+        let plan = f.plan_in(f.dest.path());
+
+        // The seam removes its own temp then reports success — an internal contract violation (§1.7).
+        let out = write_item(
+            &plan,
+            &f.source,
+            &f.frozen,
+            &[],
+            &f.scratch,
+            &mut f.cache,
+            probe(),
+            |tmp: &Path| {
+                std::fs::remove_file(tmp).expect("remove the temp mid-seam");
+                Ok(())
+            },
+        );
+
+        assert_eq!(
+            out.disposition,
+            WriteDisposition::Failed {
+                kind: ConversionErrorKind::InternalError
+            },
+            "§1.7: a vanished output after a 'successful' seam is an internal fault"
+        );
+    }
+
+    #[test]
+    fn a_missing_publish_temp_dir_fails_write_failed_before_the_engine_runs() {
+        let mut f = Fixture::new(b"src\n");
+        // `publish_temp_dir` points at a non-existent directory → step 1 cannot mint the temp.
+        let plan = OutputPlan {
+            job: ItemId::from_index(0),
+            final_dir: f.dest.path().to_path_buf(),
+            diverted: None,
+            base_name: OsString::from("data"),
+            extension: OsString::from("tsv"),
+            publish_temp_dir: f.dest.path().join("does-not-exist"),
+        };
+        let mut ran = false;
+
+        let out = write_item(
+            &plan,
+            &f.source,
+            &f.frozen,
+            &[],
+            &f.scratch,
+            &mut f.cache,
+            probe(),
+            |_tmp: &Path| {
+                ran = true;
+                Ok(())
+            },
+        );
+
+        assert_eq!(
+            out.disposition,
+            WriteDisposition::Failed {
+                kind: ConversionErrorKind::WriteFailed
+            }
+        );
+        assert!(
+            !ran,
+            "the engine seam never runs when the publish temp cannot be created"
+        );
+    }
+
+    #[test]
+    fn a_final_dir_that_is_a_file_fails_write_failed() {
+        let mut f = Fixture::new(b"src\n");
+        // `final_dir` is a real FILE, not a directory — the §2.3.3 parent-handle open rejects it.
+        let file_final = f.dest.path().join("i-am-a-file");
+        std::fs::write(&file_final, b"not a dir").expect("create the file");
+        let plan = OutputPlan {
+            job: ItemId::from_index(0),
+            final_dir: file_final.clone(),
+            diverted: None,
+            base_name: OsString::from("data"),
+            extension: OsString::from("tsv"),
+            publish_temp_dir: f.dest.path().to_path_buf(),
+        };
+
+        let out = write_item(
+            &plan,
+            &f.source,
+            &f.frozen,
+            &[],
+            &f.scratch,
+            &mut f.cache,
+            probe(),
+            |tmp: &Path| std::fs::write(tmp, b"out").map_err(|_| ConversionErrorKind::WriteFailed),
+        );
+
+        assert_eq!(
+            out.disposition,
+            WriteDisposition::Failed {
+                kind: ConversionErrorKind::WriteFailed
+            }
+        );
+        assert_eq!(
+            std::fs::read(&file_final).expect("the file is untouched"),
+            b"not a dir",
+            "a failed publish never harms an unrelated file at the final path"
+        );
+    }
+
+    #[test]
+    fn map_publish_error_maps_each_leaf_verdict_to_its_taxonomy_kind() {
+        // The tier-1 leaf-verdict -> §2.8 boundary (the hard-to-drive publish errors, covered directly).
+        assert_eq!(
+            map_publish_error(&PublishError::PathTooLong(PathTooLong::Total)),
+            ConversionErrorKind::PathTooLong
+        );
+        assert_eq!(
+            map_publish_error(&PublishError::TooManyCollisions),
+            ConversionErrorKind::TooManyCollisions
+        );
+        assert_eq!(
+            map_publish_error(&PublishError::OutOfDisk),
+            ConversionErrorKind::OutOfDisk
+        );
+        assert_eq!(
+            map_publish_error(&PublishError::Io(std::io::Error::other("write failed"))),
+            ConversionErrorKind::WriteFailed
+        );
+    }
+
+    #[test]
+    fn a_parent_resolving_onto_a_frozen_source_diverts_and_never_publishes_onto_an_original() {
+        let mut f = Fixture::new(b"a,b\n");
+        // Freeze the DESTINATION dir's own identity into the frozen set — so the §2.3.3 parent-handle verify
+        // sees `final_dir` resolve ONTO a frozen source and must divert (never publish onto an original). This
+        // drives the ResolvesOntoSource → late-divert wiring on EVERY platform (no read-only-dir permissions).
+        let frozen = vec![resolve_identity(f.dest.path()).expect("resolve the dest dir identity")];
+        let Some(divert) = non_ephemeral_dir() else {
+            return; // the crate root is itself ephemeral — no valid divert target to test against.
+        };
+        let plan = f.plan_in(f.dest.path());
+
+        let out = write_item(
+            &plan,
+            &f.source,
+            &frozen,
+            &[divert.path().to_path_buf()],
+            &f.scratch,
+            &mut f.cache,
+            probe(),
+            |tmp: &Path| {
+                std::fs::write(tmp, b"a\tb\n").map_err(|_| ConversionErrorKind::WriteFailed)
+            },
+        );
+
+        // §2.3.3/§2.7: the output diverted to the (empty) divert root under the base name.
+        let output = divert.path().join("data.tsv");
+        assert_eq!(
+            out.disposition,
+            WriteDisposition::Published {
+                output: output.clone()
+            },
+            "a resolves-onto-source parent diverts rather than publishing onto the original"
+        );
+        assert!(out.diverted, "§2.7.3: the diverted flag is set");
+        assert_eq!(
+            std::fs::read(&output).expect("read the diverted output"),
+            b"a\tb\n"
+        );
+        assert!(
+            !f.dest.path().join("data.tsv").exists(),
+            "§2.3.3: nothing was published into the frozen (resolves-onto-source) location"
+        );
+    }
+
+    // -- §2.7.2/§2.7.5 late-divert (Unix — a read-only `final_dir` injects the writability flip; a 0o500 dir
+    // blocks writes only for a non-root user, so the divert-trigger tests self-skip under root). --
+
+    #[cfg(unix)]
+    fn running_as_root() -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        // Probe: a 0o500 dir a non-root user cannot write into; root ignores the mode -> we are root, skip.
+        let probe_dir = tempfile::tempdir().expect("a probe dir");
+        std::fs::set_permissions(probe_dir.path(), std::fs::Permissions::from_mode(0o500))
+            .expect("chmod the probe dir read-only");
+        let root = std::fs::write(probe_dir.path().join("w"), b"").is_ok();
+        std::fs::set_permissions(probe_dir.path(), std::fs::Permissions::from_mode(0o700)).ok();
+        root
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_writability_flip_late_diverts_to_the_divert_root() {
+        use std::os::unix::fs::PermissionsExt;
+        if running_as_root() {
+            return; // 0o500 does not block root — the writability trigger cannot fire.
+        }
+        let mut f = Fixture::new(b"a,b\n");
+        let before = std::fs::read(&f.source).expect("read source before");
+        // Temp lands in a WRITABLE dir; `final_dir` is a separate dir we flip read-only -> the publish EACCES.
+        let temp_vol = tempfile::tempdir().expect("a writable temp-volume dir");
+        let readonly_final = tempfile::tempdir().expect("the (soon read-only) final dir");
+        let Some(divert) = non_ephemeral_dir() else {
+            return; // the crate root is itself ephemeral — no valid divert target to test against.
+        };
+        let plan = OutputPlan {
+            job: ItemId::from_index(0),
+            final_dir: readonly_final.path().to_path_buf(),
+            diverted: None,
+            base_name: OsString::from("data"),
+            extension: OsString::from("tsv"),
+            publish_temp_dir: temp_vol.path().to_path_buf(),
+        };
+        std::fs::set_permissions(
+            readonly_final.path(),
+            std::fs::Permissions::from_mode(0o500),
+        )
+        .expect("flip the final dir read-only");
+
+        let out = write_item(
+            &plan,
+            &f.source,
+            &f.frozen,
+            &[divert.path().to_path_buf()],
+            &f.scratch,
+            &mut f.cache,
+            probe(),
+            |tmp: &Path| {
+                std::fs::write(tmp, b"a\tb\n").map_err(|_| ConversionErrorKind::WriteFailed)
+            },
+        );
+
+        // Restore perms so the tempdir can clean itself up.
+        std::fs::set_permissions(
+            readonly_final.path(),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .ok();
+
+        // §2.7.3: the output diverted under the divert root (empty → the base `data.tsv` name).
+        let output = divert.path().join("data.tsv");
+        assert_eq!(
+            out.disposition,
+            WriteDisposition::Published {
+                output: output.clone()
+            },
+            "the output diverted to the divert root"
+        );
+        assert!(
+            out.diverted,
+            "§2.7.3: the diverted flag is set for the run's divert_root_display"
+        );
+        assert_eq!(
+            std::fs::read(&output).expect("read the diverted output"),
+            b"a\tb\n"
+        );
+        assert!(
+            !readonly_final.path().join("data.tsv").exists(),
+            "§2.7.5: nothing was published into the unwritable original location"
+        );
+        assert_eq!(
+            std::fs::read(&f.source).expect("read source after"),
+            before,
+            "G32(a): a diverted conversion still never touches the source"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_already_diverted_plan_does_not_re_divert_on_a_second_writability_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        if running_as_root() {
+            return;
+        }
+        let mut f = Fixture::new(b"a,b\n");
+        let temp_vol = tempfile::tempdir().expect("a writable temp-volume dir");
+        let readonly_final = tempfile::tempdir().expect("the (soon read-only) final dir");
+        let divert = tempfile::tempdir().expect("a writable candidate (must NOT be used)");
+        // The plan was ALREADY diverted at C4 — a second write-time failure is terminal (one divert per item).
+        let plan = OutputPlan {
+            job: ItemId::from_index(0),
+            final_dir: readonly_final.path().to_path_buf(),
+            diverted: Some(DivertReason::Unwritable),
+            base_name: OsString::from("data"),
+            extension: OsString::from("tsv"),
+            publish_temp_dir: temp_vol.path().to_path_buf(),
+        };
+        std::fs::set_permissions(
+            readonly_final.path(),
+            std::fs::Permissions::from_mode(0o500),
+        )
+        .expect("flip the final dir read-only");
+
+        let out = write_item(
+            &plan,
+            &f.source,
+            &f.frozen,
+            &[divert.path().to_path_buf()],
+            &f.scratch,
+            &mut f.cache,
+            probe(),
+            |tmp: &Path| {
+                std::fs::write(tmp, b"a\tb\n").map_err(|_| ConversionErrorKind::WriteFailed)
+            },
+        );
+
+        std::fs::set_permissions(
+            readonly_final.path(),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .ok();
+
+        assert_eq!(
+            out.disposition,
+            WriteDisposition::Failed {
+                kind: ConversionErrorKind::WriteFailed
+            },
+            "§2.7.3: an already-diverted plan does not divert a second time"
+        );
+        assert!(
+            part_files(divert.path()).is_empty() && !divert.path().join("data.tsv").exists(),
+            "the divert candidate was never written — no re-divert"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_writability_flip_with_no_usable_divert_target_fails_write_failed() {
+        use std::os::unix::fs::PermissionsExt;
+        if running_as_root() {
+            return;
+        }
+        let mut f = Fixture::new(b"a,b\n");
+        let temp_vol = tempfile::tempdir().expect("a writable temp-volume dir");
+        let readonly_final = tempfile::tempdir().expect("the (soon read-only) final dir");
+        let plan = OutputPlan {
+            job: ItemId::from_index(0),
+            final_dir: readonly_final.path().to_path_buf(),
+            diverted: None,
+            base_name: OsString::from("data"),
+            extension: OsString::from("tsv"),
+            publish_temp_dir: temp_vol.path().to_path_buf(),
+        };
+        std::fs::set_permissions(
+            readonly_final.path(),
+            std::fs::Permissions::from_mode(0o500),
+        )
+        .expect("flip the final dir read-only");
+
+        // No divert candidates at all -> resolve_divert_target yields Unavailable -> §2.8 WriteFailed.
+        let out = write_item(
+            &plan,
+            &f.source,
+            &f.frozen,
+            &[],
+            &f.scratch,
+            &mut f.cache,
+            probe(),
+            |tmp: &Path| {
+                std::fs::write(tmp, b"a\tb\n").map_err(|_| ConversionErrorKind::WriteFailed)
+            },
+        );
+
+        std::fs::set_permissions(
+            readonly_final.path(),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .ok();
+
+        assert_eq!(
+            out.disposition,
+            WriteDisposition::Failed {
+                kind: ConversionErrorKind::WriteFailed
+            },
+            "§2.7.3: no usable divert target -> the item fails clearly, never a bad divert"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_extension_is_an_internal_error() {
+        use std::os::unix::ffi::OsStringExt;
+        let mut f = Fixture::new(b"src\n");
+        let plan = OutputPlan {
+            job: ItemId::from_index(0),
+            final_dir: f.dest.path().to_path_buf(),
+            diverted: None,
+            base_name: OsString::from("data"),
+            extension: OsString::from_vec(vec![0xff, 0xfe]), // invalid UTF-8
+            publish_temp_dir: f.dest.path().to_path_buf(),
+        };
+
+        let out = write_item(
+            &plan,
+            &f.source,
+            &f.frozen,
+            &[],
+            &f.scratch,
+            &mut f.cache,
+            probe(),
+            |tmp: &Path| std::fs::write(tmp, b"out").map_err(|_| ConversionErrorKind::WriteFailed),
+        );
+
+        assert_eq!(
+            out.disposition,
+            WriteDisposition::Failed {
+                kind: ConversionErrorKind::InternalError
+            },
+            "a non-UTF-8 target extension is an internal fault (never a user-facing case)"
         );
     }
 }
