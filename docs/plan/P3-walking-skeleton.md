@@ -258,7 +258,7 @@ skeleton can ingest a CSV folder and land output beside-source or diverted, on a
 - [x] **P3.35** [RUST] Build the §2.7.3 divert target resolution + re-test of the divert root · §2.7.3 §2.7.4
   needs: P3.33
   > on an unwritable/ephemeral/`NoAtomicPublish` location, divert that source's output (per-location, not whole-batch) to **Downloads → Documents fallback** via `PathResolver` (`download_dir()`/`document_dir()`), overridable by the user-chosen root. The divert target is itself run through `location_status` (incl. the FAT/exFAT test, P3.18) — if it too is ephemeral/unwritable/FAT-exFAT → fail clearly `WriteFailed` (§2.8), never divert onto a purgeable/another-FAT volume. Diverted outputs de-collided by the same §2.2 numbering; summary maps each output to its source (§2.7.4).
-- [ ] **P3.36** [RUST] Build the late-divert path — post-probe read-only flip re-runs the full safety chain · §2.7.2 §2.7.5 · G31
+- [x] **P3.36** [RUST] Build the late-divert path — post-probe read-only flip re-runs the full safety chain · §2.7.2 §2.7.5 · G31
   needs: P3.35, P3.15, P3.11
   > when the real §2.1 publish fails for a **writability** reason (USB pulled / share dropped / permission flip after the cached probe), treat the location as unwritable and **late-divert** to the §2.7.3 target **before** reporting failure — re-running the full chain on the divert target: §2.3.3 `is_safe_output`, §2.2.3 path-limit re-checked against the divert **absolute path**, §2.14.4 free-space re-checked against the divert **volume**, then the §2.1 publish. A non-writability error (`OutOfDisk`) is NOT a divert trigger. The divert path is **not degraded** — every guarantee runs identically (§2.7.5, the SSOT Principle-5 assertion this proves end-to-end).
 
