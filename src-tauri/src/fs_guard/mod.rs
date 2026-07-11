@@ -71,6 +71,11 @@
 //!    link-safety via `open_verified_parent_dir` → §2.14.4 free-space → §2.2.3 path-limit + §2.1 publish via
 //!    `atomic_publish`) on the §2.7.3 divert target — "not a degraded path" (§2.7.5). The primary→trigger→divert
 //!    orchestration is the §2.1.1 write-sequence (P3.38) concern; this box provides the pieces it wires.
+//!  - `compute_output_plan` / [`OutputPlanError`] — the §1.8 per-job OutputPlan computation (**P3.37**): resolve
+//!    the output DIRECTORY (Writable → `prepare_output_dir` beside/chosen subtree; Divert → the caller-resolved
+//!    §2.7.3 divert root FLAT via a single-candidate `resolve_divert_target`, else `DivertUnavailable`) and
+//!    assemble the directory-based [`crate::domain::OutputPlan`] (no pre-baked `final_path`; `publish_temp_dir =
+//!    final_dir`, §2.14.1) the §2.1.1 write sequence (P3.38) / C4 plan_output body (P3.49) consume.
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -79,7 +84,7 @@ use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::domain::DivertReason;
+use crate::domain::{DivertReason, ItemId, OutputPlan};
 
 // [Build-Session-Entscheidung: P2.74] The §2.3.1 resolved-identity TYPE only (option A "split IO-vs-pure",
 // Co-Pilot 2026-06-30, owner-ratified): the `resolve_identity` FUNCTION that POPULATES it
@@ -690,9 +695,10 @@ impl Iterator for OutputNameCandidates {
     allow(
         dead_code,
         reason = "§2.2.1 output_name (P3.10) — the lazy candidate generator. Called by P3.36's publish_to_divert \
-                  (naming the divert output) + the §2.2.2 numbering loop / §1.8 OutputPlan (P3.37), still unwired \
-                  via the §2.1.1 write sequence (P3.38), so it is dead-at-runtime but no longer statically \
-                  unused; `allow` (permissive) covers the ambiguous dead-ness. Exercised by the output_name_tests."
+                  (naming the divert output); its other production consumer is the §2.1.1 write sequence (P3.38, \
+                  the beside-source publish candidates) — the §1.8 OutputPlan computation (P3.37) does NOT call \
+                  it (it derives base_name via file_stem, §1.8 directory-based). Dead-at-runtime but no longer \
+                  statically unused; `allow` (permissive) covers the ambiguous dead-ness. Exercised by output_name_tests."
     )
 )]
 pub fn output_name(source: &Path, ext: &str) -> Option<OutputNameCandidates> {
@@ -1940,14 +1946,19 @@ fn create_subtree_dir(dir: &Path) -> io::Result<()> {
 /// boundary): a strip/create failure is a clean `Err` the §2.8 caller maps to a per-item failure (batch
 /// continues, §1.9), NEVER a partial silently-wrong tree. `fs_guard` is a §0.7 tier-2 LEAF — it returns
 /// `io::Result`, never a `ConversionErrorKind` (the caller maps). [Build-Session-Entscheidung: P3.34]
+// [Test-Change: P3.37 — old-obsolete+new-correct, §1.8] `expect`→`allow`: P3.37's `compute_output_plan` now
+// calls `prepare_output_dir` for the Writable case, so the P3.34 DEAD assertion errors as unfulfilled under
+// -D warnings — but that consumer is unwired until the §1.8/C4 plan_output body (P3.49) / write sequence (P3.38),
+// so the fn's dead-ness is ambiguous and `allow` (permissive) is correct (cf. P3.7/P3.8/P3.15/P3.36).
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "§2.7.1 prepare_output_dir (P3.34) — the destination-mode output-dir preparation. Its \
-                  production caller is the §1.8 OutputPlan computation (P3.37, `needs: P3.34`), which stores the \
-                  returned directory as `final_dir`; statically unused in the production build until that wiring \
-                  lands (`expect` auto-flags the moment it does), exercised by prepare_output_dir_tests."
+        reason = "§2.7.1 prepare_output_dir (P3.34) — the destination-mode output-dir preparation. Called by \
+                  P3.37's compute_output_plan (the Writable-case final_dir), still unwired via the §1.8/C4 \
+                  plan_output body (P3.49) / the §2.1.1 write sequence (P3.38), so it is dead-at-runtime but no \
+                  longer statically unused; `allow` (permissive) covers the ambiguous dead-ness. Exercised by \
+                  prepare_output_dir_tests."
     )
 )]
 pub fn prepare_output_dir(source: &Path, mode: DestinationMode) -> io::Result<PathBuf> {
@@ -2056,14 +2067,19 @@ pub enum DivertTarget {
 /// deny, G4/G14). [Build-Session-Entscheidung: P3.35]
 #[must_use = "the DivertTarget verdict decides WHERE (or whether) the output diverts — dropping it would \
               divert blindly or skip the §2.8 WriteFailed on an unusable target"]
+// [Test-Change: P3.37 — old-obsolete+new-correct, §1.8] `expect`→`allow`: P3.37's `compute_output_plan` now
+// calls `resolve_divert_target` for the Divert case, so the P3.35 DEAD assertion errors as unfulfilled under
+// -D warnings — but that consumer is unwired until the §1.8/C4 plan_output body (P3.49) / write sequence (P3.38),
+// so the fn's dead-ness is ambiguous and `allow` (permissive) is correct (cf. P3.7/P3.8/P3.15/P3.36).
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "§2.7.3 resolve_divert_target (P3.35) — divert-root resolution. Its production caller is the \
-                  late-divert path (P3.36) / the §1.8 OutputPlan divert leg (P3.37), which map Unavailable to \
-                  the §2.8 WriteFailed; statically unused in the production build until that wiring lands \
-                  (`expect` auto-flags the moment it does), exercised by the resolve_divert_target_tests."
+        reason = "§2.7.3 resolve_divert_target (P3.35) — divert-root resolution. Called by P3.37's \
+                  compute_output_plan (the Divert-case final_dir) + the late-divert path (P3.36), still unwired \
+                  via the §1.8/C4 plan_output body (P3.49) / the §2.1.1 write sequence (P3.38), so it is \
+                  dead-at-runtime but no longer statically unused; `allow` (permissive) covers the ambiguous \
+                  dead-ness. Exercised by the resolve_divert_target_tests."
     )
 )]
 pub fn resolve_divert_target(
@@ -2230,6 +2246,126 @@ pub fn publish_to_divert(
         candidates,
         same_volume_intermediate,
     )
+}
+
+/// The §1.8 [`compute_output_plan`] failure verdict (P3.37) — a `crate::fs_guard` §0.7 tier-2 LEAF error the
+/// §1.8/C4 caller (P3.49) maps to §2.8. `crate::fs_guard` never depends up on `crate::outcome`, so it returns
+/// this, never a `ConversionErrorKind`. [Build-Session-Entscheidung: P3.37]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "P3.37 — compute_output_plan's failure verdict; constructed only by that fn (itself unwired \
+                  until the §1.8/C4 plan_output body P3.49 / the §2.1.1 write sequence P3.38), so it is \
+                  dead-at-runtime through the P3 wiring window; `allow` (permissive) covers the ambiguous \
+                  dead-ness (cf. OutputSafety). Exercised by compute_output_plan_tests."
+    )
+)]
+#[derive(Debug)]
+pub enum OutputPlanError {
+    /// A §2.7.1 directory-preparation failure from [`prepare_output_dir`] (a non-directory collision /
+    /// `..`-traversal / a create error — the §2.3.3 link-safety on the deepest dir runs at the P3.9 publish, NOT
+    /// here, so a symlink-to-dir ancestor is tolerated at this stage) — the item fails per §2.8 (a
+    /// `WriteFailed`/`Io`-class kind).
+    Io(io::Error),
+    /// §2.7.3: no usable divert target — the diverted location's resolved §2.7.3 root is itself
+    /// ephemeral / unwritable / FAT-exFAT ([`resolve_divert_target`] → [`DivertTarget::Unavailable`]). The item
+    /// fails clearly `WriteFailed` (§2.8), never a divert onto a purgeable / another-FAT volume.
+    DivertUnavailable,
+}
+
+/// **§1.8 the per-job OutputPlan computation (P3.37)** — resolve one job's output DIRECTORY (beside-source /
+/// chosen-root subtree / §2.7.3 divert) and assemble the directory-based [`OutputPlan`] the §2.1.1 write
+/// sequence (P3.38) consumes, BEFORE any write. **Directory-based by design:** there is NO pre-baked
+/// `final_path` — the exact leaf name + §2.2 no-clobber numbering is resolved LAZILY at write time on the
+/// resolved real file (§2.1.2 / P3.15; a pre-numbered path would reintroduce the §2.1.2 TOCTOU race) — and no
+/// `crosses_volume` field (EXDEV is detected reactively at publish, §2.14.3).
+///
+/// `location` is this destination's §2.7.2 classification (computed at C4 via `location_status`, P3.33, and
+/// passed IN — this LEAF does not re-probe the primary location):
+/// - **[`LocationStatus::Writable`]** → `final_dir` = [`prepare_output_dir`]`(source, mode)` (the §2.7.1
+///   beside-source parent OR the chosen-root subtree re-creation, create-only), `diverted = None`.
+/// - **[`LocationStatus::Divert`]`(reason)`** → the output diverts FLAT into the §2.7.3 divert root (§2.7.4 — no
+///   subtree re-creation on the divert path). `divert_root` is the caller-resolved §2.7.3 target (the §2.7.1
+///   user-chosen destination override, else Downloads, else Documents — resolved AppHandle-side via Tauri's
+///   `PathResolver` and passed IN, exactly as P3.35 takes candidates in and P3.34 the common root). A
+///   single-candidate [`resolve_divert_target`] re-tests it (§2.7.2 — the strict §2.7.3 "one resolved target,
+///   else WriteFailed" reading): `Resolved(dir)` → `final_dir = dir`, `diverted = Some(reason)`; `Unavailable`
+///   → [`OutputPlanError::DivertUnavailable`].
+///
+/// `base_name` is the source's verbatim `file_stem` (§2.2 / §2.10.1 — OS-native bytes preserved; a stemless
+/// source fails clearly, never a panic); `extension` is the chosen target's bare canonical extension;
+/// `publish_temp_dir` EQUALS `final_dir` (v1, §2.14.1 — the `*.part` is a uniquely-named sibling dotfile inside
+/// `final_dir`, on the same volume by construction, so the §2.1 publish is a true intra-volume atomic rename).
+/// No panic (G4/G14). [Build-Session-Entscheidung: P3.37]
+// [Build-Session-Entscheidung: P3.37] `#[allow(clippy::too_many_arguments)]`: the eight inputs are each a
+// DISTINCT, documented planning input — the per-job WHAT (job / source / extension / mode / location /
+// divert_root) plus the shared run CONTEXT (the `LocationCache` + the `crate::run` probe-name factory the LEAF
+// takes in). A mechanical bundle struct would group them without semantic value (and re-introduce the borrow
+// lifetimes the borrowed args already carry), so the explicit signature is the clearer surface here.
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "§1.8 compute_output_plan (P3.37) — the per-job OutputPlan computation. Its production caller \
+                  is the §1.8/C4 plan_output body (P3.49) / the §2.1.1 write sequence (P3.38); statically unused \
+                  in the production build until that wiring lands (`expect` auto-flags the moment it does), \
+                  exercised by the compute_output_plan_tests."
+    )
+)]
+pub fn compute_output_plan(
+    job: ItemId,
+    source: &Path,
+    extension: &str,
+    mode: DestinationMode,
+    location: LocationStatus,
+    divert_root: &Path,
+    cache: &mut LocationCache,
+    probe_name: impl Fn() -> OsString,
+) -> Result<OutputPlan, OutputPlanError> {
+    // §2.2 / §2.10.1: the SOURCE base name, kept verbatim (OS-native bytes). A frozen source always has a stem;
+    // a stemless path (`.` / `..` / a root) fails clearly, never a panic (G4/G14).
+    let base_name = source
+        .file_stem()
+        .ok_or_else(|| {
+            OutputPlanError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "§2.2.1: the source has no file stem — cannot name the output",
+            ))
+        })?
+        .to_os_string();
+
+    let (final_dir, diverted) = match location {
+        // §2.7.1: the location accepts a write → beside-source parent OR the chosen-root subtree (create-only).
+        LocationStatus::Writable => (
+            prepare_output_dir(source, mode).map_err(OutputPlanError::Io)?,
+            None,
+        ),
+        // §2.7.3: the location diverts → the output goes FLAT into the caller-resolved §2.7.3 divert root
+        // (§2.7.4, no subtree re-creation). A single-candidate resolve_divert_target re-tests it (§2.7.2 — the
+        // strict "one resolved target else WriteFailed" reading); Unavailable → the item fails clearly.
+        LocationStatus::Divert(reason) => {
+            let candidates = [divert_root.to_path_buf()];
+            match resolve_divert_target(&candidates, cache, probe_name) {
+                DivertTarget::Resolved(dir) => (dir, Some(reason)),
+                DivertTarget::Unavailable => return Err(OutputPlanError::DivertUnavailable),
+            }
+        }
+    };
+
+    // §2.14.1: the kind-1 publish temp lives in `final_dir` (v1) — a same-volume sibling dotfile, so the §2.1
+    // publish is a true intra-volume atomic rename. (The kind-2 engine scratch, §2.14.2, may be elsewhere and is
+    // NOT carried here.)
+    let publish_temp_dir = final_dir.clone();
+    Ok(OutputPlan {
+        job,
+        final_dir,
+        diverted,
+        base_name,
+        extension: OsString::from(extension),
+        publish_temp_dir,
+    })
 }
 
 #[cfg(test)]
@@ -3012,6 +3148,192 @@ mod late_divert_tests {
         assert!(
             matches!(err, PublishError::Io(_)),
             "§2.8: a missing completed output surfaces as a clear Io write failure, never a panic"
+        );
+    }
+}
+
+#[cfg(test)]
+mod compute_output_plan_tests {
+    use super::*;
+
+    // A non-ephemeral writable base dir under the crate source root (a plain OS temp dir classifies Ephemeral,
+    // which resolve_divert_target would refuse). `None` on the pathological env where the crate root is itself
+    // under an OS temp root. Real FS — never mocked (test-strategy §0.1).
+    fn non_ephemeral_dir() -> Option<tempfile::TempDir> {
+        let dir = tempfile::Builder::new()
+            .prefix("convertia-plan-")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .expect("create a temp dir in the crate source root");
+        (!crate::platform::is_ephemeral_output_dir(dir.path())).then_some(dir)
+    }
+
+    fn probe() -> OsString {
+        OsString::from(".convertia-plan-probe.part")
+    }
+
+    // §6.4.1 real-FS (G15) / §1.8+§2.7.1: a WRITABLE beside-source location → final_dir = the source's parent,
+    // diverted None, publish_temp_dir == final_dir, base_name = the source stem, extension = the target ext.
+    #[test]
+    fn beside_source_writable_plans_the_source_parent() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let src_dir = base.path().join("src");
+        std::fs::create_dir(&src_dir).expect("create the source's parent");
+        let source = src_dir.join("data.csv");
+        let mut cache = LocationCache::new();
+        let plan = compute_output_plan(
+            ItemId::from_index(0),
+            &source,
+            "tsv",
+            DestinationMode::BesideSource,
+            LocationStatus::Writable,
+            base.path(), // divert_root — unused on the writable path
+            &mut cache,
+            probe,
+        )
+        .expect("§1.8: a writable beside-source location plans successfully");
+        assert_eq!(plan.job, ItemId::from_index(0));
+        assert_eq!(
+            plan.final_dir, src_dir,
+            "§2.7.1: beside-source final_dir is the source's parent"
+        );
+        assert_eq!(
+            plan.diverted, None,
+            "§2.7: a writable location is not diverted"
+        );
+        assert_eq!(
+            plan.base_name,
+            OsString::from("data"),
+            "§2.2: base_name is the source stem"
+        );
+        assert_eq!(
+            plan.extension,
+            OsString::from("tsv"),
+            "§2.2: extension is the chosen target ext"
+        );
+        assert_eq!(
+            plan.publish_temp_dir, plan.final_dir,
+            "§2.14.1: publish_temp_dir == final_dir in v1"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §1.8+§2.7.1: a WRITABLE chosen-root location re-creates the dropped-root-relative
+    // subtree under D → final_dir = D/sub (created on disk), diverted None.
+    #[test]
+    fn chosen_root_writable_recreates_the_subtree() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let common = base.path().join("common");
+        std::fs::create_dir(&common).expect("create the common root");
+        let dest = base.path().join("dest");
+        std::fs::create_dir(&dest).expect("create the chosen root");
+        let source = common.join("sub").join("data.csv");
+        let mut cache = LocationCache::new();
+        let plan = compute_output_plan(
+            ItemId::from_index(1),
+            &source,
+            "tsv",
+            DestinationMode::ChosenRoot {
+                root: &dest,
+                common_root: &common,
+            },
+            LocationStatus::Writable,
+            base.path(),
+            &mut cache,
+            probe,
+        )
+        .expect("§1.8: a writable chosen-root location plans successfully");
+        assert_eq!(
+            plan.final_dir,
+            dest.join("sub"),
+            "§2.7.1: the relative subtree is re-created under the chosen root D"
+        );
+        assert!(
+            dest.join("sub").is_dir(),
+            "§2.7.1: the subtree ancestor was created on disk"
+        );
+        assert_eq!(plan.diverted, None);
+    }
+
+    // §6.4.1 real-FS (G15) / §1.8+§2.7.3+§2.7.4: a DIVERTED location → final_dir = the (writable) divert root
+    // FLAT (no subtree re-creation), diverted = Some(reason).
+    #[test]
+    fn diverted_location_plans_the_divert_root_flat() {
+        let Some(divert) = non_ephemeral_dir() else {
+            return;
+        };
+        let base = tempfile::tempdir().expect("a real temp dir");
+        // The source's ORIGINAL (now-unwritable) location — irrelevant to the divert final_dir (flattened).
+        let source = base.path().join("deep").join("data.csv");
+        let mut cache = LocationCache::new();
+        let plan = compute_output_plan(
+            ItemId::from_index(2),
+            &source,
+            "tsv",
+            DestinationMode::BesideSource,
+            LocationStatus::Divert(DivertReason::Unwritable),
+            divert.path(),
+            &mut cache,
+            probe,
+        )
+        .expect("§1.8: a diverted location plans to the writable divert root");
+        assert_eq!(
+            plan.final_dir,
+            divert.path(),
+            "§2.7.3/§2.7.4: the output diverts FLAT into the divert root (no subtree)"
+        );
+        assert_eq!(
+            plan.diverted,
+            Some(DivertReason::Unwritable),
+            "§2.7.2: the divert reason is carried on the plan"
+        );
+        assert_eq!(plan.base_name, OsString::from("data"));
+        assert_eq!(plan.publish_temp_dir, plan.final_dir);
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.3: a diverted location whose resolved divert root is ALSO unusable (ephemeral)
+    // → DivertUnavailable (→ §2.8 WriteFailed), never a bad divert onto a purgeable volume.
+    #[test]
+    fn diverted_location_with_an_unusable_divert_root_is_unavailable() {
+        let ephemeral = tempfile::tempdir().expect("an OS-temp dir (an ephemeral divert root)");
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let source = base.path().join("data.csv");
+        let mut cache = LocationCache::new();
+        let err = compute_output_plan(
+            ItemId::from_index(3),
+            &source,
+            "tsv",
+            DestinationMode::BesideSource,
+            LocationStatus::Divert(DivertReason::Unwritable),
+            ephemeral.path(), // itself ephemeral → resolve_divert_target returns Unavailable
+            &mut cache,
+            probe,
+        )
+        .expect_err("§2.7.3: an unusable divert root cannot plan");
+        assert!(
+            matches!(err, OutputPlanError::DivertUnavailable),
+            "§2.7.3: no usable divert target → DivertUnavailable (→ §2.8 WriteFailed), never a bad divert"
+        );
+    }
+
+    // §6.4.1 (G15) / §2.2.1: a stemless source fails clearly (Io InvalidInput) BEFORE any location work, never a
+    // panic (G4/G14).
+    #[test]
+    fn stemless_source_is_invalid_input() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let mut cache = LocationCache::new();
+        let err = compute_output_plan(
+            ItemId::from_index(4),
+            Path::new(""),
+            "tsv",
+            DestinationMode::BesideSource,
+            LocationStatus::Writable,
+            base.path(),
+            &mut cache,
+            probe,
+        )
+        .expect_err("a stemless source cannot name the output");
+        assert!(
+            matches!(&err, OutputPlanError::Io(e) if e.kind() == io::ErrorKind::InvalidInput),
+            "§2.2.1: a stemless source fails Io(InvalidInput), never a panic"
         );
     }
 }
