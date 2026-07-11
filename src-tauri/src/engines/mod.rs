@@ -41,7 +41,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the P3.5 minimal Engine trait, the PlanOutcome return, and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.1 §3.2.3 registry constructs the native engine, P3.41 runs its planned transform, P3.43-P3.45 rewrite the dispatch InProcessNative arm, and P4.13 the subprocess arms — so they stay dead in the production build until then (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) is likewise dead until the P3.43-P3.45 dispatch-arm rewrite runs it on crate::pool::run_in_core."
+        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the P3.5 minimal Engine trait, the PlanOutcome return, and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.1 §3.2.3 registry constructs the native engine, P3.41 runs its planned transform, P3.43-P3.45 rewrite the dispatch InProcessNative arm, and P4.13 the subprocess arms — so they stay dead in the production build until then (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) is likewise dead until the P3.43-P3.45 dispatch-arm rewrite runs it on crate::pool::run_in_core. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture."
     )
 )]
 
@@ -854,6 +854,68 @@ const fn delimiter_byte(delimiter: Delimiter) -> u8 {
         Delimiter::Tab => b'\t',
         Delimiter::Pipe => b'|',
     }
+}
+
+// ─── §3.5.6 CSV-injection literal-preservation rule — the G31/G32 reader-side check (P3.42) ─────────────
+// [Build-Session-Entscheidung: P3.42] The §3.5.6 "leading `= + - @` stay literal text" guarantee is already
+// satisfied BY CONSTRUCTION by the P3.41 transform (`ByteRecord` preserves field bytes, and RFC-4180
+// re-quoting keeps a delimiter/quote/newline-bearing injection cell one field) — the transform NEVER prefixes
+// or mangles an injection cell (the §3.5.6 rule is literal PRESERVATION, NOT OWASP `'`-prefix neutralisation,
+// which would alter data + break no-harm). This box makes that rule an ASSERTABLE, reusable READER-SIDE
+// primitive: the behaviour the G31 per-format structural-reader clause specifies ("the corpus's leading
+// `=`/`+`/`@` injection cells preserved literally as text", build-gates §6) and G32's (b) output-validity leg
+// reuses, bound over the §6.4.5 corpus by P3.62 (`needs:` P3.61's injection fixture + this checker). Governed
+// BY G31 (+ G32's (b) reuse) — it does NOT author a new gate; the `· G31 G32` markers name the gates this rule
+// feeds. Dead in the production build until the P3.62 corpus binding calls it (the module dead_code expect);
+// the `transform_tests` exercise it now.
+
+/// A §3.5.6 CSV-injection literal-preservation violation (P3.42): an expected injection cell — a leading
+/// `= + - @` field value — that did NOT survive as a literal field value in the transform OUTPUT.
+#[derive(Debug, PartialEq, Eq)]
+pub struct InjectionCellNotPreserved {
+    /// The source injection cell (a field value) that is absent or mangled in the output.
+    pub cell: Vec<u8>,
+}
+
+/// Assert the §3.5.6 CSV-injection literal-preservation RULE on a transform OUTPUT — the reader-side rule the
+/// G31 per-format structural-reader clause specifies (reused by G32's (b) output-validity leg), bound over the
+/// §6.4.5 corpus by P3.62: read `output` with a real RFC-4180 reader at `target_delimiter` and verify each
+/// `injection_cell` (a known source `= + - @`-leading value) re-appears as a LITERAL field value — the exact
+/// bytes, as ONE field: never split by the new delimiter, merged, re-quoted-away, prefixed, or otherwise
+/// re-interpreted ("CSV-injection non-execution on the OUTPUT side", §3.5.6). Reading back with a REAL parser
+/// (never a bare field-count parity) is the G31/G32 semantic. Returns `Err` naming the FIRST cell not preserved.
+///
+/// This is a PRESENCE check (position-independent — the cell survives as SOME literal field), sound because
+/// P3.62 composes it with G31's own parseability + `output != input` + size-plausibility legs, and the caller
+/// passes distinctive known corpus cells. The P3.41 transform satisfies the rule by construction; this box
+/// makes it an assertable primitive, and P3.62 binds it over the injection fixture (P3.61).
+/// [Build-Session-Entscheidung: P3.42]
+pub fn assert_injection_cells_preserved(
+    output: &[u8],
+    target_delimiter: u8,
+    injection_cells: &[&[u8]],
+) -> Result<(), InjectionCellNotPreserved> {
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(target_delimiter)
+        .has_headers(false)
+        .flexible(true)
+        .from_reader(output);
+    // Collect every output field's EXACT bytes. A read error means the output is not parseable as RFC-4180 (a
+    // separate G31 output-validity failure); here it simply stops collection, so any not-yet-seen injection
+    // cell surfaces below as a violation.
+    let mut fields: Vec<Vec<u8>> = Vec::new();
+    let mut record = csv::ByteRecord::new();
+    while reader.read_byte_record(&mut record).unwrap_or(false) {
+        fields.extend(record.iter().map(|field| field.to_vec()));
+    }
+    for &cell in injection_cells {
+        if !fields.iter().any(|field| field.as_slice() == cell) {
+            return Err(InjectionCellNotPreserved {
+                cell: cell.to_vec(),
+            });
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1857,6 +1919,48 @@ mod transform_tests {
         assert!(
             TransformError::Malformed.io_source().is_none(),
             "a content failure (Malformed) has no io source"
+        );
+    }
+
+    // ─── P3.42 §3.5.6 CSV-injection literal-preservation (the G32 reader-side rule) ───────────────────────
+
+    #[test]
+    fn output_preserves_leading_formula_injection_cells() {
+        // §3.5.6: the four leading `= + - @` cells survive as LITERAL field values when the output is read
+        // back with a real RFC-4180 reader (the G32 rule, P3.42) — CSV-injection non-execution on the output.
+        let out =
+            transform(b"=1+1,+2,-3,@SUM(A1)\nx,y,z,w\n", CsvTsvTarget::Tsv).expect("transforms");
+        assert_injection_cells_preserved(&out, b'\t', &[b"=1+1", b"+2", b"-3", b"@SUM(A1)"])
+            .expect("all four leading = + - @ cells survive as literal field values");
+    }
+
+    #[test]
+    fn a_requoted_injection_cell_is_still_preserved() {
+        // An injection cell containing the TARGET delimiter (a tab) is RFC-4180 re-quoted to stay ONE field,
+        // and still reads back as the literal cell value (the re-quote does not mangle it).
+        let out = transform(b"h1,h2\n=a\tb,plain\n", CsvTsvTarget::Tsv).expect("transforms");
+        assert_injection_cells_preserved(&out, b'\t', &[b"=a\tb"])
+            .expect("a re-quoted injection cell survives as one literal field");
+    }
+
+    #[test]
+    fn injection_cells_survive_both_directions() {
+        let out = transform(b"=x\t@y\n1\t2\n", CsvTsvTarget::Csv).expect("transforms");
+        assert_injection_cells_preserved(&out, b',', &[b"=x", b"@y"])
+            .expect("injection cells survive TSV→CSV too");
+    }
+
+    #[test]
+    fn the_injection_checker_catches_a_mangled_output() {
+        // Planted-positive (non-vacuity): a hand-crafted TSV output where the `=1+1` cell was SPLIT (a stray
+        // tab injected mid-cell) reads back as `=1` / `+1`, NOT a literal `=1+1` field → the checker flags it.
+        let mangled = b"=1\t+1\tok\n";
+        assert_eq!(
+            assert_injection_cells_preserved(mangled, b'\t', &[b"=1+1"]),
+            Err(InjectionCellNotPreserved {
+                cell: b"=1+1".to_vec()
+            }),
+            "a split / mangled injection cell is caught — the checker is not vacuous"
         );
     }
 }
