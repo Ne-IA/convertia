@@ -954,7 +954,13 @@ process to kill**, so §1.7 defines its lifecycle explicitly:
   passes it into the executor when it dispatches the §3.5.6 transform on the
   `spawn_blocking` pool. The synchronous loop calls `progress_tx.blocking_send(fraction)`
   with `fraction = bytes_processed / source_size` at **each N-KB chunk boundary** (the same
-  granularity as the cancel poll below). §1.7 owns the matching **`Receiver<f32>`** on the
+  granularity as the cancel poll below). **Realization note `[DECIDED — P3.43]`:** for the
+  whole-file-buffered CSV/TSV transform this fraction — and the *N*-KB boundary and the
+  "sub-100-KB → single tick" gate below — are measured on the **decoded-text** byte
+  position/length, a faithful 0→1 proxy for source-byte progress (identical for the dominant
+  UTF-8 case; monotonic + endpoint-exact for other encodings, and matched to processing cost,
+  which is proportional to the decoded text rather than the raw source bytes). §1.7 owns the
+  matching **`Receiver<f32>`** on the
   Tokio runtime and forwards **every received fraction as one normalised
   `ConversionEvent::ItemProgress` tick** over the §0.4.2 channel — the same
   `{ runId, itemId, fraction, stage }` wire shape every other engine produces (§1.11), so
@@ -1327,7 +1333,7 @@ long conversion. The fraction source per engine (parsed by §3.5, normalised by
 | **image-worker** (libvips, images) | `ProgressModel::VipsStdout` (§3.2.2): the separate image-worker process marshals libvips' `eval`-progress signal to its **stdout** as `progress=<0..100>` key=value lines (it cannot deliver an in-process callback across the process boundary), parsed by the §1.7 same stdout reader as FFmpeg's `-progress`. Fast ops emit start→`progress=end` (coarse); HEIC/AVIF HEVC/AV1 encode reports a real % |
 | **LibreOffice** (office/PDF) | No native progress signal → a **bounded indeterminate-but-animated** state with a watchdog (still reads as "working"); `[REC]` show a determinate-looking staged bar driven by the **four canonical §0.6 `JobStage` values — `Spawning` → `Decoding` → `Encoding` → `Writing`** rather than a raw spinner. (The LO lifecycle maps onto them: process spawn / profile init → **`Spawning`**; load+layout the source document → **`Decoding`**; run the export/render filter → **`Encoding`**; flush the produced file → **`Writing`**. No separate "render"/"export" stage vocabulary is emitted on the wire — only the four `JobStage` names §0.6 defines, so §1.11 and §0.6 agree on what the frontend receives.) |
 | **poppler / pandoc** | Usually fast; staged ticks; large PDFs report per-page where `pdftotext` allows |
-| **Native CSV/TSV** (in-process, §3.5.6) | `[DECIDED]` `ProgressModel::InProcessFraction` (§3.2.2): fraction = **`bytes_processed / source_size`** emitted per N-KB chunk as the in-process engine streams the file (there is no subprocess to watch, so it **self-reports** over the §1.7 `InProcessNative` `progress_tx: mpsc::Sender<f32>`, which §1.7 forwards as `ItemProgress`). For **sub-100 KB inputs** it is effectively instant → a single **start→done** tick (wire-indistinguishable from `CoarseSpawnDone`). So even the only non-subprocess engine reports a real fraction (or an honest start→done for tiny files), never a bare spinner. |
+| **Native CSV/TSV** (in-process, §3.5.6) | `[DECIDED]` `ProgressModel::InProcessFraction` (§3.2.2): fraction = **`bytes_processed / source_size`** emitted per N-KB chunk as the in-process engine streams the file (there is no subprocess to watch, so it **self-reports** over the §1.7 `InProcessNative` `progress_tx: mpsc::Sender<f32>`, which §1.7 forwards as `ItemProgress`). Measured on the **decoded text** — fraction, boundary and the sub-chunk gate all share that unit (§1.7 Realization note `[DECIDED — P3.43]`; identical to source bytes for the dominant UTF-8 case). For a **sub-chunk decoded text** it is effectively instant → a single **start→done** tick (wire-indistinguishable from `CoarseSpawnDone`). So even the only non-subprocess engine reports a real fraction (or an honest start→done for tiny files), never a bare spinner. |
 
 ```rust
 // payload SHAPE is §0.4.2's `ItemProgress` { runId, itemId, fraction, stage };

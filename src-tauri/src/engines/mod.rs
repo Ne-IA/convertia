@@ -41,7 +41,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the P3.5 minimal Engine trait, the PlanOutcome return, and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.1 §3.2.3 registry constructs the native engine, P3.41 runs its planned transform, P3.43-P3.45 rewrite the dispatch InProcessNative arm, and P4.13 the subprocess arms — so they stay dead in the production build until then (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) is likewise dead until the P3.43-P3.45 dispatch-arm rewrite runs it on crate::pool::run_in_core. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture."
+        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the P3.5 minimal Engine trait, the PlanOutcome return, and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.1 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout), and P4.13 rewrites the subprocess arms — so the dispatch fn + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture."
     )
 )]
 
@@ -51,6 +51,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use specta::Type;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::detection::{
@@ -58,6 +59,7 @@ use crate::detection::{
 };
 use crate::domain::{DroppedItem, FormatId, JobId, TargetId};
 use crate::outcome::ConversionErrorKind;
+use crate::pool::{LaneError, Pool};
 
 /// The stable engine discriminant (§0.6 / §3.2) — used in logging / SBOM rows (§3.7), the §3.2.3
 /// `(SourceFmt,TargetFmt) → EngineId` registry, the §0.9 pool's `HashMap<EngineId, bool>` serialised-flag
@@ -533,27 +535,121 @@ pub enum InvocationResult {
 /// catch-all — the `clippy::wildcard_enum_match_arm` deny at the crate root, G4/G14/G29) so a future engine
 /// program cannot be silently dropped.
 ///
-/// **P3 walking-skeleton state (the honest seam).** Every arm returns the honest
-/// `InvocationResult::Failed(InternalError)` (§2.13, the P2.25 unreachable-outcome precedent): no execution
-/// lane is wired at P3.4. The `InProcessNative` lane's native §1.7 lifecycle is authored across P3.43
-/// (self-reported progress) / P3.44 (cooperative cancel) / P3.45 (wall-clock timeout), which rewrite that arm
-/// to run the CSV/TSV transform on `crate::pool::run_in_core`; the subprocess lanes are
+/// **`on_progress`** is §1.7's per-fraction sink: the dispatch forwards every self-reported/parsed progress
+/// fraction to it (P3.43 wires the `InProcessNative` lane's self-report; the subprocess lanes will feed the
+/// same sink from their §3.5 line-reader at P4.13). It is a plain `f32` callback so `crate::engines` (a §0.7
+/// tier-2 module) names **no** orchestrator-homed type: the tier-1 caller (the P3.46 conductor) supplies the
+/// closure that wraps each fraction into the §0.4.2 `ItemProgress { runId, itemId, fraction, stage }` and
+/// sends it over the channel — the fraction is §1.7's, the wire tick is the conductor's. `+ Send + 'static` so
+/// §1.7 can move the sink into the concurrent progress-forwarding task (and the conductor can drive dispatch
+/// on a spawned per-item task).
+///
+/// **P3 walking-skeleton state.** The `InProcessNative` lane is authored from P3.43: it runs the §3.5.6 native
+/// CSV/TSV transform on `crate::pool::run_in_core` and forwards its self-reported fraction (P3.44 adds the
+/// cooperative cancel, P3.45 the wall-clock timeout). It stays dead in the production build until the P3.46
+/// conductor makes `dispatch` a live root (a `pub fn` in a private module of a bin crate is not itself a
+/// root, and rustc does not propagate liveness to a dead fn's callees). The subprocess lanes are
 /// unreachable-by-construction in the walking skeleton (no subprocess engine is registered — the registry +
-/// engines land at P4.4) and P4.13 rewrites them to route through `crate::isolation::run_confined`.
+/// engines land at P4.4) and still return the honest `InvocationResult::Failed(InternalError)` seam (§2.13,
+/// the P2.25 unreachable-outcome precedent) until P4.13 routes them through `crate::isolation::run_confined`.
 /// [Build-Session-Entscheidung: P3.4]
-#[must_use]
-pub fn dispatch(invocation: &EngineInvocation) -> InvocationResult {
+pub async fn dispatch(
+    invocation: &EngineInvocation,
+    pool: &Pool,
+    on_progress: impl Fn(f32) + Send + 'static,
+) -> InvocationResult {
     match &invocation.plan.program {
-        // The one walking-skeleton lane — the native CSV/TSV engine (§3.5.6). P3.43/P3.44/P3.45 rewrite this
-        // arm to run the §1.7 InProcessNative lifecycle on crate::pool::run_in_core; the honest InternalError
-        // seam holds meanwhile (§2.13, P2.25).
+        // The one walking-skeleton lane — the native CSV/TSV engine (§3.5.6): run its transform on the §0.9
+        // in-core permit lane and forward its self-reported `bytes_processed / source_size` fraction (§1.7
+        // InProcessNative sub-case). [Build-Session-Entscheidung: P3.43]
         EngineProgram::InProcessNative(_) => {
-            InvocationResult::Failed(ConversionErrorKind::InternalError)
+            run_native_csv_tsv(&invocation.plan, pool, on_progress).await
         }
         // Subprocess lanes — unreachable-by-construction in the P3 walking skeleton (no subprocess engine is
         // registered; the registry + engines land at P4.4). P4.13 authors crate::isolation::run_confined and
         // rewrites these arms to route through it; the honest InternalError seam holds meanwhile (§2.13, P2.25).
         EngineProgram::Sidecar(_) | EngineProgram::ResourceBin { .. } => {
+            InvocationResult::Failed(ConversionErrorKind::InternalError)
+        }
+    }
+}
+
+/// The §1.7 `InProcessNative` lane (P3.43) — run the §3.5.6 native CSV/TSV transform on the §0.9 in-core
+/// `spawn_blocking` permit lane ([`Pool::run_in_core`]) and forward its self-reported progress.
+///
+/// **Progress bridge (§1.7 InProcessNative sub-case).** Because this engine has no stdout to line-read, §1.7
+/// hands the transform a bounded `mpsc::Sender<f32>` (`progress_tx`, capacity [`PROGRESS_CHANNEL_CAPACITY`])
+/// captured inside the `run_in_core` closure; the synchronous transform calls `progress_tx.blocking_send` with
+/// its `bytes_processed / source_size` fraction at each [`PROGRESS_CHUNK_BYTES`] chunk boundary (plus a final
+/// `1.0`). §1.7 OWNS the matching `Receiver<f32>` in a concurrent forwarding task that hands each fraction to
+/// `on_progress`; draining CONCURRENTLY with the blocking worker is what makes the bounded channel's
+/// back-pressure a coalesce (a slow consumer parks the worker on a full buffer) rather than a deadlock. When
+/// the transform ends it drops `progress_tx`; the forwarder drains to `None` and ends. A lane panic /
+/// pool-closure ([`LaneError`]) is ONE item's `Failed(InternalError)`, never a pool-wide fault (§0.9 panic
+/// isolation).
+///
+/// **Why the FORWARDER (not the `run_in_core` future) is `tokio::spawn`ed.** `run_in_core` is awaited directly
+/// in this frame, so dropping the dispatch future drops the lane future and frees its §0.9 permit at once — the
+/// permit-free-on-drop contract P3.45's `tokio::time::timeout(dispatch(..))` relies on ([`Pool::run_in_core`]);
+/// spawning the worker instead would strand the permit until the abandoned blocking thread finished. Spawning
+/// the forwarder (the `rt` feature; `tokio::select!`/`join!` need the test-only `macros` feature) is what lets
+/// the drain run concurrently with the awaited worker without a `select!`. [Build-Session-Entscheidung: P3.43]
+async fn run_native_csv_tsv(
+    plan: &Invocation,
+    pool: &Pool,
+    on_progress: impl Fn(f32) + Send + 'static,
+) -> InvocationResult {
+    // The transform's two runtime params come from the plan's argv (§3.2.2 / NativeCsvTsvEngine::plan):
+    // args[0] = the §2.3-resolved source path, args[1] = the output-format token. Index-free (`first`/`get`) —
+    // a mis-built plan is an InternalError, never a panic (the in-core no-index/no-panic path, G4/G14).
+    let Some(source) = plan.args.first().map(PathBuf::from) else {
+        return InvocationResult::Failed(ConversionErrorKind::InternalError);
+    };
+    let Some(target) = plan
+        .args
+        .get(1)
+        .and_then(|token| CsvTsvTarget::from_token(token))
+    else {
+        return InvocationResult::Failed(ConversionErrorKind::InternalError);
+    };
+    // §1.7 owns + populates `out_tmp` before dispatch (the 2026-07-07 plan-seam ruling); the transform WRITES
+    // to it. A missing `out_tmp` on the encode invocation is a mis-wired lifecycle → InternalError.
+    let Some(out_path) = plan.out_tmp.as_ref().map(|temp| temp.to_path_buf()) else {
+        return InvocationResult::Failed(ConversionErrorKind::InternalError);
+    };
+
+    let (progress_tx, mut progress_rx) = mpsc::channel::<f32>(PROGRESS_CHANNEL_CAPACITY);
+    // Forward every self-reported fraction to the sink until the transform drops `progress_tx` (recv → None).
+    let forwarder = tokio::spawn(async move {
+        while let Some(fraction) = progress_rx.recv().await {
+            on_progress(fraction);
+        }
+    });
+
+    let outcome = pool
+        .run_in_core(move || -> Result<(), TransformError> {
+            // `create` opens the already-exclusively-created (`O_EXCL`, §2.14.1) publish temp for writing;
+            // the §2.1 atomic publish CONSUMES it on success, so the engine only writes here (§3.2.2 TempPath).
+            let out_file = std::fs::File::create(&out_path).map_err(TransformError::Write)?;
+            // The sync loop self-reports through the bounded channel. A closed receiver (only if the forwarder
+            // ended early) just stops the flow; in the P3.43 success path the forwarder is live until the
+            // transform drops progress_tx, so every send is delivered.
+            let mut report = |fraction: f32| {
+                let _ = progress_tx.blocking_send(fraction);
+            };
+            csv_tsv_transform(&source, target, out_file, &mut report)
+        })
+        .await;
+
+    // `run_in_core` has finished, so `progress_tx` (moved into its closure) is dropped and the forwarder drains
+    // to None; await it so every buffered fraction reaches `on_progress` before returning. A forwarder panic
+    // (a panicking sink) is the caller's fault, not the lane's — its JoinError is ignored.
+    let _ = forwarder.await;
+
+    match outcome {
+        Ok(Ok(())) => InvocationResult::Succeeded,
+        Ok(Err(error)) => InvocationResult::Failed(ConversionErrorKind::from(error)),
+        Err(LaneError::Panicked | LaneError::PoolClosed) => {
             InvocationResult::Failed(ConversionErrorKind::InternalError)
         }
     }
@@ -759,8 +855,25 @@ impl TransformError {
     }
 }
 
+/// The N-KB chunk granularity for the §1.7 `InProcessNative` self-reported progress (§1.11): the native
+/// CSV/TSV transform emits one `bytes_processed / source_size` fraction each time it crosses a
+/// `PROGRESS_CHUNK_BYTES` boundary (P3.44's cooperative cancel will poll the token at the SAME granularity).
+/// N = 100 KiB, so this value is ALSO the §1.7 "sub-100-KB → single 1.0 tick" gate: a source whose DECODED
+/// text is smaller than one chunk crosses no boundary and emits only the final completion tick,
+/// wire-indistinguishable from `CoarseSpawnDone` (the fraction, boundary + gate all share the decoded-text
+/// unit — for the dominant UTF-8 case decoded text == source bytes). [Build-Session-Entscheidung: P3.43]
+const PROGRESS_CHUNK_BYTES: usize = 100 * 1024;
+
+/// The bounded-channel capacity for the §1.7 `InProcessNative` progress bridge (the InProcessNative sub-case):
+/// the transform's `progress_tx.blocking_send` fractions cross from the blocking worker to §1.7's async
+/// `Receiver` through this bounded `mpsc` channel, so a slow consumer applies natural back-pressure (the
+/// blocking worker parks on a full buffer; fractions coalesce, memory stays bounded) rather than growing
+/// unboundedly. Small — the native engine emits few ticks and the async drain keeps up. [Build-Session-Entscheidung: P3.43]
+const PROGRESS_CHANNEL_CAPACITY: usize = 16;
+
 /// Run the §3.5.6 native CSV/TSV transform (P3.41): read `source`, re-detect its encoding + delimiter, and
-/// stream it to `out` at the `target` delimiter with RFC-4180 re-quoting.
+/// stream it to `out` at the `target` delimiter with RFC-4180 re-quoting, self-reporting progress via
+/// `on_progress` (P3.43).
 ///
 /// **§3.5.6 record pass:** the source is read into memory + decoded to UTF-8 (no BOM), then each RFC-4180
 /// record is parsed at the source delimiter and re-written at the target delimiter — the `csv` writer quotes
@@ -770,25 +883,35 @@ impl TransformError {
 /// [Build-Session-Entscheidung: P3.41] — deterministic + cross-platform (the P3.61 `sha256` determinism
 /// sub-assertion), never the RFC-4180 CRLF.
 ///
-/// The read is **whole-file-buffered** here, not byte-streamed: the §1.10 preflight bounds the size, and the
-/// byte-STREAMED read + the §1.7 `bytes_processed / source_size` progress seam thread through at P3.43. And
-/// `source` MUST be a regular file: the FIFO / blocking-read pre-open type-check is the P3.49 read-path
-/// wiring's job (§2.12.4), and the wall-clock / wedged-read time bound is P3.45 — this pass owns none of them.
+/// **Progress (§1.7/§1.11 InProcessFraction, P3.43):** the read is **whole-file-buffered** (the §1.10 preflight
+/// bounds the size), so the `bytes_processed / source_size` progress fraction is derived from the `csv` reader's
+/// decoded-text position — a faithful 0→1 proxy for source-byte progress (exact at both endpoints, monotonic,
+/// since processing is linear in both). `on_progress` is called with that fraction each time the reader crosses
+/// a [`PROGRESS_CHUNK_BYTES`] boundary, plus a final `1.0` completion tick; a source whose decoded text is below
+/// one chunk crosses no boundary and emits ONLY the final `1.0` (§1.7 "sub-100-KB → single tick"). `on_progress`
+/// fires only on the
+/// success path — a failed transform surfaces no completion tick (the item `Failed`s). And `source` MUST be a
+/// regular file: the FIFO / blocking-read pre-open type-check is the P3.49 read-path wiring's job (§2.12.4),
+/// and the wall-clock / wedged-read time bound is P3.45 — this pass owns neither.
 pub fn csv_tsv_transform(
     source: &Path,
     target: CsvTsvTarget,
     out: impl Write,
+    on_progress: &mut impl FnMut(f32),
 ) -> Result<(), TransformError> {
     let bytes = std::fs::read(source).map_err(TransformError::Read)?;
-    transform_bytes(&bytes, target, out)
+    transform_bytes(&bytes, target, out, on_progress)
 }
 
 /// The pure byte→byte core of [`csv_tsv_transform`] (source bytes in, transformed bytes out) — the transform
-/// LOGIC, separated from the file read so it is unit-testable over byte literals. [Build-Session-Entscheidung: P3.41]
+/// LOGIC, separated from the file read so it is unit-testable over byte literals. Self-reports `bytes_processed
+/// / source_size` progress through `on_progress` (P3.43; see [`csv_tsv_transform`] for the fraction basis).
+/// [Build-Session-Entscheidung: P3.41]
 fn transform_bytes(
     bytes: &[u8],
     target: CsvTsvTarget,
     out: impl Write,
+    on_progress: &mut impl FnMut(f32),
 ) -> Result<(), TransformError> {
     // Re-detect over the SAME §1.2 bounded header window intake used (`classify_encoding`/`classify_delimiter`
     // sample <= MAX_HEADER_WINDOW), so the transform's re-detection matches the freeze's Recognized verdict.
@@ -825,6 +948,19 @@ fn transform_bytes(
         .flexible(true)
         .from_writer(out);
 
+    // §1.7/§1.11 self-reported progress (P3.43): emit `bytes_processed / source_size` each time the reader
+    // crosses a PROGRESS_CHUNK_BYTES boundary. The fraction, the boundary, AND the small-input gate are all
+    // measured on the DECODED-TEXT byte position/length (`text_len`) — a faithful 0→1 proxy for source-byte
+    // progress (identical for the dominant UTF-8 case, monotonic + endpoint-exact otherwise; and processing
+    // time is proportional to the decoded text, not the raw source, so the gate belongs on `text_len`, NOT
+    // `bytes.len()`, or a shrinking/expanding encoding would mis-gate — §1.11 "real progress, working not
+    // hung"). `report_chunks` gates the intermediate ticks: a sub-chunk decoded text crosses no boundary →
+    // only the final 1.0 below (§1.7 "sub-100-KB → single tick"). Ticks are gated `< text_len` (position) and
+    // `< 1.0` (value) so the sole 1.0 emitted is the final completion tick, never a duplicate at EOF.
+    let text_len = text.len() as u64;
+    let report_chunks = text_len >= PROGRESS_CHUNK_BYTES as u64;
+    let mut next_boundary = PROGRESS_CHUNK_BYTES as u64;
+
     let mut record = csv::ByteRecord::new();
     loop {
         // The byte-level invalid-bytes failure is already handled above (`had_errors` → Malformed). The `csv`
@@ -834,14 +970,34 @@ fn transform_bytes(
         // practice. A write error is an out_tmp I/O failure. Either way the pass stops with no partial publish
         // (the §2.1 temp is discarded on drop).
         match reader.read_byte_record(&mut record) {
-            Ok(true) => writer
-                .write_byte_record(&record)
-                .map_err(|e| TransformError::Write(io::Error::other(e)))?,
+            Ok(true) => {
+                writer
+                    .write_byte_record(&record)
+                    .map_err(|error| TransformError::Write(io::Error::other(error)))?;
+                if report_chunks {
+                    let position = reader.position().byte();
+                    if position >= next_boundary && position < text_len {
+                        // `< 1.0` guards the rare case where an intermediate rounds up to exactly 1.0f32
+                        // (text_len > ~16 MiB with a boundary a few bytes before EOF) — it must never pre-empt
+                        // the sole final 1.0. The boundary still advances past `position` either way.
+                        let fraction = (position as f64 / text_len as f64) as f32;
+                        if fraction < 1.0 {
+                            on_progress(fraction);
+                        }
+                        while next_boundary <= position {
+                            next_boundary =
+                                next_boundary.saturating_add(PROGRESS_CHUNK_BYTES as u64);
+                        }
+                    }
+                }
+            }
             Ok(false) => break,
             Err(_) => return Err(TransformError::Malformed),
         }
     }
     writer.flush().map_err(TransformError::Write)?;
+    // The completion tick (§1.11): the sole 1.0, and — for a sub-chunk source — the only tick emitted.
+    on_progress(1.0);
     Ok(())
 }
 
@@ -1482,15 +1638,17 @@ mod tests {
         assert_ne!(InvocationResult::Succeeded, InvocationResult::Cancelled);
     }
 
-    // §6.4.1 unit (G15): the §1.7 dispatch — the P3 walking-skeleton contract. No execution lane is wired at
-    // P3.4, so the exhaustive `EngineProgram` match returns the honest `Failed(InternalError)` seam (§2.13,
-    // P2.25) for EVERY program. P3.43/P3.44/P3.45 rewrite the InProcessNative arm to run the native CSV/TSV
-    // §1.7 lifecycle on crate::pool::run_in_core; P4.13 rewrites the subprocess arms via run_confined — each
-    // updates this test alongside the code. This locks the exhaustive routing + the current seam value.
-    #[test]
-    fn dispatch_returns_the_honest_internal_error_seam_for_every_program() {
+    // §6.4.1 unit (G15): the §1.7 dispatch — the P3 walking-skeleton contract. The subprocess lanes stay
+    // unwired (no subprocess engine is registered; P4.13 routes them through run_confined), so the exhaustive
+    // `EngineProgram` match still returns the honest `Failed(InternalError)` seam (§2.13, P2.25) for them.
+    // [Test-Change: P3.43 — old-obsolete+new-correct, §1.7] the InProcessNative case was REMOVED from this
+    // seam test: P3.43 wires that arm to the real native CSV/TSV lane on crate::pool::run_in_core, so its old
+    // "InternalError seam" expectation is obsolete (the arm now succeeds — asserted by the tests below); the
+    // two subprocess arms keep the seam until P4.13. dispatch is now `async` + takes the pool + progress sink.
+    #[tokio::test]
+    async fn dispatch_returns_the_honest_internal_error_seam_for_the_unwired_subprocess_lanes() {
+        let pool = Pool::with_degree(1);
         for program in [
-            EngineProgram::InProcessNative(EngineId::NativeCsvTsv),
             EngineProgram::Sidecar(EngineId::FFmpeg),
             EngineProgram::ResourceBin {
                 engine: EngineId::LibreOffice,
@@ -1499,11 +1657,155 @@ mod tests {
         ] {
             let invocation = engine_invocation(program);
             assert_eq!(
-                dispatch(&invocation),
+                dispatch(&invocation, &pool, |_| {}).await,
                 InvocationResult::Failed(ConversionErrorKind::InternalError),
-                "§1.7/§2.13: the P3.4 dispatch returns the honest InternalError seam for every program (no lane wired yet)"
+                "§1.7/§2.13: the unwired subprocess lanes return the honest InternalError seam (P4.13 wires them)"
             );
         }
+    }
+
+    // Build an InProcessNative `EngineInvocation` for the native CSV/TSV lane: `args = [source, target-token]`
+    // (NativeCsvTsvEngine::plan's shape, §3.2.2) and a real publish `out_tmp` the transform writes to.
+    fn native_lane_invocation(
+        source: &Path,
+        target_token: &str,
+        out_tmp: TempPath,
+    ) -> EngineInvocation {
+        EngineInvocation {
+            job: JobId::from_index(0),
+            engine: EngineId::NativeCsvTsv,
+            plan: Invocation {
+                program: EngineProgram::InProcessNative(EngineId::NativeCsvTsv),
+                args: vec![source.as_os_str().to_owned(), OsString::from(target_token)],
+                cwd: None,
+                env: Vec::new(),
+                stdin: StdinPlan::None,
+                progress: ProgressModel::InProcessFraction,
+                out_tmp: Some(out_tmp),
+            },
+            cancel: CancellationToken::new(),
+        }
+    }
+
+    // §6.4.1 unit (G15) + §0.1 real-FS: the P3.43 §1.7 InProcessNative lane runs the real §3.5.6 transform on
+    // crate::pool::run_in_core, writes the TSV output to out_tmp, returns Succeeded, and forwards the
+    // self-reported progress — here a single 1.0 completion tick for the sub-100-KB source (§1.7/§1.11).
+    #[tokio::test]
+    async fn dispatch_runs_the_native_lane_writes_the_output_and_forwards_the_completion_tick() {
+        use std::sync::{Arc, Mutex};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let source = dir.path().join("data.csv");
+        std::fs::write(&source, b"a,b\n1,2\n").expect("write source");
+        let out_temp = tempfile::Builder::new()
+            .tempfile_in(dir.path())
+            .expect("out temp")
+            .into_temp_path();
+        let out_path = out_temp.to_path_buf();
+        let invocation = native_lane_invocation(&source, "tsv", out_temp);
+
+        let ticks = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&ticks);
+        let result = dispatch(&invocation, &Pool::with_degree(1), move |fraction| {
+            sink.lock().expect("tick lock").push(fraction);
+        })
+        .await;
+
+        assert_eq!(
+            result,
+            InvocationResult::Succeeded,
+            "§1.7: the native CSV→TSV lane completes successfully"
+        );
+        assert_eq!(
+            std::fs::read(&out_path).expect("read output"),
+            b"a\tb\n1\t2\n",
+            "§3.5.6: the transform wrote the TSV output to out_tmp"
+        );
+        assert_eq!(
+            ticks.lock().expect("tick lock").as_slice(),
+            &[1.0],
+            "§1.7/§1.11: a sub-100-KB source emits a single 1.0 completion tick"
+        );
+    }
+
+    // §6.4.1 unit (G15): a mis-wired InProcessNative plan (no out_tmp / an unknown target token) fails cleanly
+    // as Failed(InternalError) — index-free, never a panic (the in-core no-panic path, G4/G14).
+    #[tokio::test]
+    async fn dispatch_fails_the_native_lane_cleanly_on_a_mis_wired_plan() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let source = dir.path().join("data.csv");
+        std::fs::write(&source, b"a,b\n1,2\n").expect("write source");
+
+        // (a) no out_tmp on the encode invocation — a mis-wired §1.7 lifecycle.
+        let mut no_out_tmp = native_lane_invocation(
+            &source,
+            "tsv",
+            tempfile::Builder::new()
+                .tempfile_in(dir.path())
+                .expect("out temp")
+                .into_temp_path(),
+        );
+        no_out_tmp.plan.out_tmp = None;
+        assert_eq!(
+            dispatch(&no_out_tmp, &Pool::with_degree(1), |_| {}).await,
+            InvocationResult::Failed(ConversionErrorKind::InternalError),
+            "§1.7: a native encode invocation with no out_tmp is a mis-wired lifecycle → InternalError"
+        );
+
+        // (b) an unknown target token — a mis-routed selection (CsvTsvTarget::from_token → None).
+        let bad_token = native_lane_invocation(
+            &source,
+            "xlsx",
+            tempfile::Builder::new()
+                .tempfile_in(dir.path())
+                .expect("out temp")
+                .into_temp_path(),
+        );
+        assert_eq!(
+            dispatch(&bad_token, &Pool::with_degree(1), |_| {}).await,
+            InvocationResult::Failed(ConversionErrorKind::InternalError),
+            "§1.7: a non-CSV/TSV target token is a mis-routed selection → InternalError"
+        );
+
+        // (c) empty argv — no source path at args[0] (a mis-built plan). Index-free (`first`) → InternalError.
+        let mut no_source = native_lane_invocation(
+            &source,
+            "tsv",
+            tempfile::Builder::new()
+                .tempfile_in(dir.path())
+                .expect("out temp")
+                .into_temp_path(),
+        );
+        no_source.plan.args.clear();
+        assert_eq!(
+            dispatch(&no_source, &Pool::with_degree(1), |_| {}).await,
+            InvocationResult::Failed(ConversionErrorKind::InternalError),
+            "§1.7: a plan with no source arg is mis-built → InternalError (index-free, no panic)"
+        );
+    }
+
+    // §6.4.1 unit (G15) + §0.1 real-FS: the native lane maps a real transform FAILURE to its §2.8 kind through
+    // crate::pool::run_in_core — the run_in_core `Ok(Err(TransformError))` → `Failed(from)` arm, exercised
+    // end-to-end (spawn → transform → classify). An ambiguous-delimiter single-column source (§2.10.2) →
+    // Corrupt, with no partial output published and no panic.
+    #[tokio::test]
+    async fn dispatch_maps_a_native_transform_failure_to_its_conversion_kind() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let source = dir.path().join("ambiguous.csv");
+        std::fs::write(&source, b"alpha\nbeta\ngamma\n").expect("write source");
+        let invocation = native_lane_invocation(
+            &source,
+            "tsv",
+            tempfile::Builder::new()
+                .tempfile_in(dir.path())
+                .expect("out temp")
+                .into_temp_path(),
+        );
+        assert_eq!(
+            dispatch(&invocation, &Pool::with_degree(1), |_| {}).await,
+            InvocationResult::Failed(ConversionErrorKind::Corrupt),
+            "§1.7/§2.8: an ambiguous-delimiter source fails the transform → Failed(Corrupt), never a panic"
+        );
     }
 
     // ─── P3.5: the §3.2 Engine trait (minimal) + the native CSV/TSV engine's plan() ──
@@ -1676,11 +1978,27 @@ mod transform_tests {
     //! bar G31/G32 binds these to real reader-read-back at P3.61-P3.63.)
     use super::*;
 
-    /// Run `transform_bytes` and return the produced output bytes (the common test shape).
+    /// Run `transform_bytes` and return the produced output bytes (the common test shape). Progress is
+    /// discarded here (the content assertions do not depend on it) — the P3.43 progress contract is asserted by
+    /// its own `transform_reports_*` tests below via [`transform_collecting_ticks`].
     fn transform(bytes: &[u8], target: CsvTsvTarget) -> Result<Vec<u8>, TransformError> {
         let mut out = Vec::new();
-        transform_bytes(bytes, target, &mut out)?;
+        transform_bytes(bytes, target, &mut out, &mut |_| {})?;
         Ok(out)
+    }
+
+    /// Run `transform_bytes`, returning both the output bytes AND the ordered progress fractions `on_progress`
+    /// received — the P3.43 self-reported-progress test shape.
+    fn transform_collecting_ticks(
+        bytes: &[u8],
+        target: CsvTsvTarget,
+    ) -> Result<(Vec<u8>, Vec<f32>), TransformError> {
+        let mut out = Vec::new();
+        let mut ticks = Vec::new();
+        transform_bytes(bytes, target, &mut out, &mut |fraction| {
+            ticks.push(fraction)
+        })?;
+        Ok((out, ticks))
     }
 
     #[test]
@@ -1828,10 +2146,99 @@ mod transform_tests {
         let src = dir.path().join("data.csv");
         std::fs::write(&src, b"a,b\n1,2\n").expect("write source");
         let mut out = Vec::new();
-        csv_tsv_transform(&src, CsvTsvTarget::Tsv, &mut out).expect("transforms a real file");
+        // [Test-Change: P3.43 — old-obsolete+new-correct, §1.7] on_progress arg added (P3.43): the 3-arg call is obsolete, the 4-arg call correct, success check unchanged; fmt wrapped the call so G70 --diff over-reads the old line — no expectation relaxed, no regression hidden.
+        csv_tsv_transform(&src, CsvTsvTarget::Tsv, &mut out, &mut |_| {})
+            .expect("transforms a real file");
         assert_eq!(
             out, b"a\tb\n1\t2\n",
             "§3.5.6: the path wrapper reads + transforms a real source file"
+        );
+    }
+
+    // §6.4.1 unit (G15): the P3.43 §1.7/§1.11 self-reported progress. A source below one PROGRESS_CHUNK_BYTES
+    // chunk crosses no boundary, so the transform emits ONLY the final 1.0 completion tick (§1.7 "sub-100-KB
+    // input → single tick", wire-indistinguishable from CoarseSpawnDone).
+    #[test]
+    fn transform_reports_only_a_final_completion_tick_for_a_sub_chunk_source() {
+        let (_out, ticks) =
+            transform_collecting_ticks(b"a,b\n1,2\n", CsvTsvTarget::Tsv).expect("transforms");
+        assert_eq!(
+            ticks.as_slice(),
+            &[1.0],
+            "§1.7/§1.11: a sub-chunk source emits ONLY the final 1.0 tick"
+        );
+    }
+
+    // §6.4.1 unit (G15): the P3.43 progress fraction basis. A source spanning several PROGRESS_CHUNK_BYTES
+    // chunks emits intermediate `bytes_processed / source_size` ticks — monotonically non-decreasing, each in
+    // [0,1) — followed by the sole final 1.0 (§1.7/§1.11).
+    #[test]
+    fn transform_reports_monotonic_fractions_ending_in_one_for_a_multi_chunk_source() {
+        // A CSV a few chunks wide, so the reader crosses several boundaries. Every row is well-formed so the
+        // record pass never short-circuits.
+        let mut source = Vec::new();
+        let mut row = 0u32;
+        while source.len() < PROGRESS_CHUNK_BYTES * 3 {
+            source.extend_from_slice(format!("{row},value-{row},{row}\n").as_bytes());
+            row = row.wrapping_add(1);
+        }
+        let (out, ticks) =
+            transform_collecting_ticks(&source, CsvTsvTarget::Tsv).expect("transforms");
+        assert!(!out.is_empty(), "the multi-chunk source produced output");
+        assert!(
+            ticks.len() >= 2,
+            "§1.11: a multi-chunk source emits intermediate ticks plus the final 1.0: {ticks:?}"
+        );
+        assert_eq!(
+            ticks.last().copied(),
+            Some(1.0),
+            "§1.11: the final tick is the completion 1.0"
+        );
+        for pair in ticks.windows(2) {
+            assert!(
+                pair[0] <= pair[1],
+                "§1.11: fractions are monotonically non-decreasing: {ticks:?}"
+            );
+        }
+        for &fraction in &ticks[..ticks.len() - 1] {
+            assert!(
+                (0.0..1.0).contains(&fraction),
+                "§1.11: each intermediate fraction is in [0,1): {fraction}"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15): the P3.43 progress gate is on the DECODED text, NOT the raw source bytes — the
+    // discriminating case. A Latin-1 / Windows-1252 source of high-range bytes (0xE9 = 'é' → the 2-byte UTF-8
+    // U+00E9) EXPANDS on decode, so a source that is BELOW one chunk on disk but whose DECODED text exceeds one
+    // chunk must still report intermediate progress. A source-byte gate would see `< 1 chunk` → single tick
+    // (the regression this pins); the `text_len` gate emits real intermediates (§1.11 "working, not hung").
+    #[test]
+    fn transform_reports_progress_when_a_sub_chunk_source_decodes_past_a_chunk() {
+        let mut source = Vec::new();
+        // ~75 KiB source (< one 100 KiB chunk) of mostly high-range bytes → the decoded UTF-8 exceeds one chunk.
+        while source.len() < PROGRESS_CHUNK_BYTES * 3 / 4 {
+            source.extend([0xE9u8; 20]);
+            source.push(b',');
+            source.extend([0xE9u8; 20]);
+            source.push(b'\n');
+        }
+        assert!(
+            source.len() < PROGRESS_CHUNK_BYTES,
+            "the source is deliberately below one chunk on disk ({} bytes)",
+            source.len()
+        );
+        let (out, ticks) = transform_collecting_ticks(&source, CsvTsvTarget::Tsv)
+            .expect("transforms a high-range single-byte source");
+        assert!(!out.is_empty(), "the sub-chunk source produced output");
+        assert!(
+            ticks.len() >= 2,
+            "§1.11: a sub-chunk SOURCE whose decoded text spans chunks still emits intermediate ticks: {ticks:?}"
+        );
+        assert_eq!(
+            ticks.last().copied(),
+            Some(1.0),
+            "§1.11: the final tick is the completion 1.0"
         );
     }
 
@@ -1890,7 +2297,7 @@ mod transform_tests {
         // The path wrapper surfaces a real read failure as `Read(io::Error)`, and `io_source` exposes the io
         // detail for the §7.5 log (the P3.43-P3.45 executor records it). A missing file → NotFound.
         let missing = Path::new("this-convertia-source-does-not-exist.csv");
-        let err = csv_tsv_transform(missing, CsvTsvTarget::Tsv, Vec::new())
+        let err = csv_tsv_transform(missing, CsvTsvTarget::Tsv, Vec::new(), &mut |_| {})
             .expect_err("a missing source fails");
         assert!(
             matches!(err, TransformError::Read(_)),

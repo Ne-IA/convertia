@@ -49,13 +49,16 @@
 //! consumer); this module names no `crate::engines` type, keeping §0.7's downward-only tiering intact.
 
 // [Build-Session-Entscheidung: P3.3] dead_code expect — the §0.9 Pool + the §1.7 in-core spawn_blocking
-// lane are authored ahead of their production consumers. `expect` (not `allow`) auto-flags the moment the
-// P3.4/P3.43 consumer lands, matching crate::engines / crate::domain / crate::outcome.
+// lane are authored ahead of their production consumers. P3.43 WIRED run_in_core + LaneError into the dispatch
+// InProcessNative arm, but they stay dead until the P3.46 conductor makes dispatch a live root; Pool
+// construction + the degree helpers stay dead until the P4 pool wiring. `expect` (not `allow`) auto-flags the
+// moment the last of these consumers lands, matching crate::engines / crate::domain / crate::outcome.
+// [Test-Change: P3.43 — old-obsolete+new-correct, §0.9] reason-string accuracy edit (the &Pool dispatch means P3.43 constructs no Pool, so "until P3.43" is obsolete); the removed line quotes the lint keyword before a paren — a production-.rs G70 --diff over-flag (P3.7/P3.8 precedent), no test assertion changed.
 #![cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the §0.9 Pool + the §1.7 in-core spawn_blocking lane (Pool::new/with_degree/run_in_core), LaneError, and the clamp_global_degree/resolve_global_degree degree helpers are authored ahead of their production consumers: the §1.7 dispatch reaches the InProcessNative arm at P3.4 and the §3.5.6 native CSV/TSV executor runs on run_in_core from P3.43, and P4.20/P4.22 EXPAND the pool onto the subprocess engines + the serialised single-permit lane. Nothing constructs a Pool in the production build until P3.43; the cfg(test) tests below construct the pool and exercise the lane, so the test build is dead-code-clean. expect (not allow) auto-flags the moment the P3.4/P3.43 consumer lands — matching crate::engines/crate::domain/crate::outcome."
+        reason = "the §0.9 Pool + the §1.7 in-core spawn_blocking lane (Pool::new/with_degree/run_in_core), LaneError, and the clamp_global_degree/resolve_global_degree degree helpers are authored ahead of their production consumers. P3.43 WIRED run_in_core + LaneError into the §1.7 dispatch InProcessNative arm (the native CSV/TSV executor), but they STAY dead in the production build until the P3.46 conductor makes dispatch a live root — rustc does NOT propagate liveness through the dead-but-present dispatch to its callees. P4.20/P4.22 EXPAND the pool onto the subprocess engines + the serialised single-permit lane; nothing CONSTRUCTS a Pool in the production build yet (dispatch receives a &Pool), so Pool::new/with_degree + the clamp/resolve degree helpers stay dead until the P4 pool wiring builds the app-wide pool. Every item above is dead until its consumer lands, which keeps this module-level expect fulfilled. The cfg(test) tests below construct the pool and exercise the lane, so the test build is dead-code-clean. expect (not allow) auto-flags the moment the last of these consumers lands — matching crate::engines/crate::domain/crate::outcome."
     )
 )]
 
