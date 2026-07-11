@@ -50,6 +50,12 @@
 //!    `lacks_atomic_publish_primitive` heuristics into a `Writable`/`Divert(reason)` verdict, memoised per-dir
 //!    within a run (a planning hint — the §2.1 publish re-checks at P3.36). `fs_guard` is a LEAF: the caller
 //!    (§1.8/C4, P3.34+) passes the `crate::run::PublishTemp::probe_name` name in (that module owns the grammar).
+//!  - `prepare_output_dir` / [`DestinationMode`] — the §2.7.1 destination-mode output-directory preparation
+//!    (**P3.34**): beside-source (the source's own parent dir) or user-chosen-root subtree re-creation
+//!    (create-only, ancestor-by-ancestor; a pre-existing dir tolerated, a non-dir collision / `..` traversal
+//!    fails clearly), returning the DIRECTORY the §2.1 publish targets — never a pre-baked `final_path`. The
+//!    deepest dir's link-safety verify (P3.9 `open_verified_parent_dir`) is taken at PUBLISH (P3.38), not here
+//!    (§2.7.1 / §2.3.3 ordering); the §1.8 `OutputPlan` (P3.37) stores the returned dir as `final_dir`.
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -1806,6 +1812,168 @@ impl LocationCache {
     }
 }
 
+/// The §2.7.1 resolved destination MODE for one source's output directory — the leaf-local, path-resolved form
+/// the §1.8/C4 planning (P3.37) hands [`prepare_output_dir`] after combining the user's wire
+/// [`crate::domain::DestinationChoice`] with the §2.4 freeze-derived common root. `fs_guard` is a §0.7 tier-2
+/// LEAF: the wire `DestinationChoice` carries only the chosen root (NO common root — that is a freeze-derived
+/// value, §2.7.1), so the subtree re-creation needs BOTH, and this leaf-local mode carries them borrowed. NOT a
+/// wire type: no `serde`/`specta`, plain borrowed `&Path`s (so it is `Copy`). [Build-Session-Entscheidung: P3.34]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "P3.34 — the §2.7.1 resolved destination-mode input to `prepare_output_dir`; constructed only \
+                  by the §1.8/C4 destination planning (P3.37, which combines the wire DestinationChoice with the \
+                  §2.4 freeze common root), so it is dead-at-runtime during the P3 wiring window; `allow` \
+                  (permissive) covers the ambiguous dead-ness (cf. OutputSafety). Exercised by prepare_output_dir_tests."
+    )
+)]
+#[derive(Debug, Clone, Copy)]
+pub enum DestinationMode<'a> {
+    /// Beside source (the §2.7.1 default): the output goes in the source's OWN parent directory, so a
+    /// folder-drop's layout is preserved for free (each output sits next to its origin) with no path computation
+    /// beyond the source's parent — and NO directory is created (the parent already exists).
+    BesideSource,
+    /// User-chosen root (§2.7.1): re-create the dropped-root-relative subtree under `root`. For a `source` at
+    /// `common_root/sub/dir/file.ext`, the output directory is `root/sub/dir` — the relative subtree is re-created
+    /// (never flattened).
+    ChosenRoot {
+        /// The single user-chosen destination root `D` — assumed to EXIST (the picker returns an existing
+        /// folder); only the subtree ancestors UNDER it are created (§2.7.1).
+        root: &'a Path,
+        /// The §2.4 freeze-derived common root (the deepest directory containing all frozen sources) the source's
+        /// relative subtree is taken against. `source` and `common_root` MUST be in the SAME path representation
+        /// (the caller passes the user-facing dropped-root pair so the re-created layout matches what the user
+        /// dropped, §2.7.1).
+        common_root: &'a Path,
+    },
+}
+
+/// §2.7.1 create-only ancestor step: create ONE subtree directory `dir`, tolerating a pre-existing DIRECTORY but
+/// never a non-directory. `create_dir` (NOT `create_dir_all`) is create-only — it does not silently accept an
+/// existing NON-directory occupying the name. On `AlreadyExists` the entry is re-checked: `metadata`
+/// (symlink-FOLLOWING) `is_dir()` ⇒ continue (a real dir OR a symlink-to-dir — the symlink-ancestor-into-a-
+/// source-tree redirect is caught by the full-final-dir §2.3.3 link-safety at publish, P3.9 on the deepest dir,
+/// §2.7.1); otherwise a clear `NotADirectory` failure (a regular file / symlink-to-file occupies the name — the
+/// item fails per §2.8, batch continues, never a silent overwrite/divert-around). A dangling symlink surfaces as
+/// the `?` metadata `Err`. Any other create error fails the item. Panic-free (G4/G14): every FS op maps to
+/// `io::Result`. [Build-Session-Entscheidung: P3.34]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "P3.34 — the create-only ancestor helper, called only by `prepare_output_dir` (itself unwired \
+                  until the §1.8/C4 planning, P3.37); dead-at-runtime through the P3 wiring window, exercised by \
+                  prepare_output_dir_tests. `allow` (permissive) covers the transitive dead-ness."
+    )
+)]
+fn create_subtree_dir(dir: &Path) -> io::Result<()> {
+    match std::fs::create_dir(dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            // §2.7.1: an existing ancestor must be a DIRECTORY. `metadata` follows a symlink, so a
+            // symlink-to-FILE / regular file → `is_dir() == false` → the clear NotADirectory failure; a real dir /
+            // symlink-to-dir → continue. A dangling symlink surfaces as the `?` metadata `Err` (a clear per-item
+            // failure), never a silent success.
+            if std::fs::metadata(dir)?.is_dir() {
+                Ok(())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::NotADirectory,
+                    "§2.7.1: a non-directory already occupies an output-subtree ancestor path",
+                ))
+            }
+        }
+        Err(other) => Err(other),
+    }
+}
+
+/// **§2.7.1 destination-mode output-directory preparation (P3.34)** — resolve (and, for the chosen-root case,
+/// create-only re-create) the final output DIRECTORY for one `source` under `mode`, returning the directory the
+/// §2.1 exclusive publish will target. This is DIRECTORY-only (never a `final_path` — the exact leaf name + §2.2
+/// no-clobber numbering is resolved at write time on the resolved real file, §2.1.2 / P3.15): the §1.8
+/// `OutputPlan` (P3.37) stores this as `final_dir`, and the §2.1.1 write sequence (P3.38) opens + link-safety-
+/// verifies it via [`open_verified_parent_dir`] (P3.9) BEFORE the leaf publish (the §2.7.1 / §2.3.3 ordering —
+/// the full-final-dir link-safety on the DEEPEST dir, taken at publish, not here).
+///
+/// - **[`DestinationMode::BesideSource`]** (default, §2.7.1): the output directory is the source's own parent —
+///   the folder layout is preserved for free and NO directory is created (the parent already exists). `Err`
+///   (InvalidInput) only if `source` has no parent (a root path — a frozen source file never is).
+/// - **[`DestinationMode::ChosenRoot`]** (§2.7.1): re-create the dropped-root-relative subtree under `root`. The
+///   source's path relative to `common_root` (`sub/dir/file.ext`) has its directory part (`sub/dir`) re-created
+///   under `root` ancestor-by-ancestor (shallowest first), each step create-only via [`create_subtree_dir`] (a
+///   pre-existing directory is tolerated; a non-directory collision fails clearly). The returned directory is
+///   `root/sub/dir` (never flattened). A source directly under `common_root` yields `root` itself (no ancestor to
+///   create). `Err(InvalidInput)` if `source` is not under `common_root`, or a non-normal component (a `..` /
+///   absolute anomaly) appears in the relative subpath — never re-created through (the no-harm / anti-traversal
+///   default: a dropped-root-relative subtree can never escape the chosen root).
+///
+/// **Fallible (`io::Result`), never a panic** (G4/G14 — this runs on untrusted paths outside the §2.12
+/// boundary): a strip/create failure is a clean `Err` the §2.8 caller maps to a per-item failure (batch
+/// continues, §1.9), NEVER a partial silently-wrong tree. `fs_guard` is a §0.7 tier-2 LEAF — it returns
+/// `io::Result`, never a `ConversionErrorKind` (the caller maps). [Build-Session-Entscheidung: P3.34]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "§2.7.1 prepare_output_dir (P3.34) — the destination-mode output-dir preparation. Its \
+                  production caller is the §1.8 OutputPlan computation (P3.37, `needs: P3.34`), which stores the \
+                  returned directory as `final_dir`; statically unused in the production build until that wiring \
+                  lands (`expect` auto-flags the moment it does), exercised by prepare_output_dir_tests."
+    )
+)]
+pub fn prepare_output_dir(source: &Path, mode: DestinationMode) -> io::Result<PathBuf> {
+    match mode {
+        DestinationMode::BesideSource => source.parent().map(Path::to_path_buf).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "§2.7.1: beside-source output needs the source's parent directory, but source has none (a root path)",
+            )
+        }),
+        DestinationMode::ChosenRoot { root, common_root } => {
+            // The source's path relative to the freeze common root — `sub/dir/file.ext` (§2.7.1). `strip_prefix`
+            // fails only if `source` is not under `common_root` (a caller contract violation — the common root
+            // contains all frozen sources by construction, §2.4); fail the item clearly, never re-create a wrong
+            // tree.
+            let rel = source.strip_prefix(common_root).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "§2.7.1: source is not under the frozen common root — cannot re-create its relative subtree",
+                )
+            })?;
+            // The DIRECTORY part of the relative path (`sub/dir`); a source directly under `common_root` has an
+            // empty relative directory → the final directory is `root` itself (no ancestor to create).
+            let rel_dir = rel.parent().unwrap_or_else(|| Path::new(""));
+            let mut final_dir = root.to_path_buf();
+            for component in rel_dir.components() {
+                // Enumerate every `Component` variant (the crate root denies clippy::wildcard_enum_match_arm):
+                // only a NORMAL name extends the subtree; any Prefix/RootDir/CurDir/ParentDir in a supposedly
+                // dropped-root-relative subpath is an absolute / `..` traversal anomaly — fail clearly, never
+                // create through it (§2.7.1 / the no-harm default).
+                match component {
+                    std::path::Component::Normal(name) => {
+                        final_dir.push(name);
+                        // Create-only, ancestor-by-ancestor (shallowest first): each missing ancestor is made
+                        // create-only; a pre-existing directory is tolerated; a non-directory collision fails the
+                        // item (§2.7.1).
+                        create_subtree_dir(&final_dir)?;
+                    }
+                    std::path::Component::Prefix(_)
+                    | std::path::Component::RootDir
+                    | std::path::Component::CurDir
+                    | std::path::Component::ParentDir => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "§2.7.1: unexpected non-normal component in the dropped-root-relative subtree path",
+                        ));
+                    }
+                }
+            }
+            Ok(final_dir)
+        }
+    }
+}
+
 #[cfg(test)]
 mod location_status_tests {
     use super::*;
@@ -1920,6 +2088,321 @@ mod location_status_tests {
             calls.get(),
             1,
             "§2.7.2: the second classify is a cache HIT — the probe-name factory ran exactly once (no re-probe)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod prepare_output_dir_tests {
+    use super::*;
+
+    // §6.4.1 real-FS (G15) / §2.7.1: beside-source resolves to the source's OWN parent directory (folder layout
+    // preserved for free) and creates NOTHING (the parent already exists).
+    #[test]
+    fn beside_source_returns_the_source_parent() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let sub = base.path().join("sub");
+        std::fs::create_dir(&sub).expect("create the source's parent dir");
+        let source = sub.join("file.csv");
+        let final_dir = prepare_output_dir(&source, DestinationMode::BesideSource)
+            .expect("beside-source resolves to the source parent");
+        assert_eq!(
+            final_dir, sub,
+            "§2.7.1: beside-source output goes in the source's own parent directory"
+        );
+    }
+
+    // §6.4.1 (G15) / §2.7.1: beside-source on a path with NO parent (an empty/root path — a frozen source file
+    // never is) fails clearly (InvalidInput), never a panic (G4/G14).
+    #[test]
+    fn beside_source_with_no_parent_is_invalid_input() {
+        let err = prepare_output_dir(Path::new(""), DestinationMode::BesideSource)
+            .expect_err("an empty path has no parent → Err");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidInput,
+            "§2.7.1: beside-source with no parent directory is a clear InvalidInput failure"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.1: chosen-root re-creates the dropped-root-relative subtree under D
+    // (`D/sub/deep`, never flattened), ancestor-by-ancestor, and BOTH intermediate dirs exist on disk.
+    #[test]
+    fn chosen_root_recreates_the_relative_subtree() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let common = base.path().join("src");
+        std::fs::create_dir(&common).expect("create the freeze common root");
+        let dest = base.path().join("dest");
+        std::fs::create_dir(&dest).expect("create the chosen destination root");
+        // source at common/sub/deep/file.csv → final_dir = dest/sub/deep
+        let source = common.join("sub").join("deep").join("file.csv");
+        let final_dir = prepare_output_dir(
+            &source,
+            DestinationMode::ChosenRoot {
+                root: &dest,
+                common_root: &common,
+            },
+        )
+        .expect("chosen-root re-creates the subtree");
+        assert_eq!(
+            final_dir,
+            dest.join("sub").join("deep"),
+            "§2.7.1: the relative subtree sub/deep is re-created under the chosen root (never flattened)"
+        );
+        assert!(
+            dest.join("sub").is_dir() && dest.join("sub").join("deep").is_dir(),
+            "§2.7.1: each ancestor (sub, then sub/deep) was created ancestor-by-ancestor on disk"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.1: a source DIRECTLY under the common root has an empty relative directory →
+    // the final directory is the chosen root ITSELF (no ancestor to create).
+    #[test]
+    fn chosen_root_source_directly_under_common_root_is_the_root_itself() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let common = base.path().join("src");
+        std::fs::create_dir(&common).expect("create the common root");
+        let dest = base.path().join("dest");
+        std::fs::create_dir(&dest).expect("create the chosen root");
+        let source = common.join("file.csv");
+        let final_dir = prepare_output_dir(
+            &source,
+            DestinationMode::ChosenRoot {
+                root: &dest,
+                common_root: &common,
+            },
+        )
+        .expect("a top-level source resolves to the chosen root itself");
+        assert_eq!(
+            final_dir, dest,
+            "§2.7.1: a source directly under the common root outputs at the chosen root itself"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.1: create-only TOLERATES a pre-existing directory ancestor (a second file in
+    // the same subtree, or a re-run) — AlreadyExists on a real dir continues, idempotently.
+    #[test]
+    fn chosen_root_tolerates_a_preexisting_subtree_directory() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let common = base.path().join("src");
+        std::fs::create_dir(&common).expect("create the common root");
+        let dest = base.path().join("dest");
+        std::fs::create_dir(&dest).expect("create the chosen root");
+        // Pre-create dest/sub so the first ancestor already exists (a prior file wrote the same subtree).
+        std::fs::create_dir(dest.join("sub")).expect("pre-create the first subtree ancestor");
+        let source = common.join("sub").join("deep").join("file.csv");
+        let final_dir = prepare_output_dir(
+            &source,
+            DestinationMode::ChosenRoot {
+                root: &dest,
+                common_root: &common,
+            },
+        )
+        .expect("create-only tolerates a pre-existing directory ancestor");
+        assert_eq!(final_dir, dest.join("sub").join("deep"));
+        assert!(
+            dest.join("sub").join("deep").is_dir(),
+            "§2.7.1: the deeper ancestor is still created when a shallower one pre-exists (create-only, not a failure)"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.1: a NON-directory occupying an ancestor path fails CLEARLY (NotADirectory),
+    // never silently overwriting or diverting around it — and the occupying file is left byte-untouched (no-harm).
+    #[test]
+    fn chosen_root_non_directory_ancestor_collision_fails_clearly() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let common = base.path().join("src");
+        std::fs::create_dir(&common).expect("create the common root");
+        let dest = base.path().join("dest");
+        std::fs::create_dir(&dest).expect("create the chosen root");
+        // A regular FILE occupies dest/sub — the ancestor path the subtree needs as a directory.
+        let occupier = dest.join("sub");
+        std::fs::write(&occupier, b"i am a file, not a directory")
+            .expect("plant a non-dir at the ancestor path");
+        let source = common.join("sub").join("deep").join("file.csv");
+        let err = prepare_output_dir(
+            &source,
+            DestinationMode::ChosenRoot {
+                root: &dest,
+                common_root: &common,
+            },
+        )
+        .expect_err("a non-directory ancestor collision fails");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::NotADirectory,
+            "§2.7.1: a non-directory occupying a subtree ancestor fails clearly, never a silent overwrite"
+        );
+        assert_eq!(
+            std::fs::read(&occupier).expect("the occupying file is still readable"),
+            b"i am a file, not a directory",
+            "§2.7.1 no-harm: the file occupying the ancestor path is left byte-untouched"
+        );
+        assert!(
+            !dest.join("sub").join("deep").exists(),
+            "§2.7.1: no deeper subtree was created through/around the non-directory collision"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.1: a `source` NOT under the common root fails clearly (InvalidInput) — the
+    // relative subtree cannot be taken, so the item fails rather than re-create a wrong tree.
+    #[test]
+    fn chosen_root_source_not_under_common_root_is_invalid_input() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let common = base.path().join("src");
+        std::fs::create_dir(&common).expect("create the common root");
+        let dest = base.path().join("dest");
+        std::fs::create_dir(&dest).expect("create the chosen root");
+        let source = base.path().join("elsewhere").join("file.csv"); // NOT under `common`
+        let err = prepare_output_dir(
+            &source,
+            DestinationMode::ChosenRoot {
+                root: &dest,
+                common_root: &common,
+            },
+        )
+        .expect_err("a source outside the common root cannot be re-created");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidInput,
+            "§2.7.1: a source not under the common root is a clear InvalidInput failure"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.1: a `..` in a (non-canonical) source's relative subpath is REJECTED
+    // (InvalidInput), never re-created through — a dropped-root-relative subtree can never escape the chosen
+    // root D via traversal (the no-harm / anti-zip-slip default). Nothing is created outside D.
+    #[test]
+    fn chosen_root_parent_dir_traversal_in_subpath_is_rejected() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let common = base.path().join("src");
+        std::fs::create_dir(&common).expect("create the common root");
+        let dest = base.path().join("dest");
+        std::fs::create_dir(&dest).expect("create the chosen root");
+        // A NON-canonical source lexically under `common` but containing `..`: strip_prefix(common) yields
+        // `../escape/file.csv`, whose directory part `../escape` carries a ParentDir component (§2.7.1 reject).
+        let source = common.join("..").join("escape").join("file.csv");
+        let err = prepare_output_dir(
+            &source,
+            DestinationMode::ChosenRoot {
+                root: &dest,
+                common_root: &common,
+            },
+        )
+        .expect_err("a `..` traversal in the relative subpath is rejected");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidInput,
+            "§2.7.1: a non-normal (`..`) component in the relative subtree is rejected, never created through"
+        );
+        assert!(
+            !base.path().join("escape").exists(),
+            "§2.7.1 no-harm: the traversal target was never created outside the chosen root"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.1: a create error OTHER than AlreadyExists (a MISSING chosen root D) is
+    // propagated as a clear per-item failure (never a panic, G4/G14).
+    #[test]
+    fn chosen_root_missing_destination_root_propagates_error() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let common = base.path().join("src");
+        std::fs::create_dir(&common).expect("create the common root");
+        // `dest` is NOT created — the first create_dir under it fails (parent missing).
+        let dest = base.path().join("does-not-exist");
+        let source = common.join("sub").join("file.csv");
+        let err = prepare_output_dir(
+            &source,
+            DestinationMode::ChosenRoot {
+                root: &dest,
+                common_root: &common,
+            },
+        )
+        .expect_err("a missing destination root cannot hold the subtree");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::NotFound,
+            "§2.7.1: creating a subtree under a missing root propagates the underlying NotFound, not a panic"
+        );
+    }
+}
+
+// Two STACKED cfg attributes (`#[cfg(test)]` + `#[cfg(unix)]`), NOT `#[cfg(all(test, unix))]`: the compound
+// form hides the standalone `#[cfg(test)]` the clippy allow-`expect_used`-in-tests config keys off, reddening
+// `-D warnings` (the P1.17 lesson); mirrors this module's existing `*_unix_tests` modules.
+#[cfg(test)]
+#[cfg(unix)]
+mod prepare_output_dir_unix_tests {
+    use super::*;
+
+    // §6.4.1 real-FS (G15) / §2.7.1: a symlink-to-DIRECTORY ancestor is FOLLOWED (metadata follows the link →
+    // `is_dir() == true`), so create-only TOLERATES it and creates the deeper subtree THROUGH it — the
+    // "symlink-to-dir → continue" half of `create_subtree_dir`'s documented behavior, proven with a REAL
+    // symlink (the ancestor-into-a-source-tree redirect is caught by the full-final-dir §2.3.3 link-safety at
+    // publish, P3.9 — NOT rejected here). A regression to `symlink_metadata` (a plausible "hardening" swap)
+    // would start rejecting a legitimate symlink-to-dir ancestor and this test would catch it.
+    #[test]
+    fn chosen_root_tolerates_a_symlink_to_directory_ancestor() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let common = base.path().join("src");
+        std::fs::create_dir(&common).expect("create the common root");
+        let dest = base.path().join("dest");
+        std::fs::create_dir(&dest).expect("create the chosen root");
+        // A REAL directory + a symlink `dest/sub` → that real dir occupies the first ancestor name.
+        let real_target = base.path().join("real_target");
+        std::fs::create_dir(&real_target).expect("create the symlink's real target dir");
+        std::os::unix::fs::symlink(&real_target, dest.join("sub"))
+            .expect("symlink the first subtree ancestor onto a real dir");
+        // source at common/sub/deep/file.csv → final_dir = dest/sub/deep, created THROUGH the symlink.
+        let source = common.join("sub").join("deep").join("file.csv");
+        let final_dir = prepare_output_dir(
+            &source,
+            DestinationMode::ChosenRoot {
+                root: &dest,
+                common_root: &common,
+            },
+        )
+        .expect("create-only follows a symlink-to-dir ancestor and continues");
+        assert_eq!(final_dir, dest.join("sub").join("deep"));
+        assert!(
+            real_target.join("deep").is_dir(),
+            "§2.7.1: a symlink-to-directory ancestor is followed (not rejected); the deeper subtree is created through it"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.1: a symlink-to-FILE ancestor is REJECTED (metadata follows the link →
+    // `is_dir() == false` → NotADirectory), exactly like a regular file — the "symlink-to-file → fail clearly"
+    // half of the documented behavior. The file behind the symlink is left byte-untouched (no-harm).
+    #[test]
+    fn chosen_root_symlink_to_file_ancestor_fails_not_a_directory() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let common = base.path().join("src");
+        std::fs::create_dir(&common).expect("create the common root");
+        let dest = base.path().join("dest");
+        std::fs::create_dir(&dest).expect("create the chosen root");
+        // A real FILE + a symlink `dest/sub` → that file occupies the first ancestor name.
+        let real_file = base.path().join("real_file.csv");
+        std::fs::write(&real_file, b"payload").expect("write the symlink's real target file");
+        std::os::unix::fs::symlink(&real_file, dest.join("sub"))
+            .expect("symlink the first subtree ancestor onto a file");
+        let source = common.join("sub").join("deep").join("file.csv");
+        let err = prepare_output_dir(
+            &source,
+            DestinationMode::ChosenRoot {
+                root: &dest,
+                common_root: &common,
+            },
+        )
+        .expect_err("a symlink-to-file ancestor is not a directory → Err");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::NotADirectory,
+            "§2.7.1: a symlink-to-FILE occupying a subtree ancestor fails clearly (NotADirectory), like a regular file"
+        );
+        assert_eq!(
+            std::fs::read(&real_file).expect("the symlink's target file is still readable"),
+            b"payload",
+            "§2.7.1 no-harm: the file behind the symlinked ancestor is left byte-untouched"
         );
     }
 }
