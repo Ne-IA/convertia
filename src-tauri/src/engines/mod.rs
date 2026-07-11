@@ -41,17 +41,21 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the P3.5 minimal Engine trait, the PlanOutcome return, and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.1 §3.2.3 registry constructs the native engine, P3.41 runs its planned transform, P3.43-P3.45 rewrite the dispatch InProcessNative arm, and P4.13 the subprocess arms — so they stay dead in the production build until then (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean)."
+        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the P3.5 minimal Engine trait, the PlanOutcome return, and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.1 §3.2.3 registry constructs the native engine, P3.41 runs its planned transform, P3.43-P3.45 rewrite the dispatch InProcessNative arm, and P4.13 the subprocess arms — so they stay dead in the production build until then (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) is likewise dead until the P3.43-P3.45 dispatch-arm rewrite runs it on crate::pool::run_in_core."
     )
 )]
 
 use std::ffi::OsString;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use specta::Type;
 use tokio_util::sync::CancellationToken;
 
+use crate::detection::{
+    classify_delimiter, classify_encoding, Delimiter, DelimiterClass, MAX_HEADER_WINDOW,
+};
 use crate::domain::{DroppedItem, FormatId, JobId, TargetId};
 use crate::outcome::ConversionErrorKind;
 
@@ -649,6 +653,206 @@ impl Engine for NativeCsvTsvEngine {
             progress: ProgressModel::InProcessFraction,
             out_tmp: None,
         }))
+    }
+}
+
+// ─── §3.5.6 native CSV/TSV streamed transform (P3.41) ──────────────────────────────────────────────────
+// [Build-Session-Entscheidung: P3.41] The one in-core §2.12.4-sanctioned conversion body — pure memory-safe
+// Rust, no third-party C/C++ decoder. It re-detects the source's encoding + delimiter at RUNTIME via
+// `crate::detection` (P3.27/P3.28) — the P3.5 `plan()` contract ("the source delimiter is detected at RUNTIME
+// by the transform"), which PRE-SANCTIONED this `engines`->`detection` edge in a committed box. It is a
+// same-tier-2 acyclic CONSUME edge: `detection` never imports `engines` (engines strictly consumes detection's
+// sniff, so they are NOT mutually-independent), the same class as the existing `engines`->`outcome` edge — so
+// it is NOT the forbidden mutually-independent-SIBLING case the P3.38 `run`<->`fs_guard` ruling rejected (both
+// are tier-2, so the "down" is by consume-direction, not a tier drop). Dead in the production build until the
+// P3.43-P3.45 §1.7 InProcessNative
+// lifecycle rewrites the dispatch arm to run it (the module dead_code expect); no-panic (the in-core
+// detect/transform path, G4/G14).
+
+/// The §3.5.6 output format the native transform writes — its RFC-4180 field delimiter. Parsed from the plan's
+/// `args[1]` token (`csv`/`tsv`, `NativeCsvTsvEngine::plan`, P3.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsvTsvTarget {
+    /// Comma-delimited output.
+    Csv,
+    /// Tab-delimited output.
+    Tsv,
+}
+
+impl CsvTsvTarget {
+    /// The target's field delimiter byte — `,` for CSV, `\t` for TSV.
+    const fn delimiter(self) -> u8 {
+        match self {
+            CsvTsvTarget::Csv => b',',
+            CsvTsvTarget::Tsv => b'\t',
+        }
+    }
+
+    /// Parse the plan's `args[1]` output-format token (`NativeCsvTsvEngine::plan`, P3.5) — `Some` for the two
+    /// canonical §0.6 lowercase tokens, `None` for any other (a mis-routed selection → the §1.7 executor's
+    /// `InternalError`).
+    pub fn from_token(token: &std::ffi::OsStr) -> Option<Self> {
+        match token.to_str() {
+            Some("csv") => Some(CsvTsvTarget::Csv),
+            Some("tsv") => Some(CsvTsvTarget::Tsv),
+            _ => None,
+        }
+    }
+}
+
+/// A §3.5.6 native-transform failure — mapped to the §2.8 [`ConversionErrorKind`] by the §1.7 executor
+/// (P3.43-P3.45). [Build-Session-Entscheidung: P3.41]
+#[derive(Debug)]
+pub enum TransformError {
+    /// The source is not decodable text (`classify_encoding` declined — a binary / UTF-32 / NUL-bearing input).
+    /// The §3.2.3 registry routes only a Recognized CSV/TSV here, so this means the file changed since intake
+    /// (or an intake edge) — the §2.10.2 "not text" case.
+    NotText,
+    /// A mixed / invalid byte sequence in the detected encoding (§2.10.2 "fail clearly, never emit mojibake") —
+    /// or the defensive catch for an unexpected `csv` reader fault (the parse loop; not reached in practice, as
+    /// the `ByteRecord` + `flexible` reader over an in-memory source parses permissively).
+    Malformed,
+    /// The source's delimiter is not consistently detectable (`classify_delimiter` → `Ambiguous`) — a
+    /// structurally-inconsistent input the transform cannot re-quote faithfully.
+    AmbiguousDelimiter,
+    /// The source could not be read (an I/O failure at read time — vanished / permission).
+    Read(io::Error),
+    /// The output temp could not be written (an I/O failure — out of disk, etc.).
+    Write(io::Error),
+}
+
+impl From<TransformError> for ConversionErrorKind {
+    fn from(error: TransformError) -> Self {
+        match error {
+            // §2.10.2: a not-text / invalid-bytes / structurally-inconsistent input is a Corrupt source — the
+            // transform never emits mojibake or a mis-quoted output.
+            TransformError::NotText
+            | TransformError::Malformed
+            | TransformError::AmbiguousDelimiter => ConversionErrorKind::Corrupt,
+            // §1.1 turn-time read failure: a source frozen at intake can vanish or lock by convert time —
+            // now-missing (`NotFound`) → `Gone`; permission / lock / other IO → `Unreadable`, matching the
+            // `outcome::read_failure_to_error_kind` split (the §1.1 invariant).
+            TransformError::Read(error) => {
+                if error.kind() == io::ErrorKind::NotFound {
+                    ConversionErrorKind::Gone
+                } else {
+                    ConversionErrorKind::Unreadable
+                }
+            }
+            TransformError::Write(_) => ConversionErrorKind::WriteFailed,
+        }
+    }
+}
+
+impl TransformError {
+    /// The underlying I/O error for a read/write failure — the §7.5 diagnostic-log detail the §1.7 executor
+    /// (P3.43-P3.45) records alongside the surfaced §2.8 kind (which carries no raw detail — SSOT *no stack
+    /// traces*). `None` for the content failures (NotText / Malformed / AmbiguousDelimiter), which have no I/O
+    /// source. [Build-Session-Entscheidung: P3.41]
+    pub fn io_source(&self) -> Option<&io::Error> {
+        match self {
+            TransformError::Read(error) | TransformError::Write(error) => Some(error),
+            TransformError::NotText
+            | TransformError::Malformed
+            | TransformError::AmbiguousDelimiter => None,
+        }
+    }
+}
+
+/// Run the §3.5.6 native CSV/TSV transform (P3.41): read `source`, re-detect its encoding + delimiter, and
+/// stream it to `out` at the `target` delimiter with RFC-4180 re-quoting.
+///
+/// **§3.5.6 record pass:** the source is read into memory + decoded to UTF-8 (no BOM), then each RFC-4180
+/// record is parsed at the source delimiter and re-written at the target delimiter — the `csv` writer quotes
+/// only fields containing the new delimiter / a quote / a newline (RFC-4180 `QuoteStyle::Necessary`), so every
+/// field's VALUE is preserved byte-for-byte (incl. a leading `= + - @` — the CSV-injection-safe literal
+/// preservation, §3.5.6, bound by G32 at P3.42). Output line terminator = LF (`\n`)
+/// [Build-Session-Entscheidung: P3.41] — deterministic + cross-platform (the P3.61 `sha256` determinism
+/// sub-assertion), never the RFC-4180 CRLF.
+///
+/// The read is **whole-file-buffered** here, not byte-streamed: the §1.10 preflight bounds the size, and the
+/// byte-STREAMED read + the §1.7 `bytes_processed / source_size` progress seam thread through at P3.43. And
+/// `source` MUST be a regular file: the FIFO / blocking-read pre-open type-check is the P3.49 read-path
+/// wiring's job (§2.12.4), and the wall-clock / wedged-read time bound is P3.45 — this pass owns none of them.
+pub fn csv_tsv_transform(
+    source: &Path,
+    target: CsvTsvTarget,
+    out: impl Write,
+) -> Result<(), TransformError> {
+    let bytes = std::fs::read(source).map_err(TransformError::Read)?;
+    transform_bytes(&bytes, target, out)
+}
+
+/// The pure byte→byte core of [`csv_tsv_transform`] (source bytes in, transformed bytes out) — the transform
+/// LOGIC, separated from the file read so it is unit-testable over byte literals. [Build-Session-Entscheidung: P3.41]
+fn transform_bytes(
+    bytes: &[u8],
+    target: CsvTsvTarget,
+    out: impl Write,
+) -> Result<(), TransformError> {
+    // Re-detect over the SAME §1.2 bounded header window intake used (`classify_encoding`/`classify_delimiter`
+    // sample <= MAX_HEADER_WINDOW), so the transform's re-detection matches the freeze's Recognized verdict.
+    // Index-FREE (`get(..).unwrap_or`) — the same defense-in-depth §2.12.4 groups this in-core untrusted-byte
+    // transform with the `crate::detection` sniffs: a short source (< the window) uses the whole buffer.
+    let header = bytes.get(..MAX_HEADER_WINDOW).unwrap_or(bytes);
+    let encoding = classify_encoding(header).ok_or(TransformError::NotText)?;
+
+    // Decode to UTF-8 with the detected encoding. `decode` handles + strips the BOM; `had_errors` is true iff a
+    // malformed sequence was replaced with U+FFFD — §2.10.2 "fail clearly, never emit mojibake".
+    let (text, _, had_errors) = encoding.decode(bytes);
+    if had_errors {
+        return Err(TransformError::Malformed);
+    }
+
+    let source_delimiter = match classify_delimiter(header, encoding, None) {
+        DelimiterClass::Detected(delimiter) => delimiter_byte(delimiter),
+        DelimiterClass::Ambiguous => return Err(TransformError::AmbiguousDelimiter),
+    };
+
+    // RFC-4180 read at the source delimiter → write at the target delimiter. `flexible(true)` on BOTH tolerates
+    // a ragged field count (a real-world CSV edge, spreadsheets.md) rather than erroring; `has_headers(false)`
+    // treats every record uniformly (the header row is data to re-delimit, not a schema). `ByteRecord`
+    // preserves field VALUE bytes exactly (the decode above already produced valid UTF-8).
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(source_delimiter)
+        .has_headers(false)
+        .flexible(true)
+        .from_reader(text.as_bytes());
+    let mut writer = csv::WriterBuilder::new()
+        .delimiter(target.delimiter())
+        .terminator(csv::Terminator::Any(b'\n'))
+        .quote_style(csv::QuoteStyle::Necessary)
+        .flexible(true)
+        .from_writer(out);
+
+    let mut record = csv::ByteRecord::new();
+    loop {
+        // The byte-level invalid-bytes failure is already handled above (`had_errors` → Malformed). The `csv`
+        // reader itself parses PERMISSIVELY here (a `ByteRecord` never re-validates UTF-8, and `flexible(true)`
+        // suppresses the unequal-field-count error over an in-memory source that cannot I/O-fail), so its `Err`
+        // arm is a DEFENSIVE catch for an unexpected reader fault (mapped to `Malformed`), not reached in
+        // practice. A write error is an out_tmp I/O failure. Either way the pass stops with no partial publish
+        // (the §2.1 temp is discarded on drop).
+        match reader.read_byte_record(&mut record) {
+            Ok(true) => writer
+                .write_byte_record(&record)
+                .map_err(|e| TransformError::Write(io::Error::other(e)))?,
+            Ok(false) => break,
+            Err(_) => return Err(TransformError::Malformed),
+        }
+    }
+    writer.flush().map_err(TransformError::Write)?;
+    Ok(())
+}
+
+/// The literal delimiter byte a [`Delimiter`] splits on — the source delimiter for the `csv` reader (all four
+/// §1.2 candidates are ASCII). [Build-Session-Entscheidung: P3.41]
+const fn delimiter_byte(delimiter: Delimiter) -> u8 {
+    match delimiter {
+        Delimiter::Comma => b',',
+        Delimiter::Semicolon => b';',
+        Delimiter::Tab => b'\t',
+        Delimiter::Pipe => b'|',
     }
 }
 
@@ -1396,5 +1600,263 @@ mod tests {
                 "§3.2.2: both PlanOutcome shapes wrap the plan Invocation"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod transform_tests {
+    //! §6.4.1 unit (G15) for the P3.41 §3.5.6 native CSV/TSV streamed transform. Exercises `transform_bytes`
+    //! (the byte->byte core) over crafted inputs + `csv_tsv_transform` over a real temp file. Pins: both
+    //! directions (CSV<->TSV); RFC-4180 re-quoting when a field contains the NEW delimiter / a quote / a
+    //! newline; CSV-injection literal preservation (leading `= + - @` unchanged); non-UTF-8 -> UTF-8
+    //! transcode; BOM stripping; the §2.10.2 fail-clearly on invalid bytes; an ambiguous delimiter -> error;
+    //! LF output; determinism; and the `from_token` / error-mapping contracts. (The output-VALIDITY corpus
+    //! bar G31/G32 binds these to real reader-read-back at P3.61-P3.63.)
+    use super::*;
+
+    /// Run `transform_bytes` and return the produced output bytes (the common test shape).
+    fn transform(bytes: &[u8], target: CsvTsvTarget) -> Result<Vec<u8>, TransformError> {
+        let mut out = Vec::new();
+        transform_bytes(bytes, target, &mut out)?;
+        Ok(out)
+    }
+
+    #[test]
+    fn csv_to_tsv_swaps_the_delimiter() {
+        let out = transform(b"a,b,c\n1,2,3\n", CsvTsvTarget::Tsv).expect("valid CSV transforms");
+        assert_eq!(
+            out, b"a\tb\tc\n1\t2\t3\n",
+            "§3.5.6: comma source -> tab-delimited output, LF terminator"
+        );
+    }
+
+    #[test]
+    fn tsv_to_csv_swaps_the_delimiter() {
+        let out =
+            transform(b"a\tb\tc\n1\t2\t3\n", CsvTsvTarget::Csv).expect("valid TSV transforms");
+        assert_eq!(
+            out, b"a,b,c\n1,2,3\n",
+            "§3.5.6: tab source -> comma-delimited output"
+        );
+    }
+
+    #[test]
+    fn a_field_containing_the_new_delimiter_is_rfc4180_requoted() {
+        // A comma-CSV field `b\tc` contains a TAB; converting to TSV the tab is the NEW delimiter, so the field
+        // must be RFC-4180 quoted to stay one field.
+        let out = transform(b"h1,h2,h3\na,b\tc,d\n", CsvTsvTarget::Tsv).expect("transforms");
+        assert_eq!(
+            out, b"h1\th2\th3\na\t\"b\tc\"\td\n",
+            "§3.5.6: a field containing the NEW (tab) delimiter is re-quoted"
+        );
+    }
+
+    #[test]
+    fn a_field_with_an_embedded_quote_is_requoted_and_doubled() {
+        let out = transform(b"col1,col2\n\"a\"\"b\",c\n", CsvTsvTarget::Tsv).expect("transforms");
+        assert_eq!(
+            out, b"col1\tcol2\n\"a\"\"b\"\tc\n",
+            "§3.5.6: a field with an embedded quote is re-quoted, the quote doubled"
+        );
+    }
+
+    #[test]
+    fn a_field_with_an_embedded_newline_is_requoted() {
+        let out = transform(b"col1,col2\n\"p\nq\",z\n", CsvTsvTarget::Tsv).expect("transforms");
+        assert_eq!(
+            out, b"col1\tcol2\n\"p\nq\"\tz\n",
+            "§3.5.6: a field with an embedded newline is re-quoted"
+        );
+    }
+
+    #[test]
+    fn a_plain_field_is_never_quoted() {
+        let out = transform(b"a,bcd,e\n1,2,3\n", CsvTsvTarget::Tsv).expect("transforms");
+        assert_eq!(
+            out, b"a\tbcd\te\n1\t2\t3\n",
+            "§3.5.6: a plain field (no delimiter/quote/newline) is written bare (QuoteStyle::Necessary)"
+        );
+    }
+
+    #[test]
+    fn leading_formula_chars_are_preserved_literally() {
+        // §3.5.6 CSV-injection-safe: a leading `= + - @` field stays LITERAL text — the transform never
+        // prefixes or mangles it, and (having no delimiter/quote/newline) it is written bare, its value
+        // byte-for-byte. The G32 output-validity reader binds this literal-preservation at P3.42.
+        let out = transform(b"=1+1,+2,-3,@cmd\nx,y,z,w\n", CsvTsvTarget::Tsv).expect("transforms");
+        assert_eq!(
+            out, b"=1+1\t+2\t-3\t@cmd\nx\ty\tz\tw\n",
+            "§3.5.6: leading = + - @ stay literal (never re-interpreted / prefixed)"
+        );
+    }
+
+    #[test]
+    fn non_utf8_source_is_transcoded_to_utf8() {
+        // A Windows-1252 source (0xE9 = e-acute) -> detected as a single-byte codepage (not valid UTF-8) ->
+        // decoded -> UTF-8 output (e-acute = 0xC3 0xA9), §2.10.2.
+        let out = transform(b"nom,ville\ncaf\xE9,paris\n", CsvTsvTarget::Tsv).expect("transcodes");
+        assert_eq!(
+            out,
+            "nom\tville\ncafé\tparis\n".as_bytes(),
+            "§2.10.2: a Windows-1252 source is transcoded to UTF-8"
+        );
+    }
+
+    #[test]
+    fn a_utf8_bom_is_stripped() {
+        // A UTF-8 BOM (EF BB BF) is authoritative for encoding + stripped from the output (§2.10.2 no-BOM).
+        let out = transform(b"\xEF\xBB\xBFa,b\n1,2\n", CsvTsvTarget::Tsv).expect("transforms");
+        assert_eq!(
+            out, b"a\tb\n1\t2\n",
+            "§2.10.2: the UTF-8 BOM is stripped (output UTF-8, no BOM)"
+        );
+    }
+
+    #[test]
+    fn invalid_bytes_fail_clearly_never_mojibake() {
+        // A source whose header (first MAX_HEADER_WINDOW bytes) is valid UTF-8 CSV but whose BODY carries an
+        // invalid UTF-8 byte (0xFF): detected UTF-8 from the header, then `decode` flags had_errors ->
+        // Malformed (§2.10.2 "fail clearly, never emit mojibake") — NOT a silent U+FFFD replacement.
+        let mut bytes = b"a,b\n".repeat(MAX_HEADER_WINDOW / 4); // >= MAX_HEADER_WINDOW valid UTF-8
+        bytes.extend_from_slice(b"x,\xFF\n"); // invalid UTF-8 in the body
+        let err = transform(&bytes, CsvTsvTarget::Tsv).expect_err("invalid UTF-8 fails");
+        assert!(
+            matches!(err, TransformError::Malformed),
+            "§2.10.2: invalid bytes -> Malformed, never mojibake"
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_delimiter_fails() {
+        // A single-column source with no consistent multi-field delimiter -> classify_delimiter Ambiguous ->
+        // the transform declines (it cannot re-quote a structure it cannot parse). Such a file is Uncertain at
+        // intake and never routed here; the transform guards defensively.
+        let err =
+            transform(b"alpha\nbeta\ngamma\n", CsvTsvTarget::Tsv).expect_err("ambiguous fails");
+        assert!(
+            matches!(err, TransformError::AmbiguousDelimiter),
+            "an undetectable delimiter -> AmbiguousDelimiter"
+        );
+    }
+
+    #[test]
+    fn output_uses_lf_not_crlf() {
+        let out = transform(b"a,b\n1,2\n", CsvTsvTarget::Tsv).expect("transforms");
+        assert!(
+            !out.contains(&b'\r'),
+            "[P3.41]: the output line terminator is LF, never the RFC-4180 CRLF"
+        );
+    }
+
+    #[test]
+    fn the_transform_is_deterministic() {
+        let input = b"a,b\tc,d\n\"x\"\"y\",1,2\n";
+        let first = transform(input, CsvTsvTarget::Tsv).expect("transforms");
+        let second = transform(input, CsvTsvTarget::Tsv).expect("transforms");
+        assert_eq!(
+            first, second,
+            "§3.5.6 / P3.61: the transform is deterministic (sha256(out1) == sha256(out2))"
+        );
+    }
+
+    #[test]
+    fn csv_tsv_transform_reads_a_real_file() {
+        // The path wrapper over a real temp file (real-FS, test-strategy §0.1) — the same core, read from disk.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let src = dir.path().join("data.csv");
+        std::fs::write(&src, b"a,b\n1,2\n").expect("write source");
+        let mut out = Vec::new();
+        csv_tsv_transform(&src, CsvTsvTarget::Tsv, &mut out).expect("transforms a real file");
+        assert_eq!(
+            out, b"a\tb\n1\t2\n",
+            "§3.5.6: the path wrapper reads + transforms a real source file"
+        );
+    }
+
+    #[test]
+    fn from_token_parses_the_two_canonical_tokens() {
+        use std::ffi::OsStr;
+        assert_eq!(
+            CsvTsvTarget::from_token(OsStr::new("csv")),
+            Some(CsvTsvTarget::Csv)
+        );
+        assert_eq!(
+            CsvTsvTarget::from_token(OsStr::new("tsv")),
+            Some(CsvTsvTarget::Tsv)
+        );
+        assert_eq!(
+            CsvTsvTarget::from_token(OsStr::new("xlsx")),
+            None,
+            "a non-CSV/TSV token -> None (a mis-routed selection)"
+        );
+    }
+
+    #[test]
+    fn transform_error_maps_to_the_conversion_kind() {
+        assert_eq!(
+            ConversionErrorKind::from(TransformError::Malformed),
+            ConversionErrorKind::Corrupt
+        );
+        assert_eq!(
+            ConversionErrorKind::from(TransformError::NotText),
+            ConversionErrorKind::Corrupt
+        );
+        assert_eq!(
+            ConversionErrorKind::from(TransformError::AmbiguousDelimiter),
+            ConversionErrorKind::Corrupt
+        );
+        // §1.1 turn-time read failure: a now-missing source (NotFound) → Gone; permission / lock / other IO →
+        // Unreadable (the outcome::read_failure_to_error_kind split).
+        assert_eq!(
+            ConversionErrorKind::from(TransformError::Read(io::Error::from(
+                io::ErrorKind::NotFound
+            ))),
+            ConversionErrorKind::Gone
+        );
+        assert_eq!(
+            ConversionErrorKind::from(TransformError::Read(io::Error::other("x"))),
+            ConversionErrorKind::Unreadable
+        );
+        assert_eq!(
+            ConversionErrorKind::from(TransformError::Write(io::Error::other("x"))),
+            ConversionErrorKind::WriteFailed
+        );
+    }
+
+    #[test]
+    fn a_missing_source_is_a_read_error_carrying_the_io_detail() {
+        // The path wrapper surfaces a real read failure as `Read(io::Error)`, and `io_source` exposes the io
+        // detail for the §7.5 log (the P3.43-P3.45 executor records it). A missing file → NotFound.
+        let missing = Path::new("this-convertia-source-does-not-exist.csv");
+        let err = csv_tsv_transform(missing, CsvTsvTarget::Tsv, Vec::new())
+            .expect_err("a missing source fails");
+        assert!(
+            matches!(err, TransformError::Read(_)),
+            "a missing source is a Read error"
+        );
+        assert_eq!(
+            err.io_source().map(io::Error::kind),
+            Some(io::ErrorKind::NotFound),
+            "the missing-file read error carries its NotFound io::Error detail (for the §7.5 log)"
+        );
+        assert_eq!(
+            ConversionErrorKind::from(err),
+            ConversionErrorKind::Gone,
+            "§1.1: a turn-time-vanished source (NotFound) maps to Gone, not Unreadable"
+        );
+    }
+
+    #[test]
+    fn io_source_is_present_for_io_errors_and_absent_for_content_errors() {
+        assert!(
+            TransformError::Write(io::Error::other("x"))
+                .io_source()
+                .is_some(),
+            "a write failure carries its io::Error source (for the §7.5 log)"
+        );
+        assert!(
+            TransformError::Malformed.io_source().is_none(),
+            "a content failure (Malformed) has no io source"
+        );
     }
 }

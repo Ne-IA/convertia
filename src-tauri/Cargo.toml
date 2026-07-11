@@ -106,6 +106,23 @@ chardetng = "1.0.0"
 # `simd-accel`/`serde`/fast-*-encode). Caret-pinned to the lock-resolved 0.8.35. Its §0.8 PINNED_FLOORS row
 # rides the same P3.27 Co-Pilot L(-1) follow-up as chardetng (both first-new packages of this box).
 encoding_rs = "0.8.35"
+# [P3.41] §3.5.6 native CSV/TSV transform — a real RFC-4180 reader/writer for the streamed CSV↔TSV pass
+# (`crate::engines` `csv_tsv_transform`): the source `csv::Reader` (source delimiter, flexible field count,
+# no header) parses records, the `csv::Writer` (target delimiter) re-quotes any field containing the new
+# delimiter / quote / newline per RFC-4180 — so field content (incl. a leading `= + - @`) is preserved
+# LITERALLY (the §3.5.6 CSV-injection-safe guarantee, bound by G32 at P3.42). Uses only the low-level
+# `ByteRecord` API (no serde record de/serialization), but `csv` depends on `serde` unconditionally (already
+# in the closure). A GENUINELY-NEW package like chardetng (P3.27): `csv` + its transitive `csv-core` are
+# newly-resolved into Cargo.lock and the shipped MIT-core PROD closure (`csv` + `csv-core` + `ryu` — `itoa` /
+# `memchr` were already present). All permissive (`csv`/`csv-core` `Unlicense OR MIT` → the MIT leg satisfies
+# deny.toml; `ryu` `Apache-2.0 OR BSL-1.0` → the Apache-2.0 leg), pure Rust with
+# no socket/copyleft/image-C-lib edge, so G53 core-closure + cargo-deny [licenses]/[bans] + cargo-audit stay
+# green. Default features only. Caret-pinned to the lock-resolved 1.4.0 (the normal-lib convention). §0.8 gains
+# the `csv §3.5.6` "Additional crates" row in this commit (DoD 2); the paired `check-supply-chain`
+# PINNED_FLOORS §0.8 drift-floor row is L(-1) (G71) — the Co-Pilot follow-up box, mirroring the chardetng
+# P3.27 / tokio P3.82 split (a new direct dep ABSENT from PINNED_FLOORS does not red G18: the floor is a
+# present-crate check, P3.82).
+csv = "1.4.0"
 
 # [P3.12] §2.1.1/§2.1.2 Unix single-call no-replace publish primitive for `fs_guard::publish_noreplace` — the
 # SAFE `rustix::fs::renameat_with(olddirfd, tmp, dirfd, leaf, RenameFlags::NOREPLACE)` maps to Linux
