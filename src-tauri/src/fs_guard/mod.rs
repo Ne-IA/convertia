@@ -64,6 +64,13 @@
 //!    `Unavailable` (→ §2.8 `WriteFailed`, never a divert onto a purgeable / another-FAT volume). The §2.7.5
 //!    full-chain re-checks on the diverted FINAL path are the late-divert (P3.36) / write-sequence (P3.38)
 //!    concern, not here.
+//!  - `is_write_divert_trigger` / `recheck_divert_free_space` / `publish_to_divert` — the §2.7.2/§2.7.5
+//!    late-divert path (**P3.36**): the trigger classifier (a WRITABILITY publish failure — permission /
+//!    read-only / device-gone / network — diverts; `OutOfDisk`/`PathTooLong`/`TooManyCollisions` do not), the
+//!    §2.14.4 divert-volume free-space re-check, and the divert publish that re-runs the FULL chain (§2.3.3
+//!    link-safety via `open_verified_parent_dir` → §2.14.4 free-space → §2.2.3 path-limit + §2.1 publish via
+//!    `atomic_publish`) on the §2.7.3 divert target — "not a degraded path" (§2.7.5). The primary→trigger→divert
+//!    orchestration is the §2.1.1 write-sequence (P3.38) concern; this box provides the pieces it wires.
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -488,14 +495,18 @@ impl VerifiedParentDir {
 /// best-effort representative (re-resolved via `dunce::canonicalize`); a swap between open and that resolve can
 /// only make the canonical-path leg over-match (→ divert, the no-harm direction), never under-match, so safety
 /// rests on the handle-read identity. [Build-Session-Entscheidung: P3.9]
+// [Test-Change: P3.36 — old-obsolete+new-correct, §2.7.5] `expect`→`allow`: P3.36's `publish_to_divert` now
+// calls `open_verified_parent_dir` for the late-divert link-safety, so the P3.9 DEAD assertion errors as
+// unfulfilled under -D warnings — but that consumer is itself unwired until the §2.1.1 write sequence (P3.38),
+// so the fn's dead-ness is ambiguous and `allow` (permissive) is correct (cf. P3.7/P3.8/P3.15).
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "§2.3.3 open_verified_parent_dir (P3.9) — the TOCTOU-closed parent-dir-handle primitive. Its \
-                  production caller is the §2.1.1 write sequence (P3.38) via the P3.12–P3.18 publish; statically \
-                  unused in the production build until that wiring lands (`expect` auto-flags the moment it \
-                  does), exercised by the in-module open_verified_parent_dir_tests."
+        reason = "§2.3.3 open_verified_parent_dir (P3.9) — the TOCTOU-closed parent-dir-handle primitive. Called \
+                  by P3.36's publish_to_divert (the late-divert link-safety), still unwired via the §2.1.1 write \
+                  sequence (P3.38), so it is dead-at-runtime but no longer statically unused; `allow` \
+                  (permissive) covers the ambiguous dead-ness. Exercised by the open_verified_parent_dir_tests."
     )
 )]
 pub fn open_verified_parent_dir(
@@ -670,14 +681,18 @@ impl Iterator for OutputNameCandidates {
 /// extension, yield the LAZY [`OutputNameCandidates`] the §2.2.2 exclusive-publish loop (P3.15) consumes —
 /// `stem.ext`, then `stem (1).ext`, `stem (2).ext`, … on the verbatim source stem (§2.10.1). Returns `None`
 /// iff `source` has no file stem (a `.` / `..` / root path); a frozen source always has one.
+// [Test-Change: P3.36 — old-obsolete+new-correct, §2.7.5] `expect`→`allow`: P3.36's `publish_to_divert` now
+// calls `output_name` to name the divert output, so the P3.10 DEAD assertion errors as unfulfilled under
+// -D warnings — but that consumer is unwired until the §2.1.1 write sequence (P3.38), so the fn's dead-ness is
+// ambiguous and `allow` (permissive) is correct (cf. P3.7/P3.8/P3.15).
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "§2.2.1 output_name (P3.10) — the lazy candidate generator. Its production consumer is the \
-                  §2.2.2 numbering ↔ exclusive-publish loop (P3.15) / the §1.8 OutputPlan (P3.37); statically \
-                  unused in the production build until that wiring lands (`expect` auto-flags the moment it \
-                  does), exercised by the in-module output_name_tests."
+        reason = "§2.2.1 output_name (P3.10) — the lazy candidate generator. Called by P3.36's publish_to_divert \
+                  (naming the divert output) + the §2.2.2 numbering loop / §1.8 OutputPlan (P3.37), still unwired \
+                  via the §2.1.1 write sequence (P3.38), so it is dead-at-runtime but no longer statically \
+                  unused; `allow` (permissive) covers the ambiguous dead-ness. Exercised by the output_name_tests."
     )
 )]
 pub fn output_name(source: &Path, ext: &str) -> Option<OutputNameCandidates> {
@@ -1597,14 +1612,19 @@ fn publish_cross_volume_checked(
 /// assume `final` is absent on an `Io` error — it reconciles residues via the §2.6 sweep, never a blind remove,
 /// and a step-6 failure never means the original was harmed (no-clobber held; only crash-durability degraded).
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+// [Test-Change: P3.36 — old-obsolete+new-correct, §2.7.5] `expect`→`allow`: P3.36's `publish_to_divert` now
+// calls `atomic_publish` to publish onto the divert target, so the P3.16 DEAD assertion errors as unfulfilled
+// under -D warnings — but that consumer is unwired until the §2.1.1 write sequence (P3.38), so the fn's
+// dead-ness is ambiguous and `allow` (permissive) is correct (cf. P3.7/P3.8/P3.15).
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
         reason = "§2.1.1/§2.14.3 atomic_publish (P3.16, EXDEV fallback P3.17) — the atomic/durable/no-clobber \
-                  per-item publish composite. Its production caller is the §2.1.1 write sequence (P3.38); \
-                  statically unused in the production build until that wiring lands (`expect` auto-flags the \
-                  moment it does), exercised by atomic_publish_tests."
+                  per-item publish composite. Called by P3.36's publish_to_divert (the late-divert publish), \
+                  still unwired via the §2.1.1 write sequence (P3.38), so it is dead-at-runtime but no longer \
+                  statically unused; `allow` (permissive) covers the ambiguous dead-ness. Exercised by \
+                  atomic_publish_tests."
     )
 )]
 pub fn atomic_publish(
@@ -2063,6 +2083,153 @@ pub fn resolve_divert_target(
     }
     // §2.7.3: no candidate is usable → the item fails clearly (WriteFailed, §2.8), never a silent bad divert.
     DivertTarget::Unavailable
+}
+
+/// **§2.7.2 late-divert trigger classification (P3.36)** — is this failed §2.1 publish a WRITABILITY failure
+/// (the destination became unwritable *after* the cached §2.7.2 probe — USB pulled / share dropped / permission
+/// flip), which the late-divert rescues by re-publishing to the §2.7.3 divert target? A NON-writability error
+/// is **not** a divert trigger (it fails per §2.8): [`PublishError::OutOfDisk`] (§2.7.2 names it explicitly),
+/// [`PublishError::PathTooLong`] and [`PublishError::TooManyCollisions`] are structural, and an
+/// [`PublishError::Io`] that is not a writability kind is a genuine write failure surfaced unchanged. The
+/// writability kinds are §2.7.2's ("`PermissionDenied`, `ReadOnlyFilesystem`, network errors") plus the
+/// device-gone `NotFound` (a pulled USB / removed share leaves the pinned parent handle's directory absent).
+///
+/// **Conservative by design, and SAFE in both directions (no-harm holds regardless):** a writability kind this
+/// set MISSES merely fails the item `WriteFailed` instead of rescuing it (a missed rescue, never data loss);
+/// a kind it OVER-includes at most attempts a divert that itself fails → `WriteFailed` anyway. So the set errs
+/// toward the documented common cases (§2.7.2:writable-probe classification) without risking a wrong outcome.
+/// [Build-Session-Entscheidung: P3.36]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "§2.7.2 is_write_divert_trigger (P3.36) — the late-divert trigger classifier. Its production \
+                  caller is the §2.1.1 write sequence (P3.38), which late-diverts on a writability publish \
+                  failure; statically unused in the production build until that wiring lands (`expect` \
+                  auto-flags the moment it does), exercised by the late_divert_tests."
+    )
+)]
+pub fn is_write_divert_trigger(err: &PublishError) -> bool {
+    match err {
+        // §2.7.2: "a non-writability error — e.g. OutOfDisk — is not a divert trigger." PathTooLong /
+        // TooManyCollisions are likewise structural (a shorter/less-degenerate name, not writability) — never divert.
+        PublishError::OutOfDisk
+        | PublishError::PathTooLong(_)
+        | PublishError::TooManyCollisions => false,
+        // A genuine OS write error: a late-divert trigger IFF its kind says the DESTINATION became unwritable.
+        // `io::ErrorKind` is `#[non_exhaustive]`, so `matches!` (whitelist → `false` for anything else) is the
+        // exhaustiveness-safe form (no wildcard arm; a future kind defaults to NOT-a-trigger, the safe direction).
+        PublishError::Io(e) => matches!(
+            e.kind(),
+            io::ErrorKind::PermissionDenied            // permission flip (EACCES / EPERM / an ACL change)
+                | io::ErrorKind::ReadOnlyFilesystem    // the mount / share flipped read-only (EROFS)
+                | io::ErrorKind::NotFound              // the destination dir / device vanished (USB pulled)
+                | io::ErrorKind::NetworkUnreachable    // a network share dropped …
+                | io::ErrorKind::HostUnreachable
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+        ),
+    }
+}
+
+/// §2.14.4 free-space re-check on the DIVERT target's volume (P3.36). The up-front §1.10 preflight verified
+/// free space on the ORIGINAL beside-source volume; a late-divert lands the output on a DIFFERENT volume
+/// (Downloads/Documents), so its free space is re-checked here against the output size (≈ the completed `tmp`'s
+/// byte length) BEFORE the publish — "never assume it fits because the original volume did" (§2.7.2). This runs
+/// on BOTH the same- and cross-volume divert (the §2.14.3 cross-volume path inside [`atomic_publish`] has its
+/// own pre-copy check, but a same-volume divert would otherwise skip §2.14.4 entirely). Below the need →
+/// [`PublishError::OutOfDisk`] (→ §2.8 `OutOfDisk`; the one item fails, the batch continues, §1.9).
+/// [Build-Session-Entscheidung: P3.36]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.14.4 the divert free-space re-check (P3.36) — called by publish_to_divert (itself unwired \
+                  until the §2.1.1 write sequence, P3.38); dead-at-runtime through the P3 wiring window, \
+                  exercised directly by the late_divert_tests. `allow` (permissive) covers the ambiguous dead-ness."
+    )
+)]
+fn recheck_divert_free_space(divert_dir: &Path, needed_bytes: u64) -> Result<(), PublishError> {
+    let avail = crate::platform::available_bytes(divert_dir).map_err(PublishError::Io)?;
+    if avail < needed_bytes {
+        Err(PublishError::OutOfDisk)
+    } else {
+        Ok(())
+    }
+}
+
+/// **§2.7.2/§2.7.5 the late-divert publish (P3.36)** — re-run the FULL safety chain on the §2.7.3 divert target
+/// `divert_dir` and publish the completed `tmp` there, after the primary beside-source §2.1 publish failed for
+/// a writability reason ([`is_write_divert_trigger`]). "Not a degraded path" (§2.7.5 / SSOT Principle-5): every
+/// guarantee the beside-source publish runs, runs here too — because the up-front §2.2.3 path-limit and §2.14.4
+/// free-space verdicts were computed for the ORIGINAL volume + path, which differ from the divert's:
+///
+/// 1. **§2.3.3 link-safety** — [`open_verified_parent_dir`] opens `divert_dir` as a TOCTOU-closed pinned
+///    handle and verifies it does not resolve onto a frozen source (a `ResolvesOntoSource` divert target fails
+///    the item — the divert never publishes onto an original).
+/// 2. **§2.14.4 free-space** — [`recheck_divert_free_space`] re-checks the divert VOLUME against the output size
+///    (≈ `tmp`'s bytes); a shortfall fails `OutOfDisk`.
+/// 3. **§2.2.3 path-limit + §2.1 publish** — [`atomic_publish`] runs the §2.2.2 numbering loop (which re-checks
+///    the per-OS path limit against the divert's full absolute path per candidate) + the create-only exclusive
+///    publish (with the §2.14.3 cross-volume fallback — a late-divert `tmp` on the ORIGINAL volume publishes
+///    cross-volume onto the divert), returning [`PublishOutcome`].
+///
+/// The divert target was already §2.7.2-re-tested writable by [`resolve_divert_target`] (P3.35) before this
+/// call; this re-runs the WRITE-time chain the planning-hint probe cannot stand in for. Any leg failing fails
+/// the ONE item clearly (§2.8 `WriteFailed`/`OutOfDisk`/`PathTooLong`) and the batch continues (§1.9); the
+/// caller (P3.38) does NOT re-divert a failed divert (one divert per item, §2.7.3). No panic (G4/G14).
+/// `same_volume_intermediate` is the run-owned §2.14.3 `.part` sibling of the divert final on the DIVERT volume
+/// (passed in — the LEAF does not mint the `crate::run` name). [Build-Session-Entscheidung: P3.36]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "§2.7.2/§2.7.5 publish_to_divert (P3.36) — the late-divert publish. Its production caller is \
+                  the §2.1.1 write sequence (P3.38), which invokes it after a writability publish failure; \
+                  statically unused in the production build until that wiring lands (`expect` auto-flags the \
+                  moment it does), exercised by the late_divert_tests."
+    )
+)]
+pub fn publish_to_divert(
+    divert_dir: &Path,
+    frozen_sources: &[FileIdentity],
+    source: &Path,
+    ext: &str,
+    tmp: &Path,
+    same_volume_intermediate: &Path,
+) -> Result<PublishOutcome, PublishError> {
+    // 1. §2.3.3 link-safety on the divert dir — a TOCTOU-closed pinned handle whose resolved identity is not a
+    //    frozen source (§2.7.5's identical link-safety on the divert path — the divert never publishes onto an
+    //    original). A `ResolvesOntoSource` divert target fails the item (→ §2.8 WriteFailed).
+    let verified =
+        match open_verified_parent_dir(divert_dir, frozen_sources).map_err(PublishError::Io)? {
+            ParentDirVerdict::Verified(v) => v,
+            ParentDirVerdict::ResolvesOntoSource => {
+                return Err(PublishError::Io(io::Error::other(
+                "§2.7.5: the divert target resolves onto a frozen source — cannot publish there",
+            )));
+            }
+        };
+    // 2. §2.14.4 free-space re-check against the DIVERT volume (the output ≈ the completed tmp's byte length).
+    let output_size = std::fs::metadata(tmp).map_err(PublishError::Io)?.len();
+    recheck_divert_free_space(divert_dir, output_size)?;
+    // 3. §2.2 candidates + §2.1 publish — the numbering loop re-checks the per-OS path limit against the divert's
+    //    full absolute path per candidate (P3.15), and atomic_publish handles the §2.14.3 cross-volume copy.
+    let candidates = output_name(source, ext).ok_or_else(|| {
+        PublishError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "§2.2.1: the source has no file stem — cannot name the divert output",
+        ))
+    })?;
+    atomic_publish(
+        &verified,
+        divert_dir,
+        tmp,
+        candidates,
+        same_volume_intermediate,
+    )
 }
 
 #[cfg(test)]
@@ -2667,6 +2834,184 @@ mod resolve_divert_target_tests {
             target,
             DivertTarget::Resolved(good.path().to_path_buf()),
             "§2.7.3: an unwritable candidate is skipped; the next writable one is chosen"
+        );
+    }
+}
+
+// The publish half (recheck_divert_free_space / publish_to_divert) is `cfg(any(linux, macos, windows))` (it
+// calls atomic_publish / available_bytes), so the tests are gated to the shipped desktops too — the same
+// two-stacked-`cfg` module form as publish_numbered_tests / atomic_publish_tests.
+#[cfg(test)]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod late_divert_tests {
+    use super::*;
+
+    // §6.4.1 unit (G15) / §2.7.2: OutOfDisk / PathTooLong / TooManyCollisions are NOT writability failures →
+    // never a late-divert trigger (they fail per §2.8, §2.7.2 names OutOfDisk explicitly).
+    #[test]
+    fn structural_and_capacity_errors_are_not_divert_triggers() {
+        assert!(
+            !is_write_divert_trigger(&PublishError::OutOfDisk),
+            "§2.7.2: OutOfDisk is explicitly NOT a divert trigger"
+        );
+        assert!(
+            !is_write_divert_trigger(&PublishError::TooManyCollisions),
+            "§2.7.2: a degenerate-directory collision cap is structural, not writability — no divert"
+        );
+        assert!(
+            !is_write_divert_trigger(&PublishError::PathTooLong(PathTooLong::Total)),
+            "§2.7.2: a path-limit breach is structural, not writability — no divert"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.7.2: an Io publish failure of a WRITABILITY kind (permission / read-only /
+    // device-gone / network) IS a late-divert trigger; a non-writability Io kind is surfaced unchanged (no divert).
+    #[test]
+    fn writability_io_kinds_trigger_divert_others_do_not() {
+        for kind in [
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::ReadOnlyFilesystem,
+            io::ErrorKind::NotFound,
+            io::ErrorKind::NetworkUnreachable,
+            io::ErrorKind::HostUnreachable,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::ConnectionAborted,
+        ] {
+            assert!(
+                is_write_divert_trigger(&PublishError::Io(io::Error::from(kind))),
+                "§2.7.2: {kind:?} is a writability failure → a late-divert trigger"
+            );
+        }
+        for kind in [
+            io::ErrorKind::InvalidData,
+            io::ErrorKind::InvalidInput,
+            io::ErrorKind::Other,
+        ] {
+            assert!(
+                !is_write_divert_trigger(&PublishError::Io(io::Error::from(kind))),
+                "§2.7.2: {kind:?} is not a writability failure → surfaced unchanged, no divert"
+            );
+        }
+    }
+
+    // §6.4.1 real-FS (G15) / §2.14.4: the divert free-space re-check passes when the volume can host the output
+    // (needed = 0 always fits) and fails OutOfDisk when it cannot (u64::MAX never fits a real volume).
+    #[test]
+    fn free_space_recheck_passes_when_it_fits_and_fails_when_it_does_not() {
+        let dir = tempfile::tempdir().expect("a real temp dir on a real volume");
+        recheck_divert_free_space(dir.path(), 0).expect("§2.14.4: a zero-byte need always fits");
+        assert!(
+            matches!(
+                recheck_divert_free_space(dir.path(), u64::MAX),
+                Err(PublishError::OutOfDisk)
+            ),
+            "§2.14.4: an impossible need (u64::MAX) fails OutOfDisk — never assume it fits"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.5: the late-divert publishes the completed tmp into a writable divert dir
+    // (same volume → a direct move) — the output lands under the target base name and tmp is consumed.
+    #[test]
+    fn publish_to_divert_lands_the_output_in_a_writable_divert_dir() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let divert = base.path().join("divert");
+        std::fs::create_dir(&divert).expect("create the divert target dir");
+        // tmp on the SAME volume as the divert (both under `base`) → a direct intra-volume publish (no copy).
+        let tmp = base.path().join("out.part");
+        std::fs::write(&tmp, b"a\tb\tc\n").expect("write the completed engine output");
+        let intermediate = divert.join(".convertia-int.part"); // used only on the cross-volume path (not here)
+        let source = Path::new("data.csv");
+        let outcome = publish_to_divert(&divert, &[], source, "tsv", &tmp, &intermediate)
+            .expect("§2.7.5: the late-divert publishes into a writable divert dir");
+        assert!(
+            matches!(outcome, PublishOutcome::Published { .. }),
+            "§2.7.5: the divert publish reports Published"
+        );
+        assert!(
+            divert.join("data.tsv").is_file(),
+            "§2.7.5: the output landed under the source base name + target extension in the divert dir"
+        );
+        assert_eq!(
+            std::fs::read(divert.join("data.tsv")).expect("read the published divert output"),
+            b"a\tb\tc\n",
+            "§2.7.5 no-harm: the completed tmp's EXACT bytes landed in the divert output (content, not just existence)"
+        );
+        assert!(
+            !tmp.exists(),
+            "§2.1.2: the same-volume publish MOVED tmp (no 0-byte final, no leftover tmp)"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.5: a divert target that resolves onto a frozen source is REFUSED (the divert
+    // never publishes onto an original) — synthesised by making the divert dir's OWN identity a "frozen source".
+    #[test]
+    fn publish_to_divert_refuses_a_target_that_resolves_onto_a_source() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let divert = base.path().join("divert");
+        std::fs::create_dir(&divert).expect("create the divert dir");
+        // Treat the divert dir's own resolved identity as a frozen source → open_verified matches → refuse.
+        let dir_identity = resolve_identity(&divert).expect("resolve the divert dir's identity");
+        let tmp = base.path().join("out.part");
+        std::fs::write(&tmp, b"payload").expect("write tmp");
+        let intermediate = divert.join(".convertia-int.part");
+        let err = publish_to_divert(
+            &divert,
+            std::slice::from_ref(&dir_identity),
+            Path::new("data.csv"),
+            "tsv",
+            &tmp,
+            &intermediate,
+        )
+        .expect_err("a divert target resolving onto a frozen source must be refused");
+        assert!(
+            matches!(err, PublishError::Io(_)),
+            "§2.7.5: a divert-onto-source is refused as a write failure (→ §2.8 WriteFailed), never published"
+        );
+        assert!(
+            !divert.join("data.tsv").exists(),
+            "§2.7.5 no-harm: nothing was published when the divert target resolved onto a source"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §2.2.1: a source with no file stem fails clearly (InvalidInput), never a panic
+    // (G4/G14) — reached after the divert dir opened + free-space passed.
+    #[test]
+    fn publish_to_divert_with_a_stemless_source_is_invalid_input() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let divert = base.path().join("divert");
+        std::fs::create_dir(&divert).expect("create the divert dir");
+        let tmp = base.path().join("out.part");
+        std::fs::write(&tmp, b"payload").expect("write tmp");
+        let intermediate = divert.join(".convertia-int.part");
+        let err = publish_to_divert(&divert, &[], Path::new(""), "tsv", &tmp, &intermediate)
+            .expect_err("a stemless source cannot name the divert output");
+        assert!(
+            matches!(&err, PublishError::Io(e) if e.kind() == io::ErrorKind::InvalidInput),
+            "§2.2.1: a source with no file stem fails InvalidInput, never a panic"
+        );
+    }
+
+    // §6.4.1 real-FS (G15): a missing tmp (a bug/race — the completed output vanished) fails clearly as an Io
+    // error, never a panic (G4/G14) — the free-space re-check reads tmp's size, so a gone tmp surfaces there.
+    #[test]
+    fn publish_to_divert_with_a_missing_tmp_is_an_io_error() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let divert = base.path().join("divert");
+        std::fs::create_dir(&divert).expect("create the divert dir");
+        let tmp = base.path().join("does-not-exist.part"); // never created
+        let intermediate = divert.join(".convertia-int.part");
+        let err = publish_to_divert(
+            &divert,
+            &[],
+            Path::new("data.csv"),
+            "tsv",
+            &tmp,
+            &intermediate,
+        )
+        .expect_err("a missing tmp cannot be published");
+        assert!(
+            matches!(err, PublishError::Io(_)),
+            "§2.8: a missing completed output surfaces as a clear Io write failure, never a panic"
         );
     }
 }
