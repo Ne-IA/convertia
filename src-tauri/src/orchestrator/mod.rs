@@ -19,8 +19,9 @@
 //! run-cancellation-token store, P2.42; its register-at-C6 / cancel-at-C7 / drop-on-`RunFinished` WIRING is the
 //! P3.46 conductor), its sibling the `RunResultStore` (the process-local terminal-`RunResult` retention for C8
 //! re-serve, P2.43; no on-disk persistence per §7.4, its retain-at-`RunFinished` / evict-at-C6 / get-at-C8
-//! WIRING likewise P3.46), the `CollectedSetRegistry` (the `CollectedSetId` → `FrozenCollectedSet` resolve
-//! store, P2.44; so the bare-`collectedSetId` C3/C4/C5/C6 commands resolve the frozen detection result without
+//! WIRING likewise P3.46), the `CollectedSetRegistry` (the `CollectedSetId` → `RegisteredSet` resolve
+//! store — the domain `FrozenCollectedSet` + the §2.3 identity-evidence table, P2.44 / P3.40; so the
+//! bare-`collectedSetId` C3/C4/C5/C6 commands resolve the frozen detection result without
 //! a second walk, its register-at-C1/C2a-freeze / resolve-at-C3/C4/C5 / take-at-C6 WIRING likewise P3.46), and
 //! the `IngestRegistry` (the `CollectingId` → `CancellationToken` ingest-cancellation store, P2.45; the
 //! one-phase-earlier sibling of `RunRegistry`, so C13 `cancel_ingest` can trip an in-flight C1/C2a walk — its
@@ -38,7 +39,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) are authored as contracts before the P3.46 orchestrator behaviour + the C1/C2a/C3/C4/C5/C6/C7/C8/C13 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so their as-yet-unwired methods are dead in the production build until consumed (`RunRegistry::has_active_run` is already consumed by the §7.1.1 `converter_is_busy` from P2.55, with `register`/`cancel`/`finish` staying dead until P3.46). The P3.25 §2.6.4 cleanup-honesty leg (ResidueRecord/ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) is likewise dead until the P3.50 §1.12 projection + the P3.38 write-sequence consume it. The P3.39 §2.5.1 EquivKeyComputer (compute_equiv_key) is likewise dead until the P3.40 C4 plan_output re-run wiring resolves its managed State + calls it."
+        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) are authored as contracts before the P3.46 orchestrator behaviour + the C1/C2a/C3/C4/C5/C6/C7/C8/C13 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so their as-yet-unwired methods are dead in the production build until consumed (`RunRegistry::has_active_run` is already consumed by the §7.1.1 `converter_is_busy` from P2.55, with `register`/`cancel`/`finish` staying dead until P3.46). The P3.25 §2.6.4 cleanup-honesty leg (ResidueRecord/ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) is likewise dead until the P3.50 §1.12 projection + the P3.38 write-sequence consume it. The P3.39 §2.5.1 EquivKeyComputer (compute_equiv_key) is now consumed by the P3.40 compute_rerun_verdict, and both — plus the P3.40 RegisteredSet registry composite — stay dead in the production build until the P3.49 C4 plan_output wiring resolves the managed State + calls compute_rerun_verdict."
     )
 )]
 
@@ -68,7 +69,7 @@ use crate::fs_guard::{
     ParentDirVerdict, PublishError, PublishOutcome,
 };
 use crate::outcome::{ConversionErrorKind, IpcError, OutcomeMsg};
-use crate::run::{cleanup_item, EquivKey, RunScratch};
+use crate::run::{cleanup_item, EquivKey, RerunLedger, RunScratch};
 
 /// One same-source conversion batch (§0.6 / §1.9) — the queue the orchestrator builds at C6
 /// `start_conversion` from a frozen `CollectedSet::Single` and drives to a §1.12 summary. INTERNAL to the
@@ -1326,16 +1327,44 @@ impl RunResultStore {
 // RunResultStore P2.43), homed here under the same §0.7 "(§0.4.4)" umbrella RunResultStore set the precedent
 // for — a §0.4.4 State store added to orchestrator with NO §0.7/§1a structural edit (§0.7 attributes "(§0.4.4)"
 // State to orchestrator; it enumerates the outcome-referencing TYPES, not every store, so a third store under
-// the umbrella needs no fingerprint re-bless). It holds the frozen `CollectedSet::Single` payload (a
-// crate::domain FrozenCollectedSet, a downward orchestrator→domain edge like RunRegistry's RunId key) keyed by
-// CollectedSetId, so the bare-`collectedSetId` C3/C4/C5/C6 commands resolve back to the detected format /
-// frozen items / roots / skipped WITHOUT a second walk or re-detection (§0.4.4). Like the sibling stores it is
+// the umbrella needs no fingerprint re-bless). It holds the `RegisteredSet` composite (the frozen
+// `CollectedSet::Single` payload — a crate::domain FrozenCollectedSet, a downward orchestrator→domain edge like
+// RunRegistry's RunId key — PLUS the §2.3 identity-evidence table, P3.40) keyed by CollectedSetId, so the
+// bare-`collectedSetId` C3/C4/C5/C6 commands resolve back to the detected format / frozen items / roots /
+// skipped / identities WITHOUT a second walk or re-detection (§0.4.4). Like the sibling stores it is
 // a CONTRACT before its consumer: the register-at-C1/C2a-freeze / resolve-at-C3/C4/C5 / take-at-C6 WIRING is
 // the P3.46 conductor + the C-command bodies, so it is dead in the production build until then (covered by the
 // module-level dead_code expect).
 
-/// The §0.4.4 collected-set registry — maps each frozen `CollectedSetId` to its `FrozenCollectedSet` (the
-/// `CollectedSet::Single` payload), held as a Tauri app-managed `State` so the bare-`collectedSetId` C3
+/// The §0.4.4 registered collected-set record — the orchestrator composite the [`CollectedSetRegistry`]
+/// holds (the P3.40 frozen-model-identity ruling / §0.4.4 `[CLARIFIED]`): the domain [`FrozenCollectedSet`]
+/// PLUS the §2.3 **identity evidence** — an `ItemId → FileIdentity` table over every RESOLVED survivor. The
+/// evidence CANNOT be a field on the tier-3 `domain` `FrozenCollectedSet`: `FileIdentity` is a tier-2
+/// `fs_guard` type, so embedding it would be an upward §0.7 edge — it rides here in the tier-1 orchestrator
+/// value instead, so the "registered VALUE as a whole" carries everything §0.4.4 enumerates. The identities
+/// key the §2.5.1 EquivKey `source_identity` (P3.39 — "identity, not path") and the §2.3.3 write-time
+/// comparison set (the FULL table — §2.3's unqualified "any source in the frozen set", eligible AND skipped).
+///
+/// [Build-Session-Entscheidung: P3.40] Core-INTERNAL — no `serde`/`specta` (never crosses IPC; C3–C6 return
+/// their own §0.6 DTOs). `Debug` for the store's parity; `PartialEq`+`Eq` back the registry lifecycle tests
+/// (`FileIdentity`'s manual `Eq` over `(dev, inode)` composes). The registering fill (P3.49/P3.78) builds it
+/// from the `FrozenSnapshot` the freeze retains; dead in the production build until then (the module-level
+/// dead_code expect).
+#[derive(Debug, PartialEq, Eq)]
+pub struct RegisteredSet {
+    /// The domain frozen set (the `CollectedSet::Single` projection) — the wire-facing content C3/C4/C5/C6
+    /// resolve. A tier-3 leaf, so it holds NO `FileIdentity` (§0.7).
+    pub frozen: FrozenCollectedSet,
+    /// The §2.3 identity evidence (§0.4.4): `ItemId → FileIdentity` over every RESOLVED survivor — the
+    /// eligible members AND the detect-ineligible skips alike (§0.6 invariant 6), keyed over the single id
+    /// space. A walk/resolve-FAILURE skip has NO entry (its `resolve_identity` failed — a physical fact; an
+    /// existing such file is still protected by the §2.1 exclusive-create like any pre-existing file).
+    pub identities: BTreeMap<ItemId, FileIdentity>,
+}
+
+/// The §0.4.4 collected-set registry — maps each frozen `CollectedSetId` to its [`RegisteredSet`] (the
+/// `CollectedSet::Single` payload PLUS the §2.3 identity evidence, P3.40), held as a Tauri app-managed
+/// `State` so the bare-`collectedSetId` C3
 /// `get_targets` / C4 `plan_output` / C5 `set_destination` / C6 `start_conversion` commands resolve back to the
 /// frozen detection result without a second walk or re-detection (§0.4.4). Its §0.4.4 lifecycle is this type's
 /// methods: [`register`](CollectedSetRegistry::register) on a C1/C2a freeze (store the `Single` projection,
@@ -1353,24 +1382,26 @@ impl RunResultStore {
 /// (the `State` form serves concurrent C1/C3/C4/C5/C6 handlers); every critical section is a whole-map op that
 /// never holds the guard across an `.await`, so a plain `std::sync::Mutex` (not an async lock) is correct.
 ///
-/// [Build-Session-Entscheidung: P2.44] Stores `Arc<FrozenCollectedSet>` (not a bare value): C4 is re-callable /
-/// debounced (~150 ms, §5.8) so the frozen set — a potentially-large `items` Vec — is READ MANY times per
-/// freeze; an `Arc` makes each `resolve`/`take` an O(1) handle clone instead of an O(n) deep copy (the
-/// read-many extension of the cheap-`CancellationToken`-clone the RunRegistry already relies on).
-/// `Default`-constructed empty; `Debug` for parity with the sibling stores. NOT a wire type (no
-/// `serde`/`specta`) — pure core-internal State that never crosses IPC (C3–C6 return their own §0.6 DTOs).
+/// [Build-Session-Entscheidung: P2.44 → P3.40] Stores `Arc<RegisteredSet>` (not a bare value): C4 is
+/// re-callable / debounced (~150 ms, §5.8) so the frozen set — a potentially-large `items` Vec + its
+/// identities table — is READ MANY times per freeze; an `Arc` makes each `resolve`/`take` an O(1) handle
+/// clone instead of an O(n) deep copy (the read-many extension of the cheap-`CancellationToken`-clone the
+/// RunRegistry already relies on). `Default`-constructed empty; `Debug` for parity with the sibling stores.
+/// NOT a wire type (no `serde`/`specta`) — pure core-internal State that never crosses IPC (C3–C6 return
+/// their own §0.6 DTOs). P3.40 widened the stored value from the bare `FrozenCollectedSet` to the
+/// [`RegisteredSet`] composite so the §0.4.4-mandated §2.3 identity evidence rides with it (§0.7-tier-clean).
 #[derive(Debug, Default)]
 pub struct CollectedSetRegistry {
-    /// The live `CollectedSetId` → frozen-set map. At most one entry (the current un-run set): `register`
+    /// The live `CollectedSetId` → registered-set map. At most one entry (the current un-run set): `register`
     /// supersedes any prior, `take` (C6) removes it, a process exit drops the store.
-    sets: Mutex<HashMap<CollectedSetId, Arc<FrozenCollectedSet>>>,
+    sets: Mutex<HashMap<CollectedSetId, Arc<RegisteredSet>>>,
 }
 
 impl CollectedSetRegistry {
     /// Lock the set map, recovering the guard from a poisoned lock rather than propagating the panic — the
     /// in-core no-panic discipline (G4/G14: no `unwrap`/`expect`/`panic`), sound because the critical
     /// sections are infallible whole-map ops that never panic. [Build-Session-Entscheidung: P2.44]
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<CollectedSetId, Arc<FrozenCollectedSet>>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<CollectedSetId, Arc<RegisteredSet>>> {
         self.sets
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1378,19 +1409,21 @@ impl CollectedSetRegistry {
 
     /// Register the frozen set on a C1/C2a freeze (§0.4.4) — SUPERSEDES any prior un-run set (§0.4.4 "a new
     /// C1/C2a supersedes it" + §2.4.3 "a subsequent drop starts a new frozen set"), so at most one entry is ever
-    /// live. Keyed by the set's own `id`. After this, C3/C4/C5 `resolve(id)` and C6 `take(id)` see it.
-    pub fn register(&self, frozen: FrozenCollectedSet) {
-        let id = frozen.id;
+    /// live. Keyed by the set's own `id` (`set.frozen.id`). After this, C3/C4/C5 `resolve(id)` and C6 `take(id)`
+    /// see it. The `set` is the [`RegisteredSet`] composite (the frozen set + the §2.3 identity evidence, P3.40).
+    pub fn register(&self, set: RegisteredSet) {
+        let id = set.frozen.id;
         let mut sets = self.lock();
         sets.clear();
-        sets.insert(id, Arc::new(frozen));
+        sets.insert(id, Arc::new(set));
     }
 
-    /// Resolve a `collectedSetId` to its frozen set (C3/C4/C5, §0.4.4) — a NON-evicting read (C3/C4/C5 may
+    /// Resolve a `collectedSetId` to its registered set (C3/C4/C5, §0.4.4) — a NON-evicting read (C3/C4/C5 may
     /// each fire repeatedly; C4 is debounced-re-callable, §5.8). Returns the `Arc` clone iff `id` is the live
     /// set; `None` if `id` is unknown or was superseded (→ the C-command's §0.4.3 not-available error). The
-    /// `Arc` is cloned out before the guard drops, so the lock is not held across the return.
-    pub fn resolve(&self, id: CollectedSetId) -> Option<Arc<FrozenCollectedSet>> {
+    /// `Arc` is cloned out before the guard drops, so the lock is not held across the return. C4 reads
+    /// `.identities[item]` off the resolved composite for the §2.5 re-run verdict (P3.40).
+    pub fn resolve(&self, id: CollectedSetId) -> Option<Arc<RegisteredSet>> {
         self.lock().get(&id).map(Arc::clone)
     }
 
@@ -1398,7 +1431,7 @@ impl CollectedSetRegistry {
     /// hands the frozen items to the Batch") — one op so the set leaves the registry exactly as its run
     /// begins, never lingering to be re-run. Returns the `Arc` iff `id` was live; `None` otherwise (an unknown
     /// / already-superseded id → the C6 §0.4.3 not-available error).
-    pub fn take(&self, id: CollectedSetId) -> Option<Arc<FrozenCollectedSet>> {
+    pub fn take(&self, id: CollectedSetId) -> Option<Arc<RegisteredSet>> {
         self.lock().remove(&id)
     }
 }
@@ -1656,6 +1689,46 @@ impl EquivKeyComputer {
         settings.hash(&mut hasher);
         EquivKey::from_hash(hasher.finish())
     }
+}
+
+/// Compute the §2.5 batch-level re-run verdict for a planned conversion (C4 `plan_output`, P3.40) — the
+/// `OutputPlanPreview.rerun` field. For each **eligible** frozen member, fold its freeze-RETAINED §2.3
+/// `source_identity` (`set.identities[item]`, the P3.40 evidence) + the `target` + the effective `settings`
+/// into an `EquivKey` (P3.39) and query the in-session `ledger`; the batch-level prompt fires (`Some`) iff
+/// **any** eligible item is an equivalent prior in-session run (§2.5.2 signal 1 — the sole v1 firing
+/// authority), carrying the `equivalent_count`. Only the eligible `items` are candidates — a `skipped` item
+/// is not converted, so it can never be a re-run (its identity is retained only for the §2.3.3 comparison
+/// set, not this verdict).
+///
+/// **§2.5.3 never-overwrite fallback (inherent, not a branch):** an item the ledger has NOT seen — a new
+/// session (empty ledger), or a prior output renamed/moved so equivalence can't be determined — simply is
+/// not counted, so no prompt fires for it and it falls through to §2.2 silent next-free-variant numbering at
+/// publish. The failure mode is a harmless extra numbered copy, NEVER an overwrite (which §2.1's
+/// exclusive-create makes impossible regardless, §2.5.3). An eligible item that (defensively) has no retained
+/// identity is likewise treated as "not equivalent" — a re-run is only ever ASSERTED on positive evidence.
+///
+/// [Build-Session-Entscheidung: P3.40] A free function (it composes two orchestrator-State singletons — the
+/// `EquivKeyComputer` compute-side hasher and the `RerunLedger` store — over a resolved `RegisteredSet`);
+/// C4 (P3.49) resolves the composite from the `CollectedSetRegistry`, calls this, and seats the result in
+/// `OutputPlanPreview.rerun`. Dead in the production build until that C4 wiring (the module dead_code expect).
+pub fn compute_rerun_verdict(
+    set: &RegisteredSet,
+    target: TargetId,
+    settings: &OptionValues,
+    computer: &EquivKeyComputer,
+    ledger: &RerunLedger,
+) -> Option<RerunPrompt> {
+    let equivalent_count = set
+        .frozen
+        .items
+        .iter()
+        .filter(|item| {
+            set.identities.get(&item.item).is_some_and(|identity| {
+                ledger.has_seen(computer.compute_equiv_key(identity, target, settings))
+            })
+        })
+        .count();
+    (equivalent_count > 0).then_some(RerunPrompt { equivalent_count })
 }
 
 // ─── §7.8.1 first-launch intake buffer — the PendingIntake stash/drain store (P2.58) ─────────────────────
@@ -2464,6 +2537,16 @@ struct FrozenSnapshot {
     /// The §0.4.4 OFF-WIRE per-item path table (§2.10.1) — the real `raw_path`/`resolved_path` keyed by
     /// `ItemId` over the single space, so BOTH the eligible and the skipped items resolve their real path.
     item_paths: BTreeMap<ItemId, ItemPaths>,
+    /// The §2.3 identity evidence RETAINED at the freeze (P3.40 / §0.4.4 `[CLARIFIED]`) — the `(dev, inode)`
+    /// `FileIdentity` keyed by `ItemId` over every RESOLVED survivor: the eligible members AND the
+    /// detect-ineligible skips alike (both exit the same §2.3 resolve+de-dup pass WITH an identity, §0.6
+    /// invariant 6). A walk/resolve-FAILURE skip (its `resolve_identity` failed) has NO entry — a physical
+    /// fact, not a scoping choice. Retained so the §2.5.1 EquivKey folds `source_identity` (identity, NOT the
+    /// §2.3.2 representative path — the hardlink/two-paths match, P3.39) and the §2.3.3 write-time comparison
+    /// set draws from the FULL table (§2.3's unqualified "any source in the frozen set"). Homed here in the
+    /// tier-1 orchestrator, NEVER on the tier-3 `domain` `FrozenCollectedSet` (`FileIdentity` is a tier-2
+    /// `fs_guard` type — embedding it would be an upward §0.7 edge). [Build-Session-Entscheidung: P3.40]
+    identities: BTreeMap<ItemId, FileIdentity>,
     /// The dropped root(s) retained VERBATIM (§1.1 / §2.7, P2.66) — the §2.7 subtree / open-folder anchor.
     roots: Vec<PathBuf>,
 }
@@ -2487,7 +2570,8 @@ struct FrozenSnapshot {
 ///    non-conflation (a turn-time gone/unreadable is a `Failed`, not a `Skipped`).
 /// 3. **Materialise.** The eligible `items`, the ineligible `skipped` (the §1.1 read-failure skips —
 ///    walk-level P2.67 then resolve-time `unresolved` — minted AFTER the survivors from the SAME cursor, the
-///    P2.76 single-space contract), the OFF-WIRE `item_paths` pair for every id, and the retained `roots`.
+///    P2.76 single-space contract), the OFF-WIRE `item_paths` pair for every id, the retained per-RESOLVED-
+///    survivor `identities` (the §2.3 evidence — every survivor but no read-failure skip, P3.40), and `roots`.
 ///
 /// Fallible only on `ItemSpaceExhausted` (`?`-propagated, never a panic — G4/G14; the §1.10 bounds cap a real
 /// frozen set far below `2^32`); the P3.49 spine maps it to the §1.1 fatal-ingest surface. The lossy §2.10.1
@@ -2528,6 +2612,9 @@ fn freeze_snapshot(
     let mut items: Vec<DroppedItem> = Vec::with_capacity(survivors.len());
     let mut skipped: Vec<SkippedItem> = Vec::new();
     let mut item_paths: BTreeMap<ItemId, ItemPaths> = BTreeMap::new();
+    // §2.3 identity evidence retained per RESOLVED survivor (P3.40) — populated in the survivor loop only
+    // (a walk/resolve-FAILURE skip below has no identity). The §0.4.4 identity-evidence mandate.
+    let mut identities: BTreeMap<ItemId, FileIdentity> = BTreeMap::new();
 
     // Step 2 (P2.73 / P2.16): PARTITION each first-seen survivor by its detection verdict. The survivor already
     // carries its single-space `id` (minted in step 1) and its §2.3.1 `identity` (canonical resolved path).
@@ -2543,15 +2630,20 @@ fn freeze_snapshot(
             size_bytes,
             rel_path_display,
         } = payload;
-        // §0.4.4 / §2.10.1 off-wire path pair: `raw` = the as-dropped path, `resolved` = the §2.3 canonical
-        // identity (the §1.7 engine target). Keyed by the item's id over the single space so BOTH views resolve.
+        // §0.4.4 / §2.10.1 off-wire path pair: `raw` = the as-dropped path, `resolved` = the §2.3.2 canonical
+        // REPRESENTATIVE (the §1.7 engine target). Keyed by the item's id over the single space so BOTH views
+        // resolve. The `(dev, inode)` identity is NOT the path — it is retained separately below (§2.3.1).
         item_paths.insert(
             id,
             ItemPaths {
                 raw_path: raw_path.clone(),
-                resolved_path: identity.canonical_path,
+                resolved_path: identity.canonical_path.clone(),
             },
         );
+        // §2.3 identity evidence (P3.40 / §0.4.4): RETAIN the resolved `(dev, inode)` `FileIdentity` keyed by
+        // the survivor's id — the §2.5.1 EquivKey `source_identity` (P3.39) + the §2.3.3 comparison set. Every
+        // survivor (eligible OR detect-ineligible skip) has one; only the read-failure skips below do not.
+        identities.insert(id, identity);
         match detected.skip_reason() {
             // `Recognized` → an eligible frozen member. The lossy §2.10.1 display basename is produced here.
             None => items.push(DroppedItem {
@@ -2597,6 +2689,7 @@ fn freeze_snapshot(
         items,
         skipped,
         item_paths,
+        identities,
         roots,
     })
 }
@@ -2888,7 +2981,84 @@ mod freeze_tests {
             .canonical_path;
         assert_eq!(
             paths.resolved_path, resolved,
-            "§2.3: resolved_path = the canonical identity path (the §1.7 engine target)"
+            "§2.3.2: resolved_path = the canonical representative path (the §1.7 engine target; the (dev, inode) identity is retained separately)"
+        );
+    }
+
+    // §6.4.1 (G15) · §0.4.4 identity-evidence mandate (P3.40): the freeze RETAINS the resolved (dev, inode)
+    // FileIdentity for every RESOLVED survivor — the eligible member AND the detect-ineligible skip alike (§0.6
+    // invariant 6) — and its canonical path is exactly the off-wire §2.3.2 representative the item_paths pair
+    // carries (a clone, not a move). A walk/resolve-FAILURE skip has NO identity (its resolve_identity failed).
+    #[test]
+    fn the_freeze_retains_an_identity_for_every_resolved_survivor() {
+        let dir = tempfile::tempdir().expect("create a real temp dir");
+        let eligible = write_candidate(dir.path(), "data.csv", recognized());
+        let ineligible = write_candidate(
+            dir.path(),
+            "note.xyz",
+            DetectionOutcome::UnsupportedType {
+                detected: "XYZ".to_string(),
+            },
+        );
+        let raw_eligible = eligible.raw_path.clone();
+        // A read-failure walk skip — never resolved, so it carries no identity.
+        let walk_skip = WalkSkip {
+            path: dir.path().join("vanished.dat"),
+            reason: SkipReason::Unreadable,
+        };
+        let snap = freeze_snapshot(vec![eligible, ineligible], vec![walk_skip], vec![])
+            .expect("no exhaustion");
+
+        // Both RESOLVED survivors — the eligible member AND the detect-ineligible skip — carry a retained identity.
+        assert_eq!(
+            snap.identities.len(),
+            2,
+            "§0.4.4/§0.6 inv-6: every RESOLVED survivor (eligible + detect-ineligible skip) has a retained identity"
+        );
+        let eligible_id = snap.items[0].item;
+        let unsupported_id = snap
+            .skipped
+            .iter()
+            .find(|s| s.reason == SkipReason::UnsupportedType)
+            .expect("the detect-ineligible skip is recorded")
+            .item;
+        assert!(
+            snap.identities.contains_key(&eligible_id),
+            "the eligible member's §2.3 identity is retained"
+        );
+        assert!(
+            snap.identities.contains_key(&unsupported_id),
+            "§0.6 inv-6: the detect-ineligible skip's identity is ALSO retained (the §2.3.3 comparison set is the full table)"
+        );
+
+        // The retained identity is the REAL resolved (dev, inode), and its canonical path IS the representative.
+        let real = crate::fs_guard::resolve_identity(&raw_eligible)
+            .expect("resolve the eligible source directly");
+        assert_eq!(
+            snap.identities.get(&eligible_id),
+            Some(&real),
+            "§2.3.1: the retained identity is the resolved (dev, inode) identity"
+        );
+        assert_eq!(
+            snap.identities[&eligible_id].canonical_path,
+            snap.item_paths[&eligible_id].resolved_path,
+            "the retained identity's canonical path IS the off-wire §2.3.2 representative (a clone, not divergent values)"
+        );
+
+        // A walk/resolve-FAILURE skip has an off-wire path pair but NO identity.
+        let walk_id = snap
+            .skipped
+            .iter()
+            .find(|s| s.reason == SkipReason::Unreadable)
+            .expect("the read-failure skip is recorded")
+            .item;
+        assert!(
+            snap.item_paths.contains_key(&walk_id),
+            "the read-failure skip still has an off-wire path pair"
+        );
+        assert!(
+            !snap.identities.contains_key(&walk_id),
+            "§0.4.4: a walk/resolve-FAILURE skip has NO retained identity (its resolve_identity failed — a physical fact)"
         );
     }
 
@@ -4059,22 +4229,27 @@ mod freeze_gating_contract {
         serde_json::from_str(r#""44444444-4444-4444-8444-444444444444""#)
             .expect("InstanceId deserializes from a uuid string")
     }
-    /// A minimal `FrozenCollectedSet` carrying `id` + a content-distinguishing `count`/`total_bytes`, so the
-    /// never-merge leg asserts the resolved latest set is the freeze's OWN content (not a merge of a prior).
-    fn frozen(id: CollectedSetId, count: usize, total_bytes: u64) -> FrozenCollectedSet {
-        FrozenCollectedSet {
-            id,
-            instance: instance(),
-            format: UserFacingFormat::Csv,
-            items: vec![],
-            count,
-            skipped: vec![],
-            total_bytes,
-            roots: vec![],
-            encoding_hint: None,
-            delimiter_hint: None,
-            notes: vec![],
-            item_paths: BTreeMap::new(),
+    /// A minimal `RegisteredSet` carrying `id` + a content-distinguishing `count`/`total_bytes` on its inner
+    /// frozen set, so the never-merge leg asserts the resolved latest set is the freeze's OWN content (not a
+    /// merge of a prior). The `identities` table is empty here — these legs exercise the id/supersede
+    /// lifecycle, not the P3.40 identity evidence (that is `rerun_verdict_tests`).
+    fn frozen(id: CollectedSetId, count: usize, total_bytes: u64) -> RegisteredSet {
+        RegisteredSet {
+            frozen: FrozenCollectedSet {
+                id,
+                instance: instance(),
+                format: UserFacingFormat::Csv,
+                items: vec![],
+                count,
+                skipped: vec![],
+                total_bytes,
+                roots: vec![],
+                encoding_hint: None,
+                delimiter_hint: None,
+                notes: vec![],
+                item_paths: BTreeMap::new(),
+            },
+            identities: BTreeMap::new(),
         }
     }
 
@@ -4093,7 +4268,7 @@ mod freeze_gating_contract {
             "§1.1/§2.4.3: an idle freeze starts a NEW frozen set — the prior un-run set is superseded, never mutated"
         );
         assert_eq!(
-            reg.resolve(next).map(|s| s.count),
+            reg.resolve(next).map(|s| s.frozen.count),
             Some(5),
             "§0.4.4: the latest freeze is the one live set (at most one un-run set)"
         );
@@ -4111,14 +4286,14 @@ mod freeze_gating_contract {
         reg.register(frozen(b, 5, 50));
         let live = reg.resolve(b).expect("the latest freeze resolves");
         assert_eq!(
-            (live.count, live.total_bytes),
+            (live.frozen.count, live.frozen.total_bytes),
             (5, 50),
             "§2.4.3: the new frozen set is the freeze's OWN content — never a merge of the prior set (a merge would be count 8 / bytes 80)"
         );
         // A same-id re-freeze (a re-drop minting the same logical id) REPLACES the snapshot, never accumulates.
         reg.register(frozen(b, 7, 70));
         assert_eq!(
-            reg.resolve(b).map(|s| (s.count, s.total_bytes)),
+            reg.resolve(b).map(|s| (s.frozen.count, s.frozen.total_bytes)),
             Some((7, 70)),
             "§2.4.3: a re-freeze of the same id replaces the snapshot (clear-then-insert), never accumulates onto it"
         );
@@ -5462,23 +5637,27 @@ mod tests {
         serde_json::from_str(r#""44444444-4444-4444-8444-444444444444""#)
             .expect("InstanceId deserializes from a uuid string")
     }
-    /// A minimal `FrozenCollectedSet` carrying `id` — empty payload, since the §0.4.4 registry's
-    /// register/resolve/take/supersede lifecycle is content-agnostic (the full-payload projection is tested
-    /// in `crate::domain::tests::frozen_collected_set_projects_only_single_with_full_payload`).
-    fn frozen_set(id: CollectedSetId) -> FrozenCollectedSet {
-        FrozenCollectedSet {
-            id,
-            instance: instance_id(),
-            format: UserFacingFormat::Csv,
-            items: vec![],
-            count: 0,
-            skipped: vec![],
-            total_bytes: 0,
-            roots: vec![],
-            encoding_hint: None,
-            delimiter_hint: None,
-            notes: vec![],
-            item_paths: BTreeMap::new(),
+    /// A minimal `RegisteredSet` carrying `id` — empty frozen payload + empty identities, since the §0.4.4
+    /// registry's register/resolve/take/supersede lifecycle is content-agnostic (the full-payload projection
+    /// is tested in `crate::domain::tests::frozen_collected_set_projects_only_single_with_full_payload`; the
+    /// P3.40 identity evidence in `rerun_verdict_tests`).
+    fn frozen_set(id: CollectedSetId) -> RegisteredSet {
+        RegisteredSet {
+            frozen: FrozenCollectedSet {
+                id,
+                instance: instance_id(),
+                format: UserFacingFormat::Csv,
+                items: vec![],
+                count: 0,
+                skipped: vec![],
+                total_bytes: 0,
+                roots: vec![],
+                encoding_hint: None,
+                delimiter_hint: None,
+                notes: vec![],
+                item_paths: BTreeMap::new(),
+            },
+            identities: BTreeMap::new(),
         }
     }
 
@@ -6790,7 +6969,6 @@ mod equiv_key_tests {
     //! the end-to-end "second identical drop this session fires; a changed target does not".
     use super::*;
     use crate::domain::{CrossCatOp, OptionKey, OptionValue};
-    use crate::run::RerunLedger;
     use proptest::prelude::*;
     use proptest::test_runner::{RngAlgorithm, TestRng, TestRunner};
 
@@ -6991,5 +7169,184 @@ mod equiv_key_tests {
                 },
             )
             .expect("the determinism property holds for every pinned-seed case");
+    }
+}
+
+#[cfg(test)]
+mod rerun_verdict_tests {
+    //! §6.4.1 unit (G15) for the P3.40 §2.5 batch re-run verdict `compute_rerun_verdict` — the
+    //! `OutputPlanPreview.rerun` computation over the freeze-retained identities + the P3.39
+    //! `EquivKeyComputer`/`RerunLedger`. Pins: the prompt fires (`Some`) iff an ELIGIBLE item's retained
+    //! identity folds to a key the in-session ledger has seen; the §2.5.3 fallback (an unseen item → not
+    //! counted → no prompt → §2.2 numbering); only eligible items count (a skipped item's identity never
+    //! fires); and a missing identity is not-equivalent (a re-run is asserted only on positive evidence).
+    use super::*;
+    use crate::domain::{Confidence, InstanceId};
+
+    /// A `FileIdentity` with a chosen `(dev, inode)` — the §2.5.1 EquivKey source component.
+    fn identity(dev: u64, inode: u64) -> FileIdentity {
+        FileIdentity {
+            canonical_path: PathBuf::from(format!("/vol/{dev}-{inode}.csv")),
+            dev_or_volserial: dev,
+            inode_or_fileindex: inode,
+        }
+    }
+
+    /// An eligible `DroppedItem` at `id` — a recognized CSV (the `detected` verdict is irrelevant to the
+    /// verdict, which keys on the id + the identities table).
+    fn eligible_item(id: u32) -> DroppedItem {
+        DroppedItem {
+            item: ItemId::from_index(id),
+            display_name: format!("f{id}.csv"),
+            rel_path_display: None,
+            size_bytes: 1,
+            detected: DetectionOutcome::Recognized {
+                format: UserFacingFormat::Csv,
+                confidence: Confidence::High,
+                dims: None,
+            },
+        }
+    }
+
+    fn set_id() -> CollectedSetId {
+        serde_json::from_str(r#""77777777-7777-4777-8777-777777777777""#)
+            .expect("CollectedSetId deserializes from a uuid string")
+    }
+    fn instance() -> InstanceId {
+        serde_json::from_str(r#""88888888-8888-4888-8888-888888888888""#)
+            .expect("InstanceId deserializes from a uuid string")
+    }
+
+    /// A `RegisteredSet` with the given eligible `items` + `identities` table (the verdict iterates only the
+    /// eligible `items`, so no skipped members are needed to drive it).
+    fn registered(
+        items: Vec<DroppedItem>,
+        identities: BTreeMap<ItemId, FileIdentity>,
+    ) -> RegisteredSet {
+        let count = items.len();
+        RegisteredSet {
+            frozen: FrozenCollectedSet {
+                id: set_id(),
+                instance: instance(),
+                format: UserFacingFormat::Csv,
+                items,
+                count,
+                skipped: vec![],
+                total_bytes: 0,
+                roots: vec![],
+                encoding_hint: None,
+                delimiter_hint: None,
+                notes: vec![],
+                item_paths: BTreeMap::new(),
+            },
+            identities,
+        }
+    }
+
+    fn webp() -> TargetId {
+        TargetId::Format(UserFacingFormat::Webp)
+    }
+    fn no_settings() -> OptionValues {
+        OptionValues(BTreeMap::new())
+    }
+
+    #[test]
+    fn verdict_fires_on_a_recorded_eligible_item() {
+        let computer = EquivKeyComputer::default();
+        let ledger = RerunLedger::default();
+        let id = identity(1, 2);
+        let set = registered(
+            vec![eligible_item(0)],
+            BTreeMap::from([(ItemId::from_index(0), id.clone())]),
+        );
+        // Record this exact conversion this session.
+        ledger.record(computer.compute_equiv_key(&id, webp(), &no_settings()));
+        assert_eq!(
+            compute_rerun_verdict(&set, webp(), &no_settings(), &computer, &ledger),
+            Some(RerunPrompt {
+                equivalent_count: 1
+            }),
+            "§2.5.2: the eligible item's retained identity folds to a seen key → the batch prompt fires"
+        );
+    }
+
+    #[test]
+    fn verdict_is_none_on_a_fresh_ledger() {
+        let computer = EquivKeyComputer::default();
+        let ledger = RerunLedger::default();
+        let id = identity(1, 2);
+        let set = registered(
+            vec![eligible_item(0)],
+            BTreeMap::from([(ItemId::from_index(0), id)]),
+        );
+        assert_eq!(
+            compute_rerun_verdict(&set, webp(), &no_settings(), &computer, &ledger),
+            None,
+            "§2.5.3: a fresh session (empty ledger) determines no equivalence → no prompt → §2.2 numbering"
+        );
+    }
+
+    #[test]
+    fn verdict_counts_only_the_equivalent_items() {
+        let computer = EquivKeyComputer::default();
+        let ledger = RerunLedger::default();
+        let a = identity(1, 2);
+        let b = identity(3, 4);
+        let set = registered(
+            vec![eligible_item(0), eligible_item(1)],
+            BTreeMap::from([
+                (ItemId::from_index(0), a.clone()),
+                (ItemId::from_index(1), b),
+            ]),
+        );
+        // Record only item 0's key.
+        ledger.record(computer.compute_equiv_key(&a, webp(), &no_settings()));
+        assert_eq!(
+            compute_rerun_verdict(&set, webp(), &no_settings(), &computer, &ledger),
+            Some(RerunPrompt {
+                equivalent_count: 1
+            }),
+            "§2.5.2: exactly the one recorded eligible item is counted equivalent (the other is unseen)"
+        );
+    }
+
+    #[test]
+    fn verdict_ignores_a_skipped_items_identity() {
+        // The identities table also carries detect-ineligible skips (§0.6 inv-6), but the verdict iterates only
+        // the ELIGIBLE `items` — a skipped item is not converted, so it can never be a re-run.
+        let computer = EquivKeyComputer::default();
+        let ledger = RerunLedger::default();
+        let eligible = identity(1, 2);
+        let skipped = identity(3, 4);
+        let set = registered(
+            vec![eligible_item(0)],
+            // id 0 = the eligible member (NOT recorded); id 1 = a skipped identity (recorded), NOT in `items`.
+            BTreeMap::from([
+                (ItemId::from_index(0), eligible),
+                (ItemId::from_index(1), skipped.clone()),
+            ]),
+        );
+        ledger.record(computer.compute_equiv_key(&skipped, webp(), &no_settings()));
+        assert_eq!(
+            compute_rerun_verdict(&set, webp(), &no_settings(), &computer, &ledger),
+            None,
+            "§2.5: a recorded SKIPPED-item identity never fires the verdict — only eligible items are candidates"
+        );
+    }
+
+    #[test]
+    fn verdict_treats_a_missing_identity_as_not_equivalent() {
+        // Defensive: an eligible item with no retained identity is treated as not-equivalent — a re-run is
+        // asserted only on positive evidence (a resolved survivor always HAS one; this guards the lookup).
+        let computer = EquivKeyComputer::default();
+        let ledger = RerunLedger::default();
+        let set = registered(vec![eligible_item(0)], BTreeMap::new());
+        // Even a recorded key for some identity cannot fire an item that has no identity to fold.
+        ledger.record(computer.compute_equiv_key(&identity(1, 2), webp(), &no_settings()));
+        assert_eq!(
+            compute_rerun_verdict(&set, webp(), &no_settings(), &computer, &ledger),
+            None,
+            "§2.5: an eligible item with no retained identity is not-equivalent (evidence-only firing)"
+        );
     }
 }

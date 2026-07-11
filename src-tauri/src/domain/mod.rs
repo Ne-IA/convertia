@@ -474,8 +474,9 @@ pub struct EmptyReport {
 /// `CollectedSet::Single.items` (P2.6), carrying **only core-produced lossy DISPLAY strings + its
 /// `ItemId`** — **no `PathBuf` crosses the wire in either direction** (§2.10.1 / the 2026-07-06
 /// core-owned-paths ruling). The real per-item paths (the OS-handed `raw_path` + the
-/// symlink/junction/alias-resolved `resolved_path`, §2.3 — the identity the §2.4 freeze de-duplicates
-/// on and the path the engine is ultimately pointed at) live OFF the wire in the §0.4.4
+/// symlink/junction/alias-resolved `resolved_path`, §2.3 — the §2.3.2 first-seen representative the
+/// engine is ultimately pointed at; the §2.4 de-dup itself keys on the `(dev, inode)` `FileIdentity`, not
+/// the path) live OFF the wire in the §0.4.4
 /// `FrozenCollectedSet.item_paths` table, keyed by this `item`; the WebView cannot name a path, so a
 /// `display_name` travelling back for display can never feed an arbitrary path into a conversion.
 ///
@@ -487,7 +488,7 @@ pub struct EmptyReport {
 /// `relPathDisplay`, `size_bytes` → `sizeBytes`); `Deserialize` is retained (a display `String` is not a
 /// re-submittable path, and no command accepts a `DroppedItem` inbound, so the ruling holds regardless);
 /// NOT `Copy` (owns `String`s + a `String`-bearing `DetectionOutcome`); NOT `Hash` (not a map key — the
-/// de-dup is by resolved identity on the off-wire `resolved_path`, §2.3). `PartialEq`+`Eq` back the
+/// §2.4 de-dup keys on the `(dev, inode)` `FileIdentity`, §2.3, not on this display type). `PartialEq`+`Eq` back the
 /// round-trip + the §6 property tests. Registration auto-rides its consuming command (C1's `CollectedSet`
 /// return, P2.22), the P2.15 defer pattern.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -515,8 +516,9 @@ pub struct DroppedItem {
 
 /// The §0.4.4 OFF-WIRE per-item path pair — the real `raw_path`/`resolved_path` a `DroppedItem`/
 /// `SkippedItem` shed off the wire (the 2026-07-06 core-owned-paths ruling, §2.10.1). Stored in the
-/// `FrozenCollectedSet.item_paths` table keyed by `ItemId`, it is the identity the §2.4 freeze
-/// de-duplicates on and the path the §1.7 invocation ultimately points the engine at. Core-INTERNAL:
+/// `FrozenCollectedSet.item_paths` table keyed by `ItemId`; the `resolved_path` is the §2.3.2 first-seen
+/// representative the §1.7 invocation ultimately points the engine at (the §2.4 de-dup keys on the
+/// `(dev, inode)` `FileIdentity`, §2.3.1, not the path). Core-INTERNAL:
 /// derives NO `serde`/`specta` (it NEVER crosses IPC — the same posture as `FrozenCollectedSet` itself);
 /// `PartialEq`+`Eq` back the projection tests. [Build-Session-Entscheidung: P3.76]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -524,7 +526,8 @@ pub struct ItemPaths {
     /// The path as the OS handed it at drop/pick time (the former wire `DroppedItem.raw_path`).
     pub raw_path: PathBuf,
     /// The symlink/junction/alias-resolved real path (§2.3, the former wire `DroppedItem.resolved_path`)
-    /// — the §2.4 de-dup identity and the engine's ultimate target.
+    /// — the §2.3.2 first-seen representative and the engine's ultimate target (the §2.4 de-dup keys on
+    /// the `(dev, inode)` `FileIdentity`, §2.3.1, not this path).
     pub resolved_path: PathBuf,
 }
 

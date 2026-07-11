@@ -918,8 +918,9 @@ export type DivertReason =
  *  `CollectedSet::Single.items` (P2.6), carrying **only core-produced lossy DISPLAY strings + its
  *  `ItemId`** — **no `PathBuf` crosses the wire in either direction** (§2.10.1 / the 2026-07-06
  *  core-owned-paths ruling). The real per-item paths (the OS-handed `raw_path` + the
- *  symlink/junction/alias-resolved `resolved_path`, §2.3 — the identity the §2.4 freeze de-duplicates
- *  on and the path the engine is ultimately pointed at) live OFF the wire in the §0.4.4
+ *  symlink/junction/alias-resolved `resolved_path`, §2.3 — the §2.3.2 first-seen representative the
+ *  engine is ultimately pointed at; the §2.4 de-dup itself keys on the `(dev, inode)` `FileIdentity`, not
+ *  the path) live OFF the wire in the §0.4.4
  *  `FrozenCollectedSet.item_paths` table, keyed by this `item`; the WebView cannot name a path, so a
  *  `display_name` travelling back for display can never feed an arbitrary path into a conversion.
  *
@@ -931,7 +932,7 @@ export type DivertReason =
  *  `relPathDisplay`, `size_bytes` → `sizeBytes`); `Deserialize` is retained (a display `String` is not a
  *  re-submittable path, and no command accepts a `DroppedItem` inbound, so the ruling holds regardless);
  *  NOT `Copy` (owns `String`s + a `String`-bearing `DetectionOutcome`); NOT `Hash` (not a map key — the
- *  de-dup is by resolved identity on the off-wire `resolved_path`, §2.3). `PartialEq`+`Eq` back the
+ *  §2.4 de-dup keys on the `(dev, inode)` `FileIdentity`, §2.3, not on this display type). `PartialEq`+`Eq` back the
  *  round-trip + the §6 property tests. Registration auto-rides its consuming command (C1's `CollectedSet`
  *  return, P2.22), the P2.15 defer pattern.
  */
