@@ -296,7 +296,7 @@ produces an atomic publish for the walking-skeleton job.
 re-quoting — and its §1.7 `InProcessNative` lifecycle (self-reported progress, cooperative
 cancel, wall-clock timeout). This is the one engine the walking skeleton runs.
 
-- [ ] **P3.41** [RUST] Build the streamed CSV/TSV transform pass (encoding-normalise → delimiter-swap → RFC-4180 re-quote) · §3.5.6 §2.10.2
+- [x] **P3.41** [RUST] Build the streamed CSV/TSV transform pass (encoding-normalise → delimiter-swap → RFC-4180 re-quote) · §3.5.6 §2.10.2
   needs: P3.28, P3.5
   > a single streamed pass: detect encoding/delimiter (P3.27/P3.28) → re-encode to **UTF-8 (no BOM default)** → swap delimiter → **RFC-4180 re-quote** where a field contains the new delimiter/quote/newline → write to `out_tmp`. Use a real RFC-4180 reader (the `csv` crate). MIT (own code, no §3.6 concern). Both directions (CSV→TSV and TSV→CSV); the offered non-diagonal default for a CSV source is **TSV** (same-format CSV diagonal excluded from tiles, §1.5).
 - [ ] **P3.42** [RUST] Build the CSV-injection-safe literal-preservation rule · §3.5.6 · G32
