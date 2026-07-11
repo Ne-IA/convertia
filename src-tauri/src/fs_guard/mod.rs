@@ -56,6 +56,14 @@
 //!    fails clearly), returning the DIRECTORY the §2.1 publish targets — never a pre-baked `final_path`. The
 //!    deepest dir's link-safety verify (P3.9 `open_verified_parent_dir`) is taken at PUBLISH (P3.38), not here
 //!    (§2.7.1 / §2.3.3 ordering); the §1.8 `OutputPlan` (P3.37) stores the returned dir as `final_dir`.
+//!  - `resolve_divert_target` / [`DivertTarget`] — the §2.7.3 divert-ROOT resolution (**P3.35**): walk the
+//!    caller-ordered candidate roots (the AppHandle-side `PathResolver` resolves the §2.7.3 Downloads /
+//!    Documents roots plus any §2.7.1 user-chosen override and passes them IN — the LEAF is agnostic to the
+//!    list-construction priority, which P3.36/P3.37 decide against §2.7.3), re-testing each via the §2.7.2
+//!    `location_status` (reusing the run `LocationCache`); the first `Writable` is the divert root, else
+//!    `Unavailable` (→ §2.8 `WriteFailed`, never a divert onto a purgeable / another-FAT volume). The §2.7.5
+//!    full-chain re-checks on the diverted FINAL path are the late-divert (P3.36) / write-sequence (P3.38)
+//!    concern, not here.
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -1974,6 +1982,89 @@ pub fn prepare_output_dir(source: &Path, mode: DestinationMode) -> io::Result<Pa
     }
 }
 
+/// The §2.7.3 divert-target resolution verdict ([`resolve_divert_target`], P3.35): either the writable divert
+/// ROOT the item's output diverts to, or the signal that NO candidate is usable. `fs_guard` is a §0.7 tier-2
+/// LEAF — it returns its own verdict, never a `ConversionErrorKind` (the caller maps [`Self::Unavailable`] to
+/// the §2.8 `WriteFailed`). [Build-Session-Entscheidung: P3.35]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "P3.35 — resolve_divert_target's verdict type; constructed only by that fn (itself unwired \
+                  until the late-divert P3.36 / the §1.8 OutputPlan divert leg P3.37), so it is dead-at-runtime \
+                  through the P3 wiring window; `allow` (permissive) covers the ambiguous dead-ness (cf. \
+                  OutputSafety). Exercised by resolve_divert_target_tests."
+    )
+)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DivertTarget {
+    /// A candidate divert root passed the §2.7.2 re-test (`Writable` — not ephemeral / unwritable / FAT-exFAT):
+    /// the item's output diverts here (§2.7.3). The §2.7.5 full-chain re-checks (`is_safe_output` / path-limit /
+    /// free-space) on the diverted FINAL path run at write time (P3.36 late-divert / P3.38), not here.
+    Resolved(PathBuf),
+    /// NO candidate divert root is usable — every one is ephemeral / unwritable / atomic-publish-incapable. The
+    /// item fails clearly with `WriteFailed` (§2.8), never diverting an output onto a purgeable / another-FAT
+    /// volume (§2.7.3).
+    Unavailable,
+}
+
+/// **§2.7.3 divert-target resolution (P3.35)** — pick the divert ROOT for an unwritable / ephemeral /
+/// `NoAtomicPublish` source's output by re-testing an ordered list of candidate roots. The FIRST candidate the
+/// §2.7.2 [`location_status`] classifies `Writable` (not ephemeral / unwritable / FAT-exFAT — the P3.18 test
+/// folded in) is the divert root; if NONE qualifies, [`DivertTarget::Unavailable`] (→ §2.8 `WriteFailed`, never
+/// a divert onto a purgeable / another-FAT volume, §2.7.3).
+///
+/// `candidates` is passed IN by the AppHandle-side caller (the C4 boundary, P3.36/P3.37), which resolves the
+/// §2.7.3 roots via Tauri's `PathResolver` (`download_dir()` / `document_dir()`) plus any §2.7.1 user-chosen
+/// override — this §0.7 tier-2 LEAF cannot reach `PathResolver`, exactly as it takes the `crate::run`
+/// probe-name grammar in (P3.33) and the freeze common root in (P3.34). **This box is AGNOSTIC to how the list
+/// is BUILT:** the exact §2.7.3 candidate PRIORITY + semantics (does a user-chosen root *replace* the
+/// Downloads/Documents fallback or merely lead it; is "falling back to Documents if Downloads is *absent*"
+/// keyed on absence vs unwritability) is the caller's construction decision, made against §2.7.3 when
+/// P3.36/P3.37 build the list — `resolve_divert_target` walks whatever ordered list it is given and returns the
+/// first `Writable`, so a single-element list yields the strict "one target, else WriteFailed" behavior and a
+/// multi-element list cascades, per the list the caller supplies. [Build-Session-Entscheidung: P3.35]
+///
+/// The re-test reuses the run's [`LocationCache`] (`&mut`), so a divert root already probed this run (e.g.
+/// Downloads probed for an earlier diverted item in the same batch) is classified ONCE — the §2.7.2 "cache
+/// per-directory" hint applied to divert roots too. `probe_name` supplies a FRESH `crate::run`-grammar probe
+/// name per real probe (a `Fn`, invoked once per candidate that misses the cache), keeping this a LEAF. The
+/// §2.7.5 full-chain re-checks on the diverted FINAL path (link-safety / path-limit / free-space) are the
+/// late-divert (P3.36) / write-sequence (P3.38) concern — this box resolves the divert ROOT only.
+///
+/// **Infallible** — every candidate failure maps to a verdict, never an `Err`; panic-free (the crate no-panic
+/// deny, G4/G14). [Build-Session-Entscheidung: P3.35]
+#[must_use = "the DivertTarget verdict decides WHERE (or whether) the output diverts — dropping it would \
+              divert blindly or skip the §2.8 WriteFailed on an unusable target"]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "§2.7.3 resolve_divert_target (P3.35) — divert-root resolution. Its production caller is the \
+                  late-divert path (P3.36) / the §1.8 OutputPlan divert leg (P3.37), which map Unavailable to \
+                  the §2.8 WriteFailed; statically unused in the production build until that wiring lands \
+                  (`expect` auto-flags the moment it does), exercised by the resolve_divert_target_tests."
+    )
+)]
+pub fn resolve_divert_target(
+    candidates: &[PathBuf],
+    cache: &mut LocationCache,
+    probe_name: impl Fn() -> OsString,
+) -> DivertTarget {
+    for candidate in candidates {
+        // §2.7.2 re-test each candidate divert root in order; the FIRST Writable wins (the §2.7.3 user-chosen →
+        // Downloads → Documents priority is the caller's ordering). A `Divert(_)` verdict (ephemeral /
+        // unwritable / FAT-exFAT) skips this candidate — never divert onto a purgeable / another-FAT volume
+        // (§2.7.3). `&probe_name` (a `&impl Fn` is a valid `FnOnce`) builds a fresh `crate::run`-grammar probe
+        // name only on a real (cache-miss) probe — `LocationCache::classify` wants a `FnOnce` — keeping this a LEAF.
+        if let LocationStatus::Writable = cache.classify(candidate, &probe_name) {
+            return DivertTarget::Resolved(candidate.clone());
+        }
+    }
+    // §2.7.3: no candidate is usable → the item fails clearly (WriteFailed, §2.8), never a silent bad divert.
+    DivertTarget::Unavailable
+}
+
 #[cfg(test)]
 mod location_status_tests {
     use super::*;
@@ -2403,6 +2494,179 @@ mod prepare_output_dir_unix_tests {
             std::fs::read(&real_file).expect("the symlink's target file is still readable"),
             b"payload",
             "§2.7.1 no-harm: the file behind the symlinked ancestor is left byte-untouched"
+        );
+    }
+}
+
+#[cfg(test)]
+mod resolve_divert_target_tests {
+    use super::*;
+
+    // A non-ephemeral writable base dir under the crate source root — a plain OS temp dir classifies Ephemeral
+    // (see location_status_tests), which would divert. `None` on the pathological env where the crate root is
+    // itself under an OS temp root (a clean skip, never a false pass). Real FS — never mocked (test-strategy §0.1).
+    fn non_ephemeral_dir() -> Option<tempfile::TempDir> {
+        let dir = tempfile::Builder::new()
+            .prefix("convertia-divert-")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .expect("create a temp dir in the crate source root");
+        (!crate::platform::is_ephemeral_output_dir(dir.path())).then_some(dir)
+    }
+
+    // A fresh `crate::run`-grammar probe name per call (the `<rand>` distinguishes each real probe).
+    fn fresh_probe() -> OsString {
+        use std::cell::Cell;
+        thread_local! {
+            static N: Cell<u64> = const { Cell::new(0) };
+        }
+        let n = N.with(|c| {
+            let v = c.get();
+            c.set(v + 1);
+            v
+        });
+        OsString::from(format!(".convertia-divert-probe-{n}.part"))
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.3: the FIRST writable candidate wins (the caller's user-chosen → Downloads →
+    // Documents priority) — a subsequent writable candidate is never reached.
+    #[test]
+    fn picks_the_first_writable_candidate() {
+        let Some(a) = non_ephemeral_dir() else {
+            return;
+        };
+        let Some(b) = non_ephemeral_dir() else {
+            return;
+        };
+        let mut cache = LocationCache::new();
+        let target = resolve_divert_target(
+            &[a.path().to_path_buf(), b.path().to_path_buf()],
+            &mut cache,
+            fresh_probe,
+        );
+        assert_eq!(
+            target,
+            DivertTarget::Resolved(a.path().to_path_buf()),
+            "§2.7.3: the first writable candidate is the divert root (caller priority order)"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.3: an ephemeral (OS-temp) candidate is SKIPPED; the next writable candidate is
+    // the divert root — never divert an output into a place the OS may purge.
+    #[test]
+    fn skips_an_ephemeral_candidate_and_takes_the_next_writable() {
+        let ephemeral = tempfile::tempdir().expect("a real OS-temp dir (classified Ephemeral)");
+        let Some(good) = non_ephemeral_dir() else {
+            return;
+        };
+        let mut cache = LocationCache::new();
+        let target = resolve_divert_target(
+            &[ephemeral.path().to_path_buf(), good.path().to_path_buf()],
+            &mut cache,
+            fresh_probe,
+        );
+        assert_eq!(
+            target,
+            DivertTarget::Resolved(good.path().to_path_buf()),
+            "§2.7.3: an ephemeral candidate is skipped; the next writable one is chosen"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.3: when EVERY candidate is unusable (all ephemeral), resolution is Unavailable
+    // → the caller fails the item WriteFailed (§2.8), never a bad divert onto a purgeable volume.
+    #[test]
+    fn all_unusable_candidates_are_unavailable() {
+        let e1 = tempfile::tempdir().expect("an OS-temp dir (Ephemeral)");
+        let e2 = tempfile::tempdir().expect("another OS-temp dir (Ephemeral)");
+        let mut cache = LocationCache::new();
+        let target = resolve_divert_target(
+            &[e1.path().to_path_buf(), e2.path().to_path_buf()],
+            &mut cache,
+            fresh_probe,
+        );
+        assert_eq!(
+            target,
+            DivertTarget::Unavailable,
+            "§2.7.3: no usable candidate → Unavailable (→ §2.8 WriteFailed), never divert onto a purgeable volume"
+        );
+    }
+
+    // §6.4.1 (G15) / §2.7.3: an empty candidate list resolves Unavailable — defensive (the caller always
+    // supplies at least Downloads/Documents, but an empty list must not panic, G4/G14).
+    #[test]
+    fn empty_candidate_list_is_unavailable() {
+        let mut cache = LocationCache::new();
+        assert_eq!(
+            resolve_divert_target(&[], &mut cache, fresh_probe),
+            DivertTarget::Unavailable,
+            "§2.7.3: no candidates → Unavailable, never a panic"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.2+§2.7.3: the run LocationCache is reused ACROSS resolve calls — the real
+    // batch scenario (Downloads probed once for the whole batch, then reused per diverted item). Two separate
+    // resolve_divert_target calls sharing ONE cache + the SAME candidate probe the dir exactly ONCE: the second
+    // call is a cache HIT (no re-probe). (A single call with a repeated candidate would return on the first
+    // Writable and never reach the second — so the reuse is proven across CALLS, not within one list.)
+    #[test]
+    fn reuses_the_run_cache_across_calls_probing_a_shared_candidate_once() {
+        use std::cell::Cell;
+        let Some(good) = non_ephemeral_dir() else {
+            return;
+        };
+        let mut cache = LocationCache::new();
+        let calls = Cell::new(0usize);
+        let probe = || {
+            calls.set(calls.get() + 1);
+            OsString::from(format!(".convertia-divert-probe-r{}.part", calls.get()))
+        };
+        let first = resolve_divert_target(&[good.path().to_path_buf()], &mut cache, probe);
+        let second = resolve_divert_target(&[good.path().to_path_buf()], &mut cache, probe);
+        assert_eq!(first, DivertTarget::Resolved(good.path().to_path_buf()));
+        assert_eq!(
+            second, first,
+            "§2.7.3: the shared candidate resolves to the same divert root on both calls"
+        );
+        assert_eq!(
+            calls.get(),
+            1,
+            "§2.7.2: the SECOND resolve is a cache HIT on the shared dir — probed exactly once across the batch"
+        );
+    }
+
+    // §6.4.1 real-FS (G15, unix) / §2.7.3: a read-only (unwritable) candidate is SKIPPED; the next writable one
+    // is chosen — never divert onto an unwritable root. Mirrors location_status_tests' read-only pattern (skip
+    // where the platform won't enforce read-only, restoring writability so the TempDir cleanup succeeds).
+    #[cfg(unix)]
+    #[test]
+    fn skips_an_unwritable_candidate_and_takes_the_next_writable() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(ro) = non_ephemeral_dir() else {
+            return;
+        };
+        let Some(good) = non_ephemeral_dir() else {
+            return;
+        };
+        std::fs::set_permissions(ro.path(), std::fs::Permissions::from_mode(0o500))
+            .expect("make the first candidate read-only (r-x, no write)");
+        // Skip where read-only is not enforced (e.g. running as root) — a create would still succeed.
+        if std::fs::File::create(ro.path().join(".probe-check")).is_ok() {
+            let _ = std::fs::remove_file(ro.path().join(".probe-check"));
+            std::fs::set_permissions(ro.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("restore writability for cleanup");
+            return;
+        }
+        let mut cache = LocationCache::new();
+        let target = resolve_divert_target(
+            &[ro.path().to_path_buf(), good.path().to_path_buf()],
+            &mut cache,
+            fresh_probe,
+        );
+        std::fs::set_permissions(ro.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("restore writability so the TempDir cleanup succeeds");
+        assert_eq!(
+            target,
+            DivertTarget::Resolved(good.path().to_path_buf()),
+            "§2.7.3: an unwritable candidate is skipped; the next writable one is chosen"
         );
     }
 }
