@@ -917,7 +917,7 @@ pub struct ScanProgress {
 // + camelCase; NOT explicitly registered — deferred to the C3 `get_targets` consumer (P2.25), the
 // established P2.2-P2.7 defer pattern (`Target.options: Vec<OptionDecl>` auto-registers the family then).
 // Types owning `String`/`Vec` are not `Copy`; the fieldless `Surface`/`Unit` are `Copy`. `OptionKey`
-// derives `Ord` (it is the `OptionValues` BTreeMap key + the §2.5 EquivKey). `OptionKey`/`LabelKey` are
+// derives `Ord` (its `OptionValues` BTreeMap-key role) + `Hash` (the §2.5.1 EquivKey fold, P3.39). `OptionKey`/`LabelKey` are
 // transparent `String` newtypes (serde serializes a 1-tuple struct as its inner value → a bare string),
 // with a `pub` field since the §1.6 registry (P5-P7) constructs them from known slugs (no validation
 // invariant a public field could bypass).
@@ -945,8 +945,9 @@ pub enum Unit {
 
 /// A stable machine key for an option (e.g. "quality", "fps", "lossless"), §1.6. Used as the
 /// `OptionValues` BTreeMap key and in the §2.5 EquivKey canonicalisation, so it is a stable ASCII slug,
-/// never a UI label. Derives `Ord` for its BTreeMap-key role; serializes transparently as a bare string.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Type)]
+/// never a UI label. Derives `Ord` for its BTreeMap-key role and `Hash` for the §2.5.1 EquivKey fold
+/// ([Build-Session-Entscheidung: P3.39]); serializes transparently as a bare string.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type)]
 pub struct OptionKey(pub String);
 
 /// A UI-chrome label key (§1.6 / §5 / §2.10) — §5 resolves it to a localised string. NOT a user-facing
@@ -990,7 +991,9 @@ pub enum OptionKind {
 
 /// One concrete, fully-resolved option value (§1.6). INVARIANT (§1.6): every variant is JSON-serialisable
 /// and round-trips through the §2.5 canonical form; no floats (no NaN/Inf), colours as `#RRGGBB(AA)`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+/// `Hash` (the §2.5.1 EquivKey fold, [Build-Session-Entscheidung: P3.39]) is sound precisely because that
+/// no-float invariant leaves every variant `Eq`+`Hash` (`Int`/`Bool`/`Enum`/`Color`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum OptionValue {
     /// An `IntRange` / `Size` resolved value.
@@ -1104,9 +1107,11 @@ pub enum LossyKind {
 // [Build-Session-Entscheidung: P2.8] The §0.6 scalar/alias leaf types the P2.8.4 composites key on. Each
 // derives specta::Type + camelCase; NOT explicitly registered — deferred to the C3 consumer (P2.25), the
 // P2.2-P2.7 defer pattern. Fieldless TargetId/CrossCatOp are Copy; Availability owns a String (not Copy).
+// [Build-Session-Entscheidung: P3.39] TargetId + CrossCatOp additionally derive `Hash`: the §2.5.1 EquivKey
+// folds the `TargetId` target component (`FormatId = UserFacingFormat` already derives Hash, P2.3).
 
 /// The offered-target identity (§0.6 / §1.5): a format target or a cross-category operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum TargetId {
     /// A format target (e.g. `Format(Webp)`).
@@ -1120,7 +1125,7 @@ pub enum TargetId {
 pub type FormatId = UserFacingFormat;
 
 /// The closed set of cross-category operations (§0.6 / cross-category.md).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum CrossCatOp {
     /// Extract the audio track from a video.
@@ -1178,8 +1183,11 @@ pub struct TargetOffer {
 
 /// The effective, fully-defaulted-plus-overrides option set for a batch (§0.6; == §1.6 `EffectiveOptions`).
 /// The ONE wire/domain name for the resolved values, keyed by the stable `OptionKey`. Serializes
-/// transparently as its inner map (a JSON object keyed by the `OptionKey` slug strings).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+/// transparently as its inner map (a JSON object keyed by the `OptionKey` slug strings). Derives `Hash`
+/// (the §2.5.1 EquivKey fold, [Build-Session-Entscheidung: P3.39]): the inner `BTreeMap` hashes in
+/// sorted-key order, which IS §2.5.1's order-independent canonical form ("left everything default" twice
+/// yields the same key).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 pub struct OptionValues(pub BTreeMap<OptionKey, OptionValue>);
 
 // ─── §0.6 destination / output-plan layer (DestinationChoice / OutputPlan / DivertReason, P2.9) ───

@@ -38,12 +38,14 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) are authored as contracts before the P3.46 orchestrator behaviour + the C1/C2a/C3/C4/C5/C6/C7/C8/C13 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so their as-yet-unwired methods are dead in the production build until consumed (`RunRegistry::has_active_run` is already consumed by the §7.1.1 `converter_is_busy` from P2.55, with `register`/`cancel`/`finish` staying dead until P3.46). The P3.25 §2.6.4 cleanup-honesty leg (ResidueRecord/ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) is likewise dead until the P3.50 §1.12 projection + the P3.38 write-sequence consume it."
+        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) are authored as contracts before the P3.46 orchestrator behaviour + the C1/C2a/C3/C4/C5/C6/C7/C8/C13 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so their as-yet-unwired methods are dead in the production build until consumed (`RunRegistry::has_active_run` is already consumed by the §7.1.1 `converter_is_busy` from P2.55, with `register`/`cancel`/`finish` staying dead until P3.46). The P3.25 §2.6.4 cleanup-honesty leg (ResidueRecord/ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) is likewise dead until the P3.50 §1.12 projection + the P3.38 write-sequence consume it. The P3.39 §2.5.1 EquivKeyComputer (compute_equiv_key) is likewise dead until the P3.40 C4 plan_output re-run wiring resolves its managed State + calls it."
     )
 )]
 
+use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -66,7 +68,7 @@ use crate::fs_guard::{
     ParentDirVerdict, PublishError, PublishOutcome,
 };
 use crate::outcome::{ConversionErrorKind, IpcError, OutcomeMsg};
-use crate::run::{cleanup_item, RunScratch};
+use crate::run::{cleanup_item, EquivKey, RunScratch};
 
 /// One same-source conversion batch (§0.6 / §1.9) — the queue the orchestrator builds at C6
 /// `start_conversion` from a frozen `CollectedSet::Single` and drives to a §1.12 summary. INTERNAL to the
@@ -1601,6 +1603,58 @@ impl Drop for IngestGuard<'_> {
         // §1.1 (P2.70): de-register the ingest token on the C2a handler's exit — fires on every return path
         // (Rust drops the guard regardless of which branch returns), so the token can never leak.
         self.registry.release(self.collecting_id);
+    }
+}
+
+// ─── §2.5.1 EquivKey computation — the re-run equivalence key computer (P3.39) ────────────────────────────
+// [Build-Session-Entscheidung: P3.39] The §2.5.1 EquivKey COMPUTATION homes here in the tier-1 orchestrator
+// (the P3.38 prevention-sweep ruling): the key folds a `fs_guard::FileIdentity` + the §0.6 `TargetId` /
+// `OptionValues`, and the orchestrator already holds all three (the frozen set carries the identities, C4/C6
+// carry target + settings), so computing it here needs no `run`->`fs_guard` sibling edge (§0.7 forbids it).
+// It hands only the finished hash DOWN to the tier-2 `crate::run` ledger as an opaque `EquivKey`. An
+// app-managed singleton like the §0.4.4 stores above — it needs NO §0.7/§1a structural edit (§0.7 attributes
+// the app-managed State to orchestrator; the P2.43/P2.44/P2.45/P2.58 precedent). Contract before consumer:
+// the C4 `plan_output` path (P3.40) resolves the managed `State<EquivKeyComputer>` and calls
+// `compute_equiv_key`, so it is dead in the production build until then (the module-level dead_code expect).
+
+/// The §2.5.1 re-run equivalence-key computer — holds the ONE process-lifetime `BuildHasher` so two computes
+/// of the same `(source, target, effective settings)` in a session agree on the resulting `u64` (§2.5.2: the
+/// seed-stable compute-side hasher, NEVER a fresh `RandomState` per call — two computes of the same job must
+/// agree). The ledger is session-only (§2.5.2 cleared-on-quit, §7.4 persists nothing), so NO cross-run /
+/// cross-version hash stability is needed — a per-process random seed is sufficient and this instance is held
+/// for the process lifetime as the app-managed `State<EquivKeyComputer>`. It folds a `fs_guard::FileIdentity`
+/// (its manual `Hash` covers the `(dev, inode)` identity only, NOT the path — §2.5.1 "identity, not path") +
+/// the §0.6 `TargetId` + `OptionValues` (the `BTreeMap` hashes in sorted-key order, §2.5.1's order-independent
+/// canonical form), then hands the finished hash to `crate::run` as an opaque `EquivKey`. Core-internal — no
+/// `serde`/`specta` (`RandomState` is not serialisable and the key never crosses IPC, the P2.22 forward-guard).
+#[derive(Debug, Default)]
+pub struct EquivKeyComputer {
+    /// The held, seed-stable `BuildHasher`. `RandomState::default()` seeds ONCE at construction (app start);
+    /// every `compute_equiv_key` builds a fresh `Hasher` off this SAME seed, so identical inputs fold to the
+    /// same `u64` within the process (§2.5.2). The `run`-side `HashSet<EquivKey>`'s own bucket-hasher is a
+    /// separate, independent `RandomState` — the two never need to agree (§2.5.2).
+    hasher: RandomState,
+}
+
+impl EquivKeyComputer {
+    /// Compute the §2.5.1 `EquivKey` for one `(source, target, effective settings)` conversion — the fold
+    /// `hash(source_identity, target_format, effective_settings_canon)`. `settings` MUST already be the §1.6
+    /// fully-defaulted-plus-overrides set (the caller resolves defaults; §2.5.1 "effective_settings_canon");
+    /// its `BTreeMap` hashes in sorted-key order so "left everything default" twice yields the same key. The
+    /// three components are folded into ONE hasher in a FIXED field order (§2.5.1); a `u64` collision's only
+    /// consequence is one spurious RerunPrompt (a hint dialog — §2.1's exclusive-create makes data loss
+    /// impossible regardless). Returns the opaque key for `crate::run::RerunLedger::{has_seen, record}`.
+    pub fn compute_equiv_key(
+        &self,
+        source: &FileIdentity,
+        target: TargetId,
+        settings: &OptionValues,
+    ) -> EquivKey {
+        let mut hasher = self.hasher.build_hasher();
+        source.hash(&mut hasher);
+        target.hash(&mut hasher);
+        settings.hash(&mut hasher);
+        EquivKey::from_hash(hasher.finish())
     }
 }
 
@@ -6722,5 +6776,220 @@ mod write_sequence_tests {
             },
             "a non-UTF-8 target extension is an internal fault (never a user-facing case)"
         );
+    }
+}
+
+#[cfg(test)]
+mod equiv_key_tests {
+    //! §6.4.1 unit + §6.4.2 property (G15/G16) for the P3.39 §2.5.1 EquivKey computation and its end-to-end
+    //! firing through the `crate::run` §2.5.2 ledger. The COMPUTE half lives here (folding a `FileIdentity` +
+    //! `TargetId` + `OptionValues`); the STORAGE half is `crate::run::RerunLedger` (unit-tested there). We
+    //! pin the load-bearing §2.5.2 invariant — two computes of the same job AGREE (a held, seed-stable
+    //! `BuildHasher`, never a fresh `RandomState` per call) — as a pinned-seed property, plus the §2.5.1
+    //! folding facts (identity-not-path; target/settings/source sensitivity; the `Op` cross-cat target), and
+    //! the end-to-end "second identical drop this session fires; a changed target does not".
+    use super::*;
+    use crate::domain::{CrossCatOp, OptionKey, OptionValue};
+    use crate::run::RerunLedger;
+    use proptest::prelude::*;
+    use proptest::test_runner::{RngAlgorithm, TestRng, TestRunner};
+
+    /// A `FileIdentity` with a chosen `(dev, inode)` identity and path — the identity `Hash` covers only
+    /// `(dev, inode)` (§2.5.1 "identity, not path"), so the path is free to vary independently in the tests.
+    fn identity(dev: u64, inode: u64, path: &str) -> FileIdentity {
+        FileIdentity {
+            canonical_path: PathBuf::from(path),
+            dev_or_volserial: dev,
+            inode_or_fileindex: inode,
+        }
+    }
+
+    /// An `OptionValues` from `(key, int)` pairs — the effective (fully-defaulted) settings the §2.5.1 fold
+    /// canonicalises via the inner `BTreeMap`'s sorted-key iteration.
+    fn settings(pairs: &[(&str, i64)]) -> OptionValues {
+        OptionValues(
+            pairs
+                .iter()
+                .map(|(k, v)| (OptionKey((*k).to_string()), OptionValue::Int(*v)))
+                .collect(),
+        )
+    }
+
+    /// A PINNED-SEED runner (test-strategy §1.3 / G16): drive a `TestRunner` with a `deterministic_rng` so
+    /// the determinism property reproduces exactly and is never retried-to-pass (§7). Module-private, like
+    /// the sibling `freeze_tests` runner. [Build-Session-Entscheidung: P3.39]
+    fn pinned_runner() -> TestRunner {
+        TestRunner::new_with_rng(
+            ProptestConfig::with_cases(512),
+            TestRng::deterministic_rng(RngAlgorithm::ChaCha),
+        )
+    }
+
+    #[test]
+    fn same_inputs_yield_the_same_key() {
+        // §2.5.2 (the load-bearing invariant): two computes of the same (source, target, settings) through
+        // the SAME held BuildHasher agree — the premise the whole re-run signal rests on.
+        let computer = EquivKeyComputer::default();
+        let id = identity(1, 2, "/vol/a.csv");
+        let target = TargetId::Format(UserFacingFormat::Webp);
+        let opts = settings(&[("quality", 80), ("lossless", 0)]);
+        assert_eq!(
+            computer.compute_equiv_key(&id, target, &opts),
+            computer.compute_equiv_key(&id, target, &opts),
+            "§2.5.2: identical inputs fold to the same EquivKey (held seed-stable hasher)"
+        );
+    }
+
+    #[test]
+    fn settings_are_order_independent() {
+        // §2.5.1: the effective settings canonicalise order-independently (the BTreeMap's sorted-key form),
+        // so the same key/value set supplied in a different order yields the same EquivKey.
+        let computer = EquivKeyComputer::default();
+        let id = identity(1, 2, "/vol/a.csv");
+        let target = TargetId::Format(UserFacingFormat::Webp);
+        let forward = settings(&[("aaa", 1), ("bbb", 2), ("ccc", 3)]);
+        let shuffled = settings(&[("ccc", 3), ("aaa", 1), ("bbb", 2)]);
+        assert_eq!(
+            computer.compute_equiv_key(&id, target, &forward),
+            computer.compute_equiv_key(&id, target, &shuffled),
+            "§2.5.1: settings canonicalise order-independently (sorted-key BTreeMap)"
+        );
+    }
+
+    #[test]
+    fn source_identity_ignores_the_path() {
+        // §2.5.1: source IDENTITY (not path) keys the fold — the same (dev, inode) reached via a different
+        // path still matches (FileIdentity's Hash covers only (dev, inode), §2.3.1/§2.3.4).
+        let computer = EquivKeyComputer::default();
+        let target = TargetId::Format(UserFacingFormat::Webp);
+        let opts = settings(&[("quality", 80)]);
+        let via_a = identity(7, 9, "/vol/one/name.csv");
+        let via_b = identity(7, 9, "/vol/other/hardlink.csv");
+        assert_eq!(
+            computer.compute_equiv_key(&via_a, target, &opts),
+            computer.compute_equiv_key(&via_b, target, &opts),
+            "§2.5.1: a re-run reached via a different but same-file path still folds to the same key"
+        );
+    }
+
+    #[test]
+    fn a_different_target_folds_to_a_different_key() {
+        // §2.5.1: changing the target is a NEW conversion — the target component folds into the key.
+        let computer = EquivKeyComputer::default();
+        let id = identity(1, 2, "/vol/a.csv");
+        let opts = settings(&[("quality", 80)]);
+        assert_ne!(
+            computer.compute_equiv_key(&id, TargetId::Format(UserFacingFormat::Webp), &opts),
+            computer.compute_equiv_key(&id, TargetId::Format(UserFacingFormat::Png), &opts),
+            "§2.5.1: a different target format is a different EquivKey"
+        );
+    }
+
+    #[test]
+    fn a_cross_category_op_target_folds() {
+        // §2.5.1: the `TargetId::Op(CrossCatOp)` arm folds too (covers CrossCatOp's Hash) — ToGif vs
+        // ExtractAudio are distinct conversions of the same source.
+        let computer = EquivKeyComputer::default();
+        let id = identity(1, 2, "/vol/clip.mp4");
+        let opts = settings(&[]);
+        assert_ne!(
+            computer.compute_equiv_key(&id, TargetId::Op(CrossCatOp::ToGif), &opts),
+            computer.compute_equiv_key(&id, TargetId::Op(CrossCatOp::ExtractAudio), &opts),
+            "§2.5.1: distinct cross-category ops fold to distinct EquivKeys"
+        );
+    }
+
+    #[test]
+    fn a_different_setting_value_folds_to_a_different_key() {
+        // §2.5.1: changing an effective setting is a NEW conversion — settings fold into the key.
+        let computer = EquivKeyComputer::default();
+        let id = identity(1, 2, "/vol/a.csv");
+        let target = TargetId::Format(UserFacingFormat::Webp);
+        assert_ne!(
+            computer.compute_equiv_key(&id, target, &settings(&[("quality", 80)])),
+            computer.compute_equiv_key(&id, target, &settings(&[("quality", 90)])),
+            "§2.5.1: a different effective setting is a different EquivKey"
+        );
+    }
+
+    #[test]
+    fn a_different_source_folds_to_a_different_key() {
+        // §2.5.1: a different source identity ((dev, inode)) is a different conversion.
+        let computer = EquivKeyComputer::default();
+        let target = TargetId::Format(UserFacingFormat::Webp);
+        let opts = settings(&[("quality", 80)]);
+        assert_ne!(
+            computer.compute_equiv_key(&identity(1, 2, "/vol/a.csv"), target, &opts),
+            computer.compute_equiv_key(&identity(1, 3, "/vol/b.csv"), target, &opts),
+            "§2.5.1: a different source identity is a different EquivKey"
+        );
+    }
+
+    #[test]
+    fn compute_then_ledger_fires_on_the_second_identical_drop() {
+        // §2.5.2 end-to-end (compute + storage): compute a conversion's key, record it, then re-compute the
+        // SAME conversion — the ledger has seen it (the second identical drop this session fires the prompt).
+        // A DIFFERENT target folds to a key the ledger has NOT seen (a changed conversion never falsely fires).
+        let computer = EquivKeyComputer::default();
+        let ledger = RerunLedger::default();
+        let id = identity(1, 2, "/vol/a.csv");
+        let opts = settings(&[("quality", 80)]);
+
+        let first =
+            computer.compute_equiv_key(&id, TargetId::Format(UserFacingFormat::Webp), &opts);
+        ledger.record(first);
+
+        let again =
+            computer.compute_equiv_key(&id, TargetId::Format(UserFacingFormat::Webp), &opts);
+        assert!(
+            ledger.has_seen(again),
+            "§2.5.2: the re-computed key of an identical conversion hits the in-session ledger"
+        );
+
+        let changed =
+            computer.compute_equiv_key(&id, TargetId::Format(UserFacingFormat::Png), &opts);
+        assert!(
+            !ledger.has_seen(changed),
+            "§2.5.2/§2.5.1: a changed target folds to an unseen key — a different conversion does not fire"
+        );
+    }
+
+    #[test]
+    fn prop_compute_is_deterministic() {
+        // §2.5.2 property (G16): for ANY (source identity, target, effective settings), two computes through
+        // one held hasher agree — the pinned-seed guard against a reseeding-per-call regression (§2.5.2 warns
+        // "never a fresh RandomState per call").
+        let computer = EquivKeyComputer::default();
+        pinned_runner()
+            .run(
+                &(
+                    any::<u64>(),
+                    any::<u64>(),
+                    0u8..4,
+                    prop::collection::vec((0u8..8, any::<i64>()), 0..6),
+                ),
+                |(dev, inode, target_choice, opt_pairs)| {
+                    let id = identity(dev, inode, "/vol/prop.dat");
+                    let target = match target_choice % 4 {
+                        0 => TargetId::Format(UserFacingFormat::Webp),
+                        1 => TargetId::Format(UserFacingFormat::Png),
+                        2 => TargetId::Op(CrossCatOp::ToGif),
+                        _ => TargetId::Op(CrossCatOp::ExtractAudio),
+                    };
+                    let opts = OptionValues(
+                        opt_pairs
+                            .iter()
+                            .map(|(k, v)| (OptionKey(format!("k{k}")), OptionValue::Int(*v)))
+                            .collect(),
+                    );
+                    prop_assert_eq!(
+                        computer.compute_equiv_key(&id, target, &opts),
+                        computer.compute_equiv_key(&id, target, &opts),
+                        "§2.5.2: identical inputs always fold to the same EquivKey"
+                    );
+                    Ok(())
+                },
+            )
+            .expect("the determinism property holds for every pinned-seed case");
     }
 }

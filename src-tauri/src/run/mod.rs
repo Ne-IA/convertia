@@ -50,11 +50,12 @@
 //!    exclusive lock, and its `publish_temp` is the SOLE lock-after `.part` mint, so a `.part` is
 //!    structurally unreachable before the lock is held.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use tempfile::TempPath;
 use uuid::Uuid;
@@ -1136,6 +1137,103 @@ pub fn reclaim_dest_parts_in(dest_dir: &Path, scratch_base: &Path) -> Vec<PathBu
     reclaimed
 }
 
+// ─── §2.5.2 in-session re-run equivalence ledger — the sole firing signal (P3.39) ───────────────────────
+// [Build-Session-Entscheidung: P3.39] The §2.5.2 in-session re-run ledger + its opaque `EquivKey` are homed
+// here in `crate::run`, exactly as §2.5.2 `[DECIDED]` pins the storage ("Within the current app session,
+// `crate::run` keeps an in-memory `HashSet<EquivKey>`"). The COMPUTATION of the key homes ONE tier up in
+// `crate::orchestrator` (`EquivKeyComputer::compute_equiv_key`), which folds a `fs_guard::FileIdentity` +
+// the §0.6 `TargetId`/`OptionValues` and hands DOWN only the finished hash — so this tier-2 leaf never sees
+// `FileIdentity` and no `run`->`fs_guard` sibling edge arises (§0.7; the P3.38 prevention-sweep ruling). The
+// key type + the ledger are co-located here as one self-contained opaque-key API. Both are authored as a
+// contract at P3.39; the first production consumer is the P3.40 C4 `plan_output` re-run wiring (`has_seen`)
+// with the run-completion `record`, so they are dead in the production build until P3.40 resolves them — the
+// `rerun_ledger_tests` below exercise them now (per-item `allow(dead_code)`, the run-module convention).
+
+/// The §2.5.1 opaque re-run equivalence key — a core-internal hash-style `u64` that is NEVER on the wire
+/// (§2.5.1; the P2.22 §0.4.5 forward-guard characterises it as exactly this). Opaque by construction: the
+/// inner `u64` is private, so a caller cannot inspect or forge its structure — the ledger deals only in
+/// finished hashes. The orchestrator mints one from its §2.5.1 fold via [`EquivKey::from_hash`]; this leaf
+/// only stores and compares them. `Hash` + `Eq` back the `HashSet<EquivKey>` membership; `Copy` (a bare
+/// `u64`) keeps the by-value ledger API cheap. Core-internal — no `serde`/`specta` (it never crosses IPC).
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.5.2 the opaque EquivKey is authored as a contract at P3.39; its sole minter (crate::orchestrator::EquivKeyComputer::compute_equiv_key) and its ledger consumers are unwired in the production build until the P3.40 C4 plan_output re-run wiring resolves them, so it is dead until then — the rerun_ledger_tests exercise it now."
+    )
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EquivKey(u64);
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the sole EquivKey constructor — called by crate::orchestrator::EquivKeyComputer::compute_equiv_key (wired at the P3.40 C4 plan_output path), dead in the production build until then."
+    )
+)]
+impl EquivKey {
+    /// Wrap a finished §2.5.1 fold hash as an opaque key — the SOLE constructor, called only by the
+    /// orchestrator's `compute_equiv_key` (which owns the process-lifetime `BuildHasher`, §2.5.2). Keeping
+    /// the `u64` behind this one door is what makes `EquivKey` opaque to the rest of the core.
+    pub fn from_hash(hash: u64) -> Self {
+        Self(hash)
+    }
+}
+
+/// The §2.5.2 in-session re-run ledger — the SOLE signal that fires the §2.5 RerunPrompt in v1 (§2.5.2
+/// signal 1). An in-memory `HashSet<EquivKey>` of the conversions completed THIS app session; it is cleared
+/// on quit and NOTHING is written to disk (§7.4 "persist nothing"). A second identical drop in the same
+/// session hits the set → definite equivalence → the prompt fires; disk presence is only a §2.5.2
+/// corroborator and never fires on its own (the cross-session ledger is `[DEFER: post-v1]`). App-managed
+/// singleton (`app.manage(RerunLedger::default())`, the P3.40 wiring) shared across the C4 planning path;
+/// interior-mutable behind a `std::sync::Mutex` so the `State<RerunLedger>` handlers query/record through a
+/// shared `&self` with no `&mut`. The set's own bucket-hasher is INDEPENDENT of the compute-side
+/// `BuildHasher` (§2.5.2) — any long-lived `HashSet` suffices. Core-internal — no `serde`/`specta`.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "§2.5.2 the in-session ledger is authored as a contract at P3.39; its has_seen query (P3.40 C4 plan_output) and its record (run completion) are unwired in the production build until the P3.40 re-run wiring resolves the managed State<RerunLedger>, so it is dead until then — the rerun_ledger_tests exercise it now."
+    )
+)]
+#[derive(Debug, Default)]
+pub struct RerunLedger {
+    seen: Mutex<HashSet<EquivKey>>,
+}
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the §2.5.2 ledger's query/record API — dead in the production build until the P3.40 C4 re-run wiring calls it."
+    )
+)]
+impl RerunLedger {
+    /// Lock the set, recovering the guard from a poisoned lock rather than propagating the panic — the
+    /// in-core no-panic discipline (G4/G14), sound because the critical sections are infallible whole-set
+    /// ops that never panic (mirrors `RunRegistry::lock`, P2.42). [Build-Session-Entscheidung: P3.39]
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashSet<EquivKey>> {
+        self.seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// §2.5.2 signal 1: has this exact (resolved source, target, effective settings) conversion already
+    /// completed THIS session? A hit is definite equivalence → the batch-level RerunPrompt fires (§2.5.2 —
+    /// the only v1 signal that fires on its own). The key is opaque; this leaf never learns how it folds.
+    pub fn has_seen(&self, key: EquivKey) -> bool {
+        self.lock().contains(&key)
+    }
+
+    /// Record a completed conversion's key so a subsequent identical drop this session is detected (§2.5.2).
+    /// Idempotent — re-recording an already-present key is a no-op (a `HashSet` insert). Called at run
+    /// completion; nothing is persisted (§7.4), so the record lives only for the app session.
+    pub fn record(&self, key: EquivKey) {
+        self.lock().insert(key);
+    }
+}
+
 #[cfg(test)]
 mod publish_temp_tests {
     use super::*;
@@ -2187,6 +2285,104 @@ mod reclaim_tests {
         assert!(
             reclaim_dest_parts_in(&absent, scratch.path()).is_empty(),
             "§2.6.3 (b): an absent dest dir reclaims nothing, no panic"
+        );
+    }
+}
+
+#[cfg(test)]
+mod rerun_ledger_tests {
+    //! §6.4.1 unit (G15) for the P3.39 §2.5.2 in-session re-run ledger + its opaque `EquivKey`. The STORAGE
+    //! half of the §2.5 signal (the COMPUTE half — folding a `FileIdentity` + target + settings into an
+    //! `EquivKey` — is `crate::orchestrator::EquivKeyComputer`, tested there together with this ledger's
+    //! end-to-end firing). Here we pin: opaque-key equality reflects the finished hash, a fresh ledger reports
+    //! everything unseen, `record` makes a key seen, `record` is idempotent, and distinct keys stay
+    //! independent — the §2.5.2 "second identical drop this session fires; a different conversion does not".
+    use super::*;
+
+    /// Two distinct opaque keys used across the ledger legs — `EquivKey::from_hash` is the sole constructor,
+    /// so a test mints keys the same way the orchestrator's `compute_equiv_key` does (from a finished u64).
+    fn key_a() -> EquivKey {
+        EquivKey::from_hash(0x0123_4567_89ab_cdef)
+    }
+    fn key_b() -> EquivKey {
+        EquivKey::from_hash(0xfedc_ba98_7654_3210)
+    }
+
+    #[test]
+    fn from_hash_equality_reflects_the_finished_hash() {
+        // §2.5.1: the key IS the finished fold hash — equal hashes are the same key, distinct hashes differ.
+        assert_eq!(
+            key_a(),
+            EquivKey::from_hash(0x0123_4567_89ab_cdef),
+            "§2.5.1: an EquivKey equals another minted from the same finished hash"
+        );
+        assert_ne!(
+            key_a(),
+            key_b(),
+            "§2.5.1: EquivKeys minted from different finished hashes are distinct"
+        );
+    }
+
+    #[test]
+    fn fresh_ledger_reports_everything_unseen() {
+        // §2.5.2: a new session's ledger is empty (nothing recorded yet) → no key fires the prompt.
+        let ledger = RerunLedger::default();
+        assert!(
+            !ledger.has_seen(key_a()),
+            "§2.5.2: an empty in-session ledger has seen no conversion"
+        );
+    }
+
+    #[test]
+    fn record_then_the_key_is_seen() {
+        // §2.5.2 signal 1: recording a completed conversion's key makes a subsequent identical query a hit.
+        let ledger = RerunLedger::default();
+        ledger.record(key_a());
+        assert!(
+            ledger.has_seen(key_a()),
+            "§2.5.2: a recorded key is seen — the second identical drop this session fires the prompt"
+        );
+    }
+
+    #[test]
+    fn record_is_idempotent() {
+        // §2.5.2: re-recording the same key is a `HashSet` no-op — no panic, still exactly one membership.
+        let ledger = RerunLedger::default();
+        ledger.record(key_a());
+        ledger.record(key_a());
+        assert!(
+            ledger.has_seen(key_a()),
+            "§2.5.2: re-recording a key leaves it seen (idempotent insert)"
+        );
+    }
+
+    #[test]
+    fn distinct_keys_stay_independent() {
+        // §2.5.1/§2.5.2: recording ONE conversion's key never flags a DIFFERENT conversion as equivalent —
+        // a different target/settings/source folds to a different key, which the ledger has not seen.
+        let ledger = RerunLedger::default();
+        ledger.record(key_a());
+        assert!(ledger.has_seen(key_a()), "§2.5.2: the recorded key is seen");
+        assert!(
+            !ledger.has_seen(key_b()),
+            "§2.5.2: an unrecorded (different) conversion is NOT flagged equivalent"
+        );
+    }
+
+    #[test]
+    fn queries_and_records_through_a_shared_ref() {
+        // §2.5.2: the ledger is an app-managed singleton driven through `&self` (a Tauri `State`), so record
+        // and query both go through a shared borrow with no `&mut` — interior mutability behind the `Mutex`.
+        let ledger = RerunLedger::default();
+        let shared: &RerunLedger = &ledger;
+        assert!(
+            !shared.has_seen(key_a()),
+            "§2.5.2: unseen through a shared &"
+        );
+        shared.record(key_a());
+        assert!(
+            shared.has_seen(key_a()),
+            "§2.5.2: seen through a shared & after record"
         );
     }
 }

@@ -1532,7 +1532,8 @@ export type OptionDecl = {
 /**
  *  A stable machine key for an option (e.g. "quality", "fps", "lossless"), §1.6. Used as the
  *  `OptionValues` BTreeMap key and in the §2.5 EquivKey canonicalisation, so it is a stable ASCII slug,
- *  never a UI label. Derives `Ord` for its BTreeMap-key role; serializes transparently as a bare string.
+ *  never a UI label. Derives `Ord` for its BTreeMap-key role and `Hash` for the §2.5.1 EquivKey fold
+ *  ([Build-Session-Entscheidung: P3.39]); serializes transparently as a bare string.
  */
 export type OptionKey = string;
 
@@ -1562,6 +1563,8 @@ export type OptionKind =
 /**
  *  One concrete, fully-resolved option value (§1.6). INVARIANT (§1.6): every variant is JSON-serialisable
  *  and round-trips through the §2.5 canonical form; no floats (no NaN/Inf), colours as `#RRGGBB(AA)`.
+ *  `Hash` (the §2.5.1 EquivKey fold, [Build-Session-Entscheidung: P3.39]) is sound precisely because that
+ *  no-float invariant leaves every variant `Eq`+`Hash` (`Int`/`Bool`/`Enum`/`Color`).
  */
 export type OptionValue =
 /**  An `IntRange` / `Size` resolved value. */
@@ -1576,7 +1579,10 @@ export type OptionValue =
 /**
  *  The effective, fully-defaulted-plus-overrides option set for a batch (§0.6; == §1.6 `EffectiveOptions`).
  *  The ONE wire/domain name for the resolved values, keyed by the stable `OptionKey`. Serializes
- *  transparently as its inner map (a JSON object keyed by the `OptionKey` slug strings).
+ *  transparently as its inner map (a JSON object keyed by the `OptionKey` slug strings). Derives `Hash`
+ *  (the §2.5.1 EquivKey fold, [Build-Session-Entscheidung: P3.39]): the inner `BTreeMap` hashes in
+ *  sorted-key order, which IS §2.5.1's order-independent canonical form ("left everything default" twice
+ *  yields the same key).
  */
 export type OptionValues = { [key in OptionKey]: OptionValue };
 
