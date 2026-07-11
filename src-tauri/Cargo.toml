@@ -96,7 +96,8 @@ dunce = "1.0.5"
 # forbidden crate). Default features only (the `multithreading`/`rayon` features are NOT enabled — only 2
 # packages locked, no rayon). Caret-pinned to the lock-resolved 1.0.0 (the normal-lib convention). §0.8 lists
 # chardetng (the "Additional crates … chardetng §1.2" row); the paired `check-supply-chain` PINNED_FLOORS §0.8
-# drift-floor row is L(-1) (G71) — the Co-Pilot follow-up box, mirroring the tokio P3.82 / rustix P3.84 split
+# drift-floor row is L(-1) (G71) — landed by the Co-Pilot box P3.85 (with encoding_rs + csv), mirroring the
+# tokio P3.82 / rustix P3.84 split
 # (a new direct dep ABSENT from PINNED_FLOORS does not red G18: the floor is a present-crate check, P3.82).
 chardetng = "1.0.0"
 # [P3.27] encoding_rs is a DIRECT dep too (not only chardetng's transitive): `classify_encoding` names its
@@ -104,7 +105,7 @@ chardetng = "1.0.0"
 # encoding_hint), and chardetng::guess returns a `&'static encoding_rs::Encoding`. Already in Cargo.lock at
 # 0.8.35 via chardetng, so this direct edge adds NO newly-resolved package. Default features only (NO
 # `simd-accel`/`serde`/fast-*-encode). Caret-pinned to the lock-resolved 0.8.35. Its §0.8 PINNED_FLOORS row
-# rides the same P3.27 Co-Pilot L(-1) follow-up as chardetng (both first-new packages of this box).
+# rides the same Co-Pilot L(-1) box as chardetng — P3.85 (both first-new packages of P3.27).
 encoding_rs = "0.8.35"
 # [P3.41] §3.5.6 native CSV/TSV transform — a real RFC-4180 reader/writer for the streamed CSV↔TSV pass
 # (`crate::engines` `csv_tsv_transform`): the source `csv::Reader` (source delimiter, flexible field count,
@@ -119,9 +120,9 @@ encoding_rs = "0.8.35"
 # no socket/copyleft/image-C-lib edge, so G53 core-closure + cargo-deny [licenses]/[bans] + cargo-audit stay
 # green. Default features only. Caret-pinned to the lock-resolved 1.4.0 (the normal-lib convention). §0.8 gains
 # the `csv §3.5.6` "Additional crates" row in this commit (DoD 2); the paired `check-supply-chain`
-# PINNED_FLOORS §0.8 drift-floor row is L(-1) (G71) — the Co-Pilot follow-up box, mirroring the chardetng
-# P3.27 / tokio P3.82 split (a new direct dep ABSENT from PINNED_FLOORS does not red G18: the floor is a
-# present-crate check, P3.82).
+# PINNED_FLOORS §0.8 drift-floor row is L(-1) (G71) — landed by the Co-Pilot box P3.85, mirroring the
+# chardetng P3.27 / tokio P3.82 split (a new direct dep ABSENT from PINNED_FLOORS does not red G18: the
+# floor is a present-crate check, P3.82).
 csv = "1.4.0"
 
 # [P3.12] §2.1.1/§2.1.2 Unix single-call no-replace publish primitive for `fs_guard::publish_noreplace` — the

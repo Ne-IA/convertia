@@ -111,8 +111,9 @@ EXPECTED_EXEMPTION_COUNT = 0    # cargo-vet exemptions accepted; a bump is revie
 # §0.8 pinned-floor (P1.59): the load-bearing crates ConvertIA's OWN code relies on at a known API floor.
 # Each MUST be PRESENT in Cargo.lock at >= its floor, so a drift below a relied-upon API surface fails
 # HERE (deterministically) rather than as an opaque compile break later. Only crates ALREADY in the lock
-# are listed; the rest the box names (csv §1.5, chardetng §1.2, process-wrap §1.7, landlock §2.0; the
-# librsvg >=2.56.3 floor is a C-library binding, not a Cargo crate) activate when their phase adds them -
+# are listed; the remaining named floors (process-wrap §1.7, landlock §2.0; the librsvg >=2.56.3 floor is
+# a C-library binding, not a Cargo crate) activate when their phase adds them (csv - at its real home
+# §3.5.6, not the P1.59 box's §1.5 shorthand - and chardetng joined at P3.85) -
 # adding a row is the normal growth, lowering a floor is an L(-1) review item. Pre-release floors compare
 # by semver precedence (2.0.0 > 2.0.0-rc.25 > 2.0.0-rc.2). [Build-Session-Entscheidung: P1.59 - reconcile
 # to the present §0.8 deps; grow as P3/P4 land the rest.]
@@ -128,6 +129,9 @@ PINNED_FLOORS = {
     "winapi-util":  "0.1.11",        # §2.3.1 Windows file-identity - safe GetFileInformationByHandle wrapper (cfg(windows) direct dep from P3.6; P3.6 dep / P3.83 floor)
     "rustix":       "1.1.4",         # §2.1.1/§2.1.2 Unix publish primitives - safe renameat_with(NOREPLACE)=renameat2/renameatx_np + linkat/unlinkat/fstatvfs (cfg(unix) direct dep from P3.12; P3.12 dep / P3.84 floor)
     "windows-sys":  "0.61.2",        # §2.1.2 Windows publish/free-space externs - FileRenameInfoEx-class no-replace move + GetDiskFreeSpaceExW (cfg(windows) direct dep from P3.14; P3.14 dep / P3.84 floor)
+    "chardetng":    "1.0.0",         # §1.2 text-encoding detection - the bounded pure-Rust in-core detector (direct dep from P3.27; P3.27 dep / P3.85 floor)
+    "encoding_rs":  "0.8.35",        # §1.2 Encoding vocabulary - for_bom/name + chardetng's return type (direct dep from P3.27; P3.27 dep / P3.85 floor)
+    "csv":          "1.4.0",         # §3.5.6 native CSV/TSV RFC-4180 reader/writer - the in-core streamed transform (direct dep from P3.41; P3.41 dep / P3.85 floor)
 }
 
 
