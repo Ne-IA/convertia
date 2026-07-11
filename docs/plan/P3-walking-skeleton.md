@@ -270,7 +270,7 @@ skeleton can ingest a CSV folder and land output beside-source or diverted, on a
 together, plus the §2.5 re-run detection — the orchestration that consumes detect+plan and
 produces an atomic publish for the walking-skeleton job.
 
-- [ ] **P3.37** [RUST] Build the §1.8 `OutputPlan` computation (directory-based, no pre-baked `final_path`) · §1.8 §2.7
+- [x] **P3.37** [RUST] Build the §1.8 `OutputPlan` computation (directory-based, no pre-baked `final_path`) · §1.8 §2.7
   needs: P3.34, P3.35
   > compute `OutputPlan { job, final_dir, diverted: Option<DivertReason>, base_name, extension, publish_temp_dir }` per job before any write, applying the §2.7 rules: resolve `final_dir` (beside-source or diverted), set `publish_temp_dir = final_dir` (the sibling-dotfile temp on the same volume, §2.14.1). **Directory-based by design** — the exact final name + `(n)` numbering is resolved at write time on the resolved real file (P3.15), **never** pre-baked into a `final_path` string (a pre-numbered path reintroduces the §2.1.2 TOCTOU race). No `crosses_volume` field (EXDEV detected reactively at publish, §2.14.3).
 - [ ] **P3.38** [RUST] Assemble the §2.1.1 per-item write sequence (pick-temp → engine-writes → sync → resolve-late → publish → dir-fsync → cleanup-on-error) · §2.1.1 · G31 G32
