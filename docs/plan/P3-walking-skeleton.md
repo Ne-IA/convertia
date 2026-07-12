@@ -305,7 +305,7 @@ cancel, wall-clock timeout). This is the one engine the walking skeleton runs.
 - [x] **P3.43** [RUST] Build the §1.7 `InProcessNative` self-reported progress (`progress_tx` → `ItemProgress`) · §1.7 §1.11 §3.2.2
   needs: P3.41, P3.4
   > no stdout to line-read → §1.7 attaches **no** line-reader and instead passes a bounded `tokio::sync::mpsc::Sender<f32>` (`progress_tx`) into the `spawn_blocking` executor; the sync loop `blocking_send(bytes_processed / source_size)` at each N-KB chunk; §1.7 forwards every received fraction as one `ConversionEvent::ItemProgress { runId, itemId, fraction, stage }` — wire-indistinguishable from every other engine (§1.11). Sub-100-KB inputs → a single `1.0` start→done tick (indistinguishable from `CoarseSpawnDone`). Bounded channel = natural back-pressure.
-- [ ] **P3.44** [RUST] Build the §1.7 cooperative cancel (poll token at chunk boundary, drop `out_tmp`) · §1.7 §2.1
+- [x] **P3.44** [RUST] Build the §1.7 cooperative cancel (poll token at chunk boundary, drop `out_tmp`) · §1.7 §2.1
   needs: P3.43
   > the sync loop polls the job's `CancellationToken` at every N-KB chunk boundary; on cancel it stops mid-stream, **drops the `out_tmp` `TempPath`** (deleted on drop, §3.2.2) → `Cancelled` with no partial leftover — the "cleanly discards the one in progress" guarantee reached **cooperatively** (no kill step to sequence; the §2.6 group-kill step is a no-op for this engine, §1.7 InProcessNative sub-case).
 - [ ] **P3.45** [RUST] Build the §1.7 wall-clock timeout + wedged-uninterruptible-read bound · §1.7 §0.9 §2.12.4
