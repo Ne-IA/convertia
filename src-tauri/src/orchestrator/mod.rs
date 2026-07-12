@@ -39,7 +39,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) are authored as contracts before the P3.46 orchestrator behaviour + the C1/C2a/C3/C4/C5/C6/C7/C8/C13 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so their as-yet-unwired methods are dead in the production build until consumed (`RunRegistry::has_active_run` is already consumed by the §7.1.1 `converter_is_busy` from P2.55, with `register`/`cancel`/`finish` staying dead until P3.46). The P3.25 §2.6.4 cleanup-honesty leg (ResidueRecord/ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) is likewise dead until the P3.50 §1.12 projection + the P3.38 write-sequence consume it. The P3.39 §2.5.1 EquivKeyComputer (compute_equiv_key) is now consumed by the P3.40 compute_rerun_verdict, and both — plus the P3.40 RegisteredSet registry composite — stay dead in the production build until the P3.49 C4 plan_output wiring resolves the managed State + calls compute_rerun_verdict. P3.46 authors the §1.9 lifecycle FSM (advance / queue_order / state_is_queued / JobEvent / IllegalTransition, P3.46.1) + the §2.8 Running→Failed projection (project_outcome / TerminalProjection, P3.46.2); these are PURE and read JobState/Batch/ConversionJob/InvocationResult without themselves being reachable from a root, so they stay dead in the production build until the P3.48 conductor composes them (queue_order -> advance -> dispatch -> project_outcome -> advance) into the live C6 run — reading the dead lifecycle graph does not make it live (a dead-fn reference is not a root)."
+        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) are authored as contracts before the P3.46 orchestrator behaviour + the C1/C2a/C3/C4/C5/C6/C7/C8/C13 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so their as-yet-unwired methods are dead in the production build until consumed (`RunRegistry::has_active_run` is already consumed by the §7.1.1 `converter_is_busy` from P2.55, with `register`/`cancel`/`finish` staying dead until P3.46). The P3.25 §2.6.4 cleanup-honesty leg (ResidueRecord/ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) is likewise dead until the P3.50 §1.12 projection + the P3.38 write-sequence consume it. The P3.39 §2.5.1 EquivKeyComputer (compute_equiv_key) is now consumed by the P3.40 compute_rerun_verdict, and both — plus the P3.40 RegisteredSet registry composite — stay dead in the production build until the P3.49 C4 plan_output wiring resolves the managed State + calls compute_rerun_verdict. P3.46 authors the §1.9 lifecycle FSM (advance / queue_order / state_is_queued / JobEvent / IllegalTransition, P3.46.1) + the §2.8 Running→Failed projection (project_outcome / TerminalProjection, P3.46.2); these are PURE and read JobState/Batch/ConversionJob/InvocationResult without themselves being reachable from a root, so they stay dead in the production build until the P3.48 conductor composes them (queue_order -> advance -> dispatch -> project_outcome -> advance) into the live C6 run — reading the dead lifecycle graph does not make it live (a dead-fn reference is not a root). P3.47 adds the C6 batch constructor build_batch (materialises the §1.9 Batch from a FrozenCollectedSet — eligible Pending jobs + pre-flight Skipped records over the single id space), likewise PURE and dead in the production build until the P3.48 conductor resolves the frozen set and calls it."
     )
 )]
 
@@ -60,8 +60,8 @@ use walkdir::WalkDir;
 use crate::domain::{
     CollectedSet, CollectedSetId, CollectingId, DestinationChoice, DestinationId, DetectionOutcome,
     DivertReason, DroppedItem, FrozenCollectedSet, IntakeOrigin, ItemId, ItemIdSpace, ItemPaths,
-    ItemSpaceExhausted, JobStage, OptionValues, OutputPlan, ReadFailure, RerunPrompt, RunId,
-    SkipReason, SkippedItem, Target, TargetId, UserFacingFormat,
+    ItemSpaceExhausted, JobSource, JobStage, OptionValues, OutputPlan, ReadFailure, RerunPrompt,
+    RunId, SkipReason, SkippedItem, Target, TargetId, UserFacingFormat,
 };
 use crate::engines::InvocationResult;
 use crate::fs_guard::{
@@ -79,7 +79,7 @@ use crate::run::{cleanup_item, EquivKey, RerunLedger, RunScratch};
 /// P2.9 internal `OutputPlan`). The §0.6 invariants it carries BY SHAPE: exactly one whole-batch `target`
 /// and one effective `options` (invariants 1+2 — single values, not per-item); a `Batch` exists only from
 /// a `CollectedSet::Single` (invariant 3). The per-item enforcement (count == items.len(), frozen set,
-/// `item == source.item`, stable `ItemId`) is property-tested in P2.14.
+/// `item == source.item()`, stable `ItemId`) is property-tested in P2.14.
 ///
 /// [Build-Session-Entscheidung: P2.10] Derive set `Debug, Clone, PartialEq, Eq` — the internal-type set
 /// (no `serde`/`specta`, like `OutputPlan`); NOT `Copy` (it owns `Vec`/`String`-bearing fields). `Eq`
@@ -107,21 +107,26 @@ pub struct Batch {
 /// One per-item conversion job within a `Batch` (§0.6 / §1.9). INTERNAL (not a wire type — the same
 /// rationale as `Batch`).
 ///
-/// [Build-Session-Entscheidung: P2.10] `Debug, Clone, PartialEq, Eq`; NOT `Copy` (its `source:
-/// DroppedItem` owns `PathBuf`s). `Eq` holds — every field type is `Eq` (`OutputPlan` derives `Eq`, P2.9).
+/// [Build-Session-Entscheidung: P2.10 → P3.47] `Debug, Clone, PartialEq, Eq`; NOT `Copy` (its `source:
+/// JobSource` owns `String`/`PathBuf`-bearing records). `Eq` holds — every field type is `Eq` (`JobSource`
+/// derives `Eq`, P3.47; `OutputPlan` derives `Eq`, P2.9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversionJob {
-    /// The job's top-level key — the item's `ItemId`, DENORMALIZED from `source.item` for cheap
+    /// The job's top-level key — the item's `ItemId`, DENORMALIZED from `source.item()` for cheap
     /// addressing in the §1.9 lifecycle + the per-item progress/finished events without unwrapping
     /// `source` (§0.6; the same duplicate-for-cheap-access pattern as `count` beside `items.len()`).
-    /// INVARIANT (§0.6): `item == source.item`, property-tested in P2.14.
+    /// INVARIANT (§0.6): `item == source.item()` — UNIFORM over both `JobSource` arms (P3.47),
+    /// property-tested in P2.14.
     pub item: ItemId,
-    /// The eligible source item this job converts (§0.6) — carries its frozen resolved path + detection.
-    pub source: DroppedItem,
+    /// The job's own frozen source record (§0.6 `JobSource`, P3.47) — the `Eligible(DroppedItem)` arm for a
+    /// queued conversion, or the `Skipped(SkippedItem)` arm for a pre-flight-ineligible non-queue job (which
+    /// carries the COMPLETE skip record so the `Batch` is the sole post-C6 carrier once the §0.4.4 registry
+    /// is evicted). Coupling invariant (§0.6, P2.14): `source is Skipped(_) ⟺ state is JobState::Skipped(_)`.
+    pub source: JobSource,
     /// The §1.9 lifecycle state — §1.9 owns the TRANSITIONS; this stores the current state.
     pub state: JobState,
-    /// The §1.8-computed output plan, set before the write — `None` until §1.8 plans it (and for a
-    /// pre-flight `Skipped` job, which never plans an output).
+    /// The §1.8-computed output plan, set before the write — `None` until §1.8 plans it (and always `None`
+    /// for a pre-flight `Skipped` job, which never plans an output).
     pub plan: Option<OutputPlan>,
 }
 
@@ -344,6 +349,73 @@ pub fn project_outcome(result: InvocationResult) -> TerminalProjection {
                 message,
             }
         }
+    }
+}
+
+/// Construct the §1.9 [`Batch`] from a frozen `CollectedSet::Single` at C6 (`start_conversion`) — the
+/// materialisation the §1.9 "Batch construction projects pre-flight skips as non-queue `Skipped` records
+/// `[DECIDED]`" anchor names (P3.47). For every eligible `DroppedItem` in `frozen.items` it creates a
+/// `Pending` job ([`JobSource::Eligible`], `plan: None` until §1.8 plans it); for every `SkippedItem` in
+/// `frozen.skipped` it creates a terminal `Skipped(reason)` job ([`JobSource::Skipped`], the `SkipReason`
+/// **copied directly** from `SkippedItem.reason`) — set **at construction**, never queued, never
+/// transitioned, receiving **no** `Channel` events (§0.4.2). This is the single anchor that prevents a skip
+/// from being lost when the §0.4.4 collected-set registry is evicted at C6: the `Batch` becomes the sole
+/// post-C6 carrier of the COMPLETE skip record.
+///
+/// The jobs are emitted in the deterministic §1.1 collected/traversal order over the §0.6-invariant-6
+/// single id space — `jobs.sort_by_key(|job| job.item)`. The freeze assigns each `ItemId` in traversal
+/// order over the merged eligible+skipped set (§0.6 invariant 6), so **id order IS traversal order**, and a
+/// `SkippedItem.item` can never collide with an eligible `ItemId` — sorting by id therefore INTERLEAVES the
+/// eligible `Pending` jobs and the `Skipped` records back into the original drop order, so the §1.11
+/// progress bar + the §1.12 summary read predictably (`[REC]` no priority/size reordering in v1).
+///
+/// Every job upholds the §0.6 invariants by construction: `item == source.item()` (denormalized uniformly
+/// from whichever arm), and the coupling `source is Skipped(_) ⟺ state is JobState::Skipped(_)` (an eligible
+/// item is `Eligible`+`Pending`, a skipped item is `Skipped`+`Skipped(reason)`). PURE (no I/O, no spawn):
+/// the whole-batch `target`/`options`/`destination` are the C6 command arguments the P3.48 conductor
+/// supplies (after resolving the frozen set from the §0.4.4 registry), and this fn stays dead in the
+/// production build until that conductor calls it (the module `dead_code` expect).
+/// [Build-Session-Entscheidung: P3.47]
+pub fn build_batch(
+    frozen: &FrozenCollectedSet,
+    target: Target,
+    options: OptionValues,
+    destination: DestinationChoice,
+) -> Batch {
+    let mut jobs: Vec<ConversionJob> =
+        Vec::with_capacity(frozen.items.len() + frozen.skipped.len());
+    // Eligible items → queued `Pending` jobs (JobSource::Eligible; plan None until §1.8).
+    for dropped in &frozen.items {
+        let source = JobSource::Eligible(dropped.clone());
+        jobs.push(ConversionJob {
+            item: source.item(),
+            source,
+            state: JobState::Pending,
+            plan: None,
+        });
+    }
+    // Pre-flight-skipped items → terminal `Skipped(reason)` records materialised at construction
+    // (JobSource::Skipped; the reason copied directly from SkippedItem.reason; never queued, never planned).
+    for skipped in &frozen.skipped {
+        let reason = skipped.reason;
+        let source = JobSource::Skipped(skipped.clone());
+        jobs.push(ConversionJob {
+            item: source.item(),
+            source,
+            state: JobState::Skipped(reason),
+            plan: None,
+        });
+    }
+    // Deterministic §1.1 traversal order over the single id space (id order == traversal order, §0.6 inv 6):
+    // interleave the eligible + skipped jobs back into drop order.
+    jobs.sort_by_key(|job| job.item);
+    Batch {
+        id: frozen.id,
+        source_format: frozen.format,
+        target,
+        options,
+        destination,
+        jobs,
     }
 }
 
@@ -4559,6 +4631,16 @@ mod tests {
         dropped_item_with(id, UserFacingFormat::Csv)
     }
 
+    /// A minimal pre-flight-skipped source item at `id` with the given §0.6 `SkipReason` — the skip-arm
+    /// sibling of `dropped_item`, for the `JobSource::Skipped` fixtures (P3.47).
+    fn skipped_item(id: u32, reason: SkipReason) -> SkippedItem {
+        SkippedItem {
+            item: item_id(id),
+            source_display: "skipped.bin".to_string(),
+            reason,
+        }
+    }
+
     /// A minimal CSV→TSV target, for the batch shape test.
     fn sample_target() -> Target {
         Target {
@@ -4573,10 +4655,23 @@ mod tests {
     // ─── P3.46 §1.9 lifecycle FSM + Running→Failed projection tests ──
 
     /// A `ConversionJob` in the given §1.9 [`JobState`], for the FSM + queue-order tests.
+    /// [Test-Change: P3.47 — old-obsolete+new-correct, §0.6] `source` is now the `JobSource` sum, not a bare
+    /// `DroppedItem` (the old field form no longer compiles). The fixture mirrors the §0.6 coupling invariant
+    /// — a `Skipped` state gets the `JobSource::Skipped` arm (its `SkipReason` matching the state), every
+    /// other state the `Eligible` arm — so each `job_in` job is well-formed, and denormalizes `item` via the
+    /// new `source.item()` accessor. The exhaustive match (no `_`, the crate `wildcard_enum_match_arm` deny)
+    /// forces a conscious arm for a future `JobState` variant.
     fn job_in(id: u32, state: JobState) -> ConversionJob {
-        let source = dropped_item(id);
+        let source = match state {
+            JobState::Skipped(reason) => JobSource::Skipped(skipped_item(id, reason)),
+            JobState::Pending
+            | JobState::Running
+            | JobState::Succeeded
+            | JobState::Failed(_)
+            | JobState::Cancelled => JobSource::Eligible(dropped_item(id)),
+        };
         ConversionJob {
-            item: source.item,
+            item: source.item(),
             source,
             state,
             plan: None,
@@ -4592,6 +4687,28 @@ mod tests {
             options: OptionValues(BTreeMap::new()),
             destination: DestinationChoice::BesideSource,
             jobs,
+        }
+    }
+
+    /// A minimal frozen `CollectedSet::Single` projection over the given eligible + skipped items, for the C6
+    /// `build_batch` tests (P3.47). Only the fields `build_batch` reads matter (`id`/`format`/`items`/
+    /// `skipped`); the rest carry benign frozen defaults. `count == items.len()` (the `Single` invariant,
+    /// carried through).
+    fn frozen_of(items: Vec<DroppedItem>, skipped: Vec<SkippedItem>) -> FrozenCollectedSet {
+        let count = items.len();
+        FrozenCollectedSet {
+            id: collected_set_id(),
+            instance: instance_id(),
+            format: UserFacingFormat::Csv,
+            items,
+            count,
+            skipped,
+            total_bytes: 0,
+            roots: vec![],
+            encoding_hint: None,
+            delimiter_hint: None,
+            notes: vec![],
+            item_paths: BTreeMap::new(),
         }
     }
 
@@ -4892,34 +5009,40 @@ mod tests {
         );
     }
 
-    // §6.4.1 unit (G15): the §0.6 `ConversionJob.item == source.item` denormalization — the job's
+    // §6.4.1 unit (G15): the §0.6 `ConversionJob.item == source.item()` denormalization — the job's
     // top-level key IS its source item's id (cheap addressing without unwrapping `source`). This box
     // authors the TYPE so the relationship is expressible + correct; the orchestrator-ALWAYS-enforces-it
     // property is P2.14.
+    // [Test-Change: P3.47 — old-obsolete+new-correct, §0.6] `source` is a `JobSource` sum now; the
+    // denormalization reads the uniform `source.item()` accessor (the old `source.item` field access no
+    // longer compiles), exercised over the `Eligible` arm here (the `Skipped` arm is covered in P2.14).
     #[test]
     fn conversion_job_denormalizes_its_source_item() {
-        let source = dropped_item(3);
+        let source = JobSource::Eligible(dropped_item(3));
         let job = ConversionJob {
-            item: source.item,
+            item: source.item(),
             source: source.clone(),
             state: JobState::Pending,
             plan: None,
         };
         assert_eq!(
-            job.item, job.source.item,
-            "§0.6: ConversionJob.item is denormalized from source.item"
+            job.item,
+            job.source.item(),
+            "§0.6: ConversionJob.item is denormalized from source.item()"
         );
     }
 
     // §6.4.1 unit (G15): a `Batch` carries ONE whole-batch `Target` (§0.6 invariant 1, enforced by the
-    // single-value field SHAPE) over its jobs. Constructs the full `Batch → ConversionJob → DroppedItem`
-    // graph so the P2.10 types are exercised (and the test build is dead-code-clean); the per-item
-    // invariant ENFORCEMENT (count/frozen/stable-id) is the P2.14 property suite.
+    // single-value field SHAPE) over its jobs. Constructs the full `Batch → ConversionJob → JobSource →
+    // DroppedItem` graph so the P2.10/P3.47 types are exercised (and the test build is dead-code-clean); the
+    // per-item invariant ENFORCEMENT (count/frozen/stable-id) is the P2.14 property suite.
+    // [Test-Change: P3.47 — old-obsolete+new-correct, §0.6] `source` is wrapped in `JobSource::Eligible`
+    // (the old bare `DroppedItem` form no longer compiles); the shape assertions below are unchanged.
     #[test]
     fn batch_holds_one_target_over_its_jobs() {
-        let source = dropped_item(0);
+        let source = JobSource::Eligible(dropped_item(0));
         let job = ConversionJob {
-            item: source.item,
+            item: source.item(),
             source,
             state: JobState::Pending,
             plan: None,
@@ -4946,6 +5069,85 @@ mod tests {
             batch.source_format,
             UserFacingFormat::Csv,
             "the batch's single eligible source format (§1.3 grouping key)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the P3.47 §1.9 C6 `build_batch` materialisation — from a frozen `CollectedSet::
+    // Single` with INTERLEAVED eligible (ids 0/2/4) + skipped (ids 1/3) items, it builds `Batch.jobs`
+    // carrying BOTH kinds in the deterministic §1.1 traversal order (id-sorted), with each eligible item a
+    // `Pending`/`JobSource::Eligible` job and each skipped item a terminal `Skipped(reason)`/`JobSource::
+    // Skipped` job whose reason is copied from the `SkippedItem` — and `queue_order` then yields ONLY the
+    // eligible (Pending) ids. The "skips survive C6" anchor: a skip stored only in the (now-evicted) registry
+    // is materialised into the Batch.
+    #[test]
+    fn build_batch_materialises_eligible_pending_and_preflight_skipped_records_in_order() {
+        // Eligible ids 0/2/4 and skipped ids 1/3 — deliberately supplied out of interleave so the id-sort
+        // (the §1.1 traversal order over the single id space) is exercised, not the input order.
+        let items = vec![dropped_item(0), dropped_item(2), dropped_item(4)];
+        let skipped = vec![
+            skipped_item(1, SkipReason::UnsupportedType),
+            skipped_item(3, SkipReason::Empty),
+        ];
+        let frozen = frozen_of(items, skipped);
+        let batch = build_batch(
+            &frozen,
+            sample_target(),
+            OptionValues(BTreeMap::new()),
+            DestinationChoice::BesideSource,
+        );
+
+        // The batch carries its whole-batch fields from the frozen set + the C6 args.
+        assert_eq!(
+            batch.id, frozen.id,
+            "§1.12: Batch.id IS the source CollectedSetId"
+        );
+        assert_eq!(
+            batch.source_format,
+            UserFacingFormat::Csv,
+            "§1.3: the single eligible source format is carried from the frozen set"
+        );
+
+        // Every eligible + every skipped item became exactly one job, in id (= §1.1 traversal) order.
+        let states: Vec<(ItemId, JobState)> =
+            batch.jobs.iter().map(|job| (job.item, job.state)).collect();
+        assert_eq!(
+            states,
+            vec![
+                (item_id(0), JobState::Pending),
+                (item_id(1), JobState::Skipped(SkipReason::UnsupportedType)),
+                (item_id(2), JobState::Pending),
+                (item_id(3), JobState::Skipped(SkipReason::Empty)),
+                (item_id(4), JobState::Pending),
+            ],
+            "§1.9: build_batch materialises eligible Pending + pre-flight Skipped(reason) jobs, interleaved \
+             into the deterministic id/traversal order (the skip reason copied from the SkippedItem)"
+        );
+
+        // The source arm mirrors the state (the coupling invariant) for every job, and the plan is None.
+        for job in &batch.jobs {
+            let is_skipped_source = matches!(job.source, JobSource::Skipped(_));
+            let is_skipped_state = matches!(job.state, JobState::Skipped(_));
+            assert_eq!(
+                is_skipped_source, is_skipped_state,
+                "§0.6 coupling: source is Skipped(_) ⟺ state is JobState::Skipped(_)"
+            );
+            assert_eq!(
+                job.item,
+                job.source.item(),
+                "§0.6: the job key is denormalized uniformly from source.item()"
+            );
+            assert!(
+                job.plan.is_none(),
+                "§1.9: no job is planned at construction (§1.8 plans eligible jobs subsequently; a skip never plans)"
+            );
+        }
+
+        // The queue is exactly the eligible (Pending) ids — the Skipped records never enter it (§1.9).
+        let queued: Vec<ItemId> = queue_order(&batch).map(|job| job.item).collect();
+        assert_eq!(
+            queued,
+            vec![item_id(0), item_id(2), item_id(4)],
+            "§1.9: queue_order yields only the eligible Pending jobs; the pre-flight Skipped records are non-queue"
         );
     }
 
@@ -5531,16 +5733,22 @@ mod tests {
     /// The §0.6-invariant property-test case-count floor (test-strategy §1.3: above proptest's 256 default).
     const P2_14_CASES: u32 = 512;
 
-    /// The §1.2 recognized format of a (test) source item — for the §1.3 one-format-per-batch grouping check.
-    fn recognized_format(d: &DroppedItem) -> Option<UserFacingFormat> {
-        // Exhaustive (the crate denies `clippy::wildcard_enum_match_arm`, so no `_` arm) — a future
-        // `DetectionOutcome` variant forces a conscious decision here rather than silently mapping to `None`.
-        match &d.detected {
-            DetectionOutcome::Recognized { format, .. } => Some(*format),
-            DetectionOutcome::UnsupportedType { .. }
-            | DetectionOutcome::Uncertain { .. }
-            | DetectionOutcome::Empty
-            | DetectionOutcome::Unreadable { .. } => None,
+    /// The §1.2 recognized format of a (test) job source — for the §1.3 one-format-per-batch grouping check.
+    /// [Test-Change: P3.47 — old-obsolete+new-correct, §0.6] takes `&JobSource` now (the P2.137 callers read
+    /// `&job.source`, which is a `JobSource` sum after P3.47); a `Skipped` arm has no recognized format
+    /// (`None`), and the `Eligible` arm projects its `DroppedItem.detected` exactly as before.
+    fn recognized_format(source: &JobSource) -> Option<UserFacingFormat> {
+        // Exhaustive over both axes (the crate denies `clippy::wildcard_enum_match_arm`, so no `_` arm) — a
+        // future `JobSource`/`DetectionOutcome` variant forces a conscious decision here, never a silent `None`.
+        match source {
+            JobSource::Skipped(_) => None,
+            JobSource::Eligible(d) => match &d.detected {
+                DetectionOutcome::Recognized { format, .. } => Some(*format),
+                DetectionOutcome::UnsupportedType { .. }
+                | DetectionOutcome::Uncertain { .. }
+                | DetectionOutcome::Empty
+                | DetectionOutcome::Unreadable { .. } => None,
+            },
         }
     }
 
@@ -5594,9 +5802,12 @@ mod tests {
                 let jobs: Vec<ConversionJob> = (0..n)
                     .map(|i| {
                         let id = u32::try_from(i).expect("n < 64 fits u32");
+                        // [Test-Change: P3.47 — old-obsolete+new-correct, §0.6] `source` wraps the
+                        // `DroppedItem` in `JobSource::Eligible` (the old bare form no longer compiles); the
+                        // §1.3 grouping semantics are unchanged (recognized_format reads the eligible arm).
                         ConversionJob {
                             item: item_id(id),
-                            source: dropped_item_with(id, batch_format),
+                            source: JobSource::Eligible(dropped_item_with(id, batch_format)),
                             state: JobState::Pending,
                             plan: None,
                         }
@@ -5629,7 +5840,7 @@ mod tests {
                 let intruder_id = u32::try_from(n).expect("n < 64 fits u32");
                 batch.jobs.push(ConversionJob {
                     item: item_id(intruder_id),
-                    source: dropped_item_with(intruder_id, intruder_format),
+                    source: JobSource::Eligible(dropped_item_with(intruder_id, intruder_format)),
                     state: JobState::Pending,
                     plan: None,
                 });
@@ -5648,42 +5859,160 @@ mod tests {
             .expect("the pinned 512-case exploration holds the §0.6 inv-1 / §1.3 grouping invariant");
     }
 
-    /// §0.6 "`ConversionJob.item == source.item`": the job's top-level key is DENORMALIZED from its source
-    /// item's id (cheap addressing without unwrapping `source`). Holds for ANY generated source id; the teeth
-    /// assertion shows a deliberately-mismatched item is detectable, so the equality is a real constraint, not
-    /// a vacuous `x == x`.
+    /// §0.6 "`ConversionJob.item == source.item()`": the job's top-level key is DENORMALIZED from its source
+    /// item's id (cheap addressing without unwrapping `source`). Holds for ANY generated source id AND
+    /// UNIFORMLY over BOTH `JobSource` arms (the P3.47 strengthening — an eligible `DroppedItem` and a
+    /// pre-flight `SkippedItem` are addressed identically, no queued-only carve-out); the teeth assertion
+    /// shows a deliberately-mismatched item is detectable, so the equality is a real constraint, not a
+    /// vacuous `x == x`.
+    /// [Test-Change: P3.47 — old-obsolete+new-correct, §0.6] the prior form asserted `item == source.item`
+    /// (the P2.10 bare `DroppedItem` field) over the eligible arm only; the field is obsolete (`source` is a
+    /// `JobSource` sum now) and the invariant is STRENGTHENED to the uniform `item == source.item()` accessor
+    /// generated over BOTH arms — verified against the §0.6 `JobSource` ruling (both arms carry `item`).
     #[test]
     fn prop_conversion_job_item_equals_source_item() {
         pinned_runner()
-            .run(&any::<u32>(), |id| {
-                let source = dropped_item(id);
+            .run(&(any::<u32>(), any::<bool>()), |(id, skipped)| {
+                // Generate BOTH arms: an eligible DroppedItem or a pre-flight SkippedItem at the same id.
+                let source = if skipped {
+                    JobSource::Skipped(skipped_item(id, SkipReason::Unreadable))
+                } else {
+                    JobSource::Eligible(dropped_item(id))
+                };
+                let state = if skipped {
+                    JobState::Skipped(SkipReason::Unreadable)
+                } else {
+                    JobState::Pending
+                };
                 let job = ConversionJob {
-                    item: source.item,
+                    item: source.item(),
                     source: source.clone(),
-                    state: JobState::Pending,
+                    state,
                     plan: None,
                 };
                 prop_assert_eq!(
                     job.item,
-                    job.source.item,
-                    "§0.6: ConversionJob.item == source.item"
+                    job.source.item(),
+                    "§0.6: ConversionJob.item == source.item() (uniform over both JobSource arms)"
                 );
                 prop_assert_eq!(
                     job.item,
                     item_id(id),
-                    "the denormalized key tracks the generated source id"
+                    "the denormalized key tracks the generated source id, whichever arm"
                 );
                 // teeth: a job whose item is NOT its source's id is detectably inconsistent — `wrapping_add(1)`
                 // never equals `id` for any u32, so the denormalization invariant discriminates correct from wrong.
                 let mismatched = ConversionJob {
                     item: item_id(id.wrapping_add(1)),
                     source,
-                    state: JobState::Pending,
+                    state,
                     plan: None,
                 };
                 prop_assert_ne!(
-                    mismatched.item, mismatched.source.item,
+                    mismatched.item,
+                    mismatched.source.item(),
                     "a mismatched item IS detectable — the denormalization invariant is not vacuous"
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// §0.6 coupling invariant (P3.47) over the REAL C6 constructor: for a `build_batch` result from ANY
+    /// generated eligible+skipped mix, EVERY job satisfies `source is Skipped(_) ⟺ state is
+    /// JobState::Skipped(_)` — an eligible item is `Eligible`+`Pending`, a skipped item is `Skipped`+
+    /// `Skipped(reason)` with the reason COPIED from the `SkippedItem`, the jobs are in deterministic
+    /// id/traversal order (eligible even ids + skipped odd ids are interleaved BACK by the sort), and `item
+    /// == source.item()` holds uniformly. TEETH: a hand-built job whose source arm and state disagree IS
+    /// detectable, so the ⟺ is a real constraint, not a fixture echo. [Build-Session-Entscheidung: P3.47]
+    #[test]
+    fn prop_build_batch_couples_source_arm_with_job_state() {
+        const REASONS: [SkipReason; 4] = [
+            SkipReason::UnsupportedType,
+            SkipReason::Uncertain,
+            SkipReason::Empty,
+            SkipReason::Unreadable,
+        ];
+        pinned_runner()
+            .run(&(0u32..32, 0u32..32), |(n_elig, n_skip)| {
+                // Disjoint ids over ONE space: eligible get EVEN ids, skipped get ODD ids — so build_batch's
+                // id-sort has real interleaving work (it pushes all eligible, then all skipped, then sorts).
+                let items: Vec<DroppedItem> = (0..n_elig).map(|i| dropped_item(2 * i)).collect();
+                let skipped: Vec<SkippedItem> = (0..n_skip)
+                    .enumerate()
+                    .map(|(idx, i)| skipped_item(2 * i + 1, REASONS[idx % 4]))
+                    .collect();
+                let frozen = frozen_of(items, skipped);
+                let batch = build_batch(
+                    &frozen,
+                    sample_target(),
+                    OptionValues(BTreeMap::new()),
+                    DestinationChoice::BesideSource,
+                );
+
+                let total = usize::try_from(n_elig + n_skip).expect("n_elig + n_skip < 64 fits usize");
+                prop_assert_eq!(
+                    batch.jobs.len(),
+                    total,
+                    "build_batch materialises exactly one job per eligible + skipped item"
+                );
+
+                // Jobs are in ascending id (§1.1 traversal) order — the interleaved evens+odds re-sorted.
+                let ids: Vec<ItemId> = batch.jobs.iter().map(|job| job.item).collect();
+                let mut sorted = ids.clone();
+                sorted.sort_unstable();
+                prop_assert_eq!(
+                    ids,
+                    sorted,
+                    "§1.9: build_batch jobs are in deterministic id/traversal order over the single id space"
+                );
+
+                for job in &batch.jobs {
+                    // The coupling invariant, both directions.
+                    let skipped_source = matches!(job.source, JobSource::Skipped(_));
+                    let skipped_state = matches!(job.state, JobState::Skipped(_));
+                    prop_assert_eq!(
+                        skipped_source,
+                        skipped_state,
+                        "§0.6 coupling: source is Skipped(_) ⟺ state is JobState::Skipped(_)"
+                    );
+                    // Uniform denormalization + never-planned-at-construction, over both arms.
+                    prop_assert_eq!(
+                        job.item,
+                        job.source.item(),
+                        "§0.6: item == source.item() over both arms"
+                    );
+                    prop_assert!(
+                        job.plan.is_none(),
+                        "§1.9: no job is planned at construction (a skip never plans; §1.8 plans eligible subsequently)"
+                    );
+                    // Each arm's concrete state (the match is exhaustive over the 2-variant JobSource, no `_`).
+                    match &job.source {
+                        JobSource::Eligible(_) => prop_assert_eq!(
+                            job.state,
+                            JobState::Pending,
+                            "an eligible item materialises as a Pending job"
+                        ),
+                        JobSource::Skipped(s) => prop_assert_eq!(
+                            job.state,
+                            JobState::Skipped(s.reason),
+                            "a skipped item materialises as Skipped(reason), the reason copied from the SkippedItem"
+                        ),
+                    }
+                }
+
+                // Teeth: a job whose source arm and state DISAGREE is detectable by the ⟺ check (an Eligible
+                // source paired with a Skipped state) — proving the coupling assertion above is not vacuous.
+                let bad = ConversionJob {
+                    item: item_id(0),
+                    source: JobSource::Eligible(dropped_item(0)),
+                    state: JobState::Skipped(SkipReason::Empty),
+                    plan: None,
+                };
+                prop_assert_ne!(
+                    matches!(bad.source, JobSource::Skipped(_)),
+                    matches!(bad.state, JobState::Skipped(_)),
+                    "a coupling-violating job (Eligible source + Skipped state) IS detectable — the ⟺ is not vacuous"
                 );
                 Ok(())
             })

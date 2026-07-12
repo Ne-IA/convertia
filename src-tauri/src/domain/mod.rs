@@ -612,6 +612,65 @@ impl DetectionOutcome {
     }
 }
 
+// ─── §0.6 JobSource — the per-job frozen source record (the §1.9 Batch-construction sum, P3.47) ──
+/// The frozen source record a `ConversionJob` (§1.9, `crate::orchestrator`) converts (§0.6) — a SUM over the
+/// two §1.1-freeze outcomes a materialised job can carry: an ELIGIBLE `DroppedItem` (queued `Pending`,
+/// converted) or a pre-flight-ineligible `SkippedItem` (never queued, terminal `Skipped` at construction,
+/// §1.9). [DECIDED 2026-07-11 — the P3.47 ruling] a §1.9 pre-flight-`Skipped` job is **not** "an eligible job
+/// missing its source" (an `Option<DroppedItem>` None-with-meaning that would give the P2.14 `item ==
+/// source.item()` invariant a queued-only carve-out) but its **own kind carrying its own frozen record**, so:
+/// (1) the §1.9 "skips survive C6" anchor holds in FULL fidelity — the §0.4.4 collected-set registry is
+/// EVICTED at C6, so the `Batch` becomes the sole post-C6 carrier of the COMPLETE skip record (incl.
+/// `SkippedItem.source_display`); (2) the `item == source.item()` invariant is UNIFORM over both arms (both
+/// carry `item`); and (3) NO eligible-shaped data is synthesised for a skip (a skip has no
+/// `DetectionOutcome`/`size_bytes` to invent — §1.4/§1.12 honesty, SSOT *Fail clearly*). The coupling
+/// invariant `source is Skipped(_) ⟺ state is JobState::Skipped(_)` is upheld by the §1.9 `build_batch`
+/// constructor (P3.47) and property-tested there.
+///
+/// Homed in `crate::domain` (tier-3): it references **no** `crate::outcome` type — both arms carry pure
+/// `crate::domain` records — so per the §0.7 durable principle ("a §0.6 type that references no outcome type
+/// stays in `domain`") it lives in the pure leaf, beside the sibling lifecycle-adjacent pure `JobStage` (the
+/// §0.7 ‡ note). `crate::orchestrator::ConversionJob` embeds it via the sanctioned downward `orchestrator →
+/// domain` edge, exactly like the `DroppedItem`/`SkippedItem` it wraps.
+///
+/// [Build-Session-Entscheidung: P3.47] `Debug, Clone, PartialEq, Eq` — the same internal set as its consumer
+/// `ConversionJob` (both arms own `String`-bearing records, so NOT `Copy`). Core-INTERNAL: it is embedded
+/// only in the non-wire `ConversionJob`, so it derives NO `serde`/`specta` (`bindings.ts` is untouched — an
+/// enum need not mirror the wire derives of its `DroppedItem`/`SkippedItem` variants). `Eq` backs the P2.14
+/// property suite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JobSource {
+    /// An eligible source item → a queued `Pending` conversion job.
+    Eligible(DroppedItem),
+    /// A pre-flight-ineligible item → a non-queue `Skipped` job, terminal at construction (§1.9).
+    Skipped(SkippedItem),
+}
+
+impl JobSource {
+    /// The item's §0.6-invariant-6 freeze-assigned `ItemId` — UNIFORM over both arms (§0.6:
+    /// `ConversionJob.item == source.item()`). `ConversionJob.item` denormalizes this for cheap addressing
+    /// in the §1.9 lifecycle + the per-item progress/finished events without unwrapping `source`.
+    /// [Build-Session-Entscheidung: P3.47]
+    #[must_use]
+    pub fn item(&self) -> ItemId {
+        match self {
+            JobSource::Eligible(dropped) => dropped.item,
+            JobSource::Skipped(skipped) => skipped.item,
+        }
+    }
+
+    /// The eligible source record iff this job is queued (`Eligible`); `None` for a pre-flight `Skipped` job
+    /// (which carries no convertible source). The §1.9 conductor (P3.48) dispatches `Pending` jobs only and
+    /// reads the eligible arm through this accessor. [Build-Session-Entscheidung: P3.47]
+    #[must_use]
+    pub fn eligible(&self) -> Option<&DroppedItem> {
+        match self {
+            JobSource::Eligible(dropped) => Some(dropped),
+            JobSource::Skipped(_) => None,
+        }
+    }
+}
+
 // ─── §0.6 CollectedSet — the frozen batch candidate (C1/C2a return + §1.4 confirm shape) ──
 /// The frozen collected-set the C1 `ingest_paths` / C2a `pick_for_intake` commands return and the §1.4 /
 /// §5.2 confirm gate renders (§0.6 / §1.1 / §1.4). `Single` carries the FULL confirm-summary field set,
@@ -1963,6 +2022,56 @@ mod tests {
         assert_eq!(
             back, skipped,
             "§0.6: SkippedItem round-trips through its wire form"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §0.6 `JobSource` sum (P3.47) — `item()` yields the freeze-assigned id UNIFORMLY
+    // over BOTH arms (the `ConversionJob.item == source.item()` invariant is arm-independent), and
+    // `eligible()` exposes the convertible `DroppedItem` ONLY for the `Eligible` arm (a pre-flight `Skipped`
+    // job carries no convertible source — the §1.9 conductor dispatches `Pending` jobs by this accessor).
+    #[test]
+    fn job_source_item_is_uniform_and_eligible_exposes_only_the_eligible_arm() {
+        let dropped = DroppedItem {
+            item: ItemId(7),
+            display_name: "data.csv".to_string(),
+            rel_path_display: None,
+            size_bytes: 3,
+            detected: DetectionOutcome::Recognized {
+                format: UserFacingFormat::Csv,
+                confidence: Confidence::High,
+                dims: None,
+            },
+        };
+        let skipped = SkippedItem {
+            item: ItemId(8),
+            source_display: "mystery.bin".to_string(),
+            reason: SkipReason::Unreadable,
+        };
+        let eligible_source = JobSource::Eligible(dropped.clone());
+        let skipped_source = JobSource::Skipped(skipped.clone());
+
+        // `item()` is uniform over both arms — each yields its own frozen record's id.
+        assert_eq!(
+            eligible_source.item(),
+            ItemId(7),
+            "§0.6: JobSource::Eligible.item() == the DroppedItem's id"
+        );
+        assert_eq!(
+            skipped_source.item(),
+            ItemId(8),
+            "§0.6: JobSource::Skipped.item() == the SkippedItem's id (uniform accessor, no queued-only carve-out)"
+        );
+
+        // `eligible()` exposes the convertible source ONLY for the Eligible arm.
+        assert_eq!(
+            eligible_source.eligible(),
+            Some(&dropped),
+            "§1.9: the eligible arm exposes its DroppedItem for the P3.48 conductor to dispatch"
+        );
+        assert_eq!(
+            skipped_source.eligible(),
+            None,
+            "§1.9: a pre-flight Skipped job has no convertible source (no eligible-shaped data synthesised)"
         );
     }
 
