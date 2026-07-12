@@ -39,7 +39,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) are authored as contracts before the P3.46 orchestrator behaviour + the C1/C2a/C3/C4/C5/C6/C7/C8/C13 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so their as-yet-unwired methods are dead in the production build until consumed (`RunRegistry::has_active_run` is already consumed by the §7.1.1 `converter_is_busy` from P2.55, with `register`/`cancel`/`finish` staying dead until P3.46). The P3.25 §2.6.4 cleanup-honesty leg (ResidueRecord/ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) is likewise dead until the P3.50 §1.12 projection + the P3.38 write-sequence consume it. The P3.39 §2.5.1 EquivKeyComputer (compute_equiv_key) is now consumed by the P3.40 compute_rerun_verdict, and both — plus the P3.40 RegisteredSet registry composite — stay dead in the production build until the P3.49 C4 plan_output wiring resolves the managed State + calls compute_rerun_verdict."
+        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) are authored as contracts before the P3.46 orchestrator behaviour + the C1/C2a/C3/C4/C5/C6/C7/C8/C13 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so their as-yet-unwired methods are dead in the production build until consumed (`RunRegistry::has_active_run` is already consumed by the §7.1.1 `converter_is_busy` from P2.55, with `register`/`cancel`/`finish` staying dead until P3.46). The P3.25 §2.6.4 cleanup-honesty leg (ResidueRecord/ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) is likewise dead until the P3.50 §1.12 projection + the P3.38 write-sequence consume it. The P3.39 §2.5.1 EquivKeyComputer (compute_equiv_key) is now consumed by the P3.40 compute_rerun_verdict, and both — plus the P3.40 RegisteredSet registry composite — stay dead in the production build until the P3.49 C4 plan_output wiring resolves the managed State + calls compute_rerun_verdict. P3.46 authors the §1.9 lifecycle FSM (advance / queue_order / state_is_queued / JobEvent / IllegalTransition, P3.46.1) + the §2.8 Running→Failed projection (project_outcome / TerminalProjection, P3.46.2); these are PURE and read JobState/Batch/ConversionJob/InvocationResult without themselves being reachable from a root, so they stay dead in the production build until the P3.48 conductor composes them (queue_order -> advance -> dispatch -> project_outcome -> advance) into the live C6 run — reading the dead lifecycle graph does not make it live (a dead-fn reference is not a root)."
     )
 )]
 
@@ -63,12 +63,13 @@ use crate::domain::{
     ItemSpaceExhausted, JobStage, OptionValues, OutputPlan, ReadFailure, RerunPrompt, RunId,
     SkipReason, SkippedItem, Target, TargetId, UserFacingFormat,
 };
+use crate::engines::InvocationResult;
 use crate::fs_guard::{
     atomic_publish, is_write_divert_trigger, open_verified_parent_dir, output_name,
     publish_to_divert, resolve_divert_target, DivertTarget, FileIdentity, LocationCache,
     ParentDirVerdict, PublishError, PublishOutcome,
 };
-use crate::outcome::{ConversionErrorKind, IpcError, OutcomeMsg};
+use crate::outcome::{conversion_failure, ConversionErrorKind, IpcError, OutcomeMsg};
 use crate::run::{cleanup_item, EquivKey, RerunLedger, RunScratch};
 
 /// One same-source conversion batch (§0.6 / §1.9) — the queue the orchestrator builds at C6
@@ -171,6 +172,179 @@ pub enum JobState {
     Skipped(SkipReason),
     /// User cancel; nothing written for it (§1.7/§1.11).
     Cancelled,
+}
+
+// ─── §1.9 job/batch lifecycle FSM (P3.46.1) + the Running→Failed projection (P3.46.2) ──
+// [Build-Session-Entscheidung: P3.46] The §1.9 conducting BEHAVIOUR the module doc names: the pure transition
+// graph over `JobState` + the deterministic §1.9 queue order (P3.46.1), and the §2.8 Running→Failed projection
+// (P3.46.2) mapping a §1.7 `InvocationResult` onto the terminal event + its §2.8.2 message. Both are PURE (no
+// I/O, no spawn) — the P3.48 conductor composes them: `queue_order` → `advance(_, Started)` → dispatch →
+// `project_outcome` → `advance(_, event)` — so they stay dead in the production build until that conductor makes
+// them a live root (the module dead_code expect). Homed in `crate::orchestrator` per §0.7 (the tier-1 §1.9
+// lifecycle owner) — the 2026-07-11 reconciliation of §1.9's "crate::run" mis-attribution (the P3.46 [Decision]
+// note); the projection composes `InvocationResult` (tier-2 `engines`), `JobState` (tier-1) and `crate::outcome`
+// (tier-2), a legal downward fan the tier-2 scratch/cleanup `run` leaf could not host. No taxonomy in the FSM:
+// the internal-kind→wire-kind projection is `project_outcome`, so "a wrong transition fails in P3.46.1, a
+// missing catalog entry in P3.46.2" (the sub-box boundary).
+
+/// A §1.9 lifecycle EVENT driving a QUEUED job from one [`JobState`] to the next (§1.9). [`JobState::Skipped`]
+/// is set at `Batch` construction (P3.47) and is NOT an event target — a pre-flight-skipped job never enters
+/// the queue and never transitions. `Failed` carries the concrete [`ConversionErrorKind`] (== the §2.8
+/// `ErrorKind` alias) the §2.8 projection ([`project_outcome`]) produced — the FSM applies it as a pure state
+/// move, it does not project it. [Build-Session-Entscheidung: P3.46] INTERNAL — `Debug, Clone, Copy, PartialEq,
+/// Eq` (`Copy`: its `ConversionErrorKind` payload is a `Copy` fieldless enum), NO `serde`/`specta` (the FSM
+/// input is core-only; the wire carries `JobState`/`OutcomeMsg`, not the event).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobEvent {
+    /// The engine was invoked (§1.7) — `Pending → Running`.
+    Started,
+    /// Output verified + atomically published (§2.1) — `Running → Succeeded`.
+    Succeeded,
+    /// A named §2.8 failure — `Running → Failed(kind)`; nothing was written (§2.1). The kind is projected from
+    /// the §1.7 `InvocationResult` by [`project_outcome`] (P3.46.2), never here.
+    Failed(ConversionErrorKind),
+    /// User cancel (§1.7/§1.11) — `Running → Cancelled`; nothing was written.
+    Cancelled,
+}
+
+/// An illegal §1.9 transition — a conductor bug (a terminal or pre-flight-`Skipped` state re-driven, or an
+/// out-of-order event such as `Succeeded` before `Started`). Surfaced as a structured `Err` from [`advance`],
+/// NEVER a panic (the crate-root `clippy::panic`/`unwrap_used`/`expect_used` deny holds on this path too — an
+/// invalid transition is a control-flow bug to diagnose, not a crash). [Build-Session-Entscheidung: P3.46]
+/// INTERNAL — `Debug, Clone, Copy, PartialEq, Eq` (both fields are `Copy`), no `serde`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IllegalTransition {
+    /// The state the illegal event was applied to.
+    pub from: JobState,
+    /// The event that is not valid from `from`.
+    pub event: JobEvent,
+}
+
+/// Apply a §1.9 lifecycle [`JobEvent`] to a [`JobState`], enforcing the §1.9 transition graph (P3.46.1) — the
+/// pure FSM the module doc names, no I/O, no taxonomy/serialization:
+///
+/// ```text
+/// Pending ──Started──▶ Running ─┬─Succeeded──▶ Succeeded
+///                               ├─Failed(k)──▶ Failed(k)
+///                               └─Cancelled─▶ Cancelled
+/// Skipped(_)  +  Succeeded / Failed(_) / Cancelled : terminal — accept NO event
+/// ```
+///
+/// Every other `(state, event)` pair is an [`IllegalTransition`] `Err` (a conductor bug), never a panic. The
+/// match is EXHAUSTIVE over [`JobState`] (and over [`JobEvent`] within each non-terminal state) — no `_`
+/// wildcard, so a new `JobState`/`JobEvent` variant forces a compile-time transition decision (the crate-root
+/// `clippy::wildcard_enum_match_arm` deny, G4/G14). [Build-Session-Entscheidung: P3.46]
+pub fn advance(state: JobState, event: JobEvent) -> Result<JobState, IllegalTransition> {
+    let next = match state {
+        JobState::Pending => match event {
+            JobEvent::Started => Some(JobState::Running),
+            JobEvent::Succeeded | JobEvent::Failed(_) | JobEvent::Cancelled => None,
+        },
+        JobState::Running => match event {
+            JobEvent::Succeeded => Some(JobState::Succeeded),
+            JobEvent::Failed(kind) => Some(JobState::Failed(kind)),
+            JobEvent::Cancelled => Some(JobState::Cancelled),
+            JobEvent::Started => None,
+        },
+        // Terminal (§1.9): a published / failed / cancelled job and a pre-flight `Skipped` job accept no event.
+        JobState::Succeeded | JobState::Failed(_) | JobState::Skipped(_) | JobState::Cancelled => {
+            None
+        }
+    };
+    next.ok_or(IllegalTransition { from: state, event })
+}
+
+/// `true` iff a [`JobState`] entered (or can enter) the §1.9 `Pending` queue — every state EXCEPT the
+/// pre-flight [`JobState::Skipped`] (set at `Batch` construction, never queued, §1.9). The `Batch.jobs` list
+/// carries BOTH the queued jobs AND the materialised pre-flight-`Skipped` records (P3.47), so [`queue_order`]
+/// filters on this to yield only the queued items. Exhaustive over [`JobState`] (no `_`, G4/G14).
+/// [Build-Session-Entscheidung: P3.46]
+fn state_is_queued(state: JobState) -> bool {
+    match state {
+        JobState::Pending
+        | JobState::Running
+        | JobState::Succeeded
+        | JobState::Failed(_)
+        | JobState::Cancelled => true,
+        JobState::Skipped(_) => false,
+    }
+}
+
+/// The §1.9 deterministic queue order (P3.46.1): the `Batch`'s QUEUED jobs — the eligible ones that entered the
+/// `Pending` queue, i.e. every job EXCEPT the pre-flight `Skipped` records (P3.47) — yielded in the frozen
+/// collected/traversal order (`Batch.jobs` order, the §1.1 depth-first order) with NO reordering (§1.9 "[REC] no
+/// priority/size reordering in v1"). The order is the `Batch.jobs` order verbatim, not a re-sort — the
+/// determinism the §1.11 progress bar + the §1.12 summary read predictably.
+///
+/// **Dispatch-eligibility (for the P3.48 conductor):** this yields EVERY non-`Skipped` job — including one
+/// already `Running`/terminal — so it is the stable §1.11/§1.12 denominator + traversal order, NOT a
+/// dispatch-ready filter. The P3.48 conductor selects the `Pending` subset (via [`advance`]`(_, Started)`,
+/// which returns [`IllegalTransition`] for a non-`Pending` job by design) before dispatching an item; it does
+/// not drive `Started` off this iterator blindly. [Build-Session-Entscheidung: P3.46]
+pub fn queue_order(batch: &Batch) -> impl Iterator<Item = &ConversionJob> {
+    batch.jobs.iter().filter(|job| state_is_queued(job.state))
+}
+
+/// The §2.8 projection of a §1.7 [`InvocationResult`] (P3.46.2) — the §1.9 terminal [`JobEvent`] the FSM
+/// ([`advance`]) applies, plus the per-item §2.8.2 [`OutcomeMsg`] a Running→Failed outcome carries (into
+/// `ItemResult.reason` / the live `ItemFinished`, P3.50/P3.48). `message` is `Some` ONLY for `Failed`; a
+/// `Succeeded`/`Cancelled` item carries no per-item failure message. [Build-Session-Entscheidung: P3.46]
+/// INTERNAL — `Debug, Clone, PartialEq, Eq`, NOT `Copy` (`OutcomeMsg` owns a `String`), no `serde` (the pairing
+/// is core-only; its `OutcomeMsg` is separately the wire type).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalProjection {
+    /// The §1.9 terminal event [`advance`] applies to move the `Running` job to its terminal [`JobState`].
+    pub event: JobEvent,
+    /// The rendered §2.8.2 per-item message — `Some(OutcomeMsg::Failure)` for a Running→Failed outcome, `None`
+    /// for `Succeeded`/`Cancelled`.
+    pub message: Option<OutcomeMsg>,
+}
+
+/// Project one §1.7 [`InvocationResult`] onto its §1.9 terminal [`JobEvent`] + (for a failure) its §2.8.2
+/// per-item message (P3.46.2):
+///
+/// - `Succeeded` → `(`[`JobEvent::Succeeded`]`, None)` — the §2.1 verified/published item; no per-item message.
+/// - `Cancelled` → `(`[`JobEvent::Cancelled`]`, None)` — the cooperatively-cancelled item; no per-item message.
+/// - `Failed(kind)` → `(`[`JobEvent::Failed`]`(kind), Some(OutcomeMsg::Failure))` — the Running→Failed leg.
+///
+/// **The internal-kind → wire-kind map is the IDENTITY** (§2.8.2 option-1): `ErrorKind` is `pub type ErrorKind
+/// = ConversionErrorKind` (P2.18), so the §1.9 spec's `ErrorKind::from(kind)` is the std reflexive `From<T> for
+/// T` — `crate::outcome` owns no such `From` (E0119) and none can be written; the internal kind IS the wire
+/// kind (reconciled at P3.1.3). So the projection passes `kind` through verbatim (an explicit `ErrorKind::from`
+/// would be a `clippy::useless_conversion` no-op) — [`JobState::Failed`] already stores the concrete
+/// `ConversionErrorKind` (P2.10). The substantive work is the MESSAGE: [`conversion_failure`] renders the
+/// §2.8.2 catalog row (P3.68) with **`arg = ""`** — every kind reachable from a Running→Failed `InvocationResult`
+/// (Corrupt / Gone / Unreadable / WriteFailed / EngineHang / EngineCrash / EngineError / InternalError …) is a
+/// per-item conversion-outcome kind with NO substitution slot; the slotted kinds (UnsupportedType `{detected}`,
+/// PlatformUnavailable `{platform}`, CleanupResidue `{path}`) are pre-flight / app-level, never a Running→Failed
+/// outcome. **Forward constraint (a P4 `classify_failure()` consumer):** since `InvocationResult::Failed` is
+/// untyped over the full `ConversionErrorKind` set, a P4 engine's `classify_failure()` MUST NOT route a slotted
+/// kind through this path with the empty `arg` (it would render an empty slot, e.g. "…it looks like ."), or must
+/// extend this projection to supply the slot's `arg` — the `arg = ""` correctness is a slice invariant, not a
+/// compiler-checked one. A kind §2.8.2 homes elsewhere (a mis-route → [`conversion_failure`] `None`) falls back
+/// to the always-available `InternalError` row so a failed item is never message-less. Exhaustive over
+/// [`InvocationResult`] (no `_`, G4/G14). [Build-Session-Entscheidung: P3.46]
+pub fn project_outcome(result: InvocationResult) -> TerminalProjection {
+    match result {
+        InvocationResult::Succeeded => TerminalProjection {
+            event: JobEvent::Succeeded,
+            message: None,
+        },
+        InvocationResult::Cancelled => TerminalProjection {
+            event: JobEvent::Cancelled,
+            message: None,
+        },
+        InvocationResult::Failed(kind) => {
+            // Identity map (§2.8.2 alias): the internal kind IS the wire kind — passed through, not
+            // `.from()`-converted (a useless-conversion no-op). The message is the substantive projection.
+            let message = conversion_failure(kind, "")
+                .or_else(|| conversion_failure(ConversionErrorKind::InternalError, ""));
+            TerminalProjection {
+                event: JobEvent::Failed(kind),
+                message,
+            }
+        }
+    }
 }
 
 // ─── §0.6 command-return DTOs — the §1.8/§1.10/§2.5 C4/C5 preview shapes (P2.11) ──
@@ -4394,6 +4568,234 @@ mod tests {
             availability: Availability::Available,
             options: vec![],
         }
+    }
+
+    // ─── P3.46 §1.9 lifecycle FSM + Running→Failed projection tests ──
+
+    /// A `ConversionJob` in the given §1.9 [`JobState`], for the FSM + queue-order tests.
+    fn job_in(id: u32, state: JobState) -> ConversionJob {
+        let source = dropped_item(id);
+        ConversionJob {
+            item: source.item,
+            source,
+            state,
+            plan: None,
+        }
+    }
+
+    /// A `Batch` over the given jobs (in their given, frozen order), for the queue-order tests.
+    fn batch_of(jobs: Vec<ConversionJob>) -> Batch {
+        Batch {
+            id: collected_set_id(),
+            source_format: UserFacingFormat::Csv,
+            target: sample_target(),
+            options: OptionValues(BTreeMap::new()),
+            destination: DestinationChoice::BesideSource,
+            jobs,
+        }
+    }
+
+    // §6.4.1 unit (G15): the P3.46.1 §1.9 FSM drives every VALID transition — Pending --Started--> Running,
+    // Running --{Succeeded|Failed(kind)|Cancelled}--> the matching terminal.
+    #[test]
+    fn advance_drives_the_valid_1_9_transitions() {
+        let kind = ConversionErrorKind::Corrupt;
+        assert_eq!(
+            advance(JobState::Pending, JobEvent::Started),
+            Ok(JobState::Running),
+            "§1.9: Pending --Started--> Running"
+        );
+        assert_eq!(
+            advance(JobState::Running, JobEvent::Succeeded),
+            Ok(JobState::Succeeded),
+            "§1.9: Running --Succeeded--> Succeeded"
+        );
+        assert_eq!(
+            advance(JobState::Running, JobEvent::Failed(kind)),
+            Ok(JobState::Failed(kind)),
+            "§1.9: Running --Failed(kind)--> Failed(kind) (the kind carried through unchanged)"
+        );
+        assert_eq!(
+            advance(JobState::Running, JobEvent::Cancelled),
+            Ok(JobState::Cancelled),
+            "§1.9: Running --Cancelled--> Cancelled"
+        );
+    }
+
+    // §6.4.1 unit (G15): the P3.46.1 FSM REJECTS every illegal §1.9 transition as a structured Err, never a
+    // panic (the crate-root clippy::panic/unwrap_used deny) — a terminal (incl. pre-flight Skipped) accepts no
+    // event, Pending accepts only Started, Running accepts no second Started.
+    #[test]
+    fn advance_rejects_every_illegal_1_9_transition_without_a_panic() {
+        let kind = ConversionErrorKind::EngineHang;
+        let terminals = [
+            JobState::Succeeded,
+            JobState::Failed(kind),
+            JobState::Skipped(SkipReason::Empty),
+            JobState::Cancelled,
+        ];
+        let events = [
+            JobEvent::Started,
+            JobEvent::Succeeded,
+            JobEvent::Failed(kind),
+            JobEvent::Cancelled,
+        ];
+        // Every terminal state (a published/failed/cancelled job AND a pre-flight Skipped) rejects every event.
+        for &from in &terminals {
+            for &event in &events {
+                assert_eq!(
+                    advance(from, event),
+                    Err(IllegalTransition { from, event }),
+                    "§1.9: {from:?} is terminal and rejects {event:?}"
+                );
+            }
+        }
+        // Pending accepts ONLY Started — every terminal event is illegal from Pending.
+        for &event in &[
+            JobEvent::Succeeded,
+            JobEvent::Failed(kind),
+            JobEvent::Cancelled,
+        ] {
+            assert_eq!(
+                advance(JobState::Pending, event),
+                Err(IllegalTransition {
+                    from: JobState::Pending,
+                    event
+                }),
+                "§1.9: Pending rejects {event:?} (only Started is valid)"
+            );
+        }
+        // Running rejects a second Started (out-of-order).
+        assert_eq!(
+            advance(JobState::Running, JobEvent::Started),
+            Err(IllegalTransition {
+                from: JobState::Running,
+                event: JobEvent::Started
+            }),
+            "§1.9: Running rejects a second Started"
+        );
+    }
+
+    // §6.4.1 unit (G15): the P3.46.1 deterministic queue order yields ONLY the non-Skipped jobs, in the frozen
+    // Batch.jobs order, with NO reordering — the §1.9 "Skipped never enters the queue" + "no priority/size
+    // reordering" contract, over an interleaved Pending/Skipped batch.
+    #[test]
+    fn queue_order_yields_the_queued_jobs_in_batch_order_excluding_skipped() {
+        let batch = batch_of(vec![
+            job_in(0, JobState::Pending),
+            job_in(1, JobState::Skipped(SkipReason::UnsupportedType)),
+            job_in(2, JobState::Pending),
+            job_in(3, JobState::Skipped(SkipReason::Empty)),
+            job_in(4, JobState::Pending),
+        ]);
+        let queued: Vec<ItemId> = queue_order(&batch).map(|job| job.item).collect();
+        assert_eq!(
+            queued,
+            vec![item_id(0), item_id(2), item_id(4)],
+            "§1.9: queue_order yields only the non-Skipped jobs, in Batch.jobs order (Skipped excluded, no reordering)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the queue carries every state EXCEPT the pre-flight Skipped — an in-flight Running or a
+    // completed terminal job stays in the queue (it entered it); only a pre-flight Skipped record is excluded.
+    #[test]
+    fn queue_order_includes_every_non_skipped_state() {
+        let kind = ConversionErrorKind::Corrupt;
+        let batch = batch_of(vec![
+            job_in(0, JobState::Pending),
+            job_in(1, JobState::Running),
+            job_in(2, JobState::Succeeded),
+            job_in(3, JobState::Failed(kind)),
+            job_in(4, JobState::Cancelled),
+            job_in(5, JobState::Skipped(SkipReason::Uncertain)),
+        ]);
+        let queued: Vec<ItemId> = queue_order(&batch).map(|job| job.item).collect();
+        assert_eq!(
+            queued,
+            vec![item_id(0), item_id(1), item_id(2), item_id(3), item_id(4)],
+            "§1.9: every state except the pre-flight Skipped is in the queue (they entered it)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the P3.46.2 projection maps a Succeeded / Cancelled outcome to its terminal event with
+    // NO per-item failure message.
+    #[test]
+    fn project_outcome_maps_succeeded_and_cancelled_with_no_message() {
+        assert_eq!(
+            project_outcome(InvocationResult::Succeeded),
+            TerminalProjection {
+                event: JobEvent::Succeeded,
+                message: None
+            },
+            "§2.8: a succeeded item carries no per-item failure message"
+        );
+        assert_eq!(
+            project_outcome(InvocationResult::Cancelled),
+            TerminalProjection {
+                event: JobEvent::Cancelled,
+                message: None
+            },
+            "§2.8: a cancelled item carries no per-item failure message"
+        );
+    }
+
+    // §6.4.1 unit (G15): the P3.46.2 Running→Failed projection carries the internal kind through as the wire
+    // kind (the §2.8.2 alias IDENTITY) and renders the §2.8.2 catalog OutcomeMsg::Failure (P3.68) for every
+    // Running→Failed kind the P3-slice native lane produces (all no-substitution-slot → arg = "").
+    #[test]
+    fn project_outcome_maps_a_failed_outcome_to_its_kind_identity_and_2_8_2_message() {
+        for kind in [
+            ConversionErrorKind::Corrupt,
+            ConversionErrorKind::Gone,
+            ConversionErrorKind::Unreadable,
+            ConversionErrorKind::WriteFailed,
+            ConversionErrorKind::EngineHang,
+            ConversionErrorKind::InternalError,
+        ] {
+            let projected = project_outcome(InvocationResult::Failed(kind));
+            assert_eq!(
+                projected.event,
+                JobEvent::Failed(kind),
+                "§2.8.2: the internal kind IS the wire kind (identity) — carried through unchanged"
+            );
+            assert_eq!(
+                projected.message,
+                conversion_failure(kind, ""),
+                "§2.8.2: the per-item message is the P3.68 catalog OutcomeMsg::Failure for the kind"
+            );
+            assert!(
+                projected.message.is_some(),
+                "§2.8.2: every P3-slice Running→Failed kind renders a message (not vacuously None)"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15): the P3.46.2 mis-route fallback — a kind §2.8.2 homes ELSEWHERE (an app-level fault like
+    // EngineMissing, for which conversion_failure returns None) must never leave a failed item message-less; it
+    // falls back to the always-available InternalError row.
+    #[test]
+    fn project_outcome_falls_back_to_internal_error_for_a_non_per_item_kind() {
+        assert_eq!(
+            conversion_failure(ConversionErrorKind::EngineMissing, ""),
+            None,
+            "§2.8.2: EngineMissing is a §2.13 app-level fault, not a per-item conversion row"
+        );
+        let projected =
+            project_outcome(InvocationResult::Failed(ConversionErrorKind::EngineMissing));
+        assert_eq!(
+            projected.event,
+            JobEvent::Failed(ConversionErrorKind::EngineMissing),
+            "the terminal event still carries the (mis-routed) kind"
+        );
+        assert_eq!(
+            projected.message,
+            conversion_failure(ConversionErrorKind::InternalError, ""),
+            "§2.8.2: a non-per-item kind falls back to the InternalError message — a failed item is never message-less"
+        );
+        assert!(
+            projected.message.is_some(),
+            "the fallback always renders a message"
+        );
     }
 
     // §6.4.1 unit (G15): the §1.1/§2.4 `ingest` freeze funnel (P2.62) is the single, exhaustive freeze
