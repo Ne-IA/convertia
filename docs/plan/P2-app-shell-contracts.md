@@ -104,6 +104,7 @@
   needs: P2.12, P2.13, P2.128
   > **Gate-ref correction (Co-Pilot):** `G22 G23` → **`G16`** — G16 is the property-test gate (build-gates §6: "Property + fuzz smoke", `proptest`); G22/G23 are the format-membership-parity / `convert_*`-has-a-test **completeness** gates, which do not verify §0.6-invariant property tests (the sibling general-property box P2.126 likewise cites G16, not G22/G23).
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P2.128` points at the `proptest` dev-dependency box later in document order — P2.14 is the first Rust property test and has no property-test library to use until `proptest` is installed (P2.128), so DECISION C builds P2.128 first; the edge is acyclic and valid (P2.128 `needs:` only the Cargo foundation P1.6), the inversion documented at the `needs:` line.
+  > **[Superseded shape — the P3.47 ruling, 2026-07-11]:** the `ConversionJob.item == source.item` invariant in this box's title is the P2.10 bare-field form; the P3.47 `JobSource` sum-type ruling (see the P3.47 Decision note) evolves it to the UNIFORM `item == source.item()` over both `JobSource` arms plus the source↔state coupling invariant — the test evolution lands with the P3.47 fill under `[Test-Change: P3.47]` tags.
 
 ## Detection-outcome contract (the §1.2 result type)
 

@@ -713,7 +713,9 @@ pub struct DroppedItem {
                                   //   id space (eligible + skipped); `items` (below) is a
                                   //   NOT-re-indexed filtered VIEW, so each DroppedItem carries
                                   //   its own id (position in `items` != ItemId). Symmetric with
-                                  //   SkippedItem.item; ConversionJob.item denormalizes it.
+                                  //   SkippedItem.item; ConversionJob.item denormalizes the
+                                  //   JobSource arm's item (this one for Eligible, the
+                                  //   SkippedItem's for Skipped — the P3.47 ruling).
     pub display_name: String,     // the core-produced lossy DISPLAY basename (last-step
                                   //   to_string_lossy, §2.10.1) — display-only, never a
                                   //   re-submittable path [DECIDED 2026-07-06]
@@ -916,18 +918,35 @@ pub struct DestinationPicked {       // C2b pick_destination success payload (§
 }
 
 pub struct ConversionJob {
-    pub item: ItemId,                // == source.item, denormalized as the job's top-level key
+    pub item: ItemId,                // == source.item(), denormalized as the job's top-level key
                                      //   (cheap addressing in §1.9 lifecycle + progress/finished
                                      //   events without unwrapping source) — the same
                                      //   duplicate-for-cheap-access pattern as count beside
-                                     //   items.len(); §6 property-test asserts item == source.item.
-    pub source: DroppedItem,         // wire-shape metadata; the item's REAL raw/resolved paths
-                                     //   live in the §0.4.4 FrozenCollectedSet path table (keyed
-                                     //   by `item`) — the §1.7 invocation resolves them there
-                                     //   [DECIDED 2026-07-06]
+                                     //   items.len(); §6 property-test asserts item == source.item()
+                                     //   UNIFORMLY over both JobSource arms.
+    pub source: JobSource,           // the job's own frozen record — see JobSource below
+                                     //   [DECIDED 2026-07-11 — the P3.47 ruling]; the item's REAL
+                                     //   raw/resolved paths live in the §0.4.4 FrozenCollectedSet
+                                     //   path table (keyed by `item`) — the §1.7 invocation
+                                     //   resolves them there [DECIDED 2026-07-06]
     pub state: JobState,             // §1.9 owns the lifecycle transitions
-    pub plan: Option<OutputPlan>,    // computed by §1.8 before write
+    pub plan: Option<OutputPlan>,    // computed by §1.8 before write; always None for a
+                                     //   pre-flight Skipped job (never planned)
 }
+
+pub enum JobSource {                 // [DECIDED 2026-07-11 — the P3.47 ruling] a §1.9 pre-flight
+    Eligible(DroppedItem),           //   Skipped job is NOT "an eligible job missing its source";
+    Skipped(SkippedItem),            //   it carries its OWN frozen record. The sum type (not an
+}                                    //   Option<DroppedItem>) keeps the §1.9 "skips survive C6"
+                                     //   anchor in FULL fidelity — the collected-set registry is
+                                     //   EVICTED at C6, so the Batch is the sole post-C6 carrier
+                                     //   of the complete skip record — and keeps the item ==
+                                     //   source.item() invariant UNIFORM (both arms carry item;
+                                     //   no queued-only carve-out). Coupling invariant (§6
+                                     //   property-tested): source is Skipped(_) ⟺ state is
+                                     //   JobState::Skipped(_). No data is synthesised: a skip
+                                     //   has no DetectionOutcome/size to invent (§1.4/§1.12
+                                     //   honesty — SSOT Fail clearly).
 
 // §1.9 owns the lifecycle TRANSITIONS; this is the canonical state type.
 // `Failed` carries the §2.8 `ErrorKind` (the wire enum mirrored in §0.4.3) — NOT a

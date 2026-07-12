@@ -1165,7 +1165,10 @@ Pending ─▶ Running ─┬─▶ Succeeded
   at **C6 (start_conversion)**, it creates, for **every `SkippedItem` in
   `CollectedSet::Single.skipped`**, a `ConversionJob` record with
   `JobState = Skipped(reason)` set **at construction** (the `SkipReason` copied directly from
-  `SkippedItem.reason`, §0.6). These `Skipped` jobs **never enter the `Pending` queue** and
+  `SkippedItem.reason`, §0.6; its `source` is `JobSource::Skipped(<the frozen SkippedItem
+  record>)` — the §0.6 `JobSource` sum type `[DECIDED 2026-07-11 — the P3.47 ruling]`, so the
+  batch carries the complete skip record itself and no eligible-shaped data is
+  synthesised). These `Skipped` jobs **never enter the `Pending` queue** and
   receive **no `Channel` events** (no live `ItemStarted`/`ItemProgress`/`ItemFinished`, per
   §0.4.2) — they exist **only as non-queue entries** so the §1.12 run-end projection can emit
   them into `RunResult.items` and `Totals.skipped`. A `Skipped(reason)` job **never
