@@ -432,6 +432,17 @@ pub fn conversion_message_template(kind: ConversionErrorKind) -> Option<&'static
 /// substitution even if it happens to contain another slot token (a user residue path literally reading
 /// `{platform}`, say); `str::replace` never re-matches its own output. [Build-Session-Entscheidung: P3.68]
 pub fn conversion_failure(kind: ConversionErrorKind, arg: &str) -> Option<OutcomeMsg> {
+    let text = render_conversion_template(kind, arg)?;
+    Some(OutcomeMsg::Failure { kind, text })
+}
+
+/// Render the §2.8.2 template for `kind` with its single `{x}` slot filled from `arg` — the shared
+/// substitution both [`conversion_failure`] (→ [`OutcomeMsg::Failure`]) and [`skipped_message`] (→
+/// [`OutcomeMsg::Skipped`]) use, so the ONE catalog + ONE substitution serve both surfaces (§2.8.2). `None`
+/// for a kind §2.8.2 does not home (see [`conversion_message_template`]). Panic-free (a single `str::replace`);
+/// substitutes ONLY the one slot the template carries — never a chain — so `arg`'s own content can never be
+/// re-scanned into a second substitution. [Build-Session-Entscheidung: P3.68 → P3.50]
+fn render_conversion_template(kind: ConversionErrorKind, arg: &str) -> Option<String> {
     let template = conversion_message_template(kind)?;
     let text = if template.contains("{detected}") {
         template.replace("{detected}", arg)
@@ -443,7 +454,39 @@ pub fn conversion_failure(kind: ConversionErrorKind, arg: &str) -> Option<Outcom
         // No slot in this template — `arg` is ignored (the majority of kinds).
         template.to_owned()
     };
-    Some(OutcomeMsg::Failure { kind, text })
+    Some(text)
+}
+
+/// Build the §2.8.2 [`OutcomeMsg::Skipped`] for a pre-flight `reason` — the §1.12 skip projection's per-item
+/// line (P3.50). The `text` is sourced from the SAME §2.8.2 catalog as a failure, via the P2.20
+/// [`skip_reason_to_error_kind`] bridge onto the kind rows, so there is ONE catalog home for both surfaces —
+/// but the message rides [`OutcomeMsg::Skipped`], NOT `Failure`, keeping skip ≠ fail at the type level (§1.12
+/// "must not be conflated"). The mapping (§2.8.2, the P3.50 ruling):
+/// - `Empty` → the `Empty` row; `Unreadable` → the `Unreadable` row (both intake-worded already);
+/// - `UnsupportedType` → its row, the `{detected}` slot filled from `detected_display` (SSOT-6 "detected: X");
+/// - `Uncertain` **with** a named `detected_display` → the one skip-specific line (SSOT-6 "names what it
+///   believes"); a **guessless** `Uncertain` → the `Unrecognized` row ("or that it can't tell").
+///
+/// `detected_display` is the retained §0.6 `SkippedItem.detected_display` (`None` when detection named no
+/// type). All four bridge targets (`UnsupportedType`/`Unrecognized`/`Empty`/`Unreadable`) home in §2.8.2, so
+/// the render is always `Some`; the fallback is defensively unreachable. [Build-Session-Entscheidung: P3.50]
+#[must_use]
+pub fn skipped_message(reason: SkipReason, detected_display: Option<&str>) -> OutcomeMsg {
+    let text = match (reason, detected_display) {
+        // SSOT principle 6 "names what it believes the file is" — the mapping's ONE skip-specific line.
+        (SkipReason::Uncertain, Some(guess)) => {
+            format!("ConvertIA isn't sure what kind of file this is — it might be {guess} — so it can't convert it.")
+        }
+        // Every other skip renders its bridged §2.8.2 kind row (the UnsupportedType `{detected}` slot filled
+        // from the retained name; a guessless Uncertain bridges to the Unrecognized "can't tell" row).
+        (reason, detected) => {
+            let kind = skip_reason_to_error_kind(reason);
+            render_conversion_template(kind, detected.unwrap_or(""))
+                // Unreachable: the four skip-bridge kinds all home in §2.8.2; a defensive non-empty default.
+                .unwrap_or_else(|| "This file couldn't be converted.".to_owned())
+        }
+    };
+    OutcomeMsg::Skipped { reason, text }
 }
 
 /// The §2.8.2 batch-level summary situations — the run-end line §1.12 assembles from the run `Totals`.
@@ -969,6 +1012,80 @@ mod tests {
             conversion_failure(ConversionErrorKind::EngineMissing, "x"),
             None,
             "§2.8.2: a non-conversion kind is not produced as a per-item OutcomeMsg::Failure"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.8.2: the §1.12 skip projection's `skipped_message` (P3.50) sources every skip
+    // `text` from the SAME §2.8.2 catalog via the P2.20 `skip_reason_to_error_kind` bridge — but rides
+    // `OutcomeMsg::Skipped`, NOT `Failure` (skip ≠ fail, §1.12). Empty/Unreadable/guessless-Uncertain bridge to
+    // their kind rows VERBATIM (asserted against the template, not re-hardcoded); UnsupportedType fills its
+    // `{detected}` slot from the retained name (SSOT-6 "detected: X"); an Uncertain WITH a named guess renders
+    // the one skip-specific SSOT-6 line ("names what it believes").
+    #[test]
+    fn skipped_message_sources_each_reason_from_the_2_8_2_catalog_via_the_bridge() {
+        fn skip_text(msg: &OutcomeMsg) -> Option<String> {
+            // Exhaustive (crate `wildcard_enum_match_arm` deny): only the Skipped arm carries a skip text.
+            match msg {
+                OutcomeMsg::Skipped { text, .. } => Some(text.clone()),
+                OutcomeMsg::Failure { .. } | OutcomeMsg::Lossy { .. } => None,
+            }
+        }
+        // Empty / Unreadable bridge to their §2.8.2 kind rows VERBATIM (no slot) — compared to the template so
+        // the strings are the ONE catalog home, never re-hardcoded here.
+        for (reason, kind) in [
+            (SkipReason::Empty, ConversionErrorKind::Empty),
+            (SkipReason::Unreadable, ConversionErrorKind::Unreadable),
+        ] {
+            assert_eq!(
+                skip_text(&skipped_message(reason, None)).as_deref(),
+                conversion_message_template(kind),
+                "§2.8.2: {reason:?} bridges to its kind row verbatim (skip text from the one catalog)"
+            );
+        }
+        // A guessless Uncertain → the Unrecognized "or that it can't tell" row (SSOT-6's can't-tell arm).
+        assert_eq!(
+            skip_text(&skipped_message(SkipReason::Uncertain, None)).as_deref(),
+            conversion_message_template(ConversionErrorKind::Unrecognized),
+            "§2.8.2: a guessless Uncertain bridges to the Unrecognized row"
+        );
+        // UnsupportedType → its row with the retained detected name filling the {detected} slot (SSOT-6).
+        let unsupported = skip_text(&skipped_message(
+            SkipReason::UnsupportedType,
+            Some("a ZIP archive"),
+        ))
+        .expect("skipped_message yields OutcomeMsg::Skipped");
+        assert!(
+            unsupported.contains("a ZIP archive"),
+            "§2.8.2/SSOT-6: the retained detected name fills the {{detected}} slot (detected: X)"
+        );
+        assert!(
+            !unsupported.contains("{detected}"),
+            "§2.8.2: the {{detected}} slot is substituted, never left literal"
+        );
+        // Uncertain WITH a named guess → the ONE skip-specific SSOT-6 line, naming the guess.
+        let guessed = skip_text(&skipped_message(
+            SkipReason::Uncertain,
+            Some("a spreadsheet"),
+        ))
+        .expect("skipped_message yields OutcomeMsg::Skipped");
+        assert!(
+            guessed.contains("a spreadsheet"),
+            "SSOT-6: the named best-guess appears ('names what it believes the file is')"
+        );
+        assert!(
+            guessed.contains("isn't sure"),
+            "§2.8.2: the guess case is the skip-specific 'isn't sure … it might be {{guess}}' line"
+        );
+        // A skip rides OutcomeMsg::Skipped, NEVER Failure — skip ≠ fail at the type level (§1.12).
+        assert!(
+            matches!(
+                skipped_message(SkipReason::UnsupportedType, Some("X")),
+                OutcomeMsg::Skipped {
+                    reason: SkipReason::UnsupportedType,
+                    ..
+                }
+            ),
+            "§1.12: a skip rides OutcomeMsg::Skipped (never OutcomeMsg::Failure) — must not be conflated"
         );
     }
 

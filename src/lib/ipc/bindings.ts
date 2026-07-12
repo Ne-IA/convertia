@@ -309,19 +309,19 @@ export const commands = {
 	 *
 	 *  - `run_id` — the §0.4.4 `RunId` (minted at C6) whose retained summary to re-serve.
 	 *
-	 *  [Build-Session-Entscheidung: P2.31] **Shell returns `Err(IpcError{ kind: InternalError })` — the C3/C4/C5/
-	 *  C6 interface-shell pattern (success type has no zero value), NOT the C7 `Ok(())` no-op branch.** `RunResult`
-	 *  carries a real summary (items / totals / roots) and has **no zero value**, so — like `TargetOffer`/
-	 *  `OutputPlanPreview`/`DestinationResolved`/`RunId`, unlike C7's `()` — there is no `Ok(empty)` to return, and
-	 *  fabricating one would invent a summary for a run that never happened (CLAUDE §5). Until the §0.4.4
-	 *  `RunResult` retention registry (P2.43) holds a terminal result, **no** `runId` resolves — so the shell's
-	 *  honest result is exactly the `Err` the real body returns for an unresolvable / not-yet-finished id:
-	 *  `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError`
-	 *  precedent C3/C4/C5 cite). The named fill-boxes own the rest: (a) the §2.8 catalog box owns the FINAL message
-	 *  — the string below is a PROVISIONAL neutral English one — and must add a COMMAND-level string (the §2.8
-	 *  catalog is item-scoped); (b) the §0.4.4 retention resolve + the §1.12 `RunResult` projection (incl. the
-	 *  pre-flight-skip projection + the batch-summary string) + the §0.6 SUCCESS path belong to the body box P3.50;
-	 *  (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
+	 *  [Build-Session-Entscheidung: P3.50 — the C8 body fill] The handler is THIN (§0.7): it resolves the retained
+	 *  §1.12 `RunResult` from the §0.4.4 `State<RunResultStore>` (P2.43) and maps the `Option` onto the §0.4.3
+	 *  `IpcError` — the whole logic lives in the pure [`resolve_run_summary`] so it is unit-tested WITHOUT a
+	 *  `tauri::test` mock (this crate ships none BY DECISION), while the handler's `State` injection is
+	 *  source-scan-pinned (the C1/C13 pattern). `Some` (a run's terminal summary is retained AND its `run_id`
+	 *  matches) → `Ok(RunResult)`; `None` (no run retained, or a different / superseded run's id) → the honest
+	 *  `Err(IpcError{ InternalError })` — exactly the pre-P3.50 shell outcome for an unresolvable / not-yet-finished
+	 *  id (§2.13 catch-all). The `RunResult` graph is DISPLAY-ONLY (§2.10.1); the real roots + per-item output/
+	 *  residue `PathBuf`s stay in the store's off-wire `RunResultPaths` (C9 resolves its `OpenTarget` there, P3.79).
+	 *  `kind` stays the CONCRETE `ConversionErrorKind` (the P2.19 convention). The store is `.manage`d in `main()`'s
+	 *  Builder chain (added with this box), mirroring the sibling `RunRegistry`; the retain-at-`RunFinished` /
+	 *  evict-at-C6 lifecycle that POPULATES it is the P3.48 conductor — until then the store is empty and C8
+	 *  honestly returns `Err`, the walking-skeleton state.
 	 */
 	getRunSummary: (runId: RunId) => __TAURI_INVOKE<RunResult>("get_run_summary", { runId }),
 	/**
@@ -1916,6 +1916,11 @@ export type SkipReason =
  *  `String` is not a re-submittable path); NOT `Copy` (owns a `String`); `PartialEq`+`Eq` back the
  *  round-trip + §6 property tests. Registration auto-rides its consuming command (the C1 `CollectedSet`
  *  return, P2.22).
+ *
+ *  [Build-Session-Entscheidung: P3.50] ADDS `detected_display: Option<String>` (the retained friendly
+ *  detected-type name — SSOT principle 6, the P3.50 ruling). ADDITIVE + camelCase (`detectedDisplay`), so
+ *  the wire stays backward-compatible — an absent key deserialises to `None` (`serde` defaults a missing
+ *  `Option` field), still not a re-submittable path, still not `Copy`.
  */
 export type SkippedItem = {
 	/**
@@ -1929,6 +1934,16 @@ export type SkippedItem = {
 	 *  for the §1.4 summary display — display-only, never a re-submittable path.
 	 */
 	sourceDisplay: string,
+	/**
+	 *  The friendly detected-type name RETAINED from detection's own output (§0.6, the P3.50 ruling):
+	 *  `Some(detected)` for `UnsupportedType` (its `DetectionOutcome` variant always carries it), the
+	 *  `best_guess` for `Uncertain` when detection named one, `None` for `Empty`/`Unreadable`/guessless-
+	 *  `Uncertain`. Display-only, never a path — it fills the §2.8.2 `{detected}` slot of the §1.12
+	 *  `OutcomeMsg::Skipped` line (SSOT principle 6 "can't convert this type — detected: X"). RETENTION,
+	 *  not invention (the P3.40 class): detection COMPUTES the name and the freeze keeps it here rather
+	 *  than discarding it — produced by [`DetectionOutcome::detected_display`].
+	 */
+	detectedDisplay: string | null,
 	/**  Why the item was skipped — a §0.6 `SkipReason`, NOT an `ErrorKind` (see the type doc). */
 	reason: SkipReason,
 };

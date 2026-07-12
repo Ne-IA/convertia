@@ -550,6 +550,11 @@ pub struct ItemPaths {
 /// `String` is not a re-submittable path); NOT `Copy` (owns a `String`); `PartialEq`+`Eq` back the
 /// round-trip + §6 property tests. Registration auto-rides its consuming command (the C1 `CollectedSet`
 /// return, P2.22).
+///
+/// [Build-Session-Entscheidung: P3.50] ADDS `detected_display: Option<String>` (the retained friendly
+/// detected-type name — SSOT principle 6, the P3.50 ruling). ADDITIVE + camelCase (`detectedDisplay`), so
+/// the wire stays backward-compatible — an absent key deserialises to `None` (`serde` defaults a missing
+/// `Option` field), still not a re-submittable path, still not `Copy`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SkippedItem {
@@ -560,6 +565,14 @@ pub struct SkippedItem {
     /// The core-produced lossy DISPLAY form of the dropped path (last-step `to_string_lossy`, §2.10.1),
     /// for the §1.4 summary display — display-only, never a re-submittable path.
     pub source_display: String,
+    /// The friendly detected-type name RETAINED from detection's own output (§0.6, the P3.50 ruling):
+    /// `Some(detected)` for `UnsupportedType` (its `DetectionOutcome` variant always carries it), the
+    /// `best_guess` for `Uncertain` when detection named one, `None` for `Empty`/`Unreadable`/guessless-
+    /// `Uncertain`. Display-only, never a path — it fills the §2.8.2 `{detected}` slot of the §1.12
+    /// `OutcomeMsg::Skipped` line (SSOT principle 6 "can't convert this type — detected: X"). RETENTION,
+    /// not invention (the P3.40 class): detection COMPUTES the name and the freeze keeps it here rather
+    /// than discarding it — produced by [`DetectionOutcome::detected_display`].
+    pub detected_display: Option<String>,
     /// Why the item was skipped — a §0.6 `SkipReason`, NOT an `ErrorKind` (see the type doc).
     pub reason: SkipReason,
 }
@@ -608,6 +621,24 @@ impl DetectionOutcome {
             DetectionOutcome::Uncertain { .. } => Some(SkipReason::Uncertain),
             DetectionOutcome::Empty => Some(SkipReason::Empty),
             DetectionOutcome::Unreadable { .. } => Some(SkipReason::Unreadable),
+        }
+    }
+
+    /// The friendly detected-type name this outcome carries, for §0.6 `SkippedItem.detected_display`
+    /// RETENTION (the P3.50 ruling / SSOT principle 6) — `Some(detected)` for `UnsupportedType` (which always
+    /// carries it), the `best_guess` for `Uncertain` when detection named one, `None` for the others
+    /// (`Recognized` is not a skip; `Empty`/`Unreadable` name no type). Detection's OWN output, kept through
+    /// the §1.1 freeze rather than discarded — RETENTION, not invention (§1.4/§1.12 honesty). Exhaustive
+    /// (G4/G14, no `_`), so a future `DetectionOutcome` variant forces a conscious decision here.
+    /// [Build-Session-Entscheidung: P3.50]
+    #[must_use]
+    pub fn detected_display(&self) -> Option<String> {
+        match self {
+            DetectionOutcome::UnsupportedType { detected } => Some(detected.clone()),
+            DetectionOutcome::Uncertain { best_guess } => best_guess.clone(),
+            DetectionOutcome::Recognized { .. }
+            | DetectionOutcome::Empty
+            | DetectionOutcome::Unreadable { .. } => None,
         }
     }
 }
@@ -1961,6 +1992,59 @@ mod tests {
         );
     }
 
+    // §6.4.1 unit (G15): the §0.6 `DetectionOutcome::detected_display` RETENTION (P3.50 / SSOT-6) — the
+    // friendly detected-type name the §1.1 freeze keeps on `SkippedItem.detected_display`. `UnsupportedType`
+    // ALWAYS carries it (its variant is non-optional); `Uncertain` carries its `best_guess` (Some when named,
+    // None when guessless); `Recognized`/`Empty`/`Unreadable` name no type (None). Exhaustive, so a future
+    // `DetectionOutcome` variant forces a decision here.
+    #[test]
+    fn detection_outcome_retains_the_detected_display_name() {
+        assert_eq!(
+            DetectionOutcome::UnsupportedType {
+                detected: "a ZIP archive".to_owned(),
+            }
+            .detected_display(),
+            Some("a ZIP archive".to_owned()),
+            "§0.6/SSOT-6: UnsupportedType retains its detected type name (always Some)"
+        );
+        assert_eq!(
+            DetectionOutcome::Uncertain {
+                best_guess: Some("a spreadsheet".to_owned()),
+            }
+            .detected_display(),
+            Some("a spreadsheet".to_owned()),
+            "§0.6: a named Uncertain retains its best_guess"
+        );
+        assert_eq!(
+            DetectionOutcome::Uncertain { best_guess: None }.detected_display(),
+            None,
+            "§0.6: a guessless Uncertain names no type (None)"
+        );
+        assert_eq!(
+            DetectionOutcome::Empty.detected_display(),
+            None,
+            "§0.6: Empty names no type (None)"
+        );
+        assert_eq!(
+            DetectionOutcome::Unreadable {
+                reason: ReadFailure::NotFound,
+            }
+            .detected_display(),
+            None,
+            "§0.6: Unreadable names no type (None)"
+        );
+        assert_eq!(
+            DetectionOutcome::Recognized {
+                format: UserFacingFormat::Csv,
+                confidence: Confidence::High,
+                dims: None,
+            }
+            .detected_display(),
+            None,
+            "§0.6: a Recognized outcome is a batch member, not a skip — no detected_display"
+        );
+    }
+
     // §6.4.1 unit (G15): the §1.3/§0.6 `EmptyReport` contract (P2.17) — the all-ineligible-drop report
     // carries every item's §1.2 `DetectionResult` (in freeze order) so the §1.3 projection can build the
     // per-item skip reasons. INTERNAL type (no wire form): construction + field-access + the all-ineligible
@@ -2006,22 +2090,37 @@ mod tests {
     // serialize→deserialize round-trip; the struct literal is the compile-time field-set lock. `sourceDisplay`
     // is a DISPLAY-ONLY lossy string (2026-07-06 ruling, §2.10.1 — the real dropped path lives off-wire in
     // `FrozenCollectedSet.item_paths`); a bare filename keeps the exact-JSON assertion portable.
+    // [Test-Change: P3.50 — old-obsolete+new-correct, §0.6] the P3.50 ruling ADDS
+    // `SkippedItem.detected_display` (the retained detected-type name, SSOT-6); the golden JSON gains
+    // `detectedDisplay` (an `UnsupportedType` skip always carries one), and the added legacy-shape case
+    // proves the additive `Option` stays wire-backward-compatible (an absent key deserialises to `None`).
     #[test]
     fn skipped_item_wire_form_is_camelcase_and_roundtrips() {
         let skipped = SkippedItem {
             item: ItemId(5),
             source_display: "notes.xyz".to_string(),
+            detected_display: Some("ZIP archive".to_string()),
             reason: SkipReason::UnsupportedType,
         };
         let json = serde_json::to_string(&skipped).expect("SkippedItem serializes");
         assert_eq!(
-            json, r#"{"item":5,"sourceDisplay":"notes.xyz","reason":"unsupportedType"}"#,
-            "§0.4.3/§0.6: SkippedItem is {{ item, sourceDisplay, reason }} in camelCase wire form"
+            json,
+            r#"{"item":5,"sourceDisplay":"notes.xyz","detectedDisplay":"ZIP archive","reason":"unsupportedType"}"#,
+            "§0.4.3/§0.6: SkippedItem is {{ item, sourceDisplay, detectedDisplay, reason }} in camelCase wire form"
         );
         let back: SkippedItem = serde_json::from_str(&json).expect("SkippedItem round-trips");
         assert_eq!(
             back, skipped,
             "§0.6: SkippedItem round-trips through its wire form"
+        );
+        // The additive `Option` is wire-backward-compatible: pre-P3.50 JSON without `detectedDisplay` → None.
+        let legacy: SkippedItem = serde_json::from_str(
+            r#"{"item":5,"sourceDisplay":"notes.xyz","reason":"unsupportedType"}"#,
+        )
+        .expect("legacy SkippedItem (no detectedDisplay) still deserialises");
+        assert_eq!(
+            legacy.detected_display, None,
+            "§0.6 (P3.50): an absent detectedDisplay deserialises to None — additive, wire-compatible"
         );
     }
 
@@ -2045,6 +2144,7 @@ mod tests {
         let skipped = SkippedItem {
             item: ItemId(8),
             source_display: "mystery.bin".to_string(),
+            detected_display: None,
             reason: SkipReason::Unreadable,
         };
         let eligible_source = JobSource::Eligible(dropped.clone());
@@ -2170,9 +2270,13 @@ mod tests {
                 },
             }],
             count: 1,
+            // [Test-Change: P3.50 — old-obsolete+new-correct, §0.6] the embedded SkippedItem gains the
+            // retained `detected_display` (an UnsupportedType skip always carries the detected-type name,
+            // SSOT-6); the golden JSON below gains `detectedDisplay`.
             skipped: vec![SkippedItem {
                 item: ItemId(1),
                 source_display: "notes.xyz".to_string(),
+                detected_display: Some("ZIP archive".to_string()),
                 reason: SkipReason::UnsupportedType,
             }],
             total_bytes: 2048,
@@ -2186,7 +2290,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_string(&single).expect("Single serializes"),
-            r#"{"single":{"id":"00000000-0000-0000-0000-000000000000","instance":"00000000-0000-0000-0000-000000000000","format":"csv","items":[{"item":0,"displayName":"data.csv","relPathDisplay":null,"sizeBytes":2048,"detected":{"recognized":{"format":"csv","confidence":"high","dims":null}}}],"count":1,"skipped":[{"item":1,"sourceDisplay":"notes.xyz","reason":"unsupportedType"}],"totalBytes":2048,"rootsDisplay":["folder"],"encodingHint":"Windows-1252","delimiterHint":";","notes":[{"kind":"multipleSheets","detail":"3 sheets"}]}}"#,
+            r#"{"single":{"id":"00000000-0000-0000-0000-000000000000","instance":"00000000-0000-0000-0000-000000000000","format":"csv","items":[{"item":0,"displayName":"data.csv","relPathDisplay":null,"sizeBytes":2048,"detected":{"recognized":{"format":"csv","confidence":"high","dims":null}}}],"count":1,"skipped":[{"item":1,"sourceDisplay":"notes.xyz","detectedDisplay":"ZIP archive","reason":"unsupportedType"}],"totalBytes":2048,"rootsDisplay":["folder"],"encodingHint":"Windows-1252","delimiterHint":";","notes":[{"kind":"multipleSheets","detail":"3 sheets"}]}}"#,
             "§0.4.3/§0.6/§1.4: CollectedSet::Single is the full externally-tagged camelCase confirm-summary wire shape"
         );
         let mixed = CollectedSet::Mixed {
@@ -2278,6 +2382,7 @@ mod tests {
         let skipped = vec![SkippedItem {
             item: ItemId(2),
             source_display: "notes.xyz".to_string(),
+            detected_display: Some("ZIP archive".to_string()),
             reason: SkipReason::UnsupportedType,
         }];
         let roots = vec![PathBuf::from("/abs")];
@@ -3016,6 +3121,8 @@ mod tests {
         SkippedItem {
             item: ItemId(id),
             source_display: "mystery.bin".to_string(),
+            // An Unreadable skip names no type (§0.6): detected_display is None.
+            detected_display: None,
             reason: SkipReason::Unreadable,
         }
     }

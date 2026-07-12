@@ -1300,6 +1300,22 @@ mod launch_intake {
             );
         }
 
+        // §6.4.1 unit (G15): main() REGISTERS the §0.4.4 RunResultStore (P3.50) so the C8 get_run_summary
+        // handler's State<RunResultStore> resolve is infallible by construction — the sibling of the
+        // RunRegistry manage above; its retain/evict lifecycle is the P3.48 conductor. Needle concat!-assembled
+        // (the established self-match avoidance). [Build-Session-Entscheidung: P3.50]
+        #[test]
+        fn main_registers_the_run_result_store() {
+            let main_src = crate::boot_invariants::production_main_body();
+            assert!(
+                main_src.contains(concat!(
+                    ".manage(crate::orchestrator::Run",
+                    "ResultStore::default())"
+                )),
+                "§0.4.4: main() must register the State<RunResultStore> so the C8 handler's State resolve cannot fail (P3.50)"
+            );
+        }
+
         // §6.4.1 unit (G15): the §7.8.1 WebView-ready predicate is WIRED to the real State<FrontendReady> flag
         // (P2.59) — not the P2.54 fail-safe `false` shell. `frontend_ready` is AppHandle-coupled boot-glue (the
         // §1.1a boot-stage pattern — not cargo-test execution-testable; the mark/is_ready LOGIC is unit-tested on
@@ -1535,6 +1551,14 @@ fn main() -> tauri::Result<()> {
         // app.state::<IngestRegistry>() resolve is infallible by construction (no panic under the crate-root
         // clippy::panic deny). Its first live consumer — the P2.70 C2a dialog handler — exists now.
         .manage(crate::orchestrator::IngestRegistry::default())
+        // [Build-Session-Entscheidung: P3.50] §0.4.4 RunResult retention — register the RunResultStore (the
+        // process-local terminal-RunResult store, P2.43) so C8 get_run_summary can re-serve the retained §1.12
+        // summary (and C9 open_path resolves its OpenTarget against its off-wire paths, P3.51/P3.79). This box
+        // owns the .manage (C8 is its first live consumer); the retain-at-RunFinished / evict-at-C6 lifecycle
+        // that POPULATES it is the P3.48 conductor. Builder chain (compile-time Default, before the event loop)
+        // → the C8 handler's State<RunResultStore> resolve is infallible by construction (no panic under the
+        // crate-root clippy::panic deny) — an empty store honestly yields C8's Err until a run retains a result.
+        .manage(crate::orchestrator::RunResultStore::default())
         .invoke_handler(builder.invoke_handler())
         // [Build-Session-Entscheidung: P2.79] §7.3.2 window-lifecycle hook — the Tauri v2 two-arg
         // `(&Window, &WindowEvent)` `on_window_event` closure. Thin BY DESIGN (a Builder-chain delegation

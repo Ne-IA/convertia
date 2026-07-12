@@ -39,7 +39,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) are authored as contracts before the P3.46 orchestrator behaviour + the C1/C2a/C3/C4/C5/C6/C7/C8/C13 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so their as-yet-unwired methods are dead in the production build until consumed (`RunRegistry::has_active_run` is already consumed by the §7.1.1 `converter_is_busy` from P2.55, with `register`/`cancel`/`finish` staying dead until P3.46). The P3.25 §2.6.4 cleanup-honesty leg (ResidueRecord/ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) is likewise dead until the P3.50 §1.12 projection + the P3.38 write-sequence consume it. The P3.39 §2.5.1 EquivKeyComputer (compute_equiv_key) is now consumed by the P3.40 compute_rerun_verdict, and both — plus the P3.40 RegisteredSet registry composite — stay dead in the production build until the P3.49 C4 plan_output wiring resolves the managed State + calls compute_rerun_verdict. P3.46 authors the §1.9 lifecycle FSM (advance / queue_order / state_is_queued / JobEvent / IllegalTransition, P3.46.1) + the §2.8 Running→Failed projection (project_outcome / TerminalProjection, P3.46.2); these are PURE and read JobState/Batch/ConversionJob/InvocationResult without themselves being reachable from a root, so they stay dead in the production build until the P3.48 conductor composes them (queue_order -> advance -> dispatch -> project_outcome -> advance) into the live C6 run — reading the dead lifecycle graph does not make it live (a dead-fn reference is not a root). P3.47 adds the C6 batch constructor build_batch (materialises the §1.9 Batch from a FrozenCollectedSet — eligible Pending jobs + pre-flight Skipped records over the single id space), likewise PURE and dead in the production build until the P3.48 conductor resolves the frozen set and calls it."
+        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) are authored as contracts before the P3.46 orchestrator behaviour + the C1/C2a/C3/C4/C5/C6/C7/C8/C13 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so their as-yet-unwired methods are dead in the production build until consumed (`RunRegistry::has_active_run` is already consumed by the §7.1.1 `converter_is_busy` from P2.55, with `register`/`cancel`/`finish` staying dead until P3.46). The P3.25 §2.6.4 cleanup-honesty leg (ResidueRecord/ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) is likewise dead until the P3.50 §1.12 projection + the P3.38 write-sequence consume it. The P3.39 §2.5.1 EquivKeyComputer (compute_equiv_key) is now consumed by the P3.40 compute_rerun_verdict, and both — plus the P3.40 RegisteredSet registry composite — stay dead in the production build until the P3.49 C4 plan_output wiring resolves the managed State + calls compute_rerun_verdict. P3.46 authors the §1.9 lifecycle FSM (advance / queue_order / state_is_queued / JobEvent / IllegalTransition, P3.46.1) + the §2.8 Running→Failed projection (project_outcome / TerminalProjection, P3.46.2); these are PURE and read JobState/Batch/ConversionJob/InvocationResult without themselves being reachable from a root, so they stay dead in the production build until the P3.48 conductor composes them (queue_order -> advance -> dispatch -> project_outcome -> advance) into the live C6 run — reading the dead lifecycle graph does not make it live (a dead-fn reference is not a root). P3.47 adds the C6 batch constructor build_batch (materialises the §1.9 Batch from a FrozenCollectedSet — eligible Pending jobs + pre-flight Skipped records over the single id space), likewise PURE and dead in the production build until the P3.48 conductor resolves the frozen set and calls it. P3.50 adds the §1.12 run-end projection (project_run_result -> RunResult/RunResultPaths, composing the P3.25 residue helpers + the §2.8/§2.8.2 skip/failure renderers) + the batch-summary classifier (batch_summary/batch_summary_line), PURE and dead in the production build until the P3.48 conductor emits RunFinished; RunResultStore::get is now LIVE (the C8 get_run_summary handler reads it via resolve_run_summary), while retain/evict/paths stay dead until the P3.48 retain-at-RunFinished / evict-at-C6 + the P3.51 C9 paths wiring."
     )
 )]
 
@@ -858,6 +858,192 @@ pub fn append_residue_tail(summary_line: String, has_residue: bool) -> String {
     } else {
         summary_line
     }
+}
+
+// ─── §1.12 end-of-batch RunResult projection + batch-summary classifier (P3.50) ──────────────────────
+// [Build-Session-Entscheidung: P3.50] The §1.12 run-end projection the box names: map a TERMINAL `Batch`
+// (every job left Pending/Running) + its per-item outputs/residues/roots onto the wire `RunResult`
+// (display-only, §2.10.1) PLUS its off-wire `RunResultPaths` (real paths for the C9 OpenTarget resolution).
+// PURE (no I/O, no spawn) — the P3.48 conductor supplies the artifacts (the per-item published output paths,
+// the §2.6.4 residue records, the §2.7 roots) and emits the result as `RunFinished`; C8 `get_run_summary`
+// re-serves the retained wire half. Homed in `crate::orchestrator` (tier 1, the §1.12 result-family owner,
+// §0.7): it composes the §1.9 `Batch`/`JobState` + the §2.6.4 residue helpers (P3.25) + the §2.8.2 catalog
+// (`crate::outcome`, P3.68/P3.50). Dead in the production build until the P3.48 conductor calls it.
+
+/// The §2.6.4 residue DISPOSITION an item's terminal §1.9 `JobState` implies (P3.50) — which of the three
+/// §2.6.4 cases a residue on this item is, so the per-item reason is HONEST (`Failed` adopts the combined
+/// §2.8.2 `CleanupResidue` message, `Succeeded`/`Cancelled` keep their state's meaning). `None` for a state
+/// that cannot carry run-end residue (`Pending`/`Running` never terminate here; a pre-flight `Skipped` never
+/// ran, so it has no temp). Exhaustive over `JobState` (no `_`, G4/G14). [Build-Session-Entscheidung: P3.50]
+fn residue_disposition_of(state: JobState) -> Option<ResidueDisposition> {
+    match state {
+        JobState::Succeeded => Some(ResidueDisposition::Succeeded),
+        JobState::Failed(_) => Some(ResidueDisposition::Failed),
+        JobState::Cancelled => Some(ResidueDisposition::Cancelled),
+        JobState::Pending | JobState::Running | JobState::Skipped(_) => None,
+    }
+}
+
+/// The base per-item §2.8.2 `reason` for a terminal job (before any §2.6.4 residue override) — the resolved,
+/// ready-to-show line (`ItemResult.reason`, §0.6): a `Failed(kind)` renders its §2.8.2 catalog row, a
+/// pre-flight `Skipped` renders its `OutcomeMsg::Skipped` line (from the retained `SkippedItem.detected_display`
+/// via the P2.20 bridge, P3.50 ruling), and a plain `Succeeded`/`Cancelled` carries none. Reads the skip's
+/// `detected_display` from the `JobSource::Skipped` arm (coupling: `source is Skipped ⟺ state is Skipped`,
+/// P3.47). [Build-Session-Entscheidung: P3.50]
+fn item_base_reason(job: &ConversionJob) -> Option<OutcomeMsg> {
+    match job.state {
+        JobState::Skipped(reason) => {
+            // The retained detected-type name rides the JobSource::Skipped arm (coupling-guaranteed present).
+            let detected = match &job.source {
+                JobSource::Skipped(skipped) => skipped.detected_display.as_deref(),
+                JobSource::Eligible(_) => None,
+            };
+            Some(crate::outcome::skipped_message(reason, detected))
+        }
+        JobState::Failed(kind) => crate::outcome::conversion_failure(kind, ""),
+        JobState::Succeeded | JobState::Cancelled | JobState::Pending | JobState::Running => None,
+    }
+}
+
+/// Project a TERMINAL `Batch` onto the §1.12 wire `RunResult` (display-only) + its off-wire `RunResultPaths`
+/// (P3.50). For every job it emits one `ItemResult { item, output_display, state, reason }`: `output_display`
+/// is the published output's lossy display ONLY for a `Succeeded` item (§1.12, §2.10.1), and `reason` is the
+/// §2.8.2 line — a §2.6.4 residue on a `Failed` item OVERRIDES it to the combined `CleanupResidue` message
+/// (never a clean success, §2.6.4 case 2), otherwise the base line ([`item_base_reason`]). Pre-flight SKIPS
+/// (the `JobSource::Skipped` jobs materialised at C6, P3.47) ride through identically — `Skipped(reason)`
+/// state, `output_display: None`, an `OutcomeMsg::Skipped` reason — counted in `Totals.skipped`, NEVER
+/// `failed` (skip ≠ fail, §1.12). The §2.6.4 residues split into the wire `cleanup_incomplete` + the off-wire
+/// `item_residues` ([`split_residue_records`], P3.25), so the run is never reported a clean success while a
+/// temp may remain. The real roots + per-item output/residue `PathBuf`s ride the off-wire `RunResultPaths`
+/// (C9 resolves its `OpenTarget` against it, P3.79); the wire carries only their `to_string_lossy` displays
+/// (§2.10.1 / 2026-07-06 ruling). PURE — the P3.48 conductor supplies `item_outputs`/`residues`/roots from the
+/// live run. [Build-Session-Entscheidung: P3.50]
+pub fn project_run_result(
+    batch: &Batch,
+    run_id: RunId,
+    item_outputs: &BTreeMap<ItemId, PathBuf>,
+    residues: Vec<ResidueRecord>,
+    common_root: PathBuf,
+    divert_root: Option<PathBuf>,
+) -> (RunResult, RunResultPaths) {
+    // §2.6.4 honesty split: the wire warnings (order-preserving) + the off-wire real residue paths (P3.25).
+    let (cleanup_incomplete, item_residues) = split_residue_records(residues);
+    // Per-item residue-display lookup for the §2.6.4 Failed-with-residue reason override.
+    let residue_displays: BTreeMap<ItemId, &str> = cleanup_incomplete
+        .iter()
+        .map(|warning| (warning.item, warning.residue_display.as_str()))
+        .collect();
+
+    let mut items = Vec::with_capacity(batch.jobs.len());
+    for job in &batch.jobs {
+        // §1.12: the published output display is carried ONLY for a Succeeded item.
+        let output_display = match job.state {
+            JobState::Succeeded => item_outputs
+                .get(&job.item)
+                .map(|path| path.to_string_lossy().into_owned()),
+            JobState::Failed(_)
+            | JobState::Skipped(_)
+            | JobState::Cancelled
+            | JobState::Pending
+            | JobState::Running => None,
+        };
+        let base_reason = item_base_reason(job);
+        // §2.6.4: a residue on a Failed item overrides the reason to the combined CleanupResidue message
+        // (never a clean success); a Succeeded/Cancelled residue keeps the base reason (surfaced via
+        // cleanup_incomplete + the batch tail instead). residue_item_reason yields None for those.
+        let reason = match (
+            residue_displays.get(&job.item).copied(),
+            residue_disposition_of(job.state),
+        ) {
+            (Some(residue_display), Some(disposition)) => {
+                residue_item_reason(disposition, residue_display).or(base_reason)
+            }
+            _ => base_reason,
+        };
+        items.push(ItemResult {
+            item: job.item,
+            output_display,
+            state: job.state,
+            reason,
+        });
+    }
+
+    let totals = Totals {
+        succeeded: tally(batch, |state| matches!(state, JobState::Succeeded)),
+        failed: tally(batch, |state| matches!(state, JobState::Failed(_))),
+        cancelled: tally(batch, |state| matches!(state, JobState::Cancelled)),
+        skipped: tally(batch, |state| matches!(state, JobState::Skipped(_))),
+    };
+
+    // Compute the display forms BEFORE moving the real roots into the off-wire table (§2.10.1).
+    let common_root_display = common_root.to_string_lossy().into_owned();
+    let divert_root_display = divert_root
+        .as_ref()
+        .map(|path| path.to_string_lossy().into_owned());
+    let paths = RunResultPaths {
+        common_root,
+        divert_root,
+        item_outputs: item_outputs.clone(),
+        item_residues,
+    };
+    let result = RunResult {
+        collected_set_id: batch.id,
+        run_id,
+        items,
+        totals,
+        cleanup_incomplete,
+        common_root_display,
+        divert_root_display,
+    };
+    (result, paths)
+}
+
+/// Count the batch's jobs whose terminal `JobState` matches `pred` (§1.12 `Totals`), returning a `u32`. The
+/// count is `usize` (bounded by `batch.jobs.len()`); the `u32::try_from` cannot realistically saturate (the
+/// §0.6 single id space is `u32`, so a batch holds at most `u32::MAX + 1` jobs), and the `u32::MAX` cap keeps
+/// it panic-free at the impossible boundary rather than truncating. [Build-Session-Entscheidung: P3.50]
+fn tally(batch: &Batch, pred: impl Fn(&JobState) -> bool) -> u32 {
+    u32::try_from(batch.jobs.iter().filter(|job| pred(&job.state)).count()).unwrap_or(u32::MAX)
+}
+
+/// Classify a run's §1.12 `Totals` into its §2.8.2 [`BatchSummary`] situation (P3.50). The headline reflects
+/// the CONVERSION disposition over the ATTEMPTED items (`succeeded + failed`); pre-flight SKIPS are excluded
+/// from the headline `{n}` — they never entered the queue and are not a conversion outcome, so they appear
+/// only in `RunResult.items` + `Totals.skipped` (the skip ≠ fail posture, §1.12), never inflating "All {n}
+/// converted". A user cancel DOMINATES: a run with any `cancelled` item is `Stopped.` (its `{ok}` = the
+/// finished-before-cancel successes). Otherwise: no failures → `AllSucceeded`; no successes → `AllFailed`
+/// (an explicit failure, SSOT *Fail clearly*, never a quiet finish); a mix → `Partial`.
+/// [Build-Session-Entscheidung: P3.50 — {n} = attempted (succeeded + failed), skips excluded from the headline]
+#[must_use]
+pub fn batch_summary(totals: &Totals) -> crate::outcome::BatchSummary {
+    use crate::outcome::BatchSummary;
+    // u32 -> usize is a widening on every supported (32-/64-bit) target — never truncates.
+    let ok = totals.succeeded as usize;
+    let fail = totals.failed as usize;
+    if totals.cancelled > 0 {
+        // A user cancel dominates the headline (§2.8.2 Cancelled): finished-before-cancel items are kept.
+        BatchSummary::Cancelled { ok }
+    } else {
+        // The headline is over the attempted (succeeded + failed) items; pre-flight skips are excluded.
+        let n = ok.saturating_add(fail);
+        if fail == 0 {
+            BatchSummary::AllSucceeded { n }
+        } else if ok == 0 {
+            BatchSummary::AllFailed { n }
+        } else {
+            BatchSummary::Partial { ok, n, fail }
+        }
+    }
+}
+
+/// The full §1.12 batch-level summary LINE (P3.50) — the [`batch_summary`] situation's §2.8.2 text with the
+/// "With residue" tail appended iff the run left any residue (`has_residue` = `RunResult.cleanup_incomplete`
+/// non-empty). This is the one place the §2.8.2 batch line + the §2.6.4 honesty tail are assembled; the §5.3
+/// Summary UI (or the `RunFinished` emitter) renders it from `RunResult.totals` + `cleanup_incomplete`.
+/// [Build-Session-Entscheidung: P3.50]
+#[must_use]
+pub fn batch_summary_line(totals: &Totals, has_residue: bool) -> String {
+    append_residue_tail(batch_summary(totals).text(), has_residue)
 }
 
 // ─── §2.1.1 per-item write sequence (P3.38) ──────────────────────────────────────────────────────────
@@ -2904,6 +3090,10 @@ fn freeze_snapshot(
             Some(reason) => skipped.push(SkippedItem {
                 item: id,
                 source_display: raw_path.to_string_lossy().into_owned(),
+                // RETAIN the friendly detected-type name from detection's own output (SSOT-6 / P3.50):
+                // Some for UnsupportedType, the named best_guess for Uncertain, None otherwise — kept
+                // through the freeze rather than discarded (RETENTION, not invention).
+                detected_display: detected.detected_display(),
                 reason,
             }),
         }
@@ -2927,6 +3117,8 @@ fn freeze_snapshot(
         skipped.push(SkippedItem {
             item: id,
             source_display: path.to_string_lossy().into_owned(),
+            // A read-failure skip has NO DetectionOutcome (it failed before/at detection) — no type name.
+            detected_display: None,
             reason,
         });
     }
@@ -4632,11 +4824,24 @@ mod tests {
     }
 
     /// A minimal pre-flight-skipped source item at `id` with the given §0.6 `SkipReason` — the skip-arm
-    /// sibling of `dropped_item`, for the `JobSource::Skipped` fixtures (P3.47).
+    /// sibling of `dropped_item`, for the `JobSource::Skipped` fixtures (P3.47). `detected_display` defaults
+    /// to `None`; [`skipped_item_detected`] sets it for the P3.50 skip-message projection tests.
     fn skipped_item(id: u32, reason: SkipReason) -> SkippedItem {
         SkippedItem {
             item: item_id(id),
             source_display: "skipped.bin".to_string(),
+            detected_display: None,
+            reason,
+        }
+    }
+
+    /// A pre-flight-skipped source item carrying a retained `detected_display` (§0.6, P3.50) — for the §1.12
+    /// skip-message projection tests where the retained detected-type name feeds the §2.8.2 `{detected}` slot.
+    fn skipped_item_detected(id: u32, reason: SkipReason, detected: Option<&str>) -> SkippedItem {
+        SkippedItem {
+            item: item_id(id),
+            source_display: "skipped.bin".to_string(),
+            detected_display: detected.map(str::to_owned),
             reason,
         }
     }
@@ -5148,6 +5353,218 @@ mod tests {
             queued,
             vec![item_id(0), item_id(2), item_id(4)],
             "§1.9: queue_order yields only the eligible Pending jobs; the pre-flight Skipped records are non-queue"
+        );
+    }
+
+    /// Extract the resolved `text` of an `ItemResult.reason`, whichever `OutcomeMsg` variant (§2.8/§2.9/§1.12).
+    fn reason_text(reason: &Option<OutcomeMsg>) -> Option<String> {
+        match reason {
+            Some(OutcomeMsg::Failure { text, .. })
+            | Some(OutcomeMsg::Skipped { text, .. })
+            | Some(OutcomeMsg::Lossy { text, .. }) => Some(text.clone()),
+            None => None,
+        }
+    }
+
+    // §6.4.1 unit (G15): the P3.50 §1.12 run-end projection — a TERMINAL batch with one of each disposition
+    // (Succeeded 0 / Failed 1 / pre-flight-Skipped 2 / Cancelled 3) + a published output + a §2.6.4 residue maps
+    // onto the wire `RunResult` (display-only) + the off-wire `RunResultPaths` (real paths). Asserts: the
+    // per-disposition Totals (the SKIP counted in `skipped`, NEVER `failed`); `output_display` only for the
+    // Succeeded item; the Failed-WITH-residue item's reason is the combined §2.6.4 CleanupResidue message (never
+    // a clean success); the skip's reason is `OutcomeMsg::Skipped` naming the retained detected type (SSOT-6);
+    // the residue folds into `cleanup_incomplete` (wire) + `item_residues` (off-wire); the real paths ride
+    // `RunResultPaths`, the wire carries only their displays.
+    #[test]
+    fn project_run_result_maps_terminal_jobs_to_the_1_12_summary() {
+        let kind = ConversionErrorKind::Corrupt;
+        // The skip (item 2) is an UnsupportedType with a RETAINED detected name (P3.50 ruling).
+        let skip_job = ConversionJob {
+            item: item_id(2),
+            source: JobSource::Skipped(skipped_item_detected(
+                2,
+                SkipReason::UnsupportedType,
+                Some("a ZIP archive"),
+            )),
+            state: JobState::Skipped(SkipReason::UnsupportedType),
+            plan: None,
+        };
+        let batch = batch_of(vec![
+            job_in(0, JobState::Succeeded),
+            job_in(1, JobState::Failed(kind)),
+            skip_job,
+            job_in(3, JobState::Cancelled),
+        ]);
+        let outputs: BTreeMap<ItemId, PathBuf> =
+            BTreeMap::from([(item_id(0), PathBuf::from("out/a.tsv"))]);
+        let residues = vec![ResidueRecord::new(item_id(1), PathBuf::from("tmp/b.part"))];
+        let (result, paths) = project_run_result(
+            &batch,
+            run_id(),
+            &outputs,
+            residues,
+            PathBuf::from("root"),
+            None,
+        );
+
+        // §1.12 Totals — the skip is counted in `skipped`, NEVER `failed` (skip ≠ fail).
+        assert_eq!(
+            result.totals,
+            Totals {
+                succeeded: 1,
+                failed: 1,
+                cancelled: 1,
+                skipped: 1,
+            },
+            "§1.12: one of each disposition; the pre-flight skip counts in `skipped`, never `failed`"
+        );
+        assert_eq!(
+            result.run_id,
+            run_id(),
+            "§1.12: the summary carries its run id"
+        );
+        assert_eq!(result.items.len(), 4, "one ItemResult per job");
+
+        // Item 0: Succeeded → output_display Some(display), no failure reason.
+        let i0 = &result.items[0];
+        assert_eq!(i0.state, JobState::Succeeded);
+        assert_eq!(
+            i0.output_display.as_deref(),
+            Some("out/a.tsv"),
+            "§1.12: a Succeeded item carries its published output display"
+        );
+        assert!(
+            i0.reason.is_none(),
+            "a plain success has no failure/lossy reason"
+        );
+
+        // Item 1: Failed WITH residue → the reason is OVERRIDDEN to the §2.6.4 CleanupResidue message naming
+        // the residue path (never a clean success); no output_display.
+        let i1 = &result.items[1];
+        assert_eq!(i1.state, JobState::Failed(kind));
+        assert!(i1.output_display.is_none(), "a Failed item has no output");
+        let i1_reason =
+            reason_text(&i1.reason).expect("a Failed-with-residue item carries a reason");
+        assert!(
+            i1_reason.contains("tmp/b.part"),
+            "§2.6.4: the Failed-with-residue reason names WHERE the residue may remain (never a clean success)"
+        );
+
+        // Item 2: the pre-flight skip → OutcomeMsg::Skipped naming the retained detected type (SSOT-6).
+        let i2 = &result.items[2];
+        assert_eq!(i2.state, JobState::Skipped(SkipReason::UnsupportedType));
+        assert!(i2.output_display.is_none(), "a skip has no output");
+        assert!(
+            matches!(i2.reason, Some(OutcomeMsg::Skipped { .. })),
+            "§1.12: the skip reason rides OutcomeMsg::Skipped (never Failure)"
+        );
+        let i2_reason = reason_text(&i2.reason).expect("a skip carries a reason");
+        assert!(
+            i2_reason.contains("a ZIP archive"),
+            "SSOT-6: the skip line names the retained detected type (detected: X)"
+        );
+
+        // §2.6.4 honesty split: item 1's residue in the wire `cleanup_incomplete` + the off-wire real path.
+        assert_eq!(
+            result.cleanup_incomplete.len(),
+            1,
+            "the one residue is surfaced"
+        );
+        assert_eq!(result.cleanup_incomplete[0].item, item_id(1));
+        assert_eq!(
+            paths.item_outputs.get(&item_id(0)),
+            Some(&PathBuf::from("out/a.tsv")),
+            "the real output PathBuf rides RunResultPaths (off-wire, §2.10.1)"
+        );
+        assert_eq!(
+            paths.item_residues.get(&item_id(1)),
+            Some(&PathBuf::from("tmp/b.part")),
+            "the real residue PathBuf rides RunResultPaths (C9 Residue(item) target, §2.10.1)"
+        );
+        assert_eq!(
+            result.common_root_display, "root",
+            "§2.10.1: the wire carries only the common-root DISPLAY; the real root is in RunResultPaths"
+        );
+        assert_eq!(paths.common_root, PathBuf::from("root"));
+        assert!(
+            result.divert_root_display.is_none(),
+            "no item diverted → no divert-root display"
+        );
+    }
+
+    // §6.4.1 unit (G15): the P3.50 §1.12 batch-summary classifier — the headline reflects the ATTEMPTED items
+    // (succeeded + failed); pre-flight SKIPS are EXCLUDED from `{n}` (skip ≠ fail); any cancel DOMINATES; a
+    // no-success run is an explicit AllFailed (SSOT Fail clearly). `batch_summary_line` appends the §2.6.4
+    // "With residue" tail iff the run left residue.
+    #[test]
+    fn batch_summary_classifies_over_attempted_items_excluding_skips() {
+        use crate::outcome::BatchSummary;
+        // All attempted succeeded — the 2 skips do NOT inflate the headline `{n}` (n == succeeded).
+        assert_eq!(
+            batch_summary(&Totals {
+                succeeded: 3,
+                failed: 0,
+                cancelled: 0,
+                skipped: 2,
+            }),
+            BatchSummary::AllSucceeded { n: 3 },
+            "§1.12: AllSucceeded over attempted only — skips excluded from {{n}}"
+        );
+        // Every attempted item failed → an explicit failure (never a quiet finish).
+        assert_eq!(
+            batch_summary(&Totals {
+                succeeded: 0,
+                failed: 4,
+                cancelled: 0,
+                skipped: 1,
+            }),
+            BatchSummary::AllFailed { n: 4 },
+            "§1.12/SSOT: a no-success run is an explicit AllFailed"
+        );
+        // A mix → Partial { ok, n = ok + fail, fail }.
+        assert_eq!(
+            batch_summary(&Totals {
+                succeeded: 2,
+                failed: 1,
+                cancelled: 0,
+                skipped: 1,
+            }),
+            BatchSummary::Partial {
+                ok: 2,
+                n: 3,
+                fail: 1,
+            },
+            "§1.12: Partial with n = attempted (ok + fail)"
+        );
+        // Any cancel DOMINATES the headline → Stopped, ok = the finished-before-cancel successes.
+        assert_eq!(
+            batch_summary(&Totals {
+                succeeded: 2,
+                failed: 1,
+                cancelled: 3,
+                skipped: 0,
+            }),
+            BatchSummary::Cancelled { ok: 2 },
+            "§2.8.2: a cancelled run is Stopped; ok = the kept successes"
+        );
+        // batch_summary_line appends the §2.6.4 "With residue" tail iff the run left residue.
+        let totals = Totals {
+            succeeded: 1,
+            failed: 0,
+            cancelled: 0,
+            skipped: 0,
+        };
+        assert!(
+            !batch_summary_line(&totals, false).contains("temporary files may remain"),
+            "no residue → no tail"
+        );
+        let with_tail = batch_summary_line(&totals, true);
+        assert!(
+            with_tail.starts_with("All 1 files converted."),
+            "the batch line comes first"
+        );
+        assert!(
+            with_tail.contains("temporary files may remain"),
+            "§2.6.4: the With-residue tail is appended when the run left residue"
         );
     }
 

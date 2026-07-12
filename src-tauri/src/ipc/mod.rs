@@ -518,8 +518,12 @@ mod ipc_boundary_proptest {
     /// P2.137 completeness bind, SIGNATURE side: the wire-deserialized arg types extracted from the four
     /// handler files' production-prefix signatures (via the shared `c_surface_scan` table) are EXACTLY the
     /// pinned `INBOUND_WIRE_ARG_TYPES` set. Extraction mirrors tauri's boundary: every `name: Type` arg
-    /// except the runtime-supplied `AppHandle` / `Channel<T>`, whitespace-normalized — so an arg type added
-    /// to any §0.4.1 handler without extending the pinned list (and with it both feed legs) reds here.
+    /// except the runtime-supplied `AppHandle` / `Channel<T>` / `State<T>`, whitespace-normalized — so an arg
+    /// type added to any §0.4.1 handler without extending the pinned list (and with it both feed legs) reds here.
+    /// [Test-Change: P3.50 — old-obsolete+new-correct, §0.4.1] the C8 `get_run_summary` body (P3.50) is the
+    /// FIRST handler with a direct `State<T>` arg (the §0.4.4 `State<RunResultStore>`); like `AppHandle` /
+    /// `Channel<T>` it is RUNTIME-INJECTED by tauri, never deserialized from the wire, so it is EXCLUDED from
+    /// the inbound-wire set (extending the test's existing runtime-supplied filter, not relaxing the pin).
     #[test]
     fn handler_signatures_carry_exactly_the_pinned_inbound_arg_types() {
         use super::c_surface_scan::{signature_rest_of, HANDLERS};
@@ -538,7 +542,13 @@ mod ipc_boundary_proptest {
                     continue;
                 };
                 let ty: String = ty.chars().filter(|c| !c.is_whitespace()).collect();
-                if ty.is_empty() || ty.contains("AppHandle") || ty.contains("Channel<") {
+                // Skip tauri's runtime-injected args (never deserialized from the wire): AppHandle, the
+                // progress Channel<T>, and the §0.4.4 State<T> store injections (C8's RunResultStore, P3.50).
+                if ty.is_empty()
+                    || ty.contains("AppHandle")
+                    || ty.contains("Channel<")
+                    || ty.contains("State<")
+                {
                     continue;
                 }
                 extracted.insert(ty);

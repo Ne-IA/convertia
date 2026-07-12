@@ -12,11 +12,12 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 use tauri::ipc::Channel;
+use tauri::State;
 
 use crate::domain::{
     CollectedSetId, DestinationChoice, OptionValues, RerunDecision, RunId, TargetId,
 };
-use crate::orchestrator::{ConversionEvent, RunResult};
+use crate::orchestrator::{ConversionEvent, RunResult, RunResultStore};
 use crate::outcome::{ConversionErrorKind, IpcError};
 
 /// **C6 `start_conversion`** (§0.4.1) — mints the run's `RunId`, builds + enqueues the §1.9 batch from the
@@ -129,24 +130,35 @@ pub async fn cancel_run(run_id: RunId) -> Result<(), IpcError> {
 ///
 /// - `run_id` — the §0.4.4 `RunId` (minted at C6) whose retained summary to re-serve.
 ///
-/// [Build-Session-Entscheidung: P2.31] **Shell returns `Err(IpcError{ kind: InternalError })` — the C3/C4/C5/
-/// C6 interface-shell pattern (success type has no zero value), NOT the C7 `Ok(())` no-op branch.** `RunResult`
-/// carries a real summary (items / totals / roots) and has **no zero value**, so — like `TargetOffer`/
-/// `OutputPlanPreview`/`DestinationResolved`/`RunId`, unlike C7's `()` — there is no `Ok(empty)` to return, and
-/// fabricating one would invent a summary for a run that never happened (CLAUDE §5). Until the §0.4.4
-/// `RunResult` retention registry (P2.43) holds a terminal result, **no** `runId` resolves — so the shell's
-/// honest result is exactly the `Err` the real body returns for an unresolvable / not-yet-finished id:
-/// `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError`
-/// precedent C3/C4/C5 cite). The named fill-boxes own the rest: (a) the §2.8 catalog box owns the FINAL message
-/// — the string below is a PROVISIONAL neutral English one — and must add a COMMAND-level string (the §2.8
-/// catalog is item-scoped); (b) the §0.4.4 retention resolve + the §1.12 `RunResult` projection (incl. the
-/// pre-flight-skip projection + the batch-summary string) + the §0.6 SUCCESS path belong to the body box P3.50;
-/// (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
+/// [Build-Session-Entscheidung: P3.50 — the C8 body fill] The handler is THIN (§0.7): it resolves the retained
+/// §1.12 `RunResult` from the §0.4.4 `State<RunResultStore>` (P2.43) and maps the `Option` onto the §0.4.3
+/// `IpcError` — the whole logic lives in the pure [`resolve_run_summary`] so it is unit-tested WITHOUT a
+/// `tauri::test` mock (this crate ships none BY DECISION), while the handler's `State` injection is
+/// source-scan-pinned (the C1/C13 pattern). `Some` (a run's terminal summary is retained AND its `run_id`
+/// matches) → `Ok(RunResult)`; `None` (no run retained, or a different / superseded run's id) → the honest
+/// `Err(IpcError{ InternalError })` — exactly the pre-P3.50 shell outcome for an unresolvable / not-yet-finished
+/// id (§2.13 catch-all). The `RunResult` graph is DISPLAY-ONLY (§2.10.1); the real roots + per-item output/
+/// residue `PathBuf`s stay in the store's off-wire `RunResultPaths` (C9 resolves its `OpenTarget` there, P3.79).
+/// `kind` stays the CONCRETE `ConversionErrorKind` (the P2.19 convention). The store is `.manage`d in `main()`'s
+/// Builder chain (added with this box), mirroring the sibling `RunRegistry`; the retain-at-`RunFinished` /
+/// evict-at-C6 lifecycle that POPULATES it is the P3.48 conductor — until then the store is empty and C8
+/// honestly returns `Err`, the walking-skeleton state.
 #[tauri::command(rename_all = "camelCase")]
 #[specta::specta]
-pub async fn get_run_summary(run_id: RunId) -> Result<RunResult, IpcError> {
-    let _ = run_id;
-    Err(IpcError {
+pub async fn get_run_summary(
+    run_id: RunId,
+    store: State<'_, RunResultStore>,
+) -> Result<RunResult, IpcError> {
+    resolve_run_summary(store.inner(), run_id)
+}
+
+/// The pure C8 resolve (§0.4.4 / §1.12, P3.50) — re-serve the retained wire `RunResult` for `run_id`, mapping
+/// the store's `Option` onto the §0.4.3 `IpcError`. Separated from the `#[tauri::command]` handler so the
+/// mapping is directly unit-testable over a real `RunResultStore` (no `tauri::test` mock). `None` → the
+/// InternalError not-available result (an unresolvable / not-yet-finished / superseded id, §2.13).
+/// [Build-Session-Entscheidung: P3.50]
+fn resolve_run_summary(store: &RunResultStore, run_id: RunId) -> Result<RunResult, IpcError> {
+    store.get(run_id).ok_or_else(|| IpcError {
         kind: ConversionErrorKind::InternalError,
         message: "Could not retrieve the conversion summary.".into(),
         path_display: None,
@@ -286,40 +298,116 @@ mod c7_contract {
 
 #[cfg(test)]
 mod c8_contract {
-    //! §6.4.1 unit (G15): the §0.4.1 C8 `get_run_summary` typed CONTRACT (P2.31) — same interface-shell pattern
-    //! as C3/C4/C5/C6: the handler carries its typed `{ runId } -> Result<RunResult, IpcError>` signature, so
-    //! the P2.21 all-shells `block_on(get_run_summary())` invocation in `crate::ipc` (mod.rs) is REPLACED here
-    //! by C8's own typed-contract test. The shell returns the genuine pre-retention `Err(InternalError)`; SHAPE
-    //! is asserted, NOT the provisional message (owned by the §2.8 catalog box). The §0.4.4 retention resolve +
-    //! the §1.12 RunResult projection land at P2.43 / P3.50. [Build-Session-Entscheidung: P2.31]
-    use super::*;
-    use tauri::async_runtime::block_on;
+    //! §6.4.1 unit (G15): the §0.4.1 C8 `get_run_summary` BODY (P3.50 — replacing the P2.31 shell). C8 is the
+    //! idempotent §1.12 re-fetch: the pure [`resolve_run_summary`] re-serves the retained `RunResult` from the
+    //! §0.4.4 `RunResultStore` (P2.43), mapping the `Option` onto the §0.4.3 `IpcError`. This crate ships no
+    //! `tauri::test` mock BY DECISION (the C1/C13 pattern), so the mapping is unit-tested DIRECTLY over a real
+    //! `RunResultStore`, and the handler's `State<RunResultStore>` injection is SOURCE-SCAN-pinned (the
+    //! `main()`-registers-the-store scan lives in `boot_invariants`, beside the sibling `RunRegistry` scan).
+    //! [Build-Session-Entscheidung: P3.50]
+    //!
+    //! [Test-Change: P3.50 — old-obsolete+new-correct, §0.4.1] this module's P2.31 shell contract test (which
+    //! asserted the shell's genuine pre-retention `Err(InternalError)`) is SUPERSEDED here: the shell it
+    //! exercised no longer exists (P3.50 built the real body), so its expectation is obsolete; the new tests are
+    //! STRICTLY STRONGER — the InternalError leg is retained (an empty/mismatched store) and JOINED by the
+    //! retained-run re-serve leg, verified against real `RunResultStore` semantics (`retain` → `get`). No
+    //! assertion is weakened; the shell→body supersession is the same tagged transition as the sibling C6
+    //! contract module. (Comment cites the MODULE, never a deleted `#[test] fn` name — the G73 rs-test-refs
+    //! module-anchor discipline.)
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
 
-    /// A `RunId` for the contract call — minted through its PUBLIC bare-uuid `Deserialize` wire form (the
+    use super::*;
+    use crate::orchestrator::{RunResultPaths, Totals};
+
+    /// A `RunId` for the resolve tests — minted through its PUBLIC bare-uuid `Deserialize` wire form (the
     /// frontend holds the C6-minted id, §0.4.4), mirroring the `c6_contract`/`c7_contract` helpers.
     fn run_id() -> RunId {
         serde_json::from_str(r#""99999999-9999-4999-8999-999999999999""#)
             .expect("RunId deserializes from a uuid string")
     }
+    /// A second, DISTINCT `RunId` — for the §0.4.4 "a non-matching id never serves the wrong summary" leg.
+    fn other_run_id() -> RunId {
+        serde_json::from_str(r#""88888888-8888-4888-8888-888888888888""#)
+            .expect("RunId deserializes from a uuid string")
+    }
+    fn collected_set_id() -> CollectedSetId {
+        serde_json::from_str(r#""99999999-9999-4999-8999-999999999998""#)
+            .expect("CollectedSetId deserializes from a uuid string")
+    }
+    /// A minimal terminal `RunResult` + its off-wire `RunResultPaths` for the given run — enough to exercise
+    /// the C8 re-serve (the §1.12 PROJECTION content is tested in `crate::orchestrator`; here we test the
+    /// store re-serve + the Option → IpcError mapping).
+    fn a_retained_run(run: RunId) -> (RunResult, RunResultPaths) {
+        let result = RunResult {
+            collected_set_id: collected_set_id(),
+            run_id: run,
+            items: vec![],
+            totals: Totals {
+                succeeded: 0,
+                failed: 0,
+                cancelled: 0,
+                skipped: 0,
+            },
+            cleanup_incomplete: vec![],
+            common_root_display: "root".to_string(),
+            divert_root_display: None,
+        };
+        let paths = RunResultPaths {
+            common_root: PathBuf::from("root"),
+            divert_root: None,
+            item_outputs: BTreeMap::new(),
+            item_residues: BTreeMap::new(),
+        };
+        (result, paths)
+    }
 
-    // §6.4.1 unit (G15): the C8 contract is invocable with its §0.4.1 typed `runId` arg and returns a
-    // `Result<RunResult, IpcError>` (the §0.4 universal error shape). The shell has no §0.4.4 retention registry
-    // yet (P2.43), so it returns the genuine pre-retention `Err(InternalError)` — the same Err the real body
-    // returns for an unresolvable / not-yet-finished id. SHAPE asserted (kind == InternalError), NOT the
-    // provisional message (owned by the §2.8 catalog box); P3.50 replaces the shell with the real resolve →
-    // §1.12 RunResult projection.
+    // §6.4.1 unit (G15): the C8 resolve maps the §0.4.4 store `Option` onto the §0.4.3 `IpcError` — an empty
+    // store (no run retained) yields the honest `Err(InternalError)` (the same shell outcome for an
+    // unresolvable id), a retained run re-serves its `RunResult` verbatim (the idempotent §1.12 re-fetch), and
+    // a NON-matching run_id never serves the wrong summary (→ Err). Tested over a real `RunResultStore`, no mock.
     #[test]
-    fn c8_get_run_summary_contract_is_invocable_and_typed() {
-        let out = block_on(get_run_summary(run_id()));
-        let err = out.expect_err(
-            "§0.4.1/§0.4: the C8 shell has no retention registry yet (P2.43), so it returns the genuine \
-             pre-retention Err(InternalError); the typed Result<RunResult, IpcError> signature is the P2.31 deliverable",
-        );
+    fn c8_resolve_re_serves_the_retained_summary_else_internal_error() {
+        let store = RunResultStore::default();
+        // No retained run → the honest not-available result.
         assert_eq!(
-            err.kind,
+            resolve_run_summary(&store, run_id())
+                .expect_err("an empty store has no summary to re-serve")
+                .kind,
             ConversionErrorKind::InternalError,
-            "§2.13: the unresolvable-run shell outcome is the InternalError catch-all — SHAPE asserted, NOT \
-             the provisional message (the §2.8 catalog box owns the final string)"
+            "§2.13: an unresolvable run (nothing retained) is the InternalError catch-all"
+        );
+        // Retain a terminal summary → C8 re-serves it verbatim (idempotent, §0.4.1/§1.12).
+        let (result, paths) = a_retained_run(run_id());
+        store.retain(result.clone(), paths);
+        assert_eq!(
+            resolve_run_summary(&store, run_id()),
+            Ok(result),
+            "§0.4.1/§1.12: C8 re-serves the retained RunResult for its run_id (the idempotent re-fetch)"
+        );
+        // A DIFFERENT run's id never serves the wrong summary (a superseded / other run → Err).
+        assert_eq!(
+            resolve_run_summary(&store, other_run_id())
+                .expect_err("a non-matching run_id resolves nothing")
+                .kind,
+            ConversionErrorKind::InternalError,
+            "§0.4.4: a non-matching run_id resolves to the not-available result, never the wrong summary"
+        );
+    }
+
+    // §6.4.1 unit (G15): the C8 handler WIRING is source-scan-pinned (the C1/C13 no-mock pattern) — it injects
+    // the managed `State<RunResultStore>` and delegates to the pure `resolve_run_summary`, so it is the real
+    // re-serve, NOT the P2.31 `Err`-shell. Needles `concat!`-split to avoid the scan matching its own text.
+    #[test]
+    fn c8_handler_injects_the_store_and_delegates_to_the_pure_resolve() {
+        let src = include_str!("conversion.rs");
+        assert!(
+            src.contains(concat!("store: State<'_, Run", "ResultStore>")),
+            "§0.4.4: the C8 handler injects the managed State<RunResultStore> (P3.50)"
+        );
+        assert!(
+            src.contains(concat!("resolve_run_summary(store.", "inner(), run_id)")),
+            "§0.4.1/§0.7: the C8 handler is THIN — it delegates to the pure resolve_run_summary"
         );
     }
 }
