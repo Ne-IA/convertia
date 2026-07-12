@@ -41,7 +41,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the P3.5 minimal Engine trait, the PlanOutcome return, and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.1 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout), and P4.13 rewrites the subprocess arms — so the dispatch fn + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture."
+        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the P3.5 minimal Engine trait, the PlanOutcome return, and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.1 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout), and P4.13 rewrites the subprocess arms — so the dispatch fn + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture."
     )
 )]
 
@@ -560,10 +560,10 @@ pub async fn dispatch(
 ) -> InvocationResult {
     match &invocation.plan.program {
         // The one walking-skeleton lane — the native CSV/TSV engine (§3.5.6): run its transform on the §0.9
-        // in-core permit lane and forward its self-reported `bytes_processed / source_size` fraction (§1.7
-        // InProcessNative sub-case). [Build-Session-Entscheidung: P3.43]
+        // in-core permit lane, forward its self-reported fraction (P3.43), and cooperatively poll the job's
+        // cancellation token at each chunk boundary (P3.44). [Build-Session-Entscheidung: P3.43]
         EngineProgram::InProcessNative(_) => {
-            run_native_csv_tsv(&invocation.plan, pool, on_progress).await
+            run_native_csv_tsv(&invocation.plan, &invocation.cancel, pool, on_progress).await
         }
         // Subprocess lanes — unreachable-by-construction in the P3 walking skeleton (no subprocess engine is
         // registered; the registry + engines land at P4.4). P4.13 authors crate::isolation::run_confined and
@@ -593,9 +593,16 @@ pub async fn dispatch(
 /// permit-free-on-drop contract P3.45's `tokio::time::timeout(dispatch(..))` relies on ([`Pool::run_in_core`]);
 /// spawning the worker instead would strand the permit until the abandoned blocking thread finished. Spawning
 /// the forwarder (the `rt` feature; `tokio::select!`/`join!` need the test-only `macros` feature) is what lets
-/// the drain run concurrently with the awaited worker without a `select!`. [Build-Session-Entscheidung: P3.43]
+/// the drain run concurrently with the awaited worker without a `select!`.
+///
+/// **Cooperative cancel (P3.44).** A clone of the job's [`CancellationToken`] is moved into the blocking
+/// closure; the transform polls `cancel.is_cancelled()` at each chunk boundary and, on cancel, stops
+/// mid-stream ([`TransformStatus::Cancelled`] → [`InvocationResult::Cancelled`]). The partial `out_tmp` holds
+/// only a discardable `.part` temp — no §2.1 publish runs on the cancel path (the caller drops it, §3.2.2).
+/// [Build-Session-Entscheidung: P3.43]
 async fn run_native_csv_tsv(
     plan: &Invocation,
+    cancel: &CancellationToken,
     pool: &Pool,
     on_progress: impl Fn(f32) + Send + 'static,
 ) -> InvocationResult {
@@ -626,8 +633,11 @@ async fn run_native_csv_tsv(
         }
     });
 
+    // A clone of the token crosses into the blocking closure — CancellationToken is Clone + Send + 'static, and
+    // the clone shares the SAME cancellation state as the original the caller signals (P3.44).
+    let cancel = cancel.clone();
     let outcome = pool
-        .run_in_core(move || -> Result<(), TransformError> {
+        .run_in_core(move || -> Result<TransformStatus, TransformError> {
             // `create` opens the already-exclusively-created (`O_EXCL`, §2.14.1) publish temp for writing;
             // the §2.1 atomic publish CONSUMES it on success, so the engine only writes here (§3.2.2 TempPath).
             let out_file = std::fs::File::create(&out_path).map_err(TransformError::Write)?;
@@ -637,7 +647,9 @@ async fn run_native_csv_tsv(
             let mut report = |fraction: f32| {
                 let _ = progress_tx.blocking_send(fraction);
             };
-            csv_tsv_transform(&source, target, out_file, &mut report)
+            // The cooperative cancel poll (P3.44): a `true` at a chunk boundary stops the transform mid-stream.
+            let mut should_cancel = || cancel.is_cancelled();
+            csv_tsv_transform(&source, target, out_file, &mut report, &mut should_cancel)
         })
         .await;
 
@@ -647,7 +659,9 @@ async fn run_native_csv_tsv(
     let _ = forwarder.await;
 
     match outcome {
-        Ok(Ok(())) => InvocationResult::Succeeded,
+        Ok(Ok(TransformStatus::Completed)) => InvocationResult::Succeeded,
+        // Cooperative cancel (P3.44): the transform stopped mid-stream; the caller drops the partial out_tmp.
+        Ok(Ok(TransformStatus::Cancelled)) => InvocationResult::Cancelled,
         Ok(Err(error)) => InvocationResult::Failed(ConversionErrorKind::from(error)),
         Err(LaneError::Panicked | LaneError::PoolClosed) => {
             InvocationResult::Failed(ConversionErrorKind::InternalError)
@@ -840,6 +854,20 @@ impl From<TransformError> for ConversionErrorKind {
     }
 }
 
+/// The terminal state of a §3.5.6 native transform pass (P3.44): the pass ran to the end, or the cooperative
+/// §1.7 cancel poll stopped it at a chunk boundary. A cancel is NOT a [`TransformError`] (it is no failure) —
+/// the §1.7 executor maps it to `InvocationResult::Cancelled`, the "cleanly discards the one in progress"
+/// guarantee reached cooperatively (§1.7 InProcessNative sub-case), with the partial `out_tmp` discarded on
+/// drop and no §2.1 atomic publish. [Build-Session-Entscheidung: P3.44]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransformStatus {
+    /// Every record was written and the writer flushed — the item Succeeded.
+    Completed,
+    /// The cooperative cancel poll fired at a chunk boundary; the pass stopped mid-stream. The `out_tmp` holds
+    /// a partial, un-published `.part` temp discarded on drop (no atomic publish runs, §2.1/§3.2.2).
+    Cancelled,
+}
+
 impl TransformError {
     /// The underlying I/O error for a read/write failure — the §7.5 diagnostic-log detail the §1.7 executor
     /// (P3.43-P3.45) records alongside the surfaced §2.8 kind (which carries no raw detail — SSOT *no stack
@@ -890,29 +918,37 @@ const PROGRESS_CHANNEL_CAPACITY: usize = 16;
 /// a [`PROGRESS_CHUNK_BYTES`] boundary, plus a final `1.0` completion tick; a source whose decoded text is below
 /// one chunk crosses no boundary and emits ONLY the final `1.0` (§1.7 "sub-100-KB → single tick"). `on_progress`
 /// fires only on the
-/// success path — a failed transform surfaces no completion tick (the item `Failed`s). And `source` MUST be a
+/// success path — a failed OR cancelled transform surfaces no completion tick. And `source` MUST be a
 /// regular file: the FIFO / blocking-read pre-open type-check is the P3.49 read-path wiring's job (§2.12.4),
 /// and the wall-clock / wedged-read time bound is P3.45 — this pass owns neither.
+///
+/// **Cooperative cancel (§1.7 InProcessNative sub-case, P3.44):** `should_cancel` is polled at **every chunk
+/// boundary** — the same granularity as the progress tick. On a `true` poll the pass stops mid-stream and
+/// returns [`TransformStatus::Cancelled`]; the caller drops the partial `out_tmp` (deleted on drop, §3.2.2)
+/// and reports `Cancelled` with no §2.1 publish. A completed pass returns [`TransformStatus::Completed`].
 pub fn csv_tsv_transform(
     source: &Path,
     target: CsvTsvTarget,
     out: impl Write,
     on_progress: &mut impl FnMut(f32),
-) -> Result<(), TransformError> {
+    should_cancel: &mut impl FnMut() -> bool,
+) -> Result<TransformStatus, TransformError> {
     let bytes = std::fs::read(source).map_err(TransformError::Read)?;
-    transform_bytes(&bytes, target, out, on_progress)
+    transform_bytes(&bytes, target, out, on_progress, should_cancel)
 }
 
 /// The pure byte→byte core of [`csv_tsv_transform`] (source bytes in, transformed bytes out) — the transform
 /// LOGIC, separated from the file read so it is unit-testable over byte literals. Self-reports `bytes_processed
-/// / source_size` progress through `on_progress` (P3.43; see [`csv_tsv_transform`] for the fraction basis).
+/// / source_size` progress through `on_progress` (P3.43) and polls `should_cancel` at each chunk boundary
+/// (P3.44); see [`csv_tsv_transform`] for the fraction basis + the cooperative-cancel contract.
 /// [Build-Session-Entscheidung: P3.41]
 fn transform_bytes(
     bytes: &[u8],
     target: CsvTsvTarget,
     out: impl Write,
     on_progress: &mut impl FnMut(f32),
-) -> Result<(), TransformError> {
+    should_cancel: &mut impl FnMut() -> bool,
+) -> Result<TransformStatus, TransformError> {
     // Re-detect over the SAME §1.2 bounded header window intake used (`classify_encoding`/`classify_delimiter`
     // sample <= MAX_HEADER_WINDOW), so the transform's re-detection matches the freeze's Recognized verdict.
     // Index-FREE (`get(..).unwrap_or`) — the same defense-in-depth §2.12.4 groups this in-core untrusted-byte
@@ -988,6 +1024,14 @@ fn transform_bytes(
                             next_boundary =
                                 next_boundary.saturating_add(PROGRESS_CHUNK_BYTES as u64);
                         }
+                        // Cooperative cancel (§1.7 InProcessNative sub-case, P3.44): poll at the SAME chunk
+                        // boundary as progress. On cancel, stop mid-stream and return Cancelled — the caller
+                        // drops the partial out_tmp (§3.2.2) and runs no §2.1 publish. No final 1.0 tick fires
+                        // (the item is Cancelled, not done). A sub-chunk source crosses no boundary, so it is
+                        // effectively instant and completes before a cancel is polled.
+                        if should_cancel() {
+                            return Ok(TransformStatus::Cancelled);
+                        }
                     }
                 }
             }
@@ -998,7 +1042,7 @@ fn transform_bytes(
     writer.flush().map_err(TransformError::Write)?;
     // The completion tick (§1.11): the sole 1.0, and — for a sub-chunk source — the only tick emitted.
     on_progress(1.0);
-    Ok(())
+    Ok(TransformStatus::Completed)
 }
 
 /// The literal delimiter byte a [`Delimiter`] splits on — the source delimiter for the `csv` reader (all four
@@ -1808,6 +1852,78 @@ mod tests {
         );
     }
 
+    // §6.4.1 unit (G15) + §0.1 real-FS: the P3.44 §1.7 cooperative cancel through the dispatch lane. A
+    // PRE-cancelled token stops the native transform at the first chunk boundary → InvocationResult::Cancelled
+    // — the "cleanly discards the one in progress" guarantee reached cooperatively (no kill step, §1.7).
+    #[tokio::test]
+    async fn dispatch_cancels_the_native_lane_cooperatively() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let source = dir.path().join("big.csv");
+        // A multi-chunk source so the transform reaches a chunk boundary (where the cancel poll fires).
+        let mut bytes = Vec::new();
+        while bytes.len() < PROGRESS_CHUNK_BYTES * 3 {
+            bytes.extend_from_slice(b"a,b,c\n");
+        }
+        std::fs::write(&source, &bytes).expect("write source");
+        let invocation = native_lane_invocation(
+            &source,
+            "tsv",
+            tempfile::Builder::new()
+                .tempfile_in(dir.path())
+                .expect("out temp")
+                .into_temp_path(),
+        );
+        // Cancel BEFORE dispatch: the token is already tripped, so the first chunk-boundary poll observes it.
+        invocation.cancel.cancel();
+        assert_eq!(
+            dispatch(&invocation, &Pool::with_degree(1), |_| {}).await,
+            InvocationResult::Cancelled,
+            "§1.7: a cancelled token stops the native lane cooperatively → Cancelled"
+        );
+    }
+
+    // §6.4.1 unit (G15) + §0.1 real-FS: the P3.44 §2.1 "no partial leftover" guarantee END-TO-END. A cancelled
+    // native lane writes a partial out_tmp, but the §2.1 atomic publish NEVER runs on the cancel path, so
+    // dropping the un-consumed invocation (which owns the `TempPath`) deletes the partial `.part` temp (§3.2.2)
+    // — the file at the output path never survives. (The pre-dispatch token check + the batch-level end-to-end
+    // no-leftover assertion are the P3.46 conductor's, which owns the invocation lifecycle.)
+    #[tokio::test]
+    async fn a_cancelled_native_lane_leaves_no_partial_output_after_the_invocation_drops() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let source = dir.path().join("big.csv");
+        let mut bytes = Vec::new();
+        while bytes.len() < PROGRESS_CHUNK_BYTES * 3 {
+            bytes.extend_from_slice(b"a,b,c\n");
+        }
+        std::fs::write(&source, &bytes).expect("write source");
+        let out_temp = tempfile::Builder::new()
+            .tempfile_in(dir.path())
+            .expect("out temp")
+            .into_temp_path();
+        let out_path = out_temp.to_path_buf();
+        let invocation = native_lane_invocation(&source, "tsv", out_temp);
+        invocation.cancel.cancel();
+
+        let result = dispatch(&invocation, &Pool::with_degree(1), |_| {}).await;
+        assert_eq!(
+            result,
+            InvocationResult::Cancelled,
+            "the cancelled lane returns Cancelled"
+        );
+        // The partial temp is still present while the invocation (holding the TempPath) is alive — the §2.1
+        // publish did NOT run, so nothing was promoted to a final path.
+        assert!(
+            out_path.exists(),
+            "the un-published partial .part temp exists until the owning invocation drops"
+        );
+        // Dropping the un-consumed invocation drops the TempPath → the partial temp is deleted (§3.2.2/§2.1).
+        drop(invocation);
+        assert!(
+            !out_path.exists(),
+            "§2.1: dropping the un-published invocation deletes the partial temp — no leftover survives"
+        );
+    }
+
     // ─── P3.5: the §3.2 Engine trait (minimal) + the native CSV/TSV engine's plan() ──
 
     // A minimal eligible CSV `DroppedItem` for the native-engine plan() tests. plan() ignores `item` (the
@@ -1983,21 +2099,35 @@ mod transform_tests {
     /// its own `transform_reports_*` tests below via [`transform_collecting_ticks`].
     fn transform(bytes: &[u8], target: CsvTsvTarget) -> Result<Vec<u8>, TransformError> {
         let mut out = Vec::new();
-        transform_bytes(bytes, target, &mut out, &mut |_| {})?;
+        let status = transform_bytes(bytes, target, &mut out, &mut |_| {}, &mut || false)?;
+        assert_eq!(
+            status,
+            TransformStatus::Completed,
+            "the never-cancelling transform runs to completion"
+        );
         Ok(out)
     }
 
     /// Run `transform_bytes`, returning both the output bytes AND the ordered progress fractions `on_progress`
-    /// received — the P3.43 self-reported-progress test shape.
+    /// received — the P3.43 self-reported-progress test shape (never cancels).
     fn transform_collecting_ticks(
         bytes: &[u8],
         target: CsvTsvTarget,
     ) -> Result<(Vec<u8>, Vec<f32>), TransformError> {
         let mut out = Vec::new();
         let mut ticks = Vec::new();
-        transform_bytes(bytes, target, &mut out, &mut |fraction| {
-            ticks.push(fraction)
-        })?;
+        let status = transform_bytes(
+            bytes,
+            target,
+            &mut out,
+            &mut |fraction| ticks.push(fraction),
+            &mut || false,
+        )?;
+        assert_eq!(
+            status,
+            TransformStatus::Completed,
+            "the never-cancelling transform runs to completion"
+        );
         Ok((out, ticks))
     }
 
@@ -2146,9 +2276,11 @@ mod transform_tests {
         let src = dir.path().join("data.csv");
         std::fs::write(&src, b"a,b\n1,2\n").expect("write source");
         let mut out = Vec::new();
-        // [Test-Change: P3.43 — old-obsolete+new-correct, §1.7] on_progress arg added (P3.43): the 3-arg call is obsolete, the 4-arg call correct, success check unchanged; fmt wrapped the call so G70 --diff over-reads the old line — no expectation relaxed, no regression hidden.
-        csv_tsv_transform(&src, CsvTsvTarget::Tsv, &mut out, &mut |_| {})
-            .expect("transforms a real file");
+        // [Test-Change: P3.43 — old-obsolete+new-correct, §1.7] on_progress (P3.43) + should_cancel (P3.44) args added: the old call form is obsolete, the new call correct, success check unchanged; fmt wrapped the call so G70 --diff over-reads the old line — no expectation relaxed, no regression hidden.
+        csv_tsv_transform(&src, CsvTsvTarget::Tsv, &mut out, &mut |_| {}, &mut || {
+            false
+        })
+        .expect("transforms a real file");
         assert_eq!(
             out, b"a\tb\n1\t2\n",
             "§3.5.6: the path wrapper reads + transforms a real source file"
@@ -2242,6 +2374,72 @@ mod transform_tests {
         );
     }
 
+    // §6.4.1 unit (G15): the P3.44 cooperative cancel. A `should_cancel` firing at the first chunk boundary
+    // stops the transform MID-STREAM → TransformStatus::Cancelled, a partial (< full) output, and NO final
+    // 1.0 completion tick (§1.7 InProcessNative cancel: "cleanly discards the one in progress").
+    #[test]
+    fn transform_stops_mid_stream_and_reports_cancelled_when_the_poll_fires() {
+        // A multi-chunk source so a boundary is crossed (the poll granularity, PROGRESS_CHUNK_BYTES).
+        let mut source = Vec::new();
+        while source.len() < PROGRESS_CHUNK_BYTES * 3 {
+            source.extend_from_slice(b"a,b,c\n");
+        }
+        let full = transform(&source, CsvTsvTarget::Tsv).expect("the full transform completes");
+
+        let mut out = Vec::new();
+        let mut ticks = Vec::new();
+        let status = transform_bytes(
+            &source,
+            CsvTsvTarget::Tsv,
+            &mut out,
+            &mut |fraction| ticks.push(fraction),
+            &mut || true,
+        )
+        .expect("a cancelled transform is not an error");
+        assert_eq!(
+            status,
+            TransformStatus::Cancelled,
+            "§1.7: a firing cancel poll stops the transform mid-stream → Cancelled"
+        );
+        assert!(
+            out.len() < full.len(),
+            "§1.7: the cancelled output is partial (stopped mid-stream): {} < {}",
+            out.len(),
+            full.len()
+        );
+        assert_ne!(
+            ticks.last().copied(),
+            Some(1.0),
+            "§1.11: no final 1.0 completion tick fires on cancel: {ticks:?}"
+        );
+    }
+
+    // §6.4.1 unit (G15): the P3.44 cancel is polled ONLY at chunk boundaries (§1.7 InProcessNative sub-case). A
+    // sub-chunk source crosses no boundary, so an always-cancelling poll is NEVER reached — the near-instant
+    // pass Completes (the §1.7 "cancelling keeps the files already finished" semantics: a tiny file finishes
+    // before a cancel could be observed).
+    #[test]
+    fn a_sub_chunk_transform_completes_even_when_the_poll_would_cancel() {
+        let mut out = Vec::new();
+        let status = transform_bytes(
+            b"a,b\n1,2\n",
+            CsvTsvTarget::Tsv,
+            &mut out,
+            &mut |_| {},
+            &mut || true,
+        )
+        .expect("transforms");
+        assert_eq!(
+            status,
+            TransformStatus::Completed,
+            "§1.7: a sub-chunk source crosses no boundary, so the always-true cancel poll is never reached"
+        );
+        assert_eq!(
+            out, b"a\tb\n1\t2\n",
+            "the sub-chunk source transformed fully"
+        );
+    }
+
     #[test]
     fn from_token_parses_the_two_canonical_tokens() {
         use std::ffi::OsStr;
@@ -2297,8 +2495,14 @@ mod transform_tests {
         // The path wrapper surfaces a real read failure as `Read(io::Error)`, and `io_source` exposes the io
         // detail for the §7.5 log (the P3.43-P3.45 executor records it). A missing file → NotFound.
         let missing = Path::new("this-convertia-source-does-not-exist.csv");
-        let err = csv_tsv_transform(missing, CsvTsvTarget::Tsv, Vec::new(), &mut |_| {})
-            .expect_err("a missing source fails");
+        let err = csv_tsv_transform(
+            missing,
+            CsvTsvTarget::Tsv,
+            Vec::new(),
+            &mut |_| {},
+            &mut || false,
+        )
+        .expect_err("a missing source fails");
         assert!(
             matches!(err, TransformError::Read(_)),
             "a missing source is a Read error"
