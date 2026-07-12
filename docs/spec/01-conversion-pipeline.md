@@ -430,7 +430,8 @@ fn group(detected: Vec<DetectionResult>) -> Grouping;
 
 enum Grouping {
     /// Exactly one eligible source format across all readable items.
-    /// `SkippedItem` is the §0.6 type (owner): { item, source, reason: SkipReason }.
+    /// `SkippedItem` is the §0.6 type (owner): { item, source_display, detected_display,
+    /// reason: SkipReason } (the P3.76 wire rename + the P3.50 detected-display retention).
     /// `members` (eligible ItemIds) and `skipped`'s ItemIds are id-DISJOINT views over
     /// the SINGLE id space assigned at the freeze over ALL dropped items (§0.6 invariant
     /// 6) — never re-indexed from 0, so the two never collide.
@@ -459,7 +460,7 @@ there is **exactly one** item and its outcome is `DetectionOutcome::Uncertain { 
 otherwise (zero items, or 2+ ineligible items of mixed/none kinds) →
 `CollectedSet::Empty { skipped }` (the generic "nothing here I can convert") — **`skipped`
 is projected from `EmptyReport.outcomes`**: each ineligible item becomes a `SkippedItem
-{ item, source, reason: SkipReason }` (§0.6), so the per-item skip reasons §5.2 state-10
+{ item, source_display, detected_display, reason: SkipReason }` (§0.6), so the per-item skip reasons §5.2 state-10
 shows are **carried on the wire**, not discarded (a 2+ all-ineligible drop no longer
 collapses to a reason-less Empty). The genuinely-zero-items case (cancelled dialog /
 drained-empty `PendingIntake`) is `Empty { skipped: vec![] }`. This is the single
@@ -518,7 +519,9 @@ struct CollectedSummary {            // == the §0.6 CollectedSet::Single field 
     count: usize,                // e.g. 48  → "48 JPG files"
     total_bytes: u64,            // for the size hint / 1.10 pre-flight
     roots: Vec<PathBuf>,         // dropped root(s) → relative-subtree + open-folder
-    skipped: Vec<SkippedItem>,   // ineligibles, §0.6 type { item, source, reason: SkipReason }
+    skipped: Vec<SkippedItem>,   // ineligibles, §0.6 type { item, source_display,
+                                 //   detected_display, reason: SkipReason } (the P3.76 wire
+                                 //   rename + the P3.50 detected-display retention)
     // detection-derived hints surfaced in the summary line (per 04):
     encoding_hint: Option<String>,   // e.g. CSV detected "Windows-1252"
     delimiter_hint: Option<String>,  // e.g. CSV/TSV detected ";"

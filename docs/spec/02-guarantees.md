@@ -1282,7 +1282,7 @@ enum OutcomeMsg {
     Lossy   { kind: LossyKind, text: String },            // §2.9.1 note, substituted
     Skipped { reason: SkipReason, text: String },         // §0.6 SkipReason — a pre-flight
                                                           //   ineligible (UnsupportedType/Empty/
-                                                          //   Unreadable/Unrecognized). A skip is
+                                                          //   Unreadable/Uncertain). A skip is
                                                           //   NOT a failure: it rides a skip-shaped
                                                           //   variant so a consumer pattern-matching
                                                           //   OutcomeMsg can tell skip from fail
@@ -1292,6 +1292,23 @@ enum OutcomeMsg {
                                                           //   "must not be conflated").
 }
 ```
+
+**The pre-flight SKIP lines come from the SAME table `[DECIDED 2026-07-11 — the P3.50
+ruling]`:** `crate::outcome` renders `OutcomeMsg::Skipped.text` by mapping the
+`SkipReason` through the §1.12 bridge (`skip_reason_to_error_kind`, P2.20) onto the
+kind rows above — `Empty` → the `Empty` row, `Unreadable` → the `Unreadable` row
+(both intake-worded already), `Uncertain` → the `Unrecognized` row (the SSOT
+principle-6 "or that it can't tell" arm), and `UnsupportedType` → the
+`UnsupportedType` row, whose `{detected}` substitution fills from the retained
+`SkippedItem.detected_display` (§0.6 — detection's own output, kept through the
+freeze; the SSOT "detected: X" mandate). **One skip-specific line exists** (the
+mapping's only non-table string, honouring SSOT principle 6's "names what it
+believes the file is" arm): an `Uncertain` skip **with a named best guess**
+(`detected_display: Some`) renders **"ConvertIA isn't sure what kind of file this
+is — it might be {guess} — so it can't convert it."** (`{guess}` = the retained
+best-guess display); a guessless `Uncertain` renders the `Unrecognized` row (the
+"or that it can't tell" arm). Same tone, same catalog home, no other
+skip-specific strings.
 
 `text` is the canonical English from the catalog above (§2.8.2) or the §2.9.1 note
 table, with `{x}` substitutions already applied; `kind` lets §5 swap in a localised

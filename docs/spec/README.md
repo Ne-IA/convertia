@@ -503,7 +503,8 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   **Failed** (mid-run). Owner: §1.1 / §1.9 / §0.6.
 - **Target type name** — §1.5 adopts §0.6's `TargetOffer`/`Target` (the C3 return type);
   `OfferedTargets`/`OfferedTarget` retired. Owner: §0.6 (struct) / §1.5 (logic).
-- **`SkippedItem`** — defined in §0.6 `{ item, source, reason: SkipReason }` (NOT
+- **`SkippedItem`** — defined in §0.6 `{ item, source_display, detected_display, reason:
+  SkipReason }` (the P3.76 wire rename + the P3.50 detected-display retention; NOT
   `ErrorKind` — every SkippedItem is detection-ineligible so it always has a SkipReason,
   making the §1.12 `OutcomeMsg::Skipped` projection a trivial copy; the forward
   `SkipReason → ErrorKind` is the only, one-way, conversion, on the §1.12 projection

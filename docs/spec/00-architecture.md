@@ -834,6 +834,18 @@ pub struct SkippedItem {
     pub source_display: String,      // display-only lossy form of the dropped path (§2.10.1) for
                                      //   the summary display [DECIDED 2026-07-06]; the real path
                                      //   stays core-side (FrozenCollectedSet path table, §0.4.4)
+    pub detected_display: Option<String>, // the friendly detected-type name RETAINED from
+                                     //   detection's own output [DECIDED 2026-07-11 — the P3.50
+                                     //   ruling]: Some(detected) for UnsupportedType (its
+                                     //   DetectionOutcome variant always carries it), the
+                                     //   best_guess for Uncertain when detection named one, None
+                                     //   for Empty/Unreadable/guessless-Uncertain. RETENTION,
+                                     //   not invention — SSOT principle 6 mandates the surface
+                                     //   ("can't convert this type — detected: X"), and the
+                                     //   §2.8.2 UnsupportedType row's {detected} substitution
+                                     //   fills from HERE for the §1.12 skip line (+ the §1.4
+                                     //   confirm summary may show it). Display-only String,
+                                     //   never a path.
     pub reason: SkipReason,          // §0.6 SkipReason (UnsupportedType | Uncertain | Empty | Unreadable)
                                      //   — NOT ErrorKind. Every SkippedItem comes from a
                                      //   detection-INELIGIBLE outcome (§1.3), all of which have
@@ -945,8 +957,10 @@ pub enum JobSource {                 // [DECIDED 2026-07-11 — the P3.47 ruling
                                      //   no queued-only carve-out). Coupling invariant (§6
                                      //   property-tested): source is Skipped(_) ⟺ state is
                                      //   JobState::Skipped(_). No data is synthesised: a skip
-                                     //   has no DetectionOutcome/size to invent (§1.4/§1.12
-                                     //   honesty — SSOT Fail clearly).
+                                     //   has no full DetectionOutcome/size to invent (§1.4/§1.12
+                                     //   honesty — SSOT Fail clearly; the SkippedItem's RETAINED
+                                     //   detected_display is detection's own output, not
+                                     //   invention — the P3.50 ruling).
 
 // §1.9 owns the lifecycle TRANSITIONS; this is the canonical state type.
 // `Failed` carries the §2.8 `ErrorKind` (the wire enum mirrored in §0.4.3) — NOT a
