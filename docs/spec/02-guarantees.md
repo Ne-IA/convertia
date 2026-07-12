@@ -76,7 +76,14 @@ applied the §2.7 destination rules). Given a *final resolved destination path*
    exact owning lock cross-instance** (§2.6.3 / §2.14.1).
 2. **Engine writes into `tmp`** (the engine is told to write to `tmp`, never to
    `final`; §3.5 constructs the arg). The engine runs through the §2.12 isolation
-   wrapper.
+   wrapper. `[CLARIFIED 2026-07-12 — the P3.48 ruling]` This step IS the awaited
+   **§1.7 dispatch** (the invocation lifecycle with its cancel/timeout, writing into
+   the §3.2.2 `out_tmp` = the step-1 publish temp the tier-1 orchestrator picked and
+   populated per the §3.2.2 TempPath ownership): for a subprocess engine it is
+   inherently asynchronous (§2.12 spawn/kill), so the sequence is composed tier-1 as
+   *pick-temp (1) → await dispatch (2) → publish legs (3–7)* — steps 3–7 run only on
+   `InvocationResult::Succeeded`; a `Cancelled`/`Failed` invocation drops the temp
+   (§3.2.2) and never reaches the publish legs.
 3. On engine success: **`tmp.sync_all()`** (Rust `File::sync_all` → `fsync` on
    Unix, `FlushFileBuffers` on Windows) so the bytes are durable *before* the
    rename — per the durability research, atomic-name-update is **not** the same as
