@@ -41,13 +41,14 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the P3.5 minimal Engine trait, the PlanOutcome return, and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.1 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout), and P4.13 rewrites the subprocess arms — so the dispatch fn + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture."
+        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the P3.5 minimal Engine trait, the PlanOutcome return, and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.1 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), and P4.13 rewrites the subprocess arms — so the dispatch fn + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture."
     )
 )]
 
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Serialize;
 use specta::Type;
@@ -59,7 +60,7 @@ use crate::detection::{
 };
 use crate::domain::{DroppedItem, FormatId, JobId, TargetId};
 use crate::outcome::ConversionErrorKind;
-use crate::pool::{LaneError, Pool};
+use crate::pool::{LaneError, Pool, NATIVE_CSV_TSV_TIMEOUT};
 
 /// The stable engine discriminant (§0.6 / §3.2) — used in logging / SBOM rows (§3.7), the §3.2.3
 /// `(SourceFmt,TargetFmt) → EngineId` registry, the §0.9 pool's `HashMap<EngineId, bool>` serialised-flag
@@ -560,10 +561,18 @@ pub async fn dispatch(
 ) -> InvocationResult {
     match &invocation.plan.program {
         // The one walking-skeleton lane — the native CSV/TSV engine (§3.5.6): run its transform on the §0.9
-        // in-core permit lane, forward its self-reported fraction (P3.43), and cooperatively poll the job's
-        // cancellation token at each chunk boundary (P3.44). [Build-Session-Entscheidung: P3.43]
+        // in-core permit lane, forward its self-reported fraction (P3.43), cooperatively poll the job's
+        // cancellation token at each chunk boundary (P3.44), and bound it by the §0.9 native wall-clock timeout
+        // (P3.45). [Build-Session-Entscheidung: P3.43]
         EngineProgram::InProcessNative(_) => {
-            run_native_csv_tsv(&invocation.plan, &invocation.cancel, pool, on_progress).await
+            run_native_csv_tsv(
+                &invocation.plan,
+                &invocation.cancel,
+                pool,
+                on_progress,
+                NATIVE_CSV_TSV_TIMEOUT,
+            )
+            .await
         }
         // Subprocess lanes — unreachable-by-construction in the P3 walking skeleton (no subprocess engine is
         // registered; the registry + engines land at P4.4). P4.13 authors crate::isolation::run_confined and
@@ -588,23 +597,30 @@ pub async fn dispatch(
 /// pool-closure ([`LaneError`]) is ONE item's `Failed(InternalError)`, never a pool-wide fault (§0.9 panic
 /// isolation).
 ///
-/// **Why the FORWARDER (not the `run_in_core` future) is `tokio::spawn`ed.** `run_in_core` is awaited directly
-/// in this frame, so dropping the dispatch future drops the lane future and frees its §0.9 permit at once — the
-/// permit-free-on-drop contract P3.45's `tokio::time::timeout(dispatch(..))` relies on ([`Pool::run_in_core`]);
-/// spawning the worker instead would strand the permit until the abandoned blocking thread finished. Spawning
-/// the forwarder (the `rt` feature; `tokio::select!`/`join!` need the test-only `macros` feature) is what lets
-/// the drain run concurrently with the awaited worker without a `select!`.
+/// **Why the FORWARDER (not the lane) is `tokio::spawn`ed.** The `run_in_core` lane future is handed to
+/// [`bounded_lane`], which awaits it under `tokio::time::timeout` — so on a §1.7 wall-clock timeout the lane
+/// future is DROPPED, freeing its §0.9 permit at once (the permit-free-on-drop contract, [`Pool::run_in_core`])
+/// while the blocking worker detaches. Spawning the WORKER instead would strand the permit until the abandoned
+/// thread finished; spawning only the forwarder (the `rt` feature) lets the progress drain run concurrently
+/// with the awaited worker without a `select!`. [`bounded_lane`] drains the forwarder on the within-bound path
+/// and aborts it on timeout (so it does not linger waiting on the abandoned thread's `progress_tx`).
 ///
-/// **Cooperative cancel (P3.44).** A clone of the job's [`CancellationToken`] is moved into the blocking
-/// closure; the transform polls `cancel.is_cancelled()` at each chunk boundary and, on cancel, stops
-/// mid-stream ([`TransformStatus::Cancelled`] → [`InvocationResult::Cancelled`]). The partial `out_tmp` holds
-/// only a discardable `.part` temp — no §2.1 publish runs on the cancel path (the caller drops it, §3.2.2).
+/// **Cooperative cancel + wall-clock timeout (P3.44 / P3.45).** The blocking closure polls a **child** of the
+/// job's [`CancellationToken`] (`deadline_token`, cloned in as `poll_token`) at each chunk boundary. The child
+/// trips on the user cancel (parent → child) — stopping the transform mid-stream ([`TransformStatus::Cancelled`]
+/// → [`InvocationResult::Cancelled`]), the partial `out_tmp` discarded on drop with no §2.1 publish (§3.2.2) —
+/// AND when [`bounded_lane`] trips it on a §1.7 wall-clock `timeout` expiry, so a non-wedged abandoned thread
+/// bails at its next boundary WITHOUT the timeout cancelling the whole run. On expiry the item is
+/// `Failed(EngineHang)` and the run CONTINUES (the §1.7 InProcessNative timeout sub-case / §2.12.4 bounded
+/// in-core path; the wedged-uninterruptible-read residue parks in the pool's bounded headroom). The
+/// `timeout` parameter is the §0.9-owned [`NATIVE_CSV_TSV_TIMEOUT`] (`dispatch` supplies it).
 /// [Build-Session-Entscheidung: P3.43]
 async fn run_native_csv_tsv(
     plan: &Invocation,
     cancel: &CancellationToken,
     pool: &Pool,
     on_progress: impl Fn(f32) + Send + 'static,
+    timeout: Duration,
 ) -> InvocationResult {
     // The transform's two runtime params come from the plan's argv (§3.2.2 / NativeCsvTsvEngine::plan):
     // args[0] = the §2.3-resolved source path, args[1] = the output-format token. Index-free (`first`/`get`) —
@@ -633,38 +649,87 @@ async fn run_native_csv_tsv(
         }
     });
 
-    // A clone of the token crosses into the blocking closure — CancellationToken is Clone + Send + 'static, and
-    // the clone shares the SAME cancellation state as the original the caller signals (P3.44).
-    let cancel = cancel.clone();
-    let outcome = pool
-        .run_in_core(move || -> Result<TransformStatus, TransformError> {
-            // `create` opens the already-exclusively-created (`O_EXCL`, §2.14.1) publish temp for writing;
-            // the §2.1 atomic publish CONSUMES it on success, so the engine only writes here (§3.2.2 TempPath).
-            let out_file = std::fs::File::create(&out_path).map_err(TransformError::Write)?;
-            // The sync loop self-reports through the bounded channel. A closed receiver (only if the forwarder
-            // ended early) just stops the flow; in the P3.43 success path the forwarder is live until the
-            // transform drops progress_tx, so every send is delivered.
-            let mut report = |fraction: f32| {
-                let _ = progress_tx.blocking_send(fraction);
-            };
-            // The cooperative cancel poll (P3.44): a `true` at a chunk boundary stops the transform mid-stream.
-            let mut should_cancel = || cancel.is_cancelled();
-            csv_tsv_transform(&source, target, out_file, &mut report, &mut should_cancel)
-        })
-        .await;
+    // The blocking closure polls a CHILD of the job token (P3.44): it trips on the user cancel (parent →
+    // child) AND when `bounded_lane` trips it on a §1.7 wall-clock timeout (P3.45) — the latter WITHOUT
+    // cancelling the whole run (tripping the job token itself would). `deadline_token` stays in this frame for
+    // `bounded_lane`; `poll_token` (a cheap Arc-sharing clone) crosses into the closure — CancellationToken is
+    // Clone + Send + 'static, and the child shares the SAME cancellation state. [Build-Session-Entscheidung: P3.45]
+    let deadline_token = cancel.child_token();
+    let poll_token = deadline_token.clone();
+    let lane = pool.run_in_core(move || -> Result<TransformStatus, TransformError> {
+        // `create` opens the already-exclusively-created (`O_EXCL`, §2.14.1) publish temp for writing;
+        // the §2.1 atomic publish CONSUMES it on success, so the engine only writes here (§3.2.2 TempPath).
+        let out_file = std::fs::File::create(&out_path).map_err(TransformError::Write)?;
+        // The sync loop self-reports through the bounded channel. A closed receiver (only if the forwarder
+        // ended early) just stops the flow; in the success path the forwarder is live until the transform
+        // drops progress_tx, so every send is delivered.
+        let mut report = |fraction: f32| {
+            let _ = progress_tx.blocking_send(fraction);
+        };
+        // The cooperative cancel/timeout poll (P3.44/P3.45): a `true` at a chunk boundary stops the transform.
+        let mut should_cancel = || poll_token.is_cancelled();
+        csv_tsv_transform(&source, target, out_file, &mut report, &mut should_cancel)
+    });
 
-    // `run_in_core` has finished, so `progress_tx` (moved into its closure) is dropped and the forwarder drains
-    // to None; await it so every buffered fraction reaches `on_progress` before returning. A forwarder panic
-    // (a panicking sink) is the caller's fault, not the lane's — its JoinError is ignored.
-    let _ = forwarder.await;
+    // Run the lane under the §1.7 wall-clock bound (P3.45): a lane that outruns `timeout` is abandoned (its
+    // §0.9 permit freed on drop, the worker detached) → `Failed(EngineHang)`, the run continuing.
+    bounded_lane(lane, forwarder, deadline_token, timeout).await
+}
 
-    match outcome {
-        Ok(Ok(TransformStatus::Completed)) => InvocationResult::Succeeded,
-        // Cooperative cancel (P3.44): the transform stopped mid-stream; the caller drops the partial out_tmp.
-        Ok(Ok(TransformStatus::Cancelled)) => InvocationResult::Cancelled,
-        Ok(Err(error)) => InvocationResult::Failed(ConversionErrorKind::from(error)),
-        Err(LaneError::Panicked | LaneError::PoolClosed) => {
-            InvocationResult::Failed(ConversionErrorKind::InternalError)
+/// The terminal outcome of a §1.7 in-core lane before [`bounded_lane`] maps it to an [`InvocationResult`]: the
+/// §3.5.6 transform's `Result<`[`TransformStatus`]`, `[`TransformError`]`>` wrapped in the §0.9 pool's
+/// `Result<_, `[`LaneError`]`>` (a caught worker panic / closed pool). Named so the `bounded_lane` signature +
+/// its tests avoid a `clippy::type_complexity` nesting. [Build-Session-Entscheidung: P3.45]
+type LaneOutcome = Result<Result<TransformStatus, TransformError>, LaneError>;
+
+/// Run one §1.7 in-core lane future under the §0.9 wall-clock timeout (P3.45), map its terminal outcome to an
+/// [`InvocationResult`], and manage the progress `forwarder` — the §1.7 `InProcessNative` timeout sub-case.
+/// Extracted from [`run_native_csv_tsv`] so the wall-clock mapping is unit-testable over a synthetic lane
+/// (a never-completing `pending()` for the timeout arm, a `ready(..)` for each terminal arm) without a real hang:
+///
+/// - **Within the bound** (`timeout` returns `Ok`): drain the `forwarder` (so every buffered fraction reaches
+///   the sink before returning), then map the lane outcome — [`TransformStatus::Completed`] →
+///   [`InvocationResult::Succeeded`]; the cooperative [`TransformStatus::Cancelled`] (P3.44) →
+///   [`InvocationResult::Cancelled`]; a §3.5.6 [`TransformError`] → its §2.8 [`ConversionErrorKind`]; a
+///   [`LaneError`] (a caught worker panic / a closed pool, §0.9) → `InternalError` (ONE item's failure, never a
+///   pool-wide fault).
+/// - **On expiry** (`timeout` returns `Err(Elapsed)`): `tokio::time::timeout` has already DROPPED the lane
+///   future, so its §0.9 permit is freed at once and the blocking worker detaches — the §1.7 "wedged-read
+///   abandoned, not awaited" design (the thread parks in the pool's bounded headroom, §2.12.4). Trip the
+///   cooperative poll (`deadline_token`, a child of the job token) so a still-progressing NON-wedged abandoned
+///   thread bails at its next chunk boundary without touching the run, and abort the `forwarder` so it does not
+///   linger waiting on the abandoned thread's `progress_tx`. The item is [`InvocationResult::Failed`] with
+///   [`ConversionErrorKind::EngineHang`] and the run CONTINUES; a truly wedged uninterruptible read never
+///   reaches a boundary — the accepted §1.7 residue, bounded by the pool's headroom.
+async fn bounded_lane(
+    lane: impl std::future::Future<Output = LaneOutcome>,
+    forwarder: tokio::task::JoinHandle<()>,
+    deadline_token: CancellationToken,
+    timeout: Duration,
+) -> InvocationResult {
+    match tokio::time::timeout(timeout, lane).await {
+        Ok(outcome) => {
+            // The lane finished within the bound; drain the forwarder so every buffered fraction is delivered.
+            // A forwarder panic (a panicking sink) is the caller's fault, not the lane's — its JoinError is ignored.
+            let _ = forwarder.await;
+            match outcome {
+                Ok(Ok(TransformStatus::Completed)) => InvocationResult::Succeeded,
+                // Cooperative cancel (P3.44): the transform stopped mid-stream; the caller drops the partial out_tmp.
+                Ok(Ok(TransformStatus::Cancelled)) => InvocationResult::Cancelled,
+                Ok(Err(error)) => InvocationResult::Failed(ConversionErrorKind::from(error)),
+                Err(LaneError::Panicked | LaneError::PoolClosed) => {
+                    InvocationResult::Failed(ConversionErrorKind::InternalError)
+                }
+            }
+        }
+        Err(_elapsed) => {
+            // §1.7 wall-clock timeout: the lane future is already dropped (§0.9 permit freed, worker detached).
+            // Best-effort cooperative stop for a non-wedged abandoned thread, then tear the forwarder down so it
+            // does not linger on the abandoned thread's progress_tx.
+            deadline_token.cancel();
+            forwarder.abort();
+            let _ = forwarder.await;
+            InvocationResult::Failed(ConversionErrorKind::EngineHang)
         }
     }
 }
@@ -1922,6 +1987,118 @@ mod tests {
             !out_path.exists(),
             "§2.1: dropping the un-published invocation deletes the partial temp — no leftover survives"
         );
+    }
+
+    // §6.4.1 unit (G15): the P3.45 §1.7 wall-clock TIMEOUT arm of `bounded_lane`. A never-completing lane (the
+    // wedged-uninterruptible-read model, §2.12.4) cannot resolve, so the wall-clock bound alone decides the
+    // outcome → Failed(EngineHang) — the run continuing — and the timeout TRIPS the cooperative-cancel poll
+    // (the child deadline token) so a non-wedged abandoned thread would bail at its next boundary. Deterministic:
+    // a `pending()` lane can never win the race, so the short real bound always elapses (no flake).
+    #[tokio::test]
+    async fn bounded_lane_abandons_a_wedged_lane_to_engine_hang_and_trips_the_cooperative_poll() {
+        let deadline_token = CancellationToken::new();
+        let forwarder = tokio::spawn(async {});
+        let wedged = std::future::pending::<LaneOutcome>();
+        let result = bounded_lane(
+            wedged,
+            forwarder,
+            deadline_token.clone(),
+            Duration::from_millis(50),
+        )
+        .await;
+        assert_eq!(
+            result,
+            InvocationResult::Failed(ConversionErrorKind::EngineHang),
+            "§1.7: a lane that outruns its wall-clock bound is abandoned → Failed(EngineHang), the run continuing"
+        );
+        assert!(
+            deadline_token.is_cancelled(),
+            "§1.7: the wall-clock timeout trips the cooperative-cancel poll (the child deadline token)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the P3.45 WITHIN-bound arm of `bounded_lane` maps every terminal lane outcome and
+    // leaves the cooperative poll UN-tripped (no timeout fired) — Completed→Succeeded, the cooperative
+    // Cancelled→Cancelled (P3.44), a §3.5.6 TransformError→its §2.8 kind, and a §0.9 LaneError→InternalError
+    // (one item's failure, never a pool-wide fault). A `ready(..)` lane resolves before the generous bound.
+    #[tokio::test]
+    async fn bounded_lane_maps_each_within_bound_outcome_without_tripping_the_poll() {
+        let generous = Duration::from_secs(30);
+        let cases: Vec<(LaneOutcome, InvocationResult)> = vec![
+            (
+                Ok(Ok(TransformStatus::Completed)),
+                InvocationResult::Succeeded,
+            ),
+            (
+                Ok(Ok(TransformStatus::Cancelled)),
+                InvocationResult::Cancelled,
+            ),
+            (
+                Ok(Err(TransformError::AmbiguousDelimiter)),
+                InvocationResult::Failed(ConversionErrorKind::Corrupt),
+            ),
+            (
+                Err(LaneError::Panicked),
+                InvocationResult::Failed(ConversionErrorKind::InternalError),
+            ),
+            (
+                Err(LaneError::PoolClosed),
+                InvocationResult::Failed(ConversionErrorKind::InternalError),
+            ),
+        ];
+        for (outcome, want) in cases.into_iter() {
+            let deadline_token = CancellationToken::new();
+            let forwarder = tokio::spawn(async {});
+            let got = bounded_lane(
+                std::future::ready(outcome),
+                forwarder,
+                deadline_token.clone(),
+                generous,
+            )
+            .await;
+            assert_eq!(
+                got, want,
+                "§1.7: the within-bound lane outcome maps to its InvocationResult"
+            );
+            assert!(
+                !deadline_token.is_cancelled(),
+                "§1.7: no wall-clock timeout fired, so the cooperative poll is not tripped"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15): the P3.45 bounded-pool-headroom leg (the Decision note ② §1.7 AND/OR first leg). A real
+    // `run_in_core` lane whose worker BLOCKS forever (the wedged-uninterruptible-read model) is abandoned at the
+    // wall-clock deadline; because `run_in_core` frees its §0.9 permit ON DROP (P3.3), the detached worker parks
+    // in the pool's headroom holding NO permit — so a fresh lane on the SAME degree-1 pool still runs (the run
+    // CONTINUES, the pool is not starved). Deterministic: the worker never completes, so the short real bound
+    // alone fires the timeout; a std channel the test controls releases the parked worker at teardown.
+    #[tokio::test]
+    async fn a_timed_out_lane_frees_its_permit_so_the_pool_is_not_starved() {
+        let pool = Pool::with_degree(1);
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        // A lane whose worker blocks on a never-sent channel until teardown (models a wedged read holding the
+        // single degree-1 permit's worker slot).
+        let wedged = pool.run_in_core(move || {
+            let _ = release_rx.recv();
+        });
+        let timed_out = tokio::time::timeout(Duration::from_millis(50), wedged).await;
+        assert!(
+            timed_out.is_err(),
+            "§1.7: the wedged lane outruns the wall-clock bound and is abandoned"
+        );
+        // The permit was freed on drop despite the still-parked worker (bounded-pool-headroom): a fresh lane
+        // acquires the single degree-1 permit and runs to completion. The fresh lane is itself wall-clock-bounded
+        // so a permit-free-on-drop REGRESSION fails FAST (a clean red) instead of hanging CI forever on a lane
+        // that can never acquire the starved permit — the generous bound never bites on the passing path (the
+        // trivial closure finishes in microseconds).
+        let recovered = tokio::time::timeout(Duration::from_secs(30), pool.run_in_core(|| 7_u32))
+            .await
+            .expect("§1.7/§0.9: a fresh lane must acquire the freed permit within the bound — a permit-free regression would otherwise hang here")
+            .expect("§1.7/§0.9: the abandoned lane freed its permit — the pool is not starved, the run continues");
+        assert_eq!(recovered, 7);
+        // Release the parked worker so it exits cleanly at teardown (no blocked thread leaks beyond the test).
+        drop(release_tx);
     }
 
     // ─── P3.5: the §3.2 Engine trait (minimal) + the native CSV/TSV engine's plan() ──

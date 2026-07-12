@@ -26,6 +26,20 @@
 //! to `run_in_core`, and P3.45 wraps the lane future in `tokio::time::timeout`. §1.7 owns the `Receiver`, so
 //! the lane stays a minimal permit + off-runtime primitive and references no type authored downstream.
 //!
+//! ## The §1.7 wedged-read bound — the bounded-pool-headroom leg [Build-Session-Entscheidung: P3.45]
+//! §1.7 requires "the abandoned thread MUST NOT exhaust the blocking pool" and offers its mechanism as an
+//! explicit AND/OR: **either** a bounded pool with headroom **or** a per-read deadline. The P3 slice takes the
+//! **FIRST leg — bounded-pool-with-headroom** — which IS the already-built architecture and needs no new code:
+//! [`Pool::run_in_core`] frees its §0.9 global-degree permit the instant its future is dropped (the `_permit`
+//! lives in the async frame, NOT the blocking closure — see [`Pool::run_in_core`]), so a §1.7-timed-out
+//! (abandoned) worker parks in the pool's headroom holding **no** permit; and the Tauri-managed multi-thread
+//! Tokio runtime's default blocking pool is **bounded** (512 threads at the pinned tokio 1.52.3) with ample
+//! headroom above the §0.9 global degree (`clamp(cores − 1, 1, 4)`). A handful of wedged uninterruptible
+//! reads therefore degrade gracefully — those items fail `Failed(EngineHang)`, the batch finishes — rather
+//! than wedging the pool. The **per-read-deadline leg is deliberately NOT built** (a spec-sanctioned OR-choice,
+//! §2.12.4 demands no per-read deadline; the freeze already stat-prechecks + resolves every source, P3.9, so a
+//! wedge is rare post-freeze device death). The wall-clock timeout parameter is [`NATIVE_CSV_TSV_TIMEOUT`].
+//!
 //! ## SHELLED — a doc-only contract map P4 EXPANDS (never rebuilds)
 //!  - **P4.20** EXPANDS [`Pool`] onto the subprocess engines + the §1.10 memory-adaptive
 //!    `effective = min(global_degree, per_engine_cap, memory_cap)` factor; it REUSES [`clamp_global_degree`]
@@ -37,8 +51,10 @@
 //!    = 1` (§0.9-owned, imported by the §6.7.2 harness). **P4.23** re-homes the native lane P3.3 built onto
 //!    the now-real pool, unchanged.
 //!  - The §0.9 per-engine timeout / watchdog-poll / no-progress `pub const`s are authored with their
-//!    consumers: the §1.7 native wall-clock timeout with P3.45, the subprocess watchdog set with P4.20.
-//!    **P3.3 authors no `pub const`** (no P3 consumer imports them).
+//!    consumers: the §1.7 native wall-clock timeout [`NATIVE_CSV_TSV_TIMEOUT`] is now LIVE (authored P3.45,
+//!    consumed by the §1.7 `bounded_lane` wrapper); the subprocess watchdog set (poll interval / no-progress
+//!    threshold / per-engine timeouts) is still authored with P4.20. **P3.3 authored no `pub const`** (no P3.3
+//!    consumer imported one; P3.45 adds the first).
 //!
 //! ## Tier note (§0.7 tier-3 vs §0.9's `HashMap<EngineId, bool>`)
 //! `EngineId` lives in the tier-2 `crate::engines` layer, so a tier-3 leaf cannot name it. P3.3's live
@@ -58,14 +74,36 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.9 Pool + the §1.7 in-core spawn_blocking lane (Pool::new/with_degree/run_in_core), LaneError, and the clamp_global_degree/resolve_global_degree degree helpers are authored ahead of their production consumers. P3.43 WIRED run_in_core + LaneError into the §1.7 dispatch InProcessNative arm (the native CSV/TSV executor), but they STAY dead in the production build until the P3.46 conductor makes dispatch a live root — rustc does NOT propagate liveness through the dead-but-present dispatch to its callees. P4.20/P4.22 EXPAND the pool onto the subprocess engines + the serialised single-permit lane; nothing CONSTRUCTS a Pool in the production build yet (dispatch receives a &Pool), so Pool::new/with_degree + the clamp/resolve degree helpers stay dead until the P4 pool wiring builds the app-wide pool. Every item above is dead until its consumer lands, which keeps this module-level expect fulfilled. The cfg(test) tests below construct the pool and exercise the lane, so the test build is dead-code-clean. expect (not allow) auto-flags the moment the last of these consumers lands — matching crate::engines/crate::domain/crate::outcome."
+        reason = "the §0.9 Pool + the §1.7 in-core spawn_blocking lane (Pool::new/with_degree/run_in_core), LaneError, and the clamp_global_degree/resolve_global_degree degree helpers are authored ahead of their production consumers. P3.43 WIRED run_in_core + LaneError into the §1.7 dispatch InProcessNative arm (the native CSV/TSV executor), but they STAY dead in the production build until the P3.46 conductor makes dispatch a live root — rustc does NOT propagate liveness through the dead-but-present dispatch to its callees. P4.20/P4.22 EXPAND the pool onto the subprocess engines + the serialised single-permit lane; nothing CONSTRUCTS a Pool in the production build yet (dispatch receives a &Pool), so Pool::new/with_degree + the clamp/resolve degree helpers stay dead until the P4 pool wiring builds the app-wide pool. P3.45 adds the NATIVE_CSV_TSV_TIMEOUT pub const (the §0.9 native-engine wall-clock timeout parameter); it is consumed ONLY by crate::engines::dispatch (the §1.7 bounded_lane wrapper), which is itself dead until the P3.46 conductor makes dispatch a live root, so the const is dead in the production build until then (the §6.7.2 harness import is a subsequent consumer). Every item above is dead until its consumer lands, which keeps this module-level expect fulfilled. The cfg(test) tests below construct the pool and exercise the lane, so the test build is dead-code-clean. expect (not allow) auto-flags the moment the last of these consumers lands — matching crate::engines/crate::domain/crate::outcome."
     )
 )]
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::Semaphore;
+
+/// The §0.9-owned per-engine **wall-clock timeout** for the §1.7 `InProcessNative` native CSV/TSV engine
+/// (§3.5.6) — the single source of that engine's time bound, so test and prod can never drift (the §0.9
+/// "named `pub const`s in this §0.9 pool module … imported by the §6.7.2 test harness" contract, co-located
+/// with the P4.22 `MAX_LO_CONCURRENCY`). The §1.7 `bounded_lane` wrapper (`crate::engines`, P3.45) runs the
+/// native lane under `tokio::time::timeout(NATIVE_CSV_TSV_TIMEOUT, …)`; on expiry the lane future is dropped
+/// (its §0.9 permit freed at once, the blocking worker detached), the cooperative poll is tripped, and the
+/// item is `Failed(EngineHang)` while the run CONTINUES (the §1.7 InProcessNative timeout sub-case; the
+/// wedged-uninterruptible-read residue parks in the pool's bounded headroom, §2.12.4).
+///
+/// **Baseline (pre-calibration).** [Build-Session-Entscheidung: P3.45] `120s` — **tight for this light engine**
+/// relative to the video engine's minutes-long budget (§0.9), yet generous enough that any legitimate native
+/// CSV/TSV transform completes well within it: the transform is a bounded, whole-file-buffered, linear
+/// re-encode/re-quote (§3.5.6), so even a multi-hundred-MB export on slow media finishes in seconds, and the
+/// real trigger of this bound is a wedged/pathological stall, not a large-but-progressing file. The §1.10
+/// input-size preflight (P4.72) is the primary size bound (it rejects an over-budget input before the engine);
+/// this timeout is the stall backstop. v1 ships this as the pre-calibration baseline (the §0.9 "baseline values
+/// calibrated against the §6 corpus"); **P3.61** authors the deterministic bound-firing fixture that exercises
+/// THIS §1.7 wall-clock timeout — the §0.9 "timeout-sentinel case" for the P3 slice. (P9.41 calibrates the
+/// separate §1.10 SIZE budgets over the P4.72 engine — NOT this §1.7 timeout.)
+pub const NATIVE_CSV_TSV_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The failure modes of the §0.9 in-core `spawn_blocking` lane. INTERNAL — never on the IPC wire (no
 /// `serde`/`specta`); the §1.7/§2.8 caller (P3.46) maps it onto a per-item `Failed`, so a lane failure is

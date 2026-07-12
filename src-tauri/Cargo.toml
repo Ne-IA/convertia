@@ -59,9 +59,16 @@ tempfile = "3.27.0"
 # up on the tauri host. FIRST direct tokio edge; ALREADY in Cargo.lock transitively via `tauri`, so this is a
 # direct-edge promotion (no newly-resolved package, no SBOM/G53 row). Caret-pinned to the lock-resolved
 # 1.52.3 (the normal-lib convention serde_json/tokio-util/uuid use; `=`-exact is for the specta codegen
-# tools). Features `rt` (spawn_blocking + JoinError) + `sync` (Semaphore) — NOT `net` (no socket, so the G29
-# rule (g)/(j) + cargo-deny [bans] no-network surface stays intact). §0.8 floor row: the paired L(-1) box P3.82.
-tokio = { version = "1.52.3", features = ["rt", "sync"] }
+# tools). Features `rt` (spawn_blocking + JoinError) + `sync` (Semaphore) + `time` — NOT `net` (no socket, so
+# the G29 rule (g)/(j) + cargo-deny [bans] no-network surface stays intact). §0.8 floor row: the paired L(-1)
+# box P3.82. [P3.45] the `time` feature adds `tokio::time::timeout` — the §1.7 InProcessNative wall-clock
+# timeout wrapper that bounds the native CSV/TSV lane (on expiry the lane future is dropped → its §0.9 permit
+# frees, the blocking worker is abandoned → the item is `Failed(EngineHang)`, the run continues, §2.12.4).
+# VERIFIED gate-inert (the P3.45 pre-build ruling): `time = []` is a bare in-crate tokio feature flag with NO
+# optional dependency, so the feature-add resolves NO new package and `Cargo.lock` stays byte-identical
+# (G18/G18a unchanged), and the P3.82 §0.8 floor is version-keyed (features orthogonal) — NO floor action, NO
+# L(-1) touch. Still NOT `net`: the no-network dependency surface is intact.
+tokio = { version = "1.52.3", features = ["rt", "sync", "time"] }
 # [P2.133] §0.4.4/§1.7 cancellation primitive — `tokio_util::sync::CancellationToken` for the RunId/
 # CollectingId token registries (P2.42/P2.45). Caret-pinned to the lock-resolved 0.7.18 (the normal-lib
 # convention, not the `=`-exact codegen-coupled specta tools); NO extra features (CancellationToken is in
