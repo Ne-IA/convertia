@@ -796,7 +796,7 @@ struct EngineInvocation {
 enum InvocationResult {
     Succeeded,
     Failed(ConversionErrorKind), // §2.8 taxonomy (the Rust-internal kind, §2.8 owner);
-                                 //   the orchestrator (crate::run) maps it to the wire `ErrorKind`
+                                 //   the orchestrator (crate::orchestrator, §0.7) maps it to the wire `ErrorKind`
                                  //   via `ErrorKind::from(kind)` at the §1.9 Running→Failed transition
                                  //   (From impl owned by crate::outcome) and again at the §0.4.3 IPC
                                  //   boundary (IpcError { kind: ErrorKind::from(kind), .. }) — one conversion
@@ -1122,21 +1122,27 @@ Pending ─▶ Running ─┬─▶ Succeeded
   becomes `Pending`); it is distinct from a mid-run `Failed`.
 - **Running → Failed mapping — where the kind conversion lives `[DECIDED]`.** When the
   §1.7 lifecycle returns `InvocationResult::Failed(kind)` (carrying the Rust-internal
-  `ConversionErrorKind`, §2.8), the orchestrator — **`crate::run`**, which owns the
-  transition — advances the job to `JobState::Failed(...)` by mapping the internal kind
+  `ConversionErrorKind`, §2.8), the orchestrator — **`crate::orchestrator`**, which owns
+  the transition (`[CORRECTED 2026-07-11 — the P3.46 hard-stop]` this section previously
+  mis-named the transition/Batch owner "`crate::run`"; §0.7 is normative — the tier-1
+  `crate::orchestrator` homes the §1.9 queue + job lifecycle + `JobState`, while
+  `crate::run` is the tier-2 scratch/cleanup LEAF that depends DOWN only and may
+  reference neither the engine registry's `InvocationResult` nor `JobState` — reconciled
+  literal→normative, the §1.1-freeze precedent) — advances the job to
+  `JobState::Failed(...)` by mapping the internal kind
   to the wire `ErrorKind` **immediately, before** the state is recorded / a
   `RunResult.items` row or live `ItemFinished` event is emitted:
   ```rust
-  // in crate::run, on InvocationResult::Failed(kind):
+  // in crate::orchestrator, on InvocationResult::Failed(kind):
   let wire: ErrorKind = ErrorKind::from(kind);   // From<ConversionErrorKind> for ErrorKind
   job.state = JobState::Failed(wire);            // §0.6 JobState
   ```
   The `From<ConversionErrorKind> for ErrorKind` impl is **owned by `crate::outcome`**
-  (the §2.8 taxonomy ↔ §0.4.3 IpcError mirror module), **not** `crate::run`. Under the
+  (the §2.8 taxonomy ↔ §0.4.3 IpcError mirror module), **not** `crate::orchestrator`. Under the
   §2.8 **preferred** anti-drift mechanism (`ErrorKind` is a *type alias* for
   `ConversionErrorKind`) the `From` is the identity blanket impl and the map is a no-op
   cast; under the two-enum fallback it is an explicit per-variant `match` in
-  `crate::outcome`. Either way the conversion site is **`crate::run`** and the conversion
+  `crate::outcome`. Either way the conversion site is **`crate::orchestrator`** and the conversion
   *definition* is **`crate::outcome`** (cross-ref §0.4.3 / §1.7 / §2.8). The same
   `ErrorKind::from(kind)` is what §1.7's `InvocationResult` comment and §0.4.3's IPC
   boundary refer to — one conversion, named once.
@@ -1155,7 +1161,7 @@ Pending ─▶ Running ─┬─▶ Succeeded
   degree and any per-engine serialization the §0.9 pool enforces; it does not pick
   the number.
 - **Batch construction projects pre-flight skips as non-queue `Skipped` records `[DECIDED]`.**
-  When the orchestrator (`crate::run`) builds the `Batch` from the **frozen `CollectedSet`**
+  When the orchestrator (`crate::orchestrator`) builds the `Batch` from the **frozen `CollectedSet`**
   at **C6 (start_conversion)**, it creates, for **every `SkippedItem` in
   `CollectedSet::Single.skipped`**, a `ConversionJob` record with
   `JobState = Skipped(reason)` set **at construction** (the `SkipReason` copied directly from

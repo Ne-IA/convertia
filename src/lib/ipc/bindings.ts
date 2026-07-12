@@ -1409,7 +1409,7 @@ export type JobState =
 "succeeded" |
 /**
  *  A named §2.8 failure kind; nothing was written for it (§2.1). The §1.9 Running→Failed transition
- *  maps the internal kind to the wire kind via `ErrorKind::from` in `crate::run` (§2.8.2).
+ *  maps the internal kind to the wire kind via `ErrorKind::from` in `crate::orchestrator` (§2.8.2).
  */
 ({ failed: ConversionErrorKind }) & { skipped?: never } |
 /**

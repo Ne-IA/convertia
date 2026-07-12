@@ -164,7 +164,7 @@ pub enum JobState {
     /// Output verified + atomically published (§2.1).
     Succeeded,
     /// A named §2.8 failure kind; nothing was written for it (§2.1). The §1.9 Running→Failed transition
-    /// maps the internal kind to the wire kind via `ErrorKind::from` in `crate::run` (§2.8.2).
+    /// maps the internal kind to the wire kind via `ErrorKind::from` in `crate::orchestrator` (§2.8.2).
     Failed(ConversionErrorKind),
     /// A detection-ineligible pre-flight item (§1.2/§1.3) — set at `Batch` construction, never queued,
     /// terminal (§1.9). Carries the §0.6 `SkipReason` copied directly from the `SkippedItem`.

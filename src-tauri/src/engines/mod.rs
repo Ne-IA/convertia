@@ -514,7 +514,7 @@ pub struct EngineInvocation {
 }
 
 /// The terminal result of one §1.7 invocation (§1.7). `Failed` carries the Rust-internal §2.8
-/// [`ConversionErrorKind`]; the orchestrator (`crate::run`) maps it to the wire `ErrorKind` via
+/// [`ConversionErrorKind`]; the orchestrator (`crate::orchestrator`, §0.7) maps it to the wire `ErrorKind` via
 /// `ErrorKind::from(kind)` at the §1.9 Running→Failed transition (the identity under the §2.8.2 option-1
 /// alias) and again at the §0.4.3 IPC boundary — one conversion.
 ///

@@ -677,11 +677,12 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **`Invocation` (plan, §3.2.2) vs `EngineInvocation` (dispatch envelope, §1.7)** — the
   latter wraps `(JobId, EngineId, Invocation, CancellationToken)`; duplicated argv/cwd/env
   removed from §1.7. `TempPath = tempfile::TempPath`. `InvocationResult` carries the
-  Rust-internal `ConversionErrorKind`; the orchestrator (`crate::run`) maps it to wire
+  Rust-internal `ConversionErrorKind`; the orchestrator (`crate::orchestrator`) maps it to wire
   `ErrorKind` via `ErrorKind::from(kind)` at the **§1.9 Running→Failed transition** (the
   `From<ConversionErrorKind> for ErrorKind` impl is owned by `crate::outcome`; identity
   under the §2.8 type-alias mechanism) and at the §0.4.3 IPC boundary — one conversion,
-  call-site `crate::run`, definition-site `crate::outcome`. Owner: §1.9 / §3.2.2 / §1.7.
+  call-site `crate::orchestrator` (`[CORRECTED 2026-07-11 — P3.46]` was "`crate::run`"; §0.7
+  normative), definition-site `crate::outcome`. Owner: §1.9 / §3.2.2 / §1.7.
 - **`OutcomeMsg::Skipped { reason: SkipReason }`** added — a pre-flight skip rides a
   skip-shaped variant (not `Failure`), so skip ≠ fail at the type level. Owner: §2.8 / §1.12.
 - **process-wrap = the maintainer-described successor to command-group** (was wrongly
@@ -937,8 +938,10 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   text carve-out** so it satisfies the "resolved id" gate (not a `NOASSERTION` hard fail);
   full AOM Patent License text in `THIRD-PARTY-LICENSES.txt`. Owner: §3.1 / §3.6.1 / §3.7.2 /
   §6.3.3.
-- **Orchestrator ConversionErrorKind→ErrorKind mapping home named** — `crate::run` (the §1.9
-  transition owner) calls `ErrorKind::from(kind)` at the Running→Failed transition; the
+- **Orchestrator ConversionErrorKind→ErrorKind mapping home named** — `crate::orchestrator`
+  (the §1.9 transition owner; `[CORRECTED 2026-07-11 — P3.46]` this row previously said
+  "`crate::run`" — §0.7 normative, the tier-2 `run` leaf owns scratch/cleanup only) calls
+  `ErrorKind::from(kind)` at the Running→Failed transition; the
   `From<ConversionErrorKind> for ErrorKind` impl is owned by `crate::outcome` (identity under
   the §2.8 type-alias mechanism). Owner: §1.9 / §0.4.3 / §1.7 / §2.8.
 - **§1.2 in-core sniffs DECIDED (stale `[OPEN — owner §2.12]` tag removed)** — text-encoding
