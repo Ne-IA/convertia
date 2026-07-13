@@ -252,21 +252,17 @@ export const commands = {
 	 *    `!Deserialize`, so `Option<Channel<T>>` cannot be a command arg — the same forced shape the C1
 	 *    `ingest_paths` handler documents; the §0.4.1 C6 row already specifies it non-optional).
 	 *
-	 *  [Build-Session-Entscheidung: P2.29] **Shell returns `Err(IpcError{ kind: InternalError })` — the same
-	 *  owner-approved interface-shell pattern as C3/C4/C5 (P2.25/P2.26/P2.27).** `RunId` is a non-nil v4-UUID
-	 *  newtype with no zero value (and no public constructor), so unlike C1/C2a (`CollectedSet::Empty`) / C2b
-	 *  (`Ok(None)`) there is no `Ok(empty)` to return — and fabricating an `Ok(RunId)` would be a LIE (it would
-	 *  claim a run started when nothing was enqueued and no `ConversionEvent` will ever fire on the Channel),
-	 *  exactly the fabricated handling the interface-shell pattern forbids (CLAUDE §5). Until the §0.4.4
-	 *  collected-set registry (P2.44) + the §1.9 queue / §0.9 workers land (P3.46), **no** `collectedSetId`
-	 *  resolves — so the shell's honest result is exactly the `Err` the real body returns for an unresolvable id:
-	 *  `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError`
-	 *  `plan_encode` precedent C3/C4/C5 cite). The named fill-boxes own the rest: (a) the §2.8 catalog box owns
-	 *  the FINAL message — the string below is a PROVISIONAL neutral English one — and must add a COMMAND-level
-	 *  string (the §2.8 catalog is item-scoped); (b) the §0.4.4 registry resolve + the §1.9 queue build / §0.9
-	 *  worker spawn / `ConversionEvent` emission + the §0.6 SUCCESS path (the minted `RunId`) belong to the body
-	 *  box (P3.46), and the RunId mint-point (at C6 accept, NOT the §2.4 freeze — §7.1.2) is fixed by P2.48;
-	 *  (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
+	 *  [Build-Session-Entscheidung: P3.48 — the C6 body fill] The handler is a THIN AppHandle door (§0.7): it
+	 *  injects the `AppHandle` (a `#[tauri::command]` special arg) and delegates to [`start_run`], which resolves
+	 *  the §0.4.4 managed State + the §2.14 base paths, does the SYNC run setup, and SPAWNS the async run — so it
+	 *  returns immediately with the minted `RunId` (§1.11; the `onProgress` Channel carries all telemetry). The
+	 *  glue is AppHandle-coupled boot-glue (the §1.1a pattern — this crate ships no `tauri::test` mock BY
+	 *  DECISION, so the State-resolution + spawn are SOURCE-SCAN-pinned, not `tauri::test`-executed; the PURE
+	 *  conductor `crate::orchestrator::run_conversion` is unit-tested directly over a directly-registered frozen
+	 *  set). `on_progress` stays the non-optional run Channel (tauri's `Channel<T>` is `!Deserialize`, so
+	 *  `Option<Channel<T>>` cannot be a command arg — the C1 `onScan` forced shape). Its `AppHandle` signature
+	 *  makes the handler + `start_run` + `run_conversion_spawned` G28 diff-floor-exempt (the §1.1a boot-glue
+	 *  exemption).
 	 */
 	startConversion: (collectedSetId: CollectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice, rerunDecision: RerunDecision, onProgress: Channel<ConversionEvent>) => __TAURI_INVOKE<RunId>("start_conversion", { collectedSetId, target, options, destination, rerunDecision, onProgress }),
 	/**
@@ -531,7 +527,7 @@ export type Availability =
  *  `total` counts ONLY items that entered the §1.9 queue — the SAME queued-eligible denominator as
  *  `RunStarted.total_items` (P2.37.1), EXCLUDING pre-flight-skipped items. If `total` counted dropped-but-
  *  skipped items the bar could never reach 100%; skips are reconciled only at the §1.12 Summary. The equality
- *  `BatchProgress.total == RunStarted.total_items` is a §1.11 RUNTIME emission invariant the P3.46 conductor
+ *  `BatchProgress.total == RunStarted.total_items` is a §1.11 RUNTIME emission invariant the P3.48 conductor
  *  holds (both read the same `CollectedSet::Single.count`); P2.37.3 fixes the shared-`u32`-denominator field +
  *  its documented invariant. `done` is the completed-item numerator (also queued-only).
  */
@@ -1221,7 +1217,7 @@ export type IpcError = {
  *  path (it is not dead wire code — it carries the projected pre-flight skips + any mid-run cooperative skip),
  *  so the conductor emits no live `ItemStarted`/`ItemFinished{Skipped}` for a freeze-time skip. The
  *  `ItemFinished.outcome` field structurally CAN carry `Skipped` (the SAME shared `ItemOutcome` type as the
- *  terminal `RunResult.items`), so the policy is a §1.9/§1.12 RUNTIME emission rule the P3.46 conductor honors,
+ *  terminal `RunResult.items`), so the policy is a §1.9/§1.12 RUNTIME emission rule the P3.48 conductor honors,
  *  NOT a type-level prohibition; P2.37.4 fixes the documented policy + the structural enabler.
  */
 export type ItemFinished = {
@@ -1261,7 +1257,11 @@ export type ItemOutcome =
 ({ failed: {
 	error: IpcError,
 } }) & { skipped?: never; succeeded?: never } |
-/**  A pre-flight detection-ineligible item (§1.2/§1.3) — carries the §0.6 `SkipReason` (skip ≠ fail). */
+/**
+ *  A skipped item — carries the §0.6 `SkipReason` (skip ≠ fail): a pre-flight detection-ineligible item
+ *  (§1.2/§1.3) OR the §2.5.3 re-run skip (`AlreadyConverted`, the P3.48 ruling). Reserved for the §1.12
+ *  terminal-projection path (no live `ItemFinished{Skipped}` is emitted — §0.4.2).
+ */
 ({ skipped: {
 	reason: SkipReason,
 } }) & { failed?: never; succeeded?: never } |
@@ -1413,8 +1413,10 @@ export type JobState =
  */
 ({ failed: ConversionErrorKind }) & { skipped?: never } |
 /**
- *  A detection-ineligible pre-flight item (§1.2/§1.3) — set at `Batch` construction, never queued,
- *  terminal (§1.9). Carries the §0.6 `SkipReason` copied directly from the `SkippedItem`.
+ *  A skipped item — terminal, never queued, no live events (§1.9). Either a detection-ineligible pre-flight
+ *  item (§1.2/§1.3, its `SkipReason` copied from the frozen `SkippedItem` at `build_batch`) OR the §2.5.3
+ *  re-run skip (`Skipped(AlreadyConverted)`, the P3.48 ruling — assigned by the C6 conductor's §2.5 applier
+ *  on a ledger-hit item that keeps its real `Eligible` `DroppedItem`; the refined P3.47 coupling).
  */
 ({ skipped: SkipReason }) & { failed?: never } |
 /**  User cancel; nothing written for it (§1.7/§1.11). */
@@ -1627,9 +1629,11 @@ export type OutcomeMsg =
 	text: string,
 } } |
 /**
- *  A §1.1/§1.3 pre-flight SKIP (a detection-ineligible item that never entered the queue, projected into
- *  `RunResult.items` at run-end, §1.12) — `reason` is the §0.6 `SkipReason`. A skip rides THIS skip-shaped
- *  variant, NOT `Failure`, so skip ≠ fail at the type level (§1.12).
+ *  A SKIP projected into `RunResult.items` at run-end (§1.12) — either a §1.1/§1.3 pre-flight
+ *  detection-ineligible item that never entered the queue (the four detection `SkipReason`s) OR the §2.5.3
+ *  re-run skip (`AlreadyConverted`, the P3.48 ruling — a ledger-hit item the user chose to skip); `reason`
+ *  is the §0.6 `SkipReason`. A skip rides THIS skip-shaped variant, NOT `Failure`, so skip ≠ fail at the
+ *  type level (§1.12).
  */
 { type: "skipped"; data: {
 	reason: SkipReason,
@@ -1802,10 +1806,12 @@ export type RunResult = {
 	/**  The run this summary is for (§7.1) — minted at C6 `start_conversion`. */
 	runId: RunId,
 	/**
-	 *  Per-item outcome + output→source mapping (§1.12). INCLUDES the freeze-time pre-flight `SkippedItem`s
-	 *  (`CollectedSet::Single.skipped`) projected as `ItemResult { item, output_display: None,
-	 *  state: Skipped(reason), reason: Some(OutcomeMsg::Skipped{ reason, .. }) }` — the skip rides the skip-shaped `OutcomeMsg`
-	 *  variant (§2.8), NOT `Failure`, so skip ≠ fail at the type level (§1.12); counted in `totals.skipped`.
+	 *  Per-item outcome + output→source mapping (§1.12). INCLUDES every skip — the freeze-time pre-flight
+	 *  `SkippedItem`s (`CollectedSet::Single.skipped`, the four detection reasons) AND the §2.5.3 re-run skip
+	 *  (`Skipped(AlreadyConverted)`, assigned by the C6 applier over an item that keeps its `Eligible`
+	 *  `DroppedItem`) — each projected as `ItemResult { item, output_display: None, state: Skipped(reason),
+	 *  reason: Some(OutcomeMsg::Skipped{ reason, .. }) }`; the skip rides the skip-shaped `OutcomeMsg` variant
+	 *  (§2.8), NOT `Failure`, so skip ≠ fail at the type level (§1.12); counted in `totals.skipped`.
 	 */
 	items: ItemResult[],
 	/**  The succeeded / failed / cancelled / skipped tally (§1.12). */
@@ -1839,7 +1845,7 @@ export type RunResult = {
  *  `CollectedSet::Single.count` (i.e. `items.len()` — NOT the internal `Grouping::Single.members`, never on the
  *  §0.6 wire), EXCLUDING pre-flight-skipped items (§1.1/§1.3, which never enter the §1.9 queue). It is the
  *  `BatchProgress.total` denominator (P2.37.3), so a skipped item never holds the bar below 100% — skips are
- *  reconciled only at the §1.12 Summary. The "= count" equality is a §1.9 RUNTIME emission rule the P3.46
+ *  reconciled only at the §1.12 Summary. The "= count" equality is a §1.9 RUNTIME emission rule the P3.48
  *  conductor enforces when it builds the queue; P2.37.1 fixes the FIELD + its documented denominator contract.
  *
  *  [Build-Session-Entscheidung: P2.37.2] **`will_reencode` is a non-optional `bool`, always definite.** A
@@ -1877,15 +1883,22 @@ export type ScanProgress = {
 };
 
 /**
- *  Why a dropped item was skipped — the four detection-INELIGIBLE §1.2 outcome classes (§0.6 / §1.3).
- *  Carried on `SkippedItem.reason` as the canonical skip cause. The `DetectionOutcome → SkipReason`
- *  projection is P2.16, and the ONE-WAY forward `SkipReason → ErrorKind` projection (the non-invertible
- *  `Uncertain → Unrecognized`, §2.8.2) lives on the §1.12 helper (P2.20), never on this type. NOT
- *  `ErrorKind`: a skip is a freeze-time ineligibility, distinct from a conversion-time failure.
+ *  Why a dropped item was skipped (§0.6 / §1.3 / §2.5.3) — **four detection-INELIGIBLE §1.2 outcome classes**
+ *  (`UnsupportedType`/`Uncertain`/`Empty`/`Unreadable`, assigned at the §1.1 freeze) **plus the one §2.5.3
+ *  re-run skip** `AlreadyConverted` (assigned at C6 construction, the P3.48 rerun-skip ruling). Carried on
+ *  `SkippedItem.reason` (the four detection classes) or on a re-run item's `JobState::Skipped(AlreadyConverted)`
+ *  (the item keeps its `Eligible` `DroppedItem`, no `SkippedItem` fabricated — §1.9/§1.12 `[CLARIFIED]`). The
+ *  `DetectionOutcome → SkipReason` projection (P2.16) produces ONLY the four detection classes — never
+ *  `AlreadyConverted` (the freeze never mints it). The ONE-WAY forward `SkipReason → ErrorKind` bridge (the
+ *  non-invertible `Uncertain → Unrecognized`, §2.8.2) lives on the §1.12 helper (P2.20), never on this type;
+ *  `AlreadyConverted` rides that bridge only for exhaustiveness (its §2.8.2 line renders DIRECTLY, never via
+ *  the bridge). NOT `ErrorKind`: a skip is a freeze/re-run ineligibility, distinct from a conversion-time failure.
  *
- *  [Build-Session-Entscheidung: P2.5] Mirrors the sibling fieldless wire enums (`ReadFailure` /
+ *  [Build-Session-Entscheidung: P2.5 → P3.48] Mirrors the sibling fieldless wire enums (`ReadFailure` /
  *  `Confidence`): `Copy` (fieldless) + the uniform `#[serde(rename_all = "camelCase")]` wire form
- *  (`unsupportedType` / `uncertain` / `empty` / `unreadable`). No `Hash` (not a map key).
+ *  (`unsupportedType` / `uncertain` / `empty` / `unreadable` / `alreadyConverted`). No `Hash` (not a map key).
+ *  P3.48 ADDS `AlreadyConverted` — an ADDITIVE wire variant (bindings.ts regen); an absent-in-older-wire key is
+ *  impossible (the enum is OUTBOUND-only Rust→WebView, so no inbound compatibility concern).
  */
 export type SkipReason =
 /**  A real type we identified but do not convert (the ineligible `DetectionOutcome::UnsupportedType`). */
@@ -1895,7 +1908,15 @@ export type SkipReason =
 /**  0-byte / no bytes to read (`DetectionOutcome::Empty`). */
 "empty" |
 /**  Could not read the bytes at all (`DetectionOutcome::Unreadable`). */
-"unreadable";
+"unreadable" |
+/**
+ *  The §2.5.3 re-run skip (the P3.48 ruling): a ledger-hit item the user chose to skip at the §2.5
+ *  batch-level prompt (`RerunDecision::Skip`) — assigned `JobState::Skipped(AlreadyConverted)` at C6
+ *  construction (the item keeps its real `Eligible` `DroppedItem`, no `SkippedItem` fabricated), terminal,
+ *  never queued, no live events, projected into the §1.12 summary like every skip. NOT a detection
+ *  outcome — the §1.1 freeze never mints it (`DetectionOutcome::skip_reason` never returns it).
+ */
+"alreadyConverted";
 
 /**
  *  An item present in the drop but NOT eligible for the batch — unsupported / uncertain / empty /
@@ -2009,7 +2030,10 @@ export type Totals = {
 	failed: number,
 	/**  Items discarded by user cancel (§1.7/§1.11) — finished-before-cancel items stay in `succeeded`. */
 	cancelled: number,
-	/**  Pre-flight detection-ineligible items projected into the summary (§1.3/§1.12) — never `failed`. */
+	/**
+	 *  Skipped items projected into the summary (§1.3/§1.12) — never `failed`: the pre-flight
+	 *  detection-ineligible skips AND the §2.5.3 re-run skip (`Skipped(AlreadyConverted)`, the P3.48 ruling).
+	 */
 	skipped: number,
 };
 

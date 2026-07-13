@@ -252,15 +252,6 @@ pub fn resolve_identity(path: &Path) -> io::Result<FileIdentity> {
 /// The §2.3.3 write-target link-safety verdict — whether publishing to a candidate output path would land
 /// on (clobber) a frozen SOURCE file, directly or through a symlink / junction / hardlink (§2.3). Returned
 /// by [`is_safe_output`].
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.3.3 is_safe_output's verdict type (P3.8), constructed only by is_safe_output — itself \
-                  unwired until the §2.1.1 write sequence (P3.38) — so its dead-ness is ambiguous during the \
-                  P3 wiring window; `allow` (permissive) covers it. Exercised by the is_safe_output_tests."
-    )
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputSafety {
     /// The write does not resolve onto any frozen source file — publishing here is safe (§2.3.3).
@@ -282,13 +273,6 @@ pub enum OutputSafety {
 /// set" ONLY by resolving ONTO a source file (equality) — a literal path-PREFIX reject would reject the normal
 /// beside-source case §2.3.3 explicitly permits ("NOT the container … beside-source is the normal, correct
 /// case"). [Build-Session-Entscheidung: P3.9]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.3.3 shared membership helper — called only by is_safe_output (P3.8) + open_verified_parent_dir (P3.9), both unwired until the §2.1.1 write sequence (P3.12+ / P3.38); dead-at-runtime during the P3 wiring window, exercised by the in-module tests. `allow` (permissive) covers the ambiguous dead-ness (cf. OutputSafety)."
-    )
-)]
 fn identity_matches_a_source(id: &FileIdentity, frozen_sources: &[FileIdentity]) -> bool {
     frozen_sources
         .iter()
@@ -403,10 +387,9 @@ pub fn is_safe_output(
     not(test),
     allow(
         dead_code,
-        reason = "§2.3.3 open_verified_parent_dir's verdict type (P3.9), constructed only by that fn — itself \
-                  unwired until the P3.12–P3.18 dir-relative publish / the §2.1.1 write sequence (P3.38) — so \
-                  its dead-ness is ambiguous during the P3 wiring window; `allow` (permissive) covers it (cf. \
-                  OutputSafety). Exercised by open_verified_parent_dir_tests."
+        reason = "§2.3.3 open_verified_parent_dir's verdict type (P3.9); LIVE from P3.48 (the conductor's §2.1.1 \
+                  `publish_completed` opens the verified parent handle before the create-only publish). `allow` \
+                  is retained gate-safely (the P3.7/P3.8 precedent). Exercised by open_verified_parent_dir_tests."
     )
 )]
 #[derive(Debug)]
@@ -500,20 +483,6 @@ impl VerifiedParentDir {
 /// best-effort representative (re-resolved via `dunce::canonicalize`); a swap between open and that resolve can
 /// only make the canonical-path leg over-match (→ divert, the no-harm direction), never under-match, so safety
 /// rests on the handle-read identity. [Build-Session-Entscheidung: P3.9]
-// [Test-Change: P3.36 — old-obsolete+new-correct, §2.7.5] `expect`→`allow`: P3.36's `publish_to_divert` now
-// calls `open_verified_parent_dir` for the late-divert link-safety, so the P3.9 DEAD assertion errors as
-// unfulfilled under -D warnings — but that consumer is itself unwired until the §2.1.1 write sequence (P3.38),
-// so the fn's dead-ness is ambiguous and `allow` (permissive) is correct (cf. P3.7/P3.8/P3.15).
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.3.3 open_verified_parent_dir (P3.9) — the TOCTOU-closed parent-dir-handle primitive. Called \
-                  by P3.36's publish_to_divert (the late-divert link-safety), still unwired via the §2.1.1 write \
-                  sequence (P3.38), so it is dead-at-runtime but no longer statically unused; `allow` \
-                  (permissive) covers the ambiguous dead-ness. Exercised by the open_verified_parent_dir_tests."
-    )
-)]
 pub fn open_verified_parent_dir(
     parent: &Path,
     frozen_sources: &[FileIdentity],
@@ -686,21 +655,6 @@ impl Iterator for OutputNameCandidates {
 /// extension, yield the LAZY [`OutputNameCandidates`] the §2.2.2 exclusive-publish loop (P3.15) consumes —
 /// `stem.ext`, then `stem (1).ext`, `stem (2).ext`, … on the verbatim source stem (§2.10.1). Returns `None`
 /// iff `source` has no file stem (a `.` / `..` / root path); a frozen source always has one.
-// [Test-Change: P3.36 — old-obsolete+new-correct, §2.7.5] `expect`→`allow`: P3.36's `publish_to_divert` now
-// calls `output_name` to name the divert output, so the P3.10 DEAD assertion errors as unfulfilled under
-// -D warnings — but that consumer is unwired until the §2.1.1 write sequence (P3.38), so the fn's dead-ness is
-// ambiguous and `allow` (permissive) is correct (cf. P3.7/P3.8/P3.15).
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.2.1 output_name (P3.10) — the lazy candidate generator. Called by P3.36's publish_to_divert \
-                  (naming the divert output); its other production consumer is the §2.1.1 write sequence (P3.38, \
-                  the beside-source publish candidates) — the §1.8 OutputPlan computation (P3.37) does NOT call \
-                  it (it derives base_name via file_stem, §1.8 directory-based). Dead-at-runtime but no longer \
-                  statically unused; `allow` (permissive) covers the ambiguous dead-ness. Exercised by output_name_tests."
-    )
-)]
 pub fn output_name(source: &Path, ext: &str) -> Option<OutputNameCandidates> {
     OutputNameCandidates::new(source, ext)
 }
@@ -709,16 +663,6 @@ pub fn output_name(source: &Path, ext: &str) -> Option<OutputNameCandidates> {
 /// would breach. The §2.1.1 write-sequence caller (P3.38) maps it to the §2.8 `ConversionErrorKind::PathTooLong`;
 /// `crate::fs_guard` is a §0.7 tier-2 LEAF (it does NOT depend up on `crate::outcome`), so it returns its own
 /// verdict here, never a `ConversionErrorKind`. Truncation is NEVER the escape hatch (§2.2.3 / SSOT).
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.2.3 check_path_limit's verdict type (P3.11), constructed only by check_path_limit — whose \
-                  consumer is the §2.1.1 write sequence (P3.38, which maps it to §2.8 PathTooLong) — so it is \
-                  dead-at-runtime during the P3 wiring window; `allow` (permissive) covers the ambiguous \
-                  dead-ness (cf. OutputSafety). Exercised by check_path_limit_tests."
-    )
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathTooLong {
     /// A single path COMPONENT (a file / dir name) exceeds the 255-unit per-name ceiling — NTFS 255 UTF-16
@@ -773,20 +717,6 @@ fn os_str_units(s: &std::ffi::OsStr) -> usize {
 /// (`units + 1 > LIMIT`), matching §2.2.3's "MAX_PATH 260 … (drive + dirs + name + NUL)" — a path that fills
 /// the buffer to the ceiling leaves no room for the terminator the OS APIs require, so 259 wide chars is the
 /// Windows usable max.
-// [Test-Change: P3.15 — old-obsolete+new-correct, §2.2.3] `expect`→`allow` (a production lint change, NOT a
-// test suppression; cf. P3.7/P3.8): P3.15's `publish_numbered_capped` now calls `check_path_limit`, so the
-// P3.11 DEAD assertion errors as unfulfilled under -D warnings — but that consumer is itself unwired until the
-// §2.1.1 write sequence (P3.38), so the fn's dead-ness is ambiguous and `allow` (permissive) is correct.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.2.3 check_path_limit (P3.11) — the per-OS path-length gate. Called by P3.15's \
-                  publish_numbered_capped (still unwired until the §2.1.1 write sequence, P3.38, which maps \
-                  PathTooLong to §2.8), so it is dead-at-runtime but no longer statically unused; `allow` \
-                  (permissive) covers the ambiguous dead-ness. Exercised by the in-module check_path_limit_tests."
-    )
-)]
 pub fn check_path_limit(final_path: &Path) -> Result<(), PathTooLong> {
     // Per-COMPONENT: every NORMAL component (a real file / dir name) ≤ 255 units. The Prefix (a Windows drive /
     // UNC root) and RootDir are not filenames and carry no 255-name ceiling, so only `Component::Normal` is
@@ -818,16 +748,6 @@ pub fn check_path_limit(final_path: &Path) -> Result<(), PathTooLong> {
 // would build-break a non-shipped unix (FreeBSD/illumos/…) of this public MIT repo with an unresolved import.
 // (Distinct from the module's other `cfg(unix)` sites, which use std APIs available on ALL unix.)
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.1.2 publish_noreplace's outcome type (P3.12), constructed only by that fn — whose consumer \
-                  is the §2.2.2 numbering loop / §2.1.1 write sequence (P3.15 / P3.38) — so it is dead-at-runtime \
-                  during the P3 wiring window; `allow` (permissive) covers the ambiguous dead-ness (cf. \
-                  OutputSafety). Exercised by publish_noreplace_tests."
-    )
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublishAttempt {
     /// The exclusive no-replace rename succeeded — `leaf` now names the completed output; `tmp` was MOVED (no
@@ -862,20 +782,6 @@ pub enum PublishAttempt {
 // — `rustix::fs::renameat_with` is `cfg(any(apple, linux_kernel, redox))`; a bare `cfg(unix)` would build-break
 // a non-shipped unix (FreeBSD/…) for this public MIT repo. See the `PublishAttempt` note above.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-// [Test-Change: P3.15 — old-obsolete+new-correct, §2.1.2] `expect`→`allow` (a production lint change, NOT a
-// test suppression; cf. P3.7/P3.8): P3.15's `publish_once` now calls `publish_noreplace`, so the P3.12 DEAD
-// assertion errors as unfulfilled under -D warnings — but that consumer (via publish_numbered) is unwired until
-// the §2.1.1 write sequence (P3.38), so the fn's dead-ness is ambiguous and `allow` (permissive) is correct.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.1.2 publish_noreplace (P3.12) — the Unix no-replace publish primitive. Called by P3.15's \
-                  publish_once (still unwired via publish_numbered until the §2.1.1 write sequence, P3.38), so it \
-                  is dead-at-runtime but no longer statically unused; `allow` (permissive) covers the ambiguous \
-                  dead-ness. Exercised by the in-module publish_noreplace_tests."
-    )
-)]
 pub fn publish_noreplace(
     parent: &VerifiedParentDir,
     tmp: &Path,
@@ -912,16 +818,6 @@ pub fn publish_noreplace(
 // unix (`cfg(not(any(espidf, redox)))`), so this is a deliberate cluster-consistency gate, not a
 // build-availability one (cf. the `PublishAttempt` cfg note above).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.1.2 publish_link_fallback's outcome type (P3.13), constructed only by that fn — whose \
-                  consumer is the P3.15 composite `atomic_publish` / §2.1.1 write sequence (P3.38) — so it is \
-                  dead-at-runtime during the P3 wiring window; `allow` (permissive) covers the ambiguous \
-                  dead-ness (cf. PublishAttempt). Exercised by publish_link_fallback_tests."
-    )
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkPublishAttempt {
     /// `link(tmp, leaf)` created `leaf` fresh AND `unlink(tmp)` then reaped the source — `leaf` names the
@@ -975,20 +871,6 @@ pub enum LinkPublishAttempt {
 /// side (the source `tmp` is ours, not an attacker's), mirroring [`publish_noreplace`].
 // [Build-Session-Entscheidung: P3.13] `any(linux, macos)` to match the cluster — see the `LinkPublishAttempt` note.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-// [Test-Change: P3.15 — old-obsolete+new-correct, §2.1.2] `expect`→`allow` (a production lint change, NOT a
-// test suppression; cf. P3.7/P3.8): P3.15's `publish_once` now calls `publish_link_fallback`, so the P3.13 DEAD
-// assertion errors as unfulfilled under -D warnings — but that consumer (via publish_numbered) is unwired until
-// the §2.1.1 write sequence (P3.38), so the fn's dead-ness is ambiguous and `allow` (permissive) is correct.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.1.2 publish_link_fallback (P3.13) — the Unix `link`+`unlink` fallback publish primitive. \
-                  Called by P3.15's publish_once (still unwired via publish_numbered until the §2.1.1 write \
-                  sequence, P3.38), so it is dead-at-runtime but no longer statically unused; `allow` \
-                  (permissive) covers the ambiguous dead-ness. Exercised by the in-module publish_link_fallback_tests."
-    )
-)]
 pub fn publish_link_fallback(
     parent: &VerifiedParentDir,
     tmp: &Path,
@@ -1028,16 +910,6 @@ pub fn publish_link_fallback(
 /// `atomic_publish` (P3.15+). The Windows create-only move consumes `tmp` atomically (no residual, unlike the
 /// Unix `link`+`unlink` fallback), so there is no `PublishedResidualTmp`-style arm.
 #[cfg(windows)]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.1.2 publish_rename_windows's outcome type (P3.14), constructed only by that fn — whose \
-                  consumer is the P3.15 composite `atomic_publish` / §2.1.1 write sequence (P3.38) — so it is \
-                  dead-at-runtime during the P3 wiring window; `allow` (permissive) covers the ambiguous \
-                  dead-ness. Exercised by publish_rename_windows_tests."
-    )
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowsPublishAttempt {
     /// The create-only move committed — `leaf` names the completed output; `tmp` was moved (never a 0-byte
@@ -1057,20 +929,6 @@ pub enum WindowsPublishAttempt {
 /// `Retryable` (a transient AV/indexer lock) is retried a small bounded number of times with a doubling
 /// backoff, then surfaces as a §2.8 `WriteFailed` `io::Error`; any other (terminal) error surfaces immediately.
 #[cfg(windows)]
-// [Test-Change: P3.15 — old-obsolete+new-correct, §2.1.2] `expect`→`allow` (a production lint change, NOT a
-// test suppression; cf. P3.7/P3.8): P3.15's `publish_once` now calls `publish_rename_windows`, so the P3.14
-// DEAD assertion errors as unfulfilled under -D warnings — but that consumer (via publish_numbered) is unwired
-// until the §2.1.1 write sequence (P3.38), so the fn's dead-ness is ambiguous and `allow` (permissive) is correct.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.1.2 publish_rename_windows (P3.14) — the Windows create-only publish primitive. Called by \
-                  P3.15's publish_once (still unwired via publish_numbered until the §2.1.1 write sequence, \
-                  P3.38), so it is dead-at-runtime but no longer statically unused; `allow` (permissive) covers \
-                  the ambiguous dead-ness. Exercised by publish_rename_windows_tests."
-    )
-)]
 pub fn publish_rename_windows(
     parent: &VerifiedParentDir,
     tmp: &Path,
@@ -1112,16 +970,6 @@ pub fn publish_rename_windows(
 /// shape the §2.2.2 numbering loop ([`publish_numbered`]) drives. Private — the seed of the module-doc
 /// `atomic_publish` single-attempt composite (P3.16 adds the §2.1.1 durability fsync, P3.17 the §2.14.3 EXDEV
 /// cross-volume fallback).
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.1.2 the unified single-attempt publish outcome (P3.15), constructed only by publish_once — \
-                  driven by publish_numbered, whose production caller is the §2.1.1 write sequence (P3.38) — so \
-                  it is dead-at-runtime during the P3 wiring window; `allow` (permissive) covers the ambiguous \
-                  dead-ness (cf. PublishAttempt)."
-    )
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SinglePublish {
     /// Published — `residual_tmp` marks the §2.1.3 Unix `link`+`unlink` success-window sub-state (a `*.part`
@@ -1152,16 +1000,6 @@ enum SinglePublish {
 // `publish_noreplace`/`publish_link_fallback` cfg it composes (both `any(linux, macos)`, gated so a non-shipped
 // unix of this public MIT repo does not build-break on the `rustix::fs::renameat_with` import). See P3.12.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.1.2 the Unix single-attempt publish dispatch (P3.15) — called only by publish_numbered_capped \
-                  (driven by publish_numbered, unwired until the §2.1.1 write sequence, P3.38) — so it is \
-                  dead-at-runtime during the P3 wiring window; `allow` (permissive) covers the ambiguous \
-                  dead-ness (cf. identity_matches_a_source)."
-    )
-)]
 fn publish_once(
     parent: &VerifiedParentDir,
     tmp: &Path,
@@ -1196,16 +1034,6 @@ fn publish_once(
 /// `Published` / `NameTaken` (or a §2.8 `io::Error`), NEVER [`SinglePublish::NoAtomicPublishSupport`]. The
 /// Windows seed of the module-doc `atomic_publish` composite. No panic (G4/G14). [Build-Session-Entscheidung: P3.15]
 #[cfg(windows)]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.1.2 the Windows single-attempt publish dispatch (P3.15) — called only by \
-                  publish_numbered_capped (driven by publish_numbered, unwired until the §2.1.1 write sequence, \
-                  P3.38) — so it is dead-at-runtime during the P3 wiring window; `allow` (permissive) covers the \
-                  ambiguous dead-ness (cf. identity_matches_a_source)."
-    )
-)]
 fn publish_once(
     parent: &VerifiedParentDir,
     tmp: &Path,
@@ -1225,16 +1053,6 @@ fn publish_once(
 /// OS error) are the [`PublishError`] `Err` side. A §0.7 tier-2 LEAF verdict: `crate::fs_guard` does NOT depend
 /// up on `crate::domain`'s `DivertReason`, so it returns its own outcome and the §2.1.1 write sequence (P3.38,
 /// tier 1) maps [`Self::NoAtomicPublishSupport`] to a §2.7.2 `DivertReason::NoAtomicPublish` re-divert.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.2.2 publish_numbered's success/divert outcome (P3.15), constructed only by publish_numbered \
-                  — whose production caller is the §2.1.1 write sequence (P3.38) — so it is dead-at-runtime \
-                  during the P3 wiring window; `allow` (permissive) covers the ambiguous dead-ness (cf. \
-                  OutputSafety)."
-    )
-)]
 #[derive(Debug, PartialEq, Eq)]
 pub enum PublishOutcome {
     /// The output was published — `leaf` is the winning candidate name (the base `stem.ext`, or the first free
@@ -1251,19 +1069,19 @@ pub enum PublishOutcome {
 }
 
 /// The hard-failure verdict of the §2.2.2 numbering ↔ no-clobber publish loop ([`publish_numbered`], P3.15). A
-/// §0.7 tier-2 LEAF verdict — the §2.1.1 write sequence (P3.38, tier 1) maps it to §2.8 `ConversionErrorKind`
-/// (`PathTooLong` / `TooManyCollisions` / `WriteFailed`); `crate::fs_guard` never depends up on `crate::outcome`,
-/// so it returns its own verdict here. Not `PartialEq` (it carries an `io::Error`) — callers `match` on it.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.2.2 publish_numbered's failure verdict (P3.15), returned only by publish_numbered — whose \
-                  production caller is the §2.1.1 write sequence (P3.38, which maps it to §2.8) — so it is \
-                  dead-at-runtime during the P3 wiring window; `allow` (permissive) covers the ambiguous \
-                  dead-ness (cf. PathTooLong)."
-    )
-)]
+/// §0.7 tier-2 LEAF verdict — the P3.48 conductor's §2.1.1 publish legs ([`crate::orchestrator`], tier 1) map it
+/// to §2.8 `ConversionErrorKind` (`PathTooLong` / `TooManyCollisions` / `WriteFailed`); `crate::fs_guard` never
+/// depends up on `crate::outcome`, so it returns its own verdict here. Not `PartialEq` (it carries an
+/// `io::Error`) — callers `match` on it.
+//
+// [Test-Change: P3.48 — old-obsolete+new-correct, §2.2.3] `PublishError` is LIVE from P3.48 (the conductor's
+// `map_publish_error` matches it), so its P3.15 wiring-window `allow(dead_code)` was shed like the sibling
+// fs_guard publish primitives — EXCEPT the `PathTooLong(PathTooLong)` PAYLOAD (which §2.2.3 ceiling was
+// breached): `publish_numbered` CONSTRUCTS it, but `map_publish_error` matches the VARIANT (`PathTooLong(_)`)
+// and discards the payload, so the field is dead though the enum is live (the struct-with-unread-field case
+// rustc does not flip on enum-construction alone). Retained for the §2.8/§7.5 diagnostic detail; the
+// enum-scoped `allow(dead_code)` covers ONLY that unread field.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum PublishError {
     /// A candidate breached the §2.2.3 per-OS path limit (the base name, or the point at which appending
@@ -1304,15 +1122,6 @@ pub enum PublishError {
 /// the user-facing resolved final path. No panic (G4/G14) — every failure is a structured `Err`, the `cap`
 /// makes the loop total, and the counter is `saturating`. [Build-Session-Entscheidung: P3.15]
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.2.2 the injectable-cap numbering-loop core (P3.15) — called only by publish_numbered \
-                  (unwired until the §2.1.1 write sequence, P3.38) and the tests — so it is dead-at-runtime \
-                  during the P3 wiring window; `allow` (permissive) covers the ambiguous dead-ness."
-    )
-)]
 fn publish_numbered_capped(
     parent: &VerifiedParentDir,
     parent_dir: &Path,
@@ -1377,20 +1186,6 @@ fn publish_numbered_capped(
 /// over-counts the 4-char prefix). A mismatch fails SAFE (it can only over-reject on length, never admit an
 /// over-limit path or misdirect the handle-relative publish), but the pair-from-one-call form is the contract.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-// [Test-Change: P3.16 — old-obsolete+new-correct, §2.1.1] `expect`→`allow` (a production lint change, NOT a
-// test suppression; cf. P3.15's four flips): P3.16's `atomic_publish` now calls `publish_numbered`, so the
-// P3.15 DEAD assertion errors as unfulfilled under -D warnings — but that consumer is itself unwired until the
-// §2.1.1 write sequence (P3.38), so the fn's dead-ness is ambiguous and `allow` (permissive) is correct.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.2.2 publish_numbered (P3.15) — the numbering ↔ no-clobber retry loop. Called by P3.16's \
-                  atomic_publish (still unwired until the §2.1.1 write sequence, P3.38), so it is dead-at-runtime \
-                  but no longer statically unused; `allow` (permissive) covers the ambiguous dead-ness. Exercised \
-                  by publish_numbered_tests."
-    )
-)]
 pub fn publish_numbered(
     parent: &VerifiedParentDir,
     parent_dir: &Path,
@@ -1416,15 +1211,6 @@ pub fn publish_numbered(
 /// separate process (§3.5) whose write handle the core never holds; the in-core CSV engine's own handle is
 /// already closed by the time the §2.1.1 sequence reaches step 3.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.1.1 sync_tmp_bytes (P3.16) — the step-3 durability fsync — called only by atomic_publish \
-                  (unwired until the §2.1.1 write sequence, P3.38); dead-at-runtime during the P3 wiring window, \
-                  `allow` (permissive) covers the ambiguous dead-ness. Exercised by atomic_publish_tests."
-    )
-)]
 fn sync_tmp_bytes(tmp: &Path) -> io::Result<()> {
     std::fs::OpenOptions::new()
         .write(true)
@@ -1439,15 +1225,6 @@ fn sync_tmp_bytes(tmp: &Path) -> io::Result<()> {
 /// dentry needs this dir-fsync — §2.1.1). Takes the P3.9-verified parent dir handle the publish rooted its
 /// rename at. No panic (G4/G14). [Build-Session-Entscheidung: P3.16]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.1.1 fsync_parent_dir (P3.16, Unix) — the step-6 dentry-durability dir-fsync — called only by \
-                  atomic_publish (unwired until the §2.1.1 write sequence, P3.38); dead-at-runtime during the P3 \
-                  wiring window, `allow` (permissive) covers the ambiguous dead-ness. Exercised by atomic_publish_tests."
-    )
-)]
 fn fsync_parent_dir(parent: &VerifiedParentDir) -> io::Result<()> {
     // `File::sync_all` on the pinned directory fd = `fsync(dirfd)`, which flushes the directory's dentries
     // (the new `final` name) to disk. The handle is the same one the publish rooted its dir-relative rename at.
@@ -1460,15 +1237,6 @@ fn fsync_parent_dir(parent: &VerifiedParentDir) -> io::Result<()> {
 /// §2.1.3 atomicity invariant does NOT depend on it (§2.1.1). The file bytes are still made durable by the
 /// step-3 [`sync_tmp_bytes`] `FlushFileBuffers` as on Unix. [Build-Session-Entscheidung: P3.16]
 #[cfg(windows)]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.1.1 fsync_parent_dir (P3.16, Windows no-op) — called only by atomic_publish (unwired until \
-                  the §2.1.1 write sequence, P3.38); dead-at-runtime during the P3 wiring window, `allow` covers \
-                  the ambiguous dead-ness. Exercised by atomic_publish_tests."
-    )
-)]
 fn fsync_parent_dir(_parent: &VerifiedParentDir) -> io::Result<()> {
     Ok(())
 }
@@ -1479,16 +1247,6 @@ fn fsync_parent_dir(_parent: &VerifiedParentDir) -> io::Result<()> {
 /// surfaces unchanged, so a non-cross-device error can never silently trigger the (more expensive, though still
 /// no-harm) copy fallback — the classifier is exact to keep the common path's §2.8 error mapping faithful.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.14.3 the cross-device classifier (P3.17) — called only by atomic_publish's EXDEV routing \
-                  (unwired until the §2.1.1 write sequence, P3.38) — so it is dead-at-runtime during the P3 \
-                  wiring window; `allow` (permissive) covers the ambiguous dead-ness (the publish_once pattern). \
-                  Exercised by is_cross_device_tests."
-    )
-)]
 fn is_cross_device(e: &io::Error) -> bool {
     // The cross-device publish-failure errno, per OS — exactly one `let` compiles per target (the
     // `resolve_identity` per-OS-`let` idiom, no block-tail ambiguity). Unix: POSIX `EXDEV` = 18 (identical on
@@ -1532,16 +1290,6 @@ fn is_cross_device(e: &io::Error) -> bool {
 /// (`crate::run::cleanup_item` reclaims it by the recorded `final_dir` set); only the same-volume intermediate is
 /// consumed by the publish. No panic (G4/G14) — every failure is a structured `Err`. [Build-Session-Entscheidung: P3.17]
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.14.3 the cross-volume fallback core (P3.17) — called only by atomic_publish's EXDEV routing \
-                  + the tests (unwired until the §2.1.1 write sequence, P3.38) — so it is dead-at-runtime during \
-                  the P3 wiring window; `allow` (permissive) covers the ambiguous dead-ness (the \
-                  publish_numbered_capped pattern). Exercised by publish_cross_volume_tests."
-    )
-)]
 fn publish_cross_volume_checked(
     parent: &VerifiedParentDir,
     parent_dir: &Path,
@@ -1618,21 +1366,6 @@ fn publish_cross_volume_checked(
 /// assume `final` is absent on an `Io` error — it reconciles residues via the §2.6 sweep, never a blind remove,
 /// and a step-6 failure never means the original was harmed (no-clobber held; only crash-durability degraded).
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-// [Test-Change: P3.36 — old-obsolete+new-correct, §2.7.5] `expect`→`allow`: P3.36's `publish_to_divert` now
-// calls `atomic_publish` to publish onto the divert target, so the P3.16 DEAD assertion errors as unfulfilled
-// under -D warnings — but that consumer is unwired until the §2.1.1 write sequence (P3.38), so the fn's
-// dead-ness is ambiguous and `allow` (permissive) is correct (cf. P3.7/P3.8/P3.15).
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.1.1/§2.14.3 atomic_publish (P3.16, EXDEV fallback P3.17) — the atomic/durable/no-clobber \
-                  per-item publish composite. Called by P3.36's publish_to_divert (the late-divert publish), \
-                  still unwired via the §2.1.1 write sequence (P3.38), so it is dead-at-runtime but no longer \
-                  statically unused; `allow` (permissive) covers the ambiguous dead-ness. Exercised by \
-                  atomic_publish_tests."
-    )
-)]
 pub fn atomic_publish(
     parent: &VerifiedParentDir,
     parent_dir: &Path,
@@ -1946,21 +1679,6 @@ fn create_subtree_dir(dir: &Path) -> io::Result<()> {
 /// boundary): a strip/create failure is a clean `Err` the §2.8 caller maps to a per-item failure (batch
 /// continues, §1.9), NEVER a partial silently-wrong tree. `fs_guard` is a §0.7 tier-2 LEAF — it returns
 /// `io::Result`, never a `ConversionErrorKind` (the caller maps). [Build-Session-Entscheidung: P3.34]
-// [Test-Change: P3.37 — old-obsolete+new-correct, §1.8] `expect`→`allow`: P3.37's `compute_output_plan` now
-// calls `prepare_output_dir` for the Writable case, so the P3.34 DEAD assertion errors as unfulfilled under
-// -D warnings — but that consumer is unwired until the §1.8/C4 plan_output body (P3.49) / write sequence (P3.38),
-// so the fn's dead-ness is ambiguous and `allow` (permissive) is correct (cf. P3.7/P3.8/P3.15/P3.36).
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.7.1 prepare_output_dir (P3.34) — the destination-mode output-dir preparation. Called by \
-                  P3.37's compute_output_plan (the Writable-case final_dir), still unwired via the §1.8/C4 \
-                  plan_output body (P3.49) / the §2.1.1 write sequence (P3.38), so it is dead-at-runtime but no \
-                  longer statically unused; `allow` (permissive) covers the ambiguous dead-ness. Exercised by \
-                  prepare_output_dir_tests."
-    )
-)]
 pub fn prepare_output_dir(source: &Path, mode: DestinationMode) -> io::Result<PathBuf> {
     match mode {
         DestinationMode::BesideSource => source.parent().map(Path::to_path_buf).ok_or_else(|| {
@@ -2067,21 +1785,6 @@ pub enum DivertTarget {
 /// deny, G4/G14). [Build-Session-Entscheidung: P3.35]
 #[must_use = "the DivertTarget verdict decides WHERE (or whether) the output diverts — dropping it would \
               divert blindly or skip the §2.8 WriteFailed on an unusable target"]
-// [Test-Change: P3.37 — old-obsolete+new-correct, §1.8] `expect`→`allow`: P3.37's `compute_output_plan` now
-// calls `resolve_divert_target` for the Divert case, so the P3.35 DEAD assertion errors as unfulfilled under
-// -D warnings — but that consumer is unwired until the §1.8/C4 plan_output body (P3.49) / write sequence (P3.38),
-// so the fn's dead-ness is ambiguous and `allow` (permissive) is correct (cf. P3.7/P3.8/P3.15/P3.36).
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.7.3 resolve_divert_target (P3.35) — divert-root resolution. Called by P3.37's \
-                  compute_output_plan (the Divert-case final_dir) + the late-divert path (P3.36), still unwired \
-                  via the §1.8/C4 plan_output body (P3.49) / the §2.1.1 write sequence (P3.38), so it is \
-                  dead-at-runtime but no longer statically unused; `allow` (permissive) covers the ambiguous \
-                  dead-ness. Exercised by the resolve_divert_target_tests."
-    )
-)]
 pub fn resolve_divert_target(
     candidates: &[PathBuf],
     cache: &mut LocationCache,
@@ -2115,18 +1818,17 @@ pub fn resolve_divert_target(
 /// a kind it OVER-includes at most attempts a divert that itself fails → `WriteFailed` anyway. So the set errs
 /// toward the documented common cases (§2.7.2:writable-probe classification) without risking a wrong outcome.
 /// [Build-Session-Entscheidung: P3.36]
-// [Test-Change: P3.38 — old-obsolete+new-correct, §2.7.2] `expect`→`allow`: P3.38's `write_item` calls
-// `is_write_divert_trigger` on a primary-publish writability failure, so the P3.36 DEAD assertion errors as
-// unfulfilled under -D warnings — but `write_item` is unwired until the P3.46/P3.48 conductor, so the dead-ness
-// is ambiguous and `allow` (permissive) is correct (cf. P3.16/P3.35/P3.36).
+// [Test-Change: P3.48 — old-obsolete+new-correct, §2.7.2] LIVE from P3.48: the conductor's §2.1.1
+// `publish_completed` calls `is_write_divert_trigger` on a primary-publish writability failure (the late-divert
+// decision). The P3.38 `write_item` that formerly called it was re-cut into `publish_written_temp`; `allow` is
+// retained gate-safely (the P3.7/P3.8 precedent).
 #[cfg_attr(
     not(test),
     allow(
         dead_code,
-        reason = "§2.7.2 is_write_divert_trigger (P3.36) — the late-divert trigger classifier. Called by P3.38's \
-                  write_item (the §2.1.1 write sequence) on a writability publish failure, still unwired via the \
-                  P3.46/P3.48 conductor, so it is dead-at-runtime but no longer statically unused; `allow` \
-                  (permissive) covers the ambiguous dead-ness. Exercised by the late_divert_tests."
+        reason = "§2.7.2 is_write_divert_trigger (P3.36) — the late-divert trigger classifier; LIVE from P3.48 \
+                  (the conductor's §2.1.1 `publish_completed` classifies a writability publish failure). `allow` \
+                  is retained gate-safely (the P3.7/P3.8 precedent). Exercised by the late_divert_tests."
     )
 )]
 pub fn is_write_divert_trigger(err: &PublishError) -> bool {
@@ -2161,15 +1863,6 @@ pub fn is_write_divert_trigger(err: &PublishError) -> bool {
 /// [`PublishError::OutOfDisk`] (→ §2.8 `OutOfDisk`; the one item fails, the batch continues, §1.9).
 /// [Build-Session-Entscheidung: P3.36]
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.14.4 the divert free-space re-check (P3.36) — called by publish_to_divert (itself unwired \
-                  until the §2.1.1 write sequence, P3.38); dead-at-runtime through the P3 wiring window, \
-                  exercised directly by the late_divert_tests. `allow` (permissive) covers the ambiguous dead-ness."
-    )
-)]
 fn recheck_divert_free_space(divert_dir: &Path, needed_bytes: u64) -> Result<(), PublishError> {
     let avail = crate::platform::available_bytes(divert_dir).map_err(PublishError::Io)?;
     if avail < needed_bytes {
@@ -2202,18 +1895,17 @@ fn recheck_divert_free_space(divert_dir: &Path, needed_bytes: u64) -> Result<(),
 /// `same_volume_intermediate` is the run-owned §2.14.3 `.part` sibling of the divert final on the DIVERT volume
 /// (passed in — the LEAF does not mint the `crate::run` name). [Build-Session-Entscheidung: P3.36]
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-// [Test-Change: P3.38 — old-obsolete+new-correct, §2.7.5] `expect`→`allow`: P3.38's `write_item` now calls
-// `publish_to_divert` after a writability publish failure / FAT-exFAT NoAtomicPublishSupport, so the P3.36 DEAD
-// assertion errors as unfulfilled under -D warnings — but `write_item` is itself unwired until the P3.46/P3.48
-// conductor, so the fn's dead-ness is ambiguous and `allow` (permissive) is correct (cf. P3.16/P3.35/P3.36).
+// [Test-Change: P3.48 — old-obsolete+new-correct, §2.7.5] LIVE from P3.48: the conductor's §2.1.1
+// `divert_completed` (← `publish_completed`) calls `publish_to_divert` after a writability publish failure /
+// FAT-exFAT NoAtomicPublishSupport. The P3.38 `write_item` that formerly called it was re-cut into
+// `publish_written_temp`; `allow` is retained gate-safely (the P3.7/P3.8 precedent).
 #[cfg_attr(
     not(test),
     allow(
         dead_code,
-        reason = "§2.7.2/§2.7.5 publish_to_divert (P3.36) — the late-divert publish. Called by P3.38's write_item \
-                  (the §2.1.1 write sequence) after a writability publish failure, still unwired via the \
-                  P3.46/P3.48 conductor, so it is dead-at-runtime but no longer statically unused; `allow` \
-                  (permissive) covers the ambiguous dead-ness. Exercised by the late_divert_tests."
+        reason = "§2.7.2/§2.7.5 publish_to_divert (P3.36) — the late-divert publish; LIVE from P3.48 (the \
+                  conductor's §2.1.1 `divert_completed` re-publishes to the §2.7.3 divert target). `allow` is \
+                  retained gate-safely (the P3.7/P3.8 precedent). Exercised by the late_divert_tests."
     )
 )]
 pub fn publish_to_divert(
@@ -2312,14 +2004,19 @@ pub enum OutputPlanError {
 // takes in). A mechanical bundle struct would group them without semantic value (and re-introduce the borrow
 // lifetimes the borrowed args already carry), so the explicit signature is the clearer surface here.
 #[allow(clippy::too_many_arguments)]
+// `expect`→`allow`: the P3.48 C6 conductor (`crate::orchestrator::convert_item`) is now a LIVE production
+// caller of `compute_output_plan` (per item, before the pick-temp → dispatch → publish legs), so the P3.37
+// `expect(dead_code)` flips to "unfulfilled". The §1.8/C4 `plan_output` body (P3.49) named in the old reason
+// remains a FUTURE additional caller; `expect`→`allow` IN PLACE (a removed multi-line `expect(` is untaggable
+// in G70's ±6 window, the P3.7/P3.8 precedent). [Test-Change: P3.48 — old-obsolete+new-correct, §1.8]
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "§1.8 compute_output_plan (P3.37) — the per-job OutputPlan computation. Its production caller \
-                  is the §1.8/C4 plan_output body (P3.49) / the §2.1.1 write sequence (P3.38); statically unused \
-                  in the production build until that wiring lands (`expect` auto-flags the moment it does), \
-                  exercised by the compute_output_plan_tests."
+        reason = "§1.8 compute_output_plan (P3.37) — the per-job OutputPlan computation; LIVE from P3.48 (the \
+                  C6 conductor `convert_item` computes the plan per item). The §1.8/C4 plan_output body (P3.49) \
+                  is a future additional caller. `allow` (not removal) keeps the expect→allow diff G70-safe \
+                  (the P3.7/P3.8 precedent); the compute_output_plan_tests still exercise it."
     )
 )]
 pub fn compute_output_plan(

@@ -185,11 +185,9 @@ impl PublishTemp {
         not(test),
         allow(
             dead_code,
-            reason = "P3.38 — the name-only §2.14.3 intermediate PATH; called by RunScratch::publish_temp_path \
-                      (the §2.1.1 write sequence's same_volume_intermediate), itself dead in production until \
-                      the P3.46/P3.48 conductor wires write_item; rustc walks the dead-but-present caller and \
-                      marks this used, so `allow` (permissive) covers the transitive dead-ness (the create_in \
-                      pattern)."
+            reason = "P3.38 — the name-only §2.14.3 intermediate PATH; LIVE from P3.48 (via \
+                      RunScratch::publish_temp_path ← the conductor's §2.1.1 `publish_completed` EXDEV \
+                      intermediate). `allow` is retained gate-safely (the P3.7/P3.8 precedent)."
         )
     )]
     #[must_use]
@@ -327,15 +325,20 @@ impl PublishTemp {
     /// `InstanceId`-liveness sweep via `parse_probe_residue`. **Pre-`RunId`** (the probe runs at C4, before
     /// the C6 `RunId` mint, §7.1.2), so it is keyed on the `InstanceId` alone — an associated fn, not
     /// `&self`. [Build-Session-Entscheidung: P3.33]
+    // `expect`→`allow`: the P3.48 C6 conductor (`run_conversion`'s `probe_name` factory) is now a LIVE
+    // production caller of this probe-name creator (via the §2.7.2 `LocationCache::classify` / §2.7.3 divert
+    // probe), so the P3.33 `expect(dead_code)` flips to "unfulfilled". `expect`→`allow` IN PLACE (a removed
+    // multi-line `expect(` is untaggable in G70's ±6 window, the P3.7/P3.8 precedent); a harmless no-op on the
+    // now-live fn. [Test-Change: P3.48 — old-obsolete+new-correct, §2.7.2]
     #[cfg_attr(
         not(test),
-        expect(
+        allow(
             dead_code,
-            reason = "P3.33 — the §2.7.2 probe-residue NAME creator; its production caller is the §1.8/C4 \
-                      destination planning that calls `fs_guard::location_status` (P3.34+) and passes this \
-                      name into the fs_guard-leaf probe — unbuilt until then, so dead in the production build \
-                      during the P3 wiring window; the round-trip test below exercises it (creator → \
-                      `parse_probe_residue` → same InstanceId). `expect` auto-flags when P3.34 wires it."
+            reason = "P3.33 — the §2.7.2 probe-residue NAME creator; LIVE from P3.48 (the C6 conductor's \
+                      `run_conversion` probe-name factory calls it via `LocationCache::classify` / the §2.7.3 \
+                      divert probe). The round-trip test below still exercises it (creator → \
+                      `parse_probe_residue` → same InstanceId). `allow` (not removal) keeps the expect→allow \
+                      diff G70-safe (the P3.7/P3.8 precedent)."
         )
     )]
     #[must_use]
@@ -440,20 +443,20 @@ const LOCKLESS_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 /// the live `.part`, §2.6.3). The lock is held for the run's whole lifetime and released when the
 /// `RunScratch` is dropped (its `.lock` `File` closes). A §6 property-test target.
 ///
-/// Unlike [`PublishTemp`], this type carries NO field-reading derives (it owns a live `File`), so it is
-/// genuinely dead in the production build until its C6-accept run-start wiring lands (P3.46 / the §2.1.1
-/// write sequence P3.38) — the struct + its methods are forward-declared dead through the P3-wiring
-/// window, each carrying its own dead-code lint attribute.
+/// Unlike [`PublishTemp`], this type carries NO field-reading derives (it owns a live `File`). It is LIVE from
+/// P3.48 — the C6 handler `start_run` calls [`acquire`](RunScratch::acquire) and the conductor's run-end
+/// `cleanup_run` destructures its instance/run/dir fields — but its `_lock` field is an RAII guard whose whole
+/// effect is the HELD OS lock, so that one field is intentionally never read; the struct-level
+/// `allow(dead_code)` below covers it in the not(test) build (the test build carries the field's own).
 #[cfg_attr(
     not(test),
     allow(
         dead_code,
-        reason = "P3.21 run-lifecycle lock-before-part typestate; the runtime caller is the C6-accept run \
-                  start (P3.46) / the §2.1.1 write sequence (P3.38). The struct is constructed only by its \
-                  own `acquire` (itself dead in production until then), and rustc walks that dead-but-present \
-                  constructor and marks the struct USED, so a dead_code EXPECTATION would be unfulfilled; \
-                  `allow` (permissive) covers the transitive dead-ness through the P3 wiring window (the \
-                  platform WindowsRenameOutcome pattern)."
+        reason = "P3.21 run-lifecycle lock-before-part typestate; LIVE from P3.48 (the C6 handler `start_run` \
+                  acquires it, the conductor's `cleanup_run` destructures instance/run/dir). The RAII `_lock` \
+                  field is intentionally never read — its effect is the HELD OS advisory lock, released when \
+                  it drops (§2.6.3) — so this struct-level `allow` now covers that one never-read field in the \
+                  not(test) build (the test build carries the field's own `allow`)."
     )
 )]
 pub struct RunScratch {
@@ -486,13 +489,17 @@ impl RunScratch {
     /// `RunScratch` that PROVES the lock is held. `pid` is the current process id (a §7.1.2 human-readable
     /// label in the dir name, never the liveness gate — that is the held lock). Any I/O failure (dir
     /// create, lock open, lock acquire) is a structured `Err`, never a panic. [Build-Session-Entscheidung: P3.21]
+    // [Test-Change: P3.48 — old-obsolete+new-correct, §2.6.3] `expect`→`allow`: the P3.48 C6 handler
+    // (`start_run`) is now a LIVE production caller of `RunScratch::acquire` (the run-start lock-before-part),
+    // so the P3.21 `expect(dead_code)` flips to "unfulfilled". `expect`→`allow` IN PLACE (not removal — a
+    // removed multi-line `expect(` is untaggable in G70's ±6 window, the P3.7/P3.8 precedent).
     #[cfg_attr(
         not(test),
-        expect(
+        allow(
             dead_code,
-            reason = "P3.21 run-start lock-before-part sequence; the production caller is the C6-accept run \
-                      start (P3.46) / the §2.1.1 write sequence (P3.38) — unused in the production build \
-                      until that wiring lands."
+            reason = "P3.21 run-start lock-before-part sequence; LIVE from P3.48 (the C6 handler `start_run` \
+                      acquires the per-run scratch before spawning the run). `allow` (not removal) keeps the \
+                      expect→allow diff G70-safe (the P3.7/P3.8 precedent)."
         )
     )]
     pub fn acquire(
@@ -559,18 +566,17 @@ impl RunScratch {
     /// happens AFTER the run lock is held (the §2.6.3 lock-before-part ordering, made structural).
     /// Delegates to the P3.20 naming model ([`PublishTemp::create_in`]), stamping this run's §2.6.1
     /// ownership. [Build-Session-Entscheidung: P3.21]
-    // [Test-Change: P3.38 — old-obsolete+new-correct, §2.1.1] `expect`→`allow`: P3.38's `write_item` now calls
-    // `publish_temp` (step 1 + the §2.14.3 intermediate), so the P3.21 DEAD assertion errors as unfulfilled under
-    // -D warnings — but `write_item` is itself unwired until the P3.46/P3.48 conductor, so the dead-ness is
-    // ambiguous and `allow` (permissive) is correct (the P3.16/P3.35/P3.36 fs_guard precedent).
+    // [Test-Change: P3.48 — old-obsolete+new-correct, §2.1.1] LIVE from P3.48: the P3.48 re-cut moved §2.1.1
+    // step 1 (pick-temp) conductor-side — `crate::orchestrator::convert_item` calls `publish_temp` per item —
+    // so the P3.21 item is genuinely live now (the P3.38 `write_item` that formerly called it was re-cut away).
+    // `allow` (retained, not removal — the P3.7/P3.8 G70-safe precedent) is a harmless no-op on the live fn.
     #[cfg_attr(
         not(test),
         allow(
             dead_code,
-            reason = "P3.21 — the sole lock-after publish-temp entry; called by P3.38's write_item (§2.1.1 step 1 \
-                      + the §2.14.3 intermediate) / the §3.5.6 native-engine out_tmp (P3.43), still unwired via \
-                      the P3.46/P3.48 conductor — dead-at-runtime but no longer statically unused; `allow` \
-                      (permissive) covers the ambiguous dead-ness."
+            reason = "P3.21 — the sole lock-after publish-temp entry; LIVE from P3.48 (the C6 conductor's \
+                      `convert_item` picks the publish temp per item, §2.1.1 step 1; the §3.5.6 native-engine \
+                      writes into it). `allow` is retained gate-safely (the P3.7/P3.8 precedent)."
         )
     )]
     pub fn publish_temp(&self, dest_dir: &Path, job: JobId) -> io::Result<TempPath> {
@@ -589,10 +595,9 @@ impl RunScratch {
         not(test),
         allow(
             dead_code,
-            reason = "P3.38 — the name-only §2.14.3 intermediate PATH entry; called by write_item (the §2.1.1 \
-                      write sequence), itself dead in production until the P3.46/P3.48 conductor — dead-at-runtime \
-                      but no longer statically unused; `allow` (permissive) covers the ambiguous dead-ness (the \
-                      publish_temp pattern)."
+            reason = "P3.38 — the name-only §2.14.3 intermediate PATH entry; LIVE from P3.48 (the conductor's \
+                      §2.1.1 `publish_completed` computes the EXDEV intermediate PATH, materialised only on the \
+                      §2.14.3 cross-volume publish). `allow` is retained gate-safely (the P3.7/P3.8 precedent)."
         )
     )]
     #[must_use]
@@ -612,18 +617,17 @@ impl RunScratch {
 /// item honestly rather than as a clean success. An already-absent temp (`NotFound`) is a **clean, idempotent
 /// success** — a double call or an externally-vanished temp is not a spurious failure. Panic-free (the crate
 /// no-panic deny, G4): every step is a fallible `Result` short-circuit. [Build-Session-Entscheidung: P3.22]
-// [Test-Change: P3.38 — old-obsolete+new-correct, §2.6.2] `expect`→`allow`: P3.38's `write_item` now calls
-// `cleanup_item` (step 7 on failure + the §2.6.2 leftover sweep on success), so the P3.22 DEAD assertion errors
-// as unfulfilled under -D warnings — but `write_item` is itself unwired until the P3.46/P3.48 conductor, so the
-// dead-ness is ambiguous and `allow` (permissive) is correct (the P3.16/P3.35/P3.36 fs_guard precedent).
+// [Test-Change: P3.48 — old-obsolete+new-correct, §2.6.2] LIVE from P3.48: the conductor's §2.1.1 publish legs
+// (`cleanup_leftovers` ← `fail_cleanup`/`finish_published` ← `publish_completed`) + the `convert_item` Failed
+// arm call `cleanup_item` (step 7 on failure + the §2.6.2 success-leftover sweep). The P3.38 `write_item` that
+// formerly called it was re-cut away; `allow` is retained gate-safely (the P3.7/P3.8 precedent).
 #[cfg_attr(
     not(test),
     allow(
         dead_code,
-        reason = "P3.22 — the item-exit cleanup entry; called by P3.38's write_item (step 7 item failure / \
-                  out-of-disk / link-fallback + the §2.6.2 success-leftover sweep) and the §3.5.6 native-engine \
-                  out_tmp path (P3.43), still unwired via the P3.46/P3.48 conductor — dead-at-runtime but no \
-                  longer statically unused; `allow` (permissive) covers the ambiguous dead-ness."
+        reason = "P3.22 — the item-exit cleanup entry; LIVE from P3.48 (the conductor's §2.1.1 publish legs \
+                  clean each leftover temp on step-7 failure / the success-leftover sweep; the §3.5.6 \
+                  native-engine cancel path). `allow` is retained gate-safely (the P3.7/P3.8 precedent)."
     )
 )]
 pub fn cleanup_item(tmp: TempPath) -> io::Result<()> {
@@ -658,12 +662,18 @@ pub fn cleanup_item(tmp: TempPath) -> io::Result<()> {
 /// paths whose removal FAILED — never a silent clean success; the §2.6.4 honesty leg (P3.25) maps these into
 /// `CleanupResidue`. An empty return = a fully clean run-end. Panic-free (the crate no-panic deny, G4).
 /// [Build-Session-Entscheidung: P3.22]
+// `expect`→`allow`: the P3.48 C6 conductor (`run_conversion`'s `finish_run`) is now a LIVE production caller
+// of `cleanup_run` (the §2.6.2 run-end cleanup over the recorded final dirs), so the P3.22 `expect(dead_code)`
+// flips to "unfulfilled". The P3.74 run-lifecycle teardown named in the old reason remains a FUTURE additional
+// caller (app-exit / crash paths); `expect`→`allow` IN PLACE (a removed multi-line `expect(` is untaggable in
+// G70's ±6 window, the P3.7/P3.8 precedent). [Test-Change: P3.48 — old-obsolete+new-correct, §2.6.2]
 #[cfg_attr(
     not(test),
-    expect(
+    allow(
         dead_code,
-        reason = "P3.22 — the run-end cleanup entry; the production caller is the P3.74 run-lifecycle \
-                  teardown — unused in the production build until that wiring lands."
+        reason = "P3.22 — the run-end cleanup entry; LIVE from P3.48 (the C6 conductor's `finish_run` runs it \
+                  at run end). The P3.74 run-lifecycle teardown (app-exit / crash) is a future additional \
+                  caller. `allow` (not removal) keeps the expect→allow diff G70-safe (the P3.7/P3.8 precedent)."
     )
 )]
 pub fn cleanup_run(scratch: RunScratch, recorded_final_dirs: &BTreeSet<PathBuf>) -> Vec<PathBuf> {
@@ -1144,10 +1154,12 @@ pub fn reclaim_dest_parts_in(dest_dir: &Path, scratch_base: &Path) -> Vec<PathBu
 // `crate::orchestrator` (`EquivKeyComputer::compute_equiv_key`), which folds a `fs_guard::FileIdentity` +
 // the §0.6 `TargetId`/`OptionValues` and hands DOWN only the finished hash — so this tier-2 leaf never sees
 // `FileIdentity` and no `run`->`fs_guard` sibling edge arises (§0.7; the P3.38 prevention-sweep ruling). The
-// key type + the ledger are co-located here as one self-contained opaque-key API. Both are authored as a
-// contract at P3.39; the first production consumer is the P3.40 C4 `plan_output` re-run wiring (`has_seen`)
-// with the run-completion `record`, so they are dead in the production build until P3.40 resolves them — the
-// `rerun_ledger_tests` below exercise them now (per-item `allow(dead_code)`, the run-module convention).
+// key type + the ledger are co-located here as one self-contained opaque-key API. Both were authored as a
+// contract at P3.39; their FIRST production consumer is the P3.48 C6 run conductor — its §2.5 `RerunDecision`
+// applier calls `has_seen(compute_equiv_key(…))` (the re-run skip verdict) and its per-success leg calls
+// `record`, so the whole opaque-key API is now LIVE in the production build (the P3.39-era per-item
+// `dead_code` allows are removed — `rerun_ledger_tests` still exercise it). The P3.49 C4 `plan_output` re-run
+// VERDICT (`compute_rerun_verdict`) is a SECOND consumer of the same API, still pending its own wiring.
 
 /// The §2.5.1 opaque re-run equivalence key — a core-internal hash-style `u64` that is NEVER on the wire
 /// (§2.5.1; the P2.22 §0.4.5 forward-guard characterises it as exactly this). Opaque by construction: the
@@ -1155,23 +1167,9 @@ pub fn reclaim_dest_parts_in(dest_dir: &Path, scratch_base: &Path) -> Vec<PathBu
 /// finished hashes. The orchestrator mints one from its §2.5.1 fold via [`EquivKey::from_hash`]; this leaf
 /// only stores and compares them. `Hash` + `Eq` back the `HashSet<EquivKey>` membership; `Copy` (a bare
 /// `u64`) keeps the by-value ledger API cheap. Core-internal — no `serde`/`specta` (it never crosses IPC).
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.5.2 the opaque EquivKey is authored as a contract at P3.39; its sole minter (crate::orchestrator::EquivKeyComputer::compute_equiv_key) and its ledger consumers are unwired in the production build until the P3.40 C4 plan_output re-run wiring resolves them, so it is dead until then — the rerun_ledger_tests exercise it now."
-    )
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EquivKey(u64);
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "the sole EquivKey constructor — called by crate::orchestrator::EquivKeyComputer::compute_equiv_key (wired at the P3.40 C4 plan_output path), dead in the production build until then."
-    )
-)]
 impl EquivKey {
     /// Wrap a finished §2.5.1 fold hash as an opaque key — the SOLE constructor, called only by the
     /// orchestrator's `compute_equiv_key` (which owns the process-lifetime `BuildHasher`, §2.5.2). Keeping
@@ -1190,25 +1188,11 @@ impl EquivKey {
 /// interior-mutable behind a `std::sync::Mutex` so the `State<RerunLedger>` handlers query/record through a
 /// shared `&self` with no `&mut`. The set's own bucket-hasher is INDEPENDENT of the compute-side
 /// `BuildHasher` (§2.5.2) — any long-lived `HashSet` suffices. Core-internal — no `serde`/`specta`.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "§2.5.2 the in-session ledger is authored as a contract at P3.39; its has_seen query (P3.40 C4 plan_output) and its record (run completion) are unwired in the production build until the P3.40 re-run wiring resolves the managed State<RerunLedger>, so it is dead until then — the rerun_ledger_tests exercise it now."
-    )
-)]
 #[derive(Debug, Default)]
 pub struct RerunLedger {
     seen: Mutex<HashSet<EquivKey>>,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "the §2.5.2 ledger's query/record API — dead in the production build until the P3.40 C4 re-run wiring calls it."
-    )
-)]
 impl RerunLedger {
     /// Lock the set, recovering the guard from a poisoned lock rather than propagating the panic — the
     /// in-core no-panic discipline (G4/G14), sound because the critical sections are infallible whole-set

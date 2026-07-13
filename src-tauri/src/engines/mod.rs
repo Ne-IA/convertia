@@ -58,7 +58,9 @@ use tokio_util::sync::CancellationToken;
 use crate::detection::{
     classify_delimiter, classify_encoding, Delimiter, DelimiterClass, MAX_HEADER_WINDOW,
 };
-use crate::domain::{DroppedItem, FormatId, JobId, TargetId};
+use crate::domain::{
+    Availability, DroppedItem, FormatId, JobId, Target, TargetId, UserFacingFormat,
+};
 use crate::outcome::ConversionErrorKind;
 use crate::pool::{LaneError, Pool, NATIVE_CSV_TSV_TIMEOUT};
 
@@ -829,6 +831,59 @@ impl Engine for NativeCsvTsvEngine {
             out_tmp: None,
         }))
     }
+}
+
+// ─── §1.5 the walking-skeleton target lookup — the SHARED `UserFacingFormat → Target` map (P3.48) ─────────
+// [Build-Session-Entscheidung: P3.48] The §1.5 "source → offered target(s)" resolution, homed here in
+// `crate::engines` per the ruling (2026-07-12 P3.48 secondary-scope ruling (1)): the C6 conductor validates
+// its wire `TargetId` arg through `resolve_slice_target` + build_batch reads the full `Target` it returns
+// (§0.6 invariant 1 — one Target per Batch), and P3.49's C3 `get_targets` REUSES `slice_target` (the
+// `needs: P3.48` edge on P3.49 is already set) — ONE source of the offer, no synthesized `Target` (a `Target`
+// carries `label`/`lossy`/`availability`/`options` — §0.6 data; faking them is the P3.47-class invention).
+// The v1 walking-skeleton offer is the CSV↔TSV pair ONLY; P4.1's §3.2.3 registry supplies the full §04
+// matrices then (this lookup stays the CSV/TSV slice's authority, reused, not re-derived).
+
+/// The §1.5 offered target for a walking-skeleton source format — `Some(Target)` for the two slice formats
+/// (`Csv → TSV`, `Tsv → CSV`, the §04 spreadsheets CSV↔TSV pair, the ONLY diagonal-free pair the P3 slice
+/// converts), `None` for every other §0.6 `UserFacingFormat` (offered by the P4.1 registry, not here). The
+/// returned `Target` is the COMPLETE §0.6 offer — `id`, the display `label` (`"TSV"`/`"CSV"`, §5-facing),
+/// `lossy: None` (a delimiter re-write is not a §2.9 predictable-loss), `availability: Available` (CSV/TSV are
+/// platform-universal, no §3.4 patent gap), and an empty `options` (§1.6 — the slice takes no per-conversion
+/// option). Compared BY VALUE against the two format ids (an `if`-chain, NOT a `match` — a 46-variant
+/// `UserFacingFormat` match would need a `_` arm the crate-root `clippy::wildcard_enum_match_arm` deny
+/// forbids, mirroring `NativeCsvTsvEngine::plan`'s target dispatch). [Build-Session-Entscheidung: P3.48]
+#[must_use]
+pub fn slice_target(source: UserFacingFormat) -> Option<Target> {
+    let id = if source == UserFacingFormat::Csv {
+        TargetId::Format(FormatId::Tsv)
+    } else if source == UserFacingFormat::Tsv {
+        TargetId::Format(FormatId::Csv)
+    } else {
+        return None;
+    };
+    let label = if id == TargetId::Format(FormatId::Tsv) {
+        "TSV"
+    } else {
+        "CSV"
+    };
+    Some(Target {
+        id,
+        label: label.to_owned(),
+        lossy: None,
+        availability: Availability::Available,
+        options: Vec::new(),
+    })
+}
+
+/// Validate + resolve a wire `TargetId` against the source's §1.5 offer (the C6 `start_conversion` +
+/// C3-reuse path) — `Some(Target)` iff `requested` is exactly the source's offered target (so a batch is
+/// built only for a genuinely-offered pair, §0.6 invariant 1), `None` for a source with no slice offer OR a
+/// `requested` that is not its offered target (a defensive `UnsupportedPair`, which the UI never presents —
+/// §0.4.1 C3/§1.5). Filters `slice_target` by identity, so it can never construct a `Target` for an
+/// unoffered pair. [Build-Session-Entscheidung: P3.48]
+#[must_use]
+pub fn resolve_slice_target(source: UserFacingFormat, requested: TargetId) -> Option<Target> {
+    slice_target(source).filter(|target| target.id == requested)
 }
 
 // ─── §3.5.6 native CSV/TSV streamed transform (P3.41) ──────────────────────────────────────────────────

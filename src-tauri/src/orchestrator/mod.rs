@@ -2,8 +2,9 @@
 //! `JobState`, holds the run registry + cancellation tokens (§0.4.4), and fans progress out to the
 //! Channel. It sequences the guarantees / engines / detection layers; it owns none of their behaviour.
 //!
-//! The conducting BEHAVIOUR (queue construction at C6, the §1.9 transitions, the run-registry WIRING +
-//! the cancellation flow) is filled by P3.46. This module homes the §0.6 outcome-referencing lifecycle/result types
+//! The conducting BEHAVIOUR (queue construction at C6, the run-registry register/finish WIRING, the
+//! `ConversionEvent` fan-out) is the P3.48 C6 conductor, composing the §1.9 transition primitives P3.46
+//! authored (the cancellation-DISPATCH leg is a separate C7 `cancel_run` box). This module homes the §0.6 outcome-referencing lifecycle/result types
 //! it assembles — `Batch`/`ConversionJob`/`JobState` (P2.10), the C4/C5 command-return DTOs
 //! `PreflightVerdict`/`OutputPlanPreview`/`DestinationResolved` (P2.11), the §1.12 result types
 //! `RunResult`/`ItemResult`/`Totals`/`CleanupResidue`/`ItemOutcome` (P2.12), and the §0.4.2 `ConversionEvent`
@@ -16,35 +17,37 @@
 //!
 //! It also homes the four §0.4.4 orchestrator-State stores (per §0.7, under the §0.7 "(§0.4.4)" umbrella) —
 //! distinct from the outcome-referencing types above: the `RunRegistry` (the `RunId` → `CancellationToken`
-//! run-cancellation-token store, P2.42; its register-at-C6 / cancel-at-C7 / drop-on-`RunFinished` WIRING is the
-//! P3.46 conductor), its sibling the `RunResultStore` (the process-local terminal-`RunResult` retention for C8
-//! re-serve, P2.43; no on-disk persistence per §7.4, its retain-at-`RunFinished` / evict-at-C6 / get-at-C8
-//! WIRING likewise P3.46), the `CollectedSetRegistry` (the `CollectedSetId` → `RegisteredSet` resolve
+//! run-cancellation-token store, P2.42; its register-at-C6 + drop-on-`RunFinished` WIRING is the P3.48
+//! conductor + handler, its cancel-at-C7 a separate `cancel_run` box), its sibling the `RunResultStore` (the
+//! process-local terminal-`RunResult` retention for C8 re-serve, P2.43; no on-disk persistence per §7.4, its
+//! retain-at-`RunFinished` + evict-at-C6 WIRING the P3.48 conductor + handler, its get-at-C8 the P3.50
+//! `get_run_summary`), the `CollectedSetRegistry` (the `CollectedSetId` → `RegisteredSet` resolve
 //! store — the domain `FrozenCollectedSet` + the §2.3 identity-evidence table, P2.44 / P3.40; so the
 //! bare-`collectedSetId` C3/C4/C5/C6 commands resolve the frozen detection result without
-//! a second walk, its register-at-C1/C2a-freeze / resolve-at-C3/C4/C5 / take-at-C6 WIRING likewise P3.46), and
+//! a second walk, its take-at-C6 WIRING the P3.48 handler — its register-at-C1/C2a-freeze + resolve-at-C3/C4/C5 the P3.49 ingest/planning bodies), and
 //! the `IngestRegistry` (the `CollectingId` → `CancellationToken` ingest-cancellation store, P2.45; the
 //! one-phase-earlier sibling of `RunRegistry`, so C13 `cancel_ingest` can trip an in-flight C1/C2a walk — its
 //! register-at-handler-entry / cancel-at-C13 / release-on-every-handler-exit WIRING is C1/C2a/C13 + P2.69-71).
 
 // [Build-Session-Entscheidung: P2.10/P2.11/P2.12] dead_code expect — the lifecycle/DTO/result types homed
 // here (Batch/ConversionJob/JobState, the C4/C5 DTOs, and the §1.12 RunResult/ItemResult/Totals/
-// CleanupResidue/ItemOutcome) are authored as CONTRACTS before their consumers exist: the orchestrator
-// queue/lifecycle BEHAVIOUR that constructs and drives them is P3.46, the DTO/result wire registration rides
-// the C4/C5/C8 + RunFinished/ItemFinished consumers (later P2/P3 boxes). So each is dead in the PRODUCTION
-// build until consumed; the cfg(test) tests below construct the full graphs, so the TEST build is
-// dead-code-clean and needs no expectation. `expect` (not `allow`) auto-flags the moment the conductor
-// consumes them — matching `crate::domain` / `crate::outcome`. Scoped to `not(test)` for that same reason.
+// CleanupResidue/ItemOutcome) were authored as CONTRACTS before their consumers existed: the orchestrator
+// queue/lifecycle BEHAVIOUR that constructs and drives them is the P3.48 C6 conductor (composing the §1.9
+// FSM primitives P3.46 authored), and the DTO/result wire registration rides the C4/C5/C8 +
+// RunFinished/ItemFinished consumers. P3.48 now consumes MOST of them into the live run (the reason string
+// below tracks what still stays dead); the cfg(test) tests construct the full graphs, so the TEST build is
+// dead-code-clean and needs no expectation. `expect` (not `allow`) auto-flags the moment the LAST dead item
+// is consumed — matching `crate::domain` / `crate::outcome`. Scoped to `not(test)` for that same reason.
 #![cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) are authored as contracts before the P3.46 orchestrator behaviour + the C1/C2a/C3/C4/C5/C6/C7/C8/C13 + the C6 onProgress Channel<ConversionEvent> (P2.29) wire consumers construct/register/drive them, so their as-yet-unwired methods are dead in the production build until consumed (`RunRegistry::has_active_run` is already consumed by the §7.1.1 `converter_is_busy` from P2.55, with `register`/`cancel`/`finish` staying dead until P3.46). The P3.25 §2.6.4 cleanup-honesty leg (ResidueRecord/ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) is likewise dead until the P3.50 §1.12 projection + the P3.38 write-sequence consume it. The P3.39 §2.5.1 EquivKeyComputer (compute_equiv_key) is now consumed by the P3.40 compute_rerun_verdict, and both — plus the P3.40 RegisteredSet registry composite — stay dead in the production build until the P3.49 C4 plan_output wiring resolves the managed State + calls compute_rerun_verdict. P3.46 authors the §1.9 lifecycle FSM (advance / queue_order / state_is_queued / JobEvent / IllegalTransition, P3.46.1) + the §2.8 Running→Failed projection (project_outcome / TerminalProjection, P3.46.2); these are PURE and read JobState/Batch/ConversionJob/InvocationResult without themselves being reachable from a root, so they stay dead in the production build until the P3.48 conductor composes them (queue_order -> advance -> dispatch -> project_outcome -> advance) into the live C6 run — reading the dead lifecycle graph does not make it live (a dead-fn reference is not a root). P3.47 adds the C6 batch constructor build_batch (materialises the §1.9 Batch from a FrozenCollectedSet — eligible Pending jobs + pre-flight Skipped records over the single id space), likewise PURE and dead in the production build until the P3.48 conductor resolves the frozen set and calls it. P3.50 adds the §1.12 run-end projection (project_run_result -> RunResult/RunResultPaths, composing the P3.25 residue helpers + the §2.8/§2.8.2 skip/failure renderers) + the batch-summary classifier (batch_summary/batch_summary_line), PURE and dead in the production build until the P3.48 conductor emits RunFinished; RunResultStore::get is now LIVE (the C8 get_run_summary handler reads it via resolve_run_summary), while retain/evict/paths stay dead until the P3.48 retain-at-RunFinished / evict-at-C6 + the P3.51 C9 paths wiring."
+        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) were authored as contracts ahead of their wire consumers. The P3.48 C6 run conductor + its start_conversion handler now compose MOST of them into the live run. LIVE via P3.48: the §1.9 FSM advance + queue_order (+ state_is_queued), the P3.47 build_batch, the P3.50 project_run_result, CollectedSetRegistry::take + RunResultStore::{evict, retain} + RunRegistry::{register, finish} + crate::run::RunScratch::acquire, and the P3.39 EquivKeyComputer::compute_equiv_key (the §2.5 applier + the per-success RerunLedger record). Already live before P3.48: RunRegistry::has_active_run (the §7.1.1 converter_is_busy, P2.55) and RunResultStore::get (the C8 get_run_summary handler via resolve_run_summary, P3.50). STILL dead in the production build until its own wiring lands: the §2.8 project_outcome (P3.46.2 — the conductor maps its own ItemRunOutcome onto the terminal JobEvent INLINE, so this InvocationResult projection has no production caller yet); RunResultStore::paths (the P3.51 C9 RunResultPaths wiring); RunRegistry::cancel (the C7 cancel_run handler is still a shell — the real registry .cancel() dispatch is a separate box); the §2.8.2 batch-summary renderer batch_summary/batch_summary_line (no production caller yet) + any P3.25 §2.6.4 residue helper (ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) project_run_result does not reach; the P3.40 compute_rerun_verdict + its RegisteredSet-registry C4 path (the P3.49 C4 plan_output re-run VERDICT resolves the managed State + calls it); and the P3.49 ingest funnel (the §1.1 walk/detect/freeze spine). Reading a dead fn does not make it live — a dead-fn reference is not a root — so this pure lifecycle/projection graph stayed dead until the P3.48 conductor made it reachable from the C6 command root; the expectation stays fulfilled while ANY of the above is still unwired."
     )
 )]
 
 use std::collections::hash_map::RandomState;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -53,24 +56,28 @@ use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use specta::Type;
+use tauri::ipc::Channel;
 use tempfile::TempPath;
 use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
 use crate::domain::{
     CollectedSet, CollectedSetId, CollectingId, DestinationChoice, DestinationId, DetectionOutcome,
-    DivertReason, DroppedItem, FrozenCollectedSet, IntakeOrigin, ItemId, ItemIdSpace, ItemPaths,
-    ItemSpaceExhausted, JobSource, JobStage, OptionValues, OutputPlan, ReadFailure, RerunPrompt,
-    RunId, SkipReason, SkippedItem, Target, TargetId, UserFacingFormat,
+    DivertReason, DroppedItem, FrozenCollectedSet, InstanceId, IntakeOrigin, ItemId, ItemIdSpace,
+    ItemPaths, ItemSpaceExhausted, JobSource, JobStage, OptionValues, OutputPlan, ReadFailure,
+    RerunDecision, RerunPrompt, RunId, SkipReason, SkippedItem, Target, TargetId, UserFacingFormat,
 };
-use crate::engines::InvocationResult;
+use crate::engines::{
+    dispatch, Engine, EngineId, EngineInvocation, InvocationResult, NativeCsvTsvEngine, PlanOutcome,
+};
 use crate::fs_guard::{
-    atomic_publish, is_write_divert_trigger, open_verified_parent_dir, output_name,
-    publish_to_divert, resolve_divert_target, DivertTarget, FileIdentity, LocationCache,
-    ParentDirVerdict, PublishError, PublishOutcome,
+    atomic_publish, compute_output_plan, is_write_divert_trigger, open_verified_parent_dir,
+    output_name, publish_to_divert, resolve_divert_target, DestinationMode, DivertTarget,
+    FileIdentity, LocationCache, ParentDirVerdict, PublishError, PublishOutcome,
 };
 use crate::outcome::{conversion_failure, ConversionErrorKind, IpcError, OutcomeMsg};
-use crate::run::{cleanup_item, EquivKey, RerunLedger, RunScratch};
+use crate::pool::Pool;
+use crate::run::{cleanup_item, cleanup_run, EquivKey, RerunLedger, RunScratch};
 
 /// One same-source conversion batch (§0.6 / §1.9) — the queue the orchestrator builds at C6
 /// `start_conversion` from a frozen `CollectedSet::Single` and drives to a §1.12 summary. INTERNAL to the
@@ -172,8 +179,10 @@ pub enum JobState {
     /// A named §2.8 failure kind; nothing was written for it (§2.1). The §1.9 Running→Failed transition
     /// maps the internal kind to the wire kind via `ErrorKind::from` in `crate::orchestrator` (§2.8.2).
     Failed(ConversionErrorKind),
-    /// A detection-ineligible pre-flight item (§1.2/§1.3) — set at `Batch` construction, never queued,
-    /// terminal (§1.9). Carries the §0.6 `SkipReason` copied directly from the `SkippedItem`.
+    /// A skipped item — terminal, never queued, no live events (§1.9). Either a detection-ineligible pre-flight
+    /// item (§1.2/§1.3, its `SkipReason` copied from the frozen `SkippedItem` at `build_batch`) OR the §2.5.3
+    /// re-run skip (`Skipped(AlreadyConverted)`, the P3.48 ruling — assigned by the C6 conductor's §2.5 applier
+    /// on a ledger-hit item that keeps its real `Eligible` `DroppedItem`; the refined P3.47 coupling).
     Skipped(SkipReason),
     /// User cancel; nothing written for it (§1.7/§1.11).
     Cancelled,
@@ -516,7 +525,7 @@ pub struct DestinationResolved {
 // C4 `plan_output` and C5 `set_destination` take BYTE-IDENTICAL request payloads
 // ({ collectedSetId, target, options, destination }), so their signatures alone cannot distinguish them.
 // §0.4.1 ("C4 vs C5 — byte-identical payloads, different contract [DECIDED]") resolves the difference NOT
-// by a one-shot guard but BY LIFECYCLE — the rule this module's behaviour (P3.46) + the C4/C5 body boxes
+// by a one-shot guard but BY LIFECYCLE — the rule this module's behaviour (P3.48) + the C4/C5 body boxes
 // (P2.44+) honor:
 //   1. C4 is RE-CALLABLE at any point in state 4 (eager on the 3→4 transition, then debounced ~150 ms on
 //      any target/option change, §5.8) — there is NO "fires exactly once" constraint.
@@ -524,22 +533,22 @@ pub struct DestinationResolved {
 //      that same set CARRIES the C5-resolved destination in its `destination: DestinationChoice` argument
 //      (caller-passed) and NEVER resets it. There is NO server-side destination store — the destination is
 //      authoritative as the C6 argument (§0.4.1 C6 [DECIDED]); the "re-apply the retained C5 destination if
-//      C4 arrives carrying a stale default" (§0.4.1) is a P3.46 runtime stale-default REPAIR, NOT a P2 state
+//      C4 arrives carrying a stale default" (§0.4.1) is a P3.49 runtime stale-default REPAIR, NOT a P2 state
 //      structure.
 //   3. C4 COMPUTES `rerun` (§2.5 equivalence) + the §1.10 `preflight`; C5 NEVER recomputes `rerun` (the v1
 //      EquivKey is destination-independent, §2.5.1) — it CARRIES C4's `rerun` THROUGH UNCHANGED and
 //      re-evaluates ONLY the destination-volume `preflight` (§2.14.4). This is the ONLY ordering rule.
 //
-// [Build-Session-Entscheidung: P2.28] Structural + documented layer authored HERE; runtime asserts at P3.46.
+// [Build-Session-Entscheidung: P2.28] Structural + documented layer authored HERE; runtime asserts at P3.48/P3.49.
 // The orchestrator BEHAVIOUR that enforces these at runtime (the re-callable C4 plan, the C5 destination
-// authority, the computed-vs-carried-through `rerun`) is the P3.46 conductor + the C4/C5 body boxes (P2.44+).
+// authority, the computed-vs-carried-through `rerun`) is the P3.48 conductor + the C4/C5 body boxes (P2.44+).
 // P2.28 encodes the two layers that exist at the contract stage: (i) this documented lifecycle invariant the
-// P3.46 conductor + the body boxes honor, and (ii) the structural ENABLERS the DTO shapes above already
+// P3.48 conductor + the body boxes honor, and (ii) the structural ENABLERS the DTO shapes above already
 // guarantee — pinned by the `c4_c5_asymmetry_structural_enablers` test: `DestinationResolved` CARRIES a
 // `destination` (C5 owns it) while `OutputPlanPreview` carries only a `final_dir_display` PREVIEW and NO
 // `DestinationChoice` field (C4 does not own the choice), and both carry the SAME `rerun: Option<RerunPrompt>`
-// type (so C5 carries C4's `rerun` through unchanged). This is the same contract-here / behaviour-at-P3.46
-// split as the C1–C6 shells, NOT a stub: the structure makes the lifecycle rule TYPE-POSSIBLE; P3.46 adds the
+// type (so C5 carries C4's `rerun` through unchanged). This is the same contract-here / behaviour-at-P3.48/P3.49
+// split as the C1–C6 shells, NOT a stub: the structure makes the lifecycle rule TYPE-POSSIBLE; P3.48/P3.49 adds the
 // runtime enforcement.
 
 // ─── §1.12 result types — the end-of-batch RunResult + the live ItemFinished outcome (P2.12) ──
@@ -575,10 +584,12 @@ pub struct RunResult {
     pub collected_set_id: CollectedSetId,
     /// The run this summary is for (§7.1) — minted at C6 `start_conversion`.
     pub run_id: RunId,
-    /// Per-item outcome + output→source mapping (§1.12). INCLUDES the freeze-time pre-flight `SkippedItem`s
-    /// (`CollectedSet::Single.skipped`) projected as `ItemResult { item, output_display: None,
-    /// state: Skipped(reason), reason: Some(OutcomeMsg::Skipped{ reason, .. }) }` — the skip rides the skip-shaped `OutcomeMsg`
-    /// variant (§2.8), NOT `Failure`, so skip ≠ fail at the type level (§1.12); counted in `totals.skipped`.
+    /// Per-item outcome + output→source mapping (§1.12). INCLUDES every skip — the freeze-time pre-flight
+    /// `SkippedItem`s (`CollectedSet::Single.skipped`, the four detection reasons) AND the §2.5.3 re-run skip
+    /// (`Skipped(AlreadyConverted)`, assigned by the C6 applier over an item that keeps its `Eligible`
+    /// `DroppedItem`) — each projected as `ItemResult { item, output_display: None, state: Skipped(reason),
+    /// reason: Some(OutcomeMsg::Skipped{ reason, .. }) }`; the skip rides the skip-shaped `OutcomeMsg` variant
+    /// (§2.8), NOT `Failure`, so skip ≠ fail at the type level (§1.12); counted in `totals.skipped`.
     pub items: Vec<ItemResult>,
     /// The succeeded / failed / cancelled / skipped tally (§1.12).
     pub totals: Totals,
@@ -645,7 +656,8 @@ pub struct Totals {
     pub failed: u32,
     /// Items discarded by user cancel (§1.7/§1.11) — finished-before-cancel items stay in `succeeded`.
     pub cancelled: u32,
-    /// Pre-flight detection-ineligible items projected into the summary (§1.3/§1.12) — never `failed`.
+    /// Skipped items projected into the summary (§1.3/§1.12) — never `failed`: the pre-flight
+    /// detection-ineligible skips AND the §2.5.3 re-run skip (`Skipped(AlreadyConverted)`, the P3.48 ruling).
     pub skipped: u32,
 }
 
@@ -714,7 +726,9 @@ pub enum ItemOutcome {
     /// A named §2.8 failure — carries the full §0.4.3 `IpcError` the live row renders.
     #[serde(rename_all = "camelCase")]
     Failed { error: IpcError },
-    /// A pre-flight detection-ineligible item (§1.2/§1.3) — carries the §0.6 `SkipReason` (skip ≠ fail).
+    /// A skipped item — carries the §0.6 `SkipReason` (skip ≠ fail): a pre-flight detection-ineligible item
+    /// (§1.2/§1.3) OR the §2.5.3 re-run skip (`AlreadyConverted`, the P3.48 ruling). Reserved for the §1.12
+    /// terminal-projection path (no live `ItemFinished{Skipped}` is emitted — §0.4.2).
     #[serde(rename_all = "camelCase")]
     Skipped { reason: SkipReason },
     /// User-cancelled; nothing written (§1.7/§1.11). Not an `ErrorKind` (§0.4.3 note) — payload-free.
@@ -886,10 +900,13 @@ fn residue_disposition_of(state: JobState) -> Option<ResidueDisposition> {
 
 /// The base per-item §2.8.2 `reason` for a terminal job (before any §2.6.4 residue override) — the resolved,
 /// ready-to-show line (`ItemResult.reason`, §0.6): a `Failed(kind)` renders its §2.8.2 catalog row, a
-/// pre-flight `Skipped` renders its `OutcomeMsg::Skipped` line (from the retained `SkippedItem.detected_display`
-/// via the P2.20 bridge, P3.50 ruling), and a plain `Succeeded`/`Cancelled` carries none. Reads the skip's
-/// `detected_display` from the `JobSource::Skipped` arm (coupling: `source is Skipped ⟺ state is Skipped`,
-/// P3.47). [Build-Session-Entscheidung: P3.50]
+/// `Skipped(reason)` renders its `OutcomeMsg::Skipped` line, and a plain `Succeeded`/`Cancelled` carries none.
+/// TWO skip shapes: a pre-flight DETECTION skip (`JobSource::Skipped`) passes its retained
+/// `SkippedItem.detected_display` into `skipped_message` (the `{detected}` substitution, P3.50); the §2.5.3
+/// re-run skip `Skipped(AlreadyConverted)` (`JobSource::Eligible`) has NO `detected_display` (`None`) and its
+/// line renders DIRECTLY (the P3.48 ruling — never via the `SkipReason→ErrorKind` bridge). The coupling
+/// `source is Skipped(_) ⟺ state is Skipped(<detection reason>)` (P3.47) guarantees the detected name is
+/// present exactly when it is needed. [Build-Session-Entscheidung: P3.50 → P3.48]
 fn item_base_reason(job: &ConversionJob) -> Option<OutcomeMsg> {
     match job.state {
         JobState::Skipped(reason) => {
@@ -1046,34 +1063,41 @@ pub fn batch_summary_line(totals: &Totals, has_residue: bool) -> String {
     append_residue_tail(batch_summary(totals).text(), has_residue)
 }
 
-// ─── §2.1.1 per-item write sequence (P3.38) ──────────────────────────────────────────────────────────
-// [Build-Session-Entscheidung: P3.38] Homed HERE in crate::orchestrator (tier 1) per the 2026-07-07 home
-// ruling (§0.7 > the plan-cluster heading): the sequence COMPOSES `crate::run` (temp/cleanup) + `crate::fs_guard`
-// (publish/divert) + the engine step — three tier-2 leaves + the engine seam — and ONLY the tier-1 orchestrator
-// may compose all three (`fs_guard` depends DOWN only; `run`/`fs_guard` are mutually-independent siblings, so a
-// deliberate `run`→`fs_guard` edge is rejected, §0.7). The §2.1.1 steps 3-6 (sync → resolve-late → exclusive
-// publish → dir-fsync + the §2.14.3 EXDEV fallback + the §2.2.2 numbering ↔ no-clobber loop) all live INSIDE
-// `fs_guard::atomic_publish` (P3.15/P3.16/P3.17); this box wires step 1 (`run::publish_temp`, P3.20), step 2 (the
-// engine seam), the §1.7 exit-verification, and step 7 (`run::cleanup_item`, P3.22) around it.
+// ─── §2.1.1 per-item PUBLISH LEGS (P3.38 → re-cut P3.48) ──────────────────────────────────────────────
+// [Build-Session-Entscheidung: P3.38 → P3.48] Homed HERE in crate::orchestrator (tier 1) per the 2026-07-07
+// home ruling (§0.7 > the plan-cluster heading): the sequence COMPOSES `crate::run` (temp/cleanup) +
+// `crate::fs_guard` (publish/divert) + the engine step — and ONLY the tier-1 orchestrator may compose all
+// three (`fs_guard` depends DOWN only; `run`/`fs_guard` are mutually-independent siblings, so a deliberate
+// `run`→`fs_guard` edge is rejected, §0.7). The §2.1.1 steps 3-6 (sync → resolve-late → exclusive publish →
+// dir-fsync + the §2.14.3 EXDEV fallback + the §2.2.2 numbering ↔ no-clobber loop) all live INSIDE
+// `fs_guard::atomic_publish` (P3.15/P3.16/P3.17); [`publish_written_temp`] wires those + step 7
+// (`run::cleanup_item`, P3.22) around an ALREADY-WRITTEN, non-empty-verified publish temp.
 //
-// The engine step is a CALLABLE SEAM (a `FnOnce` writing into the temp) — the real native CSV/TSV engine binds
-// at P3.41/P3.48, so `needs:` correctly excludes P3.41. Because the seam is honest-now (a caller supplies the
-// bytes), the G32(a) source-unchanged leg binds with THIS box; the G31 output-validity structural readers bind
-// when the real engine + corpus land (P3.41 → P3.62/P3.63), per the home ruling.
+// **The P3.48 composition re-cut (the 2026-07-12 ruling — option ②: pick-temp → await dispatch → publish
+// legs).** P3.38's original `write_item` bundled all seven steps around a SYNCHRONOUS engine-write `FnOnce`
+// seam; P3.48 RE-CUT it because the §1.7 dispatch is `async` (spawn/kill/cancel) and a synchronous `FnOnce`
+// seam can never host it (the ruling's rationale (b): option ① — the `write_item` spine — dies at P4). So the
+// per-item sequence is composed TIER-1 in the [`crate::orchestrator`] conductor (`run_conversion`, §1.9):
+// step 1 (`RunScratch::publish_temp`) is conductor-side, step 2 (the write) is the awaited
+// `engines::dispatch`, the §1.7 non-empty exit-verification runs on the conductor's `Succeeded` path, and
+// ONLY on `InvocationResult::Succeeded` does the conductor call [`publish_written_temp`] for steps 3-7 (a
+// `Cancelled`/`Failed` invocation drops the temp + projects directly, never reaching the publish legs —
+// §2.1.1 step 2's `[CLARIFIED 2026-07-12]`). Every guarantee-bearing piece (sync, resolve-late, exclusive
+// publish, dir-fsync, cleanup-on-error, late-divert) stays LIVE on the run path — the re-cut moved the seam,
+// it did not deaden any leg.
 //
 // The §2.7.2/§2.7.5 LATE-DIVERT is composed here (not merely surfaced): a §2.1.1 sequence that failed an item on
 // a mid-write writability flip / FAT-exFAT `NoAtomicPublishSupport` instead of diverting would DEGRADE the §2.7.5
 // "not a degraded path" guarantee (SSOT Principle-5). P3.17/P3.35/P3.36 authored `atomic_publish` /
-// `resolve_divert_target` / `is_write_divert_trigger` / `publish_to_divert` with THIS box named as their
+// `resolve_divert_target` / `is_write_divert_trigger` / `publish_to_divert` with THIS leg named as their
 // production caller (P3.35/P3.36 are earlier `[x]` boxes, so no explicit `needs:` edge is required — the §04
 // divert primitives are already built). One divert per item (§2.7.3) — a failed divert is terminal, never
-// re-diverted. The whole surface is dead in the production build until the P3.46/P3.48 conductor calls
-// `write_item` (the module-level `not(test)` dead_code expect covers it).
+// re-diverted. The whole surface goes LIVE when the P3.48 conductor makes `start_conversion` a live root.
 
-/// The terminal disposition of one §2.1.1 per-item write ([`write_item`]) — the output published (the real
-/// path, retained core-side for `RunResultPaths.item_outputs` + the §1.12 display projection) or a named §2.8
-/// failure (one item failed, the batch continues, §1.9). Core-INTERNAL (holds the real output `PathBuf`, never a
-/// wire type); the §1.9 FSM (P3.46) projects it onto the wire `JobState`/`ItemOutcome`.
+/// The terminal disposition of one §2.1.1 per-item publish ([`publish_written_temp`]) — the output published
+/// (the real path, retained core-side for `RunResultPaths.item_outputs` + the §1.12 display projection) or a
+/// named §2.8 failure (one item failed, the batch continues, §1.9). Core-INTERNAL (holds the real output
+/// `PathBuf`, never a wire type); the P3.48 conductor maps it onto the wire `JobState`/`ItemOutcome`.
 ///
 /// [Build-Session-Entscheidung: P3.38] `Debug, Clone, PartialEq, Eq` — the internal-type set (no `serde`/
 /// `specta`, like `OutputPlan`/`ResidueRecord`); NOT `Copy` (owns a `PathBuf`).
@@ -1087,13 +1111,15 @@ pub enum WriteDisposition {
     Failed { kind: ConversionErrorKind },
 }
 
-/// The full result of one §2.1.1 per-item write ([`write_item`]) — the terminal [`WriteDisposition`], whether the
-/// output DIVERTED (§2.7.3, so the run's `divert_root_display` is set), and any §2.6.4 cleanup residue (a temp
-/// that could not be removed, so the item is never reported as a silent clean success — the P3.25 honesty leg).
-/// Core-INTERNAL (a [`ResidueRecord`] holds the off-wire real `PathBuf`).
+/// The full result of one §2.1.1 per-item publish ([`publish_written_temp`]) — the terminal
+/// [`WriteDisposition`], whether the output DIVERTED (§2.7.3, so the run's `divert_root_display` is set), and
+/// any §2.6.4 cleanup residue (a temp that could not be removed, so the item is never reported as a silent
+/// clean success — the P3.25 honesty leg). Core-INTERNAL (a [`ResidueRecord`] holds the off-wire real
+/// `PathBuf`). The P3.48 conductor also maps a `Failed`-with-residue into the live `ItemFinished` `IpcError`
+/// (kind + `residue_display`) via `write_outcome_to_run` + `failure_message`.
 ///
 /// [Build-Session-Entscheidung: P3.38] `Debug, Clone, PartialEq, Eq`; NOT `Copy` (embeds a `WriteDisposition` +
-/// an `Option<ResidueRecord>`, both owning `PathBuf`s). The §1.9 FSM (P3.46) maps `(disposition, residue)` onto
+/// an `Option<ResidueRecord>`, both owning `PathBuf`s). The §1.12 projection maps `(disposition, residue)` onto
 /// the §2.6.4 [`ResidueDisposition`] (a `Published` → case 1; a `Failed` → case 2) via [`residue_item_reason`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteOutcome {
@@ -1139,18 +1165,21 @@ struct WriteInputs<'a> {
     scratch: &'a RunScratch,
 }
 
-/// **§2.1.1 the per-item write sequence (P3.38)** — pick-temp → engine-writes → sync → resolve-late → publish →
-/// dir-fsync → cleanup-on-error, with the §2.7.2/§2.7.5 late-divert. Consumes the §1.8 [`OutputPlan`] (P3.37) and
-/// an engine-write SEAM (`engine_write`, a `FnOnce` the real native CSV/TSV engine replaces at P3.41/P3.48),
-/// producing the terminal [`WriteOutcome`] the §1.9 FSM (P3.46) projects onto `JobState`/`ItemOutcome`.
+/// **§2.1.1 the per-item PUBLISH LEGS (P3.38 → re-cut P3.48)** — sync → resolve-late → publish → dir-fsync →
+/// cleanup-on-error, with the §2.7.2/§2.7.5 late-divert, over the ALREADY-WRITTEN, non-empty-verified publish
+/// `tmp` the §1.9 conductor (`run_conversion`) hands in. Consumes the §1.8 [`OutputPlan`] (P3.37), producing
+/// the terminal [`WriteOutcome`] the conductor maps onto the `ItemFinished` `ItemOutcome` + the §1.12
+/// `RunResult` projection.
 ///
-/// The seven §2.1.1 steps: **(1)** pick the publish temp on `final`'s volume ([`RunScratch::publish_temp`], P3.20);
-/// **(2)** the engine writes into `tmp` (the seam — never `final`, §3.5); **(3-6)** sync → resolve-late + §2.3.3
-/// link-safety → the §2.2.2 numbering ↔ no-clobber exclusive publish → dir-fsync, all inside
-/// [`atomic_publish`] (P3.15/P3.16, with the §2.14.3 EXDEV fallback P3.17); **(7)** on any error in 3-6 remove
-/// `tmp` — `final` was never created ([`cleanup_item`], P3.22). The §1.7 EXIT-VERIFICATION gates step 3: success
-/// ONLY if the temp output exists and is non-empty (a 0-byte output is a §2.8 `Empty` failure, never a clean
-/// success of an empty file).
+/// **What the conductor did BEFORE this (the P3.48 re-cut, ruling option ②):** §2.1.1 step 1 — picked the
+/// publish temp on `final`'s volume ([`RunScratch::publish_temp`], P3.20); step 2 — the §1.7 `engines::dispatch`
+/// WROTE the engine's output into `tmp` (never `final`, §3.5); and the §1.7 exit-verification GATED this call —
+/// it runs ONLY on `InvocationResult::Succeeded` with a temp that exists and is non-empty (an empty/vanished
+/// output is a §2.8 `Empty`/`InternalError` the conductor fails BEFORE reaching here; a `Failed`/`Cancelled`
+/// invocation never reaches here). So this fn is steps 3-7: **(3-6)** sync → resolve-late + §2.3.3 link-safety →
+/// the §2.2.2 numbering ↔ no-clobber exclusive publish → dir-fsync, all inside [`atomic_publish`]
+/// (P3.15/P3.16, with the §2.14.3 EXDEV fallback P3.17); **(7)** on any error in 3-6 remove `tmp` — `final` was
+/// never created ([`cleanup_item`], P3.22).
 ///
 /// **Late-divert (§2.7.2/§2.7.5).** A `ResolvesOntoSource` parent (§2.3.3), a FAT/exFAT `NoAtomicPublishSupport`
 /// (§2.7.2, Unix), or a writability publish failure ([`is_write_divert_trigger`] — USB pulled / share dropped /
@@ -1158,13 +1187,17 @@ struct WriteInputs<'a> {
 /// [`publish_to_divert`]) — the FULL safety chain, not a degraded path (§2.7.5). ONE divert per item (§2.7.3): a
 /// plan already diverted, or a failed divert, is terminal (§2.8 `WriteFailed`), never re-diverted.
 ///
-/// No panic (the crate no-panic deny, G4/G14) — every failure is a structured [`WriteOutcome`]; the source bytes
-/// are never touched (the no-harm G32(a) invariant the tests assert). [Build-Session-Entscheidung: P3.38]
+/// A non-UTF-8 target extension is an internal fault, never user-facing — the temp is removed (it is already
+/// written by this point, unlike the pre-re-cut `write_item` where the ext check preceded the temp pick) and
+/// the item fails `InternalError`. No panic (the crate no-panic deny, G4/G14) — every failure is a structured
+/// [`WriteOutcome`]; the source bytes are never touched (the no-harm G32(a) invariant the tests assert).
+/// [Build-Session-Entscheidung: P3.38 → P3.48]
 #[allow(clippy::too_many_arguments)]
-// [Build-Session-Entscheidung: P3.38] Each arg is a DISTINCT §2.1.1 input (the plan/source/frozen-set/divert
-// roots/run handle/cache/probe-name factory/engine seam) — the `compute_output_plan` (P3.37) precedent; a
-// mechanical bundle struct would group them without semantic value (and the two closures cannot live in one).
-pub fn write_item(
+// [Build-Session-Entscheidung: P3.38 → P3.48] Each arg is a DISTINCT §2.1.1 input (the plan/source/frozen-set/
+// divert roots/run handle/cache/probe-name factory/the written temp) — the `compute_output_plan` (P3.37)
+// precedent; a mechanical bundle struct would group them without semantic value. The re-cut REPLACED the old
+// `engine_write: impl FnOnce` seam with `tmp: TempPath` (the conductor's already-written publish temp).
+pub fn publish_written_temp(
     plan: &OutputPlan,
     source: &Path,
     frozen_sources: &[FileIdentity],
@@ -1172,12 +1205,14 @@ pub fn write_item(
     scratch: &RunScratch,
     cache: &mut LocationCache,
     probe_name: impl Fn() -> OsString,
-    engine_write: impl FnOnce(&Path) -> Result<(), ConversionErrorKind>,
+    tmp: TempPath,
 ) -> WriteOutcome {
     let item = plan.job;
     // The target's canonical extension is ASCII (§04); a non-UTF-8 ext is an internal fault, never user-facing.
+    // The temp is ALREADY written here (the re-cut moved the pick/write conductor-side), so a failing ext check
+    // removes it (never a silent leftover) — unlike the pre-re-cut `write_item`, whose ext check preceded step 1.
     let Some(ext) = plan.extension.to_str() else {
-        return WriteOutcome::failed(ConversionErrorKind::InternalError);
+        return fail_cleanup(item, [tmp], ConversionErrorKind::InternalError);
     };
     let inputs = WriteInputs {
         plan,
@@ -1188,31 +1223,7 @@ pub fn write_item(
         scratch,
     };
 
-    // §2.1.1 step 1: pick the publish temp (P3.20) — the run-owned `.convertia-…-.part` sibling on `final`'s
-    // volume (§2.14.1). A create failure (permission / IO at the destination) fails the item clearly; nothing
-    // was written.
-    let Ok(tmp) = scratch.publish_temp(&plan.publish_temp_dir, item) else {
-        return WriteOutcome::failed(ConversionErrorKind::WriteFailed);
-    };
-
-    // §2.1.1 step 2: the engine writes into `tmp` (the callable seam — never `final`, §3.5; the real native
-    // CSV/TSV engine binds P3.41, dispatch wiring P3.48). On engine failure: §2.1.1 step 7 removes `tmp`
-    // (`final` was never created).
-    if let Err(kind) = engine_write(tmp.as_ref()) {
-        return fail_cleanup(item, [tmp], kind);
-    }
-
-    // §1.7 exit & output verification: success ONLY if the temp output exists and is non-empty — a "success exit
-    // but empty/zero output" is a §2.8 failure, never a clean success of an empty file.
-    match std::fs::metadata(&*tmp) {
-        Ok(meta) if meta.len() > 0 => {}
-        // Present but 0-byte → §2.8 `Empty` (§1.7).
-        Ok(_) => return fail_cleanup(item, [tmp], ConversionErrorKind::Empty),
-        // Gone after a "successful" seam → the engine broke its non-empty-output contract → §2.13 InternalError.
-        Err(_) => return fail_cleanup(item, [tmp], ConversionErrorKind::InternalError),
-    }
-
-    // §2.1.1 steps 3-6 (+ the §2.7.2/§2.7.5 late-divert).
+    // §2.1.1 steps 3-6 (+ the §2.7.2/§2.7.5 late-divert) over the conductor's written, non-empty-verified temp.
     publish_completed(&inputs, cache, &probe_name, tmp)
 }
 
@@ -1452,7 +1463,7 @@ pub enum ConversionEvent {
 /// `CollectedSet::Single.count` (i.e. `items.len()` — NOT the internal `Grouping::Single.members`, never on the
 /// §0.6 wire), EXCLUDING pre-flight-skipped items (§1.1/§1.3, which never enter the §1.9 queue). It is the
 /// `BatchProgress.total` denominator (P2.37.3), so a skipped item never holds the bar below 100% — skips are
-/// reconciled only at the §1.12 Summary. The "= count" equality is a §1.9 RUNTIME emission rule the P3.46
+/// reconciled only at the §1.12 Summary. The "= count" equality is a §1.9 RUNTIME emission rule the P3.48
 /// conductor enforces when it builds the queue; P2.37.1 fixes the FIELD + its documented denominator contract.
 ///
 /// [Build-Session-Entscheidung: P2.37.2] **`will_reencode` is a non-optional `bool`, always definite.** A
@@ -1515,7 +1526,7 @@ pub struct ItemProgress {
 /// path (it is not dead wire code — it carries the projected pre-flight skips + any mid-run cooperative skip),
 /// so the conductor emits no live `ItemStarted`/`ItemFinished{Skipped}` for a freeze-time skip. The
 /// `ItemFinished.outcome` field structurally CAN carry `Skipped` (the SAME shared `ItemOutcome` type as the
-/// terminal `RunResult.items`), so the policy is a §1.9/§1.12 RUNTIME emission rule the P3.46 conductor honors,
+/// terminal `RunResult.items`), so the policy is a §1.9/§1.12 RUNTIME emission rule the P3.48 conductor honors,
 /// NOT a type-level prohibition; P2.37.4 fixes the documented policy + the structural enabler.
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -1532,7 +1543,7 @@ pub struct ItemFinished {
 /// `total` counts ONLY items that entered the §1.9 queue — the SAME queued-eligible denominator as
 /// `RunStarted.total_items` (P2.37.1), EXCLUDING pre-flight-skipped items. If `total` counted dropped-but-
 /// skipped items the bar could never reach 100%; skips are reconciled only at the §1.12 Summary. The equality
-/// `BatchProgress.total == RunStarted.total_items` is a §1.11 RUNTIME emission invariant the P3.46 conductor
+/// `BatchProgress.total == RunStarted.total_items` is a §1.11 RUNTIME emission invariant the P3.48 conductor
 /// holds (both read the same `CollectedSet::Single.count`); P2.37.3 fixes the shared-`u32`-denominator field +
 /// its documented invariant. `done` is the completed-item numerator (also queued-only).
 #[derive(Debug, Clone, Serialize, Type)]
@@ -1545,6 +1556,636 @@ pub struct BatchProgress {
     pub total: u32,
 }
 
+// ─── §1.9 the C6 run conductor — pick-temp → await dispatch → publish legs (P3.48) ────────────────────
+// [Build-Session-Entscheidung: P3.48] The tier-1 conductor the §1.9 module doc names — it COMPOSES the pure
+// pieces (queue_order → advance → engines::dispatch → the §2.1.1 publish legs → advance → project_run_result)
+// into the live C6 `start_conversion` run, streaming the §0.4.2 `ConversionEvent`s over the run Channel. The
+// 2026-07-12 ruling's option ② composition is per-item: pick-temp (`RunScratch::publish_temp`) → AWAIT
+// `engines::dispatch` (the §2.1.1 step-2 write, inherently async for a subprocess engine) → on `Succeeded`,
+// the §1.7 non-empty exit-verification + the §2.1.1 publish legs (`publish_written_temp`); a `Failed`/
+// `Cancelled` invocation drops the temp + projects directly, never reaching the publish legs. `run_conversion`
+// takes PLAIN values/refs (no AppHandle), so it is unit-tested over a DIRECTLY-registered frozen set (the full
+// C1→C6→summary E2E is P3.49/P3.63) — the AppHandle State-resolution + spawn is the thin C6 handler
+// (`crate::ipc::conversion`, the boot-glue half of the build-vs-wire split).
+
+/// The per-item terminal disposition the conductor's async convert ([`convert_item`]) produces — richer than
+/// the publish-leg [`WriteOutcome`] because it additionally carries the §1.7 `Cancelled` arm (a cancelled item
+/// never reaches the publish legs, so [`WriteOutcome`], produced only by the publish legs, cannot represent
+/// it). The conductor maps it onto the §1.9 terminal [`JobEvent`] + the live §0.4.2 `ItemFinished`
+/// [`ItemOutcome`] + the §1.12 projection inputs. [Build-Session-Entscheidung: P3.48]
+enum ItemRunOutcome {
+    /// Converted + atomically published (§2.1) — the real output `PathBuf` (retained for
+    /// `RunResultPaths.item_outputs`), whether it §2.7.3-diverted, and any §2.6.4 cleanup residue.
+    Published {
+        output: PathBuf,
+        diverted: bool,
+        residue: Option<ResidueRecord>,
+    },
+    /// A named §2.8 failure (one item failed, the batch continues, §1.9) + any §2.6.4 residue.
+    Failed {
+        kind: ConversionErrorKind,
+        residue: Option<ResidueRecord>,
+    },
+    /// User-cancelled (§1.7/§1.11) — the partial `out_tmp` was dropped (§3.2.2), nothing published.
+    Cancelled,
+}
+
+/// Map a publish-leg [`WriteOutcome`] (P3.38) onto the conductor's richer [`ItemRunOutcome`] — a `Published`
+/// disposition carries the real output + divert flag + residue; a `Failed` disposition carries the §2.8 kind +
+/// residue. (A `WriteOutcome` never carries `Cancelled` — the publish legs run only on `Succeeded`.)
+/// [Build-Session-Entscheidung: P3.48]
+fn write_outcome_to_run(outcome: WriteOutcome) -> ItemRunOutcome {
+    match outcome.disposition {
+        WriteDisposition::Published { output } => ItemRunOutcome::Published {
+            output,
+            diverted: outcome.diverted,
+            residue: outcome.residue,
+        },
+        WriteDisposition::Failed { kind } => ItemRunOutcome::Failed {
+            kind,
+            residue: outcome.residue,
+        },
+    }
+}
+
+/// The §2.8.2 catalog message for a Running→Failed item's live `ItemFinished` [`IpcError`] (§0.4.3) — the
+/// substituted per-item failure line for `kind`, falling back to the always-homed `InternalError` row so a
+/// failed item is never message-less. Every kind a conductor per-item write produces (WriteFailed / Empty /
+/// InternalError / OutOfDisk / PathTooLong / TooManyCollisions / EngineHang / … + the §3.5.6 transform kinds)
+/// is a no-substitution §2.8.2 row, so `arg = ""` renders the full string (the slotted kinds UnsupportedType
+/// `{detected}` / PlatformUnavailable `{platform}` are pre-flight/app-level, never a Running→Failed outcome; a
+/// residue rides `IpcError.residue_display`, NOT a combined CleanupResidue message — that combination is the
+/// §1.12 SUMMARY-projection's job, §2.6.4 / P3.50). Exhaustive over [`OutcomeMsg`] (no `_`, G4/G14).
+/// [Build-Session-Entscheidung: P3.48]
+fn failure_message(kind: ConversionErrorKind) -> String {
+    let rendered = conversion_failure(kind, "")
+        .or_else(|| conversion_failure(ConversionErrorKind::InternalError, ""));
+    match rendered {
+        Some(OutcomeMsg::Failure { text, .. })
+        | Some(OutcomeMsg::Lossy { text, .. })
+        | Some(OutcomeMsg::Skipped { text, .. }) => text,
+        None => "Something unexpected went wrong, so this file couldn't be converted.".to_owned(),
+    }
+}
+
+/// The §1.12 `RunResult.common_root` — the "open folder" target's real root (§2.7.4 / §7.7.3). For a
+/// chosen-root batch it is the chosen root; for the beside-source default it is the DEEPEST directory
+/// containing every §2.4 frozen dropped root (so "open folder" lands on the enclosing folder the outputs sit
+/// beside). An empty root set (a defensive degenerate) yields an empty path. [Build-Session-Entscheidung: P3.48]
+fn common_ancestor(roots: &[PathBuf], destination: &DestinationChoice) -> PathBuf {
+    match destination {
+        DestinationChoice::ChosenRoot(root) => root.clone(),
+        DestinationChoice::BesideSource => source_common_root(roots),
+    }
+}
+
+/// The §2.7.1 SOURCE freeze common root — the deepest directory containing every §2.4 frozen dropped root. It
+/// is the base a chosen-root subtree is taken against (`fs_guard::prepare_output_dir` does
+/// `source.strip_prefix(source_common_root)` to re-create the relative subtree under the chosen root, §2.7.1).
+/// **Destination-INDEPENDENT** — unlike [`common_ancestor`], whose `ChosenRoot` arm returns the open-folder
+/// target D (the chosen root itself): feeding D as the strip base would fail `strip_prefix` for every source
+/// (sources are never under the destination), so the two values MUST NOT be conflated. Empty root set → empty
+/// path. [Build-Session-Entscheidung: P3.48]
+fn source_common_root(roots: &[PathBuf]) -> PathBuf {
+    let mut iter = roots.iter();
+    let Some(first) = iter.next() else {
+        return PathBuf::new();
+    };
+    let mut common = first.clone();
+    for root in iter {
+        common = deepest_common_prefix(&common, root);
+    }
+    common
+}
+
+/// The longest shared leading path prefix of two paths (component-wise) — the §2.7.4 common-ancestor fold.
+/// [Build-Session-Entscheidung: P3.48]
+fn deepest_common_prefix(a: &Path, b: &Path) -> PathBuf {
+    let mut common = PathBuf::new();
+    for (ca, cb) in a.components().zip(b.components()) {
+        if ca == cb {
+            common.push(ca);
+        } else {
+            break;
+        }
+    }
+    common
+}
+
+/// The chosen target's canonical output extension for the walking-skeleton slice (`tsv`/`csv`) — mirrors
+/// `NativeCsvTsvEngine::plan`'s target-token map (`None` for a mis-routed non-CSV/TSV target — an
+/// `InternalError`, never a user fault; the UI never offers one, §1.5). Compared by value against the two
+/// format ids (not a `match` with a `_` arm — the crate-root `clippy::wildcard_enum_match_arm` deny).
+/// [Build-Session-Entscheidung: P3.48]
+fn slice_extension(target: TargetId) -> Option<&'static str> {
+    if target == TargetId::Format(UserFacingFormat::Tsv) {
+        Some("tsv")
+    } else if target == TargetId::Format(UserFacingFormat::Csv) {
+        Some("csv")
+    } else {
+        None
+    }
+}
+
+/// **§1.7 exit & output verification (P3.48 — RELOCATED from `write_item` onto the conductor's Succeeded
+/// path).** After the §1.7 dispatch reports `Succeeded`, the reclaimed publish `tmp` must exist and be
+/// non-empty for the §2.1.1 publish legs to run: `Ok(tmp)` iff the temp is non-empty (§1.7 "success ONLY if
+/// the expected temp output exists and is non-empty"); a present-but-0-byte output is a §2.8 `Empty` failure
+/// (never a clean success of an empty file); a VANISHED temp broke the engine's non-empty contract → §2.13
+/// `InternalError`. On failure the temp is cleaned ([`fail_cleanup`] — §2.6.4 honest, a removal failure
+/// surfaces a `CleanupResidue`) and the [`WriteOutcome`] returned as `Err`. Extracted so the empty/vanished
+/// verification is unit-testable without driving the async engine. [Build-Session-Entscheidung: P3.48]
+fn verify_encode_output(item: ItemId, tmp: TempPath) -> Result<TempPath, WriteOutcome> {
+    match std::fs::metadata(&*tmp) {
+        Ok(meta) if meta.len() > 0 => Ok(tmp),
+        Ok(_) => Err(fail_cleanup(item, [tmp], ConversionErrorKind::Empty)),
+        Err(_) => Err(fail_cleanup(
+            item,
+            [tmp],
+            ConversionErrorKind::InternalError,
+        )),
+    }
+}
+
+/// The per-item async convert (§2.1.1 — the P3.48 ruling option ②: pick-temp → await dispatch → publish legs).
+/// Computes the §1.8 [`OutputPlan`], picks the publish temp (§2.14.1), builds the §1.7 invocation
+/// (`NativeCsvTsvEngine::plan` + the §1.7-owned `out_tmp`), AWAITs `engines::dispatch` (the step-2 write, with
+/// the §1.11 progress ticks + the §0.4.4 cancel token), and on `Succeeded` runs the §1.7 non-empty exit
+/// verification + the §2.1.1 publish legs ([`publish_written_temp`]); a `Failed`/`Cancelled` invocation drops
+/// the temp (§3.2.2) and projects directly. No panic (the crate no-panic deny) — every failure is a structured
+/// [`ItemRunOutcome`]; the source bytes are never touched (the no-harm G32(a) invariant).
+/// [Build-Session-Entscheidung: P3.48]
+#[allow(clippy::too_many_arguments)]
+async fn convert_item(
+    dropped: &DroppedItem,
+    source: &Path,
+    target: TargetId,
+    frozen_sources: &[FileIdentity],
+    divert_root: &Path,
+    destination: &DestinationChoice,
+    source_common_root: &Path,
+    scratch: &RunScratch,
+    cache: &mut LocationCache,
+    probe_name: impl Fn() -> OsString + Copy,
+    pool: &Pool,
+    cancel: CancellationToken,
+    run_id: RunId,
+    item: ItemId,
+    on_progress: &Channel<ConversionEvent>,
+) -> ItemRunOutcome {
+    // The §1.5 slice output extension (the handler resolved a slice target, so this is `Some` on the live
+    // path; a mis-routed non-CSV/TSV target fails the item InternalError before any temp is picked).
+    let Some(ext) = slice_extension(target) else {
+        return ItemRunOutcome::Failed {
+            kind: ConversionErrorKind::InternalError,
+            residue: None,
+        };
+    };
+
+    // §1.8 output planning (P3.37): resolve this item's output dir (beside-source parent / chosen-root subtree
+    // / §2.7.3 divert). `intended_dir` is the §2.7.2 location probe target — the beside-source parent, or the
+    // chosen root (an existing folder; the subtree is created under it by `compute_output_plan`).
+    let (mode, intended_dir): (DestinationMode, &Path) = match destination {
+        DestinationChoice::BesideSource => {
+            let Some(parent) = source.parent() else {
+                return ItemRunOutcome::Failed {
+                    kind: ConversionErrorKind::InternalError,
+                    residue: None,
+                };
+            };
+            (DestinationMode::BesideSource, parent)
+        }
+        DestinationChoice::ChosenRoot(root) => (
+            DestinationMode::ChosenRoot {
+                root,
+                common_root: source_common_root,
+            },
+            root.as_path(),
+        ),
+    };
+    let location = cache.classify(intended_dir, probe_name);
+    let plan = match compute_output_plan(
+        item,
+        source,
+        ext,
+        mode,
+        location,
+        divert_root,
+        cache,
+        probe_name,
+    ) {
+        Ok(plan) => plan,
+        // §2.7.3 no usable divert target / §2.7.1 dir-prep failure → the item fails clearly (§2.8 WriteFailed).
+        Err(_) => {
+            return ItemRunOutcome::Failed {
+                kind: ConversionErrorKind::WriteFailed,
+                residue: None,
+            }
+        }
+    };
+
+    // §2.1.1 step 1: pick the publish temp on `final`'s volume (P3.20) — the run-owned `.convertia-…-.part`
+    // sibling. A create failure (permission / IO at the destination) fails the item clearly; nothing written.
+    let Ok(tmp) = scratch.publish_temp(&plan.publish_temp_dir, item) else {
+        return ItemRunOutcome::Failed {
+            kind: ConversionErrorKind::WriteFailed,
+            residue: None,
+        };
+    };
+
+    // Build the §1.7 invocation: `NativeCsvTsvEngine::plan()` is PURE (§3.2.2) and returns `out_tmp: None`;
+    // §1.7 (this tier-1 conductor) OWNS + populates `out_tmp = Some(tmp)` on the ENCODE invocation (the
+    // 2026-07-07 plan-seam ruling). A pure PlanError → its §2.8 kind, cleaning the just-picked temp.
+    let plan_outcome = match NativeCsvTsvEngine.plan(dropped, target, source, &tmp) {
+        Ok(plan_outcome) => plan_outcome,
+        Err(err) => return write_outcome_to_run(fail_cleanup(item, [tmp], err.kind)),
+    };
+    // The slice engine is single-step: `plan()` always returns `Encode`. A `Probe` would be a mis-routed plan.
+    let PlanOutcome::Encode(mut invocation) = plan_outcome else {
+        return write_outcome_to_run(fail_cleanup(
+            item,
+            [tmp],
+            ConversionErrorKind::InternalError,
+        ));
+    };
+    invocation.out_tmp = Some(tmp);
+    let mut envelope = EngineInvocation {
+        job: item,
+        engine: EngineId::NativeCsvTsv,
+        plan: invocation,
+        cancel,
+    };
+
+    // §2.1.1 step 2: the awaited §1.7 dispatch WRITES the engine output into `out_tmp` (never `final`, §3.5).
+    // The progress sink wraps each self-reported §1.11 InProcessFraction into a §0.4.2 `ItemProgress` tick over
+    // the run Channel. [Build-Session-Entscheidung: P3.48] Stage = `Encoding` — the CSV/TSV transform reads and
+    // writes as one bounded in-core pass (§3.5.6), so its single self-reported fraction stream reports the
+    // dominant produce-the-output work; the §1.11 InProcessFraction basis carries the real fraction (§1.11).
+    let progress_channel = on_progress.clone();
+    let on_fraction = move |fraction: f32| {
+        progress_channel
+            .send(ConversionEvent::ItemProgress(ItemProgress {
+                run_id,
+                item_id: item,
+                fraction: Some(fraction),
+                stage: JobStage::Encoding,
+            }))
+            .ok();
+    };
+    let result = dispatch(&envelope, pool, on_fraction).await;
+
+    match result {
+        // §1.7 verified success → reclaim the written temp (dispatch BORROWED the envelope, so the conductor
+        // still owns `out_tmp`), run the §1.7 non-empty exit verification, then the §2.1.1 publish legs.
+        InvocationResult::Succeeded => {
+            let Some(tmp) = envelope.plan.out_tmp.take() else {
+                return ItemRunOutcome::Failed {
+                    kind: ConversionErrorKind::InternalError,
+                    residue: None,
+                };
+            };
+            // §1.7 exit & output verification (RELOCATED onto the Succeeded path — the P3.48 re-cut): the temp
+            // must exist and be non-empty or the item fails (§2.8 `Empty` / §2.13 `InternalError`) before publish.
+            let tmp = match verify_encode_output(item, tmp) {
+                Ok(tmp) => tmp,
+                Err(outcome) => return write_outcome_to_run(outcome),
+            };
+            // §2.1.1 steps 3-7 (+ the §2.7.2/§2.7.5 late-divert) over the verified temp. The §2.7.3 late-divert
+            // candidate is the single resolved divert root (the same one `compute_output_plan` used).
+            let divert_candidates = [divert_root.to_path_buf()];
+            let outcome = publish_written_temp(
+                &plan,
+                source,
+                frozen_sources,
+                &divert_candidates,
+                scratch,
+                cache,
+                probe_name,
+                tmp,
+            );
+            write_outcome_to_run(outcome)
+        }
+        // §1.7 failure → the engine wrote a partial (or nothing) into `out_tmp`; clean it EXPLICITLY (§2.6.4
+        // honesty — a removal failure surfaces as a `CleanupResidue`, never a silent delete-on-drop) and fail.
+        InvocationResult::Failed(kind) => {
+            let outcome = match envelope.plan.out_tmp.take() {
+                Some(tmp) => fail_cleanup(item, [tmp], kind),
+                None => WriteOutcome::failed(kind),
+            };
+            write_outcome_to_run(outcome)
+        }
+        // §1.7 InProcessNative cancel → drop the partial `out_tmp` (deleted on drop, §3.2.2), nothing published.
+        // [Build-Session-Entscheidung: P3.48] Drop (not `cleanup_item`) matches the §1.7 InProcessNative cancel
+        // contract ("drops the out_tmp TempPath"); the §2.6.4 deferred-residue case is the SUBPROCESS
+        // group-kill timeout (P4), not this in-core cooperative cancel.
+        InvocationResult::Cancelled => {
+            drop(envelope.plan.out_tmp.take());
+            ItemRunOutcome::Cancelled
+        }
+    }
+}
+
+/// The run-end finalisation (P3.48): project the terminal `Batch` onto the §1.12 wire `RunResult` +
+/// off-wire `RunResultPaths`, emit the terminal §0.4.2 `RunFinished`, RETAIN it for the C8 re-serve
+/// (§0.4.4), drop the run's cancellation token (`runs.finish` — the terminal `RunResult` out-lives it), and
+/// run the §2.6.2 run-end cleanup over the recorded final dirs. **The run-end cleanup residue is deliberately
+/// not re-surfaced** (see the drop at the call site): §2.6.4 honest-residue reporting is WHOLLY per-item (its
+/// three cases each ride the item via `ItemRunOutcome` above) and §1.12 `RunResult` carries NO run-level
+/// residue slot (`CleanupResidue` is an `ItemOutcome`, §1.12), so there is nowhere to project it — and both
+/// residue kinds `cleanup_run` can yield are already backstopped: a lingering destination `.part` by the
+/// per-item §2.6.4 leg, an un-removable central `run-<RunId>/` scratch tree by the §2.6.3 next-launch orphan
+/// sweep. [Build-Session-Entscheidung: P3.48]
+#[allow(clippy::too_many_arguments)]
+fn finish_run(
+    batch: Batch,
+    run_id: RunId,
+    results: &RunResultStore,
+    runs: &RunRegistry,
+    scratch: RunScratch,
+    on_progress: &Channel<ConversionEvent>,
+    common_root: PathBuf,
+    item_outputs: BTreeMap<ItemId, PathBuf>,
+    residues: Vec<ResidueRecord>,
+    recorded_final_dirs: BTreeSet<PathBuf>,
+    any_diverted: bool,
+    divert_root: PathBuf,
+) {
+    // §1.12 projection → the wire `RunResult` (display-only) + the off-wire `RunResultPaths`. `divert_root` is
+    // carried only when an item actually diverted (§2.7.4 — the second "open Downloads" affordance).
+    let divert_root_opt = any_diverted.then_some(divert_root);
+    let (result, paths) = project_run_result(
+        &batch,
+        run_id,
+        &item_outputs,
+        residues,
+        common_root,
+        divert_root_opt,
+    );
+    // §0.4.2 terminal `RunFinished` (mirrors C8) → retain for the C8 re-serve → drop the token → §2.6.2 cleanup.
+    on_progress
+        .send(ConversionEvent::RunFinished(result.clone()))
+        .ok();
+    results.retain(result, paths);
+    runs.finish(run_id);
+    // §2.6.2 run-end cleanup. Its residue is deliberately DROPPED, not re-surfaced (see the doc comment): the
+    // §2.6.4 honesty is per-item (already threaded above) and §1.12 `RunResult` has no run-level residue field
+    // — a lingering destination `.part` is the per-item §2.6.4 case, an un-removable scratch tree is reclaimed
+    // by the §2.6.3 next-launch sweep, so nothing remains to report here.
+    drop(cleanup_run(scratch, &recorded_final_dirs));
+}
+
+/// **The §1.9 C6 run conductor (P3.48)** — the tier-1 composition that drives a `Batch` to its §1.12
+/// `RunResult`, streaming the §0.4.2 `ConversionEvent`s over `on_progress`. Applies the §2.5 `RerunDecision`
+/// (the pre-pass), emits `RunStarted`, dispatches every eligible `Pending` job SEQUENTIALLY (the P3 slice = one
+/// worker; the §0.9 concurrency degree is P4), records each success's §2.5.1 ledger key, and projects the
+/// terminal batch onto the retained `RunResult` (+ its off-wire paths) for C8 re-serve. Takes PLAIN
+/// values/refs (no AppHandle), so it is unit-testable over a directly-registered frozen set; the AppHandle
+/// State-resolution + spawn is the thin C6 handler. [Build-Session-Entscheidung: P3.48]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_conversion(
+    mut batch: Batch,
+    frozen: &RegisteredSet,
+    run_id: RunId,
+    token: CancellationToken,
+    scratch: RunScratch,
+    instance: InstanceId,
+    divert_root: PathBuf,
+    rerun_decision: RerunDecision,
+    pool: &Pool,
+    ledger: &RerunLedger,
+    equiv: &EquivKeyComputer,
+    results: &RunResultStore,
+    runs: &RunRegistry,
+    on_progress: &Channel<ConversionEvent>,
+) {
+    let target_id = batch.target.id;
+    let options = batch.options.clone();
+    let destination = batch.destination.clone();
+
+    // §2.5 RerunDecision applier (the C6-construction pre-pass). A `Skip`+seen eligible item is a re-run the
+    // user chose not to re-produce (§2.5 "no new output for equivalent items"): the P3.48 rerun-skip ruling
+    // assigns it `JobState::Skipped(SkipReason::AlreadyConverted)` — it KEEPS its real `Eligible` `DroppedItem`
+    // (no `SkippedItem` fabricated; §1.4 stays detection-only) but becomes terminal-`Skipped`, so it rides the
+    // EXISTING skip machinery end-to-end: excluded from `queue_order`/`total_items` (never dispatched, no live
+    // events, §0.4.2), yet projected into the §1.12 summary as `ItemResult{ state: Skipped(AlreadyConverted),
+    // output_display: None, reason: OutcomeMsg::Skipped }` counted in `Totals.skipped` (§1.12 "skipped items
+    // appear as a distinct outcome, not a failure"). [Build-Session-Entscheidung: P3.48 — the applier arm; the
+    // JobState mapping itself is the Co-Pilot ruling `034a451` (NOT loop-decidable — §2.5 + §1.12 + §0.6 were
+    // not jointly satisfiable by any existing state, so the ruling added the `AlreadyConverted` variant).] The
+    // refined P3.47 coupling: `source is JobSource::Skipped(_) ⟺ state is Skipped(<detection reason>)`;
+    // `Skipped(AlreadyConverted)` ⟹ source `Eligible`. On a FIRST run (empty ledger) NOTHING is seen, so no item
+    // is reassigned; the applier converts every eligible item + records its §2.5.1 key on success.
+    // `ledger.has_seen` reflects a PRIOR in-session run (§2.5.2 signal 1); a within-batch duplicate is unseen in
+    // this pre-pass → both convert → §2.2 silent numbering (the §2.5.2 concurrent-identical-batch edge, accepted).
+    if rerun_decision == RerunDecision::Skip {
+        for job in &mut batch.jobs {
+            let seen =
+                match &job.source {
+                    JobSource::Eligible(dropped) => frozen
+                        .identities
+                        .get(&dropped.item)
+                        .is_some_and(|identity| {
+                            ledger.has_seen(equiv.compute_equiv_key(identity, target_id, &options))
+                        }),
+                    // A pre-flight `Skipped` job is never a re-run candidate (it never converts).
+                    JobSource::Skipped(_) => false,
+                };
+            if seen {
+                job.state = JobState::Skipped(SkipReason::AlreadyConverted);
+            }
+        }
+    }
+
+    // §0.4.2 `RunStarted` — `total_items` = QUEUED (eligible) count only (excludes pre-flight skips); the
+    // `BatchProgress.total` denominator. CSV/TSV is never re-encode → `will_reencode: false` (§2.9.2).
+    let total = u32::try_from(queue_order(&batch).count()).unwrap_or(u32::MAX);
+    on_progress
+        .send(ConversionEvent::RunStarted(RunStarted {
+            run_id,
+            total_items: total,
+            will_reencode: false,
+        }))
+        .ok();
+
+    // The §2.3.3 link-safety comparison set = every frozen source identity (§2.3 unqualified "any source in
+    // the frozen set", eligible AND skipped). The §2.7.4 open-folder root. The §2.6.1-stamped probe-name
+    // factory (closes over this run's `instance` — a Copy closure). The §2.6.2 recorded final dirs.
+    let frozen_sources: Vec<FileIdentity> = frozen.identities.values().cloned().collect();
+    // Two DISTINCT roots (do NOT conflate — the P3.48 G1-review fix): `common_root` is the §1.12/§2.7.4
+    // open-folder target (for `ChosenRoot` it is the chosen root D), while `source_root` is the §2.7.1 SOURCE
+    // freeze common root the chosen-root subtree is stripped against (`fs_guard::prepare_output_dir` does
+    // `source.strip_prefix(source_root)`). They coincide for `BesideSource` but DIFFER for `ChosenRoot` (D vs
+    // the source side); `convert_item` needs the source side, `finish_run` the open-folder side.
+    let common_root = common_ancestor(&frozen.frozen.roots, &destination);
+    let source_root = source_common_root(&frozen.frozen.roots);
+    let probe_name = move || crate::run::PublishTemp::probe_name(instance);
+    let mut cache = LocationCache::new();
+    let mut item_outputs: BTreeMap<ItemId, PathBuf> = BTreeMap::new();
+    let mut residues: Vec<ResidueRecord> = Vec::new();
+    let mut recorded_final_dirs: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut any_diverted = false;
+    let mut done: u32 = 0;
+
+    // §1.9 cancel-semantics NOTE (a P3.48 G1-review finding, owned by the C7 `cancel_run` wiring box): this loop
+    // does NOT poll `token.is_cancelled()` before dequeuing the next Pending job. It relies on each dispatched
+    // item's OWN cooperative cancel — a tripped token makes `dispatch` return `Cancelled`, which publishes
+    // nothing, so the NO-HARM invariant holds regardless of when the token trips. The §1.9 "stop dequeuing
+    // Pending" refinement (leave un-started jobs un-dispatched + give them a terminal summary state) is a C7
+    // concern: it is coupled to the C7 `cancel_run` handler (a shell today, so NO production path trips a run
+    // token mid-batch) AND to a §1.9 decision the FSM does not sanction here (`advance` returns None for a
+    // direct Pending→Cancelled, by design — so a clean stop-dequeue needs a summary-state ruling for un-started
+    // jobs). It therefore lands with the C7 wiring, not the walking-skeleton conductor.
+    for i in 0..batch.jobs.len() {
+        // Only eligible `Pending` jobs are dispatched; pre-flight `Skipped` jobs are terminal at construction
+        // (never queued, no Channel events — §0.4.2/§1.9). `queue_order`'s `state_is_queued` == this filter.
+        if !matches!(batch.jobs[i].state, JobState::Pending) {
+            continue;
+        }
+        let item = batch.jobs[i].item;
+        // The eligible source record + its §2.3-resolved real path (the §0.4.4 off-wire `item_paths` table).
+        let Some(dropped) = batch.jobs[i].source.eligible().cloned() else {
+            continue;
+        };
+        let Some(source) = frozen
+            .frozen
+            .item_paths
+            .get(&item)
+            .map(|paths| paths.resolved_path.clone())
+        else {
+            // No resolved path retained for a `Pending` item → a mis-built frozen set → fail clearly (no
+            // panic). Move it Pending → Running → Failed so the §1.12 projection reports a terminal state.
+            if let Ok(running) = advance(batch.jobs[i].state, JobEvent::Started) {
+                batch.jobs[i].state = advance(
+                    running,
+                    JobEvent::Failed(ConversionErrorKind::InternalError),
+                )
+                .unwrap_or(running);
+            }
+            continue;
+        };
+        let source_display = dropped.display_name.clone();
+
+        // §1.9 Pending → Running (§1.7 engine invoked). Emit §0.4.2 `ItemStarted`.
+        if let Ok(next) = advance(batch.jobs[i].state, JobEvent::Started) {
+            batch.jobs[i].state = next;
+        }
+        on_progress
+            .send(ConversionEvent::ItemStarted(ItemStarted {
+                run_id,
+                item_id: item,
+                source_display,
+                target: target_id,
+            }))
+            .ok();
+
+        // The per-item convert (pick-temp → await dispatch → verify → publish/fail/cancel).
+        let outcome = convert_item(
+            &dropped,
+            &source,
+            target_id,
+            &frozen_sources,
+            &divert_root,
+            &destination,
+            &source_root,
+            &scratch,
+            &mut cache,
+            probe_name,
+            pool,
+            token.clone(),
+            run_id,
+            item,
+            on_progress,
+        )
+        .await;
+
+        // Map the per-item outcome onto the §1.9 terminal event + the live §0.4.2 `ItemOutcome` + the §1.12
+        // projection inputs (output path / residue / divert flag), recording the §2.5.1 ledger key on success.
+        let (event, item_outcome) = match outcome {
+            ItemRunOutcome::Published {
+                output,
+                diverted,
+                residue,
+            } => {
+                let output_display = output.to_string_lossy().into_owned();
+                if let Some(dir) = output.parent() {
+                    recorded_final_dirs.insert(dir.to_path_buf());
+                }
+                item_outputs.insert(item, output);
+                any_diverted |= diverted;
+                if let Some(record) = residue {
+                    if let Some(dir) = record.real_path.parent() {
+                        recorded_final_dirs.insert(dir.to_path_buf());
+                    }
+                    residues.push(record);
+                }
+                // §2.5.2 ledger: record this exact conversion's key so a subsequent identical in-session run is
+                // detected (§2.5.1 — identity, not path).
+                if let Some(identity) = frozen.identities.get(&item) {
+                    ledger.record(equiv.compute_equiv_key(identity, target_id, &options));
+                }
+                (
+                    JobEvent::Succeeded,
+                    ItemOutcome::Succeeded { output_display },
+                )
+            }
+            ItemRunOutcome::Failed { kind, residue } => {
+                let residue_display = residue.as_ref().map(|record| {
+                    if let Some(dir) = record.real_path.parent() {
+                        recorded_final_dirs.insert(dir.to_path_buf());
+                    }
+                    record.real_path.to_string_lossy().into_owned()
+                });
+                if let Some(record) = residue {
+                    residues.push(record);
+                }
+                let error = IpcError {
+                    kind,
+                    message: failure_message(kind),
+                    path_display: None,
+                    residue_display,
+                };
+                (JobEvent::Failed(kind), ItemOutcome::Failed { error })
+            }
+            ItemRunOutcome::Cancelled => (JobEvent::Cancelled, ItemOutcome::Cancelled),
+        };
+
+        // §1.9 Running → terminal. Emit §0.4.2 `ItemFinished` + `BatchProgress` (queued-only denominator).
+        if let Ok(next) = advance(batch.jobs[i].state, event) {
+            batch.jobs[i].state = next;
+        }
+        on_progress
+            .send(ConversionEvent::ItemFinished(ItemFinished {
+                run_id,
+                item_id: item,
+                outcome: item_outcome,
+            }))
+            .ok();
+        done = done.saturating_add(1);
+        on_progress
+            .send(ConversionEvent::BatchProgress(BatchProgress {
+                run_id,
+                done,
+                total,
+            }))
+            .ok();
+    }
+
+    finish_run(
+        batch,
+        run_id,
+        results,
+        runs,
+        scratch,
+        on_progress,
+        common_root,
+        item_outputs,
+        residues,
+        recorded_final_dirs,
+        any_diverted,
+        divert_root,
+    );
+}
+
 // ─── §0.4.4 run registry — the RunId → CancellationToken token store (P2.42) ─────────────────────────
 // [Build-Session-Entscheidung: P2.42] The §0.4.4 cancellation-token registry, homed in crate::orchestrator
 // per §0.7 ("orchestrator homes run registry + cancellation"). It owns the token's IDENTITY + LIFECYCLE
@@ -1554,14 +2195,15 @@ pub struct BatchProgress {
 // level (reconciled by §1.7, built in P3/P4). Like the sibling lifecycle/result types, this is a CONTRACT
 // authored before its consumer — but PARTLY consumed from P2.55: `has_active_run` is the §7.1.1 refuse-busy
 // predicate `converter_is_busy` reads, and the `.manage(RunRegistry)` registration lives in main()'s Builder
-// chain (P2.55). The C6/C7/RunFinished token WIRING (the conductor's register/cancel/finish calls) is the
-// P3.46 behaviour, so those three methods stay dead in the production build until then (covered by the
+// chain (P2.55). The C6/RunFinished token WIRING is now LIVE — `register` (the P3.48 C6 `start_conversion`
+// handler) + `finish` (the P3.48 conductor's run-end + the spawn-error path); only `cancel` (the C7
+// `cancel_run` handler) stays dead until it wires the real registry `.cancel()` (covered by the
 // module-level dead_code expect). The retained terminal RunResult (so C8 re-serves after a WebView reload,
 // §0.4.4) is a SEPARATE store — the P2.43 box — NOT this token registry.
 
 /// The §0.4.4 run registry — maps each in-flight `RunId` to its `tokio_util::sync::CancellationToken`. Held
-/// as a Tauri app-managed `State` (the `.manage` is P2.55; the register/cancel/finish wiring is the P3.46
-/// conductor). The token's three §0.4.4 lifecycle
+/// as a Tauri app-managed `State` (the `.manage` is P2.55; the register/finish wiring is the P3.48 conductor
+/// and handler, the cancel wiring a separate C7 box). The token's three §0.4.4 lifecycle
 /// points are this type's three methods: [`register`](RunRegistry::register) at C6 `start_conversion` (mint +
 /// store a fresh token), [`cancel`](RunRegistry::cancel) at C7 `cancel_run` (trip it — cooperative at the
 /// orchestrator level), and [`finish`](RunRegistry::finish) on `RunFinished` (drop it; the run's terminal
@@ -1632,7 +2274,7 @@ impl RunRegistry {
     /// `RunFinished`, INCLUDING while a C7 cancel winds it down ([`cancel`](RunRegistry::cancel) trips the
     /// token but leaves it until [`finish`](RunRegistry::finish)), so a cancelling-but-not-finished run still
     /// reports busy — correct for refuse-busy (the §2.4 frozen set must not take new intake until the run is
-    /// fully terminal). The runs are POPULATED by the P3.46 conductor; until then the registry is empty, so
+    /// fully terminal). The runs are POPULATED by the P3.48 conductor; until then the registry is empty, so
     /// this is `false` (not busy) and the funnel's idle-flow is open. [Build-Session-Entscheidung: P2.55]
     pub fn has_active_run(&self) -> bool {
         !self.lock().is_empty()
@@ -1648,9 +2290,9 @@ impl RunRegistry {
 // IN-MEMORY + process-local, NO on-disk persistence — consistent with §7.4. The retained result lives "until
 // a new run starts or the app exits" (§0.4.4): a new run's start (C6) evicts the prior result, RunFinished
 // retains the new one, and a process exit drops the store. Like the sibling state, this is a CONTRACT before
-// its consumer: the retain-at-RunFinished / evict-at-C6 / get-at-C8 WIRING is the P3.46 behaviour (C8's
-// success path, the P2.31 shell note), so it is dead in the production build until then (covered by the
-// module-level dead_code expect).
+// its consumer: the retain-at-RunFinished + evict-at-C6 WIRING is now LIVE (the P3.48 conductor + handler)
+// and get-at-C8 via the P3.50 `get_run_summary`; only `paths` (the P3.51 C9 leg) stays dead in the
+// production build (covered by the module-level dead_code expect).
 
 /// The §0.4.4 OFF-WIRE path table retained alongside a terminal `RunResult` (2026-07-06 core-owned-paths
 /// ruling, §2.10.1) — the real `PathBuf`s the wire `RunResult` shed. The wire `RunResult` carries only
@@ -1764,9 +2406,9 @@ impl RunResultStore {
 // RunRegistry's RunId key — PLUS the §2.3 identity-evidence table, P3.40) keyed by CollectedSetId, so the
 // bare-`collectedSetId` C3/C4/C5/C6 commands resolve back to the detected format / frozen items / roots /
 // skipped / identities WITHOUT a second walk or re-detection (§0.4.4). Like the sibling stores it is
-// a CONTRACT before its consumer: the register-at-C1/C2a-freeze / resolve-at-C3/C4/C5 / take-at-C6 WIRING is
-// the P3.46 conductor + the C-command bodies, so it is dead in the production build until then (covered by the
-// module-level dead_code expect).
+// a CONTRACT before its consumer: the take-at-C6 WIRING is now LIVE (the P3.48 handler `start_run` resolves
+// + evicts the set); the register-at-C1/C2a-freeze + resolve-at-C3/C4/C5 legs are the P3.49 C-command
+// bodies, still dead in the production build until then (covered by the module-level dead_code expect).
 
 /// The §0.4.4 registered collected-set record — the orchestrator composite the [`CollectedSetRegistry`]
 /// holds (the P3.40 frozen-model-identity ruling / §0.4.4 `[CLARIFIED]`): the domain [`FrozenCollectedSet`]
@@ -2078,9 +2720,11 @@ impl Drop for IngestGuard<'_> {
 // carry target + settings), so computing it here needs no `run`->`fs_guard` sibling edge (§0.7 forbids it).
 // It hands only the finished hash DOWN to the tier-2 `crate::run` ledger as an opaque `EquivKey`. An
 // app-managed singleton like the §0.4.4 stores above — it needs NO §0.7/§1a structural edit (§0.7 attributes
-// the app-managed State to orchestrator; the P2.43/P2.44/P2.45/P2.58 precedent). Contract before consumer:
-// the C4 `plan_output` path (P3.40) resolves the managed `State<EquivKeyComputer>` and calls
-// `compute_equiv_key`, so it is dead in the production build until then (the module-level dead_code expect).
+// the app-managed State to orchestrator; the P2.43/P2.44/P2.45/P2.58 precedent). `compute_equiv_key` is now
+// LIVE — the P3.48 C6 conductor resolves the managed `State<EquivKeyComputer>` and folds each item's re-run
+// key in the §2.5 applier (`has_seen`) + the per-success `RerunLedger::record`; its sibling
+// `compute_rerun_verdict` (the C4 `plan_output` VERDICT) is the SECOND consumer, still dead until the P3.49 C4
+// wiring (the module-level dead_code expect stays fulfilled while it is unwired).
 
 /// The §2.5.1 re-run equivalence-key computer — holds the ONE process-lifetime `BuildHasher` so two computes
 /// of the same `(source, target, effective settings)` in a session agree on the resulting `u64` (§2.5.2: the
@@ -5646,7 +6290,7 @@ mod tests {
 
     // §6.4.1 unit (G15): the §0.4.1 C4/C5 lifecycle-asymmetry STRUCTURAL ENABLERS (P2.28). The runtime
     // enforcement (C4 re-callable, C5 destination authority, C4 computes `rerun` while C5 carries it through)
-    // is the P3.46 conductor + the C4/C5 body boxes; this test pins the layer the DTO shapes guarantee NOW —
+    // is the P3.48 conductor + the C4/C5 body boxes; this test pins the layer the DTO shapes guarantee NOW —
     // the structure that makes the §0.4.1 "by lifecycle" rule TYPE-POSSIBLE (see the invariant block above the
     // §1.12 section). [Build-Session-Entscheidung: P2.28]
     #[test]
@@ -5779,7 +6423,7 @@ mod tests {
 
         // P2.37.4 structural enabler: ItemFinished CAN carry `ItemOutcome::Skipped` (the SAME shared type as the
         // terminal `RunResult.items`). The POLICY — no LIVE ItemFinished{Skipped} for a pre-flight skip — is the
-        // P3.46 runtime emission rule documented on ItemFinished; this asserts only the structural carriability.
+        // P3.48 runtime emission rule documented on ItemFinished; this asserts only the structural carriability.
         let item_finished = ConversionEvent::ItemFinished(ItemFinished {
             run_id: run_id(),
             item_id: item_id(2),
@@ -5792,11 +6436,11 @@ mod tests {
         assert!(
             !v["data"]["outcome"].is_null(),
             "P2.37.4: ItemFinished structurally carries an ItemOutcome (here Skipped — the shared terminal type; \
-             the no-live-emit policy is the P3.46 runtime rule)"
+             the no-live-emit policy is the P3.48 runtime rule)"
         );
 
         // P2.37.1 + P2.37.3: BatchProgress.total and RunStarted.total_items are the SAME queued-only u32
-        // denominator. The RUNTIME equality is a P3.46 invariant; here both carry the same N on the wire.
+        // denominator. The RUNTIME equality is a P3.48 invariant; here both carry the same N on the wire.
         let n: u32 = 5;
         let started = RunStarted {
             run_id: run_id(),
@@ -6140,7 +6784,7 @@ mod tests {
     // counterexample); a failure is NEVER retried-to-pass (the pinned seed reproduces it deterministically,
     // test-strategy §1.3 / §7). `Strategy`-combinator automatic shrinking, no hand-rolled `Shrink` impls.
     // Instances are built by canonical `Batch` / `ConversionJob` constructors that model the §1.9 queue
-    // construction; the LIVE-path enforcement (the real P3.46 orchestrator builder over a real run) is the P3
+    // construction; the LIVE-path enforcement (the real P3.48 orchestrator builder over a real run) is the P3
     // integration leg (test-strategy §1.1 / §6 — the data-structure leg is here, the live-path leg is there).
     // [Build-Session-Entscheidung: P2.14] case-count floor 512 + a `deterministic_rng`-pinned seed; ids built
     // via the orchestrator-test `item_id` serde helper (the `ItemId` field is private to `crate::domain`, so
@@ -6335,13 +6979,22 @@ mod tests {
             .unwrap();
     }
 
-    /// §0.6 coupling invariant (P3.47) over the REAL C6 constructor: for a `build_batch` result from ANY
-    /// generated eligible+skipped mix, EVERY job satisfies `source is Skipped(_) ⟺ state is
-    /// JobState::Skipped(_)` — an eligible item is `Eligible`+`Pending`, a skipped item is `Skipped`+
-    /// `Skipped(reason)` with the reason COPIED from the `SkippedItem`, the jobs are in deterministic
-    /// id/traversal order (eligible even ids + skipped odd ids are interleaved BACK by the sort), and `item
-    /// == source.item()` holds uniformly. TEETH: a hand-built job whose source arm and state disagree IS
-    /// detectable, so the ⟺ is a real constraint, not a fixture echo. [Build-Session-Entscheidung: P3.47]
+    /// §0.6 coupling invariant (P3.47, REFINED by the P3.48 rerun-skip ruling) over the REAL C6 constructor:
+    /// for a `build_batch` result from ANY generated eligible+skipped mix, EVERY job satisfies `source is
+    /// Skipped(_) ⟺ state is JobState::Skipped(<detection reason>)` — an eligible item is `Eligible`+`Pending`,
+    /// a skipped item is `Skipped`+`Skipped(reason)` with the reason COPIED from the `SkippedItem`, the jobs are
+    /// in deterministic id/traversal order (eligible even ids + skipped odd ids are interleaved BACK by the
+    /// sort), and `item == source.item()` holds uniformly. TEETH: a hand-built job whose source arm and state
+    /// disagree IS detectable, so the ⟺ is a real constraint, not a fixture echo.
+    ///
+    /// [Test-Change: P3.48 — old-obsolete+new-correct, §0.6] The P3.48 ruling REFINED the coupling: the C6 §2.5
+    /// applier may assign an ELIGIBLE item `Skipped(AlreadyConverted)` (source stays `Eligible`), so the bare
+    /// `source is Skipped(_) ⟺ state is Skipped(_)` no longer holds POST-applier. But `build_batch` (this
+    /// constructor, PRE-applier) is unaffected — it NEVER mints `AlreadyConverted` (only the §1.1 freeze's four
+    /// detection reasons reach it), so the bare ⟺ still holds over its output AND every `Skipped` state here
+    /// carries a DETECTION reason. The added assertion pins the freeze-never-mints-`AlreadyConverted` invariant
+    /// (construction-only, type-unenforced); the POST-applier `Skipped(AlreadyConverted) ⟹ Eligible` refinement
+    /// is covered by `run_conversion_tests::rerun_skip_marks_a_seen_item_already_converted_but_fresh_copy_converts_it`.
     #[test]
     fn prop_build_batch_couples_source_arm_with_job_state() {
         const REASONS: [SkipReason; 4] = [
@@ -6392,6 +7045,13 @@ mod tests {
                         skipped_source,
                         skipped_state,
                         "§0.6 coupling: source is Skipped(_) ⟺ state is JobState::Skipped(_)"
+                    );
+                    // [Test-Change: P3.48] The FREEZE / `build_batch` NEVER mints `AlreadyConverted` — that is
+                    // the C6 §2.5 applier's assignment (over an ELIGIBLE item, post-construction). Every skip
+                    // here carries a DETECTION reason (the refined coupling's pre-applier half).
+                    prop_assert!(
+                        !matches!(job.state, JobState::Skipped(SkipReason::AlreadyConverted)),
+                        "the freeze/build_batch never mints AlreadyConverted (the §2.5 re-run skip is the C6 applier's, P3.48)"
                     );
                     // Uniform denormalization + never-planned-at-construction, over both arms.
                     prop_assert_eq!(
@@ -7444,14 +8104,25 @@ mod cleanup_honesty_tests {
 
 #[cfg(test)]
 mod write_sequence_tests {
-    //! §6.4.1 unit + real-FS integration (G15/G32(a)) for the P3.38 §2.1.1 per-item write sequence — the
-    //! composition of `crate::run` (temp/cleanup) + `crate::fs_guard` (publish/divert) + an engine-write SEAM.
-    //! The engine is a caller-supplied `FnOnce` (the real native CSV/TSV engine binds P3.41/P3.48), so these
-    //! run against a REAL temp filesystem (test-strategy §0.1 — never mock the FS under test); the G31
-    //! output-VALIDITY structural readers bind with the real engine + corpus (P3.62/P3.63). Here we pin: the
-    //! atomic beside-source publish + the no-harm G32(a) source-unchanged invariant, no-clobber numbering, the
-    //! §1.7 exit-verification (empty / vanished output), step-7 cleanup-on-error, the §2.7.2/§2.7.5 late-divert
-    //! wiring, and the one-divert-per-item rule.
+    //! §6.4.1 unit + real-FS integration (G15/G32(a)) for the §2.1.1 per-item PUBLISH LEGS (P3.38 → re-cut
+    //! P3.48) — the composition of `crate::run` (temp/cleanup) + `crate::fs_guard` (publish/divert) over an
+    //! ALREADY-WRITTEN publish temp (what the P3.48 conductor's `engines::dispatch` produces on the run path).
+    //!
+    //! [Test-Change: P3.48 — old-obsolete+new-correct, §2.1.1] The P3.48 ruling RE-CUT `write_item`: step 1
+    //! (pick-temp) + step 2 (the engine write) moved conductor-side (`crate::orchestrator::convert_item`), the
+    //! §1.7 non-empty exit-verification moved to the extracted [`verify_encode_output`], and steps 3-7 became
+    //! [`publish_written_temp`]. So the P3.38 tests migrate onto the pieces they now exercise: the publish-leg
+    //! tests PRE-WRITE the publish temp (`RunScratch::publish_temp` + `fs::write`, the two conductor-side steps)
+    //! then call [`publish_written_temp`] (steps 3-7 verbatim — the assertions are UNCHANGED, verified against
+    //! the same real FS); the empty/vanished tests target [`verify_encode_output`]; the engine-failure cleanup
+    //! targets [`fail_cleanup`]. The ONE dropped case (the old `a_missing_publish_temp_dir_...` step-1-before-
+    //! engine test) is obsolete BY CONSTRUCTION post-re-cut — the conductor picks the temp only AFTER
+    //! `compute_output_plan`'s §2.7.2 `location_status` screen, which DIVERTS an unwritable dir rather than
+    //! reaching a failing pick-temp, so "publish_temp_dir missing → WriteFailed before the engine" no longer
+    //! arises on the run path (the `RunScratch::publish_temp` Err is tested in `crate::run`; the defensive
+    //! Err→WriteFailed mapping lives in `convert_item`). The end-to-end real-engine CSV→TSV run + the §0.4.2
+    //! event stream + the §1.12 projection are the `run_conversion_tests` below (the G31 output-validity + the
+    //! conductor path the ruling names); this module keeps the engine-agnostic publish-leg invariants.
     use super::*;
     use crate::domain::InstanceId;
     use crate::fs_guard::{resolve_identity, PathTooLong};
@@ -7540,7 +8211,14 @@ mod write_sequence_tests {
         let before = std::fs::read(&f.source).expect("read source before");
         let plan = f.plan_in(f.dest.path());
 
-        let out = write_item(
+        // [Test-Change: P3.48 — old-obsolete+new-correct, §2.1.1] pre-write the publish temp (the conductor's
+        // pick-temp + the engine write) then run the §2.1.1 publish legs; the assertions are UNCHANGED.
+        let tmp = f
+            .scratch
+            .publish_temp(&plan.publish_temp_dir, plan.job)
+            .expect("pick the publish temp (step 1, conductor-side)");
+        std::fs::write(&*tmp, b"a\tb\n1\t2\n").expect("the engine writes the output into the temp");
+        let out = publish_written_temp(
             &plan,
             &f.source,
             &f.frozen,
@@ -7548,12 +8226,10 @@ mod write_sequence_tests {
             &f.scratch,
             &mut f.cache,
             probe(),
-            |tmp: &Path| {
-                std::fs::write(tmp, b"a\tb\n1\t2\n").map_err(|_| ConversionErrorKind::WriteFailed)
-            },
+            tmp,
         );
 
-        // §2.1: published at the beside-source name `data.tsv`, carrying the seam's bytes.
+        // §2.1: published at the beside-source name `data.tsv`, carrying the written bytes.
         let output = f.dest.path().join("data.tsv");
         assert_eq!(
             out.disposition,
@@ -7591,7 +8267,13 @@ mod write_sequence_tests {
             .expect("seed the collision");
         let plan = f.plan_in(f.dest.path());
 
-        let out = write_item(
+        // [Test-Change: P3.48 — old-obsolete+new-correct, §2.2.2] pre-write the publish temp, then publish.
+        let tmp = f
+            .scratch
+            .publish_temp(&plan.publish_temp_dir, plan.job)
+            .expect("pick the publish temp");
+        std::fs::write(&*tmp, b"fresh").expect("write the output into the temp");
+        let out = publish_written_temp(
             &plan,
             &f.source,
             &f.frozen,
@@ -7599,9 +8281,7 @@ mod write_sequence_tests {
             &f.scratch,
             &mut f.cache,
             probe(),
-            |tmp: &Path| {
-                std::fs::write(tmp, b"fresh").map_err(|_| ConversionErrorKind::WriteFailed)
-            },
+            tmp,
         );
 
         // §2.2.2: the collision bumps to the space-paren numbered variant, never a replace.
@@ -7621,23 +8301,24 @@ mod write_sequence_tests {
     }
 
     #[test]
-    fn an_engine_error_fails_the_item_removes_the_temp_and_never_creates_final() {
-        let mut f = Fixture::new(b"src\n");
+    fn an_engine_error_cleans_the_temp_and_never_creates_final() {
+        // [Test-Change: P3.48 — old-obsolete+new-correct, §2.1.1] the engine-write step is conductor-side now
+        // (`convert_item`'s dispatch `Failed(kind)` arm calls `fail_cleanup(item, [tmp], kind)`), so this
+        // migrates onto that cleanup mechanic directly: a written partial temp is REMOVED (§2.6.2 / step 7),
+        // the item fails with the engine's kind, no residue, and `final` was never created (the publish legs
+        // never ran). The end-to-end real-engine failure is `run_conversion_tests` below.
+        let f = Fixture::new(b"src\n");
         let before = std::fs::read(&f.source).expect("read source before");
         let plan = f.plan_in(f.dest.path());
 
-        let out = write_item(
-            &plan,
-            &f.source,
-            &f.frozen,
-            &[],
-            &f.scratch,
-            &mut f.cache,
-            probe(),
-            |_tmp: &Path| Err(ConversionErrorKind::Corrupt),
-        );
+        // The engine wrote a partial into the temp, then §1.7 dispatch reported `Failed(Corrupt)`.
+        let tmp = f
+            .scratch
+            .publish_temp(&plan.publish_temp_dir, plan.job)
+            .expect("pick the publish temp");
+        std::fs::write(&*tmp, b"partial").expect("the engine wrote a partial before failing");
+        let out = fail_cleanup(plan.job, [tmp], ConversionErrorKind::Corrupt);
 
-        // §2.1.1 step 7: the item fails with the engine's kind; `final` was never created.
         assert_eq!(
             out.disposition,
             WriteDisposition::Failed {
@@ -7650,11 +8331,11 @@ mod write_sequence_tests {
         );
         assert!(
             !f.dest.path().join("data.tsv").exists(),
-            "no `final` on an engine failure"
+            "no `final` on an engine failure (the publish legs never ran)"
         );
         assert!(
             part_files(f.dest.path()).is_empty(),
-            "the temp is removed on failure, found {:?}",
+            "the partial temp is removed on failure, found {:?}",
             part_files(f.dest.path())
         );
         assert_eq!(
@@ -7666,20 +8347,19 @@ mod write_sequence_tests {
 
     #[test]
     fn an_empty_output_is_a_failure_not_a_clean_success() {
-        let mut f = Fixture::new(b"src\n");
+        // [Test-Change: P3.48 — old-obsolete+new-correct, §1.7] the §1.7 non-empty exit-verification moved out
+        // of `write_item` onto the conductor's Succeeded path, extracted as `verify_encode_output`; this
+        // migrates onto it — a present-but-0-byte publish temp is a §2.8 `Empty` failure, never a clean success.
+        let f = Fixture::new(b"src\n");
         let plan = f.plan_in(f.dest.path());
 
-        // The seam "succeeds" but writes nothing — the §1.7 exit-verification rejects the empty output.
-        let out = write_item(
-            &plan,
-            &f.source,
-            &f.frozen,
-            &[],
-            &f.scratch,
-            &mut f.cache,
-            probe(),
-            |_tmp: &Path| Ok(()),
-        );
+        // A picked-but-never-written temp is 0-byte (the "success exit, empty output" case).
+        let tmp = f
+            .scratch
+            .publish_temp(&plan.publish_temp_dir, plan.job)
+            .expect("pick the publish temp");
+        let out = verify_encode_output(plan.job, tmp)
+            .expect_err("§1.7: a 0-byte output fails verification, never a clean success");
 
         assert_eq!(
             out.disposition,
@@ -7690,54 +8370,67 @@ mod write_sequence_tests {
         );
         assert!(
             !f.dest.path().join("data.tsv").exists(),
-            "no `final` for an empty output"
+            "no `final` for an empty output (the publish legs never ran)"
         );
     }
 
     #[test]
-    fn a_vanished_output_after_a_successful_seam_is_an_internal_error() {
-        let mut f = Fixture::new(b"src\n");
+    fn a_vanished_output_after_success_is_an_internal_error() {
+        // [Test-Change: P3.48 — old-obsolete+new-correct, §1.7] `verify_encode_output` on a VANISHED temp (the
+        // engine reported success but its output is gone — an internal contract violation) → §2.13 InternalError.
+        let f = Fixture::new(b"src\n");
         let plan = f.plan_in(f.dest.path());
 
-        // The seam removes its own temp then reports success — an internal contract violation (§1.7).
-        let out = write_item(
-            &plan,
-            &f.source,
-            &f.frozen,
-            &[],
-            &f.scratch,
-            &mut f.cache,
-            probe(),
-            |tmp: &Path| {
-                std::fs::remove_file(tmp).expect("remove the temp mid-seam");
-                Ok(())
-            },
-        );
+        // [Test-Change: P3.48 — old-obsolete+new-correct, §1.7] the old closure-based seam's
+        // `remove_file(tmp).expect("mid-seam")` (inside `write_item`'s `FnOnce`) is obsolete — `write_item` was
+        // re-cut, so the vanish is now staged DIRECTLY here (pick the temp, remove it, then verify).
+        let tmp = f
+            .scratch
+            .publish_temp(&plan.publish_temp_dir, plan.job)
+            .expect("pick the publish temp");
+        std::fs::remove_file(&*tmp)
+            .expect("remove the temp — the output vanished after a 'successful' exit");
+        let out = verify_encode_output(plan.job, tmp)
+            .expect_err("§1.7: a vanished output fails verification");
 
         assert_eq!(
             out.disposition,
             WriteDisposition::Failed {
                 kind: ConversionErrorKind::InternalError
             },
-            "§1.7: a vanished output after a 'successful' seam is an internal fault"
+            "§1.7: a vanished output after a 'successful' exit is an internal fault"
         );
     }
 
+    // [Test-Change: P3.48 — old-obsolete+new-correct, §2.6.2] the old closure-based
+    // `a_missing_publish_temp_dir_fails_write_failed_before_the_engine_runs` test is RE-CUT: post-re-cut the
+    // temp is picked conductor-side, so its `write_item(bad_publish_temp_dir)` pre-engine WriteFailed check +
+    // its `assert!(!ran)` engine-never-ran closure assertion are obsolete (the `RunScratch::publish_temp` Err is
+    // tested in `crate::run`; the `convert_item` Err→WriteFailed mapping is exercised in `run_conversion_tests`).
+    // The WriteFailed OUTCOME assertion is RETAINED here on `publish_written_temp` and STRENGTHENED to also pin
+    // the §2.6.2 publish-temp cleanup on a failed publish (the old test could not — its temp was the seam's).
     #[test]
-    fn a_missing_publish_temp_dir_fails_write_failed_before_the_engine_runs() {
+    fn a_failed_publish_is_write_failed_and_cleans_its_publish_temp() {
         let mut f = Fixture::new(b"src\n");
-        // `publish_temp_dir` points at a non-existent directory → step 1 cannot mint the temp.
+        // A file-as-final-dir → the §2.3.3 parent-handle open rejects it → §2.8 WriteFailed (the reliably-driven
+        // publish failure; the sibling `a_final_dir_...` pins the unrelated-file no-harm on the same trigger).
+        let file_final = f.dest.path().join("i-am-a-file");
+        std::fs::write(&file_final, b"not a dir").expect("create the file");
         let plan = OutputPlan {
             job: ItemId::from_index(0),
-            final_dir: f.dest.path().to_path_buf(),
+            final_dir: file_final,
             diverted: None,
             base_name: OsString::from("data"),
             extension: OsString::from("tsv"),
-            publish_temp_dir: f.dest.path().join("does-not-exist"),
+            publish_temp_dir: f.dest.path().to_path_buf(),
         };
-        let mut ran = false;
-
-        let out = write_item(
+        let tmp = f
+            .scratch
+            .publish_temp(&plan.publish_temp_dir, plan.job)
+            .expect("pick the publish temp");
+        std::fs::write(&*tmp, b"out").expect("write the output into the temp");
+        let tmp_path = tmp.to_path_buf();
+        let out = publish_written_temp(
             &plan,
             &f.source,
             &f.frozen,
@@ -7745,10 +8438,7 @@ mod write_sequence_tests {
             &f.scratch,
             &mut f.cache,
             probe(),
-            |_tmp: &Path| {
-                ran = true;
-                Ok(())
-            },
+            tmp,
         );
 
         assert_eq!(
@@ -7758,8 +8448,12 @@ mod write_sequence_tests {
             }
         );
         assert!(
-            !ran,
-            "the engine seam never runs when the publish temp cannot be created"
+            !tmp_path.exists(),
+            "§2.6.2: a failed publish cleans its own publish temp — no leftover .part, no residue"
+        );
+        assert!(
+            out.residue.is_none(),
+            "§2.6.4: a clean temp removal surfaces no residue on the failure"
         );
     }
 
@@ -7778,7 +8472,14 @@ mod write_sequence_tests {
             publish_temp_dir: f.dest.path().to_path_buf(),
         };
 
-        let out = write_item(
+        // [Test-Change: P3.48 — old-obsolete+new-correct, §2.3.3] pre-write the publish temp, then publish; the
+        // §2.3.3 parent-handle open rejects the file-as-final-dir → §2.8 WriteFailed.
+        let tmp = f
+            .scratch
+            .publish_temp(&plan.publish_temp_dir, plan.job)
+            .expect("pick the publish temp");
+        std::fs::write(&*tmp, b"out").expect("write the output into the temp");
+        let out = publish_written_temp(
             &plan,
             &f.source,
             &f.frozen,
@@ -7786,7 +8487,7 @@ mod write_sequence_tests {
             &f.scratch,
             &mut f.cache,
             probe(),
-            |tmp: &Path| std::fs::write(tmp, b"out").map_err(|_| ConversionErrorKind::WriteFailed),
+            tmp,
         );
 
         assert_eq!(
@@ -7835,17 +8536,23 @@ mod write_sequence_tests {
         };
         let plan = f.plan_in(f.dest.path());
 
-        let out = write_item(
+        // [Test-Change: P3.48 — old-obsolete+new-correct, §2.3.3] pre-write the publish temp, then publish; the
+        // §2.3.3 parent verify sees `final_dir` resolve onto a frozen source → the §2.7 late-divert.
+        let tmp = f
+            .scratch
+            .publish_temp(&plan.publish_temp_dir, plan.job)
+            .expect("pick the publish temp");
+        std::fs::write(&*tmp, b"a\tb\n").expect("write the output into the temp");
+        let divert_candidates = [divert.path().to_path_buf()];
+        let out = publish_written_temp(
             &plan,
             &f.source,
             &frozen,
-            &[divert.path().to_path_buf()],
+            &divert_candidates,
             &f.scratch,
             &mut f.cache,
             probe(),
-            |tmp: &Path| {
-                std::fs::write(tmp, b"a\tb\n").map_err(|_| ConversionErrorKind::WriteFailed)
-            },
+            tmp,
         );
 
         // §2.3.3/§2.7: the output diverted to the (empty) divert root under the base name.
@@ -7912,17 +8619,24 @@ mod write_sequence_tests {
         )
         .expect("flip the final dir read-only");
 
-        let out = write_item(
+        // [Test-Change: P3.48 — old-obsolete+new-correct, §2.7.2] pre-write the publish temp (in the WRITABLE
+        // temp-volume dir, unaffected by the final-dir flip) then publish; the read-only `final_dir` EACCES on
+        // the exclusive publish → the §2.7.2/§2.7.5 late-divert to the divert root.
+        let tmp = f
+            .scratch
+            .publish_temp(&plan.publish_temp_dir, plan.job)
+            .expect("pick the publish temp (in the writable temp-volume dir)");
+        std::fs::write(&*tmp, b"a\tb\n").expect("write the output into the temp");
+        let divert_candidates = [divert.path().to_path_buf()];
+        let out = publish_written_temp(
             &plan,
             &f.source,
             &f.frozen,
-            &[divert.path().to_path_buf()],
+            &divert_candidates,
             &f.scratch,
             &mut f.cache,
             probe(),
-            |tmp: &Path| {
-                std::fs::write(tmp, b"a\tb\n").map_err(|_| ConversionErrorKind::WriteFailed)
-            },
+            tmp,
         );
 
         // Restore perms so the tempdir can clean itself up.
@@ -7986,17 +8700,24 @@ mod write_sequence_tests {
         )
         .expect("flip the final dir read-only");
 
-        let out = write_item(
+        // [Test-Change: P3.48 — old-obsolete+new-correct, §2.7.3] pre-write the publish temp then publish; an
+        // ALREADY-diverted plan (§2.7.3 one-divert-per-item) does not divert a second time on the read-only
+        // final → terminal WriteFailed, the divert candidate never touched.
+        let tmp = f
+            .scratch
+            .publish_temp(&plan.publish_temp_dir, plan.job)
+            .expect("pick the publish temp");
+        std::fs::write(&*tmp, b"a\tb\n").expect("write the output into the temp");
+        let divert_candidates = [divert.path().to_path_buf()];
+        let out = publish_written_temp(
             &plan,
             &f.source,
             &f.frozen,
-            &[divert.path().to_path_buf()],
+            &divert_candidates,
             &f.scratch,
             &mut f.cache,
             probe(),
-            |tmp: &Path| {
-                std::fs::write(tmp, b"a\tb\n").map_err(|_| ConversionErrorKind::WriteFailed)
-            },
+            tmp,
         );
 
         std::fs::set_permissions(
@@ -8042,8 +8763,15 @@ mod write_sequence_tests {
         )
         .expect("flip the final dir read-only");
 
-        // No divert candidates at all -> resolve_divert_target yields Unavailable -> §2.8 WriteFailed.
-        let out = write_item(
+        // [Test-Change: P3.48 — old-obsolete+new-correct, §2.7.3] pre-write the publish temp then publish with
+        // NO divert candidates → the read-only final EACCES late-diverts, `resolve_divert_target([])` yields
+        // Unavailable → §2.8 WriteFailed (never a bad divert).
+        let tmp = f
+            .scratch
+            .publish_temp(&plan.publish_temp_dir, plan.job)
+            .expect("pick the publish temp");
+        std::fs::write(&*tmp, b"a\tb\n").expect("write the output into the temp");
+        let out = publish_written_temp(
             &plan,
             &f.source,
             &f.frozen,
@@ -8051,9 +8779,7 @@ mod write_sequence_tests {
             &f.scratch,
             &mut f.cache,
             probe(),
-            |tmp: &Path| {
-                std::fs::write(tmp, b"a\tb\n").map_err(|_| ConversionErrorKind::WriteFailed)
-            },
+            tmp,
         );
 
         std::fs::set_permissions(
@@ -8085,7 +8811,15 @@ mod write_sequence_tests {
             publish_temp_dir: f.dest.path().to_path_buf(),
         };
 
-        let out = write_item(
+        // [Test-Change: P3.48 — old-obsolete+new-correct, §2.1.1] pre-write the publish temp then publish; the
+        // non-UTF-8 extension fails `InternalError` — and (post-re-cut) the ALREADY-written temp is CLEANED (the
+        // ext check now runs after the write, so it removes the temp rather than returning before any exists).
+        let tmp = f
+            .scratch
+            .publish_temp(&plan.publish_temp_dir, plan.job)
+            .expect("pick the publish temp");
+        std::fs::write(&*tmp, b"out").expect("write the output into the temp");
+        let out = publish_written_temp(
             &plan,
             &f.source,
             &f.frozen,
@@ -8093,7 +8827,7 @@ mod write_sequence_tests {
             &f.scratch,
             &mut f.cache,
             probe(),
-            |tmp: &Path| std::fs::write(tmp, b"out").map_err(|_| ConversionErrorKind::WriteFailed),
+            tmp,
         );
 
         assert_eq!(
@@ -8102,6 +8836,699 @@ mod write_sequence_tests {
                 kind: ConversionErrorKind::InternalError
             },
             "a non-UTF-8 target extension is an internal fault (never a user-facing case)"
+        );
+        assert!(
+            part_files(f.dest.path()).is_empty(),
+            "the already-written temp is cleaned on the ext-None path, found {:?}",
+            part_files(f.dest.path())
+        );
+    }
+}
+
+#[cfg(test)]
+mod run_conversion_tests {
+    //! §6.4.1 unit + §6.4.3 per-pair integration (G15/G31/G32(a)) for the P3.48 C6 run conductor — the REAL
+    //! native CSV↔TSV engine driven end-to-end over a DIRECTLY-registered frozen set (test-strategy §0.1: the
+    //! conversion IS the product, so the engine + FS are real, never mocked; the full C1→C6→summary E2E is
+    //! P3.49/P3.63). Pins: the output-VALIDITY bar (a real field-parse read-back of the published TSV + the
+    //! §0.2 CSV-injection literal-preservation check, G31), the no-harm G32(a) source-unchanged invariant, the
+    //! §1.12 `RunResult` projection + `Totals`, the §0.4.4 `RunResultStore` retention (C8 re-serve), the §1.9
+    //! pre-flight-skip projection (no live events), the §2.5 `RerunDecision` applier, and the §0.4.2 event
+    //! stream. [Build-Session-Entscheidung: P3.48]
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+
+    use tauri::ipc::{Channel, InvokeResponseBody};
+
+    use super::*;
+    use crate::domain::{
+        Availability, Confidence, DetectionOutcome, InstanceId, ItemId, ItemPaths,
+    };
+    use crate::fs_guard::resolve_identity;
+
+    /// A stable `CollectedSetId` for the frozen set (`CollectedSetId` has no `mint`; minted through its public
+    /// bare-uuid `Deserialize` wire form, mirroring the C6/C8 contract test helpers).
+    fn a_collected_set_id() -> CollectedSetId {
+        serde_json::from_str(r#""55555555-5555-4555-8555-555555555555""#)
+            .expect("CollectedSetId deserializes from a uuid string")
+    }
+
+    /// A NON-ephemeral source directory (under the crate source root, not `%TEMP%`) — REALISTIC user-source
+    /// placement (Downloads/Documents/Desktop). A plain `tempfile::tempdir()` lives under the OS temp root,
+    /// which the conductor's §2.7.2 `location_status` correctly classifies `Ephemeral` → DIVERT (a result there
+    /// could be silently purged), so a beside-source publish must run from a non-ephemeral dir. `None` on the
+    /// pathological env where the crate root is itself under an OS temp root (a clean skip, never a false pass —
+    /// the `write_sequence_tests` / `location_status_tests` `non_ephemeral_tempdir` pattern). Real FS (§0.1).
+    fn non_ephemeral_source_dir() -> Option<tempfile::TempDir> {
+        let dir = tempfile::Builder::new()
+            .prefix("convertia-p348-run-")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .expect("create a temp dir in the crate source root");
+        (!crate::platform::is_ephemeral_output_dir(dir.path())).then_some(dir)
+    }
+
+    /// The §1.5 CSV→TSV target the conductor writes (mirrors `engines::slice_target(Csv)`).
+    fn tsv_target() -> Target {
+        Target {
+            id: TargetId::Format(UserFacingFormat::Tsv),
+            label: "TSV".to_owned(),
+            lossy: None,
+            availability: Availability::Available,
+            options: Vec::new(),
+        }
+    }
+
+    /// A REAL eligible CSV source file at `dir/name` (id `n`) + its `DroppedItem` / off-wire `ItemPaths` /
+    /// §2.3 `FileIdentity` — the frozen record the §1.1 freeze would build (test-strategy §0.1: a real file).
+    fn eligible(
+        dir: &Path,
+        name: &str,
+        n: u32,
+        bytes: &[u8],
+    ) -> (DroppedItem, ItemPaths, FileIdentity) {
+        let source = dir.join(name);
+        std::fs::write(&source, bytes).expect("write the real source file");
+        let item = ItemId::from_index(n);
+        let dropped = DroppedItem {
+            item,
+            display_name: name.to_owned(),
+            rel_path_display: None,
+            size_bytes: bytes.len() as u64,
+            detected: DetectionOutcome::Recognized {
+                format: UserFacingFormat::Csv,
+                confidence: Confidence::High,
+                dims: None,
+            },
+        };
+        let paths = ItemPaths {
+            raw_path: source.clone(),
+            resolved_path: source.clone(),
+        };
+        let identity = resolve_identity(&source).expect("resolve the source identity");
+        (dropped, paths, identity)
+    }
+
+    /// A pre-flight-skipped item at id `n` (unsupported at freeze) — no `item_paths`/identity (never converted).
+    fn skipped(n: u32, reason: SkipReason) -> SkippedItem {
+        SkippedItem {
+            item: ItemId::from_index(n),
+            source_display: format!("skipped-{n}.bin"),
+            detected_display: None,
+            reason,
+        }
+    }
+
+    /// Assemble a `RegisteredSet` (frozen set + §2.3 identity table) from real eligible items + skipped records,
+    /// with the source `dir` as the §2.4 dropped root (the §2.7.4 beside-source open-folder anchor).
+    fn registered(
+        dir: &Path,
+        eligibles: Vec<(DroppedItem, ItemPaths, FileIdentity)>,
+        skips: Vec<SkippedItem>,
+    ) -> RegisteredSet {
+        let mut items = Vec::new();
+        let mut item_paths: BTreeMap<ItemId, ItemPaths> = BTreeMap::new();
+        let mut identities: BTreeMap<ItemId, FileIdentity> = BTreeMap::new();
+        for (dropped, paths, identity) in eligibles {
+            identities.insert(dropped.item, identity);
+            item_paths.insert(dropped.item, paths);
+            items.push(dropped);
+        }
+        let count = items.len();
+        let frozen = FrozenCollectedSet {
+            id: a_collected_set_id(),
+            instance: InstanceId::mint(),
+            format: UserFacingFormat::Csv,
+            items,
+            count,
+            skipped: skips,
+            total_bytes: 0,
+            roots: vec![dir.to_path_buf()],
+            encoding_hint: None,
+            delimiter_hint: None,
+            notes: Vec::new(),
+            item_paths,
+        };
+        RegisteredSet { frozen, identities }
+    }
+
+    /// A capturing run Channel — records each sent `ConversionEvent`'s serialized JSON (the outbound wire form;
+    /// `ConversionEvent` is Serialize-only, so the test asserts on the JSON, never a deserialized value).
+    fn capture_channel() -> (Channel<ConversionEvent>, Arc<Mutex<Vec<String>>>) {
+        let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let channel = Channel::new(move |body: InvokeResponseBody| {
+            if let InvokeResponseBody::Json(json) = body {
+                sink.lock().expect("event sink lock").push(json);
+            }
+            Ok(())
+        });
+        (channel, events)
+    }
+
+    /// Parse a delimited output (split lines by `\n`, fields by `delim`) into rows of cells — a real field
+    /// read-back of the produced file (test-strategy §0.2: not a byte-blob, the cells are parsed + asserted).
+    fn parse_rows(bytes: &[u8], delim: char) -> Vec<Vec<String>> {
+        String::from_utf8_lossy(bytes)
+            .lines()
+            .map(|line| line.split(delim).map(str::to_owned).collect())
+            .collect()
+    }
+
+    /// The stores + scratch a run needs — freshly constructed per test (nothing shared, nothing mocked).
+    struct Deps {
+        _scratch_base: tempfile::TempDir,
+        instance: InstanceId,
+        scratch_base: PathBuf,
+        pool: Pool,
+        ledger: RerunLedger,
+        equiv: EquivKeyComputer,
+        results: RunResultStore,
+        runs: RunRegistry,
+    }
+
+    fn deps() -> Deps {
+        let scratch_base = tempfile::tempdir().expect("scratch base dir");
+        Deps {
+            scratch_base: scratch_base.path().to_path_buf(),
+            _scratch_base: scratch_base,
+            instance: InstanceId::mint(),
+            pool: Pool::new(),
+            ledger: RerunLedger::default(),
+            equiv: EquivKeyComputer::default(),
+            results: RunResultStore::default(),
+            runs: RunRegistry::default(),
+        }
+    }
+
+    /// Acquire a fresh scratch + run the conductor over `registered` with the given decision, into `dest_dir`
+    /// as the §2.7.3 divert root (beside-source runs never use it). Returns the run's `RunId`.
+    async fn run(
+        d: &Deps,
+        registered: &RegisteredSet,
+        rerun: RerunDecision,
+        divert_root: &Path,
+        channel: &Channel<ConversionEvent>,
+    ) -> RunId {
+        run_with_token(
+            d,
+            registered,
+            rerun,
+            divert_root,
+            channel,
+            CancellationToken::new(),
+            DestinationChoice::BesideSource,
+        )
+        .await
+    }
+
+    /// `run` with an explicit run token + destination — the Cancelled-arm test hands in a PRE-cancelled token
+    /// (§1.7 cooperative cancel → `InvocationResult::Cancelled`); the ChosenRoot test hands in a
+    /// `DestinationChoice::ChosenRoot` to exercise the §2.7.1 subtree path.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_with_token(
+        d: &Deps,
+        registered: &RegisteredSet,
+        rerun: RerunDecision,
+        divert_root: &Path,
+        channel: &Channel<ConversionEvent>,
+        token: CancellationToken,
+        destination: DestinationChoice,
+    ) -> RunId {
+        let batch = build_batch(
+            &registered.frozen,
+            tsv_target(),
+            OptionValues(BTreeMap::new()),
+            destination,
+        );
+        let run_id = RunId::mint();
+        let scratch = RunScratch::acquire(&d.scratch_base, d.instance, std::process::id(), run_id)
+            .expect("acquire the run scratch");
+        run_conversion(
+            batch,
+            registered,
+            run_id,
+            token,
+            scratch,
+            d.instance,
+            divert_root.to_path_buf(),
+            rerun,
+            &d.pool,
+            &d.ledger,
+            &d.equiv,
+            &d.results,
+            &d.runs,
+            channel,
+        )
+        .await;
+        run_id
+    }
+
+    // §6.4.3 integration (G31/G32(a)): a real CSV→TSV conversion publishes a VALID tab-delimited TSV beside the
+    // source (field-parsed read-back + a §0.2 CSV-injection literal-preservation check), never touches the
+    // source (no-harm), and the §1.12 summary is retained for the C8 re-serve with one Succeeded item.
+    #[tokio::test]
+    async fn converts_csv_to_tsv_reads_back_valid_preserves_injection_and_retains_the_summary() {
+        let Some(src_dir) = non_ephemeral_source_dir() else {
+            return; // the crate root is itself ephemeral — no realistic non-ephemeral source dir to test.
+        };
+        let d = deps();
+        // A leading `=` cell (a CSV-injection payload) must survive as LITERAL text (§0.2 non-execution).
+        let source_bytes = b"=cmd(),b\n1,2\n";
+        let (dropped, paths, identity) = eligible(src_dir.path(), "data.csv", 0, source_bytes);
+        let source = paths.resolved_path.clone();
+        let set = registered(src_dir.path(), vec![(dropped, paths, identity)], Vec::new());
+        let (channel, _events) = capture_channel();
+
+        let run_id = run(&d, &set, RerunDecision::FreshCopy, src_dir.path(), &channel).await;
+
+        // Output validity (G31): a tab-delimited TSV published beside the source, field-parsed to the same cells.
+        let output = src_dir.path().join("data.tsv");
+        let out = std::fs::read(&output).expect("the TSV output was published beside the source");
+        let rows = parse_rows(&out, '\t');
+        assert_eq!(
+            rows,
+            vec![
+                vec!["=cmd()".to_owned(), "b".to_owned()],
+                vec!["1".to_owned(), "2".to_owned()],
+            ],
+            "G31: the CSV converted to a tab-delimited TSV, the leading `=` cell preserved LITERALLY (§0.2 CSV-injection non-execution)"
+        );
+        assert!(
+            !out.contains(&b','),
+            "the TSV output carries no comma delimiter (the CSV became tab-delimited)"
+        );
+        // No-harm (G32(a)): the source is byte-identical.
+        assert_eq!(
+            std::fs::read(&source).expect("read source after"),
+            source_bytes,
+            "G32(a): the source file is byte-identical after the conversion"
+        );
+        // §1.12 projection + §0.4.4 retention: C8 re-serves the summary; one item Succeeded.
+        let result = d
+            .results
+            .get(run_id)
+            .expect("the terminal RunResult is retained for the C8 re-serve");
+        assert_eq!(
+            result.totals,
+            Totals {
+                succeeded: 1,
+                failed: 0,
+                cancelled: 0,
+                skipped: 0,
+            }
+        );
+        assert_eq!(result.items.len(), 1, "one item in the summary");
+        assert!(
+            matches!(result.items[0].state, JobState::Succeeded),
+            "the converted item is Succeeded"
+        );
+    }
+
+    // §6.4.1 (G15): the §0.4.2 event stream is emitted in order — RunStarted first, then per-item
+    // ItemStarted → ItemFinished (with at least one BatchProgress), terminal RunFinished last. Asserted on the
+    // serialized JSON `type` tags (ConversionEvent is Serialize-only).
+    #[tokio::test]
+    async fn emits_the_0_4_2_event_stream_in_order() {
+        let Some(src_dir) = non_ephemeral_source_dir() else {
+            return; // the crate root is itself ephemeral — no realistic non-ephemeral source dir to test.
+        };
+        let d = deps();
+        let (dropped, paths, identity) = eligible(src_dir.path(), "data.csv", 0, b"a,b\n1,2\n");
+        let set = registered(src_dir.path(), vec![(dropped, paths, identity)], Vec::new());
+        let (channel, events) = capture_channel();
+
+        run(&d, &set, RerunDecision::FreshCopy, src_dir.path(), &channel).await;
+
+        let events = events.lock().expect("event sink lock").clone();
+        let tag = |needle: &str| events.iter().position(|e| e.contains(needle));
+        let run_started = tag(r#""type":"runStarted""#).expect("a RunStarted event");
+        let item_started = tag(r#""type":"itemStarted""#).expect("an ItemStarted event");
+        let item_finished = tag(r#""type":"itemFinished""#).expect("an ItemFinished event");
+        let batch_progress = tag(r#""type":"batchProgress""#).expect("a BatchProgress event");
+        let run_finished = tag(r#""type":"runFinished""#).expect("a RunFinished event");
+        assert_eq!(run_started, 0, "§0.4.2: RunStarted is the FIRST event");
+        assert_eq!(
+            run_finished,
+            events.len() - 1,
+            "§0.4.2: RunFinished is the terminal (LAST) event"
+        );
+        assert!(
+            run_started < item_started && item_started < item_finished,
+            "§1.9: per-item ItemStarted precedes ItemFinished, both after RunStarted"
+        );
+        assert!(
+            item_finished <= batch_progress && batch_progress < run_finished,
+            "§1.11: BatchProgress follows the item's finish, before the terminal RunFinished"
+        );
+    }
+
+    // §6.4.1 (G15) / §1.9 / §1.12: a pre-flight-skipped item never enters the queue (excluded from
+    // `total_items`) and emits NO live ItemStarted/ItemFinished, but IS projected into `RunResult.items` +
+    // `Totals.skipped` (§0.4.2 pre-flight-skip emission policy; §1.12 "pre-flight skips ARE in RunResult.items").
+    #[tokio::test]
+    async fn projects_a_preflight_skip_into_the_summary_without_live_events() {
+        let Some(src_dir) = non_ephemeral_source_dir() else {
+            return; // the crate root is itself ephemeral — no realistic non-ephemeral source dir to test.
+        };
+        let d = deps();
+        let (dropped, paths, identity) = eligible(src_dir.path(), "data.csv", 0, b"a,b\n1,2\n");
+        let set = registered(
+            src_dir.path(),
+            vec![(dropped, paths, identity)],
+            vec![skipped(1, SkipReason::UnsupportedType)],
+        );
+        let (channel, events) = capture_channel();
+
+        let run_id = run(&d, &set, RerunDecision::FreshCopy, src_dir.path(), &channel).await;
+
+        // total_items counts ONLY the queued eligible item (the skip is excluded).
+        let events = events.lock().expect("event sink lock").clone();
+        let run_started = events
+            .iter()
+            .find(|e| e.contains(r#""type":"runStarted""#))
+            .expect("a RunStarted event");
+        assert!(
+            run_started.contains(r#""totalItems":1"#),
+            "§0.4.2: total_items counts only the queued eligible item, not the pre-flight skip"
+        );
+        // Exactly ONE live ItemFinished (the eligible item) — the skip emits none.
+        let finishes = events
+            .iter()
+            .filter(|e| e.contains(r#""type":"itemFinished""#))
+            .count();
+        assert_eq!(
+            finishes, 1,
+            "§0.4.2: the pre-flight skip emits NO live ItemFinished — only the eligible item does"
+        );
+        // But the summary carries BOTH — the eligible Succeeded + the skip, counted in Totals.skipped.
+        let result = d.results.get(run_id).expect("the RunResult is retained");
+        assert_eq!(
+            result.totals,
+            Totals {
+                succeeded: 1,
+                failed: 0,
+                cancelled: 0,
+                skipped: 1,
+            }
+        );
+        assert_eq!(
+            result.items.len(),
+            2,
+            "§1.12: the summary carries the eligible item AND the pre-flight skip"
+        );
+        assert!(
+            result
+                .items
+                .iter()
+                .any(|item| matches!(item.state, JobState::Skipped(SkipReason::UnsupportedType))),
+            "§1.12: the pre-flight skip is projected with its SkipReason"
+        );
+    }
+
+    // §6.4.1 (G15) / §2.5: the RerunDecision applier (the P3.48 rerun-skip ruling `034a451`) — under `Skip`, a
+    // SEEN (ledgered) equivalent item is assigned `Skipped(AlreadyConverted)`: no output, excluded from the
+    // queued `total_items`, no live events, BUT projected into the §1.12 summary as a distinct `Skipped` outcome
+    // (`Totals.skipped`, the direct §2.8.2 line) — NOT dropped. Under `FreshCopy`, the SAME seen item converts.
+    // [Build-Session-Entscheidung: P3.48 — the applier arm over the ruling's `AlreadyConverted` variant]
+    #[tokio::test]
+    async fn rerun_skip_marks_a_seen_item_already_converted_but_fresh_copy_converts_it() {
+        let Some(src_dir) = non_ephemeral_source_dir() else {
+            return; // the crate root is itself ephemeral — no realistic non-ephemeral source dir to test.
+        };
+        let d = deps();
+        let (dropped, paths, identity) = eligible(src_dir.path(), "data.csv", 0, b"a,b\n1,2\n");
+        let item = dropped.item;
+        let set = registered(src_dir.path(), vec![(dropped, paths, identity)], Vec::new());
+
+        // Pre-seed the §2.5.2 ledger with THIS item's §2.5.1 key (a prior in-session run of the same pair).
+        let key = d.equiv.compute_equiv_key(
+            &set.identities[&item],
+            tsv_target().id,
+            &OptionValues(BTreeMap::new()),
+        );
+        d.ledger.record(key);
+
+        // Under Skip, the seen item is `Skipped(AlreadyConverted)` — no output, total_items 0, no live events,
+        // but IN the summary as a distinct skip (§1.12 "never a failure").
+        let (skip_channel, skip_events) = capture_channel();
+        let skip_run = run(&d, &set, RerunDecision::Skip, src_dir.path(), &skip_channel).await;
+        assert!(
+            !src_dir.path().join("data.tsv").exists(),
+            "§2.5: a Skip re-run produces no new output for the equivalent item"
+        );
+        let skip_events = skip_events.lock().expect("lock").clone();
+        assert!(
+            skip_events
+                .iter()
+                .find(|e| e.contains(r#""type":"runStarted""#))
+                .expect("RunStarted")
+                .contains(r#""totalItems":0"#),
+            "§2.5: the AlreadyConverted item is excluded from the queued count (never dispatched)"
+        );
+        assert!(
+            !skip_events
+                .iter()
+                .any(|e| e.contains(r#""type":"itemFinished""#)),
+            "§0.4.2: a re-run skip emits NO live ItemFinished (terminal at construction)"
+        );
+        let skip_result = d.results.get(skip_run).expect("the run retains a summary");
+        assert_eq!(
+            skip_result.totals,
+            Totals {
+                succeeded: 0,
+                failed: 0,
+                cancelled: 0,
+                skipped: 1,
+            },
+            "§1.12: the re-run skip is counted in Totals.skipped, never dropped, never failed"
+        );
+        assert_eq!(
+            skip_result.items.len(),
+            1,
+            "§1.12: the item IS in the summary"
+        );
+        assert!(
+            matches!(
+                skip_result.items[0].state,
+                JobState::Skipped(SkipReason::AlreadyConverted)
+            ),
+            "§1.9: the re-run skip is state Skipped(AlreadyConverted)"
+        );
+        assert!(
+            matches!(
+                &skip_result.items[0].reason,
+                Some(OutcomeMsg::Skipped { reason: SkipReason::AlreadyConverted, text })
+                    if text.contains("already converted")
+            ),
+            "§2.8.2: the reason is the direct AlreadyConverted skip line"
+        );
+
+        // Under FreshCopy, the SAME seen item converts (a fresh numbered copy, §2.5).
+        let (fresh_channel, _fresh_events) = capture_channel();
+        let fresh_run = run(
+            &d,
+            &set,
+            RerunDecision::FreshCopy,
+            src_dir.path(),
+            &fresh_channel,
+        )
+        .await;
+        assert!(
+            src_dir.path().join("data.tsv").exists(),
+            "§2.5: FreshCopy re-produces the output for the equivalent item"
+        );
+        assert_eq!(
+            d.results
+                .get(fresh_run)
+                .expect("the FreshCopy run summary")
+                .totals
+                .succeeded,
+            1,
+            "§2.5: FreshCopy converts the seen item"
+        );
+    }
+
+    // §6.4.1 (G15) / §1.9: a source that is gone/unreadable when its turn comes fails THAT item cleanly (the
+    // batch continues), projected `Failed` in the summary with a live `ItemFinished{Failed}` — no output.
+    #[tokio::test]
+    async fn a_missing_source_fails_the_item_cleanly() {
+        let Some(src_dir) = non_ephemeral_source_dir() else {
+            return; // the crate root is itself ephemeral — no realistic non-ephemeral source dir to test.
+        };
+        let d = deps();
+        // Build the eligible item, then DELETE its source so the engine cannot read it at convert time.
+        let (dropped, paths, identity) = eligible(src_dir.path(), "data.csv", 0, b"a,b\n1,2\n");
+        let source = paths.resolved_path.clone();
+        let set = registered(src_dir.path(), vec![(dropped, paths, identity)], Vec::new());
+        std::fs::remove_file(&source).expect("remove the source before the run (it went away)");
+        let (channel, events) = capture_channel();
+
+        let run_id = run(&d, &set, RerunDecision::FreshCopy, src_dir.path(), &channel).await;
+
+        assert!(
+            !src_dir.path().join("data.tsv").exists(),
+            "no output for a failed item"
+        );
+        let result = d.results.get(run_id).expect("the RunResult is retained");
+        assert_eq!(
+            result.totals.failed, 1,
+            "§1.9: the unreadable source fails THAT item (the batch continues)"
+        );
+        assert_eq!(result.totals.succeeded, 0);
+        assert!(
+            matches!(result.items[0].state, JobState::Failed(_)),
+            "§1.12: the failed item is projected with a §2.8 kind"
+        );
+        let events = events.lock().expect("lock").clone();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.contains(r#""type":"itemFinished""#) && e.contains(r#""failed""#)),
+            "§0.4.2: a live ItemFinished carries the Failed outcome"
+        );
+    }
+
+    // §6.4.1 (G15) / §1.7 / §2.1: a run whose token is already tripped cancels the in-flight item at the
+    // native lane's first chunk-boundary poll (§1.7 cooperative cancel). The §2.1 atomic publish NEVER runs on
+    // the cancel path, so NO output survives beside the source (the partial temp drops), the source is
+    // UNTOUCHED (no-harm G32(a)), and the §1.12 summary counts the item `Cancelled` (never a clean success),
+    // retained for the C8 re-serve with a live `ItemFinished{Cancelled}`.
+    #[tokio::test]
+    async fn a_cancelled_run_publishes_no_output_leaves_the_source_intact_and_projects_cancelled() {
+        let Some(src_dir) = non_ephemeral_source_dir() else {
+            return; // the crate root is itself ephemeral — no realistic non-ephemeral source dir to test.
+        };
+        let d = deps();
+        // A MULTI-chunk source (> 3×100 KB `PROGRESS_CHUNK_BYTES`) so the transform reaches a chunk boundary
+        // where the cancel poll fires (a tiny source could complete in one pass before the first poll).
+        let mut source_bytes = Vec::new();
+        while source_bytes.len() < 300 * 1024 {
+            source_bytes.extend_from_slice(b"a,b,c\n");
+        }
+        let (dropped, paths, identity) = eligible(src_dir.path(), "big.csv", 0, &source_bytes);
+        let source = paths.resolved_path.clone();
+        let set = registered(src_dir.path(), vec![(dropped, paths, identity)], Vec::new());
+        let (channel, events) = capture_channel();
+
+        // A PRE-cancelled run token: the native lane's first chunk-boundary poll observes it → Cancelled.
+        let token = CancellationToken::new();
+        token.cancel();
+        let run_id = run_with_token(
+            &d,
+            &set,
+            RerunDecision::FreshCopy,
+            src_dir.path(),
+            &channel,
+            token,
+            DestinationChoice::BesideSource,
+        )
+        .await;
+
+        // §2.1: the atomic publish never runs on the cancel path — no output beside the source.
+        assert!(
+            !src_dir.path().join("big.tsv").exists(),
+            "§2.1/§1.7: a cancelled item publishes NO output (the partial temp is dropped, never promoted)"
+        );
+        // No-harm (G32(a)): the source is read-only to the conductor and survives byte-for-byte.
+        assert_eq!(
+            std::fs::read(&source).expect("the source is untouched by a cancelled run"),
+            source_bytes,
+            "§2.0 no-harm: a cancelled run never mutates the source"
+        );
+        // §1.12: the item is projected `Cancelled`, counted in `Totals.cancelled`, never succeeded/failed.
+        let result = d
+            .results
+            .get(run_id)
+            .expect("the RunResult is retained for C8 re-serve");
+        assert_eq!(
+            result.totals,
+            Totals {
+                succeeded: 0,
+                failed: 0,
+                cancelled: 1,
+                skipped: 0,
+            },
+            "§1.12: the cancelled item is counted in Totals.cancelled, never a clean success"
+        );
+        assert!(
+            matches!(result.items[0].state, JobState::Cancelled),
+            "§1.9: the cancelled item's terminal state is Cancelled"
+        );
+        assert!(
+            result.items[0].output_display.is_none(),
+            "§1.12: a cancelled item names no output path"
+        );
+        // §0.4.2: unlike a pre-flight skip, a cancelled item DID dispatch, so it emits a live terminal event.
+        let events = events.lock().expect("lock").clone();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.contains(r#""type":"itemFinished""#) && e.contains(r#""cancelled""#)),
+            "§0.4.2: a live ItemFinished carries the Cancelled outcome"
+        );
+    }
+
+    // §6.4.3 (G31/G32(a)) / §2.7.1: a `ChosenRoot` run RE-CREATES the source's relative subtree UNDER the
+    // chosen root (a source at `<src>/nested/data.csv` publishes to `<dest>/nested/data.tsv`), never beside the
+    // source. Regression guard for the P3.48 G1-review fix: the conductor must strip the source path against the
+    // SOURCE freeze common root, NOT the open-folder root (the chosen root D) — feeding D would fail
+    // `strip_prefix` (a source is never under the destination) → `WriteFailed` for every ChosenRoot item.
+    #[tokio::test]
+    async fn a_chosen_root_run_recreates_the_source_subtree_under_the_chosen_root() {
+        let Some(src_dir) = non_ephemeral_source_dir() else {
+            return; // the crate root is itself ephemeral — no realistic non-ephemeral source dir to test.
+        };
+        let Some(dest_dir) = non_ephemeral_source_dir() else {
+            return;
+        };
+        let d = deps();
+        // A source NESTED under the freeze root: `<src>/nested/data.csv` (the freeze root is `<src>`).
+        std::fs::create_dir(src_dir.path().join("nested"))
+            .expect("create the nested source subdir");
+        let (dropped, paths, identity) =
+            eligible(src_dir.path(), "nested/data.csv", 0, b"a,b\n1,2\n");
+        let set = registered(src_dir.path(), vec![(dropped, paths, identity)], Vec::new());
+        let (channel, _events) = capture_channel();
+
+        // Run with a CHOSEN-ROOT destination (the chosen root D = `<dest>`), fresh token.
+        let run_id = run_with_token(
+            &d,
+            &set,
+            RerunDecision::FreshCopy,
+            dest_dir.path(),
+            &channel,
+            CancellationToken::new(),
+            DestinationChoice::ChosenRoot(dest_dir.path().to_path_buf()),
+        )
+        .await;
+
+        // §2.7.1: the output re-creates the source subtree UNDER the chosen root → `<dest>/nested/data.tsv`.
+        let output = dest_dir.path().join("nested").join("data.tsv");
+        let out = std::fs::read(&output).expect(
+            "§2.7.1: the ChosenRoot output re-creates the source subtree under the chosen root",
+        );
+        assert_eq!(
+            parse_rows(&out, '\t'),
+            vec![
+                vec!["a".to_owned(), "b".to_owned()],
+                vec!["1".to_owned(), "2".to_owned()],
+            ],
+            "output validity (G31): the ChosenRoot TSV is a valid tab-delimited read-back"
+        );
+        // No-harm + no beside-source output on a ChosenRoot run.
+        assert!(
+            src_dir.path().join("nested").join("data.csv").is_file(),
+            "no-harm: the source is untouched"
+        );
+        assert!(
+            !src_dir.path().join("nested").join("data.tsv").exists(),
+            "§2.7.1: a ChosenRoot run publishes under the chosen root, never beside the source"
+        );
+        let result = d.results.get(run_id).expect("the RunResult is retained");
+        assert_eq!(
+            result.totals.succeeded, 1,
+            "§1.12: the ChosenRoot item succeeded (not WriteFailed on a mis-fed strip base)"
         );
     }
 }

@@ -276,9 +276,11 @@ pub enum OutcomeMsg {
     /// A §2.9 predictable-LOSS note on an otherwise-successful conversion — `kind` is the §2.9.1 catalog key,
     /// `text` the §2.9.1 note.
     Lossy { kind: LossyKind, text: String },
-    /// A §1.1/§1.3 pre-flight SKIP (a detection-ineligible item that never entered the queue, projected into
-    /// `RunResult.items` at run-end, §1.12) — `reason` is the §0.6 `SkipReason`. A skip rides THIS skip-shaped
-    /// variant, NOT `Failure`, so skip ≠ fail at the type level (§1.12).
+    /// A SKIP projected into `RunResult.items` at run-end (§1.12) — either a §1.1/§1.3 pre-flight
+    /// detection-ineligible item that never entered the queue (the four detection `SkipReason`s) OR the §2.5.3
+    /// re-run skip (`AlreadyConverted`, the P3.48 ruling — a ledger-hit item the user chose to skip); `reason`
+    /// is the §0.6 `SkipReason`. A skip rides THIS skip-shaped variant, NOT `Failure`, so skip ≠ fail at the
+    /// type level (§1.12).
     Skipped { reason: SkipReason, text: String },
 }
 
@@ -305,6 +307,14 @@ pub fn skip_reason_to_error_kind(reason: SkipReason) -> ConversionErrorKind {
         SkipReason::Uncertain => ConversionErrorKind::Unrecognized,
         SkipReason::Empty => ConversionErrorKind::Empty,
         SkipReason::Unreadable => ConversionErrorKind::Unreadable,
+        // The §2.5.3 re-run skip (`AlreadyConverted`, the P3.48 rerun-skip ruling) is NEVER rendered through
+        // this bridge — its §2.8.2 line ("This file was already converted in this session, so it was skipped.")
+        // renders DIRECTLY in [`skipped_message`], because a re-run skip is not a detection ineligibility and
+        // has no honest `ErrorKind`. This arm exists ONLY to keep the match exhaustive over the §0.6 five-variant
+        // `SkipReason` set; it returns the §2.13 catch-all `InternalError` as a CONCRETE never-taken value,
+        // documented never-rendered — NEVER `unreachable!()` (the P2.25 honest-seam precedent; a real kind, not a
+        // production panic). [Build-Session-Entscheidung: P3.48]
+        SkipReason::AlreadyConverted => ConversionErrorKind::InternalError,
     }
 }
 
@@ -457,11 +467,14 @@ fn render_conversion_template(kind: ConversionErrorKind, arg: &str) -> Option<St
     Some(text)
 }
 
-/// Build the §2.8.2 [`OutcomeMsg::Skipped`] for a pre-flight `reason` — the §1.12 skip projection's per-item
-/// line (P3.50). The `text` is sourced from the SAME §2.8.2 catalog as a failure, via the P2.20
-/// [`skip_reason_to_error_kind`] bridge onto the kind rows, so there is ONE catalog home for both surfaces —
-/// but the message rides [`OutcomeMsg::Skipped`], NOT `Failure`, keeping skip ≠ fail at the type level (§1.12
-/// "must not be conflated"). The mapping (§2.8.2, the P3.50 ruling):
+/// Build the §2.8.2 [`OutcomeMsg::Skipped`] for a skip `reason` — the §1.12 skip projection's per-item line
+/// (P3.50). For the four DETECTION `SkipReason`s the `text` is sourced from the SAME §2.8.2 catalog as a
+/// failure, via the P2.20 [`skip_reason_to_error_kind`] bridge onto the kind rows, so there is ONE catalog home
+/// for both surfaces — but the message rides [`OutcomeMsg::Skipped`], NOT `Failure`, keeping skip ≠ fail at the
+/// type level (§1.12 "must not be conflated"). The §2.5.3 re-run skip `AlreadyConverted` (the P3.48 ruling)
+/// renders its §2.8.2 line DIRECTLY (never via the bridge — it is not a detection ineligibility). The mapping
+/// (§2.8.2, the P3.50 + P3.48 rulings):
+/// - `AlreadyConverted` → "This file was already converted in this session, so it was skipped." (DIRECT);
 /// - `Empty` → the `Empty` row; `Unreadable` → the `Unreadable` row (both intake-worded already);
 /// - `UnsupportedType` → its row, the `{detected}` slot filled from `detected_display` (SSOT-6 "detected: X");
 /// - `Uncertain` **with** a named `detected_display` → the one skip-specific line (SSOT-6 "names what it
@@ -473,6 +486,12 @@ fn render_conversion_template(kind: ConversionErrorKind, arg: &str) -> Option<St
 #[must_use]
 pub fn skipped_message(reason: SkipReason, detected_display: Option<&str>) -> OutcomeMsg {
     let text = match (reason, detected_display) {
+        // The §2.5.3 re-run skip (`AlreadyConverted`, the P3.48 ruling) renders its §2.8.2 line DIRECTLY —
+        // NEVER through the `skip_reason_to_error_kind` bridge (it is not a detection ineligibility, so it has
+        // no honest `ErrorKind` row); `detected_display` is irrelevant (a re-run item has no detected-type slot).
+        (SkipReason::AlreadyConverted, _) => {
+            "This file was already converted in this session, so it was skipped.".to_owned()
+        }
         // SSOT principle 6 "names what it believes the file is" — the mapping's ONE skip-specific line.
         (SkipReason::Uncertain, Some(guess)) => {
             format!("ConvertIA isn't sure what kind of file this is — it might be {guess} — so it can't convert it.")

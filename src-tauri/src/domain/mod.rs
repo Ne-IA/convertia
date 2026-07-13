@@ -577,15 +577,22 @@ pub struct SkippedItem {
     pub reason: SkipReason,
 }
 
-/// Why a dropped item was skipped — the four detection-INELIGIBLE §1.2 outcome classes (§0.6 / §1.3).
-/// Carried on `SkippedItem.reason` as the canonical skip cause. The `DetectionOutcome → SkipReason`
-/// projection is P2.16, and the ONE-WAY forward `SkipReason → ErrorKind` projection (the non-invertible
-/// `Uncertain → Unrecognized`, §2.8.2) lives on the §1.12 helper (P2.20), never on this type. NOT
-/// `ErrorKind`: a skip is a freeze-time ineligibility, distinct from a conversion-time failure.
+/// Why a dropped item was skipped (§0.6 / §1.3 / §2.5.3) — **four detection-INELIGIBLE §1.2 outcome classes**
+/// (`UnsupportedType`/`Uncertain`/`Empty`/`Unreadable`, assigned at the §1.1 freeze) **plus the one §2.5.3
+/// re-run skip** `AlreadyConverted` (assigned at C6 construction, the P3.48 rerun-skip ruling). Carried on
+/// `SkippedItem.reason` (the four detection classes) or on a re-run item's `JobState::Skipped(AlreadyConverted)`
+/// (the item keeps its `Eligible` `DroppedItem`, no `SkippedItem` fabricated — §1.9/§1.12 `[CLARIFIED]`). The
+/// `DetectionOutcome → SkipReason` projection (P2.16) produces ONLY the four detection classes — never
+/// `AlreadyConverted` (the freeze never mints it). The ONE-WAY forward `SkipReason → ErrorKind` bridge (the
+/// non-invertible `Uncertain → Unrecognized`, §2.8.2) lives on the §1.12 helper (P2.20), never on this type;
+/// `AlreadyConverted` rides that bridge only for exhaustiveness (its §2.8.2 line renders DIRECTLY, never via
+/// the bridge). NOT `ErrorKind`: a skip is a freeze/re-run ineligibility, distinct from a conversion-time failure.
 ///
-/// [Build-Session-Entscheidung: P2.5] Mirrors the sibling fieldless wire enums (`ReadFailure` /
+/// [Build-Session-Entscheidung: P2.5 → P3.48] Mirrors the sibling fieldless wire enums (`ReadFailure` /
 /// `Confidence`): `Copy` (fieldless) + the uniform `#[serde(rename_all = "camelCase")]` wire form
-/// (`unsupportedType` / `uncertain` / `empty` / `unreadable`). No `Hash` (not a map key).
+/// (`unsupportedType` / `uncertain` / `empty` / `unreadable` / `alreadyConverted`). No `Hash` (not a map key).
+/// P3.48 ADDS `AlreadyConverted` — an ADDITIVE wire variant (bindings.ts regen); an absent-in-older-wire key is
+/// impossible (the enum is OUTBOUND-only Rust→WebView, so no inbound compatibility concern).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum SkipReason {
@@ -597,6 +604,12 @@ pub enum SkipReason {
     Empty,
     /// Could not read the bytes at all (`DetectionOutcome::Unreadable`).
     Unreadable,
+    /// The §2.5.3 re-run skip (the P3.48 ruling): a ledger-hit item the user chose to skip at the §2.5
+    /// batch-level prompt (`RerunDecision::Skip`) — assigned `JobState::Skipped(AlreadyConverted)` at C6
+    /// construction (the item keeps its real `Eligible` `DroppedItem`, no `SkippedItem` fabricated), terminal,
+    /// never queued, no live events, projected into the §1.12 summary like every skip. NOT a detection
+    /// outcome — the §1.1 freeze never mints it (`DetectionOutcome::skip_reason` never returns it).
+    AlreadyConverted,
 }
 
 // ─── §1.2/§1.3 DetectionOutcome → SkipReason projection (ineligible-outcome → skip cause, P2.16) ──
@@ -606,9 +619,11 @@ pub enum SkipReason {
 /// "eligible ⇒ no skip reason" cleanly where `From` would need a panic and `TryFrom` an error type for the
 /// eligible case. §1.3 `group()` (P3) calls it to fill `SkippedItem.reason` when building the
 /// `CollectedSet::Single.skipped` / `Empty { skipped }` views; the eligible `Recognized` outcome becomes a
-/// batch MEMBER, never a `SkippedItem`. The four INELIGIBLE outcomes project by IDENTICAL name (the §0.6
-/// `SkipReason` set is exactly those four), so the projection cannot silently mis-map. This is the §1.2-side
-/// projection; the inverse, one-way `SkipReason → ErrorKind` lives on the separate §1.12 helper (P2.20).
+/// batch MEMBER, never a `SkippedItem`. The four DETECTION-INELIGIBLE outcomes project by IDENTICAL name onto
+/// the four detection `SkipReason`s; the fifth `SkipReason` — `AlreadyConverted` (the §2.5.3 re-run skip, the
+/// P3.48 ruling) — is NOT a detection outcome and is NEVER produced here (the freeze never mints it; it is
+/// assigned by the C6 conductor's §2.5 applier), so the projection still cannot silently mis-map. This is the
+/// §1.2-side projection; the inverse, one-way `SkipReason → ErrorKind` lives on the separate §1.12 helper (P2.20).
 impl DetectionOutcome {
     /// Project this §1.2 detection outcome to its §0.6 `SkipReason` (§1.3) — `None` for the eligible
     /// `Recognized` outcome (a batch member, never skipped), `Some(reason)` for each ineligible outcome,
@@ -1904,10 +1919,11 @@ mod tests {
         );
     }
 
-    // §6.4.1 unit (G15): the §0.6 `SkipReason` enum — the four detection-ineligible skip classes, each
-    // serializing in the §0.4.3 camelCase wire form (`unsupportedType`/`uncertain`/`empty`/`unreadable`),
-    // locked by a serialize→deserialize round-trip. The no-wildcard `exhaustive` arm locks MEMBERSHIP: an
-    // added/removed variant fails to compile here (the anti-drift "lock the contract" discipline).
+    // §6.4.1 unit (G15): the §0.6 `SkipReason` enum — the four detection-ineligible skip classes PLUS the
+    // §2.5.3 re-run skip `AlreadyConverted` (the P3.48 ruling), each serializing in the §0.4.3 camelCase wire
+    // form (`unsupportedType`/`uncertain`/`empty`/`unreadable`/`alreadyConverted`), locked by a
+    // serialize→deserialize round-trip. The no-wildcard `exhaustive` arm locks MEMBERSHIP: an added/removed
+    // variant fails to compile here (the anti-drift "lock the contract" discipline).
     #[test]
     fn skip_reason_wire_form_is_camelcase_and_roundtrips() {
         for (reason, wire) in [
@@ -1915,6 +1931,7 @@ mod tests {
             (SkipReason::Uncertain, "\"uncertain\""),
             (SkipReason::Empty, "\"empty\""),
             (SkipReason::Unreadable, "\"unreadable\""),
+            (SkipReason::AlreadyConverted, "\"alreadyConverted\""),
         ] {
             let json = serde_json::to_string(&reason).expect("SkipReason serializes");
             assert_eq!(json, wire, "§0.4.3: SkipReason wire casing is camelCase");
@@ -1930,7 +1947,8 @@ mod tests {
                 SkipReason::UnsupportedType
                 | SkipReason::Uncertain
                 | SkipReason::Empty
-                | SkipReason::Unreadable => {}
+                | SkipReason::Unreadable
+                | SkipReason::AlreadyConverted => {}
             }
         }
         exhaustive(SkipReason::Empty);
@@ -1990,6 +2008,30 @@ mod tests {
             Some(SkipReason::Unreadable),
             "§1.2/§1.3: Unreadable → SkipReason::Unreadable (by name)"
         );
+        // [Test-Change: P3.48] The §1.1 FREEZE never mints `AlreadyConverted` — it is the §2.5.3 re-run skip
+        // the C6 conductor's applier assigns over an ELIGIBLE item, NOT a detection outcome. NO
+        // `DetectionOutcome` projects to it (the construction-only invariant, type-unenforced).
+        for outcome in [
+            DetectionOutcome::Recognized {
+                format: UserFacingFormat::Csv,
+                confidence: Confidence::High,
+                dims: None,
+            },
+            DetectionOutcome::UnsupportedType {
+                detected: "PostScript".to_owned(),
+            },
+            DetectionOutcome::Uncertain { best_guess: None },
+            DetectionOutcome::Empty,
+            DetectionOutcome::Unreadable {
+                reason: ReadFailure::NotFound,
+            },
+        ] {
+            assert_ne!(
+                outcome.skip_reason(),
+                Some(SkipReason::AlreadyConverted),
+                "§2.5.3/P3.48: the §1.1 freeze never mints AlreadyConverted (it is the C6 applier's re-run skip)"
+            );
+        }
     }
 
     // §6.4.1 unit (G15): the §0.6 `DetectionOutcome::detected_display` RETENTION (P3.50 / SSOT-6) — the

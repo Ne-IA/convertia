@@ -2,23 +2,33 @@
 //! run, and re-fetch a run summary. P2.21 registered these as the §0.4.1 command-surface interface shells;
 //! C6 `start_conversion`'s typed request/response CONTRACT is authored by P2.29 (this file), C7's by P2.30,
 //! and C8's by P2.31. Each command's `crate::orchestrator` delegation BODY is its own named fill-box (the C6
-//! queue build / §1.9 run lifecycle / §0.9 worker spawn / `ConversionEvent` emission is P3.46). Thin by
-//! design (§0.7): the handler validates, delegates, and maps the `Result` onto the §0.4.3 `IpcError`.
+//! run conductor — the §1.9 batch build / lifecycle / §0.9 dispatch / `ConversionEvent` emission — is P3.48;
+//! C8's §1.12 re-serve is P3.50; C7's cancel wiring is P3.52). Thin by design (§0.7): the handler validates,
+//! delegates, and maps the `Result` onto the §0.4.3 `IpcError`.
 
 // §0.4 / T10: unchecked arithmetic on an untrusted wire field must be a compile error in every IPC handler
-// (the `crate::ipc` arithmetic-overflow deny cascades here; restated at the T10 boundary). The C6 contract
-// handler below + the remaining C7/C8 shells do no arithmetic; the deny bites the fill-bodies (the C6 queue
-// body P3.46, C7 P2.30, C8 P2.31).
+// (the `crate::ipc` arithmetic-overflow deny cascades here; restated at the T10 boundary). The C6 conductor
+// body (P3.48) + the C7 shell do no arithmetic in this file; the deny bites any future fill-body.
 #![deny(clippy::arithmetic_side_effects)]
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use tauri::ipc::Channel;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
+use tokio_util::sync::CancellationToken;
 
 use crate::domain::{
-    CollectedSetId, DestinationChoice, OptionValues, RerunDecision, RunId, TargetId,
+    CollectedSetId, DestinationChoice, InstanceId, OptionValues, RerunDecision, RunId, TargetId,
 };
-use crate::orchestrator::{ConversionEvent, RunResult, RunResultStore};
+use crate::engines::resolve_slice_target;
+use crate::orchestrator::{
+    build_batch, run_conversion, Batch, CollectedSetRegistry, ConversionEvent, EquivKeyComputer,
+    RegisteredSet, RunRegistry, RunResult, RunResultStore,
+};
 use crate::outcome::{ConversionErrorKind, IpcError};
+use crate::pool::Pool;
+use crate::run::{RerunLedger, RunScratch};
 
 /// **C6 `start_conversion`** (§0.4.1) — mints the run's `RunId`, builds + enqueues the §1.9 batch from the
 /// frozen collected set, spawns the §0.9 workers, and streams `ConversionEvent`s over the handed `onProgress`
@@ -46,21 +56,17 @@ use crate::outcome::{ConversionErrorKind, IpcError};
 ///   `!Deserialize`, so `Option<Channel<T>>` cannot be a command arg — the same forced shape the C1
 ///   `ingest_paths` handler documents; the §0.4.1 C6 row already specifies it non-optional).
 ///
-/// [Build-Session-Entscheidung: P2.29] **Shell returns `Err(IpcError{ kind: InternalError })` — the same
-/// owner-approved interface-shell pattern as C3/C4/C5 (P2.25/P2.26/P2.27).** `RunId` is a non-nil v4-UUID
-/// newtype with no zero value (and no public constructor), so unlike C1/C2a (`CollectedSet::Empty`) / C2b
-/// (`Ok(None)`) there is no `Ok(empty)` to return — and fabricating an `Ok(RunId)` would be a LIE (it would
-/// claim a run started when nothing was enqueued and no `ConversionEvent` will ever fire on the Channel),
-/// exactly the fabricated handling the interface-shell pattern forbids (CLAUDE §5). Until the §0.4.4
-/// collected-set registry (P2.44) + the §1.9 queue / §0.9 workers land (P3.46), **no** `collectedSetId`
-/// resolves — so the shell's honest result is exactly the `Err` the real body returns for an unresolvable id:
-/// `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError`
-/// `plan_encode` precedent C3/C4/C5 cite). The named fill-boxes own the rest: (a) the §2.8 catalog box owns
-/// the FINAL message — the string below is a PROVISIONAL neutral English one — and must add a COMMAND-level
-/// string (the §2.8 catalog is item-scoped); (b) the §0.4.4 registry resolve + the §1.9 queue build / §0.9
-/// worker spawn / `ConversionEvent` emission + the §0.6 SUCCESS path (the minted `RunId`) belong to the body
-/// box (P3.46), and the RunId mint-point (at C6 accept, NOT the §2.4 freeze — §7.1.2) is fixed by P2.48;
-/// (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
+/// [Build-Session-Entscheidung: P3.48 — the C6 body fill] The handler is a THIN AppHandle door (§0.7): it
+/// injects the `AppHandle` (a `#[tauri::command]` special arg) and delegates to [`start_run`], which resolves
+/// the §0.4.4 managed State + the §2.14 base paths, does the SYNC run setup, and SPAWNS the async run — so it
+/// returns immediately with the minted `RunId` (§1.11; the `onProgress` Channel carries all telemetry). The
+/// glue is AppHandle-coupled boot-glue (the §1.1a pattern — this crate ships no `tauri::test` mock BY
+/// DECISION, so the State-resolution + spawn are SOURCE-SCAN-pinned, not `tauri::test`-executed; the PURE
+/// conductor `crate::orchestrator::run_conversion` is unit-tested directly over a directly-registered frozen
+/// set). `on_progress` stays the non-optional run Channel (tauri's `Channel<T>` is `!Deserialize`, so
+/// `Option<Channel<T>>` cannot be a command arg — the C1 `onScan` forced shape). Its `AppHandle` signature
+/// makes the handler + `start_run` + `run_conversion_spawned` G28 diff-floor-exempt (the §1.1a boot-glue
+/// exemption).
 #[tauri::command(rename_all = "camelCase")]
 #[specta::specta]
 pub async fn start_conversion(
@@ -70,21 +76,173 @@ pub async fn start_conversion(
     destination: DestinationChoice,
     rerun_decision: RerunDecision,
     on_progress: Channel<ConversionEvent>,
+    app: AppHandle,
 ) -> Result<RunId, IpcError> {
-    let _ = (
+    start_run(
+        &app,
         collected_set_id,
         target,
         options,
         destination,
         rerun_decision,
         on_progress,
-    );
-    Err(IpcError {
+    )
+}
+
+/// The §2.13 not-startable `IpcError` — the §0.4.3 shape every C6 refusal maps to (an unresolvable
+/// `collectedSetId`, an unoffered target, or a missing managed store / scratch failure). `kind` is the
+/// concrete `ConversionErrorKind` (the P2.19 convention); the message is a calm, trace-free command-level line
+/// (§2.13 — the §2.8 catalog is item-scoped, so the run-start command carries its own string).
+/// [Build-Session-Entscheidung: P3.48]
+fn not_startable() -> IpcError {
+    IpcError {
         kind: ConversionErrorKind::InternalError,
         message: "Could not start the conversion.".into(),
         path_display: None,
         residue_display: None,
-    })
+    }
+}
+
+/// The C6 run SETUP (§0.4.1 / §0.4.4, P3.48) — resolve + evict the frozen collected set (§0.4.4 "evicted when
+/// its run starts"), validate the §1.5 target and build the §1.9 `Batch`, mint the `RunId` + set up its
+/// §0.4.4 registries (evict the prior `RunResult`, register a fresh cancellation token), acquire the §2.14
+/// per-run scratch (lock-before-part), resolve the §2.7.3 divert root, and SPAWN the async run — returning the
+/// `RunId` immediately (§1.11). AppHandle-coupled boot-glue (the §1.1a pattern; G28 signature-exempt,
+/// source-scan-pinned). [Build-Session-Entscheidung: P3.48]
+fn start_run(
+    app: &AppHandle,
+    collected_set_id: CollectedSetId,
+    target: TargetId,
+    options: OptionValues,
+    destination: DestinationChoice,
+    rerun_decision: RerunDecision,
+    on_progress: Channel<ConversionEvent>,
+) -> Result<RunId, IpcError> {
+    // §0.4.4: resolve + EVICT the frozen collected set (C6 takes it out of the registry as its run begins —
+    // the `Batch` becomes the sole post-C6 carrier, incl. the pre-flight skips, §1.9). An unknown / superseded
+    // id is refused (the WebView cannot name a set the freeze did not register). `take` is EARLY BY DESIGN — it
+    // is the atomic serialization gate for two concurrent C6s on the SAME set (the first evicts, the second
+    // finds nothing and is refused), so it must NOT be moved after the fallible scratch/path IO below (a `take`
+    // via a non-evicting `resolve` would let both run — a double-conversion regression). The accepted cost: a
+    // transient scratch/path IO failure below has already evicted the set, so the user re-drops — recoverable,
+    // corrupts no persistent state (unlike the run-token/`RunResult` mutations, which are moved past that IO).
+    let collected_sets = app
+        .try_state::<CollectedSetRegistry>()
+        .ok_or_else(not_startable)?;
+    let registered = collected_sets
+        .take(collected_set_id)
+        .ok_or_else(not_startable)?;
+
+    // §1.5: validate + resolve the wire `TargetId` to the full `Target` (refuse an unoffered pair, §0.6 inv 1 —
+    // the UI never presents one). §1.9: build the batch (eligible `Pending` jobs + pre-flight `Skipped` records).
+    let full_target =
+        resolve_slice_target(registered.frozen.format, target).ok_or_else(not_startable)?;
+    let batch = build_batch(&registered.frozen, full_target, options, destination);
+
+    // Mint the run id (at C6 accept, NOT the §2.4 freeze — §7.1.2).
+    let run_id = RunId::mint();
+
+    // §2.14 scratch: acquire the per-run scratch under `app_local_data_dir()` (lock-before-part, §2.6.3), and
+    // resolve the §2.7.3 divert root — the user Downloads (then Documents, then the scratch base as a last
+    // resort) — AppHandle-side via Tauri's PathResolver (the P3.35 "candidates resolved AppHandle-side"). These
+    // are ALL the fallible steps, done BEFORE any registry mutation so a failure here leaves the §0.4.4 stores
+    // untouched.
+    let instance = *app.try_state::<InstanceId>().ok_or_else(not_startable)?;
+    let scratch_base = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|_| not_startable())?;
+    let scratch = RunScratch::acquire(&scratch_base, instance, std::process::id(), run_id)
+        .map_err(|_| not_startable())?;
+    let divert_root = app
+        .path()
+        .download_dir()
+        .or_else(|_| app.path().document_dir())
+        .unwrap_or_else(|_| scratch_base.clone());
+
+    // §0.4.4 registry setup — the LAST mutations before the infallible spawn. Resolve BOTH stores first, then
+    // evict the prior retained `RunResult` (§0.4.4 "until a new run starts") and register a fresh cancellation
+    // token. `register` MUST be the final fallible-free step so no post-register early-return can leak the token:
+    // a leaked token leaves `RunRegistry::has_active_run` permanently true, wedging `§7.1.1 converter_is_busy` /
+    // the §7.3 close-guard for the whole process lifetime (the G1 dual-review blocker — the scratch/path IO
+    // above formerly ran AFTER `register`, so a transient disk/permission failure bricked the convert path).
+    let results_store = app
+        .try_state::<RunResultStore>()
+        .ok_or_else(not_startable)?;
+    let runs = app.try_state::<RunRegistry>().ok_or_else(not_startable)?;
+    results_store.evict();
+    let token = runs.register(run_id);
+
+    // §1.11: spawn the async run + return the `RunId` immediately (the Channel carries all telemetry). The
+    // spawned task re-resolves the managed State via the cloned AppHandle (the handler's `State` guards cannot
+    // cross the `'static` spawn boundary).
+    let app_for_run = app.clone();
+    tauri::async_runtime::spawn(async move {
+        run_conversion_spawned(
+            app_for_run,
+            batch,
+            registered,
+            run_id,
+            token,
+            scratch,
+            instance,
+            divert_root,
+            rerun_decision,
+            on_progress,
+        )
+        .await;
+    });
+    Ok(run_id)
+}
+
+/// The spawned async run (P3.48) — re-resolve the §0.4.4 managed State inside the `'static` task (the
+/// handler's `State` guards can't cross the spawn) and drive the pure `crate::orchestrator::run_conversion`.
+/// A missing managed store is a boot-wiring bug (the `boot_invariants` source-scan pins all of
+/// Pool/RerunLedger/EquivKeyComputer/RunResultStore/RunRegistry as `.manage`d), so it drops the run token so a
+/// later run is not blocked and returns without emitting `RunFinished` — unreachable in a correctly-wired app.
+/// AppHandle-coupled boot-glue (§1.1a; G28 signature-exempt). [Build-Session-Entscheidung: P3.48]
+#[allow(clippy::too_many_arguments)]
+async fn run_conversion_spawned(
+    app: AppHandle,
+    batch: Batch,
+    registered: Arc<RegisteredSet>,
+    run_id: RunId,
+    token: CancellationToken,
+    scratch: RunScratch,
+    instance: InstanceId,
+    divert_root: PathBuf,
+    rerun_decision: RerunDecision,
+    on_progress: Channel<ConversionEvent>,
+) {
+    let (Some(pool), Some(ledger), Some(equiv), Some(results), Some(runs)) = (
+        app.try_state::<Pool>(),
+        app.try_state::<RerunLedger>(),
+        app.try_state::<EquivKeyComputer>(),
+        app.try_state::<RunResultStore>(),
+        app.try_state::<RunRegistry>(),
+    ) else {
+        if let Some(runs) = app.try_state::<RunRegistry>() {
+            runs.finish(run_id);
+        }
+        return;
+    };
+    run_conversion(
+        batch,
+        registered.as_ref(),
+        run_id,
+        token,
+        scratch,
+        instance,
+        divert_root,
+        rerun_decision,
+        pool.inner(),
+        ledger.inner(),
+        equiv.inner(),
+        results.inner(),
+        runs.inner(),
+        &on_progress,
+    )
+    .await;
 }
 
 /// **C7 `cancel_run`** (§0.4.1) — trips the `RunId`-indexed §0.4.4 cancellation token (`.cancel()` on the
@@ -168,53 +326,61 @@ fn resolve_run_summary(store: &RunResultStore, run_id: RunId) -> Result<RunResul
 
 #[cfg(test)]
 mod c6_contract {
-    //! §6.4.1 unit (G15): the §0.4.1 C6 `start_conversion` typed CONTRACT (P2.29) — same interface-shell
-    //! pattern as C3/C4/C5: the handler carries its typed `{ collectedSetId, target, options, destination,
-    //! rerunDecision, onProgress } -> Result<RunId, IpcError>` signature, so the P2.21 all-shells
-    //! `block_on(start_conversion())` invocation in `crate::ipc` (mod.rs) is REPLACED here by C6's own
-    //! typed-contract test (the fill-box transition the P2.21 note schedules). The shell returns the genuine
-    //! pre-registry `Err(InternalError)`; SHAPE is asserted, NOT the provisional message (owned by the §2.8
-    //! catalog box). The §0.4.4 registry resolve + the §1.9 queue build / §0.9 worker spawn / `ConversionEvent`
-    //! emission + the minted `RunId` SUCCESS path land at P3.46. [Build-Session-Entscheidung: P2.29]
-    use super::*;
-    use tauri::async_runtime::block_on;
+    //! §6.4.1 unit (G15): the §0.4.1 C6 `start_conversion` BODY (P3.48 — replacing the P2.29 shell). C6 is
+    //! AppHandle-coupled boot-glue: the handler injects the `AppHandle`, delegates to `start_run` (which
+    //! resolves the §0.4.4 managed State + the §2.14 paths, builds the §1.9 batch, and SPAWNS the async run),
+    //! and this crate ships no `tauri::test` mock BY DECISION (the C1/C8 pattern), so the handler's wiring is
+    //! SOURCE-SCAN-pinned here; the PURE conductor `crate::orchestrator::run_conversion` is unit-tested
+    //! DIRECTLY over a directly-registered frozen set (the `run_conversion_tests` module in
+    //! `crate::orchestrator`). [Build-Session-Entscheidung: P3.48]
+    //!
+    //! [Test-Change: P3.48 — old-obsolete+new-correct, §0.4.1] this module's P2.29 shell contract test (which
+    //! called `start_conversion` directly via `block_on` and asserted the shell's genuine pre-registry
+    //! `Err(InternalError)`) is SUPERSEDED: the shell no longer exists (P3.48 built the real body + added the
+    //! `AppHandle` arg, so the old 6-arg `block_on(start_conversion(...))` cannot compile and its `Err`
+    //! expectation is obsolete), and the handler is now AppHandle-coupled (not `block_on`-callable without a
+    //! Tauri runtime). The new source-scan pins verify the handler delegates to `start_run` + spawns
+    //! `run_conversion` — the same shell→body transition as the sibling C8 contract module. (Comment cites the
+    //! MODULE, never a deleted `#[test] fn` name — the G73 rs-test-refs module-anchor discipline.)
 
-    /// A `CollectedSetId` for the contract call — minted through its PUBLIC bare-uuid `Deserialize` wire form
-    /// (the frontend mints the id, §0.4.4), mirroring the `c3_contract`/`c4_contract`/`c5_contract` helpers.
-    fn collected_set_id() -> CollectedSetId {
-        serde_json::from_str(r#""77777777-7777-4777-8777-777777777777""#)
-            .expect("CollectedSetId deserializes from a uuid string")
+    // [Test-Change: P3.48 — old-obsolete+new-correct, §0.4.1] the deleted P2.29 shell helper's
+    // `.expect("CollectedSetId deserializes…")` is obsolete — the shell (and its uuid-mint helper) is gone,
+    // replaced by this source-scan helper (the module `//!` note carries the full rationale).
+    /// The production prefix of `conversion.rs` (everything before the FIRST `#[cfg(test)]`), so a needle
+    /// declared in this test can never self-match — the per-module copy of the `c7_contract`/`c8_contract`
+    /// helper (each contract module keeps its own copy, the established per-module test-helper pattern).
+    fn production_conversion_source() -> &'static str {
+        let full = include_str!("conversion.rs");
+        full.split_once(concat!("#[cfg", "(test)]"))
+            .map_or(full, |(prefix, _)| prefix)
     }
 
-    // §6.4.1 unit (G15): the C6 contract is invocable with its full §0.4.1 typed arg set ({ collectedSetId,
-    // target, options, destination, rerunDecision, the non-optional onProgress Channel }) and returns a
-    // `Result<RunId, IpcError>` (the §0.4 universal error shape). `on_progress` is a real
-    // `Channel::new(|_| Ok(()))` — the non-optional contract (there is no `None` arm; the same `Channel<T>`
-    // `!Deserialize` forced shape C1 documents). The shell has no §0.4.4 registry / §1.9 queue yet (P2.44 /
-    // P3.46), so it returns the genuine pre-registry `Err(InternalError)`. SHAPE asserted (kind ==
-    // InternalError), NOT the provisional message (owned by the §2.8 catalog box); P3.46 replaces the shell
-    // with the real resolve → queue build → minted RunId.
+    // §6.4.1 unit (G15): the C6 handler is THIN — it injects the `AppHandle` and delegates to `start_run`,
+    // which resolves the §0.4.4 managed State, builds the batch, and SPAWNS the pure `run_conversion` conductor
+    // (returning the `RunId` immediately, §1.11). AppHandle-coupled boot-glue (not cargo-test-runnable; the
+    // PURE conductor is unit-tested in `crate::orchestrator::run_conversion_tests`), so a source-scan pins the
+    // wiring. Needles `concat!`-split so the scan never matches its own text.
     #[test]
-    fn c6_start_conversion_contract_is_invocable_and_typed() {
-        use crate::domain::FormatId;
-        use std::collections::BTreeMap;
-        let out = block_on(start_conversion(
-            collected_set_id(),
-            TargetId::Format(FormatId::Png),
-            OptionValues(BTreeMap::new()),
-            DestinationChoice::BesideSource,
-            RerunDecision::Skip,
-            Channel::new(|_| Ok(())),
-        ));
-        let err = out.expect_err(
-            "§0.4.1/§0.4: the C6 shell has no registry/queue yet (P2.44/P3.46), so it returns the genuine \
-             pre-registry Err(InternalError); the typed Result<RunId, IpcError> signature is the P2.29 deliverable",
+    fn c6_handler_injects_the_app_handle_and_delegates_to_start_run() {
+        let src = production_conversion_source();
+        assert!(
+            src.contains(concat!("app: App", "Handle")),
+            "§0.4.1: the C6 handler injects the AppHandle (the P3.48 body)"
         );
-        assert_eq!(
-            err.kind,
-            ConversionErrorKind::InternalError,
-            "§2.13: the unresolvable-set shell outcome is the InternalError catch-all — SHAPE asserted, NOT \
-             the provisional message (the §2.8 catalog box owns the final string)"
+        // [Test-Change: P3.48 — old-obsolete+new-correct, §0.4.1] replaces the deleted P2.29 shell test's
+        // `assert_eq!(err.kind, InternalError)` (+ its `expect_err`): the shell's pre-registry Err is gone (the
+        // real body spawns the run); the outcome is asserted by these source-scan pins.
+        assert!(
+            src.contains(concat!("start_", "run(")),
+            "§0.4.1/§0.7: the C6 handler delegates to start_run (resolve State + build batch + spawn)"
+        );
+        assert!(
+            src.contains(concat!("async_runtime::", "spawn(")),
+            "§1.11: start_run spawns the async run + returns the RunId immediately"
+        );
+        assert!(
+            src.contains(concat!("run_", "conversion(")),
+            "§1.9: the spawned task drives the pure crate::orchestrator::run_conversion conductor"
         );
     }
 }

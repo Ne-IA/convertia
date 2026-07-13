@@ -1361,6 +1361,41 @@ mod launch_intake {
             );
         }
 
+        // §6.4.1 unit (G15): main() REGISTERS the four §0.4.4/§0.9/§2.5 stores the P3.48 C6 conductor first
+        // CONSUMES — the CollectedSetRegistry (C6 `take`), the §0.9 Pool (`dispatch` permit lane; `Pool::new()`,
+        // NO Default), the §2.5.1 EquivKeyComputer, and the §2.5.2 RerunLedger (crate::run) — so the conductor's
+        // `app.try_state` resolves cannot fail (a missing store is the `run_conversion_spawned` unreachable
+        // boot-wiring bug). The conductor is AppHandle-coupled boot-glue (not cargo-test-runnable; the PURE
+        // `crate::orchestrator::run_conversion` is unit-tested directly), so a source-scan on main()'s body pins
+        // each `.manage`. Needles `concat!`-assembled (the established self-match avoidance).
+        // [Build-Session-Entscheidung: P3.48]
+        #[test]
+        fn main_registers_the_p348_conductor_stores() {
+            let main_src = crate::boot_invariants::production_main_body();
+            assert!(
+                main_src.contains(concat!(
+                    ".manage(crate::orchestrator::Collected",
+                    "SetRegistry::default())"
+                )),
+                "§0.4.4: main() must register the State<CollectedSetRegistry> so C6 `take` cannot fail (P3.48)"
+            );
+            assert!(
+                main_src.contains(concat!(".manage(crate::pool::Pool::", "new())")),
+                "§0.9: main() must register the State<Pool> (Pool::new(), no Default) for the dispatch permit lane (P3.48)"
+            );
+            assert!(
+                main_src.contains(concat!(
+                    ".manage(crate::orchestrator::Equiv",
+                    "KeyComputer::default())"
+                )),
+                "§2.5.1: main() must register the State<EquivKeyComputer> for the RerunDecision applier + ledger recording (P3.48)"
+            );
+            assert!(
+                main_src.contains(concat!(".manage(crate::run::Rerun", "Ledger::default())")),
+                "§2.5.2: main() must register the State<RerunLedger> the conductor reads + records (P3.48)"
+            );
+        }
+
         // §6.4.1 unit (G15): the §7.8.1 launch-origin decision (P2.56) — a first-launch Open-with (WebView not
         // ready) is LaunchArg (buffered + drained); a while-running Open-with is SecondInstance. The pure rule
         // beside the macOS Open-with glue (the §1.1a boot-stage pattern), unit-tested in isolation.
@@ -1559,6 +1594,19 @@ fn main() -> tauri::Result<()> {
         // → the C8 handler's State<RunResultStore> resolve is infallible by construction (no panic under the
         // crate-root clippy::panic deny) — an empty store honestly yields C8's Err until a run retains a result.
         .manage(crate::orchestrator::RunResultStore::default())
+        // [Build-Session-Entscheidung: P3.48] §0.4.4/§0.9/§2.5 — the four stores the P3.48 C6 conductor first
+        // CONSUMES: the CollectedSetRegistry (the CollectedSetId → RegisteredSet resolve store, P2.44 — C6
+        // `take`s the frozen set from it), the §0.9 subprocess/in-core Pool (P3.4 — `dispatch` runs the native
+        // transform on its permit lane; NO Default, so constructed via `Pool::new()`), the §2.5.1
+        // EquivKeyComputer (P3.39 — the RerunDecision applier + the success-ledger recording fold their §2.5.1
+        // keys through it), and the §2.5.2 RerunLedger (crate::run, P3.39 — the in-session `HashSet<EquivKey>`
+        // the applier reads + records). Builder chain (compile-time `Default` / `Pool::new()`, before the event
+        // loop) → the conductor's `app.try_state` resolves are infallible by construction. The register / take /
+        // record WIRING is the P3.48 conductor (this box owns both the `.manage` AND the first consumer).
+        .manage(crate::orchestrator::CollectedSetRegistry::default())
+        .manage(crate::pool::Pool::new())
+        .manage(crate::orchestrator::EquivKeyComputer::default())
+        .manage(crate::run::RerunLedger::default())
         .invoke_handler(builder.invoke_handler())
         // [Build-Session-Entscheidung: P2.79] §7.3.2 window-lifecycle hook — the Tauri v2 two-arg
         // `(&Window, &WindowEvent)` `on_window_event` closure. Thin BY DESIGN (a Builder-chain delegation
