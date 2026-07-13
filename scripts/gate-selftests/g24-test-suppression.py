@@ -89,6 +89,25 @@ D_COMMENTED = "@@ -1,2 +1,2 @@\n fn t() {\n+    // assert_eq!(a, b);\n"
 record("diff: a newly COMMENTED-OUT assertion with no tag -> violation", len(hunk(D_COMMENTED)) == 1)
 D_CLEAN = "@@ -1,1 +1,2 @@\n fn t() {\n+    let helper = 1;\n"
 record("diff: a clean test change (no marker/removed-assertion) -> no violation", hunk(D_CLEAN) == [])
+
+# --- the whole-deletion-run window (the 2026-07-12 P3.86 refinement): a REMOVED assertion is
+#     justified by ONE tag within ±WINDOW of its contiguous `-`-run's BOUNDARIES — git emits every
+#     `-` before any `+`, so a buried assert in an atomically-deleted test unit can never carry a
+#     tag within ±WINDOW of itself; the tombstone belongs to the deletion EVENT ------------------
+_RUN_BODY = ("-#[test]\n-fn gone() {\n-    assert_eq!(retired(), 7);\n-    let x1 = 1;\n-    let x2 = 2;\n"
+             "-    let x3 = 3;\n-    let x4 = 4;\n-    let x5 = 5;\n-    let x6 = 6;\n-    let x7 = 7;\n-}\n")
+D_RUN_NOTAG = "@@ -1,13 +1,2 @@\n fn keep() {}\n" + _RUN_BODY + " fn also_keep() {}\n"
+record("diff: a buried assert in a whole-deletion run WITHOUT any tag -> violation",
+       len(hunk(D_RUN_NOTAG)) == 1)
+D_RUN_TOMBSTONE = ("@@ -1,13 +1,3 @@\n fn keep() {}\n" + _RUN_BODY
+                   + "+// [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1]\n fn also_keep() {}\n")
+record("diff: a buried assert (>±6 from the tag) in a whole-deletion run WITH one adjacent tombstone -> no violation",
+       hunk(D_RUN_TOMBSTONE) == [])
+D_RUN_FARTAG = ("@@ -1,20 +1,10 @@\n fn keep() {}\n" + _RUN_BODY
+                + " c1();\n c2();\n c3();\n c4();\n c5();\n c6();\n c7();\n"
+                + "+// [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1]\n")
+record("diff: a tag BEYOND ±6 of the deletion run's boundary does NOT justify it -> violation",
+       len(hunk(D_RUN_FARTAG)) == 1)
 D_TS = "@@ -1,1 +1,2 @@\n describe('x', () => {\n+  it.only('only this', () => {})\n"
 record("diff: an ADDED it.only in a .ts test with no tag -> violation", len(hunk(D_TS, "src/a.test.ts")) == 1)
 

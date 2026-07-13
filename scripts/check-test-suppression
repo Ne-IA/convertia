@@ -9,7 +9,12 @@ the exact G8 <-> G1 split: G8 flags a deferral marker, G1 judges the design; her
 test-suppression, G1 judges whether the rewrite is legitimate or is swallowing a regression.
 
 It FLAGS + REQUIRES JUSTIFICATION, it does NOT forbid. A suppression is fine when it carries a
-[Test-Change] tag within +/-N lines documenting WHY:
+[Test-Change] tag within +/-N lines documenting WHY (for a REMOVED assertion: within +/-N of the
+BOUNDARIES of its contiguous deletion run - git emits every `-` of a change region before any `+`,
+so the buried assertions of an atomically-deleted test unit can never have a tag within +/-N of
+themselves; ONE tombstone tag adjacent to the deletion run justifies the whole deleted unit, and a
+1-line removal degenerates to the historical per-assert window exactly - the 2026-07-12 P3.86
+refinement, owner-acked L(-1)):
   - the changed-expectation form  [Test-Change: <box-id> - old-obsolete+new-correct, <ref>]
         (the green-by-rewrite case: prove (1) the old expectation is obsolete (cite the spec) AND
          (2) the new expectation is correct);
@@ -352,6 +357,24 @@ def _scan_hunks(diff_text: str, relpath: str) -> list[str]:
                 flagged.append((k, "removed assertion"))
         for k, label in flagged:
             lo, hi = max(0, k - WINDOW), min(len(body), k + WINDOW + 1)
+            # The whole-deletion-run window (the 2026-07-12 P3.86 refinement, owner-acked L(-1)): a
+            # REMOVED assertion is justified by a tag within +/-WINDOW of its maximal contiguous
+            # `-`-run's BOUNDARIES, not of each buried line. Git emits every `-` of a change region
+            # before any `+`, so an atomically-deleted test unit's inner assertions are structurally
+            # unreachable by any adjacent tag - the justification belongs to the deletion EVENT (the
+            # run), the same site-adjacency G8's suppressor uses. A 1-line removal's run IS the line,
+            # so this degenerates to the historical per-assert window exactly; added markers and
+            # commented-out assertions (the `+` signals) keep the per-line window. No opener-gating:
+            # a mid-test gutted run still demands its own adjacent tag, and the SEMANTIC judgement
+            # (legitimate retire vs swallowed regression) stays G1's, exactly as before.
+            if label == "removed assertion":
+                run_lo = k
+                while run_lo > 0 and body[run_lo - 1][:1] == "-":
+                    run_lo -= 1
+                run_hi = k
+                while run_hi + 1 < len(body) and body[run_hi + 1][:1] == "-":
+                    run_hi += 1
+                lo, hi = max(0, run_lo - WINDOW), min(len(body), run_hi + WINDOW + 1)
             if not TAG_RE.search("\n".join(b[1:] for b in body[lo:hi])):
                 violations.append(f"{label}: {body[k][1:].strip()[:80]}")
     return violations
@@ -406,7 +429,8 @@ def run_diff() -> int:
         for v in violations:
             print(f"[G70] FAIL: {v}", file=sys.stderr)
         print(f"[G70] {len(violations)} new unjustified test-suppression(s) staged — add a "
-              "[Test-Change: …] tag within ±6 lines (or prove the change is legitimate)", file=sys.stderr)
+              "[Test-Change: …] tag within ±6 lines (for a deleted block: one tombstone tag adjacent "
+              "to the deletion run justifies the whole unit)", file=sys.stderr)
         return 1
     print("[G70] no new unjustified test-suppression markers in the staged test diff")
     return 0
