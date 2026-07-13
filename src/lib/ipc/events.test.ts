@@ -50,8 +50,6 @@ import { useAppStore } from "../../state/store";
 
 import {
   drainPendingIntake,
-  ingestFromDrop,
-  ingestFromIntakeEvent,
   startConversionRun,
   subscribeAppEvents,
   subscribeNativeDragDrop,
@@ -105,13 +103,20 @@ describe("subscribeAppEvents (P2.120 §5.8 three app:// listeners)", () => {
     expect(listen).toHaveBeenCalledTimes(3);
   });
 
-  it("app://intake re-enters intake via C1 ingest_paths with the event's paths/origin + drainPending null", async () => {
+  // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] app://intake is now a PAYLOAD-LESS nudge (the
+  // core-owned-path ruling retired `IntakePayload`), so the listener issues the DRAIN — the same
+  // `ingest_paths(paths: [], drainPending: true)` shape the mount drain uses — never a payload-carrying ingest.
+  it("app://intake issues the payload-less drain (ingest_paths with empty paths + drainPending true)", async () => {
     await subscribeAppEvents();
-    handlerFor("app://intake")?.({ payload: { paths: ["/x.png"], origin: "secondInstance" } });
-    await Promise.resolve(); // let the fire-and-forget C1 call land
+    handlerFor("app://intake")?.({ payload: null });
+    await Promise.resolve(); // let the fire-and-forget C1 drain land
     expect(invoke).toHaveBeenCalledWith(
       "ingest_paths",
-      expect.objectContaining({ paths: ["/x.png"], origin: "secondInstance", drainPending: null }),
+      expect.objectContaining({
+        paths: [],
+        drainPending: true,
+        collectingId: expect.any(String),
+      }),
     );
   });
 
@@ -240,27 +245,12 @@ describe("startConversionRun (P2.120 §5.8 Channel<ConversionEvent> → store)",
   );
 });
 
-describe("ingestFromIntakeEvent (P2.120 app://intake → C1)", () => {
-  beforeEach(() => {
-    invoke.mockReset();
-    invoke.mockResolvedValue({ empty: { skipped: [] } });
-  });
+// [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the `ingestFromIntakeEvent` describe is removed with
+// the function it exercised: `app://intake` is a payload-less nudge now (the core-owned-path ruling retired
+// `IntakePayload`), so there is no payload-carrying intake handler. Its coverage lives in the `subscribeAppEvents`
+// "app://intake issues the payload-less drain" test + the `drainPendingIntake` describe above.
 
-  it("calls C1 ingest_paths with the payload's paths/origin, a fresh collectingId, drainPending null", async () => {
-    await ingestFromIntakeEvent({ paths: ["/a.png", "/b.png"], origin: "launchArg" });
-    expect(invoke).toHaveBeenCalledWith(
-      "ingest_paths",
-      expect.objectContaining({
-        paths: ["/a.png", "/b.png"],
-        origin: "launchArg",
-        drainPending: null,
-        collectingId: expect.any(String),
-      }),
-    );
-  });
-});
-
-describe("subscribeNativeDragDrop (P2.121 §5.4 native file-drop)", () => {
+describe("subscribeNativeDragDrop (P2.121 §5.4 native drag-active affordance; drop is core-side, P3.77)", () => {
   beforeEach(() => {
     onDragDropEvent.mockReset();
     invoke.mockReset();
@@ -280,37 +270,32 @@ describe("subscribeNativeDragDrop (P2.121 §5.4 native file-drop)", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it("on drop: clears drag-active and hands the paths to C1 with origin 'drop' + drainPending null", async () => {
+  // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the drop is handled CORE-SIDE now — the WebView
+  // clears the affordance on drop but NEVER ingests (a WebView ingest would double-ingest the drop the Rust
+  // `WindowEvent::DragDrop` handler already funnelled into `PendingIntake`). The former "drop → C1" test + the
+  // frontend de-dup test are retired: no frontend ingest means no frontend de-dup (the backend frozen-set
+  // de-dup is the authority, §2.4).
+  it("on drop: clears drag-active and does NOT ingest (the drop is core-side, P3.77)", async () => {
     const onDragActiveChange = vi.fn();
     await subscribeNativeDragDrop({ onDragActiveChange });
     handler()?.({ payload: { type: "drop", paths: ["/a.png", "/b.png"] } });
-    await Promise.resolve(); // let the fire-and-forget C1 call land
+    // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the old drop→C1 `toHaveBeenCalledWith` is gone —
+    // the drop is core-side, so the WebView makes no C1 call (asserted by not.toHaveBeenCalled below).
+    await Promise.resolve(); // give any (forbidden) fire-and-forget C1 call a chance to land
     expect(onDragActiveChange).toHaveBeenLastCalledWith(false);
-    expect(invoke).toHaveBeenCalledWith(
-      "ingest_paths",
-      expect.objectContaining({ paths: ["/a.png", "/b.png"], origin: "drop", drainPending: null }),
-    );
+    // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] old: expect(invoke).toHaveBeenCalledWith(
+    // "ingest_paths", {drop paths}) + a separate de-dups test; the drop is core-side now, so the WebView makes
+    // NO C1 call and the frontend de-dup test is retired (the backend frozen-set de-dup is the authority, §2.4).
+    expect(invoke).not.toHaveBeenCalled();
   });
 
-  it("de-dups the dropped paths by set before C1 (§5.4 — native events can duplicate)", async () => {
+  it("a drop with no handler is a silent no-op (no ingest, no throw)", async () => {
     await subscribeNativeDragDrop();
-    handler()?.({ payload: { type: "drop", paths: ["/a.png", "/a.png", "/b.png"] } });
+    // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] with the drop core-side, a no-handler drop is a
+    // silent no-op: the old enter-precondition + drop→C1 `toHaveBeenCalledWith` become not.toThrow + not-called.
+    expect(() => handler()?.({ payload: { type: "drop", paths: ["/a.png"] } })).not.toThrow();
     await Promise.resolve();
-    expect(invoke).toHaveBeenCalledWith(
-      "ingest_paths",
-      expect.objectContaining({ paths: ["/a.png", "/b.png"] }),
-    );
-  });
-
-  it("a drop with no onDragActiveChange handler still ingests (the visual seam is inert in P2)", async () => {
-    await subscribeNativeDragDrop();
-    expect(() => handler()?.({ payload: { type: "enter", paths: ["/a"] } })).not.toThrow();
-    handler()?.({ payload: { type: "drop", paths: ["/a.png"] } });
-    await Promise.resolve();
-    expect(invoke).toHaveBeenCalledWith(
-      "ingest_paths",
-      expect.objectContaining({ origin: "drop" }),
-    );
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it("returns the unlisten from onDragDropEvent", async () => {
@@ -322,22 +307,7 @@ describe("subscribeNativeDragDrop (P2.121 §5.4 native file-drop)", () => {
   });
 });
 
-describe("ingestFromDrop (P2.121 drop → C1)", () => {
-  beforeEach(() => {
-    invoke.mockReset();
-    invoke.mockResolvedValue({ empty: { skipped: [] } });
-  });
-
-  it("calls C1 ingest_paths with origin 'drop', a fresh collectingId, drainPending null, an onScan Channel", async () => {
-    await ingestFromDrop(["/x.png"]);
-    expect(invoke).toHaveBeenCalledWith(
-      "ingest_paths",
-      expect.objectContaining({
-        paths: ["/x.png"],
-        origin: "drop",
-        drainPending: null,
-        collectingId: expect.any(String),
-      }),
-    );
-  });
-});
+// [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the `ingestFromDrop` describe is removed with the
+// function it exercised: the native drop is handled core-side (`WindowEvent::DragDrop` → the §7.8.1 funnel →
+// `PendingIntake`), so the WebView no longer ingests a drop. Its coverage lives in the `subscribeNativeDragDrop`
+// "on drop: does NOT ingest" test + the `drainPendingIntake` describe above.

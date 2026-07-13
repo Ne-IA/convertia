@@ -133,7 +133,8 @@ enum ResolvedIntake {
 /// seam consumes, handling the first-launch `drainPending` call. When `drain_pending == Some(true)` (the
 /// frontend's root-shell-mount drain, fired AFTER it registered its `app://intake` listener) two cohesive
 /// effects run: (1) MARK the frontend ready — the drain call IS the §7.8.1 readiness signal, so a subsequent
-/// launch intake EMITs `app://intake` instead of buffering (P2.59's `FrontendReady`) — and (2) CONSUME
+/// intake NUDGES `app://intake` after its stash (P2.59's `FrontendReady`; the funnel always stashes, P3.77) —
+/// and (2) CONSUME
 /// `PendingIntake` exactly once (§7.8.1 "consumes `PendingIntake` exactly once"), freezing THAT buffered set
 /// with its STORED origin (typically `LaunchArg`), or — if the buffer is empty — returning `Empty` (the
 /// ordinary first launch with no files → `CollectedSet::Empty`, §0.4.1). A normal intake (`drain_pending`
@@ -151,8 +152,9 @@ fn resolve_intake_source(
 ) -> ResolvedIntake {
     if drain_pending == Some(true) {
         // The two cohesive drain effects — mark-ready + consume-once — run FUSED under the pending-slot
-        // Mutex (`take_marking_ready`, P2.137): no §7.8.1 Buffer-arm stash can land between them, so a
-        // launch set is either observed by this drain or re-routed to a live emit (the no-loss closure).
+        // Mutex (`take_marking_ready`, P2.137): mark-BEFORE-take is the §7.8.1 no-loss ordering's second rule
+        // (P3.77), so an intake whose stash serializes after this drain sees `ready == true` and gets a nudge →
+        // the next drain consumes it; every intake set is either observed by this drain or nudged for a fresh one.
         match pending.take_marking_ready(ready) {
             Some(buffered) => ResolvedIntake::Freeze {
                 paths: buffered.paths,
@@ -445,12 +447,13 @@ mod c1_contract {
     // once. The passed `paths`/`origin` are IGNORED (§0.4.1 mutual exclusivity) — a decoy proves it.
     #[test]
     fn resolve_drain_nonempty_freezes_buffer_with_stored_origin_and_drains_once() {
-        // [Test-Change: P2.137 — old-obsolete+new-correct, §7.8.1] `stash`/`take` fused into
-        // `stash_or_route`/`take_marking_ready` (the no-loss closure); same assertions, fused API.
+        // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the P2.137 `stash_or_route(&ready, …)` fused
+        // form collapsed into a plain `PendingIntake::stash(paths, origin)` when the payload-carrying `Emit` arm
+        // was retired (no `RouteToEmit` to hand back); the drain's `take_marking_ready` is unchanged. Same
+        // assertions, simplified stash API.
         let pending = PendingIntake::default();
         let ready = FrontendReady::default();
-        pending.stash_or_route(
-            &ready,
+        pending.stash(
             paths(&["/launch/x.png", "/launch/y.jpg"]),
             IntakeOrigin::LaunchArg,
         );

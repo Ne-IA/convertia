@@ -48,7 +48,9 @@ pub mod events {
 
     /// `app://fault` — the §2.13 app-level fault (payload `AppFault`). Emit sites: §2.13.3 / §5.8 / §7.2.
     pub const APP_FAULT: &str = "app://fault";
-    /// `app://intake` — the §7.8.1 launch-arg / second-instance IDLE-path hand-off (payload `IntakePayload`).
+    /// `app://intake` — the §7.8.1 payload-less "come and drain `PendingIntake`" nudge for every idle launch/drop
+    /// intake origin (drop / launch-arg / second-instance; the C2a picker joins at P3.78; payload `()` since the
+    /// P3.77 core-owned-path ruling retired `IntakePayload` — no path crosses the wire).
     pub const APP_INTAKE: &str = "app://intake";
     /// `app://close-requested` — the §7.3.2 mid-run window-close intercept (payload `()`; §7.3.2 emits a
     /// `serde_json::Value::Null`).

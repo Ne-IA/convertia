@@ -262,16 +262,19 @@ impl ItemIdSpace {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemSpaceExhausted;
 
-/// How a set of paths entered intake (§0.6 / §7.8). Every source is routed through the single §7.8.1
-/// funnel into the §1.1 intake state machine, so the §2.4 freeze + §1.3 one-batch rules apply
-/// identically regardless of origin. `Drop`/`Picker` reach C1/C2a directly; only `LaunchArg` and
-/// `SecondInstance` ever travel on the `app://intake` event (§0.4.2 / §7.8.1).
+/// How a set of paths entered intake (§0.6 / §7.8). Every source funnels into the §1.1 intake state machine,
+/// so the §2.4 freeze + §1.3 one-batch rules apply identically regardless of origin. `Drop`/`LaunchArg`/
+/// `SecondInstance` stash core-side into `PendingIntake` and reach the §1.1 freeze via the C1 drain (§7.8.1,
+/// P3.77); the `Picker` set is still frozen directly by C2a `pick_for_intake` (never via C1) and joins the same
+/// §7.8.1 funnel at P3.78 — either way the origin is stored core-side, never on the wire.
 ///
 /// [Build-Session-Entscheidung: P2.2] `#[serde(rename_all = "camelCase")]` matches the established
 /// §0.6 wire-enum casing (the sibling `ErrorKind`/`IpcError` wire types, §0.4.3): the variants
-/// serialize as `drop`/`picker`/`launchArg`/`secondInstance`. `Serialize`+`Deserialize` because the
-/// origin crosses IPC both inbound (the C1 `ingest_paths` arg, §0.4.1) and outbound (the `app://intake`
-/// payload, §7.8.1); `Copy`/`Eq` are free for a fieldless enum. (`Hash` is omitted — not a map key.)
+/// serialize as `drop`/`picker`/`launchArg`/`secondInstance`. `Serialize`+`Deserialize` because the origin
+/// still crosses IPC as the **inbound** C1 `ingest_paths` arg (§0.4.1). [Build-Session-Entscheidung: P3.77]
+/// It no longer has an OUTBOUND wire path: the 2026-07-06 core-owned-path ruling retired `IntakePayload`, so
+/// `app://intake` is a payload-less nudge and the origin never travels outbound. `Copy`/`Eq` are free for a
+/// fieldless enum. (`Hash` is omitted — not a map key.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum IntakeOrigin {
@@ -949,13 +952,17 @@ impl FrozenCollectedSet {
 // ─── §0.6 wire DTOs for the C-commands + app:// hand-off (§0.4.1 / §0.4.2) ───────
 // [Build-Session-Entscheidung: P2.7] The §0.6 "Intake & detection" wire-DTO group. Each derives
 // `specta::Type` + camelCase per the §0.6 wire convention so it mirrors to `bindings.ts` as a named type;
-// registration is deferred to the consuming command/event (C2a/C9/app://intake/C1-onScan, P2.21+), the
-// established P2.2–P2.6 defer pattern. DIRECTION drives the derive set: the INBOUND command-arg enums
-// (`PickKind`/`OpenKind`) derive `Serialize`+`Deserialize` (round-trippable, fieldless → `Copy`); the
-// app:// event payload (`IntakePayload`) follows the round-trippable struct pattern (`Serialize`+
-// `Deserialize`, like `DroppedItem`); the Channel payload (`ScanProgress`) is OUTBOUND-ONLY per its §0.6
-// literal (`#[derive(Clone, Serialize, specta::Type)]`) — `Serialize` without `Deserialize`, since the
-// frontend RECEIVES but never sends it.
+// registration is deferred to the consuming command/event (C2a/C9/C1-onScan, P2.21+), the established
+// P2.2–P2.6 defer pattern. DIRECTION drives the derive set: the INBOUND command-arg enums
+// (`PickKind`/`OpenKind`) derive `Serialize`+`Deserialize` (round-trippable, fieldless → `Copy`); the Channel
+// payload (`ScanProgress`) is OUTBOUND-ONLY per its §0.6 literal (`#[derive(Clone, Serialize, specta::Type)]`)
+// — `Serialize` without `Deserialize`, since the frontend RECEIVES but never sends it.
+//
+// [Build-Session-Entscheidung: P3.77] The former `app://intake` payload DTO (`IntakePayload { paths, origin }`)
+// is RETIRED with the 2026-07-06 core-owned-path ruling: `app://intake` becomes a PAYLOAD-LESS nudge (no path
+// ever crosses the wire), so there is no intake-event DTO here — the paths live core-side in `PendingIntake`
+// and the C1 drain returns them via the command response (§7.8.1). `IntakeOrigin` (below/above) survives — it
+// is still a C1 command-arg until P3.78 and a core-internal freeze/buffer field.
 
 /// The C2a `pick_for_intake` `kind` arg (§0.4.1) — pick files or a folder. Inbound (WebView → Rust).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -979,29 +986,12 @@ pub enum OpenKind {
     RevealInFolder,
 }
 
-/// The `app://intake` hand-off payload (§0.4.2 / §7.8.1) — the launch-arg / second-instance paths drained
-/// through the §7.8.1 buffer-then-replay once the WebView is ready. `origin` is typed as the full
-/// `IntakeOrigin`, but only `LaunchArg` | `SecondInstance` ever travel on this event (`Drop`/`Picker`
-/// reach C1/C2a directly) — a §7.8.1 runtime invariant, not a type constraint.
-///
-/// [Build-Session-Entscheidung: P2.7] Follows the round-trippable struct pattern (`Serialize`+
-/// `Deserialize`, like `DroppedItem`); NOT `Copy` (owns a `Vec<PathBuf>`). camelCase wire form.
-///
-/// [Build-Session-Entscheidung: P2.39] Registered EXPLICITLY in `main.rs`'s `register_ipc_event_types`
-/// `.types()` chain now that its consumer — the `app://intake` event (§0.4.2 / §7.8.1) — is authored.
-/// The P2.7 "deferred to its consuming command/event" note assumed an auto-pull, but `app://intake` is a
-/// RAW `app.emit` / TS `listen` event (§0.4.2), not a command arg / `collect_events!` typed event, so it
-/// does NOT auto-pull `IntakePayload` into `bindings.ts` — the explicit `.types()` registration is what
-/// keeps `listen('app://intake')` typed against the named `IntakePayload` rather than `any` (the same
-/// reason `collect_events!` is avoided — see `register_ipc_event_types`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct IntakePayload {
-    /// The paths handed in (already resolved by the §7.8.1 funnel; frozen at C1).
-    pub paths: Vec<PathBuf>,
-    /// How the set entered intake — only `LaunchArg` | `SecondInstance` on this event (see the type doc).
-    pub origin: IntakeOrigin,
-}
+// [Build-Session-Entscheidung: P3.77] The `app://intake` hand-off DTO (`IntakePayload { paths, origin }`) is
+// RETIRED — the 2026-07-06 core-owned-path ruling makes `app://intake` a PAYLOAD-LESS nudge (no path crosses
+// the wire): the intake paths stay core-side in `PendingIntake` and the C1 drain returns them via the command
+// response, so no event DTO is authored here (§7.8.1). `IntakeOrigin` survives (a C1 command-arg until P3.78 +
+// a core-internal freeze/buffer field); the paths that were this DTO's `Vec<PathBuf>` now route through the
+// `PendingIntake` buffer (`crate::orchestrator`, P2.58) instead.
 
 /// The C1 `ingest_paths` `onScan` Channel payload (§0.4.2) — a throttled (~2/s, coalesced) live count of
 /// files seen during the §1.1 recursive walk + §1.2 detection, so the §5.2 Collecting state can show
@@ -1557,8 +1547,8 @@ mod tests {
 
     // §6.4.1 unit (G15): the §0.6/§7.8 `IntakeOrigin` wire enum — all four origins exist and serialize
     // in the §0.4.3 camelCase wire form. A serialize→deserialize round-trip locks the wire casing so a
-    // silent rename can't break the frontend's `IntakeOrigin` handling (Drop/Picker reach C1/C2a;
-    // LaunchArg/SecondInstance also ride the `app://intake` event, §7.8.1).
+    // silent rename can't break the frontend's `IntakeOrigin` handling. Since P3.77 `IntakeOrigin` is
+    // INBOUND-only — the C1 `ingest_paths` arg — for every origin (`app://intake` is a payload-less nudge, §7.8.1).
     #[test]
     fn intake_origin_wire_form_is_camelcase_and_roundtrips() {
         for (origin, wire) in [
@@ -2591,25 +2581,10 @@ mod tests {
         exhaustive(OpenKind::File);
     }
 
-    // §6.4.1 unit (G15): the app://intake `IntakePayload` — { paths, origin } in camelCase wire form
-    // (origin reusing the §0.6 `IntakeOrigin` camelCase, e.g. `launchArg`), round-tripped.
-    #[test]
-    fn intake_payload_wire_form_is_camelcase_and_roundtrips() {
-        let payload = IntakePayload {
-            paths: vec![PathBuf::from("a.jpg"), PathBuf::from("b.png")],
-            origin: IntakeOrigin::LaunchArg,
-        };
-        let json = serde_json::to_string(&payload).expect("IntakePayload serializes");
-        assert_eq!(
-            json, r#"{"paths":["a.jpg","b.png"],"origin":"launchArg"}"#,
-            "§0.4.2/§7.8.1: IntakePayload is {{ paths, origin }} in camelCase wire form"
-        );
-        let back: IntakePayload = serde_json::from_str(&json).expect("IntakePayload round-trips");
-        assert_eq!(
-            back, payload,
-            "§7.8.1: IntakePayload round-trips through its wire form"
-        );
-    }
+    // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the `intake_payload_wire_form_is_camelcase_and_roundtrips`
+    // test is removed with `IntakePayload`: app://intake is a payload-less nudge now (no `{ paths, origin }` wire
+    // form), so there is no payload DTO to round-trip. `IntakeOrigin`'s camelCase wire form + round-trip (all four
+    // variants) are covered by `intake_origin_wire_form_is_camelcase_and_roundtrips` above.
 
     // §6.4.1 unit (G15): the C1 onScan `ScanProgress` Channel payload — { scanned } wire form. It is
     // OUTBOUND-ONLY (Serialize, no Deserialize per the §0.6 literal), so this locks the SERIALIZED form,

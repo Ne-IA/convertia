@@ -2807,49 +2807,54 @@ pub fn compute_rerun_verdict(
     (equivalent_count > 0).then_some(RerunPrompt { equivalent_count })
 }
 
-// ─── §7.8.1 first-launch intake buffer — the PendingIntake stash/drain store (P2.58) ─────────────────────
-// [Build-Session-Entscheidung: P2.58] The §7.8.1 first-launch buffer, homed here under the same §0.7 State
+// ─── §7.8.1 intake buffer — the PendingIntake stash/drain store (P2.58; single hand-off buffer P3.77) ─────
+// [Build-Session-Entscheidung: P2.58] The §7.8.1 intake buffer, homed here under the same §0.7 State
 // umbrella as the four §0.4.4 sibling stores (RunRegistry/RunResultStore/CollectedSetRegistry/IngestRegistry)
 // — a launch-intake State store added to orchestrator needs NO §0.7/§1a structural edit (§0.7 attributes the
 // app-managed State to orchestrator + enumerates the outcome-referencing TYPES, not every store; the
-// P2.43/P2.44/P2.45 precedent). It is the single-slot sibling of `RunResultStore` (a `Mutex<Option<…>>`): the
-// §7.8.1 launch funnel's `Buffer` arm (`buffer_pending_intake`, main.rs) STASHES the idle-and-not-ready launch
-// set here when the WebView's `app://intake` listener is not yet ready (the first-launch listener race), and
-// the C1 `drainPending` path (P2.60) TAKEs it once on root-shell mount and freezes it (§1.1). It differs from
-// the §0.4.4 run/ingest stores only in WHO drives it — the launch glue writes, C1 reads — but the State-store
-// shape + the contract-before-consumer discipline (the `take` reader is dead in the production build until
-// P2.60 wires C1, covered by the module-level dead_code expect) are identical.
+// P2.43/P2.44/P2.45 precedent). It is the single-slot sibling of `RunResultStore` (a `Mutex<Option<…>>`).
+// [Build-Session-Entscheidung: P3.77] The 2026-07-06 core-owned-path ruling makes this the SINGLE hand-off
+// buffer for every non-busy LAUNCH/DROP origin — drop, launch-arg, second-instance (Open-with arrives as one of
+// those, §7.8.1): the §7.8.1 intake funnel (`stash_pending_intake`, main.rs) ALWAYS `stash`es the set here (the
+// former `Emit` arm — a payload-carrying `app://intake` emit — is retired with `IntakePayload`; the nudge is now
+// payload-less), and the C1 drain (P2.60/P3.78) TAKEs it and freezes it (§1.1). The C2a picker still ingests
+// directly (`ingest(.., Picker)`) and joins this same funnel at P3.78 (§7.8.1 end-state), not yet in P3.77. It
+// differs from the §0.4.4 run/ingest stores only
+// in WHO drives it — the intake glue writes, C1 reads — but the State-store shape + the contract-before-consumer
+// discipline (the `take` reader is dead in the production build until C1 wires it, covered by the module-level
+// dead_code expect) are identical.
 
-/// One buffered §7.8.1 first-launch intake — a launch path set + its §0.6 `IntakeOrigin`. Stashed by the
-/// launch funnel's `Buffer` arm when the WebView is not yet ready, drained once by C1 `drainPending` (P2.60).
+/// One buffered §7.8.1 intake — a path set + its §0.6 `IntakeOrigin`. Stashed by the intake funnel (every
+/// non-busy launch/drop origin — drop, launch-arg, second-instance, P3.77; the C2a picker joins at P3.78),
+/// drained once by the C1 drain (P2.60).
 /// NOT a wire type: the C1 drain returns a `CollectedSet` (§0.4.1), never this buffer (pure core-internal
 /// State). [Build-Session-Entscheidung: P2.58]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BufferedLaunchIntake {
-    /// The launch-time paths (already `parse_path_args`-classified, §7.8.1), accumulated across any repeat
-    /// stash in the same not-ready window (no-loss — see [`PendingIntake::stash_or_route`]).
+    /// The intake paths (already `parse_path_args`-classified for a launch/second-instance set, §7.8.1),
+    /// accumulated across any repeat stash before the drain (no-loss — see [`PendingIntake::stash`]).
     pub paths: Vec<PathBuf>,
-    /// The §0.6 origin of the FIRST stash in this not-ready window (typically `LaunchArg`; §7.8.1 "its stored
-    /// origin"). A subsequent stash in the same window accumulates its paths but keeps this origin — the §1.1
+    /// The §0.6 origin of the FIRST stash before this drain (typically `LaunchArg`/`Drop`; §7.8.1 "its stored
+    /// origin"). A subsequent stash before the drain accumulates its paths but keeps this origin — the §1.1
     /// freeze re-validates every path and is origin-agnostic, so one stored origin for the merged set is
     /// correct.
     pub origin: IntakeOrigin,
 }
 
-/// The §7.8.1 first-launch buffer (`State<PendingIntake>`) — holds at most one un-drained
-/// [`BufferedLaunchIntake`]. The single-slot sibling of [`RunResultStore`]: the launch funnel's `Buffer` arm
-/// stashes here when the WebView's `app://intake` listener is not yet ready (the first-launch listener race,
-/// §7.8.1), and C1 `drainPending` (P2.60) drains it exactly once on root-shell mount. Held as a Tauri
-/// app-managed `State` (registered in `main()`'s Builder chain). Interior-mutable behind a `Mutex` (the
-/// `State` form is shared across the launch hooks + the C1 handler); the critical sections are infallible
-/// slot ops that never hold the guard across an `.await`, so a `std::sync::Mutex` is correct.
+/// The §7.8.1 intake buffer (`State<PendingIntake>`) — holds at most one un-drained
+/// [`BufferedLaunchIntake`]. The single-slot sibling of [`RunResultStore`]: the intake funnel `stash`es every
+/// non-busy launch/drop intake set here (drop, launch-arg, second-instance — the single hand-off buffer, P3.77;
+/// the C2a picker joins at P3.78), and the C1 drain (P2.60/P3.78) drains it exactly once per call. Held as a Tauri app-managed `State`
+/// (registered in `main()`'s Builder chain). Interior-mutable behind a `Mutex` (the `State` form is shared
+/// across the intake hooks + the C1 handler); the critical sections are infallible slot ops that never hold
+/// the guard across an `.await`, so a `std::sync::Mutex` is correct.
 ///
 /// [Build-Session-Entscheidung: P2.58] `Default`-constructed empty; `Debug` for parity with the sibling
 /// stores. NOT a wire type (no `serde`/`specta`) — pure core-internal State that never crosses IPC (the C1
 /// drain returns a `CollectedSet`, §0.4.1).
 #[derive(Debug, Default)]
 pub struct PendingIntake {
-    /// The single buffered launch set, or `None` when nothing is pending (never stashed, or already drained).
+    /// The single buffered intake set, or `None` when nothing is pending (never stashed, or already drained).
     pending: Mutex<Option<BufferedLaunchIntake>>,
 }
 
@@ -2863,48 +2868,39 @@ impl PendingIntake {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Stash a launch set from the §7.8.1 `Buffer` arm (idle + WebView not-yet-ready) — UNLESS the frontend
-    /// proved ready in the meantime, in which case the set is handed BACK for the `Emit` arm
-    /// ([`StashOutcome::RouteToEmit`]). NO-LOSS on a repeat stash before the drain: a second launch event in
-    /// the same not-ready window APPENDS its paths to the pending set rather than superseding it —
-    /// superseding would drop the earlier launch's paths, the very loss this buffer exists to prevent
-    /// (§7.8.1) — and keeps the FIRST origin (§7.8.1 "its stored origin"). The funnel only reaches this with
-    /// a non-empty `paths` (it returns early on empty, §7.8.1), so no empty-stash guard is needed.
-    /// [Build-Session-Entscheidung: P2.58]
+    /// Stash an intake set into the §7.8.1 buffer (every non-busy launch/drop origin — drop, launch-arg,
+    /// second-instance, P3.77; the C2a picker joins at P3.78). NO-LOSS on a repeat stash before the drain: a second intake before the drain
+    /// APPENDS its paths to the pending set rather than superseding it — superseding would drop the earlier
+    /// set's paths, the very loss this buffer exists to prevent (§7.8.1) — and keeps the FIRST origin (§7.8.1
+    /// "its stored origin"). The funnel only reaches this with a non-empty `paths` (it returns early on empty,
+    /// §7.8.1), so no empty-stash guard is needed. [Build-Session-Entscheidung: P2.58]
     ///
-    /// **The §7.8.1 no-loss closure (the stash-vs-drain interleaving, P2.137):** the funnel's ready-read
-    /// (`intake_disposition`'s snapshot) and this stash are two steps, so the C1 drain
-    /// ([`take_marking_ready`](PendingIntake::take_marking_ready)) can run BETWEEN them — mark-ready +
-    /// take(`None`) — after which a plain stash would strand the set for the whole session (`FrontendReady`
-    /// is monotonic and the frontend drains once per mount). Both critical sections therefore serialize on
-    /// the SAME pending-slot `Mutex`, and this op RE-CHECKS the ready flag under that lock: every launch set
-    /// is either stashed strictly before the drain's fused mark+take (so the drain observes it) or re-routed
-    /// to a live `app://intake` emit. Proven by `state_stores::stash_after_drain_reroutes_to_emit` (+ the
-    /// two-thread stress leg). [Build-Session-Entscheidung: P2.137]
-    pub fn stash_or_route(
-        &self,
-        ready: &FrontendReady,
-        paths: Vec<PathBuf>,
-        origin: IntakeOrigin,
-    ) -> StashOutcome {
+    /// **The §7.8.1 no-loss ordering (the stash-vs-drain interleaving, P3.77):** the 2026-07-06 core-owned-path
+    /// ruling collapsed the former Emit-vs-Buffer split into ALWAYS-stash + a payload-less nudge, so the
+    /// `RouteToEmit` re-route and the under-lock ready re-check are structurally unnecessary — this op simply
+    /// buffers. Two rules replace the former lock dance: the funnel **stashes BEFORE it reads the ready flag**,
+    /// and the drain **marks ready BEFORE it takes**
+    /// ([`take_marking_ready`](PendingIntake::take_marking_ready)). So every intake set is either stashed
+    /// strictly before the drain's take (the drain observes it) or its stash precedes a `is_ready()` read that
+    /// sees `true` (the mark happened in the earlier drain) → the funnel nudges → the next drain consumes it;
+    /// the worst outcome of any interleaving is a harmless empty drain, never a stranded or double-ingested
+    /// set. Proven by `state_stores::stash_after_drain_stays_buffered_for_the_nudge_drain` (+ the two-thread
+    /// stress leg). [Build-Session-Entscheidung: P3.77]
+    pub fn stash(&self, paths: Vec<PathBuf>, origin: IntakeOrigin) {
         let mut slot = self.lock();
-        if ready.is_ready() {
-            return StashOutcome::RouteToEmit(BufferedLaunchIntake { paths, origin });
-        }
         match slot.as_mut() {
             Some(buffered) => buffered.paths.extend(paths),
             None => *slot = Some(BufferedLaunchIntake { paths, origin }),
         }
-        StashOutcome::Stashed
     }
 
-    /// Mark the frontend ready AND take the buffered launch set — the C1 `drainPending` drain's two cohesive
-    /// effects (P2.60, §7.8.1 "consumes `PendingIntake` exactly once") FUSED under the pending-slot `Mutex`
-    /// so no [`stash_or_route`](PendingIntake::stash_or_route) can land between them (the §7.8.1 no-loss
-    /// closure — see `stash_or_route`; P2.137). Mark-BEFORE-take inside the lock: a stash serialized after
-    /// this section observes `ready == true` and re-routes to the `Emit` arm. Returns `None` when nothing is
-    /// pending (the ordinary first launch with no files → C1 returns `CollectedSet::Empty`, §0.4.1).
-    /// Idempotent: a second drain is `None`. [Build-Session-Entscheidung: P2.137]
+    /// Mark the frontend ready AND take the buffered intake set — the C1 drain's two cohesive effects (P2.60,
+    /// §7.8.1 "consumes `PendingIntake` exactly once") ordered under the pending-slot `Mutex`. Mark-BEFORE-take
+    /// inside the lock is the §7.8.1 no-loss ordering's second rule (P3.77 — see [`stash`](PendingIntake::stash)):
+    /// an intake whose `stash` serializes after this section is followed by a funnel `is_ready()` read that
+    /// observes `ready == true` (the mark), so the funnel nudges and the next drain consumes it — nothing is
+    /// stranded. Returns `None` when nothing is pending (the ordinary drain with no files → C1 returns
+    /// `CollectedSet::Empty`, §0.4.1). Idempotent: a second drain is `None`. [Build-Session-Entscheidung: P2.137]
     pub fn take_marking_ready(&self, ready: &FrontendReady) -> Option<BufferedLaunchIntake> {
         let mut slot = self.lock();
         ready.mark_ready();
@@ -2912,68 +2908,55 @@ impl PendingIntake {
     }
 }
 
-/// The §7.8.1 `Buffer`-arm outcome of [`PendingIntake::stash_or_route`] — either the set is buffered for the
-/// C1 drain replay, or the drain already ran (`FrontendReady` flipped between the funnel's disposition
-/// snapshot and the stash) and the set is handed back so the caller emits `app://intake` instead: nothing is
-/// ever stranded (§7.8.1 "a launch-with-files is never lost"). Core-internal (not a wire type — no
-/// `serde`/`specta`). [Build-Session-Entscheidung: P2.137]
-#[derive(Debug, PartialEq, Eq)]
-pub enum StashOutcome {
-    /// The set is buffered; the C1 `drainPending` drain will consume it (§7.8.1).
-    Stashed,
-    /// The drain already consumed the buffer and marked the frontend ready — the set is handed back for a
-    /// live `app://intake` emit (the §7.8.1 no-loss re-route).
-    RouteToEmit(BufferedLaunchIntake),
-}
-
-// ─── §7.8.1 WebView-ready flag — the FrontendReady emit-vs-buffer gate (P2.59) ────────────────────────────
+// ─── §7.8.1 WebView-ready flag — the FrontendReady nudge gate (P2.59; nudge-vs-silent P3.77) ──────────────
 // [Build-Session-Entscheidung: P2.59] The §7.8.1 / §0.4.2 WebView-ready flag, homed here under the same §0.7
-// State umbrella as the launch-intake sibling PendingIntake (P2.58) + the four §0.4.4 stores — a launch-intake
+// State umbrella as the intake sibling PendingIntake (P2.58) + the four §0.4.4 stores — a launch-intake
 // State store added to orchestrator needs NO §0.7/§1a structural edit (the P2.58 precedent: §0.7 attributes the
 // app-managed State to orchestrator, not every store). It records whether the WebView's `app://intake` listener
-// is registered: the §7.8.1 launch funnel reads it (`frontend_ready`, main.rs) to choose the `Emit` arm (ready →
-// emit `app://intake`) versus the `Buffer` arm (not-ready → stash into PendingIntake, the §7.8.1 first-launch
-// listener race), and the C1 `drainPending` path (P2.60 — on root-shell mount, AFTER the listener registers)
-// marks it ready. MONOTONIC false→true: the `main` window lives for the whole session (§7.3.1 closing-quits) so
-// the listener never un-registers, hence the flag never resets — an `AtomicBool` is the right tool (no
-// Mutex/poison handling; the reader needs only the published boolean, no data is gated behind it). Both
-// methods are LIVE: `mark_ready` is driven by the C1 `drainPending` handler via the fused
-// [`PendingIntake::take_marking_ready`] (P2.137; `crate::ipc::intake::resolve_intake_source` calls it —
-// the drain call is the §7.8.1 root-shell-mount readiness signal), and `is_ready` is read by the §7.8.1
-// funnel's `frontend_ready` (P2.59, main.rs) plus the stash's under-lock re-check (`stash_or_route`).
+// is registered. [Build-Session-Entscheidung: P3.77] After the 2026-07-06 core-owned-path ruling the funnel
+// ALWAYS stashes into `PendingIntake` and reads this flag ONLY to decide whether to NUDGE: the §7.8.1 intake
+// funnel reads it (`frontend_ready`, main.rs) AFTER the stash to emit a payload-less `app://intake` nudge iff
+// ready (not-ready → no nudge; the root-shell mount drains the stash once regardless, §5.8), and the C1 drain
+// (P2.60 — on root-shell mount, AFTER the listener registers) marks it ready. MONOTONIC false→true: the `main`
+// window lives for the whole session (§7.3.1 closing-quits) so the listener never un-registers, hence the flag
+// never resets — an `AtomicBool` is the right tool (no Mutex/poison handling; the reader needs only the
+// published boolean, no data is gated behind it). Both methods are LIVE: `mark_ready` is driven by the C1 drain
+// handler via the fused [`PendingIntake::take_marking_ready`] (`crate::ipc::intake::resolve_intake_source` calls
+// it — the drain call is the §7.8.1 root-shell-mount readiness signal), and `is_ready` is read by the §7.8.1
+// funnel's `frontend_ready` (P2.59, main.rs) after the stash.
 
 /// The §7.8.1 WebView-ready flag (`State<FrontendReady>`) — `true` once the frontend has registered its
-/// `app://intake` listener and run the C1 `drainPending` drain (P2.60) on root-shell mount. The §7.8.1 launch
-/// funnel reads it (`frontend_ready`, main.rs) to pick Emit-vs-Buffer: a launch set arriving BEFORE the
-/// listener exists (the first-launch race, §7.8.1) is buffered into [`PendingIntake`] rather than emitted into
-/// a listener that would drop it. Held as a Tauri app-managed `State` (registered in `main()`'s Builder chain,
-/// so the funnel's `frontend_ready` resolve is infallible by construction). A monotonic false→true flag, so an
-/// `AtomicBool` (no `Mutex`/poison handling) is the right shape.
+/// `app://intake` listener and run the C1 drain (P2.60) on root-shell mount. The §7.8.1 intake funnel reads it
+/// (`frontend_ready`, main.rs) AFTER the stash to decide whether to nudge: an intake set arriving BEFORE the
+/// listener exists (the first-launch race, §7.8.1) is still buffered into [`PendingIntake`] (the funnel always
+/// stashes, P3.77) — the flag only gates the payload-less nudge, and the mount drain collects the stash either
+/// way. Held as a Tauri app-managed `State` (registered in `main()`'s Builder chain, so the funnel's
+/// `frontend_ready` resolve is infallible by construction). A monotonic false→true flag, so an `AtomicBool`
+/// (no `Mutex`/poison handling) is the right shape.
 ///
 /// [Build-Session-Entscheidung: P2.59] `Default`-constructed `false` (not-ready at app start — the funnel's
-/// fail-safe default: a launch set is buffered, never emitted, until the frontend proves its listener exists);
-/// `Debug` for parity with the sibling State stores. NOT a wire type (no `serde`/`specta`) — pure core-internal
-/// State that never crosses IPC.
+/// fail-safe default: no nudge is emitted until the frontend proves its listener exists; the stash is still
+/// taken by the mount drain); `Debug` for parity with the sibling State stores. NOT a wire type (no
+/// `serde`/`specta`) — pure core-internal State that never crosses IPC.
 #[derive(Debug, Default)]
 pub struct FrontendReady {
-    /// `true` once the WebView's `app://intake` listener is live (set by the C1 `drainPending` drain, P2.60).
+    /// `true` once the WebView's `app://intake` listener is live (set by the C1 drain, P2.60).
     ready: AtomicBool,
 }
 
 impl FrontendReady {
     /// Mark the frontend ready — the WebView has registered its `app://intake` listener and is draining
-    /// `PendingIntake` (the C1 `drainPending` path on root-shell mount, P2.60). Monotonic: once set it never
-    /// clears (the `main` window lives for the whole session, §7.3.1), so a repeat call is a harmless no-op.
-    /// `Release` publishes the write so a subsequent `is_ready` `Acquire` observes it.
-    /// [Build-Session-Entscheidung: P2.59]
+    /// `PendingIntake` (the C1 drain on root-shell mount, P2.60). Monotonic: once set it never clears (the
+    /// `main` window lives for the whole session, §7.3.1), so a repeat call is a harmless no-op. `Release`
+    /// publishes the write so a subsequent `is_ready` `Acquire` observes it. [Build-Session-Entscheidung: P2.59]
     pub fn mark_ready(&self) {
         self.ready.store(true, Ordering::Release);
     }
 
     /// Read the §7.8.1 ready flag — `true` once [`mark_ready`](FrontendReady::mark_ready) has fired. The §7.8.1
-    /// launch funnel's `frontend_ready` predicate (main.rs) reads this to choose the `Emit` arm (ready) versus
-    /// the `Buffer` arm (not-ready, the first-launch race). `Acquire` pairs with `mark_ready`'s `Release`.
-    /// [Build-Session-Entscheidung: P2.59]
+    /// intake funnel's `frontend_ready` predicate (main.rs) reads this AFTER the stash to decide whether to emit
+    /// the payload-less `app://intake` nudge (ready → nudge; not-ready → no nudge, the mount drain collects the
+    /// stash, P3.77). `Acquire` pairs with `mark_ready`'s `Release`. [Build-Session-Entscheidung: P2.59]
     pub fn is_ready(&self) -> bool {
         self.ready.load(Ordering::Acquire)
     }
@@ -5383,22 +5366,22 @@ mod freeze_gating_contract {
 
     // Leg 3 — §6.4.1 unit (G15): the busy launch-intake is refused UPSTREAM, so this freeze is never reached.
     // The §7.1.1 PRIMARY rule `intake_disposition` (the funnel reads it, P2.55) returns `Drop` for a busy
-    // converter in EVERY readiness state — `Drop` emits no `app://intake` and buffers nothing, so neither the
-    // ready re-call (Emit) nor the first-launch drain (Buffer) ever routes paths back into the orchestrator
-    // freeze (`ingest`). This asserts the DELEGATION SEAM (refuse-busy is upstream, not in the freeze); the
-    // full busy x ready truth table is `crate::launch_intake::tests` (the pure rule's home).
-    // [Build-Session-Entscheidung: P2.72] The contract test reaches the `pub(crate)` upstream rule so the
-    // "freeze never reached" delegation is asserted end-to-end, not only documented.
+    // converter — `Drop` neither stashes into `PendingIntake` nor nudges `app://intake`, so the intake never
+    // routes paths back into the orchestrator freeze (`ingest`) mid-run. This asserts the DELEGATION SEAM
+    // (refuse-busy is upstream, not in the freeze); the full disposition truth table is `crate::launch_intake::tests`
+    // (the pure rule's home). [Build-Session-Entscheidung: P2.72] The contract test reaches the `pub(crate)`
+    // upstream rule so the "freeze never reached" delegation is asserted end-to-end, not only documented.
+    // the readiness loop is obsolete — `intake_disposition` no longer takes `frontend_ready` (the nudge is a
+    // separate post-stash read, P3.77), so busy → Drop depends on `busy` alone; the delegation-seam assertion
+    // is the surviving invariant. [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1]
     #[test]
     fn busy_launch_intake_is_refused_upstream_so_the_freeze_is_never_reached() {
         use crate::launch_intake::{intake_disposition, IntakeDisposition};
-        for ready in [true, false] {
-            assert_eq!(
-                intake_disposition(true, ready),
-                IntakeDisposition::Drop,
-                "§7.1.1/§2.4: a busy converter DROPS the launch-intake upstream (ready={ready}) — no emit, no buffer, so the orchestrator freeze is never reached mid-run"
-            );
-        }
+        assert_eq!(
+            intake_disposition(true),
+            IntakeDisposition::Drop,
+            "§7.1.1/§2.4: a busy converter DROPS the launch-intake upstream — no stash, no nudge, so the orchestrator freeze is never reached mid-run"
+        );
     }
 
     // Structural Reading-B anchor — §6.4.1 unit (G15): there is NO core-side freeze gate, BY CONSTRUCTION.
@@ -7697,25 +7680,21 @@ mod tests {
         names.iter().map(PathBuf::from).collect()
     }
 
-    // [Test-Change: P2.137 — old-obsolete+new-correct, §7.8.1] The P2.58 `stash`/`take` pair was fused into
-    // `stash_or_route`/`take_marking_ready` (the §7.8.1 no-loss closure: both critical sections share the
-    // pending-slot Mutex and the stash re-checks readiness under it) — the P2.58 assertions below are the
-    // SAME contracts driven through the fused API (a not-ready stash routes to `Stashed`; the drain fuses
-    // mark-ready + take), verified against §7.8.1's consume-once + stored-origin + no-loss prose.
+    // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] The P2.137 `stash_or_route`/`RouteToEmit` fused
+    // no-loss closure collapsed into a plain [`PendingIntake::stash`] + the two-rule no-loss ordering (stash
+    // BEFORE the funnel's ready-read; mark-ready BEFORE the drain's take) when the 2026-07-06 core-owned-path
+    // ruling retired the payload-carrying `Emit` arm (there is no live emit to re-route to). The assertions
+    // below are the SAME §7.8.1 contracts (consume-once, stored-origin, no-loss accumulation) driven through
+    // the simplified API (`stash` unconditionally buffers; the drain still fuses mark-ready + take).
 
-    // §6.4.1 unit (G15): the §7.8.1 stash→drain round-trip — a buffered launch set is taken back with its
-    // paths + the stored origin, and the slot is cleared (the C1 drainPending consume-once, §7.8.1); the
-    // drain marks the frontend ready in the same fused step (P2.137).
+    // §6.4.1 unit (G15): the §7.8.1 stash→drain round-trip — a buffered intake set is taken back with its
+    // paths + the stored origin, and the slot is cleared (the C1 drain consume-once, §7.8.1); the drain marks
+    // the frontend ready in the same fused step (P2.137).
     #[test]
     fn pending_intake_stash_then_take_returns_the_set_and_clears() {
         let buf = PendingIntake::default();
-        // [Test-Change: P2.137 — old-obsolete+new-correct, §7.8.1] (fused-API rewrite; see block header)
         let ready = FrontendReady::default();
-        assert_eq!(
-            buf.stash_or_route(&ready, paths(&["a.png", "b.jpg"]), IntakeOrigin::LaunchArg),
-            StashOutcome::Stashed,
-            "§7.8.1: a not-ready stash buffers (the Buffer arm's normal case)"
-        );
+        buf.stash(paths(&["a.png", "b.jpg"]), IntakeOrigin::LaunchArg);
         let drained = buf
             .take_marking_ready(&ready)
             .expect("§7.8.1: a stashed set is drained back");
@@ -7756,17 +7735,16 @@ mod tests {
         );
     }
 
-    // §6.4.1 unit (G15): NO-LOSS on a repeat stash before the drain — a second launch event in the same
-    // not-ready window APPENDS its paths (never supersedes, which would drop the earlier launch's paths) and
-    // keeps the FIRST origin (§7.8.1 "its stored origin"). This is the property the path-loss-avoidance the
-    // owner-confirmed P2.58-before-P2.55 order rests on (every reachable launch set is preserved).
+    // §6.4.1 unit (G15): NO-LOSS on a repeat stash before the drain — a second intake before the drain
+    // APPENDS its paths (never supersedes, which would drop the earlier set's paths) and keeps the FIRST
+    // origin (§7.8.1 "its stored origin"). This is the path-loss-avoidance property the single hand-off buffer
+    // rests on (every buffered intake set is preserved until the drain). [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1]
     #[test]
     fn pending_intake_repeat_stash_accumulates_paths_keeps_first_origin() {
         let buf = PendingIntake::default();
         let ready = FrontendReady::default();
-        buf.stash_or_route(&ready, paths(&["first.png"]), IntakeOrigin::LaunchArg);
-        buf.stash_or_route(
-            &ready,
+        buf.stash(paths(&["first.png"]), IntakeOrigin::LaunchArg);
+        buf.stash(
             paths(&["second.jpg", "third.gif"]),
             IntakeOrigin::SecondInstance,
         );
@@ -7785,86 +7763,92 @@ mod tests {
         );
     }
 
-    // §6.4.1 unit (G15): the §7.8.1 no-loss closure, deterministic interleaving (P2.137) — the exact TOCTOU
-    // the fused API exists to close: the funnel snapshots ready=false (its `intake_disposition` read), the C1
-    // drain then runs its fused mark-ready+take (finding nothing), and only THEN does the funnel's Buffer arm
-    // reach the stash. A plain stash would strand the set for the session (ready is monotonic, the drain
-    // fires once per mount); `stash_or_route` re-checks readiness under the pending-slot lock and hands the
-    // set BACK for a live emit instead.
+    // §6.4.1 unit (G15): the §7.8.1 no-loss ordering (P3.77) — the exact interleaving the two-rule ordering
+    // closes: the C1 drain runs its fused mark-ready + take (finding nothing), and only THEN does the funnel
+    // reach the stash. Under the retired `Emit`-arm model a plain stash here would strand the set (ready is
+    // monotonic, the drain fires once per mount). Now the funnel ALWAYS stashes (the set is buffered, never
+    // dropped) and — because the drain already marked ready — its post-stash `is_ready()` read sees `true`, so
+    // it NUDGES, and the nudge-triggered drain retrieves the buffered set. [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1]
     #[test]
-    fn stash_after_drain_reroutes_to_emit() {
+    fn stash_after_drain_stays_buffered_for_the_nudge_drain() {
         let buf = PendingIntake::default();
         let ready = FrontendReady::default();
-        // The funnel's disposition snapshot: idle + not-ready → it WILL pick the Buffer arm.
-        assert!(
-            !ready.is_ready(),
-            "precondition: the snapshot read not-ready"
-        );
-        // The drain interleaves before the stash lands: fused mark-ready + take (nothing pending yet).
+        // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the old not-ready `precondition` assert is
+        // obsolete — the funnel no longer snapshots readiness up front (the disposition is `busy`-only now).
+        // The C1 drain interleaves before the stash lands: fused mark-ready + take (nothing pending yet).
         assert!(buf.take_marking_ready(&ready).is_none());
-        // The funnel's stale Buffer arm now stashes — and MUST be re-routed, not stranded.
-        let outcome = buf.stash_or_route(&ready, paths(&["late.png"]), IntakeOrigin::LaunchArg);
         assert!(
-            matches!(outcome, StashOutcome::RouteToEmit(_)),
-            "§7.8.1/P2.137: a stash after the drain must RE-ROUTE to Emit — a plain Stashed here is the \
-             stranded-set loss the fused API exists to prevent"
+            ready.is_ready(),
+            "§7.8.1: the drain marked the frontend ready in the same fused step"
         );
-        let StashOutcome::RouteToEmit(set) = outcome else {
-            return; // proven RouteToEmit by the assert above
-        };
+        // The funnel now stashes the late set — unconditionally buffered (never dropped, the P3.77 no-loss rule).
+        // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the old drain-check-after-stash order + the
+        // retired `stash_or_route`→`RouteToEmit` re-route collapse into this plain `stash`; same no-loss meaning.
+        buf.stash(paths(&["late.png"]), IntakeOrigin::LaunchArg);
+        // Because ready is already `true`, the funnel's post-stash `is_ready()` read nudges → a fresh drain,
+        // which retrieves the buffered set. Nothing is stranded.
+        assert!(
+            ready.is_ready(),
+            "§7.8.1: ready stays true after the stash, so the funnel emits the app://intake nudge (P3.77)"
+        );
+        let drained = buf.take_marking_ready(&ready).expect(
+            "§7.8.1: the late stash is retrieved by the nudge-triggered drain (never stranded)",
+        );
         assert_eq!(
-            set.paths,
+            drained.paths,
             paths(&["late.png"]),
-            "§7.8.1/P2.137: the re-routed set carries the full stale-stash payload"
+            "§7.8.1: the buffered set carries the full stashed payload"
         );
-        assert_eq!(set.origin, IntakeOrigin::LaunchArg);
+        // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the old `set.origin` (off the retired
+        // `RouteToEmit(set)`) is now `drained.origin` off the buffered take — the same origin-preservation check.
+        assert_eq!(drained.origin, IntakeOrigin::LaunchArg);
         assert!(
             buf.take_marking_ready(&ready).is_none(),
-            "§7.8.1: nothing may remain buffered after the re-route (the set went to the Emit arm)"
+            "§7.8.1: the drain consumed the buffer exactly once (nothing remains)"
         );
     }
 
     // §6.4.2 stress leg (G15; bounded, deterministic INVARIANT — not timing-dependent asserts): under a real
-    // two-thread race between the Buffer-arm stash and the C1 drain, every outcome pair satisfies the §7.8.1
-    // no-loss invariant — `Stashed` implies the drain observed the set (its take returned it), and a drain
-    // that took nothing implies the stash re-routed to Emit. No interleaving may strand a set.
+    // two-thread race between the funnel `stash` and the C1 drain, the §7.8.1 no-loss invariant always holds —
+    // the raced set is EITHER taken by the concurrent drain OR still buffered for a late one; it is never
+    // stranded. [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the `stash_or_route`/`RouteToEmit`
+    // re-route collapsed into a plain `stash`, so there is no second outcome branch — `stash` always buffers,
+    // and the two-rule ordering (funnel nudges after the stash iff ready) closes the race at the funnel, not
+    // here; this leg proves the buffer level never loses the set.
     #[test]
     fn stash_vs_drain_race_never_strands_a_set() {
         for _ in 0..100 {
             let buf = std::sync::Arc::new(PendingIntake::default());
             let ready = std::sync::Arc::new(FrontendReady::default());
-            let (b1, r1) = (std::sync::Arc::clone(&buf), std::sync::Arc::clone(&ready));
+            let b1 = std::sync::Arc::clone(&buf);
             let stasher = std::thread::spawn(move || {
-                b1.stash_or_route(
-                    &r1,
-                    vec![PathBuf::from("race.png")],
-                    IntakeOrigin::LaunchArg,
-                )
+                b1.stash(vec![PathBuf::from("race.png")], IntakeOrigin::LaunchArg);
             });
             let (b2, r2) = (std::sync::Arc::clone(&buf), std::sync::Arc::clone(&ready));
             let drainer = std::thread::spawn(move || b2.take_marking_ready(&r2));
-            let stash_outcome = stasher
+            stasher
                 .join()
-                .expect("§7.8.1/P2.137: the stasher thread must not panic");
+                .expect("§7.8.1: the stasher thread must not panic");
             let drained = drainer
                 .join()
-                .expect("§7.8.1/P2.137: the drainer thread must not panic");
+                .expect("§7.8.1: the drainer thread must not panic");
+            // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the join `.expect` messages shed their
+            // P2.137 tag (the stash is a plain `stash` now, no `StashOutcome` bound); same thread-panic checks.
             // The residue a LATE drain (serialized after the stash) would still find:
             let residue = buf.take_marking_ready(&ready);
-            let observed = drained.is_some() || residue.is_some();
-            match stash_outcome {
-                StashOutcome::Stashed => assert!(
-                    observed,
-                    "§7.8.1/P2.137 no-loss: a Stashed set must be observable by a drain (never stranded)"
-                ),
-                StashOutcome::RouteToEmit(set) => {
-                    assert_eq!(set.paths, vec![PathBuf::from("race.png")]);
-                    assert!(
-                        drained.is_none() && residue.is_none(),
-                        "§7.8.1/P2.137: a re-routed set is emitted, never ALSO buffered (no duplicate)"
-                    );
-                }
-            }
+            // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the old `match stash_outcome { Stashed =>
+            // assert!(observed…), RouteToEmit(set) => assert_eq!(set.paths…) + assert!(…) }` collapses to two
+            // no-loss invariants (no `StashOutcome` → one branch): the RouteToEmit paths-check + re-route assert
+            // reduce to an observed assert + a no-duplicate assert.
+            assert!(
+                drained.is_some() || residue.is_some(),
+                "§7.8.1 no-loss: the raced set is observed by the concurrent drain or remains buffered for \
+                 a late one — never stranded"
+            );
+            assert!(
+                !(drained.is_some() && residue.is_some()),
+                "§7.8.1: the single-slot buffer hands the set to exactly one take, never both (no duplicate)"
+            );
         }
     }
 
@@ -7882,14 +7866,15 @@ mod tests {
     }
 
     // §6.4.1 unit (G15): mark_ready flips the flag false→true — once the WebView registers its listener (the C1
-    // drainPending drain, P2.60) the funnel switches from the Buffer arm to the Emit arm (§7.8.1).
+    // drain, P2.60) the funnel starts NUDGING `app://intake` after its stash instead of staying silent (§7.8.1;
+    // the funnel always stashes, P3.77).
     #[test]
     fn frontend_ready_mark_ready_sets_ready() {
         let flag = FrontendReady::default();
         flag.mark_ready();
         assert!(
             flag.is_ready(),
-            "§7.8.1: mark_ready makes the funnel emit app://intake instead of buffering"
+            "§7.8.1: mark_ready makes the funnel nudge app://intake after the stash instead of staying silent"
         );
     }
 

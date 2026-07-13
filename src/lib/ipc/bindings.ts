@@ -452,9 +452,8 @@ export const commands = {
  *  suppression relies on (the identical P2.19 `IpcError.kind` decision; specta resolves the alias to the
  *  same wire type
  *  regardless). Only the three §2.13 app-level variants {`EngineMissing`, `WebviewFault`, `BundleDamaged`}
- *  ever travel on this event — a §2.13 RUNTIME invariant, NOT a type constraint (mirroring
- *  `IntakePayload.origin`, typed as the full `IntakeOrigin` though only `LaunchArg`/`SecondInstance` ride
- *  `app://intake`). `message` is the §2.13.3 pre-localised, plain-English, trace-free calm line (NEVER a
+ *  ever travel on this event — a §2.13 RUNTIME invariant, NOT a type constraint. `message` is the §2.13.3
+ *  pre-localised, plain-English, trace-free calm line (NEVER a
  *  stack trace / raw engine stderr, SSOT *no stack traces*); the §2.13.3 / §7.2 strings that fill it are a
  *  later box.
  *
@@ -1106,16 +1105,19 @@ export type EnumChoice = {
 export type InstanceId = string;
 
 /**
- *  How a set of paths entered intake (§0.6 / §7.8). Every source is routed through the single §7.8.1
- *  funnel into the §1.1 intake state machine, so the §2.4 freeze + §1.3 one-batch rules apply
- *  identically regardless of origin. `Drop`/`Picker` reach C1/C2a directly; only `LaunchArg` and
- *  `SecondInstance` ever travel on the `app://intake` event (§0.4.2 / §7.8.1).
+ *  How a set of paths entered intake (§0.6 / §7.8). Every source funnels into the §1.1 intake state machine,
+ *  so the §2.4 freeze + §1.3 one-batch rules apply identically regardless of origin. `Drop`/`LaunchArg`/
+ *  `SecondInstance` stash core-side into `PendingIntake` and reach the §1.1 freeze via the C1 drain (§7.8.1,
+ *  P3.77); the `Picker` set is still frozen directly by C2a `pick_for_intake` (never via C1) and joins the same
+ *  §7.8.1 funnel at P3.78 — either way the origin is stored core-side, never on the wire.
  *
  *  [Build-Session-Entscheidung: P2.2] `#[serde(rename_all = "camelCase")]` matches the established
  *  §0.6 wire-enum casing (the sibling `ErrorKind`/`IpcError` wire types, §0.4.3): the variants
- *  serialize as `drop`/`picker`/`launchArg`/`secondInstance`. `Serialize`+`Deserialize` because the
- *  origin crosses IPC both inbound (the C1 `ingest_paths` arg, §0.4.1) and outbound (the `app://intake`
- *  payload, §7.8.1); `Copy`/`Eq` are free for a fieldless enum. (`Hash` is omitted — not a map key.)
+ *  serialize as `drop`/`picker`/`launchArg`/`secondInstance`. `Serialize`+`Deserialize` because the origin
+ *  still crosses IPC as the **inbound** C1 `ingest_paths` arg (§0.4.1). [Build-Session-Entscheidung: P3.77]
+ *  It no longer has an OUTBOUND wire path: the 2026-07-06 core-owned-path ruling retired `IntakePayload`, so
+ *  `app://intake` is a payload-less nudge and the origin never travels outbound. `Copy`/`Eq` are free for a
+ *  fieldless enum. (`Hash` is omitted — not a map key.)
  */
 export type IntakeOrigin =
 /**  Files dropped on the drop area — the §1.1 primary intake; reaches C1 `ingest_paths` directly. */
@@ -1133,30 +1135,6 @@ export type IntakeOrigin =
  *  `argv`/cwd callback, or the macOS `RunEvent::Opened` while already running (§7.8).
  */
 "secondInstance";
-
-/**
- *  The `app://intake` hand-off payload (§0.4.2 / §7.8.1) — the launch-arg / second-instance paths drained
- *  through the §7.8.1 buffer-then-replay once the WebView is ready. `origin` is typed as the full
- *  `IntakeOrigin`, but only `LaunchArg` | `SecondInstance` ever travel on this event (`Drop`/`Picker`
- *  reach C1/C2a directly) — a §7.8.1 runtime invariant, not a type constraint.
- *
- *  [Build-Session-Entscheidung: P2.7] Follows the round-trippable struct pattern (`Serialize`+
- *  `Deserialize`, like `DroppedItem`); NOT `Copy` (owns a `Vec<PathBuf>`). camelCase wire form.
- *
- *  [Build-Session-Entscheidung: P2.39] Registered EXPLICITLY in `main.rs`'s `register_ipc_event_types`
- *  `.types()` chain now that its consumer — the `app://intake` event (§0.4.2 / §7.8.1) — is authored.
- *  The P2.7 "deferred to its consuming command/event" note assumed an auto-pull, but `app://intake` is a
- *  RAW `app.emit` / TS `listen` event (§0.4.2), not a command arg / `collect_events!` typed event, so it
- *  does NOT auto-pull `IntakePayload` into `bindings.ts` — the explicit `.types()` registration is what
- *  keeps `listen('app://intake')` typed against the named `IntakePayload` rather than `any` (the same
- *  reason `collect_events!` is avoided — see `register_ipc_event_types`).
- */
-export type IntakePayload = {
-	/**  The paths handed in (already resolved by the §7.8.1 funnel; frozen at C1). */
-	paths: string[],
-	/**  How the set entered intake — only `LaunchArg` | `SecondInstance` on this event (see the type doc). */
-	origin: IntakeOrigin,
-};
 
 /**
  *  The §0.4.3 authoritative error shape — every command's `Err` and every `ItemOutcome::Failed.error` is

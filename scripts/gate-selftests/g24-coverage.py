@@ -236,7 +236,7 @@ record("_apphandle_fn_ranges: a format!-brace body ends correctly (the following
 _main_src = (m.ROOT / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
 _main_fns = {n for n, _, _ in m._apphandle_fn_ranges(_main_src)}
 record("_apphandle_fn_ranges: real main.rs - the funnel + shells are exempt",
-       {"forward_launch_intake", "converter_is_busy", "frontend_ready", "buffer_pending_intake"} <= _main_fns)
+       {"forward_launch_intake", "converter_is_busy", "frontend_ready", "stash_pending_intake"} <= _main_fns)
 record("_apphandle_fn_ranges: real main.rs - the PURE helpers (intake_disposition/parse_path_args) are NOT exempt",
        "intake_disposition" not in _main_fns and "parse_path_args" not in _main_fns)
 record("_apphandle_fn_ranges: real main.rs - fn main (no AppHandle in its sig) is NOT exempt (boot_invariants source-scan covers its body, not this diff exemption)",

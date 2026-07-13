@@ -212,9 +212,8 @@ pub struct IpcError {
 /// suppression relies on (the identical P2.19 `IpcError.kind` decision; specta resolves the alias to the
 /// same wire type
 /// regardless). Only the three §2.13 app-level variants {`EngineMissing`, `WebviewFault`, `BundleDamaged`}
-/// ever travel on this event — a §2.13 RUNTIME invariant, NOT a type constraint (mirroring
-/// `IntakePayload.origin`, typed as the full `IntakeOrigin` though only `LaunchArg`/`SecondInstance` ride
-/// `app://intake`). `message` is the §2.13.3 pre-localised, plain-English, trace-free calm line (NEVER a
+/// ever travel on this event — a §2.13 RUNTIME invariant, NOT a type constraint. `message` is the §2.13.3
+/// pre-localised, plain-English, trace-free calm line (NEVER a
 /// stack trace / raw engine stderr, SSOT *no stack traces*); the §2.13.3 / §7.2 strings that fill it are a
 /// later box.
 ///

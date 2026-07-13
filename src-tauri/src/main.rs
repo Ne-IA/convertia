@@ -43,9 +43,7 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_log::{log::LevelFilter, RotationStrategy, Target, TargetKind};
 
-use crate::domain::{
-    CollectedSetId, CollectingId, InstanceId, IntakePayload, ItemId, LossyKind, RunId,
-};
+use crate::domain::{CollectedSetId, CollectingId, InstanceId, ItemId, LossyKind, RunId};
 use crate::outcome::{AppFault, ConversionErrorKind, IpcError, OutcomeMsg};
 
 /// [Build-Session-Entscheidung: P1.15] The §7.2.1 step-2 boot context: the three resolved base dirs
@@ -122,12 +120,15 @@ fn register_ipc_taxonomy_types(types: specta::Types) -> specta::Types {
 /// "register in collect_types![]" the §0.4.2/§0.4.3 box-notes call for (tauri-specta v2 has no
 /// `collect_types!` macro — `.types(register::<T>())` is its canonical equivalent): it exports each app://
 /// payload as a NAMED `bindings.ts` type so the TS `listen(<name>)` side type-checks rather than mirroring
-/// `any`. Two payload types register here — `AppFault` (app://fault, `crate::outcome`) and `IntakePayload`
-/// (app://intake, `crate::domain`); `app://close-requested` carries `()` (§0.4.2), so it has NO payload type
-/// to register. Kept as its own function (not folded into identity/taxonomy) so the three registration
+/// `any`. ONE payload type registers here — `AppFault` (app://fault, `crate::outcome`); `app://intake` and
+/// `app://close-requested` both carry `()` (§0.4.2), so neither has a payload type to register.
+/// [Build-Session-Entscheidung: P3.77] `IntakePayload` (the former app://intake `{ paths, origin }` payload) is
+/// RETIRED with the 2026-07-06 core-owned-path ruling — `app://intake` is now a PAYLOAD-LESS nudge (the paths
+/// stay core-side in `PendingIntake` and drain via the C1 response), so it joins `app://close-requested` as a
+/// no-payload-type event. Kept as its own function (not folded into identity/taxonomy) so the three registration
 /// RATIONALES — identity-spine vs §2.8.2-taxonomy-mandate vs §0.4.2-event-payload — stay legible.
 fn register_ipc_event_types(types: specta::Types) -> specta::Types {
-    types.register::<AppFault>().register::<IntakePayload>()
+    types.register::<AppFault>()
 }
 
 /// [Build-Session-Entscheidung: P1.25/P1.26] The single tauri-specta `Builder` — the ONE source the
@@ -201,6 +202,18 @@ fn ipc_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
 #[derive(Clone, serde::Serialize)]
 struct CloseRequestedSignal;
 
+/// [Build-Session-Entscheidung: P3.77] The §0.4.2 / §7.8.1 `app://intake` nudge payload. After the 2026-07-06
+/// core-owned-path ruling `app://intake` carries NO data — it is a pure "come and drain `PendingIntake`" signal
+/// (the real paths stay core-side; no path ever crosses the wire). Emitted as a `Serialize + Clone` unit struct
+/// for the SAME reason `CloseRequestedSignal` is (§7.3.2/P2.80): `serde_json` is a DEV-only dependency in this
+/// crate while `serde` is in the production closure, so a `serde_json::Value::Null` literal is unavailable —
+/// serde serialises a unit struct to JSON `null`, the same wire form, and not the bare `()` literal §0.4.2 rules
+/// out. Deliberately NOT `specta::Type` and NOT registered in `.types()` (the sibling of `CloseRequestedSignal`),
+/// so `bindings.ts` gains no payload type for `app://intake` — the frontend `listen('app://intake')` handler
+/// takes no payload (it just re-drains). This is what retires `IntakePayload`.
+#[derive(Clone, serde::Serialize)]
+struct IntakeSignal;
+
 /// [Build-Session-Entscheidung: P2.79/P2.80] §7.3.2 the window-lifecycle event handler — the Tauri v2 two-arg
 /// `Builder::on_window_event(|window, event|)` hook (registered in `main()`) delegates every `WindowEvent`
 /// here with the resolved `&AppHandle`, and this fn intercepts `CloseRequested`. When a conversion run is in
@@ -211,12 +224,19 @@ struct CloseRequestedSignal;
 /// decision; the JS side only renders, avoiding the §7.3.2-warned split-brain "is it converting?" check. It
 /// reuses the ONE §7.1.1 run-busy predicate (`launch_intake::converter_is_busy`, the §1.9 `RunRegistry` read)
 /// — the spec mandates the launch refuse-busy gate and the close guard share the SAME predicate (§7.3.2). An
-/// idle converter is not busy, so the close proceeds and the app quits immediately (§7.3.3). Other
-/// `WindowEvent` variants are not intercepted (the single `main` window needs no per-event handling).
+/// idle converter is not busy, so the close proceeds and the app quits immediately (§7.3.3).
+///
+/// [Build-Session-Entscheidung: P3.77] It ALSO intercepts `WindowEvent::DragDrop(DragDropEvent::Drop)` — the
+/// §5.4 native window drop, handled CORE-SIDE (the 2026-07-06 core-owned-path ruling): the dropped paths never
+/// enter the WebView (which renders drag-over styling from DOM drag events only), they route through the SAME
+/// §7.8.1 `forward_launch_intake` funnel as the launch-arg / second-instance / Open-with paths, origin `Drop`,
+/// so the §7.1.1 refuse-busy gate + the §2.4 freeze + the single `PendingIntake` hand-off buffer apply
+/// identically. Two independent `if let`s (not a `match`) keep this off the `#[non_exhaustive]` `WindowEvent`'s
+/// wildcard-arm deny; every other variant is a no-op (the single `main` window needs no further handling).
 /// AppHandle-coupled boot-glue (the §1.1a boot-stage pattern — not `tauri::test`-mockable here; the routing is
-/// source-scan-pinned + the §6.4.6 window-close E2E leg exercises it, and the `AppHandle` signature makes it
-/// G28 diff-floor-exempt). `main()`'s closure is a thin delegation line (the established `.setup`/`.plugin`
-/// main-body pattern), so the interceptor logic lives in this exempt fn, not in `main()`.
+/// source-scan-pinned + the §6.4.6 window-close / §5.4 native-drop E2E legs exercise it, and the `AppHandle`
+/// signature makes it G28 diff-floor-exempt). `main()`'s closure is a thin delegation line (the established
+/// `.setup`/`.plugin` main-body pattern), so the interceptor logic lives in this exempt fn, not in `main()`.
 fn dispatch_window_event(app: &tauri::AppHandle, event: &tauri::WindowEvent) {
     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
         if launch_intake::converter_is_busy(app) {
@@ -227,6 +247,13 @@ fn dispatch_window_event(app: &tauri::AppHandle, event: &tauri::WindowEvent) {
             )
             .ok();
         }
+    }
+    // §5.4/§7.8.1 native window drop — handled core-side (P3.77): route the dropped paths through the SAME
+    // §7.8.1 funnel as every other intake origin (origin `Drop`), so no drop path ever reaches the WebView and
+    // the §7.1.1 refuse-busy gate + §2.4 freeze + `PendingIntake` hand-off apply once. `paths.clone()` because
+    // the event is borrowed; the funnel takes ownership (it stashes / drops the set).
+    if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+        launch_intake::forward_launch_intake(app, paths.clone(), crate::domain::IntakeOrigin::Drop);
     }
 }
 
@@ -494,9 +521,10 @@ fn readiness_checks(app: &AppHandle) -> Result<(), AppFault> {
 /// This fn returns `()` (internal routing, NOT a short-circuit signal — so `main()`'s setup is unchanged +
 /// G28-clean, not the `and_then` variant that would add uncovered lines to `main`), so the setup's step-7
 /// launch-intake feed (`forward_first_launch_argv`) still runs after a `None`/`WebviewFault`. That feed is
-/// INERT on this path — `frontend_ready` is `false` (no window ⇒ `mark_ready` is never called), so
-/// `intake_disposition` resolves to `Buffer` → `PendingIntake`, which is then never drained: no panic, no
-/// path loss. Whether a fatal boot fault should SKIP step 7 is a P4 decision that travels with the native
+/// INERT on this path — the funnel stashes the launch set into `PendingIntake` (as always, P3.77) but
+/// `frontend_ready` is `false` (no window ⇒ `mark_ready` is never called), so it emits NO `app://intake` nudge
+/// and the stash is then never drained: no panic, no path loss. Whether a fatal boot fault should SKIP step 7
+/// is a P4 decision that travels with the native
 /// presentation body (which owns what the app does after a `WebviewFault`). AppHandle-coupled boot-glue (§1.1a;
 /// signature-pinned + G28-exempt).
 fn reveal_main_window(app: &AppHandle) {
@@ -575,97 +603,101 @@ mod launch_intake {
     // and the former module-level `#![cfg_attr(not(test), …)]` dead-code suppression is REMOVED (with nothing
     // dead, that `dead_code` expectation would flip to "expectation unfulfilled" under `-D warnings`). The
     // `converter_is_busy` predicate now reads the real §1.9 run-state via the RunRegistry (P2.55), the
-    // `PendingIntake` buffer arm is real (P2.58), and the `frontend_ready` ready-flag now reads the real
-    // `State<FrontendReady>` (P2.59). Until P3 populates runs the registry is empty (not busy), and until P2.60
-    // wires the C1 `drainPending` drain (which calls `mark_ready`) the flag stays `false`, so an idle launch set
-    // routes — via `frontend_ready`'s not-ready flag — to the real buffer, never lost.
+    // `PendingIntake` stash is real (P2.58), and the `frontend_ready` ready-flag now reads the real
+    // `State<FrontendReady>` (P2.59). [Build-Session-Entscheidung: P3.77] The funnel now ALWAYS stashes an idle
+    // intake set into `PendingIntake` (the single hand-off buffer) and reads `frontend_ready` AFTER the stash to
+    // decide the payload-less `app://intake` nudge — so a not-ready launch set is buffered (never lost) and the
+    // root-shell mount drain collects it (§5.8); the native drop joins this same funnel via the crate-root
+    // `dispatch_window_event` (§5.4, P3.77).
 
     use std::path::PathBuf;
 
     use tauri::{AppHandle, Emitter, Manager};
 
-    use crate::domain::{IntakeOrigin, IntakePayload};
+    use crate::domain::IntakeOrigin;
     use crate::ipc::events;
     use crate::orchestrator::{FrontendReady, PendingIntake, RunRegistry};
 
-    /// [Build-Session-Entscheidung: P2.40] The §0.4.2 / §7.8.1 `app://intake` disposition — the THREE
-    /// outcomes a launch-time path set can take. Encoding it as an enum makes the IDLE-path-only rule
-    /// STRUCTURAL: a `busy` state maps ONLY to `Drop` (see `intake_disposition`), so the funnel can never
-    /// emit/buffer ingestable paths mid-run — the §2.4 freeze + the §0.4.2 "never emits `app://intake` with
-    /// ingestable paths mid-run" contract become a property of the type, not a convention.
+    /// [Build-Session-Entscheidung: P2.40] The §0.4.2 / §7.8.1 intake disposition — the two outcomes an intake
+    /// path set can take. Encoding it as an enum makes the IDLE-path-only rule STRUCTURAL: a `busy` state maps
+    /// ONLY to `Drop` (see `intake_disposition`), so the funnel can never stash/nudge ingestable paths mid-run —
+    /// the §2.4 freeze + the §0.4.2 "never emits `app://intake` with ingestable paths mid-run" contract become a
+    /// property of the type, not a convention.
+    ///
+    /// [Build-Session-Entscheidung: P3.77] The former three-way `Drop`/`Emit`/`Buffer` collapsed to two when the
+    /// 2026-07-06 core-owned-path ruling retired the payload-carrying `Emit` arm: every non-busy intake now
+    /// ALWAYS stashes (`Stash`) and the funnel nudges iff the WebView is ready — a SEPARATE post-stash read, NOT
+    /// part of the disposition (the ready flag MUST be read AFTER the stash for the §7.8.1 no-loss ordering, so
+    /// it cannot be folded into an up-front disposition). So the disposition depends on `busy` alone.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) enum IntakeDisposition {
-        /// §7.1.1 refuse-busy: a run is in flight — DROP the launch paths core-side (no `app://intake`
-        /// emit, no `PendingIntake` buffer), so the §2.4 frozen set is never mutated mid-run. Enforced in
-        /// the funnel at P2.55.
+        /// §7.1.1 refuse-busy: a run is in flight — DROP the intake paths core-side (no `PendingIntake` stash,
+        /// no `app://intake` nudge), so the §2.4 frozen set is never mutated mid-run. Enforced in the funnel at
+        /// P2.55.
         Drop,
-        /// Idle + the WebView `app://intake` listener is ready — emit `app://intake` so the frontend mirrors
-        /// a drop (§5.2/§1.1). Selected once the real `frontend_ready` flag (`State<FrontendReady>`, P2.59) is set.
-        Emit,
-        /// Idle but the WebView is not-yet-ready (the §7.8.1 first-launch listener race) — stash the paths in
-        /// `PendingIntake` for the drain-on-mount replay (P2.58/P2.60). The default until `frontend_ready` is set (P2.59).
-        Buffer,
+        /// Idle (not busy) — STASH the paths in `PendingIntake` (the single hand-off buffer, P3.77) for the C1
+        /// drain, then nudge `app://intake` iff the WebView is ready (the funnel's separate post-stash read).
+        Stash,
     }
 
-    /// [Build-Session-Entscheidung: P2.40] The §0.4.2 / §7.8.1 IDLE-path-only decision. `busy` is tested
-    /// FIRST and short-circuits to `Drop` regardless of `frontend_ready` — that ordering is what encodes
-    /// "never emit ingestable paths mid-run": this fn can return `Emit`/`Buffer` ONLY when `!busy`. The
-    /// `busy` / `frontend_ready` predicates are resolved by the funnel against the `AppHandle`
-    /// (`converter_is_busy`, §1.9 run-state, wired P2.55; the WebView-ready flag, §7.8.1, wired P2.59) and
-    /// PASSED IN, so the rule itself is pure and unit-tested in isolation.
-    pub(crate) fn intake_disposition(busy: bool, frontend_ready: bool) -> IntakeDisposition {
+    /// [Build-Session-Entscheidung: P2.40] The §0.4.2 / §7.8.1 IDLE-path-only decision — `busy` maps to `Drop`,
+    /// idle maps to `Stash`. That short-circuit is what encodes "never stash/nudge ingestable paths mid-run":
+    /// this fn returns `Stash` ONLY when `!busy`. [Build-Session-Entscheidung: P3.77] It depends on `busy`
+    /// ALONE — the readiness (nudge) decision is deliberately NOT here: the funnel reads `frontend_ready` AFTER
+    /// the stash (the §7.8.1 no-loss ordering), so folding it into this up-front disposition would reintroduce
+    /// the TOCTOU that ordering closes. The `busy` predicate is resolved by the funnel against the `AppHandle`
+    /// (`converter_is_busy`, §1.9 run-state, wired P2.55) and PASSED IN, so the rule is pure + unit-tested in isolation.
+    pub(crate) fn intake_disposition(busy: bool) -> IntakeDisposition {
         if busy {
             IntakeDisposition::Drop
-        } else if frontend_ready {
-            IntakeDisposition::Emit
         } else {
-            IntakeDisposition::Buffer
+            IntakeDisposition::Stash
         }
     }
 
-    /// [Build-Session-Entscheidung: P2.54] The §7.8.1 single funnel — EVERY launch-time path source (the
-    /// §7.1.1 single-instance argv callback, the macOS `RunEvent::Opened` handler, the first-launch argv
-    /// reader) routes here, so the §7.1.1 refuse-busy gate and the §7.8.1 first-launch buffer-replay are
-    /// enforced ONCE, not duplicated per hook. The disposition is the pure `intake_disposition` rule (P2.40,
-    /// already truth-table-tested), NOT a re-inlined copy of the illustrative §7.8.1 if/else: the funnel
-    /// resolves the two run-time predicates against the `AppHandle` and dispatches on the result.
-    fn forward_launch_intake(app: &AppHandle, paths: Vec<PathBuf>, origin: IntakeOrigin) {
-        // §7.8.1: an empty path set (a bare relaunch with no files) is a no-op.
+    /// [Build-Session-Entscheidung: P2.54] The §7.8.1 single funnel — EVERY intake source (the §7.1.1
+    /// single-instance argv callback, the macOS `RunEvent::Opened` handler, the first-launch argv reader, and
+    /// [Build-Session-Entscheidung: P3.77] the native `WindowEvent::DragDrop` — routed here from the crate-root
+    /// `dispatch_window_event`) reduces to this one function, so the §7.1.1 refuse-busy gate and the §7.8.1
+    /// stash-then-nudge are enforced ONCE, not duplicated per hook. The busy disposition is the pure
+    /// `intake_disposition` rule (P2.40, truth-table-tested); the nudge decision is a SEPARATE post-stash
+    /// `frontend_ready` read (the §7.8.1 no-loss ordering, P3.77). `pub(super)` so the crate-root native-drop
+    /// hook can route the dropped paths through the same funnel.
+    pub(super) fn forward_launch_intake(
+        app: &AppHandle,
+        paths: Vec<PathBuf>,
+        origin: IntakeOrigin,
+    ) {
+        // §7.8.1: an empty path set (a bare relaunch with no files, or an empty drop) is a no-op.
         if paths.is_empty() {
             return;
         }
-        match intake_disposition(converter_is_busy(app), frontend_ready(app)) {
-            // §7.1.1 PRIMARY refuse-busy: a mid-run second launch / Open-with is dropped core-side — no
-            // `app://intake` emit, no `PendingIntake` buffer — so the §2.4 frozen set is never mutated mid-run.
+        match intake_disposition(converter_is_busy(app)) {
+            // §7.1.1 PRIMARY refuse-busy: a mid-run second launch / Open-with / drop is dropped core-side — no
+            // `PendingIntake` stash, no `app://intake` nudge — so the §2.4 frozen set is never mutated mid-run.
             IntakeDisposition::Drop => {}
-            // Idle + the WebView listener is ready: emit the §0.4.2 `app://intake` event so the UI mirrors
-            // a drop (§5.2/§1.1).
-            IntakeDisposition::Emit => emit_intake(app, paths, origin),
-            // Idle but the WebView is not-yet-ready (the §7.8.1 first-launch listener race): stash the
-            // paths + origin for the drain-on-mount replay — or, when the C1 drain won the race between
-            // the disposition snapshot above and the stash (the §7.8.1 no-loss closure, P2.137:
-            // `stash_or_route` re-checks readiness under the pending-slot lock), take the set back and
-            // emit it live instead — nothing is ever stranded.
-            IntakeDisposition::Buffer => {
-                if let crate::orchestrator::StashOutcome::RouteToEmit(set) =
-                    buffer_pending_intake(app, paths, origin)
-                {
-                    emit_intake(app, set.paths, set.origin);
+            // Idle: ALWAYS stash into the single §7.8.1 hand-off buffer (P3.77) — the paths never cross the
+            // wire — then read `frontend_ready` AFTER the stash and nudge iff ready (the §7.8.1 no-loss
+            // ordering: stash-before-read pairs with the C1 drain's mark-before-take, so a set is never lost;
+            // a not-ready launch is collected by the root-shell mount drain, §5.8).
+            IntakeDisposition::Stash => {
+                stash_pending_intake(app, paths, origin);
+                if frontend_ready(app) {
+                    nudge_intake(app);
                 }
             }
         }
     }
 
-    /// The single §0.4.2 `app://intake` emit site — the payload is `{ paths, origin }` so the frontend
-    /// re-calls C1 with the right `IntakeOrigin` (§5.2/§1.1); the event name via the `crate::ipc::events`
-    /// constant, never a re-spelled literal (plan-lint check 28). Extracted so the emit surface has exactly
-    /// ONE production `emit(events::APP_INTAKE` call site (both funnel arms route through it; the
-    /// `launch_intake::tests` cardinality scan pins that closed surface — a second emit site would bypass
-    /// the §7.1.1 refuse-busy gate). AppHandle-coupled boot-glue (§1.1a; G28 signature-exempt).
-    /// [Build-Session-Entscheidung: P2.137]
-    fn emit_intake(app: &AppHandle, paths: Vec<PathBuf>, origin: IntakeOrigin) {
-        app.emit(events::APP_INTAKE, IntakePayload { paths, origin })
-            .ok();
+    /// The single §0.4.2 `app://intake` NUDGE site — a PAYLOAD-LESS "come and drain `PendingIntake`" signal
+    /// (P3.77; the `IntakeSignal` unit struct serialises to JSON `null`, no path on the wire), so the frontend
+    /// re-calls the C1 drain (§7.8.1). The event name via the `crate::ipc::events` constant, never a re-spelled
+    /// literal (plan-lint check 28). Extracted so the nudge surface has exactly ONE production
+    /// `emit(events::APP_INTAKE` call site (the `launch_intake::tests` cardinality scan pins that closed
+    /// surface — a second emit site would bypass the §7.1.1 refuse-busy gate). AppHandle-coupled boot-glue
+    /// (§1.1a; G28 signature-exempt). [Build-Session-Entscheidung: P3.77]
+    fn nudge_intake(app: &AppHandle) {
+        app.emit(events::APP_INTAKE, crate::IntakeSignal).ok();
     }
 
     /// [Build-Session-Entscheidung: P2.54.1] The §7.8.1 `argv` classifier — split launch FLAG tokens from
@@ -869,85 +901,77 @@ mod launch_intake {
 
     /// [Build-Session-Entscheidung: P2.59] The §7.8.1 WebView-ready predicate — reads the real
     /// `State<FrontendReady>` flag (`crate::orchestrator`, P2.59): `true` once the frontend has registered its
-    /// `app://intake` listener and run the C1 `drainPending` drain on root-shell mount (P2.60 calls
-    /// `mark_ready`). When ready, `intake_disposition` returns `Emit` (the funnel emits `app://intake`); when
-    /// not-ready it returns `Buffer`, so a first-launch set arriving before the listener exists is stashed in
-    /// `PendingIntake` (P2.58) instead of emitted into a listener that would drop it (the §7.8.1 race). The flag
-    /// is `false` at app start (the fail-safe default — buffer, never emit, until the listener is proven), so
-    /// while the run registry is empty (pre-P3) `converter_is_busy` is `false` and an idle launch set still
-    /// routes to the real `PendingIntake` buffer until P2.60 wires the `mark_ready` drain — this box makes the
-    /// `Emit` arm reachable. AppHandle-coupled boot-glue (§1.1a; G28 signature-exempt; the source-scan pins the
+    /// `app://intake` listener and run the C1 drain on root-shell mount (P2.60 calls `mark_ready`).
+    /// [Build-Session-Entscheidung: P3.77] The funnel reads this AFTER the stash to decide the NUDGE: ready →
+    /// emit the payload-less `app://intake` nudge; not-ready → no nudge (the set is still stashed in
+    /// `PendingIntake`, and the root-shell mount drain collects it, §5.8 — no listener-race loss). The flag is
+    /// `false` at app start (the fail-safe default — no nudge until the listener is proven; the mount drain
+    /// still runs). AppHandle-coupled boot-glue (§1.1a; G28 signature-exempt; the source-scan pins the
     /// `FrontendReady` query). `app.state::<FrontendReady>()` is infallible by construction (registered in
     /// main()'s Builder chain).
     fn frontend_ready(app: &AppHandle) -> bool {
         app.state::<FrontendReady>().is_ready()
     }
 
-    /// [Build-Session-Entscheidung: P2.58] The §7.8.1 first-launch `Buffer` arm — stash the idle-and-not-ready
-    /// launch set into the app-managed `State<PendingIntake>` (`crate::orchestrator`) for the C1 `drainPending`
-    /// replay (P2.60), closing the §7.8.1 first-launch listener race. AppHandle-coupled boot-glue (the §1.1a
-    /// boot-stage pattern — not cargo-test execution-testable; the stash LOGIC is unit-tested on
-    /// `PendingIntake`, this WIRING is source-scan-pinned + G28 boot-glue-exempt). `app.state::<PendingIntake>()`
-    /// is infallible by construction: `main()` registers the buffer in the Builder chain BEFORE the event loop
-    /// (so before any single-instance callback), so the resolve cannot fail at runtime — no panic despite the
-    /// crate-root `clippy::panic` deny. REACHED from P2.55: with the run registry empty (pre-P3)
-    /// `converter_is_busy` is `false`, so an idle-and-not-ready launch set now routes into this real stash —
-    /// the owner-confirmed order landed this buffer (P2.58) BEFORE P2.55 opened idle-flow, so no idle set
-    /// ever routed into a no-op.
-    fn buffer_pending_intake(
-        app: &AppHandle,
-        paths: Vec<PathBuf>,
-        origin: IntakeOrigin,
-    ) -> crate::orchestrator::StashOutcome {
-        let pending = app.state::<PendingIntake>();
-        let ready = app.state::<FrontendReady>();
-        pending.stash_or_route(ready.inner(), paths, origin)
+    /// [Build-Session-Entscheidung: P2.58] The §7.8.1 stash — buffer the idle intake set into the app-managed
+    /// `State<PendingIntake>` (`crate::orchestrator`) for the C1 drain replay (P2.60). [Build-Session-Entscheidung: P3.77]
+    /// The 2026-07-06 core-owned-path ruling makes this UNCONDITIONAL for every non-busy launch/drop origin (drop,
+    /// launch-arg, second-instance — the single hand-off buffer; the C2a picker joins at P3.78): the funnel
+    /// stashes here, then reads `frontend_ready` SEPARATELY to decide the nudge (no more `Emit`-vs-`Buffer` split / `RouteToEmit`
+    /// re-route). AppHandle-coupled boot-glue (the §1.1a boot-stage pattern — not cargo-test execution-testable;
+    /// the stash LOGIC is unit-tested on `PendingIntake`, this WIRING is source-scan-pinned + G28
+    /// boot-glue-exempt). `app.state::<PendingIntake>()` is infallible by construction: `main()` registers the
+    /// buffer in the Builder chain BEFORE the event loop (so before any intake hook), so the resolve cannot fail
+    /// at runtime — no panic despite the crate-root `clippy::panic` deny.
+    fn stash_pending_intake(app: &AppHandle, paths: Vec<PathBuf>, origin: IntakeOrigin) {
+        app.state::<PendingIntake>().stash(paths, origin);
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
 
-        // §6.4.1 unit (G15): the §0.4.2 / §7.8.1 `app://intake` IDLE-path-only rule (P2.40) — the full
-        // busy x ready truth table. The load-bearing rows are the two busy ones: busy yields `Drop` in BOTH
-        // ready states (the "never emit ingestable paths mid-run" invariant — a mid-run launch / Open-with
-        // is dropped core-side, never emitted or buffered, §7.1.1 / §2.4).
+        // §6.4.1 unit (G15): the §0.4.2 / §7.8.1 intake IDLE-path-only rule (P2.40; reduced to a busy→disposition
+        // rule at P3.77 — the nudge is now a separate post-stash read, no longer part of the disposition). Busy
+        // → `Drop`; idle → `Stash`. The load-bearing row is the busy one: it yields `Drop` (the "never
+        // stash/nudge ingestable paths mid-run" invariant — a mid-run launch / drop / Open-with is dropped
+        // core-side, §7.1.1 / §2.4). [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1]
         #[test]
         fn idle_path_only_rule_truth_table() {
+            // the 4-row busy×ready truth table collapsed to 2: `intake_disposition` no longer reads
+            // `frontend_ready`, so each case's two ready-variants fuse. [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1]
             assert_eq!(
-                intake_disposition(true, true),
+                intake_disposition(true),
                 IntakeDisposition::Drop,
-                "§7.1.1: busy drops even when the frontend is ready (never emit ingestable paths mid-run)"
+                "§7.1.1: busy drops (never stash/nudge ingestable paths mid-run)"
             );
+            // the old idle+ready `Emit` and idle+not-ready `Buffer` rows likewise fuse into this single
+            // idle→`Stash` row (the nudge is a separate post-stash read). [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1]
             assert_eq!(
-                intake_disposition(true, false),
-                IntakeDisposition::Drop,
-                "§7.1.1: busy drops even when the frontend is not ready (no buffer mid-run either)"
-            );
-            assert_eq!(
-                intake_disposition(false, true),
-                IntakeDisposition::Emit,
-                "§7.8.1: idle + ready emits app://intake"
-            );
-            assert_eq!(
-                intake_disposition(false, false),
-                IntakeDisposition::Buffer,
-                "§7.8.1: idle + not-ready buffers (the first-launch listener race)"
+                intake_disposition(false),
+                IntakeDisposition::Stash,
+                "§7.8.1: idle stashes into the single PendingIntake hand-off buffer (P3.77)"
             );
         }
 
-        // §6.4.1 unit (G15): the IDLE-path-only INVARIANT made explicit — for a busy converter the
-        // disposition is `Drop` for EVERY readiness value, so the funnel can never emit/buffer ingestable
-        // paths mid-run by construction (§0.4.2 "never emits app://intake with ingestable paths mid-run").
+        // §6.4.1 unit (G15): the refuse-busy INVARIANT — a busy converter's disposition is `Drop`, NEVER
+        // `Stash`, so the funnel can never stash/nudge ingestable paths mid-run by construction (§0.4.2 / §2.4
+        // freeze). The former readiness-iteration is obsolete: `intake_disposition` no longer takes
+        // `frontend_ready` (the nudge is a separate post-stash read, P3.77), so "busy drops regardless of
+        // readiness" is now a property of the signature; this asserts the surviving security invariant (busy ⇒
+        // not Stash) as a distinct assert. [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1]
         #[test]
-        fn busy_never_emits_or_buffers() {
-            for ready in [true, false] {
-                assert_eq!(
-                    intake_disposition(true, ready),
-                    IntakeDisposition::Drop,
-                    "§0.4.2/§7.1.1: a busy converter always drops launch paths (ready={ready})"
-                );
-            }
+        fn busy_disposition_is_never_stash() {
+            assert_eq!(
+                intake_disposition(true),
+                IntakeDisposition::Drop,
+                "§7.1.1: a busy converter's disposition is Drop"
+            );
+            assert_ne!(
+                intake_disposition(true),
+                IntakeDisposition::Stash,
+                "§0.4.2/§2.4: a busy converter never stashes ingestable paths mid-run"
+            );
         }
 
         // §6.4.1 unit (G15): the §7.8.1 funnel + classifier exist with their spec'd signatures. The
@@ -963,13 +987,11 @@ mod launch_intake {
             let _argv: fn(&AppHandle, &[String], &str, IntakeOrigin) = forward_launch_argv;
             let _busy: fn(&AppHandle) -> bool = converter_is_busy;
             let _ready: fn(&AppHandle) -> bool = frontend_ready;
-            // [Test-Change: P2.137 — old-obsolete+new-correct, §7.8.1] the Buffer arm now returns the fused
-            // no-loss `StashOutcome` (stash-or-route), so the signature pin follows the new return type.
-            let _buffer: fn(
-                &AppHandle,
-                Vec<PathBuf>,
-                IntakeOrigin,
-            ) -> crate::orchestrator::StashOutcome = buffer_pending_intake;
+            // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the P2.137 `buffer_pending_intake ->
+            // StashOutcome` fused form collapsed into an unconditional `stash_pending_intake` (unit return) when
+            // the payload-carrying `Emit` arm was retired (no `RouteToEmit` to hand back), so the signature pin
+            // follows the new name + return type.
+            let _stash: fn(&AppHandle, Vec<PathBuf>, IntakeOrigin) = stash_pending_intake;
             let _opened: fn(&AppHandle, &[tauri::Url]) = handle_opened;
             let _origin: fn(bool) -> IntakeOrigin = launch_origin;
             let _argvread: fn(&AppHandle) = forward_first_launch_argv;
@@ -1014,11 +1036,11 @@ mod launch_intake {
         }
 
         // §6.4.1 unit (G15): the §7.8.1 funnel DISPATCHES via the pure P2.40 `intake_disposition` rule
-        // (resolving both predicates against the AppHandle), NOT a re-inlined copy of the illustrative
-        // §7.8.1 if/else — the DRY property the owner confirmed. Scan the production source (the shared
-        // `boot_invariants` helper, truncated before the FIRST `cfg(test)` module = launch_intake's own
-        // tests, so the needle can never self-match this file); the call substring does not appear in
-        // `intake_disposition`'s own `fn` definition. Needle `concat!`-assembled (the established
+        // (resolving the busy predicate against the AppHandle — P3.77 reduced it to `busy` alone), NOT a
+        // re-inlined copy of the illustrative §7.8.1 if/else — the DRY property the owner confirmed. Scan the
+        // production source (the shared `boot_invariants` helper, truncated before the FIRST `cfg(test)` module
+        // = launch_intake's own tests, so the needle can never self-match this file); the call substring does
+        // not appear in `intake_disposition`'s own `fn` definition. Needle `concat!`-assembled (the established
         // self-match-avoidance). [Build-Session-Entscheidung: P2.54]
         #[test]
         fn funnel_dispatches_via_the_pure_disposition_rule() {
@@ -1027,7 +1049,7 @@ mod launch_intake {
             assert!(
                 src.contains(dispatch),
                 "§7.8.1: forward_launch_intake must dispatch via the pure intake_disposition rule (P2.40), \
-                 resolving the predicates against the AppHandle — not a re-inlined if/else"
+                 resolving the busy predicate against the AppHandle — not a re-inlined if/else"
             );
         }
 
@@ -1199,9 +1221,9 @@ mod launch_intake {
         }
 
         // §6.4.1 unit (G15, P2.137): the §7.8.1 empty-SET no-op guard is WIRED — the funnel returns early on
-        // an empty path set, so a bare flags-only relaunch never occupies the PendingIntake slot (whose
-        // `stash_or_route` waives its own empty guard on this one) and never emits a spurious `app://intake`
-        // against the §0.4.2 row semantics.
+        // an empty path set, so a bare flags-only relaunch (or an empty drop) never occupies the PendingIntake
+        // slot (whose `stash` waives its own empty guard on this one) and never emits a spurious `app://intake`
+        // nudge against the §0.4.2 row semantics.
         #[test]
         fn funnel_returns_early_on_an_empty_path_set() {
             let src = crate::boot_invariants::production_boot_source();
@@ -1211,12 +1233,12 @@ mod launch_intake {
             );
         }
 
-        // §6.4.1 unit (G15, P2.137): the §0.4.2 `app://intake` emit surface is CLOSED — exactly ONE
-        // production emit call site exists (`emit_intake`; both funnel arms route through it), so a future
-        // box adding a second emit — which would bypass the §7.1.1 refuse-busy gate and the §2.4 freeze
-        // protection — reds here. Walks every crate source file, each stripped at its first test-module
-        // boundary (the established per-file production-prefix discipline); the needles carry the leading
-        // `.` of the method call so `emit_intake`'s own doc prose never aliases.
+        // §6.4.1 unit (G15, P2.137): the §0.4.2 `app://intake` nudge surface is CLOSED — exactly ONE
+        // production emit call site exists (`nudge_intake`, the payload-less nudge, P3.77), so a future box
+        // adding a second emit — which would bypass the §7.1.1 refuse-busy gate and the §2.4 freeze protection —
+        // reds here. Walks every crate source file, each stripped at its first test-module boundary (the
+        // established per-file production-prefix discipline); the needles carry the leading `.` of the method
+        // call so `nudge_intake`'s own doc prose never aliases.
         #[test]
         fn app_intake_has_exactly_one_production_emit_site() {
             fn collect_production_sources(dir: &std::path::Path, out: &mut String) {
@@ -1245,35 +1267,36 @@ mod launch_intake {
                     .count();
             assert_eq!(
                 count, 1,
-                "§0.4.2/§7.1.1: exactly ONE production app://intake emit site (emit_intake) — a second \
+                "§0.4.2/§7.1.1: exactly ONE production app://intake emit site (nudge_intake) — a second \
                  site would bypass the refuse-busy gate + the §2.4 freeze protection"
             );
         }
 
-        // §6.4.1 unit (G15): the §7.8.1 `Buffer` arm is WIRED into the `State<PendingIntake>` stash (P2.58) —
-        // not the P2.54 no-op shell. `buffer_pending_intake` is AppHandle-coupled boot-glue (the §1.1a
-        // boot-stage pattern — not cargo-test execution-testable; the stash/take LOGIC is unit-tested on
+        // §6.4.1 unit (G15): the §7.8.1 idle arm is WIRED into the `State<PendingIntake>` stash (P2.58) — not
+        // the P2.54 no-op shell. `stash_pending_intake` is AppHandle-coupled boot-glue (the §1.1a boot-stage
+        // pattern — not cargo-test execution-testable; the stash/take LOGIC is unit-tested on
         // `crate::orchestrator::PendingIntake`), so a source-scan pins it resolves the managed buffer + stashes;
         // a second scan pins `main()` REGISTERS the buffer (else the resolve would fail). Needles
-        // `concat!`-assembled (the established self-match avoidance). [Build-Session-Entscheidung: P2.58]
+        // `concat!`-assembled (the established self-match avoidance). [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1]
         #[test]
-        fn buffer_arm_stashes_into_the_managed_pending_intake() {
+        fn stash_arm_stashes_into_the_managed_pending_intake() {
             let buffer_src = crate::boot_invariants::production_boot_source();
             assert!(
                 buffer_src.contains(concat!("state::<Pending", "Intake>()")),
-                "§7.8.1: buffer_pending_intake must resolve the managed State<PendingIntake> (P2.58)"
+                "§7.8.1: stash_pending_intake must resolve the managed State<PendingIntake> (P2.58)"
             );
-            // [Test-Change: P2.137 — old-obsolete+new-correct, §7.8.1] the P2.58 `.stash(` call form was
-            // fused into `stash_or_route` (the no-loss closure); the needle follows the new sole call form.
+            // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the P2.137 `stash_or_route(ready.inner(),
+            // …)` fused form collapsed into a plain `.stash(paths, origin)` when the `Emit` arm was retired; the
+            // needle follows the new sole call form.
             assert!(
-                buffer_src.contains(concat!(".stash_or_route(", "ready.inner(), paths, origin)")),
-                "§7.8.1: buffer_pending_intake must stash-or-route the launch set + origin under the fused \
-                 no-loss protocol (P2.137; not the P2.54 no-op shell)"
+                buffer_src.contains(concat!(".stash(", "paths, origin)")),
+                "§7.8.1: stash_pending_intake must stash the intake set + origin into PendingIntake \
+                 (P3.77 single hand-off buffer; not the P2.54 no-op shell)"
             );
             let main_src = crate::boot_invariants::production_main_body();
             assert!(
                 main_src.contains(concat!(".manage(crate::orchestrator::Pending", "Intake::default())")),
-                "§7.8.1: main() must register the State<PendingIntake> so the buffer-arm resolve cannot fail (P2.58)"
+                "§7.8.1: main() must register the State<PendingIntake> so the stash-arm resolve cannot fail (P2.58)"
             );
         }
 
@@ -1508,9 +1531,10 @@ fn main() -> tauri::Result<()> {
     // §0.4.5 IPC seam: the shared `ipc_specta_builder()` is BOTH the runtime invoke/event registry and
     // the single source the generated `bindings.ts` is produced from (no drift between them). The C1..C13
     // §0.4.1 command surface is registered from P2.21 (interface shells); the run-telemetry `ConversionEvent`
-    // (P2.37) joins `bindings.ts` via C6's Channel arg (P2.29); the §0.4.2 app:// event payloads (`AppFault`/
-    // `IntakePayload`) register via `register_ipc_event_types` (`.types()`) at P2.39, as RAW `app.emit`/
-    // `listen` events — `collect_events![]` stays empty (a typed event would force an `any` into bindings.ts).
+    // (P2.37) joins `bindings.ts` via C6's Channel arg (P2.29); the §0.4.2 app:// event payload (`AppFault`)
+    // registers via `register_ipc_event_types` (`.types()`) at P2.39, as a RAW `app.emit`/`listen` event —
+    // `collect_events![]` stays empty (a typed event would force an `any` into bindings.ts). `app://intake` /
+    // `app://close-requested` carry `()` (`app://intake` is a payload-less nudge, P3.77), so neither registers a type.
     let builder = ipc_specta_builder();
 
     // [Build-Session-Entscheidung: P1.13] Async runtime: ConvertIA runs on Tauri v2's own managed
@@ -1559,12 +1583,12 @@ fn main() -> tauri::Result<()> {
         // whitelist + level live in that helper (`log_targets()` is the pure, tested §3 zero-egress control);
         // this chain line is the single production registration site.
         .plugin(log_plugin())
-        // [Build-Session-Entscheidung: P2.58] §7.8.1 first-launch intake buffer — register the
-        // State<PendingIntake> in the Builder chain (compile-time Default, so registered BEFORE the event
-        // loop / any single-instance callback: the funnel's Buffer arm resolve is then infallible by
-        // construction, no panic under the crate-root clippy::panic deny). Writer = the launch funnel
-        // (buffer_pending_intake); reader = C1 drainPending (P2.60). Ahead of the P3.46-registered run stores
-        // because its live consumer — the P2 launch funnel — exists now.
+        // [Build-Session-Entscheidung: P2.58] §7.8.1 intake buffer — register the State<PendingIntake> in the
+        // Builder chain (compile-time Default, so registered BEFORE the event loop / any intake hook: the
+        // funnel's stash resolve is then infallible by construction, no panic under the crate-root clippy::panic
+        // deny). [Build-Session-Entscheidung: P3.77] the single hand-off buffer for every intake origin — writer
+        // = the §7.8.1 funnel (`stash_pending_intake`, incl. the native drop); reader = the C1 drain (P2.60).
+        // Ahead of the P3.46-registered run stores because its live consumer — the intake funnel — exists now.
         .manage(crate::orchestrator::PendingIntake::default())
         // [Build-Session-Entscheidung: P2.55] §7.1.1 refuse-busy run-state — register the RunRegistry (the
         // §0.4.4 run-cancellation-token store, P2.42) so converter_is_busy can read it (the SAME registry the
@@ -1574,8 +1598,8 @@ fn main() -> tauri::Result<()> {
         .manage(crate::orchestrator::RunRegistry::default())
         // [Build-Session-Entscheidung: P2.59] §7.8.1 WebView-ready flag — register the State<FrontendReady>
         // (crate::orchestrator) so the §7.8.1 funnel's `frontend_ready` predicate can read it. `false` at startup
-        // (buffer, never emit, until the frontend proves its `app://intake` listener) → the C1 `drainPending`
-        // drain (P2.60) flips it ready on root-shell mount via `mark_ready`. Builder chain (compile-time Default,
+        // (the funnel stashes but emits no `app://intake` nudge until the frontend proves its listener, P3.77) →
+        // the C1 `drainPending` drain (P2.60) flips it ready on root-shell mount via `mark_ready`. Builder chain (compile-time Default,
         // before the event loop) → the `frontend_ready` resolve is infallible by construction (no panic under the
         // crate-root clippy::panic deny). Its live consumer — the P2 launch funnel — exists now.
         .manage(crate::orchestrator::FrontendReady::default())
@@ -1917,15 +1941,14 @@ mod ipc_typegen {
     }
 
     // §6.4.1 unit (G15): the §0.4.2 app:// event-payload registration (P2.39). `register_ipc_event_types`
-    // puts the two raw-event payload types (AppFault §crate::outcome, IntakePayload §crate::domain) into the
-    // type collection so `listen('app://fault')` / `listen('app://intake')` mirror NAMED types, not `any`
-    // (`app://close-requested` carries `()`, so it has no payload type to register). PINNED BY NAME (not a
-    // bare count) so a dropped / added / renamed registration reddens with a legible diff. The referenced
-    // types are pulled in named too (verified by read-back of the registered names): `AppFault.kind` →
-    // ConversionErrorKind, `AppFault.message` → String, `IntakePayload.origin` → IntakeOrigin,
-    // `IntakePayload.paths: Vec<PathBuf>` → both the `Vec` container AND `PathBuf` element (specta tracks each
-    // as a named map entry, exactly as `Uuid` is for the identity set's count and `String`/`PathBuf` for the
-    // taxonomy set — the container `Vec` renders as TS `string[]`, not an `export type Vec`).
+    // puts the ONE raw-event payload type (AppFault §crate::outcome) into the type collection so
+    // `listen('app://fault')` mirrors a NAMED type, not `any`. [Test-Change: P3.77 — old-obsolete+new-correct,
+    // §7.8.1] `IntakePayload` is RETIRED — `app://intake` is now a payload-less nudge (with
+    // `app://close-requested`, both carry `()`), so neither registers a payload type. PINNED BY NAME (not a
+    // bare count) so a dropped / added / renamed registration reddens with a legible diff. The referenced types
+    // are pulled in named too (verified by read-back of the registered names): `AppFault.kind` →
+    // ConversionErrorKind, `AppFault.message` → String (net removal of IntakeOrigin / PathBuf / Vec, which only
+    // `IntakePayload` pulled in — a correct consequence of the retire, not a dropped registration).
     #[test]
     fn event_payload_types_registered_for_typegen() {
         let types = register_ipc_event_types(specta::Types::default());
@@ -1936,9 +1959,9 @@ mod ipc_typegen {
         names.sort();
         assert_eq!(
             names.join(","),
-            "AppFault,ConversionErrorKind,IntakeOrigin,IntakePayload,PathBuf,String,Vec",
-            "§0.4.2: the app:// event-payload registration is AppFault + IntakePayload + the named types \
-             they pull in (ConversionErrorKind / IntakeOrigin / PathBuf / String / the Vec container)"
+            "AppFault,ConversionErrorKind,String",
+            "§0.4.2: the app:// event-payload registration is AppFault + the named types it pulls in \
+             (ConversionErrorKind / String); IntakePayload is retired (app://intake is a payload-less nudge, P3.77)"
         );
     }
 }
@@ -1951,22 +1974,24 @@ mod app_event_closed_set {
     //! with: there, the L2 source scan (check 12) proves "no spurious registered command"; here, the L2 source
     //! scan (`plan-lint` check 28 `app-event-surface-drift`, build-gates §6) proves no fourth app:// literal
     //! exists anywhere in `src-tauri/src` and that every such literal lives only in `crate::ipc::events`, and
-    //! THIS cross-check pins the in-core side a text scan cannot reach: each §0.4.2 event's payload type is
-    //! authored and `.types()`-registered (via `register_ipc_event_types`), so the TS `listen(...)` side
-    //! mirrors a NAMED type, never the TS `any` escape (§0.4.2/§0.4.5, the no-`any` rule G5/G8).
+    //! THIS cross-check pins the in-core side a text scan cannot reach: each PAYLOAD-BEARING §0.4.2 event's
+    //! payload type is authored and `.types()`-registered (via `register_ipc_event_types`), so the TS
+    //! `listen(...)` side mirrors a NAMED type, never the TS `any` escape (§0.4.2/§0.4.5, the no-`any` rule G5/G8).
     //!
     //! The set is keyed by the `crate::ipc::events` constants, NEVER by re-spelled app:// string literals —
     //! check 28 forbids those outside `crate::ipc::events`, and the constants' literal VALUES are pinned there
-    //! by `crate::ipc::app_event_names` (P2.39), which this leans on. The close-requested event carries `()`
-    //! (§0.4.2 row), so it has — correctly — no payload type to register. Also leans on
-    //! `ipc_typegen::event_payload_types_registered_for_typegen` (the full registration name-list, P2.39).
-    //! [Build-Session-Entscheidung: P2.41]
+    //! by `crate::ipc::app_event_names` (P2.39), which this leans on. [Build-Session-Entscheidung: P3.77] the
+    //! close-requested AND intake events carry `()` (§0.4.2 rows — app://intake is a payload-less nudge since
+    //! the core-owned-path ruling retired `IntakePayload`), so neither has — correctly — a payload type to
+    //! register. Also leans on `ipc_typegen::event_payload_types_registered_for_typegen` (the full registration
+    //! name-list, P2.39). [Build-Session-Entscheidung: P2.41]
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
 
     // §6.4.1 unit (G15): the §0.4.2 app:// event surface is the closed set {fault, intake, close-requested},
-    // each event's payload type authored + registered so none mirrors as the TS `any` escape. Pairs with
-    // plan-lint check 28 (the "no fourth literal" source scan) — this is the in-core registration side.
+    // each payload-BEARING event's payload type authored + registered so none mirrors as the TS `any` escape
+    // (intake + close-requested carry `()`, P3.77). Pairs with plan-lint check 28 (the "no fourth literal"
+    // source scan) — this is the in-core registration side.
     #[test]
     fn app_event_closed_set_binds_each_event_to_its_registered_payload() {
         use crate::ipc::events;
@@ -1975,9 +2000,11 @@ mod app_event_closed_set {
         // constants (referencing them pins they are PRESENT — a removed/renamed constant fails to compile),
         // NOT by re-spelled app:// literals (plan-lint check 28 forbids those here; their literal values are
         // pinned by `app_event_names` in ipc/mod.rs). `None` = the event carries `()`, so it has no payload.
+        // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] app://intake is now a PAYLOAD-LESS nudge
+        // (`None`) — `IntakePayload` retired — so it joins app://close-requested as a `()`-carrying event.
         let closed_set: BTreeMap<&str, Option<&str>> = [
             (events::APP_FAULT, Some("AppFault")), // §2.13 app-level fault
-            (events::APP_INTAKE, Some("IntakePayload")), // §7.8.1 idle launch-arg / second-instance hand-off
+            (events::APP_INTAKE, None), // §7.8.1 payload-less "come and drain" nudge (P3.77)
             (events::APP_CLOSE_REQUESTED, None), // §7.3.2 mid-run close intercept — payload `()`
         ]
         .into_iter()
@@ -1993,15 +2020,15 @@ mod app_event_closed_set {
              (P2.41/G23, paired with plan-lint check 28's source scan)"
         );
 
-        // (B) The payload-BEARING events carry EXACTLY {AppFault, IntakePayload}; close-requested carries `()`
-        // (None). A fourth payload-bearing event, a dropped payload, or close-requested sprouting a payload all
+        // (B) The payload-BEARING events carry EXACTLY {AppFault}; intake + close-requested carry `()` (None).
+        // A fourth payload-bearing event, a dropped payload, or intake/close-requested sprouting a payload all
         // redden here — the in-core "each event with its authored payload type" half of the box invariant.
         let closed_payloads: BTreeSet<&str> = closed_set.values().copied().flatten().collect();
-        let expected_payloads: BTreeSet<&str> = ["AppFault", "IntakePayload"].into_iter().collect();
+        let expected_payloads: BTreeSet<&str> = ["AppFault"].into_iter().collect();
         assert_eq!(
             closed_payloads, expected_payloads,
-            "§0.4.2: exactly two of the three app:// events carry a payload type (AppFault for fault, \
-             IntakePayload for intake); close-requested carries `()` (P2.41/G23)"
+            "§0.4.2: exactly one of the three app:// events carries a payload type (AppFault for fault); \
+             intake is a payload-less nudge and close-requested carries `()` (P2.41/G23; P3.77)"
         );
 
         // (C) The side a source scan cannot do: each payload-bearing event's type is authored +
@@ -2242,24 +2269,29 @@ mod bindings_codegen {
         );
     }
 
-    // §6.4.1 unit (G15): the §0.4.2 app:// event PAYLOADS (P2.39) mirror to the committed bindings.ts as
-    // named types so the TS `listen(<name>)` side type-checks rather than `any` — the raw-event registration
-    // via `register_ipc_event_types` (`collect_events!` is avoided; it would force an `any`-bearing
-    // `makeEvent` helper, the P2.22 Throw-to-avoid-any precedent). app://fault → AppFault, app://intake →
-    // IntakePayload (app://close-requested carries `()`, no payload type). Read the committed artifact back
-    // (the §0.2 read-the-output-back discipline). The CLOSED-SET "exactly three, no fourth" assertion is
-    // P2.41/G23's; this pins the two payload types are PRESENT + named.
+    // §6.4.1 unit (G15): the §0.4.2 app:// event PAYLOAD (P2.39) mirrors to the committed bindings.ts as a
+    // named type so the TS `listen('app://fault')` side type-checks rather than `any` — the raw-event
+    // registration via `register_ipc_event_types` (`collect_events!` is avoided; it would force an `any`-bearing
+    // `makeEvent` helper, the P2.22 Throw-to-avoid-any precedent). app://fault → AppFault (app://intake is now a
+    // payload-less nudge and app://close-requested carries `()`, neither with a payload type). Read the committed
+    // artifact back (the §0.2 read-the-output-back discipline). The CLOSED-SET "exactly three, no fourth"
+    // assertion is P2.41/G23's; this pins the one payload type is PRESENT + named.
     #[test]
     fn committed_bindings_expose_the_app_event_payloads() {
         let ts = std::fs::read_to_string(TRACKED_BINDINGS_PATH).expect(
             "the committed src/lib/ipc/bindings.ts must exist — regenerate it via the xtask codegen task",
         );
-        for ty in ["AppFault", "IntakePayload"] {
-            assert!(
-                ts.contains(&format!("export type {ty}")),
-                "the §0.4.2 app:// event payload `{ty}` must be a named `export type` in the committed bindings.ts (P2.39)"
-            );
-        }
+        // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the old ["AppFault","IntakePayload"] loop split
+        // into a positive AppFault check + a negative "IntakePayload retired" check (app://intake is payload-less).
+        assert!(
+            ts.contains("export type AppFault"),
+            "the §0.4.2 app:// event payload `AppFault` must be a named `export type` in the committed bindings.ts (P2.39)"
+        );
+        // app://intake is a payload-less nudge (P3.77): no `IntakePayload` type may remain in the bindings.
+        assert!(
+            !ts.contains(concat!("export type Intake", "Payload")),
+            "§7.8.1: the retired `IntakePayload` must NOT appear in the committed bindings.ts (app://intake is payload-less, P3.77)"
+        );
     }
 }
 
@@ -2379,14 +2411,17 @@ mod window_model {
 
 #[cfg(test)]
 mod window_lifecycle {
-    //! §7.3.2 window lifecycle — the Tauri v2 `Builder::on_window_event` `CloseRequested` interceptor
-    //! (P2.79). When a conversion run is in flight the core blocks the window close (`prevent_close`) so an
-    //! ungraceful end can never truncate the in-flight output (§7.3.3; the SSOT never-harm origin). This is
-    //! AppHandle-coupled boot-glue: this crate ships no `tauri::test` mock harness (the boot-stage pattern,
-    //! test-strategy §1.1a), so the wiring is pinned by a SOURCE SCAN of the production source (the runtime
-    //! is the §6.4.6 window-close E2E leg), not cargo-test execution. Reusing the ONE §7.1.1 run-busy
-    //! predicate is the §7.3.2 mandate ("the same predicate the close guard uses"); the `has_active_run`
-    //! logic itself is unit-tested on `crate::orchestrator::RunRegistry`. [Build-Session-Entscheidung: P2.79]
+    //! §7.3.2 / §5.4 window lifecycle — the Tauri v2 `Builder::on_window_event` handler. It intercepts
+    //! `CloseRequested` (P2.79 — when a conversion run is in flight the core blocks the window close via
+    //! `prevent_close` so an ungraceful end can never truncate the in-flight output, §7.3.3; the SSOT
+    //! never-harm origin) AND [Build-Session-Entscheidung: P3.77] `DragDrop(DragDropEvent::Drop)` — the §5.4
+    //! native window drop, handled CORE-SIDE (the dropped paths route through the §7.8.1 funnel, never entering
+    //! the WebView). This is AppHandle-coupled boot-glue: this crate ships no `tauri::test` mock harness (the
+    //! boot-stage pattern, test-strategy §1.1a), so the wiring is pinned by a SOURCE SCAN of the production
+    //! source (the runtime is the §6.4.6 window-close / §5.4 native-drop E2E legs), not cargo-test execution.
+    //! Reusing the ONE §7.1.1 run-busy predicate is the §7.3.2 mandate ("the same predicate the close guard
+    //! uses"); the `has_active_run` logic itself is unit-tested on `crate::orchestrator::RunRegistry`.
+    //! [Build-Session-Entscheidung: P2.79]
 
     // §6.4.1 unit (G15): `main()` WIRES the §7.3.2 `on_window_event` hook and delegates to the named
     // `dispatch_window_event` with the resolved `&AppHandle` (the thin-main-closure pattern). Scans
@@ -2460,6 +2495,50 @@ mod window_lifecycle {
             serde_json::Value::Null,
             "§7.3.2/§0.4.2: app://close-requested carries JSON null (the unit-struct wire form), never {{}}"
         );
+    }
+
+    // §6.4.1 unit (G15, P3.77): the §7.8.1 `app://intake` payload-less wire form is EXECUTED, not comment-only —
+    // `IntakeSignal` is a unit struct precisely because serde serialises it to JSON `null` (the §0.4.2 `()`/no-
+    // payload form; a braced `struct IntakeSignal {}` or a subsequent field addition would silently ship `{}`/an
+    // object instead, undoing `IntakePayload`'s no-path-on-the-wire guarantee, with every source-scan needle green).
+    // Mirrors `close_requested_signal_serialises_to_json_null` — the one cargo-testable piece of the nudge emit
+    // (pure serde, no AppHandle); `serde_json` is the established dev-dependency.
+    #[test]
+    fn intake_signal_serialises_to_json_null() {
+        let wire = serde_json::to_value(super::IntakeSignal)
+            .expect("§7.8.1: the intake nudge signal serialises");
+        assert_eq!(
+            wire,
+            serde_json::Value::Null,
+            "§7.8.1/§0.4.2: app://intake carries JSON null (the payload-less nudge), never {{}} — no path on the wire (P3.77)"
+        );
+    }
+
+    // §6.4.1 unit (G15, P3.77): the §5.4/§7.8.1 native window drop is handled CORE-SIDE — `dispatch_window_event`
+    // intercepts `WindowEvent::DragDrop(DragDropEvent::Drop)` and routes the dropped paths through the SAME
+    // §7.8.1 `forward_launch_intake` funnel as every other intake origin, with origin `Drop`, so no drop path
+    // reaches the WebView and the §7.1.1 refuse-busy gate + §2.4 freeze + `PendingIntake` hand-off apply once.
+    // AppHandle-coupled boot-glue (the §1.1a boot-stage pattern — not `tauri::test`-mockable; the runtime is the
+    // §5.4 native-drop E2E leg): a source-scan pins the intercept + the FULL routing call (a wrong-origin or
+    // deleted-route regression cannot alias). Needles `concat!`-assembled (the established self-match avoidance).
+    #[test]
+    fn native_drop_is_handled_core_side_and_routed_through_the_funnel() {
+        let src = super::boot_invariants::all_production_source();
+        for needle in [
+            concat!(
+                "WindowEvent::DragDrop(tauri::DragDrop",
+                "Event::Drop { paths, .. })"
+            ), // the core-side intercept
+            concat!(
+                "launch_intake::forward_launch_",
+                "intake(app, paths.clone(), crate::domain::IntakeOrigin::Drop)"
+            ), // the FULL routing call — origin `Drop`, a wrong-origin regression cannot alias
+        ] {
+            assert!(
+                src.contains(needle),
+                "§5.4/§7.8.1: dispatch_window_event must handle the native drop core-side and route it through the funnel as Drop (missing `{needle}`)"
+            );
+        }
     }
 }
 

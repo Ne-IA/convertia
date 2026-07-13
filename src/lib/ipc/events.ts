@@ -8,12 +8,17 @@
 // lifecycle, the §0.4.1 C1/C2a `onScan` `Channel<ScanProgress>` telemetry, and the three §0.4.2 `app://`
 // listeners — wired incrementally as P2 lands each (see P2.61 / P2.120 / P2.121 below).
 //
-// P2.61 landed the FIRST hand-written helper: the §7.8.1 first-launch DRAIN (`drainPendingIntake`). P2.120
-// landed the async model: `subscribeAppEvents` (the three §0.4.2 `app://` listeners) + the `start_conversion`
+// P2.61 landed the FIRST hand-written helper: the §7.8.1 DRAIN (`drainPendingIntake`). P2.120 landed the async
+// model: `subscribeAppEvents` (the three §0.4.2 `app://` listeners) + the `start_conversion`
 // `Channel<ConversionEvent>` lifecycle (`startConversionRun`). P2.121 lands `subscribeNativeDragDrop` — the
-// §5.4 native `onDragDropEvent` hover affordance + drop→C1 intake (never the DOM drop, a §0.4.0 boundary fact).
-// P2.124 adds the §5.8/§2.13.3 backend-disconnect fault seam (`ConversionRunHandlers.onRunFault`) on the
-// `startConversionRun` lifecycle — a mid-run app-level fault routes to AppFault (state 12), never a per-item outcome.
+// §5.4 native `onDragDropEvent` hover affordance. P2.124 adds the §5.8/§2.13.3 backend-disconnect fault seam
+// (`ConversionRunHandlers.onRunFault`) on the `startConversionRun` lifecycle — a mid-run app-level fault routes
+// to AppFault (state 12), never a per-item outcome.
+// [Build-Session-Entscheidung: P3.77] The 2026-07-06 core-owned-path ruling moved the native DROP core-side
+// (`WindowEvent::DragDrop` → the §7.8.1 funnel) and made `app://intake` a PAYLOAD-LESS nudge: the WebView no
+// longer ingests a drop or carries intake paths — the `app://intake` listener + the mount both issue the C1
+// DRAIN (`drainPendingIntake`), and `subscribeNativeDragDrop` keeps only the drag-active affordance (the
+// retired `ingestFromDrop` / `ingestFromIntakeEvent` are tombstoned below). P3.81 is the comprehensive re-wire.
 // [Build-Session-Entscheidung: P2.61]
 import { Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -27,7 +32,6 @@ import {
   type CollectedSetId,
   type ConversionEvent,
   type DestinationChoice,
-  type IntakePayload,
   type OptionValues,
   type RerunDecision,
   type RunId,
@@ -36,11 +40,15 @@ import {
 } from "./commands";
 
 /**
- * [Build-Session-Entscheidung: P2.61] The §7.8.1 first-launch DRAIN — re-call C1 `ingest_paths` with
- * `drainPending: true` and NO paths, consuming the Rust-side `State<PendingIntake>` first-launch buffer
- * (P2.58/P2.60) exactly once. This closes the §7.8.1 listener race: a launch-with-files (Open-with / argv)
- * that arrived BEFORE the WebView registered its `app://intake` listener was buffered core-side, and is
- * replayed HERE on root-shell mount (`useLaunchDrain`, fired AFTER the listener registration — P2.120).
+ * [Build-Session-Entscheidung: P2.61] The §7.8.1 DRAIN — re-call C1 `ingest_paths` with `drainPending: true`
+ * and NO paths, consuming the Rust-side `State<PendingIntake>` hand-off buffer (P2.58/P2.60) exactly once.
+ * [Build-Session-Entscheidung: P3.77] After the 2026-07-06 core-owned-path ruling this is the drain BOTH intake
+ * triggers issue (§7.8.1 "the frontend issues the drain on every `app://intake` nudge and once on root-shell
+ * mount"): the root-shell mount (`useLaunchDrain`, P2.120) AND the payload-less `app://intake` nudge listener
+ * (`subscribeAppEvents`, retiring the old payload-carrying `ingestFromIntakeEvent`). Each call drains the single
+ * hand-off buffer once — for a first-launch/Open-with set that raced the listener, a second-instance launch, or
+ * a native drop (now handled core-side and stashed into the same buffer, P3.77). It re-calls the CURRENT C1
+ * `ingest_paths(drainPending)` shape; P3.78 renames it to the args-less `drain_intake`.
  *
  * The Rust handler (P2.60) marks the frontend ready + drains the buffer using its STORED origin, so:
  * - `paths: []` — a drain ignores any passed paths (`drainPending` ⊻ paths, §0.4.1 C1 mutual exclusivity);
@@ -147,20 +155,11 @@ function isIpcError(value: unknown): boolean {
   );
 }
 
-/**
- * [Build-Session-Entscheidung: P2.120] The `app://intake` handler (§0.4.2 / §7.8.1): the OS handed the running
- * (idle) instance new paths via a second-instance launch / Open-with, so re-enter intake by calling C1
- * `ingest_paths` with the event's `{ paths, origin }`, a fresh §0.4.4 `collectingId`, the §0.4.1 `onScan`
- * `Channel<ScanProgress>` (non-optional — a bare sink here; the "Scanning… N" display subscribes it when the
- * §5.2 Collecting screen lands, P3.53), and `drainPending: null` (a LIVE intake, distinct from the
- * first-launch `drainPendingIntake`). Returns the frozen `CollectedSet`; the §5.2 `Collecting` transition that
- * consumes it is the P3.53 machine's, exactly like a drop (mirrors `drainPendingIntake`).
- */
-export async function ingestFromIntakeEvent(payload: IntakePayload): Promise<CollectedSet> {
-  const collectingId = crypto.randomUUID();
-  const onScan = new Channel<ScanProgress>();
-  return commands.ingestPaths(payload.paths, payload.origin, collectingId, null, onScan);
-}
+// [Build-Session-Entscheidung: P3.77] The old payload-carrying `app://intake` handler (`ingestFromIntakeEvent`,
+// P2.120) is RETIRED with `IntakePayload`: the 2026-07-06 core-owned-path ruling makes `app://intake` a
+// PAYLOAD-LESS nudge (no path crosses the wire), so the listener issues the DRAIN (`drainPendingIntake`) — the
+// paths were stashed core-side in `PendingIntake` and drain via the C1 response (§7.8.1). The second-instance /
+// Open-with paths a `LIVE intake` used to carry are now buffered core-side exactly like a first-launch set.
 
 /**
  * [Build-Session-Entscheidung: P2.120] Optional typed handlers for the two §0.4.2 `app://` events whose §5.8
@@ -184,17 +183,19 @@ export interface AppEventHandlers {
  * events (the closed set G23 + plan-lint check 28 assert). Returns a single cleanup dropping all three
  * listeners. `useAppEvents` calls this BEFORE `useLaunchDrain` so a buffered first-launch set (§7.8.1) replays
  * only after the `app://intake` listener exists (the listener-before-drain race, P2.61):
- * - `app://intake` → C1 `ingest_paths` (`ingestFromIntakeEvent`), live from P2.120 — it ingests
- *   unconditionally here; the §5.8 defence-in-depth "ignore-unless-Idle/Summary + BusyNotice" guard on a
- *   leaked mid-run event is the P3.53 FSM's (only `idle` exists in P2, and the §7.1 single-instance callback
- *   is the authoritative primary refuse-busy gate);
+ * - `app://intake` → the payload-LESS DRAIN (`drainPendingIntake`, P3.77): the 2026-07-06 core-owned-path
+ *   ruling made this event a pure "come and drain `PendingIntake`" nudge (no payload), so the listener issues
+ *   the same drain as the mount does — the paths were stashed core-side and drain via the C1 response. It drains
+ *   unconditionally here; the §5.8 defence-in-depth "ignore-unless-Idle/Summary + BusyNotice" guard on a leaked
+ *   mid-run nudge is the P3.53 FSM's (only `idle` exists in P2, and the §7.1 single-instance callback is the
+ *   authoritative primary refuse-busy gate — the funnel drops a mid-run intake before it ever nudges);
  * - `app://fault` → `handlers.onFault?.(payload)` (UNSET in P2 — see {@link AppEventHandlers});
  * - `app://close-requested` → `handlers.onCloseRequested?.()` (unit payload, no DTO; UNSET in P2).
  */
 export async function subscribeAppEvents(handlers: AppEventHandlers = {}): Promise<() => void> {
   const unlisteners = await Promise.all([
-    listen<IntakePayload>("app://intake", (event) => {
-      void ingestFromIntakeEvent(event.payload);
+    listen("app://intake", () => {
+      void drainPendingIntake();
     }),
     listen<AppFault>("app://fault", (event) => {
       handlers.onFault?.(event.payload);
@@ -210,7 +211,7 @@ export async function subscribeAppEvents(handlers: AppEventHandlers = {}): Promi
   };
 }
 
-// ─── P2.121: the §5.4 native file-drop (the §0.4.0 boundary fact — Tauri's window onDragDropEvent, NOT DOM) ───
+// ─── P2.121: the §5.4 native drag-active affordance (Tauri's window onDragDropEvent; the DROP itself is core-side, P3.77) ───
 
 /**
  * [Build-Session-Entscheidung: P2.121] The optional drag-active visual callback. `subscribeNativeDragDrop`
@@ -224,15 +225,17 @@ export interface NativeDragDropHandlers {
 }
 
 /**
- * [Build-Session-Entscheidung: P2.121] Wire the §5.4 native file-drop — Tauri v2's window `onDragDropEvent`,
- * NOT the DOM `drop` event (HTML5 DnD in a WebView never exposes real filesystem paths — the §0.4.0 boundary
- * fact). This is the ONLY place it is wired (§0.7). `enter`/`over` → drag-active `true`, `leave` → `false`
- * (the hover affordance, routed to the UNSET-in-P2 `onDragActiveChange` seam — its §5.3 `DropZone` consumer is
- * P3+). On `drop`: drag-active `false`, then hand the absolute paths to C1 `ingest_paths` with `origin: 'drop'`
- * (`ingestFromDrop`, live) — folders arrive as directory paths + recurse Rust-side (§1.1). Paths are de-duped
- * by SET per drop (§5.4: native events can duplicate across platforms/patch versions); the backend frozen-set
- * de-dup (§2.4) is the authority — the frontend never assumes uniqueness. The `Idle → Collecting` transition
- * the drop drives is the P3.53 machine's (mirrors `app://intake` / `drainPendingIntake`). Returns the unlisten.
+ * [Build-Session-Entscheidung: P2.121] Wire the §5.4 native drag-active affordance via Tauri v2's window
+ * `onDragDropEvent`. `enter`/`over` → drag-active `true`, `leave`/`drop` → `false` (the hover affordance, routed
+ * to the UNSET-in-P2 `onDragActiveChange` seam — its §5.3 `DropZone` consumer is P3+).
+ *
+ * [Build-Session-Entscheidung: P3.77] The `drop` no longer INGESTS from the WebView — the 2026-07-06
+ * core-owned-path ruling moved the native drop CORE-SIDE (`WindowEvent::DragDrop` → the §7.8.1 funnel →
+ * `PendingIntake` → the payload-less `app://intake` nudge → the C1 drain), so ingesting here too would
+ * DOUBLE-INGEST one drop. The `drop` phase now only clears the drag-active affordance; the dropped paths never
+ * enter the WebView (the §0.4.0 boundary fact). This Tauri-`onDragDropEvent` affordance is the interim; the
+ * §7.8.1 "drag-over styling from DOM drag events only" DropZone replaces it at P3.54, and P3.81 finalises the
+ * WebView drop-wiring removal. This is the ONLY place `onDragDropEvent` is wired (§0.7). Returns the unlisten.
  */
 export async function subscribeNativeDragDrop(
   handlers: NativeDragDropHandlers = {},
@@ -244,27 +247,16 @@ export async function subscribeNativeDragDrop(
         handlers.onDragActiveChange?.(true);
         break;
       case "leave":
+      case "drop":
+        // §5.4/§7.8.1 (P3.77): the drop is handled CORE-SIDE — clear the affordance only, never ingest here
+        // (a WebView ingest would double-ingest the drop the Rust `WindowEvent::DragDrop` handler already took).
         handlers.onDragActiveChange?.(false);
         break;
-      case "drop": {
-        handlers.onDragActiveChange?.(false);
-        const paths = [...new Set(event.payload.paths)];
-        void ingestFromDrop(paths);
-        break;
-      }
     }
   });
 }
 
-/**
- * [Build-Session-Entscheidung: P2.121] The §5.4 native-drop → C1 handler: hand the dropped absolute paths to
- * C1 `ingest_paths` with `origin: 'drop'`, a fresh §0.4.4 `collectingId`, the §0.4.1 `onScan` Channel (a bare
- * sink here — the "Scanning… N" display subscribes it when the §5.2 Collecting screen lands, P3.53), and
- * `drainPending: null`. Returns the frozen `CollectedSet`; the §5.2 `Collecting` transition that consumes it
- * is the P3.53 machine's (mirrors `ingestFromIntakeEvent`).
- */
-export async function ingestFromDrop(paths: string[]): Promise<CollectedSet> {
-  const collectingId = crypto.randomUUID();
-  const onScan = new Channel<ScanProgress>();
-  return commands.ingestPaths(paths, "drop", collectingId, null, onScan);
-}
+// [Build-Session-Entscheidung: P3.77] The old WebView drop→C1 handler (`ingestFromDrop`, P2.121) is RETIRED:
+// the native drop is handled core-side (`WindowEvent::DragDrop` → the §7.8.1 funnel), so the WebView no longer
+// ingests a drop — it would double-ingest. The drop's paths route through `PendingIntake` + the payload-less
+// `app://intake` nudge + the C1 drain (`drainPendingIntake`), exactly like every other intake origin.

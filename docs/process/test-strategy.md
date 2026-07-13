@@ -170,7 +170,8 @@ Each is the §6.4.1 contract made executable:
 
 The **launch / host glue** — the §7.8.1 `forward_launch_intake` funnel, the §7.1.1
 single-instance callback, the macOS `RunEvent::Opened` handler, the AppHandle
-predicate/buffer shells (`converter_is_busy`/`frontend_ready`/`buffer_pending_intake`),
+predicate/buffer shells (`converter_is_busy`/`frontend_ready`/`stash_pending_intake` —
+the §7.8.1-named stash, renamed from the P2.54-era `buffer_pending_intake` at P3.77),
 and `fn main()` itself — is **AppHandle-coupled**: it cannot run under `cargo test`
 without a Tauri runtime, and **this crate ships no `tauri::test` mock harness BY
 DECISION** (a mock runtime would reverse this stance, add a test-feature dependency
