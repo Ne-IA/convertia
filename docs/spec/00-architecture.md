@@ -955,8 +955,13 @@ pub enum JobSource {                 // [DECIDED 2026-07-11 — the P3.47 ruling
                                      //   of the complete skip record — and keeps the item ==
                                      //   source.item() invariant UNIFORM (both arms carry item;
                                      //   no queued-only carve-out). Coupling invariant (§6
-                                     //   property-tested): source is Skipped(_) ⟺ state is
-                                     //   JobState::Skipped(_). No data is synthesised: a skip
+                                     //   property-tested; REFINED by the 2026-07-12 P3.48
+                                     //   rerun-skip ruling): source is Skipped(_) ⟺ state is
+                                     //   JobState::Skipped(<a detection reason>) — the §2.5.3
+                                     //   re-run skip is state Skipped(AlreadyConverted) with
+                                     //   source ELIGIBLE(_) (an eligible ledger-hit item the
+                                     //   user chose not to re-produce keeps its real
+                                     //   DroppedItem record). No data is synthesised: a skip
                                      //   has no full DetectionOutcome/size to invent (§1.4/§1.12
                                      //   honesty — SSOT Fail clearly; the SkippedItem's RETAINED
                                      //   detected_display is detection's own output, not
@@ -971,15 +976,31 @@ pub enum JobState {
     Running,
     Succeeded,
     Failed(ErrorKind),               // §2.8 kind; nothing written (§2.1)
-    Skipped(SkipReason),             // detection-ineligible pre-flight (§1.2/§1.3)
+    Skipped(SkipReason),             // pre-flight, terminal at construction: detection-
+                                     //   ineligible (§1.2/§1.3) OR the §2.5.3 rerun-skip
+                                     //   (AlreadyConverted — the P3.48 ruling)
     Cancelled,
 }
 
-pub enum SkipReason {                // why a pre-flight item never entered the queue (§1.3)
+pub enum SkipReason {                // why a pre-flight item never entered the queue (§1.3/§2.5.3)
     UnsupportedType,                 // real but out-of-scope (§1.2)
     Uncertain,                       // can't tell (§1.2)
     Empty,                           // 0-byte / no decodable content
     Unreadable,                      // gone/locked/denied at freeze (§1.2)
+    AlreadyConverted,                // the §2.5.3 re-run skip [DECIDED 2026-07-12 — the P3.48
+                                     //   rerun-skip ruling]: the user chose RerunDecision::Skip
+                                     //   at the §2.5 batch-level prompt for a ledger-hit item —
+                                     //   assigned at C6 construction (terminal, never queued,
+                                     //   §1.9), so the §1.12 summary shows the item as a
+                                     //   distinct skipped outcome (§1.12 "skipped items appear
+                                     //   as a distinct outcome, not a failure"), never dropped.
+                                     //   The ONLY non-detection reason: it never rides a
+                                     //   freeze-time SkippedItem (§1.4 shows detection skips
+                                     //   only) and never renders through the SkipReason→
+                                     //   ErrorKind bridge (its §2.8.2 line is its own; the
+                                     //   bridge's forced exhaustive arm is a concrete
+                                     //   never-taken InternalError-class arm, documented
+                                     //   never-rendered — never unreachable!()).
 }
 
 // The coarse per-item progress stage, carried by ItemProgress (§0.4.2). §1.11 owns

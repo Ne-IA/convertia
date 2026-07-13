@@ -1110,8 +1110,10 @@ plan itself is recomputed per job at write time from the updated destination.
 //   Failed(ErrorKind)        // named §2.8 kind (see Running→Failed mapping below);
 //                            //   nothing written for it
 //   Cancelled                // user cancel; nothing written for it
-//   Skipped(SkipReason)      // detected-ineligible pre-flight (§0.6 SkipReason:
-//                            //   UnsupportedType | Uncertain | Empty | Unreadable)
+//   Skipped(SkipReason)      // pre-flight, terminal at construction (§0.6 SkipReason:
+//                            //   the detection-ineligible UnsupportedType | Uncertain |
+//                            //   Empty | Unreadable, OR the §2.5.3 rerun-skip
+//                            //   AlreadyConverted — the P3.48 ruling)
 ```
 
 ```
@@ -1122,7 +1124,11 @@ Pending ─▶ Running ─┬─▶ Succeeded
 ```
 
 - `Skipped` is assigned **before** the queue (a §1.2/§1.3 ineligible item never
-  becomes `Pending`); it is distinct from a mid-run `Failed`.
+  becomes `Pending`); it is distinct from a mid-run `Failed`. `[CLARIFIED 2026-07-12 —
+  the P3.48 rerun-skip ruling]` The same construction-terminal rule covers the
+  **§2.5.3 re-run skip**: an eligible ledger-hit item the user chose to skip at the
+  §2.5 batch-level prompt is assigned `Skipped(AlreadyConverted)` at C6 construction —
+  never queued, no live events, projected into the §1.12 summary like every skip.
 - **Running → Failed mapping — where the kind conversion lives `[DECIDED]`.** When the
   §1.7 lifecycle returns `InvocationResult::Failed(kind)` (carrying the Rust-internal
   `ConversionErrorKind`, §2.8), the orchestrator — **`crate::orchestrator`**, which owns
@@ -1443,7 +1449,13 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
 - **Re-run prompt linkage:** if §2.5 detected an equivalent prior output **before**
   CONVERT, the one batch-level skip/fresh-copy prompt (§5.2) already resolved it;
   the summary reflects whichever the user chose (skipped items appear as a distinct
-  outcome, not a failure).
+  outcome, not a failure). `[CLARIFIED 2026-07-12 — the P3.48 rerun-skip ruling]` The
+  representation is `JobState::Skipped(SkipReason::AlreadyConverted)` (§0.6), assigned
+  at C6 construction: the item is projected into `RunResult.items` as
+  `ItemResult { item, state: Skipped(AlreadyConverted), output_display: None,
+  reason: Some(OutcomeMsg::Skipped{ reason: AlreadyConverted, .. }) }` and counted in
+  `Totals.skipped` — the same skip-shaped machinery as the pre-flight detection skips
+  below, one uniform summary source; it is NEVER silently dropped from the summary.
 - **Pre-flight skips ARE in `RunResult.items` `[DECIDED]`.** The freeze-time
   `SkippedItem`s held in `CollectedSet::Single.skipped` (the unsupported / uncertain /
   empty / unreadable-at-intake items that **never entered the queue**, §1.1/§1.3) are

@@ -1308,14 +1308,19 @@ kind rows above — `Empty` → the `Empty` row, `Unreadable` → the `Unreadabl
 principle-6 "or that it can't tell" arm), and `UnsupportedType` → the
 `UnsupportedType` row, whose `{detected}` substitution fills from the retained
 `SkippedItem.detected_display` (§0.6 — detection's own output, kept through the
-freeze; the SSOT "detected: X" mandate). **One skip-specific line exists** (the
-mapping's only non-table string, honouring SSOT principle 6's "names what it
-believes the file is" arm): an `Uncertain` skip **with a named best guess**
-(`detected_display: Some`) renders **"ConvertIA isn't sure what kind of file this
-is — it might be {guess} — so it can't convert it."** (`{guess}` = the retained
-best-guess display); a guessless `Uncertain` renders the `Unrecognized` row (the
-"or that it can't tell" arm). Same tone, same catalog home, no other
-skip-specific strings.
+freeze; the SSOT "detected: X" mandate). **Two skip-specific lines exist** (the
+mapping's only non-table strings): **(i)** an `Uncertain` skip **with a named best
+guess** (`detected_display: Some`) renders **"ConvertIA isn't sure what kind of
+file this is — it might be {guess} — so it can't convert it."** (`{guess}` = the
+retained best-guess display; honouring SSOT principle 6's "names what it believes
+the file is" arm); a guessless `Uncertain` renders the `Unrecognized` row (the "or
+that it can't tell" arm). **(ii)** the §2.5.3 re-run skip
+(`SkipReason::AlreadyConverted`, the P3.48 rerun-skip ruling) renders **"This file
+was already converted in this session, so it was skipped."** — slot-free, rendered
+DIRECTLY (never through the `SkipReason → ErrorKind` bridge, which serves only the
+four detection reasons; the sentence is exactly the §2.5.2 ledger's true claim,
+honest even across the accepted vanished-output edge). Same tone, same catalog
+home, no other skip-specific strings.
 
 `text` is the canonical English from the catalog above (§2.8.2) or the §2.9.1 note
 table, with `{x}` substitutions already applied; `kind` lets §5 swap in a localised
