@@ -163,7 +163,7 @@ fn ipc_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         // via C6's `onProgress` arg (P2.29), NOT a collect_events! event.
         .commands(tauri_specta::collect_commands![
             // intake (§0.4.1 C1 / C2a / C13)
-            crate::ipc::intake::ingest_paths,
+            crate::ipc::intake::drain_intake,
             crate::ipc::intake::pick_for_intake,
             crate::ipc::intake::cancel_ingest,
             // planning (§0.4.1 C2b / C3 / C4 / C5)
@@ -592,7 +592,7 @@ fn present_startup_fault(_app: &AppHandle, fault: AppFault) {
 /// `forward_launch_argv` argv classifier. The per-OS live callers — the single-instance callback (P2.52),
 /// the macOS `RunEvent::Opened` handler (P2.56), the first-launch argv reader (P2.57) — wire the funnel
 /// from P2.52 onward.
-mod launch_intake {
+pub(crate) mod launch_intake {
     // [Test-Change: P2.52 — old-obsolete+new-correct, §7.1.1] G70 flags the REMOVED module dead-code lint
     // attribute (the `#![cfg_attr(not(test), …)]` above) as a "removed assertion" — a false positive (a LINT
     // attribute, never a test assertion); the dead-code expectation is OBSOLETE now the §7.1.1 callback makes
@@ -661,9 +661,11 @@ mod launch_intake {
     /// `dispatch_window_event`) reduces to this one function, so the §7.1.1 refuse-busy gate and the §7.8.1
     /// stash-then-nudge are enforced ONCE, not duplicated per hook. The busy disposition is the pure
     /// `intake_disposition` rule (P2.40, truth-table-tested); the nudge decision is a SEPARATE post-stash
-    /// `frontend_ready` read (the §7.8.1 no-loss ordering, P3.77). `pub(super)` so the crate-root native-drop
-    /// hook can route the dropped paths through the same funnel.
-    pub(super) fn forward_launch_intake(
+    /// `frontend_ready` read (the §7.8.1 no-loss ordering, P3.77). `pub(crate)` (P3.78) so BOTH the crate-root
+    /// native-drop hook AND the C2a `pick_for_intake` picker (`crate::ipc::intake`) can route their paths
+    /// through this one funnel — the §7.8.1 "ONE mechanism for every intake source" (drop, launch-arg,
+    /// second-instance, Open-with, the C2a-picked set).
+    pub(crate) fn forward_launch_intake(
         app: &AppHandle,
         paths: Vec<PathBuf>,
         origin: IntakeOrigin,
@@ -916,7 +918,7 @@ mod launch_intake {
     /// [Build-Session-Entscheidung: P2.58] The §7.8.1 stash — buffer the idle intake set into the app-managed
     /// `State<PendingIntake>` (`crate::orchestrator`) for the C1 drain replay (P2.60). [Build-Session-Entscheidung: P3.77]
     /// The 2026-07-06 core-owned-path ruling makes this UNCONDITIONAL for every non-busy launch/drop origin (drop,
-    /// launch-arg, second-instance — the single hand-off buffer; the C2a picker joins at P3.78): the funnel
+    /// launch-arg, second-instance — the single hand-off buffer; the C2a picker joins it too since P3.78): the funnel
     /// stashes here, then reads `frontend_ready` SEPARATELY to decide the nudge (no more `Emit`-vs-`Buffer` split / `RouteToEmit`
     /// re-route). AppHandle-coupled boot-glue (the §1.1a boot-stage pattern — not cargo-test execution-testable;
     /// the stash LOGIC is unit-tested on `PendingIntake`, this WIRING is source-scan-pinned + G28
@@ -2206,7 +2208,7 @@ mod bindings_codegen {
         // names, one per §0.4.1 row C1..C13. The double-quoted form matches only the generated `invoke`
         // call, never the back-ticked command name inside a doc comment.
         for cmd in [
-            "ingest_paths",      // C1
+            "drain_intake",      // C1
             "pick_for_intake",   // C2a
             "pick_destination",  // C2b
             "get_targets",       // C3
@@ -2244,7 +2246,7 @@ mod bindings_codegen {
             .expect("src-tauri/ipc-commands.golden must exist — the P2.36 closed-set IPC-surface drift golden");
         let listed: std::collections::BTreeSet<&str> = golden.split_whitespace().collect();
         let expected: std::collections::BTreeSet<&str> = [
-            "ingest_paths",      // C1
+            "drain_intake",      // C1
             "pick_for_intake",   // C2a
             "pick_destination",  // C2b
             "get_targets",       // C3

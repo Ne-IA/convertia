@@ -263,24 +263,29 @@ impl ItemIdSpace {
 pub struct ItemSpaceExhausted;
 
 /// How a set of paths entered intake (§0.6 / §7.8). Every source funnels into the §1.1 intake state machine,
-/// so the §2.4 freeze + §1.3 one-batch rules apply identically regardless of origin. `Drop`/`LaunchArg`/
-/// `SecondInstance` stash core-side into `PendingIntake` and reach the §1.1 freeze via the C1 drain (§7.8.1,
-/// P3.77); the `Picker` set is still frozen directly by C2a `pick_for_intake` (never via C1) and joins the same
-/// §7.8.1 funnel at P3.78 — either way the origin is stored core-side, never on the wire.
+/// so the §2.4 freeze + §1.3 one-batch rules apply identically regardless of origin. [Build-Session-Entscheidung:
+/// P3.78] ALL origins — `Drop`/`LaunchArg`/`SecondInstance` AND `Picker` — stash core-side into `PendingIntake`
+/// and reach the §1.1 freeze via the C1 `drain_intake` drain (§7.8.1); no source-specific freeze path exists. The
+/// origin is stored core-side, never on the wire.
 ///
 /// [Build-Session-Entscheidung: P2.2] `#[serde(rename_all = "camelCase")]` matches the established
 /// §0.6 wire-enum casing (the sibling `ErrorKind`/`IpcError` wire types, §0.4.3): the variants
-/// serialize as `drop`/`picker`/`launchArg`/`secondInstance`. `Serialize`+`Deserialize` because the origin
-/// still crosses IPC as the **inbound** C1 `ingest_paths` arg (§0.4.1). [Build-Session-Entscheidung: P3.77]
-/// It no longer has an OUTBOUND wire path: the 2026-07-06 core-owned-path ruling retired `IntakePayload`, so
-/// `app://intake` is a payload-less nudge and the origin never travels outbound. `Copy`/`Eq` are free for a
-/// fieldless enum. (`Hash` is omitted — not a map key.)
+/// serialize as `drop`/`picker`/`launchArg`/`secondInstance`. [Build-Session-Entscheidung: P3.78] Since P3.78 the
+/// origin is CORE-INTERNAL — it travels inside the `PendingIntake` buffer (§7.8.1), never on the wire (C1
+/// `drain_intake` shed the `origin` arg — the 2026-07-06 core-owned-path ruling; `app://intake` was already a
+/// payload-less nudge since P3.77). It KEEPS `Serialize`/`Deserialize`/`Type` under the §0.6
+/// defer-registration pattern (a wire-capable enum no command currently references → absent from `bindings.ts`
+/// until a consumer wires it, exactly like `UserFacingFormat`); the derives are exercised by the
+/// `intake_origin_wire_form_is_camelcase_and_roundtrips` unit test. `Copy`/`Eq` are free for a fieldless enum.
+/// (`Hash` is omitted — not a map key.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum IntakeOrigin {
-    /// Files dropped on the drop area — the §1.1 primary intake; reaches C1 `ingest_paths` directly.
+    /// Files dropped on the drop area — the §1.1 primary intake; the native `WindowEvent::DragDrop` stashes
+    /// them core-side into `PendingIntake`, drained by C1 `drain_intake` (§7.8.1).
     Drop,
-    /// Files chosen via the OS file picker (C2a `pick_for_intake`); reaches C1 directly.
+    /// Files chosen via the OS file picker (C2a `pick_for_intake`); the picker stashes them core-side into
+    /// `PendingIntake` via the §7.8.1 funnel, drained by C1 `drain_intake`.
     Picker,
     /// Files passed at first launch (the desktop-entry `%F`/`%U` expansion, the Windows first-launch
     /// `argv`, or the macOS first-launch `RunEvent::Opened`), drained through the §7.8.1
@@ -721,7 +726,8 @@ impl JobSource {
 }
 
 // ─── §0.6 CollectedSet — the frozen batch candidate (C1/C2a return + §1.4 confirm shape) ──
-/// The frozen collected-set the C1 `ingest_paths` / C2a `pick_for_intake` commands return and the §1.4 /
+/// The frozen collected-set the C1 `drain_intake` command returns (the sole freeze/return since P3.78 — the
+/// C2a `pick_for_intake` picker only fills the §7.8.1 funnel and returns `()`) and the §1.4 /
 /// §5.2 confirm gate renders (§0.6 / §1.1 / §1.4). `Single` carries the FULL confirm-summary field set,
 /// so the wire type IS the §1.4 `CollectedSummary` (unified — the mandatory confirm gate gets a real IPC
 /// path); the §0.4.4 collected-set registry stores this payload + its roots keyed by `CollectedSetId`
@@ -961,8 +967,9 @@ impl FrozenCollectedSet {
 // [Build-Session-Entscheidung: P3.77] The former `app://intake` payload DTO (`IntakePayload { paths, origin }`)
 // is RETIRED with the 2026-07-06 core-owned-path ruling: `app://intake` becomes a PAYLOAD-LESS nudge (no path
 // ever crosses the wire), so there is no intake-event DTO here — the paths live core-side in `PendingIntake`
-// and the C1 drain returns them via the command response (§7.8.1). `IntakeOrigin` (below/above) survives — it
-// is still a C1 command-arg until P3.78 and a core-internal freeze/buffer field.
+// and the C1 drain returns them via the command response (§7.8.1). `IntakeOrigin` (below/above) survives as a
+// CORE-INTERNAL freeze/buffer field — since P3.78 no command references it (C1 `drain_intake` shed the `origin`
+// arg), so it is a §0.6 defer-registration type absent from `bindings.ts` until a consumer wires it.
 
 /// The C2a `pick_for_intake` `kind` arg (§0.4.1) — pick files or a folder. Inbound (WebView → Rust).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -989,11 +996,11 @@ pub enum OpenKind {
 // [Build-Session-Entscheidung: P3.77] The `app://intake` hand-off DTO (`IntakePayload { paths, origin }`) is
 // RETIRED — the 2026-07-06 core-owned-path ruling makes `app://intake` a PAYLOAD-LESS nudge (no path crosses
 // the wire): the intake paths stay core-side in `PendingIntake` and the C1 drain returns them via the command
-// response, so no event DTO is authored here (§7.8.1). `IntakeOrigin` survives (a C1 command-arg until P3.78 +
-// a core-internal freeze/buffer field); the paths that were this DTO's `Vec<PathBuf>` now route through the
-// `PendingIntake` buffer (`crate::orchestrator`, P2.58) instead.
+// response, so no event DTO is authored here (§7.8.1). `IntakeOrigin` survives as a CORE-INTERNAL freeze/buffer
+// field (since P3.78 no command references it — C1 `drain_intake` shed the `origin` arg); the paths that were
+// this DTO's `Vec<PathBuf>` now route through the `PendingIntake` buffer (`crate::orchestrator`, P2.58) instead.
 
-/// The C1 `ingest_paths` `onScan` Channel payload (§0.4.2) — a throttled (~2/s, coalesced) live count of
+/// The C1 `drain_intake` `onScan` Channel payload (§0.4.2) — a throttled (~2/s, coalesced) live count of
 /// files seen during the §1.1 recursive walk + §1.2 detection, so the §5.2 Collecting state can show
 /// "Scanning… N files so far". Best-effort, monotonic, dies with the C1 call.
 ///
@@ -1545,10 +1552,12 @@ mod tests {
         );
     }
 
-    // §6.4.1 unit (G15): the §0.6/§7.8 `IntakeOrigin` wire enum — all four origins exist and serialize
-    // in the §0.4.3 camelCase wire form. A serialize→deserialize round-trip locks the wire casing so a
-    // silent rename can't break the frontend's `IntakeOrigin` handling. Since P3.77 `IntakeOrigin` is
-    // INBOUND-only — the C1 `ingest_paths` arg — for every origin (`app://intake` is a payload-less nudge, §7.8.1).
+    // §6.4.1 unit (G15): the §0.6/§7.8 `IntakeOrigin` enum — all four origins exist and serialize in the §0.4.3
+    // camelCase form. A serialize→deserialize round-trip locks the enum's wire casing, exercising the derives it
+    // KEEPS (§0.6 defer-registration). [Test-Change: P3.78 — old-obsolete+new-correct, §0.4.1] since P3.78
+    // `IntakeOrigin` is CORE-INTERNAL — no command references it (C1 `drain_intake` shed the `origin` arg; the
+    // origin travels inside `PendingIntake`, §7.8.1) — so this locks the stable form a future wire consumer would
+    // inherit, not a live frontend contract.
     #[test]
     fn intake_origin_wire_form_is_camelcase_and_roundtrips() {
         for (origin, wire) in [

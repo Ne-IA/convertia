@@ -54,7 +54,7 @@ use crate::run::{RerunLedger, RunScratch};
 /// - `on_progress` — the run-telemetry `Channel<ConversionEvent>` (§0.4.2): ordered, run-scoped (dies with
 ///   the run — no cross-run leak, §1.11). Like C1's `onScan` it is **non-optional** (tauri's `Channel<T>` is
 ///   `!Deserialize`, so `Option<Channel<T>>` cannot be a command arg — the same forced shape the C1
-///   `ingest_paths` handler documents; the §0.4.1 C6 row already specifies it non-optional).
+///   `drain_intake` handler documents; the §0.4.1 C6 row already specifies it non-optional).
 ///
 /// [Build-Session-Entscheidung: P3.48 — the C6 body fill] The handler is a THIN AppHandle door (§0.7): it
 /// injects the `AppHandle` (a `#[tauri::command]` special arg) and delegates to [`start_run`], which resolves

@@ -5,53 +5,39 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 /** Commands */
 export const commands = {
 	/**
-	 *  **C1 `ingest_paths`** (§0.4.1) — the single §2.4 freeze point for every intake origin (drop / picker /
-	 *  launch-arg / second-instance). This box (P2.22) authors the typed §0.4.1 wire CONTRACT — the
-	 *  `{ paths, origin, collectingId, drainPending?, onScan } -> CollectedSet` door — so the generated
-	 *  `bindings.ts` mirrors the C1 surface, pulling the whole `CollectedSet` graph + `IntakeOrigin` +
-	 *  `ScanProgress` into the bindings as named types (the §0.6 defer-registration-to-the-consumer pattern).
+	 *  **C1 `drain_intake`** (§0.4.1) — the universal intake-completion door: the single §2.4 freeze point for
+	 *  **every** intake origin (the Rust `WindowEvent::DragDrop` native drop, the C2a picker, launch-arg /
+	 *  second-instance / Open-with — §7.8). This box (P2.22, reshaped P3.78) authors the typed §0.4.1 wire
+	 *  CONTRACT — the `{ collectingId, onScan } -> CollectedSet` door — so the generated `bindings.ts` mirrors the
+	 *  C1 surface, pulling the whole `CollectedSet` graph + `ScanProgress` into the bindings as named types (the
+	 *  §0.6 defer-registration-to-the-consumer pattern).
 	 *
-	 *  - `paths` — the absolute FS paths to freeze (a drop / launch-arg / second-instance set; empty for the
-	 *    `drain_pending` first-launch drain).
-	 *  - `origin` — how the set entered intake (§7.8) — the §0.6 `IntakeOrigin`; a drop/launch-arg/second-instance
-	 *    carries its origin here, while C2a's handler stamps `Picker` itself (§1.1).
 	 *  - `collecting_id` — the frontend-generated ingest-scoped cancel handle (§0.4.4) so C13 `cancel_ingest`
 	 *    can name this in-flight walk **before** C1's long await resolves (§1.1).
-	 *  - `drain_pending` — `Some(true)` consumes the §7.8.1 first-launch `PendingIntake` buffer instead of
-	 *    `paths` (mutually exclusive with a non-empty `paths`, §0.4.1); `None` / `Some(false)` = a normal intake.
-	 *    Wire form `drainPending: boolean | null` (tauri-specta's `Option<bool>` arg form): the frontend passes
-	 *    `null` for a normal intake, `true` to drain — `null` ≡ the spec's omittable `drainPending?` (serde maps
-	 *    a missing/`null` `Option` arg to `None`).
 	 *  - `on_scan` — the throttled scan-telemetry Channel (§0.4.2 `ScanProgress`, ≈2/s) driving the §5.2
 	 *    *Collecting* "Scanning… N files" count; best-effort, monotonic, dies with the call. **Always passed**
 	 *    (non-optional — see the forced-deviation note below); the frontend realises the §0.4.1 "optional" intent
-	 *    by subscribing only for a long walk, never by omitting the argument.
+	 *    by subscribing only for a long walk, never by omitting the argument. C1 is the **sole** `onScan` carrier
+	 *    (C2a walks nothing, §0.4.1).
 	 *
-	 *  [Build-Session-Entscheidung: P2.22] **The typed CONTRACT is the P2.22 deliverable.** P2.22 authors the
-	 *  §0.4.1 wire signature above so the generated `bindings.ts` carries the full C1 door. The §2.4 freeze BODY
-	 *  is its own set of named, scheduled boxes — the §1.1 recursive walk → §1.2 detect → §2.3 de-dup → §1.3
-	 *  group freeze funnel (P2.62), the §0.4.4 `collecting_id` token registry (P2.45), and the `on_scan`
-	 *  scan-telemetry emit (the throttled §0.4.2 `ScanProgress` count, part of the §1.1 walk P2.62/P2.64) — wired
-	 *  end-to-end into this handler by P3.49 "Implement C1 `ingest_paths`" (the CSV→TSV walking-skeleton slice).
-	 *  This is the sanctioned compile-time interface-shell pattern (CLAUDE §5 / the P3 `crate::isolation` shells
-	 *  P4 expands), NOT a quiet deferral: a freeze seam that collects nothing returns the §0.6 zero-collection
-	 *  `CollectedSet::Empty { skipped: [] }` until P3.49 fills it. The freeze funnel is now homed in
-	 *  `crate::orchestrator::ingest` (P2.62 — the §0.7 §01-conductor's first act; no §0.7 tree edit, since
-	 *  `orchestrator` already homes it like the §7.8.1 `PendingIntake`/`FrontendReady` machinery), so it was
-	 *  not pre-created here.
+	 *  [Build-Session-Entscheidung: P3.78] **Every call drains — the P2.60 `drainPending` flag is retired.** The
+	 *  2026-07-06 core-owned-path ruling makes the drain the ONLY mode: the WebView no longer supplies `paths` /
+	 *  `origin` / `drainPending` — every intake origin funnels core-side into `State<PendingIntake>` (the native
+	 *  drop, the C2a picker, launch-arg / second-instance / Open-with), and this command DRAINS it. So the handler
+	 *  binds an `AppHandle` (a Tauri-injected arg, NOT part of the §0.4.1 wire signature) to reach the Rust-side
+	 *  `State<PendingIntake>` + `State<FrontendReady>` (P2.58/P2.59) and dispatches via the pure-state
+	 *  `drain_to_collected_set` helper: MARK the frontend ready (the §7.8.1 readiness signal) + CONSUME
+	 *  `PendingIntake` exactly once; a non-empty buffer enters the §1.1/§2.4 freeze funnel (`ingest`) with its
+	 *  STORED origin, an empty buffer is the genuine §0.6 zero-collection `CollectedSet::Empty` (a raced/duplicate
+	 *  drain, or the ordinary first launch with no files). **No FS path crosses this wire in either direction**
+	 *  (§2.10.1); the `origin` travels inside the buffer (core-side `IntakeOrigin`), never on the wire.
 	 *
-	 *  [Build-Session-Entscheidung: P2.60] **The §7.8.1 `drainPending` drain dispatch is now WIRED** (no longer
-	 *  an ignore-all-args shell). The handler binds an `AppHandle` (a Tauri-injected arg, NOT part of the §0.4.1
-	 *  wire signature — the generated C1 command signature is unchanged) to reach the Rust-side `State<PendingIntake>` +
-	 *  `State<FrontendReady>` (P2.58/P2.59), and dispatches via the pure-state `resolve_intake_source` helper:
-	 *  a `drainPending: true` call MARKS the frontend ready (the §7.8.1 root-shell-mount readiness signal) and
-	 *  CONSUMES `PendingIntake` exactly once with its stored origin (empty buffer → `CollectedSet::Empty`, the
-	 *  ordinary first launch with no files); a normal intake passes its `paths` + `origin` through. The drained /
-	 *  passed-through `Freeze` source then enters the SAME §1.1/§2.4 freeze seam above (the shell until P3.49) —
-	 *  P2.60 owns the drain DISPATCH, P2.62 builds the freeze funnel, P3.49 wires it end-to-end. The `AppHandle`
-	 *  makes this handler AppHandle-coupled boot-glue (§1.1a; G28 signature-exempt): its drain LOGIC is
-	 *  unit-tested on `resolve_intake_source`, its WIRING is source-scan-pinned (this crate ships no `tauri::test`
-	 *  mock BY DECISION). `collecting_id`/`on_scan` remain shell-accepted (`_`-bound) until P2.45/P3.49.
+	 *  [Build-Session-Entscheidung: P2.22] **The freeze BODY is P3.49.** The §1.1 recursive walk → §1.2 detect →
+	 *  §2.3 de-dup → §1.3 group freeze funnel (`ingest`, homed in `crate::orchestrator`) is a compile-time
+	 *  interface shell that returns the §0.6 zero-collection `CollectedSet::Empty { skipped: [] }` until P3.49
+	 *  wires it end-to-end (CLAUDE §5 / the P3 `crate::isolation` shells P4 expands — NOT a quiet deferral). The
+	 *  §0.4.4 `collecting_id` token registration + the `on_scan` throttled emit are that same P3.49 walk's, so
+	 *  here `collecting_id`/`on_scan` are shell-accepted (`_`-bound).
 	 *
 	 *  [Build-Session-Entscheidung: P2.22] **`on_scan` is NON-OPTIONAL — a FORCED deviation from the §0.4.1
 	 *  `onScan?` `[DECIDED]`.** tauri 2.11.3's `Channel<T>` is `!Deserialize` (it carries its own `CommandArg`
@@ -59,73 +45,67 @@ export const commands = {
 	 *  so an optional channel argument cannot compile. No behaviour is lost: the wire-form optionality is realised
 	 *  by the frontend subscribing only for a long walk, never by omitting the arg. The rejected alternative was a
 	 *  custom `OptionalChannel<T>` wrapper replicating undocumented `__CHANNEL__:N` internals (version-fragile).
-	 *  §0.4.1 (C1 + the sibling C2a) / §0.4.2 + the README / plan / §05 mirrors are spec-synced non-optional in
-	 *  THIS same commit (DoD item 2 — the forced deviation is reflected in the spec, not silently absorbed).
+	 *  §0.4.1 (C1) / §0.4.2 + the README / plan / §05 mirrors are spec-synced non-optional (DoD item 2).
 	 */
-	ingestPaths: (paths: string[], origin: IntakeOrigin, collectingId: CollectingId, drainPending: boolean | null, onScan: Channel<ScanProgress>) => __TAURI_INVOKE<CollectedSet>("ingest_paths", { paths, origin, collectingId, drainPending, onScan }),
+	drainIntake: (collectingId: CollectingId, onScan: Channel<ScanProgress>) => __TAURI_INVOKE<CollectedSet>("drain_intake", { collectingId, onScan }),
 	/**
-	 *  **C2a `pick_for_intake`** (§0.4.1) — the Rust-side `DialogExt` intake picker. This box (P2.23) authors the
-	 *  typed §0.4.1 wire CONTRACT — the `{ kind, collectingId, onScan } -> CollectedSet` door — mirroring the C1
-	 *  surface so the picker shares C1's freeze return and **no raw FS path ever reaches the WebView** (the WebView
-	 *  only triggers the picker and receives the collected summary, §0.10 / §5.4).
+	 *  **C2a `pick_for_intake`** (§0.4.1) — the Rust-side `DialogExt` intake picker. This box (P2.23, reshaped
+	 *  P3.78) authors the typed §0.4.1 wire CONTRACT — the `{ kind } -> ()` door. The picker **only fills the
+	 *  §7.8.1 funnel**: it opens the native dialog Rust-side, stamps the `Picker` origin core-side, routes the
+	 *  picked paths through the SAME `forward_launch_intake` funnel every other intake source uses (uniform §7.1.1
+	 *  refuse-busy → `State<PendingIntake>` → the payload-less `app://intake` nudge), and returns `()`. The WebView
+	 *  then completes the intake with **C1 `drain_intake`** — so **no raw FS path ever reaches the WebView** and C1
+	 *  is the sole walk/freeze/`onScan` carrier (§0.4.1).
 	 *
 	 *  - `kind` — the §0.6 `PickKind` (`Files` | `Folder`): open the native files-multiselect or the folder
-	 *    dialog; a folder pick is recursively collected at the §1.1 freeze.
-	 *  - `collecting_id` — the frontend-generated ingest-scoped cancel handle (§0.4.4), registered as the §1.1
-	 *    token **before the dialog opens** so C13 `cancel_ingest` can trip the in-flight pick/walk (P2.70).
-	 *  - `on_scan` — the throttled scan-telemetry Channel (§0.4.2 `ScanProgress`); **non-optional**, the *same*
-	 *    `Channel<T>` `!Deserialize` forced deviation the C1 `ingest_paths` handler documents above — C2a takes it
-	 *    identically (§0.4.1). The frontend always hands it and realises the "optional" intent by subscribing only
-	 *    for a long walk, never by omitting the argument.
+	 *    dialog; a folder pick is recursively collected at the §1.1 freeze (inside the C1 drain, P3.49).
 	 *
-	 *  C2a carries **no `origin` field**: the picked set's origin is `Picker`, **stamped by this handler itself**
-	 *  (P2.63), not supplied by the WebView (§1.1 / §5.4) — so a compromised WebView cannot forge the intake origin.
+	 *  C2a carries **no `collectingId` / `onScan`** (P3.78): the picker walks nothing — the walk, the freeze,
+	 *  `collectingId`, `onScan` and the `CollectedSet` return all live on C1 `drain_intake`. During the modal there
+	 *  is no walk, so a C13-during-modal has nothing to cancel (§0.4.1). It carries **no `origin` field** either:
+	 *  the picked set's origin is `Picker`, **stamped by this handler itself** (P2.63) — so a compromised WebView
+	 *  cannot forge the intake origin (§1.1 / §5.4).
 	 *
-	 *  [Build-Session-Entscheidung: P2.70] **Native-dialog phase — the body is now built.** The handler binds an
-	 *  `AppHandle` (a Tauri-injected arg, NOT part of the §0.4.1 wire signature — the generated C2a command stays
-	 *  `{ kind, collectingId, onScan }`) to open the native `DialogExt` picker and reach the §0.4.4
-	 *  `IngestRegistry`. Per §1.1: it registers the `CollectingId` token **before** the dialog opens — via the
-	 *  RAII `IngestGuard` (P2.70), so the token is de-registered on **every** exit branch by construction (the
-	 *  §1.1 "drop in every C2a return path"; the explicit per-branch + the C13 `.cancel()` trip are P2.71) — then
-	 *  opens the picker on a **dedicated blocking thread** (`spawn_blocking` + `blocking_pick_*`, never a
-	 *  synchronous `blocking_pick_*` on a Tokio worker), so the runtime stays free and a C13 during the modal is
-	 *  serviceable. After the dialog it runs the **AppHandle-free `resolve_pick_outcome`** decision (§1.1a split,
-	 *  unit-tested): a C13 trip during the modal **abandons** the pick → `Empty`; a user-dismissed dialog →
-	 *  `Empty` (§5.4 clean no-op); otherwise the picked paths are **`Picker`-stamped core-side** (a compromised
-	 *  WebView cannot forge the origin, §5.4 / §0.10) and funnelled into the single §1.1/§2.4 freeze
-	 *  (`crate::orchestrator::ingest`, the interface shell until P3.49 — so today the funnel still yields `Empty`,
-	 *  but the dialog→funnel path is real). The post-dialog token check is **live** (until P2.71 wires C13's
-	 *  `.cancel()` it reads `false` — reachable-by-construction, no hole). This handler is AppHandle-coupled
-	 *  boot-glue (§1.1a; G28 signature-exempt): the dialog open + the token registration are source-scan-pinned,
-	 *  the outcome decision is `resolve_pick_outcome` (unit-tested + G27-counted). `on_scan` belongs to the §1.1
-	 *  walk (the freeze funnel, P3.49), not the dialog phase, so it stays `_`-bound here.
+	 *  [Build-Session-Entscheidung: P3.78] **Fill-the-funnel phase.** The handler binds an `AppHandle` (a
+	 *  Tauri-injected arg, NOT part of the §0.4.1 wire signature — the generated C2a command is `{ kind }`) to
+	 *  open the native `DialogExt` picker and reach the §7.8.1 funnel. It opens the picker on a **dedicated
+	 *  blocking thread** (`spawn_blocking` + `blocking_pick_*`, never a synchronous `blocking_pick_*` on a Tokio
+	 *  worker), so the runtime stays free. After the dialog it runs the **AppHandle-free `resolve_pick_outcome`**
+	 *  decision (§1.1a split, unit-tested): a user-dismissed dialog → a clean no-op (nothing buffered, no nudge,
+	 *  the UI stays Idle, §5.4); otherwise the picked paths are **`Picker`-stamped core-side** and funnelled through
+	 *  `crate::launch_intake::forward_launch_intake` (stash + nudge — the same §7.8.1 funnel the native drop /
+	 *  launch-arg use), and the WebView drains via C1. This handler is AppHandle-coupled boot-glue (§1.1a; G28
+	 *  signature-exempt): the dialog open is source-scan-pinned, the outcome decision is `resolve_pick_outcome`
+	 *  (unit-tested + G27-counted). (The former P2.70 `collectingId` ingest-token registration is retired with the
+	 *  picker's walk — there is no dialog-phase walk to cancel; only the C1 drain registers a token, P3.49.)
 	 */
-	pickForIntake: (kind: PickKind, collectingId: CollectingId, onScan: Channel<ScanProgress>) => __TAURI_INVOKE<CollectedSet>("pick_for_intake", { kind, collectingId, onScan }),
+	pickForIntake: (kind: PickKind) => __TAURI_INVOKE<null>("pick_for_intake", { kind }),
 	/**
 	 *  **C13 `cancel_ingest`** (§0.4.1) — trips the ingest-scoped `CollectingId` token to cancel an in-flight
-	 *  C1/C2a walk **before** its long await resolves (§1.1): the frontend mints the `CollectingId`, hands it to
-	 *  C1/C2a, and names it here to abort a deep recursive collect that would otherwise run to completion. This
-	 *  box (P2.35) authors the typed §0.4.1 wire CONTRACT — the `{ collectingId } -> Result<(), IpcError>` door
+	 *  C1 `drain_intake` walk **before** its long await resolves (§1.1): the frontend mints the `CollectingId`,
+	 *  hands it to C1, and names it here to abort a deep recursive collect that would otherwise run to completion.
+	 *  This box (P2.35) authors the typed §0.4.1 wire CONTRACT — the `{ collectingId } -> Result<(), IpcError>` door
 	 *  (the §0.4 universal error shape) — so the generated `bindings.ts` mirrors the C13 surface.
 	 *
-	 *  - `collecting_id` — the §0.4.4 frontend-generated ingest-scoped cancel handle (registered by C1/C2a at
-	 *    handler entry, P2.45) whose token to trip.
+	 *  - `collecting_id` — the §0.4.4 frontend-generated ingest-scoped cancel handle (registered by C1's drain at
+	 *    handler entry, P3.49) whose token to trip.
 	 *
-	 *  [Build-Session-Entscheidung: P2.71] **The `.cancel()` trip is now WIRED** (no longer the P2.35 `Ok(())`
+	 *  [Build-Session-Entscheidung: P2.71] **The `.cancel()` trip is WIRED** (no longer the P2.35 `Ok(())`
 	 *  shell). The handler binds an `AppHandle` (Tauri-injected — the §0.4.1 wire signature stays
 	 *  `{ collectingId }`) to reach the §0.4.4 `IngestRegistry` (`.manage`d in main, P2.70) and **trips the
 	 *  ingest-scoped token** via `IngestRegistry::cancel(collecting_id)`. The cancel EFFECT is then observed by
-	 *  the in-flight ingest — the §1.1 walk-loop poll (P2.69) returns `WalkAbort::Cancelled`, or the C2a
-	 *  post-dialog check (P2.70) reads the tripped token via its RAII guard — each yielding the §0.6
-	 *  zero-collection `CollectedSet::Empty` (§1.1); C13's own return never carries the effect. **Idempotent
-	 *  `Ok(())` `[DECIDED]`:** a cancel of an unknown / already-finished ingest finds no live token
+	 *  the in-flight C1 `drain_intake` walk — the §1.1 walk-loop poll (P2.69) returns `WalkAbort::Cancelled`,
+	 *  yielding the §0.6 zero-collection `CollectedSet::Empty` (§1.1); C13's own return never carries the effect.
+	 *  (The former C2a-during-modal leg is retired with C2a's walk — the picker now only fills the §7.8.1 funnel
+	 *  and walks nothing, §0.4.1, so the dialog wait has no token to trip; only the C1 drain registers one, P3.49.)
+	 *  **Idempotent `Ok(())` `[DECIDED]`:** a cancel of an unknown / already-finished ingest finds no live token
 	 *  (`IngestRegistry::cancel` returns `false`) — the genuine "not collecting" end-state (§1.1), the C7
 	 *  `cancel_run` mirror — so the result is ALWAYS `Ok(())` (the §0.4.1 C13 idempotent contract), NEVER an
 	 *  `Err`. This handler is AppHandle-coupled boot-glue (§1.1a; G28 signature-exempt): the trip LOGIC is
-	 *  `IngestRegistry::cancel` (unit-tested at P2.45, + the end-to-end token-trip→guard→`Empty` chain proven in
-	 *  the C13 tests here), the WIRING source-scan-pinned. `app.state::<…>()` is infallible by construction (the
-	 *  registry is `.manage`d in main()'s Builder chain before the event loop, P2.70 — no panic under the
-	 *  `crate::ipc` clippy::panic deny).
+	 *  `IngestRegistry::cancel` (unit-tested at P2.45, + the end-to-end token-trip chain proven in the C13 tests
+	 *  here), the WIRING source-scan-pinned. `app.state::<…>()` is infallible by construction (the registry is
+	 *  `.manage`d in main()'s Builder chain before the event loop, P2.70 — no panic under the `crate::ipc`
+	 *  clippy::panic deny).
 	 */
 	cancelIngest: (collectingId: CollectingId) => __TAURI_INVOKE<null>("cancel_ingest", { collectingId }),
 	/**
@@ -250,7 +230,7 @@ export const commands = {
 	 *  - `on_progress` — the run-telemetry `Channel<ConversionEvent>` (§0.4.2): ordered, run-scoped (dies with
 	 *    the run — no cross-run leak, §1.11). Like C1's `onScan` it is **non-optional** (tauri's `Channel<T>` is
 	 *    `!Deserialize`, so `Option<Channel<T>>` cannot be a command arg — the same forced shape the C1
-	 *    `ingest_paths` handler documents; the §0.4.1 C6 row already specifies it non-optional).
+	 *    `drain_intake` handler documents; the §0.4.1 C6 row already specifies it non-optional).
 	 *
 	 *  [Build-Session-Entscheidung: P3.48 — the C6 body fill] The handler is a THIN AppHandle door (§0.7): it
 	 *  injects the `AppHandle` (a `#[tauri::command]` special arg) and delegates to [`start_run`], which resolves
@@ -603,7 +583,8 @@ export type CollectedNoteKind =
 "other";
 
 /**
- *  The frozen collected-set the C1 `ingest_paths` / C2a `pick_for_intake` commands return and the §1.4 /
+ *  The frozen collected-set the C1 `drain_intake` command returns (the sole freeze/return since P3.78 — the
+ *  C2a `pick_for_intake` picker only fills the §7.8.1 funnel and returns `()`) and the §1.4 /
  *  §5.2 confirm gate renders (§0.6 / §1.1 / §1.4). `Single` carries the FULL confirm-summary field set,
  *  so the wire type IS the §1.4 `CollectedSummary` (unified — the mandatory confirm gate gets a real IPC
  *  path); the §0.4.4 collected-set registry stores this payload + its roots keyed by `CollectedSetId`
@@ -1103,38 +1084,6 @@ export type EnumChoice = {
 
 /**  One per app launch (§7.1). */
 export type InstanceId = string;
-
-/**
- *  How a set of paths entered intake (§0.6 / §7.8). Every source funnels into the §1.1 intake state machine,
- *  so the §2.4 freeze + §1.3 one-batch rules apply identically regardless of origin. `Drop`/`LaunchArg`/
- *  `SecondInstance` stash core-side into `PendingIntake` and reach the §1.1 freeze via the C1 drain (§7.8.1,
- *  P3.77); the `Picker` set is still frozen directly by C2a `pick_for_intake` (never via C1) and joins the same
- *  §7.8.1 funnel at P3.78 — either way the origin is stored core-side, never on the wire.
- *
- *  [Build-Session-Entscheidung: P2.2] `#[serde(rename_all = "camelCase")]` matches the established
- *  §0.6 wire-enum casing (the sibling `ErrorKind`/`IpcError` wire types, §0.4.3): the variants
- *  serialize as `drop`/`picker`/`launchArg`/`secondInstance`. `Serialize`+`Deserialize` because the origin
- *  still crosses IPC as the **inbound** C1 `ingest_paths` arg (§0.4.1). [Build-Session-Entscheidung: P3.77]
- *  It no longer has an OUTBOUND wire path: the 2026-07-06 core-owned-path ruling retired `IntakePayload`, so
- *  `app://intake` is a payload-less nudge and the origin never travels outbound. `Copy`/`Eq` are free for a
- *  fieldless enum. (`Hash` is omitted — not a map key.)
- */
-export type IntakeOrigin =
-/**  Files dropped on the drop area — the §1.1 primary intake; reaches C1 `ingest_paths` directly. */
-"drop" |
-/**  Files chosen via the OS file picker (C2a `pick_for_intake`); reaches C1 directly. */
-"picker" |
-/**
- *  Files passed at first launch (the desktop-entry `%F`/`%U` expansion, the Windows first-launch
- *  `argv`, or the macOS first-launch `RunEvent::Opened`), drained through the §7.8.1
- *  buffer-then-replay once the WebView is ready (§7.8).
- */
-"launchArg" |
-/**
- *  Files handed to the already-running instance by a second launch — the §7.1.1 single-instance
- *  `argv`/cwd callback, or the macOS `RunEvent::Opened` while already running (§7.8).
- */
-"secondInstance";
 
 /**
  *  The §0.4.3 authoritative error shape — every command's `Err` and every `ItemOutcome::Failed.error` is
@@ -1844,7 +1793,7 @@ export type RunStarted = {
 };
 
 /**
- *  The C1 `ingest_paths` `onScan` Channel payload (§0.4.2) — a throttled (~2/s, coalesced) live count of
+ *  The C1 `drain_intake` `onScan` Channel payload (§0.4.2) — a throttled (~2/s, coalesced) live count of
  *  files seen during the §1.1 recursive walk + §1.2 detection, so the §5.2 Collecting state can show
  *  "Scanning… N files so far". Best-effort, monotonic, dies with the C1 call.
  *

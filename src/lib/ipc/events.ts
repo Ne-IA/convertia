@@ -40,34 +40,33 @@ import {
 } from "./commands";
 
 /**
- * [Build-Session-Entscheidung: P2.61] The §7.8.1 DRAIN — re-call C1 `ingest_paths` with `drainPending: true`
- * and NO paths, consuming the Rust-side `State<PendingIntake>` hand-off buffer (P2.58/P2.60) exactly once.
+ * [Build-Session-Entscheidung: P2.61] The §7.8.1 DRAIN — call C1 `drain_intake`, consuming the Rust-side
+ * `State<PendingIntake>` hand-off buffer (P2.58/P2.60) exactly once.
  * [Build-Session-Entscheidung: P3.77] After the 2026-07-06 core-owned-path ruling this is the drain BOTH intake
  * triggers issue (§7.8.1 "the frontend issues the drain on every `app://intake` nudge and once on root-shell
  * mount"): the root-shell mount (`useLaunchDrain`, P2.120) AND the payload-less `app://intake` nudge listener
  * (`subscribeAppEvents`, retiring the old payload-carrying `ingestFromIntakeEvent`). Each call drains the single
- * hand-off buffer once — for a first-launch/Open-with set that raced the listener, a second-instance launch, or
- * a native drop (now handled core-side and stashed into the same buffer, P3.77). It re-calls the CURRENT C1
- * `ingest_paths(drainPending)` shape; P3.78 renames it to the args-less `drain_intake`.
+ * hand-off buffer once — for a first-launch/Open-with set that raced the listener, a second-instance launch, a
+ * native drop, or a C2a-picked set (all handled core-side and stashed into the same buffer, P3.77/P3.78).
+ * [Build-Session-Entscheidung: P3.78] It calls the args-less C1 `drain_intake { collectingId, onScan }` — the
+ * WebView supplies no path / origin / drain flag; every call drains the core-side buffer (the P2.60
+ * `drainPending: true` + empty-`paths` shape is retired with `ingest_paths`).
  *
- * The Rust handler (P2.60) marks the frontend ready + drains the buffer using its STORED origin, so:
- * - `paths: []` — a drain ignores any passed paths (`drainPending` ⊻ paths, §0.4.1 C1 mutual exclusivity);
- * - `origin: "launchArg"` is IGNORED by the drain (the buffer's stored origin wins, §7.8.1) — passed as the
- *   semantically-apt default (the typical first-launch origin), never relied on;
- * - `collectingId` is a fresh §0.4.4 ingest-cancel handle (a drain is quick, but the contract requires one);
- * - `onScan` is the required §0.4.1 `Channel<ScanProgress>` (the C1 non-optional forced deviation) — a drain
- *   has no scan progress, so it is a bare unsubscribed sink.
+ * - `collectingId` is a fresh §0.4.4 ingest-cancel handle (a drain is quick, but the contract requires one so
+ *   C13 can cancel a long walk);
+ * - `onScan` is the required §0.4.1 `Channel<ScanProgress>` (the C1 non-optional forced deviation) — a drain of
+ *   a small buffer has little scan progress, so it is a bare unsubscribed sink here.
  *
  * Returns the §0.6 `CollectedSet`: a non-empty drain → the §5.2 `Collecting` transition (P3.53's state
  * machine consumes the result, exactly like a drop); an empty drain (the ordinary first launch with no
- * files) → `CollectedSet::Empty` and the UI stays `Idle`. During P2 the Rust §1.1 freeze seam is a shell,
+ * files) → `CollectedSet::Empty` and the UI stays `Idle`. Through P3.78 the Rust §1.1 freeze seam is a shell,
  * so the result is always `Empty` until P3.49 wires the real freeze — the drain TRIGGER is this box's
  * deliverable, the result CONSUMPTION lands with the state machine.
  */
 export async function drainPendingIntake(): Promise<CollectedSet> {
   const collectingId = crypto.randomUUID();
   const onScan = new Channel<ScanProgress>();
-  return commands.ingestPaths([], "launchArg", collectingId, true, onScan);
+  return commands.drainIntake(collectingId, onScan);
 }
 
 // ─── P2.120: the §5.8 frontend async model (Channel<ConversionEvent> lifecycle + the three app:// listeners) ───
@@ -168,7 +167,7 @@ function isIpcError(value: unknown): boolean {
  * `app://fault`'s dispatch → FSM state 12 is the P3.53 reducer (the channel-death fault SOURCE is P2.124; the
  * `AppFaultNotice` render is the P3.60 slice → P8.19.1 copy; the `app://fault` EMIT + `PendingFault` buffer is
  * P4), and `app://close-requested`'s → QuitConfirm (state 11) body is P4.67.1. `app://intake` is NOT a prop —
- * it is handled internally (→ C1 `ingest_paths`), live from P2.120.
+ * it is handled internally (→ the C1 `drain_intake` drain via `drainPendingIntake`), live from P2.120.
  */
 export interface AppEventHandlers {
   /** `app://fault` (§2.13.3): an app-level fault (`AppFault`). The dispatch-to-FSM-state-12 body is P3.53. */

@@ -2813,19 +2813,19 @@ pub fn compute_rerun_verdict(
 // — a launch-intake State store added to orchestrator needs NO §0.7/§1a structural edit (§0.7 attributes the
 // app-managed State to orchestrator + enumerates the outcome-referencing TYPES, not every store; the
 // P2.43/P2.44/P2.45 precedent). It is the single-slot sibling of `RunResultStore` (a `Mutex<Option<…>>`).
-// [Build-Session-Entscheidung: P3.77] The 2026-07-06 core-owned-path ruling makes this the SINGLE hand-off
-// buffer for every non-busy LAUNCH/DROP origin — drop, launch-arg, second-instance (Open-with arrives as one of
-// those, §7.8.1): the §7.8.1 intake funnel (`stash_pending_intake`, main.rs) ALWAYS `stash`es the set here (the
-// former `Emit` arm — a payload-carrying `app://intake` emit — is retired with `IntakePayload`; the nudge is now
-// payload-less), and the C1 drain (P2.60/P3.78) TAKEs it and freezes it (§1.1). The C2a picker still ingests
-// directly (`ingest(.., Picker)`) and joins this same funnel at P3.78 (§7.8.1 end-state), not yet in P3.77. It
-// differs from the §0.4.4 run/ingest stores only
-// in WHO drives it — the intake glue writes, C1 reads — but the State-store shape + the contract-before-consumer
-// discipline (the `take` reader is dead in the production build until C1 wires it, covered by the module-level
-// dead_code expect) are identical.
+// [Build-Session-Entscheidung: P3.77/P3.78] The 2026-07-06 core-owned-path ruling makes this the SINGLE hand-off
+// buffer for EVERY non-busy intake origin — the native drop, launch-arg, second-instance, Open-with, AND the C2a
+// picker's picked set (§7.8.1): the §7.8.1 intake funnel (`stash_pending_intake`, main.rs) ALWAYS `stash`es the
+// set here (the former `Emit` arm — a payload-carrying `app://intake` emit — is retired with `IntakePayload`; the
+// nudge is now payload-less), and the C1 `drain_intake` drain (P2.60/P3.78) TAKEs it and freezes it (§1.1). The
+// C2a picker now joins this same funnel (P3.78): it stashes its picked set here via `forward_launch_intake` and
+// the C1 drain collects it, exactly like every other origin — no source-specific freeze path exists. It differs
+// from the §0.4.4 run/ingest stores only in WHO drives it — the intake glue writes, the C1 drain reads (via
+// `take_marking_ready`, live since P2.60) — but the State-store shape + the contract-before-consumer discipline
+// are identical.
 
 /// One buffered §7.8.1 intake — a path set + its §0.6 `IntakeOrigin`. Stashed by the intake funnel (every
-/// non-busy launch/drop origin — drop, launch-arg, second-instance, P3.77; the C2a picker joins at P3.78),
+/// non-busy launch/drop origin — drop, launch-arg, second-instance, P3.77; and the C2a picker, P3.78),
 /// drained once by the C1 drain (P2.60).
 /// NOT a wire type: the C1 drain returns a `CollectedSet` (§0.4.1), never this buffer (pure core-internal
 /// State). [Build-Session-Entscheidung: P2.58]
@@ -2844,7 +2844,7 @@ pub struct BufferedLaunchIntake {
 /// The §7.8.1 intake buffer (`State<PendingIntake>`) — holds at most one un-drained
 /// [`BufferedLaunchIntake`]. The single-slot sibling of [`RunResultStore`]: the intake funnel `stash`es every
 /// non-busy launch/drop intake set here (drop, launch-arg, second-instance — the single hand-off buffer, P3.77;
-/// the C2a picker joins at P3.78), and the C1 drain (P2.60/P3.78) drains it exactly once per call. Held as a Tauri app-managed `State`
+/// and the C2a picker since P3.78), and the C1 drain (P2.60/P3.78) drains it exactly once per call. Held as a Tauri app-managed `State`
 /// (registered in `main()`'s Builder chain). Interior-mutable behind a `Mutex` (the `State` form is shared
 /// across the intake hooks + the C1 handler); the critical sections are infallible slot ops that never hold
 /// the guard across an `.await`, so a `std::sync::Mutex` is correct.
@@ -2869,7 +2869,7 @@ impl PendingIntake {
     }
 
     /// Stash an intake set into the §7.8.1 buffer (every non-busy launch/drop origin — drop, launch-arg,
-    /// second-instance, P3.77; the C2a picker joins at P3.78). NO-LOSS on a repeat stash before the drain: a second intake before the drain
+    /// second-instance, P3.77; and the C2a picker, P3.78). NO-LOSS on a repeat stash before the drain: a second intake before the drain
     /// APPENDS its paths to the pending set rather than superseding it — superseding would drop the earlier
     /// set's paths, the very loss this buffer exists to prevent (§7.8.1) — and keeps the FIRST origin (§7.8.1
     /// "its stored origin"). The funnel only reaches this with a non-empty `paths` (it returns early on empty,
@@ -2920,10 +2920,10 @@ impl PendingIntake {
 // (P2.60 — on root-shell mount, AFTER the listener registers) marks it ready. MONOTONIC false→true: the `main`
 // window lives for the whole session (§7.3.1 closing-quits) so the listener never un-registers, hence the flag
 // never resets — an `AtomicBool` is the right tool (no Mutex/poison handling; the reader needs only the
-// published boolean, no data is gated behind it). Both methods are LIVE: `mark_ready` is driven by the C1 drain
-// handler via the fused [`PendingIntake::take_marking_ready`] (`crate::ipc::intake::resolve_intake_source` calls
-// it — the drain call is the §7.8.1 root-shell-mount readiness signal), and `is_ready` is read by the §7.8.1
-// funnel's `frontend_ready` (P2.59, main.rs) after the stash.
+// published boolean, no data is gated behind it). Both methods are LIVE: `mark_ready` is driven by the C1
+// `drain_intake` handler via the fused [`PendingIntake::take_marking_ready`]
+// (`crate::ipc::intake::drain_to_collected_set` calls it — every drain call is the §7.8.1 readiness signal),
+// and `is_ready` is read by the §7.8.1 funnel's `frontend_ready` (P2.59, main.rs) after the stash.
 
 /// The §7.8.1 WebView-ready flag (`State<FrontendReady>`) — `true` once the frontend has registered its
 /// `app://intake` listener and run the C1 drain (P2.60) on root-shell mount. The §7.8.1 intake funnel reads it
@@ -2963,9 +2963,11 @@ impl FrontendReady {
 }
 
 /// The §1.1 / §2.4 **intake-freeze funnel** — the single, exhaustive freeze point every intake entry
-/// point routes through (SSOT *Never harm the original*). All five §1.1 entry points reduce to this one
-/// Rust function: the C1 `ingest_paths` drop / launch-arg / second-instance set, and the C2a
-/// `pick_for_intake` picked set (origin stamped `Picker` by the C2a handler, §1.1) — so the §2.4 freeze
+/// point routes through (SSOT *Never harm the original*). [Build-Session-Entscheidung: P3.78] All §1.1 entry
+/// points reduce to this one Rust function via the C1 `drain_intake` drain: every origin (the native drop,
+/// launch-arg / second-instance / Open-with, and the C2a `pick_for_intake` picked set — origin stamped
+/// `Picker` by the C2a handler, §1.1) funnels core-side into the §7.8.1 `PendingIntake` buffer, and the C1
+/// drain (`drain_to_collected_set`) hands the drained set here with its stored origin — so the §2.4 freeze
 /// and the §1.3 one-batch rule are enforced ONCE here, never duplicated per entry point. It builds the
 /// frozen source set **eagerly and once, before any conversion** (§2.4.1) and projects it to the §0.6
 /// `CollectedSet` the §1.4 confirm gate renders.
@@ -3013,13 +3015,15 @@ impl FrontendReady {
 /// `crate::isolation` shells P4 expands — NOT a quiet deferral). While the walk + detection + grouping
 /// remain unbuilt the spine collects nothing, so the funnel returns the §0.6 zero-collection
 /// `CollectedSet::Empty { skipped: [] }` — the genuine result for an input that yields no eligible source
-/// (and the same zero-collection result the C1 / C2a shells already return for an empty/cancelled intake,
+/// (and the same zero-collection result the C1 `drain_intake` drain returns for an empty/raced buffer,
 /// §0.4.1 / §5.4). [Test-Change: P2.63 — old-obsolete+new-correct, §1.1] the P2.62 per-fn dead-code lint
-/// attribute on `ingest` is removed now the funnel is LIVE — its first production caller is the C2a
-/// `pick_for_intake` picker (P2.63, which stamps `Picker` and funnels its picked set here); keeping the
-/// attribute would error "unfulfilled expectation" under -D warnings (a production lint change, not a test
-/// suppression). The C1 `ingest_paths` handler wires it end-to-end at P3.49 (the CSV→TSV walking skeleton);
-/// the funnel returns the zero-collection `Empty` for every input until its §2.4.1 spine stages land (P2.64 / P3).
+/// attribute on `ingest` is removed now the funnel is LIVE — [Build-Session-Entscheidung: P3.78] its
+/// production caller is the C1 `drain_intake` drain (`drain_to_collected_set`, which freezes the drained
+/// `PendingIntake` buffer here with its stored origin); keeping the attribute would error "unfulfilled
+/// expectation" under -D warnings (a production lint change, not a test suppression). C1 `drain_intake` wires
+/// it end-to-end at P3.49 (the CSV→TSV walking skeleton); the funnel returns the zero-collection `Empty` for
+/// every input until its §2.4.1 spine stages land (P2.64 / P3). (Pre-P3.78 the C2a picker called `ingest`
+/// directly; it now funnels through `forward_launch_intake` → `PendingIntake` → the C1 drain, §7.8.1.)
 #[must_use]
 pub fn ingest(paths: Vec<PathBuf>, origin: IntakeOrigin) -> CollectedSet {
     // §2.4.1 freeze spine: walk (P2.64) → detect (P3) → resolve-identity (P3, produces the P2.74

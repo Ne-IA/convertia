@@ -61,20 +61,22 @@ describe("drainPendingIntake (§7.8.1 first-launch drain)", () => {
     invoke.mockResolvedValue({ empty: { skipped: [] } });
   });
 
-  it("re-calls C1 ingest_paths with no paths + drainPending true + a fresh collectingId", async () => {
+  it("calls C1 drain_intake with a fresh collectingId + onScan (no paths/origin/drainPending, P3.78)", async () => {
     await drainPendingIntake();
     expect(invoke).toHaveBeenCalledTimes(1);
-    // §7.8.1 / §0.4.1: a drain sends empty paths (drainPending ⊻ paths) + drainPending=true; the origin is
-    // ignored by the Rust drain (stored origin wins) but passed as the launchArg placeholder.
+    // §7.8.1 / §0.4.1 (P3.78): every drain calls the args-less `drain_intake { collectingId, onScan }` — the
+    // WebView supplies no path / origin / drain flag; the core drains its `PendingIntake` buffer.
     expect(invoke).toHaveBeenCalledWith(
-      "ingest_paths",
+      "drain_intake",
       expect.objectContaining({
-        paths: [],
-        origin: "launchArg",
-        drainPending: true,
         collectingId: expect.any(String),
       }),
     );
+    // [Test-Change: P3.78 — old-obsolete+new-correct, §0.4.1] the retired `paths: []` / `origin: "launchArg"` /
+    // `drainPending: true` assertions are gone — those args no longer exist on the wire (C1 sheds them). Pin the
+    // EXACT arg set to `{ collectingId, onScan }` so a re-added path arg reddens.
+    const args = invoke.mock.calls[0]?.[1] ?? {};
+    expect(Object.keys(args).sort()).toEqual(["collectingId", "onScan"]);
   });
 
   it("mints a fresh collectingId per drain (no reuse across calls)", async () => {
@@ -103,18 +105,16 @@ describe("subscribeAppEvents (P2.120 §5.8 three app:// listeners)", () => {
     expect(listen).toHaveBeenCalledTimes(3);
   });
 
-  // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] app://intake is now a PAYLOAD-LESS nudge (the
-  // core-owned-path ruling retired `IntakePayload`), so the listener issues the DRAIN — the same
-  // `ingest_paths(paths: [], drainPending: true)` shape the mount drain uses — never a payload-carrying ingest.
-  it("app://intake issues the payload-less drain (ingest_paths with empty paths + drainPending true)", async () => {
+  // [Test-Change: P3.77/P3.78 — old-obsolete+new-correct, §7.8.1/§0.4.1] app://intake is a PAYLOAD-LESS nudge
+  // (the core-owned-path ruling retired `IntakePayload`), so the listener issues the args-less C1 `drain_intake`
+  // drain (P3.78 — no `paths`/`drainPending`), the same drain the mount issues — never a payload-carrying ingest.
+  it("app://intake issues the payload-less drain (C1 drain_intake with a fresh collectingId)", async () => {
     await subscribeAppEvents();
     handlerFor("app://intake")?.({ payload: null });
     await Promise.resolve(); // let the fire-and-forget C1 drain land
     expect(invoke).toHaveBeenCalledWith(
-      "ingest_paths",
+      "drain_intake",
       expect.objectContaining({
-        paths: [],
-        drainPending: true,
         collectingId: expect.any(String),
       }),
     );

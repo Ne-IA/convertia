@@ -607,7 +607,7 @@ mod c10_contract {
     //! `block_on(open_project_page())` contract test is OBSOLETE — P2.104 filled the body and the handler now
     //! binds an `AppHandle`, uninvocable without a Tauri runtime (none in cargo-test, §1.1a). It is REPLACED by
     //! the `PROJECT_PAGE_URL` constant unit test (the pure value, read back directly) + the handler source-scan
-    //! — the sanctioned boot-glue stratification (the C1 `ingest_paths` P2.60 / C13 `cancel_ingest` P2.71
+    //! — the sanctioned boot-glue stratification (the C1 `drain_intake` P2.60 / C13 `cancel_ingest` P2.71
     //! precedent), NOT a dropped assertion.
     use super::*;
 

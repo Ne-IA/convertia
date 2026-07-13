@@ -49,7 +49,7 @@ pub mod events {
     /// `app://fault` — the §2.13 app-level fault (payload `AppFault`). Emit sites: §2.13.3 / §5.8 / §7.2.
     pub const APP_FAULT: &str = "app://fault";
     /// `app://intake` — the §7.8.1 payload-less "come and drain `PendingIntake`" nudge for every idle launch/drop
-    /// intake origin (drop / launch-arg / second-instance; the C2a picker joins at P3.78; payload `()` since the
+    /// intake origin (drop / launch-arg / second-instance, and the C2a picker since P3.78; payload `()` since the
     /// P3.77 core-owned-path ruling retired `IntakePayload` — no path crosses the wire).
     pub const APP_INTAKE: &str = "app://intake";
     /// `app://close-requested` — the §7.3.2 mid-run window-close intercept (payload `()`; §7.3.2 emits a
@@ -114,7 +114,7 @@ mod c_surface_scan {
         ("plan_output", planning_src),
         ("set_destination", planning_src),
         ("pick_destination", planning_src),
-        ("ingest_paths", intake_src),
+        ("drain_intake", intake_src),
         ("pick_for_intake", intake_src),
         ("cancel_ingest", intake_src),
         ("start_conversion", conversion_src),
@@ -148,8 +148,9 @@ mod responsiveness_contract {
     //! of the per-engine watchdog (which is P3.44/P4.12). A STRUCTURAL (source-scan) assertion that no
     //! synchronous C-command can wedge the WebView, in three parts: (1) UNIVERSAL-ASYNC — every §0.4.1 C1–C13
     //! handler is `pub async fn`, so its dispatch yields to the Tokio runtime rather than the WebView thread;
-    //! (2) STREAMING-SEAM on the long-running commands — C1/C2a carry `on_scan: Channel<ScanProgress>` and C6
-    //! carries `on_progress: Channel<ConversionEvent>`, so their long work streams instead of resolving one
+    //! (2) STREAMING-SEAM on the long-running commands — C1 `drain_intake` carries `on_scan: Channel<ScanProgress>`
+    //! (the sole `onScan` carrier since P3.78 — C2a walks nothing) and C6 carries
+    //! `on_progress: Channel<ConversionEvent>`, so their long work streams instead of resolving one
     //! end-of-call Promise (§5.8 "respond immediately, stream the rest"); (3) BLOCKING-NATIVE-OFFLOAD — the C2a
     //! native dialog opens via `spawn_blocking`, pinned by the `intake::c2a_contract` test module.
     //!
@@ -157,7 +158,7 @@ mod responsiveness_contract {
     //! (the P2.72 assert-now / wire-P3.49 precedent), NOT a runtime test. The RUNTIME behaviours the box once
     //! read as — a large-folder C1 that streams throttled `ScanProgress` without a freeze, and C3/C4 that
     //! return within a bounded budget under a real §1.10 preflight — need the P3.49 `on_scan` emit + the C3/C4
-    //! slice bodies + the P4.72 §1.10 estimator, none of which the P2 tree carries (`intake::ingest_paths`
+    //! slice bodies + the P4.72 §1.10 estimator, none of which the P2 tree carries (`intake::drain_intake`
     //! `_`-binds `on_scan` → `Empty`; `planning::get_targets` / `plan_output` are instant-return `Err` shells).
     //! Those runtime end-to-end streaming / latency assertions belong to P3.49 (+ P4.72), not this box. The
     //! signature invariant pinned here is present + stable now, so a sync/blocking regression on the C-surface
@@ -168,19 +169,22 @@ mod responsiveness_contract {
     // `camel_case_wire_contract`, the `ipc_boundary_proptest` completeness bind; assertions unchanged).
     use super::c_surface_scan::{conversion_src, intake_src, HANDLERS};
 
-    // P2.125.1 — the STREAMING-SEAM leg. The long-running commands carry a `Channel<T>` seam + are async, so
-    // their work streams rather than blocking the WebView on one end-of-call Promise: C1 `ingest_paths` + C2a
-    // `pick_for_intake` carry `on_scan: Channel<ScanProgress>` (a large-folder walk streams over it — the
-    // throttled emit is P3.49); C6 `start_conversion` carries `on_progress: Channel<ConversionEvent>` (§5.8).
-    // The C2a native-dialog `spawn_blocking` offload is pinned by `intake::c2a_contract`; this leg pins the
-    // async + Channel-seam signature. Needles use the trailing `(` so a doc-comment mention of the fn name
-    // cannot false-match the signature scan.
+    // P2.125.1 — the STREAMING-SEAM leg. The long-running command carries a `Channel<T>` seam + is async, so
+    // its work streams rather than blocking the WebView on one end-of-call Promise: C1 `drain_intake` carries
+    // `on_scan: Channel<ScanProgress>` (a large-folder walk streams over it — the throttled emit is P3.49); C6
+    // `start_conversion` carries `on_progress: Channel<ConversionEvent>` (§5.8). C2a `pick_for_intake` walks
+    // nothing (it only fills the §7.8.1 funnel, §0.4.1), so it carries NO `on_scan` since P3.78 — C1 is the sole
+    // `onScan` carrier; C2a stays async (its native-dialog `spawn_blocking` offload is pinned by
+    // `intake::c2a_contract`). This leg pins the async + Channel-seam signature. Needles use the trailing `(` so
+    // a doc-comment mention of the fn name cannot false-match the signature scan.
+    // [Test-Change: P3.78 — old-obsolete+new-correct, §0.4.1] the `on_scan` count was 2 (both C1 + C2a) — C2a
+    // shed `on_scan` when it stopped walking (§0.4.1), so exactly ONE handler (C1 `drain_intake`) carries it.
     #[test]
     fn long_running_commands_are_async_and_carry_a_streaming_channel_seam() {
         let intake = intake_src();
         assert!(
-            intake.contains("pub async fn ingest_paths("),
-            "§0.4/§1.1: C1 ingest_paths must be `pub async fn` (its walk yields to the runtime, never the WebView thread)"
+            intake.contains("pub async fn drain_intake("),
+            "§0.4/§1.1: C1 drain_intake must be `pub async fn` (its walk yields to the runtime, never the WebView thread)"
         );
         assert!(
             intake.contains("pub async fn pick_for_intake("),
@@ -188,9 +192,9 @@ mod responsiveness_contract {
         );
         assert_eq!(
             intake.matches("on_scan: Channel<ScanProgress>").count(),
-            2,
-            "§1.1/§5.8: both C1 ingest_paths and C2a pick_for_intake carry the on_scan: Channel<ScanProgress> \
-             streaming seam (a large-folder walk streams over it, never a whole-walk block)"
+            1,
+            "§1.1/§5.8: exactly C1 drain_intake carries the on_scan: Channel<ScanProgress> streaming seam (a \
+             large-folder walk streams over it, never a whole-walk block) — C2a walks nothing since P3.78"
         );
 
         let conversion = conversion_src();
@@ -341,10 +345,12 @@ mod camel_case_wire_contract {
                  d832698 incident class)"
             );
         }
-        // The scan must actually bite: the surface carries 9 snake-arg handlers (C1/C2a/C13, C3/C4/C5,
-        // C6/C7/C8) — a parser regression that silently matched none would leave the invariant unasserted.
+        // The scan must actually bite: the surface carries 8 snake-arg handlers (C1/C13, C3/C4/C5, C6/C7/C8) —
+        // a parser regression that silently matched none would leave the invariant unasserted. [Test-Change:
+        // P3.78 — old-obsolete+new-correct, §0.4.1] was 9 incl. C2a; C2a `pick_for_intake` shed its multi-word
+        // args (only single-word `kind` remains — no snake_case wire key), so it no longer carries a renamed arg.
         assert!(
-            covered.len() >= 9,
+            covered.len() >= 8,
             "§0.4.1: the snake_case wire-arg scan covered fewer handlers than the known surface: {covered:?}"
         );
     }
@@ -387,8 +393,8 @@ mod ipc_boundary_proptest {
     //! handler signatures AND to both feed-helper bodies.
 
     use crate::domain::{
-        CollectedSetId, CollectingId, DestinationChoice, IntakeOrigin, OpenKind, OptionValue,
-        OptionValues, PickKind, RerunDecision, RunId, TargetId,
+        CollectedSetId, CollectingId, DestinationChoice, OpenKind, OptionValue, OptionValues,
+        PickKind, RerunDecision, RunId, TargetId,
     };
     use proptest::prelude::*;
     use proptest::test_runner::{RngAlgorithm, TestRng, TestRunner};
@@ -441,20 +447,21 @@ mod ipc_boundary_proptest {
     /// below bind (a) the real handler signatures to this list and (b) this list to the feed-helper bodies
     /// — so an inbound arg type added to any handler reds at L2 until BOTH feed legs cover it.
     /// [Build-Session-Entscheidung: P2.137]
-    const INBOUND_WIRE_ARG_TYPES: [&str; 13] = [
+    // [Test-Change: P3.78 — old-obsolete+new-correct, §0.4.1] 13 → 10: C1 `drain_intake` shed `paths`
+    // (`Vec<PathBuf>`), `origin` (`IntakeOrigin`) and `drainPending` (`Option<bool>`) — every call drains the
+    // core-side `PendingIntake` buffer, so those three types are no longer any handler's inbound wire arg. The
+    // single-`PathBuf` C9 `open_path` arg keeps `PathBuf`; `CollectingId` stays (C1 drain + C13).
+    const INBOUND_WIRE_ARG_TYPES: [&str; 10] = [
         "CollectedSetId",
         "CollectingId",
         "DestinationChoice",
-        "IntakeOrigin",
         "OpenKind",
-        "Option<bool>",
         "OptionValues",
         "PathBuf",
         "PickKind",
         "RerunDecision",
         "RunId",
         "TargetId",
-        "Vec<PathBuf>",
     ];
 
     /// Deserialize the given JSON `Value` into EVERY §0.4.1 C1–C13 inbound argument type — the exact per-arg
@@ -463,11 +470,9 @@ mod ipc_boundary_proptest {
     /// discarded — the property under exercise is that none of these calls PANICS. Enumerates exactly the
     /// pinned `INBOUND_WIRE_ARG_TYPES` (the P2.137 completeness bind holds it to that list).
     fn feed_every_ipc_input_type_from_value(v: &serde_json::Value) {
-        // C1 ingest_paths — paths / origin / collectingId / drainPending
-        let _ = serde_json::from_value::<Vec<PathBuf>>(v.clone());
-        let _ = serde_json::from_value::<IntakeOrigin>(v.clone());
+        // C1 drain_intake — collectingId (onScan is a runtime-injected Channel<T>, never deserialized; C1 sheds
+        // paths/origin/drainPending — every call drains the core-side PendingIntake buffer, P3.78)
         let _ = serde_json::from_value::<CollectingId>(v.clone());
-        let _ = serde_json::from_value::<Option<bool>>(v.clone());
         // C2a pick_for_intake — kind (collectingId shared with C1/C13)
         let _ = serde_json::from_value::<PickKind>(v.clone());
         // C3/C4/C5/C6 — collectedSetId / target / options / destination
@@ -489,10 +494,8 @@ mod ipc_boundary_proptest {
     /// a structured `Result`, never a panic. Enumerates exactly the pinned `INBOUND_WIRE_ARG_TYPES` (the
     /// P2.137 completeness bind holds it to that list).
     fn feed_every_ipc_input_type_from_str(s: &str) {
-        let _ = serde_json::from_str::<Vec<PathBuf>>(s);
-        let _ = serde_json::from_str::<IntakeOrigin>(s);
+        // C1 drain_intake sheds paths/origin/drainPending (P3.78) → CollectingId is its only inbound arg here.
         let _ = serde_json::from_str::<CollectingId>(s);
-        let _ = serde_json::from_str::<Option<bool>>(s);
         let _ = serde_json::from_str::<PickKind>(s);
         let _ = serde_json::from_str::<CollectedSetId>(s);
         let _ = serde_json::from_str::<TargetId>(s);
@@ -660,10 +663,10 @@ mod ipc_boundary_proptest {
             serde_json::from_str::<PickKind>("[]").is_err(),
             "PickKind rejects an array"
         );
-        assert!(
-            serde_json::from_str::<IntakeOrigin>("{}").is_err(),
-            "IntakeOrigin rejects an object"
-        );
+        // [Test-Change: P3.78 — old-obsolete+new-correct, §0.4.1] the `IntakeOrigin rejects an object` sample is
+        // removed: `IntakeOrigin` is no longer an IPC arg (C1 `drain_intake` sheds `origin` — the origin travels
+        // inside the core-side `PendingIntake` buffer, §7.8.1), so its deserialize-boundary is not part of the
+        // §1.5 IPC-robustness surface. `IntakeOrigin`'s serde form is still round-tripped by the domain unit test.
         assert!(
             serde_json::from_str::<RerunDecision>("true").is_err(),
             "RerunDecision rejects a bool"

@@ -29,8 +29,8 @@
 // startup sequence (src-tauri `main()`'s spine, P2.106). After the Rust core reveals the window (step 6) and
 // feeds launch intake (step 7), control passes to this React shell, which renders the §5.2 `Idle` empty state
 // (the `<main>` landmark; the §5.7 reassurance copy + the 12-state screens land P3–P8) AND completes the
-// readiness handshake — `useLaunchDrain` re-calls C1 `drainPending`, which flips the core `FrontendReady`
-// flag via `mark_ready` (P2.60) so buffered launch paths replay. [Build-Session-Entscheidung: P2.106.8]
+// readiness handshake — `useLaunchDrain` calls C1 `drain_intake` (P3.78 — every call drains), which flips the
+// core `FrontendReady` flag via `mark_ready` (P2.60) so buffered launch paths replay. [Build-Session-Entscheidung: P2.106.8]
 import { useAppEvents } from "./hooks/useAppEvents";
 import { useLaunchDrain } from "./hooks/useLaunchDrain";
 import { useNativeDragDrop } from "./hooks/useNativeDragDrop";

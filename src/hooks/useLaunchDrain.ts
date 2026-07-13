@@ -4,8 +4,8 @@ import { useEffect, useRef } from "react";
 import { drainPendingIntake } from "../lib/ipc/events";
 
 /**
- * [Build-Session-Entscheidung: P2.61] The §7.8.1 root-shell-mount drain trigger — re-call C1 with
- * `drainPending: true` (via `drainPendingIntake`, §5.8) to replay any launch-with-files (Open-with / argv)
+ * [Build-Session-Entscheidung: P2.61] The §7.8.1 root-shell-mount drain trigger — call C1 `drain_intake`
+ * (via `drainPendingIntake`, §5.8; P3.78 — every call drains) to replay any launch-with-files (Open-with / argv)
  * that was buffered core-side before the WebView's `app://intake` listener existed (§7.8.1 buffer-then-replay;
  * the Rust path is P2.58/P2.60). Drained EXACTLY ONCE per mount (the `drained` ref survives re-renders and a
  * changed gate identity) — a fresh `collectingId` is minted per call, and `PendingIntake` is consumed once, so
