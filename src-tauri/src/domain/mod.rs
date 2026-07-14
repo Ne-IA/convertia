@@ -973,9 +973,13 @@ impl FrozenCollectedSet {
 // `specta::Type` + camelCase per the §0.6 wire convention so it mirrors to `bindings.ts` as a named type;
 // registration is deferred to the consuming command/event (C2a/C9/C1-onScan, P2.21+), the established
 // P2.2–P2.6 defer pattern. DIRECTION drives the derive set: the INBOUND command-arg enums
-// (`PickKind`/`OpenKind`) derive `Serialize`+`Deserialize` (round-trippable, fieldless → `Copy`); the Channel
-// payload (`ScanProgress`) is OUTBOUND-ONLY per its §0.6 literal (`#[derive(Clone, Serialize, specta::Type)]`)
-// — `Serialize` without `Deserialize`, since the frontend RECEIVES but never sends it.
+// (`PickKind`/`OpenTarget`) derive `Serialize`+`Deserialize` (round-trippable); the fieldless `PickKind` is
+// additionally `Copy`, while `OpenTarget` — a data-carrying variant enum like `DestinationChoice` — derives
+// `Clone`, not `Copy`: its `Item`/`Residue` payload is an `ItemId` which is ITSELF `Copy`, so `Copy` would be
+// legal, but it is unnecessary (the §7.7.3 `resolve_open_target` borrows `&OpenTarget`) so it follows the
+// sibling data-enum posture. The Channel payload (`ScanProgress`) is OUTBOUND-ONLY per its
+// §0.6 literal (`#[derive(Clone, Serialize, specta::Type)]`) — `Serialize` without `Deserialize`, since the
+// frontend RECEIVES but never sends it.
 //
 // [Build-Session-Entscheidung: P3.77] The former `app://intake` payload DTO (`IntakePayload { paths, origin }`)
 // is RETIRED with the 2026-07-06 core-owned-path ruling: `app://intake` becomes a PAYLOAD-LESS nudge (no path
@@ -994,16 +998,31 @@ pub enum PickKind {
     Folder,
 }
 
-/// The C9 `open_path` `kind` arg (§0.4.1 / §7.7) — how to surface an output path. Inbound.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+/// The C9 `open_path` `target` arg (§0.4.1 / §7.7) — a run-scoped ID naming WHICH recorded location to
+/// surface, resolved core-side against the `RunResultStore` (§0.4.4 / §7.7.3). Inbound (WebView → Rust).
+/// The WebView can no longer NAME a filesystem path (the 2026-07-06 core-owned-paths owner ruling, which
+/// supersedes the former `OpenKind { Folder, File, RevealInFolder }` + `path: PathBuf` shape); it selects an
+/// `OpenTarget` and the core resolves it to its OWN recorded `PathBuf`, so membership IS successful
+/// resolution and an unresolvable target is the §7.7.3 refusal (no WebView path exists to validate,
+/// canonicalize or race — §7.7.2). §7.7 owns the per-variant open-vs-reveal mechanics; the C9 resolution
+/// (`crate::ipc::system::resolve_open_target`) selects the concrete §7.7.1 `OpenerExt` op.
+/// [Build-Session-Entscheidung: P3.79]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
-pub enum OpenKind {
-    /// Open the containing folder.
-    Folder,
-    /// Open the file itself in its default app.
-    File,
-    /// Reveal the file within its folder (highlight it).
-    RevealInFolder,
+pub enum OpenTarget {
+    /// The run's recorded common root — the §2.7 beside-source folder; the primary "Open folder" folder-browse
+    /// (§7.7.1). Always resolves (every retained run records a common root).
+    CommonRoot,
+    /// The run's recorded divert root, present ONLY for a split-output batch (§2.7.3) — the second "Open
+    /// saved-to folder" folder-browse target (§7.7.1). Resolves only on a diverted run; an undiverted run has
+    /// no divert root, so the target is the §7.7.3 refusal.
+    DivertRoot,
+    /// That item's recorded OUTPUT file — "Open file" (launch in the OS default app, §7.7.3 file-launch).
+    /// Resolves only for a succeeded item with a recorded output; an unknown/output-less id is refused.
+    Item(ItemId),
+    /// That item's recorded §2.6.4 cleanup-residue location — the "reveal residue" link (reveal only, never a
+    /// launch, §7.7.1). Resolves only for a cleanup-incomplete item; a residue-free id is refused.
+    Residue(ItemId),
 }
 
 // [Build-Session-Entscheidung: P3.77] The `app://intake` hand-off DTO (`IntakePayload { paths, origin }`) is
@@ -2577,30 +2596,49 @@ mod tests {
         exhaustive(PickKind::Files);
     }
 
-    // §6.4.1 unit (G15): the C9 `OpenKind` arg — Folder/File/RevealInFolder in camelCase (`revealInFolder`
-    // is the multi-word lock), round-tripped; the no-wildcard `exhaustive` arm locks membership.
+    // §6.4.1 unit (G15): the C9 `OpenTarget` arg (P3.79) — the run-scoped id form. Unit variants are bare
+    // camelCase tags; `Item`/`Residue` are externally-tagged and wrap the `ItemId` transparently (its u32
+    // index). The wire form is read back (test-strategy §0.2) and round-tripped; the no-wildcard `exhaustive`
+    // arm locks membership.
+    // [Test-Change: P3.79 — old-obsolete+new-correct, §0.4.1] the former
+    // `open_kind_wire_form_is_camelcase_and_roundtrips` test is obsolete: `OpenKind { Folder, File,
+    // RevealInFolder }` + a WebView-supplied `path` is RETIRED — C9 now takes an `OpenTarget` id the core
+    // resolves (the §0.4.1 C9 row + the §0.4 SUPERSEDED note, 2026-07-06 owner ruling). The new expectation is
+    // verified by reading back each variant's REAL serialized wire form (not "it compiles").
     #[test]
-    fn open_kind_wire_form_is_camelcase_and_roundtrips() {
-        for (kind, wire) in [
-            (OpenKind::Folder, "\"folder\""),
-            (OpenKind::File, "\"file\""),
-            (OpenKind::RevealInFolder, "\"revealInFolder\""),
+    fn open_target_wire_form_is_camelcase_and_roundtrips() {
+        for (target, wire) in [
+            (OpenTarget::CommonRoot, "\"commonRoot\""),
+            (OpenTarget::DivertRoot, "\"divertRoot\""),
+            (OpenTarget::Item(ItemId::from_index(3)), "{\"item\":3}"),
+            (
+                OpenTarget::Residue(ItemId::from_index(7)),
+                "{\"residue\":7}",
+            ),
         ] {
-            let json = serde_json::to_string(&kind).expect("OpenKind serializes");
-            assert_eq!(json, wire, "§0.4.1: OpenKind wire casing is camelCase");
-            let back: OpenKind =
-                serde_json::from_str(&json).expect("OpenKind round-trips from its wire form");
+            // [Test-Change: P3.79 — old-obsolete+new-correct, §0.4.1] these serialize/round-trip asserts
+            // replace the retired OpenKind loop-body ones (kind→target); each new expectation is read back.
+            let json = serde_json::to_string(&target).expect("OpenTarget serializes");
             assert_eq!(
-                back, kind,
-                "§7.7: OpenKind round-trips through its wire form"
+                json, wire,
+                "§0.4.1: OpenTarget wire casing is camelCase; the ItemId serializes transparently as its index"
+            );
+            let back: OpenTarget =
+                serde_json::from_str(&json).expect("OpenTarget round-trips from its wire form");
+            assert_eq!(
+                back, target,
+                "§7.7: OpenTarget round-trips through its wire form"
             );
         }
-        fn exhaustive(k: OpenKind) {
-            match k {
-                OpenKind::Folder | OpenKind::File | OpenKind::RevealInFolder => {}
+        fn exhaustive(t: OpenTarget) {
+            match t {
+                OpenTarget::CommonRoot
+                | OpenTarget::DivertRoot
+                | OpenTarget::Item(_)
+                | OpenTarget::Residue(_) => {}
             }
         }
-        exhaustive(OpenKind::File);
+        exhaustive(OpenTarget::CommonRoot);
     }
 
     // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the `intake_payload_wire_form_is_camelcase_and_roundtrips`

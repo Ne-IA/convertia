@@ -302,42 +302,42 @@ export const commands = {
 	 */
 	getRunSummary: (runId: RunId) => __TAURI_INVOKE<RunResult>("get_run_summary", { runId }),
 	/**
-	 *  **C9 `open_path`** (§0.4.1) — the DoD "one-click open-folder / open-file" action: reveal or open an output
-	 *  in the OS file manager / default app. The handler **validates `path` against the current §1.12 `RunResult`'s
-	 *  recorded outputs (file-launch) or roots (folder-browse) — the §7.7.3 membership gate** — then calls the
-	 *  opener plugin's `OpenerExt` internally (`reveal_item_in_dir` / `open_path`, §7.7.1); there is **no
-	 *  `opener:*` WebView capability** (§0.10) — the Rust-side membership check, not a static scope, is the real
-	 *  gate (§7.7.2: beside-source outputs routinely fall outside any OS-known root, so a glob scope could never
-	 *  cover them). This box (P2.32) authors the typed §0.4.1 wire CONTRACT — the `{ kind, path } -> Result<(),
-	 *  IpcError>` door (the §0.4 universal error shape) — so the generated `bindings.ts` mirrors the C9 surface
-	 *  (pulling `OpenKind` into the bindings as a command-arg type).
+	 *  **C9 `open_path`** (§0.4.1) — the DoD "one-click open-folder / open-file" action: reveal or open a recorded
+	 *  output in the OS file manager / default app. The WebView names an **`OpenTarget` id — never a filesystem
+	 *  path** (the 2026-07-06 core-owned-paths owner ruling); the handler **resolves that id against the current
+	 *  run's `State<RunResultStore>`** (§0.4.4) to the core's OWN recorded `PathBuf` — membership IS successful
+	 *  resolution, an unresolvable id is the §7.7.3 refusal (§7.7.2: no WebView path exists to validate,
+	 *  canonicalize or race) — then calls the opener plugin's `OpenerExt` internally (`reveal_item_in_dir` /
+	 *  `open_path`, §7.7.1). There is **no `opener:*` WebView capability** (§0.10) — the Rust-side id-resolution,
+	 *  not a static scope, is the real gate (§7.7.2: beside-source outputs routinely fall outside any OS-known
+	 *  root, so a glob scope could never cover them). This box (P3.79) RE-KEYS the typed §0.4.1 wire CONTRACT — the
+	 *  `{ target } -> Result<(), IpcError>` door (the §0.4 universal error shape) — so the generated `bindings.ts`
+	 *  mirrors the C9 surface, pulling `OpenTarget` onto the wire and retiring `OpenKind` + the WebView `path`.
 	 *
-	 *  - `kind` — the §0.6 `OpenKind` (`RevealInFolder` | `Folder` | `File`) selecting the §7.7.1 `OpenerExt` op:
-	 *    reveal-with-select / open-containing-folder / open-file-in-default-app.
-	 *  - `path` — the path to open; the §7.7.3 gate admits an *output file* for `File` and a run *root* for the
-	 *    folder-browse kinds (`RevealInFolder`/`Folder`), refusing anything else (never a source, never an
-	 *    arbitrary WebView path).
+	 *  - `target` — the §0.6 `OpenTarget` (`CommonRoot` | `DivertRoot` | `Item(ItemId)` | `Residue(ItemId)`)
+	 *    naming which recorded location to surface: a run ROOT (folder browse), a recorded OUTPUT file (launch), or
+	 *    an item's cleanup-residue location (reveal). The §7.7.3 resolution admits only what the run recorded.
 	 *
-	 *  [Build-Session-Entscheidung: P2.32] **Shell returns `Err(IpcError{ kind: InternalError })` — the
-	 *  C3/C4/C5/C6/C8 branch (the §7.7.3 gate refuses), NOT C7's `Ok(())` no-op branch.** Unlike C7's idempotent
-	 *  fire-and-forget cancel (whose `()` zero value makes a tripped-nothing a genuine no-op success), C9 is a
-	 *  **gated side-effect**: it opens `path` *only if* the §7.7.3 membership check passes, and a path not in the
-	 *  set is **refused** (§7.7.2/§7.7.3 — "a path not in that set is refused and logged"). A refusal is an error,
-	 *  not a successful no-op — returning `Ok(())` would falsely claim the open happened. The shell has no §1.12
-	 *  `RunResult` to validate against (the §0.4.4 retention registry is P2.43), so **every** path fails the
-	 *  membership check — exactly the `Err` the real body returns for a non-member path: `Err(IpcError{ kind:
-	 *  ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError` precedent C3/C4/C5 cite).
-	 *  The named fill-boxes own the rest: (a) the §2.8 catalog box owns the FINAL message — the string below is a
-	 *  PROVISIONAL neutral English one — and must add a COMMAND-level string (the §2.8 catalog is item-scoped); (b)
-	 *  the C9 LOGIC is built PURE in P2 (the P2↔P3 §7.7 build-vs-wire split, Co-Pilot-ratified): the
-	 *  `OpenKind`→`OpenerOp` mapping is P2.100, the §7.7.3 membership validate over the real P2.43 `RunResultStore`
-	 *  is P2.101, the two-rule split (file→output FILES / folder→run ROOTS) is P2.102, and the split-output
-	 *  two-targets rule is P2.103 — all pure, dead-until the wire box; only the LIVE WIRE — the `AppHandle`, the
-	 *  current-`RunResult` fetch from `State<RunResultStore>`, the §7.7.1 `OpenerExt` reveal/open call, the §7.5
-	 *  refusal log, and the §0.6 SUCCESS path (`Ok(())` on a validated open) — belongs to the wire box P3.51; (c)
-	 *  `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
+	 *  [Build-Session-Entscheidung: P3.79 → wired P3.51] **Shell returns `Err(IpcError{ kind: InternalError })` —
+	 *  the C3/C4/C5/C6/C8 branch (the §7.7.3 target does not resolve), NOT C7's `Ok(())` no-op branch.** C9 is a
+	 *  **gated side-effect**: it opens the resolved location *only if* the `OpenTarget` resolves against the run's
+	 *  recorded paths, and an unresolvable target is **refused** (§7.7.2/§7.7.3). A refusal is an error, not a
+	 *  successful no-op — returning `Ok(())` would falsely claim the open happened. This box RE-KEYS the WIRE
+	 *  (`OpenTarget` in, the pure `resolve_open_target` id→`OpenerOp` resolution beside it) but does NOT yet inject
+	 *  the `State<RunResultStore>` (that is P3.51) — so the shell has no recorded paths to resolve against and
+	 *  **every** target fails resolution, exactly the `Err` the real body returns for an unresolvable target:
+	 *  `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError`
+	 *  precedent C3/C4/C5 cite). The named fill-boxes own the rest: (a) the §2.8 catalog box owns the FINAL message
+	 *  — the string below is a PROVISIONAL neutral English one — and must add a COMMAND-level string (the §2.8
+	 *  catalog is item-scoped); (b) the C9 resolution LOGIC re-keys the P2.100–103 build-vs-wire split
+	 *  (Co-Pilot-ratified) onto the resolved entry — `resolve_open_target` folds the P2.100 `OpenerExt`-op mapping
+	 *  and the P2.101–103 membership gate into ONE id-resolution (the §7.7.3 check IS the resolution), pure and
+	 *  dead-until the wire box; only the LIVE WIRE — the `AppHandle`, the `State<RunResultStore>` paths fetch, the
+	 *  §7.7.1 `OpenerExt` reveal/open call, the §7.5 refusal log, and the §0.6 SUCCESS path (`Ok(())` on a resolved
+	 *  open) — belongs to the wire box P3.51; (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind`
+	 *  alias (the P2.19 convention).
 	 */
-	openPath: (kind: OpenKind, path: string) => __TAURI_INVOKE<null>("open_path", { kind, path }),
+	openPath: (target: OpenTarget) => __TAURI_INVOKE<null>("open_path", { target }),
 	/**
 	 *  **C10 `open_project_page`** (§0.4.1) — the **only** permitted, user-initiated network action: opens the
 	 *  fixed compiled-in canonical Ne-IA GitHub Releases URL (the `PROJECT_PAGE_URL` constant, §7.6.2) in the
@@ -1433,14 +1433,39 @@ export type LossyKind =
 /**  surround forced to stereo by codec (rare; audio.md). */
 "audio_downmix";
 
-/**  The C9 `open_path` `kind` arg (§0.4.1 / §7.7) — how to surface an output path. Inbound. */
-export type OpenKind =
-/**  Open the containing folder. */
-"folder" |
-/**  Open the file itself in its default app. */
-"file" |
-/**  Reveal the file within its folder (highlight it). */
-"revealInFolder";
+/**
+ *  The C9 `open_path` `target` arg (§0.4.1 / §7.7) — a run-scoped ID naming WHICH recorded location to
+ *  surface, resolved core-side against the `RunResultStore` (§0.4.4 / §7.7.3). Inbound (WebView → Rust).
+ *  The WebView can no longer NAME a filesystem path (the 2026-07-06 core-owned-paths owner ruling, which
+ *  supersedes the former `OpenKind { Folder, File, RevealInFolder }` + `path: PathBuf` shape); it selects an
+ *  `OpenTarget` and the core resolves it to its OWN recorded `PathBuf`, so membership IS successful
+ *  resolution and an unresolvable target is the §7.7.3 refusal (no WebView path exists to validate,
+ *  canonicalize or race — §7.7.2). §7.7 owns the per-variant open-vs-reveal mechanics; the C9 resolution
+ *  (`crate::ipc::system::resolve_open_target`) selects the concrete §7.7.1 `OpenerExt` op.
+ *  [Build-Session-Entscheidung: P3.79]
+ */
+export type OpenTarget =
+/**
+ *  The run's recorded common root — the §2.7 beside-source folder; the primary "Open folder" folder-browse
+ *  (§7.7.1). Always resolves (every retained run records a common root).
+ */
+"commonRoot" |
+/**
+ *  The run's recorded divert root, present ONLY for a split-output batch (§2.7.3) — the second "Open
+ *  saved-to folder" folder-browse target (§7.7.1). Resolves only on a diverted run; an undiverted run has
+ *  no divert root, so the target is the §7.7.3 refusal.
+ */
+"divertRoot" |
+/**
+ *  That item's recorded OUTPUT file — "Open file" (launch in the OS default app, §7.7.3 file-launch).
+ *  Resolves only for a succeeded item with a recorded output; an unknown/output-less id is refused.
+ */
+({ item: ItemId }) & { residue?: never } |
+/**
+ *  That item's recorded §2.6.4 cleanup-residue location — the "reveal residue" link (reveal only, never a
+ *  launch, §7.7.1). Resolves only for a cleanup-incomplete item; a residue-free id is refused.
+ */
+({ residue: ItemId }) & { item?: never };
 
 /**
  *  A declared option for a (source, target) pair (§1.6), supplied by the registry (concrete values in

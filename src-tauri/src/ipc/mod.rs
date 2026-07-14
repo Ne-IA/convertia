@@ -393,7 +393,7 @@ mod ipc_boundary_proptest {
     //! handler signatures AND to both feed-helper bodies.
 
     use crate::domain::{
-        CollectedSetId, CollectingId, DestinationChoice, OpenKind, OptionValue, OptionValues,
+        CollectedSetId, CollectingId, DestinationChoice, OpenTarget, OptionValue, OptionValues,
         PickKind, RerunDecision, RunId, TargetId,
     };
     use proptest::prelude::*;
@@ -449,15 +449,18 @@ mod ipc_boundary_proptest {
     /// [Build-Session-Entscheidung: P2.137]
     // [Test-Change: P3.78 — old-obsolete+new-correct, §0.4.1] 13 → 10: C1 `drain_intake` shed `paths`
     // (`Vec<PathBuf>`), `origin` (`IntakeOrigin`) and `drainPending` (`Option<bool>`) — every call drains the
-    // core-side `PendingIntake` buffer, so those three types are no longer any handler's inbound wire arg. The
-    // single-`PathBuf` C9 `open_path` arg keeps `PathBuf`; `CollectingId` stays (C1 drain + C13).
-    const INBOUND_WIRE_ARG_TYPES: [&str; 10] = [
+    // core-side `PendingIntake` buffer, so those three types are no longer any handler's inbound wire arg.
+    // [Test-Change: P3.79 — old-obsolete+new-correct, §0.4.1] 10 → 9: C9 `open_path` is re-keyed from
+    // `{ kind: OpenKind, path: PathBuf }` to `{ target: OpenTarget }` (the §0.4.1 C9 row + the §0.4 SUPERSEDED
+    // note), so `OpenKind` → `OpenTarget` and `PathBuf` — C9's sole inbound-arg use — leaves the set (no handler
+    // takes a bare `PathBuf` arg any more; the standalone `Vec<PathBuf>` recursion-guard case below is not a
+    // per-handler feed leg).
+    const INBOUND_WIRE_ARG_TYPES: [&str; 9] = [
         "CollectedSetId",
         "CollectingId",
         "DestinationChoice",
-        "OpenKind",
+        "OpenTarget",
         "OptionValues",
-        "PathBuf",
         "PickKind",
         "RerunDecision",
         "RunId",
@@ -484,9 +487,8 @@ mod ipc_boundary_proptest {
         let _ = serde_json::from_value::<RerunDecision>(v.clone());
         // C7/C8 — runId
         let _ = serde_json::from_value::<RunId>(v.clone());
-        // C9 open_path — kind / path
-        let _ = serde_json::from_value::<OpenKind>(v.clone());
-        let _ = serde_json::from_value::<PathBuf>(v.clone());
+        // C9 open_path — target (re-keyed from kind/path to a single OpenTarget id, P3.79)
+        let _ = serde_json::from_value::<OpenTarget>(v.clone());
     }
 
     /// The `from_str` twin of `feed_every_ipc_input_type_from_value` — exercises the raw-parse path (an
@@ -503,8 +505,7 @@ mod ipc_boundary_proptest {
         let _ = serde_json::from_str::<DestinationChoice>(s);
         let _ = serde_json::from_str::<RerunDecision>(s);
         let _ = serde_json::from_str::<RunId>(s);
-        let _ = serde_json::from_str::<OpenKind>(s);
-        let _ = serde_json::from_str::<PathBuf>(s);
+        let _ = serde_json::from_str::<OpenTarget>(s);
     }
 
     /// The body of one of the two module-level feed helpers: from its `fn …(` marker to its
@@ -650,14 +651,14 @@ mod ipc_boundary_proptest {
     /// that turns a pathologically nested payload into an `Err` rather than a stack overflow.
     #[test]
     fn serde_boundary_rejects_malformed_with_structured_err() {
-        // an enum fed the wrong JSON kind or an unknown variant
+        // an enum fed the wrong JSON kind or an unknown variant (C9's arg is `OpenTarget` since P3.79)
         assert!(
-            serde_json::from_str::<OpenKind>("42").is_err(),
-            "OpenKind rejects a bare number"
+            serde_json::from_str::<OpenTarget>("42").is_err(),
+            "OpenTarget rejects a bare number (a tag string or {{item|residue: id}} object is required)"
         );
         assert!(
-            serde_json::from_str::<OpenKind>(r#""notAVariant""#).is_err(),
-            "OpenKind rejects an unknown variant"
+            serde_json::from_str::<OpenTarget>(r#""notAVariant""#).is_err(),
+            "OpenTarget rejects an unknown variant tag"
         );
         assert!(
             serde_json::from_str::<PickKind>("[]").is_err(),

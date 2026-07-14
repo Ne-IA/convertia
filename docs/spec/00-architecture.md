@@ -696,7 +696,7 @@ pub enum PickKind { Files, Folder }                 // C2a pick_for_intake `kind
 pub enum OpenTarget {                                // C9 open_path — ID-keyed [DECIDED 2026-07-06]
     CommonRoot,                                      //   the RunResult common root (open folder)
     DivertRoot,                                      //   the divert root, when any item diverted (§2.7.3)
-    Item(ItemId),                                    //   that item's written output (reveal-in-folder)
+    Item(ItemId),                                    //   that item's written output (open file / launch)
     Residue(ItemId),                                 //   that item's §2.6 cleanup residue (reveal)
 }                                                    // resolved core-side against RunResultStore
                                                      //   (§0.4.4/§7.7.3); §7.7 owns the per-variant
@@ -1177,7 +1177,7 @@ pub struct RunResult {               // canonical shape; §1.12 computes & refer
                                      //   are §7.7.3 open-folder targets resolved core-side (C9
                                      //   OpenTarget::DivertRoot); a per-item diverted output is
                                      //   reachable via C9 OpenTarget::Item(ItemId), via
-                                     //   OpenerExt::reveal_item_in_dir. (§1.12 / §7.7.3)
+                                     //   OpenerExt::open_path (file launch). (§1.12 / §7.7.3)
 }
 
 pub struct ItemResult {              // §1.12

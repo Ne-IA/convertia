@@ -1443,8 +1443,8 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
   "open Downloads/Documents" affordance fires `OpenTarget::DivertRoot`. Per-item
   diverted outputs are also reachable via C9 `OpenTarget::Item(ItemId)` — resolved
   core-side against `State<RunResultStore>` to the recorded output `PathBuf` (the
-  Rust handler calls `OpenerExt::reveal_item_in_dir`; the WebView names a run-scoped
-  target, never a path — the 2026-07-06 core-owned-paths ruling). The summary is the
+  Rust handler calls `OpenerExt::open_path` for a file launch; the WebView names a
+  run-scoped target, never a path — the 2026-07-06 core-owned-paths ruling). The summary is the
   data; the buttons are §5/§7.7.
 - **Re-run prompt linkage:** if §2.5 detected an equivalent prior output **before**
   CONVERT, the one batch-level skip/fresh-copy prompt (§5.2) already resolved it;
