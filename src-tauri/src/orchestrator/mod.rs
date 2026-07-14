@@ -4,7 +4,7 @@
 //!
 //! The conducting BEHAVIOUR (queue construction at C6, the run-registry register/finish WIRING, the
 //! `ConversionEvent` fan-out) is the P3.48 C6 conductor, composing the §1.9 transition primitives P3.46
-//! authored (the cancellation-DISPATCH leg is a separate C7 `cancel_run` box). This module homes the §0.6 outcome-referencing lifecycle/result types
+//! authored (the cancellation-DISPATCH leg is the C7 `cancel_run` handler, wired P3.52). This module homes the §0.6 outcome-referencing lifecycle/result types
 //! it assembles — `Batch`/`ConversionJob`/`JobState` (P2.10), the C4/C5 command-return DTOs
 //! `PreflightVerdict`/`OutputPlanPreview`/`DestinationResolved` (P2.11), the §1.12 result types
 //! `RunResult`/`ItemResult`/`Totals`/`CleanupResidue`/`ItemOutcome` (P2.12), and the §0.4.2 `ConversionEvent`
@@ -18,7 +18,7 @@
 //! It also homes the four §0.4.4 orchestrator-State stores (per §0.7, under the §0.7 "(§0.4.4)" umbrella) —
 //! distinct from the outcome-referencing types above: the `RunRegistry` (the `RunId` → `CancellationToken`
 //! run-cancellation-token store, P2.42; its register-at-C6 + drop-on-`RunFinished` WIRING is the P3.48
-//! conductor + handler, its cancel-at-C7 a separate `cancel_run` box), its sibling the `RunResultStore` (the
+//! conductor + handler, its cancel-at-C7 the `cancel_run` handler wired P3.52), its sibling the `RunResultStore` (the
 //! process-local terminal-`RunResult` retention for C8 re-serve, P2.43; no on-disk persistence per §7.4, its
 //! retain-at-`RunFinished` + evict-at-C6 WIRING the P3.48 conductor + handler, its get-at-C8 the P3.50
 //! `get_run_summary`), the `CollectedSetRegistry` (the `CollectedSetId` → `RegisteredSet` resolve
@@ -42,7 +42,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) were authored as contracts ahead of their wire consumers. The P3.48 C6 run conductor + its start_conversion handler now compose MOST of them into the live run. LIVE via P3.48: the §1.9 FSM advance + queue_order (+ state_is_queued), the P3.47 build_batch, the P3.50 project_run_result, CollectedSetRegistry::take + RunResultStore::{evict, retain} + RunRegistry::{register, finish} + crate::run::RunScratch::acquire, and the P3.39 EquivKeyComputer::compute_equiv_key (the §2.5 applier + the per-success RerunLedger record). Already live before P3.48: RunRegistry::has_active_run (the §7.1.1 converter_is_busy, P2.55) and RunResultStore::get (the C8 get_run_summary handler via resolve_run_summary, P3.50). LIVE via P3.49 (the C1 drain_intake / C3 get_targets / C4 plan_output walking-skeleton wiring): the §1.1/§2.4.1 ingest funnel spine (walk_intake_roots + resolve_and_dedup/dedup_by_identity + freeze_snapshot + the §1.3 group() projection) via the C1 drain, CollectedSetRegistry::{register, resolve} (the C1 freeze register + the C3/C4 resolve), and the P3.40 compute_rerun_verdict (its first production caller — the C4 plan_output_preview re-run verdict). STILL dead in the production build until its own wiring lands: the §2.8 project_outcome (P3.46.2 — the conductor maps its own ItemRunOutcome onto the terminal JobEvent INLINE, so this InvocationResult projection has no production caller yet); RunRegistry::cancel (the C7 cancel_run handler is still a shell — the real registry .cancel() dispatch is a separate box); the §2.8.2 batch-summary renderer batch_summary/batch_summary_line (no production caller yet) + any P3.25 §2.6.4 residue helper (ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) project_run_result does not reach. Reading a dead fn does not make it live — a dead-fn reference is not a root — so this pure lifecycle/projection graph stayed dead until the P3.48 conductor made it reachable from the C6 command root; the expectation stays fulfilled while ANY of the above is still unwired."
+        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) were authored as contracts ahead of their wire consumers. The P3.48 C6 run conductor + its start_conversion handler now compose MOST of them into the live run. LIVE via P3.48: the §1.9 FSM advance + queue_order (+ state_is_queued), the P3.47 build_batch, the P3.50 project_run_result, CollectedSetRegistry::take + RunResultStore::{evict, retain} + RunRegistry::{register, finish} + crate::run::RunScratch::acquire, and the P3.39 EquivKeyComputer::compute_equiv_key (the §2.5 applier + the per-success RerunLedger record). Already live before P3.48: RunRegistry::has_active_run (the §7.1.1 converter_is_busy, P2.55) and RunResultStore::get (the C8 get_run_summary handler via resolve_run_summary, P3.50). LIVE via P3.49 (the C1 drain_intake / C3 get_targets / C4 plan_output walking-skeleton wiring): the §1.1/§2.4.1 ingest funnel spine (walk_intake_roots + resolve_and_dedup/dedup_by_identity + freeze_snapshot + the §1.3 group() projection) via the C1 drain, CollectedSetRegistry::{register, resolve} (the C1 freeze register + the C3/C4 resolve), and the P3.40 compute_rerun_verdict (its first production caller — the C4 plan_output_preview re-run verdict). STILL dead in the production build until its own wiring lands: the §2.8 project_outcome (P3.46.2 — the conductor maps its own ItemRunOutcome onto the terminal JobEvent INLINE, so this InvocationResult projection has no production caller yet); the §2.8.2 batch-summary renderer batch_summary/batch_summary_line (no production caller yet) + any P3.25 §2.6.4 residue helper (ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) project_run_result does not reach. Reading a dead fn does not make it live — a dead-fn reference is not a root — so this pure lifecycle/projection graph stayed dead until the P3.48 conductor made it reachable from the C6 command root; the expectation stays fulfilled while ANY of the above is still unwired."
     )
 )]
 
@@ -2029,15 +2029,20 @@ pub(crate) async fn run_conversion(
     let mut any_diverted = false;
     let mut done: u32 = 0;
 
-    // §1.9 cancel-semantics NOTE (a P3.48 G1-review finding, owned by the C7 `cancel_run` wiring box): this loop
-    // does NOT poll `token.is_cancelled()` before dequeuing the next Pending job. It relies on each dispatched
-    // item's OWN cooperative cancel — a tripped token makes `dispatch` return `Cancelled`, which publishes
-    // nothing, so the NO-HARM invariant holds regardless of when the token trips. The §1.9 "stop dequeuing
-    // Pending" refinement (leave un-started jobs un-dispatched + give them a terminal summary state) is a C7
-    // concern: it is coupled to the C7 `cancel_run` handler (a shell today, so NO production path trips a run
-    // token mid-batch) AND to a §1.9 decision the FSM does not sanction here (`advance` returns None for a
-    // direct Pending→Cancelled, by design — so a clean stop-dequeue needs a summary-state ruling for un-started
-    // jobs). It therefore lands with the C7 wiring, not the walking-skeleton conductor.
+    // §1.9 cancel-semantics NOTE (a P3.48 G1-review finding; the C7 `cancel_run` token trip is now wired, P3.52):
+    // this loop does NOT poll `token.is_cancelled()` before dequeuing the next Pending job. It relies on each
+    // dispatched item's OWN cooperative cancel — a tripped token makes `dispatch` return `Cancelled`, which
+    // publishes nothing, so the NO-HARM invariant holds regardless of when the token trips (including mid-batch,
+    // now that C7 can trip it). The §1.9 "stop dequeuing Pending" refinement (leave un-started jobs un-dispatched
+    // + give them a terminal summary state) is a SEPARATE §1.9 optimization, NOT a no-harm requirement — per-item
+    // cooperative cancel already discards every un-started job cleanly (each is dispatched, reads the tripped
+    // token, and returns `Cancelled` without publishing). It also needs a §1.9 decision the FSM does not sanction
+    // here (`advance` returns None for a direct Pending→Cancelled, by design — a clean stop-dequeue needs a
+    // summary-state ruling for un-started jobs), so it is deliberately OUT of P3.52's token-trip-wiring scope. Its
+    // natural home is the P4.11 §1.7 kill↔cleanup box (which is measured against the full §1.7 cancel enumeration,
+    // incl. §1.7's "stop dequeuing Pending"); the spec §1.7 mandate is unchanged, so nothing is dropped here — the
+    // run still terminates with every job in a valid terminal state via the sanctioned Pending→Running→Cancelled
+    // path. [Build-Session-Entscheidung: P3.52]
     for i in 0..batch.jobs.len() {
         // Only eligible `Pending` jobs are dispatched; pre-flight `Skipped` jobs are terminal at construction
         // (never queued, no Channel events — §0.4.2/§1.9). `queue_order`'s `state_is_queued` == this filter.
@@ -2198,15 +2203,15 @@ pub(crate) async fn run_conversion(
 // level (reconciled by §1.7, built in P3/P4). Like the sibling lifecycle/result types, this is a CONTRACT
 // authored before its consumer — but PARTLY consumed from P2.55: `has_active_run` is the §7.1.1 refuse-busy
 // predicate `converter_is_busy` reads, and the `.manage(RunRegistry)` registration lives in main()'s Builder
-// chain (P2.55). The C6/RunFinished token WIRING is now LIVE — `register` (the P3.48 C6 `start_conversion`
-// handler) + `finish` (the P3.48 conductor's run-end + the spawn-error path); only `cancel` (the C7
-// `cancel_run` handler) stays dead until it wires the real registry `.cancel()` (covered by the
-// module-level dead_code expect). The retained terminal RunResult (so C8 re-serves after a WebView reload,
+// chain (P2.55). The C6/RunFinished/C7 token WIRING is now LIVE — `register` (the P3.48 C6 `start_conversion`
+// handler) + `finish` (the P3.48 conductor's run-end + the spawn-error path) + `cancel` (the C7 `cancel_run`
+// handler tripping the real registry `.cancel()`, P3.52) — so no `RunRegistry` method is dead any more. The
+// retained terminal RunResult (so C8 re-serves after a WebView reload,
 // §0.4.4) is a SEPARATE store — the P2.43 box — NOT this token registry.
 
 /// The §0.4.4 run registry — maps each in-flight `RunId` to its `tokio_util::sync::CancellationToken`. Held
 /// as a Tauri app-managed `State` (the `.manage` is P2.55; the register/finish wiring is the P3.48 conductor
-/// and handler, the cancel wiring a separate C7 box). The token's three §0.4.4 lifecycle
+/// and handler, the cancel wiring the C7 `cancel_run` handler, P3.52). The token's three §0.4.4 lifecycle
 /// points are this type's three methods: [`register`](RunRegistry::register) at C6 `start_conversion` (mint +
 /// store a fresh token), [`cancel`](RunRegistry::cancel) at C7 `cancel_run` (trip it — cooperative at the
 /// orchestrator level), and [`finish`](RunRegistry::finish) on `RunFinished` (drop it; the run's terminal
@@ -2587,10 +2592,10 @@ impl DestinationRegistry {
 // CollectingId (§0.4.4 / §1.1) so C13 cancel_ingest can trip an IN-FLIGHT C1 walk / C2a pick before its
 // long await resolves. Homed here under the same §0.7 "(§0.4.4) cancellation" umbrella as the RunRegistry
 // (no §0.7/§1a structural edit — the P2.43/P2.44 precedent). Like the sibling stores it is a CONTRACT
-// before its consumer: the register-at-handler-entry (C1 walk start / C2a BEFORE the dialog opens, §1.1) /
-// cancel-at-C13 / release-on-EVERY-handler-exit-branch WIRING is the C1/C2a/C13 handler bodies + the
-// walk-loop poll (P2.69/P2.70/P2.71) — the C13 shell (P2.35) already trips no token pending this store —
-// so it is dead in the production build until consumed (covered by the module-level dead_code expect).
+// before its consumer, but is now CONSUMED (live): the register-at-handler-entry (the C1 `drain_intake` walk
+// start, §1.1 — the C2a picker walks nothing now, §0.4.1, so only C1 registers) / cancel-at-C13 /
+// release-on-EVERY-handler-exit-branch WIRING is LIVE — the C1 drain register-guard (P3.49) + the C13
+// `cancel_ingest` trip (P2.71) + the §1.1 walk-loop poll (P2.69) — so this store is no longer dead.
 
 /// The §0.4.4 ingest registry — maps each in-flight `CollectingId` to its `tokio_util::sync::
 /// CancellationToken`, so C13 `cancel_ingest` can cooperatively cancel an in-flight C1 walk / C2a pick

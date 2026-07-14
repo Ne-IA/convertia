@@ -256,20 +256,21 @@ export const commands = {
 	 *
 	 *  - `run_id` — the §0.4.4 `RunId` (minted at C6) whose cancellation token to trip.
 	 *
-	 *  [Build-Session-Entscheidung: P2.30] **Shell returns `Ok(())` — the genuine no-op-cancel outcome, the
-	 *  C1/C2a (`CollectedSet::Empty`) / C2b (`Ok(None)`) "zero-valued result" branch of the interface-shell
-	 *  pattern, NOT the C3/C4/C5/C6 `Err(InternalError)` branch.** The split is principled: C3/C4/C5/C6 return
-	 *  `Err` because their success type (`TargetOffer`/`OutputPlanPreview`/`DestinationResolved`/`RunId`) has **no
-	 *  zero value**, so a pre-registry shell cannot honestly produce one. C7's success type is `()`, which **does**
-	 *  have a zero value, and `cancel_run` is an **idempotent fire-and-forget side-effect**: it trips a token and
-	 *  returns — `tokio_util` `CancellationToken::cancel()` on an unheld/already-cancelled token is a harmless
-	 *  no-op, and a cancel of an already-finished run is the desired end-state ("not running" ⇒ effectively
-	 *  cancelled, §0.4.4). So tripping *no* token (the shell has no run registry — P2.42 — yet) is genuinely
-	 *  `Ok(())`, NOT a fabricated success: it claims nothing positive happened (unlike a fabricated C6 `Ok(RunId)`,
-	 *  which would lie that a run started). The kill *outcome* is never C7's return — it is reported async via the
-	 *  `ConversionEvent`/`RunResult` (§1.7/§1.12). The real registry resolve + `.cancel()` wiring lands at P2.42
-	 *  (the `RunId` token registry) / P3.52 (the C7 cancel-wiring to the §1.1/P3.44 cooperative cancel); the
-	 *  contract is unchanged by it (cancel stays `Ok(())`).
+	 *  [Build-Session-Entscheidung: P3.52] **The `.cancel()` trip is WIRED** (no longer the P2.30 `Ok(())` shell).
+	 *  The handler binds an `AppHandle` (Tauri-injected — the §0.4.1 wire signature stays `{ runId }`) to reach the
+	 *  §0.4.4 `RunRegistry` (`.manage`d in main, P2.42) and **trips the run's cancellation token** via
+	 *  `RunRegistry::cancel(run_id)` — the exact mirror of the C13 `cancel_ingest` wiring (P2.71). The cancel EFFECT
+	 *  is then observed by the in-flight conversion: the §1.7 / P3.44 cooperative cancel keeps already-finished
+	 *  items and discards the in-progress one cleanly (§2.1/§2.6); the forceful engine kill is §1.7's mechanism.
+	 *  C7's own return never carries the effect — the kill *outcome* is reported async via the
+	 *  `ConversionEvent`/`RunResult` (§1.7/§1.12). **Idempotent `Ok(())` `[DECIDED]`:** a cancel of an unknown /
+	 *  already-finished run finds no live token (`RunRegistry::cancel` returns `false`) — the genuine "not running"
+	 *  end-state (§0.4.4), the C13 `cancel_ingest` mirror — so the result is ALWAYS `Ok(())` (the §0.4.1 C7
+	 *  idempotent contract), NEVER an `Err`. This handler is AppHandle-coupled boot-glue (§1.1a; G28
+	 *  signature-exempt): the trip LOGIC is `RunRegistry::cancel` (unit-tested at P2.42, + the end-to-end
+	 *  token-trip chain proven in the `c7_contract` tests here), the WIRING source-scan-pinned.
+	 *  `app.state::<RunRegistry>()` is infallible by construction (the registry is `.manage`d in main()'s Builder
+	 *  chain before the event loop, P2.42 — no panic under the `crate::ipc` clippy::panic deny).
 	 */
 	cancelRun: (runId: RunId) => __TAURI_INVOKE<null>("cancel_run", { runId }),
 	/**

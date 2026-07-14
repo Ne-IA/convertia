@@ -8,7 +8,7 @@
 
 // §0.4 / T10: unchecked arithmetic on an untrusted wire field must be a compile error in every IPC handler
 // (the `crate::ipc` arithmetic-overflow deny cascades here; restated at the T10 boundary). The C6 conductor
-// body (P3.48) + the C7 shell do no arithmetic in this file; the deny bites any future fill-body.
+// body (P3.48) + the C7 `cancel_run` handler (P3.52) do no arithmetic in this file; the deny bites any future fill-body.
 #![deny(clippy::arithmetic_side_effects)]
 
 use std::path::PathBuf;
@@ -254,24 +254,30 @@ async fn run_conversion_spawned(
 ///
 /// - `run_id` — the §0.4.4 `RunId` (minted at C6) whose cancellation token to trip.
 ///
-/// [Build-Session-Entscheidung: P2.30] **Shell returns `Ok(())` — the genuine no-op-cancel outcome, the
-/// C1/C2a (`CollectedSet::Empty`) / C2b (`Ok(None)`) "zero-valued result" branch of the interface-shell
-/// pattern, NOT the C3/C4/C5/C6 `Err(InternalError)` branch.** The split is principled: C3/C4/C5/C6 return
-/// `Err` because their success type (`TargetOffer`/`OutputPlanPreview`/`DestinationResolved`/`RunId`) has **no
-/// zero value**, so a pre-registry shell cannot honestly produce one. C7's success type is `()`, which **does**
-/// have a zero value, and `cancel_run` is an **idempotent fire-and-forget side-effect**: it trips a token and
-/// returns — `tokio_util` `CancellationToken::cancel()` on an unheld/already-cancelled token is a harmless
-/// no-op, and a cancel of an already-finished run is the desired end-state ("not running" ⇒ effectively
-/// cancelled, §0.4.4). So tripping *no* token (the shell has no run registry — P2.42 — yet) is genuinely
-/// `Ok(())`, NOT a fabricated success: it claims nothing positive happened (unlike a fabricated C6 `Ok(RunId)`,
-/// which would lie that a run started). The kill *outcome* is never C7's return — it is reported async via the
-/// `ConversionEvent`/`RunResult` (§1.7/§1.12). The real registry resolve + `.cancel()` wiring lands at P2.42
-/// (the `RunId` token registry) / P3.52 (the C7 cancel-wiring to the §1.1/P3.44 cooperative cancel); the
-/// contract is unchanged by it (cancel stays `Ok(())`).
+/// [Build-Session-Entscheidung: P3.52] **The `.cancel()` trip is WIRED** (no longer the P2.30 `Ok(())` shell).
+/// The handler binds an `AppHandle` (Tauri-injected — the §0.4.1 wire signature stays `{ runId }`) to reach the
+/// §0.4.4 `RunRegistry` (`.manage`d in main, P2.42) and **trips the run's cancellation token** via
+/// `RunRegistry::cancel(run_id)` — the exact mirror of the C13 `cancel_ingest` wiring (P2.71). The cancel EFFECT
+/// is then observed by the in-flight conversion: the §1.7 / P3.44 cooperative cancel keeps already-finished
+/// items and discards the in-progress one cleanly (§2.1/§2.6); the forceful engine kill is §1.7's mechanism.
+/// C7's own return never carries the effect — the kill *outcome* is reported async via the
+/// `ConversionEvent`/`RunResult` (§1.7/§1.12). **Idempotent `Ok(())` `[DECIDED]`:** a cancel of an unknown /
+/// already-finished run finds no live token (`RunRegistry::cancel` returns `false`) — the genuine "not running"
+/// end-state (§0.4.4), the C13 `cancel_ingest` mirror — so the result is ALWAYS `Ok(())` (the §0.4.1 C7
+/// idempotent contract), NEVER an `Err`. This handler is AppHandle-coupled boot-glue (§1.1a; G28
+/// signature-exempt): the trip LOGIC is `RunRegistry::cancel` (unit-tested at P2.42, + the end-to-end
+/// token-trip chain proven in the `c7_contract` tests here), the WIRING source-scan-pinned.
+/// `app.state::<RunRegistry>()` is infallible by construction (the registry is `.manage`d in main()'s Builder
+/// chain before the event loop, P2.42 — no panic under the `crate::ipc` clippy::panic deny).
 #[tauri::command(rename_all = "camelCase")]
 #[specta::specta]
-pub async fn cancel_run(run_id: RunId) -> Result<(), IpcError> {
-    let _ = run_id;
+pub async fn cancel_run(app: AppHandle, run_id: RunId) -> Result<(), IpcError> {
+    // §0.4.4/§1.1 (P3.52): trip the run's cancellation token so the in-flight conversion observes the cancel —
+    // the §1.7/P3.44 cooperative cancel keeps already-finished items and discards the in-progress one cleanly
+    // (§2.1/§2.6). Idempotent: a cancel of an unknown/already-finished run finds no token (cancel returns false)
+    // — the genuine "not running" no-op (§0.4.4) — so the result is ALWAYS Ok(()) (the §0.4.1 C7 contract),
+    // never an error. The kill OUTCOME is reported async via the ConversionEvent/RunResult (§1.7/§1.12).
+    let _ = app.state::<RunRegistry>().cancel(run_id);
     Ok(())
 }
 
@@ -387,78 +393,98 @@ mod c6_contract {
 
 #[cfg(test)]
 mod c7_contract {
-    //! §6.4.1 unit (G15): the §0.4.1 C7 `cancel_run` typed CONTRACT (P2.30). The handler now carries its typed
-    //! `{ runId } -> Result<(), IpcError>` signature, so the P2.21 all-shells `block_on(cancel_run())`
-    //! invocation in `crate::ipc` (mod.rs) is REPLACED here by C7's own typed-contract test (the fill-box
-    //! transition the P2.21 note schedules). The shell returns the genuine idempotent no-op-cancel `Ok(())`;
-    //! the §0.4.4 token registry resolve + `.cancel()` land at P2.42 / P3.46. [Build-Session-Entscheidung: P2.30]
-    //! P2.137 (phase-end hardening) adds the shell-body source-scan beside the contract test — the
-    //! mutation-hardening leg: the cargo-mutants replace-body-with-`Ok(())` mutant survived the pure
-    //! `Ok(())` contract check, because a zero-effect documented shell offers no state change to observe.
+    //! §6.4.1 unit (G15): the §0.4.1 C7 `cancel_run` `.cancel()` trip wiring (P3.52). The handler binds an
+    //! `AppHandle` (to reach the §0.4.4 `RunRegistry` and trip the run's token), so it is AppHandle-coupled
+    //! boot-glue (the §1.1a pattern — NOT cargo-test-invocable; this crate ships no `tauri::test` mock BY
+    //! DECISION, G28 signature-exempt). The trip LOGIC is `RunRegistry::cancel` (unit-tested at P2.42); this
+    //! module pins the handler WIRING by source-scan + proves the END-TO-END token-trip chain at the
+    //! registry/token level (no runtime) — the exact mirror of the C13 `c13_contract` (P2.71).
+    //! [Build-Session-Entscheidung: P3.52]
+    //!
+    //! [Test-Change: P3.52 — old-obsolete+new-correct, §0.4.1] the P2.30 shell contract test
+    //! (`block_on(cancel_run(run_id()))` → the idempotent no-op `Ok(())`) AND the P2.137 `c7_shell_body_binds_...`
+    //! source-scan are OBSOLETE: the shell no longer exists — the handler now binds an `AppHandle` (uninvocable
+    //! under `cargo test`, §1.1a) and TRIPS the token via `RunRegistry::cancel`. They are REPLACED by the
+    //! end-to-end token-trip chain (register → cancel → is_cancelled) — what C7 does and what the §1.7/P3.44
+    //! cooperative cancel observes — plus the handler source-scan, exactly as the P2.137 `c7_shell_body_...`
+    //! comment scheduled ("superseded by a behavioural token-tripped check at the fill-box"). STRICTLY STRONGER
+    //! (the shell asserted only a no-op `Ok(())`; this asserts the real trip), NOT a dropped assertion.
     use super::*;
-    use tauri::async_runtime::block_on;
 
-    /// A `RunId` for the contract call — minted through its PUBLIC bare-uuid `Deserialize` wire form (the
+    /// A `RunId` for the registry-level end-to-end test — its PUBLIC bare-uuid `Deserialize` wire form (the
     /// frontend holds the C6-minted id, §0.4.4), mirroring the `c6_contract` helper.
+    /// [Test-Change: P3.52 — old-obsolete+new-correct, §0.4.1] this helper is retained; the P2.30 block_on shell
+    /// contract test + the P2.137 shell-body source-scan it fed are superseded by the token-trip chain below.
     fn run_id() -> RunId {
         serde_json::from_str(r#""88888888-8888-4888-8888-888888888888""#)
             .expect("RunId deserializes from a uuid string")
     }
 
-    // §6.4.1 unit (G15): the C7 contract is invocable with its §0.4.1 typed `runId` arg and returns a
-    // `Result<(), IpcError>` (the §0.4 universal error shape). The shell trips no token yet (no run registry —
-    // P2.42), so it returns the genuine idempotent no-op-cancel `Ok(())` (a cancel of a non-existent/finished
-    // run is the desired "not running" end-state, §0.4.4); P3.46 wires the real registry resolve + `.cancel()`.
+    // [Test-Change: P3.52 — old-obsolete+new-correct, §0.4.1] this end-to-end token-trip chain REPLACES the
+    // obsolete P2.30 `block_on(cancel_run)` shell contract test (the shell is gone — the handler is now
+    // AppHandle-coupled, uninvocable under cargo test): STRICTLY STRONGER (it asserts the real trip, not Ok(())).
+    // §6.4.1 unit (G15): the END-TO-END C7-tripped→observed chain (P3.52), proven at the registry/token level
+    // with NO Tauri runtime — the C13 `c13_contract` mirror. The C6 conductor registered the run's token at
+    // dispatch (RunRegistry::register, P2.42/P3.48); a C7 cancel trips it (`RunRegistry::cancel` — the wiring
+    // this handler adds); the in-flight conversion's §1.7/P3.44 cooperative-cancel poll then reads the tripped
+    // token and winds the run down (already-finished items kept, in-progress discarded cleanly, §2.1/§2.6). An
+    // unknown/finished run trips nothing (cancel returns false) — the idempotent §0.4.1 no-op.
     #[test]
-    fn c7_cancel_run_contract_is_invocable_and_typed() {
-        let out = block_on(cancel_run(run_id()));
-        assert_eq!(
-            out,
-            Ok(()),
-            "§0.4.1/§0.4: the C7 contract shell trips no token yet (the §0.4.4 registry is P2.42), so it \
-             returns the genuine idempotent no-op-cancel Ok(()); the typed Result<(), IpcError> signature is \
-             the P2.30 deliverable"
+    fn c7_cancel_trips_the_run_token_so_the_in_flight_conversion_observes_it() {
+        // [Test-Change: P3.52 — old-obsolete+new-correct, §0.4.1] this real token-trip chain supersedes the
+        // obsolete P2.30 `block_on(cancel_run)` shell assert_eq (the shell is gone — the handler is AppHandle-coupled).
+        let registry = RunRegistry::default();
+        // The C6 conductor registered the run's cancellation token at dispatch (P2.42/P3.48):
+        let token = registry.register(run_id());
+        // C7 cancel_run trips it (the wiring P3.52 adds: app.state::<RunRegistry>().cancel):
+        assert!(
+            registry.cancel(run_id()),
+            "§0.4.4: C7 finds the in-flight run's token and trips it"
+        );
+        // The in-flight conversion's cooperative-cancel poll (§1.7/P3.44) now reads the tripped token and winds
+        // the run down (kept-finished / discarded-in-progress). Cancellation-token clones share state, so the
+        // token the conductor holds observes the trip.
+        assert!(
+            token.is_cancelled(),
+            "§1.7: the in-flight conversion observes the C7 trip (its cooperative-cancel poll reads the token)"
+        );
+        // Idempotent: cancelling a finished/unknown run finds no live token — the §0.4.1 no-op.
+        registry.finish(run_id());
+        assert!(
+            !registry.cancel(run_id()),
+            "§0.4.1: a cancel of a finished/unknown run trips nothing (RunRegistry::cancel returns false) — the idempotent no-op"
         );
     }
 
     /// The production prefix of `conversion.rs` (everything before the FIRST `#[cfg(test)]`), so a needle
-    /// declared in this test can never self-match — the per-module copy of the system.rs `c10_contract`
-    /// helper (each contract module keeps its own copy, the established per-module test-helper pattern).
+    /// declared in this test can never self-match — the per-module copy of the system.rs `c10_contract` helper.
     fn production_conversion_source() -> &'static str {
         let full = include_str!("conversion.rs");
         full.split_once(concat!("#[cfg", "(test)]"))
             .map_or(full, |(prefix, _)| prefix)
     }
 
-    // §6.4.1 unit (G15): the C7 shell BODY form (P2.137) — a source-scan pinning that `cancel_run` still
-    // binds its `run_id` before the documented no-op `Ok(())`. The shell is a DOCUMENTED zero-effect
-    // contract (it trips no token — the registry dispatch is the named fill-box, per the handler doc), so
-    // there is no observable state change a behavioural test could observe; the cargo-mutants
-    // replace-body-with-`Ok(())` mutant is instead killed HERE: mutating the body drops the `run_id`
-    // binding line, and this scan reds. When the fill-box lands the real `.cancel()` dispatch, this scan
-    // is superseded by a behavioural token-tripped check (a [Test-Change] at that box).
-    // [Build-Session-Entscheidung: P2.137]
+    // [Test-Change: P3.52 — old-obsolete+new-correct, §0.4.1] this handler source-scan REPLACES the obsolete
+    // P2.137 `c7_shell_body_binds_run_id` scan (the shell body it pinned is gone), exactly as that test's own
+    // comment scheduled ("superseded by a behavioural token-tripped check at the fill-box").
+    // §6.4.1 unit (G15): the C7 handler binds an AppHandle and TRIPS the token via `RunRegistry::cancel` (the
+    // P3.52 wiring), no longer the P2.30 `let _ = run_id; Ok(())` shell. Source-scan (AppHandle boot-glue, not
+    // cargo-test-runnable; the cancel LOGIC is unit-tested on `RunRegistry` at P2.42 + the chain above). Needles
+    // `concat!`-assembled (self-match avoidance); the literal call forms appear only in the handler body.
     #[test]
-    fn c7_shell_body_binds_run_id_before_the_no_op_ok() {
+    fn c7_handler_trips_the_run_token_via_the_registry() {
+        // [Test-Change: P3.52 — old-obsolete+new-correct, §0.4.1] this wired-handler scan supersedes the
+        // obsolete P2.137 `c7_shell_body_binds_run_id` shell-body scan (the `let _ = run_id; Ok(())` shell is gone).
         let src = production_conversion_source();
-        let (_, after) = src
-            .split_once(concat!("pub async fn cancel_", "run("))
-            .expect("the C7 handler declaration is present in the production prefix");
-        let (body, _) = after.split_once('}').expect("the C7 handler body closes");
-        let bind = concat!("let _ = run_", "id;");
-        assert!(
-            body.contains(bind),
-            "§0.4.1 C7: the shell body must bind its `runId` arg (the P2.30 documented no-op form) — a \
-             body-replaced mutant drops this line"
-        );
-        let (_, after_bind) = body
-            .split_once(bind)
-            .expect("the run_id binding precedes the no-op Ok");
-        assert!(
-            after_bind.contains("Ok(())"),
-            "§0.4.1 C7: the documented idempotent no-op `Ok(())` terminates the shell body, after the \
-             `runId` binding"
-        );
+        for needle in [
+            concat!("cancel_run(app: App", "Handle"),
+            concat!("state::<Run", "Registry>().cancel(run_id)"),
+        ] {
+            assert!(
+                src.contains(needle),
+                "§0.4.4/§1.1: cancel_run must bind an AppHandle and trip the token via RunRegistry::cancel (missing `{needle}`)"
+            );
+        }
     }
 }
 
