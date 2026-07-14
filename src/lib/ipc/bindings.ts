@@ -32,12 +32,14 @@ export const commands = {
 	 *  drain, or the ordinary first launch with no files). **No FS path crosses this wire in either direction**
 	 *  (§2.10.1); the `origin` travels inside the buffer (core-side `IntakeOrigin`), never on the wire.
 	 *
-	 *  [Build-Session-Entscheidung: P2.22] **The freeze BODY is P3.49.** The §1.1 recursive walk → §1.2 detect →
-	 *  §2.3 de-dup → §1.3 group freeze funnel (`ingest`, homed in `crate::orchestrator`) is a compile-time
-	 *  interface shell that returns the §0.6 zero-collection `CollectedSet::Empty { skipped: [] }` until P3.49
-	 *  wires it end-to-end (CLAUDE §5 / the P3 `crate::isolation` shells P4 expands — NOT a quiet deferral). The
-	 *  §0.4.4 `collecting_id` token registration + the `on_scan` throttled emit are that same P3.49 walk's, so
-	 *  here `collecting_id`/`on_scan` are shell-accepted (`_`-bound).
+	 *  [Build-Session-Entscheidung: P3.49] **The freeze BODY is wired.** The §1.1 recursive walk → §1.2 detect →
+	 *  §2.3 de-dup → §2.4 freeze → §1.3 group freeze funnel (`ingest`, homed in `crate::orchestrator`) runs
+	 *  end-to-end for the CSV→TSV walking skeleton: this handler registers the §0.4.4 `collecting_id` ingest
+	 *  token (RAII, so C13 `cancel_ingest` can trip the in-flight walk), threads the `on_scan` Channel into the
+	 *  throttled §0.4.2 scan emit, and registers the resulting `Single` set into the §0.4.4
+	 *  `CollectedSetRegistry` (so C3/C4/C6 can resolve it) — all inside the pure `drain_to_collected_set` helper.
+	 *  The blocking walk runs on a dedicated `spawn_blocking` thread (mirroring the C2a picker) so the async
+	 *  runtime stays free and C13 remains serviceable.
 	 *
 	 *  [Build-Session-Entscheidung: P2.22] **`on_scan` is NON-OPTIONAL — a FORCED deviation from the §0.4.1
 	 *  `onScan?` `[DECIDED]`.** tauri 2.11.3's `Channel<T>` is `!Deserialize` (it carries its own `CommandArg`
@@ -145,22 +147,17 @@ export const commands = {
 	 *  IpcError>` (the §0.4 universal error shape) — so the generated `bindings.ts` carries the C3 door, pulling the
 	 *  whole `TargetOffer` graph (`Target` / `TargetId` / `OptionValues` / …) into the bindings.
 	 *
-	 *  [Build-Session-Entscheidung: P2.25] **Shell returns `Err(IpcError{ kind: InternalError })` — the genuine
-	 *  pre-registry "set not resolvable" outcome, NOT a stub.** `TargetOffer` has no zero value (§1.5: it carries
-	 *  exactly one real `default_target`), so unlike C1/C2a (`CollectedSet::Empty`) / C2b (`Ok(None)`) there is no
-	 *  `Ok(empty)` to return. Until the §0.4.4 collected-set registry (P2.44) + the §1.5/§1.6 target-resolution
-	 *  logic land, **no** `collectedSetId` resolves — so the shell's honest result is exactly the `Err` the real
-	 *  body returns for an unresolvable id: `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })`.
-	 *  `InternalError` is spec-grounded — the §2.13 catch-all, matching the §3.2 `PlanError` "can't compute the
-	 *  plan" precedent (03-engines §3.2.1 `plan_encode` default `Err(PlanError{ InternalError })`).
-	 *
-	 *  Three things the named fill-boxes own (so this shell is a named, scheduled interface shell, CLAUDE §5):
-	 *  (a) the §2.8 **message catalog** owns the FINAL wording — the `message` below is a PROVISIONAL neutral
-	 *  English string — and must add a COMMAND-level string, because the current §2.8 catalog (02-guarantees
-	 *  §2.8.2) is ITEM-scoped ("…this file was skipped"), which does not fit a command-level failure; (b) the
-	 *  §0.4.4 registry resolve + the §0.6 SUCCESS path (a real `TargetOffer`) + any `kind` refinement belong to the
-	 *  body box (P2.44+); (c) the `kind` is spelled with the CONCRETE `ConversionErrorKind`, NOT the `ErrorKind`
-	 *  alias (the P2.19 convention against the rustc dead-code-EXPECTATION/alias interaction).
+	 *  [Build-Session-Entscheidung: P3.49] **WIRED.** The handler binds an `AppHandle` (a Tauri-injected arg, NOT
+	 *  part of the §0.4.1 `{ collectedSetId }` wire signature) to reach the §0.4.4 `State<CollectedSetRegistry>`
+	 *  (`.manage`d in main, P2.44) and dispatches to the AppHandle-free `resolve_targets` helper (the §1.1a
+	 *  boot-glue split, mirroring C8's `resolve_run_summary`, unit-tested + G27-counted). `resolve_targets`
+	 *  resolves the set, reads its detected `format`, and builds the §1.5 `TargetOffer` from the SHARED
+	 *  `engines::slice_target` offer (the ONE source of the CSV↔TSV offer, the P3.48 `needs:` edge — no
+	 *  synthesized `Target`); the single offered target IS the pre-highlighted default. An unresolvable
+	 *  `collectedSetId` (expired / superseded / never registered) returns the §2.13 `Err(InternalError)` catch-all
+	 *  (the §3.2 `PlanError` precedent) — the message is PROVISIONAL (the §2.8 catalog box owns the final
+	 *  command-level wording), the `kind` spelled with the CONCRETE `ConversionErrorKind` not the `ErrorKind`
+	 *  alias (the P2.19 convention).
 	 */
 	getTargets: (collectedSetId: CollectedSetId) => __TAURI_INVOKE<TargetOffer>("get_targets", { collectedSetId }),
 	/**
@@ -171,16 +168,20 @@ export const commands = {
 	 *  generated `bindings.ts` carries the C4 door, pulling the `OutputPlanPreview` graph (`DivertReason` /
 	 *  `RerunPrompt` / `PreflightVerdict` / …) into the bindings.
 	 *
-	 *  [Build-Session-Entscheidung: P2.26] **Shell returns `Err(IpcError{ kind: InternalError })` — the same
-	 *  owner-approved interface-shell pattern as C3 (P2.25).** `OutputPlanPreview` has no zero value (it carries a
-	 *  resolved `final_dir_display` + a `PreflightVerdict`), so there is no `Ok(empty)` to return; the genuine
-	 *  pre-registry outcome (the §0.4.4 collected-set registry, P2.44, is not yet built) is exactly the `Err` the
-	 *  real body returns for an unresolvable id: `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })`
-	 *  (§2.13 catch-all; the §3.2 `PlanError` `plan_encode` precedent). The named fill-boxes own the rest: (a) the
-	 *  §2.8 catalog box owns the FINAL message (the string below is provisional) and must add a COMMAND-level
-	 *  string (the §2.8 catalog is item-scoped); (b) the §0.4.4 registry resolve + the §1.8 `OutputPlan`
-	 *  computation (divert / §2.5 re-run / §1.10 pre-flight) + the §0.6 SUCCESS path belong to the body box
-	 *  (P2.44+); (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind` alias (the P2.19 convention).
+	 *  [Build-Session-Entscheidung: P3.49] **WIRED for the walking skeleton.** The handler binds an `AppHandle`
+	 *  (Tauri-injected — the §0.4.1 wire signature stays `{ collectedSetId, target, options, destination }`) to
+	 *  reach the §0.4.4 `State<CollectedSetRegistry>` + the §2.5 `State<EquivKeyComputer>` / `State<RerunLedger>`
+	 *  + the app `State<InstanceId>`, and dispatches to the AppHandle-free `resolve_output_plan` helper, which
+	 *  resolves the set and delegates the §1.8 batch preview to `orchestrator::plan_output_preview`: the
+	 *  representative "will save to…" directory + its §2.7.2 divert classification (`location_status`), the §2.5
+	 *  PEEK-only re-run verdict (`compute_rerun_verdict`), and the §1.10 preflight verdict. The §1.10 verdict is
+	 *  the **trivial §1.10-seam slice verdict** (the CSV→TSV footprint is negligible ⇒ `up_front_fail: None` by
+	 *  construction); the real §1.10 estimator is P4.72, which SUPERSEDES it behind this same contract — so P3
+	 *  must NOT build a real estimator here (a double-build). An unresolvable `collectedSetId` returns the §2.13
+	 *  `Err(InternalError)` catch-all (provisional message, CONCRETE `ConversionErrorKind` — the P2.19 convention).
+	 *  C4 is re-callable (debounced, §5.8): `resolve` is NON-evicting, so re-planning never consumes the set. The
+	 *  §2.7.2 divert probe is blocking FS I/O, so the handler runs the whole preview on `spawn_blocking` — off the
+	 *  async runtime, like C1's walk / C2a's dialog (§1.1 "MUST NOT block a Tokio worker thread").
 	 */
 	planOutput: (collectedSetId: CollectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice) => __TAURI_INVOKE<OutputPlanPreview>("plan_output", { collectedSetId, target, options, destination }),
 	/**

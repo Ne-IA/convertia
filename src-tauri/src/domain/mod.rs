@@ -140,6 +140,19 @@ impl RunId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 pub struct CollectedSetId(Uuid);
 
+impl CollectedSetId {
+    /// Mint a fresh collected-set id — a random **v4** UUID stamped by the §1.3 `group()` projection at the
+    /// §2.4 freeze (the C1 `drain_intake` funnel, P3.49) onto a `CollectedSet::Single` / its
+    /// `FrozenCollectedSet`, and the §0.4.4 `CollectedSetRegistry` key the C3–C6 commands resolve. Named `mint`
+    /// per the §7.1 "minted" identity vocabulary (mirroring `RunId::mint` / `InstanceId::mint` /
+    /// `DestinationId::mint`); a random `Default` would be a surprising, non-deterministic default
+    /// (`clippy::new_without_default`). [Build-Session-Entscheidung: P3.49]
+    #[must_use]
+    pub fn mint() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
 /// A C2b-picked destination root, named **by id on the wire** and resolved core-side against the
 /// session-scoped picked-roots registry (`crate::orchestrator::DestinationRegistry`, §0.4.4) — the real
 /// `PathBuf` NEVER crosses the wire in either direction (§2.10.1 / the 2026-07-06 core-owned-paths ruling).

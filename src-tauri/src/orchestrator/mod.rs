@@ -42,7 +42,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) were authored as contracts ahead of their wire consumers. The P3.48 C6 run conductor + its start_conversion handler now compose MOST of them into the live run. LIVE via P3.48: the §1.9 FSM advance + queue_order (+ state_is_queued), the P3.47 build_batch, the P3.50 project_run_result, CollectedSetRegistry::take + RunResultStore::{evict, retain} + RunRegistry::{register, finish} + crate::run::RunScratch::acquire, and the P3.39 EquivKeyComputer::compute_equiv_key (the §2.5 applier + the per-success RerunLedger record). Already live before P3.48: RunRegistry::has_active_run (the §7.1.1 converter_is_busy, P2.55) and RunResultStore::get (the C8 get_run_summary handler via resolve_run_summary, P3.50). STILL dead in the production build until its own wiring lands: the §2.8 project_outcome (P3.46.2 — the conductor maps its own ItemRunOutcome onto the terminal JobEvent INLINE, so this InvocationResult projection has no production caller yet); RunResultStore::paths (the P3.51 C9 RunResultPaths wiring); RunRegistry::cancel (the C7 cancel_run handler is still a shell — the real registry .cancel() dispatch is a separate box); the §2.8.2 batch-summary renderer batch_summary/batch_summary_line (no production caller yet) + any P3.25 §2.6.4 residue helper (ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) project_run_result does not reach; the P3.40 compute_rerun_verdict + its RegisteredSet-registry C4 path (the P3.49 C4 plan_output re-run VERDICT resolves the managed State + calls it); and the P3.49 ingest funnel (the §1.1 walk/detect/freeze spine). Reading a dead fn does not make it live — a dead-fn reference is not a root — so this pure lifecycle/projection graph stayed dead until the P3.48 conductor made it reachable from the C6 command root; the expectation stays fulfilled while ANY of the above is still unwired."
+        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) were authored as contracts ahead of their wire consumers. The P3.48 C6 run conductor + its start_conversion handler now compose MOST of them into the live run. LIVE via P3.48: the §1.9 FSM advance + queue_order (+ state_is_queued), the P3.47 build_batch, the P3.50 project_run_result, CollectedSetRegistry::take + RunResultStore::{evict, retain} + RunRegistry::{register, finish} + crate::run::RunScratch::acquire, and the P3.39 EquivKeyComputer::compute_equiv_key (the §2.5 applier + the per-success RerunLedger record). Already live before P3.48: RunRegistry::has_active_run (the §7.1.1 converter_is_busy, P2.55) and RunResultStore::get (the C8 get_run_summary handler via resolve_run_summary, P3.50). LIVE via P3.49 (the C1 drain_intake / C3 get_targets / C4 plan_output walking-skeleton wiring): the §1.1/§2.4.1 ingest funnel spine (walk_intake_roots + resolve_and_dedup/dedup_by_identity + freeze_snapshot + the §1.3 group() projection) via the C1 drain, CollectedSetRegistry::{register, resolve} (the C1 freeze register + the C3/C4 resolve), and the P3.40 compute_rerun_verdict (its first production caller — the C4 plan_output_preview re-run verdict). STILL dead in the production build until its own wiring lands: the §2.8 project_outcome (P3.46.2 — the conductor maps its own ItemRunOutcome onto the terminal JobEvent INLINE, so this InvocationResult projection has no production caller yet); RunResultStore::paths (the P3.51 C9 RunResultPaths wiring); RunRegistry::cancel (the C7 cancel_run handler is still a shell — the real registry .cancel() dispatch is a separate box); the §2.8.2 batch-summary renderer batch_summary/batch_summary_line (no production caller yet) + any P3.25 §2.6.4 residue helper (ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) project_run_result does not reach. Reading a dead fn does not make it live — a dead-fn reference is not a root — so this pure lifecycle/projection graph stayed dead until the P3.48 conductor made it reachable from the C6 command root; the expectation stays fulfilled while ANY of the above is still unwired."
     )
 )]
 
@@ -53,6 +53,7 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use specta::Type;
@@ -65,19 +66,21 @@ use crate::domain::{
     CollectedSet, CollectedSetId, CollectingId, DestinationChoice, DestinationId, DetectionOutcome,
     DivertReason, DroppedItem, FrozenCollectedSet, InstanceId, IntakeOrigin, ItemId, ItemIdSpace,
     ItemPaths, ItemSpaceExhausted, JobSource, JobStage, OptionValues, OutputPlan, ReadFailure,
-    RerunDecision, RerunPrompt, RunId, SkipReason, SkippedItem, Target, TargetId, UserFacingFormat,
+    RerunDecision, RerunPrompt, RunId, ScanProgress, SkipReason, SkippedItem, Target, TargetId,
+    UserFacingFormat,
 };
 use crate::engines::{
     dispatch, Engine, EngineId, EngineInvocation, InvocationResult, NativeCsvTsvEngine, PlanOutcome,
 };
 use crate::fs_guard::{
-    atomic_publish, compute_output_plan, is_write_divert_trigger, open_verified_parent_dir,
-    output_name, publish_to_divert, resolve_divert_target, DestinationMode, DivertTarget,
-    FileIdentity, LocationCache, ParentDirVerdict, PublishError, PublishOutcome,
+    atomic_publish, compute_output_plan, is_write_divert_trigger, location_status,
+    open_verified_parent_dir, output_name, publish_to_divert, resolve_divert_target,
+    DestinationMode, DivertTarget, FileIdentity, LocationCache, LocationStatus, ParentDirVerdict,
+    PublishError, PublishOutcome,
 };
 use crate::outcome::{conversion_failure, ConversionErrorKind, IpcError, OutcomeMsg};
 use crate::pool::Pool;
-use crate::run::{cleanup_item, cleanup_run, EquivKey, RerunLedger, RunScratch};
+use crate::run::{cleanup_item, cleanup_run, EquivKey, PublishTemp, RerunLedger, RunScratch};
 
 /// One same-source conversion batch (§0.6 / §1.9) — the queue the orchestrator builds at C6
 /// `start_conversion` from a frozen `CollectedSet::Single` and drives to a §1.12 summary. INTERNAL to the
@@ -2703,6 +2706,16 @@ impl IngestGuard<'_> {
     pub fn is_cancelled(&self) -> bool {
         self.token.is_cancelled()
     }
+
+    /// The raw ingest-scoped cancellation token, polled cooperatively by the §1.1 C1 `drain_intake` walk +
+    /// §1.2 detection loop (`ingest`, P3.49): the walk hands `&guard.token()` to `walk_intake_roots` and
+    /// re-checks it between detected files, so a C13 `cancel_ingest` trip stops the in-flight walk and the
+    /// partial, not-yet-frozen set is discarded (§1.1). Distinct from [`is_cancelled`](Self::is_cancelled),
+    /// the one-shot boolean the C2a post-dialog check read: the walk needs the token itself to thread into
+    /// `walk_intake_roots`. [Build-Session-Entscheidung: P3.49]
+    pub fn token(&self) -> &CancellationToken {
+        &self.token
+    }
 }
 
 impl Drop for IngestGuard<'_> {
@@ -3025,15 +3038,431 @@ impl FrontendReady {
 /// every input until its §2.4.1 spine stages land (P2.64 / P3). (Pre-P3.78 the C2a picker called `ingest`
 /// directly; it now funnels through `forward_launch_intake` → `PendingIntake` → the C1 drain, §7.8.1.)
 #[must_use]
-pub fn ingest(paths: Vec<PathBuf>, origin: IntakeOrigin) -> CollectedSet {
-    // §2.4.1 freeze spine: walk (P2.64) → detect (P3) → resolve-identity (P3, produces the P2.74
-    // `FileIdentity`) + de-dup (P2.76) → freeze/materialise the immutable snapshot + assign
-    // `ItemId` (P3.32 [`freeze_snapshot`] / P2.75) → group (P3.49). While those stages are unwired here the
-    // frozen snapshot is empty, so the §1.3 projection of a no-eligible-source freeze is the §0.6
-    // zero-collection `Empty` (§0.4.1 / §5.4).
-    let _ = (paths, origin);
-    CollectedSet::Empty {
-        skipped: Vec::new(),
+pub fn ingest(
+    paths: Vec<PathBuf>,
+    origin: IntakeOrigin,
+    cancel: &CancellationToken,
+    on_scan: &Channel<ScanProgress>,
+    instance: InstanceId,
+) -> IngestResult {
+    // The §1.1 funnel origin is informational — the §1.3 projection keys off DETECTION, not origin (every
+    // origin funnels uniformly since P3.78). [Build-Session-Entscheidung: P3.49]
+    let _ = origin;
+
+    // Step 1 (§1.1, P2.64): the recursive walk. A tripped C13 token → discard the partial, not-yet-frozen set
+    // (the §0.6 zero-collection `Empty`, §1.1); a fatal walk-root (the dropped root itself gone/unreadable) →
+    // surface the root as one Unreadable skip through the freeze (§1.1 "intake-time unreadable = Skipped").
+    let IntakeWalk {
+        files,
+        roots,
+        skipped: walk_skips,
+    } = match walk_intake_roots(&paths, cancel) {
+        Ok(walk) => walk,
+        Err(WalkAbort::Cancelled) => return empty_ingest_result(),
+        Err(WalkAbort::FatalRoot(fatal)) => return fatal_root_ingest_result(fatal, instance),
+    };
+
+    // Step 2 (§1.2, P3.26–P3.29): detect each walked file → a `DetectedCandidate`, polling the ingest cancel
+    // token between files (§1.1 cooperative cancel) and emitting the throttled §0.4.2 scan count. The
+    // representative §1.4 encoding/delimiter hints are recomputed from the FIRST eligible item's header (they
+    // are NOT carried on `DetectionOutcome` — `Recognized` holds only format/confidence/dims, §1.2).
+    let mut candidates: Vec<DetectedCandidate> = Vec::with_capacity(files.len());
+    let mut hints: Option<SliceHints> = None;
+    let mut throttle = ScanThrottle::new();
+    let mut scanned: u32 = 0;
+    for path in &files {
+        if cancel.is_cancelled() {
+            return empty_ingest_result();
+        }
+        scanned = scanned.saturating_add(1);
+        throttle.tick(on_scan, scanned);
+        let (detected, header, size_bytes) = detect_candidate(path);
+        if hints.is_none() && matches!(detected, DetectionOutcome::Recognized { .. }) {
+            hints = Some(SliceHints::from_header(&header));
+        }
+        candidates.push(DetectedCandidate {
+            raw_path: path.clone(),
+            detected,
+            size_bytes,
+            rel_path_display: rel_path_for(path, &roots),
+        });
+    }
+    throttle.finish(on_scan, scanned);
+
+    // Step 3 (§2.4.1, P3.7/P3.32): resolve identity + de-dup + freeze into the immutable snapshot.
+    let snapshot = match freeze_snapshot(candidates, walk_skips, roots) {
+        Ok(snapshot) => snapshot,
+        // `ItemSpaceExhausted` is the > u32::MAX-items overflow — astronomically unreachable (§1.10 caps
+        // cardinality far lower), handled without a panic (§0.7 in-core no-panic policy): collect nothing.
+        Err(ItemSpaceExhausted) => return empty_ingest_result(),
+    };
+
+    // Step 4 (§1.3, P3.49): project the frozen snapshot into the wire `CollectedSet` + the registrable set.
+    group(snapshot, instance, hints.unwrap_or_default())
+}
+
+/// The §0.6 zero-collection ingest result (`CollectedSet::Empty { skipped: [] }`, nothing registrable) — the
+/// honest result of a cancelled walk (the partial set is discarded, §1.1) or the unreachable id-space
+/// overflow. [Build-Session-Entscheidung: P3.49]
+fn empty_ingest_result() -> IngestResult {
+    IngestResult {
+        collected: CollectedSet::Empty {
+            skipped: Vec::new(),
+        },
+        registrable: None,
+    }
+}
+
+/// §1.1 fatal-walk-root projection (P3.49): the dropped root itself was gone/unreadable, so the walk sank the
+/// ingest before any candidate was collected (`walk_intake_roots` abandons any earlier roots). Per §1.1
+/// "intake-time unreadable = Skipped", the root is frozen as a single Unreadable skip → the §1.3
+/// `Empty { skipped: [root] }` view, so the reason is surfaced rather than dropped (SSOT *Fail clearly*). The
+/// gone-vs-denied `ReadFailure` nuance collapses to `SkipReason::Unreadable` (the `SkippedItem` model carries
+/// no `ReadFailure` slot — the same collapse the per-item `record_unreadable` makes).
+/// [Build-Session-Entscheidung: P3.49]
+fn fatal_root_ingest_result(fatal: FatalWalkRoot, instance: InstanceId) -> IngestResult {
+    let FatalWalkRoot { root, cause: _ } = fatal;
+    let root_skip = WalkSkip {
+        path: root.clone(),
+        reason: SkipReason::Unreadable,
+    };
+    match freeze_snapshot(Vec::new(), vec![root_skip], vec![root]) {
+        Ok(snapshot) => group(snapshot, instance, SliceHints::default()),
+        Err(ItemSpaceExhausted) => empty_ingest_result(),
+    }
+}
+
+/// Detect one §1.1 walked file (§1.2): stat it (recording `size_bytes` at the §2.4 freeze), read the bounded
+/// §1.2 header window, and classify. A pre-open regular-file check — a FIFO/pipe/device that raced the walk's
+/// own `is_file` check would BLOCK `File::open` (an in-core hang/DoS, §2.12.4) — and any stat/open/read failure
+/// map to `DetectionOutcome::Unreadable` rather than propagating (§1.1: "a bad file never sinks the ingest").
+/// Returns `(outcome, header, size_bytes)`; the header is returned for the caller's representative-hint
+/// recompute and is empty on a read failure. This is the only untrusted-byte touch, bounded + memory-safe,
+/// kept in-core (§1.2 / §2.12.4). **Residual TOCTOU (owner-accepted, the P3.9 precedent):** a NARROW window
+/// remains if the file is swapped regular→FIFO in the µs between THIS `metadata()` pre-check and THIS
+/// `File::open()` — the identical residual `fs_guard::open_verified_parent_dir`'s stat-precheck names and
+/// accepts; the pre-check closes the common case (the walk's already-stale verdict), the residual is inherent
+/// to any stat-then-open and is not a full closure. [Build-Session-Entscheidung: P3.49]
+fn detect_candidate(path: &Path) -> (DetectionOutcome, Vec<u8>, u64) {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return (
+                DetectionOutcome::Unreadable {
+                    reason: classify_read_failure(&error),
+                },
+                Vec::new(),
+                0,
+            );
+        }
+    };
+    // A non-regular file (a FIFO/pipe/device that replaced the file after the walk's `is_file` check) is NEVER
+    // opened — a blocking FIFO open is an in-core hang (§2.12.4 no-hang). It surfaces as an Unreadable skip.
+    if !metadata.is_file() {
+        return (
+            DetectionOutcome::Unreadable {
+                reason: ReadFailure::IoError,
+            },
+            Vec::new(),
+            metadata.len(),
+        );
+    }
+    let size_bytes = metadata.len();
+    let header = match std::fs::File::open(path).and_then(crate::detection::read_header) {
+        Ok(header) => header,
+        Err(error) => {
+            return (
+                DetectionOutcome::Unreadable {
+                    reason: classify_read_failure(&error),
+                },
+                Vec::new(),
+                size_bytes,
+            );
+        }
+    };
+    (crate::detection::detect(&header), header, size_bytes)
+}
+
+/// Map a `std::io::Error` from stat/open/read to the §0.6 [`ReadFailure`] taxonomy `DetectionOutcome::Unreadable`
+/// carries — the same gone-vs-denied mapping [`classify_walk_root_failure`] makes for `walkdir::Error`: a
+/// missing file → `NotFound` ("gone"), a denied read → `PermissionDenied`, anything else → `IoError`. `Locked`
+/// is NOT produced at intake (a sharing violation has no portable `io::ErrorKind`, and `Locked` is a
+/// conversion-time §2.8 outcome), so intake maps only the gone-vs-denied distinction. An if-chain (not a
+/// `match`) because `io::ErrorKind` is `#[non_exhaustive]` — a `_`-wildcard `match` trips the crate-root
+/// `clippy::wildcard_enum_match_arm` deny (the engines-module convention). [Build-Session-Entscheidung: P3.49]
+fn classify_read_failure(error: &std::io::Error) -> ReadFailure {
+    let kind = error.kind();
+    if kind == std::io::ErrorKind::NotFound {
+        ReadFailure::NotFound
+    } else if kind == std::io::ErrorKind::PermissionDenied {
+        ReadFailure::PermissionDenied
+    } else {
+        ReadFailure::IoError
+    }
+}
+
+/// The §2.7 root-relative subpath preview for a walked file (`DroppedItem.rel_path_display`, §1.4): the
+/// DEEPEST dropped root that is an ancestor of `file`, stripped. `None` for a top-level dropped FILE (its root
+/// IS the file — no subtree) and for the unreached case of a file under no dropped root. A lossy §2.10.1
+/// display string, never re-submitted as input. [Build-Session-Entscheidung: P3.49]
+fn rel_path_for(file: &Path, roots: &[PathBuf]) -> Option<String> {
+    let root = roots
+        .iter()
+        .filter(|root| file.starts_with(root))
+        .max_by_key(|root| root.components().count())?;
+    let rel = file.strip_prefix(root).ok()?;
+    if rel.as_os_str().is_empty() {
+        None
+    } else {
+        Some(rel.to_string_lossy().into_owned())
+    }
+}
+
+/// The §0.4.2 `ScanProgress` telemetry throttle (P3.49): a best-effort ~2/s coalescing emitter for the §5.2
+/// *Collecting* "Scanning… N files" count during the §1.1 walk. Emits on the first tick, then at most once per
+/// [`SCAN_EMIT_INTERVAL`], plus a final emit of the true total. A dead listener (`Channel::send` `Err`) is
+/// non-fatal — the walk never depends on the frontend receiving telemetry (best-effort, monotonic, dies with
+/// the C1 call, §0.4.2). [Build-Session-Entscheidung: P3.49]
+struct ScanThrottle {
+    last_emit: Option<Instant>,
+}
+
+/// The ≈2/s coalescing interval for [`ScanThrottle`] (§0.4.2 "≈2/s").
+const SCAN_EMIT_INTERVAL: Duration = Duration::from_millis(500);
+
+impl ScanThrottle {
+    fn new() -> Self {
+        Self { last_emit: None }
+    }
+
+    /// Emit the running `scanned` count if the throttle interval has elapsed (or on the first tick).
+    fn tick(&mut self, on_scan: &Channel<ScanProgress>, scanned: u32) {
+        let now = Instant::now();
+        let due = match self.last_emit {
+            None => true,
+            Some(last) => now.duration_since(last) >= SCAN_EMIT_INTERVAL,
+        };
+        if due {
+            // Best-effort: a dead listener (`Err`) is ignored — telemetry never blocks the walk.
+            let _ = on_scan.send(ScanProgress { scanned });
+            self.last_emit = Some(now);
+        }
+    }
+
+    /// Emit the final total once the walk completes (always — so the last "Scanning… N" reflects the true count).
+    fn finish(&self, on_scan: &Channel<ScanProgress>, scanned: u32) {
+        let _ = on_scan.send(ScanProgress { scanned });
+    }
+}
+
+/// The §1.4 detection-derived encoding/delimiter hints for a `CollectedSet::Single`, recomputed from a
+/// REPRESENTATIVE (the first eligible) item's header — they are NOT carried on `DetectionOutcome` (§1.2). Both
+/// `None` for a UTF-8 comma-CSV (no hint to surface) or for a non-`Single` collection. [Build-Session-Entscheidung: P3.49]
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SliceHints {
+    encoding: Option<String>,
+    delimiter: Option<String>,
+}
+
+impl SliceHints {
+    /// Recompute the §1.4 hints from a header via the §1.2 classifiers. `ext_hint: None` reproduces the
+    /// extension-free classification `detect` already used, so the delimiter hint agrees with the recognized
+    /// format (a real extension could flip a genuine comma/tab tie). A non-text header yields no hints (unreached
+    /// for a `Recognized` CSV/TSV, which reached `Recognized` only because `classify_encoding` returned `Some`).
+    fn from_header(header: &[u8]) -> Self {
+        let Some(encoding) = crate::detection::classify_encoding(header) else {
+            return Self::default();
+        };
+        let delimiter_class = crate::detection::classify_delimiter(header, encoding, None);
+        Self {
+            encoding: crate::detection::encoding_hint(encoding),
+            delimiter: crate::detection::delimiter_hint(delimiter_class),
+        }
+    }
+}
+
+/// §1.3 batch grouping (P3.49): project the frozen snapshot into the §0.6 wire `CollectedSet` + the
+/// registrable `RegisteredSet`. Exactly one eligible source format → `Single` (the ONLY registrable outcome,
+/// §0.4.4); two or more distinct eligible formats → the §1.3 hard pre-flight refusal `Mixed { found }` (no
+/// partial conversion); zero eligible → the §1.3 Empty-projection over the skips ([`empty_projection`]). The
+/// `CollectedSet::Single` fields the snapshot does not carry are computed here: a fresh `CollectedSetId`, the
+/// `instance`, the single `format`, `count`/`total_bytes`, the lossy `roots_display`, and the §1.4
+/// `encoding_hint`/`delimiter_hint` (`hints`); `notes` is empty (CSV/TSV has no §1.4 structural-peek producer —
+/// that arrives with P5–P7). [Build-Session-Entscheidung: P3.49]
+fn group(snapshot: FrozenSnapshot, instance: InstanceId, hints: SliceHints) -> IngestResult {
+    let FrozenSnapshot {
+        items,
+        skipped,
+        item_paths,
+        identities,
+        roots,
+    } = snapshot;
+
+    // Distinct eligible source formats in first-seen order, with per-format counts (§1.3 grouping key). Every
+    // `items` member is `Recognized` by the freeze partition; the `if let` keeps the fold total without a panic.
+    let mut found: Vec<(UserFacingFormat, usize)> = Vec::new();
+    for item in &items {
+        if let DetectionOutcome::Recognized { format, .. } = item.detected {
+            match found.iter_mut().find(|(seen, _)| *seen == format) {
+                Some(entry) => entry.1 = entry.1.saturating_add(1),
+                None => found.push((format, 1)),
+            }
+        }
+    }
+
+    match found.len() {
+        // Zero eligible source → the §1.3 Empty-projection (lone Unsupported/Uncertain specificity, else Empty).
+        0 => IngestResult {
+            collected: empty_projection(skipped),
+            registrable: None,
+        },
+        // Exactly one eligible format → `Single` (the registrable collection).
+        1 => {
+            let Some(&(format, _)) = found.first() else {
+                // Unreachable (len checked == 1); the §0.7 no-panic totality guard, never an unwrap.
+                return IngestResult {
+                    collected: CollectedSet::Empty { skipped },
+                    registrable: None,
+                };
+            };
+            let count = items.len();
+            let total_bytes = items.iter().map(|item| item.size_bytes).sum();
+            let roots_display = roots
+                .iter()
+                .map(|root| root.to_string_lossy().into_owned())
+                .collect();
+            let single = CollectedSet::Single {
+                id: CollectedSetId::mint(),
+                instance,
+                format,
+                items,
+                count,
+                skipped,
+                total_bytes,
+                roots_display,
+                encoding_hint: hints.encoding,
+                delimiter_hint: hints.delimiter,
+                notes: Vec::new(),
+            };
+            // `from_collected` returns `Some` only for `Single`, so this is `Some` by construction; `.map`
+            // avoids a dead no-panic branch. The real off-wire `roots` + `item_paths` are moved into the frozen
+            // set (the wire `roots_display` above is the lossy display; §2.10.1).
+            let registrable = FrozenCollectedSet::from_collected(&single, roots, item_paths)
+                .map(move |frozen| RegisteredSet { frozen, identities });
+            IngestResult {
+                collected: single,
+                registrable,
+            }
+        }
+        // Two or more distinct eligible formats → the §1.3 hard pre-flight refusal.
+        _ => IngestResult {
+            collected: CollectedSet::Mixed { found },
+            registrable: None,
+        },
+    }
+}
+
+/// The §1.3 all-ineligible projection: a LONE `UnsupportedType` skip → `Unsupported { detected }` (SSOT
+/// principle 6 "detected: X"); a LONE `Uncertain` skip → `Uncertain { note }` (the §1.2 best-guess text, or
+/// empty when detection could not even guess); anything else (zero skips, or 2+ ineligibles of mixed kinds) →
+/// the generic `Empty { skipped }` carrying every per-item reason (§1.3 "the reasons are no longer lost when
+/// 2+ ineligible items collapse to Empty"). [Build-Session-Entscheidung: P3.49]
+fn empty_projection(skipped: Vec<SkippedItem>) -> CollectedSet {
+    if let [only] = skipped.as_slice() {
+        match only.reason {
+            SkipReason::UnsupportedType => {
+                return CollectedSet::Unsupported {
+                    detected: only.detected_display.clone().unwrap_or_default(),
+                };
+            }
+            SkipReason::Uncertain => {
+                return CollectedSet::Uncertain {
+                    note: only.detected_display.clone().unwrap_or_default(),
+                };
+            }
+            SkipReason::Empty | SkipReason::Unreadable | SkipReason::AlreadyConverted => {}
+        }
+    }
+    CollectedSet::Empty { skipped }
+}
+
+/// The §1.1 `ingest` funnel result (P3.49): the wire `CollectedSet` the C1 `drain_intake` drain returns (the
+/// §1.3 [`group`] projection of the frozen snapshot) PLUS the `registrable` `RegisteredSet` the C1 handler
+/// registers into the §0.4.4 `CollectedSetRegistry` for a `Single` collection (`None` for every non-`Single`
+/// outcome — only a `Single` set is offered targets / planned / run, so only it is registered). The split
+/// keeps `ingest` a pure `crate::orchestrator` funnel (no `AppHandle`/State) while the AppHandle-coupled C1
+/// handler owns the managed-registry mutation, performed LAST — after the whole fallible funnel resolves — so
+/// a mid-funnel early-return can never leave a half-registered set (the §1.1a boot-glue split; the
+/// mutate-registries-last discipline). INTERNAL: it wraps the tier-1 `RegisteredSet`, so it derives no
+/// `serde`/`specta`. [Build-Session-Entscheidung: P3.49]
+#[derive(Debug, PartialEq, Eq)]
+pub struct IngestResult {
+    /// The §0.6 wire union the C1 drain returns (the §1.3 `group()` projection of the frozen snapshot).
+    pub collected: CollectedSet,
+    /// `Some` for a `Single` collection (the registrable frozen set the C3/C4/C6 commands resolve by
+    /// `CollectedSetId`); `None` for `Mixed`/`Unsupported`/`Uncertain`/`Empty` (nothing to register).
+    pub registrable: Option<RegisteredSet>,
+}
+
+/// The representative "will save to …" directory for the §1.8 / C4 batch preview (P3.49). For `ChosenRoot`
+/// the chosen root is shown as-is (the per-item subtree is re-created at C6 write time, not here — a preview
+/// writes nothing). For `BesideSource` the representative is the PARENT of the first eligible source file
+/// (§2.7.1 — output lands beside its source), NOT `source_common_root` (which for a lone dropped FILE root is
+/// the file itself, not a directory — probing it as a dir would falsely divert). Falls back to the §2.7.1
+/// source common root only if the first item has no retained resolved path (a mis-built set — never for a real
+/// freeze). No filesystem side effect. [Build-Session-Entscheidung: P3.49]
+fn preview_final_dir(frozen: &FrozenCollectedSet, destination: &DestinationChoice) -> PathBuf {
+    match destination {
+        DestinationChoice::ChosenRoot(root) => root.clone(),
+        DestinationChoice::BesideSource => frozen
+            .items
+            .first()
+            .and_then(|item| frozen.item_paths.get(&item.item))
+            .and_then(|paths| paths.resolved_path.parent())
+            .map_or_else(|| source_common_root(&frozen.roots), Path::to_path_buf),
+    }
+}
+
+/// §1.8 / C4 `plan_output` (P3.49): compute the batch-level [`OutputPlanPreview`] for a registered set — the
+/// "will save to …" directory, its §2.7.2 divert classification, the §2.5 re-run verdict, and the §1.10
+/// preflight verdict — the plan/preview the §5.2 Targets/Destination screens render BEFORE convert (eager on
+/// the `3→4` transition, debounced re-callable on target/option/destination change; §0.4.1 C4). Reads only —
+/// no ledger record, no registry eviction — so it is safe to re-call.
+///
+/// - `final_dir`/`diverted`: the representative destination directory ([`preview_final_dir`]: the beside-source
+///   PARENT of the first eligible source for `BesideSource`, the chosen root for `ChosenRoot`), classified once
+///   via [`location_status`] (§2.7.2 — the eager planning HINT; the §2.1 at-write re-check is the authority).
+///   `final_dir_display` is the lossy §2.10.1 display — no `PathBuf` crosses the wire.
+/// - `rerun`: [`compute_rerun_verdict`] over the set's §2.3 identities (PEEK-only, §2.5).
+/// - `preflight`: the §1.10-seam walking-skeleton trivial verdict — the CSV→TSV footprint is negligible, so
+///   `up_front_fail: None` by construction and `est_total_output_bytes` is the frozen size; the real §1.10
+///   estimator is P4.72, which SUPERSEDES this behind the same C4 contract (the §1.10-seam slice-verdict note),
+///   so P3 must NOT build a real estimator here (a double-build). [Build-Session-Entscheidung: P3.49]
+#[must_use]
+pub fn plan_output_preview(
+    set: &RegisteredSet,
+    target: TargetId,
+    options: &OptionValues,
+    destination: &DestinationChoice,
+    instance: InstanceId,
+    computer: &EquivKeyComputer,
+    ledger: &RerunLedger,
+) -> OutputPlanPreview {
+    let final_dir = preview_final_dir(&set.frozen, destination);
+    let diverted = match location_status(&final_dir, &PublishTemp::probe_name(instance)) {
+        LocationStatus::Writable => None,
+        LocationStatus::Divert(reason) => Some(reason),
+    };
+    OutputPlanPreview {
+        set: set.frozen.id,
+        final_dir_display: final_dir.to_string_lossy().into_owned(),
+        diverted,
+        rerun: compute_rerun_verdict(set, target, options, computer, ledger),
+        preflight: PreflightVerdict {
+            est_total_output_bytes: set.frozen.total_bytes,
+            est_total_scratch_bytes: 0,
+            up_front_fail: None,
+        },
     }
 }
 
@@ -3043,16 +3472,9 @@ pub fn ingest(paths: Vec<PathBuf>, origin: IntakeOrigin) -> CollectedSet {
 /// relative-subtree COMPUTATION; this is plain §1.1 retention — the roots are carried through the walk so
 /// the P3.49 ingest funnel can freeze them onto `CollectedSet::Single.roots` (§0.6).
 /// [Build-Session-Entscheidung: P2.66]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "P2.66 retains the dropped roots + P2.67 the per-item Unreadable skips on the §2.4.1 \
-                  freeze-spine step-1 result; produced by walk_intake_roots, frozen onto the §0.6 CollectedSet \
-                  by the ingest funnel at P3.49 — dead in the production build pending that wiring, read by \
-                  the in-module walk_tests below."
-    )
-)]
+// [Test-Change: P3.49 — old-obsolete+new-correct, §2.4.1] the P2.66 dead-code lint attribute is removed — the
+// `ingest` funnel spine (this item's production reader) is now LIVE (P3.49), so the dead-code lint is obsolete
+// (a production lint removal, not a test suppression).
 struct IntakeWalk {
     /// The flat candidate file paths (§1.1), depth-first deterministic order ([`walk_intake_roots`]).
     files: Vec<PathBuf>,
@@ -3091,10 +3513,13 @@ struct WalkSkip {
 /// wiring is its production caller — the P3.49 ingest funnel that maps it to the fatal surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FatalWalkRoot {
-    /// The dropped/picked root that could not be read (for the §1.1 fatal-ingest message).
+    /// The dropped/picked root that could not be read (its lossy display feeds the §1.1 fatal-ingest skip).
     root: PathBuf,
-    /// Why the root could not be read — the §0.6 [`ReadFailure`] taxonomy reused here (gone vs denied/io), so
-    /// the P3.49 surfacing distinguishes "gone" (`NotFound`) from "unreadable".
+    /// Why the root could not be read — the §0.6 [`ReadFailure`] taxonomy (gone vs denied/io). Retained as a
+    /// diagnostic record (`derive(Debug)`); the P3.49 fatal-ingest surfacing does NOT distinguish it —
+    /// `fatal_root_ingest_result` collapses every fatal root to `SkipReason::Unreadable` through the freeze,
+    /// because the §0.6 `SkippedItem` model carries no `ReadFailure` slot (the same collapse the per-item
+    /// `record_unreadable` makes for a mid-walk read failure).
     cause: ReadFailure,
 }
 
@@ -3178,17 +3603,9 @@ enum WalkAbort {
 /// ("symlinked dirs not traversed … file-level aliasing handled by §2.3") + the T7 corpus expectation. A
 /// dropped symlinked-dir ROOT is followed (walkdir's `follow_root_links` default) — the user chose it
 /// explicitly; the no-traversal rule defends against cycles DISCOVERED mid-walk.]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "P2.64 authors the §2.4.1 freeze-spine step-1 walk primitive (the §1.1 recursive folder \
-                  enumeration). Its production caller is the `ingest` funnel, consumed at P3.49 (the CSV→TSV \
-                  walking skeleton); dead in the production build pending that wiring, exercised by the \
-                  in-module walk_tests below — the same per-fn interface-shell attribute `ingest` itself \
-                  carried (P2.62) before P2.63 consumed it."
-    )
-)]
+// [Test-Change: P3.49 — old-obsolete+new-correct, §2.4.1] the P2.64 dead-code lint attribute is removed — the
+// `ingest` funnel spine (this walk's production caller) is now LIVE (P3.49), so the dead-code lint is obsolete
+// (a production lint removal, not a test suppression).
 fn walk_intake_roots(
     roots: &[PathBuf],
     cancel: &CancellationToken,
@@ -3220,8 +3637,9 @@ fn walk_intake_roots(
                     // P2.68: a DEPTH-0 error is the dropped ROOT itself unreadable/gone — a FATAL walk-root
                     // error that STOPS the walk (§1.1), distinct from the P2.67 per-item skip that CONTINUES.
                     // It abandons any candidates collected from earlier roots (the multi-root short-circuit) —
-                    // a bad root sinks the ingest, a bad file never does. `cause` carries the gone-vs-unreadable
-                    // §0.6 `ReadFailure` for the P3.49 fatal-ingest message.
+                    // a bad root sinks the ingest, a bad file never does. `cause` records the gone-vs-denied
+                    // §0.6 `ReadFailure` (a `Debug` diagnostic); the P3.49 fatal-ingest surfacing collapses it to
+                    // one generic `SkipReason::Unreadable` skip (the `SkippedItem` model has no `ReadFailure` slot).
                     if err.depth() == 0 {
                         return Err(WalkAbort::FatalRoot(FatalWalkRoot {
                             root: root.clone(),
@@ -3272,8 +3690,9 @@ fn walk_intake_roots(
 /// P2.68) into the §0.6 [`ReadFailure`] taxonomy: a missing root → `NotFound` ("gone"), a denied read →
 /// `PermissionDenied`, anything else → `IoError`. The §0.6 `Locked` variant is **not** produced here — a
 /// directory-root sharing violation has no portable `io::ErrorKind`, and `Locked` is a conversion-time (§2.8)
-/// outcome, not an intake one; so the walk-root maps only the gone-vs-unreadable distinction the §1.1
-/// fatal-ingest message needs.
+/// outcome, not an intake one; so the walk-root classifier maps only the gone-vs-denied distinction onto the
+/// `FatalWalkRoot.cause` diagnostic record. (The P3.49 intake surfacing does not distinguish it — it collapses
+/// every fatal root to a generic `SkipReason::Unreadable` skip, the `SkippedItem` model carrying no slot for it.)
 /// [Build-Session-Entscheidung: P2.68 — map `io::ErrorKind` {NotFound, PermissionDenied} to the matching
 /// `ReadFailure`, everything else to `IoError`; `Locked` is conversion-time only (§2.8).]
 fn classify_walk_root_failure(err: &walkdir::Error) -> ReadFailure {
@@ -3363,21 +3782,6 @@ fn windows_attr_hidden(_entry: &walkdir::DirEntry) -> bool {
 /// `Eq` ignores `canonical_path`, so two rows with different first-seen paths but the same identity would
 /// compare equal). The §6.4.1 tests assert on the fields (`.id` / `.identity.canonical_path` / `.payload`)
 /// individually instead. Core-INTERNAL (never crosses IPC) → no `serde`/`specta`.
-// [Test-Change: P3.32 — old-obsolete+new-correct, §2.4.1] `expect`→`allow` (a production lint change, NOT a
-// test suppression; cf. P3.7): P3.32's `freeze_snapshot` (below) now destructures this survivor row, so the
-// P2.76 assertion that it is DEAD would error as unfulfilled — but `freeze_snapshot` is itself unwired until
-// P3.49, so the row's dead-ness is ambiguous and `allow` (permissive) is the correct attribute.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "P2.76's §2.3.2 de-dup fold `dedup_by_identity` yields `DedupedMember<P>` (the id + \
-                  retained FileIdentity + payload survivor row). Referenced by P3.32's `freeze_snapshot` \
-                  (which resolves+de-dups, folds each survivor in, then projects it into a §0.6 DroppedItem / \
-                  SkippedItem), still unwired until the P3.49 spine — so it is dead-at-runtime but no longer \
-                  statically unused; the in-module dedup_tests construct it directly."
-    )
-)]
 #[derive(Debug)]
 struct DedupedMember<P> {
     /// The freeze-assigned §0.6 `ItemId` — one per survivor (§0.6 invariant 6).
@@ -3403,19 +3807,6 @@ struct DedupedMember<P> {
 /// the eligible survivors AND the §1.1 skips, so the P3.49 assembly owns the single space and threads it
 /// through — the skip ids (for `WalkSkip`s, which have no resolvable identity and are therefore NOT de-duped
 /// here) mint from the same cursor after this fold. [Build-Session-Entscheidung: P2.76]
-// [Test-Change: P3.7 — old-obsolete+new-correct, §2.4.1] `expect`→`allow` (a production lint change, NOT a
-// test suppression; cf. P2.63): P3.7's `resolve_and_dedup` (below) now references this fold, so the P2.76
-// assertion that it is DEAD would error as unfulfilled under -D warnings — but `resolve_and_dedup` is itself
-// unwired until P3.49, so the fold's dead-ness is ambiguous and `allow` (permissive) is the correct attribute.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "The §2.4.1 freeze-spine step-3 resolved-identity de-dup fold (P2.76). Referenced by P3.7's \
-                  `resolve_and_dedup` (still unwired until the P3.49 spine), so it is dead-at-runtime but no \
-                  longer statically unused; the in-module dedup_tests exercise it directly."
-    )
-)]
 fn dedup_by_identity<P>(
     candidates: Vec<(FileIdentity, P)>,
     ids: &mut ItemIdSpace,
@@ -3450,21 +3841,6 @@ fn dedup_by_identity<P>(
 /// §1.1 `Unreadable` [`WalkSkip`]s WITHOUT an `ItemId` — the P3.49 spine mints their ids from the same cursor
 /// after the survivors (the P2.76 `&mut ItemIdSpace` contract) — so this step never silently drops a candidate
 /// (§1.1: recorded, never dropped) and never lets a single vanished file sink the ingest.
-// [Test-Change: P3.32 — old-obsolete+new-correct, §2.4.1] `expect`→`allow` (a production lint change, NOT a
-// test suppression; cf. P3.7): P3.32's `freeze_snapshot` (below) now destructures this result (`survivors` /
-// `unresolved`), so the P3.7 assertion that it is DEAD would error as unfulfilled — but `freeze_snapshot` is
-// itself unwired until P3.49, so its dead-ness is ambiguous and `allow` (permissive) is correct.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "P3.7's real-FS resolve+de-dup step yields `ResolvedDedup<P>` (the first-seen survivors + the \
-                  unresolved read-failure skips). Referenced by P3.32's `freeze_snapshot` (which materialises \
-                  the §2.4.1 frozen snapshot from it), still unwired until the P3.49 spine — so it is \
-                  dead-at-runtime but no longer statically unused; the in-module resolve_dedup tests construct \
-                  it directly."
-    )
-)]
 #[derive(Debug)]
 struct ResolvedDedup<P> {
     /// The de-duplicated first-seen survivors ([`dedup_by_identity`], P2.76) — one per resolved file, ids
@@ -3491,20 +3867,6 @@ struct ResolvedDedup<P> {
 ///
 /// A candidate whose `resolve_identity` FAILS is surfaced on `unresolved` as an `Unreadable` [`WalkSkip`] and
 /// the de-dup proceeds over the resolvable rest — see the `Err` arm.
-// [Test-Change: P3.32 — old-obsolete+new-correct, §2.4.1] `expect`→`allow` (a production lint change, NOT a
-// test suppression; cf. P3.7): P3.32's `freeze_snapshot` (below) now CALLS this step, so the P3.7 assertion
-// that it is DEAD would error as unfulfilled — but `freeze_snapshot` is itself unwired until P3.49, so its
-// dead-ness is ambiguous and `allow` (permissive) is correct.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "P3.7 authors the §2.4.1 freeze-spine step-3 real-FS resolve+de-dup step. Called by P3.32's \
-                  `freeze_snapshot` (the §2.4.1 freeze-point that materialises the frozen snapshot from its \
-                  survivors), still unwired until the P3.49 spine — so it is dead-at-runtime but no longer \
-                  statically unused; the in-module resolve_dedup tests exercise it directly."
-    )
-)]
 fn resolve_and_dedup<P>(
     candidates: Vec<(PathBuf, P)>,
     ids: &mut ItemIdSpace,
@@ -3576,18 +3938,9 @@ struct DetectedCandidate {
 /// the retained dropped `roots` (§1.1 / §2.7, P2.66). The P3.49 ingest spine calls this, then projects the
 /// snapshot through §1.3 `group()` into the wire `CollectedSet` and registers a `FrozenCollectedSet` (P3.76)
 /// — this box homes the snapshot primitive; P3.49 wires it.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "P3.32 authors the §2.4.1 frozen snapshot (the eager immutable Vec<DroppedItem> \
-                  materialisation). Its production reader is the `ingest` funnel's spine, wired at P3.49 (the \
-                  CSV→TSV walking skeleton — which projects it through §1.3 group() into the wire CollectedSet); \
-                  its fields are read only by the in-module freeze_tests until then, so it is dead in the \
-                  production build — the same interface-shell attribute IntakeWalk (P2.66) / ResolvedDedup (P3.7) \
-                  carry."
-    )
-)]
+// [Test-Change: P3.49 — old-obsolete+new-correct, §2.4.1] the P3.32 dead-code lint attribute is removed — the
+// `ingest` funnel spine (this snapshot's production reader) is now LIVE (P3.49), so the dead-code lint is
+// obsolete (a production lint removal, not a test suppression).
 #[derive(Debug)]
 struct FrozenSnapshot {
     /// The eligible frozen members (§2.4) — the immutable `Vec<DroppedItem>` the run iterates, in first-seen
@@ -3640,16 +3993,9 @@ struct FrozenSnapshot {
 /// frozen set far below `2^32`); the P3.49 spine maps it to the §1.1 fatal-ingest surface. The lossy §2.10.1
 /// `display_name` (basename) / `source_display` (path) projections are produced here from `raw_path`; the §2.7
 /// `rel_path_display` + the `size_bytes` are carried through from the candidate (see [`DetectedCandidate`]).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "P3.32 authors the §2.4.1 freeze-point primitive. Its production caller is the `ingest` \
-                  funnel's spine, wired at P3.49 (the CSV→TSV walking skeleton); dead in the production build \
-                  pending that wiring, exercised by the in-module freeze_tests below — the same interface-shell \
-                  attribute walk_intake_roots (P2.64) / resolve_and_dedup (P3.7) carry."
-    )
-)]
+// [Test-Change: P3.49 — old-obsolete+new-correct, §2.4.1] the P3.32 dead-code lint attribute is removed — the
+// `ingest` funnel spine (this freeze-point's production caller) is now LIVE (P3.49), so the dead-code lint is
+// obsolete (a production lint removal, not a test suppression).
 fn freeze_snapshot(
     candidates: Vec<DetectedCandidate>,
     walk_skips: Vec<WalkSkip>,
@@ -5389,13 +5735,23 @@ mod freeze_gating_contract {
     }
 
     // Structural Reading-B anchor — §6.4.1 unit (G15): there is NO core-side freeze gate, BY CONSTRUCTION.
-    // `ingest`'s signature takes only the paths + origin; it carries no run-state / `busy` parameter, so it
-    // CANNOT refuse-busy — the refusal is necessarily upstream (Leg 3). A drift that bolted a core-side gate
-    // onto the freeze (an added `busy` / `&RunRegistry` parameter) would fail this fn-pointer coercion to
-    // compile — the signature pin is the structural guard the doc-comments delegate to.
+    // `ingest`'s signature takes only the drop inputs (paths + origin) + the §1.1 walk plumbing (the ingest
+    // cancel token, the §0.4.2 scan Channel, the app instance); it carries NO run-state / `busy` / `&RunRegistry`
+    // parameter, so it CANNOT refuse-busy — the refusal is necessarily upstream (Leg 3). A drift that bolted a
+    // core-side gate onto the freeze (an added `busy` / `&RunRegistry` parameter) would fail this fn-pointer
+    // coercion to compile — the signature pin is the structural guard the doc-comments delegate to.
+    // [Test-Change: P3.49 — old-obsolete+new-correct, §1.1] the pin grows to the P3.49 walk signature (the
+    // ingest cancel token / `on_scan` Channel / `instance` + the `IngestResult` return); the "no busy /
+    // &RunRegistry param" assertion is preserved (the added params are walk plumbing, not a run-state gate).
     #[test]
     fn ingest_freeze_carries_no_core_side_busy_gate() {
-        let _freeze: fn(Vec<PathBuf>, IntakeOrigin) -> CollectedSet = ingest;
+        let _freeze: fn(
+            Vec<PathBuf>,
+            IntakeOrigin,
+            &CancellationToken,
+            &Channel<ScanProgress>,
+            InstanceId,
+        ) -> IngestResult = ingest;
     }
 }
 
@@ -5409,6 +5765,7 @@ mod tests {
     use proptest::test_runner::{RngAlgorithm, TestRng, TestRunner};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use tauri::ipc::InvokeResponseBody;
 
     // The §0.6 id newtypes' inner fields are PRIVATE to `crate::domain` and their MINTING is owned by
     // §1.1/§7.1 (P2.75 assigns `ItemId` at the freeze; the ids are not minted here) — so these
@@ -5751,19 +6108,35 @@ mod tests {
         );
     }
 
-    // §6.4.1 unit (G15): the §1.1/§2.4 `ingest` freeze funnel (P2.62) is the single, exhaustive freeze
-    // point every intake origin routes through, returning the §0.6 `CollectedSet`. While the §2.4.1 spine
-    // stages are unbuilt (walk P2.64 / detect P3 / de-dup P2.76 / group P3) the funnel collects nothing,
-    // so it returns the genuine zero-collection `CollectedSet::Empty { skipped: [] }` for EVERY origin and
-    // for both an empty and a non-empty path set — the seam contract, not an origin- or input-specific
-    // branch. This pins the §2.4.1 "all five entry points → one funnel" shape: one fn, every
-    // `IntakeOrigin`, one zero-collection contract.
+    // A `FrozenSnapshot` from explicit eligible + skipped views — for the §1.3 `group()` projection unit tests
+    // (constructed directly to control the skip reasons the Empty-projection keys off; the identities/item_paths
+    // are empty because `group()`'s projection does not read them). [Build-Session-Entscheidung: P3.49]
+    fn frozen_snapshot(items: Vec<DroppedItem>, skipped: Vec<SkippedItem>) -> FrozenSnapshot {
+        FrozenSnapshot {
+            items,
+            skipped,
+            item_paths: BTreeMap::new(),
+            identities: BTreeMap::new(),
+            roots: vec![PathBuf::from("/drop")],
+        }
+    }
+
+    // A discarding §0.4.2 scan Channel — `ingest` never depends on the frontend receiving telemetry.
+    fn discard_scan() -> Channel<ScanProgress> {
+        Channel::new(|_body: InvokeResponseBody| Ok(()))
+    }
+
+    // §6.4.1 unit (G15) / §1.1/§2.4: the `ingest` freeze funnel is ORIGIN-INDEPENDENT — every intake origin
+    // funnels the same way (P3.78), so the §1.3 projection keys off DETECTION, not origin. An EMPTY intake set
+    // (no roots to walk) yields the zero-collection `Empty` for every origin. [Test-Change: P3.49 —
+    // old-obsolete+new-correct, §1.1] the P2.62 assertion that a NON-empty set also returns `Empty` (the `ingest`
+    // interface shell) is OBSOLETE — the funnel now freezes real sets (see `ingest_of_one_csv_*` below); the
+    // origin-independence + empty-set contract survives, the compile-time variant lock stays.
     #[test]
-    fn ingest_funnel_returns_zero_collection_for_every_origin() {
-        // Compile-time variant lock (the established `exhaustive`-match pattern, cf.
-        // `job_state_is_the_six_lifecycle_states`): a new `IntakeOrigin` variant breaks this match,
-        // forcing the `all` array below — the funnel's "all five entry points" coverage — to grow with it,
-        // so the test can never silently miss a new origin. [Build-Session-Entscheidung: P2.62]
+    fn ingest_funnel_is_origin_independent_and_empty_for_an_empty_set() {
+        // Compile-time variant lock (the established `exhaustive`-match pattern): a new `IntakeOrigin` variant
+        // breaks this match, forcing the `all` array below to grow with it, so the test can never silently miss
+        // a new origin. [Build-Session-Entscheidung: P2.62]
         fn exhaustive(o: IntakeOrigin) {
             match o {
                 IntakeOrigin::Drop
@@ -5772,9 +6145,6 @@ mod tests {
                 | IntakeOrigin::SecondInstance => {}
             }
         }
-        let zero = CollectedSet::Empty {
-            skipped: Vec::new(),
-        };
         let all = [
             IntakeOrigin::Drop,
             IntakeOrigin::Picker,
@@ -5783,21 +6153,410 @@ mod tests {
         ];
         for origin in all {
             exhaustive(origin);
-            assert_eq!(
-                ingest(Vec::new(), origin),
-                zero,
-                "§1.1/§2.4: an empty intake set yields the zero-collection Empty for every origin"
+            let result = ingest(
+                Vec::new(),
+                origin,
+                &CancellationToken::new(),
+                &discard_scan(),
+                InstanceId::mint(),
             );
             assert_eq!(
-                ingest(
-                    vec![PathBuf::from("/drop/data.csv"), PathBuf::from("/drop/pic.png")],
-                    origin,
-                ),
-                zero,
-                "§1.1/§2.4: the §2.4.1 spine collects nothing until the walk/detect/group fills land — the \
-                 zero-collection Empty, not an origin- or input-specific CollectedSet"
+                result.collected,
+                CollectedSet::Empty {
+                    skipped: Vec::new(),
+                },
+                "§1.1/§2.4: an empty intake set (no roots) is the zero-collection Empty for every origin"
+            );
+            assert!(
+                result.registrable.is_none(),
+                "§0.4.4: a zero-collection funnel registers nothing"
             );
         }
+    }
+
+    // §6.4.1 unit (G15) / §1.3: exactly one eligible source format → a registrable `Single`.
+    #[test]
+    fn group_of_one_format_is_a_registrable_single() {
+        let snapshot = frozen_snapshot(
+            vec![
+                dropped_item_with(0, UserFacingFormat::Csv),
+                dropped_item_with(1, UserFacingFormat::Csv),
+            ],
+            Vec::new(),
+        );
+        let result = group(snapshot, InstanceId::mint(), SliceHints::default());
+        assert!(
+            matches!(
+                &result.collected,
+                CollectedSet::Single {
+                    format: UserFacingFormat::Csv,
+                    count: 2,
+                    ..
+                }
+            ),
+            "§1.3: one eligible format across the members → Single (CSV, count 2), got {:?}",
+            result.collected
+        );
+        assert!(
+            result.registrable.is_some(),
+            "§0.4.4: a Single collection is the ONE registrable outcome"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §1.3: two or more distinct eligible formats → the hard `Mixed` refusal (no partial
+    // conversion, no registration).
+    #[test]
+    fn group_of_two_formats_is_a_mixed_refusal() {
+        let snapshot = frozen_snapshot(
+            vec![
+                dropped_item_with(0, UserFacingFormat::Csv),
+                dropped_item_with(1, UserFacingFormat::Tsv),
+            ],
+            Vec::new(),
+        );
+        let result = group(snapshot, InstanceId::mint(), SliceHints::default());
+        assert!(
+            result.registrable.is_none(),
+            "§1.3: a Mixed refusal registers nothing"
+        );
+        assert!(
+            matches!(&result.collected, CollectedSet::Mixed { .. }),
+            "§1.3: two distinct eligible formats → Mixed, got {:?}",
+            result.collected
+        );
+        if let CollectedSet::Mixed { found } = &result.collected {
+            assert_eq!(
+                found.len(),
+                2,
+                "§1.3: the refusal names both found formats (with counts)"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15) / §1.3: a LONE `UnsupportedType` skip → the specific `Unsupported { detected }` (the
+    // SSOT-6 "detected: X" surface), NOT a generic Empty.
+    #[test]
+    fn group_of_a_lone_unsupported_skip_is_the_specific_unsupported() {
+        let snapshot = frozen_snapshot(
+            Vec::new(),
+            vec![skipped_item_detected(
+                0,
+                SkipReason::UnsupportedType,
+                Some("HEIC"),
+            )],
+        );
+        let result = group(snapshot, InstanceId::mint(), SliceHints::default());
+        assert_eq!(
+            result.collected,
+            CollectedSet::Unsupported {
+                detected: "HEIC".to_string(),
+            },
+            "§1.3: a lone UnsupportedType skip → the specific Unsupported carrying the detected type"
+        );
+        assert!(result.registrable.is_none());
+    }
+
+    // §6.4.1 unit (G15) / §1.3: a LONE `Uncertain` skip → the specific `Uncertain { note }` (from the best-guess).
+    #[test]
+    fn group_of_a_lone_uncertain_skip_is_the_specific_uncertain() {
+        let snapshot = frozen_snapshot(
+            Vec::new(),
+            vec![skipped_item_detected(
+                0,
+                SkipReason::Uncertain,
+                Some("maybe RTF"),
+            )],
+        );
+        let result = group(snapshot, InstanceId::mint(), SliceHints::default());
+        assert_eq!(
+            result.collected,
+            CollectedSet::Uncertain {
+                note: "maybe RTF".to_string(),
+            },
+            "§1.3: a lone Uncertain skip → the specific Uncertain note from the §1.2 best-guess"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §1.3: a lone skip that is NEITHER Unsupported nor Uncertain (e.g. Unreadable) → the
+    // generic `Empty { skipped }` carrying the reason (no lone-specificity for those kinds).
+    #[test]
+    fn group_of_a_lone_unreadable_skip_is_the_generic_empty() {
+        let snapshot = frozen_snapshot(Vec::new(), vec![skipped_item(0, SkipReason::Unreadable)]);
+        let result = group(snapshot, InstanceId::mint(), SliceHints::default());
+        assert!(
+            matches!(&result.collected, CollectedSet::Empty { .. }),
+            "§1.3: a lone Unreadable (not Unsupported/Uncertain) → the generic Empty, got {:?}",
+            result.collected
+        );
+        if let CollectedSet::Empty { skipped } = &result.collected {
+            assert_eq!(
+                skipped.len(),
+                1,
+                "§1.3: the generic Empty carries the per-item reason (not discarded)"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15) / §1.3: 2+ ineligibles of mixed kinds → the generic `Empty { skipped }` carrying EVERY
+    // reason (no lone-Unsupported/Uncertain collapse — the reasons are no longer lost).
+    #[test]
+    fn group_of_multiple_ineligibles_is_the_generic_empty_carrying_all_reasons() {
+        let snapshot = frozen_snapshot(
+            Vec::new(),
+            vec![
+                skipped_item_detected(0, SkipReason::UnsupportedType, Some("HEIC")),
+                skipped_item(1, SkipReason::Uncertain),
+            ],
+        );
+        let result = group(snapshot, InstanceId::mint(), SliceHints::default());
+        assert!(
+            matches!(&result.collected, CollectedSet::Empty { .. }),
+            "§1.3: 2+ ineligibles of mixed kinds → the generic Empty, got {:?}",
+            result.collected
+        );
+        if let CollectedSet::Empty { skipped } = &result.collected {
+            assert_eq!(
+                skipped.len(),
+                2,
+                "§1.3: the generic Empty carries every per-item reason (no lone-specificity collapse)"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15) / §1.3: genuinely zero items and zero skips → the bare zero-collection `Empty`.
+    #[test]
+    fn group_of_nothing_is_the_bare_empty() {
+        let result = group(
+            frozen_snapshot(Vec::new(), Vec::new()),
+            InstanceId::mint(),
+            SliceHints::default(),
+        );
+        assert_eq!(
+            result.collected,
+            CollectedSet::Empty {
+                skipped: Vec::new(),
+            },
+            "§1.3: zero items + zero skips → the bare zero-collection Empty"
+        );
+        assert!(result.registrable.is_none());
+    }
+
+    // §6.4.1 real-FS (G15) / §1.1/§1.3: a lone CSV drop freezes end-to-end into a registrable `Single` (CSV,
+    // count 1, nonzero bytes) — the real walk → detect → freeze → group spine (test-strategy §0.1: no mocks).
+    #[test]
+    fn ingest_of_one_csv_freezes_a_registrable_single() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let csv = dir.path().join("data.csv");
+        std::fs::write(&csv, b"a,b,c\n1,2,3\n").expect("write the CSV source");
+        let result = ingest(
+            vec![csv],
+            IntakeOrigin::Drop,
+            &CancellationToken::new(),
+            &discard_scan(),
+            InstanceId::mint(),
+        );
+        assert!(
+            matches!(
+                &result.collected,
+                CollectedSet::Single {
+                    format: UserFacingFormat::Csv,
+                    count: 1,
+                    total_bytes,
+                    ..
+                } if *total_bytes > 0
+            ),
+            "§1.1/§1.3: a lone CSV drop freezes a Single (CSV, count 1, nonzero bytes), got {:?}",
+            result.collected
+        );
+        assert!(
+            result.registrable.is_some(),
+            "§0.4.4: the frozen Single is registrable"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §1.3: CSV + TSV are two distinct eligible formats → the hard `Mixed` refusal.
+    #[test]
+    fn ingest_of_csv_and_tsv_is_a_mixed_refusal() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let csv = dir.path().join("a.csv");
+        let tsv = dir.path().join("b.tsv");
+        std::fs::write(&csv, b"a,b\n1,2\n").expect("write the CSV source");
+        std::fs::write(&tsv, b"a\tb\n1\t2\n").expect("write the TSV source");
+        let result = ingest(
+            vec![csv, tsv],
+            IntakeOrigin::Drop,
+            &CancellationToken::new(),
+            &discard_scan(),
+            InstanceId::mint(),
+        );
+        assert!(
+            matches!(&result.collected, CollectedSet::Mixed { .. }),
+            "§1.3: CSV + TSV are two distinct eligible formats → Mixed, got {:?}",
+            result.collected
+        );
+        assert!(result.registrable.is_none());
+    }
+
+    // §6.4.1 real-FS (G15) / §1.4: a semicolon-delimited CSV is detected as CSV, and the §1.4 delimiter hint is
+    // recomputed from the representative header as ";".
+    #[test]
+    fn ingest_surfaces_the_semicolon_delimiter_hint() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let csv = dir.path().join("data.csv");
+        std::fs::write(&csv, b"a;b;c\n1;2;3\n").expect("write the semicolon CSV");
+        let result = ingest(
+            vec![csv],
+            IntakeOrigin::Drop,
+            &CancellationToken::new(),
+            &discard_scan(),
+            InstanceId::mint(),
+        );
+        assert!(
+            matches!(&result.collected, CollectedSet::Single { .. }),
+            "§1.3: a semicolon-CSV is a Single, got {:?}",
+            result.collected
+        );
+        if let CollectedSet::Single { delimiter_hint, .. } = &result.collected {
+            assert_eq!(
+                delimiter_hint.as_deref(),
+                Some(";"),
+                "§1.4: a semicolon-CSV surfaces the ';' delimiter hint (recomputed from the representative header)"
+            );
+        }
+    }
+
+    // §6.4.1 real-FS (G15) / §1.1: a PRE-TRIPPED ingest token discards the partial, not-yet-frozen set → the
+    // zero-collection Empty (the cooperative-cancel contract C13 drives).
+    #[test]
+    fn ingest_of_a_cancelled_token_discards_the_partial() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("data.csv"), b"a,b\n1,2\n").expect("write the CSV source");
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let result = ingest(
+            vec![dir.path().to_path_buf()],
+            IntakeOrigin::Drop,
+            &cancel,
+            &discard_scan(),
+            InstanceId::mint(),
+        );
+        assert_eq!(
+            result.collected,
+            CollectedSet::Empty {
+                skipped: Vec::new(),
+            },
+            "§1.1: a tripped ingest token discards the partial set → the zero-collection Empty"
+        );
+        assert!(result.registrable.is_none());
+    }
+
+    // §6.4.1 real-FS (G15) / §1.1: a fatal walk-root (a dropped root that does not exist) sinks the ingest →
+    // the root surfaces as ONE Unreadable skip through the freeze (intake-time unreadable = Skipped), never a
+    // panic.
+    #[test]
+    fn ingest_of_a_fatal_walk_root_surfaces_the_root_as_an_unreadable_skip() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let missing = dir.path().join("nonexistent-dropped-root");
+        let result = ingest(
+            vec![missing],
+            IntakeOrigin::Drop,
+            &CancellationToken::new(),
+            &discard_scan(),
+            InstanceId::mint(),
+        );
+        assert!(result.registrable.is_none());
+        assert!(
+            matches!(&result.collected, CollectedSet::Empty { .. }),
+            "§1.1: a fatal walk-root sinks the ingest → Empty, got {:?}",
+            result.collected
+        );
+        if let CollectedSet::Empty { skipped } = &result.collected {
+            assert_eq!(
+                skipped.len(),
+                1,
+                "§1.1: the fatal root surfaces as exactly ONE Unreadable skip"
+            );
+            assert_eq!(
+                skipped.first().map(|item| item.reason),
+                Some(SkipReason::Unreadable),
+                "§1.1: the fatal root's skip reason is Unreadable (SSOT Fail clearly — the reason is not dropped)"
+            );
+        }
+    }
+
+    // §6.4.1 real-FS (G15) / §1.1/§1.3/§1.4: a mixed drop of ONE eligible CSV + ONE ineligible (0-byte) file in
+    // the SAME folder freezes through the REAL funnel to a `Single { count: 1, skipped: [the 0-byte Empty skip] }`
+    // — the walk → detect(Empty) → freeze single-id-space merge → §1.3 `group()` `Single{skipped}` composition
+    // seam, read back end-to-end (not a hand-built FrozenSnapshot).
+    #[test]
+    fn ingest_of_one_csv_plus_one_empty_file_is_a_single_carrying_the_skip() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("data.csv"), b"a,b\n1,2\n").expect("write the CSV source");
+        std::fs::write(dir.path().join("empty.dat"), b"").expect("write the 0-byte file");
+        let result = ingest(
+            vec![dir.path().to_path_buf()],
+            IntakeOrigin::Drop,
+            &CancellationToken::new(),
+            &discard_scan(),
+            InstanceId::mint(),
+        );
+        assert!(
+            result.registrable.is_some(),
+            "§0.4.4: one eligible format (CSV) → a registrable Single, even with an ineligible sibling"
+        );
+        assert!(
+            matches!(
+                &result.collected,
+                CollectedSet::Single {
+                    format: UserFacingFormat::Csv,
+                    count: 1,
+                    ..
+                }
+            ),
+            "§1.3: one eligible CSV among a mixed drop → Single (CSV, count 1), got {:?}",
+            result.collected
+        );
+        if let CollectedSet::Single { skipped, .. } = &result.collected {
+            assert_eq!(
+                skipped.len(),
+                1,
+                "§1.4: the ineligible 0-byte file rides the Single's skipped list (not the eligible count)"
+            );
+            assert_eq!(
+                skipped.first().map(|item| item.reason),
+                Some(SkipReason::Empty),
+                "§1.2: the 0-byte file is detected Empty and surfaced as an Empty skip"
+            );
+        }
+    }
+
+    // §6.4.1 real-FS (G15) / §0.4.2: the scan throttle emits the final total once the walk completes (a
+    // best-effort monotonic count for the §5.2 Collecting state).
+    #[test]
+    fn ingest_emits_the_final_scan_count() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("a.csv"), b"x,y\n1,2\n").expect("write");
+        std::fs::write(dir.path().join("b.csv"), b"x,y\n3,4\n").expect("write");
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        let channel = Channel::new(move |body: InvokeResponseBody| {
+            if let InvokeResponseBody::Json(json) = body {
+                sink.lock().expect("scan sink lock").push(json);
+            }
+            Ok(())
+        });
+        let _ = ingest(
+            vec![dir.path().to_path_buf()],
+            IntakeOrigin::Drop,
+            &CancellationToken::new(),
+            &channel,
+            InstanceId::mint(),
+        );
+        let emitted = seen.lock().expect("scan sink lock").clone();
+        assert!(
+            emitted.iter().any(|json| json.contains("\"scanned\":2")),
+            "§0.4.2: the throttle emits the final total (scanned:2) once the walk completes, got {emitted:?}"
+        );
     }
 
     // §6.4.1 unit (G15): the §0.6/§1.9 `JobState` is exactly the SIX lifecycle states, in the §0.6 order.

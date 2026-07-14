@@ -26,8 +26,10 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::{DialogExt, FilePath};
 
-use crate::domain::{CollectedSet, CollectingId, IntakeOrigin, PickKind, ScanProgress};
-use crate::orchestrator::{ingest, FrontendReady, IngestRegistry, PendingIntake};
+use crate::domain::{CollectedSet, CollectingId, InstanceId, IntakeOrigin, PickKind, ScanProgress};
+use crate::orchestrator::{
+    ingest, CollectedSetRegistry, FrontendReady, IngestRegistry, PendingIntake,
+};
 use crate::outcome::{ConversionErrorKind, IpcError};
 
 /// **C1 `drain_intake`** (§0.4.1) — the universal intake-completion door: the single §2.4 freeze point for
@@ -57,12 +59,14 @@ use crate::outcome::{ConversionErrorKind, IpcError};
 /// drain, or the ordinary first launch with no files). **No FS path crosses this wire in either direction**
 /// (§2.10.1); the `origin` travels inside the buffer (core-side `IntakeOrigin`), never on the wire.
 ///
-/// [Build-Session-Entscheidung: P2.22] **The freeze BODY is P3.49.** The §1.1 recursive walk → §1.2 detect →
-/// §2.3 de-dup → §1.3 group freeze funnel (`ingest`, homed in `crate::orchestrator`) is a compile-time
-/// interface shell that returns the §0.6 zero-collection `CollectedSet::Empty { skipped: [] }` until P3.49
-/// wires it end-to-end (CLAUDE §5 / the P3 `crate::isolation` shells P4 expands — NOT a quiet deferral). The
-/// §0.4.4 `collecting_id` token registration + the `on_scan` throttled emit are that same P3.49 walk's, so
-/// here `collecting_id`/`on_scan` are shell-accepted (`_`-bound).
+/// [Build-Session-Entscheidung: P3.49] **The freeze BODY is wired.** The §1.1 recursive walk → §1.2 detect →
+/// §2.3 de-dup → §2.4 freeze → §1.3 group freeze funnel (`ingest`, homed in `crate::orchestrator`) runs
+/// end-to-end for the CSV→TSV walking skeleton: this handler registers the §0.4.4 `collecting_id` ingest
+/// token (RAII, so C13 `cancel_ingest` can trip the in-flight walk), threads the `on_scan` Channel into the
+/// throttled §0.4.2 scan emit, and registers the resulting `Single` set into the §0.4.4
+/// `CollectedSetRegistry` (so C3/C4/C6 can resolve it) — all inside the pure `drain_to_collected_set` helper.
+/// The blocking walk runs on a dedicated `spawn_blocking` thread (mirroring the C2a picker) so the async
+/// runtime stays free and C13 remains serviceable.
 ///
 /// [Build-Session-Entscheidung: P2.22] **`on_scan` is NON-OPTIONAL — a FORCED deviation from the §0.4.1
 /// `onScan?` `[DECIDED]`.** tauri 2.11.3's `Channel<T>` is `!Deserialize` (it carries its own `CommandArg`
@@ -78,40 +82,91 @@ pub async fn drain_intake(
     collecting_id: CollectingId,
     on_scan: Channel<ScanProgress>,
 ) -> Result<CollectedSet, IpcError> {
-    // §7.8.1/§0.4.1 (P3.78): every call drains. `app.state::<…>()` is infallible by construction — both stores
-    // are `.manage()`'d in main()'s Builder chain before the event loop (P2.58/P2.59), so no panic under the
-    // `crate::ipc` clippy::panic deny. `&State<T>` deref-coerces to the `&T` the pure helper takes, keeping the
-    // AppHandle resolution in this thin (G28-exempt) wrapper. The §0.4.4 token registration + the `on_scan`
-    // throttled emit are the §1.1 walk's (P3.49), so `collecting_id`/`on_scan` are shell-accepted here.
-    let pending = app.state::<PendingIntake>();
-    let ready = app.state::<FrontendReady>();
-    let _ = (collecting_id, on_scan);
-    Ok(drain_to_collected_set(&pending, &ready))
+    // §1.1/§0.4.1 (P3.49): the drain runs the §1.1 recursive walk + §1.2 detection — blocking FS I/O that can
+    // run long for a thousands-file folder — so it runs on a DEDICATED BLOCKING THREAD (`spawn_blocking`),
+    // never a Tokio worker (mirroring the C2a picker), keeping the async runtime free so C13 `cancel_ingest`
+    // stays serviceable and can trip the ingest token the walk polls. `AppHandle` / `Channel` are `Send +
+    // 'static` and move into the closure; State is re-resolved inside — `app.state::<…>()` is infallible by
+    // construction (every store is `.manage()`'d in main()'s Builder chain before the event loop:
+    // PendingIntake/FrontendReady P2.58/P2.59, IngestRegistry/CollectedSetRegistry P2.45/P2.44, InstanceId at
+    // §7.2.1 setup), so no panic under the `crate::ipc` clippy::panic deny. A `spawn_blocking` `JoinError` (the
+    // walk thread panicked — should-never-happen under the in-core no-panic policy) surfaces as an
+    // InternalError, never a silent empty. [Build-Session-Entscheidung: P3.49]
+    tauri::async_runtime::spawn_blocking(move || {
+        let pending = app.state::<PendingIntake>();
+        let ready = app.state::<FrontendReady>();
+        let ingest_registry = app.state::<IngestRegistry>();
+        let collected_sets = app.state::<CollectedSetRegistry>();
+        let instance = *app.state::<InstanceId>();
+        drain_to_collected_set(
+            &pending,
+            &ready,
+            &ingest_registry,
+            &collected_sets,
+            collecting_id,
+            &on_scan,
+            instance,
+        )
+    })
+    .await
+    .map_err(|_| IpcError {
+        kind: ConversionErrorKind::InternalError,
+        message: "Could not collect the dropped files.".into(),
+        path_display: None,
+        residue_display: None,
+    })
 }
 
-/// [Build-Session-Entscheidung: P3.78] The §7.8.1 / §0.4.1 C1 drain — resolve what THIS `drain_intake` call
-/// yields from the §1.1/§2.4 freeze seam. Every call drains (the P2.60 `drainPending` flag is retired —
-/// draining `PendingIntake` IS the command): the two cohesive effects — MARK the frontend ready + CONSUME the
-/// buffer exactly once — run FUSED under the pending-slot `Mutex` (`take_marking_ready`, §7.8.1). A non-empty
-/// buffer enters the single §1.1 freeze funnel (`ingest`, the interface shell until P3.49) with its STORED
-/// origin (a first-launch set drains as `LaunchArg`, a picked set as `Picker` — never a hard-coded origin); an
-/// empty buffer is the genuine §0.6 zero-collection `CollectedSet::Empty` (a raced/duplicate drain, or the
-/// ordinary first launch with no files, §0.4.1). Mark-BEFORE-take inside the lock is the §7.8.1 no-loss
-/// ordering's second rule (P3.77): an intake whose `stash` serializes after this section sees `ready == true`
-/// and nudges → the next drain consumes it; every intake set is either observed by this drain or nudged for a
-/// fresh one. Takes `&PendingIntake` / `&FrontendReady` (NOT the `AppHandle`) so it is fully unit-testable with
-/// real state — the AppHandle resolution stays in the thin command wrapper (the §1.1a boot-glue split).
-fn drain_to_collected_set(pending: &PendingIntake, ready: &FrontendReady) -> CollectedSet {
-    match pending.take_marking_ready(ready) {
-        // §1.1/§2.4: freeze the drained buffer with its STORED origin through the single freeze funnel
-        // (`ingest`, the interface shell until P3.49 → the zero-collection `Empty`).
-        Some(buffered) => ingest(buffered.paths, buffered.origin),
-        // §7.8.1: nothing pending — the genuine §0.6 zero-collection `Empty` (a raced/duplicate drain, or the
-        // ordinary first launch with no files). The UI stays put (§0.4.1).
-        None => CollectedSet::Empty {
+/// [Build-Session-Entscheidung: P3.49] The §7.8.1 / §0.4.1 C1 drain — resolve what THIS `drain_intake` call
+/// yields from the §1.1/§2.4 freeze seam, and register the frozen set for the C3–C6 commands. Every call
+/// drains: MARK the frontend ready + CONSUME the buffer exactly once, FUSED under the pending-slot `Mutex`
+/// (`take_marking_ready`, §7.8.1). An empty buffer is the genuine §0.6 zero-collection `CollectedSet::Empty`
+/// (a raced/duplicate drain, or the ordinary first launch with no files, §0.4.1) — no ingest token is
+/// registered (there is no walk to cancel). A non-empty buffer registers an ingest-scoped cancel token under
+/// `collecting_id` — an RAII [`IngestGuard`](crate::orchestrator) whose `Drop` de-registers on EVERY exit
+/// branch (no leak, §0.4.4 / §1.1), so C13 `cancel_ingest` can trip the in-flight walk (`ingest` polls
+/// `guard.token()`) — then enters the single §1.1 freeze funnel (`ingest`) with its STORED origin, the
+/// throttled `on_scan` Channel, and the app `instance`. The resulting `Single` set is registered into the
+/// §0.4.4 `CollectedSetRegistry` **LAST** — after the whole fallible funnel resolved — so C3/C4/C6 can resolve
+/// it by `CollectedSetId`; a `Mixed`/`Unsupported`/`Uncertain`/`Empty` funnel registers nothing (the
+/// mutate-registries-last discipline: a mid-funnel early-return leaves no half-registered set). Takes plain
+/// `&` state (NOT the `AppHandle`) so it is fully unit-testable with real state + a real temp FS — the
+/// AppHandle resolution stays in the thin `spawn_blocking` command wrapper (the §1.1a boot-glue split).
+fn drain_to_collected_set(
+    pending: &PendingIntake,
+    ready: &FrontendReady,
+    ingest_registry: &IngestRegistry,
+    collected_sets: &CollectedSetRegistry,
+    collecting_id: CollectingId,
+    on_scan: &Channel<ScanProgress>,
+    instance: InstanceId,
+) -> CollectedSet {
+    // §7.8.1: nothing pending — the genuine §0.6 zero-collection `Empty` (a raced/duplicate drain, or the
+    // ordinary first launch with no files). The UI stays put (§0.4.1); no ingest token is registered.
+    let Some(buffered) = pending.take_marking_ready(ready) else {
+        return CollectedSet::Empty {
             skipped: Vec::new(),
-        },
+        };
+    };
+    // §0.4.4 / §1.1: register the ingest-scoped cancel token under `collecting_id` so C13 can trip the walk;
+    // the RAII guard de-registers on EVERY exit branch below (its `Drop`), so the token can never leak.
+    let guard = ingest_registry.register_guard(collecting_id);
+    // §1.1/§2.4: freeze the drained buffer with its STORED origin through the single freeze funnel; the walk
+    // polls `guard.token()` (C13 cancel) and emits the throttled `on_scan` count.
+    let result = ingest(
+        buffered.paths,
+        buffered.origin,
+        guard.token(),
+        on_scan,
+        instance,
+    );
+    // §0.4.4: register the frozen `Single` set LAST — after the fallible funnel resolved — so C3/C4/C6 resolve
+    // it by `CollectedSetId`; a non-`Single` funnel yields `None` and registers nothing.
+    if let Some(registrable) = result.registrable {
+        collected_sets.register(registrable);
     }
+    result.collected
+    // `guard` drops here → `IngestRegistry::release` (the normal walk-completed exit branch, §0.4.4).
 }
 
 /// **C2a `pick_for_intake`** (§0.4.1) — the Rust-side `DialogExt` intake picker. This box (P2.23, reshaped
@@ -253,47 +308,66 @@ pub async fn cancel_ingest(app: AppHandle, collecting_id: CollectingId) -> Resul
 
 #[cfg(test)]
 mod c1_contract {
-    //! §6.4.1 unit (G15): the §0.4.1 C1 `drain_intake` contract — the §7.8.1 ALWAYS-drain (P3.78; the P2.60
-    //! `drainPending` flag is retired — draining `PendingIntake` IS the command). The handler binds an
-    //! `AppHandle` (to reach the §7.8.1 `State<PendingIntake>` / `State<FrontendReady>`), so it is
-    //! AppHandle-coupled boot-glue (the §1.1a pattern — NOT cargo-test-invocable; this crate ships no
-    //! `tauri::test` mock BY DECISION). Its drain LOGIC lives in the `drain_to_collected_set` helper (taking
-    //! `&State`-deref refs, not the `AppHandle`), unit-tested here with real `PendingIntake` / `FrontendReady`;
-    //! the handler's WIRING (resolve the two States + dispatch via the helper) is source-scan-pinned. The
-    //! §0.4.1 typed wire surface stays asserted by the bindings.ts golden (`bindings_codegen` in main.rs).
-    //! [Build-Session-Entscheidung: P3.78]
-    //!
-    //! [Test-Change: P3.78 — old-obsolete+new-correct, §7.8.1/§0.4.1] the P2.60 `resolve_intake_source`
-    //! passthrough / `drainPending` unit tests are OBSOLETE — C1 sheds `paths`/`origin`/`drainPending` entirely
-    //! (every call drains, §0.4.1), so there is no passthrough branch and no `drainPending` flag to test. They
-    //! are REPLACED by the `drain_to_collected_set` unit tests (the always-drain logic, read back via real
-    //! `PendingIntake`/`FrontendReady` state) + the renamed handler source-scan — the sanctioned boot-glue
-    //! stratification, NOT a dropped assertion.
+    //! §6.4.1 unit (G15): the §0.4.1 C1 `drain_intake` contract — the §7.8.1 ALWAYS-drain (P3.78) with the
+    //! §1.1 freeze funnel WIRED (P3.49). The handler binds an `AppHandle` (to reach the §7.8.1/§0.4.4 State) and
+    //! runs the blocking §1.1 walk on `spawn_blocking`, so it is AppHandle-coupled boot-glue (the §1.1a pattern
+    //! — NOT cargo-test-invocable; this crate ships no `tauri::test` mock BY DECISION). Its drain LOGIC lives in
+    //! the `drain_to_collected_set` helper (taking `&State`-deref refs + a real `Channel` + an `InstanceId`, not
+    //! the `AppHandle`), unit-tested here with real state + a real temp FS — a lone CSV drop read back as a
+    //! frozen `Single` and resolved from the `CollectedSetRegistry`; the handler's WIRING (run on
+    //! `spawn_blocking`, resolve the five States, dispatch via the helper) is source-scan-pinned. The §0.4.1
+    //! typed wire surface stays asserted by the bindings.ts golden (`bindings_codegen` in main.rs).
+    //! [Build-Session-Entscheidung: P3.49]
     use super::*;
 
-    // [Test-Change: P3.78 — old-obsolete+new-correct, §7.8.1/§0.4.1] (rationale in the module doc above) — the
-    // P2.60 `resolve_intake_source` passthrough (`drain_pending = None` / `Some(false)`) tests are obsolete:
-    // C1 has no `paths`/`origin`/`drainPending` args, so there is no passthrough branch. Replaced by the
-    // `drain_to_collected_set` empty/non-empty drain tests below.
-    fn paths(names: &[&str]) -> Vec<PathBuf> {
-        names.iter().map(PathBuf::from).collect()
+    use std::sync::{Arc, Mutex};
+
+    use tauri::ipc::InvokeResponseBody;
+
+    use crate::domain::UserFacingFormat;
+
+    /// A `CollectingId` for the drain tests — its PUBLIC bare-uuid wire form (the frontend mints the ingest
+    /// id, §0.4.4), mirroring the `c13_contract` helper.
+    fn collecting_id() -> CollectingId {
+        serde_json::from_str(r#""11111111-1111-1111-8111-111111111111""#)
+            .expect("CollectingId deserializes from a uuid string")
     }
 
-    // [Test-Change: P3.78 — old-obsolete+new-correct, §7.8.1/§0.4.1] replaces the obsolete P2.60
-    // `resolve_intake_source` passthrough / `drain_pending = Some(false)` tests — C1 shed `paths`/`origin`/
-    // `drainPending`, so every call drains and there is no passthrough branch left to test.
+    /// A capturing scan-telemetry Channel — records each sent `ScanProgress`'s serialized JSON (the §0.4.2
+    /// outbound wire form; `ScanProgress` is Serialize-only). The drain never depends on the sink. Mirrors the
+    /// orchestrator `capture_channel` helper.
+    fn capture_scan_channel() -> (Channel<ScanProgress>, Arc<Mutex<Vec<String>>>) {
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        let channel = Channel::new(move |body: InvokeResponseBody| {
+            if let InvokeResponseBody::Json(json) = body {
+                sink.lock().expect("scan sink lock").push(json);
+            }
+            Ok(())
+        });
+        (channel, seen)
+    }
+
     // §6.4.1 unit (G15): a `drain_intake` call over an EMPTY `PendingIntake` returns the genuine zero-collection
     // `Empty` (a raced/duplicate drain, or the ordinary first launch with no files) AND marks the frontend
     // ready — the drain call IS the §7.8.1 root-shell-mount readiness signal, which fires even when no files
-    // were buffered (§7.8.1 / §0.4.1).
+    // were buffered (§7.8.1 / §0.4.1) — AND registers NO ingest token (there is no walk to cancel).
     #[test]
-    fn drain_of_empty_buffer_is_empty_and_marks_ready() {
-        // [Test-Change: P3.78 — old-obsolete+new-correct, §7.8.1/§0.4.1] this + the non-empty test below fold in
-        // the obsolete P2.60 `resolve_drain_false` / `resolve_drain_empty` `drainPending`-flag cases — the flag
-        // is retired (every call drains, §0.4.1), so the flag-branch assertions have no counterpart.
+    fn drain_of_empty_buffer_is_empty_marks_ready_and_registers_no_token() {
         let pending = PendingIntake::default();
         let ready = FrontendReady::default();
-        let out = drain_to_collected_set(&pending, &ready);
+        let ingest_registry = IngestRegistry::default();
+        let collected_sets = CollectedSetRegistry::default();
+        let (on_scan, _seen) = capture_scan_channel();
+        let out = drain_to_collected_set(
+            &pending,
+            &ready,
+            &ingest_registry,
+            &collected_sets,
+            collecting_id(),
+            &on_scan,
+            InstanceId::mint(),
+        );
         assert_eq!(
             out,
             CollectedSet::Empty {
@@ -301,39 +375,65 @@ mod c1_contract {
             },
             "§7.8.1: a drain of an empty PendingIntake is the genuine zero-collection Empty (first launch, no files)"
         );
-        // [Test-Change: P3.78 — old-obsolete+new-correct, §7.8.1/§0.4.1] folds in the obsolete P2.60
-        // `resolve_drain_false` (drainPending=false passthrough) + `resolve_drain_empty` (drainPending=true drain)
-        // cases — the `drainPending` flag is retired (every call drains, §0.4.1), so those flag branches are gone.
         assert!(
             ready.is_ready(),
             "§7.8.1: the drain call marks the frontend ready EVEN when the buffer is empty (the drain IS the readiness signal)"
         );
+        assert!(
+            !ingest_registry.cancel(collecting_id()),
+            "§0.4.4/§1.1: an empty drain registers no ingest token (a post-drain cancel finds none — no leak)"
+        );
     }
 
-    // [Test-Change: P3.78 — old-obsolete+new-correct, §7.8.1/§0.4.1] replaces the obsolete P2.60
-    // `resolve_drain_empty` / `resolve_drain_nonempty` `drainPending`-flag tests — the flag is retired (every
-    // call drains, §0.4.1); this asserts the same mark-ready + consume-once contract without the flag.
-    // §6.4.1 unit (G15): a `drain_intake` call over a NON-empty `PendingIntake` freezes the BUFFERED set with
-    // its STORED origin (§7.8.1 "using its stored origin"), marks ready, and consumes the buffer exactly once.
-    // The §1.1 freeze funnel (`ingest`) is the interface shell until P3.49, so the returned `CollectedSet` is
-    // the zero-collection `Empty`; the drain's OBSERVABLE contract here is mark-ready + consume-once +
-    // route-through-the-freeze-funnel (pinned by the handler source-scan below; the P3.49 fill upgrades `ingest`).
+    // [Test-Change: P3.49 — old-obsolete+new-correct, §1.1/§1.3] the P3.78 assertion that a non-empty drain
+    // returns the zero-collection `Empty` (the `ingest` interface shell) is OBSOLETE — P3.49 wires the §2.4.1
+    // walk/detect/freeze/group spine, so a real CSV drop now freezes a `CollectedSet::Single` and REGISTERS it
+    // (§0.4.4). Verified by READING THE FROZEN RESULT BACK (a real temp-FS drop → Single{CSV, count 1}) and
+    // resolving the registered set, not "it compiles" (test-strategy §0.1: a real FS, no mocks).
+    // §6.4.1 unit (G15): a `drain_intake` over a NON-empty `PendingIntake` runs the §1.1 freeze funnel, returns
+    // the `CollectedSet::Single` for a lone CSV, registers it into the §0.4.4 `CollectedSetRegistry` (so C3/C4/C6
+    // resolve it), marks the frontend ready, consumes the buffer exactly once, and RELEASES the ingest token on
+    // its exit (the RAII guard — no leak).
     #[test]
-    fn drain_of_nonempty_buffer_freezes_with_stored_origin_marks_ready_and_drains_once() {
+    fn drain_of_nonempty_buffer_freezes_the_single_registers_it_and_releases_the_token() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let csv = dir.path().join("data.csv");
+        std::fs::write(&csv, b"a,b,c\n1,2,3\n").expect("write the CSV source");
         let pending = PendingIntake::default();
         let ready = FrontendReady::default();
-        pending.stash(
-            paths(&["/launch/x.png", "/launch/y.jpg"]),
-            IntakeOrigin::LaunchArg,
+        let ingest_registry = IngestRegistry::default();
+        let collected_sets = CollectedSetRegistry::default();
+        let (on_scan, _seen) = capture_scan_channel();
+        pending.stash(vec![csv], IntakeOrigin::Drop);
+        let out = drain_to_collected_set(
+            &pending,
+            &ready,
+            &ingest_registry,
+            &collected_sets,
+            collecting_id(),
+            &on_scan,
+            InstanceId::mint(),
         );
-        let out = drain_to_collected_set(&pending, &ready);
-        assert_eq!(
-            out,
-            CollectedSet::Empty {
-                skipped: Vec::new(),
-            },
-            "§1.1: the drained buffer enters the freeze funnel (`ingest`, the interface shell until P3.49 → Empty)"
+        // [Test-Change: P3.49 — old-obsolete+new-correct, §1.1/§1.3] the old zero-collection Empty expectation
+        // is obsolete — the funnel now freezes a real Single (not the interface shell); replaced by the Single
+        // read-back below (a real temp-FS drop resolved from the registry, test-strategy §0.1).
+        assert!(
+            matches!(
+                &out,
+                CollectedSet::Single {
+                    format: UserFacingFormat::Csv,
+                    count: 1,
+                    ..
+                }
+            ),
+            "§1.3/§1.4: a lone CSV drop freezes a Single collection of one CSV file, got {out:?}"
         );
+        if let CollectedSet::Single { id, .. } = out {
+            assert!(
+                collected_sets.resolve(id).is_some(),
+                "§0.4.4: the frozen Single set is registered so C3/C4/C6 can resolve it by CollectedSetId"
+            );
+        }
         assert!(
             ready.is_ready(),
             "§7.8.1: the drain marks the frontend ready"
@@ -341,6 +441,10 @@ mod c1_contract {
         assert!(
             pending.take_marking_ready(&ready).is_none(),
             "§7.8.1: the drain consumed PendingIntake exactly once (the buffer is now empty)"
+        );
+        assert!(
+            !ingest_registry.cancel(collecting_id()),
+            "§0.4.4/§1.1: the RAII ingest guard released the token on the drain-completed exit (no leak — a post-drain cancel finds none)"
         );
     }
 
@@ -353,25 +457,40 @@ mod c1_contract {
             .map_or(full, |(prefix, _)| prefix)
     }
 
-    // §6.4.1 unit (G15): the C1 `drain_intake` handler is AppHandle-coupled boot-glue — a source-scan pins it
-    // binds an `AppHandle`, resolves the two §7.8.1 States, and DISPATCHES via `drain_to_collected_set` (the
-    // testable always-drain logic), rather than a WebView-supplied-paths passthrough. The dispatch needle
-    // carries the call-site args (`&pending, &ready`) so it matches the CALL, not merely the fn definition
-    // (non-blind). Needles `concat!`-assembled (self-match avoidance). [Build-Session-Entscheidung: P3.78]
+    // [Test-Change: P3.49 — old-obsolete+new-correct, §1.1/§0.4.1] the P3.78 dispatch shape
+    // (`drain_to_collected_set(&pending, &ready)`, no walk) is superseded: P3.49 wires the §1.1 walk, so the
+    // handler now runs the blocking drain on `spawn_blocking` (off the async runtime, mirroring C2a), resolves
+    // FIVE States (adding IngestRegistry for the ingest cancel token, CollectedSetRegistry for the freeze
+    // register, and InstanceId), and dispatches with the added args — the same "binds AppHandle + resolves the
+    // funnel State + dispatches via drain_to_collected_set" assertion, re-pinned to the new call shape. The
+    // helper's own logic (drain → freeze → register) is unit-tested above; this pins the boot-glue.
+    // §6.4.1 unit (G15): the C1 `drain_intake` handler is AppHandle-coupled boot-glue (§1.1a; G28-exempt) — a
+    // source-scan pins it binds an `AppHandle`, runs the blocking walk on `spawn_blocking`, resolves the five
+    // §7.8.1/§0.4.4 States, and DISPATCHES via `drain_to_collected_set` (the `&pending,`/`&ready,`/`&collected_sets,`
+    // needles carry the call-site args — RETAINING the P3.78 `&pending`/`&ready` pins so the drain's core-state
+    // args stay pinned — so it matches the CALL, not merely the fn definition). Needles `concat!`-assembled
+    // (self-match avoidance). [Build-Session-Entscheidung: P3.49]
     #[test]
     fn drain_intake_handler_dispatches_via_the_drain_helper() {
         let src = production_intake_source();
         for needle in [
             concat!("pub async fn drain_", "intake("),
             concat!("app: App", "Handle"),
+            concat!("spawn_", "blocking(move"),
             concat!("state::<Pending", "Intake>()"),
             concat!("state::<Frontend", "Ready>()"),
-            concat!("drain_to_collected_", "set(&pending, &ready"),
+            concat!("state::<Ingest", "Registry>()"),
+            concat!("state::<CollectedSet", "Registry>()"),
+            concat!("state::<Instance", "Id>()"),
+            concat!("drain_to_collected_", "set("),
+            concat!("&pend", "ing,"),
+            concat!("&read", "y,"),
+            concat!("&collected_", "sets,"),
         ] {
             assert!(
                 src.contains(needle),
-                "§7.8.1/§0.4.1: the C1 drain_intake handler must bind an AppHandle, resolve the §7.8.1 States, \
-                 and dispatch via drain_to_collected_set (missing `{needle}`)"
+                "§1.1/§0.4.1: the C1 drain_intake handler must bind an AppHandle, run the blocking walk on \
+                 spawn_blocking, resolve the five States, and dispatch via drain_to_collected_set (missing `{needle}`)"
             );
         }
     }

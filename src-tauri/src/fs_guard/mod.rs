@@ -1465,17 +1465,12 @@ pub enum LocationStatus {
 /// verdict. Panic-free (the crate no-panic deny, G4/G14) — the probe create/remove and the `statfs` are all
 /// fallible ops whose errors map to a verdict. `fs_guard` is a §0.7 tier-2 LEAF: the `crate::run`-grammar
 /// `probe_name` is passed IN (never a `crate::run` dependency here). [Build-Session-Entscheidung: P3.33]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "P3.33 — the §2.7.2 per-location classifier; its production caller is the §1.8/C4 destination \
-                  planning (P3.34+, which passes the crate::run::PublishTemp::probe_name grammar name in) — \
-                  it is also called by the dead-but-present `LocationCache::classify` below, so `allow` \
-                  (permissive) covers the transitive dead-ness through the P3 wiring window (the PublishTemp \
-                  pattern); the location_status_tests below exercise it directly."
-    )
-)]
+// [Test-Change: P3.49 — old-obsolete+new-correct, §1.8] the P3.33 `allow(dead_code)` is removed: the §1.8/C4
+// `plan_output` preview (`crate::orchestrator::plan_output_preview` → C4 `plan_output`) is now a LIVE production
+// caller of `location_status`, so the "dead until P3.34+" annotation is obsolete. The `LocationCache` memo + its
+// `new`/`classify` (P3.33) are ALSO live in production — the P3.48 C6 conductor (`run_conversion`) threads the
+// cache per-item — so their stale "dead until P3.34+" attributes are swept in this same commit (a P3.48-era
+// miss corrected here; a production lint cleanup, not a test suppression).
 pub fn location_status(dir: &Path, probe_name: &OsStr) -> LocationStatus {
     // 1. Ephemeral first — short-circuit BEFORE the writable probe so no probe residue is written into a temp
     //    dir the OS may purge, and it is the cheapest + most-specific classification (§2.7.2).
@@ -1517,17 +1512,10 @@ pub fn location_status(dir: &Path, probe_name: &OsStr) -> LocationStatus {
 /// candidate output dir PATH (a hint, so two aliased paths to one dir get separate entries — harmless: the
 /// real §2.1 publish P3.36 re-checks). Owned by the §1.8/C4 planning pass and threaded across it.
 /// [Build-Session-Entscheidung: P3.33]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "P3.33 — the §2.7.2 per-dir location-status memo; its production owner is the §1.8/C4 \
-                  destination planning (P3.34+) that threads it across the plan pass — constructed only by \
-                  the dead-but-present `new`/`Default` + `classify` below until then, so `allow` (permissive) \
-                  covers the transitive dead-ness through the P3 wiring window; the location_status_tests \
-                  below exercise it."
-    )
-)]
+// [Test-Change: P3.49 — old-obsolete+new-correct, §1.8] the P3.33 `allow(dead_code)` on `LocationCache` + its
+// `new`/`classify` (below) is removed: the P3.48 C6 conductor (`crate::orchestrator::run_conversion`) threads
+// the cache per-item in production, so they are LIVE — the "dead until P3.34+" annotation is a P3.48-era miss
+// corrected here (a production lint cleanup, not a test suppression).
 #[derive(Debug, Default)]
 pub struct LocationCache {
     seen: HashMap<PathBuf, LocationStatus>,
@@ -1535,14 +1523,6 @@ pub struct LocationCache {
 
 impl LocationCache {
     /// A fresh empty cache. [Build-Session-Entscheidung: P3.33]
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "P3.33 — its production caller is the §1.8/C4 planning (P3.34+); dead in the production \
-                      build until then, exercised by the location_status_tests below."
-        )
-    )]
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -1555,16 +1535,6 @@ impl LocationCache {
     /// built ONLY on a real probe, which keeps `fs_guard` a LEAF (the caller wires it to
     /// `crate::run::PublishTemp::probe_name`) — [`location_status`] classifies, and the verdict is cached.
     /// [Build-Session-Entscheidung: P3.33]
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "P3.33 — the §2.7.2 memoised classify entry; its production caller is the §1.8/C4 \
-                      planning (P3.34+), which threads the cache across the plan pass; dead in the production \
-                      build until then (it calls the dead-but-present `location_status`), exercised by the \
-                      location_status_tests below."
-        )
-    )]
     pub fn classify(
         &mut self,
         dir: &Path,
