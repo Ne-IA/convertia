@@ -42,7 +42,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) were authored as contracts ahead of their wire consumers. The P3.48 C6 run conductor + its start_conversion handler now compose MOST of them into the live run. LIVE via P3.48: the §1.9 FSM advance + queue_order (+ state_is_queued), the P3.47 build_batch, the P3.50 project_run_result, CollectedSetRegistry::take + RunResultStore::{evict, retain} + RunRegistry::{register, finish} + crate::run::RunScratch::acquire, and the P3.39 EquivKeyComputer::compute_equiv_key (the §2.5 applier + the per-success RerunLedger record). Already live before P3.48: RunRegistry::has_active_run (the §7.1.1 converter_is_busy, P2.55) and RunResultStore::get (the C8 get_run_summary handler via resolve_run_summary, P3.50). LIVE via P3.49 (the C1 drain_intake / C3 get_targets / C4 plan_output walking-skeleton wiring): the §1.1/§2.4.1 ingest funnel spine (walk_intake_roots + resolve_and_dedup/dedup_by_identity + freeze_snapshot + the §1.3 group() projection) via the C1 drain, CollectedSetRegistry::{register, resolve} (the C1 freeze register + the C3/C4 resolve), and the P3.40 compute_rerun_verdict (its first production caller — the C4 plan_output_preview re-run verdict). STILL dead in the production build until its own wiring lands: the §2.8 project_outcome (P3.46.2 — the conductor maps its own ItemRunOutcome onto the terminal JobEvent INLINE, so this InvocationResult projection has no production caller yet); RunResultStore::paths (the P3.51 C9 RunResultPaths wiring); RunRegistry::cancel (the C7 cancel_run handler is still a shell — the real registry .cancel() dispatch is a separate box); the §2.8.2 batch-summary renderer batch_summary/batch_summary_line (no production caller yet) + any P3.25 §2.6.4 residue helper (ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) project_run_result does not reach. Reading a dead fn does not make it live — a dead-fn reference is not a root — so this pure lifecycle/projection graph stayed dead until the P3.48 conductor made it reachable from the C6 command root; the expectation stays fulfilled while ANY of the above is still unwired."
+        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) were authored as contracts ahead of their wire consumers. The P3.48 C6 run conductor + its start_conversion handler now compose MOST of them into the live run. LIVE via P3.48: the §1.9 FSM advance + queue_order (+ state_is_queued), the P3.47 build_batch, the P3.50 project_run_result, CollectedSetRegistry::take + RunResultStore::{evict, retain} + RunRegistry::{register, finish} + crate::run::RunScratch::acquire, and the P3.39 EquivKeyComputer::compute_equiv_key (the §2.5 applier + the per-success RerunLedger record). Already live before P3.48: RunRegistry::has_active_run (the §7.1.1 converter_is_busy, P2.55) and RunResultStore::get (the C8 get_run_summary handler via resolve_run_summary, P3.50). LIVE via P3.49 (the C1 drain_intake / C3 get_targets / C4 plan_output walking-skeleton wiring): the §1.1/§2.4.1 ingest funnel spine (walk_intake_roots + resolve_and_dedup/dedup_by_identity + freeze_snapshot + the §1.3 group() projection) via the C1 drain, CollectedSetRegistry::{register, resolve} (the C1 freeze register + the C3/C4 resolve), and the P3.40 compute_rerun_verdict (its first production caller — the C4 plan_output_preview re-run verdict). STILL dead in the production build until its own wiring lands: the §2.8 project_outcome (P3.46.2 — the conductor maps its own ItemRunOutcome onto the terminal JobEvent INLINE, so this InvocationResult projection has no production caller yet); RunRegistry::cancel (the C7 cancel_run handler is still a shell — the real registry .cancel() dispatch is a separate box); the §2.8.2 batch-summary renderer batch_summary/batch_summary_line (no production caller yet) + any P3.25 §2.6.4 residue helper (ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) project_run_result does not reach. Reading a dead fn does not make it live — a dead-fn reference is not a root — so this pure lifecycle/projection graph stayed dead until the P3.48 conductor made it reachable from the C6 command root; the expectation stays fulfilled while ANY of the above is still unwired."
     )
 )]
 
@@ -2333,8 +2333,9 @@ struct RetainedRun {
 /// against the real paths (P3.79). Holds AT MOST ONE run (the latest): [`retain`](RunResultStore::retain)
 /// on `RunFinished` stores it, [`evict`](RunResultStore::evict) on a new run's start (C6) clears the prior
 /// one (the §0.4.4 "until a new run starts" eviction), [`get`](RunResultStore::get) serves the wire result
-/// back to C8, and [`paths`](RunResultStore::paths) serves the off-wire paths to C9 — each matched by
-/// `RunId` so a stale/other run is never served for the wrong id. NO on-disk persistence (§7.4) — the store
+/// back to C8 (matched by `RunId` so a stale/other run is never served for the wrong id), and
+/// [`current_paths`](RunResultStore::current_paths) serves the off-wire paths of the current run to C9 (which
+/// carries no `RunId` on its wire, §7.7.2). NO on-disk persistence (§7.4) — the store
 /// is dropped on process exit. Interior-mutable behind a `Mutex` (the `State` form serves concurrent
 /// C6/C8/C9 handlers); the critical sections never hold the guard across an `.await`, so a `std::sync::Mutex`
 /// is correct.
@@ -2362,7 +2363,7 @@ impl RunResultStore {
 
     /// Retain the run's terminal summary + its off-wire real paths (`RunFinished`, §0.4.4) — supersedes any
     /// prior retained run (only the latest is kept). After this, C8 `get(result.run_id)` re-serves the wire
-    /// summary and C9 `paths(result.run_id)` resolves its `OpenTarget` against the real paths (P3.79).
+    /// summary and C9 `current_paths()` resolves its `OpenTarget` against the real paths (P3.51).
     /// [Build-Session-Entscheidung: P3.76] `paths` is the sibling off-wire `RunResultPaths` (the real roots +
     /// per-item output/residue `PathBuf`s the display-only wire `RunResult` shed, §2.10.1).
     pub fn retain(&self, result: RunResult, paths: RunResultPaths) {
@@ -2380,15 +2381,16 @@ impl RunResultStore {
             .map(|retained| retained.result.clone())
     }
 
-    /// Re-serve the retained OFF-WIRE `RunResultPaths` for `run_id` (C9 `open_path`, §0.4.4 / §7.7.3, P3.79)
-    /// — the real roots + per-item output/residue `PathBuf`s the wire `RunResult` shed (§2.10.1). Returns a
-    /// clone iff a run is retained AND its `run_id` matches; `None` otherwise (→ the C9 §7.7.3 refusal). The
-    /// paths are cloned out, so the guard is not held across the return. [Build-Session-Entscheidung: P3.76]
-    pub fn paths(&self, run_id: RunId) -> Option<RunResultPaths> {
-        self.lock()
-            .as_ref()
-            .filter(|retained| retained.result.run_id == run_id)
-            .map(|retained| retained.paths.clone())
+    /// Re-serve the CURRENT (single latest) run's off-wire `RunResultPaths` — the C9 `open_path` accessor
+    /// (§0.4.4 / §7.7.2, P3.51). It takes NO `RunId` (unlike the run-id-keyed [`get`](Self::get)): the §0.4.1 C9
+    /// wire is id-keyed on the OPEN TARGET (`OpenTarget`), never on the run, and the §0.4.4 store holds AT MOST
+    /// ONE run (the latest terminal one), so "the current run" is unambiguous (§7.7.2 "resolves it against the
+    /// current run's `RunResultStore`"). `None` = no terminal run retained (→ the C9 §7.7.3 refusal). The paths
+    /// are cloned out, so the guard is not held across the return. This is the C9 accessor — the run-id-keyed
+    /// P3.76 `paths(run_id)` sibling is removed with P3.51, since the C9 wire carries no `run_id` (a run-id form
+    /// would never be reachable). [Build-Session-Entscheidung: P3.51]
+    pub fn current_paths(&self) -> Option<RunResultPaths> {
+        self.lock().as_ref().map(|retained| retained.paths.clone())
     }
 
     /// Evict the retained run when a new run starts (C6, §0.4.4 "until a new run starts") — so a stale prior
@@ -8071,27 +8073,32 @@ mod tests {
         );
     }
 
-    // §6.4.1 unit (G15): the §0.4.4 OFF-WIRE `RunResultPaths` re-serve (P3.76) — `retain` stores the real
-    // paths alongside the wire result; `paths` re-serves them for the matching `RunId` (the C9 `OpenTarget`
-    // resolution source, P3.79), and mismatched/empty is `None` (the C9 §7.7.3 refusal). This is the off-wire
-    // half of the retention contract the display-only wire `RunResult` depends on (§2.10.1).
+    // §6.4.1 unit (G15): the §0.4.4 OFF-WIRE `RunResultPaths` re-serve (P3.51) — `retain` stores the real paths
+    // alongside the wire result; `current_paths` re-serves the CURRENT run's paths (the C9 `OpenTarget`
+    // resolution source, §7.7.2), and on an empty store or after `evict` it is `None` (the C9 §7.7.3 refusal).
+    // This is the off-wire half of the retention contract the display-only wire `RunResult` depends on (§2.10.1).
+    // [Test-Change: P3.51 — old-obsolete+new-correct, §7.7.2] the P3.76 run-id-keyed `paths(run_id)` accessor is
+    // REMOVED with P3.51 (the C9 wire carries no `run_id`, §7.7.2/§0.4.1 — a run-id form is unreachable), so this
+    // test re-cuts onto the live `current_paths`; its RunId-MISMATCH assertion is obsolete (the run-id-match
+    // guard stays covered by the sibling `get(run_id)` test above), while the retain-then-serve and
+    // evict-clears-paths legs are RETAINED over the live accessor (read-back proof, test-strategy §0.2).
     #[test]
-    fn run_result_store_paths_re_serves_the_off_wire_paths_for_matching_id() {
+    fn run_result_store_current_paths_re_serves_the_off_wire_paths() {
         let store = RunResultStore::default();
+        assert_eq!(
+            store.current_paths(),
+            None,
+            "§0.4.4: an empty store has no off-wire paths to serve (the C9 §7.7.3 refusal)"
+        );
         store.retain(sample_run_result(run_id()), sample_run_paths());
         assert_eq!(
-            store.paths(run_id()),
+            store.current_paths(),
             Some(sample_run_paths()),
-            "§0.4.4/§7.7.3: the off-wire RunResultPaths is re-served to C9 for its own RunId"
-        );
-        assert_eq!(
-            store.paths(run_id_other()),
-            None,
-            "§0.4.4: the off-wire paths are NEVER served for a different run's id (the RunId match guards it)"
+            "§0.4.4/§7.7.3: the current run's off-wire RunResultPaths is re-served to C9"
         );
         store.evict();
         assert_eq!(
-            store.paths(run_id()),
+            store.current_paths(),
             None,
             "§0.4.4: evict clears the off-wire paths too (no stale real path survives a new run start)"
         );

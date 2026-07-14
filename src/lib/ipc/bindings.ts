@@ -318,24 +318,23 @@ export const commands = {
 	 *    naming which recorded location to surface: a run ROOT (folder browse), a recorded OUTPUT file (launch), or
 	 *    an item's cleanup-residue location (reveal). The §7.7.3 resolution admits only what the run recorded.
 	 *
-	 *  [Build-Session-Entscheidung: P3.79 → wired P3.51] **Shell returns `Err(IpcError{ kind: InternalError })` —
-	 *  the C3/C4/C5/C6/C8 branch (the §7.7.3 target does not resolve), NOT C7's `Ok(())` no-op branch.** C9 is a
-	 *  **gated side-effect**: it opens the resolved location *only if* the `OpenTarget` resolves against the run's
-	 *  recorded paths, and an unresolvable target is **refused** (§7.7.2/§7.7.3). A refusal is an error, not a
-	 *  successful no-op — returning `Ok(())` would falsely claim the open happened. This box RE-KEYS the WIRE
-	 *  (`OpenTarget` in, the pure `resolve_open_target` id→`OpenerOp` resolution beside it) but does NOT yet inject
-	 *  the `State<RunResultStore>` (that is P3.51) — so the shell has no recorded paths to resolve against and
-	 *  **every** target fails resolution, exactly the `Err` the real body returns for an unresolvable target:
-	 *  `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError`
-	 *  precedent C3/C4/C5 cite). The named fill-boxes own the rest: (a) the §2.8 catalog box owns the FINAL message
-	 *  — the string below is a PROVISIONAL neutral English one — and must add a COMMAND-level string (the §2.8
-	 *  catalog is item-scoped); (b) the C9 resolution LOGIC re-keys the P2.100–103 build-vs-wire split
-	 *  (Co-Pilot-ratified) onto the resolved entry — `resolve_open_target` folds the P2.100 `OpenerExt`-op mapping
-	 *  and the P2.101–103 membership gate into ONE id-resolution (the §7.7.3 check IS the resolution), pure and
-	 *  dead-until the wire box; only the LIVE WIRE — the `AppHandle`, the `State<RunResultStore>` paths fetch, the
-	 *  §7.7.1 `OpenerExt` reveal/open call, the §7.5 refusal log, and the §0.6 SUCCESS path (`Ok(())` on a resolved
-	 *  open) — belongs to the wire box P3.51; (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind`
-	 *  alias (the P2.19 convention).
+	 *  [Build-Session-Entscheidung: P3.51] **Live wire (the P2↔P3 §7.7 build-vs-wire split, Co-Pilot Option ①).**
+	 *  The wire re-key + the pure `resolve_open_target` id-resolution are P3.79; THIS box makes the handler live.
+	 *  It is AppHandle-coupled boot-glue (§1.1a; G28 signature-exempt — this crate ships no `tauri::test` mock BY
+	 *  DECISION): it injects the `AppHandle` (to reach the §7.7.1 opener) + the §0.4.4 `State<RunResultStore>`,
+	 *  delegates the resolve/refuse DECISION to the pure [`resolve_open_request`] (fetch the current run's paths →
+	 *  `resolve_open_target` → `Ok(OpenerOp)`, or the §7.7.3-refused + §7.5-logged `Err`), and on a resolved
+	 *  `OpenerOp` invokes `OpenerExt` — `reveal_item_in_dir` (a `Residue` reveal) or `open_path` (a root
+	 *  folder-browse / an `Item` file-launch), §7.7.1. `Ok(())` on a successful shell-out; a genuine `OpenerExt`
+	 *  failure (no file manager / OS error) maps to `Err(IpcError{ InternalError })` (§2.13 catch-all, the C10
+	 *  precedent). The refuse/log DECISION is unit-tested over a real `RunResultStore` (no mock, the C8
+	 *  `resolve_run_summary` precedent); the handler's `AppHandle`/`State` injection + the `OpenerExt` invoke are
+	 *  SOURCE-SCAN-pinned (the C10 pattern), and the runtime shell-out through the real window is the §1.6 E2E /
+	 *  §6.6 walkthrough. Two facts stay owned by their boxes: (a) the §2.8 catalog owns the FINAL messages — the
+	 *  strings below are PROVISIONAL neutral English; (b) `kind` is the CONCRETE `ConversionErrorKind`, not the
+	 *  `ErrorKind` alias (the P2.19 convention). `open_path` for an `Item`/root uses `to_string_lossy` because the
+	 *  §7.7.1 `OpenerExt::open_path` takes `impl Into<String>` (a plugin API constraint); `reveal_item_in_dir`
+	 *  keeps the exact `&Path` (a `Residue`'s recorded location, byte-preserving).
 	 */
 	openPath: (target: OpenTarget) => __TAURI_INVOKE<null>("open_path", { target }),
 	/**

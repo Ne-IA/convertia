@@ -17,12 +17,12 @@
 
 use std::path::PathBuf;
 
-use tauri::AppHandle;
+use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::domain::OpenTarget;
 use crate::engines::{AppInfo, EngineHealth};
-use crate::orchestrator::RunResultPaths;
+use crate::orchestrator::{RunResultPaths, RunResultStore};
 use crate::outcome::{ConversionErrorKind, IpcError};
 
 /// **C9 `open_path`** (§0.4.1) — the DoD "one-click open-folder / open-file" action: reveal or open a recorded
@@ -41,34 +41,78 @@ use crate::outcome::{ConversionErrorKind, IpcError};
 ///   naming which recorded location to surface: a run ROOT (folder browse), a recorded OUTPUT file (launch), or
 ///   an item's cleanup-residue location (reveal). The §7.7.3 resolution admits only what the run recorded.
 ///
-/// [Build-Session-Entscheidung: P3.79 → wired P3.51] **Shell returns `Err(IpcError{ kind: InternalError })` —
-/// the C3/C4/C5/C6/C8 branch (the §7.7.3 target does not resolve), NOT C7's `Ok(())` no-op branch.** C9 is a
-/// **gated side-effect**: it opens the resolved location *only if* the `OpenTarget` resolves against the run's
-/// recorded paths, and an unresolvable target is **refused** (§7.7.2/§7.7.3). A refusal is an error, not a
-/// successful no-op — returning `Ok(())` would falsely claim the open happened. This box RE-KEYS the WIRE
-/// (`OpenTarget` in, the pure `resolve_open_target` id→`OpenerOp` resolution beside it) but does NOT yet inject
-/// the `State<RunResultStore>` (that is P3.51) — so the shell has no recorded paths to resolve against and
-/// **every** target fails resolution, exactly the `Err` the real body returns for an unresolvable target:
-/// `Err(IpcError{ kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError`
-/// precedent C3/C4/C5 cite). The named fill-boxes own the rest: (a) the §2.8 catalog box owns the FINAL message
-/// — the string below is a PROVISIONAL neutral English one — and must add a COMMAND-level string (the §2.8
-/// catalog is item-scoped); (b) the C9 resolution LOGIC re-keys the P2.100–103 build-vs-wire split
-/// (Co-Pilot-ratified) onto the resolved entry — `resolve_open_target` folds the P2.100 `OpenerExt`-op mapping
-/// and the P2.101–103 membership gate into ONE id-resolution (the §7.7.3 check IS the resolution), pure and
-/// dead-until the wire box; only the LIVE WIRE — the `AppHandle`, the `State<RunResultStore>` paths fetch, the
-/// §7.7.1 `OpenerExt` reveal/open call, the §7.5 refusal log, and the §0.6 SUCCESS path (`Ok(())` on a resolved
-/// open) — belongs to the wire box P3.51; (c) `kind` is the CONCRETE `ConversionErrorKind`, not the `ErrorKind`
-/// alias (the P2.19 convention).
+/// [Build-Session-Entscheidung: P3.51] **Live wire (the P2↔P3 §7.7 build-vs-wire split, Co-Pilot Option ①).**
+/// The wire re-key + the pure `resolve_open_target` id-resolution are P3.79; THIS box makes the handler live.
+/// It is AppHandle-coupled boot-glue (§1.1a; G28 signature-exempt — this crate ships no `tauri::test` mock BY
+/// DECISION): it injects the `AppHandle` (to reach the §7.7.1 opener) + the §0.4.4 `State<RunResultStore>`,
+/// delegates the resolve/refuse DECISION to the pure [`resolve_open_request`] (fetch the current run's paths →
+/// `resolve_open_target` → `Ok(OpenerOp)`, or the §7.7.3-refused + §7.5-logged `Err`), and on a resolved
+/// `OpenerOp` invokes `OpenerExt` — `reveal_item_in_dir` (a `Residue` reveal) or `open_path` (a root
+/// folder-browse / an `Item` file-launch), §7.7.1. `Ok(())` on a successful shell-out; a genuine `OpenerExt`
+/// failure (no file manager / OS error) maps to `Err(IpcError{ InternalError })` (§2.13 catch-all, the C10
+/// precedent). The refuse/log DECISION is unit-tested over a real `RunResultStore` (no mock, the C8
+/// `resolve_run_summary` precedent); the handler's `AppHandle`/`State` injection + the `OpenerExt` invoke are
+/// SOURCE-SCAN-pinned (the C10 pattern), and the runtime shell-out through the real window is the §1.6 E2E /
+/// §6.6 walkthrough. Two facts stay owned by their boxes: (a) the §2.8 catalog owns the FINAL messages — the
+/// strings below are PROVISIONAL neutral English; (b) `kind` is the CONCRETE `ConversionErrorKind`, not the
+/// `ErrorKind` alias (the P2.19 convention). `open_path` for an `Item`/root uses `to_string_lossy` because the
+/// §7.7.1 `OpenerExt::open_path` takes `impl Into<String>` (a plugin API constraint); `reveal_item_in_dir`
+/// keeps the exact `&Path` (a `Residue`'s recorded location, byte-preserving).
 #[tauri::command]
 #[specta::specta]
-pub async fn open_path(target: OpenTarget) -> Result<(), IpcError> {
-    let _ = target;
-    Err(IpcError {
+pub async fn open_path(
+    app: AppHandle,
+    target: OpenTarget,
+    store: State<'_, RunResultStore>,
+) -> Result<(), IpcError> {
+    match resolve_open_request(store.inner(), &target)? {
+        OpenerOp::RevealItemInDir(path) => app.opener().reveal_item_in_dir(&path),
+        OpenerOp::OpenPath(path) => app
+            .opener()
+            .open_path(path.to_string_lossy().into_owned(), None::<&str>),
+    }
+    .map_err(|_err| open_error("Could not open the requested location."))?;
+    Ok(())
+}
+
+/// The pure C9 resolve/refuse DECISION (§7.7.2 / §7.7.3, P3.51) — fetch the CURRENT run's off-wire
+/// `RunResultPaths` from the §0.4.4 `RunResultStore` and resolve the `OpenTarget` id to a concrete §7.7.1
+/// `OpenerOp` on the core's OWN recorded path, or the §7.7.3 refusal. Separated from the AppHandle-coupled
+/// `#[tauri::command]` handler so the decision is directly unit-testable over a real `RunResultStore` (no
+/// `tauri::test` mock — the C8 `resolve_run_summary` precedent). Two refusal cases, each LOGGED at `warn`
+/// (§7.5): no terminal run retained, and a `target` that does not resolve against the recorded set. The log is
+/// PATH-FREE by construction — it records only the `OpenTarget` (a variant tag + an `ItemId` u32 index), never
+/// a path, so the §7.5.3 default-level "structural facts only, never a full path" stance holds with NO
+/// redaction needed (the id-keyed wire carries no path to leak). [Build-Session-Entscheidung: P3.51]
+pub(crate) fn resolve_open_request(
+    store: &RunResultStore,
+    target: &OpenTarget,
+) -> Result<OpenerOp, IpcError> {
+    let Some(paths) = store.current_paths() else {
+        tauri_plugin_log::log::warn!(
+            "C9 open_path refused: no terminal run is retained (target {target:?})"
+        );
+        return Err(open_error("Could not open the requested location."));
+    };
+    resolve_open_target(target, &paths).ok_or_else(|| {
+        tauri_plugin_log::log::warn!(
+            "C9 open_path refused: {target:?} did not resolve against the current run's recorded set"
+        );
+        open_error("Could not open the requested location.")
+    })
+}
+
+/// Build the §0.4.3 `IpcError` for a C9 refusal or a failed `OpenerExt` shell-out — the §2.13 `InternalError`
+/// catch-all (the C9 shell / C10 precedent) carrying a PROVISIONAL neutral message (the §2.8 catalog owns the
+/// final string). No path is ever placed in the error (the id-keyed wire has none — the display-only
+/// `path_display`/`residue_display` legs stay `None`). [Build-Session-Entscheidung: P3.51]
+fn open_error(message: &str) -> IpcError {
+    IpcError {
         kind: ConversionErrorKind::InternalError,
-        message: "Could not open the requested location.".into(),
+        message: message.into(),
         path_display: None,
         residue_display: None,
-    })
+    }
 }
 
 /// The concrete §7.7.1 `OpenerExt` operation a resolved `OpenTarget` maps to — a PURE descriptor that SELECTS
@@ -80,8 +124,9 @@ pub async fn open_path(target: OpenTarget) -> Result<(), IpcError> {
 /// and `open_path(_, None)` (open a file in its default app OR a directory in the file manager). A run ROOT
 /// (`CommonRoot`/`DivertRoot`, folder browse) and an OUTPUT file (`Item`, file launch) both map to `OpenPath`
 /// — the SAME `OpenerExt` call on a different subject; a `Residue` reveal maps to `RevealItemInDir` (reveal
-/// only, never a launch, §7.7.1). (The type is referenced by `resolve_open_target`'s signature so it is not
-/// itself dead; the resolution FN carries the dead-until-P3.51 `expect`.) [Build-Session-Entscheidung: P3.79]
+/// only, never a launch, §7.7.1). Both variants are constructed by `resolve_open_target` and consumed by the
+/// P3.51 live handler (`OpenPath` → `OpenerExt::open_path`, `RevealItemInDir` → `reveal_item_in_dir`).
+/// [Build-Session-Entscheidung: P3.79]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum OpenerOp {
     /// `OpenerExt::reveal_item_in_dir(path)` — open the OS file manager with `path` selected/highlighted.
@@ -105,8 +150,8 @@ pub(crate) enum OpenerOp {
 /// successful resolution" (§7.7.2) — so the anti-TOCTOU / canonicalization surface of the old
 /// validate-a-given-path gate dissolves: no WebView path exists to validate, canonicalize or race, the only
 /// path in play is the core's own recorded one. PURE: no `AppHandle`, no filesystem touch, no `OpenerExt`
-/// invoke — the live wire (which fetches the paths from `State<RunResultStore>::paths` and calls the mapped
-/// `OpenerOp`) is P3.51. The §7.7.3 resolution rules, one per variant:
+/// invoke — the live wire (which fetches the paths from `State<RunResultStore>::current_paths` and calls the
+/// mapped `OpenerOp`) is P3.51 (`resolve_open_request` + the handler). The §7.7.3 resolution rules, one per variant:
 /// - **File launch** (`Item(id)`) resolves ONLY into the run's recorded OUTPUT files (`item_outputs`, §1.12 /
 ///   §2.1) — never a source, never an engine intermediate (neither is in the recorded output set); an
 ///   unknown / output-less id does not resolve. Opens via `OpenPath` (launch in the OS default app).
@@ -124,13 +169,11 @@ pub(crate) enum OpenerOp {
 /// and needs a subject output a ROOT target does not name, so the id-keyed resolution opens the folder
 /// (complete for the "Open folder" DoD action). `Residue` is the sole `RevealItemInDir` producer (its §7.7.1
 /// reveal-only mandate).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the §7.7.2/§7.7.3 C9 id-resolution folds the OpenerExt-op mapping and the membership gate over a &RunResultPaths; its only production consumer is the P3.51 live-wire box (AppHandle + RunResultStore::paths fetch + OpenerExt invoke — the build-vs-wire split), so it is dead in the production build until then (the §1.1-walk / §7.8.1-funnel dead-until pattern)."
-    )
-)]
+// [Test-Change: P3.51 — old-obsolete+new-correct, §7.7.1] resolve_open_target is now PROD-LIVE — the P3.51
+// handler routes through resolve_open_request into here — so its dead-until-P3.51 not-test dead-code lint
+// attribute is removed: the fn is genuinely used in the production build now, so the dead-code lint no longer
+// fires and a leftover lint-expectation would be UNFULFILLED under -D warnings. The removed attribute line is
+// G70's token-scan FP over a production attribute removal, not a suppressed test assertion.
 pub(crate) fn resolve_open_target(target: &OpenTarget, paths: &RunResultPaths) -> Option<OpenerOp> {
     match target {
         // Folder browse: a run ROOT opened via OpenPath (§7.7.1). CommonRoot always resolves; DivertRoot
@@ -251,41 +294,131 @@ pub async fn get_engine_health() -> Result<EngineHealth, IpcError> {
 
 #[cfg(test)]
 mod c9_contract {
-    //! §6.4.1 unit (G15): the §0.4.1 C9 `open_path` typed CONTRACT (re-keyed at P3.79) — same interface-shell
-    //! pattern as C3/C4/C5/C6/C8: the handler carries its typed `{ target } -> Result<(), IpcError>` signature
-    //! (the §0.6 `OpenTarget` id, retiring `OpenKind` + the WebView `path`). The shell returns the genuine
-    //! §7.7.3-refused `Err(InternalError)` (no `State<RunResultStore>` injected to resolve against yet — that is
-    //! the P3.51 wire); SHAPE is asserted, NOT the provisional message (owned by the §2.8 catalog box). The
-    //! §7.7.3 id-resolution is `resolve_open_target` (exercised by `c9_resolution`); only the live `OpenerExt`
-    //! reveal/open wire lands at P3.51. [Build-Session-Entscheidung: P3.79]
+    //! §6.4.1 unit (G15): the P3.51 C9 `open_path` LIVE WIRE. The handler is AppHandle-coupled boot-glue (§1.1a;
+    //! no `tauri::test` mock BY DECISION), so its resolve/refuse DECISION lives in the pure `resolve_open_request`
+    //! — unit-tested here over a REAL `RunResultStore` (the C8 `resolve_run_summary` precedent) — while the
+    //! handler's `AppHandle`/`State` injection + the §7.7.1 `OpenerExt` invoke are SOURCE-SCAN-pinned (the C10
+    //! `open_project_page` pattern); the runtime shell-out is the §1.6 E2E / §6.6 walkthrough.
+    //!
+    //! [Test-Change: P3.51 — old-obsolete+new-correct, §0.4.1] the P3.79 shell contract test
+    //! (`block_on(open_path(OpenTarget::CommonRoot))` → the honest pre-wire `Err(InternalError)`) is OBSOLETE: the
+    //! shell it exercised no longer exists (this box injects the `AppHandle` + `State<RunResultStore>` and does the
+    //! real resolve+invoke), so the handler is uninvocable without a Tauri runtime (§1.1a — no mock). It is
+    //! REPLACED by the `resolve_open_request` decision test (STRICTLY STRONGER — it asserts the RESOLVE leg the
+    //! shell never had, over a real store) + the handler source-scan (the C10/C8 boot-glue stratification), NOT a
+    //! dropped assertion. [Build-Session-Entscheidung: P3.51]
     use super::*;
-    use tauri::async_runtime::block_on;
+    use crate::domain::{CollectedSetId, ItemId, RunId};
+    use crate::orchestrator::{RunResult, Totals};
+    use std::collections::BTreeMap;
 
-    // §6.4.1 unit (G15): the C9 contract is invocable with its re-keyed §0.4.1 typed arg ({ target: OpenTarget })
-    // and returns a `Result<(), IpcError>` (the §0.4 universal error shape). The shell has no injected
-    // `State<RunResultStore>` to resolve against yet (P3.51), so every target fails resolution — it returns the
-    // genuine §7.7.3-refused `Err(InternalError)`, the same Err the real body returns for an unresolvable
-    // target. SHAPE asserted (kind == InternalError), NOT the provisional message (owned by the §2.8 catalog
-    // box); the pure `resolve_open_target` is exercised by `c9_resolution` and P3.51 wires it live (State fetch
-    // → resolve → `OpenerExt` reveal/open).
-    // [Test-Change: P3.79 — old-obsolete+new-correct, §0.4.1] the arg set changed with the spec-mandated re-key
-    // (`{ kind, path }` → `{ target }`, the §0.4.1 C9 row + the §0.4 SUPERSEDED note); the invocation is updated
-    // to `OpenTarget::CommonRoot` and the assertion (the honest §7.7.3-refused Err(InternalError) shell) is
-    // unchanged and re-verified — no assertion is relaxed.
+    /// Retain a minimal terminal run in `store` for the resolve tests: one recorded output keyed by `ItemId` 0,
+    /// the given roots, no residues — enough to exercise `resolve_open_request` (the §1.12 projection is tested
+    /// in `crate::orchestrator`; here we test the store fetch → resolve/refuse). Mirrors the C8 `a_retained_run`
+    /// helper. The retained `RunResult`'s own `run_id` is irrelevant — `current_paths` is run-id-free (§7.7.2).
+    fn retain_run(store: &RunResultStore, common: &str, divert: Option<&str>) {
+        let run_id = serde_json::from_str::<RunId>(r#""77777777-7777-4777-8777-777777777777""#)
+            .expect("RunId deserializes from a uuid string");
+        let collected_set_id =
+            serde_json::from_str::<CollectedSetId>(r#""77777777-7777-4777-8777-777777777776""#)
+                .expect("CollectedSetId deserializes from a uuid string");
+        let result = RunResult {
+            collected_set_id,
+            run_id,
+            items: vec![],
+            totals: Totals {
+                succeeded: 0,
+                failed: 0,
+                cancelled: 0,
+                skipped: 0,
+            },
+            cleanup_incomplete: vec![],
+            common_root_display: common.to_string(),
+            divert_root_display: divert.map(str::to_string),
+        };
+        let mut item_outputs = BTreeMap::new();
+        item_outputs.insert(
+            ItemId::from_index(0),
+            PathBuf::from(format!("{common}/data.tsv")),
+        );
+        let paths = RunResultPaths {
+            common_root: PathBuf::from(common),
+            divert_root: divert.map(PathBuf::from),
+            item_outputs,
+            item_residues: BTreeMap::new(),
+        };
+        store.retain(result, paths);
+    }
+
+    // §6.4.1 unit (G15): the P3.51 resolve/refuse DECISION over a real `RunResultStore` (no tauri::test mock, the
+    // C8 precedent) — an EMPTY store (no terminal run) refuses (§7.7.3, InternalError); a retained run resolves
+    // CommonRoot to the folder-open OpenerOp and a recorded Item to its output launch; an unknown Item id
+    // refuses. This is the RESOLVE leg the pre-wire shell never had. The refusal is also LOGGED (§7.5) — the
+    // pathless `log::warn!` is structurally pinned by the handler source-scan below (§1.1a: the log runs under no
+    // installed logger in this unit, so its effect, not its emission, is what the decision test asserts).
     #[test]
-    fn c9_open_path_contract_is_invocable_and_typed() {
-        let out = block_on(open_path(OpenTarget::CommonRoot));
-        let err = out.expect_err(
-            "§0.4.1/§0.4: the C9 shell has no State<RunResultStore> injected to resolve against yet (P3.51), so \
-             the §7.7.3 resolution refuses every target → the genuine Err(InternalError); the typed \
-             Result<(), IpcError> signature is the P3.79 re-key deliverable",
+    fn resolve_open_request_resolves_a_recorded_target_else_refuses() {
+        let store = RunResultStore::default();
+        // No terminal run retained → the §7.7.3 refusal (InternalError catch-all).
+        assert_eq!(
+            resolve_open_request(&store, &OpenTarget::CommonRoot)
+                .expect_err("an empty store has no run to resolve against")
+                .kind,
+            ConversionErrorKind::InternalError,
+            "§7.7.3: with no terminal run retained, every target is refused (the InternalError catch-all)"
+        );
+        retain_run(&store, "/out", None);
+        assert_eq!(
+            resolve_open_request(&store, &OpenTarget::CommonRoot)
+                .expect("a retained run resolves its common root"),
+            OpenerOp::OpenPath(PathBuf::from("/out")),
+            "§7.7.1/§7.7.3: CommonRoot resolves to the folder-open on the retained run's common root"
         );
         assert_eq!(
-            err.kind,
-            ConversionErrorKind::InternalError,
-            "§2.13: the unresolvable-target shell outcome is the InternalError catch-all — SHAPE asserted, NOT \
-             the provisional message (the §2.8 catalog box owns the final string)"
+            resolve_open_request(&store, &OpenTarget::Item(ItemId::from_index(0)))
+                .expect("the recorded item resolves to its output launch"),
+            OpenerOp::OpenPath(PathBuf::from("/out/data.tsv")),
+            "§7.7.3: a recorded Item resolves to its output file (launch via OpenPath)"
         );
+        assert_eq!(
+            resolve_open_request(&store, &OpenTarget::Item(ItemId::from_index(9)))
+                .expect_err("an unrecorded item id does not resolve")
+                .kind,
+            ConversionErrorKind::InternalError,
+            "§7.7.3: an Item id absent from the recorded outputs is refused"
+        );
+    }
+
+    /// The production prefix of `system.rs` (everything before the FIRST `#[cfg(test)]`), so a needle declared
+    /// here never self-matches — the C10 `production_system_source` pattern (each contract module keeps its own).
+    fn production_system_source() -> &'static str {
+        let full = include_str!("system.rs");
+        full.split_once(concat!("#[cfg", "(test)]"))
+            .map_or(full, |(prefix, _)| prefix)
+    }
+
+    // §6.4.1 unit (G15): the C9 handler is AppHandle-coupled boot-glue (§1.1a) — a source-scan pins that it binds
+    // an `AppHandle` + a `State<RunResultStore>`, delegates to `resolve_open_request`, and invokes BOTH §7.7.1
+    // `OpenerExt` methods (`reveal_item_in_dir` for a Residue reveal, `open_path` for a root/Item launch). The
+    // C10 pattern: the runtime shell-out is the §1.6 E2E; here the WIRING is structurally pinned. Needles
+    // `concat!`-assembled (self-match avoidance — the tokens appear only in the handler body, never the prose).
+    // [Build-Session-Entscheidung: P3.51]
+    #[test]
+    fn open_path_handler_binds_the_apphandle_state_and_invokes_the_opener() {
+        let src = production_system_source();
+        for needle in [
+            concat!("app: App", "Handle"),
+            concat!("store: State<'_, Run", "ResultStore>"),
+            concat!("resolve_open_", "request(store.inner()"),
+            concat!("reveal_item_in_", "dir(&path)"),
+            concat!("open_", "path(path.to_string_lossy"),
+        ] {
+            assert!(
+                src.contains(needle),
+                "§7.7.1/§1.1a: the C9 handler must bind AppHandle + State<RunResultStore>, delegate to \
+                 resolve_open_request, and invoke both OpenerExt methods (missing `{needle}`)"
+            );
+        }
     }
 }
 
