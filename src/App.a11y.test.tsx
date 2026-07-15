@@ -20,12 +20,18 @@ import { axe } from "vitest-axe";
 // The vitest-axe `toHaveNoViolations` matcher is not used — its 0.1.0 `.d.ts` re-exports the matcher type-only,
 // which `verbatimModuleSyntax` rejects — so the assertions read the `axe()` result directly.
 vi.mock("./lib/ipc/events", () => ({
-  drainPendingIntake: () => Promise.resolve({ empty: { skipped: [] } }),
+  // [Test-Change: P3.55 — old-obsolete+new-correct, §5.8] the mount handshake now calls the consuming
+  // `consumeMountDrain` (not the bare `drainPendingIntake`); the a11y baseline is unchanged (Idle renders the
+  // DropZone). The advanceToTargets/cancelIntakeCollect stubs feed the statically-imported Confirm/Collecting
+  // router arms P3.55 added (unused in the Idle render this baseline exercises).
+  consumeMountDrain: () => Promise.resolve(),
   subscribeAppEvents: () => Promise.resolve(() => {}),
   subscribeNativeDragDrop: () => Promise.resolve(() => {}),
   // The §5.2 Idle screen (the P3.54 DropZone, rendered by App) imports the C2a `pickForIntake` façade — stub it
   // so this a11y baseline render stays hermetic. The DropZone's own axe legs live in DropZone.a11y.test.tsx.
   pickForIntake: () => Promise.resolve(),
+  advanceToTargets: () => Promise.resolve(),
+  cancelIntakeCollect: () => Promise.resolve(),
 }));
 
 import { App } from "./App";

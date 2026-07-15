@@ -223,6 +223,31 @@ per-item outcome); the machine only sequences the user through them.
 > "startup + files" arrow straight into `Collecting`** that skips the `Idle` empty-state; a
 > plain launch (no files) starts in `Idle` as drawn.
 >
+> **P3.55 slice behaviour — the mount-drain routes from `Idle`, so the launch walk does NOT transit the
+> `Collecting` indicator (grounded in the P3.53 `machine.ts` routing + the P3.55 consumption-seam box):**
+> the "initial state `Collecting` when launched with files" above is the *aspirational* target, but the
+> WebView **cannot pre-distinguish a launch-with-files from a plain launch before the asynchronous
+> mount-time C1 `drain_intake` resolves** (the launch set lives core-side in `PendingIntake`; no
+> synchronous "launched-with-files" signal reaches the store at init). So the built slice **inits the
+> store to `Idle`** (the P3.53 `initialState()`) and the mount-drain **routes the returned `CollectedSet`
+> from `Idle`** (`consumeMountDrain`, §5.8 — per the P3.53 `emptyStaysIdle` routing already in the machine
+> + the P3.55 box's consumption-seam note): a launch-with-files reaches `Confirm` (3) **directly from
+> `Idle`**, and a plain-launch `Empty` **stays `Idle`** (never `Unsupported`) — the launch-vs-nudge
+> asymmetry. The `Collecting` scan indicator is therefore shown **only on the user-driven nudge path**
+> (drop / pick → `consumeIntakeNudge`, which enters `Collecting` first). For the CSV→TSV slice (a
+> near-instant walk) the missing launch-time `Collecting` is not user-visible; a heavy launch folder would
+> show `Idle` then `Confirm`.
+>
+> **`[OPEN]` — reconcile the aspirational launch-`Collecting` line + `launchCollectingState`'s fate
+> (escalated to Co-Pilot, NOT self-decided):** making a launch-with-files *also* show `Collecting` would
+> need a **synchronous launch-with-files signal at store init** — a mechanism that does not exist today;
+> the P3.53 `machine.ts` `launchCollectingState()` constructor is the **anticipatory shell** for it,
+> currently unwired. Whether to **(a)** design that synchronous signal + wire `launchCollectingState`, or
+> **(b)** accept mount-drain-from-`Idle` as the permanent design + retire the shell + soften the
+> aspirational line above, is an **open Co-Pilot/owner decision**. Recorded here (per the DoD spec-sync
+> rule) so the built slice's architecture-forced deviation is honest — not a silently reconciled
+> contradiction, and not a self-issued `[DECIDED]`.
+>
 > **Additional arrows/nodes the ASCII is too cramped to draw, pinned here `[DECIDED]` (the
 > text/tables are authoritative — Phase 3 derives the machine from these, not the art):**
 > - **Targets (4) → Confirm (3) back-arrow.** The §5.2 row-4 table + §5.10

@@ -12,10 +12,10 @@
 // RESULTS/EVENTS back as `Msg`s. The machine only SEQUENCES the user through the backend's facts (§5.2 "the
 // backend is the source of truth; the machine only sequences the user through them").
 //
-// SLICE SCOPE (P3.53 → P4.80): states 1–10 + 12 (Idle/Collecting/Confirm/Targets+Destination/RerunPrompt/
+// SLICE SCOPE (P3.53 → P4.78): states 1–10 + 12 (Idle/Collecting/Confirm/Targets+Destination/RerunPrompt/
 // Converting[+7a Cancelling]/Summary/MixedDropRefusal/Unsupported/AppFault). NOT the slice: state 11
 // `AppCloseRequested` (P4.67.1) and the full 7a button semantics (P4.67) — this box wires the 7a ARM
-// (enter-on-cancel, second-Esc-ignored, → Summary(partial)); P4.80 completes all 12 states.
+// (enter-on-cancel, second-Esc-ignored, → Summary(partial)); P4.78 completes all 12 states.
 //
 // [Build-Session-Entscheidung: P3.53] The `Msg` names are this fill's naming (the §5.2 tables + the P3.53
 // [Decision]-note ~18-msg sketch are the faithful source). User-facing literals are NOT here — the machine is
@@ -453,7 +453,7 @@ function fromAppFault(state: State & { tag: "appFault" }, msg: Msg): State {
 
 /** Exhaustiveness guard — a NEW `State` variant reaching {@link transition}'s switch fails to compile
  *  (`state: never`), so the slice reducer can never silently drop a state. Unreachable by construction (the
- *  §5.2 slice states are closed here; P4.80 adds the remaining states + this guard flags the gap). */
+ *  §5.2 slice states are closed here; P4.78 adds the remaining states + this guard flags the gap). */
 function assertNever(state: never): never {
   throw new Error(`unhandled slice State variant: ${JSON.stringify(state)}`);
 }

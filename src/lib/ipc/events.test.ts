@@ -46,15 +46,45 @@ vi.mock("@tauri-apps/api/window", () => ({
   }),
 }));
 
+import type { SingleSet } from "../../state/machine";
 import { useAppStore } from "../../state/store";
 
 import {
+  advanceToTargets,
+  cancelIntakeCollect,
+  consumeIntakeNudge,
+  consumeMountDrain,
   drainPendingIntake,
   pickForIntake,
   startConversionRun,
   subscribeAppEvents,
   subscribeNativeDragDrop,
 } from "./events";
+
+// §1.4 CollectedSet::Single / §1.5 TargetOffer / §1.8 OutputPlanPreview fixtures for the P3.55 consumption +
+// advance tests. `singleSet` is typed (it seats the §5.2 `confirm` state in setState); the offer/plan are
+// loose (only ever mocked `invoke` return values, `unknown`, and the machine STORES them without validating).
+const singleSet: SingleSet = {
+  id: "cs1",
+  instance: "inst-1",
+  format: "csv",
+  items: [],
+  count: 1,
+  skipped: [],
+  totalBytes: 10,
+  rootsDisplay: ["/drop"],
+  encodingHint: null,
+  delimiterHint: null,
+  notes: [],
+};
+const targetOffer = { set: "cs1", targets: [], defaultTarget: { format: "tsv" } };
+const outputPlan = {
+  set: "cs1",
+  finalDirDisplay: "/drop",
+  diverted: null,
+  rerun: null,
+  preflight: { estTotalOutputBytes: 0, estTotalScratchBytes: 0, upFrontFail: null },
+};
 
 describe("drainPendingIntake (§7.8.1 first-launch drain)", () => {
   beforeEach(() => {
@@ -118,6 +148,7 @@ describe("subscribeAppEvents (P2.120 §5.8 three app:// listeners)", () => {
     invoke.mockReset();
     listen.mockImplementation(() => Promise.resolve(() => {}));
     invoke.mockResolvedValue({ empty: { skipped: [] } });
+    useAppStore.setState({ machine: { tag: "idle" } });
   });
 
   const handlerFor = (event: string) => listen.mock.calls.find((call) => call[0] === event)?.[1];
@@ -130,19 +161,29 @@ describe("subscribeAppEvents (P2.120 §5.8 three app:// listeners)", () => {
     expect(listen).toHaveBeenCalledTimes(3);
   });
 
-  // [Test-Change: P3.77/P3.78 — old-obsolete+new-correct, §7.8.1/§0.4.1] app://intake is a PAYLOAD-LESS nudge
-  // (the core-owned-path ruling retired `IntakePayload`), so the listener issues the args-less C1 `drain_intake`
-  // drain (P3.78 — no `paths`/`drainPending`), the same drain the mount issues — never a payload-carrying ingest.
-  it("app://intake issues the payload-less drain (C1 drain_intake with a fresh collectingId)", async () => {
+  // [Test-Change: P3.55 — old-obsolete+new-correct, §5.8] The app://intake listener now CONSUMES the nudge
+  // (`consumeIntakeNudge`) rather than firing the bare `drainPendingIntake` (P3.77): from Idle it enters
+  // Collecting + drains + routes the result. The obsolete pin was "issues the drain"; the correct pin is the
+  // consumption (enters Collecting synchronously, then drains).
+  it("app://intake from Idle CONSUMES the nudge — enters Collecting then drains (§5.8)", async () => {
     await subscribeAppEvents();
     handlerFor("app://intake")?.({ payload: null });
+    // consumeIntakeNudge synchronously dispatches startCollecting (Idle → Collecting) BEFORE the async drain.
+    expect(useAppStore.getState().machine.tag).toBe("collecting");
     await Promise.resolve(); // let the fire-and-forget C1 drain land
     expect(invoke).toHaveBeenCalledWith(
       "drain_intake",
-      expect.objectContaining({
-        collectingId: expect.any(String),
-      }),
+      expect.objectContaining({ collectingId: expect.any(String) }),
     );
+  });
+
+  it("app://intake in a non-Idle state is a no-op — no drain, machine unchanged (§5.4 slice guard)", async () => {
+    useAppStore.setState({ machine: { tag: "converting", runId: "r1", cancelling: false } });
+    await subscribeAppEvents();
+    handlerFor("app://intake")?.({ payload: null });
+    await Promise.resolve();
+    expect(useAppStore.getState().machine.tag).toBe("converting");
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it("app://fault + app://close-requested route to the typed handlers when supplied", async () => {
@@ -170,6 +211,151 @@ describe("subscribeAppEvents (P2.120 §5.8 three app:// listeners)", () => {
     const cleanup = await subscribeAppEvents();
     cleanup();
     expect(unlisten).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("consumeMountDrain (§5.8 mount-drain consumption, P3.55)", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    useAppStore.setState({ machine: { tag: "idle" } });
+  });
+
+  it("drains + routes a launch-with-files Single set → Confirm, from Idle (no Collecting transit)", async () => {
+    invoke.mockResolvedValue({ single: singleSet });
+    await consumeMountDrain();
+    expect(invoke).toHaveBeenCalledWith(
+      "drain_intake",
+      expect.objectContaining({ collectingId: expect.any(String) }),
+    );
+    expect(useAppStore.getState().machine.tag).toBe("confirm");
+  });
+
+  it("a plain-launch Empty STAYS Idle — never Unsupported (the mount-drain asymmetry)", async () => {
+    invoke.mockResolvedValue({ empty: { skipped: [] } });
+    await consumeMountDrain();
+    expect(useAppStore.getState().machine.tag).toBe("idle");
+  });
+});
+
+describe("consumeIntakeNudge (§5.8 nudge consumption, P3.55)", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    channels.length = 0;
+    useAppStore.setState({ machine: { tag: "idle" } });
+  });
+
+  it("from Idle: enters Collecting synchronously, drains, routes a Single set → Confirm", async () => {
+    invoke.mockResolvedValue({ single: singleSet });
+    const pending = consumeIntakeNudge();
+    expect(useAppStore.getState().machine.tag).toBe("collecting");
+    await pending;
+    expect(useAppStore.getState().machine.tag).toBe("confirm");
+  });
+
+  it("a drop's Empty from Collecting → Unsupported (the emptyStaysIdle=false arm)", async () => {
+    invoke.mockResolvedValue({ empty: { skipped: [] } });
+    await consumeIntakeNudge();
+    expect(useAppStore.getState().machine.tag).toBe("unsupported");
+  });
+
+  it("routes onScan ticks to the Collecting count (scanTick) over the command-scoped Channel", async () => {
+    let resolveDrain: (value: unknown) => void = () => undefined;
+    invoke.mockImplementation(
+      () =>
+        new Promise<unknown>((resolve) => {
+          resolveDrain = resolve;
+        }),
+    );
+    const pending = consumeIntakeNudge();
+    channels[channels.length - 1]?.onmessage?.({ scanned: 7 });
+    const machine = useAppStore.getState().machine;
+    expect(machine.tag).toBe("collecting");
+    if (machine.tag === "collecting") {
+      expect(machine.scanned).toBe(7);
+    }
+    resolveDrain({ empty: { skipped: [] } });
+    await pending;
+  });
+
+  it("a nudge in a non-Idle state is a no-op — no drain, buffer preserved (§5.4 slice guard)", async () => {
+    useAppStore.setState({ machine: { tag: "converting", runId: "r1", cancelling: false } });
+    await consumeIntakeNudge();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(useAppStore.getState().machine.tag).toBe("converting");
+  });
+
+  it("drops a STALE drain result — an older walk never routes into a newer walk (the collectingId guard)", async () => {
+    // Sonnet review: a cancel-then-immediately-redrop can let drain-1 resolve AFTER a NEW walk (walk-2) started.
+    // Without the guard, drain-1's `collected(single)` would route from walk-2's Collecting → Confirm(stale).
+    let resolveDrain: (value: unknown) => void = () => undefined;
+    invoke.mockImplementation(
+      () =>
+        new Promise<unknown>((resolve) => {
+          resolveDrain = resolve;
+        }),
+    );
+    const pending = consumeIntakeNudge(); // walk-1: startCollecting(id1) → Collecting; drain-1 pending
+    expect(useAppStore.getState().machine.tag).toBe("collecting");
+    // A newer walk supersedes walk-1 (the redrop) while drain-1 is still pending.
+    useAppStore.setState({ machine: { tag: "collecting", collectingId: "walk-2", scanned: null } });
+    resolveDrain({ single: singleSet }); // drain-1 resolves with a real (now STALE) set
+    await pending;
+    // The guard drops it: the machine is STILL walk-2's Collecting, NOT Confirm(stale set).
+    const machine = useAppStore.getState().machine;
+    expect(machine.tag).toBe("collecting");
+    if (machine.tag === "collecting") {
+      expect(machine.collectingId).toBe("walk-2");
+    }
+  });
+});
+
+describe("cancelIntakeCollect (§5.10 C13 cancel-collect, P3.55)", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue(null);
+    useAppStore.setState({ machine: { tag: "collecting", collectingId: "c1", scanned: 3 } });
+  });
+
+  it("advances to Idle then trips C13 cancel_ingest for the walk (§1.1)", async () => {
+    await cancelIntakeCollect("c1");
+    expect(useAppStore.getState().machine.tag).toBe("idle");
+    expect(invoke).toHaveBeenCalledWith("cancel_ingest", { collectingId: "c1" });
+  });
+});
+
+describe("advanceToTargets (§5.8 Confirm → Targets, P3.55)", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    useAppStore.setState({ machine: { tag: "confirm", set: singleSet } });
+  });
+
+  it("fires C3 get_targets + C4 plan_output (beside-source) then dispatches targetsReady → Targets", async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === "get_targets") {
+        return Promise.resolve(targetOffer);
+      }
+      if (cmd === "plan_output") {
+        return Promise.resolve(outputPlan);
+      }
+      return Promise.reject(new Error(`unexpected ${cmd}`));
+    });
+    await advanceToTargets("cs1");
+    expect(invoke).toHaveBeenCalledWith("get_targets", { collectedSetId: "cs1" });
+    expect(invoke).toHaveBeenCalledWith(
+      "plan_output",
+      expect.objectContaining({
+        collectedSetId: "cs1",
+        target: { format: "tsv" },
+        destination: "besideSource",
+      }),
+    );
+    expect(useAppStore.getState().machine.tag).toBe("targets");
+  });
+
+  it("re-throws a C3/C4 rejection (→ the §7.5.1 global bridge) leaving the machine in Confirm", async () => {
+    invoke.mockRejectedValue({ kind: "internalError", message: "stale set" });
+    await expect(advanceToTargets("cs1")).rejects.toBeDefined();
+    expect(useAppStore.getState().machine.tag).toBe("confirm");
   });
 });
 

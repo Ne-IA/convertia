@@ -11,9 +11,13 @@ import { renderHook } from "@testing-library/react";
 // expectation is obsolete: §7.8.1 mandates the drain fire "later than listener-registration, so it closes
 // the race" (07-app-shell.md §7.8.1), so the hook signature gained the `eventsReady` gate and the drain is
 // asserted AFTER the gate settles — never in the mount's synchronous flush.
-const drainPendingIntake = vi.fn<() => Promise<unknown>>();
+// [Test-Change: P3.55 — old-obsolete+new-correct, §5.8] The mount trigger now calls the CONSUMING
+// `consumeMountDrain` (drain + route the `CollectedSet` into the §5.2 machine) rather than the bare
+// `drainPendingIntake`; the gate/once/cancelled semantics under test are unchanged — only the mocked façade
+// name is (the mount consumes now). The consumption itself is covered in `events.test.ts`.
+const consumeMountDrain = vi.fn<() => Promise<void>>();
 vi.mock("../lib/ipc/events", () => ({
-  drainPendingIntake: () => drainPendingIntake(),
+  consumeMountDrain: () => consumeMountDrain(),
 }));
 
 import { useLaunchDrain } from "./useLaunchDrain";
@@ -26,17 +30,21 @@ async function flushMicrotasks(): Promise<void> {
 
 describe("useLaunchDrain (§7.8.1 completion-gated first-launch drain trigger)", () => {
   beforeEach(() => {
-    drainPendingIntake.mockReset();
-    drainPendingIntake.mockResolvedValue({ empty: { skipped: [] } });
+    consumeMountDrain.mockReset();
+    consumeMountDrain.mockResolvedValue(undefined);
   });
 
+  // [Test-Change: P3.55 — old-obsolete+new-correct, §5.8] Each `expect(drainPendingIntake)` below became
+  // `expect(consumeMountDrain)` — the mount trigger now calls the CONSUMING façade (drain + route into the §5.2
+  // machine), not the bare drain. The gate/once/cancelled semantics are unchanged; the tags mark the rename.
   it("does NOT drain while the gate promise is pending (the §7.8.1 unregistered-listener window)", async () => {
     const gate = new Promise<void>(() => undefined); // never settles
     renderHook(() => {
       useLaunchDrain(gate);
     });
     await flushMicrotasks();
-    expect(drainPendingIntake).not.toHaveBeenCalled();
+    // [Test-Change: P3.55 — old-obsolete+new-correct, §5.8]
+    expect(consumeMountDrain).not.toHaveBeenCalled();
   });
 
   it("fires the drain exactly once after the gate FULFILS", async () => {
@@ -47,10 +55,11 @@ describe("useLaunchDrain (§7.8.1 completion-gated first-launch drain trigger)",
     renderHook(() => {
       useLaunchDrain(gate);
     });
-    expect(drainPendingIntake).not.toHaveBeenCalled();
+    // [Test-Change: P3.55 — old-obsolete+new-correct, §5.8]
+    expect(consumeMountDrain).not.toHaveBeenCalled();
     resolveGate();
     await flushMicrotasks();
-    expect(drainPendingIntake).toHaveBeenCalledTimes(1);
+    expect(consumeMountDrain).toHaveBeenCalledTimes(1);
   });
 
   it("fires the drain on the gate's REJECT leg too — the buffered set is never stranded (§7.8.1)", async () => {
@@ -65,7 +74,8 @@ describe("useLaunchDrain (§7.8.1 completion-gated first-launch drain trigger)",
     });
     rejectGate(new Error("listen failed"));
     await flushMicrotasks();
-    expect(drainPendingIntake).toHaveBeenCalledTimes(1);
+    // [Test-Change: P3.55 — old-obsolete+new-correct, §5.8]
+    expect(consumeMountDrain).toHaveBeenCalledTimes(1);
   });
 
   it("does not re-fire on re-render (drained once per mount)", async () => {
@@ -76,7 +86,8 @@ describe("useLaunchDrain (§7.8.1 completion-gated first-launch drain trigger)",
     await flushMicrotasks();
     rerender();
     await flushMicrotasks();
-    expect(drainPendingIntake).toHaveBeenCalledTimes(1);
+    // [Test-Change: P3.55 — old-obsolete+new-correct, §5.8]
+    expect(consumeMountDrain).toHaveBeenCalledTimes(1);
   });
 
   it("does not re-fire when a NEW gate identity arrives on re-render (the drained ref)", async () => {
@@ -91,7 +102,8 @@ describe("useLaunchDrain (§7.8.1 completion-gated first-launch drain trigger)",
     await flushMicrotasks();
     rerender({ gate: Promise.resolve() });
     await flushMicrotasks();
-    expect(drainPendingIntake).toHaveBeenCalledTimes(1);
+    // [Test-Change: P3.55 — old-obsolete+new-correct, §5.8]
+    expect(consumeMountDrain).toHaveBeenCalledTimes(1);
   });
 
   it("does not drain when unmount beats the gate settle (the cancelled guard)", async () => {
@@ -105,6 +117,7 @@ describe("useLaunchDrain (§7.8.1 completion-gated first-launch drain trigger)",
     unmount(); // BEFORE the gate settles
     resolveGate();
     await flushMicrotasks();
-    expect(drainPendingIntake).not.toHaveBeenCalled();
+    // [Test-Change: P3.55 — old-obsolete+new-correct, §5.8]
+    expect(consumeMountDrain).not.toHaveBeenCalled();
   });
 });

@@ -31,14 +31,17 @@ import {
   type AppFault,
   type CollectedSet,
   type CollectedSetId,
+  type CollectingId,
   type ConversionEvent,
   type DestinationChoice,
   type OptionValues,
+  type OutputPlanPreview,
   type PickKind,
   type RerunDecision,
   type RunId,
   type ScanProgress,
   type TargetId,
+  type TargetOffer,
 } from "./commands";
 
 /**
@@ -64,13 +67,110 @@ import {
  * seam is a shell, so the result is `Empty` until P3.49 wires the real freeze. This helper is the drain TRIGGER;
  * feeding the result into the §5.2 machine — dispatching the `collected`/`startCollecting`/`scanTick` Msgs — is
  * the **§5.8 drain consumption** (§5.4 names it "the §5.8 C1 `drain_intake` consumption"), owned by the SCREEN
- * boxes that make each target state reachable (P3.55 Confirm is the first `collected`→Confirm consumer), NOT this
- * trigger. So the drained result is currently unconsumed by design; P3.55+ wire the dispatch.
+ * boxes that make each target state reachable (P3.55 Confirm is the first `collected`→Confirm consumer).
+ * [Build-Session-Entscheidung: P3.55] The consumption is now wired: {@link consumeMountDrain} (the root-shell
+ * mount-drain, routing from Idle) and {@link consumeIntakeNudge} (the `app://intake` nudge, entering
+ * Collecting) call this trigger + dispatch the returned `CollectedSet` into the §5.2 machine.
  */
 export async function drainPendingIntake(): Promise<CollectedSet> {
   const collectingId = crypto.randomUUID();
   const onScan = new Channel<ScanProgress>();
   return commands.drainIntake(collectingId, onScan);
+}
+
+/**
+ * [Build-Session-Entscheidung: P3.55] The §5.8 MOUNT-drain consumption (§7.8.1): drain `PendingIntake` once on
+ * root-shell mount and route the `CollectedSet` into the §5.2 machine FROM Idle (the `useLaunchDrain` caller).
+ * The launch-vs-nudge ASYMMETRY (memory `p3-screen-box-wiring-model`): the mount-drain dispatches `collected`
+ * DIRECTLY from Idle (no `startCollecting`), so a plain-launch `Empty` STAYS Idle (the machine's `fromIdle`
+ * `emptyStaysIdle=true` arm) rather than mis-routing to Unsupported — while a launch-with-files set advances
+ * exactly like a drop. The launch walk therefore does NOT transit the Collecting indicator; that is the nudge
+ * path's ({@link consumeIntakeNudge}).
+ */
+export async function consumeMountDrain(): Promise<void> {
+  const set = await drainPendingIntake();
+  useAppStore.getState().dispatch({ type: "collected", set });
+}
+
+/**
+ * [Build-Session-Entscheidung: P3.55] The §5.8/§5.4 NUDGE consumption: on the payload-less `app://intake`
+ * nudge, if the machine can take fresh intake, enter Collecting and drain WITH scan telemetry, then route the
+ * result (a drop's `Empty` → Unsupported, the machine's `fromCollecting` `emptyStaysIdle=false` arm). The
+ * `collectingId` is minted HERE and dispatched via `startCollecting` BEFORE the drain, so C13 `cancel_ingest`
+ * (via {@link cancelIntakeCollect}) can name the in-flight walk while it awaits (§1.1); `onScan` drives the
+ * §5.2 "Scanning… N files" count via `scanTick`.
+ *
+ * SLICE POLICY: the drainable state is Idle ONLY. The full §5.4 fresh-intake set (a nudge in
+ * Confirm/Targets/Destination/Summary/refusal states re-drains) is NOT wired yet because the §5.2 machine has
+ * no `startCollecting` arm from those states (that requires the P4.78 machine completion, not the P3.56–P3.60
+ * screens); until then a nudge in ANY non-Idle state is a no-op HERE and the core-side `PendingIntake` buffer
+ * is PRESERVED (§7.8.1 no-loss accumulation), consumed by a subsequent drainable-state drain. The
+ * non-drainable-state `BusyNotice` also lands with P4.
+ *
+ * STALE-WALK GUARD: the late `scanTick`/`collected` dispatches fire only if the machine is STILL this walk's
+ * `Collecting` (same `collectingId`). Otherwise a cancel-then-immediately-redrop — where drain-1 resolves AFTER
+ * the redrop entered a NEW walk (or a cancel returned to Idle) — would route drain-1's STALE set into the newer
+ * walk's state (a `Collecting`→Unsupported/Confirm misroute). The guard drops the stale result; the fresh walk
+ * keeps its state (Sonnet review, P3.55).
+ */
+export async function consumeIntakeNudge(): Promise<void> {
+  if (useAppStore.getState().machine.tag !== "idle") {
+    return;
+  }
+  const collectingId = crypto.randomUUID();
+  useAppStore.getState().dispatch({ type: "startCollecting", collectingId });
+  const isThisWalk = (): boolean => {
+    const machine = useAppStore.getState().machine;
+    return machine.tag === "collecting" && machine.collectingId === collectingId;
+  };
+  const onScan = new Channel<ScanProgress>();
+  onScan.onmessage = (message) => {
+    if (isThisWalk()) {
+      useAppStore.getState().dispatch({ type: "scanTick", scanned: message.scanned });
+    }
+  };
+  const set = await commands.drainIntake(collectingId, onScan);
+  if (isThisWalk()) {
+    useAppStore.getState().dispatch({ type: "collected", set });
+  }
+}
+
+/**
+ * [Build-Session-Entscheidung: P3.55] The §5.2/§5.10 Collecting cancel-collect: optimistically advance the
+ * machine to Idle (`cancelCollect`), then trip the ingest-scoped §0.4.4 token via C13 `cancel_ingest` so the
+ * in-flight C1 walk discards its partial unfrozen set (§1.1). The `cancelCollect` dispatch FIRST is deliberate:
+ * a C13-tripped C1 returns `CollectedSet::Empty` (§1.1), and the still-in-flight {@link consumeIntakeNudge}
+ * `collected(Empty)` then routes from the now-Idle machine (STAYS Idle) instead of `Collecting`→Unsupported.
+ * Fire-and-forget: a C13 rejection surfaces through the §7.5.1 global frontend-error bridge (§5.4).
+ */
+export async function cancelIntakeCollect(collectingId: CollectingId): Promise<void> {
+  useAppStore.getState().dispatch({ type: "cancelCollect" });
+  await commands.cancelIngest(collectingId);
+}
+
+/**
+ * [Build-Session-Entscheidung: P3.55] The §5.8 Confirm → Targets (3 → 4) advance: fire C3 `get_targets` then
+ * the eager C4 `plan_output` (with the pre-highlighted default target + the slice beside-source destination),
+ * then dispatch `targetsReady` so the machine enters `Targets` with the offer + initial plan + destination.
+ * C4's FIRST-call destination is `besideSource` (the §2.7.1 default): the §5.8 persisted-`lastDestinationMode`
+ * intent is a §7.4 prefs capability not built in P3 (there is no `last` `DestinationChoice` variant on the wire
+ * yet), so the slice plans beside-source; P3.56's DestinationBar + §7.4 wire the persisted-choice resolution.
+ *
+ * A rejection (a stale `CollectedSetId` §0.4.3 `IpcError`, or an opaque core panic) RE-THROWS unhandled to the
+ * §7.5.1 global frontend-error bridge and LEAVES the machine in Confirm (the user retries the gate). The full
+ * §5.2 state-12 pre-run routing — the §5.3 `CommandError` inline slot (IpcError) / the AppFault wildcard
+ * (opaque) — rides P3.56/P3.60, which build those surfaces (the CommandError slot lives in the Targets screen).
+ */
+export async function advanceToTargets(collectedSetId: CollectedSetId): Promise<void> {
+  const offer: TargetOffer = await commands.getTargets(collectedSetId);
+  const destination: DestinationChoice = "besideSource";
+  const plan: OutputPlanPreview = await commands.planOutput(
+    collectedSetId,
+    offer.defaultTarget,
+    {},
+    destination,
+  );
+  useAppStore.getState().dispatch({ type: "targetsReady", offer, plan, destination });
 }
 
 /**
@@ -206,19 +306,24 @@ export interface AppEventHandlers {
  * events (the closed set G23 + plan-lint check 28 assert). Returns a single cleanup dropping all three
  * listeners. `useAppEvents` calls this BEFORE `useLaunchDrain` so a buffered first-launch set (§7.8.1) replays
  * only after the `app://intake` listener exists (the listener-before-drain race, P2.61):
- * - `app://intake` → the payload-LESS DRAIN (`drainPendingIntake`, P3.77): the 2026-07-06 core-owned-path
- *   ruling made this event a pure "come and drain `PendingIntake`" nudge (no payload), so the listener issues
- *   the same drain as the mount does — the paths were stashed core-side and drain via the C1 response. It drains
- *   unconditionally here; the §5.8 defence-in-depth "ignore-unless-Idle/Summary + BusyNotice" guard on a leaked
- *   mid-run nudge is the P3.53 FSM's (only `idle` exists in P2, and the §7.1 single-instance callback is the
- *   authoritative primary refuse-busy gate — the funnel drops a mid-run intake before it ever nudges);
+ * - `app://intake` → the §5.8 nudge CONSUMPTION ({@link consumeIntakeNudge}, P3.55; the P3.77 bare
+ *   `drainPendingIntake` trigger is replaced): the 2026-07-06 core-owned-path ruling made this event a pure
+ *   "come and drain `PendingIntake`" nudge (no payload), and P3.55 wires its consumption — enter Collecting,
+ *   drain (paths stashed core-side, returned via the C1 response), route the `CollectedSet` into the §5.2
+ *   machine. The §5.4 "ignore-unless-drainable + preserve-the-buffer" guard now lives IN `consumeIntakeNudge`
+ *   (slice: Idle only; the full fresh-intake set + the `BusyNotice` land with the P3.56–P3.60/P4 screens), and
+ *   the §7.1 single-instance callback stays the authoritative primary refuse-busy gate (the funnel drops a
+ *   mid-run intake before it ever nudges);
  * - `app://fault` → `handlers.onFault?.(payload)` (UNSET in P2 — see {@link AppEventHandlers});
  * - `app://close-requested` → `handlers.onCloseRequested?.()` (unit payload, no DTO; UNSET in P2).
  */
 export async function subscribeAppEvents(handlers: AppEventHandlers = {}): Promise<() => void> {
   const unlisteners = await Promise.all([
     listen("app://intake", () => {
-      void drainPendingIntake();
+      // [Build-Session-Entscheidung: P3.55] The nudge CONSUMPTION: enter Collecting + drain + route the result
+      // into the §5.2 machine ({@link consumeIntakeNudge}), replacing the P3.77 bare `drainPendingIntake()`
+      // trigger. The §5.4 not-drainable-state guard lives IN `consumeIntakeNudge` (slice: Idle only).
+      void consumeIntakeNudge();
     }),
     listen<AppFault>("app://fault", (event) => {
       handlers.onFault?.(event.payload);

@@ -9,7 +9,7 @@
 // The named owning boxes fill the behaviour (this is a sanctioned compile-time interface
 // shell, not a quiet gap):
 //   - the §5.2 reducer finite-state machine that DRIVES `machine` is `state/machine.ts`
-//     (P3.53 slice subset → P4.80 all 12 states); this store only HOLDS the state value.
+//     (P3.53 slice subset → P4.78 all 12 states); this store only HOLDS the state value.
 //   - the live-progress wiring — the §5.8 `Channel<ConversionEvent>` → the `applyConvertEvent`
 //     reducer (the per-item `progress` map) + the `pendingVideoReencodeNote` keep/clear from
 //     `RunStarted.willReencode` — is LANDED by P2.120 (the store's first action, the pure
@@ -56,7 +56,7 @@ export type ItemProgress = { readonly fraction: number | null; readonly done: bo
  *  `reduceConvertEvent` can take/return it without depending on the actions. */
 export interface AppState {
   /** Current §5.2 screen state — the P3.53 `state/machine.ts` slice-subset {@link State}, driven by
-   *  {@link AppStore.dispatch} through the pure `transition` reducer (§5.2). P4.80 adds the remaining states. */
+   *  {@link AppStore.dispatch} through the pure `transition` reducer (§5.2). P4.78 adds the remaining states. */
   readonly machine: State;
   /** The frozen collected batch, or `null` before intake. */
   readonly batch: CollectedBatch | null;

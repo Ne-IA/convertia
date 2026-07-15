@@ -1,7 +1,7 @@
 // src/hooks/useLaunchDrain.ts — the §7.8.1 root-shell-mount first-launch drain trigger (P2.61).
 import { useEffect, useRef } from "react";
 
-import { drainPendingIntake } from "../lib/ipc/events";
+import { consumeMountDrain } from "../lib/ipc/events";
 
 /**
  * [Build-Session-Entscheidung: P2.61] The §7.8.1 root-shell-mount drain trigger — call C1 `drain_intake`
@@ -22,12 +22,13 @@ import { drainPendingIntake } from "../lib/ipc/events";
  * after a failed subscribe still loses nothing — the buffer is never left stranded core-side. The `cancelled`
  * guard drops a drain whose gate settles only after unmount.
  *
- * RESULT (§5.2): a non-empty drained `CollectedSet` drives the `Collecting` transition (P3.53's state machine
- * consumes it, exactly like a drop); an empty drain leaves the UI `Idle`. During P2 the Rust §1.1 freeze
- * seam is a shell so the result is always `Empty` → `Idle` (the trigger fires correctly; the `Collecting`
- * consumption lands with the state machine). The drain is best-effort and cannot reject under the current C1
- * handler (it returns `Ok(Empty)`); a genuine failure once C1 can fail (P3.49+) routes to the §2.13/§5.8
- * app-fault surface wired by P2.124. `void` marks the fire-and-forget trigger intent.
+ * RESULT (§5.2): [Build-Session-Entscheidung: P3.55] the drain now CONSUMES — `consumeMountDrain` (events.ts)
+ * drains once and routes the `CollectedSet` into the §5.2 machine FROM Idle (the launch-vs-nudge asymmetry: a
+ * plain-launch `Empty` STAYS Idle via the machine's `emptyStaysIdle=true` arm; a launch-with-files set advances
+ * exactly like a drop). Through P3.78 the Rust §1.1 freeze seam is a shell so the result is `Empty` → `Idle`;
+ * P3.49 wires the real freeze so a launch-with-files reaches `Confirm`. The drain is best-effort; a genuine C1
+ * failure re-throws to the §7.5.1 global frontend-error bridge (like every intake trigger). `void` marks the
+ * fire-and-forget trigger intent.
  */
 export function useLaunchDrain(eventsReady: Promise<void>): void {
   const drained = useRef(false);
@@ -38,7 +39,7 @@ export function useLaunchDrain(eventsReady: Promise<void>): void {
         return;
       }
       drained.current = true;
-      void drainPendingIntake();
+      void consumeMountDrain();
     };
     // Both legs open the gate (see the doc comment); a settled promise fires `fire` on a microtask, so the
     // drain is ALWAYS issued after the registrations settled — never in the same synchronous flush.

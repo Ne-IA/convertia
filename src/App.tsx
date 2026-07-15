@@ -4,16 +4,17 @@
 // `Idle` state shows before any file is dropped. Everything below is a named, scheduled box —
 // NOT a quiet deferral:
 //   - the §5.2 finite-state machine (the 12-state discriminated union + reducer) is the
-//     separate `state/machine.ts` artifact (P3.53 slice subset → P4.80 all 12 states);
+//     separate `state/machine.ts` artifact (P3.53 slice subset → P4.78 all 12 states);
 //   - the per-state screens (DropZone, BatchSummary, FormatPicker, ProgressList, …) are P3–P8;
 //   - the §5.7 `idle_reassurance` copy ("All conversion happens locally, …") is owned by
 //     `strings/ui.ts` (P1.37) and rendered into the Idle empty-state by P8.17 — so no text is
 //     hardcoded here.
 // This component renders the `<main>` landmark + the §5.2 screen router over the store's machine state — the
-// P1 phase end-state assembled by P1.31 (this mount) + P1.23 (index.html) + P1.16 (window model). P3.54 wires
-// the first router arm — the Idle (1) `DropZone` (§5.3) — over the `state/machine.ts` machine (P3.53); the
-// remaining slice screens (Confirm P3.55 … fault screens P3.60) add their arms as they land, and a not-yet-built
-// state renders the empty `<main>` workspace until its box lands. [Build-Session-Entscheidung: P1.31] [Build-Session-Entscheidung: P3.54]
+// P1 phase end-state assembled by P1.31 (this mount) + P1.23 (index.html) + P1.16 (window model). P3.54 wired
+// the first router arm — the Idle (1) `DropZone` (§5.3); P3.55 adds the Collecting (2) + Confirm (3) arms (the
+// §5.8 consumption seam drives Idle → Collecting → Confirm). The remaining slice screens (Targets P3.56 …
+// fault screens P3.60) add their arms as they land, and a not-yet-built state renders the empty `<main>`
+// workspace until its box lands. [Build-Session-Entscheidung: P1.31] [Build-Session-Entscheidung: P3.54] [Build-Session-Entscheidung: P3.55]
 //
 // [Build-Session-Entscheidung: P2.137] P2.61 wired the §7.8.1 root-shell-mount first-launch drain trigger
 // (`useLaunchDrain`); P2.120 added `useAppEvents()` — the three §5.8 `app://` listener registrations. P2.137
@@ -32,20 +33,40 @@
 // (the `<main>` landmark; the §5.7 reassurance copy + the 12-state screens land P3–P8) AND completes the
 // readiness handshake — `useLaunchDrain` calls C1 `drain_intake` (P3.78 — every call drains), which flips the
 // core `FrontendReady` flag via `mark_ready` (P2.60) so buffered launch paths replay. [Build-Session-Entscheidung: P2.106.8]
+import type { ReactElement } from "react";
+
+import { CollectingScreen } from "./components/CollectingScreen";
+import { ConfirmScreen } from "./components/ConfirmScreen";
 import { DropZone } from "./components/DropZone";
 import { useAppEvents } from "./hooks/useAppEvents";
 import { useLaunchDrain } from "./hooks/useLaunchDrain";
 import { useNativeDragDrop } from "./hooks/useNativeDragDrop";
-import { useAppStore } from "./state/store";
+import { useAppStore, type State } from "./state/store";
+
+// §5.2 screen router: map the current machine state to its screen. P3.54 landed the Idle (1) arm; P3.55 adds
+// the Collecting (2) + Confirm (3) arms (the §5.8 consumption seam drives Idle → Collecting → Confirm). The
+// remaining slice states (Targets P3.56 … fault screens P3.60) render null until their box lands — never a dead
+// button, because the transition INTO each state is wired by the box that first reaches it (the P3 screen-box
+// wiring model). [Build-Session-Entscheidung: P3.55]
+function screenFor(machine: State): ReactElement | null {
+  switch (machine.tag) {
+    case "idle":
+      return <DropZone />;
+    case "collecting":
+      return <CollectingScreen collectingId={machine.collectingId} scanned={machine.scanned} />;
+    case "confirm":
+      return <ConfirmScreen set={machine.set} />;
+    default:
+      return null;
+  }
+}
 
 export function App() {
   const eventsReady = useAppEvents();
   useNativeDragDrop();
   useLaunchDrain(eventsReady);
-  // §5.2 screen router: the store's `machine.tag` selects the current screen (§5.1 selector granularity).
-  // P3.54 lands the first arm — the Idle (1) `DropZone`; P3.55–P3.60 add the remaining slice screens, growing
-  // this into the full §5.2 switch. A non-Idle state renders no screen yet (the empty `<main>` workspace) until
-  // its box lands. [Build-Session-Entscheidung: P3.54]
-  const tag = useAppStore((state) => state.machine.tag);
-  return <main>{tag === "idle" ? <DropZone /> : null}</main>;
+  // §5.1 selector granularity: subscribe to the whole machine state (each §5.2 transition mints a new object,
+  // so this re-renders exactly on a screen change). [Build-Session-Entscheidung: P3.55]
+  const machine = useAppStore((state) => state.machine);
+  return <main>{screenFor(machine)}</main>;
 }
