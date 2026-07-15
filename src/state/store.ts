@@ -24,11 +24,14 @@ import { create } from "zustand";
 
 import type { ConversionEvent, EngineHealth, ItemId, TargetId } from "../lib/ipc/commands";
 
-// ─── shell domain types (expanded/replaced by the named owning boxes) ───────────────
+import { initialState, transition, type Msg, type State } from "./machine";
 
-/** The §5.2 screen-state value the store holds. The full 12-variant discriminated-union
- *  `State` + reducer is `state/machine.ts` (P3.53 → P4.80); P1 holds only the initial tag. */
-export type ScreenState = { readonly tag: "idle" };
+// The §5.2 screen-state machine now lives in `state/machine.ts` (the P3.53 slice-subset `State` +
+// pure `transition` reducer, the 2026-07-13 P3.53 ruling); the store HOLDS `machine: State` and drives it
+// via {@link AppStore.dispatch}. Re-exported here so the §5.3 screens read/dispatch from the one store home.
+export type { Msg, State } from "./machine";
+
+// ─── shell domain types (expanded/replaced by the named owning boxes) ───────────────
 
 /** The frozen collected batch (§1.3 / §0.6 `CollectedSet::Single`); P2 mirrors the real §0.6
  *  wire type via §0.4.5 `bindings.ts`. */
@@ -52,8 +55,9 @@ export type ItemProgress = { readonly fraction: number | null; readonly done: bo
 /** The DATA slice of the §5.1 store (state only). Split from the full {@link AppStore} so the pure
  *  `reduceConvertEvent` can take/return it without depending on the actions. */
 export interface AppState {
-  /** Current §5.2 screen state (driven by the P3.53 reducer once it lands). */
-  readonly machine: ScreenState;
+  /** Current §5.2 screen state — the P3.53 `state/machine.ts` slice-subset {@link State}, driven by
+   *  {@link AppStore.dispatch} through the pure `transition` reducer (§5.2). P4.80 adds the remaining states. */
+  readonly machine: State;
   /** The frozen collected batch, or `null` before intake. */
   readonly batch: CollectedBatch | null;
   /** The chosen target + options, or `null` before the Targets step. */
@@ -84,10 +88,14 @@ export interface AppStore extends AppState {
    *  and the §5.8 keep/clear of `pendingVideoReencodeNote` on `runStarted.willReencode`. It writes NO other
    *  field (the §1.11 aggregate batch bar + the §1.12 terminal `RunResult` are the P3.53 machine's, §5.8). */
   readonly applyConvertEvent: (event: ConversionEvent) => void;
+  /** [P3.53] Dispatch a §5.2 machine `Msg` — apply the pure `transition` reducer to advance `machine` (§5.2).
+   *  The §5.3 screens dispatch these (user actions + inbound §5.8 IPC results/events); the machine is the flow
+   *  single-source-of-truth (the 2026-07-13 P3.53 ruling), so the screens hold NO transition logic. */
+  readonly dispatch: (msg: Msg) => void;
 }
 
 const initialAppState: AppState = {
-  machine: { tag: "idle" },
+  machine: initialState(),
   batch: null,
   chosenTarget: null,
   destination: null,
@@ -103,6 +111,7 @@ const initialAppState: AppState = {
 export const useAppStore = create<AppStore>()((set) => ({
   ...initialAppState,
   applyConvertEvent: (event) => set((state) => reduceConvertEvent(state, event)),
+  dispatch: (msg) => set((state) => ({ machine: transition(state.machine, msg) })),
 }));
 
 /** The pure §5.8 progress reducer behind `applyConvertEvent` — `(state, event) → changed slice` so it is

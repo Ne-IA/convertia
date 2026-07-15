@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 
 import type { ConversionEvent, EngineHealth, RunResult } from "../lib/ipc/commands";
 
+import { initialState } from "./machine";
 import { reduceConvertEvent, selectUnavailableTargets, useAppStore, type AppStore } from "./store";
 
 // §6.4.6 unit (G15): the P2.114 `EngineHealth` → `unavailableTargets` store-selector seam (§7.2.3 / §5.1).
@@ -170,5 +171,28 @@ describe("applyConvertEvent (P2.120 live store action)", () => {
       data: { runId: "r1", itemId: 1, fraction: 0.25, stage: "writing" },
     });
     expect(useAppStore.getState().progress).toEqual({ 1: { fraction: 0.25, done: false } });
+  });
+});
+
+// §6.4.6 unit (G15): the P3.53 §5.2 machine store-integration — the store HOLDS `machine: State` and drives it
+// through the pure `transition` reducer via `dispatch` (the 2026-07-13 P3.53 ruling). The per-transition logic
+// is tested exhaustively in `machine.test.ts`; here we assert the store seam (initial state + dispatch → reducer).
+describe("machine dispatch (P3.53 §5.2 store integration)", () => {
+  afterEach(() => {
+    // Reset the singleton's machine field so tests stay isolated.
+    useAppStore.setState({ machine: initialState() });
+  });
+
+  it("the store's initial machine state is Idle (§5.2 initialState())", () => {
+    expect(useAppStore.getState().machine).toEqual({ tag: "idle" });
+  });
+
+  it("dispatch drives the machine through the pure transition reducer (Idle → Collecting)", () => {
+    useAppStore.getState().dispatch({ type: "startCollecting", collectingId: "c1" });
+    expect(useAppStore.getState().machine).toEqual({
+      tag: "collecting",
+      collectingId: "c1",
+      scanned: null,
+    });
   });
 });
