@@ -50,6 +50,7 @@ import { useAppStore } from "../../state/store";
 
 import {
   drainPendingIntake,
+  pickForIntake,
   startConversionRun,
   subscribeAppEvents,
   subscribeNativeDragDrop,
@@ -84,6 +85,30 @@ describe("drainPendingIntake (§7.8.1 first-launch drain)", () => {
     await drainPendingIntake();
     const ids = invoke.mock.calls.map((call) => call[1].collectingId);
     expect(new Set(ids).size).toBe(2);
+  });
+});
+
+describe("pickForIntake (§0.4.1 C2a intake picker — the §5.3 DropZone action, P3.54)", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue(null);
+  });
+
+  // C2a opens the native dialog Rust-side and returns () — the picked set completes via the app://intake
+  // nudge → C1 drain (subscribeAppEvents), so this call carries only the § 0.6 PickKind and no path (§5.4).
+  it.each([["files"], ["folder"]] as const)(
+    "calls C2a pick_for_intake with { kind: %s } (files → browse click, folder → choose-folder)",
+    async (kind) => {
+      await pickForIntake(kind);
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(invoke).toHaveBeenCalledWith("pick_for_intake", { kind });
+    },
+  );
+
+  it("carries EXACTLY { kind } on the wire — no path / collectingId / onScan (C2a walks nothing, P3.78)", async () => {
+    await pickForIntake("files");
+    const args = invoke.mock.calls[0]?.[1] ?? {};
+    expect(Object.keys(args)).toEqual(["kind"]);
   });
 });
 

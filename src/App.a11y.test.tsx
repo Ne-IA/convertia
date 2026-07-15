@@ -23,6 +23,9 @@ vi.mock("./lib/ipc/events", () => ({
   drainPendingIntake: () => Promise.resolve({ empty: { skipped: [] } }),
   subscribeAppEvents: () => Promise.resolve(() => {}),
   subscribeNativeDragDrop: () => Promise.resolve(() => {}),
+  // The §5.2 Idle screen (the P3.54 DropZone, rendered by App) imports the C2a `pickForIntake` façade — stub it
+  // so this a11y baseline render stays hermetic. The DropZone's own axe legs live in DropZone.a11y.test.tsx.
+  pickForIntake: () => Promise.resolve(),
 }));
 
 import { App } from "./App";

@@ -17,6 +17,9 @@ vi.mock("./lib/ipc/events", () => ({
   drainPendingIntake: () => drainPendingIntake(),
   subscribeAppEvents: () => subscribeAppEvents(),
   subscribeNativeDragDrop: () => subscribeNativeDragDrop(),
+  // The §5.2 Idle screen (the P3.54 DropZone, rendered by App) imports the C2a `pickForIntake` façade; stub it
+  // so the Idle render stays hermetic (it fires only on a user action, which this suite does not exercise).
+  pickForIntake: () => Promise.resolve(),
 }));
 
 import { App } from "./App";

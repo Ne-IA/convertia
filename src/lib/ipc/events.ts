@@ -34,6 +34,7 @@ import {
   type ConversionEvent,
   type DestinationChoice,
   type OptionValues,
+  type PickKind,
   type RerunDecision,
   type RunId,
   type ScanProgress,
@@ -58,16 +59,38 @@ import {
  * - `onScan` is the required §0.4.1 `Channel<ScanProgress>` (the C1 non-optional forced deviation) — a drain of
  *   a small buffer has little scan progress, so it is a bare unsubscribed sink here.
  *
- * Returns the §0.6 `CollectedSet`: a non-empty drain → the §5.2 `Collecting` transition (P3.53's state
- * machine consumes the result, exactly like a drop); an empty drain (the ordinary first launch with no
- * files) → `CollectedSet::Empty` and the UI stays `Idle`. Through P3.78 the Rust §1.1 freeze seam is a shell,
- * so the result is always `Empty` until P3.49 wires the real freeze — the drain TRIGGER is this box's
- * deliverable, the result CONSUMPTION lands with the state machine.
+ * Returns the §0.6 `CollectedSet`: a non-empty drain would drive the §5.2 `Collecting`/`Confirm` transition, an
+ * empty drain (the ordinary first launch with no files) leaves the UI `Idle`. Through P3.78 the Rust §1.1 freeze
+ * seam is a shell, so the result is `Empty` until P3.49 wires the real freeze. This helper is the drain TRIGGER;
+ * feeding the result into the §5.2 machine — dispatching the `collected`/`startCollecting`/`scanTick` Msgs — is
+ * the **§5.8 drain consumption** (§5.4 names it "the §5.8 C1 `drain_intake` consumption"), owned by the SCREEN
+ * boxes that make each target state reachable (P3.55 Confirm is the first `collected`→Confirm consumer), NOT this
+ * trigger. So the drained result is currently unconsumed by design; P3.55+ wire the dispatch.
  */
 export async function drainPendingIntake(): Promise<CollectedSet> {
   const collectingId = crypto.randomUUID();
   const onScan = new Channel<ScanProgress>();
   return commands.drainIntake(collectingId, onScan);
+}
+
+/**
+ * [Build-Session-Entscheidung: P3.54] Fire the §0.4.1 C2a `pick_for_intake` intake picker — the §5.3 DropZone's
+ * click-to-browse (`kind: "files"`) / choose-folder (`kind: "folder"`) action. C2a opens the native
+ * files/folder dialog Rust-side via `DialogExt` (no `dialog:allow-open` WebView grant, §0.10/§5.4) and returns
+ * `()`: the picked set is routed core-side through the same §7.8.1 funnel every intake source uses →
+ * `State<PendingIntake>` → the payload-less `app://intake` nudge (§0.4.2), and the WebView completes the intake
+ * via the C1 drain ({@link drainPendingIntake}, wired on the nudge by {@link subscribeAppEvents}). So NO raw FS
+ * path ever reaches the WebView, and this call's own resolution carries nothing to act on. A cancelled dialog is
+ * a clean core-side no-op — nothing buffered, no nudge; the UI stays Idle (§5.4).
+ *
+ * Fire-and-forget: the §5.3 DropZone `void`s it (the completion is the nudge→drain, never this promise). A
+ * genuine dialog-subsystem `Err(IpcError)` (rare — a folder/file pick has no *user-facing* failure) surfaces
+ * through the §7.5.1 global frontend-error bridge as a structural record (`installFrontendErrorLog`), exactly as
+ * an unhandled {@link drainPendingIntake} rejection would; its user-visible §5.3 `CommandError` inline surface is
+ * a state-screen concern (§5.8), not this intake-trigger box.
+ */
+export async function pickForIntake(kind: PickKind): Promise<void> {
+  await commands.pickForIntake(kind);
 }
 
 // ─── P2.120: the §5.8 frontend async model (Channel<ConversionEvent> lifecycle + the three app:// listeners) ───

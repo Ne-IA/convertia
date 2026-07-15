@@ -17,4 +17,11 @@ export const ui = {
   // fixed string (the SSOT "Local, private & offline" promise). This is its SINGLE home: P8.17 only
   // references it for the Idle screen, never re-defines it; the exact text is drift-checked by G57.
   idle_reassurance: "All conversion happens locally, on your machine — nothing is ever uploaded.",
+
+  // The section 5.3 DropZone (the section 5.2 Idle intake surface, P3.54). The primary drop-or-browse
+  // surface labels the click-to-browse action (a native file drop is handled core-side, section 5.4 --
+  // the label speaks to the mouse-drop and the click/keyboard browse equally); the secondary link is the
+  // "choose a folder" affordance (both invoke C2a pick_for_intake, section 0.4.1). [Build-Session-Entscheidung: P3.54]
+  dropzone_prompt: "Drop files here, or click to choose files",
+  dropzone_choose_folder: "Or choose a folder",
 } as const;

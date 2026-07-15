@@ -9,10 +9,11 @@
 //   - the §5.7 `idle_reassurance` copy ("All conversion happens locally, …") is owned by
 //     `strings/ui.ts` (P1.37) and rendered into the Idle empty-state by P8.17 — so no text is
 //     hardcoded here.
-// This component renders only the `<main>` landmark so the empty ConvertIA window boots — the
-// P1 phase end-state assembled by P1.31 (this mount) + P1.23 (index.html) + P1.16 (window
-// model). The machine-state switch that selects a screen is wired when `state/machine.ts`
-// lands (P3.53). [Build-Session-Entscheidung: P1.31]
+// This component renders the `<main>` landmark + the §5.2 screen router over the store's machine state — the
+// P1 phase end-state assembled by P1.31 (this mount) + P1.23 (index.html) + P1.16 (window model). P3.54 wires
+// the first router arm — the Idle (1) `DropZone` (§5.3) — over the `state/machine.ts` machine (P3.53); the
+// remaining slice screens (Confirm P3.55 … fault screens P3.60) add their arms as they land, and a not-yet-built
+// state renders the empty `<main>` workspace until its box lands. [Build-Session-Entscheidung: P1.31] [Build-Session-Entscheidung: P3.54]
 //
 // [Build-Session-Entscheidung: P2.137] P2.61 wired the §7.8.1 root-shell-mount first-launch drain trigger
 // (`useLaunchDrain`); P2.120 added `useAppEvents()` — the three §5.8 `app://` listener registrations. P2.137
@@ -31,13 +32,20 @@
 // (the `<main>` landmark; the §5.7 reassurance copy + the 12-state screens land P3–P8) AND completes the
 // readiness handshake — `useLaunchDrain` calls C1 `drain_intake` (P3.78 — every call drains), which flips the
 // core `FrontendReady` flag via `mark_ready` (P2.60) so buffered launch paths replay. [Build-Session-Entscheidung: P2.106.8]
+import { DropZone } from "./components/DropZone";
 import { useAppEvents } from "./hooks/useAppEvents";
 import { useLaunchDrain } from "./hooks/useLaunchDrain";
 import { useNativeDragDrop } from "./hooks/useNativeDragDrop";
+import { useAppStore } from "./state/store";
 
 export function App() {
   const eventsReady = useAppEvents();
   useNativeDragDrop();
   useLaunchDrain(eventsReady);
-  return <main />;
+  // §5.2 screen router: the store's `machine.tag` selects the current screen (§5.1 selector granularity).
+  // P3.54 lands the first arm — the Idle (1) `DropZone`; P3.55–P3.60 add the remaining slice screens, growing
+  // this into the full §5.2 switch. A non-Idle state renders no screen yet (the empty `<main>` workspace) until
+  // its box lands. [Build-Session-Entscheidung: P3.54]
+  const tag = useAppStore((state) => state.machine.tag);
+  return <main>{tag === "idle" ? <DropZone /> : null}</main>;
 }
