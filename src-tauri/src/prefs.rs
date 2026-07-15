@@ -110,7 +110,8 @@ impl LastDestinationMode {
 /// Instead `crate::orchestrator::resolve_persisted_destination` reads this `LastDestinationMode` Rust-side,
 /// re-validates a `ChosenPath` as writable (§2.7.2 `location_status`; §7.4.1 re-validate-at-use-time), and loads
 /// a valid one into the §0.4.4 `DestinationRegistry` (a beside-source fallback registers nothing) — the frontend
-/// then handles only the resulting `DestinationPicked` ID+display pair (its live consumer is P3.81). The
+/// then handles only the resulting `DestinationPicked` ID+display pair (its live consumers are the
+/// P3.53+/P3.56 screens; P3.81 verifies — the 2026-07-12 re-ordering). The
 /// HINT-not-a-guarantee semantics are encoded by the distinct `LastDestinationMode` type (P2.85).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Prefs {

@@ -18,7 +18,8 @@
 // (`WindowEvent::DragDrop` → the §7.8.1 funnel) and made `app://intake` a PAYLOAD-LESS nudge: the WebView no
 // longer ingests a drop or carries intake paths — the `app://intake` listener + the mount both issue the C1
 // DRAIN (`drainPendingIntake`), and `subscribeNativeDragDrop` keeps only the drag-active affordance (the
-// retired `ingestFromDrop` / `ingestFromIntakeEvent` are tombstoned below). P3.81 is the comprehensive re-wire.
+// retired `ingestFromDrop` / `ingestFromIntakeEvent` are tombstoned below). P3.81 is the post-screens
+// consolidation/verification box (re-ordered after the P3.53-P3.60 screens by its 2026-07-12 ruling).
 // [Build-Session-Entscheidung: P2.61]
 import { Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -233,8 +234,9 @@ export interface NativeDragDropHandlers {
  * `PendingIntake` → the payload-less `app://intake` nudge → the C1 drain), so ingesting here too would
  * DOUBLE-INGEST one drop. The `drop` phase now only clears the drag-active affordance; the dropped paths never
  * enter the WebView (the §0.4.0 boundary fact). This Tauri-`onDragDropEvent` affordance is the interim; the
- * §7.8.1 "drag-over styling from DOM drag events only" DropZone replaces it at P3.54, and P3.81 finalises the
- * WebView drop-wiring removal. This is the ONLY place `onDragDropEvent` is wired (§0.7). Returns the unlisten.
+ * §7.8.1 "drag-over styling from DOM drag events only" DropZone replaces it at P3.54, and P3.81 retires this
+ * interim listener (its post-screens hand-off completion, the 2026-07-12 re-ordering ruling).
+ * This is the ONLY place `onDragDropEvent` is wired (§0.7). Returns the unlisten.
  */
 export async function subscribeNativeDragDrop(
   handlers: NativeDragDropHandlers = {},

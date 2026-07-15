@@ -2537,7 +2537,8 @@ impl CollectedSetRegistry {
 // batches never forces a re-pick) and die at app exit; nothing is persisted (§7.4)". Like the sibling
 // stores it is a CONTRACT before its consumer: P3.80 wired the C4/C6 `resolve_choice` resolution + the
 // `.manage` registration (so `resolve`/`resolve_choice` are now LIVE); `register` stays dead in the production
-// build until the C2b real-pick body (P3.56) and the P3.81 consumer of `resolve_persisted_destination` (leg 3),
+// build until the C2b real-pick body (P3.56) and the P3.53+/P3.56 screen consumer of
+// `resolve_persisted_destination` (leg 3; P3.81 verifies, per its 2026-07-12 re-ordering),
 // so the module-level dead_code expect stays fulfilled while those remain unwired.
 
 /// The §0.4.4 picked-destination registry — maps each C2b-minted `DestinationId` to its Rust-picked root
@@ -2630,7 +2631,8 @@ impl DestinationRegistry {
 /// grammar probe name (passed IN — `fs_guard`'s `location_status` never depends on `crate::run`), performing NO
 /// `AppHandle` / `prefs::load` read itself. Its AppHandle-coupled consumer — the startup/mount read of
 /// `prefs::load(app).last_destination_mode` + `State<InstanceId>` (for the probe) + `State<DestinationRegistry>`
-/// that hands the resulting `DestinationPicked` to the frontend — is the §5.8-owned P3.81 wire (consumer-free
+/// that hands the resulting `DestinationPicked` to the frontend — is the §5.8-owned P3.53+/P3.56 screen
+/// wire (P3.81 verifies, per its 2026-07-12 re-ordering; consumer-free
 /// until then, the `DestinationRegistry`-dead-until-P3.80 + C9 P3.79→P3.51 build-vs-wire precedent; the
 /// module-level `dead_code` expect covers it). [Build-Session-Entscheidung: P3.80]
 pub fn resolve_persisted_destination(
@@ -2652,7 +2654,8 @@ pub fn resolve_persisted_destination(
             })
         }
         // §7.4.1/§2.7: a gone / read-only / ephemeral persisted path → the beside-source fallback, nothing
-        // registered (the §5.8 "falls back to beside-source" — the passive fallback note is the P3.81 frontend's).
+        // registered (the §5.8 "falls back to beside-source" — the passive fallback note is the P3.56+ screens'
+        // frontend concern).
         LocationStatus::Divert(_) => None,
     }
 }
