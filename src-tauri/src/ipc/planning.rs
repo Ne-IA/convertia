@@ -10,51 +10,56 @@
 // deny guards. The shells below do no arithmetic; the deny bites the fill-bodies.
 #![deny(clippy::arithmetic_side_effects)]
 
-use std::path::PathBuf;
-
 use tauri::{AppHandle, Manager};
 
 use crate::domain::{
-    CollectedSetId, DestinationChoice, InstanceId, OptionValues, TargetId, TargetOffer,
+    CollectedSetId, DestinationChoice, DestinationPicked, InstanceId, OptionValues,
+    ResolvedDestination, TargetId, TargetOffer,
 };
 use crate::engines::slice_target;
 use crate::orchestrator::{
-    plan_output_preview, CollectedSetRegistry, DestinationResolved, EquivKeyComputer,
-    OutputPlanPreview,
+    plan_output_preview, CollectedSetRegistry, DestinationRegistry, DestinationResolved,
+    EquivKeyComputer, OutputPlanPreview,
 };
 use crate::outcome::{ConversionErrorKind, IpcError};
 use crate::run::RerunLedger;
 
-/// **C2b `pick_destination`** (§0.4.1) — the Rust-side `DialogExt` destination-folder picker. This box (P2.24)
-/// authors the typed §0.4.1 wire CONTRACT — the `{} -> Result<Option<PathBuf>, IpcError>` door — so the
-/// generated `bindings.ts` carries the C2b surface. Unlike the C2a intake picker, the **one chosen `PathBuf` it
-/// returns legitimately transits the WebView** into C5 `set_destination` (and then C6): it is a *write*
-/// destination, not a source path, so it can never harm an original or read anything (§0.10 / §2.1 / §0.11 T2).
-/// `Ok(None)` = the user cancelled — a clean no-op; the held C4/C5 destination is unchanged.
+/// **C2b `pick_destination`** (§0.4.1) — the Rust-side `DialogExt` destination-folder picker. P2.24 authored the
+/// typed §0.4.1 wire CONTRACT; **P3.80 RE-KEYS the return** to the id form — the
+/// `{} -> Result<Option<DestinationPicked>, IpcError>` door — so the generated `bindings.ts` carries the id +
+/// display pair, never a path. The picked folder is a *write* destination (never a source), so it can never harm
+/// an original or read anything (§0.10 / §2.1 / §0.11 T2); and per the 2026-07-06 core-owned-paths ruling **no FS
+/// path transits the WebView in either direction** — the handler mints a `DestinationId`, stores the picked
+/// folder in the §0.4.4 `DestinationRegistry`, and returns `DestinationPicked { destination: DestinationId,
+/// display: String }` (§2.10.1). The WebView carries the id into C5 `set_destination` (and C6) as
+/// `DestinationChoice::ChosenRoot(id)`; the core resolves it back to the real `PathBuf`. `Ok(None)` = the user
+/// cancelled — a clean no-op; the held C4/C5 destination is unchanged.
 ///
-/// [Build-Session-Entscheidung: P2.24] **`Result<Option<PathBuf>, IpcError>` return — the §0.4 universal
-/// error-shape rule.** §0.4 "Error shape" is categorical: *every* command returns `Result<T, IpcError>`. The
-/// §0.4.1 table's `Option<PathBuf>` output column is the SUCCESS type `T`, wrapped in `Result<T, IpcError>` at
-/// the handler — exactly as C1's `CollectedSet` column maps to `Result<CollectedSet, IpcError>`. So the three
-/// boundary outcomes are: `Ok(Some(path))` = the user picked a folder; `Ok(None)` = the user cancelled (a clean
-/// no-op, the §5.4 cancelled-picker result); `Err(IpcError)` = the native dialog subsystem genuinely failed (a
-/// folder pick has no *user-facing* failure, but the boundary still honours the universal Result shape rather
-/// than panicking across it, §0.4 "No command ever panics across the boundary"). The wire/TS callsite is
-/// unchanged (`Result<T, E>` renders as `__TAURI_INVOKE<T>` + a thrown `IpcError`, like C1).
+/// [Build-Session-Entscheidung: P2.24 → P3.80] **`Result<Option<DestinationPicked>, IpcError>` return — the §0.4
+/// universal error-shape rule.** §0.4 "Error shape" is categorical: *every* command returns `Result<T, IpcError>`.
+/// The §0.4.1 table's `Option<DestinationPicked>` output column is the SUCCESS type `T`, wrapped in
+/// `Result<T, IpcError>` at the handler — exactly as C1's `CollectedSet` column maps to
+/// `Result<CollectedSet, IpcError>`. So the three boundary outcomes are: `Ok(Some(picked))` = the user picked a
+/// folder (registered, id + display returned); `Ok(None)` = the user cancelled (a clean no-op, the §5.4
+/// cancelled-picker result); `Err(IpcError)` = the native dialog subsystem genuinely failed (a folder pick has no
+/// *user-facing* failure, but the boundary still honours the universal Result shape rather than panicking across
+/// it, §0.4 "No command ever panics across the boundary"). The wire/TS callsite is unchanged (`Result<T, E>`
+/// renders as `__TAURI_INVOKE<T>` + a thrown `IpcError`, like C1).
 ///
-/// [Build-Session-Entscheidung: P2.24] **Interface-shell body — the typed CONTRACT is the deliverable.**
-/// P2.24 authors the §0.4.1 wire signature; the native `DialogExt` folder-pick BODY (`app.dialog().file()
-/// .pick_folder(..)`, opened async/`spawn_blocking` so it never blocks a Tokio worker, §7 app-shell) is wired
-/// end-to-end at P3.56 — the DestinationBar, whose "Change destination" affordance drives C2b → C5 (P3.54 wires
-/// the C2a *intake* picker, a distinct path; C2b is the *destination* picker). A native OS folder dialog is
-/// **not unit-testable** (it needs a real OS dialog /
-/// user interaction — the §6.6 walkthrough + the P9 E2E flow exercise it), so the testable P2 deliverable is
-/// the typed contract; the shell returns `Ok(None)` — the genuine cancelled/no-pick result. This is the
-/// sanctioned compile-time interface-shell pattern (CLAUDE §5 / the P3 `crate::isolation` shells P4 expands),
-/// not a quiet deferral.
+/// [Build-Session-Entscheidung: P2.24 → P3.80] **Interface-shell body — the typed CONTRACT is the deliverable;
+/// P3.80 re-keys only the RETURN TYPE.** P2.24 authored the wire signature; P3.80 re-keys `Option<PathBuf>` →
+/// `Option<DestinationPicked>` (the id form). The native `DialogExt` folder-pick BODY (`app.dialog().file()
+/// .pick_folder(..)`, opened async/`spawn_blocking` so it never blocks a Tokio worker, §7 app-shell) — which
+/// mints the id, registers the picked root in `State<DestinationRegistry>` (the P3.80-live `register`), and
+/// returns the `DestinationPicked` — is wired end-to-end at P3.56 (the DestinationBar "Change destination"
+/// affordance drives C2b → C5; P3.54 wires the C2a *intake* picker, a distinct path). A native OS folder dialog
+/// is **not unit-testable** (it needs a real OS dialog / user interaction — the §6.6 walkthrough + the P9 E2E
+/// flow exercise it), so the testable deliverable is the typed contract; the shell returns `Ok(None)` — the
+/// genuine cancelled/no-pick result. This is the sanctioned compile-time interface-shell pattern (CLAUDE §5 / the
+/// P3 `crate::isolation` shells P4 expands), not a quiet deferral.
 #[tauri::command]
 #[specta::specta]
-pub async fn pick_destination() -> Result<Option<PathBuf>, IpcError> {
+pub async fn pick_destination() -> Result<Option<DestinationPicked>, IpcError> {
     Ok(None)
 }
 
@@ -94,9 +99,11 @@ pub async fn get_targets(
 ///
 /// [Build-Session-Entscheidung: P3.49] **WIRED for the walking skeleton.** The handler binds an `AppHandle`
 /// (Tauri-injected — the §0.4.1 wire signature stays `{ collectedSetId, target, options, destination }`) to
-/// reach the §0.4.4 `State<CollectedSetRegistry>` + the §2.5 `State<EquivKeyComputer>` / `State<RerunLedger>`
-/// + the app `State<InstanceId>`, and dispatches to the AppHandle-free `resolve_output_plan` helper, which
-/// resolves the set and delegates the §1.8 batch preview to `orchestrator::plan_output_preview`: the
+/// reach the §0.4.4 `State<CollectedSetRegistry>` + `State<DestinationRegistry>` + the §2.5
+/// `State<EquivKeyComputer>` / `State<RerunLedger>` + the app `State<InstanceId>`; it resolves the wire
+/// `ChosenRoot(DestinationId)` against the picked-roots registry (`resolve_choice`; an unknown id → the §0.4.3
+/// refusal, P3.80) and dispatches the resolved `ResolvedDestination` to the AppHandle-free `resolve_output_plan`
+/// helper, which resolves the set and delegates the §1.8 batch preview to `orchestrator::plan_output_preview`: the
 /// representative "will save to…" directory + its §2.7.2 divert classification (`location_status`), the §2.5
 /// PEEK-only re-run verdict (`compute_rerun_verdict`), and the §1.10 preflight verdict. The §1.10 verdict is
 /// the **trivial §1.10-seam slice verdict** (the CSV→TSV footprint is negligible ⇒ `up_front_fail: None` by
@@ -121,14 +128,23 @@ pub async fn plan_output(
     // (`spawn_blocking`), never a Tokio worker — the same async-safety discipline C1 applies to its walk and C2a
     // to its dialog (§1.1 "MUST NOT block a Tokio worker thread"), keeping the async runtime free for the
     // debounced re-calls (§5.8). `AppHandle` + the owned args move into the closure; State is re-resolved inside
-    // (infallible — all four stores are `.manage()`d). A `JoinError` (the probe thread panicked —
-    // should-never-happen under the in-core no-panic policy) surfaces as an InternalError, never a silent value.
-    // [Build-Session-Entscheidung: P3.49]
+    // (all five stores are `.manage()`d); the P3.80 `resolve_choice` adds a fallible step — an unknown
+    // `ChosenRoot(DestinationId)` refuses with the §0.4.3 not-available `Err` before the preview runs. A
+    // `JoinError` (the probe thread panicked — should-never-happen under the in-core no-panic policy) surfaces as
+    // an InternalError, never a silent value. [Build-Session-Entscheidung: P3.49]
     match tauri::async_runtime::spawn_blocking(move || {
         let sets = app.state::<CollectedSetRegistry>();
         let computer = app.state::<EquivKeyComputer>();
         let ledger = app.state::<RerunLedger>();
+        let destinations = app.state::<DestinationRegistry>();
         let instance = *app.state::<InstanceId>();
+        // §0.4.4 (P3.80): resolve the wire `ChosenRoot(DestinationId)` against the picked-roots registry to its
+        // real `PathBuf` — an unknown id is the §0.4.3 refusal (`not_available`). The pure §1.8 preview then
+        // reads a resolved `ResolvedDestination`, never a registry lookup (the 2026-07-06 core-owned-paths split,
+        // the C9 `open_path` id-resolution mirror). [Build-Session-Entscheidung: P3.80]
+        let Some(resolved) = destinations.resolve_choice(&destination) else {
+            return Err(not_available("Could not plan the output."));
+        };
         resolve_output_plan(
             &sets,
             &computer,
@@ -137,7 +153,7 @@ pub async fn plan_output(
             collected_set_id,
             target,
             &options,
-            &destination,
+            &resolved,
         )
     })
     .await
@@ -234,7 +250,7 @@ fn resolve_output_plan(
     collected_set_id: CollectedSetId,
     target: TargetId,
     options: &OptionValues,
-    destination: &DestinationChoice,
+    destination: &ResolvedDestination,
 ) -> Result<OutputPlanPreview, IpcError> {
     let Some(set) = sets.resolve(collected_set_id) else {
         return Err(not_available("Could not plan the output."));
@@ -311,30 +327,31 @@ mod support {
 #[cfg(test)]
 mod c2b_contract {
     //! §6.4.1 unit (G15): the §0.4.1 C2b `pick_destination` typed CONTRACT (P2.24). Mirrors the C1/C2a
-    //! `*_contract` tests — the handler now carries its typed `-> Result<Option<PathBuf>, IpcError>` signature
-    //! (the §0.4 universal error shape), so the P2.21 all-shells `block_on(pick_destination())` invocation in
-    //! `crate::ipc` (mod.rs) is REPLACED here by C2b's own typed-contract test (the fill-box transition the
-    //! P2.21 note schedules). The native folder-dialog body is not unit-testable (it needs a real OS dialog) and
-    //! lands at P3.56 (the DestinationBar "Change destination" path); this asserts the typed contract returns
-    //! the cancelled/no-pick `Ok(None)`. [Build-Session-Entscheidung: P2.24]
+    //! `*_contract` tests — the handler carries its typed signature, **re-keyed by P3.80** to
+    //! `-> Result<Option<DestinationPicked>, IpcError>` (the id form; the §0.4 universal error shape), so the
+    //! P2.21 all-shells `block_on(pick_destination())` invocation in `crate::ipc` (mod.rs) is REPLACED here by
+    //! C2b's own typed-contract test (the fill-box transition the P2.21 note schedules). The native folder-dialog
+    //! body (which mints the id + registers the picked root) is not unit-testable (it needs a real OS dialog) and
+    //! lands at P3.56 (the DestinationBar "Change destination" path); this asserts the typed contract returns the
+    //! cancelled/no-pick `Ok(None)`. [Build-Session-Entscheidung: P2.24 → P3.80]
     use super::*;
     use tauri::async_runtime::block_on;
 
-    // §6.4.1 unit (G15): the C2b contract is invocable and returns `Result<Option<PathBuf>, IpcError>` (the wire
-    // door this box authors, in the §0.4 universal error shape). The shell opens no dialog yet (the DialogExt
-    // body is P3.56, the DestinationBar "Change destination" path), so it returns `Ok(None)` — which is ALSO the
-    // contract's genuine cancelled-dialog result (§0.4.1: `Ok(None)` = the user cancelled); P3.56 replaces it
-    // with the real folder pick whose `Ok(Some(path))` carries into C5, and an `Err(IpcError)` for a genuine
-    // dialog-subsystem failure.
+    // §6.4.1 unit (G15): the C2b contract is invocable and returns `Result<Option<DestinationPicked>, IpcError>`
+    // (the id-keyed wire door, P3.80-re-keyed, in the §0.4 universal error shape). The shell opens no dialog yet
+    // (the DialogExt body is P3.56, the DestinationBar "Change destination" path), so it returns `Ok(None)` —
+    // which is ALSO the contract's genuine cancelled-dialog result (§0.4.1: `Ok(None)` = the user cancelled);
+    // P3.56 replaces it with the real folder pick whose `Ok(Some(DestinationPicked))` (id + display) carries into
+    // C5, and an `Err(IpcError)` for a genuine dialog-subsystem failure.
     #[test]
     fn c2b_pick_destination_contract_is_invocable_and_typed() {
-        let out: Result<Option<PathBuf>, IpcError> = block_on(pick_destination());
+        let out: Result<Option<DestinationPicked>, IpcError> = block_on(pick_destination());
         assert_eq!(
             out,
             Ok(None),
             "§0.4.1/§0.4: the C2b contract shell opens no dialog yet (the DialogExt body is P3.56), so it \
-             returns Ok(None) — also the §5.4 cancelled-pick result; the typed Result<Option<PathBuf>, \
-             IpcError> signature (the §0.4 universal error shape) is the P2.24 deliverable"
+             returns Ok(None) — also the §5.4 cancelled-pick result; the typed Result<Option<DestinationPicked>, \
+             IpcError> signature (the §0.4 universal error shape) is the P2.24→P3.80 deliverable"
         );
     }
 }
@@ -487,7 +504,7 @@ mod c4_contract {
             id,
             TargetId::Format(FormatId::Tsv),
             &no_options(),
-            &DestinationChoice::BesideSource,
+            &ResolvedDestination::BesideSource,
         )
         .expect("a registered CSV set resolves an OutputPlanPreview");
         assert_eq!(
@@ -535,7 +552,7 @@ mod c4_contract {
             id,
             TargetId::Format(FormatId::Tsv),
             &no_options(),
-            &DestinationChoice::ChosenRoot(chosen_dir.path().to_path_buf()),
+            &ResolvedDestination::ChosenRoot(chosen_dir.path().to_path_buf()),
         )
         .expect("a registered CSV set with a chosen root resolves an OutputPlanPreview");
         assert_eq!(
@@ -564,7 +581,7 @@ mod c4_contract {
             collected_set_id(),
             TargetId::Format(FormatId::Tsv),
             &no_options(),
-            &DestinationChoice::BesideSource,
+            &ResolvedDestination::BesideSource,
         )
         .expect_err("§2.13: an unresolvable set id yields the not-available Err");
         assert_eq!(
@@ -575,8 +592,10 @@ mod c4_contract {
     }
 
     // §6.4.1 unit (G15): the C4 handler is AppHandle-coupled boot-glue (§1.1a; G28-exempt) — a source-scan pins
-    // it binds an `AppHandle`, resolves the four States (the `state::<InstanceId>()` needle is call-specific),
-    // and DISPATCHES via `resolve_output_plan`. Needles `concat!`-assembled (self-match avoidance).
+    // it binds an `AppHandle`, resolves the FIVE States (incl. the P3.80 `DestinationRegistry`; the
+    // `state::<InstanceId>()` needle is call-specific), resolves the wire ChosenRoot(DestinationId) via
+    // `resolve_choice` (§0.4.4/§0.4.3), and DISPATCHES via `resolve_output_plan`. Needles `concat!`-assembled
+    // (self-match avoidance).
     #[test]
     fn plan_output_handler_binds_apphandle_and_dispatches_via_the_helper() {
         let src = production_planning_source();
@@ -585,15 +604,18 @@ mod c4_contract {
             concat!("app: App", "Handle"),
             concat!("spawn_", "blocking(move"),
             concat!("state::<CollectedSet", "Registry>()"),
+            concat!("state::<Destination", "Registry>()"),
             concat!("state::<EquivKey", "Computer>()"),
             concat!("state::<Rerun", "Ledger>()"),
             concat!("state::<Instance", "Id>()"),
+            concat!("resolve_", "choice(&destination)"),
             concat!("resolve_output_", "plan("),
         ] {
             assert!(
                 src.contains(needle),
-                "§0.4.1/§1.8: the C4 plan_output handler must bind an AppHandle, resolve the four States, and \
-                 dispatch via resolve_output_plan (missing `{needle}`)"
+                "§0.4.1/§1.8/§0.4.4: the C4 plan_output handler must bind an AppHandle, resolve the five States \
+                 (incl. DestinationRegistry), resolve the destination id (resolve_choice), and dispatch via \
+                 resolve_output_plan (missing `{needle}`)"
             );
         }
     }

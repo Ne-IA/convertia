@@ -909,11 +909,11 @@ pub struct Batch {
     pub source_format: UserFacingFormat,
     pub target: Target,              // INVARIANT: exactly one, whole-batch (below)
     pub options: OptionValues,       // INVARIANT: one effective set, whole-batch
-    pub destination: DestinationChoice,
+    pub destination: ResolvedDestination, // the C6-resolved CORE form (see ResolvedDestination below), NOT the wire enum
     pub jobs: Vec<ConversionJob>,
 }
 
-pub enum DestinationChoice {
+pub enum DestinationChoice {         // the WIRE type — the C4/C5/C6 `destination` argument (§0.4.1)
     BesideSource,                    // default (§2.7); per-location divert applies
     ChosenRoot(DestinationId),       // a C2b-picked root, named BY ID [DECIDED 2026-07-06]; the
                                      //   core resolves it against the §0.4.4 picked-roots registry
@@ -927,6 +927,16 @@ pub struct DestinationPicked {       // C2b pick_destination success payload (§
     pub destination: DestinationId,  // the freshly-minted id of the picked root
     pub display: String,             // display-only lossy form of the picked folder (§2.10.1),
                                      //   for the "will save to …" line
+}
+// [PROPOSED — the P3.80 wire/core split, the Build-Loop escalation ruling] The pure §1.8/§2.7 orchestrator
+// legs (Batch.destination, build_batch, common_ancestor, plan_output_preview) consume a CORE-RESOLVED form,
+// NOT the id-keyed wire DestinationChoice: C4/C6 resolve ChosenRoot(DestinationId) against the §0.4.4
+// picked-roots registry to its real PathBuf at the IPC boundary (an unknown id → §0.4.3 refusal), so no
+// registry lookup reaches the pure planning/convert path (the C9 open_path id-resolution mirror). The WIRE
+// type stays the 2-variant DestinationChoice above; the core form is a companion enum, no serde (never crosses IPC):
+pub enum ResolvedDestination {       // core-internal (no serde) — the resolved twin of DestinationChoice
+    BesideSource,
+    ChosenRoot(PathBuf),             // the registry-resolved real path for the wire ChosenRoot(DestinationId)
 }
 
 pub struct ConversionJob {

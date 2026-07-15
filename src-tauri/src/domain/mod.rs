@@ -156,10 +156,11 @@ impl CollectedSetId {
 /// A C2b-picked destination root, named **by id on the wire** and resolved core-side against the
 /// session-scoped picked-roots registry (`crate::orchestrator::DestinationRegistry`, §0.4.4) — the real
 /// `PathBuf` NEVER crosses the wire in either direction (§2.10.1 / the 2026-07-06 core-owned-paths ruling).
-/// C2b `pick_destination` mints one per successful pick and returns it (paired with a lossy display string)
-/// as the `DestinationChoice::ChosenRoot(DestinationId)` the WebView carries into C4/C5/C6; the picker
-/// wiring + the `ChosenRoot(DestinationId)` re-key are P3.80 (this box only stands up the id + its
-/// registry). [Build-Session-Entscheidung: P3.76]
+/// C2b `pick_destination` mints one per successful pick and returns it (paired with a lossy display string,
+/// the [`DestinationPicked`] payload) as the `DestinationChoice::ChosenRoot(DestinationId)` the WebView carries
+/// into C4/C5/C6. The `ChosenRoot(DestinationId)` re-key + the C4/C6 registry resolution landed at P3.80 (this
+/// P3.76 box stood up the id + its registry; the picker BODY that mints on a real folder pick is P3.56).
+/// [Build-Session-Entscheidung: P3.76]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 pub struct DestinationId(Uuid);
 
@@ -1342,17 +1343,57 @@ pub struct OptionValues(pub BTreeMap<OptionKey, OptionValue>);
 // has no cross-platform-stable JSON form — which is precisely why the plan stays off the wire — so it derives only
 // `Debug, Clone, PartialEq, Eq` (no `Serialize`/`Deserialize`/`Type`), unlike the wire types above.
 
-/// Where a batch's outputs are written (§0.6 / §2.7.1) — the C4/C5/C6 `destination` argument (§0.4.1).
-/// WebView-held, with no server-side store (§0.11 T2a): the no-harm machinery, not path provenance, is the bound.
+/// Where a batch's outputs are written (§0.6 / §2.7.1) — the C4/C5/C6 `destination` **wire** argument (§0.4.1).
+/// The chosen root is named **BY ID** (`DestinationId`), never by path: the WebView selects among user-picked
+/// roots it can only reference, and the core resolves the id to its real `PathBuf` against the §0.4.4
+/// `DestinationRegistry` at the C4/C6 boundary (`crate::orchestrator::DestinationRegistry::resolve_choice` →
+/// [`ResolvedDestination`]) — no filesystem path crosses the wire in either direction (§2.10.1 / the 2026-07-06
+/// core-owned-paths ruling). The no-harm machinery, not path provenance, remains the bound (§0.11 T2a).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum DestinationChoice {
     /// Beside each source in place — the §2.7.1 default; folder layout is preserved for free and per-location
     /// divert (§2.7.2) still applies to any unwritable/ephemeral source.
     BesideSource,
-    /// A single user-chosen root under which the dropped-selection-relative subtree is re-created (§2.7.1, not
-    /// flattened). A re-validated HINT, never a guarantee — §2.7.2 / §7.4.1 re-check writability + divert at use time.
+    /// A single user-chosen root (named by its §0.4.4 [`DestinationId`]) under which the
+    /// dropped-selection-relative subtree is re-created (§2.7.1, not flattened). A re-validated HINT, never a
+    /// guarantee — §2.7.2 / §7.4.1 re-check writability + divert at use time; an unknown id is refused as a
+    /// §0.4.3 error at C4/C6 (the WebView cannot name a root the user never picked). [Build-Session-Entscheidung: P3.80]
+    ChosenRoot(DestinationId),
+}
+
+/// The **core-resolved** destination (§2.7) — a wire [`DestinationChoice`]'s `ChosenRoot(DestinationId)` after
+/// the C4/C6 handler resolves the id against the §0.4.4 `crate::orchestrator::DestinationRegistry` to its real
+/// picked-root `PathBuf` (the 2026-07-06 core-owned-paths ruling: the wire carries the id, the core holds the
+/// path). The pure §1.8/§2.7 orchestrator legs (`build_batch` / `common_ancestor` / `convert_item` /
+/// `preview_final_dir` / `plan_output_preview`) consume THIS, never the id-keyed wire form — so no registry
+/// lookup ever reaches the pure planning/convert path (the resolution is a single fallible step at the IPC
+/// boundary, mirroring the C9 `open_path` id-resolution). Core-internal: no `serde`/`specta` (it never crosses
+/// IPC — the wire type is `DestinationChoice`, this is its resolved companion). [Build-Session-Entscheidung: P3.80
+/// — the escalation's PROPOSED resolved form; this box names it `ResolvedDestination` (the §0.6 Batch note records the PROPOSED shape).]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedDestination {
+    /// Beside each source in place — the §2.7.1 default (the resolved twin of [`DestinationChoice::BesideSource`]).
+    BesideSource,
+    /// The chosen root resolved to its real `PathBuf` (the §0.4.4 registry's picked-root for the wire id).
     ChosenRoot(PathBuf),
+}
+
+/// The C2b `pick_destination` success payload (§0.4.1 / §0.6) — the freshly-registered picked destination the
+/// WebView carries forward as `DestinationChoice::ChosenRoot(destination)`. A **return-only** wire DTO: C2b
+/// mints a [`DestinationId`], stores the picked folder in the §0.4.4 `DestinationRegistry`, and returns this
+/// pair — the id the WebView references + a **display-only** lossy string for the "will save to …" line
+/// (§2.10.1). The real `PathBuf` stays core-side (never on the wire, either direction). Serialize-only (a
+/// command return is Rust→WebView, never deserialized in Rust). [Build-Session-Entscheidung: P3.80]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DestinationPicked {
+    /// The freshly-minted §0.4.4 id of the picked root — the WebView carries it into C4/C5/C6 as
+    /// `DestinationChoice::ChosenRoot(id)`; the real `PathBuf` never crosses the wire (§2.10.1).
+    pub destination: DestinationId,
+    /// A display-only lossy form of the picked folder (last-step `to_string_lossy`, §2.10.1), for the
+    /// "will save to …" line — never re-submittable as an input path.
+    pub display: String,
 }
 
 /// Why a single source's output was diverted away from its intended location (§0.6 / §2.7.2). Carried by the
@@ -3005,11 +3046,18 @@ mod tests {
             r#""besideSource""#,
             "§2.7.1: BesideSource is the bare camelCase tag (the default destination)"
         );
-        let chosen = DestinationChoice::ChosenRoot(PathBuf::from("/dest"));
+        // [Test-Change: P3.80 — old-obsolete+new-correct, §0.4.1/§2.7.1] the old `ChosenRoot(PathBuf)` →
+        // `{"chosenRoot":"/dest"}` path form is OBSOLETE: the 2026-07-06 core-owned-paths ruling re-keyed the
+        // wire to `ChosenRoot(DestinationId)` (no FS path crosses the wire, §2.10.1). The NEW id form is correct
+        // — verified by reading back the serialized shape: the bare-uuid `DestinationId` under the `chosenRoot`
+        // key. The id is constructed via its `Deserialize` wire form (a fixed uuid) so the assertion is stable.
+        let id: DestinationId = serde_json::from_str(r#""33333333-3333-4333-8333-333333333333""#)
+            .expect("DestinationId deserializes from a uuid string");
+        let chosen = DestinationChoice::ChosenRoot(id);
         assert_eq!(
             serde_json::to_string(&chosen).expect("ChosenRoot serializes"),
-            r#"{"chosenRoot":"/dest"}"#,
-            "§2.7.1: ChosenRoot carries the chosen root path (externally-tagged camelCase)"
+            r#"{"chosenRoot":"33333333-3333-4333-8333-333333333333"}"#,
+            "§0.4.1/§2.7.1: ChosenRoot names the picked root BY ID (the wire carries no path; the P3.80 re-key)"
         );
         for dc in [DestinationChoice::BesideSource, chosen.clone()] {
             let json = serde_json::to_string(&dc).expect("DestinationChoice serializes");

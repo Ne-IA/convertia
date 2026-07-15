@@ -101,16 +101,17 @@ impl LastDestinationMode {
 
 /// The §7.4 3-key `settings.json` prefs blob — the only state ConvertIA persists (§7.4.1 `[DECIDED]`).
 ///
-/// [Build-Session-Entscheidung: P2.88] Consumer map — Rust reads all three keys into this complete typed
-/// model (best-effort, §7.4.2), but only `verbose_log` is **Rust-consumed** (§7.5.3 — the P2.94
-/// `resolve_log_verbosity` startup read in `main`'s setup stage). `theme` (§5.5) and `last_destination_mode`
-/// (the C4 destination hint) are **frontend-consumed** —
-/// read JS-side from the store (05-ui-ux "Persisted `lastDestinationMode`"), never via Rust — modelled here
-/// for the complete-blob representation + its §7.4.2 tolerance. The `last_destination_mode`
-/// re-validate-as-writable / beside-source-fallback ENFORCEMENT lives in P3 (C4 §1.10 preflight + §2.7.2
-/// `location_status` + §2.7 divert), not here; a Rust `LastDestinationMode` → `DestinationChoice` mapping
-/// would have no Rust consumer (C4 receives the `DestinationChoice` already mapped JS-side, 05-ui-ux). The
-/// HINT-not-a-guarantee semantics are already encoded by the distinct `LastDestinationMode` type (P2.85).
+/// [Build-Session-Entscheidung: P2.88 → P3.80] Consumer map — Rust reads all three keys into this complete typed
+/// model (best-effort, §7.4.2). `verbose_log` is **Rust-consumed** (§7.5.3 — the P2.94 `resolve_log_verbosity`
+/// startup read in `main`'s setup stage); `theme` (§5.5) is **frontend-consumed** (read JS-side from the store).
+/// `last_destination_mode` is now **CORE-consumed** (P3.80 — the 2026-07-06 core-owned-paths ruling superseding
+/// the P2.88 "frontend-consumed, mapped JS-side, never via Rust" split, the plan P2.88 `[Superseded]` note points
+/// here): no FS path may cross the wire, so the WebView can NEVER hold the stored absolute path to map it.
+/// Instead `crate::orchestrator::resolve_persisted_destination` reads this `LastDestinationMode` Rust-side,
+/// re-validates a `ChosenPath` as writable (§2.7.2 `location_status`; §7.4.1 re-validate-at-use-time), and loads
+/// a valid one into the §0.4.4 `DestinationRegistry` (a beside-source fallback registers nothing) — the frontend
+/// then handles only the resulting `DestinationPicked` ID+display pair (its live consumer is P3.81). The
+/// HINT-not-a-guarantee semantics are encoded by the distinct `LastDestinationMode` type (P2.85).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Prefs {
     /// §7.4.1 `theme` — UI colour scheme (default `System`).

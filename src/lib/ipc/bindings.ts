@@ -111,35 +111,52 @@ export const commands = {
 	 */
 	cancelIngest: (collectingId: CollectingId) => __TAURI_INVOKE<null>("cancel_ingest", { collectingId }),
 	/**
-	 *  **C2b `pick_destination`** (§0.4.1) — the Rust-side `DialogExt` destination-folder picker. This box (P2.24)
-	 *  authors the typed §0.4.1 wire CONTRACT — the `{} -> Result<Option<PathBuf>, IpcError>` door — so the
-	 *  generated `bindings.ts` carries the C2b surface. Unlike the C2a intake picker, the **one chosen `PathBuf` it
-	 *  returns legitimately transits the WebView** into C5 `set_destination` (and then C6): it is a *write*
-	 *  destination, not a source path, so it can never harm an original or read anything (§0.10 / §2.1 / §0.11 T2).
-	 *  `Ok(None)` = the user cancelled — a clean no-op; the held C4/C5 destination is unchanged.
+	 *  **C2b `pick_destination`** (§0.4.1) — the Rust-side `DialogExt` destination-folder picker. P2.24 authored the
+	 *  typed §0.4.1 wire CONTRACT; **P3.80 RE-KEYS the return** to the id form — the
+	 *  `{} -> Result<Option<DestinationPicked>, IpcError>` door — so the generated `bindings.ts` carries the id +
+	 *  display pair, never a path. The picked folder is a *write* destination (never a source), so it can never harm
+	 *  an original or read anything (§0.10 / §2.1 / §0.11 T2); and per the 2026-07-06 core-owned-paths ruling **no FS
+	 *  path transits the WebView in either direction** — the handler mints a `DestinationId`, stores the picked
+	 *  folder in the §0.4.4 `DestinationRegistry`, and returns `DestinationPicked { destination: DestinationId,
+	 *  display: String }` (§2.10.1). The WebView carries the id into C5 `set_destination` (and C6) as
+	 *  `DestinationChoice::ChosenRoot(id)`; the core resolves it back to the real `PathBuf`. `Ok(None)` = the user
+	 *  cancelled — a clean no-op; the held C4/C5 destination is unchanged.
 	 *
-	 *  [Build-Session-Entscheidung: P2.24] **`Result<Option<PathBuf>, IpcError>` return — the §0.4 universal
-	 *  error-shape rule.** §0.4 "Error shape" is categorical: *every* command returns `Result<T, IpcError>`. The
-	 *  §0.4.1 table's `Option<PathBuf>` output column is the SUCCESS type `T`, wrapped in `Result<T, IpcError>` at
-	 *  the handler — exactly as C1's `CollectedSet` column maps to `Result<CollectedSet, IpcError>`. So the three
-	 *  boundary outcomes are: `Ok(Some(path))` = the user picked a folder; `Ok(None)` = the user cancelled (a clean
-	 *  no-op, the §5.4 cancelled-picker result); `Err(IpcError)` = the native dialog subsystem genuinely failed (a
-	 *  folder pick has no *user-facing* failure, but the boundary still honours the universal Result shape rather
-	 *  than panicking across it, §0.4 "No command ever panics across the boundary"). The wire/TS callsite is
-	 *  unchanged (`Result<T, E>` renders as `__TAURI_INVOKE<T>` + a thrown `IpcError`, like C1).
+	 *  [Build-Session-Entscheidung: P2.24 → P3.80] **`Result<Option<DestinationPicked>, IpcError>` return — the §0.4
+	 *  universal error-shape rule.** §0.4 "Error shape" is categorical: *every* command returns `Result<T, IpcError>`.
+	 *  The §0.4.1 table's `Option<DestinationPicked>` output column is the SUCCESS type `T`, wrapped in
+	 *  `Result<T, IpcError>` at the handler — exactly as C1's `CollectedSet` column maps to
+	 *  `Result<CollectedSet, IpcError>`. So the three boundary outcomes are: `Ok(Some(picked))` = the user picked a
+	 *  folder (registered, id + display returned); `Ok(None)` = the user cancelled (a clean no-op, the §5.4
+	 *  cancelled-picker result); `Err(IpcError)` = the native dialog subsystem genuinely failed (a folder pick has no
+	 *  *user-facing* failure, but the boundary still honours the universal Result shape rather than panicking across
+	 *  it, §0.4 "No command ever panics across the boundary"). The wire/TS callsite is unchanged (`Result<T, E>`
+	 *  renders as `__TAURI_INVOKE<T>` + a thrown `IpcError`, like C1).
 	 *
-	 *  [Build-Session-Entscheidung: P2.24] **Interface-shell body — the typed CONTRACT is the deliverable.**
-	 *  P2.24 authors the §0.4.1 wire signature; the native `DialogExt` folder-pick BODY (`app.dialog().file()
-	 *  .pick_folder(..)`, opened async/`spawn_blocking` so it never blocks a Tokio worker, §7 app-shell) is wired
-	 *  end-to-end at P3.56 — the DestinationBar, whose "Change destination" affordance drives C2b → C5 (P3.54 wires
-	 *  the C2a *intake* picker, a distinct path; C2b is the *destination* picker). A native OS folder dialog is
-	 *  **not unit-testable** (it needs a real OS dialog /
-	 *  user interaction — the §6.6 walkthrough + the P9 E2E flow exercise it), so the testable P2 deliverable is
-	 *  the typed contract; the shell returns `Ok(None)` — the genuine cancelled/no-pick result. This is the
-	 *  sanctioned compile-time interface-shell pattern (CLAUDE §5 / the P3 `crate::isolation` shells P4 expands),
-	 *  not a quiet deferral.
+	 *  [Build-Session-Entscheidung: P2.24 → P3.80] **Interface-shell body — the typed CONTRACT is the deliverable;
+	 *  P3.80 re-keys only the RETURN TYPE.** P2.24 authored the wire signature; P3.80 re-keys `Option<PathBuf>` →
+	 *  `Option<DestinationPicked>` (the id form). The native `DialogExt` folder-pick BODY (`app.dialog().file()
+	 *  .pick_folder(..)`, opened async/`spawn_blocking` so it never blocks a Tokio worker, §7 app-shell) — which
+	 *  mints the id, registers the picked root in `State<DestinationRegistry>` (the P3.80-live `register`), and
+	 *  returns the `DestinationPicked` — is wired end-to-end at P3.56 (the DestinationBar "Change destination"
+	 *  affordance drives C2b → C5; P3.54 wires the C2a *intake* picker, a distinct path). A native OS folder dialog
+	 *  is **not unit-testable** (it needs a real OS dialog / user interaction — the §6.6 walkthrough + the P9 E2E
+	 *  flow exercise it), so the testable deliverable is the typed contract; the shell returns `Ok(None)` — the
+	 *  genuine cancelled/no-pick result. This is the sanctioned compile-time interface-shell pattern (CLAUDE §5 / the
+	 *  P3 `crate::isolation` shells P4 expands), not a quiet deferral.
 	 */
-	pickDestination: () => __TAURI_INVOKE<string | null>("pick_destination"),
+	pickDestination: () => __TAURI_INVOKE<{
+	/**
+	 *  The freshly-minted §0.4.4 id of the picked root — the WebView carries it into C4/C5/C6 as
+	 *  `DestinationChoice::ChosenRoot(id)`; the real `PathBuf` never crosses the wire (§2.10.1).
+	 */
+	destination: DestinationId,
+	/**
+	 *  A display-only lossy form of the picked folder (last-step `to_string_lossy`, §2.10.1), for the
+	 *  "will save to …" line — never re-submittable as an input path.
+	 */
+	display: string,
+} | null>("pick_destination"),
 	/**
 	 *  **C3 `get_targets`** (§0.4.1) — a pure function of the detected source type to the offered `Vec<Target>` +
 	 *  the one pre-highlighted default + per-target lossy/availability/options model (§1.5/§1.6); no engine spawned.
@@ -170,9 +187,11 @@ export const commands = {
 	 *
 	 *  [Build-Session-Entscheidung: P3.49] **WIRED for the walking skeleton.** The handler binds an `AppHandle`
 	 *  (Tauri-injected — the §0.4.1 wire signature stays `{ collectedSetId, target, options, destination }`) to
-	 *  reach the §0.4.4 `State<CollectedSetRegistry>` + the §2.5 `State<EquivKeyComputer>` / `State<RerunLedger>`
-	 *  + the app `State<InstanceId>`, and dispatches to the AppHandle-free `resolve_output_plan` helper, which
-	 *  resolves the set and delegates the §1.8 batch preview to `orchestrator::plan_output_preview`: the
+	 *  reach the §0.4.4 `State<CollectedSetRegistry>` + `State<DestinationRegistry>` + the §2.5
+	 *  `State<EquivKeyComputer>` / `State<RerunLedger>` + the app `State<InstanceId>`; it resolves the wire
+	 *  `ChosenRoot(DestinationId)` against the picked-roots registry (`resolve_choice`; an unknown id → the §0.4.3
+	 *  refusal, P3.80) and dispatches the resolved `ResolvedDestination` to the AppHandle-free `resolve_output_plan`
+	 *  helper, which resolves the set and delegates the §1.8 batch preview to `orchestrator::plan_output_preview`: the
 	 *  representative "will save to…" directory + its §2.7.2 divert classification (`location_status`), the §2.5
 	 *  PEEK-only re-run verdict (`compute_rerun_verdict`), and the §1.10 preflight verdict. The §1.10 verdict is
 	 *  the **trivial §1.10-seam slice verdict** (the CSV→TSV footprint is negligible ⇒ `up_front_fail: None` by
@@ -223,9 +242,12 @@ export const commands = {
 	 *    against the §0.4.4 registry (P2.44) to the `CollectedSet::Single` whose items become the queue.
 	 *  - `target` — the one whole-batch `TargetId` (§0.6 invariant 1 — one Target per Batch, never per item).
 	 *  - `options` — the effective whole-batch `OptionValues` (§0.6 invariant 2 / §2.5).
-	 *  - `destination` — **AUTHORITATIVE** (§0.4.1 C6 `[DECIDED]`): C4/C5 are plan/preview + revalidation only,
-	 *    there is no separate server-side destination store — the value the UI passes here (the last C5-resolved
-	 *    destination) is what the run writes to.
+	 *  - `destination` — **AUTHORITATIVE** (§0.4.1 C6 `[DECIDED]`): C4/C5 are plan/preview + revalidation only, the
+	 *    value the UI passes here (the last C5-resolved destination) is what the run writes to. It names
+	 *    beside-source or WHICH picked root by id (`ChosenRoot(DestinationId)`); `start_run` resolves the id against
+	 *    the §0.4.4 `DestinationRegistry` to its real `PathBuf` (`resolve_choice`; an unknown id is the §0.4.3
+	 *    refusal) BEFORE building the batch, so the run drives a resolved `ResolvedDestination` — the path never
+	 *    crosses the wire (the 2026-07-06 core-owned-paths split).
 	 *  - `rerun_decision` — the §0.6 `RerunDecision` (the user's answer to a C4 `RerunPrompt`, §2.5): `Skip` (the
 	 *    safe default — no new output for equivalent items) or `FreshCopy` (fresh numbered copies).
 	 *  - `on_progress` — the run-telemetry `Channel<ConversionEvent>` (§0.4.2): ordered, run-scoped (dies with
@@ -778,8 +800,12 @@ export type CrossCatOp =
 "toGif";
 
 /**
- *  Where a batch's outputs are written (§0.6 / §2.7.1) — the C4/C5/C6 `destination` argument (§0.4.1).
- *  WebView-held, with no server-side store (§0.11 T2a): the no-harm machinery, not path provenance, is the bound.
+ *  Where a batch's outputs are written (§0.6 / §2.7.1) — the C4/C5/C6 `destination` **wire** argument (§0.4.1).
+ *  The chosen root is named **BY ID** (`DestinationId`), never by path: the WebView selects among user-picked
+ *  roots it can only reference, and the core resolves the id to its real `PathBuf` against the §0.4.4
+ *  `DestinationRegistry` at the C4/C6 boundary (`crate::orchestrator::DestinationRegistry::resolve_choice` →
+ *  [`ResolvedDestination`]) — no filesystem path crosses the wire in either direction (§2.10.1 / the 2026-07-06
+ *  core-owned-paths ruling). The no-harm machinery, not path provenance, remains the bound (§0.11 T2a).
  */
 export type DestinationChoice =
 /**
@@ -788,10 +814,45 @@ export type DestinationChoice =
  */
 "besideSource" |
 /**
- *  A single user-chosen root under which the dropped-selection-relative subtree is re-created (§2.7.1, not
- *  flattened). A re-validated HINT, never a guarantee — §2.7.2 / §7.4.1 re-check writability + divert at use time.
+ *  A single user-chosen root (named by its §0.4.4 [`DestinationId`]) under which the
+ *  dropped-selection-relative subtree is re-created (§2.7.1, not flattened). A re-validated HINT, never a
+ *  guarantee — §2.7.2 / §7.4.1 re-check writability + divert at use time; an unknown id is refused as a
+ *  §0.4.3 error at C4/C6 (the WebView cannot name a root the user never picked). [Build-Session-Entscheidung: P3.80]
  */
-{ chosenRoot: string };
+{ chosenRoot: DestinationId };
+
+/**
+ *  A C2b-picked destination root, named **by id on the wire** and resolved core-side against the
+ *  session-scoped picked-roots registry (`crate::orchestrator::DestinationRegistry`, §0.4.4) — the real
+ *  `PathBuf` NEVER crosses the wire in either direction (§2.10.1 / the 2026-07-06 core-owned-paths ruling).
+ *  C2b `pick_destination` mints one per successful pick and returns it (paired with a lossy display string,
+ *  the [`DestinationPicked`] payload) as the `DestinationChoice::ChosenRoot(DestinationId)` the WebView carries
+ *  into C4/C5/C6. The `ChosenRoot(DestinationId)` re-key + the C4/C6 registry resolution landed at P3.80 (this
+ *  P3.76 box stood up the id + its registry; the picker BODY that mints on a real folder pick is P3.56).
+ *  [Build-Session-Entscheidung: P3.76]
+ */
+export type DestinationId = string;
+
+/**
+ *  The C2b `pick_destination` success payload (§0.4.1 / §0.6) — the freshly-registered picked destination the
+ *  WebView carries forward as `DestinationChoice::ChosenRoot(destination)`. A **return-only** wire DTO: C2b
+ *  mints a [`DestinationId`], stores the picked folder in the §0.4.4 `DestinationRegistry`, and returns this
+ *  pair — the id the WebView references + a **display-only** lossy string for the "will save to …" line
+ *  (§2.10.1). The real `PathBuf` stays core-side (never on the wire, either direction). Serialize-only (a
+ *  command return is Rust→WebView, never deserialized in Rust). [Build-Session-Entscheidung: P3.80]
+ */
+export type DestinationPicked = {
+	/**
+	 *  The freshly-minted §0.4.4 id of the picked root — the WebView carries it into C4/C5/C6 as
+	 *  `DestinationChoice::ChosenRoot(id)`; the real `PathBuf` never crosses the wire (§2.10.1).
+	 */
+	destination: DestinationId,
+	/**
+	 *  A display-only lossy form of the picked folder (last-step `to_string_lossy`, §2.10.1), for the
+	 *  "will save to …" line — never re-submittable as an input path.
+	 */
+	display: string,
+};
 
 /**
  *  The C5 `set_destination` return (§0.6 / §1.8 / §2.14.4) — the re-validated destination after the user
@@ -802,11 +863,15 @@ export type DestinationChoice =
  *  Serialize-only `PreflightVerdict`); NOT `Copy`. camelCase. P3.76 ADDS the `final_dir_display` lossy
  *  display `String` (mirroring `OutputPlanPreview.final_dir_display`, §2.10.1) so the refreshed
  *  "will save to …" line has a display projection with no `PathBuf` on the wire. (`destination:
- *  DestinationChoice` still carries a raw `ChosenRoot(PathBuf)` until P3.80 re-keys it to a
- *  `DestinationId` — the phased P3.76→P3.80 split; this box owns only the display projections.)
+ *  DestinationChoice` is the id-keyed wire form — `ChosenRoot(DestinationId)` since the P3.80 re-key landed —
+ *  the C5 echo of the choice; the core-resolved `ResolvedDestination` (a real `PathBuf`) never crosses the wire.)
  */
 export type DestinationResolved = {
-	/**  The (now chosen) destination (§0.6 / §2.7). Re-keyed to `ChosenRoot(DestinationId)` at P3.80. */
+	/**
+	 *  The (now chosen) destination the C5 echo carries back (§0.6 / §2.7) — the id-keyed wire
+	 *  `DestinationChoice` (`ChosenRoot(DestinationId)`, the P3.80 re-key); the core resolves the id to its real
+	 *  `PathBuf` against the §0.4.4 `DestinationRegistry` at C6, never on the wire.
+	 */
 	destination: DestinationChoice,
 	/**
 	 *  The refreshed display-only "will save to …" form for the new destination (mirrors

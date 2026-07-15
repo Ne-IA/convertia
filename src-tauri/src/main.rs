@@ -1419,6 +1419,13 @@ pub(crate) mod launch_intake {
                 main_src.contains(concat!(".manage(crate::run::Rerun", "Ledger::default())")),
                 "§2.5.2: main() must register the State<RerunLedger> the conductor reads + records (P3.48)"
             );
+            assert!(
+                main_src.contains(concat!(
+                    ".manage(crate::orchestrator::Destination",
+                    "Registry::default())"
+                )),
+                "§0.4.4: main() must register the State<DestinationRegistry> so C4/C6 `resolve_choice` cannot fail (P3.80)"
+            );
         }
 
         // §6.4.1 unit (G15): the §7.8.1 launch-origin decision (P2.56) — a first-launch Open-with (WebView not
@@ -1633,6 +1640,12 @@ fn main() -> tauri::Result<()> {
         .manage(crate::pool::Pool::new())
         .manage(crate::orchestrator::EquivKeyComputer::default())
         .manage(crate::run::RerunLedger::default())
+        // [Build-Session-Entscheidung: P3.80] §0.4.4 — the FIFTH §0.4.4 store: the picked-destination registry
+        // (DestinationId → PathBuf, P3.76). C4/C6 resolve `ChosenRoot(DestinationId)` against it
+        // (`resolve_choice`; an unknown id → the §0.4.3 refusal) so no FS path crosses the wire (the 2026-07-06
+        // core-owned-paths ruling). Builder chain (compile-time `Default`, before the event loop) → the C4/C6
+        // `app.state`/`app.try_state` resolves are infallible by construction. The C2b register body is P3.56.
+        .manage(crate::orchestrator::DestinationRegistry::default())
         .invoke_handler(builder.invoke_handler())
         // [Build-Session-Entscheidung: P2.79] §7.3.2 window-lifecycle hook — the Tauri v2 two-arg
         // `(&Window, &WindowEvent)` `on_window_event` closure. Thin BY DESIGN (a Builder-chain delegation

@@ -48,7 +48,7 @@
 
 use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -63,11 +63,11 @@ use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
 use crate::domain::{
-    CollectedSet, CollectedSetId, CollectingId, DestinationChoice, DestinationId, DetectionOutcome,
-    DivertReason, DroppedItem, FrozenCollectedSet, InstanceId, IntakeOrigin, ItemId, ItemIdSpace,
-    ItemPaths, ItemSpaceExhausted, JobSource, JobStage, OptionValues, OutputPlan, ReadFailure,
-    RerunDecision, RerunPrompt, RunId, ScanProgress, SkipReason, SkippedItem, Target, TargetId,
-    UserFacingFormat,
+    CollectedSet, CollectedSetId, CollectingId, DestinationChoice, DestinationId,
+    DestinationPicked, DetectionOutcome, DivertReason, DroppedItem, FrozenCollectedSet, InstanceId,
+    IntakeOrigin, ItemId, ItemIdSpace, ItemPaths, ItemSpaceExhausted, JobSource, JobStage,
+    OptionValues, OutputPlan, ReadFailure, RerunDecision, RerunPrompt, ResolvedDestination, RunId,
+    ScanProgress, SkipReason, SkippedItem, Target, TargetId, UserFacingFormat,
 };
 use crate::engines::{
     dispatch, Engine, EngineId, EngineInvocation, InvocationResult, NativeCsvTsvEngine, PlanOutcome,
@@ -80,6 +80,7 @@ use crate::fs_guard::{
 };
 use crate::outcome::{conversion_failure, ConversionErrorKind, IpcError, OutcomeMsg};
 use crate::pool::Pool;
+use crate::prefs::LastDestinationMode;
 use crate::run::{cleanup_item, cleanup_run, EquivKey, PublishTemp, RerunLedger, RunScratch};
 
 /// One same-source conversion batch (§0.6 / §1.9) — the queue the orchestrator builds at C6
@@ -106,8 +107,11 @@ pub struct Batch {
     pub target: Target,
     /// The one effective, fully-resolved option set for the whole batch (§0.6 invariant 2 / §2.5).
     pub options: OptionValues,
-    /// Where the batch's outputs are written (§2.7) — beside-source or a chosen root.
-    pub destination: DestinationChoice,
+    /// Where the batch's outputs are written (§2.7) — beside-source or a chosen root, **already resolved**
+    /// core-side ([`ResolvedDestination`]): C6 `start_run` resolves the wire `DestinationChoice`'s
+    /// `ChosenRoot(DestinationId)` against the §0.4.4 `DestinationRegistry` before `build_batch`, so the pure
+    /// §1.8/§2.7 legs read a real `PathBuf`, never do a registry lookup (the 2026-07-06 core-owned-paths split).
+    pub destination: ResolvedDestination,
     /// The per-item jobs, in the deterministic collected/traversal order (§1.9 queue order). Carries BOTH
     /// the `Pending` eligible jobs AND the pre-flight `Skipped` jobs materialised at construction (§1.9),
     /// over the §0.6 single id space (so a `SkippedItem.item` never collides with an eligible `ItemId`).
@@ -392,7 +396,7 @@ pub fn build_batch(
     frozen: &FrozenCollectedSet,
     target: Target,
     options: OptionValues,
-    destination: DestinationChoice,
+    destination: ResolvedDestination,
 ) -> Batch {
     let mut jobs: Vec<ConversionJob> =
         Vec::with_capacity(frozen.items.len() + frozen.skipped.len());
@@ -503,12 +507,14 @@ pub struct OutputPlanPreview {
 /// Serialize-only `PreflightVerdict`); NOT `Copy`. camelCase. P3.76 ADDS the `final_dir_display` lossy
 /// display `String` (mirroring `OutputPlanPreview.final_dir_display`, §2.10.1) so the refreshed
 /// "will save to …" line has a display projection with no `PathBuf` on the wire. (`destination:
-/// DestinationChoice` still carries a raw `ChosenRoot(PathBuf)` until P3.80 re-keys it to a
-/// `DestinationId` — the phased P3.76→P3.80 split; this box owns only the display projections.)
+/// DestinationChoice` is the id-keyed wire form — `ChosenRoot(DestinationId)` since the P3.80 re-key landed —
+/// the C5 echo of the choice; the core-resolved `ResolvedDestination` (a real `PathBuf`) never crosses the wire.)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DestinationResolved {
-    /// The (now chosen) destination (§0.6 / §2.7). Re-keyed to `ChosenRoot(DestinationId)` at P3.80.
+    /// The (now chosen) destination the C5 echo carries back (§0.6 / §2.7) — the id-keyed wire
+    /// `DestinationChoice` (`ChosenRoot(DestinationId)`, the P3.80 re-key); the core resolves the id to its real
+    /// `PathBuf` against the §0.4.4 `DestinationRegistry` at C6, never on the wire.
     pub destination: DestinationChoice,
     /// The refreshed display-only "will save to …" form for the new destination (mirrors
     /// `OutputPlanPreview.final_dir_display`, last-step `to_string_lossy`, §2.10.1) [DECIDED 2026-07-06].
@@ -1635,10 +1641,10 @@ fn failure_message(kind: ConversionErrorKind) -> String {
 /// chosen-root batch it is the chosen root; for the beside-source default it is the DEEPEST directory
 /// containing every §2.4 frozen dropped root (so "open folder" lands on the enclosing folder the outputs sit
 /// beside). An empty root set (a defensive degenerate) yields an empty path. [Build-Session-Entscheidung: P3.48]
-fn common_ancestor(roots: &[PathBuf], destination: &DestinationChoice) -> PathBuf {
+fn common_ancestor(roots: &[PathBuf], destination: &ResolvedDestination) -> PathBuf {
     match destination {
-        DestinationChoice::ChosenRoot(root) => root.clone(),
-        DestinationChoice::BesideSource => source_common_root(roots),
+        ResolvedDestination::ChosenRoot(root) => root.clone(),
+        ResolvedDestination::BesideSource => source_common_root(roots),
     }
 }
 
@@ -1725,7 +1731,7 @@ async fn convert_item(
     target: TargetId,
     frozen_sources: &[FileIdentity],
     divert_root: &Path,
-    destination: &DestinationChoice,
+    destination: &ResolvedDestination,
     source_common_root: &Path,
     scratch: &RunScratch,
     cache: &mut LocationCache,
@@ -1749,7 +1755,7 @@ async fn convert_item(
     // / §2.7.3 divert). `intended_dir` is the §2.7.2 location probe target — the beside-source parent, or the
     // chosen root (an existing folder; the subtree is created under it by `compute_output_plan`).
     let (mode, intended_dir): (DestinationMode, &Path) = match destination {
-        DestinationChoice::BesideSource => {
+        ResolvedDestination::BesideSource => {
             let Some(parent) = source.parent() else {
                 return ItemRunOutcome::Failed {
                     kind: ConversionErrorKind::InternalError,
@@ -1758,7 +1764,7 @@ async fn convert_item(
             };
             (DestinationMode::BesideSource, parent)
         }
-        DestinationChoice::ChosenRoot(root) => (
+        ResolvedDestination::ChosenRoot(root) => (
             DestinationMode::ChosenRoot {
                 root,
                 common_root: source_common_root,
@@ -2529,9 +2535,10 @@ impl CollectedSetRegistry {
 // structural edit — the P2.43/P2.44/P2.45 precedent). Unlike the SUPERSEDING CollectedSetRegistry, this
 // ACCUMULATES: §0.4.4 "entries live for the app session (they survive across collected sets, so switching
 // batches never forces a re-pick) and die at app exit; nothing is persisted (§7.4)". Like the sibling
-// stores it is a CONTRACT before its consumer: the C2b register + the C4/C5/C6 resolve + the `.manage`
-// registration are the P3.80 destination-legs box, so it is dead in the production build until then
-// (covered by the module-level dead_code expect).
+// stores it is a CONTRACT before its consumer: P3.80 wired the C4/C6 `resolve_choice` resolution + the
+// `.manage` registration (so `resolve`/`resolve_choice` are now LIVE); `register` stays dead in the production
+// build until the C2b real-pick body (P3.56) and the P3.81 consumer of `resolve_persisted_destination` (leg 3),
+// so the module-level dead_code expect stays fulfilled while those remain unwired.
 
 /// The §0.4.4 picked-destination registry — maps each C2b-minted `DestinationId` to its Rust-picked root
 /// `PathBuf`, held as a Tauri app-managed `State` so a picked destination PATH never crosses the wire
@@ -2546,9 +2553,10 @@ impl CollectedSetRegistry {
 ///
 /// [Build-Session-Entscheidung: P3.76] `Default`-constructed empty; `Debug` for parity with the sibling
 /// stores. NOT a wire type (no `serde`/`specta`) — pure core-internal State that never crosses IPC (the
-/// wire carries only the `DestinationId` + the C2b display string, §0.6). The C2b register + C4/C5/C6
-/// resolve WIRING is the P3.80 box, so it is dead in the production build until then (the module-level
-/// dead_code expect covers it, the P2.44 `CollectedSetRegistry` precedent).
+/// wire carries only the `DestinationId` + the C2b display string, §0.6). P3.80 wired the C4/C6
+/// `resolve_choice` resolution + the `.manage` registration; `register` stays dead in the production build
+/// until the C2b real-pick body (P3.56), so the module-level dead_code expect stays fulfilled (the P2.44
+/// `CollectedSetRegistry` precedent).
 #[derive(Debug, Default)]
 pub struct DestinationRegistry {
     /// The session's `DestinationId` → picked-root map. ACCUMULATES across the session (unlike the
@@ -2583,6 +2591,69 @@ impl DestinationRegistry {
     /// before the guard drops, so the lock is not held across the return. [Build-Session-Entscheidung: P3.76]
     pub fn resolve(&self, id: DestinationId) -> Option<PathBuf> {
         self.lock().get(&id).cloned()
+    }
+
+    /// Resolve a wire [`DestinationChoice`] to its core [`ResolvedDestination`] — the single fallible step the
+    /// C4/C6 handlers run at the IPC boundary (§0.4.4). `BesideSource` maps through unchanged; a
+    /// `ChosenRoot(id)` resolves the id to its picked-root `PathBuf` via [`resolve`](DestinationRegistry::resolve).
+    /// `None` ONLY when a `ChosenRoot(id)` names an unknown id — the §0.4.3 refusal the C4/C6 handler maps to its
+    /// not-available `IpcError` (the WebView cannot name a root the user never picked); `BesideSource` never
+    /// fails. The pure §1.8/§2.7 legs then consume the `ResolvedDestination`, so no registry lookup ever reaches
+    /// the planning/convert path (the 2026-07-06 core-owned-paths split — the C9 `resolve_open_target`
+    /// id-resolution mirror). [Build-Session-Entscheidung: P3.80]
+    pub fn resolve_choice(&self, choice: &DestinationChoice) -> Option<ResolvedDestination> {
+        match choice {
+            DestinationChoice::BesideSource => Some(ResolvedDestination::BesideSource),
+            DestinationChoice::ChosenRoot(id) => {
+                self.resolve(*id).map(ResolvedDestination::ChosenRoot)
+            }
+        }
+    }
+}
+
+/// **§7.4 persisted-last resolver (leg 3, P3.80)** — load + validate the §7.4.1 `lastDestinationMode` pref
+/// core-side into the §0.4.4 [`DestinationRegistry`], yielding the [`DestinationPicked`] the frontend
+/// subsequently references (the 2026-07-06 core-owned-paths ruling: the CORE reads the pref, the WebView never
+/// touches the stored path — the P2.88 `[Superseded]` re-cut). Given the P2.85-built [`LastDestinationMode`] union
+/// (`BesideSource | ChosenPath(PathBuf)` — the §7.4.1 `"beside-source" | "<absolute path>"` VALUE; the
+/// §7.4.1-key-name-vs-§5.8-value "mode-vs-path" reading is a non-finding, the ruling's steelman: the
+/// `ChosenPath` arm's value IS the path):
+/// - `BesideSource` → `None` (use the §2.7.1 beside-source default, nothing registered);
+/// - `ChosenPath(path)` → re-validate the path as WRITABLE via the §2.7.2 [`location_status`] machinery
+///   (§7.4.1 "always re-validated as writable at use time"): a `Writable` verdict mints + registers a
+///   `DestinationId` and returns `Some(DestinationPicked{ destination, display })`; a `Divert(_)` verdict (the
+///   path is gone / read-only / ephemeral / no-atomic-publish) falls back to beside-source (`None`, nothing
+///   registered — the §2.7 per-location fallback, §5.8 "falls back to beside-source"), so a stale pref never
+///   reaches the no-harm machinery unchecked.
+///
+/// PURE + directly testable: it takes the pref VALUE + a real `&DestinationRegistry` + the caller's `crate::run`
+/// grammar probe name (passed IN — `fs_guard`'s `location_status` never depends on `crate::run`), performing NO
+/// `AppHandle` / `prefs::load` read itself. Its AppHandle-coupled consumer — the startup/mount read of
+/// `prefs::load(app).last_destination_mode` + `State<InstanceId>` (for the probe) + `State<DestinationRegistry>`
+/// that hands the resulting `DestinationPicked` to the frontend — is the §5.8-owned P3.81 wire (consumer-free
+/// until then, the `DestinationRegistry`-dead-until-P3.80 + C9 P3.79→P3.51 build-vs-wire precedent; the
+/// module-level `dead_code` expect covers it). [Build-Session-Entscheidung: P3.80]
+pub fn resolve_persisted_destination(
+    last: &LastDestinationMode,
+    registry: &DestinationRegistry,
+    probe_name: &OsStr,
+) -> Option<DestinationPicked> {
+    let LastDestinationMode::ChosenPath(path) = last else {
+        // §7.4.1 `"beside-source"` sentinel → the §2.7.1 default; nothing registered.
+        return None;
+    };
+    match location_status(path, probe_name) {
+        LocationStatus::Writable => {
+            let display = path.to_string_lossy().into_owned();
+            let destination = registry.register(path.clone());
+            Some(DestinationPicked {
+                destination,
+                display,
+            })
+        }
+        // §7.4.1/§2.7: a gone / read-only / ephemeral persisted path → the beside-source fallback, nothing
+        // registered (the §5.8 "falls back to beside-source" — the passive fallback note is the P3.81 frontend's).
+        LocationStatus::Divert(_) => None,
     }
 }
 
@@ -3418,10 +3489,10 @@ pub struct IngestResult {
 /// the file itself, not a directory — probing it as a dir would falsely divert). Falls back to the §2.7.1
 /// source common root only if the first item has no retained resolved path (a mis-built set — never for a real
 /// freeze). No filesystem side effect. [Build-Session-Entscheidung: P3.49]
-fn preview_final_dir(frozen: &FrozenCollectedSet, destination: &DestinationChoice) -> PathBuf {
+fn preview_final_dir(frozen: &FrozenCollectedSet, destination: &ResolvedDestination) -> PathBuf {
     match destination {
-        DestinationChoice::ChosenRoot(root) => root.clone(),
-        DestinationChoice::BesideSource => frozen
+        ResolvedDestination::ChosenRoot(root) => root.clone(),
+        ResolvedDestination::BesideSource => frozen
             .items
             .first()
             .and_then(|item| frozen.item_paths.get(&item.item))
@@ -3450,7 +3521,7 @@ pub fn plan_output_preview(
     set: &RegisteredSet,
     target: TargetId,
     options: &OptionValues,
-    destination: &DestinationChoice,
+    destination: &ResolvedDestination,
     instance: InstanceId,
     computer: &EquivKeyComputer,
     ledger: &RerunLedger,
@@ -5885,7 +5956,7 @@ mod tests {
             source_format: UserFacingFormat::Csv,
             target: sample_target(),
             options: OptionValues(BTreeMap::new()),
-            destination: DestinationChoice::BesideSource,
+            destination: ResolvedDestination::BesideSource,
             jobs,
         }
     }
@@ -6654,7 +6725,7 @@ mod tests {
             source_format: UserFacingFormat::Csv,
             target: sample_target(),
             options: OptionValues(BTreeMap::new()),
-            destination: DestinationChoice::BesideSource,
+            destination: ResolvedDestination::BesideSource,
             jobs: vec![job],
         };
         assert_eq!(
@@ -6695,7 +6766,7 @@ mod tests {
             &frozen,
             sample_target(),
             OptionValues(BTreeMap::new()),
-            DestinationChoice::BesideSource,
+            ResolvedDestination::BesideSource,
         );
 
         // The batch carries its whole-batch fields from the frozen set + the C6 args.
@@ -7632,7 +7703,7 @@ mod tests {
                     source_format: batch_format,
                     target: sample_target(),
                     options: OptionValues(BTreeMap::new()),
-                    destination: DestinationChoice::BesideSource,
+                    destination: ResolvedDestination::BesideSource,
                     jobs,
                 };
                 prop_assert_eq!(batch.jobs.len(), n, "the batch carries exactly its n constructed jobs");
@@ -7770,7 +7841,7 @@ mod tests {
                     &frozen,
                     sample_target(),
                     OptionValues(BTreeMap::new()),
-                    DestinationChoice::BesideSource,
+                    ResolvedDestination::BesideSource,
                 );
 
                 let total = usize::try_from(n_elig + n_skip).expect("n_elig + n_skip < 64 fits usize");
@@ -8189,6 +8260,86 @@ mod tests {
             reg.resolve(DestinationId::mint()),
             None,
             "§0.4.4/§0.4.3: an unknown id resolves to None — the WebView cannot name a path the user never picked"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §0.4.4 wire→core `resolve_choice` (P3.80) — the single fallible C4/C6 boundary step
+    // that turns a wire `DestinationChoice` into a core `ResolvedDestination`. `BesideSource` maps through (never
+    // fails, never a registry lookup); a `ChosenRoot(registered id)` resolves to its real `PathBuf`; a
+    // `ChosenRoot(unknown id)` is the §0.4.3 refusal (`None`) the C4/C6 handler maps to its not-available
+    // `IpcError`. Read back over a real registry (test-strategy §0.2), never mocked — the C9 `resolve_open_target`
+    // id-resolution mirror.
+    #[test]
+    fn resolve_choice_maps_beside_source_and_resolves_or_refuses_a_chosen_id() {
+        let reg = DestinationRegistry::default();
+        assert_eq!(
+            reg.resolve_choice(&DestinationChoice::BesideSource),
+            Some(ResolvedDestination::BesideSource),
+            "§0.4.4: BesideSource maps through to the resolved beside-source (never a registry lookup, never fails)"
+        );
+        let id = reg.register(PathBuf::from("/home/me/Exports"));
+        assert_eq!(
+            reg.resolve_choice(&DestinationChoice::ChosenRoot(id)),
+            Some(ResolvedDestination::ChosenRoot(PathBuf::from(
+                "/home/me/Exports"
+            ))),
+            "§0.4.4: a ChosenRoot(registered id) resolves to its real picked-root PathBuf"
+        );
+        assert_eq!(
+            reg.resolve_choice(&DestinationChoice::ChosenRoot(DestinationId::mint())),
+            None,
+            "§0.4.4/§0.4.3: a ChosenRoot(unknown id) is the refusal (None) → the C4/C6 not-available IpcError"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §7.4 persisted-last resolver (leg 3, P3.80) — read the §7.4.1 `lastDestinationMode`
+    // pref VALUE, re-validate a stored path as writable (§2.7.2 location_status), and load it into the registry.
+    // `BesideSource` → None (the §2.7.1 default, nothing registered); a WRITABLE `ChosenPath` mints + registers a
+    // DestinationId and yields the DestinationPicked; a GONE/read-only `ChosenPath` falls back to beside-source
+    // (None), nothing registered (§7.4.1 "re-validated at use time" / §5.8 fallback). Real FS + a real registry,
+    // never mocked (test-strategy §0.1/§0.2).
+    #[test]
+    fn resolve_persisted_destination_registers_a_writable_path_else_falls_back_beside_source() {
+        let probe = PublishTemp::probe_name(instance_id());
+
+        // §7.4.1: a beside-source pref uses the default — no DestinationPicked, nothing registered (no probe).
+        let reg = DestinationRegistry::default();
+        assert_eq!(
+            resolve_persisted_destination(&LastDestinationMode::BesideSource, &reg, &probe),
+            None,
+            "§7.4.1: a beside-source pref uses the §2.7.1 default — no DestinationPicked, nothing registered"
+        );
+
+        // A real, non-ephemeral WRITABLE dir → registered + a DestinationPicked whose id resolves back to it.
+        let base = tempfile::Builder::new()
+            .prefix("convertia-persisted-")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .expect("create a temp dir in the crate source root");
+        if crate::platform::is_ephemeral_output_dir(base.path()) {
+            return; // pathological: the crate root sits under an OS temp root → location_status would divert; a clean skip.
+        }
+        let last = LastDestinationMode::ChosenPath(base.path().to_path_buf());
+        let picked = resolve_persisted_destination(&last, &reg, &probe)
+            .expect("§7.4.1: a writable persisted path registers + yields a DestinationPicked");
+        assert_eq!(
+            picked.display,
+            base.path().to_string_lossy().into_owned(),
+            "§2.10.1: the display is the lossy form of the picked folder"
+        );
+        assert_eq!(
+            reg.resolve(picked.destination),
+            Some(base.path().to_path_buf()),
+            "§7.4.1: the yielded id resolves to the registered real path (loaded core-side into the registry)"
+        );
+
+        // A GONE path (a non-existent subdir) → location_status Divert(Unwritable) → beside-source fallback,
+        // nothing registered (a stale pref never reaches the no-harm machinery unchecked, §7.4.1/§5.8).
+        let reg2 = DestinationRegistry::default();
+        let gone = LastDestinationMode::ChosenPath(base.path().join("does-not-exist"));
+        assert_eq!(
+            resolve_persisted_destination(&gone, &reg2, &probe),
+            None,
+            "§7.4.1/§5.8: a gone/read-only persisted path falls back to beside-source (None, nothing registered)"
         );
     }
 
@@ -9797,7 +9948,7 @@ mod run_conversion_tests {
             divert_root,
             channel,
             CancellationToken::new(),
-            DestinationChoice::BesideSource,
+            ResolvedDestination::BesideSource,
         )
         .await
     }
@@ -9813,7 +9964,7 @@ mod run_conversion_tests {
         divert_root: &Path,
         channel: &Channel<ConversionEvent>,
         token: CancellationToken,
-        destination: DestinationChoice,
+        destination: ResolvedDestination,
     ) -> RunId {
         let batch = build_batch(
             &registered.frozen,
@@ -10181,7 +10332,7 @@ mod run_conversion_tests {
             src_dir.path(),
             &channel,
             token,
-            DestinationChoice::BesideSource,
+            ResolvedDestination::BesideSource,
         )
         .await;
 
@@ -10259,7 +10410,7 @@ mod run_conversion_tests {
             dest_dir.path(),
             &channel,
             CancellationToken::new(),
-            DestinationChoice::ChosenRoot(dest_dir.path().to_path_buf()),
+            ResolvedDestination::ChosenRoot(dest_dir.path().to_path_buf()),
         )
         .await;
 

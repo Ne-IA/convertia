@@ -23,8 +23,8 @@ use crate::domain::{
 };
 use crate::engines::resolve_slice_target;
 use crate::orchestrator::{
-    build_batch, run_conversion, Batch, CollectedSetRegistry, ConversionEvent, EquivKeyComputer,
-    RegisteredSet, RunRegistry, RunResult, RunResultStore,
+    build_batch, run_conversion, Batch, CollectedSetRegistry, ConversionEvent, DestinationRegistry,
+    EquivKeyComputer, RegisteredSet, RunRegistry, RunResult, RunResultStore,
 };
 use crate::outcome::{ConversionErrorKind, IpcError};
 use crate::pool::Pool;
@@ -46,9 +46,12 @@ use crate::run::{RerunLedger, RunScratch};
 ///   against the §0.4.4 registry (P2.44) to the `CollectedSet::Single` whose items become the queue.
 /// - `target` — the one whole-batch `TargetId` (§0.6 invariant 1 — one Target per Batch, never per item).
 /// - `options` — the effective whole-batch `OptionValues` (§0.6 invariant 2 / §2.5).
-/// - `destination` — **AUTHORITATIVE** (§0.4.1 C6 `[DECIDED]`): C4/C5 are plan/preview + revalidation only,
-///   there is no separate server-side destination store — the value the UI passes here (the last C5-resolved
-///   destination) is what the run writes to.
+/// - `destination` — **AUTHORITATIVE** (§0.4.1 C6 `[DECIDED]`): C4/C5 are plan/preview + revalidation only, the
+///   value the UI passes here (the last C5-resolved destination) is what the run writes to. It names
+///   beside-source or WHICH picked root by id (`ChosenRoot(DestinationId)`); `start_run` resolves the id against
+///   the §0.4.4 `DestinationRegistry` to its real `PathBuf` (`resolve_choice`; an unknown id is the §0.4.3
+///   refusal) BEFORE building the batch, so the run drives a resolved `ResolvedDestination` — the path never
+///   crosses the wire (the 2026-07-06 core-owned-paths split).
 /// - `rerun_decision` — the §0.6 `RerunDecision` (the user's answer to a C4 `RerunPrompt`, §2.5): `Skip` (the
 ///   safe default — no new output for equivalent items) or `FreshCopy` (fresh numbered copies).
 /// - `on_progress` — the run-telemetry `Channel<ConversionEvent>` (§0.4.2): ordered, run-scoped (dies with
@@ -129,6 +132,19 @@ fn start_run(
     let collected_sets = app
         .try_state::<CollectedSetRegistry>()
         .ok_or_else(not_startable)?;
+    // §0.4.4 (P3.80): resolve the wire `DestinationChoice`'s `ChosenRoot(DestinationId)` against the picked-roots
+    // registry to its real `PathBuf` (`resolve_choice`) — an unknown id is the §0.4.3 refusal (`not_startable`).
+    // Done BEFORE the eviction gate so a bad destination id NEVER evicts the frozen set: a pure in-memory registry
+    // read cannot affect the concurrent-C6 `take` serialization, and refusing here (the set stays registered) lets
+    // the user retry without re-dropping. The pure §1.8/§2.7 conductor then drives a resolved
+    // `ResolvedDestination`, never a registry lookup (the 2026-07-06 core-owned-paths split, the C9 `open_path`
+    // id-resolution mirror). [Build-Session-Entscheidung: P3.80]
+    let destinations = app
+        .try_state::<DestinationRegistry>()
+        .ok_or_else(not_startable)?;
+    let resolved_destination = destinations
+        .resolve_choice(&destination)
+        .ok_or_else(not_startable)?;
     let registered = collected_sets
         .take(collected_set_id)
         .ok_or_else(not_startable)?;
@@ -137,7 +153,12 @@ fn start_run(
     // the UI never presents one). §1.9: build the batch (eligible `Pending` jobs + pre-flight `Skipped` records).
     let full_target =
         resolve_slice_target(registered.frozen.format, target).ok_or_else(not_startable)?;
-    let batch = build_batch(&registered.frozen, full_target, options, destination);
+    let batch = build_batch(
+        &registered.frozen,
+        full_target,
+        options,
+        resolved_destination,
+    );
 
     // Mint the run id (at C6 accept, NOT the §2.4 freeze — §7.1.2).
     let run_id = RunId::mint();
@@ -387,6 +408,31 @@ mod c6_contract {
         assert!(
             src.contains(concat!("run_", "conversion(")),
             "§1.9: the spawned task drives the pure crate::orchestrator::run_conversion conductor"
+        );
+        // §0.4.4 (P3.80): start_run resolves the wire ChosenRoot(DestinationId) against the DestinationRegistry
+        // (resolve_choice) BEFORE build_batch — an unknown id is the §0.4.3 refusal; the pure conductor drives a
+        // resolved ResolvedDestination, never a registry lookup (the 2026-07-06 core-owned-paths split). Needle
+        // concat!-split (self-match avoidance; the call form lives only in the production prefix).
+        assert!(
+            src.contains(concat!("resolve_", "choice(&destination)")),
+            "§0.4.4 (P3.80): start_run resolves ChosenRoot(DestinationId) via DestinationRegistry::resolve_choice \
+             (an unknown id → the §0.4.3 refusal), then build_batch drives a resolved ResolvedDestination"
+        );
+        // §0.4.4 (P3.80, G1 Sonnet-P2 order-check): the destination resolution must run BEFORE the `take`
+        // eviction gate — presence alone is insufficient, because the load-bearing property is the ORDER: a bad
+        // destination id must refuse WITHOUT evicting the frozen set (so the user retries without re-dropping). A
+        // silent reorder would regress that with no other gate catching it, so pin the order via `src.find()`
+        // index comparison (the `main.rs` boot-order-test pattern). Needles `concat!`-split (self-match avoidance).
+        let resolve_at = src
+            .find(concat!("resolve_", "choice(&destination)"))
+            .expect("start_run calls resolve_choice");
+        let take_at = src
+            .find(concat!(".take(collected_set", "_id)"))
+            .expect("start_run calls take on the CollectedSetRegistry");
+        assert!(
+            resolve_at < take_at,
+            "§0.4.4 (P3.80): resolve_choice must precede the `take` eviction gate so an unknown destination id is \
+             refused BEFORE the frozen set is evicted (no evict-on-refusal; the user retries without re-dropping)"
         );
     }
 }
