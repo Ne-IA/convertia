@@ -298,7 +298,7 @@ restated per component.
 | **FormatPicker** | target tiles for the detected source | `targets[]`, `default`, `selected`, per-tile `disabledReason?` | one pre-highlighted default (§1.5); cross-category outputs (extract-audio / to-GIF) appear as extra tiles of a video source (cross-category.md); disabled tiles per §3.4 (§5.2) |
 | **OptionsPanel** | the few **basic** contextual settings for the chosen target | option descriptors (§1.6 generic model); values & defaults from 04 | e.g. JPG quality slider, GIF fps/width — **descriptors come from the backend** (§1.6), UI just renders the declared widget type |
 | **AdvancedDrawer** | collapsed-by-default drawer for niche options | `open` | keeps the default view clean (SSOT How It Feels 5); never gates conversion |
-| **DestinationBar** | the "will save to …" line + Change button + the up-front preflight verdict | `plan` (destination preview — the line renders `OutputPlanPreview.finalDirDisplay`, a lossy display string; the real dir stays core-side, §0.6), `diverted?`, `preflight: PreflightVerdict` (§0.6/§1.10) | **always visible before Convert** (state 5); **initial state for a returning user = the persisted `lastDestinationMode`** (resolved CORE-side: the frontend passes only the last-choice intent on C4's first call, the core reads + re-validates the stored value via `crate::prefs` and falls back to beside-source when it fails to resolve — §5.8 / §7.4); shows per-location divert note (§2.7); **Change → the directory picker (C2b `pick_destination` → returns `DestinationPicked { destination: DestinationId, display }` → C5 `set_destination` with `DestinationChoice::ChosenRoot(destination)`, §5.4)** — *not* the §7.7 shell-out (§7.7 is open-finished-output, a different action). When `preflight.up_front_fail` is `Some(kind)` (§1.10 "doomed up front"), **Convert is disabled** and a passive inline `Note` shows the §2.8 catalog string for that kind (e.g. `TooBig`/`OutOfDisk`) — the SSOT "fails fast up front" surfacing; the user can still change the destination/target to clear it |
+| **DestinationBar** | the "will save to …" line + Change button + the up-front preflight verdict | `plan` (destination preview — the line renders `OutputPlanPreview.finalDirDisplay`, a lossy display string; the real dir stays core-side, §0.6), `diverted?`, `preflight: PreflightVerdict` (§0.6/§1.10) | **always visible before Convert** (state 5); **initial state for a returning user = the persisted `lastDestinationMode`** (resolved CORE-side via the §5.8 **C14 `get_initial_destination`** hand-off at the Confirm→Targets advance: the core reads + re-validates via `crate::prefs` and returns a structural `InitialDestination` the frontend maps onto C4's first `destination` — an ordinary `ChosenRoot(id)` / `BesideSource`, no path on the wire — falling back to beside-source + the passive §5.8:926 fallback note when it fails to resolve; §5.8 / §7.4); shows per-location divert note (§2.7); **Change → the directory picker (C2b `pick_destination` → returns `DestinationPicked { destination: DestinationId, display }` → C5 `set_destination` with `DestinationChoice::ChosenRoot(destination)`, §5.4)** — *not* the §7.7 shell-out (§7.7 is open-finished-output, a different action). When `preflight.up_front_fail` is `Some(kind)` (§1.10 "doomed up front"), **Convert is disabled** and a passive inline `Note` shows the §2.8 catalog string for that kind (e.g. `TooBig`/`OutOfDisk`) — the SSOT "fails fast up front" surfacing; the user can still change the destination/target to clear it |
 | **ProgressList** | per-item rows + aggregate bar | `Map<ItemId, ItemProgress>` (the §0.4.2 `ItemProgress` payloads, keyed by `itemId`; `JobId == ItemId` §0.6), `batchPct`, `currentItem` | real determinate progress (§1.11); virtualised for large batches; rows transition to terminal `Succeeded`/`Failed`/`Cancelled`/`Skipped`. For an indeterminate-`fraction` (LibreOffice) row it shows a staged determinate-looking bar from `stage` (§1.11) |
 | **ResultSummary** | end-of-batch outcome | `RunResult` (§1.12) | success/fail counts, per-item reason (§2.8 strings), output→source map; fully-failed banner. **Residue rendering `[DECIDED]`:** an item whose `IpcError.residueDisplay != None` (§0.4.3) — or that appears in `RunResult.cleanup_incomplete` (§1.12/§2.6.4) — is rendered as **Failed (not Succeeded)** with its reason string **including the residue location display** (`CleanupResidue.residueDisplay`, §0.6 — the §2.8 `cleanup_residue` string), optionally a **"reveal residue" link via C9** (`open_path { target: OpenTarget::Residue(ItemId) }`, §7.7). Cross-ref §2.6/§0.4.3. A Cancelled-with-residue item (§2.6.4 case 3) shows the §2.8.2 "With residue" tail. |
 | **OpenActions** | open-folder / open-file buttons | `commonRootDisplay`, `divertRootDisplay?` (from the wire `RunResult`, §0.6/§1.12), the single-output `ItemId` (its `ItemResult.outputDisplay` labels the button) | **backed by §7.7** (the only OS shell-out). **Buttons → C9 `OpenTarget` mapping `[DECIDED — re-cut by the 2026-07-06 owner ruling]`:** the WebView fires C9 `open_path { target }` **by id, never by path** — "Open folder" → `{ target: OpenTarget::CommonRoot }` (the core resolves the run's recorded common root, §2.7/§7.7); "Open file" (single-output runs) → `{ target: OpenTarget::Item(itemId) }`; the ResultSummary residue link → `{ target: OpenTarget::Residue(itemId) }`. **Split-divert → TWO open-folder buttons with concrete labels `[DECIDED]`:** when `RunResult.divertRootDisplay` is present (§1.12/§7.7.1), render BOTH a common-root button labelled **"Open source folder"** (`{ target: CommonRoot }`) and a divert button labelled **"Open saved-to folder"** (`{ target: DivertRoot }`); a connector line **"Some files were saved to {divertRootDisplay}"** explains the split. When absent, render only the common-root button labelled **"Open folder"** (a single button would strand a user whose files diverted). **These labels are real `strings/ui.ts` entries `[DECIDED]`** (`open_folder`, `open_source_folder`, `open_saved_to_folder`, `open_file`, `saved_to_connector`) — not schematic bracket placeholders — so they share the §5.7 localization boundary and "output lands somewhere obvious" is a concrete string, not a TODO. **Availability `[DECIDED]`: Summary-only (state 8), NOT mid-run (state 7).** During `Converting` the run's results are still incomplete and the §7.7.3 `RunResultStore` resolution set is not final, so open-actions are withheld until the run reaches a terminal `Summary`; this keeps the open-finished-output model (§7.7) honest and avoids opening a folder of half-written outputs |
@@ -900,7 +900,7 @@ the Phase-3 task list is unambiguous:
   destination-dependent preflight and **carries `rerun` through unchanged** (§2.5.1
   destination-independence). It is **not** part of the default forward path.
 
-#### Persisted `lastDestinationMode` → C4's default destination `[DECIDED — re-cut by the 2026-07-06 owner ruling (core-owned paths)]`
+#### Persisted `lastDestinationMode` → C4's default destination `[DECIDED — re-cut by the 2026-07-06 owner ruling (core-owned paths); the hand-off wire form re-cut at P3.56 (C14 query)]`
 §7.4 persists a `lastDestinationMode` prefs key (`"beside-source"` | `"<absolute path
 string>"`, default `beside-source`). Who reads it, when, and how it reaches C4 is pinned
 here so a returning user's `DestinationBar` initial state is derivable:
@@ -915,18 +915,24 @@ here so a returning user's `DestinationBar` initial state is derivable:
   stored path** (the 2026-07-06 owner ruling: no FS path crosses the wire in either
   direction — a prefs-stored path is still a path). The frontend holds only the fact
   *that* a persisted choice exists to pre-select, never its value.
-- **HOW it reaches C4:** the frontend passes only the **persisted-choice INTENT** on C4
-  `plan_output`'s FIRST Targets-entry call (the eager `3→4` call above) — a
-  `{ mode: "last" }`-style `destination` argument (the exact wire form is §0.4.1's),
-  **not a path**. The core resolves the intent: `"beside-source"` → the beside-source
-  plan; a stored absolute path that re-validates → a session **`DestinationId`** minted
-  in the core destination registry (the same registry C2b/C5 use), planned against and
-  reflected back in the C4 response (`OutputPlanPreview.finalDirDisplay` + the resolved
-  destination id, so subsequent debounced re-calls pass `ChosenRoot(id)`); a path that
-  fails re-validation → the beside-source fallback + the passive fallback note, exactly
-  as a fresh destination change would surface it. The stored path never bypasses the
-  no-harm machinery — C4's per-volume preflight (§1.10) and the §2.7 writability/divert
-  check run against the *resolved* destination as ever.
+- **HOW it reaches C4 — the pre-C4 hand-off `[DECIDED — P3.56]`:** at the eager `3→4`
+  advance the frontend calls **C14 `get_initial_destination`** (§0.4.1) BEFORE the first
+  C4 `plan_output`. Its handler resolves `lastDestinationMode` core-side into a
+  **structural `InitialDestination`** (`besideSource` | `{ chosenRoot: DestinationPicked }`
+  | `fallback`, §0.6) — **a fact, never a path or a `{ mode: "last" }`-intent-on-C4**:
+  `"beside-source"` → `besideSource`; a stored absolute path that re-validates → a session
+  **`DestinationId`** minted in the core destination registry (the same registry C2b/C5
+  use), returned as the `DestinationPicked { destination, display }` pair; a path that
+  fails re-validation → **`fallback`** (a STRUCTURALLY distinct outcome from a plain
+  beside-source pref, so the passive fallback note surfaces even when beside-source is
+  itself writable — only the resolver knows the fallback happened). The frontend then maps
+  the outcome onto C4's FIRST `destination` argument — an **ordinary `ChosenRoot(id)` or
+  `BesideSource`** — so §0.6's 2-variant `DestinationChoice` AND the id-less
+  `OutputPlanPreview` stay permanent (**no `Last` variant, no C4 mirror-back field**). The
+  stored path never bypasses the no-harm machinery — C4's per-volume preflight (§1.10) and
+  the §2.7 writability/divert check run against the *resolved* destination as ever; the
+  re-validation-failure fallback note is the §5.7:825 chrome string the `DestinationBar`
+  renders from the `fallback` fact (surfaced independently of the C4 divert note).
 
 ### Progress subscription lifecycle (Channel)
 Per-item and batch progress stream from Rust via a **`tauri::ipc::Channel`**

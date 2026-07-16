@@ -46,7 +46,7 @@ vi.mock("@tauri-apps/api/window", () => ({
   }),
 }));
 
-import type { SingleSet } from "../../state/machine";
+import type { Planned, SingleSet } from "../../state/machine";
 import { useAppStore } from "../../state/store";
 
 import {
@@ -55,7 +55,10 @@ import {
   consumeIntakeNudge,
   consumeMountDrain,
   drainPendingIntake,
+  pickAndSetDestination,
   pickForIntake,
+  replanOutput,
+  runConversion,
   startConversionRun,
   subscribeAppEvents,
   subscribeNativeDragDrop,
@@ -84,6 +87,25 @@ const outputPlan = {
   diverted: null,
   rerun: null,
   preflight: { estTotalOutputBytes: 0, estTotalScratchBytes: 0, upFrontFail: null },
+};
+
+// A typed §5.2 `targets`-state `Planned` (the held FormatPicker + DestinationBar plan) for the P3.56 re-plan /
+// change-destination / convert façade tests — these dispatch `planResolved` / `destinationResolved` / `runStarted`,
+// all of which the machine only takes from `targets`, so the store must be seated in a real `targets` state.
+const plannedFixture: Planned = {
+  set: singleSet,
+  offer: { set: "cs1", targets: [], defaultTarget: { format: "tsv" } },
+  selected: { format: "tsv" },
+  options: {},
+  destination: "besideSource",
+  preview: {
+    set: "cs1",
+    finalDirDisplay: "/drop",
+    diverted: null,
+    rerun: null,
+    preflight: { estTotalOutputBytes: 0, estTotalScratchBytes: 0, upFrontFail: null },
+  },
+  persistedFallback: false,
 };
 
 describe("drainPendingIntake (§7.8.1 first-launch drain)", () => {
@@ -323,14 +345,19 @@ describe("cancelIntakeCollect (§5.10 C13 cancel-collect, P3.55)", () => {
   });
 });
 
-describe("advanceToTargets (§5.8 Confirm → Targets, P3.55)", () => {
+describe("advanceToTargets (§5.8 Confirm → Targets, P3.55 → the P3.56 persisted-destination hand-off)", () => {
   beforeEach(() => {
     invoke.mockReset();
     useAppStore.setState({ machine: { tag: "confirm", set: singleSet } });
   });
 
-  it("fires C3 get_targets + C4 plan_output (beside-source) then dispatches targetsReady → Targets", async () => {
+  // Route the three planning commands the advance fires: C14 get_initial_destination (the persisted hand-off), then
+  // C3 get_targets + C4 plan_output. `initial` sets the C14 return so each test drives one InitialDestination arm.
+  const mockPlanning = (initial: unknown) => {
     invoke.mockImplementation((cmd: string) => {
+      if (cmd === "get_initial_destination") {
+        return Promise.resolve(initial);
+      }
       if (cmd === "get_targets") {
         return Promise.resolve(targetOffer);
       }
@@ -339,7 +366,12 @@ describe("advanceToTargets (§5.8 Confirm → Targets, P3.55)", () => {
       }
       return Promise.reject(new Error(`unexpected ${cmd}`));
     });
+  };
+
+  it("C14 besideSource → C4 gets besideSource, targetsReady with persistedFallback=false → Targets", async () => {
+    mockPlanning("besideSource");
     await advanceToTargets("cs1");
+    expect(invoke.mock.calls.map((call) => call[0])).toContain("get_initial_destination");
     expect(invoke).toHaveBeenCalledWith("get_targets", { collectedSetId: "cs1" });
     expect(invoke).toHaveBeenCalledWith(
       "plan_output",
@@ -349,13 +381,168 @@ describe("advanceToTargets (§5.8 Confirm → Targets, P3.55)", () => {
         destination: "besideSource",
       }),
     );
-    expect(useAppStore.getState().machine.tag).toBe("targets");
+    // [Test-Change: P3.56 — old-obsolete+new-correct, §5.8] the single old "fires C3+C4 → Targets" advanceToTargets
+    // test is re-cut into three C14-arm tests (besideSource/chosenRoot/fallback) as the advance now runs the C14
+    // persisted-destination hand-off first; the `→ Targets` assertion is preserved here.
+    const machine = useAppStore.getState().machine;
+    expect(machine.tag).toBe("targets");
+    if (machine.tag === "targets") {
+      expect(machine.plan.persistedFallback).toBe(false);
+    }
+  });
+
+  it("C14 chosenRoot(id) → C4 gets ChosenRoot(id) (no path on the wire), persistedFallback=false", async () => {
+    mockPlanning({ chosenRoot: { destination: "dest-9", display: "/saved" } });
+    await advanceToTargets("cs1");
+    expect(invoke).toHaveBeenCalledWith(
+      "plan_output",
+      expect.objectContaining({ destination: { chosenRoot: "dest-9" } }),
+    );
+    const machine = useAppStore.getState().machine;
+    if (machine.tag === "targets") {
+      expect(machine.plan.destination).toEqual({ chosenRoot: "dest-9" });
+      expect(machine.plan.persistedFallback).toBe(false);
+    }
+  });
+
+  it("C14 fallback → C4 gets besideSource AND persistedFallback=TRUE (the §5.8:926 fallback-note fact)", async () => {
+    mockPlanning("fallback");
+    await advanceToTargets("cs1");
+    expect(invoke).toHaveBeenCalledWith(
+      "plan_output",
+      expect.objectContaining({ destination: "besideSource" }),
+    );
+    const machine = useAppStore.getState().machine;
+    expect(machine.tag).toBe("targets");
+    if (machine.tag === "targets") {
+      // The structural fallback fact survives into Planned — the DestinationBar renders the passive note even
+      // though the resolved destination is beside-source (only the resolver knew the persisted path failed).
+      expect(machine.plan.persistedFallback).toBe(true);
+    }
   });
 
   it("re-throws a C3/C4 rejection (→ the §7.5.1 global bridge) leaving the machine in Confirm", async () => {
     invoke.mockRejectedValue({ kind: "internalError", message: "stale set" });
     await expect(advanceToTargets("cs1")).rejects.toBeDefined();
     expect(useAppStore.getState().machine.tag).toBe("confirm");
+  });
+});
+
+describe("replanOutput (§5.8 Targets re-plan, P3.56)", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    useAppStore.setState({ machine: { tag: "targets", plan: plannedFixture } });
+  });
+
+  it("fires C4 plan_output for the (set, target, options, destination) then dispatches planResolved", async () => {
+    const refreshed = { ...outputPlan, finalDirDisplay: "/re-planned" };
+    invoke.mockResolvedValue(refreshed);
+    await replanOutput("cs1", { format: "tsv" }, {}, "besideSource");
+    expect(invoke).toHaveBeenCalledWith(
+      "plan_output",
+      expect.objectContaining({
+        collectedSetId: "cs1",
+        target: { format: "tsv" },
+        destination: "besideSource",
+      }),
+    );
+    // planResolved folds the refreshed preview into the held plan (the machine stays in Targets).
+    const machine = useAppStore.getState().machine;
+    expect(machine.tag).toBe("targets");
+    if (machine.tag === "targets") {
+      expect(machine.plan.preview.finalDirDisplay).toBe("/re-planned");
+    }
+  });
+});
+
+describe("pickAndSetDestination (§5.4/§5.8 Change destination, P3.56)", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    useAppStore.setState({ machine: { tag: "targets", plan: plannedFixture } });
+  });
+
+  const destinationResolved = {
+    destination: { chosenRoot: "dest-1" },
+    finalDirDisplay: "/picked",
+    diverted: null,
+    preflight: { estTotalOutputBytes: 0, estTotalScratchBytes: 0, upFrontFail: null },
+    rerun: null,
+  };
+
+  it("on a real pick: fires C2b then C5 with ChosenRoot(id) and dispatches destinationResolved", async () => {
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === "pick_destination") {
+        return Promise.resolve({ destination: "dest-1", display: "/picked" });
+      }
+      if (cmd === "set_destination") {
+        return Promise.resolve(destinationResolved);
+      }
+      return Promise.reject(new Error(`unexpected ${cmd}`));
+    });
+    await pickAndSetDestination("cs1", { format: "tsv" }, {});
+    expect(invoke.mock.calls.map((call) => call[0])).toContain("pick_destination");
+    // C5 carries the picked root as the ChosenRoot(DestinationId) wire choice (no path on the wire, §2.10.1).
+    expect(invoke).toHaveBeenCalledWith(
+      "set_destination",
+      expect.objectContaining({
+        collectedSetId: "cs1",
+        target: { format: "tsv" },
+        destination: { chosenRoot: "dest-1" },
+      }),
+    );
+    const machine = useAppStore.getState().machine;
+    expect(machine.tag).toBe("targets");
+    if (machine.tag === "targets") {
+      expect(machine.plan.destination).toEqual({ chosenRoot: "dest-1" });
+      expect(machine.plan.preview.finalDirDisplay).toBe("/picked");
+    }
+  });
+
+  it("a cancelled pick (null) is a no-op — no C5 fires, the held destination is unchanged (§5.4)", async () => {
+    invoke.mockImplementation((cmd: string) =>
+      cmd === "pick_destination" ? Promise.resolve(null) : Promise.reject(new Error("no C5")),
+    );
+    await pickAndSetDestination("cs1", { format: "tsv" }, {});
+    expect(invoke).toHaveBeenCalledTimes(1); // only C2b — no C5
+    expect(invoke.mock.calls.map((call) => call[0])).not.toContain("set_destination");
+    const machine = useAppStore.getState().machine;
+    if (machine.tag === "targets") {
+      expect(machine.plan.destination).toBe("besideSource");
+    }
+  });
+});
+
+describe("runConversion (§5.2 Convert → C6, P3.56)", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue("run-7");
+    channels.length = 0;
+    useAppStore.setState({ machine: { tag: "targets", plan: plannedFixture } });
+  });
+
+  it("fires C6 start_conversion and dispatches runStarted → Converting", async () => {
+    await runConversion("cs1", { format: "tsv" }, {}, "besideSource", "skip");
+    expect(invoke).toHaveBeenCalledWith(
+      "start_conversion",
+      expect.objectContaining({
+        collectedSetId: "cs1",
+        destination: "besideSource",
+        rerunDecision: "skip",
+      }),
+    );
+    const machine = useAppStore.getState().machine;
+    expect(machine.tag).toBe("converting");
+    if (machine.tag === "converting") {
+      expect(machine.runId).toBe("run-7");
+    }
+  });
+
+  it("re-throws a C6 rejection (→ the §7.5.1 global bridge) leaving the machine in Targets", async () => {
+    invoke.mockRejectedValueOnce(new Error("ipc drop"));
+    await expect(
+      runConversion("cs1", { format: "tsv" }, {}, "besideSource", "skip"),
+    ).rejects.toBeDefined();
+    expect(useAppStore.getState().machine.tag).toBe("targets");
   });
 });
 

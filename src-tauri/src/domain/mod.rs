@@ -1396,6 +1396,32 @@ pub struct DestinationPicked {
     pub display: String,
 }
 
+/// The C14 `get_initial_destination` return (§0.4.1 / §0.6 / §5.8) — the returning user's initial DestinationBar
+/// state, resolved CORE-side from the persisted §7.4.1 `lastDestinationMode` at the Confirm→Targets advance. A
+/// **STRUCTURAL 3-way outcome** (a FACT on the wire, never a path/string): the frontend maps it onto the FIRST C4
+/// `plan_output` `destination` argument (`ChosenRoot(id)` / `BesideSource`), keeping §0.6's 2-variant
+/// `DestinationChoice` permanently — no `Last` variant, no C4 mirror-back field (the P3.80 hand-off form, §5.8:918).
+/// `Fallback` is distinguished from `BesideSource` STRUCTURALLY so the §5.8:926 passive fallback note surfaces even
+/// when beside-source itself is writable (only the resolver knows the persisted path failed re-validation — the G1
+/// Opus-P2 adoption). Serialize-only (a command return is Rust→WebView, never deserialized in Rust); the real
+/// re-validated `PathBuf` stays core-side in the §0.4.4 `DestinationRegistry` (never on the wire, §2.10.1).
+///
+/// [Build-Session-Entscheidung: P3.56] `Serialize` + `Type`, NO `Deserialize` (outbound-only — no command TAKES an
+/// `InitialDestination`); NOT `Copy` (its `ChosenRoot` arm owns `DestinationPicked`'s `String`). `PartialEq`/`Eq`
+/// back the resolver's unit tests. camelCase (`besideSource` / `chosenRoot` / `fallback`) per the §0.6 wire default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum InitialDestination {
+    /// The §2.7.1 beside-source default — the persisted pref was `"beside-source"` (or absent). No fallback note.
+    BesideSource,
+    /// The persisted `ChosenPath` re-validated as writable (§2.7.2) — the registered `DestinationId` + display the
+    /// WebView carries onto C4 as `ChosenRoot(destination)` (the real `PathBuf` stays core-side, §2.10.1).
+    ChosenRoot(DestinationPicked),
+    /// The persisted `ChosenPath` FAILED re-validation (gone / read-only / ephemeral) → the beside-source fallback.
+    /// The STRUCTURAL fact (never a path/string) that drives the §5.8:926 passive fallback note (§5.7:825 chrome).
+    Fallback,
+}
+
 /// Why a single source's output was diverted away from its intended location (§0.6 / §2.7.2). Carried by the
 /// P2.11 wire DTOs (`OutputPlanPreview`/`DestinationResolved`); on `OutputPlan`, `None` = beside-source (no divert).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]

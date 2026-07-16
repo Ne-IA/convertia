@@ -12,3 +12,4 @@ open_project_page
 get_app_info
 get_engine_health
 cancel_ingest
+get_initial_destination

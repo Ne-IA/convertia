@@ -58,13 +58,14 @@ const preview = (rerun: RerunPrompt | null = null): OutputPlanPreview => ({
   rerun,
   preflight: { estTotalOutputBytes: 4096, estTotalScratchBytes: 0, upFrontFail: null },
 });
-const planned = (rerun: RerunPrompt | null = null): Planned => ({
+const planned = (rerun: RerunPrompt | null = null, persistedFallback = false): Planned => ({
   set: singleSet(),
   offer: offer(),
   selected: { format: "tsv" },
   options: {},
   destination: "besideSource",
   preview: preview(rerun),
+  persistedFallback,
 });
 const runResult = (): RunResult => ({
   collectedSetId: "cs1",
@@ -184,12 +185,14 @@ describe("Collecting (§5.2 state 2)", () => {
 // ─── state 3: Confirm ────────────────────────────────────────────────────────────────────────────────────
 describe("Confirm (§5.2 state 3)", () => {
   const confirm: State = { tag: "confirm", set: singleSet() };
-  it("targetsReady → Targets, selecting the offer's default + threading the set forward", () => {
+  it("targetsReady → Targets, selecting the offer's default + threading the set + the §5.8:926 fallback fact forward", () => {
     const next = transition(confirm, {
       type: "targetsReady",
       offer: offer(),
       plan: preview(),
       destination: "besideSource",
+      // The C14 hand-off reported a re-validation fallback — the fact must thread into Planned (→ the DestinationBar note).
+      persistedFallback: true,
     });
     expect(next).toEqual({
       tag: "targets",
@@ -200,6 +203,7 @@ describe("Confirm (§5.2 state 3)", () => {
         options: {},
         destination: "besideSource",
         preview: preview(),
+        persistedFallback: true,
       },
     });
   });
@@ -242,6 +246,26 @@ describe("Targets/Destination (§5.2 states 4/5)", () => {
         },
       },
     });
+  });
+  it("destinationResolved CLEARS persistedFallback — the user actively chose, so the §5.8:926 note no longer applies", () => {
+    // Start in a persisted-fallback state (returning user whose saved path failed re-validation → beside-source).
+    const start: State = { tag: "targets", plan: planned(null, true) };
+    const resolved: DestinationResolved = {
+      destination: { chosenRoot: "11111111-1111-4111-8111-111111111111" },
+      finalDirDisplay: "/chosen",
+      diverted: null,
+      preflight: { estTotalOutputBytes: 8192, estTotalScratchBytes: 0, upFrontFail: null },
+      rerun: null,
+    };
+    const next = transition(start, { type: "destinationResolved", resolved });
+    expect(next.tag).toBe("targets");
+    if (next.tag === "targets") {
+      // The stale fallback note must not survive an active Change — else it contradicts the new "will save to …".
+      expect(next.plan.persistedFallback).toBe(false);
+      expect(next.plan.destination).toEqual({
+        chosenRoot: "11111111-1111-4111-8111-111111111111",
+      });
+    }
   });
   it("convert WITH a rerun verdict → RerunPrompt", () => {
     const next = transition(targetsSt({ equivalentCount: 3 }), { type: "convert" });

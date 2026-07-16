@@ -10,19 +10,22 @@
 // deny guards. The shells below do no arithmetic; the deny bites the fill-bodies.
 #![deny(clippy::arithmetic_side_effects)]
 
+use std::path::PathBuf;
+
 use tauri::{AppHandle, Manager};
+use tauri_plugin_dialog::{DialogExt, FilePath};
 
 use crate::domain::{
-    CollectedSetId, DestinationChoice, DestinationPicked, InstanceId, OptionValues,
-    ResolvedDestination, TargetId, TargetOffer,
+    CollectedSetId, DestinationChoice, DestinationPicked, InitialDestination, InstanceId,
+    OptionValues, ResolvedDestination, TargetId, TargetOffer,
 };
 use crate::engines::slice_target;
 use crate::orchestrator::{
-    plan_output_preview, CollectedSetRegistry, DestinationRegistry, DestinationResolved,
-    EquivKeyComputer, OutputPlanPreview,
+    plan_output_preview, resolve_persisted_destination, CollectedSetRegistry, DestinationRegistry,
+    DestinationResolved, EquivKeyComputer, OutputPlanPreview,
 };
 use crate::outcome::{ConversionErrorKind, IpcError};
-use crate::run::RerunLedger;
+use crate::run::{PublishTemp, RerunLedger};
 
 /// **C2b `pick_destination`** (§0.4.1) — the Rust-side `DialogExt` destination-folder picker. P2.24 authored the
 /// typed §0.4.1 wire CONTRACT; **P3.80 RE-KEYS the return** to the id form — the
@@ -46,21 +49,64 @@ use crate::run::RerunLedger;
 /// it, §0.4 "No command ever panics across the boundary"). The wire/TS callsite is unchanged (`Result<T, E>`
 /// renders as `__TAURI_INVOKE<T>` + a thrown `IpcError`, like C1).
 ///
-/// [Build-Session-Entscheidung: P2.24 → P3.80] **Interface-shell body — the typed CONTRACT is the deliverable;
-/// P3.80 re-keys only the RETURN TYPE.** P2.24 authored the wire signature; P3.80 re-keys `Option<PathBuf>` →
-/// `Option<DestinationPicked>` (the id form). The native `DialogExt` folder-pick BODY (`app.dialog().file()
-/// .pick_folder(..)`, opened async/`spawn_blocking` so it never blocks a Tokio worker, §7 app-shell) — which
-/// mints the id, registers the picked root in `State<DestinationRegistry>` (the P3.80-live `register`), and
-/// returns the `DestinationPicked` — is wired end-to-end at P3.56 (the DestinationBar "Change destination"
-/// affordance drives C2b → C5; P3.54 wires the C2a *intake* picker, a distinct path). A native OS folder dialog
-/// is **not unit-testable** (it needs a real OS dialog / user interaction — the §6.6 walkthrough + the P9 E2E
-/// flow exercise it), so the testable deliverable is the typed contract; the shell returns `Ok(None)` — the
-/// genuine cancelled/no-pick result. This is the sanctioned compile-time interface-shell pattern (CLAUDE §5 / the
-/// P3 `crate::isolation` shells P4 expands), not a quiet deferral.
+/// [Build-Session-Entscheidung: P2.24 → P3.80 → P3.56] **WIRED — the native folder-pick body.** P2.24 authored
+/// the wire signature; P3.80 re-keyed the return to `Option<DestinationPicked>` (the id form); P3.56 fills the
+/// native `DialogExt` folder-pick BODY the DestinationBar "Change destination" affordance drives (C2b → C5;
+/// P3.54 wired the C2a *intake* picker, a distinct path). The handler binds an `AppHandle` (a Tauri-injected
+/// arg, NOT part of the §0.4.1 `{}` wire signature) to open the native picker + reach `State<DestinationRegistry>`;
+/// it opens the folder dialog on a **dedicated blocking thread** (`spawn_blocking` + `blocking_pick_folder`, never
+/// a synchronous `blocking_pick_*` on a Tokio worker, §1.1) so the runtime stays free — mirroring C2a's dialog
+/// discipline. A dismissed dialog → `Ok(None)` (a clean no-op, the held C4/C5 destination unchanged, §5.4);
+/// otherwise the picked folder is registered via the AppHandle-free `register_picked` (mints a `DestinationId`,
+/// stores the root in `State<DestinationRegistry>`, returns `DestinationPicked { destination, display }` — the id
+/// + lossy display, **no `PathBuf` on the wire**, §2.10.1). This is AppHandle-coupled boot-glue (§1.1a; G28
+/// signature-exempt): the dialog open is source-scan-pinned, the registration is `register_picked` (unit-tested +
+/// G27-counted). A native OS folder dialog is **not unit-testable** (it needs a real OS dialog — the §6.6
+/// walkthrough + the P9 E2E flow exercise it), so the testable deliverable is `register_picked` + the typed
+/// contract. `#[tauri::command]` (no `rename_all`): the wire signature takes no args (the `AppHandle` is injected).
 #[tauri::command]
 #[specta::specta]
-pub async fn pick_destination() -> Result<Option<DestinationPicked>, IpcError> {
-    Ok(None)
+pub async fn pick_destination(app: AppHandle) -> Result<Option<DestinationPicked>, IpcError> {
+    // §1.1/§0.4.1 (P3.56): open the native folder picker on a DEDICATED BLOCKING THREAD (spawn_blocking), never a
+    // synchronous blocking_pick_* on a Tokio worker — the same async-safety discipline C2a applies to its intake
+    // picker + C4 to its FS probe (§1.1 "MUST NOT block a Tokio worker thread"). A spawn_blocking failure (the
+    // dialog thread panicked — should-never-happen) surfaces as an InternalError, never a silent no-op.
+    let dialog_app = app.clone();
+    let picked: Option<FilePath> = tauri::async_runtime::spawn_blocking(move || {
+        dialog_app.dialog().file().blocking_pick_folder()
+    })
+    .await
+    .map_err(|_| IpcError {
+        kind: ConversionErrorKind::InternalError,
+        message: "Could not open the folder picker.".into(),
+        path_display: None,
+        residue_display: None,
+    })?;
+    // A dismissed dialog (or a non-path entry, defensively dropped) → the §5.4 clean no-op: nothing registered,
+    // the held C4/C5 destination unchanged (`Ok(None)`, the §0.4.1 cancelled-pick result).
+    let Some(path) = picked.and_then(|file| file.into_path().ok()) else {
+        return Ok(None);
+    };
+    // §0.4.4 (P3.80 `register`): mint + register the picked root, returning the id + display the WebView carries
+    // into C5 as `DestinationChoice::ChosenRoot(destination)` — the real `PathBuf` never crosses the wire (§2.10.1).
+    let registry = app.state::<DestinationRegistry>();
+    Ok(Some(register_picked(&registry, path)))
+}
+
+/// Register a C2b-picked folder into the §0.4.4 [`DestinationRegistry`] and build its [`DestinationPicked`] return
+/// (§0.4.1, P3.56) — AppHandle-free so the native-dialog handler's registration half is unit-tested (the §1.1a
+/// boot-glue split, mirroring C2a's `resolve_pick_outcome`). Computes the lossy display BEFORE `register` moves
+/// the `PathBuf` in; the minted `DestinationId` resolves back to `path` in the registry (the C4/C5/C6
+/// `resolve_choice` handle). [Build-Session-Entscheidung: P3.56]
+fn register_picked(registry: &DestinationRegistry, path: PathBuf) -> DestinationPicked {
+    // §2.10.1: the display-only lossy form for the "will save to …" line — computed before the path is moved into
+    // the registry; never re-submittable as an input path (the WebView only ever names the id).
+    let display = path.to_string_lossy().into_owned();
+    let destination = registry.register(path);
+    DestinationPicked {
+        destination,
+        display,
+    }
 }
 
 /// **C3 `get_targets`** (§0.4.1) — a pure function of the detected source type to the offered `Vec<Target>` +
@@ -171,32 +217,110 @@ pub async fn plan_output(
 /// payload as C4 `plan_output`, the C4/C5 byte-identical-payload pair) — so the generated `bindings.ts` carries
 /// the C5 door, pulling the `DestinationResolved` graph into the bindings.
 ///
-/// [Build-Session-Entscheidung: P2.27] **Shell returns `Err(IpcError{ kind: InternalError })` — the same
-/// owner-approved interface-shell pattern as C3/C4.** `DestinationResolved` has no zero value (it carries a
-/// re-evaluated `PreflightVerdict`), so there is no `Ok(empty)`; the genuine pre-registry outcome (the §0.4.4
-/// registry, P2.44, does not exist) is the `Err` the real body returns for an unresolvable id: `Err(IpcError{
-/// kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError` precedent). The named
-/// fill-boxes own the rest: (a) the §2.8 catalog box owns the FINAL message (the string below is provisional) +
-/// must add a COMMAND-level string (the §2.8 catalog is item-scoped); (b) the §0.4.4 registry resolve + the
-/// §1.8/§2.14.4 destination-change re-validation (re-eval pre-flight, carry `rerun` through) + the §0.6 SUCCESS
-/// path belong to the body box (P2.44+) — the C4/C5 lifecycle asymmetry (C4 re-callable; C5 owns the
-/// destination; C4 never overrides C5) is enforced by P2.28; (c) `kind` is the CONCRETE `ConversionErrorKind`,
-/// not the `ErrorKind` alias (the P2.19 convention).
+/// [Build-Session-Entscheidung: P2.27 → P3.56] **WIRED — the destination-change re-validation body.** P2.27
+/// authored the typed contract; P3.56 fills the §1.8/§2.14.4 body the DestinationBar "Change destination" flow
+/// drives (C2b `pick_destination` → C5). Same AppHandle-coupled boot-glue pattern as C4 `plan_output` (§1.1a; G28
+/// signature-exempt): the handler binds an `AppHandle` (Tauri-injected — the §0.4.1 wire signature stays
+/// `{ collectedSetId, target, options, destination }`, the C4/C5 byte-identical payload pair) to reach the
+/// §0.4.4 `State<CollectedSetRegistry>` + `State<DestinationRegistry>` + the §2.5 `State<EquivKeyComputer>` /
+/// `State<RerunLedger>` + the app `State<InstanceId>`; it resolves the wire `ChosenRoot(DestinationId)` against
+/// the picked-roots registry (`resolve_choice`; an unknown id → the §0.4.3 refusal) and dispatches to the
+/// AppHandle-free `resolve_destination_change` helper (unit-tested + G27-counted). The re-validation runs on a
+/// **dedicated blocking thread** (`spawn_blocking`) — the §2.7.2 `location_status` probe is blocking FS I/O, so
+/// the async runtime stays free for the debounced re-calls, exactly as C4 does. `resolve_destination_change`
+/// reuses `orchestrator::plan_output_preview` (the ONE §1.8 preview machinery — the refreshed "will save to …"
+/// dir, the §2.7.2 divert, the §2.14.4-re-evaluated preflight) and maps it onto the C5 `DestinationResolved`
+/// echo. **`rerun` carried through unchanged (§2.5.1):** the v1 §2.5 EquivKey has NO destination component, so the
+/// re-run verdict is destination-INDEPENDENT — recomputing it via the PEEK-only `plan_output_preview` yields the
+/// identical value C4 held, which is exactly "carried through unchanged" (a fresh peek is idempotent, never a
+/// double-record). An unresolvable `collectedSetId` returns the §2.13 `Err(InternalError)` catch-all (provisional
+/// message, CONCRETE `ConversionErrorKind` — the P2.19 convention). The C4/C5 lifecycle asymmetry (C4 re-callable;
+/// C5 owns the destination; C4 never overrides C5) is the §0.4.1 caller-passed-destination contract (P2.28) — C5
+/// echoes the caller's `destination` back, holding no server-side destination store.
 #[tauri::command(rename_all = "camelCase")]
 #[specta::specta]
 pub async fn set_destination(
+    app: AppHandle,
     collected_set_id: CollectedSetId,
     target: TargetId,
     options: OptionValues,
     destination: DestinationChoice,
 ) -> Result<DestinationResolved, IpcError> {
-    let _ = (collected_set_id, target, options, destination);
-    Err(IpcError {
-        kind: ConversionErrorKind::InternalError,
-        message: "Could not update the destination.".into(),
-        path_display: None,
-        residue_display: None,
+    // §1.8/§2.14.4 (P3.56): re-validate the destination-dependent divert + preflight on a DEDICATED BLOCKING
+    // THREAD (`location_status` is blocking FS I/O), the same async-safety discipline C4 applies to its preview
+    // (§1.1 "MUST NOT block a Tokio worker thread"), keeping the runtime free for the debounced re-calls (§5.8).
+    // `AppHandle` + the owned args move into the closure; State is re-resolved inside. The wire
+    // `ChosenRoot(DestinationId)` resolves against the picked-roots registry FIRST — an unknown id refuses with the
+    // §0.4.3 not-available `Err` before the preview runs (P3.80 `resolve_choice`). A `JoinError` (the probe thread
+    // panicked — should-never-happen under the in-core no-panic policy) surfaces as an InternalError, never a
+    // silent value. [Build-Session-Entscheidung: P3.56]
+    match tauri::async_runtime::spawn_blocking(move || {
+        let sets = app.state::<CollectedSetRegistry>();
+        let computer = app.state::<EquivKeyComputer>();
+        let ledger = app.state::<RerunLedger>();
+        let destinations = app.state::<DestinationRegistry>();
+        let instance = *app.state::<InstanceId>();
+        let Some(resolved) = destinations.resolve_choice(&destination) else {
+            return Err(not_available("Could not update the destination."));
+        };
+        resolve_destination_change(
+            &sets,
+            &computer,
+            &ledger,
+            instance,
+            collected_set_id,
+            target,
+            &options,
+            destination,
+            &resolved,
+        )
     })
+    .await
+    {
+        Ok(result) => result,
+        Err(_join) => Err(not_available("Could not update the destination.")),
+    }
+}
+
+/// **C14 `get_initial_destination`** (§0.4.1, P3.56) — the returning-user DestinationBar initial-state query the
+/// frontend's Confirm→Targets advance runs (§5.8:918) BEFORE the first C4 `plan_output`. Resolves the persisted
+/// §7.4.1 `lastDestinationMode` CORE-side into a structural [`InitialDestination`] (`BesideSource` / `ChosenRoot` /
+/// `Fallback`) the frontend maps onto C4's first `destination` argument — keeping §0.6's 2-variant
+/// `DestinationChoice` permanently (no `Last` variant, no C4 mirror-back; the P3.80 hand-off form). The
+/// re-validation FALLBACK is distinguished STRUCTURALLY from a plain beside-source pref so the §5.8:926 passive
+/// fallback note surfaces even when beside-source is writable (the G1 Opus-P2 adoption).
+///
+/// [Build-Session-Entscheidung: P3.56] Naming = this box's fill decision (the `get_*` query convention, cf.
+/// `get_targets`). AppHandle-coupled boot-glue (§1.1a; G28 signature-exempt): the handler binds an `AppHandle` (a
+/// Tauri-injected arg, NOT part of the §0.4.1 `{}` wire signature) to read the prefs store + reach the §0.4.4
+/// `State<DestinationRegistry>` + the app `State<InstanceId>` (the §2.6.3 probe name); it runs on a **dedicated
+/// blocking thread** (`spawn_blocking`) — `prefs::load` reads `settings.json` and the resolver's §2.7.2
+/// `location_status` re-validation is blocking FS I/O — then dispatches to the AppHandle-free
+/// `orchestrator::resolve_persisted_destination` (unit-tested + G27-counted). The resolver never fails (the
+/// beside-source/fallback IS a value), so the only `Err` is a `JoinError` (the probe thread panicked —
+/// should-never-happen under the in-core no-panic policy) → the §2.13 InternalError catch-all, never a silent
+/// value. NO path outbound: a re-validated `ChosenPath` is registered in the `DestinationRegistry` and only its
+/// id + display cross the wire (§2.10.1), exactly as C2b does.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_initial_destination(app: AppHandle) -> Result<InitialDestination, IpcError> {
+    // §5.8:918/§7.4.1 (P3.56): read the persisted `lastDestinationMode` + re-validate it on a DEDICATED BLOCKING
+    // THREAD (`prefs::load` opens `settings.json`; the resolver's §2.7.2 `location_status` probe is blocking FS
+    // I/O), the same async-safety discipline C4 applies to its preview (§1.1 "MUST NOT block a Tokio worker").
+    // `AppHandle` moves into the closure; State is re-resolved inside. A `JoinError` (should-never-happen) surfaces
+    // as an InternalError, never a silent value. [Build-Session-Entscheidung: P3.56]
+    match tauri::async_runtime::spawn_blocking(move || {
+        let prefs = crate::prefs::load(&app);
+        let registry = app.state::<DestinationRegistry>();
+        let instance = *app.state::<InstanceId>();
+        let probe = PublishTemp::probe_name(instance);
+        resolve_persisted_destination(&prefs.last_destination_mode, &registry, &probe)
+    })
+    .await
+    {
+        Ok(result) => Ok(result),
+        Err(_join) => Err(not_available("Could not resolve the saved destination.")),
+    }
 }
 
 /// The §0.4.3 "collected set not resolvable" `IpcError` (P3.49) — the honest result when a `collectedSetId`
@@ -266,6 +390,40 @@ fn resolve_output_plan(
     ))
 }
 
+/// The C5 `set_destination` resolve LOGIC (§1.8/§2.14.4, P3.56) — AppHandle-free so it is unit-tested, mirroring
+/// `resolve_output_plan`. Resolve the set (`None` → the §0.4.3 not-available `Err`), re-run the ONE §1.8 preview
+/// machinery (`orchestrator::plan_output_preview` — the refreshed "will save to …" dir, the §2.7.2 divert, the
+/// §2.14.4-re-evaluated preflight) for the new `resolved` destination, and map it onto the C5 `DestinationResolved`
+/// echo: `destination` is the wire choice echoed back (the caller-passed §0.4.1 destination, P2.28); `rerun` is
+/// **carried through unchanged** — the v1 §2.5 EquivKey is destination-INDEPENDENT (§2.5.1), so the PEEK-only
+/// recompute yields the identical verdict C4 held (idempotent, never a double-record). [Build-Session-Entscheidung: P3.56]
+#[allow(clippy::too_many_arguments)] // each arg is a distinct, documented C5 re-validation input (the C4 resolve_output_plan precedent)
+fn resolve_destination_change(
+    sets: &CollectedSetRegistry,
+    computer: &EquivKeyComputer,
+    ledger: &RerunLedger,
+    instance: InstanceId,
+    collected_set_id: CollectedSetId,
+    target: TargetId,
+    options: &OptionValues,
+    destination: DestinationChoice,
+    resolved: &ResolvedDestination,
+) -> Result<DestinationResolved, IpcError> {
+    let Some(set) = sets.resolve(collected_set_id) else {
+        return Err(not_available("Could not update the destination."));
+    };
+    let preview = plan_output_preview(&set, target, options, resolved, instance, computer, ledger);
+    Ok(DestinationResolved {
+        // §0.4.1 (P2.28): C5 echoes the caller's destination choice back — no server-side destination store.
+        destination,
+        final_dir_display: preview.final_dir_display,
+        diverted: preview.diverted,
+        preflight: preview.preflight,
+        // §2.5.1: destination-INDEPENDENT, so the fresh PEEK == the C4-held verdict (carried through unchanged).
+        rerun: preview.rerun,
+    })
+}
+
 #[cfg(test)]
 mod support {
     //! Shared §6.4.1 (G15) test support for the C3/C4 resolve tests (P3.49): freeze a real one-CSV drop
@@ -326,33 +484,66 @@ mod support {
 
 #[cfg(test)]
 mod c2b_contract {
-    //! §6.4.1 unit (G15): the §0.4.1 C2b `pick_destination` typed CONTRACT (P2.24). Mirrors the C1/C2a
-    //! `*_contract` tests — the handler carries its typed signature, **re-keyed by P3.80** to
-    //! `-> Result<Option<DestinationPicked>, IpcError>` (the id form; the §0.4 universal error shape), so the
-    //! P2.21 all-shells `block_on(pick_destination())` invocation in `crate::ipc` (mod.rs) is REPLACED here by
-    //! C2b's own typed-contract test (the fill-box transition the P2.21 note schedules). The native folder-dialog
-    //! body (which mints the id + registers the picked root) is not unit-testable (it needs a real OS dialog) and
-    //! lands at P3.56 (the DestinationBar "Change destination" path); this asserts the typed contract returns the
-    //! cancelled/no-pick `Ok(None)`. [Build-Session-Entscheidung: P2.24 → P3.80]
+    //! §6.4.1 unit (G15): the §0.4.1 C2b `pick_destination` — the native folder-pick, WIRED (P3.56). Same
+    //! AppHandle-coupled boot-glue pattern as C3/C4 (§1.1a; G28-exempt): the handler binds an `AppHandle` (to open
+    //! the native `DialogExt` folder dialog + reach `State<DestinationRegistry>`), so it is NOT cargo-test-invocable,
+    //! and the native OS dialog is not unit-testable either (it needs a real dialog — the §6.6 walkthrough + the P9
+    //! E2E flow exercise it). Its testable half — the AppHandle-free `register_picked` registration — is unit-tested
+    //! here with a real registry (the minted id read BACK to its path), and the handler WIRING (open the dialog +
+    //! register via the helper) is source-scan-pinned. The §0.4.1 typed wire surface stays asserted by the
+    //! bindings.ts golden (`bindings_codegen` in main.rs). [Build-Session-Entscheidung: P3.56]
+    //!
+    //! [Test-Change: P3.56 — old-obsolete+new-correct, §0.4.1] the P2.24 `block_on(pick_destination())` contract
+    //! test is OBSOLETE — the handler now binds an `AppHandle` (not constructible in a cargo test), and the shell's
+    //! unconditional `Ok(None)` is superseded by the real native folder pick. It is REPLACED by the `register_picked`
+    //! unit test (a picked path → a `DestinationPicked` whose minted id RESOLVES BACK to the path + the display
+    //! form — read back, not "it compiles") + the handler source-scan — the sanctioned boot-glue stratification (the
+    //! C3/C4 P3.49 precedent), NOT a dropped assertion.
+    use super::support::production_planning_source;
     use super::*;
-    use tauri::async_runtime::block_on;
+    use crate::orchestrator::DestinationRegistry;
 
-    // §6.4.1 unit (G15): the C2b contract is invocable and returns `Result<Option<DestinationPicked>, IpcError>`
-    // (the id-keyed wire door, P3.80-re-keyed, in the §0.4 universal error shape). The shell opens no dialog yet
-    // (the DialogExt body is P3.56, the DestinationBar "Change destination" path), so it returns `Ok(None)` —
-    // which is ALSO the contract's genuine cancelled-dialog result (§0.4.1: `Ok(None)` = the user cancelled);
-    // P3.56 replaces it with the real folder pick whose `Ok(Some(DestinationPicked))` (id + display) carries into
-    // C5, and an `Err(IpcError)` for a genuine dialog-subsystem failure.
+    // §6.4.1 unit (G15) / §0.4.1: `register_picked` mints a resolvable id + the lossy display for a picked folder —
+    // the `DestinationPicked` pair the WebView carries into C5 (`ChosenRoot(destination)`). Read BACK: the minted
+    // `DestinationId` resolves to the registered path in a real registry (not "it compiles"), and the display is the
+    // path's lossy form (§2.10.1). Real registry, no mock (test-strategy §0.1).
     #[test]
-    fn c2b_pick_destination_contract_is_invocable_and_typed() {
-        let out: Result<Option<DestinationPicked>, IpcError> = block_on(pick_destination());
+    fn register_picked_mints_a_resolvable_id_and_the_display() {
+        let registry = DestinationRegistry::default();
+        let path = std::env::temp_dir().join("convertia-c2b-picked-root");
+        let picked = register_picked(&registry, path.clone());
         assert_eq!(
-            out,
-            Ok(None),
-            "§0.4.1/§0.4: the C2b contract shell opens no dialog yet (the DialogExt body is P3.56), so it \
-             returns Ok(None) — also the §5.4 cancelled-pick result; the typed Result<Option<DestinationPicked>, \
-             IpcError> signature (the §0.4 universal error shape) is the P2.24→P3.80 deliverable"
+            picked.display,
+            path.to_string_lossy(),
+            "§2.10.1: the DestinationPicked display is the picked folder's lossy form (the 'will save to …' line)"
         );
+        assert_eq!(
+            registry.resolve(picked.destination),
+            Some(path),
+            "§0.4.4: the minted DestinationId resolves BACK to the registered picked root (the C5/C6 ChosenRoot handle)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the C2b handler is AppHandle-coupled boot-glue (§1.1a; G28-exempt) — a source-scan pins it
+    // binds an `AppHandle`, opens the native folder dialog on a blocking thread, resolves `State<DestinationRegistry>`,
+    // and REGISTERS via `register_picked`. Needles `concat!`-assembled (self-match avoidance).
+    #[test]
+    fn pick_destination_handler_opens_the_folder_dialog_and_registers_via_the_helper() {
+        let src = production_planning_source();
+        for needle in [
+            concat!("pub async fn pick_", "destination("),
+            concat!("app: App", "Handle"),
+            concat!("spawn_", "blocking(move"),
+            concat!("blocking_pick_", "folder()"),
+            concat!("state::<Destination", "Registry>()"),
+            concat!("register_", "picked(&registry, path)"),
+        ] {
+            assert!(
+                src.contains(needle),
+                "§0.4.1/§1.1a: the C2b pick_destination handler must bind an AppHandle, open the folder dialog on a \
+                 blocking thread, resolve the DestinationRegistry, and register via register_picked (missing `{needle}`)"
+            );
+        }
     }
 }
 
@@ -623,44 +814,213 @@ mod c4_contract {
 
 #[cfg(test)]
 mod c5_contract {
-    //! §6.4.1 unit (G15): the §0.4.1 C5 `set_destination` typed CONTRACT (P2.27) — same interface-shell pattern
-    //! as C3/C4: the handler carries its typed `{ collectedSetId, target, options, destination } ->
-    //! Result<DestinationResolved, IpcError>` signature (the SAME request payload as C4), so the P2.21
-    //! all-shells `block_on(set_destination())` invocation in `crate::ipc` (mod.rs) moves here. The shell
-    //! returns the genuine pre-registry `Err(InternalError)`; SHAPE is asserted, NOT the provisional message
-    //! (owned by the §2.8 catalog box). [Build-Session-Entscheidung: P2.27]
+    //! §6.4.1 unit (G15): the §0.4.1 C5 `set_destination` — the §1.8/§2.14.4 destination-change re-validation,
+    //! WIRED (P3.56). Same AppHandle-coupled boot-glue pattern as C4 (§1.1a; G28-exempt): the resolve LOGIC is the
+    //! AppHandle-free `resolve_destination_change` helper (unit-tested with a real registry + a real freeze + a real
+    //! FS probe), the handler WIRING is source-scan-pinned. [Build-Session-Entscheidung: P3.56]
+    //!
+    //! [Test-Change: P3.56 — old-obsolete+new-correct, §1.8] the P2.27 `block_on(set_destination(..))` contract test
+    //! is OBSOLETE (the handler now binds an `AppHandle`; the shell's unconditional `Err(InternalError)` is superseded
+    //! by the real §1.8/§2.14.4 re-validation). REPLACED by the `resolve_destination_change` unit tests (a registered
+    //! CSV set → the DestinationResolved echo read back; a ChosenRoot echo; an unresolvable id → the InternalError
+    //! catch-all) + the handler source-scan — the boot-glue stratification (the C4 P3.49 precedent), NOT a dropped
+    //! assertion.
+    use std::collections::BTreeMap;
+
+    use super::support::{non_ephemeral_tempdir, production_planning_source, register_one_csv};
     use super::*;
-    use tauri::async_runtime::block_on;
+    use crate::domain::FormatId;
+    use crate::orchestrator::DestinationRegistry;
 
     fn collected_set_id() -> CollectedSetId {
         serde_json::from_str(r#""66666666-6666-4666-8666-666666666666""#)
             .expect("CollectedSetId deserializes from a uuid string")
     }
 
-    // §6.4.1 unit (G15): the C5 contract is invocable with its full §0.4.1 typed arg set ({ collectedSetId,
-    // target, options, destination }) and returns a `Result<DestinationResolved, IpcError>` (the §0.4 universal
-    // error shape). The shell has no §0.4.4 registry (P2.44), so it returns the genuine pre-registry
-    // `Err(InternalError)`. SHAPE asserted (kind == InternalError), NOT the provisional message (owned by the
-    // §2.8 catalog box); P2.44+ replaces the shell with the real §1.8/§2.14.4 destination re-validation.
+    fn no_options() -> OptionValues {
+        OptionValues(BTreeMap::new())
+    }
+
+    // §6.4.1 real-FS (G15) / §1.8/§2.7.2: a registered CSV set re-validates a beside-source destination change — the
+    // DestinationResolved ECHOES the (beside-source) choice, a non-empty "will save to" dir, NO divert (writable,
+    // non-ephemeral), NO re-run (first run, empty ledger, carried through), and the §1.10-seam trivial verdict. Read
+    // back from the real `plan_output_preview` + a real `location_status` probe (test-strategy §0.1/§0.2).
     #[test]
-    fn c5_set_destination_contract_is_invocable_and_typed() {
-        use crate::domain::FormatId;
-        use std::collections::BTreeMap;
-        let out = block_on(set_destination(
-            collected_set_id(),
-            TargetId::Format(FormatId::Png),
-            OptionValues(BTreeMap::new()),
+    fn resolve_destination_change_echoes_beside_source_and_re_validates() {
+        let Some(dir) = non_ephemeral_tempdir() else {
+            // crate root under an OS temp root — `location_status` would classify it Ephemeral, so the "no divert"
+            // assertion is unreachable. A clean skip (the fs_guard `location_status_tests` precedent).
+            return;
+        };
+        let sets = CollectedSetRegistry::default();
+        let equiv = EquivKeyComputer::default();
+        let ledger = RerunLedger::default();
+        let id = register_one_csv(&sets, dir.path());
+        let resolved = resolve_destination_change(
+            &sets,
+            &equiv,
+            &ledger,
+            InstanceId::mint(),
+            id,
+            TargetId::Format(FormatId::Tsv),
+            &no_options(),
             DestinationChoice::BesideSource,
-        ));
-        let err = out.expect_err(
-            "§0.4.1/§0.4: the C5 shell has no registry (P2.44), so it returns the genuine pre-registry \
-             Err(InternalError); the typed Result<DestinationResolved, IpcError> signature is the P2.27 deliverable",
+            &ResolvedDestination::BesideSource,
+        )
+        .expect("a registered CSV set re-validates a DestinationResolved");
+        assert_eq!(
+            resolved.destination,
+            DestinationChoice::BesideSource,
+            "§0.4.1: C5 echoes the caller's destination choice back (no server-side destination store)"
         );
+        assert_eq!(
+            resolved.diverted, None,
+            "§2.7.2: a writable, non-ephemeral beside-source destination is not diverted"
+        );
+        assert_eq!(
+            resolved.rerun, None,
+            "§2.5.1: a first run (empty ledger) carries through no re-run verdict"
+        );
+        assert_eq!(
+            resolved.preflight.up_front_fail, None,
+            "§1.10-seam: the CSV/TSV slice is never up-front doomed (the trivial slice verdict)"
+        );
+        assert!(
+            !resolved.final_dir_display.is_empty(),
+            "§1.8: the re-validated 'will save to' directory is shown (a non-empty lossy display)"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §1.8: a ChosenRoot destination change re-validates the CHOSEN directory as the "will
+    // save to" line AND echoes the ChosenRoot choice — the C5 destination-owns leg (distinct from BesideSource). The
+    // id is minted through a real `DestinationRegistry` (as C2b does), resolved via `resolve_choice`.
+    #[test]
+    fn resolve_destination_change_echoes_and_previews_a_chosen_root() {
+        let Some(source_dir) = non_ephemeral_tempdir() else {
+            return; // crate root under an OS temp root — a clean skip (the fs_guard precedent).
+        };
+        let Some(chosen_dir) = non_ephemeral_tempdir() else {
+            return;
+        };
+        let sets = CollectedSetRegistry::default();
+        let equiv = EquivKeyComputer::default();
+        let ledger = RerunLedger::default();
+        let destinations = DestinationRegistry::default();
+        let id = register_one_csv(&sets, source_dir.path());
+        let dest_id = destinations.register(chosen_dir.path().to_path_buf());
+        let choice = DestinationChoice::ChosenRoot(dest_id);
+        let resolved_dest = destinations
+            .resolve_choice(&choice)
+            .expect("the just-registered ChosenRoot id resolves");
+        let resolved = resolve_destination_change(
+            &sets,
+            &equiv,
+            &ledger,
+            InstanceId::mint(),
+            id,
+            TargetId::Format(FormatId::Tsv),
+            &no_options(),
+            choice.clone(),
+            &resolved_dest,
+        )
+        .expect("a ChosenRoot destination change re-validates a DestinationResolved");
+        assert_eq!(
+            resolved.destination, choice,
+            "§0.4.1: C5 echoes the ChosenRoot(DestinationId) choice back verbatim"
+        );
+        assert_eq!(
+            resolved.final_dir_display,
+            chosen_dir.path().to_string_lossy(),
+            "§1.8: a ChosenRoot destination re-validates the CHOSEN directory as the 'will save to' line"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.13: an unresolvable `collectedSetId` is the InternalError catch-all (SHAPE, not the
+    // provisional message owned by the §2.8 catalog box).
+    #[test]
+    fn resolve_destination_change_of_an_unresolvable_id_is_the_internalerror_catch_all() {
+        let sets = CollectedSetRegistry::default();
+        let equiv = EquivKeyComputer::default();
+        let ledger = RerunLedger::default();
+        let err = resolve_destination_change(
+            &sets,
+            &equiv,
+            &ledger,
+            InstanceId::mint(),
+            collected_set_id(),
+            TargetId::Format(FormatId::Tsv),
+            &no_options(),
+            DestinationChoice::BesideSource,
+            &ResolvedDestination::BesideSource,
+        )
+        .expect_err("§2.13: an unresolvable set id yields the not-available Err");
         assert_eq!(
             err.kind,
             ConversionErrorKind::InternalError,
-            "§2.13: the unresolvable-set shell outcome is the InternalError catch-all — SHAPE asserted, NOT \
-             the provisional message (the §2.8 catalog box owns the final string)"
+            "§2.13: the unresolvable-set outcome is the InternalError catch-all"
         );
+    }
+
+    // §6.4.1 unit (G15): the C5 handler is AppHandle-coupled boot-glue (§1.1a; G28-exempt) — a source-scan pins it
+    // binds an `AppHandle`, resolves the FIVE States (incl. the DestinationRegistry), resolves the wire
+    // ChosenRoot(DestinationId) via `resolve_choice` (§0.4.4/§0.4.3), and DISPATCHES via `resolve_destination_change`.
+    // Needles `concat!`-assembled (self-match avoidance).
+    #[test]
+    fn set_destination_handler_binds_apphandle_and_dispatches_via_the_helper() {
+        let src = production_planning_source();
+        for needle in [
+            concat!("pub async fn set_", "destination("),
+            concat!("app: App", "Handle"),
+            concat!("spawn_", "blocking(move"),
+            concat!("state::<CollectedSet", "Registry>()"),
+            concat!("state::<Destination", "Registry>()"),
+            concat!("resolve_", "choice(&destination)"),
+            concat!("resolve_destination_", "change("),
+        ] {
+            assert!(
+                src.contains(needle),
+                "§0.4.1/§1.8/§0.4.4: the C5 set_destination handler must bind an AppHandle, resolve the States (incl. \
+                 DestinationRegistry), resolve the destination id (resolve_choice), and dispatch via \
+                 resolve_destination_change (missing `{needle}`)"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod c14_contract {
+    //! §6.4.1 unit (G15): the §0.4.1 C14 `get_initial_destination` — the persisted-destination hand-off query,
+    //! WIRED (P3.56). Same AppHandle-coupled boot-glue pattern as C3/C4/C5 (§1.1a; G28-exempt): the handler binds
+    //! an `AppHandle` (to read the prefs store + reach `State<DestinationRegistry>` / `State<InstanceId>`), so it is
+    //! NOT cargo-test-invocable; its resolve LOGIC is the AppHandle-free
+    //! `orchestrator::resolve_persisted_destination` (unit-tested in `crate::orchestrator` with a real registry + a
+    //! real FS probe — the 3-way `InitialDestination` outcome), the handler WIRING is source-scan-pinned. The
+    //! §0.4.1 typed wire surface stays asserted by the bindings.ts golden (`bindings_codegen` in main.rs).
+    //! [Build-Session-Entscheidung: P3.56]
+    use super::support::production_planning_source;
+
+    // §6.4.1 unit (G15): the C14 handler is AppHandle-coupled boot-glue (§1.1a; G28-exempt) — a source-scan pins it
+    // binds an `AppHandle`, reads the prefs (`prefs::load`), resolves `State<DestinationRegistry>` + the probe
+    // (`InstanceId` → `probe_name`) on a blocking thread, and DISPATCHES via `resolve_persisted_destination`.
+    // Needles `concat!`-assembled (self-match avoidance).
+    #[test]
+    fn get_initial_destination_handler_reads_prefs_and_dispatches_via_the_resolver() {
+        let src = production_planning_source();
+        for needle in [
+            concat!("pub async fn get_initial_", "destination("),
+            concat!("app: App", "Handle"),
+            concat!("spawn_", "blocking(move"),
+            concat!("prefs::", "load(&app)"),
+            concat!("state::<Destination", "Registry>()"),
+            concat!("probe_", "name(instance)"),
+            concat!("resolve_persisted_", "destination("),
+        ] {
+            assert!(
+                src.contains(needle),
+                "§0.4.1/§5.8: the C14 get_initial_destination handler must bind an AppHandle, read the prefs, resolve \
+                 the DestinationRegistry + probe on a blocking thread, and dispatch via resolve_persisted_destination \
+                 (missing `{needle}`)"
+            );
+        }
     }
 }

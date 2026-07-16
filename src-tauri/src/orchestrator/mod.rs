@@ -64,10 +64,11 @@ use walkdir::WalkDir;
 
 use crate::domain::{
     CollectedSet, CollectedSetId, CollectingId, DestinationChoice, DestinationId,
-    DestinationPicked, DetectionOutcome, DivertReason, DroppedItem, FrozenCollectedSet, InstanceId,
-    IntakeOrigin, ItemId, ItemIdSpace, ItemPaths, ItemSpaceExhausted, JobSource, JobStage,
-    OptionValues, OutputPlan, ReadFailure, RerunDecision, RerunPrompt, ResolvedDestination, RunId,
-    ScanProgress, SkipReason, SkippedItem, Target, TargetId, UserFacingFormat,
+    DestinationPicked, DetectionOutcome, DivertReason, DroppedItem, FrozenCollectedSet,
+    InitialDestination, InstanceId, IntakeOrigin, ItemId, ItemIdSpace, ItemPaths,
+    ItemSpaceExhausted, JobSource, JobStage, OptionValues, OutputPlan, ReadFailure, RerunDecision,
+    RerunPrompt, ResolvedDestination, RunId, ScanProgress, SkipReason, SkippedItem, Target,
+    TargetId, UserFacingFormat,
 };
 use crate::engines::{
     dispatch, Engine, EngineId, EngineInvocation, InvocationResult, NativeCsvTsvEngine, PlanOutcome,
@@ -525,8 +526,11 @@ pub struct DestinationResolved {
     /// verdict never goes stale (§1.8).
     pub preflight: PreflightVerdict,
     /// CARRIED THROUGH UNCHANGED from the C4 verdict — in v1 the §2.5 EquivKey has no destination
-    /// component, so re-run is destination-INDEPENDENT (§2.5.1); C5 re-evaluates ONLY `preflight`, never
-    /// recomputes `rerun`.
+    /// component, so re-run is destination-INDEPENDENT (§2.5.1). C5's `resolve_destination_change` re-runs the
+    /// ONE §1.8 preview machinery (`plan_output_preview`), whose PEEK-only re-run recompute therefore yields the
+    /// IDENTICAL value the C4 verdict held — "carried through unchanged" BY CONSTRUCTION (an idempotent peek,
+    /// never a divergent re-decision), not a separate skip-the-recompute path. Only `preflight` actually changes
+    /// with the destination (§2.14.4). [Build-Session-Entscheidung: P3.56 — the resolver-reuse nuance]
     pub rerun: Option<RerunPrompt>,
 }
 
@@ -2536,10 +2540,11 @@ impl CollectedSetRegistry {
 // ACCUMULATES: §0.4.4 "entries live for the app session (they survive across collected sets, so switching
 // batches never forces a re-pick) and die at app exit; nothing is persisted (§7.4)". Like the sibling
 // stores it is a CONTRACT before its consumer: P3.80 wired the C4/C6 `resolve_choice` resolution + the
-// `.manage` registration (so `resolve`/`resolve_choice` are now LIVE); `register` stays dead in the production
-// build until the C2b real-pick body (P3.56) and the P3.53+/P3.56 screen consumer of
-// `resolve_persisted_destination` (leg 3; P3.81 verifies, per its 2026-07-12 re-ordering),
-// so the module-level dead_code expect stays fulfilled while those remain unwired.
+// `.manage` registration (so `resolve`/`resolve_choice` are LIVE); **P3.56 wires the remaining two —
+// `register` (the C2b `pick_destination` real-pick body via `register_picked`) and
+// `resolve_persisted_destination` (the C14 `get_initial_destination` hand-off) — so both are now LIVE in the
+// production build.** The module-level `not(test)` dead_code expect stays fulfilled by the OTHER still-unwired
+// items it covers (the §2.8 `project_outcome` / batch-summary renderer / §2.6.4 residue helpers — see its reason).
 
 /// The §0.4.4 picked-destination registry — maps each C2b-minted `DestinationId` to its Rust-picked root
 /// `PathBuf`, held as a Tauri app-managed `State` so a picked destination PATH never crosses the wire
@@ -2552,12 +2557,13 @@ impl CollectedSetRegistry {
 /// concurrent C2b/C4/C5/C6 handlers); every critical section is a whole-map op that never holds the guard
 /// across an `.await`, so a plain `std::sync::Mutex` is correct.
 ///
-/// [Build-Session-Entscheidung: P3.76] `Default`-constructed empty; `Debug` for parity with the sibling
+/// [Build-Session-Entscheidung: P3.76 → P3.56] `Default`-constructed empty; `Debug` for parity with the sibling
 /// stores. NOT a wire type (no `serde`/`specta`) — pure core-internal State that never crosses IPC (the
 /// wire carries only the `DestinationId` + the C2b display string, §0.6). P3.80 wired the C4/C6
-/// `resolve_choice` resolution + the `.manage` registration; `register` stays dead in the production build
-/// until the C2b real-pick body (P3.56), so the module-level dead_code expect stays fulfilled (the P2.44
-/// `CollectedSetRegistry` precedent).
+/// `resolve_choice` resolution + the `.manage` registration; **P3.56 makes `register` LIVE** in the production
+/// build (the C2b `pick_destination` real-pick body registers a picked root via `register_picked`). The
+/// module-level `not(test)` dead_code expect stays fulfilled by the other still-unwired items it covers (the §2.8
+/// `project_outcome` / batch-summary renderer / §2.6.4 residue helpers — see its reason string).
 #[derive(Debug, Default)]
 pub struct DestinationRegistry {
     /// The session's `DestinationId` → picked-root map. ACCUMULATES across the session (unlike the
@@ -2612,51 +2618,54 @@ impl DestinationRegistry {
     }
 }
 
-/// **§7.4 persisted-last resolver (leg 3, P3.80)** — load + validate the §7.4.1 `lastDestinationMode` pref
-/// core-side into the §0.4.4 [`DestinationRegistry`], yielding the [`DestinationPicked`] the frontend
-/// subsequently references (the 2026-07-06 core-owned-paths ruling: the CORE reads the pref, the WebView never
-/// touches the stored path — the P2.88 `[Superseded]` re-cut). Given the P2.85-built [`LastDestinationMode`] union
+/// **§7.4 persisted-last resolver (leg 3, P3.80; return re-cut P3.56)** — load + validate the §7.4.1
+/// `lastDestinationMode` pref core-side into the §0.4.4 [`DestinationRegistry`], yielding the 3-way
+/// [`InitialDestination`] the C14 handler returns and the frontend maps onto C4's first destination (its
+/// `ChosenRoot` arm carries the [`DestinationPicked`] id + display; the WebView never touches the stored path —
+/// the 2026-07-06 core-owned-paths ruling / the P2.88 `[Superseded]` re-cut). Given the P2.85-built [`LastDestinationMode`] union
 /// (`BesideSource | ChosenPath(PathBuf)` — the §7.4.1 `"beside-source" | "<absolute path>"` VALUE; the
 /// §7.4.1-key-name-vs-§5.8-value "mode-vs-path" reading is a non-finding, the ruling's steelman: the
 /// `ChosenPath` arm's value IS the path):
-/// - `BesideSource` → `None` (use the §2.7.1 beside-source default, nothing registered);
+/// - `BesideSource` → [`InitialDestination::BesideSource`] (the §2.7.1 default, nothing registered, NO fallback);
 /// - `ChosenPath(path)` → re-validate the path as WRITABLE via the §2.7.2 [`location_status`] machinery
 ///   (§7.4.1 "always re-validated as writable at use time"): a `Writable` verdict mints + registers a
-///   `DestinationId` and returns `Some(DestinationPicked{ destination, display })`; a `Divert(_)` verdict (the
-///   path is gone / read-only / ephemeral / no-atomic-publish) falls back to beside-source (`None`, nothing
-///   registered — the §2.7 per-location fallback, §5.8 "falls back to beside-source"), so a stale pref never
-///   reaches the no-harm machinery unchecked.
+///   `DestinationId` and returns [`InitialDestination::ChosenRoot`]`(DestinationPicked{ destination, display })`;
+///   a `Divert(_)` verdict (the path is gone / read-only / ephemeral / no-atomic-publish) →
+///   [`InitialDestination::Fallback`] (nothing registered — the §2.7 per-location fallback, §5.8:926 "falls back
+///   to beside-source"), so a stale pref never reaches the no-harm machinery unchecked. **`Fallback` is
+///   STRUCTURALLY distinct from `BesideSource`** so the §5.8 passive fallback note surfaces even when beside-source
+///   itself is writable (the G1 Opus-P2 adoption — only this resolver knows the path failed re-validation).
 ///
 /// PURE + directly testable: it takes the pref VALUE + a real `&DestinationRegistry` + the caller's `crate::run`
 /// grammar probe name (passed IN — `fs_guard`'s `location_status` never depends on `crate::run`), performing NO
-/// `AppHandle` / `prefs::load` read itself. Its AppHandle-coupled consumer — the startup/mount read of
-/// `prefs::load(app).last_destination_mode` + `State<InstanceId>` (for the probe) + `State<DestinationRegistry>`
-/// that hands the resulting `DestinationPicked` to the frontend — is the §5.8-owned P3.53+/P3.56 screen
-/// wire (P3.81 verifies, per its 2026-07-12 re-ordering; consumer-free
-/// until then, the `DestinationRegistry`-dead-until-P3.80 + C9 P3.79→P3.51 build-vs-wire precedent; the
-/// module-level `dead_code` expect covers it). [Build-Session-Entscheidung: P3.80]
+/// `AppHandle` / `prefs::load` read itself. **LIVE via P3.56:** its AppHandle-coupled consumer is the C14
+/// `get_initial_destination` handler (`crate::ipc::planning`) — the `prefs::load(app).last_destination_mode` +
+/// `State<InstanceId>` (probe) + `State<DestinationRegistry>` read the frontend's `advanceToTargets` hand-off runs
+/// at the Confirm→Targets advance (§5.8:918); the module-level `not(test)` `dead_code` expect stays fulfilled by
+/// the other still-dead items it covers. [Build-Session-Entscheidung: P3.80 → P3.56]
 pub fn resolve_persisted_destination(
     last: &LastDestinationMode,
     registry: &DestinationRegistry,
     probe_name: &OsStr,
-) -> Option<DestinationPicked> {
+) -> InitialDestination {
     let LastDestinationMode::ChosenPath(path) = last else {
-        // §7.4.1 `"beside-source"` sentinel → the §2.7.1 default; nothing registered.
-        return None;
+        // §7.4.1 `"beside-source"` sentinel → the §2.7.1 default; nothing registered, NO fallback (a plain pref).
+        return InitialDestination::BesideSource;
     };
     match location_status(path, probe_name) {
         LocationStatus::Writable => {
             let display = path.to_string_lossy().into_owned();
             let destination = registry.register(path.clone());
-            Some(DestinationPicked {
+            InitialDestination::ChosenRoot(DestinationPicked {
                 destination,
                 display,
             })
         }
-        // §7.4.1/§2.7: a gone / read-only / ephemeral persisted path → the beside-source fallback, nothing
-        // registered (the §5.8 "falls back to beside-source" — the passive fallback note is the P3.56+ screens'
-        // frontend concern).
-        LocationStatus::Divert(_) => None,
+        // §7.4.1/§2.7/§5.8: a gone / read-only / ephemeral persisted path → the beside-source FALLBACK, nothing
+        // registered. The `Fallback` fact (STRUCTURALLY distinct from the plain `BesideSource` above) drives the
+        // §5.8:926 passive fallback note the P3.56 DestinationBar renders (§5.7:825 chrome) — surfaced EVEN when
+        // beside-source itself is writable (only this resolver knows the persisted path failed re-validation).
+        LocationStatus::Divert(_) => InitialDestination::Fallback,
     }
 }
 
@@ -8301,19 +8310,25 @@ mod tests {
     // DestinationId and yields the DestinationPicked; a GONE/read-only `ChosenPath` falls back to beside-source
     // (None), nothing registered (§7.4.1 "re-validated at use time" / §5.8 fallback). Real FS + a real registry,
     // never mocked (test-strategy §0.1/§0.2).
+    // [Test-Change: P3.56 — old-obsolete+new-correct, §5.8] the resolver's return type is re-cut from
+    // `Option<DestinationPicked>` to the 3-way `InitialDestination` (Co-Pilot ruling item 2, 7f73553): the two
+    // `None` cases (a plain beside-source pref vs a re-validation FALLBACK) MUST be STRUCTURALLY distinct so the
+    // §5.8:926 passive fallback note surfaces even when beside-source is writable (the G1 Opus-P2 adoption). The
+    // old `None`/`Some(picked)` assertions are obsolete against the new type; the new `BesideSource`/`ChosenRoot`/
+    // `Fallback` assertions verify the SAME behaviours (sentinel→default, writable→registered+read-back, gone→fall-back).
     #[test]
     fn resolve_persisted_destination_registers_a_writable_path_else_falls_back_beside_source() {
         let probe = PublishTemp::probe_name(instance_id());
 
-        // §7.4.1: a beside-source pref uses the default — no DestinationPicked, nothing registered (no probe).
+        // §7.4.1: a beside-source pref → the plain §2.7.1 default (NOT a fallback), nothing registered (no probe).
         let reg = DestinationRegistry::default();
         assert_eq!(
             resolve_persisted_destination(&LastDestinationMode::BesideSource, &reg, &probe),
-            None,
-            "§7.4.1: a beside-source pref uses the §2.7.1 default — no DestinationPicked, nothing registered"
+            InitialDestination::BesideSource,
+            "§7.4.1: a beside-source pref → InitialDestination::BesideSource (the plain default, nothing registered)"
         );
 
-        // A real, non-ephemeral WRITABLE dir → registered + a DestinationPicked whose id resolves back to it.
+        // A real, non-ephemeral WRITABLE dir → ChosenRoot(DestinationPicked) whose id resolves back to it.
         let base = tempfile::Builder::new()
             .prefix("convertia-persisted-")
             .tempdir_in(env!("CARGO_MANIFEST_DIR"))
@@ -8322,8 +8337,17 @@ mod tests {
             return; // pathological: the crate root sits under an OS temp root → location_status would divert; a clean skip.
         }
         let last = LastDestinationMode::ChosenPath(base.path().to_path_buf());
-        let picked = resolve_persisted_destination(&last, &reg, &probe)
-            .expect("§7.4.1: a writable persisted path registers + yields a DestinationPicked");
+        // [Test-Change: P3.56 — old-obsolete+new-correct, §5.8] the writable-arm assertion is re-cut from the old
+        // `Option::expect` to a match→`expect` over the 3-way return (`ChosenRoot(picked)` replaces `Some(picked)`).
+        // Extract via match → Option → `expect` (no `panic!` on the in-core path; the §1.1 no-panic discipline).
+        // Arms enumerated (no `_`) — `#![deny(clippy::wildcard_enum_match_arm)]` on the dispatch enums.
+        let picked = match resolve_persisted_destination(&last, &reg, &probe) {
+            InitialDestination::ChosenRoot(picked) => Some(picked),
+            InitialDestination::BesideSource | InitialDestination::Fallback => None,
+        }
+        .expect(
+            "§7.4.1: a writable persisted path → InitialDestination::ChosenRoot(DestinationPicked)",
+        );
         assert_eq!(
             picked.display,
             base.path().to_string_lossy().into_owned(),
@@ -8335,14 +8359,14 @@ mod tests {
             "§7.4.1: the yielded id resolves to the registered real path (loaded core-side into the registry)"
         );
 
-        // A GONE path (a non-existent subdir) → location_status Divert(Unwritable) → beside-source fallback,
+        // A GONE path (a non-existent subdir) → location_status Divert(Unwritable) → InitialDestination::Fallback,
         // nothing registered (a stale pref never reaches the no-harm machinery unchecked, §7.4.1/§5.8).
         let reg2 = DestinationRegistry::default();
         let gone = LastDestinationMode::ChosenPath(base.path().join("does-not-exist"));
         assert_eq!(
             resolve_persisted_destination(&gone, &reg2, &probe),
-            None,
-            "§7.4.1/§5.8: a gone/read-only persisted path falls back to beside-source (None, nothing registered)"
+            InitialDestination::Fallback,
+            "§7.4.1/§5.8: a gone/read-only persisted path → InitialDestination::Fallback (the structural fallback fact, nothing registered)"
         );
     }
 

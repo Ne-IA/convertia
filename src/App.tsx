@@ -11,10 +11,11 @@
 //     hardcoded here.
 // This component renders the `<main>` landmark + the §5.2 screen router over the store's machine state — the
 // P1 phase end-state assembled by P1.31 (this mount) + P1.23 (index.html) + P1.16 (window model). P3.54 wired
-// the first router arm — the Idle (1) `DropZone` (§5.3); P3.55 adds the Collecting (2) + Confirm (3) arms (the
-// §5.8 consumption seam drives Idle → Collecting → Confirm). The remaining slice screens (Targets P3.56 …
-// fault screens P3.60) add their arms as they land, and a not-yet-built state renders the empty `<main>`
-// workspace until its box lands. [Build-Session-Entscheidung: P1.31] [Build-Session-Entscheidung: P3.54] [Build-Session-Entscheidung: P3.55]
+// the first router arm — the Idle (1) `DropZone` (§5.3); P3.55 added the Collecting (2) + Confirm (3) arms (the
+// §5.8 consumption seam drives Idle → Collecting → Confirm); P3.56 adds the Targets+Destination (4/5) arm. The
+// remaining slice screens (RerunPrompt P3.57 … fault screens P3.60) add their arms as they land, and a
+// not-yet-built state renders the empty `<main>` workspace until its box lands.
+// [Build-Session-Entscheidung: P1.31] [Build-Session-Entscheidung: P3.54] [Build-Session-Entscheidung: P3.55] [Build-Session-Entscheidung: P3.56]
 //
 // [Build-Session-Entscheidung: P2.137] P2.61 wired the §7.8.1 root-shell-mount first-launch drain trigger
 // (`useLaunchDrain`); P2.120 added `useAppEvents()` — the three §5.8 `app://` listener registrations. P2.137
@@ -38,16 +39,18 @@ import type { ReactElement } from "react";
 import { CollectingScreen } from "./components/CollectingScreen";
 import { ConfirmScreen } from "./components/ConfirmScreen";
 import { DropZone } from "./components/DropZone";
+import { TargetsScreen } from "./components/TargetsScreen";
 import { useAppEvents } from "./hooks/useAppEvents";
 import { useLaunchDrain } from "./hooks/useLaunchDrain";
 import { useNativeDragDrop } from "./hooks/useNativeDragDrop";
 import { useAppStore, type State } from "./state/store";
 
-// §5.2 screen router: map the current machine state to its screen. P3.54 landed the Idle (1) arm; P3.55 adds
-// the Collecting (2) + Confirm (3) arms (the §5.8 consumption seam drives Idle → Collecting → Confirm). The
-// remaining slice states (Targets P3.56 … fault screens P3.60) render null until their box lands — never a dead
-// button, because the transition INTO each state is wired by the box that first reaches it (the P3 screen-box
-// wiring model). [Build-Session-Entscheidung: P3.55]
+// §5.2 screen router: map the current machine state to its screen. P3.54 landed the Idle (1) arm; P3.55 added
+// the Collecting (2) + Confirm (3) arms; P3.56 adds the Targets+Destination (4/5) arm (the §5.8 flow drives
+// Confirm → Targets via the C3+C4 advance). The remaining slice states (RerunPrompt P3.57, Converting P3.58,
+// Summary P3.59, fault screens P3.60) render null until their box lands — never a dead button, because the
+// transition INTO each state is wired by the box that first reaches it (the P3 screen-box wiring model).
+// [Build-Session-Entscheidung: P3.55] [Build-Session-Entscheidung: P3.56]
 function screenFor(machine: State): ReactElement | null {
   switch (machine.tag) {
     case "idle":
@@ -56,6 +59,8 @@ function screenFor(machine: State): ReactElement | null {
       return <CollectingScreen collectingId={machine.collectingId} scanned={machine.scanned} />;
     case "confirm":
       return <ConfirmScreen set={machine.set} />;
+    case "targets":
+      return <TargetsScreen plan={machine.plan} />;
     default:
       return null;
   }

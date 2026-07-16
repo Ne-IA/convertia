@@ -1255,7 +1255,7 @@ harmless empty drain. A stash over a still-undrained set **APPENDS** to it and k
 FIRST stash's `origin` (the P2.58 no-loss accumulation — a superseding replace would
 silently drop the earlier launch's paths, the exact loss this section's guarantee
 forbids); the next drain consumes the merged set. There is **no
-separate `take_pending_intake` command/accessor**, so the canonical C1–C13 IPC table
+separate `take_pending_intake` command/accessor**, so the canonical C1–C14 IPC table
 (§0.4.1) stays complete and the codegen/drift check covers the whole drain path; **no
 4th `app://` event** is added (the §0.4.2 three-event invariant holds).
 

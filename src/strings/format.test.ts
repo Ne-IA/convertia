@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  divertNote,
   fill,
   formatConfirmAnnouncement,
   formatConfirmCount,
@@ -9,6 +10,7 @@ import {
   formatScanStatus,
   formatSkipRow,
   formatSkipTally,
+  formatWillSaveTo,
   skipReasonLabel,
 } from "./format";
 import { ui } from "./ui";
@@ -115,5 +117,22 @@ describe("formatSkipRow (§5.3 skipped-row reason line)", () => {
     expect(formatSkipRow("unsupportedType", "PDF")).toBe(
       "Skipped — Unsupported type — detected: PDF",
     );
+  });
+});
+
+describe("formatWillSaveTo (§5.3 will-save-to line)", () => {
+  it("wraps the C4 plan's finalDirDisplay in the chrome frame", () => {
+    expect(formatWillSaveTo("C:/Users/me/Downloads")).toBe("Will save to C:/Users/me/Downloads");
+  });
+});
+
+describe("divertNote (§2.7.2 per-location divert)", () => {
+  it("maps every §0.6 DivertReason variant to a non-empty note (exhaustive)", () => {
+    for (const reason of ["unwritable", "ephemeral", "noAtomicPublish"] as const) {
+      expect(divertNote(reason).trim()).not.toBe("");
+    }
+    expect(divertNote("unwritable")).toBe(ui.destination_divert_unwritable);
+    expect(divertNote("ephemeral")).toBe(ui.destination_divert_ephemeral);
+    expect(divertNote("noAtomicPublish")).toBe(ui.destination_divert_no_atomic_publish);
   });
 });

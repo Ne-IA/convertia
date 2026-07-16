@@ -31,6 +31,11 @@ vi.mock("./lib/ipc/events", () => ({
   // (unused in the Idle render this suite exercises).
   advanceToTargets: () => Promise.resolve(),
   cancelIntakeCollect: () => Promise.resolve(),
+  // The P3.56 Targets (4/5) router arm (TargetsScreen) is statically imported by App; stub its façade calls
+  // (fired only on a user action, so unused in these render-only router legs).
+  replanOutput: () => Promise.resolve(),
+  pickAndSetDestination: () => Promise.resolve(),
+  runConversion: () => Promise.resolve(),
 }));
 // The Confirm (3) router arm renders the ConfirmScreen → BatchSummary, which announces on mount; stub the
 // announcer so the router render stays hermetic (its own announce contract is BatchSummary.test.tsx's).
@@ -38,7 +43,7 @@ vi.mock("./a11y/announcer", () => ({ announce: () => undefined }));
 
 import { App } from "./App";
 import { useAppStore } from "./state/store";
-import type { SingleSet } from "./state/machine";
+import type { Planned, SingleSet } from "./state/machine";
 
 // Unmount each render (this file did not previously auto-clean; the §5.2 router legs below re-render <App/> per
 // machine state, so cleanup keeps their document-scoped role queries from tripping over an accumulated tree).
@@ -149,6 +154,39 @@ describe("App — §5.2 screen router (P3.55)", () => {
     useAppStore.setState({ machine: { tag: "confirm", set: singleSet } });
     const { getByRole } = render(<App />);
     expect(getByRole("button", { name: "Continue" })).not.toBeNull();
+  });
+
+  it("routes Targets (4/5) → the TargetsScreen (P3.56)", () => {
+    const plan: Planned = {
+      set: singleSet,
+      offer: {
+        set: "cs1",
+        targets: [
+          {
+            id: { format: "tsv" },
+            label: "TSV",
+            lossy: null,
+            availability: "available",
+            options: [],
+          },
+        ],
+        defaultTarget: { format: "tsv" },
+      },
+      selected: { format: "tsv" },
+      options: {},
+      destination: "besideSource",
+      preview: {
+        set: "cs1",
+        finalDirDisplay: "/drop",
+        diverted: null,
+        rerun: null,
+        preflight: { estTotalOutputBytes: 0, estTotalScratchBytes: 0, upFrontFail: null },
+      },
+      persistedFallback: false,
+    };
+    useAppStore.setState({ machine: { tag: "targets", plan } });
+    const { getByRole } = render(<App />);
+    expect(getByRole("button", { name: "Convert" })).not.toBeNull();
   });
 
   it("renders the empty `<main>` for a not-yet-built slice state (never a dead screen)", () => {

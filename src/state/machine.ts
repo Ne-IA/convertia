@@ -72,6 +72,12 @@ export interface Planned {
   readonly destination: DestinationChoice;
   /** The last C4/C5 plan preview: the "will save to…" line + divert + §1.10 preflight + §2.5 rerun verdict. */
   readonly preview: OutputPlanPreview;
+  /** §5.8:926 — the persisted-destination re-validation FALLBACK fact: `true` iff the C14 `get_initial_destination`
+   *  hand-off reported the saved `lastDestinationMode` path failed re-validation (gone/read-only/ephemeral) and fell
+   *  back to beside-source. Drives the DestinationBar's passive §5.7:825 chrome fallback note — surfaced even when
+   *  beside-source itself is writable (only the resolver knows the fallback happened; the G1 Opus-P2 adoption).
+   *  Structural, never a path/string. [Build-Session-Entscheidung: P3.56] */
+  readonly persistedFallback: boolean;
 }
 
 // ─── the slice State (a §5.2 discriminated union) ────────────────────────────────────────────────────────
@@ -133,6 +139,8 @@ export type Msg =
       readonly offer: TargetOffer;
       readonly plan: OutputPlanPreview;
       readonly destination: DestinationChoice;
+      /** §5.8:926 — the C14 hand-off's persisted-destination re-validation FALLBACK fact (→ `Planned.persistedFallback`). */
+      readonly persistedFallback: boolean;
     }
   /** Cancel the pre-run wizard back to Idle (§5.2/§5.10) — the Confirm Esc (row 3) AND the Targets/Destination
    *  Ctrl/⌘+N "cancel back to Idle" (§5.10 row 1180 — no temp written yet, so nothing to clean). Distinct from
@@ -316,6 +324,7 @@ function fromConfirm(state: State & { tag: "confirm" }, msg: Msg): State {
           options: {},
           destination: msg.destination,
           preview: msg.plan,
+          persistedFallback: msg.persistedFallback,
         },
       };
     case "cancel":
@@ -337,12 +346,16 @@ function fromTargets(state: State & { tag: "targets" }, msg: Msg): State {
       return { ...state, plan: { ...state.plan, preview: msg.plan } };
     case "destinationResolved":
       // §2.5.1: C5 re-evaluates the destination-dependent preview but CARRIES `rerun` THROUGH UNCHANGED (the v1
-      // EquivKey is destination-independent), so the refreshed preview keeps the held C4 `rerun`.
+      // EquivKey is destination-independent), so the refreshed preview keeps the held C4 `rerun`. §5.8:926: the
+      // user ACTIVELY chose a destination via Change, so the persisted-destination FALLBACK note no longer applies
+      // (it described the INITIAL persisted-choice re-validation) — clear `persistedFallback` so a stale note
+      // never contradicts the newly-chosen "will save to …" line (the G1 dual-review P2).
       return {
         ...state,
         plan: {
           ...state.plan,
           destination: msg.resolved.destination,
+          persistedFallback: false,
           preview: {
             ...state.plan.preview,
             finalDirDisplay: msg.resolved.finalDirDisplay,

@@ -34,6 +34,7 @@ import {
   type CollectingId,
   type ConversionEvent,
   type DestinationChoice,
+  type InitialDestination,
   type OptionValues,
   type OutputPlanPreview,
   type PickKind,
@@ -149,28 +150,107 @@ export async function cancelIntakeCollect(collectingId: CollectingId): Promise<v
 }
 
 /**
- * [Build-Session-Entscheidung: P3.55] The §5.8 Confirm → Targets (3 → 4) advance: fire C3 `get_targets` then
- * the eager C4 `plan_output` (with the pre-highlighted default target + the slice beside-source destination),
- * then dispatch `targetsReady` so the machine enters `Targets` with the offer + initial plan + destination.
- * C4's FIRST-call destination is `besideSource` (the §2.7.1 default): the §5.8 persisted-`lastDestinationMode`
- * intent is a §7.4 prefs capability not built in P3 (there is no `last` `DestinationChoice` variant on the wire
- * yet), so the slice plans beside-source; P3.56's DestinationBar + §7.4 wire the persisted-choice resolution.
+ * [Build-Session-Entscheidung: P3.55 → P3.56] The §5.8 Confirm → Targets (3 → 4) advance: run the §5.8:918
+ * persisted-destination HAND-OFF (C14 `get_initial_destination`) to resolve the returning user's initial
+ * destination CORE-side, then fire C3 `get_targets` + the eager C4 `plan_output` (with the pre-highlighted default
+ * target + the resolved first-call destination), then dispatch `targetsReady` so the machine enters `Targets`.
+ *
+ * [Build-Session-Entscheidung: P3.56] **Persisted-destination hand-off (Co-Pilot ruling item 2, 7f73553):** the
+ * P3.80 resolver's consumer is now WIRED — C14 resolves the saved §7.4.1 `lastDestinationMode` into a structural
+ * `InitialDestination` ({@link mapInitialDestination} maps it): a re-validated `ChosenRoot` → the ordinary
+ * `ChosenRoot(DestinationId)` first-call destination (no path on the wire, §2.10.1, keeping §0.6's 2-variant
+ * `DestinationChoice` — no `Last` variant, no C4 mirror-back); a `Fallback` → beside-source + the §5.8:926
+ * fallback-note fact; a plain `BesideSource` → the §2.7.1 default (no note). The fact rides `targetsReady` into
+ * `Planned.persistedFallback` (the DestinationBar renders the passive §5.7:825 chrome note).
  *
  * A rejection (a stale `CollectedSetId` §0.4.3 `IpcError`, or an opaque core panic) RE-THROWS unhandled to the
  * §7.5.1 global frontend-error bridge and LEAVES the machine in Confirm (the user retries the gate). The full
  * §5.2 state-12 pre-run routing — the §5.3 `CommandError` inline slot (IpcError) / the AppFault wildcard
- * (opaque) — rides P3.56/P3.60, which build those surfaces (the CommandError slot lives in the Targets screen).
+ * (opaque) — rides P4.69/P3.60, which build those surfaces (the CommandError slot lives in the Targets screen).
  */
 export async function advanceToTargets(collectedSetId: CollectedSetId): Promise<void> {
+  const initial = await commands.getInitialDestination();
+  const { destination, persistedFallback } = mapInitialDestination(initial);
   const offer: TargetOffer = await commands.getTargets(collectedSetId);
-  const destination: DestinationChoice = "besideSource";
   const plan: OutputPlanPreview = await commands.planOutput(
     collectedSetId,
     offer.defaultTarget,
     {},
     destination,
   );
-  useAppStore.getState().dispatch({ type: "targetsReady", offer, plan, destination });
+  useAppStore
+    .getState()
+    .dispatch({ type: "targetsReady", offer, plan, destination, persistedFallback });
+}
+
+/**
+ * [Build-Session-Entscheidung: P3.56] Map the C14 `InitialDestination` hand-off onto the FIRST C4 `(destination,
+ * persistedFallback)` pair (§5.8:918): `chosenRoot` → the ordinary `ChosenRoot(DestinationId)` wire choice (the
+ * WebView carries only the id, never the path); `fallback` → beside-source + the §5.8:926 fallback-note fact;
+ * `besideSource` → the plain §2.7.1 default (no note). Pure — unit-tested over all three arms.
+ */
+function mapInitialDestination(initial: InitialDestination): {
+  destination: DestinationChoice;
+  persistedFallback: boolean;
+} {
+  if (initial === "besideSource") {
+    return { destination: "besideSource", persistedFallback: false };
+  }
+  if (initial === "fallback") {
+    return { destination: "besideSource", persistedFallback: true };
+  }
+  return { destination: { chosenRoot: initial.chosenRoot.destination }, persistedFallback: false };
+}
+
+/**
+ * [Build-Session-Entscheidung: P3.56] The §5.8 Targets re-plan: fire C4 `plan_output` for the currently-held
+ * (set, target, options, destination) and dispatch `planResolved` so the DestinationBar's "will save to …" line
+ * + the §1.10 preflight + the §2.5 rerun verdict refresh (the §5.2 state-4 `selectTarget` re-plan). The
+ * FormatPicker dispatches `selectTarget` OPTIMISTICALLY (an immediate tile highlight), then calls this to refresh
+ * the preview for the new target — the machine's `planResolved` arm folds it into the held plan. For the CSV→TSV
+ * slice there is one target, so a re-plan is a no-op refresh; the wiring is general (P5–P7 grow the offer). A
+ * rejection RE-THROWS to the §7.5.1 global frontend-error bridge (the `advanceToTargets` precedent) — the machine
+ * stays in Targets; the §5.3 `CommandError` inline slot for a C4 reject rides P4.69.
+ */
+export async function replanOutput(
+  collectedSetId: CollectedSetId,
+  target: TargetId,
+  options: OptionValues,
+  destination: DestinationChoice,
+): Promise<void> {
+  const plan: OutputPlanPreview = await commands.planOutput(
+    collectedSetId,
+    target,
+    options,
+    destination,
+  );
+  useAppStore.getState().dispatch({ type: "planResolved", plan });
+}
+
+/**
+ * [Build-Session-Entscheidung: P3.56] The §5.4/§5.8 "Change destination" flow: fire C2b `pick_destination` (the
+ * native Rust-side `DialogExt` folder dialog — no `dialog:allow-open` WebView grant, §0.10/§5.4), then, on a real
+ * pick, fire C5 `set_destination` with the picked root as `DestinationChoice::ChosenRoot(destination)` and dispatch
+ * `destinationResolved` so the held plan's destination + the re-validated "will save to …" / divert / §2.14.4
+ * preflight refresh. C2b returns the id-keyed `DestinationPicked` (id + display, **no path on the wire**, §2.10.1);
+ * the WebView carries only the id. A **cancelled** dialog (`null`) is a clean no-op — the held destination is
+ * unchanged (§5.4), no C5 fires. A C2b/C5 rejection RE-THROWS to the §7.5.1 global frontend-error bridge (the
+ * `advanceToTargets` precedent); the §5.3 `CommandError` inline slot for a C4/C5 reject rides P4.69.
+ */
+export async function pickAndSetDestination(
+  collectedSetId: CollectedSetId,
+  target: TargetId,
+  options: OptionValues,
+): Promise<void> {
+  const picked = await commands.pickDestination();
+  if (picked === null) {
+    // §5.4: a dismissed folder dialog is a clean no-op — nothing changes, no C5 round-trip.
+    return;
+  }
+  const resolved = await commands.setDestination(collectedSetId, target, options, {
+    chosenRoot: picked.destination,
+  });
+  useAppStore.getState().dispatch({ type: "destinationResolved", resolved });
 }
 
 /**
@@ -276,6 +356,37 @@ function isIpcError(value: unknown): boolean {
     "kind" in value &&
     typeof (value as { kind: unknown }).kind === "string"
   );
+}
+
+/**
+ * [Build-Session-Entscheidung: P3.56] The §5.2/§5.8 Convert transition: fire C6 `start_conversion` (via
+ * {@link startConversionRun} — the run-scoped `Channel<ConversionEvent>` lifecycle) and dispatch `runStarted`
+ * with the minted `RunId`, entering `Converting` (state 7). Called by the DestinationBar's Convert button on the
+ * **no-rerun** path (`rerunDecision = "skip"` — no equivalent prior run exists, so the decision is moot; §2.5),
+ * and by the §2.5 RerunPrompt (P3.57) with the user's `Skip`/`FreshCopy` choice on the rerun path.
+ *
+ * Fault handling follows the `advanceToTargets` precedent — no `onRunFault` handler is supplied here, so a C6
+ * rejection (an opaque core/IPC drop OR a structured §0.4.3 `IpcError`) RE-THROWS to the §7.5.1 global
+ * frontend-error bridge and leaves the machine in Targets (the user retries). The §5.2 fault routing — the
+ * `appFault` wildcard for an opaque pre-run C6 drop, the §5.3 `CommandError` slot for a structured reject —
+ * rides the boxes that build those surfaces (P3.60 AppFault / P4.69 CommandError), which supply `onRunFault`
+ * then; the SEAM is already live ({@link ConversionRunHandlers}).
+ */
+export async function runConversion(
+  collectedSetId: CollectedSetId,
+  target: TargetId,
+  options: OptionValues,
+  destination: DestinationChoice,
+  rerunDecision: RerunDecision,
+): Promise<void> {
+  const runId = await startConversionRun(
+    collectedSetId,
+    target,
+    options,
+    destination,
+    rerunDecision,
+  );
+  useAppStore.getState().dispatch({ type: "runStarted", runId });
 }
 
 // [Build-Session-Entscheidung: P3.77] The old payload-carrying `app://intake` handler (`ingestFromIntakeEvent`,

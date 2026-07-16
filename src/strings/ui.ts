@@ -74,4 +74,39 @@ export const ui = {
   skip_reason_already_converted: "Already converted",
   // Appends the retained detected-type name when the skipped item carried one (section 0.6 detectedDisplay).
   skip_reason_detected: "{label} — detected: {detected}",
+
+  // ── P3.56 ──────────────────────────────────────────────────────────────────────────────────────────
+  // The section 5.3 FormatPicker (the section 5.2 Targets state 4) heading. The offered target tiles carry
+  // their own backend-supplied label (section 0.6 Target.label, from C3 -- never re-homed here); this is only
+  // the group's contextual heading. [Build-Session-Entscheidung: P3.56]
+  formatpicker_heading: "Convert to",
+
+  // The section 5.3 DestinationBar (state 5). "Will save to {dir}" renders the C4 plan's finalDirDisplay (a
+  // core-produced lossy display string, section 2.10.1 -- never a re-submittable path); the Change/Convert
+  // button labels. Chrome (section 5.7: destination + button text owned here); the plan itself is section
+  // 1.8/2.7-owned. [Build-Session-Entscheidung: P3.56]
+  destination_will_save_to: "Will save to {dir}",
+  destination_change: "Change destination",
+  destination_convert: "Convert",
+  // The section 5.2 row-4 "Back button" (Targets -> Confirm, preserving the frozen set) the machine's `back`
+  // arm references. The section 5.10 Ctrl/Cmd+Backspace accelerator that also drives it is P4.70.3 (keyboard a11y).
+  targets_back: "Back",
+
+  // The section 2.7.2 per-location divert note -- shown under the will-save-to line when the C4 plan diverted
+  // (OutputPlanPreview.diverted is Some). Chrome (section 5.7 line 825: "divert noted", string owned here); it
+  // explains WHY the output moved to the shown safe folder. One line per section 0.6 DivertReason variant.
+  // [Build-Session-Entscheidung: P3.56]
+  destination_divert_unwritable:
+    "The original folder can't be written to, so it's being saved here instead.",
+  destination_divert_ephemeral:
+    "The original folder is temporary, so it's being saved here instead.",
+  destination_divert_no_atomic_publish:
+    "The original folder can't safely store the result, so it's being saved here instead.",
+
+  // The section 5.8:926 persisted-destination FALLBACK note -- shown when the C14 get_initial_destination hand-off
+  // reported the saved lastDestinationMode path failed re-validation (gone/read-only/ephemeral) and fell back to
+  // beside-source. Chrome (section 5.7:825, string owned here); surfaced EVEN when beside-source is writable (only
+  // the resolver knows the fallback happened -- the G1 Opus-P2 adoption). [Build-Session-Entscheidung: P3.56]
+  destination_persisted_fallback:
+    "Your saved destination folder isn't available, so files will be saved beside each source.",
 } as const;

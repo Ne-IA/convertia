@@ -2,7 +2,8 @@
 //!
 //! P1.13 stands up the Tauri v2 `Builder` entrypoint on Tauri's managed multi-threaded tokio async
 //! runtime (§0.4.0/§0.8/§0.9): the §0.4.5 tauri-specta codegen seam — `collect_commands!` carries the
-//! C1..C13 §0.4.1 command surface from P2.21 (interface shells; `collect_events!` stays empty BY DECISION —
+//! C1..C14 §0.4.1 command surface (C1..C13 from P2.21 interface shells; C14 `get_initial_destination` P3.56;
+//! `collect_events!` stays empty BY DECISION —
 //! the §0.4.2 app:// events are RAW `app.emit`/`listen` events whose payloads register via `.types()` at
 //! P2.39, and the P2.37 `ConversionEvent` Channel payload joins via C6/P2.29, neither via `collect_events!`),
 //! plus the P1.25 standalone `.types(...)` registration of the §0.6 identity
@@ -135,7 +136,7 @@ fn register_ipc_event_types(types: specta::Types) -> specta::Types {
 /// generated `src/lib/ipc/bindings.ts` is produced from (the `bindings_codegen` export test, driven by
 /// `cargo run -p xtask -- codegen`, §0.4.5) AND the runtime invoke/event registry (`main`). Sharing one
 /// constructor is what guarantees the generated TS surface can never drift from the registered Rust
-/// surface. The C1..C13 §0.4.1 command set is registered from P2.21 (interface shells, each filled by its
+/// surface. The C1..C14 §0.4.1 command set is registered from P2.21 (C1..C13 interface shells, each filled by its
 /// per-command fill-box). [Reconcile: P2.39] `collect_events![]` (below) stays EMPTY BY DECISION: the §0.4.2
 /// app:// events (`app://fault`/`intake`/`close-requested`) are RAW `app.emit` / TS `listen` events whose
 /// payload types register via `register_ipc_event_types` (`.types()`), NOT tauri-specta typed events — a
@@ -166,11 +167,12 @@ fn ipc_specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             crate::ipc::intake::drain_intake,
             crate::ipc::intake::pick_for_intake,
             crate::ipc::intake::cancel_ingest,
-            // planning (§0.4.1 C2b / C3 / C4 / C5)
+            // planning (§0.4.1 C2b / C3 / C4 / C5 / C14)
             crate::ipc::planning::pick_destination,
             crate::ipc::planning::get_targets,
             crate::ipc::planning::plan_output,
             crate::ipc::planning::set_destination,
+            crate::ipc::planning::get_initial_destination,
             // conversion run lifecycle (§0.4.1 C6 / C7 / C8)
             crate::ipc::conversion::start_conversion,
             crate::ipc::conversion::cancel_run,
@@ -1538,7 +1540,7 @@ pub(crate) mod launch_intake {
 
 fn main() -> tauri::Result<()> {
     // §0.4.5 IPC seam: the shared `ipc_specta_builder()` is BOTH the runtime invoke/event registry and
-    // the single source the generated `bindings.ts` is produced from (no drift between them). The C1..C13
+    // the single source the generated `bindings.ts` is produced from (no drift between them). The C1..C14
     // §0.4.1 command surface is registered from P2.21 (interface shells); the run-telemetry `ConversionEvent`
     // (P2.37) joins `bindings.ts` via C6's Channel arg (P2.29); the §0.4.2 app:// event payload (`AppFault`)
     // registers via `register_ipc_event_types` (`.types()`) at P2.39, as a RAW `app.emit`/`listen` event —
@@ -1985,7 +1987,7 @@ mod ipc_typegen {
 mod app_event_closed_set {
     //! §6.4.1 unit (G15): the §0.4.2 app:// event CLOSED-SET + payload-registration cross-check (P2.41 — the
     //! loose-`G23` closed-set gate's IN-CORE half). This is the §0.4.1-command analog of the Rust golden test
-    //! `bindings_codegen::golden_lists_exactly_the_c1_c13_command_surface` that `plan-lint` check 12 pairs
+    //! `bindings_codegen::golden_lists_exactly_the_c1_c14_command_surface` that `plan-lint` check 12 pairs
     //! with: there, the L2 source scan (check 12) proves "no spurious registered command"; here, the L2 source
     //! scan (`plan-lint` check 28 `app-event-surface-drift`, build-gates §6) proves no fourth app:// literal
     //! exists anywhere in `src-tauri/src` and that every such literal lives only in `crate::ipc::events`, and
@@ -2201,15 +2203,16 @@ mod bindings_codegen {
         );
     }
 
-    // §6.4.1 unit (G15): the §0.4.1 command SURFACE registered at P2.21. The C1–C13 handlers are registered
-    // as interface shells on the shared `ipc_specta_builder()`, so the committed bindings.ts (the frontend's
-    // only IPC door, §0.7) must expose all 14 commands. Read the committed artifact back (the §0.2
+    // §6.4.1 unit (G15): the §0.4.1 command SURFACE registered at P2.21. The C1–C14 handlers are registered
+    // on the shared `ipc_specta_builder()`, so the committed bindings.ts (the frontend's
+    // only IPC door, §0.7) must expose all 15 commands. Read the committed artifact back (the §0.2
     // read-the-output-back discipline applied to the IPC surface) and assert the `commands` export plus each
     // canonical Tauri command id — so a dropped/renamed registration reddens L2 BEFORE the P2.36 closed-set
-    // drift gate (G23) sees it at push. (C1–C13 = 14 commands: §0.4.1's C2 splits into C2a `pick_for_intake`
-    // + C2b `pick_destination`.) PINNED BY NAME (not a bare count) so a drop/rename gives a legible diff.
+    // drift gate (G23) sees it at push. (C1–C14 = 15 commands: §0.4.1's C2 splits into C2a `pick_for_intake`
+    // + C2b `pick_destination`, so 14 numbered rows C1..C14 → 15 fns; C14 `get_initial_destination` = P3.56.)
+    // PINNED BY NAME (not a bare count) so a drop/rename gives a legible diff.
     #[test]
-    fn committed_bindings_expose_the_c1_c13_command_surface() {
+    fn committed_bindings_expose_the_c1_c14_command_surface() {
         let ts = std::fs::read_to_string(TRACKED_BINDINGS_PATH).expect(
             "the committed src/lib/ipc/bindings.ts must exist — regenerate it via the xtask codegen task",
         );
@@ -2218,23 +2221,24 @@ mod bindings_codegen {
             "the committed bindings.ts must expose the `commands` IPC surface (§0.4.1 / P2.21)"
         );
         // The canonical Tauri command ids = the snake_case `invoke(...)` names = the registered Rust fn
-        // names, one per §0.4.1 row C1..C13. The double-quoted form matches only the generated `invoke`
+        // names, one per §0.4.1 row C1..C14. The double-quoted form matches only the generated `invoke`
         // call, never the back-ticked command name inside a doc comment.
         for cmd in [
-            "drain_intake",      // C1
-            "pick_for_intake",   // C2a
-            "pick_destination",  // C2b
-            "get_targets",       // C3
-            "plan_output",       // C4
-            "set_destination",   // C5
-            "start_conversion",  // C6
-            "cancel_run",        // C7
-            "get_run_summary",   // C8
-            "open_path",         // C9
-            "open_project_page", // C10
-            "get_app_info",      // C11
-            "get_engine_health", // C12
-            "cancel_ingest",     // C13
+            "drain_intake",            // C1
+            "pick_for_intake",         // C2a
+            "pick_destination",        // C2b
+            "get_targets",             // C3
+            "plan_output",             // C4
+            "set_destination",         // C5
+            "start_conversion",        // C6
+            "cancel_run",              // C7
+            "get_run_summary",         // C8
+            "open_path",               // C9
+            "open_project_page",       // C10
+            "get_app_info",            // C11
+            "get_engine_health",       // C12
+            "cancel_ingest",           // C13
+            "get_initial_destination", // C14
         ] {
             assert!(
                 ts.contains(&format!("\"{cmd}\"")),
@@ -2247,38 +2251,39 @@ mod bindings_codegen {
     // (the L2 `doc12_ipc_surface_drift`) diffs the registered `#[tauri::command]` fn set in `src-tauri/src`
     // against the committed `src-tauri/ipc-commands.golden`, flagging any SPURIOUS WebView-reachable command
     // (a registered fn absent from the golden — the `names - want` direction). This test pins the OTHER
-    // direction at the core level: the golden lists EXACTLY the §0.4.1 C1–C13 command set (the same 14 fn names
+    // direction at the core level: the golden lists EXACTLY the §0.4.1 C1–C14 command set (the same 15 fn names
     // the surface test above pins in the bindings + `collect_commands!` registers), so a golden that silently
     // drifts (a missing entry — which would drop a real command from check 12's `want` set — or an extra /
     // typo'd entry) reddens L1/L2 here. Together with check 12 (registered ⊆ golden) + the surface test
-    // (bindings ⊇ C1–C13), the IPC surface is asserted complete + drift-free (no extra, no missing).
+    // (bindings ⊇ C1–C14), the IPC surface is asserted complete + drift-free (no extra, no missing).
     // [Build-Session-Entscheidung: P2.36]
     #[test]
-    fn golden_lists_exactly_the_c1_c13_command_surface() {
+    fn golden_lists_exactly_the_c1_c14_command_surface() {
         let golden = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ipc-commands.golden"))
             .expect("src-tauri/ipc-commands.golden must exist — the P2.36 closed-set IPC-surface drift golden");
         let listed: std::collections::BTreeSet<&str> = golden.split_whitespace().collect();
         let expected: std::collections::BTreeSet<&str> = [
-            "drain_intake",      // C1
-            "pick_for_intake",   // C2a
-            "pick_destination",  // C2b
-            "get_targets",       // C3
-            "plan_output",       // C4
-            "set_destination",   // C5
-            "start_conversion",  // C6
-            "cancel_run",        // C7
-            "get_run_summary",   // C8
-            "open_path",         // C9
-            "open_project_page", // C10
-            "get_app_info",      // C11
-            "get_engine_health", // C12
-            "cancel_ingest",     // C13
+            "drain_intake",            // C1
+            "pick_for_intake",         // C2a
+            "pick_destination",        // C2b
+            "get_targets",             // C3
+            "plan_output",             // C4
+            "set_destination",         // C5
+            "start_conversion",        // C6
+            "cancel_run",              // C7
+            "get_run_summary",         // C8
+            "open_path",               // C9
+            "open_project_page",       // C10
+            "get_app_info",            // C11
+            "get_engine_health",       // C12
+            "cancel_ingest",           // C13
+            "get_initial_destination", // C14
         ]
         .into_iter()
         .collect();
         assert_eq!(
             listed, expected,
-            "§0.4.1: the committed ipc-commands.golden must list EXACTLY the 14 C1–C13 command fn names — \
+            "§0.4.1: the committed ipc-commands.golden must list EXACTLY the 15 C1–C14 command fn names — \
              plan-lint check 12 diffs the registered #[tauri::command] set against it, so a drifted golden \
              would silently weaken the closed-set IPC-surface gate (P2.36)"
         );

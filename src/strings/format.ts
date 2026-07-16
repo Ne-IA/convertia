@@ -8,7 +8,7 @@
 // BatchSummary count line and the assertive announcement are BOTH built from `confirm_count_*` here — while
 // leaving `ui` a lint-/G57-clean flat table. No JSX, no user-facing literal outside `ui`; the `—`/`·` glue is
 // section-owned punctuation, not translatable copy. [Build-Session-Entscheidung: P3.55]
-import type { SkipReason, UserFacingFormat } from "../lib/ipc/commands";
+import type { DivertReason, SkipReason, UserFacingFormat } from "../lib/ipc/commands";
 
 import { ui } from "./ui";
 
@@ -105,8 +105,30 @@ export function formatSkipRow(reason: SkipReason, detectedDisplay: string | null
   return fill(ui.filelist_skip_row, { reason: reasonText });
 }
 
-/** Exhaustiveness guard: a new `SkipReason` variant reaching {@link skipReasonLabel} fails to compile
- *  (`reason: never`), so a label can never be silently missing. Unreachable by construction. */
-function assertNever(reason: never): never {
-  throw new Error(`unhandled SkipReason variant: ${String(reason)}`);
+/** The §5.3 DestinationBar "will save to …" line — the C4 plan's `finalDirDisplay` (a core-produced lossy
+ *  display string, §2.10.1) wrapped in the chrome frame. [Build-Session-Entscheidung: P3.56] */
+export function formatWillSaveTo(finalDirDisplay: string): string {
+  return fill(ui.destination_will_save_to, { dir: finalDirDisplay });
+}
+
+/** The §2.7.2 per-location divert note for a §0.6 `DivertReason` (§5.3/§5.7 chrome) — shown under the
+ *  will-save-to line when the C4 plan diverted. Exhaustive over the three variants. [Build-Session-Entscheidung: P3.56] */
+export function divertNote(reason: DivertReason): string {
+  switch (reason) {
+    case "unwritable":
+      return ui.destination_divert_unwritable;
+    case "ephemeral":
+      return ui.destination_divert_ephemeral;
+    case "noAtomicPublish":
+      return ui.destination_divert_no_atomic_publish;
+    default:
+      return assertNever(reason);
+  }
+}
+
+/** Exhaustiveness guard: a new variant reaching an exhaustive switch ({@link skipReasonLabel} /
+ *  {@link divertNote}) fails to compile (`value: never`), so a label can never be silently missing.
+ *  Unreachable by construction. */
+function assertNever(value: never): never {
+  throw new Error(`unhandled union variant: ${String(value)}`);
 }

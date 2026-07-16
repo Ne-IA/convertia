@@ -133,17 +133,21 @@ export const commands = {
 	 *  it, §0.4 "No command ever panics across the boundary"). The wire/TS callsite is unchanged (`Result<T, E>`
 	 *  renders as `__TAURI_INVOKE<T>` + a thrown `IpcError`, like C1).
 	 *
-	 *  [Build-Session-Entscheidung: P2.24 → P3.80] **Interface-shell body — the typed CONTRACT is the deliverable;
-	 *  P3.80 re-keys only the RETURN TYPE.** P2.24 authored the wire signature; P3.80 re-keys `Option<PathBuf>` →
-	 *  `Option<DestinationPicked>` (the id form). The native `DialogExt` folder-pick BODY (`app.dialog().file()
-	 *  .pick_folder(..)`, opened async/`spawn_blocking` so it never blocks a Tokio worker, §7 app-shell) — which
-	 *  mints the id, registers the picked root in `State<DestinationRegistry>` (the P3.80-live `register`), and
-	 *  returns the `DestinationPicked` — is wired end-to-end at P3.56 (the DestinationBar "Change destination"
-	 *  affordance drives C2b → C5; P3.54 wires the C2a *intake* picker, a distinct path). A native OS folder dialog
-	 *  is **not unit-testable** (it needs a real OS dialog / user interaction — the §6.6 walkthrough + the P9 E2E
-	 *  flow exercise it), so the testable deliverable is the typed contract; the shell returns `Ok(None)` — the
-	 *  genuine cancelled/no-pick result. This is the sanctioned compile-time interface-shell pattern (CLAUDE §5 / the
-	 *  P3 `crate::isolation` shells P4 expands), not a quiet deferral.
+	 *  [Build-Session-Entscheidung: P2.24 → P3.80 → P3.56] **WIRED — the native folder-pick body.** P2.24 authored
+	 *  the wire signature; P3.80 re-keyed the return to `Option<DestinationPicked>` (the id form); P3.56 fills the
+	 *  native `DialogExt` folder-pick BODY the DestinationBar "Change destination" affordance drives (C2b → C5;
+	 *  P3.54 wired the C2a *intake* picker, a distinct path). The handler binds an `AppHandle` (a Tauri-injected
+	 *  arg, NOT part of the §0.4.1 `{}` wire signature) to open the native picker + reach `State<DestinationRegistry>`;
+	 *  it opens the folder dialog on a **dedicated blocking thread** (`spawn_blocking` + `blocking_pick_folder`, never
+	 *  a synchronous `blocking_pick_*` on a Tokio worker, §1.1) so the runtime stays free — mirroring C2a's dialog
+	 *  discipline. A dismissed dialog → `Ok(None)` (a clean no-op, the held C4/C5 destination unchanged, §5.4);
+	 *  otherwise the picked folder is registered via the AppHandle-free `register_picked` (mints a `DestinationId`,
+	 *  stores the root in `State<DestinationRegistry>`, returns `DestinationPicked { destination, display }` — the id
+	 *  + lossy display, **no `PathBuf` on the wire**, §2.10.1). This is AppHandle-coupled boot-glue (§1.1a; G28
+	 *  signature-exempt): the dialog open is source-scan-pinned, the registration is `register_picked` (unit-tested +
+	 *  G27-counted). A native OS folder dialog is **not unit-testable** (it needs a real OS dialog — the §6.6
+	 *  walkthrough + the P9 E2E flow exercise it), so the testable deliverable is `register_picked` + the typed
+	 *  contract. `#[tauri::command]` (no `rename_all`): the wire signature takes no args (the `AppHandle` is injected).
 	 */
 	pickDestination: () => __TAURI_INVOKE<{
 	/**
@@ -212,19 +216,50 @@ export const commands = {
 	 *  payload as C4 `plan_output`, the C4/C5 byte-identical-payload pair) — so the generated `bindings.ts` carries
 	 *  the C5 door, pulling the `DestinationResolved` graph into the bindings.
 	 *
-	 *  [Build-Session-Entscheidung: P2.27] **Shell returns `Err(IpcError{ kind: InternalError })` — the same
-	 *  owner-approved interface-shell pattern as C3/C4.** `DestinationResolved` has no zero value (it carries a
-	 *  re-evaluated `PreflightVerdict`), so there is no `Ok(empty)`; the genuine pre-registry outcome (the §0.4.4
-	 *  registry, P2.44, does not exist) is the `Err` the real body returns for an unresolvable id: `Err(IpcError{
-	 *  kind: ConversionErrorKind::InternalError, … })` (§2.13 catch-all; the §3.2 `PlanError` precedent). The named
-	 *  fill-boxes own the rest: (a) the §2.8 catalog box owns the FINAL message (the string below is provisional) +
-	 *  must add a COMMAND-level string (the §2.8 catalog is item-scoped); (b) the §0.4.4 registry resolve + the
-	 *  §1.8/§2.14.4 destination-change re-validation (re-eval pre-flight, carry `rerun` through) + the §0.6 SUCCESS
-	 *  path belong to the body box (P2.44+) — the C4/C5 lifecycle asymmetry (C4 re-callable; C5 owns the
-	 *  destination; C4 never overrides C5) is enforced by P2.28; (c) `kind` is the CONCRETE `ConversionErrorKind`,
-	 *  not the `ErrorKind` alias (the P2.19 convention).
+	 *  [Build-Session-Entscheidung: P2.27 → P3.56] **WIRED — the destination-change re-validation body.** P2.27
+	 *  authored the typed contract; P3.56 fills the §1.8/§2.14.4 body the DestinationBar "Change destination" flow
+	 *  drives (C2b `pick_destination` → C5). Same AppHandle-coupled boot-glue pattern as C4 `plan_output` (§1.1a; G28
+	 *  signature-exempt): the handler binds an `AppHandle` (Tauri-injected — the §0.4.1 wire signature stays
+	 *  `{ collectedSetId, target, options, destination }`, the C4/C5 byte-identical payload pair) to reach the
+	 *  §0.4.4 `State<CollectedSetRegistry>` + `State<DestinationRegistry>` + the §2.5 `State<EquivKeyComputer>` /
+	 *  `State<RerunLedger>` + the app `State<InstanceId>`; it resolves the wire `ChosenRoot(DestinationId)` against
+	 *  the picked-roots registry (`resolve_choice`; an unknown id → the §0.4.3 refusal) and dispatches to the
+	 *  AppHandle-free `resolve_destination_change` helper (unit-tested + G27-counted). The re-validation runs on a
+	 *  **dedicated blocking thread** (`spawn_blocking`) — the §2.7.2 `location_status` probe is blocking FS I/O, so
+	 *  the async runtime stays free for the debounced re-calls, exactly as C4 does. `resolve_destination_change`
+	 *  reuses `orchestrator::plan_output_preview` (the ONE §1.8 preview machinery — the refreshed "will save to …"
+	 *  dir, the §2.7.2 divert, the §2.14.4-re-evaluated preflight) and maps it onto the C5 `DestinationResolved`
+	 *  echo. **`rerun` carried through unchanged (§2.5.1):** the v1 §2.5 EquivKey has NO destination component, so the
+	 *  re-run verdict is destination-INDEPENDENT — recomputing it via the PEEK-only `plan_output_preview` yields the
+	 *  identical value C4 held, which is exactly "carried through unchanged" (a fresh peek is idempotent, never a
+	 *  double-record). An unresolvable `collectedSetId` returns the §2.13 `Err(InternalError)` catch-all (provisional
+	 *  message, CONCRETE `ConversionErrorKind` — the P2.19 convention). The C4/C5 lifecycle asymmetry (C4 re-callable;
+	 *  C5 owns the destination; C4 never overrides C5) is the §0.4.1 caller-passed-destination contract (P2.28) — C5
+	 *  echoes the caller's `destination` back, holding no server-side destination store.
 	 */
 	setDestination: (collectedSetId: CollectedSetId, target: TargetId, options: OptionValues, destination: DestinationChoice) => __TAURI_INVOKE<DestinationResolved>("set_destination", { collectedSetId, target, options, destination }),
+	/**
+	 *  **C14 `get_initial_destination`** (§0.4.1, P3.56) — the returning-user DestinationBar initial-state query the
+	 *  frontend's Confirm→Targets advance runs (§5.8:918) BEFORE the first C4 `plan_output`. Resolves the persisted
+	 *  §7.4.1 `lastDestinationMode` CORE-side into a structural [`InitialDestination`] (`BesideSource` / `ChosenRoot` /
+	 *  `Fallback`) the frontend maps onto C4's first `destination` argument — keeping §0.6's 2-variant
+	 *  `DestinationChoice` permanently (no `Last` variant, no C4 mirror-back; the P3.80 hand-off form). The
+	 *  re-validation FALLBACK is distinguished STRUCTURALLY from a plain beside-source pref so the §5.8:926 passive
+	 *  fallback note surfaces even when beside-source is writable (the G1 Opus-P2 adoption).
+	 *
+	 *  [Build-Session-Entscheidung: P3.56] Naming = this box's fill decision (the `get_*` query convention, cf.
+	 *  `get_targets`). AppHandle-coupled boot-glue (§1.1a; G28 signature-exempt): the handler binds an `AppHandle` (a
+	 *  Tauri-injected arg, NOT part of the §0.4.1 `{}` wire signature) to read the prefs store + reach the §0.4.4
+	 *  `State<DestinationRegistry>` + the app `State<InstanceId>` (the §2.6.3 probe name); it runs on a **dedicated
+	 *  blocking thread** (`spawn_blocking`) — `prefs::load` reads `settings.json` and the resolver's §2.7.2
+	 *  `location_status` re-validation is blocking FS I/O — then dispatches to the AppHandle-free
+	 *  `orchestrator::resolve_persisted_destination` (unit-tested + G27-counted). The resolver never fails (the
+	 *  beside-source/fallback IS a value), so the only `Err` is a `JoinError` (the probe thread panicked —
+	 *  should-never-happen under the in-core no-panic policy) → the §2.13 InternalError catch-all, never a silent
+	 *  value. NO path outbound: a re-validated `ChosenPath` is registered in the `DestinationRegistry` and only its
+	 *  id + display cross the wire (§2.10.1), exactly as C2b does.
+	 */
+	getInitialDestination: () => __TAURI_INVOKE<InitialDestination>("get_initial_destination"),
 	/**
 	 *  **C6 `start_conversion`** (§0.4.1) — mints the run's `RunId`, builds + enqueues the §1.9 batch from the
 	 *  frozen collected set, spawns the §0.9 workers, and streams `ConversionEvent`s over the handed `onProgress`
@@ -887,8 +922,11 @@ export type DestinationResolved = {
 	preflight: PreflightVerdict,
 	/**
 	 *  CARRIED THROUGH UNCHANGED from the C4 verdict — in v1 the §2.5 EquivKey has no destination
-	 *  component, so re-run is destination-INDEPENDENT (§2.5.1); C5 re-evaluates ONLY `preflight`, never
-	 *  recomputes `rerun`.
+	 *  component, so re-run is destination-INDEPENDENT (§2.5.1). C5's `resolve_destination_change` re-runs the
+	 *  ONE §1.8 preview machinery (`plan_output_preview`), whose PEEK-only re-run recompute therefore yields the
+	 *  IDENTICAL value the C4 verdict held — "carried through unchanged" BY CONSTRUCTION (an idempotent peek,
+	 *  never a divergent re-decision), not a separate skip-the-recompute path. Only `preflight` actually changes
+	 *  with the destination (§2.14.4). [Build-Session-Entscheidung: P3.56 — the resolver-reuse nuance]
 	 */
 	rerun: RerunPrompt | null,
 };
@@ -1147,6 +1185,35 @@ export type EnumChoice = {
 	/**  The §5 UI-chrome label for the choice. */
 	label: LabelKey,
 };
+
+/**
+ *  The C14 `get_initial_destination` return (§0.4.1 / §0.6 / §5.8) — the returning user's initial DestinationBar
+ *  state, resolved CORE-side from the persisted §7.4.1 `lastDestinationMode` at the Confirm→Targets advance. A
+ *  **STRUCTURAL 3-way outcome** (a FACT on the wire, never a path/string): the frontend maps it onto the FIRST C4
+ *  `plan_output` `destination` argument (`ChosenRoot(id)` / `BesideSource`), keeping §0.6's 2-variant
+ *  `DestinationChoice` permanently — no `Last` variant, no C4 mirror-back field (the P3.80 hand-off form, §5.8:918).
+ *  `Fallback` is distinguished from `BesideSource` STRUCTURALLY so the §5.8:926 passive fallback note surfaces even
+ *  when beside-source itself is writable (only the resolver knows the persisted path failed re-validation — the G1
+ *  Opus-P2 adoption). Serialize-only (a command return is Rust→WebView, never deserialized in Rust); the real
+ *  re-validated `PathBuf` stays core-side in the §0.4.4 `DestinationRegistry` (never on the wire, §2.10.1).
+ *
+ *  [Build-Session-Entscheidung: P3.56] `Serialize` + `Type`, NO `Deserialize` (outbound-only — no command TAKES an
+ *  `InitialDestination`); NOT `Copy` (its `ChosenRoot` arm owns `DestinationPicked`'s `String`). `PartialEq`/`Eq`
+ *  back the resolver's unit tests. camelCase (`besideSource` / `chosenRoot` / `fallback`) per the §0.6 wire default.
+ */
+export type InitialDestination =
+/**  The §2.7.1 beside-source default — the persisted pref was `"beside-source"` (or absent). No fallback note. */
+"besideSource" |
+/**
+ *  The persisted `ChosenPath` re-validated as writable (§2.7.2) — the registered `DestinationId` + display the
+ *  WebView carries onto C4 as `ChosenRoot(destination)` (the real `PathBuf` stays core-side, §2.10.1).
+ */
+{ chosenRoot: DestinationPicked } |
+/**
+ *  The persisted `ChosenPath` FAILED re-validation (gone / read-only / ephemeral) → the beside-source fallback.
+ *  The STRUCTURAL fact (never a path/string) that drives the §5.8:926 passive fallback note (§5.7:825 chrome).
+ */
+"fallback";
 
 /**  One per app launch (§7.1). */
 export type InstanceId = string;
