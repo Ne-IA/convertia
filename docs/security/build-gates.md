@@ -474,9 +474,10 @@ Invariant checks (initial set; expanded during P0 review):
    the class set ONLY from the §5 table and the canonical 18-class list here, NEVER from the §7
    frozen snapshot, so the superseded enumeration cannot leak into the parity check.
 9. **Inventory parity (membership checks)** — every IPC command named in prose ∈ the
-   §0.4.1 **explicit enumerated set** (treated as a SET, **not** a contiguous `C1..C13`
+   §0.4.1 **explicit enumerated set** (treated as a SET, **not** a contiguous `C1..C14`
    range — `C2` is split into **C2a `pick_for_intake` / C2b `pick_destination`** and
-   there is **C13 `cancel_ingest`**, so a range check would miss C2a/C2b); every engine
+   there is **C13 `cancel_ingest`** / **C14 `get_initial_destination`**, so a range
+   check would miss C2a/C2b); every engine
    id in prose ∈ §3.1; the §0.4 error taxonomy (incl. the `QuarantinedByOs` kind) and
    the fixed-set enums (`FormatId`, `EngineProgram`, `PatentDisposition`, the
    lossy-catalog) are internally consistent across the files that reference them.
@@ -502,7 +503,7 @@ Invariant checks (initial set; expanded during P0 review):
     so a frozen `G2–Gxx` bound can never silently drift below a newly-added gate.
 12. **IPC command-surface drift** *(glob-scoped to `src-tauri/`, L2 pre-push)* — the set
     of registered `#[tauri::command]` function names equals **exactly** the §0.4
-    enumerated command set (the SET above incl. C2a/C2b/C13 — an AST/grep diff against
+    enumerated command set (the SET above incl. C2a/C2b/C13/C14 — an AST/grep diff against
     the committed golden), so a spurious `#[tauri::command]` (a new WebView-reachable
     surface) is a deterministic gate failure, not a dual-review-only catch. (G22/G23 are
     format-matrix-scoped, not IPC-surface-scoped, so this closes the IPC drift they miss.)

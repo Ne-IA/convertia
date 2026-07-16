@@ -355,7 +355,7 @@ _GATE_ROW_RE = re.compile(r"^\| \*\*G(\d+)\*\* \|", re.M)
 THREAT_CLASSES = {"T1", "T2", "T2a", "T2b", "T2c", "T3", "T3a", "T4", "T5", "T6",
                   "T7", "T8", "T9a", "T9b", "T10", "T11", "T12", "T13"}
 # the §0.4.1 enumerated IPC command SET (a set, not a contiguous range — C2 is split into C2a/C2b)
-IPC_COMMANDS = {"C1", "C2a", "C2b", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13"}
+IPC_COMMANDS = {"C1", "C2a", "C2b", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14"}
 
 
 def _slug(text: str) -> str:
@@ -593,7 +593,7 @@ def doc17_forward_idea_status(ctx: Ctx) -> list[Finding]:
 
 def doc9_inventory_parity(ctx: Ctx) -> list[Finding]:
     """Check 9 (membership): every IPC command token `Cn` named in the spec/security prose is in the
-    §0.4.1 enumerated set {C1,C2a,C2b,C3..C13} (bare `C2` is allowed as the picker-family alias)."""
+    §0.4.1 enumerated set {C1,C2a,C2b,C3..C14} (bare `C2` is allowed as the picker-family alias)."""
     out = []
     allowed = IPC_COMMANDS | {"C2"}
     for rel, text in ctx.docs.items():
@@ -605,7 +605,7 @@ def doc9_inventory_parity(ctx: Ctx) -> list[Finding]:
                 if tok not in allowed:
                     out.append(Finding("9:inventory-parity", rel, ln,
                                        f"IPC command {tok} is not in the §0.4.1 enumerated set "
-                                       "{C1,C2a,C2b,C3..C13}"))
+                                       "{C1,C2a,C2b,C3..C14}"))
     return out
 
 
