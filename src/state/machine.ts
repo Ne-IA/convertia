@@ -101,10 +101,25 @@ export type State =
   | { readonly tag: "targets"; readonly plan: Planned }
   /** State 6 — the one batch-level §2.5 re-run interstitial over the held plan (entered ONLY from a C4 `rerun`). */
   | { readonly tag: "rerunPrompt"; readonly plan: Planned; readonly rerun: RerunPrompt }
-  /** State 7 (+7a) — the live conversion run; `cancelling` is the §5.2 7a `Converting (Cancelling…)` sub-state. */
-  | { readonly tag: "converting"; readonly runId: RunId; readonly cancelling: boolean }
-  /** State 8 — the §1.12 end-of-batch summary. */
-  | { readonly tag: "summary"; readonly result: RunResult }
+  /** State 7 (+7a) — the live conversion run; `cancelling` is the §5.2 7a `Converting (Cancelling…)` sub-state.
+   *  `set` is carried through (not rendered here) so the terminal Summary can name each `ItemId`'s source — the
+   *  same carry-forward `Planned.set` uses for the §5.2 row-4 Back (see the `summary` variant below). */
+  | {
+      readonly tag: "converting";
+      readonly runId: RunId;
+      readonly cancelling: boolean;
+      readonly set: SingleSet;
+    }
+  /** State 8 — the §1.12 end-of-batch summary over the terminal `RunResult` + the frozen set that names its items.
+   *  [Derived-Assumption: P3.59 — the source-display side of the §1.12 output→source map comes from the frozen
+   *  `CollectedSet`, derived from §1.12:1425 ("`item` keys the output→source mapping **against the CollectedSet**")
+   *  + the §0.6 `ItemResult.item` doc ("the source is named for display via the `CollectedSet`'s
+   *  `DroppedItem.display_name`"). `RunResult` alone cannot name a source: P3.76 retired `ItemResult.source:
+   *  PathBuf` in favour of the `ItemId` anchor (2026-07-06 core-owned paths, §2.10.1). The store's live `progress`
+   *  map is NOT the source: a pre-flight skip never emits `ItemStarted` (§0.4.2), so it would have no row — while
+   *  `SingleSet.items` + `.skipped` span the whole §0.6-invariant-6 id space, so EVERY `RunResult.items[]` entry
+   *  (incl. the §1.12-projected skips) resolves.] */
+  | { readonly tag: "summary"; readonly result: RunResult; readonly set: SingleSet }
   /** State 9 — the §1.3 hard mixed-format pre-flight refusal. */
   | { readonly tag: "mixedDropRefusal"; readonly found: MixedFound }
   /** State 10 — the §1.2 unsupported/uncertain/empty pre-flight outcome. */
@@ -371,7 +386,7 @@ function fromTargets(state: State & { tag: "targets" }, msg: Msg): State {
         ? { tag: "rerunPrompt", plan: state.plan, rerun: state.plan.preview.rerun }
         : state;
     case "runStarted":
-      return { tag: "converting", runId: msg.runId, cancelling: false };
+      return { tag: "converting", runId: msg.runId, cancelling: false, set: state.plan.set };
     case "back":
       // §5.2 row-4 Back: return to the Confirm gate PRESERVING the frozen set (distinct from Ctrl+N → Idle) —
       // the `SingleSet` threaded through `Planned` from Confirm is the preserved set, re-rendered verbatim.
@@ -393,7 +408,7 @@ function fromTargets(state: State & { tag: "targets" }, msg: Msg): State {
 function fromRerunPrompt(state: State & { tag: "rerunPrompt" }, msg: Msg): State {
   switch (msg.type) {
     case "runStarted":
-      return { tag: "converting", runId: msg.runId, cancelling: false };
+      return { tag: "converting", runId: msg.runId, cancelling: false, set: state.plan.set };
     case "rerunCancel":
       return { tag: "targets", plan: state.plan };
     default:
@@ -409,7 +424,9 @@ function fromConverting(state: State & { tag: "converting" }, msg: Msg): State {
   switch (msg.type) {
     case "runFinished":
       // §1.9: every job reached a terminal state → the §1.12 Summary (a partial run — post-cancel — lands here too).
-      return { tag: "summary", result: msg.result };
+      // The frozen `set` rides along so the Summary can name each `ItemId`'s source (the §1.12 output→source map);
+      // the 7a `cancelling` bit is dropped — partial-ness lives in `RunResult.totals.cancelled` (§1.12).
+      return { tag: "summary", result: msg.result, set: state.set };
     case "cancelRun":
       // §5.2 row 7a: enter Cancelling on the first cancel; a second cancel/Esc while cancelling is a no-op
       // (no double-cancel, the button is disabled). `already cancelling → return state` is that ignore.

@@ -1377,8 +1377,12 @@ export type ItemResult = {
 	 */
 	state: JobState,
 	/**
-	 *  The resolved, ready-to-show §2.8 failure / §2.9 lossy / §1.1 skip line (§2.8.2 `OutcomeMsg`); `None`
-	 *  for a plain success with no lossy note.
+	 *  The resolved, ready-to-show §2.8 failure / §2.9 lossy / §1.1 skip line, **or the §2.6.4 case-1 residue
+	 *  annotation** on an otherwise-successful item (§2.8.2 `OutcomeMsg` — the non-failure `Residue` variant the
+	 *  P3.59 ruling added, in the `Lossy` shape). `None` for a plain success with no lossy note AND no residue,
+	 *  and for a §2.6.4 case-3 (cancelled-with-residue) item — §2.6.4 authors no per-item case-3 sentence, so
+	 *  its surface is the structural `cleanup_incomplete` entry + the batch-level tail on
+	 *  [`RunResult::summary_line_display`] alone.
 	 */
 	reason: OutcomeMsg | null,
 };
@@ -1677,12 +1681,15 @@ export type OptionValues = { [key in OptionKey]: OptionValue };
 /**
  *  The §2.8.2 surfaced per-item outcome — the *resolved, ready-to-show* line for one item, carried by the
  *  §0.6 `ItemResult.reason: Option<OutcomeMsg>` (which rides the `RunFinished` Channel payload + the C8
- *  return, §0.4.2/§1.12). It is **either** a §2.8 failure, a §2.9 lossy note, **or** a §1.1/§1.3 pre-flight
- *  skip — three distinct variants so a consumer pattern-matching `OutcomeMsg` can tell skip from fail WITHOUT
+ *  return, §0.4.2/§1.12). It is a §2.8 failure, a §2.9 lossy note, a §1.1/§1.3 pre-flight skip, or the §2.6.4
+ *  case-1 residue annotation on a SUCCEEDED item (P3.59) — four distinct variants so a consumer
+ *  pattern-matching `OutcomeMsg` can tell skip from fail — and an annotation from either — WITHOUT
  *  also reading `ItemResult.state` (§0.6 keeps `Skipped`/`Failed` distinct, §1.12 `Totals` counts them
- *  separately — "must not be conflated"). Each variant carries the stable discriminant (`kind`/`reason`) so
- *  §5 may re-localise (§2.10) AND the resolved English `text` (the §2.8.2 catalog row / §2.9.1 note with its
- *  `{x}` substitutions already applied), so the §5.3 Summary needs no second lookup.
+ *  separately — "must not be conflated"). `Failure`/`Lossy`/`Skipped` each carry a stable discriminant
+ *  (`kind`/`reason`) so §5 may re-localise (§2.10); `Residue` carries NONE and is discriminated by its variant
+ *  tag alone (§2.8.2 homes exactly ONE case-1 row, so there is nothing to discriminate — the variant IS the
+ *  key, P3.59). EVERY variant carries the resolved English `text` (the §2.8.2 catalog row / §2.9.1 note with
+ *  its `{x}` substitutions already applied), so the §5.3 Summary needs no second lookup.
  *
  *  [Build-Session-Entscheidung: P2.20] OUTBOUND-ONLY (it crosses the boundary inside the outbound
  *  `RunResult`/`ItemResult`, never deserialized from the WebView) — `Serialize` + `Type` (the §2.8.2
@@ -1722,6 +1729,30 @@ export type OutcomeMsg =
  */
 { type: "skipped"; data: {
 	reason: SkipReason,
+	text: string,
+} } |
+/**
+ *  A §2.6.4 **case 1** RESIDUE annotation on an otherwise-successful conversion (the output published, but
+ *  its temp could not be removed) — `text` is the §2.8.2 case-1 row with its `{path}` slot filled from the
+ *  item's §2.10.1 `residue_display`. **NON-FAILURE by construction:** it carries no `ConversionErrorKind`,
+ *  so it cannot be mistaken for the `Failure { kind: CleanupResidue }` case-2 line, and the item keeps its
+ *  terminal `JobState::Succeeded` — residue NEVER rewrites the terminal state (§2.6.4; §2.6.2 / §2.1.3
+ *  "annotated, **not an item failure**"). This is the EXACT `Lossy` shape: a §02-rendered note on an
+ *  item that succeeded. **Case 3 (`Cancelled`-with-residue) does NOT ride this variant** — §2.6.4 authors
+ *  no per-item case-3 sentence; its complete per-item surface is the structural `CleanupResidue`
+ *  annotation (the rendered `residue_display` + the C9 reveal link), and the "With residue" tail is
+ *  BATCH-level (§2.8.2). Case 2 is unchanged (`Failure` carries the full `cleanup_residue` row).
+ *
+ *  [Build-Session-Entscheidung: P3.59] Named `Residue` (not `ResidueAnnotation`/`CleanupResidue`) — the
+ *  sibling variants are single nouns (`Failure`/`Lossy`/`Skipped`), and `CleanupResidue` is already taken
+ *  by BOTH the `ConversionErrorKind` case-2 variant and the §0.6 structural `CleanupResidue` struct, so
+ *  reusing it here would collide with the two things this variant must be distinguishable from. It carries
+ *  **no `kind` discriminant** (unlike `Failure`/`Lossy`/`Skipped`): §2.8.2 homes exactly ONE case-1 row, so
+ *  a single-variant kind enum would be ceremony with no discriminating power — the variant IS the kind.
+ *  Authored by the 2026-07-16 P3.59 Co-Pilot ruling (option (a)): §2.8.2 keeps string ownership; a
+ *  `CleanupResidue.text` field (option (c)) was rejected because it would double-carry case 2.
+ */
+{ type: "residue"; data: {
 	text: string,
 } };
 
@@ -1921,6 +1952,23 @@ export type RunResult = {
 	 *  via C9 `OpenTarget::Item(ItemId)` (its real path in `RunResultPaths.item_outputs`).
 	 */
 	divertRootDisplay: string | null,
+	/**
+	 *  The §1.12 batch-level SUMMARY LINE, core-assembled + ready to show: the §2.8.2 situation row for this
+	 *  run's `totals` ("All {n} files converted." / "{ok} of {n} files converted. …" / "None of the {n} files
+	 *  could be converted." / "Stopped. …") with the §2.6.4 "With residue" tail appended iff
+	 *  `cleanup_incomplete` is non-empty — i.e. exactly [`batch_summary_line`]'s output. The §5.3 Summary
+	 *  renders it VERBATIM; the fully-failed case is what §5.2 row 8 dresses as a clear failure banner
+	 *  ("never a quiet done"), but the STRING is §02's, not chrome.
+	 *
+	 *  [Build-Session-Entscheidung: P3.59] Named `summary_line_display` per the sibling `*_display` convention
+	 *  (the wire-facing, core-rendered projection a consumer shows as-is). It is a plain `String`, not an
+	 *  `Option`: §2.8.2's situation table is TOTAL over `Totals` (`batch_summary` always classifies), so every
+	 *  run has a line — an `Option` would invent an "no summary" state the spec does not have. This field is
+	 *  what the 2026-07-16 P3.59 ruling wired: [`batch_summary_line`] was built at P3.50 but had NO production
+	 *  caller, and that wire gap is exactly why the pre-ruling fill authored a chrome banner string against
+	 *  §5.7:799 (the G1 NOGO).
+	 */
+	summaryLineDisplay: string,
 };
 
 /**

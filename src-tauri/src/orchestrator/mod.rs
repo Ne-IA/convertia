@@ -42,7 +42,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) were authored as contracts ahead of their wire consumers. The P3.48 C6 run conductor + its start_conversion handler now compose MOST of them into the live run. LIVE via P3.48: the §1.9 FSM advance + queue_order (+ state_is_queued), the P3.47 build_batch, the P3.50 project_run_result, CollectedSetRegistry::take + RunResultStore::{evict, retain} + RunRegistry::{register, finish} + crate::run::RunScratch::acquire, and the P3.39 EquivKeyComputer::compute_equiv_key (the §2.5 applier + the per-success RerunLedger record). Already live before P3.48: RunRegistry::has_active_run (the §7.1.1 converter_is_busy, P2.55) and RunResultStore::get (the C8 get_run_summary handler via resolve_run_summary, P3.50). LIVE via P3.49 (the C1 drain_intake / C3 get_targets / C4 plan_output walking-skeleton wiring): the §1.1/§2.4.1 ingest funnel spine (walk_intake_roots + resolve_and_dedup/dedup_by_identity + freeze_snapshot + the §1.3 group() projection) via the C1 drain, CollectedSetRegistry::{register, resolve} (the C1 freeze register + the C3/C4 resolve), and the P3.40 compute_rerun_verdict (its first production caller — the C4 plan_output_preview re-run verdict). STILL dead in the production build until its own wiring lands: the §2.8 project_outcome (P3.46.2 — the conductor maps its own ItemRunOutcome onto the terminal JobEvent INLINE, so this InvocationResult projection has no production caller yet); the §2.8.2 batch-summary renderer batch_summary/batch_summary_line (no production caller yet) + any P3.25 §2.6.4 residue helper (ResidueDisposition/residue_item_reason/split_residue_records/append_residue_tail) project_run_result does not reach. Reading a dead fn does not make it live — a dead-fn reference is not a root — so this pure lifecycle/projection graph stayed dead until the P3.48 conductor made it reachable from the C6 command root; the expectation stays fulfilled while ANY of the above is still unwired."
+        reason = "the §0.6 lifecycle/DTO/result types homed here (Batch/ConversionJob/JobState P2.10, the C4/C5 DTOs P2.11, RunResult/ItemResult/Totals/CleanupResidue/ItemOutcome P2.12, the §0.4.2 ConversionEvent enum + its RunStarted/ItemStarted/ItemProgress/ItemFinished/BatchProgress payloads P2.37, and the four §0.4.4 State stores RunRegistry P2.42 + RunResultStore P2.43 + CollectedSetRegistry P2.44 + IngestRegistry P2.45) were authored as contracts ahead of their wire consumers. The P3.48 C6 run conductor + its start_conversion handler now compose MOST of them into the live run. LIVE via P3.48: the §1.9 FSM advance + queue_order (+ state_is_queued), the P3.47 build_batch, the P3.50 project_run_result, CollectedSetRegistry::take + RunResultStore::{evict, retain} + RunRegistry::{register, finish} + crate::run::RunScratch::acquire, and the P3.39 EquivKeyComputer::compute_equiv_key (the §2.5 applier + the per-success RerunLedger record). Already live before P3.48: RunRegistry::has_active_run (the §7.1.1 converter_is_busy, P2.55) and RunResultStore::get (the C8 get_run_summary handler via resolve_run_summary, P3.50). LIVE via P3.49 (the C1 drain_intake / C3 get_targets / C4 plan_output walking-skeleton wiring): the §1.1/§2.4.1 ingest funnel spine (walk_intake_roots + resolve_and_dedup/dedup_by_identity + freeze_snapshot + the §1.3 group() projection) via the C1 drain, CollectedSetRegistry::{register, resolve} (the C1 freeze register + the C3/C4 resolve), and the P3.40 compute_rerun_verdict (its first production caller — the C4 plan_output_preview re-run verdict). STILL dead in the production build until its own wiring lands: the §2.8 project_outcome (P3.46.2 — the conductor maps its own ItemRunOutcome onto the terminal JobEvent INLINE, so this InvocationResult projection has no production caller yet); any P3.25 §2.6.4 residue helper project_run_result does not reach. LIVE via P3.59 (the 2026-07-16 ruling wiring the §1.12 batch line onto the wire): the §2.8.2 batch-summary renderer batch_summary_line (its FIRST production caller — project_run_result assembles RunResult.summary_line_display from it) + batch_summary/append_residue_tail transitively, and crate::outcome::residue_annotation (the promoted §2.8.2 case-1 row) via residue_item_reason's Succeeded arm. Reading a dead fn does not make it live — a dead-fn reference is not a root — so this pure lifecycle/projection graph stayed dead until the P3.48 conductor made it reachable from the C6 command root; the expectation stays fulfilled while ANY of the above is still unwired."
     )
 )]
 
@@ -620,6 +620,21 @@ pub struct RunResult {
     /// `OpenTarget::DivertRoot`, from `RunResultPaths.divert_root`); a per-item diverted output is reachable
     /// via C9 `OpenTarget::Item(ItemId)` (its real path in `RunResultPaths.item_outputs`).
     pub divert_root_display: Option<String>,
+    /// The §1.12 batch-level SUMMARY LINE, core-assembled + ready to show: the §2.8.2 situation row for this
+    /// run's `totals` ("All {n} files converted." / "{ok} of {n} files converted. …" / "None of the {n} files
+    /// could be converted." / "Stopped. …") with the §2.6.4 "With residue" tail appended iff
+    /// `cleanup_incomplete` is non-empty — i.e. exactly [`batch_summary_line`]'s output. The §5.3 Summary
+    /// renders it VERBATIM; the fully-failed case is what §5.2 row 8 dresses as a clear failure banner
+    /// ("never a quiet done"), but the STRING is §02's, not chrome.
+    ///
+    /// [Build-Session-Entscheidung: P3.59] Named `summary_line_display` per the sibling `*_display` convention
+    /// (the wire-facing, core-rendered projection a consumer shows as-is). It is a plain `String`, not an
+    /// `Option`: §2.8.2's situation table is TOTAL over `Totals` (`batch_summary` always classifies), so every
+    /// run has a line — an `Option` would invent an "no summary" state the spec does not have. This field is
+    /// what the 2026-07-16 P3.59 ruling wired: [`batch_summary_line`] was built at P3.50 but had NO production
+    /// caller, and that wire gap is exactly why the pre-ruling fill authored a chrome banner string against
+    /// §5.7:799 (the G1 NOGO).
+    pub summary_line_display: String,
 }
 
 /// One per-item row of the §1.12 summary (§0.6) — its `ItemId` (the output→source mapping anchor; the
@@ -648,8 +663,12 @@ pub struct ItemResult {
     /// The terminal §1.9 lifecycle state for this item (§0.6) — at `RunFinished` always a terminal variant
     /// (`Succeeded`/`Failed`/`Skipped`/`Cancelled`).
     pub state: JobState,
-    /// The resolved, ready-to-show §2.8 failure / §2.9 lossy / §1.1 skip line (§2.8.2 `OutcomeMsg`); `None`
-    /// for a plain success with no lossy note.
+    /// The resolved, ready-to-show §2.8 failure / §2.9 lossy / §1.1 skip line, **or the §2.6.4 case-1 residue
+    /// annotation** on an otherwise-successful item (§2.8.2 `OutcomeMsg` — the non-failure `Residue` variant the
+    /// P3.59 ruling added, in the `Lossy` shape). `None` for a plain success with no lossy note AND no residue,
+    /// and for a §2.6.4 case-3 (cancelled-with-residue) item — §2.6.4 authors no per-item case-3 sentence, so
+    /// its surface is the structural `cleanup_incomplete` entry + the batch-level tail on
+    /// [`RunResult::summary_line_display`] alone.
     pub reason: Option<OutcomeMsg>,
 }
 
@@ -813,13 +832,29 @@ impl ResidueRecord {
 /// the "With residue" batch tail); the disposition governs only the per-item `reason` OVERRIDE
 /// ([`residue_item_reason`]):
 ///
-/// - `Succeeded` (case 1) and `Cancelled` (case 3): the item's terminal `state` already carries the meaning,
-///   so the residue does NOT rewrite the per-item reason — it is surfaced via `cleanup_incomplete` (+ the tail)
-///   alone. The two coincide in the reason override **by design, not by accident**: `state` (not the message)
-///   is what distinguishes a kept success from a stopped cancel, and neither is a failure, so neither adopts
-///   the §2.8.2 `CleanupResidue` *failure* string.
-/// - `Failed` (case 2): the item is reported `Failed` WITH the combined §2.8.2 `CleanupResidue` message
-///   ("This file couldn't be converted, and a temporary file may remain at {path}.") — never a clean success.
+/// - `Succeeded` (case 1): the item stays `Succeeded` and its reason carries the §2.8.2 case-1
+///   [`crate::outcome::OutcomeMsg::Residue`] annotation — [Build-Session-Entscheidung: P3.59] the row is
+///   quoted here VERBATIM from the §2.8.2 catalog ("Converted — a temporary file may remain at {path}."),
+///   so its "temporary" is §02's own product wording about a leftover FILE, not a G8 deferral marker
+///   about this code; the string may not be reworded (§5.7:799 — one string, one home)
+///   — a NON-failure note in the `Lossy` shape, so the success stands while the summary still says residue may
+///   remain and WHERE (§5.7:830). **[Test-Change: P3.59 — old-obsolete+new-correct, §2.6.4]** this arm
+///   SUPERSEDES the P3.25 `Succeeded => None` rule, per the 2026-07-16 P3.59 Co-Pilot ruling. OLD OBSOLETE:
+///   P3.25's rationale ("neither adopts the §2.8.2 `CleanupResidue` *failure* string") was CORRECT against the
+///   failure-worded row — and stays correct: case 1 still does not adopt it. But it left §2.6.4:944's OWN
+///   already-authored case-1 annotation **carrier-less**, and that gap is what forced the pre-ruling fill to
+///   author a chrome string against §5.7:799's "the UI must not paraphrase" (the G1 NOGO). NEW CORRECT: §2.6.4
+///   case 1 authors that sentence normatively and §2.8.2 now homes it (spec > code); the note rides a
+///   non-failure variant, so the "not a failure string" invariant P3.25 protected is preserved intact.
+/// - `Cancelled` (case 3): **RATIFIED exactly as built** — the residue does NOT rewrite the per-item reason
+///   (`None`). §2.6.4 authors no per-item case-3 sentence: its complete per-item surface is the STRUCTURAL
+///   `CleanupResidue` annotation (the rendered `residue_display` + the C9 reveal link), and the "With residue"
+///   tail is BATCH-level (§2.8.2 02:1266/:1274) — routing it per-item would double-render it against the
+///   `RunResult` summary line, and its pathless "see details" wording cannot satisfy §5.7:830's "with where
+///   residue remains" anyway. `state` (not the message) is what distinguishes a stopped cancel.
+/// - `Failed` (case 2): **unchanged as built** — the item is reported `Failed` WITH the combined §2.8.2
+///   `CleanupResidue` message ("This file couldn't be converted, and a temporary file may remain at {path}.")
+///   — never a clean success.
 ///
 /// [Build-Session-Entscheidung: P3.25] The three variants mirror the item's terminal `JobState` (§1.9) — the
 /// state the residue attaches to — so a `ResidueDisposition::Failed` names exactly the `JobState::Failed` case.
@@ -836,14 +871,18 @@ pub enum ResidueDisposition {
     Cancelled,
 }
 
-/// The per-item §2.8.2 `reason` OVERRIDE a residue imposes for the given §2.6.4 disposition, read from the
-/// crate::outcome catalog (P3.68): the combined `CleanupResidue` message for `Failed` (never a clean
-/// success — §2.6.4 case 2), and `None` for `Succeeded`/`Cancelled` (the terminal `state` carries the meaning;
-/// the residue is surfaced via `cleanup_incomplete` + the batch tail). `residue_display` is the same §2.10.1
-/// display string carried in the item's [`ResidueRecord::warning`], substituted into the row's `{path}` slot.
-/// Because the §2.8.2 `CleanupResidue` row IS homed ([`crate::outcome::conversion_failure`] returns `Some` for
-/// it), `Failed` always yields `Some`; the exhaustive match forces a fourth §2.6.4 case to decide its reason
-/// explicitly. Panic-free. [Build-Session-Entscheidung: P3.25]
+/// The per-item §2.8.2 `reason` a residue imposes for the given §2.6.4 disposition, read from the
+/// crate::outcome catalog (P3.68/P3.59): the combined `CleanupResidue` FAILURE message for `Failed` (never a
+/// clean success — case 2), the NON-failure [`crate::outcome::OutcomeMsg::Residue`] annotation for `Succeeded`
+/// (case 1 — the success stands, with where residue remains), and `None` for `Cancelled` (case 3 — the
+/// terminal `state` carries the meaning; the residue is surfaced structurally via `cleanup_incomplete` + the
+/// batch tail). In NO case does the residue rewrite the item's terminal `JobState` — see [`ResidueDisposition`]
+/// for the per-case rationale + the P3.59 supersession of P3.25's `Succeeded => None` arm. `residue_display`
+/// is the same §2.10.1 display string carried in the item's [`ResidueRecord::warning`], substituted into the
+/// row's `{path}` slot. Because the §2.8.2 `CleanupResidue` row IS homed ([`crate::outcome::conversion_failure`]
+/// returns `Some` for it) `Failed` always yields `Some`, and [`crate::outcome::residue_annotation`] is
+/// infallible, so `Succeeded` always yields `Some`; the exhaustive match forces a fourth §2.6.4 case to decide
+/// its reason explicitly. Panic-free. [Build-Session-Entscheidung: P3.25 → P3.59]
 pub fn residue_item_reason(
     disposition: ResidueDisposition,
     residue_display: &str,
@@ -852,7 +891,10 @@ pub fn residue_item_reason(
         ResidueDisposition::Failed => {
             crate::outcome::conversion_failure(ConversionErrorKind::CleanupResidue, residue_display)
         }
-        ResidueDisposition::Succeeded | ResidueDisposition::Cancelled => None,
+        // §2.6.4 case 1 (P3.59, superseding P3.25's `None`): the promoted §2.8.2 non-failure annotation.
+        ResidueDisposition::Succeeded => Some(crate::outcome::residue_annotation(residue_display)),
+        // §2.6.4 case 3 (RATIFIED as built): no per-item sentence exists to carry — the tail is batch-level.
+        ResidueDisposition::Cancelled => None,
     }
 }
 
@@ -895,11 +937,13 @@ pub fn append_residue_tail(summary_line: String, has_residue: bool) -> String {
 // the §2.6.4 residue records, the §2.7 roots) and emits the result as `RunFinished`; C8 `get_run_summary`
 // re-serves the retained wire half. Homed in `crate::orchestrator` (tier 1, the §1.12 result-family owner,
 // §0.7): it composes the §1.9 `Batch`/`JobState` + the §2.6.4 residue helpers (P3.25) + the §2.8.2 catalog
-// (`crate::outcome`, P3.68/P3.50). Dead in the production build until the P3.48 conductor calls it.
+// (`crate::outcome`, P3.68/P3.50). LIVE since P3.48 — the C6 conductor calls it (see the module `reason=`).
 
 /// The §2.6.4 residue DISPOSITION an item's terminal §1.9 `JobState` implies (P3.50) — which of the three
-/// §2.6.4 cases a residue on this item is, so the per-item reason is HONEST (`Failed` adopts the combined
-/// §2.8.2 `CleanupResidue` message, `Succeeded`/`Cancelled` keep their state's meaning). `None` for a state
+/// §2.6.4 cases a residue on this item is, so the per-item reason is HONEST: `Failed` adopts the combined
+/// §2.8.2 `CleanupResidue` FAILURE message, `Succeeded` the §2.8.2 non-failure `Residue` ANNOTATION (P3.59 —
+/// superseding P3.25's no-reason grouping of the two non-failure cases), and `Cancelled` no reason at all
+/// (§2.6.4 authors none; its terminal state carries the meaning). See [`ResidueDisposition`]. `None` for a state
 /// that cannot carry run-end residue (`Pending`/`Running` never terminate here; a pre-flight `Skipped` never
 /// ran, so it has no temp). Exhaustive over `JobState` (no `_`, G4/G14). [Build-Session-Entscheidung: P3.50]
 fn residue_disposition_of(state: JobState) -> Option<ResidueDisposition> {
@@ -938,8 +982,10 @@ fn item_base_reason(job: &ConversionJob) -> Option<OutcomeMsg> {
 /// Project a TERMINAL `Batch` onto the §1.12 wire `RunResult` (display-only) + its off-wire `RunResultPaths`
 /// (P3.50). For every job it emits one `ItemResult { item, output_display, state, reason }`: `output_display`
 /// is the published output's lossy display ONLY for a `Succeeded` item (§1.12, §2.10.1), and `reason` is the
-/// §2.8.2 line — a §2.6.4 residue on a `Failed` item OVERRIDES it to the combined `CleanupResidue` message
-/// (never a clean success, §2.6.4 case 2), otherwise the base line ([`item_base_reason`]). Pre-flight SKIPS
+/// §2.8.2 line — a §2.6.4 residue supplies it per the item's case (P3.59): `Failed` the combined
+/// `CleanupResidue` FAILURE message (never a clean success, case 2), `Succeeded` the NON-failure `Residue`
+/// annotation (case 1), `Cancelled` none (case 3 — the base line, i.e. `None`); otherwise the base line
+/// ([`item_base_reason`]). The residue never rewrites the item's terminal `state`. Pre-flight SKIPS
 /// (the `JobSource::Skipped` jobs materialised at C6, P3.47) ride through identically — `Skipped(reason)`
 /// state, `output_display: None`, an `OutcomeMsg::Skipped` reason — counted in `Totals.skipped`, NEVER
 /// `failed` (skip ≠ fail, §1.12). The §2.6.4 residues split into the wire `cleanup_incomplete` + the off-wire
@@ -978,9 +1024,16 @@ pub fn project_run_result(
             | JobState::Running => None,
         };
         let base_reason = item_base_reason(job);
-        // §2.6.4: a residue on a Failed item overrides the reason to the combined CleanupResidue message
-        // (never a clean success); a Succeeded/Cancelled residue keeps the base reason (surfaced via
-        // cleanup_incomplete + the batch tail instead). residue_item_reason yields None for those.
+        // §2.6.4 (P3.59): a residue supplies the item's reason per its case — Failed the combined
+        // CleanupResidue FAILURE message (never a clean success, case 2); Succeeded the NON-failure Residue
+        // ANNOTATION (case 1 — the success stands, with where residue remains); Cancelled nothing (case 3 —
+        // `residue_item_reason` yields None, so `.or(base_reason)` falls through and the structural
+        // cleanup_incomplete entry + the batch tail carry it). In no case is the terminal `state` rewritten.
+        // PRECEDENCE: a residue reason SHORT-CIRCUITS `.or(base_reason)`. Reachable only for case 1 (the other
+        // two dispositions have no base reason to lose: `item_base_reason` is None for Succeeded/Cancelled),
+        // and unreachable even there in the P3 slice, which emits no §2.9 Lossy. The rule for an item carrying
+        // BOTH a lossy note and a case-1 annotation is P4.69's named forward point (the 2026-07-16 ruling's
+        // Forward clause) — it is a consequence of that ruling's carrier choice, not a silent drop here.
         let reason = match (
             residue_displays.get(&job.item).copied(),
             residue_disposition_of(job.state),
@@ -1016,6 +1069,10 @@ pub fn project_run_result(
         item_outputs: item_outputs.clone(),
         item_residues,
     };
+    // §1.12 (P3.59): assemble the §2.8.2 batch line + its §2.6.4 tail HERE, in the core — the one place that
+    // holds both halves (`totals` + whether any residue survived). Computed BEFORE `cleanup_incomplete` moves
+    // into the struct. `batch_summary_line` is the P3.50 build; this is its first production caller.
+    let summary_line_display = batch_summary_line(&totals, !cleanup_incomplete.is_empty());
     let result = RunResult {
         collected_set_id: batch.id,
         run_id,
@@ -1024,6 +1081,7 @@ pub fn project_run_result(
         cleanup_incomplete,
         common_root_display,
         divert_root_display,
+        summary_line_display,
     };
     (result, paths)
 }
@@ -1636,7 +1694,11 @@ fn failure_message(kind: ConversionErrorKind) -> String {
     match rendered {
         Some(OutcomeMsg::Failure { text, .. })
         | Some(OutcomeMsg::Lossy { text, .. })
-        | Some(OutcomeMsg::Skipped { text, .. }) => text,
+        | Some(OutcomeMsg::Skipped { text, .. })
+        // Unreachable by construction — `conversion_failure` only ever builds `Failure` (the `Residue` arm is
+        // minted solely by `crate::outcome::residue_annotation`, §2.6.4 case 1) — but the text-extraction is
+        // uniform across every variant, so the arm needs no special case. [Build-Session-Entscheidung: P3.59]
+        | Some(OutcomeMsg::Residue { text }) => text,
         None => "Something unexpected went wrong, so this file couldn't be converted.".to_owned(),
     }
 }
@@ -2889,7 +2951,8 @@ impl EquivKeyComputer {
 /// [Build-Session-Entscheidung: P3.40] A free function (it composes two orchestrator-State singletons — the
 /// `EquivKeyComputer` compute-side hasher and the `RerunLedger` store — over a resolved `RegisteredSet`);
 /// C4 (P3.49) resolves the composite from the `CollectedSetRegistry`, calls this, and seats the result in
-/// `OutputPlanPreview.rerun`. Dead in the production build until that C4 wiring (the module dead_code expect).
+/// `OutputPlanPreview.rerun`. LIVE since P3.49 — the C4 `plan_output_preview` is its first production caller
+/// (see the module `reason=`).
 pub fn compute_rerun_verdict(
     set: &RegisteredSet,
     target: TargetId,
@@ -6836,12 +6899,17 @@ mod tests {
         );
     }
 
-    /// Extract the resolved `text` of an `ItemResult.reason`, whichever `OutcomeMsg` variant (§2.8/§2.9/§1.12).
+    /// Extract the resolved `text` of an `ItemResult.reason`, whichever `OutcomeMsg` variant
+    /// (§2.8/§2.9/§1.12/§2.6.4). [Test-Change: P3.59 — old-obsolete+new-correct, §2.6.4] gains the `Residue`
+    /// arm: the 2026-07-16 ruling added the §2.6.4 case-1 variant, and this helper is text-extraction only —
+    /// it is variant-agnostic by contract, so the arm joins the existing or-pattern rather than branching. No
+    /// assertion changed; the exhaustive match (G4/G14) is what forced the update.
     fn reason_text(reason: &Option<OutcomeMsg>) -> Option<String> {
         match reason {
             Some(OutcomeMsg::Failure { text, .. })
             | Some(OutcomeMsg::Skipped { text, .. })
-            | Some(OutcomeMsg::Lossy { text, .. }) => Some(text.clone()),
+            | Some(OutcomeMsg::Lossy { text, .. })
+            | Some(OutcomeMsg::Residue { text }) => Some(text.clone()),
             None => None,
         }
     }
@@ -7340,6 +7408,9 @@ mod tests {
                 skipped: 0,
             },
             cleanup_incomplete: Vec::new(),
+            // Irrelevant to this variant-wrapping pin; the line itself is pinned by
+            // `batch_summary_line_*` + the wire-form pin. [Build-Session-Entscheidung: P3.59]
+            summary_line_display: String::new(),
             common_root_display: "/src".to_string(),
             divert_root_display: None,
         };
@@ -7592,6 +7663,16 @@ mod tests {
             }],
             common_root_display: "/src".to_string(),
             divert_root_display: Some("/Downloads".to_string()),
+            // [Test-Change: P3.59 — old-obsolete+new-correct, §1.12] The wire GAINED this field by the
+            // 2026-07-16 P3.59 ruling (the §2.8.2 batch line, core-assembled, finally reaching the wire from
+            // the P3.50 `batch_summary_line`), so the pre-P3.59 expected JSON below is obsolete BY THE WIRE
+            // CONTRACT — a pin that omitted it would assert a shape the core no longer emits. NEW CORRECT: the
+            // value is exactly what `batch_summary_line` produces for THIS fixture's inputs (verified by the
+            // `run_result_wire_summary_line_matches_the_assembler` read-back below, not by eyeballing): totals
+            // 1 succeeded / 0 failed / 0 cancelled ⇒ `AllSucceeded { n: 1 }` ⇒ "All 1 files converted.", plus
+            // the §2.6.4 tail because `cleanup_incomplete` is non-empty. Nothing else in the pin moved.
+            summary_line_display: "All 1 files converted. Some temporary files may remain — see details."
+                .to_string(),
         };
         assert_eq!(
             serde_json::to_string(&run).expect("RunResult serializes"),
@@ -7603,10 +7684,31 @@ mod tests {
                 r#""reason":{"type":"skipped","data":{"reason":"uncertain","text":"ConvertIA couldn't tell what kind of file this is, so it can't convert it."}}}],"#,
                 r#""totals":{"succeeded":1,"failed":0,"cancelled":0,"skipped":1},"#,
                 r#""cleanupIncomplete":[{"item":2,"residueDisplay":"/src/.data.tsv.part"}],"#,
-                r#""commonRootDisplay":"/src","divertRootDisplay":"/Downloads"}"#
+                r#""commonRootDisplay":"/src","divertRootDisplay":"/Downloads","#,
+                r#""summaryLineDisplay":"All 1 files converted. Some temporary files may remain — see details."}"#
             ),
             "§1.12: RunResult is the end-of-batch summary graph in camelCase (pre-flight skip rides \
-             OutcomeMsg::Skipped, not Failure — skip ≠ fail)"
+             OutcomeMsg::Skipped, not Failure — skip ≠ fail; the §2.8.2 batch line rides summaryLineDisplay)"
+        );
+    }
+
+    // §6.4.1 unit (G15): the wire pin above hardcodes its `summaryLineDisplay` literal, so this reads the value
+    // BACK from the real assembler for the SAME inputs — the §0.2 read-back bar (never "it's green now"). If
+    // `batch_summary`/`append_residue_tail`/the §2.8.2 rows ever change, this fails rather than letting the pin
+    // silently assert a string the core would no longer produce. [Build-Session-Entscheidung: P3.59]
+    #[test]
+    fn run_result_wire_summary_line_matches_the_assembler() {
+        let totals = Totals {
+            succeeded: 1,
+            failed: 0,
+            cancelled: 0,
+            skipped: 1,
+        };
+        assert_eq!(
+            batch_summary_line(&totals, true),
+            "All 1 files converted. Some temporary files may remain — see details.",
+            "§1.12/§2.8.2: the wire pin's summaryLineDisplay literal IS the assembler's output for its own \
+             fixture (totals + a non-empty cleanup_incomplete)"
         );
     }
 
@@ -8127,6 +8229,9 @@ mod tests {
                 skipped: 0,
             },
             cleanup_incomplete: vec![],
+            // Irrelevant to the retention tests (they exercise store lifetime, not the projection).
+            // [Build-Session-Entscheidung: P3.59]
+            summary_line_display: String::new(),
             common_root_display: "/out".to_string(),
             divert_root_display: None,
         }
@@ -8902,12 +9007,31 @@ mod cleanup_honesty_tests {
         );
     }
 
-    // §6.4.1 (G15): the §2.6.4 THREE-CASE honesty — only `Failed` (case 2) rewrites the per-item reason to
-    // the combined §2.8.2 `CleanupResidue` message ("never a clean success"); `Succeeded` (case 1) and
-    // `Cancelled` (case 3) impose NO reason override (the terminal state carries the meaning; the residue rides
-    // `cleanup_incomplete` + the tail). The machine-checkable "never a silent clean success" guard.
+    // §6.4.1 (G15): the §2.6.4 THREE-CASE honesty — each disposition gets the reason §2.6.4 authors for it, and
+    // NONE of them rewrites the item's terminal state: `Failed` (case 2) the combined §2.8.2 `CleanupResidue`
+    // FAILURE message ("never a clean success"); `Succeeded` (case 1) the §2.8.2 NON-failure `Residue`
+    // annotation (the success stands, with where residue remains — §5.7:830); `Cancelled` (case 3) NO reason
+    // (§2.6.4 authors no per-item case-3 sentence; its surface is the structural `cleanup_incomplete` entry +
+    // the BATCH-level tail). The machine-checkable "never a silent clean success" guard.
+    //
+    // [Test-Change: P3.59 — old-obsolete+new-correct, §2.6.4] The `Succeeded` arm's expectation flipped
+    // `None` → `Some(Residue{..})`, per the 2026-07-16 P3.59 Co-Pilot ruling.
+    // (1) OLD OBSOLETE: the P3.25 expectation encoded "case 1 imposes no reason override". Its rationale — that
+    //     case 1 must not adopt the §2.8.2 CleanupResidue *failure* string — was CORRECT and still holds (the
+    //     new arm is a NON-failure variant carrying no `ConversionErrorKind`). What it got wrong is that it
+    //     left §2.6.4:944's OWN authored case-1 sentence — [Build-Session-Entscheidung: P3.59] quoted
+    //     verbatim from the spec ("converted — a temporary file may remain at <path>"), so its
+    //     "temporary" is §02 product copy about a leftover FILE, not a G8 deferral about this test —
+    //     with no carrier at all, which is what forced the pre-ruling P3.59 fill to author a chrome paraphrase
+    //     against §5.7:799 — the defect the G1 NOGO surfaced. The ruling promoted that sentence into §2.8.2 and
+    //     gave it the `OutcomeMsg::Residue` slot; spec > code, so the expectation is obsolete.
+    // (2) NEW CORRECT: verified against §2.6.4 case 1 (the success stands + the summary carries the annotation)
+    //     and §5.7:830 ("not a clean success WITH WHERE residue remains"), and by READ-BACK below — the arm is
+    //     compared to `crate::outcome::residue_annotation(display)` (the catalog's own output, never a
+    //     re-hardcoded string), with the {path} substitution and the non-failure shape both asserted.
+    // The `Cancelled` (case 3) and `Failed` (case 2) expectations are UNCHANGED — RATIFIED as built.
     #[test]
-    fn residue_item_reason_rewrites_only_the_failure_case() {
+    fn residue_item_reason_carries_each_2_6_4_case_without_rewriting_the_state() {
         let display = "/src/.residue.tsv.part";
 
         let failed = residue_item_reason(ResidueDisposition::Failed, display);
@@ -8925,15 +9049,33 @@ mod cleanup_honesty_tests {
             "§2.6.4/§2.8.2: a failed-with-residue item is Failed(CleanupResidue) with the {{path}} slot substituted — never a clean success"
         );
 
+        let succeeded = residue_item_reason(ResidueDisposition::Succeeded, display);
         assert_eq!(
-            residue_item_reason(ResidueDisposition::Succeeded, display),
-            None,
-            "§2.6.4 case 1: a success-with-residue item keeps its Succeeded state — no failure reason override"
+            succeeded,
+            Some(crate::outcome::residue_annotation(display)),
+            "§2.6.4 case 1: a success-with-residue item carries the §2.8.2 NON-failure residue annotation \
+             from the catalog — no re-authored string (P3.59, superseding P3.25's None)"
         );
+        assert!(
+            matches!(
+                &succeeded,
+                Some(OutcomeMsg::Residue { text })
+                    if text.contains(display) && !text.contains("{path}")
+            ),
+            "§2.6.4/§2.8.2: case 1 is a Residue annotation with the {{path}} slot substituted — the item's \
+             success STANDS (§5.7:830 'with where residue remains'), never downgraded to a failure"
+        );
+        assert!(
+            !matches!(&succeeded, Some(OutcomeMsg::Failure { .. })),
+            "§2.6.4 case 1: the annotation is NOT a Failure — residue never rewrites the terminal state \
+             (§2.6.2/§2.1.3 'annotated, not an item failure'); this is what P3.25's rationale protected"
+        );
+
         assert_eq!(
             residue_item_reason(ResidueDisposition::Cancelled, display),
             None,
-            "§2.6.4 case 3: a cancelled-with-residue item stays Cancelled — no failure reason override"
+            "§2.6.4 case 3: a cancelled-with-residue item stays Cancelled — §2.6.4 authors no per-item \
+             sentence for it (the With-residue tail is BATCH-level, §2.8.2); RATIFIED as built"
         );
     }
 

@@ -1199,6 +1199,13 @@ pub struct RunResult {               // canonical shape; §1.12 computes & refer
                                      //   OpenTarget::DivertRoot); a per-item diverted output is
                                      //   reachable via C9 OpenTarget::Item(ItemId), via
                                      //   OpenerExt::open_path (file launch). (§1.12 / §7.7.3)
+    pub summary_line_display: String, // the core-assembled §2.8.2 BATCH-level summary line for
+                                     //   this run's totals (All-succeeded / Partial / All-failed
+                                     //   / Cancelled) + the §2.6.4 "With residue" tail appended
+                                     //   iff cleanup_incomplete is non-empty. Assembled ONCE in
+                                     //   the core (§2.8.2 owns the strings); §5.3's Summary
+                                     //   renders it VERBATIM and never derives its own batch
+                                     //   copy. [DECIDED 2026-07-16 — the P3.59 ruling] (§1.12)
 }
 
 pub struct ItemResult {              // §1.12
@@ -1214,7 +1221,12 @@ pub struct ItemResult {              // §1.12
     pub state: JobState,             // terminal per-item state (§1.9 — Succeeded / Failed /
                                      //   Skipped / Cancelled), unchanged by the wire revision
     pub reason: Option<OutcomeMsg>,  // the §2.8-resolved, ready-to-show line (failure string /
-                                     //   §2.9 lossy note on a SUCCEEDED item / skip text) —
+                                     //   §2.9 lossy note on a SUCCEEDED item / skip text /
+                                     //   the §2.6.4 case-1 RESIDUE annotation on a SUCCEEDED
+                                     //   item — `OutcomeMsg::Residue`, the non-failure note
+                                     //   the [DECIDED 2026-07-16] P3.59 ruling added; a
+                                     //   §2.6.4 case-3 (cancelled-with-residue) item keeps
+                                     //   None, its surface being cleanup_incomplete alone) —
                                      //   OutcomeMsg's shape + wire rationale are §2.8's
                                      //   `[DECIDED]` and are NOT changed by the path revision
                                      //   (OutcomeMsg carries kind + text, never a path)

@@ -35,6 +35,7 @@ import {
   type ConversionEvent,
   type DestinationChoice,
   type InitialDestination,
+  type OpenTarget,
   type OptionValues,
   type OutputPlanPreview,
   type PickKind,
@@ -409,6 +410,28 @@ export async function runConversion(
 export async function cancelConversionRun(runId: RunId): Promise<void> {
   useAppStore.getState().dispatch({ type: "cancelRun" });
   await commands.cancelRun(runId);
+}
+
+/**
+ * [Build-Session-Entscheidung: P3.59] The §7.7 open-finished-output shell-out: fire C9 `open_path { target }`
+ * with a run-scoped `OpenTarget` ID — the §5.3 OpenActions "Open folder" (`"commonRoot"`) / the split-divert
+ * "Open saved-to folder" (`"divertRoot"`) / the ResultSummary reveal-residue link (`{ residue: itemId }`). This
+ * is C9's FIRST frontend consumer: P3.79 re-keyed the command to `OpenTarget` and P3.51 wired the live Rust
+ * handler, but no button called it until this box (the P3.79 note's "their first live frontend consumers are the
+ * P3.56/P3.59 screens" — a rendered action MUST fire its command).
+ *
+ * The WebView names **an id, never a path** (the 2026-07-06 core-owned-paths ruling, §2.10.1): the core resolves
+ * the target against `State<RunResultStore>` to its OWN recorded `PathBuf`, so membership IS the resolution
+ * (§7.7.2) — there is no WebView path to validate, canonicalize or race. An unresolvable target (a mid-run call,
+ * an undiverted `divertRoot`, a residue-free item) is the §7.7.3 refusal, logged core-side.
+ *
+ * Fire-and-forget: the caller `void`s it (opening a folder has no UI result to await, and the §5.3 OpenActions
+ * stay available). A C9 rejection surfaces through the §7.5.1 global frontend-error bridge — the
+ * {@link cancelIntakeCollect} / {@link pickForIntake} fire-and-forget precedent; a failed shell-out is not an
+ * app-level fault (the run's outputs are published either way, §7.7).
+ */
+export async function openResultTarget(target: OpenTarget): Promise<void> {
+  await commands.openPath(target);
 }
 
 // [Build-Session-Entscheidung: P3.77] The old payload-carrying `app://intake` handler (`ingestFromIntakeEvent`,

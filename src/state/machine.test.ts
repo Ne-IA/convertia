@@ -75,6 +75,7 @@ const runResult = (): RunResult => ({
   cleanupIncomplete: [],
   commonRootDisplay: "/out",
   divertRootDisplay: null,
+  summaryLineDisplay: "All 1 files converted.",
 });
 const fault = (): AppFault => ({ kind: "webviewFault", message: "core disconnected" });
 
@@ -89,8 +90,8 @@ const allStates: State[] = [
   { tag: "confirm", set: singleSet() },
   targetsSt(),
   { tag: "rerunPrompt", plan: planned({ equivalentCount: 2 }), rerun: { equivalentCount: 2 } },
-  { tag: "converting", runId: "r1", cancelling: false },
-  { tag: "summary", result: runResult() },
+  { tag: "converting", runId: "r1", cancelling: false, set: singleSet() },
+  { tag: "summary", result: runResult(), set: singleSet() },
   { tag: "mixedDropRefusal", found: [["jpg", 3]] },
   { tag: "unsupported", reason: { kind: "unsupported", detected: "PDF" } },
   { tag: "appFault", fault: fault() },
@@ -279,11 +280,12 @@ describe("Targets/Destination (§5.2 states 4/5)", () => {
     const start = targetsSt();
     expect(transition(start, { type: "convert" })).toEqual(start);
   });
-  it("runStarted (the no-rerun path) → Converting", () => {
+  it("runStarted (the no-rerun path) → Converting, carrying the frozen set forward for the Summary", () => {
     expect(transition(targetsSt(), { type: "runStarted", runId: "r1" })).toEqual({
       tag: "converting",
       runId: "r1",
       cancelling: false,
+      set: singleSet(),
     });
   });
   it("back → Confirm, PRESERVING the threaded frozen set (§5.2 row-4 Back)", () => {
@@ -301,11 +303,12 @@ describe("RerunPrompt (§5.2 state 6)", () => {
     plan: planned({ equivalentCount: 2 }),
     rerun: { equivalentCount: 2 },
   };
-  it("runStarted (after the decision fired C6) → Converting", () => {
+  it("runStarted (after the decision fired C6) → Converting, carrying the frozen set forward", () => {
     expect(transition(rerun, { type: "runStarted", runId: "r2" })).toEqual({
       tag: "converting",
       runId: "r2",
       cancelling: false,
+      set: singleSet(),
     });
   });
   it("rerunCancel (Esc) → Targets, held plan intact (§5.2 row 6)", () => {
@@ -318,11 +321,12 @@ describe("RerunPrompt (§5.2 state 6)", () => {
 
 // ─── states 7 + 7a: Converting ───────────────────────────────────────────────────────────────────────────
 describe("Converting + Cancelling (§5.2 states 7/7a)", () => {
-  const converting: State = { tag: "converting", runId: "r1", cancelling: false };
-  it("runFinished → Summary", () => {
+  const converting: State = { tag: "converting", runId: "r1", cancelling: false, set: singleSet() };
+  it("runFinished → Summary, threading the frozen set the §1.12 output→source map names its items from", () => {
     expect(transition(converting, { type: "runFinished", result: runResult() })).toEqual({
       tag: "summary",
       result: runResult(),
+      set: singleSet(),
     });
   });
   it("cancelRun → the 7a Cancelling sub-state", () => {
@@ -330,17 +334,29 @@ describe("Converting + Cancelling (§5.2 states 7/7a)", () => {
       tag: "converting",
       runId: "r1",
       cancelling: true,
+      set: singleSet(),
     });
   });
   it("a SECOND cancelRun while already cancelling is IGNORED (§5.2 row 7a — no double-cancel)", () => {
-    const cancelling: State = { tag: "converting", runId: "r1", cancelling: true };
+    const cancelling: State = {
+      tag: "converting",
+      runId: "r1",
+      cancelling: true,
+      set: singleSet(),
+    };
     expect(transition(cancelling, { type: "cancelRun" })).toEqual(cancelling);
   });
-  it("runFinished from 7a → Summary (a partial run)", () => {
-    const cancelling: State = { tag: "converting", runId: "r1", cancelling: true };
+  it("runFinished from 7a → Summary (a partial run), the 7a bit dropped + the set threaded", () => {
+    const cancelling: State = {
+      tag: "converting",
+      runId: "r1",
+      cancelling: true,
+      set: singleSet(),
+    };
     expect(transition(cancelling, { type: "runFinished", result: runResult() })).toEqual({
       tag: "summary",
       result: runResult(),
+      set: singleSet(),
     });
   });
   it("runFault → AppFault (a mid-run backend disconnect, §5.8)", () => {
@@ -354,7 +370,18 @@ describe("Converting + Cancelling (§5.2 states 7/7a)", () => {
 // ─── states 8/9/10/12: terminal + pre-flight + fault ─────────────────────────────────────────────────────
 describe("Summary / pre-flight / fault (§5.2 states 8/9/10/12)", () => {
   it("Summary + convertMore → Idle", () => {
-    expect(transition({ tag: "summary", result: runResult() }, { type: "convertMore" })).toEqual({
+    // [Test-Change: P3.59 — old-obsolete+new-correct, §1.12] The state LITERAL gained `set`; the assertion
+    // (convertMore → Idle) is untouched. OLD OBSOLETE: P3.59 threads the frozen `CollectedSet` into `summary`
+    // (§1.12 names each row's source "against the CollectedSet" — `ItemResult` carries only the `ItemId` anchor
+    // since P3.76 retired `source: PathBuf`, §2.10.1), so a `summary` without `set` is no longer a constructible
+    // §5.2 state — the compiler rejects it. NEW CORRECT: verified vs §1.12 + by read-back (the reducer returns
+    // the set unchanged, asserted in the `runFinished` test above). Nothing weakened, skipped or removed.
+    expect(
+      transition(
+        { tag: "summary", result: runResult(), set: singleSet() },
+        { type: "convertMore" },
+      ),
+    ).toEqual({
       tag: "idle",
     });
   });
@@ -402,17 +429,25 @@ describe("app://fault wildcard + no-op invariants (§5.2 state-12 wildcard)", ()
     // A convert in Idle, a scanTick in Summary, a confirm-cancel in Converting: each returns the state verbatim.
     expect(transition({ tag: "idle" }, { type: "convert" })).toEqual({ tag: "idle" });
     expect(
-      transition({ tag: "summary", result: runResult() }, { type: "scanTick", scanned: 1 }),
+      transition(
+        { tag: "summary", result: runResult(), set: singleSet() },
+        { type: "scanTick", scanned: 1 },
+      ),
     ).toEqual({
       tag: "summary",
       result: runResult(),
+      set: singleSet(),
     });
     expect(
-      transition({ tag: "converting", runId: "r1", cancelling: false }, { type: "cancel" }),
+      transition(
+        { tag: "converting", runId: "r1", cancelling: false, set: singleSet() },
+        { type: "cancel" },
+      ),
     ).toEqual({
       tag: "converting",
       runId: "r1",
       cancelling: false,
+      set: singleSet(),
     });
   });
 });

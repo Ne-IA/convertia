@@ -333,6 +333,9 @@ mod c9_contract {
                 skipped: 0,
             },
             cleanup_incomplete: vec![],
+            // The §1.12 batch line is irrelevant here (this fixture exercises the store re-serve, not the
+            // projection that assembles it — see this helper's doc). [Build-Session-Entscheidung: P3.59]
+            summary_line_display: String::new(),
             common_root_display: common.to_string(),
             divert_root_display: divert.map(str::to_string),
         };

@@ -1260,8 +1260,16 @@ plain, calm, never blaming, never technical (SSOT *Fail clearly*). These are the
 | `EngineError` | **"ConvertIA couldn't convert this file."** | — | clean nonzero exit; generic calm fallback. |
 | `PlatformUnavailable` | **"This conversion isn't available on {platform} because the required format support can't be included here."** | `{platform}` | the §3.4 honest per-platform gap; SSOT v1-DoD exception 1. |
 | `QuarantinedByOs` | **"macOS is blocking one of ConvertIA's built-in tools with a security check. Open System Settings → Privacy & Security and choose "Open Anyway", then try again."** | — | macOS Sequoia per-sidecar quarantine — a bundled engine couldn't spawn because Gatekeeper quarantined it (§7.2.3); distinct from a missing/corrupt engine. |
-| `CleanupResidue` | **"This file couldn't be converted, and a temporary file may remain at {path}."** | `{path}` | the only failure that names a path of residue (§2.6.4). |
+| `CleanupResidue` | **"This file couldn't be converted, and a temporary file may remain at {path}."** | `{path}` | the only **failure** that names a path of residue (§2.6.4 **case 2** — the item failed AND its partial could not be cleaned). A *succeeded*-with-residue item (case 1) is **not** a failure and takes the residue-annotation row below instead. |
 | `InternalError` | **"Something unexpected went wrong, so this file was skipped. The rest of your files will continue."** | — | §2.13; never a stack trace. |
+
+**Residue annotation** (§2.6.4 **case 1**) — *not* a failure, so it is keyed by no
+`ConversionErrorKind`; it rides the non-failure `OutcomeMsg::Residue` variant on an
+otherwise-successful item's `ItemResult.reason` (the `Lossy` shape):
+
+| Row | Canonical English | Slots | Notes |
+|-----|-------------------|-------|-------|
+| `residue_annotation` | **"Converted — a temporary file may remain at {path}."** | `{path}` | §2.6.4 case 1: the output published but its temp could not be removed — **the success stands**, and the summary still says residue may remain and *where* (§5.7). Promoted verbatim (modulo catalog capitalization) from §2.6.4's own authored copy `[DECIDED 2026-07-16 — the P3.59 ruling]`; §02 keeps ownership, the UI renders it verbatim. **Case 3** (a *cancelled* item's wedged temp) has **no per-item row** — its surface is the structural `CleanupResidue` annotation (the rendered `residue_display` + the §7.7 reveal) plus the batch-level **With residue** tail below. |
 
 **Batch-level summary strings** (assembled by §1.12, strings owned here):
 
@@ -1274,14 +1282,17 @@ plain, calm, never blaming, never technical (SSOT *Fail clearly*). These are the
 | With residue | append **"Some temporary files may remain — see details."** |
 
 **`OutcomeMsg` — the surfaced per-item string (defined here; §0.6 `ItemResult.reason`
-references it).** The §0.6 `ItemResult.reason: Option<OutcomeMsg>` is **either** a §2.8
-failure string **or** a §2.9 lossy note. It is the *resolved, ready-to-show* line (so
+references it).** The §0.6 `ItemResult.reason: Option<OutcomeMsg>` is a §2.8 failure
+string, a §2.9 lossy note, a §1.1/§1.3 skip line, **or** the §2.6.4 case-1 residue
+annotation on an otherwise-successful item. It is the *resolved, ready-to-show* line (so
 the summary needs no second lookup), produced by `crate::outcome` from the kind + its
 substitutions:
 
 ```rust
-/// A surfaced one-line outcome for one item (§0.6 ItemResult.reason). Carries the
-/// stable discriminant so §5 may re-localise (§2.10) AND the resolved English line.
+/// A surfaced one-line outcome for one item (§0.6 ItemResult.reason). Failure/Lossy/
+/// Skipped carry a stable discriminant so §5 may re-localise (§2.10); Residue carries
+/// none (§2.8.2 homes exactly one case-1 row — the variant tag IS the key). EVERY
+/// variant carries the resolved English line.
 #[derive(Serialize, specta::Type)]            // wire type — see specta note below
 #[serde(rename_all = "camelCase", tag = "type", content = "data")]
 enum OutcomeMsg {
@@ -1297,6 +1308,18 @@ enum OutcomeMsg {
                                                           //   (§0.6 JobState distinguishes them and
                                                           //   §1.12 Totals counts them separately —
                                                           //   "must not be conflated").
+    Residue { text: String },                             // §2.6.4 case 1 — the NON-failure residue
+                                                          //   annotation on a SUCCEEDED item (the
+                                                          //   `residue_annotation` row above, {path}
+                                                          //   substituted). Carries NO kind: §2.8.2
+                                                          //   homes exactly ONE case-1 row, and a
+                                                          //   ConversionErrorKind would make it a
+                                                          //   failure — which it is not (§2.6.2 /
+                                                          //   §2.1.3 "annotated, not an item
+                                                          //   failure"). The `Lossy` shape. Case 3
+                                                          //   (cancelled-with-residue) has no row:
+                                                          //   its reason stays None.
+                                                          //   [DECIDED 2026-07-16 — the P3.59 ruling]
 }
 ```
 

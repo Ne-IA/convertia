@@ -230,7 +230,7 @@ describe("App — §5.2 screen router (P3.55)", () => {
 
   it("routes Converting (7) → the ConvertingScreen (P3.58)", () => {
     useAppStore.setState({
-      machine: { tag: "converting", runId: "run-1", cancelling: false },
+      machine: { tag: "converting", runId: "run-1", cancelling: false, set: singleSet },
       progress: { 0: { sourceDisplay: "/a.csv", status: "running", fraction: 0.5, reason: null } },
       batchProgress: { done: 0, total: 1 },
     });
@@ -239,6 +239,31 @@ describe("App — §5.2 screen router (P3.55)", () => {
     expect(getByRole("button", { name: "Cancel" })).not.toBeNull();
     // reset the reducer-touched fields the other router legs don't seat.
     useAppStore.setState({ progress: {}, batchProgress: null });
+  });
+
+  it("routes Summary (8) → the SummaryScreen (P3.59)", () => {
+    useAppStore.setState({
+      machine: {
+        tag: "summary",
+        set: singleSet,
+        result: {
+          collectedSetId: "cs-1",
+          runId: "run-1",
+          items: [{ item: 0, outputDisplay: "a.tsv", state: "succeeded", reason: null }],
+          totals: { succeeded: 1, failed: 0, cancelled: 0, skipped: 0 },
+          cleanupIncomplete: [],
+          commonRootDisplay: "/drop",
+          divertRootDisplay: null,
+          summaryLineDisplay: "All 1 files converted.",
+        },
+      },
+    });
+    const { getByRole, getByText } = render(<App />);
+    expect(getByRole("heading", { name: "Results" })).not.toBeNull();
+    // The §1.12 batch line + the §7.7 OpenActions + the §5.2 row-8 exit all reach the router arm.
+    expect(getByText("All 1 files converted.")).not.toBeNull();
+    expect(getByRole("button", { name: "Open folder" })).not.toBeNull();
+    expect(getByRole("button", { name: "Convert more" })).not.toBeNull();
   });
 
   it("renders the empty `<main>` for a not-yet-built slice state (never a dead screen)", () => {

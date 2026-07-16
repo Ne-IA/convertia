@@ -16,7 +16,9 @@
 //!  - the §2.8.2 `ConversionErrorKind → canonical-English` message catalog — **P3.68 (built below):**
 //!    `conversion_message_template` (the single-home 21-row table + `None` for the 4 kinds homed elsewhere),
 //!    `conversion_failure` (the `{detected}`/`{platform}`/`{path}`-substituting `OutcomeMsg::Failure`
-//!    producer), and the 5 batch-summary strings (`BatchSummary` + `WITH_RESIDUE_TAIL`).
+//!    producer), and the 5 batch-summary strings (`BatchSummary` + `WITH_RESIDUE_TAIL`); **P3.59 adds**
+//!    the §2.6.4 case-1 `RESIDUE_ANNOTATION_TEMPLATE` + its `residue_annotation` producer — a NON-failure
+//!    row, so it is deliberately NOT keyed by a `ConversionErrorKind` and lives outside the table above.
 //!  - the §2.9.1 `LossyKind → canonical-English` lossy-note catalog — **P3.69**.
 //!  - the Running→Failed render seam turning an internal `ConversionErrorKind` into the surfaced
 //!    `OutcomeMsg::Failure { text }` through the P3.68 catalog — **P3.46**.
@@ -41,19 +43,25 @@
 // the §0.4.3 `IpcError`, the `OutcomeMsg` surfaced line, the §1.12 `SkipReason → ErrorKind` helper, and the
 // §1.1 turn-time `ReadFailure → ErrorKind` helper (P2.73) are all
 // authored as CONTRACTS and registered for typegen (`collect_types![]`), but registration is a type-PARAMETER
-// reference, not a construction — and no production path CONSTRUCTS an item-level outcome / calls the helper
-// yet (the pipeline that emits them is P3/P4+). [P2.109] The one exception is the app-level `WebviewFault`
-// `AppFault`: the §7.2.1 step-6 boot-fault seam in `main.rs` (`webview_init_fault`) now CONSTRUCTS it — the
-// first production construction in this module — so `AppFault` + the `WebviewFault` variant are live; the
-// item-level §2.8 taxonomy / IpcError / OutcomeMsg / helpers stay dead, which keeps this module-level
-// expectation fulfilled. So the rest are dead in the PRODUCTION build until then; the cfg(test) anti-drift +
+// reference, not a construction. [P2.109] The FIRST production construction in this module was the app-level
+// `WebviewFault` `AppFault`: the §7.2.1 step-6 boot-fault seam in `main.rs` (`webview_init_fault`).
+// [Build-Session-Entscheidung: P3.59] The ITEM-LEVEL outcomes then went live as their pipeline landed —
+// `conversion_failure` + `skipped_message` via P3.48 (the C6 conductor reaches them through
+// `crate::orchestrator::project_run_result` → `item_base_reason`), `residue_annotation` via P3.59 (the
+// promoted §2.8.2 case-1 row, through `residue_item_reason`'s Succeeded arm), and `IpcError` at the §0.4.3
+// command boundaries. What still keeps this module-level expectation fulfilled is the REMAINDER rustc itself
+// flags HERE (established by demoting the expect to a warn and reading its enumeration back, not by
+// assertion — a module-scoped expect can only ever be fulfilled by an item of THIS module, so a sibling's
+// dead fn would not count): the not-yet-emitted `ConversionErrorKind` variants, the `ErrorKind` alias, the
+// `OutcomeMsg::Lossy` variant (no §2.9 producer until P4.65), and the §1.1 turn-time
+// `read_failure_to_error_kind` helper. Those are dead in the PRODUCTION build; the cfg(test) anti-drift +
 // wire-form tests reference them, so the TEST build is dead-code-clean. `expect` (not `allow`) auto-flags the
 // moment the LAST covered item gains a production constructor/caller — matching `crate::domain`.
 #![cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the item-level §2.8 taxonomy + IpcError + OutcomeMsg + the §1.12 SkipReason→ErrorKind and §1.1 turn-time ReadFailure→ErrorKind helpers are authored as contracts and registered for typegen, but no production path CONSTRUCTS an item-level outcome / calls either helper until the P3/P4+ pipeline, so they stay dead in the production build until then. (The app-level `WebviewFault` `AppFault` IS constructed by the P2.109 boot-fault seam in main.rs — the first production construction here — but the enumerated item-level items remain dead, keeping this expectation fulfilled.)"
+        reason = "the item-level §2.8 taxonomy + IpcError + OutcomeMsg + the §1.12 SkipReason→ErrorKind and §1.1 turn-time ReadFailure→ErrorKind helpers were authored as contracts and registered for typegen ahead of their pipeline. Much of that is now LIVE: `conversion_failure` + `skipped_message` since P3.48 (the C6 conductor root reaches them through crate::orchestrator::project_run_result → item_base_reason — the first production constructions of an item-level outcome); `residue_annotation` via P3.59 (the promoted §2.8.2 case-1 row, through residue_item_reason's Succeeded arm); `IpcError` at the §0.4.3 command boundaries (ipc::{conversion,intake,planning,system}) + the conductor's per-item Failed arm; the app-level `WebviewFault` `AppFault` via the P2.109 boot-fault seam in main.rs. What STILL keeps this expectation fulfilled is the remainder rustc itself flags in THIS module (verified by demoting the expect to warn and reading the enumeration back — never by assertion): the not-yet-emitted `ConversionErrorKind` variants (the engine/platform kinds P4+ raises), the `ErrorKind` alias (§0.6 names it; every construction site spells the concrete type, P2.10), `OutcomeMsg::Lossy` (the §2.9 note has no producer until P4.65), and the §1.1 turn-time `read_failure_to_error_kind` helper (P2.73 — the §1.1 freeze re-implements the split inline)."
     )
 )]
 
@@ -245,12 +253,15 @@ pub struct AppFault {
 // ─── §2.8.2 OutcomeMsg — the surfaced per-item outcome line (P2.20) ──
 /// The §2.8.2 surfaced per-item outcome — the *resolved, ready-to-show* line for one item, carried by the
 /// §0.6 `ItemResult.reason: Option<OutcomeMsg>` (which rides the `RunFinished` Channel payload + the C8
-/// return, §0.4.2/§1.12). It is **either** a §2.8 failure, a §2.9 lossy note, **or** a §1.1/§1.3 pre-flight
-/// skip — three distinct variants so a consumer pattern-matching `OutcomeMsg` can tell skip from fail WITHOUT
+/// return, §0.4.2/§1.12). It is a §2.8 failure, a §2.9 lossy note, a §1.1/§1.3 pre-flight skip, or the §2.6.4
+/// case-1 residue annotation on a SUCCEEDED item (P3.59) — four distinct variants so a consumer
+/// pattern-matching `OutcomeMsg` can tell skip from fail — and an annotation from either — WITHOUT
 /// also reading `ItemResult.state` (§0.6 keeps `Skipped`/`Failed` distinct, §1.12 `Totals` counts them
-/// separately — "must not be conflated"). Each variant carries the stable discriminant (`kind`/`reason`) so
-/// §5 may re-localise (§2.10) AND the resolved English `text` (the §2.8.2 catalog row / §2.9.1 note with its
-/// `{x}` substitutions already applied), so the §5.3 Summary needs no second lookup.
+/// separately — "must not be conflated"). `Failure`/`Lossy`/`Skipped` each carry a stable discriminant
+/// (`kind`/`reason`) so §5 may re-localise (§2.10); `Residue` carries NONE and is discriminated by its variant
+/// tag alone (§2.8.2 homes exactly ONE case-1 row, so there is nothing to discriminate — the variant IS the
+/// key, P3.59). EVERY variant carries the resolved English `text` (the §2.8.2 catalog row / §2.9.1 note with
+/// its `{x}` substitutions already applied), so the §5.3 Summary needs no second lookup.
 ///
 /// [Build-Session-Entscheidung: P2.20] OUTBOUND-ONLY (it crosses the boundary inside the outbound
 /// `RunResult`/`ItemResult`, never deserialized from the WebView) — `Serialize` + `Type` (the §2.8.2
@@ -281,6 +292,26 @@ pub enum OutcomeMsg {
     /// is the §0.6 `SkipReason`. A skip rides THIS skip-shaped variant, NOT `Failure`, so skip ≠ fail at the
     /// type level (§1.12).
     Skipped { reason: SkipReason, text: String },
+    /// A §2.6.4 **case 1** RESIDUE annotation on an otherwise-successful conversion (the output published, but
+    /// its temp could not be removed) — `text` is the §2.8.2 case-1 row with its `{path}` slot filled from the
+    /// item's §2.10.1 `residue_display`. **NON-FAILURE by construction:** it carries no `ConversionErrorKind`,
+    /// so it cannot be mistaken for the `Failure { kind: CleanupResidue }` case-2 line, and the item keeps its
+    /// terminal `JobState::Succeeded` — residue NEVER rewrites the terminal state (§2.6.4; §2.6.2 / §2.1.3
+    /// "annotated, **not an item failure**"). This is the EXACT `Lossy` shape: a §02-rendered note on an
+    /// item that succeeded. **Case 3 (`Cancelled`-with-residue) does NOT ride this variant** — §2.6.4 authors
+    /// no per-item case-3 sentence; its complete per-item surface is the structural `CleanupResidue`
+    /// annotation (the rendered `residue_display` + the C9 reveal link), and the "With residue" tail is
+    /// BATCH-level (§2.8.2). Case 2 is unchanged (`Failure` carries the full `cleanup_residue` row).
+    ///
+    /// [Build-Session-Entscheidung: P3.59] Named `Residue` (not `ResidueAnnotation`/`CleanupResidue`) — the
+    /// sibling variants are single nouns (`Failure`/`Lossy`/`Skipped`), and `CleanupResidue` is already taken
+    /// by BOTH the `ConversionErrorKind` case-2 variant and the §0.6 structural `CleanupResidue` struct, so
+    /// reusing it here would collide with the two things this variant must be distinguishable from. It carries
+    /// **no `kind` discriminant** (unlike `Failure`/`Lossy`/`Skipped`): §2.8.2 homes exactly ONE case-1 row, so
+    /// a single-variant kind enum would be ceremony with no discriminating power — the variant IS the kind.
+    /// Authored by the 2026-07-16 P3.59 Co-Pilot ruling (option (a)): §2.8.2 keeps string ownership; a
+    /// `CleanupResidue.text` field (option (c)) was rejected because it would double-carry case 2.
+    Residue { text: String },
 }
 
 // ─── §1.12 forward projection helper — SkipReason → ErrorKind (one-way, non-inverted) ──
@@ -430,6 +461,34 @@ pub fn conversion_message_template(kind: ConversionErrorKind) -> Option<&'static
         | ConversionErrorKind::MixedDrop => return None,
     };
     Some(text)
+}
+
+/// The §2.8.2 **case-1 residue-annotation** row — the canonical English note for §2.6.4 case 1 (the output
+/// published, but its temp could not be removed): the item's success STANDS and the summary says residue may
+/// remain and WHERE (§5.7:830 "not a clean success **with where residue remains** — never a green done"). Its
+/// `{path}` slot takes the item's §2.10.1 `residue_display`.
+///
+/// [Build-Session-Entscheidung: P3.59] PROMOTED verbatim from §2.6.4's own already-authored copy (02:944,
+/// *"converted — a temporary file may remain at &lt;path&gt;"*) into the §2.8.2 catalog per the 2026-07-16 ruling —
+/// "verbatim modulo catalog capitalization", so the leading `c`→`C` and the sentence-final `.` match every
+/// sibling row's form (`{path}` replaces the prose `<path>` placeholder). It is homed as its OWN const rather
+/// than a [`conversion_message_template`] arm because that table is keyed by `ConversionErrorKind` — a FAILURE
+/// taxonomy — and this row is deliberately NOT a failure (`ConversionErrorKind::CleanupResidue` is case 2's
+/// row and stays exactly as built); keying case 1 off a failure kind is precisely the conflation the ruling
+/// rejected. One string, one home (§2.8.2 owns it; the UI renders it verbatim, §5.7:799).
+const RESIDUE_ANNOTATION_TEMPLATE: &str = "Converted — a temporary file may remain at {path}.";
+
+/// Build the §2.8.2 [`OutcomeMsg::Residue`] case-1 annotation, filling `{path}` from `residue_display` (the
+/// same §2.10.1 display string the item's `CleanupResidue` carries). Infallible — the row is unconditionally
+/// homed above (unlike [`conversion_failure`], whose table returns `None` for the four kinds §2.8.2 does not
+/// home), so this returns the message directly rather than an `Option` the caller would have to unwrap.
+/// Panic-free (a single `str::replace`; `residue_display`'s own content is never re-scanned — `str::replace`
+/// never re-matches its own output). [Build-Session-Entscheidung: P3.59]
+#[must_use]
+pub fn residue_annotation(residue_display: &str) -> OutcomeMsg {
+    OutcomeMsg::Residue {
+        text: RESIDUE_ANNOTATION_TEMPLATE.replace("{path}", residue_display),
+    }
 }
 
 /// Build the §2.8.2 [`OutcomeMsg::Failure`] for a conversion-outcome `kind`, filling the kind's single `{x}`
@@ -750,6 +809,8 @@ mod tests {
     // §6.4.1 unit (G15): the §2.8.2 `OutcomeMsg` wire form (P2.20) — the surfaced per-item line carried by
     // §0.6 `ItemResult.reason`, adjacently tagged (`type`/`data`) camelCase. OUTBOUND-ONLY, so a SERIALIZE
     // pin (not a round-trip). One case per variant pins (1) the variant tag, (2) the embedded discriminant's
+    // (where the variant HAS one — `Residue` carries none by design, P3.59, so its case pins the bare
+    // `{text}` data shape instead)
     // wire casing — `ConversionErrorKind` camelCase, `LossyKind` snake_case (its §2.9.1-catalog casing),
     // `SkipReason` camelCase — and (3) that a skip rides the `skipped` tag, NOT `failure` (§1.12 skip ≠ fail).
     #[test]
@@ -783,6 +844,44 @@ mod tests {
             serde_json::to_string(&skipped).expect("OutcomeMsg::Skipped serializes"),
             r#"{"type":"skipped","data":{"reason":"uncertain","text":"ConvertIA couldn't tell what kind of file this is, so it can't convert it."}}"#,
             "§1.12: a pre-flight skip rides the `skipped` tag (NOT `failure`), carrying a SkipReason"
+        );
+
+        // [Build-Session-Entscheidung: P3.59] The 4th variant joins this pin per its own "one case per
+        // variant" contract. It is the ONLY variant with no discriminant, so its `data` is a bare `{text}` —
+        // pinned here because that shape is what makes it structurally unmistakable for the
+        // `Failure { kind: CleanupResidue }` case-2 line (§2.6.4). specta declares the same shape in
+        // `bindings.ts`, but that is a DIFFERENT derivation than serde's `Serialize` — this asserts the one
+        // that actually crosses the wire.
+        let residue = OutcomeMsg::Residue {
+            text: "Converted — a temporary file may remain at /src/.data.tsv.part.".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_string(&residue).expect("OutcomeMsg::Residue serializes"),
+            r#"{"type":"residue","data":{"text":"Converted — a temporary file may remain at /src/.data.tsv.part."}}"#,
+            "§2.6.4 case 1: the residue annotation rides the `residue` tag with NO kind — a non-failure note on a SUCCEEDED item, never mistakable for Failure{{kind:cleanupResidue}}"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.8.2: an INDEPENDENT second transcription of the §2.6.4 case-1 residue-annotation
+    // row (P3.59), mirroring `catalog_rows_match_the_exact_canonical_english` (the 21 kind rows) and
+    // `batch_summary_strings_are_canonical` (the 5 batch strings) — the module's convention for every §02-owned
+    // string it homes. Without it the row would be MUTATION-SURVIVABLE: every other assertion on it is either
+    // self-referential (comparing `residue_item_reason`'s output to `residue_annotation`'s own) or
+    // substitution-only, so a reworded row would drift from §2.8.2 / §2.6.4:944 with the suite still green —
+    // and this is the exact string the 2026-07-16 P3.59 ruling promoted and gave §02 ownership of.
+    // [Build-Session-Entscheidung: P3.59]
+    #[test]
+    fn residue_annotation_row_matches_the_exact_canonical_english() {
+        assert_eq!(
+            RESIDUE_ANNOTATION_TEMPLATE, "Converted — a temporary file may remain at {path}.",
+            "§2.8.2: the case-1 residue row is §02's canonical English, promoted from §2.6.4:944 (verbatim modulo the catalog's leading capital + sentence-final period) — one string, one home"
+        );
+        assert_eq!(
+            residue_annotation("/src/.data.tsv.part"),
+            OutcomeMsg::Residue {
+                text: "Converted — a temporary file may remain at /src/.data.tsv.part.".to_owned(),
+            },
+            "§2.6.4 case 1: {{path}} is filled from the item's §2.10.1 residue_display, and the note rides the NON-failure Residue variant (the success stands, with where residue remains — §5.7:830)"
         );
     }
 
@@ -1043,9 +1142,14 @@ mod tests {
     fn skipped_message_sources_each_reason_from_the_2_8_2_catalog_via_the_bridge() {
         fn skip_text(msg: &OutcomeMsg) -> Option<String> {
             // Exhaustive (crate `wildcard_enum_match_arm` deny): only the Skipped arm carries a skip text.
+            // [Test-Change: P3.59 — old-obsolete+new-correct, §2.6.4] `Residue` (the ruling's §2.6.4 case-1
+            // variant) joins the NOT-a-skip arm — it is a §2.6.4 annotation on a SUCCEEDED item, never a skip
+            // text, so it returns `None` exactly like `Failure`/`Lossy`. The assertion below is unchanged.
             match msg {
                 OutcomeMsg::Skipped { text, .. } => Some(text.clone()),
-                OutcomeMsg::Failure { .. } | OutcomeMsg::Lossy { .. } => None,
+                OutcomeMsg::Failure { .. }
+                | OutcomeMsg::Lossy { .. }
+                | OutcomeMsg::Residue { .. } => None,
             }
         }
         // Empty / Unreadable bridge to their §2.8.2 kind rows VERBATIM (no slot) — compared to the template so

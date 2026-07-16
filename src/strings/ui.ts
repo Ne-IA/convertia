@@ -139,4 +139,44 @@ export const ui = {
   converting_status_failed: "Failed",
   converting_status_cancelled: "Cancelled",
   converting_status_skipped: "Skipped",
+
+  // ── P3.59 ──────────────────────────────────────────────────────────────────────────────────────────
+  // The section 5.2 Summary screen (state 8) — the ResultSummary + OpenActions CHROME (section 5.7: button
+  // text + screen copy owned here). The per-item OUTCOME lines are NOT here: a row renders its
+  // core-supplied OutcomeMsg.text verbatim (section 5.7:800 -- section 02-owned, never paraphrased), and the
+  // section 2.8.2 BATCH-level summary line (all / partial / all-failed / cancelled + the section 2.6.4
+  // with-residue tail) is NOT here either: the 2026-07-16 P3.59 ruling wired the core's existing
+  // batch_summary_line onto RunResult.summaryLineDisplay, and the Summary renders that VERBATIM -- so the
+  // fully-failed banner is a section 5.2 row-8 PRESENTATION of a section 02-owned string, not a chrome
+  // paraphrase of it (the pre-ruling fill authored one here and the G1 dual review rejected it against
+  // section 5.7:799). [Build-Session-Entscheidung: P3.59]
+  summary_heading: "Results",
+  // The per-row outcome chrome: the status word (textual, never colour-alone -- section 5.6) + the
+  // output->source mapping line (section 1.12 / SSOT How It Feels 7: every output maps back to its source).
+  summary_status_succeeded: "Done",
+  summary_status_failed: "Failed",
+  summary_status_cancelled: "Cancelled",
+  summary_status_skipped: "Skipped",
+  summary_saved_as: "Saved as {output}",
+  // The section 7.7 reveal affordance for a section 2.6.4 residue row (C9 Residue(ItemId)). The residue
+  // LOCATION is NOT chrome: it arrives already rendered inside the item's section 02-owned reason line
+  // (case 1 = the section 2.8.2 residue annotation, case 2 = the cleanup_residue row) and is shown verbatim,
+  // so only this button label is owned here.
+  summary_reveal_residue: "Reveal residue",
+  // The section 5.3 OpenActions labels (section 5.3 [DECIDED]: real string entries, not placeholders) --
+  // the single common-root button, or the split-divert PAIR + its connector line when the run diverted
+  // (section 1.12 divertRootDisplay is Some). Backed by C9 open_path by OpenTarget id (section 7.7).
+  // [Build-Session-Entscheidung: P3.59] section 5.3's [DECIDED] enumerates these keys unprefixed
+  // (open_folder / open_source_folder / open_saved_to_folder / saved_to_connector). They ship
+  // screen-prefixed, per this table's established convention (converting_status_* / confirm_count_* /
+  // filelist_*) -- naming is the fill's call (roles section 4 "NOT escalation"), and the [DECIDED]'s
+  // substance is honoured: these are REAL entries sharing the section 5.7 localization boundary, not
+  // schematic bracket placeholders. open_file is legitimately absent -- the single-output "Open file"
+  // button is P4.68's (this box's OpenActions clause omits it).
+  summary_open_folder: "Open folder",
+  summary_open_source_folder: "Open source folder",
+  summary_open_saved_to_folder: "Open saved-to folder",
+  summary_saved_to_connector: "Some files were saved to {dir}",
+  // The section 5.2 row-8 "Convert more" -> Idle (also Ctrl/Cmd+N, section 5.10; the accelerator is P4.70.3).
+  summary_convert_more: "Convert more",
 } as const;

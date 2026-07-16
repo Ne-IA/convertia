@@ -202,7 +202,9 @@ describe("subscribeAppEvents (P2.120 §5.8 three app:// listeners)", () => {
   });
 
   it("app://intake in a non-Idle state is a no-op — no drain, machine unchanged (§5.4 slice guard)", async () => {
-    useAppStore.setState({ machine: { tag: "converting", runId: "r1", cancelling: false } });
+    useAppStore.setState({
+      machine: { tag: "converting", runId: "r1", cancelling: false, set: singleSet },
+    });
     await subscribeAppEvents();
     handlerFor("app://intake")?.({ payload: null });
     await Promise.resolve();
@@ -302,7 +304,9 @@ describe("consumeIntakeNudge (§5.8 nudge consumption, P3.55)", () => {
   });
 
   it("a nudge in a non-Idle state is a no-op — no drain, buffer preserved (§5.4 slice guard)", async () => {
-    useAppStore.setState({ machine: { tag: "converting", runId: "r1", cancelling: false } });
+    useAppStore.setState({
+      machine: { tag: "converting", runId: "r1", cancelling: false, set: singleSet },
+    });
     await consumeIntakeNudge();
     expect(invoke).not.toHaveBeenCalled();
     expect(useAppStore.getState().machine.tag).toBe("converting");
@@ -592,7 +596,9 @@ describe("startConversionRun (P2.120 §5.8 Channel<ConversionEvent> → store)",
   it("dispatches the machine runFinished on a terminal RunFinished event → Summary (P3.58 transition out of Converting)", async () => {
     // §5.8: the onmessage handler ALSO drives the machine Converting → Summary on RunFinished (the store reducer
     // holds no RunResult; the machine carries it). Seat the machine in Converting so `fromConverting` takes it.
-    useAppStore.setState({ machine: { tag: "converting", runId: "run-1", cancelling: false } });
+    useAppStore.setState({
+      machine: { tag: "converting", runId: "run-1", cancelling: false, set: singleSet },
+    });
     await startConversionRun("cs1", { format: "tsv" }, {}, "besideSource", "skip");
     const runResult = {
       collectedSetId: "cs1",
@@ -682,7 +688,9 @@ describe("cancelConversionRun (§5.2 row 7a / §5.8 Cancel-run round-trip, P3.58
   beforeEach(() => {
     invoke.mockReset();
     invoke.mockResolvedValue(null); // C7 cancel_run returns Ok(()) → null on the wire
-    useAppStore.setState({ machine: { tag: "converting", runId: "run-1", cancelling: false } });
+    useAppStore.setState({
+      machine: { tag: "converting", runId: "run-1", cancelling: false, set: singleSet },
+    });
   });
   afterEach(() => {
     useAppStore.setState({ machine: initialState() });

@@ -8,7 +8,7 @@
 // BatchSummary count line and the assertive announcement are BOTH built from `confirm_count_*` here — while
 // leaving `ui` a lint-/G57-clean flat table. No JSX, no user-facing literal outside `ui`; the `—`/`·` glue is
 // section-owned punctuation, not translatable copy. [Build-Session-Entscheidung: P3.55]
-import type { DivertReason, SkipReason, UserFacingFormat } from "../lib/ipc/commands";
+import type { DivertReason, JobState, SkipReason, UserFacingFormat } from "../lib/ipc/commands";
 
 import { ui } from "./ui";
 
@@ -132,6 +132,49 @@ export function divertNote(reason: DivertReason): string {
 export function formatBatchProgress(done: number, total: number): string {
   const template = total === 1 ? ui.converting_aggregate_one : ui.converting_aggregate_many;
   return fill(template, { done, total });
+}
+
+/** The §5.2 Summary (state 8) per-row status word for a §0.6 terminal `JobState` — TEXTUAL, so the outcome is
+ *  never carried by colour alone (§5.6). GENUINELY exhaustive: every arm is discriminated until `state` narrows
+ *  to `never`, so a new `JobState` variant fails to compile here rather than silently rendering a wrong word.
+ *  The §2.8 REASON line beside this word is the core-supplied `OutcomeMsg.text`, rendered verbatim (§5.7).
+ *
+ *  The two NON-terminal variants (`pending`/`running`) are **unrepresentable in a §1.12 `RunResult`** ("at
+ *  `RunFinished` always a terminal variant", §0.6) — so they THROW rather than render a label: a `RunResult`
+ *  carrying one is a backend contract violation, and inventing an outcome for it would breach §5.2's
+ *  "never fabricates per-item outcomes for items it never heard back about". [Build-Session-Entscheidung: P3.59] */
+export function summaryStatusLabel(state: JobState): string {
+  if (state === "succeeded") {
+    return ui.summary_status_succeeded;
+  }
+  if (state === "cancelled") {
+    return ui.summary_status_cancelled;
+  }
+  if (state === "pending" || state === "running") {
+    throw new Error(`non-terminal JobState in a terminal RunResult (§0.6/§1.12): ${state}`);
+  }
+  if (state.skipped !== undefined) {
+    return ui.summary_status_skipped;
+  }
+  if (state.failed !== undefined) {
+    return ui.summary_status_failed;
+  }
+  return assertNever(state);
+}
+
+/** The §1.12 output→source mapping line for a succeeded row — "Saved as {output}" over the core-supplied
+ *  `ItemResult.outputDisplay` (a lossy display string, §2.10.1; never a re-submittable path). The SOURCE half of
+ *  the map is the row's own heading (the frozen set's `displayName`), so the pair reads source → output (SSOT
+ *  *How It Feels* 7). [Build-Session-Entscheidung: P3.59] */
+export function formatSavedAs(outputDisplay: string): string {
+  return fill(ui.summary_saved_as, { output: outputDisplay });
+}
+
+/** The §5.3 split-divert connector line — "Some files were saved to {dir}" over the §1.12
+ *  `RunResult.divertRootDisplay`, explaining WHY the run has two open-folder buttons (§2.7.3/§7.7.1).
+ *  [Build-Session-Entscheidung: P3.59] */
+export function formatSavedToConnector(divertRootDisplay: string): string {
+  return fill(ui.summary_saved_to_connector, { dir: divertRootDisplay });
 }
 
 /** Exhaustiveness guard: a new variant reaching an exhaustive switch ({@link skipReasonLabel} /

@@ -1414,19 +1414,31 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
 
 - `RunResult { collected_set_id, run_id, items: Vec<ItemResult>, totals: Totals,
   cleanup_incomplete: Vec<CleanupResidue>, common_root_display, divert_root_display:
-  Option<String> }` (`common_root_display` = the beside-source open-folder target's
+  Option<String>, summary_line_display: String }` (`common_root_display` = the beside-source open-folder target's
   display form; `divert_root_display` = `Some(..)` when any item diverted, §0.6 /
   §2.7.4 — a single field cannot carry both roots; the REAL root `PathBuf`s live in
   the core-side `RunResultStore` the C9 `OpenTarget` resolution reads, §0.4.4 —
   `[DECIDED 2026-07-06]` core-owned paths)
 - `ItemResult { item, output_display: Option<String>, state: JobState, reason:
-  Option<OutcomeMsg> }` (per-item terminal state + the §2.8-resolved display line +
-  the output's display form; `item` keys the output→source mapping against the
-  CollectedSet, and the real output `PathBuf` is `RunResultStore`-side, opened via
-  C9 `Item(ItemId)`)
+  Option<OutcomeMsg> }` (per-item terminal state + the §2.8-resolved display line + the
+  output's display form; `item` keys the output→source mapping against the CollectedSet,
+  and the real output `PathBuf` is `RunResultStore`-side, opened via C9 `Item(ItemId)`).
+  **`reason` is the resolved, ready-to-show line:** a §2.8 failure, a §2.9 lossy note, a
+  §1.1/§2.5.3 skip line, **or the §2.6.4 case-1 residue annotation** (`OutcomeMsg::Residue`,
+  the non-failure note on a succeeded-with-residue item — the `Lossy`-shaped carrier the
+  `[DECIDED 2026-07-16]` P3.59 ruling added); `None` for a plain success with no lossy note,
+  and for a §2.6.4 case-3 (cancelled-with-residue) item, whose per-item surface is the
+  structural `cleanup_incomplete` entry alone
 - `Totals { succeeded, failed, cancelled, skipped }` — the "all failed" condition is
   **derived** (`failed == total && total > 0`), not a stored field.
-- `CleanupResidue { item, residue_display }` (§2.6.4; reveal via C9 `Residue(ItemId)`).
+- `CleanupResidue { item, residue_display }` (§2.6.4; reveal via C9 `Residue(ItemId)`) — the
+  STRUCTURAL residue annotation, carried for all three §2.6.4 cases; it holds no text (the
+  per-item wording, where §2.6.4 authors one, rides `ItemResult.reason`).
+- `summary_line_display` — the core-assembled §2.8.2 BATCH-level line for this run's `totals`
+  (All-succeeded / Partial / All-failed / Cancelled) with the §2.6.4 **"With residue"** tail
+  appended iff `cleanup_incomplete` is non-empty. Assembled ONCE in the core (§2.8.2 owns the
+  strings; the §5.3 Summary renders it VERBATIM and never derives its own batch copy) — the
+  `[DECIDED 2026-07-16]` P3.59 ruling wired it.
 
 - **Per-item success/failure with reasons** and **output locations**; every output
   is **mapped back to its source** (SSOT How It Feels 7 — the completion summary
@@ -1471,9 +1483,15 @@ section *computes* them; §0.4.2 carries `RunResult` as the `RunFinished` payloa
   **not** `OutcomeMsg::Failure` — so a consumer pattern-matching `OutcomeMsg` can tell a
   skip from a fail without also reading `ItemResult.state` (§0.6 keeps `Skipped` and
   `Failed` distinct and §1.12 `Totals` counts them separately; they must not be conflated). This gives the §5.2 Summary UI a single uniform source for every item's
-  source path + reason — pre-flight skips and in-run outcomes render the same way — and
+  outcome + reason — pre-flight skips and in-run outcomes render the same way — and
   resolves the otherwise-ambiguous "where does the Summary get a skipped item's
-  source/reason" question: it is in `RunResult.items`. (The pre-flight skip is **also**
+  outcome/reason" question: it is in `RunResult.items`. **The item's SOURCE is named
+  against the `CollectedSet`**, not carried here: `ItemResult` holds the `ItemId` anchor
+  only (P3.76 retired its `source: PathBuf` per the 2026-07-06 core-owned-paths ruling,
+  §2.10.1), so §5.3's ResultSummary resolves each row's display name via the frozen set's
+  `DroppedItem.display_name` / `SkippedItem.source_display` — the two id-disjoint views
+  that span the §0.6-invariant-6 id space, so a projected skip resolves exactly like an
+  in-run item (the uniform-list property above is what makes ONE lookup enough). (The pre-flight skip is **also**
   shown earlier in the §1.4 confirm summary; appearing again in the final summary is
   intentional, so nothing the user dropped is silently dropped, §1.4/§0.6.)
 

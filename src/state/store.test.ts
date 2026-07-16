@@ -293,6 +293,7 @@ describe("reduceConvertEvent (§5.8 ConversionEvent reducer)", () => {
       cleanupIncomplete: [],
       commonRootDisplay: "/out",
       divertRootDisplay: null,
+      summaryLineDisplay: "All 0 files converted.",
     };
     const event: ConversionEvent = { type: "runFinished", data: runResult };
     expect(reduceConvertEvent(pristine(), event)).toEqual({});
