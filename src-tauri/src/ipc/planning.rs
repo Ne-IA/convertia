@@ -510,7 +510,10 @@ mod c2b_contract {
     #[test]
     fn register_picked_mints_a_resolvable_id_and_the_display() {
         let registry = DestinationRegistry::default();
-        let path = std::env::temp_dir().join("convertia-c2b-picked-root");
+        // A unique real dir via `tempfile` (not `std::env::temp_dir()`, the SAST-flagged shared-temp
+        // pattern) — `register_picked` only stores + resolves the path, so the dir is never written to.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("convertia-c2b-picked-root");
         let picked = register_picked(&registry, path.clone());
         assert_eq!(
             picked.display,

@@ -18,6 +18,18 @@ import { TargetsScreen } from "./TargetsScreen";
 import { useAppStore } from "../state/store";
 import type { Planned, SingleSet } from "../state/machine";
 
+// The frontend tsconfig omits @types/node (frontend code never touches Node globals), so `process` is not a typed
+// global here. Vitest runs on Node, so the object exists at runtime; the guard-reset test below reaches its
+// `unhandledRejection` bookkeeping through globalThis via this minimal listener-host shape (no @types/node, no `any`) —
+// the type-safe alternative to widening the test tsconfig with node types. [Build-Session-Entscheidung: P3.56]
+type UnhandledRejectionListener = (...args: unknown[]) => void;
+interface RejectionListenerHost {
+  listeners(event: "unhandledRejection"): UnhandledRejectionListener[];
+  removeAllListeners(event: "unhandledRejection"): void;
+  on(event: "unhandledRejection", listener: UnhandledRejectionListener): void;
+}
+const nodeProcess = (globalThis as unknown as { process: RejectionListenerHost }).process;
+
 const singleSet: SingleSet = {
   id: "cs1",
   instance: "inst-1",
@@ -128,9 +140,9 @@ describe("TargetsScreen — §5.2 Targets/Destination (states 4/5)", () => {
     // Vitest tracks unhandled rejections at the Node process level (a jsdom `window` preventDefault does NOT
     // suppress it), so swap Vitest's `unhandledRejection` listeners for a swallow across the intentional throw; the
     // throw's real observability is the §7.5.1 bridge's concern, not this guard-reset test's.
-    const saved = process.listeners("unhandledRejection");
-    process.removeAllListeners("unhandledRejection");
-    process.on("unhandledRejection", () => undefined);
+    const saved = nodeProcess.listeners("unhandledRejection");
+    nodeProcess.removeAllListeners("unhandledRejection");
+    nodeProcess.on("unhandledRejection", () => undefined);
     try {
       runConversion.mockRejectedValueOnce(new Error("ipc drop")); // first C6 rejects; the beforeEach default resolves
       const { getByRole } = renderTargets();
@@ -140,9 +152,9 @@ describe("TargetsScreen — §5.2 Targets/Destination (states 4/5)", () => {
       fireEvent.click(convert); // the guard was reset → fires runConversion #2 (a clean retry)
       expect(runConversion).toHaveBeenCalledTimes(2);
     } finally {
-      process.removeAllListeners("unhandledRejection");
+      nodeProcess.removeAllListeners("unhandledRejection");
       for (const listener of saved) {
-        process.on("unhandledRejection", listener as (...args: unknown[]) => void);
+        nodeProcess.on("unhandledRejection", listener);
       }
     }
   });
