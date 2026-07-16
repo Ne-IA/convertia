@@ -19,6 +19,17 @@ import { axe } from "vitest-axe";
 // Channel/invoke/listen/onDragDropEvent throws. Each helper's behaviour is covered in `lib/ipc/events.test.ts`.
 // The vitest-axe `toHaveNoViolations` matcher is not used — its 0.1.0 `.d.ts` re-exports the matcher type-only,
 // which `verbatimModuleSyntax` rejects — so the assertions read the `axe()` result directly.
+//
+// [Build-Session-Entscheidung: P3.60] **This factory must export EVERY events-façade binding `App.tsx` imports —
+// including module-SCOPE ones.** A `vi.mock` factory is strict: a missing export throws at import time
+// ("No <x> export is defined on the … mock") and the whole file fails to COLLECT, so the miss reds this G33a leg
+// (and the coverage leg) while `pnpm test` stays green — the a11y legs are `exclude`d from `vitest.config.ts` by
+// design, so they cannot catch each other. P3.60's `APP_EVENT_HANDLERS` (App.tsx, module scope) made
+// `consumeAppFault` the first such import and tripped exactly this. **The class:** a new façade import in
+// `App.tsx` must be added to BOTH App mock factories (here + `App.test.tsx`) in the SAME commit — and a screen
+// box must run `pnpm test:a11y`, not only `pnpm test`. (The sibling class: the P1.35/ee362ce mount-side-effect
+// note — an IPC side effect at mount breaks a11y AND coverage; the fix is mocking the FAÇADE, isolation not
+// suppression.)
 vi.mock("./lib/ipc/events", () => ({
   // [Test-Change: P3.55 — old-obsolete+new-correct, §5.8] the mount handshake now calls the consuming
   // `consumeMountDrain` (not the bare `drainPendingIntake`); the a11y baseline is unchanged (Idle renders the
@@ -32,6 +43,8 @@ vi.mock("./lib/ipc/events", () => ({
   pickForIntake: () => Promise.resolve(),
   advanceToTargets: () => Promise.resolve(),
   cancelIntakeCollect: () => Promise.resolve(),
+  // The §5.8 `app://fault` consumption App wires into its module-scope handler set (P3.60) — see the note above.
+  consumeAppFault: () => undefined,
 }));
 
 import { App } from "./App";

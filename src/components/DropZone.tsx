@@ -18,7 +18,7 @@
 // target state reachable (P3.55 Confirm is the first `collected`→Confirm consumer); it is deliberately NOT wired
 // here. So after P3.54 the picker opens and the nudge→drain runs, but the machine advances when P3.55+ land.
 // [Build-Session-Entscheidung: P3.54]
-import { useEffect, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent } from "react";
 
 import { keymap, matchesAccelerator } from "../a11y/keymap";
 import { pickForIntake } from "../lib/ipc/events";
@@ -29,23 +29,49 @@ export interface DropZoneProps {
    *  two states the DropZone renders — so it defaults false; P3.60 reuses the component in state 9. When set,
    *  every intake action (click, folder, the §5.10 accelerators) is a no-op. */
   readonly disabled?: boolean;
+  /** [Build-Session-Entscheidung: P3.60] Bind the §5.10 GLOBAL chords (Ctrl/⌘+O files, Ctrl/⌘+Shift+O folder).
+   *  `true` (the default) is the Idle (1) binding; the state-9 `MixedDropRefusal` re-drop passes `false` —
+   *  §5.10:1211 `[DECIDED]` scopes the global chord to `Idle` ONLY, while the per-element **Enter/Space on the
+   *  focused surface** works wherever a DropZone renders (it is native `<button>` activation, so it needs no
+   *  binding here and is unaffected by this flag). This is the gate the P3.54 DropZone reserved for the P3.60
+   *  reuse ("state 9 gets Enter/Space on the focused surface ONLY, never the global chords"). */
+  readonly bindGlobalAccelerators?: boolean;
+  /** [Build-Session-Entscheidung: P3.60] Focus the drop surface on mount — the §5.3:306 `[DECIDED]`
+   *  focus-on-entry for the state-9 `MixedDropRefusal` re-drop ("focus lands on the re-drop `DropZone`, the
+   *  primary action, so a keyboard user can Enter/Space to re-pick immediately"). Defaults `false`: the Idle (1)
+   *  DropZone's own focus-on-entry is P4.70.1's contract, not this box's. */
+  readonly autoFocus?: boolean;
 }
 
 /**
  * The §5.3 DropZone. `dragActive` is DOM-drag-event visual state (§5.4/§5.5 lift), never a path source (the drop
  * itself is handled core-side, §7.8.1); firing C2a is fire-and-forget — the picked set returns via the nudge→drain.
  */
-export function DropZone({ disabled = false }: DropZoneProps) {
+export function DropZone({
+  disabled = false,
+  bindGlobalAccelerators = true,
+  autoFocus = false,
+}: DropZoneProps) {
   const [dragActive, setDragActive] = useState(false);
+  const surfaceRef = useRef<HTMLButtonElement>(null);
+
+  // §5.3:306 `[DECIDED]` state-9 focus-on-entry: the re-drop surface is the refusal screen's PRIMARY action, so
+  // focus lands on it (the heading is announced via its own live region, never focused). Opt-in — the Idle (1)
+  // focus-on-entry is P4.70.1's. [Build-Session-Entscheidung: P3.60]
+  useEffect(() => {
+    if (autoFocus) {
+      surfaceRef.current?.focus();
+    }
+  }, [autoFocus]);
 
   // §5.10 Idle accelerators: Ctrl/⌘+O → files, Ctrl/⌘+Shift+O → folder. `matchesAccelerator` resolves the chord
   // per platform (Cmd on macOS, Ctrl elsewhere) and disambiguates by Shift (openFilePicker has no Shift;
-  // chooseFolder requires it). They bind while the DropZone is mounted + enabled: in P3.54 the DropZone is
-  // mounted ONLY in Idle (App renders it for `tag === "idle"`), so the §5.10 Idle-only scope holds by mounting.
-  // When P3.60 reuses this component as the state-9 re-drop surface, state 9 gets Enter/Space on the focused
-  // surface ONLY (never the global chords, §5.10), so that reuse must gate this binding off.
+  // chooseFolder requires it). They bind while the DropZone is mounted + enabled + `bindGlobalAccelerators`:
+  // App renders the DropZone in Idle (1) and — since P3.60 — in the state-9 MixedDropRefusal re-drop, which
+  // passes `bindGlobalAccelerators={false}` because §5.10:1211 scopes the global chord to `Idle` ONLY (state 9
+  // re-drops via Enter/Space on the focused surface, i.e. native <button> activation, which needs no binding).
   useEffect(() => {
-    if (disabled) {
+    if (disabled || !bindGlobalAccelerators) {
       return;
     }
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -61,7 +87,7 @@ export function DropZone({ disabled = false }: DropZoneProps) {
     return () => {
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [disabled]);
+  }, [disabled, bindGlobalAccelerators]);
 
   // §5.4 drag-over affordance — DOM drag events ONLY, on the surface <button>, never a path source. The surface
   // holds only its text label (no interactive children), so a plain enter→lift / leave→clear is flicker-free.
@@ -99,6 +125,7 @@ export function DropZone({ disabled = false }: DropZoneProps) {
   return (
     <div className="flex flex-col items-center gap-3">
       <button
+        ref={surfaceRef}
         type="button"
         className={surfaceClasses}
         data-drag-active={dragActive ? "true" : "false"}

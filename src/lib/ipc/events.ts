@@ -25,6 +25,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+import type { Msg, State } from "../../state/machine";
 import { useAppStore } from "../../state/store";
 import {
   commands,
@@ -95,18 +96,37 @@ export async function consumeMountDrain(): Promise<void> {
 }
 
 /**
+ * [Build-Session-Entscheidung: P3.60] Map the machine's CURRENT state onto the §5.2 Msg that enters `Collecting`
+ * for a fresh intake, or `null` when this state cannot take one (the §5.4 not-drainable case). The two drainable
+ * slice states have DISTINCT entry Msgs — the §5.2 tables give each its own edge, and the P3.53 machine mirrors
+ * that: `Idle` (1) → `startCollecting` (the row-1 drop/pick edge), `MixedDropRefusal` (9) → `redrop` (the row-9
+ * "re-drop → `Collecting`" edge the §5.3 active DropZone drives, WITHOUT a Dismiss-to-Idle round-trip). Both
+ * carry the freshly-minted `collectingId` and land in `Collecting`, so the drain below is identical for either.
+ */
+function intakeEntryMsg(state: State, collectingId: CollectingId): Msg | null {
+  if (state.tag === "idle") {
+    return { type: "startCollecting", collectingId };
+  }
+  if (state.tag === "mixedDropRefusal") {
+    return { type: "redrop", collectingId };
+  }
+  return null;
+}
+
+/**
  * [Build-Session-Entscheidung: P3.55] The §5.8/§5.4 NUDGE consumption: on the payload-less `app://intake`
  * nudge, if the machine can take fresh intake, enter Collecting and drain WITH scan telemetry, then route the
  * result (a drop's `Empty` → Unsupported, the machine's `fromCollecting` `emptyStaysIdle=false` arm). The
- * `collectingId` is minted HERE and dispatched via `startCollecting` BEFORE the drain, so C13 `cancel_ingest`
- * (via {@link cancelIntakeCollect}) can name the in-flight walk while it awaits (§1.1); `onScan` drives the
- * §5.2 "Scanning… N files" count via `scanTick`.
+ * `collectingId` is minted HERE and dispatched via the state's entry Msg BEFORE the drain, so C13
+ * `cancel_ingest` (via {@link cancelIntakeCollect}) can name the in-flight walk while it awaits (§1.1); `onScan`
+ * drives the §5.2 "Scanning… N files" count via `scanTick`.
  *
- * SLICE POLICY: the drainable state is Idle ONLY. The full §5.4 fresh-intake set (a nudge in
- * Confirm/Targets/Destination/Summary/refusal states re-drains) is NOT wired yet because the §5.2 machine has
- * no `startCollecting` arm from those states (that requires the P4.78 machine completion, not the P3.56–P3.60
- * screens); until then a nudge in ANY non-Idle state is a no-op HERE and the core-side `PendingIntake` buffer
- * is PRESERVED (§7.8.1 no-loss accumulation), consumed by a subsequent drainable-state drain. The
+ * SLICE POLICY: the drainable states are `Idle` (1) and — since P3.60 — `MixedDropRefusal` (9), i.e. exactly the
+ * states that RENDER a `DropZone` (§5.3:295) and that the P3.53 machine gives a `Collecting` entry edge
+ * ({@link intakeEntryMsg}). The REST of the §5.4 fresh-intake set (a nudge in Confirm/Targets/Destination/
+ * Summary/state-10 re-drains) stays unwired: the §5.2 machine has no entry arm from those states, which requires
+ * the P4.78 machine completion — so a nudge there is a no-op HERE and the core-side `PendingIntake` buffer is
+ * PRESERVED (§7.8.1 no-loss accumulation), consumed by a subsequent drainable-state drain. The
  * non-drainable-state `BusyNotice` also lands with P4.
  *
  * STALE-WALK GUARD: the late `scanTick`/`collected` dispatches fire only if the machine is STILL this walk's
@@ -116,11 +136,12 @@ export async function consumeMountDrain(): Promise<void> {
  * keeps its state (Sonnet review, P3.55).
  */
 export async function consumeIntakeNudge(): Promise<void> {
-  if (useAppStore.getState().machine.tag !== "idle") {
+  const collectingId = crypto.randomUUID();
+  const entry = intakeEntryMsg(useAppStore.getState().machine, collectingId);
+  if (entry === null) {
     return;
   }
-  const collectingId = crypto.randomUUID();
-  useAppStore.getState().dispatch({ type: "startCollecting", collectingId });
+  useAppStore.getState().dispatch(entry);
   const isThisWalk = (): boolean => {
     const machine = useAppStore.getState().machine;
     return machine.tag === "collecting" && machine.collectingId === collectingId;
@@ -135,6 +156,21 @@ export async function consumeIntakeNudge(): Promise<void> {
   if (isThisWalk()) {
     useAppStore.getState().dispatch({ type: "collected", set });
   }
+}
+
+/**
+ * [Build-Session-Entscheidung: P3.60] The §5.8 `app://fault` CONSUMPTION: route an app-level §2.13 fault into the
+ * §5.2 machine's `appFault` WILDCARD (→ AppFault, state 12, from ANY state — the §5.2:262-69 global edge). This
+ * is the seam {@link AppEventHandlers.onFault} reserved and the ONLY runtime entry into state 12 in P3 (the
+ * DTO-less run-path entry is P4.50's, per the 2026-07-16 P3.60 ruling).
+ *
+ * The `AppFault` is passed through UNTOUCHED — its `message` is the §2.13.3/§7.2-owned calm line the
+ * `AppFaultNotice` renders verbatim (§5.7:799), so nothing is re-authored, re-classified or dropped on the way.
+ * Homed here beside {@link consumeIntakeNudge}/{@link consumeMountDrain}: every §5.8 event consumption dispatches
+ * from this façade, so the store write stays inside `src/lib/ipc/**` (the §5.1 one-IPC-consumer discipline).
+ */
+export function consumeAppFault(fault: AppFault): void {
+  useAppStore.getState().dispatch({ type: "appFault", fault });
 }
 
 /**
@@ -282,13 +318,21 @@ export async function pickForIntake(kind: PickKind): Promise<void> {
  * the core panicked, the IPC channel dropped), NOT a per-item `ItemFinished{Failed}` — so the UI can route to
  * the AppFault surface (state 12) and stop the run **without fabricating outcomes for items it never heard back
  * about** (§5.8). It is a DISTINCT fault from the `app://fault` `AppFault` DTO ({@link AppEventHandlers.onFault}),
- * whose kinds ({EngineMissing, WebviewFault, BundleDamaged}) are the §7.2 STARTUP faults. UNSET in P2: the P3.53
- * FSM supplies it (dispatch → state 12 / `AppFaultNotice`, P3.60→P8) and adds the §5.8 mid-run **channel-silence**
- * watchdog (the per-engine wall-clock watchdog is P3.44/P4.12); this box wires the SEAM + the buildable-now
- * `start_conversion`-rejection detection SOURCE.
+ * whose kinds ({EngineMissing, WebviewFault, BundleDamaged}) are the §7.2 STARTUP faults.
+ *
+ * [Build-Session-Entscheidung: P3.60] **SUPPLIER = P4.50** (re-cut from "the P3.53 FSM" per the 2026-07-16 P3.60
+ * ruling, which assigns the state-12 run-path leg to P4.50): P4.50 supplies `onRunFault` and adds the §5.8 mid-run
+ * **channel-silence** watchdog (the per-engine wall-clock watchdog is P3.44/P4.12). P3.60 deliberately does NOT
+ * wire it — this fault carries no `AppFault` DTO (by construction the core is dead and can author nothing), so
+ * supplying it under P3's non-null `runFault { fault: AppFault }` typing would force the frontend to SYNTHESIZE a
+ * wire fact (§5.2: the backend is the source of truth for facts); P4.50 re-cuts that typing and owns the class's
+ * copy. The P2.124 `start_conversion`-rejection detection SOURCE below stays live, firing into the
+ * optional-absent handler as a documented no-op until then. (The `app://fault` RENDER chain is unaffected:
+ * dispatch → state 12 / `AppFaultNotice` is P3.60→P8.)
  */
 export interface ConversionRunHandlers {
-  /** §5.8/§2.13.3 mid-run backend-disconnect → AppFault (state 12). UNSET in P2 (P3.53 supplies it). */
+  /** §5.8/§2.13.3 mid-run backend-disconnect → AppFault (state 12). UNSET through P3 (P4.50 supplies it — the
+   *  2026-07-16 P3.60 ruling; see the interface doc). */
   readonly onRunFault?: () => void;
 }
 
@@ -305,9 +349,10 @@ export interface ConversionRunHandlers {
  * rejection — a documented, EXPECTED error, e.g. a stale `CollectedSetId`) is **not** app-level: it re-throws
  * unsignalled for the caller to route (the §5.3 `CommandError`, P3.53). An OPAQUE (non-`IpcError`) rejection is
  * the "core panic / IPC drop" case → `onRunFault` (→ AppFault, state 12). Either way the rejection is
- * **re-thrown** — the seam NOTIFIES, it never swallows the failure. The CALLER (the §5.2 Convert transition,
- * P3.53) invokes this once the batch/target/destination are chosen and supplies `onRunFault` (mirrors
- * `drainPendingIntake`, whose consumption also lands with the state machine).
+ * **re-thrown** — the seam NOTIFIES, it never swallows the failure. The CALLER (the §5.2 Convert transition) is
+ * live from P3.56/P3.57 ({@link runConversion}), which invokes this once the batch/target/destination are chosen;
+ * `onRunFault` itself is supplied by **P4.50**, not the caller ([Build-Session-Entscheidung: P3.60] — re-cut from
+ * "the §5.2 Convert transition, P3.53" per the 2026-07-16 P3.60 ruling; see {@link ConversionRunHandlers}).
  */
 export async function startConversionRun(
   collectedSetId: CollectedSetId,
@@ -375,10 +420,12 @@ function isIpcError(value: unknown): boolean {
  *
  * Fault handling follows the `advanceToTargets` precedent — no `onRunFault` handler is supplied here, so a C6
  * rejection (an opaque core/IPC drop OR a structured §0.4.3 `IpcError`) RE-THROWS to the §7.5.1 global
- * frontend-error bridge and leaves the machine in Targets (the user retries). The §5.2 fault routing — the
- * `appFault` wildcard for an opaque pre-run C6 drop, the §5.3 `CommandError` slot for a structured reject —
- * rides the boxes that build those surfaces (P3.60 AppFault / P4.69 CommandError), which supply `onRunFault`
- * then; the SEAM is already live ({@link ConversionRunHandlers}).
+ * frontend-error bridge and leaves the machine in Targets (the user retries). The §5.2 fault routing rides the
+ * boxes that build those surfaces: the `appFault` wildcard for an opaque pre-run C6 drop is **P4.50**'s, which
+ * supplies `onRunFault` ([Build-Session-Entscheidung: P3.60] — re-cut from "P3.60 AppFault" per the 2026-07-16
+ * P3.60 ruling, which leaves this DTO-less leg to P4.50; see {@link ConversionRunHandlers}), and the §5.3
+ * `CommandError` slot for a structured reject is P4.69's. The SEAM is already live
+ * ({@link ConversionRunHandlers}).
  */
 export async function runConversion(
   collectedSetId: CollectedSetId,
@@ -442,15 +489,20 @@ export async function openResultTarget(target: OpenTarget): Promise<void> {
 
 /**
  * [Build-Session-Entscheidung: P2.120] Optional typed handlers for the two §0.4.2 `app://` events whose §5.8
- * intent is a §5.2 finite-state-machine transition that does not exist until P3.53. They are UNSET in P2.120 —
- * a §5.8-mandated on-mount registration seam with named fillers on record (typed optional props, G8-clean):
- * `app://fault`'s dispatch → FSM state 12 is the P3.53 reducer (the channel-death fault SOURCE is P2.124; the
- * `AppFaultNotice` render is the P3.60 slice → P8.19.1 copy; the `app://fault` EMIT + `PendingFault` buffer is
- * P4), and `app://close-requested`'s → QuitConfirm (state 11) body is P4.67.1. `app://intake` is NOT a prop —
- * it is handled internally (→ the C1 `drain_intake` drain via `drainPendingIntake`), live from P2.120.
+ * intent is a §5.2 finite-state-machine transition that did not exist in P2 — a §5.8-mandated on-mount
+ * registration seam with named fillers on record (typed optional props, G8-clean).
+ *
+ * [Build-Session-Entscheidung: P3.60] `onFault` is now SUPPLIED: App passes {@link consumeAppFault}, which
+ * dispatches the §5.2 `appFault` wildcard → state 12, whose `AppFaultNotice` renders the DTO's §2.13.3/§7.2-owned
+ * `message` verbatim (the P3.60 slice → P8.19.1 chrome copy). The `app://fault` EMIT + `PendingFault` buffer that
+ * lights this path up in production is the P4 readiness body (`main.rs present_startup_fault`: both presentation
+ * bodies are P4); the DTO-less mid-run channel-death SOURCE is P2.124's, whose handler is P4.50's
+ * ({@link ConversionRunHandlers}). `onCloseRequested`'s → QuitConfirm (state 11) body remains P4.67.1.
+ * `app://intake` is NOT a prop — it is handled internally (→ the §5.8 nudge consumption {@link consumeIntakeNudge}).
  */
 export interface AppEventHandlers {
-  /** `app://fault` (§2.13.3): an app-level fault (`AppFault`). The dispatch-to-FSM-state-12 body is P3.53. */
+  /** `app://fault` (§2.13.3): an app-level fault (`AppFault`) → the §5.2 state-12 wildcard. Supplied from P3.60
+   *  by {@link consumeAppFault}. */
   readonly onFault?: (fault: AppFault) => void;
   /** `app://close-requested` (§7.3.3): the quit-while-converting confirm. QuitConfirm (state 11) body = P4.67.1. */
   readonly onCloseRequested?: () => void;
@@ -467,18 +519,20 @@ export interface AppEventHandlers {
  *   "come and drain `PendingIntake`" nudge (no payload), and P3.55 wires its consumption — enter Collecting,
  *   drain (paths stashed core-side, returned via the C1 response), route the `CollectedSet` into the §5.2
  *   machine. The §5.4 "ignore-unless-drainable + preserve-the-buffer" guard now lives IN `consumeIntakeNudge`
- *   (slice: Idle only; the full fresh-intake set + the `BusyNotice` land with the P3.56–P3.60/P4 screens), and
- *   the §7.1 single-instance callback stays the authoritative primary refuse-busy gate (the funnel drops a
- *   mid-run intake before it ever nudges);
- * - `app://fault` → `handlers.onFault?.(payload)` (UNSET in P2 — see {@link AppEventHandlers});
- * - `app://close-requested` → `handlers.onCloseRequested?.()` (unit payload, no DTO; UNSET in P2).
+ *   (slice: Idle (1) + the state-9 re-drop, i.e. the DropZone-rendering states, P3.60; the REST of the
+ *   fresh-intake set + the `BusyNotice` land with P4), and the §7.1 single-instance callback stays the
+ *   authoritative primary refuse-busy gate (the funnel drops a mid-run intake before it ever nudges);
+ * - `app://fault` → `handlers.onFault?.(payload)` (supplied from P3.60 by {@link consumeAppFault} → the §5.2
+ *   state-12 wildcard — see {@link AppEventHandlers});
+ * - `app://close-requested` → `handlers.onCloseRequested?.()` (unit payload, no DTO; UNSET through P3 — P4.67.1).
  */
 export async function subscribeAppEvents(handlers: AppEventHandlers = {}): Promise<() => void> {
   const unlisteners = await Promise.all([
     listen("app://intake", () => {
       // [Build-Session-Entscheidung: P3.55] The nudge CONSUMPTION: enter Collecting + drain + route the result
       // into the §5.2 machine ({@link consumeIntakeNudge}), replacing the P3.77 bare `drainPendingIntake()`
-      // trigger. The §5.4 not-drainable-state guard lives IN `consumeIntakeNudge` (slice: Idle only).
+      // trigger. The §5.4 not-drainable-state guard lives IN `consumeIntakeNudge` (slice: Idle + the state-9
+      // re-drop, P3.60).
       void consumeIntakeNudge();
     }),
     listen<AppFault>("app://fault", (event) => {

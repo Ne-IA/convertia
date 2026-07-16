@@ -54,6 +54,7 @@ import {
   advanceToTargets,
   cancelConversionRun,
   cancelIntakeCollect,
+  consumeAppFault,
   consumeIntakeNudge,
   consumeMountDrain,
   drainPendingIntake,
@@ -240,6 +241,41 @@ describe("subscribeAppEvents (P2.120 §5.8 three app:// listeners)", () => {
   });
 });
 
+// §6.4.6 unit (G15): the §5.8 `app://fault` consumption (P3.60) — the handler App supplies into the P2.120
+// seam. It is the ONLY runtime entry into state 12 in P3 (the DTO-less run-path entry is P4.50's), and its
+// contract is that the §2.13.3/§7.2-owned DTO reaches the machine UNTOUCHED — nothing re-authored, re-classified
+// or dropped on the way. [Build-Session-Entscheidung: P3.60]
+describe("consumeAppFault (§5.8 app://fault consumption, P3.60)", () => {
+  beforeEach(() => {
+    useAppStore.setState({ machine: { tag: "idle" } });
+  });
+  afterEach(() => {
+    useAppStore.setState({ machine: { tag: "idle" } });
+  });
+
+  it("dispatches the appFault wildcard → state 12, carrying the DTO through unmodified", () => {
+    const fault = { kind: "bundleDamaged", message: "Part of the app is damaged." } as const;
+    consumeAppFault(fault);
+    expect(useAppStore.getState().machine).toEqual({ tag: "appFault", fault });
+  });
+
+  it("routes from ANY state — the §5.2 wildcard edge, not a Converting-only one", () => {
+    const fault = { kind: "engineMissing", message: "An engine is missing." } as const;
+    useAppStore.setState({ machine: { tag: "confirm", set: singleSet } });
+    consumeAppFault(fault);
+    expect(useAppStore.getState().machine.tag).toBe("appFault");
+  });
+
+  it("reaches state 12 through the LIVE app://fault listener (the seam is wired end-to-end)", async () => {
+    listen.mockReset();
+    listen.mockImplementation(() => Promise.resolve(() => {}));
+    const fault = { kind: "webviewFault", message: "The web view is out of date." };
+    await subscribeAppEvents({ onFault: consumeAppFault });
+    listen.mock.calls.find((call) => call[0] === "app://fault")?.[1]?.({ payload: fault });
+    expect(useAppStore.getState().machine).toEqual({ tag: "appFault", fault });
+  });
+});
+
 describe("consumeMountDrain (§5.8 mount-drain consumption, P3.55)", () => {
   beforeEach(() => {
     invoke.mockReset();
@@ -310,6 +346,30 @@ describe("consumeIntakeNudge (§5.8 nudge consumption, P3.55)", () => {
     await consumeIntakeNudge();
     expect(invoke).not.toHaveBeenCalled();
     expect(useAppStore.getState().machine.tag).toBe("converting");
+  });
+
+  // [Build-Session-Entscheidung: P3.60] The §5.2 row-9 re-drop: state 9 is the SECOND drainable state (it is
+  // the second state that renders a DropZone, §5.3:295). Without this route the refusal screen's re-drop
+  // DropZone would open the picker and then silently no-op — a dead button (the P3.54 NOGO class).
+  it("from MixedDropRefusal (9): re-drops into Collecting and routes the fresh set → Confirm (§5.2 row 9)", async () => {
+    useAppStore.setState({ machine: { tag: "mixedDropRefusal", found: [["jpg", 2]] } });
+    invoke.mockResolvedValue({ single: singleSet });
+    const pending = consumeIntakeNudge();
+    // The `redrop` Msg enters Collecting synchronously — WITHOUT a Dismiss-to-Idle round-trip (§5.2 row 9).
+    expect(useAppStore.getState().machine.tag).toBe("collecting");
+    await pending;
+    expect(useAppStore.getState().machine.tag).toBe("confirm");
+  });
+
+  it("state 10 is NOT drainable in the slice — the machine has no entry arm, so the buffer is preserved", async () => {
+    // §5.8's full fresh-intake set includes state 10, but the P3.53 slice machine gives `unsupported` no
+    // `Collecting` entry edge (and §5.3:295 renders no DropZone there) — that rides the P4.78 completion.
+    useAppStore.setState({
+      machine: { tag: "unsupported", reason: { kind: "unsupported", detected: "PDF" } },
+    });
+    await consumeIntakeNudge();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(useAppStore.getState().machine.tag).toBe("unsupported");
   });
 
   it("drops a STALE drain result — an older walk never routes into a newer walk (the collectingId guard)", async () => {

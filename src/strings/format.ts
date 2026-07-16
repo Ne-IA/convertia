@@ -177,9 +177,66 @@ export function formatSavedToConnector(divertRootDisplay: string): string {
   return fill(ui.summary_saved_to_connector, { dir: divertRootDisplay });
 }
 
+/** The §5.2 row-9 formats-found line ("Found 30 JPG, 12 PNG, 3 PDF") — the §1.3 mixed-drop tally, one entry per
+ *  distinct eligible format over the wire's `[UserFacingFormat, count]` pairs, joined by ", " in the wire's own
+ *  order (the core produced it; the UI does not re-rank the refusal, §5.2 "the backend is the source of truth
+ *  for facts"). The `, ` glue is section-owned punctuation, not translatable copy (this module's header).
+ *  [Build-Session-Entscheidung: P3.60] */
+export function formatMixedFound(found: readonly (readonly [UserFacingFormat, number])[]): string {
+  const list = found
+    .map(([format, count]) => fill(ui.mixed_found_entry, { count, format: formatLabel(format) }))
+    .join(", ");
+  return fill(ui.mixed_found, { list });
+}
+
+/** The §5.2 row-10 Empty per-reason tally ("5 files, none convertible (3 unreadable, 2 unsupported)") — grouped
+ *  client-side from `CollectedSet::Empty.skipped` on the §0.6 `SkipReason` (§5.3 "derived client-side"). Entries
+ *  keep first-seen order (the wire's), and the total is the skipped count, so the sentence's "N files" and its
+ *  breakdown always sum. Returns `null` for an empty list — the §5.2 all-hidden `Empty { skipped: [] }` case,
+ *  which renders "the plain copy, no tally". [Build-Session-Entscheidung: P3.60] */
+export function formatSkipBreakdown(
+  skipped: readonly { readonly reason: SkipReason }[],
+): string | null {
+  if (skipped.length === 0) {
+    return null;
+  }
+  const counts = new Map<SkipReason, number>();
+  for (const { reason } of skipped) {
+    counts.set(reason, (counts.get(reason) ?? 0) + 1);
+  }
+  const breakdown = [...counts]
+    .map(([reason, count]) =>
+      fill(ui.unsupported_tally_entry, { count, reason: tallyReasonWord(reason) }),
+    )
+    .join(", ");
+  const template = skipped.length === 1 ? ui.unsupported_tally_one : ui.unsupported_tally_many;
+  return fill(template, { count: skipped.length, breakdown });
+}
+
+/** The SHORT lowercase counted-noun for a §0.6 `SkipReason` inside the {@link formatSkipBreakdown} sentence
+ *  ("3 unreadable") — distinct from {@link skipReasonLabel}'s capitalised confirm-gate ROW label. Exhaustive
+ *  over the five variants (`alreadyConverted` is a C6 re-run skip, never a freeze-time `SkippedItem`, mapped for
+ *  the exhaustive switch — the `skipReasonLabel` precedent). [Build-Session-Entscheidung: P3.60] */
+function tallyReasonWord(reason: SkipReason): string {
+  switch (reason) {
+    case "unsupportedType":
+      return ui.unsupported_tally_reason_unsupported_type;
+    case "uncertain":
+      return ui.unsupported_tally_reason_uncertain;
+    case "empty":
+      return ui.unsupported_tally_reason_empty;
+    case "unreadable":
+      return ui.unsupported_tally_reason_unreadable;
+    case "alreadyConverted":
+      return ui.unsupported_tally_reason_already_converted;
+    default:
+      return assertNever(reason);
+  }
+}
+
 /** Exhaustiveness guard: a new variant reaching an exhaustive switch ({@link skipReasonLabel} /
- *  {@link divertNote}) fails to compile (`value: never`), so a label can never be silently missing.
- *  Unreachable by construction. */
+ *  {@link divertNote} / {@link tallyReasonWord}) fails to compile (`value: never`), so a label can never be
+ *  silently missing. Unreachable by construction. */
 function assertNever(value: never): never {
   throw new Error(`unhandled union variant: ${String(value)}`);
 }

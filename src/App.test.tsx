@@ -17,13 +17,20 @@ import { render, cleanup } from "@testing-library/react";
 // unchanged — only the mocked façade name. The `advanceToTargets`/`cancelIntakeCollect` stubs feed the
 // statically-imported ConfirmScreen (3) / CollectingScreen (2) router arms P3.55 added — Idle renders the
 // DropZone, so they never run here.
+//
+// [Build-Session-Entscheidung: P3.60] The `subscribeAppEvents` stub now FORWARDS its `handlers` argument (it
+// previously dropped it): App supplies the §5.8 `onFault` handler from this box on, so the seam's contract is
+// only assertable if the spy sees what App passed.
 const consumeMountDrain = vi.fn<() => Promise<void>>();
-const subscribeAppEvents = vi.fn<() => Promise<() => void>>();
+const subscribeAppEvents = vi.fn<(handlers?: AppEventHandlers) => Promise<() => void>>();
 const subscribeNativeDragDrop = vi.fn<() => Promise<() => void>>();
 vi.mock("./lib/ipc/events", () => ({
   consumeMountDrain: () => consumeMountDrain(),
-  subscribeAppEvents: () => subscribeAppEvents(),
+  subscribeAppEvents: (handlers?: AppEventHandlers) => subscribeAppEvents(handlers),
   subscribeNativeDragDrop: () => subscribeNativeDragDrop(),
+  // The §5.8 `app://fault` consumption App wires into the handler set (P3.60) — a plain dispatch, stubbed here
+  // so this suite stays hermetic; its dispatch contract is `lib/ipc/events.test.ts`'s.
+  consumeAppFault: () => undefined,
   // The §5.2 Idle screen (the P3.54 DropZone, rendered by App) imports the C2a `pickForIntake` façade; stub it
   // so the Idle render stays hermetic (it fires only on a user action, which this suite does not exercise).
   pickForIntake: () => Promise.resolve(),
@@ -47,6 +54,8 @@ vi.mock("./a11y/announcer", () => ({ announce: () => undefined }));
 import { App } from "./App";
 import { useAppStore } from "./state/store";
 import type { Planned, SingleSet } from "./state/machine";
+// Type-only: erased at runtime, so it reads the REAL module's types while `vi.mock` replaces its runtime.
+import type { AppEventHandlers } from "./lib/ipc/events";
 
 // Unmount each render (this file did not previously auto-clean; the §5.2 router legs below re-render <App/> per
 // machine state, so cleanup keeps their document-scoped role queries from tripping over an accumulated tree).
@@ -266,11 +275,75 @@ describe("App — §5.2 screen router (P3.55)", () => {
     expect(getByRole("button", { name: "Convert more" })).not.toBeNull();
   });
 
-  it("renders the empty `<main>` for a not-yet-built slice state (never a dead screen)", () => {
-    useAppStore.setState({ machine: { tag: "mixedDropRefusal", found: [] } });
-    const { container } = render(<App />);
-    const main = container.querySelector("main");
-    expect(main).not.toBeNull();
-    expect(main?.children.length).toBe(0);
+  // [Test-Change: P3.60 — old-obsolete+new-correct, §5.2] The removed leg pinned "a not-yet-built slice state
+  // renders the empty `<main>`", using `mixedDropRefusal` as its specimen. (1) OLD OBSOLETE: P3.60 builds the
+  // last three slice screens (9/10/12), so `mixedDropRefusal` now renders the refusal — and no "not-yet-built
+  // slice state" specimen remains at all: the router is exhaustive over the P3.53 slice machine, and its null
+  // fallback is retired for a compile-time `assertNever` (the P3.60 box + §5.2 rows 9/10/12; state 11 is not a
+  // slice state — it joins with P4.78/P4.67.1). The assertion is therefore unrepresentable, not merely
+  // failing. (2) NEW CORRECT: verified against §5.2/§5.3 by rendering each arm and reading back its
+  // spec-named surface — the row-9 formats-found line, the row-10 variant copy, the row-12 verbatim
+  // `AppFault.message` — rather than by re-running the old shape until green.
+  it("routes MixedDropRefusal (9) → the refusal + its active re-drop DropZone (P3.60)", () => {
+    useAppStore.setState({
+      machine: { tag: "mixedDropRefusal", found: [["jpg", 30]] },
+    });
+    const { getByRole, getByText } = render(<App />);
+    expect(getByRole("heading", { name: "More than one kind of file" })).not.toBeNull();
+    expect(getByText("Found 30 JPG")).not.toBeNull();
+    expect(getByRole("button", { name: /Drop files here/ })).not.toBeNull();
+    expect(getByRole("button", { name: "Dismiss" })).not.toBeNull();
+  });
+
+  it("routes Unsupported (10) → the UnsupportedNotice variant copy (P3.60)", () => {
+    useAppStore.setState({
+      machine: { tag: "unsupported", reason: { kind: "unsupported", detected: "PDF" } },
+    });
+    const { getByRole } = render(<App />);
+    expect(
+      getByRole("heading", { name: "Can't convert this type — detected: PDF" }),
+    ).not.toBeNull();
+    expect(getByRole("button", { name: "Dismiss" })).not.toBeNull();
+  });
+
+  it("routes AppFault (12) → the AppFaultNotice rendering the wire message verbatim (P3.60)", () => {
+    const message = "ConvertIA is missing one of its built-in tools.";
+    useAppStore.setState({
+      machine: { tag: "appFault", fault: { kind: "engineMissing", message } },
+    });
+    const { getByRole, getByText } = render(<App />);
+    expect(getByRole("heading", { name: "Something went wrong" })).not.toBeNull();
+    expect(getByText(message)).not.toBeNull();
+    expect(getByRole("button", { name: "Start over" })).not.toBeNull();
+  });
+});
+
+// §6.4.6 unit (G15): the §5.8 `app://fault` handler App supplies (P3.60). The seam P2.120 authored is now
+// SUPPLIED — App passes `consumeAppFault` — and the handler object must be MODULE-stable, because
+// `useAppEvents` keys its subscribe effect on it: an inline object would re-subscribe the three listeners on
+// every render and re-open the §7.8.1 registration race. [Build-Session-Entscheidung: P3.60]
+describe("App — the §5.8 app://fault handler (P3.60)", () => {
+  beforeEach(() => {
+    subscribeAppEvents.mockReset();
+    subscribeAppEvents.mockResolvedValue(() => {});
+    consumeMountDrain.mockReset();
+    consumeMountDrain.mockResolvedValue(undefined);
+    subscribeNativeDragDrop.mockReset();
+    subscribeNativeDragDrop.mockResolvedValue(() => {});
+  });
+
+  it("supplies onFault to subscribeAppEvents (the P2.120 seam is no longer unset)", () => {
+    render(<App />);
+    expect(subscribeAppEvents).toHaveBeenCalledTimes(1);
+    const handlers = subscribeAppEvents.mock.calls[0]?.[0];
+    expect(typeof handlers?.onFault).toBe("function");
+    // state 11 (QuitConfirm) is P4.67.1's — its seam stays deliberately unset here.
+    expect(handlers?.onCloseRequested).toBeUndefined();
+  });
+
+  it("passes a STABLE handler identity across re-renders (no re-subscribe, §7.8.1)", () => {
+    const { rerender } = render(<App />);
+    rerender(<App />);
+    expect(subscribeAppEvents).toHaveBeenCalledTimes(1);
   });
 });

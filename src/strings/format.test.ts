@@ -8,12 +8,15 @@ import {
   formatConfirmCount,
   formatDisclosure,
   formatLabel,
+  formatMixedFound,
   formatScanStatus,
+  formatSkipBreakdown,
   formatSkipRow,
   formatSkipTally,
   formatWillSaveTo,
   skipReasonLabel,
 } from "./format";
+import type { SkipReason } from "../lib/ipc/commands";
 import { ui } from "./ui";
 
 // §6.4.6 unit (G15): the §5.7 confirm-gate string FORMATTERS (P3.55). ui.ts stays a flat English string map
@@ -147,5 +150,87 @@ describe("formatBatchProgress (§5.2/§1.11 Converting aggregate line, P3.58)", 
   it("uses the plural template for a multi-file batch and substitutes done + total", () => {
     expect(formatBatchProgress(1, 2)).toBe("1 of 2 files done");
     expect(formatBatchProgress(3, 10)).toBe("3 of 10 files done");
+  });
+});
+
+describe("formatMixedFound (§5.2 row-9 formats-found line, P3.60)", () => {
+  it("renders the §5.2 row-9 example verbatim — every format with its count, uppercased", () => {
+    expect(
+      formatMixedFound([
+        ["jpg", 30],
+        ["png", 12],
+        ["pdf", 3],
+      ]),
+    ).toBe("Found 30 JPG, 12 PNG, 3 PDF");
+  });
+
+  it("keeps the WIRE's order — the UI does not re-rank the core's refusal tally", () => {
+    expect(
+      formatMixedFound([
+        ["pdf", 3],
+        ["jpg", 30],
+      ]),
+    ).toBe("Found 3 PDF, 30 JPG");
+  });
+
+  it("handles the minimum mixed drop (two formats — one is not a mixed drop at all)", () => {
+    expect(
+      formatMixedFound([
+        ["csv", 1],
+        ["tsv", 1],
+      ]),
+    ).toBe("Found 1 CSV, 1 TSV");
+  });
+});
+
+describe("formatSkipBreakdown (§5.2 row-10 Empty per-reason tally, P3.60)", () => {
+  const skip = (reason: SkipReason): { reason: SkipReason } => ({ reason });
+
+  it("groups by SkipReason and renders the §5.2 row-10 sentence", () => {
+    expect(
+      formatSkipBreakdown([
+        skip("unreadable"),
+        skip("unreadable"),
+        skip("unreadable"),
+        skip("unsupportedType"),
+        skip("unsupportedType"),
+      ]),
+    ).toBe("5 files, none convertible (3 unreadable, 2 unsupported)");
+  });
+
+  it("uses the singular template for a one-file drop", () => {
+    expect(formatSkipBreakdown([skip("unreadable")])).toBe(
+      "1 file, none convertible (1 unreadable)",
+    );
+  });
+
+  it("the breakdown counts always sum to the stated total", () => {
+    const skipped = [skip("unreadable"), skip("empty"), skip("uncertain"), skip("unreadable")];
+    const line = formatSkipBreakdown(skipped) ?? "";
+    expect(line).toBe("4 files, none convertible (2 unreadable, 1 empty, 1 unrecognized)");
+    const summed = [...line.matchAll(/(\d+) [a-z]/g)]
+      .slice(1)
+      .reduce((total, [, n]) => total + Number(n), 0);
+    expect(summed).toBe(skipped.length);
+  });
+
+  it("returns null for the all-hidden Empty { skipped: [] } — the §5.2 'plain copy, no tally' case", () => {
+    expect(formatSkipBreakdown([])).toBeNull();
+  });
+
+  it("covers every §0.6 SkipReason with a non-empty lowercase word (the exhaustive switch)", () => {
+    const reasons: SkipReason[] = [
+      "unsupportedType",
+      "uncertain",
+      "empty",
+      "unreadable",
+      "alreadyConverted",
+    ];
+    for (const reason of reasons) {
+      const line = formatSkipBreakdown([skip(reason)]) ?? "";
+      const word = /\(1 (.+)\)/.exec(line)?.[1] ?? "";
+      expect(word.trim()).not.toBe("");
+      expect(word).toBe(word.toLowerCase());
+    }
   });
 });

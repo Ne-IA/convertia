@@ -179,4 +179,55 @@ export const ui = {
   summary_saved_to_connector: "Some files were saved to {dir}",
   // The section 5.2 row-8 "Convert more" -> Idle (also Ctrl/Cmd+N, section 5.10; the accelerator is P4.70.3).
   summary_convert_more: "Convert more",
+
+  // ── P3.60 ──────────────────────────────────────────────────────────────────────────────────────────
+  // The section 5.2 MixedDropRefusal (state 9) — the section 1.3 hard pre-flight refusal. CHROME in full:
+  // section 5.7:803 names "the mixed-drop refusal phrasing" as a UI-owned string and section 5.7:823 gives the
+  // row's owner as "here (chrome)"; crate::outcome's one-string-one-home comment likewise refuses section 2.8.2
+  // homing for MixedDrop ("via the section 5.2 pre-flight UI"), so this screen has no section 02 body to render.
+  // The found-formats line is composed in strings/format.ts over the wire's [format, count] tally.
+  // [Build-Session-Entscheidung: P3.60]
+  mixed_heading: "More than one kind of file",
+  mixed_body: "ConvertIA converts one kind of file at a time. Drop a single kind to continue.",
+  // The section 5.2 row-9 formats-found line ("Found 30 JPG, 12 PNG, 3 PDF") — {list} is the joined per-format
+  // tally, each entry built from mixed_found_entry.
+  mixed_found: "Found {list}",
+  mixed_found_entry: "{count} {format}",
+  mixed_dismiss: "Dismiss",
+
+  // The section 5.2 UnsupportedNotice (state 10) — the four section 5.3 variants, each with its own copy path.
+  // CHROME wrappers only: the section 02-supplied PAYLOADS ride inside them verbatim — {detected} is the wire's
+  // retained detected-type name (CollectedSet::Unsupported.detected) and the Uncertain note is the section 1.2
+  // can't-tell text (CollectedSet::Uncertain.note), rendered as its own calm secondary line so the payload is
+  // never dropped (section 5.2 row 10). [Build-Session-Entscheidung: P3.60]
+  unsupported_heading_unsupported: "Can't convert this type — detected: {detected}",
+  unsupported_heading_uncertain: "Couldn't tell what this file is",
+  unsupported_heading_unreadable: "Couldn't read these files",
+  unsupported_heading_empty: "Nothing here I can convert",
+  // The section 5.2 row-10 Empty per-reason tally ("N files, none convertible (M unreadable, K unsupported, …)"),
+  // derived client-side from Empty.skipped by grouping on the section 0.6 SkipReason (section 5.3). {breakdown}
+  // is the joined per-reason list, each entry built from unsupported_tally_entry.
+  unsupported_tally_one: "1 file, none convertible ({breakdown})",
+  unsupported_tally_many: "{count} files, none convertible ({breakdown})",
+  unsupported_tally_entry: "{count} {reason}",
+  // The SHORT lowercase per-SkipReason words the tally breakdown reads ("3 unreadable, 2 unsupported"). Distinct
+  // from the capitalised skip_reason_* confirm-gate row labels above: those name a single row, these are counted
+  // nouns inside one parenthesised sentence. Chrome (section 5.7 / the tally is a UI-derived line).
+  unsupported_tally_reason_unsupported_type: "unsupported",
+  unsupported_tally_reason_uncertain: "unrecognized",
+  unsupported_tally_reason_empty: "empty",
+  unsupported_tally_reason_unreadable: "unreadable",
+  unsupported_tally_reason_already_converted: "already converted",
+  unsupported_dismiss: "Dismiss",
+
+  // The section 5.2 AppFaultNotice (state 12) — the CHROME ONLY. The screen's BODY is the wire AppFault.message,
+  // rendered VERBATIM: it is the section 2.13.3 pre-localised, plain-English, trace-free calm line and section
+  // 7.2/section 2.13.3 own those WORDS (the 2026-07-16 P3.60 ruling; crate::outcome deliberately refuses section
+  // 2.8.2 homing for the three app-level kinds — "render via the section 2.13.3 app://fault catalog", one string
+  // one home). So NO body/message key lives here: authoring one would fork a section 02-owned catalog (the
+  // section 5.7:799 doctrine, the P3.56-item-1 / P3.59 rejected class). The run-path fault line (the section
+  // 5.8:1021 chrome literal, whose core is dead and can author nothing) is P4.50's leg, not this box's.
+  // [Build-Session-Entscheidung: P3.60]
+  appfault_heading: "Something went wrong",
+  appfault_start_over: "Start over",
 } as const;
