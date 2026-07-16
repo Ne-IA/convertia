@@ -22,7 +22,13 @@
 // this is the in-memory frontend app store. [Build-Session-Entscheidung: P1.31]
 import { create } from "zustand";
 
-import type { ConversionEvent, EngineHealth, ItemId, TargetId } from "../lib/ipc/commands";
+import type {
+  ConversionEvent,
+  EngineHealth,
+  ItemId,
+  ItemOutcome,
+  TargetId,
+} from "../lib/ipc/commands";
 
 import { initialState, transition, type Msg, type State } from "./machine";
 
@@ -45,10 +51,23 @@ export type ChosenTarget = { readonly targetId: string };
  *  fills the real `OutputPlanPreview`-derived shape. */
 export type DestinationPreview = { readonly willSaveTo: string };
 
-/** One row of the live per-item progress map (§5.8 `ItemProgress` / `ItemFinished`); P2.120
- *  fills the reducer that populates it from the `Channel<ConversionEvent>`. `fraction` is
- *  `null` for an indeterminate stage (§5.8). */
-export type ItemProgress = { readonly fraction: number | null; readonly done: boolean };
+/** The terminal/running status of one §5.8 progress row — `running` until the §0.4.2 `ItemFinished` outcome
+ *  lands, then the mapped terminal state (§1.11 "rows transition to terminal Succeeded/Failed/Cancelled/Skipped").
+ *  [Build-Session-Entscheidung: P3.58] */
+export type ItemRowStatus = "running" | "succeeded" | "failed" | "cancelled" | "skipped";
+
+/** One row of the live per-item progress list (§5.8/§1.11), reduced from the §0.4.2 `ConversionEvent` stream:
+ *  the source display (from `ItemStarted`), the live fraction (`ItemProgress`; `null` = the §1.11 indeterminate
+ *  stage), the terminal `status` once the item finishes (`ItemFinished.outcome`), and the verbatim §2.8 reason
+ *  line for a `failed` row (the outcome's `IpcError.message` — §5.7: §02-owned, rendered verbatim, never
+ *  paraphrased). P3.58 fills the terminal-outcome + source-display seams P2.120 deferred to "the ProgressList
+ *  box" (the earlier minimal `{ fraction, done }` shape is superseded). [Build-Session-Entscheidung: P3.58] */
+export type ItemRow = {
+  readonly sourceDisplay: string;
+  readonly status: ItemRowStatus;
+  readonly fraction: number | null;
+  readonly reason: string | null;
+};
 
 // ─── the store shape ───────────────────────────────────────────────────────────────────────
 
@@ -66,7 +85,12 @@ export interface AppState {
   readonly destination: DestinationPreview | null;
   /** Live per-item progress, keyed by the §0.6 `ItemId`. Consumed via a SELECTOR (§1.10) so a
    *  1000-row virtualised `ProgressList` re-renders per row, not per progress tick. */
-  readonly progress: Readonly<Record<ItemId, ItemProgress>>;
+  readonly progress: Readonly<Record<ItemId, ItemRow>>;
+  /** The §1.11 aggregate batch progress (`done`/`total` queued items, from the §0.4.2 `BatchProgress` event)
+   *  driving the Converting aggregate bar — `null` before the first `batchProgress` tick and reset between
+   *  runs. The run-level half of the §5.1 "live progress" holding; P3.58 fills the seam P2.120 deferred to the
+   *  ProgressList box. Read via a selector (§1.10/§5.8 selector-granularity). [Build-Session-Entscheidung: P3.58] */
+  readonly batchProgress: { readonly done: number; readonly total: number } | null;
   /** §5.8 carry-over: the worst-case `video_reencode` `ConvertingNote` text, set from the C3
    *  `Target.lossy` at the Targets step (4), carried 4→7, then kept or cleared (`null`) by
    *  `RunStarted.willReencode`. `null` when no worst-case re-encode note applies. */
@@ -100,6 +124,7 @@ const initialAppState: AppState = {
   chosenTarget: null,
   destination: null,
   progress: {},
+  batchProgress: null,
   pendingVideoReencodeNote: null,
   engineHealth: null,
 };
@@ -120,36 +145,91 @@ export const useAppStore = create<AppStore>()((set) => ({
  *  return an empty slice with their real consumer named. [Build-Session-Entscheidung: P2.120] */
 export function reduceConvertEvent(state: AppState, event: ConversionEvent): Partial<AppState> {
   switch (event.type) {
-    case "runStarted":
-      // §5.8: `willReencode` KEEPS the step-4 `pendingVideoReencodeNote` (whose text P4.65 sets) or CLEARS it
-      // when the run took the lossless remux path. The per-run `progress` reset on Converting-entry is the
-      // P3.53 machine's job, not this reducer.
-      return event.data.willReencode ? {} : { pendingVideoReencodeNote: null };
+    case "runStarted": {
+      // §5.8: a new run CLEARS the previous run's live progress (the per-item rows + the aggregate), so a
+      // second batch (convert-more → … → Converting) never shows the prior run's rows. `willReencode` then
+      // KEEPS the step-4 `pendingVideoReencodeNote` (whose text P4.65 sets) or CLEARS it when the run took the
+      // lossless remux path. [Build-Session-Entscheidung: P3.58]
+      const reset = { progress: {}, batchProgress: null } as const;
+      return event.data.willReencode ? reset : { ...reset, pendingVideoReencodeNote: null };
+    }
     case "itemStarted":
-      // §1.9 Pending→Running: a determinate row, no fraction reported.
-      return {
-        progress: { ...state.progress, [event.data.itemId]: { fraction: null, done: false } },
-      };
-    case "itemProgress":
+      // §1.9 Pending→Running: a `running` row named by its §2.4 source display, no fraction reported yet.
       return {
         progress: {
           ...state.progress,
-          [event.data.itemId]: { fraction: event.data.fraction, done: false },
+          [event.data.itemId]: {
+            sourceDisplay: event.data.sourceDisplay,
+            status: "running",
+            fraction: null,
+            reason: null,
+          },
         },
       };
-    case "itemFinished":
-      // §1.9 terminal per item: the row is done. The OUTCOME (Succeeded/Failed/Skipped/Cancelled) is surfaced
-      // by the §1.12 Summary/RunResult (P3.53 machine), not this minimal live bar.
-      return { progress: { ...state.progress, [event.data.itemId]: { fraction: 1, done: true } } };
+    case "itemProgress": {
+      // §1.11 live fraction — merge with the row's `ItemStarted` fields (§1.9 guarantees ItemStarted precedes
+      // ItemProgress; the `?? RUNNING_ROW_FALLBACK` covers the unreachable out-of-order case without a bare name).
+      const prior = state.progress[event.data.itemId] ?? RUNNING_ROW_FALLBACK;
+      return {
+        progress: {
+          ...state.progress,
+          [event.data.itemId]: { ...prior, status: "running", fraction: event.data.fraction },
+        },
+      };
+    }
+    case "itemFinished": {
+      // §1.9 terminal per item: map the §0.6 `ItemOutcome` onto the row's terminal `status` + verbatim §2.8
+      // reason (the P2.120-deferred outcome fill, this box). Merges over the row's `ItemStarted` fields.
+      const prior = state.progress[event.data.itemId] ?? RUNNING_ROW_FALLBACK;
+      const terminal = mapItemOutcome(event.data.outcome, prior.fraction);
+      return {
+        progress: { ...state.progress, [event.data.itemId]: { ...prior, ...terminal } },
+      };
+    }
     case "batchProgress":
-      // §1.11 aggregate batch bar — no §5.1 store field; its render is the P3.53 ProgressList's. No store effect.
-      return {};
+      // §1.11 aggregate batch bar — store the backend-computed `done`/`total` (P2.120's deferred seam, this box).
+      return { batchProgress: { done: event.data.done, total: event.data.total } };
     case "runFinished":
-      // §1.12 terminal RunResult → Summary (state 8) is the P3.53 machine + the C8 re-fetch. No §5.1 store field.
+      // §1.12 terminal RunResult → Summary (state 8) is the P3.53 machine (dispatched by the §5.8 run lifecycle,
+      // events.ts) + the C8 re-fetch. It carries the `RunResult` in the machine state, not this store slice.
       return {};
     default:
       return assertNever(event);
   }
+}
+
+/** The defensive fallback row for an `itemProgress`/`itemFinished` that arrives with NO prior `itemStarted` row
+ *  (unreachable under the §1.9 Pending→Running→terminal ordering guarantee; present so the merge never fabricates
+ *  a partial row). [Build-Session-Entscheidung: P3.58] */
+const RUNNING_ROW_FALLBACK: ItemRow = {
+  sourceDisplay: "",
+  status: "running",
+  fraction: null,
+  reason: null,
+};
+
+/** Map a §0.6 `ItemOutcome` (the live `ItemFinished` projection) onto the row's terminal `status` + `fraction` +
+ *  verbatim §2.8 `reason`. `Succeeded` snaps the bar to full; `Failed` keeps the last fraction and carries the
+ *  §0.4.3 `IpcError.message` (§2.8.2 pre-localised, §02-owned — rendered verbatim, never paraphrased);
+ *  `Cancelled` keeps the last fraction, no reason. `Skipped` is handled for exhaustive completeness only — no
+ *  LIVE `ItemFinished{Skipped}` is emitted (§0.4.2 / P2.37.4: skips are the §1.12 terminal-projection path), so
+ *  the plain "Skipped" chrome label suffices (its `SkipReason` detail is the Summary's, §1.12).
+ *  [Build-Session-Entscheidung: P3.58] */
+function mapItemOutcome(
+  outcome: ItemOutcome,
+  lastFraction: number | null,
+): { status: ItemRowStatus; fraction: number | null; reason: string | null } {
+  if (outcome === "cancelled") {
+    return { status: "cancelled", fraction: lastFraction, reason: null };
+  }
+  if (outcome.succeeded !== undefined) {
+    return { status: "succeeded", fraction: 1, reason: null };
+  }
+  if (outcome.failed !== undefined) {
+    return { status: "failed", fraction: lastFraction, reason: outcome.failed.error.message };
+  }
+  // The only remaining §0.6 variant — `Skipped` (unreachable via the live channel, above).
+  return { status: "skipped", fraction: lastFraction, reason: null };
 }
 
 /** Exhaustiveness guard: a new `ConversionEvent` variant reaching here fails to compile (`event: never`), so

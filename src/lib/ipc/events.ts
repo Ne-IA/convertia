@@ -319,6 +319,13 @@ export async function startConversionRun(
   const onProgress = new Channel<ConversionEvent>();
   onProgress.onmessage = (event) => {
     useAppStore.getState().applyConvertEvent(event);
+    if (event.type === "runFinished") {
+      // [Build-Session-Entscheidung: P3.58] §5.8: the run reached its terminal §1.12 `RunResult` (a partial run
+      // on cancel included) → drive the machine Converting (7/7a) → Summary (8). The store reducer holds no
+      // `RunResult`; the machine carries it (P3.53 `runFinished` arm). This is the transition OUT of Converting
+      // the P3.58 box wires; the Summary SCREEN that renders `machine.result` is P3.59.
+      useAppStore.getState().dispatch({ type: "runFinished", result: event.data });
+    }
   };
   try {
     return await commands.startConversion(
@@ -387,6 +394,21 @@ export async function runConversion(
     rerunDecision,
   );
   useAppStore.getState().dispatch({ type: "runStarted", runId });
+}
+
+/**
+ * [Build-Session-Entscheidung: P3.58] The §5.2 row-7a / §5.8 Cancel-run round-trip: optimistically enter the 7a
+ * `Converting (Cancelling…)` sub-state (dispatch `cancelRun`), then trip the §0.4.4 cancellation token via C7
+ * `cancel_run` (idempotent `Ok(())`, §0.4.1 — never a business `Err`). The backend then keeps finished items +
+ * discards the in-flight one (§1.7/§2.6) and emits the terminal `RunFinished` (partial) → the
+ * {@link startConversionRun} onmessage drives the machine Converting → Summary. The optimistic dispatch FIRST
+ * mirrors {@link cancelIntakeCollect} (the C13 precedent), so a second Cancel/Esc while already in 7a is a no-op
+ * (the machine's `cancelRun` arm ignores it). A C7 rejection (opaque transport only) surfaces via the §7.5.1
+ * global frontend-error bridge (the fire-and-forget caller `void`s it, the `cancelIntakeCollect` precedent).
+ */
+export async function cancelConversionRun(runId: RunId): Promise<void> {
+  useAppStore.getState().dispatch({ type: "cancelRun" });
+  await commands.cancelRun(runId);
 }
 
 // [Build-Session-Entscheidung: P3.77] The old payload-carrying `app://intake` handler (`ingestFromIntakeEvent`,

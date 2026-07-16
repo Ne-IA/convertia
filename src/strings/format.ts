@@ -126,6 +126,14 @@ export function divertNote(reason: DivertReason): string {
   }
 }
 
+/** The §5.2/§1.11 Converting aggregate line ("1 of 2 files done" / "0 of 1 file done") — the queued-only
+ *  `done`/`total` from the §0.4.2 `BatchProgress` (`total == RunStarted.total_items`, pre-flight skips excluded,
+ *  §0.4.2). Singular/plural on `total` (`converting_aggregate_one`/`_many`). [Build-Session-Entscheidung: P3.58] */
+export function formatBatchProgress(done: number, total: number): string {
+  const template = total === 1 ? ui.converting_aggregate_one : ui.converting_aggregate_many;
+  return fill(template, { done, total });
+}
+
 /** Exhaustiveness guard: a new variant reaching an exhaustive switch ({@link skipReasonLabel} /
  *  {@link divertNote}) fails to compile (`value: never`), so a label can never be silently missing.
  *  Unreachable by construction. */

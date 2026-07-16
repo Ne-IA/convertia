@@ -122,4 +122,21 @@ export const ui = {
   rerun_skip: "Skip",
   rerun_fresh_copy: "Make a fresh copy",
   rerun_cancel: "Cancel",
+
+  // ── P3.58 ──────────────────────────────────────────────────────────────────────────────────────────
+  // The section 5.2 Converting screen (state 7 + the 7a Cancelling sub-state) — the ProgressList aggregate
+  // bar + per-item row status labels + the Cancel affordance. The per-item Failed row also shows the item's
+  // verbatim section 2.8 reason string (backend-rendered IpcError.message, section 5.7 -- section 02-owned,
+  // NOT re-homed here); these are the surrounding chrome labels only. The aggregate "{done} of {total}" line
+  // is composed in strings/format.ts (singular/plural on total). [Build-Session-Entscheidung: P3.58]
+  converting_heading: "Converting",
+  converting_cancel: "Cancel",
+  converting_cancelling: "Cancelling…",
+  converting_aggregate_one: "{done} of 1 file done",
+  converting_aggregate_many: "{done} of {total} files done",
+  converting_status_running: "Converting…",
+  converting_status_succeeded: "Done",
+  converting_status_failed: "Failed",
+  converting_status_cancelled: "Cancelled",
+  converting_status_skipped: "Skipped",
 } as const;

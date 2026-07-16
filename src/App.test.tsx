@@ -36,6 +36,9 @@ vi.mock("./lib/ipc/events", () => ({
   replanOutput: () => Promise.resolve(),
   pickAndSetDestination: () => Promise.resolve(),
   runConversion: () => Promise.resolve(),
+  // The P3.58 Converting (7/7a) router arm (ConvertingScreen) is statically imported by App; stub its C7 façade
+  // (fired only on Cancel, unused in these render-only router legs).
+  cancelConversionRun: () => Promise.resolve(),
 }));
 // The Confirm (3) router arm renders the ConfirmScreen → BatchSummary, which announces on mount; stub the
 // announcer so the router render stays hermetic (its own announce contract is BatchSummary.test.tsx's).
@@ -223,6 +226,19 @@ describe("App — §5.2 screen router (P3.55)", () => {
       getByRole("alertdialog", { name: "Already converted with these settings" }),
     ).not.toBeNull();
     expect(getByRole("button", { name: "Skip" })).not.toBeNull();
+  });
+
+  it("routes Converting (7) → the ConvertingScreen (P3.58)", () => {
+    useAppStore.setState({
+      machine: { tag: "converting", runId: "run-1", cancelling: false },
+      progress: { 0: { sourceDisplay: "/a.csv", status: "running", fraction: 0.5, reason: null } },
+      batchProgress: { done: 0, total: 1 },
+    });
+    const { getByRole } = render(<App />);
+    expect(getByRole("heading", { name: "Converting" })).not.toBeNull();
+    expect(getByRole("button", { name: "Cancel" })).not.toBeNull();
+    // reset the reducer-touched fields the other router legs don't seat.
+    useAppStore.setState({ progress: {}, batchProgress: null });
   });
 
   it("renders the empty `<main>` for a not-yet-built slice state (never a dead screen)", () => {

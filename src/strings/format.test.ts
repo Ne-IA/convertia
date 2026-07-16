@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import {
   divertNote,
   fill,
+  formatBatchProgress,
   formatConfirmAnnouncement,
   formatConfirmCount,
   formatDisclosure,
@@ -134,5 +135,17 @@ describe("divertNote (§2.7.2 per-location divert)", () => {
     expect(divertNote("unwritable")).toBe(ui.destination_divert_unwritable);
     expect(divertNote("ephemeral")).toBe(ui.destination_divert_ephemeral);
     expect(divertNote("noAtomicPublish")).toBe(ui.destination_divert_no_atomic_publish);
+  });
+});
+
+describe("formatBatchProgress (§5.2/§1.11 Converting aggregate line, P3.58)", () => {
+  it("uses the singular template for a single-file batch (total === 1)", () => {
+    expect(formatBatchProgress(0, 1)).toBe("0 of 1 file done");
+    expect(formatBatchProgress(1, 1)).toBe("1 of 1 file done");
+  });
+
+  it("uses the plural template for a multi-file batch and substitutes done + total", () => {
+    expect(formatBatchProgress(1, 2)).toBe("1 of 2 files done");
+    expect(formatBatchProgress(3, 10)).toBe("3 of 10 files done");
   });
 });

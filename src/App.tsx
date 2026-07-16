@@ -38,6 +38,7 @@ import type { ReactElement } from "react";
 
 import { CollectingScreen } from "./components/CollectingScreen";
 import { ConfirmScreen } from "./components/ConfirmScreen";
+import { ConvertingScreen } from "./components/ConvertingScreen";
 import { DropZone } from "./components/DropZone";
 import { RerunScreen } from "./components/RerunScreen";
 import { TargetsScreen } from "./components/TargetsScreen";
@@ -47,11 +48,11 @@ import { useNativeDragDrop } from "./hooks/useNativeDragDrop";
 import { useAppStore, type State } from "./state/store";
 
 // §5.2 screen router: map the current machine state to its screen. P3.54 landed the Idle (1) arm; P3.55 added
-// the Collecting (2) + Confirm (3) arms; P3.56 added the Targets+Destination (4/5) arm; P3.57 adds the
-// RerunPrompt (6) arm (the §2.5 re-run decision modal over the inert Targets/Destination). The remaining slice
-// states (Converting P3.58, Summary P3.59, fault screens P3.60) render null until their box lands — never a
-// dead button, because the transition INTO each state is wired by the box that first reaches it (the P3
-// screen-box wiring model). [Build-Session-Entscheidung: P3.55] [Build-Session-Entscheidung: P3.56] [Build-Session-Entscheidung: P3.57]
+// the Collecting (2) + Confirm (3) arms; P3.56 added the Targets+Destination (4/5) arm; P3.57 added the
+// RerunPrompt (6) arm; P3.58 adds the Converting (7/7a) arm (the live ProgressList + Cancel). The remaining
+// slice states (Summary P3.59, fault screens P3.60) render null until their box lands — never a dead button,
+// because the transition INTO each state is wired by the box that first reaches it (the P3 screen-box wiring
+// model). [Build-Session-Entscheidung: P3.55] [Build-Session-Entscheidung: P3.56] [Build-Session-Entscheidung: P3.57] [Build-Session-Entscheidung: P3.58]
 function screenFor(machine: State): ReactElement | null {
   switch (machine.tag) {
     case "idle":
@@ -64,6 +65,8 @@ function screenFor(machine: State): ReactElement | null {
       return <TargetsScreen plan={machine.plan} />;
     case "rerunPrompt":
       return <RerunScreen plan={machine.plan} />;
+    case "converting":
+      return <ConvertingScreen runId={machine.runId} cancelling={machine.cancelling} />;
     default:
       return null;
   }

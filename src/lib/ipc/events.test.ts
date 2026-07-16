@@ -47,10 +47,12 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 
 import type { Planned, SingleSet } from "../../state/machine";
+import { initialState } from "../../state/machine";
 import { useAppStore } from "../../state/store";
 
 import {
   advanceToTargets,
+  cancelConversionRun,
   cancelIntakeCollect,
   consumeIntakeNudge,
   consumeMountDrain,
@@ -554,7 +556,7 @@ describe("startConversionRun (P2.120 §5.8 Channel<ConversionEvent> → store)",
     useAppStore.setState({ progress: {} });
   });
   afterEach(() => {
-    useAppStore.setState({ progress: {} });
+    useAppStore.setState({ progress: {}, batchProgress: null, machine: initialState() });
   });
 
   it("fires C6 start_conversion and routes Channel events into the store's applyConvertEvent", async () => {
@@ -568,12 +570,45 @@ describe("startConversionRun (P2.120 §5.8 Channel<ConversionEvent> → store)",
         rerunDecision: "skip",
       }),
     );
-    // the run-scoped Channel routes an itemProgress tick straight into the live store.
-    channels[channels.length - 1]?.onmessage?.({
+    // [Test-Change: P3.58 — old-obsolete+new-correct, §5.8] the run-scoped Channel routes ItemStarted then an
+    // itemProgress tick into the live store; the row is the richer P3.58 shape (merged over ItemStarted),
+    // superseding the old bare `{ fraction, done }`.
+    const channel = channels[channels.length - 1];
+    channel?.onmessage?.({
+      type: "itemStarted",
+      data: { runId: "run-1", itemId: 1, sourceDisplay: "/a.csv", target: { format: "tsv" } },
+    });
+    channel?.onmessage?.({
       type: "itemProgress",
       data: { runId: "run-1", itemId: 1, fraction: 0.5, stage: "encoding" },
     });
-    expect(useAppStore.getState().progress).toEqual({ 1: { fraction: 0.5, done: false } });
+    // [Test-Change: P3.58 — old-obsolete+new-correct, §5.8] the richer P3.58 row (merged over ItemStarted)
+    // supersedes the old bare `{ 1: { fraction: 0.5, done: false } }`.
+    expect(useAppStore.getState().progress).toEqual({
+      1: { sourceDisplay: "/a.csv", status: "running", fraction: 0.5, reason: null },
+    });
+  });
+
+  it("dispatches the machine runFinished on a terminal RunFinished event → Summary (P3.58 transition out of Converting)", async () => {
+    // §5.8: the onmessage handler ALSO drives the machine Converting → Summary on RunFinished (the store reducer
+    // holds no RunResult; the machine carries it). Seat the machine in Converting so `fromConverting` takes it.
+    useAppStore.setState({ machine: { tag: "converting", runId: "run-1", cancelling: false } });
+    await startConversionRun("cs1", { format: "tsv" }, {}, "besideSource", "skip");
+    const runResult = {
+      collectedSetId: "cs1",
+      runId: "run-1",
+      items: [],
+      totals: { succeeded: 1, failed: 0, cancelled: 0, skipped: 0 },
+      cleanupIncomplete: [],
+      commonRootDisplay: "/out",
+      divertRootDisplay: null,
+    };
+    channels[channels.length - 1]?.onmessage?.({ type: "runFinished", data: runResult });
+    const machine = useAppStore.getState().machine;
+    expect(machine.tag).toBe("summary");
+    if (machine.tag === "summary") {
+      expect(machine.result).toEqual(runResult);
+    }
   });
 
   it("signals onRunFault + re-throws on an OPAQUE rejection (P2.124 §5.8 core-panic / IPC-drop)", async () => {
@@ -641,6 +676,39 @@ describe("startConversionRun (P2.120 §5.8 Channel<ConversionEvent> → store)",
       expect(onRunFault).toHaveBeenCalledTimes(1);
     },
   );
+});
+
+describe("cancelConversionRun (§5.2 row 7a / §5.8 Cancel-run round-trip, P3.58)", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+    invoke.mockResolvedValue(null); // C7 cancel_run returns Ok(()) → null on the wire
+    useAppStore.setState({ machine: { tag: "converting", runId: "run-1", cancelling: false } });
+  });
+  afterEach(() => {
+    useAppStore.setState({ machine: initialState() });
+  });
+
+  it("optimistically enters 7a (dispatch cancelRun) then trips C7 cancel_run for the live runId", async () => {
+    await cancelConversionRun("run-1");
+    const machine = useAppStore.getState().machine;
+    // §5.2 row 7a: still Converting, now `cancelling` (the optimistic dispatch, before the backend confirms).
+    expect(machine.tag).toBe("converting");
+    if (machine.tag === "converting") {
+      expect(machine.cancelling).toBe(true);
+    }
+    // C7 cancel_run tripped for the live runId (idempotent Ok(()), §0.4.1).
+    expect(invoke).toHaveBeenCalledWith("cancel_run", { runId: "run-1" });
+  });
+
+  it("a second cancel while already in 7a stays cancelling (the machine's cancelRun arm ignores it, §5.2 row 7a)", async () => {
+    await cancelConversionRun("run-1"); // → 7a
+    await cancelConversionRun("run-1"); // second cancel
+    const machine = useAppStore.getState().machine;
+    expect(machine.tag).toBe("converting");
+    if (machine.tag === "converting") {
+      expect(machine.cancelling).toBe(true);
+    }
+  });
 });
 
 // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the `ingestFromIntakeEvent` describe is removed with
