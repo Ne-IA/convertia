@@ -109,4 +109,17 @@ export const ui = {
   // the resolver knows the fallback happened -- the G1 Opus-P2 adoption). [Build-Session-Entscheidung: P3.56]
   destination_persisted_fallback:
     "Your saved destination folder isn't available, so files will be saved beside each source.",
+
+  // ── P3.57 ──────────────────────────────────────────────────────────────────────────────────────────
+  // The section 5.3 RerunPrompt (the section 5.2 RerunPrompt state 6) -- the one batch-level section 2.5 re-run
+  // decision modal. The heading + body are the two distinct section 5.6(f) [DECIDED] strings (a short heading +
+  // a sentence body, intentionally not identical); the heading is the alertdialog's accessible name (WCAG 4.1.2,
+  // aria-labelledby). The three control labels are the section 5.2 row-6 / section 5.6.1 decided controls:
+  // Skip (the safe default) / Make a fresh copy / Cancel. Chrome (section 5.7: button + dialog text owned here);
+  // the section 2.5 re-run LOGIC is section 02-owned. [Build-Session-Entscheidung: P3.57]
+  rerun_heading: "Already converted with these settings",
+  rerun_body: "You already converted these with the same settings.",
+  rerun_skip: "Skip",
+  rerun_fresh_copy: "Make a fresh copy",
+  rerun_cancel: "Cancel",
 } as const;

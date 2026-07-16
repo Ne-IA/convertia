@@ -189,6 +189,42 @@ describe("App — §5.2 screen router (P3.55)", () => {
     expect(getByRole("button", { name: "Convert" })).not.toBeNull();
   });
 
+  it("routes RerunPrompt (6) → the RerunScreen modal (P3.57)", () => {
+    const plan: Planned = {
+      set: singleSet,
+      offer: {
+        set: "cs1",
+        targets: [
+          {
+            id: { format: "tsv" },
+            label: "TSV",
+            lossy: null,
+            availability: "available",
+            options: [],
+          },
+        ],
+        defaultTarget: { format: "tsv" },
+      },
+      selected: { format: "tsv" },
+      options: {},
+      destination: "besideSource",
+      preview: {
+        set: "cs1",
+        finalDirDisplay: "/drop",
+        diverted: null,
+        rerun: { equivalentCount: 2 },
+        preflight: { estTotalOutputBytes: 0, estTotalScratchBytes: 0, upFrontFail: null },
+      },
+      persistedFallback: false,
+    };
+    useAppStore.setState({ machine: { tag: "rerunPrompt", plan, rerun: { equivalentCount: 2 } } });
+    const { getByRole } = render(<App />);
+    expect(
+      getByRole("alertdialog", { name: "Already converted with these settings" }),
+    ).not.toBeNull();
+    expect(getByRole("button", { name: "Skip" })).not.toBeNull();
+  });
+
   it("renders the empty `<main>` for a not-yet-built slice state (never a dead screen)", () => {
     useAppStore.setState({ machine: { tag: "mixedDropRefusal", found: [] } });
     const { container } = render(<App />);

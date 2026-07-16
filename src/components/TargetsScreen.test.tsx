@@ -169,4 +169,16 @@ describe("TargetsScreen — §5.2 Targets/Destination (states 4/5)", () => {
     }
     expect(runConversion).not.toHaveBeenCalled();
   });
+
+  it("Back is INERT once a no-rerun Convert has fired C6 — no silent stale-runStarted drop (prevention-sweep, P3.57)", () => {
+    // The sibling of the RerunScreen Cancel-race: Convert (no-rerun) commits C6 (guard set); a Back before
+    // `runStarted` arrives would return to Confirm, where `fromConfirm` silently drops the stale `runStarted`
+    // and the UI sits at the Confirm gate while the run is live. The guard keeps the machine in `targets` (where
+    // `runStarted` → Converting resolves correctly).
+    const { getByRole } = renderTargets();
+    fireEvent.click(getByRole("button", { name: "Convert" })); // no-rerun → fires C6, guard set
+    fireEvent.click(getByRole("button", { name: "Back" })); // must be inert now
+    expect(useAppStore.getState().machine.tag).toBe("targets"); // stayed (not confirm)
+    expect(runConversion).toHaveBeenCalledTimes(1); // only Convert; Back fired nothing
+  });
 });

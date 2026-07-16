@@ -72,6 +72,20 @@ export function TargetsScreen({ plan }: TargetsScreenProps) {
     );
   };
 
+  const onBack = (): void => {
+    // [Build-Session-Entscheidung: P3.57] Prevention-sweep sibling of the RerunScreen Cancel guard: once the
+    // no-rerun Convert has fired C6 (`convertingRef` set), the run is COMMITTED — a Back here returns to Confirm,
+    // where a pending `runStarted` is SILENTLY DROPPED (`fromConfirm` has no `runStarted` arm) and the UI would
+    // sit at the Confirm gate while the run is live. So while a convert is in flight, Back is inert (Converting —
+    // driven by `runStarted` — is the next screen). It re-enables if C6 rejects (the `.catch` above resets the
+    // guard); the rerun path never sets `convertingRef` here (it dispatches `convert` and returns), so Back stays
+    // live there. Same defect class fixed at both C6-firing sites (§5.2 row 4 / row 6).
+    if (convertingRef.current) {
+      return;
+    }
+    dispatch({ type: "back" });
+  };
+
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-6 p-8">
       <FormatPicker targets={plan.offer.targets} selected={plan.selected} onSelect={onSelect} />
@@ -81,11 +95,7 @@ export function TargetsScreen({ plan }: TargetsScreenProps) {
         onChangeDestination={onChangeDestination}
         onConvert={onConvert}
       />
-      <button
-        type="button"
-        onClick={() => dispatch({ type: "back" })}
-        className="self-start text-accent underline"
-      >
+      <button type="button" onClick={onBack} className="self-start text-accent underline">
         {ui.targets_back}
       </button>
     </div>

@@ -39,6 +39,7 @@ import type { ReactElement } from "react";
 import { CollectingScreen } from "./components/CollectingScreen";
 import { ConfirmScreen } from "./components/ConfirmScreen";
 import { DropZone } from "./components/DropZone";
+import { RerunScreen } from "./components/RerunScreen";
 import { TargetsScreen } from "./components/TargetsScreen";
 import { useAppEvents } from "./hooks/useAppEvents";
 import { useLaunchDrain } from "./hooks/useLaunchDrain";
@@ -46,11 +47,11 @@ import { useNativeDragDrop } from "./hooks/useNativeDragDrop";
 import { useAppStore, type State } from "./state/store";
 
 // §5.2 screen router: map the current machine state to its screen. P3.54 landed the Idle (1) arm; P3.55 added
-// the Collecting (2) + Confirm (3) arms; P3.56 adds the Targets+Destination (4/5) arm (the §5.8 flow drives
-// Confirm → Targets via the C3+C4 advance). The remaining slice states (RerunPrompt P3.57, Converting P3.58,
-// Summary P3.59, fault screens P3.60) render null until their box lands — never a dead button, because the
-// transition INTO each state is wired by the box that first reaches it (the P3 screen-box wiring model).
-// [Build-Session-Entscheidung: P3.55] [Build-Session-Entscheidung: P3.56]
+// the Collecting (2) + Confirm (3) arms; P3.56 added the Targets+Destination (4/5) arm; P3.57 adds the
+// RerunPrompt (6) arm (the §2.5 re-run decision modal over the inert Targets/Destination). The remaining slice
+// states (Converting P3.58, Summary P3.59, fault screens P3.60) render null until their box lands — never a
+// dead button, because the transition INTO each state is wired by the box that first reaches it (the P3
+// screen-box wiring model). [Build-Session-Entscheidung: P3.55] [Build-Session-Entscheidung: P3.56] [Build-Session-Entscheidung: P3.57]
 function screenFor(machine: State): ReactElement | null {
   switch (machine.tag) {
     case "idle":
@@ -61,6 +62,8 @@ function screenFor(machine: State): ReactElement | null {
       return <ConfirmScreen set={machine.set} />;
     case "targets":
       return <TargetsScreen plan={machine.plan} />;
+    case "rerunPrompt":
+      return <RerunScreen plan={machine.plan} />;
     default:
       return null;
   }
