@@ -413,7 +413,7 @@ exercising the generated `bindings.ts` IPC door. Full polish + the rich componen
 - [x] **P3.57** [UI] Build the RerunPrompt interstitial (Skip default / Fresh copy / Cancel) · §5.3 §2.5
   needs: P3.56
   > the one batch-level prompt (state 6), entered **only** from the C4 `rerun` flag (destination-independent, never re-entered on a C5 change): *"Already converted with these settings."* — **Skip (default, focused)** / **Make a fresh copy** / **Cancel** (Esc → back to Destination with the held plan intact). The choice becomes the `RerunDecision` carried into C6. Rendered as a focus-trapped `role="alertdialog"` over the inert-but-mounted Targets/Destination.
-- [ ] **P3.58** [UI] Build the Converting screen (ProgressList real per-item + aggregate bar + Cancel) · §5.3 §1.11 §0.4.2
+- [x] **P3.58** [UI] Build the Converting screen (ProgressList real per-item + aggregate bar + Cancel) · §5.3 §1.11 §0.4.2
   needs: P3.57
   > **ProgressList** keyed by `itemId` over the `ItemProgress` payloads: real determinate per-item progress (never a bare spinner — the native engine self-reports a real fraction or an honest start→done, §1.11) + the aggregate `BatchProgress` bar; rows transition to terminal `Succeeded`/`Failed`/`Cancelled`/`Skipped`. **Cancel** button → C7 `cancel_run` → the `Converting (Cancelling…)` (7a) sub-state (button disabled, label "Cancelling…", a second Esc ignored) → `Summary` (partial) on backend confirm.
 - [ ] **P3.59** [UI] Build the Summary screen (ResultSummary + OpenActions, split-divert two-button) · §5.3 §1.12 §2.6.4
