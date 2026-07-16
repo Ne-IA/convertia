@@ -665,7 +665,15 @@ fn canonical_or_lexical(p: &Path) -> PathBuf {
 /// path is kept verbatim, never lossily dropped. Only Win/macOS/Linux ship (§1), so exactly one cfg block is
 /// active per build and `roots` is always mutated (no `unused_mut`). [Build-Session-Entscheidung: P3.33]
 fn ephemeral_roots() -> Vec<PathBuf> {
-    let mut roots = vec![std::env::temp_dir()];
+    let mut roots = Vec::new();
+    // The §2.7.2 detector READ-ONLY enumerates the OS primary temp root — the path is compared
+    // against, never created/written/handed out as a work dir, so the temp-dir rule's
+    // predictable-shared-path concern does not apply here. Statement-level (never macro-nested)
+    // so the G29 rule SEES this use (the check-sast temp-dir macro-arg backstop bars the
+    // semgrep-invisible `vec![..]` form). [Build-Session-Entscheidung: P3.33 — re-shaped by the
+    // 2026-07-16 Co-Pilot backstop commit]
+    // nosemgrep: rust.lang.security.temp-dir.temp-dir
+    roots.push(std::env::temp_dir());
     #[cfg(windows)]
     for var in ["TEMP", "TMP"] {
         if let Some(v) = std::env::var_os(var) {

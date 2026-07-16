@@ -141,10 +141,22 @@ def _blank_rs_noncode(text: str) -> str:
 # RECONCILIATION (any text Command::new semgrep did not see is a gap), which cannot run target-absent.
 _MACRO_CMD_RE = re.compile(r"\b[A-Za-z_]\w*!\s*[(\[{][^;]*?\b(?:std::process::|tokio::process::)?Command::new", re.S)
 
+# The temp-dir SIBLING of the same matcher gap (the 91d1975 P3.56 forward-note): a `temp_dir()`
+# nested in a macro arg (`vec![std::env::temp_dir()]` — the exact form that escaped) is INVISIBLE to
+# the vendored rust.lang.security.temp-dir.temp-dir rule for the same reason. Semgrep's Rust name
+# resolution covers every IMPORT style (`std::env::temp_dir()` / `env::temp_dir()` / a bare imported
+# `temp_dir()`) and non-macro nesting (a `.push(..)` arg) — verified empirically against the vendored
+# pack, 2026-07-16 — so the macro interior is the rule's ONE blind spot. Same POLICY as Command::new
+# above: call it at statement/expression level, where the rule sees it and an inline `nosemgrep:`
+# audit covers each sanctioned use. Same optional-qualifier posture as _MACRO_CMD_RE (a bare
+# `temp_dir(` in a macro arg is matched — fails-SAFE over-strict on a local helper literally named
+# `temp_dir`, of which none exists); the same documented internal-`;` residual applies.
+_MACRO_TMPDIR_RE = re.compile(r"\b[A-Za-z_]\w*!\s*[(\[{][^;]*?\b(?:(?:std::)?env::)?temp_dir\s*\(", re.S)
 
-def macro_nested_commands(roots: list[Path]) -> list[tuple[str, int]]:
-    """Repo-relative (file, line) of every Command::new nested inside a macro arg — a SAST-matcher
-    blind spot that would let an unhardened/un-isolated spawn escape G29. Target-absent (no app source) -> []."""
+
+def _macro_nested(roots: list[Path], rx: re.Pattern) -> list[tuple[str, int]]:
+    """Repo-relative (file, line) of every `rx` hit over the blanked app source — the shared walker
+    behind the macro-arg matcher-gap backstops. Target-absent (no app source) -> []."""
     hits: list[tuple[str, int]] = []
     for t in roots:
         for f in t.rglob("*.rs"):
@@ -153,9 +165,21 @@ def macro_nested_commands(roots: list[Path]) -> list[tuple[str, int]]:
                 rel = f.resolve().relative_to(ROOT.resolve()).as_posix()
             except (ValueError, OSError):
                 rel = f.as_posix()                       # outside ROOT (e.g. a self-test temp dir)
-            for m in _MACRO_CMD_RE.finditer(code):
+            for m in rx.finditer(code):
                 hits.append((rel, code[: m.start()].count("\n") + 1))
     return hits
+
+
+def macro_nested_commands(roots: list[Path]) -> list[tuple[str, int]]:
+    """Repo-relative (file, line) of every Command::new nested inside a macro arg — a SAST-matcher
+    blind spot that would let an unhardened/un-isolated spawn escape G29. Target-absent (no app source) -> []."""
+    return _macro_nested(roots, _MACRO_CMD_RE)
+
+
+def macro_nested_temp_dirs(roots: list[Path]) -> list[tuple[str, int]]:
+    """Repo-relative (file, line) of every temp_dir() nested inside a macro arg — the temp-dir rule's
+    SAST-matcher blind spot (a use the shared-temp audit would silently skip). Target-absent -> []."""
+    return _macro_nested(roots, _MACRO_TMPDIR_RE)
 
 
 def parse_net_allow_list(text: str) -> set[str]:
@@ -366,6 +390,16 @@ def main(argv: list[str] | None = None) -> int:
         for rel, ln in macro_cmds[:50]:
             fail(f"Command::new nested in a macro arg at {rel}:{ln} is invisible to the SAST matcher - "
                  f"build it at statement level so the G29 spawn rules can analyse it")
+        problems += 1
+
+    # The temp-dir sibling backstop (the 91d1975 P3.56 forward-note): a temp_dir() nested in a macro
+    # arg is invisible to the vendored temp-dir rule -> grep flags it so every use stays
+    # semgrep-visible (and inline-nosemgrep-auditable).
+    macro_tds = macro_nested_temp_dirs(app_roots)
+    if macro_tds:
+        for rel, ln in macro_tds[:50]:
+            fail(f"temp_dir() nested in a macro arg at {rel}:{ln} is invisible to the SAST matcher - "
+                 f"call it at statement level (with its audited nosemgrep) so the temp-dir rule can analyse it")
         problems += 1
 
     problems += shellcheck_scan()

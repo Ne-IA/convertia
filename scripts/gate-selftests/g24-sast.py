@@ -146,6 +146,32 @@ try:
     (_td / "b.rs").write_text('fn f(){ let _ = vec![{ let z = 1; Command::new(a()).spawn() }]; }\n', encoding="utf-8")
     record("macro-backstop: the DOCUMENTED internal-`;` macro form is a known miss (P1 reconciliation, not silent)",
            m.macro_nested_commands([_td]) == [])
+
+    # --- 7b. the temp-dir sibling backstop: a temp_dir() nested in a macro arg (semgrep-invisible) is flagged ---
+    record("tmpdir-backstop: target-absent (no app source) -> []", m.macro_nested_temp_dirs([]) == [])
+    (_td / "b.rs").write_text('fn f(){ let v = vec![std::env::temp_dir()]; }\n', encoding="utf-8")
+    record("tmpdir-backstop: std::env::temp_dir() inside vec![..] is flagged (the escaped 91d1975 form)",
+           len(m.macro_nested_temp_dirs([_td])) >= 1)
+    (_td / "b.rs").write_text('fn f(){ let s = format!("{:?}", env::temp_dir()); }\n', encoding="utf-8")
+    record("tmpdir-backstop: env::temp_dir() inside format!(..) is flagged", len(m.macro_nested_temp_dirs([_td])) >= 1)
+    (_td / "b.rs").write_text('fn f(){ let v = vec![temp_dir()]; }\n', encoding="utf-8")
+    record("tmpdir-backstop: a BARE imported temp_dir() in a macro arg is flagged (the _MACRO_CMD_RE optional-qualifier posture)",
+           len(m.macro_nested_temp_dirs([_td])) >= 1)
+    (_td / "b.rs").write_text('fn f(){ let mut v = Vec::new(); v.push(std::env::temp_dir()); }\n', encoding="utf-8")
+    record("tmpdir-backstop: a statement-level push-arg temp_dir is NOT flagged (semgrep sees + nosemgrep audits it)",
+           m.macro_nested_temp_dirs([_td]) == [])
+    (_td / "b.rs").write_text('fn f(){ assert_eq!(x, y); let _ = std::env::temp_dir(); }\n', encoding="utf-8")
+    record("tmpdir-backstop: a temp_dir AFTER a macro's `;` (statement-level) is NOT flagged",
+           m.macro_nested_temp_dirs([_td]) == [])
+    (_td / "b.rs").write_text('fn f(){ // vec![std::env::temp_dir()] in a comment\n let s = "vec![env::temp_dir()]"; }\n', encoding="utf-8")
+    record("tmpdir-backstop: a temp_dir in a comment/string does NOT count (blanking)", m.macro_nested_temp_dirs([_td]) == [])
+    (_td / "b.rs").write_text('fn f(){ let p = make_temp_dir_for_job(); let v = vec![p]; }\n', encoding="utf-8")
+    record("tmpdir-backstop: a `..temp_dir..`-substring identifier is NOT matched (word-boundary + call-paren anchors)",
+           m.macro_nested_temp_dirs([_td]) == [])
+    # the same DOCUMENTED internal-`;` residual as the Command sibling (leg-for-leg parity):
+    (_td / "b.rs").write_text('fn f(){ let v = vec![{ let z = 1; std::env::temp_dir() }]; }\n', encoding="utf-8")
+    record("tmpdir-backstop: the DOCUMENTED internal-`;` macro form is a known miss (the shared-walker residual, not silent)",
+           m.macro_nested_temp_dirs([_td]) == [])
 finally:
     shutil.rmtree(_td, ignore_errors=True)
 
