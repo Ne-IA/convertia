@@ -2929,3 +2929,224 @@ mod transform_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod csv_tsv_corpus_binding {
+    //! §6.4.3 per-pair corpus binding (P3.62) — the FIRST binding of the G31 output-validity readers +
+    //! the G32(a) source-unchanged and G32(c) determinism invariants to REAL CSV/TSV corpus data (the
+    //! §6.4.5 P3.61 fixtures). The `transform_tests` module above is the §6.4.1 UNIT level (G15) over
+    //! crafted byte literals; this module is the corpus-driven reader binding the §6.4.3 output-validity
+    //! bar (G31) + §2.5/G32 invariants specify: the produced output is read back by the REAL RFC-4180
+    //! `csv` reader (never a magic-sniff / bare field-count), the source bytes are proven byte-identical
+    //! before/after (no-harm), and the transform is deterministic. The invariant homes are P0.5.5/P0.5.6
+    //! (test-strategy §0.2/§1.4/§2); this box activates them for the native pair, mirroring the P4.59
+    //! runner's `needs: P0.5.6` activation pattern for every subsequent engine.
+    //!
+    //! [Build-Session-Entscheidung: P3.62] The binding drives the ENGINE transform (`csv_tsv_transform` +
+    //! the P3.42 `assert_injection_cells_preserved` reader) — the natural level for the OUTPUT-VALIDITY
+    //! readers, whose primitives live here (the module dead-code note names P3.62 as the injection
+    //! checker's first caller). The FULL drop→…→publish→summary vertical slice + no-clobber + the §6.5
+    //! ledger is the SEPARATE P3.63 runner box; the source-unchanged proof at this level (the transform
+    //! reads the source, never writes it) is verified against a temp COPY so a committed corpus fixture
+    //! can never be mutated by the test.
+    use super::*;
+    use crate::test_corpus::fixture;
+
+    /// The convertible CSV-source corpus fixtures — each backs the `CSV → TSV` pair (manifest `covers`).
+    const CSV_TO_TSV: &[&str] = &[
+        "canonical.csv",
+        "cp1252.csv",
+        "quoted_fields.csv",
+        "injection.csv",
+        "cjk_rtl.csv",
+        "ragged_zero.csv",
+        "expansion_sentinel.csv",
+        "semicolon_decimal.csv",
+        "pipe.csv",
+        "utf8_bom.csv",
+        "utf16le_bom.csv",
+        "utf16be_bom.csv",
+    ];
+    /// The convertible TSV-source corpus fixtures — each backs the `TSV → CSV` pair (manifest `covers`).
+    /// `tsv_as_csv.csv` is a `.csv`-named file that is CONTENT-detected as TSV (§04 CSV rule "content over
+    /// name"), so it is a genuine TSV source of the reverse pair.
+    const TSV_TO_CSV: &[&str] = &["canonical.tsv", "quoted_fields.tsv", "tsv_as_csv.csv"];
+
+    /// The §3.5.6 CSV-injection cells authored in `injection.csv` (its formula column) — the leading
+    /// `= + - @` four-token set plus the classic payload. The G31/G32 output-side check asserts every one
+    /// survives as a LITERAL field (CSV-injection non-execution on the output side, never `'`-neutralised).
+    const INJECTION_CELLS: &[&[u8]] = &[
+        b"=1+1",
+        b"+1-1",
+        b"-2+3",
+        b"@SUM(A1)",
+        b"=cmd|' /c calc'!A0",
+    ];
+
+    /// Stage a corpus fixture as a temp COPY (never the committed corpus file) and return the live temp dir
+    /// (the caller keeps `_dir` in scope so it is not deleted) + the staged source path. EVERY test drives
+    /// the transform against this copy — the success path and the decline path (`ambiguous.csv`) alike — so
+    /// the G32(a) source-unchanged proof is honest AND no test can ever mutate a committed fixture.
+    fn stage(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("create a temp source dir");
+        let staged = dir.path().join(name);
+        let original = std::fs::read(fixture(name)).expect("read the corpus fixture");
+        std::fs::write(&staged, &original).expect("stage the source copy");
+        (dir, staged)
+    }
+
+    /// Convert a corpus fixture through the native transform (staged via [`stage`]), returning
+    /// `(source_before, source_after, output)` for the source-unchanged + output-validity assertions.
+    fn convert(name: &str, target: CsvTsvTarget) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let (_dir, staged) = stage(name);
+        let before = std::fs::read(&staged).expect("read the staged source before");
+        let mut output = Vec::new();
+        let status = csv_tsv_transform(&staged, target, &mut output, &mut |_| {}, &mut || false)
+            .expect("the native transform succeeds on a well-formed corpus source");
+        assert_eq!(
+            status,
+            TransformStatus::Completed,
+            "{name}: a never-cancelling transform runs to completion"
+        );
+        let after = std::fs::read(&staged).expect("read the staged source after");
+        (before, after, output)
+    }
+
+    /// Read `output` back with the REAL RFC-4180 `csv` reader at `delimiter` (the G31 "real structural
+    /// reader" bar — NOT a magic re-detect / bare field-count parity, which pass on mis-quoted or
+    /// embedded-newline output that is unparseable). Returns the record count; `expect` fails the test if
+    /// the output is not valid RFC-4180.
+    fn record_count(output: &[u8], delimiter: u8) -> usize {
+        let mut reader = csv::ReaderBuilder::new()
+            .delimiter(delimiter)
+            .has_headers(false)
+            .flexible(true)
+            .from_reader(output);
+        let mut record = csv::ByteRecord::new();
+        let mut records = 0usize;
+        while reader
+            .read_byte_record(&mut record)
+            .expect("the transform output parses as valid RFC-4180")
+        {
+            records = records.saturating_add(1);
+        }
+        records
+    }
+
+    /// The G31 output-validity bar over one produced output (§6.4.3, reused by G32's (b) leg): parseable by
+    /// the real RFC-4180 reader (≥1 record), non-empty, `output != input` (no silent passthrough), and
+    /// size-plausible.
+    fn assert_output_valid(name: &str, input: &[u8], output: &[u8], delimiter: u8) {
+        assert!(
+            !output.is_empty(),
+            "{name}: the output is non-empty (not an empty/stub file)"
+        );
+        assert!(
+            record_count(output, delimiter) > 0,
+            "{name}: the RFC-4180 reader decodes at least one record"
+        );
+        // G31 sub-assertion (2): where `src_format != tgt_format` the output must differ from the input — a
+        // delimiter swap changes the bytes for any multi-column source (every convertible fixture here holds
+        // at least one delimiter), so a byte-identical output would be a silent passthrough of the source.
+        assert_ne!(
+            output, input,
+            "{name}: output != input (no silent passthrough of the source bytes)"
+        );
+        // G31 sub-assertion (1) — size-plausibility. A CSV↔TSV transform re-encodes to UTF-8 (no BOM) and
+        // swaps one delimiter, so the output stays within a narrow factor of the source: UTF-16→UTF-8 roughly
+        // halves (~0.53×), a Windows-1252 source whose bytes expand to multi-byte UTF-8 can grow (~1.15×), and
+        // RFC-4180 re-quoting adds only a bounded per-field overhead. The [0.25×, 4×] band bounds every corpus
+        // fixture with margin while still catching a truncated stub (too small) or a runaway (too large).
+        // Integer cross-multiplication avoids float rounding. [Build-Session-Entscheidung: P3.62]
+        assert!(
+            output.len().saturating_mul(4) >= input.len(),
+            "{name}: output {} is not implausibly small vs input {}",
+            output.len(),
+            input.len()
+        );
+        assert!(
+            output.len() <= input.len().saturating_mul(4),
+            "{name}: output {} is not implausibly large vs input {}",
+            output.len(),
+            input.len()
+        );
+    }
+
+    #[test]
+    fn csv_to_tsv_source_unchanged_and_output_valid() {
+        for &name in CSV_TO_TSV {
+            let (before, after, output) = convert(name, CsvTsvTarget::Tsv);
+            // G32(a) SOURCE-UNCHANGED (the no-harm proof, T2/T7). Byte equality is the sha256-equality
+            // semantic — equal bytes ⟺ equal sha256, with no collision risk.
+            assert_eq!(before, after, "{name}: SOURCE-UNCHANGED (G32(a) no-harm)");
+            assert_output_valid(name, &before, &output, b'\t');
+        }
+    }
+
+    #[test]
+    fn tsv_to_csv_source_unchanged_and_output_valid() {
+        for &name in TSV_TO_CSV {
+            let (before, after, output) = convert(name, CsvTsvTarget::Csv);
+            assert_eq!(before, after, "{name}: SOURCE-UNCHANGED (G32(a) no-harm)");
+            assert_output_valid(name, &before, &output, b',');
+        }
+    }
+
+    #[test]
+    fn injection_cells_survive_literally_in_the_output() {
+        // The G31/G32 CSV-injection output-side check, bound over the §6.4.5 injection fixture (P3.61) — the
+        // binding the P3.42 checker's dead-code note names P3.62 as the caller of. Scope: CSV→TSV only —
+        // P3.61's set (its 2026-07-17 scope ruling) authored no `injection.tsv`, so the reverse direction has
+        // no corpus binding; both directions share the delimiter-parametrised `transform_bytes`, so the gap is
+        // low-risk. An `injection.tsv` fixture would extend the check to TSV→CSV.
+        let (_, _, output) = convert("injection.csv", CsvTsvTarget::Tsv);
+        assert_injection_cells_preserved(&output, b'\t', INJECTION_CELLS)
+            .expect("§3.5.6 CSV-injection cells survive as literal fields in the TSV output");
+    }
+
+    #[test]
+    fn conversion_is_deterministic() {
+        // G32(c) determinism — same source + settings twice → byte-identical output (== sha256(out1) ==
+        // sha256(out2)). Asserted for BOTH native output-format categories (TSV output AND CSV output) — the
+        // ≥1-pair-per-output-category determinism floor for the in-core CSV/TSV engine. The LF terminator +
+        // deterministic quoting make the transform reproducible, so §2.5 re-run-equivalence rests on a real
+        // property and no embedded timestamp / uninitialised padding can leak into an offline app's output.
+        for (name, target) in [
+            ("canonical.csv", CsvTsvTarget::Tsv),
+            ("canonical.tsv", CsvTsvTarget::Csv),
+        ] {
+            let (_, _, first) = convert(name, target);
+            let (_, _, second) = convert(name, target);
+            assert_eq!(first, second, "{name}: deterministic output (G32(c))");
+        }
+    }
+
+    #[test]
+    fn ambiguous_source_declines_and_backs_no_pair() {
+        // `ambiguous.csv` has no consistent delimiter, so the transform declines with `AmbiguousDelimiter`
+        // rather than emitting a mis-quoted output — which is why it carries NO manifest `covers` (it backs
+        // no conversion pair). This guards the corpus partition: the convertible-fixture lists above are the
+        // pair-backers, and this decline is principled, not an accidental omission.
+        let (_dir, staged) = stage("ambiguous.csv");
+        let before = std::fs::read(&staged).expect("read the staged source before");
+        let mut output = Vec::new();
+        let error = csv_tsv_transform(
+            &staged,
+            CsvTsvTarget::Tsv,
+            &mut output,
+            &mut |_| {},
+            &mut || false,
+        )
+        .expect_err("ambiguous.csv has no consistent delimiter to re-quote faithfully");
+        assert!(
+            matches!(error, TransformError::AmbiguousDelimiter),
+            "ambiguous.csv declines to AmbiguousDelimiter, got {error:?}"
+        );
+        // No-harm holds even on the decline path — the transform reads the source, never writes it.
+        let after = std::fs::read(&staged).expect("read the staged source after");
+        assert_eq!(
+            before, after,
+            "ambiguous.csv: SOURCE-UNCHANGED on the decline path"
+        );
+    }
+}

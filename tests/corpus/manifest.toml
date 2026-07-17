@@ -5,7 +5,9 @@
 # `provenance` (auditable source). G24a (check-corpus-integrity) verifies sha256 + licence + provenance +
 # the bijection (every committed tests/corpus/ byte is manifested). `source` names the detected format
 # where one exists; `covers`/`[file.expect]` (the §6.4.3a conversion-pair coupling the P4.60 bijection
-# guard reads) are added with the conversion boxes (P4+), so these detection-only P3.30 rows carry none.
+# guard reads) are added by each pair's conversion box: the **CSV↔TSV** coupling is added HERE by P3.62
+# (both directions, on every convertible row below); every OTHER pair's coupling arrives with its P4+
+# conversion box. `ambiguous.csv` carries none — it declines to Uncertain and backs no conversion pair.
 #
 # Layout: these first P3.30 detection-KAT fixtures live FLAT at the corpus root (§6.4.5: "the
 # per-source-format directory organisation is just file layout"); a per-source-format directory tier
@@ -22,10 +24,25 @@
 # byte-exactness) — fixture bytes are the test subject, so no hygiene axis asserts anything about them.
 # The exemption globs are FLAT + extension-pinned, which is a second reason the P3.30 flat layout above
 # stands. This manifest file itself is first-party and deliberately stays under the global rules.
-# Still no `covers`/`[file.expect]` here — but the "(P4+)" in the header sentence above is PRECISED by the
-# 2026-07-17 P3.61 scope ruling: the CSV↔TSV coupling lands one box away in **P3.62** (`needs: P3.61`, which
-# registers the pair with its byte-stable/lossy disposition), because the native pair's first corpus
-# validation is a P3 concern; every OTHER pair's coupling still arrives with its P4+ conversion box.
+#
+# P3.62 registers the CSV↔TSV coupling: every convertible row below carries `covers` (the §6.4.3a array
+# form the P4.60 bijection guard parses) + a `[file.expect]` per-target outcome. **Disposition of the
+# native CSV↔TSV pair** (the box's "byte-stable/lossy disposition"): (1) LOSSLESS — a pure re-delimit +
+# UTF-8 re-encode drops nothing (§04 spreadsheets marks `CSV↔TSV` `✓`, never `✓~`), so every `[file.expect]`
+# is `{ result = "success" }` with NO `lossy` key. (2) NOT a byte-stable round-trip pair — the §3.5.6
+# transform re-encodes to UTF-8 (no BOM) and RFC-4180 re-quotes (`QuoteStyle::Necessary`), so only a
+# canonical minimal-quoting ASCII/LF input round-trips byte-for-byte; a cp1252 / UTF-16-BOM / extra-quoted
+# input does not. The PAIR is therefore deliberately ABSENT from the G32 machine-enumerated
+# lossless-round-trip set (that set is filled per byte-stable pair from P5.64+; adding CSV↔TSV there would
+# fail G32 on the encoding-normalising fixtures). (3) DETERMINISTIC — same source+settings twice yields a
+# byte-identical output (`sha256(out1)==sha256(out2)`), asserted by the P3.62
+# `engines::csv_tsv_corpus_binding` test for both output-format categories. The per-category determinism
+# floor + a machine-readable enumeration land with the G32 gate that reads them (the P5.64+ pattern).
+#
+# Still no per-source-format subdirectory — the P3 corpus stays FLAT (the P3.30 precedent); the first
+# corpus-subdirectory box (P7.61, or P5 image staging if earlier) owns that re-organisation as a
+# structural act (the §0.7 + §1a rows + the `.editorconfig`/`.gitattributes` glob extension in one
+# owner-acked L(-1) commit).
 
 [[file]]
 path = "canonical.csv"
@@ -33,6 +50,9 @@ sha256 = "1a0603dcd224139b399e75b96602776b31a32a147443b5af8e7f0238932f8e0e"
 source = "CSV"
 licence = "synthetic"
 provenance = "self-produced"
+covers = [["CSV", "TSV"]]
+[file.expect]
+"CSV→TSV" = { result = "success" }
 
 [[file]]
 path = "canonical.tsv"
@@ -40,6 +60,9 @@ sha256 = "a1f33b26523b50f88f43f8c59b681f14ff1c8f7978e0cabab0c2fd5a9764cad7"
 source = "TSV"
 licence = "synthetic"
 provenance = "self-produced"
+covers = [["TSV", "CSV"]]
+[file.expect]
+"TSV→CSV" = { result = "success" }
 
 [[file]]
 path = "tsv_as_csv.csv"
@@ -47,9 +70,14 @@ sha256 = "0170e80db767731ecbd7c008433085b3fb9ab7d3e84e240da44030c27d7488c1"
 source = "TSV"
 licence = "synthetic"
 provenance = "self-produced"
+covers = [["TSV", "CSV"]]
+[file.expect]
+"TSV→CSV" = { result = "success" }
 
 [[file]]
-# no `source`: a no-consistent-delimiter file that declines to Uncertain (a detection-decline fixture)
+# no `source`: a no-consistent-delimiter file that declines to Uncertain (a detection-decline fixture).
+# It backs NO conversion pair — the transform declines it (`AmbiguousDelimiter`, asserted by the P3.62
+# `engines::csv_tsv_corpus_binding` test module) — so it carries no `covers`/`[file.expect]`.
 path = "ambiguous.csv"
 sha256 = "3fa8e514e2769c860e2e01427907a81d24e144a05b5544758b6a710e789b62e3"
 licence = "synthetic"
@@ -65,6 +93,9 @@ sha256 = "ded6b29c8989f99f937b9f81e83d6c4775364650b0a69d19d6a650be2bbf2e35"
 source = "CSV"
 licence = "synthetic"
 provenance = "self-produced"
+covers = [["CSV", "TSV"]]
+[file.expect]
+"CSV→TSV" = { result = "success" }
 
 [[file]]
 # RFC-4180 quoting: a quoted comma, a quoted EMBEDDED NEWLINE, a doubled quote, and a quoted TAB — the
@@ -74,6 +105,9 @@ sha256 = "23160fafaaa6e6292ea86f9edd7126e4a3609c018174a4272ba02088d9d3249c"
 source = "CSV"
 licence = "synthetic"
 provenance = "self-produced"
+covers = [["CSV", "TSV"]]
+[file.expect]
+"CSV→TSV" = { result = "success" }
 
 [[file]]
 # §3.5.6 CSV-injection literal preservation: leading `=`, `+`, `-`, `@` cells (the spec's full four-token
@@ -84,6 +118,9 @@ sha256 = "f014d5344a77aefb504aaed48c58aee264aca1d06a21ce48c3e1d2eb95cce3d8"
 source = "CSV"
 licence = "synthetic"
 provenance = "self-produced"
+covers = [["CSV", "TSV"]]
+[file.expect]
+"CSV→TSV" = { result = "success" }
 
 [[file]]
 # §2.10 text fidelity through the pair: CJK (zh/ja/ko) + RTL (Arabic/Hebrew) cell text, UTF-8. The NAME
@@ -93,6 +130,9 @@ sha256 = "029106dd8f502f8a238408674286753edc45ec27c499c4bc9c87a08454e7d30a"
 source = "CSV"
 licence = "synthetic"
 provenance = "self-produced"
+covers = [["CSV", "TSV"]]
+[file.expect]
+"CSV→TSV" = { result = "success" }
 
 [[file]]
 # §6.4.5 ragged rows (the transform is `flexible(true)` on both sides) + leading-zero values (`0123` must
@@ -102,6 +142,9 @@ sha256 = "367a1c59212dc6442a8fa475c32455b1f4fe04944f3dc5a34c519da4492ef9f6"
 source = "CSV"
 licence = "synthetic"
 provenance = "self-produced"
+covers = [["CSV", "TSV"]]
+[file.expect]
+"CSV→TSV" = { result = "success" }
 
 [[file]]
 # The TSV-side edge fixture, so TSV→CSV is not canonical-only: a quoted field bearing the TARGET delimiter
@@ -111,6 +154,9 @@ sha256 = "0ffc9354c551d6747d8e16fcd808e3b5b562bfe044d788ddf58a66b33ea2fe9b"
 source = "TSV"
 licence = "synthetic"
 provenance = "self-produced"
+covers = [["TSV", "CSV"]]
+[file.expect]
+"TSV→CSV" = { result = "success" }
 
 [[file]]
 # The §0.9 TIMEOUT-SENTINEL for the P3 slice (§0.9:1633 "a deterministic input / a `#[cfg(test)]` sidecar
@@ -124,11 +170,18 @@ provenance = "self-produced"
 # 3328 × 32-byte rows = 106510 B, pure ASCII so the decoded length equals the byte length) make the
 # crossing arithmetic rather than accidental: the boundary is first reached by record 3200 at position
 # 102414, with 128 records still to come — so the poll provably fires, on every machine.
+#
+# It is ALSO a well-formed CSV source, so P3.62 covers it as a CSV→TSV pair fixture (the large-input
+# reader-binding case): the output parses as RFC-4180, the source is unchanged, and the transform stays
+# deterministic across the chunk-boundary path.
 path = "expansion_sentinel.csv"
 sha256 = "174181bdfac161554b85a89b9f985c6e3f444455f8b31fe2eea202d4cb35e0c9"
 source = "CSV"
 licence = "synthetic"
 provenance = "self-produced"
+covers = [["CSV", "TSV"]]
+[file.expect]
+"CSV→TSV" = { result = "success" }
 
 [[file]]
 # §6.4.5 "semicolon (European decimal-comma)" — the `Delimiter::Semicolon` arm. The decimal COMMA inside an
@@ -138,6 +191,9 @@ sha256 = "d079bd1be4668bdadf3e7d265f57e9ba775aa6a2678b3f679105c2acfff46580"
 source = "CSV"
 licence = "synthetic"
 provenance = "self-produced"
+covers = [["CSV", "TSV"]]
+[file.expect]
+"CSV→TSV" = { result = "success" }
 
 [[file]]
 # §6.4.5 "pipe" sample — the `Delimiter::Pipe` arm.
@@ -146,6 +202,9 @@ sha256 = "6aee8e003be310d5c58104d694cf076e010ec845c23e2c32c7a65a4e97a64580"
 source = "CSV"
 licence = "synthetic"
 provenance = "self-produced"
+covers = [["CSV", "TSV"]]
+[file.expect]
+"CSV→TSV" = { result = "success" }
 
 [[file]]
 # §6.4.5 "UTF-8-BOM" — §2.10.2: `Encoding::for_bom` is authoritative and `decode` strips the BOM, so it must
@@ -155,6 +214,9 @@ sha256 = "701dc8935ecf7943f3ce1652254b0595420076ccb6a0d5a0adb08082efb108bd"
 source = "CSV"
 licence = "synthetic"
 provenance = "self-produced"
+covers = [["CSV", "TSV"]]
+[file.expect]
+"CSV→TSV" = { result = "success" }
 
 [[file]]
 # §6.4.5 "UTF-16", the LE arm. [Build-Session-Entscheidung: P3.61] Both endiannesses ship as SEPARATE files:
@@ -168,6 +230,9 @@ sha256 = "674fd3d9812cf71ca5feda9917ce3c2bb8814895be92c1b5fc1b3db8fcc0c302"
 source = "CSV"
 licence = "synthetic"
 provenance = "self-produced"
+covers = [["CSV", "TSV"]]
+[file.expect]
+"CSV→TSV" = { result = "success" }
 
 [[file]]
 # §6.4.5 "UTF-16", the BE arm (see the LE row above).
@@ -176,3 +241,6 @@ sha256 = "71a0f2c78b746f00d12bd1821b8f4c5d6cd07efc5ed692af3a7cc3443515cd0e"
 source = "CSV"
 licence = "synthetic"
 provenance = "self-produced"
+covers = [["CSV", "TSV"]]
+[file.expect]
+"CSV→TSV" = { result = "success" }
