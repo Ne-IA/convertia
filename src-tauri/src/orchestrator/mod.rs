@@ -9926,6 +9926,9 @@ mod write_sequence_tests {
 }
 
 #[cfg(test)]
+mod run_conversion_e2e_tests;
+
+#[cfg(test)]
 mod run_conversion_tests {
     //! §6.4.1 unit + §6.4.3 per-pair integration (G15/G31/G32(a)) for the P3.48 C6 run conductor — the REAL
     //! native CSV↔TSV engine driven end-to-end over a DIRECTLY-registered frozen set (test-strategy §0.1: the
@@ -9935,6 +9938,11 @@ mod run_conversion_tests {
     //! §1.12 `RunResult` projection + `Totals`, the §0.4.4 `RunResultStore` retention (C8 re-serve), the §1.9
     //! pre-flight-skip projection (no live events), the §2.5 `RerunDecision` applier, and the §0.4.2 event
     //! stream. [Build-Session-Entscheidung: P3.48]
+    //!
+    //! The record-building + conductor-driving helpers below are `pub(super)` so the sibling P3.63
+    //! [`run_conversion_e2e_tests`](super::run_conversion_e2e_tests) suite — which lives in a
+    //! `_TEST_PATH_RE`-matching file (the G23 conversion-command→test home) — reuses the SAME C6-path
+    //! harness rather than duplicating it. [Build-Session-Entscheidung: P3.63]
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
@@ -9960,7 +9968,7 @@ mod run_conversion_tests {
     /// could be silently purged), so a beside-source publish must run from a non-ephemeral dir. `None` on the
     /// pathological env where the crate root is itself under an OS temp root (a clean skip, never a false pass —
     /// the `write_sequence_tests` / `location_status_tests` `non_ephemeral_tempdir` pattern). Real FS (§0.1).
-    fn non_ephemeral_source_dir() -> Option<tempfile::TempDir> {
+    pub(super) fn non_ephemeral_source_dir() -> Option<tempfile::TempDir> {
         let dir = tempfile::Builder::new()
             .prefix("convertia-p348-run-")
             .tempdir_in(env!("CARGO_MANIFEST_DIR"))
@@ -9981,7 +9989,7 @@ mod run_conversion_tests {
 
     /// A REAL eligible CSV source file at `dir/name` (id `n`) + its `DroppedItem` / off-wire `ItemPaths` /
     /// §2.3 `FileIdentity` — the frozen record the §1.1 freeze would build (test-strategy §0.1: a real file).
-    fn eligible(
+    pub(super) fn eligible(
         dir: &Path,
         name: &str,
         n: u32,
@@ -10021,7 +10029,7 @@ mod run_conversion_tests {
 
     /// Assemble a `RegisteredSet` (frozen set + §2.3 identity table) from real eligible items + skipped records,
     /// with the source `dir` as the §2.4 dropped root (the §2.7.4 beside-source open-folder anchor).
-    fn registered(
+    pub(super) fn registered(
         dir: &Path,
         eligibles: Vec<(DroppedItem, ItemPaths, FileIdentity)>,
         skips: Vec<SkippedItem>,
@@ -10054,7 +10062,7 @@ mod run_conversion_tests {
 
     /// A capturing run Channel — records each sent `ConversionEvent`'s serialized JSON (the outbound wire form;
     /// `ConversionEvent` is Serialize-only, so the test asserts on the JSON, never a deserialized value).
-    fn capture_channel() -> (Channel<ConversionEvent>, Arc<Mutex<Vec<String>>>) {
+    pub(super) fn capture_channel() -> (Channel<ConversionEvent>, Arc<Mutex<Vec<String>>>) {
         let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&events);
         let channel = Channel::new(move |body: InvokeResponseBody| {
@@ -10076,18 +10084,18 @@ mod run_conversion_tests {
     }
 
     /// The stores + scratch a run needs — freshly constructed per test (nothing shared, nothing mocked).
-    struct Deps {
+    pub(super) struct Deps {
         _scratch_base: tempfile::TempDir,
         instance: InstanceId,
         scratch_base: PathBuf,
         pool: Pool,
         ledger: RerunLedger,
         equiv: EquivKeyComputer,
-        results: RunResultStore,
+        pub(super) results: RunResultStore,
         runs: RunRegistry,
     }
 
-    fn deps() -> Deps {
+    pub(super) fn deps() -> Deps {
         let scratch_base = tempfile::tempdir().expect("scratch base dir");
         Deps {
             scratch_base: scratch_base.path().to_path_buf(),
@@ -10103,7 +10111,7 @@ mod run_conversion_tests {
 
     /// Acquire a fresh scratch + run the conductor over `registered` with the given decision, into `dest_dir`
     /// as the §2.7.3 divert root (beside-source runs never use it). Returns the run's `RunId`.
-    async fn run(
+    pub(super) async fn run(
         d: &Deps,
         registered: &RegisteredSet,
         rerun: RerunDecision,
