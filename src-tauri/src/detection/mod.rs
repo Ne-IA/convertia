@@ -1260,15 +1260,14 @@ mod tests {
 // [Build-Session-Entscheidung: P3.30]
 #[cfg(test)]
 mod kat_tests {
-    use std::path::{Path, PathBuf};
-
     use super::{detect, read_header};
     use crate::domain::{DetectionOutcome, UserFacingFormat};
-
-    /// The workspace-root `tests/` dir — this crate's manifest dir is `src-tauri/`, so `tests/` is `../tests`.
-    fn tests_dir() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests")
-    }
+    // [Build-Session-Entscheidung: P3.61] The corpus/`tests/` path resolution moved to the §6.4.5
+    // SINGLE-SOURCE helper (`crate::test_corpus`): P3.61's sentinel test in `crate::engines` needs the same
+    // resolution, and re-deriving `CARGO_MANIFEST_DIR/../tests` there would be the inline duplication
+    // test-strategy §3 (:601) forbids. This module's own `fn tests_dir()` was that single source while it was
+    // the only consumer.
+    use crate::test_corpus::{corpus_dir, tests_dir};
 
     /// One pinned KAT case: the corpus-relative fixture `file` and its `expect` (a FormatId or an outcome name).
     struct KatCase {
@@ -1375,7 +1374,7 @@ mod kat_tests {
             !cases.is_empty(),
             "§6.4.1: the detection KAT must pin at least one case (an empty KAT is a no-op tripwire)"
         );
-        let corpus = tests_dir().join("corpus");
+        let corpus = corpus_dir();
         for case in &cases {
             let fixture = corpus.join(&case.file);
             let read = std::fs::read(&fixture);

@@ -2044,6 +2044,128 @@ mod tests {
         );
     }
 
+    // §6.4.2 bound-firing (G16): the §0.9 TIMEOUT-SENTINEL over the REAL transform + the REAL §0.9 lane —
+    // `tests/corpus/expansion_sentinel.csv` (P3.61). §0.9:1633 asks for "a deterministic input / a
+    // `#[cfg(test)]` sidecar that reliably exceeds the budget or stalls without progress" so the §1.7 reap is
+    // "test-covered, not prose"; `NATIVE_CSV_TSV_TIMEOUT`'s own doc names P3.61 as this sentinel's author.
+    //
+    // WHY A FIXTURE AND NOT ANOTHER `pending()` LANE: the sibling below already covers the mapping over a
+    // synthetic lane. This one proves the reap over the code a real file actually drives — `csv_tsv_transform`
+    // reading real bytes, on `Pool::run_in_core`, under `bounded_lane` — composed exactly as
+    // `run_native_csv_tsv` composes it.
+    //
+    // WHY IT IS DETERMINISTIC (no stopwatch, no margin): the 120s production bound can never fire on SIZE — the
+    // transform is a linear whole-file-buffered re-encode, so its real trigger is a stall, not a big file
+    // (`NATIVE_CSV_TSV_TIMEOUT`'s doc says exactly this). So the sentinel STRUCTURALLY stalls: `should_cancel`
+    // blocks on a channel whose sender this test holds, so the lane CANNOT complete inside any bound — the
+    // `pending()` determinism argument, applied to the real transform. Dropping the sender at test end unblocks
+    // the parked worker, so the abandoned thread exits rather than leaking.
+    //
+    // WHY THE FIXTURE'S SIZE IS LOAD-BEARING: `transform_bytes` gates `should_cancel` behind
+    // `report_chunks = text_len >= PROGRESS_CHUNK_BYTES`, so a sub-100-KiB source is never polled and has NO
+    // stall point at all. The sentinel is sized past that gate (106510 B, ASCII ⇒ decoded len == byte len; the
+    // boundary is first reached by record 3200 at position 102414, with 128 records to spare). The control leg
+    // below pins that this size is what arms it: the SAME stall closure over the 58-byte canonical fixture is
+    // never polled, so that lane completes — a fixture-inertness tripwire that goes red the moment a shrunk
+    // sentinel (or a raised PROGRESS_CHUNK_BYTES) stops crossing the gate.
+    //
+    // Stated precisely (the G1 opus P3): the ASSERTION is bound-independent — the parked lane can never
+    // complete, so `EngineHang` is the only reachable outcome. What the pair of legs cannot separate is
+    // ATTRIBUTION on a pathologically slow runner: `spawn_blocking` scheduling alone could outrun the 50 ms
+    // bound, so a hypothetically-inert sentinel might still report EngineHang for an unrelated reason. The
+    // control leg closes that gap from the other side (an inert fixture completes), which is why both legs
+    // exist rather than one.
+    #[tokio::test]
+    async fn the_timeout_sentinel_fixture_stalls_at_its_chunk_boundary_and_the_wall_clock_bound_reaps_it(
+    ) {
+        let pool = Pool::with_degree(1);
+        let out_dir = tempfile::tempdir().expect("a temp dir for the sentinel's out_tmp");
+        let out_path = out_dir.path().join("sentinel.tsv");
+        let source = crate::test_corpus::fixture("expansion_sentinel.csv");
+
+        // The §1.7 job token: the run. `bounded_lane` trips only its CHILD on expiry — the run must survive.
+        let job = CancellationToken::new();
+        let deadline_token = job.child_token();
+
+        // The structural stall: `recv()` parks until this test drops `stall_tx`. Held across the whole await,
+        // so the lane cannot finish inside the bound no matter how fast the machine is.
+        let (stall_tx, stall_rx) = std::sync::mpsc::channel::<()>();
+        let lane = pool.run_in_core(move || -> Result<TransformStatus, TransformError> {
+            let out_file = std::fs::File::create(&out_path).map_err(TransformError::Write)?;
+            let mut report = |_fraction: f32| {};
+            let mut should_cancel = || {
+                // Parks at the fixture's first chunk boundary — which its size guarantees is reached.
+                let _ = stall_rx.recv();
+                false
+            };
+            csv_tsv_transform(
+                &source,
+                CsvTsvTarget::Tsv,
+                out_file,
+                &mut report,
+                &mut should_cancel,
+            )
+        });
+        let forwarder = tokio::spawn(async {});
+
+        let result = bounded_lane(lane, forwarder, deadline_token, Duration::from_millis(50)).await;
+
+        assert_eq!(
+            result,
+            InvocationResult::Failed(ConversionErrorKind::EngineHang),
+            "§0.9/§1.7: the sentinel stalls without progress, so the wall-clock bound reaps it to EngineHang"
+        );
+        assert!(
+            !job.is_cancelled(),
+            "§1.7: the reap trips only the CHILD deadline token — the RUN continues (P3.45)"
+        );
+        drop(stall_tx); // unpark the abandoned worker so it exits instead of leaking
+    }
+
+    // The sentinel's fixture-inertness tripwire (G16): the SAME structural stall over a sub-chunk fixture is
+    // never polled, so the lane completes well inside the bound. This is what proves the sentinel's SIZE is the
+    // thing arming it — without this leg, a future shrink of the sentinel (or a raise of PROGRESS_CHUNK_BYTES)
+    // would silently turn it into a file that is loaded and then ignored.
+    #[tokio::test]
+    async fn a_sub_chunk_fixture_is_never_polled_so_the_same_stall_cannot_arm_the_bound() {
+        let pool = Pool::with_degree(1);
+        let out_dir = tempfile::tempdir().expect("a temp dir for the control's out_tmp");
+        let out_path = out_dir.path().join("control.tsv");
+        let source = crate::test_corpus::fixture("canonical.csv");
+
+        let job = CancellationToken::new();
+        let deadline_token = job.child_token();
+
+        let (stall_tx, stall_rx) = std::sync::mpsc::channel::<()>();
+        let lane = pool.run_in_core(move || -> Result<TransformStatus, TransformError> {
+            let out_file = std::fs::File::create(&out_path).map_err(TransformError::Write)?;
+            let mut report = |_fraction: f32| {};
+            let mut should_cancel = || {
+                let _ = stall_rx.recv();
+                false
+            };
+            csv_tsv_transform(
+                &source,
+                CsvTsvTarget::Tsv,
+                out_file,
+                &mut report,
+                &mut should_cancel,
+            )
+        });
+        let forwarder = tokio::spawn(async {});
+
+        // A generous bound: the point is that the lane finishes, not that it races.
+        let result = bounded_lane(lane, forwarder, deadline_token, Duration::from_secs(30)).await;
+
+        assert_eq!(
+            result,
+            InvocationResult::Succeeded,
+            "a sub-PROGRESS_CHUNK_BYTES source crosses no boundary, so `should_cancel` never runs and the \
+             identical stall closure cannot arm the bound — the sentinel's SIZE is what makes it a sentinel"
+        );
+        drop(stall_tx);
+    }
+
     // §6.4.1 unit (G15): the P3.45 §1.7 wall-clock TIMEOUT arm of `bounded_lane`. A never-completing lane (the
     // wedged-uninterruptible-read model, §2.12.4) cannot resolve, so the wall-clock bound alone decides the
     // outcome → Failed(EngineHang) — the run continuing — and the timeout TRIPS the cooperative-cancel poll

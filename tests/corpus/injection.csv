@@ -1,0 +1,6 @@
+formula,label
+=1+1,equals
++1-1,plus
+-2+3,minus
+@SUM(A1),at
+=cmd|' /c calc'!A0,classic-payload

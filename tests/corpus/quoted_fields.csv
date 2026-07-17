@@ -1,0 +1,6 @@
+id,description,qty
+1,"a comma, inside",2
+2,"a line
+break inside",3
+3,"she said ""hi""",4
+4,"a	tab inside",5

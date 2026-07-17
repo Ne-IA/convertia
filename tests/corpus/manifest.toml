@@ -15,6 +15,17 @@
 # First live entries: P3.30 (the §1.2 detection walking-skeleton — canonical CSV/TSV, a .csv that is
 # really TSV (content over name), and a no-consistent-delimiter file that declines to Uncertain). Each is
 # also pinned in tests/detect-kat.toml, read by the G15 detection KAT test.
+#
+# P3.61 adds the CSV↔TSV CONVERSION-pair fixtures (the §6.4.5 CSV/TSV edge set the slice's two pairs need)
+# + the §0.9 timeout-sentinel. Their bytes are text-hygiene-EXEMPT by the 2026-07-17 owner ruling
+# (`.editorconfig [tests/corpus/*.{csv,tsv}]` unsets all four axes; `.gitattributes … -text` pins
+# byte-exactness) — fixture bytes are the test subject, so no hygiene axis asserts anything about them.
+# The exemption globs are FLAT + extension-pinned, which is a second reason the P3.30 flat layout above
+# stands. This manifest file itself is first-party and deliberately stays under the global rules.
+# Still no `covers`/`[file.expect]` here — but the "(P4+)" in the header sentence above is PRECISED by the
+# 2026-07-17 P3.61 scope ruling: the CSV↔TSV coupling lands one box away in **P3.62** (`needs: P3.61`, which
+# registers the pair with its byte-stable/lossy disposition), because the native pair's first corpus
+# validation is a P3 concern; every OTHER pair's coupling still arrives with its P4+ conversion box.
 
 [[file]]
 path = "canonical.csv"
@@ -41,5 +52,127 @@ provenance = "self-produced"
 # no `source`: a no-consistent-delimiter file that declines to Uncertain (a detection-decline fixture)
 path = "ambiguous.csv"
 sha256 = "3fa8e514e2769c860e2e01427907a81d24e144a05b5544758b6a710e789b62e3"
+licence = "synthetic"
+provenance = "self-produced"
+
+# ── P3.61: the CSV↔TSV conversion-pair fixtures ────────────────────────────────────────────────────────
+
+[[file]]
+# §6.4.5 `non-ascii-encoding`: a Windows-1252 (single-byte, NOT UTF-8) CSV — the §1.2 chardetng path and
+# the §2.10.2 decode-or-fail-clearly rule. The fixture the 2026-07-17 charset exemption was granted for.
+path = "cp1252.csv"
+sha256 = "ded6b29c8989f99f937b9f81e83d6c4775364650b0a69d19d6a650be2bbf2e35"
+source = "CSV"
+licence = "synthetic"
+provenance = "self-produced"
+
+[[file]]
+# RFC-4180 quoting: a quoted comma, a quoted EMBEDDED NEWLINE, a doubled quote, and a quoted TAB — the
+# last is the CSV→TSV target delimiter, so re-quoting must keep it one field rather than split a column.
+path = "quoted_fields.csv"
+sha256 = "23160fafaaa6e6292ea86f9edd7126e4a3609c018174a4272ba02088d9d3249c"
+source = "CSV"
+licence = "synthetic"
+provenance = "self-produced"
+
+[[file]]
+# §3.5.6 CSV-injection literal preservation: leading `=`, `+`, `-`, `@` cells (the spec's full four-token
+# set) plus the classic `=cmd|…!A0` payload. These cells are what P3.62 feeds to the P3.42 checker; the
+# rule is literal PRESERVATION, never OWASP `'`-prefix neutralisation (which would alter data).
+path = "injection.csv"
+sha256 = "f014d5344a77aefb504aaed48c58aee264aca1d06a21ce48c3e1d2eb95cce3d8"
+source = "CSV"
+licence = "synthetic"
+provenance = "self-produced"
+
+[[file]]
+# §2.10 text fidelity through the pair: CJK (zh/ja/ko) + RTL (Arabic/Hebrew) cell text, UTF-8. The NAME
+# stays ASCII like every sibling — the non-Latin content belongs inside the file, not in its filename.
+path = "cjk_rtl.csv"
+sha256 = "029106dd8f502f8a238408674286753edc45ec27c499c4bc9c87a08454e7d30a"
+source = "CSV"
+licence = "synthetic"
+provenance = "self-produced"
+
+[[file]]
+# §6.4.5 ragged rows (the transform is `flexible(true)` on both sides) + leading-zero values (`0123` must
+# stay text — the mis-typing-defence case).
+path = "ragged_zero.csv"
+sha256 = "367a1c59212dc6442a8fa475c32455b1f4fe04944f3dc5a34c519da4492ef9f6"
+source = "CSV"
+licence = "synthetic"
+provenance = "self-produced"
+
+[[file]]
+# The TSV-side edge fixture, so TSV→CSV is not canonical-only: a quoted field bearing the TARGET delimiter
+# (a comma) + an embedded newline — the mirror of quoted_fields.csv across the pair.
+path = "quoted_fields.tsv"
+sha256 = "0ffc9354c551d6747d8e16fcd808e3b5b562bfe044d788ddf58a66b33ea2fe9b"
+source = "TSV"
+licence = "synthetic"
+provenance = "self-produced"
+
+[[file]]
+# The §0.9 TIMEOUT-SENTINEL for the P3 slice (§0.9:1633 "a deterministic input / a `#[cfg(test)]` sidecar
+# that reliably exceeds the budget or stalls without progress"), which `crate::pool`'s
+# NATIVE_CSV_TSV_TIMEOUT doc names P3.61 as the author of.
+#
+# Its SIZE is load-bearing, not decorative. `transform_bytes` gates BOTH its progress tick and its
+# cooperative-cancel poll behind `report_chunks = text_len >= PROGRESS_CHUNK_BYTES` (100 KiB) and then
+# `position >= next_boundary && position < text_len`. Below that gate no poll ever runs, so a small
+# fixture would have NO stall point and the sentinel would be inert. Fixed-width rows (a 14-byte header +
+# 3328 × 32-byte rows = 106510 B, pure ASCII so the decoded length equals the byte length) make the
+# crossing arithmetic rather than accidental: the boundary is first reached by record 3200 at position
+# 102414, with 128 records still to come — so the poll provably fires, on every machine.
+path = "expansion_sentinel.csv"
+sha256 = "174181bdfac161554b85a89b9f985c6e3f444455f8b31fe2eea202d4cb35e0c9"
+source = "CSV"
+licence = "synthetic"
+provenance = "self-produced"
+
+[[file]]
+# §6.4.5 "semicolon (European decimal-comma)" — the `Delimiter::Semicolon` arm. The decimal COMMA inside an
+# UNQUOTED field is the point: a comma-delimiter mis-sniff would shred these rows into extra columns.
+path = "semicolon_decimal.csv"
+sha256 = "d079bd1be4668bdadf3e7d265f57e9ba775aa6a2678b3f679105c2acfff46580"
+source = "CSV"
+licence = "synthetic"
+provenance = "self-produced"
+
+[[file]]
+# §6.4.5 "pipe" sample — the `Delimiter::Pipe` arm.
+path = "pipe.csv"
+sha256 = "6aee8e003be310d5c58104d694cf076e010ec845c23e2c32c7a65a4e97a64580"
+source = "CSV"
+licence = "synthetic"
+provenance = "self-produced"
+
+[[file]]
+# §6.4.5 "UTF-8-BOM" — §2.10.2: `Encoding::for_bom` is authoritative and `decode` strips the BOM, so it must
+# not survive into the output as a stray U+FEFF cell.
+path = "utf8_bom.csv"
+sha256 = "701dc8935ecf7943f3ce1652254b0595420076ccb6a0d5a0adb08082efb108bd"
+source = "CSV"
+licence = "synthetic"
+provenance = "self-produced"
+
+[[file]]
+# §6.4.5 "UTF-16", the LE arm. [Build-Session-Entscheidung: P3.61] Both endiannesses ship as SEPARATE files:
+# `classify_encoding` has two distinct BOM arms (`FF FE` / `FE FF`) and the §1.2 KATs pin them only at unit
+# level — the corpus's job is the PAIR, so one file per arm leaves neither arm corpus-unvalidated. The BOM is
+# mandatory: without one, `classify_encoding`'s NUL guard declines the file to NotText (a fail-clearly case,
+# not the §6.4.5 sample). These are also the only fixtures bearing NUL bytes, so G52's checker skips them as
+# binary and git's `text=auto` never touches them — the hygiene exemption covers them either way.
+path = "utf16le_bom.csv"
+sha256 = "674fd3d9812cf71ca5feda9917ce3c2bb8814895be92c1b5fc1b3db8fcc0c302"
+source = "CSV"
+licence = "synthetic"
+provenance = "self-produced"
+
+[[file]]
+# §6.4.5 "UTF-16", the BE arm (see the LE row above).
+path = "utf16be_bom.csv"
+sha256 = "71a0f2c78b746f00d12bd1821b8f4c5d6cd07efc5ed692af3a7cc3443515cd0e"
+source = "CSV"
 licence = "synthetic"
 provenance = "self-produced"

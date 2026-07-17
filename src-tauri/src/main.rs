@@ -38,6 +38,10 @@ mod platform;
 mod pool;
 mod prefs;
 mod run;
+// NOTE: the §6.4.5 `test_corpus` helper is ALSO a crate-root module, but its test-only `mod` declaration
+// deliberately sits at the FOOT of this file, not here with its siblings — see the note there. (This comment
+// spells the attribute out of band on purpose: `production_boot_source` slices this file on the literal
+// marker, so writing it here — even inside a comment — would truncate the production prefix.)
 
 use std::path::PathBuf;
 
@@ -3552,3 +3556,17 @@ mod startup_spine {
         );
     }
 }
+
+// [Build-Session-Entscheidung: P3.61] The §6.4.5 SINGLE-SOURCE corpus helper (`crate::test_corpus`) —
+// `#[cfg(test)]`-only cross-cutting test infrastructure, so it is a crate-root sibling of the §0.7 tiers
+// rather than a member of one (see the module's own doc). It adds a FILE, never a directory, so the §1a/§0.7
+// structure map (G69 asserts the DIRECTORY set) is untouched.
+//
+// WHY IT IS DECLARED HERE, AT THE FOOT, AND NOT WITH THE OTHER `mod` LINES AT THE TOP: the §1.1a boot-stage
+// source-scans slice this file's PRODUCTION prefix as "everything up to the FIRST `#[cfg(test)]` marker"
+// (`production_boot_source`). Declaring a `#[cfg(test)] mod` beside the tier `mod`s would make IT the first
+// marker and truncate that prefix to the import block — blinding every boot invariant (no-socket-on-boot, the
+// window model, the updater-plugin ban, the §7.2.1 spine) while they still reported green-by-vacuity. The
+// scans caught it; this placement is the fix. Any future `#[cfg(test)] mod` declaration belongs here too.
+#[cfg(test)]
+mod test_corpus;
