@@ -39,9 +39,11 @@ storage split. (ii) the gate scopes its bijection to the §6.4.5 ONE-root-manife
 manifest concern (its files land in P3). (iii) the §6.4.5 ship-integrity leg (c) (corpus never in the app
 bundle) is the G35 test-asset-exclusion sub-check, NOT this gate.
 
-TARGET-ABSENT: no `tests/corpus/manifest.toml` exists until the corpus fills (P3-P7) -> skip-with-notice;
-fail-CLOSES the moment the manifest lands. The FREEZE (the allow-list / endpoint / required fields /
-corpus root) is live now. stdlib-only (tomllib + hashlib).
+TARGET-ABSENT (the manifest-less-root arm only): a root without `tests/corpus/manifest.toml` ->
+skip-with-notice. On the REAL repo the manifest landed at P3.30, so the gate runs LIVE fail-closed
+there; this arm stays reachable only for a bare root (the g24 self-test's temp dirs). The FREEZE
+(the allow-list / endpoint / required fields / corpus root) is live regardless. stdlib-only
+(tomllib + hashlib).
 
 Exit: 0 = clean (or target-absent); 1 = an integrity / provenance / licence / bijection / LFS violation;
 2 = the manifest is unparseable / a structural prerequisite is unverifiable.
@@ -338,8 +340,8 @@ def main(argv: list[str] | None = None) -> int:
 
     manifest = root / MANIFEST_REL
     if not manifest.is_file():
-        print(f"[G24a] no {MANIFEST_REL} yet (the corpus fills P3-P7) - corpus-integrity verification "
-              "target-absent; fail-closed the moment the manifest lands")
+        print(f"[G24a] no {MANIFEST_REL} at this root - corpus-integrity verification target-absent "
+              "(the real repo's manifest is live since P3.30; this arm serves a manifest-less root)")
         problems += check_lfsconfig(root)            # the endpoint guard is live whenever .lfsconfig exists
         if problems:
             for p in problems:

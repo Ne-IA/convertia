@@ -207,7 +207,8 @@ def main(argv: list[str] | None = None) -> int:
 
     manifest = args.root / MANIFEST_REL
     if not manifest.is_file():
-        print(f"[stage-corpus] no {MANIFEST_REL} yet (the corpus fills P3-P7) - nothing to stage")
+        print(f"[stage-corpus] no {MANIFEST_REL} at this root - nothing to stage "
+              "(the real repo's manifest is live since P3.30)")
         return 0
     try:
         text = manifest.read_text(encoding="utf-8")

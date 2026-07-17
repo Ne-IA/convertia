@@ -76,7 +76,7 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
       run: python3 scripts/check-build-matrix
     completeness:    # G22/G23 - format membership-parity bijection + every-`convert_*`-has-a-test walk (target-absent until P3/P4 handlers+corpus)
       run: python3 scripts/check-completeness
-    corpus-integrity: # G24a - corpus SHA-256 manifest + provenance/licence + bijection + LFS-tracking governance (target-absent until the corpus fills P3-P7)
+    corpus-integrity: # G24a - corpus SHA-256 manifest + provenance/licence + bijection + LFS-tracking governance (LIVE fail-closed since P3.30 - manifest.toml present)
       run: python3 scripts/check-corpus-integrity
     # L1 gate slots: the P0.4 contract set is wired; later phases add their own gate slots.
     # NOTE: the G29 Semgrep + shellcheck SAST gate (check-sast) is L4-only (the CI `sast` job) -
@@ -132,6 +132,6 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/check-build-matrix
     completeness:    # G22/G23 - schema/membership-parity bijection logic + every-`convert_*`-has-a-test git walk (target-absent until P3/P4)
       run: python3 scripts/check-completeness
-    corpus-integrity: # G24a - whole-tree corpus integrity: SHA-256 manifest + provenance/licence + bijection + LFS-resolution governance (target-absent until P3-P7)
+    corpus-integrity: # G24a - whole-tree corpus integrity: SHA-256 manifest + provenance/licence + bijection + LFS-resolution governance (LIVE fail-closed since P3.30 - manifest.toml present)
       run: python3 scripts/check-corpus-integrity
     # L2 gate slots: the P0.4 contract set is wired; later phases add their own gate slots.

@@ -188,7 +188,7 @@ with tempfile.TemporaryDirectory() as td:
     finally:
         m._default_ls_files, m._default_check_attr = saved_ls, saved_attr
 
-record("e2e: the real repo passes (no corpus manifest yet -> target-absent)", m.main([]) == 0)
+record("e2e: the real repo passes (manifest present + consistent - the gate is LIVE since P3.30)", m.main([]) == 0)
 
 # G1 P1 end-to-end (real git): a committed UNICODE-named fixture NOT in the manifest must be CAUGHT by
 # the bijection - proves the `-z` / core.quotePath=false runner fix against real `git ls-files` quoting.

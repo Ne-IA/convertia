@@ -24,3 +24,17 @@ charset = unset
 end_of_line = unset
 insert_final_newline = unset
 trim_trailing_whitespace = unset
+
+[tests/corpus/*.{csv,tsv}]
+# §6.4.5 corpus fixtures are REPRESENTATIVE INPUT BYTES — the test subject itself (P3.61 mandates a
+# Windows-1252-encoded CSV, which `[*]`'s charset=utf-8 would red via G52): no text-hygiene axis may
+# assert anything about fixture bytes, exactly like the binary block above (all four unset, not
+# charset alone — a no-final-newline / trailing-space / CRLF fixture is the same fixture-sovereignty
+# class). Path-scoped flat per the §6.4.5 layout so the tree-wide guarantee is untouched;
+# `tests/corpus/manifest.toml` (a first-party file) deliberately stays under `[*]`. Future corpus
+# text formats (P5-P7) extend this block consciously — an L(-1) act per format phase.
+# [Owner decision 2026-07-17 — the P3.61 escalation; paired with the `.gitattributes -text` rows.]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset

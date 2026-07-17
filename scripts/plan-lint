@@ -12,9 +12,9 @@ docs/process/, docs/plan/). It enforces TWO families of checks:
     parity, the G68 doc-graph leg, the G69 struct-map leg, the check-27 gate-posture-transition leg, etc.
 
 Checks whose source-of-truth target does not exist yet SKIP-WITH-WARNING (the target-absent posture)
-and flip to fail-closed the moment the target lands — e.g. the P3–P7 format-membership /
-corpus-completeness gates (G22 / G23 / G24a) stay target-absent until their phase fills the §04
-handlers + `tests/corpus/`. This file is L(-1) security-critical (G71).
+and flip to fail-closed the moment the target lands — e.g. the format-membership gates (G22 / G23)
+stay target-absent until their phase fills the §04 handlers; G24a made exactly that flip at P3.30
+when `tests/corpus/manifest.toml` landed. This file is L(-1) security-critical (G71).
 
 Build status: foundation + the 8 FORMAT checks are implemented + self-tested. The doc-wide checks
 1..28 are added incrementally by P0.3.5 (each with its G24 negative fixture); until a doc check is

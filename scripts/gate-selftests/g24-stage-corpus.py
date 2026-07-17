@@ -151,7 +151,7 @@ with tempfile.TemporaryDirectory() as td:
 # --- target-absent + real repo ----------------------------------------------------------------
 with tempfile.TemporaryDirectory() as td:
     record("e2e: no manifest -> target-absent no-op (exit 0)", m.main(["--root", td]) == 0)
-record("e2e: the real repo passes (no corpus manifest yet -> nothing to stage)", m.main([]) == 0)
+record("e2e: the real repo passes (manifest present + current - stage-corpus is LIVE since P3.30)", m.main([]) == 0)
 
 passed = sum(1 for _, ok in results if ok)
 print(f"\n[g24-stage-corpus] {passed}/{len(results)} assertions passed.")

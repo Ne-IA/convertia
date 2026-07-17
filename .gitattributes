@@ -27,3 +27,12 @@
 # effective `git check-attr filter` (a tampered un-tracking edit then surfaces as a manifest mismatch).
 # Reserved here; fixtures fill P3-P7 (exact homing reconciled against §0.7 as the corpus lands).
 tests/corpus-large/** filter=lfs diff=lfs merge=lfs -text
+
+# §6.4.5 small-tier corpus fixtures are byte-exact by contract (their SHA-256 lives in
+# tests/corpus/manifest.toml, G24a): never EOL-normalise them — the global `* text=auto eol=lf`
+# would rewrite a future CRLF fixture at add/checkout and break its manifest hash. `-text` only
+# (text diffs stay useful, unlike the `binary` assets above); `manifest.toml` itself stays under
+# the global text rule. [Owner decision 2026-07-17 — the P3.61 escalation's class sweep; paired
+# with the `.editorconfig [tests/corpus/*.{csv,tsv}]` unset block.]
+tests/corpus/*.csv -text
+tests/corpus/*.tsv -text
