@@ -74,7 +74,7 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
       run: python3 scripts/check-lockfile-integrity
     build-matrix:    # G30 - native-OS matrix + macOS-universal fat-Mach-O slice contract (sidecar slice-assertion target-absent until P1+)
       run: python3 scripts/check-build-matrix
-    completeness:    # G22/G23 - format membership-parity bijection + every-`convert_*`-has-a-test walk (target-absent until P3/P4 handlers+corpus)
+    completeness:    # G22/G23 - format membership-parity bijection + the conversion-command(start_conversion)->test walk (G23 LIVE since P3.63; G22 target-absent until P4.60)
       run: python3 scripts/check-completeness
     corpus-integrity: # G24a - corpus SHA-256 manifest + provenance/licence + bijection + LFS-tracking governance (LIVE fail-closed since P3.30 - manifest.toml present)
       run: python3 scripts/check-corpus-integrity
@@ -130,7 +130,7 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/check-lockfile-integrity
     build-matrix:    # G30 - build-matrix contract: native-OS set freeze + macOS-universal fat-Mach-O both-slice assertion (target-absent until a universal sidecar is staged)
       run: python3 scripts/check-build-matrix
-    completeness:    # G22/G23 - schema/membership-parity bijection logic + every-`convert_*`-has-a-test git walk (target-absent until P3/P4)
+    completeness:    # G22/G23 - schema/membership-parity bijection logic + the conversion-command(start_conversion)->test git walk (G23 LIVE since P3.63; G22 target-absent until P4.60)
       run: python3 scripts/check-completeness
     corpus-integrity: # G24a - whole-tree corpus integrity: SHA-256 manifest + provenance/licence + bijection + LFS-resolution governance (LIVE fail-closed since P3.30 - manifest.toml present)
       run: python3 scripts/check-corpus-integrity

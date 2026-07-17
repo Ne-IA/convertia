@@ -73,10 +73,12 @@ activations (no `informational`↔`required` posture), so the table below delibe
 `Status`/`Since` columns** (check 23 governs only the ratchet ledger). The reverse `→ activated in P<n>`
 edges live on the P0 gate rows in [build-gates.md](../security/build-gates.md); this is their closing
 side. **G69** (the §1a structural-map ↔ on-disk bijection) activated at **P1.64** — the P1-END
-structure-establishment box — and its row is below. The remaining two `→ activated in P1`-annotated
-gates are NOT rows here yet, by design: **G22/G23** (the format membership/completeness mirror gates)
-activate when their §04-matrix / corpus / `convert_*` targets stand up in **P3–P7**, so they add their
-rows then. (The continuously-active scanners G8 / G29 are a different class — see the P1.62 plan note.
+structure-establishment box — and its row is below. Of the two remaining `→ activated in P1`-annotated
+gates, **G23** (the conversion-command→test completeness walk) activated at **P3.63** — re-keyed to the
+§0.4.1 `start_conversion` by the 2026-07-17 P3.63 ruling; its row is in the P3 flips table below.
+**G22** (the format-membership mirror gate) is NOT a row here yet, by design: it activates when its
+§04-matrix / corpus / round-trip targets stand up (the **P4.60** bijection guard onward), so it adds
+its row then. (The continuously-active scanners G8 / G29 are a different class — see the P1.62 plan note.
 **G71 was originally grouped here too — and that misclassification is exactly why its scheduled fail-soft
 → fail-closed flip was missed through all of P1: it is NOT a continuously-active scanner but a
 posture-flag gate with a due P1 transition. P1.66 corrected it — the flip is wired and its row is below,
@@ -101,6 +103,12 @@ The four **owner-decidable over-assurance contracts** (`cargo-acl`/cackle, Kani,
 `cargo-geiger`) ALSO carry `→ activated in P1`, but — being `informational`-only, not fail-closed —
 their activation is the **presence** of their dated `informational` rows in the ratchet ledger above
 (P1.62.10, a check over those entries), NOT a planted-violation self-test.
+
+## P3 gate-activation flips (deterministic gates: bootstrap-skip → fail-closed)
+
+| Gate | Activated-in | Now-real target (P-box) | Negative self-test — a planted violation MUST fail | Flipped |
+|------|--------------|-------------------------|-----------------------------------------------------|---------|
+| **G23** — conversion-command→test completeness walk (RE-KEYED: the P0.4.11 `convert_*` premise could never match the real §0.4.1 command — spec §0.4 invariant 1 forbids a per-item-target command class; the 2026-07-17 P3.63 ruling, owner-acked L(-1)) | P3.63 (test landed FIRST — d1892ab — then the re-key, so the flip was live AND green) | `scripts/check-completeness` keyed to `_CONVERSION_COMMANDS = {start_conversion}`; the partner suite `src-tauri/src/orchestrator/run_conversion_e2e_tests.rs` genuinely drives the C6 path | `g24-completeness` — a conversion command with NO partner-test reference MUST fail (e2e planted positive); the retired `convert_*` shape is ignored and the pre-re-key "`start_conversion` is ignored" leg is INVERTED (32 legs) | 2026-07-17 |
 
 ## Over-assurance behavioural backstops (P0.4.5 · §1.2 · G29 G48)
 

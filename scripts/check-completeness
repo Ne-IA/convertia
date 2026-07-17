@@ -3,15 +3,18 @@
 
 Two MIRROR completeness gates over app code that does not exist until P1+ (the same bootstrap
 annotation G47/G27/G33a/G57 carry): each fail-opens / skips-with-notice while its target is absent
-and fail-CLOSES the moment a real `convert_*` command / format-registry entry / corpus fixture
+and fail-CLOSES the moment a real conversion command / format-registry entry / corpus fixture
 lands - so the P0 green-L4 exit criterion is not blocked by a gate targeting absent code, and the
 gate is never silently fail-open once its target lands.
 
-  * G23 "every X has a Y" completeness - every `#[tauri::command] fn convert_*` handler has a
-    PARTNER TEST (a tracking-aware `git ls-files` walk; stage the test in the same commit). This is
-    G23's REAL home - it needs no §04 matrix row or bijection script, just the walk - and it
-    fail-closes from P3.63 when the first `convert_*` handler (CSV->TSV) + its test land. The walk
-    is live-capable NOW (target-absent until a handler exists).
+  * G23 "every X has a Y" completeness - every §0.4.1 CONVERSION COMMAND (`_CONVERSION_COMMANDS`,
+    exactly `start_conversion`) has a PARTNER TEST (a tracking-aware `git ls-files` walk; stage the
+    test in the same commit). This is G23's REAL home - it needs no §04 matrix row or bijection
+    script, just the walk - LIVE fail-closed since P3.63 (the run_conversion_e2e_tests partner
+    suite). RE-KEYED 2026-07-17 (the P3.63 ruling, owner-acked L(-1)): the P0.4.11-era premise
+    keyed the walk on a `convert_*` handler class that spec §0.4 invariant 1 forbids (no
+    per-item-target command exists or may exist), so the walk was permanently dormant against the
+    real C6 command; it now keys on the named §0.4.1 conversion-command set below.
 
   * G22 schema/membership parity - every SUPPORTED format is in the §04 category matrices AND has a
     corpus fixture AND a round-trip test. [Build-Session-Entscheidung: P0.4.11] the AUTHORITATIVE
@@ -28,7 +31,7 @@ gate is never silently fail-open once its target lands.
 Distinct from `plan-lint` check 12 (IPC-surface drift, format-matrix-scoped) - these are the
 SET / completeness gates check 12 explicitly does not subsume. stdlib-only.
 
-Exit: 0 = clean (or target-absent); 1 = an untested `convert_*` handler / an uncovered format;
+Exit: 0 = clean (or target-absent); 1 = an untested conversion command / an uncovered format;
 2 = a structural prerequisite is unverifiable (git unavailable for the G23 walk).
 """
 from __future__ import annotations
@@ -41,19 +44,32 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# --- G23: `#[tauri::command] fn convert_*` handlers + their partner tests ------------------------
+# --- G23: the §0.4.1 conversion-command handlers + their partner tests ---------------------------
+# The conversion-command set G23 keys on (re-keyed 2026-07-17, the P3.63 ruling: spec §0.4
+# invariant 1 forbids any per-item-target IPC command, so the once-assumed `convert_*` handler
+# class can never exist - the walk's real subject is the single §0.4.1 C6 `start_conversion`).
+# STANDING OBLIGATION (recorded in the P3.63 Decision note): a spec-level act that adds a
+# conversion command to §0.4.1 MUST extend this set + the g24 legs in the same owner-acked
+# L(-1) commit - no other check auto-syncs this set to the §0.4.1 table. That extension MUST
+# also (a) re-add a multi-member/multi-match scan leg (dormant while the set is single-element -
+# the G1 re-key review's convergent finding) and (b) check the new name against the repo's
+# planted-fixture/vendor .rs trees: the walk spans ALL tracked .rs, and a G29 SAST fixture
+# (scripts/semgrep-rules/fixtures/f-rename.rs) already declares a textual `fn start_conversion`
+# - deduped into the same set member today, harmless, but a future member whose name collides
+# with an unreferenced fixture would spuriously fail-close the walk (the review's P2).
+_CONVERSION_COMMANDS = ("start_conversion",)
 # Run over a COMMENT-AND-STRING-BLANKED copy of the source (`_strip_rs_comments_and_strings`, the
 # check-test-suppression `_rs_structural` discipline), so a block comment between the attribute and
 # the fn, and a `]` inside an attribute-arg string (`#[doc = "x]y"]`), can neither hide the handler
 # nor truncate the attribute match. After blanking, only whitespace + further `#[…]` attributes sit
 # between `#[tauri::command]` and the fn. The fn-qualifier group accepts `pub`/`pub(crate)` then any
-# order of `const`/`async`/`unsafe`/`extern "ABI"`. Captures the `convert_<name>` command fn name.
+# order of `const`/`async`/`unsafe`/`extern "ABI"`. Captures the conversion-command fn name.
 _CMD_RE = re.compile(
-    r"#\[\s*tauri::command\b[^\]]*\]"                              # the command attribute
+    r"#\[\s*tauri::command\b[^\]]*\]"                              # the command attribute (attr-args tolerated)
     r"(?:\s*#\[[^\]]*\])*"                                         # further attributes (comments blanked)
     r"\s*(?:pub(?:\s*\([^)]*\))?\s+)?"                             # optional pub / pub(crate)
     r"(?:(?:const|async|unsafe)\s+|extern\s+(?:\"[^\"]*\"\s+)?)*"  # fn qualifiers, any order
-    r"fn\s+(convert_\w+)")
+    r"fn\s+(" + "|".join(_CONVERSION_COMMANDS) + r")\b")
 # raw-string opener: an optional `b`/`r`/`br` prefix then `#*` then `"` (closed by `"` + same #-run).
 _RAW_OPEN = re.compile(r'(?:b?r)(#*)"')
 # a char literal `'x'` / `'\n'` / `'\''` / `'\u{1F}'` / `'"'` - ONE char or an escape, then a closing
@@ -125,8 +141,9 @@ def fail(msg: str) -> None:
     print(f"[G22/G23] FAIL: {msg}", file=sys.stderr)
 
 
-def scan_convert_handlers(text: str) -> set[str]:
-    """The `convert_*` command-handler fn names declared in `text` (scanned over a comment-and-
+def scan_conversion_commands(text: str) -> set[str]:
+    """The §0.4.1 conversion-command fn names (`_CONVERSION_COMMANDS`) declared in `text` with the
+    `#[tauri::command]` attribute (scanned over a comment-and-
     string-blanked copy so a block comment / a `]`-in-a-string cannot hide or truncate a handler)."""
     return set(_CMD_RE.findall(_strip_rs_comments_and_strings(text)))
 
@@ -160,11 +177,11 @@ def _git_tracked(root: Path, *patterns: str) -> list[str] | None:
 
 
 def check_g23(root: Path) -> tuple[list[str], int]:
-    """(problems, n_handlers). Walk tracked Rust: every `convert_*` command handler must be
+    """(problems, n_handlers). Walk tracked Rust: every §0.4.1 conversion command must be
     referenced by a test file. n_handlers == 0 => target-absent (no handler exists yet)."""
     rs = _git_tracked(root, "*.rs")
     if rs is None:
-        return (["git is unavailable - cannot run the G23 `convert_*`->test walk (fail-closed: an "
+        return (["git is unavailable - cannot run the G23 conversion-command->test walk (fail-closed: an "
                  "untested handler could go uncaught)"], -1)
     handlers: set[str] = set()
     test_texts: list[str] = []
@@ -177,11 +194,11 @@ def check_g23(root: Path) -> tuple[list[str], int]:
         if _TEST_PATH_RE.search(rel):
             test_texts.append(text)
         else:
-            handlers |= scan_convert_handlers(text)
+            handlers |= scan_conversion_commands(text)
     if not handlers:
         return ([], 0)
     untested = g23_untested(handlers, "\n".join(test_texts))
-    problems = [f"`convert_*` command `{h}` has no partner test - G23 requires every conversion "
+    problems = [f"conversion command `{h}` has no partner test - G23 requires every conversion "
                 "command be tested; stage the test file in the same commit (the §6.4 per-pair "
                 "integration runner)" for h in sorted(untested)]
     return (problems, len(handlers))
@@ -195,10 +212,10 @@ def main(argv: list[str] | None = None) -> int:
 
     problems, n_handlers = check_g23(args.root)
     if n_handlers == 0:
-        print("[G23] no `#[tauri::command] fn convert_*` handler tracked yet (the first - CSV->TSV - "
-              "lands in P3; G23 fail-closes at P3.63) - every-X-has-a-Y walk target-absent")
+        print("[G23] no §0.4.1 conversion-command handler tracked at this root - every-X-has-a-Y "
+              "walk target-absent (on the real repo G23 is LIVE since P3.63: `start_conversion` exists)")
     elif n_handlers > 0:
-        print(f"[G23] {n_handlers} `convert_*` handler(s) walked; each has a partner test")
+        print(f"[G23] {n_handlers} conversion command(s) walked; each has a partner test")
 
     # G22 is target-absent here: the authoritative supported-format set is the compiled
     # `UserFacingFormat` registry + the §04 matrices + the corpus, none of which exist until P4-P7;

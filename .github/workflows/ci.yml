@@ -224,7 +224,7 @@ jobs:
         run: python3 scripts/check-lockfile-integrity
       - name: 'G30: build-matrix contract — native-OS set freeze + macOS-universal fat-Mach-O both-slice assertion (stdlib fat-header parse; sidecar slice-assertion target-absent until P1+ stage-engines)'
         run: python3 scripts/check-build-matrix
-      - name: 'G22/G23: completeness — format membership-parity bijection logic + every-`convert_*`-has-a-test git walk (target-absent until P3/P4 handlers+corpus; §04↔registry↔corpus bijection is the P4.60 Rust guard)'
+      - name: 'G22/G23: completeness — format membership-parity bijection logic + the conversion-command(start_conversion)→test git walk (G23 LIVE fail-closed since P3.63; G22 target-absent until the P4.60 Rust guard §04↔registry↔corpus bijection)'
         run: python3 scripts/check-completeness
       - name: 'G24a: corpus / crash-fixture integrity — SHA-256 manifest + provenance/licence + bijection + LFS-resolution governance (.gitattributes/.lfsconfig); LIVE fail-closed since P3.30 (manifest.toml present)'
         run: python3 scripts/check-corpus-integrity
