@@ -9929,6 +9929,9 @@ mod write_sequence_tests {
 mod run_conversion_e2e_tests;
 
 #[cfg(test)]
+mod link_safety_e2e_tests;
+
+#[cfg(test)]
 mod run_conversion_tests {
     //! §6.4.1 unit + §6.4.3 per-pair integration (G15/G31/G32(a)) for the P3.48 C6 run conductor — the REAL
     //! native CSV↔TSV engine driven end-to-end over a DIRECTLY-registered frozen set (test-strategy §0.1: the
