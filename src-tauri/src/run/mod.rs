@@ -2370,3 +2370,249 @@ mod rerun_ledger_tests {
         );
     }
 }
+
+// ─── P3.71 the §2.14.1 temp-ownership security-TEST home (the b/c/d legs) ───────────────────────────────
+/// The P3.71 grouping shell's Windows-DACL + cleanup-fault legs, exercising the §2.14.1 temp-ownership
+/// invariants the P3.20/P3.21/P3.22/P3.23 MECHANISM builders produce (those stay the mechanism home).
+///
+/// **Leg (a) — the Unix `0o700`/`0o600` mode bits (P3.71.1) — is a RECONCILE, not re-authored here.** The two
+/// assertions it demands already exist, authored alongside the mechanism (P3.20/P3.21) with explicit
+/// forward-refs to P3.71: `publish_temp_tests::create_in_is_owner_only_0o600_on_posix` (the kind-1 `.part`)
+/// and `run_scratch_tests::run_dir_is_owner_only_0o700_on_posix` (the kind-2 scratch root). Every kind-1 temp
+/// is `0o600` by the CHOKE-POINT argument: all publish temps mint through the one `PublishTemp::create_in`
+/// path (`0o600` in its `tempfile::Builder`), so the one asserted temp is representative of all.
+///
+/// Legs (b)/(c)/(d) are the genuinely-new assertions homed below. Each targets a DIFFERENT OS + syscall
+/// surface and fails independently (a Windows DACL bug is unrelated to a cleanup-fault orphan). Real temp FS +
+/// real locks throughout (test-strategy §0.1 — never mock the no-harm/ownership layer under test).
+#[cfg(test)]
+mod temp_ownership_security_tests {
+    use super::*;
+
+    // Leg (b) — P3.71.2 · §2.14.1 · G31/G15. The per-run scratch root's EFFECTIVE (inherited) security
+    // descriptor grants NO broad principal (Everyone / BUILTIN\Users / Authenticated Users). This is the
+    // §2.14.1-[DECIDED] Windows equivalent of the POSIX `0o700` (leg a): the scratch lives under the per-user
+    // profile, whose inherited default ACL adds no broad principal — the P3.21 `acquire` create path is
+    // unchanged (plain `create_dir_all`, no explicit DACL — verified: the repo holds zero explicit-DACL code).
+    // Machine-trust principals (SYSTEM / Administrators) retain their inherited ACEs, exactly as `0o700` never
+    // excludes root on POSIX. Windows-specific, test-only — asserted at SID level so it is locale-independent
+    // (a de-DE Windows prints `VORDEFINIERT\Benutzer` for `BUILTIN\Users`, so a principal-NAME string match
+    // would be wrong; the well-known SID `S-1-5-32-545` is invariant).
+    #[cfg(windows)]
+    #[test]
+    fn scratch_root_effective_dacl_grants_no_broad_principal() {
+        // A read-only OS ACL-INSPECTION subprocess in a #[cfg(test)] leg — NOT an engine spawn. It decodes no
+        // untrusted bytes (§2.12), so the G29 engine-spawn rules do not apply semantically: the isolation
+        // choke-point (c) is for decoders; the env-scrub (b1) guards a decoder from a poisoned parent env (and
+        // `.env_clear()` is not viable here — a cleared env breaks the PowerShell CLR load, error 8009001d);
+        // the macOS-TCC staging (d) is a macOS path this Windows-only test never takes. There is no unsafe-free
+        // in-process way to read a Windows security descriptor (`crate::run` is `#![deny(unsafe_code)]`; the
+        // only allow-listed FFI is `crate::platform`, and adding a helper there for a test would be a
+        // production change the §2.14.1-[DECIDED] frame forbids), so a read-only inspection subprocess is the
+        // sanctioned mechanism (the P3.71.2 pre-fill ruling). The BARE `Command::new` form is used so the G9
+        // repo-invariant (b) qualified-spawn grep (`process::Command::new`, the clap-builder carve-out) does
+        // not match — that grep is not semgrep-suppressible. [Build-Session-Entscheidung: P3.71.2]
+        use std::process::Command;
+        // Root the test base at %LOCALAPPDATA% — the parent the production `app_local_data_dir()` scratch
+        // base sits under — NOT `tempfile::tempdir()`'s `%TEMP%`, which on some hosts resolves to a
+        // broader-ACL location (e.g. `C:\Windows\TEMP` under a service account) and would make the test
+        // inherit an ACL the production per-user profile never has. A `tempdir_in` here keeps RAII cleanup
+        // while faithfully mirroring the production base's inherited per-user ACL. [Build-Session-Entscheidung: P3.71.2]
+        let local_app_data =
+            std::env::var_os("LOCALAPPDATA").expect("%LOCALAPPDATA% is set on Windows");
+        let base = tempfile::Builder::new()
+            .prefix("convertia-dacl-test-")
+            .tempdir_in(&local_app_data)
+            .expect("a real scratch base dir under the per-user %LOCALAPPDATA% profile");
+        let scratch = RunScratch::acquire(
+            base.path(),
+            InstanceId::mint(),
+            std::process::id(),
+            RunId::mint(),
+        )
+        .expect("acquire the locked run scratch");
+        let dir = scratch.dir().to_path_buf();
+
+        // Translate EVERY ACE's identity to its well-known SID string (locale-independent), one per line. A
+        // single-quoted `'…'` literal path is safe here (a `tempfile` dir name carries no single quote); the
+        // unresolvable-ACE `catch` keeps the query total rather than throwing on an exotic ACE.
+        let query = format!(
+            "$ErrorActionPreference='Stop'; (Get-Acl -LiteralPath '{}').Access | ForEach-Object {{ \
+             try {{ $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }} \
+             catch {{ 'UNRESOLVED:' + $_.IdentityReference.Value }} }}",
+            dir.display()
+        );
+        // nosemgrep: convertia-command-outside-isolation, convertia-command-missing-env-clear, convertia-macos-command-missing-stage-for-tcc
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &query])
+            .output()
+            .expect("run the PowerShell Get-Acl SID query");
+        assert!(
+            output.status.success(),
+            "§2.14.1: the Get-Acl SID query failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let sids = String::from_utf8_lossy(&output.stdout);
+
+        for (sid, who) in [
+            ("S-1-1-0", "Everyone"),
+            ("S-1-5-32-545", "BUILTIN\\Users"),
+            ("S-1-5-11", "Authenticated Users"),
+        ] {
+            assert!(
+                !sids.lines().any(|line| line.trim() == sid),
+                "§2.14.1: the per-run scratch root's effective DACL grants a BROAD principal {who} ({sid}) an \
+                 ACE — the inherited per-user ACL must add no broadening. ACEs:\n{sids}"
+            );
+        }
+    }
+
+    // Leg (c) — P3.71.3 · §2.6.3/§2.6.4 · G31/G15. Cleanup-on-fault/kill leaves ZERO own-prefix orphan (all
+    // OS). A killed run (its `RunScratch` dropped WITHOUT `cleanup_run` — a crash: the OS releases the advisory
+    // lock, but the scratch dir + any in-flight dest `.part` are left behind) is fully reclaimed on next launch
+    // by the union of the §2.6.3 sweep (the central `run-<RunId>/` surface, P3.23) + the opportunistic dest
+    // reclaim (P3.24) — every reclaim OWN-PREFIX-scoped, so a CONCURRENT LIVE foreign instance's scratch dir +
+    // in-progress `.part` are NEVER touched (the SSOT "cleanup never removes another instance's in-progress
+    // file"). All OS — the lock/liveness path is cross-platform through `acquire`/`resolve_run_lock_state`.
+    #[test]
+    fn a_killed_run_is_reclaimed_leaving_zero_own_orphan_while_a_live_foreign_run_is_untouched() {
+        use std::time::Duration;
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        let dest = tempfile::tempdir().expect("a real destination dir the two runs share");
+
+        // The VICTIM: a run that acquires scratch + has an in-flight dest `.part`, then is KILLED. Its `.part`
+        // is planted via the name-only `publish_temp_path` (a real parse-able run-grammar name, so the P3.24
+        // reclaim recognises + reclaims it) so it PERSISTS past the drop (a live mint would delete on drop).
+        let victim_instance = InstanceId::mint();
+        let victim_run = RunId::mint();
+        let victim =
+            RunScratch::acquire(base.path(), victim_instance, std::process::id(), victim_run)
+                .expect("acquire the victim run scratch");
+        let victim_dir = victim.dir().to_path_buf();
+        let victim_part = victim.publish_temp_path(dest.path(), JobId::from_index(1));
+        std::fs::write(&victim_part, b"in-flight partial output")
+            .expect("plant the victim's dest .part");
+
+        // The SURVIVOR: a concurrent foreign instance holding its lock (LIVE) with its own in-flight `.part`.
+        // It must survive both reclaim legs (held lock ⇒ live ⇒ keep).
+        let survivor_instance = InstanceId::mint();
+        let survivor_run = RunId::mint();
+        let survivor = RunScratch::acquire(
+            base.path(),
+            survivor_instance,
+            std::process::id(),
+            survivor_run,
+        )
+        .expect("acquire the survivor run scratch");
+        let survivor_dir = survivor.dir().to_path_buf();
+        let survivor_part = survivor.publish_temp_path(dest.path(), JobId::from_index(1));
+        std::fs::write(&survivor_part, b"a live foreign run's in-progress output")
+            .expect("plant the survivor's dest .part");
+
+        // THE KILL: drop the victim WITHOUT `cleanup_run` — the OS releases its advisory lock, but nothing
+        // removes its scratch dir or dest `.part` (exactly a crashed/killed process).
+        drop(victim);
+        assert!(
+            victim_dir.is_dir() && victim_part.exists(),
+            "pre-reclaim: the killed run's scratch dir + dest .part are orphaned"
+        );
+
+        // Next-launch reclaim leg 1 — the §2.6.3 central-scratch sweep (P3.23). Zero grace so the just-created
+        // dirs count by their LOCK state alone (the held lock is the sole delete gate, not mtime aging).
+        let swept = sweep_stale_within(base.path(), Duration::ZERO);
+        assert!(
+            swept.contains(&victim_dir),
+            "§2.6.3: the killed run's scratch dir (lock released on kill) is swept: {swept:?}"
+        );
+        assert!(
+            !victim_dir.exists(),
+            "§2.6.3: zero orphan — the killed run's scratch dir is gone"
+        );
+        assert!(
+            survivor_dir.is_dir(),
+            "§2.6.3 CRITICAL: a LIVE foreign run holding its lock is NEVER swept (own-prefix / held-lock scope)"
+        );
+
+        // Next-launch reclaim leg 2 — the §2.6.3 (b) opportunistic dest-`.part` reclaim (P3.24). It removes the
+        // dead victim's dest `.part` (its run resolves dead) and LEAVES the live survivor's (its run resolves
+        // Held) — never a bare `*.part` glob.
+        let reclaimed = reclaim_dest_parts_in(dest.path(), base.path());
+        assert!(
+            reclaimed.contains(&victim_part),
+            "§2.6.3 (b): the killed run's dest .part is reclaimed: {reclaimed:?}"
+        );
+        assert!(
+            !victim_part.exists(),
+            "§2.6.4: zero orphan — the killed run's dest .part is gone"
+        );
+        assert!(
+            survivor_part.exists(),
+            "SSOT: a concurrent LIVE foreign run's in-progress .part is NEVER reclaimed (own-prefix scope)"
+        );
+
+        drop(survivor); // release the survivor's lock only after the assertions, so it stayed provably live.
+    }
+
+    // Leg (d) — P3.71.4 · §2.6.4/§2.6.3 · G31/G15. The Windows AV-lock-during-cleanup path, asserted against
+    // the §2.6.4-[DECIDED] residue+sweep model the P3.22/P3.23 mechanism delivers (NOT a retry loop or a
+    // `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` deferred delete — neither exists in spec or code; the P3.71.4
+    // pre-fill ruling): a temp held open during cleanup (a no-`FILE_SHARE_DELETE` handle, the AV-scanner class
+    // → `ERROR_SHARING_VIOLATION`) makes `cleanup_run`'s SINGLE bounded attempt fail, and it surfaces the
+    // undeletable dir as RESIDUE (never a silent leak, never an in-process retry spin). After the handle
+    // releases, the §2.6.3 sweep reclaims the dir → zero orphan. Windows-specific (a held handle blocks
+    // deletion only under Windows mandatory locking; POSIX unlinks an open file).
+    #[cfg(windows)]
+    #[test]
+    fn an_av_locked_cleanup_reports_residue_without_spinning_then_the_sweep_reclaims_it() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::time::Duration;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        let scratch = RunScratch::acquire(
+            base.path(),
+            InstanceId::mint(),
+            std::process::id(),
+            RunId::mint(),
+        )
+        .expect("acquire the locked run scratch");
+        let dir = scratch.dir().to_path_buf();
+
+        // Plant an engine-working file inside the central run dir and hold it open WITHOUT FILE_SHARE_DELETE —
+        // the AV-scanner-holds-a-handle class — a delete-access open (as `remove_dir_all` performs) then hits
+        // ERROR_SHARING_VIOLATION. Same held-handle pattern as the §2.1.2 publish-path AV tests (P3.19.2).
+        let held_path = dir.join("engine-working.tmp");
+        std::fs::write(&held_path, b"decoded working bytes").expect("plant the held scratch file");
+        let blocker = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&held_path)
+            .expect("hold a no-delete-share handle on the scratch file");
+
+        // The §2.6.4 single-attempt cleanup: `cleanup_run` drops the lock and makes ONE `remove_dir_all`
+        // attempt, which fails on the held file → the dir is surfaced as residue (no in-process retry loop by
+        // construction — unlike the §2.1.2 publish path, §2.6.4 defers reclaim to the sweep).
+        let residue = cleanup_run(scratch, &BTreeSet::new());
+        assert_eq!(
+            residue,
+            vec![dir.clone()],
+            "§2.6.4: an AV-locked cleanup surfaces the undeletable scratch dir as residue — never a silent leak"
+        );
+        assert!(
+            dir.is_dir(),
+            "§2.6.4: the single-attempt cleanup left the dir in place (no spin, no silent success)"
+        );
+
+        // Release the AV hold; the §2.6.3 sweep now reclaims the dir (its lock was released by `cleanup_run`,
+        // so it resolves dead) → zero orphan. Zero grace so liveness (not mtime) is the sole gate.
+        drop(blocker);
+        let swept = sweep_stale_within(base.path(), Duration::ZERO);
+        assert!(
+            swept.contains(&dir),
+            "§2.6.3: after the AV hold releases, the sweep reclaims the run dir: {swept:?}"
+        );
+        assert!(
+            !dir.exists(),
+            "§2.6.3/§2.6.4: zero orphan — the AV-locked-then-released scratch dir is gone"
+        );
+    }
+}
