@@ -768,9 +768,16 @@ property/integration tests on **G31** / **G15** / **G16**:
   cleanup-on-fault/kill sub-case** (the per-job kind-2 scratch is removed after a
   forced engine kill mid-conversion) **+ a Windows AV-lock sub-case** — an AV
   scanner can hold scratch files open after process exit, failing `remove_dir_all`
-  with `ERROR_SHARING_VIOLATION`; assert cleanup retries-after-release or schedules
-  `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)`, mirroring the §2.1.2 publish-path
-  AV-retry.
+  with `ERROR_SHARING_VIOLATION`; assert the §2.6.4-`[DECIDED]` model: cleanup
+  makes its **single bounded attempt** and surfaces the held path as
+  `CleanupResidue` (never a silent leak, never an in-process retry spin), and the
+  §2.6.3 sweep / opportunistic reclaim removes it after the handle releases
+  — the publish-path §2.1.2 in-process AV-retry is deliberately NOT mirrored on
+  the cleanup path (reclaim has a decided asynchronous home) *(corrected
+  2026-07-20 — the P3.71.4 pre-fill ruling: this bullet formerly asserted
+  "retries-after-release or schedules `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)`,
+  mirroring the §2.1.2 publish-path AV-retry" — a mechanism spec §2.6.4 decided
+  against, and one requiring administrator rights)*.
 - **Adversarial-egress / out-of-input read (§0.11 T9b · G42/G42b release; pulled
   forward to the per-push L4 leg on G31):** an adversarial-network corpus — HLS
   `.m3u8` / DASH `.mpd` / `-f concat` script / external-reference-box MP4 (FFmpeg),
