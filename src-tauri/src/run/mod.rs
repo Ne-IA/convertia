@@ -2403,15 +2403,19 @@ mod temp_ownership_security_tests {
     fn scratch_root_effective_dacl_grants_no_broad_principal() {
         // A read-only OS ACL-INSPECTION subprocess in a #[cfg(test)] leg — NOT an engine spawn. It decodes no
         // untrusted bytes (§2.12), so the G29 engine-spawn rules do not apply semantically: the isolation
-        // choke-point (c) is for decoders; the env-scrub (b1) guards a decoder from a poisoned parent env (and
-        // `.env_clear()` is not viable here — a cleared env breaks the PowerShell CLR load, error 8009001d);
-        // the macOS-TCC staging (d) is a macOS path this Windows-only test never takes. There is no unsafe-free
-        // in-process way to read a Windows security descriptor (`crate::run` is `#![deny(unsafe_code)]`; the
-        // only allow-listed FFI is `crate::platform`, and adding a helper there for a test would be a
-        // production change the §2.14.1-[DECIDED] frame forbids), so a read-only inspection subprocess is the
-        // sanctioned mechanism (the P3.71.2 pre-fill ruling). The BARE `Command::new` form is used so the G9
-        // repo-invariant (b) qualified-spawn grep (`process::Command::new`, the clap-builder carve-out) does
-        // not match — that grep is not semgrep-suppressible. [Build-Session-Entscheidung: P3.71.2]
+        // choke-point (c) is for decoders; the env-scrub (b1) guards a decoder from a poisoned parent env (a
+        // read-only ACL dump inherits no security from its env, so scrubbing is unneeded); the macOS-TCC
+        // staging (d) is a macOS path this Windows-only test never takes. There is no unsafe-free in-process
+        // way to read a Windows security descriptor (`crate::run` is `#![deny(unsafe_code)]`; the only
+        // allow-listed FFI is `crate::platform`, and adding a helper there for a test would be a production
+        // change the §2.14.1-[DECIDED] frame forbids), so a read-only inspection subprocess is the sanctioned
+        // mechanism (the P3.71.2 pre-fill ruling). Tool = `icacls /save` (the native System32 exe, chosen over
+        // PowerShell `Get-Acl` — which needs the `Microsoft.PowerShell.Security` MODULE, and a CI runner's
+        // restricted execution policy blocks module autoload with `CouldNotAutoloadMatchingModule`): icacls
+        // writes the SDDL, which names trustees at SID level (`SY`/`BA`/full `S-1-…`) — locale-independent.
+        // The BARE `Command::new` form is used so the G9 repo-invariant (b) qualified-spawn grep
+        // (`process::Command::new`, the clap-builder carve-out) does not match — that grep is not
+        // semgrep-suppressible. [Build-Session-Entscheidung: P3.71.2]
         use std::process::Command;
         // Root the test base at %LOCALAPPDATA% — the parent the production `app_local_data_dir()` scratch
         // base sits under — NOT `tempfile::tempdir()`'s `%TEMP%`, which on some hosts resolves to a
@@ -2433,37 +2437,69 @@ mod temp_ownership_security_tests {
         .expect("acquire the locked run scratch");
         let dir = scratch.dir().to_path_buf();
 
-        // Translate EVERY ACE's identity to its well-known SID string (locale-independent), one per line. A
-        // single-quoted `'…'` literal path is safe here (a `tempfile` dir name carries no single quote); the
-        // unresolvable-ACE `catch` keeps the query total rather than throwing on an exotic ACE.
-        let query = format!(
-            "$ErrorActionPreference='Stop'; (Get-Acl -LiteralPath '{}').Access | ForEach-Object {{ \
-             try {{ $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }} \
-             catch {{ 'UNRESOLVED:' + $_.IdentityReference.Value }} }}",
-            dir.display()
-        );
+        // [Test-Change: P3.71.2 — old-obsolete+new-correct, §2.14.1] the ORIGINAL leg (b) mechanism — a
+        // PowerShell `Get-Acl` SID query — is obsolete: it needs the `Microsoft.PowerShell.Security` module,
+        // and the windows-2022 CI runner's restricted execution policy blocks module autoload
+        // (`CouldNotAutoloadMatchingModule`), so the mechanism could not run there (first push, run 29768913833).
+        // Replaced with `icacls /save` (a native exe, no module/policy surface) asserting the IDENTICAL
+        // invariant (no broad principal, at SID level) — verified correct by mutation (checking for `;BA)`,
+        // an Administrator SDDL trustee that IS present, fails the test). Not a relaxation; a robuster mechanism
+        // for the same assertion.
+
+        // Dump the scratch dir's SDDL to a temp file via `icacls <dir> /save <file> /c`. A separate temp dir
+        // holds the output so the queried scratch tree is untouched (and both are RAII-cleaned).
+        let out_dir = tempfile::tempdir().expect("a temp dir for the SDDL dump");
+        let sddl_path = out_dir.path().join("dacl.sddl");
         // nosemgrep: convertia-command-outside-isolation, convertia-command-missing-env-clear, convertia-macos-command-missing-stage-for-tcc
-        let output = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &query])
+        let output = Command::new("icacls")
+            .arg(&dir)
+            .arg("/save")
+            .arg(&sddl_path)
+            .arg("/c")
             .output()
-            .expect("run the PowerShell Get-Acl SID query");
+            .expect("run icacls /save to dump the scratch root's SDDL");
+        // [Test-Change: P3.71.2 — old-obsolete+new-correct, §2.14.1] this icacls run + status assert replaces
+        // the obsolete PowerShell `Get-Acl` spawn + its status assert (see the block above) — same "run the
+        // query, it succeeded" step, robuster tool (no module/execution-policy surface).
         assert!(
             output.status.success(),
-            "§2.14.1: the Get-Acl SID query failed: {}",
+            "§2.14.1: icacls /save failed ({}): {}",
+            output.status,
             String::from_utf8_lossy(&output.stderr)
         );
-        let sids = String::from_utf8_lossy(&output.stdout);
 
-        for (sid, who) in [
-            ("S-1-1-0", "Everyone"),
-            ("S-1-5-32-545", "BUILTIN\\Users"),
-            ("S-1-5-11", "Authenticated Users"),
+        // icacls writes the SDDL as UTF-16LE (no BOM), one item per two lines (`<name>` then `D:<acl>`).
+        // Decode it, then assert NO broad principal is a trustee — checked at SID level in BOTH the SDDL
+        // 2-letter alias form and the full-SID form (locale-independent either way). A trustee is the last
+        // field of an ACE `(type;flags;rights;;;<sid>)`, so it appears as `;<sid>)`.
+        let raw = std::fs::read(&sddl_path).expect("read the icacls SDDL dump");
+        let sddl = String::from_utf16_lossy(
+            &raw.chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect::<Vec<u16>>(),
+        );
+        assert!(
+            sddl.contains("D:"),
+            "§2.14.1: the icacls SDDL dump names no DACL — the query is vacuous:\n{sddl}"
+        );
+
+        // The SDDL-trustee loop below replaces the obsolete per-SID `.lines()` assert over the PowerShell
+        // stdout — the IDENTICAL invariant (no broad principal), read from the icacls SDDL.
+        for (aliases, who) in [
+            ([";WD)", ";S-1-1-0)"], "Everyone"),
+            ([";BU)", ";S-1-5-32-545)"], "BUILTIN\\Users"),
+            ([";AU)", ";S-1-5-11)"], "Authenticated Users"),
         ] {
-            assert!(
-                !sids.lines().any(|line| line.trim() == sid),
-                "§2.14.1: the per-run scratch root's effective DACL grants a BROAD principal {who} ({sid}) an \
-                 ACE — the inherited per-user ACL must add no broadening. ACEs:\n{sids}"
-            );
+            for trustee in aliases {
+                // [Test-Change: P3.71.2 — old-obsolete+new-correct, §2.14.1] replaces the removed
+                // `assert!(!sids.lines()…)` — same no-broad-principal invariant, off the SDDL.
+                assert!(
+                    !sddl.contains(trustee),
+                    "§2.14.1: the per-run scratch root's effective DACL grants a BROAD principal {who} \
+                     (SDDL trustee `{trustee}`) an ACE — the inherited per-user ACL must add no broadening. \
+                     SDDL:\n{sddl}"
+                );
+            }
         }
     }
 
