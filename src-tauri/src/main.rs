@@ -3570,3 +3570,10 @@ mod startup_spine {
 // scans caught it; this placement is the fix. Any future `#[cfg(test)] mod` declaration belongs here too.
 #[cfg(test)]
 mod test_corpus;
+
+// [Build-Session-Entscheidung: P3.65] The §2.14.3 SINGLE-SOURCE volume-capability helper
+// (`crate::test_volumes`) — the same crate-root placement, for the same reason as `test_corpus` above: it is
+// `#[cfg(test)]`-only cross-cutting infrastructure both `crate::fs_guard` and `crate::orchestrator` reach, and
+// it adds a FILE, never a directory (G69). It sits under the same at-the-foot rule the comment above states.
+#[cfg(test)]
+mod test_volumes;

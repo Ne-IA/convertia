@@ -1012,8 +1012,13 @@ fn publish_once(
         PublishAttempt::NameTaken => Ok(SinglePublish::NameTaken),
         // The single-call no-replace flag is unsupported on this FS — fall back to the portable `link`+`unlink`
         // primitive (§2.1.2). This branch is reached only on a FAT/exFAT-class destination, which §2.7.2 diverts
-        // up front (P3.18), so it is exercised by the §6.5 FAT-divert corpus (P3.65), not a per-push unit test —
-        // the same "needs a FAT/exFAT volume" limitation the publish_noreplace/publish_link_fallback tests note.
+        // up front (P3.18). Driving it needs such a filesystem MOUNTED, which is a privileged out-of-process act
+        // no test may perform (`crate::isolation` is the sole sanctioned spawn site, G9 invariant (b) / G29) —
+        // the bound P3.65 recorded. Its home is therefore the release-candidate verification on real removable
+        // media (P11.25, DoD gate 8, which names USB FAT/exFAT explicitly). Everything the resulting VERDICT
+        // feeds is covered by P3.65: the `fat_class_destination` fence drives `NoAtomicPublishSupport` through
+        // the composite + the reactive late divert (`crate::orchestrator::cross_volume_e2e_tests`), and
+        // `crate::platform`'s suite asserts the detector against a kernel-reported FAT mount where one exists.
         PublishAttempt::Unsupported => match publish_link_fallback(parent, tmp, leaf)? {
             LinkPublishAttempt::Published => Ok(SinglePublish::Published {
                 residual_tmp: false,
@@ -1144,6 +1149,23 @@ fn publish_numbered_capped(
         let final_path = parent_dir.join(&leaf);
         if let Err(too_long) = check_path_limit(&final_path) {
             return Err(PublishError::PathTooLong(too_long));
+        }
+
+        // §2.1.2 fault-injection seam (P3.65) — `#[cfg(test)]` ONLY, so the not(test) PRODUCTION build is
+        // byte-identical (this statement compiles out entirely). On a FAT/exFAT-class destination
+        // `publish_once` returns `NoAtomicPublishSupport` (its no-replace rename AND `link()` both refuse,
+        // §2.1.2's third fallback); MOUNTING such a filesystem is a privileged out-of-process act no test may
+        // perform (`crate::isolation` is the sole sanctioned spawn site, G9 (b)/G29), so a test arms this
+        // fence for ONE DIRECTORY instead and everything around it — the §2.2.3 path-limit check, the §2.2.2
+        // numbering loop, the §2.7.2/§2.7.3 divert this verdict triggers, the §2.1 publish AT the divert
+        // target — runs for real. Same class as the `location_status` verdict a test hands
+        // `compute_output_plan` by value, and as the injected `avail_bytes`/`cap`: the PRECONDITION is
+        // supplied, never the subject. Directory-scoped on purpose — a global switch would make the §2.7.3
+        // divert TARGET refuse too, so the divert under test could never complete.
+        // [Build-Session-Entscheidung: P3.65]
+        #[cfg(test)]
+        if fat_class_destination::armed_for(parent_dir) {
+            return Ok(PublishOutcome::NoAtomicPublishSupport);
         }
 
         // §2.2.2: the kernel's exclusive create decides — NameTaken → the next candidate; Published → done;
@@ -3013,6 +3035,62 @@ mod compute_output_plan_tests {
     }
 }
 
+/// The §2.1.2 FAT/exFAT-class destination fault-injection fence (P3.65) — the sibling of [`kill_after_sync`]
+/// for the OTHER §2 precondition no test can create: a filesystem offering neither a no-replace rename nor
+/// hardlinks. `#[cfg(test)]`-only, so the production build is byte-identical and this widens NO runtime
+/// surface; `pub(crate)` (unlike `kill_after_sync`, whose users are all inside `crate::fs_guard`) because the
+/// consumer under test is TIER-1 — `crate::orchestrator`'s reactive `Ok(NoAtomicPublishSupport) =>
+/// divert_completed` arm, which had no coverage at all before this box.
+/// [Build-Session-Entscheidung: P3.65]
+#[cfg(test)]
+pub(crate) mod fat_class_destination {
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+
+    thread_local! {
+        static ARMED_DIR: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    }
+
+    /// True iff the current thread has an [`Armed`] guard live for `parent_dir` (or an ancestor of it) — read
+    /// by the [`super::publish_numbered_capped`] `#[cfg(test)]` fence.
+    pub(crate) fn armed_for(parent_dir: &Path) -> bool {
+        ARMED_DIR.with(|armed| {
+            armed
+                .borrow()
+                .as_deref()
+                .is_some_and(|dir| parent_dir.starts_with(dir))
+        })
+    }
+
+    /// RAII: make `dir` (and anything beneath it) behave as a FAT/exFAT-class destination for the current
+    /// thread; **restore the previous armed state on drop** (even on a test panic), so no armed state leaks
+    /// past the test's scope. Thread-local, so a parallel test on another thread is unaffected.
+    ///
+    /// The guard carries the state it displaced rather than clearing to `None`, so NESTING is sound: this
+    /// fence is `pub(crate)` and armable from `crate::orchestrator`, so an inner guard's drop must not
+    /// silently disarm an outer one that is still in scope. [Build-Session-Entscheidung: P3.65]
+    pub(crate) struct Armed {
+        previous: Option<PathBuf>,
+    }
+
+    impl Armed {
+        #[must_use = "the returned Armed guard restores the FAT/exFAT fence on Drop; discarding it (a bare \
+                      `Armed::arm(dir);` or `let _ = …`) would disarm IMMEDIATELY, silently defeating the \
+                      fault injection — bind it to a named `_fat` for the intended scope"]
+        pub(crate) fn arm(dir: &Path) -> Self {
+            let previous = ARMED_DIR.with(|armed| armed.borrow_mut().replace(dir.to_path_buf()));
+            Armed { previous }
+        }
+    }
+
+    impl Drop for Armed {
+        fn drop(&mut self) {
+            let previous = self.previous.take();
+            ARMED_DIR.with(|armed| *armed.borrow_mut() = previous);
+        }
+    }
+}
+
 /// §2.1.3 crash/power-loss fault-injection kill switch (P3.19.1) — `#[cfg(test)]` ONLY. A **thread-local** flag
 /// [`atomic_publish`] checks in the post-`sync_all`-pre-rename window; when armed, the publish "dies" there so
 /// the two-state-invariant test can inspect the on-disk state. Thread-local (cargo runs each `#[test]` on its
@@ -4171,8 +4249,9 @@ mod check_path_limit_windows_tests {
 // ([`publish_noreplace`], P3.12). Never mock the FS under test (test-strategy §0.1): a REAL temp dir + a REAL
 // rustix rename. TWO STACKED cfg attrs (`#[cfg(test)]` then the `any(linux, macos)` predicate matching the
 // primitive's own cfg) — NOT a compound `all(test, …)` (the P1.17 compound-cfg trap). The `Unsupported`
-// (EINVAL/ENOTSUP) arm is not unit-tested here (it needs a FAT/exFAT-class volume that lacks the flag) — it is
-// exercised by the P3.13 link+unlink fallback + the §6.5 FAT-divert corpus (P3.65).
+// (EINVAL/ENOTSUP) arm is driven by the P3.13 link+unlink fallback; reaching it from a REAL filesystem needs a
+// mounted FAT/exFAT-class volume, whose home is the P11.25 release-candidate verification on removable media
+// (the environment bound P3.65 recorded — see the `publish_once` note).
 #[cfg(test)]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod publish_noreplace_tests {
@@ -4251,8 +4330,8 @@ mod publish_noreplace_tests {
 // test (test-strategy §0.1): a REAL temp dir + a REAL rustix `linkat`/`unlink`. TWO STACKED cfg attrs
 // (`#[cfg(test)]` then the `any(linux, macos)` predicate matching the primitive's own cfg) — NOT a compound
 // `all(test, …)` (the P1.17 compound-cfg trap). The `Unsupported` (EPERM/ENOTSUP on a FAT/exFAT-class volume
-// that lacks hardlinks) arm is not unit-tested here (it needs such a volume) — it is exercised by the §6.5
-// FAT-divert corpus (P3.65).
+// that lacks hardlinks) arm needs such a volume MOUNTED, so its home is the P11.25 release-candidate
+// verification on removable media (the environment bound P3.65 recorded — see the `publish_once` note).
 #[cfg(test)]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod publish_link_fallback_tests {
@@ -4553,9 +4632,10 @@ mod publish_rename_windows_tests {
 // platform (the loop dispatches per-OS via publish_once, so the happy path + numbering assertions hold on
 // Win/macOS/Linux alike). TWO STACKED cfg attrs (`#[cfg(test)]` then the shipped-platforms predicate) — NOT a
 // compound `all(test, …)` (the P1.17 compound-cfg clippy::expect_used trap). The Unix-only FAT/exFAT
-// `NoAtomicPublishSupport` arm needs a FAT/exFAT volume that lacks hardlinks, so — like the underlying
-// publish_noreplace/publish_link_fallback `Unsupported` arms — it is exercised by the §6.5 FAT-divert corpus
-// (P3.65), not a per-push unit test.
+// `NoAtomicPublishSupport` arm needs a FAT/exFAT volume that lacks hardlinks MOUNTED, so — like the underlying
+// publish_noreplace/publish_link_fallback `Unsupported` arms — its home is the P11.25 release-candidate
+// verification on removable media (the environment bound P3.65 recorded — see the `publish_once` note); what
+// the verdict FEEDS is covered by `crate::orchestrator::cross_volume_e2e_tests`.
 #[cfg(test)]
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 mod publish_numbered_tests {
@@ -5195,7 +5275,7 @@ mod atomic_publish_tests {
     // `atomic_publish`'s non-cross-device Err arm UNCHANGED — the §2.14.3 fallback fires ONLY on a real
     // cross-device failure, NEVER on PathTooLong (or any other §2.8 write error), and it never creates the
     // cross-volume intermediate on such a path. (The cross-device routing arm itself needs a genuine 2-volume
-    // setup and is exercised at the §6.5 cross-volume integration level, P3.65.)
+    // setup; it is driven on a real volume boundary by the `real_cross_volume_tests` module below, P3.65.)
     #[test]
     fn atomic_publish_passes_through_a_non_crossdevice_error() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -5215,6 +5295,371 @@ mod atomic_publish_tests {
         assert!(
             !intermediate.exists(),
             "§2.14.3: the cross-volume intermediate is never created on a non-cross-device error"
+        );
+    }
+
+    // §2.1.2/§2.7.2 (G15/G31, P3.65): a FAT/exFAT-class destination is a VERDICT, not an error — the composite
+    // reports `NoAtomicPublishSupport` (the §2.7.2 divert signal) while creating NO `final`, leaving the
+    // completed tmp intact for the divert to re-publish, and creating no cross-volume intermediate. The
+    // §2.1.1 step-6 dir-fsync is correctly skipped (no dentry was made). Its tier-1 consumer — the reactive
+    // late-divert — is `crate::orchestrator::cross_volume_e2e_tests`.
+    //
+    // HONEST READING OF WHAT EACH ASSERTION BUYS: the fence returns BEFORE `publish_once`, so "no `final`",
+    // "tmp intact" and "no intermediate" are fence-IMPLIED — they pin that the fence models a real FAT
+    // destination faithfully (on vfat the chain refuses with no FS side effect either), not a §2.1.2 property.
+    // The LOAD-BEARING assertion is the first one: `atomic_publish` PROPAGATES the leaf verdict as an `Ok`
+    // outcome rather than an `Err`, and (per its own contract) skips the step-6 dir-fsync on it — production
+    // logic the §2.7.2 divert routing depends on. [Build-Session-Entscheidung: P3.65]
+    #[test]
+    fn a_fat_class_destination_reports_no_atomic_publish_support_and_creates_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = verified(dir.path());
+        let tmp = dir.path().join(".convertia-out.part");
+        std::fs::write(&tmp, b"converted bytes").expect("write the tmp");
+        let intermediate = dir.path().join(".convertia-xvol.part");
+        let candidates = output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem");
+
+        let _fat = fat_class_destination::Armed::arm(dir.path()); // RAII: disarmed on scope exit
+        let outcome = atomic_publish(&parent, dir.path(), &tmp, candidates, &intermediate)
+            .expect("§2.7.2: an atomic-publish-incapable destination is a verdict, never an Err");
+
+        assert_eq!(
+            outcome,
+            PublishOutcome::NoAtomicPublishSupport,
+            "§2.1.2 third fallback: neither the no-replace rename nor `link` can publish here"
+        );
+        assert!(
+            !dir.path().join("data.tsv").exists(),
+            "§2.7.2: nothing is published on an atomic-publish-incapable destination"
+        );
+        assert_eq!(
+            std::fs::read(&tmp).expect("read the tmp"),
+            b"converted bytes",
+            "§2.7.2: the completed tmp is intact — the §2.7.3 divert re-publishes THIS output elsewhere"
+        );
+        assert!(
+            !intermediate.exists(),
+            "§2.14.3: no cross-volume intermediate is created on the divert-signal path"
+        );
+    }
+
+    // §2.7.3 (G15, P3.65) THE FENCE IS DIRECTORY-SCOPED — the premise the whole reactive-divert case rests on:
+    // an armed destination refuses, while a SIBLING directory (standing in for the §2.7.3 divert target on a
+    // hardlink-capable volume) publishes for real in the same call scope. A global switch would make the
+    // divert target refuse too, so the divert could never complete and the case would prove nothing.
+    #[test]
+    fn the_fat_class_fence_is_directory_scoped_so_a_sibling_destination_still_publishes() {
+        let base = tempfile::tempdir().expect("temp dir");
+        let fat_dir = base.path().join("fat-class");
+        let ok_dir = base.path().join("hardlink-capable");
+        std::fs::create_dir(&fat_dir).expect("create the armed dir");
+        std::fs::create_dir(&ok_dir).expect("create the sibling dir");
+        let tmp = ok_dir.join(".convertia-out.part");
+        std::fs::write(&tmp, b"converted bytes").expect("write the tmp");
+
+        let _fat = fat_class_destination::Armed::arm(&fat_dir);
+        assert!(
+            fat_class_destination::armed_for(&fat_dir.join("nested")),
+            "the fence covers the armed dir and everything beneath it"
+        );
+        assert!(
+            !fat_class_destination::armed_for(&ok_dir),
+            "the fence does NOT cover a sibling dir — the §2.7.3 divert target keeps publishing for real"
+        );
+        let outcome = atomic_publish(
+            &verified(&ok_dir),
+            &ok_dir,
+            &tmp,
+            output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem"),
+            &ok_dir.join(".convertia-xvol.part"),
+        )
+        .expect("the un-armed sibling publishes");
+        assert_eq!(
+            outcome,
+            PublishOutcome::Published {
+                leaf: OsString::from("data.tsv"),
+                residual_tmp: false,
+            },
+            "§2.7.3: the divert target publishes normally while another dir is atomic-publish-incapable"
+        );
+    }
+}
+
+// §6.4.3 real-FS integration (G15/G31) for the §2.14.3 EXDEV path driven over a GENUINE VOLUME BOUNDARY, and
+// the §2.1.3 two-state invariant proven with the temp on a real second volume (P3.65).
+//
+// The `atomic_publish_tests` above reach the §2.14.3 fallback CORE directly (`publish_cross_volume_checked`
+// with an injected `avail_bytes` — the `publish_numbered_capped` injectable-value idiom, real FS + real
+// publish primitive, nothing mocked). What they structurally cannot reach is the ROUTING arm that gets there:
+// `atomic_publish`'s `Err(Io(e)) if is_cross_device(&e)` match, which fires only when the OS itself refuses
+// the rename `EXDEV`/`ERROR_NOT_SAME_DEVICE`. That needs two real volumes, which no in-process call can
+// create — mounting one is privileged and out-of-process, and `crate::isolation` is the sole sanctioned
+// `process::Command::new` site (G9 invariant (b) / G29), so these tests DISCOVER a second volume the host
+// already offers ([`crate::test_volumes`]) and take a clean, commented skip where there is none (the P3.6
+// guarded-early-`return` precedent — never a vacuous pass, never `#[ignore]`). TWO STACKED cfg attrs (the
+// P1.17 compound-cfg trap). [Build-Session-Entscheidung: P3.65]
+#[cfg(test)]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+mod real_cross_volume_tests {
+    use super::*;
+
+    /// The P3.9 verified parent handle for `dir` (empty frozen set → always Verified).
+    fn verified(dir: &Path) -> VerifiedParentDir {
+        match open_verified_parent_dir(dir, &[]).expect("open the dest dir") {
+            ParentDirVerdict::Verified(v) => Some(v),
+            ParentDirVerdict::ResolvesOntoSource => None,
+        }
+        .expect("a real dir with an empty frozen set verifies")
+    }
+
+    /// A `(destination, other-volume)` pair whose two dirs sit on GENUINELY different volumes — the §2.14.3
+    /// substrate. `None` = this host mounts no second volume, so the caller skips.
+    fn volume_pair() -> Option<(tempfile::TempDir, tempfile::TempDir)> {
+        let dest = tempfile::tempdir().expect("temp dir");
+        let other = crate::test_volumes::second_volume_dir(dest.path())?;
+        Some((dest, other))
+    }
+
+    /// The §2.2.1 candidate names for `data.csv` → `.tsv` (a fresh iterator per publish attempt).
+    fn data_tsv_candidates() -> OutputNameCandidates {
+        output_name(Path::new("data.csv"), "tsv").expect("a real path has a stem")
+    }
+
+    // §2.14.3 (G15/G31) THE CROSS-DEVICE ROUTING ARM ON A REAL VOLUME BOUNDARY: a `tmp` sitting on a different
+    // volume than `final` makes the DIRECT publish fail cross-device, `atomic_publish` classifies it
+    // (`is_cross_device`), reads `final`'s volume free space, and hands off to the copy fallback — which
+    // publishes a same-volume COPY at the fresh base name while LEAVING the cross-volume `tmp` untouched
+    // (copy-exactly-once; the source stays on its own volume for the §2.6 run-scope cleanup) and CONSUMING the
+    // same-volume intermediate. This is the arm no injected value can reach.
+    #[test]
+    fn a_real_cross_device_publish_copies_once_and_leaves_the_cross_volume_tmp() {
+        let Some((dest, other)) = volume_pair() else {
+            // This host mounts no second volume, so the OS never returns EXDEV and the routing arm cannot be
+            // driven here. The fallback CORE it routes into (copy-exactly-once, the free-space gate, the
+            // numbering loop) stays covered on every platform by `atomic_publish_tests` above.
+            return;
+        };
+        let parent = verified(dest.path());
+        let tmp = other.path().join(".convertia-out.part");
+        std::fs::write(&tmp, b"cross-volume bytes").expect("write the tmp on the other volume");
+        let intermediate = dest.path().join(".convertia-xvol.part");
+
+        let outcome = atomic_publish(
+            &parent,
+            dest.path(),
+            &tmp,
+            data_tsv_candidates(),
+            &intermediate,
+        )
+        .expect("§2.14.3: the cross-device failure routes into the copy fallback and publishes");
+
+        assert_eq!(
+            outcome,
+            PublishOutcome::Published {
+                leaf: OsString::from("data.tsv"),
+                residual_tmp: false,
+            },
+            "§2.14.3: the cross-volume publish lands at the fresh base name (callers see the same outcome as a direct publish)"
+        );
+        assert_eq!(
+            std::fs::read(dest.path().join("data.tsv")).expect("read the published file"),
+            b"cross-volume bytes",
+            "§2.14.3: the published file carries the cross-volume tmp's exact bytes"
+        );
+        assert_eq!(
+            std::fs::read(&tmp).expect("read the cross-volume tmp"),
+            b"cross-volume bytes",
+            "§2.14.3 copy-exactly-once: the cross-volume tmp is COPIED not moved — left on its own volume for the §2.6 cleanup"
+        );
+        assert!(
+            !intermediate.exists(),
+            "§2.14.3: the same-volume intermediate was consumed by the intra-volume exclusive rename"
+        );
+    }
+
+    // §2.14.3/§2.2.2 (G15/G31) COPY-EXACTLY-ONCE UNDER A REAL NUMBERING COLLISION: with the base name taken,
+    // the fallback re-renames the SAME already-copied same-volume intermediate to `data (1).tsv` — the
+    // expensive cross-volume copy does NOT re-run per attempt. The pre-existing file is byte-identical
+    // (no-harm through the fallback) and the cross-volume tmp is still untouched.
+    #[test]
+    fn a_real_cross_device_publish_numbers_away_without_recopying_or_clobbering() {
+        let Some((dest, other)) = volume_pair() else {
+            return; // no second volume on this host (see the sibling test's note).
+        };
+        let parent = verified(dest.path());
+        let taken = dest.path().join("data.tsv");
+        std::fs::write(&taken, b"PRE-EXISTING must survive").expect("seed the taken base name");
+        let tmp = other.path().join(".convertia-out.part");
+        std::fs::write(&tmp, b"new xvol bytes").expect("write the tmp on the other volume");
+        let intermediate = dest.path().join(".convertia-xvol.part");
+
+        let outcome = atomic_publish(
+            &parent,
+            dest.path(),
+            &tmp,
+            data_tsv_candidates(),
+            &intermediate,
+        )
+        .expect("publish");
+
+        assert_eq!(
+            outcome,
+            PublishOutcome::Published {
+                leaf: OsString::from("data (1).tsv"),
+                residual_tmp: false,
+            },
+            "§2.14.3/§2.2.2: the cross-volume publish numbers away to the first free stem (1).ext"
+        );
+        assert_eq!(
+            std::fs::read(&taken).expect("read the pre-existing base name"),
+            b"PRE-EXISTING must survive",
+            "§2.2.2 no-harm: the pre-existing file is byte-identical — the cross-volume publish NEVER clobbered it"
+        );
+        assert_eq!(
+            std::fs::read(dest.path().join("data (1).tsv")).expect("read the numbered output"),
+            b"new xvol bytes",
+            "§2.14.3: the numbered output carries the copied bytes"
+        );
+        assert_eq!(
+            std::fs::read(&tmp).expect("read the cross-volume tmp"),
+            b"new xvol bytes",
+            "§2.14.3 copy-exactly-once: the numbering retry re-renamed the intermediate — the cross-volume source was not re-copied"
+        );
+    }
+
+    // §2.14.3 step (c) / §2.8 (G15/G31) THE FREE-SPACE RE-CHECK FIRING ON THE LIVE PATH: with `final`'s volume
+    // unable to host a second copy of the output, `atomic_publish`'s live
+    // `crate::platform::available_bytes` read feeds the pre-copy gate, which fails `OutOfDisk` BEFORE writing a
+    // byte — no intermediate, nothing published, the source untouched ("never assume it fits", §2.7.2).
+    //
+    // The ORIENTATION is deliberately flipped versus the sibling tests (`final` on the discovered second
+    // volume, the tmp on the anchor volume): the gate needs a destination whose free space a SPARSE
+    // pre-sized file can exceed cheaply, and the discovered volume is the smaller of the two on a stock host.
+    // Unix-gated because `set_len` is a sparse expansion on the Unix filesystems here, whereas a Windows
+    // `SetEndOfFile` allocates — so a Windows run would either really consume the space or fail the `set_len`;
+    // BOTH sides of this gate are proven deterministically on EVERY platform by
+    // `atomic_publish_tests`' injected-`avail_bytes` pair (one case each side of the gate), so what
+    // is Unix-only here is the LIVE `available_bytes`-fed firing, not the gate's coverage.
+    // [Build-Session-Entscheidung: P3.65]
+    #[cfg(unix)]
+    #[test]
+    fn a_real_cross_device_out_of_disk_fires_before_the_copy() {
+        let Some((anchor, other)) = volume_pair() else {
+            return; // no second volume on this host (see the first test's note).
+        };
+        let dest = other.path();
+        let parent = verified(dest);
+        let avail = crate::platform::available_bytes(dest)
+            .expect("read the destination volume's free space");
+        let tmp = anchor.path().join(".convertia-oversized.part");
+        let file = std::fs::File::create(&tmp).expect("create the oversized tmp");
+        // A SPARSE pre-sized file: `metadata().len()` (what the §2.14.3 gate compares) exceeds the
+        // destination's free space without any bytes being written. A filesystem that materialises the
+        // expansion instead refuses it — skip rather than fill the disk.
+        //
+        // The MARGIN is deliberately enormous — at least DOUBLE the free space, and never under 1 GiB — not a
+        // token overshoot. `atomic_publish` re-reads `available_bytes` independently, and `/dev/shm`-class
+        // destinations breathe with every process that maps or releases shared memory: if free space grew past
+        // `need` between the two reads, the gate would NOT fire and the fallback would copy an ~`avail`-sized
+        // file into the destination volume until `ENOSPC` — a host-harming outcome, not a mere flake. A gap
+        // this size cannot be closed by ordinary drift. [Build-Session-Entscheidung: P3.65]
+        let need = avail.saturating_mul(2).max(1 << 30);
+        if file.set_len(need).is_err() {
+            return;
+        }
+        drop(file);
+        let intermediate = dest.join(".convertia-xvol.part");
+
+        let err = atomic_publish(&parent, dest, &tmp, data_tsv_candidates(), &intermediate)
+            .expect_err("§2.14.3: the live free-space re-check refuses a copy that cannot fit");
+
+        assert!(
+            matches!(err, PublishError::OutOfDisk),
+            "§2.8: the live cross-volume free-space re-check maps to OutOfDisk (not a generic Io), got {err:?}"
+        );
+        assert!(
+            !intermediate.exists(),
+            "§2.14.3: OutOfDisk fires BEFORE the copy — no intermediate byte was written"
+        );
+        assert!(
+            !dest.join("data.tsv").exists(),
+            "§2.14.3: nothing was published on the OutOfDisk path"
+        );
+        assert!(
+            tmp.exists(),
+            "§2.14.3: the source tmp is untouched when the free-space gate refuses"
+        );
+    }
+
+    // §2.1.3 (G15/G31) THE CRASH / POWER-LOSS TWO-STATE INVARIANT ACROSS A REAL VOLUME BOUNDARY: the sibling
+    // `atomic_publish_tests` proof runs with `tmp` and `final` on ONE volume; this one arms the same P3.19.1
+    // kill fence with the durable `tmp` on a REAL SECOND VOLUME, so §2.1.3's closing clause ("the only rename
+    // is still intra-volume and exclusive, so the same two-state invariant holds") is proven where it is
+    // actually claimed. State-2: no `final`, the durable `*.part` remains on ITS OWN volume. State-1 (fence
+    // disarmed): `final` springs into existence complete via the §2.14.3 copy fallback, with the cross-volume
+    // `tmp` still present (copied, not moved) — the third §2.1.3 state (a truncated/0-byte `final`) never
+    // exists on either side.
+    #[test]
+    fn the_two_state_invariant_holds_with_the_tmp_on_a_real_second_volume() {
+        let Some((dest, other)) = volume_pair() else {
+            return; // no second volume on this host (see the first test's note).
+        };
+        let parent = verified(dest.path());
+        let tmp = other.path().join(".convertia-out.part");
+        std::fs::write(&tmp, b"converted bytes").expect("write the tmp on the other volume");
+        let final_name = dest.path().join("data.tsv");
+        let intermediate = dest.path().join(".convertia-xvol.part");
+
+        // ── §2.1.3 STATE-2: a crash in the post-sync-pre-rename window, tmp on the other volume ──
+        {
+            let _kill = kill_after_sync::Armed::arm(); // RAII: disarmed on scope exit (even on a panic)
+            let killed = atomic_publish(
+                &parent,
+                dest.path(),
+                &tmp,
+                data_tsv_candidates(),
+                &intermediate,
+            );
+            assert!(
+                killed.is_err(),
+                "§2.1.3: the armed fence returns in the post-sync-pre-rename window (nothing published)"
+            );
+        }
+        assert!(
+            !final_name.exists(),
+            "§2.1.3 state-2: after a kill before the rename NO `final` exists — never a truncated/0-byte final"
+        );
+        assert!(
+            !intermediate.exists(),
+            "§2.1.3 state-2: the kill precedes the cross-volume copy — no intermediate was created either"
+        );
+        assert_eq!(
+            std::fs::read(&tmp).expect("read the tmp"),
+            b"converted bytes",
+            "§2.1.3 state-2: the durable *.part remains byte-identical ON ITS OWN VOLUME (unpublished, discardable)"
+        );
+
+        // ── §2.1.3 STATE-1: the un-armed publish completes atomically via the §2.14.3 fallback ──
+        let outcome = atomic_publish(
+            &parent,
+            dest.path(),
+            &tmp,
+            data_tsv_candidates(),
+            &intermediate,
+        )
+        .expect("§2.1.3: the un-armed cross-volume publish completes");
+        assert!(
+            matches!(outcome, PublishOutcome::Published { .. }),
+            "§2.1.3 state-1: with the fence disarmed the cross-volume publish reaches state-1"
+        );
+        assert_eq!(
+            std::fs::read(&final_name).expect("read the final"),
+            b"converted bytes",
+            "§2.1.3 state-1: `final` sprang into existence COMPLETE — the two-state invariant holds across the volume boundary"
+        );
+        assert!(
+            tmp.exists(),
+            "§2.14.3: the cross-volume tmp survives the successful publish (copied, not moved)"
         );
     }
 }

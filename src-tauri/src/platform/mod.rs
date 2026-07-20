@@ -1009,8 +1009,10 @@ mod available_bytes_tests {
 // Linux, APFS on macOS, NTFS on Windows — none FAT/exFAT-class → `Ok(false)`). A real FAT/exFAT volume cannot
 // be mounted on the CI runners, so the classification boundary is proven on the magic value / name directly
 // (Decision P3.18 "magic/name-list boundary fixtures instead of probe-error fixtures"), and the read is
-// exercised end-to-end on a real temp dir (never mock the FS under test, test-strategy §0.1). STANDALONE
-// `#[cfg(test)]` (clippy `is_cfg_test` recognition, P1.17).
+// exercised end-to-end on a real temp dir (never mock the FS under test, test-strategy §0.1). P3.65 adds the
+// converse leg: wherever a host DOES have a FAT/exFAT filesystem mounted, the detector is asserted against it
+// using the kernel's own mount table as the independent oracle. STANDALONE `#[cfg(test)]` (clippy
+// `is_cfg_test` recognition, P1.17).
 #[cfg(test)]
 mod lacks_atomic_publish_primitive_tests {
     use super::lacks_atomic_publish_primitive;
@@ -1110,6 +1112,32 @@ mod lacks_atomic_publish_primitive_tests {
                 .count(),
             0,
             "Decision P3.18: the statfs detection is READ-ONLY — it left no probe residue"
+        );
+    }
+
+    // §2.7.2 (G15/G31, P3.65) THE DETECTOR AGAINST A REAL FAT/exFAT FILESYSTEM, wherever the host has one
+    // mounted. Both the mount point and its TYPE come from the kernel's own mount table (`/proc/self/mounts`,
+    // read by `crate::test_volumes::fat_class_mount`), NOT from this detector — so the assertion is an
+    // independent check of the classifier rather than a restatement of it (asking the detector to find its own
+    // subject would assert nothing). `None` = no such filesystem mounted here (the ordinary case, including the
+    // CI runners) → a clean skip; where the substrate DOES exist, a miss is exactly the P3.18 "list-miss" the
+    // reactive §2.1.2 backstop covers, and catching it is the point. READ-ONLY — nothing is written to what may
+    // be removable media. [Build-Session-Entscheidung: P3.65]
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_real_kernel_reported_fat_mount_classifies_as_fat_class() {
+        let Some(mount_point) = crate::test_volumes::fat_class_mount() else {
+            return; // no FAT/exFAT filesystem mounted on this host — the magic-boundary proof above stands.
+        };
+        // `!= Some(false)` on purpose, not `== Some(true)`: a `statfs` READ FAILURE (a permission-restricted
+        // `/boot/efi`, a vanished mount) is a spec-sanctioned outcome the §2.7.2 caller treats as
+        // heuristic-indeterminate (the P3.18 list-miss honesty), so it must not red the build. Only a genuine
+        // CLASSIFICATION MISS — the read succeeded and said "not FAT-class" — is the defect this pins.
+        assert_ne!(
+            lacks_atomic_publish_primitive(&mount_point).ok(),
+            Some(false),
+            "§2.7.2: a filesystem the kernel reports as vfat/exfat/msdos at {mount_point:?} MUST NOT classify \
+             as non-FAT-class"
         );
     }
 
