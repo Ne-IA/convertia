@@ -342,7 +342,15 @@ pub async fn get_run_summary(
 /// mapping is directly unit-testable over a real `RunResultStore` (no `tauri::test` mock). `None` → the
 /// InternalError not-available result (an unresolvable / not-yet-finished / superseded id, §2.13).
 /// [Build-Session-Entscheidung: P3.50]
-fn resolve_run_summary(store: &RunResultStore, run_id: RunId) -> Result<RunResult, IpcError> {
+///
+/// `pub(super)` — visible in `crate::ipc` + its descendants, NOT crate-wide: the P3.66 C1→C6→C8 round-trip
+/// smoke (`crate::ipc::slice_round_trip`) closes on this C8 leg, while `pub(crate)` would expose an
+/// IPC-funnel internal to tier 1/2 against the §0.7 tier model. This FULFILS the direct unit-testability the
+/// doc above already declares as this fn's reason to exist. [Decision: P3.66, 2026-07-18]
+pub(super) fn resolve_run_summary(
+    store: &RunResultStore,
+    run_id: RunId,
+) -> Result<RunResult, IpcError> {
     store.get(run_id).ok_or_else(|| IpcError {
         kind: ConversionErrorKind::InternalError,
         message: "Could not retrieve the conversion summary.".into(),

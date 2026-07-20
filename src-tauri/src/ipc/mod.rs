@@ -72,6 +72,13 @@ mod app_event_names {
     }
 }
 
+// [Build-Session-Entscheidung: P3.66] The C1->C6->C8 cross-OS de-risk smoke — homed at the SPAN's own level
+// beside the other cross-cutting C-surface suites (the P3.66 ruling), a FILE rather than an inline mod
+// because it carries a real-FS fixture and a full conversion run. G69 asserts the DIRECTORY set, so a new
+// file is structurally free.
+#[cfg(test)]
+mod slice_round_trip;
+
 #[cfg(test)]
 mod c_surface_scan {
     //! Shared test-support for the STRUCTURAL C-surface scans (`responsiveness_contract`,

@@ -132,7 +132,14 @@ pub async fn drain_intake(
 /// mutate-registries-last discipline: a mid-funnel early-return leaves no half-registered set). Takes plain
 /// `&` state (NOT the `AppHandle`) so it is fully unit-testable with real state + a real temp FS — the
 /// AppHandle resolution stays in the thin `spawn_blocking` command wrapper (the §1.1a boot-glue split).
-fn drain_to_collected_set(
+///
+/// `pub(super)` — visible in `crate::ipc` + its descendants, NOT crate-wide: the P3.66 C1→C6→C8 round-trip
+/// smoke lives at the span's own level (`crate::ipc::slice_round_trip`) and needs the C1 leg, while
+/// `pub(crate)` would expose an IPC-funnel internal to tier 1/2 (`orchestrator`/`engines`) against the §0.7
+/// tier model. This FULFILS the unit-testability the doc above already declares as this fn's reason to exist
+/// (owner decision A ships no `tauri::test` mock, so the AppHandle-free split IS the test surface).
+/// [Decision: P3.66, 2026-07-18 — `pub(super)`, not `pub(crate)`]
+pub(super) fn drain_to_collected_set(
     pending: &PendingIntake,
     ready: &FrontendReady,
     ingest_registry: &IngestRegistry,
