@@ -754,9 +754,17 @@ property/integration tests on **G31** / **G15** / **G16**:
   (G15 mirror) homed in G31's hosted security-assertion set, parallel to temp-ownership.
 - **Temp ownership + mode-bits (§2.14.1 · G15/G31):** `0o700` scratch root / `0o600`
   `.part` publish-temp **+ a Windows ACL leg** — POSIX mode bits are meaningless on
-  Windows, so assert the scratch root's DACL grants access **only to the
-  current-user SID** (an explicit restrictive DACL at create / `icacls` inspection),
-  closing the world-readable-`%TEMP%`-of-decoded-plaintext hole. **+ a
+  Windows, so assert the created scratch root's **effective** DACL grants **no
+  broad principal** (Everyone / `BUILTIN\Users` / Authenticated Users) an ACE, via
+  a SID-level security-descriptor/`icacls` query (never a localized principal-name
+  string match). The delivering mechanism is §2.14.1's `[DECIDED]` **inherited
+  default per-user profile ACL** ("no explicit broadening" — the machine-trust
+  SYSTEM/Administrators principals retain their inherited ACEs, just as `0o700`
+  never excludes root on POSIX), closing the
+  world-readable-`%TEMP%`-of-decoded-plaintext hole
+  *(corrected 2026-07-20 — the P3.71.2 pre-fill ruling: this bullet formerly
+  asserted "only to the current-user SID" and offered "an explicit restrictive
+  DACL at create", a mechanism §2.14.1's mode-bits block decided against)*. **+ a
   cleanup-on-fault/kill sub-case** (the per-job kind-2 scratch is removed after a
   forced engine kill mid-conversion) **+ a Windows AV-lock sub-case** — an AV
   scanner can hold scratch files open after process exit, failing `remove_dir_all`
