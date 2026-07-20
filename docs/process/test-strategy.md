@@ -411,8 +411,13 @@ trailing dots/spaces.
 
 **Crash-corpus persistence + cross-platform replay.** Every libFuzzer-found crash
 is minimized and committed under tracked `fuzz/corpus/` + `fuzz/crashes/`. The
-deterministic replay is a **plain `cargo test` integration test
-(`tests/fuzz_replay.rs`)** that feeds every corpus/crash file directly to the
+deterministic replay is a **plain `cargo test` replay suite — the crate-root
+`#[cfg(test)]` module `crate::fuzz_replay`** (`src-tauri/src/fuzz_replay.rs`;
+corrected 2026-07-20, the P3.67 homing ruling: NOT a cargo `tests/`-dir
+integration target — `convertia-core` is a binary crate with no `lib.rs`, so a
+`tests/`-dir target links no library and cannot reach
+`crate::detection`/`fs_guard`; the P2.126 IPC-proptest precedent) — that feeds
+every corpus/crash file directly to the
 target function with **no libFuzzer harness** — so it compiles and runs on **all
 platforms incl. Windows under the stable toolchain**, no nightly/instrumentation
 needed. So: **all platforms run the stable-toolchain replay; Linux + macOS

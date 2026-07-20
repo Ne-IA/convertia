@@ -3581,8 +3581,9 @@ mod test_volumes;
 // [Build-Session-Entscheidung: P3.67] The §6.4.2/G48 fuzz-crash REPLAY harness (`crate::fuzz_replay`) — the
 // same crate-root placement, for the same reason as the two modules above: it is `#[cfg(test)]`-only
 // infrastructure spanning three §0.7 tiers (`detection`, `fs_guard`, `engines`), and it adds a FILE, never a
-// directory (G69). G48/P0.5.8 name it `tests/fuzz_replay.rs`, denoting the plain `cargo test` suite as
-// opposed to `fuzz/`; this crate is a BINARY crate, so a cargo `tests/` integration target links no library
+// directory (G69). G48/P0.5.8 originally named it `tests/fuzz_replay.rs` — denoting the plain `cargo test`
+// suite as opposed to `fuzz/` — until the 2026-07-20 homing correction re-cut those docs to name
+// `crate::fuzz_replay` outright; this crate is a BINARY crate, so a cargo `tests/` integration target links no library
 // and could not call the in-core functions it replays (the module's own doc records the full reasoning, and
 // the P2.126 IPC-proptest delivery is the precedent). It sits under the same at-the-foot rule above.
 #[cfg(test)]

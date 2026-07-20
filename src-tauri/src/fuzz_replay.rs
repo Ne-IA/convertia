@@ -11,8 +11,9 @@
 //! Replaying a hostile corpus therefore cannot damage anything on the machine that runs it.
 //!
 //! [Build-Session-Entscheidung: P3.67] **Homed at the crate root as `crate::fuzz_replay`, not as a cargo
-//! `tests/` integration target.** G48 + P0.5.8 + test-strategy §1.5 name this harness
-//! `tests/fuzz_replay.rs`; that name denotes **the plain `cargo test` suite as opposed to `fuzz/`** (the
+//! `tests/` integration target.** G48 + P0.5.8 + test-strategy §1.5 originally named this harness
+//! `tests/fuzz_replay.rs` (re-cut to `crate::fuzz_replay` by the 2026-07-20 homing correction); that
+//! name denoted **the plain `cargo test` suite as opposed to `fuzz/`** (the
 //! contrast those §§ draw in every sentence: "a plain `cargo test` … with NO libFuzzer harness"), and the
 //! physical home follows the crate's real shape. `convertia-core` is a BINARY crate (no `lib.rs`, main.rs
 //! §0.7), so a cargo integration test under `src-tauri/tests/` links no library and cannot reach
