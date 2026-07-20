@@ -19,7 +19,10 @@
 //!    producer), and the 5 batch-summary strings (`BatchSummary` + `WITH_RESIDUE_TAIL`); **P3.59 adds**
 //!    the §2.6.4 case-1 `RESIDUE_ANNOTATION_TEMPLATE` + its `residue_annotation` producer — a NON-failure
 //!    row, so it is deliberately NOT keyed by a `ConversionErrorKind` and lives outside the table above.
-//!  - the §2.9.1 `LossyKind → canonical-English` lossy-note catalog — **P3.69**.
+//!  - the §2.9.1 `LossyKind → canonical-English` lossy-note catalog — **P3.69 (built below):**
+//!    `lossy_note_template` (the single-home 27-row table — every `LossyKind` is §2.9.1-homed, so it
+//!    returns `&'static str`, not the §2.8.2 table's `Option`) and `lossy_note` (the `OutcomeMsg::Lossy`
+//!    producer for EVERY kind, substituting `{w}`×`{h}` for the one templated row, `image_svg_raster`).
 //!  - the Running→Failed render seam turning an internal `ConversionErrorKind` into the surfaced
 //!    `OutcomeMsg::Failure { text }` through the P3.68 catalog — **P3.46**.
 //!
@@ -53,15 +56,17 @@
 // flags HERE (established by demoting the expect to a warn and reading its enumeration back, not by
 // assertion — a module-scoped expect can only ever be fulfilled by an item of THIS module, so a sibling's
 // dead fn would not count): the not-yet-emitted `ConversionErrorKind` variants, the `ErrorKind` alias, the
-// `OutcomeMsg::Lossy` variant (no §2.9 producer until P4.65), and the §1.1 turn-time
-// `read_failure_to_error_kind` helper. Those are dead in the PRODUCTION build; the cfg(test) anti-drift +
+// `OutcomeMsg::Lossy` variant together with the P3.69 §2.9.1 catalog pair that renders it
+// (`lossy_note_template` / `lossy_note` — the note's first production CONSUMER is P4.65's FormatPicker, so
+// nothing constructs one), and the §1.1 turn-time `read_failure_to_error_kind` helper. Those are dead in
+// the PRODUCTION build; the cfg(test) anti-drift +
 // wire-form tests reference them, so the TEST build is dead-code-clean. `expect` (not `allow`) auto-flags the
 // moment the LAST covered item gains a production constructor/caller — matching `crate::domain`.
 #![cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the item-level §2.8 taxonomy + IpcError + OutcomeMsg + the §1.12 SkipReason→ErrorKind and §1.1 turn-time ReadFailure→ErrorKind helpers were authored as contracts and registered for typegen ahead of their pipeline. Much of that is now LIVE: `conversion_failure` + `skipped_message` since P3.48 (the C6 conductor root reaches them through crate::orchestrator::project_run_result → item_base_reason — the first production constructions of an item-level outcome); `residue_annotation` via P3.59 (the promoted §2.8.2 case-1 row, through residue_item_reason's Succeeded arm); `IpcError` at the §0.4.3 command boundaries (ipc::{conversion,intake,planning,system}) + the conductor's per-item Failed arm; the app-level `WebviewFault` `AppFault` via the P2.109 boot-fault seam in main.rs. What STILL keeps this expectation fulfilled is the remainder rustc itself flags in THIS module (verified by demoting the expect to warn and reading the enumeration back — never by assertion): the not-yet-emitted `ConversionErrorKind` variants (the engine/platform kinds P4+ raises), the `ErrorKind` alias (§0.6 names it; every construction site spells the concrete type, P2.10), `OutcomeMsg::Lossy` (the §2.9 note has no producer until P4.65), and the §1.1 turn-time `read_failure_to_error_kind` helper (P2.73 — the §1.1 freeze re-implements the split inline)."
+        reason = "the item-level §2.8 taxonomy + IpcError + OutcomeMsg + the §1.12 SkipReason→ErrorKind and §1.1 turn-time ReadFailure→ErrorKind helpers were authored as contracts and registered for typegen ahead of their pipeline. Much of that is now LIVE: `conversion_failure` + `skipped_message` since P3.48 (the C6 conductor root reaches them through crate::orchestrator::project_run_result → item_base_reason — the first production constructions of an item-level outcome); `residue_annotation` via P3.59 (the promoted §2.8.2 case-1 row, through residue_item_reason's Succeeded arm); `IpcError` at the §0.4.3 command boundaries (ipc::{conversion,intake,planning,system}) + the conductor's per-item Failed arm; the app-level `WebviewFault` `AppFault` via the P2.109 boot-fault seam in main.rs. What STILL keeps this expectation fulfilled is the remainder rustc itself flags in THIS module (verified by demoting the expect to warn and reading the enumeration back — never by assertion): the not-yet-emitted `ConversionErrorKind` variants (the engine/platform kinds P4+ raises), the `ErrorKind` alias (§0.6 names it; every construction site spells the concrete type, P2.10), `OutcomeMsg::Lossy` together with the P3.69 §2.9.1 catalog pair that renders it (`lossy_note_template` / `lossy_note`) — the note's first CONSUMER is P4.65's FormatPicker surface, so no production path constructs one, which rustc reports as all three being dead — and the §1.1 turn-time `read_failure_to_error_kind` helper (P2.73 — the §1.1 freeze re-implements the split inline)."
     )
 )]
 
@@ -606,6 +611,119 @@ impl BatchSummary {
 /// may remain (§2.6.4). Its own `const` so the §1.12 assembler and the §2.6.4 residue path (P3.25) share the
 /// one string. [Build-Session-Entscheidung: P3.68]
 pub const WITH_RESIDUE_TAIL: &str = "Some temporary files may remain — see details.";
+
+// ─── §2.9.1 the LossyKind → canonical-English note catalog (P3.69) ──────────────
+/// The §2.9.1 note for one predictable-loss kind — the SINGLE home of every lossy-note string (§2.9: "single
+/// home of every lossy-note string"), the §2.9.1 sibling of [`conversion_message_template`]. Each note is a
+/// **calm single line** shown once beside the chosen target the moment a lossy target is selected (§2.9.1):
+/// passive, dismissible-by-ignoring, never gating Convert.
+///
+/// Unlike the §2.8.2 table this returns `&'static str`, NOT `Option` — §2.9.1 homes a row for EVERY
+/// `LossyKind` variant (there is no kind whose string lives elsewhere), and the completeness test below pins
+/// that. Exactly one row carries substitution slots (`image_svg_raster`'s `{w}`×`{h}`); [`lossy_note`]
+/// renders them.
+///
+/// The strings are plain/calm and never blaming (SSOT *Fail clearly*), English-only (G57 — the UI renders
+/// them verbatim and never re-authors a note: P4.65 surfaces them in FormatPicker, P8.20 polishes only the
+/// presentation). §2.9 is strictly about CONTENT FAITHFULNESS — a compatibility caveat ("may not open in
+/// older players") is NOT a §2.9 note and has no row here (§2.9.2 "Compatibility ≠ loss").
+#[must_use]
+pub fn lossy_note_template(kind: LossyKind) -> &'static str {
+    match kind {
+        LossyKind::ImageLossyCodec => {
+            "Saved with compression — fine details may be slightly reduced."
+        }
+        LossyKind::ImagePalette => "Reduced to 256 colours — some colour detail is lost.",
+        LossyKind::ImageDownscale => {
+            "Resized to multiple icon sizes — detail may be lost at smaller sizes."
+        }
+        LossyKind::ImageAlphaFlatten => {
+            "Transparency isn't supported here and will be filled with a background colour."
+        }
+        LossyKind::ImageAnimationFlatten => "Animated — only the first frame is converted.",
+        LossyKind::ImageSvgRaster => {
+            "Vector image converted to a fixed-size picture ({w}×{h}) — it won't scale up cleanly afterward."
+        }
+        LossyKind::DocPdfReflow => "Layout may shift slightly when converted to PDF.",
+        LossyKind::DocPdfToText => "Text only — layout, tables and images are dropped.",
+        LossyKind::DocHtmlRender => "The result may look different from a web browser.",
+        LossyKind::DocToText => "Text only — formatting and images are dropped.",
+        LossyKind::DocSimplified => "Some formatting may be simplified.",
+        LossyKind::SheetToDelimited => {
+            "Only one sheet and its values are exported — formatting, formulas and other sheets are dropped."
+        }
+        LossyKind::XlsLegacyLimits => {
+            "Saved in the old Excel format — rows/columns beyond the legacy limit and newer features are dropped."
+        }
+        LossyKind::TextEncodingNarrowed => {
+            "Some characters can't be saved in the chosen encoding and would be lost."
+        }
+        LossyKind::SlidesToPdfFlatten => {
+            "Animations, transitions and embedded media are flattened or dropped, and editing is no longer possible."
+        }
+        LossyKind::OfficeRoundtripApprox => {
+            "Some effects and layout may shift when converting between PowerPoint and OpenDocument."
+        }
+        LossyKind::PptxToPptLegacy => {
+            "Saved in the old PowerPoint format — SmartArt, modern charts, and newer transitions (e.g. Morph) can't be stored and are simplified or dropped."
+        }
+        LossyKind::AudioLossyTarget => {
+            "Saved in a compressed audio format — some quality is reduced."
+        }
+        LossyKind::AudioTranscode => {
+            "Re-compressing already-compressed audio — quality drops a little more."
+        }
+        LossyKind::AudioLossyOrigin => {
+            "This won't improve quality — the original is already compressed, so the result is just larger."
+        }
+        LossyKind::AudioBitdepth => {
+            "Saved at 16-bit — the source's extra audio precision is reduced."
+        }
+        LossyKind::AudioTagsDropped => {
+            "This format can't store song info, so title/artist tags are dropped."
+        }
+        LossyKind::VideoReencode => "Re-encoded to play widely — some video quality is reduced.",
+        LossyKind::VideoAlphaLost => {
+            "Transparency isn't supported in this format and will be removed."
+        }
+        LossyKind::VideoSubsDropped => "Embedded subtitles couldn't be kept and were dropped.",
+        LossyKind::VideoToGif => {
+            "GIFs reduce colours, smoothness and remove sound — best for short clips."
+        }
+        LossyKind::AudioDownmix => "Surround sound is mixed down to stereo for this format.",
+    }
+}
+
+/// The §2.9.1 note producer — renders [`lossy_note_template`] into the surfaced
+/// [`OutcomeMsg::Lossy`] (§2.8.2/P2.20), the §2.9 sibling of [`conversion_failure`].
+///
+/// `raster_size` supplies the `{w}`×`{h}` pair for the ONE templated row
+/// ([`LossyKind::ImageSvgRaster`], the §2.9.1 SVG→raster entry); every other kind ignores it. Returns
+/// `None` iff the kind's note needs those dimensions and none were supplied — a caller contract, kept as a
+/// `None` rather than a second string because §2.9.1 homes exactly one SVG-raster sentence and inventing a
+/// dimension-free variant of it here would fork the single home §2.9 mandates. A rendered note therefore
+/// NEVER carries an unsubstituted `{w}`/`{h}` slot (pinned below).
+///
+/// **A `None` is a CALLER BUG, never "no loss applies".** The kind is what decides whether a note is due
+/// (§1.5 `Target.lossy` / the §2.9.2 co-applying set); this returning `None` means the caller had the
+/// dimension-bearing kind and withheld its dimensions. A consumer must not `filter_map` it away — that
+/// would silently show NO note for a genuinely lossy conversion, the opposite of §2.9's promise.
+/// [Build-Session-Entscheidung: P3.69]
+pub fn lossy_note(kind: LossyKind, raster_size: Option<(u32, u32)>) -> Option<OutcomeMsg> {
+    let template = lossy_note_template(kind);
+    // Substitute ONLY when the template actually carries the slots. The chained replace is safe HERE for a
+    // structural reason (the P3.68 self-contamination lesson — a substituted value must never be re-scanned
+    // for a later slot token): both values are `u32` decimals, which cannot contain `{h}`.
+    let text = if template.contains("{w}") {
+        let (width, height) = raster_size?;
+        template
+            .replace("{w}", &width.to_string())
+            .replace("{h}", &height.to_string())
+    } else {
+        template.to_owned()
+    };
+    Some(OutcomeMsg::Lossy { kind, text })
+}
 
 #[cfg(test)]
 mod tests {
@@ -1240,5 +1358,243 @@ mod tests {
             WITH_RESIDUE_TAIL,
             "Some temporary files may remain — see details."
         );
+    }
+
+    // ─── §2.9.1 the lossy-note catalog (P3.69) ──────────────────────────────────
+    /// Every `LossyKind` the §2.9.1 catalog defines, in the spec table's own order (`audio_downmix` last).
+    /// The exhaustive `match` in [`lossy_note_template`] (crate-level `deny(clippy::wildcard_enum_match_arm)`)
+    /// is the COMPILE-TIME guard that no variant can ship without a string; this list asserts the current 27
+    /// are the ones pinned below. A 28th variant compiles against this array unchanged, so a variant added
+    /// without extending it would still be forced to carry a row — it would simply escape these pins.
+    const ALL_LOSSY_KINDS: [LossyKind; 27] = [
+        LossyKind::ImageLossyCodec,
+        LossyKind::ImagePalette,
+        LossyKind::ImageDownscale,
+        LossyKind::ImageAlphaFlatten,
+        LossyKind::ImageAnimationFlatten,
+        LossyKind::ImageSvgRaster,
+        LossyKind::DocPdfReflow,
+        LossyKind::DocPdfToText,
+        LossyKind::DocHtmlRender,
+        LossyKind::DocToText,
+        LossyKind::DocSimplified,
+        LossyKind::SheetToDelimited,
+        LossyKind::XlsLegacyLimits,
+        LossyKind::TextEncodingNarrowed,
+        LossyKind::SlidesToPdfFlatten,
+        LossyKind::OfficeRoundtripApprox,
+        LossyKind::PptxToPptLegacy,
+        LossyKind::AudioLossyTarget,
+        LossyKind::AudioTranscode,
+        LossyKind::AudioLossyOrigin,
+        LossyKind::AudioBitdepth,
+        LossyKind::AudioTagsDropped,
+        LossyKind::VideoReencode,
+        LossyKind::VideoAlphaLost,
+        LossyKind::VideoSubsDropped,
+        LossyKind::VideoToGif,
+        LossyKind::AudioDownmix,
+    ];
+
+    /// §2.9.1 completeness: EVERY `LossyKind` variant has a non-empty note row — no unhomed kind (the box's
+    /// own bar). §2.9 makes `crate::outcome` the single home of every lossy-note string, so a kind without
+    /// a row would leave `OutcomeMsg::Lossy.text` with nothing to produce.
+    #[test]
+    fn every_lossy_kind_has_a_non_empty_catalog_row() {
+        for kind in ALL_LOSSY_KINDS {
+            let note = lossy_note_template(kind);
+            assert!(
+                !note.trim().is_empty(),
+                "§2.9.1: {kind:?} has no canonical-English note row"
+            );
+        }
+    }
+
+    /// The rows are pinned to their EXACT §2.9.1 canonical English — a second, independent transcription of
+    /// the spec table. A completeness-only check would let a mutation to any row survive (the P3.68 review
+    /// lesson: pin every row, not a sample).
+    #[test]
+    fn lossy_catalog_rows_match_the_exact_canonical_english() {
+        let expected: [(LossyKind, &str); 27] = [
+            (
+                LossyKind::ImageLossyCodec,
+                "Saved with compression — fine details may be slightly reduced.",
+            ),
+            (
+                LossyKind::ImagePalette,
+                "Reduced to 256 colours — some colour detail is lost.",
+            ),
+            (
+                LossyKind::ImageDownscale,
+                "Resized to multiple icon sizes — detail may be lost at smaller sizes.",
+            ),
+            (
+                LossyKind::ImageAlphaFlatten,
+                "Transparency isn't supported here and will be filled with a background colour.",
+            ),
+            (
+                LossyKind::ImageAnimationFlatten,
+                "Animated — only the first frame is converted.",
+            ),
+            (
+                LossyKind::ImageSvgRaster,
+                "Vector image converted to a fixed-size picture ({w}×{h}) — it won't scale up cleanly afterward.",
+            ),
+            (
+                LossyKind::DocPdfReflow,
+                "Layout may shift slightly when converted to PDF.",
+            ),
+            (
+                LossyKind::DocPdfToText,
+                "Text only — layout, tables and images are dropped.",
+            ),
+            (
+                LossyKind::DocHtmlRender,
+                "The result may look different from a web browser.",
+            ),
+            (
+                LossyKind::DocToText,
+                "Text only — formatting and images are dropped.",
+            ),
+            (LossyKind::DocSimplified, "Some formatting may be simplified."),
+            (
+                LossyKind::SheetToDelimited,
+                "Only one sheet and its values are exported — formatting, formulas and other sheets are dropped.",
+            ),
+            (
+                LossyKind::XlsLegacyLimits,
+                "Saved in the old Excel format — rows/columns beyond the legacy limit and newer features are dropped.",
+            ),
+            (
+                LossyKind::TextEncodingNarrowed,
+                "Some characters can't be saved in the chosen encoding and would be lost.",
+            ),
+            (
+                LossyKind::SlidesToPdfFlatten,
+                "Animations, transitions and embedded media are flattened or dropped, and editing is no longer possible.",
+            ),
+            (
+                LossyKind::OfficeRoundtripApprox,
+                "Some effects and layout may shift when converting between PowerPoint and OpenDocument.",
+            ),
+            (
+                LossyKind::PptxToPptLegacy,
+                "Saved in the old PowerPoint format — SmartArt, modern charts, and newer transitions (e.g. Morph) can't be stored and are simplified or dropped.",
+            ),
+            (
+                LossyKind::AudioLossyTarget,
+                "Saved in a compressed audio format — some quality is reduced.",
+            ),
+            (
+                LossyKind::AudioTranscode,
+                "Re-compressing already-compressed audio — quality drops a little more.",
+            ),
+            (
+                LossyKind::AudioLossyOrigin,
+                "This won't improve quality — the original is already compressed, so the result is just larger.",
+            ),
+            (
+                LossyKind::AudioBitdepth,
+                "Saved at 16-bit — the source's extra audio precision is reduced.",
+            ),
+            (
+                LossyKind::AudioTagsDropped,
+                "This format can't store song info, so title/artist tags are dropped.",
+            ),
+            (
+                LossyKind::VideoReencode,
+                "Re-encoded to play widely — some video quality is reduced.",
+            ),
+            (
+                LossyKind::VideoAlphaLost,
+                "Transparency isn't supported in this format and will be removed.",
+            ),
+            (
+                LossyKind::VideoSubsDropped,
+                "Embedded subtitles couldn't be kept and were dropped.",
+            ),
+            (
+                LossyKind::VideoToGif,
+                "GIFs reduce colours, smoothness and remove sound — best for short clips.",
+            ),
+            (
+                LossyKind::AudioDownmix,
+                "Surround sound is mixed down to stereo for this format.",
+            ),
+        ];
+        for (kind, canonical) in expected {
+            assert_eq!(
+                lossy_note_template(kind),
+                canonical,
+                "§2.9.1: the {kind:?} note drifted from its canonical English"
+            );
+        }
+    }
+
+    /// `image_svg_raster` is the ONE templated row, and a rendered note never leaks an unsubstituted slot.
+    #[test]
+    fn image_svg_raster_is_the_only_templated_row_and_substitutes_its_dimensions() {
+        let templated: Vec<LossyKind> = ALL_LOSSY_KINDS
+            .into_iter()
+            .filter(|kind| lossy_note_template(*kind).contains("{w}"))
+            .collect();
+        assert_eq!(
+            templated,
+            vec![LossyKind::ImageSvgRaster],
+            "§2.9.1 homes exactly one substituting note ({{w}}×{{h}}, the SVG→raster row)"
+        );
+
+        let rendered = lossy_note(LossyKind::ImageSvgRaster, Some((1024, 768)))
+            .expect("the SVG raster note renders when dimensions are supplied");
+        assert_eq!(
+            rendered,
+            OutcomeMsg::Lossy {
+                kind: LossyKind::ImageSvgRaster,
+                text: "Vector image converted to a fixed-size picture (1024×768) — it won't scale up cleanly afterward."
+                    .to_owned(),
+            },
+            "§2.9.1: both dimension slots are filled from the supplied size"
+        );
+    }
+
+    /// No rendered note carries a leftover `{…}` slot, for any kind — the surfaced string is always
+    /// ready-to-show (§2.9.1 "a calm single line"), never a half-substituted template.
+    #[test]
+    fn no_rendered_lossy_note_leaks_an_unsubstituted_slot() {
+        for kind in ALL_LOSSY_KINDS {
+            let text = lossy_note_template(kind)
+                .replace("{w}", "320")
+                .replace("{h}", "240");
+            assert!(
+                !text.contains('{') && !text.contains('}'),
+                "§2.9.1: the rendered {kind:?} note still carries a slot: {text}"
+            );
+            // The producer wraps exactly that rendered row into the surfaced §2.8.2 variant, for every kind.
+            assert_eq!(
+                lossy_note(kind, Some((320, 240))),
+                Some(OutcomeMsg::Lossy { kind, text }),
+                "§2.9.1: the {kind:?} producer must surface its catalog row verbatim"
+            );
+        }
+    }
+
+    /// The dimension-bearing kind declines rather than surfacing a raw `{w}`×`{h}` when no size is supplied;
+    /// every slot-free kind renders regardless (the `raster_size` argument is ignored there).
+    #[test]
+    fn the_svg_raster_note_declines_without_dimensions_and_others_ignore_them() {
+        assert_eq!(
+            lossy_note(LossyKind::ImageSvgRaster, None),
+            None,
+            "§2.9.1: the templated row must not surface an unsubstituted slot"
+        );
+        for kind in ALL_LOSSY_KINDS
+            .into_iter()
+            .filter(|kind| *kind != LossyKind::ImageSvgRaster)
+        {
+            assert!(
+                lossy_note(kind, None).is_some(),
+                "§2.9.1: {kind:?} carries no slot, so it renders without dimensions"
+            );
+        }
     }
 }
