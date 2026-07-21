@@ -47,6 +47,40 @@ G48_FUZZ_TARGETS = [
     ("imgworker_ffi", "the imgworker Rust->FFI surface vs staged libvips/libheif/librsvg, ASAN on (boundary side only)"),
 ]
 
+# --- per-target dormancy (the 2026-07-21 P3.73 fork ruling, owner-acked): fuzz/ arrives at P3.73 with
+#     the FOUR buildable in-core targets; `zip_slip` fuzzes the P7.30 in-core OPC/archive-entry peek
+#     (activated by the [TEST] box P7.50.1) and `imgworker_ffi` the P4-filled imgworker FFI surface
+#     (activated by P4.35.1, after the P4.83 lib split). Demanding those harnesses before their target
+#     fns exist forces a stub anti-pattern (CLAUDE §5), so each late target (+ its fixture) is DORMANT
+#     until its ACTIVATING BOX is checked `[x]` in the plan - SELF-HEALING, the plan-lint-check-27
+#     philosophy: the check reads the box status live, so the box's own check-off IS the arming event
+#     (a checked-off activation box with no harness reds immediately; there is no follow-up L(-1) act
+#     to forget). Dormancy waives ABSENCE only: a PRESENT dormant harness is still fully validated,
+#     and an unresolvable plan file / box id ARMS the target (fail-closed, never a silent waiver). ---
+DORMANT_UNTIL = {
+    "zip_slip":      ("docs/plan/P7-office.md", "P7.50.1"),
+    "imgworker_ffi": ("docs/plan/P4-engine-framework.md", "P4.35.1"),
+}
+DORMANT_FIXTURES = {
+    "zip_slip_entry": ("docs/plan/P7-office.md", "P7.50.1"),
+}
+
+
+def _box_checked(plan_file: str, box_id: str) -> bool:
+    """True = the activating box is `[x]` OR cannot be resolved (a missing plan file / unfindable box
+    id must ARM the target - fail-closed, never a silent waiver); False = the box is LEGIBLY not done
+    (`[ ]` unchecked or `[!]` blocked - both are provable not-done states, so tolerating the dormant
+    absence is semantically correct; only resolution FAILURES arm)."""
+    p = ROOT / plan_file
+    if not p.is_file():
+        return True
+    hit = re.search(r"^\s*- \[(x| |!)\] \*\*" + re.escape(box_id) + r"\*\*",
+                    p.read_text(encoding="utf-8", errors="replace"), flags=re.M)
+    if hit is None:
+        return True
+    return hit.group(1) == "x"
+
+
 # --- the G16 IPC proptest contracts: the serde-boundary + the per-numeric-IPC-arg overflow legs land in
 #     P2 (P2.126, in tests/ as the C1-C13 commands land - NOT under fuzz/), so their LIVE assertion is
 #     P2-scoped, not part of the fuzz/-gated live tier here; the CONTRACT is frozen now. -------------
@@ -154,6 +188,11 @@ def assert_harness_live() -> int:
     for key, desc in G48_FUZZ_TARGETS:
         f = targets_dir / f"{key}.rs"
         if not f.is_file():
+            if key in DORMANT_UNTIL and not _box_checked(*DORMANT_UNTIL[key]):
+                plan_file, box = DORMANT_UNTIL[key]
+                print(f"[G48] target {key!r} DORMANT until its activating box {box} is [x] "
+                      f"({plan_file}) - absence tolerated; a present harness is still validated")
+                continue
             fail(f"G48 target {key!r} has no fuzz/fuzz_targets/{key}.rs harness ({desc})")
             problems += 1
         elif not _FUZZ_TARGET_RE.search(_strip_rs(f.read_text(encoding="utf-8", errors="replace"))):
@@ -164,6 +203,11 @@ def assert_harness_live() -> int:
     corpus_names = {p.name for p in FUZZ_DIR.rglob("*") if p.is_file()}
     for fid, what in REQUIRED_FIXTURES:
         if fid not in corpus_names:
+            if fid in DORMANT_FIXTURES and not _box_checked(*DORMANT_FIXTURES[fid]):
+                plan_file, box = DORMANT_FIXTURES[fid]
+                print(f"[G48] fixture {fid!r} DORMANT until its activating box {box} is [x] "
+                      f"({plan_file}) - absence tolerated")
+                continue
             fail(f"G16 bound-firing fixture {fid!r} has no committed corpus file ({what})")
             problems += 1
 

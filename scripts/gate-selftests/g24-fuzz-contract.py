@@ -9,6 +9,7 @@ stdlib-only. Exit 0 = all held.
 """
 import importlib.machinery
 import importlib.util
+import re
 import shutil
 import sys
 import tempfile
@@ -117,9 +118,9 @@ record("harness: a fuzz_target! only in a COMMENT is CAUGHT", harness(t) >= 1)
 t = complete_tree(); t["fuzz_targets/detect.rs"] = 'fn main() { let _name = "fuzz_target!"; }\n'   # bare token in a STRING
 record("harness: fuzz_target! only as a STRING-LITERAL token (no invocation) is CAUGHT", harness(t) >= 1)
 
-t = complete_tree(); del t["fuzz_targets/zip_slip.rs"]
-t["notes.txt"] = "zip_slip target is coming later\n"   # comment/prose mention must NOT satisfy it
-record("harness: a MISSING target file (mentioned only in prose) is CAUGHT", harness(t) >= 1)
+t = complete_tree(); del t["fuzz_targets/detect.rs"]
+t["notes.txt"] = "detect target harness lives elsewhere\n"   # prose mention must NOT satisfy it
+record("harness: a MISSING (non-dormant) target file (mentioned only in prose) is CAUGHT", harness(t) >= 1)
 
 t = complete_tree(); t["run.sh"] = "cargo fuzz run detect   # -rss_limit_mb=1 -max_len=1 (commented bounds)\n"
 record("harness: bounds present only in a COMMENT are CAUGHT", harness(t) >= 1)
@@ -128,6 +129,59 @@ t = complete_tree()
 for fid, _ in m.REQUIRED_FIXTURES[1:]:
     t.pop(f"corpus/{fid}", None)
 record("harness: a fuzz/ missing G16 bound-firing corpus files is CAUGHT", harness(t) >= 1)
+
+# --- per-target dormancy (the 2026-07-21 P3.73 fork ruling): absence of a DORMANT target/fixture is
+# tolerated ONLY while its activating box is unchecked; the box's [x] arms it (self-healing); a PRESENT
+# dormant harness is still validated; an unresolvable plan file/box id ARMS fail-closed. -------------
+
+
+def dormancy(tree: dict, box_line: str, *, missing_plan: bool = False) -> int:
+    """Run the harness with DORMANT_UNTIL/DORMANT_FIXTURES patched to a synthetic plan file whose
+    P7.50.1/P4.35.1 boxes carry `box_line`'s checkbox state ([ ] / [x])."""
+    td = Path(tempfile.mkdtemp(prefix="g24-fuzz-d-"))
+    saved_u, saved_f = m.DORMANT_UNTIL, m.DORMANT_FIXTURES
+    try:
+        plan = td / "plan.md"
+        if not missing_plan:
+            plan.write_text(f"  - {box_line} **P7.50.1** [TEST] x · §1 · G48\n"
+                            f"  - {box_line} **P4.35.1** [TEST] y · §1 · G48\n", encoding="utf-8")
+        m.DORMANT_UNTIL = {"zip_slip": (str(plan), "P7.50.1"), "imgworker_ffi": (str(plan), "P4.35.1")}
+        m.DORMANT_FIXTURES = {"zip_slip_entry": (str(plan), "P7.50.1")}
+        return harness(tree)
+    finally:
+        m.DORMANT_UNTIL, m.DORMANT_FIXTURES = saved_u, saved_f
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def p373_tree() -> dict:
+    """The honest P3.73 shape: the four buildable targets + the seven buildable fixtures - NO
+    zip_slip.rs / imgworker_ffi.rs / zip_slip_entry."""
+    t = complete_tree()
+    del t["fuzz_targets/zip_slip.rs"]
+    del t["fuzz_targets/imgworker_ffi.rs"]
+    del t["corpus/zip_slip_entry"]
+    return t
+
+
+record("dormancy: the P3.73-shape tree passes while the activating boxes are UNCHECKED",
+       dormancy(p373_tree(), "[ ]") == 0)
+record("dormancy: the SAME absences are CAUGHT once the activating boxes are [x] (the arming event)",
+       dormancy(p373_tree(), "[x]") >= 3)
+t = p373_tree(); t["fuzz_targets/zip_slip.rs"] = "fn zip_slip(_d: &[u8]) {}\n"   # present but hollow
+record("dormancy: a PRESENT dormant harness is STILL validated (a hollow stub is CAUGHT)",
+       dormancy(t, "[ ]") >= 1)
+record("dormancy: a MISSING plan file ARMS the dormant targets (fail-closed, no silent waiver)",
+       dormancy(p373_tree(), "[ ]", missing_plan=True) >= 3)
+record("dormancy: _box_checked on an unfindable box id ARMS (fail-closed)",
+       m._box_checked("docs/plan/P7-office.md", "P99.999") is True)
+record("dormancy: a `[!]` (blocked) activating box is a LEGIBLE not-done state -> dormant tolerated",
+       dormancy(p373_tree(), "[!]") == 0)
+record("dormancy: the committed DORMANT_UNTIL/DORMANT_FIXTURES wiring resolves in the REAL plans "
+       "(each activating box id is findable - a renumber would strand-and-arm, this leg makes it loud)",
+       all((Path(m.ROOT) / pf).is_file()
+           and re.search(r"^\s*- \[(x| |!)\] \*\*" + re.escape(box) + r"\*\*",
+                         (Path(m.ROOT) / pf).read_text(encoding="utf-8"), flags=re.M)
+           for pf, box in list(m.DORMANT_UNTIL.values()) + list(m.DORMANT_FIXTURES.values())))
 
 failed = [n for n, ok in results if not ok]
 print(f"\n{len(results) - len(failed)}/{len(results)} legs passed")
