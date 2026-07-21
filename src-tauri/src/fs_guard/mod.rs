@@ -3375,6 +3375,30 @@ mod windows_realfs_tests {
         );
     }
 
+    // §2.3.1 / G48 (the 2026-07-21 P3.73 P0 ruling, item 5): every Windows dangerous-PATH class MUST resolve
+    // to `Err` (never `Ok`) from `resolve_identity` — the fn the P0 ruling re-homed the `win_*` fuzz fixtures
+    // to. This makes the G48 REQUIRED_FIXTURES "MUST return Err on Windows (via resolve_identity)" contract
+    // RUNTIME-true (not merely fixture-byte-shape-true) and mutation-proof: a mutant that lets any class
+    // through would flip an `is_err()` here. The five representative literals mirror the committed
+    // `fuzz/corpus/fs_guard_resolve_identity/win_*` seeds; each is a non-existent / syntactically-invalid path
+    // so it Errs via `InvalidInput` (the device namespace) or `NotFound` (the rest) — the specific kind is not
+    // asserted (it is OS-error-dependent), only the load-bearing "never Ok" verdict. [Build-Session-Entscheidung: P3.73]
+    #[test]
+    fn every_windows_dangerous_path_class_resolves_to_err() {
+        for (class, literal) in [
+            ("device namespace", r"\\.\NUL"),
+            ("reserved DOS name", "CON.jpg"),
+            ("drive-relative", "C:relative-no-backslash.txt"),
+            ("UNC share", r"\\server\share\payload.txt"),
+            ("trailing dot", "trailing-dot.txt."),
+        ] {
+            assert!(
+                resolve_identity(Path::new(literal)).is_err(),
+                "§2.3.1/G48: resolve_identity must return Err for the Windows {class} class ({literal:?}), never Ok"
+            );
+        }
+    }
+
     // §2.3.4: a Windows symlink is followed to the target identity. Symlink creation needs the
     // SeCreateSymbolicLink privilege (Developer Mode / elevation); an UNPRIVILEGED runner errors with 1314
     // (ERROR_PRIVILEGE_NOT_HELD → PermissionDenied) → skip gracefully. So on an unprivileged Windows CI leg

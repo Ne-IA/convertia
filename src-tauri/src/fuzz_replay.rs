@@ -61,7 +61,6 @@ use walkdir::WalkDir;
 
 use crate::detection::{classify_delimiter, classify_encoding, detect, ExtensionDelimiterHint};
 use crate::engines::{csv_tsv_transform, CsvTsvTarget};
-use crate::fs_guard::{is_safe_output, resolve_identity};
 
 /// The workspace-root `fuzz/` tree (this crate's manifest dir is `src-tauri/`, so `fuzz/` is `../fuzz`) —
 /// the P0.5.8 home of every minimized libFuzzer input, mirroring `crate::test_corpus::tests_dir`.
@@ -114,29 +113,18 @@ impl InCoreTarget {
     }
 }
 
-/// A libFuzzer input is a raw byte string; the two `fs_guard` targets interpret it as an OS PATH. On Unix a
-/// path IS arbitrary bytes, so the conversion is BYTE-FAITHFUL — a lossy UTF-8 decode would rewrite exactly
-/// the shapes G48 names (an overlong `C0 AF` becomes two `U+FFFD` replacement chars, three times the length
-/// and different content), so a crash found on a non-UTF-8 path would not reproduce and this harness would
-/// report green over a live regression. Windows paths are UTF-16 with no faithful byte mapping, so there the
-/// lossy decode is the honest best effort. An interior NUL survives on both (the T7+T2a "never `Ok` on a
-/// null-byte path" contract). P3.73's `fuzz_target!` body must use this same conversion, or the fuzzer and
-/// the replay disagree about what a given corpus file means.
-#[cfg(unix)]
-fn path_from_bytes(bytes: &[u8]) -> PathBuf {
-    use std::os::unix::ffi::OsStrExt;
-    PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
-}
-
-/// The non-Unix half of the byte→path conversion — see the `cfg(unix)` sibling above for the contract.
-#[cfg(not(unix))]
-fn path_from_bytes(bytes: &[u8]) -> PathBuf {
-    PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
-}
-
 /// Feed one input to one in-core target exactly as its libFuzzer target body does. Every result is
 /// discarded on purpose: the replayed invariant is "no panic / no abort on arbitrary bytes", and a
 /// structured `Err` IS the correct outcome for most of this corpus.
+///
+/// [Build-Session-Entscheidung: P3.73] The two `fs_guard` arms route through `crate::fuzz_api` — the same
+/// pub wrappers the P3.73 `fuzz/fuzz_targets/*.rs` harnesses call — so the byte→path conversion (the
+/// load-bearing "what does this corpus file MEAN as a path" contract, `fuzz_api::bytes_to_path`) has ONE
+/// home the replay and the fuzzer share; a divergence used to be a real drift risk (this arm's former
+/// private `path_from_bytes` vs the target body). The `detect` arm stays direct because the replay derives
+/// an extension hint from the corpus FILE name (which the byte-only `fuzz_api::detect` cannot); the CSV/TSV
+/// arm stays direct because the replay drives the file-path entry over the committed FILE (the documented
+/// `fuzz_api` asymmetry). Both remaining direct arms are the deliberate replay-vs-fuzzer differences.
 fn drive(target: InCoreTarget, file: &Path, bytes: &[u8]) {
     match target {
         InCoreTarget::Detect => {
@@ -150,11 +138,11 @@ fn drive(target: InCoreTarget, file: &Path, bytes: &[u8]) {
             }
         }
         InCoreTarget::FsGuardResolveIdentity => {
-            let _ = resolve_identity(&path_from_bytes(bytes));
+            crate::fuzz_api::fs_guard_resolve_identity(bytes);
         }
         InCoreTarget::FsGuardIsSafeOutput => {
-            // An empty frozen set: the fuzzed dimension is the PATH, not the source list.
-            let _ = is_safe_output(&path_from_bytes(bytes), &[]);
+            // The fuzzed dimension is the PATH; `fuzz_api` supplies the empty frozen set + byte→path.
+            crate::fuzz_api::fs_guard_is_safe_output(bytes);
         }
         InCoreTarget::CsvTsv => {
             // §3.5.6's PUBLIC entry point takes the source PATH and reads it itself, so this arm re-reads

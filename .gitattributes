@@ -36,3 +36,13 @@ tests/corpus-large/** filter=lfs diff=lfs merge=lfs -text
 # with the `.editorconfig [tests/corpus/*.{csv,tsv}]` unset block.]
 tests/corpus/*.csv -text
 tests/corpus/*.tsv -text
+
+# §6.4.2/G48 fuzz seed corpus + minimized crashes are RAW BYTES by contract (a NUL byte, a
+# PATH_MAX+1 run, a trailing-space path): the global `* text=auto eol=lf` would append/normalise
+# a newline at add/checkout and silently destroy the path semantics a bound-firing fixture encodes
+# (e.g. `win_trailing`, whose LAST byte must be the dot/space; `crate::fuzz_bounds` asserts the
+# byte shapes). `binary` (= `-text -diff -merge`), the asset-tier treatment — a fixture is an
+# opaque byte string, never a text file. [Owner decision 2026-07-21 — the P3.73 L(-1) tail;
+# the tests/corpus `-text` precedent extended to the fuzz tree.]
+fuzz/corpus/**  binary
+fuzz/crashes/** binary

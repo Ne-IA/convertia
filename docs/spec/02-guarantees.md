@@ -404,6 +404,41 @@ check runs on the **fully-resolved** path including any §2.7 divert, so the
 divert-path enjoys the identical guarantee (SSOT: "apply identically on the
 divert/fallback path").
 
+### 2.2.4 Windows-unopenable names (fail, never alias) `[DECIDED — the 2026-07-21 P3.73 P0 ruling]`
+
+§2.2.1's verbatim-stem rule can construct an output name Windows cannot treat as an
+ordinary file: a source named `CON.csv` (legal on Unix media / network shares)
+yields the candidate `CON.tsv`, whose **first dot-segment is a reserved DOS device
+name** (`CON`/`PRN`/`AUX`/`NUL`/`COM1`–`COM9`/`LPT1`–`LPT9`, case-insensitive) — a
+Win32-namespace open of it aliases the **console/device**, not a file. ConvertIA's
+own §2.1.2 publish is dir-handle-relative (NT namespace, no Win32 name parsing), so
+it would create a **real** `CON.tsv` — which the user's Win32 apps (Explorer, most
+editors) then **cannot open or delete normally**: exactly the §2.2.3 posture "a
+final output path that the user/Explorer cannot then open is surfaced as a failure
+rather than a silent success". Likewise a component whose **final character is a
+dot or space** is silently stripped by the Win32 path layer (`evil.txt.` aliases
+`evil.txt` — an alias onto a *different* name, violating the §2.2 no-alias/no-decorate
+posture).
+
+Therefore, **on Windows** (the §2.2.3 running-OS scoping — the names are legal and
+harmless on the other platforms), the same pre-publish validation seam as
+`check_path_limit` (§2.2.3) rejects, **before the exclusive create**, every
+ConvertIA-**constructed** path component — the §2.2.1 leaf candidate and any
+§2.7.1-recreated subtree directory, **never** the user-chosen existing ancestors —
+when:
+
+- its first dot-segment, right-trimmed of trailing dots/spaces, equals a reserved
+  DOS device name (case-insensitive), **or**
+- its final character is a dot or a space.
+
+The rejection is a **clear per-item §2.8 failure naming the offending token** —
+never a silent rename/sanitisation (§2.2.1 forbids decorating the stem), never an
+aliased write, never truncation. The divert path is re-checked identically (§2.2.3:
+"apply identically on the divert/fallback path"). Built by **P3.88** beside
+`check_path_limit` (P3.11); neither `output_name` (verbatim-stem by §2.2.1 design)
+nor `is_safe_output` (a pure §2.3.3 no-clobber verdict) owns this class — this
+subsection does.
+
 ---
 
 ## 2.3 Resolved-identity & link safety `[DECIDED]`

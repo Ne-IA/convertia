@@ -57,16 +57,41 @@ mod run;
 /// The dedicated G48 fuzz-entry surface (P3.87, §0.7 minimal-pub) — thin, result-discarding wrappers
 /// over the P0.4.3 in-core fuzz-target functions, so the `cargo-fuzz` targets (P3.73 `fuzz/`; the
 /// instrumented-nightly legs) can drive the REAL kernel functions through the lib boundary without any
-/// §0.7 tier module becoming public API. Each wrapper mirrors the driving shape of the stable-toolchain
-/// replay (`crate::fuzz_replay`): feed the input, discard the structured result — the fuzz invariant is
-/// "no panic / abort / OOM on arbitrary input" (§6.4.2), never a value assertion. (One deliberate
-/// asymmetry: the CSV/TSV wrapper drives the byte-level `transform_bytes` entry — libFuzzer feeds
-/// in-memory bytes — while the replay drives the file-path `csv_tsv_transform` over committed corpus
-/// FILES; both reach the same transform logic.) No crate-private type crosses the boundary (inputs are
-/// `&[u8]`/`&Path`, returns are `()`), so minimal-pub holds.
-/// [Build-Session-Entscheidung: P3.87]
+/// §0.7 tier module becoming public API. Every wrapper takes the RAW libFuzzer input (`&[u8]`) and
+/// returns `()`, so a `fuzz/fuzz_targets/*.rs` harness imports ONLY this module — never a `crate::` tier
+/// path, never `std::path` (P3.73: "targets import `convertia_core::fuzz_api`, not the tier modules").
+/// The fuzz invariant is "no panic / abort / OOM on arbitrary input" (§6.4.2), never a value assertion.
+/// The two path wrappers own the byte→OS-path conversion HERE (`bytes_to_path`) — the single home the
+/// P3.73 targets AND the `crate::fuzz_replay` stable-replay share, so the fuzzer and the replay cannot
+/// disagree about what a given corpus file MEANS as a path (the exact drift the replay's helper doc
+/// warned about). (One deliberate asymmetry with the replay: the CSV/TSV wrapper drives the byte-level
+/// `transform_bytes` entry — libFuzzer feeds in-memory bytes — while the replay's own CSV/TSV arm drives
+/// the file-path `csv_tsv_transform` over committed corpus FILES; both reach the same transform logic.)
+/// No crate-private type crosses the boundary (inputs are `&[u8]`, returns `()`), so minimal-pub holds.
+/// [Build-Session-Entscheidung: P3.87] [Build-Session-Entscheidung: P3.73]
 pub mod fuzz_api {
-    use std::path::Path;
+    use std::path::PathBuf;
+
+    /// The byte→OS-path conversion the two `fs_guard` fuzz surfaces share — the SINGLE home (moved here
+    /// from `crate::fuzz_replay` at P3.73 so the fuzz targets, the replay, and the smoke test agree). A
+    /// libFuzzer input is a raw byte string; on Unix a path IS arbitrary bytes, so the conversion is
+    /// BYTE-FAITHFUL — a lossy UTF-8 decode would rewrite exactly the shapes G48 names (an overlong
+    /// `C0 AF` becomes two `U+FFFD` chars, three times the length and different content), so a crash found
+    /// on a non-UTF-8 path would not reproduce. Windows paths are UTF-16 with no faithful byte mapping, so
+    /// there the lossy decode is the honest best effort. An interior NUL survives on both (the T7+T2a
+    /// "never `Ok` on a null-byte path" contract). Used only inside this module — `crate::fuzz_replay`
+    /// reaches it by calling the wrappers below, so there is exactly one conversion in the crate.
+    #[cfg(unix)]
+    pub(crate) fn bytes_to_path(bytes: &[u8]) -> PathBuf {
+        use std::os::unix::ffi::OsStrExt;
+        PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
+    }
+
+    /// The non-Unix half of the byte→path conversion — see the `cfg(unix)` sibling for the contract.
+    #[cfg(not(unix))]
+    pub(crate) fn bytes_to_path(bytes: &[u8]) -> PathBuf {
+        PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+    }
 
     /// The §1.2 detect entry — the full in-core sniff chain the replay drives: `detect` over the
     /// header bytes, then (when an encoding classifies) the delimiter classification with no
@@ -78,16 +103,19 @@ pub mod fuzz_api {
         }
     }
 
-    /// `crate::fs_guard::resolve_identity` (§2.3) over an untrusted path — no panic, structured
-    /// `Err` on the hostile classes (NUL bytes, overlong, `PATH_MAX`+1, dangerous Windows forms).
-    pub fn fs_guard_resolve_identity(path: &Path) {
-        let _ = crate::fs_guard::resolve_identity(path);
+    /// `crate::fs_guard::resolve_identity` (§2.3) over an untrusted PATH built byte-faithfully from the
+    /// libFuzzer input — no panic, structured `Err` on the hostile classes (NUL bytes, overlong,
+    /// `PATH_MAX`+1, dangerous Windows forms). The target passes raw bytes; the byte→path contract is
+    /// [`bytes_to_path`] above.
+    pub fn fs_guard_resolve_identity(path_bytes: &[u8]) {
+        let _ = crate::fs_guard::resolve_identity(&bytes_to_path(path_bytes));
     }
 
-    /// `crate::fs_guard::is_safe_output` (§2.3.3) over an untrusted output path — the replay shape:
-    /// an empty frozen-source set (the fuzz surface is the path handling, not the membership test).
-    pub fn fs_guard_is_safe_output(final_path: &Path) {
-        let _ = crate::fs_guard::is_safe_output(final_path, &[]);
+    /// `crate::fs_guard::is_safe_output` (§2.3.3) over an untrusted output PATH built byte-faithfully from
+    /// the libFuzzer input, with an empty frozen-source set (the fuzz surface is the path handling, not
+    /// the membership test). The byte→path contract is [`bytes_to_path`] above.
+    pub fn fs_guard_is_safe_output(path_bytes: &[u8]) {
+        let _ = crate::fs_guard::is_safe_output(&bytes_to_path(path_bytes), &[]);
     }
 
     /// The §3.5.6 in-core CSV/TSV transform over untrusted bytes — both directions, into an
@@ -3759,22 +3787,32 @@ mod test_volumes;
 #[cfg(test)]
 mod fuzz_replay;
 
-// §6.4.1 unit (G15): the [`fuzz_api`] wrapper smoke — each P3.87 fuzz-entry wrapper drives its real kernel
+// [Build-Session-Entscheidung: P3.73] The §6.4.2/G48 bound-firing FIXTURE-CONTENT proof (`crate::fuzz_bounds`)
+// — asserts the eight committed `fuzz/corpus/fs_guard_*/` bound-firing fixtures actually hold their dangerous
+// byte shape, so a fat-fingered dud cannot pass `check-fuzz-contract` (existence-only) + `crate::fuzz_replay`
+// (no-panic-only) while silently un-firing its guard (the G48 "structurally proven, not fuzzer-hoped"
+// mandate). Same crate-root foot placement + reason as `fuzz_replay`/`test_corpus`: `#[cfg(test)]`-only fuzz
+// infrastructure reading the workspace-root `fuzz/` tree; adds a FILE, never a directory (G69).
+#[cfg(test)]
+mod fuzz_bounds;
+
+// §6.4.1 unit (G15): the [`fuzz_api`] wrapper smoke — each fuzz-entry wrapper drives its real kernel
 // function over benign input without panicking, so the pub surface P3.73's `cargo-fuzz` targets import is
 // proven CALLABLE (a broken wrapper would otherwise surface only on the Linux/macOS instrumented-nightly
-// legs, never in the per-push suite). The adversarial-input bar stays the fuzzers' + the `fuzz_replay`
-// corpus's job — this is the callability floor, not a robustness proof. Declared at the foot per the rule
-// above. [Build-Session-Entscheidung: P3.87]
+// legs, never in the per-push suite). Every wrapper takes RAW bytes since P3.73 (the fs_guard pair owns the
+// byte→path conversion), so this also pins that every target's arg is `&[u8]`. The adversarial-input bar
+// stays the fuzzers' + the `fuzz_replay` corpus's job — this is the callability floor, not a robustness
+// proof. Declared at the foot per the rule above.
+// [Build-Session-Entscheidung: P3.87] [Build-Session-Entscheidung: P3.73]
 #[cfg(test)]
 mod fuzz_api_smoke {
     #[test]
     fn every_fuzz_api_wrapper_is_callable() {
         crate::fuzz_api::detect(b"col_a,col_b\n1,2\n");
         crate::fuzz_api::detect(b"");
-        crate::fuzz_api::fs_guard_resolve_identity(std::path::Path::new(
-            "relative/never-exists.csv",
-        ));
-        crate::fuzz_api::fs_guard_is_safe_output(std::path::Path::new("relative/never-exists.tsv"));
+        crate::fuzz_api::fs_guard_resolve_identity(b"relative/never-exists.csv");
+        crate::fuzz_api::fs_guard_resolve_identity(b"with-\0-interior-nul");
+        crate::fuzz_api::fs_guard_is_safe_output(b"relative/never-exists.tsv");
         crate::fuzz_api::csv_tsv_transform(b"a,b\n\"q\",2\n");
         crate::fuzz_api::csv_tsv_transform(b"");
     }

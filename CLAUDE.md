@@ -67,9 +67,9 @@ hard-stop + escalate** — the build is downstream of the spec and cannot pick a
 > requires a row here **and** in §0.7 in the same commit (the standing rule above).
 > **Deliberately absent** (each created by its owning phase, which adds its §0.7 + §1a rows
 > then): `bundle/` — engines stage into `src-tauri/binaries/` + `src-tauri/resources/` per
-> §6.1.3, not a separate staging tree; `fuzz/` — the P3-owned `cargo-fuzz` tree, created
-> **with** its G48 harness (pre-creating its empty `corpus/`/`crashes/` would prematurely
-> activate the `check-fuzz-contract` live tier, which then requires the not-yet-built harness).
+> §6.1.3, not a separate staging tree. (`fuzz/` — the P3-owned `cargo-fuzz` tree — **landed
+> at P3.73** with its four buildable G48 targets + harness; `zip_slip`/`imgworker_ffi` stay
+> `check-fuzz-contract`-dormant until P7.50.1/P4.35.1, so their harnesses join at those boxes.)
 
 ```
 convertia/                          → repo root (Git, GitHub: Ne-IA/convertia)
@@ -100,6 +100,11 @@ convertia/                          → repo root (Git, GitHub: Ne-IA/convertia)
 │       │   └── engines/            → engine-arg SAST fixtures
 │       ├── project/                → first-party Semgrep rules
 │       └── vendor/                 → vendored Semgrep rule packs
+├── fuzz/                           → the `cargo-fuzz` (libFuzzer) crate — the §6.4.2/G48 in-core untrusted-byte targets (P3.73; standalone `[workspace]`, outside the MIT-core graph; drives only `convertia_core::fuzz_api`)
+│   ├── fuzz_targets/               → per-target `#![no_main]` harnesses (detect / fs_guard_resolve_identity / fs_guard_is_safe_output / csv_tsv); zip_slip (P7.50.1) + imgworker_ffi (P4.35.1) dormant until their boxes
+│   └── corpus/                     → the libFuzzer seed corpus — the committed G16 bound-firing fixtures per target
+│       ├── fs_guard_resolve_identity/  → `nul_path` · `path_max_plus_1` · the 5 Windows dangerous-path class seeds (device / reserved / drive-relative / UNC / trailing — re-homed here by the 2026-07-21 P3.73 P0 ruling: the hostile-PATH classes belong to the untrusted-path fn, §2.3.1)
+│       └── fs_guard_is_safe_output/    → `nul_output_path` — the §2.3.3 no-clobber verdict's OWN bound-firing seed (interior-NUL output path → its non-fallback `Err` arm; never the Windows classes — the P3.73 P0 ruling)
 ├── src/                            → the React 19 / TS / Tailwind / Vite UI (§05)
 │   ├── a11y/                       → the §5.6 a11y helpers (announcer / keymap) + the G33a leg
 │   ├── components/                 → presentational components (§5.x)

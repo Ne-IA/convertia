@@ -1,0 +1,123 @@
+# .github/workflows/fuzz.yml — the G48 instrumented-nightly in-core fuzz legs (P3.73; L(-1), owner-acked).
+#
+# WHAT: the coverage-guided libFuzzer runs over the four buildable in-core untrusted-byte targets
+# (detect / fs_guard_resolve_identity / fs_guard_is_safe_output / csv_tsv — the frozen G48_FUZZ_TARGETS
+# keys, check-fuzz-contract; zip_slip + imgworker_ffi join at P7.50.1 / P4.35.1 per-target dormancy).
+# Linux + macOS ONLY (spec §6.4.2 / the G48 row: libFuzzer is constrained to where it is reliable);
+# the per-push / all-platform (incl. Windows) coverage is the STABLE-toolchain `crate::fuzz_replay`
+# corpus replay (P3.67) + the `crate::fuzz_bounds` fixture-content tests — never an instrumented
+# Windows build.
+#
+# WHY nightly-scheduled, not per-push: an instrumented -max_total_time=300s × 4-target run is a
+# budgeted background sweep (G56 cost discipline), and a fuzz FINDING is a committed artifact
+# (fuzz/crashes/ + the stable replay pins it), not a push-blocking gate.
+#
+# PINS (security-concept §0 pin-and-verify):
+#   - toolchain: the DATE-pinned `nightly-2026-06-16` = gate-tools.toml [toolchain] fuzz_nightly —
+#     invoked as `cargo +nightly-2026-06-16 fuzz` (check-ci-supply-chain check (7) asserts the literal
+#     date form AND cross-checks it against the committed pin).
+#   - cargo-fuzz 0.13.2 via `cargo install --version 0.13.2 --locked` — crates.io is content-addressed
+#     (cargo verifies the crate archive's sha256 against the registry index at install), so the
+#     version pin + --locked IS the checksum leg here; upstream rust-fuzz/cargo-fuzz publishes NO
+#     prebuilt binaries, so the gate-tools.toml binary-download pattern does not apply (recorded in
+#     gate-tools.toml's growth comment). Corroborated 2026-07-21: crates.io lists 0.13.2 (2026-06-09)
+#     as current; the rust-fuzz/cargo-fuzz CHANGELOG names the same version. Established by Co-Pilot,
+#     owner-acked (the P3.73 L(-1) tail).
+#   - libFuzzer resource bounds: sourced from the committed fuzz/libfuzzer-bounds.txt (G48 — an
+#     OOM/timeout is a REPORTED finding, never a runner kill; check-fuzz-contract asserts the four
+#     bound names live in a committed fuzz config, never inline-only CLI args).
+#   - ASAN is EXPLICIT (`-s address`) — libFuzzer's default, kept explicit and asserted-not-disabled
+#     per the G48 row (a `--sanitizer none` would silently drop it).
+#
+# FINDINGS: a crash/OOM/timeout fails the job; the minimized artifact under fuzz/artifacts/ is dumped
+# base64 into the job log (NO upload-artifact action — deliberately zero new SHA-pinned action
+# surfaces; -max_len=1 MiB bounds the dump) and is then committed under fuzz/crashes/ by the fixing
+# box, where the P3.67 stable replay pins it forever (the G48 crash-corpus discipline).
+#
+# This job reads NO secrets (check (6): non-secret jobs are host-unconstrained; the fuzz plane and
+# the future signing job stay on disjoint hosts by construction).
+
+name: fuzz
+
+on:
+  schedule:
+    - cron: '23 1 * * *' # daily instrumented sweep, 01:23 UTC (offset minutes — GitHub thundering-herd guidance)
+  workflow_dispatch: # manual re-run (e.g. re-driving a finding)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60 # G56 outer wall-clock cap: 4 targets × -max_total_time=300 s + the cold instrumented compile of the Tauri tree
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # The fuzz targets path-dep on convertia-core (the lib), whose compile closure is the same as
+      # compile-sanity's: the Tauri v2 gtk/webkit/soup/jsc/dbus -sys crates resolve system libs via
+      # pkg-config on Linux (macOS has WKWebView natively), and the tauri context needs the JS deps
+      # installed (the proven-green gate-tooling/compile-sanity preamble, mirrored verbatim).
+      - name: 'Tauri v2 Linux compile deps (webkit2gtk-4.1 / gtk-3 / soup-3 / jsc-4.1 / dbus -sys stack)'
+        if: runner.os == 'Linux'
+        run: |
+          for i in 1 2 3; do sudo apt-get update && break; echo "apt-get update failed; retry $i"; sleep 5; done
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libdbus-1-dev
+      - name: 'Node/pnpm toolchain via corepack'
+        run: corepack enable pnpm
+      - name: Install JS deps (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: 'Install the date-pinned fuzz nightly (= gate-tools.toml [toolchain] fuzz_nightly)'
+        run: rustup toolchain install nightly-2026-06-16 --profile minimal
+
+      - name: 'Install cargo-fuzz 0.13.2 (crates.io index-checksum-verified by cargo; no prebuilt upstream binaries exist)'
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+
+      - name: 'G48: run the four in-core targets (ASAN explicit; bounds from the committed fuzz/libfuzzer-bounds.txt)'
+        run: |
+          BOUNDS="$(grep -v '^#' fuzz/libfuzzer-bounds.txt | xargs)"
+          echo "libFuzzer bounds: ${BOUNDS}"
+          for t in detect fs_guard_resolve_identity fs_guard_is_safe_output csv_tsv; do
+            echo "::group::fuzz ${t}"
+            # shellcheck disable=SC2086  # ${BOUNDS} is a deliberately word-split flag list (one committed source file, no user input)
+            cargo +nightly-2026-06-16 fuzz run "${t}" -s address -- ${BOUNDS}
+            echo "::endgroup::"
+          done
+
+      # G18a lockfile discipline: the committed fuzz/Cargo.lock must not drift under the run
+      # (a drifted lock means the instrumented build resolved deps the committed graph does not pin).
+      - name: 'G18a: committed fuzz/Cargo.lock did not drift'
+        run: git diff --exit-code fuzz/Cargo.lock
+
+      # A finding is never lost to an ephemeral runner: dump any minimized artifact base64 into the
+      # log (bounded by -max_len=1 MiB) for the fixing box to commit under fuzz/crashes/.
+      - name: 'On failure: dump minimized crash artifacts (base64) for the fuzz/crashes/ commit'
+        if: failure()
+        run: |
+          if [ -d fuzz/artifacts ]; then
+            find fuzz/artifacts -type f | while read -r f; do
+              echo "::group::${f}"
+              base64 "${f}"
+              echo "::endgroup::"
+            done
+          else
+            echo "no fuzz/artifacts/ directory - the failure was not a fuzz finding"
+          fi

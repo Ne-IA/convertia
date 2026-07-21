@@ -105,7 +105,26 @@ def complete_tree() -> dict:
     return tree
 
 
-record("target-absent: no fuzz/ -> main skips (exit 0)", m.main([]) == 0)
+# target-absent must be HERMETIC (patch FUZZ_DIR to a nonexistent path like every other leg): since
+# P3.73 landed the real fuzz/, a bare `m.main([])` runs the LIVE tier against the REAL repo tree -
+# the leg then tests "the committed tree is green" (accidentally green pre-P3.73-ruling, red the
+# moment a new REQUIRED_FIXTURES row precedes its seed file), not "absent fuzz/ skips". [Fixed with
+# the 2026-07-21 P3.73 P0 ruling's 9th fixture row, which exposed the non-hermetic call.]
+def main_with_fuzz_dir(path: Path) -> int:
+    saved = m.FUZZ_DIR
+    try:
+        m.FUZZ_DIR = path
+        return m.main([])
+    finally:
+        m.FUZZ_DIR = saved
+
+
+_absent_td = Path(tempfile.mkdtemp(prefix="g24-fuzz-absent-"))
+try:
+    record("target-absent: no fuzz/ -> main skips (exit 0)",
+           main_with_fuzz_dir(_absent_td / "__no_fuzz__") == 0)
+finally:
+    shutil.rmtree(_absent_td, ignore_errors=True)
 record("harness: a COMPLETE structurally-real fuzz/ passes", harness(complete_tree()) == 0)
 
 # THE G1-r1 P0 regression guards: hollow-stub + comment-only false-passes MUST be CAUGHT.

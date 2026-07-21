@@ -1,0 +1,65 @@
+# fuzz/Cargo.toml — the `cargo-fuzz` (libFuzzer) crate for the §6.4.2 / G48 in-core untrusted-byte fuzz
+# targets (P3.73). It is a STANDALONE workspace (the empty `[workspace]` table below detaches it from the
+# repo-root virtual manifest, the standard cargo-fuzz layout): the main `cargo build/test/clippy --workspace`
+# never compiles it, so its `libfuzzer-sys` dependency never enters the MIT-core Cargo.lock / the G53
+# core-deps closure / the G18 cargo-deny graph / the SBOM — the fuzz harness is a dev/CI artifact, not a
+# shipped dependency. It path-depends on `convertia-core` (the P3.87 lib target) and drives ONLY its
+# `convertia_core::fuzz_api` pub surface (never a `crate::` tier module).
+#
+# The instrumented `cargo +nightly-<DATE> fuzz run` legs (Linux + macOS) + the committed `fuzz/Cargo.lock`
+# (which pins `libfuzzer-sys` exactly) are the owner-acked L(-1) `.github/workflows` tail (the G23 sequencing
+# pattern): the harness + targets + fixtures + bounds config are Loop-built here; the workflow leg lands with
+# the Co-Pilot. The nightly channel itself is pinned in `scripts/gate-tools.toml [toolchain] fuzz_nightly`
+# (`nightly-2026-06-16`) and asserted date-pinned by `check-fuzz-contract`.
+[package]
+name = "convertia-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+rust-version = "1.96.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+# libfuzzer-sys: the cargo-fuzz harness glue. Caret here; the EXACT pin is the generated `fuzz/Cargo.lock`
+# committed with the L(-1) `.github` nightly leg (fuzz/ is outside the main supply-chain gates by design).
+libfuzzer-sys = "0.4"
+
+[dependencies.convertia-core]
+path = "../src-tauri"
+
+# The four in-core targets P3.73 builds (the P0.4.3 `G48_FUZZ_TARGETS` keys whose fuzz_api wrappers exist).
+# `zip_slip` (P7.50.1) and `imgworker_ffi` (P4.35.1) are DORMANT in check-fuzz-contract until their
+# activating boxes land, and join this file with their own targets then. Each `[[bin]]` disables test/doc/
+# bench harnesses (the cargo-fuzz convention — a fuzz target is `#![no_main]`).
+[[bin]]
+name = "detect"
+path = "fuzz_targets/detect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fs_guard_resolve_identity"
+path = "fuzz_targets/fs_guard_resolve_identity.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fs_guard_is_safe_output"
+path = "fuzz_targets/fs_guard_is_safe_output.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "csv_tsv"
+path = "fuzz_targets/csv_tsv.rs"
+test = false
+doc = false
+bench = false
+
+# Detach from the repo-root virtual workspace (the cargo-fuzz standard): fuzz/ resolves + locks on its own.
+[workspace]

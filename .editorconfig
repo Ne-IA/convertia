@@ -38,3 +38,27 @@ charset = unset
 end_of_line = unset
 insert_final_newline = unset
 trim_trailing_whitespace = unset
+
+[fuzz/corpus/**]
+# §6.4.2/G48 fuzz seeds are the SAME fixture-sovereignty class as tests/corpus above — RAW dangerous
+# bytes (an interior NUL, a PATH_MAX+1 run, a `win_trailing` whose LAST byte must be a dot/space; the
+# byte shapes are load-bearing and content-asserted by `crate::fuzz_bounds`): a final-newline or
+# EOL-normalisation "fix" would silently destroy the path semantics a bound-firing fixture encodes.
+# All four axes unset. Path-scoped by DIRECTORY (not extension) — fuzz fixtures are extension-less by
+# convention. editorconfig-checker (v3.7.0, verified empirically at P3.73) does NOT honour
+# `.gitattributes` binary/-text, so this section is the enforcement half the `.gitattributes`
+# `fuzz/corpus/** binary` rows cannot provide — the same pairing as the tests/corpus block.
+# [Owner decision 2026-07-21 — the P3.73 P0 ruling's L(-1) tail; the 2026-07-17 precedent extended.]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+
+[fuzz/crashes/**]
+# minimized crash artifacts (the G48 crash-corpus discipline) are byte-exact findings — identical
+# fixture-sovereignty treatment to fuzz/corpus above (paired with the `.gitattributes` binary row;
+# the directory joins the tree with the first committed finding).
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset

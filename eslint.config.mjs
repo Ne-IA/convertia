@@ -54,7 +54,10 @@ export default tseslint.config(
   {
     ignores: [
       "dist/**",
-      "target/**",
+      // `**/target/**` (not root-anchored `target/**`) so a NESTED cargo build dir is excluded too —
+      // e.g. `fuzz/target/` from a local `cargo fuzz`/`cargo check` in the standalone fuzz workspace,
+      // which emits generated JS (a Tauri `__global-api-script.js`) the ts-gate must not lint (P3.73).
+      "**/target/**",
       "src-tauri/**",
       "node_modules/**",
       ".gate-tools/**",

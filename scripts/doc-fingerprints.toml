@@ -69,10 +69,17 @@ fingerprint = "sha256:f8dc97d001e1ea3e3b475839b2f58af43ad045188f01f9db6c3567a9cb
 #     Re-blessed 2026-07-21 (the P3.87 bin+lib split): §0.7's physical tree gained the
 #     `src-tauri/src/lib.rs` FILE row (no directory change — the G69 dir-set is untouched); §1a
 #     re-verified as the faithful projection in the same commit (its `src/` row parenthetical re-cut).
+#     Re-blessed 2026-07-21 (P3.73 — the fuzz/ tree + the P0 ruling): §0.7 gained the fuzz/ rows
+#     (fuzz_targets/ + corpus/ + the two per-target corpus subdirs) and the P0-ruling re-cut of the
+#     corpus-subdir descriptions (the win_* seeds re-homed onto fs_guard_resolve_identity/;
+#     fs_guard_is_safe_output/ carries its own nul_output_path seed); §1a re-verified as the faithful
+#     projection in the same commit (its fuzz/ / fuzz_targets/ / corpus/ rows land with the staged
+#     tree; the corpus SUBDIR rows are §0.7-only detail — the §1a ⊆ §0.7 projection bind holds and
+#     check 26 is green over the staged tree). Hash computed via plan-lint's own _extract_section.
 [[source]]
 id = "spec-0.7-physical-tree"
 kind = "section"
 file = "docs/spec/00-architecture.md"
 anchor = "0.7"
 describes = ["CLAUDE.md §1a Repo-layout map (the §0.7 projection)"]
-fingerprint = "sha256:3f80e57df4ea1f64b39e04fff9cb90ac8d338ff28235161a3105dcf4ee23eb5c"
+fingerprint = "sha256:e5783375f21a0e6a0023e2b1be615dd3e2903af486195d19dd2467123d40e39b"

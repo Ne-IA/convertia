@@ -40,8 +40,14 @@ FUZZ_DIR = ROOT / "fuzz"
 #     P3-P9 (the box activation note); the SET is frozen now. (key, spec-§). NOT the isolated engines.
 G48_FUZZ_TARGETS = [
     ("detect", "crate::detection content-sniff on a hostile corpus (ZIP/OLE2/gzip/svgz/XML; ratio cap + XXE-off)"),
-    ("fs_guard_resolve_identity", "crate::fs_guard::resolve_identity on untrusted PATHs (null/overlong/symlink/..)"),
-    ("fs_guard_is_safe_output", "crate::fs_guard::is_safe_output (Windows device/reserved/drive-relative/UNC classes)"),
+    ("fs_guard_resolve_identity", "crate::fs_guard::resolve_identity on untrusted PATHs (null/overlong/symlink/.. "
+                                  "+ the Windows device/reserved/drive-relative/UNC/trailing classes - re-homed "
+                                  "here from is_safe_output by the 2026-07-21 P3.73 P0 ruling: spec 2.3.1 makes "
+                                  "THIS the untrusted-path fn; 2.3.3 makes is_safe_output no-clobber-only)"),
+    ("fs_guard_is_safe_output", "crate::fs_guard::is_safe_output - the spec-2.3.3 no-clobber verdict over an "
+                                "untrusted OUTPUT path (no panic; never Ok(Safe) on an unresolvable/NUL path - "
+                                "its fallback is gated on exactly NotFound/NotADirectory; the Windows classes "
+                                "belong to resolve_identity per the 2026-07-21 P3.73 P0 ruling)"),
     ("csv_tsv", "the in-core CSV/TSV native engine (§3.5.6 InProcessNative - gigabyte fields, recursive quoting, NUL)"),
     ("zip_slip", "archive-entry-name (zip-slip): central-dir entry names with ../ / absolute / NUL / overlong-UTF-8"),
     ("imgworker_ffi", "the imgworker Rust->FFI surface vs staged libvips/libheif/librsvg, ASAN on (boundary side only)"),
@@ -101,11 +107,14 @@ LIBFUZZER_BOUNDS = ["-rss_limit_mb", "-max_len", "-timeout", "-max_total_time"]
 REQUIRED_FIXTURES = [
     ("nul_path", "a NUL-byte path MUST return Err on every platform (never Ok on a null-byte path - T7+T2a)"),
     ("path_max_plus_1", "a PATH_MAX+1 path MUST return Err (the path-limit guard is reachable)"),
-    ("win_device", r"Windows device path (\\.\ , \\?\) MUST return Err"),
-    ("win_reserved", "Windows reserved name (CON/NUL/COM1-9/LPT1-9 with ANY extension) MUST return Err"),
-    ("win_drive_relative", "Windows drive-relative (C:foo vs C:\\foo) MUST return Err"),
-    ("win_unc", r"Windows UNC (\\server\share) MUST return Err"),
-    ("win_trailing", "Windows trailing dots/spaces MUST return Err"),
+    ("win_device", r"Windows device path (\\.\ , \\?\) MUST return Err on Windows (via resolve_identity - the P3.73 P0 ruling)"),
+    ("win_reserved", "Windows reserved name (CON/NUL/COM1-9/LPT1-9 with ANY extension) MUST return Err on Windows (via resolve_identity - the P3.73 P0 ruling)"),
+    ("win_drive_relative", "Windows drive-relative (C:foo vs C:\\foo) MUST return Err on Windows (via resolve_identity - the P3.73 P0 ruling)"),
+    ("win_unc", r"Windows UNC (\\server\share) MUST return Err on Windows (via resolve_identity - the P3.73 P0 ruling)"),
+    ("win_trailing", "Windows trailing dots/spaces MUST return Err on Windows (via resolve_identity - the P3.73 P0 ruling)"),
+    ("nul_output_path", "an interior-NUL OUTPUT path MUST return Err from is_safe_output on every platform (its "
+                        "non-fallback reject arm - the fallback is gated on exactly NotFound/NotADirectory, so an "
+                        "unresolvable target is never Ok(Safe); is_safe_output's OWN bound-firing seed, P3.73 P0 ruling)"),
     ("zip_slip_entry", "a ../../etc/passwd archive-entry-name fixture MUST be rejected (never escapes scratch)"),
 ]
 

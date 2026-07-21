@@ -17,7 +17,12 @@
 # executor, needed first by P0.2.2). Each additional gate tool is pinned here BY THE
 # BOX THAT INTRODUCES IT, through the same mechanism — gitleaks (P0.3.1),
 # actionlint (P0.2.4 - CI workflow validator), zizmor (P0.2.6), typos/editorconfig-checker (P0.3.11),
-# cargo-deny + cargo-audit (P1.59), cargo-mutants (P3.72), Syft/cargo-vet/cargo-fuzz/minisign/cyclonedx (their boxes). pip-installed tools
+# cargo-deny + cargo-audit (P1.59), cargo-mutants (P3.72), Syft/cargo-vet/minisign/cyclonedx (their
+# boxes). cargo-fuzz (P3.73) is version-pinned via `cargo install cargo-fuzz --version 0.13.2 --locked`
+# IN .github/workflows/fuzz.yml, deliberately NOT a binary row here: upstream rust-fuzz/cargo-fuzz
+# publishes NO prebuilt binaries, and a crates.io install is content-addressed (cargo verifies the
+# crate archive sha256 against the registry index), so the version pin + --locked IS the checksum leg
+# (corroboration recorded in fuzz.yml's header; established 2026-07-21, Co-Pilot, owner-acked). pip-installed tools
 # (Semgrep, P0.4.2) live in `requirements-ci.txt` (the --require-hashes leg), not
 # here. [Build-Session-Entscheidung: P0.2.1 — mechanism + first-tool pins now,
 # remaining tools pinned per-introducing-box; matches §0.8 "[DEFER: build] exact

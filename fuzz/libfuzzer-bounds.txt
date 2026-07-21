@@ -1,0 +1,26 @@
+# fuzz/libfuzzer-bounds.txt — the PINNED libFuzzer resource bounds for every G48 in-core fuzz run (P3.73).
+#
+# WHY a committed config, not inline CLI args (G48 / check-fuzz-contract): a decompression-bomb / recursive-
+# quote input can OOM or hang the shared runner and surface as FLAKY INFRA rather than a finding — a
+# denial-of-CI vector. Pinning the bounds in a version-controlled file makes an OOM/timeout a COMMITTED
+# FINDING (libFuzzer writes the offending input to fuzz/crashes/), never a silent runner kill, and makes the
+# bound values auditable + reviewable. The owner-acked L(-1) `.github/workflows` nightly leg (the G23 tail)
+# sources these into `cargo +nightly-<DATE> fuzz run <target> -- <these args>`; the outer wall-clock cap is
+# the G56 `timeout-minutes` on the fuzz JOB (a belt-and-suspenders over -max_total_time).
+#
+# [Build-Session-Entscheidung: P3.73] Values chosen for the shared IONOS VPS runner: bound the per-input
+# work so a bomb cannot exhaust the host, keep a single input's time small so a hang is caught fast, and cap
+# the per-target job so the nightly finishes. These are the v1 baseline; a target that legitimately needs a
+# larger input can raise -max_len in its own box with a recorded rationale.
+#
+# -rss_limit_mb: per-process RSS ceiling; exceeding it is a REPORTED crash (committed to fuzz/crashes/), not
+#   an OOM-killer kill. 2048 MiB fits the runner with headroom for ASAN's shadow memory.
+-rss_limit_mb=2048
+# -max_len: maximum input length libFuzzer generates; bounds a decompression-bomb / recursive-quote input so
+#   the fuzzer explores structure, not just size. 1 MiB is ample for a header sniff / a path / a CSV body.
+-max_len=1048576
+# -timeout: per-INPUT wall-clock seconds; an input slower than this is a timeout FINDING, minimized + committed.
+-timeout=25
+# -max_total_time: per-JOB wall-clock seconds for a single `fuzz run` target (the nightly runs each target for
+#   this long). The G56 `timeout-minutes` on the job is the outer bound.
+-max_total_time=300

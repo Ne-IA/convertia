@@ -351,9 +351,10 @@ def fmt_numbering_gap_free(ctx: Ctx) -> list[Finding]:
 #  DOC checks (build-gates.md §6, checks 1..28) — added incrementally; active-now ones first.
 # =============================================================================================
 _GATE_ROW_RE = re.compile(r"^\| \*\*G(\d+)\*\* \|", re.M)
-# the canonical §0.11 / §5 threat-class set (security-concept §5 table + the canonical list) — 18 classes
+# the canonical §0.11 / §5 threat-class set (security-concept §5 table + the canonical list) — 19 classes
+# (T7a — Windows reserved-name output aliasing — added by the 2026-07-21 P3.73 P0 ruling)
 THREAT_CLASSES = {"T1", "T2", "T2a", "T2b", "T2c", "T3", "T3a", "T4", "T5", "T6",
-                  "T7", "T8", "T9a", "T9b", "T10", "T11", "T12", "T13"}
+                  "T7", "T7a", "T8", "T9a", "T9b", "T10", "T11", "T12", "T13"}
 # the §0.4.1 enumerated IPC command SET (a set, not a contiguous range — C2 is split into C2a/C2b)
 IPC_COMMANDS = {"C1", "C2a", "C2b", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13", "C14"}
 
@@ -429,7 +430,7 @@ def doc8_threat_parity(ctx: Ctx) -> list[Finding]:
     for t, txts in rows.items():
         if t not in THREAT_CLASSES:
             out.append(Finding("8:threat-map-parity", "docs/security/security-concept.md", 0,
-                               f"§5 row {t} is not in the canonical 18-class set"))
+                               f"§5 row {t} is not in the canonical 19-class set"))
             continue
         cited = re.findall(r"\bG\d+[a-z]?\b", txts[0])
         if not cited:

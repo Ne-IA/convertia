@@ -357,10 +357,17 @@ covers the FFI boundary):
    resolution off — defeats XXE / billion-laughs in the `xl/workbook.xml` / ODS
    `content.xml` peek).
 2. **`crate::fs_guard::resolve_identity`** on untrusted PATHS (null bytes,
-   overlong UTF-8, max-length, symlink chains, `..`) — no panic, structured
-   `Err`, **never `Ok` on a null-byte path** (**T7+T2a**).
-3. **`crate::fs_guard::is_safe_output`** (Windows device / reserved-name /
-   drive-relative / UNC classes) — no panic, structured `Err`.
+   overlong UTF-8, max-length, symlink chains, `..`, **and the Windows device /
+   reserved-name / drive-relative / UNC / trailing-dot-space classes** — re-homed
+   here by the 2026-07-21 P3.73 P0 ruling: §2.3.1 makes this the untrusted-path
+   fn) — no panic, structured `Err`, **never `Ok` on a null-byte path**
+   (**T7+T2a**).
+3. **`crate::fs_guard::is_safe_output`** — the §2.3.3 **no-clobber verdict** over
+   an untrusted OUTPUT path (the P3.73 P0 ruling: the Windows classes are item 2's,
+   not this fn's — `Ok(Safe)` against an empty frozen set is contract-correct) —
+   no panic; **never `Ok(Safe)` on an unresolvable/NUL target** (its fallback is
+   gated on exactly `NotFound`/`NotADirectory`; own bound-firing seed
+   `nul_output_path`).
 4. **the in-core CSV/TSV native engine** (§3.5.6 — memory-safe ≠ panic/OOM-safe:
    gigabyte quoted fields, recursive quoting, NUL bytes) — no panic, bounded output
    relative to input, clear failure beyond a column floor.
