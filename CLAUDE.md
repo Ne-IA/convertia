@@ -109,12 +109,12 @@ convertia/                          → repo root (Git, GitHub: Ne-IA/convertia)
 │   ├── state/                      → the zustand store (§5.x)
 │   ├── strings/                    → the §5.7 English-only `ui.ts` string catalog (G57)
 │   └── styles/                     → Tailwind / app CSS
-├── src-tauri/                      → the MIT core crate `convertia-core` (the Tauri host binary)
+├── src-tauri/                      → the MIT core crate `convertia-core` (the Tauri host, lib + thin bin since P3.87)
 │   ├── binaries/                   → bundled engine sidecars per platform (externalBin, §3.3)
 │   ├── capabilities/               → the §0.10 capability allowlist (`main.json`, G47; L(-1))
 │   ├── icons/                      → the bundled app-icon set (§3.3, P1.19.2)
 │   ├── resources/                  → bundled non-exe engine assets (LibreOffice profile, fonts, codec libs)
-│   └── src/                        → the core crate source (`main.rs` + the §0.7 tier modules):
+│   └── src/                        → the core crate source (`lib.rs` crate root + the thin `main.rs` bin shim, P3.87 + the §0.7 tier modules):
 │       ├── detection/              → tier 2 — §1.2 content sniffing (first to touch untrusted bytes)
 │       ├── domain/                 → tier 3 — the PURE §0.6 types (identity / intake / detection / Target / destination/plan / JobStage), a true leaf; the outcome-referencing lifecycle/result types live in orchestrator (§0.7 ‡, P2.10)
 │       ├── engines/                → tier 2 — the §3.2 engine registry/seam + §1.7 invocation + §3.5 args

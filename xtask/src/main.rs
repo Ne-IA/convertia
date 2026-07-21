@@ -40,13 +40,15 @@ fn main() -> ExitCode {
 /// [Build-Session-Entscheidung: P1.26]
 fn codegen() -> ExitCode {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    // `--lib` since P3.87 (the bin+lib split): the codegen test lives in the crate-root test suites,
+    // which compile into the LIB test harness. The pre-split `--bin convertia-core` filter would now
+    // match ZERO tests and exit green — a silent no-op regeneration (caught by the P3.87 fill-verify).
     let status = Command::new(cargo)
         .args([
             "test",
             "-p",
             "convertia-core",
-            "--bin",
-            "convertia-core",
+            "--lib",
             "regenerate_committed_bindings",
             "--",
             "--ignored",

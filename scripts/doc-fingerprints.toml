@@ -61,10 +61,13 @@ fingerprint = "sha256:5c691fcc3c015df3ad50140a1d8ba553e14b195c56197d51b99b711434
 #     projection of the expanded §0.7 (the check-26 bijection §1a == on-disk-tree ⊆ §0.7 passes), and
 #     re-blessed the hash below in that commit. A later §0.7 tree edit not mirrored into §1a now fails
 #     check 25; the `dormant` key was removed when PLACEHOLDER ceased to exist (the binding is permanent).
+#     Re-blessed 2026-07-21 (the P3.87 bin+lib split): §0.7's physical tree gained the
+#     `src-tauri/src/lib.rs` FILE row (no directory change — the G69 dir-set is untouched); §1a
+#     re-verified as the faithful projection in the same commit (its `src/` row parenthetical re-cut).
 [[source]]
 id = "spec-0.7-physical-tree"
 kind = "section"
 file = "docs/spec/00-architecture.md"
 anchor = "0.7"
 describes = ["CLAUDE.md §1a Repo-layout map (the §0.7 projection)"]
-fingerprint = "sha256:6f82882e21e29d63c695274cd5122857ec7a1322bcbf7f0314b441420f8777b6"
+fingerprint = "sha256:3f80e57df4ea1f64b39e04fff9cb90ac8d338ff28235161a3105dcf4ee23eb5c"

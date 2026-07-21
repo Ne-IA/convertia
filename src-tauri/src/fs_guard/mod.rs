@@ -307,16 +307,11 @@ fn identity_matches_a_source(id: &FileIdentity, frozen_sources: &[FileIdentity])
 /// P3.8 is the path-based verdict; the §2.3.3 TOCTOU-closed dir-handle publish (P3.9) roots the *write* at a
 /// verified parent handle so the parent cannot be swapped between this check and the publish — this function
 /// yields the verdict, that primitive enforces it atomically.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "§2.3.3 is_safe_output (P3.8) — the write-target link-safety verdict. Its production caller \
-                  is the §2.1.1 per-item write sequence (P3.38), which diverts on ResolvesOntoSource; dead in \
-                  the production build pending that wiring, exercised by the in-module is_safe_output_tests \
-                  below."
-    )
-)]
+// [Test-Change: P3.87 — old-obsolete+new-correct, §0.7] The P3.8-era not-in-test dead-code lint
+// expectation on this fn is RETIRED: the crate-root `fuzz_api::fs_guard_is_safe_output` wrapper (the G48
+// fuzz-entry surface) is a production caller since the bin+lib split, so the item is live in every build
+// and the old expectation would be unfulfilled (a build error). The §2.1.1 per-item write sequence
+// (P3.38) remains the pipeline consumer this verdict was declared for.
 pub fn is_safe_output(
     final_path: &Path,
     frozen_sources: &[FileIdentity],

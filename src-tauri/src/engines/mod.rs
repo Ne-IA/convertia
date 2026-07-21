@@ -1061,8 +1061,10 @@ pub fn csv_tsv_transform(
 /// LOGIC, separated from the file read so it is unit-testable over byte literals. Self-reports `bytes_processed
 /// / source_size` progress through `on_progress` (P3.43) and polls `should_cancel` at each chunk boundary
 /// (P3.44); see [`csv_tsv_transform`] for the fraction basis + the cooperative-cancel contract.
+/// `pub(crate)` since P3.87: the crate-root `fuzz_api::csv_tsv_transform` wrapper drives exactly this
+/// byte-level entry (the G48 fuzz surface — untrusted bytes, no file read), crate-internal only.
 /// [Build-Session-Entscheidung: P3.41]
-fn transform_bytes(
+pub(crate) fn transform_bytes(
     bytes: &[u8],
     target: CsvTsvTarget,
     out: impl Write,

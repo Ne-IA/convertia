@@ -277,7 +277,9 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   v9 + `@axe-core/webdriverio` pinned in §0.8; macOS single-run-180min operative trigger, 3-run
   average post-v1; `[OPEN-6.1b]`→AppImage-only v1; EngineHealth NativeCsvTsv synthesized not
   loop-derived; warm magic-byte check executables-only; RunEvent::Exit cleanup = idempotent §2.6.3
-  `sweep_stale` path, mechanism CORRECTED at P3.74), §6/§7.
+  `sweep_stale` path, mechanism CORRECTED at P3.74), §6/§7; **`convertia-core` = lib + thin bin**
+  (P3.87, the P3.73 fuzz lib-target precondition fork ①: `lib.rs` crate root with `pub fn run()` +
+  `pub mod fuzz_api`, minimal-pub; `main.rs` → thin `convertia_core::run()` shim), §0.7.
 
 ### Resolved in this round (SVG-API / FAT-exFAT / engine-derivability / NSIS / facts) `[DECIDED]`
 - **SVG/librsvg LFR primary control corrected to the REAL librsvg API** — was a
@@ -630,8 +632,9 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   Owner: §5.7 / §5.8 / §2.9.2.
 - **fs module canonical = `crate::fs_guard`** (layer "guarantees-fs", dir `fs_guard/`);
   `fs_guarantees` module name retired. Path is `crate::fs_guard` **not** `core::fs_guard`
-  (in a Rust binary crate `core` is the no_std stdlib crate, so an app module can't be
-  named `core`). Owner: §2.0 / §0.7.
+  (in a Rust crate `core` is the no_std stdlib crate, so an app module can't be
+  named `core` — holds for the P3.87 lib root exactly as it did for the pre-split
+  binary root). Owner: §2.0 / §0.7.
 - **engine manifest filename = `engines.lock`** (the §3.7.2 `engines.toml` mention fixed).
   Owner: §3.7.2.
 - **macOS automated E2E = defined degraded smoke test** (launch + synthetic-argv

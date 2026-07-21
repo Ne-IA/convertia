@@ -1413,7 +1413,8 @@ convertia/
 │  │  │                                      #   links libvips/libheif/libde265/librsvg/ImageMagick (§3.6.1)
 │  ├─ resources/                   # bundled non-exe engine assets (LibreOffice profile seed, fonts §documents.md, image codec libs)
 │  └─ src/
-│     ├─ main.rs                   # Tauri builder, invoke_handler (C1–C13), collect_commands!/collect_events! (§0.4.5)
+│     ├─ lib.rs                    # the CRATE ROOT (P3.87 bin+lib split — the P3.73 fuzz lib-target precondition): the §0.7 tier-module declarations + crate lint policy + the app entry body `run()` (Tauri builder, invoke_handler C1–C14, collect_commands!/collect_events!, §0.4.5) + `pub mod fuzz_api` (the G48 fuzz-entry wrappers; minimal-pub — exactly `run` + `fuzz_api` are public, every tier module stays private)
+│     ├─ main.rs                   # the thin bin shim — `fn main()` delegates to `convertia_core::run()` (the standard Tauri-v2 lib+bin shape)
 │     ├─ ipc/                      # tier 0 — §0.4 handlers, one file per command group
 │     ├─ orchestrator/             # tier 1 — queue, lifecycle (§1.9), run registry, cancellation (§0.4.4); homes the §0.6 outcome-referencing lifecycle/result types (Batch/ConversionJob/JobState + PreflightVerdict/OutputPlanPreview/DestinationResolved + RunResult/ItemResult/ItemOutcome — above tier 3 to break the domain↔outcome cycle, §0.7 ‡)
 │     ├─ detection/                # tier 2 — §1.2

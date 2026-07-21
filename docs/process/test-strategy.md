@@ -413,10 +413,13 @@ trailing dots/spaces.
 is minimized and committed under tracked `fuzz/corpus/` + `fuzz/crashes/`. The
 deterministic replay is a **plain `cargo test` replay suite — the crate-root
 `#[cfg(test)]` module `crate::fuzz_replay`** (`src-tauri/src/fuzz_replay.rs`;
-corrected 2026-07-20, the P3.67 homing ruling: NOT a cargo `tests/`-dir
-integration target — `convertia-core` is a binary crate with no `lib.rs`, so a
-`tests/`-dir target links no library and cannot reach
-`crate::detection`/`fs_guard`; the P2.126 IPC-proptest precedent) — that feeds
+corrected 2026-07-20, the P3.67 homing ruling — re-dated 2026-07-21, the P3.87
+bin+lib split: NOT a cargo `tests/`-dir integration target — at the ruling
+`convertia-core` was a binary crate with no `lib.rs` (no library for a
+`tests/`-dir target to link), and the P3.87 split lib is deliberately
+**minimal-pub**, so a `tests/`-dir target STILL cannot reach
+`crate::detection`/`fs_guard`; the in-crate homing stands; the P2.126
+IPC-proptest precedent) — that feeds
 every corpus/crash file directly to the
 target function with **no libFuzzer harness** — so it compiles and runs on **all
 platforms incl. Windows under the stable toolchain**, no nightly/instrumentation

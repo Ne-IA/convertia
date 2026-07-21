@@ -15,13 +15,18 @@
 //! `tests/fuzz_replay.rs` (re-cut to `crate::fuzz_replay` by the 2026-07-20 homing correction); that
 //! name denoted **the plain `cargo test` suite as opposed to `fuzz/`** (the
 //! contrast those §§ draw in every sentence: "a plain `cargo test` … with NO libFuzzer harness"), and the
-//! physical home follows the crate's real shape. `convertia-core` is a BINARY crate (no `lib.rs`, main.rs
-//! §0.7), so a cargo integration test under `src-tauri/tests/` links no library and cannot reach
-//! `crate::detection` / `crate::fs_guard` / `crate::engines` at all — the harness would be unable to call the
-//! very functions it exists to replay. The workspace-root `tests/` dir is likewise not a cargo target (the
-//! P1.6 root manifest is VIRTUAL); it holds the §6.4.5 corpus data. **This is the P2.126 precedent applied
-//! unchanged**: the P0.4.3 `IPC_PROPTEST_TARGETS`, contracted identically as "in `tests/`, NOT under
-//! `fuzz/`", were delivered as a `#[cfg(test)]` module inside `src-tauri/src/ipc/mod.rs` and ratified there.
+//! physical home follows the crate's real shape. When the ruling landed, `convertia-core` was a BINARY-only
+//! crate, so a cargo integration test under `src-tauri/tests/` linked no library and could not reach
+//! `crate::detection` / `crate::fs_guard` / `crate::engines` at all — the harness would have been unable to
+//! call the very functions it exists to replay. The P3.87 bin+lib split (§0.7, the P3.73 lib-target
+//! precondition) has since made `src-tauri/src/lib.rs` the crate root; this module's declaration moved with
+//! it and the crate-root home stands unchanged (a `tests/`-dir re-home would now compile, but would trade
+//! the in-crate `pub(super)`/private reach this harness uses for the narrow public `fuzz_api` surface — the
+//! crate-root module remains the delivered, correct shape). The workspace-root `tests/` dir is likewise not
+//! a cargo target (the P1.6 root manifest is VIRTUAL); it holds the §6.4.5 corpus data. **This is the P2.126
+//! precedent applied unchanged**: the P0.4.3 `IPC_PROPTEST_TARGETS`, contracted identically as "in `tests/`,
+//! NOT under `fuzz/`", were delivered as a `#[cfg(test)]` module inside `src-tauri/src/ipc/mod.rs` and
+//! ratified there.
 //! The crate-root PLACEMENT follows `crate::test_corpus` (P3.61) / `crate::test_volumes` (P3.65): this is
 //! `#[cfg(test)]`-only infrastructure spanning three §0.7 tiers (`detection`, `fs_guard`, `engines`), so
 //! homing it inside any one of them would invert the dependency direction the tiers express. It adds a FILE,
