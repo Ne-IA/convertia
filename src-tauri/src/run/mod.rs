@@ -874,8 +874,7 @@ fn dir_age(dir: &Path) -> Option<std::time::Duration> {
 /// **Production callers (LIVE since P3.74):** the §7.3.2 `RunEvent::Exit` best-effort backstop
 /// `main::best_effort_scratch_cleanup` (P3.74) — the FIRST production caller, wired now. The §7.2.5
 /// startup orphan-reclaim slot (`main::prepare_scratch_and_log`, the P2.106.5-built `Ok(())` SLOT) is the
-/// intended SECOND caller, but its body has **no named owning box** in the plan (P2.106.5 says only "body
-/// P3/P4"; no P4 box names it — flagged to the Co-Pilot at P3.74). Both callers pass the launch's
+/// SECOND caller, owned by **P4.82** (the 2026-07-21 resolution of the P3.74 flag). Both callers pass the launch's
 /// `app_local_data_dir()` base; the sweep is idempotent, so an Exit sweep + a next-launch sweep never
 /// conflict.
 pub fn sweep_stale(scratch_base: &Path) -> Vec<PathBuf> {
