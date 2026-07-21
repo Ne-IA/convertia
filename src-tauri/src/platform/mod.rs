@@ -703,7 +703,6 @@ fn ephemeral_roots() -> Vec<PathBuf> {
 #[cfg(test)]
 mod ephemeral_tests {
     use super::is_ephemeral_output_dir;
-    use std::path::Path;
 
     // §6.4.1 unit (G15) / §2.7.2: a real subdir of the OS temp root IS ephemeral — a writability-passing temp
     // destination §2.7.2 diverts so a silent OS purge never loses the user's output. Real-FS
@@ -719,15 +718,19 @@ mod ephemeral_tests {
         );
     }
 
-    // §6.4.1 unit (G15) / §2.7.2: a dir NOT under any known temp root is NOT ephemeral — the crate source
-    // root (`CARGO_MANIFEST_DIR`) is a real, canonicalisable, non-temp path (the CI workspace is never under
-    // the OS temp root), so the negative branch is proven against a real directory, not a fabricated one.
+    // §6.4.1 unit (G15) / §2.7.2: a dir NOT under any known temp root is NOT ephemeral — the negative
+    // branch is proven against a real, canonicalisable directory, not a fabricated one. [Test-Change:
+    // P3.72 — old-obsolete+new-correct, §2.7.2] the former specimen (`CARGO_MANIFEST_DIR`, "the CI
+    // workspace is never under the OS temp root") is obsolete: the P3.72 `cargo-mutants` gate runs this
+    // suite from a tree COPY under the OS temp root, where the source root genuinely IS ephemeral — a
+    // checkout-location assumption, not a §2.7.2 fact. The home dir is never a temp root on any OS, so
+    // the same negative branch holds in every execution environment (repo checkout, CI, a temp-dir copy).
     #[test]
     fn a_non_temp_dir_is_not_ephemeral() {
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let home = std::env::home_dir().expect("a real home dir on every dev/CI environment");
         assert!(
-            !is_ephemeral_output_dir(manifest),
-            "§2.7.2: the crate source root ({manifest:?}) is not under any OS temp root → not ephemeral"
+            !is_ephemeral_output_dir(&home),
+            "§2.7.2: the user home dir ({home:?}) is not under any OS temp root → not ephemeral"
         );
     }
 
