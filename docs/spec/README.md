@@ -276,8 +276,8 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   §5.2/§5.3/§5.4/§5.6/§5.8; **build/test alignment** (§3.9.1→§3.9.2 ceiling cross-ref; WebdriverIO
   v9 + `@axe-core/webdriverio` pinned in §0.8; macOS single-run-180min operative trigger, 3-run
   average post-v1; `[OPEN-6.1b]`→AppImage-only v1; EngineHealth NativeCsvTsv synthesized not
-  loop-derived; warm magic-byte check executables-only; RunEvent::Exit cleanup = idempotent §2.6
-  path), §6/§7.
+  loop-derived; warm magic-byte check executables-only; RunEvent::Exit cleanup = idempotent §2.6.3
+  `sweep_stale` path, mechanism CORRECTED at P3.74), §6/§7.
 
 ### Resolved in this round (SVG-API / FAT-exFAT / engine-derivability / NSIS / facts) `[DECIDED]`
 - **SVG/librsvg LFR primary control corrected to the REAL librsvg API** — was a

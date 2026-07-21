@@ -272,9 +272,9 @@ fn dispatch_window_event(app: &tauri::AppHandle, event: &tauri::WindowEvent) {
 /// busy predicate + the ONE `app://close-requested` confirm signal — the P2.137 sweep closed the quit leg
 /// the macOS app-menu Quit / Cmd+Q path needs, which never raises a per-window `CloseRequested`).
 /// `RunEvent::Exit` is the final cleanup point: flush the plugin logger's buffered records before exit (via
-/// tauri-plugin-log's re-exported `log`). The best-effort scratch cleanup call joins at P3.74 (= the §2.6
-/// `cleanup_run` path, §7.3.2) — `crate::run::cleanup_run` is the P3 §2.6 kernel and nothing run-owned is
-/// created to clean at this box. `RunEvent` is an external `#[non_exhaustive]` enum whose known-variant set is
+/// tauri-plugin-log's re-exported `log`), then the §2.6.3 best-effort scratch sweep `best_effort_scratch_cleanup`
+/// → `crate::run::sweep_stale` (wired at P3.74). Per-run cleanup is NOT here — the P3.48 conductor's `finish_run`
+/// runs `cleanup_run` per run (the Exit arm reaches no `RunScratch`; the P3.74 ruling). `RunEvent` is an external `#[non_exhaustive]` enum whose known-variant set is
 /// PLATFORM-DEPENDENT (`Opened`/`Reopen`/`SceneRequested` are `#[cfg]`-gated to Apple/mobile targets), so an
 /// exhaustive listing would be platform-fragile (clippy would demand a different variant set per OS); the
 /// item-level `#[allow(clippy::wildcard_enum_match_arm)]` is the gate-sanctioned per-item escape (it does NOT
@@ -307,9 +307,11 @@ fn dispatch_run_event(app: &tauri::AppHandle, event: &tauri::RunEvent) {
                 .ok();
             }
         }
-        // §7.3.2 the final cleanup point — flush the plugin logger before the process exits.
+        // §7.3.2 the final cleanup point — flush the plugin logger, then a best-effort §2.6.3 scratch sweep
+        // (P3.74) before the process exits.
         tauri::RunEvent::Exit => {
             tauri_plugin_log::log::logger().flush();
+            best_effort_scratch_cleanup(app);
         }
         // §7.8.1 macOS Open-with: `RunEvent::Opened` is an Apple/mobile-target `#[cfg]`-gated variant (absent
         // on Win/Linux, so the arm carries the SAME cfg — an unconditional arm would not compile there). Route
@@ -318,6 +320,32 @@ fn dispatch_run_event(app: &tauri::AppHandle, event: &tauri::RunEvent) {
         #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
         tauri::RunEvent::Opened { urls } => launch_intake::handle_opened(app, urls),
         _ => {}
+    }
+}
+
+/// [Build-Session-Entscheidung: P3.74] §7.3.2 the `RunEvent::Exit` best-effort scratch cleanup. It invokes the
+/// §2.6.3 sweep primitive [`crate::run::sweep_stale`] over this launch's scratch BASE — NOT the per-run
+/// `cleanup_run` the §7.3.2 `[DECIDED]` block originally named (the Co-Pilot P3.74 ruling): `cleanup_run`
+/// consumes a `RunScratch` by value, and the P3.48 C6 conductor OWNS the live run's `RunScratch` inside its
+/// spawned `run_conversion` future (which cleans it per-run through `finish_run` there), so no `RunScratch` is
+/// ever reachable from an `&AppHandle` at exit — verified: none of the app-managed State stores holds one.
+/// `sweep_stale` IS the §2.6.3 machinery, **not a separate cleanup implementation** (the §7.3.2 intent stands):
+/// it sweeps the CENTRAL `<scratch_base>/…/scratch/` root across every instance dir, removing only run dirs
+/// whose `.lock` is **not held** (held-lock-is-the-sole-delete-gate, §2.6.3 — a concurrent LIVE instance is
+/// never touched), and a wedged descendant still holding a `.part` is left to the SAME sweep next launch
+/// (§2.6.3). Destination-resident `.part`s are the §2.6.3(b) opportunistic reclaim's surface (P3.24), not this
+/// central sweep. Best-effort (the reclaimed set is dropped) + non-blocking — a bounded synchronous sweep
+/// whose lock probe is a NON-blocking try-lock (§2.6.3), so it never waits on a live run's lock (the real
+/// stall risk); the `read_dir`/`remove_dir_all` walk is bounded FS I/O over this launch's small per-run
+/// scratch dirs, not an unbounded wait. AppHandle-coupled boot-glue (§1.1a;
+/// the `AppHandle` signature makes it G28 diff-floor-exempt; the wiring is source-scan-pinned below,
+/// `sweep_stale` itself unit-tested in `crate::run::sweep_tests`).
+fn best_effort_scratch_cleanup(app: &tauri::AppHandle) {
+    // The scratch base is the §7.2.1-step-2 `app_local_data_dir()` (the same resolve the C6 handler uses,
+    // §2.14). Best-effort: an unresolvable base at exit is simply skipped, never a panic (the crate no-panic
+    // deny holds — `.app_local_data_dir()` is fallible, and its `Err` is a silent no-op here).
+    if let Ok(scratch_base) = app.path().app_local_data_dir() {
+        drop(crate::run::sweep_stale(&scratch_base));
     }
 }
 
@@ -2571,8 +2599,9 @@ mod run_lifecycle {
     //! §7.3.2 app run-event lifecycle — the `App::run` handler registered on the BUILT `App`
     //! (`.build(ctx)?.run(|app, event| dispatch_run_event(app, &event))`, NOT the `Builder`), P2.81. It owns
     //! `RunEvent::ExitRequested` (the last `prevent_exit` chance, the §7.3.3 quit-guard hook site) and
-    //! `RunEvent::Exit` (the final cleanup point — flush the plugin logger; the §2.6 best-effort scratch
-    //! cleanup call joins at P3.74). `RunEvent` is external `#[non_exhaustive]`, so the `_ =>` arm is
+    //! `RunEvent::Exit` (the final cleanup point — flush the plugin logger, then the §2.6.3 best-effort
+    //! scratch sweep `best_effort_scratch_cleanup` → `crate::run::sweep_stale`, wired at P3.74). `RunEvent`
+    //! is external `#[non_exhaustive]`, so the `_ =>` arm is
     //! mandatory (the item-level `#[allow(clippy::wildcard_enum_match_arm)]` is the gate-sanctioned escape,
     //! the known-variant set being platform-dependent). AppHandle-coupled boot-glue: the wiring is
     //! source-scan-pinned (this crate ships no `tauri::test` mock harness — the boot-stage pattern,
@@ -2618,13 +2647,42 @@ mod run_lifecycle {
             concat!("api.prevent_", "exit();"), // the busy-gated block (§7.3.2 "last chance")
             concat!("RunEvent::Exit ", "=> {"), // the final cleanup point arm (§7.3.2)
             concat!("log::logger().", "flush()"), // flush the plugin logger before exit (§7.5)
+            concat!("best_effort_scratch_", "cleanup(app);"), // the §2.6.3 best-effort scratch sweep (P3.74)
             concat!("allow(clippy::wildcard_enum_", "match_arm)"), // the gate-sanctioned per-item escape
         ] {
             assert!(
                 src.contains(needle),
-                "§7.3.2/§7.3.3: dispatch_run_event must wire the busy-gated ExitRequested quit guard + Exit(flush) + the item allow (missing `{needle}`)"
+                "§7.3.2/§7.3.3: dispatch_run_event must wire the busy-gated ExitRequested quit guard + Exit(flush + scratch sweep) + the item allow (missing `{needle}`)"
             );
         }
+    }
+
+    // §6.4.1 unit (G15) / §7.3.2 (P3.74): `best_effort_scratch_cleanup` invokes the §2.6.3 `sweep_stale`
+    // primitive over the launch's `app_local_data_dir()` scratch base — NOT the per-run `cleanup_run` the
+    // §7.3.2 [DECIDED] block originally named (the Co-Pilot P3.74 ruling: `cleanup_run` consumes a
+    // `RunScratch` the P3.48 conductor owns in its run future, unreachable from `&AppHandle` at exit). The
+    // NEGATIVE pin makes the mechanism re-cut load-bearing: the Exit backstop must never call `cleanup_run`.
+    // AppHandle-coupled boot-glue → source-scan (the fn takes `&AppHandle`; `sweep_stale` itself is unit-tested
+    // in `crate::run::sweep_tests`). Needles `concat!`-assembled (self-match avoidance).
+    #[test]
+    fn best_effort_scratch_cleanup_sweeps_and_never_calls_cleanup_run() {
+        let src = super::boot_invariants::all_production_source();
+        for needle in [
+            concat!("fn best_effort_scratch_", "cleanup(app: &tauri::AppHandle)"), // the §7.3.2 backstop fn
+            concat!("app.path().app_local_data_", "dir()"), // resolves the §2.14 scratch base (§7.2.1 step 2)
+            concat!("crate::run::sweep_", "stale(&scratch_base)"), // the §2.6.3 central-scratch sweep (the re-cut mechanism)
+        ] {
+            assert!(
+                src.contains(needle),
+                "§7.3.2/§2.6.3: best_effort_scratch_cleanup must sweep the scratch base via sweep_stale (missing `{needle}`)"
+            );
+        }
+        // The superseded per-run mechanism must NOT appear in the Exit backstop (it is uncallable here — the
+        // conductor owns the RunScratch; per-run cleanup stays `finish_run`).
+        assert!(
+            !src.contains(concat!("cleanup_", "run(")),
+            "§7.3.2 (P3.74 ruling): the Exit backstop must NOT call cleanup_run (the conductor owns the RunScratch)"
+        );
     }
 
     // §6.4.1 unit (G15): the §7.8.1 macOS Open-with arm (P2.82) — `dispatch_run_event` routes the `#[cfg]`-gated

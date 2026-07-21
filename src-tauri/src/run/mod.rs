@@ -14,8 +14,9 @@
 //! permissive default would falsely claim "cleaned" / "swept", and a permissive `sweep_stale` could
 //! remove a LIVE foreign temp (the §2.6.3 held-lock delete-gate the kernel exists to protect). No
 //! run-owned temp even exists to clean ahead of the P3.20 naming model + the P3.21 lock-before-part
-//! lifecycle, and no caller reaches these ahead of their fill-box (`cleanup_run` wires at P3.74, the
-//! sweep at startup with P3.23). Signature AND body land together in each fill-box:
+//! lifecycle, and no caller reaches these ahead of their fill-box (`cleanup_run` wires at P3.48 via the
+//! conductor's `finish_run`; `sweep_stale` wires at P3.74, the §7.3.2 `RunEvent::Exit` backstop). Signature
+//! AND body land together in each fill-box:
 //!  - `cleanup_item` / `cleanup_run` — own-prefix-scoped cleanup on every exit path
 //!    (`.convertia-<thisInstanceId>-<thisRunId>-*.part`, never a bare `*.part` glob, §2.6.2) — **P3.22
 //!    (built below)**: `cleanup_item` removes one item's `.part` on the failure / out-of-disk / link-fallback
@@ -207,21 +208,8 @@ impl PublishTemp {
     /// `.part` suffix in each RECORDED `final_dir`, **never** a bare `*.part` / `.convertia-*.part` glob
     /// (which would delete a concurrent foreign instance's LIVE temp — the §2.6.2 CRITICAL rule). It is
     /// job-INDEPENDENT (an associated fn of `(instance, run)`, not `&self`) because run-end cleanup spans
-    /// every job of the run. [Build-Session-Entscheidung: P3.20]
-    // [Test-Change: P3.22 - old-obsolete+new-correct, §2.6.2] flip to allow: P3.22's `cleanup_run` now calls
-    // run_prefix (its own-prefix match), so rustc walks that dead-but-present caller and marks this callee
-    // USED — the old dead-code EXPECTATION is obsolete and allow is correct (a lint-attribute flip, not a real
-    // assertion change — the G70 signal FPs on the changed dead_code line).
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "P3.20 — now called by P3.22's `cleanup_run` own-prefix match (itself dead in production \
-                      until the P3.74 run-lifecycle wiring); rustc walks that dead-but-present caller and \
-                      marks this callee used, so `allow` (permissive) covers the transitive dead-ness through \
-                      the P3 wiring window (the `create_in` pattern)."
-        )
-    )]
+    /// every job of the run. LIVE in production via `cleanup_run` (P3.48's `finish_run`); no dead-code
+    /// attribute needed. [Build-Session-Entscheidung: P3.20]
     #[must_use]
     pub fn run_prefix(instance: InstanceId, run: RunId) -> String {
         format!(
@@ -654,7 +642,7 @@ pub fn cleanup_item(tmp: TempPath) -> io::Result<()> {
 /// `recorded_final_dirs` is the union of every DISTINCT `final_dir` an output actually landed in this run —
 /// incl. §2.7.2 late-divert targets and §2.14.3 cross-volume intermediates, which can sit in dirs that are
 /// neither a drop root nor the chosen destination. Recording it per written item is the caller's job (the
-/// P3.74 run-lifecycle teardown); this fn only CONSUMES the set.
+/// P3.48 conductor's `finish_run`, which builds `recorded_final_dirs` per written item); this fn only CONSUMES the set.
 ///
 /// Run-end consumes the [`RunScratch`], **releasing its held `.lock` BEFORE** the `run-<RunId>/` tree is
 /// removed — on Windows a still-open handle inside a dir blocks its recursive delete, and releasing the lock
@@ -664,16 +652,17 @@ pub fn cleanup_item(tmp: TempPath) -> io::Result<()> {
 /// [Build-Session-Entscheidung: P3.22]
 // `expect`→`allow`: the P3.48 C6 conductor (`run_conversion`'s `finish_run`) is now a LIVE production caller
 // of `cleanup_run` (the §2.6.2 run-end cleanup over the recorded final dirs), so the P3.22 `expect(dead_code)`
-// flips to "unfulfilled". The P3.74 run-lifecycle teardown named in the old reason remains a FUTURE additional
-// caller (app-exit / crash paths); `expect`→`allow` IN PLACE (a removed multi-line `expect(` is untaggable in
+// flips to "unfulfilled". (`cleanup_run` has NO other production caller: the P3.74 `RunEvent::Exit` backstop
+// uses `sweep_stale`, not `cleanup_run` — it reaches no `RunScratch` — and a crash calls nothing; per-run
+// cleanup is finish_run's alone.) `expect`→`allow` IN PLACE (a removed multi-line `expect(` is untaggable in
 // G70's ±6 window, the P3.7/P3.8 precedent). [Test-Change: P3.48 — old-obsolete+new-correct, §2.6.2]
 #[cfg_attr(
     not(test),
     allow(
         dead_code,
         reason = "P3.22 — the run-end cleanup entry; LIVE from P3.48 (the C6 conductor's `finish_run` runs it \
-                  at run end). The P3.74 run-lifecycle teardown (app-exit / crash) is a future additional \
-                  caller. `allow` (not removal) keeps the expect→allow diff G70-safe (the P3.7/P3.8 precedent)."
+                  at run end) — its SOLE production caller (the P3.74 Exit backstop uses `sweep_stale`, not \
+                  cleanup_run). `allow` (not removal) keeps the expect→allow diff G70-safe (the P3.7/P3.8 precedent)."
     )
 )]
 pub fn cleanup_run(scratch: RunScratch, recorded_final_dirs: &BTreeSet<PathBuf>) -> Vec<PathBuf> {
@@ -719,16 +708,6 @@ pub fn cleanup_run(scratch: RunScratch, recorded_final_dirs: &BTreeSet<PathBuf>)
 /// skipped — §2.6.3 sanctions only a *crash* or a *wedged cancel* as silent lingering carve-outs, not this,
 /// so both are surfaced by pushing `dir` itself into `residue` (never a silent clean success), mirroring the
 /// `cleanup_item` / `remove_dir_all` `NotFound`-vs-other split. Panic-free (the crate no-panic deny, G4).
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "P3.22 — the run-end own-prefix removal helper; its only caller is `cleanup_run` (itself \
-                  dead in production until the P3.74 wiring), which rustc walks as a present caller and marks \
-                  this callee used, so `allow` (permissive) covers the transitive dead-ness through the P3 \
-                  wiring window (the `PublishTemp::create_in` pattern)."
-    )
-)]
 fn remove_own_temps_in(dir: &Path, own_prefix: &str, residue: &mut Vec<PathBuf>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -770,16 +749,6 @@ fn remove_own_temps_in(dir: &Path, own_prefix: &str, residue: &mut Vec<PathBuf>)
 /// §2.6.3 liveness of a run dir's `.lock`, as read by the non-blocking try-lock probe ([`probe_lock`]). The
 /// three-state split (vs a bare bool) is a build-session decomposition so [`sweep_verdict`] can apply the
 /// §2.6.3 (b) grace window to BOTH the `Free` and `Absent` not-held cases. [Build-Session-Entscheidung: P3.23]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "P3.23 — the §2.6.3 sweep's liveness enum; constructed only by `probe_lock` and read only by \
-                  `sweep_verdict`, both reached solely from `sweep_stale` (dead in production until the §7.2 \
-                  startup wiring), which rustc walks as present callers marking these variants used — `allow` \
-                  covers the transitive dead-ness through the P3 wiring window (the `create_in` pattern)."
-    )
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LockState {
     /// `.lock` opened, the non-blocking exclusive acquire was REFUSED — a live owner holds it (LIVE).
@@ -816,16 +785,6 @@ impl LockState {
 }
 
 /// §2.6.3 per-run-dir sweep decision — the output of the pure [`sweep_verdict`] rule.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "P3.23 — the §2.6.3 sweep verdict enum; produced by `sweep_verdict` and consumed by \
-                  `sweep_stale` (dead in production until the §7.2 startup wiring), which rustc walks as a \
-                  present caller marking these variants used — `allow` covers the transitive dead-ness \
-                  through the P3 wiring window."
-    )
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SweepVerdict {
     /// Keep the dir — a live owner (held lock), a just-starting run (lockless within grace), or an
@@ -844,15 +803,6 @@ enum SweepVerdict {
 /// reclaimed on a subsequent sweep (§2.6.3: "a lockless very-recent dir is left for next time"). A `None`
 /// `dir_age` (unreadable mtime / clock skew) is a conservative `Keep` — mtime is never a delete gate on its
 /// own (§2.6.3), so an unknown age never removes. [Build-Session-Entscheidung: P3.23]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "P3.23 — the pure §2.6.3 sweep rule; its only caller is `sweep_stale` (dead in production \
-                  until the §7.2 startup wiring), which rustc walks as a present caller marking this used — \
-                  `allow` covers the transitive dead-ness through the P3 wiring window."
-    )
-)]
 fn sweep_verdict(
     lock: LockState,
     dir_age: Option<std::time::Duration>,
@@ -878,15 +828,6 @@ fn sweep_verdict(
 /// handle inside the dir would block its delete). `NotFound` ⇒ `Absent`; any other open error, or a probe I/O
 /// error, maps conservatively to `Held` (keep — liveness could not be established, and the held lock is the
 /// sole delete gate). Panic-free (crate no-panic deny, G4). [Build-Session-Entscheidung: P3.23]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "P3.23 — the §2.6.3 sweep's per-dir lock probe; its only caller is `sweep_stale` (dead in \
-                  production until the §7.2 startup wiring), which rustc walks as a present caller marking \
-                  this used — `allow` covers the transitive dead-ness through the P3 wiring window."
-    )
-)]
 fn probe_lock(lock_path: &Path) -> LockState {
     let file = match OpenOptions::new().read(true).write(true).open(lock_path) {
         Ok(file) => file,
@@ -906,15 +847,6 @@ fn probe_lock(lock_path: &Path) -> LockState {
 /// The age of `dir` (now − mtime), or `None` if the mtime is unreadable or in the future (a clock skew ⇒
 /// unknown ⇒ conservative keep). Used ONLY for the §2.6.3 lockless grace window — never as a delete gate for a
 /// dir that has a `.lock`. Panic-free (crate no-panic deny, G4): every step is a fallible `Option`.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "P3.23 — the §2.6.3 lockless-grace mtime read; its only caller is `sweep_stale` (dead in \
-                  production until the §7.2 startup wiring), which rustc walks as a present caller marking \
-                  this used — `allow` covers the transitive dead-ness through the P3 wiring window."
-    )
-)]
 fn dir_age(dir: &Path) -> Option<std::time::Duration> {
     let mtime = std::fs::metadata(dir).ok()?.modified().ok()?;
     std::time::SystemTime::now().duration_since(mtime).ok()
@@ -929,33 +861,31 @@ fn dir_age(dir: &Path) -> Option<std::time::Duration> {
 /// dead/crashed run). A HELD lock (live run) and a **just-created not-held** dir (a run mid-`acquire`) are
 /// LEFT UNTOUCHED — the sweep never races a just-starting run, never hangs on a live one (the try-lock is
 /// non-blocking). Best-effort + panic-free (crate no-panic deny, G4): an unreadable scratch root / instance
-/// dir / run dir is skipped, never a crash. Returns the run dirs actually REMOVED (for the §7.2 startup
-/// caller's observability). The destination-resident `*.part` reclaim (§2.6.3 (b), a different location
-/// entirely) is P3.24, not this central-scratch sweep. [Build-Session-Entscheidung: P3.23]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "P3.23 — the §2.6.3 startup sweep entry; the production caller is the §7.2 startup sequence \
-                  wiring — unused in the production build until that lands."
-    )
-)]
+/// dir / run dir is skipped, never a crash. Returns the run dirs actually REMOVED (for the caller's
+/// observability). The destination-resident `*.part` reclaim (§2.6.3 (b), a different location entirely) is
+/// P3.24, not this central-scratch sweep. [Build-Session-Entscheidung: P3.23]
+///
+/// [Test-Change: P3.74 — old-obsolete+new-correct, §7.3.2] the `#[cfg_attr(not(test), expect(dead_code))]`
+/// that stood here is REMOVED, not flipped to `allow`: `sweep_stale` is now a genuinely LIVE production fn
+/// (P3.74's `best_effort_scratch_cleanup` calls it), so the dead-code expectation is obsolete and NO
+/// dead-code attribute is correct — an `allow` would falsely imply the fn may be dead. (G70 reads the removed
+/// `expect(` token as an assertion; this tombstone records the real, non-test reason — the P3.7/P3.8 class.)
+///
+/// **Production callers (LIVE since P3.74):** the §7.3.2 `RunEvent::Exit` best-effort backstop
+/// `main::best_effort_scratch_cleanup` (P3.74) — the FIRST production caller, wired now. The §7.2.5
+/// startup orphan-reclaim slot (`main::prepare_scratch_and_log`, the P2.106.5-built `Ok(())` SLOT) is the
+/// intended SECOND caller, but its body has **no named owning box** in the plan (P2.106.5 says only "body
+/// P3/P4"; no P4 box names it — flagged to the Co-Pilot at P3.74). Both callers pass the launch's
+/// `app_local_data_dir()` base; the sweep is idempotent, so an Exit sweep + a next-launch sweep never
+/// conflict.
 pub fn sweep_stale(scratch_base: &Path) -> Vec<PathBuf> {
     sweep_stale_within(scratch_base, LOCKLESS_GRACE)
 }
 
 /// The §2.6.3 sweep body, parameterised on the grace window so a test can drive the reclaim path with a
 /// zero/large `grace` without fragile directory-mtime aging. `sweep_stale` calls it with [`LOCKLESS_GRACE`];
-/// the logic is otherwise identical. [Build-Session-Entscheidung: P3.23]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "P3.23 — the §2.6.3 sweep body; its only caller is `sweep_stale` (dead in production until \
-                  the §7.2 startup wiring), which rustc walks as a present caller marking this used — `allow` \
-                  covers the transitive dead-ness through the P3 wiring window."
-    )
-)]
+/// the logic is otherwise identical. Its `sweep_stale` caller is LIVE in production since P3.74 (the §7.3.2
+/// `RunEvent::Exit` backstop), so this body is live too — no dead-code allow needed. [Build-Session-Entscheidung: P3.23]
 fn sweep_stale_within(scratch_base: &Path, grace: std::time::Duration) -> Vec<PathBuf> {
     let scratch_root = scratch_base.join(SCRATCH_NAMESPACE).join(SCRATCH_SUBDIR);
     let mut removed = Vec::new();

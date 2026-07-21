@@ -617,12 +617,31 @@ Two complementary hooks own the lifecycle (per Tauri v2):
   closure passed to **`App::run`** (i.e. `builder.build(ctx)?.run(|app, event| …)` —
   the run-event handler is on the built `App`, **not** on `Builder`). `ExitRequested`
   is the last chance to `api.prevent_exit()`; `Exit` is the final cleanup point (flush
-  logs, best-effort scratch cleanup). **`best_effort_scratch_cleanup` IS the same idempotent
-  §2.6 `cleanup_run` path `[DECIDED]`** — not a separate cleanup implementation: it invokes
-  the §2.6 run-end cleanup (remove the central `run-<RunId>/` dir + `*.part` in the recorded
-  `final_dir` set), **best-effort and non-blocking** (it must not stall app exit). If a
-  **wedged descendant** still holds a `.part` at exit (§1.7 group-kill timed out), that temp
-  is **deferred to the §2.6.3 next-launch startup sweep** — exit never blocks waiting on it.
+  logs, best-effort scratch cleanup). **`best_effort_scratch_cleanup` IS the idempotent
+  §2.6.3 `sweep_stale` path `[DECIDED, mechanism CORRECTED 2026-07-21 — see below]`** — not a
+  separate cleanup implementation: it invokes the §2.6.3 central-scratch sweep (`sweep_stale`
+  reclaims the discardable `run-<RunId>/` dirs of DEAD runs across every instance dir under the
+  launch's scratch base, held-lock-gated so a concurrent LIVE instance is never touched),
+  **best-effort and non-blocking** (a bounded synchronous sweep whose lock probe is a
+  NON-blocking try-lock, so it never waits on a live run's lock — the real stall risk; the FS
+  walk is bounded I/O over this launch's small per-run scratch dirs). If a **wedged descendant** still holds a `.part` at
+  exit (§1.7 group-kill timed out), that temp is **deferred to the same §2.6.3 sweep next
+  launch** — exit never blocks waiting on it.
+  > **[Mechanism CORRECTED 2026-07-21 (Co-Pilot P3.74 ruling — literal→reachable).]** This
+  > block originally named the per-run **`cleanup_run`** path. That is structurally
+  > uncallable from `RunEvent::Exit`: `cleanup_run` consumes a `RunScratch` by value, and the
+  > §1.9/P3.48 C6 conductor OWNS the live run's `RunScratch` inside its spawned `run_conversion`
+  > future — which cleans it **per-run** through `finish_run` there — so no `RunScratch` is ever
+  > reachable from an `&AppHandle` at exit (no app-managed State holds one). Only the
+  > **mechanism** name changes; every intent clause stands and `sweep_stale` fulfils each
+  > verbatim (it IS §2.6.3 machinery, so "not a separate implementation" holds). **Honest
+  > residual:** this central sweep does not touch a **destination-resident** `.part` (a
+  > lingering output temp) — that is the §2.6.3 (b) opportunistic reclaim's surface (`P3.24`
+  > `reclaim_dest_parts_in`); and the normal **per-run** cleanup is unchanged (`finish_run` →
+  > `cleanup_run`, §2.6.2). The §7.3.3 confirmed-quit cancel→cleanup→exit flow (which is where a
+  > mid-run scratch would exist) is **P4.67**; today `RunEvent::Exit` is reached only while idle
+  > (the busy guard blocks a busy quit), so this backstop mainly reclaims a **prior/foreign**
+  > crashed run's scratch — an early run of the same §2.6.3 sweep the next launch would do.
 
 ```rust
 .on_window_event(|window, event| {                 // v2: two args (&Window, &WindowEvent)
@@ -669,7 +688,7 @@ builder
             let origin = if frontend_ready(app) { IntakeOrigin::SecondInstance } else { IntakeOrigin::LaunchArg };
             forward_launch_intake(app, paths, origin); // → §7.8.1 funnel → busy gate + §1.1
         }
-        RunEvent::Exit => { flush_logs(app); best_effort_scratch_cleanup(app); /* §2.6 */ }
+        RunEvent::Exit => { flush_logs(app); best_effort_scratch_cleanup(app); /* §2.6.3 sweep_stale */ }
         _ => {}
     });
 ```
