@@ -17,7 +17,7 @@
 # executor, needed first by P0.2.2). Each additional gate tool is pinned here BY THE
 # BOX THAT INTRODUCES IT, through the same mechanism — gitleaks (P0.3.1),
 # actionlint (P0.2.4 - CI workflow validator), zizmor (P0.2.6), typos/editorconfig-checker (P0.3.11),
-# cargo-deny + cargo-audit (P1.59), Syft/cargo-vet/cargo-fuzz/minisign/cyclonedx (their boxes). pip-installed tools
+# cargo-deny + cargo-audit (P1.59), cargo-mutants (P3.72), Syft/cargo-vet/cargo-fuzz/minisign/cyclonedx (their boxes). pip-installed tools
 # (Semgrep, P0.4.2) live in `requirements-ci.txt` (the --require-hashes leg), not
 # here. [Build-Session-Entscheidung: P0.2.1 — mechanism + first-tool pins now,
 # remaining tools pinned per-introducing-box; matches §0.8 "[DEFER: build] exact
@@ -211,3 +211,23 @@ linux-aarch64  = { url = "https://github.com/taiki-e/cargo-llvm-cov/releases/dow
 macos-x86_64   = { url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.8.7/cargo-llvm-cov-x86_64-apple-darwin.tar.gz",        sha256 = "288ce0cb976207a9a1ad5af4d7ec9a06c9af116727066fb2287df8d9d1026be9" }
 macos-aarch64  = { url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.8.7/cargo-llvm-cov-aarch64-apple-darwin.tar.gz",       sha256 = "3efee732ed7e9a653e20d96c930e0ec799901289cce90f46bb20f627e2c0d2e9" }
 windows-x86_64 = { url = "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.8.7/cargo-llvm-cov-x86_64-pc-windows-msvc.tar.gz",     sha256 = "56bce7aef6bf906af0fe025d2459f8be483d65ed4c105760671f9c92449c966d" }
+
+# --- cargo-mutants - the G15 scoped mutation-testing sub-leg over the safety kernel
+# (P0.5.10 registration; the P3.72 first informational pass + `max_survived_mutants.toml`
+# ratchet). Release-tier only - never per-push (run cost; gate-status.md row). Upstream
+# ships x86_64-only assets, so the entry declares `missing_platforms = "skip"` (the
+# installer's declared-gap arm): the ci.yml full install on macos-14 (aarch64) SKIPs it
+# visibly; the mutants leg itself runs on linux-x86_64 (release tier) / windows-x86_64
+# (the local first pass). ---
+[tools.cargo-mutants]
+version           = "27.1.0"
+origin            = "https://github.com/sourcefrog/cargo-mutants/releases/download/v27.1.0/"
+bin_name          = "cargo-mutants"
+asset_kind        = "targz"   # default (linux/macos); the windows platform overrides to "zip"
+missing_platforms = "skip"    # upstream publishes NO aarch64 assets (see corroboration)
+corroboration     = "sourcefrog/cargo-mutants release v27.1.0 publishes NO checksums file and NO build-provenance attestation (`gh attestation verify` org- and repo-scoped -> HTTP 404), so each platform archive sha256 was computed from the official GitHub release download. 2nd origin (version identity): crates.io records cargo-mutants 27.1.0 as the current release (sparse-index cksum 07072e7bcdeb425d5e5fdbfd9f15a2c749e23cb2edf5ef40aee5876760ae1cf9 for the source crate; the v27.1.0 tag matches). Not in Homebrew core or Scoop main. RESIDUAL (honest, same class as cargo-audit/shellcheck): no independent recording of the prebuilt binary-archive hashes; a future attested cargo-mutants release should be re-pinned via the attestation arm. Upstream ships ONLY x86_64 assets (linux-gnu/apple-darwin/windows-msvc) - no aarch64 exists to pin, hence `missing_platforms = \"skip\"`. Established 2026-07-21 by Co-Pilot, owner-acked."
+
+[tools.cargo-mutants.platforms]
+linux-x86_64   = { url = "https://github.com/sourcefrog/cargo-mutants/releases/download/v27.1.0/cargo-mutants-x86_64-unknown-linux-gnu.tar.gz", sha256 = "dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e" }
+macos-x86_64   = { url = "https://github.com/sourcefrog/cargo-mutants/releases/download/v27.1.0/cargo-mutants-x86_64-apple-darwin.tar.gz",      sha256 = "7109a9e9673fe0b977f622e6f32383b6d1cbbf3fbb63b7c30db3267462c74670" }
+windows-x86_64 = { url = "https://github.com/sourcefrog/cargo-mutants/releases/download/v27.1.0/cargo-mutants-x86_64-pc-windows-msvc.zip",      sha256 = "2a2f00e47d4b458262a41501b0820aa26015fd35779903d2c8b30b2993f36791", asset_kind = "zip" }

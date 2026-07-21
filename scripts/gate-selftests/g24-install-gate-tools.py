@@ -142,6 +142,49 @@ rc, out = run_installer('schema_version = 1\n[toolchain]\nrust_stable = "stable"
 record("floating toolchain channel is rejected", rc == 1 and "floating" in out.lower(), f"exit={rc}")
 
 
+def manifest_missing_platform(declare_skip: bool, plant_other_platform: bool = False) -> str:
+    """A manifest missing the CURRENT platform key - drives the declared-gap arm
+    (`missing_platforms = "skip"`, the cargo-mutants x86_64-only-upstream case,
+    P3.72) vs the fail-closed default. `plant_other_platform` pins ONE real row for
+    a platform that is guaranteed NOT the current one (the legitimate declared-gap
+    shape); without it the platforms table is EMPTY (the dead-pin shape)."""
+    skip = 'missing_platforms = "skip"\n' if declare_skip else ""
+    rows = ""
+    if plant_other_platform:
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader("igt_probe", str(INSTALLER))
+        igt = importlib.util.module_from_spec(importlib.util.spec_from_loader("igt_probe", loader))
+        loader.exec_module(igt)
+        other = next(k for k in PLATFORM_KEYS if k != igt.detect_platform())
+        rows = f'{other} = {{ url = "{SMALL_ASSET}", sha256 = "{"0" * 64}" }}\n'
+    return (
+        "schema_version = 1\n"
+        "[tools.selftest]\n"
+        'version = "0"\n'
+        f'origin = "{ORIGIN}"\n'
+        'bin_name = "selftest-asset"\n'
+        'asset_kind = "raw"\n'
+        + skip
+        + 'corroboration = "self-test synthetic"\n'
+        "[tools.selftest.platforms]\n" + rows
+    )
+
+
+# The declared-gap arm ALL ways (hermetic - the skip/raise happens before any download):
+# an UNDECLARED missing platform stays FAIL-CLOSED; a DECLARED one with a real foreign
+# pin SKIPs visibly (exit 0); a declared skip with an EMPTY table is a DEAD PIN and FAILS.
+rc, out = run_installer(manifest_missing_platform(declare_skip=False))
+record("undeclared missing platform FAILS (fail-closed default)",
+       rc == 1 and "no pin for platform" in out, f"exit={rc}")
+rc, out = run_installer(manifest_missing_platform(declare_skip=True, plant_other_platform=True))
+record("declared missing_platforms=skip + a foreign pin -> visible SKIP, exit 0",
+       rc == 0 and "[SKIP]" in out and "missing_platforms=skip" in out, f"exit={rc}")
+rc, out = run_installer(manifest_missing_platform(declare_skip=True))
+record("declared skip with an EMPTY platforms table FAILS (dead-pin guard)",
+       rc == 1 and "dead pin" in out.lower(), f"exit={rc}")
+
+
 def archive_leg() -> None:
     """Hermetic: extract_binary round-trips the inner binary from a tar.gz (nested
     member) + a zip (root member), and fails on a missing member - covers the P0.2.4

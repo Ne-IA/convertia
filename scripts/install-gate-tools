@@ -165,6 +165,27 @@ def extract_binary(archive: Path, kind: str, out_path: Path, want_name: str) -> 
 def install_tool(name: str, entry: dict, dest: Path, platform_key: str, offline: bool) -> None:
     platforms = entry.get("platforms", {})
     if platform_key not in platforms:
+        # A tool whose UPSTREAM publishes no asset for this platform may DECLARE the
+        # gap in this L(-1) manifest (`missing_platforms = "skip"`, rationale recorded
+        # in its `corroboration`); the installer then SKIPs it VISIBLY instead of
+        # failing the whole run (first user: cargo-mutants, x86_64-only upstream, the
+        # P3.72 pin - the ci.yml full install runs on macos-14 aarch64). The default
+        # (no declaration) stays FAIL-CLOSED: an undeclared hole is an error, never a
+        # silent skip. (Co-Pilot, owner-acked 2026-07-21; g24 legs cover both arms.)
+        if entry.get("missing_platforms") == "skip":
+            # Dead-pin guard: a skip-declared tool must still pin >=1 platform - an
+            # EMPTY (or fully typo'd-away) table would skip on EVERY platform and the
+            # tool would never be installed/verified anywhere (G1-review hardening).
+            if not platforms:
+                raise GateToolError(
+                    "missing_platforms=skip declared but the platforms table is EMPTY - "
+                    "a tool that would skip on EVERY platform is a dead pin, not a declared gap"
+                )
+            print(
+                f"[SKIP]    {name}: no pinned asset for {platform_key} "
+                f"(declared missing_platforms=skip; pinned: {', '.join(sorted(platforms))})"
+            )
+            return
         raise GateToolError(
             f"no pin for platform {platform_key!r} "
             f"(pinned: {', '.join(sorted(platforms)) or 'none'})"
