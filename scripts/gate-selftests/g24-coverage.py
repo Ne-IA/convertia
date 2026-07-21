@@ -232,23 +232,30 @@ _TWO = _GLUE + _PURE
 _two_ranges = m._apphandle_fn_ranges(_TWO)
 record("_apphandle_fn_ranges: a format!-brace body ends correctly (the following pure fn is not swallowed)",
        [n for n, _, _ in _two_ranges] == ["glue"] and _two_ranges[0][2] == 3)
-# the REAL main.rs: the 5 launch-funnel AppHandle fns are ranges; the pure helpers are NOT (the partition)
-_main_src = (m.ROOT / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
-_main_fns = {n for n, _, _ in m._apphandle_fn_ranges(_main_src)}
-record("_apphandle_fn_ranges: real main.rs - the funnel + shells are exempt",
-       {"forward_launch_intake", "converter_is_busy", "frontend_ready", "stash_pending_intake"} <= _main_fns)
-record("_apphandle_fn_ranges: real main.rs - the PURE helpers (intake_disposition/parse_path_args) are NOT exempt",
-       "intake_disposition" not in _main_fns and "parse_path_args" not in _main_fns)
-record("_apphandle_fn_ranges: real main.rs - fn main (no AppHandle in its sig) is NOT exempt (boot_invariants source-scan covers its body, not this diff exemption)",
-       "main" not in _main_fns)
+# the REAL lib.rs (the P3.87 crate root - the boot glue lives here since the bin+lib split): the
+# launch-funnel AppHandle fns are ranges; the pure helpers are NOT (the partition). The thin main.rs
+# is additionally asserted to yield ZERO ranges (the post-split shape; the specimen re-point that
+# fixed the [0]-IndexError crash this block had against the thin main - a real-repo-specimen leg
+# must move with its specimen, 2026-07-21).
+_lib_src = (m.ROOT / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
+_lib_fns = {n for n, _, _ in m._apphandle_fn_ranges(_lib_src)}
+record("_apphandle_fn_ranges: real lib.rs - the funnel + shells are exempt",
+       {"forward_launch_intake", "converter_is_busy", "frontend_ready", "stash_pending_intake"} <= _lib_fns)
+record("_apphandle_fn_ranges: real lib.rs - the PURE helpers (intake_disposition/parse_path_args) are NOT exempt",
+       "intake_disposition" not in _lib_fns and "parse_path_args" not in _lib_fns)
+record("_apphandle_fn_ranges: real lib.rs - run() (no AppHandle in its sig) is NOT exempt (boot_invariants source-scan covers it, not this diff exemption)",
+       "run" not in _lib_fns)
+_thin_main = (m.ROOT / "src-tauri" / "src" / "main.rs").read_text(encoding="utf-8")
+record("_apphandle_fn_ranges: the thin post-split main.rs yields ZERO AppHandle ranges",
+       m._apphandle_fn_ranges(_thin_main) == [])
 
 # _boot_glue_exempt: reads the HEAD tree; a product Rust file's AppHandle-fn lines are exempt, a non-product
 # file contributes nothing; _diff_counts honours the exempt set (an uncovered exempt line stops counting).
-_first = m._apphandle_fn_ranges(_main_src)[0]
+_first = m._apphandle_fn_ranges(_lib_src)[0]
 _inside = _first[1] + 1                                # a line inside the first AppHandle fn body
-_ex, _labels = m._boot_glue_exempt({"src-tauri/src/main.rs": {_inside}, "README.md": {1}})
+_ex, _labels = m._boot_glue_exempt({"src-tauri/src/lib.rs": {_inside}, "README.md": {1}})
 record("_boot_glue_exempt: a product Rust AppHandle-fn line is exempt",
-       _inside in _ex.get("src-tauri/src/main.rs", set()))
+       _inside in _ex.get("src-tauri/src/lib.rs", set()))
 record("_boot_glue_exempt: a non-product file contributes nothing + a label is logged",
        "README.md" not in _ex and len(_labels) >= 1)
 _eh = {"f.rs": {10: 1, 11: 0, 12: 0}}
