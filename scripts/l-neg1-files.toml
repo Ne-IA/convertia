@@ -54,6 +54,7 @@ patterns = [
   "rustfmt.toml",                 # the Rust format contract (G3); a relaxation weakens the format plane
   "clippy.toml",                  # the Rust lint config (G4/G14); a broad allow weakens the no-panic deny
   "coverage-floors.toml",         # the G27 per-domain coverage-floor ratchet; lowering a floor weakens the coverage plane (increase-only)
+  "max_survived_mutants.toml",    # the G15 mutation-testing survived-mutant ratchet (P3.72); raising a count weakens the kernel-test plane (decrease-only)
   "src-tauri/capabilities/**",    # the locked Tauri capabilities / permissions allowlist
   "engines.lock",                 # the pinned bundled-engine digests
 

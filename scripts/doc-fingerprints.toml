@@ -51,7 +51,12 @@ describes = [
   "CLAUDE.md §5 (the L(-1) anti-pattern bullet)",
   "the docs-only-fastpath L(-1) list (G10)",
 ]
-fingerprint = "sha256:5c691fcc3c015df3ad50140a1d8ba553e14b195c56197d51b99b71143425fa03"
+fingerprint = "sha256:f8dc97d001e1ea3e3b475839b2f58af43ad045188f01f9db6c3567a9cbad49f0"
+# ^ re-blessed 2026-07-21 (P3.72): the cage gained `max_survived_mutants.toml` (the G15 mutation
+#   ratchet, the coverage-floors class); the §2 + G71-row enumerations were synced in the same
+#   commit; CLAUDE §5 is deliberately non-exhaustive, and the docs-only fastpath's skip
+#   eligibility is a hardcoded .md/LICENSE/NOTICE allow-list (it never parses the cage), so a
+#   non-.md file like the ratchet is structurally ineligible — both re-verified, no edit needed.
 
 # (b) LIVE since P1.64 — the spec §0.7 physical tree is the HIGHER source (SSOT > spec > docs); the
 #     CLAUDE.md §1a "Repo layout" map is its operational projection. This fingerprint is the freshness

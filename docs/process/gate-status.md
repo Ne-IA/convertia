@@ -187,6 +187,22 @@ per-crate `max_survived_mutants.toml` initialised at the first-run count, **decr
 fuzz-replay activation pattern). The gate then ratchets decrease-only per crate as
 subsequent phases deepen the kernel test suites.
 
+**First informational pass (P3.72, 2026-07-21 — the activation).** Run at tree `7238e62`
+with the pinned `cargo-mutants` 27.1.0 (`scripts/gate-tools.toml`, the 3b4fc5d pin):
+**182 mutants** over the three kernel modules — **111 caught, 39 missed**
+(`crate::fs_guard` 29, `crate::detection` 10, `crate::outcome` 0), 32 unviable,
+0 timeout. The decrease-only [`max_survived_mutants.toml`](../../max_survived_mutants.toml)
+ratchet is initialised at those counts (repo root, **L(-1)** — cage entry + the
+`l-neg1-cage` fingerprint re-blessed in the same owner-acked P3.72 commit, the
+coverage-floors P0.4.8 pattern). Survivor clusters (the full report lives in the run's
+`mutants.out`): the fs_guard publish arms (`publish_noreplace`/`publish_link_fallback`)
+and the `detection::viable_agreement` comparison operators — the concrete targets the
+subsequent phases ratchet down. Baseline byproducts of the activation: the
+environment-fragile ephemeral-specimen test corrected (`7238e62`, `[Test-Change: P3.72]`)
+and the g24-coverage real-repo specimen re-pointed post-split (`25d96e6`). Posture
+unchanged: `informational`; the owner flips to `required` at **0** for
+`crate::fs_guard` + `crate::detection`.
+
 ## Bundled-engine CVE awareness — G17b (P0.7.7 · §3.4.3 §6.5 · G17b G17)
 
 An **informational per-push** OSV/grype scan of the **PURL-keyed** `engines.lock` (the full

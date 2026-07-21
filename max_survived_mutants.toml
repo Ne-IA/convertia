@@ -1,0 +1,22 @@
+# max_survived_mutants.toml - the G15 scoped mutation-testing ratchet (P0.5.10 / P3.72).
+#
+# Per kernel MODULE of `convertia-core` (the no-harm/atomicity/no-misroute kernel the
+# gate is scoped to), the maximum number of SURVIVED (missed) `cargo-mutants` mutants.
+# DECREASE-ONLY: initialised at the P3.72 first informational pass and only ever
+# lowered as subsequent phases deepen the kernel test suites; a raise is an owner
+# decision, never a build-loop edit. The owner flips the gate informational->required
+# once fs_guard + detection reach 0 (gate-status.md, plan-lint check 23). This file
+# is L(-1) (scripts/l-neg1-files.toml, G71) - the coverage-floors.toml class.
+#
+# First pass (P3.72, 2026-07-21, tree 7238e62, cargo-mutants 27.1.0 pinned in
+# scripts/gate-tools.toml): 182 mutants over the three modules - 111 caught,
+# 39 missed, 32 unviable, 0 timeout. Run shape: `cargo-mutants mutants -p
+# convertia-core -f src-tauri/src/fs_guard/mod.rs -f src-tauri/src/detection/mod.rs
+# -f src-tauri/src/outcome/mod.rs --gitignore true --no-shuffle` (release-tier,
+# never per-push - the run cost; the survivor report lives in the run's mutants.out,
+# the clusters named in the gate-status.md first-run entry).
+
+[max_survived]
+"crate::fs_guard"  = 29
+"crate::detection" = 10
+"crate::outcome"   = 0
