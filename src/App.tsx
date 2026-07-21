@@ -25,8 +25,9 @@
 // `FrontendReady` into a window where a second launch is emitted into an unregistered listener and dropped.
 // `useAppEvents()` returns the per-mount registration-completion promise; `useLaunchDrain(eventsReady)` drains
 // only once it SETTLES (both legs — the drained set returns via the C1 response, so a failed subscribe loses
-// nothing). P2.121 adds `useNativeDragDrop()` (the §5.4 native file-drop) — independent of the drain gate (a
-// live drop is never a buffered launch path).
+// nothing). P2.121's `useNativeDragDrop()` interim drag-affordance listener is RETIRED at P3.81 (the
+// post-screens hand-off completion): the P3.54 DropZone renders the §5.4 drag-over affordance from its own DOM
+// drag events, so the WebView subscribes no Tauri window drag event at all — the drop is core-side (§7.8.1).
 //
 // This root render IS §7.2.1 step 8 — "hand to UI empty/idle state (§5.2)": the terminal step of the ordered
 // startup sequence (src-tauri `main()`'s spine, P2.106). After the Rust core reveals the window (step 6) and
@@ -48,7 +49,6 @@ import { TargetsScreen } from "./components/TargetsScreen";
 import { UnsupportedNotice } from "./components/UnsupportedNotice";
 import { useAppEvents } from "./hooks/useAppEvents";
 import { useLaunchDrain } from "./hooks/useLaunchDrain";
-import { useNativeDragDrop } from "./hooks/useNativeDragDrop";
 import { consumeAppFault, type AppEventHandlers } from "./lib/ipc/events";
 import { useAppStore, type Msg, type State } from "./state/store";
 
@@ -108,7 +108,6 @@ function assertNever(machine: never): never {
 
 export function App() {
   const eventsReady = useAppEvents(APP_EVENT_HANDLERS);
-  useNativeDragDrop();
   useLaunchDrain(eventsReady);
   // §5.1 selector granularity: subscribe to the whole machine state (each §5.2 transition mints a new object,
   // so this re-renders exactly on a screen change). [Build-Session-Entscheidung: P3.55]

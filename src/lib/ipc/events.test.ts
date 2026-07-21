@@ -9,16 +9,6 @@ const invoke = vi.fn<(cmd: string, args: Record<string, unknown>) => Promise<unk
 const listen =
   vi.fn<(event: string, handler: (e: { payload: unknown }) => void) => Promise<() => void>>();
 
-// P2.121: the §5.4 native window drag-drop event. The mock records the handler so a test can fire each
-// DragDropEvent phase (enter/over/leave/drop) and assert the drag-active visual + the drop→C1 intake.
-type DragPayload =
-  | { type: "enter"; paths: string[] }
-  | { type: "over" }
-  | { type: "drop"; paths: string[] }
-  | { type: "leave" };
-const onDragDropEvent =
-  vi.fn<(handler: (e: { payload: DragPayload }) => void) => Promise<() => void>>();
-
 // The mock `Channel` records instances + carries `onmessage`, so a test can fire a `ConversionEvent` through
 // the `start_conversion` progress Channel and assert it reaches the store's `applyConvertEvent`. Hoisted
 // because it is referenced eagerly in the `vi.mock` factory (unlike the lazily-called `invoke`/`listen`).
@@ -40,11 +30,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/api/event", () => ({
   listen: (event: string, handler: (e: { payload: unknown }) => void) => listen(event, handler),
 }));
-vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({
-    onDragDropEvent: (handler: (e: { payload: DragPayload }) => void) => onDragDropEvent(handler),
-  }),
-}));
+// [Build-Session-Entscheidung: P3.81] The `@tauri-apps/api/window` mock (P2.121's `onDragDropEvent` recorder)
+// is removed with the retired interim affordance listener — `events.ts` no longer imports that module at all.
 
 import type { Planned, SingleSet } from "../../state/machine";
 import { initialState } from "../../state/machine";
@@ -64,7 +51,6 @@ import {
   runConversion,
   startConversionRun,
   subscribeAppEvents,
-  subscribeNativeDragDrop,
 } from "./events";
 
 // §1.4 CollectedSet::Single / §1.5 TargetOffer / §1.8 OutputPlanPreview fixtures for the P3.55 consumption +
@@ -784,64 +770,17 @@ describe("cancelConversionRun (§5.2 row 7a / §5.8 Cancel-run round-trip, P3.58
 // `IntakePayload`), so there is no payload-carrying intake handler. Its coverage lives in the `subscribeAppEvents`
 // "app://intake issues the payload-less drain" test + the `drainPendingIntake` describe above.
 
-describe("subscribeNativeDragDrop (P2.121 §5.4 native drag-active affordance; drop is core-side, P3.77)", () => {
-  beforeEach(() => {
-    onDragDropEvent.mockReset();
-    invoke.mockReset();
-    onDragDropEvent.mockResolvedValue(() => {});
-    invoke.mockResolvedValue({ empty: { skipped: [] } });
-  });
-
-  const handler = () => onDragDropEvent.mock.calls[0]?.[0];
-
-  it("toggles drag-active on enter/over/leave (§5.4 visual affordance only — no C1 call)", async () => {
-    const onDragActiveChange = vi.fn();
-    await subscribeNativeDragDrop({ onDragActiveChange });
-    handler()?.({ payload: { type: "enter", paths: ["/a"] } });
-    handler()?.({ payload: { type: "over" } });
-    handler()?.({ payload: { type: "leave" } });
-    expect(onDragActiveChange.mock.calls).toEqual([[true], [true], [false]]);
-    expect(invoke).not.toHaveBeenCalled();
-  });
-
-  // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the drop is handled CORE-SIDE now — the WebView
-  // clears the affordance on drop but NEVER ingests (a WebView ingest would double-ingest the drop the Rust
-  // `WindowEvent::DragDrop` handler already funnelled into `PendingIntake`). The former "drop → C1" test + the
-  // frontend de-dup test are retired: no frontend ingest means no frontend de-dup (the backend frozen-set
-  // de-dup is the authority, §2.4).
-  it("on drop: clears drag-active and does NOT ingest (the drop is core-side, P3.77)", async () => {
-    const onDragActiveChange = vi.fn();
-    await subscribeNativeDragDrop({ onDragActiveChange });
-    handler()?.({ payload: { type: "drop", paths: ["/a.png", "/b.png"] } });
-    // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the old drop→C1 `toHaveBeenCalledWith` is gone —
-    // the drop is core-side, so the WebView makes no C1 call (asserted by not.toHaveBeenCalled below).
-    await Promise.resolve(); // give any (forbidden) fire-and-forget C1 call a chance to land
-    expect(onDragActiveChange).toHaveBeenLastCalledWith(false);
-    // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] old: expect(invoke).toHaveBeenCalledWith(
-    // "ingest_paths", {drop paths}) + a separate de-dups test; the drop is core-side now, so the WebView makes
-    // NO C1 call and the frontend de-dup test is retired (the backend frozen-set de-dup is the authority, §2.4).
-    expect(invoke).not.toHaveBeenCalled();
-  });
-
-  it("a drop with no handler is a silent no-op (no ingest, no throw)", async () => {
-    await subscribeNativeDragDrop();
-    // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] with the drop core-side, a no-handler drop is a
-    // silent no-op: the old enter-precondition + drop→C1 `toHaveBeenCalledWith` become not.toThrow + not-called.
-    expect(() => handler()?.({ payload: { type: "drop", paths: ["/a.png"] } })).not.toThrow();
-    await Promise.resolve();
-    expect(invoke).not.toHaveBeenCalled();
-  });
-
-  it("returns the unlisten from onDragDropEvent", async () => {
-    const unlisten = vi.fn();
-    onDragDropEvent.mockResolvedValue(unlisten);
-    const cleanup = await subscribeNativeDragDrop();
-    cleanup();
-    expect(unlisten).toHaveBeenCalledTimes(1);
-  });
-});
+// [Test-Change: P3.81 — old-obsolete+new-correct, §5.4] the `subscribeNativeDragDrop` describe is removed with
+// the function it exercised: the P2.121 interim Tauri-window drag-active affordance is RETIRED by the
+// post-screens consolidation — the P3.54 DropZone renders the §5.4 drag-over affordance from its own DOM drag
+// events ("drag-over styling from DOM drag events ONLY", §5.4), covered by DropZone.test.tsx (the
+// dragEnter/dragOver/dragLeave → `data-drag-active` legs, incl. the disabled and drop-clears-affordance
+// cases). The "never ingests / no C1 call" half those legs asserted is structural now: no window drag event is
+// subscribed anywhere in the WebView, so there is no handler left to ingest (the drop is core-side since
+// P3.77, `WindowEvent::DragDrop` → the §7.8.1 funnel).
 
 // [Test-Change: P3.77 — old-obsolete+new-correct, §7.8.1] the `ingestFromDrop` describe is removed with the
 // function it exercised: the native drop is handled core-side (`WindowEvent::DragDrop` → the §7.8.1 funnel →
-// `PendingIntake`), so the WebView no longer ingests a drop. Its coverage lives in the `subscribeNativeDragDrop`
-// "on drop: does NOT ingest" test + the `drainPendingIntake` describe above.
+// `PendingIntake`), so the WebView no longer ingests a drop. Its coverage lives in the `drainPendingIntake`
+// describe above (the C1 drain is the WebView's only intake door) and — since the P3.81 interim-listener
+// retirement — the DOM-affordance legs in DropZone.test.tsx.

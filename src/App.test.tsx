@@ -23,11 +23,9 @@ import { render, cleanup } from "@testing-library/react";
 // only assertable if the spy sees what App passed.
 const consumeMountDrain = vi.fn<() => Promise<void>>();
 const subscribeAppEvents = vi.fn<(handlers?: AppEventHandlers) => Promise<() => void>>();
-const subscribeNativeDragDrop = vi.fn<() => Promise<() => void>>();
 vi.mock("./lib/ipc/events", () => ({
   consumeMountDrain: () => consumeMountDrain(),
   subscribeAppEvents: (handlers?: AppEventHandlers) => subscribeAppEvents(handlers),
-  subscribeNativeDragDrop: () => subscribeNativeDragDrop(),
   // The §5.8 `app://fault` consumption App wires into the handler set (P3.60) — a plain dispatch, stubbed here
   // so this suite stays hermetic; its dispatch contract is `lib/ipc/events.test.ts`'s.
   consumeAppFault: () => undefined,
@@ -73,22 +71,22 @@ describe("App — §7.2.1 step 8 (hand to the §5.2 Idle UI)", () => {
   beforeEach(() => {
     consumeMountDrain.mockReset();
     subscribeAppEvents.mockReset();
-    subscribeNativeDragDrop.mockReset();
     consumeMountDrain.mockResolvedValue(undefined);
     subscribeAppEvents.mockResolvedValue(() => {});
-    subscribeNativeDragDrop.mockResolvedValue(() => {});
   });
 
-  it("renders the §5.2 Idle `main` landmark and fires all three §5.4/§5.8 mount effects", async () => {
+  // [Test-Change: P3.81 — old-obsolete+new-correct, §5.4] the `subscribeNativeDragDrop` mount-effect assertion
+  // is removed with the retired P2.121 interim listener: App no longer mounts a Tauri window drag-event
+  // subscription — the P3.54 DropZone owns the §5.4 DOM drag affordance (DropZone.test.tsx covers it), so the
+  // remaining mount effects are the `app://` subscribe + the gated §7.8.1 drain, asserted below.
+  it("renders the §5.2 Idle `main` landmark and fires the §5.8 mount effects", async () => {
     const { container } = render(<App />);
     // §5.2 Idle empty-state: the `<main>` landmark boots (the step-8 handoff surface; the §5.7 reassurance copy
     // + the per-state screens land P3–P8, so the landmark is the P2 contract).
     expect(container.querySelector("main")).not.toBeNull();
-    // §5.4/§5.8: App subscribes the three `app://` listeners (P2.120) + the native file-drop (P2.121) directly
-    // on mount, and — once the subscription settles — fires the §7.8.1 readiness drain (P2.60/P2.61), each
-    // exactly once.
+    // §5.8: App subscribes the three `app://` listeners (P2.120) directly on mount, and — once the subscription
+    // settles — fires the §7.8.1 readiness drain (P2.60/P2.61), each exactly once.
     expect(subscribeAppEvents).toHaveBeenCalledTimes(1);
-    expect(subscribeNativeDragDrop).toHaveBeenCalledTimes(1);
     await flushMicrotasks();
     // [Test-Change: P3.55 — old-obsolete+new-correct, §5.8] drainPendingIntake→consumeMountDrain rename.
     expect(consumeMountDrain).toHaveBeenCalledTimes(1);
@@ -328,8 +326,6 @@ describe("App — the §5.8 app://fault handler (P3.60)", () => {
     subscribeAppEvents.mockResolvedValue(() => {});
     consumeMountDrain.mockReset();
     consumeMountDrain.mockResolvedValue(undefined);
-    subscribeNativeDragDrop.mockReset();
-    subscribeNativeDragDrop.mockResolvedValue(() => {});
   });
 
   it("supplies onFault to subscribeAppEvents (the P2.120 seam is no longer unset)", () => {

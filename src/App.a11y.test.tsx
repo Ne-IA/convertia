@@ -14,9 +14,10 @@ import { axe } from "vitest-axe";
 // chrome with an unfilled landmark, so the shell DOM is unchanged and this file is the enforced baseline
 // contract (P1.35 wired the runner + P1.62.5 the armed canary; this box establishes the baseline they scan).
 //
-// App fires three §5.4/§5.8 IPC mount effects (`useAppEvents`/`useNativeDragDrop`/`useLaunchDrain`); mock the
-// §5.8 IPC façade so each a11y render stays hermetic — jsdom has no Tauri runtime, so the real
-// Channel/invoke/listen/onDragDropEvent throws. Each helper's behaviour is covered in `lib/ipc/events.test.ts`.
+// App fires two §5.8 IPC mount effects (`useAppEvents`/`useLaunchDrain` — the P2.121 `useNativeDragDrop`
+// interim is retired at P3.81, the DropZone owns the §5.4 DOM drag affordance); mock the §5.8 IPC façade so
+// each a11y render stays hermetic — jsdom has no Tauri runtime, so the real Channel/invoke/listen throws. Each
+// helper's behaviour is covered in `lib/ipc/events.test.ts`.
 // The vitest-axe `toHaveNoViolations` matcher is not used — its 0.1.0 `.d.ts` re-exports the matcher type-only,
 // which `verbatimModuleSyntax` rejects — so the assertions read the `axe()` result directly.
 //
@@ -37,7 +38,6 @@ vi.mock("./lib/ipc/events", () => ({
   // router arms P3.55 added (unused in the Idle render this baseline exercises).
   consumeMountDrain: () => Promise.resolve(),
   subscribeAppEvents: () => Promise.resolve(() => {}),
-  subscribeNativeDragDrop: () => Promise.resolve(() => {}),
   // The §5.2 Idle screen (the P3.54 DropZone, rendered by App) imports the C2a `pickForIntake` façade — stub it
   // so this a11y baseline render stays hermetic. The DropZone's own axe legs live in DropZone.a11y.test.tsx.
   pickForIntake: () => Promise.resolve(),

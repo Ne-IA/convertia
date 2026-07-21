@@ -3,27 +3,27 @@
 // The SINGLE place the WebView wires `@tauri-apps/api` Channel / window-event APIs — the §5.1
 // one-IPC-consumer discipline (only `src/lib/ipc/**` imports the Tauri IPC surface: `@tauri-apps/api` +
 // any `@tauri-apps/plugin-*` package), enforced by the P1.36/G5 ESLint rule from the first commit. It is the named home for the hand-written subscription helpers
-// authored as P2 lands the §0.4.2 event contract + the §1.1 intake flow: the §5.4 native
-// `onDragDropEvent` intake wiring, the §5.8 `start_conversion` progress `Channel<ConversionEvent>`
-// lifecycle, the §0.4.1 C1/C2a `onScan` `Channel<ScanProgress>` telemetry, and the three §0.4.2 `app://`
-// listeners — wired incrementally as P2 lands each (see P2.61 / P2.120 / P2.121 below).
+// authored as P2 lands the §0.4.2 event contract + the §1.1 intake flow: the §5.8 `start_conversion` progress
+// `Channel<ConversionEvent>` lifecycle, the §0.4.1 C1/C2a `onScan` `Channel<ScanProgress>` telemetry, and the
+// three §0.4.2 `app://` listeners — wired incrementally as P2 lands each (see P2.61 / P2.120 below).
 //
 // P2.61 landed the FIRST hand-written helper: the §7.8.1 DRAIN (`drainPendingIntake`). P2.120 landed the async
 // model: `subscribeAppEvents` (the three §0.4.2 `app://` listeners) + the `start_conversion`
-// `Channel<ConversionEvent>` lifecycle (`startConversionRun`). P2.121 lands `subscribeNativeDragDrop` — the
-// §5.4 native `onDragDropEvent` hover affordance. P2.124 adds the §5.8/§2.13.3 backend-disconnect fault seam
-// (`ConversionRunHandlers.onRunFault`) on the `startConversionRun` lifecycle — a mid-run app-level fault routes
-// to AppFault (state 12), never a per-item outcome.
+// `Channel<ConversionEvent>` lifecycle (`startConversionRun`). P2.124 adds the §5.8/§2.13.3 backend-disconnect
+// fault seam (`ConversionRunHandlers.onRunFault`) on the `startConversionRun` lifecycle — a mid-run app-level
+// fault routes to AppFault (state 12), never a per-item outcome.
 // [Build-Session-Entscheidung: P3.77] The 2026-07-06 core-owned-path ruling moved the native DROP core-side
 // (`WindowEvent::DragDrop` → the §7.8.1 funnel) and made `app://intake` a PAYLOAD-LESS nudge: the WebView no
 // longer ingests a drop or carries intake paths — the `app://intake` listener + the mount both issue the C1
-// DRAIN (`drainPendingIntake`), and `subscribeNativeDragDrop` keeps only the drag-active affordance (the
-// retired `ingestFromDrop` / `ingestFromIntakeEvent` are tombstoned below). P3.81 is the post-screens
-// consolidation/verification box (re-ordered after the P3.53-P3.60 screens by its 2026-07-12 ruling).
+// DRAIN (`drainPendingIntake`); the retired `ingestFromDrop` / `ingestFromIntakeEvent` are tombstoned below.
+// [Build-Session-Entscheidung: P3.81] The last interim went with the post-screens consolidation: P2.121's
+// `subscribeNativeDragDrop` (the Tauri window drag-event drag-active affordance) is RETIRED — the P3.54
+// DropZone renders the §5.4 drag-over affordance from its own DOM drag events ("drag-over styling from DOM
+// drag events ONLY", §5.4), so this façade wires no window drag event and imports nothing from
+// `@tauri-apps/api/window` (see the tombstone below).
 // [Build-Session-Entscheidung: P2.61]
 import { Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type { Msg, State } from "../../state/machine";
 import { useAppStore } from "../../state/store";
@@ -549,51 +549,14 @@ export async function subscribeAppEvents(handlers: AppEventHandlers = {}): Promi
   };
 }
 
-// ─── P2.121: the §5.4 native drag-active affordance (Tauri's window onDragDropEvent; the DROP itself is core-side, P3.77) ───
-
-/**
- * [Build-Session-Entscheidung: P2.121] The optional drag-active visual callback. `subscribeNativeDragDrop`
- * fires it `true` on `enter`/`over` and `false` on `leave`/`drop` (§5.4 "visual affordance only"). It is UNSET
- * in P2.121 — the §5.3 `DropZone` component that consumes the `dragActive` flag is P3+, so this is a typed
- * seam (like the {@link AppEventHandlers} fault/close callbacks), not a `dragActive` store field: per the
- * §5.1-store-shape discipline a store field is homed by the P1.31.2 shell, not ad-hoc-minted mid-phase.
- */
-export interface NativeDragDropHandlers {
-  readonly onDragActiveChange?: (active: boolean) => void;
-}
-
-/**
- * [Build-Session-Entscheidung: P2.121] Wire the §5.4 native drag-active affordance via Tauri v2's window
- * `onDragDropEvent`. `enter`/`over` → drag-active `true`, `leave`/`drop` → `false` (the hover affordance, routed
- * to the UNSET-in-P2 `onDragActiveChange` seam — its §5.3 `DropZone` consumer is P3+).
- *
- * [Build-Session-Entscheidung: P3.77] The `drop` no longer INGESTS from the WebView — the 2026-07-06
- * core-owned-path ruling moved the native drop CORE-SIDE (`WindowEvent::DragDrop` → the §7.8.1 funnel →
- * `PendingIntake` → the payload-less `app://intake` nudge → the C1 drain), so ingesting here too would
- * DOUBLE-INGEST one drop. The `drop` phase now only clears the drag-active affordance; the dropped paths never
- * enter the WebView (the §0.4.0 boundary fact). This Tauri-`onDragDropEvent` affordance is the interim; the
- * §7.8.1 "drag-over styling from DOM drag events only" DropZone replaces it at P3.54, and P3.81 retires this
- * interim listener (its post-screens hand-off completion, the 2026-07-12 re-ordering ruling).
- * This is the ONLY place `onDragDropEvent` is wired (§0.7). Returns the unlisten.
- */
-export async function subscribeNativeDragDrop(
-  handlers: NativeDragDropHandlers = {},
-): Promise<() => void> {
-  return getCurrentWindow().onDragDropEvent((event) => {
-    switch (event.payload.type) {
-      case "enter":
-      case "over":
-        handlers.onDragActiveChange?.(true);
-        break;
-      case "leave":
-      case "drop":
-        // §5.4/§7.8.1 (P3.77): the drop is handled CORE-SIDE — clear the affordance only, never ingest here
-        // (a WebView ingest would double-ingest the drop the Rust `WindowEvent::DragDrop` handler already took).
-        handlers.onDragActiveChange?.(false);
-        break;
-    }
-  });
-}
+// [Build-Session-Entscheidung: P3.81] The P2.121 interim drag-active affordance (`NativeDragDropHandlers` +
+// `subscribeNativeDragDrop`, the Tauri window `onDragDropEvent` subscription) is RETIRED with the post-screens
+// consolidation: the P3.54 DropZone renders the §5.4 drag-over affordance from its own DOM
+// `dragenter`/`dragover`/`dragleave` styling hooks ("drag-over styling from DOM drag events ONLY", §5.4), so
+// the WebView subscribes no window drag event at all — the drop itself has been core-side since P3.77
+// (`WindowEvent::DragDrop` → the §7.8.1 funnel → `PendingIntake` → the payload-less `app://intake` nudge → the
+// C1 drain). With it goes this module's `@tauri-apps/api/window` import: the façade's Tauri surface is exactly
+// `Channel` (command-scoped telemetry) + `listen` (the three `app://` events).
 
 // [Build-Session-Entscheidung: P3.77] The old WebView drop→C1 handler (`ingestFromDrop`, P2.121) is RETIRED:
 // the native drop is handled core-side (`WindowEvent::DragDrop` → the §7.8.1 funnel), so the WebView no longer
