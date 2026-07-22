@@ -4,7 +4,7 @@
 The §3.8 pin-everything discipline for lockfiles: a CI build/test/install must re-resolve the
 EXACT committed dependency graph (the one cargo-vet audited + the SBOM was cut from), never a
 freshly-resolved different one, and a lockfile that drifted mid-run must redden the push rather
-than silently auto-resolve. Three responsibilities, mirroring the P0.4.x two-tier pattern (a
+than silently auto-resolve. Four responsibilities, mirroring the P0.4.x two-tier pattern (a
 structural freeze live NOW + a target-absent live tier that fail-closes the moment its P1 source
 lands):
 
@@ -29,6 +29,18 @@ lands):
       build/install/cargo-vet step that mutated a tracked lockfile reddens the push. No-op (with a
       notice) while no lockfile exists yet (the P0 posture); fail-CLOSED the moment one drifts or
       git cannot be consulted.
+  (D) SUB-WORKSPACE LOCK-SYNC (live since P3.73) - a standalone [workspace] with a path dep on a
+      root-workspace crate (fuzz/ - outside the MIT-core graph by design, spec §0.7) carries its
+      OWN committed Cargo.lock, and cargo resolves it INDEPENDENTLY: generated fresh instead of
+      seeded from the root lock, it compiles the SAME first-party crate against a DIFFERENT
+      dependency closure than the audited/pinned one (the 2026-07-22 P3.73 finding: 79 drifted
+      crates incl. a §0.8-pinned tauri plugin - the instrumented fuzz leg built not-the-product and
+      broke E0063). Legs (A)-(C) cannot see this: the drift is COMMITTED, so `git diff` is clean.
+      (D) asserts every crate NAME present in BOTH locks resolves in the sub-lock to a SUBSET of
+      the root lock's pinned versions, and every shared (name, version) pair carries the IDENTICAL
+      source + checksum (a same-version `[patch]`/fork substitution compiles different bytes).
+      Target-absent while a listed sub-lock does not exist; fail-CLOSED on any unreadable/
+      unparseable/malformed lockfile, a version drift, or a source/checksum mismatch.
 
 DEFENSE-IN-DEPTH SCOPE: the flag-scan reasons over the PLAIN block-form `run:` text of each
 workflow. Exotic YAML (anchors / aliases / merge keys / multi-document / flow-mappings that could
@@ -50,6 +62,7 @@ import argparse
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,9 +75,17 @@ DRIFT_SET = ("Cargo.lock", "pnpm-lock.yaml", "imports.lock")
 # until P1; pnpm-lock.yaml at the workspace root; the cargo-vet trust DB under supply-chain/).
 DRIFT_PATHS = (
     "Cargo.lock", "src-tauri/Cargo.lock",
+    "fuzz/Cargo.lock",
     "pnpm-lock.yaml",
     "supply-chain/imports.lock",
 )
+# (D) sub-workspace lockfiles that must stay VERSION-SYNCED to the root Cargo.lock: standalone
+# [workspace]s with a path dep on a root-workspace crate, whose independently-resolved lock would
+# otherwise compile the shared first-party crate against a different (un-audited) closure. NON-member,
+# recorded (the 2026-07-22 prevention sweep): tests/g53-fixture/Cargo.lock - the planted G53 NEGATIVE
+# fixture's hermetic nested-workspace lock (fake path-only crates, deliberately outside the real
+# graph; it shares no registry graph to sync).
+SUBWORKSPACE_LOCKS = ("fuzz/Cargo.lock",)
 # cargo BUILT-IN subcommands that RESOLVE/read the dependency graph and so must pin to the committed
 # lock (the compiling set - each runs build.rs + proc-macros + codegen - plus `fetch`). EXCLUDES, by
 # design: `audit` (no --locked flag, G17 r7), `deny`/`vet` (plugins that read the lock, do not
@@ -280,6 +301,15 @@ def frozen_contract() -> list[str]:
         problems.append("`--locked` must be an accepted cargo pin flag")
     if PNPM_PIN_FLAG != "--frozen-lockfile":
         problems.append(f"the pnpm pin flag must be `--frozen-lockfile` (is {PNPM_PIN_FLAG!r})")
+    if "fuzz/Cargo.lock" not in SUBWORKSPACE_LOCKS:
+        problems.append(
+            "the sub-workspace lock-sync set no longer includes fuzz/Cargo.lock - a COMMITTED "
+            "fuzz-lock drift from the root graph would go uncaught (legs (A)-(C) cannot see it: "
+            "`git diff` is clean over a committed drift; the 2026-07-22 P3.73 class)")
+    if "fuzz/Cargo.lock" not in DRIFT_PATHS:
+        problems.append(
+            "the drift-guard paths no longer include fuzz/Cargo.lock - a CI step mutating the "
+            "committed fuzz lock mid-run would go uncaught")
     return problems
 
 
@@ -317,6 +347,79 @@ def drift_guard(root: Path, runner=_git_diff) -> list[str]:
             f"verdict) - cannot verify lockfile integrity (fail-closed).\n{out}".rstrip()]
 
 
+def _lock_packages(path: Path) -> dict[str, dict[str, tuple[str | None, str | None]]] | None:
+    """name -> {version -> (source, checksum)} of a Cargo.lock ([[package]] rows, stdlib tomllib).
+    source/checksum are None for path/workspace-member crates (they carry neither). None when the
+    file is unreadable/unparseable, a row is malformed, or a (name, version) pair appears twice
+    (a shape cargo never writes) - the fail-closed signal (an unverifiable lock is never synced)."""
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    out: dict[str, dict[str, tuple[str | None, str | None]]] = {}
+    for pkg in data.get("package", []):
+        name, ver = pkg.get("name"), pkg.get("version")
+        src, chk = pkg.get("source"), pkg.get("checksum")
+        if (not isinstance(name, str) or not isinstance(ver, str)
+                or not isinstance(src, (str, type(None))) or not isinstance(chk, (str, type(None)))):
+            return None
+        vers = out.setdefault(name, {})
+        if ver in vers:
+            return None
+        vers[ver] = (src, chk)
+    return out
+
+
+def subworkspace_lock_sync(root: Path) -> list[str]:
+    """(D) every crate NAME present in BOTH the root Cargo.lock and a SUBWORKSPACE_LOCKS lockfile
+    must resolve in the sub-lock to a SUBSET of the root lock's pinned versions, AND every shared
+    (name, version) pair must carry the IDENTICAL source + checksum - a sub-workspace that
+    re-resolved a shared crate differently (or substituted a same-version fork via `[patch]`/a
+    source redirect) builds the path-dep first-party crate against bytes the root lock (the
+    audited/SBOM'd/§0.8-floored one) does not pin. Sub-lock-ONLY crates (libfuzzer-sys, arbitrary,
+    their unique deps) are legitimate and not compared. Target-absent (with a notice) while a
+    listed sub-lock does not exist; fail-CLOSED on an unreadable/malformed lock."""
+    problems: list[str] = []
+    for rel in SUBWORKSPACE_LOCKS:
+        sub_path = root / rel
+        if not sub_path.is_file():
+            print(f"[G18a] sub-workspace lockfile {rel} is absent (it lands with its owning phase "
+                  "box) - the lock-sync leg is target-absent for it; fail-closed the moment it exists")
+            continue
+        root_path = root / "Cargo.lock"
+        if not root_path.is_file():
+            problems.append(f"{rel} exists but the root Cargo.lock is absent - the sub-workspace "
+                            "lock has nothing to version-sync against (fail-closed)")
+            continue
+        root_v = _lock_packages(root_path)
+        sub_v = _lock_packages(sub_path)
+        if root_v is None or sub_v is None:
+            bad = "Cargo.lock" if root_v is None else rel
+            problems.append(f"{bad} is unreadable/unparseable/malformed - the (D) sub-workspace "
+                            "lock-sync cannot be verified (fail-closed)")
+            continue
+        subdir = rel.rsplit("/", 1)[0]
+        reseed = (f"re-seed: cp Cargo.lock {rel} && cargo metadata --manifest-path "
+                  f"{subdir}/Cargo.toml")
+        for name in sorted(set(sub_v) & set(root_v)):
+            extra = sorted(set(sub_v[name]) - set(root_v[name]))
+            if extra:
+                problems.append(
+                    f"{rel}: `{name}` resolves to {extra} but the root Cargo.lock pins "
+                    f"{sorted(root_v[name])} - the sub-workspace re-resolved a DIFFERENT graph for "
+                    "a shared crate (its path-dep first-party build no longer matches the "
+                    f"audited/pinned closure); {reseed}")
+                continue
+            for ver in sorted(sub_v[name]):
+                if sub_v[name][ver] != root_v[name][ver]:
+                    problems.append(
+                        f"{rel}: `{name} {ver}` carries a source/checksum different from the root "
+                        f"Cargo.lock's ({sub_v[name][ver]} vs {root_v[name][ver]}) - a same-version "
+                        "SUBSTITUTION (a `[patch]`/fork/source redirect) would compile different "
+                        f"bytes than the audited closure; {reseed}")
+    return problems
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="G18a lockfile-integrity contract (P0.4.9)")
     ap.add_argument("--root", type=Path, default=ROOT,
@@ -337,13 +440,15 @@ def main(argv: list[str] | None = None) -> int:
               "build-step slot) - flag-scan target-absent; fail-closed the moment a build command lands")
 
     problems += drift_guard(args.root)
+    problems += subworkspace_lock_sync(args.root)
 
     if problems:
         for p in problems:
             fail(p)
         return 1
     print(f"[G18a] lockfile integrity OK (drift-set {DRIFT_SET}; {total_found} pinned "
-          "build/install command(s) scanned; live drift-guard clean)")
+          "build/install command(s) scanned; live drift-guard clean; sub-workspace lock-sync "
+          f"clean over {SUBWORKSPACE_LOCKS})")
     return 0
 
 

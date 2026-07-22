@@ -66,6 +66,27 @@ jobs:
         with:
           persist-credentials: false
 
+      # G18a leg (D) pre-flight, BEFORE the expensive installs + instrumented sweep: the committed
+      # fuzz/Cargo.lock must (a) satisfy the fuzz manifest AS-IS (`--locked` - cargo would otherwise
+      # silently re-resolve at build time) and (b) stay version-synced to the root Cargo.lock (the
+      # check-lockfile-integrity sub-workspace leg - a self-consistent but root-drifted lock builds
+      # fine yet fuzzes a dependency closure the product does not ship; the 2026-07-22 finding).
+      # `working-directory` (not `--manifest-path fuzz/Cargo.toml`) keeps the cargo segment free of
+      # an incidental `fuzz` token - G56 check (7) deliberately over-rejects any `cargo … fuzz`
+      # segment lacking the date-pinned channel, and a metadata call is not a fuzz invocation.
+      - name: 'G18a: the committed sub-workspace lockfile satisfies its manifest as-is (--locked)'
+        working-directory: fuzz
+        run: cargo metadata --locked --format-version 1 > /dev/null
+      # the gate script needs tomllib (Python >= 3.11); ubuntu-22.04's system python3 is 3.10, so the
+      # SAME SHA-pinned setup-python@3.12 every other python-invoking workflow uses is mandatory here
+      # (the R1 sonnet P0 - local green on 3.13 masked the runner's 3.10).
+      - name: 'Python 3.12 for the stdlib gate scripts (tomllib >= 3.11)'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - name: 'G18a: the sub-workspace lockfile is version-synced to the root Cargo.lock (leg D)'
+        run: python3 scripts/check-lockfile-integrity
+
       # The fuzz targets path-dep on convertia-core (the lib), whose compile closure is the same as
       # compile-sanity's: the Tauri v2 gtk/webkit/soup/jsc/dbus -sys crates resolve system libs via
       # pkg-config on Linux (macOS has WKWebView natively), and the tauri context needs the JS deps

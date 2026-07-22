@@ -3,10 +3,16 @@
 
 Proves the structural freeze (A) CANNOT be relaxed (imports.lock dropped from the drift-set / a
 no-flag cargo command excluded / a lock-mutating or no-`--locked` subcommand leaking into the
-pin-set), the CI-workflow flag-scan (B) CATCHES an unpinned `cargo build`/`pnpm install` and PASSES
-a pinned one (while NOT mistaking a `cargo audit`/`cargo deny`/`cargo vet`/step-`name:` mention for
-a pinned build), and the live drift-guard (C) is a no-op when no lockfile exists, clean on rc=0,
-and fail-CLOSED on a drift / a git error / git-unavailable. stdlib-only. Exit 0 = held.
+pin-set / fuzz/Cargo.lock dropped from the sub-workspace lock-sync set or the drift paths), the
+CI-workflow flag-scan (B) CATCHES an unpinned `cargo build`/`pnpm install` and PASSES a pinned one
+(while NOT mistaking a `cargo audit`/`cargo deny`/`cargo vet`/step-`name:` mention for a pinned
+build), the live drift-guard (C) is a no-op when no lockfile exists, clean on rc=0, and fail-CLOSED
+on a drift / a git error / git-unavailable, and the sub-workspace lock-sync (D) CATCHES a committed
+sub-lock resolving a shared crate to a version the root lock does not pin (the 2026-07-22 P3.73
+class) AND a same-version source/checksum substitution (the [patch]/fork shape), PASSES a
+synced/subset resolution + sub-only crates + identical source/checksum, is target-absent without
+the sub-lock, and fail-CLOSES on an unparseable/malformed lock (incl. a duplicate (name, version)
+pair) / a sub-lock without a root lock. stdlib-only. Exit 0 = held.
 """
 import importlib.machinery
 import importlib.util
@@ -68,6 +74,10 @@ record("freeze: dropping --locked from the cargo pin flags is caught",
        len(_freeze_with(PIN_FLAGS=("--frozen",))) >= 1)
 record("freeze: the pnpm pin flag retyped away from --frozen-lockfile is caught",
        len(_freeze_with(PNPM_PIN_FLAG="--prod")) >= 1)
+record("freeze: fuzz/Cargo.lock dropped from the sub-workspace lock-sync set is caught",
+       len(_freeze_with(SUBWORKSPACE_LOCKS=())) >= 1)
+record("freeze: fuzz/Cargo.lock dropped from the drift-guard paths is caught",
+       len(_freeze_with(DRIFT_PATHS=("Cargo.lock", "pnpm-lock.yaml", "supply-chain/imports.lock"))) >= 1)
 
 # --- (B) the CI-workflow flag-scan -------------------------------------------------------------
 record("scan: `cargo build` without --locked is caught", scan(wf_run("cargo build")) == (["wf.yml: `cargo build` runs without --locked/--frozen - it would re-resolve the dependency graph instead of the committed Cargo.lock (the audited/SBOM'd one); add --locked (§3.8 pin-everything)"], 1))
@@ -160,6 +170,83 @@ with tempfile.TemporaryDirectory() as td:
            len(m.drift_guard(root, runner=lambda r, p: (128, "fatal: not a git repo"))) == 1)
     record("drift: the present-path list passed to git contains the existing Cargo.lock",
            m.drift_guard(root, runner=lambda r, p: (0, "") if "Cargo.lock" in p else (1, "wrong paths")) == [])
+
+# --- (D) the sub-workspace lock-sync -----------------------------------------------------------
+_ROOT_LOCK = ('[[package]]\nname = "shared"\nversion = "1.0.0"\n\n'
+              '[[package]]\nname = "dual"\nversion = "1.0.0"\n\n'
+              '[[package]]\nname = "dual"\nversion = "2.0.0"\n')
+
+
+with tempfile.TemporaryDirectory() as _sync_td:
+    _sync_n = 0
+
+    def _sync_tree(root_lock: str | None, fuzz_lock: str | None) -> Path:
+        global _sync_n
+        _sync_n += 1
+        td = Path(_sync_td) / f"case{_sync_n}"
+        td.mkdir()
+        if root_lock is not None:
+            (td / "Cargo.lock").write_text(root_lock, encoding="utf-8")
+        if fuzz_lock is not None:
+            (td / "fuzz").mkdir()
+            (td / "fuzz" / "Cargo.lock").write_text(fuzz_lock, encoding="utf-8")
+        return td
+
+    record("sync: a sub-lock resolving a shared crate OFF the root pin is caught (the P3.73 class)",
+           len(m.subworkspace_lock_sync(_sync_tree(
+               _ROOT_LOCK, '[[package]]\nname = "shared"\nversion = "1.0.1"\n'))) == 1)
+    record("sync: a sub-lock matching the root pin passes",
+           m.subworkspace_lock_sync(_sync_tree(
+               _ROOT_LOCK, '[[package]]\nname = "shared"\nversion = "1.0.0"\n')) == [])
+    record("sync: a SUBSET of a root dual-version pin passes (bitflags-1+2 shape)",
+           m.subworkspace_lock_sync(_sync_tree(
+               _ROOT_LOCK, '[[package]]\nname = "dual"\nversion = "2.0.0"\n')) == [])
+    record("sync: a sub-ONLY crate (libfuzzer-sys shape) is not compared, passes",
+           m.subworkspace_lock_sync(_sync_tree(
+               _ROOT_LOCK, '[[package]]\nname = "libfuzzer-sys"\nversion = "0.4.10"\n')) == [])
+    record("sync: no sub-lock -> target-absent (0 problems)",
+           m.subworkspace_lock_sync(_sync_tree(_ROOT_LOCK, None)) == [])
+    record("sync: a sub-lock WITHOUT a root lock is fail-closed",
+           len(m.subworkspace_lock_sync(_sync_tree(
+               None, '[[package]]\nname = "shared"\nversion = "1.0.0"\n'))) == 1)
+    record("sync: an unparseable sub-lock is fail-closed (never treated as synced)",
+           len(m.subworkspace_lock_sync(_sync_tree(_ROOT_LOCK, "not = [ toml"))) == 1)
+    record("sync: a malformed [[package]] row (no version) is fail-closed",
+           len(m.subworkspace_lock_sync(_sync_tree(
+               _ROOT_LOCK, '[[package]]\nname = "shared"\n'))) == 1)
+    record("sync: a duplicate (name, version) pair (a shape cargo never writes) is fail-closed",
+           len(m.subworkspace_lock_sync(_sync_tree(
+               _ROOT_LOCK,
+               '[[package]]\nname = "shared"\nversion = "1.0.0"\n\n'
+               '[[package]]\nname = "shared"\nversion = "1.0.0"\nsource = "x"\n'))) == 1)
+    record("sync: a same-version DIFFERENT-SOURCE substitution ([patch]/fork shape) is caught",
+           len(m.subworkspace_lock_sync(_sync_tree(
+               '[[package]]\nname = "reg"\nversion = "1.0.0"\n'
+               'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+               'checksum = "aaaa"\n',
+               '[[package]]\nname = "reg"\nversion = "1.0.0"\n'
+               'source = "git+https://example.invalid/fork"\n'
+               'checksum = "aaaa"\n'))) == 1)
+    record("sync: a same-version DIFFERENT-CHECKSUM entry is caught",
+           len(m.subworkspace_lock_sync(_sync_tree(
+               '[[package]]\nname = "reg"\nversion = "1.0.0"\n'
+               'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+               'checksum = "aaaa"\n',
+               '[[package]]\nname = "reg"\nversion = "1.0.0"\n'
+               'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+               'checksum = "bbbb"\n'))) == 1)
+    record("sync: an identical source+checksum entry passes",
+           m.subworkspace_lock_sync(_sync_tree(
+               '[[package]]\nname = "reg"\nversion = "1.0.0"\n'
+               'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+               'checksum = "aaaa"\n',
+               '[[package]]\nname = "reg"\nversion = "1.0.0"\n'
+               'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+               'checksum = "aaaa"\n')) == [])
+    record("sync: the drift message names the crate, both version sets and the re-seed command",
+           (lambda p: "shared" in p and "1.0.1" in p and "1.0.0" in p and "cp Cargo.lock" in p)(
+               m.subworkspace_lock_sync(_sync_tree(
+                   _ROOT_LOCK, '[[package]]\nname = "shared"\nversion = "1.0.1"\n'))[0]))
 
 # --- end-to-end over the real repo (live since P1) ---------------------------------------------
 record("main: the real repo passes (flag-scan live over the build commands + drift-guard clean)", m.main([]) == 0)
