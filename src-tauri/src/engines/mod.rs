@@ -41,7 +41,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the P3.5 minimal Engine trait, the PlanOutcome return, and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.1 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), and P4.13 rewrites the subprocess arms — so the dispatch fn + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture. The P4.2-authored §3.2.2 ProbeOutput (the parsed §3.2.1 probe result) is dead until the P4.9 probe-then-encode sequencing constructs it and the P4.1 plan_encode consumer reads it; its cfg(test) shape test constructs + reads all four fields, keeping the test build dead-code-clean."
+        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the P3.5 minimal Engine trait, the PlanOutcome return, and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.1 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), and P4.13 rewrites the subprocess arms — so the dispatch fn + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture. The P4.2-authored §3.2.2 ProbeOutput (the parsed §3.2.1 probe result) is dead until the P4.9 probe-then-encode sequencing constructs it and the P4.1 plan_encode consumer reads it; its cfg(test) shape test constructs + reads all four fields, keeping the test build dead-code-clean. The P4.3-authored §3.2.2 leaf types (Direction / PatentDisposition / CodecPosture / EngineCapability + the SourceFmt/TargetFmt aliases) are dead until the P4.1 trait expansion references them in capabilities(platform, patents) signatures, the P4.4 registry constructs the capability rows, and the P4.40 engines.lock parse builds the disposition; their cfg(test) shape tests construct + read every field, keeping the test build dead-code-clean."
     )
 )]
 
@@ -152,7 +152,8 @@ pub struct EngineDescriptor {
 
 // ─── §3.2.2 engine-layer leaf types referenced by the `Engine` trait (defined here, §3.2 is owner) ──
 // `Platform` is the SINGLE §3.2 leaf PULLED IN-PHASE to P2 (the rest — `Direction` / `EngineCapability` /
-// `PatentDisposition` / the `SourceFmt`/`TargetFmt` aliases — stay in P4.3 with the `Engine` trait): the C11
+// `PatentDisposition`/`CodecPosture` / the `SourceFmt`/`TargetFmt` aliases — authored at P4.3 below, ahead
+// of the P4.1 `Engine`-trait expansion that references them): the C11
 // `AppInfo` contract embeds it (`AppInfo.platform: Platform`, §7.2.3 / P2.112), so it is authored here in
 // `crate::engines` — its §3.2.2/§0.7 home, NOT the `crate::platform` OS-primitive shim (a false-friend
 // name) — to keep the whole C1–C13 surface (and its G23 completeness gate P2.36) inside P2. From P4 the
@@ -190,6 +191,85 @@ pub enum Platform {
     /// Linux — the Linux desktop build (§1).
     Linux,
 }
+
+/// Conversion direction of a capability cell (§3.2.2) — matches the §04 matrices' arrows: which way the
+/// declaring engine can carry the cell's `(source, target)` pair on this platform.
+///
+/// [Build-Session-Entscheidung: P4.3] INTERNAL (a field of the internal [`EngineCapability`]; never on the
+/// wire) — `Debug, Clone, Copy, PartialEq, Eq` (`Copy`, fieldless), no `serde`/`specta` (mirroring the
+/// internal `EngineKind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// The engine reads (decodes) the cell's source format (§3.2.2).
+    Decode,
+    /// The engine writes (encodes) the cell's target format (§3.2.2).
+    Encode,
+    /// The engine carries the cell both ways (§3.2.2).
+    Both,
+}
+
+/// The build-time-resolved patent/ship posture per encumbered codec on THIS platform (§3.2.2 / §3.4).
+/// `Available` = shipped & usable; `Unavailable` = honestly gapped — the only legitimate §3.2.3 `select()`
+/// miss, surfaced as the §2.8 `PlatformUnavailable`. Built by the §3.4.4a `engines.lock` parse→map flow
+/// (P4.40) BEFORE any `capabilities(platform, patents)` call and passed in — the single source of the
+/// posture. Additional encumbered codecs join as fields as §3.4 evolves; a royalty-free codec defaults to
+/// available and needs no field here (§3.2.2).
+///
+/// [Build-Session-Entscheidung: P4.3] INTERNAL (read by `capabilities()` / the §3.2.3 registry core-side;
+/// never on the wire — the §5.2 disable/omit set rides `EngineHealth.unavailable_targets` as `TargetId`s) —
+/// `Debug, Clone, PartialEq, Eq`, NOT `Copy` (the §0.6 struct convention, cf. [`EngineDescriptor`]), no
+/// `serde`/`specta`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatentDisposition {
+    /// HEVC encode/decode posture for HEIC on this platform (§3.4).
+    pub heic_hevc: CodecPosture,
+    /// AAC posture on this platform (§3.4).
+    pub aac: CodecPosture,
+    /// H.264 posture on this platform (§3.4).
+    pub h264: CodecPosture,
+}
+
+/// One encumbered codec's build-time ship posture on this platform (§3.2.2 / §3.4) — the value each
+/// [`PatentDisposition`] field carries.
+///
+/// [Build-Session-Entscheidung: P4.3] INTERNAL, fieldless — `Debug, Clone, Copy, PartialEq, Eq`, no
+/// `serde` (mirroring [`StdinPlan`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodecPosture {
+    /// Shipped & usable on this platform (§3.4).
+    Available,
+    /// Honestly gapped on this platform (§3.4) — the only legitimate `select()` → `None` (§2.8
+    /// `PlatformUnavailable`).
+    Unavailable,
+}
+
+/// One capability a registered engine declares for a `(source, target)` pair on a platform (§3.2.2) — the
+/// row `capabilities(platform, patents)` returns and the §3.2.3 registry is built from. A NAMED struct — it
+/// replaces the earlier bare `(SourceFmt, TargetFmt, Direction)` tuple so the registry/codegen surface is
+/// unambiguous (§3.2.2).
+///
+/// [Build-Session-Entscheidung: P4.3] INTERNAL (the §3.2.3 registry reads it core-side; never on the wire)
+/// — `Debug, Clone, PartialEq, Eq`, NOT `Copy` (the §0.6 struct convention, cf. [`EngineDescriptor`]), no
+/// `serde`/`specta`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineCapability {
+    /// The user-facing source format of the cell (§1.5 / the §04 matrices).
+    pub source: SourceFmt,
+    /// The user-facing target of the cell (§1.5).
+    pub target: TargetFmt,
+    /// Which way the engine carries the cell (§3.2.2).
+    pub direction: Direction,
+}
+
+/// The §3.2.2 source-format vocabulary alias — the user-facing format set is §0.6-owned
+/// ([`UserFacingFormat`]); the engine layer names it `SourceFmt` (§3.2.2). The alias references an
+/// EXTERNAL (`crate::domain`) type, so it does not trip the P2.19 within-module forward-declared-alias
+/// dead-code interaction. [Build-Session-Entscheidung: P4.3]
+pub type SourceFmt = UserFacingFormat;
+
+/// The §3.2.2 target vocabulary alias — the target set is §0.6-owned ([`TargetId`]); the engine layer
+/// names it `TargetFmt` (§3.2.2). External-type alias like [`SourceFmt`]. [Build-Session-Entscheidung: P4.3]
+pub type TargetFmt = TargetId;
 
 /// **`AppInfo`** — the C11 `get_app_info` return (§7.2.3; §0.4.1 references it, §5.9 About screen displays
 /// it). The in-bundle About payload: app version, CI build id, running platform, and the §3.7
@@ -2350,6 +2430,68 @@ mod tests {
                 ..unflagged.clone()
             },
             "§3.2.2: an absent rotation flag (None) is distinct from an explicit 0° rotation"
+        );
+    }
+
+    // ─── P4.3: §3.2.2 leaf types — Direction / PatentDisposition / CodecPosture / EngineCapability ──
+
+    // §6.4.1 unit (G15): the §3.2.2 `Direction` models the three capability arrows (P4.3) — pairwise
+    // distinct, matching the §04 matrices' cell directions.
+    #[test]
+    fn direction_models_the_three_capability_arrows() {
+        let variants = [Direction::Decode, Direction::Encode, Direction::Both];
+        for (i, a) in variants.iter().enumerate() {
+            for (j, b) in variants.iter().enumerate() {
+                assert_eq!(
+                    i == j,
+                    a == b,
+                    "§3.2.2: the three Direction variants are pairwise distinct"
+                );
+            }
+        }
+    }
+
+    // §6.4.1 unit (G15): the §3.2.2 `EngineCapability` names its (source, target, direction) cell through
+    // the §0.6-owned `SourceFmt`/`TargetFmt` aliases (P4.3) — the named struct that replaces the earlier
+    // bare tuple. Constructs THROUGH the aliases and asserts against the aliased §0.6 types, proving the
+    // aliases are identities (not new types); reads every field so the test build is dead-code-clean.
+    #[test]
+    fn engine_capability_holds_source_target_direction() {
+        let cell = EngineCapability {
+            source: SourceFmt::Csv,
+            target: TargetFmt::Format(FormatId::Tsv),
+            direction: Direction::Both,
+        };
+        assert_eq!(
+            cell.source,
+            UserFacingFormat::Csv,
+            "§3.2.2/§0.6: SourceFmt IS the §0.6 UserFacingFormat (an alias, not a new type)"
+        );
+        assert_eq!(
+            cell.target,
+            TargetId::Format(FormatId::Tsv),
+            "§3.2.2/§0.6: TargetFmt IS the §0.6 TargetId (an alias, not a new type)"
+        );
+        assert_eq!(cell.direction, Direction::Both);
+    }
+
+    // §6.4.1 unit (G15): the §3.2.2 `PatentDisposition` carries one `CodecPosture` per encumbered codec
+    // (P4.3) — a mixed posture reads all three fields; Available vs Unavailable is the §3.4
+    // honest-availability discriminant behind the §2.8 PlatformUnavailable.
+    #[test]
+    fn patent_disposition_holds_the_three_codec_postures() {
+        let patents = PatentDisposition {
+            heic_hevc: CodecPosture::Unavailable,
+            aac: CodecPosture::Available,
+            h264: CodecPosture::Available,
+        };
+        assert_eq!(patents.heic_hevc, CodecPosture::Unavailable);
+        assert_eq!(patents.aac, CodecPosture::Available);
+        assert_eq!(patents.h264, CodecPosture::Available);
+        assert_ne!(
+            CodecPosture::Available,
+            CodecPosture::Unavailable,
+            "§3.4: the two postures are the honest-availability discriminant"
         );
     }
 
