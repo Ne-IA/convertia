@@ -113,6 +113,14 @@ jobs:
         run: cargo install cargo-fuzz --version 0.13.2 --locked
 
       - name: 'G48: run the four in-core targets (ASAN explicit; bounds from the committed fuzz/libfuzzer-bounds.txt)'
+        env:
+          # macOS leg only (inert on Linux): Apple's ld-prime rejects the ASAN'd tauri_utils rlib with
+          # `ld: initializer pointer has no target` when the deployment target (< 12) forces the CLASSIC
+          # __mod_init_func initializer format under -dead_strip; >= 12 uses chained fixups, which handle
+          # a stripped initializer target - the Apple-documented resolution (the deprecated -ld_classic
+          # alternative asserts on some toolchains). Fuzz-build-ONLY: the shipped app's min-macOS is
+          # untouched (this workflow never produces a shipped artifact). Round-3 finding, 2026-07-22.
+          MACOSX_DEPLOYMENT_TARGET: '12.0'
         run: |
           BOUNDS="$(grep -v '^#' fuzz/libfuzzer-bounds.txt | xargs)"
           echo "libFuzzer bounds: ${BOUNDS}"
