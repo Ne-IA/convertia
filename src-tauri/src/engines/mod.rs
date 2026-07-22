@@ -3,9 +3,9 @@
 //! argument construction. Every spawn routes through `crate::isolation` and the §0.9 pool.
 //!
 //! P2.13 authors the §3.2 engine-seam descriptor TYPES here — `EngineId` / `EngineKind` /
-//! `EngineDescriptor` (§0.6) — ahead of the registry / `trait Engine` / selection BEHAVIOUR, which is
-//! filled by P4.1. The descriptor types are the seam vocabulary the P4.1 registry + the §0.9 pool + the
-//! §7.2 `EngineHealth` contract key on.
+//! `EngineDescriptor` (§0.6) — ahead of the registry / selection BEHAVIOUR, which P4.4 fills (the full
+//! §3.2.2 `trait Engine` surface landed at P4.1, homed in `engines/registry.rs`). The descriptor types are
+//! the seam vocabulary the P4.4 registry + the §0.9 pool + the §7.2 `EngineHealth` contract key on.
 //!
 //! This module is ALSO the §0.7 home of the §7.2.3 C-return DTO cluster — the app-info / engine-health wire
 //! types the C11 `get_app_info` / C12 `get_engine_health` handlers return: `Platform` (P2.132) and `AppInfo`
@@ -23,7 +23,8 @@
 //! at P3.46, so nothing in this cluster crosses the IPC door.
 
 // [Build-Session-Entscheidung: P2.13] dead_code expect — the §3.2 seam descriptor types are authored as
-// CONTRACTS before their consumers exist: the registry / `trait Engine` / selection is P4.1, the §0.9 pool
+// CONTRACTS before their consumers exist: the registry/selection is P4.4 (the full §3.2.2 `trait Engine`
+// landed at P4.1 in `registry.rs`), the §0.9 pool
 // reads `EngineDescriptor.serialised_only` then, and `EngineId`'s wire registration rides the §7.2
 // `EngineHealth` (C12) consumer (a later P2 box). So `EngineId`/`EngineKind`/`EngineDescriptor` are dead in
 // the PRODUCTION build until consumed; the cfg(test) tests below construct them, so the TEST build is
@@ -41,13 +42,14 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the P3.5 minimal Engine trait, the PlanOutcome return, and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.1 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), and P4.13 rewrites the subprocess arms — so the dispatch fn + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture. The P4.2-authored §3.2.2 ProbeOutput (the parsed §3.2.1 probe result) is dead until the P4.9 probe-then-encode sequencing constructs it and the P4.1 plan_encode consumer reads it; its cfg(test) shape test constructs + reads all four fields, keeping the test build dead-code-clean. The P4.3-authored §3.2.2 leaf types (Direction / PatentDisposition / CodecPosture / EngineCapability + the SourceFmt/TargetFmt aliases) are dead until the P4.1 trait expansion references them in capabilities(platform, patents) signatures, the P4.4 registry constructs the capability rows, and the P4.40 engines.lock parse builds the disposition; their cfg(test) shape tests construct + read every field, keeping the test build dead-code-clean."
+        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.4 registry/selection + the §0.9 pool (P4.5) + the P4.45 startup probe construct/call them (the full P4.1 trait surface names them in its signatures and descriptor() constructs EngineDescriptor, but those impls stay uncalled until then). The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the Engine trait + PlanOutcome return (P3.5-minimal, expanded to the full §3.2.2 surface and homed in engines/registry.rs at P4.1) and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.4 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), and P4.13 rewrites the subprocess arms — so the dispatch fn + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture. The P4.2-authored §3.2.2 ProbeOutput (the parsed §3.2.1 probe result) is dead until the P4.9 probe-then-encode sequencing constructs it and a probe-engine plan_encode impl reads it (the P4.1 default impl ignores its _probe param by contract); its cfg(test) shape test constructs + reads all four fields, keeping the test build dead-code-clean. The P4.3-authored §3.2.2 leaf types (Direction / PatentDisposition / CodecPosture / EngineCapability + the SourceFmt/TargetFmt aliases) are NAMED by the P4.1 trait signatures (capabilities(platform, patents)) and the native engine's capability row, but their construction sites stay dead until the P4.4 registry calls capabilities() and the P4.40 engines.lock parse builds the disposition; their cfg(test) shape tests construct + read every field, keeping the test build dead-code-clean."
     )
 )]
 
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -63,6 +65,12 @@ use crate::domain::{
 };
 use crate::outcome::ConversionErrorKind;
 use crate::pool::{LaneError, Pool, NATIVE_CSV_TSV_TIMEOUT};
+
+// The §3.2 registry seam file (§0.7: `engines/registry.rs` — "Engine trait + selection", P4.1). Re-exported
+// so the logical tier-2 path `crate::engines::{Engine, PlanOutcome}` its consumers import is unchanged by
+// the physical file split. [Build-Session-Entscheidung: P4.1]
+mod registry;
+pub use registry::{Engine, PlanOutcome};
 
 /// The stable engine discriminant (§0.6 / §3.2) — used in logging / SBOM rows (§3.7), the §3.2.3
 /// `(SourceFmt,TargetFmt) → EngineId` registry, the §0.9 pool's `HashMap<EngineId, bool>` serialised-flag
@@ -554,7 +562,7 @@ pub struct PlanError {
 }
 
 /// The parsed result of a probe sub-invocation (§3.2.2, the §3.2.1 two-phase contract), produced by §1.7
-/// from `ffprobe`'s stdout and handed to `plan_encode` (the P4.1 trait method) to finalise the encode
+/// from `ffprobe`'s stdout and handed to `Engine::plan_encode` (registry.rs) to finalise the encode
 /// [`Invocation`]. Engine-layer-internal, like [`Invocation`]. `duration_us` becomes the
 /// [`ProgressModel::FfmpegKeyValue`] denominator for the encode — PROVIDED here, never mutated onto a
 /// pre-probe struct (§3.2.1's "no placeholder-then-mutate"). Video FFmpeg is the only v1 probe-requiring
@@ -575,28 +583,9 @@ pub struct ProbeOutput {
     pub interlaced: Option<bool>,
 }
 
-/// What `Engine::plan()` produced — the §3.2.1 two-shape return, named at the type level (the 2026-07-07
-/// plan-seam ruling). The discriminator §1.7 sequences on: under the `out_tmp` ownership contract every
-/// plan-time [`Invocation`] constructs `out_tmp: None`, so `out_tmp.is_some()` cannot mark the probe.
-/// Probe-ness is per-JOB, not per-engine (the same FFmpeg engine encodes audio single-step and probes video),
-/// so it is NOT an [`EngineDescriptor`] flag — the engine names the shape on the value it returns.
-///
-/// [Build-Session-Entscheidung: P3.5] SOLE author (§3.2.2 owns the shape; the P3.5 minimal-trait box). INTERNAL
-/// — no `serde`/`specta` (it wraps the core-only [`Invocation`], never on the wire). Derives only `Debug`:
-/// [`Invocation`] is itself `Debug`-only (it owns a live `TempPath`), so `PlanOutcome` is moved, never cloned.
-/// §1.7 matches it EXHAUSTIVELY (no `_ =>` catch-all — the §1.2/G29 dispatch-enum discipline the crate-root
-/// `clippy::wildcard_enum_match_arm` deny enforces).
-#[derive(Debug)]
-pub enum PlanOutcome {
-    /// A single-step engine's encode plan (the native CSV/TSV engine, and every image/office/pdf pair from P4
-    /// on): §1.7 populates `out_tmp = Some(temp)` and dispatches it directly; `plan_encode` (a P4.1 trait
-    /// method) is never called.
-    Encode(Invocation),
-    /// A probe-requiring engine's `ffprobe` sub-invocation (video FFmpeg, §3.2.1): `out_tmp` stays `None` for
-    /// the whole probe leg (no publish artifact); §1.7 holds the temp, runs the probe, parses `ProbeOutput`,
-    /// then calls `plan_encode`. No P3 engine produces it — the walking skeleton's one engine is single-step.
-    Probe(Invocation),
-}
+// `PlanOutcome` — the §3.2.1 two-shape `plan()` return — lives in `engines/registry.rs` beside the trait it
+// is authored with (moved at P4.1, the §0.7 file split; re-exported above, so `crate::engines::PlanOutcome`
+// is unchanged for its §1.7/§1.9 consumers).
 
 /// The §1.7 dispatch ENVELOPE — NOT a second plan type. It wraps `(JobId, EngineId, Invocation,
 /// CancellationToken)` and adds nothing the §3.2.2 [`Invocation`] already carries (no argv/cwd/env
@@ -839,46 +828,16 @@ async fn bounded_lane(
     }
 }
 
-// ─── §3.2 Engine trait (minimal walking-skeleton) + the native CSV/TSV engine (P3.5) ──
-// P3.5 authors the §3.2.2 `Engine` registry-seam trait in its MINIMAL form — just `plan()` — together with the
-// one walking-skeleton engine that impls it: the native CSV/TSV transform (§3.5.6). P4.1 EXPANDS the SAME trait
-// (never a second one) to the full §3.2.2 surface — `descriptor()` / `capabilities()` / `plan_encode()` /
-// `classify_failure()` — when the §3.2.3 registry + the subprocess engines land. [Build-Session-Entscheidung: P3.5]
-
-/// A bundled conversion engine (§3.2.2) — one impl per engine binary/lib. The registry seam: §3.2.3 selection
-/// resolves a job's `(source, target)` pair to one `Engine`, and §1.7 calls `plan()` to get the dispatch-ready
-/// [`Invocation`]. **Minimal walking-skeleton surface (P3.5): `plan()` only.** P4.1 adds the `descriptor()` /
-/// `capabilities()` / `plan_encode()` / `classify_failure()` methods to THIS trait (§3.2.2). `Send + Sync`
-/// because the §3.2.3 registry stores engines behind a shared handle and §1.7 dispatches them across the §0.9
-/// worker pool.
-pub trait Engine: Send + Sync {
-    /// Build the concrete, dispatch-ready plan for one job — **Pure: no I/O, no spawn** (§3.2.2). It only
-    /// *describes* the invocation (program / argv / cwd / env / stdin / progress); §1.7 owns the actual
-    /// spawn / cancel / timeout and populates `out_tmp` at spawn time.
-    ///
-    /// **Params are the job's tier-3 projection (the 2026-07-07 plan-seam ruling):** the §0.6 [`DroppedItem`]
-    /// (detection + size) + [`TargetId`] + the effective read `input` path §1.7 hands in — NOT the tier-1
-    /// orchestrator-homed `ConversionJob` (§0.7: `crate::engines` is tier 2 and cannot reference it). `input`
-    /// is the §2.3-resolved source (or the §3.5.0 core-staged scratch copy from P4 on); argv embeds `input`,
-    /// NEVER a path derived from `item`. `out_tmp` is BORROWED only so argv can embed its path — `plan()`
-    /// constructs the returned [`Invocation`] with `out_tmp: None`; §1.7 owns the temp and populates
-    /// `Some(temp)` on the ENCODE invocation after this call returns.
-    ///
-    /// Returns [`PlanOutcome::Encode`] (single-step) or [`PlanOutcome::Probe`] (a probe-requiring engine's
-    /// `ffprobe` sub-invocation — §3.2.1) — the shape §1.7 sequences on. A pure planning failure (an option
-    /// value out of range, an unexpected target) is a [`PlanError`] carrying its §2.8 kind.
-    fn plan(
-        &self,
-        item: &DroppedItem,
-        target: TargetId,
-        input: &Path,
-        out_tmp: &TempPath,
-    ) -> Result<PlanOutcome, PlanError>;
-}
+// ─── §3.2 the native CSV/TSV engine (P3.5; its trait expanded + re-homed to registry.rs at P4.1) ──
+// P3.5 authored the §3.2.2 `Engine` registry-seam trait in its minimal `plan()`-only form together with the
+// one walking-skeleton engine that impls it: the native CSV/TSV transform (§3.5.6). P4.1 EXPANDED the SAME
+// trait (never a second one) to the full §3.2.2 surface — `id()` / `descriptor()` / `capabilities()` /
+// `plan_encode()` / `classify_failure()` — and homed it in `engines/registry.rs` (the §0.7 file split;
+// re-exported above). The engine impl stays here beside its §3.5.6 transform. [Build-Session-Entscheidung: P3.5]
 
 /// ConvertIA's own MIT in-core CSV/TSV engine (§3.5.6) — the ONE `EngineProgram::InProcessNative` engine and
 /// the single engine the P3 walking skeleton runs. It decodes NO third-party bytes (pure memory-safe Rust), so
-/// it is the sole sanctioned in-core conversion path (§2.12.4 absolute). The §3.2.3 registry (P4.1) holds one
+/// it is the sole sanctioned in-core conversion path (§2.12.4 absolute). The §3.2.3 registry (P4.4) holds one
 /// instance.
 ///
 /// [Build-Session-Entscheidung: P3.5] a fieldless unit struct — the engine carries no per-instance state (the
@@ -886,9 +845,45 @@ pub trait Engine: Send + Sync {
 pub struct NativeCsvTsvEngine;
 
 impl Engine for NativeCsvTsvEngine {
+    /// The stable §0.6 discriminant (§3.2.2).
+    fn id(&self) -> EngineId {
+        EngineId::NativeCsvTsv
+    }
+
+    /// The §0.6 capability descriptor (§3.2.2): the one `InProcessNative` engine (§3.5.6), and NOT
+    /// `serialised_only` — the native transform is freely parallel on the §0.9 in-core lane (only
+    /// LibreOffice headless is single-permit, §0.9). [Build-Session-Entscheidung: P4.1]
+    fn descriptor(&self) -> EngineDescriptor {
+        EngineDescriptor {
+            id: EngineId::NativeCsvTsv,
+            serialised_only: false,
+            kind: EngineKind::InProcessNative,
+        }
+    }
+
+    /// The §04/spreadsheets cells this engine owns: exactly `CSV ↔ TSV` (pure text re-delimiting — the
+    /// #engines table's own arrow), platform-universal (all three §1 desktop OS) and patent-free (no §3.4
+    /// encumbered codec), so both params are honestly unused. [Derived-Assumption: P4.1 — ONE row
+    /// `{source: Csv, target: Tsv, direction: Both}` models the table's bidirectional `CSV ↔ TSV` arrow
+    /// (§3.2.2: a capability cell "matches the 04 matrices' arrows"; §04/spreadsheets #engines names the
+    /// pair `CSV ↔ TSV`); the §3.2.3 registry (P4.4) expands a `Both` row into both `(src,tgt)` orderings
+    /// when it populates the `(SourceFmt,TargetFmt) → EngineId` lookup, covering the matrix's two ✓(native)
+    /// cells from one declared arrow.]
+    fn capabilities(
+        &self,
+        _platform: Platform,
+        _patents: &PatentDisposition,
+    ) -> Vec<EngineCapability> {
+        vec![EngineCapability {
+            source: UserFacingFormat::Csv,
+            target: TargetId::Format(FormatId::Tsv),
+            direction: Direction::Both,
+        }]
+    }
+
     /// Plan the native CSV↔TSV transform (§3.5.6). Pure: maps the chosen `target` to its output format token
     /// and builds the dispatch-ready [`Invocation`] — no I/O, no spawn. Single-step, so it always returns
-    /// [`PlanOutcome::Encode`]; `plan_encode` (a P4.1 trait method) is never reached.
+    /// [`PlanOutcome::Encode`]; `plan_encode` is never reached (§1.7 only calls it after a `Probe`).
     ///
     /// **`args` carries the transform's two runtime parameters** [Build-Session-Entscheidung: P3.5]: the
     /// effective read `input` path (`args[0]`, embedded per the §3.2.2 ownership contract — the transform reads
@@ -934,6 +929,15 @@ impl Engine for NativeCsvTsvEngine {
             out_tmp: None,
         }))
     }
+
+    /// §3.2.2 exit-classification — unreachable-by-construction for the ONE in-process engine: no
+    /// subprocess exists, so no `ExitStatus` is ever produced for it (the §1.7 `InProcessNative` lane maps
+    /// `TransformError → ConversionErrorKind` directly, P3.43). Reaching this is a mis-wired lifecycle,
+    /// answered with the honest `InternalError` (the P2.25 unreachable-outcome precedent, cf. the dispatch
+    /// subprocess arms). [Build-Session-Entscheidung: P4.1]
+    fn classify_failure(&self, _exit: ExitStatus, _stderr: &str) -> ConversionErrorKind {
+        ConversionErrorKind::InternalError
+    }
 }
 
 // ─── §1.5 the walking-skeleton target lookup — the SHARED `UserFacingFormat → Target` map (P3.48) ─────────
@@ -943,12 +947,12 @@ impl Engine for NativeCsvTsvEngine {
 // (§0.6 invariant 1 — one Target per Batch), and P3.49's C3 `get_targets` REUSES `slice_target` (the
 // `needs: P3.48` edge on P3.49 is already set) — ONE source of the offer, no synthesized `Target` (a `Target`
 // carries `label`/`lossy`/`availability`/`options` — §0.6 data; faking them is the P3.47-class invention).
-// The v1 walking-skeleton offer is the CSV↔TSV pair ONLY; P4.1's §3.2.3 registry supplies the full §04
+// The v1 walking-skeleton offer is the CSV↔TSV pair ONLY; P4.4's §3.2.3 registry supplies the full §04
 // matrices then (this lookup stays the CSV/TSV slice's authority, reused, not re-derived).
 
 /// The §1.5 offered target for a walking-skeleton source format — `Some(Target)` for the two slice formats
 /// (`Csv → TSV`, `Tsv → CSV`, the §04 spreadsheets CSV↔TSV pair, the ONLY diagonal-free pair the P3 slice
-/// converts), `None` for every other §0.6 `UserFacingFormat` (offered by the P4.1 registry, not here). The
+/// converts), `None` for every other §0.6 `UserFacingFormat` (offered by the P4.4 registry, not here). The
 /// returned `Target` is the COMPLETE §0.6 offer — `id`, the display `label` (`"TSV"`/`"CSV"`, §5-facing),
 /// `lossy: None` (a delimiter re-write is not a §2.9 predictable-loss), `availability: Available` (CSV/TSV are
 /// platform-universal, no §3.4 patent gap), and an empty `options` (§1.6 — the slice takes no per-conversion
@@ -2495,7 +2499,118 @@ mod tests {
         );
     }
 
-    // ─── P3.5: the §3.2 Engine trait (minimal) + the native CSV/TSV engine's plan() ──
+    // ─── P4.1: the full §3.2.2 Engine trait surface (id / descriptor / capabilities / plan_encode /
+    //     classify_failure; the trait itself lives in engines/registry.rs) ──
+
+    // §3.2.2 classify_failure takes a real std `ExitStatus`; std has no portable constructor, so build a
+    // nonzero-exit one per-OS from its raw form (Windows: the raw exit code; Unix: the wait status,
+    // code << 8).
+    fn nonzero_exit_status() -> ExitStatus {
+        #[cfg(windows)]
+        {
+            <ExitStatus as std::os::windows::process::ExitStatusExt>::from_raw(1)
+        }
+        #[cfg(unix)]
+        {
+            <ExitStatus as std::os::unix::process::ExitStatusExt>::from_raw(0x100)
+        }
+    }
+
+    // §6.4.1 unit (G15): the native engine's §3.2.2 identity surface (P4.1) — id() is the stable §0.6
+    // discriminant; descriptor() is the concrete §0.9 `EngineId → serialised_only` data path: in-process
+    // (§3.5.6) and freely parallel (NOT serialised_only — only LibreOffice headless is single-permit, §0.9).
+    #[test]
+    fn native_engine_id_and_descriptor_carry_the_spec_facts() {
+        let engine = NativeCsvTsvEngine;
+        assert_eq!(engine.id(), EngineId::NativeCsvTsv);
+        assert_eq!(
+            engine.descriptor(),
+            EngineDescriptor {
+                id: EngineId::NativeCsvTsv,
+                serialised_only: false,
+                kind: EngineKind::InProcessNative,
+            },
+            "§3.2.2/§0.9: the native engine is in-process and freely parallel"
+        );
+    }
+
+    // §6.4.1 unit (G15): capabilities() declares exactly the §04/spreadsheets `CSV ↔ TSV` cell (P4.1) —
+    // platform-universal (identical on all three §1 platforms) and patent-independent (identical under a
+    // fully-gapped §3.4 disposition: CSV/TSV touches no encumbered codec).
+    #[test]
+    fn native_engine_capabilities_are_the_csv_tsv_cell_on_every_platform() {
+        let engine = NativeCsvTsvEngine;
+        let all_gapped = PatentDisposition {
+            heic_hevc: CodecPosture::Unavailable,
+            aac: CodecPosture::Unavailable,
+            h264: CodecPosture::Unavailable,
+        };
+        let expected = vec![EngineCapability {
+            source: UserFacingFormat::Csv,
+            target: TargetId::Format(FormatId::Tsv),
+            direction: Direction::Both,
+        }];
+        for platform in [Platform::Win, Platform::MacOS, Platform::Linux] {
+            assert_eq!(
+                engine.capabilities(platform, &all_gapped),
+                expected,
+                "§04/spreadsheets: the CSV↔TSV cell is platform-universal and patent-free"
+            );
+        }
+    }
+
+    // §6.4.1 unit (G15): the §3.2.2 plan_encode DEFAULT impl is the single-step-engine seam (P4.1) — §1.7
+    // only calls plan_encode after a PlanOutcome::Probe, so the single-step native engine reaching it is a
+    // mis-sequenced lifecycle: the spec's InternalError PlanError carrying the spec's detail string.
+    #[test]
+    fn plan_encode_default_is_the_internal_error_seam() {
+        let engine = NativeCsvTsvEngine;
+        let item = csv_dropped_item();
+        let out_tmp = throwaway_temp_path();
+        let probe = ProbeOutput {
+            duration_us: 0,
+            inner_codecs: Vec::new(),
+            rotation_deg: None,
+            interlaced: None,
+        };
+        let err = engine
+            .plan_encode(
+                &item,
+                TargetId::Format(FormatId::Tsv),
+                Path::new("in.csv"),
+                &out_tmp,
+                &probe,
+            )
+            .expect_err("§3.2.2: a single-step engine has no two-phase plan");
+        assert_eq!(err.kind, ConversionErrorKind::InternalError);
+        assert_eq!(
+            err.detail, "engine has no probe/encode two-phase plan",
+            "§3.2.2: the default-impl detail string is the spec's, verbatim"
+        );
+    }
+
+    // §6.4.1 unit (G15): classify_failure is unreachable-by-construction for the in-process engine (P4.1)
+    // — no subprocess, so no ExitStatus is ever produced for it (the §1.7 lane maps TransformError
+    // directly, P3.43); its honest answer is InternalError (the P2.25 unreachable-outcome precedent).
+    #[test]
+    fn native_engine_classify_failure_is_the_honest_internal_error() {
+        let engine = NativeCsvTsvEngine;
+        assert_eq!(
+            engine.classify_failure(nonzero_exit_status(), "unused stderr"),
+            ConversionErrorKind::InternalError
+        );
+    }
+
+    // §6.4.1 unit (G15): the trait is dyn-compatible (P4.1) — the §3.2.3 registry stores engines behind a
+    // shared handle (§3.2.2 "registry of capability-declaring engines behind one trait"), so a signature
+    // change that breaks object-safety must fail HERE at compile time, not at P4.4.
+    #[test]
+    fn engine_trait_is_dyn_compatible() {
+        let engine: &dyn Engine = &NativeCsvTsvEngine;
+        assert_eq!(engine.id(), EngineId::NativeCsvTsv);
+    }
+
+    // ─── P3.5: the native CSV/TSV engine's plan() (its trait lives in engines/registry.rs since P4.1) ──
 
     // A minimal eligible CSV `DroppedItem` for the native-engine plan() tests. plan() ignores `item` (the
     // source delimiter is detected at RUNTIME by the transform, not planned), so any well-formed item serves.
