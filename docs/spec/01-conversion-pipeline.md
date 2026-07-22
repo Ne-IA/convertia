@@ -1119,10 +1119,22 @@ plan itself is recomputed per job at write time from the updated destination.
 ```
                  ┌────────────▶ Skipped        (set at detection/grouping; never enters the queue)
 Pending ─▶ Running ─┬─▶ Succeeded
-                    ├─▶ Failed(kind)
-                    └─▶ Cancelled
+      │             ├─▶ Failed(kind)
+      │             └─▶ Cancelled
+      └────────────▶ Cancelled       (batch-cancel before start — the §1.7 "stop dequeuing Pending" leg; nothing written)
 ```
 
+- **`Pending → Cancelled` (direct) `[DECIDED — the 2026-07-22 P4.11 pre-fill ruling]`:**
+  on a batch cancel, a job the conductor never dispatched terminates **directly
+  `Pending → Cancelled`** ("cancelled before start") — the §1.7 granularity's "stop
+  dequeuing `Pending`" leg gets an honest terminal state: nothing was written for it,
+  it counts in `Totals.cancelled` exactly like a mid-run cancel, and **no new wire
+  state exists** (`Cancelled` is the existing §0.6 variant — no `bindings.ts` change).
+  The FSM `advance` gains the arm at **P4.11** (the P3.46.1 valid/illegal-transition
+  pins — which pre-ruling asserted "Pending accepts ONLY Started" — evolve under
+  `[Test-Change: P4.11]`); the delivered P3-era conductor dispatches every job and
+  cancels cooperatively (the P3.52 note), so the arm is unreachable until P4.11 wires
+  the stop-dequeue — the spec decides it ahead of its consumer.
 - `Skipped` is assigned **before** the queue (a §1.2/§1.3 ineligible item never
   becomes `Pending`); it is distinct from a mid-run `Failed`. `[CLARIFIED 2026-07-12 —
   the P3.48 rerun-skip ruling]` The same construction-terminal rule covers the
