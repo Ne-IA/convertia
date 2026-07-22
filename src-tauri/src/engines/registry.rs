@@ -155,15 +155,23 @@ pub struct EngineRegistry {
     pairs: HashMap<(SourceFmt, TargetFmt), EngineId>,
     /// The registered engines by id — the shared handles a `select()` winner is resolved through.
     engines: HashMap<EngineId, Arc<dyn Engine>>,
+    /// The §0.9 serialised-flag map, pre-computed from each registered engine's `descriptor()` at build
+    /// time (P4.5) — the `[DECIDED]` second leg of §0.9's `EngineId → serialised_only` path, the only
+    /// tier-legal one (§0.7: `crate::pool` is a tier-3 leaf that never calls UP into this tier-2
+    /// registry — the pool-module tier note): the registry HANDS this map DOWN as data; the §0.9
+    /// single-permit semaphore wiring consumes it at P4.22.
+    serialised: HashMap<EngineId, bool>,
 }
 
 /// Manual `Debug` — `dyn Engine` carries no `Debug` bound (the trait is a behaviour seam, §3.2.2), so
-/// the registered engines render as their ids; the pair map renders in full. [Build-Session-Entscheidung: P4.4]
+/// the registered engines render as their ids; the pair + serialised maps render in full.
+/// [Build-Session-Entscheidung: P4.4]
 impl std::fmt::Debug for EngineRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EngineRegistry")
             .field("pairs", &self.pairs)
             .field("engines", &self.engines.keys().collect::<Vec<_>>())
+            .field("serialised", &self.serialised)
             .finish()
     }
 }
@@ -209,8 +217,12 @@ impl EngineRegistry {
     ) -> Result<Self, RegistryBuildError> {
         let mut pairs: HashMap<(SourceFmt, TargetFmt), EngineId> = HashMap::new();
         let mut by_id: HashMap<EngineId, Arc<dyn Engine>> = HashMap::new();
+        let mut serialised: HashMap<EngineId, bool> = HashMap::new();
         for engine in engines {
             let id = engine.id();
+            // §0.9 (P4.5): pre-compute the serialised flag from the engine's own descriptor — the
+            // `EngineId → serialised_only` data path, produced ONCE here (no descriptor-less lookup gap).
+            serialised.insert(id, engine.descriptor().serialised_only);
             for cell in engine.capabilities(platform, patents) {
                 insert_single_owner(&mut pairs, cell.source, cell.target, id)?;
                 if cell.direction == Direction::Both {
@@ -233,7 +245,19 @@ impl EngineRegistry {
         Ok(EngineRegistry {
             pairs,
             engines: by_id,
+            serialised,
         })
+    }
+
+    /// The §0.9 serialised-flag map (P4.5) — `EngineId → serialised_only`, pre-computed from each
+    /// registered engine's `descriptor()` at build time (the §0.9 `[DECIDED]` second leg; there is no
+    /// descriptor-less lookup gap). The registry hands it DOWN as data because the tier-3 pool never
+    /// calls UP into this tier-2 registry (§0.7; the pool-module tier note) — the §0.9 single-permit
+    /// semaphore wiring (P4.22) reads it on every dispatch, allocating the dedicated single-permit
+    /// semaphore per `true` engine (LibreOffice) at pool-build time.
+    #[must_use]
+    pub fn serialised_flags(&self) -> &HashMap<EngineId, bool> {
+        &self.serialised
     }
 
     /// The §3.2.3 static lookup — `Some(owner)` for a registered pair; `None` is the §3.4 honest gap
@@ -402,6 +426,79 @@ mod registry_tests {
         fn classify_failure(&self, _exit: ExitStatus, _stderr: &str) -> ConversionErrorKind {
             ConversionErrorKind::InternalError
         }
+    }
+
+    // A test-only serialised office-like engine (LibreOffice-shaped) for the §0.9 flag-map leg —
+    // distinct pair (Xlsx → Pdf), serialised_only: true.
+    struct SerialisedOfficeEngine;
+    impl Engine for SerialisedOfficeEngine {
+        fn id(&self) -> EngineId {
+            EngineId::LibreOffice
+        }
+        fn descriptor(&self) -> EngineDescriptor {
+            EngineDescriptor {
+                id: EngineId::LibreOffice,
+                serialised_only: true,
+                kind: EngineKind::Subprocess,
+            }
+        }
+        fn capabilities(
+            &self,
+            _platform: Platform,
+            _patents: &PatentDisposition,
+        ) -> Vec<EngineCapability> {
+            vec![EngineCapability {
+                source: UserFacingFormat::Xlsx,
+                target: TargetId::Format(FormatId::Pdf),
+                direction: Direction::Encode,
+            }]
+        }
+        fn plan(
+            &self,
+            _item: &DroppedItem,
+            _target: TargetId,
+            _input: &Path,
+            _out_tmp: &TempPath,
+        ) -> Result<PlanOutcome, PlanError> {
+            Err(PlanError {
+                kind: ConversionErrorKind::InternalError,
+                detail: "test office engine plans nothing".to_owned(),
+            })
+        }
+        fn classify_failure(&self, _exit: ExitStatus, _stderr: &str) -> ConversionErrorKind {
+            ConversionErrorKind::InternalError
+        }
+    }
+
+    // §6.4.1 unit (G15): the §0.9 serialised-flag map (P4.5) covers exactly the registered set — the
+    // startup registry maps the one walking-skeleton engine to `false` (the native transform is freely
+    // parallel; only LibreOffice headless is single-permit, §0.9), and a registry with a
+    // `serialised_only` engine carries its `true` flag from `descriptor()` (no descriptor-less gap).
+    #[test]
+    fn serialised_flag_map_covers_exactly_the_registered_set() {
+        let startup = engine_registry()
+            .expect("§3.2.3: the registered v1 set builds a valid single-owner registry");
+        assert_eq!(startup.serialised_flags().len(), 1);
+        assert_eq!(
+            startup.serialised_flags().get(&EngineId::NativeCsvTsv),
+            Some(&false),
+            "§0.9: the native in-core engine is freely parallel"
+        );
+        let with_office = EngineRegistry::build(
+            vec![
+                Arc::new(NativeCsvTsvEngine),
+                Arc::new(SerialisedOfficeEngine),
+            ],
+            Platform::MacOS,
+            &resolved_patent_disposition(),
+        )
+        .expect("§3.2.3: the office test engine's Xlsx→Pdf cell collides with nothing");
+        assert_eq!(
+            with_office.serialised_flags().get(&EngineId::LibreOffice),
+            Some(&true),
+            "§0.9: a serialised_only descriptor flows into the pre-computed flag map"
+        );
+        assert_eq!(with_office.serialised_flags().len(), 2);
     }
 
     // §6.4.1 unit (G15): the startup registry builds Ok and resolves BOTH slice orderings to the native
