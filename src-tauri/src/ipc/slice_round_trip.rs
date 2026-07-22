@@ -228,7 +228,7 @@ async fn the_slice_round_trips_from_c1_intake_through_c6_conversion_to_the_c8_su
         CancellationToken::new(),
         scratch,
         instance,
-        src_dir.path().to_path_buf(),
+        Some(src_dir.path().to_path_buf()),
         RerunDecision::FreshCopy,
         &Pool::new(),
         &RerunLedger::default(),

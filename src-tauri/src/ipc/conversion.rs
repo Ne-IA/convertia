@@ -164,10 +164,12 @@ fn start_run(
     let run_id = RunId::mint();
 
     // §2.14 scratch: acquire the per-run scratch under `app_local_data_dir()` (lock-before-part, §2.6.3), and
-    // resolve the §2.7.3 divert root — the user Downloads (then Documents, then the scratch base as a last
-    // resort) — AppHandle-side via Tauri's PathResolver (the P3.35 "candidates resolved AppHandle-side"). These
-    // are ALL the fallible steps, done BEFORE any registry mutation so a failure here leaves the §0.4.4 stores
-    // untouched.
+    // resolve the §2.7.3 divert root — the user Downloads (then Documents) — AppHandle-side via Tauri's
+    // PathResolver (the P3.35 "candidates resolved AppHandle-side"). When NEITHER resolves the root is `None`
+    // (an empty §2.7.3 candidate set) and a diverting item fails clearly with `WriteFailed`, never an output
+    // buried in a hidden app dir (§2.7.3 [DECIDED] sanctions ONLY Downloads → Documents; an unusable divert
+    // target is a §2.8 failure, "rather than diverting an output into a place the OS may purge"). These are ALL
+    // the fallible steps, done BEFORE any registry mutation so a failure here leaves the §0.4.4 stores untouched.
     let instance = *app.try_state::<InstanceId>().ok_or_else(not_startable)?;
     let scratch_base = app
         .path()
@@ -175,11 +177,11 @@ fn start_run(
         .map_err(|_| not_startable())?;
     let scratch = RunScratch::acquire(&scratch_base, instance, std::process::id(), run_id)
         .map_err(|_| not_startable())?;
-    let divert_root = app
+    let divert_root: Option<PathBuf> = app
         .path()
         .download_dir()
         .or_else(|_| app.path().document_dir())
-        .unwrap_or_else(|_| scratch_base.clone());
+        .ok();
 
     // §0.4.4 registry setup — the LAST mutations before the infallible spawn. Resolve BOTH stores first, then
     // evict the prior retained `RunResult` (§0.4.4 "until a new run starts") and register a fresh cancellation
@@ -231,7 +233,7 @@ async fn run_conversion_spawned(
     token: CancellationToken,
     scratch: RunScratch,
     instance: InstanceId,
-    divert_root: PathBuf,
+    divert_root: Option<PathBuf>,
     rerun_decision: RerunDecision,
     on_progress: Channel<ConversionEvent>,
 ) {

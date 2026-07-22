@@ -134,7 +134,7 @@ fn a_no_atomic_publish_destination_diverts_and_the_full_chain_holds_at_the_diver
         "tsv",
         DestinationMode::BesideSource,
         LocationStatus::Divert(DivertReason::NoAtomicPublish),
-        divert_root.path(),
+        Some(divert_root.path()),
         &mut f.cache,
         probe,
     )
@@ -219,7 +219,7 @@ fn a_collision_at_the_no_atomic_publish_divert_target_numbers_away_without_clobb
         "tsv",
         DestinationMode::BesideSource,
         LocationStatus::Divert(DivertReason::NoAtomicPublish),
-        divert_root.path(),
+        Some(divert_root.path()),
         &mut f.cache,
         probe,
     )

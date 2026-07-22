@@ -2152,7 +2152,7 @@ pub fn compute_output_plan(
     extension: &str,
     mode: DestinationMode,
     location: LocationStatus,
-    divert_root: &Path,
+    divert_root: Option<&Path>,
     cache: &mut LocationCache,
     probe_name: impl Fn() -> OsString,
 ) -> Result<OutputPlan, OutputPlanError> {
@@ -2182,10 +2182,11 @@ pub fn compute_output_plan(
             None,
         ),
         // §2.7.3: the location diverts → the output goes FLAT into the caller-resolved §2.7.3 divert root
-        // (§2.7.4, no subtree re-creation). A single-candidate resolve_divert_target re-tests it (§2.7.2 — the
-        // strict "one resolved target else WriteFailed" reading); Unavailable → the item fails clearly.
+        // (§2.7.4, no subtree re-creation). `resolve_divert_target` re-tests the candidate (§2.7.2 — the strict
+        // "one resolved target else WriteFailed" reading); an EMPTY set (neither Downloads nor Documents resolved,
+        // so `divert_root` is `None`) yields Unavailable → the item fails clearly, never a hidden-app-dir write.
         LocationStatus::Divert(reason) => {
-            let candidates = [divert_root.to_path_buf()];
+            let candidates: Vec<PathBuf> = divert_root.map(Path::to_path_buf).into_iter().collect();
             match resolve_divert_target(&candidates, cache, probe_name) {
                 DivertTarget::Resolved(dir) => (dir, Some(reason)),
                 DivertTarget::Unavailable => return Err(OutputPlanError::DivertUnavailable),
@@ -3177,7 +3178,7 @@ mod compute_output_plan_tests {
             "tsv",
             DestinationMode::BesideSource,
             LocationStatus::Writable,
-            base.path(), // divert_root — unused on the writable path
+            Some(base.path()), // divert_root — unused on the writable path
             &mut cache,
             probe,
         )
@@ -3227,7 +3228,7 @@ mod compute_output_plan_tests {
                 common_root: &common,
             },
             LocationStatus::Writable,
-            base.path(),
+            Some(base.path()),
             &mut cache,
             probe,
         )
@@ -3261,7 +3262,7 @@ mod compute_output_plan_tests {
             "tsv",
             DestinationMode::BesideSource,
             LocationStatus::Divert(DivertReason::Unwritable),
-            divert.path(),
+            Some(divert.path()),
             &mut cache,
             probe,
         )
@@ -3294,7 +3295,7 @@ mod compute_output_plan_tests {
             "tsv",
             DestinationMode::BesideSource,
             LocationStatus::Divert(DivertReason::Unwritable),
-            ephemeral.path(), // itself ephemeral → resolve_divert_target returns Unavailable
+            Some(ephemeral.path()), // itself ephemeral → resolve_divert_target returns Unavailable
             &mut cache,
             probe,
         )
@@ -3302,6 +3303,32 @@ mod compute_output_plan_tests {
         assert!(
             matches!(err, OutputPlanError::DivertUnavailable),
             "§2.7.3: no usable divert target → DivertUnavailable (→ §2.8 WriteFailed), never a bad divert"
+        );
+    }
+
+    // §6.4.1 real-FS (G15) / §2.7.3 (P3.75 sweep): a diverting location with NO divert root at all (neither
+    // Downloads nor Documents resolved AppHandle-side, so the caller passes `None`) → an EMPTY candidate set →
+    // DivertUnavailable (→ §2.8 WriteFailed), never a fallback write into a hidden app dir. This pins the removal
+    // of the unsanctioned `app_local_data_dir` last-resort (§2.7.3 [DECIDED] sanctions ONLY Downloads → Documents).
+    #[test]
+    fn diverted_location_with_no_divert_root_is_unavailable() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let source = base.path().join("data.csv");
+        let mut cache = LocationCache::new();
+        let err = compute_output_plan(
+            ItemId::from_index(3),
+            &source,
+            "tsv",
+            DestinationMode::BesideSource,
+            LocationStatus::Divert(DivertReason::Unwritable),
+            None, // no Downloads/Documents resolved → no §2.7.3 divert root at all
+            &mut cache,
+            probe,
+        )
+        .expect_err("§2.7.3: with no divert root, a diverting item cannot plan");
+        assert!(
+            matches!(err, OutputPlanError::DivertUnavailable),
+            "§2.7.3: an absent divert root → DivertUnavailable (→ §2.8 WriteFailed), never a hidden-app-dir write"
         );
     }
 
@@ -3317,7 +3344,7 @@ mod compute_output_plan_tests {
             "tsv",
             DestinationMode::BesideSource,
             LocationStatus::Writable,
-            base.path(),
+            Some(base.path()),
             &mut cache,
             probe,
         )

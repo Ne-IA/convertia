@@ -1854,7 +1854,7 @@ async fn convert_item(
     source: &Path,
     target: TargetId,
     frozen_sources: &[FileIdentity],
-    divert_root: &Path,
+    divert_root: Option<&Path>,
     destination: &ResolvedDestination,
     source_common_root: &Path,
     scratch: &RunScratch,
@@ -1999,8 +1999,11 @@ async fn convert_item(
                 Err(outcome) => return write_outcome_to_run(outcome),
             };
             // §2.1.1 steps 3-7 (+ the §2.7.2/§2.7.5 late-divert) over the verified temp. The §2.7.3 late-divert
-            // candidate is the single resolved divert root (the same one `compute_output_plan` used).
-            let divert_candidates = [divert_root.to_path_buf()];
+            // candidate is the resolved divert root (the same one `compute_output_plan` used), or an EMPTY set
+            // when neither Downloads nor Documents resolved — an empty set makes `resolve_divert_target` yield
+            // `Unavailable` → the late-divert fails clearly with `WriteFailed`, never a hidden-app-dir write (§2.7.3).
+            let divert_candidates: Vec<PathBuf> =
+                divert_root.map(Path::to_path_buf).into_iter().collect();
             let outcome = publish_written_temp(
                 &plan,
                 source,
@@ -2057,11 +2060,12 @@ fn finish_run(
     residues: Vec<ResidueRecord>,
     recorded_final_dirs: BTreeSet<PathBuf>,
     any_diverted: bool,
-    divert_root: PathBuf,
+    divert_root: Option<PathBuf>,
 ) {
     // §1.12 projection → the wire `RunResult` (display-only) + the off-wire `RunResultPaths`. `divert_root` is
-    // carried only when an item actually diverted (§2.7.4 — the second "open Downloads" affordance).
-    let divert_root_opt = any_diverted.then_some(divert_root);
+    // carried only when an item actually diverted (§2.7.4 — the second "open Downloads" affordance); a diverted
+    // item implies the root resolved, so `filter` keeps the `Some` in that case and is `None` otherwise.
+    let divert_root_opt = divert_root.filter(|_| any_diverted);
     let (result, paths) = project_run_result(
         &batch,
         run_id,
@@ -2099,7 +2103,7 @@ pub(crate) async fn run_conversion(
     token: CancellationToken,
     scratch: RunScratch,
     instance: InstanceId,
-    divert_root: PathBuf,
+    divert_root: Option<PathBuf>,
     rerun_decision: RerunDecision,
     pool: &Pool,
     ledger: &RerunLedger,
@@ -2243,7 +2247,7 @@ pub(crate) async fn run_conversion(
             &source,
             target_id,
             &frozen_sources,
-            &divert_root,
+            divert_root.as_deref(),
             &destination,
             &source_root,
             &scratch,
@@ -10324,7 +10328,7 @@ mod run_conversion_tests {
             token,
             scratch,
             d.instance,
-            divert_root.to_path_buf(),
+            Some(divert_root.to_path_buf()),
             rerun,
             &d.pool,
             &d.ledger,
