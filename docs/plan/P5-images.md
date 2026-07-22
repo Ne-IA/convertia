@@ -54,7 +54,7 @@
 > **No dynamic-library relocation leg for the image stack (recorded decision, not a gap).**
 > The P4.30 generic rpath/install_name rewrite + its FFmpeg leg (P6.1.2) exist for the
 > beside-the-exe component-lib case; the P5 image stack needs **none** because it is
-> **statically linked into `convertia-imgworker`** (P4.33 — one binary, the dynamic
+> **statically linked into `convertia-imgworker`** (P4.34 — one binary, the dynamic
 > closure resolves to system libs only) and **x265 is the dynamically-loaded libheif
 > plugin** discovered via `LIBHEIF_PLUGIN_PATH`/the add-plugin API (P5.10), not a
 > beside-the-exe lib whose `install_name`/RUNPATH must be rewritten (§3.6.1 static/plugin
@@ -75,7 +75,7 @@
   > cgif (MIT) for native `gifsave`, plus the **BSD-2-Clause `lovell/libimagequant` v2.4.x fork ONLY** vendored/statically linked inside the cgif/palette path (never upstream 4.x GPLv3-or-commercial which would taint the LGPL worker, §3.1 row 1e); pinned by exact version+ref in `engines.lock`.
 - [ ] **P5.4** [BUILD] Add the libimagequant BSD-2-Clause leg-text + lockfile-pin provenance §6.1.3 assertion · §3.1 §6.1.3 §6.3.3 · G38
   needs: P5.3
-  > the stage-step assertion that the staged `libimagequant` `COPYRIGHT` contains the **BSD-2-Clause** text (the SPDX-presence gate sees a declared id, not shipped text, so the text check is the real guard) **and** the `engines.lock`/`Cargo.lock` ref is exactly the `lovell/libimagequant` v2.4.x-fork commit (provenance, not an ABI/soname check — it is statically vendored, §3.1 row 1e).
+  > the stage-step assertion that the staged `libimagequant` `COPYRIGHT` contains the **BSD-2-Clause** text (the SPDX-presence gate sees a declared id, not shipped text, so the text check is the real guard) **and** the `engines.lock`/`Cargo.lock` ref is exactly the `lovell/libimagequant` v2.4.x-fork commit (provenance, not an ABI/soname check — it is statically vendored, §3.1 row 1e). **Artifact + stage distinction (vs P4.54):** P4.54 is the P4 proof-of-life check on the P4.34 imgworker's vendored cgif/palette path; this box asserts the newly-staged P5.3 artifact — same property, different artifact at a different build stage, _format.md §8.
 - [ ] **P5.5** [BUILD] Stage the REQUIRED ImageMagick delegate (permissive, GPL optional-delegates excluded) for BMP load/save · §3.1 §3.5.5 §6.1.3 · G37 G37b
   needs: P5.1
   > ImageMagick (the ImageMagick License, Apache-2.0-style, **not** GPL) staged as a libvips `magickload`/`magicksave` delegate **inside** the image-worker — **required** because libvips has no native BMP support; the trimmed build **excludes GPL optional delegates** (§3.6.1); its own `engines.lock`+SBOM row + dynamic-closure assert (G37b). The from-source trimmed/coder-excluded COMPILE (the build the P5.6/P5.7 coder lockdown can assert against — option (b) of P5.6) is the sub-box P5.5.1 below.

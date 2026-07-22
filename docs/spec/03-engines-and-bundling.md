@@ -469,7 +469,7 @@ downloaded after the app itself.
 | Mechanism | Used for | Tauri config | Resolved at runtime by |
 |---|---|---|---|
 | **`bundle.externalBin`** (sidecars, target-triple-suffixed) | FFmpeg, ffprobe, soffice launcher, pdftotext, pandoc, **`convertia-imgworker`** (the libvips image-worker process, §3.5.5) — the **standalone invoked binaries** (Ghostscript **[DECIDED: dropped]**; **x265 is NOT a sidecar** — it ships as a dynamically-loaded libheif encoder *plugin* under `resources`, §3.1 row 1a) | `"bundle": { "externalBin": ["binaries/ffmpeg", "binaries/ffprobe", "binaries/soffice", "binaries/pdftotext", "binaries/pandoc", "binaries/convertia-imgworker"] }` | spawned by the Rust core (see 3.3.3) |
-| **`bundle.resources`** (verbatim files/dirs) | the LibreOffice **program tree + profile template + bundled fonts**, the **image-worker stack** (libvips + libheif/libde265 + the **x265 libheif plugin** + libaom/dav1d + librsvg + cgif + the **required ImageMagick** delegate), FFmpeg/pandoc data files if any, the NOTICE/third-party-licenses text (§3.7) | `"bundle": { "resources": { "engines/libreoffice/": "engines/libreoffice/", "engines/image/": "engines/image/", "fonts/": "fonts/", "THIRD-PARTY-LICENSES.txt": "" } }` | `app.path().resolve(rel, BaseDirectory::Resource)` |
+| **`bundle.resources`** (verbatim files/dirs) | the LibreOffice **program tree + profile template + bundled fonts**, the **image-worker stack** (libvips + libheif/libde265 + the **x265 libheif plugin** + libaom/dav1d + librsvg + cgif + the **required ImageMagick** delegate), FFmpeg/pandoc data files if any, the NOTICE/third-party-licenses text (§3.7) | `"bundle": { "resources": { "resources/libreoffice/": "engines/libreoffice/", "resources/image/": "engines/image/", "resources/fonts/": "fonts/", "THIRD-PARTY-LICENSES.txt": "" } }` `[CORRECTED 2026-07-22 — the P4 pre-fill audit: source-side re-home only (the map's SOURCE keys now live under src-tauri/resources/ per the normative §0.7 physical tree + §6.1.3); the bundle-internal TARGET values are unchanged]` | `app.path().resolve(rel, BaseDirectory::Resource)` |
 
 > **Why LibreOffice is `resources`, not `externalBin`.** `externalBin` is for a
 > single self-contained executable that gets the target-triple suffix; LibreOffice
@@ -494,8 +494,13 @@ The build (§6.1 owns the CI matrix) performs, per platform:
 2. Place each standalone engine at `src-tauri/binaries/<name>-<target-triple>[.exe]`
    (the `externalBin` naming convention; e.g. `ffmpeg-x86_64-pc-windows-msvc.exe`,
    `ffmpeg-aarch64-apple-darwin`, `ffmpeg-x86_64-unknown-linux-gnu`).
-3. Place the LibreOffice tree + fonts under `src-tauri/engines/` /
-   `src-tauri/fonts/` (the `resources` map).
+3. Place the LibreOffice tree + fonts under `src-tauri/resources/` (the
+   `resources` map's source side). `[CORRECTED 2026-07-22 — the P4 pre-fill
+   audit: was "src-tauri/engines/ / src-tauri/fonts/", contradicting the
+   normative §0.7 physical tree + §6.1.3, which home ALL non-exe engine assets
+   under src-tauri/resources/; reconciled literal→normative. The bundle-internal
+   TARGET paths (engines/libreoffice/, engines/image/, fonts/) are unchanged, so
+   the §3.3.3/§3.2 resolve literals stand.]`
 4. Emit the per-build **SBOM + NOTICE** (§3.7) and the patent-disposition record
    (§3.4) as bundled resources.
 5. `tauri build` packages everything into the one artifact per platform (§6.1).
