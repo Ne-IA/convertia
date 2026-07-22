@@ -202,6 +202,96 @@ record("dormancy: the committed DORMANT_UNTIL/DORMANT_FIXTURES wiring resolves i
                          (Path(m.ROOT) / pf).read_text(encoding="utf-8"), flags=re.M)
            for pf, box in list(m.DORMANT_UNTIL.values()) + list(m.DORMANT_FIXTURES.values())))
 
+
+# --- the 2026-07-22 sanitizer-posture leg (hermetic: patch m.FUZZ_WORKFLOW, never the real file) --
+_POSTURE_OK = (
+    "jobs:\n  fuzz:\n    steps:\n      - name: sweep\n        env:\n"
+    "          SAN: ${{ runner.os == 'macOS' && 'none' || 'address' }}\n"
+    "        run: |\n"
+    '          cargo +nightly-2026-07-14 fuzz run "${t}" -s "${SAN}" -- ${BOUNDS}\n'
+    "      - name: canary\n        run: |\n"
+    '          if cargo +nightly-2026-07-14 fuzz run detect -s address -- ${BOUNDS}; then\n'
+    '            echo "::warning title=ASAN healed on aarch64-apple-darwin::re-arm"\n'
+    "          fi\n")
+
+
+def posture(wf_body: str | None) -> int:
+    """assert_sanitizer_posture() with FUZZ_WORKFLOW patched to a temp file (or an absent path)."""
+    saved = m.FUZZ_WORKFLOW
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "fuzz.yml"
+            if wf_body is not None:
+                p.write_text(wf_body, encoding="utf-8")
+            m.FUZZ_WORKFLOW = p
+            return m.assert_sanitizer_posture()
+    finally:
+        m.FUZZ_WORKFLOW = saved
+
+
+record("posture: an absent fuzz.yml is target-absent (0 problems)", posture(None) == 0)
+record("posture: the canonical split + SAN usage + canary passes", posture(_POSTURE_OK) == 0)
+record("posture: the Linux arm flipped to 'none' is CAUGHT (the full-ASAN oracle drop)",
+       posture(_POSTURE_OK.replace("&& 'none' || 'address'", "&& 'none' || 'none'")) >= 1)
+record("posture: a literal un-split `-s none` on the sweep is CAUGHT",
+       posture(_POSTURE_OK.replace('-s "${SAN}"', "-s none")) >= 1)  # the illegal token; expr+canary intact
+record("posture: the canary (its ::warning:: marker) removed is CAUGHT",
+       posture(_POSTURE_OK.replace("ASAN healed on aarch64-apple-darwin", "gone")) >= 1)
+record("posture: a `-s address` mention in a COMMENT is not a violation (comment-stripped scan)",
+       posture(_POSTURE_OK + "          # restore -s address someday\n") == 0)
+record("posture: a `-s`-glued prose substring (a `dbus -sys stack` step name) is NOT a FP",
+       posture(_POSTURE_OK + "      - name: deps (dbus -sys stack)\n        run: echo x\n") == 0)
+record("posture: an unrelated `grep -s foo` in a run step is NOT a FP (value not forbidden)",
+       posture(_POSTURE_OK + "      - name: x\n        run: grep -s foo bar\n") == 0)
+# --- the R6-confirm bypass regressions (opus P2 spellings; sonnet P1 decoy; sonnet-2 P1 var-hoist) -
+record("posture: the LONG form `--sanitizer none` is CAUGHT",
+       posture(_POSTURE_OK.replace('-s "${SAN}"', "--sanitizer none")) >= 1)
+record("posture: the `=`-glued `--sanitizer=none` is CAUGHT",
+       posture(_POSTURE_OK.replace('-s "${SAN}"', "--sanitizer=none")) >= 1)
+record("posture: the glued short form `-snone` is CAUGHT",
+       posture(_POSTURE_OK.replace('-s "${SAN}"', "-snone")) >= 1)
+record("posture: the single-quoted `-s 'none'` is CAUGHT (quote-normalized)",
+       posture(_POSTURE_OK.replace('-s "${SAN}"', "-s 'none'")) >= 1)
+record("posture: an exotic non-address sanitizer `-s thread` is CAUGHT (denylist, not just none)",
+       posture(_POSTURE_OK.replace('-s "${SAN}"', "-s thread")) >= 1)
+record("posture: a quoted `-s 'address'` PASSES (quote-normalized to a non-forbidden value)",
+       posture(_POSTURE_OK.replace("-s address", "-s 'address'")) == 0)
+record("posture: the VARIABLE-HOIST bypass is CAUGHT - `fuzz run` hidden in a shell var, `-s none` "
+       "on a line with no literal `fuzz run` (whole-file denylist, no invocation-line scoping)",
+       posture(_POSTURE_OK.replace(
+           'cargo +nightly-2026-07-14 fuzz run "${t}" -s "${SAN}" -- ${BOUNDS}',
+           'CMD="fuzz run"\n'
+           '          cargo +nightly-2026-07-14 $CMD "${t}" -s none -- ${BOUNDS}')) >= 1)
+record("posture: the DECOY bypass is CAUGHT - SAN rebound to unconditional none, the frozen "
+       "expression parked in another key (binding-tied, not substring-presence)",
+       posture(_POSTURE_OK.replace(
+           "SAN: ${{ runner.os == 'macOS' && 'none' || 'address' }}",
+           "SAN: ${{ 'none' }}\n"
+           "          SAN_DECOY: \"runner.os == 'macOS' && 'none' || 'address'\"")) >= 1)
+record("posture: a SECOND rebinding `SAN:` definition elsewhere is CAUGHT (exactly-one binding)",
+       posture(_POSTURE_OK +
+               "      - name: extra\n        env:\n          SAN: ${{ 'none' }}\n"
+               "        run: echo x\n") >= 1)
+record("posture: the REAL committed fuzz.yml satisfies the frozen posture",
+       m.assert_sanitizer_posture() == 0)
+_sp = m.SANITIZER_SPLIT_EXPR
+try:
+    m.SANITIZER_SPLIT_EXPR = "runner.os == 'macOS' && 'none' || 'none'"
+    record("posture freeze: SANITIZER_SPLIT_EXPR without the 'address' fallback is caught",
+           m.freeze_contract() >= 1)
+finally:
+    m.SANITIZER_SPLIT_EXPR = _sp
+_fv = m.FORBIDDEN_SANITIZER_VALUES
+try:
+    m.FORBIDDEN_SANITIZER_VALUES = frozenset({"leak", "memory", "thread"})  # dropped `none`
+    record("posture freeze: FORBIDDEN_SANITIZER_VALUES dropping `none` is caught",
+           m.freeze_contract() >= 1)
+    m.FORBIDDEN_SANITIZER_VALUES = frozenset({"none", "address"})  # forbids the ASAN leg itself
+    record("posture freeze: FORBIDDEN_SANITIZER_VALUES forbidding `address` is caught",
+           m.freeze_contract() >= 1)
+finally:
+    m.FORBIDDEN_SANITIZER_VALUES = _fv
+
 failed = [n for n, ok in results if not ok]
 print(f"\n{len(results) - len(failed)}/{len(results)} legs passed")
 if failed:

@@ -26,8 +26,16 @@
 #   - libFuzzer resource bounds: sourced from the committed fuzz/libfuzzer-bounds.txt (G48 — an
 #     OOM/timeout is a REPORTED finding, never a runner kill; check-fuzz-contract asserts the four
 #     bound names live in a committed fuzz config, never inline-only CLI args).
-#   - ASAN is EXPLICIT (`-s address`) — libFuzzer's default, kept explicit and asserted-not-disabled
-#     per the G48 row (a `--sanitizer none` would silently drop it).
+#   - sanitizer split (the 2026-07-22 owner-ruled G48 refinement; gate-status.md G48 entry): Linux
+#     runs FULL ASAN (`-s address`, explicit — never silently dropped); macOS runs SANITIZER-LESS
+#     coverage-guided (`-s none`, still sancov-instrumented: panics/hangs/OOMs stay the oracle) —
+#     ASAN on aarch64-apple-darwin is upstream-broken for BOTH linkers, proven empirically in the
+#     P3.73 rounds 3-6: ld-prime rejects the instrumented rlibs at LINK (`initializer pointer has
+#     no target`; deployment-target 12.0 refuted), and under -ld_classic the ASAN RUNTIME SEGVs at
+#     process start (flockfile, from dyld start) on nightly-2026-06-16 AND -07-14 (compiler-rt
+#     variation refuted; rust#101247 #121624 #146367). The per-run ASAN CANARY below is the
+#     self-healing re-arm: its first green run emits a ::warning:: annotation = the loud signal to
+#     restore `-s address` on macOS (nothing is parked on a prose reminder).
 #
 # FINDINGS: a crash/OOM/timeout fails the job; the minimized artifact under fuzz/artifacts/ is dumped
 # base64 into the job log (NO upload-artifact action — deliberately zero new SHA-pinned action
@@ -55,7 +63,7 @@ jobs:
   fuzz:
     name: fuzz (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60 # G56 outer wall-clock cap: 4 targets × -max_total_time=300 s + the cold instrumented compile of the Tauri tree
+    timeout-minutes: 80 # G56 outer wall-clock cap: 4 targets × -max_total_time=300 s + the cold instrumented compile of the Tauri tree + the macOS ASAN-canary's second (differently-flagged) compile
     strategy:
       fail-fast: false
       matrix:
@@ -126,15 +134,44 @@ jobs:
           # weaken the only macOS memory-error oracle). cargo-fuzz APPENDS its sanitizer RUSTFLAGS to
           # this env value, so the link-arg and the ASAN instrumentation compose.
           RUSTFLAGS: ${{ runner.os == 'macOS' && '-Clink-arg=-Wl,-ld_classic' || '' }}
+          # the header's sanitizer split: Linux = full ASAN; macOS = sanitizer-less coverage-guided
+          # (sancov stays on; -ld_classic stays - the sancov module-ctors hit the same ld-prime
+          # initializer rejection the ASAN ones did).
+          SAN: ${{ runner.os == 'macOS' && 'none' || 'address' }}
         run: |
           BOUNDS="$(grep -v '^#' fuzz/libfuzzer-bounds.txt | xargs)"
-          echo "libFuzzer bounds: ${BOUNDS}"
+          echo "libFuzzer bounds: ${BOUNDS} | sanitizer: ${SAN}"
           for t in detect fs_guard_resolve_identity fs_guard_is_safe_output csv_tsv; do
             echo "::group::fuzz ${t}"
             # shellcheck disable=SC2086  # ${BOUNDS} is a deliberately word-split flag list (one committed source file, no user input)
-            cargo +nightly-2026-07-14 fuzz run "${t}" -s address -- ${BOUNDS}
+            cargo +nightly-2026-07-14 fuzz run "${t}" -s "${SAN}" -- ${BOUNDS}
             echo "::endgroup::"
           done
+
+      # The self-healing ASAN re-arm canary (macOS only; the 2026-07-22 G48 refinement's second
+      # half): every nightly run ATTEMPTS one short full-ASAN target. While upstream stays broken
+      # it fails INSIDE the wrapper (exit 0 - the leg stays green; the expected-broken note is
+      # printed). The FIRST run where it succeeds emits a ::warning:: annotation on the run summary
+      # - the loud, mechanical signal that aarch64-apple-darwin ASAN healed and the main step's
+      # `SAN` split must be reverted to full `-s address` (this canary then retires). Budgeted: one
+      # target, -max_total_time=30, the second instrumented compile is inside the raised
+      # timeout-minutes cap.
+      - name: 'ASAN re-arm canary (expected-fail while upstream is broken; green => ::warning:: re-arm signal)'
+        if: runner.os == 'macOS'
+        env:
+          RUSTFLAGS: '-Clink-arg=-Wl,-ld_classic'
+        run: |
+          # `|| true`: the canary must NEVER red the leg - even a hypothetically all-comment bounds
+          # file (pipefail would kill a bare assignment) degrades to an empty list here, and the
+          # explicit -max_total_time=30 below keeps the attempt bounded regardless (the MAIN sweep's
+          # unguarded twin of this line SHOULD red on that shape - G48 asserts the committed bounds).
+          BOUNDS="$(grep -v '^#' fuzz/libfuzzer-bounds.txt | xargs || true)"
+          # shellcheck disable=SC2086  # ${BOUNDS} is the same deliberately word-split committed flag list; the trailing -max_total_time=30 overrides only the time budget (libFuzzer last-flag-wins)
+          if cargo +nightly-2026-07-14 fuzz run detect -s address -- ${BOUNDS} -max_total_time=30; then
+            echo "::warning title=ASAN healed on aarch64-apple-darwin::The macOS ASAN canary ran green - restore -s address on the macOS fuzz leg (revert the SAN split; see the G48 gate-status entry, 2026-07-22)."
+          else
+            echo "ASAN canary still fails on aarch64-apple-darwin (expected while rust#101247/#121624/#146367 stay open) - the sanitizer-less main sweep above is the macOS oracle."
+          fi
 
       # G18a lockfile discipline: the committed fuzz/Cargo.lock must not drift under the run
       # (a drifted lock means the instrumented build resolved deps the committed graph does not pin).

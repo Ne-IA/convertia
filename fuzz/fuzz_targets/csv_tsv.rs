@@ -6,7 +6,7 @@
 // fields, recursive quoting and interior NUL bytes are the adversarial shapes. This target feeds arbitrary
 // bytes to both directions via `convertia_core::fuzz_api::csv_tsv_transform` (the byte-level `transform_bytes`
 // entry into an in-memory sink). The invariant is "no panic; bounded output relative to input" (§6.4.2).
-// Instrumented (ASAN on) on the Linux + macOS nightly legs; per-push it is the crate::fuzz_replay stable
+// Instrumented on the Linux (full ASAN) + macOS (sanitizer-less coverage-guided - the upstream aarch64-apple-darwin ASAN breakage, G48 row + gate-status 2026-07-22; the per-run canary re-arms) nightly legs; per-push it is the crate::fuzz_replay stable
 // replay (P3.67). Targets import ONLY fuzz_api, P3.73.
 #![no_main]
 

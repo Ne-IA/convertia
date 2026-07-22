@@ -34,6 +34,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 GATE_TOOLS = ROOT / "scripts" / "gate-tools.toml"
 FUZZ_DIR = ROOT / "fuzz"
+FUZZ_WORKFLOW = ROOT / ".github" / "workflows" / "fuzz.yml"
 
 # --- the frozen G48 libFuzzer in-core target CONTRACT (build-gates §6 G48): untrusted-byte surfaces
 #     OUTSIDE the §2.12 boundary, each a `fuzz/fuzz_targets/<key>.rs` libFuzzer target. The BODIES land
@@ -118,6 +119,29 @@ REQUIRED_FIXTURES = [
     ("zip_slip_entry", "a ../../etc/passwd archive-entry-name fixture MUST be rejected (never escapes scratch)"),
 ]
 
+# --- the fuzz.yml sanitizer POSTURE (the 2026-07-22 owner-ruled G48 refinement; gate-status.md G48
+#     entry + the P3.73 rounds-3-6 empirics): Linux = FULL ASAN, macOS = sanitizer-less
+#     coverage-guided (`-s none` via the SAN split expression; aarch64-apple-darwin ASAN is
+#     upstream-broken under both Apple linkers) + the per-run ASAN re-arm CANARY. Frozen here so a
+#     careless workflow edit cannot silently flip the LINUX leg to `-s none` (dropping the only
+#     full-ASAN memory-error oracle), smuggle a literal un-split sanitizer value in, or drop the
+#     canary (the self-healing re-arm signal). Asserted over the committed fuzz.yml. -------------
+SANITIZER_SPLIT_EXPR = "runner.os == 'macOS' && 'none' || 'address'"  # the Linux arm MUST be 'address'
+# the sanitizer VALUES that drop the ASAN memory-error oracle (every clap `Sanitizer` variant that is
+# not `address`). A DENYLIST, not an allowlist: forbidding these VALUES needs no detection of the
+# fuzz invocation, so it cannot be evaded by hiding the `fuzz run` text (e.g. hoisting the subcommand
+# into a shell var - the R6-confirm-2 sonnet P1), and it is FP-safe (a `-s`-glued prose substring
+# like `dbus -sys stack` yields `ys`, not a forbidden value; a random `grep -s foo` yields `foo`).
+# macOS reaches `none` ONLY through the binding-tied `${SAN}` at RUNTIME - never as literal text.
+# This set is EXACTLY the non-`address` members of cargo-fuzz 0.13.2's `Sanitizer` ValueEnum
+# ({Address,Leak,Memory,Thread,None}; `coverage` is a separate bool, not a `-s` value) - context7-
+# verified from source. Any OTHER string is a hard clap rejection (cargo-fuzz errors LOUD), so the
+# denylist is complete for the pinned tool. RE-VERIFY on a cargo-fuzz / `fuzz_nightly` pin bump: a
+# future release adding a sanitizer variant that runs ASAN-free on Linux would need adding here
+# (the G17-r7 pinned-tool-fact discipline).
+FORBIDDEN_SANITIZER_VALUES = frozenset({"none", "leak", "memory", "thread"})
+CANARY_MARKER = "ASAN healed on aarch64-apple-darwin"  # the canary's ::warning:: re-arm annotation title
+
 # a DATE-pinned nightly: `nightly-YYYY-MM-DD` with a real month/day range (rustup rejects 99-99 too, but
 # the gate should not even accept a calendar-impossible date as "pinned").
 _NIGHTLY_RE = re.compile(r"nightly-\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])")
@@ -164,6 +188,21 @@ def freeze_contract() -> int:
     if "ipc_numeric_overflow" not in {k for k, _ in IPC_PROPTEST_TARGETS}:
         fail("IPC_PROPTEST_TARGETS is missing the per-numeric-IPC-arg overflow proptest")
         problems += 1
+    if "|| 'address'" not in SANITIZER_SPLIT_EXPR:
+        fail("SANITIZER_SPLIT_EXPR no longer falls back to 'address' - the Linux full-ASAN "
+             "guarantee is gone from the frozen posture (the 2026-07-22 G48 refinement)")
+        problems += 1
+    if "none" not in FORBIDDEN_SANITIZER_VALUES:
+        fail("FORBIDDEN_SANITIZER_VALUES no longer forbids `none` - the core silent-ASAN-drop "
+             "(a `-s none` sweep) is unguarded")
+        problems += 1
+    if "address" in FORBIDDEN_SANITIZER_VALUES:
+        fail("FORBIDDEN_SANITIZER_VALUES forbids `address` - it would reject the very full-ASAN "
+             "leg the posture exists to keep")
+        problems += 1
+    if not CANARY_MARKER:
+        fail("CANARY_MARKER is empty - the ASAN re-arm canary's presence can no longer be asserted")
+        problems += 1
     return problems
 
 
@@ -185,6 +224,82 @@ def freeze_nightly_pin() -> int:
         fail(f"fuzz_nightly {pin!r} is not a DATE-pinned `nightly-YYYY-MM-DD` channel (would float)")
         return 1
     return 0
+
+
+# the `SAN:` env-key definition line (value captured); anchored so `MY_SAN:` never matches.
+_SAN_KEY_RE = re.compile(r"^\s*SAN:\s*(.*?)\s*$", re.M)
+# every sanitizer-flag VALUE, all clap-reachable spellings: `-s X` / `-s=X` / `-sX` (glued) /
+# `--sanitizer X` / `--sanitizer=X`. `(?<!\S)` keeps `-s` from matching inside another token.
+# Scanned over the WHOLE comment-stripped file (denylist, no invocation-line detection) so it cannot
+# be evaded by hoisting the `fuzz run` subcommand into a shell variable.
+_SANITIZER_ARG_RE = re.compile(r"(?<!\S)(?:--sanitizer|-s)(?:[=\s]+|(?=\S))(\S+)")
+
+
+def _dequote(tok: str) -> str:
+    """One matching quote layer stripped (`'none'`/`\"none\"` -> `none`), so a quoted spelling
+    cannot slip past the allowlist (the R6-confirm opus bypass)."""
+    if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in "'\"":
+        return tok[1:-1]
+    return tok
+
+
+def assert_sanitizer_posture() -> int:
+    """The fuzz.yml sanitizer posture (the 2026-07-22 owner-ruled G48 refinement): the committed
+    workflow must (1) define the `SAN` env key EXACTLY ONCE, (2) BIND it to the frozen split
+    expression whose LINUX arm is 'address' (full ASAN) - binding-tied, not two independent
+    substring checks: a redefined `SAN: ${{ 'none' }}` with the frozen string parked in a decoy
+    key, or a second rebinding `SAN:` in another step, is caught (the R6-confirm sonnet P1) -,
+    (3) pass NO `-s`/`--sanitizer` flag (short/long/glued/`=`/quoted, quote-normalized - the
+    R6-confirm opus P2) that resolves to a NON-'address' sanitizer value anywhere in the file - a
+    whole-file DENYLIST (never an allowlist scoped to a detected `fuzz run` line, which the
+    R6-confirm-2 sonnet P1 evaded by hoisting the subcommand into a shell var): `none`/`leak`/... is
+    never a legitimate literal `-s` value in the text, so the scan needs no invocation detection and
+    cannot be hidden; macOS reaches `none` only THROUGH the binding-tied `${SAN}` at runtime. (4)
+    still contain the ASAN re-arm canary (its ::warning:: marker - the self-healing signal the
+    macOS sanitizer-less posture depends on). Target-absent while fuzz.yml does not exist;
+    comment-stripped scans (the canary marker lives in an echoed string, scanned raw).
+
+    SCOPE (honest bounds of a static text scan): this proves the cargo-fuzz CLI-flag TEXT. It does
+    NOT audit a raw `-Zsanitizer=`/`-Csanitizer=` inside the `RUSTFLAGS` value, nor a sanitizer flag
+    hoisted through a shell variable (`SANFLAG='--sanitizer none'; cargo fuzz run … $SANFLAG`) - both
+    need deliberate indirection no static shell scan closes (variable/eval/source), NOT an ordinary
+    careless edit; every INLINE spelling (short/long, space/`=`/glued, single-/double-quoted,
+    real-continuation-split) IS caught."""
+    if not FUZZ_WORKFLOW.is_file():
+        print("[G48] fuzz.yml absent (the workflow lands with the P3.73 L(-1) tail) - the "
+              "sanitizer-posture leg is target-absent; fail-closed the moment it exists")
+        return 0
+    raw = FUZZ_WORKFLOW.read_text(encoding="utf-8", errors="replace")
+    text = _strip_cfg(raw)
+    problems = 0
+    bindings = _SAN_KEY_RE.findall(text)
+    expected = "${{ " + SANITIZER_SPLIT_EXPR + " }}"
+    if len(bindings) != 1:
+        fail(f"fuzz.yml defines the `SAN` env key {len(bindings)} time(s) - exactly ONE binding is "
+             "sanctioned (zero = the split is gone; more = a later definition can silently rebind "
+             "the sweep's sanitizer; the 2026-07-22 G48 refinement)")
+        problems += 1
+    elif bindings[0] != expected:
+        fail(f"fuzz.yml binds `SAN:` to {bindings[0]!r} instead of the frozen split {expected!r} - "
+             "the Linux leg's full-ASAN posture is no longer structurally pinned (a decoy copy of "
+             "the expression elsewhere does not count; the binding is what the sweep resolves)")
+        problems += 1
+    # collapse shell line-continuations, then DENYLIST every sanitizer flag (whole file - no
+    # invocation-line detection to evade) whose resolved value drops ASAN.
+    joined = re.sub(r"\\\n\s*", " ", text)
+    for hit in _SANITIZER_ARG_RE.finditer(joined):
+        val = _dequote(hit.group(1))
+        if val in FORBIDDEN_SANITIZER_VALUES:
+            fail(f"fuzz.yml passes a sanitizer flag resolving to {val!r} - a non-'address' "
+                 "sanitizer drops the ASAN memory-error oracle; only the binding-tied `\"${SAN}\"` "
+                 "variable (macOS reaches `none` through it at runtime) or an explicit `address` is "
+                 "sanctioned as a literal `-s`/`--sanitizer` value")
+            problems += 1
+    if CANARY_MARKER not in raw:
+        fail(f"fuzz.yml lost the ASAN re-arm canary (marker {CANARY_MARKER!r}) - the macOS "
+             "sanitizer-less posture is only sanctioned WITH its self-healing re-arm signal")
+        problems += 1
+    return problems
 
 
 def assert_harness_live() -> int:
@@ -243,6 +358,7 @@ def main(argv: list[str] | None = None) -> int:
     if nightly == 2:                                # a missing/malformed pinned config is exit-2
         return 2
     total = freeze_contract() + nightly             # nightly is 0 or 1 here
+    total += assert_sanitizer_posture()             # its own target-absent guard (fuzz.yml, not fuzz/)
 
     if not FUZZ_DIR.is_dir():
         if total:

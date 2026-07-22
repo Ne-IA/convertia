@@ -5,7 +5,7 @@
 // feeds arbitrary bytes to the full sniff chain via `convertia_core::fuzz_api::detect` — the ONLY door a
 // fuzz target uses (never a `crate::detection::*` tier path, P3.73). The invariant is "no panic / abort /
 // OOM on arbitrary input" (§6.4.2); the byte→result mapping is fuzz_api's, so this file stays a thin body.
-// Instrumented (ASAN on) on the Linux + macOS date-pinned nightly legs; per-push it is the crate::fuzz_replay
+// Instrumented on the Linux (full ASAN) + macOS (sanitizer-less coverage-guided - the upstream aarch64-apple-darwin ASAN breakage, G48 row + gate-status 2026-07-22; the per-run canary re-arms) nightly legs; per-push it is the crate::fuzz_replay
 // stable-toolchain replay of the committed corpus/crashes (P3.67).
 #![no_main]
 

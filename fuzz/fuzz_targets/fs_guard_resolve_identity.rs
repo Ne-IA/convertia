@@ -8,8 +8,7 @@
 // (T7+T2a, §6.4.2). The committed `fuzz/corpus/fs_guard_resolve_identity/` seed corpus carries the
 // deterministic bound-firing fixtures: nul_path, path_max_plus_1, and the five Windows dangerous-path class
 // seeds (device / reserved / drive-relative / UNC / trailing) re-homed here by the 2026-07-21 P3.73 P0
-// ruling — those hostile-PATH classes are the untrusted-path fn's, not is_safe_output's. Instrumented (ASAN on) on the Linux +
-// macOS nightly legs; per-push it is the crate::fuzz_replay stable replay (P3.67). Targets import ONLY
+// ruling — those hostile-PATH classes are the untrusted-path fn's, not is_safe_output's. Instrumented on the Linux (full ASAN) + macOS (sanitizer-less coverage-guided - the upstream aarch64-apple-darwin ASAN breakage, G48 row + gate-status 2026-07-22; the per-run canary re-arms) nightly legs; per-push it is the crate::fuzz_replay stable replay (P3.67). Targets import ONLY
 // fuzz_api (never a `crate::fs_guard` / `std::path` path), P3.73.
 #![no_main]
 

@@ -345,9 +345,17 @@ black-box engine-subprocess fuzz is the build-gates §8 forward item — **G65**
 
 **The invariant: "never panic / abort / UB on arbitrary bytes."** `cargo-fuzz`
 (libFuzzer) targets (**G48**), on the **Linux + macOS nightly** legs (date-pinned
-`nightly-YYYY-MM-DD`), with **AddressSanitizer ON** (asserted-not-disabled — a
-`--sanitizer none` would silently drop it) + a **UBSan** leg + a small **`cargo
-miri`** leg over the pure-logic in-core paths (Miri covers the safe-Rust side; ASAN
+`nightly-YYYY-MM-DD`), with **AddressSanitizer ON on Linux** (explicit, never
+silently dropped) and — `[REFINED 2026-07-22, owner-ruled; the P3.73 rounds-3–6
+empirics + gate-status G48 entry]` — **sanitizer-less coverage-guided on macOS**:
+ASAN on `aarch64-apple-darwin` is upstream-broken under BOTH Apple linkers
+(ld-prime rejects the instrumented rlibs at link; under `-ld_classic` the ASAN
+runtime SEGVs at process start on two compiler-rt generations —
+rust#101247/#121624/#146367), so the macOS leg keeps the sancov-guided
+panic/hang/OOM oracle while a **per-run ASAN canary** in `fuzz.yml` emits the loud
+re-arm signal the first time upstream heals (nothing parked on a prose reminder).
+Plus a **UBSan** leg where the toolchain supports it + a small **`cargo miri`**
+leg over the pure-logic in-core paths (Miri covers the safe-Rust side; ASAN
 covers the FFI boundary):
 
 1. **`crate::detection`/sniff** on a hostile ZIP/OLE2/gzip/svgz/XML corpus — no
@@ -376,9 +384,11 @@ covers the FFI boundary):
    the in-core peek never resolves or writes outside its bounded buffer and never
    escapes the per-job scratch root.
 6. **`convertia-imgworker`'s own Rust→FFI surface** linked against the staged
-   `libvips`/`libheif`/`librsvg`, **ASAN on** — the densest unsafe surface in the
-   product (the first Rust touching untrusted image bytes across the C/C++
-   boundary). **ASAN-coverage honesty:** the staged engines are pre-compiled
+   `libvips`/`libheif`/`librsvg`, **ASAN on** (subject at its P4.35.1 build time to
+   the same macOS-ASAN upstream constraint the 2026-07-22 refinement above records —
+   that box decides against the then-current upstream state) — the densest unsafe
+   surface in the product (the first Rust touching untrusted image bytes across the
+   C/C++ boundary). **ASAN-coverage honesty:** the staged engines are pre-compiled
    `.so`/`.dylib`/`.dll` that **cannot** be ASAN-instrumented, so ASAN here catches
    **Rust-side heap violations + FFI-boundary crossings only, NOT bugs inside
    libvips/libheif/librsvg** — a valuable boundary test, *not* a decoder-internals

@@ -11,7 +11,7 @@
 // arm → `Err`, never a silent Safe). The Windows dangerous-PATH classes (device/reserved/drive-relative/
 // UNC/trailing) are the `resolve_identity` target's — their fixtures live under `.../fs_guard_resolve_identity/`
 // (the 2026-07-21 P3.73 P0 ruling: the P0.4.3 gate prose had mis-attributed those classes to this fn).
-// (§6.4.2). Instrumented (ASAN on) on the Linux + macOS nightly legs; per-push it is the crate::fuzz_replay
+// (§6.4.2). Instrumented on the Linux (full ASAN) + macOS (sanitizer-less coverage-guided - the upstream aarch64-apple-darwin ASAN breakage, G48 row + gate-status 2026-07-22; the per-run canary re-arms) nightly legs; per-push it is the crate::fuzz_replay
 // stable replay (P3.67). Targets import ONLY fuzz_api, P3.73.
 #![no_main]
 

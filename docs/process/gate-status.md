@@ -110,6 +110,44 @@ their activation is the **presence** of their dated `informational` rows in the 
 |------|--------------|-------------------------|-----------------------------------------------------|---------|
 | **G23** — conversion-command→test completeness walk (RE-KEYED: the P0.4.11 `convert_*` premise could never match the real §0.4.1 command — spec §0.4 invariant 1 forbids a per-item-target command class; the 2026-07-17 P3.63 ruling, owner-acked L(-1)) | P3.63 (test landed FIRST — d1892ab — then the re-key, so the flip was live AND green) | `scripts/check-completeness` keyed to `_CONVERSION_COMMANDS = {start_conversion}`; the partner suite `src-tauri/src/orchestrator/run_conversion_e2e_tests.rs` genuinely drives the C6 path | `g24-completeness` — a conversion command with NO partner-test reference MUST fail (e2e planted positive); the retired `convert_*` shape is ignored and the pre-re-key "`start_conversion` is ignored" leg is INVERTED (32 legs) | 2026-07-17 |
 
+### G48 macOS-sanitizer refinement — owner decision, 2026-07-22 (the P3.73 first-run validation, rounds 3–6)
+
+The instrumented-nightly plan authored "ASAN on the Linux **+ macOS** legs"; the P3.73 first-run
+validation proved `aarch64-apple-darwin` ASAN **upstream-broken under BOTH Apple linkers**, each
+refuted empirically on the real runner: **(a)** ld-prime rejects the ASAN'd rlibs at LINK
+(`ld: initializer pointer has no target`, first victim `tauri_utils`'s cgu; the
+`MACOSX_DEPLOYMENT_TARGET=12.0` chained-fixups hypothesis carried min-version 12.0.0 on the round-4
+link line and failed identically); **(b)** `-ld_classic` cures the link, but the ASAN **runtime**
+SEGVs at process start (`flockfile`, from dyld `start`) — on compiler-rt of nightly-2026-06-16 AND
+the bumped nightly-2026-07-14 (the bounded full-restoration one-shot; rust#101247/#121624/#146367 —
+a long tail of distinct open upstream bugs, no single pending fix). Linux ran end-to-end green with
+full ASAN in every round.
+
+**Owner ruling («die sauberste und vollständigste Lösung, nie parken»):** the macOS leg runs
+**sanitizer-less coverage-guided** (`-s none`; sancov instrumentation + the panic/hang/OOM oracle
+stay; `-ld_classic` stays for the sancov module-ctors) — Linux keeps **full ASAN** over the same
+shared-code in-core targets, so the memory-error oracle is retained where it works. The re-arm is
+**self-healing, not a prose deferral** (the check-27 arming philosophy): a per-run **ASAN canary**
+in `fuzz.yml` (one target × 30 s, expected-fail, exit-0-wrapped) emits a `::warning::` annotation on
+its FIRST green run — the loud, mechanical signal to restore `-s address` on macOS and retire the
+canary. Doc-sync landed same-commit: the G48 row, test-strategy §6.4.2, the four
+`fuzz/fuzz_targets/*.rs` comments, the `fuzz.yml` header, the P3.73 Resolution note (which also
+records the P4.35.1 imgworker-FFI forward-question). **The posture is GATE-BACKED** (the R6 opus P3,
+adopted same-commit): `check-fuzz-contract` gained the sanitizer-posture leg — the SAN split
+expression (Linux arm `'address'`) is frozen, every `-s` token in `fuzz.yml` is allowlisted
+(`"${SAN}"` / the canary's `address`), and the canary marker is asserted — so a careless workflow
+edit can neither silently flip Linux to `-s none` nor drop the re-arm canary. The leg is
+BINDING-TIED (the `SAN` env key must be defined exactly once AND bound to the frozen split — a
+decoy copy of the expression in another key does not count) and uses a whole-file sanitizer-VALUE
+**denylist** (forbid `none`/`leak`/`memory`/`thread` as any-spelling quote-normalized `-s`/
+`--sanitizer` value) rather than an allowlist scoped to a detected `fuzz run` line — because two
+R6-confirm dual-review rounds found the invocation-line-detection evadable (a substring-vs-binding
+decoy, glued/long/quoted value spellings, and finally hoisting the `fuzz run` subcommand into a
+shell variable). The denylist needs no invocation detection, so it cannot be hidden, and it is
+FP-safe (a `-s`-glued prose substring like `dbus -sys stack` resolves to `ys`, not a forbidden
+value). 21 new g24 legs, 50 total. Not an `informational`↔`required` flip — G48 stays a required scheduled plane; this entry
+records the macOS-oracle SCOPE decision + its re-arm mechanism.
+
 ## Over-assurance behavioural backstops (P0.4.5 · §1.2 · G29 G48)
 
 Each contract is `→ activated in P1` (the dependency graph, the crate roots, and the
