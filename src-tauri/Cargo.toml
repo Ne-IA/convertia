@@ -193,3 +193,11 @@ tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 tokio = { version = "1.52.3", features = ["macros"] }
 [build-dependencies]
 tauri-build = "2.6.3"
+
+# `cfg(fuzzing)` is the compile-time flag `cargo fuzz` injects (RUSTFLAGS `--cfg fuzzing`); the G48
+# fuzz build gates `run()` out on it (lib.rs — the `generate_context!` host/target debug-assertions
+# skew, the 2026-07-22 P3.73 fixup). Declaring it via check-cfg keeps rustc's `unexpected_cfgs` lint
+# quiet in the NORMAL build, where the cfg is never set — G4 runs `-D warnings`, so an undeclared
+# custom cfg would otherwise redden every clippy pass. (The cargo-fuzz-documented declaration shape.)
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }

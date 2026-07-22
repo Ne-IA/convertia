@@ -48,6 +48,10 @@ mod outcome;
 mod platform;
 mod pool;
 mod prefs;
+// The MODULE `run` (tier-3 per-run scratch, §2.4/§2.6) shares its name with the FN `run()` below in a
+// different namespace; under `--cfg fuzzing` the fn is compiled out (its `cfg(not(fuzzing))` gate), so a
+// bin build forced into that cfg resolves `convertia_core::run` HERE and fails E0423/E0603 — fail-loud,
+// unsupported config (cargo-fuzz builds only the lib as a path-dep); see the gate's doc on `run()`.
 mod run;
 // NOTE: the §6.4.5 `test_corpus` helper is ALSO a crate-root module, but its test-only `mod` declaration
 // deliberately sits at the FOOT of this file, not here with its siblings — see the note there. (This comment
@@ -1666,6 +1670,20 @@ pub(crate) mod launch_intake {
 /// The app entry body — the whole Tauri `Builder` chain + `.run()` (the pre-P3.87 `main`, moved into
 /// the lib crate root by the bin+lib split; the thin `main.rs` bin shim delegates here). One of exactly
 /// two public items of `convertia_core` (with [`fuzz_api`] — the §0.7 minimal-pub discipline).
+///
+/// **Compiled OUT of the G48 fuzz build** (`cfg(not(fuzzing))`; `cargo fuzz` sets `--cfg fuzzing`):
+/// `tauri::generate_context!` embeds the resolved ACL as a struct literal whose
+/// `cfg(debug_assertions)`-gated field set is decided by the HOST-compiled macro side, while
+/// cargo-fuzz's `--release` + RUSTFLAGS `-Cdebug-assertions` reach only the TARGET side (RUSTFLAGS
+/// never apply to host proc-macros under `--target`) — the two disagree and the context macro fails
+/// `E0063` (`ResolvedCommand.referenced_by`, tauri-utils 2.9.3 `acl/resolved.rs`; reproduced locally
+/// 2026-07-22). The fuzz surface is exactly [`fuzz_api`] — the app shell is not fuzzed, so the gate
+/// removes the macro from that build entirely instead of weakening the fuzz oracle (dropping
+/// `-Cdebug-assertions` via `-O` was the rejected alternative). The shipped build never sets
+/// `fuzzing`, so `run()` is unconditionally present for the `main.rs` bin shim; `cfg(fuzzing)` is
+/// declared via `[lints.rust] unexpected_cfgs` check-cfg in Cargo.toml so G4's `-D warnings` stays
+/// clean. [Build-Session-Entscheidung: P3.73 — the 2026-07-22 fuzz-lock fixup's second finding]
+#[cfg(not(fuzzing))]
 pub fn run() -> tauri::Result<()> {
     // §0.4.5 IPC seam: the shared `ipc_specta_builder()` is BOTH the runtime invoke/event registry and
     // the single source the generated `bindings.ts` is produced from (no drift between them). The C1..C14
