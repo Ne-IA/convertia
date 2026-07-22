@@ -1232,6 +1232,7 @@ enum ConversionErrorKind {
     WriteFailed,        // the output write/publish failed for a non-space reason (perm/IO at the destination, §2.1/§2.7)
     PathTooLong,        // §2.2.3 — name/extension would exceed OS path limit
     TooManyCollisions,  // §2.1.2/§2.2 — the ~10,000-variant no-clobber cap was exhausted (a degenerate dir)
+    UnopenableOutputName,// §2.2.4 (Windows) — a CONSTRUCTED output component is a reserved DOS device name / trailing dot-space Windows can't open
     EngineCrash,        // subprocess killed by signal / nonzero abnormal exit (§1.7/§2.12)
     EngineHang,         // exceeded the §1.7 timeout, killed (§2.12)
     EngineError,        // subprocess clean nonzero exit w/ classifiable stderr (§3.5)
@@ -1252,8 +1253,9 @@ enum ConversionErrorKind {
 ```
 
 A `ConversionError` carries the kind, the **owning source path** (for the summary),
-optional **detected-type detail** (for `UnsupportedType`), and an optional
-**residue path** (for `CleanupResidue`). It deliberately carries **no** stack trace,
+optional **detected-type detail** (for `UnsupportedType`), an optional **residue
+path** (for `CleanupResidue`), and the **offending constructed token** (for
+`UnopenableOutputName`, §2.2.4). It deliberately carries **no** stack trace,
 no Rust `Debug` of the underlying error, no engine command line (that goes to the
 local log §7.5 if enabled, never to the user — SSOT "no stack traces").
 
@@ -1290,6 +1292,7 @@ plain, calm, never blaming, never technical (SSOT *Fail clearly*). These are the
 | `WriteFailed` | **"ConvertIA couldn't save the converted file to that location."** | — | non-space write/publish failure at the destination (permission/IO, §2.1/§2.7); distinct from `OutOfDisk`. |
 | `PathTooLong` | **"The output name would be too long for this system, so this file was skipped. Try a shorter folder or file name."** | — | never truncates (§2.2.3). |
 | `TooManyCollisions` | **"There are already too many files with this name in that folder, so this one couldn't be saved. Try a different folder."** | — | the §2.1.2/§2.2 no-clobber numbering cap (~10,000 variants) was exhausted; a degenerate destination directory. |
+| `UnopenableOutputName` | **"The output name "{name}" can't be used as a file on Windows, so this file was skipped. Rename the original so its name isn't a reserved word (like CON or NUL) and doesn't end with a dot or space."** | `{name}` = the offending constructed component | §2.2.4 (Windows only): a reserved DOS device name / trailing dot-space in a CONSTRUCTED leaf or re-created subtree directory; NAMES the token, never aliases/renames/truncates. |
 | `EngineCrash` | **"Something went wrong while converting this file, so it was skipped."** | — | subprocess crash; no trace shown. Detail goes to §7.5 log only. |
 | `EngineHang` | **"This file took too long to convert and was stopped."** | — | §1.7 timeout. |
 | `EngineError` | **"ConvertIA couldn't convert this file."** | — | clean nonzero exit; generic calm fallback. |

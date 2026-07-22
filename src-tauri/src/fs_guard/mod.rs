@@ -735,6 +735,82 @@ pub fn check_path_limit(final_path: &Path) -> Result<(), PathTooLong> {
     }
 }
 
+/// §2.2.4 — the reserved DOS device names a Win32-namespace open aliases to the console/device rather than a
+/// file (`CON`/`PRN`/`AUX`/`NUL` + the numbered `COM1`–`COM9` / `LPT1`–`LPT9`, matched case-insensitively).
+/// Windows-only: on the other desktops these are ordinary, openable names (§2.2.3 running-OS scoping), so the
+/// whole class is gated `cfg(windows)`.
+#[cfg(windows)]
+const RESERVED_DOS_DEVICE_NAMES: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// The two §2.2.4 unopenable-name classes. Diagnostic only — the §2.8 `UnopenableOutputName` message names BOTH
+/// causes (a reserved word, or a trailing dot/space), so the caller discards the class and keeps the offending
+/// token; the enum is kept typed for the classifier's own unit tests + self-documentation.
+#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(windows),
+    allow(
+        dead_code,
+        reason = "constructed only by the cfg(windows) classifier body; on the other desktops \
+                  reject_unopenable_windows_name is a const-Ok and never builds a variant (§2.2.3)"
+    )
+)]
+pub enum UnopenableName {
+    /// The first dot-segment (right-trimmed of trailing dots/spaces) is a reserved DOS device name.
+    ReservedDevice,
+    /// The final character is a dot or a space — silently stripped by the Win32 path layer (an alias onto a
+    /// DIFFERENT name, §2.2.4).
+    TrailingDotOrSpace,
+}
+
+/// **§2.2.4 the Windows-unopenable-name guard (P3.88)** — reject a ConvertIA-CONSTRUCTED output path component
+/// (the §2.2.1 leaf candidate or a §2.7.1-recreated subtree directory, NEVER a user-chosen existing ancestor)
+/// that Windows cannot treat as an ordinary file: its first dot-segment, right-trimmed of trailing dots/spaces,
+/// is a reserved DOS device name (case-insensitive), OR its final character is a dot or a space. The caller
+/// fails the item clearly NAMING the offending token — never an alias / rename / truncation (§2.2.1 forbids
+/// decorating the stem). The SAME pre-publish validation seam as [`check_path_limit`] (§2.2.3).
+///
+/// **Windows-only** (§2.2.3 running-OS scoping — the names are legal + harmless on the other desktops, where a
+/// `CON.tsv` opens fine): on `not(windows)` this is unconditionally `Ok`, so the guard is a compile-time no-op
+/// off Windows. Pure + total, never a panic (G4/G14). [Build-Session-Entscheidung: P3.88]
+#[cfg(windows)]
+pub fn reject_unopenable_windows_name(component: &OsStr) -> Result<(), UnopenableName> {
+    // Lossy is safe for the CLASSIFICATION decision: a reserved name / trailing dot/space is pure ASCII, so a
+    // lossy replacement of any non-UTF-8 byte cannot forge OR mask a match (a `\u{FFFD}` is neither a dot/space
+    // nor an ASCII device letter). The offending TOKEN the caller surfaces is taken from the real OsStr.
+    let name = component.to_string_lossy();
+
+    // (a) first dot-segment (the part before the first `.`), right-trimmed of trailing dots/spaces, equals a
+    // reserved DOS device name — `CON`, `CON.csv`, `con` and `CON ` (a trailing-space stem) all alias CON. The
+    // reserved cause is the PRIMARY one (§2.2.4 lists it first), so it is reported ahead of a coincidental
+    // trailing dot/space (a name that is a reserved device WITH a trailing space is reported `ReservedDevice`).
+    let first_segment = name.split('.').next().unwrap_or("");
+    let trimmed = first_segment.trim_end_matches([' ', '.']);
+    if RESERVED_DOS_DEVICE_NAMES
+        .iter()
+        .any(|reserved| trimmed.eq_ignore_ascii_case(reserved))
+    {
+        return Err(UnopenableName::ReservedDevice);
+    }
+
+    // (b) final character is a dot or a space → the Win32 path layer silently strips it (an alias onto a
+    // DIFFERENT name). Checked on the RAW name, before any trim.
+    if name.ends_with('.') || name.ends_with(' ') {
+        return Err(UnopenableName::TrailingDotOrSpace);
+    }
+
+    Ok(())
+}
+
+/// §2.2.4 running-OS scoping (P3.88): on the non-Windows desktops a reserved-word / trailing-dot name is an
+/// ordinary openable file, so the guard is a const-`Ok` — the caller's reject arm is unreachable off Windows.
+#[cfg(not(windows))]
+pub fn reject_unopenable_windows_name(_component: &OsStr) -> Result<(), UnopenableName> {
+    Ok(())
+}
+
 /// The §2.1.2 outcome of one no-replace publish attempt ([`publish_noreplace`]). Unix-only — the Windows
 /// dir-handle publish (P3.14) has its own outcome (a `FileRenameInformationEx` NT-status), and the composite
 /// `atomic_publish` (P3.15+) unifies them.
@@ -1102,6 +1178,12 @@ pub enum PublishError {
     /// cross-device publish failure and routes it to the §2.14.3 copy-into-dest-volume fallback, so an `Io` that
     /// escapes to the §2.1.1 caller (P3.38) is a real write failure, never a cross-volume one.
     Io(io::Error),
+    /// §2.2.4 (Windows): the resolved LEAF candidate is a name Windows cannot open as an ordinary file (a
+    /// reserved DOS device name in its first dot-segment, or a trailing dot/space) — [`reject_unopenable_windows_name`]
+    /// refused it BEFORE the exclusive create. Carries the offending token (the leaf's lossy display) so the §2.8
+    /// `UnopenableOutputName` message NAMES it (§2.2.4: "naming the offending token", never an alias/rename). Maps
+    /// to §2.8 `UnopenableOutputName`. Windows-only — the guard is a const-`Ok` off Windows. [Build-Session-Entscheidung: P3.88]
+    UnopenableName(String),
 }
 
 /// §2.2.2 the numbering ↔ no-clobber retry loop with an INJECTABLE attempt `cap` — the testable core of
@@ -1144,6 +1226,16 @@ fn publish_numbered_capped(
         let final_path = parent_dir.join(&leaf);
         if let Err(too_long) = check_path_limit(&final_path) {
             return Err(PublishError::PathTooLong(too_long));
+        }
+
+        // §2.2.4 (Windows): reject a CONSTRUCTED leaf Windows cannot open as an ordinary file (a reserved DOS
+        // device name in its first dot-segment, or a trailing dot/space) BEFORE the exclusive create — fail
+        // clearly NAMING the token, never an alias/rename (§2.2.1). The SAME pre-publish seam as the length
+        // check; a const-`Ok` no-op off Windows. The offending token is the leaf's lossy display.
+        if reject_unopenable_windows_name(&leaf).is_err() {
+            return Err(PublishError::UnopenableName(
+                leaf.to_string_lossy().into_owned(),
+            ));
         }
 
         // §2.1.2 fault-injection seam (P3.65) — `#[cfg(test)]` ONLY, so the not(test) PRODUCTION build is
@@ -1642,6 +1734,29 @@ fn create_subtree_dir(dir: &Path) -> io::Result<()> {
     }
 }
 
+/// The fallible outcome of [`prepare_output_dir`] (P3.34, extended at P3.88) — either a §2.7.1 directory-
+/// preparation IO failure (a non-directory ancestor collision / a `..`-traversal / a create error / a source
+/// outside the common root — all `Io`, the pre-P3.88 sole outcome), or the §2.2.4 Windows-unopenable-name reject
+/// on a RE-CREATED subtree directory (`UnopenableName`, carrying the offending token). `fs_guard` is a §0.7
+/// tier-2 LEAF, so this is its OWN error (never a §1.8 [`OutputPlanError`] / §2.8 `ConversionErrorKind` — the
+/// §1.8 [`compute_output_plan`] maps it). [Build-Session-Entscheidung: P3.88]
+#[derive(Debug)]
+pub enum PrepareOutputDirError {
+    /// A §2.7.1 IO failure (the pre-P3.88 sole outcome) — the caller maps it to a `WriteFailed`/`Io`-class §2.8 kind.
+    Io(io::Error),
+    /// §2.2.4 (Windows): a CONSTRUCTED subtree directory is a name Windows cannot open (a reserved DOS device name
+    /// in its first dot-segment, or a trailing dot/space) — carries the offending token for the §2.8
+    /// `UnopenableOutputName` message. Windows-only (the classifier is a const-`Ok` off Windows).
+    UnopenableName(String),
+}
+
+impl From<io::Error> for PrepareOutputDirError {
+    /// Lets the §2.7.1 body keep its `?` on `io::Result` steps — every io failure is the `Io` class.
+    fn from(e: io::Error) -> Self {
+        PrepareOutputDirError::Io(e)
+    }
+}
+
 /// **§2.7.1 destination-mode output-directory preparation (P3.34)** — resolve (and, for the chosen-root case,
 /// create-only re-create) the final output DIRECTORY for one `source` under `mode`, returning the directory the
 /// §2.1 exclusive publish will target. This is DIRECTORY-only (never a `final_path` — the exact leaf name + §2.2
@@ -1658,21 +1773,28 @@ fn create_subtree_dir(dir: &Path) -> io::Result<()> {
 ///   under `root` ancestor-by-ancestor (shallowest first), each step create-only via [`create_subtree_dir`] (a
 ///   pre-existing directory is tolerated; a non-directory collision fails clearly). The returned directory is
 ///   `root/sub/dir` (never flattened). A source directly under `common_root` yields `root` itself (no ancestor to
-///   create). `Err(InvalidInput)` if `source` is not under `common_root`, or a non-normal component (a `..` /
+///   create). `Err(Io/InvalidInput)` if `source` is not under `common_root`, or a non-normal component (a `..` /
 ///   absolute anomaly) appears in the relative subpath — never re-created through (the no-harm / anti-traversal
-///   default: a dropped-root-relative subtree can never escape the chosen root).
+///   default: a dropped-root-relative subtree can never escape the chosen root). **§2.2.4 (P3.88):** each
+///   CONSTRUCTED subtree directory is rejected BEFORE creation if Windows cannot open it (a reserved DOS device
+///   name / trailing dot-space) → `Err(`[`PrepareOutputDirError::UnopenableName`]`)` naming the token; the
+///   user-chosen `root`/`common_root` ancestors are NEVER checked (only re-created names).
 ///
-/// **Fallible (`io::Result`), never a panic** (G4/G14 — this runs on untrusted paths outside the §2.12
-/// boundary): a strip/create failure is a clean `Err` the §2.8 caller maps to a per-item failure (batch
-/// continues, §1.9), NEVER a partial silently-wrong tree. `fs_guard` is a §0.7 tier-2 LEAF — it returns
-/// `io::Result`, never a `ConversionErrorKind` (the caller maps). [Build-Session-Entscheidung: P3.34]
-pub fn prepare_output_dir(source: &Path, mode: DestinationMode) -> io::Result<PathBuf> {
+/// **Fallible ([`PrepareOutputDirError`]), never a panic** (G4/G14 — this runs on untrusted paths outside the
+/// §2.12 boundary): a strip/create failure (`Io`) or a §2.2.4 unopenable-name reject (`UnopenableName`) is a
+/// clean `Err` the §2.8 caller maps to a per-item failure (batch continues, §1.9), NEVER a partial silently-wrong
+/// tree. `fs_guard` is a §0.7 tier-2 LEAF — it returns its OWN error, never a `ConversionErrorKind` (the §1.8
+/// [`compute_output_plan`] maps it). [Build-Session-Entscheidung: P3.34, P3.88]
+pub fn prepare_output_dir(
+    source: &Path,
+    mode: DestinationMode,
+) -> Result<PathBuf, PrepareOutputDirError> {
     match mode {
         DestinationMode::BesideSource => source.parent().map(Path::to_path_buf).ok_or_else(|| {
-            io::Error::new(
+            PrepareOutputDirError::Io(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "§2.7.1: beside-source output needs the source's parent directory, but source has none (a root path)",
-            )
+            ))
         }),
         DestinationMode::ChosenRoot { root, common_root } => {
             // The source's path relative to the freeze common root — `sub/dir/file.ext` (§2.7.1). `strip_prefix`
@@ -1696,6 +1818,16 @@ pub fn prepare_output_dir(source: &Path, mode: DestinationMode) -> io::Result<Pa
                 // create through it (§2.7.1 / the no-harm default).
                 match component {
                     std::path::Component::Normal(name) => {
+                        // §2.2.4 (Windows): reject a CONSTRUCTED subtree directory Windows cannot open (a reserved
+                        // DOS device name / a trailing dot-space) BEFORE creating it — fail clearly NAMING the
+                        // token, never create an aliased directory (§2.2.1). ONLY these re-created names are
+                        // checked; the user-chosen `root` + `common_root` ancestors are NEVER (§2.2.4). A const-`Ok`
+                        // no-op off Windows.
+                        if reject_unopenable_windows_name(name).is_err() {
+                            return Err(PrepareOutputDirError::UnopenableName(
+                                name.to_string_lossy().into_owned(),
+                            ));
+                        }
                         final_dir.push(name);
                         // Create-only, ancestor-by-ancestor (shallowest first): each missing ancestor is made
                         // create-only; a pre-existing directory is tolerated; a non-directory collision fails the
@@ -1706,10 +1838,10 @@ pub fn prepare_output_dir(source: &Path, mode: DestinationMode) -> io::Result<Pa
                     | std::path::Component::RootDir
                     | std::path::Component::CurDir
                     | std::path::Component::ParentDir => {
-                        return Err(io::Error::new(
+                        return Err(PrepareOutputDirError::Io(io::Error::new(
                             io::ErrorKind::InvalidInput,
                             "§2.7.1: unexpected non-normal component in the dropped-root-relative subtree path",
-                        ));
+                        )));
                     }
                 }
             }
@@ -1821,10 +1953,13 @@ pub fn resolve_divert_target(
 pub fn is_write_divert_trigger(err: &PublishError) -> bool {
     match err {
         // §2.7.2: "a non-writability error — e.g. OutOfDisk — is not a divert trigger." PathTooLong /
-        // TooManyCollisions are likewise structural (a shorter/less-degenerate name, not writability) — never divert.
+        // TooManyCollisions / UnopenableName are likewise structural (a shorter/less-degenerate/differently-named
+        // candidate, not a writability problem) — a §2.7.3 divert to another volume would carry the SAME
+        // unopenable name and fail identically (§2.2.4: "the divert path is re-checked identically"). Never divert.
         PublishError::OutOfDisk
         | PublishError::PathTooLong(_)
-        | PublishError::TooManyCollisions => false,
+        | PublishError::TooManyCollisions
+        | PublishError::UnopenableName(_) => false,
         // A genuine OS write error: a late-divert trigger IFF its kind says the DESTINATION became unwritable.
         // `io::ErrorKind` is `#[non_exhaustive]`, so `matches!` (whitelist → `false` for anything else) is the
         // exhaustiveness-safe form (no wildcard arm; a future kind defaults to NOT-a-trigger, the safe direction).
@@ -1959,6 +2094,11 @@ pub enum OutputPlanError {
     /// ephemeral / unwritable / FAT-exFAT ([`resolve_divert_target`] → [`DivertTarget::Unavailable`]). The item
     /// fails clearly `WriteFailed` (§2.8), never a divert onto a purgeable / another-FAT volume.
     DivertUnavailable,
+    /// §2.2.4 (Windows): a CONSTRUCTED chosen-root subtree directory is a name Windows cannot open (a reserved
+    /// DOS device name / a trailing dot-space) — [`prepare_output_dir`] refused it BEFORE creation. Carries the
+    /// offending token so the §2.8 `UnopenableOutputName` message NAMES it (§2.2.4). The subtree analog of the
+    /// leaf-side [`PublishError::UnopenableName`] (§2.1.1 publish). Windows-only. [Build-Session-Entscheidung: P3.88]
+    UnopenableName(String),
 }
 
 /// **§1.8 the per-job OutputPlan computation (P3.37)** — resolve one job's output DIRECTORY (beside-source /
@@ -2031,7 +2171,14 @@ pub fn compute_output_plan(
     let (final_dir, diverted) = match location {
         // §2.7.1: the location accepts a write → beside-source parent OR the chosen-root subtree (create-only).
         LocationStatus::Writable => (
-            prepare_output_dir(source, mode).map_err(OutputPlanError::Io)?,
+            // Map the §0.7 tier-2 leaf error onto the §1.8 taxonomy: a §2.7.1 IO failure → `Io`; a §2.2.4
+            // unopenable re-created subtree dir → `UnopenableName` (carrying the token) → §2.8 `UnopenableOutputName`.
+            prepare_output_dir(source, mode).map_err(|e| match e {
+                PrepareOutputDirError::Io(io) => OutputPlanError::Io(io),
+                PrepareOutputDirError::UnopenableName(token) => {
+                    OutputPlanError::UnopenableName(token)
+                }
+            })?,
             None,
         ),
         // §2.7.3: the location diverts → the output goes FLAT into the caller-resolved §2.7.3 divert root
@@ -2178,6 +2325,147 @@ mod location_status_tests {
     }
 }
 
+// §2.2.4 (P3.88) — the Windows-unopenable-name guard: the classifier + its leaf (publish) and subtree
+// (prepare_output_dir) wiring. Windows-ONLY: off Windows the guard is a compile-time const-`Ok`, so there is
+// nothing to reject and the whole class is `cfg(all(test, windows))`.
+// Two STACKED cfg attrs (not `all(test, windows)`): clippy's expect-used/unwrap-used test allowance only
+// recognises a STANDALONE `#[cfg(test)]` gate, so a compound `all(test, windows)` would wrongly deny the tests'
+// fail-fast unwrapping. Stacking `#[cfg(test)]` + `#[cfg(windows)]` compiles to the same gate while keeping the allow.
+#[cfg(test)]
+#[cfg(windows)]
+mod unopenable_windows_name_tests {
+    use super::*;
+
+    fn verified(dir: &Path) -> VerifiedParentDir {
+        match open_verified_parent_dir(dir, &[]).expect("open the dest dir") {
+            ParentDirVerdict::Verified(v) => Some(v),
+            ParentDirVerdict::ResolvesOntoSource => None,
+        }
+        .expect("a real dir with an empty frozen set verifies")
+    }
+
+    // §2.2.4 (a): the first dot-segment (right-trimmed of trailing dots/spaces) is a reserved DOS device name —
+    // bare, with any extension, case-insensitive, the numbered COM/LPT families, and even with a coincidental
+    // trailing space (the reserved cause is the PRIMARY one, reported ahead of a trailing dot/space).
+    #[test]
+    fn reserved_device_in_first_dot_segment_is_rejected() {
+        for token in [
+            "CON",
+            "con",
+            "CON.tsv",
+            "nul.csv",
+            "AUX",
+            "PRN.txt",
+            "COM1",
+            "com9.tsv",
+            "LPT1",
+            "LPT9.md",
+            "CON ",
+            "NUL.",
+            "aux.csv.bak",
+        ] {
+            assert_eq!(
+                reject_unopenable_windows_name(OsStr::new(token)),
+                Err(UnopenableName::ReservedDevice),
+                "§2.2.4: `{token}` aliases a reserved DOS device and must be rejected",
+            );
+        }
+    }
+
+    // §2.2.4 (b): the final character is a dot or a space — silently stripped by the Win32 path layer (an alias
+    // onto a DIFFERENT name). The stem is NOT a reserved device (else it would be class (a)).
+    #[test]
+    fn trailing_dot_or_space_is_rejected() {
+        for token in ["evil.txt.", "evil.txt ", "report.", "data.csv "] {
+            assert_eq!(
+                reject_unopenable_windows_name(OsStr::new(token)),
+                Err(UnopenableName::TrailingDotOrSpace),
+                "§2.2.4: `{token}` ends in a dot/space → an alias onto a different name, rejected",
+            );
+        }
+    }
+
+    // A reserved name aliases a device ONLY when it IS the first dot-segment — never as a substring, a longer
+    // word, a subsequent dot-segment, or a non-existent `COM0`; a non-reserved trailing-free name is openable.
+    #[test]
+    fn ordinary_openable_names_are_accepted() {
+        for token in [
+            "CONSOLE.txt",
+            "CONVERT.csv",
+            "report.tsv",
+            "NUL2.csv",
+            "COM0.txt",
+            "COMB.md",
+            "data.con.csv",
+            "my.CON.txt",
+            "aCON.csv",
+            "lpt.csv",
+            "data.tsv",
+        ] {
+            assert_eq!(
+                reject_unopenable_windows_name(OsStr::new(token)),
+                Ok(()),
+                "§2.2.4: `{token}` is an ordinary openable name, not a device alias",
+            );
+        }
+    }
+
+    // §2.1.1 LEAF wiring (P3.88): the publish seam surfaces a reserved CONSTRUCTED leaf as
+    // `PublishError::UnopenableName` NAMING the token, BEFORE the exclusive create — so nothing is written.
+    #[test]
+    fn publish_rejects_a_reserved_leaf_naming_the_token() {
+        let dir = tempfile::tempdir().expect("a real temp dir");
+        let parent = verified(dir.path());
+        let tmp = dir.path().join(".convertia-out.part");
+        std::fs::write(&tmp, b"converted bytes").expect("write the tmp");
+        // A source named `CON.csv` yields the constructed leaf `CON.tsv` — a reserved DOS device alias (§2.2.4).
+        let candidates = output_name(Path::new("CON.csv"), "tsv").expect("a real path has a stem");
+        let err = publish_numbered_capped(&parent, dir.path(), &tmp, candidates, 10_000)
+            .expect_err(
+                "§2.2.4: a constructed `CON.tsv` leaf must be rejected on Windows, never created",
+            );
+        assert!(
+            matches!(&err, PublishError::UnopenableName(token) if token == "CON.tsv"),
+            "§2.2.4: the publish reject NAMES the offending token (`CON.tsv`), got {err:?}",
+        );
+        assert!(
+            !dir.path().join("CON.tsv").exists(),
+            "§2.2.4: nothing was written — no aliased `CON.tsv` file exists in the destination",
+        );
+    }
+
+    // §2.7.1 SUBTREE wiring (P3.88): the chosen-root subtree recreation rejects a CONSTRUCTED `CON` directory
+    // BEFORE creating it → `PrepareOutputDirError::UnopenableName` naming the token, and no `CON` dir is left.
+    // The source PATH need not exist — `prepare_output_dir` does pure path arithmetic (strip_prefix + the
+    // component walk) and the reject fires BEFORE any create (we could not `create_dir("CON")` on Windows anyway
+    // — that IS the hazard §2.2.4 guards).
+    #[test]
+    fn prepare_output_dir_rejects_a_reserved_subtree_component() {
+        let base = tempfile::tempdir().expect("a real temp dir");
+        let common = base.path().join("drop");
+        let dest = base.path().join("out");
+        std::fs::create_dir(&common).expect("create the common root");
+        std::fs::create_dir(&dest).expect("create the chosen destination root");
+        let source = common.join("CON").join("file.csv");
+        let err = prepare_output_dir(
+            &source,
+            DestinationMode::ChosenRoot {
+                root: &dest,
+                common_root: &common,
+            },
+        )
+        .expect_err("§2.2.4: a re-created `CON` subtree directory must be rejected on Windows");
+        assert!(
+            matches!(&err, PrepareOutputDirError::UnopenableName(token) if token == "CON"),
+            "§2.2.4: the subtree reject NAMES the offending token (`CON`), got {err:?}",
+        );
+        assert!(
+            !dest.join("CON").exists(),
+            "§2.2.4: the aliased `CON` directory was NEVER created under the chosen root",
+        );
+    }
+}
+
 #[cfg(test)]
 mod prepare_output_dir_tests {
     use super::*;
@@ -2204,9 +2492,10 @@ mod prepare_output_dir_tests {
     fn beside_source_with_no_parent_is_invalid_input() {
         let err = prepare_output_dir(Path::new(""), DestinationMode::BesideSource)
             .expect_err("an empty path has no parent → Err");
-        assert_eq!(
-            err.kind(),
-            io::ErrorKind::InvalidInput,
+        // [Test-Change: P3.88 — old-obsolete+new-correct, §2.7.1] prepare_output_dir now returns
+        // PrepareOutputDirError (not io::Error), so err.kind() → matches! on its Io arm — same io kind asserted.
+        assert!(
+            matches!(&err, PrepareOutputDirError::Io(e) if e.kind() == io::ErrorKind::InvalidInput),
             "§2.7.1: beside-source with no parent directory is a clear InvalidInput failure"
         );
     }
@@ -2314,9 +2603,10 @@ mod prepare_output_dir_tests {
             },
         )
         .expect_err("a non-directory ancestor collision fails");
-        assert_eq!(
-            err.kind(),
-            io::ErrorKind::NotADirectory,
+        // [Test-Change: P3.88 — old-obsolete+new-correct, §2.7.1] prepare_output_dir now returns
+        // PrepareOutputDirError (not io::Error), so err.kind() → matches! on its Io arm — same io kind asserted.
+        assert!(
+            matches!(&err, PrepareOutputDirError::Io(e) if e.kind() == io::ErrorKind::NotADirectory),
             "§2.7.1: a non-directory occupying a subtree ancestor fails clearly, never a silent overwrite"
         );
         assert_eq!(
@@ -2348,9 +2638,10 @@ mod prepare_output_dir_tests {
             },
         )
         .expect_err("a source outside the common root cannot be re-created");
-        assert_eq!(
-            err.kind(),
-            io::ErrorKind::InvalidInput,
+        // [Test-Change: P3.88 — old-obsolete+new-correct, §2.7.1] prepare_output_dir now returns
+        // PrepareOutputDirError (not io::Error), so err.kind() → matches! on its Io arm — same io kind asserted.
+        assert!(
+            matches!(&err, PrepareOutputDirError::Io(e) if e.kind() == io::ErrorKind::InvalidInput),
             "§2.7.1: a source not under the common root is a clear InvalidInput failure"
         );
     }
@@ -2376,9 +2667,10 @@ mod prepare_output_dir_tests {
             },
         )
         .expect_err("a `..` traversal in the relative subpath is rejected");
-        assert_eq!(
-            err.kind(),
-            io::ErrorKind::InvalidInput,
+        // [Test-Change: P3.88 — old-obsolete+new-correct, §2.7.1] prepare_output_dir now returns
+        // PrepareOutputDirError (not io::Error), so err.kind() → matches! on its Io arm — same io kind asserted.
+        assert!(
+            matches!(&err, PrepareOutputDirError::Io(e) if e.kind() == io::ErrorKind::InvalidInput),
             "§2.7.1: a non-normal (`..`) component in the relative subtree is rejected, never created through"
         );
         assert!(
@@ -2405,9 +2697,10 @@ mod prepare_output_dir_tests {
             },
         )
         .expect_err("a missing destination root cannot hold the subtree");
-        assert_eq!(
-            err.kind(),
-            io::ErrorKind::NotFound,
+        // [Test-Change: P3.88 — old-obsolete+new-correct, §2.7.1] prepare_output_dir now returns
+        // PrepareOutputDirError (not io::Error), so err.kind() → matches! on its Io arm — same io kind asserted.
+        assert!(
+            matches!(&err, PrepareOutputDirError::Io(e) if e.kind() == io::ErrorKind::NotFound),
             "§2.7.1: creating a subtree under a missing root propagates the underlying NotFound, not a panic"
         );
     }
@@ -2480,9 +2773,10 @@ mod prepare_output_dir_unix_tests {
             },
         )
         .expect_err("a symlink-to-file ancestor is not a directory → Err");
-        assert_eq!(
-            err.kind(),
-            io::ErrorKind::NotADirectory,
+        // [Test-Change: P3.88 — old-obsolete+new-correct, §2.7.1] prepare_output_dir now returns
+        // PrepareOutputDirError (not io::Error), so err.kind() → matches! on its Io arm — same io kind asserted.
+        assert!(
+            matches!(&err, PrepareOutputDirError::Io(e) if e.kind() == io::ErrorKind::NotADirectory),
             "§2.7.1: a symlink-to-FILE occupying a subtree ancestor fails clearly (NotADirectory), like a regular file"
         );
         assert_eq!(
@@ -2689,6 +2983,11 @@ mod late_divert_tests {
         assert!(
             !is_write_divert_trigger(&PublishError::PathTooLong(PathTooLong::Total)),
             "§2.7.2: a path-limit breach is structural, not writability — no divert"
+        );
+        assert!(
+            !is_write_divert_trigger(&PublishError::UnopenableName("CON.tsv".to_owned())),
+            "§2.2.4/§2.7.2: an unopenable name is structural (the divert would carry the SAME name and fail \
+             identically), not writability — no divert"
         );
     }
 

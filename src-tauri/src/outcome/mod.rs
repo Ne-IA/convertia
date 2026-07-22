@@ -14,7 +14,7 @@
 //! this box authors NO new type or impl; it records the root as scaffolded and maps the string TABLES +
 //! the surfacing leg owned by the scheduled boxes:
 //!  - the §2.8.2 `ConversionErrorKind → canonical-English` message catalog — **P3.68 (built below):**
-//!    `conversion_message_template` (the single-home 21-row table + `None` for the 4 kinds homed elsewhere),
+//!    `conversion_message_template` (the single-home 22-row table + `None` for the 4 kinds homed elsewhere),
 //!    `conversion_failure` (the `{detected}`/`{platform}`/`{path}`-substituting `OutcomeMsg::Failure`
 //!    producer), and the 5 batch-summary strings (`BatchSummary` + `WITH_RESIDUE_TAIL`); **P3.59 adds**
 //!    the §2.6.4 case-1 `RESIDUE_ANNOTATION_TEMPLATE` + its `residue_annotation` producer — a NON-failure
@@ -120,6 +120,11 @@ pub enum ConversionErrorKind {
     PathTooLong,
     /// §2.1.2/§2.2 — the ~10,000-variant no-clobber cap was exhausted (a degenerate directory).
     TooManyCollisions,
+    /// §2.2.4 — a ConvertIA-CONSTRUCTED output component is a Windows-unopenable name (a reserved DOS device
+    /// name in its first dot-segment, or a trailing dot/space Win32 silently strips) — fail clearly, NEVER
+    /// alias onto a different name (§2.2 no-alias). Windows-only (the names are legal elsewhere, §2.2.3
+    /// running-OS scoping); the message names the offending token.
+    UnopenableOutputName,
     /// Subprocess killed by signal / nonzero abnormal exit (§1.7/§2.12).
     EngineCrash,
     /// Exceeded the §1.7 timeout, killed (§2.12).
@@ -440,6 +445,9 @@ pub fn conversion_message_template(kind: ConversionErrorKind) -> Option<&'static
         ConversionErrorKind::TooManyCollisions => {
             "There are already too many files with this name in that folder, so this one couldn't be saved. Try a different folder."
         }
+        ConversionErrorKind::UnopenableOutputName => {
+            "The output name \"{name}\" can't be used as a file on Windows, so this file was skipped. Rename the original so its name isn't a reserved word (like CON or NUL) and doesn't end with a dot or space."
+        }
         ConversionErrorKind::EngineCrash => {
             "Something went wrong while converting this file, so it was skipped."
         }
@@ -523,6 +531,9 @@ fn render_conversion_template(kind: ConversionErrorKind, arg: &str) -> Option<St
         template.replace("{platform}", arg)
     } else if template.contains("{path}") {
         template.replace("{path}", arg)
+    } else if template.contains("{name}") {
+        // §2.2.4: the UnopenableOutputName row names the offending CONSTRUCTED component (§2.8 honesty).
+        template.replace("{name}", arg)
     } else {
         // No slot in this template — `arg` is ignored (the majority of kinds).
         template.to_owned()
@@ -798,13 +809,13 @@ mod tests {
 
     // §6.4.1 unit (G15/G23): the §2.8.1 ↔ §0.4.3 byte-identical wire mirror (P2.18.3 anti-drift). Pins
     // every variant's exact camelCase wire string (a renamed/added/removed variant changes a pin) AND the
-    // total count == 25 (21 item-level + 3 run/app-level + MixedDrop). The companion exhaustive match
+    // total count == 26 (22 item-level + 3 run/app-level + MixedDrop). The companion exhaustive match
     // (`conversion_error_kind_exhaustive`) is the COMPILE-TIME half: a variant added without a row in this
     // array fails to compile there, so the array can never silently fall behind the enum. ErrorKind/
     // ConversionErrorKind are outbound-only (no Deserialize), so this is a serialize pin, not a round-trip.
     #[test]
     fn conversion_error_kind_wire_names_byte_identical_to_catalog() {
-        let all: [(ConversionErrorKind, &str); 25] = [
+        let all: [(ConversionErrorKind, &str); 26] = [
             (ConversionErrorKind::Corrupt, "corrupt"),
             (ConversionErrorKind::Empty, "empty"),
             (ConversionErrorKind::Unrecognized, "unrecognized"),
@@ -819,6 +830,10 @@ mod tests {
             (ConversionErrorKind::WriteFailed, "writeFailed"),
             (ConversionErrorKind::PathTooLong, "pathTooLong"),
             (ConversionErrorKind::TooManyCollisions, "tooManyCollisions"),
+            (
+                ConversionErrorKind::UnopenableOutputName,
+                "unopenableOutputName",
+            ),
             (ConversionErrorKind::EngineCrash, "engineCrash"),
             (ConversionErrorKind::EngineHang, "engineHang"),
             (ConversionErrorKind::EngineError, "engineError"),
@@ -836,8 +851,8 @@ mod tests {
         ];
         assert_eq!(
             all.len(),
-            25,
-            "§2.8.1: the taxonomy is exactly 25 kinds (21 item-level + 3 run/app-level + MixedDrop)"
+            26,
+            "§2.8.1: the taxonomy is exactly 26 kinds (22 item-level + 3 run/app-level + MixedDrop)"
         );
         for (kind, wire) in all {
             assert_eq!(
@@ -868,6 +883,7 @@ mod tests {
             | ConversionErrorKind::WriteFailed
             | ConversionErrorKind::PathTooLong
             | ConversionErrorKind::TooManyCollisions
+            | ConversionErrorKind::UnopenableOutputName
             | ConversionErrorKind::EngineCrash
             | ConversionErrorKind::EngineHang
             | ConversionErrorKind::EngineError
@@ -1055,11 +1071,11 @@ mod tests {
         }
     }
 
-    // §6.4.1 unit (G15) / §2.8.2 / G23 completeness: EVERY ConversionErrorKind is homed — the 21 §2.8.2
+    // §6.4.1 unit (G15) / §2.8.2 / G23 completeness: EVERY ConversionErrorKind is homed — the 22 §2.8.2
     // conversion-outcome kinds each carry a non-empty catalog row, and the 4 non-conversion kinds
     // ({EngineMissing, WebviewFault, BundleDamaged} → §2.13.3 app-fault; MixedDrop → §5.2 pre-flight) return
     // None (homed elsewhere — one string, one home), NOT an unhomed kind. The exhaustive match in
-    // conversion_message_template is the compile-time guard; this asserts the current 25 are correctly split.
+    // conversion_message_template is the compile-time guard; this asserts the current 26 are correctly split.
     #[test]
     fn every_conversion_kind_is_homed() {
         use ConversionErrorKind as K;
@@ -1078,6 +1094,7 @@ mod tests {
             K::WriteFailed,
             K::PathTooLong,
             K::TooManyCollisions,
+            K::UnopenableOutputName,
             K::EngineCrash,
             K::EngineHang,
             K::EngineError,
@@ -1088,8 +1105,8 @@ mod tests {
         ];
         assert_eq!(
             conversion.len(),
-            21,
-            "§2.8.2 defines 21 conversion-outcome rows"
+            22,
+            "§2.8.2 defines 22 conversion-outcome rows"
         );
         for kind in conversion {
             let row = conversion_message_template(kind);
@@ -1228,6 +1245,15 @@ mod tests {
                     .to_owned(),
             }),
             "§2.6.4/§2.8.2: {{path}} is substituted — the only failure that names a residue path"
+        );
+        assert_eq!(
+            conversion_failure(ConversionErrorKind::UnopenableOutputName, "CON.tsv"),
+            Some(OutcomeMsg::Failure {
+                kind: ConversionErrorKind::UnopenableOutputName,
+                text: "The output name \"CON.tsv\" can't be used as a file on Windows, so this file was skipped. Rename the original so its name isn't a reserved word (like CON or NUL) and doesn't end with a dot or space."
+                    .to_owned(),
+            }),
+            "§2.2.4/§2.8.2: {{name}} is substituted with the offending CONSTRUCTED token"
         );
     }
 

@@ -76,8 +76,8 @@ use crate::engines::{
 use crate::fs_guard::{
     atomic_publish, compute_output_plan, is_write_divert_trigger, location_status,
     open_verified_parent_dir, output_name, publish_to_divert, resolve_divert_target,
-    DestinationMode, DivertTarget, FileIdentity, LocationCache, LocationStatus, ParentDirVerdict,
-    PublishError, PublishOutcome,
+    DestinationMode, DivertTarget, FileIdentity, LocationCache, LocationStatus, OutputPlanError,
+    ParentDirVerdict, PublishError, PublishOutcome,
 };
 use crate::outcome::{conversion_failure, ConversionErrorKind, IpcError, OutcomeMsg};
 use crate::pool::Pool;
@@ -337,15 +337,20 @@ pub struct TerminalProjection {
 /// `ConversionErrorKind` (P2.10). The substantive work is the MESSAGE: [`conversion_failure`] renders the
 /// §2.8.2 catalog row (P3.68) with **`arg = ""`** — every kind reachable from a Running→Failed `InvocationResult`
 /// (Corrupt / Gone / Unreadable / WriteFailed / EngineHang / EngineCrash / EngineError / InternalError …) is a
-/// per-item conversion-outcome kind with NO substitution slot; the slotted kinds (UnsupportedType `{detected}`,
-/// PlatformUnavailable `{platform}`, CleanupResidue `{path}`) are pre-flight / app-level, never a Running→Failed
-/// outcome. **Forward constraint (a P4 `classify_failure()` consumer):** since `InvocationResult::Failed` is
-/// untyped over the full `ConversionErrorKind` set, a P4 engine's `classify_failure()` MUST NOT route a slotted
-/// kind through this path with the empty `arg` (it would render an empty slot, e.g. "…it looks like ."), or must
-/// extend this projection to supply the slot's `arg` — the `arg = ""` correctness is a slice invariant, not a
-/// compiler-checked one. A kind §2.8.2 homes elsewhere (a mis-route → [`conversion_failure`] `None`) falls back
-/// to the always-available `InternalError` row so a failed item is never message-less. Exhaustive over
-/// [`InvocationResult`] (no `_`, G4/G14). [Build-Session-Entscheidung: P3.46]
+/// per-item conversion-outcome kind with NO substitution slot. The §2.2.4 `UnopenableOutputName` (P3.88) is the
+/// FIRST slotted kind that IS a Running→Failed outcome, but it arises on the §2.1.1 publish / §1.8 output-plan
+/// path (`map_publish_error` / `compute_output_plan`), NOT this engine-`InvocationResult` projection — the
+/// conductor's INLINE render (`failure_message` + `item_base_reason`) takes its `name_arg`; the other slotted
+/// kinds (UnsupportedType `{detected}`, PlatformUnavailable `{platform}`, CleanupResidue `{path}`) stay
+/// pre-flight / app-level, never a Running→Failed outcome. **Forward constraint (a P4 `classify_failure()`
+/// consumer):** since `InvocationResult::Failed` is untyped over the full `ConversionErrorKind` set, and THIS
+/// projection still renders `arg = ""`, a P4 engine's `classify_failure()` MUST NOT route a slotted kind through
+/// this path with the empty `arg` (it would render an empty slot, e.g. "…it looks like ."), or must extend this
+/// projection to supply the slot's `arg` — P3.88 already did exactly that on the conductor's inline path (so the
+/// "first slotted Running→Failed kind" arrived earlier than this P4 note anticipated); the `arg = ""` correctness
+/// here remains a slice invariant, not a compiler-checked one. A kind §2.8.2 homes elsewhere (a mis-route →
+/// [`conversion_failure`] `None`) falls back to the always-available `InternalError` row so a failed item is
+/// never message-less. Exhaustive over [`InvocationResult`] (no `_`, G4/G14). [Build-Session-Entscheidung: P3.46, P3.88]
 pub fn project_outcome(result: InvocationResult) -> TerminalProjection {
     match result {
         InvocationResult::Succeeded => TerminalProjection {
@@ -964,7 +969,7 @@ fn residue_disposition_of(state: JobState) -> Option<ResidueDisposition> {
 /// line renders DIRECTLY (the P3.48 ruling — never via the `SkipReason→ErrorKind` bridge). The coupling
 /// `source is Skipped(_) ⟺ state is Skipped(<detection reason>)` (P3.47) guarantees the detected name is
 /// present exactly when it is needed. [Build-Session-Entscheidung: P3.50 → P3.48]
-fn item_base_reason(job: &ConversionJob) -> Option<OutcomeMsg> {
+fn item_base_reason(job: &ConversionJob, name_arg: Option<&str>) -> Option<OutcomeMsg> {
     match job.state {
         JobState::Skipped(reason) => {
             // The retained detected-type name rides the JobSource::Skipped arm (coupling-guaranteed present).
@@ -974,7 +979,10 @@ fn item_base_reason(job: &ConversionJob) -> Option<OutcomeMsg> {
             };
             Some(crate::outcome::skipped_message(reason, detected))
         }
-        JobState::Failed(kind) => crate::outcome::conversion_failure(kind, ""),
+        // §2.2.4 (P3.88): `name_arg` fills the `UnopenableOutputName` `{name}` slot with the offending token so
+        // the terminal reason NAMES it, matching the live message; `None` (every other Failed kind is a
+        // no-substitution row) renders the full string with the empty `arg`.
+        JobState::Failed(kind) => crate::outcome::conversion_failure(kind, name_arg.unwrap_or("")),
         JobState::Succeeded | JobState::Cancelled | JobState::Pending | JobState::Running => None,
     }
 }
@@ -992,12 +1000,14 @@ fn item_base_reason(job: &ConversionJob) -> Option<OutcomeMsg> {
 /// `item_residues` ([`split_residue_records`], P3.25), so the run is never reported a clean success while a
 /// temp may remain. The real roots + per-item output/residue `PathBuf`s ride the off-wire `RunResultPaths`
 /// (C9 resolves its `OpenTarget` against it, P3.79); the wire carries only their `to_string_lossy` displays
-/// (§2.10.1 / 2026-07-06 ruling). PURE — the P3.48 conductor supplies `item_outputs`/`residues`/roots from the
-/// live run. [Build-Session-Entscheidung: P3.50]
+/// (§2.10.1 / 2026-07-06 ruling). §2.2.4 (P3.88): `failed_name_args` supplies the per-item offending token for an
+/// `UnopenableOutputName` failure so the terminal reason NAMES it (empty for a run with none). PURE — the P3.48
+/// conductor supplies `item_outputs`/`failed_name_args`/`residues`/roots from the live run. [Build-Session-Entscheidung: P3.50, P3.88]
 pub fn project_run_result(
     batch: &Batch,
     run_id: RunId,
     item_outputs: &BTreeMap<ItemId, PathBuf>,
+    failed_name_args: &BTreeMap<ItemId, String>,
     residues: Vec<ResidueRecord>,
     common_root: PathBuf,
     divert_root: Option<PathBuf>,
@@ -1023,7 +1033,10 @@ pub fn project_run_result(
             | JobState::Pending
             | JobState::Running => None,
         };
-        let base_reason = item_base_reason(job);
+        // §2.2.4 (P3.88): pass the item's offending token (present only for an `UnopenableOutputName` failure)
+        // so the base reason NAMES it, matching the live message.
+        let base_reason =
+            item_base_reason(job, failed_name_args.get(&job.item).map(String::as_str));
         // §2.6.4 (P3.59): a residue supplies the item's reason per its case — Failed the combined
         // CleanupResidue FAILURE message (never a clean success, case 2); Succeeded the NON-failure Residue
         // ANNOTATION (case 1 — the success stands, with where residue remains); Cancelled nothing (case 3 —
@@ -1203,6 +1216,11 @@ pub struct WriteOutcome {
     /// `Some` when §2.6 cleanup left a temp behind (§2.6.4) — recorded for `cleanup_incomplete` + the off-wire
     /// residue table so the summary never reports a clean success. `None` when every temp was removed.
     pub residue: Option<ResidueRecord>,
+    /// §2.2.4 (P3.88): the offending CONSTRUCTED token when `disposition` is `Failed(UnopenableOutputName)` — the
+    /// leaf name Windows cannot open (a reserved DOS device / trailing dot-space), threaded so the §2.8 message
+    /// NAMES it (§2.2.4). `None` for every other outcome. `write_outcome_to_run` rides it onto
+    /// `ItemRunOutcome::Failed.name_arg`; a non-`Failed`/non-unopenable outcome leaves it `None`.
+    pub name_arg: Option<String>,
 }
 
 impl WriteOutcome {
@@ -1213,6 +1231,7 @@ impl WriteOutcome {
             disposition: WriteDisposition::Failed { kind },
             diverted: false,
             residue: None,
+            name_arg: None,
         }
     }
 }
@@ -1358,7 +1377,8 @@ fn publish_completed(
             if inputs.plan.diverted.is_none() && is_write_divert_trigger(&err) {
                 divert_completed(inputs, cache, probe_name, tmp)
             } else {
-                fail_cleanup(item, [tmp], map_publish_error(&err))
+                let (kind, name_arg) = map_publish_error(&err);
+                fail_cleanup_named(item, [tmp], kind, name_arg)
             }
         }
     }
@@ -1419,20 +1439,31 @@ fn divert_completed(
             fail_cleanup(item, [tmp, intermediate], ConversionErrorKind::WriteFailed)
         }
         // A divert leg failed (link-safety / free-space / publish) — the ONE item fails clearly; no re-divert.
-        // Clean both temps (§2.6.2) so a divert-volume leftover surfaces, never a silent drop.
-        Err(err) => fail_cleanup(item, [tmp, intermediate], map_publish_error(&err)),
+        // Clean both temps (§2.6.2) so a divert-volume leftover surfaces, never a silent drop. §2.2.4 is
+        // re-checked identically on the divert path, so a divert-side unopenable leaf carries its token too.
+        Err(err) => {
+            let (kind, name_arg) = map_publish_error(&err);
+            fail_cleanup_named(item, [tmp, intermediate], kind, name_arg)
+        }
     }
 }
 
 /// Map a `crate::fs_guard` [`PublishError`] to its §2.8 [`ConversionErrorKind`] — the tier-1 boundary where the
 /// leaf verdict becomes the wire taxonomy (§2.8; `crate::fs_guard` never depends up on `crate::outcome`). A
 /// generic `Io` is a non-space destination write failure (§2.1/§2.7). [Build-Session-Entscheidung: P3.38]
-fn map_publish_error(err: &PublishError) -> ConversionErrorKind {
+fn map_publish_error(err: &PublishError) -> (ConversionErrorKind, Option<String>) {
     match err {
-        PublishError::PathTooLong(_) => ConversionErrorKind::PathTooLong,
-        PublishError::TooManyCollisions => ConversionErrorKind::TooManyCollisions,
-        PublishError::OutOfDisk => ConversionErrorKind::OutOfDisk,
-        PublishError::Io(_) => ConversionErrorKind::WriteFailed,
+        PublishError::PathTooLong(_) => (ConversionErrorKind::PathTooLong, None),
+        PublishError::TooManyCollisions => (ConversionErrorKind::TooManyCollisions, None),
+        PublishError::OutOfDisk => (ConversionErrorKind::OutOfDisk, None),
+        PublishError::Io(_) => (ConversionErrorKind::WriteFailed, None),
+        // §2.2.4 (Windows): the leaf is a name Windows cannot open — the §2.8 `UnopenableOutputName` message
+        // NAMES the offending token (the second tuple slot), never an alias/rename. Off Windows the guard is a
+        // const-`Ok`, so this arm is unreachable there.
+        PublishError::UnopenableName(token) => (
+            ConversionErrorKind::UnopenableOutputName,
+            Some(token.clone()),
+        ),
     }
 }
 
@@ -1446,10 +1477,24 @@ fn fail_cleanup(
     temps: impl IntoIterator<Item = TempPath>,
     kind: ConversionErrorKind,
 ) -> WriteOutcome {
+    fail_cleanup_named(item, temps, kind, None)
+}
+
+/// §2.1.1 step 7 with the §2.2.4 offending token (P3.88) — the [`fail_cleanup`] variant that threads a
+/// `name_arg` (the leaf name Windows cannot open) onto [`WriteOutcome::name_arg`], so the §2.8
+/// `UnopenableOutputName` message NAMES it. Every other failure passes `None` via [`fail_cleanup`]. The token
+/// rides `write_outcome_to_run` → `ItemRunOutcome::Failed.name_arg` → the live/terminal render.
+fn fail_cleanup_named(
+    item: ItemId,
+    temps: impl IntoIterator<Item = TempPath>,
+    kind: ConversionErrorKind,
+    name_arg: Option<String>,
+) -> WriteOutcome {
     WriteOutcome {
         disposition: WriteDisposition::Failed { kind },
         diverted: false,
         residue: cleanup_leftovers(item, temps),
+        name_arg,
     }
 }
 
@@ -1467,6 +1512,7 @@ fn finish_published(
         disposition: WriteDisposition::Published { output },
         diverted,
         residue: cleanup_leftovers(item, temps),
+        name_arg: None,
     }
 }
 
@@ -1656,6 +1702,12 @@ enum ItemRunOutcome {
     Failed {
         kind: ConversionErrorKind,
         residue: Option<ResidueRecord>,
+        /// §2.2.4 (P3.88): the offending CONSTRUCTED token when `kind` is `UnopenableOutputName` — the leaf/
+        /// subtree name Windows cannot open, threaded so BOTH the live `ItemFinished` `IpcError.message` and the
+        /// terminal `RunResult.items[].reason` NAME it (§2.2.4 "naming the offending token"; the first slotted
+        /// kind reachable on the Running→Failed path — see the `project_outcome` forward-constraint note). `None`
+        /// for every non-slotted failure (the vast majority), rendered with the empty `arg`.
+        name_arg: Option<String>,
     },
     /// User-cancelled (§1.7/§1.11) — the partial `out_tmp` was dropped (§3.2.2), nothing published.
     Cancelled,
@@ -1675,21 +1727,27 @@ fn write_outcome_to_run(outcome: WriteOutcome) -> ItemRunOutcome {
         WriteDisposition::Failed { kind } => ItemRunOutcome::Failed {
             kind,
             residue: outcome.residue,
+            // §2.2.4 (P3.88): ride the offending token (set only for a `Failed(UnopenableOutputName)`, else
+            // `None`) onto the conductor's outcome for the live/terminal §2.8 render.
+            name_arg: outcome.name_arg,
         },
     }
 }
 
 /// The §2.8.2 catalog message for a Running→Failed item's live `ItemFinished` [`IpcError`] (§0.4.3) — the
 /// substituted per-item failure line for `kind`, falling back to the always-homed `InternalError` row so a
-/// failed item is never message-less. Every kind a conductor per-item write produces (WriteFailed / Empty /
-/// InternalError / OutOfDisk / PathTooLong / TooManyCollisions / EngineHang / … + the §3.5.6 transform kinds)
-/// is a no-substitution §2.8.2 row, so `arg = ""` renders the full string (the slotted kinds UnsupportedType
-/// `{detected}` / PlatformUnavailable `{platform}` are pre-flight/app-level, never a Running→Failed outcome; a
-/// residue rides `IpcError.residue_display`, NOT a combined CleanupResidue message — that combination is the
-/// §1.12 SUMMARY-projection's job, §2.6.4 / P3.50). Exhaustive over [`OutcomeMsg`] (no `_`, G4/G14).
-/// [Build-Session-Entscheidung: P3.48]
-fn failure_message(kind: ConversionErrorKind) -> String {
-    let rendered = conversion_failure(kind, "")
+/// failed item is never message-less. `arg` fills the row's substitution slot: **almost** every kind a conductor
+/// per-item write produces (WriteFailed / Empty / InternalError / OutOfDisk / PathTooLong / TooManyCollisions /
+/// EngineHang / … + the §3.5.6 transform kinds) is a NO-substitution row rendered with `arg = ""`. The **one
+/// §2.2.4 exception (P3.88)** is `UnopenableOutputName`, the FIRST slotted kind reachable on the Running→Failed
+/// path — its `{name}` slot is filled with the offending CONSTRUCTED token (the `project_outcome`
+/// forward-constraint note: "a slotted kind … must extend this projection to supply the slot's arg"). The other
+/// slotted kinds (UnsupportedType `{detected}` / PlatformUnavailable `{platform}`) stay pre-flight/app-level,
+/// never a Running→Failed outcome; a residue rides `IpcError.residue_display`, NOT a combined CleanupResidue
+/// message — that combination is the §1.12 SUMMARY-projection's job, §2.6.4 / P3.50). Exhaustive over
+/// [`OutcomeMsg`] (no `_`, G4/G14). [Build-Session-Entscheidung: P3.48, P3.88]
+fn failure_message(kind: ConversionErrorKind, arg: &str) -> String {
+    let rendered = conversion_failure(kind, arg)
         .or_else(|| conversion_failure(ConversionErrorKind::InternalError, ""));
     match rendered {
         Some(OutcomeMsg::Failure { text, .. })
@@ -1814,6 +1872,7 @@ async fn convert_item(
         return ItemRunOutcome::Failed {
             kind: ConversionErrorKind::InternalError,
             residue: None,
+            name_arg: None,
         };
     };
 
@@ -1826,6 +1885,7 @@ async fn convert_item(
                 return ItemRunOutcome::Failed {
                     kind: ConversionErrorKind::InternalError,
                     residue: None,
+                    name_arg: None,
                 };
             };
             (DestinationMode::BesideSource, parent)
@@ -1850,11 +1910,22 @@ async fn convert_item(
         probe_name,
     ) {
         Ok(plan) => plan,
+        // §2.2.4 (P3.88): a re-created chosen-root subtree directory Windows cannot open → fail clearly
+        // `UnopenableOutputName` NAMING the token (the subtree analog of the leaf-side publish reject), never a
+        // generic write failure — so the §2.8 message tells the user WHICH constructed component is the problem.
+        Err(OutputPlanError::UnopenableName(token)) => {
+            return ItemRunOutcome::Failed {
+                kind: ConversionErrorKind::UnopenableOutputName,
+                residue: None,
+                name_arg: Some(token),
+            }
+        }
         // §2.7.3 no usable divert target / §2.7.1 dir-prep failure → the item fails clearly (§2.8 WriteFailed).
-        Err(_) => {
+        Err(OutputPlanError::DivertUnavailable | OutputPlanError::Io(_)) => {
             return ItemRunOutcome::Failed {
                 kind: ConversionErrorKind::WriteFailed,
                 residue: None,
+                name_arg: None,
             }
         }
     };
@@ -1865,6 +1936,7 @@ async fn convert_item(
         return ItemRunOutcome::Failed {
             kind: ConversionErrorKind::WriteFailed,
             residue: None,
+            name_arg: None,
         };
     };
 
@@ -1917,6 +1989,7 @@ async fn convert_item(
                 return ItemRunOutcome::Failed {
                     kind: ConversionErrorKind::InternalError,
                     residue: None,
+                    name_arg: None,
                 };
             };
             // §1.7 exit & output verification (RELOCATED onto the Succeeded path — the P3.48 re-cut): the temp
@@ -1980,6 +2053,7 @@ fn finish_run(
     on_progress: &Channel<ConversionEvent>,
     common_root: PathBuf,
     item_outputs: BTreeMap<ItemId, PathBuf>,
+    failed_name_args: BTreeMap<ItemId, String>,
     residues: Vec<ResidueRecord>,
     recorded_final_dirs: BTreeSet<PathBuf>,
     any_diverted: bool,
@@ -1992,6 +2066,7 @@ fn finish_run(
         &batch,
         run_id,
         &item_outputs,
+        &failed_name_args,
         residues,
         common_root,
         divert_root_opt,
@@ -2099,6 +2174,10 @@ pub(crate) async fn run_conversion(
     let mut residues: Vec<ResidueRecord> = Vec::new();
     let mut recorded_final_dirs: BTreeSet<PathBuf> = BTreeSet::new();
     let mut any_diverted = false;
+    // §2.2.4 (P3.88): the per-item offending token for an `UnopenableOutputName` failure, collected here so the
+    // TERMINAL `RunResult.items[].reason` NAMES it too (the live `ItemFinished` message already does). Empty for
+    // a run with no unopenable-name failure.
+    let mut failed_name_args: BTreeMap<ItemId, String> = BTreeMap::new();
     let mut done: u32 = 0;
 
     // §1.9 cancel-semantics NOTE (a P3.48 G1-review finding; the C7 `cancel_run` token trip is now wired, P3.52):
@@ -2208,7 +2287,11 @@ pub(crate) async fn run_conversion(
                     ItemOutcome::Succeeded { output_display },
                 )
             }
-            ItemRunOutcome::Failed { kind, residue } => {
+            ItemRunOutcome::Failed {
+                kind,
+                residue,
+                name_arg,
+            } => {
                 let residue_display = residue.as_ref().map(|record| {
                     if let Some(dir) = record.real_path.parent() {
                         recorded_final_dirs.insert(dir.to_path_buf());
@@ -2218,9 +2301,14 @@ pub(crate) async fn run_conversion(
                 if let Some(record) = residue {
                     residues.push(record);
                 }
+                // §2.2.4 (P3.88): the live message NAMES the offending token; collect it so the terminal
+                // `RunResult` reason names it too. `None` for every non-slotted failure → the empty `arg`.
+                if let Some(token) = &name_arg {
+                    failed_name_args.insert(item, token.clone());
+                }
                 let error = IpcError {
                     kind,
-                    message: failure_message(kind),
+                    message: failure_message(kind, name_arg.as_deref().unwrap_or("")),
                     path_display: None,
                     residue_display,
                 };
@@ -2259,6 +2347,7 @@ pub(crate) async fn run_conversion(
         on_progress,
         common_root,
         item_outputs,
+        failed_name_args,
         residues,
         recorded_final_dirs,
         any_diverted,
@@ -6945,10 +7034,13 @@ mod tests {
         let outputs: BTreeMap<ItemId, PathBuf> =
             BTreeMap::from([(item_id(0), PathBuf::from("out/a.tsv"))]);
         let residues = vec![ResidueRecord::new(item_id(1), PathBuf::from("tmp/b.part"))];
+        // No §2.2.4 unopenable-name failure in this fixture → an empty per-item token map.
+        let failed_name_args: BTreeMap<ItemId, String> = BTreeMap::new();
         let (result, paths) = project_run_result(
             &batch,
             run_id(),
             &outputs,
+            &failed_name_args,
             residues,
             PathBuf::from("root"),
             None,
@@ -7036,6 +7128,63 @@ mod tests {
         assert!(
             result.divert_root_display.is_none(),
             "no item diverted → no divert-root display"
+        );
+    }
+
+    // §2.2.4 (P3.88): the live `ItemFinished` message for an `UnopenableOutputName` failure fills the `{name}`
+    // slot with the offending token (the conductor's INLINE render); a no-substitution kind ignores the arg.
+    #[test]
+    fn failure_message_fills_the_unopenable_name_slot() {
+        let msg = failure_message(ConversionErrorKind::UnopenableOutputName, "CON.tsv");
+        assert!(
+            msg.contains("CON.tsv") && !msg.contains("{name}"),
+            "§2.2.4: the live message NAMES the token with the slot filled, got: {msg}"
+        );
+        // A no-substitution kind renders its full string regardless of the (empty) arg.
+        let write_failed = failure_message(ConversionErrorKind::WriteFailed, "");
+        assert!(
+            !write_failed.is_empty() && !write_failed.contains('{'),
+            "§2.8.2: a no-substitution kind renders its full string: {write_failed}"
+        );
+    }
+
+    // §2.2.4 (P3.88): a TERMINAL `Failed(UnopenableOutputName)` job renders its `RunResult` reason NAMING the
+    // offending token from `failed_name_args` — the terminal reason matches the live message (never a literal
+    // `{name}`). A token-less run (empty map) is unaffected. NOTE: `failed_name_args` is hand-populated here (not
+    // derived from a live `run_conversion`) BY NECESSITY: an end-to-end conductor run that actually PRODUCES an
+    // `UnopenableOutputName` needs a source whose §2.2.1 verbatim stem constructs a reserved output (e.g. a
+    // `CON.csv` source → `CON.tsv` leaf), and such a source CANNOT EXIST on the Windows test host — that
+    // unrepresentable-on-Windows source is the very reason §2.2.4 exists (the names arrive from Unix media /
+    // network shares). So the collection glue in `run_conversion` (`if let Some(token) = &name_arg { … insert … }`)
+    // is covered by construction (trivial, and the map key `item` equals the terminal `job.item` lookup key), not
+    // by an E2E — a documented, unavoidable coverage seam, not a green-by-omission.
+    #[test]
+    fn project_run_result_names_the_unopenable_token_in_the_terminal_reason() {
+        let batch = batch_of(vec![job_in(
+            0,
+            JobState::Failed(ConversionErrorKind::UnopenableOutputName),
+        )]);
+        let outputs: BTreeMap<ItemId, PathBuf> = BTreeMap::new();
+        let failed_name_args: BTreeMap<ItemId, String> =
+            BTreeMap::from([(item_id(0), "CON.tsv".to_owned())]);
+        let (result, _paths) = project_run_result(
+            &batch,
+            run_id(),
+            &outputs,
+            &failed_name_args,
+            Vec::new(),
+            PathBuf::from("root"),
+            None,
+        );
+        let reason =
+            reason_text(&result.items[0].reason).expect("a failed item carries a §2.8 reason");
+        assert!(
+            reason.contains("CON.tsv"),
+            "§2.2.4: the terminal reason NAMES the offending token, got: {reason}"
+        );
+        assert!(
+            !reason.contains("{name}"),
+            "§2.2.4: the {{name}} slot is filled, never left literal in the terminal reason"
         );
     }
 
@@ -9585,22 +9734,32 @@ mod write_sequence_tests {
 
     #[test]
     fn map_publish_error_maps_each_leaf_verdict_to_its_taxonomy_kind() {
-        // The tier-1 leaf-verdict -> §2.8 boundary (the hard-to-drive publish errors, covered directly).
+        // The tier-1 leaf-verdict -> §2.8 boundary (the hard-to-drive publish errors, covered directly). The
+        // second tuple slot is the §2.2.4 offending token — `None` for every non-unopenable verdict.
         assert_eq!(
             map_publish_error(&PublishError::PathTooLong(PathTooLong::Total)),
-            ConversionErrorKind::PathTooLong
+            (ConversionErrorKind::PathTooLong, None)
         );
         assert_eq!(
             map_publish_error(&PublishError::TooManyCollisions),
-            ConversionErrorKind::TooManyCollisions
+            (ConversionErrorKind::TooManyCollisions, None)
         );
         assert_eq!(
             map_publish_error(&PublishError::OutOfDisk),
-            ConversionErrorKind::OutOfDisk
+            (ConversionErrorKind::OutOfDisk, None)
         );
         assert_eq!(
             map_publish_error(&PublishError::Io(std::io::Error::other("write failed"))),
-            ConversionErrorKind::WriteFailed
+            (ConversionErrorKind::WriteFailed, None)
+        );
+        // §2.2.4 (P3.88): the unopenable-name verdict maps to `UnopenableOutputName` AND carries the offending
+        // token (the second slot), so the §2.8 message can NAME it.
+        assert_eq!(
+            map_publish_error(&PublishError::UnopenableName("CON.tsv".to_owned())),
+            (
+                ConversionErrorKind::UnopenableOutputName,
+                Some("CON.tsv".to_owned())
+            )
         );
     }
 

@@ -778,6 +778,13 @@ export type ConversionErrorKind =
 "pathTooLong" |
 /**  §2.1.2/§2.2 — the ~10,000-variant no-clobber cap was exhausted (a degenerate directory). */
 "tooManyCollisions" |
+/**
+ *  §2.2.4 — a ConvertIA-CONSTRUCTED output component is a Windows-unopenable name (a reserved DOS device
+ *  name in its first dot-segment, or a trailing dot/space Win32 silently strips) — fail clearly, NEVER
+ *  alias onto a different name (§2.2 no-alias). Windows-only (the names are legal elsewhere, §2.2.3
+ *  running-OS scoping); the message names the offending token.
+ */
+"unopenableOutputName" |
 /**  Subprocess killed by signal / nonzero abnormal exit (§1.7/§2.12). */
 "engineCrash" |
 /**  Exceeded the §1.7 timeout, killed (§2.12). */
