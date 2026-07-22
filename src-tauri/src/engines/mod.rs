@@ -70,7 +70,7 @@ use crate::pool::{LaneError, Pool, NATIVE_CSV_TSV_TIMEOUT};
 // so the logical tier-2 path `crate::engines::{Engine, PlanOutcome}` its consumers import is unchanged by
 // the physical file split. [Build-Session-Entscheidung: P4.1]
 mod registry;
-pub use registry::{Engine, PlanOutcome};
+pub use registry::{engine_registry, Engine, PlanOutcome};
 
 /// The stable engine discriminant (§0.6 / §3.2) — used in logging / SBOM rows (§3.7), the §3.2.3
 /// `(SourceFmt,TargetFmt) → EngineId` registry, the §0.9 pool's `HashMap<EngineId, bool>` serialised-flag

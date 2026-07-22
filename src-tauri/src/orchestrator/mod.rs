@@ -70,9 +70,7 @@ use crate::domain::{
     RerunPrompt, ResolvedDestination, RunId, ScanProgress, SkipReason, SkippedItem, Target,
     TargetId, UserFacingFormat,
 };
-use crate::engines::{
-    dispatch, Engine, EngineId, EngineInvocation, InvocationResult, NativeCsvTsvEngine, PlanOutcome,
-};
+use crate::engines::{dispatch, engine_registry, EngineInvocation, InvocationResult, PlanOutcome};
 use crate::fs_guard::{
     atomic_publish, compute_output_plan, is_write_divert_trigger, location_status,
     open_verified_parent_dir, output_name, publish_to_divert, resolve_divert_target,
@@ -1846,8 +1844,10 @@ fn verify_encode_output(item: ItemId, tmp: TempPath) -> Result<TempPath, WriteOu
 }
 
 /// The per-item async convert (§2.1.1 — the P3.48 ruling option ②: pick-temp → await dispatch → publish legs).
-/// Computes the §1.8 [`OutputPlan`], picks the publish temp (§2.14.1), builds the §1.7 invocation
-/// (`NativeCsvTsvEngine::plan` + the §1.7-owned `out_tmp`), AWAITs `engines::dispatch` (the step-2 write, with
+/// Computes the §1.8 [`OutputPlan`], picks the publish temp (§2.14.1), resolves the pair's single owner
+/// through the §3.2.3 registry (`engine_registry().select` — P4.4; a miss is the §3.4 honest gap →
+/// `PlatformUnavailable`), builds the §1.7 invocation (the selected engine's `plan` + the §1.7-owned
+/// `out_tmp`), AWAITs `engines::dispatch` (the step-2 write, with
 /// the §1.11 progress ticks + the §0.4.4 cancel token), and on `Succeeded` runs the §1.7 non-empty exit
 /// verification + the §2.1.1 publish legs ([`publish_written_temp`]); a `Failed`/`Cancelled` invocation drops
 /// the temp (§3.2.2) and projects directly. No panic (the crate no-panic deny) — every failure is a structured
@@ -1945,14 +1945,53 @@ async fn convert_item(
         };
     };
 
-    // Build the §1.7 invocation: `NativeCsvTsvEngine::plan()` is PURE (§3.2.2) and returns `out_tmp: None`;
-    // §1.7 (this tier-1 conductor) OWNS + populates `out_tmp = Some(tmp)` on the ENCODE invocation (the
-    // 2026-07-07 plan-seam ruling). A pure PlanError → its §2.8 kind, cleaning the just-picked temp.
-    let plan_outcome = match NativeCsvTsvEngine.plan(dropped, target, source, &tmp) {
+    // §3.2.3 (P4.4): resolve the pair's single owner through the startup registry — the P3.48
+    // walking-skeleton hard-wire (a direct `NativeCsvTsvEngine.plan`) is retired. A non-Recognized
+    // detection on the live path is a conductor inconsistency (the C6 handler validated the slice pair
+    // against the detected format) → InternalError; a `select()` miss is §3.2.3's single legitimate
+    // `None` — the §3.4 honest gap → `PlatformUnavailable` (§2.8); a registry build fault is a
+    // programming error surfaced as this item's InternalError (no panic, the crate policy).
+    // [Build-Session-Entscheidung: P4.4]
+    let DetectionOutcome::Recognized { format, .. } = &dropped.detected else {
+        return write_outcome_to_run(fail_cleanup(
+            item,
+            [tmp],
+            ConversionErrorKind::InternalError,
+        ));
+    };
+    let Ok(registry) = engine_registry() else {
+        return write_outcome_to_run(fail_cleanup(
+            item,
+            [tmp],
+            ConversionErrorKind::InternalError,
+        ));
+    };
+    let Some(engine_id) = registry.select(*format, target) else {
+        return write_outcome_to_run(fail_cleanup(
+            item,
+            [tmp],
+            ConversionErrorKind::PlatformUnavailable,
+        ));
+    };
+    let Some(engine) = registry.engine(engine_id) else {
+        return write_outcome_to_run(fail_cleanup(
+            item,
+            [tmp],
+            ConversionErrorKind::InternalError,
+        ));
+    };
+
+    // Build the §1.7 invocation: the selected engine's `plan()` is PURE (§3.2.2) and returns
+    // `out_tmp: None`; §1.7 (this tier-1 conductor) OWNS + populates `out_tmp = Some(tmp)` on the ENCODE
+    // invocation (the 2026-07-07 plan-seam ruling). A pure PlanError → its §2.8 kind, cleaning the
+    // just-picked temp.
+    let plan_outcome = match engine.plan(dropped, target, source, &tmp) {
         Ok(plan_outcome) => plan_outcome,
         Err(err) => return write_outcome_to_run(fail_cleanup(item, [tmp], err.kind)),
     };
-    // The slice engine is single-step: `plan()` always returns `Encode`. A `Probe` would be a mis-routed plan.
+    // Every registered walking-skeleton engine is single-step: `plan()` returns `Encode`. A `Probe` is a
+    // mis-routed plan here — the two-phase sequencing that consumes it is P4.9's (which supersedes this
+    // Encode-only match).
     let PlanOutcome::Encode(mut invocation) = plan_outcome else {
         return write_outcome_to_run(fail_cleanup(
             item,
@@ -1963,7 +2002,7 @@ async fn convert_item(
     invocation.out_tmp = Some(tmp);
     let mut envelope = EngineInvocation {
         job: item,
-        engine: EngineId::NativeCsvTsv,
+        engine: engine_id,
         plan: invocation,
         cancel,
     };
