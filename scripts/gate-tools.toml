@@ -33,7 +33,7 @@ schema_version = 1
 # --- Rust toolchain (rustup-managed; rustup verifies its own signatures) -------
 [toolchain]
 rust_stable  = "1.96.0"               # mirrors rust-toolchain.toml's channel (asserted equal + not-floating)
-fuzz_nightly = "nightly-2026-06-16"   # cargo-fuzz G48; invoked as `cargo +nightly-2026-06-16 fuzz` (P0.2.10)
+fuzz_nightly = "nightly-2026-07-14"   # cargo-fuzz G48; invoked as `cargo +nightly-2026-07-14 fuzz` (P0.2.10)
 
 # --- lefthook — the L1/L2/L3 git-hook plane executor (G54) ---------------------
 # A poisoned lefthook can silently no-op EVERY local hook (the core.hooksPath-bypass

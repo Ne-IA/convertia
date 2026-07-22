@@ -13,8 +13,8 @@
 # (fuzz/crashes/ + the stable replay pins it), not a push-blocking gate.
 #
 # PINS (security-concept §0 pin-and-verify):
-#   - toolchain: the DATE-pinned `nightly-2026-06-16` = gate-tools.toml [toolchain] fuzz_nightly —
-#     invoked as `cargo +nightly-2026-06-16 fuzz` (check-ci-supply-chain check (7) asserts the literal
+#   - toolchain: the DATE-pinned `nightly-2026-07-14` = gate-tools.toml [toolchain] fuzz_nightly —
+#     invoked as `cargo +nightly-2026-07-14 fuzz` (check-ci-supply-chain check (7) asserts the literal
 #     date form AND cross-checks it against the committed pin).
 #   - cargo-fuzz 0.13.2 via `cargo install --version 0.13.2 --locked` — crates.io is content-addressed
 #     (cargo verifies the crate archive's sha256 against the registry index at install), so the
@@ -107,7 +107,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: 'Install the date-pinned fuzz nightly (= gate-tools.toml [toolchain] fuzz_nightly)'
-        run: rustup toolchain install nightly-2026-06-16 --profile minimal
+        run: rustup toolchain install nightly-2026-07-14 --profile minimal
 
       - name: 'Install cargo-fuzz 0.13.2 (crates.io index-checksum-verified by cargo; no prebuilt upstream binaries exist)'
         run: cargo install cargo-fuzz --version 0.13.2 --locked
@@ -132,7 +132,7 @@ jobs:
           for t in detect fs_guard_resolve_identity fs_guard_is_safe_output csv_tsv; do
             echo "::group::fuzz ${t}"
             # shellcheck disable=SC2086  # ${BOUNDS} is a deliberately word-split flag list (one committed source file, no user input)
-            cargo +nightly-2026-06-16 fuzz run "${t}" -s address -- ${BOUNDS}
+            cargo +nightly-2026-07-14 fuzz run "${t}" -s address -- ${BOUNDS}
             echo "::endgroup::"
           done
 

@@ -10,7 +10,7 @@
 # (which pins `libfuzzer-sys` exactly) are the owner-acked L(-1) `.github/workflows` tail (the G23 sequencing
 # pattern): the harness + targets + fixtures + bounds config are Loop-built here; the workflow leg lands with
 # the Co-Pilot. The nightly channel itself is pinned in `scripts/gate-tools.toml [toolchain] fuzz_nightly`
-# (`nightly-2026-06-16`) and asserted date-pinned by `check-fuzz-contract`.
+# (`nightly-2026-07-14`) and asserted date-pinned by `check-fuzz-contract`.
 [package]
 name = "convertia-fuzz"
 version = "0.0.0"
