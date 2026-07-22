@@ -18,7 +18,7 @@
 //! P3.4 additionally homes the §1.7 invocation-dispatch cluster + its transitively-embedded §3.2.2 plan-seam
 //! hull (the P3.4 ↔ P4.2/P4.3/P4.6 reconcile): the `EngineInvocation` envelope + `InvocationResult` (§1.7),
 //! the `Invocation`/`EngineProgram`/`StdinPlan`/`TempPath`/`PlanError`/`ProgressModel` plan-seam types
-//! (§3.2.2 — `ProbeOutput` stays P4.2), and the `dispatch` fn (the exhaustive `EngineProgram` routing). All
+//! (§3.2.2 — `ProbeOutput` authored at P4.2), and the `dispatch` fn (the exhaustive `EngineProgram` routing). All
 //! are core-INTERNAL (no `serde`/`specta`): the §1.9 FSM maps `InvocationResult` onto the wire `ErrorKind`
 //! at P3.46, so nothing in this cluster crosses the IPC door.
 
@@ -41,7 +41,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the P3.5 minimal Engine trait, the PlanOutcome return, and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.1 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), and P4.13 rewrites the subprocess arms — so the dispatch fn + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture."
+        reason = "the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111) are dead in the production build until the P4.1 registry/trait/selection + the §0.9 pool + the P4.45 startup probe construct them. The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the P3.5 minimal Engine trait, the PlanOutcome return, and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.1 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), and P4.13 rewrites the subprocess arms — so the dispatch fn + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture. The P4.2-authored §3.2.2 ProbeOutput (the parsed §3.2.1 probe result) is dead until the P4.9 probe-then-encode sequencing constructs it and the P4.1 plan_encode consumer reads it; its cfg(test) shape test constructs + reads all four fields, keeping the test build dead-code-clean."
     )
 )]
 
@@ -352,7 +352,8 @@ pub struct EngineHealth {
 // The §1.7 `EngineInvocation` envelope transitively embeds the §3.2.2 `Invocation` (via `plan`), and the
 // dispatch matches `Invocation.program` (reading `Invocation.progress` is the §1.11 concern P4.8 wires) — so
 // P3.4 authors the whole transitive hull here at its §3.2.2/§1.7 literal shape (the P3.4 ↔ P4.2/P4.3/P4.6
-// reconcile). `ProbeOutput` stays P4.2 — the §3.2.1 two-phase probe leg is P4-only, referenced by neither the
+// reconcile — CLOSED at P4.2: the five P3.4 types verified against §3.2.2 verbatim, zero residual delta).
+// `ProbeOutput` (P4.2-authored, below) is the §3.2.1 two-phase probe leg — P4-only, referenced by neither the
 // envelope nor P3.5's `plan()`. All hull types are core-INTERNAL (no `serde`/`specta`): the §1.9 FSM maps
 // `InvocationResult` onto the wire `ErrorKind` at P3.46, the ONE conversion. [Build-Session-Entscheidung: P3.4]
 
@@ -470,6 +471,28 @@ pub struct PlanError {
     pub kind: ConversionErrorKind,
     /// A short internal detail for the §7.5 log — NEVER surfaced raw to the user (SSOT *no stack traces*).
     pub detail: String,
+}
+
+/// The parsed result of a probe sub-invocation (§3.2.2, the §3.2.1 two-phase contract), produced by §1.7
+/// from `ffprobe`'s stdout and handed to `plan_encode` (the P4.1 trait method) to finalise the encode
+/// [`Invocation`]. Engine-layer-internal, like [`Invocation`]. `duration_us` becomes the
+/// [`ProgressModel::FfmpegKeyValue`] denominator for the encode — PROVIDED here, never mutated onto a
+/// pre-probe struct (§3.2.1's "no placeholder-then-mutate"). Video FFmpeg is the only v1 probe-requiring
+/// engine; the shape is FFmpeg-shaped but the contract is generic.
+///
+/// [Build-Session-Entscheidung: P4.2] INTERNAL — `Debug, Clone, PartialEq, Eq`; NOT `Copy` (owns a `Vec`);
+/// no `serde`/`specta` (never on the wire — it lives entirely between §1.7's probe parse and `plan_encode`),
+/// mirroring the sibling [`PlanError`] derive set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeOutput {
+    /// Total media duration in microseconds — the §1.11 progress denominator (§3.2.2).
+    pub duration_us: u64,
+    /// The stream codecs — feeds the video.md remux-vs-reencode decision (§3.2.2).
+    pub inner_codecs: Vec<String>,
+    /// Display rotation in degrees, where flagged — feeds auto-orient (§3.2.2); `None` when unflagged.
+    pub rotation_deg: Option<i32>,
+    /// Flagged-interlaced — feeds the video.md deinterlace default (§3.2.2); `None` when unflagged.
+    pub interlaced: Option<bool>,
 }
 
 /// What `Engine::plan()` produced — the §3.2.1 two-shape return, named at the type level (the 2026-07-07
@@ -2278,6 +2301,56 @@ mod tests {
         assert_eq!(recovered, 7);
         // Release the parked worker so it exits cleanly at teardown (no blocked thread leaks beyond the test).
         drop(release_tx);
+    }
+
+    // ─── P4.2: §3.2.2 `ProbeOutput` — the §3.2.1 two-phase probe result ──
+
+    // §6.4.1 unit (G15): the §3.2.2 `ProbeOutput` holds the four parsed probe fields (P4.2) — the typed
+    // result §1.7 parses from ffprobe stdout and hands to `plan_encode` (P4.1). Reads every field so the
+    // test build is dead-code-clean; `duration_us` is the §1.11 FfmpegKeyValue denominator PROVIDED here,
+    // never mutated onto a pre-probe struct (§3.2.1).
+    #[test]
+    fn probe_output_holds_the_four_probe_fields() {
+        let probe = ProbeOutput {
+            duration_us: 90_000_000,
+            inner_codecs: vec!["h264".to_owned(), "aac".to_owned()],
+            rotation_deg: Some(90),
+            interlaced: Some(false),
+        };
+        assert_eq!(
+            probe.duration_us, 90_000_000,
+            "§3.2.2: duration_us carries the probed media duration — the §1.11 progress denominator"
+        );
+        assert_eq!(
+            probe.inner_codecs,
+            vec!["h264".to_owned(), "aac".to_owned()],
+            "§3.2.2: inner_codecs carries the stream codecs for the remux-vs-reencode decision"
+        );
+        assert_eq!(probe.rotation_deg, Some(90));
+        assert_eq!(probe.interlaced, Some(false));
+    }
+
+    // §6.4.1 unit (G15): the two optional probe facts are honestly absent (`None`) when the probed streams
+    // carry no rotation/interlace flag (§3.2.2) — the minimal shape a flag-less source produces; distinct
+    // from the flagged shape via the derived `PartialEq` (which reads all four fields).
+    #[test]
+    fn probe_output_optional_fields_model_unflagged_streams() {
+        let unflagged = ProbeOutput {
+            duration_us: 1,
+            inner_codecs: vec!["pcm_s16le".to_owned()],
+            rotation_deg: None,
+            interlaced: None,
+        };
+        assert_eq!(unflagged.rotation_deg, None);
+        assert_eq!(unflagged.interlaced, None);
+        assert_ne!(
+            unflagged,
+            ProbeOutput {
+                rotation_deg: Some(0),
+                ..unflagged.clone()
+            },
+            "§3.2.2: an absent rotation flag (None) is distinct from an explicit 0° rotation"
+        );
     }
 
     // ─── P3.5: the §3.2 Engine trait (minimal) + the native CSV/TSV engine's plan() ──
