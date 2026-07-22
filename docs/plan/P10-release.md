@@ -106,7 +106,7 @@
 - [ ] **P10.13** [BUILD] Record the `latest`-runner drift facts as release-asset lines + the deployment-target / WebView2 floor assertions · §6.1.4 · G30
   needs: P10.8
   > each macOS/Windows leg records the resolved image label + Xcode/CLT (macOS) / WebView2 (Windows) version as a release-asset line, and the build **fails** if `MACOSX_DEPLOYMENT_TARGET` drifts below the §0.3.1 floor (`= 11.0`) or WebView2 is absent on the image — so a `latest`-runner roll surfaces loudly, not silently (the drift-guard price of not hard-pinning macOS/Windows).
-  > **Forward-note (2026-07-22, the P3.73 fuzz round-3 finding):** the assertion is scoped to the RELEASE/shipped-build legs — never a blanket workflow-wide `MACOSX_DEPLOYMENT_TARGET` scan: `fuzz.yml`'s G48 step legitimately pins `12.0` (Apple ld-prime rejects the ASAN'd rlib initializer format below 12 under dead-strip; a CI-only build, no shipped artifact), so a blanket `== 11.0` grep over `.github/workflows/**` would false-positive against it.
+  > **Forward-note (2026-07-22, the P3.73 fuzz rounds 3–5):** the assertion is scoped to the RELEASE/shipped-build legs — never a blanket scan of `.github/workflows/**` for deployment-target/linker settings: `fuzz.yml`'s G48 step legitimately carries its OWN macOS linker posture (`-ld_classic` via a macOS-only `RUSTFLAGS` — Apple ld-prime rejects the ASAN-instrumented rlib initializers, the sanitizer-module-ctor × dead-strip class; a CI-only build, no shipped artifact), so a blanket release-floor grep would false-positive against it.
 
 ---
 

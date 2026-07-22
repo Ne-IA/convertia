@@ -114,13 +114,18 @@ jobs:
 
       - name: 'G48: run the four in-core targets (ASAN explicit; bounds from the committed fuzz/libfuzzer-bounds.txt)'
         env:
-          # macOS leg only (inert on Linux): Apple's ld-prime rejects the ASAN'd tauri_utils rlib with
-          # `ld: initializer pointer has no target` when the deployment target (< 12) forces the CLASSIC
-          # __mod_init_func initializer format under -dead_strip; >= 12 uses chained fixups, which handle
-          # a stripped initializer target - the Apple-documented resolution (the deprecated -ld_classic
-          # alternative asserts on some toolchains). Fuzz-build-ONLY: the shipped app's min-macOS is
-          # untouched (this workflow never produces a shipped artifact). Round-3 finding, 2026-07-22.
-          MACOSX_DEPLOYMENT_TARGET: '12.0'
+          # macOS leg only (empty on Linux): Apple's ld-prime rejects the ASAN-instrumented rlibs with
+          # `ld: initializer pointer has no target` (first victim: tauri_utils's cgu) - the known
+          # sanitizer-module-ctor x -dead_strip class on aarch64-apple-darwin. Empirics (2026-07-22,
+          # rounds 3+4): MACOSX_DEPLOYMENT_TARGET=12.0 (the chained-fixups hypothesis) did NOT cure it -
+          # the round-4 link line carried -mmacosx-version-min=12.0.0 and failed identically, so that
+          # env was REMOVED as demonstrably ineffective. The classic linker sidesteps the ld-prime
+          # initializer handling entirely (the canonical rust-fuzz workaround). -ld_classic is
+          # Apple-deprecated: when a future runner-image Xcode drops it, this leg fails LOUDLY at link
+          # and the pin is revisited (fail-loud beats ASAN-off - the rejected alternative would silently
+          # weaken the only macOS memory-error oracle). cargo-fuzz APPENDS its sanitizer RUSTFLAGS to
+          # this env value, so the link-arg and the ASAN instrumentation compose.
+          RUSTFLAGS: ${{ runner.os == 'macOS' && '-Clink-arg=-Wl,-ld_classic' || '' }}
         run: |
           BOUNDS="$(grep -v '^#' fuzz/libfuzzer-bounds.txt | xargs)"
           echo "libFuzzer bounds: ${BOUNDS}"
