@@ -42,7 +42,7 @@
 
 ## Engine-registry seam & the `Engine` trait
 
-- [ ] **P4.1** [RUST] Define the `Engine` trait — id/descriptor/capabilities/plan/plan_encode/classify_failure · §3.2.2 · G29
+- [x] **P4.1** [RUST] Define the `Engine` trait — id/descriptor/capabilities/plan/plan_encode/classify_failure · §3.2.2 · G29
   needs: P3.4, P3.75, P4.2, P4.3
   > the §3.2.2 trait shape + semantics in `engines/registry.rs`: `fn id() -> EngineId`, `fn descriptor() -> EngineDescriptor`, `fn capabilities(Platform, &PatentDisposition) -> Vec<EngineCapability>`, `fn plan(&job, &out_tmp) -> Result<Invocation, PlanError>`, the two-phase `fn plan_encode(&job, &out_tmp, &ProbeOutput)` default-impl returning the `InternalError` PlanError, `fn classify_failure(ExitStatus, &str) -> ConversionErrorKind`. NO `progress_model()` method (progress is per-Invocation). `Send + Sync`. (Build-order: expands the P3 §1.7 dispatch-stub interface shell P3.4 established — `needs: P3.4`, the cross-phase edge wired here per the P4.77 reconciliation obligation.)
   > **[Reconcile: P4.1 — edges compiler-corrected, 2026-07-07 (Co-Pilot; the Loop's P3.4 hard-stop escalation)]** the trait SIGNATURE references `Invocation`/`PlanError` (the P3.4 hull), `ProbeOutput` (P4.2) and `EngineCapability` (P4.3) — so `needs:` gains P4.2 + P4.3 (the former inverse `needs: P4.1` edges on those boxes were compiler-backwards; a trait references its signature types, the types reference no trait). `EngineDescriptor`/`EngineId` come from P2.13, `ConversionErrorKind` from P2.18, `Platform` from P2.132. This box EXPANDS the minimal P3.5 trait (covered transitively by `needs: P3.75`) — never a second trait.
