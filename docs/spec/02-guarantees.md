@@ -119,9 +119,19 @@ applied the §2.7 destination rules). Given a *final resolved destination path*
    is only a best-effort metadata flush and the crash-safety invariant does **not**
    depend on it. (No replacing path exists; `ReplaceFileW`/`REPLACEFILE_WRITE_THROUGH`
    have no caller — §2.1.2 / §2.5.2.)
-7. On engine failure / cancel / any error in steps 3–6: **`tmp` is removed**
-   (§2.6); `final` was never created → nothing to undo. Cleanup failure is itself
-   handled (§2.6: never reported as clean success).
+7. On engine failure / cancel / any error in steps 3–5 (before, or *at*, the
+   create-only publish): **`tmp` is removed** (§2.6); the publish is atomic, so `final`
+   was **never created** → nothing to undo. **The one exception is a step-6
+   (post-publish) directory-fsync error:** step 5's create-only rename has *already*
+   produced a complete, correct `final`, which is then **present but
+   durability-uncertain** — it is **not** blind-removed (deleting a real, correct output
+   would break no-harm), and the item is surfaced as a §2.8 `WriteFailed` by conservative
+   decision (durability could not be confirmed), with the §2.6 sweep reconciling the temp.
+   This matches the `fs_guard::atomic_publish` caller-contract, which documents that a
+   step-6 dir-fsync `Io` means the publish already succeeded and `final` exists. The
+   normative invariant is unchanged — a genuine pre-create failure leaves nothing to undo;
+   a post-create durability error is reported honestly, never a silent clean success.
+   Cleanup failure is itself handled (§2.6: never reported as clean success).
 
 ### 2.1.2 Exclusive create + atomic publish — the OS-primitive split `[DECIDED]`
 
@@ -909,6 +919,16 @@ On startup (§7.2 sequence) `crate::run::sweep_stale`:
    human-readable label / fast pre-filter only; it is **not** the liveness test
    (PIDs are reused → a dead run's PID may belong to a live unrelated process). The
    held advisory lock is the one predicate both §2.6 and §7.1.2 defer to.
+4. **Empty instance-shell reclaim `[DECIDED — P3.75 sweep]`:** once a stale instance's
+   `run-*` dirs are reclaimed (step 2) — or it had none left — its now-**empty**
+   `<InstanceId>.<pid>/` shell is itself removed, a best-effort **non-recursive**
+   `remove_dir` that succeeds **ONLY on an empty directory**. A live instance still holds a
+   `run-*` subdir (kept by its held lock), so its shell is non-empty and never touched (the
+   "never touch a live instance's temp" rule holds transitively via the run-dir gate); a
+   run mid-first-`acquire` self-heals because `RunScratch::acquire` re-creates the tree with
+   `create_dir_all`. Without this, each launch would leak one empty instance dir forever (a
+   fresh per-launch `InstanceId`, never reused) — the housekeeping residue the run-dir sweep
+   left behind, contradicting the SSOT "temps are the only thing added, fully reclaimed".
 
 **Destination-resident publish temps — the honest limitation `[DECIDED]`.** The
 kind-1 `*.part` publish temps live in the *destination* dirs (§2.14.1), **not** the

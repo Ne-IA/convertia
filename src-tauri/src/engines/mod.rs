@@ -2496,6 +2496,24 @@ mod transform_tests {
         );
     }
 
+    // §3.5.6 / spreadsheets.md "CSV → TSV not lossy" edge cases (P3.75 sweep): a GENUINELY-empty line (zero
+    // bytes between two terminators — no fields at all) is NOT an RFC-4180 record and is DROPPED, exactly as
+    // every mainstream CSV reader does; but a line with ANY content — here a whitespace-only field — IS a
+    // record and is preserved. Pins the disclosed blank-line normalisation so it is reviewed, not accidental.
+    #[test]
+    fn a_genuinely_empty_line_is_dropped_but_a_content_line_is_kept() {
+        let dropped = transform(b"a,b\n\nc,d\n", CsvTsvTarget::Tsv).expect("transforms");
+        assert_eq!(
+            dropped, b"a\tb\nc\td\n",
+            "§3.5.6: a zero-field blank line is not a record and is dropped (universal CSV convention)"
+        );
+        let kept = transform(b"a,b\n \nc,d\n", CsvTsvTarget::Tsv).expect("transforms");
+        assert_eq!(
+            kept, b"a\tb\n \nc\td\n",
+            "§3.5.6: a whitespace-only line has content → it IS a one-field record and is preserved"
+        );
+    }
+
     #[test]
     fn tsv_to_csv_swaps_the_delimiter() {
         let out =

@@ -527,7 +527,25 @@ fn sample_record_counts(text: &str) -> Vec<RecordCounts> {
                 has_content = false;
                 at_field_start = true;
             }
-            '\r' => {} // the CR of a CRLF — ignored, not content, does not move the field position
+            '\r' => {
+                // A CR is the lead byte of a CRLF when a `\n` follows — then it is ignored (not content, does
+                // not move the field position) and the `\n` arm closes the record. A LONE CR (no following
+                // `\n`) is a classic-Mac / legacy-exporter record terminator (§04 spreadsheets "mixed line
+                // endings (CRLF/LF/CR) normalised on read") and must close the record itself — without this a
+                // CR-delimited file collapses to ONE sampled record and is wrongly declined `Uncertain` (P3.75
+                // sweep). A CR inside a quoted field is handled by the `in_quotes` arm above, never here.
+                if chars.peek() != Some(&'\n') {
+                    if has_content {
+                        records.push(counts);
+                        if records.len() >= DELIMITER_SNIFF_SAMPLE_LINES {
+                            return records;
+                        }
+                    }
+                    counts = [0; 4];
+                    has_content = false;
+                    at_field_start = true;
+                }
+            }
             _ => {
                 if let Some(index) = candidate_index(ch) {
                     if let Some(slot) = counts.get_mut(index) {
@@ -1133,6 +1151,21 @@ mod tests {
             sniff_delimiter(crlf, None),
             DelimiterClass::Detected(Delimiter::Comma),
             "§1.2: CRLF endings do not disturb the delimiter sniff — the \\r is ignored"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §04 spreadsheets "CRLF/LF/CR normalised on read" (P3.75 sweep): a lone-CR (classic-Mac)
+    // CSV must sniff its delimiter — before the fix the `\r` arm was a pure no-op, so a CR-delimited file
+    // collapsed to ONE sampled record, failed the viable-agreement floor, and was wrongly declined `Uncertain`.
+    // Now a lone CR closes the record (the csv-crate transform already normalises CR on read, so a detected
+    // CR-CSV converts cleanly — detection was the only gap).
+    #[test]
+    fn classify_delimiter_handles_lone_cr_line_endings() {
+        let cr_only = "id,name\r1,alpha\r2,beta\r";
+        assert_eq!(
+            sniff_delimiter(cr_only, None),
+            DelimiterClass::Detected(Delimiter::Comma),
+            "§1.2: a lone CR is a record terminator — a CR-delimited CSV is detected, not declined Uncertain"
         );
     }
 

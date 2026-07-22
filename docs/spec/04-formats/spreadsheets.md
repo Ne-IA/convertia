@@ -238,17 +238,23 @@ items — see §1.7 / §2.6).
 - **Options/settings (as target):** see shared **CSV/TSV export options** below.
 - **Lossy?** `CSV → XLSX/ODS` is **not** lossy (text in, richer container out —
   it only *adds* structure; the only risk is value mis-typing, which the
-  "quoted fields are text" switch defends). `CSV → TSV` is **not** lossy (both
-  are plain text; only the delimiter and possibly the encoding normalise to
-  UTF-8). Producing CSV *from* a workbook is the lossy direction (recorded on the
+  "quoted fields are text" switch defends). `CSV → TSV` is **not** lossy for cell
+  data (both are plain text; only the delimiter and possibly the encoding normalise
+  to UTF-8, and — per the blank-line edge case below — genuinely-empty record-lines,
+  which carry no cell data, are dropped per RFC-4180 / universal CSV convention).
+  Producing CSV *from* a workbook is the lossy direction (recorded on the
   workbook entries), not these.
 - **Edge cases:** mixed line endings (CRLF/LF/CR) normalised on read; embedded
   newlines inside quoted fields preserved (RFC-4180); a stray BOM is consumed,
   not emitted as a phantom first cell; ragged rows (uneven field counts) are
   kept as-is (short rows pad with empty cells into a workbook, never truncated);
-  a leading `=`/`+`/`-`/`@` cell is **not** auto-executed as a formula on import
-  (CSV-injection-safe: imported as text unless the user opts into formula
-  evaluation, which v1 does **not** expose).
+  a **genuinely-empty line** (zero bytes between two record terminators — no
+  fields at all) is **not an RFC-4180 record and is dropped**, exactly as every
+  mainstream CSV reader does (Python `csv`, the Rust `csv` crate, Excel); a line
+  with **any** content — even a single empty quoted field `""` or only whitespace
+  — **is** a record and is preserved; a leading `=`/`+`/`-`/`@` cell is **not**
+  auto-executed as a formula on import (CSV-injection-safe: imported as text unless
+  the user opts into formula evaluation, which v1 does **not** expose).
 
 ### `TSV` — Tab-Separated Values
 

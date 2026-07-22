@@ -916,6 +916,15 @@ fn sweep_stale_within(scratch_base: &Path, grace: std::time::Duration) -> Vec<Pa
                 removed.push(run_dir);
             }
         }
+        // §2.6.3 (P3.75 sweep): reclaim the now-empty `<InstanceId>.<pid>/` instance shell itself — a
+        // best-effort NON-recursive `remove_dir` that SUCCEEDS ONLY on an empty directory. A live instance (or
+        // one mid-first-`acquire`) still holds a `run-*` subdir → the dir is non-empty → this is a no-op, so it
+        // never races a live instance (the "never touch a live instance's temp" rule holds transitively via the
+        // held-lock run-dir gate), and `RunScratch::acquire` re-creates the tree with `create_dir_all` so even a
+        // benign mid-creation removal self-heals. Without this each launch leaks one empty instance dir forever
+        // (a fresh per-launch `InstanceId`, never reused) that the run-dir sweep left behind. NOT added to
+        // `removed` — that return value accounts swept RUN dirs; the shell teardown is a silent side-effect.
+        let _ = std::fs::remove_dir(instance_entry.path());
     }
     removed
 }
@@ -1879,6 +1888,53 @@ mod sweep_tests {
             "§2.6.3: nothing is reclaimed while the only run is live, got {removed:?}"
         );
         drop(live); // release the lock only after the sweep has run
+    }
+
+    // §6.4.3 real-FS (G31) / §2.6.3 point 4 (P3.75 sweep): after a dead instance's run dir is reclaimed, its
+    // now-EMPTY `<InstanceId>.<pid>/` shell is removed too — while a SEPARATE live instance's shell (kept
+    // non-empty by its held-lock run dir) survives. Pins the empty-instance-shell reclaim AND its live-instance
+    // safety; without the reclaim each launch would leak one empty instance dir forever.
+    #[test]
+    fn sweep_reclaims_the_empty_instance_shell_but_never_a_live_one() {
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        // A dead run (unheld `.lock`) in its own instance dir.
+        let dead = plant_run_dir(base.path(), InstanceId::mint(), 4242, RunId::mint());
+        std::fs::write(dead.join(RUN_LOCK_FILE), b"").expect("plant an unheld .lock");
+        let dead_instance = dead
+            .parent()
+            .expect("the dead run's instance dir")
+            .to_path_buf();
+        // A live run (held lock) in a DIFFERENT instance dir.
+        let live = RunScratch::acquire(
+            base.path(),
+            InstanceId::mint(),
+            std::process::id(),
+            RunId::mint(),
+        )
+        .expect("acquire a live locked run");
+        let live_instance = live
+            .dir()
+            .parent()
+            .expect("the live run's instance dir")
+            .to_path_buf();
+
+        let removed = sweep_stale_within(base.path(), Duration::ZERO);
+
+        assert!(!dead.exists(), "§2.6.3: the dead run dir is reclaimed");
+        assert!(
+            !dead_instance.exists(),
+            "§2.6.3 point 4: the dead instance's now-empty shell is reclaimed too (no empty-dir leak)"
+        );
+        assert!(
+            live_instance.is_dir(),
+            "§2.6.3 point 4: a live instance's shell (non-empty via its held-lock run dir) is NEVER removed"
+        );
+        assert_eq!(
+            removed,
+            vec![dead.clone()],
+            "§2.6.3: only the swept RUN dir is reported — the shell teardown is a silent side-effect"
+        );
+        drop(live); // release the live lock only after the sweep has run
     }
 
     // §6.4.3 real-FS (G31) / §2.6.3 (b) — the create-then-not-yet-locked RACE regression: a run that has

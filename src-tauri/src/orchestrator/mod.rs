@@ -981,8 +981,13 @@ fn item_base_reason(job: &ConversionJob, name_arg: Option<&str>) -> Option<Outco
         }
         // §2.2.4 (P3.88): `name_arg` fills the `UnopenableOutputName` `{name}` slot with the offending token so
         // the terminal reason NAMES it, matching the live message; `None` (every other Failed kind is a
-        // no-substitution row) renders the full string with the empty `arg`.
-        JobState::Failed(kind) => crate::outcome::conversion_failure(kind, name_arg.unwrap_or("")),
+        // no-substitution row) renders the full string with the empty `arg`. §2.8 / §1.12 (P3.75 sweep): a
+        // mis-homed app-level kind ({EngineMissing, WebviewFault, BundleDamaged, MixedDrop}) has no §2.8.2 row →
+        // `conversion_failure` returns `None`; the same `InternalError` fallback the live `failure_message` /
+        // `project_outcome` siblings carry keeps this TERMINAL projection never-message-less too (a failed item
+        // is never message-less — the two projections of one item must agree).
+        JobState::Failed(kind) => crate::outcome::conversion_failure(kind, name_arg.unwrap_or(""))
+            .or_else(|| crate::outcome::conversion_failure(ConversionErrorKind::InternalError, "")),
         JobState::Succeeded | JobState::Cancelled | JobState::Pending | JobState::Running => None,
     }
 }
@@ -2186,18 +2191,22 @@ pub(crate) async fn run_conversion(
 
     // §1.9 cancel-semantics NOTE (a P3.48 G1-review finding; the C7 `cancel_run` token trip is now wired, P3.52):
     // this loop does NOT poll `token.is_cancelled()` before dequeuing the next Pending job. It relies on each
-    // dispatched item's OWN cooperative cancel — a tripped token makes `dispatch` return `Cancelled`, which
-    // publishes nothing, so the NO-HARM invariant holds regardless of when the token trips (including mid-batch,
-    // now that C7 can trip it). The §1.9 "stop dequeuing Pending" refinement (leave un-started jobs un-dispatched
-    // + give them a terminal summary state) is a SEPARATE §1.9 optimization, NOT a no-harm requirement — per-item
-    // cooperative cancel already discards every un-started job cleanly (each is dispatched, reads the tripped
-    // token, and returns `Cancelled` without publishing). It also needs a §1.9 decision the FSM does not sanction
-    // here (`advance` returns None for a direct Pending→Cancelled, by design — a clean stop-dequeue needs a
+    // dispatched item's OWN cooperative cancel. NO-HARM holds regardless of WHEN the token trips (including
+    // mid-batch, now that C7 can trip it) — but NOT because every dispatched item returns `Cancelled` without
+    // publishing (the P3.75 sweep corrected this): the §1.7 in-core CSV/TSV transform polls the token only at
+    // N-KB chunk boundaries, so a SUB-CHUNK item (the common small-file case) never observes the trip, completes,
+    // and PUBLISHES a fresh output. That fresh output still harms no original — no-harm rests on no-clobber +
+    // frozen-at-drop + the §2.1.2 atomic create-only publish (which can ONLY create a NEW file, never
+    // touch/overwrite a source), independent of cancel timing; the cancel-before-publish path is one mechanism,
+    // not the guarantee. The §1.9 "stop dequeuing Pending" refinement (leave un-started jobs un-dispatched + give
+    // them a terminal summary state) is a SEPARATE §1.9 optimization — it would end the wasted small-item work
+    // above, but is NOT a no-harm requirement. It also needs a §1.9 decision the FSM does not sanction here
+    // (`advance` returns None for a direct Pending→Cancelled, by design — a clean stop-dequeue needs a
     // summary-state ruling for un-started jobs), so it is deliberately OUT of P3.52's token-trip-wiring scope. Its
-    // natural home is the P4.11 §1.7 kill↔cleanup box (which is measured against the full §1.7 cancel enumeration,
-    // incl. §1.7's "stop dequeuing Pending"); the spec §1.7 mandate is unchanged, so nothing is dropped here — the
-    // run still terminates with every job in a valid terminal state via the sanctioned Pending→Running→Cancelled
-    // path. [Build-Session-Entscheidung: P3.52]
+    // home is the P4.11 §1.7 kill↔cleanup box (measured against the full §1.7 cancel enumeration, incl. §1.7's
+    // "stop dequeuing Pending"); the spec §1.7 mandate is unchanged, so nothing is dropped here — the run still
+    // terminates with every job in a valid terminal state (a dispatched large item via Pending→Running→Cancelled;
+    // a dispatched sub-chunk item via Pending→Running→Succeeded). [Build-Session-Entscheidung: P3.52]
     for i in 0..batch.jobs.len() {
         // Only eligible `Pending` jobs are dispatched; pre-flight `Skipped` jobs are terminal at construction
         // (never queued, no Channel events — §0.4.2/§1.9). `queue_order`'s `state_is_queued` == this filter.
@@ -6352,6 +6361,38 @@ mod tests {
             projected.message.is_some(),
             "the fallback always renders a message"
         );
+    }
+
+    // §2.8 / §1.12 (P3.75 sweep): the TERMINAL `item_base_reason` projection mirrors the live
+    // `project_outcome` / `failure_message` InternalError fallback — a per-item `Failed` carrying a mis-homed
+    // app-level kind ({EngineMissing, WebviewFault, BundleDamaged, MixedDrop}, none of which has a §2.8.2 row)
+    // is NEVER message-less in the summary either, so the live `ItemFinished` message and the terminal
+    // `RunResult` reason of one item always agree. Before the fix the terminal arm had no fallback → `None`.
+    #[test]
+    fn item_base_reason_falls_back_to_internal_error_for_a_non_per_item_kind() {
+        for kind in [
+            ConversionErrorKind::EngineMissing,
+            ConversionErrorKind::WebviewFault,
+            ConversionErrorKind::BundleDamaged,
+            ConversionErrorKind::MixedDrop,
+        ] {
+            assert_eq!(
+                conversion_failure(kind, ""),
+                None,
+                "§2.8.2: {kind:?} is a §2.13 app-level fault with no per-item row"
+            );
+            let job = job_in(0, JobState::Failed(kind));
+            let reason = item_base_reason(&job, None);
+            assert_eq!(
+                reason,
+                conversion_failure(ConversionErrorKind::InternalError, ""),
+                "§2.8/§1.12: a mis-homed app-level kind falls back to InternalError — the terminal reason is never message-less"
+            );
+            assert!(
+                reason.is_some(),
+                "the terminal projection always renders a message for {kind:?}"
+            );
+        }
     }
 
     // A `FrozenSnapshot` from explicit eligible + skipped views — for the §1.3 `group()` projection unit tests
