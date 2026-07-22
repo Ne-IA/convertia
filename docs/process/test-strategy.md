@@ -1062,13 +1062,17 @@ Co-Pilot hardening sweep** (`[!extern]`, `[TEST]`, the last work box of its
 phase; owner directive, recorded 2026-07-06): once every other box of the phase
 is `[x]`, the **Co-Pilot session — never the Build-Loop — adversarially re-tests
 the phase's whole delivery at the hardest technically-possible level**, with
-whatever tooling that takes.
+whatever tooling that takes — **and then pre-fill-audits the NEXT phase's plan
+boxes against the as-built codebase (§11.4; owner directive, recorded
+2026-07-22)**, so pre-fill escalations are intercepted at the boundary instead
+of stopping the loop once per box mid-phase.
 
 ### 11.1 Why a phase-level pass exists
 
 The per-box bar (DoD item (c), §10) proves each box at its own highest sensible
 level; **nobody owns the phase as a system**. The sweep attacks exactly the
-residue the per-box bar structurally leaves behind:
+residue the per-box bar structurally leaves behind (this section motivates the
+delivery leg; the second leg's rationale is §11.4's own):
 
 - **cross-box seams** — two boxes each correct, their composition untested;
 - **whole-surface properties** — the accumulated contract surface (every IPC
@@ -1111,6 +1115,9 @@ delivered *system*.
   itself stays a bare marker flip.
 - **Who:** the Co-Pilot session (roles-and-escalation §1); an L(-1) surface
   touched by a fix follows the normal owner-ack path (G71).
+- **Second leg:** after the delivery re-test, the same sweep runs the
+  **next-phase pre-fill plan audit** (§11.4) — the sweep box is not `[x]` until
+  both legs are done (for the final phase the second leg is vacuous, §11.4).
 
 ### 11.3 The mechanical boundary stop
 
@@ -1122,6 +1129,45 @@ roles-and-escalation §4(d)) — so the loop **mechanically hard-stops at every
 phase boundary until the sweep is `[x]`**, with no new loop mechanics. A
 DECISION-C early build of a *single* later-phase prerequisite box is **not**
 gated by the boundary stop — that box is swept by its owning phase's sweep.
+
+### 11.4 The next-phase pre-fill plan audit (owner directive, recorded 2026-07-22)
+
+**Why.** Each phase's plan was authored **before the code it builds on existed**;
+by the time a phase boundary is reached, a real codebase exists that the next
+phase's boxes were never checked against. P3 measured the cost of that gap: a
+large share of its escalations were **pre-fill classes** — a box literal
+contradicted by the delivered code or a spec `[DECIDED]`, a type homed at the
+wrong §0.7 tier, a build-vs-wire decomposition left implicit, a named mechanism
+that is structurally uncallable as described, a missing `needs:` edge for an
+embedded type — each one an avoidable mid-phase loop stop. The audit moves that
+discovery to the boundary, where the Co-Pilot resolves it in batch.
+
+**What.** After the delivery re-test (§11.2), the same sweep audits **every box
+of the next phase** against four surfaces:
+
+- **(a) its cited spec `§§`** — they resolve, and they actually decide what the
+  box claims (the mis-cite class);
+- **(b) the as-built codebase** — the named types / functions / modules /
+  homings exist in the form the box assumes; a box re-authoring something
+  already delivered gets the RECONCILE treatment (the dup-box class);
+- **(c) its dependency edges** — `needs:` / `unlocked-by` present and correct,
+  **including embedded-type edges `plan-lint` cannot see**;
+- **(d) information-completeness** — the box carries enough to build without
+  guessing (named shapes, decided defaults, the build-vs-wire split explicit).
+
+**Resolution.** Findings the Co-Pilot can resolve are landed as **normal
+dual-reviewed plan/spec edits before the next phase's build session starts**;
+genuine forks (roles-and-escalation §4) are brought to the **owner at the
+boundary — batched, never one per box mid-phase**. The audit **builds nothing**:
+it edits the plan/spec layer only; an L(-1) surface follows the normal owner-ack
+path (G71). Evidence rides the audit's commit bodies, same as the delivery leg.
+
+**Scope notes.** The **final phase's sweep (`P11.34`) has no successor plan** —
+its second leg is vacuous by construction. **Genesis:** `P3.75` closed before
+this directive existed, so the **P4 audit runs immediately after this amendment
+lands, as the catch-up first application** — its evidence rides its own commit
+bodies, same as every later application; from `P4.81` on the leg is part of
+every standing sweep box.
 
 ---
 
