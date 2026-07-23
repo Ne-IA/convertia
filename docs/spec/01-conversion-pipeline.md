@@ -822,14 +822,18 @@ enum InvocationResult {
 - Spawned on the **Tokio** async runtime (`tauri::async_runtime` / `tokio::process`,
   §0.9 owns the worker pool & concurrency degree).
 - **`stdout`/`stderr` handling is per-`ProgressModel` `[DECIDED]`:** for invocations with a
-  **streaming** `ProgressModel` (`FfmpegKeyValue`, `VipsStdout`, `InProcessFraction`),
-  `stdout`/`stderr` are **streamed line-by-line** and parsed by the §3.5 per-engine
+  **streaming subprocess** `ProgressModel` (`FfmpegKeyValue`, `VipsStdout`),
+  **`stdout`** is **streamed line-by-line** and parsed by the §3.5 per-engine
   adapter into normalised progress ticks (FFmpeg `-progress pipe:` key=value;
   LibreOffice has no native progress → §1.11's heuristic; libvips is fast/atomic →
   coarse ticks). For **`ProgressModel::CoarseSpawnDone`** (the ffprobe probe sub-invocation,
   below) §1.7 instead **buffers stdout in full** and passes the **complete buffer** to the
   §3.5.1 adapter's `ProbeOutput` JSON parser — **no line reader is attached** to a
-  CoarseSpawnDone stdout (it would corrupt the single-JSON-blob parse). Normalised ticks flow
+  CoarseSpawnDone stdout (it would corrupt the single-JSON-blob parse). **`ProgressModel::InProcessFraction`
+  is NOT in the streaming line-reader set** — the one in-core engine (native CSV/TSV, §3.5.6) has **no
+  subprocess stdout at all**: it **self-reports** a `bytes_processed / source_size` fraction over an in-process
+  `mpsc::Sender<f32>` and §1.7 attaches **no line reader** (the `InProcessNative` sub-case below is its sole
+  owner). Normalised ticks flow
   to the frontend over the **§0.4.2 `Channel<ConversionEvent>`** as
   `ConversionEvent::ItemProgress` (the wire shape is defined in **§0.4**, not here;
   "ProgressEvent" in §1.11 is the internal projection of that wire variant). `stderr` is

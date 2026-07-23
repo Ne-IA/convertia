@@ -75,7 +75,18 @@ tempfile = "3.27.0"
 # (`signal-hook-registry` — ALREADY lock-resolved transitively via tauri: no newly-resolved package, no
 # network surface, no ban/advisory hit; G18/G18a posture unchanged); the P3.82 §0.8 floor is version-keyed
 # (features orthogonal) — NO floor action, NO L(-1) touch. Still NOT `net`.
-tokio = { version = "1.52.3", features = ["process", "rt", "sync", "time"] }
+# [P4.8] the `io-util` feature exposes `tokio::io::{AsyncReadExt, AsyncBufReadExt, BufReader}` — the §1.7
+# per-`ProgressModel` stdout line-reader + stderr-in-full capture `crate::isolation::run_confined` uses to
+# drain a confined child's piped streams (streaming models → `progress_fraction` ticks; `CoarseSpawnDone`
+# buffers the probe JSON; stderr captured in full). Gate-inert (the P3.45-①-style verification, VERIFIED via
+# `cargo tree -e features -i tokio@1.52.3`): `io-util` is ALREADY enabled in the build graph by `tauri`'s own
+# tokio edge (NOT by our `process` feature — tokio's `process` pulls `bytes`/`libc`/`mio`/`signal-hook-registry`,
+# not `io-util`), so under Cargo feature unification naming it explicitly on OUR edge resolves NO new
+# feature/package and `Cargo.lock` stays byte-identical (G18/G18a unchanged). Declaring it explicitly (rather
+# than leaning on tauri's transitive enablement, which a future tauri bump could drop) makes convertia-core's
+# own use of `io-util` honest. The P3.82 §0.8 floor is version-keyed (features orthogonal) — NO floor action,
+# NO L(-1) touch. Still NOT `net`.
+tokio = { version = "1.52.3", features = ["io-util", "process", "rt", "sync", "time"] }
 # [P2.133] §0.4.4/§1.7 cancellation primitive — `tokio_util::sync::CancellationToken` for the RunId/
 # CollectingId token registries (P2.42/P2.45). Caret-pinned to the lock-resolved 0.7.18 (the normal-lib
 # convention, not the `=`-exact codegen-coupled specta tools); NO extra features (CancellationToken is in

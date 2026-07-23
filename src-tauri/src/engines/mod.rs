@@ -42,7 +42,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "of the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111): the P4.4/P4.5 registry build is live on the conductor's path (engine_registry() calls descriptor()+capabilities() and pre-computes the §0.9 serialised-flag map), but the EngineDescriptor.kind field-read and the serialised_flags() accessor stay dead until the P4.22 pool wiring consumes them, and EngineStatus/EngineHealth until the P4.45 startup probe assembles the real Ok(EngineHealth). The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the Engine trait + PlanOutcome return (P3.5-minimal, expanded to the full §3.2.2 surface and homed in engines/registry.rs at P4.1) and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.4 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), P4.13 authors crate::isolation::run_confined, P4.7 authors the §1.7 generic subprocess lane run_subprocess routing through it (the engines-side §1.7 seam P4.8/P4.9/P4.12 extend; itself dead until P4.32), and P4.32 rewrites the subprocess arms to call run_subprocess (once P4.32 resolves EngineProgram to the binary path) — so the dispatch fn + run_subprocess + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture. The P4.2-authored §3.2.2 ProbeOutput (the parsed §3.2.1 probe result) is dead until the P4.9 probe-then-encode sequencing constructs it and a probe-engine plan_encode impl reads it (the P4.1 default impl ignores its _probe param by contract); its cfg(test) shape test constructs + reads all four fields, keeping the test build dead-code-clean. The P4.3-authored §3.2.2 leaf types (Direction / PatentDisposition / CodecPosture / EngineCapability + the SourceFmt/TargetFmt aliases) are NAMED by the P4.1 trait signatures (capabilities(platform, patents)) and the native engine's capability row, but their construction sites stay dead until the P4.4 registry calls capabilities() and the P4.40 engines.lock parse builds the disposition; their cfg(test) shape tests construct + read every field, keeping the test build dead-code-clean."
+        reason = "of the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111): the P4.4/P4.5 registry build is live on the conductor's path (engine_registry() calls descriptor()+capabilities() and pre-computes the §0.9 serialised-flag map), but the EngineDescriptor.kind field-read and the serialised_flags() accessor stay dead until the P4.22 pool wiring consumes them, and EngineStatus/EngineHealth until the P4.45 startup probe assembles the real Ok(EngineHealth). The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the Engine trait + PlanOutcome return (P3.5-minimal, expanded to the full §3.2.2 surface and homed in engines/registry.rs at P4.1) and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.4 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), P4.13 authors crate::isolation::run_confined, P4.7 authors the §1.7 generic subprocess lane run_subprocess routing through it (the engines-side §1.7 seam P4.8/P4.9/P4.12 extend; itself dead until P4.32), and P4.32 rewrites the subprocess arms to call run_subprocess (once P4.32 resolves EngineProgram to the binary path) — so the dispatch fn + run_subprocess + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture. The P4.2-authored §3.2.2 ProbeOutput (the parsed §3.2.1 probe result) is dead until the P4.9 probe-then-encode sequencing constructs it and a probe-engine plan_encode impl reads it (the P4.1 default impl ignores its _probe param by contract); its cfg(test) shape test constructs + reads all four fields, keeping the test build dead-code-clean. The P4.3-authored §3.2.2 leaf types (Direction / PatentDisposition / CodecPosture / EngineCapability + the SourceFmt/TargetFmt aliases) are NAMED by the P4.1 trait signatures (capabilities(platform, patents)) and the native engine's capability row, but their construction sites stay dead until the P4.4 registry calls capabilities() and the P4.40 engines.lock parse builds the disposition; their cfg(test) shape tests construct + read every field, keeping the test build dead-code-clean. P4.8 adds ProgressModel::progress_fraction + fraction_of (the §1.7 per-ProgressModel line->fraction parse) and the ConfinedRun captured-stream outcome (failed/cancelled ctors + the stdout/stderr buffers the P4.9 probe-parse / P4.12 stderr-classify will consume) — all constructed/called only by the dead crate::isolation::run_confined until run_subprocess becomes a live root at P4.32, so dead in the production build; their cfg(test) unit + real-subprocess tests exercise the parse + the capture, keeping the test build dead-code-clean."
     )
 )]
 
@@ -484,7 +484,8 @@ pub enum StdinPlan {
 /// normalises it (no `progress_model()` trait method).
 ///
 /// [Build-Session-Entscheidung: P3.4] INTERNAL — `Debug, Clone, Copy, PartialEq, Eq` (every variant is
-/// `Copy`), no `serde`. The per-variant stdout/stderr-handling dispatch is P4.8; P3's live value is
+/// `Copy`), no `serde`. The per-variant stdout/stderr-handling dispatch landed at P4.8
+/// ([`ProgressModel::progress_fraction`] plus the `crate::isolation::run_confined` re-cut); P3's live value is
 /// `InProcessFraction` (the native CSV/TSV self-reported fraction, §3.5.6, wired P3.43).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgressModel {
@@ -500,6 +501,62 @@ pub enum ProgressModel {
     /// stdout to line-read — it self-reports a real `bytes_processed / source_size` fraction per N-KB chunk
     /// (§1.11) over an in-process `mpsc::Sender<f32>` (the §1.7 `InProcessNative` sub-case, wired P3.43).
     InProcessFraction,
+}
+
+impl ProgressModel {
+    /// §1.7/§1.11 progress-line parse (P4.8) — map ONE `key=value` stdout line from a **streaming** subprocess
+    /// model into a clamped `0.0..=1.0` fraction, or `None` for a non-progress / unparseable line. The two
+    /// streaming models share the **identical** cross-process `key=value` wire (§1.11 / §3.5.5), so the §1.7
+    /// SAME line reader parses both:
+    ///
+    /// - [`ProgressModel::FfmpegKeyValue`] — FFmpeg `-progress pipe:1 -nostats` (§3.5.1): `out_time_us=<µs>`
+    ///   over the ffprobe `duration_us` denominator (NOT `total_size`, which is an output byte count, §1.11);
+    ///   `progress=end` → `1.0`. A `duration_us` of `0` (unknown duration) yields `None`, never a div-by-zero.
+    /// - [`ProgressModel::VipsStdout`] — the image-worker's marshalled libvips eval-progress (§3.5.5):
+    ///   `progress=<0..100>` → `n / 100`; `progress=end` → `1.0`.
+    ///
+    /// [`ProgressModel::CoarseSpawnDone`] (the ffprobe probe / LibreOffice·pandoc·poppler coarse path) and
+    /// [`ProgressModel::InProcessFraction`] (the in-core native CSV/TSV engine, which self-reports over an
+    /// mpsc channel with NO stdout line reader — §1.7 InProcessNative sub-case) never line-parse → always
+    /// `None`. Pure + no-panic (`?` / `parse().ok()` / `clamp`, never an index/unwrap). [Build-Session-Entscheidung: P4.8]
+    pub(crate) fn progress_fraction(&self, line: &str) -> Option<f32> {
+        let (key, value) = line.split_once('=')?;
+        let (key, value) = (key.trim(), value.trim());
+        match self {
+            ProgressModel::FfmpegKeyValue { duration_us } => match key {
+                "out_time_us" => {
+                    if *duration_us == 0 {
+                        // Unknown / not-yet-known duration — no honest fraction (§1.11 reads `Spawning` until
+                        // the first real tick); never a division by zero.
+                        return None;
+                    }
+                    let elapsed_us: u64 = value.parse().ok()?;
+                    Some(fraction_of(elapsed_us, *duration_us))
+                }
+                "progress" if value == "end" => Some(1.0),
+                _ => None,
+            },
+            ProgressModel::VipsStdout => {
+                if key != "progress" {
+                    return None;
+                }
+                if value == "end" {
+                    return Some(1.0);
+                }
+                let percent: u32 = value.parse().ok()?;
+                Some(fraction_of(u64::from(percent.min(100)), 100))
+            }
+            ProgressModel::CoarseSpawnDone | ProgressModel::InProcessFraction => None,
+        }
+    }
+}
+
+/// A `numer / denom` progress ratio clamped into `0.0..=1.0` as `f32` (P4.8). `denom` is a caller-guaranteed
+/// non-zero positive (the `progress_fraction` arms check it), so this is a total, no-panic computation — the
+/// `f64` intermediate keeps the ratio precise for large `duration_us` before the final clamp. [Build-Session-Entscheidung: P4.8]
+fn fraction_of(numer: u64, denom: u64) -> f32 {
+    let ratio = numer as f64 / denom as f64;
+    ratio.clamp(0.0, 1.0) as f32
 }
 
 /// The §3.2.2 publish-temp the engine writes its output to — `tempfile::TempPath` (a path whose file is
@@ -625,14 +682,64 @@ pub enum InvocationResult {
     Cancelled,
 }
 
+/// The full captured outcome of one confined subprocess run (P4.8) — the terminal [`InvocationResult`] plus
+/// the child's captured `stdout` / `stderr` bytes the §1.7 lane's downstream steps consume. Produced by the
+/// sole spawn site [`crate::isolation::run_confined`]; [`run_subprocess`] returns only `.result` today, and
+/// the two buffers become live seams at their consumer boxes:
+///
+/// - **`stdout`** holds the whole **buffered** stdout of a [`ProgressModel::CoarseSpawnDone`] invocation — the
+///   ffprobe single-JSON blob the **P4.9** probe→`ProbeOutput` parse reads (§3.2.1). For a **line-read**
+///   streaming model ([`ProgressModel::FfmpegKeyValue`] / [`ProgressModel::VipsStdout`]) it is **empty**: each
+///   line was consumed into the `on_progress` sink as a fraction and never buffered (a line reader would
+///   fragment a JSON blob, so the two paths are mutually exclusive, §1.7).
+/// - **`stderr`** is captured **in full** for every subprocess model — consumed by the **P4.12** exit≠0 →
+///   §3.5 `classify_failure` routing, the §7.5 verbose/diagnostic echo, and the §2.13 classify-into-§2.8 (§1.7).
+///
+/// [Build-Session-Entscheidung: P4.8] INTERNAL — no `serde`; `Debug` only (the buffers are moved to their
+/// consumers, never compared/cloned). Homed in the §1.7 invocation cluster beside [`InvocationResult`] because
+/// its consumers (P4.9 probe-parse, P4.12 classify) are the engines-side §1.7 lane; `crate::isolation`
+/// constructs + returns it exactly as it already returns [`InvocationResult`].
+#[derive(Debug)]
+pub struct ConfinedRun {
+    /// The terminal §1.7 result (`Succeeded` / `Failed(kind)` / `Cancelled`).
+    pub result: InvocationResult,
+    /// The buffered stdout of a `CoarseSpawnDone` invocation (the P4.9 probe JSON); empty for a line-read model.
+    pub stdout: Vec<u8>,
+    /// The child's stderr captured in full (the P4.12 exit-classification / §7.5 echo / §2.13 classify input).
+    pub stderr: Vec<u8>,
+}
+
+impl ConfinedRun {
+    /// A pre-spawn / reap-fault outcome carrying just the §1.7 result and no captured streams (P4.8) — the
+    /// mis-built-plan / spawn-error / internal-fault arms of [`crate::isolation::run_confined`].
+    pub(crate) fn failed(kind: ConversionErrorKind) -> Self {
+        ConfinedRun {
+            result: InvocationResult::Failed(kind),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        }
+    }
+
+    /// A user-cancel outcome — the partial output is discarded by the §1.7 caller (§3.2.2), so no streams are
+    /// surfaced (P4.8).
+    pub(crate) fn cancelled() -> Self {
+        ConfinedRun {
+            result: InvocationResult::Cancelled,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        }
+    }
+}
+
 /// The §1.7 dispatch — routes an [`EngineInvocation`] to its execution lane by `Invocation.program` and
 /// returns the [`InvocationResult`]. The exhaustive match over [`EngineProgram`] is deny-gated (no `_ =>`
 /// catch-all — the `clippy::wildcard_enum_match_arm` deny at the crate root, G4/G14/G29) so a future engine
 /// program cannot be silently dropped.
 ///
 /// **`on_progress`** is §1.7's per-fraction sink: the dispatch forwards every self-reported/parsed progress
-/// fraction to it (P3.43 wires the `InProcessNative` lane's self-report; the subprocess lanes will feed the
-/// same sink from their §3.5 line-reader at P4.8). It is a plain `f32` callback so `crate::engines` (a §0.7
+/// fraction to it (P3.43 wires the `InProcessNative` lane's self-report; the subprocess lanes feed the same
+/// sink from the §1.7 per-`ProgressModel` line-reader in `crate::isolation::run_confined`, P4.8 — the P4.32
+/// program-path resolution wires their arms to [`run_subprocess`]). It is a plain `f32` callback so `crate::engines` (a §0.7
 /// tier-2 module) names **no** orchestrator-homed type: the tier-1 caller (the P3.46 conductor) supplies the
 /// closure that wraps each fraction into the §0.4.2 `ItemProgress { runId, itemId, fraction, stage }` and
 /// sends it over the channel — the fraction is §1.7's, the wire tick is the conductor's. `+ Send + 'static` so
@@ -690,23 +797,35 @@ pub async fn dispatch(
 ///
 /// `run_confined` already realises the whole per-spawn state machine (§2.12.1 process boundary + §2.12.3
 /// cheap-tier floor + the exit/cancel/spawn-error mapping, P4.13); this lane is the §1.7 SEAM its siblings
-/// EXTEND on top of that primitive: **P4.8** attaches the per-`ProgressModel` stdout/stderr line-reader →
-/// `on_progress` sink here, **P4.9** the two-step probe-then-encode sequencing, **P4.12** the no-progress
-/// watchdog → `Failed(EngineHang)` + the exit≠0 → §3.5 `classify_failure` routing — each grows THIS body while
-/// `run_confined` stays the pure confinement primitive. The §1.7 exit-output verification is NOT re-implemented
-/// here — it is delivered conductor-side (`orchestrator::verify_encode_output`, the P3.48 re-cut) after every
-/// `Succeeded`. `program` is the RESOLVED absolute binary path; the `EngineProgram → path` resolution is
-/// **P4.32**'s (§3.3.3), which then rewrites `dispatch`'s `Sidecar`/`ResourceBin` arms to call this lane — no
-/// resolvable subprocess program exists before then, so this lane is dead in the production build until P4.32
-/// (the cfg(test) subprocess suite below exercises it; it is covered by the module-level dead-code lint level,
-/// like [`run_native_csv_tsv`]'s pre-conductor InProcessNative chain). [Build-Session-Entscheidung: P4.7]
-async fn run_subprocess(invocation: &EngineInvocation, program: &Path) -> InvocationResult {
+/// EXTEND on top of that primitive: **P4.8** landed the per-`ProgressModel` stdout/stderr handling in the
+/// `run_confined` re-cut and threads the `on_progress` sink through to it (streaming models line-read →
+/// fractions, `CoarseSpawnDone` buffers stdout, stderr captured in full — see [`ProgressModel::progress_fraction`]
+/// and [`ConfinedRun`]); **P4.9** adds the two-step probe-then-encode sequencing (consuming the buffered
+/// [`ConfinedRun::stdout`]), **P4.12** the no-progress watchdog → `Failed(EngineHang)` + the exit≠0 → §3.5
+/// `classify_failure` routing (consuming [`ConfinedRun::stderr`]) — each grows THIS body while `run_confined`
+/// stays the pure confinement primitive. This lane returns only `.result` today; the captured
+/// [`ConfinedRun`] stdout/stderr buffers become live seams when P4.9/P4.12 grow it. The §1.7 exit-output
+/// verification is NOT re-implemented here — it is delivered conductor-side (`orchestrator::verify_encode_output`,
+/// the P3.48 re-cut) after every `Succeeded`. `program` is the RESOLVED absolute binary path; the
+/// `EngineProgram → path` resolution is **P4.32**'s (§3.3.3), which then rewrites `dispatch`'s
+/// `Sidecar`/`ResourceBin` arms to call this lane — no resolvable subprocess program exists before then, so
+/// this lane is dead in the production build until P4.32 (the cfg(test) subprocess suite below exercises it;
+/// it is covered by the module-level dead-code lint level, like [`run_native_csv_tsv`]'s pre-conductor
+/// InProcessNative chain). [Build-Session-Entscheidung: P4.7]
+async fn run_subprocess(
+    invocation: &EngineInvocation,
+    program: &Path,
+    on_progress: impl Fn(f32),
+) -> InvocationResult {
     // §1.7 routes every spawn THROUGH the §2.12 isolation wrapper — the sole `Command` site (G29 rule (c),
-    // which does NOT exclude `crate::engines`). This lane hands the invocation + the resolved program path in
-    // as DATA and never constructs a `Command` itself; `run_confined` owns the confinement + the per-spawn
-    // state machine (P4.13). P4.8/P4.9/P4.12 extend THIS body (progress line-reader / probe-then-encode /
-    // watchdog + classify_failure). [Build-Session-Entscheidung: P4.7]
-    crate::isolation::run_confined(invocation, program).await
+    // which does NOT exclude `crate::engines`). This lane hands the invocation + the resolved program path +
+    // the `on_progress` sink in as DATA and never constructs a `Command` itself; `run_confined` owns the
+    // confinement + the per-spawn state machine + the P4.8 per-`ProgressModel` stdout/stderr handling (P4.13/
+    // P4.8). It returns the full [`ConfinedRun`]; this lane forwards only `.result` — P4.9 (probe stdout) /
+    // P4.12 (stderr classify) grow it to consume the captured buffers. [Build-Session-Entscheidung: P4.8]
+    crate::isolation::run_confined(invocation, program, on_progress)
+        .await
+        .result
 }
 
 /// The §1.7 `InProcessNative` lane (P3.43) — run the §3.5.6 native CSV/TSV transform on the §0.9 in-core
@@ -1864,6 +1983,56 @@ mod tests {
         }
     }
 
+    // §1.7/§1.11 unit (G15, P4.8): the pure per-`ProgressModel` line→fraction parse. The two streaming models
+    // share the `key=value` wire (§1.11 / §3.5.5), so the SAME §1.7 reader parses both; the coarse / in-process
+    // models never line-parse. No-panic on any input (no `=`, unparseable value, zero denominator).
+    #[test]
+    fn progress_fraction_parses_the_streaming_key_value_wire() {
+        let ffmpeg = ProgressModel::FfmpegKeyValue {
+            duration_us: 1_000_000,
+        };
+        // FFmpeg `-progress`: `out_time_us` over the ffprobe duration; `progress=end` → done.
+        assert_eq!(ffmpeg.progress_fraction("out_time_us=500000"), Some(0.5));
+        assert_eq!(ffmpeg.progress_fraction("out_time_us=0"), Some(0.0));
+        assert_eq!(ffmpeg.progress_fraction("progress=end"), Some(1.0));
+        // out_time beyond the duration clamps to 1.0 (never > 1.0).
+        assert_eq!(ffmpeg.progress_fraction("out_time_us=9000000"), Some(1.0));
+        // Non-progress FFmpeg keys + `progress=continue` carry no fraction (`total_size` is NOT the denominator).
+        assert_eq!(ffmpeg.progress_fraction("total_size=4096"), None);
+        assert_eq!(ffmpeg.progress_fraction("progress=continue"), None);
+        // Whitespace around key/value is tolerated (the reader trims).
+        assert_eq!(
+            ffmpeg.progress_fraction("  out_time_us = 250000 "),
+            Some(0.25)
+        );
+        // A line with no '=' or an unparseable numerator is None, never a panic.
+        assert_eq!(ffmpeg.progress_fraction("not-a-kv-line"), None);
+        assert_eq!(ffmpeg.progress_fraction("out_time_us=not-a-number"), None);
+
+        // A zero denominator (unknown duration) yields None, never a division by zero.
+        let unknown = ProgressModel::FfmpegKeyValue { duration_us: 0 };
+        assert_eq!(unknown.progress_fraction("out_time_us=500000"), None);
+
+        // VipsStdout: `progress=<0..100>` / 100; `progress=end` → done; over-100 clamps to 1.0.
+        let vips = ProgressModel::VipsStdout;
+        assert_eq!(vips.progress_fraction("progress=50"), Some(0.5));
+        assert_eq!(vips.progress_fraction("progress=100"), Some(1.0));
+        assert_eq!(vips.progress_fraction("progress=150"), Some(1.0));
+        assert_eq!(vips.progress_fraction("progress=end"), Some(1.0));
+        assert_eq!(vips.progress_fraction("other=7"), None);
+        assert_eq!(vips.progress_fraction("progress=not-a-number"), None);
+
+        // The non-streaming models never line-parse — always None (a JSON blob is buffered, not line-read).
+        assert_eq!(
+            ProgressModel::CoarseSpawnDone.progress_fraction("progress=50"),
+            None
+        );
+        assert_eq!(
+            ProgressModel::InProcessFraction.progress_fraction("out_time_us=1"),
+            None
+        );
+    }
+
     // §6.4.1 unit (G15): the §3.2.2 `StdinPlan` has exactly the path-arg (`None`) and pipe-bytes cases (P3.4).
     #[test]
     fn stdin_plan_has_none_and_pipe_bytes() {
@@ -2807,7 +2976,10 @@ mod tests {
     // (c); this lane builds NO Command). These tests prove the SEAM: an EngineInvocation + a resolved program
     // path handed to run_subprocess yields the SAME confined §1.7 outcome run_confined produces — over a REAL
     // subprocess + a REAL scratch cwd (the isolation layer is never mocked, test-strategy §0.1). The child is
-    // the platform shell at its ABSOLUTE path (the confined env has no PATH).
+    // the platform shell at its ABSOLUTE path (the confined env has no PATH). P4.8 added the `on_progress`
+    // param + the progress-forwarding test below; the exit/cancel/spawn-error asserts pass `|_| {}` (no
+    // outcome expectation changed — a pure signature-param addition, NOT a suppressed assertion, so no
+    // [Test-Change] tag is warranted; the return type stays `InvocationResult`).
 
     #[cfg(windows)]
     fn seam_shell() -> (PathBuf, Vec<OsString>) {
@@ -2866,13 +3038,13 @@ mod tests {
         let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
         let (ok, program) = seam_shell_invocation("exit 0", scratch.path().to_path_buf());
         assert_eq!(
-            run_subprocess(&ok, &program).await,
+            run_subprocess(&ok, &program, |_| {}).await,
             InvocationResult::Succeeded,
             "§1.7: run_subprocess routes a clean exit through run_confined to Succeeded"
         );
         let (bad, program) = seam_shell_invocation("exit 3", scratch.path().to_path_buf());
         assert_eq!(
-            run_subprocess(&bad, &program).await,
+            run_subprocess(&bad, &program, |_| {}).await,
             InvocationResult::Failed(ConversionErrorKind::EngineCrash),
             "§2.12.1: a nonzero engine exit passes through the lane as the reap-mapped EngineCrash floor"
         );
@@ -2890,7 +3062,7 @@ mod tests {
         let (envelope, program) = seam_shell_invocation(script, scratch.path().to_path_buf());
         envelope.cancel.cancel();
         assert_eq!(
-            run_subprocess(&envelope, &program).await,
+            run_subprocess(&envelope, &program, |_| {}).await,
             InvocationResult::Cancelled,
             "§1.7: a tripped cancel token routes through the lane to Cancelled, never a fabricated success"
         );
@@ -2905,9 +3077,48 @@ mod tests {
         let (envelope, _) = seam_shell_invocation("exit 0", scratch.path().to_path_buf());
         let missing = scratch.path().join("no-such-engine-binary.exe");
         assert_eq!(
-            run_subprocess(&envelope, &missing).await,
+            run_subprocess(&envelope, &missing, |_| {}).await,
             InvocationResult::Failed(ConversionErrorKind::InternalError),
             "§2.13.1: a runtime per-item spawn failure is the item-level InternalError (P4.7-resolved)"
+        );
+    }
+
+    // §1.7/§1.11 (G15, P4.8): run_subprocess FORWARDS the confined child's parsed progress fractions to its
+    // `on_progress` sink — a FfmpegKeyValue streaming child's `out_time_us` / `progress=end` stdout lines
+    // arrive as fractions through the lane (the sink `crate::isolation::run_confined` drives, threaded through
+    // run_subprocess). [Build-Session-Entscheidung: P4.8]
+    #[tokio::test]
+    async fn the_subprocess_lane_forwards_progress_fractions_to_the_sink() {
+        use std::sync::{Arc, Mutex};
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        #[cfg(windows)]
+        let raw = "echo out_time_us=250000&echo progress=end";
+        #[cfg(unix)]
+        let raw = "printf 'out_time_us=250000\\nprogress=end\\n'";
+        let (mut envelope, program) = seam_shell_invocation(raw, scratch.path().to_path_buf());
+        // The lane reads the child's stdout per the invocation's ProgressModel (§1.7) — set the streaming
+        // FfmpegKeyValue model with a 1,000,000 µs denominator so out_time_us=250000 → 0.25.
+        envelope.plan.progress = ProgressModel::FfmpegKeyValue {
+            duration_us: 1_000_000,
+        };
+        let hits = Arc::new(Mutex::new(Vec::<f32>::new()));
+        let sink = {
+            let hits = hits.clone();
+            move |fraction: f32| {
+                hits.lock()
+                    .expect("progress mutex not poisoned")
+                    .push(fraction)
+            }
+        };
+        assert_eq!(
+            run_subprocess(&envelope, &program, sink).await,
+            InvocationResult::Succeeded
+        );
+        let forwarded = hits.lock().expect("progress mutex readable").clone();
+        assert_eq!(
+            forwarded,
+            vec![0.25_f32, 1.0_f32],
+            "§1.11: the lane forwards out_time_us=250000/1_000_000 → 0.25, then progress=end → 1.0"
         );
     }
 }

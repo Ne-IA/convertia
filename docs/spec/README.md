@@ -81,9 +81,11 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   shared `final_dir`); it removes only `.convertia-<thisInstanceId>-<thisRunId>-*.part` and
   applies the §2.6.3 held-lock guard to any non-matching `.convertia-*.part`. Owner: §2.6.2.
 - **§1.7 line-reader vs ffprobe-buffered reconciled `[DECIDED]`** — the §1.7 opening now
-  qualifies stdout handling per `ProgressModel`: line-by-line for streaming models
-  (FfmpegKeyValue/VipsStdout/InProcessFraction), buffered-and-JSON-parsed for the
-  CoarseSpawnDone ffprobe probe (no line reader). Owner: §1.7.
+  qualifies stdout handling per `ProgressModel`: line-by-line for the streaming SUBPROCESS models
+  (FfmpegKeyValue/VipsStdout), buffered-and-JSON-parsed for the CoarseSpawnDone ffprobe probe (no line
+  reader), and self-reported over an in-process mpsc channel for InProcessFraction (the in-core native
+  CSV/TSV engine — NOT a line-reader model; P4.8 removed it from the streaming set, literal→normative).
+  Owner: §1.7.
 - **§1.9 batch construction projects pre-flight skips `[DECIDED]`** — a new §1.9 Queue-semantics
   bullet states that at C6 the orchestrator materialises a `Skipped(reason)` ConversionJob for
   every `CollectedSet::Single.skipped` item (no queue entry, no Channel events, terminal at
