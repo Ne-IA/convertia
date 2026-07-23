@@ -98,7 +98,7 @@
 
 ## The §2.12 decoder-isolation wrapper (`crate::isolation`)
 
-- [ ] **P4.13** [RUST] Build the `crate::isolation` cheap-tier floor (process boundary + minimal/cleared env + scratch-cwd + input/tmp-only handing) · §2.12.1 §2.12.3 · G29 G9
+- [x] **P4.13** [RUST] Build the `crate::isolation` cheap-tier floor (process boundary + minimal/cleared env + scratch-cwd + input/tmp-only handing) · §2.12.1 §2.12.3 · G29 G9
   needs: P3.2, P4.85
   > **Forward-ref note (DECISION-C ordering inversion):** `needs: P4.85` points at the L(-1) G29 rule-refinement box defined later in document order — the first production `Command::new` this box lands would red the un-refined rule (d)/(b1) in CI, so DECISION-C requires P4.85 (Co-Pilot/owner-executed, a loop STOP per `_format.md` §2/§6) before this box; the edge is acyclic and valid, the inversion documented at the `needs:` line.
   > the §2.12.3 NON-NEGOTIABLE v1 floor every engine spawn routes through: the §2.12.1 process boundary, a minimal/cleared environment (no inherited secrets), working-dir = the per-run scratch dir (§2.6), the engine handed **only** the exact input path + the `tmp` output path (not a scannable dir). Fills the P3 interface-only `crate::isolation` shell P3.2 established — `needs: P3.2`, the cross-phase edge wired here per the P4.77 reconciliation obligation. Spawn routed via `process-wrap` (P4.10).
