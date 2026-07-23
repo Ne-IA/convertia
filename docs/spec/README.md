@@ -790,7 +790,9 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   CSV transform is acceptable. Owner: §2.12.4.
 - **Video probe-then-encode is two sub-invocations of one engine, not a chain** — `plan()`
   stays Pure and returns the `ffprobe` invocation; §1.7 spawns it, parses a typed
-  `ProbeOutput`, then calls `Engine::plan_encode(job, out_tmp, &probe)` (a second trait
+  `ProbeOutput` via the engine's `parse_probe` seam (a sibling trait method, P4.9 — the
+  generic parse door; the concrete `ffprobe`-JSON parse is the §3.5.1 adapter's), then calls
+  `Engine::plan_encode(job, out_tmp, &probe)` (a second trait
   method) to build the encode `Invocation` with `duration_us` taken FROM the probe — NO
   in-place `progress.duration_us` struct mutation. Owner: §3.2.1 / §1.7 / §3.5.1.
   (Call shape revised per the 2026-07-07 plan-seam ruling: tier-3 params
@@ -893,7 +895,10 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   Skipped` variant is reserved for that projection path. Owner: §0.4.2 / §1.9 / §1.12.
 - **Video two-phase plan contract = `plan_encode(ProbeOutput)` trait method** — `plan()`
   returns the probe `Invocation`; the §3.2 Engine trait gains
-  `plan_encode(&self, probe: ProbeOutput) -> Invocation`; `duration_us` is provided BY the
+  `plan_encode(&self, probe: ProbeOutput) -> Invocation` **and the sibling parse seam
+  `parse_probe(&self, stdout: &[u8]) -> Result<ProbeOutput, PlanError>`** (P4.9 — the generic
+  parse door §1.7 drives; both default to `InternalError` for single-step engines, filled by
+  the §3.5.1 `ffprobe` adapter at P6.10); `duration_us` is provided BY the
   probe output (carried into `plan_encode`), NOT mutated on a prior struct. The §3.5.1
   "sets progress.duration_us" in-place-mutation sentence is removed. Owner: §3.2.1 / §1.7
   / §3.5.1. (Revised per the 2026-07-07 plan-seam ruling: `plan()` returns

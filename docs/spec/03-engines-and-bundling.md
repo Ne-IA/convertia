@@ -145,9 +145,12 @@ scratch on the §2.14 volume, per-step progress §1.11, step-attributed errors
 > - the §3.2.2 `Engine` trait gains **`fn plan_encode(&self, item: &DroppedItem,
 >   target: TargetId, input: &Path, out_tmp: &TempPath, probe: &ProbeOutput) ->
 >   Result<Invocation, PlanError>`** (the tier-3 plan params — §3.2.2, the 2026-07-07
->   plan-seam ruling) — §1.7 runs
+>   plan-seam ruling) **and a sibling parse SEAM `fn parse_probe(&self, stdout: &[u8]) ->
+>   Result<ProbeOutput, PlanError>`** (§3.2.2, added P4.9) — §1.7 runs
 >   the probe sub-invocation, parses its stdout into a typed **`ProbeOutput`** (inner codecs
->   + `duration_us` + rotation + interlace), then calls `plan_encode(.., &probe)` to get the
+>   + `duration_us` + rotation + interlace) **via that `parse_probe` seam** (the concrete
+>   `ffprobe`-JSON parse is the §3.5.1 adapter's, so a generic `&dyn Engine` sequencing can
+>   only reach it through the trait), then calls `plan_encode(.., &probe)` to get the
 >   finalised encode `Invocation`, which §1.7 then spawns.
 > - **`duration_us` is provided BY the `ProbeOutput`** carried into `plan_encode` (the
 >   encode `Invocation`'s `progress` is built with the real denominator at that point) —
@@ -236,6 +239,24 @@ pub trait Engine: Send + Sync {
         -> Result<Invocation, PlanError> {
         Err(PlanError { kind: ConversionErrorKind::InternalError,
                         detail: "engine has no probe/encode two-phase plan".into() })
+    }
+
+    /// Parse a probe sub-invocation's captured stdout into `ProbeOutput` `[DECIDED §3.2.1]`. Called by
+    /// §1.7 ONLY for an engine whose `plan()` returned `PlanOutcome::Probe`: §1.7 buffers the probe's
+    /// `CoarseSpawnDone` stdout in FULL (a single `ffprobe -print_format json` blob — no line reader) and
+    /// hands the complete buffer here, so the ENGINE — which alone knows its probe's wire format (§3.5.1) —
+    /// turns it into the four typed fields (inner codecs + `duration_us` + rotation + interlace). §1.7 then
+    /// carries the `ProbeOutput` into `plan_encode`, where `duration_us` becomes the
+    /// `ProgressModel::FfmpegKeyValue` denominator — never mutated onto a pre-probe struct (§3.2.1). This is
+    /// the parse SEAM the generic §1.7 sequencing invokes: it is a trait method (not a §1.7-internal parse)
+    /// precisely because the concrete `ffprobe`-JSON parser is the §3.5.1 FFmpeg adapter's, which a generic
+    /// `&dyn Engine` sequencing can only reach through the trait. Default impl returns a
+    /// `ConversionErrorKind::InternalError` PlanError with the detail string below (single-step engines never
+    /// reach it — §1.7 only calls `parse_probe` after a `PlanOutcome::Probe`). Pure (no I/O, no spawn — it
+    /// parses already-captured bytes).
+    fn parse_probe(&self, _stdout: &[u8]) -> Result<ProbeOutput, PlanError> {
+        Err(PlanError { kind: ConversionErrorKind::InternalError,
+                        detail: "engine has no probe stdout parser".into() })
     }
 
     // NO `progress_model()` trait method `[DECIDED]`. Progress is a PER-INVOCATION
@@ -340,7 +361,8 @@ pub type TempPath = tempfile::TempPath;
 pub struct PlanError { pub kind: ConversionErrorKind, pub detail: String }
 
 /// The parsed result of a probe sub-invocation (§3.2.1 two-phase contract), produced
-/// by §1.7 from `ffprobe`'s stdout and handed to `plan_encode`. Engine-layer-internal.
+/// by §1.7 via the engine's `parse_probe` seam from `ffprobe`'s stdout and handed to
+/// `plan_encode`. Engine-layer-internal.
 /// `duration_us` becomes the ProgressModel::FfmpegKeyValue denominator for the encode
 /// (provided here, NOT mutated onto a pre-probe struct). Video FFmpeg is the only v1
 /// probe-requiring engine; the shape is FFmpeg-shaped but the contract is generic.
@@ -938,7 +960,8 @@ conversion" is a **read-side** claim, not a write-side one).
   FfmpegKeyValue { duration_us }` (§1.11). Real per-item %, never a spinner.
   **`duration_us` population — via the two-phase plan, not struct mutation `[DECIDED]`:**
   the `duration_us` denominator comes from the **`ProbeOutput`** §1.7 parses from
-  `ffprobe`, carried into **`Engine::plan_encode(.., &probe)`** (§3.2.1/§3.2.2) which builds
+  `ffprobe` via the engine's **`Engine::parse_probe`** seam (§3.2.2), carried into
+  **`Engine::plan_encode(.., &probe)`** (§3.2.1/§3.2.2) which builds
   the encode `Invocation` with `ProgressModel::FfmpegKeyValue { duration_us: probe.duration_us }`
   already populated. There is **no placeholder-then-mutate**: `plan()` returns the probe
   invocation (no encode `progress` to mutate); the encode invocation is built **after** the

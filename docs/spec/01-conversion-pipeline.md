@@ -828,7 +828,8 @@ enum InvocationResult {
   LibreOffice has no native progress → §1.11's heuristic; libvips is fast/atomic →
   coarse ticks). For **`ProgressModel::CoarseSpawnDone`** (the ffprobe probe sub-invocation,
   below) §1.7 instead **buffers stdout in full** and passes the **complete buffer** to the
-  §3.5.1 adapter's `ProbeOutput` JSON parser — **no line reader is attached** to a
+  engine's `Engine::parse_probe` seam (§3.2.2 — the §3.5.1 adapter's concrete `ProbeOutput`
+  JSON parser) — **no line reader is attached** to a
   CoarseSpawnDone stdout (it would corrupt the single-JSON-blob parse). **`ProgressModel::InProcessFraction`
   is NOT in the streaming line-reader set** — the one in-core engine (native CSV/TSV, §3.5.6) has **no
   subprocess stdout at all**: it **self-reports** a `bytes_processed / source_size` fraction over an in-process
@@ -849,6 +850,8 @@ enum InvocationResult {
   on the probe's inner-codec result, §1.7 uses the §3.2.1/§3.2.2 **two-phase trait
   contract**: it **calls `Engine::plan()` (which returns the `ffprobe` sub-invocation as
   `PlanOutcome::Probe`, §3.2.2), spawns it, parses its stdout into a typed `ProbeOutput`
+  via the engine's `Engine::parse_probe` seam (§3.2.2, the parse door a generic
+  `&dyn Engine` sequencing invokes — the concrete parser is the §3.5.1 adapter's)
   (inner codecs + `duration_us` + rotation + interlace), then calls
   `Engine::plan_encode(item, target, input, out_tmp, &probe)` (the tier-3 plan params,
   §3.2.2) to get the finalised encode `Invocation`, populates its `out_tmp = Some(temp)`
@@ -870,7 +873,8 @@ enum InvocationResult {
   **Probe stdout is BUFFERED-and-JSON-parsed, NOT routed to the line reader `[DECIDED]`:**
   the probe sub-invocation runs `ffprobe -print_format json …`, which emits a **single JSON
   blob** (not key=value progress lines). So for the probe invocation §1.7 **captures stdout
-  in full and hands the complete buffer to the §3.5.1 adapter's `ProbeOutput` JSON parser** —
+  in full and hands the complete buffer to the engine's `Engine::parse_probe` seam (§3.2.2 —
+  the §3.5.1 adapter's concrete `ProbeOutput` JSON parser)** —
   it does **not** feed probe stdout to the line-by-line progress reader. The line-by-line
   progress reader (above) is used **only** for invocations with a streaming `ProgressModel`
   (`FfmpegKeyValue` for the encode, `VipsStdout` for the image-worker); the probe's

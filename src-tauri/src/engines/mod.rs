@@ -42,7 +42,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "of the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111): the P4.4/P4.5 registry build is live on the conductor's path (engine_registry() calls descriptor()+capabilities() and pre-computes the §0.9 serialised-flag map), but the EngineDescriptor.kind field-read and the serialised_flags() accessor stay dead until the P4.22 pool wiring consumes them, and EngineStatus/EngineHealth until the P4.45 startup probe assembles the real Ok(EngineHealth). The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the Engine trait + PlanOutcome return (P3.5-minimal, expanded to the full §3.2.2 surface and homed in engines/registry.rs at P4.1) and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.4 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), P4.13 authors crate::isolation::run_confined, P4.7 authors the §1.7 generic subprocess lane run_subprocess routing through it (the engines-side §1.7 seam P4.8/P4.9/P4.12 extend; itself dead until P4.32), and P4.32 rewrites the subprocess arms to call run_subprocess (once P4.32 resolves EngineProgram to the binary path) — so the dispatch fn + run_subprocess + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture. The P4.2-authored §3.2.2 ProbeOutput (the parsed §3.2.1 probe result) is dead until the P4.9 probe-then-encode sequencing constructs it and a probe-engine plan_encode impl reads it (the P4.1 default impl ignores its _probe param by contract); its cfg(test) shape test constructs + reads all four fields, keeping the test build dead-code-clean. The P4.3-authored §3.2.2 leaf types (Direction / PatentDisposition / CodecPosture / EngineCapability + the SourceFmt/TargetFmt aliases) are NAMED by the P4.1 trait signatures (capabilities(platform, patents)) and the native engine's capability row, but their construction sites stay dead until the P4.4 registry calls capabilities() and the P4.40 engines.lock parse builds the disposition; their cfg(test) shape tests construct + read every field, keeping the test build dead-code-clean. P4.8 adds ProgressModel::progress_fraction + fraction_of (the §1.7 per-ProgressModel line->fraction parse) and the ConfinedRun captured-stream outcome (failed/cancelled ctors + the stdout/stderr buffers the P4.9 probe-parse / P4.12 stderr-classify will consume) — all constructed/called only by the dead crate::isolation::run_confined until run_subprocess becomes a live root at P4.32, so dead in the production build; their cfg(test) unit + real-subprocess tests exercise the parse + the capture, keeping the test build dead-code-clean."
+        reason = "of the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111): the P4.4/P4.5 registry build is live on the conductor's path (engine_registry() calls descriptor()+capabilities() and pre-computes the §0.9 serialised-flag map), but the EngineDescriptor.kind field-read and the serialised_flags() accessor stay dead until the P4.22 pool wiring consumes them, and EngineStatus/EngineHealth until the P4.45 startup probe assembles the real Ok(EngineHealth). The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the Engine trait + PlanOutcome return (P3.5-minimal, expanded to the full §3.2.2 surface and homed in engines/registry.rs at P4.1) and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.4 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), P4.13 authors crate::isolation::run_confined, P4.7 authors the §1.7 generic subprocess lane run_subprocess routing through it (the engines-side §1.7 seam P4.8/P4.9/P4.12 extend; itself dead until P4.32), and P4.32 rewrites the subprocess arms to call run_subprocess (once P4.32 resolves EngineProgram to the binary path) — so the dispatch fn + run_subprocess + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture. The P4.2-authored §3.2.2 ProbeOutput (the parsed §3.2.1 probe result) is constructed by an engine's parse_probe seam (P4.9, registry.rs) and read by run_probe_then_encode (which hands it to plan_encode) — dead in the PRODUCTION build until the P6.10 ffprobe adapter overrides parse_probe/plan_encode to construct + read it (every registered v1 engine before P6 is single-step, so both seams hit the InternalError default); its cfg(test) shape test + the P4.9 synthetic-probe-engine suite construct + read all four fields, keeping the test build dead-code-clean. The P4.3-authored §3.2.2 leaf types (Direction / PatentDisposition / CodecPosture / EngineCapability + the SourceFmt/TargetFmt aliases) are NAMED by the P4.1 trait signatures (capabilities(platform, patents)) and the native engine's capability row, but their construction sites stay dead until the P4.4 registry calls capabilities() and the P4.40 engines.lock parse builds the disposition; their cfg(test) shape tests construct + read every field, keeping the test build dead-code-clean. P4.8 adds ProgressModel::progress_fraction + fraction_of (the §1.7 per-ProgressModel line->fraction parse) and the ConfinedRun captured-stream outcome (failed/cancelled ctors + the stdout/stderr buffers the P4.9 probe-parse / P4.12 stderr-classify consume) — all constructed/called only by the dead crate::isolation::run_confined until run_subprocess becomes a live root at P4.32, so dead in the production build; their cfg(test) unit + real-subprocess tests exercise the parse + the capture, keeping the test build dead-code-clean. P4.9 adds the parse_probe Engine trait seam (default InternalError, registry.rs, overridden by the P6.10 ffprobe adapter) and the run_probe_then_encode two-step sequencing (spawn probe via run_confined -> parse_probe -> plan_encode -> the encode Invocation); run_probe_then_encode calls run_confined directly (it needs the &dyn Engine handle the per-invocation run_subprocess lane does not carry) and has NO production caller until P6.10 wires it through the conductor's Probe arm (with the P4.32 EngineProgram->path resolution + the concrete ffprobe engine), so it is dead in the production build like run_subprocess; its cfg(test) synthetic-probe-engine suite exercises the whole sequence over a real subprocess, keeping the test build dead-code-clean."
     )
 )]
 
@@ -618,8 +618,9 @@ pub struct PlanError {
     pub detail: String,
 }
 
-/// The parsed result of a probe sub-invocation (§3.2.2, the §3.2.1 two-phase contract), produced by §1.7
-/// from `ffprobe`'s stdout and handed to `Engine::plan_encode` (registry.rs) to finalise the encode
+/// The parsed result of a probe sub-invocation (§3.2.2, the §3.2.1 two-phase contract), produced by §1.7 via
+/// the engine's [`Engine::parse_probe`] seam (registry.rs) from the buffered probe stdout and handed to
+/// [`Engine::plan_encode`] (registry.rs) to finalise the encode
 /// [`Invocation`]. Engine-layer-internal, like [`Invocation`]. `duration_us` becomes the
 /// [`ProgressModel::FfmpegKeyValue`] denominator for the encode — PROVIDED here, never mutated onto a
 /// pre-probe struct (§3.2.1's "no placeholder-then-mutate"). Video FFmpeg is the only v1 probe-requiring
@@ -800,11 +801,15 @@ pub async fn dispatch(
 /// EXTEND on top of that primitive: **P4.8** landed the per-`ProgressModel` stdout/stderr handling in the
 /// `run_confined` re-cut and threads the `on_progress` sink through to it (streaming models line-read →
 /// fractions, `CoarseSpawnDone` buffers stdout, stderr captured in full — see [`ProgressModel::progress_fraction`]
-/// and [`ConfinedRun`]); **P4.9** adds the two-step probe-then-encode sequencing (consuming the buffered
-/// [`ConfinedRun::stdout`]), **P4.12** the no-progress watchdog → `Failed(EngineHang)` + the exit≠0 → §3.5
-/// `classify_failure` routing (consuming [`ConfinedRun::stderr`]) — each grows THIS body while `run_confined`
-/// stays the pure confinement primitive. This lane returns only `.result` today; the captured
-/// [`ConfinedRun`] stdout/stderr buffers become live seams when P4.9/P4.12 grow it. The §1.7 exit-output
+/// and [`ConfinedRun`]); **P4.9** builds the two-step probe-then-encode sequencing as the SIBLING
+/// [`run_probe_then_encode`] — NOT a growth of this per-invocation lane: the two-step needs the `&dyn Engine`
+/// handle (for `parse_probe` + `plan_encode`) that this single-invocation lane does not carry, so it calls
+/// [`crate::isolation::run_confined`] directly to consume the buffered [`ConfinedRun::stdout`] for the probe
+/// parse; **P4.12** the no-progress watchdog → `Failed(EngineHang)` + the exit≠0 → §3.5 `classify_failure`
+/// routing (consuming [`ConfinedRun::stderr`]) grows THIS body while `run_confined` stays the pure confinement
+/// primitive. This lane returns only `.result` (the encode leg's outcome); the probe's buffered
+/// [`ConfinedRun::stdout`] is consumed by the sibling [`run_probe_then_encode`] and [`ConfinedRun::stderr`]
+/// becomes a live seam when P4.12 grows this lane. The §1.7 exit-output
 /// verification is NOT re-implemented here — it is delivered conductor-side (`orchestrator::verify_encode_output`,
 /// the P3.48 re-cut) after every `Succeeded`. `program` is the RESOLVED absolute binary path; the
 /// `EngineProgram → path` resolution is **P4.32**'s (§3.3.3), which then rewrites `dispatch`'s
@@ -826,6 +831,88 @@ async fn run_subprocess(
     crate::isolation::run_confined(invocation, program, on_progress)
         .await
         .result
+}
+
+/// The §1.7 two-step probe-then-encode sequencing (P4.9) — the §3.2.1 two-phase contract for a
+/// probe-requiring engine, run as ONE composition over the engines-side §1.7 primitives. Given an engine
+/// whose `plan()` returned [`PlanOutcome::Probe`], it (1) runs the probe sub-invocation THROUGH the §2.12
+/// isolation wrapper ([`crate::isolation::run_confined`], the sole spawn site — this fn builds no `Command`,
+/// G29 rule (c)); the probe is a read ([`ProgressModel::CoarseSpawnDone`], §3.2.1), so its stdout is BUFFERED
+/// whole (no line reader — a JSON blob) and no progress tick fires (the sink is a no-op). (2) On a clean
+/// exit it hands the buffered [`ConfinedRun::stdout`] to the engine's [`Engine::parse_probe`] seam → a typed
+/// [`ProbeOutput`] (the concrete `ffprobe`-JSON parser is the §3.5.1 adapter's, wired at P6.10). (3) It calls
+/// [`Engine::plan_encode`] with the `ProbeOutput` to finalise the encode [`Invocation`] — `duration_us` built
+/// INTO its [`ProgressModel::FfmpegKeyValue`] there, never mutated onto a pre-probe struct (§3.2.1).
+///
+/// **Returns the finalised encode [`Invocation`] (still `out_tmp: None`) for the §1.7 caller to dispatch.**
+/// The tier-1 conductor (§0.7: the orchestrator sequences the leaves — the P3.38 composition rule) populates
+/// `out_tmp = Some(temp)` on it (the temp §1.7 HELD across the probe leg) and dispatches it, then runs the
+/// §2.1 atomic-publish + §2.6 cleanup — **for the ENCODE leg only**. There is NO publish/cleanup for the
+/// probe leg: its `Invocation` carries `out_tmp: None` (§3.2.2 — `ffprobe` writes only stdout JSON, no
+/// `*.part` artifact), so this sequencing runs none.
+///
+/// **Both legs share the §1.7 cancel/timeout/group-kill machinery.** The probe runs under the same
+/// [`EngineInvocation::cancel`] token `run_confined` honours; a cancel trips it to
+/// [`InvocationResult::Cancelled`], returned as `Err` (nothing encoded); the encode leg's own cancel/kill
+/// rides its subsequent dispatch. `Err` carries the probe leg's terminal [`InvocationResult`]
+/// (`Failed(kind)` / `Cancelled`) for the caller to project directly (`Failed` cleans the encode temp,
+/// `Cancelled` drops it); a `parse_probe` / `plan_encode` [`PlanError`] maps to `Err(Failed(kind))` — its
+/// §2.8 kind, the pure-planning-failure path (matching how the conductor maps a `plan()` `PlanError`). The
+/// probe's own `stderr` classification is P4.12's (exit≠0 → §3.5 `classify_failure`); the pre-P4.12 floor is
+/// `run_confined`'s reap-mapped kind.
+///
+/// **`probe_program` is the RESOLVED absolute probe binary path** (`binaries/ffprobe`, §3.3.3) — the P4.32
+/// `EngineProgram → &Path` resolution supplies it, exactly like [`run_subprocess`]'s `program`. No v1
+/// probe-requiring engine is registered before P6 (§3.2.2), so this sequencing has no production caller until
+/// P6.10 (`needs: P4.9`) wires it through the conductor's `Probe` arm (with the concrete `ffprobe` engine +
+/// the P4.32 resolution); it is dead in the production build meanwhile (the module dead-code lint level, like
+/// [`run_subprocess`]), exercised by the cfg(test) synthetic-probe-engine suite below (a real subprocess
+/// emitting a synthetic probe line).
+///
+/// [Derived-Assumption: P4.9 — this fn implements the MIDDLE of the box-title's five steps
+/// (spawn probe → parse ProbeOutput → plan_encode), taking the already-planned probe envelope as `probe` and
+/// RETURNING the finalised encode `Invocation`. Step 1 (`engine.plan()` → the probe `PlanOutcome`) already
+/// runs in the tier-1 conductor (`orchestrator::convert_item`, pre-P4.9) and step 5 (populate `out_tmp` →
+/// dispatch the encode → §2.1 publish) is the conductor's existing single-step encode path — both are tier-1
+/// leaf-sequencing an engines-tier fn cannot own (§0.7; the P4.7 home-forward-note). So P4.9 builds the
+/// engines-tier SEAM (this fn + `parse_probe`); P6.10 (`needs: P4.9`) wires steps 1↔5 around it in the
+/// conductor.] [Build-Session-Entscheidung: P4.9]
+async fn run_probe_then_encode(
+    engine: &dyn Engine,
+    probe: &EngineInvocation,
+    probe_program: &Path,
+    dropped: &DroppedItem,
+    target: TargetId,
+    input: &Path,
+    out_tmp: &TempPath,
+) -> Result<Invocation, InvocationResult> {
+    // (1) Run the probe through the §2.12 isolation wrapper. CoarseSpawnDone (§3.2.1) → stdout buffered whole
+    // (no line reader, a JSON blob), no progress tick → a no-op sink. `run_confined` is the sole `Command`
+    // site (G29 rule (c)); this fn builds none — program + argv flow in as DATA.
+    let ConfinedRun {
+        result,
+        stdout,
+        stderr: _,
+    } = crate::isolation::run_confined(probe, probe_program, |_| {}).await;
+    // A probe that did not cleanly exit yields nothing to parse — return its terminal §1.7 result for the
+    // caller to project. Exhaustive (no `_` — the G4/G29 dispatch-enum discipline); `Failed`'s precise §2.8
+    // kind is the reap-mapped floor (P4.12 refines exit≠0 via `classify_failure` over the captured stderr).
+    match result {
+        InvocationResult::Succeeded => {}
+        InvocationResult::Failed(kind) => return Err(InvocationResult::Failed(kind)),
+        InvocationResult::Cancelled => return Err(InvocationResult::Cancelled),
+    }
+    // (2) Hand the buffered probe stdout to the engine's parser seam → a typed ProbeOutput (the §3.5.1
+    // adapter's concrete parse, P6.10). A parse failure is a pure PlanError → its §2.8 kind.
+    let probe_output = engine
+        .parse_probe(&stdout)
+        .map_err(|err| InvocationResult::Failed(err.kind))?;
+    // (3) Finalise the encode Invocation from the ProbeOutput — `duration_us` built INTO its FfmpegKeyValue
+    // model here, never mutated onto a pre-probe struct (§3.2.1). Still `out_tmp: None` (the plan-time shape);
+    // the §1.7 caller populates `Some(temp)` and dispatches it.
+    engine
+        .plan_encode(dropped, target, input, out_tmp, &probe_output)
+        .map_err(|err| InvocationResult::Failed(err.kind))
 }
 
 /// The §1.7 `InProcessNative` lane (P3.43) — run the §3.5.6 native CSV/TSV transform on the §0.9 in-core
@@ -3119,6 +3206,316 @@ mod tests {
             forwarded,
             vec![0.25_f32, 1.0_f32],
             "§1.11: the lane forwards out_time_us=250000/1_000_000 → 0.25, then progress=end → 1.0"
+        );
+    }
+
+    // ─── P4.9: the §3.2.1 two-step probe-then-encode sequencing (run_probe_then_encode) ──
+    //
+    // Exercised via a SYNTHETIC probe engine (no v1 probe-requiring engine exists before P6, §3.2.2) over a
+    // REAL subprocess (the platform shell) — the isolation layer is never mocked (test-strategy §0.1). The
+    // synthetic engine's parse_probe reads a `duration_us=<n>` line (its stand-in for the §3.5.1 ffprobe JSON
+    // parse P6.10 supplies) and its plan_encode builds the encode Invocation carrying FfmpegKeyValue
+    // { duration_us } FROM that probe (never a pre-probe struct, §3.2.1). The probe envelope is the
+    // CoarseSpawnDone shell sub-invocation `seam_shell_invocation` builds (its stdout is buffered whole, §1.7).
+
+    // A cfg(test)-only probe-requiring engine: parse_probe → ProbeOutput from a `duration_us=<n>` line;
+    // plan_encode → the encode Invocation with the probe's duration_us as the FfmpegKeyValue denominator. The
+    // other methods are the honest InternalError/empty shapes (the run_probe_then_encode tests build the probe
+    // envelope directly, so plan() is never called). [Build-Session-Entscheidung: P4.9]
+    struct SyntheticProbeEngine;
+    impl Engine for SyntheticProbeEngine {
+        fn id(&self) -> EngineId {
+            EngineId::FFmpeg
+        }
+        fn descriptor(&self) -> EngineDescriptor {
+            EngineDescriptor {
+                id: EngineId::FFmpeg,
+                serialised_only: false,
+                kind: EngineKind::Subprocess,
+            }
+        }
+        fn capabilities(
+            &self,
+            _platform: Platform,
+            _patents: &PatentDisposition,
+        ) -> Vec<EngineCapability> {
+            Vec::new()
+        }
+        fn plan(
+            &self,
+            _item: &DroppedItem,
+            _target: TargetId,
+            _input: &Path,
+            _out_tmp: &TempPath,
+        ) -> Result<PlanOutcome, PlanError> {
+            Err(PlanError {
+                kind: ConversionErrorKind::InternalError,
+                detail: "synthetic probe engine is driven via the test-built probe envelope"
+                    .to_owned(),
+            })
+        }
+        // The §3.5.1-adapter stand-in: parse the synthetic `duration_us=<n>` probe line into a ProbeOutput.
+        // No-panic (lines / strip_prefix / parse().ok(), never an index/unwrap).
+        fn parse_probe(&self, stdout: &[u8]) -> Result<ProbeOutput, PlanError> {
+            let text = String::from_utf8_lossy(stdout);
+            let duration_us = text
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("duration_us="))
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .ok_or_else(|| PlanError {
+                    kind: ConversionErrorKind::InternalError,
+                    detail: "no duration_us in synthetic probe stdout".to_owned(),
+                })?;
+            Ok(ProbeOutput {
+                duration_us,
+                inner_codecs: vec!["h264".to_owned()],
+                rotation_deg: None,
+                interlaced: None,
+            })
+        }
+        // The encode Invocation carries FfmpegKeyValue { duration_us } built FROM the probe here — never
+        // mutated onto a pre-probe struct (§3.2.1); out_tmp None (the plan-time shape; §1.7 populates it).
+        fn plan_encode(
+            &self,
+            _item: &DroppedItem,
+            _target: TargetId,
+            _input: &Path,
+            _out_tmp: &TempPath,
+            probe: &ProbeOutput,
+        ) -> Result<Invocation, PlanError> {
+            Ok(Invocation {
+                program: EngineProgram::Sidecar(EngineId::FFmpeg),
+                args: vec![OsString::from("-i"), OsString::from("in.mp4")],
+                cwd: None,
+                env: Vec::new(),
+                stdin: StdinPlan::None,
+                progress: ProgressModel::FfmpegKeyValue {
+                    duration_us: probe.duration_us,
+                },
+                out_tmp: None,
+            })
+        }
+        fn classify_failure(&self, _exit: ExitStatus, _stderr: &str) -> ConversionErrorKind {
+            ConversionErrorKind::InternalError
+        }
+    }
+
+    // A synthetic probe engine whose parse_probe SUCCEEDS but whose plan_encode is the trait DEFAULT
+    // (InternalError) — the plan_encode-failure leg of the sequencing. [Build-Session-Entscheidung: P4.9]
+    struct SyntheticProbeNoEncodeEngine;
+    impl Engine for SyntheticProbeNoEncodeEngine {
+        fn id(&self) -> EngineId {
+            EngineId::FFmpeg
+        }
+        fn descriptor(&self) -> EngineDescriptor {
+            EngineDescriptor {
+                id: EngineId::FFmpeg,
+                serialised_only: false,
+                kind: EngineKind::Subprocess,
+            }
+        }
+        fn capabilities(
+            &self,
+            _platform: Platform,
+            _patents: &PatentDisposition,
+        ) -> Vec<EngineCapability> {
+            Vec::new()
+        }
+        fn plan(
+            &self,
+            _item: &DroppedItem,
+            _target: TargetId,
+            _input: &Path,
+            _out_tmp: &TempPath,
+        ) -> Result<PlanOutcome, PlanError> {
+            Err(PlanError {
+                kind: ConversionErrorKind::InternalError,
+                detail: "synthetic engine is driven via the test-built probe envelope".to_owned(),
+            })
+        }
+        fn parse_probe(&self, _stdout: &[u8]) -> Result<ProbeOutput, PlanError> {
+            Ok(ProbeOutput {
+                duration_us: 1,
+                inner_codecs: Vec::new(),
+                rotation_deg: None,
+                interlaced: None,
+            })
+        }
+        // plan_encode is the trait DEFAULT (InternalError) — deliberately not overridden here.
+        fn classify_failure(&self, _exit: ExitStatus, _stderr: &str) -> ConversionErrorKind {
+            ConversionErrorKind::InternalError
+        }
+    }
+
+    // §1.7/§3.2.1 (G15): the happy path — a clean probe (CoarseSpawnDone shell echoing `duration_us=1500000`)
+    // is buffered, parse_probe reads it into a ProbeOutput, and plan_encode finalises the encode Invocation
+    // whose FfmpegKeyValue denominator is the probe's duration_us (built in plan_encode, NOT mutated onto a
+    // pre-probe struct, §3.2.1). Over a REAL subprocess through the §2.12 confinement.
+    #[tokio::test]
+    async fn probe_then_encode_parses_the_probe_stdout_and_finalises_the_encode() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        #[cfg(windows)]
+        let raw = "echo duration_us=1500000";
+        #[cfg(unix)]
+        let raw = "printf 'duration_us=1500000\\n'";
+        let (probe, program) = seam_shell_invocation(raw, scratch.path().to_path_buf());
+        let out_tmp = throwaway_temp_path();
+        let encode = run_probe_then_encode(
+            &SyntheticProbeEngine,
+            &probe,
+            &program,
+            &csv_dropped_item(),
+            TargetId::Format(FormatId::Tsv),
+            Path::new("in.mp4"),
+            &out_tmp,
+        )
+        .await
+        .expect("§3.2.1: a clean probe → parse_probe → plan_encode yields the finalised encode Invocation");
+        assert_eq!(
+            encode.progress,
+            ProgressModel::FfmpegKeyValue {
+                duration_us: 1_500_000
+            },
+            "§3.2.1: the encode's FfmpegKeyValue denominator comes FROM the parsed probe, built in plan_encode"
+        );
+        assert!(
+            encode.out_tmp.is_none(),
+            "§3.2.2: plan_encode constructs out_tmp None; §1.7 populates Some(temp) at spawn time"
+        );
+        assert!(
+            matches!(encode.program, EngineProgram::Sidecar(EngineId::FFmpeg)),
+            "§3.2.1: the finalised leg is the ffmpeg encode Invocation"
+        );
+    }
+
+    // §1.7 (G15): a nonzero-exit probe returns its terminal InvocationResult (the reap-mapped EngineCrash
+    // floor) and NEVER reaches parse_probe/plan_encode — the caller projects it (P4.12 refines exit≠0 via
+    // classify_failure over the captured stderr).
+    #[tokio::test]
+    async fn a_failed_probe_returns_its_result_and_never_reaches_the_parse_or_encode() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        let (probe, program) = seam_shell_invocation("exit 3", scratch.path().to_path_buf());
+        let out_tmp = throwaway_temp_path();
+        let err = run_probe_then_encode(
+            &SyntheticProbeEngine,
+            &probe,
+            &program,
+            &csv_dropped_item(),
+            TargetId::Format(FormatId::Tsv),
+            Path::new("in.mp4"),
+            &out_tmp,
+        )
+        .await
+        .expect_err("§1.7: a nonzero-exit probe yields no encode");
+        assert_eq!(
+            err,
+            InvocationResult::Failed(ConversionErrorKind::EngineCrash),
+            "§2.12.1: the probe's reap-mapped EngineCrash floor is returned for the caller to project"
+        );
+    }
+
+    // §1.7/§0.4.4 (G15): a pre-tripped cancel token routed through the probe leg yields Cancelled — never a
+    // fabricated encode; the probe carries the same §1.7 cancel semantics run_confined honours.
+    #[tokio::test]
+    async fn a_cancelled_probe_returns_cancelled_and_never_parses() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        #[cfg(windows)]
+        let script = "%SystemRoot%\\System32\\ping.exe -n 30 127.0.0.1 >nul";
+        #[cfg(unix)]
+        let script = "while :; do :; done";
+        let (probe, program) = seam_shell_invocation(script, scratch.path().to_path_buf());
+        probe.cancel.cancel();
+        let out_tmp = throwaway_temp_path();
+        let err = run_probe_then_encode(
+            &SyntheticProbeEngine,
+            &probe,
+            &program,
+            &csv_dropped_item(),
+            TargetId::Format(FormatId::Tsv),
+            Path::new("in.mp4"),
+            &out_tmp,
+        )
+        .await
+        .expect_err("§1.7: a cancelled probe yields no encode");
+        assert_eq!(
+            err,
+            InvocationResult::Cancelled,
+            "§1.7: a cancelled probe returns Cancelled, never a fabricated encode"
+        );
+    }
+
+    // §3.2.1 (G15): a clean probe whose stdout carries no `duration_us=` line makes parse_probe fail — the
+    // item fails Failed(kind) (the pure-planning-failure path), never a fabricated encode.
+    #[tokio::test]
+    async fn an_unparseable_probe_stdout_fails_the_item_without_encoding() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        #[cfg(windows)]
+        let raw = "echo no-duration-here";
+        #[cfg(unix)]
+        let raw = "printf 'no-duration-here\\n'";
+        let (probe, program) = seam_shell_invocation(raw, scratch.path().to_path_buf());
+        let out_tmp = throwaway_temp_path();
+        let err = run_probe_then_encode(
+            &SyntheticProbeEngine,
+            &probe,
+            &program,
+            &csv_dropped_item(),
+            TargetId::Format(FormatId::Tsv),
+            Path::new("in.mp4"),
+            &out_tmp,
+        )
+        .await
+        .expect_err("§3.2.1: an unparseable probe fails the item");
+        assert_eq!(
+            err,
+            InvocationResult::Failed(ConversionErrorKind::InternalError),
+            "§3.2.1: a parse_probe PlanError maps to Failed(kind), never a fabricated encode"
+        );
+    }
+
+    // §3.2.1 (G15): a clean probe whose parse SUCCEEDS but whose plan_encode fails (the trait default) makes
+    // the item fail Failed(kind) — the second pure-planning-failure arm, never a fabricated encode.
+    #[tokio::test]
+    async fn a_plan_encode_failure_after_a_clean_probe_fails_the_item() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        #[cfg(windows)]
+        let raw = "echo duration_us=1000";
+        #[cfg(unix)]
+        let raw = "printf 'duration_us=1000\\n'";
+        let (probe, program) = seam_shell_invocation(raw, scratch.path().to_path_buf());
+        let out_tmp = throwaway_temp_path();
+        let err = run_probe_then_encode(
+            &SyntheticProbeNoEncodeEngine,
+            &probe,
+            &program,
+            &csv_dropped_item(),
+            TargetId::Format(FormatId::Tsv),
+            Path::new("in.mp4"),
+            &out_tmp,
+        )
+        .await
+        .expect_err("§3.2.1: a plan_encode failure after a clean probe fails the item");
+        assert_eq!(
+            err,
+            InvocationResult::Failed(ConversionErrorKind::InternalError),
+            "§3.2.1: a plan_encode PlanError maps to Failed(kind), never a fabricated encode"
+        );
+    }
+
+    // §6.4.1 unit (G15): the §3.2.2 parse_probe DEFAULT impl is the single-step-engine seam (P4.9) — §1.7 only
+    // calls parse_probe after a PlanOutcome::Probe, so the single-step native engine reaching it is a
+    // mis-sequenced lifecycle: the spec's InternalError PlanError carrying the spec's detail string (the
+    // plan_encode-default sibling).
+    #[test]
+    fn parse_probe_default_is_the_internal_error_seam() {
+        let engine = NativeCsvTsvEngine;
+        let err = engine
+            .parse_probe(b"duration_us=1")
+            .expect_err("§3.2.2: a single-step engine has no probe stdout parser");
+        assert_eq!(err.kind, ConversionErrorKind::InternalError);
+        assert_eq!(
+            err.detail, "engine has no probe stdout parser",
+            "§3.2.2: the default-impl detail string is the spec's, verbatim"
         );
     }
 }

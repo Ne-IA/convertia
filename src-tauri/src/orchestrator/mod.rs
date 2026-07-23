@@ -70,7 +70,9 @@ use crate::domain::{
     RerunPrompt, ResolvedDestination, RunId, ScanProgress, SkipReason, SkippedItem, Target,
     TargetId, UserFacingFormat,
 };
-use crate::engines::{dispatch, engine_registry, EngineInvocation, InvocationResult, PlanOutcome};
+use crate::engines::{
+    dispatch, engine_registry, EngineInvocation, Invocation, InvocationResult, PlanOutcome,
+};
 use crate::fs_guard::{
     atomic_publish, compute_output_plan, is_write_divert_trigger, location_status,
     open_verified_parent_dir, output_name, publish_to_divert, resolve_divert_target,
@@ -1843,6 +1845,35 @@ fn verify_encode_output(item: ItemId, tmp: TempPath) -> Result<TempPath, WriteOu
     }
 }
 
+/// Resolve a §3.2.1 two-shape [`PlanOutcome`] to the dispatch-ready encode [`Invocation`] (P4.9 — supersedes
+/// the conductor's prior `Encode`-only let-else). A single-step engine's `Encode` is returned with its
+/// §1.7-owned `out_tmp` populated `Some(tmp)` (the 2026-07-07 plan-seam ruling: `plan()` returns it `None`,
+/// §1.7 — the conductor — OWNS the temp and populates it at spawn time). A probe-requiring engine's `Probe` is
+/// consumed by the engines-tier two-step sequencing [`crate::engines::run_probe_then_encode`] (spawn `ffprobe`
+/// → `Engine::parse_probe` → `Engine::plan_encode` → the encode `Invocation`), which **P6.10** (`needs: P4.9`)
+/// wires in here with the concrete `ffprobe` engine + the P4.32 `EngineProgram → &Path` resolution. No v1
+/// probe-requiring engine is registered before P6 (§3.2.2), so a `Probe` reaching the conductor TODAY is a
+/// mis-routed plan → the honest `InternalError` [`WriteOutcome`], cleaning the just-picked `tmp` (the dispatch
+/// `Sidecar`-arm precedent). Exhaustive over both shapes (no `_` — the §0.7/G29 dispatch discipline the
+/// crate-root `clippy::wildcard_enum_match_arm` deny enforces). [Build-Session-Entscheidung: P4.9]
+fn encode_invocation_from_plan(
+    plan_outcome: PlanOutcome,
+    tmp: TempPath,
+    item: ItemId,
+) -> Result<Invocation, WriteOutcome> {
+    match plan_outcome {
+        PlanOutcome::Encode(mut invocation) => {
+            invocation.out_tmp = Some(tmp);
+            Ok(invocation)
+        }
+        PlanOutcome::Probe(_) => Err(fail_cleanup(
+            item,
+            [tmp],
+            ConversionErrorKind::InternalError,
+        )),
+    }
+}
+
 /// The per-item async convert (§2.1.1 — the P3.48 ruling option ②: pick-temp → await dispatch → publish legs).
 /// Computes the §1.8 [`OutputPlan`], picks the publish temp (§2.14.1), resolves the pair's single owner
 /// through the §3.2.3 registry (`engine_registry().select` — P4.4; a miss is the §3.4 honest gap →
@@ -1989,17 +2020,14 @@ async fn convert_item(
         Ok(plan_outcome) => plan_outcome,
         Err(err) => return write_outcome_to_run(fail_cleanup(item, [tmp], err.kind)),
     };
-    // Every registered walking-skeleton engine is single-step: `plan()` returns `Encode`. A `Probe` is a
-    // mis-routed plan here — the two-phase sequencing that consumes it is P4.9's (which supersedes this
-    // Encode-only match).
-    let PlanOutcome::Encode(mut invocation) = plan_outcome else {
-        return write_outcome_to_run(fail_cleanup(
-            item,
-            [tmp],
-            ConversionErrorKind::InternalError,
-        ));
+    // §3.2.1 two-shape plan resolution (P4.9 — supersedes the prior `Encode`-only let-else): resolve the
+    // `PlanOutcome` to the dispatch-ready encode `Invocation` (its §1.7-owned `out_tmp` populated `Some(tmp)`),
+    // or the mis-routed-`Probe` failure. The two-shape contract + the P6.10 wiring live in
+    // [`encode_invocation_from_plan`].
+    let invocation = match encode_invocation_from_plan(plan_outcome, tmp, item) {
+        Ok(invocation) => invocation,
+        Err(outcome) => return write_outcome_to_run(outcome),
     };
-    invocation.out_tmp = Some(tmp);
     let mut envelope = EngineInvocation {
         job: item,
         engine: engine_id,
@@ -10202,6 +10230,7 @@ mod run_conversion_tests {
     use crate::domain::{
         Availability, Confidence, DetectionOutcome, InstanceId, ItemId, ItemPaths,
     };
+    use crate::engines::{EngineId, EngineProgram, ProgressModel, StdinPlan};
     use crate::fs_guard::resolve_identity;
 
     /// A stable `CollectedSetId` for the frozen set (`CollectedSetId` has no `mint`; minted through its public
@@ -10866,6 +10895,69 @@ mod run_conversion_tests {
         assert_eq!(
             result.totals.succeeded, 1,
             "§1.12: the ChosenRoot item succeeded (not WriteFailed on a mis-fed strip base)"
+        );
+    }
+
+    // ─── P4.9: the §3.2.1 two-shape plan resolution (encode_invocation_from_plan) ──
+
+    // A minimal single-step encode Invocation for the plan-resolution tests — the native program (the helper
+    // only reads/populates `out_tmp`, so the argv/progress specifics are immaterial). [P4.9]
+    fn native_plan_invocation() -> Invocation {
+        Invocation {
+            program: EngineProgram::InProcessNative(EngineId::NativeCsvTsv),
+            args: Vec::new(),
+            cwd: None,
+            env: Vec::new(),
+            stdin: StdinPlan::None,
+            progress: ProgressModel::InProcessFraction,
+            out_tmp: None,
+        }
+    }
+
+    // A throwaway publish-temp (deleted on drop) for the plan-resolution tests — a real on-disk temp, since the
+    // helper threads the §1.7-owned `TempPath` (§2.14.1). Rooted in the system temp dir (a test-only convenience).
+    fn throwaway_publish_temp() -> TempPath {
+        tempfile::NamedTempFile::new()
+            .expect("a temp file for the plan-resolution test")
+            .into_temp_path()
+    }
+
+    // §6.4.1 unit (G15, P4.9): a single-step engine's `Encode` resolves to the dispatch-ready invocation with
+    // the §1.7-owned `out_tmp` populated `Some(tmp)` — the conductor's plan-seam ownership (`plan()` returned it
+    // `None`; the 2026-07-07 ruling).
+    #[test]
+    fn encode_invocation_from_plan_populates_out_tmp_on_a_single_step_encode() {
+        let resolved = encode_invocation_from_plan(
+            PlanOutcome::Encode(native_plan_invocation()),
+            throwaway_publish_temp(),
+            ItemId::from_index(0),
+        )
+        .expect("§3.2.1: an Encode resolves to the dispatch-ready invocation");
+        assert!(
+            resolved.out_tmp.is_some(),
+            "§1.7: the conductor populates out_tmp Some(tmp) on the encode (plan() returned None)"
+        );
+    }
+
+    // §6.4.1 unit (G15, P4.9): a `Probe` reaching the conductor before P6 (no probe-requiring engine registered,
+    // §3.2.2) is a mis-routed plan → the honest `InternalError` WriteOutcome, cleaning the just-picked temp (the
+    // dispatch `Sidecar`-arm precedent); P6.10 (`needs: P4.9`) wires `engines::run_probe_then_encode` in here.
+    #[test]
+    fn encode_invocation_from_plan_fails_a_mis_routed_probe() {
+        let outcome = encode_invocation_from_plan(
+            PlanOutcome::Probe(native_plan_invocation()),
+            throwaway_publish_temp(),
+            ItemId::from_index(0),
+        )
+        .expect_err("§3.2.1: a Probe reaching the conductor before P6 is a mis-routed plan");
+        assert!(
+            matches!(
+                outcome.disposition,
+                WriteDisposition::Failed {
+                    kind: ConversionErrorKind::InternalError
+                }
+            ),
+            "§2.13: the mis-routed Probe fails the item InternalError until P6.10 wires the real sequencing"
         );
     }
 }

@@ -102,6 +102,33 @@ pub trait Engine: Send + Sync {
         })
     }
 
+    /// Parse a probe sub-invocation's captured stdout into a typed [`ProbeOutput`] `[DECIDED §3.2.1]`
+    /// (§3.2.2). Called by §1.7 ONLY for an engine whose `plan()` returned [`PlanOutcome::Probe`]: §1.7
+    /// buffers the probe's [`ProgressModel::CoarseSpawnDone`] stdout in FULL — no line reader, it is a single
+    /// JSON blob (§1.7) — then hands the complete buffer here so the ENGINE, which alone knows its probe's
+    /// wire format (`ffprobe -print_format json`, §3.5.1), turns it into the four typed fields (inner codecs /
+    /// `duration_us` / rotation / interlace). §1.7 then carries the [`ProbeOutput`] into [`Engine::plan_encode`],
+    /// where `duration_us` becomes the [`ProgressModel::FfmpegKeyValue`] denominator — never mutated onto a
+    /// pre-probe struct (§3.2.1). Pure: no I/O, no spawn (it parses already-captured bytes) — no-panic like the
+    /// sibling planning methods.
+    ///
+    /// The default impl is the §3.2.2 single-step-engine seam, exactly like [`Engine::plan_encode`]: §1.7 only
+    /// calls `parse_probe` after a `Probe`, so a single-step engine never reaches it — reaching it is a
+    /// mis-sequenced lifecycle, answered with the spec's `InternalError` [`PlanError`] and its detail string.
+    /// The concrete `ffprobe`-JSON parser is the §3.5.1 FFmpeg adapter's, wired at P6.10 (which overrides this).
+    ///
+    /// [Derived-Assumption: P4.9 — §1.7/§3.2.1 name "the §3.5.1 adapter's `ProbeOutput` JSON parser" but not
+    /// the seam MECHANISM; a GENERIC `&dyn Engine` sequencing (`engines::run_probe_then_encode`, exercised by a
+    /// synthetic probe engine) can only invoke an engine-specific parse through the trait, so the parse seam is
+    /// realised as this trait method, mirroring [`Engine::plan_encode`]'s default-`InternalError` shape. P6.10
+    /// (`needs: P4.9`) fills it for `ffprobe`.]
+    fn parse_probe(&self, _stdout: &[u8]) -> Result<ProbeOutput, PlanError> {
+        Err(PlanError {
+            kind: ConversionErrorKind::InternalError,
+            detail: "engine has no probe stdout parser".into(),
+        })
+    }
+
     /// Map this engine's exit code + stderr into the §2.8 error taxonomy (§3.2.2). Returns the §2.8-owned
     /// [`ConversionErrorKind`] — NOT a separate "FailureKind" (that name is dropped; §2.8 is the single
     /// owner of the failure-kind set). The wire `ErrorKind` (§0.4.3) is its projection at the §1.9
