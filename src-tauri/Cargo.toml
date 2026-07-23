@@ -149,6 +149,44 @@ encoding_rs = "0.8.35"
 # chardetng P3.27 / tokio P3.82 split (a new direct dep ABSENT from PINNED_FLOORS does not red G18: the
 # floor is a present-crate check, P3.82).
 csv = "1.4.0"
+# [P4.10] §1.7 whole-group engine teardown — the cross-platform process-group / Job-Object spawn wrapper
+# `crate::isolation::run_confined` composes over `tokio::process`: on Windows the engine and every descendant
+# join ONE Job Object (`TerminateJobObject` tears the whole tree down), on POSIX the engine becomes a
+# process-group LEADER
+# (`setpgid`) so `killpg(pgid, SIGKILL)` reaps its descendants — the §1.7 `[DECIDED — sole owner]` mechanism.
+# Without it a `soffice` → `soffice.bin` re-exec ORPHANS the grandchild on cancel (the §1.7 researched
+# problem), leaking processes, handles and scratch files. Features: `default-features = false` + exactly
+# `tokio1` (the async frontend — the `std` frontend is NOT enabled) + `job-object` (Windows) + `process-group`
+# (POSIX) + `kill-on-drop` (which buys ONLY tokio's own direct-child kill-on-drop / orphan-reaping — the
+# cross-wrapper kill-on-job-close read it is documented to feed is inert in 9.1.0, the verified upstream
+# defect recorded in `crate::isolation::run_confined` and reconciled into spec §1.7). Deliberately NOT
+# enabled: `tracing` (the crate's internal log surface — §7.5 owns ConvertIA's logging through the `log`
+# facade), `process-session` (a `setsid` tier §2.12.3 does not ask for), `reset-sigmask`, and
+# `creation-flags` — [Build-Session-Entscheidung: P4.10] the `CreationFlags` shim is meant to let a
+# CALLER-set Windows creation flag survive alongside the `CREATE_SUSPENDED` the Job Object sets itself, but
+# the SAME upstream defect makes that read inert (the `JobObject` wrapper overwrites `creation_flags`
+# unconditionally). Either way ConvertIA sets NO creation flag, so the shim would carry nothing and enabling
+# it would ship an unused wrapper — and `job-object` already pulls the identical
+# `windows/Win32_System_Threading` feature, so excluding it costs no capability.
+# Newly-resolved packages: `process-wrap` itself + the `futures` FACADE (its sub-crates futures-core/-util/
+# -channel/-executor/-io/-sink/-task are already locked) + `nix` 0.31.3 (cfg(unix) only,
+# `default-features = false`, features `fs`/`poll`/`signal` — NO `socket`, so the G29 rule-(j) raw-socket FFI
+# ban stays intact) + the `windows` crate 0.62.2 with its `windows-collections` / `windows-future` /
+# `windows-numerics` / `windows-threading` transitives (cfg(windows) only; a SECOND `windows` version beside
+# the already-locked 0.61.3 — `multiple-versions = "warn"` in deny.toml, a hygiene signal, not a failure);
+# `indexmap` 2.x is already locked, and the `futures` facade pulls its seven already-locked `futures-*`
+# sub-crates up 0.3.32 → 0.3.33 (a same-line patch bump; `cargo audit`/`cargo deny` re-run green). Its tokio
+# edge requests `macros` (previously a dev-only feature), so
+# `tokio-macros` — already in Cargo.lock — joins the PROD closure through feature unification. All permissive
+# (process-wrap / futures / the whole `windows-*` family / indexmap `MIT OR Apache-2.0`, nix `MIT`), pure Rust
+# with no copyleft / image-C-lib / socket edge, so G53
+# core-closure + cargo-deny [licenses]/[bans] + cargo-audit stay green. Caret-pinned to the lock-resolved
+# 9.1.0 (the normal-lib convention; its MSRV 1.87.0 is under the workspace `rust-version` 1.96.0). §0.8
+# ALREADY carries the `process-wrap §1.7` "Additional crates" row, so no §0.8 prose edit is due here; the
+# paired `check-supply-chain` PINNED_FLOORS §0.8 drift-floor row is L(-1) (G71) — the Co-Pilot box P4.84,
+# mirroring the chardetng P3.27 / csv P3.41 splits (a new direct dep ABSENT from PINNED_FLOORS does not red
+# G18: the floor is a present-crate check, P3.82).
+process-wrap = { version = "9.1.0", default-features = false, features = ["job-object", "kill-on-drop", "process-group", "tokio1"] }
 
 # [P3.12] §2.1.1/§2.1.2 Unix single-call no-replace publish primitive for `fs_guard::publish_noreplace` — the
 # SAFE `rustix::fs::renameat_with(olddirfd, tmp, dirfd, leaf, RenameFlags::NOREPLACE)` maps to Linux

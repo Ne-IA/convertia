@@ -3138,7 +3138,8 @@ mod tests {
     }
 
     // §1.7/§0.4.4 (G15): a pre-tripped cancel token routed through the lane yields Cancelled — the lane
-    // carries run_confined's §0.4.4 cancel semantics (best-effort kill, never a fabricated success).
+    // carries run_confined's §0.4.4 cancel semantics (whole-GROUP kill since P4.10, never a fabricated
+    // success).
     #[tokio::test]
     async fn the_subprocess_lane_carries_the_confined_cancel_semantics() {
         let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");

@@ -909,10 +909,40 @@ leader** and kills the **whole group**, so one cancel/kill tears down the engine
   per-concern wrappers** rather than command-group's single cross-platform API),
   composed over `tokio::process`:
   - **Windows:** `JobObject` wrapper — the engine and all its children join one
-    **Win32 Job Object**; killing the job (or closing its last handle with
-    kill-on-close) terminates the entire tree immediately. Use the crate's
-    `KillOnDrop` / `CreationFlags` shims so the job correctly tracks
-    kill-on-drop + `CREATE_SUSPENDED`/`CREATE_NEW_PROCESS_GROUP` flags.
+    **Win32 Job Object**; killing the job (`TerminateJobObject`) terminates the entire
+    tree immediately. Use the crate's `KillOnDrop` shim rather than setting
+    `Command::kill_on_drop` directly, so the kill-on-drop state is registered where the
+    job wrapper can see it; never set `Command::creation_flags` directly either — the
+    `JobObject` wrapper overwrites it with its own `CREATE_SUSPENDED`.
+    > **`[CORRECTED 2026-07-23 — P4.10, FORCED DEVIATION]` the kill-on-CLOSE half is NOT
+    > achievable through this crate, and the shims do not carry it.** This bullet
+    > previously offered "or closing its last handle with kill-on-close" as an equivalent
+    > second trigger and said the shims make "the job correctly track kill-on-drop".
+    > Verified in the pinned `process-wrap` 9.1.0 source: `CommandWrap::spawn_with` does
+    > `mem::take(&mut self.wrappers)` and then passes `&self` as the `core` argument to
+    > every wrapper hook, so `core.has_wrap::<KillOnDrop>()` — the read
+    > `JobObject::wrap_child` uses to choose the limit — sees an EMPTY map and is
+    > unconditionally `false`, whatever the registration order. The job is therefore
+    > created **without** `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and there is no public API
+    > to add one (the job handle lives in a `pub(crate)` `JobPort`). The same defect makes
+    > the `CreationFlags` shim inert, which is why the §2.12.3 Windows tier (P4.17) cannot
+    > lean on it for a spawn-suspended → adjust-token → resume sequence. **Compensation:**
+    > `crate::isolation` owns the child in a drop guard, so every exit path that ends the
+    > invocation **without a completed engine wait** — a cancel, a failed reap, an early
+    > return, or the whole future being dropped by a caller — issues an explicit
+    > whole-group kill. **The residual is therefore exactly two cases, not one:** (a) a
+    > HARD end of ConvertIA itself (crash / power-loss / SIGKILL), where no Rust `Drop`
+    > runs at all (the App-exit bullet below), and (b) a descendant outliving a
+    > **completed** engine run, where the guard stands down **by decision** — neither
+    > platform's wait proves the group empty (POSIX `waitpid(-pgid)` → `ECHILD` only means
+    > *we* hold no children in that group; a grandchild never was our child), so killing
+    > there would be speculative, and for an engine whose launcher exits before its worker
+    > has finished writing it would truncate `out_tmp` mid-write while the exit still reads
+    > as success — publishing a corrupt output as a clean one. Case (b) is left to the
+    > §1.7 app-exit group-kill and the §2.6 sweep. (Not to the Exit & output verification
+    > below: that is a non-empty check on the OUTPUT, so it neither observes a surviving
+    > descendant nor catches a truncated-but-nonzero file — which is precisely why the
+    > speculative kill had to go rather than be caught downstream.)
   - **POSIX (macOS/Linux):** `ProcessGroup::leader()` wrapper — the engine becomes
     a **process-group leader** (`setpgid`); `kill()` signals the whole group
     (negative-pgid `SIGKILL`/`SIGTERM`), reaping descendants.
@@ -958,9 +988,24 @@ leader** and kills the **whole group**, so one cancel/kill tears down the engine
   intact. A cancelled-but-already-finished item stays finished.
 - **App-exit / quit-while-converting:** the same group-kill runs for every live
   job on shutdown (so no orphans survive the app — the §7.3 quit-while-converting
-  policy calls into this). On an **ungraceful** end (crash/power-loss) the OS
-  reaps the Windows job; POSIX orphans are reaped by re-parenting + the
-  **startup cleanup** (§2.6) discarding the previous run's owned temp.
+  policy calls into this). On an **ungraceful** end (crash/power-loss) engine
+  descendants can survive us on **every** platform; they are reaped by re-parenting
+  (POSIX) / left to exit on their own (Windows), and the **startup cleanup** (§2.6)
+  discards the previous run's owned temp.
+  > **`[CORRECTED 2026-07-23 — P4.10, FORCED DEVIATION]`** this bullet previously said
+  > "On an **ungraceful** end (crash/power-loss) the OS reaps the Windows job", which
+  > rested on the kill-on-job-close limit the Mechanism bullet above shows is
+  > unreachable through `process-wrap` 9.1.0. Windows is therefore **symmetric with the
+  > POSIX posture this same sentence already accepted**, not better than it: an
+  > ungraceful end can leave engine descendants running, the temp stays a discardable
+  > `*.part` the §2.6 startup sweep reclaims, and no §2.1 no-harm / no-partial guarantee
+  > is touched (the output is promoted only by the atomic rename after a clean exit).
+  > Restoring the crash-time reap needs a first-party Win32 job carrying
+  > `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` — the raw `JOB_OBJECT_LIMIT` FFI §2.12.3
+  > already homes in `crate::platform` for the Windows privilege-drop tier, whose plan
+  > box (P4.17) normatively requires exactly that limit. **P4.17 is therefore the
+  > tracked home for closing this residual**, and P4.10 records both halves of the
+  > upstream defect in that box's forward note.
 
 ### `InProcessNative` sub-case — the one non-subprocess engine `[DECIDED]`
 

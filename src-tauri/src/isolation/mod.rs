@@ -20,9 +20,11 @@
 //!    the §1.7 confined-spawn entry every SUBPROCESS engine invocation routes through: the §2.12.1 OS process
 //!    boundary + the §2.12.3 cheap-tier floor (P4.13) + the §1.7 per-`ProgressModel` stdout/stderr handling
 //!    (P4.8 — streaming line-reader → `on_progress`, `CoarseSpawnDone` stdout buffered, stderr captured in
-//!    full; returned in the [`crate::engines::ConfinedRun`] outcome). The remaining layers land on THIS entry
-//!    at their boxes: the §1.7 whole-group kill (`process-wrap` Job-Object / process-group teardown of the
-//!    engine AND its descendants, e.g. `soffice` → `soffice.bin`) at **P4.10**, the §1.7 / §2.12.2
+//!    full; returned in the [`crate::engines::ConfinedRun`] outcome) + the §1.7 whole-group spawn/kill
+//!    (**P4.10** — `process-wrap` Job-Object / process-group teardown of the engine AND its descendants,
+//!    e.g. `soffice` → `soffice.bin`). The remaining layers land on THIS entry at their boxes: the §1.7
+//!    kill↔cleanup↔no-partial ordering + the TIMEOUT-BOUNDED confirm-wait + the deferred-reclaim
+//!    `CleanupResidue` tail at **P4.11**, the §1.7 / §2.12.2
 //!    timeout / no-progress watchdog at **P4.12**, the loader-var strip at **P4.14**, the per-OS
 //!    privilege-drop legs at **P4.15 / P4.16 / P4.17**, and the achieved-tier record into
 //!    `privilege-drop-coverage.toml` at **P4.18**. It never runs the §2.1 publish — that is
@@ -62,6 +64,11 @@
 use std::path::Path;
 use std::process::Stdio;
 
+#[cfg(windows)]
+use process_wrap::tokio::JobObject;
+#[cfg(unix)]
+use process_wrap::tokio::ProcessGroup;
+use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::{ChildStderr, ChildStdout, Command};
 
@@ -97,8 +104,9 @@ use crate::outcome::ConversionErrorKind;
 /// `Failed(InternalError)` — the §2.13.1 ITEM-level answer (a runtime per-item spawn failure fails that one
 /// item, §2.13.2; the app-level `EngineMissing`/`BundleDamaged` escalation is the §7.2.3 startup probe's, a
 /// distinct path — P4.7-resolved: no per-item AppFault here); a cancel trip →
-/// best-effort kill → `Cancelled` (single-process kill here; the whole-GROUP teardown + the
-/// kill↔cleanup↔no-partial ordering are P4.10/P4.11, layered on this entry). `StdinPlan::PipeBytes` is
+/// **whole-GROUP kill** → `Cancelled` (P4.10: the engine and every descendant it spawned die together — the
+/// `process-wrap` Job Object on Windows, the POSIX process group elsewhere; the kill↔cleanup↔no-partial
+/// ordering + the timeout-bounded confirm-wait are P4.11, layered on this entry). `StdinPlan::PipeBytes` is
 /// unreachable-by-construction until the §3.5.4 pandoc adapter (P7) wires its byte feed — the honest
 /// `InternalError` seam (the P2.25 precedent), matched exhaustively so the arm cannot be silently
 /// dropped. [Build-Session-Entscheidung: P4.13]
@@ -144,17 +152,21 @@ pub async fn run_confined(
         }
     };
 
-    // The §2.12.3 cheap-tier spawn — ONE fluent chain so the G29 rule-(b1) chain-anchored env-scrub
-    // (`.env_clear()` FIRST on the builder's own chain) is structurally visible to the SAST. stdout/stderr are
-    // now PIPED (the P4.8 re-cut) for the per-`ProgressModel` handling above; kill_on_drop: a dropped child
-    // (the cancel arm below, or a caller drop) is killed, never orphaned (the whole-group descendant teardown
-    // is P4.10's process-wrap layer). G29 rule (d) (macOS stage_for_tcc-before-spawn) does NOT reach this
-    // cross-platform floor: its P4.85-refined form is `paths:`-scoped to the macOS isolation module
-    // (`isolation/macos.rs` / `isolation/macos/**`), and this floor embeds no macOS-TCC path (the §3.5.0
-    // staging fn + its macOS-scoped spawn land at P4.24) — so no (d) suppression is needed or present.
-    // [Build-Session-Entscheidung: P4.13]
-    let spawned = Command::new(program)
-        .env_clear()
+    // The §2.12.3 cheap-tier spawn, built as an OWNED `tokio::process::Command` — the shape `process-wrap`
+    // forces (its `CommandWrap` takes the builder BY VALUE, so the P4.13 single fluent `…spawn()` chain cannot
+    // survive the P4.10 group-kill wrapping). `env_clear()` is therefore the IMMEDIATELY-following statement:
+    // that gap-free construction+scrub pair is exactly the G29 rule-(b1) split-builder suppression the P4.85
+    // L(-1) refinement authored FOR this crate ("the owned-Command shape `process-wrap` forces") — a gapped
+    // split would redden the SAST. stdout/stderr are PIPED (the P4.8 re-cut) for the per-`ProgressModel`
+    // handling above; kill-on-drop now rides the `KillOnDrop` WRAPPER instead of a raw `.kill_on_drop(true)`
+    // (below). G29 rule (d) (macOS stage_for_tcc-before-spawn) does NOT reach this cross-platform floor: its
+    // P4.85-refined form is `paths:`-scoped to the macOS isolation module (`isolation/macos.rs` /
+    // `isolation/macos/**`), and this floor embeds no macOS-TCC path (the §3.5.0 staging fn + its macOS-scoped
+    // spawn land at P4.24) — so no (d) suppression is needed or present.
+    // [Build-Session-Entscheidung: P4.13] [Build-Session-Entscheidung: P4.10]
+    let mut command = Command::new(program);
+    command.env_clear();
+    command
         .envs(
             invocation
                 .plan
@@ -166,10 +178,57 @@ pub async fn run_confined(
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn();
-    let mut child = match spawned {
+        .stderr(Stdio::piped());
+
+    // §1.7 `[DECIDED — sole owner]` (P4.10): every engine is spawned as a process-group / job-object LEADER so
+    // ONE kill tears down the engine AND ALL ITS DESCENDANTS. Several bundled engines re-exec or launch
+    // children of their own — most importantly LibreOffice (`soffice` → `soffice.bin`) — and killing only the
+    // IMMEDIATE child ORPHANS them, leaking processes, file handles and scratch files and breaking "cleanly
+    // discards the one in progress" (§2.1 no-partial). The composable wrappers, per §1.7:
+    //   * `JobObject` (Windows) — engine + children join one Win32 Job Object; `TerminateJobObject` on it
+    //     terminates the entire tree. It sets `CREATE_SUSPENDED` itself so the job is assigned before any
+    //     thread runs (and resumes them right after).
+    //   * `ProcessGroup::leader()` (POSIX) — `setpgid` makes the engine a process-group leader, so ONE kill
+    //     signals the WHOLE group (`killpg`), descendants included. (The reaping is the KILL's doing, not the
+    //     wait's: `waitpid(-pgid)` only ever collects OUR OWN children, so it can neither reap nor observe a
+    //     grandchild — see [`GroupKillGuard`]'s `Drop`.)
+    //   * `KillOnDrop` — §1.7 names this shim; it sets tokio's own kill-on-drop flag on the builder, which is
+    //     what makes tokio kill + background-reap the IMMEDIATE child if its handle is dropped unwaited (so a
+    //     dropped run leaves no zombie). See the FORCED DEVIATION below for what it does NOT buy.
+    //
+    // FORCED DEVIATION (DoD item 2 — §1.7's kill-on-job-close clause; spec §1.7 reconciled in this commit):
+    // §1.7 also expects the Job Object to carry `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` ("closing its last handle
+    // with kill-on-close") via the `KillOnDrop` shim, so that even an UNGRACEFUL end of ConvertIA has the OS
+    // reap the job. `process-wrap` 9.1.0 CANNOT deliver that, verified in its source: `CommandWrap::spawn_with`
+    // does `let mut wrappers = mem::take(&mut self.wrappers);` and then passes `&self` as the `core` argument
+    // to every hook, so `core.has_wrap::<KillOnDrop>()` — the read `JobObject::wrap_child` uses to choose the
+    // limit — sees an EMPTY wrapper map and is unconditionally `false`, whatever the registration order. The
+    // job is therefore created with no kill-on-close limit and there is no public API to add one (the job
+    // handle lives in a `pub(crate)` `JobPort`). Consequences + compensations:
+    //   * IN-PROCESS teardown is carried by [`GroupKillGuard`] below — every exit path that ends the
+    //     invocation WITHOUT a completed engine wait, INCLUDING the whole future being dropped by a caller
+    //     (the P4.12 watchdog, the §7.3.3 quit path), issues an explicit whole-group kill. For the paths that
+    //     actually need a teardown that is a stronger guarantee than a drop-flag: it is not limited to a
+    //     process exit. (After a COMPLETED wait the guard deliberately stands down — its `Drop` says why.)
+    //   * The residual is a HARD end of ConvertIA itself (crash / power-loss / SIGKILL), where no Rust `Drop`
+    //     runs: engine descendants can survive us — exactly the posture §1.7 already accepts for POSIX
+    //     ("POSIX orphans are reaped by re-parenting + the startup cleanup"), so Windows is now symmetric with
+    //     it rather than better, and the §2.6 startup sweep still discards the previous run's owned temp.
+    //   * Restoring the crash-time guarantee needs a first-party Win32 job with the limit set — the raw
+    //     `JOB_OBJECT_LIMIT` FFI that §2.12.3 already homes in **P4.17**, whose box note normatively requires
+    //     that job to carry kill-on-job-close: that box is the tracked home for closing this residual, and the
+    //     forward note added to it at P4.10 records both halves. The same upstream `core`-is-empty defect makes
+    //     `CreationFlags` inert too, which is why P4.17 cannot lean on that shim for a
+    //     spawn-suspended/adjust-token/resume sequence.
+    //
+    // v1 uses the §1.7 `[REC]` FORCEFUL group-kill (no cooperative drain): the output lives on a §2.14 temp
+    // path promoted only by the §2.1 atomic rename, so a hard kill leaves only a discardable temp artifact.
+    // The `tauri_plugin_shell` sidecar kill path is deliberately NOT used (its `CommandChild::kill` is
+    // tree-incomplete, and §0.10/§3.3.3 grant no `shell:allow-execute` at all) — the spawn+kill is pure Rust
+    // here. [Build-Session-Entscheidung: P4.10] the per-OS `wrap` calls are `cfg`-gated rather than always
+    // registered: each wrapper type only EXISTS on its own platform (`job-object` is a Windows-only feature,
+    // `process-group` a POSIX-only one), so the gate is the crate's own shape, not a ConvertIA choice.
+    let spawned = match group_wrapped(command).spawn() {
         Ok(child) => child,
         // Spawn error (binary missing / denied) is the §2.13.1 ITEM-level fault: a runtime per-item spawn
         // failure fails that one item as InternalError (§2.13.2) — the final answer at this per-item level
@@ -177,14 +236,19 @@ pub async fn run_confined(
         // this path (a mid-run vanished binary fails the item; the next startup probe catches a broken bundle).
         Err(_) => return ConfinedRun::failed(ConversionErrorKind::InternalError),
     };
+    // From here on the child is owned by the guard, so no way out of this fn that ends the invocation WITHOUT
+    // a completed engine wait — an early return, a panic, or the caller dropping the whole future — can leave
+    // the engine's process tree running (§1.7 P4.10). After a COMPLETED wait the guard deliberately stands
+    // down; its `Drop` carries that decision and the reason.
+    let mut child = GroupKillGuard::new(spawned);
 
-    // Take the piped handles OUT so the two drains borrow THEM (owned) while `child.wait()` borrows `child` —
+    // Take the piped handles OUT so the two drains borrow THEM (owned) while `wait()` borrows the child —
     // all three run CONCURRENTLY under one `tokio::join!` on this task, so a full stdout/stderr pipe can never
     // back-pressure the child into a deadlock (the classic "wait without draining" hang). The whole join runs
-    // under the §0.4.4 cancel token: a cancel trip drops the future (freeing the borrows) and best-effort-kills
-    // the child (kill_on_drop backstops; the bounded confirm-wait + residue path are P4.11).
-    let child_stdout = child.stdout.take();
-    let child_stderr = child.stderr.take();
+    // under the §0.4.4 cancel token: a cancel trip drops the future (freeing the borrows) and the arm below
+    // group-kills.
+    let child_stdout = child.inner.stdout().take();
+    let child_stderr = child.inner.stderr().take();
 
     let captured = invocation
         .cancel
@@ -196,12 +260,16 @@ pub async fn run_confined(
                 &on_progress,
             );
             let stderr_fut = read_all(child_stderr);
-            tokio::join!(child.wait(), stdout_fut, stderr_fut)
+            tokio::join!(child.inner.wait(), stdout_fut, stderr_fut)
         })
         .await;
 
     match captured {
         Some((Ok(status), stdout_buf, stderr_buf)) => {
+            // The engine ran to completion and `wait()` returned — the invocation ended through its own
+            // normal arm, so the guard stands down (see its `Drop` for why a post-exit group-kill would be a
+            // correctness regression, not extra safety).
+            child.group_settled = true;
             let result = if status.success() {
                 InvocationResult::Succeeded
             } else {
@@ -215,13 +283,86 @@ pub async fn run_confined(
                 stderr: stderr_buf,
             }
         }
-        // The reap itself failed — an internal fault, never a panic (the crate no-panic policy).
+        // The reap itself failed — an internal fault, never a panic (the crate no-panic policy). `group_settled`
+        // stays FALSE, so the guard group-kills on the way out: a failed reap must not leave the tree running.
         Some((Err(_), _, _)) => ConfinedRun::failed(ConversionErrorKind::InternalError),
         None => {
-            // User cancel: best-effort kill (kill_on_drop backstops); the item is Cancelled and the
-            // §1.7 caller discards the partial temp (§3.2.2).
-            child.kill().await.ok();
+            // User cancel → the §1.7 step-2 GROUP-kill (P4.10): `start_kill` signals the whole process group
+            // (`killpg(pgid, SIGKILL)`) / terminates the whole Job Object, so the engine AND every descendant
+            // it spawned die — never an orphan holding the temp file open. The kill is issued WITHOUT awaiting
+            // the group reap: §1.7 step 2 `[DECIDED]` requires that confirm-wait to be TIMEOUT-BOUNDED (so a
+            // descendant wedged in uninterruptible kernel I/O cannot hang the UI/quit path), and the bound —
+            // with its deferred-reclaim `CleanupResidue` tail — is P4.11's, so shipping an UNBOUNDED wait here
+            // would ship exactly the shape §1.7 forbids. SIGKILL / `TerminateJobObject` are not refusable, so
+            // the teardown itself needs no await; the immediate child is reaped by tokio's kill-on-drop
+            // background reaper (the `KillOnDrop` shim above), leaving no zombie. The item is Cancelled and the
+            // §1.7 caller discards the partial temp (§3.2.2). [Build-Session-Entscheidung: P4.10]
+            // The flag records an OBSERVED delivery, never an assumed one: if `start_kill` errored, the guard
+            // still gets its turn on the way out (SIGKILL / `TerminateJobObject` are idempotent).
+            child.group_settled = child.inner.start_kill().is_ok();
             ConfinedRun::cancelled()
+        }
+    }
+}
+
+/// Compose the §1.7 whole-group wrappers (P4.10) over an already-configured `tokio::process::Command` — the
+/// ONE place the Job-Object / process-group / kill-on-drop composition is spelled out, so the production
+/// spawn and the [`GroupKillGuard`] tests exercise the SAME wrapping rather than two drifting copies.
+/// [Build-Session-Entscheidung: P4.10]
+fn group_wrapped(command: Command) -> CommandWrap {
+    let mut wrapped = CommandWrap::from(command);
+    wrapped.wrap(KillOnDrop);
+    #[cfg(windows)]
+    wrapped.wrap(JobObject);
+    #[cfg(unix)]
+    wrapped.wrap(ProcessGroup::leader());
+    wrapped
+}
+
+/// The §1.7 whole-group kill BACKSTOP (P4.10) — owns the spawned child so that **no way out of
+/// [`run_confined`] that ends the invocation WITHOUT a completed engine wait** can leave the engine's process
+/// tree running. That covers the failed-reap arm, any early return, and above all the exit no explicit arm can
+/// reach: the caller **dropping the whole future** (the P4.12 no-progress watchdog, the §7.3.3
+/// quit-while-converting path). `process-wrap`'s `KillOnDrop` shim cannot serve as this backstop — it sets
+/// tokio's kill-on-drop, which kills only the IMMEDIATE child, and the Job Object's kill-on-job-close limit it
+/// is supposed to switch on is unreachable in 9.1.0 (the `core`-is-empty defect documented in `run_confined`).
+/// [Build-Session-Entscheidung: P4.10]
+struct GroupKillGuard {
+    inner: Box<dyn ChildWrapper>,
+    /// `true` once the invocation reached a terminal state through one of its OWN arms — the engine's `wait()`
+    /// returned `Ok` (the run ended normally), or a group kill was already delivered. Read by [`Drop`], which
+    /// backstops only the paths that set neither.
+    group_settled: bool,
+}
+
+impl GroupKillGuard {
+    fn new(inner: Box<dyn ChildWrapper>) -> Self {
+        Self {
+            inner,
+            group_settled: false,
+        }
+    }
+}
+
+impl Drop for GroupKillGuard {
+    fn drop(&mut self) {
+        // Best-effort and never panicking (the crate no-panic policy); `start_kill` is `killpg(pgid, SIGKILL)`
+        // on POSIX and `TerminateJobObject` on Windows — both tear down the WHOLE group, which is the point.
+        //
+        // [Build-Session-Entscheidung: P4.10] the guard deliberately does NOT fire after a COMPLETED engine
+        // wait, on either platform, even though neither platform's `wait()` proves the group is empty at that
+        // moment: POSIX `waitpid(-pgid)` returns `ECHILD` once WE have no children left in the group — a
+        // grandchild is not our child, so it never was a proof — and `JobObjectChild::wait` returns on the
+        // FIRST completion-port message rather than on `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO`. Killing on that
+        // path would trade a process-hygiene problem for a CORRECTNESS one: for an engine whose launcher
+        // legitimately exits before its worker has finished writing (the `soffice` → `soffice.bin` shape this
+        // very box exists for), a post-exit group-kill destroys in-flight work, and P4.10 is engine-agnostic
+        // infrastructure that must not pre-empt the §3.5 adapters' launcher/worker knowledge. A descendant
+        // outliving a SUCCESSFUL run is left to the §1.7 app-exit group-kill, the P4.12 exit/output
+        // verification and the §2.6 sweep. On POSIX not firing also keeps a stale `killpg` off a pgid the OS
+        // may already have freed and recycled.
+        if !self.group_settled {
+            self.inner.start_kill().ok();
         }
     }
 }
@@ -709,19 +850,16 @@ mod confined_spawn_tests {
 
     // §1.7/§0.4.4 (G15, P4.8): a cancel arriving WHILE the concurrent drain is active (mid-stream) PROMPTLY
     // tears the child down to Cancelled — the P4.8 `tokio::join!` (stdout drain + stderr drain + `child.wait`)
-    // runs under `run_until_cancelled`, so a cancel drops the whole join and best-effort-kills the child
-    // without waiting for it to exit (`run_confined` returns as soon as the token trips — measured ~105 ms,
-    // NOT the child's lifetime). This is the NEW P4.8 path the pre-tripped-token tests don't reach: they never
-    // enter the join, so they never exercise dropping the ACTIVE drains + wait on cancel.
+    // runs under `run_until_cancelled`, so a cancel drops the whole join and kills the child without waiting
+    // for it to exit (`run_confined` returns as soon as the token trips — measured ~105 ms, NOT the child's
+    // lifetime). This is the NEW P4.8 path the pre-tripped-token tests don't reach: they never enter the join,
+    // so they never exercise dropping the ACTIVE drains + wait on cancel. THIS test asserts only that
+    // responsiveness half; the descendant-teardown half is the P4.10 group-kill test below.
     //
-    // The shell blocks via a grandchild (`ping`/`sleep`). On this cheap-tier floor only the IMMEDIATE child is
-    // killed (the whole-GROUP `process-wrap` kill that reaps descendants is P4.10) — and on Windows the
-    // grandchild INHERITS the shell's stdout/stderr pipe handles (std-stream redirection does not defeat
-    // Win32 handle inheritance), so the drain's blocking read only sees EOF when the orphaned grandchild
-    // finally exits. That does not delay `run_confined` (it already returned on cancel) — it only holds test
-    // TEARDOWN until the grandchild dies, so the grandchild is kept SHORT (~1 s). On Linux the pipe fds are
-    // CLOEXEC (the grandchild never inherits them) so teardown is immediate; P4.10's group-kill makes it
-    // immediate everywhere. The lingering orphan is a P4.10 concern, not a run_confined-responsiveness one.
+    // The shell blocks via a grandchild (`ping`/`sleep`). Since P4.10 the cancel arm group-kills, so the
+    // grandchild dies WITH the shell — on Windows that also closes the stdout/stderr pipe handles the
+    // grandchild INHERITED (std-stream redirection does not defeat Win32 handle inheritance), so the drain's
+    // blocking read sees EOF at once and test teardown is immediate on every platform.
     #[tokio::test]
     async fn a_cancel_mid_drain_still_tears_the_child_down() {
         let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
@@ -776,6 +914,209 @@ mod confined_spawn_tests {
             fractions,
             vec![0.75_f32],
             "§1.7: a final line lacking a trailing newline still yields its fraction (read_until returns the partial at EOF)"
+        );
+    }
+
+    // ─── P4.10: the §1.7 whole-group / job-object teardown — over a REAL process TREE ─────────────────────
+    //
+    // The load-bearing §1.7 guarantee: ONE kill tears down the engine AND ALL ITS DESCENDANTS. The engine that
+    // motivates it is LibreOffice (`soffice` re-execs `soffice.bin`), so the fixture reproduces exactly that
+    // shape — a confined child that itself runs a longer-lived DESCENDANT — and both tests below prove the
+    // descendant is reaped, not orphaned, on the two paths that reach the kill: an explicit CANCEL, and the
+    // caller DROPPING the whole `run_confined` future (the `GroupKillGuard` backstop, which carries the
+    // teardown that `process-wrap`'s inert kill-on-job-close limit cannot). Pre-P4.10 (direct-child kill only)
+    // the cancel test FAILS: the orphan survives and writes its late marker.
+    // [Build-Session-Entscheidung: P4.10] the marker-file design is what makes the assertion OS-portable
+    // without a process-enumeration dependency (`remoteprocess`/`sysinfo` would be a new dep for a test-only
+    // capability): a live orphan announces itself by writing a file, a reaped one cannot.
+
+    // The descendant's own delay before it writes its late marker, and the margin the test waits past it. The
+    // margin is the slack for kill latency + the filesystem flush on a loaded CI runner. It must stay generous
+    // in BOTH directions, because the consumers assert the marker in both: an ABSENCE assertion (the two
+    // teardown tests, and the guard test's `settled == false` branch) is weakened toward a false PASS if a
+    // runner stalls a surviving descendant past the whole window, while a PRESENCE assertion (the guard test's
+    // `settled == true` branch) turns into a false FAILURE if a stalled runner has not let the descendant
+    // reach its write by then. So do not trim the margin on the strength of one direction.
+    const DESCENDANT_LATE_MARKER_DELAY: Duration = Duration::from_secs(2);
+    const DESCENDANT_LATE_MARKER_MARGIN: Duration = Duration::from_secs(2);
+
+    // Build the process-TREE fixture in `scratch`: a confined child that starts a longer-lived DESCENDANT.
+    // The descendant writes `started.txt` at once and `alive.txt` only after DESCENDANT_LATE_MARKER_DELAY, so
+    // the early marker proves it ran (non-vacuity) and the late marker appears IFF it outlived the teardown.
+    //
+    // Windows: the confined child is `cmd.exe`, which runs a NESTED `cmd.exe` (the descendant) reading a script
+    // FILE written into the scratch dir — a file rather than an inline nested command so the script text
+    // carries no quote character (cmd's `/c` quote-stripping rules and Rust's MSVCRT arg quoting disagree about
+    // nested quotes; every script in this module stays quote-free for that reason). `%SystemRoot%` expands from
+    // the plan's own minimal env; `ping -n 3` is the PATH-free ~2 s sleep this module already uses.
+    // Unix: `/bin/sh` backgrounds a SUBSHELL (the descendant) and then blocks. A non-interactive shell has no
+    // job control, so that subshell and its `sleep` stay in THE SHELL'S process group — exactly the group
+    // members `killpg` must reap. [Build-Session-Entscheidung: P4.10]
+    fn descendant_tree_script(scratch: &Path) -> &'static str {
+        #[cfg(windows)]
+        {
+            std::fs::write(
+                scratch.join("descendant.cmd"),
+                "@echo off\r\n\
+                 echo x> started.txt\r\n\
+                 %SystemRoot%\\System32\\ping.exe -n 3 127.0.0.1 > nul\r\n\
+                 echo x> alive.txt\r\n",
+            )
+            .expect("the descendant script is written into the scratch dir");
+            "%SystemRoot%\\System32\\cmd.exe /d /c descendant.cmd"
+        }
+        #[cfg(unix)]
+        {
+            let _ = scratch;
+            "( : > started.txt; sleep 2; : > alive.txt ) & sleep 10"
+        }
+    }
+
+    fn descendant_tree_invocation(scratch: &Path) -> (EngineInvocation, PathBuf) {
+        confined_shell_invocation_with_progress(
+            descendant_tree_script(scratch),
+            Some(scratch.to_path_buf()),
+            ProgressModel::CoarseSpawnDone,
+        )
+    }
+
+    // Poll for the descendant's early marker, bounded — returns whether it appeared. Every teardown assertion
+    // is armed off THIS, never off a wall-clock guess that could fire before the descendant even existed.
+    async fn descendant_started(marker: &Path) -> bool {
+        for _ in 0..250 {
+            if marker.exists() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        marker.exists()
+    }
+
+    // §1.7 (G15, P4.10): a cancel GROUP-kills — the engine's descendant dies with it and never writes the
+    // late marker.
+    #[tokio::test]
+    async fn a_cancel_group_kills_the_engines_descendants() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        let (envelope, program) = descendant_tree_invocation(scratch.path());
+        let token = envelope.cancel.clone();
+        let started = scratch.path().join("started.txt");
+        let canceller = tokio::spawn(async move {
+            let observed = descendant_started(&started).await;
+            token.cancel();
+            observed
+        });
+        let run = run_confined(&envelope, &program, |_| {}).await;
+        let observed_start = canceller.await.expect("the canceller task joins");
+
+        assert_eq!(
+            run.result,
+            InvocationResult::Cancelled,
+            "§1.7: the cancelled invocation reports Cancelled"
+        );
+        assert!(
+            observed_start,
+            "non-vacuity: the descendant really ran before the cancel (its early marker exists), so an absent late marker below can only mean it was reaped"
+        );
+        // Past the descendant's own delay: an ORPHANED descendant writes its late marker in this window.
+        tokio::time::sleep(DESCENDANT_LATE_MARKER_DELAY + DESCENDANT_LATE_MARKER_MARGIN).await;
+        assert!(
+            !scratch.path().join("alive.txt").exists(),
+            "§1.7: the group-kill reaped the engine's DESCENDANT too — a direct-child-only kill would have left it running to write this marker (the soffice -> soffice.bin orphan class)"
+        );
+    }
+
+    // §1.7 (G15, P4.10): the guard's DECISION, both directions, over a REAL process tree — an UNSETTLED guard
+    // group-kills on drop, a SETTLED one deliberately STANDS DOWN. The stand-down half is the load-bearing
+    // one: neither platform's `wait()` proves the group is empty, so a post-exit group-kill would be
+    // speculative, and for an engine whose launcher exits before its worker has finished writing it would
+    // truncate `out_tmp` mid-write while the exit still reads as success — publishing a corrupt output as a
+    // clean one. Without this test a refactor could silently re-introduce the always-kill and only a real
+    // engine would notice.
+    //
+    // [Build-Session-Entscheidung: P4.10] this exercises the guard DIRECTLY rather than through
+    // `run_confined`, and that is what makes it deterministic on all three OSes: the child's std handles are
+    // NULL here, so no descendant can hold a pipe open. Driving the stand-down end-to-end would instead need a
+    // descendant detached from the invocation's stdout/stderr PIPES — trivially expressible on POSIX
+    // (`>/dev/null 2>&1 &`), but on Windows a `start /b`-launched grandchild inherits those handles whatever
+    // cmd-level redirection is applied (measured: every variant kept the pipe open until the worker exited),
+    // so the invocation could not return while the worker still ran and the assertion would be VACUOUS. The
+    // spawn path is not mocked away: the tree is real and it is wrapped by the SAME `group_wrapped`
+    // composition production uses. What this test does not cover is the one-line per-arm `group_settled`
+    // assignment inside `run_confined`; the two end-to-end teardown tests below pin its unsettled arms.
+    #[tokio::test]
+    async fn a_settled_guard_stands_down_while_an_unsettled_one_group_kills() {
+        for settled in [true, false] {
+            let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+            let (program, mut args) = shell();
+            args.push(OsString::from(descendant_tree_script(scratch.path())));
+            let mut command = Command::new(&program);
+            command.env_clear();
+            command
+                .envs(minimal_env())
+                .args(&args)
+                .current_dir(scratch.path())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let child = group_wrapped(command)
+                .spawn()
+                .expect("the real process tree spawns");
+            let mut guard = GroupKillGuard::new(child);
+            guard.group_settled = settled;
+
+            // Drop only once the DESCENDANT is really running — otherwise "its marker never appeared" would
+            // prove nothing about the guard.
+            assert!(
+                descendant_started(&scratch.path().join("started.txt")).await,
+                "non-vacuity: the descendant really started before the guard was dropped"
+            );
+            drop(guard);
+
+            tokio::time::sleep(DESCENDANT_LATE_MARKER_DELAY + DESCENDANT_LATE_MARKER_MARGIN).await;
+            assert_eq!(
+                scratch.path().join("alive.txt").exists(),
+                settled,
+                "§1.7: a SETTLED guard must leave a still-working descendant alone (killing it would truncate a worker mid-write and publish a corrupt output as a success); an UNSETTLED one must group-kill it"
+            );
+        }
+    }
+
+    // §1.7 (G15, P4.10): DROPPING the `run_confined` future group-kills too — the `GroupKillGuard` backstop.
+    // This is the path no explicit arm can reach (a caller's `tokio::time::timeout` at P4.12, the §7.3.3
+    // quit-while-converting path) and the one `process-wrap`'s `KillOnDrop` shim does NOT cover: it sets only
+    // tokio's DIRECT-child kill-on-drop, and the Job Object's kill-on-job-close limit that the shim is meant to
+    // switch on is unreachable in 9.1.0 (the `core`-is-empty defect recorded in `run_confined`). Without the
+    // guard the descendant survives the drop and writes its late marker.
+    #[tokio::test]
+    async fn dropping_the_confined_run_group_kills_the_engines_descendants() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        let (envelope, program) = descendant_tree_invocation(scratch.path());
+        let started = scratch.path().join("started.txt");
+
+        // Drive the future until the descendant has really started, then DROP it mid-run — no cancel token is
+        // tripped, so the only thing that can tear the tree down is the guard's `Drop`.
+        let mut run = Box::pin(run_confined(&envelope, &program, |_| {}));
+        let mut observed_start = false;
+        for _ in 0..250 {
+            tokio::select! {
+                _ = &mut run => break,
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+            }
+            if started.exists() {
+                observed_start = true;
+                break;
+            }
+        }
+        drop(run);
+
+        assert!(
+            observed_start,
+            "non-vacuity: the descendant really ran before the drop, so an absent late marker below can only mean it was reaped"
+        );
+        tokio::time::sleep(DESCENDANT_LATE_MARKER_DELAY + DESCENDANT_LATE_MARKER_MARGIN).await;
+        assert!(
+            !scratch.path().join("alive.txt").exists(),
+            "§1.7: dropping the run group-kills the engine AND its descendants — the GroupKillGuard backstop, since kill-on-job-close is inert upstream"
         );
     }
 }
