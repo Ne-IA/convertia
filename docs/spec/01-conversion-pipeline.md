@@ -768,6 +768,16 @@ spawn ─▶ Running ──(progress events)──▶ ...
             └──▶ spawn error (binary missing/denied) ─▶ Failed/AppFault [→ §2.13]
 ```
 
+**Spawn-error branch — the `[→ §2.13]` is a deferral pointer, resolved by §2.13.1.** Exactly like the
+sibling `[→ §2.8]` brackets on the branches above, `[→ §2.13]` names the section that **owns** this
+branch's classification; it does **not** assert that a per-item spawn yields an app-level fault. §2.13.1
+resolves it: a **runtime, per-item** spawn failure (a mid-run vanished/denied binary) is **item-level
+`Failed(InternalError)`** — that one item fails and the batch continues (§2.8); the **app-level**
+`EngineMissing` / `BundleDamaged` fault (a missing/corrupt engine) is a **§7.2.3 startup** fault caught
+**before** the per-item lifecycle (§2.13.3), *never* a per-item transition. So `AppFault` on this branch
+denotes that startup path, not a per-item outcome — the per-item arm is the §2.12 isolation wrapper's
+item-level `Failed(InternalError)`.
+
 **`EngineInvocation` is the dispatch envelope, NOT a second plan type.** `[DECIDED]`
 The plan-time artifact is the §3.2.2 **`Invocation`** returned by `Engine::plan()` (it
 owns `program`/`args`/`cwd`/`env`/`stdin`/`progress`/`out_tmp` — the single source of

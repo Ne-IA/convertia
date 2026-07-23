@@ -83,19 +83,24 @@ use crate::outcome::ConversionErrorKind;
 /// verification runs conductor-side on that path, the P3.48 re-cut); a non-success exit →
 /// `Failed(EngineCrash)` (§2.12.1's reap mapping — P4.12 routes exit≠0 through the §3.5 per-engine
 /// `classify_failure` for the precise §2.8 kind); a spawn error (binary missing/denied) →
-/// `Failed(InternalError)` (P4.7's machine refines the §2.13 spawn-error split); a cancel trip →
+/// `Failed(InternalError)` — the §2.13.1 ITEM-level answer (a runtime per-item spawn failure fails that one
+/// item, §2.13.2; the app-level `EngineMissing`/`BundleDamaged` escalation is the §7.2.3 startup probe's, a
+/// distinct path — P4.7-resolved: no per-item AppFault here); a cancel trip →
 /// best-effort kill → `Cancelled` (single-process kill here; the whole-GROUP teardown + the
 /// kill↔cleanup↔no-partial ordering are P4.10/P4.11, layered on this entry). `StdinPlan::PipeBytes` is
 /// unreachable-by-construction until the §3.5.4 pandoc adapter (P7) wires its byte feed — the honest
 /// `InternalError` seam (the P2.25 precedent), matched exhaustively so the arm cannot be silently
 /// dropped. [Build-Session-Entscheidung: P4.13]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the §1.7 engines::dispatch subprocess arms route through run_confined when the P4.32 program-path resolution supplies the resolved binary path this entry takes (no resolvable subprocess program exists before then — no subprocess engine is registered until P5-P7); the cfg(test) real-subprocess suite below exercises every arm, keeping the test build dead-code-clean. expect (not allow) auto-flags the moment the wiring lands."
-    )
-)]
+// [Test-Change: P4.7 — old-obsolete+new-correct, §1.7 §2.12.3] the P4.13 dead-code lint level assumed this
+// entry had no caller; the §1.7 `engines::run_subprocess` seam (below) now references `run_confined`, so
+// relaxing the level is correct — the entry stays unreachable until P4.32 yet is no longer reported unused.
+// Mechanism: `run_subprocess` counts as a dead-code-analysis root (via the `engines` module-level dead-code
+// lint attribute), so its body marks `run_confined` used even though `run_subprocess` is ITSELF dead until
+// P4.32, leaving `run_confined` unreachable but no longer reported unused. dispatch's
+// `Sidecar`/`ResourceBin` arms call `run_subprocess` when P4.32's program-path resolution supplies the resolved
+// `&Path` (no resolvable subprocess program before then); the cfg(test) real-subprocess suite below exercises
+// every arm.
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn run_confined(invocation: &EngineInvocation, program: &Path) -> InvocationResult {
     // §2.12.3(a): the scratch working directory is MANDATORY on a confined spawn.
     let Some(cwd) = invocation.plan.cwd.as_deref() else {
@@ -136,8 +141,10 @@ pub async fn run_confined(invocation: &EngineInvocation, program: &Path) -> Invo
         .spawn();
     let mut child = match spawned {
         Ok(child) => child,
-        // Spawn error (binary missing / denied): the P4.7 lifecycle machine refines the §2.13
-        // Failed-vs-AppFault split; the floor answers the honest internal fault.
+        // Spawn error (binary missing / denied) is the §2.13.1 ITEM-level fault: a runtime per-item spawn
+        // failure fails that one item as InternalError (§2.13.2) — the final answer at this per-item level
+        // (P4.7-resolved). The app-level EngineMissing/BundleDamaged split is the §7.2.3 startup probe's, not
+        // this path (a mid-run vanished binary fails the item; the next startup probe catches a broken bundle).
         Err(_) => return InvocationResult::Failed(ConversionErrorKind::InternalError),
     };
 

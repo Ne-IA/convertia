@@ -42,7 +42,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "of the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111): the P4.4/P4.5 registry build is live on the conductor's path (engine_registry() calls descriptor()+capabilities() and pre-computes the §0.9 serialised-flag map), but the EngineDescriptor.kind field-read and the serialised_flags() accessor stay dead until the P4.22 pool wiring consumes them, and EngineStatus/EngineHealth until the P4.45 startup probe assembles the real Ok(EngineHealth). The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the Engine trait + PlanOutcome return (P3.5-minimal, expanded to the full §3.2.2 surface and homed in engines/registry.rs at P4.1) and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.4 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), P4.13 authors crate::isolation::run_confined and P4.32 rewrites the subprocess arms to route through it (once P4.32 resolves EngineProgram to the binary path the entry takes) — so the dispatch fn + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture. The P4.2-authored §3.2.2 ProbeOutput (the parsed §3.2.1 probe result) is dead until the P4.9 probe-then-encode sequencing constructs it and a probe-engine plan_encode impl reads it (the P4.1 default impl ignores its _probe param by contract); its cfg(test) shape test constructs + reads all four fields, keeping the test build dead-code-clean. The P4.3-authored §3.2.2 leaf types (Direction / PatentDisposition / CodecPosture / EngineCapability + the SourceFmt/TargetFmt aliases) are NAMED by the P4.1 trait signatures (capabilities(platform, patents)) and the native engine's capability row, but their construction sites stay dead until the P4.4 registry calls capabilities() and the P4.40 engines.lock parse builds the disposition; their cfg(test) shape tests construct + read every field, keeping the test build dead-code-clean."
+        reason = "of the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111): the P4.4/P4.5 registry build is live on the conductor's path (engine_registry() calls descriptor()+capabilities() and pre-computes the §0.9 serialised-flag map), but the EngineDescriptor.kind field-read and the serialised_flags() accessor stay dead until the P4.22 pool wiring consumes them, and EngineStatus/EngineHealth until the P4.45 startup probe assembles the real Ok(EngineHealth). The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the Engine trait + PlanOutcome return (P3.5-minimal, expanded to the full §3.2.2 surface and homed in engines/registry.rs at P4.1) and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.4 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), P4.13 authors crate::isolation::run_confined, P4.7 authors the §1.7 generic subprocess lane run_subprocess routing through it (the engines-side §1.7 seam P4.8/P4.9/P4.12 extend; itself dead until P4.32), and P4.32 rewrites the subprocess arms to call run_subprocess (once P4.32 resolves EngineProgram to the binary path) — so the dispatch fn + run_subprocess + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture. The P4.2-authored §3.2.2 ProbeOutput (the parsed §3.2.1 probe result) is dead until the P4.9 probe-then-encode sequencing constructs it and a probe-engine plan_encode impl reads it (the P4.1 default impl ignores its _probe param by contract); its cfg(test) shape test constructs + reads all four fields, keeping the test build dead-code-clean. The P4.3-authored §3.2.2 leaf types (Direction / PatentDisposition / CodecPosture / EngineCapability + the SourceFmt/TargetFmt aliases) are NAMED by the P4.1 trait signatures (capabilities(platform, patents)) and the native engine's capability row, but their construction sites stay dead until the P4.4 registry calls capabilities() and the P4.40 engines.lock parse builds the disposition; their cfg(test) shape tests construct + read every field, keeping the test build dead-code-clean."
     )
 )]
 
@@ -670,14 +670,43 @@ pub async fn dispatch(
             .await
         }
         // Subprocess lanes — unreachable-by-construction in the P3 walking skeleton (no subprocess engine is
-        // registered; the registry + engines land at P4.4). P4.13 authors crate::isolation::run_confined; P4.32
-        // rewrites these arms to route through it once the program-path resolution supplies the resolved &Path
-        // (no resolvable subprocess program exists before then); the honest InternalError seam holds meanwhile
-        // (§2.13, P2.25).
+        // registered; the registry + engines land at P4.4). P4.13 authors crate::isolation::run_confined; P4.7
+        // authors the §1.7 [`run_subprocess`] lane that routes through it; P4.32 rewrites these arms to CALL
+        // run_subprocess once the program-path resolution supplies the resolved &Path (no resolvable subprocess
+        // program exists before then); the honest InternalError seam holds meanwhile (§2.13, P2.25).
         EngineProgram::Sidecar(_) | EngineProgram::ResourceBin { .. } => {
             InvocationResult::Failed(ConversionErrorKind::InternalError)
         }
     }
+}
+
+/// The §1.7 generic SUBPROCESS lane (P4.7) — the sole owner of the §1.7 per-item spawn-lifecycle skeleton
+/// (spawn → Running → exit / cancel / spawn-error), the engines-side (§0.7: `crate::engines` owns the §1.7
+/// invocation lifecycle) counterpart to the [`run_native_csv_tsv`] InProcessNative lane. It routes the
+/// invocation THROUGH the §2.12 isolation wrapper: [`crate::isolation::run_confined`] is the SOLE spawn site.
+/// This lane constructs NO `Command` of its own — `crate::engines` is **not** excluded from the G29 rule-(c)
+/// spawn-outside-isolation ban, so program + argv flow only as DATA (the [`EngineInvocation`] + the resolved
+/// absolute `program` path) into the isolation wrapper, which owns the one sanctioned `tokio::process::Command`.
+///
+/// `run_confined` already realises the whole per-spawn state machine (§2.12.1 process boundary + §2.12.3
+/// cheap-tier floor + the exit/cancel/spawn-error mapping, P4.13); this lane is the §1.7 SEAM its siblings
+/// EXTEND on top of that primitive: **P4.8** attaches the per-`ProgressModel` stdout/stderr line-reader →
+/// `on_progress` sink here, **P4.9** the two-step probe-then-encode sequencing, **P4.12** the no-progress
+/// watchdog → `Failed(EngineHang)` + the exit≠0 → §3.5 `classify_failure` routing — each grows THIS body while
+/// `run_confined` stays the pure confinement primitive. The §1.7 exit-output verification is NOT re-implemented
+/// here — it is delivered conductor-side (`orchestrator::verify_encode_output`, the P3.48 re-cut) after every
+/// `Succeeded`. `program` is the RESOLVED absolute binary path; the `EngineProgram → path` resolution is
+/// **P4.32**'s (§3.3.3), which then rewrites `dispatch`'s `Sidecar`/`ResourceBin` arms to call this lane — no
+/// resolvable subprocess program exists before then, so this lane is dead in the production build until P4.32
+/// (the cfg(test) subprocess suite below exercises it; it is covered by the module-level dead-code lint level,
+/// like [`run_native_csv_tsv`]'s pre-conductor InProcessNative chain). [Build-Session-Entscheidung: P4.7]
+async fn run_subprocess(invocation: &EngineInvocation, program: &Path) -> InvocationResult {
+    // §1.7 routes every spawn THROUGH the §2.12 isolation wrapper — the sole `Command` site (G29 rule (c),
+    // which does NOT exclude `crate::engines`). This lane hands the invocation + the resolved program path in
+    // as DATA and never constructs a `Command` itself; `run_confined` owns the confinement + the per-spawn
+    // state machine (P4.13). P4.8/P4.9/P4.12 extend THIS body (progress line-reader / probe-then-encode /
+    // watchdog + classify_failure). [Build-Session-Entscheidung: P4.7]
+    crate::isolation::run_confined(invocation, program).await
 }
 
 /// The §1.7 `InProcessNative` lane (P3.43) — run the §3.5.6 native CSV/TSV transform on the §0.9 in-core
@@ -2770,6 +2799,116 @@ mod tests {
                 "§3.2.2: both PlanOutcome shapes wrap the plan Invocation"
             );
         }
+    }
+
+    // ─── P4.7: the §1.7 generic subprocess lane (run_subprocess) — the seam routes through isolation ──
+    //
+    // run_subprocess is a pure data-router to crate::isolation::run_confined (the sole spawn site, G29 rule
+    // (c); this lane builds NO Command). These tests prove the SEAM: an EngineInvocation + a resolved program
+    // path handed to run_subprocess yields the SAME confined §1.7 outcome run_confined produces — over a REAL
+    // subprocess + a REAL scratch cwd (the isolation layer is never mocked, test-strategy §0.1). The child is
+    // the platform shell at its ABSOLUTE path (the confined env has no PATH).
+
+    #[cfg(windows)]
+    fn seam_shell() -> (PathBuf, Vec<OsString>) {
+        let system_root = std::env::var_os("SystemRoot").expect("SystemRoot is set on Windows");
+        let mut cmd = PathBuf::from(system_root);
+        cmd.push("System32");
+        cmd.push("cmd.exe");
+        (cmd, vec![OsString::from("/d"), OsString::from("/c")])
+    }
+    #[cfg(unix)]
+    fn seam_shell() -> (PathBuf, Vec<OsString>) {
+        (PathBuf::from("/bin/sh"), vec![OsString::from("-c")])
+    }
+
+    // The minimal env the shell child NEEDS (cmd.exe needs SystemRoot on Windows; /bin/sh needs nothing) —
+    // NOT an inherited leak; the env-clearing is proven by isolation::run_confined's own tests.
+    #[cfg(windows)]
+    fn seam_min_env() -> Vec<(OsString, OsString)> {
+        vec![(
+            OsString::from("SystemRoot"),
+            std::env::var_os("SystemRoot").expect("SystemRoot is set on Windows"),
+        )]
+    }
+    #[cfg(unix)]
+    fn seam_min_env() -> Vec<(OsString, OsString)> {
+        Vec::new()
+    }
+
+    // A confined subprocess EngineInvocation running `script` through the platform shell in `cwd`, plus the
+    // resolved absolute program path run_subprocess takes (the P4.32 program-path seam, caller-supplied here).
+    fn seam_shell_invocation(script: &str, cwd: PathBuf) -> (EngineInvocation, PathBuf) {
+        let (program, mut args) = seam_shell();
+        args.push(OsString::from(script));
+        let envelope = EngineInvocation {
+            job: JobId::from_index(0),
+            engine: EngineId::Pandoc,
+            plan: Invocation {
+                program: EngineProgram::Sidecar(EngineId::Pandoc),
+                args,
+                cwd: Some(cwd),
+                env: seam_min_env(),
+                stdin: StdinPlan::None,
+                progress: ProgressModel::CoarseSpawnDone,
+                out_tmp: None,
+            },
+            cancel: CancellationToken::new(),
+        };
+        (envelope, program)
+    }
+
+    // §1.7/§2.12 (G15): the P4.7 subprocess lane routes a clean exit through the §2.12 confinement to
+    // Succeeded and a nonzero exit to the §2.8 EngineCrash floor — proving run_subprocess delegates to
+    // run_confined (the sole spawn site) and passes its InvocationResult through unchanged.
+    #[tokio::test]
+    async fn the_subprocess_lane_routes_a_clean_and_a_failing_exit_through_the_confinement() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        let (ok, program) = seam_shell_invocation("exit 0", scratch.path().to_path_buf());
+        assert_eq!(
+            run_subprocess(&ok, &program).await,
+            InvocationResult::Succeeded,
+            "§1.7: run_subprocess routes a clean exit through run_confined to Succeeded"
+        );
+        let (bad, program) = seam_shell_invocation("exit 3", scratch.path().to_path_buf());
+        assert_eq!(
+            run_subprocess(&bad, &program).await,
+            InvocationResult::Failed(ConversionErrorKind::EngineCrash),
+            "§2.12.1: a nonzero engine exit passes through the lane as the reap-mapped EngineCrash floor"
+        );
+    }
+
+    // §1.7/§0.4.4 (G15): a pre-tripped cancel token routed through the lane yields Cancelled — the lane
+    // carries run_confined's §0.4.4 cancel semantics (best-effort kill, never a fabricated success).
+    #[tokio::test]
+    async fn the_subprocess_lane_carries_the_confined_cancel_semantics() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        #[cfg(windows)]
+        let script = "%SystemRoot%\\System32\\ping.exe -n 30 127.0.0.1 >nul";
+        #[cfg(unix)]
+        let script = "while :; do :; done";
+        let (envelope, program) = seam_shell_invocation(script, scratch.path().to_path_buf());
+        envelope.cancel.cancel();
+        assert_eq!(
+            run_subprocess(&envelope, &program).await,
+            InvocationResult::Cancelled,
+            "§1.7: a tripped cancel token routes through the lane to Cancelled, never a fabricated success"
+        );
+    }
+
+    // §2.13.1 (G15): a per-item runtime spawn error (a missing binary) routes through the lane to the
+    // item-level Failed(InternalError) — the resolved §2.13 per-item answer (the app-level EngineMissing
+    // escalation is the §7.2.3 startup probe's, not this path).
+    #[tokio::test]
+    async fn the_subprocess_lane_maps_a_missing_binary_to_the_item_level_internal_error() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        let (envelope, _) = seam_shell_invocation("exit 0", scratch.path().to_path_buf());
+        let missing = scratch.path().join("no-such-engine-binary.exe");
+        assert_eq!(
+            run_subprocess(&envelope, &missing).await,
+            InvocationResult::Failed(ConversionErrorKind::InternalError),
+            "§2.13.1: a runtime per-item spawn failure is the item-level InternalError (P4.7-resolved)"
+        );
     }
 }
 
