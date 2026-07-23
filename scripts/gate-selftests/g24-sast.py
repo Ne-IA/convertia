@@ -5,9 +5,13 @@ Runs on all 3 OS in the continuous-armed-canary WITHOUT semgrep installed, so it
 pure, importable LOGIC: (1) the project rule-ids auto-discover from scripts/semgrep-rules/project/ and
 match the committed rule set; (2) every project rule has a planted-positive fixture; (3) the
 armed-canary detector (missing_canaries) flags a rule that stopped firing; (4) the net-allow-list
-parser ignores comments/blanks; (5) the net-ban allow-list FILTER drops only allow-listed net findings.
-The REAL semgrep-over-fixtures armed canary runs inside check-sast in the CI `sast` job (semgrep
-present). stdlib-only. Exit 0 = all held.
+parser ignores comments/blanks; (5) the net-ban allow-list FILTER drops only allow-listed net findings;
+(6, P4.85) the `sast-clean`/`sast-must-fire` per-line pin marker parse + the both-direction
+detectors (broken_suppressions / missing_must_fires), the text<->matcher command-census
+counter/comparator, the macOS homing scan (cfg + runtime consts::OS forms), and the structural
+pins on the refined (b1)/(d) rule text (paths scope + fixture binding + the adjacent suppression
+forms). The REAL semgrep-over-fixtures armed canary runs inside check-sast in the CI `sast` job
+(semgrep present). stdlib-only. Exit 0 = all held.
 """
 import importlib.machinery
 import importlib.util
@@ -174,6 +178,124 @@ try:
            m.macro_nested_temp_dirs([_td]) == [])
 finally:
     shutil.rmtree(_td, ignore_errors=True)
+
+# --- 8. the P4.85 suppression pins: `sast-clean` marker parse + broken-suppression detector -----
+mk = m.parse_clean_markers('fn f(){}\nlet x = 1; // sast-clean: rule-a\nlet y = 2; // sast-clean: rule-a, rule-b\n')
+record("clean-markers: a trailing `// sast-clean:` marker parses to its 1-based line + rule-id", mk.get(2) == {"rule-a"})
+record("clean-markers: a comma-separated multi-id marker parses to the full id set", mk.get(3) == {"rule-a", "rule-b"})
+record("clean-markers: text without markers parses to {}", m.parse_clean_markers("fn f(){}\nno markers here\n") == {})
+
+_MPATH = "scripts/semgrep-rules/fixtures/x.rs"
+_markers = {(_MPATH, 5): {"convertia-x"}}
+def _f(rid, path, line):  # a synthetic semgrep finding with a start line
+    return {"check_id": "rules." + rid, "path": path, "start": {"line": line}}
+record("broken-suppressions: a finding of the pinned rule on the pinned line is flagged",
+       m.broken_suppressions([_f("convertia-x", _MPATH, 5)], _markers) == [(_MPATH, 5, "convertia-x")])
+record("broken-suppressions: a DIFFERENT rule's finding on the pinned line is NOT flagged (per-rule pins)",
+       m.broken_suppressions([_f("convertia-y", _MPATH, 5)], _markers) == [])
+record("broken-suppressions: the pinned rule on an UNpinned line is NOT flagged",
+       m.broken_suppressions([_f("convertia-x", _MPATH, 7)], _markers) == [])
+record("broken-suppressions: an ABSOLUTE finding path is normalised before the pin lookup",
+       m.broken_suppressions([_f("convertia-x", str(m.ROOT / "scripts" / "semgrep-rules" / "fixtures" / "x.rs"), 5)],
+                             _markers) == [(_MPATH, 5, "convertia-x")])
+
+fm = m.fixture_clean_markers()
+record("clean-markers: the committed b1+d fixtures pin >=5 refined-suppression lines clean (armed, not hoped)",
+       len(fm) >= 5 and {"convertia-command-missing-env-clear", "convertia-macos-command-missing-stage-for-tcc"}
+       <= {i for ids in fm.values() for i in ids})
+
+# --- 8b. the sast-must-fire twin (the G1 round-1 Opus P2: per-line positives, fail-OPEN direction) ---
+fk = m.parse_fire_markers("fn f(){}\nlet a = spawn(); // sast-must-fire: rule-a\n"
+                          "let b = spawn(); // prose first // sast-must-fire: rule-a, rule-b\n")
+record("fire-markers: a trailing `// sast-must-fire:` marker parses to its 1-based line + rule-id",
+       fk.get(2) == {"rule-a"})
+record("fire-markers: a marker AFTER a prose comment on the same line still parses (multi-id)",
+       fk.get(3) == {"rule-a", "rule-b"})
+record("fire-markers: text without markers parses to {}", m.parse_fire_markers("fn f(){}\n") == {})
+record("must-fire: a pinned positive WITH its finding is not reported",
+       m.missing_must_fires([_f("convertia-x", _MPATH, 5)], _markers) == [])
+record("must-fire: a pinned positive with NO finding is reported (the fail-OPEN direction)",
+       m.missing_must_fires([], _markers) == [(_MPATH, 5, "convertia-x")])
+record("must-fire: a finding of a DIFFERENT rule on the pinned line does not satisfy the pin",
+       m.missing_must_fires([_f("convertia-y", _MPATH, 5)], _markers) == [(_MPATH, 5, "convertia-x")])
+record("must-fire: an ABSOLUTE finding path is normalised before the pin lookup",
+       m.missing_must_fires([_f("convertia-x", str(m.ROOT / "scripts" / "semgrep-rules" / "fixtures" / "x.rs"), 5)],
+                            _markers) == [])
+ff = m.fixture_fire_markers()
+record("fire-markers: the committed b1+d fixtures pin >=7 must-fire positives (both refined rules armed)",
+       len(ff) >= 7 and {"convertia-command-missing-env-clear", "convertia-macos-command-missing-stage-for-tcc"}
+       <= {i for ids in ff.values() for i in ids})
+
+# --- 9. the P4.85 text<->matcher command census (counter + comparator) --------------------------
+record("census-text: target-absent (no app source) -> {}", m.command_census_text([]) == {})
+_td2 = Path(tempfile.mkdtemp(prefix="g24-sast-p485-"))
+try:
+    _cdir = _td2 / "census"
+    _cdir.mkdir(parents=True)
+    (_cdir / "c.rs").write_text(
+        "fn f(){ let a = Command::new(x); let b = std::process::Command::new(y); let c = Command :: new(z); }\n",
+        encoding="utf-8")
+    record("census-text: bare + qualified + spaced `Command::new(` all count (3 in one file)",
+           list(m.command_census_text([_cdir]).values()) == [3])
+    (_cdir / "c.rs").write_text('// Command::new(a) in a comment\nlet s = "Command::new(b) in a string";\n',
+                                encoding="utf-8")
+    record("census-text: a Command::new in a comment/string does NOT count (blanking)",
+           m.command_census_text([_cdir]) == {})
+    (_cdir / "c.rs").write_text("fn f(){ let t = TokioCommand::new(x); }\n", encoding="utf-8")
+    record("census-text: an identifier-tail form (TokioCommand::new) does NOT count (word boundary)",
+           m.command_census_text([_cdir]) == {})
+
+    record("census-gaps: text == matched -> no gap", m.census_gaps({"a.rs": 2}, {"a.rs": 2}) == [])
+    record("census-gaps: text > matched -> the file is flagged (a matcher-invisible spawn)",
+           m.census_gaps({"a.rs": 2}, {"a.rs": 1}) == ["a.rs"])
+    record("census-gaps: matched > text is benign (a qualified call can match twice)",
+           m.census_gaps({"a.rs": 1}, {"a.rs": 3}) == [])
+    record("census-gaps: a file the matcher never reported at all is flagged",
+           m.census_gaps({"a.rs": 1}, {}) == ["a.rs"])
+
+    # --- 10. the P4.85 macOS-cfg homing scan ----------------------------------------------------
+    record("macos-homing: target-absent (no app source) -> []", m.misplaced_macos_cfg([]) == [])
+    _iso = _td2 / "homing" / "src" / "isolation"
+    (_iso / "macos").mkdir(parents=True)
+    (_iso / "mod.rs").write_text('#[cfg(target_os = "macos")]\nfn mac_leak() {}\n', encoding="utf-8")
+    record("macos-homing: a mac-cfg in isolation/mod.rs (outside the macos module) is flagged",
+           len(m.misplaced_macos_cfg([_td2 / "homing"])) == 1)
+    (_iso / "mod.rs").write_text("fn cross_platform() {}\n", encoding="utf-8")
+    (_iso / "macos.rs").write_text('#[cfg(target_os = "macos")]\nfn staged() {}\n', encoding="utf-8")
+    (_iso / "macos" / "tcc.rs").write_text('#[cfg(target_os = "macos")]\nfn stage_for_tcc() {}\n', encoding="utf-8")
+    record("macos-homing: mac-cfg in isolation/macos.rs + isolation/macos/ is the sanctioned home (not flagged)",
+           m.misplaced_macos_cfg([_td2 / "homing"]) == [])
+    (_iso / "mod.rs").write_text('// on target_os = "macos" we stage first\nfn cross_platform() {}\n',
+                                 encoding="utf-8")
+    record("macos-homing: a mac-cfg mention in a COMMENT does not count (comment blanking, strings kept)",
+           m.misplaced_macos_cfg([_td2 / "homing"]) == [])
+    _other = _td2 / "homing" / "src" / "platform"
+    _other.mkdir(parents=True)
+    (_other / "mac.rs").write_text('#[cfg(target_os = "macos")]\nfn os_shim() {}\n', encoding="utf-8")
+    record("macos-homing: a mac-cfg OUTSIDE the isolation tree (crate::platform) is not this scan's business",
+           m.misplaced_macos_cfg([_td2 / "homing"]) == [])
+    (_iso / "mod.rs").write_text('fn f() { if std::env::consts::OS == "macos" { stage(); } }\n',
+                                 encoding="utf-8")
+    record("macos-homing: a RUNTIME os-check (consts::OS == \"macos\") outside the macos module is flagged too",
+           len(m.misplaced_macos_cfg([_td2 / "homing"])) == 1)
+    (_iso / "mod.rs").write_text("fn cross_platform() {}\n", encoding="utf-8")
+finally:
+    shutil.rmtree(_td2, ignore_errors=True)
+
+# --- 11. structural pins on the refined (b1)/(d) rule text --------------------------------------
+_yaml = (m.PROJECT_RULES / "process-isolation.yaml").read_text(encoding="utf-8")
+_blocks = m._RULE_SPLIT_RE.split(_yaml)
+_d_block = next((b for b in _blocks if "convertia-macos-command-missing-stage-for-tcc" in b), "")
+_b1_block = next((b for b in _blocks if "convertia-command-missing-env-clear" in b), "")
+record("yaml-pin: rule (d) is paths-scoped to the macOS isolation module AND fixture-bound",
+       all(g in _d_block for g in ('"**/isolation/macos.rs"', '"**/isolation/macos/**"',
+                                   '"**/fixtures/d-stage-tcc.rs"')))
+record("yaml-pin: rule (d) keys on the literal standalone stage_for_tcc call (inline + adjacent-arg forms)",
+       ".arg(stage_for_tcc(...))" in _d_block and "let $S = stage_for_tcc(...);" in _d_block)
+record("yaml-pin: rule (d) carries the stage-then-build adjacency arm (the split-builder shape)",
+       "let mut $C = Command::new(...);" in _d_block)
+record("yaml-pin: rule (b1) carries the split-builder scrub-FIRST adjacent suppression",
+       "let mut $C = Command::new(...);" in _b1_block and "$C.env_clear();" in _b1_block)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n{len(results) - len(failed)}/{len(results)} legs passed")

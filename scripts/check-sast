@@ -12,12 +12,28 @@ CI job, immediately before the real scan):
   1. `semgrep --validate scripts/semgrep-rules/`            - the vendored packs + project rules parse.
   2. SELF-TEST PRELUDE: `semgrep --config scripts/semgrep-rules/project/ <fixtures>` - assert EVERY
      project rule fires on its planted-positive. A rule that stops matching its own planted violation
-     FAILS, even on a clean run where no real code changed.
+     FAILS, even on a clean run where no real code changed. PLUS the per-LINE pins (P4.85): fixture
+     lines carrying a `// sast-clean: <rule-id>` marker MUST produce NO finding of that rule (a
+     suppression that stops suppressing FAILS - the over-fire direction), and lines carrying a
+     `// sast-must-fire: <rule-id>` marker MUST produce one (a specific gapped/wrong-receiver/
+     sibling positive that stops firing FAILS - the fail-OPEN direction the set-level canary
+     cannot see), before either can reach the first production spawn.
   3. REAL SCAN: `semgrep --config scripts/semgrep-rules/ <app-source>` over src-tauri/src + src. The
      net-ban findings (rules g/j) are filtered through the committed net-allow-list.txt (empty -> any
      match fails; finding paths are normalised to repo-relative first). Target-absent -> skip; fail-closes when it lands.
+  3b. TEXT<->MATCHER COMMAND CENSUS (P4.85 - the delivered form of the formerly-"P1"
+     grep-every-Command::new reconciliation): per file, the textual `Command::new` count over the
+     comment/string-blanked app source must be <= the count an unconditional Semgrep census rule
+     (generated at runtime, never part of the committed ruleset) actually MATCHED there. Any textual
+     spawn the matcher did not see (a macro-argument interior - incl. the internal-`;` forms the
+     macro_nested_commands grep's `;`-boundary misses) FAILS. Target-absent -> skip.
   4. T2c single-store-name COUNT (rule (e)'s call-site half): at most ONE Store::load/StoreBuilder::new/.store()
      across the app source. Target-absent -> 0.
+  4b. macOS-cfg HOMING (P4.85, semgrep-independent): `target_os = "macos"`-conditional code inside
+     the isolation tree MUST live in isolation/macos.rs (or isolation/macos/) - the module the
+     refined paths-scoped rule (d) binds to; a mac-cfg elsewhere in isolation would dodge (d)'s
+     scope. Text-level over comment-blanked source (a cfg mention in a normal string still counts:
+     over-strict, fails-safe). Target-absent -> no-op.
   5. shellcheck over ALL committed *.sh (actionlint only shellchecks workflow `run:` steps, G49) — runs
      AFTER the semgrep legs (it is semgrep-independent, so it also runs when semgrep is absent locally).
   6. cargo-geiger - INFORMATIONAL only (a census, never a required green check); skipped until crates.
@@ -134,11 +150,13 @@ def _blank_rs_noncode(text: str) -> str:
 # POLICY: a Command::new must be built at statement/expression level, never nested in a macro arg, so the
 # SAST rules can analyse every spawn. `\w+!\s*([|[|{ ... Command::new` before the next `;` = a violation.
 # (`println!`/`eprintln!`/`dbg!` macro forms are independently forbidden in production by G8.)
-# P0 covers the common expression-macro forms (vec!/format!/function-like) WITHOUT an internal `;`. A
-# Command::new preceded by a `;` inside a macro-argument block/closure (e.g. vec![{ let z=1; Command::new() }])
-# escapes both semgrep (matcher-blind to macro interiors) AND this grep (the `[^;]` class stops at the `;`)
-# — a DOCUMENTED, NOT silent, fail-OPEN closed by the P1 grep-every-Command::new vs rule-(d)-matched-set
-# RECONCILIATION (any text Command::new semgrep did not see is a gap), which cannot run target-absent.
+# This grep covers the common expression-macro forms (vec!/format!/function-like) WITHOUT an internal `;`
+# and gives them a precise per-line message. A Command::new preceded by a `;` inside a macro-argument
+# block/closure (e.g. vec![{ let z=1; Command::new() }]) escapes both semgrep (matcher-blind to macro
+# interiors) AND this grep (the `[^;]` class stops at the `;`) — that residual is CLOSED by the P4.85
+# text<->matcher command CENSUS (census_scan: any textual Command::new the Semgrep matcher did not
+# actually match fails the gate; skips target-absent), so this grep is the belt-and-suspenders
+# messenger for the common forms, no longer the sole backstop.
 _MACRO_CMD_RE = re.compile(r"\b[A-Za-z_]\w*!\s*[(\[{][^;]*?\b(?:std::process::|tokio::process::)?Command::new", re.S)
 
 # The temp-dir SIBLING of the same matcher gap (the 91d1975 P3.56 forward-note): a `temp_dir()`
@@ -180,6 +198,182 @@ def macro_nested_temp_dirs(roots: list[Path]) -> list[tuple[str, int]]:
     """Repo-relative (file, line) of every temp_dir() nested inside a macro arg — the temp-dir rule's
     SAST-matcher blind spot (a use the shared-temp audit would silently skip). Target-absent -> []."""
     return _macro_nested(roots, _MACRO_TMPDIR_RE)
+
+
+# --- the P4.85 refinement legs: suppression pins + the text<->matcher command census + macOS homing ---
+
+# A fixture line ending in `// sast-clean: <rule-id>[, <rule-id>...]` pins that line CLEAN for the
+# named rule(s): the prelude FAILS if any such finding lands there. This is the inverse arm of the
+# planted-positive canary - positives prove a rule still FIRES; these pins prove a refined rule's
+# suppression still SUPPRESSES (a Semgrep bump that breaks the adjacent-statement forms would
+# otherwise surface only as a red real-scan on production code).
+_CLEAN_MARK_RE = re.compile(r"//\s*sast-clean:\s*([A-Za-z0-9_,\s-]+?)\s*$")
+
+# The per-LINE must-fire twin (the G1 round-1 Opus P2): `// sast-must-fire: <rule-id>[, ...]` pins
+# that line as a POSITIVE that must produce a finding of the named rule(s). The set-level canary
+# (missing_canaries) only proves each rule fires SOMEWHERE, so a Semgrep bump that makes an
+# adjacent-statement suppression LOOSER (gap-tolerant adjacency, dropped $C/$S unification) would
+# over-suppress a specific gapped/wrong-receiver/sibling positive - the fail-OPEN direction - while
+# the set-level canary stays green. These pins arm exactly that direction per shape.
+_FIRE_MARK_RE = re.compile(r"//\s*sast-must-fire:\s*([A-Za-z0-9_,\s-]+?)\s*$")
+
+# Textual spawn census: every `Command::new(` over comment/string-blanked source (qualified paths
+# contain the same token; `\b` rejects identifier tails like TokioCommand::new).
+_TEXT_CMD_RE = re.compile(r"\bCommand\s*::\s*new\s*\(")
+
+# The runtime-generated census config: an UNCONDITIONAL spawn matcher whose results are CONSUMED as
+# a per-file count, never surfaced as findings. Deliberately NOT a committed project rule - it must
+# stay outside scripts/semgrep-rules/ so neither the real scan (which fails on any finding) nor the
+# a-j contract set (EXPECTED_RULE_TAGS) picks it up.
+_CENSUS_CONFIG = """rules:
+  - id: convertia-command-census
+    languages: [rust]
+    severity: INFO
+    message: spawn census (internal; consumed by check-sast, never a finding)
+    pattern-either:
+      - pattern: Command::new($B)
+      - pattern: std::process::Command::new($B)
+      - pattern: tokio::process::Command::new($B)
+"""
+
+# All macOS-conditional isolation code homes in isolation/macos.rs (or isolation/macos/) - the
+# module the refined rule (d) paths-binds to. Matched text forms: the compile-time
+# `target_os = "macos"` predicate (cfg / cfg! / cfg_attr all contain it) AND the runtime
+# `std::env::consts::OS == "macos"` comparison (the G1 round-1 Sonnet P3: a runtime os-check
+# carries no cfg literal). The cfg VALUE is a string literal, so this scan blanks COMMENTS ONLY
+# (the full noncode blank would erase the marker). DOCUMENTED residual: a platform-helper
+# indirection (e.g. a crate::platform `is_macos()` called from isolation code) carries neither
+# literal at the call site - caught behaviourally by the G31 macOS first-accessor leg, and the
+# helper's own body carries the literal where IT lives.
+_MACOS_CFG_RE = re.compile(r'target_os\s*=\s*"macos"|consts\s*::\s*OS\s*==\s*"macos"')
+
+
+def _parse_line_markers(text: str, rx: re.Pattern) -> dict[int, set[str]]:
+    """1-based line -> the rule-ids named by `rx` marker comments on that line."""
+    out: dict[int, set[str]] = {}
+    for i, ln in enumerate(text.split("\n"), start=1):
+        m = rx.search(ln)
+        if m:
+            ids = {p.strip() for p in m.group(1).replace(",", " ").split() if p.strip()}
+            if ids:
+                out[i] = ids
+    return out
+
+
+def parse_clean_markers(text: str) -> dict[int, set[str]]:
+    """1-based line -> the rule-ids pinned CLEAN on that line (the `// sast-clean:` markers)."""
+    return _parse_line_markers(text, _CLEAN_MARK_RE)
+
+
+def parse_fire_markers(text: str) -> dict[int, set[str]]:
+    """1-based line -> the rule-ids pinned MUST-FIRE on that line (`// sast-must-fire:` markers)."""
+    return _parse_line_markers(text, _FIRE_MARK_RE)
+
+
+def _fixture_markers(parse) -> dict[tuple[str, int], set[str]]:
+    out: dict[tuple[str, int], set[str]] = {}
+    for f in sorted(list(FIXTURES.rglob("*.rs")) + list(FIXTURES.rglob("*.ts"))):
+        for line, ids in parse(f.read_text(encoding="utf-8", errors="replace")).items():
+            out[(to_repo_rel(str(f)), line)] = ids
+    return out
+
+
+def fixture_clean_markers() -> dict[tuple[str, int], set[str]]:
+    """(repo-relative POSIX fixture path, line) -> pinned-clean rule-ids, over all fixtures."""
+    return _fixture_markers(parse_clean_markers)
+
+
+def fixture_fire_markers() -> dict[tuple[str, int], set[str]]:
+    """(repo-relative POSIX fixture path, line) -> pinned must-fire rule-ids, over all fixtures."""
+    return _fixture_markers(parse_fire_markers)
+
+
+def missing_must_fires(results: list[dict], markers: dict[tuple[str, int], set[str]]) -> list[tuple[str, int, str]]:
+    """Pinned must-fire (file, line, rule-id) triples with NO matching finding - each one is a
+    positive that STOPPED firing at its pinned shape (a suppression got LOOSER: the fail-OPEN
+    direction the set-level canary cannot see)."""
+    fired: set[tuple[str, int, str]] = set()
+    for r in results:
+        fired.add((to_repo_rel(r.get("path", "")), r.get("start", {}).get("line", 0),
+                   r.get("check_id", "").split(".")[-1]))
+    out = []
+    for (path, line), ids in sorted(markers.items()):
+        for rid in sorted(ids):
+            if (path, line, rid) not in fired:
+                out.append((path, line, rid))
+    return out
+
+
+def broken_suppressions(results: list[dict], markers: dict[tuple[str, int], set[str]]) -> list[tuple[str, int, str]]:
+    """Findings that landed on a pinned-clean (file, line) for their own rule-id - each one is a
+    refined-rule suppression that stopped suppressing (the armed-canary failure's inverse arm)."""
+    out = []
+    for r in results:
+        rid = r.get("check_id", "").split(".")[-1]
+        key = (to_repo_rel(r.get("path", "")), r.get("start", {}).get("line", 0))
+        if rid in markers.get(key, set()):
+            out.append((key[0], key[1], rid))
+    return out
+
+
+def command_census_text(roots: list[Path]) -> dict[str, int]:
+    """Repo-relative file -> textual `Command::new(` count over the blanked app source (the census's
+    text side). Target-absent (no app source) -> {}."""
+    out: dict[str, int] = {}
+    for t in roots:
+        for f in t.rglob("*.rs"):
+            n = len(_TEXT_CMD_RE.findall(_blank_rs_noncode(f.read_text(encoding="utf-8", errors="replace"))))
+            if n:
+                try:
+                    rel = f.resolve().relative_to(ROOT.resolve()).as_posix()
+                except (ValueError, OSError):
+                    rel = f.as_posix()
+                out[rel] = out.get(rel, 0) + n
+    return out
+
+
+def census_gaps(text_counts: dict[str, int], matched_counts: dict[str, int]) -> list[str]:
+    """Files where the TEXT census exceeds the MATCHED census - a spawn the Semgrep matcher did not
+    see (macro-argument interiors incl. the internal-`;` forms). matched > text is benign (a
+    qualified call can match more than one census pattern spelling). DOCUMENTED design bound: the
+    reconciliation is per-FILE count, not per-occurrence (semgrep anchors a qualified/wrapped match
+    on a different line than the text token, so a line-set compare would false-gap) - in principle
+    an over-match could offset a blind spot in the SAME file; no such over-match shape is known
+    (each spelling matched exactly once empirically), and the macro grep backstop still covers the
+    common forms independently."""
+    return sorted(f for f, n in text_counts.items() if n > matched_counts.get(f, 0))
+
+
+def misplaced_macos_cfg(roots: list[Path]) -> list[tuple[str, int]]:
+    """Repo-relative (file, line) of every `target_os = "macos"` in the isolation tree OUTSIDE
+    isolation/macos.rs / isolation/macos/ - mac-cfg'd isolation code the paths-scoped rule (d)
+    could not see. Comment-blanked (strings KEPT - the cfg value is itself a string literal; a
+    string MENTION over-counts, fails-safe). Target-absent -> []."""
+    hits: list[tuple[str, int]] = []
+    for t in roots:
+        for f in t.rglob("*.rs"):
+            try:
+                rel = f.resolve().relative_to(ROOT.resolve()).as_posix()
+            except (ValueError, OSError):
+                rel = f.as_posix()                       # outside ROOT (e.g. a self-test temp dir)
+            probe = "/" + rel
+            if "/isolation/" not in probe and not probe.endswith("/isolation.rs"):
+                continue
+            if probe.endswith("/isolation/macos.rs") or "/isolation/macos/" in probe:
+                continue
+            code = _blank_rs_comments(f.read_text(encoding="utf-8", errors="replace"))
+            for m in _MACOS_CFG_RE.finditer(code):
+                hits.append((rel, code[: m.start()].count("\n") + 1))
+    return hits
+
+
+def _blank_rs_comments(text: str) -> str:
+    """`text` with block + line comments blanked but STRING LITERALS KEPT (the macOS-cfg scan needs
+    the `"macos"` literal). Naive `//` stripping: a line whose string contains `//` before a real
+    cfg loses that cfg (contrived, documented residual); a cfg TEXT inside a kept string still
+    counts (over-strict, fails-safe)."""
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
+    return "\n".join(re.sub(r"//.*$", "", ln) for ln in text.split("\n"))
 
 
 def parse_net_allow_list(text: str) -> set[str]:
@@ -303,7 +497,20 @@ def self_test_prelude() -> int:
         fail(f"armed-canary FAILURE: contract rule tag(s) {sorted(missing_tags)} did not fire on any "
              f"planted-positive fixture")
         return 1
-    print(f"[G29] self-test prelude: contract a-j set intact; all {len(required)} project rules fired")
+    broken = broken_suppressions(results, fixture_clean_markers())
+    if broken:
+        fail("armed-canary FAILURE: a refined-rule suppression stopped suppressing - finding(s) on "
+             "pinned-clean fixture line(s): "
+             + ", ".join(f"{p}:{ln} ({rid})" for p, ln, rid in broken[:10]))
+        return 1
+    unfired = missing_must_fires(results, fixture_fire_markers())
+    if unfired:
+        fail("armed-canary FAILURE: pinned must-fire positive(s) stopped firing (a suppression got "
+             "LOOSER - the fail-OPEN direction): "
+             + ", ".join(f"{p}:{ln} ({rid})" for p, ln, rid in unfired[:10]))
+        return 1
+    print(f"[G29] self-test prelude: contract a-j set intact; all {len(required)} project rules "
+          f"fired; the sast-clean + sast-must-fire per-line pins held")
     return 0
 
 
@@ -325,6 +532,43 @@ def real_scan() -> int:
         print(f"[G29] real scan: {len(findings)} SAST finding(s)", file=sys.stderr)
         return 1
     print("[G29] real scan: 0 findings over the app source")
+    return 0
+
+
+def census_scan() -> int:
+    """The text<->matcher command census (P4.85 - the delivered grep-every-Command::new
+    reconciliation): any textual `Command::new` the Semgrep matcher did not actually MATCH is a
+    macro-interior (or otherwise matcher-invisible) spawn no G29 spawn rule could have judged."""
+    roots = [ROOT / t for t in APP_SOURCE if (ROOT / t).exists()]
+    if not roots:
+        print("[G29] command census: no app source yet - skipped (target-absent)")
+        return 0
+    text_counts = command_census_text(roots)
+    if not text_counts:
+        print("[G29] command census: no textual Command::new in the app source - nothing to reconcile")
+        return 0
+    import tempfile
+    td = tempfile.mkdtemp(prefix="g29-census-")
+    try:
+        cfg = Path(td) / "command-census.yaml"
+        cfg.write_text(_CENSUS_CONFIG, encoding="utf-8")
+        rc, results = run_semgrep(cfg, [str(r) for r in roots])
+        if rc >= 2:
+            return 2
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+    matched: dict[str, int] = {}
+    for r in results:
+        rel = to_repo_rel(r.get("path", ""))
+        matched[rel] = matched.get(rel, 0) + 1
+    gaps = census_gaps(text_counts, matched)
+    if gaps:
+        for g in gaps[:50]:
+            fail(f"command census: {g} has {text_counts[g]} textual Command::new but the Semgrep "
+                 f"matcher saw only {matched.get(g, 0)} - a matcher-invisible spawn (macro-argument "
+                 f"interior); build every spawn at statement level so the G29 rules can analyse it")
+        return 1
+    print(f"[G29] command census: text<->matcher reconciled over {len(text_counts)} file(s)")
     return 0
 
 
@@ -371,6 +615,7 @@ def main(argv: list[str] | None = None) -> int:
         problems += validate()
         problems += self_test_prelude()
         problems += real_scan()
+        problems += census_scan()
         # cargo-geiger is INFORMATIONAL only (never blocks) and needs crates (P1) - omitted in P0.
 
     # These structural greps are semgrep-INDEPENDENT (text-based) and run regardless — they backstop
@@ -402,12 +647,24 @@ def main(argv: list[str] | None = None) -> int:
                  f"call it at statement level (with its audited nosemgrep) so the temp-dir rule can analyse it")
         problems += 1
 
+    # macOS-cfg homing (P4.85): the refined rule (d) is paths-scoped to isolation/macos.rs +
+    # isolation/macos/ - a `target_os = "macos"`-conditional slice elsewhere in the isolation tree
+    # would sit outside (d)'s scope, so it is forced into the module the rule binds to.
+    macos_cfg = misplaced_macos_cfg(app_roots)
+    if macos_cfg:
+        for rel, ln in macos_cfg[:50]:
+            fail(f'target_os = "macos"-conditional isolation code at {rel}:{ln} lives outside the '
+                 f"macOS isolation module - home it in isolation/macos.rs (or isolation/macos/) so "
+                 f"the paths-scoped G29 rule (d) can see it")
+        problems += 1
+
     problems += shellcheck_scan()
 
     if problems:
         print(f"[G29] {problems} SAST gate problem(s)", file=sys.stderr)
         return 1
-    print("[G29] SAST gate OK (validate + armed-canary + scan + single-store + shellcheck)")
+    print("[G29] SAST gate OK (validate + armed-canary/suppression-pins + scan + census + "
+          "single-store + macos-homing + shellcheck)")
     return 0
 
 

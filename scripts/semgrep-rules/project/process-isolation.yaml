@@ -6,26 +6,57 @@
 # (d) on macOS, stage inputs into scratch BEFORE the spawn so the engine never first-touches a
 # TCC-protected path (T11, spec §3.5.0/§7.2.6).
 #
-# Semgrep-Rust note (G1-r3/r4): suppression is CHAIN-ANCHORED-ONLY — a builder is exempt only via its
-# OWN fluent chain `Command::new(...). ... .<HARDEN>()`, so no region/fn/sequence not-inside can swallow
-# a SIBLING or INTERLEAVED spawn (every such form fail-OPENED in review). KNOWN P1 residual (contrived):
-# a Command::new nested in an OUTER builder's `.arg(...)` subtree is still inside that outer chain, so the
-# hardening rules miss the inner spawn INSIDE crate::isolation (the catch-all (c) catches it outside
-# isolation); P1's per-receiver/taint dataflow closes it. (b1) env_clear: chain-only.
-# (d) macOS staging: NO suppression at all (stage_for_tcc is off-builder; any "preceded-by" form is a
-# fail-OPEN region) — it fails-SAFE OVER-STRICT, firing on every spawn until P1 adds per-path dataflow.
+# Semgrep-Rust note (G1-r3/r4; refined at P4.85, 2026-07-23, the pre-P4.13 L(-1) act): suppression
+# is CHAIN-ANCHORED or GAP-FREE-ADJACENT only. A builder is exempt via its OWN fluent chain
+# `Command::new(...). ... .<HARDEN>()`, or via a FIXED adjacent statement pair with NO `...`
+# between the statements — a gap-free region has no interior a SIBLING or INTERLEAVED spawn could
+# hide in, so no region/fn/sequence not-inside can swallow a foreign spawn (every GAPPED region
+# form fail-OPENED in review r2/r3; the adjacent forms below were empirically pinned against the
+# planted sibling/gap/wrong-receiver positives in their fixtures). KNOWN residual (contrived): a
+# Command::new nested in an OUTER builder's/statement-pair's `.arg(...)`/initializer subtree is
+# still inside that suppressed span, so the hardening rules miss the inner spawn INSIDE
+# crate::isolation (the catch-all (c) catches it outside isolation; the check-sast text↔matcher
+# command CENSUS still counts it — it is expression-level, matcher-VISIBLE — so only the
+# HARDENING judgment is missed, never the spawn's existence; a per-receiver taint closure remains
+# unbuilt, accepted as contrived, recorded in the G29 row).
+# (b1) env_clear: fluent-chain, OR the split-builder scrub-FIRST pair
+# (`let mut c = Command::new(..); c.env_clear();` — the owned-Command shape `process-wrap`
+# forces, §1.7/P4.10; the scrub must be the IMMEDIATELY-following statement — a gapped split
+# still reddens, fails-SAFE over-strict by design).
+# (d) macOS staging (the refined per-path form): scoped by `paths:` to the macOS isolation
+# module (`**/isolation/macos.rs` / `**/isolation/macos/**`; the fixture is explicitly bound,
+# the engines/-fixture precedent) — check-sast's `misplaced_macos_cfg` homing scan forces ALL
+# `target_os = "macos"`-conditional isolation code into that module, so the scope is closed, not
+# hopeful. Within scope (d) fires on every spawn EXCEPT the staged shapes: the spawn chain
+# arg'ing `stage_for_tcc(..)` inline, the staging `let` IMMEDIATELY followed by the spawn chain
+# arg'ing the SAME binding (`$S`/`&$S`, metavariable-unified — staging ONE path can never
+# blanket-cover a spawn on a SECOND path), or the staging `let` IMMEDIATELY followed by the
+# owned-builder construction (the split-builder shape; per-path unification is structurally
+# unreachable across a split builder without a gapped fail-OPEN region, so this arm enforces
+# stage-then-build ADJACENCY and the SAME-path half rides the behavioural G31 macOS
+# first-accessor leg + P4.26's tests). The cross-platform spawn path (isolation outside the
+# macos module) is (d)-silent by design — the refined scope is what lets the P4.13–P4.25 spawns
+# stay green until P4.24 lands `stage_for_tcc` (the fn NAME is load-bearing: these patterns key
+# on the literal standalone call — build-gates G29 (d), P4.26).
 # A Command::new nested in a macro arg is invisible to the matcher → backstopped by the grep in
-# scripts/check-sast (macro_nested_commands). module-path scoping binds via `paths:` in P1.
+# scripts/check-sast (macro_nested_commands) AND the text↔matcher command CENSUS (any textual
+# Command::new the Semgrep matcher did not see fails the gate — this closes the formerly-open
+# internal-`;` macro-argument residual). module-path scoping binds via `paths:` (delivered at
+# P4.85).
 #
-# → activated in P1 (targets first-party Rust source that lands in P1; positives live now).
+# → activated in P1 (targets first-party Rust source; positives live now); (b1)/(d) hold their
+#   refined precise forms since P4.85 so the first production spawn (P4.13) is judged by them.
 rules:
   - id: convertia-command-missing-env-clear
     languages: [rust]
     severity: ERROR
     message: >-
-      A process::Command is built without .env_clear()/.envs([]) in its chain. Every engine
-      spawn MUST scrub the inherited environment (a poisoned parent env must not reach the
-      decoder). G29 rule (b), threat T9b, spec §2.12 / §3.5.x.
+      A process::Command is built without .env_clear()/.envs([]) in its chain or an
+      immediately-adjacent split-builder scrub. Every engine spawn MUST scrub the inherited
+      environment (a poisoned parent env must not reach the decoder), fluent
+      (`Command::new(..).env_clear()`) or scrub-FIRST split
+      (`let mut c = Command::new(..); c.env_clear();` — the scrub as the very next statement).
+      G29 rule (b), threat T9b, spec §2.12 / §3.5.x.
     metadata:
       convertia-rule: "b1"
       threat: [T9b]
@@ -35,22 +66,35 @@ rules:
           - pattern: Command::new($B)
           - pattern: std::process::Command::new($B)
           - pattern: tokio::process::Command::new($B)
-      # CHAIN-ANCHORED-ONLY suppression (the G1-r3 fix). Each spawn is judged by its OWN single-chain
+      # CHAIN-ANCHORED suppression (the G1-r3 fix). Each spawn is judged by its OWN single-chain
       # expression `Command::new(...). ... .env_clear()` — there is NO fn-scope / region / let-sequence
       # not-inside, so an interleaved or sibling spawn can NEVER be swallowed (the r2 whole-fn form and
       # the r3 let-sequence form both fail-OPENED on a foreign spawn placed inside their match region;
       # a single-chain match has no region to span). Only a builder whose OWN fluent chain calls
       # .env_clear()/.envs([]) is suppressed.
-      # RESIDUAL (fails-SAFE, P1): the SPLIT-builder clean form (`let mut c = Command::new(b);
-      # c.env_clear();`) is over-strict (it reddens) because the scrub is a separate statement, not on
-      # the new-expression chain — accepted as fails-safe (the isolation code uses the fluent form, or
-      # P1 adds value-flow/dataflow once the real module shape exists). NEVER fails-OPEN.
       - pattern-not-inside: Command::new(...). ... .env_clear()
       - pattern-not-inside: Command::new(...). ... .envs(...)
       - pattern-not-inside: std::process::Command::new(...). ... .env_clear()
       - pattern-not-inside: std::process::Command::new(...). ... .envs(...)
       - pattern-not-inside: tokio::process::Command::new(...). ... .env_clear()
       - pattern-not-inside: tokio::process::Command::new(...). ... .envs(...)
+      # SPLIT-BUILDER scrub-FIRST suppression (the P4.85 refinement — the owned-Command shape
+      # `process-wrap` forces). GAP-FREE: the pair is the construction `let` + the scrub as the
+      # IMMEDIATELY-following statement (no `...`), so the region has no interior statement a foreign
+      # spawn could hide in; `$C` is intra-pattern-unified, so scrubbing a DIFFERENT receiver does not
+      # suppress (both pinned by the fixture's gapped/wrong-receiver/sibling-after positives). The
+      # split form accepts ONLY `.env_clear()` (the true scrub) — `.envs(..)` merely ADDS vars and is
+      # honoured only in the historical chain form above. A gapped split (any statement between
+      # construction and scrub) reddens: fails-SAFE over-strict, the region-soundness boundary.
+      - pattern-not-inside: |
+          let mut $C = Command::new(...);
+          $C.env_clear();
+      - pattern-not-inside: |
+          let mut $C = std::process::Command::new(...);
+          $C.env_clear();
+      - pattern-not-inside: |
+          let mut $C = tokio::process::Command::new(...);
+          $C.env_clear();
 
   - id: convertia-command-outside-isolation
     languages: [rust]
@@ -77,23 +121,65 @@ rules:
     languages: [rust]
     severity: ERROR
     message: >-
-      A process::Command is spawned on macOS without a preceding stage_for_tcc() staging the input
-      into scratch — the engine must NOT first-touch a TCC-protected path. G29 rule (d), threat T11,
-      spec §3.5.0 / §7.2.6.
-    # G1-r3 fix: this rule has NO suppression. stage_for_tcc() is a standalone call (NOT a method on
-    # the Command builder), so the only Semgrep "preceded by" form is a whole-fn / region not-inside —
-    # which FAILS-OPEN (a fn that stages ONE path blanket-covers a spawn on a SECOND, unstaged path; r2/r3
-    # proved this class lets a spawn escape). Rather than ship a fail-OPEN, (d) is deliberately
-    # FAILS-SAFE OVER-STRICT: it fires on EVERY Command::new in scope (no not-inside). P1 replaces this
-    # with the precise per-path "stage_for_tcc precedes the spawn on the SAME path" DATAFLOW/taint check
-    # + the cfg(target_os="macos") scoping, once the real macOS isolation module + its path-flow exist.
-    # NEVER fails-OPEN; over-strict (every spawn reddens) until P1 — the safe direction.
+      A process::Command in the macOS isolation module is spawned without its per-path
+      stage_for_tcc() staging — the engine must NOT first-touch a TCC-protected path. Stage the
+      input into per-job scratch and hand the spawn the staged path: inline
+      (`.arg(stage_for_tcc(..))`), staged-let immediately followed by the spawn chain arg'ing the
+      SAME binding, or staged-let immediately followed by the owned-builder construction. G29
+      rule (d), threat T11, spec §3.5.0 / §7.2.6.
+    # P4.85 refined form (supersedes the P0.4.2 fires-on-every-spawn posture, whose "per-path
+    # dataflow + cfg(macos) scope are P1" deferral was never homed — the audit homed it HERE):
+    # (1) SCOPE: `paths:` binds the rule to the macOS isolation module — all
+    #     `target_os = "macos"`-conditional isolation code MUST live there (enforced by
+    #     check-sast's `misplaced_macos_cfg` homing scan, so the scope cannot be dodged by an
+    #     inline cfg elsewhere; a spawn outside isolation is (c)'s catch). The fixture file is
+    #     explicitly path-bound so the armed canary can fire (the engines/-fixture precedent).
+    # (2) SUPPRESSION is chain-anchored or gap-free-adjacent ONLY (stage_for_tcc is off-builder,
+    #     so any GAPPED "preceded-by" region fail-OPENs — r2/r3): the spawn's OWN chain arg'ing
+    #     stage_for_tcc(..) inline; the staging `let $S = stage_for_tcc(..)[?];` IMMEDIATELY
+    #     followed by the spawn chain arg'ing `$S`/`&$S` (metavariable-unified = per-path: staging
+    #     ONE path never covers a spawn arg'ing ANOTHER); or the staging `let` IMMEDIATELY
+    #     followed by `let mut $C = Command::new(..);` (the split-builder shape — per-path
+    #     unification cannot span a split builder without a gapped region, so this arm enforces
+    #     stage-then-build ADJACENCY; the SAME-path half is carried by the G31 macOS
+    #     first-accessor leg + P4.26's tests). Everything else reddens: fails-SAFE over-strict.
+    # (3) The suppression patterns key on the LITERAL standalone `stage_for_tcc` call — the fn
+    #     name is load-bearing (build-gates G29 (d), test-strategy's macOS-T11 row, P4.26).
     metadata:
       convertia-rule: "d"
       threat: [T11]
       references: ["build-gates.md G29 (d)"]
+    paths:
+      include:
+        - "**/isolation/macos.rs"
+        - "**/isolation/macos/**"
+        - "**/fixtures/d-stage-tcc.rs"
     patterns:
       - pattern-either:
           - pattern: Command::new($B)
           - pattern: std::process::Command::new($B)
           - pattern: tokio::process::Command::new($B)
+      - pattern-not-inside: Command::new(...). ... .arg(stage_for_tcc(...))
+      - pattern-not-inside: Command::new(...). ... .arg(stage_for_tcc(...)?)
+      - pattern-not-inside: std::process::Command::new(...). ... .arg(stage_for_tcc(...))
+      - pattern-not-inside: std::process::Command::new(...). ... .arg(stage_for_tcc(...)?)
+      - pattern-not-inside: tokio::process::Command::new(...). ... .arg(stage_for_tcc(...))
+      - pattern-not-inside: tokio::process::Command::new(...). ... .arg(stage_for_tcc(...)?)
+      - pattern-not-inside: |
+          let $S = stage_for_tcc(...);
+          Command::new(...). ... .arg($S)
+      - pattern-not-inside: |
+          let $S = stage_for_tcc(...);
+          Command::new(...). ... .arg(&$S)
+      - pattern-not-inside: |
+          let $S = stage_for_tcc(...)?;
+          Command::new(...). ... .arg($S)
+      - pattern-not-inside: |
+          let $S = stage_for_tcc(...)?;
+          Command::new(...). ... .arg(&$S)
+      - pattern-not-inside: |
+          let $S = stage_for_tcc(...);
+          let mut $C = Command::new(...);
+      - pattern-not-inside: |
+          let $S = stage_for_tcc(...)?;
+          let mut $C = Command::new(...);
