@@ -68,7 +68,14 @@ tempfile = "3.27.0"
 # optional dependency, so the feature-add resolves NO new package and `Cargo.lock` stays byte-identical
 # (G18/G18a unchanged), and the P3.82 §0.8 floor is version-keyed (features orthogonal) — NO floor action, NO
 # L(-1) touch. Still NOT `net`: the no-network dependency surface is intact.
-tokio = { version = "1.52.3", features = ["rt", "sync", "time"] }
+# [P4.13] the `process` feature adds `tokio::process::Command` — the §2.12 confined-spawn primitive
+# `crate::isolation::run_confined` builds the cheap-tier floor on (the FIRST spawn box; the P4.10
+# process-wrap group-kill wraps this same spawn). Gate-inertness (the P3.45-①-style verification): `process`
+# enables tokio's in-crate `signal` internals on unix, adding ONE unix-only dependency EDGE
+# (`signal-hook-registry` — ALREADY lock-resolved transitively via tauri: no newly-resolved package, no
+# network surface, no ban/advisory hit; G18/G18a posture unchanged); the P3.82 §0.8 floor is version-keyed
+# (features orthogonal) — NO floor action, NO L(-1) touch. Still NOT `net`.
+tokio = { version = "1.52.3", features = ["process", "rt", "sync", "time"] }
 # [P2.133] §0.4.4/§1.7 cancellation primitive — `tokio_util::sync::CancellationToken` for the RunId/
 # CollectingId token registries (P2.42/P2.45). Caret-pinned to the lock-resolved 0.7.18 (the normal-lib
 # convention, not the `=`-exact codegen-coupled specta tools); NO extra features (CancellationToken is in

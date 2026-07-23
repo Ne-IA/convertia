@@ -42,7 +42,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "of the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111): the P4.4/P4.5 registry build is live on the conductor's path (engine_registry() calls descriptor()+capabilities() and pre-computes the §0.9 serialised-flag map), but the EngineDescriptor.kind field-read and the serialised_flags() accessor stay dead until the P4.22 pool wiring consumes them, and EngineStatus/EngineHealth until the P4.45 startup probe assembles the real Ok(EngineHealth). The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the Engine trait + PlanOutcome return (P3.5-minimal, expanded to the full §3.2.2 surface and homed in engines/registry.rs at P4.1) and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.4 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), and P4.13 rewrites the subprocess arms — so the dispatch fn + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture. The P4.2-authored §3.2.2 ProbeOutput (the parsed §3.2.1 probe result) is dead until the P4.9 probe-then-encode sequencing constructs it and a probe-engine plan_encode impl reads it (the P4.1 default impl ignores its _probe param by contract); its cfg(test) shape test constructs + reads all four fields, keeping the test build dead-code-clean. The P4.3-authored §3.2.2 leaf types (Direction / PatentDisposition / CodecPosture / EngineCapability + the SourceFmt/TargetFmt aliases) are NAMED by the P4.1 trait signatures (capabilities(platform, patents)) and the native engine's capability row, but their construction sites stay dead until the P4.4 registry calls capabilities() and the P4.40 engines.lock parse builds the disposition; their cfg(test) shape tests construct + read every field, keeping the test build dead-code-clean."
+        reason = "of the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111): the P4.4/P4.5 registry build is live on the conductor's path (engine_registry() calls descriptor()+capabilities() and pre-computes the §0.9 serialised-flag map), but the EngineDescriptor.kind field-read and the serialised_flags() accessor stay dead until the P4.22 pool wiring consumes them, and EngineStatus/EngineHealth until the P4.45 startup probe assembles the real Ok(EngineHealth). The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the Engine trait + PlanOutcome return (P3.5-minimal, expanded to the full §3.2.2 surface and homed in engines/registry.rs at P4.1) and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.4 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), P4.13 authors crate::isolation::run_confined and P4.32 rewrites the subprocess arms to route through it (once P4.32 resolves EngineProgram to the binary path the entry takes) — so the dispatch fn + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture. The P4.2-authored §3.2.2 ProbeOutput (the parsed §3.2.1 probe result) is dead until the P4.9 probe-then-encode sequencing constructs it and a probe-engine plan_encode impl reads it (the P4.1 default impl ignores its _probe param by contract); its cfg(test) shape test constructs + reads all four fields, keeping the test build dead-code-clean. The P4.3-authored §3.2.2 leaf types (Direction / PatentDisposition / CodecPosture / EngineCapability + the SourceFmt/TargetFmt aliases) are NAMED by the P4.1 trait signatures (capabilities(platform, patents)) and the native engine's capability row, but their construction sites stay dead until the P4.4 registry calls capabilities() and the P4.40 engines.lock parse builds the disposition; their cfg(test) shape tests construct + read every field, keeping the test build dead-code-clean."
     )
 )]
 
@@ -632,7 +632,7 @@ pub enum InvocationResult {
 ///
 /// **`on_progress`** is §1.7's per-fraction sink: the dispatch forwards every self-reported/parsed progress
 /// fraction to it (P3.43 wires the `InProcessNative` lane's self-report; the subprocess lanes will feed the
-/// same sink from their §3.5 line-reader at P4.13). It is a plain `f32` callback so `crate::engines` (a §0.7
+/// same sink from their §3.5 line-reader at P4.8). It is a plain `f32` callback so `crate::engines` (a §0.7
 /// tier-2 module) names **no** orchestrator-homed type: the tier-1 caller (the P3.46 conductor) supplies the
 /// closure that wraps each fraction into the §0.4.2 `ItemProgress { runId, itemId, fraction, stage }` and
 /// sends it over the channel — the fraction is §1.7's, the wire tick is the conductor's. `+ Send + 'static` so
@@ -646,7 +646,8 @@ pub enum InvocationResult {
 /// root, and rustc does not propagate liveness to a dead fn's callees). The subprocess lanes are
 /// unreachable-by-construction in the walking skeleton (no subprocess engine is registered — the registry +
 /// engines land at P4.4) and still return the honest `InvocationResult::Failed(InternalError)` seam (§2.13,
-/// the P2.25 unreachable-outcome precedent) until P4.13 routes them through `crate::isolation::run_confined`.
+/// the P2.25 unreachable-outcome precedent) until P4.32 wires them through `crate::isolation::run_confined`
+/// (authored at P4.13; the arms route through it only once P4.32 resolves `EngineProgram` → the binary path).
 /// [Build-Session-Entscheidung: P3.4]
 pub async fn dispatch(
     invocation: &EngineInvocation,
@@ -669,8 +670,10 @@ pub async fn dispatch(
             .await
         }
         // Subprocess lanes — unreachable-by-construction in the P3 walking skeleton (no subprocess engine is
-        // registered; the registry + engines land at P4.4). P4.13 authors crate::isolation::run_confined and
-        // rewrites these arms to route through it; the honest InternalError seam holds meanwhile (§2.13, P2.25).
+        // registered; the registry + engines land at P4.4). P4.13 authors crate::isolation::run_confined; P4.32
+        // rewrites these arms to route through it once the program-path resolution supplies the resolved &Path
+        // (no resolvable subprocess program exists before then); the honest InternalError seam holds meanwhile
+        // (§2.13, P2.25).
         EngineProgram::Sidecar(_) | EngineProgram::ResourceBin { .. } => {
             InvocationResult::Failed(ConversionErrorKind::InternalError)
         }
@@ -1707,7 +1710,8 @@ mod tests {
     // The not(test) module dead-code expectation does NOT cover cfg(test), so a never-read field/variant would
     // red the TEST build under -D warnings — these tests read every field of every hull type (directly, or via
     // a derived `PartialEq` that reads all fields), so the test build stays dead-code-clean while the hull
-    // remains dead in the production build until P3.5/P3.43-46/P4.13 construct + wire it.
+    // remains dead in the production build until P3.5/P3.43-46/P4.32 construct + wire it (run_confined is
+    // authored at P4.13 but its subprocess arms stay dead until P4.32 resolves the program path they route).
 
     // A canonical InProcessNative native-CSV/TSV `Invocation` — every field set (read by
     // `invocation_holds_the_seven_plan_seam_fields`).
@@ -1912,12 +1916,12 @@ mod tests {
     }
 
     // §6.4.1 unit (G15): the §1.7 dispatch — the P3 walking-skeleton contract. The subprocess lanes stay
-    // unwired (no subprocess engine is registered; P4.13 routes them through run_confined), so the exhaustive
+    // unwired (no subprocess engine is registered; P4.32 routes them through run_confined), so the exhaustive
     // `EngineProgram` match still returns the honest `Failed(InternalError)` seam (§2.13, P2.25) for them.
     // [Test-Change: P3.43 — old-obsolete+new-correct, §1.7] the InProcessNative case was REMOVED from this
     // seam test: P3.43 wires that arm to the real native CSV/TSV lane on crate::pool::run_in_core, so its old
     // "InternalError seam" expectation is obsolete (the arm now succeeds — asserted by the tests below); the
-    // two subprocess arms keep the seam until P4.13. dispatch is now `async` + takes the pool + progress sink.
+    // two subprocess arms keep the seam until P4.32. dispatch is now `async` + takes the pool + progress sink.
     #[tokio::test]
     async fn dispatch_returns_the_honest_internal_error_seam_for_the_unwired_subprocess_lanes() {
         let pool = Pool::with_degree(1);
@@ -1932,7 +1936,7 @@ mod tests {
             assert_eq!(
                 dispatch(&invocation, &pool, |_| {}).await,
                 InvocationResult::Failed(ConversionErrorKind::InternalError),
-                "§1.7/§2.13: the unwired subprocess lanes return the honest InternalError seam (P4.13 wires them)"
+                "§1.7/§2.13: the unwired subprocess lanes return the honest InternalError seam (P4.32 wires them)"
             );
         }
     }
