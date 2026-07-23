@@ -3218,11 +3218,15 @@ mod tests {
     // { duration_us } FROM that probe (never a pre-probe struct, §3.2.1). The probe envelope is the
     // CoarseSpawnDone shell sub-invocation `seam_shell_invocation` builds (its stdout is buffered whole, §1.7).
 
-    // A cfg(test)-only probe-requiring engine: parse_probe → ProbeOutput from a `duration_us=<n>` line;
-    // plan_encode → the encode Invocation with the probe's duration_us as the FfmpegKeyValue denominator. The
-    // other methods are the honest InternalError/empty shapes (the run_probe_then_encode tests build the probe
-    // envelope directly, so plan() is never called). [Build-Session-Entscheidung: P4.9]
-    struct SyntheticProbeEngine;
+    // A cfg(test)-only probe-requiring engine (the P4.9 synthetic exerciser): parse_probe → ProbeOutput from a
+    // `duration_us=<n>` line; plan_encode → the encode Invocation carrying the probe's duration_us as the
+    // FfmpegKeyValue denominator when `encode_ok`, else a pure PlanError (the plan_encode-failure leg). The
+    // other methods carry the honest fixture shapes (plan() is the mis-sequenced-lifecycle error — never called
+    // by the sequencing, which builds the probe envelope directly), exercised by the trait-surface test below.
+    // [Build-Session-Entscheidung: P4.9]
+    struct SyntheticProbeEngine {
+        encode_ok: bool,
+    }
     impl Engine for SyntheticProbeEngine {
         fn id(&self) -> EngineId {
             EngineId::FFmpeg
@@ -3283,6 +3287,12 @@ mod tests {
             _out_tmp: &TempPath,
             probe: &ProbeOutput,
         ) -> Result<Invocation, PlanError> {
+            if !self.encode_ok {
+                return Err(PlanError {
+                    kind: ConversionErrorKind::InternalError,
+                    detail: "synthetic plan_encode failure".to_owned(),
+                });
+            }
             Ok(Invocation {
                 program: EngineProgram::Sidecar(EngineId::FFmpeg),
                 args: vec![OsString::from("-i"), OsString::from("in.mp4")],
@@ -3300,51 +3310,50 @@ mod tests {
         }
     }
 
-    // A synthetic probe engine whose parse_probe SUCCEEDS but whose plan_encode is the trait DEFAULT
-    // (InternalError) — the plan_encode-failure leg of the sequencing. [Build-Session-Entscheidung: P4.9]
-    struct SyntheticProbeNoEncodeEngine;
-    impl Engine for SyntheticProbeNoEncodeEngine {
-        fn id(&self) -> EngineId {
-            EngineId::FFmpeg
-        }
-        fn descriptor(&self) -> EngineDescriptor {
-            EngineDescriptor {
-                id: EngineId::FFmpeg,
-                serialised_only: false,
-                kind: EngineKind::Subprocess,
-            }
-        }
-        fn capabilities(
-            &self,
-            _platform: Platform,
-            _patents: &PatentDisposition,
-        ) -> Vec<EngineCapability> {
-            Vec::new()
-        }
-        fn plan(
-            &self,
-            _item: &DroppedItem,
-            _target: TargetId,
-            _input: &Path,
-            _out_tmp: &TempPath,
-        ) -> Result<PlanOutcome, PlanError> {
-            Err(PlanError {
-                kind: ConversionErrorKind::InternalError,
-                detail: "synthetic engine is driven via the test-built probe envelope".to_owned(),
-            })
-        }
-        fn parse_probe(&self, _stdout: &[u8]) -> Result<ProbeOutput, PlanError> {
-            Ok(ProbeOutput {
-                duration_us: 1,
-                inner_codecs: Vec::new(),
-                rotation_deg: None,
-                interlaced: None,
-            })
-        }
-        // plan_encode is the trait DEFAULT (InternalError) — deliberately not overridden here.
-        fn classify_failure(&self, _exit: ExitStatus, _stderr: &str) -> ConversionErrorKind {
+    // §6.4.1 unit (G15, P4.9): the synthetic fixture is a well-formed §3.2.2 `Engine` — its
+    // id/descriptor/capabilities/plan/classify_failure carry the honest fixture shapes the sequencing tests
+    // depend on a valid `&dyn Engine` for. `plan()` is the mis-sequenced-lifecycle honest error (§1.7 never
+    // calls it on this fixture — the tests build the probe envelope directly). Proves the fixture + keeps its
+    // whole trait surface exercised.
+    #[test]
+    fn synthetic_probe_engine_is_a_well_formed_engine() {
+        let engine = SyntheticProbeEngine { encode_ok: true };
+        assert_eq!(engine.id(), EngineId::FFmpeg);
+        let descriptor = engine.descriptor();
+        assert_eq!(descriptor.id, EngineId::FFmpeg);
+        assert!(!descriptor.serialised_only);
+        assert_eq!(descriptor.kind, EngineKind::Subprocess);
+        assert!(
+            engine
+                .capabilities(
+                    Platform::Linux,
+                    &PatentDisposition {
+                        heic_hevc: CodecPosture::Available,
+                        aac: CodecPosture::Available,
+                        h264: CodecPosture::Available,
+                    },
+                )
+                .is_empty(),
+            "§3.2.2: the synthetic fixture declares no capability rows"
+        );
+        assert_eq!(
+            engine
+                .plan(
+                    &csv_dropped_item(),
+                    TargetId::Format(FormatId::Tsv),
+                    Path::new("in.mp4"),
+                    &throwaway_temp_path(),
+                )
+                .expect_err(
+                    "§3.2.2: the fixture's plan() is the mis-sequenced-lifecycle honest error"
+                )
+                .kind,
             ConversionErrorKind::InternalError
-        }
+        );
+        assert_eq!(
+            engine.classify_failure(nonzero_exit_status(), "err"),
+            ConversionErrorKind::InternalError
+        );
     }
 
     // §1.7/§3.2.1 (G15): the happy path — a clean probe (CoarseSpawnDone shell echoing `duration_us=1500000`)
@@ -3361,7 +3370,7 @@ mod tests {
         let (probe, program) = seam_shell_invocation(raw, scratch.path().to_path_buf());
         let out_tmp = throwaway_temp_path();
         let encode = run_probe_then_encode(
-            &SyntheticProbeEngine,
+            &SyntheticProbeEngine { encode_ok: true },
             &probe,
             &program,
             &csv_dropped_item(),
@@ -3397,7 +3406,7 @@ mod tests {
         let (probe, program) = seam_shell_invocation("exit 3", scratch.path().to_path_buf());
         let out_tmp = throwaway_temp_path();
         let err = run_probe_then_encode(
-            &SyntheticProbeEngine,
+            &SyntheticProbeEngine { encode_ok: true },
             &probe,
             &program,
             &csv_dropped_item(),
@@ -3427,7 +3436,7 @@ mod tests {
         probe.cancel.cancel();
         let out_tmp = throwaway_temp_path();
         let err = run_probe_then_encode(
-            &SyntheticProbeEngine,
+            &SyntheticProbeEngine { encode_ok: true },
             &probe,
             &program,
             &csv_dropped_item(),
@@ -3456,7 +3465,7 @@ mod tests {
         let (probe, program) = seam_shell_invocation(raw, scratch.path().to_path_buf());
         let out_tmp = throwaway_temp_path();
         let err = run_probe_then_encode(
-            &SyntheticProbeEngine,
+            &SyntheticProbeEngine { encode_ok: true },
             &probe,
             &program,
             &csv_dropped_item(),
@@ -3473,8 +3482,9 @@ mod tests {
         );
     }
 
-    // §3.2.1 (G15): a clean probe whose parse SUCCEEDS but whose plan_encode fails (the trait default) makes
-    // the item fail Failed(kind) — the second pure-planning-failure arm, never a fabricated encode.
+    // §3.2.1 (G15): a clean probe whose parse SUCCEEDS but whose plan_encode fails (the `encode_ok: false`
+    // fixture leg) makes the item fail Failed(kind) — the second pure-planning-failure arm, never a fabricated
+    // encode.
     #[tokio::test]
     async fn a_plan_encode_failure_after_a_clean_probe_fails_the_item() {
         let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
@@ -3485,7 +3495,7 @@ mod tests {
         let (probe, program) = seam_shell_invocation(raw, scratch.path().to_path_buf());
         let out_tmp = throwaway_temp_path();
         let err = run_probe_then_encode(
-            &SyntheticProbeNoEncodeEngine,
+            &SyntheticProbeEngine { encode_ok: false },
             &probe,
             &program,
             &csv_dropped_item(),
