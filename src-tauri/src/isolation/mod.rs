@@ -32,10 +32,11 @@
 //!    in [`crate::engines::ConfinedRun::exit`] so the §1.7 `run_subprocess` lane (engines-side) can refine the
 //!    `EngineCrash` floor via the §3.5 `classify_failure` seam. The §1.7 no-progress / wall-clock watchdog
 //!    itself lives engines-side in `bounded_confined_run` (shared by `run_subprocess` + `run_probe_then_encode`;
-//!    it drops THIS future on a hang, so the Drop backstop is the kill), NOT here. The remaining layers land on
-//!    THIS entry at their boxes: the loader-var strip at
-//!    **P4.14**, the per-OS privilege-drop legs at **P4.15 / P4.16 / P4.17**, and the achieved-tier record into
-//!    `privilege-drop-coverage.toml` at **P4.18**. It never runs the §2.1 publish — that is
+//!    it drops THIS future on a hang, so the Drop backstop is the kill), NOT here. **P4.14** delivered the
+//!    §2.12.3 dynamic-loader-injection env STRIP (the [`is_loader_injection_var`] filter on the constructed
+//!    env — `LD_PRELOAD`/`LD_LIBRARY_PATH`/`DYLD_*`, §0.11 T3a). The remaining layers land on THIS entry at
+//!    their boxes: the per-OS privilege-drop legs at **P4.15 / P4.16 / P4.17**, and the achieved-tier record
+//!    into `privilege-drop-coverage.toml` at **P4.18**. It never runs the §2.1 publish — that is
 //!    `crate::fs_guard`, invoked by the §1.7 lifecycle after a `Succeeded` return; the §0.9 pool permit is
 //!    acquired one layer up (§1.7). `program` is the RESOLVED absolute binary path — the
 //!    `EngineProgram → path` resolution is P4.32's (`current_exe().parent()` sidecars /
@@ -72,6 +73,8 @@
 use std::path::Path;
 use std::process::Stdio;
 
+use std::ffi::OsStr;
+
 #[cfg(windows)]
 use process_wrap::tokio::JobObject;
 #[cfg(unix)]
@@ -84,14 +87,39 @@ use crate::engines::{ConfinedRun, EngineInvocation, InvocationResult, ProgressMo
 use crate::outcome::ConversionErrorKind;
 use crate::pool::GROUP_CONFIRM_WAIT;
 
+/// The §3.5/§2.12.3 dynamic-loader INJECTION variables the §2.12.3 minimal env strips (P4.14) so a hostile
+/// input cannot coerce a side-load (§0.11 T3a): the OS run-time loader honours these to PRELOAD a shared
+/// object or PREPEND a library search path, so an engine handed one could be steered to load an
+/// attacker-controlled `.so`/`.dylib` ahead of the bundled ones (§3.3.3 absolute-path resolution). `LD_*` are
+/// the Linux (glibc) loader's, `DYLD_*` the macOS dyld's; the strip is UNCONDITIONAL on every OS
+/// (belt-and-suspenders — filtering a not-present var is a harmless no-op), so no platform path is missed.
+/// [Build-Session-Entscheidung: P4.14]
+const LOADER_INJECTION_VARS: [&str; 4] = [
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+];
+
+/// True if `name` is a [`LOADER_INJECTION_VARS`] dynamic-loader injection variable (P4.14) — an EXACT,
+/// case-sensitive match (the POSIX loaders these target read case-sensitive env-var names). Used by
+/// [`run_confined`] to strip the vars from the constructed engine env (the §2.12.3 minimal-env floor).
+fn is_loader_injection_var(name: &OsStr) -> bool {
+    LOADER_INJECTION_VARS
+        .iter()
+        .any(|var| name == OsStr::new(var))
+}
+
 /// The §2.12 confined-spawn entry (P4.13) — runs ONE subprocess engine invocation inside the §2.12.3
 /// **cheap-tier floor**, the NON-NEGOTIABLE v1 confinement shipped unconditionally on all three OSes:
 ///
 /// - the **§2.12.1 process boundary** — a real OS subprocess (`tokio::process`); a decoder that
 ///   segfaults/aborts takes down only its own process, never the core (§2.12.1);
-/// - a **minimal / cleared environment** — `env_clear()` then EXACTLY the plan's `env` pairs (no
-///   inherited secrets; a poisoned parent env never reaches the decoder — T9b, G29 rule (b1)); the
-///   `LD_PRELOAD`/`DYLD_*` loader-var strip on the PLAN side is P4.14's (§3.5 builds the pairs);
+/// - a **minimal / cleared environment** — `env_clear()` then the plan's `env` pairs MINUS the §3.5/§2.12.3
+///   dynamic-loader injection vars (`LD_PRELOAD`/`LD_LIBRARY_PATH`/`DYLD_*`), which are filtered OUT HERE by
+///   [`is_loader_injection_var`] (P4.14, §0.11 T3a — a consumer-side strip, defense-in-depth over `env_clear`,
+///   which drops only the INHERITED copy). No inherited secrets, no poisoned parent env, no coerced side-load
+///   (T9b/T3a, G29 rule (b1));
 /// - a **scratch-cwd** — the working directory is the plan's per-run scratch dir (§2.6); a `None` cwd on
 ///   a confined spawn is a mis-built plan → honest `InternalError`, never an inherited cwd;
 /// - **input/tmp-only handing** — the child receives exactly the plan's argv (§3.5 embeds only the
@@ -179,11 +207,19 @@ pub async fn run_confined(
     let mut command = Command::new(program);
     command.env_clear();
     command
+        // §3.5/§2.12.3 minimal-env dynamic-loader-injection STRIP (P4.14, §0.11 T3a): filter the
+        // dynamic-loader injection vars (LD_PRELOAD/LD_LIBRARY_PATH, DYLD_INSERT_LIBRARIES/DYLD_LIBRARY_PATH)
+        // OUT of the constructed env so a hostile input can never coerce a side-load. `env_clear()` above
+        // already dropped any INHERITED copy; this filter is the defense-in-depth over the CONSTRUCTED env —
+        // no plan env, now or the P5 per-engine whitelist seam, can pass one through. The engine resolves only
+        // the bundled shared libs beside it (absolute paths, §3.3.3; `PATH` not relied on).
+        // [Build-Session-Entscheidung: P4.14]
         .envs(
             invocation
                 .plan
                 .env
                 .iter()
+                .filter(|(name, _)| !is_loader_injection_var(name))
                 .map(|(k, v)| (k.clone(), v.clone())),
         )
         .args(&invocation.plan.args)
@@ -688,6 +724,93 @@ mod confined_spawn_tests {
                 .lines()
                 .any(|line| line.to_ascii_lowercase().starts_with("systemroot=")),
             "§2.12.3(b): the plan's own minimal pairs DO reach the child"
+        );
+    }
+
+    // §3.5/§2.12.3 (G15, P4.14): is_loader_injection_var matches EXACTLY the four dynamic-loader injection
+    // vars, case-sensitively — a legit var (PATH/HOME/SystemRoot) or a P5 per-engine whitelist var
+    // (LIBHEIF_PLUGIN_PATH/VIPS_BLOCK_UNTRUSTED) is NOT stripped, and a lowercase near-miss (`ld_preload`) does
+    // not match (the POSIX loaders these target read case-sensitive env-var names).
+    #[test]
+    fn is_loader_injection_var_matches_exactly_the_four_loader_vars() {
+        for var in [
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "DYLD_INSERT_LIBRARIES",
+            "DYLD_LIBRARY_PATH",
+        ] {
+            assert!(
+                is_loader_injection_var(std::ffi::OsStr::new(var)),
+                "§3.5: {var} is a stripped dynamic-loader injection var (T3a)"
+            );
+        }
+        for var in [
+            "PATH",
+            "HOME",
+            "SystemRoot",
+            "LIBHEIF_PLUGIN_PATH",
+            "VIPS_BLOCK_UNTRUSTED",
+            "ld_preload",
+        ] {
+            assert!(
+                !is_loader_injection_var(std::ffi::OsStr::new(var)),
+                "{var} is NOT a loader injection var — a legit/whitelist var (or a case near-miss) must survive"
+            );
+        }
+    }
+
+    // §3.5/§2.12.3/§0.11 (G15, P4.14): the four dynamic-loader injection vars are STRIPPED from the constructed
+    // engine env even when the plan env carries them — a real confined child dumps its environment and NONE of
+    // the sentinel loader values appear, while a legitimate non-loader var survives (the strip is precise, not
+    // a blanket wipe). A hostile input therefore cannot coerce a side-load (T3a). `env_clear` (tested above)
+    // drops the INHERITED copy; this proves the CONSTRUCTED-env defense-in-depth over the plan env. A broken
+    // strip would leave `LD_PRELOAD=evil-preload` in the child env and the sentinel would appear.
+    #[tokio::test]
+    async fn the_loader_injection_vars_are_stripped_from_the_engine_env() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        #[cfg(windows)]
+        let script = "set > env.txt";
+        #[cfg(unix)]
+        let script = "env > env.txt";
+        let (mut envelope, program) = confined_shell_invocation_with_progress(
+            script,
+            Some(scratch.path().to_path_buf()),
+            ProgressModel::CoarseSpawnDone,
+        );
+        // Inject all four loader-injection vars (distinct sentinel values) + a legit var that MUST survive.
+        for (name, value) in [
+            ("LD_PRELOAD", "evil-preload"),
+            ("LD_LIBRARY_PATH", "evil-libpath"),
+            ("DYLD_INSERT_LIBRARIES", "evil-dyldins"),
+            ("DYLD_LIBRARY_PATH", "evil-dyldlib"),
+            ("CONVERTIA_KEPT", "kept-value"),
+        ] {
+            envelope
+                .plan
+                .env
+                .push((OsString::from(name), OsString::from(value)));
+        }
+        assert_eq!(
+            run_confined(&envelope, &program, |_| {}).await.result,
+            InvocationResult::Succeeded
+        );
+        let env_dump = std::fs::read_to_string(scratch.path().join("env.txt"))
+            .expect("the child wrote its environment into the scratch dir");
+        for sentinel in [
+            "evil-preload",
+            "evil-libpath",
+            "evil-dyldins",
+            "evil-dyldlib",
+        ] {
+            assert!(
+                !env_dump.contains(sentinel),
+                "§3.5/§2.12.3 (T3a): the loader-injection var carrying {sentinel:?} was STRIPPED from the \
+                 engine env — a hostile input cannot coerce a side-load. Full env dump:\n{env_dump}"
+            );
+        }
+        assert!(
+            env_dump.contains("kept-value"),
+            "the strip is PRECISE — a legitimate (non-loader) env var survives. Full env dump:\n{env_dump}"
         );
     }
 
