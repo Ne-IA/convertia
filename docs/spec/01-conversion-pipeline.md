@@ -1038,10 +1038,14 @@ process to kill**, so §1.7 defines its lifecycle explicitly:
 - **Cancellation (cooperative, not a kill):** the synchronous streaming loop **polls the
   job's `CancellationToken` at every N-KB chunk boundary** (the same chunk granularity it
   uses for its `bytes_processed / source_size` progress, §1.11). On cancel it **stops
-  mid-stream, drops the `out_tmp` `TempPath`** (deleted on drop, §3.2.2) and reports
-  `Cancelled` — exactly the "no partial leftover" guarantee, reached cooperatively instead
-  of by group-kill. There is **no kill step to sequence** in the §2.6 ordering for this
-  engine (step 2 "group-kill" is a no-op; the temp-discard step still runs).
+  mid-stream** and reports `Cancelled`; the §1.7 caller (`convert_item`) then discards the
+  `out_tmp` via the **§2.6 single-attempt cleanup** (§2.6.4 `[CORRECTED 2026-07-24 — P4.11]`:
+  formerly "drops the `out_tmp` `TempPath` (deleted on drop, §3.2.2)"; P4.11 routes ALL cancel
+  temp-discard through the same §2.6 removal so a removal failure surfaces as a `CleanupResidue`
+  rather than a silent delete-on-drop — an in-core cancel has no external handle, so the removal
+  always succeeds and leaves no residue) — exactly the "no partial leftover" guarantee, reached
+  cooperatively instead of by group-kill. There is **no kill step to sequence** in the §2.6
+  ordering for this engine (step 2 "group-kill" is a no-op; the temp-discard step still runs).
 - **Timeout / hang bound:** a **wall-clock timeout guard** (the §0.9-owned per-engine
   timeout, tight for this light engine) wraps the synchronous call; on expiry the loop is
   cancelled cooperatively (same chunk-boundary poll), the temp is discarded, and the item

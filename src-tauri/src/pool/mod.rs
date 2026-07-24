@@ -74,7 +74,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.9 Pool + the §1.7 in-core spawn_blocking lane (Pool::new/with_degree/run_in_core), LaneError, and the clamp_global_degree/resolve_global_degree degree helpers are authored ahead of their production consumers. P3.43 WIRED run_in_core + LaneError into the §1.7 dispatch InProcessNative arm (the native CSV/TSV executor), but they STAY dead in the production build until the P3.46 conductor makes dispatch a live root — rustc does NOT propagate liveness through the dead-but-present dispatch to its callees. P4.20/P4.22 EXPAND the pool onto the subprocess engines + the serialised single-permit lane; nothing CONSTRUCTS a Pool in the production build yet (dispatch receives a &Pool), so Pool::new/with_degree + the clamp/resolve degree helpers stay dead until the P4 pool wiring builds the app-wide pool. P3.45 adds the NATIVE_CSV_TSV_TIMEOUT pub const (the §0.9 native-engine wall-clock timeout parameter); it is consumed ONLY by crate::engines::dispatch (the §1.7 bounded_lane wrapper), which is itself dead until the P3.46 conductor makes dispatch a live root, so the const is dead in the production build until then (the §6.7.2 harness import is a subsequent consumer). Every item above is dead until its consumer lands, which keeps this module-level expect fulfilled. The cfg(test) tests below construct the pool and exercise the lane, so the test build is dead-code-clean. expect (not allow) auto-flags the moment the last of these consumers lands — matching crate::engines/crate::domain/crate::outcome."
+        reason = "the §0.9 Pool + the §1.7 in-core spawn_blocking lane (Pool::new/with_degree/run_in_core), LaneError, and the clamp_global_degree/resolve_global_degree degree helpers are authored ahead of their production consumers. P3.43 WIRED run_in_core + LaneError into the §1.7 dispatch InProcessNative arm (the native CSV/TSV executor), but they STAY dead in the production build until the P3.46 conductor makes dispatch a live root — rustc does NOT propagate liveness through the dead-but-present dispatch to its callees. P4.20/P4.22 EXPAND the pool onto the subprocess engines + the serialised single-permit lane; nothing CONSTRUCTS a Pool in the production build yet (dispatch receives a &Pool), so Pool::new/with_degree + the clamp/resolve degree helpers stay dead until the P4 pool wiring builds the app-wide pool. P3.45 adds the NATIVE_CSV_TSV_TIMEOUT pub const (the §0.9 native-engine wall-clock timeout parameter); it is consumed ONLY by crate::engines::dispatch (the §1.7 bounded_lane wrapper), which is itself dead until the P3.46 conductor makes dispatch a live root, so the const is dead in the production build until then (the §6.7.2 harness import is a subsequent consumer). P4.11 adds the GROUP_CONFIRM_WAIT pub const (the §0.9 group-kill confirm-wait bound); it is consumed ONLY by crate::isolation::run_confined (the §1.7 cancel ordering, step 2), itself dead in the production build until P4.32 wires the subprocess dispatch arms, so the const is dead until then (the §6.7.2 harness import is a subsequent consumer). Every item above is dead until its consumer lands, which keeps this module-level expect fulfilled. The cfg(test) tests below construct the pool and exercise the lane, so the test build is dead-code-clean. expect (not allow) auto-flags the moment the last of these consumers lands — matching crate::engines/crate::domain/crate::outcome."
     )
 )]
 
@@ -104,6 +104,32 @@ use tokio::sync::Semaphore;
 /// THIS §1.7 wall-clock timeout — the §0.9 "timeout-sentinel case" for the P3 slice. (P9.41 calibrates the
 /// separate §1.10 SIZE budgets over the P4.72 engine — NOT this §1.7 timeout.)
 pub const NATIVE_CSV_TSV_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The §0.9-owned **group-kill confirm-wait bound** for the §1.7 cancel ordering (P4.11) — the short cap the
+/// §2.12 confined runner (`crate::isolation::run_confined`) waits, AFTER issuing the whole-group kill, for the
+/// OS to reap the engine's process group before the tier-1 conductor removes the per-job `*.part`
+/// (§1.7 step 2 → step 3). Homed here beside [`NATIVE_CSV_TSV_TIMEOUT`] so the one §0.9 time bound is the
+/// single source of truth (test and prod can never drift — the §0.9 "named `pub const`s … imported by the
+/// §6.7.2 test harness" contract). Its consumer is `crate::isolation` (a downward tier-2 → tier-3 edge, the
+/// same shape `crate::engines` already has on `NATIVE_CSV_TSV_TIMEOUT`).
+///
+/// **Why bounded, and why it is a settle *window*, not a proof (P4.10 forward note).** The kill
+/// (`TerminateJobObject` / `killpg`) is unrefusable, but on Windows an open descendant handle blocks the
+/// `*.part` deletion, so the runner gives the OS up to this cap to release the handle so the conductor's
+/// subsequent single removal succeeds on the normal path. Neither platform's `wait()` PROVES the group empty
+/// (Windows `JobObjectChild::wait` returns on the FIRST completion-port message; POSIX `ProcessGroupChild::wait`
+/// returns on `waitpid(-pgid)` → `ECHILD`, i.e. no children of *ours* remain), so the runner never asserts
+/// emptiness — it waits up to the cap, then returns REGARDLESS. On a wedged descendant the cap is what keeps
+/// §7.3.3 quit-while-converting and the §5.8 cancel round-trip from hanging; the still-held `*.part` is then a
+/// §2.6.4-case-3 `CleanupResidue` reclaimed by the §2.6.3 sweep. The removal's own success/failure — not this
+/// wait — is the honest residue signal (§2.6.4 single bounded attempt).
+///
+/// **Baseline (pre-calibration).** [Build-Session-Entscheidung: P4.11] `5s` — normal group teardown returns in
+/// well under this (the runner returns as soon as `wait()` returns), so the cap bites ONLY on a genuinely
+/// wedged descendant; `5s` is generous for that rare case yet short enough that a cancel/quit stays responsive
+/// (v1 is sequential, so it is a per-cancel worst case, not per-item). The §0.9 "baseline values calibrated
+/// against the §6 corpus" applies — this is the pre-calibration value, tunable like the other §0.9 bounds.
+pub const GROUP_CONFIRM_WAIT: Duration = Duration::from_secs(5);
 
 /// The failure modes of the §0.9 in-core `spawn_blocking` lane. INTERNAL — never on the IPC wire (no
 /// `serde`/`specta`); the §1.7/§2.8 caller (P3.46) maps it onto a per-item `Failed`, so a lane failure is

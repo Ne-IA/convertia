@@ -22,9 +22,11 @@
 //!    (P4.8 — streaming line-reader → `on_progress`, `CoarseSpawnDone` stdout buffered, stderr captured in
 //!    full; returned in the [`crate::engines::ConfinedRun`] outcome) + the §1.7 whole-group spawn/kill
 //!    (**P4.10** — `process-wrap` Job-Object / process-group teardown of the engine AND its descendants,
-//!    e.g. `soffice` → `soffice.bin`). The remaining layers land on THIS entry at their boxes: the §1.7
-//!    kill↔cleanup↔no-partial ordering + the TIMEOUT-BOUNDED confirm-wait + the deferred-reclaim
-//!    `CleanupResidue` tail at **P4.11**, the §1.7 / §2.12.2
+//!    e.g. `soffice` → `soffice.bin`) + the §1.7 step-2 **TIMEOUT-BOUNDED confirm-wait** on the cancel arm
+//!    (**P4.11** — after the group-kill, wait up to [`crate::pool::GROUP_CONFIRM_WAIT`] for the OS to reap,
+//!    then return regardless, so a wedged descendant cannot hang the cancel/quit path; the deferred-reclaim
+//!    `CleanupResidue` tail is the tier-1 conductor's, which owns the temp). The remaining layers land on THIS
+//!    entry at their boxes: the §1.7 / §2.12.2
 //!    timeout / no-progress watchdog at **P4.12**, the loader-var strip at **P4.14**, the per-OS
 //!    privilege-drop legs at **P4.15 / P4.16 / P4.17**, and the achieved-tier record into
 //!    `privilege-drop-coverage.toml` at **P4.18**. It never runs the §2.1 publish — that is
@@ -74,6 +76,7 @@ use tokio::process::{ChildStderr, ChildStdout, Command};
 
 use crate::engines::{ConfinedRun, EngineInvocation, InvocationResult, ProgressModel, StdinPlan};
 use crate::outcome::ConversionErrorKind;
+use crate::pool::GROUP_CONFIRM_WAIT;
 
 /// The §2.12 confined-spawn entry (P4.13) — runs ONE subprocess engine invocation inside the §2.12.3
 /// **cheap-tier floor**, the NON-NEGOTIABLE v1 confinement shipped unconditionally on all three OSes:
@@ -104,9 +107,12 @@ use crate::outcome::ConversionErrorKind;
 /// `Failed(InternalError)` — the §2.13.1 ITEM-level answer (a runtime per-item spawn failure fails that one
 /// item, §2.13.2; the app-level `EngineMissing`/`BundleDamaged` escalation is the §7.2.3 startup probe's, a
 /// distinct path — P4.7-resolved: no per-item AppFault here); a cancel trip →
-/// **whole-GROUP kill** → `Cancelled` (P4.10: the engine and every descendant it spawned die together — the
-/// `process-wrap` Job Object on Windows, the POSIX process group elsewhere; the kill↔cleanup↔no-partial
-/// ordering + the timeout-bounded confirm-wait are P4.11, layered on this entry). `StdinPlan::PipeBytes` is
+/// **whole-GROUP kill + a [`GROUP_CONFIRM_WAIT`]-bounded confirm-wait** → `Cancelled` (P4.10 the kill: the
+/// engine and every descendant it spawned die together — the `process-wrap` Job Object on Windows, the POSIX
+/// process group elsewhere; P4.11 the §1.7 step-2 confirm-wait: after the kill, wait up to the bound for the
+/// OS to reap, then return regardless so a wedged descendant cannot hang the cancel/quit path — the return
+/// never proves the group empty, so the honest reclaim verdict is the conductor's own §2.6.4 removal, and the
+/// deferred-reclaim `CleanupResidue` tail is the tier-1 conductor's, which owns the temp). `StdinPlan::PipeBytes` is
 /// unreachable-by-construction until the §3.5.4 pandoc adapter (P7) wires its byte feed — the honest
 /// `InternalError` seam (the P2.25 precedent), matched exhaustively so the arm cannot be silently
 /// dropped. [Build-Session-Entscheidung: P4.13]
@@ -289,17 +295,32 @@ pub async fn run_confined(
         None => {
             // User cancel → the §1.7 step-2 GROUP-kill (P4.10): `start_kill` signals the whole process group
             // (`killpg(pgid, SIGKILL)`) / terminates the whole Job Object, so the engine AND every descendant
-            // it spawned die — never an orphan holding the temp file open. The kill is issued WITHOUT awaiting
-            // the group reap: §1.7 step 2 `[DECIDED]` requires that confirm-wait to be TIMEOUT-BOUNDED (so a
-            // descendant wedged in uninterruptible kernel I/O cannot hang the UI/quit path), and the bound —
-            // with its deferred-reclaim `CleanupResidue` tail — is P4.11's, so shipping an UNBOUNDED wait here
-            // would ship exactly the shape §1.7 forbids. SIGKILL / `TerminateJobObject` are not refusable, so
-            // the teardown itself needs no await; the immediate child is reaped by tokio's kill-on-drop
-            // background reaper (the `KillOnDrop` shim above), leaving no zombie. The item is Cancelled and the
-            // §1.7 caller discards the partial temp (§3.2.2). [Build-Session-Entscheidung: P4.10]
-            // The flag records an OBSERVED delivery, never an assumed one: if `start_kill` errored, the guard
-            // still gets its turn on the way out (SIGKILL / `TerminateJobObject` are idempotent).
+            // it spawned die — never an orphan holding the temp file open. SIGKILL / `TerminateJobObject` are
+            // not refusable, so the kill itself needs no await; the flag records an OBSERVED delivery, never an
+            // assumed one (if `start_kill` errored, the [`GroupKillGuard`] still gets its turn on the way out —
+            // both kills are idempotent). [Build-Session-Entscheidung: P4.10]
             child.group_settled = child.inner.start_kill().is_ok();
+
+            // §1.7 step 2's TIMEOUT-BOUNDED confirm-wait (P4.11): after the kill, wait UP TO
+            // [`GROUP_CONFIRM_WAIT`] for the OS to reap the group, THEN return regardless. This is the
+            // load-bearing half of step 2 — on Windows an open descendant handle blocks the `*.part` deletion,
+            // so this window is what lets the tier-1 conductor's subsequent single removal (§1.7 step 3)
+            // succeed on the NORMAL cancel; the bound is what stops a wedged descendant from hanging the §5.8
+            // cancel round-trip / §7.3.3 quit (SSOT *app stays responsive*). Per the P4.10 forward note the
+            // `wait()` does NOT prove the group empty on either platform — so the return value is DELIBERATELY
+            // ignored: settled-within-`T` and timed-out are treated identically here (the runner returns a bare
+            // `Cancelled` either way). The honest settle/wedge verdict is the conductor's own removal
+            // success/failure (§2.6.4 "single bounded attempt"): a still-held `*.part` fails the removal → a
+            // §2.6.4-case-3 `CleanupResidue` deferred to the §2.6.3 sweep; a released one removes clean. On
+            // timeout the dropped `wait()` future may leave `process-wrap`'s blocking group-reaper running
+            // detached — bounded and accepted exactly like the §1.7 InProcessNative wedged-read case (the
+            // `spawn_blocking` pool has headroom above the §0.9 degree). NOTE the confirm-wait lives ONLY on
+            // this cancel arm — a NORMAL completed exit (the `Some((Ok(_)…))` arm above) performs no kill and
+            // must NOT get a confirm-wait, or it would truncate a launcher-exits-early worker (the exact
+            // regression [`GroupKillGuard`]'s Drop stand-down exists to prevent). [Build-Session-Entscheidung: P4.11]
+            tokio::time::timeout(GROUP_CONFIRM_WAIT, child.inner.wait())
+                .await
+                .ok();
             ConfinedRun::cancelled()
         }
     }
@@ -1117,6 +1138,47 @@ mod confined_spawn_tests {
         assert!(
             !scratch.path().join("alive.txt").exists(),
             "§1.7: dropping the run group-kills the engine AND its descendants — the GroupKillGuard backstop, since kill-on-job-close is inert upstream"
+        );
+    }
+
+    // §1.7 step 2 (G15, P4.11): the cancel arm's bounded confirm-wait RUNS (the group is reaped before
+    // `run_confined` returns, which is what lets the tier-1 conductor's subsequent §2.6.4 removal succeed on
+    // the normal cancel) AND is BOUNDED — on a group that settles normally it returns in well under
+    // `GROUP_CONFIRM_WAIT` (5s), never near the cap. This is the responsiveness half of §1.7 step 2 (SSOT *app
+    // stays responsive*; the §5.8 cancel round-trip / §7.3.3 quit must not hang): the runner returns as soon
+    // as the OS reaps, and the cap only bites on a genuinely wedged descendant (not constructed here — a real
+    // wedge would hold the test ~5s; the bound itself is exercised by the `tokio::time::timeout` wrapper, and
+    // the wedged path is the conductor-side §2.6.4 residue test's concern). [Build-Session-Entscheidung: P4.11]
+    #[tokio::test]
+    async fn a_cancel_confirm_wait_reaps_the_group_and_returns_well_within_the_bound() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        let (envelope, program) = descendant_tree_invocation(scratch.path());
+        let token = envelope.cancel.clone();
+        let started = scratch.path().join("started.txt");
+        let canceller = tokio::spawn(async move {
+            let observed = descendant_started(&started).await;
+            token.cancel();
+            observed
+        });
+        let began = tokio::time::Instant::now();
+        let run = run_confined(&envelope, &program, |_| {}).await;
+        let elapsed = began.elapsed();
+        let observed_start = canceller.await.expect("the canceller task joins");
+
+        assert!(
+            observed_start,
+            "non-vacuity: the descendant really ran before the cancel"
+        );
+        assert_eq!(
+            run.result,
+            InvocationResult::Cancelled,
+            "§1.7: the cancelled invocation reports Cancelled"
+        );
+        // The confirm-wait ran (the group is reaped by the time we return) yet the runner returned far under
+        // the 5s cap — a normal-teardown cancel is responsive, never anywhere near the wedged-descendant bound.
+        assert!(
+            elapsed < GROUP_CONFIRM_WAIT,
+            "§1.7: run_confined returned in {elapsed:?}, well within the {GROUP_CONFIRM_WAIT:?} confirm-wait bound (the group settled; the cap only bites on a wedged descendant)"
         );
     }
 }

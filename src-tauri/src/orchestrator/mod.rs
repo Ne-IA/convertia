@@ -225,7 +225,9 @@ pub enum JobEvent {
     /// A named §2.8 failure — `Running → Failed(kind)`; nothing was written (§2.1). The kind is projected from
     /// the §1.7 `InvocationResult` by [`project_outcome`] (P3.46.2), never here.
     Failed(ConversionErrorKind),
-    /// User cancel (§1.7/§1.11) — `Running → Cancelled`; nothing was written.
+    /// User cancel (§1.7/§1.11); nothing was written. Drives EITHER `Running → Cancelled` (a dispatched item
+    /// group-killed mid-run) OR the P4.11 direct `Pending → Cancelled` (the §1.7 stop-dequeue leg — a job
+    /// cancelled before it ever started).
     Cancelled,
 }
 
@@ -246,9 +248,10 @@ pub struct IllegalTransition {
 /// pure FSM the module doc names, no I/O, no taxonomy/serialization:
 ///
 /// ```text
-/// Pending ──Started──▶ Running ─┬─Succeeded──▶ Succeeded
-///                               ├─Failed(k)──▶ Failed(k)
-///                               └─Cancelled─▶ Cancelled
+/// Pending ─┬─Started──▶ Running ─┬─Succeeded──▶ Succeeded
+///          │                     ├─Failed(k)──▶ Failed(k)
+///          │                     └─Cancelled─▶ Cancelled
+///          └─Cancelled──────────────────────▶ Cancelled   (§1.9 stop-dequeue: cancelled before start; nothing written)
 /// Skipped(_)  +  Succeeded / Failed(_) / Cancelled : terminal — accept NO event
 /// ```
 ///
@@ -260,7 +263,12 @@ pub fn advance(state: JobState, event: JobEvent) -> Result<JobState, IllegalTran
     let next = match state {
         JobState::Pending => match event {
             JobEvent::Started => Some(JobState::Running),
-            JobEvent::Succeeded | JobEvent::Failed(_) | JobEvent::Cancelled => None,
+            // §1.9 direct Pending → Cancelled `[DECIDED — 2026-07-22 P4.11 pre-fill ruling]`: a batch cancel
+            // that reaches a job the conductor never dispatched ("cancelled before start; nothing written")
+            // terminates it directly — the §1.7 "stop dequeuing Pending" leg's honest terminal state, counted
+            // in `Totals.cancelled` exactly like a mid-run cancel. [Build-Session-Entscheidung: P4.11]
+            JobEvent::Cancelled => Some(JobState::Cancelled),
+            JobEvent::Succeeded | JobEvent::Failed(_) => None,
         },
         JobState::Running => match event {
             JobEvent::Succeeded => Some(JobState::Succeeded),
@@ -1539,6 +1547,25 @@ fn cleanup_leftovers(
     residue
 }
 
+/// §2.6.4 (P4.11): thread a per-item cleanup `residue` into the run's `residues` collection + `recorded_final_dirs`,
+/// so the §2.6.2 run-end cleanup sees the dir and the §1.12 projection folds the record into
+/// `RunResult.cleanup_incomplete` (→ the §2.8.2 "With residue" tail). A `None` residue — the common clean case,
+/// and every in-core cancel — is a no-op. Shared by the [`run_conversion`] terminal-mapping Cancelled arm; the
+/// `Some` path is dead-until-P4.32 in that arm (a wedged cancel needs a subprocess) but is directly
+/// unit-tested here so the §2.6.4 seam is proven. [Build-Session-Entscheidung: P4.11]
+fn thread_residue(
+    residue: Option<ResidueRecord>,
+    residues: &mut Vec<ResidueRecord>,
+    recorded_final_dirs: &mut BTreeSet<PathBuf>,
+) {
+    if let Some(record) = residue {
+        if let Some(dir) = record.real_path.parent() {
+            recorded_final_dirs.insert(dir.to_path_buf());
+        }
+        residues.push(record);
+    }
+}
+
 // ─── §0.4.2 ConversionEvent — the C6 run-telemetry Channel<ConversionEvent> payload (P2.37) ──────────
 // [Build-Session-Entscheidung: P2.37] Homed in crate::orchestrator (ConversionEvent references RunResult +
 // ItemOutcome → outcome-referencing, §0.7 ‡), co-homed with the §1.12 result types it carries. OUTBOUND-ONLY
@@ -1714,8 +1741,12 @@ enum ItemRunOutcome {
         /// for every non-slotted failure (the vast majority), rendered with the empty `arg`.
         name_arg: Option<String>,
     },
-    /// User-cancelled (§1.7/§1.11) — the partial `out_tmp` was dropped (§3.2.2), nothing published.
-    Cancelled,
+    /// User-cancelled (§1.7/§1.11) — nothing published. The per-job `out_tmp` is removed by the §1.7 step-3
+    /// single bounded attempt (after the isolation-side confirm-wait), so `residue` is `Some` ONLY on the
+    /// §2.6.4-case-3 path — a wedged descendant still holding the `*.part` (Windows) makes that one removal
+    /// fail, deferring reclaim to the §2.6.3 sweep; every clean cancel (and the in-core cooperative cancel,
+    /// which has no external handle) leaves `None`. [Build-Session-Entscheidung: P4.11]
+    Cancelled { residue: Option<ResidueRecord> },
 }
 
 /// Map a publish-leg [`WriteOutcome`] (P3.38) onto the conductor's richer [`ItemRunOutcome`] — a `Published`
@@ -2097,13 +2128,24 @@ async fn convert_item(
             };
             write_outcome_to_run(outcome)
         }
-        // §1.7 InProcessNative cancel → drop the partial `out_tmp` (deleted on drop, §3.2.2), nothing published.
-        // [Build-Session-Entscheidung: P3.48] Drop (not `cleanup_item`) matches the §1.7 InProcessNative cancel
-        // contract ("drops the out_tmp TempPath"); the §2.6.4 deferred-residue case is the SUBPROCESS
-        // group-kill timeout (P4), not this in-core cooperative cancel.
+        // §1.7 step 3 (P4.11): a cancelled item is never published, so there is only the per-job temp to
+        // discard. The isolation-side step-2 confirm-wait already gave the group up to `GROUP_CONFIRM_WAIT` to
+        // reap (a subprocess cancel) or is a no-op (the in-core cooperative cancel), so a SINGLE bounded removal
+        // is correct here (§2.6.4 "single bounded attempt", never a retry-spin): `cleanup_leftovers` — the same
+        // §2.6.4 primitive the Failed/Succeeded paths use — removes the `out_tmp` and, iff a wedged descendant
+        // still holds it (the §2.6.4 case-3 Windows path), records a `CleanupResidue` naming the deferred path
+        // for the §2.6.3 sweep, never a silent leftover. The clean cancel (and every POSIX / in-core cancel,
+        // where nothing external holds the temp) removes it cleanly → `residue: None`. This SUPERSEDES the
+        // P3.48 `drop(out_tmp)` (a best-effort delete-on-drop that swallowed a removal failure); the removal's
+        // own success/failure — not the isolation `wait()` (which proves nothing about group-emptiness, the
+        // P4.10 forward note) — is the honest §2.6.4 residue signal. [Build-Session-Entscheidung: P4.11]
         InvocationResult::Cancelled => {
-            drop(envelope.plan.out_tmp.take());
-            ItemRunOutcome::Cancelled
+            let residue = envelope
+                .plan
+                .out_tmp
+                .take()
+                .and_then(|tmp| cleanup_leftovers(item, [tmp]));
+            ItemRunOutcome::Cancelled { residue }
         }
     }
 }
@@ -2256,28 +2298,54 @@ pub(crate) async fn run_conversion(
     let mut failed_name_args: BTreeMap<ItemId, String> = BTreeMap::new();
     let mut done: u32 = 0;
 
-    // §1.9 cancel-semantics NOTE (a P3.48 G1-review finding; the C7 `cancel_run` token trip is now wired, P3.52):
-    // this loop does NOT poll `token.is_cancelled()` before dequeuing the next Pending job. It relies on each
-    // dispatched item's OWN cooperative cancel. NO-HARM holds regardless of WHEN the token trips (including
-    // mid-batch, now that C7 can trip it) — but NOT because every dispatched item returns `Cancelled` without
-    // publishing (the P3.75 sweep corrected this): the §1.7 in-core CSV/TSV transform polls the token only at
-    // N-KB chunk boundaries, so a SUB-CHUNK item (the common small-file case) never observes the trip, completes,
-    // and PUBLISHES a fresh output. That fresh output still harms no original — no-harm rests on no-clobber +
-    // frozen-at-drop + the §2.1.2 atomic create-only publish (which can ONLY create a NEW file, never
-    // touch/overwrite a source), independent of cancel timing; the cancel-before-publish path is one mechanism,
-    // not the guarantee. The §1.9 "stop dequeuing Pending" refinement (leave un-started jobs un-dispatched + give
-    // them a terminal summary state) is a SEPARATE §1.9 optimization — it would end the wasted small-item work
-    // above, but is NOT a no-harm requirement. It also needs a §1.9 decision the FSM does not sanction here
-    // (`advance` returns None for a direct Pending→Cancelled, by design — a clean stop-dequeue needs a
-    // summary-state ruling for un-started jobs), so it is deliberately OUT of P3.52's token-trip-wiring scope. Its
-    // home is the P4.11 §1.7 kill↔cleanup box (measured against the full §1.7 cancel enumeration, incl. §1.7's
-    // "stop dequeuing Pending"); the spec §1.7 mandate is unchanged, so nothing is dropped here — the run still
-    // terminates with every job in a valid terminal state (a dispatched large item via Pending→Running→Cancelled;
-    // a dispatched sub-chunk item via Pending→Running→Succeeded). [Build-Session-Entscheidung: P3.52]
+    // §1.7/§1.9 STOP-DEQUEUE (P4.11 — the P3.52 note's named home): the loop polls `token.is_cancelled()`
+    // before dequeuing each Pending job. A trip (C7 `cancel_run`, P3.52) stops dispatching the rest — the §1.7
+    // "stop dequeuing Pending" granularity. Two paths, per the full §1.7 cancel enumeration:
+    //   • a job the conductor NEVER reached → the direct §1.9 `Pending → Cancelled` arm below ("cancelled
+    //     before start; nothing written"), no engine invoked, no temp minted, NO live `ItemStarted`/
+    //     `ItemFinished` — surfaced as a per-item outcome ONLY in the §1.12 `RunResult` (counted in
+    //     `Totals.cancelled`), following the P2.37.4 pre-flight-skip NO-LIVE-PER-ITEM-EVENT policy (a
+    //     never-started item has no live progress row; the frontend resolves it from the terminal summary over
+    //     the whole id space, §5.2/machine.ts). It DIFFERS from a pre-flight skip in one respect — a skip is
+    //     EXCLUDED from `total` (`state_is_queued` is false for `Skipped`), whereas a stop-dequeued job WAS in
+    //     `total`, so the aggregate `BatchProgress` still ticks for it (below) to keep the bar reaching 100%.
+    //     [Build-Session-Entscheidung: P4.11]
+    //   • the job that was ALREADY dispatched when the trip landed → its own cooperative/group-kill cancel
+    //     (`convert_item` → `Pending → Running → Cancelled`), which DOES emit a live terminal `ItemFinished`.
+    // This SUPERSEDES the P3.52 parking note (which deferred stop-dequeue here because the FSM did not yet
+    // sanction a direct `Pending → Cancelled`; the 2026-07-22 owner ruling + the `advance` arm above now do).
+    // NO-HARM is unchanged and never rested on stop-dequeue: it rests on no-clobber + frozen-at-drop + the
+    // §2.1.2 atomic create-only publish, independent of cancel timing (a sub-chunk item that completes before
+    // observing the trip still publishes only a NEW file, never touches a source — the P3.75 sweep finding).
+    // Stop-dequeue ends that wasted small-item work and gives every un-started job an honest terminal state.
     for i in 0..batch.jobs.len() {
         // Only eligible `Pending` jobs are dispatched; pre-flight `Skipped` jobs are terminal at construction
         // (never queued, no Channel events — §0.4.2/§1.9). `queue_order`'s `state_is_queued` == this filter.
         if !matches!(batch.jobs[i].state, JobState::Pending) {
+            continue;
+        }
+        // §1.7/§1.9 stop-dequeue (P4.11): the run was cancelled before this still-`Pending` job was dispatched
+        // → drive it directly `Pending → Cancelled` (nothing written) and move on. `advance(Pending, Cancelled)`
+        // is the arm authored above; it cannot fail for a `Pending` job, but a defensive `unwrap_or` keeps the
+        // no-panic policy without an `expect`. Emit NO per-item `ItemStarted`/`ItemFinished` (a never-started
+        // item has no live progress row — the §1.12 summary carries it; the P2.37.4 pre-flight-skip precedent),
+        // BUT DO advance the batch aggregate: the item counted in `total` (`queue_order` includes every
+        // eligible `Pending` job, §1.11) reached a terminal `Cancelled`, so `done` must track it or the
+        // `BatchProgress` bar would freeze below `total` on a partial cancel — §1.11's aggregate
+        // `(succeeded+failed+cancelled)/total` explicitly counts cancelled, so the bar correctly resolves to
+        // 100% once every job is terminal. This aggregate tick is batch-level, NOT a per-item surface.
+        // [Build-Session-Entscheidung: P4.11]
+        if token.is_cancelled() {
+            batch.jobs[i].state =
+                advance(batch.jobs[i].state, JobEvent::Cancelled).unwrap_or(JobState::Cancelled);
+            done = done.saturating_add(1);
+            on_progress
+                .send(ConversionEvent::BatchProgress(BatchProgress {
+                    run_id,
+                    done,
+                    total,
+                }))
+                .ok();
             continue;
         }
         let item = batch.jobs[i].item;
@@ -2394,7 +2462,21 @@ pub(crate) async fn run_conversion(
                 };
                 (JobEvent::Failed(kind), ItemOutcome::Failed { error })
             }
-            ItemRunOutcome::Cancelled => (JobEvent::Cancelled, ItemOutcome::Cancelled),
+            // §1.7/§2.6.4 (P4.11): a cancelled item carries a §2.6.4-case-3 residue ONLY when its `*.part`
+            // survived the §1.7 step-3 removal (a wedged descendant still holding it). [`thread_residue`] folds it
+            // into `residues` (→ `RunResult.cleanup_incomplete` → the §2.8.2 "With residue" tail) +
+            // `recorded_final_dirs`; the wire `ItemOutcome::Cancelled` STAYS payload-free (§2.8.2 case 3 has no
+            // per-item row — the structural `cleanup_incomplete` entry + the batch tail carry it; no `bindings.ts`
+            // change). A `Some` residue here is DEAD-UNTIL-P4.32 (a wedged cancel needs a SUBPROCESS engine; the
+            // in-core lane's cancel always removes its temp cleanly → `residue: None`, proven by the
+            // dispatched-cancel test), so the threading rides the shared helper whose `Some` body is directly
+            // unit-tested — the §2.6.4 seam is proven now, ready when P4.32 makes the subprocess lane live. The
+            // reached path (`residue: None` → the arm's terminal tuple) is covered by the dispatched-cancel test.
+            // [Build-Session-Entscheidung: P4.11]
+            ItemRunOutcome::Cancelled { residue } => {
+                thread_residue(residue, &mut residues, &mut recorded_final_dirs);
+                (JobEvent::Cancelled, ItemOutcome::Cancelled)
+            }
         };
 
         // §1.9 Running → terminal. Emit §0.4.2 `ItemFinished` + `BatchProgress` (queued-only denominator).
@@ -6228,7 +6310,8 @@ mod tests {
     }
 
     // §6.4.1 unit (G15): the P3.46.1 §1.9 FSM drives every VALID transition — Pending --Started--> Running,
-    // Running --{Succeeded|Failed(kind)|Cancelled}--> the matching terminal.
+    // Pending --Cancelled--> Cancelled (the P4.11 direct stop-dequeue arm), Running --{Succeeded|Failed(kind)|
+    // Cancelled}--> the matching terminal.
     #[test]
     fn advance_drives_the_valid_1_9_transitions() {
         let kind = ConversionErrorKind::Corrupt;
@@ -6236,6 +6319,15 @@ mod tests {
             advance(JobState::Pending, JobEvent::Started),
             Ok(JobState::Running),
             "§1.9: Pending --Started--> Running"
+        );
+        // [Test-Change: P4.11 — old-obsolete+new-correct, §1.9] the direct Pending → Cancelled arm is NEW: the
+        // §1.9 diagram + the 2026-07-22 owner pre-fill ruling (§1.9 "cancelled before start; nothing written")
+        // added it, and P4.11 wires it into `advance` for the stop-dequeue leg. Verified correct vs the §1.9
+        // states diagram (line 1187, the `Pending ──▶ Cancelled` batch-cancel-before-start arm).
+        assert_eq!(
+            advance(JobState::Pending, JobEvent::Cancelled),
+            Ok(JobState::Cancelled),
+            "§1.9: Pending --Cancelled--> Cancelled (stop-dequeue, cancelled before start)"
         );
         assert_eq!(
             advance(JobState::Running, JobEvent::Succeeded),
@@ -6256,7 +6348,7 @@ mod tests {
 
     // §6.4.1 unit (G15): the P3.46.1 FSM REJECTS every illegal §1.9 transition as a structured Err, never a
     // panic (the crate-root clippy::panic/unwrap_used deny) — a terminal (incl. pre-flight Skipped) accepts no
-    // event, Pending accepts only Started, Running accepts no second Started.
+    // event, Pending accepts only Started AND (P4.11) Cancelled, Running accepts no second Started.
     #[test]
     fn advance_rejects_every_illegal_1_9_transition_without_a_panic() {
         let kind = ConversionErrorKind::EngineHang;
@@ -6282,19 +6374,19 @@ mod tests {
                 );
             }
         }
-        // Pending accepts ONLY Started — every terminal event is illegal from Pending.
-        for &event in &[
-            JobEvent::Succeeded,
-            JobEvent::Failed(kind),
-            JobEvent::Cancelled,
-        ] {
+        // [Test-Change: P4.11 — old-obsolete+new-correct, §1.9] Pending now accepts Started AND Cancelled (the
+        // direct stop-dequeue arm); the pre-ruling "Pending accepts ONLY Started" pin dropped `Cancelled` from
+        // this illegal set. Only `Succeeded`/`Failed` remain illegal from Pending (an item cannot succeed or
+        // fail without first Running). Old obsolete: the 2026-07-22 owner ruling authored the direct arm; new
+        // correct: verified against the §1.9 diagram (line 1187) + the valid-transition test above.
+        for &event in &[JobEvent::Succeeded, JobEvent::Failed(kind)] {
             assert_eq!(
                 advance(JobState::Pending, event),
                 Err(IllegalTransition {
                     from: JobState::Pending,
                     event
                 }),
-                "§1.9: Pending rejects {event:?} (only Started is valid)"
+                "§1.9: Pending rejects {event:?} (Started and Cancelled are valid; a job cannot succeed/fail before Running)"
             );
         }
         // Running rejects a second Started (out-of-order).
@@ -9340,6 +9432,38 @@ mod cleanup_honesty_tests {
         );
     }
 
+    // §6.4.1 (G15) / §2.6.4 (P4.11): `thread_residue` folds a per-item cleanup residue into the run's
+    // `residues` list + `recorded_final_dirs` (a `Some` residue — the §2.6.4-case-3 wedged-cancel path the
+    // run_conversion Cancelled arm rides); a `None` residue is a no-op (every clean/in-core cancel). Directly
+    // covers the `Some` body the mapping arm cannot reach until the P4.32 subprocess lane is live.
+    #[test]
+    fn thread_residue_folds_a_residue_into_the_run_collections_and_no_ops_on_none() {
+        let mut residues: Vec<ResidueRecord> = Vec::new();
+        let mut recorded_final_dirs: BTreeSet<PathBuf> = BTreeSet::new();
+
+        thread_residue(
+            Some(ResidueRecord::new(
+                ItemId::from_index(1),
+                PathBuf::from("/dest/sub/.job.tsv.part"),
+            )),
+            &mut residues,
+            &mut recorded_final_dirs,
+        );
+        assert_eq!(residues.len(), 1, "§2.6.4: the residue record is pushed");
+        assert_eq!(residues[0].item, ItemId::from_index(1));
+        assert!(
+            recorded_final_dirs.contains(&PathBuf::from("/dest/sub")),
+            "§2.6.2: the residue's parent dir is recorded for the run-end cleanup"
+        );
+
+        thread_residue(None, &mut residues, &mut recorded_final_dirs);
+        assert_eq!(
+            residues.len(),
+            1,
+            "§2.6.4: a None residue (the clean/in-core cancel) is a no-op — nothing pushed"
+        );
+    }
+
     // §6.4.1 (G15): `split_residue_records` is the ONE §2.10.1 wire↔off-wire fork — the wire list mirrors the
     // records in order (what the user sees), the off-wire map keys each item to its REAL `PathBuf`.
     #[test]
@@ -10755,29 +10879,50 @@ mod run_conversion_tests {
         );
     }
 
-    // §6.4.1 (G15) / §1.7 / §2.1: a run whose token is already tripped cancels the in-flight item at the
-    // native lane's first chunk-boundary poll (§1.7 cooperative cancel). The §2.1 atomic publish NEVER runs on
-    // the cancel path, so NO output survives beside the source (the partial temp drops), the source is
-    // UNTOUCHED (no-harm G32(a)), and the §1.12 summary counts the item `Cancelled` (never a clean success),
-    // retained for the C8 re-serve with a live `ItemFinished{Cancelled}`.
+    // §6.4.1 (G15) / §1.7 / §1.9 / §2.1: a run whose token is ALREADY tripped when the conductor reaches its
+    // jobs STOP-DEQUEUES every un-started `Pending` item (§1.7 "stop dequeuing Pending" / §1.9 direct
+    // `Pending → Cancelled`, P4.11): each is driven directly to `Cancelled` WITHOUT being dispatched — no engine
+    // invoked, no temp minted, so no output survives beside any source (no-harm G32(a)), and — like a pre-flight
+    // skip (P2.37.4) — NO live `ItemStarted`/`ItemFinished` is emitted; the items are surfaced ONLY in the §1.12
+    // `RunResult` (counted in `Totals.cancelled`). Multi-item so the enumeration is over more than one job.
+    //
+    // [Test-Change: P4.11 — old-obsolete+new-correct, §1.7 §1.9] pre-ruling this test asserted a pre-tripped
+    // token DISPATCHED item 0 and cancelled it at the native lane's first chunk poll, emitting a live
+    // `ItemFinished{Cancelled}` ("a cancelled item DID dispatch"). The 2026-07-22 owner stop-dequeue ruling +
+    // the P4.11 leg OBSOLETE that: a token tripped BEFORE an item starts now stop-dequeues it (nothing runs, no
+    // live event) — the more efficient + honest "cancelled before start; nothing written" behaviour. New
+    // correct: verified vs §1.9:1187-1200 (the direct arm) + the P2.37.4 no-live-event-for-a-never-started-item
+    // policy (bindings.ts `ItemFinished` doc) + read-back of the retained `RunResult`. The DISPATCHED
+    // `Running → Cancelled` path (which still emits a live event) is covered by
+    // `convert_item_cancelled_arm_cleans_the_temp_and_carries_no_residue_on_a_clean_cancel` below (a direct
+    // `convert_item` call, deterministic — the in-core transform is memory-fast, so a mid-dispatch cancel is
+    // inherently racy at the run level and unfit for a non-flaky test, §7).
     #[tokio::test]
-    async fn a_cancelled_run_publishes_no_output_leaves_the_source_intact_and_projects_cancelled() {
+    async fn a_pre_cancelled_run_stop_dequeues_every_pending_item_with_no_output_and_no_live_events(
+    ) {
         let Some(src_dir) = non_ephemeral_source_dir() else {
             return; // the crate root is itself ephemeral — no realistic non-ephemeral source dir to test.
         };
         let d = deps();
-        // A MULTI-chunk source (> 3×100 KB `PROGRESS_CHUNK_BYTES`) so the transform reaches a chunk boundary
-        // where the cancel poll fires (a tiny source could complete in one pass before the first poll).
-        let mut source_bytes = Vec::new();
-        while source_bytes.len() < 300 * 1024 {
-            source_bytes.extend_from_slice(b"a,b,c\n");
+        let mut items = Vec::new();
+        for (i, name) in ["one.csv", "two.csv"].iter().enumerate() {
+            let bytes = format!("a,b,c\n{i},{i},{i}\n").into_bytes();
+            items.push(eligible(src_dir.path(), name, i as u32, &bytes));
         }
-        let (dropped, paths, identity) = eligible(src_dir.path(), "big.csv", 0, &source_bytes);
-        let source = paths.resolved_path.clone();
-        let set = registered(src_dir.path(), vec![(dropped, paths, identity)], Vec::new());
+        let sources: Vec<(PathBuf, Vec<u8>)> = items
+            .iter()
+            .map(|(_, paths, _)| {
+                (
+                    paths.resolved_path.clone(),
+                    std::fs::read(&paths.resolved_path).expect("the seeded source reads"),
+                )
+            })
+            .collect();
+        let set = registered(src_dir.path(), items, Vec::new());
         let (channel, events) = capture_channel();
 
-        // A PRE-cancelled run token: the native lane's first chunk-boundary poll observes it → Cancelled.
+        // A PRE-cancelled run token: the conductor's loop-top stop-dequeue check trips on EVERY item before it
+        // is dispatched → all directly `Pending → Cancelled`.
         let token = CancellationToken::new();
         token.cancel();
         let run_id = run_with_token(
@@ -10791,18 +10936,131 @@ mod run_conversion_tests {
         )
         .await;
 
-        // §2.1: the atomic publish never runs on the cancel path — no output beside the source.
+        // §2.1/§2.0 no-harm: no output beside ANY source, and every source survives byte-for-byte (a
+        // stop-dequeued item never runs an engine, so nothing is even written to a temp).
+        for name in ["one.tsv", "two.tsv"] {
+            assert!(
+                !src_dir.path().join(name).exists(),
+                "§1.7/§1.9: a stop-dequeued item never dispatches, so it publishes NO output ({name})"
+            );
+        }
+        for (source, bytes) in &sources {
+            assert_eq!(
+                &std::fs::read(source).expect("the source is untouched by a stop-dequeued run"),
+                bytes,
+                "§2.0 no-harm: a stop-dequeued run never touches a source"
+            );
+        }
+        // §1.12: every item is projected `Cancelled`, counted in `Totals.cancelled`, none succeeded/failed.
+        let result = d
+            .results
+            .get(run_id)
+            .expect("the RunResult is retained for C8 re-serve");
+        assert_eq!(
+            result.totals,
+            Totals {
+                succeeded: 0,
+                failed: 0,
+                cancelled: 2,
+                skipped: 0,
+            },
+            "§1.12: every stop-dequeued item is counted in Totals.cancelled, never a clean success"
+        );
+        assert!(
+            result
+                .items
+                .iter()
+                .all(|item| matches!(item.state, JobState::Cancelled) && item.output_display.is_none()),
+            "§1.9/§1.12: every stop-dequeued item's terminal state is Cancelled and names no output"
+        );
+        // §0.4.2 / §1.9 stop-dequeue emission policy (P4.11, the P2.37.4 precedent): a never-started item emits
+        // NO live ItemStarted/ItemFinished — it is surfaced ONLY in the terminal RunResult above.
+        let events = events.lock().expect("lock").clone();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.contains(r#""type":"itemStarted""#) || e.contains(r#""type":"itemFinished""#)),
+            "§0.4.2: a stop-dequeued (never-started) item emits no live ItemStarted/ItemFinished (summary-only, the pre-flight-skip precedent)"
+        );
+        // §1.11 (P4.11): but the batch AGGREGATE still resolves — the last `BatchProgress` reaches `done == total`
+        // even though every item was stop-dequeued (a stop-dequeued job was counted in `total`, unlike a
+        // pre-flight skip), so the progress bar never freezes below 100% on a cancelled run.
+        let last_batch_progress = events
+            .iter()
+            .rfind(|e| e.contains(r#""type":"batchProgress""#))
+            .expect("a cancelled run still emits BatchProgress ticks for its stop-dequeued items");
+        assert!(
+            last_batch_progress.contains(r#""done":2"#) && last_batch_progress.contains(r#""total":2"#),
+            "§1.11: the final BatchProgress reaches done==total (2/2) — the aggregate counts the stop-dequeued cancels, got {last_batch_progress}"
+        );
+    }
+
+    // §6.4.1 (G15) / §1.7 / §1.9 / §0.4.2: a DISPATCHED item cancelled MID-RUN through `run_conversion`
+    // (`Pending → Running → Cancelled`) — the OTHER §1.7 cancel path (distinct from stop-dequeue): the item
+    // WAS running when the cancel landed, so it emits a live terminal `ItemFinished{Cancelled}` (unlike a
+    // stop-dequeued item), the §2.1 publish never runs, and the §1.12 summary counts it Cancelled.
+    //
+    // Made DETERMINISTIC (never a timing race — the in-core transform is memory-fast, §7 bans flaky tests) by
+    // exploiting that a tauri `Channel` invokes its handler SYNCHRONOUSLY on `send`: the custom channel trips
+    // the run token the first time it sees a live `itemStarted` event. `run_conversion` emits `ItemStarted`
+    // AFTER the loop-top stop-dequeue check passed (token still clear → item DISPATCHES, not stop-dequeued) and
+    // BEFORE `convert_item`, so by the time the native transform runs the token is already tripped → its first
+    // chunk-boundary poll observes it → `Cancelled` — the `run_conversion` Cancelled mapping arm. A multi-chunk
+    // source guarantees a chunk boundary is reached (a sub-chunk item completes in one pass, §1.7).
+    // [Build-Session-Entscheidung: P4.11]
+    #[tokio::test]
+    async fn a_dispatched_item_cancelled_mid_run_emits_a_live_itemfinished_and_projects_cancelled()
+    {
+        let Some(src_dir) = non_ephemeral_source_dir() else {
+            return;
+        };
+        let d = deps();
+        let mut source_bytes = Vec::new();
+        while source_bytes.len() < 300 * 1024 {
+            source_bytes.extend_from_slice(b"a,b,c\n");
+        }
+        let (dropped, paths, identity) = eligible(src_dir.path(), "big.csv", 0, &source_bytes);
+        let source = paths.resolved_path.clone();
+        let set = registered(src_dir.path(), vec![(dropped, paths, identity)], Vec::new());
+
+        // A channel that both CAPTURES events and, synchronously on the first `itemStarted`, trips the run
+        // token — so the dispatched item's transform observes the cancel at its first chunk boundary.
+        let token = CancellationToken::new();
+        let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let trip = token.clone();
+        let channel = Channel::new(move |body: InvokeResponseBody| {
+            if let InvokeResponseBody::Json(json) = body {
+                if json.contains(r#""type":"itemStarted""#) {
+                    trip.cancel();
+                }
+                sink.lock().expect("event sink lock").push(json);
+            }
+            Ok(())
+        });
+
+        let run_id = run_with_token(
+            &d,
+            &set,
+            RerunDecision::FreshCopy,
+            src_dir.path(),
+            &channel,
+            token,
+            ResolvedDestination::BesideSource,
+        )
+        .await;
+
+        // §2.1 / §2.0 no-harm: no output beside the source, the source untouched.
         assert!(
             !src_dir.path().join("big.tsv").exists(),
-            "§2.1/§1.7: a cancelled item publishes NO output (the partial temp is dropped, never promoted)"
+            "§2.1/§1.7: a mid-run-cancelled item publishes NO output"
         );
-        // No-harm (G32(a)): the source is read-only to the conductor and survives byte-for-byte.
         assert_eq!(
             std::fs::read(&source).expect("the source is untouched by a cancelled run"),
             source_bytes,
             "§2.0 no-harm: a cancelled run never mutates the source"
         );
-        // §1.12: the item is projected `Cancelled`, counted in `Totals.cancelled`, never succeeded/failed.
+        // §1.12: the dispatched-then-cancelled item is Cancelled, counted in Totals.cancelled.
         let result = d
             .results
             .get(run_id)
@@ -10815,23 +11073,199 @@ mod run_conversion_tests {
                 cancelled: 1,
                 skipped: 0,
             },
-            "§1.12: the cancelled item is counted in Totals.cancelled, never a clean success"
+            "§1.12: the mid-run-cancelled item is counted in Totals.cancelled"
         );
         assert!(
             matches!(result.items[0].state, JobState::Cancelled),
-            "§1.9: the cancelled item's terminal state is Cancelled"
+            "§1.9: the item's terminal state is Cancelled"
         );
-        assert!(
-            result.items[0].output_display.is_none(),
-            "§1.12: a cancelled item names no output path"
-        );
-        // §0.4.2: unlike a pre-flight skip, a cancelled item DID dispatch, so it emits a live terminal event.
+        // §0.4.2: a DISPATCHED item (unlike a stop-dequeued one) emits BOTH a live ItemStarted and a terminal
+        // ItemFinished{Cancelled} — the distinguishing signal of the Running→Cancelled path.
+        // [Test-Change: P4.11 — old-obsolete+new-correct, §0.4.2 §1.9] the pre-P4.11 single cancel test asserted
+        // a bare `ItemFinished{Cancelled}` on the rationale "a cancelled item DID dispatch" — obsoleted by the
+        // stop-dequeue split (a cancel now has TWO paths: stop-dequeued = no live events, dispatched = live
+        // events). New correct: this dispatched-path test asserts BOTH the live ItemStarted and the terminal
+        // ItemFinished{Cancelled}; the stop-dequeue test above asserts their ABSENCE (verified by read-back of
+        // the captured event stream).
         let events = events.lock().expect("lock").clone();
+        assert!(
+            events.iter().any(|e| e.contains(r#""type":"itemStarted""#)),
+            "§0.4.2: a dispatched item emits a live ItemStarted"
+        );
+        // [Test-Change: P4.11 — old-obsolete+new-correct, §0.4.2] this live-ItemFinished{Cancelled} assertion
+        // is the dispatched-path successor of the old single cancel test's tail (obsoleted by the stop-dequeue
+        // split above); new-correct via read-back of the captured event stream.
         assert!(
             events
                 .iter()
                 .any(|e| e.contains(r#""type":"itemFinished""#) && e.contains(r#""cancelled""#)),
-            "§0.4.2: a live ItemFinished carries the Cancelled outcome"
+            "§0.4.2: a dispatched-then-cancelled item emits a live ItemFinished carrying the Cancelled outcome"
+        );
+    }
+
+    // §6.4.1 (G15) / §1.7 / §1.9 / §1.11: the FULL §1.7 cancel enumeration in ONE MIXED run — item 0 SUCCEEDS
+    // (untouched by the later cancel), item 1 STOP-DEQUEUES to Cancelled — and the `done` counter climbs across
+    // BOTH increment sites (the dispatch tail AND the stop-dequeue leg) so the aggregate `BatchProgress` reaches
+    // `done == total`. Deterministic (§7 non-flaky) via the synchronous-`Channel` trip: a SUB-chunk item 0
+    // completes in ONE pass without polling the token (§1.7 sub-chunk → no chunk boundary → Succeeds regardless),
+    // then its own `itemStarted` trips the token; the loop-top stop-dequeue check catches the now-tripped token
+    // for item 1. [Build-Session-Entscheidung: P4.11]
+    #[tokio::test]
+    async fn a_mixed_cancel_run_keeps_the_succeeded_item_stop_dequeues_the_rest_and_reaches_total()
+    {
+        let Some(src_dir) = non_ephemeral_source_dir() else {
+            return;
+        };
+        let d = deps();
+        // Two SUB-chunk sources (< PROGRESS_CHUNK_BYTES): item 0 completes before any cancel poll → Succeeds.
+        let mut items = Vec::new();
+        for (i, name) in ["first.csv", "second.csv"].iter().enumerate() {
+            let bytes = format!("a,b\n{i},{i}\n").into_bytes();
+            items.push(eligible(src_dir.path(), name, i as u32, &bytes));
+        }
+        let set = registered(src_dir.path(), items, Vec::new());
+
+        // Trip the token on the FIRST `itemStarted` (item 0's) — item 0 (sub-chunk) still Succeeds; item 1's
+        // loop-top stop-dequeue check then sees the tripped token.
+        let token = CancellationToken::new();
+        let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let trip = token.clone();
+        let channel = Channel::new(move |body: InvokeResponseBody| {
+            if let InvokeResponseBody::Json(json) = body {
+                if json.contains(r#""type":"itemStarted""#) {
+                    trip.cancel();
+                }
+                sink.lock().expect("event sink lock").push(json);
+            }
+            Ok(())
+        });
+
+        let run_id = run_with_token(
+            &d,
+            &set,
+            RerunDecision::FreshCopy,
+            src_dir.path(),
+            &channel,
+            token,
+            ResolvedDestination::BesideSource,
+        )
+        .await;
+
+        let result = d
+            .results
+            .get(run_id)
+            .expect("the RunResult is retained for C8 re-serve");
+        // §1.7 enumeration: the item that ran before the cancel STAYS Succeeded; the un-started one is Cancelled.
+        assert_eq!(
+            result.totals,
+            Totals {
+                succeeded: 1,
+                failed: 0,
+                cancelled: 1,
+                skipped: 0,
+            },
+            "§1.7/§1.12: a mid-run cancel keeps the already-succeeded item and stop-dequeues the rest"
+        );
+        assert!(
+            src_dir.path().join("first.tsv").exists(),
+            "§2.1: the succeeded item's output stands (a later cancel never un-does a finished item)"
+        );
+        assert!(
+            !src_dir.path().join("second.tsv").exists(),
+            "§1.9: the stop-dequeued item published no output"
+        );
+        // §1.11: `done` climbed across BOTH the dispatch tail (item 0) AND the stop-dequeue leg (item 1), so the
+        // final BatchProgress reaches done==total (2/2) — no freeze below total on a mixed cancel.
+        let events = events.lock().expect("lock").clone();
+        let last_batch_progress = events
+            .iter()
+            .rfind(|e| e.contains(r#""type":"batchProgress""#))
+            .expect("the run emits BatchProgress ticks");
+        assert!(
+            last_batch_progress.contains(r#""done":2"#) && last_batch_progress.contains(r#""total":2"#),
+            "§1.11: the final BatchProgress reaches done==total across both increment sites, got {last_batch_progress}"
+        );
+        // The succeeded item emits a live ItemFinished; the stop-dequeued one does not (only ONE itemFinished).
+        let item_finished = events
+            .iter()
+            .filter(|e| e.contains(r#""type":"itemFinished""#))
+            .count();
+        assert_eq!(
+            item_finished, 1,
+            "§0.4.2: exactly one live ItemFinished (the dispatched success) — the stop-dequeued item emits none"
+        );
+    }
+
+    // §6.4.1 (G15) / §1.7 / §2.6.4: a DISPATCHED item cancelled mid-transform (§1.7 `Running → Cancelled`) —
+    // tested via a DIRECT `convert_item` call (deterministic: `convert_item` has no stop-dequeue, so a
+    // pre-tripped token reaches the native lane's first chunk-boundary poll → `TransformStatus::Cancelled` →
+    // `InvocationResult::Cancelled` → the P4.11 Cancelled arm). On a CLEAN cancel (no wedged handle — the
+    // in-core lane never spawns a subprocess, so nothing external holds the temp) the §1.7 step-3 single removal
+    // succeeds → `residue: None`, and the per-job `*.part` is gone (never published, never leaked).
+    // [Build-Session-Entscheidung: P4.11]
+    #[tokio::test]
+    async fn convert_item_cancelled_arm_cleans_the_temp_and_carries_no_residue_on_a_clean_cancel() {
+        let Some(src_dir) = non_ephemeral_source_dir() else {
+            return;
+        };
+        // A MULTI-chunk source (> 3×`PROGRESS_CHUNK_BYTES`) so the transform reaches a chunk boundary where the
+        // pre-tripped cancel poll fires (a sub-chunk source completes in one pass before the first poll, §1.7).
+        let mut source_bytes = Vec::new();
+        while source_bytes.len() < 300 * 1024 {
+            source_bytes.extend_from_slice(b"a,b,c\n");
+        }
+        let (dropped, paths, _identity) = eligible(src_dir.path(), "big.csv", 0, &source_bytes);
+        let source = paths.resolved_path.clone();
+        let scratch_base = tempfile::tempdir().expect("scratch base dir");
+        let instance = InstanceId::mint();
+        let run_id = RunId::mint();
+        let scratch =
+            RunScratch::acquire(scratch_base.path(), instance, std::process::id(), run_id)
+                .expect("acquire the run scratch");
+        let mut cache = LocationCache::new();
+        let pool = Pool::new();
+        let (channel, _events) = capture_channel();
+        let probe_name = move || crate::run::PublishTemp::probe_name(instance);
+        let item = dropped.item;
+
+        let token = CancellationToken::new();
+        token.cancel();
+        let outcome = convert_item(
+            &dropped,
+            &source,
+            tsv_target().id,
+            &[],
+            None,
+            &ResolvedDestination::BesideSource,
+            src_dir.path(),
+            &scratch,
+            &mut cache,
+            probe_name,
+            &pool,
+            token,
+            run_id,
+            item,
+            &channel,
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, ItemRunOutcome::Cancelled { residue: None }),
+            "§1.7/§2.6.4: a clean in-core cancel yields Cancelled with NO residue (the temp removed on the single §1.7 step-3 attempt)"
+        );
+        // §2.1/§2.6: no output beside the source, and no leftover `.part` publish-temp in the destination dir.
+        assert!(
+            !src_dir.path().join("big.tsv").exists(),
+            "§2.1: a cancelled item publishes no output"
+        );
+        let leftover_part = std::fs::read_dir(src_dir.path())
+            .expect("the source dir lists")
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().ends_with(".part"));
+        assert!(
+            !leftover_part,
+            "§2.6.4: the per-job publish-temp is removed on a clean cancel — no `.part` residue"
         );
     }
 
