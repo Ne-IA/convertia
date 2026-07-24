@@ -52,9 +52,14 @@
 //!    the now-real pool, unchanged.
 //!  - The §0.9 per-engine timeout / watchdog-poll / no-progress `pub const`s are authored with their
 //!    consumers: the §1.7 native wall-clock timeout [`NATIVE_CSV_TSV_TIMEOUT`] is now LIVE (authored P3.45,
-//!    consumed by the §1.7 `bounded_lane` wrapper); the subprocess watchdog set (poll interval / no-progress
-//!    threshold / per-engine timeouts) is still authored with P4.20. **P3.3 authored no `pub const`** (no P3.3
-//!    consumer imported one; P3.45 adds the first).
+//!    consumed by the §1.7 `bounded_lane` wrapper); the subprocess watchdog set — [`WATCHDOG_POLL_INTERVAL`] /
+//!    [`NO_PROGRESS_TIMEOUT`] / [`SUBPROCESS_WALL_CLOCK_DEFAULT`] / [`VIDEO_WALL_CLOCK`] — is authored **at
+//!    P4.12** with its consumer, the §1.7 `crate::engines::run_subprocess` no-progress/wall-clock watchdog
+//!    (the §0.9 "authored with their consumers" principle; this reconciles the prior "authored with P4.20"
+//!    forecast — the watchdog MECHANISM lands at P4.12, so its parameters do too, while P4.20 expands the pool
+//!    *structure*). They stay dead in the production build until P4.32 wires `run_subprocess` live, exactly
+//!    like [`GROUP_CONFIRM_WAIT`]. **P3.3 authored no `pub const`** (no P3.3 consumer imported one; P3.45 adds
+//!    the first).
 //!
 //! ## Tier note (§0.7 tier-3 vs §0.9's `HashMap<EngineId, bool>`)
 //! `EngineId` lives in the tier-2 `crate::engines` layer, so a tier-3 leaf cannot name it. P3.3's live
@@ -74,7 +79,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.9 Pool + the §1.7 in-core spawn_blocking lane (Pool::new/with_degree/run_in_core), LaneError, and the clamp_global_degree/resolve_global_degree degree helpers are authored ahead of their production consumers. P3.43 WIRED run_in_core + LaneError into the §1.7 dispatch InProcessNative arm (the native CSV/TSV executor), but they STAY dead in the production build until the P3.46 conductor makes dispatch a live root — rustc does NOT propagate liveness through the dead-but-present dispatch to its callees. P4.20/P4.22 EXPAND the pool onto the subprocess engines + the serialised single-permit lane; nothing CONSTRUCTS a Pool in the production build yet (dispatch receives a &Pool), so Pool::new/with_degree + the clamp/resolve degree helpers stay dead until the P4 pool wiring builds the app-wide pool. P3.45 adds the NATIVE_CSV_TSV_TIMEOUT pub const (the §0.9 native-engine wall-clock timeout parameter); it is consumed ONLY by crate::engines::dispatch (the §1.7 bounded_lane wrapper), which is itself dead until the P3.46 conductor makes dispatch a live root, so the const is dead in the production build until then (the §6.7.2 harness import is a subsequent consumer). P4.11 adds the GROUP_CONFIRM_WAIT pub const (the §0.9 group-kill confirm-wait bound); it is consumed ONLY by crate::isolation::run_confined (the §1.7 cancel ordering, step 2), itself dead in the production build until P4.32 wires the subprocess dispatch arms, so the const is dead until then (the §6.7.2 harness import is a subsequent consumer). Every item above is dead until its consumer lands, which keeps this module-level expect fulfilled. The cfg(test) tests below construct the pool and exercise the lane, so the test build is dead-code-clean. expect (not allow) auto-flags the moment the last of these consumers lands — matching crate::engines/crate::domain/crate::outcome."
+        reason = "the §0.9 Pool + the §1.7 in-core spawn_blocking lane (Pool::new/with_degree/run_in_core), LaneError, and the clamp_global_degree/resolve_global_degree degree helpers are authored ahead of their production consumers. P3.43 WIRED run_in_core + LaneError into the §1.7 dispatch InProcessNative arm (the native CSV/TSV executor), but they STAY dead in the production build until the P3.46 conductor makes dispatch a live root — rustc does NOT propagate liveness through the dead-but-present dispatch to its callees. P4.20/P4.22 EXPAND the pool onto the subprocess engines + the serialised single-permit lane; nothing CONSTRUCTS a Pool in the production build yet (dispatch receives a &Pool), so Pool::new/with_degree + the clamp/resolve degree helpers stay dead until the P4 pool wiring builds the app-wide pool. P3.45 adds the NATIVE_CSV_TSV_TIMEOUT pub const (the §0.9 native-engine wall-clock timeout parameter); it is consumed ONLY by crate::engines::dispatch (the §1.7 bounded_lane wrapper), which is itself dead until the P3.46 conductor makes dispatch a live root, so the const is dead in the production build until then (the §6.7.2 harness import is a subsequent consumer). P4.11 adds the GROUP_CONFIRM_WAIT pub const (the §0.9 group-kill confirm-wait bound); it is consumed ONLY by crate::isolation::run_confined (the §1.7 cancel ordering, step 2), itself dead in the production build until P4.32 wires the subprocess dispatch arms, so the const is dead until then (the §6.7.2 harness import is a subsequent consumer). P4.12 adds the §1.7 subprocess-watchdog pub consts (WATCHDOG_POLL_INTERVAL / NO_PROGRESS_TIMEOUT / SUBPROCESS_WALL_CLOCK_DEFAULT / VIDEO_WALL_CLOCK); their consumer is the §1.7 crate::engines::run_subprocess no-progress/wall-clock watchdog (which reads WATCHDOG_POLL_INTERVAL directly and takes the per-engine wall-clock/no-progress bounds as params the P4.32 dispatch-arm wiring selects), itself dead in the production build until P4.32 wires the subprocess dispatch arms, so the consts are dead until then (the §6.7.2 harness import is a subsequent consumer). Every item above is dead until its consumer lands, which keeps this module-level expect fulfilled. The cfg(test) tests below construct the pool and exercise the lane, so the test build is dead-code-clean. expect (not allow) auto-flags the moment the last of these consumers lands — matching crate::engines/crate::domain/crate::outcome."
     )
 )]
 
@@ -130,6 +135,70 @@ pub const NATIVE_CSV_TSV_TIMEOUT: Duration = Duration::from_secs(120);
 /// (v1 is sequential, so it is a per-cancel worst case, not per-item). The §0.9 "baseline values calibrated
 /// against the §6 corpus" applies — this is the pre-calibration value, tunable like the other §0.9 bounds.
 pub const GROUP_CONFIRM_WAIT: Duration = Duration::from_secs(5);
+
+/// The §0.9-owned **watchdog poll interval** for the §1.7 subprocess no-progress/timeout watchdog (P4.12) —
+/// how often the `crate::engines::run_subprocess` lane checks a running engine for progress/liveness while it
+/// races the confined run. Homed here beside the other §0.9 time bounds so the pool is the single source of the
+/// watchdog parameters (test and prod can never drift — the §0.9 "named `pub const`s … imported by the §6.7.2
+/// test harness" contract). Engine-INDEPENDENT: the poll cadence is a mechanism property, not a per-engine
+/// value, so the lane reads this const directly; the per-engine [`NO_PROGRESS_TIMEOUT`] /
+/// [`SUBPROCESS_WALL_CLOCK_DEFAULT`] / [`VIDEO_WALL_CLOCK`] bounds are passed in per invocation (the caller
+/// selects them, the way `dispatch` passes [`NATIVE_CSV_TSV_TIMEOUT`]). A hang is detected within
+/// `no_progress + WATCHDOG_POLL_INTERVAL` of the last progress signal.
+///
+/// **Baseline (pre-calibration).** [Build-Session-Entscheidung: P4.12] `250ms` — four polls per second: snappy
+/// enough that a hung engine is reaped within a quarter-second of its no-progress/wall-clock bound, cheap enough
+/// (one async timer tick) to run per live subprocess. The §0.9 "baseline values calibrated against the §6
+/// corpus" applies — tunable like the other §0.9 bounds.
+pub const WATCHDOG_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// The §0.9-owned **no-progress threshold** for the §1.7 subprocess watchdog (P4.12) — the time a STREAMING
+/// engine may produce no progress before it is treated as hung → killed → `Failed(EngineHang)` (§1.7
+/// timeout/hang policy; §2.8). Measured from the last forwarded progress fraction (the `on_progress` sink the
+/// §1.7 per-`ProgressModel` line-reader feeds). The §1.7 watchdog (`crate::engines::bounded_confined_run`)
+/// applies this leg **only to a streaming model** (`FfmpegKeyValue`/`VipsStdout`), whose silence genuinely
+/// signals a hang; a no-tick `CoarseSpawnDone` invocation (the ffprobe probe / a no-native-progress encode)
+/// emits no fractions, so this leg is INERT for it and the wall-clock ([`SUBPROCESS_WALL_CLOCK_DEFAULT`]) is its
+/// sole bound — a no-progress bound over a no-tick engine would falsely reap a live-but-quiet conversion
+/// (`NO_PROGRESS_TIMEOUT < SUBPROCESS_WALL_CLOCK_DEFAULT`). (§1.7/§0.9 also name output-FILE-size growth as a
+/// third no-progress signal; monitoring `out_tmp` size for a no-tick encode is a P5–P7 refinement, per the
+/// `bounded_confined_run` FORWARD note.) Homed here beside [`WATCHDOG_POLL_INTERVAL`] so the §6.7.2 harness
+/// imports the same value (no test≠prod drift).
+///
+/// **Baseline (pre-calibration).** [Build-Session-Entscheidung: P4.12] `90s` — generous enough that a
+/// legitimately-slow-but-progressing engine (a large re-encode emitting `-progress` ticks, a document render
+/// whose §1.11 heuristic ticks) is never falsely reaped, tight enough that a genuinely wedged decoder fails the
+/// one item within a minute-and-a-half rather than leaving the user staring at a hang. The §0.9 "baseline values
+/// calibrated against the §6 corpus" applies — tunable.
+pub const NO_PROGRESS_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// The §0.9-owned **per-engine wall-clock timeout — the light-engine default** for the §1.7 subprocess watchdog
+/// (P4.12): the maximum total runtime for a light/short-lived subprocess engine (poppler / pandoc / the
+/// image-worker / LibreOffice) before it is killed → `Failed(EngineHang)` (§1.7), independent of whether it is
+/// still emitting progress. The §0.9 per-engine wall-clock is "**tight for the light engines**"; the generous
+/// video budget is [`VIDEO_WALL_CLOCK`]. The `EngineId → which wall-clock` selection is the caller's (the P4.32
+/// dispatch-arm wiring / the P5–P7 engine adapters, which pass the chosen bound into `run_subprocess` the way
+/// `dispatch` passes [`NATIVE_CSV_TSV_TIMEOUT`] to the native lane); this const is the §0.9-owned value they
+/// select, single-sourced here so the §6.7.2 harness imports it rather than hard-coding.
+///
+/// **Baseline (pre-calibration).** [Build-Session-Entscheidung: P4.12] `300s` (5 min) — comfortably above any
+/// legitimate light conversion (a document export, a PDF text extract, an image transcode finish in seconds),
+/// so the bound bites only a runaway. The §0.9 "baseline values calibrated against the §6 corpus" applies —
+/// tunable; §3.4-heavy per-engine calibration lands with each engine's staging box (P5–P7).
+pub const SUBPROCESS_WALL_CLOCK_DEFAULT: Duration = Duration::from_secs(300);
+
+/// The §0.9-owned **per-engine wall-clock timeout — the generous video budget** for the §1.7 subprocess watchdog
+/// (P4.12): the maximum total runtime for an FFmpeg video re-encode before it is killed → `Failed(EngineHang)`.
+/// The §0.9 per-engine wall-clock is "**generous for video — a long film legitimately takes minutes**", so a
+/// video re-encode gets this longer budget instead of [`SUBPROCESS_WALL_CLOCK_DEFAULT`]; the no-progress leg
+/// ([`NO_PROGRESS_TIMEOUT`]) still catches a *stalled* re-encode long before this. The `EngineId → wall-clock`
+/// selection is the caller's (P4.32 / P6 FFmpeg staging), the same seam as [`SUBPROCESS_WALL_CLOCK_DEFAULT`].
+///
+/// **Baseline (pre-calibration).** [Build-Session-Entscheidung: P4.12] `3600s` (60 min) — generous enough that a
+/// long, still-progressing film re-encode is never wall-clock-reaped (the no-progress leg handles a genuine
+/// stall), and finite so a truly wedged encode cannot run unbounded. The §0.9 "baseline values calibrated
+/// against the §6 corpus" applies — tunable; the FFmpeg-specific calibration lands with P6.
+pub const VIDEO_WALL_CLOCK: Duration = Duration::from_secs(3600);
 
 /// The failure modes of the §0.9 in-core `spawn_blocking` lane. INTERNAL — never on the IPC wire (no
 /// `serde`/`specta`); the §1.7/§2.8 caller (P3.46) maps it onto a per-item `Failed`, so a lane failure is
@@ -423,6 +492,34 @@ mod tests {
             pool.run_in_core(|| 1_u32).await,
             Err(LaneError::PoolClosed),
             "§0.9: acquiring on a closed semaphore maps to PoolClosed, never an unwrap/panic on the no-panic pool path"
+        );
+    }
+
+    // §6.4.1 (G15): the §0.9 subprocess-watchdog baseline bounds (P4.12) hold their ordering invariants — the
+    // poll cadence is far below the no-progress threshold (so a hang is detected within ~one poll of the
+    // threshold, never masked by a coarse poll), the no-progress threshold is below the light-engine wall-clock
+    // (a stalled light engine is reaped by no-progress before its total budget), and video's wall-clock is the
+    // most generous ("generous for video, tight for the light engines", §0.9). This references every watchdog
+    // const so they stay non-dead in the test build and pins the pre-calibration ordering the §6.7.2 harness
+    // will later import. [Build-Session-Entscheidung: P4.12]
+    #[test]
+    fn subprocess_watchdog_baseline_bounds_hold_their_ordering() {
+        assert!(
+            WATCHDOG_POLL_INTERVAL < NO_PROGRESS_TIMEOUT,
+            "§0.9: the poll cadence must be well under the no-progress threshold (else a hang is only \
+             detected a full threshold-plus-poll late)"
+        );
+        assert!(
+            NO_PROGRESS_TIMEOUT < SUBPROCESS_WALL_CLOCK_DEFAULT,
+            "§0.9: a stalled light engine is reaped by the no-progress leg before its total wall-clock budget"
+        );
+        assert!(
+            SUBPROCESS_WALL_CLOCK_DEFAULT < VIDEO_WALL_CLOCK,
+            "§0.9: the video wall-clock is 'generous for video', above the tight light-engine default"
+        );
+        assert!(
+            WATCHDOG_POLL_INTERVAL > Duration::ZERO,
+            "§0.9: a zero poll interval would busy-spin the watchdog"
         );
     }
 }

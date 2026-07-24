@@ -42,7 +42,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "of the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111): the P4.4/P4.5 registry build is live on the conductor's path (engine_registry() calls descriptor()+capabilities() and pre-computes the §0.9 serialised-flag map), but the EngineDescriptor.kind field-read and the serialised_flags() accessor stay dead until the P4.22 pool wiring consumes them, and EngineStatus/EngineHealth until the P4.45 startup probe assembles the real Ok(EngineHealth). The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the Engine trait + PlanOutcome return (P3.5-minimal, expanded to the full §3.2.2 surface and homed in engines/registry.rs at P4.1) and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.4 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), P4.13 authors crate::isolation::run_confined, P4.7 authors the §1.7 generic subprocess lane run_subprocess routing through it (the engines-side §1.7 seam P4.8/P4.9/P4.12 extend; itself dead until P4.32), and P4.32 rewrites the subprocess arms to call run_subprocess (once P4.32 resolves EngineProgram to the binary path) — so the dispatch fn + run_subprocess + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture. The P4.2-authored §3.2.2 ProbeOutput (the parsed §3.2.1 probe result) is constructed by an engine's parse_probe seam (P4.9, registry.rs) and read by run_probe_then_encode (which hands it to plan_encode) — dead in the PRODUCTION build until the P6.10 ffprobe adapter overrides parse_probe/plan_encode to construct + read it (every registered v1 engine before P6 is single-step, so both seams hit the InternalError default); its cfg(test) shape test + the P4.9 synthetic-probe-engine suite construct + read all four fields, keeping the test build dead-code-clean. The P4.3-authored §3.2.2 leaf types (Direction / PatentDisposition / CodecPosture / EngineCapability + the SourceFmt/TargetFmt aliases) are NAMED by the P4.1 trait signatures (capabilities(platform, patents)) and the native engine's capability row, but their construction sites stay dead until the P4.4 registry calls capabilities() and the P4.40 engines.lock parse builds the disposition; their cfg(test) shape tests construct + read every field, keeping the test build dead-code-clean. P4.8 adds ProgressModel::progress_fraction + fraction_of (the §1.7 per-ProgressModel line->fraction parse) and the ConfinedRun captured-stream outcome (failed/cancelled ctors + the stdout/stderr buffers the P4.9 probe-parse / P4.12 stderr-classify consume) — all constructed/called only by the dead crate::isolation::run_confined until run_subprocess becomes a live root at P4.32, so dead in the production build; their cfg(test) unit + real-subprocess tests exercise the parse + the capture, keeping the test build dead-code-clean. P4.9 adds the parse_probe Engine trait seam (default InternalError, registry.rs, overridden by the P6.10 ffprobe adapter) and the run_probe_then_encode two-step sequencing (spawn probe via run_confined -> parse_probe -> plan_encode -> the encode Invocation); run_probe_then_encode calls run_confined directly (it needs the &dyn Engine handle the per-invocation run_subprocess lane does not carry) and has NO production caller until P6.10 wires it through the conductor's Probe arm (with the P4.32 EngineProgram->path resolution + the concrete ffprobe engine), so it is dead in the production build like run_subprocess; its cfg(test) synthetic-probe-engine suite exercises the whole sequence over a real subprocess, keeping the test build dead-code-clean."
+        reason = "of the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111): the P4.4/P4.5 registry build is live on the conductor's path (engine_registry() calls descriptor()+capabilities() and pre-computes the §0.9 serialised-flag map), but the EngineDescriptor.kind field-read and the serialised_flags() accessor stay dead until the P4.22 pool wiring consumes them, and EngineStatus/EngineHealth until the P4.45 startup probe assembles the real Ok(EngineHealth). The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the Engine trait + PlanOutcome return (P3.5-minimal, expanded to the full §3.2.2 surface and homed in engines/registry.rs at P4.1) and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.4 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), P4.13 authors crate::isolation::run_confined, P4.7 authors the §1.7 generic subprocess lane run_subprocess routing through it (the engines-side §1.7 seam P4.8/P4.9/P4.12 extend; itself dead until P4.32), and P4.32 rewrites the subprocess arms to call run_subprocess (once P4.32 resolves EngineProgram to the binary path) — so the dispatch fn + run_subprocess + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture. The P4.2-authored §3.2.2 ProbeOutput (the parsed §3.2.1 probe result) is constructed by an engine's parse_probe seam (P4.9, registry.rs) and read by run_probe_then_encode (which hands it to plan_encode) — dead in the PRODUCTION build until the P6.10 ffprobe adapter overrides parse_probe/plan_encode to construct + read it (every registered v1 engine before P6 is single-step, so both seams hit the InternalError default); its cfg(test) shape test + the P4.9 synthetic-probe-engine suite construct + read all four fields, keeping the test build dead-code-clean. The P4.3-authored §3.2.2 leaf types (Direction / PatentDisposition / CodecPosture / EngineCapability + the SourceFmt/TargetFmt aliases) are NAMED by the P4.1 trait signatures (capabilities(platform, patents)) and the native engine's capability row, but their construction sites stay dead until the P4.4 registry calls capabilities() and the P4.40 engines.lock parse builds the disposition; their cfg(test) shape tests construct + read every field, keeping the test build dead-code-clean. P4.8 adds ProgressModel::progress_fraction + fraction_of (the §1.7 per-ProgressModel line->fraction parse) and the ConfinedRun captured-stream outcome (failed/cancelled/hung ctors + the stdout/stderr buffers the P4.9 probe-parse / P4.12 stderr-classify consume, plus the P4.12-added ConfinedRun.exit raw ExitStatus the P4.12 classify_exit reads for the §3.5 classify_failure seam) — all constructed/called only by the dead crate::isolation::run_confined until run_subprocess becomes a live root at P4.32, so dead in the production build; their cfg(test) unit + real-subprocess tests exercise the parse + the capture, keeping the test build dead-code-clean. P4.12 adds bounded_confined_run (the §1.7 no-progress/wall-clock watchdog over run_confined, shared by BOTH run_subprocess AND run_probe_then_encode so both §1.7 sub-invocations are bounded) + ConfinedRun::hung (its Failed(EngineHang) outcome) + classify_exit (the exit≠0 -> §3.5 classify_failure routing); run_subprocess + run_probe_then_encode now carry the &dyn Engine handle + the per-engine wall_clock/no_progress bounds and stay dead in the production build until P4.32 (run_subprocess) / P6.10 (run_probe_then_encode), exercised by the cfg(test) subprocess + probe suites. P4.9 adds the parse_probe Engine trait seam (default InternalError, registry.rs, overridden by the P6.10 ffprobe adapter) and the run_probe_then_encode two-step sequencing (spawn probe via run_confined -> parse_probe -> plan_encode -> the encode Invocation); run_probe_then_encode calls run_confined directly (it needs the &dyn Engine handle the per-invocation run_subprocess lane does not carry) and has NO production caller until P6.10 wires it through the conductor's Probe arm (with the P4.32 EngineProgram->path resolution + the concrete ffprobe engine), so it is dead in the production build like run_subprocess; its cfg(test) synthetic-probe-engine suite exercises the whole sequence over a real subprocess, keeping the test build dead-code-clean."
     )
 )]
 
@@ -64,7 +64,7 @@ use crate::domain::{
     Availability, DroppedItem, FormatId, JobId, Target, TargetId, UserFacingFormat,
 };
 use crate::outcome::ConversionErrorKind;
-use crate::pool::{LaneError, Pool, NATIVE_CSV_TSV_TIMEOUT};
+use crate::pool::{LaneError, Pool, NATIVE_CSV_TSV_TIMEOUT, WATCHDOG_POLL_INTERVAL};
 
 // The §3.2 registry seam file (§0.7: `engines/registry.rs` — "Engine trait + selection", P4.1). Re-exported
 // so the logical tier-2 path `crate::engines::{Engine, PlanOutcome}` its consumers import is unchanged by
@@ -695,11 +695,18 @@ pub enum InvocationResult {
 ///   fragment a JSON blob, so the two paths are mutually exclusive, §1.7).
 /// - **`stderr`** is captured **in full** for every subprocess model — consumed by the **P4.12** exit≠0 →
 ///   §3.5 `classify_failure` routing, the §7.5 verbose/diagnostic echo, and the §2.13 classify-into-§2.8 (§1.7).
+/// - **`exit`** carries the child's raw [`ExitStatus`] on the completed-wait arm (`Some` on a real engine exit —
+///   clean OR non-zero; `None` on a mis-built plan / spawn error / reap failure / user cancel, where no engine
+///   exit was observed). The **P4.12** classify routing needs the real `ExitStatus` for the §3.5
+///   `classify_failure(exit, stderr)` seam — `run_confined` stays the *pure confinement primitive* (it computes
+///   only the pre-classification `EngineCrash` floor over `status.success()`) and hands the raw status OUT here
+///   so `run_subprocess` (which carries the `&dyn Engine`) refines the floor into the precise §2.8 kind. A
+///   `Some(non-success)` status is exactly the input the per-engine §3.5 classifier keys on.
 ///
 /// [Build-Session-Entscheidung: P4.8] INTERNAL — no `serde`; `Debug` only (the buffers are moved to their
-/// consumers, never compared/cloned). Homed in the §1.7 invocation cluster beside [`InvocationResult`] because
-/// its consumers (P4.9 probe-parse, P4.12 classify) are the engines-side §1.7 lane; `crate::isolation`
-/// constructs + returns it exactly as it already returns [`InvocationResult`].
+/// consumers, never compared/cloned; `ExitStatus` is `Copy`+`Debug`). Homed in the §1.7 invocation cluster
+/// beside [`InvocationResult`] because its consumers (P4.9 probe-parse, P4.12 classify) are the engines-side
+/// §1.7 lane; `crate::isolation` constructs + returns it exactly as it already returns [`InvocationResult`].
 #[derive(Debug)]
 pub struct ConfinedRun {
     /// The terminal §1.7 result (`Succeeded` / `Failed(kind)` / `Cancelled`).
@@ -708,26 +715,46 @@ pub struct ConfinedRun {
     pub stdout: Vec<u8>,
     /// The child's stderr captured in full (the P4.12 exit-classification / §7.5 echo / §2.13 classify input).
     pub stderr: Vec<u8>,
+    /// The child's raw exit status on a completed wait (`Some` = the engine ran and exited, clean or non-zero;
+    /// `None` = no engine exit was observed — mis-built plan / spawn error / reap fault / user cancel). The
+    /// P4.12 exit-classification input for the §3.5 `classify_failure(exit, stderr)` seam.
+    pub exit: Option<ExitStatus>,
 }
 
 impl ConfinedRun {
-    /// A pre-spawn / reap-fault outcome carrying just the §1.7 result and no captured streams (P4.8) — the
-    /// mis-built-plan / spawn-error / internal-fault arms of [`crate::isolation::run_confined`].
+    /// A pre-spawn / reap-fault outcome carrying just the §1.7 result and no captured streams / no observed exit
+    /// (P4.8) — the mis-built-plan / spawn-error / internal-fault arms of [`crate::isolation::run_confined`].
     pub(crate) fn failed(kind: ConversionErrorKind) -> Self {
         ConfinedRun {
             result: InvocationResult::Failed(kind),
             stdout: Vec::new(),
             stderr: Vec::new(),
+            exit: None,
         }
     }
 
-    /// A user-cancel outcome — the partial output is discarded by the §1.7 caller (§3.2.2), so no streams are
-    /// surfaced (P4.8).
+    /// A user-cancel outcome — the partial output is discarded by the §1.7 caller (§3.2.2), so no streams and no
+    /// observed exit are surfaced (P4.8; the engine was group-killed, not waited to completion).
     pub(crate) fn cancelled() -> Self {
         ConfinedRun {
             result: InvocationResult::Cancelled,
             stdout: Vec::new(),
             stderr: Vec::new(),
+            exit: None,
+        }
+    }
+
+    /// A §1.7 no-progress / wall-clock watchdog HANG outcome (P4.12) — the confined run exceeded its §0.9 bound
+    /// and was abandoned by [`bounded_confined_run`] (its future dropped → `GroupKillGuard::Drop` group-killed
+    /// the tree); no streams / no observed exit are surfaced. Distinct from [`ConfinedRun::failed`] (a pre-spawn
+    /// / reap fault): a hang is the watchdog's OWN verdict, `Failed(EngineHang)` (§2.8). `classify_exit` passes
+    /// it through unchanged (`exit` is `None`, so it is never routed to `classify_failure`).
+    pub(crate) fn hung() -> Self {
+        ConfinedRun {
+            result: InvocationResult::Failed(ConversionErrorKind::EngineHang),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            exit: None,
         }
     }
 }
@@ -802,35 +829,147 @@ pub async fn dispatch(
 /// `run_confined` re-cut and threads the `on_progress` sink through to it (streaming models line-read →
 /// fractions, `CoarseSpawnDone` buffers stdout, stderr captured in full — see [`ProgressModel::progress_fraction`]
 /// and [`ConfinedRun`]); **P4.9** builds the two-step probe-then-encode sequencing as the SIBLING
-/// [`run_probe_then_encode`] — NOT a growth of this per-invocation lane: the two-step needs the `&dyn Engine`
-/// handle (for `parse_probe` + `plan_encode`) that this single-invocation lane does not carry, so it calls
-/// [`crate::isolation::run_confined`] directly to consume the buffered [`ConfinedRun::stdout`] for the probe
-/// parse; **P4.12** the no-progress watchdog → `Failed(EngineHang)` + the exit≠0 → §3.5 `classify_failure`
-/// routing (consuming [`ConfinedRun::stderr`]) grows THIS body while `run_confined` stays the pure confinement
-/// primitive. This lane returns only `.result` (the encode leg's outcome); the probe's buffered
-/// [`ConfinedRun::stdout`] is consumed by the sibling [`run_probe_then_encode`] and [`ConfinedRun::stderr`]
-/// becomes a live seam when P4.12 grows this lane. The §1.7 exit-output
-/// verification is NOT re-implemented here — it is delivered conductor-side (`orchestrator::verify_encode_output`,
-/// the P3.48 re-cut) after every `Succeeded`. `program` is the RESOLVED absolute binary path; the
+/// [`run_probe_then_encode`] — NOT a growth of this per-invocation lane, because the two-step interleaves
+/// `parse_probe` + `plan_encode` BETWEEN two spawns (a compose-across-invocations shape this single-invocation
+/// lane does not have), so it calls [`crate::isolation::run_confined`] directly to consume the buffered
+/// [`ConfinedRun::stdout`] for the probe parse; **P4.12** grew both this lane AND that sibling with the two §1.7
+/// halves it owns, while `run_confined` stays the pure confinement primitive:
+///
+/// 1. **the no-progress / wall-clock watchdog → `Failed(EngineHang)`** — homed in [`bounded_confined_run`],
+///    which BOTH legs call, so "both sub-invocations are bounded by the same §1.7 cancel/timeout/group-kill
+///    machinery" (§1.7) holds. It drives `run_confined` in [`WATCHDOG_POLL_INTERVAL`] slices and, on a bound
+///    trip, drops the pinned future → `GroupKillGuard::Drop` group-kills the whole engine tree (P4.10). The
+///    per-engine `wall_clock`/`no_progress` bounds are §0.9-owned and passed in (the caller selects
+///    [`crate::pool::SUBPROCESS_WALL_CLOCK_DEFAULT`] / [`crate::pool::VIDEO_WALL_CLOCK`] and
+///    [`crate::pool::NO_PROGRESS_TIMEOUT`]).
+/// 2. **the exit≠0 → §3.5 `classify_failure` routing** — on a completed non-success exit `run_confined` returns
+///    the pre-classification `EngineCrash` floor plus the raw [`ConfinedRun::exit`] status and captured
+///    [`ConfinedRun::stderr`]; this lane refines the floor into the precise §2.8 kind via the engine's §3.5
+///    [`Engine::classify_failure`] ([`classify_exit`]). This is why the lane now carries the `&dyn Engine`
+///    handle (P4.12) — the classifier is per-engine.
+///
+/// The §1.7 exit-output verification is NOT re-implemented here — it is delivered conductor-side
+/// (`orchestrator::verify_encode_output`, the P3.48 re-cut) after every `Succeeded`, over the reclaimed publish
+/// temp regardless of which dispatch lane produced it. `program` is the RESOLVED absolute binary path; the
 /// `EngineProgram → path` resolution is **P4.32**'s (§3.3.3), which then rewrites `dispatch`'s
-/// `Sidecar`/`ResourceBin` arms to call this lane — no resolvable subprocess program exists before then, so
-/// this lane is dead in the production build until P4.32 (the cfg(test) subprocess suite below exercises it;
-/// it is covered by the module-level dead-code lint level, like [`run_native_csv_tsv`]'s pre-conductor
-/// InProcessNative chain). [Build-Session-Entscheidung: P4.7]
+/// `Sidecar`/`ResourceBin` arms to call this lane (selecting the per-engine `wall_clock`/`no_progress` bounds)
+/// — no resolvable subprocess program exists before then, so this lane is dead in the production build until
+/// P4.32 (the cfg(test) subprocess suite below exercises it; it is covered by the module-level dead-code lint
+/// level, like [`run_native_csv_tsv`]'s pre-conductor InProcessNative chain). [Build-Session-Entscheidung: P4.7]
 async fn run_subprocess(
+    engine: &dyn Engine,
     invocation: &EngineInvocation,
     program: &Path,
     on_progress: impl Fn(f32),
+    wall_clock: Duration,
+    no_progress: Duration,
 ) -> InvocationResult {
-    // §1.7 routes every spawn THROUGH the §2.12 isolation wrapper — the sole `Command` site (G29 rule (c),
-    // which does NOT exclude `crate::engines`). This lane hands the invocation + the resolved program path +
-    // the `on_progress` sink in as DATA and never constructs a `Command` itself; `run_confined` owns the
-    // confinement + the per-spawn state machine + the P4.8 per-`ProgressModel` stdout/stderr handling (P4.13/
-    // P4.8). It returns the full [`ConfinedRun`]; this lane forwards only `.result` — P4.9 (probe stdout) /
-    // P4.12 (stderr classify) grow it to consume the captured buffers. [Build-Session-Entscheidung: P4.8]
-    crate::isolation::run_confined(invocation, program, on_progress)
-        .await
-        .result
+    // Run the confined subprocess under the §1.7 watchdog ([`bounded_confined_run`], shared with the probe
+    // leg), then refine: a completed non-zero exit → the §3.5 per-engine classifier (P4.12); a watchdog hang /
+    // a success / a cancel passes through `classify_exit` unchanged. [Build-Session-Entscheidung: P4.12]
+    let ConfinedRun {
+        result,
+        stdout: _,
+        stderr,
+        exit,
+    } = bounded_confined_run(invocation, program, on_progress, wall_clock, no_progress).await;
+    classify_exit(result, exit, &stderr, engine)
+}
+
+/// §1.7 exit classification (P4.12) — refine `run_confined`'s pre-classification `EngineCrash` floor into the
+/// precise §2.8 kind via the engine's §3.5 [`Engine::classify_failure`], keyed on the real [`ExitStatus`] +
+/// captured stderr. A completed non-success exit is the ONLY case that classifies: [`ConfinedRun::exit`] is
+/// `Some` only on a completed wait, and a completed wait yields `Failed` iff the exit was non-zero
+/// (`run_confined`'s reap floor), so a `Failed` with `Some(status)` is exactly "the engine ran and exited
+/// non-zero — here is its status + stderr". Everything else passes through unchanged: a clean `Succeeded`, a
+/// user `Cancelled`, and a no-exit fault (mis-built plan / spawn error / reap failure, `exit` = `None`, whose
+/// `InternalError` floor is not an exit-classifiable outcome). Shared by [`run_subprocess`] (encode leg) and
+/// [`run_probe_then_encode`] (probe leg). [Build-Session-Entscheidung: P4.12]
+fn classify_exit(
+    result: InvocationResult,
+    exit: Option<ExitStatus>,
+    stderr: &[u8],
+    engine: &dyn Engine,
+) -> InvocationResult {
+    match result {
+        InvocationResult::Failed(floor) => match exit {
+            Some(status) => InvocationResult::Failed(
+                engine.classify_failure(status, String::from_utf8_lossy(stderr).as_ref()),
+            ),
+            None => InvocationResult::Failed(floor),
+        },
+        InvocationResult::Succeeded => InvocationResult::Succeeded,
+        InvocationResult::Cancelled => InvocationResult::Cancelled,
+    }
+}
+
+/// §1.7 no-progress / wall-clock watchdog (P4.12) — run a confined subprocess under its §0.9 time bounds,
+/// returning the FULL [`ConfinedRun`] on completion or a synthesized [`ConfinedRun::hung`]
+/// (`Failed(EngineHang)`) when a bound trips. Shared by BOTH §1.7 sub-invocations — [`run_subprocess`] (the
+/// encode leg) and [`run_probe_then_encode`] (the probe leg) — so "**both sub-invocations are bounded by the
+/// same §1.7 cancel/timeout/group-kill machinery**" (§1.7) holds; `run_confined` stays the pure confinement
+/// primitive and this lane owns the timing.
+///
+/// **Mechanism.** The `on_progress` sink is the liveness signal: wrap it to stamp a `watch` channel on every
+/// forwarded fraction, then drive `run_confined` in [`WATCHDOG_POLL_INTERVAL`] slices via `tokio::time::timeout`
+/// (NOT `tokio::select!` — the tokio `macros` feature is deliberately dev-only, out of the production closure,
+/// Cargo.toml). At each slice the run either completed (return its `ConfinedRun`) or a poll fired: on
+/// `elapsed >= wall_clock`, OR — for a STREAMING model only — `idle >= no_progress`, RETURN the hang outcome
+/// without awaiting the run, so the pinned `run_confined` future drops and `GroupKillGuard::Drop` group-kills
+/// the whole engine tree (P4.10). Every spawn still routes THROUGH the §2.12 isolation wrapper (the sole
+/// `Command` site, G29 rule (c)); this lane constructs no `Command`. The hang fails ONE item; the batch continues.
+///
+/// **The no-progress leg applies ONLY to a STREAMING progress model** (`FfmpegKeyValue` / `VipsStdout`), whose
+/// silence genuinely signals a hang. A `CoarseSpawnDone` invocation (the ffprobe probe + a no-native-progress
+/// encode) emits **no** ticks through the `run_confined` sink, so its only bound is the wall-clock — a
+/// no-progress bound over a no-tick engine would FALSELY reap a live-but-quiet conversion the instant it ran
+/// past `no_progress` (e.g. a large LibreOffice `doc→pdf`, since `NO_PROGRESS_TIMEOUT < SUBPROCESS_WALL_CLOCK`).
+/// `InProcessFraction` never reaches this lane (the in-core native engine has no subprocess; §1.7). **[FORWARD:
+/// output-file growth]** §1.7 (843-846) / §0.9 (1637-1649) name output-file-SIZE growth as a third no-progress
+/// signal; monitoring `out_tmp` size for a no-tick encode (or the LibreOffice §1.11 progress heuristic) is a
+/// refinement homed with the no-native-progress engines in P5–P7 — until then the wall-clock is the honest
+/// bound for a no-tick model, never a spurious `no_progress` reap.
+///
+/// **Boundary note (cancel vs. watchdog).** During `run_confined`'s own up-to-[`crate::pool::GROUP_CONFIRM_WAIT`]
+/// cancel confirm-wait, this poll keeps firing; a bound crossing in that window preempts the user `Cancelled`
+/// to `Failed(EngineHang)`. Benign — the item fails/cancels either way and its output is discarded — and rare
+/// at the §0.9 baselines (the confirm-wait ≪ the bounds). [Build-Session-Entscheidung: P4.12]
+async fn bounded_confined_run(
+    invocation: &EngineInvocation,
+    program: &Path,
+    on_progress: impl Fn(f32),
+    wall_clock: Duration,
+    no_progress: Duration,
+) -> ConfinedRun {
+    // A no-progress bound is meaningful ONLY for a streaming model that ticks; a no-tick CoarseSpawnDone
+    // invocation is bounded by the wall-clock alone (see the doc above — else a live-but-quiet no-tick encode
+    // would be falsely reaped, because NO_PROGRESS_TIMEOUT < SUBPROCESS_WALL_CLOCK_DEFAULT).
+    let streaming = matches!(
+        invocation.plan.progress,
+        ProgressModel::FfmpegKeyValue { .. } | ProgressModel::VipsStdout
+    );
+    let (tick_tx, tick_rx) = tokio::sync::watch::channel(tokio::time::Instant::now());
+    let watched = move |fraction: f32| {
+        tick_tx.send_replace(tokio::time::Instant::now());
+        on_progress(fraction);
+    };
+    let mut run = std::pin::pin!(crate::isolation::run_confined(invocation, program, watched));
+
+    let start = tokio::time::Instant::now();
+    loop {
+        match tokio::time::timeout(WATCHDOG_POLL_INTERVAL, run.as_mut()).await {
+            Ok(confined) => return confined,
+            Err(_elapsed) => {
+                let no_progress_hang = streaming && tick_rx.borrow().elapsed() >= no_progress;
+                if no_progress_hang || start.elapsed() >= wall_clock {
+                    // Return WITHOUT awaiting `run` → the pinned `run_confined` future drops → `GroupKillGuard`
+                    // group-kills the engine tree (P4.10). The hang fails one item; the batch continues.
+                    return ConfinedRun::hung();
+                }
+                // Still progressing / within budget — drive the SAME pinned run for another poll slice.
+            }
+        }
+    }
 }
 
 /// The §1.7 two-step probe-then-encode sequencing (P4.9) — the §3.2.1 two-phase contract for a
@@ -851,15 +990,19 @@ async fn run_subprocess(
 /// probe leg: its `Invocation` carries `out_tmp: None` (§3.2.2 — `ffprobe` writes only stdout JSON, no
 /// `*.part` artifact), so this sequencing runs none.
 ///
-/// **Both legs share the §1.7 cancel/timeout/group-kill machinery.** The probe runs under the same
-/// [`EngineInvocation::cancel`] token `run_confined` honours; a cancel trips it to
-/// [`InvocationResult::Cancelled`], returned as `Err` (nothing encoded); the encode leg's own cancel/kill
-/// rides its subsequent dispatch. `Err` carries the probe leg's terminal [`InvocationResult`]
+/// **Both legs share the §1.7 cancel/timeout/group-kill machinery (P4.12).** The probe runs under
+/// [`bounded_confined_run`] — the SAME no-progress/wall-clock watchdog + group-kill the encode leg uses — and
+/// the same [`EngineInvocation::cancel`] token `run_confined` honours; a wall-clock overrun trips it to
+/// `Failed(EngineHang)` and a cancel to [`InvocationResult::Cancelled`], each returned as `Err` (nothing
+/// encoded); the encode leg's own watchdog/cancel/kill rides its subsequent dispatch. The probe is
+/// `CoarseSpawnDone` (no ticks), so its no-progress leg is inert and the WALL-CLOCK is its bound (the
+/// [`bounded_confined_run`] streaming-only note). `Err` carries the probe leg's terminal [`InvocationResult`]
 /// (`Failed(kind)` / `Cancelled`) for the caller to project directly (`Failed` cleans the encode temp,
 /// `Cancelled` drops it); a `parse_probe` / `plan_encode` [`PlanError`] maps to `Err(Failed(kind))` — its
 /// §2.8 kind, the pure-planning-failure path (matching how the conductor maps a `plan()` `PlanError`). The
-/// probe's own `stderr` classification is P4.12's (exit≠0 → §3.5 `classify_failure`); the pre-P4.12 floor is
-/// `run_confined`'s reap-mapped kind.
+/// probe's own `stderr` classification is delivered by P4.12 ([`classify_exit`]: a non-success probe exit is
+/// refined via the engine's §3.5 `classify_failure` over the captured stderr, keyed on the raw
+/// [`ConfinedRun::exit`]; a clean `Cancelled` passes through), replacing the pre-P4.12 reap-mapped floor.
 ///
 /// **`probe_program` is the RESOLVED absolute probe binary path** (`binaries/ffprobe`, §3.3.3) — the P4.32
 /// `EngineProgram → &Path` resolution supplies it, exactly like [`run_subprocess`]'s `program`. No v1
@@ -877,6 +1020,12 @@ async fn run_subprocess(
 /// leaf-sequencing an engines-tier fn cannot own (§0.7; the P4.7 home-forward-note). So P4.9 builds the
 /// engines-tier SEAM (this fn + `parse_probe`); P6.10 (`needs: P4.9`) wires steps 1↔5 around it in the
 /// conductor.] [Build-Session-Entscheidung: P4.9]
+// [Build-Session-Entscheidung: P4.12] `#[allow(clippy::too_many_arguments)]`: each arg is a distinct §1.7
+// composition input — the `&dyn Engine` + the probe envelope + the resolved probe program + the four §3.2.2
+// `plan_encode` inputs (dropped/target/input/out_tmp) + the two §0.9 watchdog bounds (wall_clock/no_progress,
+// P4.12 added the pair so the probe leg is bounded like the encode leg). Bundling any subset is artificial —
+// each is consumed at a different step. The C4/C5 planning-input allows (`ipc/planning.rs`) are the precedent.
+#[allow(clippy::too_many_arguments)]
 async fn run_probe_then_encode(
     engine: &dyn Engine,
     probe: &EngineInvocation,
@@ -885,18 +1034,26 @@ async fn run_probe_then_encode(
     target: TargetId,
     input: &Path,
     out_tmp: &TempPath,
+    wall_clock: Duration,
+    no_progress: Duration,
 ) -> Result<Invocation, InvocationResult> {
-    // (1) Run the probe through the §2.12 isolation wrapper. CoarseSpawnDone (§3.2.1) → stdout buffered whole
-    // (no line reader, a JSON blob), no progress tick → a no-op sink. `run_confined` is the sole `Command`
-    // site (G29 rule (c)); this fn builds none — program + argv flow in as DATA.
+    // (1) Run the probe through the §2.12 isolation wrapper UNDER the shared §1.7 watchdog
+    // ([`bounded_confined_run`] — the SAME machinery the encode leg uses, so both sub-invocations are bounded,
+    // P4.12). CoarseSpawnDone (§3.2.1) → stdout buffered whole (no line reader, a JSON blob), no progress tick →
+    // the no-progress leg is inert; the WALL-CLOCK is the probe's bound. `run_confined` (inside the watchdog) is
+    // the sole `Command` site (G29 rule (c)); this fn builds none — program + argv flow in as DATA.
     let ConfinedRun {
         result,
         stdout,
-        stderr: _,
-    } = crate::isolation::run_confined(probe, probe_program, |_| {}).await;
-    // A probe that did not cleanly exit yields nothing to parse — return its terminal §1.7 result for the
-    // caller to project. Exhaustive (no `_` — the G4/G29 dispatch-enum discipline); `Failed`'s precise §2.8
-    // kind is the reap-mapped floor (P4.12 refines exit≠0 via `classify_failure` over the captured stderr).
+        stderr,
+        exit,
+    } = bounded_confined_run(probe, probe_program, |_| {}, wall_clock, no_progress).await;
+    // Refine a non-success probe exit through the engine's §3.5 classifier (P4.12, `classify_exit`) over the
+    // captured stderr — it passes a clean `Succeeded` and a user `Cancelled` through unchanged and refines the
+    // `Failed(EngineCrash)` reap floor into the precise §2.8 kind. Then project: a probe that did not cleanly
+    // exit yields nothing to parse, so return its terminal §1.7 result for the caller. Exhaustive (no `_` — the
+    // G4/G29 dispatch-enum discipline).
+    let result = classify_exit(result, exit, &stderr, engine);
     match result {
         InvocationResult::Succeeded => {}
         InvocationResult::Failed(kind) => return Err(InvocationResult::Failed(kind)),
@@ -3117,23 +3274,99 @@ mod tests {
         (envelope, program)
     }
 
-    // §1.7/§2.12 (G15): the P4.7 subprocess lane routes a clean exit through the §2.12 confinement to
-    // Succeeded and a nonzero exit to the §2.8 EngineCrash floor — proving run_subprocess delegates to
-    // run_confined (the sole spawn site) and passes its InvocationResult through unchanged.
+    // A test-only Engine modelling a per-engine §3.5 classifier for the P4.12 exit≠0 routing: a non-zero exit
+    // whose stderr contains "locked" → the §2.8 PasswordProtected kind, else the generic EngineError (a clean
+    // nonzero exit); this stands in for the real §3.5 stderr-pattern classifiers the P5–P7 adapters ship. Its
+    // non-classify methods answer honest InternalError/empty shapes (the seam tests never call plan()).
+    struct SeamEngine;
+    impl Engine for SeamEngine {
+        fn id(&self) -> EngineId {
+            EngineId::Pandoc
+        }
+        fn descriptor(&self) -> EngineDescriptor {
+            EngineDescriptor {
+                id: EngineId::Pandoc,
+                serialised_only: false,
+                kind: EngineKind::Subprocess,
+            }
+        }
+        fn capabilities(
+            &self,
+            _platform: Platform,
+            _patents: &PatentDisposition,
+        ) -> Vec<EngineCapability> {
+            Vec::new()
+        }
+        fn plan(
+            &self,
+            _item: &DroppedItem,
+            _target: TargetId,
+            _input: &Path,
+            _out_tmp: &TempPath,
+        ) -> Result<PlanOutcome, PlanError> {
+            Err(PlanError {
+                kind: ConversionErrorKind::InternalError,
+                detail: "seam test engine plans nothing".to_owned(),
+            })
+        }
+        fn classify_failure(&self, _exit: ExitStatus, stderr: &str) -> ConversionErrorKind {
+            if stderr.contains("locked") {
+                ConversionErrorKind::PasswordProtected
+            } else {
+                ConversionErrorKind::EngineError
+            }
+        }
+    }
+
+    // Generous watchdog bounds for the exit/cancel/spawn/progress seam tests — the §0.9 baselines (well above
+    // any of these sub-second shell subprocesses), so the P4.12 no-progress/wall-clock watchdog never fires and
+    // these tests exercise ONLY the exit/cancel/spawn mapping. Referencing the real consts also keeps them
+    // non-dead in the test build.
+    const SEAM_WALL_CLOCK: Duration = crate::pool::SUBPROCESS_WALL_CLOCK_DEFAULT;
+    const SEAM_NO_PROGRESS: Duration = crate::pool::NO_PROGRESS_TIMEOUT;
+
+    // §1.7/§2.12/§3.5 (G15): the P4.7 subprocess lane routes a clean exit through the §2.12 confinement to
+    // Succeeded, and P4.12 routes a nonzero exit through the engine's §3.5 classify_failure (over the captured
+    // stderr + raw ExitStatus) into the precise §2.8 kind — no longer the raw EngineCrash floor.
+    // [Test-Change: P4.12 — old-obsolete+new-correct, §1.7/§3.5] the exit-3 case formerly asserted the raw
+    // reap-mapped `EngineCrash` FLOOR; P4.12's exit≠0 → §3.5 `classify_failure` routing (the box's mandated NEW
+    // half) refines that floor into the engine-classified kind, so the old floor expectation is obsolete and the
+    // new expectation (SeamEngine's classifier → `EngineError` for a no-stderr nonzero exit) is correct per
+    // §1.7's "exit ≠0 / stderr-classified → §2.8 taxonomy via the §3.5 per-engine classify_failure".
     #[tokio::test]
-    async fn the_subprocess_lane_routes_a_clean_and_a_failing_exit_through_the_confinement() {
+    async fn the_subprocess_lane_routes_a_clean_exit_and_classifies_a_failing_exit() {
         let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
         let (ok, program) = seam_shell_invocation("exit 0", scratch.path().to_path_buf());
         assert_eq!(
-            run_subprocess(&ok, &program, |_| {}).await,
+            run_subprocess(&SeamEngine, &ok, &program, |_| {}, SEAM_WALL_CLOCK, SEAM_NO_PROGRESS).await,
             InvocationResult::Succeeded,
-            "§1.7: run_subprocess routes a clean exit through run_confined to Succeeded"
+            "§1.7: run_subprocess routes a clean exit through run_confined to Succeeded (no classify)"
         );
         let (bad, program) = seam_shell_invocation("exit 3", scratch.path().to_path_buf());
         assert_eq!(
-            run_subprocess(&bad, &program, |_| {}).await,
-            InvocationResult::Failed(ConversionErrorKind::EngineCrash),
-            "§2.12.1: a nonzero engine exit passes through the lane as the reap-mapped EngineCrash floor"
+            run_subprocess(&SeamEngine, &bad, &program, |_| {}, SEAM_WALL_CLOCK, SEAM_NO_PROGRESS).await,
+            InvocationResult::Failed(ConversionErrorKind::EngineError),
+            "§1.7/§3.5 (P4.12): a nonzero exit is refined through classify_failure — SeamEngine maps a \
+             no-stderr nonzero exit to EngineError, NOT the raw EngineCrash floor"
+        );
+    }
+
+    // §1.7/§3.5 (G15, P4.12): the captured stderr genuinely reaches classify_failure — a nonzero exit whose
+    // stderr matches the engine's pattern is classified accordingly (SeamEngine: "locked" → PasswordProtected),
+    // proving the exit-classification routing feeds BOTH the raw ExitStatus and the full stderr to the §3.5 seam.
+    #[tokio::test]
+    async fn the_subprocess_lane_feeds_captured_stderr_to_classify_failure() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        #[cfg(windows)]
+        let script = "echo locked 1>&2& exit 4";
+        #[cfg(unix)]
+        let script = "echo locked >&2; exit 4";
+        let (bad, program) = seam_shell_invocation(script, scratch.path().to_path_buf());
+        assert_eq!(
+            run_subprocess(&SeamEngine, &bad, &program, |_| {}, SEAM_WALL_CLOCK, SEAM_NO_PROGRESS).await,
+            InvocationResult::Failed(ConversionErrorKind::PasswordProtected),
+            "§3.5 (P4.12): the child's stderr ('locked') reaches classify_failure, which maps it to \
+             PasswordProtected — not the generic EngineError, proving stderr (not just the exit code) flows through"
         );
     }
 
@@ -3150,7 +3383,7 @@ mod tests {
         let (envelope, program) = seam_shell_invocation(script, scratch.path().to_path_buf());
         envelope.cancel.cancel();
         assert_eq!(
-            run_subprocess(&envelope, &program, |_| {}).await,
+            run_subprocess(&SeamEngine, &envelope, &program, |_| {}, SEAM_WALL_CLOCK, SEAM_NO_PROGRESS).await,
             InvocationResult::Cancelled,
             "§1.7: a tripped cancel token routes through the lane to Cancelled, never a fabricated success"
         );
@@ -3165,9 +3398,10 @@ mod tests {
         let (envelope, _) = seam_shell_invocation("exit 0", scratch.path().to_path_buf());
         let missing = scratch.path().join("no-such-engine-binary.exe");
         assert_eq!(
-            run_subprocess(&envelope, &missing, |_| {}).await,
+            run_subprocess(&SeamEngine, &envelope, &missing, |_| {}, SEAM_WALL_CLOCK, SEAM_NO_PROGRESS).await,
             InvocationResult::Failed(ConversionErrorKind::InternalError),
-            "§2.13.1: a runtime per-item spawn failure is the item-level InternalError (P4.7-resolved)"
+            "§2.13.1: a runtime per-item spawn failure is the item-level InternalError (P4.7-resolved); \
+             classify_exit passes a no-exit (None) fault through as its floor kind, never mis-classifying it"
         );
     }
 
@@ -3199,7 +3433,15 @@ mod tests {
             }
         };
         assert_eq!(
-            run_subprocess(&envelope, &program, sink).await,
+            run_subprocess(
+                &SeamEngine,
+                &envelope,
+                &program,
+                sink,
+                SEAM_WALL_CLOCK,
+                SEAM_NO_PROGRESS
+            )
+            .await,
             InvocationResult::Succeeded
         );
         let forwarded = hits.lock().expect("progress mutex readable").clone();
@@ -3207,6 +3449,192 @@ mod tests {
             forwarded,
             vec![0.25_f32, 1.0_f32],
             "§1.11: the lane forwards out_time_us=250000/1_000_000 → 0.25, then progress=end → 1.0"
+        );
+    }
+
+    // ─── P4.12: the §1.7 no-progress / wall-clock watchdog + the exit≠0 → §3.5 classify_failure routing ──
+
+    // §1.7/§2.8 (G15, P4.12): the NO-PROGRESS watchdog reaps a hung STREAMING subprocess to Failed(EngineHang).
+    // A sleep-forever shell that emits NO stdout, tagged with a STREAMING progress model (FfmpegKeyValue) whose
+    // silence therefore signals a hang, with a TIGHT no_progress bound and a GENEROUS wall_clock, is reaped by
+    // the NO-PROGRESS leg (only that leg can fire within the window) — the lane returns EngineHang and, by
+    // returning, drops the run_confined future, whose GroupKillGuard tears the engine tree down (the
+    // drop→group-kill itself is separately pinned by crate::isolation's drop-backstop test). The streaming tag
+    // is load-bearing: the no-progress leg is inert for a no-tick CoarseSpawnDone model (pinned by the sibling
+    // `a_no_tick_..._is_not_falsely_reaped` test). A BROKEN watchdog would instead block until the ~10 s sleep
+    // exits and return Succeeded, failing this assertion.
+    #[tokio::test]
+    async fn the_no_progress_watchdog_reaps_a_hung_subprocess_to_engine_hang() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        #[cfg(windows)]
+        let script = "%SystemRoot%\\System32\\ping.exe -n 11 127.0.0.1 >nul";
+        #[cfg(unix)]
+        let script = "sleep 10";
+        let (mut hung, program) = seam_shell_invocation(script, scratch.path().to_path_buf());
+        // A STREAMING model: its silence (no ticks over `no_progress`) is a genuine hang signal.
+        hung.plan.progress = ProgressModel::FfmpegKeyValue {
+            duration_us: 1_000_000,
+        };
+        assert_eq!(
+            run_subprocess(
+                &SeamEngine,
+                &hung,
+                &program,
+                |_| {},
+                Duration::from_secs(30), // wall_clock: generous, so only the no-progress leg can fire
+                Duration::from_millis(50), // no_progress: tight — a silent engine is hung within one poll
+            )
+            .await,
+            InvocationResult::Failed(ConversionErrorKind::EngineHang),
+            "§1.7: a subprocess making no progress past the no_progress bound is reaped to EngineHang; the \
+             batch continues"
+        );
+    }
+
+    // §1.7/§2.8 (G15, P4.12): the WALL-CLOCK watchdog reaps a still-quiet-but-overrunning subprocess. Same
+    // sleep-forever shell, now with a GENEROUS no_progress and a TIGHT wall_clock — so the WALL-CLOCK leg fires
+    // (no_progress cannot within the window). Proves the total-runtime bound is independent of the progress leg.
+    #[tokio::test]
+    async fn the_wall_clock_watchdog_reaps_an_overrunning_subprocess_to_engine_hang() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        #[cfg(windows)]
+        let script = "%SystemRoot%\\System32\\ping.exe -n 11 127.0.0.1 >nul";
+        #[cfg(unix)]
+        let script = "sleep 10";
+        let (overrun, program) = seam_shell_invocation(script, scratch.path().to_path_buf());
+        assert_eq!(
+            run_subprocess(
+                &SeamEngine,
+                &overrun,
+                &program,
+                |_| {},
+                Duration::from_millis(50), // wall_clock: tight — the total budget is exceeded fast
+                Duration::from_secs(30),   // no_progress: generous, so only the wall-clock leg can fire
+            )
+            .await,
+            InvocationResult::Failed(ConversionErrorKind::EngineHang),
+            "§1.7: a subprocess exceeding its wall-clock budget is reaped to EngineHang even under a generous \
+             no_progress bound"
+        );
+    }
+
+    // §1.7 (G15, P4.12): a progress tick RESETS the no-progress watchdog, so a slow-but-progressing STREAMING
+    // engine is NOT falsely reaped. A shell loop emits a fraction every ~100 ms for ~1.5 s — a total runtime
+    // WELL past the 700 ms no_progress bound, but each tick keeps the idle time far under it — so the run
+    // completes to Succeeded rather than being reaped. The wide margin (~100 ms tick gap vs 700 ms bound) keeps
+    // it robust against a loaded CI runner. Unix-only: the watchdog reset is platform-independent Rust (the
+    // watch-channel stamp on every forwarded fraction), so one real timed subprocess suffices; Windows `cmd`
+    // has no clean sub-second-delay loop. [Build-Session-Entscheidung: P4.12]
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_progress_tick_resets_the_no_progress_watchdog_so_a_slow_progressing_run_completes() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        // 15 ticks at ~100 ms ≈ 1.5 s total; each `out_time_us=100000` line is an FfmpegKeyValue 0.1 fraction.
+        let script =
+            "i=1; while [ $i -le 15 ]; do echo out_time_us=100000; sleep 0.1; i=$((i+1)); done";
+        let (mut slow, program) = seam_shell_invocation(script, scratch.path().to_path_buf());
+        slow.plan.progress = ProgressModel::FfmpegKeyValue {
+            duration_us: 1_000_000,
+        };
+        assert_eq!(
+            run_subprocess(
+                &SeamEngine,
+                &slow,
+                &program,
+                |_| {},
+                Duration::from_secs(30),    // wall_clock: generous
+                Duration::from_millis(700), // no_progress: SHORTER than the ~1.5 s runtime but >> the ~100 ms tick gap
+            )
+            .await,
+            InvocationResult::Succeeded,
+            "§1.7: ticks every ~100 ms keep the idle time far under the 700 ms no_progress bound, so a ~1.5 s \
+             progressing run completes to Succeeded — the watchdog does not falsely reap a live engine"
+        );
+    }
+
+    // §1.7 (G15, P4.12): a NO-TICK CoarseSpawnDone engine is NOT falsely reaped by the no-progress leg — that
+    // leg applies ONLY to a STREAMING model (the `bounded_confined_run` streaming gate), so a quiet-but-working
+    // no-tick conversion running PAST `no_progress` but UNDER `wall_clock` completes to Succeeded. Without the
+    // gate it would be reaped to EngineHang at the first poll (~250 ms), since it emits no ticks and
+    // `no_progress` is 50 ms here. This pins the fix for a slow LibreOffice/pandoc/poppler `doc→pdf` (all
+    // CoarseSpawnDone, no native progress) once P4.32 wires them. Cross-platform (the gate is model-based, not
+    // OS-based). [Build-Session-Entscheidung: P4.12]
+    #[tokio::test]
+    async fn a_no_tick_coarse_spawn_done_engine_is_not_falsely_reaped_by_the_no_progress_leg() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        // A ~1 s no-output subprocess (CoarseSpawnDone, the seam default): emits NO progress ticks.
+        #[cfg(windows)]
+        let script = "%SystemRoot%\\System32\\ping.exe -n 2 127.0.0.1 >nul";
+        #[cfg(unix)]
+        let script = "sleep 1";
+        let (quiet, program) = seam_shell_invocation(script, scratch.path().to_path_buf());
+        assert_eq!(
+            run_subprocess(
+                &SeamEngine,
+                &quiet,
+                &program,
+                |_| {},
+                Duration::from_secs(30),   // wall_clock: generous
+                Duration::from_millis(50), // no_progress: TINY — would reap at the first poll IF the leg applied
+            )
+            .await,
+            InvocationResult::Succeeded,
+            "§1.7: a no-tick CoarseSpawnDone engine's no-progress leg is inert (streaming-only), so a ~1 s \
+             quiet-but-working run completes to Succeeded — bounded only by the (generous) wall-clock"
+        );
+    }
+
+    // §1.7/§3.5 (G15, P4.12): the `classify_exit` refinement is exhaustive and correct — a completed nonzero
+    // exit is refined via the engine's classify_failure (keyed on BOTH the exit and the stderr); Succeeded, a
+    // user Cancelled, and a NO-EXIT fault (exit `None`) pass through unchanged (a no-exit InternalError floor
+    // must never be mis-classified as an engine crash).
+    #[test]
+    fn classify_exit_refines_a_completed_nonzero_exit_and_passes_everything_else_through() {
+        let exit = nonzero_exit_status();
+        assert_eq!(
+            classify_exit(
+                InvocationResult::Failed(ConversionErrorKind::EngineCrash),
+                Some(exit),
+                b"",
+                &SeamEngine,
+            ),
+            InvocationResult::Failed(ConversionErrorKind::EngineError),
+            "a completed nonzero exit with unremarkable stderr → SeamEngine's generic EngineError"
+        );
+        assert_eq!(
+            classify_exit(
+                InvocationResult::Failed(ConversionErrorKind::EngineCrash),
+                Some(exit),
+                b"the file is locked",
+                &SeamEngine,
+            ),
+            InvocationResult::Failed(ConversionErrorKind::PasswordProtected),
+            "a completed nonzero exit whose stderr matches the engine pattern → the engine-classified kind"
+        );
+        assert_eq!(
+            classify_exit(
+                InvocationResult::Failed(ConversionErrorKind::InternalError),
+                None,
+                b"whatever",
+                &SeamEngine,
+            ),
+            InvocationResult::Failed(ConversionErrorKind::InternalError),
+            "a no-exit fault (exit None) keeps its floor kind — classify_failure is never called without an exit"
+        );
+        assert_eq!(
+            classify_exit(
+                InvocationResult::Succeeded,
+                Some(exit),
+                b"locked",
+                &SeamEngine
+            ),
+            InvocationResult::Succeeded,
+            "a success is never classified, even if an exit status is present"
+        );
+        assert_eq!(
+            classify_exit(InvocationResult::Cancelled, None, b"", &SeamEngine),
+            InvocationResult::Cancelled,
+            "a user cancel is never classified"
         );
     }
 
@@ -3306,8 +3734,13 @@ mod tests {
                 out_tmp: None,
             })
         }
+        // Classifies a nonzero engine exit as EngineError (the generic "clean nonzero exit" §2.8 kind),
+        // DELIBERATELY distinct from the InternalError its plan/parse seams use — so the P4.12 probe-leg
+        // exit-classification test can OBSERVE that the routing invoked classify_failure (a distinct kind proves
+        // it, an InternalError would be ambiguous with the parse/plan-error path). A real §3.5.1 adapter keys on
+        // ffprobe stderr patterns.
         fn classify_failure(&self, _exit: ExitStatus, _stderr: &str) -> ConversionErrorKind {
-            ConversionErrorKind::InternalError
+            ConversionErrorKind::EngineError
         }
     }
 
@@ -3351,9 +3784,13 @@ mod tests {
                 .kind,
             ConversionErrorKind::InternalError
         );
+        // [Test-Change: P4.12 — old-obsolete+new-correct, §3.5] the fixture's classify_failure was refined from
+        // InternalError to EngineError (a distinct "clean nonzero exit" kind, unlike the InternalError its
+        // plan/parse seams use) so the P4.12 probe-leg exit-classification test can OBSERVE the classify result;
+        // the old InternalError expectation is obsolete, the new EngineError is the fixture's value by construction.
         assert_eq!(
             engine.classify_failure(nonzero_exit_status(), "err"),
-            ConversionErrorKind::InternalError
+            ConversionErrorKind::EngineError
         );
     }
 
@@ -3378,6 +3815,8 @@ mod tests {
             TargetId::Format(FormatId::Tsv),
             Path::new("in.mp4"),
             &out_tmp,
+            SEAM_WALL_CLOCK,
+            SEAM_NO_PROGRESS,
         )
         .await
         .expect("§3.2.1: a clean probe → parse_probe → plan_encode yields the finalised encode Invocation");
@@ -3398,9 +3837,13 @@ mod tests {
         );
     }
 
-    // §1.7 (G15): a nonzero-exit probe returns its terminal InvocationResult (the reap-mapped EngineCrash
-    // floor) and NEVER reaches parse_probe/plan_encode — the caller projects it (P4.12 refines exit≠0 via
-    // classify_failure over the captured stderr).
+    // §1.7/§3.5 (G15, P4.12): a nonzero-exit probe is refined through the engine's classify_failure (the P4.12
+    // probe-leg routing, `classify_exit`) and NEVER reaches parse_probe/plan_encode — the caller projects the
+    // classified result.
+    // [Test-Change: P4.12 — old-obsolete+new-correct, §1.7/§3.5] formerly asserted the raw reap-mapped
+    // `EngineCrash` FLOOR; P4.12's `classify_exit` on the probe leg now refines a nonzero probe exit via the
+    // engine's §3.5 classify_failure (SyntheticProbeEngine → EngineError), so the old floor expectation is
+    // obsolete and the new classified expectation is correct per §1.7 "exit ≠0 → §3.5 classify_failure".
     #[tokio::test]
     async fn a_failed_probe_returns_its_result_and_never_reaches_the_parse_or_encode() {
         let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
@@ -3414,13 +3857,16 @@ mod tests {
             TargetId::Format(FormatId::Tsv),
             Path::new("in.mp4"),
             &out_tmp,
+            SEAM_WALL_CLOCK,
+            SEAM_NO_PROGRESS,
         )
         .await
         .expect_err("§1.7: a nonzero-exit probe yields no encode");
         assert_eq!(
             err,
-            InvocationResult::Failed(ConversionErrorKind::EngineCrash),
-            "§2.12.1: the probe's reap-mapped EngineCrash floor is returned for the caller to project"
+            InvocationResult::Failed(ConversionErrorKind::EngineError),
+            "§1.7/§3.5 (P4.12): a nonzero probe exit is refined via classify_failure (→ EngineError here), \
+             returned for the caller to project — never the raw EngineCrash floor"
         );
     }
 
@@ -3444,6 +3890,8 @@ mod tests {
             TargetId::Format(FormatId::Tsv),
             Path::new("in.mp4"),
             &out_tmp,
+            SEAM_WALL_CLOCK,
+            SEAM_NO_PROGRESS,
         )
         .await
         .expect_err("§1.7: a cancelled probe yields no encode");
@@ -3451,6 +3899,42 @@ mod tests {
             err,
             InvocationResult::Cancelled,
             "§1.7: a cancelled probe returns Cancelled, never a fabricated encode"
+        );
+    }
+
+    // §1.7 (G15, P4.12): the PROBE leg is now bounded by the SAME §1.7 watchdog as the encode leg — a hung
+    // probe (a wedged ffprobe on a hostile file) is reaped to Err(Failed(EngineHang)) rather than hanging
+    // forever, closing the gap where run_probe_then_encode called run_confined directly with no timeout. The
+    // probe is CoarseSpawnDone (no ticks), so the WALL-CLOCK is its bound (the no_progress leg is inert); a
+    // BROKEN watchdog would instead block until the ~10 s sleep exits, failing this assertion.
+    // [Build-Session-Entscheidung: P4.12]
+    #[tokio::test]
+    async fn a_hung_probe_is_reaped_to_engine_hang_by_the_shared_watchdog() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        #[cfg(windows)]
+        let script = "%SystemRoot%\\System32\\ping.exe -n 11 127.0.0.1 >nul";
+        #[cfg(unix)]
+        let script = "sleep 10";
+        let (probe, program) = seam_shell_invocation(script, scratch.path().to_path_buf());
+        let out_tmp = throwaway_temp_path();
+        let err = run_probe_then_encode(
+            &SyntheticProbeEngine { encode_ok: true },
+            &probe,
+            &program,
+            &csv_dropped_item(),
+            TargetId::Format(FormatId::Tsv),
+            Path::new("in.mp4"),
+            &out_tmp,
+            Duration::from_millis(50), // wall_clock: tight — the probe's total budget is exceeded fast
+            SEAM_NO_PROGRESS,          // no_progress: generous (inert for CoarseSpawnDone anyway)
+        )
+        .await
+        .expect_err("§1.7: a hung probe yields no encode");
+        assert_eq!(
+            err,
+            InvocationResult::Failed(ConversionErrorKind::EngineHang),
+            "§1.7 (P4.12): the probe leg's wall-clock watchdog reaps a hung probe to EngineHang — the probe is \
+             now bounded by the same machinery as the encode leg, never an unbounded wait"
         );
     }
 
@@ -3473,6 +3957,8 @@ mod tests {
             TargetId::Format(FormatId::Tsv),
             Path::new("in.mp4"),
             &out_tmp,
+            SEAM_WALL_CLOCK,
+            SEAM_NO_PROGRESS,
         )
         .await
         .expect_err("§3.2.1: an unparseable probe fails the item");
@@ -3503,6 +3989,8 @@ mod tests {
             TargetId::Format(FormatId::Tsv),
             Path::new("in.mp4"),
             &out_tmp,
+            SEAM_WALL_CLOCK,
+            SEAM_NO_PROGRESS,
         )
         .await
         .expect_err("§3.2.1: a plan_encode failure after a clean probe fails the item");

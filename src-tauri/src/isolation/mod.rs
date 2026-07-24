@@ -25,10 +25,16 @@
 //!    e.g. `soffice` → `soffice.bin`) + the §1.7 step-2 **TIMEOUT-BOUNDED confirm-wait** on the cancel arm
 //!    (**P4.11** — after the group-kill, wait up to [`crate::pool::GROUP_CONFIRM_WAIT`] for the OS to reap,
 //!    then return regardless, so a wedged descendant cannot hang the cancel/quit path; the deferred-reclaim
-//!    `CleanupResidue` tail is the tier-1 conductor's, which owns the temp). The remaining layers land on THIS
-//!    entry at their boxes: the §1.7 / §2.12.2
-//!    timeout / no-progress watchdog at **P4.12**, the loader-var strip at **P4.14**, the per-OS
-//!    privilege-drop legs at **P4.15 / P4.16 / P4.17**, and the achieved-tier record into
+//!    `CleanupResidue` tail is the tier-1 conductor's, which owns the temp). **P4.12** added this entry's two
+//!    exit-handling halves while leaving it the pure confinement primitive: (a) the crash-vs-clean group-kill
+//!    decision — a CLEAN completed wait stands the [`GroupKillGuard`] down, a CRASH (non-zero) completed wait
+//!    leaves it armed so the Drop backstop tears the doomed tree down; and (b) surfacing the raw `ExitStatus`
+//!    in [`crate::engines::ConfinedRun::exit`] so the §1.7 `run_subprocess` lane (engines-side) can refine the
+//!    `EngineCrash` floor via the §3.5 `classify_failure` seam. The §1.7 no-progress / wall-clock watchdog
+//!    itself lives engines-side in `bounded_confined_run` (shared by `run_subprocess` + `run_probe_then_encode`;
+//!    it drops THIS future on a hang, so the Drop backstop is the kill), NOT here. The remaining layers land on
+//!    THIS entry at their boxes: the loader-var strip at
+//!    **P4.14**, the per-OS privilege-drop legs at **P4.15 / P4.16 / P4.17**, and the achieved-tier record into
 //!    `privilege-drop-coverage.toml` at **P4.18**. It never runs the §2.1 publish — that is
 //!    `crate::fs_guard`, invoked by the §1.7 lifecycle after a `Succeeded` return; the §0.9 pool permit is
 //!    acquired one layer up (§1.7). `program` is the RESOLVED absolute binary path — the
@@ -272,21 +278,39 @@ pub async fn run_confined(
 
     match captured {
         Some((Ok(status), stdout_buf, stderr_buf)) => {
-            // The engine ran to completion and `wait()` returned — the invocation ended through its own
-            // normal arm, so the guard stands down (see its `Drop` for why a post-exit group-kill would be a
-            // correctness regression, not extra safety).
-            child.group_settled = true;
+            // The engine ran to completion and `wait()` returned. Whether the guard stands down depends on the
+            // exit status (P4.12 — the crash-vs-clean decision the P4.10 forward note delegated here):
             let result = if status.success() {
+                // A CLEAN completed exit: the invocation ended through its own normal arm, so the guard stands
+                // down (see its `Drop` for why a post-exit group-kill of a SUCCESSFUL run would be a correctness
+                // regression — a launcher that legitimately exits before its worker finishes writing valid
+                // output must not be truncated, §1.7 936-945).
+                child.group_settled = true;
                 InvocationResult::Succeeded
             } else {
-                // The §2.12.1 reap mapping (pre-classification floor): P4.12 routes exit≠0 through the
-                // §3.5 per-engine classify_failure (over `stderr_buf`) for the precise §2.8 kind.
+                // A CRASH completed exit (non-zero): the item is `Failed` → its `out_tmp` is discarded, so there
+                // is NO valid output to preserve. Leave `group_settled` FALSE so [`GroupKillGuard`]'s Drop
+                // group-kills any descendant that outlived the crashed launcher (e.g. a `soffice.bin` left
+                // running by a `soffice` error exit) — otherwise a pure process leak (+ on Windows a
+                // `*.part`-handle holder that would spuriously fail the conductor's cleanup into a
+                // `CleanupResidue`). The §1.7 936-945 stand-down rationale is success-specific ("publishing a
+                // corrupt output as a clean one"), so it does not apply to a crash. (The Drop's POSIX `killpg`
+                // on this arm accepts the microsecond pgid-recycle window the success arm avoids — negligible
+                // next to the leaked-worker cost; on Windows the held Job-Object handle makes the kill
+                // non-speculative regardless.) The value stays the §2.12.1
+                // reap PRE-CLASSIFICATION FLOOR (`EngineCrash`) — `run_subprocess`'s `classify_exit` (P4.12)
+                // refines it via the §3.5 per-engine `classify_failure` over `stderr_buf`, keyed on the raw
+                // `status` surfaced in `ConfinedRun::exit` below. [Build-Session-Entscheidung: P4.12]
                 InvocationResult::Failed(ConversionErrorKind::EngineCrash)
             };
             ConfinedRun {
                 result,
                 stdout: stdout_buf,
                 stderr: stderr_buf,
+                // The raw completed-wait exit status — `run_subprocess`/`run_probe_then_encode` `classify_exit`
+                // consume it for the §3.5 `classify_failure(exit, stderr)` seam (P4.12). `Some` on both the
+                // clean and the crash arm; the non-completed arms (`ConfinedRun::failed`/`cancelled`) carry `None`.
+                exit: Some(status),
             }
         }
         // The reap itself failed — an internal fault, never a panic (the crate no-panic policy). `group_settled`
@@ -311,13 +335,17 @@ pub async fn run_confined(
             // ignored: settled-within-`T` and timed-out are treated identically here (the runner returns a bare
             // `Cancelled` either way). The honest settle/wedge verdict is the conductor's own removal
             // success/failure (§2.6.4 "single bounded attempt"): a still-held `*.part` fails the removal → a
-            // §2.6.4-case-3 `CleanupResidue` deferred to the §2.6.3 sweep; a released one removes clean. On
+            // §2.6.4-case-3 `CleanupResidue` reclaimed by the §2.6.3 sweep; a released one removes clean. On
             // timeout the dropped `wait()` future may leave `process-wrap`'s blocking group-reaper running
             // detached — bounded and accepted exactly like the §1.7 InProcessNative wedged-read case (the
             // `spawn_blocking` pool has headroom above the §0.9 degree). NOTE the confirm-wait lives ONLY on
-            // this cancel arm — a NORMAL completed exit (the `Some((Ok(_)…))` arm above) performs no kill and
-            // must NOT get a confirm-wait, or it would truncate a launcher-exits-early worker (the exact
-            // regression [`GroupKillGuard`]'s Drop stand-down exists to prevent). [Build-Session-Entscheidung: P4.11]
+            // this cancel arm. A CLEAN completed exit (the `Some((Ok(status)…))` arm above, `status.success()`)
+            // performs no kill and must NOT get a confirm-wait, or it would truncate a launcher-exits-early
+            // worker (the exact regression [`GroupKillGuard`]'s Drop stand-down exists to prevent). A CRASH
+            // completed exit DOES group-kill (P4.12 leaves `group_settled` false → the Drop backstop) but gets
+            // no confirm-wait here either: its output is discarded, so the tier-1 conductor's own §2.6.4
+            // single-attempt cleanup surfaces any still-held-handle honestly as a `CleanupResidue` — no
+            // blocking wait needed on the doomed tree. [Build-Session-Entscheidung: P4.11]
             tokio::time::timeout(GROUP_CONFIRM_WAIT, child.inner.wait())
                 .await
                 .ok();
@@ -350,9 +378,12 @@ fn group_wrapped(command: Command) -> CommandWrap {
 /// [Build-Session-Entscheidung: P4.10]
 struct GroupKillGuard {
     inner: Box<dyn ChildWrapper>,
-    /// `true` once the invocation reached a terminal state through one of its OWN arms — the engine's `wait()`
-    /// returned `Ok` (the run ended normally), or a group kill was already delivered. Read by [`Drop`], which
-    /// backstops only the paths that set neither.
+    /// `true` once the invocation reached a terminal state that must NOT be backstopped by a group-kill on drop.
+    /// `run_confined` sets it in exactly two places: a **CLEAN** completed engine wait (`wait()` returned `Ok`
+    /// AND `status.success()` — P4.12; killing there would truncate a launcher-outlives-worker's valid output),
+    /// and the cancel arm (a group kill was already delivered). Left **FALSE** on a **crash** completed exit
+    /// (non-zero — P4.12 wants the doomed tree killed), a failed reap, an early return, and the caller dropping
+    /// the whole future — all paths the [`Drop`] backstop group-kills.
     group_settled: bool,
 }
 
@@ -370,18 +401,25 @@ impl Drop for GroupKillGuard {
         // Best-effort and never panicking (the crate no-panic policy); `start_kill` is `killpg(pgid, SIGKILL)`
         // on POSIX and `TerminateJobObject` on Windows — both tear down the WHOLE group, which is the point.
         //
-        // [Build-Session-Entscheidung: P4.10] the guard deliberately does NOT fire after a COMPLETED engine
-        // wait, on either platform, even though neither platform's `wait()` proves the group is empty at that
-        // moment: POSIX `waitpid(-pgid)` returns `ECHILD` once WE have no children left in the group — a
-        // grandchild is not our child, so it never was a proof — and `JobObjectChild::wait` returns on the
-        // FIRST completion-port message rather than on `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO`. Killing on that
-        // path would trade a process-hygiene problem for a CORRECTNESS one: for an engine whose launcher
-        // legitimately exits before its worker has finished writing (the `soffice` → `soffice.bin` shape this
-        // very box exists for), a post-exit group-kill destroys in-flight work, and P4.10 is engine-agnostic
-        // infrastructure that must not pre-empt the §3.5 adapters' launcher/worker knowledge. A descendant
-        // outliving a SUCCESSFUL run is left to the §1.7 app-exit group-kill, the P4.12 exit/output
-        // verification and the §2.6 sweep. On POSIX not firing also keeps a stale `killpg` off a pgid the OS
-        // may already have freed and recycled.
+        // The guard fires on drop iff `group_settled` is false. `run_confined` sets it (P4.10 / P4.12):
+        //   - a CLEAN completed wait (`wait()` returned `Ok` AND `status.success()`) → `group_settled = true`,
+        //     stand down. Neither platform's `wait()` proves the group empty (POSIX `waitpid(-pgid)` → `ECHILD`
+        //     only means WE hold no children — a grandchild was never our child; `JobObjectChild::wait` returns
+        //     on the FIRST completion-port message, not on `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO`), so a post-exit
+        //     kill here would be speculative AND, worse, a CORRECTNESS regression: for an engine whose launcher
+        //     legitimately exits before its worker has finished writing (the `soffice` → `soffice.bin` shape
+        //     this box family exists for), it would truncate valid in-flight output and publish a corrupt file
+        //     as a clean success. So a SUCCESSFUL run stands down; a descendant outliving it is left to the §1.7
+        //     app-exit group-kill and the §2.6 sweep. On POSIX standing down also keeps a stale `killpg` off a
+        //     pgid the OS may already have recycled.
+        //   - a CRASH completed wait (non-zero exit) → `group_settled` stays FALSE, so the guard DOES fire
+        //     (P4.12, the crash-vs-clean decision the P4.10 forward note delegated): the item is `Failed` and
+        //     its output discarded, so there is no valid work to truncate — the correctness objection above is
+        //     success-specific — and a descendant outliving the crashed launcher is a pure leak (+ a Windows
+        //     temp-handle holder that would spuriously fail cleanup). Killing the doomed tree is the clean win.
+        //   - a cancel / failed reap / early return / the caller DROPPING the whole future (the P4.12 no-progress
+        //     watchdog, the §7.3.3 quit path) → `group_settled` false → the guard is the backstop that tears the
+        //     tree down. [Build-Session-Entscheidung: P4.10 / P4.12]
         if !self.group_settled {
             self.inner.start_kill().ok();
         }
@@ -1062,8 +1100,10 @@ mod confined_spawn_tests {
     // cmd-level redirection is applied (measured: every variant kept the pipe open until the worker exited),
     // so the invocation could not return while the worker still ran and the assertion would be VACUOUS. The
     // spawn path is not mocked away: the tree is real and it is wrapped by the SAME `group_wrapped`
-    // composition production uses. What this test does not cover is the one-line per-arm `group_settled`
-    // assignment inside `run_confined`; the two end-to-end teardown tests below pin its unsettled arms.
+    // composition production uses. This test itself does not exercise the per-arm `group_settled` assignment
+    // INSIDE `run_confined`; those are pinned end-to-end elsewhere — the two teardown tests below pin the cancel
+    // arm + the drop backstop, and the P4.12 crash-vs-clean completed-exit test in this module (unix) pins the
+    // COMPLETED-WAIT arm (clean → settled/stand-down, crash → unsettled/group-kill).
     #[tokio::test]
     async fn a_settled_guard_stands_down_while_an_unsettled_one_group_kills() {
         for settled in [true, false] {
@@ -1098,6 +1138,70 @@ mod confined_spawn_tests {
                 scratch.path().join("alive.txt").exists(),
                 settled,
                 "§1.7: a SETTLED guard must leave a still-working descendant alone (killing it would truncate a worker mid-write and publish a corrupt output as a success); an UNSETTLED one must group-kill it"
+            );
+        }
+    }
+
+    // §1.7 (G15, P4.12): the run_confined COMPLETED-WAIT arm's crash-vs-clean group-kill decision, END-TO-END
+    // over a real process tree — the arm the P4.10 guard-decision test above could exercise only by SETTING
+    // group_settled directly. The launcher starts a detached descendant (its std handles redirected to
+    // /dev/null so it does NOT hold the invocation's stdout/stderr pipes — otherwise the drains never reach EOF
+    // and run_confined could not return while the descendant runs, the exact Windows vacuity the guard-decision
+    // test records), waits until the descendant has really started, then EXITS with the chosen code. On a CLEAN
+    // exit the guard stands down and the descendant SURVIVES to write its late marker; on a CRASH (non-zero)
+    // exit the guard stays armed → the Drop backstop group-kills the tree (no late marker). Unix-only for the
+    // detach-from-pipes reason above; the decision logic itself is platform-independent Rust.
+    // [Build-Session-Entscheidung: P4.12]
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_crash_completed_exit_group_kills_the_tree_while_a_clean_one_stands_down() {
+        for (exit_code, expect_alive) in [(0, true), (3, false)] {
+            let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+            // The descendant is detached from the launcher's stdout/stderr (`</dev/null >/dev/null 2>&1`) so the
+            // drains reach EOF when the LAUNCHER exits — reaching the completed-wait arm while the descendant is
+            // still sleeping. It stays in the launcher's process group (no job control) so `killpg` reaps it.
+            // The launcher waits until `started.txt` exists before exiting, so the descendant has provably run
+            // (non-vacuity) before run_confined returns and the crash arm's kill fires.
+            let script = format!(
+                "( : > started.txt; sleep {}; : > alive.txt ) </dev/null >/dev/null 2>&1 &\n\
+                 until [ -f started.txt ]; do sleep 0.01; done\n\
+                 exit {}",
+                DESCENDANT_LATE_MARKER_DELAY.as_secs(),
+                exit_code,
+            );
+            let (envelope, program) = confined_shell_invocation_with_progress(
+                &script,
+                Some(scratch.path().to_path_buf()),
+                ProgressModel::CoarseSpawnDone,
+            );
+            let run = run_confined(&envelope, &program, |_| {}).await;
+            assert_eq!(
+                run.result,
+                if exit_code == 0 {
+                    InvocationResult::Succeeded
+                } else {
+                    InvocationResult::Failed(ConversionErrorKind::EngineCrash)
+                },
+                "§1.7: a clean exit is Succeeded; a nonzero exit is the pre-classification EngineCrash floor"
+            );
+            assert_eq!(
+                run.exit.map(|status| status.success()),
+                Some(exit_code == 0),
+                "§1.7 (P4.12): run_confined surfaces the raw completed-wait ExitStatus in ConfinedRun::exit"
+            );
+            assert!(
+                descendant_started(&scratch.path().join("started.txt")).await,
+                "non-vacuity: the descendant really started (the launcher waited for it), so the late-marker \
+                 check below is meaningful in both directions"
+            );
+            // Past the descendant's own delay: it writes alive.txt IFF it outlived run_confined's teardown.
+            tokio::time::sleep(DESCENDANT_LATE_MARKER_DELAY + DESCENDANT_LATE_MARKER_MARGIN).await;
+            assert_eq!(
+                scratch.path().join("alive.txt").exists(),
+                expect_alive,
+                "§1.7 (P4.12): a CLEAN completed exit stands the guard down (descendant survives → alive.txt \
+                 written); a CRASH completed exit leaves the guard armed → the Drop backstop group-kills the \
+                 doomed tree (no alive.txt)"
             );
         }
     }

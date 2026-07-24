@@ -1864,6 +1864,15 @@ fn slice_extension(target: TargetId) -> Option<&'static str> {
 /// `InternalError`. On failure the temp is cleaned ([`fail_cleanup`] — §2.6.4 honest, a removal failure
 /// surfaces a `CleanupResidue`) and the [`WriteOutcome`] returned as `Err`. Extracted so the empty/vanished
 /// verification is unit-testable without driving the async engine. [Build-Session-Entscheidung: P3.48]
+///
+/// **[RECONCILE — P4.12] this covers the SUBPROCESS lane too, unchanged.** P4.12 built the §1.7 subprocess
+/// `run_subprocess` lane (the exit≠0 / no-progress watchdog halves); the box's exit-output verification is NOT
+/// re-implemented there but delivered HERE, and this fn is already **lane-agnostic** — it runs on the
+/// conductor's single `InvocationResult::Succeeded` arm over the reclaimed publish `tmp`, checking `metadata`
+/// on the RESULT FILE, with no knowledge of whether the native in-core lane or a confined subprocess produced
+/// it. So when P4.32 wires a subprocess `Succeeded` through `dispatch`, the same `Succeeded` arm runs THIS
+/// verification over the subprocess-written temp — no code change, only this confirmation (DoD item (b)). The
+/// §1.7 "exit-0-but-empty/zero-output" guard is thus honored identically for every engine class.
 fn verify_encode_output(item: ItemId, tmp: TempPath) -> Result<TempPath, WriteOutcome> {
     match std::fs::metadata(&*tmp) {
         Ok(meta) if meta.len() > 0 => Ok(tmp),

@@ -930,10 +930,12 @@ leader** and kills the **whole group**, so one cancel/kill tears down the engine
     > `crate::isolation` owns the child in a drop guard, so every exit path that ends the
     > invocation **without a completed engine wait** — a cancel, a failed reap, an early
     > return, or the whole future being dropped by a caller — issues an explicit
-    > whole-group kill. **The residual is therefore exactly two cases, not one:** (a) a
-    > HARD end of ConvertIA itself (crash / power-loss / SIGKILL), where no Rust `Drop`
-    > runs at all (the App-exit bullet below), and (b) a descendant outliving a
-    > **completed** engine run, where the guard stands down **by decision** — neither
+    > whole-group kill, **as does a CRASH (non-zero-exit) completed wait** (the P4.12
+    > refinement below). **The residual — a descendant the guard deliberately LEAVES
+    > running — is therefore exactly two cases, not one:** (a) a HARD end of ConvertIA
+    > itself (crash / power-loss / SIGKILL), where no Rust `Drop` runs at all (the App-exit
+    > bullet below), and (b) a descendant outliving a **SUCCESSFUL completed** engine run,
+    > where the guard stands down **by decision** — neither
     > platform's wait proves the group empty (POSIX `waitpid(-pgid)` → `ECHILD` only means
     > *we* hold no children in that group; a grandchild never was our child), so killing
     > there would be speculative, and for an engine whose launcher exits before its worker
@@ -943,6 +945,18 @@ leader** and kills the **whole group**, so one cancel/kill tears down the engine
     > below: that is a non-empty check on the OUTPUT, so it neither observes a surviving
     > descendant nor catches a truncated-but-nonzero file — which is precisely why the
     > speculative kill had to go rather than be caught downstream.)
+    > **`[REFINED 2026-07-24 — P4.12]` the crash-completed sub-case group-kills, by decision.**
+    > The stand-down reasoning above is success-specific: "publishing a corrupt output as a
+    > clean one" applies only when the exit reads as success. On a **non-zero** completed exit
+    > the item is `Failed` and its `out_tmp` is discarded, so there is no valid work to
+    > truncate; a descendant outliving a crashed launcher (a `soffice` error exit leaving
+    > `soffice.bin` running) is then a pure process leak — and, on Windows, a `*.part`-handle
+    > holder that would spuriously fail the §2.6.4 cleanup into a `CleanupResidue`. So the
+    > §2.12 confined runner leaves the guard **armed** on a crash-completed wait and the drop
+    > backstop group-kills the doomed tree; **only the SUCCESSFUL completed wait stands down**
+    > (case (b) above is thus specifically the successful-run descendant). This resolves the
+    > exit-classification-owner decision the P4.10 forward note delegated to P4.12 — the same
+    > box that owns the exit≠0 → §3.5 `classify_failure` routing.
   - **POSIX (macOS/Linux):** `ProcessGroup::leader()` wrapper — the engine becomes
     a **process-group leader** (`setpgid`); `kill()` signals the whole group
     (negative-pgid `SIGKILL`/`SIGTERM`), reaping descendants.
