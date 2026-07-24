@@ -1831,6 +1831,18 @@ the privilege-drop tier is best-effort, degrading silently — see the callout):
 > The **only residual** is the *precise per-OS privilege-drop profile contents*
 > (which exact syscalls/paths each profile allows) — `[DEFER: tuning]`, a tuning detail,
 > not a commitment question; the tier model itself is `[DECIDED]`. Feeds §0.11 and §6.
+>
+> **Clarification (P4.15 realization) — the seccomp "deny exec" scope `[DECIDED]`:** a seccomp filter
+> installed **pre-exec** (in the child, before it `execve`s the engine) cannot deny `execve`/`execveat`
+> without blocking the engine's **own** launch. So the seccomp leg's deny-list **excludes** `execve`/
+> `execveat` (as well as `unshare`, needed by the net-ns leg, and `setpgid`, the §1.7 group leader) and
+> denies only the never-legitimate-in-a-decoder primitives (`ptrace`, `mount`, `bpf`, `kexec_load`,
+> `setns`, …). Limiting what the *running* decoder can execute is therefore carried **primarily by sandbox
+> INHERITANCE** — any program the decoder does `execve` inherits the full netns + Landlock + seccomp
+> confinement (`NO_NEW_PRIVS` keeps it) — **not** by a seccomp `execve` deny. (The Landlock execute-right
+> *could* also scope which paths are executable, but the v1 read set grants Execute on the standard system
+> dirs so the engine + its shells run, so it is not the exec limiter today — tightening it is part of the
+> `[DEFER: tuning]` residual above.) Recorded here because "seccomp denies exec" would otherwise over-read.
 
 ### 2.12.4 Where detection runs relative to the boundary `[DECIDED]`
 

@@ -197,23 +197,20 @@ pub async fn run_confined(
     // survive the P4.10 group-kill wrapping). `env_clear()` is therefore the IMMEDIATELY-following statement:
     // that gap-free construction+scrub pair is exactly the G29 rule-(b1) split-builder suppression the P4.85
     // L(-1) refinement authored FOR this crate ("the owned-Command shape `process-wrap` forces") — a gapped
-    // split would redden the SAST. stdout/stderr are PIPED (the P4.8 re-cut) for the per-`ProgressModel`
-    // handling above; kill-on-drop now rides the `KillOnDrop` WRAPPER instead of a raw `.kill_on_drop(true)`
-    // (below). G29 rule (d) (macOS stage_for_tcc-before-spawn) does NOT reach this cross-platform floor: its
-    // P4.85-refined form is `paths:`-scoped to the macOS isolation module (`isolation/macos.rs` /
-    // `isolation/macos/**`), and this floor embeds no macOS-TCC path (the §3.5.0 staging fn + its macOS-scoped
-    // spawn land at P4.24) — so no (d) suppression is needed or present.
+    // split would redden the SAST. G29 rule (d) (macOS stage_for_tcc-before-spawn) does NOT reach this
+    // cross-platform floor: its P4.85-refined form is `paths:`-scoped to the macOS isolation module
+    // (`isolation/macos.rs` / `isolation/macos/**`), and this floor embeds no macOS-TCC path (the §3.5.0
+    // staging fn + its macOS-scoped spawn land at P4.24) — so no (d) suppression is needed or present.
     // [Build-Session-Entscheidung: P4.13] [Build-Session-Entscheidung: P4.10]
     let mut command = Command::new(program);
     command.env_clear();
     command
-        // §3.5/§2.12.3 minimal-env dynamic-loader-injection STRIP (P4.14, §0.11 T3a): filter the
-        // dynamic-loader injection vars (LD_PRELOAD/LD_LIBRARY_PATH, DYLD_INSERT_LIBRARIES/DYLD_LIBRARY_PATH)
-        // OUT of the constructed env so a hostile input can never coerce a side-load. `env_clear()` above
-        // already dropped any INHERITED copy; this filter is the defense-in-depth over the CONSTRUCTED env —
-        // no plan env, now or the P5 per-engine whitelist seam, can pass one through. The engine resolves only
-        // the bundled shared libs beside it (absolute paths, §3.3.3; `PATH` not relied on).
-        // [Build-Session-Entscheidung: P4.14]
+        // §3.5/§2.12.3 minimal-env dynamic-loader-injection STRIP (P4.14, §0.11 T3a): filter the dynamic-loader
+        // injection vars (LD_PRELOAD/LD_LIBRARY_PATH, DYLD_INSERT_LIBRARIES/DYLD_LIBRARY_PATH) OUT of the
+        // constructed env so a hostile input can never coerce a side-load. `env_clear()` above already dropped
+        // any INHERITED copy; this filter is the defense-in-depth over the CONSTRUCTED env — no plan env, now or
+        // the P5 per-engine whitelist seam, can pass one through. The engine resolves only the bundled shared
+        // libs beside it (absolute paths, §3.3.3; `PATH` not relied on). [Build-Session-Entscheidung: P4.14]
         .envs(
             invocation
                 .plan
@@ -227,6 +224,19 @@ pub async fn run_confined(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    // §2.12.3 best-effort Linux privilege-drop tier (P4.15): attach ALL THREE legs — the network-namespace
+    // egress-deny (P4.15.2), Landlock fs-restrict (P4.15.1) and seccomp-bpf exec-deny (P4.15.3) — as ONE
+    // best-effort `pre_exec` closure homed in crate::platform (the one core `unsafe` module) so THIS module stays
+    // unsafe-free per its P3.2 contract. Net-ns is applied INSIDE the post-fork/pre-exec child (single-threaded,
+    // where `unshare(CLONE_NEWUSER|CLONE_NEWNET)` is valid), so a runtime namespace-setup failure just SKIPS
+    // net-ns and the engine still runs — the tier is non-load-bearing and NEVER fails the conversion. Because
+    // the engine is spawned DIRECTLY (no argv-wrap), a missing binary still surfaces as the §2.13.1 spawn-error
+    // `InternalError`, never a masked crash. A `pre_exec` set on the underlying std command (via `as_std_mut`)
+    // survives the process-wrap `CommandWrap` (which preserves it) and composes with its setpgid, so the P4.10
+    // group-kill still reaps the engine (the process-group leader). [Build-Session-Entscheidung: P4.15]
+    #[cfg(target_os = "linux")]
+    crate::platform::install_confinement(command.as_std_mut(), program, cwd);
 
     // §1.7 `[DECIDED — sole owner]` (P4.10): every engine is spawned as a process-group / job-object LEADER so
     // ONE kill tears down the engine AND ALL ITS DESCENDANTS. Several bundled engines re-exec or launch

@@ -220,6 +220,52 @@ winapi-util = "0.1.11"
 # `Win32_System_IO` (IO_STATUS_BLOCK).
 windows-sys = { version = "0.61.2", features = ["Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
+# [P4.15.1] §2.12.3 best-effort Linux privilege-drop tier — the Landlock FS-restrict leg: restricts a spawned
+# decoder subprocess's filesystem to {input ro, scratch rw + the read/exec runtime paths it needs to launch and
+# load its bundled libs}, kernel ≥ 5.13 (Landlock ABI ≥ 1). Applied via a `pre_exec` `restrict_self()` homed in
+# `crate::platform` (the sole G29 ALLOWED_UNSAFE_MODULES entry) so `crate::isolation` stays unsafe-free per its
+# P3.2 contract map. BEST-EFFORT / silent-degrade: on a pre-5.13 kernel the `BestEffort` ruleset returns
+# `NotEnforced` and the decoder runs at the P4.13 cheap-tier floor — the tier is defence-in-depth, NOT
+# load-bearing (§0.11 T9b: the §3.5/§6.1.3 argv/build controls carry the guarantee). A GENUINELY-NEW package
+# (like chardetng/csv, P3.27/P3.41): only `landlock` itself is newly-resolved into Cargo.lock — its transitives
+# (libc/thiserror/enumflags2) were already present. Permissive (`MIT OR Apache-2.0`) and pure Rust with no
+# socket/copyleft/image-C-lib edge, so G53 core-closure + cargo-deny [licenses]/[bans] + cargo-audit stay green.
+# Default features (no non-default flag needed). Caret-pinned to the lock-resolved 0.4.5 (the normal-lib
+# convention; MSRV 1.71 ≤ the workspace rust-version 1.96.0). Linux-only, so it rides
+# `[target.'cfg(target_os = "linux")'.dependencies]`. §0.8 gains the `landlock §2.12.3` Additional-crates row in
+# THIS commit (DoD 2); the paired `check-supply-chain` PINNED_FLOORS §0.8 drift-floor row is L(-1) (G71) — the
+# Co-Pilot box P4.84 (whose anticipated-floors comment already names "landlock §2.0"), mirroring the
+# chardetng P3.27 / csv P3.41 / process-wrap P4.10 splits (a new direct dep ABSENT from PINNED_FLOORS does not
+# red G18: the floor is a present-crate check, P3.82).
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4.5"
+# [P4.15] §2.12.3 privilege-drop tier — `libc` supplies the arch-specific `SYS_*` syscall NUMBERS the seccomp
+# DENY-list names (P4.15.3) + `EPERM`, AND the raw `unshare`/`open`/`write`/`getuid` FFI the §2.12.3 net-ns leg
+# (P4.15.2) issues in its `crate::platform` pre_exec closure (the Landlock + seccomp SYSCALLS ride the safe
+# `landlock`/`seccompiler` crates). A direct-edge promotion: `libc` is already in Cargo.lock transitively
+# (rustix/tokio/…), so this adds NO newly-resolved package. Permissive (`MIT OR Apache-2.0`). Pinned to the
+# pre-existing lock-resolved 0.2.186 (no incidental bump). Linux-only. §0.8 gains the `libc §2.12.3` Additional-
+# crates row in THIS commit (DoD 2); its paired `check-supply-chain` PINNED_FLOORS floor row is L(-1) — the
+# Co-Pilot box P4.84's catch-all ("plus any further P4 direct-dep promotion's row"), exactly like the
+# landlock/seccompiler/process-wrap rows. (A new direct dep ABSENT from PINNED_FLOORS does not red G18 — the
+# floor is a present-crate check, P3.82 — so nothing reds before P4.84 lands the row.)
+libc = "0.2.186"
+# [P4.15.3] §2.12.3 best-effort Linux privilege-drop tier — the seccomp-bpf leg: installs an ALLOW-by-default
+# seccomp filter with a small DENY-list of never-legit-in-a-decoder syscalls (defence-in-depth, NOT the egress
+# block — network deny is the P4.15.2 network namespace) on a spawned decoder, applied via `apply_filter` inside
+# the same `pre_exec` closure homed in `crate::platform`. `apply_filter` sets `PR_SET_NO_NEW_PRIVS` itself (no
+# extra prctl FFI). The DENY-list deliberately EXCLUDES `execve`/`execveat` — a filter installed pre-exec would
+# otherwise block the engine's own launch (§2.12.3 [DEFER: tuning] profile contents). BEST-EFFORT /
+# silent-degrade: an unsupported kernel/arch is swallowed and the decoder runs at the cheap-tier floor. A
+# GENUINELY-NEW package: only `seccompiler` itself is newly-resolved (its `libc` transitive was already present;
+# the `json`/`serde`/`serde_json` features that would pull serde are NOT enabled — default features only).
+# Permissive (`Apache-2.0 OR BSD-3-Clause`) and pure Rust with no socket/copyleft/image-C-lib edge, so G53 +
+# cargo-deny + cargo-audit stay green. Caret-pinned to the lock-resolved 0.5.0. Linux-only (`seccompiler` builds
+# only on Linux). §0.8 gains the `seccompiler §2.12.3` row in THIS commit (DoD 2); the paired PINNED_FLOORS floor
+# row is L(-1) — the Co-Pilot box P4.84 (which EXTENDS the anticipated-floors comment, since seccompiler is not
+# yet named there).
+seccompiler = "0.5.0"
+
 # [Build-Session-Entscheidung: P1.26] §0.4.5 IPC type-gen: the TypeScript exporter the `bindings_codegen`
 # test uses to emit the single tracked `src/lib/ipc/bindings.ts` (driven by `cargo run -p xtask --
 # codegen`). DEV-ONLY by design — `specta-typescript` + tauri-specta's `typescript` feature are needed

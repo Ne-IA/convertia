@@ -1545,6 +1545,9 @@ the corpus (§6.4) — engine bumps are best-effort posture (§3.8), not a gate.
 | **tauri-plugin-store** | §7.4 | the single `settings.json` prefs blob (theme + lastDestinationMode + verboseLog) |
 | **tauri-plugin-log** | §7.5 | local-only rotating diagnostic log + JS bridge (its `@tauri-apps/plugin-log` companion — §0.8 Tauri row — forwards WebView errors to the same file, structural facts only per §7.5.3) |
 | **tauri-plugin-opener** | §7.7 | open-folder / open-file / open-url shell-out (the only OS shell-out) — called **Rust-side via `OpenerExt`** from the C9/C10 handlers (no WebView `opener:*` grant, §0.10/§7.7.1) |
+| **landlock** *(Linux-only)* | §2.12.3 | best-effort Linux Landlock FS-restrict for the decoder subprocess (scratch rw + `/dev`/`/proc`/engine-runtime read/exec paths, ABI ≥ 1, silent-degrade) — the privilege-drop tier's FS leg; the per-item **input-file** grant is the P4.37 refinement (`[DEFER: tuning]`) |
+| **seccompiler** *(Linux-only)* | §2.12.3 | best-effort Linux seccomp-bpf exec/unexpected-syscall deny on the decoder subprocess (defence-in-depth, silent-degrade) — NOT the egress block (that is the network namespace) |
+| **libc** *(Linux-only)* | §2.12.3 | the arch-specific `SYS_*` syscall NUMBERS the seccomp deny-list names + `EPERM` + the `unshare`/`open`/`write` net-ns syscalls (a constants+raw-syscall edge for the privilege-drop tier; already transitive via rustix/tokio) |
 
 Concrete crate **versions are deliberately not hard-coded in this prose** (they go
 stale); the lockfiles + SBOM are the source of truth (§6.3). This table fixes the

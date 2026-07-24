@@ -21,7 +21,11 @@
 //! **The one `unsafe` allow (G29):** this file carries the module-inner `#![allow(unsafe_code)]` that
 //! overrides the crate-root `#![deny(unsafe_code)]` — `src-tauri/src/platform/*.rs` is the sole entry in
 //! `check-unsafe-policy`'s `ALLOWED_UNSAFE_MODULES`, so the core's entire `unsafe` surface is confined here,
-//! each block carrying a `// SAFETY:` justification. Empty on Unix (the renames ride safe `rustix`).
+//! each block carrying a `// SAFETY:` justification. The Windows renames/locks/free-space ride the
+//! `windows-sys` FFI; on **Linux** the §2.12.3 best-effort privilege-drop tier (P4.15, [`install_confinement`])
+//! attaches its Landlock + seccomp legs through the one `unsafe` `CommandExt::pre_exec` closure (the safe
+//! `landlock`/`seccompiler` crates do the syscalls inside it); macOS carries no `unsafe` (its renames ride
+//! safe `rustix`; the P4.16 Seatbelt leg is built by its own box).
 #![allow(unsafe_code)]
 
 use std::io;
@@ -700,6 +704,336 @@ fn ephemeral_roots() -> Vec<PathBuf> {
     roots
 }
 
+// ============================================================================
+// §2.12.3 best-effort Linux privilege-drop tier (P4.15) — Landlock FS-restrict
+// (P4.15.1), network-namespace egress-deny (P4.15.2), seccomp-bpf exec/unexpected-
+// syscall deny (P4.15.3). THREE INDEPENDENT, each-silent-degrading kernel-subsystem
+// legs layered on the P4.13 cheap-tier floor. Best-effort defence-in-depth, NOT
+// load-bearing (§0.11 T9b — the §3.5/§6.1.3 argv/build controls carry the guarantee):
+// every leg degrades SILENTLY to the cheap tier where the kernel / portable build can't
+// enable it and NEVER fails the conversion. All three legs live HERE (the sole
+// `check-unsafe-policy` ALLOWED_UNSAFE_MODULES entry, G29) and attach as ONE `unsafe`
+// `pre_exec` closure ([`install_confinement`]); `crate::isolation` stays
+// `#![deny(unsafe_code)]`-clean and just calls it. Net-ns is applied via `libc::unshare`
+// IN the post-fork child (single-threaded, where `CLONE_NEWUSER` is valid) rather than an
+// `unshare(1)` argv-wrap — so a runtime namespace-setup failure just SKIPS the leg and the
+// engine still runs (an argv-wrap would surface the failure as a non-zero exit = a broken
+// conversion), and the identity uid/gid map is written BEFORE Landlock (which then needs
+// only `/proc` read). The exact granted paths + the seccomp DENY-list are the §2.12.3
+// `[DEFER: tuning]` residual; this box builds the tier MECHANISM. [Build-Session-Entscheidung: P4.15]
+//
+// PROFILE NOTE (§2.12.3 `[DEFER: tuning]`, refined by P4.24/P4.32/P4.37 + P5–P7): the
+// Landlock read set grants the engine's own bundle dir (`program.parent()`) + the standard
+// system runtime dirs so the decoder can launch + load its libs, and scratch (rw) for the
+// output — but NOT yet a per-item INPUT-file grant: `run_confined` has no structured input
+// path (it is flattened into `plan.args`), and NO real subprocess engine reads a real input
+// through this seam before P4.37 (the imgworker wire) — so the `{input ro}` half is the
+// real-engine consumer's additive grant, consistent with `run_subprocess` being production-
+// dead until P4.32. Until then the leg is exercised by the `/bin/sh` integration tests below.
+// ============================================================================
+
+/// The applied-vs-degraded outcome of ONE §2.12.3 privilege-drop leg (P4.15) — INTERNAL
+/// (no serde / IPC, `Debug` only; it never crosses the §0.4 wire). Consumed by the per-leg
+/// tests (a Landlock failure does not imply a seccomp / net-ns failure, so each leg reports
+/// independently — the P4.15 box's per-leg-independence contract); the §2.12.3
+/// achieved-tier record (P4.18) + the per-spawn tier-APPLIED regression (P4.18.1) are the
+/// P4.18 aggregate consumers. Not surfaced on [`crate::engines::ConfinedRun`] here — that
+/// shaping choice is P4.18's, made with its real consumer (no premature type, CLAUDE §5).
+///
+/// `allow(dead_code)` (non-test), NOT `expect`: today only the per-leg tests + the (also test-only)
+/// [`landlock_probe`]/[`seccomp_probe`] reporters consume this; the production consumer is the P4.18
+/// achieved-tier record. An `expect` dead-code lint FAILS here — the reporter fn BODIES compile in the
+/// non-test build and CONSTRUCT these variants, so the enum is not "dead" and the `expect` flips to
+/// unfulfilled (the fs_guard forward-declared-item precedent). When P4.18 wires a real caller the reporters
+/// become live and this `allow` can be dropped.
+#[cfg(target_os = "linux")]
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LegOutcome {
+    /// The kernel confirmed the restriction is in force (the grant-IS-enforcement model).
+    Applied,
+    /// Silently degraded to the P4.13 cheap-tier floor; the reason distinguishes the classes.
+    Degraded(DegradeReason),
+}
+
+#[cfg(target_os = "linux")]
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DegradeReason {
+    /// The kernel feature is absent — Landlock ABI < 1 (kernel < 5.13), unprivileged userns
+    /// denied, or seccomp unsupported on this arch/kernel.
+    Unavailable,
+    /// The grant call returned but did NOT enforce (Landlock `RulesetStatus::NotEnforced`) —
+    /// the "assert the ruleset applied, never assume the grant took" signal (P4.15.1).
+    NotApplied,
+}
+
+/// The standard system dirs the Landlock read set grants (read + traverse + EXECUTE — the
+/// `AccessFs::from_read(ABI::V1)` group includes execute) so the confined decoder can launch
+/// and resolve its shared libraries + read config (`/etc/ld.so.cache`, fontconfig, locale).
+/// A dir that does not exist on the host is skipped (best-effort). §2.12.3 `[DEFER: tuning]`.
+#[cfg(target_os = "linux")]
+const SANDBOX_READ_DIRS: [&str; 6] = ["/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc"];
+
+/// The seccomp DENY-list (P4.15.3): syscalls never legitimately issued by a short-lived
+/// decoder, denied `EPERM` by the otherwise-ALLOW-by-default filter (so libvips/ffmpeg's
+/// large, glibc-version-dependent syscall set runs untouched — a default-deny allow-list
+/// would randomly break decodes). Deliberately EXCLUDES `execve`/`execveat` — the filter is
+/// installed pre-exec, so denying them would block the engine's OWN launch; "no arbitrary
+/// exec" is the Landlock execute-right's job — and EXCLUDES `unshare` (the P4.15.2 net-ns
+/// leg) + `setpgid` (the P4.10 group-leader). §2.12.3 `[DEFER: tuning]` — the exact set is a
+/// tuning residual; every entry is a syscall whose only use in a decoder would be an exploit
+/// primitive (debugger attach, mount, kernel-module/BPF load, key management, ns-join).
+/// [Build-Session-Entscheidung: P4.15]
+#[cfg(target_os = "linux")]
+fn seccomp_denied_syscalls() -> Vec<i64> {
+    let mut denied = vec![
+        libc::SYS_ptrace,
+        libc::SYS_process_vm_readv,
+        libc::SYS_process_vm_writev,
+        libc::SYS_mount,
+        libc::SYS_umount2,
+        libc::SYS_pivot_root,
+        libc::SYS_kexec_load,
+        libc::SYS_kexec_file_load,
+        libc::SYS_perf_event_open,
+        libc::SYS_bpf,
+        libc::SYS_add_key,
+        libc::SYS_keyctl,
+        libc::SYS_request_key,
+        libc::SYS_setns,
+    ];
+    denied.sort_unstable(); // deterministic BPF program (byte-stable across runs)
+    denied
+}
+
+/// Build the §2.12.3 Landlock ruleset (P4.15.1) in the PARENT — this opens the path fds and
+/// allocates the ruleset fd, so ONLY the returned handle's `restrict_self()` (two async-signal-
+/// safe syscalls) runs in the pre-exec child. `BestEffort` compatibility means a pre-5.13 kernel
+/// yields a `NotEnforced` ruleset rather than an error, so the caller degrades silently. The
+/// granted set: `scratch` (full `from_all` rw incl. create — the engine's output lands here), `/dev`
+/// (`ReadFile|ReadDir|WriteFile` — read `/dev/urandom`, write `/dev/null`; NOT device-node create,
+/// which `from_all` would grant via MakeChar/MakeSock/…), `/proc` (read — the P4.15.2 net-ns leg writes
+/// `/proc/self/uid_map` in the SAME pre_exec closure BEFORE this Landlock applies, so read suffices),
+/// the engine's own bundle dir `program.parent()` (rx), and [`SANDBOX_READ_DIRS`] (rx). Everything else
+/// — the user's home + other files — is denied. A missing path is skipped (best-effort). Returns `None`
+/// only if the ruleset could not be created at all (the leg then degrades). NOTE (§2.12.3
+/// `[DEFER: tuning]`): the per-item INPUT-file grant is NOT here — see the PROFILE NOTE above (the
+/// real-engine consumer P4.37 adds it, since run_confined has no structured input path yet).
+/// [Build-Session-Entscheidung: P4.15]
+#[cfg(target_os = "linux")]
+fn build_landlock_ruleset(program: &Path, scratch: &Path) -> Option<landlock::RulesetCreated> {
+    use landlock::{
+        Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
+        RulesetCreatedAttr, ABI,
+    };
+    let abi = ABI::V1;
+    let read = AccessFs::from_read(abi);
+    let all = AccessFs::from_all(abi);
+    // /dev needs read (/dev/urandom) + write (/dev/null) of EXISTING device files, never node-create —
+    // so read (ReadFile|ReadDir|Execute) plus WriteFile, NOT `from_all` (which adds MakeChar/MakeSock/
+    // RemoveFile/… a decoder never needs). Least-privilege over the "grant IS the enforcement" model.
+    let dev = read | AccessFs::WriteFile;
+    let mut rs = Ruleset::default()
+        // BestEffort + silent-degrade: never hard-error on an old/Landlock-off kernel.
+        .set_compatibility(CompatLevel::BestEffort)
+        // handle_access MUST declare the superset (from_all) or the rw grants are silently dropped.
+        .handle_access(all)
+        .ok()?
+        .create()
+        .ok()?;
+    // Add a `PathBeneath` rule for `path` (best-effort): a MISSING path (e.g. no /lib64 on a merged-usr
+    // host) is SKIPPED — the leg keeps its other grants (`Some(rs)`); a landlock `add_rule` failure with a
+    // valid fd is rare and degrades the WHOLE leg via `?` at the call site (`add_rule` consumes the ruleset
+    // by value, so a failed add cannot return the original — `.ok()` maps it to `None`).
+    let add =
+        |rs: landlock::RulesetCreated, path: &Path, access| -> Option<landlock::RulesetCreated> {
+            match PathFd::new(path) {
+                Ok(fd) => rs.add_rule(PathBeneath::new(fd, access)).ok(),
+                Err(_) => Some(rs),
+            }
+        };
+    rs = add(rs, scratch, all)?;
+    rs = add(rs, Path::new("/dev"), dev)?;
+    rs = add(rs, Path::new("/proc"), read)?;
+    if let Some(parent) = program.parent() {
+        rs = add(rs, parent, read)?;
+    }
+    for dir in SANDBOX_READ_DIRS {
+        rs = add(rs, Path::new(dir), read)?;
+    }
+    Some(rs)
+}
+
+/// Build the §2.12.3 seccomp-bpf program (P4.15.3) for `denied` in the PARENT (this allocates
+/// the `BTreeMap` + the `Vec<sock_filter>`, so only the tiny `apply_filter` install runs in the
+/// child). ALLOW-by-default (`mismatch_action`), `EPERM` for a listed syscall (`match_action` —
+/// graceful, so a denied call surfaces as an engine error, never a spurious KILL; §2.12.3
+/// `[DEFER: tuning]` could switch to `KillProcess`). Returns `None` on an unsupported arch
+/// (`TargetArch` conversion fails) or a compile error — then the seccomp leg degrades silently.
+/// An empty `denied` yields `None` (a no-op filter is not installed). [Build-Session-Entscheidung: P4.15]
+#[cfg(target_os = "linux")]
+fn build_seccomp_program_for(denied: &[i64]) -> Option<seccompiler::BpfProgram> {
+    use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, SeccompRule, TargetArch};
+    use std::collections::BTreeMap;
+    if denied.is_empty() {
+        return None;
+    }
+    // The filter must be compiled for the RUNNING arch (a wrong-arch filter SIGSYSes at runtime).
+    let arch: TargetArch = std::env::consts::ARCH.try_into().ok()?;
+    let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
+    for &syscall in denied {
+        // An empty rule Vec matches the syscall UNCONDITIONALLY → the match_action (EPERM) fires.
+        rules.insert(syscall, vec![]);
+    }
+    let filter = SeccompFilter::new(
+        rules,
+        SeccompAction::Allow, // mismatch: allow every other syscall
+        SeccompAction::Errno(libc::EPERM as u32), // match: deny the listed ones with EPERM
+        arch,
+    )
+    .ok()?;
+    let program: BpfProgram = filter.try_into().ok()?;
+    Some(program)
+}
+
+/// The production seccomp program — [`build_seccomp_program_for`] over [`seccomp_denied_syscalls`].
+#[cfg(target_os = "linux")]
+fn build_seccomp_program() -> Option<seccompiler::BpfProgram> {
+    build_seccomp_program_for(&seccomp_denied_syscalls())
+}
+
+/// Attach the §2.12.3 privilege-drop tier (P4.15) to `command` as ONE best-effort `pre_exec` closure:
+/// the network-namespace egress-deny leg (P4.15.2), the Landlock fs-restrict leg (P4.15.1) and the
+/// seccomp-bpf exec-deny leg (P4.15.3), applied IN THAT ORDER in the post-fork / pre-exec child.
+/// `crate::isolation::run_confined` calls this on the spawn's underlying `std::process::Command`
+/// (`command.as_std_mut()`), so `crate::isolation` stays unsafe-free. The Landlock ruleset fd, the seccomp
+/// BPF program and the identity uid/gid map bytes are built HERE in the PARENT and moved into the closure,
+/// which issues ONLY async-signal-safe syscalls. `program` is the engine binary (the Landlock bundle-dir
+/// grant keys on it); `scratch` is the per-run cwd (rw). BEST-EFFORT / NEVER-break: net-ns applies via
+/// `unshare` IN the single-threaded child, so a namespace-setup failure just SKIPS net-ns and the engine
+/// still runs; a `NotEnforced` Landlock ruleset or a failed `apply_filter` is swallowed to `Ok(())` — the
+/// tier is non-load-bearing and must NEVER fail the spawn. ORDER: net-ns FIRST (its `/proc/self/uid_map`
+/// write must precede Landlock, which grants `/proc` read-only), seccomp LAST (so it never gates the setup
+/// syscalls). The closure is ALWAYS installed (net-ns is always attempted). [Build-Session-Entscheidung: P4.15]
+#[cfg(target_os = "linux")]
+pub(crate) fn install_confinement(
+    command: &mut std::process::Command,
+    program: &Path,
+    scratch: &Path,
+) {
+    use std::os::unix::process::CommandExt;
+    // Build everything the closure needs in the PARENT (fd open, allocation, formatting) — the child only
+    // APPLIES it via syscalls. The identity uid/gid maps keep the engine's OWN uid inside the user namespace,
+    // so it can still read/write the per-run scratch (the correct realization of the §2.12.3 net-ns leg — a
+    // default `unshare --user` maps to nobody and would break scratch access).
+    let mut ruleset = build_landlock_ruleset(program, scratch);
+    let seccomp = build_seccomp_program();
+    // SAFETY: getuid/getgid are argument-less, pointer-free syscalls that cannot fail. Parent-side.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    let uid_map = format!("{uid} {uid} 1\n").into_bytes();
+    let gid_map = format!("{gid} {gid} 1\n").into_bytes();
+
+    // The `pre_exec` closure runs post-fork / pre-exec in the child. Every operation is async-signal-safe:
+    //   - net-ns: raw `unshare` + `open`/`write`/`close` of static `/proc` control paths (no alloc/lock);
+    //   - Landlock `restrict_self()`: prctl(NO_NEW_PRIVS) + landlock_restrict_self — the `landlock` crate
+    //     resolves the BestEffort compat level in the PARENT at build time, so the child call neither
+    //     allocates nor logs (verified against landlock 0.4.5's ruleset.rs — the fork-safety guarantee);
+    //   - seccompiler `apply_filter()`: prctl + seccomp(SET_MODE_FILTER) on the parent-built BPF — stack-only.
+    // No heap allocation, no lock, no panic (every arm swallows to Ok); the ruleset fd, BPF program and map
+    // bytes are built in the PARENT and moved in by value, so no lock a sibling thread held across the fork
+    // can deadlock the child.
+    // SAFETY: the `pre_exec` contract (async-signal-safe only) is met per the rationale above.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    unsafe {
+        command.pre_exec(move || {
+            // 1. net-ns (P4.15.2) FIRST — the child is single-threaded post-fork, so CLONE_NEWUSER is valid.
+            //    A FAILURE just skips (the engine still runs — never-break); the identity maps keep our uid.
+            //    Async-signal-safe raw syscalls (covered by the outer `unsafe`): unshare + open/write/close of
+            //    static NUL-terminated /proc paths + parent-built map bytes; every fd is closed; failure ignored.
+            if libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET) == 0 {
+                // setgroups=deny MUST precede gid_map for an unprivileged user namespace.
+                for (path, content) in [
+                    (&b"/proc/self/setgroups\0"[..], &b"deny"[..]),
+                    (&b"/proc/self/uid_map\0"[..], uid_map.as_slice()),
+                    (&b"/proc/self/gid_map\0"[..], gid_map.as_slice()),
+                ] {
+                    let fd = libc::open(path.as_ptr().cast::<libc::c_char>(), libc::O_WRONLY);
+                    if fd >= 0 {
+                        libc::write(fd, content.as_ptr().cast::<libc::c_void>(), content.len());
+                        libc::close(fd);
+                    }
+                }
+            }
+            // 2. Landlock (P4.15.1) — restrict_self consumes the ruleset by value → Option::take (FnMut, once).
+            if let Some(rs) = ruleset.take() {
+                let _ = rs.restrict_self();
+            }
+            // 3. seccomp (P4.15.3) LAST — so it never gates the net-ns / Landlock setup syscalls above.
+            if let Some(prog) = &seccomp {
+                let _ = seccompiler::apply_filter(prog);
+            }
+            Ok(())
+        });
+    }
+}
+
+/// §2.12.3 Landlock availability probe (P4.15.1) — build a trivial `BestEffort` ruleset on a
+/// THROWAWAY thread (so no parent thread is left restricted) and read the `RestrictionStatus`:
+/// `NotEnforced` ⇒ the kernel lacks Landlock (< 5.13 / disabled) ⇒ `Degraded(Unavailable)`; a real
+/// error ⇒ `Degraded(NotApplied)`; otherwise `Applied`. Used by the per-leg tests (and reportable to
+/// the P4.18 record); the production apply in [`install_confinement`] needs no probe — `BestEffort`
+/// self-degrades. [Build-Session-Entscheidung: P4.15]
+///
+/// `allow(dead_code)` (non-test): the reporter's production consumer is the P4.18 achieved-tier record; today
+/// only the per-leg tests call it. `allow` not `expect` — see [`LegOutcome`]: the body constructs the enum in
+/// the non-test build, so `expect` would flip unfulfilled.
+#[cfg(target_os = "linux")]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn landlock_probe() -> LegOutcome {
+    use landlock::{
+        Access, AccessFs, CompatLevel, Compatible, Ruleset, RulesetAttr, RulesetStatus, ABI,
+    };
+    std::thread::spawn(|| {
+        let status = Ruleset::default()
+            .set_compatibility(CompatLevel::BestEffort)
+            .handle_access(AccessFs::from_all(ABI::V1))
+            .and_then(|r| r.create())
+            .and_then(|r| r.restrict_self());
+        match status {
+            Ok(s) if s.ruleset == RulesetStatus::NotEnforced => {
+                LegOutcome::Degraded(DegradeReason::Unavailable)
+            }
+            Ok(_) => LegOutcome::Applied,
+            Err(_) => LegOutcome::Degraded(DegradeReason::NotApplied),
+        }
+    })
+    .join()
+    .unwrap_or(LegOutcome::Degraded(DegradeReason::NotApplied))
+}
+
+/// §2.12.3 seccomp availability probe (P4.15.3) — compile the production DENY-list and install it on
+/// a THROWAWAY thread (a seccomp filter is thread-local + never removable, so it must not touch a live
+/// thread): a clean install ⇒ `Applied`; a compile miss (unsupported arch) or a kernel that rejects
+/// `seccomp(SET_MODE_FILTER)` ⇒ `Degraded(Unavailable)`. [Build-Session-Entscheidung: P4.15]
+///
+/// `allow(dead_code)` (non-test): production consumer is the P4.18 record; today only the tests call it.
+/// `allow` not `expect` — see [`LegOutcome`] (the reporter body constructs the enum in the non-test build).
+#[cfg(target_os = "linux")]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn seccomp_probe() -> LegOutcome {
+    let Some(program) = build_seccomp_program() else {
+        return LegOutcome::Degraded(DegradeReason::Unavailable);
+    };
+    std::thread::spawn(move || match seccompiler::apply_filter(&program) {
+        Ok(()) => LegOutcome::Applied,
+        Err(_) => LegOutcome::Degraded(DegradeReason::Unavailable),
+    })
+    .join()
+    .unwrap_or(LegOutcome::Degraded(DegradeReason::Unavailable))
+}
+
 #[cfg(test)]
 mod ephemeral_tests {
     use super::is_ephemeral_output_dir;
@@ -1156,5 +1490,223 @@ mod lacks_atomic_publish_primitive_tests {
             lacks_atomic_publish_primitive(&missing).is_err(),
             "§2.8: a missing directory is a clean Err (heuristic-indeterminate), never a panic"
         );
+    }
+}
+
+// §2.12.3 best-effort Linux privilege-drop tier (P4.15) — per-leg tests. Linux-only + real subprocess:
+// each leg's enforcement is only observable through a REAL child under a REAL kernel (grant-is-enforcement),
+// never a mock (test-strategy §0.1). TWO STACKED cfg attrs (`#[cfg(test)]` then `#[cfg(target_os = "linux")]`)
+// — NOT a compound `all(test, target_os = "linux")` (the clippy `is_cfg_test` trap; the P1.17 precedent).
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod privilege_drop_tests {
+    use super::{
+        build_seccomp_program_for, install_confinement, landlock_probe, seccomp_denied_syscalls,
+        seccomp_probe, DegradeReason, LegOutcome,
+    };
+    use std::os::unix::process::CommandExt;
+    use std::path::Path;
+    use std::process::Command;
+
+    // Run `/bin/sh -c <script>` in `scratch` under the FULL P4.15 tier (net-ns + Landlock + seccomp) via the
+    // SAME `install_confinement` the production spawn uses — not a re-implementation.
+    fn confined_sh(scratch: &Path, script: &str) -> std::process::Output {
+        let sh = Path::new("/bin/sh");
+        // A TEST-ONLY spawn of /bin/sh to OBSERVE the P4.15 confinement — NOT a production engine spawn (those
+        // route through crate::isolation::run_confined, the G29-sanctioned site). It deliberately keeps the
+        // inherited env so the shell can resolve `cat`/`mkdir` via PATH (env_clear would break the observation),
+        // and homes in crate::platform because the sibling seccomp test needs the allow-listed `pre_exec`.
+        // nosemgrep: convertia-command-outside-isolation, convertia-command-missing-env-clear
+        let mut cmd = Command::new(sh);
+        cmd.arg("-c").arg(script).current_dir(scratch);
+        install_confinement(&mut cmd, sh, scratch);
+        cmd.output().expect("spawn /bin/sh")
+    }
+
+    // §2.12.3 P4.15.3 (deny-list CONTENT): the seccomp deny-list must EXCLUDE execve/execveat + unshare +
+    // setpgid (denying them would break the engine launch / the net-ns leg / the P4.10 group-leader) and
+    // INCLUDE the exploit primitives; and be deterministic (sorted → byte-stable BPF).
+    #[test]
+    fn seccomp_denylist_excludes_launch_syscalls_and_covers_exploit_primitives() {
+        let denied = seccomp_denied_syscalls();
+        for allowed in [
+            libc::SYS_execve,
+            libc::SYS_execveat,
+            libc::SYS_unshare,
+            libc::SYS_setpgid,
+        ] {
+            assert!(
+                !denied.contains(&allowed),
+                "syscall {allowed} must NOT be denied (engine launch / net-ns / group-leader): {denied:?}"
+            );
+        }
+        for primitive in [
+            libc::SYS_ptrace,
+            libc::SYS_mount,
+            libc::SYS_bpf,
+            libc::SYS_kexec_load,
+            libc::SYS_setns,
+        ] {
+            assert!(
+                denied.contains(&primitive),
+                "exploit-primitive syscall {primitive} must be denied: {denied:?}"
+            );
+        }
+        let mut sorted = denied.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            denied, sorted,
+            "the deny-list must be sorted for a byte-stable BPF program"
+        );
+    }
+
+    // §2.12.3 P4.15.1 (grant-is-enforcement): a Landlock-confined child CANNOT read a file OUTSIDE
+    // {scratch, /dev, /proc, its bundle dir, the system dirs}, yet CAN still read its own scratch. Where
+    // the kernel lacks Landlock (probe = Degraded) the leg silent-degrades and the read is NOT gated — the
+    // test asserts the arm matching the runner, so it is honest on a 5.13+ CI runner AND an older one.
+    #[test]
+    fn landlock_denies_out_of_sandbox_reads_when_enforced() {
+        let scratch = tempfile::tempdir().expect("scratch dir");
+        std::fs::write(scratch.path().join("ok.txt"), b"ok").expect("write a scratch file");
+        let secret_dir = tempfile::tempdir().expect("a sibling dir NOT under scratch");
+        let secret = secret_dir.path().join("secret.txt");
+        std::fs::write(&secret, b"TOP SECRET").expect("write the out-of-sandbox file");
+        let script = format!(
+            "cat ok.txt >/dev/null 2>&1 && echo scratch=ok || echo scratch=FAIL; \
+             cat '{}' >/dev/null 2>&1 && echo secret=LEAK || echo secret=denied",
+            secret.display()
+        );
+        let out = confined_sh(scratch.path(), &script);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("scratch=ok"),
+            "the confined child must still read its own scratch (never break the conversion): {stdout}"
+        );
+        match landlock_probe() {
+            LegOutcome::Applied => assert!(
+                stdout.contains("secret=denied"),
+                "Landlock enforced — the out-of-sandbox read MUST be denied: {stdout}"
+            ),
+            LegOutcome::Degraded(_) => assert!(
+                stdout.contains("secret=LEAK"),
+                "Landlock degraded on this kernel — the read is not gated (silent-degrade): {stdout}"
+            ),
+        }
+    }
+
+    // §2.12.3 P4.15.3 (seccomp mechanism): a syscall in a filter's deny-list returns EPERM in the child.
+    // A CUSTOM filter denying BOTH mkdir variants (glibc uses mkdir(2) on some arches, mkdirat on others)
+    // makes `mkdir` fail regardless — the mechanism, distinct from the production deny-list content above.
+    #[test]
+    fn seccomp_denies_a_listed_syscall_in_the_child() {
+        let scratch = tempfile::tempdir().expect("scratch dir");
+        // Deny BOTH mkdir variants so `mkdir` fails regardless of which glibc issues. `SYS_mkdir` exists only
+        // on x86_64 (aarch64/riscv define only `SYS_mkdirat`), so it is arch-guarded to keep this test portable
+        // if a non-x86_64 Linux target is ever added (v1 Linux is x86_64-only). [Build-Session-Entscheidung: P4.15]
+        let mut denied = vec![libc::SYS_mkdirat];
+        #[cfg(target_arch = "x86_64")]
+        denied.push(libc::SYS_mkdir);
+        let Some(program) = build_seccomp_program_for(&denied) else {
+            return; // unsupported arch — the leg degrades; nothing to assert.
+        };
+        // A TEST-ONLY spawn of /bin/sh to OBSERVE that a seccomp-denied syscall returns EPERM in the child —
+        // NOT a production engine spawn (crate::isolation owns those); it keeps the inherited env (the shell
+        // resolves `mkdir` via PATH) and homes here because the `pre_exec` below needs the allow-listed unsafe.
+        // nosemgrep: convertia-command-outside-isolation, convertia-command-missing-env-clear
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg("mkdir denied_dir 2>/dev/null && echo mkdir=ALLOWED || echo mkdir=denied")
+            .current_dir(scratch.path());
+        // SAFETY: post-fork / pre-exec, async-signal-safe only — seccompiler `apply_filter` (prctl + seccomp
+        // syscalls) on a BPF program built in the parent; no alloc / no panic. Mirrors install_confinement.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+        unsafe {
+            cmd.pre_exec(move || {
+                let _ = seccompiler::apply_filter(&program);
+                Ok(())
+            });
+        }
+        let out = cmd.output().expect("spawn /bin/sh");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        match seccomp_probe() {
+            LegOutcome::Applied => assert!(
+                stdout.contains("mkdir=denied"),
+                "seccomp enforced — the denied syscall MUST return EPERM in the child: {stdout}"
+            ),
+            LegOutcome::Degraded(_) => { /* seccomp unavailable on this kernel — silent-degrade, no assertion */
+            }
+        }
+    }
+
+    // §2.12.3: the tier is NON-load-bearing — applying it must NEVER break a benign conversion. A confined
+    // child touching only its scratch + system paths runs to a clean exit on EVERY kernel (enforced or
+    // degraded), so the P4.13 cheap-tier floor is never regressed.
+    #[test]
+    fn confinement_never_breaks_a_benign_confined_spawn() {
+        let scratch = tempfile::tempdir().expect("scratch dir");
+        let out = confined_sh(scratch.path(), "echo hello > out.txt");
+        assert!(
+            out.status.success(),
+            "a benign confined spawn must succeed (best-effort, never breaks): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(scratch.path().join("out.txt"))
+                .unwrap_or_default()
+                .trim(),
+            "hello",
+            "the confined child wrote its output into the scratch dir"
+        );
+    }
+
+    // Each leg's availability probe returns a well-formed LegOutcome (never a panic), on any runner.
+    #[test]
+    fn the_leg_probes_report_a_well_formed_outcome() {
+        assert!(matches!(
+            landlock_probe(),
+            LegOutcome::Applied
+                | LegOutcome::Degraded(DegradeReason::Unavailable | DegradeReason::NotApplied)
+        ));
+        assert!(matches!(
+            seccomp_probe(),
+            LegOutcome::Applied | LegOutcome::Degraded(DegradeReason::Unavailable)
+        ));
+    }
+
+    // §2.12.3 P4.15.2 (net-ns): a confined child is placed in a FRESH, isolated network namespace when
+    // unprivileged user+net namespaces are available, else the leg silently degrades (the child shares the
+    // host netns). Observed via the child's `/proc/self/ns/net` inode vs the parent's. This ALSO proves the
+    // never-break property: the net-ns setup runs INSIDE the pre_exec closure, so a failure just skips and the
+    // child still runs. The egress-deny enforcement itself is environment-gated (userns is restricted on many
+    // CI runners) + non-load-bearing (§0.11 T9b) — so the applied arm is asserted only WHEN observable.
+    #[test]
+    fn net_ns_isolates_the_child_or_degrades() {
+        let scratch = tempfile::tempdir().expect("scratch dir");
+        let out = confined_sh(
+            scratch.path(),
+            "readlink /proc/self/ns/net > netns.txt 2>/dev/null; echo done",
+        );
+        assert!(
+            out.status.success(),
+            "the confined child must run — the net-ns leg never breaks the spawn: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let child_ns =
+            std::fs::read_to_string(scratch.path().join("netns.txt")).unwrap_or_default();
+        assert!(
+            !child_ns.trim().is_empty(),
+            "the confined child must read its own /proc/self/ns/net (proc granted read): {child_ns:?}"
+        );
+        let parent_ns = std::fs::read_link("/proc/self/ns/net")
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if child_ns.trim() != parent_ns.trim() {
+            // net-ns APPLIED: the child is in a different (fresh, empty-but-loopback) network namespace.
+            assert!(
+                child_ns.trim().starts_with("net:["),
+                "an isolated network namespace link: {child_ns:?}"
+            );
+        }
+        // else: SAME namespace = silent-degrade (unprivileged userns unavailable on this runner) — accepted.
     }
 }
