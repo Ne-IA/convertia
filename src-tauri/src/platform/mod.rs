@@ -24,8 +24,12 @@
 //! each block carrying a `// SAFETY:` justification. The Windows renames/locks/free-space ride the
 //! `windows-sys` FFI; on **Linux** the §2.12.3 best-effort privilege-drop tier (P4.15, [`install_confinement`])
 //! attaches its Landlock + seccomp legs through the one `unsafe` `CommandExt::pre_exec` closure (the safe
-//! `landlock`/`seccompiler` crates do the syscalls inside it); macOS carries no `unsafe` (its renames ride
-//! safe `rustix`; the P4.16 Seatbelt leg is built by its own box).
+//! `landlock`/`seccompiler` crates do the syscalls inside it); macOS carries no `unsafe` — its renames ride
+//! safe `rustix`, and the P4.16 macOS Seatbelt privilege-drop leg is **DECIDED cheap-tier only** (no apply,
+//! no `unsafe` FFI): its only apply path is a private-libsandbox call in the post-fork/pre-exec child, which
+//! is neither auditable fork-safe nor silent-skippable at its worst case (a hang, not an errno), so §2.12.3's
+//! never-break floor forbids it — the same admission test that ADMITTED the Linux in-closure legs (Co-Pilot
+//! ruling 2026-07-25, spec §2.12.3; macOS runs the P4.13 cheap-tier floor unconditionally).
 #![allow(unsafe_code)]
 
 use std::io;
@@ -1708,5 +1712,78 @@ mod privilege_drop_tests {
             );
         }
         // else: SAME namespace = silent-degrade (unprivileged userns unavailable on this runner) — accepted.
+    }
+}
+
+// §2.12.3 macOS privilege-drop DECISION pin (P4.16, Co-Pilot ruling 2026-07-25 — anchor: never-break >
+// non-load-bearing defence-in-depth). The macOS Seatbelt tier is DECIDED cheap-tier only: no private-libsandbox
+// apply FFI enters the core, because its only apply path (a call in the post-fork/pre-exec child of the
+// multithreaded host) is neither auditable fork-safe nor silent-skippable at its worst case (a hang, not an
+// errno), so §2.12.3's never-break floor forbids it. This CROSS-PLATFORM source-scan (runs on ALL THREE CI
+// legs incl. macOS — the macOS apply path is untestable-on-host, so the decision is pinned structurally, not
+// at runtime) walks the TWO directories that could home a Seatbelt apply RECURSIVELY, so a future submodule
+// (e.g. the P4.24 `isolation/macos.rs` the P4.85 homing contract designates) is covered AUTOMATICALLY — the
+// scan does not silently stop enforcing when its target grows (the g24 target-absent-leg lesson). It FAILS if
+// any edit reintroduces such a call/FFI into `crate::platform` (the sole G29 ALLOWED_UNSAFE_MODULES entry,
+// where a `sandbox_*` FFI may be DECLARED) or `crate::isolation` (the spawn path that would CALL it — a call
+// in any third module would have to call a `platform`-declared FFI, which the `platform` scan catches at its
+// declaration). [Build-Session-Entscheidung: P4.16]
+#[cfg(test)]
+mod macos_seatbelt_decision_tests {
+    // Everything before a scanned file's FIRST `#[cfg(test)]`, so a needle can never match a test's own
+    // source (this module names the forbidden tokens in its assertions). `concat!`-split so the literal
+    // marker is absent from this scanning module too (the `c_surface_scan::production_prefix` precedent).
+    fn production_prefix(full: &str) -> &str {
+        full.split_once(concat!("#[cfg", "(test)]"))
+            .map_or(full, |(prefix, _)| prefix)
+    }
+
+    // The private libsandbox apply/compile/init family — the only way to APPLY a Seatbelt profile from Rust,
+    // and (per the P4.16 ruling) exactly what must NOT exist in the core. Substrings so `_with_parameters`
+    // and `_bytecode` variants are covered too.
+    const FORBIDDEN_APPLY_TOKENS: [&str; 3] = ["sandbox_init", "sandbox_apply", "sandbox_compile"];
+
+    // §2.12.3 / P4.16 Co-Pilot ruling: no private-libsandbox apply call or FFI in the core's isolation surface.
+    // Walks `src/platform/**` + `src/isolation/**` (from the compile-time crate root) recursively, so a new
+    // file under either — the P4.24 `isolation/macos.rs`, an `isolation/macos/` subdir — is scanned WITHOUT a
+    // future editor having to extend a hardcoded file list.
+    #[test]
+    fn no_seatbelt_apply_callsite_in_the_core() {
+        use walkdir::WalkDir;
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut scanned = 0usize;
+        let (mut saw_platform_root, mut saw_isolation_root) = (false, false);
+        for dir in ["platform", "isolation"] {
+            for entry in WalkDir::new(src.join(dir)) {
+                let entry = entry.expect("walk the core platform/isolation source tree");
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let full = std::fs::read_to_string(path).expect("read a core source file");
+                let prod = production_prefix(&full);
+                for token in FORBIDDEN_APPLY_TOKENS {
+                    assert!(
+                        !prod.contains(token),
+                        "§2.12.3 P4.16 decision (never-break > non-load-bearing DiD): a `{token}` call/FFI \
+                         reappeared in {}'s production source. The macOS Seatbelt apply leg is DECIDED \
+                         cheap-tier only — its worst-case fork-child hang is not silent-skippable, so it cannot \
+                         ship. If a signed/notarized build with a safe apply path is being added, revisit the \
+                         Co-Pilot ruling (2026-07-25) + spec §2.12.3 FIRST.",
+                        path.display()
+                    );
+                }
+                scanned += 1;
+                saw_platform_root |= path.ends_with("platform/mod.rs");
+                saw_isolation_root |= path.ends_with("isolation/mod.rs");
+            }
+        }
+        // Hermetic guard (the g24 lesson — never silently watch nothing): the scan MUST have read the two
+        // known homes. If the tree layout ever changes so they are not found, FAIL loudly rather than pass vacuously.
+        assert!(
+            saw_platform_root && saw_isolation_root && scanned >= 2,
+            "the source-scan must cover crate::platform + crate::isolation (found platform={saw_platform_root}, \
+             isolation={saw_isolation_root}, {scanned} .rs files) — the P4.16 decision is not being enforced"
+        );
     }
 }

@@ -416,7 +416,7 @@ only wires them.
 > `ptrace`/Landlock fs-audit + the egress-monitor harness) **activates with the first engine
 > spawn in P4** (the imgworker proof-of-life) — the substrate is wired in **P4.13** (cheap-tier
 > floor: process boundary + cleared env + scratch-cwd), **P4.15** (Linux Landlock/net-ns/seccomp
-> legs), **P4.16/P4.17** (macOS Seatbelt / Windows restricted-token + net-deny), and **anchored
+> legs), **P4.16/P4.17** (macOS privilege-drop tier — decided cheap-tier per P4.16 / Windows restricted-token + net-deny), and **anchored
 > with the named formal edge by P4.18.1** (the tier-APPLIED-per-spawn regression carries the
 > `needs: P0.7.12` leg-(a) edge); this is the leg that "activates with the first engine spawn",
 > NOT the full gate;

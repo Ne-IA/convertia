@@ -35,7 +35,8 @@
 //!    it drops THIS future on a hang, so the Drop backstop is the kill), NOT here. **P4.14** delivered the
 //!    §2.12.3 dynamic-loader-injection env STRIP (the [`is_loader_injection_var`] filter on the constructed
 //!    env — `LD_PRELOAD`/`LD_LIBRARY_PATH`/`DYLD_*`, §0.11 T3a). The remaining layers land on THIS entry at
-//!    their boxes: the per-OS privilege-drop legs at **P4.15 / P4.16 / P4.17**, and the achieved-tier record
+//!    their boxes: the per-OS privilege-drop legs at **P4.15** (Linux) / **P4.17** (Windows) — **P4.16**
+//!    (macOS) is DECIDED cheap-tier only, no leg attaches (Co-Pilot ruling 2026-07-25) — and the achieved-tier record
 //!    into `privilege-drop-coverage.toml` at **P4.18**. It never runs the §2.1 publish — that is
 //!    `crate::fs_guard`, invoked by the §1.7 lifecycle after a `Succeeded` return; the §0.9 pool permit is
 //!    acquired one layer up (§1.7). `program` is the RESOLVED absolute binary path — the
@@ -53,6 +54,12 @@
 //! defence-in-depth that degrades SILENTLY to the cheap tier where it cannot be enabled without install-time
 //! elevation or breaking the portable build, and is NOT load-bearing (the §0.11 T9b network guarantee rests
 //! on the §3.5 / §6.1.3 argv / build controls). The per-OS profile CONTENTS are a §2.12.3 tuning residual.
+//! **macOS realization `[DECIDED — P4.16, Co-Pilot ruling 2026-07-25]`:** the macOS Seatbelt leg is realized as
+//! the cheap-tier floor ONLY in v1-portable — its sole apply path is a private-libsandbox call in the
+//! post-fork/pre-exec child, which is neither auditable fork-safe nor silent-skippable at its worst case (a
+//! hang, not an errno), so §2.12.3's never-break floor forbids it (the Linux in-closure admission test the
+//! macOS apply fails). No Seatbelt profile is applied and no private-sandbox FFI enters the core (pinned by the
+//! `crate::platform` `no_seatbelt_apply_callsite_in_the_core` source-scan). spec §2.12.3 carries the ruling.
 //! Whether the achieved depth surfaces as a Rust tier value (e.g. a `SandboxTier` enum) or as an
 //! unconditional cheap floor plus best-effort privilege-drop with no runtime discriminant is a P4 shaping
 //! choice made WITH its real consumer (the P4.18 achieved-tier record) — no possibly-unused type is planted
@@ -237,6 +244,22 @@ pub async fn run_confined(
     // group-kill still reaps the engine (the process-group leader). [Build-Session-Entscheidung: P4.15]
     #[cfg(target_os = "linux")]
     crate::platform::install_confinement(command.as_std_mut(), program, cwd);
+
+    // §2.12.3 macOS privilege-drop tier: DECIDED cheap-tier ONLY — no best-effort leg is attached here (unlike
+    // the Linux `install_confinement` call above). [Decision: P4.16 — Co-Pilot ruling 2026-07-25, anchor
+    // never-break > non-load-bearing defence-in-depth] The macOS Seatbelt route would have to apply its profile
+    // via the private libsandbox apply API INSIDE the post-fork/pre-exec child of this multithreaded tokio
+    // parent (an unsigned portable build has no parent-side or spawn-time apply path). Unlike the Linux legs —
+    // where Landlock `restrict_self()` is auditable fork-safe and every failure is an errno the closure silently
+    // skips — that private call is (a) closed-source / not provably fork-safe and (b) its WORST case is a HANG
+    // (a fork-malloc / dispatch deadlock), which is NOT silent-skippable: a hung child never execs, the §1.7
+    // watchdog reaps it, and the item Fails — a never-break violation. §2.12.3's never-break floor (the same
+    // admission test that ADMITTED the Linux in-closure legs: auditable + errno-skippable) therefore forbids the
+    // macOS apply leg in v1-portable, so macOS runs the P4.13 cheap-tier floor built above unconditionally. No
+    // profile artifact is built (no dead code for a decided-not-applied mechanism) and no private-sandbox FFI
+    // enters the core — `crate::platform`'s `no_seatbelt_apply_callsite_in_the_core` source-scan pins that on
+    // all three CI legs. Revisit anchors (spec §2.12.3): (a) a signed / notarized build epoch with a safe apply
+    // path; (b) a future Apple-sanctioned spawn-time sandbox API. [Build-Session-Entscheidung: P4.16]
 
     // §1.7 `[DECIDED — sole owner]` (P4.10): every engine is spawned as a process-group / job-object LEADER so
     // ONE kill tears down the engine AND ALL ITS DESCENDANTS. Several bundled engines re-exec or launch
@@ -1417,5 +1440,42 @@ mod confined_spawn_tests {
             elapsed < GROUP_CONFIRM_WAIT,
             "§1.7: run_confined returned in {elapsed:?}, well within the {GROUP_CONFIRM_WAIT:?} confirm-wait bound (the group settled; the cap only bites on a wedged descendant)"
         );
+    }
+
+    // §2.12.3 P4.16 (Co-Pilot ruling 2026-07-25): a concurrency regression over the CHEAP-TIER spawn path
+    // (macOS attaches no privilege-drop apply leg — DECIDED cheap-tier). Origin: the P4.16 design's macOS
+    // fork-safety concern; RETAINED without an apply leg (per the ruling) as a standing regression that the
+    // cheap-tier spawn + the §1.7 concurrent stdout/stderr drain handle many in-flight confined spawns cleanly
+    // — no deadlock, no leak, every child reaps — each bounded by a timeout so a wedged spawn surfaces as a
+    // deterministic RED, never a hung suite. `multi_thread` so the spawns genuinely run in parallel across
+    // worker threads (the shape that would have exposed a fork-child hang, had an apply leg been introduced).
+    // [Build-Session-Entscheidung: P4.16]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn many_concurrent_cheap_tier_spawns_all_complete_under_timeout() {
+        const CONCURRENT_SPAWNS: usize = 16;
+        let mut tasks = Vec::with_capacity(CONCURRENT_SPAWNS);
+        for _ in 0..CONCURRENT_SPAWNS {
+            tasks.push(tokio::spawn(async {
+                // Each task owns its scratch dir (a `TempDir` with `Drop`, so it outlives the confined child
+                // that runs in it) and its own confined envelope — no shared state between the concurrent spawns.
+                let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+                let (envelope, program) =
+                    confined_shell_invocation(EXIT_ZERO, Some(scratch.path().to_path_buf()));
+                let run = tokio::time::timeout(
+                    Duration::from_secs(60),
+                    run_confined(&envelope, &program, |_| {}),
+                )
+                .await
+                .expect("a cheap-tier confined spawn must complete well within the timeout (never wedge)");
+                run.result
+            }));
+        }
+        for task in tasks {
+            assert_eq!(
+                task.await.expect("the spawned task must not panic"),
+                InvocationResult::Succeeded,
+                "every concurrent cheap-tier `exit 0` spawn must reap to Succeeded (no deadlock / no leak)"
+            );
+        }
     }
 }

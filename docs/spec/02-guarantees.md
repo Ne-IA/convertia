@@ -1794,6 +1794,22 @@ the privilege-drop tier is best-effort, degrading silently — see the callout):
   guarantee rests on the always-on argv/build controls (§3.5/§6.1.3) and the offline
   guarantee on §3.3.4 + the §2.11.4 packet gate, neither of which depends on Seatbelt.
   This is exactly why T9b/offline correctly do not depend on this tier.)
+  **`[DECIDED — P4.16, Co-Pilot ruling 2026-07-25: v1-portable macOS = ALWAYS the cheap tier, not merely
+  "most often in practice".]`** On an unsigned portable build there is **no parent-side or spawn-time apply
+  path** for the Seatbelt profile — only the private libsandbox apply call **inside the post-fork/pre-exec
+  child** of the multithreaded host. That **fails the same admission test that ADMITTED the Linux in-closure
+  legs** (P4.15): the Linux apply is **auditable fork-safe** (Landlock `restrict_self()` is two syscalls, no
+  allocation) and every failure is an **errno the closure silently skips**; the macOS private apply is
+  **neither auditable** (closed-source, mutable across OS updates) **nor is its worst case silent-skippable** —
+  a fork-child **HANG** (a fork-malloc / dispatch deadlock), not an errno, which leaves the child never
+  `exec`-ing → the §1.7 watchdog reaps it → the item **Fails = a never-break violation**. Because **never-break
+  is absolute** and this tier is non-load-bearing, the macOS privilege-drop tier is realized as the §2.12.1
+  cheap-tier floor **only** in v1: **no Seatbelt profile is applied and no private-sandbox FFI enters the
+  core** (a `crate::platform`/`crate::isolation` source-scan pins this — the `no_seatbelt_apply_callsite_in_the_core`
+  test). The industry norm confirms it: production macOS sandboxing (Chromium / WebKit / Apple's own
+  `sandbox-exec`) is **always** post-`exec` self-sandbox in a fresh single-threaded image, **never** a
+  post-fork/pre-exec apply. **Revisit anchors — either re-opens this decision:** (a) a **signed / notarized**
+  build epoch that unlocks a safe apply path; (b) a future **Apple-sanctioned spawn-time sandbox API**.
 - **Windows (recommended v1 if feasible):** spawn in a **restricted token / App
   Container** with a **low-integrity** token, inside a **Job Object** with
   **`JOB_OBJECT_LIMIT`** flags (kill-on-job-close so no orphan survives, memory cap).
