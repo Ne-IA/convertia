@@ -6,12 +6,14 @@
 # may be silenced in one scanner but live in the other). L(-1) security-critical
 # (scripts/l-neg1-files.toml, G71): a silently-added ignore would blind both scanners to a real advisory.
 #
-# The 20 ids below MIRROR deny.toml [advisories].ignore EXACTLY — keep the two in lock-step. 18 (P1.59) are
-# confirmed `unmaintained`/`unsound`, NOT vulnerabilities; 2 are REAL vulnerability advisories (the quick-xml
+# The 21 ids below MIRROR deny.toml [advisories].ignore EXACTLY — keep the two in lock-step. 18 (P1.59) are
+# confirmed `unmaintained`/`unsound`, NOT vulnerabilities; 3 are REAL vulnerability advisories (the quick-xml
 # DoS pair RUSTSEC-2026-0194/-0195, owner-acked — transitive, the runtime plist call site is dead in
-# ConvertIA). All are PURELY TRANSITIVE, with no reachable fix in the current Tauri/plist-locked tree. The
-# per-id rationale lives in deny.toml; re-triage the whole set on any deliberate Tauri/dep bump.
-# [Build-Session-Entscheidung: P1.59]
+# ConvertIA; and the rkyv OOB-read RUSTSEC-2026-0235, owner-acked — a locked-but-inert optional dep of
+# rust_decimal that is never compiled). All are PURELY TRANSITIVE, with no reachable fix in the current
+# dependency tree (the Tauri/plist pin for quick-xml; the rust_decimal `rkyv ^0.7` pin for rkyv). The per-id
+# rationale lives in deny.toml; re-triage the whole set on any deliberate Tauri/dep bump.
+# [Build-Session-Entscheidung: P1.59; the quick-xml pair + the rkyv id added by Co-Pilot under owner ack]
 
 [advisories]
 ignore = [
@@ -44,4 +46,13 @@ ignore = [
   # lock-step); re-triage on a Tauri/plist bump that moves quick-xml >=0.41. Full rationale in deny.toml.
   "RUSTSEC-2026-0194",  # quick-xml quadratic attribute-dedup DoS (transitive; runtime call site dead in ConvertIA)
   "RUSTSEC-2026-0195",  # quick-xml NsReader namespace-alloc DoS (not reachable in plist's Reader path; both fixed >=0.41)
+  # rkyv OOB-read on archives containing Rc/Arc (fixed >=0.8.17) — LOCKED-BUT-INERT: rkyv 0.7.46 enters the
+  # lock only as rust_decimal 1.42.1's optional dep (tauri-plugin-log <- byte-unit <- rust_decimal), and no
+  # active feature enables it (`cargo tree -i rkyv --target all` = empty, the tauri-plugin-fs forced-inert
+  # precedent) — never compiled into any artifact on any platform, and ConvertIA deserializes no rkyv
+  # archives anywhere. No reachable fix: rust_decimal pins rkyv ^0.7. FORWARD: any future rkyv ACTIVATION
+  # (a direct dep, or a feature enabling rust_decimal/rkyv) MUST land >=0.8.17 + a §0.8 floor row — this
+  # graph-wide id would otherwise mask it; re-triage on any tauri-plugin-log/byte-unit/rust_decimal bump.
+  # MIRRORS deny.toml (G18 two-scanner lock-step). [Co-Pilot, owner-acked, 2026-08-24]
+  "RUSTSEC-2026-0235",  # rkyv OOB-read in archived Rc/Arc (locked-but-inert optional dep of rust_decimal; never compiled)
 ]

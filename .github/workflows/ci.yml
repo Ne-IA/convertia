@@ -141,8 +141,8 @@ jobs:
       # check-rust-lint-contract step below is LIVE (a clean runner ships the pinned cargo-audit but no db).
       # Linux-only - the audit reads the OS-agnostic Cargo.lock, so it runs once (on macOS/Windows the db
       # is absent and the G17 leg skips-with-notice). A fresh shallow clone each run pulls the latest
-      # advisories (a NEW one not in audit.toml then reddens the gate); the 18 accepted ids are reconciled
-      # across deny.toml + audit.toml (the G18 two-scanner check).
+      # advisories (a NEW one not in audit.toml then reddens the gate); the accepted ids are reconciled
+      # across deny.toml + audit.toml (the G18 two-scanner check asserts the two sets are identical).
       - name: 'P1.59 G17: warm the RustSec advisory-db (Linux; OS-agnostic over Cargo.lock)'
         if: runner.os == 'Linux'
         # 3-try retry (same convention as the apt-get step) so a transient GitHub/CDN hiccup does not

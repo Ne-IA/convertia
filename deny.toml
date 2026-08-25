@@ -46,13 +46,15 @@ all-features = true
 # (audit.toml; G18 two-scanner reconciliation) — check-supply-chain asserts the two sets agree.
 version = 2
 yanked = "deny"
-# 20 advisories ACCEPTED below — 18 (P1.59) confirmed by `cargo audit` as `unmaintained`/`unsound`, NOT
-# vulnerabilities (`cargo audit` reports 0 vulnerabilities among THOSE 18), PLUS 2 REAL vulnerability
-# advisories (the quick-xml DoS pair RUSTSEC-2026-0194/-0195, owner-acked; per-id rationale in the block
-# below). All are PURELY TRANSITIVE (ConvertIA depends on none directly) with NO reachable fix in the current
-# Tauri/plist-locked tree. A NEW advisory not on this list STILL fails the gate (fail-closed); re-triage this
-# whole set on any deliberate Tauri/dep version bump (itself an L(-1) act). [Build-Session-Entscheidung:
-# P1.59; the quick-xml pair added by Co-Pilot under owner ack]
+# 21 advisories ACCEPTED below — 18 (P1.59) confirmed by `cargo audit` as `unmaintained`/`unsound`, NOT
+# vulnerabilities (`cargo audit` reports 0 vulnerabilities among THOSE 18), PLUS 3 REAL vulnerability
+# advisories (the quick-xml DoS pair RUSTSEC-2026-0194/-0195 + the rkyv OOB-read RUSTSEC-2026-0235
+# (locked-but-inert, never compiled), each owner-acked; per-id rationale in the block below). All are PURELY
+# TRANSITIVE (ConvertIA depends on none directly) with NO reachable fix in the current dependency tree (the
+# Tauri/plist pin for quick-xml; the rust_decimal `rkyv ^0.7` pin for rkyv). A NEW advisory not on this
+# list STILL fails the gate (fail-closed); re-triage this whole set on any deliberate Tauri/dep version
+# bump (itself an L(-1) act). [Build-Session-Entscheidung: P1.59; the quick-xml pair + the rkyv id added
+# by Co-Pilot under owner ack]
 ignore = [
   # gtk-rs GTK3 bindings — unmaintained (gtk-rs moved to GTK4). LINUX-ONLY, transitive via Tauri v2's
   # webkit2gtk-4.1 backend (gtk 0.18.2 <- tauri 2.11.3); absent from the Windows/macOS builds. No fix:
@@ -102,6 +104,16 @@ ignore = [
   # (enforced, not prose) and these ids removed the moment quick-xml exits the vulnerable range in the plist path.
   "RUSTSEC-2026-0194",  # quick-xml quadratic attribute-dedup DoS (transitive, runtime call site dead in ConvertIA)
   "RUSTSEC-2026-0195",  # quick-xml NsReader namespace-alloc DoS (not even reachable in plist's Reader path; both fixed >=0.41)
+  # rkyv OOB-read on archives containing Rc/Arc (RUSTSEC-2026-0235, fixed >=0.8.17) — LOCKED-BUT-INERT:
+  # rkyv 0.7.46 enters the lock only as rust_decimal 1.42.1's optional dep (tauri-plugin-log <- byte-unit
+  # <- rust_decimal), and NO active feature enables it (`cargo tree -i rkyv --target all` = empty; the
+  # tauri-plugin-fs forced-inert precedent) — never compiled into any artifact on any platform, and
+  # ConvertIA deserializes no rkyv archives anywhere. No reachable fix from our side: rust_decimal pins
+  # rkyv ^0.7. NB SCOPE: an advisory-ID ignore is GRAPH-WIDE — a future rkyv ACTIVATION (a direct dep, or
+  # a feature enabling rust_decimal/rkyv) would be silenced by this id, so it MUST land >=0.8.17 + a §0.8
+  # floor row; re-triage on any tauri-plugin-log/byte-unit/rust_decimal bump. MIRRORS audit.toml (G18
+  # two-scanner lock-step). [Co-Pilot, owner-acked, 2026-08-24]
+  "RUSTSEC-2026-0235",  # rkyv OOB-read in archived Rc/Arc (locked-but-inert optional dep of rust_decimal; never compiled)
 ]
 
 [licenses]
