@@ -79,9 +79,14 @@
 //! macOS apply fails). No Seatbelt profile is applied and no private-sandbox FFI enters the core (pinned by the
 //! `crate::platform` `no_seatbelt_apply_callsite_in_the_core` source-scan). spec §2.12.3 carries the ruling.
 //! Whether the achieved depth surfaces as a Rust tier value (e.g. a `SandboxTier` enum) or as an
-//! unconditional cheap floor plus best-effort privilege-drop with no runtime discriminant is a P4 shaping
-//! choice made WITH its real consumer (the P4.18 achieved-tier record) — no possibly-unused type is planted
-//! here (CLAUDE §5 no-premature-commitment; the P3.1 doc-only precedent).
+//! unconditional cheap floor plus best-effort privilege-drop with no runtime discriminant was left open
+//! here for the P4 box that would own its real consumer — no possibly-unused type was planted (CLAUDE §5
+//! no-premature-commitment; the P3.1 doc-only precedent). **P4.18 CLOSED it: a Rust value, but a per-LEG
+//! one.** `crate::platform::SpawnTier` (a leg id + its `LegOutcome`) is assembled by [`run_confined`] right
+//! after the spawn and handed out on [`crate::engines::ConfinedRun::tier`]; the legs are never collapsed
+//! into one discriminant, because they degrade independently (a FAT/exFAT or SMB destination degrades the
+//! Windows write confinement while its Job Object still attaches, and one value could not say so). Its
+//! durable projection is the tracked `privilege-drop-coverage.toml` the G64 ratchet reads.
 //!
 //! ## §2.12.4 absolute — the P3 walking-skeleton conversion BYPASSES this module entirely
 //! [Build-Session-Entscheidung: P3.2] The §2.12.4 absolute forbids any third-party C/C++ decoder in-core;
@@ -394,6 +399,55 @@ pub async fn run_confined(
             .take();
     }
 
+    // §2.12.3 achieved-tier record (P4.18): read the per-leg verdicts ONCE, here — the first point where a
+    // child exists and every leg has had its apply window — and thread the same record onto whichever arm
+    // the invocation ends on below. This is the production READ of the P4.17 hand-back cell's `integrity`
+    // verdict and of the P4.15 host probes; the durable projection is the platform's row in the tracked
+    // `privilege-drop-coverage.toml` the G64 ratchet guards, and the per-spawn assertion is P4.18.1's.
+    //
+    // The verdict SOURCE differs PER LEG because the apply point does (crate::platform::VERDICT_SOURCES is
+    // the record of which is which): Windows applied both legs parent-side on the still-suspended child, so
+    // each has a real per-spawn read-back — Leg A the `GetTokenInformation` re-read `lower_child_to` already
+    // performed, Leg B simply whether ConvertIA's own job attached (a `None` there IS the silent degrade).
+    // The two are recorded SEPARATELY, never collapsed: a FAT/exFAT or SMB destination legitimately leaves
+    // Leg B applied while Leg A degraded, and one tier value could not say so. On Linux the net-namespace
+    // leg is likewise read off the RUNNING CHILD (`/proc/<pid>/ns/net` vs ours), while Landlock and seccomp
+    // apply inside the pre-exec child with no channel back and are therefore host-capability readings;
+    // macOS records nothing (P4.16 — no leg exists). [Build-Session-Entscheidung: P4.18]
+    #[cfg(windows)]
+    let spawn_tier = {
+        let mut tier = crate::platform::SpawnTier::default();
+        let integrity = win_confinement
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .integrity;
+        tier.record(
+            crate::platform::LEG_INTEGRITY,
+            integrity.unwrap_or(crate::platform::LegOutcome::Degraded(
+                // No verdict at all means the label-then-lower GRANT was never issued for this spawn (a
+                // sink that could not be labelled), so the leg never reached its apply point — the
+                // `Unavailable` class, not a refused apply.
+                crate::platform::DegradeReason::Unavailable,
+            )),
+        );
+        tier.record(
+            crate::platform::LEG_JOB,
+            if child.job.is_some() {
+                crate::platform::LegOutcome::Applied
+            } else {
+                crate::platform::LegOutcome::Degraded(crate::platform::DegradeReason::Unavailable)
+            },
+        );
+        tier
+    };
+    // The pid is read while the child is still owned by the guard and has not been waited on, which is the
+    // only window in which `/proc/<pid>/ns/net` is guaranteed to exist; a child that raced us to exit yields
+    // the honest `Degraded(Unavailable)` rather than a guess.
+    #[cfg(target_os = "linux")]
+    let spawn_tier = crate::platform::spawn_leg_verdicts(child.inner.id());
+    #[cfg(not(any(target_os = "linux", windows)))]
+    let spawn_tier = crate::platform::SpawnTier::default();
+
     // Take the piped handles OUT so the two drains borrow THEM (owned) while `wait()` borrows the child —
     // all three run CONCURRENTLY under one `tokio::join!` on this task, so a full stdout/stderr pipe can never
     // back-pressure the child into a deadlock (the classic "wait without draining" hang). The whole join runs
@@ -461,11 +515,16 @@ pub async fn run_confined(
                 // consume it for the §3.5 `classify_failure(exit, stderr)` seam (P4.12). `Some` on both the
                 // clean and the crash arm; the non-completed arms (`ConfinedRun::failed`/`cancelled`) carry `None`.
                 exit: Some(status),
+                // The §2.12.3 achieved-tier record of THIS spawn (P4.18) — read above, right after the child
+                // existed. Present on every arm that really spawned, including the crash arm.
+                tier: Some(spawn_tier),
             }
         }
         // The reap itself failed — an internal fault, never a panic (the crate no-panic policy). `group_settled`
         // stays FALSE, so the guard group-kills on the way out: a failed reap must not leave the tree running.
-        Some((Err(_), _, _)) => ConfinedRun::failed(ConversionErrorKind::InternalError),
+        Some((Err(_), _, _)) => {
+            ConfinedRun::failed(ConversionErrorKind::InternalError).with_tier(spawn_tier)
+        }
         None => {
             // User cancel → the §1.7 step-2 GROUP-kill (P4.10): `start_kill` signals the whole process group
             // (`killpg(pgid, SIGKILL)`) / terminates the whole Job Object, so the engine AND every descendant
@@ -499,7 +558,7 @@ pub async fn run_confined(
             tokio::time::timeout(GROUP_CONFIRM_WAIT, child.inner.wait())
                 .await
                 .ok();
-            ConfinedRun::cancelled()
+            ConfinedRun::cancelled().with_tier(spawn_tier)
         }
     }
 }
@@ -520,7 +579,9 @@ fn group_wrapped(command: Command) -> CommandWrap {
 
 /// What the §2.12.3 Windows tier (P4.17) achieved for ONE spawn, handed back out of the `post_spawn` hook.
 /// `job` is moved into [`GroupKillGuard`] straight after the spawn (it owns the teardown decision);
-/// `integrity` is the Leg-A read-back the P4.18 achieved-tier record will consume.
+/// `integrity` is the Leg-A read-back the P4.18 achieved-tier record consumes — [`run_confined`] folds both
+/// into the spawn's [`crate::platform::SpawnTier`] right after the move, as the two SEPARATE per-leg
+/// verdicts the G64 record keeps un-collapsed.
 /// [Build-Session-Entscheidung: P4.17]
 #[cfg(windows)]
 #[derive(Debug, Default)]
@@ -531,10 +592,10 @@ struct WindowsConfinementOutcome {
     /// non-persistent-ACL sink, a blocked engine label), otherwise the `GetTokenInformation` read-back's
     /// applied-vs-degraded outcome.
     ///
-    /// `allow(dead_code)` (non-test): the production consumer is the P4.18 achieved-tier record — the same
-    /// posture the Linux `LegOutcome` reporters carry (P4.15). The tier tests below read it today, so the
-    /// field is genuinely exercised; P4.18 adds the production read.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Read in production by [`run_confined`] (P4.18) into the spawn's `SpawnTier` — the achieved-tier
+    /// record the G64 `privilege-drop-coverage.toml` ratchet is the durable projection of. `None` there is
+    /// NOT "applied": it means the grant was never issued, which the record maps to
+    /// `Degraded(Unavailable)`.
     integrity: Option<crate::platform::LegOutcome>,
 }
 
@@ -1658,6 +1719,217 @@ mod confined_spawn_tests {
                 "every concurrent cheap-tier `exit 0` spawn must reap to Succeeded (no deadlock / no leak)"
             );
         }
+    }
+
+    // ─── P4.18.1: the §2.12.3 per-spawn tier-APPLIED regression ──────────────────────────────────────
+    //
+    // This is the activation of the P0.5.9 isolation/privilege-drop home ("the privilege-drop-tier-applied
+    // per-run regression assertion", §6.4.2/test-strategy §6) and the named anchor of the **P0.7.12 leg-(a)
+    // enforcement SUBSTRATE**, the substrate P0.7.12 records as "activating with the first engine spawn in
+    // P4". Its three parts are asserted here, each exactly once, none of them re-stated:
+    //   * the `.env_clear()` spawn invariant — `the_child_runs_env_cleared_in_the_scratch_cwd` above (P4.13),
+    //     reinforced structurally by the G29 SAST rule on the spawn builder;
+    //   * the Landlock `{scratch rw, everything else denied}` grant + the net-deny namespace — the Linux
+    //     effect test below, driven through the PRODUCTION `run_confined` rather than through
+    //     `install_confinement` directly (which is what `crate::platform`'s per-leg tests exercise);
+    //   * the per-spawn achieved-tier record itself — the two cross-platform tests immediately below.
+    //
+    // The DIVISION OF LABOUR against the sibling gates: `crate::platform`'s `privilege_drop_record_tests`
+    // hold `privilege-drop-coverage.toml` to the CODE (host-independent); these hold it to a running SPAWN
+    // (host-dependent). Neither can substitute for the other — a leg can be present in code and silently
+    // stop attaching at spawn time, which is precisely the invisible regression G64 exists to surface.
+
+    // §2.12.3/§2.11.4 (G31/G42/G42b/G64, P4.18.1): every leg the platform's `privilege-drop-coverage.toml`
+    // row names reports a verdict on a REAL confined spawn — the mechanical half of "the achieved tier is
+    // applied on each engine spawn". A leg that stopped attaching would report nothing here.
+    #[tokio::test]
+    async fn every_recorded_leg_reports_a_verdict_on_a_real_confined_spawn() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        let (envelope, program) =
+            confined_shell_invocation(EXIT_ZERO, Some(scratch.path().to_path_buf()));
+        let run = run_confined(&envelope, &program, |_| {}).await;
+        assert_eq!(
+            run.result,
+            InvocationResult::Succeeded,
+            "non-vacuity: the confined child must really have run for its tier record to mean anything"
+        );
+        let tier = run.tier.expect(
+            "§2.12.3/P4.18: a spawn that produced a child always carries its achieved-tier record",
+        );
+        let reported: Vec<&str> = tier.verdicts().iter().map(|verdict| verdict.leg).collect();
+        assert_eq!(
+            reported,
+            crate::platform::ATTACHED_LEGS,
+            "§2.12.3/G64: every leg `privilege-drop-coverage.toml` records for this platform must report a \
+             per-spawn verdict — a leg that silently stopped attaching is the NET tier regression the G64 \
+             ratchet exists to surface"
+        );
+        // The tier a SPAWN reports must be BACKED by a verdict, never inferred from the leg set the build
+        // attaches: a `tier()` that read `ATTACHED_LEGS` instead of the recorded outcomes would claim the
+        // privilege-drop tier for a spawn where every leg degraded — an over-report, the one direction the
+        // G64 ratchet must never take. Asserted as an EQUIVALENCE so both directions bite (and so it cannot
+        // be trivially true the way a "reaches at most the recorded tier" phrasing would be, with only two
+        // possible tier values).
+        let any_applied = tier
+            .verdicts()
+            .iter()
+            .any(|verdict| verdict.outcome == crate::platform::LegOutcome::Applied);
+        assert_eq!(
+            tier.tier() == crate::platform::TIER_PRIVILEGE_DROP,
+            any_applied,
+            "§2.12.3/G64: a spawn reports the privilege-drop tier EXACTLY when one of its legs actually \
+             APPLIED — verdicts={:?}",
+            tier.verdicts()
+        );
+    }
+
+    // §2.12.3 (G31, P4.18.1): the NON-VACUITY partner of the assertion above — the record is `Some` because
+    // a child was confined, not because the field is unconditionally filled. A spawn that never produced a
+    // child (a missing engine binary, the §2.13.1 item-level spawn fault) has nothing to confine and must
+    // say so, so an empty record can never be mistaken for "the tier degraded".
+    #[tokio::test]
+    async fn a_spawn_that_never_produced_a_child_carries_no_tier_record() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        let (envelope, _program) =
+            confined_shell_invocation(EXIT_ZERO, Some(scratch.path().to_path_buf()));
+        let missing = scratch.path().join("no-such-engine-binary");
+        let run = run_confined(&envelope, &missing, |_| {}).await;
+        assert_eq!(
+            run.result,
+            InvocationResult::Failed(ConversionErrorKind::InternalError),
+            "non-vacuity: the spawn really failed before any child existed"
+        );
+        assert!(
+            run.tier.is_none(),
+            "§2.12.3/P4.18: no child, no confinement, no achieved-tier record — {:?}",
+            run.tier
+        );
+    }
+
+    // §2.12.3/§2.11.4 (G31/G42/G42b/G64, P4.18.1) — the Linux EFFECT half, through the production
+    // `run_confined` (the `crate::platform` per-leg tests drive `install_confinement` directly, so this is
+    // the first assertion that the wired-up spawn path really confines). It is also the P0.7.12 leg-(a)
+    // substrate in one observation: the confined child WRITES its own scratch (never-break — the Landlock
+    // `{scratch rw}` grant) while the out-of-input read the T9b fs-audit half targets is DENIED.
+    //
+    // Each leg is keyed on its own recorded verdict, the `match landlock_probe()` shape the P4.15 tests use
+    // — the tier degrades silently by design, so a kernel without Landlock must skip its arm rather than
+    // fail the build. The two arms differ in STRENGTH because their verdict sources do
+    // (`crate::platform::VERDICT_SOURCES`): Landlock's is a `host-probe`, so the assertion is one-directional
+    // (an APPLIED Landlock leg MUST deny; a degraded one says nothing about this spawn). The net-ns verdict
+    // is `per-spawn` — the parent compares the child's own `/proc/<pid>/ns/net` — so it is asserted as an
+    // EQUIVALENCE against what the child itself observed: the record must not claim a namespace the child
+    // never got (the over-report G64 must never take), and must not deny one it demonstrably did get.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn the_recorded_linux_legs_take_effect_on_a_real_confined_spawn() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        let outside = tempfile::tempdir().expect("a real dir OUTSIDE the Landlock grant set");
+        let sentinel = outside.path().join("out-of-sandbox.txt");
+        std::fs::write(&sentinel, b"sentinel").expect("plant the out-of-input sentinel");
+        // Every redirection targets the scratch cwd, so the parent reads each verdict off the filesystem.
+        // `2>/dev/null` keeps a denial quiet: a denied read must show as an EMPTY leak file, not as a
+        // failed script (the child must still complete — never-break).
+        let script = format!(
+            "readlink /proc/self/ns/net > netns.txt 2>/dev/null; \
+             cat {sentinel} > leaked.txt 2>/dev/null; \
+             : > done.txt",
+            sentinel = sentinel.display()
+        );
+        let (envelope, program) =
+            confined_shell_invocation(&script, Some(scratch.path().to_path_buf()));
+        let run = run_confined(&envelope, &program, |_| {}).await;
+        let tier = run
+            .tier
+            .expect("§2.12.3/P4.18: a spawned child always carries its achieved-tier record");
+        assert!(
+            scratch.path().join("done.txt").exists(),
+            "non-vacuity + never-break: the confined child ran AND could write its own scratch (the \
+             Landlock `{{scratch rw}}` grant, the P0.7.12 leg-(a) substrate)"
+        );
+
+        if tier.outcome_of(crate::platform::LEG_LANDLOCK)
+            == Some(crate::platform::LegOutcome::Applied)
+        {
+            let leaked = std::fs::read(scratch.path().join("leaked.txt")).unwrap_or_default();
+            assert!(
+                leaked.is_empty(),
+                "§2.12.3 Landlock: an APPLIED fs-restrict leg must DENY the out-of-sandbox read the \
+                 record claims it prevents — leaked {} bytes",
+                leaked.len()
+            );
+        }
+
+        let child_ns =
+            std::fs::read_to_string(scratch.path().join("netns.txt")).unwrap_or_default();
+        let parent_ns = std::fs::read_link("/proc/self/ns/net")
+            .map(|target| target.display().to_string())
+            .unwrap_or_default();
+        let netns = tier.outcome_of(crate::platform::LEG_NETNS);
+        // `Unavailable` = the parent could not read the membership at all (the child raced it to exit), so
+        // there is nothing to compare against; every OTHER verdict is a claim about this spawn and is held
+        // to what the child itself saw.
+        if netns
+            != Some(crate::platform::LegOutcome::Degraded(
+                crate::platform::DegradeReason::Unavailable,
+            ))
+        {
+            assert!(
+                !child_ns.trim().is_empty() && !parent_ns.is_empty(),
+                "non-vacuity: both namespace links must be readable for the equivalence below to mean \
+                 anything (child={child_ns:?} parent={parent_ns:?})"
+            );
+            assert_eq!(
+                netns == Some(crate::platform::LegOutcome::Applied),
+                child_ns.trim() != parent_ns,
+                "§2.12.3 net-ns: the record reports the egress-deny leg APPLIED for this spawn EXACTLY \
+                 when the child really ran in its OWN network namespace — over-reporting a namespace the \
+                 child never got is the one direction the G64 record must never take (child={child_ns:?} \
+                 parent={parent_ns:?} verdict={netns:?})"
+            );
+        }
+    }
+
+    // §2.12.3 (G31/G64, P4.18.1) — the Windows EFFECT half, through the production `run_confined`. Both
+    // P4.17 legs are applied parent-side on the still-suspended child, so both have a real per-spawn
+    // read-back and this is the assertion that the RECORDED tier is the tier a spawn actually reaches.
+    // Every Leg-A precondition holds here (a local NTFS scratch we created ourselves, an unlabelled
+    // System32 program), which is what keeps the assertion from passing forever on a silent-degrade arm —
+    // the same non-vacuity posture as `the_tier_actually_applies_on_a_local_scratch_with_an_owned_publish_temp`,
+    // one layer up: that one reads the internal hand-back cell, this one reads the PUBLIC per-spawn record.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn the_recorded_windows_legs_apply_on_a_real_confined_spawn() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        let (envelope, program) =
+            confined_shell_invocation(EXIT_ZERO, Some(scratch.path().to_path_buf()));
+        let run = run_confined(&envelope, &program, |_| {}).await;
+        assert_eq!(
+            run.result,
+            InvocationResult::Succeeded,
+            "non-vacuity + never-break: the confined child ran to a clean exit under BOTH applied legs"
+        );
+        let tier = run
+            .tier
+            .expect("§2.12.3/P4.18: a spawned child always carries its achieved-tier record");
+        assert_eq!(
+            tier.outcome_of(crate::platform::LEG_JOB),
+            Some(crate::platform::LegOutcome::Applied),
+            "§2.12.3 Leg B: ConvertIA's own kill-on-job-close Job Object attaches on every spawn — it \
+             depends on no volume or label precondition"
+        );
+        assert_eq!(
+            tier.outcome_of(crate::platform::LEG_INTEGRITY),
+            Some(crate::platform::LegOutcome::Applied),
+            "§2.12.3 Leg A: every label-then-lower precondition holds on a local NTFS scratch we own, so \
+             the write confinement must APPLY here — a degrade in THIS environment is a real defect, not \
+             the production silent-degrade (a FAT/exFAT or SMB destination)"
+        );
+        assert_eq!(
+            tier.tier(),
+            crate::platform::attached_tier(),
+            "§2.12.3/G64: with both legs applied the spawn reaches exactly the tier the record claims"
+        );
     }
 }
 

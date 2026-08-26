@@ -42,7 +42,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "of the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111): the P4.4/P4.5 registry build is live on the conductor's path (engine_registry() calls descriptor()+capabilities() and pre-computes the §0.9 serialised-flag map), but the EngineDescriptor.kind field-read and the serialised_flags() accessor stay dead until the P4.22 pool wiring consumes them, and EngineStatus/EngineHealth until the P4.45 startup probe assembles the real Ok(EngineHealth). The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the Engine trait + PlanOutcome return (P3.5-minimal, expanded to the full §3.2.2 surface and homed in engines/registry.rs at P4.1) and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.4 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), P4.13 authors crate::isolation::run_confined, P4.7 authors the §1.7 generic subprocess lane run_subprocess routing through it (the engines-side §1.7 seam P4.8/P4.9/P4.12 extend; itself dead until P4.32), and P4.32 rewrites the subprocess arms to call run_subprocess (once P4.32 resolves EngineProgram to the binary path) — so the dispatch fn + run_subprocess + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture. The P4.2-authored §3.2.2 ProbeOutput (the parsed §3.2.1 probe result) is constructed by an engine's parse_probe seam (P4.9, registry.rs) and read by run_probe_then_encode (which hands it to plan_encode) — dead in the PRODUCTION build until the P6.10 ffprobe adapter overrides parse_probe/plan_encode to construct + read it (every registered v1 engine before P6 is single-step, so both seams hit the InternalError default); its cfg(test) shape test + the P4.9 synthetic-probe-engine suite construct + read all four fields, keeping the test build dead-code-clean. The P4.3-authored §3.2.2 leaf types (Direction / PatentDisposition / CodecPosture / EngineCapability + the SourceFmt/TargetFmt aliases) are NAMED by the P4.1 trait signatures (capabilities(platform, patents)) and the native engine's capability row, but their construction sites stay dead until the P4.4 registry calls capabilities() and the P4.40 engines.lock parse builds the disposition; their cfg(test) shape tests construct + read every field, keeping the test build dead-code-clean. P4.8 adds ProgressModel::progress_fraction + fraction_of (the §1.7 per-ProgressModel line->fraction parse) and the ConfinedRun captured-stream outcome (failed/cancelled/hung ctors + the stdout/stderr buffers the P4.9 probe-parse / P4.12 stderr-classify consume, plus the P4.12-added ConfinedRun.exit raw ExitStatus the P4.12 classify_exit reads for the §3.5 classify_failure seam) — all constructed/called only by the dead crate::isolation::run_confined until run_subprocess becomes a live root at P4.32, so dead in the production build; their cfg(test) unit + real-subprocess tests exercise the parse + the capture, keeping the test build dead-code-clean. P4.12 adds bounded_confined_run (the §1.7 no-progress/wall-clock watchdog over run_confined, shared by BOTH run_subprocess AND run_probe_then_encode so both §1.7 sub-invocations are bounded) + ConfinedRun::hung (its Failed(EngineHang) outcome) + classify_exit (the exit≠0 -> §3.5 classify_failure routing); run_subprocess + run_probe_then_encode now carry the &dyn Engine handle + the per-engine wall_clock/no_progress bounds and stay dead in the production build until P4.32 (run_subprocess) / P6.10 (run_probe_then_encode), exercised by the cfg(test) subprocess + probe suites. P4.9 adds the parse_probe Engine trait seam (default InternalError, registry.rs, overridden by the P6.10 ffprobe adapter) and the run_probe_then_encode two-step sequencing (spawn probe via run_confined -> parse_probe -> plan_encode -> the encode Invocation); run_probe_then_encode calls run_confined directly (it needs the &dyn Engine handle the per-invocation run_subprocess lane does not carry) and has NO production caller until P6.10 wires it through the conductor's Probe arm (with the P4.32 EngineProgram->path resolution + the concrete ffprobe engine), so it is dead in the production build like run_subprocess; its cfg(test) synthetic-probe-engine suite exercises the whole sequence over a real subprocess, keeping the test build dead-code-clean."
+        reason = "of the §3.2 engine-seam descriptor types EngineId/EngineKind/EngineDescriptor + the §7.2.3 EngineStatus/EngineHealth wire DTOs (P2.110/P2.111): the P4.4/P4.5 registry build is live on the conductor's path (engine_registry() calls descriptor()+capabilities() and pre-computes the §0.9 serialised-flag map), but the EngineDescriptor.kind field-read and the serialised_flags() accessor stay dead until the P4.22 pool wiring consumes them, and EngineStatus/EngineHealth until the P4.45 startup probe assembles the real Ok(EngineHealth). The C12 get_engine_health return (P2.113) REGISTERS EngineStatus/EngineHealth into bindings.ts via its Result<EngineHealth, IpcError> signature, but its honest Err shell constructs neither, so their fields stay unread (dead) until the P4.45 probe assembles the real Ok(EngineHealth). AppInfo (P2.112) + the §3.2.2 Platform leaf (P2.132) are now LIVE — P2.98's C11 get_app_info assembles a real Ok(AppInfo) (AppInfo::gather()), constructing Platform via current_platform(); the P4 capabilities(platform) consumers construct Platform further. The P3.4 §3.2.2 plan-seam hull (Invocation/EngineProgram/StdinPlan/TempPath/PlanError/ProgressModel) + the §1.7 EngineInvocation/InvocationResult + the dispatch fn — plus the Engine trait + PlanOutcome return (P3.5-minimal, expanded to the full §3.2.2 surface and homed in engines/registry.rs at P4.1) and the NativeCsvTsvEngine impl — are authored ahead of their consumers: the P4.4 §3.2.3 registry constructs the native engine, P3.44/P3.45 extend the P3.43 dispatch InProcessNative arm (cooperative cancel / wall-clock timeout — P3.45 adds the bounded_lane wall-clock wrapper, dead until dispatch is a live root), P4.13 authors crate::isolation::run_confined, P4.7 authors the §1.7 generic subprocess lane run_subprocess routing through it (the engines-side §1.7 seam P4.8/P4.9/P4.12 extend; itself dead until P4.32), and P4.32 rewrites the subprocess arms to call run_subprocess (once P4.32 resolves EngineProgram to the binary path) — so the dispatch fn + run_subprocess + the plan-seam hull stay dead in the production build until the P3.46 conductor calls dispatch (the cfg(test) tests below construct + exercise them — the native engine's plan() is called there — so the test build is dead-code-clean). The P3.41 §3.5.6 native transform (csv_tsv_transform / transform_bytes / CsvTsvTarget / TransformError / delimiter_byte) + its P3.44 cooperative-cancel TransformStatus + run_native_csv_tsv are WIRED by the P3.43 dispatch InProcessNative arm onto crate::pool::run_in_core but STAY dead in the production build until the P3.46 conductor makes dispatch a live root: rustc does NOT propagate liveness through a dead-but-present caller to its callees (a pub fn in a private module of a bin crate is not itself a root), so the whole InProcessNative chain (dispatch -> run_native_csv_tsv -> the transform + run_in_core) is dead until then. The P3.42 §3.5.6 CSV-injection literal-preservation checker (assert_injection_cells_preserved / InjectionCellNotPreserved) is dead until the P3.62 G32 corpus binding calls it over the injection fixture. The P4.2-authored §3.2.2 ProbeOutput (the parsed §3.2.1 probe result) is constructed by an engine's parse_probe seam (P4.9, registry.rs) and read by run_probe_then_encode (which hands it to plan_encode) — dead in the PRODUCTION build until the P6.10 ffprobe adapter overrides parse_probe/plan_encode to construct + read it (every registered v1 engine before P6 is single-step, so both seams hit the InternalError default); its cfg(test) shape test + the P4.9 synthetic-probe-engine suite construct + read all four fields, keeping the test build dead-code-clean. The P4.3-authored §3.2.2 leaf types (Direction / PatentDisposition / CodecPosture / EngineCapability + the SourceFmt/TargetFmt aliases) are NAMED by the P4.1 trait signatures (capabilities(platform, patents)) and the native engine's capability row, but their construction sites stay dead until the P4.4 registry calls capabilities() and the P4.40 engines.lock parse builds the disposition; their cfg(test) shape tests construct + read every field, keeping the test build dead-code-clean. P4.8 adds ProgressModel::progress_fraction + fraction_of (the §1.7 per-ProgressModel line->fraction parse) and the ConfinedRun captured-stream outcome (failed/cancelled/hung ctors + the stdout/stderr buffers the P4.9 probe-parse / P4.12 stderr-classify consume, plus the P4.12-added ConfinedRun.exit raw ExitStatus the P4.12 classify_exit reads for the §3.5 classify_failure seam) — all constructed/called only by the dead crate::isolation::run_confined until run_subprocess becomes a live root at P4.32, so dead in the production build; their cfg(test) unit + real-subprocess tests exercise the parse + the capture, keeping the test build dead-code-clean. P4.12 adds bounded_confined_run (the §1.7 no-progress/wall-clock watchdog over run_confined, shared by BOTH run_subprocess AND run_probe_then_encode so both §1.7 sub-invocations are bounded) + ConfinedRun::hung (its Failed(EngineHang) outcome) + classify_exit (the exit≠0 -> §3.5 classify_failure routing); run_subprocess + run_probe_then_encode now carry the &dyn Engine handle + the per-engine wall_clock/no_progress bounds and stay dead in the production build until P4.32 (run_subprocess) / P6.10 (run_probe_then_encode), exercised by the cfg(test) subprocess + probe suites. P4.9 adds the parse_probe Engine trait seam (default InternalError, registry.rs, overridden by the P6.10 ffprobe adapter) and the run_probe_then_encode two-step sequencing (spawn probe via run_confined -> parse_probe -> plan_encode -> the encode Invocation); run_probe_then_encode calls run_confined directly (it needs the &dyn Engine handle the per-invocation run_subprocess lane does not carry) and has NO production caller until P6.10 wires it through the conductor's Probe arm (with the P4.32 EngineProgram->path resolution + the concrete ffprobe engine), so it is dead in the production build like run_subprocess; its cfg(test) synthetic-probe-engine suite exercises the whole sequence over a real subprocess, keeping the test build dead-code-clean. P4.18 adds the ConfinedRun.tier field (the §2.12.3 crate::platform::SpawnTier achieved-tier record) + its with_tier builder: crate::isolation::run_confined assembles the record and attaches it on every spawned arm, and the P4.18/P4.18.1 cfg(test) suites read it back, so like every sibling above it is live in the test build and dead in the production build until run_subprocess becomes a live root at P4.32."
     )
 )]
 
@@ -719,6 +719,25 @@ pub struct ConfinedRun {
     /// `None` = no engine exit was observed — mis-built plan / spawn error / reap fault / user cancel). The
     /// P4.12 exit-classification input for the §3.5 `classify_failure(exit, stderr)` seam.
     pub exit: Option<ExitStatus>,
+    /// The §2.12.3 achieved privilege-drop tier of THIS spawn (**P4.18**) — the per-leg record
+    /// [`crate::platform::SpawnTier`] the G64 `privilege-drop-coverage.toml` row is the durable projection
+    /// of, and the value the P4.18.1 per-spawn tier-APPLIED regression asserts. `Some` on every arm
+    /// [`crate::isolation::run_confined`] itself returns after spawning a child — clean exit, crash exit,
+    /// reap fault, user cancel — since the tier applies at spawn time and is therefore observable on all of
+    /// them. `None` in exactly two shapes: the PRE-spawn arms (a mis-built plan, a spawn error) where no
+    /// child ever existed to confine, and the WATCHDOG-HANG arm — where a child very much did exist and was
+    /// confined, but [`bounded_confined_run`] reaps by DROPPING the pinned `run_confined` future, which
+    /// discards the record along with it and synthesises [`ConfinedRun::hung`] in its place. That second
+    /// shape is a real (small) hole in the record's coverage of hung decoders, stated here rather than
+    /// papered over: closing it would mean publishing the tier out of the run before the drop, which is a
+    /// change to the watchdog's shape, not to this box's record.
+    ///
+    /// This is the shaping choice `crate::isolation`'s P3.2 contract map and `crate::platform`'s
+    /// `LegOutcome` doc both left to P4.18 to make WITH its real consumer: the tier surfaces as the
+    /// spawn's OWN per-leg outcome rather than as a global discriminant, because the legs degrade per
+    /// spawn (a destination on a FAT/exFAT stick degrades Leg A for that item and no other) — a
+    /// process-wide value could not express that.
+    pub tier: Option<crate::platform::SpawnTier>,
 }
 
 impl ConfinedRun {
@@ -730,6 +749,7 @@ impl ConfinedRun {
             stdout: Vec::new(),
             stderr: Vec::new(),
             exit: None,
+            tier: None,
         }
     }
 
@@ -741,6 +761,7 @@ impl ConfinedRun {
             stdout: Vec::new(),
             stderr: Vec::new(),
             exit: None,
+            tier: None,
         }
     }
 
@@ -755,7 +776,19 @@ impl ConfinedRun {
             stdout: Vec::new(),
             stderr: Vec::new(),
             exit: None,
+            tier: None,
         }
+    }
+
+    /// Attach the §2.12.3 achieved-tier record of the spawn that produced this outcome (**P4.18**).
+    /// A builder rather than a fourth constructor parameter: the three constructors above are also used on
+    /// the PRE-spawn arms, where there is no tier to attach, so the tier is added exactly on the arms that
+    /// really spawned a child — `run_confined` reads its per-leg verdicts once, right after the spawn, and
+    /// threads the same record onto whichever arm the invocation ends on.
+    /// [Build-Session-Entscheidung: P4.18]
+    pub(crate) fn with_tier(mut self, tier: crate::platform::SpawnTier) -> Self {
+        self.tier = Some(tier);
+        self
     }
 }
 
@@ -872,6 +905,9 @@ async fn run_subprocess(
         stdout: _,
         stderr,
         exit,
+        // The P4.18 §2.12.3 achieved-tier record rides the spawn outcome for the G64 record + the P4.18.1
+        // per-spawn regression; it is not an input to the §2.8 classification this lane performs.
+        tier: _,
     } = bounded_confined_run(invocation, program, on_progress, wall_clock, no_progress).await;
     classify_exit(result, exit, &stderr, engine)
 }
@@ -1047,6 +1083,8 @@ async fn run_probe_then_encode(
         stdout,
         stderr,
         exit,
+        // As in `run_subprocess`: the P4.18 tier record is the spawn's, not an input to the probe parse.
+        tier: _,
     } = bounded_confined_run(probe, probe_program, |_| {}, wall_clock, no_progress).await;
     // Refine a non-success probe exit through the engine's §3.5 classifier (P4.12, `classify_exit`) over the
     // captured stderr — it passes a clean `Succeeded` and a user `Cancelled` through unchanged and refines the
@@ -3603,6 +3641,135 @@ mod tests {
             started.elapsed() >= Duration::from_millis(500),
             "non-vacuity: the quiet child must really have run PAST the 50 ms no_progress bound (ran {:?})",
             started.elapsed()
+        );
+    }
+
+    // ─── P4.18.3: the process-group / Job-Object REAP regression (the P0.5.9 home) ────────────────────
+    //
+    // "After a kill, NO orphaned descendant of the engine survives." The kill has three triggers and they
+    // fail INDEPENDENTLY, so each is regressed where its mechanism lives: the CANCEL trigger is
+    // `crate::isolation`'s `a_cancel_group_kills_the_engines_descendants`, the Windows job-teardown trigger
+    // (the memory-cap / kill-on-job-close path) is `crate::platform`'s
+    // `dropping_an_armed_job_reaps_the_childs_descendants_too`, and the §1.7 WATCHDOG-TIMEOUT trigger is
+    // here — the only one that runs through `bounded_confined_run`, which reaps by DROPPING the pinned
+    // `run_confined` future so `GroupKillGuard::Drop` issues the whole-group kill. That indirection is
+    // exactly why it needs its own regression: a refactor that awaited the run instead of dropping it would
+    // still return `Failed(EngineHang)` and pass every other watchdog test, while quietly leaking the tree.
+
+    // A descendant-leaving engine: it starts a DETACHED grandchild that outlives the launcher's own reap
+    // window, then hangs itself so the wall-clock watchdog fires. The grandchild writes an early marker at
+    // once (non-vacuity: it really ran), then APPENDS a heartbeat once a second for far longer than the
+    // test's own horizon.
+    //
+    // A HEARTBEAT rather than a single late marker, and that is the whole determinism of this test. A
+    // one-shot "the orphan writes `alive.txt` after N seconds" marker makes the assertion depend on TWO
+    // wall-clock guesses at once — the descendant must start before the reap fires, AND the test must wait
+    // past `descendant_start + N`. Under a full-suite parallel run the first guess is the one that breaks:
+    // the descendant had not started when the reap came, so the non-vacuity assertion failed (observed —
+    // this test was rebuilt for exactly that). A heartbeat removes the second guess entirely: the parent
+    // snapshots the file's LENGTH after the reap, waits a short fixed window, and asserts it did not grow.
+    // That is true whenever the descendant started at all, no matter WHEN, so only the first ordering
+    // remains — and it is given a generous budget and fails LOUDLY (an absent early marker) rather than
+    // silently passing.
+    //
+    // Windows uses `waitfor.exe` rather than `ping.exe` for the sleeps for the reason the no-tick test above
+    // records: under the §2.12.3 `[DECIDED — P4.17]` tier the engine's children run below Medium and are
+    // refused the device objects a socket needs, so a `ping` sleep would return instantly and the heartbeat
+    // would spin at full speed. `.\` on the script path is likewise load-bearing (a bare name is not
+    // resolved from the current directory on a host with `NoDefaultCurrentDirectoryInExePath` set).
+    // [Build-Session-Entscheidung: P4.18.3]
+    fn descendant_leaving_script(scratch: &Path) -> String {
+        #[cfg(windows)]
+        {
+            std::fs::write(
+                scratch.join("descendant.cmd"),
+                "@echo off\r\n\
+                 echo x> started.txt\r\n\
+                 for /L %%i in (1,1,60) do (\r\n\
+                 echo x>> ticks.txt\r\n\
+                 %SystemRoot%\\System32\\waitfor.exe /t 1 convertiareaptick >nul 2>&1\r\n\
+                 )\r\n",
+            )
+            .expect("write the descendant script into the scratch dir");
+            "start /b cmd /d /c .\\descendant.cmd & \
+             %SystemRoot%\\System32\\waitfor.exe /t 90 convertiareaphang >nul 2>&1"
+                .to_owned()
+        }
+        #[cfg(unix)]
+        {
+            let _ = scratch;
+            "( : > started.txt; i=0; while [ $i -lt 60 ]; do echo x >> ticks.txt; sleep 1; \
+             i=$((i+1)); done ) & sleep 90"
+                .to_owned()
+        }
+    }
+
+    // Poll for a marker, bounded — the assertion is armed off the EARLY marker, never off a wall-clock guess
+    // that could fire before the descendant even existed.
+    async fn marker_appeared(marker: &Path, bound: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + bound;
+        while tokio::time::Instant::now() < deadline {
+            if marker.exists() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        marker.exists()
+    }
+
+    // The heartbeat file's length — `0` while it does not exist yet, so a descendant reaped before its
+    // first tick reads as "not growing" exactly like one reaped further along.
+    fn heartbeat_len(path: &Path) -> u64 {
+        std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
+    }
+
+    // §1.7/§2.12.3 (G31/G64, P4.18.3): the WALL-CLOCK watchdog's reap tears down the engine's DESCENDANT
+    // too. `the_wall_clock_watchdog_reaps_an_overrunning_subprocess_to_engine_hang` above proves the
+    // watchdog's VERDICT; this proves its TEARDOWN — the half that leaks in production, where a launcher
+    // (`soffice`) re-execs a worker (`soffice.bin`) that a direct-child-only kill would orphan, leaving it
+    // holding the scratch file the §2.6.4 cleanup then cannot remove.
+    #[tokio::test]
+    async fn the_watchdog_reap_leaves_no_orphaned_descendant() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
+        let script = descendant_leaving_script(scratch.path());
+        let (hanging, program) = seam_shell_invocation(&script, scratch.path().to_path_buf());
+        let started = scratch.path().join("started.txt");
+        let ticks = scratch.path().join("ticks.txt");
+        // 10 s of wall clock is the descendant's budget to exist before the reap — five times what a
+        // detached grandchild needs on an idle host, so a fully loaded CI runner still clears it. The
+        // heartbeat runs 60 s, far past everything this test does.
+        let result = bounded_confined_run(
+            &hanging,
+            &program,
+            |_| {},
+            Duration::from_secs(10), // wall_clock: the trigger
+            SEAM_NO_PROGRESS,        // no_progress: inert for this CoarseSpawnDone model
+        )
+        .await;
+        assert_eq!(
+            result.result,
+            InvocationResult::Failed(ConversionErrorKind::EngineHang),
+            "§1.7: the wall-clock watchdog reaps an overrunning engine to Failed(EngineHang)"
+        );
+        assert!(
+            marker_appeared(&started, Duration::from_secs(5)).await,
+            "non-vacuity: the descendant must really have run, or the frozen heartbeat below would prove \
+             nothing — it would just be a process that never started"
+        );
+        // The heartbeat is the observation: a reaped descendant stops appending; an ORPHAN keeps going,
+        // whenever it happened to start. A short settle first — an append already in flight when the kill
+        // lands may still complete, and reading across that would be a one-off FALSE RED; bounded and
+        // one-directional, it can never hide a survivor.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let at_reap = heartbeat_len(&ticks);
+        // Several of the descendant's own tick intervals: a survivor appends throughout this window.
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert_eq!(
+            heartbeat_len(&ticks),
+            at_reap,
+            "§1.7/§2.12.3: the watchdog's reap group-killed the engine's DESCENDANT too — a teardown that \
+             only killed the immediate child would have left it appending to its heartbeat throughout this \
+             window (the `soffice` → `soffice.bin` orphan class)"
         );
     }
 

@@ -745,44 +745,254 @@ fn ephemeral_roots() -> Vec<PathBuf> {
 /// The applied-vs-degraded outcome of ONE §2.12.3 privilege-drop leg (P4.15) — INTERNAL
 /// (no serde / IPC, `Debug` only; it never crosses the §0.4 wire). Consumed by the per-leg
 /// tests (a Landlock failure does not imply a seccomp / net-ns failure, so each leg reports
-/// independently — the P4.15 box's per-leg-independence contract); the §2.12.3
-/// achieved-tier record (P4.18) + the per-spawn tier-APPLIED regression (P4.18.1) are the
-/// P4.18 aggregate consumers. Not surfaced on [`crate::engines::ConfinedRun`] here — that
-/// shaping choice is P4.18's, made with its real consumer (no premature type, CLAUDE §5).
+/// independently — the P4.15 box's per-leg-independence contract) and, since **P4.18**, by
+/// [`SpawnTier`] — the achieved-tier record every confined spawn hands out on
+/// [`crate::engines::ConfinedRun::tier`]. That is the shaping choice P4.15 left to P4.18: the record
+/// keeps the PER-LEG verdicts rather than collapsing them to one tier value, because the two Windows
+/// legs degrade independently (a FAT/exFAT or SMB destination can leave Leg B applied while Leg A
+/// degrades) and a collapsed value would hide exactly that.
 ///
-/// `allow(dead_code)` (non-test), NOT `expect`: today only the per-leg tests + the (also test-only)
-/// [`landlock_probe`]/[`seccomp_probe`] reporters consume this; the production consumer is the P4.18
-/// achieved-tier record. An `expect` dead-code lint FAILS here — the reporter fn BODIES compile in the
-/// non-test build and CONSTRUCT these variants, so the enum is not "dead" and the `expect` flips to
-/// unfulfilled (the fs_guard forward-declared-item precedent). When P4.18 wires a real caller the reporters
-/// become live and this `allow` can be dropped.
+/// `allow(dead_code)` (non-test), NOT `expect`: the reporter fn BODIES compile in the non-test build and
+/// CONSTRUCT these variants, so an `expect` would flip to unfulfilled (the fs_guard forward-declared-item
+/// precedent). The P4.18 production reader ([`crate::isolation::run_confined`] assembling the [`SpawnTier`])
+/// exists, but rustc does not propagate liveness through a DEAD caller and that whole confined-spawn lane
+/// stays dead until **P4.32** wires the subprocess dispatch arms — the same phenomenon the module-level
+/// dead-code expectation in `crate::engines` records for `ConfinedRun` itself. The annotation therefore
+/// stands until P4.32, then drops with its siblings.
 ///
 /// Shared with the §2.12.3 WINDOWS tier (P4.17), whose Leg-A `lower_child_to` reports the same
 /// three outcomes over the same grant-IS-the-enforcement model — one per-leg vocabulary across both
-/// per-OS tiers, so the P4.18 record reads a single shape. (macOS is DECIDED cheap-tier only, P4.16, so
-/// it has no leg to report.)
-#[cfg(any(target_os = "linux", windows))]
-#[cfg_attr(not(test), allow(dead_code))]
+/// per-OS tiers, so the P4.18 record reads a single shape. It is deliberately declared on ALL platforms
+/// (P4.18): macOS is DECIDED cheap-tier only (P4.16) and so constructs no verdict, but naming the same type
+/// in the same [`SpawnTier`] shape everywhere is what lets one record, one accessor set and one test read
+/// every platform — a macOS-only variant of the record would fork the shape the forward note asks to keep
+/// single. `dead_code` is therefore allowed on macOS unconditionally (there is no leg to construct there),
+/// where on Linux/Windows it is the non-test annotation above.
+#[cfg_attr(any(not(test), target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LegOutcome {
-    /// The kernel confirmed the restriction is in force (the grant-IS-enforcement model).
+    /// The leg's [`VERDICT_SOURCES`] reading says the restriction is in force (the
+    /// grant-IS-enforcement model). Its STRENGTH is the source's: a `per-spawn` source answered about THIS
+    /// spawn's own child, so `Applied` is a confirmation for that spawn; a `host-probe` source asked the
+    /// kernel about this HOST, so `Applied` says the mechanism is in force here, not that this individual
+    /// child received it (those legs' effect proofs are named on [`SpawnTier`]). Never read a bare `Applied`
+    /// without its source.
     Applied,
     /// Silently degraded to the P4.13 cheap-tier floor; the reason distinguishes the classes.
     Degraded(DegradeReason),
 }
 
-#[cfg(any(target_os = "linux", windows))]
-#[cfg_attr(not(test), allow(dead_code))]
+/// Why a [`LegOutcome`] degraded. Declared on all platforms for the same single-shape reason as
+/// [`LegOutcome`] (P4.18).
+#[cfg_attr(any(not(test), target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DegradeReason {
-    /// The OS feature is absent — Landlock ABI < 1 (kernel < 5.13), unprivileged userns
-    /// denied, seccomp unsupported on this arch/kernel, or (Windows, P4.17) the child's token /
-    /// the confinement SID could not be obtained at all.
+    /// The restriction was never issued at all, so there is nothing to enforce — the OS feature is absent
+    /// (Landlock ABI < 1 on a kernel < 5.13, seccomp unsupported on this arch/kernel), the mechanism could
+    /// not be addressed (Windows, P4.17: the child's token or the confinement SID could not be obtained;
+    /// P4.18: the child's namespace membership could not be read), or (P4.18) the leg's GRANT was never
+    /// issued for this spawn — a Windows sink that could not be labelled, so the token was never lowered.
+    /// The common thread is "not observed to be in force", never "observed to have failed".
     Unavailable,
     /// The grant call returned but did NOT enforce (Landlock `RulesetStatus::NotEnforced`; on
     /// Windows a `SetTokenInformation` whose integrity read-back does not show the requested
     /// level) — the "assert the grant applied, never assume it took" signal (P4.15.1 / P4.17).
     NotApplied,
+}
+
+// ============================================================================
+// §2.12.3 ACHIEVED PRIVILEGE-DROP TIER — the G64 record's in-code half (P4.18)
+//
+// G64 (build-gates.md; the ratchet policy in docs/process/gate-status.md, P0.7.14) records the
+// tier each platform ACHIEVES into the tracked `privilege-drop-coverage.toml` and guards it
+// against a DECREASE, because the §2.12.3 tier is best-effort and silently degrades: a subsequent
+// phase that quietly drops a platform from the privilege-drop tier to the cheap floor would
+// otherwise be invisible (the T1 honest residual). This block is the half the code owns —
+// the leg vocabulary the record is keyed by, the leg set THIS build attaches per platform, and
+// the per-spawn verdict record. The `.toml` is the durable projection of it; the P4.18 record
+// test binds the two so neither can drift from the other.
+//
+// [Build-Session-Entscheidung: P4.18] the record is keyed by STABLE STRING leg ids rather than a
+// cross-platform enum: the legs are disjoint per OS (three on Linux, two on Windows, none on
+// macOS), so one enum would carry variants that are unconstructible — and therefore dead — on
+// every platform but one, while the ids have to survive verbatim into a `.toml` row anyway. The
+// ids are `const`s, not literals at the use sites, so the record key and the verdict key are ONE
+// decision that cannot drift.
+// ============================================================================
+
+/// The §2.12.3 tier NAMES the G64 `privilege-drop-coverage.toml` record uses, lowest first — the
+/// ratchet's order (a platform moving from [`TIER_PRIVILEGE_DROP`] down to [`TIER_CHEAP`] is the NET
+/// regression G64 exists to make visible). [`TIER_CHEAP`] is the §2.12.3 non-negotiable v1 floor that
+/// ships unconditionally on all three OSes (P4.13). [Build-Session-Entscheidung: P4.18]
+pub(crate) const TIER_CHEAP: &str = "cheap";
+
+/// The §2.12.3 best-effort tier — reached when the platform attaches at least one privilege-drop leg
+/// on top of the [`TIER_CHEAP`] floor. [Build-Session-Entscheidung: P4.18]
+pub(crate) const TIER_PRIVILEGE_DROP: &str = "privilege-drop";
+
+/// Leg id — the P4.15.2 network-namespace egress-deny leg (Linux).
+#[cfg(target_os = "linux")]
+pub(crate) const LEG_NETNS: &str = "netns";
+/// Leg id — the P4.15.1 Landlock fs-restrict leg (Linux).
+#[cfg(target_os = "linux")]
+pub(crate) const LEG_LANDLOCK: &str = "landlock";
+/// Leg id — the P4.15.3 seccomp-bpf syscall-deny leg (Linux).
+#[cfg(target_os = "linux")]
+pub(crate) const LEG_SECCOMP: &str = "seccomp";
+/// Leg id — the P4.17 Leg-A intermediate-integrity write confinement (Windows).
+#[cfg(windows)]
+pub(crate) const LEG_INTEGRITY: &str = "integrity";
+/// Leg id — the P4.17 Leg-B own kill-on-job-close Job Object (Windows).
+#[cfg(windows)]
+pub(crate) const LEG_JOB: &str = "job";
+
+/// The §2.12.3 privilege-drop legs THIS build attaches on the current platform, in apply order — the
+/// MECHANISM set the G64 record pins per platform. It is a compile-time fact, not a host reading: a
+/// commit that removes a leg from the code changes this slice, and the P4.18 record test then reddens
+/// against the unchanged `.toml` row. That is the host-independent half of the decrease guard (the
+/// host-dependent half is the per-spawn [`SpawnTier`] verdicts).
+///
+/// Linux attaches all three P4.15 legs; Windows the two P4.17 legs; **macOS attaches none** — its tier
+/// is DECIDED the cheap-tier floor only (P4.16), so the empty slice is the honest record, not a gap.
+///
+/// `allow(dead_code)` (non-test): this constant's consumer IS the record binding — the P4.18 test that
+/// holds it and `privilege-drop-coverage.toml` identical. Same posture as its ratchet siblings
+/// (`coverage-floors.toml` / `max_survived_mutants.toml` have no production reader either): the value is a
+/// tracked FACT the gate layer compares, not an input the app branches on.
+#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(target_os = "linux")]
+pub(crate) const ATTACHED_LEGS: &[&str] = &[LEG_NETNS, LEG_LANDLOCK, LEG_SECCOMP];
+/// The Windows leg set — see the Linux declaration above for the contract.
+#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(windows)]
+pub(crate) const ATTACHED_LEGS: &[&str] = &[LEG_INTEGRITY, LEG_JOB];
+/// The macOS leg set: EMPTY by the P4.16 decision — see the Linux declaration above for the contract.
+#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(not(any(target_os = "linux", windows)))]
+pub(crate) const ATTACHED_LEGS: &[&str] = &[];
+
+/// How EACH leg's verdict is OBSERVED, paired with its [`ATTACHED_LEGS`] id — recorded in
+/// `privilege-drop-coverage.toml` beside the leg set so the asymmetry is a CHECKED fact, not prose that can
+/// quietly stop being true. It is PER LEG, not per platform, because the strength of a verdict follows the
+/// leg's apply point, and Linux mixes the two:
+///
+/// * `"per-spawn"` — the verdict is about THIS spawn's own child, so it is a real confirmation for it: the
+///   Windows integrity leg re-reads the child's token (`GetTokenInformation`), the Windows job leg is
+///   whether the assignment to ConvertIA's own job succeeded, and the Linux net-namespace leg compares the
+///   child's `/proc/<pid>/ns/net` against the parent's.
+/// * `"host-probe"` — the leg applies inside the pre-exec child, which has no channel back to the parent, so
+///   the verdict is what the KERNEL answers for this host: it says the mechanism is in force on this machine,
+///   it does NOT confirm this individual spawn. Landlock and seccomp read this way, and the per-spawn proof
+///   that they took effect is the EFFECT the P4.18.1 regression measures.
+///
+/// EMPTY on macOS — no leg, so no verdict (P4.16). Same `allow(dead_code)` posture as [`ATTACHED_LEGS`] —
+/// the record binding is its consumer. [Build-Session-Entscheidung: P4.18]
+#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(target_os = "linux")]
+pub(crate) const VERDICT_SOURCES: &[(&str, &str)] = &[
+    (LEG_NETNS, "per-spawn"),
+    (LEG_LANDLOCK, "host-probe"),
+    (LEG_SECCOMP, "host-probe"),
+];
+/// The Windows verdict sources — see the Linux declaration above for the contract.
+#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(windows)]
+pub(crate) const VERDICT_SOURCES: &[(&str, &str)] =
+    &[(LEG_INTEGRITY, "per-spawn"), (LEG_JOB, "per-spawn")];
+/// The macOS verdict sources: EMPTY — see the Linux declaration above for the contract.
+#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(not(any(target_os = "linux", windows)))]
+pub(crate) const VERDICT_SOURCES: &[(&str, &str)] = &[];
+
+/// The §2.12.3 tier [`ATTACHED_LEGS`] reaches on this platform — [`TIER_PRIVILEGE_DROP`] where the build
+/// attaches at least one leg, else the [`TIER_CHEAP`] floor. This is the value the platform's
+/// `privilege-drop-coverage.toml` row records. Same `allow(dead_code)` posture as [`ATTACHED_LEGS`].
+/// [Build-Session-Entscheidung: P4.18]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const fn attached_tier() -> &'static str {
+    if ATTACHED_LEGS.is_empty() {
+        TIER_CHEAP
+    } else {
+        TIER_PRIVILEGE_DROP
+    }
+}
+
+/// ONE leg's verdict inside a [`SpawnTier`] — the leg's [`ATTACHED_LEGS`] id plus its
+/// applied-vs-degraded [`LegOutcome`].
+#[cfg_attr(any(not(test), target_os = "macos"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LegVerdict {
+    /// The leg id — one of [`ATTACHED_LEGS`].
+    pub(crate) leg: &'static str,
+    /// What that leg achieved for this spawn.
+    pub(crate) outcome: LegOutcome,
+}
+
+/// The §2.12.3 achieved privilege-drop tier of ONE confined spawn (P4.18) — the per-leg record
+/// [`crate::isolation::run_confined`] assembles and hands out on [`crate::engines::ConfinedRun::tier`],
+/// and the value the P4.18.1 per-spawn tier-APPLIED regression asserts against the platform's
+/// `privilege-drop-coverage.toml` row.
+///
+/// **Per-leg, never collapsed.** Both Windows legs degrade INDEPENDENTLY — a FAT/exFAT stick or an SMB
+/// destination fails Leg A's label-then-lower grant while Leg B's Job Object still attaches — so a single
+/// collapsed tier value would report "privilege-drop" for a spawn whose write confinement never applied.
+///
+/// **A verdict is only ever as strong as its source, and [`VERDICT_SOURCES`] says which is which.** Both
+/// Windows legs and the Linux net-namespace leg are `per-spawn` — each is about THIS spawn's own child (a
+/// `GetTokenInformation` re-read of its token, whether the assignment to our own job succeeded, whether its
+/// `/proc/<pid>/ns/net` differs from ours), so `Applied` there means this spawn really is confined. Landlock
+/// and seccomp apply inside the pre-exec child, which has no channel back, so their verdicts are
+/// `host-probe` — the kernel's answer for this HOST. Their EFFECT proofs live in different places:
+/// Landlock's is the P4.18.1 regression (an APPLIED leg must deny an out-of-sandbox read through the
+/// production `run_confined`); seccomp's is P4.15.3's own `seccomp_denies_a_listed_syscall_in_the_child`,
+/// which applies a filter through the SAME `build_seccomp_program_for` + `seccompiler::apply_filter`
+/// pre-exec mechanism `install_confinement` uses but with a TEST deny-list, because the production
+/// deny-list (`ptrace`, `mount`, `bpf`, `kexec_load`, `setns`) is not reachable from a shell — so seccomp is
+/// proven at the leg rather than on the spawn path. macOS records no verdict (P4.16 — no leg to report).
+/// (`install_confinement` is named without a doc link on purpose: this type is declared on all three
+/// platforms while that fn is Linux-only, so a link here would dangle on the Windows and macOS doc builds.)
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SpawnTier {
+    verdicts: Vec<LegVerdict>,
+}
+
+#[cfg_attr(any(not(test), target_os = "macos"), allow(dead_code))]
+impl SpawnTier {
+    /// Record one leg's verdict. Called once per attached leg by the spawn that produced it.
+    pub(crate) fn record(&mut self, leg: &'static str, outcome: LegOutcome) {
+        self.verdicts.push(LegVerdict { leg, outcome });
+    }
+
+    /// Every recorded verdict, in the order the legs were recorded.
+    pub(crate) fn verdicts(&self) -> &[LegVerdict] {
+        &self.verdicts
+    }
+
+    /// The verdict recorded for `leg`, or `None` when this platform records none for it (macOS records
+    /// none at all; a Linux/Windows leg is always recorded once the spawn reached its apply point).
+    pub(crate) fn outcome_of(&self, leg: &str) -> Option<LegOutcome> {
+        self.verdicts
+            .iter()
+            .find(|verdict| verdict.leg == leg)
+            .map(|verdict| verdict.outcome)
+    }
+
+    /// The tier THIS SPAWN achieved: [`TIER_PRIVILEGE_DROP`] once at least one leg reports
+    /// [`LegOutcome::Applied`], else the [`TIER_CHEAP`] floor. Distinct from [`attached_tier`], which is
+    /// the compile-time mechanism set: a build that attaches legs still lands on the cheap floor for a
+    /// spawn where every one of them degraded (the §2.12.3 silent-degrade semantics, made readable).
+    pub(crate) fn tier(&self) -> &'static str {
+        if self
+            .verdicts
+            .iter()
+            .any(|verdict| verdict.outcome == LegOutcome::Applied)
+        {
+            TIER_PRIVILEGE_DROP
+        } else {
+            TIER_CHEAP
+        }
+    }
 }
 
 /// The standard system dirs the Landlock read set grants (read + traverse + EXECUTE — the
@@ -999,13 +1209,13 @@ pub(crate) fn install_confinement(
 /// §2.12.3 Landlock availability probe (P4.15.1) — build a trivial `BestEffort` ruleset on a
 /// THROWAWAY thread (so no parent thread is left restricted) and read the `RestrictionStatus`:
 /// `NotEnforced` ⇒ the kernel lacks Landlock (< 5.13 / disabled) ⇒ `Degraded(Unavailable)`; a real
-/// error ⇒ `Degraded(NotApplied)`; otherwise `Applied`. Used by the per-leg tests (and reportable to
-/// the P4.18 record); the production apply in [`install_confinement`] needs no probe — `BestEffort`
-/// self-degrades. [Build-Session-Entscheidung: P4.15]
+/// error ⇒ `Degraded(NotApplied)`; otherwise `Applied`. Used by the per-leg tests and reported into
+/// the P4.18 record via [`spawn_leg_verdicts`]; the production apply in [`install_confinement`] needs no
+/// probe — `BestEffort` self-degrades. [Build-Session-Entscheidung: P4.15]
 ///
-/// `allow(dead_code)` (non-test): the reporter's production consumer is the P4.18 achieved-tier record; today
-/// only the per-leg tests call it. `allow` not `expect` — see [`LegOutcome`]: the body constructs the enum in
-/// the non-test build, so `expect` would flip unfulfilled.
+/// `allow(dead_code)` (non-test): the P4.18 production consumer is [`spawn_leg_verdicts`], itself dead until
+/// the confined-spawn lane becomes a live root at P4.32 — see [`LegOutcome`]. `allow` not `expect`: the body
+/// constructs the enum in the non-test build, so `expect` would flip unfulfilled.
 #[cfg(target_os = "linux")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn landlock_probe() -> LegOutcome {
@@ -1035,8 +1245,9 @@ pub(crate) fn landlock_probe() -> LegOutcome {
 /// thread): a clean install ⇒ `Applied`; a compile miss (unsupported arch) or a kernel that rejects
 /// `seccomp(SET_MODE_FILTER)` ⇒ `Degraded(Unavailable)`. [Build-Session-Entscheidung: P4.15]
 ///
-/// `allow(dead_code)` (non-test): production consumer is the P4.18 record; today only the tests call it.
-/// `allow` not `expect` — see [`LegOutcome`] (the reporter body constructs the enum in the non-test build).
+/// `allow(dead_code)` (non-test): the P4.18 production consumer is [`spawn_leg_verdicts`], itself dead
+/// until the confined-spawn lane becomes a live root at P4.32 — see [`LegOutcome`]. `allow` not `expect`
+/// (the reporter body constructs the enum in the non-test build).
 #[cfg(target_os = "linux")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn seccomp_probe() -> LegOutcome {
@@ -1049,6 +1260,67 @@ pub(crate) fn seccomp_probe() -> LegOutcome {
     })
     .join()
     .unwrap_or(LegOutcome::Degraded(DegradeReason::Unavailable))
+}
+
+/// §2.12.3 net-namespace PER-SPAWN verdict (P4.15.2, recorded into the P4.18 tier record): does the child
+/// `pid` really sit in a network namespace of its own?
+///
+/// This leg has **no throwaway-thread apply** the way its two siblings do — `unshare(CLONE_NEWUSER)` is
+/// rejected outright in a MULTITHREADED process (EINVAL), which is exactly why [`install_confinement`]
+/// applies it in the single-threaded post-fork child and nowhere else, and a parent that tried to "probe by
+/// applying" would either fail for the wrong reason or move the HOST process into a new namespace. But the
+/// result IS parent-observable: namespace membership is exposed as a symlink under `/proc`, so comparing the
+/// child's `/proc/<pid>/ns/net` against our own answers the real question — DID this child get its own
+/// namespace — instead of the weaker "does the kernel permit one".
+///
+/// That distinction is load-bearing. A capability reading over the `user.max_user_namespaces` /
+/// `kernel.unprivileged_userns_clone` / `kernel.apparmor_restrict_unprivileged_userns` knobs cannot see a
+/// container or LSM policy that denies `unshare` anyway, and cannot see the in-closure `unshare` failing at
+/// runtime (which silently skips, by design) — so it would report `Applied` for a spawn that never got a
+/// namespace. Over-reporting is the one direction the G64 record must never take, since the whole point of
+/// the ratchet is to make a LOST restriction visible.
+///
+/// `Degraded(NotApplied)` = the child demonstrably shares our namespace (the leg was skipped or refused);
+/// `Degraded(Unavailable)` = the membership could not be read at all — no `/proc`, no pid (the spawn
+/// wrapper had none to give), or the child was already reaped — an honest "not observed", never a silent
+/// `Applied`. [Build-Session-Entscheidung: P4.18]
+#[cfg(target_os = "linux")]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn netns_verdict(pid: Option<u32>) -> LegOutcome {
+    let (Some(pid), Ok(ours)) = (pid, std::fs::read_link("/proc/self/ns/net")) else {
+        return LegOutcome::Degraded(DegradeReason::Unavailable);
+    };
+    let Ok(theirs) = std::fs::read_link(format!("/proc/{pid}/ns/net")) else {
+        return LegOutcome::Degraded(DegradeReason::Unavailable);
+    };
+    if theirs == ours {
+        return LegOutcome::Degraded(DegradeReason::NotApplied);
+    }
+    LegOutcome::Applied
+}
+
+/// The §2.12.3 Linux per-leg verdicts for the P4.18 achieved-tier record of ONE spawn, in [`ATTACHED_LEGS`]
+/// order so the record and the apply order read the same. Every leg reports INDEPENDENTLY — the P4.15
+/// per-leg-independence contract: an old kernel without Landlock says nothing about seccomp.
+///
+/// Net-ns is read PER SPAWN off the child itself ([`netns_verdict`]). Landlock and seccomp cannot be:
+/// they apply inside the pre-exec child with no channel back, so their verdicts are the host-capability
+/// readings [`landlock_probe`] / [`seccomp_probe`] produce — taken ONCE per process and cached, because
+/// each costs a thread (Landlock restricts it, seccomp installs a filter on it) and the answer is a host
+/// property that cannot change under a running app. The cache also keeps the cost off the async spawn path:
+/// only the FIRST Linux spawn joins the two probe threads; every later one reads the memoised value.
+/// [Build-Session-Entscheidung: P4.18]
+#[cfg(target_os = "linux")]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn spawn_leg_verdicts(pid: Option<u32>) -> SpawnTier {
+    static CACHED_HOST_LEGS: std::sync::OnceLock<(LegOutcome, LegOutcome)> =
+        std::sync::OnceLock::new();
+    let (landlock, seccomp) = *CACHED_HOST_LEGS.get_or_init(|| (landlock_probe(), seccomp_probe()));
+    let mut tier = SpawnTier::default();
+    tier.record(LEG_NETNS, netns_verdict(pid));
+    tier.record(LEG_LANDLOCK, landlock);
+    tier.record(LEG_SECCOMP, seccomp);
+    tier
 }
 
 // ============================================================================
@@ -2649,6 +2921,7 @@ mod privilege_drop_tests {
 // where a `sandbox_*` FFI may be DECLARED) or `crate::isolation` (the spawn path that would CALL it — a call
 // in any third module would have to call a `platform`-declared FFI, which the `platform` scan catches at its
 // declaration). [Build-Session-Entscheidung: P4.16]
+
 #[cfg(test)]
 mod macos_seatbelt_decision_tests {
     // Everything before a scanned file's FIRST `#[cfg(test)]`, so a needle can never match a test's own
@@ -2705,6 +2978,223 @@ mod macos_seatbelt_decision_tests {
             saw_platform_root && saw_isolation_root && scanned >= 2,
             "the source-scan must cover crate::platform + crate::isolation (found platform={saw_platform_root}, \
              isolation={saw_isolation_root}, {scanned} .rs files) — the P4.16 decision is not being enforced"
+        );
+    }
+}
+
+// §2.12.3 / G64 (G15, P4.18): the ACHIEVED-TIER RECORD BINDING. The tracked
+// `privilege-drop-coverage.toml` and this module's `ATTACHED_LEGS` / `attached_tier()` / `VERDICT_SOURCES`
+// are ONE fact stated in two places, so they are held identical here. `include_str!` pins the REAL
+// committed file (never a copy), so a leg removed from the code reddens against the unchanged row, and a
+// row edited in the file reddens against the unchanged code — on every leg of the 3-OS CI matrix. That is
+// the host-INDEPENDENT half of the G64 decrease guard (the host-dependent half is the per-spawn
+// `SpawnTier` the P4.18.1 regression asserts through a real confined spawn).
+#[cfg(test)]
+mod privilege_drop_record_tests {
+    use super::{attached_tier, ATTACHED_LEGS, TIER_CHEAP, TIER_PRIVILEGE_DROP, VERDICT_SOURCES};
+
+    /// The REAL tracked record — the file the G64 ratchet reads, never a fixture copy.
+    const RECORD: &str = include_str!("../../../privilege-drop-coverage.toml");
+
+    /// The three platforms ConvertIA ships (CLAUDE.md §1: one artifact per platform, no fourth target).
+    const PLATFORMS: [&str; 3] = ["linux", "macos", "windows"];
+
+    // A deliberately tiny TOML reader. The record is a flat table-per-platform file of string scalars and
+    // string arrays, and the MIT core ships no `toml` crate — pulling one in (plus its §0.8 floor row) to
+    // read four keys would be a dependency bought for a test's convenience. It understands exactly the two
+    // shapes the record uses and answers `None` for anything else. [Build-Session-Entscheidung: P4.18]
+    fn section(name: &str) -> String {
+        let head = format!("[{name}]");
+        let mut body = String::new();
+        let mut inside = false;
+        for line in RECORD.lines() {
+            let trimmed = line.trim();
+            // A comment can legitimately contain a key-looking or table-looking word, so comments are
+            // dropped BEFORE the table-header test — otherwise a commented-out header would flip sections.
+            if trimmed.starts_with('#') {
+                continue;
+            }
+            if trimmed.starts_with('[') {
+                inside = trimmed == head;
+                continue;
+            }
+            if inside {
+                body.push_str(trimmed);
+                body.push('\n');
+            }
+        }
+        body
+    }
+
+    fn scalar(body: &str, key: &str) -> Option<String> {
+        body.lines()
+            .filter_map(|line| line.split_once('='))
+            .find(|(name, _)| name.trim() == key)
+            .map(|(_, value)| value.trim().trim_matches('"').to_owned())
+    }
+
+    fn array(body: &str, key: &str) -> Option<Vec<String>> {
+        let raw = scalar(body, key)?;
+        let inner = raw.trim().strip_prefix('[')?.strip_suffix(']')?;
+        Some(
+            inner
+                .split(',')
+                .map(|item| item.trim().trim_matches('"').to_owned())
+                .filter(|item| !item.is_empty())
+                .collect(),
+        )
+    }
+
+    fn this_platform() -> &'static str {
+        if cfg!(target_os = "linux") {
+            "linux"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else if cfg!(windows) {
+            "windows"
+        } else {
+            ""
+        }
+    }
+
+    // The load-bearing binding: this build's leg set, tier and verdict source ARE the row. A phase that
+    // drops a leg — the exact NET regression G64 exists to surface — changes `ATTACHED_LEGS` and fails here
+    // against the unchanged record, so re-blessing the record becomes a visible, reviewable diff.
+    #[test]
+    fn the_record_row_for_this_platform_matches_the_legs_this_build_attaches() {
+        let platform = this_platform();
+        assert!(
+            PLATFORMS.contains(&platform),
+            "§2.12.3/G64: the build targets one of the three shipped platforms, got {:?}",
+            std::env::consts::OS
+        );
+        let row = section(&format!("platform.{platform}"));
+        let legs = array(&row, "legs").expect("the platform row carries a `legs` array");
+        assert_eq!(
+            legs, ATTACHED_LEGS,
+            "§2.12.3/G64: `privilege-drop-coverage.toml` [platform.{platform}].legs must equal the legs \
+             this build attaches — a leg added or removed in code is a tier change and is re-blessed in \
+             the record (decrease-guarded)"
+        );
+        assert_eq!(
+            scalar(&row, "tier").expect("the platform row carries a `tier`"),
+            attached_tier(),
+            "§2.12.3/G64: the recorded tier must equal the tier this build's leg set reaches"
+        );
+        let sources = section(&format!("platform.{platform}.verdict_source"));
+        let recorded: Vec<(String, String)> = legs
+            .iter()
+            .map(|leg| {
+                (
+                    leg.clone(),
+                    scalar(&sources, leg)
+                        .unwrap_or_else(|| format!("<no verdict_source recorded for `{leg}`>")),
+                )
+            })
+            .collect();
+        let expected: Vec<(String, String)> = VERDICT_SOURCES
+            .iter()
+            .map(|(leg, source)| ((*leg).to_owned(), (*source).to_owned()))
+            .collect();
+        assert_eq!(
+            recorded, expected,
+            "§2.12.3/G64: [platform.{platform}.verdict_source] must name, PER LEG, where that leg's verdict \
+             actually comes from — a parent-side read-back of the running child (`per-spawn`) or the \
+             kernel's answer for this host (`host-probe`). The strength of an `Applied` is its source's, so \
+             a leg that quietly loses its per-spawn read-back must show up as a record change"
+        );
+    }
+
+    // The record is read by a release-tier gate for EVERY platform, so every row must parse and mean
+    // something on the two legs where the code binding above does not run.
+    #[test]
+    fn every_shipped_platform_has_a_well_formed_row() {
+        let meta = section("meta");
+        assert_eq!(
+            scalar(&meta, "schema").expect("[meta].schema"),
+            "1",
+            "§2.12.3/G64: the record schema this test knows how to read. A bump means the shape changed — \
+             re-read the parser and the assertions below BEFORE re-blessing this number, or the binding \
+             silently starts checking the wrong keys"
+        );
+        let tier_order = array(&meta, "tier_order").expect("[meta].tier_order");
+        let verdict_sources = array(&meta, "verdict_sources").expect("[meta].verdict_sources");
+        assert_eq!(
+            tier_order,
+            vec![TIER_CHEAP, TIER_PRIVILEGE_DROP],
+            "§2.12.3/G64: the record's tier vocabulary IS the code's, lowest first — the ratchet's order"
+        );
+        for platform in PLATFORMS {
+            let row = section(&format!("platform.{platform}"));
+            let tier = scalar(&row, "tier").expect("every platform row carries a `tier`");
+            let legs = array(&row, "legs").expect("every platform row carries a `legs` array");
+            let sources = section(&format!("platform.{platform}.verdict_source"));
+            assert!(
+                tier_order.contains(&tier),
+                "§2.12.3/G64: [platform.{platform}].tier {tier:?} is outside the recorded tier vocabulary"
+            );
+            assert_eq!(
+                tier == TIER_PRIVILEGE_DROP,
+                !legs.is_empty(),
+                "§2.12.3/G64: [platform.{platform}] reaches the privilege-drop tier EXACTLY when it \
+                 attaches at least one leg — a tier claimed without a leg, or a leg without the tier, \
+                 makes the record unreadable"
+            );
+            // Every leg names a source from the vocabulary, and NOTHING else does: a leg-less platform
+            // carries no verdict-source table at all, and a source for a leg the platform does not attach
+            // is an orphan the next reader would trust.
+            let named: Vec<String> = sources
+                .lines()
+                .filter_map(|line| line.split_once('='))
+                .map(|(key, _)| key.trim().to_owned())
+                .collect();
+            assert_eq!(
+                named, legs,
+                "§2.12.3/G64: [platform.{platform}.verdict_source] names EXACTLY this platform's legs, in \
+                 the same order"
+            );
+            for leg in &legs {
+                let source = scalar(&sources, leg)
+                    .unwrap_or_else(|| format!("<no verdict_source recorded for `{leg}`>"));
+                assert!(
+                    verdict_sources.contains(&source),
+                    "§2.12.3/G64: [platform.{platform}.verdict_source].{leg} = {source:?} is outside the \
+                     recorded verdict-source vocabulary"
+                );
+            }
+        }
+    }
+
+    // The forward note P4.17 left for this box, made mechanical: the Windows tier has TWO legs that
+    // degrade INDEPENDENTLY (a FAT/exFAT or SMB destination fails the label-then-lower grant while the Job
+    // Object still attaches), so the record must never collapse them — a collapsed row would report a
+    // write confinement that never applied.
+    #[test]
+    fn the_windows_row_keeps_its_two_legs_separate() {
+        let legs = array(&section("platform.windows"), "legs").expect("the Windows row's legs");
+        assert_eq!(
+            legs,
+            ["integrity", "job"],
+            "§2.12.3 (the P4.17 forward note): the Windows record names Leg A (intermediate-integrity \
+             write confinement) and Leg B (the own kill-on-job-close Job Object) SEPARATELY"
+        );
+    }
+
+    // macOS is the cheap-tier floor by DECISION (P4.16), not by degradation — so an empty leg list is the
+    // honest record, and a commit adding a leg row here would be a spec change, never a ratchet raise.
+    #[test]
+    fn the_macos_row_records_the_decided_cheap_floor() {
+        let row = section("platform.macos");
+        assert_eq!(
+            scalar(&row, "tier").expect("the macOS row's tier"),
+            TIER_CHEAP,
+            "§2.12.3 [DECIDED — P4.16]: v1-portable macOS runs the cheap-tier floor"
+        );
+        assert!(
+            array(&row, "legs")
+                .expect("the macOS row's legs")
+                .is_empty(),
+            "§2.12.3 [DECIDED — P4.16]: no Seatbelt profile is applied, so macOS attaches no leg"
         );
     }
 }
@@ -2824,14 +3314,24 @@ mod windows_privilege_drop_tests {
     // Poll a child for up to `bound` for its exit — the deterministic replacement for a fixed sleep: it
     // returns as soon as the state is observed, and the generous bound absorbs a loaded CI runner.
     fn exited_within(child: &mut std::process::Child, bound: Duration) -> bool {
+        status_within(child, bound).is_some()
+    }
+
+    // The same poll, keeping the STATUS — a cap-breach regression has to tell "the child finished its work"
+    // apart from "the child was stopped", and a bare did-it-exit answer cannot.
+    // [Build-Session-Entscheidung: P4.18.2]
+    fn status_within(
+        child: &mut std::process::Child,
+        bound: Duration,
+    ) -> Option<std::process::ExitStatus> {
         let deadline = Instant::now() + bound;
         while Instant::now() < deadline {
-            if matches!(child.try_wait(), Ok(Some(_))) {
-                return true;
+            if let Ok(Some(status)) = child.try_wait() {
+                return Some(status);
             }
             std::thread::sleep(Duration::from_millis(25));
         }
-        false
+        None
     }
 
     // §6.4.1 unit (G15) / §2.12.3 Leg A: the SDDL literals and the RID constant are ONE decision — a drift
@@ -3138,6 +3638,246 @@ mod windows_privilege_drop_tests {
         theirs.stand_down();
         child.kill().ok();
         child.wait().ok();
+    }
+
+    // ─── P4.18.2 / P4.18.3: the §2.12.3 Leg-B cap + reap REGRESSIONS (the P0.5.9 homes) ──────────────
+    //
+    // `the_own_job_arms_the_caps_and_kill_on_job_close` above proves the caps are SET — read back from the
+    // kernel rather than assumed from the write. What it cannot prove is that a cap actually BITES, or that
+    // the reap reaches past the immediate child. Those are the two P0.5.9 regressions this box instantiates,
+    // and they are deliberately separate tests: they exercise different OS subsystems (job memory accounting
+    // vs job teardown) and fail independently. Both drive the PRODUCTION `set_job_limits` / `attach_job_with`
+    // path — only the cap VALUE is a test value, which is exactly what `JobLimits` carries limits as data for.
+
+    // A child that COMMITS a large allocation shortly after start, so a job attached in between decides
+    // whether it can finish. PowerShell is the only System32 tool that allocates on demand without an input
+    // file; `-NoProfile -NonInteractive` keeps it deterministic and `-Command` is not gated by the machine's
+    // script execution policy. [Build-Session-Entscheidung: P4.18.2]
+    fn allocating_child(megabytes: u32) -> std::process::Child {
+        let shell =
+            Path::new(&std::env::var_os("SystemRoot").expect("SystemRoot is set on Windows"))
+                .join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("powershell.exe");
+        // A TEST-ONLY spawn OBSERVING the P4.17 Leg-B cap semantics — not a production engine spawn (those
+        // route through crate::isolation::run_confined, the G29-sanctioned site). The imported `Command::new`
+        // form is the P4.15 `confined_sh` / P4.17 `long_lived_child` precedent in this module.
+        // nosemgrep: convertia-command-outside-isolation, convertia-command-missing-env-clear
+        Command::new(shell)
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                // The sleep is the attach window: the job must be assigned BEFORE the allocation, or the
+                // test would measure nothing. `AllocHGlobal` rather than a managed `byte[]`: the CLR
+                // RESERVES a large-object segment and commits it lazily as pages are touched, so a managed
+                // array of this size charges the job almost nothing until it is written page by page
+                // (measured — a 768 MB `[byte[]]` sailed through a 128 MiB cap). `AllocHGlobal` commits the
+                // whole block up front, which is what `JOB_OBJECT_LIMIT_JOB_MEMORY` accounts.
+                // [Build-Session-Entscheidung: P4.18.2]
+                &format!(
+                    "Start-Sleep -Milliseconds 400; \
+                     $p = [System.Runtime.InteropServices.Marshal]::AllocHGlobal({megabytes}MB); \
+                     [System.Runtime.InteropServices.Marshal]::WriteByte($p, 0, 1); \
+                     [System.Runtime.InteropServices.Marshal]::FreeHGlobal($p); \
+                     exit 0"
+                ),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn the System32 PowerShell allocating child")
+    }
+
+    // §6.4.2 fault-injection (G16/G31) / §2.12.3 Leg B (P4.18.2): the memory cap is ARMED, not merely set —
+    // a child that breaches it CANNOT run on. Asserted as a red-green PAIR so it can never pass vacuously:
+    // the very same child under the PRODUCTION cap completes, and under a deliberately tiny cap it does not.
+    // Without the control leg a child that died for an unrelated reason would look like a firing cap.
+    //
+    // This is the §2.12.3 memory-cap arm of the P0.5.9 isolation/privilege-drop home. It is Windows-only by
+    // construction: the Job-Object `JOB_OBJECT_LIMIT_JOB_MEMORY` is the ONLY §2.12.3 memory cap in the
+    // product — the Linux and macOS tiers carry none, so there is nothing to regress there (their per-item
+    // memory kill is the §1.10/§1.7 preflight path, a different control with its own home).
+    #[test]
+    fn the_job_memory_cap_is_armed_and_stops_a_breaching_engine() {
+        const ALLOCATE_MB: u32 = 768;
+        // Generously below the allocation and generously above a PowerShell start-up, so the breach is what
+        // the tiny-cap leg measures. Wherever the runtime happens to fail first, the assertion holds: under
+        // this cap the child CANNOT complete a 768 MB commit.
+        const TINY_CAP_BYTES: u64 = 128 << 20;
+
+        let mut capped = allocating_child(ALLOCATE_MB);
+        let capped_job = attach_job_with(
+            capped.id(),
+            JobLimits {
+                memory_bytes: TINY_CAP_BYTES,
+                active_processes: PRODUCTION_JOB_LIMITS.active_processes,
+            },
+        )
+        .expect("assign a tiny-memory-cap job to the allocating child");
+        let capped_status = status_within(&mut capped, Duration::from_secs(60));
+        drop(capped_job);
+        capped.kill().ok();
+        capped.wait().ok();
+
+        let mut uncapped = allocating_child(ALLOCATE_MB);
+        let uncapped_job = attach_confined_job(uncapped.id())
+            .expect("assign the PRODUCTION-cap job to the same allocating child");
+        let uncapped_status = status_within(&mut uncapped, Duration::from_secs(60));
+        drop(uncapped_job);
+        uncapped.kill().ok();
+        uncapped.wait().ok();
+
+        // The CONTROL leg first: it is what makes the capped leg mean anything. If the allocating child
+        // could not complete even UNCAPPED, the capped leg would be measuring a broken environment rather
+        // than a firing cap — the exact silent vacuity this red-green pair exists to rule out.
+        assert!(
+            uncapped_status.is_some_and(|status| status.success()),
+            "control leg: under the production cap ({} GiB) the child COMPLETES its {ALLOCATE_MB} MB \
+             allocation and exits 0 — got {uncapped_status:?}",
+            PRODUCTION_JOB_LIMITS.memory_bytes >> 30
+        );
+        let capped_status =
+            capped_status.expect("a capped child must not run on past its cap (it never exited)");
+        assert!(
+            !capped_status.success(),
+            "§2.12.3 Leg B: a child breaching its job memory cap must FAIL rather than complete the same \
+             {ALLOCATE_MB} MB allocation the control leg just completed — the cap is ARMED, not merely SET \
+             (the runaway guard the §1.7 watchdog sits above); got {capped_status:?}"
+        );
+
+        // §1.9 batch-continues, at the layer this box owns: a cap breach kills ONE spawn's job and leaves
+        // the tier able to confine the next item. Each spawn gets its OWN job, so a killed one must not
+        // wedge the mechanism — the property that makes "the offending item is reported Failed while the
+        // batch continues" true at the Leg-B layer. (The §2.8 mapping of an abnormally-terminated engine to
+        // `Failed` is `crate::isolation`'s
+        // `a_clean_exit_maps_to_succeeded_and_a_nonzero_exit_to_engine_crash`, and the many-items-in-one-
+        // process property is its `many_concurrent_cheap_tier_spawns_all_complete_under_timeout` — both
+        // proven over the real wrapper, so re-asserting them here would only duplicate. The §0.9 permit that
+        // the failing item returns is acquired by the subprocess lane the pool-wiring boxes build; the
+        // pool's own release-on-failure guarantee is proven by `crate::pool`'s permit tests.)
+        // [Build-Session-Entscheidung: P4.18.2]
+        let mut next = long_lived_child();
+        let next_job = attach_confined_job(next.id()).expect(
+            "the tier still confines the NEXT item after a cap breach killed the previous one",
+        );
+        drop(next_job);
+        assert!(
+            exited_within(&mut next, Duration::from_secs(30)),
+            "§1.9/§2.12.3: the next item's own job is fully functional after the cap breach — kill-on-job-\
+             close still reaps it"
+        );
+        next.kill().ok();
+        next.wait().ok();
+    }
+
+    // A child that leaves a DETACHED descendant behind and exits at once, so what survives the teardown is
+    // the grandchild, never the direct child. The descendant writes an early marker (non-vacuity: it really
+    // ran), then APPENDS a heartbeat once a second for far longer than the test's own horizon.
+    //
+    // A HEARTBEAT rather than a one-shot "an orphan writes `alive.txt` after N seconds" marker, and for the
+    // same reason its engines-side sibling uses one: a one-shot marker makes the assertion depend on a
+    // wall-clock guess (the test must wait past `descendant_start + N`), and here that guess fails in the
+    // WORST direction — a loaded runner that stalls a genuinely-orphaned descendant past the wait window
+    // would read as "reaped" and pass SILENTLY. A frozen-length observation cannot: it proves the process is
+    // not executing, whenever it happened to start. [Build-Session-Entscheidung: P4.18.3]
+    //
+    // `ping.exe` is a valid tick sleep HERE and would not be under `run_confined`: this child is never
+    // integrity-lowered, whereas a §2.12.3 Leg-A-confined child runs below Medium and is refused the device
+    // objects a socket needs, so `ping` would return instantly and the heartbeat would spin at full speed.
+    // The engines-side sibling (`the_watchdog_reap_leaves_no_orphaned_descendant`) DOES run confined and
+    // uses `waitfor.exe` for exactly that reason; the rationale is cross-referenced here so re-homing this
+    // test under a confined spawn cannot re-open the vacuity.
+    fn descendant_leaving_child(scratch: &Path) -> std::process::Child {
+        std::fs::write(
+            scratch.join("descendant.cmd"),
+            "@echo off\r\n\
+             echo x> started.txt\r\n\
+             for /L %%i in (1,1,60) do (\r\n\
+             echo x>> ticks.txt\r\n\
+             %SystemRoot%\\System32\\ping.exe -n 2 127.0.0.1 > nul\r\n\
+             )\r\n",
+        )
+        .expect("write the descendant script into the scratch dir");
+        // A TEST-ONLY spawn OBSERVING the P4.17 Leg-B teardown — see `long_lived_child`.
+        // nosemgrep: convertia-command-outside-isolation, convertia-command-missing-env-clear
+        let mut command = Command::new(system32("cmd.exe"));
+        command
+            .args(["/d", "/c"])
+            .current_dir(scratch)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        // `cmd.exe` parses `/c`'s tail with its OWN quoting rules, which do not understand the MSVCRT
+        // backslash-escaping `Command::arg` applies — the same reason `crate::isolation`'s confined-cmd
+        // helper reaches for `raw_arg`. The `.\` prefix is load-bearing: a bare `descendant.cmd` is not
+        // resolved from the current directory on a host with `NoDefaultCurrentDirectoryInExePath` set
+        // (measured — the inner shell reports "command not found" and the descendant never runs).
+        {
+            use std::os::windows::process::CommandExt;
+            command.raw_arg("start /b cmd /d /c .\\descendant.cmd");
+        }
+        command
+            .spawn()
+            .expect("spawn the descendant-leaving cmd child")
+    }
+
+    // Poll for a marker, bounded — every teardown assertion is armed off the EARLY marker, never off a
+    // wall-clock guess that could fire before the descendant even existed.
+    fn appeared_within(marker: &Path, bound: Duration) -> bool {
+        let deadline = Instant::now() + bound;
+        while Instant::now() < deadline {
+            if marker.exists() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        marker.exists()
+    }
+
+    // The heartbeat file's length — `0` while it does not exist yet, so a descendant reaped before its
+    // first tick reads as "not growing" exactly like one reaped further along.
+    fn heartbeat_len(path: &Path) -> u64 {
+        std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
+    }
+
+    // §6.4.3 integration (G31) / §2.12.3 Leg B + §1.7 (P4.18.3): the kill-on-job-close reap reaches the whole
+    // TREE, not just the process we assigned. `dropping_an_armed_job_reaps_the_child` above proves the direct
+    // child dies; this proves the case that actually leaks in production — a launcher that exits immediately
+    // and leaves a worker behind (the `soffice` → `soffice.bin` class). An orphaned descendant would keep
+    // appending to its heartbeat; the reap is what freezes it.
+    //
+    // This is the process-group / Job-Object REAP arm of the P0.5.9 home. Its cross-platform sibling — the
+    // §1.7 watchdog-timeout trigger through the production `run_confined` — lives with the watchdog in
+    // `crate::engines`; the cancel trigger is `crate::isolation`'s `a_cancel_group_kills_the_engines_descendants`.
+    #[test]
+    fn dropping_an_armed_job_reaps_the_childs_descendants_too() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir for the descendant markers");
+        let ticks = scratch.path().join("ticks.txt");
+        let mut child = descendant_leaving_child(scratch.path());
+        let job = attach_confined_job(child.id()).expect("assign our own job to the child");
+        assert!(
+            appeared_within(&scratch.path().join("started.txt"), Duration::from_secs(30)),
+            "non-vacuity: the descendant must really have run, or the frozen heartbeat below would prove \
+             nothing — it would just be a process that never started"
+        );
+        // The launcher exits at once; the descendant is what the job still holds.
+        child.wait().ok();
+        drop(job);
+        // A short settle before the snapshot: an append already in flight when the kill lands may still
+        // complete, and reading across that would be a one-off FALSE RED. Bounded and one-directional — it
+        // can never hide a survivor, only mis-time the baseline.
+        std::thread::sleep(Duration::from_millis(250));
+        let at_reap = heartbeat_len(&ticks);
+        // Several of the descendant's own tick intervals: a survivor appends throughout this window.
+        std::thread::sleep(Duration::from_secs(5));
+        assert_eq!(
+            heartbeat_len(&ticks),
+            at_reap,
+            "§2.12.3 Leg B / §1.7: closing the kill-on-job-close job must reap the engine's DESCENDANT too \
+             — a direct-child-only teardown would have left it appending to its heartbeat throughout this \
+             window"
+        );
     }
 }
 

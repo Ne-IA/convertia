@@ -1,0 +1,113 @@
+# privilege-drop-coverage.toml — the G64 §2.12.3 privilege-drop-tier ratchet record (P4.18).
+#
+# WHAT IT RECORDS: the tier each platform ACHIEVES for a confined engine spawn, kept PER LEG. G64
+# (build-gates.md; the ratchet policy section in docs/process/gate-status.md, P0.7.14) exists because the
+# §2.12.3 privilege-drop tier is best-effort and degrades SILENTLY — the T1 honest residual. G31 proves the
+# tier FIRED on a CI runner, but nothing tracked it as a TREND, so a later phase that dropped a platform
+# from the privilege-drop tier to the cheap floor would be an invisible NET regression. This file turns that
+# movement into a diff.
+#
+# DECREASE-GUARDED, exactly like the coverage-floors.toml / max_survived_mutants.toml siblings: a commit
+# that LOWERS an achieved tier — `privilege-drop` → `cheap`, or a leg dropped from a `legs` list — FAILS
+# and escalates. A RAISE is a deliberate committed change. What is ARMED TODAY is the code↔file binding
+# below, which fires on every push; the tier-vs-prior-tier COMPARISON is the G64 ratchet run itself, and
+# G64 is `informational` while the §2.12.3 matrix fills across P4–P9 (docs/process/gate-status.md) — the
+# owner flips it to `required` once the matrix stabilises. So a lowered tier is VISIBLE in the diff now and
+# BLOCKING from that flip on.
+#
+# BOUND TO THE CODE, not a prose claim: `crate::platform::ATTACHED_LEGS` / `attached_tier()` /
+# `VERDICT_SOURCES` are the same three facts expressed in Rust, and the P4.18 record test
+# (`crate::platform`'s `privilege_drop_record_tests`) asserts this file's row for the RUNNING platform
+# equals them. A leg removed from the code therefore reddens against an unchanged row here, on every leg of
+# the 3-OS CI matrix — the host-independent half of the guard. The host-dependent half is the per-spawn
+# `crate::platform::SpawnTier` the P4.18.1 regression asserts.
+#
+# CAGE POSTURE: this file sits deliberately OUTSIDE the `scripts/l-neg1-files.toml` L(-1) cage while the
+# §2.12.3 tier matrix fills across P4–P9 and G64 is `informational` (docs/process/gate-status.md) — the
+# Build-Loop populates it per box. It joins the cage in the same owner-acked L(-1) commit that flips G64
+# `informational` → `required`. The asymmetry against its caged siblings is a decided posture (the P4.18
+# box note), not an oversight.
+
+[meta]
+# The record's shape version. A bump means the keys or their nesting changed, so every reader is re-read
+# before it is re-blessed (the P4.18 record test asserts this number for exactly that reason). Written as a
+# bare TOML INTEGER deliberately — neither ratchet sibling carries a `schema` key, so there is no house
+# precedent, and the P9 G64 ratchet script will parse this file with a real TOML reader where an integer is
+# the natural type for a version counter.
+schema = 1
+# The tier vocabulary, LOWEST first — the ratchet's order. `cheap` is the §2.12.3 NON-NEGOTIABLE v1 floor
+# (the §2.12.1 process boundary + the §1.7 timeout + a cleared/minimal env with the dynamic-loader
+# injection vars stripped + a per-run scratch cwd + only the exact input and tmp-output paths handed in),
+# shipped unconditionally on all three OSes (P4.13/P4.14). `privilege-drop` is the best-effort tier layered
+# on top of it, and it is NOT load-bearing: the §0.11 T9b network/read guarantees rest on the §3.5/§6.1.3
+# argv and build controls plus the §2.11.4 packet gate, never on this tier.
+tier_order = ["cheap", "privilege-drop"]
+# How a leg's verdict is OBSERVED. This is recorded PER LEG, not per platform, because the strength of a
+# verdict follows the leg's APPLY POINT and Linux mixes the two:
+#   per-spawn  the verdict is about THIS spawn's own child: the Windows integrity leg re-reads the child's
+#              token, the Windows job leg is whether the assignment to ConvertIA's own job succeeded, and
+#              the Linux net-namespace leg compares the child's `/proc/<pid>/ns/net` with the parent's. A
+#              `per-spawn` verdict is what `ConfinedRun.tier` carries out of the spawn.
+#   host-probe the leg applies inside the pre-exec child, which has no channel back to the parent, so the
+#              verdict is what the KERNEL answers for this HOST: the mechanism is in force on this machine,
+#              which is NOT a claim about the individual child. The EFFECT proof differs per leg:
+#              Landlock's is the P4.18.1 regression (an APPLIED leg must deny an out-of-sandbox read through
+#              the production `run_confined`); seccomp's is P4.15.3's own
+#              `seccomp_denies_a_listed_syscall_in_the_child`, which observes a denied syscall returning
+#              EPERM through the SAME `build_seccomp_program_for` + `seccompiler::apply_filter` pre-exec
+#              mechanism `install_confinement` uses, but with a TEST deny-list — the production deny-list
+#              (`ptrace`, `mount`, `bpf`, `kexec_load`, `setns`) is not reachable from a shell, so seccomp is
+#              proven at the leg, not on the spawn path.
+# Over-reporting is the one direction this record must never take — a LOST restriction is exactly what the
+# ratchet exists to surface — so a leg whose application cannot be observed reports `Degraded`, never
+# `Applied`.
+verdict_sources = ["per-spawn", "host-probe"]
+
+# Linux — the three independent P4.15 legs, each silently degrading on its own (an old kernel without
+# Landlock says nothing about seccomp). Applied as ONE `pre_exec` closure in `crate::platform`
+# (`install_confinement`): net-ns first (its `/proc/self/uid_map` write must precede Landlock, which grants
+# `/proc` read-only), then Landlock, then seccomp last so it never gates the setup syscalls.
+[platform.linux]
+tier = "privilege-drop"
+legs = ["netns", "landlock", "seccomp"]
+
+[platform.linux.verdict_source]
+netns = "per-spawn"
+landlock = "host-probe"
+seccomp = "host-probe"
+
+# macOS — the cheap-tier floor ONLY, and that is a DECISION, not a degradation to be ratcheted away
+# (P4.16, Co-Pilot ruling 2026-07-25, spec §2.12.3): the Seatbelt profile's only apply path on an unsigned
+# portable build is a private-libsandbox call in the post-fork/pre-exec child, which is neither auditable
+# fork-safe nor silent-skippable at its worst case (a hang, not an errno) — so §2.12.3's absolute
+# never-break floor forbids it. An EMPTY `legs` list is therefore the honest record. The revisit anchors
+# are a signed/notarized build epoch with a safe apply path, or an Apple-sanctioned spawn-time sandbox API.
+[platform.macos]
+tier = "cheap"
+legs = []
+
+# No `[platform.macos.verdict_source]` table: with no leg there is nothing to observe. The absence is
+# asserted, not merely tolerated — a leg-less platform that grew a verdict source, or a leg without one,
+# fails the record test.
+
+# Windows — the two P4.17 legs, both applied PARENT-SIDE on the `CREATE_SUSPENDED` child before its threads
+# resume. `integrity` is the intermediate-integrity write confinement (label-then-lower at the
+# ConvertIA-private mandatory IL between Low and Medium); `job` is ConvertIA's own Job Object carrying
+# kill-on-job-close plus the runaway caps. They are recorded SEPARATELY and must stay so: a FAT/exFAT or SMB
+# destination fails the label-then-lower grant while the Job Object still attaches, so one collapsed value
+# would report a write confinement that never applied. Restricted-token / AppContainer and the
+# AppContainer/WFP network deny are DECIDED unrealizable in the v1-portable build (spec §2.12.3), so they
+# are absent from this list by decision — the revisit anchor is an installer-build epoch plus a
+# brokered/staged input model.
+#
+# Note on reading the Windows rows: Leg B attaches on every spawn (it depends on no volume or label
+# precondition), so a Windows spawn essentially always reaches `privilege-drop` and the per-spawn TIER
+# scalar carries little signal here. The `legs` list and the per-leg verdicts are the load-bearing part —
+# `integrity` degrading while `job` holds is the real, expected movement.
+[platform.windows]
+tier = "privilege-drop"
+legs = ["integrity", "job"]
+
+[platform.windows.verdict_source]
+integrity = "per-spawn"
+job = "per-spawn"
