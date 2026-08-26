@@ -318,7 +318,7 @@ fn clamp_global_degree(cores: usize) -> usize {
 /// the machine usable" intent better than a raw physical count). `available_parallelism` is fallible — an
 /// unknowable count on an exotic platform falls back to 1 core → degree 1 (`unwrap_or`, never a panic on the
 /// §0.9 no-panic pool path). The §0.9 literal says `physical_cores`; std exposes no physical-core API, and
-/// the clamp to [1,4] + the per-engine caps (§0.9 table, P4.21) keep heavy engines conservative regardless
+/// the clamp to `[1, 4]` + the per-engine caps (§0.9 table, P4.21) keep heavy engines conservative regardless
 /// of the logical-vs-physical difference — the §0.9 spec is reconciled to this in the same commit (DoD
 /// item 2). Physical-core precision (a dedicated crate) is an unadopted refinement.
 fn resolve_global_degree() -> usize {

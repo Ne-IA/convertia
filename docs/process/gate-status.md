@@ -268,8 +268,11 @@ platform from a full tier to a cheap one would be an invisible NET regression. *
 the **exact tier achieved per platform** into a tracked **`privilege-drop-coverage.toml`**,
 **decrease-guarded** exactly like the coverage floor / `max_survived_mutants.toml`: a commit
 that lowers an achieved tier **fails / escalates** (raises are deliberate committed changes).
-The schema + the per-tier ratchet criteria are homed here; the `.toml` is populated as the
-§2.12.3 tier matrix fills in P4–P9.
+The per-tier ratchet criteria are homed here; **the SCHEMA is homed, since P4.18, in the
+committed `privilege-drop-coverage.toml` header + its `crate::platform` Rust binding** (the
+code↔file-bound `[meta].schema` the per-push binding test reads — a schema change is a
+deliberate two-sided edit, never a drift). The `.toml` is populated as the §2.12.3 tier
+matrix fills in P4–P9.
 
 **Owner decision (`informational`↔`required`).** Recorded `informational` here — it stays so
 while the §2.12.3 tier matrix is still being filled (P4–P9); the owner flips it to `required`

@@ -23,12 +23,13 @@
 //! `check-unsafe-policy`'s `ALLOWED_UNSAFE_MODULES`, so the core's entire `unsafe` surface is confined here,
 //! each block carrying a `// SAFETY:` justification. The Windows renames/locks/free-space ride the
 //! `windows-sys` FFI, joined at **P4.17** by the §2.12.3 best-effort **Windows** privilege-drop tier —
-//! Leg A the intermediate-integrity write confinement ([`label_confinement_sinks`] /
-//! [`lower_child_to`] / [`strip_mandatory_label`]) and Leg B the own Job Object
-//! ([`attach_confined_job`]), both applied parent-side on the still-suspended child; restricted-token /
+//! Leg A the intermediate-integrity write confinement (`label_confinement_sinks` /
+//! `lower_child_to` / `strip_mandatory_label`) and Leg B the own Job Object
+//! (`attach_confined_job`) — code spans: all four are cfg-gated off non-Windows doc
+//! builds — both applied parent-side on the still-suspended child; restricted-token /
 //! AppContainer and the AppContainer/WFP net-deny are DECIDED unrealizable in the v1-portable build, so no
 //! FFI for them exists here (the `no_appcontainer_or_spawn_token_ffi_in_the_core` source-scan pins it).
-//! On **Linux** the §2.12.3 best-effort privilege-drop tier (P4.15, [`install_confinement`])
+//! On **Linux** the §2.12.3 best-effort privilege-drop tier (P4.15, `install_confinement` — a code span: the fn is cfg-gated off non-Linux doc builds)
 //! attaches its Landlock + seccomp legs through the one `unsafe` `CommandExt::pre_exec` closure (the safe
 //! `landlock`/`seccompiler` crates do the syscalls inside it); macOS carries no `unsafe` — its renames ride
 //! safe `rustix`, and the P4.16 macOS Seatbelt privilege-drop leg is **DECIDED cheap-tier only** (no apply,

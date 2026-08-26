@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""check-doc-splice - G74 comment-attachment integrity on .rs insertions (P4.18 follow-up).
+
+THE CLASS (2x recurred before this gate; the Loop-memory entry
+`inserting-a-module-hijacks-the-preceding-doc-comment`): an edit anchored on an item's
+DECLARATION line (`#[cfg(test)]` / `mod x {` / `fn y(`) inserts a NEW ITEM between a comment
+block and the item that block belongs to - a `///` block genuinely re-attaches to the
+insertion (proven with `#![deny(missing_docs)]`; attachment crosses BLANK lines and
+ATTRIBUTE lines, so the hijack does too), and a plain `//` prose/decision-pin block (the
+real P4.18 incident is a `//` block followed by a BLANK line) reads as describing the wrong
+item. Both forms compile, a unified diff shows only context + adds, and no compiler lint
+fires - so the catcher must read the DIFF GEOMETRY, which only exists at edit time. There is
+no whole-tree form: a snapshot cannot distinguish a hijacked attachment from an authored one
+(leg (a) is diff/range-scoped BY NATURE - unlike G8/G70 there is no `--full` re-cover; the
+L1 staged + L2/L4 range legs are the whole coverage).
+
+THE RULE (calibrated against the repo's full real history + rustc ground truth): the scan
+tracks an ATTACHMENT state over each hunk's context/added lines - a PROSE comment line
+(any `//`-family line containing a letter, or a block-comment body/tail; a letter-free
+divider like `// ----` is NOT prose and never opens an attachment) sets it, BLANK lines and
+ATTRIBUTE lines carry it through (rustc attaches across both), any other code line clears
+it, a REMOVED line clears it (a declaration REPLACEMENT - rename / signature change /
+rustfmt reflow - re-declares the same attachment owner and must not fire; the recorded
+residual: the reset is content-blind, so an edit that also touches the line above the
+insertion is outside the modeled pure-insertion class). An added run FAILS iff the
+attachment state is set at its start AND the run DECLARES AN ITEM (an item keyword on any
+run line; in an attribute-led run also the `name!(...)` item-macro form). Runs that only
+extend the comment (the repo-mandated `[Build-Session-Entscheidung]`/`[Test-Change]` tag
+inserts - rustc-proven harmless) or only add attributes pass. Over-strict residual: a
+genuinely-new item spliced under a foreign PROSE comment always fires; the fix for a false
+positive (move the insertion below the documented item's closing brace, or move a trailing
+end-of-section note onto its own item's line) IS the fix for a true hijack - no escape
+marker.
+
+CONTEXT WINDOW: both modes diff with -U10 - the attachment source must be visible IN the hunk,
+so a prose comment separated from the insertion by MORE than 10 unchanged carry (blank/attr)
+lines is outside the window (a recorded residual; the in-tree maximum observed is 1 blank line,
+and every hunk boundary honestly RESETS the state rather than guessing).
+
+MODES
+  --diff              L1 (pre-commit): the STAGED diff (`git diff --cached -U10 -- *.rs`).
+                      FAIL-OPEN with a notice when there is no HEAD to diff against.
+  --range [--base S]  L2 (pre-push): every unpushed commit (`git diff <base>..HEAD`); the
+                      base falls back through `@{u}` -> `origin/<branch>` -> `origin/main` ->
+                      `origin/HEAD` (the run-gitleaks chain). L4 (CI): `--base` is the push
+                      event's `before` SHA; an EMPTY / all-zeros / unresolvable base SKIPS
+                      with a notice (pull_request / schedule / first push - the
+                      check-l-neg1-ack posture; the ci.yml step quotes the expansion so an
+                      absent event field arrives as an empty string, never a missing arg).
+
+stdlib-only. This script is L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+Exit: 0 = clean (or fail-open/skip with notice); 1 = a hijack-shaped insertion; 2 = git error.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+
+# An item-introducing keyword - the signal that an added run DECLARES A NEW ITEM. Optional
+# visibility, then the fn/impl/trait modifier chain (default/async/unsafe/const + an
+# extern-ABI prefix), then the item keyword itself; the regex BACKTRACKS so `const X:` /
+# `static S:` still match as items after the modifier loop. (`macro_rules!` matches via the
+# keyword alternation; the attr-led `name!(..)` item-macro form is _ITEM_MACRO's, below.)
+_ITEM_KW = re.compile(
+    r"^\s*(?:pub(?:\s*\([^)]*\))?\s+)?"
+    r"(?:(?:default|async|unsafe|const)\s+)*"      # fn/impl/trait modifier chain (async fn, unsafe extern fn, const fn)
+    r"(?:extern\s*\"[^\"]*\"\s+)?"                # an extern-ABI fn prefix (unsafe extern \"C\" fn)
+    r"(?:mod|fn|struct|enum|union|trait|impl|const|static|type|macro_rules!|extern)\b"
+)
+# `pub use` re-exports: rustdoc attaches a /// to a re-export, so a spliced `pub use` steals
+# docs like any item. Bare `use` is NOT counted (a body `use std::io;` after an explanatory
+# comment is an everyday non-item edit).
+_PUB_USE = re.compile(r"^\s*pub(?:\s*\([^)]*\))?\s+use\b")
+# The item-macro form (`define_test_module!(x);` / `name! { ... }`) - counted as an item
+# declaration ONLY in an attribute-led run (an attr in item position pins the macro as an
+# item; a bare macro CALL after an explanatory comment inside a body must not fire).
+_ITEM_MACRO = re.compile(r"^\s*[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*!\s*[({\[]")
+_ATTR_LINE = re.compile(r"^\s*#\s*\[")
+_COMMENT_LINE = re.compile(r"^\s*(//|/\*|\*)")     # any //-family line or block-comment body/opener
+_HAS_LETTER = re.compile(r"[A-Za-z]")
+
+
+def _line_kind(line: str) -> str:
+    """Classify one context/added line for the attachment state machine:
+    'comment' (a PROSE comment - it can own an attachment), 'carry' (blank or attribute -
+    rustc attaches ACROSS these), or 'code' (clears any attachment)."""
+    if not line.strip():
+        return "carry"
+    if _ATTR_LINE.match(line):
+        return "carry"
+    if _COMMENT_LINE.match(line) or re.search(r"\*/\s*$", line):
+        # a letter-free divider (`// ----`, `//======`) is punctuation, not prose - it owns
+        # no attachment a splice could steal.
+        return "comment" if _HAS_LETTER.search(line) else "carry"
+    return "code"
+
+
+def _run_declares_item(added: list[str]) -> bool:
+    """Does this added run declare a new item (vs only extending the comment block or adding
+    attributes to the item the block already documents)?"""
+    if any(_ITEM_KW.match(line) or _PUB_USE.match(line) for line in added):
+        return True
+    if _ATTR_LINE.match(added[0]):
+        # an attribute-led run is in ITEM position - a macro invocation there is an item.
+        return any(_ITEM_MACRO.match(line) for line in added if not _ATTR_LINE.match(line)
+                   and not _COMMENT_LINE.match(line))
+    return False
+
+
+def scan_unified_diff(diff_text: str) -> list[str]:
+    """Return one problem string per hijack-shaped added run in a unified diff (any .rs file)."""
+    problems: list[str] = []
+    current_file = ""
+    in_rs = False
+    new_lineno = 0
+    attach = False                        # a prose-comment attachment is open above the cursor
+    pending_run: list[str] = []
+    run_start_line = 0
+    run_in_attachment = False
+
+    def flush() -> None:
+        nonlocal pending_run
+        if pending_run and run_in_attachment and _run_declares_item(pending_run):
+            problems.append(
+                f"{current_file}:{run_start_line}: an inserted ITEM lands inside the attachment of "
+                f"a comment block that belongs to the NEXT item (first added line: "
+                f"{pending_run[0].strip()[:80]!r}) - the block above will read as if it describes "
+                "the insertion, and a `///` block genuinely re-attaches to it (attachment crosses "
+                "blank and attribute lines). Move the insertion BELOW the documented item's closing "
+                "brace (anchor on the end of the item, never on its declaration/attribute line); if "
+                "the comment above is a trailing end-of-section note, move it onto its own item "
+                "instead. See the Loop-memory entry "
+                "`inserting-a-module-hijacks-the-preceding-doc-comment`."
+            )
+        pending_run = []
+
+    def feed(line: str) -> None:
+        """Advance the attachment state machine with one context/added line."""
+        nonlocal attach
+        kind = _line_kind(line)
+        if kind == "comment":
+            attach = True
+        elif kind == "code":
+            attach = False
+        # 'carry': blank/attr - attachment passes through unchanged
+
+    for raw in diff_text.splitlines():
+        if raw.startswith("+++ "):
+            flush()
+            current_file = raw[4:].strip()
+            if current_file.startswith("b/"):
+                current_file = current_file[2:]
+            in_rs = current_file.endswith(".rs")
+            attach = False
+            continue
+        if not in_rs:
+            continue
+        if raw.startswith("@@"):
+            flush()
+            m = re.search(r"\+(\d+)", raw)
+            new_lineno = int(m.group(1)) - 1 if m else 0
+            attach = False                # hunk boundary: attachment context unknown
+            continue
+        if raw.startswith("+"):
+            new_lineno += 1
+            if not pending_run:
+                run_start_line = new_lineno
+                run_in_attachment = attach
+            pending_run.append(raw[1:])
+            feed(raw[1:])
+            continue
+        if raw.startswith("-"):
+            # a removal ends the pure-insertion shape AND clears the attachment: a declaration
+            # REPLACED under its comment block (rename / signature change / rustfmt reflow)
+            # re-declares the SAME owner - never a steal. Recorded residual: the reset is
+            # content-blind (an edit also touching the line above the insertion falls outside
+            # the modeled pure-insertion class).
+            flush()
+            attach = False
+            continue
+        # context line
+        flush()
+        new_lineno += 1
+        feed(raw[1:] if raw.startswith(" ") else raw)
+    flush()
+    return problems
+
+
+def _git(*args: str) -> tuple[int, str]:
+    p = subprocess.run(["git", *args], capture_output=True, encoding="utf-8", errors="replace")
+    return p.returncode, (p.stdout or "") + (p.stderr or "")
+
+
+def _staged_diff() -> tuple[int, str]:
+    rc, head = _git("rev-parse", "--verify", "HEAD")
+    if rc != 0:
+        return 0, ""                      # unborn branch: nothing to diff against (fail-open)
+    return _git("diff", "--cached", "-U10", "--diff-filter=ACMR", "--", "*.rs")
+
+
+def _range_base(explicit: str | None) -> str | None:
+    if explicit is not None:
+        if not explicit or set(explicit) == {"0"}:
+            return None                   # empty (pull_request/schedule) or first-push zero SHA
+        rc, _ = _git("rev-parse", "--verify", f"{explicit}^{{commit}}")
+        return explicit if rc == 0 else None
+    cands = ["@{u}"]
+    rc, branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+    if rc == 0 and branch.strip() and branch.strip() != "HEAD":
+        cands.append(f"origin/{branch.strip()}")
+    cands += ["origin/main", "origin/HEAD"]
+    for c in cands:
+        rc, _ = _git("rev-parse", "--verify", f"{c}^{{commit}}")
+        if rc == 0:
+            return c
+    return None
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="G74 comment-attachment integrity on .rs insertions")
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--diff", action="store_true", help="L1: scan the staged diff (fail-open w/o base)")
+    mode.add_argument("--range", action="store_true", help="L2/L4: scan <base>..HEAD")
+    ap.add_argument("--base", default=None, help="explicit range base (CI: the push event's before SHA; "
+                                                 "an empty value skips with a notice)")
+    args = ap.parse_args(argv)
+
+    if args.diff:
+        rc, diff = _staged_diff()
+        if rc != 0:
+            print(f"[G74] git diff failed: {diff.strip()[:200]}", file=sys.stderr)
+            return 2
+        if not diff:
+            print("[G74] doc-splice: no staged .rs changes (or unborn branch) - nothing to scan")
+            return 0
+    else:
+        base = _range_base(args.base)
+        if base is None:
+            print("[G74] doc-splice: no resolvable range base (pull_request/schedule/first push) - "
+                  "skipped with notice; the L1 staged-diff leg covered each commit at its edit")
+            return 0
+        rc, diff = _git("diff", "-U10", "--diff-filter=ACMR", f"{base}..HEAD", "--", "*.rs")
+        if rc != 0:
+            print(f"[G74] git diff {base}..HEAD failed: {diff.strip()[:200]}", file=sys.stderr)
+            return 2
+
+    problems = scan_unified_diff(diff)
+    if problems:
+        for p in problems:
+            print(f"[G74] FAIL: {p}", file=sys.stderr)
+        return 1
+    print("[G74] doc-splice: no comment-attachment hijack in the scanned .rs insertions")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -8,7 +8,7 @@
 //! [Build-Session-Entscheidung: P3.26] This box builds the §1.2 four-step strategy AS A DISPATCHER — the
 //! bounded [`MAX_HEADER_WINDOW`] header read ([`read_header`]) and [`detect`], which runs
 //! **magic → container → text → structural-peek** in order and returns the canonical §1.2
-//! [`DetectionOutcome`](crate::domain::DetectionOutcome). Step 1 (magic) is a live table-driven matcher
+//! [`DetectionOutcome`]. Step 1 (magic) is a live table-driven matcher
 //! ([`sniff_magic`]) over the [`MAGIC_SIGNATURES`] registry — genuinely EMPTY in P3 because the
 //! walking-skeleton CSV/TSV are magic-less and every per-format signature is §04-owned, added by the format
 //! phases P5–P7. The other three steps are the §1.2 order's typed seams filled by their named boxes: text

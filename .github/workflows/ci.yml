@@ -158,6 +158,11 @@ jobs:
           echo "advisory-db clone failed after 3 attempts" >&2; exit 1
       - name: 'G3/G4/G14/G17: Rust lint/format/test/audit contract (rustfmt/clippy policy frozen; live fmt/clippy/test/audit in P1)'
         run: python3 scripts/check-rust-lint-contract --full
+      - name: 'G74: .rs comment-attachment integrity over the push range (the splice-hijack class; an empty/zero before-SHA - pull_request/schedule/first push - skips with notice)'
+        run: python3 scripts/check-doc-splice --range --base "${{ github.event.before }}"
+      - name: 'G74: rustdoc intra-doc-link integrity (deny broken + private links, private items documented - a rename that strands a doc link fails here; per-OS builds catch the cfg-gated dangles)'
+        run: |
+          RUSTDOCFLAGS='-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links' cargo doc --workspace --no-deps --document-private-items --locked
       - name: 'G29: unsafe-policy gate (#![deny(unsafe_code)] + one allow-listed FFI module; cross-platform, live deny/allow scan in P1)'
         run: python3 scripts/check-unsafe-policy --full
       - name: 'G48/G16: in-core fuzz-harness + per-numeric-IPC-arg overflow contract (frozen target/bounds/fixture set + date-pinned nightly; live harness in P3)'

@@ -110,14 +110,14 @@ pub mod fuzz_api {
     /// `crate::fs_guard::resolve_identity` (§2.3) over an untrusted PATH built byte-faithfully from the
     /// libFuzzer input — no panic, structured `Err` on the hostile classes (NUL bytes, overlong,
     /// `PATH_MAX`+1, dangerous Windows forms). The target passes raw bytes; the byte→path contract is
-    /// [`bytes_to_path`] above.
+    /// `bytes_to_path` above (private — a code span, not an intra-doc link).
     pub fn fs_guard_resolve_identity(path_bytes: &[u8]) {
         let _ = crate::fs_guard::resolve_identity(&bytes_to_path(path_bytes));
     }
 
     /// `crate::fs_guard::is_safe_output` (§2.3.3) over an untrusted output PATH built byte-faithfully from
     /// the libFuzzer input, with an empty frozen-source set (the fuzz surface is the path handling, not
-    /// the membership test). The byte→path contract is [`bytes_to_path`] above.
+    /// the membership test). The byte→path contract is `bytes_to_path` above (private — a code span, not an intra-doc link).
     pub fn fs_guard_is_safe_output(path_bytes: &[u8]) {
         let _ = crate::fs_guard::is_safe_output(&bytes_to_path(path_bytes), &[]);
     }

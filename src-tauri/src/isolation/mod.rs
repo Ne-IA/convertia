@@ -37,7 +37,7 @@
 //!    §2.12.3 dynamic-loader-injection env STRIP (the [`is_loader_injection_var`] filter on the constructed
 //!    env — `LD_PRELOAD`/`LD_LIBRARY_PATH`/`DYLD_*`, §0.11 T3a). The remaining layers land on THIS entry at
 //!    their boxes: the per-OS privilege-drop legs at **P4.15** (Linux, three `pre_exec` legs) and **P4.17**
-//!    (Windows, the [`WindowsConfinement`] `post_spawn` wrapper) — **P4.16** (macOS) is DECIDED cheap-tier
+//!    (Windows, the `WindowsConfinement` `post_spawn` wrapper — a code span: cfg-gated off non-Windows doc builds) — **P4.16** (macOS) is DECIDED cheap-tier
 //!    only, no leg attaches (Co-Pilot ruling 2026-07-25) — and the achieved-tier record
 //!    into `privilege-drop-coverage.toml` at **P4.18**. It never runs the §2.1 publish — that is
 //!    `crate::fs_guard`, invoked by the §1.7 lifecycle after a `Succeeded` return; the §0.9 pool permit is

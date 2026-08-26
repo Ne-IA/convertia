@@ -302,7 +302,7 @@ fn state_is_queued(state: JobState) -> bool {
 
 /// The §1.9 deterministic queue order (P3.46.1): the `Batch`'s QUEUED jobs — the eligible ones that entered the
 /// `Pending` queue, i.e. every job EXCEPT the pre-flight `Skipped` records (P3.47) — yielded in the frozen
-/// collected/traversal order (`Batch.jobs` order, the §1.1 depth-first order) with NO reordering (§1.9 "[REC] no
+/// collected/traversal order (`Batch.jobs` order, the §1.1 depth-first order) with NO reordering (§1.9 "`[REC]` no
 /// priority/size reordering in v1"). The order is the `Batch.jobs` order verbatim, not a re-sort — the
 /// determinism the §1.11 progress bar + the §1.12 summary read predictably.
 ///
@@ -1120,7 +1120,7 @@ fn tally(batch: &Batch, pred: impl Fn(&JobState) -> bool) -> u32 {
     u32::try_from(batch.jobs.iter().filter(|job| pred(&job.state)).count()).unwrap_or(u32::MAX)
 }
 
-/// Classify a run's §1.12 `Totals` into its §2.8.2 [`BatchSummary`] situation (P3.50). The headline reflects
+/// Classify a run's §1.12 `Totals` into its §2.8.2 [`BatchSummary`](crate::outcome::BatchSummary) situation (P3.50). The headline reflects
 /// the CONVERSION disposition over the ATTEMPTED items (`succeeded + failed`); pre-flight SKIPS are excluded
 /// from the headline `{n}` — they never entered the queue and are not a conversion outcome, so they appear
 /// only in `RunResult.items` + `Totals.skipped` (the skip ≠ fail posture, §1.12), never inflating "All {n}
@@ -1892,7 +1892,7 @@ fn verify_encode_output(item: ItemId, tmp: TempPath) -> Result<TempPath, WriteOu
 /// the publish legs — is the ONE site that covers every engine and both publish shapes (the same-volume
 /// rename and the §2.14.3 cross-volume copy both consume this same `.part`).
 ///
-/// On [`LabelStrip::Failed`] the bytes are republished through a FRESH exclusively-created sibling in the same
+/// On `LabelStrip::Failed` (a code span: the `crate::platform` strip verdict is cfg-gated off non-Windows doc builds) the bytes are republished through a FRESH exclusively-created sibling in the same
 /// publish-temp directory: `std::fs::copy` does not carry a mandatory label (it is not part of what
 /// `CopyFileEx` propagates), so the replacement `.part` is unlabelled by construction, stays on `final`'s
 /// volume (§2.14.1), and keeps the run-owned `.part` grammar the §2.6.2/§2.6.3 sweeps recognise. The original
@@ -1960,7 +1960,7 @@ fn rewrite_temp_unlabelled(
 /// the conductor's prior `Encode`-only let-else). A single-step engine's `Encode` is returned with its
 /// §1.7-owned `out_tmp` populated `Some(tmp)` (the 2026-07-07 plan-seam ruling: `plan()` returns it `None`,
 /// §1.7 — the conductor — OWNS the temp and populates it at spawn time). A probe-requiring engine's `Probe` is
-/// consumed by the engines-tier two-step sequencing [`crate::engines::run_probe_then_encode`] (spawn `ffprobe`
+/// consumed by the engines-tier two-step sequencing `crate::engines::run_probe_then_encode` (a code span: private to the engines tier, not linkable from here) (spawn `ffprobe`
 /// → `Engine::parse_probe` → `Engine::plan_encode` → the encode `Invocation`), which **P6.10** (`needs: P4.9`)
 /// wires in here with the concrete `ffprobe` engine + the P4.32 `EngineProgram → &Path` resolution. No v1
 /// probe-requiring engine is registered before P6 (§3.2.2), so a `Probe` reaching the conductor TODAY is a

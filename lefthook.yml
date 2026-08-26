@@ -72,6 +72,8 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
       run: python3 scripts/check-coverage
     lockfile-integrity: # G18a - lockfile drift-set freeze + --locked/--frozen-lockfile flag contract; live git-diff drift-guard (CI flag-scan live since P1)
       run: python3 scripts/check-lockfile-integrity
+    doc-splice:      # G74 - .rs doc-comment attachment integrity on the STAGED diff (the splice-hijack class; fail-open w/o base like G8/G70)
+      run: python3 scripts/check-doc-splice --diff
     build-matrix:    # G30 - native-OS matrix + macOS-universal fat-Mach-O slice contract (sidecar slice-assertion target-absent until P1+)
       run: python3 scripts/check-build-matrix
     completeness:    # G22/G23 - format membership-parity bijection + the conversion-command(start_conversion)->test walk (G23 LIVE since P3.63; G22 target-absent until P4.60)
@@ -128,6 +130,8 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/check-coverage --full
     lockfile-integrity: # G18a - whole-tree lockfile-integrity contract: drift-set freeze + CI --locked/--frozen-lockfile flag-scan + git-diff drift-guard + (E) sub-workspace --locked resolve (--deep; cargo already required at L2 for rust-lint-contract) (live since P1)
       run: python3 scripts/check-lockfile-integrity --deep
+    doc-splice:      # G74 - .rs doc-comment attachment integrity over the unpushed range (the L2 mirror of the L1 staged-diff leg)
+      run: python3 scripts/check-doc-splice --range
     build-matrix:    # G30 - build-matrix contract: native-OS set freeze + macOS-universal fat-Mach-O both-slice assertion (target-absent until a universal sidecar is staged)
       run: python3 scripts/check-build-matrix
     completeness:    # G22/G23 - schema/membership-parity bijection logic + the conversion-command(start_conversion)->test git walk (G23 LIVE since P3.63; G22 target-absent until P4.60)

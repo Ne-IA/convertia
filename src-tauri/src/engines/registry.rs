@@ -104,11 +104,11 @@ pub trait Engine: Send + Sync {
 
     /// Parse a probe sub-invocation's captured stdout into a typed [`ProbeOutput`] `[DECIDED §3.2.1]`
     /// (§3.2.2). Called by §1.7 ONLY for an engine whose `plan()` returned [`PlanOutcome::Probe`]: §1.7
-    /// buffers the probe's [`ProgressModel::CoarseSpawnDone`] stdout in FULL — no line reader, it is a single
+    /// buffers the probe's [`ProgressModel::CoarseSpawnDone`](crate::engines::ProgressModel::CoarseSpawnDone) stdout in FULL — no line reader, it is a single
     /// JSON blob (§1.7) — then hands the complete buffer here so the ENGINE, which alone knows its probe's
     /// wire format (`ffprobe -print_format json`, §3.5.1), turns it into the four typed fields (inner codecs /
     /// `duration_us` / rotation / interlace). §1.7 then carries the [`ProbeOutput`] into [`Engine::plan_encode`],
-    /// where `duration_us` becomes the [`ProgressModel::FfmpegKeyValue`] denominator — never mutated onto a
+    /// where `duration_us` becomes the [`ProgressModel::FfmpegKeyValue`](crate::engines::ProgressModel::FfmpegKeyValue) denominator — never mutated onto a
     /// pre-probe struct (§3.2.1). Pure: no I/O, no spawn (it parses already-captured bytes) — no-panic like the
     /// sibling planning methods.
     ///

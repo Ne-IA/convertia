@@ -977,7 +977,7 @@ pub fn publish_link_fallback(
 }
 
 /// The §2.1.2 Windows outcome of one create-only publish ([`publish_rename_windows`], P3.14). Windows-only —
-/// its own outcome type (like the Unix [`PublishAttempt`] / [`LinkPublishAttempt`]), unified by the composite
+/// its own outcome type (like the Unix `PublishAttempt` / `LinkPublishAttempt` — code spans: cfg-gated, absent from this OS's doc build), unified by the composite
 /// `atomic_publish` (P3.15+). The Windows create-only move consumes `tmp` atomically (no residual, unlike the
 /// Unix `link`+`unlink` fallback), so there is no `PublishedResidualTmp`-style arm.
 #[cfg(windows)]
@@ -1037,7 +1037,7 @@ pub fn publish_rename_windows(
 }
 
 /// The unified outcome of ONE create-only publish attempt at a single candidate `leaf`, folding the per-OS
-/// primitives (Unix [`PublishAttempt`]/[`LinkPublishAttempt`], Windows [`WindowsPublishAttempt`]) into the one
+/// primitives (Unix `PublishAttempt`/`LinkPublishAttempt`, Windows `WindowsPublishAttempt` — code spans: each cfg-gated, absent from the other OS's doc build) into the one
 /// shape the §2.2.2 numbering loop ([`publish_numbered`]) drives. Private — the seed of the module-doc
 /// `atomic_publish` single-attempt composite (P3.16 adds the §2.1.1 durability fsync, P3.17 the §2.14.3 EXDEV
 /// cross-volume fallback).
