@@ -84,6 +84,29 @@ applied the §2.7 destination rules). Given a *final resolved destination path*
    *pick-temp (1) → await dispatch (2) → publish legs (3–7)* — steps 3–7 run only on
    `InvocationResult::Succeeded`; a `Cancelled`/`Failed` invocation drops the temp
    (§3.2.2) and never reaches the publish legs.
+   - **Windows tail of step 2 — STRIP the §2.12.3 mandatory integrity label from `tmp`
+     `[DECIDED — P4.17, 2026-08-25]`.** Where the §2.12.3 Windows privilege-drop tier applied
+     its Leg-A write confinement, `tmp` carries ConvertIA's private intermediate integrity
+     LABEL (§2.14.1) — and that label **travels with the create-only move** of step 5, so a
+     published `final` would keep it for the rest of its life. After the engine exit and the
+     §1.7 non-empty output verification, and **before** step 3, the parent therefore REMOVES
+     the explicit label (an empty SACL, never a re-label to Medium), so `final` carries the
+     destination's implicit level. This is **one site** covering every engine and both publish
+     shapes — the same-volume rename of step 5 and the §2.14.3 cross-volume copy both consume
+     this same `tmp`. A no-op on every other OS and on every spawn whose Leg A degraded (an
+     unlabelled `tmp` is a cheap read-back, no write); a label state that cannot be READ is
+     treated as "still labelled", never as "no label" — the grant-is-enforcement bias.
+     **If the strip FAILS**, the bytes are republished through a **fresh exclusively-created
+     `.part` sibling** in the same publish-temp directory (a copy carries no label) and the
+     original is discarded — never the source, never an existing `final`.
+     **This step NEVER fails an item `[DECIDED — P4.17]`:** the strip needs `WRITE_OWNER`, so
+     its most plausible failure cause is a mid-run WRITABILITY FLIP of the destination — exactly
+     the case §2.7.2 exists to LATE-DIVERT — and a fallback that could not mint or copy therefore
+     hands the ORIGINAL `tmp` on so steps 3–7 (and their §2.7.2 divert) run exactly as they would
+     without the tier. The residual of that doubly-degraded path is that `final` may retain the
+     label: **over-restrictive, not unsafe** (a Medium user still reads and writes it; only
+     subjects below the level are excluded), and strictly preferable to failing a conversion that
+     would otherwise have diverted — never-break is absolute (§2.12.3).
 3. On engine success: **`tmp.sync_all()`** (Rust `File::sync_all` → `fsync` on
    Unix, `FlushFileBuffers` on Windows) so the bytes are durable *before* the
    rename — per the durability research, atomic-name-update is **not** the same as
@@ -224,6 +247,13 @@ check. `[DECIDED]`
     no-replace; NOT the boolean `ReplaceIfExists` of the non-Ex struct) →
     `STATUS_OBJECT_NAME_COLLISION` on collision** — see §2.3.3. Same create-only,
     no-placeholder semantics; rooted at a handle, not a re-parsed path.)
+    - **The move carries the SECURITY DESCRIPTOR across `[DECIDED — P4.17, 2026-08-25]`.** A
+      same-volume create-only move preserves the file's explicit ACEs, **the mandatory integrity
+      LABEL included** — so a `tmp` the §2.12.3 Windows tier labelled would publish a `final`
+      carrying ConvertIA's private intermediate level. That is why the label is stripped in the
+      §2.1.1 step-2 Windows tail, **before** this move: `final` always carries the destination's
+      implicit level. Nothing about the create-only/atomicity semantics changes — the strip is a
+      metadata write on `tmp`, complete before step 3's `sync_all`.
     - The earlier `create_new`-reserve-then-`ReplaceFileW` ordering is **rejected**
       precisely because it first creates a 0-byte file at the **final** path
       (`ReplaceFileW` requires the target to exist), admitting the forbidden third

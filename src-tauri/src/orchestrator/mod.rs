@@ -1885,6 +1885,77 @@ fn verify_encode_output(item: ItemId, tmp: TempPath) -> Result<TempPath, WriteOu
     }
 }
 
+/// Remove the §2.12.3 Leg-A mandatory integrity label from the verified `.part` before the §2.1.2 publish
+/// (P4.17, Windows; a no-op elsewhere and on every spawn whose Leg A degraded). The label TRAVELS with the
+/// create-only move, so a published `final` would otherwise keep ConvertIA's private intermediate level for
+/// the rest of its life; stripping it here — after the engine exit and the §1.7 non-empty verification, before
+/// the publish legs — is the ONE site that covers every engine and both publish shapes (the same-volume
+/// rename and the §2.14.3 cross-volume copy both consume this same `.part`).
+///
+/// On [`LabelStrip::Failed`] the bytes are republished through a FRESH exclusively-created sibling in the same
+/// publish-temp directory: `std::fs::copy` does not carry a mandatory label (it is not part of what
+/// `CopyFileEx` propagates), so the replacement `.part` is unlabelled by construction, stays on `final`'s
+/// volume (§2.14.1), and keeps the run-owned `.part` grammar the §2.6.2/§2.6.3 sweeps recognise. The original
+/// is then removed like any other item-exit leftover. The source is NEVER touched and no existing `final` is
+/// ever written.
+///
+/// **Infallible by construction — it hands a temp on, never an outcome.** The strip is a
+/// `LABEL_SECURITY_INFORMATION` write needing `WRITE_OWNER`, so its single most plausible failure cause is a
+/// mid-run WRITABILITY FLIP of the destination directory (a USB pull, a share drop, a permission change) —
+/// exactly the case §2.7.2 exists to LATE-DIVERT. Conceding `WriteFailed` here would kill an item the publish
+/// legs would have diverted, and would re-introduce the eager-mint-in-the-destination anti-pattern
+/// [`crate::run::RunScratch::publish_temp_path`] documents against. So a fallback that cannot mint or copy
+/// hands the ORIGINAL temp back and lets the §2.1.1 legs decide exactly as they would without the tier. The
+/// residual of that doubly-degraded path is recorded in §2.1.1: the published `final` may retain the label,
+/// which is over-restrictive rather than unsafe (a Medium user still reads and writes it; only subjects BELOW
+/// the level are excluded) — strictly better than failing a conversion that could have diverted.
+/// [Build-Session-Entscheidung: P4.17]
+fn strip_publish_label(
+    item: ItemId,
+    publish_temp_dir: &Path,
+    scratch: &RunScratch,
+    tmp: TempPath,
+) -> TempPath {
+    use crate::platform::LabelStrip;
+    match crate::platform::strip_mandatory_label(&tmp) {
+        LabelStrip::Absent | LabelStrip::Stripped => tmp,
+        LabelStrip::Failed => rewrite_temp_unlabelled(item, publish_temp_dir, scratch, tmp),
+    }
+}
+
+/// The [`strip_publish_label`] fallback (P4.17): copy `tmp`'s bytes into a FRESH exclusively-created `.part`
+/// sibling in the same publish-temp directory and hand that one on, then discard the original. `std::fs::copy`
+/// does not carry a mandatory label (it is not part of what `CopyFileEx` propagates), so the replacement is
+/// unlabelled by construction; minting it through [`crate::run::RunScratch::publish_temp`] keeps it on
+/// `final`'s volume (§2.14.1) and inside the run-owned `.part` grammar the §2.6.2/§2.6.3 sweeps recognise.
+///
+/// A mint or copy failure returns the ORIGINAL temp unchanged — never a failure outcome — so the §2.1.1
+/// publish legs (including the §2.7.2 late-divert) still run; see [`strip_publish_label`] for why that is the
+/// never-break-correct concession. A half-written replacement is cleaned before conceding. The SOURCE is never
+/// touched and no existing `final` is ever written. Extracted from its one caller so the fallback is exercised
+/// on every platform, not only where a label can exist. [Build-Session-Entscheidung: P4.17]
+fn rewrite_temp_unlabelled(
+    item: ItemId,
+    publish_temp_dir: &Path,
+    scratch: &RunScratch,
+    tmp: TempPath,
+) -> TempPath {
+    let Ok(fresh) = scratch.publish_temp(publish_temp_dir, item) else {
+        return tmp;
+    };
+    if std::fs::copy(&*tmp, &*fresh).is_err() {
+        crate::run::cleanup_item(fresh).ok();
+        return tmp;
+    }
+    // The original `.part` is now redundant. Neither removal here can be REPORTED — this fn hands a temp on,
+    // not an outcome, so it has no channel to the §2.6.4 per-item residue leg: a failed removal (of the
+    // original here, or of the half-written replacement on the copy-failure arm above) is reclaimed by the
+    // §2.6.2 run-end own-prefix sweep / the §2.6.3 next-launch sweep instead. Both are double-failure edges
+    // and neither is a new leak class — the run-owned `.part` grammar is exactly what those sweeps key on.
+    crate::run::cleanup_item(tmp).ok();
+    fresh
+}
+
 /// Resolve a §3.2.1 two-shape [`PlanOutcome`] to the dispatch-ready encode [`Invocation`] (P4.9 — supersedes
 /// the conductor's prior `Encode`-only let-else). A single-step engine's `Encode` is returned with its
 /// §1.7-owned `out_tmp` populated `Some(tmp)` (the 2026-07-07 plan-seam ruling: `plan()` returns it `None`,
@@ -2110,6 +2181,13 @@ async fn convert_item(
                 Ok(tmp) => tmp,
                 Err(outcome) => return write_outcome_to_run(outcome),
             };
+            // §2.1.1 step 2's Windows tail (P4.17): the §2.12.3 Leg-A mandatory integrity label the isolation
+            // wrapper put on this `.part` TRAVELS with the §2.1.2 move, so it is removed HERE — after the engine
+            // exit and the non-empty verification, BEFORE the publish legs below — and `final` carries the
+            // destination's implicit level. ONE site covering every engine and both publish shapes (the
+            // same-volume rename and the §2.14.3 cross-volume copy both consume this `.part`). A no-op on every
+            // other OS and on every spawn whose Leg A degraded. [Build-Session-Entscheidung: P4.17]
+            let tmp = strip_publish_label(item, plan.publish_temp_dir.as_path(), scratch, tmp);
             // §2.1.1 steps 3-7 (+ the §2.7.2/§2.7.5 late-divert) over the verified temp. The §2.7.3 late-divert
             // candidate is the resolved divert root (the same one `compute_output_plan` used), or an EMPTY set
             // when neither Downloads nor Documents resolved — an empty set makes `resolve_divert_target` yield
@@ -9677,6 +9755,130 @@ mod write_sequence_tests {
             .tempdir_in(env!("CARGO_MANIFEST_DIR"))
             .expect("create a temp dir in the crate source root");
         (!crate::platform::is_ephemeral_output_dir(dir.path())).then_some(dir)
+    }
+
+    // §6.4.1 unit (G15) / §2.1.1 + §2.12.3 (P4.17): the label-strip leg is a NO-OP on a temp that carries no
+    // §2.12.3 mandatory label — every non-Windows publish and every Windows publish whose Leg A degraded. It
+    // must hand the SAME temp on (no needless re-mint, no extra `.part` in the user's destination dir), so the
+    // common publish path is unchanged by the tier.
+    #[test]
+    fn the_label_strip_leg_hands_an_unlabelled_temp_straight_through() {
+        let f = Fixture::new(b"a,b\n1,2\n");
+        let plan = f.plan_in(f.dest.path());
+        let tmp = f
+            .scratch
+            .publish_temp(&plan.publish_temp_dir, plan.job)
+            .expect("pick the publish temp");
+        std::fs::write(&*tmp, b"converted\n").expect("write the engine output");
+        let before = tmp.to_path_buf();
+        let after = strip_publish_label(plan.job, plan.publish_temp_dir.as_path(), &f.scratch, tmp);
+        assert_eq!(
+            after.to_path_buf(),
+            before,
+            "the unlabelled fast path must hand the SAME temp on"
+        );
+        assert_eq!(
+            part_files(f.dest.path()).len(),
+            1,
+            "no second `.part` may be minted on the fast path"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.1.1 + §2.12.3 (P4.17): the strip-failure fallback republishes the BYTES through a
+    // fresh exclusively-created `.part` sibling (which carries no label, since a copy does not propagate one),
+    // discards the original, and never touches the source or an existing `final`. Exercised on every platform:
+    // the arm only FIRES on Windows, but its correctness is filesystem work that must hold everywhere.
+    #[test]
+    fn the_strip_fallback_republishes_the_bytes_through_a_fresh_unlabelled_sibling() {
+        let f = Fixture::new(b"a,b\n1,2\n");
+        let source_before = std::fs::read(&f.source).expect("read the source before");
+        let plan = f.plan_in(f.dest.path());
+        let tmp = f
+            .scratch
+            .publish_temp(&plan.publish_temp_dir, plan.job)
+            .expect("pick the publish temp");
+        std::fs::write(&*tmp, b"converted\n").expect("write the engine output");
+        let original = tmp.to_path_buf();
+        let fresh =
+            rewrite_temp_unlabelled(plan.job, plan.publish_temp_dir.as_path(), &f.scratch, tmp);
+        assert_ne!(
+            fresh.to_path_buf(),
+            original,
+            "the fallback must publish through a NEW sibling, not the labelled original"
+        );
+        assert_eq!(
+            std::fs::read(&*fresh).expect("read the fresh temp"),
+            b"converted\n",
+            "the fallback must carry the converted bytes across verbatim"
+        );
+        assert!(
+            !original.exists(),
+            "the original `.part` must be discarded, never left as a silent leftover"
+        );
+        assert_eq!(
+            part_files(f.dest.path()).len(),
+            1,
+            "exactly one `.part` remains — the fresh one the publish will consume"
+        );
+        assert_eq!(
+            std::fs::read(&f.source).expect("read the source after"),
+            source_before,
+            "no-harm: the fallback never touches the source"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.1.1 + §2.12.3 (P4.17): the fallback NEVER concedes an outcome — a destination that
+    // cannot mint a fresh `.part`, or a source temp that vanished before the copy, both hand the ORIGINAL temp
+    // back so the §2.1.1 publish legs (including the §2.7.2 late-divert) still run. This is the never-break
+    // half of the strip: the strip needs `WRITE_OWNER`, so its most plausible failure cause is a mid-run
+    // writability flip of the destination — exactly the case §2.7.2 exists to divert — and conceding here would
+    // kill an item that would otherwise have diverted, while also re-introducing the eager-mint-in-the-
+    // destination anti-pattern `RunScratch::publish_temp_path` documents against.
+    #[test]
+    fn the_strip_fallback_concedes_the_original_temp_when_it_cannot_mint_or_copy() {
+        let f = Fixture::new(b"a,b\n1,2\n");
+        let plan = f.plan_in(f.dest.path());
+
+        // (a) the fresh sibling cannot be minted — that publish-temp directory is gone.
+        let tmp = f
+            .scratch
+            .publish_temp(&plan.publish_temp_dir, plan.job)
+            .expect("pick the publish temp");
+        std::fs::write(&*tmp, b"converted\n").expect("write the engine output");
+        let original = tmp.to_path_buf();
+        let absent_dir = f.dest.path().join("no-such-destination");
+        let handed_on = rewrite_temp_unlabelled(plan.job, &absent_dir, &f.scratch, tmp);
+        assert_eq!(
+            handed_on.to_path_buf(),
+            original,
+            "a mint failure must hand the ORIGINAL temp on, so the publish legs still get their chance"
+        );
+        assert_eq!(
+            std::fs::read(&*handed_on).expect("read the conceded temp"),
+            b"converted\n",
+            "the conceded temp still carries the converted bytes"
+        );
+        drop(handed_on);
+
+        // (b) the bytes cannot be copied — the temp vanished between the mint and the copy.
+        let tmp = f
+            .scratch
+            .publish_temp(&plan.publish_temp_dir, plan.job)
+            .expect("pick a second publish temp");
+        let original = tmp.to_path_buf();
+        std::fs::remove_file(&*tmp).expect("make the copy source vanish");
+        let handed_on =
+            rewrite_temp_unlabelled(plan.job, plan.publish_temp_dir.as_path(), &f.scratch, tmp);
+        assert_eq!(
+            handed_on.to_path_buf(),
+            original,
+            "a copy failure must hand the ORIGINAL temp on, never a half-written replacement"
+        );
+        drop(handed_on);
+        assert!(
+            part_files(f.dest.path()).is_empty(),
+            "the half-written replacement must be cleaned — no stray `.part` may be left behind"
+        );
     }
 
     #[test]

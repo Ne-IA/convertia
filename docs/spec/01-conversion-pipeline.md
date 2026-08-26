@@ -1011,9 +1011,10 @@ leader** and kills the **whole group**, so one cancel/kill tears down the engine
 - **App-exit / quit-while-converting:** the same group-kill runs for every live
   job on shutdown (so no orphans survive the app — the §7.3 quit-while-converting
   policy calls into this). On an **ungraceful** end (crash/power-loss) engine
-  descendants can survive us on **every** platform; they are reaped by re-parenting
-  (POSIX) / left to exit on their own (Windows), and the **startup cleanup** (§2.6)
-  discards the previous run's owned temp.
+  descendants can survive us on **POSIX**; they are reaped by re-parenting, and the
+  **startup cleanup** (§2.6) discards the previous run's owned temp. **On Windows the
+  crash-time reap is CLOSED for a still-running engine wherever the §2.12.3 Leg-B job attached
+  `[CORRECTED — P4.17, 2026-08-25]`** — see the note below for the precise arm split.
   > **`[CORRECTED 2026-07-23 — P4.10, FORCED DEVIATION]`** this bullet previously said
   > "On an **ungraceful** end (crash/power-loss) the OS reaps the Windows job", which
   > rested on the kill-on-job-close limit the Mechanism bullet above shows is
@@ -1032,6 +1033,20 @@ leader** and kills the **whole group**, so one cancel/kill tears down the engine
   > Mechanism bullet's `[UPSTREAM]` note above (the pin stays 9.1.0; the bump is a deliberate
   > dep-major act of its own). P4.17's own `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` job remains the
   > in-product close regardless of the bump.
+  > **`[CORRECTED 2026-08-25 — P4.17, the residual is CLOSED on Windows, arm-split]`** the
+  > "tracked home" this note names has landed: §2.12.3's Windows privilege-drop tier (Leg B)
+  > creates ConvertIA's OWN Job Object carrying `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and assigns
+  > the still-suspended child to it before its threads resume (a Windows-8+ NESTED pair with
+  > `process-wrap`'s own limit-less job, so the group-kill + wait contract above is untouched).
+  > While that job's handle is held, an **ungraceful end of ConvertIA has the OS terminate the
+  > engine tree** — the crash-time reap, restored without the unreachable upstream shim.
+  > **Precisely, per arm:** the limit is cleared ONLY on a **clean** completed engine wait (the
+  > same stand-down the group-kill backstop makes, so a launcher that legitimately exits before
+  > its worker finished writing is never truncated); on the **crash / reap-fault / cancel** arms
+  > it is LEFT ARMED, which is exactly where a doomed tree should die. So the residual survives in
+  > one shape only: a host crash AFTER a clean engine exit, where a legitimately-lingering
+  > descendant is again left to exit on its own — the POSIX-symmetric posture this note already
+  > accepted, and no §2.1 no-harm / no-partial guarantee is touched either way.
 
 ### `InProcessNative` sub-case — the one non-subprocess engine `[DECIDED]`
 

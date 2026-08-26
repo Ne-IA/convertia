@@ -7,9 +7,10 @@
 //! builds the engine args INSIDE it; it depends DOWN only, never up on IPC / orchestrator / the engine
 //! registry. Unsafe-free — the crate-root `#![deny(unsafe_code)]` (main.rs) covers it; the §2.12.3
 //! privilege-drop tier reaches its per-OS confinement through SAFE wrapper crates (`process-wrap`
-//! group-kill / Job-Object teardown + the best-effort seccomp / Landlock / Seatbelt / AppContainer
-//! mechanisms), so this module adds NO FFI and NO `unsafe`; the confined-spawn entry [`run_confined`]
-//! below is the P4.13-authored cheap-tier body.
+//! group-kill / Job-Object teardown) and through SAFE `crate::platform` shims (the best-effort Linux
+//! seccomp / Landlock / net-namespace legs, P4.15; the Windows intermediate-integrity write confinement +
+//! own-Job-Object legs, P4.17), so this module adds NO FFI and NO `unsafe`; the confined-spawn entry
+//! [`run_confined`] below is the P4.13-authored cheap-tier body.
 //!
 //! ## The confined-spawn entry (P3.2 contract map → P4.13-authored body)
 //! [Build-Session-Entscheidung: P3.2] This root was a documented CONTRACT MAP through P3 (as in
@@ -35,8 +36,9 @@
 //!    it drops THIS future on a hang, so the Drop backstop is the kill), NOT here. **P4.14** delivered the
 //!    §2.12.3 dynamic-loader-injection env STRIP (the [`is_loader_injection_var`] filter on the constructed
 //!    env — `LD_PRELOAD`/`LD_LIBRARY_PATH`/`DYLD_*`, §0.11 T3a). The remaining layers land on THIS entry at
-//!    their boxes: the per-OS privilege-drop legs at **P4.15** (Linux) / **P4.17** (Windows) — **P4.16**
-//!    (macOS) is DECIDED cheap-tier only, no leg attaches (Co-Pilot ruling 2026-07-25) — and the achieved-tier record
+//!    their boxes: the per-OS privilege-drop legs at **P4.15** (Linux, three `pre_exec` legs) and **P4.17**
+//!    (Windows, the [`WindowsConfinement`] `post_spawn` wrapper) — **P4.16** (macOS) is DECIDED cheap-tier
+//!    only, no leg attaches (Co-Pilot ruling 2026-07-25) — and the achieved-tier record
 //!    into `privilege-drop-coverage.toml` at **P4.18**. It never runs the §2.1 publish — that is
 //!    `crate::fs_guard`, invoked by the §1.7 lifecycle after a `Succeeded` return; the §0.9 pool permit is
 //!    acquired one layer up (§1.7). `program` is the RESOLVED absolute binary path — the
@@ -50,10 +52,26 @@
 //! `LD_PRELOAD` / `LD_LIBRARY_PATH` / `DYLD_*` stripped, P4.14) + a scratch-cwd working dir + only the exact
 //! input + `tmp` output paths handed in — is the NON-NEGOTIABLE v1 floor, shipped unconditionally on
 //! Windows / macOS / Linux. (2) the **privilege-drop tier** — seccomp-bpf / Landlock + net-namespace
-//! (Linux), Seatbelt (macOS), restricted-token / AppContainer + Job-Object caps (Windows) — is best-effort
+//! (Linux), an intermediate-integrity write confinement + an own Job Object with `JOB_OBJECT_LIMIT` caps
+//! (Windows, P4.17), nothing beyond the cheap floor (macOS, P4.16) — is best-effort
 //! defence-in-depth that degrades SILENTLY to the cheap tier where it cannot be enabled without install-time
 //! elevation or breaking the portable build, and is NOT load-bearing (the §0.11 T9b network guarantee rests
 //! on the §3.5 / §6.1.3 argv / build controls). The per-OS profile CONTENTS are a §2.12.3 tuning residual.
+//! **Windows realization `[DECIDED — P4.17, Co-Pilot ruling 2026-08-25]`:** the restricted-token /
+//! AppContainer leg and the AppContainer / WFP network-deny leg are NOT realizable in v1-portable — stable
+//! `CommandExt` carries no spawn-token / process-creation-attribute path and `tokio::process::Child` cannot be
+//! built from a raw handle, an AppContainer additionally needs `ALL APPLICATION PACKAGES` DACL grants on the
+//! portable bundle dir (impossible on a FAT/exFAT stick) and on every input (source-metadata mutation = §2.0
+//! harm), and a WFP/firewall rule needs elevation plus a persistent machine-global mutation. What IS realized,
+//! both PARENT-SIDE on the `CREATE_SUSPENDED` child before its threads resume: a reduced-integrity token at a
+//! ConvertIA-private level strictly between Low and Medium with the write sinks labelled at the same level
+//! FIRST (the Windows analogue of the Landlock `{scratch rw}` grant; the label is stripped again before the
+//! §2.1.2 publish), and an own Job Object carrying kill-on-job-close plus generous runaway caps. No FFI for
+//! the unrealizable legs enters the core (pinned by the `crate::platform`
+//! `no_appcontainer_or_spawn_token_ffi_in_the_core` source-scan); the revisit anchor is an installer-build
+//! epoch plus a brokered/staged input model. **Network deny therefore has no Windows privilege-drop leg** —
+//! the load-bearing offline gate is the §2.11.4 packet-monitor regardless of tier, and the §6.7.3 CI egress
+//! gate (an ELEVATED runner firewall, a CI fact) is unaffected. spec §2.12.3 carries the ruling.
 //! **macOS realization `[DECIDED — P4.16, Co-Pilot ruling 2026-07-25]`:** the macOS Seatbelt leg is realized as
 //! the cheap-tier floor ONLY in v1-portable — its sole apply path is a private-libsandbox call in the
 //! post-fork/pre-exec child, which is neither auditable fork-safe nor silent-skippable at its worst case (a
@@ -199,6 +217,20 @@ pub async fn run_confined(
         }
     };
 
+    // §2.12.3 best-effort Windows privilege-drop tier, Leg A step (i) — LABEL-THEN-LOWER (P4.17): BEFORE the
+    // spawn, the parent labels every write sink the §2.14.1/§2.14.3 placement chose (the per-run scratch cwd
+    // `(OI)(CI)`, and the `.part` publish temp when this invocation produces one) at the ConvertIA-private
+    // intermediate integrity level, and reports whether the child's token may therefore be lowered to it. The
+    // Windows analogue of the Landlock `{scratch rw}` grant: the grant is issued FIRST, so the lowered child
+    // can still write exactly its own sinks and nothing else. `false` = cheap tier for this spawn (a FAT/exFAT
+    // or SMB destination, a `Modify`-only folder, a read/execute-blocking label on the engine binary) — never
+    // an error, never a broken conversion. The label is removed again before the §2.1.2 publish (the tier-1
+    // conductor's single strip site), so `final` never carries it. [Build-Session-Entscheidung: P4.17]
+    #[cfg(windows)]
+    let lower_to =
+        crate::platform::label_confinement_sinks(cwd, invocation.plan.out_tmp.as_deref(), program)
+            .then_some(crate::platform::CONFINED_INTEGRITY_RID);
+
     // The §2.12.3 cheap-tier spawn, built as an OWNED `tokio::process::Command` — the shape `process-wrap`
     // forces (its `CommandWrap` takes the builder BY VALUE, so the P4.13 single fluent `…spawn()` chain cannot
     // survive the P4.10 group-kill wrapping). `env_clear()` is therefore the IMMEDIATELY-following statement:
@@ -291,16 +323,22 @@ pub async fn run_confined(
     //     (the P4.12 watchdog, the §7.3.3 quit path), issues an explicit whole-group kill. For the paths that
     //     actually need a teardown that is a stronger guarantee than a drop-flag: it is not limited to a
     //     process exit. (After a COMPLETED wait the guard deliberately stands down — its `Drop` says why.)
-    //   * The residual is a HARD end of ConvertIA itself (crash / power-loss / SIGKILL), where no Rust `Drop`
-    //     runs: engine descendants can survive us — exactly the posture §1.7 already accepts for POSIX
-    //     ("POSIX orphans are reaped by re-parenting + the startup cleanup"), so Windows is now symmetric with
-    //     it rather than better, and the §2.6 startup sweep still discards the previous run's owned temp.
-    //   * Restoring the crash-time guarantee needs a first-party Win32 job with the limit set — the raw
-    //     `JOB_OBJECT_LIMIT` FFI that §2.12.3 already homes in **P4.17**, whose box note normatively requires
-    //     that job to carry kill-on-job-close: that box is the tracked home for closing this residual, and the
-    //     forward note added to it at P4.10 records both halves. The same upstream `core`-is-empty defect makes
-    //     `CreationFlags` inert too, which is why P4.17 cannot lean on that shim for a
-    //     spawn-suspended/adjust-token/resume sequence.
+    //   * The residual was a HARD end of ConvertIA itself (crash / power-loss / SIGKILL), where no Rust `Drop`
+    //     runs: engine descendants could survive us — the posture §1.7 already accepts for POSIX
+    //     ("POSIX orphans are reaped by re-parenting + the startup cleanup"), and the §2.6 startup sweep
+    //     discards the previous run's owned temp either way.
+    //   * **CLOSED ON WINDOWS BY P4.17 (§2.12.3 Leg B) — for a STILL-RUNNING engine, WHERE LEG B ATTACHED**
+    //     (`attach_confined_job` can degrade to `None`, and the residual is then unchanged). The first-party Win32
+    //     job the P4.10 forward note assigns to that box now exists: [`crate::platform::attach_confined_job`]
+    //     creates ConvertIA's OWN job WITH `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (plus the memory /
+    //     active-process / die-on-unhandled-exception caps) and assigns the still-suspended child to it in the
+    //     `post_spawn` hook below — a Win8+ NESTED pair with `process-wrap`'s own limit-less job, so the
+    //     P4.10/P4.11 group-kill + wait contract is untouched while the OS reaps the tree when our handle
+    //     closes. The upstream `core`-is-empty defect is routed around, not depended on. **Arm split (§1.7's
+    //     `[CORRECTED — P4.17]` note):** the limit is cleared ONLY on a clean completed wait — the same
+    //     stand-down this guard makes, so a launcher-outlives-worker tree is never truncated — so the residual
+    //     survives in exactly one shape: a host crash AFTER a clean engine exit. POSIX keeps its re-parenting
+    //     posture.
     //
     // v1 uses the §1.7 `[REC]` FORCEFUL group-kill (no cooperative drain): the output lives on a §2.14 temp
     // path promoted only by the §2.1 atomic rename, so a hard kill leaves only a discardable temp artifact.
@@ -309,7 +347,26 @@ pub async fn run_confined(
     // here. [Build-Session-Entscheidung: P4.10] the per-OS `wrap` calls are `cfg`-gated rather than always
     // registered: each wrapper type only EXISTS on its own platform (`job-object` is a Windows-only feature,
     // `process-group` a POSIX-only one), so the gate is the crate's own shape, not a ConvertIA choice.
-    let spawned = match group_wrapped(command).spawn() {
+    let mut wrapped = group_wrapped(command);
+
+    // §2.12.3 best-effort Windows privilege-drop tier (P4.17): register ConvertIA's own `CommandWrapper`
+    // ALONGSIDE the P4.10 group-kill composition (never inside `group_wrapped`, which owns only the §1.7
+    // whole-group shape). Its `post_spawn` hook is where BOTH Windows legs apply, and `process-wrap` runs every
+    // `post_spawn` BEFORE any `wrap_child` — while `JobObject::wrap_child` is what resumes the `CREATE_SUSPENDED`
+    // threads — so the child is still suspended there: parent-side, at creation time, before it runs one
+    // instruction (the P4.16 forward note's constraint, satisfied literally). The shared cell hands the created
+    // job back out here. This is the Windows peer of the Linux `install_confinement` call above; macOS attaches
+    // nothing (P4.16). [Build-Session-Entscheidung: P4.17]
+    #[cfg(windows)]
+    let win_confinement =
+        std::sync::Arc::new(std::sync::Mutex::new(WindowsConfinementOutcome::default()));
+    #[cfg(windows)]
+    wrapped.wrap(WindowsConfinement {
+        lower_to,
+        outcome: std::sync::Arc::clone(&win_confinement),
+    });
+
+    let spawned = match wrapped.spawn() {
         Ok(child) => child,
         // Spawn error (binary missing / denied) is the §2.13.1 ITEM-level fault: a runtime per-item spawn
         // failure fails that one item as InternalError (§2.13.2) — the final answer at this per-item level
@@ -322,6 +379,20 @@ pub async fn run_confined(
     // the engine's process tree running (§1.7 P4.10). After a COMPLETED wait the guard deliberately stands
     // down; its `Drop` carries that decision and the reason.
     let mut child = GroupKillGuard::new(spawned);
+
+    // §2.12.3 Leg B (P4.17): move ConvertIA's own kill-on-job-close job OUT of the hand-back cell and INTO the
+    // guard, so exactly one owner decides its fate on exactly the arms the guard already discriminates — the
+    // clean-exit stand-down and the crash-arm backstop live together, and the handle closes when the guard
+    // drops. A `None` here is the silent degrade (nested jobs unavailable, the assign refused): the cheap-tier
+    // floor plus `process-wrap`'s own job, exactly as before this box. [Build-Session-Entscheidung: P4.17]
+    #[cfg(windows)]
+    {
+        child.job = win_confinement
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .job
+            .take();
+    }
 
     // Take the piped handles OUT so the two drains borrow THEM (owned) while `wait()` borrows the child —
     // all three run CONCURRENTLY under one `tokio::join!` on this task, so a full stdout/stderr pipe can never
@@ -355,6 +426,16 @@ pub async fn run_confined(
                 // regression — a launcher that legitimately exits before its worker finishes writing valid
                 // output must not be truncated, §1.7 936-945).
                 child.group_settled = true;
+                // §2.12.3 Leg B (P4.17): the CLEAN arm is the ONLY one that stands ConvertIA's own Job Object
+                // down (clear `KILL_ON_JOB_CLOSE`, keep the caps). The crash / reap-fault / cancel arms
+                // deliberately leave it ARMED so a ConvertIA host crash still reaps the tree — the P4.10
+                // crash-time-reap residual closed on exactly the arms where the tree should die. A separate flag
+                // from `group_settled` on purpose: that one is ALSO set on the cancel arm, where the job must
+                // stay armed. [Build-Session-Entscheidung: P4.17]
+                #[cfg(windows)]
+                {
+                    child.clean_exit = true;
+                }
                 InvocationResult::Succeeded
             } else {
                 // A CRASH completed exit (non-zero): the item is `Failed` → its `out_tmp` is discarded, so there
@@ -437,6 +518,78 @@ fn group_wrapped(command: Command) -> CommandWrap {
     wrapped
 }
 
+/// What the §2.12.3 Windows tier (P4.17) achieved for ONE spawn, handed back out of the `post_spawn` hook.
+/// `job` is moved into [`GroupKillGuard`] straight after the spawn (it owns the teardown decision);
+/// `integrity` is the Leg-A read-back the P4.18 achieved-tier record will consume.
+/// [Build-Session-Entscheidung: P4.17]
+#[cfg(windows)]
+#[derive(Debug, Default)]
+struct WindowsConfinementOutcome {
+    /// ConvertIA's own kill-on-job-close job (§2.12.3 Leg B), or `None` when the leg degraded.
+    job: Option<crate::platform::ConfinedJob>,
+    /// The Leg-A per-spawn verdict — `None` when the label-then-lower grant was not issued at all (a
+    /// non-persistent-ACL sink, a blocked engine label), otherwise the `GetTokenInformation` read-back's
+    /// applied-vs-degraded outcome.
+    ///
+    /// `allow(dead_code)` (non-test): the production consumer is the P4.18 achieved-tier record — the same
+    /// posture the Linux `LegOutcome` reporters carry (P4.15). The tier tests below read it today, so the
+    /// field is genuinely exercised; P4.18 adds the production read.
+    #[cfg_attr(not(test), allow(dead_code))]
+    integrity: Option<crate::platform::LegOutcome>,
+}
+
+/// The §2.12.3 Windows privilege-drop `CommandWrapper` (P4.17) — the parent-side, pre-resume apply point for
+/// BOTH Windows legs. `process-wrap` runs every `post_spawn` BEFORE any `wrap_child`, and its own
+/// `JobObject::wrap_child` is what resumes the `CREATE_SUSPENDED` threads, so this hook is the exact window in
+/// which the child exists but has not run: a restricted-token-equivalent adjustment is legal there and a job
+/// assignment covers the process before it can spawn anything.
+///
+/// **It MUST NOT return `Err`.** A `post_spawn` error propagates with `?` out of `spawn_inner` BEFORE any
+/// `wrap_child` runs, so the `JobObject` wrapper never resumes the threads: the child would be dropped
+/// suspended and unreaped — a stranded orphan AND a broken conversion. Every failure inside is therefore a
+/// silent degrade to the P4.13 cheap-tier floor, pinned by the two red-green tests
+/// `a_failing_confinement_step_still_yields_a_resumed_completing_child` (the grant leg never issued) and
+/// `a_refused_token_lowering_still_yields_a_resumed_completing_child` (the risky call itself refused).
+/// [Build-Session-Entscheidung: P4.17]
+#[cfg(windows)]
+#[derive(Debug)]
+struct WindowsConfinement {
+    /// The mandatory integrity level to lower the child's token to, or `None` when Leg A's label-then-lower
+    /// grant did not succeed for every sink — then Leg A is skipped for this spawn and Leg B still applies
+    /// (the two legs are independent). Production always passes
+    /// `Some(crate::platform::CONFINED_INTEGRITY_RID)`; carrying the level as DATA rather than hardcoding it
+    /// here is what lets the tier tests stand a co-tenant up at a different level and prove the enforcement
+    /// claim from the other side.
+    lower_to: Option<u32>,
+    /// The hand-back cell `run_confined` reads after the spawn.
+    outcome: std::sync::Arc<std::sync::Mutex<WindowsConfinementOutcome>>,
+}
+
+#[cfg(windows)]
+impl process_wrap::tokio::CommandWrapper for WindowsConfinement {
+    fn post_spawn(
+        &mut self,
+        _command: &mut Command,
+        child: &mut tokio::process::Child,
+        _core: &CommandWrap,
+    ) -> std::io::Result<()> {
+        // Every arm returns `Ok(())` — see the type doc: an `Err` here strands a suspended child.
+        if let Some(pid) = child.id() {
+            let job = crate::platform::attach_confined_job(pid);
+            let integrity = self
+                .lower_to
+                .map(|rid| crate::platform::lower_child_to(pid, rid));
+            let mut slot = self
+                .outcome
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            slot.job = job;
+            slot.integrity = integrity;
+        }
+        Ok(())
+    }
+}
+
 /// The §1.7 whole-group kill BACKSTOP (P4.10) — owns the spawned child so that **no way out of
 /// [`run_confined`] that ends the invocation WITHOUT a completed engine wait** can leave the engine's process
 /// tree running. That covers the failed-reap arm, any early return, and above all the exit no explicit arm can
@@ -454,6 +607,17 @@ struct GroupKillGuard {
     /// (non-zero — P4.12 wants the doomed tree killed), a failed reap, an early return, and the caller dropping
     /// the whole future — all paths the [`Drop`] backstop group-kills.
     group_settled: bool,
+    /// `true` ONLY on a clean completed exit (§2.12.3 Leg B, P4.17) — the one arm on which ConvertIA's own
+    /// Job Object stands down. Distinct from `group_settled`, which is ALSO set on the cancel arm, where the
+    /// job must stay armed.
+    #[cfg(windows)]
+    clean_exit: bool,
+    /// ConvertIA's own `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` job around this spawn (§2.12.3 Leg B, P4.17), or
+    /// `None` when the leg degraded. Owned HERE so its teardown decision rides the same clean-vs-crash split
+    /// the group-kill backstop already makes: on the clean arm it is stood down (flag cleared, caps kept), on
+    /// every other arm it stays armed and the handle's close reaps the tree — the P4.10 crash-time residual.
+    #[cfg(windows)]
+    job: Option<crate::platform::ConfinedJob>,
 }
 
 impl GroupKillGuard {
@@ -461,6 +625,10 @@ impl GroupKillGuard {
         Self {
             inner,
             group_settled: false,
+            #[cfg(windows)]
+            clean_exit: false,
+            #[cfg(windows)]
+            job: None,
         }
     }
 }
@@ -491,6 +659,19 @@ impl Drop for GroupKillGuard {
         //     tree down. [Build-Session-Entscheidung: P4.10 / P4.12]
         if !self.group_settled {
             self.inner.start_kill().ok();
+        }
+        // §2.12.3 Leg B (P4.17) — ConvertIA's OWN job, torn down on the SAME clean-vs-crash split. On the CLEAN
+        // arm it is stood down (kill-on-job-close cleared, the caps kept) so the close below cannot truncate the
+        // launcher-outlives-worker tree the stand-down above exists to protect. On every other arm the flag is
+        // left ARMED, so dropping the handle here — and, crucially, the OS closing it if ConvertIA itself is
+        // killed — reaps the whole engine tree: the P4.10 crash-time-reap residual `process-wrap` 9.1.0 cannot
+        // deliver. The order matters: the explicit group-kill above runs first, this is the OS-level backstop
+        // behind it. [Build-Session-Entscheidung: P4.17]
+        #[cfg(windows)]
+        if let Some(job) = self.job.take() {
+            if self.clean_exit {
+                job.stand_down();
+            }
         }
     }
 }
@@ -1477,5 +1658,303 @@ mod confined_spawn_tests {
                 "every concurrent cheap-tier `exit 0` spawn must reap to Succeeded (no deadlock / no leak)"
             );
         }
+    }
+}
+
+// §2.12.3 best-effort WINDOWS privilege-drop tier (P4.17) — the cross-module ENFORCEMENT half. The per-leg
+// primitives are unit-tested in `crate::platform`; what only this module can prove is the composed claim the
+// ruling arms here: a child spawned through the SAME `WindowsConfinement` composition the production path
+// registers can still write its own labelled sinks (never-break) and is DENIED a Medium sink it does not own
+// (the confinement's actual goal). Child-observed against the real kernel — the grant-IS-enforcement model,
+// exactly as the Landlock / seccomp / net-ns legs are proven, never a mock (test-strategy §0.1). TWO STACKED
+// cfg attrs (`#[cfg(test)]` then `#[cfg(windows)]`) — NOT a compound `all(test, windows)` (the P1.17 clippy
+// `is_cfg_test` trap).
+#[cfg(test)]
+#[cfg(windows)]
+mod windows_confinement_tests {
+    use super::{group_wrapped, WindowsConfinement, WindowsConfinementOutcome};
+    use crate::platform::{DegradeReason, LegOutcome};
+    use std::ffi::OsString;
+    use std::path::{Path, PathBuf};
+    use std::process::Stdio;
+    use std::sync::{Arc, Mutex, PoisonError};
+    use tokio::process::Command;
+
+    // An absolute System32 executable — never a PATH lookup (the confined child runs env-cleared).
+    fn system32(exe: &str) -> PathBuf {
+        let root = std::env::var_os("SystemRoot").expect("SystemRoot is set on Windows");
+        Path::new(&root).join("System32").join(exe)
+    }
+
+    // Run `script` through `cmd.exe` under the SAME composition `run_confined` builds — the P4.10 group
+    // wrappers plus the P4.17 `WindowsConfinement`, with the Leg-A grant issued first exactly as production
+    // issues it. Returns the tier outcome so each assertion can key on the arm that matches this runner
+    // (the P4.15 `match landlock_probe()` shape).
+    async fn confined_cmd(
+        scratch: &Path,
+        out_tmp: Option<&Path>,
+        script: &str,
+    ) -> WindowsConfinementOutcome {
+        confined_cmd_at(scratch, out_tmp, script, None).await
+    }
+
+    // The general form: `force_level` overrides the level the child's token is lowered to (production always
+    // uses the grant's own `CONFINED_INTEGRITY_RID`), so a test can stand a CO-TENANT up at another level —
+    // the only way to prove the enforcement claim from the outside — or force the lowering itself to be
+    // refused by the kernel.
+    async fn confined_cmd_at(
+        scratch: &Path,
+        out_tmp: Option<&Path>,
+        script: &str,
+        force_level: Option<u32>,
+    ) -> WindowsConfinementOutcome {
+        let program = system32("cmd.exe");
+        let granted = crate::platform::label_confinement_sinks(scratch, out_tmp, &program);
+        let lower_to = match force_level {
+            Some(rid) => Some(rid),
+            None => granted.then_some(crate::platform::CONFINED_INTEGRITY_RID),
+        };
+        // The production shape verbatim: an owned `Command` whose `env_clear()` is the gap-free next
+        // statement (the G29 rule-(b1) split-builder suppression this crate carries), then the wrappers.
+        // nosemgrep: convertia-command-outside-isolation
+        let mut command = Command::new(&program);
+        command.env_clear();
+        command
+            .envs([(
+                OsString::from("SystemRoot"),
+                std::env::var_os("SystemRoot").expect("SystemRoot is set on Windows"),
+            )])
+            .args([OsString::from("/d"), OsString::from("/c")])
+            .current_dir(scratch)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // `cmd.exe` parses `/c`'s tail with its OWN quoting rules, which do not understand the MSVCRT
+        // backslash-escaping `Command::arg` applies — a script containing `"` would arrive mangled. `raw_arg`
+        // passes it through verbatim, the documented way to hand cmd.exe a command line.
+        {
+            use std::os::windows::process::CommandExt;
+            command.as_std_mut().raw_arg(script);
+        }
+        let outcome = Arc::new(Mutex::new(WindowsConfinementOutcome::default()));
+        let mut wrapped = group_wrapped(command);
+        wrapped.wrap(WindowsConfinement {
+            lower_to,
+            outcome: Arc::clone(&outcome),
+        });
+        let mut child = wrapped.spawn().expect("spawn the confined cmd.exe child");
+        child.wait().await.expect("reap the confined child");
+        let mut slot = outcome.lock().unwrap_or_else(PoisonError::into_inner);
+        WindowsConfinementOutcome {
+            job: slot.job.take(),
+            integrity: slot.integrity,
+        }
+    }
+
+    // §6.4.3 integration (G31) / §2.12.3 Leg A — THE enforcement claim. The confined child writes markers into
+    // its own labelled scratch, so the parent reads the verdict off the filesystem rather than off a localized
+    // console string. Three observations: the run happened at all (non-vacuity), the labelled `.part` stayed
+    // writable (never-break), and the Medium sibling directory was refused (the confinement).
+    #[tokio::test]
+    async fn a_confined_child_writes_its_labelled_sink_and_is_denied_a_medium_one() {
+        let scratch = tempfile::tempdir().expect("a real per-run scratch dir");
+        let dest = tempfile::tempdir().expect("a real destination dir for the publish temp");
+        let medium = tempfile::tempdir().expect("a real UNLABELLED (Medium) sibling dir");
+        let part = dest.path().join("item.part");
+        std::fs::write(&part, b"seed").expect("create the publish temp the parent owns");
+        let obs = scratch.path();
+        let script = format!(
+            "(echo x)>>\"{part}\" && (echo ok)>\"{obs}\\\\part_ok\" & \
+             (echo y)>\"{medium}\\\\leak.txt\" && (echo leak)>\"{obs}\\\\medium_leak\" & \
+             (echo done)>\"{obs}\\\\done\"",
+            part = part.display(),
+            obs = obs.display(),
+            medium = medium.path().display(),
+        );
+        let outcome = confined_cmd(scratch.path(), Some(&part), &script).await;
+        assert!(
+            obs.join("done").exists(),
+            "non-vacuity: the confined child must have run its script to the end"
+        );
+        assert!(
+            obs.join("part_ok").exists(),
+            "never-break: the child MUST still write the labelled publish temp it was granted"
+        );
+        match outcome.integrity {
+            Some(LegOutcome::Applied) => assert!(
+                !obs.join("medium_leak").exists(),
+                "§2.12.3 Leg A applied — a write into an unlabelled Medium directory MUST be denied"
+            ),
+            Some(LegOutcome::Degraded(reason)) => assert!(
+                obs.join("medium_leak").exists(),
+                "Leg A degraded ({reason:?}) — the child keeps its Medium write access (silent-degrade)"
+            ),
+            None => assert!(
+                obs.join("medium_leak").exists(),
+                "the Leg-A grant was not issued — the child keeps its Medium write access (cheap tier)"
+            ),
+        }
+        assert_ne!(
+            outcome.integrity,
+            Some(LegOutcome::Degraded(DegradeReason::NotApplied)),
+            "a lowering that returned yet did not take is a real defect, not a legitimate degrade"
+        );
+    }
+
+    // §6.4.3 integration (G31) / §2.12.3 Leg A — **THE claim the 0x1800 choice exists for**, armed here on a
+    // real Windows runner as the P4.17 ruling requires. The round-1 review of that ruling found that labelling
+    // the `.part` at the WELL-KNOWN LOW level would leave it writable by every same-user Low process — an
+    // Acrobat renderer, Office Protected View, a browser content process, i.e. exactly the sandboxes a hostile
+    // document compromises — which could overwrite the `.part` mid-conversion, before the strip publishes it
+    // under the expected name. The fix was the INTERMEDIATE level; this test proves the fix, from the co-tenant's
+    // side: a child standing in for such a sandbox, lowered to Low (4096), is DENIED write-UP to the 6144
+    // `.part`, while the Medium parent still writes it. The co-tenant reports into its OWN Low-labelled dir,
+    // because a Low subject cannot write a Medium one either — so its markers are the honest non-vacuity signal.
+    #[tokio::test]
+    async fn a_low_co_tenant_is_denied_write_up_to_the_labelled_publish_temp() {
+        const LOW_INTEGRITY_RID: u32 = 0x1000;
+        let scratch = tempfile::tempdir().expect("a real per-run scratch dir");
+        let dest = tempfile::tempdir().expect("a real destination dir");
+        let obs = tempfile::tempdir().expect("a real Low-labelled observation dir");
+        let part = dest.path().join("item.part");
+        std::fs::write(&part, b"seed").expect("create the publish temp the parent owns");
+        assert!(
+            crate::platform::label_at_level(obs.path(), LOW_INTEGRITY_RID, true),
+            "the co-tenant needs a sink at its OWN level to report into"
+        );
+        let script = format!(
+            "(echo tampered)>>\"{part}\" && (echo t)>\"{obs}\\\\tampered\" & \
+             (echo done)>\"{obs}\\\\done\"",
+            part = part.display(),
+            obs = obs.path().display(),
+        );
+        let outcome = confined_cmd_at(
+            scratch.path(),
+            Some(&part),
+            &script,
+            Some(LOW_INTEGRITY_RID),
+        )
+        .await;
+        assert_eq!(
+            outcome.integrity,
+            Some(LegOutcome::Applied),
+            "non-vacuity: the co-tenant must really be running at Low, or the denial below proves nothing"
+        );
+        // The OTHER half of the non-vacuity: an UNLABELLED `.part` would deny the Low writer just as well
+        // (implicit Medium), so without this the denial could pass for the wrong reason — the test would keep
+        // passing if the grant stopped labelling entirely. Pin the sink's actual level in-test.
+        assert!(
+            crate::platform::read_label_sddl_for_test(&part)
+                .unwrap_or_default()
+                .contains("S-1-16-6144"),
+            "non-vacuity: the `.part` must really carry the confined level, not merely deny by implicit Medium"
+        );
+        assert!(
+            obs.path().join("done").exists(),
+            "non-vacuity: the Low co-tenant must have run and been able to write its OWN level"
+        );
+        assert!(
+            !obs.path().join("tampered").exists(),
+            "§2.12.3 P4.17: a Low co-tenant MUST be denied write-UP to the 6144-labelled `.part` — this is \
+             exactly the tamper the intermediate level (rather than the well-known Low) was chosen to exclude"
+        );
+        assert_eq!(
+            std::fs::read(&part).expect("read the publish temp back"),
+            b"seed",
+            "no-harm: the denied write must not have changed a byte of the publish temp"
+        );
+        std::fs::write(&part, b"parent still writes").expect(
+            "the Medium parent must still write the labelled temp — the label restricts write-UP only",
+        );
+    }
+
+    // §6.4.2 fault-injection (G16/G31) / §2.12.3 — the second half of the never-break red-green: here the
+    // hook TRAVERSES the risky `SetTokenInformation` call and the kernel REFUSES it (raising an integrity
+    // level is `ERROR_INVALID_LABEL`, unlike lowering). The child must still resume and complete, and the
+    // refusal must read as `Unavailable` — the grant could not be obtained at all — never `NotApplied`, which
+    // is reserved for a call that succeeded without the kernel showing the level.
+    //
+    // The forced level is derived from THIS process's own, never a fixed constant: the refusal depends on the
+    // target being ABOVE the caller's level, so a hardcoded High would be a no-op success on an ELEVATED
+    // runner (a GitHub-hosted `windows-2022` job runs at High) and the test would invert. One step above
+    // whatever we are is a refusal on every host — the CI-runtime-validation lesson applied up front.
+    #[tokio::test]
+    async fn a_refused_token_lowering_still_yields_a_resumed_completing_child() {
+        let own_level = crate::platform::child_integrity_rid(std::process::id())
+            .expect("read this process's own integrity level");
+        let above_us = own_level + 0x100;
+        let scratch = tempfile::tempdir().expect("a real per-run scratch dir");
+        let obs = scratch.path();
+        let script = format!("(echo done)>\"{obs}\\\\done\"", obs = obs.display());
+        let outcome = confined_cmd_at(scratch.path(), None, &script, Some(above_us)).await;
+        assert!(
+            obs.join("done").exists(),
+            "never-break: a REFUSED token adjustment must still resume the child and let it complete"
+        );
+        assert_eq!(
+            outcome.integrity,
+            Some(LegOutcome::Degraded(DegradeReason::Unavailable)),
+            "a refused write is an unobtainable grant (`Unavailable`), not a grant that failed to enforce \
+             (own level {own_level:#x}, refused target {above_us:#x})"
+        );
+        assert!(
+            outcome.job.is_some(),
+            "Leg B is independent of Leg A — the own Job Object still attaches on the same spawn"
+        );
+    }
+
+    // §6.4.3 integration (G31) / §2.12.3 Leg A — the NON-VACUITY guard for the assertion above (the g24
+    // never-silently-watch-nothing lesson, and the ruling's "the runner test ARMS the full claim"). The
+    // enforcement test keeps a legitimate silent-degrade arm, which on its own could pass forever on a runner
+    // where the tier never applies. On a local NTFS scratch with a publish temp we created ourselves, every
+    // precondition holds, so the tier MUST reach `Applied` here — a degrade in THIS environment is a real
+    // defect, not the production silent-degrade.
+    #[tokio::test]
+    async fn the_tier_actually_applies_on_a_local_scratch_with_an_owned_publish_temp() {
+        let scratch = tempfile::tempdir().expect("a real per-run scratch dir");
+        let dest = tempfile::tempdir().expect("a real destination dir");
+        let part = dest.path().join("item.part");
+        std::fs::write(&part, b"seed").expect("create the publish temp the parent owns");
+        let obs = scratch.path();
+        let script = format!("(echo done)>\"{obs}\\done\"", obs = obs.display());
+        let outcome = confined_cmd(scratch.path(), Some(&part), &script).await;
+        assert!(
+            obs.join("done").exists(),
+            "non-vacuity: the confined child must have run"
+        );
+        assert_eq!(
+            outcome.integrity,
+            Some(LegOutcome::Applied),
+            "every §2.12.3 Leg-A precondition holds here (local NTFS, sinks we own) — the tier must APPLY, \
+             so the enforcement test above cannot pass forever on its silent-degrade arm"
+        );
+    }
+
+    // §6.4.2 fault-injection (G16/G31) / §2.12.3 — the NEVER-BREAK red-green the ruling names: a Leg-A grant
+    // that CANNOT be issued (a sink that is not ours to label) must leave a resumed, completing child. This is
+    // the observable proof that the `post_spawn` hook silently degrades instead of returning `Err`, which would
+    // propagate before any `wrap_child` and strand the `CREATE_SUSPENDED` child un-resumed and un-reaped. It
+    // also pins LEG INDEPENDENCE: Leg B still attaches its job on the very same spawn.
+    #[tokio::test]
+    async fn a_failing_confinement_step_still_yields_a_resumed_completing_child() {
+        let scratch = tempfile::tempdir().expect("a real per-run scratch dir");
+        let dest = tempfile::tempdir().expect("a real destination dir");
+        let unlabellable = dest.path().join("never-created.part");
+        let obs = scratch.path();
+        let script = format!("(echo done)>\"{obs}\\\\done\"", obs = obs.display());
+        let outcome = confined_cmd(scratch.path(), Some(&unlabellable), &script).await;
+        assert!(
+            obs.join("done").exists(),
+            "never-break: a degraded confinement step must still resume the child and let it complete"
+        );
+        assert!(
+            outcome.integrity.is_none(),
+            "the Leg-A grant failed, so the token must NOT have been lowered: {:?}",
+            outcome.integrity
+        );
+        assert!(
+            outcome.job.is_some(),
+            "Leg B is independent of Leg A — the own Job Object still attaches on the same spawn"
+        );
     }
 }

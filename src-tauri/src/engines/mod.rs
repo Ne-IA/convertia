@@ -3563,24 +3563,46 @@ mod tests {
     async fn a_no_tick_coarse_spawn_done_engine_is_not_falsely_reaped_by_the_no_progress_leg() {
         let scratch = tempfile::tempdir().expect("a real scratch dir for the confined cwd");
         // A ~1 s no-output subprocess (CoarseSpawnDone, the seam default): emits NO progress ticks.
+        // [Test-Change: P4.17 — old-obsolete+new-correct, §2.12.3] the Windows quiet-sleep helper was
+        // `ping.exe -n 2 127.0.0.1 >nul`. (1) OBSOLETE: the §2.12.3 `[DECIDED — P4.17]` Windows tier now
+        // confines every engine child below Medium, and a child at that level is refused the Medium-labelled
+        // device objects a SOCKET needs — so `ping` exits non-zero and the helper no longer models a quiet
+        // conversion. (2) CORRECT: `waitfor.exe` is a System32 sleep that opens no socket (measured under the
+        // real confinement: a `/t 2` invocation waited the full ~2 s, so its `/t 1` here waits ~1 s) and
+        // `exit 0` normalises its ERROR_WAIT_TIMEOUT; the ASSERTION is unchanged, and the added elapsed floor
+        // closes the vacuity the swap would otherwise open — `& exit 0` makes the invocation succeed
+        // unconditionally, so that floor IS the real proof the child ran and must never be relaxed. The §1.7
+        // invariant under test — the
+        // no-progress leg is inert for a non-streaming model — is untouched by the tier. The signal name is
+        // ALPHANUMERIC-ONLY on purpose: `waitfor` rejects `_`/`-` and returns instantly, which is exactly the
+        // silent no-sleep the elapsed floor now catches.
         #[cfg(windows)]
-        let script = "%SystemRoot%\\System32\\ping.exe -n 2 127.0.0.1 >nul";
+        let script = "%SystemRoot%\\System32\\waitfor.exe /t 1 convertiaquiet >nul 2>&1 & exit 0";
         #[cfg(unix)]
         let script = "sleep 1";
         let (quiet, program) = seam_shell_invocation(script, scratch.path().to_path_buf());
+        let started = std::time::Instant::now();
+        let result = run_subprocess(
+            &SeamEngine,
+            &quiet,
+            &program,
+            |_| {},
+            Duration::from_secs(30),   // wall_clock: generous
+            Duration::from_millis(50), // no_progress: TINY — would reap at the first poll IF the leg applied
+        )
+        .await;
+        // The RESULT first, so a genuine engine failure reports as itself rather than as a timing failure;
+        // the elapsed floor then proves the run was not vacuous.
         assert_eq!(
-            run_subprocess(
-                &SeamEngine,
-                &quiet,
-                &program,
-                |_| {},
-                Duration::from_secs(30),   // wall_clock: generous
-                Duration::from_millis(50), // no_progress: TINY — would reap at the first poll IF the leg applied
-            )
-            .await,
+            result,
             InvocationResult::Succeeded,
             "§1.7: a no-tick CoarseSpawnDone engine's no-progress leg is inert (streaming-only), so a ~1 s \
              quiet-but-working run completes to Succeeded — bounded only by the (generous) wall-clock"
+        );
+        assert!(
+            started.elapsed() >= Duration::from_millis(500),
+            "non-vacuity: the quiet child must really have run PAST the 50 ms no_progress bound (ran {:?})",
+            started.elapsed()
         );
     }
 

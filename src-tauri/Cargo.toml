@@ -218,7 +218,18 @@ winapi-util = "0.1.11"
 # (NtSetInformationFile / FILE_RENAME_INFORMATION / FileRenameInformationEx), `Win32_Foundation` (HANDLE /
 # NTSTATUS / STATUS_* / RtlNtStatusToDosError), `Win32_Storage_FileSystem` (DELETE / SYNCHRONIZE), and
 # `Win32_System_IO` (IO_STATUS_BLOCK).
-windows-sys = { version = "0.61.2", features = ["Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+# [P4.17] §2.12.3 best-effort Windows privilege-drop tier — FEATURE-ONLY additions to this already-pinned
+# direct dep (no new package, no Cargo.lock change, so no §0.8 floor row is due; the `windows-sys 0.61.2`
+# PINNED_FLOORS row from P3.84 already covers it): `Win32_Security` (mandatory-integrity labels + the
+# TokenIntegrityLevel get/set + GetSecurityDescriptorSacl + the SID helpers), `Win32_Security_Authorization`
+# (Get/SetNamedSecurityInfoW + the SDDL <-> security-descriptor converters + SE_FILE_OBJECT),
+# `Win32_System_JobObjects` (the Leg-B CreateJobObjectW / AssignProcessToJobObject /
+# SetInformationJobObject + the JOB_OBJECT_LIMIT flags) and `Win32_System_Threading` (OpenProcess /
+# OpenProcessToken + the PROCESS_* access rights; also the IO_COUNTERS member of
+# JOBOBJECT_EXTENDED_LIMIT_INFORMATION). `FILE_PERSISTENT_ACLS` + `SE_GROUP_INTEGRITY` are declared
+# locally in `crate::platform` rather than pulling `Win32_System_SystemServices` for two constants (the
+# `fs_guard` FILE_FLAG_BACKUP_SEMANTICS precedent). [Build-Session-Entscheidung: P4.17]
+windows-sys = { version = "0.61.2", features = ["Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 # [P4.15.1] §2.12.3 best-effort Linux privilege-drop tier — the Landlock FS-restrict leg: restricts a spawned
 # decoder subprocess's filesystem to {input ro, scratch rw + the read/exec runtime paths it needs to launch and

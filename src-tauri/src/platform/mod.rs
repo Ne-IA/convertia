@@ -22,7 +22,13 @@
 //! overrides the crate-root `#![deny(unsafe_code)]` — `src-tauri/src/platform/*.rs` is the sole entry in
 //! `check-unsafe-policy`'s `ALLOWED_UNSAFE_MODULES`, so the core's entire `unsafe` surface is confined here,
 //! each block carrying a `// SAFETY:` justification. The Windows renames/locks/free-space ride the
-//! `windows-sys` FFI; on **Linux** the §2.12.3 best-effort privilege-drop tier (P4.15, [`install_confinement`])
+//! `windows-sys` FFI, joined at **P4.17** by the §2.12.3 best-effort **Windows** privilege-drop tier —
+//! Leg A the intermediate-integrity write confinement ([`label_confinement_sinks`] /
+//! [`lower_child_to`] / [`strip_mandatory_label`]) and Leg B the own Job Object
+//! ([`attach_confined_job`]), both applied parent-side on the still-suspended child; restricted-token /
+//! AppContainer and the AppContainer/WFP net-deny are DECIDED unrealizable in the v1-portable build, so no
+//! FFI for them exists here (the `no_appcontainer_or_spawn_token_ffi_in_the_core` source-scan pins it).
+//! On **Linux** the §2.12.3 best-effort privilege-drop tier (P4.15, [`install_confinement`])
 //! attaches its Landlock + seccomp legs through the one `unsafe` `CommandExt::pre_exec` closure (the safe
 //! `landlock`/`seccompiler` crates do the syscalls inside it); macOS carries no `unsafe` — its renames ride
 //! safe `rustix`, and the P4.16 macOS Seatbelt privilege-drop leg is **DECIDED cheap-tier only** (no apply,
@@ -750,7 +756,12 @@ fn ephemeral_roots() -> Vec<PathBuf> {
 /// non-test build and CONSTRUCT these variants, so the enum is not "dead" and the `expect` flips to
 /// unfulfilled (the fs_guard forward-declared-item precedent). When P4.18 wires a real caller the reporters
 /// become live and this `allow` can be dropped.
-#[cfg(target_os = "linux")]
+///
+/// Shared with the §2.12.3 WINDOWS tier (P4.17), whose Leg-A `lower_child_to` reports the same
+/// three outcomes over the same grant-IS-the-enforcement model — one per-leg vocabulary across both
+/// per-OS tiers, so the P4.18 record reads a single shape. (macOS is DECIDED cheap-tier only, P4.16, so
+/// it has no leg to report.)
+#[cfg(any(target_os = "linux", windows))]
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LegOutcome {
@@ -760,15 +771,17 @@ pub(crate) enum LegOutcome {
     Degraded(DegradeReason),
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DegradeReason {
-    /// The kernel feature is absent — Landlock ABI < 1 (kernel < 5.13), unprivileged userns
-    /// denied, or seccomp unsupported on this arch/kernel.
+    /// The OS feature is absent — Landlock ABI < 1 (kernel < 5.13), unprivileged userns
+    /// denied, seccomp unsupported on this arch/kernel, or (Windows, P4.17) the child's token /
+    /// the confinement SID could not be obtained at all.
     Unavailable,
-    /// The grant call returned but did NOT enforce (Landlock `RulesetStatus::NotEnforced`) —
-    /// the "assert the ruleset applied, never assume the grant took" signal (P4.15.1).
+    /// The grant call returned but did NOT enforce (Landlock `RulesetStatus::NotEnforced`; on
+    /// Windows a `SetTokenInformation` whose integrity read-back does not show the requested
+    /// level) — the "assert the grant applied, never assume it took" signal (P4.15.1 / P4.17).
     NotApplied,
 }
 
@@ -1036,6 +1049,914 @@ pub(crate) fn seccomp_probe() -> LegOutcome {
     })
     .join()
     .unwrap_or(LegOutcome::Degraded(DegradeReason::Unavailable))
+}
+
+// ============================================================================
+// §2.12.3 best-effort WINDOWS privilege-drop tier (P4.17) — the two mechanisms that ARE
+// realizable in the v1-portable build (spec §2.12.3 `[DECIDED — P4.17, Co-Pilot ruling
+// 2026-08-25]`): **Leg A**, an intermediate-integrity WRITE confinement (label-then-lower), and
+// **Leg B**, an own Job Object carrying the `JOB_OBJECT_LIMIT` caps + kill-on-job-close.
+// Restricted-token / AppContainer and the AppContainer/WFP net-deny are DECIDED unrealizable on
+// this stack, so NO FFI for them enters the core — pinned by the cross-platform
+// `no_appcontainer_or_spawn_token_ffi_in_the_core` source-scan at the end of this file (the
+// `no_seatbelt_apply_callsite_in_the_core` sibling).
+//
+// Both legs apply PARENT-SIDE on the still-`CREATE_SUSPENDED` child, BEFORE its threads resume
+// (`crate::isolation`'s own `process_wrap::CommandWrapper::post_spawn` hook, which the crate runs
+// before every `wrap_child` — and `JobObject::wrap_child` is what resumes the threads). That
+// satisfies the P4.16 admission test literally: parent-side, never a post-fork child, and every
+// failure is an error the caller silently skips, never a hang.
+//
+// EMERGENT SIDE-EFFECT, recorded honestly — NOT a designed control: a child at the intermediate
+// level is also refused Medium-labelled DEVICE objects, so it cannot open a SOCKET or a mailslot.
+// Measured against a real confined child on this stack: a System32 `ping` fails, while a System32
+// `waitfor` sleep, an `exec` of another System32 binary, a `>nul` redirect and every write into a
+// granted sink all succeed. §2.12.3 is explicit that Windows has NO privilege-drop network-deny
+// leg, and this must not be read as one — it disappears the moment the tier degrades, and the
+// load-bearing offline gate is the §2.11.4 packet-monitor regardless of tier. What it IS, is
+// exactly the class the ruling's PER-ENGINE tier opt-out exists for: the first candidate is
+// LibreOffice headless, whose UNO IPC rides a NAMED PIPE, so the P7 office corpus decides that
+// engine's tier rather than widening the grant.
+//
+// The §2.12.3 residual covers BOTH labelled sinks, not only the `.part`: the per-run scratch is
+// labelled `(OI)(CI)` at the same level, so the same-user cross-integrity co-tenant the spec note
+// records could equally write there — engine working files, and (were it not created before the
+// label, §2.6.3 lock-before-part) the run lock. Same subject, same bound, same compensating
+// controls; recorded here because the sink set is this module's, and flagged to the Co-Pilot for
+// the §2.12.3 note, whose text is theirs.
+//
+// PER-ENGINE TIER OPT-OUT — decided up front (the ruling's Leg-A(iv)): Leg A is a GRANT, never a
+// tuning dial. An engine that DELETES and RE-CREATES its output file mid-run (the FFmpeg
+// truncate-vs-recreate shape) succeeds the unlink from the confined child but is DENIED the
+// re-create in the Medium destination dir — and the unlink also RELEASES the §2.1.2 `create_new`'d
+// reserved name mid-run. Closing that would mean labelling the USER'S WHOLE DESTINATION DIRECTORY,
+// which is unacceptable, so the answer for such an engine is to SKIP Leg A for it — a per-engine
+// tier decision the P5-P7 G31/G32 corpus verdict makes — never to widen the grant. No per-engine
+// discriminant is planted here: the subprocess engines land P5-P7, so a possibly-unused one would
+// be a premature type (CLAUDE §5); the plan carries the obligation (the P4.37 / P7 forward notes).
+//
+// BEST-EFFORT / NEVER-break: every fn here returns a verdict rather than an error, and every
+// failure path leaves the P4.13 cheap-tier floor in place — the tier is defence-in-depth, NOT
+// load-bearing (§0.11 T9b: the §3.5/§6.1.3 argv/build controls carry the guarantee). The exact
+// label placement + cap values are the §2.12.3 `[DEFER: tuning]` residual; this box builds the
+// tier MECHANISM. [Build-Session-Entscheidung: P4.17]
+// ============================================================================
+
+/// The ConvertIA-private mandatory integrity level the Leg-A confinement uses — `S-1-16-6144`
+/// (`0x1800`), STRICTLY between Low (`0x1000`) and Medium (`0x2000`) (spec §2.12.3
+/// `[DECIDED — P4.17]`). The intermediate level, NOT the well-known Low, is deliberate: a Low
+/// (4096) co-tenant — an Acrobat renderer, Office Protected View, a browser content process,
+/// i.e. exactly the sandboxes a hostile document compromises — is denied write-UP to a 6144
+/// object by the MIC total order (`NO_WRITE_UP`), while the engine at 6144 still cannot write
+/// Medium (8192) user files. Windows keeps the exact RID (it does not snap an intermediate value
+/// to a well-known level), as its own Medium Plus (`0x2100`) shows.
+#[cfg(windows)]
+pub(crate) const CONFINED_INTEGRITY_RID: u32 = 0x1800;
+
+/// The mandatory-integrity SID for `rid` — `S-1-16-<rid>`, the mandatory-label authority.
+#[cfg(windows)]
+fn integrity_sid(rid: u32) -> String {
+    format!("S-1-16-{rid}")
+}
+
+/// The Leg-A label ACE for ONE FILE at `rid` (no inheritance) — the `.part` publish temp. Built from
+/// [`integrity_sid`] rather than written out, so the level lives in exactly one place.
+#[cfg(windows)]
+fn label_sddl_file(rid: u32) -> String {
+    format!("S:(ML;;NW;;;{})", integrity_sid(rid))
+}
+
+/// The Leg-A label ACE for a DIRECTORY at `rid`, `(OI)(CI)`-inheritable so everything the engine
+/// creates inside the per-run scratch — a LibreOffice `--outdir` / profile / TMP subtree — inherits
+/// the same level.
+#[cfg(windows)]
+fn label_sddl_dir(rid: u32) -> String {
+    format!("S:(ML;OICI;NW;;;{})", integrity_sid(rid))
+}
+
+/// The STRIP: an explicit EMPTY SACL, which reads back `NO_ACCESS_CONTROL` — never "set Medium",
+/// which would stamp a label the destination does not otherwise carry. Only
+/// `LABEL_SECURITY_INFORMATION` is ever passed, so the DACL / owner / group stay untouched (§2.14.1:
+/// the mandatory label is the orthogonal INTEGRITY dimension, not the confidentiality/DACL one).
+#[cfg(windows)]
+const LABEL_SDDL_NONE: &str = "S:";
+
+/// The SDDL fragment that marks a mandatory-label ACE — the needle both the strip and the
+/// read-blocking test key on.
+#[cfg(windows)]
+const LABEL_ACE_MARKER: &str = "(ML;";
+
+/// The Leg-B `JOB_OBJECT_LIMIT` runaway caps (§2.12.3 `[DEFER: tuning]` — the per-OS profile
+/// CONTENTS are the tier's one residual; the MECHANISM is what this box builds). Both are
+/// deliberately GENEROUS so a cap can only ever catch a runaway, never a legitimate conversion
+/// (never-break is absolute): 16 GiB of committed job memory is multiples of what the bundled
+/// engines commit — they stream (FFmpeg) or tile (libvips) — and 64 active processes is far
+/// above the deepest bundled tree (`soffice` → `soffice.bin`). These are NOT the §1.10 per-item
+/// resource budgets (a different control with its own preflight); they are the OS-level backstop
+/// underneath them.
+#[cfg(windows)]
+const JOB_MEMORY_CAP_BYTES: u64 = 16 << 30;
+#[cfg(windows)]
+const JOB_ACTIVE_PROCESS_CAP: u32 = 64;
+
+/// The `JOB_OBJECT_LIMIT` values one [`ConfinedJob`] carries. Kept as a value rather than read
+/// back from the job so [`ConfinedJob::stand_down`] can re-apply the SAME caps while dropping
+/// only the kill-on-job-close flag, and so a test can attach a deliberately tiny cap to prove the
+/// limit is ARMED rather than merely set. [Build-Session-Entscheidung: P4.17]
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct JobLimits {
+    /// `JOB_OBJECT_LIMIT_JOB_MEMORY` — the job-wide committed-memory cap.
+    memory_bytes: u64,
+    /// `JOB_OBJECT_LIMIT_ACTIVE_PROCESS` — the fork-bomb guard.
+    active_processes: u32,
+}
+
+/// The production Leg-B caps ([`JOB_MEMORY_CAP_BYTES`] / [`JOB_ACTIVE_PROCESS_CAP`]).
+#[cfg(windows)]
+const PRODUCTION_JOB_LIMITS: JobLimits = JobLimits {
+    memory_bytes: JOB_MEMORY_CAP_BYTES,
+    active_processes: JOB_ACTIVE_PROCESS_CAP,
+};
+
+/// ConvertIA's OWN Job Object around one confined engine spawn (§2.12.3 Leg B, P4.17) — the
+/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` + memory / active-process / die-on-unhandled-exception
+/// job the §1.7 P4.10 forward note assigns to this box. It is assigned in `post_spawn`, i.e.
+/// BEFORE `process_wrap`'s own (limit-less) job is assigned in `wrap_child`, so ours is the OUTER
+/// job of the Windows-8+ nested pair and its limits cover the whole tree; `process_wrap`'s
+/// `TerminateJobObject` group-kill and its completion-port wait keep working unchanged (the
+/// P4.10/P4.11 contract survives 1:1).
+///
+/// The handle is a `std::os::windows::io::OwnedHandle`, which closes on drop — and with
+/// kill-on-job-close armed, that close IS the crash-time reap `process_wrap` 9.1.0 cannot deliver
+/// (its `core`-is-empty defect leaves the flag off). `OwnedHandle` is `Send` + `Sync` by
+/// construction, so the tier needs no `unsafe impl Send` — which the G9 repo-invariant (c)
+/// forbids outside an `ffi` module anyway. [Build-Session-Entscheidung: P4.17]
+#[cfg(windows)]
+#[derive(Debug)]
+pub(crate) struct ConfinedJob {
+    job: std::os::windows::io::OwnedHandle,
+    limits: JobLimits,
+}
+
+#[cfg(windows)]
+impl ConfinedJob {
+    /// Drop kill-on-job-close while KEEPING the resource caps, then let the handle close
+    /// harmlessly — the CLEAN-exit arm only. `crate::isolation`'s `GroupKillGuard` stands its
+    /// explicit group-kill down on a clean completed wait (killing there would truncate a launcher
+    /// that legitimately exits before its worker finished writing valid output, §1.7); this is the
+    /// Leg-B mirror of that decision, so the two teardown authorities agree. On the CRASH /
+    /// reap-fault / cancel arms the flag is deliberately LEFT ARMED, so a ConvertIA host crash
+    /// still reaps the engine tree (the P4.10 residual this box closes).
+    ///
+    /// If clearing the flag FAILS, the handle is deliberately LEAKED (`mem::forget`) instead of
+    /// closed: closing it while armed would kill exactly the launcher-outlives-worker tree this
+    /// stand-down exists to protect. One kernel handle then lives until the process exits — at
+    /// which point a job teardown is the correct behaviour anyway — which is strictly better than
+    /// a correctness regression on the success path. [Build-Session-Entscheidung: P4.17]
+    pub(crate) fn stand_down(self) {
+        use std::os::windows::io::AsRawHandle;
+        if set_job_limits(self.job.as_raw_handle(), self.limits, false) {
+            return;
+        }
+        std::mem::forget(self);
+    }
+}
+
+/// Widen an `OsStr` into the NUL-terminated UTF-16 buffer a `PCWSTR` Win32 argument needs.
+/// Returns `None` when the value already contains an interior NUL, which would silently truncate
+/// the argument — the caller then degrades to the cheap tier rather than acting on a truncated
+/// path. [Build-Session-Entscheidung: P4.17]
+#[cfg(windows)]
+fn wide_nul(text: &std::ffi::OsStr) -> Option<Vec<u16>> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut buf: Vec<u16> = text.encode_wide().collect();
+    if buf.contains(&0) {
+        return None;
+    }
+    buf.push(0);
+    Some(buf)
+}
+
+/// True when the volume holding `path` persists ACLs (`FILE_PERSISTENT_ACLS`) — i.e. it can
+/// actually store the Leg-A mandatory label. Evaluated PER SINK (§2.14.1 puts the `.part` in the
+/// destination dir while the §2.14.2 scratch lives under the user profile, and the §2.14.3
+/// fallback can place them on different volumes), because a FAT/exFAT stick or any other
+/// non-persistent volume silently DROPS the label — and lowering the engine's token against a sink
+/// whose label was dropped would break the conversion. `GetVolumePathNameW` resolves the mount
+/// point first, so a nested mount / UNC path is classified against the volume that really holds it.
+/// Any failure reads as "cannot confirm" ⇒ `false` ⇒ cheap tier.
+///
+/// A **REMOTE** volume is excluded OUTRIGHT, ahead of the flag test, rather than trusted to report
+/// honestly: an SMB share backed by NTFS DOES report `FILE_PERSISTENT_ACLS` and DOES accept the
+/// label write over the redirector — yet MIC is a LOCAL-kernel mechanism, so whether a confined
+/// subject can then open that redirector-served file for write is not something this build has
+/// probed. §2.12.3's never-break floor is absolute, and this tier is non-load-bearing, so an
+/// unprobed edge degrades rather than ships on an assumption. That also covers mapped drives and
+/// UNC paths, which `GetVolumePathNameW` alone would happily resolve.
+/// [Build-Session-Entscheidung: P4.17]
+#[cfg(windows)]
+fn volume_persists_acls(path: &Path) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetDriveTypeW, GetVolumeInformationW, GetVolumePathNameW,
+    };
+    // Win32 `FILE_PERSISTENT_ACLS` / `DRIVE_REMOTE` (winnt.h / winbase.h), declared locally so the
+    // `windows-sys` feature set stays at the four this tier needs (the `fs_guard`
+    // `FILE_FLAG_BACKUP_SEMANTICS` precedent).
+    const FILE_PERSISTENT_ACLS: u32 = 0x0000_0008;
+    const DRIVE_REMOTE: u32 = 4;
+    // The extended-path maximum, not `MAX_PATH`: a 260-element buffer would make
+    // `GetVolumePathNameW` fail on a long destination and degrade the tier for a reason that has
+    // nothing to do with the volume.
+    const MOUNT_BUF: usize = 32_768;
+    let Some(wide_path) = wide_nul(path.as_os_str()) else {
+        return false;
+    };
+    let mut mount = vec![0u16; MOUNT_BUF];
+    // SAFETY: `wide_path` is a NUL-terminated UTF-16 buffer alive across the call, and `mount` is
+    // a caller-owned buffer whose true element count is passed as the length.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let resolved = unsafe {
+        GetVolumePathNameW(
+            wide_path.as_ptr(),
+            mount.as_mut_ptr(),
+            u32::try_from(mount.len()).unwrap_or(0),
+        )
+    };
+    if resolved == 0 {
+        return false;
+    }
+    // SAFETY: `mount` is the NUL-terminated mount point `GetVolumePathNameW` just wrote.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let drive_type = unsafe { GetDriveTypeW(mount.as_ptr()) };
+    if drive_type == DRIVE_REMOTE {
+        return false;
+    }
+    let mut flags: u32 = 0;
+    // SAFETY: `mount` is the NUL-terminated mount point `GetVolumePathNameW` just wrote; every unwanted
+    // out-param is null with a zero length, and `flags` is a valid `u32` out-param.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let read = unsafe {
+        GetVolumeInformationW(
+            mount.as_ptr(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &raw mut flags,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    read != 0 && flags & FILE_PERSISTENT_ACLS != 0
+}
+
+/// Apply an SDDL security descriptor's SACL to `path` as its mandatory integrity LABEL, or clear
+/// it ([`LABEL_SDDL_NONE`]). Only `LABEL_SECURITY_INFORMATION` is passed and the owner / group /
+/// DACL arguments are null, so nothing but the label changes. Needs no `SeSecurityPrivilege`
+/// (that privilege gates the AUDIT half of the SACL, not the label) and no elevation — only
+/// `WRITE_OWNER` on an object we created. Returns `true` on `ERROR_SUCCESS`.
+/// [Build-Session-Entscheidung: P4.17]
+#[cfg(windows)]
+fn set_label_sddl(path: &Path, sddl: &str) -> bool {
+    use windows_sys::Win32::Foundation::{LocalFree, ERROR_SUCCESS};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW,
+        SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        GetSecurityDescriptorSacl, ACL, LABEL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    };
+    let (Some(wide_path), Some(wide_sddl)) = (
+        wide_nul(path.as_os_str()),
+        wide_nul(std::ffi::OsStr::new(sddl)),
+    ) else {
+        return false;
+    };
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: `wide_sddl` is a NUL-terminated UTF-16 buffer alive across the call; `descriptor` is
+    // a valid out-param receiving a `LocalAlloc` block freed exactly once below.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let converted = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            wide_sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &raw mut descriptor,
+            std::ptr::null_mut(),
+        )
+    };
+    if converted == 0 {
+        return false;
+    }
+    let mut present: i32 = 0;
+    let mut sacl: *mut ACL = std::ptr::null_mut();
+    let mut defaulted: i32 = 0;
+    // SAFETY: `descriptor` is the descriptor the converter just produced and is still owned here;
+    // the three out-params are valid locals.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let read = unsafe {
+        GetSecurityDescriptorSacl(
+            descriptor,
+            &raw mut present,
+            &raw mut sacl,
+            &raw mut defaulted,
+        )
+    };
+    let rc = if read == 0 {
+        // A sentinel distinct from `ERROR_SUCCESS`: the verdict below is `== ERROR_SUCCESS`, so any
+        // other value reads as "the label was not applied".
+        u32::MAX
+    } else {
+        // SAFETY: `wide_path` is NUL-terminated and alive, `sacl` points INTO `descriptor` (freed only
+        // after this returns), and owner / group / DACL are null — so only the label is written.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+        unsafe {
+            SetNamedSecurityInfoW(
+                wide_path.as_ptr(),
+                SE_FILE_OBJECT,
+                LABEL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                sacl,
+            )
+        }
+    };
+    // SAFETY: `descriptor` is the `LocalAlloc` block the converter returned, freed exactly once.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    unsafe { LocalFree(descriptor) };
+    rc == ERROR_SUCCESS
+}
+
+/// Read `path`'s mandatory-label SACL back as SDDL (`S:AI(ML;;NW;;;S-1-16-6144)`,
+/// `S:AINO_ACCESS_CONTROL`, …), or `None` when it cannot be read. Reading with
+/// `LABEL_SECURITY_INFORMATION` alone needs no `SeSecurityPrivilege`, unlike a full SACL read, so
+/// this works from an ordinary non-elevated ConvertIA process. It is the grant-IS-the-enforcement
+/// read-back the Leg-A strip and the tier tests assert against, never an assumption that the
+/// write took. [Build-Session-Entscheidung: P4.17]
+#[cfg(windows)]
+fn read_label_sddl(path: &Path) -> Option<String> {
+    use windows_sys::Win32::Foundation::{LocalFree, ERROR_SUCCESS};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+        SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{ACL, LABEL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+    let wide_path = wide_nul(path.as_os_str())?;
+    let mut sacl: *mut ACL = std::ptr::null_mut();
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: `wide_path` is NUL-terminated and alive; the unrequested out-params are null, and `sacl` /
+    // `descriptor` are valid out-params — `descriptor` gets a `LocalAlloc` block freed once below.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let rc = unsafe {
+        GetNamedSecurityInfoW(
+            wide_path.as_ptr(),
+            SE_FILE_OBJECT,
+            LABEL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &raw mut sacl,
+            &raw mut descriptor,
+        )
+    };
+    if rc != ERROR_SUCCESS {
+        return None;
+    }
+    let mut text: windows_sys::core::PWSTR = std::ptr::null_mut();
+    let mut len: u32 = 0;
+    // SAFETY: `descriptor` is the descriptor just returned and still owned here; `text` receives a
+    // `LocalAlloc` UTF-16 string freed exactly once below.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let converted = unsafe {
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor,
+            SDDL_REVISION_1,
+            LABEL_SECURITY_INFORMATION,
+            &raw mut text,
+            &raw mut len,
+        )
+    };
+    let sddl = if converted == 0 || text.is_null() {
+        None
+    } else {
+        // SAFETY: `text` is the NUL-terminated UTF-16 string the converter allocated and `len` is its
+        // character count, so the slice stays inside the allocation.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+        let chars = unsafe { std::slice::from_raw_parts(text, len as usize) };
+        // `len` COUNTS the terminator, so the lossy conversion would carry a trailing NUL into the
+        // String — measured, not assumed. Trim it, so every consumer sees the bare SDDL text.
+        Some(
+            String::from_utf16_lossy(chars)
+                .trim_end_matches('\0')
+                .to_owned(),
+        )
+    };
+    // SAFETY: both pointers are `LocalAlloc` blocks owned here, each freed exactly once; a null
+    // `text` (the not-converted arm) is a documented no-op for `LocalFree`.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    unsafe {
+        LocalFree(text.cast());
+        LocalFree(descriptor);
+    }
+    sddl
+}
+
+/// The mandatory-integrity RID an SDDL label ACE names, or `None` when the SDDL carries no label ACE
+/// or a level this cannot resolve. Lets the read-blocking test below reason about the LEVEL rather
+/// than the mere presence of an `NR`/`NX` flag — a `NO_READ_UP` ACE BELOW our own level cannot block
+/// us (that is a read DOWN).
+///
+/// Both SDDL spellings are handled, because Windows CHOOSES between them on read-back: a WELL-KNOWN
+/// level comes back as its two-letter alias (`S:AI(ML;;NWNR;;;LW)`), while an intermediate level with
+/// no alias — ConvertIA's own [`CONFINED_INTEGRITY_RID`] — comes back as the verbatim SID
+/// (`S:AI(ML;;NW;;;S-1-16-6144)`). Reading only the numeric form would silently resolve every
+/// well-known level to `None`, which the caller's never-break bias then treats as blocking — i.e. the
+/// tier would degrade on a label that cannot restrict it. The ACE's account-SID is its 6th
+/// `;`-separated field. [Build-Session-Entscheidung: P4.17]
+#[cfg(windows)]
+fn label_ace_rid(sddl: &str) -> Option<u32> {
+    let (_rights, sid) = label_ace_fields(sddl)?;
+    if let Some(rid) = sid.strip_prefix("S-1-16-") {
+        return rid.parse().ok();
+    }
+    // The `SDDL_ML_*` aliases (sddl.h). An unknown one stays `None` — the caller's never-break bias.
+    match sid {
+        "LW" => Some(0x1000),
+        "ME" => Some(0x2000),
+        "MP" => Some(0x2100),
+        "HI" => Some(0x3000),
+        "SI" => Some(0x4000),
+        _ => None,
+    }
+}
+
+/// The `(rights, account_sid)` of the FIRST mandatory-label ACE in `sddl`. An ACE is
+/// `(type;flags;rights;object_guid;inherit_object_guid;account_sid)`; splitting at the `(ML;` marker
+/// consumes the type, so the remaining fields are `flags` (0), `rights` (1), the two GUIDs (2, 3) and
+/// the SID (4). Returning BOTH is what keeps the level test and the rights test keyed to the SAME ace —
+/// each resolves the FIRST `(ML;` ACE, so they can never describe two different subjects. (They are two
+/// calls, not one parse: `label_ace_rid` re-enters here for the SID. Reading `NR`/`NX` off the whole
+/// descriptor while reading the RID off one ACE is what would mix subjects, and that is what this
+/// replaces.) [Build-Session-Entscheidung: P4.17]
+#[cfg(windows)]
+fn label_ace_fields(sddl: &str) -> Option<(&str, &str)> {
+    let mut fields = sddl.split_once(LABEL_ACE_MARKER)?.1.split(';');
+    let _flags = fields.next()?;
+    let rights = fields.next()?;
+    let _object_guid = fields.next()?;
+    let _inherit_object_guid = fields.next()?;
+    let sid = fields.next()?.trim_end_matches([')', '\0']);
+    Some((rights, sid))
+}
+
+/// True when `path` carries a label that would BLOCK a child confined to `rid` from reading or
+/// executing it — an ACE **at or above** `rid` carrying `NO_READ_UP` (`NR`) or `NO_EXECUTE_UP`
+/// (`NX`). Lowering the token against such an engine binary would break the conversion, so the
+/// caller degrades to the cheap tier instead. The labels real files carry in practice (a browser
+/// download at Low) are `NW`-only AND below `0x1800`, so neither applies — and the level test is
+/// what makes that claim true of the CODE, not only of the prose. An unreadable label, or a label ACE
+/// whose RID does not parse, reads as blocking — the never-break bias.
+/// [Build-Session-Entscheidung: P4.17]
+#[cfg(windows)]
+fn label_blocks_lowered_access(path: &Path, rid: u32) -> bool {
+    let Some(sddl) = read_label_sddl(path) else {
+        return true;
+    };
+    // No label ACE at all — nothing can block. Both tests below read the SAME ace, never the whole
+    // descriptor, so the rights and the level can never describe two different subjects.
+    let Some((rights, _sid)) = label_ace_fields(&sddl) else {
+        return false;
+    };
+    if !(rights.contains("NR") || rights.contains("NX")) {
+        return false;
+    }
+    label_ace_rid(&sddl).is_none_or(|ace_rid| ace_rid >= rid)
+}
+
+/// The Leg-A grant for one confined spawn: label EVERY write sink the §2.14.1/§2.14.3 placement
+/// actually chose at [`CONFINED_INTEGRITY_RID`], and report whether the child's token may
+/// therefore be lowered to it. LABEL-THEN-LOWER, never the reverse — the Windows analogue of the
+/// Landlock `{scratch rw}` grant (P4.15.1): every engine write sink is OURS (the parent
+/// `create_new`s the §2.14.1 `.part`; the §2.14.2 per-run scratch is app-owned), so the parent
+/// grants them to the lowered child BEFORE lowering it.
+///
+/// `scratch` is the per-run cwd, labelled `(OI)(CI)` so the engine's own subtree (a LibreOffice
+/// `--outdir` / profile / TMP tree) inherits the level; `out_tmp` is the `.part` publish temp,
+/// `None` for a read-only sub-invocation such as the §3.2.1 probe, which writes no artifact. The
+/// label is set NON-RECURSIVELY, so the pre-existing `run-<RunId>/.lock` (§2.6.3
+/// lock-before-part) keeps its implicit level — and a Medium parent reaches a lower-integrity
+/// object regardless, so nothing breaks either way.
+///
+/// Returns `false` — cheap tier for THIS spawn — unless every sink sits on a
+/// `FILE_PERSISTENT_ACLS` volume AND every label call succeeded AND the engine binary carries no
+/// read/execute-blocking label. A `false` verdict does NOT unwind the labels already applied: the
+/// scratch is labelled before `out_tmp` is evaluated, so a spawn that degrades on the `.part` leaves
+/// the per-run scratch (and everything the engine creates inside it) labelled for the rest of the
+/// run. That is deliberate and harmless — the token was never lowered, a Medium parent reads, writes
+/// and deletes DOWN freely, and the §2.14.3 cross-volume `std::fs::copy` carries no label — but it is
+/// a persistent effect of a not-issued grant, so it is stated rather than left to be rediscovered. That covers a FAT/exFAT-stick destination, a `Modify`-only folder
+/// without `WRITE_OWNER`, and an SMB share, so no integrity-enforcement assumption about those
+/// filesystems is ever load-bearing.
+///
+/// PROFILE NOTE (§2.12.3 `[DEFER: tuning]`, additive at P4.37): the per-item INPUT file is not in
+/// the checked set — `run_confined` has no structured input path (§3.5 flattens it into
+/// `plan.args`), exactly as the P4.15.1 Landlock leg has no `{input ro}` grant yet, and no real
+/// subprocess engine reads a real input through this seam before the P4.37 image-worker wire. The
+/// input's read-blocking-label check joins that box together with the structured path. The
+/// residual is bounded: the labels real inputs carry (a browser download at Low) are `NW`-only and
+/// below `0x1800`, so reading them from the confined child is unaffected.
+/// [Build-Session-Entscheidung: P4.17]
+#[cfg(windows)]
+pub(crate) fn label_confinement_sinks(
+    scratch: &Path,
+    out_tmp: Option<&Path>,
+    program: &Path,
+) -> bool {
+    if label_blocks_lowered_access(program, CONFINED_INTEGRITY_RID) {
+        return false;
+    }
+    if !(volume_persists_acls(scratch)
+        && set_label_sddl(scratch, &label_sddl_dir(CONFINED_INTEGRITY_RID)))
+    {
+        return false;
+    }
+    match out_tmp {
+        Some(tmp) => {
+            volume_persists_acls(tmp)
+                && set_label_sddl(tmp, &label_sddl_file(CONFINED_INTEGRITY_RID))
+        }
+        None => true,
+    }
+}
+
+/// The verdict of [`strip_mandatory_label`]. `Failed` is the only arm the caller must act on: the
+/// §2.1.1 publish then republishes the bytes through a FRESH exclusively-created sibling (a copy
+/// carries no label) rather than publishing a still-labelled `final` — never the source, never an
+/// existing `final`.
+///
+/// `allow(dead_code)` OFF WINDOWS: the type is cross-platform (the §2.1.1 publish calls the strip
+/// with no per-OS `cfg` at the call site), but only `Absent` is ever CONSTRUCTED elsewhere — the
+/// `#[cfg(not(windows))]` [`strip_mandatory_label`] returns exactly that. Matching a variant does not
+/// count as constructing it, so `Stripped`/`Failed` read as dead on the Linux + macOS legs and would
+/// fail their `clippy -D warnings` (G4/G14). `allow`, never `expect`: on Windows all three ARE
+/// constructed, so an `expect` would flip to unfulfilled there (the recorded `expect`→`allow` trap).
+#[cfg_attr(
+    not(windows),
+    allow(
+        dead_code,
+        reason = "§2.12.3 Leg A is Windows-only (P4.17): the cross-platform strip returns only `Absent` \
+                  off Windows, and a matched-but-never-constructed variant reads as dead there"
+    )
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LabelStrip {
+    /// No explicit mandatory label to remove — every non-Windows publish, and every Windows
+    /// publish whose §2.12.3 Leg A degraded to the cheap tier.
+    Absent,
+    /// The explicit label was removed, and the removal was read back.
+    Stripped,
+    /// The label is still there, or its state could not be read at all — the caller republishes
+    /// through a fresh unlabelled sibling.
+    Failed,
+}
+
+/// Remove the explicit §2.12.3 mandatory label from the `.part` before the §2.1.2 create-only
+/// move, so `final` carries the destination's implicit level. The label TRAVELS with
+/// `MoveFileEx`, so without this strip a published output would keep ConvertIA's private
+/// `0x1800` level for the rest of its life. Called after the engine exit and the §1.7 non-empty
+/// verification, before the publish — ONE site covering every engine and both publish shapes (the
+/// same-volume rename and the §2.14.3 cross-volume `std::fs::copy`, which both consume this
+/// `.part`). An UNLABELLED `.part` — every spawn whose Leg A degraded — is [`LabelStrip::Absent`]:
+/// a cheap read-back, no write.
+///
+/// Every uncertainty resolves to [`LabelStrip::Failed`], never to `Absent`: a label state that
+/// cannot be READ is not evidence that there is none, and the fallback the `Failed` arm routes to
+/// (republish through a fresh sibling) is unlabelled by construction. That is the same
+/// never-break/never-assume bias [`label_blocks_lowered_access`] carries, applied to the other end
+/// of the leg — the grant-IS-the-enforcement doctrine cuts both ways.
+/// [Build-Session-Entscheidung: P4.17]
+#[cfg(windows)]
+pub(crate) fn strip_mandatory_label(path: &Path) -> LabelStrip {
+    let Some(before) = read_label_sddl(path) else {
+        return LabelStrip::Failed;
+    };
+    if !before.contains(LABEL_ACE_MARKER) {
+        return LabelStrip::Absent;
+    }
+    if !set_label_sddl(path, LABEL_SDDL_NONE) {
+        return LabelStrip::Failed;
+    }
+    match read_label_sddl(path) {
+        Some(after) if !after.contains(LABEL_ACE_MARKER) => LabelStrip::Stripped,
+        _ => LabelStrip::Failed,
+    }
+}
+
+/// The non-Windows sibling of [`strip_mandatory_label`]: no other OS's §2.12.3 tier labels a
+/// publish temp, so there is never a label to remove. Present unconditionally so the §2.1.1
+/// publish sequence calls it with no per-OS `cfg` at the call site (the [`ensure_executable`]
+/// precedent). [Build-Session-Entscheidung: P4.17]
+#[cfg(not(windows))]
+pub(crate) fn strip_mandatory_label(_path: &Path) -> LabelStrip {
+    LabelStrip::Absent
+}
+
+/// Open the just-spawned, still-suspended child by PID with exactly the rights the two legs need
+/// — `PROCESS_SET_QUOTA` + `PROCESS_TERMINATE` for `AssignProcessToJobObject`, and
+/// `PROCESS_QUERY_INFORMATION` for `OpenProcessToken`. The PID is taken rather than the child's
+/// raw handle so no raw pointer crosses the `crate::isolation` → `crate::platform` boundary
+/// (`crate::isolation` stays unsafe-free per its P3.2 contract map), and PID REUSE is impossible
+/// here: the caller still holds the child's own process handle, which pins the PID for the whole
+/// call. [Build-Session-Entscheidung: P4.17]
+#[cfg(windows)]
+fn open_child(pid: u32) -> Option<std::os::windows::io::OwnedHandle> {
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    };
+    // SAFETY: an argument-less-by-value call whose only pointer is the returned handle; a failure
+    // yields a null handle, which the check below rejects before it is ever adopted.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let raw = unsafe {
+        OpenProcess(
+            PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_QUERY_INFORMATION,
+            0,
+            pid,
+        )
+    };
+    if raw.is_null() {
+        return None;
+    }
+    // SAFETY: `raw` is a non-null process handle this call just opened and nothing else owns, so
+    // adopting it into an `OwnedHandle` transfers the single close responsibility exactly once.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    Some(unsafe { OwnedHandle::from_raw_handle(raw) })
+}
+
+/// Write one `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` onto `job`: the [`JobLimits`] caps plus
+/// `JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION` (so a crashed engine cannot sit in a Windows
+/// Error Reporting dialog until the §1.7 watchdog reaps it), and `KILL_ON_JOB_CLOSE` iff
+/// `kill_on_close`. Re-callable, so [`ConfinedJob::stand_down`] re-applies the same caps with the
+/// flag dropped. [Build-Session-Entscheidung: P4.17]
+#[cfg(windows)]
+fn set_job_limits(
+    job: std::os::windows::io::RawHandle,
+    limits: JobLimits,
+    kill_on_close: bool,
+) -> bool {
+    use windows_sys::Win32::System::JobObjects::{
+        JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+        JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_JOB_MEMORY,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    let mut flags = JOB_OBJECT_LIMIT_JOB_MEMORY
+        | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+        | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
+    if kill_on_close {
+        flags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    }
+    info.BasicLimitInformation.LimitFlags = flags;
+    info.BasicLimitInformation.ActiveProcessLimit = limits.active_processes;
+    // A cap wider than the address space is not expressible; saturating keeps the widest
+    // expressible cap (still a runaway guard) instead of degrading the whole leg.
+    info.JobMemoryLimit = usize::try_from(limits.memory_bytes).unwrap_or(usize::MAX);
+    let size = u32::try_from(std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
+        .unwrap_or(u32::MAX);
+    // SAFETY: `job` is a live job handle owned by the caller; `info` is a fully-initialised,
+    // correctly-typed `repr(C)` struct whose own `size_of` is passed as the length.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let ok = unsafe {
+        SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            (&raw const info).cast(),
+            size,
+        )
+    };
+    ok != 0
+}
+
+/// Create ConvertIA's own Job Object with `limits` + kill-on-job-close and assign the still-
+/// suspended child `pid` to it (§2.12.3 Leg B, P4.17). The child is already destined for
+/// `process_wrap`'s own job in `wrap_child`; Windows 8+ NESTED jobs make ours the outer one, so
+/// both coexist and the P4.10 `TerminateJobObject` group-kill keeps working on the inner job while
+/// our caps + kill-on-close cover the whole tree. Every failure yields `None` ⇒ cheap tier for
+/// this spawn, never an error the caller must handle.
+///
+/// **Nested-job support is LOAD-BEARING ON THE SPAWN PATH, not merely on the caps.** Unlike every
+/// other failure here, a refusal of the SECOND assignment is not ours to swallow: it would surface
+/// inside `process_wrap`'s `JobObject::wrap_child`, whose `?` turns it into a `spawn()` error — i.e.
+/// EVERY Windows conversion would fail. Windows 8 introduced nesting and §0.8 floors the product at
+/// Windows 10, so the assumption holds on the whole supported range; it is pinned directly rather
+/// than by inference by `a_second_job_assignment_nests_rather_than_failing`.
+/// [Build-Session-Entscheidung: P4.17]
+#[cfg(windows)]
+fn attach_job_with(pid: u32, limits: JobLimits) -> Option<ConfinedJob> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
+    let child = open_child(pid)?;
+    // SAFETY: both arguments are the documented "no attributes / unnamed" nulls; the returned
+    // handle is null on failure, which the check below rejects before it is adopted.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let raw_job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    if raw_job.is_null() {
+        return None;
+    }
+    // SAFETY: `raw_job` is a non-null job handle this call just created and nothing else owns, so adopting
+    // it transfers the single close responsibility exactly once — and that close is the reap.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let job = unsafe { OwnedHandle::from_raw_handle(raw_job) };
+    if !set_job_limits(job.as_raw_handle(), limits, true) {
+        return None;
+    }
+    // SAFETY: both handles are live and owned here — the job just created, the child just opened.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let assigned = unsafe { AssignProcessToJobObject(job.as_raw_handle(), child.as_raw_handle()) };
+    if assigned == 0 {
+        return None;
+    }
+    Some(ConfinedJob { job, limits })
+}
+
+/// §2.12.3 Leg B (P4.17) with the production caps — see [`attach_job_with`].
+#[cfg(windows)]
+pub(crate) fn attach_confined_job(pid: u32) -> Option<ConfinedJob> {
+    attach_job_with(pid, PRODUCTION_JOB_LIMITS)
+}
+
+/// Read the integrity RID of `pid`'s primary token — the grant-IS-the-enforcement read-back that
+/// turns "we called `SetTokenInformation`" into "the child really runs at this level". Used to
+/// verify the Leg-A lowering and, at P4.18, to feed the achieved-tier record.
+/// [Build-Session-Entscheidung: P4.17]
+#[cfg(windows)]
+pub(crate) fn child_integrity_rid(pid: u32) -> Option<u32> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Security::{
+        GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
+        TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::OpenProcessToken;
+    let child = open_child(pid)?;
+    let handle = child.as_raw_handle();
+    let mut raw_token: windows_sys::Win32::Foundation::HANDLE = std::ptr::null_mut();
+    // SAFETY: `handle` is a live process handle opened with `PROCESS_QUERY_INFORMATION`; the token
+    // out-param is a valid local receiving a handle adopted exactly once below.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let opened = unsafe { OpenProcessToken(handle, TOKEN_QUERY, &raw mut raw_token) };
+    if opened == 0 || raw_token.is_null() {
+        return None;
+    }
+    // SAFETY: `raw_token` is the non-null token handle just opened and owned by nobody else.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let token = unsafe { OwnedHandle::from_raw_handle(raw_token) };
+    let mut needed: u32 = 0;
+    // SAFETY: the documented size-probe form — a null buffer with a zero length makes the call fail
+    // with the required byte count written to `needed`.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    unsafe {
+        GetTokenInformation(
+            token.as_raw_handle(),
+            TokenIntegrityLevel,
+            std::ptr::null_mut(),
+            0,
+            &raw mut needed,
+        );
+    }
+    if needed == 0 {
+        return None;
+    }
+    // Backing store: a `Vec<u64>`, NOT a `Vec<u8>` — `TOKEN_MANDATORY_LABEL` embeds a `PSID`, so it is
+    // 8-byte-aligned, and a `Vec<u8>` guarantees only alignment 1; the `*const TOKEN_MANDATORY_LABEL` cast
+    // below must be well-aligned by construction, not by the allocator's habit. Mirrors the
+    // `FILE_RENAME_INFORMATION` backing store the §2.1.2 publish uses above.
+    let mut buffer = vec![0u64; (needed as usize).div_ceil(std::mem::size_of::<u64>())];
+    // SAFETY: `buffer` is a caller-owned allocation of at least `needed` bytes (the `div_ceil` rounds UP)
+    // whose true byte length is passed, so the call writes strictly inside it.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let read = unsafe {
+        GetTokenInformation(
+            token.as_raw_handle(),
+            TokenIntegrityLevel,
+            buffer.as_mut_ptr().cast(),
+            needed,
+            &raw mut needed,
+        )
+    };
+    if read == 0 {
+        return None;
+    }
+    // The `Vec<u64>` store makes the cast below well-aligned for `TOKEN_MANDATORY_LABEL` by construction.
+    // SAFETY: the call above filled `buffer` with a label whose `Label.Sid` points at the SID inside that
+    // same 8-byte-aligned buffer; the LAST sub-authority of a valid SID is the integrity RID.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    unsafe {
+        let label = buffer.as_ptr().cast::<TOKEN_MANDATORY_LABEL>();
+        let sid = (*label).Label.Sid;
+        let count = *GetSidSubAuthorityCount(sid);
+        if count == 0 {
+            return None;
+        }
+        Some(*GetSidSubAuthority(sid, u32::from(count - 1)))
+    }
+}
+
+/// §2.12.3 Leg A (P4.17) — lower the still-suspended child `pid`'s primary token to the mandatory
+/// integrity level `rid` and READ THE LEVEL BACK. Production always passes
+/// [`CONFINED_INTEGRITY_RID`], which `crate::isolation` supplies from the grant; the level is a PARAMETER rather than a
+/// second hardcoded literal so the tier tests can stand a co-tenant up at a different level and prove
+/// the enforcement claim from the other side. Called only after [`label_confinement_sinks`] granted
+/// every write sink at the same level (label-then-lower, never the reverse). Lowering needs no
+/// privilege; RAISING is refused by the kernel (`ERROR_INVALID_LABEL`), so this can only ever
+/// restrict. Returns the per-leg outcome the P4.18 achieved-tier record consumes: `Applied` when the
+/// read-back confirms the level, `Degraded(NotApplied)` when the call SUCCEEDED but the read-back does
+/// not show it, `Degraded(Unavailable)` when the token / the SID / the write itself could not be
+/// obtained at all. Never an error — the caller silently keeps the cheap tier.
+/// [Build-Session-Entscheidung: P4.17]
+#[cfg(windows)]
+pub(crate) fn lower_child_to(pid: u32, rid: u32) -> LegOutcome {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
+    use windows_sys::Win32::Security::{
+        GetLengthSid, SetTokenInformation, TokenIntegrityLevel, PSID, SID_AND_ATTRIBUTES,
+        TOKEN_ADJUST_DEFAULT, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::OpenProcessToken;
+    // Win32 `SE_GROUP_INTEGRITY` (winnt.h) — declared locally so the `windows-sys` feature set
+    // stays at the four this tier needs (the `FILE_PERSISTENT_ACLS` precedent above).
+    const SE_GROUP_INTEGRITY: u32 = 0x0000_0020;
+    let Some(sid_text) = wide_nul(std::ffi::OsStr::new(&integrity_sid(rid))) else {
+        return LegOutcome::Degraded(DegradeReason::Unavailable);
+    };
+    let Some(child) = open_child(pid) else {
+        return LegOutcome::Degraded(DegradeReason::Unavailable);
+    };
+    let mut raw_token: windows_sys::Win32::Foundation::HANDLE = std::ptr::null_mut();
+    // SAFETY: `child` is a live process handle opened with `PROCESS_QUERY_INFORMATION`; the token
+    // out-param is a valid local receiving a handle adopted exactly once below.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let opened = unsafe {
+        OpenProcessToken(
+            child.as_raw_handle(),
+            TOKEN_ADJUST_DEFAULT | TOKEN_QUERY,
+            &raw mut raw_token,
+        )
+    };
+    if opened == 0 || raw_token.is_null() {
+        return LegOutcome::Degraded(DegradeReason::Unavailable);
+    }
+    // SAFETY: `raw_token` is the non-null token handle just opened and owned by nobody else.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let token = unsafe { OwnedHandle::from_raw_handle(raw_token) };
+    let mut sid: PSID = std::ptr::null_mut();
+    // SAFETY: `sid_text` is a NUL-terminated UTF-16 SID string alive across the call; `sid` is a
+    // valid out-param receiving a `LocalAlloc` block freed exactly once below.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let converted = unsafe { ConvertStringSidToSidW(sid_text.as_ptr(), &raw mut sid) };
+    if converted == 0 || sid.is_null() {
+        return LegOutcome::Degraded(DegradeReason::Unavailable);
+    }
+    let label = TOKEN_MANDATORY_LABEL {
+        Label: SID_AND_ATTRIBUTES {
+            Sid: sid,
+            Attributes: SE_GROUP_INTEGRITY,
+        },
+    };
+    // SAFETY: `sid` is the valid SID just converted; `GetLengthSid` reads only its own header. The
+    // documented length for a `TokenIntegrityLevel` write is the struct plus the SID it points at.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let length = unsafe { GetLengthSid(sid) }
+        .saturating_add(u32::try_from(std::mem::size_of::<TOKEN_MANDATORY_LABEL>()).unwrap_or(0));
+    // SAFETY: `token` is a live token opened with `TOKEN_ADJUST_DEFAULT`; `label` is a fully-initialised
+    // `repr(C)` struct whose `Sid` outlives the call, and `length` is the documented struct-plus-SID size.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let set = unsafe {
+        SetTokenInformation(
+            token.as_raw_handle(),
+            TokenIntegrityLevel,
+            (&raw const label).cast(),
+            length,
+        )
+    };
+    // SAFETY: `sid` is the `LocalAlloc` block `ConvertStringSidToSidW` returned, freed exactly once
+    // and only after the `SetTokenInformation` that read through it has returned.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    unsafe { LocalFree(sid) };
+    if set == 0 {
+        // The WRITE ITSELF was refused (a policy, a token we cannot adjust, an out-of-range level) — the
+        // grant could not be obtained at all, which is `Unavailable` in the shared per-OS vocabulary.
+        // `NotApplied` is reserved for the sharper signal below: the call SUCCEEDED yet the kernel does
+        // not show the level, i.e. a grant that returned without enforcing.
+        return LegOutcome::Degraded(DegradeReason::Unavailable);
+    }
+    match child_integrity_rid(pid) {
+        Some(read_back) if read_back == rid => LegOutcome::Applied,
+        Some(_) => LegOutcome::Degraded(DegradeReason::NotApplied),
+        None => LegOutcome::Degraded(DegradeReason::Unavailable),
+    }
 }
 
 #[cfg(test)]
@@ -1784,6 +2705,544 @@ mod macos_seatbelt_decision_tests {
             saw_platform_root && saw_isolation_root && scanned >= 2,
             "the source-scan must cover crate::platform + crate::isolation (found platform={saw_platform_root}, \
              isolation={saw_isolation_root}, {scanned} .rs files) — the P4.16 decision is not being enforced"
+        );
+    }
+}
+
+/// Read `path`'s mandatory-label SDDL for the tier tests — the crate-internal window onto
+/// [`read_label_sddl`], so a test in `crate::isolation` can assert the LEVEL a sink actually carries
+/// rather than inferring it from a denial (an unlabelled sink denies a Low writer just as well, by
+/// implicit Medium). Test-only.
+#[cfg(windows)]
+#[cfg(test)]
+pub(crate) fn read_label_sddl_for_test(path: &Path) -> Option<String> {
+    read_label_sddl(path)
+}
+
+/// Label `path` at the mandatory integrity level `rid`, `(OI)(CI)`-inheritably when `inheritable`
+/// (§2.12.3 Leg A, P4.17). Test-only: production always labels at [`CONFINED_INTEGRITY_RID`] through
+/// [`label_confinement_sinks`], but the tier tests need a sink at a DIFFERENT level — a co-tenant
+/// standing in for a Low sandbox can only report into a sink at its own level, which is what makes
+/// its denial against the 6144 `.part` non-vacuous.
+#[cfg(windows)]
+#[cfg(test)]
+pub(crate) fn label_at_level(path: &Path, rid: u32, inheritable: bool) -> bool {
+    let sddl = if inheritable {
+        label_sddl_dir(rid)
+    } else {
+        label_sddl_file(rid)
+    };
+    set_label_sddl(path, &sddl)
+}
+
+/// Read one job's `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` back (§2.12.3 Leg B, P4.17) — the
+/// grant-IS-the-enforcement read-back for the caps, mirroring the Linux legs' probe reporters: the tier tests
+/// assert what the KERNEL holds, never what [`set_job_limits`] was asked to write. Test-only: production never
+/// re-reads its own limits (it re-writes them on stand-down instead).
+#[cfg(windows)]
+#[cfg(test)]
+fn query_job_limits(
+    job: std::os::windows::io::RawHandle,
+) -> Option<windows_sys::Win32::System::JobObjects::JOBOBJECT_EXTENDED_LIMIT_INFORMATION> {
+    use windows_sys::Win32::System::JobObjects::{
+        JobObjectExtendedLimitInformation, QueryInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    };
+    let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    let size = u32::try_from(std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>()).ok()?;
+    let mut returned: u32 = 0;
+    // SAFETY: `job` is a live job handle owned by the caller; `info` is a correctly-typed `repr(C)` buffer
+    // whose own `size_of` is passed as the length, and `returned` is a valid out-param.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let ok = unsafe {
+        QueryInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            (&raw mut info).cast(),
+            size,
+            &raw mut returned,
+        )
+    };
+    (ok != 0).then_some(info)
+}
+
+// §2.12.3 best-effort WINDOWS privilege-drop tier (P4.17) — per-leg tests. Windows-only + REAL objects: a
+// mandatory label and a Job Object are only observable through the real kernel (grant-IS-enforcement), never a
+// mock (test-strategy §0.1). TWO STACKED cfg attrs (`#[cfg(test)]` then `#[cfg(windows)]`) — NOT a compound
+// `all(test, windows)` (the P1.17 clippy `is_cfg_test` trap). The cross-module ENFORCEMENT half — a lowered
+// child writing its own labelled sink and being denied a Medium one — lives in `crate::isolation`, which owns
+// the spawn composition these legs attach to.
+#[cfg(test)]
+#[cfg(windows)]
+mod windows_privilege_drop_tests {
+    use super::{
+        attach_confined_job, attach_job_with, label_ace_rid, label_blocks_lowered_access,
+        label_confinement_sinks, label_sddl_dir, label_sddl_file, query_job_limits,
+        read_label_sddl, set_job_limits, set_label_sddl, strip_mandatory_label,
+        volume_persists_acls, ConfinedJob, JobLimits, LabelStrip, CONFINED_INTEGRITY_RID,
+        LABEL_SDDL_NONE, PRODUCTION_JOB_LIMITS,
+    };
+    use std::os::windows::io::AsRawHandle;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+    use windows_sys::Win32::System::JobObjects::{
+        JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
+        JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    // The SID string the constants are built from, derived from the RID rather than repeated, so the
+    // duplication between `CONFINED_INTEGRITY_RID` and the SDDL literals cannot silently drift.
+    fn confined_sid() -> String {
+        format!("S-1-16-{CONFINED_INTEGRITY_RID}")
+    }
+
+    // An absolute System32 executable — never a PATH lookup (the confined child runs env-cleared, and a CI
+    // runner's PATH is not ours to rely on).
+    fn system32(exe: &str) -> PathBuf {
+        let root = std::env::var_os("SystemRoot").expect("SystemRoot is set on Windows");
+        Path::new(&root).join("System32").join(exe)
+    }
+
+    // A real, long-lived child to attach a job to. `PING.EXE -n <n> 127.0.0.1` is the System32 sleep that
+    // needs no shell, no PATH and no console input.
+    fn long_lived_child() -> std::process::Child {
+        // A TEST-ONLY spawn to OBSERVE the P4.17 Leg-B job semantics — NOT a production engine spawn (those
+        // route through crate::isolation::run_confined, the G29-sanctioned site). It keeps the inherited env
+        // deliberately: this child observes nothing about the env, and env_clear would add no signal. The
+        // IMPORTED `Command::new` form is the P4.15 `confined_sh` precedent (the G9 invariant-(b) grep is
+        // scoped to the qualified spelling; the import-resolving SAST job is the real net, suppressed here).
+        // nosemgrep: convertia-command-outside-isolation, convertia-command-missing-env-clear
+        Command::new(system32("PING.EXE"))
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn the System32 ping child")
+    }
+
+    // Poll a child for up to `bound` for its exit — the deterministic replacement for a fixed sleep: it
+    // returns as soon as the state is observed, and the generous bound absorbs a loaded CI runner.
+    fn exited_within(child: &mut std::process::Child, bound: Duration) -> bool {
+        let deadline = Instant::now() + bound;
+        while Instant::now() < deadline {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        false
+    }
+
+    // §6.4.1 unit (G15) / §2.12.3 Leg A: the SDDL literals and the RID constant are ONE decision — a drift
+    // between them would silently label at a different level than the tier reasons about.
+    #[test]
+    fn the_label_constants_all_name_the_confined_integrity_level() {
+        let sid = confined_sid();
+        assert_eq!(
+            sid, "S-1-16-6144",
+            "the P4.17 ruling fixes the level at 0x1800"
+        );
+        let file_ace = label_sddl_file(CONFINED_INTEGRITY_RID);
+        let dir_ace = label_sddl_dir(CONFINED_INTEGRITY_RID);
+        assert!(
+            file_ace.contains(&sid) && dir_ace.contains(&sid),
+            "both label ACEs must name {sid}: file={file_ace} dir={dir_ace}"
+        );
+        assert_eq!(
+            label_ace_rid(&file_ace),
+            Some(CONFINED_INTEGRITY_RID),
+            "the ACE's RID must parse back to the level the tier reasons about: {file_ace}"
+        );
+        assert!(
+            dir_ace.contains("OICI"),
+            "the directory ACE must be object+container inheritable so the engine's own subtree inherits it"
+        );
+        assert!(
+            !LABEL_SDDL_NONE.contains("ML"),
+            "the strip must be an EMPTY SACL, never a re-label: {LABEL_SDDL_NONE}"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.12.3 Leg A: the label round-trips VERBATIM at the intermediate level (Windows
+    // keeps the exact RID rather than snapping it to a well-known one) and the strip removes it — the two
+    // halves the §2.1.2 publish depends on. Real FS, real kernel (test-strategy §0.1).
+    #[test]
+    fn the_intermediate_label_round_trips_and_the_strip_removes_it() {
+        let dir = tempfile::tempdir().expect("a real temp dir");
+        let file = dir.path().join("out.part");
+        std::fs::write(&file, b"bytes").expect("write the publish-temp stand-in");
+        assert_eq!(
+            strip_mandatory_label(&file),
+            LabelStrip::Absent,
+            "an unlabelled temp needs no strip — the every-publish fast path"
+        );
+        assert!(
+            set_label_sddl(&file, &label_sddl_file(CONFINED_INTEGRITY_RID)),
+            "labelling a file we own needs no privilege and no elevation"
+        );
+        let labelled =
+            read_label_sddl(&file).expect("the label reads back without SeSecurityPrivilege");
+        assert!(
+            labelled.contains(&confined_sid()),
+            "Windows must keep the exact intermediate RID: {labelled}"
+        );
+        assert_eq!(
+            strip_mandatory_label(&file),
+            LabelStrip::Stripped,
+            "the strip must remove the label AND read the removal back"
+        );
+        let stripped = read_label_sddl(&file).unwrap_or_default();
+        assert!(
+            !stripped.contains("(ML;"),
+            "after the strip no label ACE may remain, so `final` carries the destination's implicit level: {stripped}"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.12.3 Leg A: the `(OI)(CI)` scratch ACE PROPAGATES to files the engine creates
+    // inside the per-run scratch — the LibreOffice `--outdir` / profile / TMP subtree case, which is why the
+    // directory sink is labelled inheritably rather than once.
+    #[test]
+    fn a_labelled_scratch_propagates_the_level_to_engine_created_files() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir");
+        assert!(
+            set_label_sddl(scratch.path(), &label_sddl_dir(CONFINED_INTEGRITY_RID)),
+            "labelling the per-run scratch dir"
+        );
+        let inherited = scratch.path().join("engine-working-file.tmp");
+        std::fs::write(&inherited, b"engine bytes")
+            .expect("create a file inside the labelled scratch");
+        let sddl = read_label_sddl(&inherited).expect("read the inherited label");
+        assert!(
+            sddl.contains(&confined_sid()),
+            "a file created inside the labelled scratch must inherit the level: {sddl}"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.12.3 Leg A: the grant covers BOTH sinks the §2.14.1 placement chose, and a sink
+    // that cannot be labelled DEGRADES the whole grant (never-break: the token is then not lowered, so the
+    // engine keeps full write access to a sink whose label was dropped).
+    #[test]
+    fn the_sink_grant_covers_both_sinks_and_degrades_when_one_cannot_be_labelled() {
+        let scratch = tempfile::tempdir().expect("a real scratch dir");
+        let dest = tempfile::tempdir().expect("a real destination dir");
+        let part = dest.path().join("item.part");
+        std::fs::write(&part, b"bytes").expect("create the publish temp");
+        let program = system32("cmd.exe");
+        assert!(
+            label_confinement_sinks(scratch.path(), Some(&part), &program),
+            "both sinks are on a real NTFS temp volume and are ours to label"
+        );
+        for sink in [scratch.path(), part.as_path()] {
+            let sddl = read_label_sddl(sink).unwrap_or_default();
+            assert!(
+                sddl.contains(&confined_sid()),
+                "every granted sink must carry the level ({}): {sddl}",
+                sink.display()
+            );
+        }
+        assert!(
+            !label_confinement_sinks(
+                scratch.path(),
+                Some(&dest.path().join("absent.part")),
+                &program
+            ),
+            "a sink that cannot be labelled degrades the grant to the cheap tier"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.12.3 Leg A: the per-sink volume test is NOT vacuous — a real local NTFS temp
+    // dir must report persistent ACLs, or every grant above would degrade for the wrong reason.
+    #[test]
+    fn a_local_temp_volume_reports_persistent_acls() {
+        let dir = tempfile::tempdir().expect("a real temp dir");
+        assert!(
+            volume_persists_acls(dir.path()),
+            "the local NTFS temp volume must persist ACLs, else the tier degrades vacuously everywhere"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.12.3 Leg A: an UNREADABLE label state is never mistaken for "no label". The
+    // strip is what keeps ConvertIA's private level off `final` (§2.1.1 step-2 Windows tail), so a read it
+    // cannot perform must route to the fallback, not to the silent fast path — the same never-assume bias
+    // `label_blocks_lowered_access` carries at the other end of the leg.
+    #[test]
+    fn an_unreadable_label_state_routes_to_the_fallback_not_to_absent() {
+        let dir = tempfile::tempdir().expect("a real temp dir");
+        assert_eq!(
+            strip_mandatory_label(&dir.path().join("vanished.part")),
+            LabelStrip::Failed,
+            "a label state that cannot be read is not evidence that there is none"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.12.3 Leg A: the read-blocking test reasons about the LEVEL, not merely about the
+    // presence of an `NR`/`NX` flag. A `NO_READ_UP` ACE BELOW the confined level cannot block our child (that
+    // is a read DOWN), so degrading the tier for it would be a needless loss; one AT or ABOVE it genuinely
+    // would, so the tier must step aside.
+    #[test]
+    fn a_read_blocking_label_only_counts_at_or_above_the_confined_level() {
+        let dir = tempfile::tempdir().expect("a real temp dir");
+        let below = dir.path().join("low-nr.bin");
+        std::fs::write(&below, b"x").expect("create the low-labelled file");
+        assert!(
+            set_label_sddl(&below, "S:(ML;;NRNW;;;S-1-16-4096)"),
+            "labelling a file we own at Low"
+        );
+        assert_eq!(
+            label_ace_rid(&read_label_sddl(&below).unwrap_or_default()),
+            Some(0x1000),
+            "the Low ACE must resolve to its level — Windows reads a well-known level back as its SDDL ALIAS"
+        );
+        assert!(
+            !label_blocks_lowered_access(&below, CONFINED_INTEGRITY_RID),
+            "a Low `NO_READ_UP` ACE cannot block a {CONFINED_INTEGRITY_RID}-level reader — that is a read DOWN"
+        );
+        let at_level = dir.path().join("medium-nr.bin");
+        std::fs::write(&at_level, b"x").expect("create the medium-labelled file");
+        assert!(
+            set_label_sddl(&at_level, "S:(ML;;NRNW;;;S-1-16-8192)"),
+            "labelling a file we own at Medium"
+        );
+        assert!(
+            label_blocks_lowered_access(&at_level, CONFINED_INTEGRITY_RID),
+            "a Medium `NO_READ_UP` ACE DOES block a lowered child — the tier must degrade rather than break it"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.12.3 Leg B: the own job is created with the caps AND kill-on-job-close ARMED —
+    // read back from the kernel, not assumed from the write.
+    #[test]
+    fn the_own_job_arms_the_caps_and_kill_on_job_close() {
+        let mut child = long_lived_child();
+        let job = attach_confined_job(child.id()).expect("assign our own job to the child");
+        let info = query_job_limits(job.job.as_raw_handle()).expect("read the job limits back");
+        let flags = info.BasicLimitInformation.LimitFlags;
+        for (flag, name) in [
+            (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, "KILL_ON_JOB_CLOSE"),
+            (JOB_OBJECT_LIMIT_JOB_MEMORY, "JOB_MEMORY"),
+            (JOB_OBJECT_LIMIT_ACTIVE_PROCESS, "ACTIVE_PROCESS"),
+            (
+                JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
+                "DIE_ON_UNHANDLED_EXCEPTION",
+            ),
+        ] {
+            assert!(
+                flags & flag != 0,
+                "§2.12.3 Leg B must arm {name}: flags={flags:#x}"
+            );
+        }
+        assert_eq!(
+            u64::try_from(info.JobMemoryLimit).unwrap_or(0),
+            PRODUCTION_JOB_LIMITS.memory_bytes,
+            "the committed-memory runaway cap must be the production value"
+        );
+        assert_eq!(
+            info.BasicLimitInformation.ActiveProcessLimit, PRODUCTION_JOB_LIMITS.active_processes,
+            "the fork-bomb cap must be the production value"
+        );
+        drop(job);
+        child.kill().ok();
+        child.wait().ok();
+    }
+
+    // §6.4.1 unit (G15) / §2.12.3 Leg B: the stand-down clears ONLY kill-on-job-close — the resource caps
+    // survive it, so a stood-down job is still a runaway guard for whatever of the tree outlives the launcher.
+    #[test]
+    fn the_stand_down_clears_only_kill_on_job_close() {
+        let mut child = long_lived_child();
+        let job = attach_confined_job(child.id()).expect("assign our own job to the child");
+        let handle = job.job.as_raw_handle();
+        assert!(
+            set_job_limits(handle, PRODUCTION_JOB_LIMITS, false),
+            "re-writing the limits without kill-on-close is what stand_down does"
+        );
+        let info = query_job_limits(handle).expect("read the job limits back");
+        let flags = info.BasicLimitInformation.LimitFlags;
+        assert!(
+            flags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE == 0,
+            "the clean-exit stand-down must drop kill-on-job-close: flags={flags:#x}"
+        );
+        for (flag, name) in [
+            (JOB_OBJECT_LIMIT_JOB_MEMORY, "JOB_MEMORY"),
+            (JOB_OBJECT_LIMIT_ACTIVE_PROCESS, "ACTIVE_PROCESS"),
+            (
+                JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
+                "DIE_ON_UNHANDLED_EXCEPTION",
+            ),
+        ] {
+            assert!(
+                flags & flag != 0,
+                "the stand-down must KEEP {name}: flags={flags:#x}"
+            );
+        }
+        drop(job);
+        child.kill().ok();
+        child.wait().ok();
+    }
+
+    // §6.4.1 unit (G15) / §2.12.3 Leg B — the ENFORCEMENT half (the P4.10 crash-time-reap residual this box
+    // closes): dropping an ARMED job reaps the child, which is exactly what the OS does for us when ConvertIA
+    // itself dies. The armed arm is every non-clean exit.
+    #[test]
+    fn dropping_an_armed_job_reaps_the_child() {
+        let mut child = long_lived_child();
+        let job = attach_confined_job(child.id()).expect("assign our own job to the child");
+        assert!(
+            !exited_within(&mut child, Duration::from_millis(200)),
+            "non-vacuity: the child must still be alive while the job handle is held"
+        );
+        drop(job);
+        assert!(
+            exited_within(&mut child, Duration::from_secs(10)),
+            "closing the last handle of a kill-on-job-close job must reap the tree"
+        );
+        child.wait().ok();
+    }
+
+    // §6.4.1 unit (G15) / §2.12.3 Leg B — the other half of the same decision: a STOOD-DOWN job leaves the
+    // tree alone, so a launcher that legitimately exits before its worker finished writing is never truncated
+    // (the P4.12 clean-exit rationale, mirrored).
+    #[test]
+    fn a_stood_down_job_leaves_the_child_running() {
+        let mut child = long_lived_child();
+        let job = attach_confined_job(child.id()).expect("assign our own job to the child");
+        job.stand_down();
+        assert!(
+            !exited_within(&mut child, Duration::from_secs(2)),
+            "a stood-down job must NOT reap the tree on close — that would truncate valid in-flight output"
+        );
+        child.kill().ok();
+        child.wait().ok();
+    }
+
+    // §6.4.1 unit (G15) / §2.12.3 Leg B: our job NESTS rather than colliding — the load-bearing assumption of
+    // attaching in `post_spawn` while `process_wrap` assigns its own job in `wrap_child`. A second assignment
+    // succeeding IS the Windows-8+ nested-job behaviour; if it ever failed, the spawn itself would fail and
+    // the P4.10 group-kill contract would break, so this pins it directly rather than by inference.
+    #[test]
+    fn a_second_job_assignment_nests_rather_than_failing() {
+        let mut child = long_lived_child();
+        let ours: ConfinedJob = attach_confined_job(child.id()).expect("our job assigns first");
+        let theirs: ConfinedJob = attach_job_with(
+            child.id(),
+            JobLimits {
+                memory_bytes: PRODUCTION_JOB_LIMITS.memory_bytes,
+                active_processes: PRODUCTION_JOB_LIMITS.active_processes,
+            },
+        )
+        .expect(
+            "a SECOND job assignment must nest (Windows 8+), as process-wrap's does after ours",
+        );
+        ours.stand_down();
+        theirs.stand_down();
+        child.kill().ok();
+        child.wait().ok();
+    }
+}
+
+// §2.12.3 WINDOWS privilege-drop DECISION pin (P4.17, Co-Pilot ruling 2026-08-25 — the
+// `macos_seatbelt_decision_tests` sibling). The restricted-token / AppContainer leg and the AppContainer /
+// WFP network-deny leg are DECIDED unrealizable in the v1-portable build (stable `CommandExt` carries no
+// spawn-token / process-creation-attribute path, `tokio::process::Child` cannot be built from a raw handle,
+// an AppContainer additionally needs `ALL APPLICATION PACKAGES` DACL grants on the portable bundle dir and on
+// every input, and a WFP/firewall rule needs elevation plus a persistent machine-global mutation), so NO FFI
+// for them may enter the core — no dead code for a decided-not-applied mechanism (CLAUDE §5). This
+// CROSS-PLATFORM source-scan runs on ALL THREE CI legs and walks the two directories that could home such a
+// call RECURSIVELY, so a future submodule is covered automatically (the g24 target-absent-leg lesson).
+// [Build-Session-Entscheidung: P4.17]
+#[cfg(test)]
+mod windows_tier_decision_tests {
+    // Everything before a scanned file's FIRST `#[cfg(test)]`, so a needle can never match a test's own
+    // source (this module names the forbidden tokens in its assertions). `concat!`-split so the literal
+    // marker is absent from this scanning module too (the `macos_seatbelt_decision_tests` precedent).
+    fn production_prefix(full: &str) -> &str {
+        full.split_once(concat!("#[cfg", "(test)]"))
+            .map_or(full, |(prefix, _)| prefix)
+    }
+
+    // The spawn-token / AppContainer / WFP API families — API IDENTIFIERS, never the English words, so the
+    // decision PROSE that necessarily names the rejected mechanisms (this file's module doc, the §2.12.3
+    // rationale in `crate::isolation`) does not trip its own pin. `CreateProcessAsUser`/`CreateProcessWithToken`
+    // are the only ways to spawn with a foreign token; `CreateRestrictedToken` mints one; the AppContainer
+    // family creates/derives a profile SID and `SECURITY_CAPABILITIES` is the attribute that would carry it;
+    // `Fwpm`/`INetFw` are the WFP and COM-firewall surfaces. Substrings, so the `W`/`A`/`0` suffixed variants
+    // are covered.
+    const FORBIDDEN_SPAWN_TOKEN_TOKENS: [&str; 8] = [
+        "CreateProcessAsUser",
+        "CreateProcessWithToken",
+        "CreateRestrictedToken",
+        "CreateAppContainerProfile",
+        "DeriveAppContainerSid",
+        "SECURITY_CAPABILITIES",
+        "Fwpm",
+        "INetFw",
+    ];
+
+    // The scanned PREFIX must be non-trivial, per file — the g24 never-silently-watch-nothing lesson applied
+    // one level deeper than "the file was read". `production_prefix` truncates at the first `#[cfg(test)]`, so
+    // a file whose production half shrank (or that grew production code BELOW its first test module, where the
+    // scan cannot see it) would pass vacuously while enforcing nothing. Each needle is a production symbol the
+    // scanned file cannot lose without the tier itself changing, and each lives in that file's production half
+    // by construction.
+    const PREFIX_NEEDLES: [(&str, &str); 2] = [
+        ("platform/mod.rs", "SetTokenInformation"),
+        ("isolation/mod.rs", "post_spawn"),
+    ];
+
+    // §2.12.3 / the P4.17 Co-Pilot ruling: no restricted-token / AppContainer / WFP call or FFI in the core's
+    // isolation surface. Walks `src/platform/**` + `src/isolation/**` from the compile-time crate root.
+    #[test]
+    fn no_appcontainer_or_spawn_token_ffi_in_the_core() {
+        use walkdir::WalkDir;
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut scanned = 0usize;
+        let (mut saw_platform_root, mut saw_isolation_root) = (false, false);
+        for dir in ["platform", "isolation"] {
+            for entry in WalkDir::new(src.join(dir)) {
+                let entry = entry.expect("walk the core platform/isolation source tree");
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let full = std::fs::read_to_string(path).expect("read a core source file");
+                let prod = production_prefix(&full);
+                for token in FORBIDDEN_SPAWN_TOKEN_TOKENS {
+                    assert!(
+                        !prod.contains(token),
+                        "§2.12.3 P4.17 decision (v1-portable Windows = intermediate-IL write confinement + an \
+                         own Job Object): a `{token}` call/FFI reappeared in {}'s production source. \
+                         Restricted-token / AppContainer and the AppContainer/WFP net-deny are DECIDED \
+                         unrealizable here — an installer-build epoch plus a brokered/staged input model is the \
+                         revisit anchor. Revisit the Co-Pilot ruling (2026-08-25) + spec §2.12.3 FIRST.",
+                        path.display()
+                    );
+                }
+                scanned += 1;
+                saw_platform_root |= path.ends_with("platform/mod.rs");
+                saw_isolation_root |= path.ends_with("isolation/mod.rs");
+                // Hermetic guard, per file: the scanned PREFIX must still contain that file's production
+                // needle. "The file was read" is not the same as "a production half was scanned" — a
+                // truncated-to-nothing prefix would enforce nothing while passing.
+                for (suffix, needle) in PREFIX_NEEDLES {
+                    if path.ends_with(suffix) {
+                        assert!(
+                            prod.contains(needle),
+                            "the scanned production prefix of {} no longer contains `{needle}` — the \
+                             `#[cfg(test)]` truncation is scanning (nearly) nothing, so the P4.17 decision \
+                             pin would pass vacuously",
+                            path.display()
+                        );
+                    }
+                }
+            }
+        }
+        // Hermetic guard (the g24 lesson — never silently watch nothing): the scan MUST have read the two
+        // known homes, else FAIL loudly rather than pass vacuously.
+        assert!(
+            saw_platform_root && saw_isolation_root && scanned >= 2,
+            "the source-scan must cover crate::platform + crate::isolation (found platform={saw_platform_root}, \
+             isolation={saw_isolation_root}, {scanned} .rs files) — the P4.17 decision is not being enforced"
         );
     }
 }

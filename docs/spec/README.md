@@ -250,7 +250,11 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   `actions/cache` keyed `<engine>-<version>-<triple>` + checksum-verified pinned-URL
   populate/fallback, macOS keeps two per-triple keys per engine for the `lipo` universal build
   (§6.1.3); **Windows network confinement** = AppContainer network-isolation profile / per-program
-  firewall (WFP) rule — **NOT** a Job Object (which cannot restrict sockets), §2.12.3/§6.7.3;
+  firewall (WFP) rule — **NOT** a Job Object (which cannot restrict sockets), §2.12.3/§6.7.3
+  *(**superseded for the RUNTIME tier by `[DECIDED — P4.17, 2026-08-25]`:** neither mechanism is
+  realizable in the v1-portable build, so Windows has **no** privilege-drop network-deny leg — the
+  load-bearing offline gate is the §2.11.4 packet-monitor regardless of tier. The **§6.7.3 CI
+  egress gate stands unchanged** — it uses an ELEVATED runner firewall, a CI fact. See §2.12.3.)*;
   **macOS CI smoke** runs on the build-output dir (no quarantine) + writes to a temp dir (no TCC
   prompt), TCC moved to the §6.6 walkthrough (§6.4.4/§6.4.6); **FFmpeg SSRF floor** reframed as
   **build-time-primary** (network protocol family absent at configure time; `-protocol_whitelist`
@@ -1118,7 +1122,13 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   the cheap tier otherwise — and is **NOT load-bearing** (the T9b network/LFR guarantee
   rests on the always-on argv/build controls §3.5/§6.1.3, not this tier). The only
   residual is the **precise per-OS profile contents** (`[DEFER: tuning]`, not a
-  commitment). Owner: §2.12.3.
+  commitment). **Per-OS realization, both rulings now landed:** **macOS** = the cheap-tier
+  floor ONLY (`[DECIDED — P4.16, 2026-07-25]`: the Seatbelt apply leg is not never-break-safe);
+  **Windows** = an intermediate-integrity write confinement + an own Job Object with
+  `JOB_OBJECT_LIMIT` caps, both applied parent-side on the suspended child
+  (`[DECIDED — P4.17, 2026-08-25]`: restricted-token/AppContainer and the AppContainer/WFP
+  network-deny are NOT realizable in v1-portable, so Windows has no privilege-drop net-deny
+  leg); **Linux** = the three P4.15 kernel-subsystem legs. Owner: §2.12.3.
 - **In-core memory-safe sniffs vs the §2.12 isolation boundary — `[DECIDED]` (§2.12.4).**
   The **text-encoding heuristic**, the **Rust ZIP central-directory peek**, and the
   **`.svgz` bounded inflate** (`flate2 rust_backend`/miniz_oxide — pure safe Rust, **no
@@ -1135,7 +1145,9 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   synthesis-fix round additionally resolved **`[OPEN-6.1b]` Linux `.deb`** (→ AppImage-only
   v1, `.deb` post-v1), the **engine-asset cache hosting** (→ `actions/cache` keyed
   `<engine>-<version>-<triple>` + pinned-URL fallback), the **Windows network-confinement
-  mechanism** (→ AppContainer profile / per-program firewall rule, NOT a Job Object), the
+  mechanism** (→ AppContainer profile / per-program firewall rule, NOT a Job Object — *the
+  RUNTIME half later superseded by `[DECIDED — P4.17]`: neither is realizable in v1-portable,
+  so there is no privilege-drop net-deny leg on Windows; §2.12.3*), the
   **`store:default` scope** (no per-file scope — convention-scoped), the **min body
   text-size** (→ `--text-base` = 16px floor), the **WebdriverIO pin** (→ v9), and the
   **`CollectedSet::Empty` payload / CollectedNoteKind `Other` / C4-vs-C5 destination
