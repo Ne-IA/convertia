@@ -126,8 +126,8 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/check-english-only --full
     coverage:        # G27/G28 - coverage-floor freeze + decrease-guard; per-domain/diff live in P1 (authoritative ratchet leg is the L4 workflow-security check)
       run: python3 scripts/check-coverage --full
-    lockfile-integrity: # G18a - whole-tree lockfile-integrity contract: drift-set freeze + CI --locked/--frozen-lockfile flag-scan + git-diff drift-guard (live since P1)
-      run: python3 scripts/check-lockfile-integrity
+    lockfile-integrity: # G18a - whole-tree lockfile-integrity contract: drift-set freeze + CI --locked/--frozen-lockfile flag-scan + git-diff drift-guard + (E) sub-workspace --locked resolve (--deep; cargo already required at L2 for rust-lint-contract) (live since P1)
+      run: python3 scripts/check-lockfile-integrity --deep
     build-matrix:    # G30 - build-matrix contract: native-OS set freeze + macOS-universal fat-Mach-O both-slice assertion (target-absent until a universal sidecar is staged)
       run: python3 scripts/check-build-matrix
     completeness:    # G22/G23 - schema/membership-parity bijection logic + the conversion-command(start_conversion)->test git walk (G23 LIVE since P3.63; G22 target-absent until P4.60)

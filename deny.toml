@@ -112,7 +112,12 @@ ignore = [
   # rkyv ^0.7. NB SCOPE: an advisory-ID ignore is GRAPH-WIDE — a future rkyv ACTIVATION (a direct dep, or
   # a feature enabling rust_decimal/rkyv) would be silenced by this id, so it MUST land >=0.8.17 + a §0.8
   # floor row; re-triage on any tauri-plugin-log/byte-unit/rust_decimal bump. MIRRORS audit.toml (G18
-  # two-scanner lock-step). [Co-Pilot, owner-acked, 2026-08-24]
+  # two-scanner lock-step). NB cargo-deny does NOT see the never-compiled rkyv, so
+  # `warning[advisory-not-detected]` is its EXPECTED report for this id (verified live, cargo-deny
+  # 0.19.9 — the glib precedent above) while cargo-audit's raw-Cargo.lock scan REQUIRES the ignore —
+  # kept in BOTH sets to hold the G18 deny==audit reconciliation; the deny-side warning itself
+  # corroborates the inertness. [Co-Pilot, owner-acked, 2026-08-24; NB added 2026-08-25 — the
+  # c045ccd R2 review follow-up]
   "RUSTSEC-2026-0235",  # rkyv OOB-read in archived Rc/Arc (locked-but-inert optional dep of rust_decimal; never compiled)
 ]
 

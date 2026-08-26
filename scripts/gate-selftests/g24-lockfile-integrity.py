@@ -12,7 +12,12 @@ sub-lock resolving a shared crate to a version the root lock does not pin (the 2
 class) AND a same-version source/checksum substitution (the [patch]/fork shape), PASSES a
 synced/subset resolution + sub-only crates + identical source/checksum, is target-absent without
 the sub-lock, and fail-CLOSES on an unparseable/malformed lock (incl. a duplicate (name, version)
-pair) / a sub-lock without a root lock. stdlib-only. Exit 0 = held.
+pair) / a sub-lock without a root lock, and the sub-workspace --locked resolve (E) PASSES a synced
+fixture workspace under REAL cargo, CATCHES a stale sub-lock (the 2026-08-24 c045ccd class),
+is target-absent without the sub-workspace manifest, and fail-CLOSES when cargo is unavailable,
+and the --deep FLAG gates leg (E) (main([]) at L1 never spawns cargo; main(['--deep']) at L2/L4 does).
+stdlib-only (the (E) legs invoke the real `cargo` binary, present wherever --deep is wired — L2/L4).
+Exit 0 = held.
 """
 import importlib.machinery
 import importlib.util
@@ -247,6 +252,66 @@ with tempfile.TemporaryDirectory() as _sync_td:
            (lambda p: "shared" in p and "1.0.1" in p and "1.0.0" in p and "cp Cargo.lock" in p)(
                m.subworkspace_lock_sync(_sync_tree(
                    _ROOT_LOCK, '[[package]]\nname = "shared"\nversion = "1.0.1"\n'))[0]))
+
+# --- (E) the sub-workspace --locked resolve ----------------------------------------------------
+_E_MANIFEST = ('[package]\nname = "e-fixture"\nversion = "0.0.1"\nedition = "2021"\n\n'
+               '[lib]\npath = "lib.rs"\n')
+_E_LOCK = 'version = 4\n\n[[package]]\nname = "e-fixture"\nversion = "0.0.1"\n'
+
+with tempfile.TemporaryDirectory() as _res_td:
+    _res_n = 0
+
+    def _resolve_tree(manifest: str | None, lock: str | None) -> Path:
+        global _res_n
+        _res_n += 1
+        td = Path(_res_td) / f"case{_res_n}"
+        (td / "fuzz").mkdir(parents=True)
+        if manifest is not None:
+            (td / "fuzz" / "Cargo.toml").write_text(manifest, encoding="utf-8")
+            (td / "fuzz" / "lib.rs").write_text("", encoding="utf-8")
+        if lock is not None:
+            (td / "fuzz" / "Cargo.lock").write_text(lock, encoding="utf-8")
+        return td
+
+    record("resolve: a synced sub-workspace passes `cargo metadata --locked` (real cargo)",
+           m.subworkspace_locked_resolve(_resolve_tree(_E_MANIFEST, _E_LOCK)) == [])
+    record("resolve: a STALE sub-lock (manifest moved on, lock not re-seeded) is caught "
+           "(the c045ccd class; real cargo)",
+           len(m.subworkspace_locked_resolve(_resolve_tree(
+               _E_MANIFEST.replace('version = "0.0.1"', 'version = "0.0.2"'), _E_LOCK))) == 1)
+    record("resolve: target-absent (no sub-workspace manifest) is a notice, never a failure",
+           m.subworkspace_locked_resolve(_resolve_tree(None, None)) == [])
+    record("resolve: the failure text names the stale lock + carries the re-seed command",
+           (lambda ps: len(ps) == 1 and "cp Cargo.lock fuzz/Cargo.lock" in ps[0]
+            and "--locked" in ps[0] and "STALE" in ps[0])(
+               m.subworkspace_locked_resolve(_resolve_tree(
+                   _E_MANIFEST.replace('version = "0.0.1"', 'version = "0.0.2"'), _E_LOCK))))
+    _real_run = m._run_cargo_metadata_locked
+    try:
+        m._run_cargo_metadata_locked = lambda d: (127, "cargo is not on PATH")
+        record("resolve: cargo-unavailable fail-CLOSES (the drift-guard git-unavailable posture)",
+               len(m.subworkspace_locked_resolve(_resolve_tree(_E_MANIFEST, _E_LOCK))) == 1)
+    finally:
+        m._run_cargo_metadata_locked = _real_run
+
+# --- (E) flag wiring: L1 (no --deep) skips the cargo spawn; --deep runs it -----------------------
+_leg_e_calls = {"n": 0}
+_real_leg_e = m.subworkspace_locked_resolve
+try:
+    def _counting_leg_e(root):
+        _leg_e_calls["n"] += 1
+        return _real_leg_e(root)
+    m.subworkspace_locked_resolve = _counting_leg_e
+    _leg_e_calls["n"] = 0
+    _rc_plain = m.main([])
+    record("flag: main([]) (L1 fast-path) does NOT invoke leg (E) — no cargo spawn per commit",
+           _leg_e_calls["n"] == 0 and _rc_plain == 0)
+    _leg_e_calls["n"] = 0
+    _rc_deep = m.main(["--deep"])
+    record("flag: main(['--deep']) (L2/L4) DOES invoke leg (E) and the real repo passes",
+           _leg_e_calls["n"] == 1 and _rc_deep == 0)
+finally:
+    m.subworkspace_locked_resolve = _real_leg_e
 
 # --- end-to-end over the real repo (live since P1) ---------------------------------------------
 record("main: the real repo passes (flag-scan live over the build commands + drift-guard clean)", m.main([]) == 0)

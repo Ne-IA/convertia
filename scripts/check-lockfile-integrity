@@ -4,7 +4,7 @@
 The §3.8 pin-everything discipline for lockfiles: a CI build/test/install must re-resolve the
 EXACT committed dependency graph (the one cargo-vet audited + the SBOM was cut from), never a
 freshly-resolved different one, and a lockfile that drifted mid-run must redden the push rather
-than silently auto-resolve. Four responsibilities, mirroring the P0.4.x two-tier pattern (a
+than silently auto-resolve. Five responsibilities (A)-(E), mirroring the P0.4.x two-tier pattern (a
 structural freeze live NOW + a target-absent live tier that fail-closes the moment its P1 source
 lands):
 
@@ -41,6 +41,14 @@ lands):
       source + checksum (a same-version `[patch]`/fork substitution compiles different bytes).
       Target-absent while a listed sub-lock does not exist; fail-CLOSED on any unreadable/
       unparseable/malformed lockfile, a version drift, or a source/checksum mismatch.
+  (E) SUB-WORKSPACE --LOCKED RESOLVE (live since 2026-08-25) - the STALENESS half of (D): a root
+      dep-add whose NEW subtree never reached the sub-lock at all is invisible to (D)'s both-locks
+      comparison (the 2026-08-24 c045ccd class - fuzz/Cargo.lock missing the P4.15 landlock/
+      seccompiler subtrees redded the --locked nightly fuzz job on BOTH legs for 2 nights, caught
+      by the SCHEDULE rather than the push), so (E) runs `cargo metadata --locked` FROM each
+      sub-workspace dir (the exact fuzz.yml pre-flight form) and fail-CLOSES on a non-zero
+      resolve, cargo-unavailable, or a timeout. Target-absent while the sub-workspace MANIFEST
+      does not exist.
 
 DEFENSE-IN-DEPTH SCOPE: the flag-scan reasons over the PLAIN block-form `run:` text of each
 workflow. Exotic YAML (anchors / aliases / merge keys / multi-document / flow-mappings that could
@@ -420,10 +428,61 @@ def subworkspace_lock_sync(root: Path) -> list[str]:
     return problems
 
 
+def _run_cargo_metadata_locked(workspace_dir: Path) -> tuple[int, str]:
+    """Run `cargo metadata --locked` FROM `workspace_dir` (the working-directory form fuzz.yml's
+    pre-flight uses). Returns (returncode, trimmed stderr); 127 when cargo is not on PATH and 124
+    on a timeout - both fail-CLOSED at the caller (the drift-guard git-unavailable posture)."""
+    try:
+        proc = subprocess.run(
+            ["cargo", "metadata", "--locked", "--format-version", "1"],
+            cwd=workspace_dir, capture_output=True, encoding="utf-8",
+            errors="replace", timeout=180)
+    except FileNotFoundError:
+        return 127, "cargo is not on PATH"
+    except subprocess.TimeoutExpired:
+        return 124, "`cargo metadata --locked` timed out"
+    return proc.returncode, (proc.stderr or "").strip()
+
+
+def subworkspace_locked_resolve(root: Path) -> list[str]:
+    """(E) `cargo metadata --locked` must SUCCEED from every SUBWORKSPACE_LOCKS workspace dir - the
+    STALENESS half of the sub-workspace contract. Leg (D) compares only crate names present in
+    BOTH locks, so a root dep-add whose NEW subtree never reached the sub-lock at all is invisible
+    to it (the 2026-08-24 c045ccd class: fuzz/Cargo.lock missing the P4.15 landlock/seccompiler
+    subtrees redded the --locked nightly fuzz job on BOTH legs for 2 nights); a --locked resolve
+    fails exactly then - at L1/L2, instead of at the next scheduled run. Target-absent (with a
+    notice) while the sub-workspace MANIFEST does not exist; fail-CLOSED when cargo is
+    unavailable / the resolve times out (the drift-guard git-unavailable posture) or the lock is
+    absent/stale."""
+    problems: list[str] = []
+    for rel in SUBWORKSPACE_LOCKS:
+        subdir_rel = rel.rsplit("/", 1)[0]
+        subdir = root / subdir_rel
+        if not (subdir / "Cargo.toml").is_file():
+            print(f"[G18a] sub-workspace manifest {subdir_rel}/Cargo.toml is absent (it lands with "
+                  "its owning phase box) - the (E) --locked resolve leg is target-absent for it; "
+                  "fail-closed the moment it exists")
+            continue
+        rc, err = _run_cargo_metadata_locked(subdir)
+        if rc != 0:
+            reseed = (f"re-seed: cp Cargo.lock {rel} && cargo metadata --manifest-path "
+                      f"{subdir_rel}/Cargo.toml")
+            problems.append(
+                f"{rel}: `cargo metadata --locked` FAILS from {subdir_rel}/ (rc={rc}: {err[:400]}) "
+                "- the committed sub-workspace lock is STALE against its manifest/path-dep closure "
+                "(a root dep-add must refresh it in the same commit) or cargo is unavailable; "
+                f"{reseed}")
+    return problems
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="G18a lockfile-integrity contract (P0.4.9)")
     ap.add_argument("--root", type=Path, default=ROOT,
                     help="repo root to check (default: the repo; a fixture tree in the self-test)")
+    ap.add_argument("--deep", action="store_true",
+                    help="also run the (E) sub-workspace `cargo metadata --locked` resolve leg "
+                         "(spawns cargo; wired at L2 pre-push + L4 CI, where a full toolchain is "
+                         "already required — SKIPPED at L1 pre-commit so a commit adds no extra fuzz-workspace resolve)")
     args = ap.parse_args(argv)
 
     problems = list(frozen_contract())
@@ -441,6 +500,11 @@ def main(argv: list[str] | None = None) -> int:
 
     problems += drift_guard(args.root)
     problems += subworkspace_lock_sync(args.root)
+    if args.deep:
+        problems += subworkspace_locked_resolve(args.root)
+    else:
+        print("[G18a] (E) sub-workspace --locked resolve leg skipped (L1 fast-path; run with "
+              "--deep at L2 pre-push / L4 CI)")
 
     if problems:
         for p in problems:
@@ -448,7 +512,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(f"[G18a] lockfile integrity OK (drift-set {DRIFT_SET}; {total_found} pinned "
           "build/install command(s) scanned; live drift-guard clean; sub-workspace lock-sync "
-          f"clean over {SUBWORKSPACE_LOCKS})")
+          f"{'+ --locked resolve ' if args.deep else ''}clean over {SUBWORKSPACE_LOCKS})")
     return 0
 
 

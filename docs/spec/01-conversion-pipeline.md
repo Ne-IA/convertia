@@ -957,6 +957,14 @@ leader** and kills the **whole group**, so one cancel/kill tears down the engine
     > (case (b) above is thus specifically the successful-run descendant). This resolves the
     > exit-classification-owner decision the P4.10 forward note delegated to P4.12 — the same
     > box that owns the exit≠0 → §3.5 `classify_failure` routing.
+    > **`[UPSTREAM 2026-08-25 — Co-Pilot]`** the defect is FIXED upstream in `process-wrap`
+    > **10.0.0** (released 2026-08-24: "Keep wrapper registry live during hooks" + "Preserve
+    > creation flags with job objects"; reported independently as watchexec/process-wrap#35/#36,
+    > both closed — so there is nothing left to report upstream). The pin stays **9.1.0**:
+    > 10.0.0 is a BREAKING major (typed wrapper extension, removed panicking accessors), and the
+    > P4.10–P4.12 kill/wait machinery + the P4.17 Leg-B design are reviewed against 9.1.0
+    > semantics — the bump is a deliberate dep-major act of its own (fresh review + the §0.8
+    > floor move) that re-opens this FORCED DEVIATION, never an auto-refresh.
   - **POSIX (macOS/Linux):** `ProcessGroup::leader()` wrapper — the engine becomes
     a **process-group leader** (`setpgid`); `kill()` signals the whole group
     (negative-pgid `SIGKILL`/`SIGTERM`), reaping descendants.
@@ -1020,6 +1028,10 @@ leader** and kills the **whole group**, so one cancel/kill tears down the engine
   > box (P4.17) normatively requires exactly that limit. **P4.17 is therefore the
   > tracked home for closing this residual**, and P4.10 records both halves of the
   > upstream defect in that box's forward note.
+  > **`[UPSTREAM 2026-08-25 — Co-Pilot]`** fixed upstream in `process-wrap` 10.0.0 — see the
+  > Mechanism bullet's `[UPSTREAM]` note above (the pin stays 9.1.0; the bump is a deliberate
+  > dep-major act of its own). P4.17's own `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` job remains the
+  > in-product close regardless of the bump.
 
 ### `InProcessNative` sub-case — the one non-subprocess engine `[DECIDED]`
 
