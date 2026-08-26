@@ -314,6 +314,19 @@ build commit. Input: the STAGED diff (git diff --cached, inline). Critique it fo
      now"). A red→green test edit lacking that (1)+(2) justification is a P0/P1
      finding. (Mechanical signal: G70 flags an unjustified suppression marker; YOUR job
      is the SEMANTIC call — test-strategy.md §8.)
+  6. CLASS-CLOSURE (owner rule, 2026-08-26 — CLAUDE.md §10) — when the diff FIXES a
+     defect (a bug, a red gate, a review finding, a broken assumption), ask: "can this
+     or a SIBLING of it recur?" If yes, the commit must EITHER close the class — the
+     sibling sweep (the same pattern grepped across plan/spec/code/gates) PLUS a
+     permanent catcher (a gate leg / lint / self-test / spec note / Loop-memory entry)
+     so the recurrence is caught mechanically, never re-learned — OR explicitly record
+     in the commit body why the defect is a genuine one-off (or where that closure
+     is homed, with the box id). A closure landing outside the diff under review
+     (a Loop-memory entry) MUST be NAMED in the commit body, so the reviewer can
+     see it. An instance-only fix that leaves its class silently
+     open is a P1. (Scope guard: this asks for the CATCHER, not for gold-plating —
+     a one-line memory/spec note IS a valid closure when a mechanical gate would be
+     disproportionate; name the judgment.)
 
 Rank every finding P0 (must-fix, blocks) → P1 (must-fix) → P2 → P3. Give each one a
 one-line reason WITH a spec-§ or file ref. State convergence/divergence explicitly:

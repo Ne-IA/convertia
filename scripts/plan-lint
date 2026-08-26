@@ -1246,13 +1246,19 @@ def _extract_fenced_block(text: str, marker: str) -> str | None:
 
 # The canonical G1 reviewer-rubric block lives as a fenced block in build-loop.md §3 Step 5 (P0.6.2).
 # _RUBRIC_MARKER identifies it; _RUBRIC_PHRASES are the load-bearing strings the box requires present so
-# the loop cannot silently under-specify its own review prompt: the five critique dimensions, the
+# the loop cannot silently under-specify its own review prompt: the six critique dimensions, the
 # no-green-by-rewrite test-integrity item, the divergence handling, and the SPEC-CONTRADICTION-above-P0
 # class. Matched case-insensitively as substrings WITHIN the extracted block (not the whole doc).
 _RUBRIC_MARKER = "ConvertIA dual-review rubric"
 _RUBRIC_PHRASES = (
     "STAGED diff",                                     # staged-diff input (not a SHA)
-    "COMPLETENESS", "CORRECTNESS", "SPEC-CONFORMANCE", "TEST-INTEGRITY",  # 4 of the 5 critique dimensions
+    "COMPLETENESS", "CORRECTNESS", "SPEC-CONFORMANCE", "TEST-INTEGRITY",  # 4 of the 6 critique dimensions
+    "CLASS-CLOSURE",                                   # the 6th critique dimension (owner rule 2026-08-26)
+    "permanent catcher",                               # its substance - the sweep-plus-catcher requirement
+    #   Pin-uniqueness is MECHANICAL, not asserted-in-a-comment: the g24 pin-uniqueness leg requires
+    #   every phrase above to occur EXACTLY ONCE (case-insensitively) in the real committed block -
+    #   a prose twin silently disarms a substring pin (the 3x-recurred collision class: the P0.6.2
+    #   bare-"SECURITY" case, then two fresh twins caught in the 2026-08-26 G1 R2).
     "open a network surface",                          # the SECURITY dimension's substance — pinned to the
     #   critique line, NOT the bare word "SECURITY" (which collides with "security-critical file" elsewhere
     #   in-block, so renaming the dimension away would slip through — G1 P0.6.2 P3 hardening)

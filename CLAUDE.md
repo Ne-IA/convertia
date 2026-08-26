@@ -397,6 +397,18 @@ In brief:
 
 <!-- The owner adds personal rules here. Claude does not touch this block without an explicit instruction. -->
 
-- _…_
+- **Root-cause rule (owner, 2026-08-26).** Every fix carries the question: *"can this
+  — or a sibling of it — recur?"* If yes, the fix is not done until the **class** is
+  closed **in the same commit**: sweep the siblings (grep the pattern across
+  plan/spec/code/gates) and land a **permanent catcher** — a gate leg, a lint, a
+  self-test, a spec note, or a Loop-memory entry — so the recurrence is caught
+  **mechanically**, never re-learned. A fix that leaves its class open is half a fix.
+  If it is a genuine one-off, record **why** in the commit body — and the rule is
+  **proportionate**: a one-line memory/spec note IS a valid closure where a mechanical
+  gate would be disproportionate (an out-of-repo closure is NAMED in the commit body).
+  Enforced per commit by the G1 rubric's CLASS-CLOSURE item
+  ([build-loop.md](docs/process/build-loop.md), drift-guarded by plan-lint check 19);
+  the escalation-scoped form predates this rule as a Loop-memory entry
+  (`escalation-resolution-includes-prevention-sweep`).
 
 <!-- End owner rules -->

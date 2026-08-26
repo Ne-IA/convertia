@@ -255,6 +255,7 @@ _RUBRIC_OK = ("# Build-Loop\n\n```text\n=== ConvertIA dual-review rubric (canoni
               "Input: the STAGED diff (git diff --cached, inline).\n"
               "1. COMPLETENESS  2. CORRECTNESS  3. SPEC-CONFORMANCE  4. SECURITY (does it open a network surface?)  5. TEST-INTEGRITY\n"
               "is this SUPPRESSING A REAL REGRESSION? State convergence/divergence explicitly.\n"
+              "6. CLASS-CLOSURE - class closed (sweep + permanent catcher) or the one-off recorded.\n"
               "SPEC-CONTRADICTION is a finding CLASS ABOVE P0.\n```\n")
 record("_extract_fenced_block: returns the marked block's body",
        (m._extract_fenced_block("a\n```text\nMARK here\nbody line\n```\nb\n", "MARK here") or "").strip().endswith("body line"))
@@ -278,8 +279,27 @@ record("19 reviewer-rubric: a rubric MISSING the test-integrity item -> caught",
 record("19 reviewer-rubric: a rubric MISSING the SECURITY dimension (open-a-network-surface) -> caught",
        any("open a network surface" in f.msg for f in m.doc19_reviewer_rubric(
            dctx({_BL: _RUBRIC_OK.replace("open a network surface", "")}))))
+record("19 reviewer-rubric: a rubric MISSING the CLASS-CLOSURE dimension -> caught",
+       any("CLASS-CLOSURE" in f.msg for f in m.doc19_reviewer_rubric(
+           dctx({_BL: _RUBRIC_OK.replace("6. CLASS-CLOSURE", "6. ")}))))
+record("19 reviewer-rubric: a rubric MISSING the class-closure SUBSTANCE (permanent catcher) -> caught",
+       any("permanent catcher" in f.msg for f in m.doc19_reviewer_rubric(
+           dctx({_BL: _RUBRIC_OK.replace("permanent catcher", "catcher")}))))
 record("19 reviewer-rubric: the REAL committed build-loop.md rubric passes (no finding)",
        m.doc19_reviewer_rubric(m.build_ctx(ROOT)) == [])
+# Pin-uniqueness (the 3x-recurred collision class, mechanized 2026-08-26): a substring pin is ARMED
+# only while its phrase occurs EXACTLY ONCE in the block - a second (prose) twin keeps check 19 green
+# while the guarded element is deleted/renamed (P0.6.2 bare-"SECURITY"; the 2026-08-26 G1 R2 caught
+# "staged diff" + "class-closure" twins). This leg turns any future twin into a red canary.
+def _real_rubric_block() -> str:
+    bl_text = (ROOT / "docs" / "process" / "build-loop.md").read_text(encoding="utf-8")
+    return m._extract_fenced_block(bl_text, m._RUBRIC_MARKER) or ""
+record("19 pin-uniqueness: every _RUBRIC_PHRASES entry occurs EXACTLY ONCE in the real rubric block",
+       (lambda blk: bool(blk) and all(blk.lower().count(ph.lower()) == 1 for ph in m._RUBRIC_PHRASES))(
+           _real_rubric_block()))
+record("19 pin-uniqueness: the leg ARMS - a planted prose twin of a pinned phrase is caught",
+       (lambda blk: blk.lower().count("permanent catcher") == 2)(
+           _real_rubric_block() + "a permanent catcher mentioned twice\n"))
 
 # --- check 20: the reviewer-family owner decision + spot-audit cadence (P0.6.3) ----------------
 _FAM_OK = ("# Build-Loop\n\nRecorded reviewer-family decision: the two reviewers share model lineage, so\n"

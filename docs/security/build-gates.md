@@ -147,6 +147,16 @@ spec-conformance, plus the relevant spec `§§` + this catalogue.
   rewrite is legitimate — together they ensure the ability to change a test is
   **preserved but verified** (a justified change passes normally). Doctrine:
   [test-strategy.md](../process/test-strategy.md) §8.
+- **Class-closure scrutiny (the owner's 2026-08-26 root-cause rule — rubric item 6).**
+  When the diff FIXES a defect (a bug, a red gate, a review finding, a broken
+  assumption), both reviewers ask whether the defect CLASS can recur; if yes, the
+  commit must close it — the sibling sweep plus a **permanent catcher** (a gate leg /
+  lint / self-test / spec note / Loop-memory entry; a closure outside the diff under
+  review must be NAMED in the commit body) — or record why it is a genuine one-off. An
+  instance-only fix with its class silently open is a **P1**. Proportionality is part
+  of the rule (a one-line note is a valid closure where a mechanical gate would be
+  disproportionate). Canonical text: the [build-loop.md](../process/build-loop.md)
+  rubric, drift-guarded by plan-lint check 19.
 - **Definition-of-Done.** A box is "done" only when it satisfies the ConvertIA DoD
   (authored in [build-loop.md](../process/build-loop.md), P0.6): (a) spec-`§`
   referenced or marked tooling-only; (b) spec synced in the same commit; (c) tests
