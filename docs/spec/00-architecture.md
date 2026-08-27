@@ -1655,9 +1655,11 @@ pool** governs how many engine processes run at once. **This number lives here;
   **dedicated single-permit semaphore** (one per serialised engine). A job for that
   engine must **acquire BOTH** the global degree semaphore **and** that engine's
   single-permit semaphore **before spawn**, and **releases both on subprocess exit**
-  (success/fail/kill). This is the concrete code that *reads* `serialised_only`: the
-  pool, at registry-build time, allocates a `Semaphore(MAX_LO_CONCURRENCY)` for each
-  engine flagged serialised; non-serialised engines acquire only the global degree permit.
+  (success/fail/kill). This is the concrete code that *reads* `serialised_only`: at
+  registry-build time a `Semaphore(MAX_LO_CONCURRENCY)` is allocated for each engine
+  flagged serialised; non-serialised engines acquire only the global degree permit.
+  ("The pool holds" is the OWNERSHIP of the mechanism, not of the instance — note (a)
+  below fixes where each half lives, and the note is the normative one for placement.)
   **`MAX_LO_CONCURRENCY = 1` is a §0.9-owned `pub const` `[DECIDED]`** (the single source
   of the LibreOffice serialisation degree); the §6.7.2 test harness **imports this same
   constant** rather than hard-coding `1`, so the test env can never drift from prod.
@@ -1666,8 +1668,36 @@ pool** governs how many engine processes run at once. **This number lives here;
   Engine` exposes **`fn descriptor() -> EngineDescriptor`**; the pool reads
   `registry.engine(engine_id).descriptor().serialised_only` before dispatch (or, at
   registry-build time, pre-computes a `HashMap<EngineId, bool>` of serialised flags
-  from each registered engine's `descriptor()`, read on every dispatch). This is the
+  from each registered engine's `descriptor()`). This is the
   named `EngineId → serialised_only` path — there is no descriptor-less lookup gap.
+  **`[P4.22]` took the second option**, so nothing re-reads the flag per job: the map is
+  the build-time input that allocates the lanes, and the per-job read is of the LANE.
+  > **`[DECIDED — P4.22]` the two realisation choices this bullet leaves open.**
+  > **(a) Where the semaphores live.** They are keyed by `EngineId`, a §0.7 **tier-2**
+  > type, and the pool this section owns is a **tier-3 leaf** that may not name one. So
+  > the pool owns the MECHANISM as a **generic-keyed `SerialisedLanes<K>`** (the
+  > semaphores, the `MAX_LO_CONCURRENCY` sizing and the acquire), and the tier-2
+  > **registry owns the one instance**, `SerialisedLanes<EngineId>`, allocated in the same
+  > `descriptor()` walk that produces the flag map above — which is exactly this bullet's
+  > "at registry-build time", with ONE source for both the flag and the lane. The
+  > alternative, making the pool type itself generic, was rejected: the pool is the
+  > app-managed value every §1.7 signature names, so a key parameter would spread a
+  > tier-2 type across the whole tier-3 surface to buy nothing. `EngineId` is **not**
+  > re-homed.
+  > **(b) The acquire ORDER.** This bullet fixes none ("acquire BOTH … before spawn"), so
+  > it is fixed here: the **engine permit first, the global-degree permit second**, and
+  > consistently. Any single fixed order over the two resources is deadlock-free, but only
+  > this one cannot wedge throughput: taking the global permit first would let N queued
+  > office jobs each hold a global permit while waiting on the single office permit, so an
+  > office-heavy batch could occupy the whole degree with waiters and starve every other
+  > engine (head-of-line blocking). Engine-first means a job waiting its turn at
+  > LibreOffice holds **no** global permit, and it costs that job nothing that
+  > matters — it queues twice (engine lane, then global) rather than once, but it is
+  > serialised either way, so the added hop can only delay a job that was already
+  > waiting on that same single permit. The §1.7 caller (the tier-1 conductor) holds the engine permit
+  > across the dispatch that takes the global one, so both are released the instant the
+  > engine run ends — success, failure, kill, cancel or a dropped future — and neither is
+  > held across the §2.1 publish.
 - **FFmpeg internal threading (avoid oversubscription).** FFmpeg's own
   `libx264`/`libvpx` use multiple internal threads per process by default, so even
   the **1–2** video-re-encode cap can saturate the CPU. v1 does **not** additionally

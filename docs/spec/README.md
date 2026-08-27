@@ -587,7 +587,11 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
   `EngineProgram::InProcessNative`); `InCoreNative`/`InProcess` retired. Owner: §0.6/§3.2.
 - **`serialised_only` access path** — `trait Engine` gains `fn descriptor() ->
   EngineDescriptor`; the §0.9 pool reads `registry.engine(id).descriptor().serialised_only`
-  before dispatch. Owner: §3.2 / §0.9.
+  before dispatch. **`[P4.22]` SETTLED to the section's other option:** the flag is read ONCE, at
+  registry-BUILD time, where it also allocates that engine's dedicated single-permit lane
+  (`SerialisedLanes<EngineId>`, owned by the registry — the tier-3 pool may not name `EngineId`);
+  the §1.7 caller then acquires from the LANE, so nothing re-reads the descriptor per job.
+  Owner: §3.2 / §0.9.
 - **§0.9 per-engine-CAP access path `[P4.21]`** — the sibling of the entry above, and a
   *different* method for a *different* axis: `trait Engine` gains `fn parallelism(item,
   target) -> EngineParallelism`, a **per-JOB** row (not a `descriptor()` field) because

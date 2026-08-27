@@ -14,7 +14,7 @@ use std::sync::{Arc, LazyLock};
 
 use crate::domain::{DroppedItem, TargetId};
 use crate::outcome::ConversionErrorKind;
-use crate::pool::EngineParallelism;
+use crate::pool::{EngineParallelism, SerialisedLanes};
 
 use super::{
     current_platform, CodecPosture, Direction, EngineCapability, EngineDescriptor, EngineId,
@@ -39,12 +39,14 @@ pub trait Engine: Send + Sync {
     /// (`ffmpeg`, `libreoffice`, `vips`, …).
     fn id(&self) -> EngineId;
 
-    /// The §0.6 capability descriptor for this engine, incl. `serialised_only` and `kind` (§3.2.2). The
-    /// §0.9 pool reads `descriptor().serialised_only` from a job's resolved [`EngineId`] BEFORE spawn to
-    /// decide whether to also acquire the engine's single-permit semaphore (LibreOffice) — the concrete
-    /// `EngineId → serialised_only` data path §0.9 depends on (P4.5 wires it; without it the pool cannot
-    /// get the flag from the §3.2.3 `(SourceFmt,TargetFmt) → EngineId` registry). Pure, const-ish (a
-    /// static fact per engine).
+    /// The §0.6 capability descriptor for this engine, incl. `serialised_only` and `kind` (§3.2.2). Its
+    /// `serialised_only` is the concrete `EngineId → serialised_only` data path §0.9 depends on (P4.5
+    /// wires it; without it there is no way to get the flag from the §3.2.3
+    /// `(SourceFmt,TargetFmt) → EngineId` registry). **[Corrected by P4.22]** — this sentence used to say
+    /// the §0.9 pool reads it "from a job's resolved [`EngineId`] BEFORE spawn"; §0.9 took its other
+    /// option, so [`EngineRegistry::build`] reads the flag ONCE and allocates that engine's dedicated
+    /// single-permit lane from it — the per-job acquire is of the LANE ([`EngineRegistry::serialised_lanes`]),
+    /// never of this descriptor. Pure, const-ish (a static fact per engine).
     fn descriptor(&self) -> EngineDescriptor;
 
     /// The §0.9 **per-engine parallelism row** for ONE job — how many of THIS engine's jobs the §0.9 pool
@@ -238,9 +240,16 @@ pub struct EngineRegistry {
     /// The §0.9 serialised-flag map, pre-computed from each registered engine's `descriptor()` at build
     /// time (P4.5) — the `[DECIDED]` second leg of §0.9's `EngineId → serialised_only` path, the only
     /// tier-legal one (§0.7: `crate::pool` is a tier-3 leaf that never calls UP into this tier-2
-    /// registry — the pool-module tier note): the registry HANDS this map DOWN as data; the §0.9
-    /// single-permit semaphore wiring consumes it at P4.22.
+    /// registry — the pool-module tier note): the registry HANDS this map DOWN as data. P4.22 CONSUMED it
+    /// here rather than across the tier boundary — it is the build input for the [`Self::serialised_lanes`]
+    /// field below, so the flag and the lane come from ONE `descriptor()` walk and cannot disagree.
     serialised: HashMap<EngineId, bool>,
+    /// The §0.9 serialised-engine LANES (P4.22) — one dedicated `Semaphore(MAX_LO_CONCURRENCY)` per engine
+    /// whose flag above is `true`, allocated HERE because §0.9 says they are allocated "at registry-build
+    /// time" and because only this tier-2 layer may name the `EngineId` key. The pool owns the MECHANISM
+    /// ([`crate::pool::SerialisedLanes`] + the permit count); the registry owns the INSTANCE — the
+    /// generic-keyed resolution P4.5 left open, taken without re-homing `EngineId`.
+    serialised_lanes: SerialisedLanes<EngineId>,
 }
 
 /// Manual `Debug` — `dyn Engine` carries no `Debug` bound (the trait is a behaviour seam, §3.2.2), so
@@ -252,6 +261,7 @@ impl std::fmt::Debug for EngineRegistry {
             .field("pairs", &self.pairs)
             .field("engines", &self.engines.keys().collect::<Vec<_>>())
             .field("serialised", &self.serialised)
+            .field("serialised_lanes", &self.serialised_lanes)
             .finish()
     }
 }
@@ -325,6 +335,12 @@ impl EngineRegistry {
         Ok(EngineRegistry {
             pairs,
             engines: by_id,
+            // §0.9 (P4.22): allocate the dedicated single-permit lanes "at registry-build time", from the
+            // SAME flag map computed above — one source for both the flag and the lane, so a serialised
+            // engine can never have a flag without a lane. Built by value from the map's own entries.
+            serialised_lanes: SerialisedLanes::build(
+                serialised.iter().map(|(id, flag)| (*id, *flag)),
+            ),
             serialised,
         })
     }
@@ -332,12 +348,23 @@ impl EngineRegistry {
     /// The §0.9 serialised-flag map (P4.5) — `EngineId → serialised_only`, pre-computed from each
     /// registered engine's `descriptor()` at build time (the §0.9 `[DECIDED]` second leg; there is no
     /// descriptor-less lookup gap). The registry hands it DOWN as data because the tier-3 pool never
-    /// calls UP into this tier-2 registry (§0.7; the pool-module tier note) — the §0.9 single-permit
-    /// semaphore wiring (P4.22) reads it on every dispatch, allocating the dedicated single-permit
-    /// semaphore per `true` engine (LibreOffice) at pool-build time.
+    /// calls UP into this tier-2 registry (§0.7; the pool-module tier note). P4.22 turned it into the
+    /// [`Self::serialised_lanes`] allocation at THIS registry's build time; the §1.7 dispatch path reads
+    /// the LANES, not this map, so nothing consults it per job.
     #[must_use]
     pub fn serialised_flags(&self) -> &HashMap<EngineId, bool> {
         &self.serialised
+    }
+
+    /// The §0.9 serialised-engine LANES (P4.22) — the dedicated single-permit semaphores allocated at
+    /// build time from [`Self::serialised_flags`]. The §1.7 caller acquires a job's engine permit from
+    /// here **before** the §0.9 global-degree permit and holds it across the engine run, which is §0.9's
+    /// "acquire BOTH … before spawn … releases both on subprocess exit"; a non-serialised engine has no
+    /// lane, so the acquire is a no-op and only the global permit is taken. The engine-first order is the
+    /// caller's contract, argued on [`SerialisedLanes`].
+    #[must_use]
+    pub fn serialised_lanes(&self) -> &SerialisedLanes<EngineId> {
+        &self.serialised_lanes
     }
 
     /// The §3.2.3 static lookup — `Some(owner)` for a registered pair; `None` is the §3.4 honest gap
@@ -597,6 +624,72 @@ mod registry_tests {
             "§0.9: a serialised_only descriptor flows into the pre-computed flag map"
         );
         assert_eq!(with_office.serialised_flags().len(), 2);
+    }
+
+    // §6.4.1 unit (G15) — P4.22, the tier-2 half of the §0.9 `serialised_only` mechanism: the registry
+    // allocates the dedicated single-permit LANES "at registry-build time" from the very flag map above, so
+    // a serialised engine can never carry a flag without a lane (one source, one walk over `descriptor()`).
+    // The pool owns the mechanism generically (§0.7: a tier-3 leaf may not name `EngineId`); this is the
+    // instantiation P4.5 left open, taken WITHOUT re-homing `EngineId`.
+    #[tokio::test]
+    async fn the_registry_allocates_a_serialised_lane_for_each_flagged_engine() {
+        let startup = engine_registry()
+            .expect("§3.2.3: the registered v1 set builds a valid single-owner registry");
+        assert_eq!(
+            startup.serialised_lanes().lane_count(),
+            0,
+            "§0.9: the one registered v1 engine is the freely-parallel native transform — no lane at all"
+        );
+        assert!(
+            startup
+                .serialised_lanes()
+                .acquire(&EngineId::NativeCsvTsv)
+                .await
+                .expect("§0.9: the lane set is open")
+                .is_none(),
+            "§0.9: a non-serialised engine acquires only the global degree permit"
+        );
+
+        let with_office = EngineRegistry::build(
+            vec![
+                Arc::new(NativeCsvTsvEngine),
+                Arc::new(SerialisedOfficeEngine),
+            ],
+            Platform::MacOS,
+            &resolved_patent_disposition(),
+        )
+        .expect("§3.2.3: the office test engine's Xlsx→Pdf cell collides with nothing");
+        assert_eq!(
+            with_office.serialised_lanes().lane_count(),
+            1,
+            "§0.9: exactly the `serialised_only` engine got a lane — allocated from the SAME descriptor \
+             walk that produced its flag"
+        );
+        let permit = with_office
+            .serialised_lanes()
+            .acquire(&EngineId::LibreOffice)
+            .await
+            .expect("§0.9: the lane set is open")
+            .expect("§0.9: the serialised engine HAS its dedicated permit");
+        // The registry-built lane really serialises — a second office job waits, and is admitted the moment
+        // the first releases (the §0.9 "one document per invocation, serialized" property, end to end from
+        // `descriptor().serialised_only` through to a real permit).
+        let mut queued = Box::pin(
+            with_office
+                .serialised_lanes()
+                .acquire(&EngineId::LibreOffice),
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut queued)
+                .await
+                .is_err(),
+            "§0.9: LibreOffice headless is not safely parallel — the second job waits"
+        );
+        drop(permit);
+        assert!(
+            queued.await.expect("§0.9: the lane set is open").is_some(),
+            "§0.9: the permit is released on the first job's exit and admits the next"
+        );
     }
 
     // §6.4.1 unit (G15) — P4.21, the §0.9 TWO-AXES ORTHOGONALITY: a `serialised_only` engine takes exactly

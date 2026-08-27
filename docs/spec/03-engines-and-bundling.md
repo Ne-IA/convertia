@@ -174,12 +174,14 @@ pub trait Engine: Send + Sync {
     fn id(&self) -> EngineId;
 
     /// The §0.6 capability descriptor for this engine, incl. `serialised_only` and
-    /// `kind: EngineKind`. The §0.9 pool reads `descriptor().serialised_only` from a
-    /// job's resolved `EngineId` BEFORE spawn to decide whether to also acquire the
-    /// engine's single-permit semaphore (LibreOffice). This is the concrete
-    /// `EngineId → serialised_only` data path §0.9 depends on (without it the pool has
-    /// no way to get `serialised_only` from the §3.2.3 `(SourceFmt,TargetFmt)→EngineId`
-    /// registry). Pure, const-ish (a static fact per engine).
+    /// `kind: EngineKind`. `serialised_only` is the concrete `EngineId → serialised_only`
+    /// data path §0.9 depends on (without it there is no way to get the flag from the
+    /// §3.2.3 `(SourceFmt,TargetFmt)→EngineId` registry). **`[Corrected by P4.22]`** — this
+    /// sentence used to say the §0.9 pool reads it "from a job's resolved `EngineId` BEFORE
+    /// spawn"; §0.9, which OWNS the mechanism and which this clause defers to, took its
+    /// other option, so the flag is read ONCE at registry-build time (where it allocates the
+    /// engine's single-permit lane) and nothing re-reads it per job. Pure, const-ish (a
+    /// static fact per engine).
     fn descriptor(&self) -> EngineDescriptor;
 
     /// The §0.9 per-engine parallelism ROW for ONE job `[DECIDED §0.9 — P4.21]` — how

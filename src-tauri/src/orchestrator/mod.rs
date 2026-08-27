@@ -2169,7 +2169,36 @@ async fn convert_item(
             }))
             .ok();
     };
-    let result = dispatch(&envelope, pool, parallelism, on_fraction).await;
+    // §0.9 (P4.22): a `serialised_only` engine (LibreOffice) must hold its DEDICATED single permit as well
+    // as the global-degree one for the whole engine run — "acquire BOTH … before spawn … releases both on
+    // subprocess exit". The engine permit is taken HERE, one frame outside `dispatch` (which takes the
+    // global one inside its lane), so the two are acquired in the fixed engine-then-global order
+    // `SerialisedLanes` argues for: a job queued behind LibreOffice holds no global permit, so an
+    // office-heavy batch cannot fill the §0.9 degree with waiters and starve every other engine. The guard
+    // lives in this block and nothing else, so it is released the instant the engine run ends — on success,
+    // failure, kill, cancel and a dropped future alike — and is NOT held across the §2.1 publish below.
+    // A non-serialised engine has no lane: the acquire yields `None` and nothing is held (§0.9
+    // "non-serialised engines acquire only the global degree permit"). An `Err` is unreachable by
+    // construction (the lanes are never closed) and fails THIS item closed rather than running an office
+    // job whose serialisation could not be established — the profile corruption §0.9 calls a correctness
+    // issue. [Build-Session-Entscheidung: P4.22]
+    //
+    // TWO FORWARD OBLIGATIONS, both raised by the P4.22 dual review and homed in the plan (P4.86 +
+    // P7.10), named here so the next reader of this site sees them:
+    // (1) this acquire is NOT cancel-aware, unlike the §1.10 watermark gate one layer down (which is a
+    //     `biased;` `select!` on the same token, P4.20). A job queued on an engine lane therefore
+    //     ignores a tripped C7 cancel until the in-flight job of THAT engine ends - minutes for a large
+    //     document. UNREACHABLE today (the conductor is sequential, so nothing ever queues on a lane);
+    //     the cancel-awareness leg belongs to P4.86, the box that makes contention real.
+    // (2) the guard-HOLDING here has no test and cannot have one yet: no registered engine is
+    //     `serialised_only`, and `convert_item` reads the `engine_registry()` static, so nothing can
+    //     inject one. Binding `Ok(_)` instead of `Ok(_serialised)` would delete serialisation with a
+    //     green suite. P7.10 - which registers the FIRST serialised engine - carries the end-to-end
+    //     assertion (two concurrent office jobs serialise through this path).
+    let result = match registry.serialised_lanes().acquire(&engine_id).await {
+        Ok(_serialised) => dispatch(&envelope, pool, parallelism, on_fraction).await,
+        Err(_closed) => InvocationResult::Failed(ConversionErrorKind::InternalError),
+    };
 
     match result {
         // §1.7 verified success → reclaim the written temp (dispatch BORROWED the envelope, so the conductor

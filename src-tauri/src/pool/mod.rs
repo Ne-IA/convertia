@@ -1,7 +1,7 @@
 //! `crate::pool` — the §0.9 bounded engine-subprocess pool: the single owner of the global concurrency
 //! degree, of the per-engine parallelism rules ([`EngineParallelism`] + its cap consts since P4.21;
-//! LibreOffice serialised via a dedicated single-permit semaphore at P4.22) and of the timeout /
-//! no-progress-watchdog parameters. A §0.7 **tier-3 leaf** — it
+//! LibreOffice serialised via the dedicated single-permit [`SerialisedLanes`] since P4.22) and of the
+//! timeout / no-progress-watchdog parameters. A §0.7 **tier-3 leaf** — it
 //! depends DOWN only, on `std`, the `tokio` runtime primitives and (since P4.20) the tier-3 SIBLING
 //! `crate::platform` for the §1.10 available-memory read; it names **no** tier-2 type. A sibling edge is not
 //! an upward one — §0.7 puts `pool`, `platform` and `domain` on the same tier as "the leaves: they depend on
@@ -85,12 +85,23 @@
 //!    global permit, so a serialised job takes ONE global permit — see [`EngineParallelism`] for the full
 //!    argument.
 //!
+//! ## LIVE in P4.22 (the §0.9 `serialised_only` enforcement)
+//!  - [`MAX_LO_CONCURRENCY`] `= 1` is the §0.9-owned single source of the serialisation degree (imported by
+//!    the §6.7.2 harness, never hard-coded), and it is the number [`SerialisedLanes`] sizes each lane with.
+//!  - [`SerialisedLanes`] is §0.9's `[DECIDED]` mechanism: one dedicated single-permit `Semaphore` per
+//!    engine whose descriptor carries `serialised_only`, allocated at registry-build time; a job for such
+//!    an engine acquires BOTH that permit and the global-degree one before spawn and releases both on exit,
+//!    while a non-serialised engine has no lane and takes only the global permit.
+//!  - It is GENERIC in the key, which is how the §0.7 tier holds: the pool owns the mechanism, the tier-2
+//!    registry instantiates `SerialisedLanes<EngineId>` from its own `descriptor()` walk. This is the
+//!    resolution P4.5 left open, taken WITHOUT re-homing `EngineId` — see the tier note below.
+//!  - The §1.7 caller takes the ENGINE permit first and the global one second (the tier-1 conductor holds
+//!    the guard across `dispatch`), so a job queued behind LibreOffice holds no global permit and an
+//!    office-heavy batch cannot fill the §0.9 degree with waiters — the ordering argument lives on
+//!    [`SerialisedLanes`].
+//!
 //! ## SHELLED — a doc-only contract map P4 EXPANDS (never rebuilds)
-//!  - **P4.22** adds the `serialised_only` enforcement — a dedicated single-permit `Semaphore` per
-//!    serialised engine, allocated at registry-build time; a serialised job acquires BOTH the global permit
-//!    AND that engine's single-permit before spawn, releasing both on exit — and authors `MAX_LO_CONCURRENCY
-//!    = 1` (§0.9-owned, imported by the §6.7.2 harness). **P4.23** re-homes the native lane P3.3 built onto
-//!    the now-real pool, unchanged.
+//!  - **P4.23** re-homes the native lane P3.3 built onto the now-real pool, unchanged.
 //!  - The §0.9 per-engine timeout / watchdog-poll / no-progress `pub const`s are authored with their
 //!    consumers: the §1.7 native wall-clock timeout [`NATIVE_CSV_TSV_TIMEOUT`] is now LIVE (authored P3.45,
 //!    consumed by the §1.7 `bounded_lane` wrapper); the subprocess watchdog set — [`WATCHDOG_POLL_INTERVAL`] /
@@ -107,15 +118,20 @@
 //! `EngineId` lives in the tier-2 `crate::engines` layer, so a tier-3 leaf cannot name it. P3.3's live
 //! scope needs none (the native lane acquires only the global permit). §0.9's serialised-flag map is DATA
 //! the tier-2 registry pre-computes from each `descriptor()` and hands the pool at registry-build time — the
-//! pool never calls UP into the registry. P4.22 realises it tier-legally (a generic-keyed map the registry
-//! instantiates with `EngineId`, a legal downward edge — or a re-home of `EngineId` decided with its
-//! consumer); this module names no `crate::engines` type, keeping §0.7's downward-only tiering intact.
+//! pool never calls UP into the registry. **P4.22 CLOSED that open question with the FIRST of its two
+//! options — a generic-keyed value the registry instantiates — so `EngineId` was NOT re-homed:**
+//! [`SerialisedLanes<K>`] owns the semaphores, the permit count and the acquire; `EngineRegistry` holds the
+//! one `SerialisedLanes<EngineId>` instance, built from the same `descriptor()` walk that yields the flag
+//! map. Making [`Pool`] itself generic was rejected — `Pool` is the app-managed value every §1.7 signature
+//! names, so a key parameter would spread a tier-2 type across the whole tier-3 surface to buy nothing.
+//! This module still names no `crate::engines` type, keeping §0.7's downward-only tiering intact.
 //! P4.20 kept that intact for the subprocess half too: the lane is generic in the caller's return type, so
 //! `ConfinedRun`/`InvocationResult`/`EngineInvocation` are instantiated BY the tier-2 caller and named
 //! nowhere here. P4.21 keeps it intact for the per-engine caps as well: [`EngineParallelism`] is keyed by
 //! nothing at all — it is a plain §0.9 ROW the tier-2 engine declares per job and hands DOWN, so the cap
-//! needs no `EngineId` key and this leaf still names no `crate::engines` type. The `EngineId`-keyed map
-//! question therefore remains P4.22's alone (the serialised-flag path).
+//! needs no `EngineId` key and this leaf still names no `crate::engines` type. So all three P4 boxes that
+//! could have forced an `EngineId` re-home resolved without one, by three different tier-legal shapes:
+//! generic in the caller's return type (P4.20), keyed by nothing (P4.21), generic in the key (P4.22).
 
 // [Build-Session-Entscheidung: P3.3] dead_code expect — the §0.9 Pool + the §1.7 in-core spawn_blocking
 // lane are authored ahead of their production consumers. P3.43 WIRED run_in_core + LaneError into the dispatch
@@ -131,11 +147,12 @@
     )
 )]
 
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, SemaphorePermit};
 
 /// The §0.9-owned per-engine **wall-clock timeout** for the §1.7 `InProcessNative` native CSV/TSV engine
 /// (§3.5.6) — the single source of that engine's time bound, so test and prod can never drift (the §0.9
@@ -305,6 +322,139 @@ pub const MEMORY_PAUSE_MAX: Duration = Duration::from_secs(30);
 const _: () = assert!(HIGH_MEMORY_WATERMARK_BYTES < MEMORY_PER_SLOT_BYTES);
 const _: () = assert!(MEMORY_PER_SLOT_BYTES > 0);
 
+/// The §0.9-owned **LibreOffice serialisation degree** — how many jobs of a `serialised_only` engine may
+/// run at once. `[DECIDED]` **1**, and this is a *correctness* bound rather than a throughput one: §0.9
+/// records that LibreOffice headless "is **NOT safely parallel under one user profile** — concurrent
+/// `soffice` instances sharing a profile **lock/corrupt** it — a *correctness* issue, not just contention",
+/// and that even with the §3.5.2 per-run isolated `-env:UserInstallation` profiles "the safe v1 stance is
+/// **one office conversion at a time**".
+///
+/// It is a named `pub const` here because §0.9 makes it one: "**`MAX_LO_CONCURRENCY = 1` is a §0.9-owned
+/// `pub const`** (the single source of the LibreOffice serialisation degree); the §6.7.2 test harness
+/// **imports this same constant** rather than hard-coding `1`, so the test env can never drift from prod."
+/// [`SerialisedLanes`] sizes every serialised engine's dedicated semaphore with it — the one place the
+/// number is spent. [Build-Session-Entscheidung: P4.22]
+pub const MAX_LO_CONCURRENCY: usize = 1;
+
+/// A serialised lane must genuinely serialise: a zero-permit lane would deadlock every office job and any
+/// value above 1 would re-open the profile-corruption §0.9 calls a correctness issue. Compile-enforced, so
+/// a recalibration of the const cannot silently break the property it exists to guarantee.
+/// [Build-Session-Entscheidung: P4.22]
+const _: () = assert!(MAX_LO_CONCURRENCY == 1);
+
+/// The §0.9 **serialised-engine lanes** — one dedicated [`MAX_LO_CONCURRENCY`]-permit `Semaphore` per
+/// engine whose §0.6 descriptor carries `serialised_only` (LibreOffice today), allocated ONCE at
+/// registry-build time. This is §0.9's `[DECIDED]` `serialised_only` enforcement mechanism: "the pool holds
+/// a **dedicated single-permit semaphore** (one per serialised engine). A job for that engine must
+/// **acquire BOTH** the global degree semaphore **and** that engine's single-permit semaphore **before
+/// spawn**, and **releases both on subprocess exit** (success/fail/kill) … non-serialised engines acquire
+/// only the global degree permit."
+///
+/// **Why it is GENERIC in the key, and who instantiates it** [Build-Session-Entscheidung: P4.22]. §0.9
+/// keys the lanes by `EngineId`, which lives in the tier-2 `crate::engines` layer — a §0.7 tier-3 leaf may
+/// not name it. P4.5 left the resolution open ("a generic-keyed map the registry instantiates with
+/// `EngineId`, a legal downward edge — or the `EngineId` re-home the tier note leaves open, decided with
+/// P4.22"); this box takes the FIRST option, which needs no re-home: the pool owns the mechanism (the
+/// semaphores, the permit count, the acquire) as `SerialisedLanes<K>`, and the tier-2 registry instantiates
+/// it as `SerialisedLanes<EngineId>` from the very `descriptor()` walk that already produces the P4.5
+/// serialised-flag map. The alternative — making [`Pool`] itself generic — was rejected: `Pool` is the
+/// app-managed value every §1.7 signature names, so a key parameter would spread a tier-2 type through the
+/// whole tier-3 surface to buy nothing, whereas a standalone generic value keeps this module naming **no**
+/// `crate::engines` type at all (the same reason [`Pool::run_subprocess`] stays generic in the caller's
+/// return type).
+///
+/// **ORDERING — the engine permit is taken BEFORE the global one** (the §1.7 caller's contract; §0.9 fixes
+/// no order, only "acquire BOTH … before spawn"). Both orders are deadlock-free while they are used
+/// CONSISTENTLY, because a fixed global order over the two resources admits no cycle — but this order is
+/// also the one that cannot wedge the pool's throughput. Taking the global permit first would let N queued
+/// office jobs each hold a global permit while waiting on the single office permit, so a batch of office
+/// items could occupy the whole §0.9 degree with waiters and starve every other engine (head-of-line
+/// blocking). Taking the engine permit first means a job waiting for its turn at LibreOffice holds **no**
+/// global permit, so the rest of the batch keeps flowing. It costs the office job nothing that matters: it
+/// queues twice (engine lane, then global) rather than once, but it is serialised either way, so the added
+/// hop can only delay a job that was already waiting on that same single permit.
+///
+/// **The acquire is deliberately NOT cancel-aware, and that is a NAMED forward obligation, not an
+/// oversight** [Build-Session-Entscheidung: P4.22]. The §1.10 watermark gate in `crate::engines::dispatch`
+/// wraps its wait in a `biased;` `select!` on the job token so a cancel is never swallowed by a stall;
+/// this wait has no such arm, so a job queued on an engine lane ignores a tripped cancel until the
+/// in-flight job of that engine ends. It is UNREACHABLE while the tier-1 conductor is sequential (nothing
+/// ever queues on a lane), and the leg is homed on **P4.86** — the box that makes contention real — with
+/// its test on **P7.10**, the box that registers the first `serialised_only` engine. Adding the arm here
+/// now would land an UNVERIFIED cancel arm — not literally the P4.20 class (an unbiased `select!` silently
+/// re-deciding existing semantics), but the same risk profile, and it cannot be verified before P7.10.
+///
+/// INTERNAL — no `serde`/`specta`; not `Clone` (it OWNS the semaphores, and a clone would silently create a
+/// second, independent set of permits — the one thing that would break serialisation). The registry holds
+/// the single instance behind its `&'static` handle, so a permit's lifetime is never the constraint.
+pub struct SerialisedLanes<K> {
+    /// One single-permit lane per SERIALISED engine. A non-serialised engine is deliberately ABSENT rather
+    /// than present-with-many-permits, so a missing key means exactly "acquire only the global permit".
+    lanes: HashMap<K, Semaphore>,
+}
+
+/// Manual `Debug` — a `Semaphore` renders as an opaque blob, so the lanes render as their key set (the
+/// question a reader ever has is *which* engines are serialised). Mirrors [`EngineRegistry`]'s own manual
+/// `Debug` over its engine map. [Build-Session-Entscheidung: P4.22]
+impl<K: std::fmt::Debug> std::fmt::Debug for SerialisedLanes<K> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SerialisedLanes")
+            .field("lanes", &self.lanes.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+impl<K: Eq + std::hash::Hash> SerialisedLanes<K> {
+    /// Allocate the lanes from a `(key, serialised_only)` flag set — §0.9's "the pool, at registry-build
+    /// time, allocates a `Semaphore(MAX_LO_CONCURRENCY)` for **each engine flagged serialised**". A `false`
+    /// flag allocates nothing at all, which is what makes [`Self::acquire`]'s absent-key answer exactly
+    /// §0.9's "non-serialised engines acquire only the global degree permit".
+    /// [Build-Session-Entscheidung: P4.22]
+    #[must_use]
+    pub fn build(flags: impl IntoIterator<Item = (K, bool)>) -> Self {
+        SerialisedLanes {
+            lanes: flags
+                .into_iter()
+                .filter(|(_, serialised_only)| *serialised_only)
+                .map(|(key, _)| (key, Semaphore::new(MAX_LO_CONCURRENCY)))
+                .collect(),
+        }
+    }
+
+    /// Acquire this engine's dedicated single permit, if it has one — the §0.9 "acquire BOTH … before
+    /// spawn" half that the global-degree lane does not cover.
+    ///
+    /// * `Ok(None)` — the engine is not serialised; nothing was acquired and nothing must be released
+    ///   (§0.9: "non-serialised engines acquire only the global degree permit").
+    /// * `Ok(Some(permit))` — the engine's ONE permit, held until the guard drops. The caller keeps it in
+    ///   the frame that wraps the engine run, so it is released on EVERY exit path — success, failure,
+    ///   kill, cancel and a dropped future alike (§0.9 "releases both on subprocess exit").
+    /// * `Err(LaneError::PoolClosed)` — unreachable by construction: these semaphores are never closed
+    ///   (this type exposes no close, unlike [`Pool`]'s `#[cfg(test)]` seam). It is surfaced rather than
+    ///   unwrapped to keep the §0.9 no-panic pool path, and the caller fails that ONE item — fail-CLOSED,
+    ///   because serialisation is a correctness control: running an office job whose serialisation could
+    ///   not be established is precisely the profile corruption §0.9 forbids.
+    ///
+    /// [Build-Session-Entscheidung: P4.22]
+    pub async fn acquire(&self, key: &K) -> Result<Option<SemaphorePermit<'_>>, LaneError> {
+        let Some(lane) = self.lanes.get(key) else {
+            return Ok(None);
+        };
+        lane.acquire()
+            .await
+            .map(Some)
+            .map_err(|_closed| LaneError::PoolClosed)
+    }
+
+    /// The number of allocated lanes — the `#[cfg(test)]` observability seam the registry's own tests read
+    /// (a `Semaphore` set has no other honest shape to assert on). Absent from production, so it needs no
+    /// dead-code entry. [Build-Session-Entscheidung: P4.22]
+    #[cfg(test)]
+    pub(crate) fn lane_count(&self) -> usize {
+        self.lanes.len()
+    }
+}
+
 /// The §0.9-owned **video re-encode** parallelism cap — the concrete number behind the §0.9 engine table's
 /// "**FFmpeg** (video re-encode) | **low — 1–2**" row, and the single source of it: a named `pub const` in
 /// this §0.9 pool module, co-located with the timeout / watchdog / memory set, so the §6.7.2 test harness
@@ -379,16 +529,22 @@ impl EngineParallelism {
     }
 }
 
-/// The failure modes of the §0.9 in-core `spawn_blocking` lane. INTERNAL — never on the IPC wire (no
+/// The failure modes of the §0.9 permit paths. Authored (P3.3) for the in-core `spawn_blocking` lane
+/// alone, it has since OUTGROWN that scope twice — [`Pool::run_subprocess`] (P4.20) and
+/// [`SerialisedLanes::acquire`] (P4.22) both produce it — so the type doc names the general shape and
+/// each variant states which producers can actually reach it. INTERNAL — never on the IPC wire (no
 /// `serde`/`specta`); the §1.7/§2.8 caller (P3.46) maps it onto a per-item `Failed`, so a lane failure is
 /// always ONE item's failure, never a pool-wide fault. [Build-Session-Entscheidung: P3.3] `Debug` + the
 /// test-assertion `PartialEq`/`Eq`; NO `Clone` (the caller matches/maps it, never clones) — mirroring the
 /// internal `crate::engines` descriptor types.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LaneError {
-    /// The global-degree semaphore was closed — no permit can be granted. Unreachable while the app runs
-    /// (the pool lives for the process lifetime and is never closed); surfaced without a panic to keep the
-    /// §0.9 no-panic pool path.
+    /// A semaphore this path acquires from was closed, so no permit can be granted — the GLOBAL-degree one
+    /// on either [`Pool`] lane, or a [`SerialisedLanes`] engine lane (P4.22). Unreachable while the app
+    /// runs in both cases: the pool lives for the process lifetime and is closed only by a `#[cfg(test)]`
+    /// seam, and `SerialisedLanes` exposes no close at all. Surfaced without a panic to keep the §0.9
+    /// no-panic pool path; the §1.7/§2.8 caller maps it to ONE item's failure — fail-CLOSED on the
+    /// serialised lane, where the permit IS the correctness control.
     PoolClosed,
     /// The worker closure panicked; `tokio::task::spawn_blocking` caught the unwind (§2.13 catch_unwind
     /// semantics — the worker is not killed). Because a `spawn_blocking` task cannot be abort-cancelled, a
@@ -397,9 +553,12 @@ pub enum LaneError {
     Panicked,
 }
 
-/// The §0.9 bounded pool. In P3 it carries the LIVE global-degree permit model + the in-core lane; P4.20/
-/// P4.22 EXPAND it with the subprocess machinery (the per-engine serialised single-permit semaphores, the
-/// §1.10 memory-adaptive effective degree). [Build-Session-Entscheidung: P3.3] `Clone` = a cheap `Arc`
+/// The §0.9 bounded pool. In P3 it carries the LIVE global-degree permit model + the in-core lane; P4.20
+/// EXPANDED it with the subprocess lane + the §1.10 memory-adaptive effective degree, and P4.21 with the
+/// §0.9 per-engine cap term. **P4.22 deliberately did NOT expand it**: the `serialised_only` single-permit
+/// semaphores live in the standalone [`SerialisedLanes`] the tier-2 registry owns, precisely so this
+/// app-managed type stays un-generic and names no `crate::engines` key (the §0.9 `[DECIDED — P4.22]`
+/// decision (a); see the module tier note). [Build-Session-Entscheidung: P3.3] `Clone` = a cheap `Arc`
 /// bump sharing the SAME global semaphore, so the one app-wide pool is handed to every executor by value
 /// (the tokio-pool convention); `Debug` for diagnostics. NOT `Copy` (owns an `Arc`); NOT `PartialEq` (a
 /// semaphore is not comparable). `global` is `Arc<Semaphore>` because `acquire_owned` — needed to move a
@@ -1570,5 +1729,184 @@ mod tests {
                 "§0.9: every weighted acquisition returned all its permits ({row:?})"
             );
         }
+    }
+
+    // ─── P4.22: the §0.9 `serialised_only` dedicated single-permit lanes ──
+    //
+    // The lanes are keyed GENERICALLY (§0.7: this tier-3 leaf may not name `EngineId`), so the tests key on
+    // their own local engine set — which also proves the generic actually is generic. The tier-2 side (the
+    // registry instantiating `SerialisedLanes<EngineId>` from its `descriptor()` walk) is asserted in
+    // `crate::engines::registry`'s own tests.
+
+    /// A local stand-in for the tier-2 `EngineId` key: one serialised engine, a SECOND serialised engine
+    /// (§0.9 says "one per serialised engine", so two must not share a lane) and one that is not.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    enum TestEngineKey {
+        Office,
+        SecondOffice,
+        Light,
+    }
+
+    fn office_lanes() -> SerialisedLanes<TestEngineKey> {
+        SerialisedLanes::build([
+            (TestEngineKey::Office, true),
+            (TestEngineKey::SecondOffice, true),
+            (TestEngineKey::Light, false),
+        ])
+    }
+
+    // §6.4.1 (G15): `MAX_LO_CONCURRENCY` is the §0.9-owned single source of the serialisation degree, and
+    // it is the number a lane is actually SIZED with — the const and the mechanism cannot drift apart
+    // (§0.9: "the single source of the LibreOffice serialisation degree; the §6.7.2 test harness imports
+    // this same constant rather than hard-coding 1"). The `== 1` value itself is compile-enforced beside the
+    // definition, so this asserts the LINK: whatever the const says, that many holders fit.
+    #[tokio::test]
+    async fn max_lo_concurrency_is_the_number_a_serialised_lane_is_sized_with() {
+        let lanes = office_lanes();
+        let mut held = Vec::new();
+        for _ in 0..MAX_LO_CONCURRENCY {
+            held.push(
+                lanes
+                    .acquire(&TestEngineKey::Office)
+                    .await
+                    .expect("§0.9: the lane is open")
+                    .expect("§0.9: a serialised engine HAS a lane"),
+            );
+        }
+        assert_eq!(
+            held.len(),
+            MAX_LO_CONCURRENCY,
+            "§0.9: exactly MAX_LO_CONCURRENCY holders fit the lane"
+        );
+        let mut queued = Box::pin(lanes.acquire(&TestEngineKey::Office));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut queued)
+                .await
+                .is_err(),
+            "§0.9: the MAX_LO_CONCURRENCY-th+1 office job WAITS — the lane is sized by the const, not by a \
+             hard-coded literal"
+        );
+        drop(held);
+        assert!(
+            queued.await.expect("§0.9: the lane is open").is_some(),
+            "§0.9: releasing admits the next office job — the permit is returned, never leaked"
+        );
+    }
+
+    // §6.4.1 (G15): §0.9's allocation rule — "a `Semaphore(MAX_LO_CONCURRENCY)` for EACH ENGINE FLAGGED
+    // SERIALISED" — and its mirror image, "non-serialised engines acquire only the global degree permit".
+    // A `false` flag allocates NOTHING, so an unflagged engine's acquire is a genuine no-op (`Ok(None)`),
+    // not a permit it must remember to release.
+    #[tokio::test]
+    async fn lanes_are_allocated_for_exactly_the_flagged_engines() {
+        let lanes = office_lanes();
+        assert_eq!(
+            lanes.lane_count(),
+            2,
+            "§0.9: one lane per SERIALISED engine — the unflagged one allocates nothing"
+        );
+        assert!(
+            lanes
+                .acquire(&TestEngineKey::Light)
+                .await
+                .expect("§0.9: the lane set is open")
+                .is_none(),
+            "§0.9: a non-serialised engine acquires only the global degree permit — nothing is taken here"
+        );
+        assert!(
+            SerialisedLanes::build([(TestEngineKey::Light, false)]).lane_count() == 0,
+            "§0.9: an engine set with no serialised engine allocates no lane at all"
+        );
+    }
+
+    // §6.4.x (G15): §0.9 says "one per serialised engine", not one shared lane — two serialised engines
+    // must not serialise against EACH OTHER (that would be a global office lock, which §0.9 does not ask
+    // for and which would cost throughput for no correctness gain: the profile corruption is per-engine).
+    #[tokio::test]
+    async fn each_serialised_engine_gets_its_own_lane() {
+        let lanes = office_lanes();
+        let _first = lanes
+            .acquire(&TestEngineKey::Office)
+            .await
+            .expect("§0.9: the lane is open")
+            .expect("§0.9: a serialised engine HAS a lane");
+        let second = tokio::time::timeout(
+            Duration::from_millis(50),
+            lanes.acquire(&TestEngineKey::SecondOffice),
+        )
+        .await
+        .expect("§0.9: a DIFFERENT serialised engine has its OWN lane and is admitted at once")
+        .expect("§0.9: the lane is open");
+        assert!(
+            second.is_some(),
+            "§0.9: the second serialised engine took its own permit"
+        );
+    }
+
+    // §6.4.x (G15) THE ORDERING DECISION, as observable behaviour: the §1.7 caller takes the ENGINE permit
+    // before the §0.9 GLOBAL one, so an office job queued behind another holds NO global permit and the rest
+    // of the batch keeps flowing. Under the opposite order the queued job would be sitting on a global
+    // permit and an office-heavy batch could fill the whole §0.9 degree with waiters (head-of-line
+    // blocking). Deterministic: proven by permit accounting plus a pending future, never by a sleep race.
+    #[tokio::test]
+    async fn a_queued_office_job_holds_no_global_permit_so_other_engines_keep_running() {
+        const DEGREE: usize = 2;
+        let pool = Pool::with_degree(DEGREE);
+        let lanes = office_lanes();
+
+        // Office job A: engine permit FIRST, then the global lane — the caller's fixed order.
+        let _office_permit = lanes
+            .acquire(&TestEngineKey::Office)
+            .await
+            .expect("§0.9: the lane is open")
+            .expect("§0.9: a serialised engine HAS a lane");
+        let mut running = Box::pin(pool.run_subprocess(
+            EngineParallelism::UpToGlobalDegree,
+            std::future::pending::<u32>(),
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut running)
+                .await
+                .is_err(),
+            "office job A is running (its engine future never completes)"
+        );
+        assert_eq!(
+            pool.global.available_permits(),
+            DEGREE - 1,
+            "office job A holds exactly one global permit"
+        );
+
+        // Office job B queues on the ENGINE lane, before it ever reaches the pool.
+        let mut queued_office = Box::pin(lanes.acquire(&TestEngineKey::Office));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut queued_office)
+                .await
+                .is_err(),
+            "§0.9: office job B waits for the single office permit"
+        );
+        assert_eq!(
+            pool.global.available_permits(),
+            DEGREE - 1,
+            "§0.9: the QUEUED office job holds no global permit — the engine-then-global order is what \
+             keeps the pool free for other engines"
+        );
+
+        // ...which is exactly what lets a non-office job run beside them, on the permit B did not take.
+        assert_eq!(
+            pool.run_subprocess(EngineParallelism::UpToGlobalDegree, async { 7_u32 })
+                .await
+                .expect("§0.9: the light engine takes the free global permit and runs"),
+            7,
+            "§0.9: an office backlog does not starve the other engines"
+        );
+
+        drop(_office_permit);
+        assert!(
+            queued_office
+                .await
+                .expect("§0.9: the lane is open")
+                .is_some(),
+            "§0.9: releasing the engine permit on job A's exit admits job B"
+        );
     }
 }
