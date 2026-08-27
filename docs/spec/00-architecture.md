@@ -1548,6 +1548,7 @@ the corpus (§6.4) — engine bumps are best-effort posture (§3.8), not a gate.
 | **landlock** *(Linux-only)* | §2.12.3 | best-effort Linux Landlock FS-restrict for the decoder subprocess (scratch rw + `/dev`/`/proc`/engine-runtime read/exec paths, ABI ≥ 1, silent-degrade) — the privilege-drop tier's FS leg; the per-item **input-file** grant is the P4.37 refinement (`[DEFER: tuning]`) |
 | **seccompiler** *(Linux-only)* | §2.12.3 | best-effort Linux seccomp-bpf exec/unexpected-syscall deny on the decoder subprocess (defence-in-depth, silent-degrade) — NOT the egress block (that is the network namespace) |
 | **libc** *(Linux-only)* | §2.12.3 | the arch-specific `SYS_*` syscall NUMBERS the seccomp deny-list names + `EPERM` + the `unshare`/`open`/`write` net-ns syscalls (a constants+raw-syscall edge for the privilege-drop tier; already transitive via rustix/tokio) |
+| **toml** *(dev-only — the `cargo test` plane, never the shipped LINK set; it does sit in the target-agnostic lockfile closure the walk deliberately over-approximates)* | §2.12.4 | the real TOML parser (serde-derived `[[package]]` rows) behind `crate::untrusted_byte_boundary`'s committed-`Cargo.lock` closure walk — the in-crate §2.12.4 no-decoder-in-core assertion (no bespoke lockfile reader); already lock-resolved via the tauri build/utils graph |
 
 Concrete crate **versions are deliberately not hard-coded in this prose** (they go
 stale); the lockfiles + SBOM are the source of truth (§6.3). This table fixes the

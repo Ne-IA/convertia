@@ -1932,6 +1932,34 @@ T1 (§0.11) is uniformly subprocess-isolated. (This also reinforces §3.6: copyl
 engines are aggregated as separate binaries; the image-worker links libvips/LGPL
 internally, which is aggregation, never a link into the MIT core.)
 
+> **Clarification (P4.19 realization, 2026-08-26) — the absolute's SCOPE + its in-crate assertion
+> `[DECIDED — P4.19]`:** "decoder" in this absolute means a decoder on the **untrusted-input path** —
+> the §1.2 detection sniffs, the §3.x conversion engines and the §3.5.6 native transform (this
+> section's own scope sentence: detection is "the first code touching untrusted bytes"). The
+> **platform WebView host toolkit** the §0.4/§0.8 Tauri mandate links — WebKitGTK/GTK with its
+> GLib/Pango/Cairo/`gdk-pixbuf` stack on Linux, the WebView2 COM shim on Windows, WKWebView on
+> macOS — is the **UI host**, never on that path: the §0.4 IPC carries paths, not file bytes, and the
+> locked §0.10 CSP has no `asset:` protocol, so no dropped file's bytes ever reach the WebView or its
+> loaders; those host bindings are therefore **classified, not forbidden**. The absolute's two halves
+> are asserted **in-crate on every `cargo test`** by `crate::untrusted_byte_boundary` — the
+> cargo-test-plane companion of the live L(-1) enforcers G53 (`check-core-deps`) + G29
+> (`check-unsafe-policy`), never their replacement: (1) the committed `Cargo.lock` closure of
+> `convertia-core` (the union over every target and dependency kind — a superset of the shipped
+> link set, so fail-closed by construction) carries no decoder binding (the G53 image-worker set, mirrored verbatim and
+> drift-guarded against the gate script, + the subprocess-only FFmpeg/poppler/image-codec families +
+> the C zlib/XML/xz/bzip2 backends), `flate2` rides `miniz_oxide` only (the §0.8 row), `convertia-imgworker`
+> is **not** in the closure (aggregation, not linkage), and every native-binding-shaped (`-sys`) crate in
+> the closure is classified in a bijective table (a new C-library binding reaching the core is a
+> reviewed classification, never a silent link); (2) over the live §3.2.3 registry every registered
+> engine's `EngineKind` matches an exhaustive per-`EngineId` classification and the native CSV/TSV
+> engine is the one `InProcessNative`; (3) `crate::detection` imports only the vetted pure-Rust sniff
+> crates named here/§0.8 (`chardetng`, `encoding_rs`, `flate2`/`miniz_oxide`, `quick-xml`/`roxmltree`)
+> with no `unsafe`/`extern`/`#[link]`/process/network path — so a pure-Rust **full** decoder is refused
+> there too (sniffs only); (4) the G29 mirror, scoped to the core crate — `#![deny(unsafe_code)]` at both
+> core-crate roots (`lib.rs` + `main.rs`), no `unsafe` and no `allow`/`expect(unsafe_code)` in any
+> production source of the crate outside `src/platform/**` (a projection that blanks every
+> `#[cfg(test)]`-gated item and keeps scanning after it, so a statement-level test seam hides nothing).
+
 > **Note — the §2.13 `catch_unwind` boundary is NOT a containment mechanism for
 > hostile native code.** It catches *Rust* panics in ConvertIA's own orchestration
 > code at the item boundary; it does **not** contain arbitrary-code-execution or

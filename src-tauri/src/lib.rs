@@ -3814,6 +3814,17 @@ mod fuzz_replay;
 #[cfg(test)]
 mod fuzz_bounds;
 
+// [Build-Session-Entscheidung: P4.19] The §2.12.4 in-core untrusted-byte BOUNDARY assertion
+// (`crate::untrusted_byte_boundary`) — the absolute "no third-party C/C++ decoder linked into or run inside
+// the core; every full decode in a subprocess" made executable on every `cargo test`: the committed
+// `Cargo.lock` closure walk (the G53 mirror + the §2.12.4 extension + the aggregation-not-linkage image-worker
+// proof + the classified native-binding table), the §3.2.3 registry kind check, the detection vetted-import
+// leg and the G29 whole-core unsafe mirror. Same crate-root foot placement + reason as its `fuzz_replay` /
+// `fuzz_bounds` siblings: `#[cfg(test)]`-only infrastructure spanning the Cargo graph, `crate::engines` and
+// `crate::detection` at once; adds a FILE, never a directory (G69).
+#[cfg(test)]
+mod untrusted_byte_boundary;
+
 // §6.4.1 unit (G15): the [`fuzz_api`] wrapper smoke — each fuzz-entry wrapper drives its real kernel
 // function over benign input without panicking, so the pub surface P3.73's `cargo-fuzz` targets import is
 // proven CALLABLE (a broken wrapper would otherwise surface only on the Linux/macOS instrumented-nightly

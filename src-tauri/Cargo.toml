@@ -304,6 +304,19 @@ tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 # `macros`/`tokio-macros` stay out of the production closure (the tauri-specta normal-`derive` /
 # dev-`typescript` split precedent). Same 1.52.3 pin as the prod `[dependencies]` tokio edge.
 tokio = { version = "1.52.3", features = ["macros"] }
+# [P4.19] §2.12.4 in-core untrusted-byte boundary assertion (`crate::untrusted_byte_boundary`): the committed
+# workspace `Cargo.lock` is parsed with the real TOML parser (serde-derived `[[package]]` rows) so the
+# `convertia-core` dependency CLOSURE can be walked in-crate on every `cargo test` — the cargo-test-plane
+# companion of the G53 `cargo metadata` walk (no bespoke lockfile reader; the P2.85 serde_json-for-JSON
+# precedent). DEV-ONLY — the walk is `#[cfg(test)]`, so under resolver 2 `toml` never enters the shipped
+# MIT-core closure through this edge (it is ALREADY lock-resolved at 1.1.2 via the tauri build/utils graph,
+# so this is a direct-edge promotion: no newly-resolved package, no SBOM/G53 row; `MIT OR Apache-2.0`, pure
+# Rust, no socket/copyleft/image-C-lib edge). Default features (`parse` + `serde`). Caret-pinned to the
+# lock-resolved 1.1.2 (the normal-lib convention). §0.8 records the choice in the same commit (DoD 2); the
+# paired `check-supply-chain` PINNED_FLOORS floor row is L(-1) — the Co-Pilot box P4.84's catch-all ("plus
+# any further P4 direct-dep promotion's row"), exactly like the P4.10/P4.15 rows (a new direct dep ABSENT
+# from PINNED_FLOORS does not red G18: the floor is a present-crate check, P3.82).
+toml = "1.1.2"
 [build-dependencies]
 tauri-build = "2.6.3"
 
