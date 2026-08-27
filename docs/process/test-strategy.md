@@ -1143,7 +1143,7 @@ embedded type — each one an avoidable mid-phase loop stop. The audit moves tha
 discovery to the boundary, where the Co-Pilot resolves it in batch.
 
 **What.** After the delivery re-test (§11.2), the same sweep audits **every box
-of the next phase** against four surfaces:
+of the next phase** against five surfaces ((e) added 2026-08-27):
 
 - **(a) its cited spec `§§`** — they resolve, and they actually decide what the
   box claims (the mis-cite class);
@@ -1153,7 +1153,16 @@ of the next phase** against four surfaces:
 - **(c) its dependency edges** — `needs:` / `unlocked-by` present and correct,
   **including embedded-type edges `plan-lint` cannot see**;
 - **(d) information-completeness** — the box carries enough to build without
-  guessing (named shapes, decided defaults, the build-vs-wire split explicit).
+  guessing (named shapes, decided defaults, the build-vs-wire split explicit);
+- **(e) mandate-pair & promise coverage (added 2026-08-27 — the two P4.20 escape
+  classes)** — every spec sentence that mandates TWO halves in one breath (a
+  mechanism + its user-visible signal; a bound + the dispatch site it bounds) has
+  an owning box for EACH half, and every code comment promising "X is P<n>"
+  resolves to a real box in that phase — at P4.20 both halves of §1.10's
+  watermark-pause sentence and the conductor's own §0.9-concurrency promise had
+  no owning box, and the P4 pre-fill audit's surfaces (a)–(d) could not see it
+  (they audit boxes that EXIST; this surface audits mandates/promises for
+  MISSING boxes).
 
 **Resolution.** Findings the Co-Pilot can resolve are landed as **normal
 dual-reviewed plan/spec edits before the next phase's build session starts**;
