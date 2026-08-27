@@ -2637,3 +2637,101 @@ mod temp_ownership_security_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod parallel_scratch_binding_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    // §0.9 "Binding to identity & temp" (P4.20) · G15/G31. §0.9 requires that each running job is
+    // `(InstanceId, RunId, ItemId)` and writes only into its per-run owned scratch, "so parallel jobs — and
+    // a second app instance — never collide on temp files". The NAMING that delivers it is `crate::run`'s
+    // (`PublishTemp`'s `<InstanceId>-<RunId>-<job>-<rand>` grammar, P3.21) and the per-run dir is
+    // `RunScratch`'s — P4.20 does not rebuild either. What P4.20 adds is the PROOF under real concurrency:
+    // until the pool's subprocess lane existed there was no bounded-parallel dispatch to assert against, so
+    // the property had only ever been exercised one job at a time.
+    //
+    // Driven through the real `Pool::run_subprocess` lane at a real degree, with every job minting its temp
+    // WHILE holding a permit — so any shared/racy component of the name would show up as a collision here
+    // rather than in production. Asserted three ways: every path is distinct, every file coexists on disk at
+    // the same instant (the actual §0.9 "never collide" claim — a name that merely differed after the fact
+    // would not prove it), and every name carries this run's `(instance, run)` prefix (so the §2.6.3 sweep
+    // can still tell whose leftovers they are).
+    //
+    // **Every job deliberately mints under the SAME `JobId`** — the sharp form of the probe. In production
+    // each item carries its own id, so distinct ids alone would make the paths differ and the assertion
+    // would hold even if the mint were racy; pinning one id strips that away and leaves only the §2.14.1
+    // exclusive-create + fresh-random component to separate them. If THAT is collision-safe under real
+    // concurrency, the production shape (which differs additionally by id) is safe a fortiori.
+    // [Build-Session-Entscheidung: P4.20]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn parallel_jobs_never_collide_on_their_per_run_publish_temps() {
+        const JOBS: u32 = 12;
+        const DEGREE: usize = 3;
+        const SHARED_JOB: u32 = 7;
+
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        let dest = tempfile::tempdir().expect("a real destination dir");
+        let instance = InstanceId::mint();
+        let run = RunId::mint();
+        let scratch = std::sync::Arc::new(
+            RunScratch::acquire(base.path(), instance, std::process::id(), run)
+                .expect("§2.6 per-run scratch acquires"),
+        );
+        let pool = crate::pool::Pool::with_degree(DEGREE);
+        let expected_prefix = PublishTemp::run_prefix(instance, run);
+
+        // Every temp is HELD (not dropped) until all jobs have minted, so the coexistence assertion below is
+        // about files that genuinely exist at the same moment.
+        let minted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut handles = Vec::new();
+        for _ in 0..JOBS {
+            let pool = pool.clone();
+            let scratch = std::sync::Arc::clone(&scratch);
+            let minted = std::sync::Arc::clone(&minted);
+            let dest_dir = dest.path().to_path_buf();
+            handles.push(tokio::spawn(async move {
+                pool.run_subprocess(None, async {
+                    let temp = scratch
+                        .publish_temp(&dest_dir, JobId::from_index(SHARED_JOB))
+                        .expect("§2.1.1 the per-item publish temp is created");
+                    minted
+                        .lock()
+                        .expect("the mint list is not poisoned")
+                        .push(temp);
+                })
+                .await
+                .expect("§0.9: the subprocess lane runs each job to completion");
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("each job task joins");
+        }
+
+        let minted = minted.lock().expect("the mint list is not poisoned");
+        assert_eq!(minted.len(), JOBS as usize, "every job minted a temp");
+        let distinct: BTreeSet<&Path> = minted.iter().map(std::ops::Deref::deref).collect();
+        assert_eq!(
+            distinct.len(),
+            JOBS as usize,
+            "§0.9: parallel jobs never collide on temp — every per-item publish temp is a distinct path"
+        );
+        for path in &distinct {
+            assert!(
+                path.exists(),
+                "§0.9: all {JOBS} temps coexist on disk at once — {} vanished, which is the collision this \
+                 asserts against",
+                path.display()
+            );
+            let name = path
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .expect("a publish temp always has a UTF-8 file name");
+            assert!(
+                name.starts_with(&expected_prefix),
+                "§2.6.3: every temp carries this run's (instance, run) prefix `{expected_prefix}` so the \
+                 sweep can tell whose leftovers they are; got `{name}`"
+            );
+        }
+    }
+}

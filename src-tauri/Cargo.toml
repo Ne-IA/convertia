@@ -229,7 +229,12 @@ winapi-util = "0.1.11"
 # JOBOBJECT_EXTENDED_LIMIT_INFORMATION). `FILE_PERSISTENT_ACLS` + `SE_GROUP_INTEGRITY` are declared
 # locally in `crate::platform` rather than pulling `Win32_System_SystemServices` for two constants (the
 # `fs_guard` FILE_FLAG_BACKUP_SEMANTICS precedent). [Build-Session-Entscheidung: P4.17]
-windows-sys = { version = "0.61.2", features = ["Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Threading"] }
+# [P4.20] `Win32_System_SystemInformation` — FEATURE-ONLY again (no new package, no Cargo.lock change, so no
+# §0.8 floor row is due; the P4.17 precedent above): `GlobalMemoryStatusEx` + `MEMORYSTATUSEX` for the §1.10
+# available-memory probe `crate::platform::available_memory_bytes`, the Windows leg of the §0.9/§1.10
+# memory-adaptive concurrency factor. The plan box pre-clears it ("the already-floored `rustix`/`windows-sys`
+# need no new row").
+windows-sys = { version = "0.61.2", features = ["Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 # [P4.15.1] §2.12.3 best-effort Linux privilege-drop tier — the Landlock FS-restrict leg: restricts a spawned
 # decoder subprocess's filesystem to {input ro, scratch rw + the read/exec runtime paths it needs to launch and
@@ -277,6 +282,17 @@ libc = "0.2.186"
 # yet named there).
 seccompiler = "0.5.0"
 
+# [P4.20] §1.10 available-memory probe, macOS leg — `crate::platform::available_memory_bytes` reads the Mach
+# `host_statistics64(HOST_VM_INFO64)` page counts + `sysconf(_SC_PAGESIZE)`, the only way to obtain available
+# (not merely total) memory on macOS: there is no `MemAvailable` equivalent and no std API. `libc` is ALREADY
+# a direct `convertia-core` dependency (the Linux §2.12.3 arm above, P4.15) and is recorded target-agnostically
+# in `Cargo.lock`, so widening it to macOS adds NO newly-resolved package and leaves the lock byte-identical —
+# it is a target-table addition, not a dep-add. Same pin as the Linux arm (0.2.186, no incidental bump). §0.8's
+# `libc` Additional-crates row is widened from "Linux-only" in THIS commit (DoD 2); the `check-supply-chain`
+# PINNED_FLOORS row rides the P4.84 catch-all exactly as the Linux arm's does.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.186"
+
 # [Build-Session-Entscheidung: P1.26] §0.4.5 IPC type-gen: the TypeScript exporter the `bindings_codegen`
 # test uses to emit the single tracked `src/lib/ipc/bindings.ts` (driven by `cargo run -p xtask --
 # codegen`). DEV-ONLY by design — `specta-typescript` + tauri-specta's `typescript` feature are needed
@@ -303,7 +319,12 @@ tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 # DEV-ONLY — under resolver 2 a dev-dep feature never unifies into the shipped MIT-core build, so
 # `macros`/`tokio-macros` stay out of the production closure (the tauri-specta normal-`derive` /
 # dev-`typescript` split precedent). Same 1.52.3 pin as the prod `[dependencies]` tokio edge.
-tokio = { version = "1.52.3", features = ["macros"] }
+# [P4.20] `test-util` joins `macros` — DEV-ONLY, for `#[tokio::test(start_paused = true)]`: the §1.10
+# watermark tests drive the pause gate on tokio's VIRTUAL clock, so the 30 s `MEMORY_PAUSE_MAX` ceiling is
+# asserted exactly and costs no wall time and no real sleep (test-strategy §7: engineer determinism, never
+# absorb it with a timing window). Feature-only on the already-pinned dev edge — no newly-resolved package,
+# `Cargo.lock` unchanged; under resolver 2 a dev-dep feature never unifies into the shipped MIT-core build.
+tokio = { version = "1.52.3", features = ["macros", "test-util"] }
 # [P4.19] §2.12.4 in-core untrusted-byte boundary assertion (`crate::untrusted_byte_boundary`): the committed
 # workspace `Cargo.lock` is parsed with the real TOML parser (serde-derived `[[package]]` rows) so the
 # `convertia-core` dependency CLOSURE can be walked in-crate on every `cargo test` — the cargo-test-plane

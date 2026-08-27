@@ -1,8 +1,12 @@
 //! `crate::pool` — the §0.9 bounded engine-subprocess pool: the single owner of the global concurrency
 //! degree and (from P4) the per-engine parallelism rules (LibreOffice serialised via a dedicated
 //! single-permit semaphore) + the timeout / no-progress-watchdog parameters. A §0.7 **tier-3 leaf** — it
-//! depends DOWN only, on `std` + the `tokio` runtime primitives, and names **no** tier-2 type. Unsafe-free
-//! (the crate-root `#![deny(unsafe_code)]` in `main.rs` covers it); `tokio::sync::Semaphore` +
+//! depends DOWN only, on `std`, the `tokio` runtime primitives and (since P4.20) the tier-3 SIBLING
+//! `crate::platform` for the §1.10 available-memory read; it names **no** tier-2 type. A sibling edge is not
+//! an upward one — §0.7 puts `pool`, `platform` and `domain` on the same tier as "the leaves: they depend on
+//! nothing above" — and `platform` has no edge back, so the graph stays acyclic and strictly downward.
+//! Unsafe-free (the crate-root `#![deny(unsafe_code)]` in `main.rs` covers it; the OS probe's own `unsafe`
+//! is confined to `crate::platform`, the one G29-allow-listed FFI module); `tokio::sync::Semaphore` +
 //! `tokio::task::spawn_blocking` add no FFI and no sockets, so the G29 rule (g)/(j) socket ban + the §3
 //! zero-egress rule hold.
 //!
@@ -11,8 +15,9 @@
 //!    `clamp(available_parallelism − 1, 1, 4)` (§0.9; see the `available_parallelism` note on
 //!    [`resolve_global_degree`]), the bound every engine job acquires.
 //!  - [`Pool::run_in_core`] is the **`spawn_blocking`-style in-core worker-thread lane** the sole
-//!    `EngineProgram::InProcessNative` engine (native CSV/TSV, §3.5.6) runs on: it acquires ONE
-//!    global-degree permit, runs a synchronous closure on a dedicated `spawn_blocking` worker thread so the
+//!    `EngineProgram::InProcessNative` engine (native CSV/TSV, §3.5.6) runs on: it acquires a slot (one
+//!    global-degree permit at full effective degree, `slot_weight` of them under §1.10 memory pressure —
+//!    P4.20), runs a synchronous closure on a dedicated `spawn_blocking` worker thread so the
 //!    CSV loop **never blocks** the Tokio runtime that drives the subprocess engines + IPC (§0.9
 //!    native-CSV/TSV row / §1.7 concurrency-permit model), and releases the permit on completion, on a
 //!    worker panic (§0.9 panic isolation — a caught panic maps to a clean [`LaneError::Panicked`], never
@@ -40,11 +45,34 @@
 //! §2.12.4 demands no per-read deadline; the freeze already stat-prechecks + resolves every source, P3.9, so a
 //! wedge is rare post-freeze device death). The wall-clock timeout parameter is [`NATIVE_CSV_TSV_TIMEOUT`].
 //!
+//! ## LIVE in P4.20 (the subprocess half + the §1.10 memory factor)
+//!  - [`Pool::run_subprocess`] is the **subprocess permit lane** — the half P3.3 shelled. It takes a slot
+//!    (`slot_weight` permits — one at full effective degree, more under §1.10 memory pressure), awaits the
+//!    caller's engine future and releases on every exit path (clean, failed/killed, watchdog-reaped,
+//!    caller-dropped). The §1.10 watermark pause is deliberately NOT in either lane — see the bullet
+//!    below. It takes a
+//!    caller-supplied FUTURE rather than a `'static` closure because the tier-2 confined runner borrows its
+//!    arguments — the same generic-`R` trick that keeps this leaf from naming a tier-2 type.
+//!  - [`Pool::effective_degree`] is the §0.9/§1.10 three-term `min(global_degree, per_engine_cap,
+//!    memory_based_cap)`. It REUSES [`clamp_global_degree`] verbatim through [`resolve_global_degree`] (it
+//!    does not re-author the degree formula this module owns) and layers the §1.10 memory term on top. It is
+//!    ENFORCED, not merely computed: `slot_weight` turns it into the number of global permits one slot takes
+//!    (`ceil(degree / effective)`), so under memory pressure fewer lanes fit in the same fixed semaphore —
+//!    down to exactly one, §1.10's "down to serial". Both lanes acquire by weight.
+//!  - The §1.10 high-memory watermark: [`Pool::await_dispatch_headroom`] holds a NEW item back while
+//!    available memory is under [`HIGH_MEMORY_WATERMARK_BYTES`], re-reading every
+//!    [`MEMORY_WATERMARK_POLL`] and CEILED at [`MEMORY_PAUSE_MAX`] so the throttle can never wedge a batch.
+//!    It is called by `crate::engines::dispatch` at the §1.7 dispatch entry — deliberately OUTSIDE the
+//!    lanes, because §1.7 wraps each lane in a wall-clock timeout and a pause spent inside one would come
+//!    out of the ENGINE's budget (§2.12.3 never-break). That placement also gives "in-flight items finish"
+//!    for free, and makes the gate live in production today via the in-core CSV/TSV lane rather than staged
+//!    for P4.32.
+//!  - The reading comes from `crate::platform::available_memory_bytes`, injected as a fn pointer so
+//!    [`Pool::with_degree`] stays deterministic for the §6.7.2 harness and the tests drive exact values.
+//!
 //! ## SHELLED — a doc-only contract map P4 EXPANDS (never rebuilds)
-//!  - **P4.20** EXPANDS [`Pool`] onto the subprocess engines + the §1.10 memory-adaptive
-//!    `effective = min(global_degree, per_engine_cap, memory_cap)` factor; it REUSES [`clamp_global_degree`]
-//!    verbatim (it does not re-author the degree formula this module owns).
-//!  - **P4.21** adds the per-engine caps (LibreOffice 1, video re-encode 1–2, the rest up to the degree).
+//!  - **P4.21** adds the per-engine caps (LibreOffice 1, video re-encode 1–2, the rest up to the degree) —
+//!    it passes them to [`Pool::effective_degree`]'s `per_engine_cap` term rather than re-deriving it.
 //!  - **P4.22** adds the `serialised_only` enforcement — a dedicated single-permit `Semaphore` per
 //!    serialised engine, allocated at registry-build time; a serialised job acquires BOTH the global permit
 //!    AND that engine's single-permit before spawn, releasing both on exit — and authors `MAX_LO_CONCURRENCY
@@ -59,7 +87,8 @@
 //!    forecast — the watchdog MECHANISM lands at P4.12, so its parameters do too, while P4.20 expands the pool
 //!    *structure*). They stay dead in the production build until P4.32 wires `run_subprocess` live, exactly
 //!    like [`GROUP_CONFIRM_WAIT`]. **P3.3 authored no `pub const`** (no P3.3 consumer imported one; P3.45 adds
-//!    the first).
+//!    the first). P4.20's own §1.10 memory `pub const`s follow the same rule and ARE live: their consumers
+//!    ([`Pool::effective_degree`] and the watermark gate) are in this module.
 //!
 //! ## Tier note (§0.7 tier-3 vs §0.9's `HashMap<EngineId, bool>`)
 //! `EngineId` lives in the tier-2 `crate::engines` layer, so a tier-3 leaf cannot name it. P3.3's live
@@ -68,6 +97,10 @@
 //! pool never calls UP into the registry. P4.22 realises it tier-legally (a generic-keyed map the registry
 //! instantiates with `EngineId`, a legal downward edge — or a re-home of `EngineId` decided with its
 //! consumer); this module names no `crate::engines` type, keeping §0.7's downward-only tiering intact.
+//! P4.20 kept that intact for the subprocess half too: the lane is generic in the caller's return type, so
+//! `ConfinedRun`/`InvocationResult`/`EngineInvocation` are instantiated BY the tier-2 caller and named
+//! nowhere here — and the per-engine cap enters as a plain `Option<usize>`, needing no `EngineId` key until
+//! P4.22 decides the map's tier-legal form.
 
 // [Build-Session-Entscheidung: P3.3] dead_code expect — the §0.9 Pool + the §1.7 in-core spawn_blocking
 // lane are authored ahead of their production consumers. P3.43 WIRED run_in_core + LaneError into the dispatch
@@ -79,7 +112,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "the §0.9 Pool + the §1.7 in-core spawn_blocking lane (Pool::new/with_degree/run_in_core), LaneError, and the clamp_global_degree/resolve_global_degree degree helpers are authored ahead of their production consumers. P3.43 WIRED run_in_core + LaneError into the §1.7 dispatch InProcessNative arm (the native CSV/TSV executor), but they STAY dead in the production build until the P3.46 conductor makes dispatch a live root — rustc does NOT propagate liveness through the dead-but-present dispatch to its callees. P4.20/P4.22 EXPAND the pool onto the subprocess engines + the serialised single-permit lane; nothing CONSTRUCTS a Pool in the production build yet (dispatch receives a &Pool), so Pool::new/with_degree + the clamp/resolve degree helpers stay dead until the P4 pool wiring builds the app-wide pool. P3.45 adds the NATIVE_CSV_TSV_TIMEOUT pub const (the §0.9 native-engine wall-clock timeout parameter); it is consumed ONLY by crate::engines::dispatch (the §1.7 bounded_lane wrapper), which is itself dead until the P3.46 conductor makes dispatch a live root, so the const is dead in the production build until then (the §6.7.2 harness import is a subsequent consumer). P4.11 adds the GROUP_CONFIRM_WAIT pub const (the §0.9 group-kill confirm-wait bound); it is consumed ONLY by crate::isolation::run_confined (the §1.7 cancel ordering, step 2), itself dead in the production build until P4.32 wires the subprocess dispatch arms, so the const is dead until then (the §6.7.2 harness import is a subsequent consumer). P4.12 adds the §1.7 subprocess-watchdog pub consts (WATCHDOG_POLL_INTERVAL / NO_PROGRESS_TIMEOUT / SUBPROCESS_WALL_CLOCK_DEFAULT / VIDEO_WALL_CLOCK); their consumer is the §1.7 crate::engines::run_subprocess no-progress/wall-clock watchdog (which reads WATCHDOG_POLL_INTERVAL directly and takes the per-engine wall-clock/no-progress bounds as params the P4.32 dispatch-arm wiring selects), itself dead in the production build until P4.32 wires the subprocess dispatch arms, so the consts are dead until then (the §6.7.2 harness import is a subsequent consumer). Every item above is dead until its consumer lands, which keeps this module-level expect fulfilled. The cfg(test) tests below construct the pool and exercise the lane, so the test build is dead-code-clean. expect (not allow) auto-flags the moment the last of these consumers lands — matching crate::engines/crate::domain/crate::outcome."
+        reason = "Items authored ahead of their production consumers, each named with the box that makes it live. DEAD TODAY: Pool::with_degree + no_memory_cap (the deterministic pinned-degree constructor path, used by the §6.7.2 harness and by tests only); Pool::run_subprocess, whose production consumers are the P4.32 subprocess dispatch arms (the §1.7 lane calls it once the program-path resolution supplies a resolved binary); and the §0.9 subprocess-watchdog consts WATCHDOG_POLL_INTERVAL / NO_PROGRESS_TIMEOUT / SUBPROCESS_WALL_CLOCK_DEFAULT / VIDEO_WALL_CLOCK (P4.12) plus GROUP_CONFIRM_WAIT (P4.11), whose consumers (crate::engines::run_subprocess, crate::isolation::run_confined) are themselves dead until P4.32. LIVE, hence deliberately NOT listed: Pool::new and the with_degree_and_memory it calls one hop down; Pool::run_in_core (the native CSV/TSV lane runs through the live §1.7 dispatch) and, through it, Pool::slot_weight and Pool::effective_degree — the weighted acquire enforces the §1.10 effective degree on every live acquire — plus the MEMORY_PER_SLOT_BYTES those read; LaneError, whose variants run_in_core constructs and the live crate::engines::bounded_lane matches; Pool::await_dispatch_headroom and HIGH_MEMORY_WATERMARK_BYTES / MEMORY_WATERMARK_POLL / MEMORY_PAUSE_MAX, called by crate::engines::dispatch at the §1.7 dispatch entry; NATIVE_CSV_TSV_TIMEOUT; and the clamp_global_degree/resolve_global_degree degree helpers Pool::new resolves through. The cfg(test) tests below construct every pool shape and exercise both lanes, so the test build is dead-code-clean. `expect` (not `allow`) auto-flags the moment the last consumer lands."
     )
 )]
 
@@ -200,6 +233,63 @@ pub const SUBPROCESS_WALL_CLOCK_DEFAULT: Duration = Duration::from_secs(300);
 /// against the §6 corpus" applies — tunable; the FFmpeg-specific calibration lands with P6.
 pub const VIDEO_WALL_CLOCK: Duration = Duration::from_secs(3600);
 
+/// The §1.10 **memory budget per concurrent engine slot** — the divisor that turns an available-memory
+/// reading into the memory-based degree cap of `effective = min(global_degree, per_engine_cap,
+/// memory_based_cap)`. Homed here with the other §0.9 bounds so the §6.7.2 harness imports the same number
+/// production uses.
+///
+/// **Baseline (pre-calibration).** [Build-Session-Entscheidung: P4.20] `512 MiB` per concurrent slot, so
+/// the cap reads: ~2 GB AVAILABLE → 4 slots (the §0.9 clamp ceiling), ~1 GB → 2, under 512 MiB → 1, i.e.
+/// serial. The order of magnitude is motivated by §0.3.1's envelope ("2 GB minimum-supported … below 2 GB
+/// it still launches + converts **serially**, slower") — but note the units differ: §0.3.1 speaks of
+/// TOTAL installed RAM while this divisor consumes AVAILABLE memory, which on a 2 GB machine is far less
+/// once the OS, the WebView and the app are resident. So this is a defensible placeholder, NOT a derivation
+/// from §0.3.1: it puts a minimum-supported machine at or near serial, which is the right end of the curve,
+/// while the exact digit is what P6.56.1's memory-constrained-host run calibrates (§1.10 marks the memory
+/// numbers "corpus-calibrated starting values"). It is a per-SLOT budget, not a per-item ceiling — the
+/// §1.10 per-item memory ceiling that kills one over-budget item is a separate control.
+pub const MEMORY_PER_SLOT_BYTES: u64 = 512 * 1024 * 1024;
+
+/// The §1.10 **high-memory watermark** — while available memory is below it, the §1.7 dispatch gate
+/// ([`Pool::await_dispatch_headroom`]) holds a NEW item back before it is dispatched at all ("a high-memory
+/// watermark pauses dispatch of NEW items … and resumes as memory frees"); items already dispatched are
+/// untouched and run to completion. The hold is at the DISPATCH entry, never at the permit acquire — see
+/// that fn's doc for why placing it any deeper would breach §2.12.3's never-break floor.
+///
+/// **Baseline (pre-calibration).** [Build-Session-Entscheidung: P4.20] `256 MiB` — half a slot budget: at
+/// that point even one more engine would not fit its own [`MEMORY_PER_SLOT_BYTES`], so admitting it is the
+/// step that risks the OOM §1.10 forbids. Deliberately BELOW the per-slot budget so the watermark is the
+/// last line rather than a second, earlier throttle — the degree cap above already thins concurrency
+/// gradually, and a watermark set at or above the slot budget would pause dispatch while the degree cap
+/// was still granting slots, i.e. two controls fighting.
+pub const HIGH_MEMORY_WATERMARK_BYTES: u64 = 256 * 1024 * 1024;
+
+/// The §1.10 watermark **re-check cadence** — how often a paused dispatch re-reads available memory to see
+/// whether it may proceed ("resumes as memory frees"). [Build-Session-Entscheidung: P4.20] `500ms`, twice
+/// [`WATCHDOG_POLL_INTERVAL`]: memory pressure eases on a human/allocator timescale, not a syscall one, so
+/// a gentler cadence costs nothing in responsiveness and keeps the probe off the hot path.
+pub const MEMORY_WATERMARK_POLL: Duration = Duration::from_millis(500);
+
+/// The §1.10 watermark **pause CEILING** — the longest the pool holds a new item back before dispatching it
+/// regardless. The pause is a best-effort throttle, and §2.12.3's never-break floor governs it exactly as it
+/// governs the privilege-drop legs: a defence-in-depth control must never be able to stop a conversion from
+/// happening. Without a ceiling, a machine that simply never rises above the watermark (a small-RAM host
+/// under steady foreign load) would hang the batch forever — the one outcome worse than converting under
+/// pressure. On expiry the item proceeds and the OTHER half of the §1.10 policy takes over: a single item
+/// that still exceeds its per-item memory ceiling is killed to a clean `Failed(TooBig)` while the batch
+/// continues. [Build-Session-Entscheidung: P4.20] `30s` — long enough for a transient spike (another app's
+/// large allocation, a GC pause) to clear, short enough that a user never reads it as a freeze.
+pub const MEMORY_PAUSE_MAX: Duration = Duration::from_secs(30);
+
+// The two §1.10 memory bounds are const-vs-const, so their ordering is a COMPILE-TIME invariant rather than
+// a runtime test: a recalibration that inverted them could not build. (a) the watermark sits BELOW one
+// slot's budget, so the degree cap thins concurrency first and the watermark stays the last line rather
+// than a second, earlier throttle that fights it; (b) a zero slot budget would divide by zero in the memory
+// cap. The Duration bounds' ordering is not const-foldable and is asserted in the test module beside the
+// §0.9 watchdog set. [Build-Session-Entscheidung: P4.20]
+const _: () = assert!(HIGH_MEMORY_WATERMARK_BYTES < MEMORY_PER_SLOT_BYTES);
+const _: () = assert!(MEMORY_PER_SLOT_BYTES > 0);
+
 /// The failure modes of the §0.9 in-core `spawn_blocking` lane. INTERNAL — never on the IPC wire (no
 /// `serde`/`specta`); the §1.7/§2.8 caller (P3.46) maps it onto a per-item `Failed`, so a lane failure is
 /// always ONE item's failure, never a pool-wide fault. [Build-Session-Entscheidung: P3.3] `Debug` + the
@@ -228,35 +318,154 @@ pub enum LaneError {
 #[derive(Debug, Clone)]
 pub struct Pool {
     /// The global-degree permit source (§0.9): `degree` permits. Every job — subprocess (P4) or
-    /// InProcessNative (P3) — acquires one permit here before running.
+    /// InProcessNative (P3) — takes a SLOT here before running, which is [`Pool::slot_weight`] permits:
+    /// one at full effective degree, more under §1.10 memory pressure (P4.20).
     global: Arc<Semaphore>,
     /// The resolved global degree (§0.9). Stored because `Semaphore::available_permits` fluctuates as
     /// permits are held; the P4.20/P4.21 effective-degree math + the §1.11 batch bar read this configured
     /// value.
     degree: usize,
+    /// The §1.10 available-memory reading behind the memory-adaptive factor — a plain fn pointer, not a
+    /// captured closure, so [`Pool`] stays `Clone`/`Debug` and allocation-free. `Pool::new` wires the real
+    /// `crate::platform::available_memory_bytes`; [`Pool::with_degree`] wires [`no_memory_cap`] so a pinned
+    /// harness degree is not perturbed by the host's live memory, and the tests inject deterministic
+    /// readings. A probe returning `None` means "unknown ⇒ impose no memory cap" (the never-break bias the
+    /// probe's own doc states). [Build-Session-Entscheidung: P4.20]
+    memory: fn() -> Option<u64>,
 }
 
 impl Pool {
-    /// Construct the pool sized to this machine's §0.9 global concurrency degree.
-    /// [Build-Session-Entscheidung: P3.3]
+    /// Construct the pool sized to this machine's §0.9 global concurrency degree, with the §1.10
+    /// memory-adaptive factor reading real host memory. This is the PRODUCTION constructor.
+    /// [Build-Session-Entscheidung: P3.3] [Build-Session-Entscheidung: P4.20]
     pub fn new() -> Self {
-        Self::with_degree(resolve_global_degree())
+        Self::with_degree_and_memory(
+            resolve_global_degree(),
+            crate::platform::available_memory_bytes,
+        )
     }
 
-    /// Construct the pool at an explicit degree — the §6.7.2 harness pins a deterministic degree, and the
-    /// P4.20 §1.10 memory-adaptive factor re-sizes against it. The degree is floored at 1 (`max(1)`) so the
-    /// global `Semaphore` always has ≥1 permit (a zero-permit pool would deadlock every job).
-    /// [Build-Session-Entscheidung: P3.3]
+    /// Construct the pool at an explicit degree — the §6.7.2 harness pins a deterministic degree. The
+    /// degree is floored at 1 (`max(1)`) so the global `Semaphore` always has ≥1 permit (a zero-permit pool
+    /// would deadlock every job). [Build-Session-Entscheidung: P3.3]
+    ///
+    /// **The §1.10 memory factor is OFF here, deliberately** [Build-Session-Entscheidung: P4.20]: a
+    /// constructor whose whole purpose is a *pinned, deterministic* degree must not have that degree
+    /// silently re-capped — or a watermark pause introduced — by whatever the host's memory happens to be
+    /// while a test runs (test-strategy §7: engineer determinism, never absorb it with retries). The real
+    /// probe is wired by [`Pool::new`]; the memory path has its own tests, which inject deterministic
+    /// readings.
     pub fn with_degree(degree: usize) -> Self {
+        Self::with_degree_and_memory(degree, no_memory_cap)
+    }
+
+    /// The shared constructor behind [`Pool::new`] and [`Pool::with_degree`], parameterised on the §1.10
+    /// memory probe so the memory-adaptive paths are testable against deterministic readings.
+    /// [Build-Session-Entscheidung: P4.20]
+    fn with_degree_and_memory(degree: usize, memory: fn() -> Option<u64>) -> Self {
         let degree = degree.max(1);
         Pool {
             global: Arc::new(Semaphore::new(degree)),
             degree,
+            memory,
         }
     }
 
-    /// The §0.9 native-CSV/TSV / §1.7 InProcessNative in-core permit lane. Acquire ONE global-degree
-    /// permit, run `task` on a dedicated `spawn_blocking` worker thread (so the synchronous loop never
+    /// The `#[cfg(test)]` door onto [`Self::with_degree_and_memory`] for tests in OTHER modules — the
+    /// `crate::engines` cancel-during-pause regression drives the gate through the real `dispatch`, so it
+    /// needs a pool with a pinned memory reading. Placed AFTER the fn it wraps, never between that fn and
+    /// its doc block (the `inserting-a-module-hijacks-the-preceding-doc-comment` class).
+    /// [Build-Session-Entscheidung: P4.20]
+    #[cfg(test)]
+    pub(crate) fn with_degree_and_memory_for_test(
+        degree: usize,
+        memory: fn() -> Option<u64>,
+    ) -> Self {
+        Self::with_degree_and_memory(degree, memory)
+    }
+
+    /// The §0.9/§1.10 **effective parallelism** for one engine — `min(global_degree, per_engine_cap,
+    /// memory_based_cap)`, the three-term form §1.10 mandates ("the effective §0.9 concurrency degree
+    /// adapts to available memory … down to serial"). Each term only ever caps DOWNWARD, never upward, and
+    /// the result is floored at 1 (a zero degree would dispatch nothing at all).
+    ///
+    /// * `global_degree` — this pool's configured §0.9 degree.
+    /// * `per_engine_cap` — `None` today; the §0.9 per-engine caps (LibreOffice 1, video re-encode 1–2)
+    ///   are wired by P4.21, which passes them here rather than re-deriving the formula.
+    /// * `memory_based_cap` — `available_memory / MEMORY_PER_SLOT_BYTES`, or NO cap when the probe cannot
+    ///   read a value (the never-break bias).
+    ///
+    /// Pure over the probe's reading, so the formula is unit-tested against deterministic memory values.
+    /// [Build-Session-Entscheidung: P4.20]
+    #[must_use]
+    pub fn effective_degree(&self, per_engine_cap: Option<usize>) -> usize {
+        let memory_cap = (self.memory)().map(|available| {
+            // integer division floors, so a machine with less than one slot's budget yields 0 → the
+            // `max(1)` below makes that SERIAL, which is exactly §1.10's "down to serial"
+            usize::try_from(available / MEMORY_PER_SLOT_BYTES).unwrap_or(usize::MAX)
+        });
+        [Some(self.degree), per_engine_cap, memory_cap]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(self.degree)
+            .max(1)
+    }
+
+    /// How many of the `degree` global permits ONE slot must take so that at most
+    /// [`Self::effective_degree`] slots can be held at once — the mechanism that makes the effective degree
+    /// actually BITE rather than merely be computed.
+    ///
+    /// The global semaphore is fixed at `degree` permits (resizing it under a live pool would race with
+    /// in-flight holders), so the effective degree is enforced by WEIGHT instead: a job takes
+    /// `ceil(degree / effective)` permits, which admits `floor(degree / weight) ≤ effective` of them
+    /// concurrently. At full effective degree the weight is 1 and nothing changes; at effective 1 the weight
+    /// is the whole degree, i.e. SERIAL — §1.10's "down to serial", enforced. Where `degree` is not a
+    /// multiple of `effective` the integer weight admits slightly FEWER than the cap (degree 4, effective 3
+    /// ⇒ weight 2 ⇒ 2 concurrent): under-admitting is the safe direction for a memory gate, and the
+    /// alternative — a resizable permit pool — would buy one extra slot at the price of a race.
+    ///
+    /// Never zero and never above `degree`: `effective_degree` is floored at 1, so the weight is in
+    /// `1..=degree` and the semaphore can always satisfy it (a weight above the total would deadlock).
+    /// [Build-Session-Entscheidung: P4.20]
+    fn slot_weight(&self, per_engine_cap: Option<usize>) -> u32 {
+        let weight = self.degree.div_ceil(self.effective_degree(per_engine_cap));
+        u32::try_from(weight).unwrap_or(u32::MAX).max(1)
+    }
+
+    /// The §1.10 **high-memory watermark gate** — hold a NEW item back while available memory is below
+    /// [`HIGH_MEMORY_WATERMARK_BYTES`], re-reading every [`MEMORY_WATERMARK_POLL`], and let it through as
+    /// soon as memory frees. Items already dispatched are never touched, so "in-flight items finish" is
+    /// satisfied by construction: this gate sits at the dispatch entry, not around the work.
+    ///
+    /// **Bounded by [`MEMORY_PAUSE_MAX`], never open-ended** — §2.12.3's never-break floor applies to this
+    /// throttle exactly as it does to the privilege-drop legs: a host that simply never rises above the
+    /// watermark must not hang the batch forever. On expiry the item dispatches anyway and the other half
+    /// of the §1.10 policy (the per-item memory ceiling → `Failed(TooBig)`, batch continues) takes over.
+    /// An unreadable probe imposes no pause at all.
+    ///
+    /// **The caller invokes this BEFORE it starts the item's timed lane — it is deliberately NOT inside
+    /// [`Pool::run_in_core`]/[`Pool::run_subprocess`].** §1.7 wraps each lane in a wall-clock timeout
+    /// (`NATIVE_CSV_TSV_TIMEOUT`, and the P4.12 subprocess watchdog bounds), so a pause *inside* the lane
+    /// would be spent out of the ENGINE's budget: a low-memory host could silently turn a slow-but-
+    /// progressing conversion into `Failed(EngineHang)` — a defence-in-depth throttle becoming the reason a
+    /// conversion fails, precisely what §2.12.3's never-break floor forbids and what the ceiling above
+    /// exists to prevent. Placing it at the §1.7 dispatch entry also matches §1.10's own wording: the
+    /// watermark pauses **dispatch** of new items, it does not shorten a running engine.
+    /// [Build-Session-Entscheidung: P4.20]
+    pub async fn await_dispatch_headroom(&self) {
+        let deadline = tokio::time::Instant::now() + MEMORY_PAUSE_MAX;
+        while (self.memory)().is_some_and(|available| available < HIGH_MEMORY_WATERMARK_BYTES) {
+            if tokio::time::Instant::now() >= deadline {
+                return;
+            }
+            tokio::time::sleep(MEMORY_WATERMARK_POLL).await;
+        }
+    }
+
+    /// The §0.9 native-CSV/TSV / §1.7 InProcessNative in-core permit lane. Acquire a slot — `slot_weight`
+    /// global-degree permits, which is ONE at full effective degree and more under §1.10 memory pressure
+    /// (P4.20) — run `task` on a dedicated `spawn_blocking` worker thread (so the synchronous loop never
     /// blocks the Tokio runtime that drives the subprocess engines + IPC), and release the permit on
     /// completion, on a worker panic, AND on abandonment. A caught worker panic → `Err(LaneError::Panicked)`
     /// (never re-raised: re-raising would panic the pool-driver task and violate §0.9 panic isolation). The
@@ -272,10 +481,13 @@ impl Pool {
         // wedged-uninterruptible-read design (the abandoned thread must not hold a global-degree permit, or
         // a handful of wedges would starve the pool). Moving it into the closure would keep a wedged
         // thread's permit held until that thread finishes. [Build-Session-Entscheidung: P3.3]
+        // The §1.10 effective degree is enforced by WEIGHT (see `slot_weight`): under memory pressure one
+        // slot takes several global permits, so fewer run at once. The native engine carries no §0.9
+        // per-engine cap ("native CSV/TSV … up to global degree"), hence `None`.
         let _permit = self
             .global
             .clone()
-            .acquire_owned()
+            .acquire_many_owned(self.slot_weight(None))
             .await
             .map_err(|_closed| LaneError::PoolClosed)?;
         // spawn_blocking gives the §2.13 catch_unwind boundary for free: a panic → JoinError (never
@@ -288,6 +500,53 @@ impl Pool {
             .map_err(|_join_err| LaneError::Panicked)
     }
 
+    /// The §0.9 **subprocess** permit lane — the half of the pool P3.3 shelled and this box fills. Acquire
+    /// a slot — `slot_weight` permits, which is ONE at full effective degree and more under §1.10 memory
+    /// pressure — await the caller's engine run, and release on EVERY exit path. It is the bound behind
+    /// §0.9's "a bounded engine-subprocess pool governs how many engine processes run at once".
+    ///
+    /// **The §1.10 watermark pause is NOT here**, and a P4.32 caller must not add it: it lives at the §1.7
+    /// dispatch entry ([`Pool::await_dispatch_headroom`], called by `crate::engines::dispatch`) precisely
+    /// so it stays outside each lane's wall-clock timeout. Pausing inside this lane would spend the
+    /// throttle out of the ENGINE's budget — the §2.12.3 never-break defect the placement exists to avoid.
+    ///
+    /// **Why a caller-supplied future rather than a closure like [`Pool::run_in_core`]** — the §0.7 tier
+    /// rule, not a style choice. `crate::isolation::run_confined` and the §1.7 `bounded_confined_run` that
+    /// wraps it are tier-2 and borrow their arguments (`&EngineInvocation`, `&Path`, a non-`Send`
+    /// `on_progress`), so the `F: FnOnce() -> R + Send + 'static` shape the in-core lane needs cannot hold
+    /// here. Taking `impl Future<Output = R>` and returning the caller's own `R` keeps this tier-3 leaf
+    /// from naming a single tier-2 type, exactly as `run_in_core<F, R>` does — the caller instantiates `R`
+    /// as its own `ConfinedRun`/`InvocationResult`. [Build-Session-Entscheidung: P4.20]
+    ///
+    /// **The permit is released on all four failure shapes, which is the P4.18.2 forward obligation.**
+    /// Because `_permit` is bound in THIS async frame rather than inside `task`, it drops when the lane
+    /// returns (clean exit or engine failure), when the §2.12.3 memory cap kills the engine, when the §1.7
+    /// watchdog reaps a hang, and when the caller DROPS the lane future (cancel / quit). No path can leave
+    /// the pool a permit down — the `pool::tests` permit regressions assert over all four.
+    ///
+    /// **`LaneError::Panicked` is unreachable on this lane** and that is by construction, not an oversight:
+    /// it denotes a `spawn_blocking` `JoinError`, and an awaited future has no `catch_unwind` boundary — a
+    /// panic inside `task` propagates to the caller's own §2.13 per-item boundary. The only error this lane
+    /// produces is `PoolClosed`. [Build-Session-Entscheidung: P4.20]
+    pub async fn run_subprocess<F, R>(
+        &self,
+        per_engine_cap: Option<usize>,
+        task: F,
+    ) -> Result<R, LaneError>
+    where
+        F: std::future::Future<Output = R>,
+    {
+        // The §1.10 effective degree is enforced by WEIGHT (see `slot_weight`), and `per_engine_cap` is the
+        // §0.9 per-engine term P4.21 fills — `None` until then, which leaves the global degree and the
+        // memory cap as the only bounds.
+        let _permit = self
+            .global
+            .acquire_many(self.slot_weight(per_engine_cap))
+            .await
+            .map_err(|_closed| LaneError::PoolClosed)?;
+        Ok(task.await)
+    }
+
     /// Test-only seam: close the global semaphore so the next acquire fails — exercises the `PoolClosed`
     /// arm (unreachable in the running app). `cfg(test)`, so it is absent from production.
     /// [Build-Session-Entscheidung: P3.3]
@@ -295,6 +554,21 @@ impl Pool {
     fn close(&self) {
         self.global.close();
     }
+}
+
+/// The §1.10 probe [`Pool::with_degree`] wires: "no reading available" — hence no memory cap and no
+/// watermark pause, the never-break default. A pinned-degree pool is deterministic by construction.
+/// [Build-Session-Entscheidung: P4.20]
+fn no_memory_cap() -> Option<u64> {
+    None
+}
+
+/// A §1.10 probe pinned permanently BELOW the watermark — the deterministic "memory-constrained host" the
+/// cross-module tests need (`crate::engines`' cancel-during-pause regression). `#[cfg(test)]`, so it cannot
+/// reach production. [Build-Session-Entscheidung: P4.20]
+#[cfg(test)]
+pub(crate) fn below_watermark_for_test() -> Option<u64> {
+    Some(HIGH_MEMORY_WATERMARK_BYTES / 2)
 }
 
 impl Default for Pool {
@@ -520,6 +794,428 @@ mod tests {
         assert!(
             WATCHDOG_POLL_INTERVAL > Duration::ZERO,
             "§0.9: a zero poll interval would busy-spin the watchdog"
+        );
+    }
+
+    // ─── P4.20: the §1.10 memory-adaptive factor + the subprocess lane ──
+    //
+    // Every memory-dependent test injects its OWN probe fn (each with its own `static`, so the suite's
+    // parallel tests never share a reading) — the §1.10 numbers are then exact inputs, not whatever the CI
+    // host happens to have free. The pauses run under a PAUSED tokio clock, so a 30 s ceiling costs no wall
+    // time and no test depends on a real sleep landing (test-strategy §7: engineer determinism).
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    fn mem_unknown() -> Option<u64> {
+        None
+    }
+    fn mem_4gib() -> Option<u64> {
+        Some(4 * GIB)
+    }
+    fn mem_1gib() -> Option<u64> {
+        Some(GIB)
+    }
+    fn mem_quarter_slot() -> Option<u64> {
+        Some(MEMORY_PER_SLOT_BYTES / 4)
+    }
+
+    // §6.4.1 (G15): the §0.9/§1.10 three-term formula `min(global_degree, per_engine_cap, memory_cap)`.
+    // Each term is proven to cap DOWNWARD and only downward, the memory term is proven to be the
+    // `available / MEMORY_PER_SLOT_BYTES` floor, and an unknown reading is proven to impose NO cap (the
+    // never-break bias). The last row is §1.10's headline: too little memory for even one slot ⇒ SERIAL.
+    #[test]
+    fn effective_degree_is_the_three_term_minimum() {
+        // (degree, per-engine cap, probe, expected, why)
+        type DegreeCase = (
+            usize,
+            Option<usize>,
+            fn() -> Option<u64>,
+            usize,
+            &'static str,
+        );
+        let cases: [DegreeCase; 8] = [
+            (
+                4,
+                None,
+                mem_unknown,
+                4,
+                "no cap + unknown memory ⇒ the global degree stands",
+            ),
+            (
+                4,
+                None,
+                mem_4gib,
+                4,
+                "4 GiB ⇒ 8 slots, above the degree ⇒ the degree still stands",
+            ),
+            (
+                4,
+                Some(2),
+                mem_4gib,
+                2,
+                "the per-engine cap is the smallest term",
+            ),
+            (
+                4,
+                None,
+                mem_1gib,
+                2,
+                "1 GiB / 512 MiB ⇒ 2 ⇒ the memory cap is the smallest term",
+            ),
+            (
+                2,
+                Some(3),
+                mem_4gib,
+                2,
+                "a per-engine cap ABOVE the degree never raises it",
+            ),
+            (
+                4,
+                Some(3),
+                mem_1gib,
+                2,
+                "all three terms present ⇒ the minimum wins",
+            ),
+            (
+                4,
+                None,
+                mem_quarter_slot,
+                1,
+                "§1.10: under one slot's budget ⇒ serial, never 0",
+            ),
+            (
+                1,
+                Some(4),
+                mem_4gib,
+                1,
+                "a degree-1 pool stays serial whatever the other terms say",
+            ),
+        ];
+        for (degree, cap, probe, want, why) in cases {
+            let pool = Pool::with_degree_and_memory(degree, probe);
+            assert_eq!(
+                pool.effective_degree(cap),
+                want,
+                "§0.9/§1.10: {why} (degree {degree}, cap {cap:?})"
+            );
+        }
+    }
+
+    // §6.4.1 (G15): `Pool::with_degree` — the deterministic harness constructor — imposes NO memory cap, so
+    // a pinned degree is never silently re-capped by the host's live memory while a test runs. The
+    // production `Pool::new` is the constructor that reads real memory.
+    #[test]
+    fn with_degree_pins_the_degree_without_a_memory_cap() {
+        let pool = Pool::with_degree(4);
+        assert_eq!(
+            pool.effective_degree(None),
+            4,
+            "a pinned-degree pool is deterministic — the §1.10 factor is off"
+        );
+        assert_eq!((pool.memory)(), None, "with_degree wires the no-cap probe");
+        // Compared as fn POINTERS, never by calling both and comparing readings: two live memory reads
+        // legitimately differ (the host allocates between them), so a value comparison would be a
+        // nondeterministic test of a deterministic property (test-strategy §7 — engineer determinism out,
+        // never absorb it). The pointer identity IS the property: which probe the constructor wired.
+        assert!(
+            std::ptr::fn_addr_eq(
+                Pool::new().memory,
+                crate::platform::available_memory_bytes as fn() -> Option<u64>
+            ),
+            "§1.10: the PRODUCTION constructor wires the real platform probe"
+        );
+    }
+
+    static LOW_THEN_HIGH_READS: AtomicUsize = AtomicUsize::new(0);
+    /// Below the watermark for the first three reads, then above it — so "the pause ENDED when memory
+    /// freed" is proven by the read count, with no cross-task timing to race on.
+    fn mem_low_then_high() -> Option<u64> {
+        let n = LOW_THEN_HIGH_READS.fetch_add(1, Ordering::SeqCst);
+        Some(if n < 3 {
+            HIGH_MEMORY_WATERMARK_BYTES / 2
+        } else {
+            4 * GIB
+        })
+    }
+
+    // §6.4.1 (G15): the §1.10 effective degree is ENFORCED, not merely computed — `slot_weight` is the
+    // mechanism. One slot takes `ceil(degree / effective)` of the `degree` global permits, so the admitted
+    // concurrency `floor(degree / weight)` never exceeds the effective degree and reaches 1 (serial) when
+    // memory allows only one slot. The last column pins the deliberate under-admission where `degree` is not
+    // a multiple of `effective` (the safe direction for a memory gate).
+    #[test]
+    fn the_effective_degree_is_enforced_by_the_slot_weight() {
+        // (degree, probe, expected effective, expected weight, expected admitted concurrency)
+        type WeightCase = (usize, fn() -> Option<u64>, usize, u32, usize);
+        let cases: [WeightCase; 5] = [
+            (4, mem_unknown, 4, 1, 4),
+            (4, mem_4gib, 4, 1, 4),
+            (4, mem_1gib, 2, 2, 2),
+            (4, mem_quarter_slot, 1, 4, 1),
+            (3, mem_1gib, 2, 2, 1),
+        ];
+        for (degree, probe, effective, weight, admitted) in cases {
+            let pool = Pool::with_degree_and_memory(degree, probe);
+            assert_eq!(
+                pool.effective_degree(None),
+                effective,
+                "degree {degree}: effective"
+            );
+            assert_eq!(
+                pool.slot_weight(None),
+                weight,
+                "degree {degree}: slot weight"
+            );
+            assert_eq!(
+                degree / weight as usize,
+                admitted,
+                "§1.10: degree {degree} at effective {effective} admits {admitted} concurrent slot(s)"
+            );
+            assert!(
+                degree / weight as usize <= effective,
+                "§1.10: the weight never admits MORE than the effective degree"
+            );
+        }
+    }
+
+    // §6.4.x (G15): the enforcement, end to end on a real semaphore — under memory pressure that allows one
+    // slot, a degree-4 pool admits exactly ONE lane: the first takes all four permits and a second cannot
+    // enter until it releases. This is §1.10's "down to serial" as observable behaviour rather than
+    // arithmetic. Deterministic: proven by permit accounting + a pending second lane, never by a sleep race.
+    #[tokio::test]
+    async fn under_memory_pressure_a_degree_four_pool_admits_one_lane_at_a_time() {
+        let pool = Pool::with_degree_and_memory(4, mem_quarter_slot);
+        let mut first = Box::pin(pool.run_subprocess(None, std::future::pending::<u32>()));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut first)
+                .await
+                .is_err(),
+            "the first lane is running (its engine future never completes)"
+        );
+        assert_eq!(
+            pool.global.available_permits(),
+            0,
+            "§1.10: at effective degree 1 ONE slot consumes the whole degree — that IS the enforcement"
+        );
+        // The second lane's engine future completes INSTANTLY, so "still pending" can only mean it is
+        // blocked acquiring — that is what distinguishes "not admitted" from "admitted and running".
+        let mut second = Box::pin(pool.run_subprocess(None, async { 7_u32 }));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut second)
+                .await
+                .is_err(),
+            "a second lane cannot be admitted while the first holds the whole degree — serial under pressure"
+        );
+        drop(first);
+        assert_eq!(
+            second.await.expect("§0.9: the second lane runs once the first releases"),
+            7,
+            "§1.10: releasing the weighted permits admits the next item — the pause is a throttle, not a wedge"
+        );
+        assert_eq!(
+            pool.global.available_permits(),
+            4,
+            "both weighted acquisitions returned every permit"
+        );
+    }
+
+    // §6.4.x (G15): the §1.10 watermark HOLDS a new item while memory is below the mark and RELEASES it the
+    // moment memory frees. Proven by the probe's read count (it polled, it did not pass straight through)
+    // plus the gate returning — never by a wall-clock sleep. Under a paused clock the polls cost no time.
+    #[tokio::test(start_paused = true)]
+    async fn the_watermark_pauses_a_new_item_and_resumes_when_memory_frees() {
+        LOW_THEN_HIGH_READS.store(0, Ordering::SeqCst);
+        let pool = Pool::with_degree_and_memory(2, mem_low_then_high);
+        pool.await_dispatch_headroom().await;
+        assert!(
+            LOW_THEN_HIGH_READS.load(Ordering::SeqCst) >= 4,
+            "§1.10: the gate re-read while below the watermark and only proceeded once memory freed — {} \
+             read(s) means it passed straight through",
+            LOW_THEN_HIGH_READS.load(Ordering::SeqCst)
+        );
+    }
+
+    // §6.4.x (G15): NEVER-BREAK — a host that stays below the watermark forever must not hang the batch.
+    // The gate gives up after MEMORY_PAUSE_MAX and dispatches anyway (the §1.10 per-item ceiling is then
+    // the control that bites). Asserted on the PAUSED clock's own elapsed virtual time, so it is exact.
+    #[tokio::test(start_paused = true)]
+    async fn a_permanently_low_watermark_still_dispatches_within_the_ceiling() {
+        let pool = Pool::with_degree_and_memory(2, mem_quarter_slot);
+        let start = tokio::time::Instant::now();
+        pool.await_dispatch_headroom().await;
+        let waited = start.elapsed();
+        assert!(
+            waited >= MEMORY_PAUSE_MAX,
+            "§1.10: the gate genuinely waited for headroom (waited {waited:?})"
+        );
+        assert!(
+            waited < MEMORY_PAUSE_MAX + MEMORY_WATERMARK_POLL * 2,
+            "§2.12.3 never-break: the pause is CEILED at MEMORY_PAUSE_MAX, never open-ended (waited \
+             {waited:?})"
+        );
+    }
+
+    // §6.4.x (G15): an unreadable probe imposes NO pause at all — the never-break bias end to end. On a
+    // paused clock a single elapsed poll interval would be visible, so zero elapsed proves no wait.
+    #[tokio::test(start_paused = true)]
+    async fn an_unknown_memory_reading_never_pauses_dispatch() {
+        let pool = Pool::with_degree_and_memory(2, mem_unknown);
+        let start = tokio::time::Instant::now();
+        pool.await_dispatch_headroom().await;
+        assert_eq!(
+            start.elapsed(),
+            Duration::ZERO,
+            "§1.10: unknown ⇒ no cap AND no pause; the app runs as if the factor were absent"
+        );
+    }
+
+    // §6.4.x (G15) PERMIT BOUNDING for the SUBPROCESS lane — the mirror of the in-core lane's barrier test:
+    // a Barrier(DEGREE) proves permits are granted up to the full degree (liveness) while the degree bound
+    // caps the peak (safety). This is §0.9's "a bounded engine-subprocess pool governs how many engine
+    // processes run at once" made executable. Deterministic — no sleep window to overlap.
+    #[tokio::test]
+    async fn run_subprocess_bounds_concurrency_to_the_global_degree() {
+        const DEGREE: usize = 3;
+        let pool = Pool::with_degree(DEGREE);
+        let barrier = Arc::new(tokio::sync::Barrier::new(DEGREE));
+        let concurrent = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..(2 * DEGREE) {
+            let pool = pool.clone();
+            let barrier = Arc::clone(&barrier);
+            let concurrent = Arc::clone(&concurrent);
+            let peak = Arc::clone(&peak);
+            handles.push(tokio::spawn(async move {
+                pool.run_subprocess(None, async {
+                    let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    barrier.wait().await; // permit-bounded: exactly DEGREE can be here at once
+                    concurrent.fetch_sub(1, Ordering::SeqCst);
+                })
+                .await
+                .expect("§0.9: the subprocess lane runs the engine future to completion");
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("each spawned lane task joins");
+        }
+
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            DEGREE,
+            "§0.9: exactly `degree` engine futures run concurrently — the Barrier forces all degree \
+             permit-holders to rendezvous (liveness) and the degree-permit bound caps the peak (safety)"
+        );
+        assert_eq!(
+            pool.global.available_permits(),
+            DEGREE,
+            "§0.9: all global-degree permits are released after the batch drains"
+        );
+    }
+
+    // §6.4.x (G15) THE P4.18.2 FORWARD OBLIGATION — "a killed/failed engine returns its permit; the pool is
+    // not left a permit down after a cap breach, a crash exit or a watchdog hang". Every shape a failing
+    // engine reaches the pool through is driven against a DEGREE-1 pool, where a leaked permit is instantly
+    // fatal (the next acquire would hang forever) — so the follow-up acquire is the real proof, not the
+    // permit count alone. The shapes are exactly those the §2.12.3 memory cap (P4.18.2), a crash exit and
+    // the §1.7 watchdog reap produce at this boundary: the lane future RETURNS a failure value, or the lane
+    // future is DROPPED mid-flight (cancel / quit / watchdog).
+    #[tokio::test]
+    async fn a_failing_or_killed_engine_always_returns_its_permit() {
+        let pool = Pool::with_degree(1);
+
+        // (1) clean completion
+        pool.run_subprocess(None, async { 1_u32 })
+            .await
+            .expect("a clean engine run completes");
+        assert_eq!(
+            pool.global.available_permits(),
+            1,
+            "clean exit returns the permit"
+        );
+
+        // (2) the engine FAILED — a non-zero exit, a §2.12.3 memory-cap kill, a §1.7 watchdog reap: at this
+        // boundary they are all "the future resolved to a failure value", which must not change the permit
+        // accounting one bit.
+        let failed: Result<Result<u32, &str>, LaneError> = pool
+            .run_subprocess(None, async { Err("engine killed at its memory cap") })
+            .await;
+        assert_eq!(
+            failed.expect("the lane itself succeeded — the ENGINE failed"),
+            Err("engine killed at its memory cap")
+        );
+        assert_eq!(
+            pool.global.available_permits(),
+            1,
+            "§0.9/P4.18.2: a failed/killed engine returns its permit — the pool is not left a permit down"
+        );
+
+        // (3) the lane future is DROPPED mid-flight — the cancel / quit / watchdog-reap shape. The engine
+        // future here never completes, exactly like a wedged engine, so only the frame-bound permit can
+        // save the pool. `Box::pin` (not `tokio::pin!`) because the drop must destroy the FUTURE: `pin!`
+        // yields a `Pin<&mut _>`, and dropping a reference leaves the referent — and its permit — alive
+        // until end of scope, which would make this leg silently vacuous.
+        let mut abandoned = Box::pin(pool.run_subprocess(None, std::future::pending::<u32>()));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut abandoned)
+                .await
+                .is_err(),
+            "the wedged engine future is still pending, as the shape requires"
+        );
+        assert_eq!(
+            pool.global.available_permits(),
+            0,
+            "the wedged engine is HOLDING the single permit — so the drop below is what must return it"
+        );
+        drop(abandoned);
+        assert_eq!(
+            pool.global.available_permits(),
+            1,
+            "§1.7/P4.18.2: dropping the lane future (cancel / quit / watchdog reap) releases the permit"
+        );
+
+        // The load-bearing proof: on a DEGREE-1 pool the next item can only run if every shape above
+        // genuinely returned its permit.
+        let recovered = pool
+            .run_subprocess(None, async { 42_u32 })
+            .await
+            .expect("§0.9: the single permit survived every failure shape");
+        assert_eq!(recovered, 42);
+    }
+
+    // §6.4.x (G15): the subprocess lane maps a closed pool onto the same clean `PoolClosed` the in-core lane
+    // does — never an unwrap/panic on the §0.9 no-panic pool path.
+    #[tokio::test]
+    async fn a_closed_pool_surfaces_pool_closed_on_the_subprocess_lane_too() {
+        let pool = Pool::with_degree(2);
+        pool.close();
+        assert_eq!(
+            pool.run_subprocess(None, async { 1_u32 }).await,
+            Err(LaneError::PoolClosed),
+            "§0.9: acquiring on a closed semaphore maps to PoolClosed on both lanes"
+        );
+    }
+
+    // §6.4.1 (G15): the §1.10 memory bounds hold their ordering — the watermark sits BELOW one slot's
+    // budget (so the degree cap thins concurrency first and the watermark is the last line, not a second
+    // earlier throttle), the poll cadence is far under the pause ceiling (so a freed machine resumes
+    // promptly rather than serving out the ceiling), and neither bound is zero (a zero poll would busy-spin,
+    // a zero ceiling would disable the pause). Pins the pre-calibration relationships the §6.7.2 harness
+    // imports. [Build-Session-Entscheidung: P4.20]
+    #[test]
+    fn memory_adaptive_baseline_bounds_hold_their_ordering() {
+        // The byte bounds' ordering is compile-enforced beside their definitions (a `const` assertion, so
+        // an inverted recalibration cannot build); these are the Duration relationships, which are not
+        // const-foldable.
+        assert!(
+            MEMORY_WATERMARK_POLL < MEMORY_PAUSE_MAX,
+            "§1.10: a freed machine resumes on a poll, long before the ceiling"
+        );
+        assert!(
+            MEMORY_WATERMARK_POLL > Duration::ZERO && MEMORY_PAUSE_MAX > Duration::ZERO,
+            "§1.10: a zero poll would busy-spin the gate; a zero ceiling would disable the pause"
         );
     }
 }

@@ -822,6 +822,30 @@ pub async fn dispatch(
     pool: &Pool,
     on_progress: impl Fn(f32) + Send + 'static,
 ) -> InvocationResult {
+    // §1.10 (P4.20): a NEW item waits here for memory headroom — BEFORE either lane's §1.7 wall-clock
+    // timeout starts, so the throttle is never spent out of the engine's own budget (a pause inside a timed
+    // lane could turn a slow-but-progressing conversion into `Failed(EngineHang)`, which §2.12.3's
+    // never-break floor forbids). §1.10 pauses DISPATCH of new items; items already running are untouched,
+    // which holds by placement: this is the dispatch entry. The pause is CEILED (`MEMORY_PAUSE_MAX`) and an
+    // unreadable memory probe imposes none at all.
+    //
+    // The wait is CANCEL-AWARE (§1.7 cancel ordering / §7.3.3 quit = cancel + exit): C7 `cancel_run` trips
+    // the job token but does NOT abort the run task, so a pause that watched only the clock would swallow a
+    // user's cancel — and a quit — for up to the whole ceiling, on exactly the low-memory host where the
+    // stall is already unexplained. Selecting on the token makes cancel immediate, and the item is terminal
+    // `Cancelled` rather than started: nothing ran, so there is no partial to discard (§1.9/§2.1).
+    // [Build-Session-Entscheidung: P4.20]
+    // `biased` is load-bearing, not a style choice: `select!` picks a RANDOM ready arm by default, so with
+    // an already-cancelled token AND immediately-available headroom the cancel arm would win about half the
+    // time and terminate an item that never needed to pause — changing (non-deterministically) the
+    // pre-existing §1.9 cancel semantics, where the conductor's stop-dequeue and the transform's
+    // cooperative chunk-boundary poll decide. Biased ordering polls the gate FIRST: when no pause is due it
+    // completes on that first poll and wins outright, so this arm can only fire while genuinely paused.
+    tokio::select! {
+        biased;
+        () = pool.await_dispatch_headroom() => {}
+        () = invocation.cancel.cancelled() => return InvocationResult::Cancelled,
+    }
     match &invocation.plan.program {
         // The one walking-skeleton lane — the native CSV/TSV engine (§3.5.6): run its transform on the §0.9
         // in-core permit lane, forward its self-reported fraction (P3.43), cooperatively poll the job's
@@ -2441,6 +2465,92 @@ mod tests {
                 out_tmp: Some(out_tmp),
             },
             cancel: CancellationToken::new(),
+        }
+    }
+
+    // §6.4.x (G15): the §1.10 dispatch-entry memory pause is CANCEL-AWARE (P4.20). C7 `cancel_run` trips the
+    // job token but does NOT abort the run task, so a pause that watched only the clock would swallow a
+    // user's cancel — and, via §7.3.3, a quit — for up to the whole `MEMORY_PAUSE_MAX` ceiling. Driven on a
+    // PAUSED clock with a probe pinned permanently below the watermark, so without the cancel arm this test
+    // would burn the entire ceiling before returning; with it, the item is terminal `Cancelled` at once and
+    // no engine ever runs. The elapsed assertion is what makes it a regression rather than a shape check.
+    // [Build-Session-Entscheidung: P4.20]
+    #[tokio::test(start_paused = true)]
+    async fn a_cancel_during_the_memory_pause_is_honoured_at_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let source = dir.path().join("data.csv");
+        std::fs::write(&source, b"a,b\n1,2\n").expect("write source");
+        let out_temp = tempfile::Builder::new()
+            .tempfile_in(dir.path())
+            .expect("out temp")
+            .into_temp_path();
+        let out_path = out_temp.to_path_buf();
+        let invocation = native_lane_invocation(&source, "tsv", out_temp);
+        invocation.cancel.cancel();
+
+        // A pool whose memory reading never rises above the watermark: the gate would otherwise hold this
+        // item for the full ceiling.
+        let pool = Pool::with_degree_and_memory_for_test(1, crate::pool::below_watermark_for_test);
+        let start = tokio::time::Instant::now();
+        let result = dispatch(&invocation, &pool, |_| {}).await;
+        let waited = start.elapsed();
+
+        assert_eq!(
+            result,
+            InvocationResult::Cancelled,
+            "§1.9/§1.7: a cancel observed at the dispatch gate makes the item terminal Cancelled — nothing ran"
+        );
+        assert_eq!(
+            waited,
+            Duration::ZERO,
+            "§1.7/§7.3.3: the cancel is honoured AT ONCE, not after the {:?} pause ceiling",
+            crate::pool::MEMORY_PAUSE_MAX
+        );
+        assert!(
+            !out_path.exists() || std::fs::read(&out_path).is_ok_and(|bytes| bytes.is_empty()),
+            "§2.1: no engine ran, so there is no partial output to discard"
+        );
+    }
+
+    // §6.4.x (G15): the `biased;` on the dispatch gate's `select!` is LOAD-BEARING, and this is its
+    // regression. When no pause is due (any pool without a §1.10 memory cap) the gate arm is Ready on its
+    // first poll; if the job token is ALSO already cancelled both arms are ready, and an unbiased `select!`
+    // picks at random — so ~half the time an item that never needed to pause would terminate at the gate,
+    // silently re-deciding the pre-existing §1.9 cancel semantics (the conductor's stop-dequeue plus the
+    // transform's cooperative chunk-boundary poll decide, and a sub-chunk item that completes before
+    // observing the trip still publishes — the P3.75 sweep finding).
+    //
+    // The observable that separates the two paths: the LANE path runs the real transform, which for this
+    // one-chunk source completes before its first cancel poll and yields `Succeeded`, while the GATE path
+    // returns `Cancelled` without running anything. Repeating the dispatch makes the guard a hard one: with
+    // `biased` every iteration is deterministically `Succeeded`; without it, surviving all 24 iterations has
+    // probability 2^-24 (about 1 in 17 million), so deleting the keyword reddens this test essentially
+    // always instead of reappearing as a 1-in-3 flake in an unrelated conductor test — which is how this
+    // defect actually surfaced. [Build-Session-Entscheidung: P4.20]
+    #[tokio::test]
+    async fn the_dispatch_gate_is_biased_so_an_unpaused_cancel_keeps_its_1_9_semantics() {
+        const ITERATIONS: usize = 24;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let source = dir.path().join("data.csv");
+        std::fs::write(&source, b"a,b\n1,2\n").expect("write source");
+
+        for iteration in 0..ITERATIONS {
+            let out_temp = tempfile::Builder::new()
+                .tempfile_in(dir.path())
+                .expect("out temp")
+                .into_temp_path();
+            let invocation = native_lane_invocation(&source, "tsv", out_temp);
+            invocation.cancel.cancel();
+            // `with_degree` wires the no-cap probe, so the headroom gate is Ready on its first poll — the
+            // exact condition under which an unbiased select would start coin-flipping.
+            let result = dispatch(&invocation, &Pool::with_degree(1), |_| {}).await;
+            assert_eq!(
+                result,
+                InvocationResult::Succeeded,
+                "§1.9: with no pause due, an already-cancelled item still takes the LANE path and its \
+                 one-chunk transform completes (iteration {iteration}) — a `Cancelled` here means the gate \
+                 arm won a race it must not be in"
+            );
         }
     }
 

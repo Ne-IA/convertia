@@ -1449,6 +1449,18 @@ struct SizeEstimate {
   memory-based degree cap are corpus-calibrated starting values (like the other §1.10
   numbers). This is why the §0.3.1 2 GB floor holds: bounded concurrency + adaptive degree
   + per-item kill keep peak RSS finite regardless of batch size.
+  > **The watermark pause is CEILED, and it pauses DISPATCH only `[DECIDED — P4.20]`.**
+  > Two properties the sentence above leaves implicit, both required by §2.12.3's
+  > never-break floor (a defence-in-depth control must never become the reason a
+  > conversion cannot run). **(a)** The pause has a maximum (`MEMORY_PAUSE_MAX`, a §0.9
+  > pool `pub const`): a host that never rises above the watermark — a small-RAM machine
+  > under steady foreign load — would otherwise hold the batch forever, which is worse
+  > than converting under pressure. On expiry the item dispatches anyway and the
+  > **per-item memory ceiling** above is what still protects the host. **(b)** The gate
+  > sits at the §1.7 **dispatch entry**, outside each lane's wall-clock timeout — a pause
+  > spent inside a timed lane would come out of the ENGINE's budget and could turn a
+  > slow-but-progressing conversion into `Failed(EngineHang)`. Placing it there is also
+  > what makes "in-flight items finish" hold by construction rather than by bookkeeping.
 
 This section **feeds** §1.8 (plan only if it fits), §2.6 (cleanup on
 out-of-disk), §2.8 (the named failure kinds), §2.14 (scratch sizing) and §5

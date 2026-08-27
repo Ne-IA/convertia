@@ -1547,7 +1547,7 @@ the corpus (§6.4) — engine bumps are best-effort posture (§3.8), not a gate.
 | **tauri-plugin-opener** | §7.7 | open-folder / open-file / open-url shell-out (the only OS shell-out) — called **Rust-side via `OpenerExt`** from the C9/C10 handlers (no WebView `opener:*` grant, §0.10/§7.7.1) |
 | **landlock** *(Linux-only)* | §2.12.3 | best-effort Linux Landlock FS-restrict for the decoder subprocess (scratch rw + `/dev`/`/proc`/engine-runtime read/exec paths, ABI ≥ 1, silent-degrade) — the privilege-drop tier's FS leg; the per-item **input-file** grant is the P4.37 refinement (`[DEFER: tuning]`) |
 | **seccompiler** *(Linux-only)* | §2.12.3 | best-effort Linux seccomp-bpf exec/unexpected-syscall deny on the decoder subprocess (defence-in-depth, silent-degrade) — NOT the egress block (that is the network namespace) |
-| **libc** *(Linux-only)* | §2.12.3 | the arch-specific `SYS_*` syscall NUMBERS the seccomp deny-list names + `EPERM` + the `unshare`/`open`/`write` net-ns syscalls (a constants+raw-syscall edge for the privilege-drop tier; already transitive via rustix/tokio) |
+| **libc** *(Linux + macOS)* | §2.12.3 · §1.10 | **Linux:** the arch-specific `SYS_*` syscall NUMBERS the seccomp deny-list names + `EPERM` + the `unshare`/`open`/`write` net-ns syscalls (a constants+raw-syscall edge for the privilege-drop tier; already transitive via rustix/tokio). **macOS (P4.20):** the Mach `host_statistics64(HOST_VM_INFO64)` + `sysconf(_SC_PAGESIZE)` behind the §1.10 available-memory read — macOS publishes no `MemAvailable` equivalent and no std API, so this is the only way to obtain available (not merely total) memory |
 | **toml** *(dev-only — the `cargo test` plane, never the shipped LINK set; it does sit in the target-agnostic lockfile closure the walk deliberately over-approximates)* | §2.12.4 | the real TOML parser (serde-derived `[[package]]` rows) behind `crate::untrusted_byte_boundary`'s committed-`Cargo.lock` closure walk — the in-crate §2.12.4 no-decoder-in-core assertion (no bespoke lockfile reader); already lock-resolved via the tauri build/utils graph |
 
 Concrete crate **versions are deliberately not hard-coded in this prose** (they go
@@ -1593,11 +1593,29 @@ pool** governs how many engine processes run at once. **This number lives here;
 | **poppler / pandoc** | up to global degree | light, short-lived. |
 | **native CSV/TSV** (in-Rust, no subprocess) | up to global degree (worker threads) | trivial cost. |
 
-- **Effective parallelism = `min(global_degree, per_engine_cap)`.** The per-engine
-  caps above **override** the global degree downward, never upward: e.g. video
-  re-encode runs at `min(global_degree, 2)`, LibreOffice at exactly 1 regardless of
-  the global degree. A batch mixing engines respects each engine's own cap within
-  the shared global bound.
+- **Effective parallelism = `min(global_degree, per_engine_cap, memory_based_cap)`.**
+  The per-engine caps above **override** the global degree downward, never upward:
+  e.g. video re-encode runs at `min(global_degree, 2)`, LibreOffice at exactly 1
+  regardless of the global degree. A batch mixing engines respects each engine's own
+  cap within the shared global bound.
+  > **`[DECIDED — P4.20]` the third term, stated here in the owning section.** This
+  > bullet formerly named only the first two terms, because its subject was the
+  > per-engine override; §1.10's low-memory policy meanwhile mandates the same number
+  > with a third, memory-based term (`effective = min(cpu-degree, per-engine-cap,
+  > memory-based-cap)`) and describes itself as adapting "the effective §0.9
+  > concurrency degree". The two are **not** alternatives: every term caps downward
+  > only, so the three-term form satisfies this bullet's rule as well, and §0.9 already
+  > delegates the budget dimension ("§1.10 references it for budgets"). Since §0.9 owns
+  > the number, the owning section now names all three terms rather than leaving the
+  > memory one visible only from §1.10. The `memory_based_cap` is
+  > `available_memory / MEMORY_PER_SLOT_BYTES` floored at 1, and an **unreadable**
+  > memory figure imposes **no** cap at all (§2.12.3's never-break floor: a
+  > defence-in-depth control must never be the reason a conversion cannot run).
+  > Computed by `crate::pool::effective_degree` and **enforced by weighted
+  > acquisition**: because resizing a live semaphore would race with in-flight
+  > holders, one slot takes `ceil(global_degree / effective)` of the pool's permits,
+  > so a lower effective degree admits proportionally fewer lanes — down to exactly
+  > one. The reading comes from the `crate::platform` available-memory shim.
 - **`EngineDescriptor.serialised_only` enforcement mechanism `[DECIDED]`.** For an
   engine whose descriptor has `serialised_only = true` (LibreOffice), the pool holds a
   **dedicated single-permit semaphore** (one per serialised engine). A job for that

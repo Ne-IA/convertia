@@ -6,7 +6,10 @@
 //! run-lock `LockFileEx` exclusive advisory-lock acquire (`acquire_exclusive_lock`, P3.21) + its
 //! non-blocking startup-sweep liveness probe (`try_acquire_exclusive_lock`, P3.23), and the §2.14.3
 //! cross-volume free-space re-check `GetDiskFreeSpaceExW` (`available_bytes`, P3.17 — built at its
-//! §2.14.3 first-need, consumed by the §1.10/§2.14.4 preflight P4.72/P4.73 in a subsequent phase), and the
+//! §2.14.3 first-need, consumed by the §1.10/§2.14.4 preflight P4.72/P4.73 in a subsequent phase), the
+//! §1.10 available-MEMORY read `GlobalMemoryStatusEx` (`available_memory_bytes`, P4.20 — built at its
+//! §0.9/§1.10 first-need, the memory-adaptive concurrency factor in `crate::pool`; its Linux leg is a pure
+//! `/proc/meminfo` read with no FFI at all, its macOS leg the Mach call named below), and the
 //! §2.7.2 FAT/exFAT-class "no-atomic-publish" detection (`lacks_atomic_publish_primitive`, P3.18 — the
 //! proactive per-location divert heuristic §2.7.2 `location_status` folds in; Unix `statfs`, a Windows no-op),
 //! and the §2.7.2 ephemeral-output classification (`is_ephemeral_output_dir`, P3.33 — the known-temp-dir
@@ -31,8 +34,13 @@
 //! FFI for them exists here (the `no_appcontainer_or_spawn_token_ffi_in_the_core` source-scan pins it).
 //! On **Linux** the §2.12.3 best-effort privilege-drop tier (P4.15, `install_confinement` — a code span: the fn is cfg-gated off non-Linux doc builds)
 //! attaches its Landlock + seccomp legs through the one `unsafe` `CommandExt::pre_exec` closure (the safe
-//! `landlock`/`seccompiler` crates do the syscalls inside it); macOS carries no `unsafe` — its renames ride
-//! safe `rustix`, and the P4.16 macOS Seatbelt privilege-drop leg is **DECIDED cheap-tier only** (no apply,
+//! `landlock`/`seccompiler` crates do the syscalls inside it). On **macOS** the only `unsafe` is the P4.20
+//! §1.10 available-memory read (`available_memory_bytes` → `host_statistics64(HOST_VM_INFO64)` +
+//! `sysconf(_SC_PAGESIZE)`, with the host port cached once per process): macOS publishes no `MemAvailable`
+//! equivalent and no std API, so the Mach call is the only way to obtain AVAILABLE rather than merely total
+//! memory (corrected at P4.20 — this paragraph previously read "macOS carries no `unsafe`", which the probe
+//! made false). Its renames still ride
+//! safe `rustix`, and the P4.16 macOS Seatbelt privilege-drop leg remains **DECIDED cheap-tier only** (no apply,
 //! no `unsafe` FFI): its only apply path is a private-libsandbox call in the post-fork/pre-exec child, which
 //! is neither auditable fork-safe nor silent-skippable at its worst case (a hang, not an errno), so §2.12.3's
 //! never-break floor forbids it — the same admission test that ADMITTED the Linux in-closure legs (Co-Pilot
@@ -477,6 +485,174 @@ pub(crate) fn available_bytes(dir: &Path) -> io::Result<u64> {
         return Err(io::Error::last_os_error());
     }
     Ok(free_to_caller)
+}
+
+/// The §1.10 **available-MEMORY** read — the OS-shim sibling of [`available_bytes`] (which reads free DISK),
+/// built HERE at its first need so the memory read has ONE home: the §0.9/§1.10 memory-adaptive concurrency
+/// factor (`crate::pool`, P4.20), which caps the effective degree and gates the high-memory watermark. The
+/// §1.10 preflight engine (P4.72/P4.73) reads the same primitive for its memory ceilings.
+///
+/// **The failure bias is the OPPOSITE of [`available_bytes`]'s, deliberately** [Build-Session-Entscheidung:
+/// P4.20]. A free-DISK read feeds a "does it fit?" gate, so an unreadable value must fail toward
+/// *does-not-fit* — hence `io::Result`. A memory read feeds a *degradation* gate, and §2.12.3's never-break
+/// floor (a defence-in-depth leg must never break a conversion) points the other way: an unreadable value
+/// must NOT collapse the degree to serial or pause dispatch forever. So this returns `Option<u64>` and
+/// `None` means **unknown ⇒ impose NO memory cap** — the app runs exactly as it would without the factor.
+/// No panic (G4/G14): every arm maps an OS failure onto `None`, never an `unwrap`/`expect`.
+///
+/// **What "available" means per OS** (each is the platform's own best answer, not a derived guess):
+/// * **Linux** — `/proc/meminfo`'s `MemAvailable:` line (kB → bytes), the kernel's own estimate of memory
+///   obtainable without swapping. Pure `std`, no dependency, no `unsafe`. A kernel too old to publish the
+///   field (pre-3.14) yields `None` (unknown ⇒ no cap) rather than a `MemFree` guess: the §0.3.1 supported
+///   envelope guarantees the field, so a fallback would be an untestable branch, and the honest unknown arm
+///   is already the never-break behaviour.
+/// * **Windows** — `GlobalMemoryStatusEx`'s `ullAvailPhys`, the physical memory available to the process.
+/// * **macOS** — `host_statistics64(HOST_VM_INFO64)` page counts × the page size. There is **no OS-provided
+///   "available" number** on macOS (unlike Linux's `MemAvailable`), so the combination is a decision:
+///   `free + inactive` — the two counts that are unambiguously disjoint and reclaimable without swapping or
+///   compressing. Everything else is deliberately excluded, each for its own reason: `speculative` is
+///   understood to be counted inside `free_count` already, so adding it would double-count (and if that
+///   reading is wrong the only effect is a further UNDER-estimate — the safe direction, which is why the
+///   term is excluded either way); `compressor`/`external` are only
+///   reclaimable by compressing or paging, which is exactly the pressure this gate exists to avoid; and
+///   `purgeable` is excluded because XNU also counts purgeable pages on the active/inactive queues, so
+///   `inactive + purgeable` would double-count an unknown overlap and could make the figure OVER-report.
+///   The result is a deliberate UNDER-estimate, the safe direction for a degradation gate: degrading a
+///   little early costs throughput, while over-reporting risks the OOM §1.10 forbids. §1.10 marks the memory
+///   numbers "corpus-calibrated starting values", which covers the digits; this is the FORMULA, recorded
+///   here as its own decision, and P6.56.1's memory-constrained-host run is where it is validated against a
+///   real Mac rather than argued. [Build-Session-Entscheidung: P4.20]
+/// * **Any other target** — `None` (no cap). ConvertIA ships only the three above (§1).
+///
+/// **Cost.** Called on the async path (the §1.7 dispatch gate, and once per weighted acquire), without
+/// `spawn_blocking`: each arm is a single sub-millisecond read — one small `procfs` file on Linux, one
+/// syscall on Windows, one cached-port Mach call on macOS — so the per-item cost is negligible. It is
+/// recorded because that stays true only while the call sites remain per-item: a future caller that reads
+/// it inside a hot loop should sample it instead. [Build-Session-Entscheidung: P4.20]
+#[cfg(target_os = "linux")]
+pub(crate) fn available_memory_bytes() -> Option<u64> {
+    parse_mem_available(&std::fs::read_to_string("/proc/meminfo").ok()?)
+}
+
+/// The pure `/proc/meminfo` parse behind the Linux [`available_memory_bytes`] leg — split out so the format
+/// handling is unit-testable on every OS (the field is `MemAvailable:<spaces><number> kB`). `None` when the
+/// field is absent or unparseable. [Build-Session-Entscheidung: P4.20]
+// Off Linux the production build has no caller (the probe's other legs read their own OS APIs), but the
+// parse is deliberately cfg-free so its format handling is exercised on all three CI legs — hence the
+// dead-code expectation only where it is genuinely dead, and never in the test build.
+#[cfg_attr(
+    all(not(target_os = "linux"), not(test)),
+    expect(
+        dead_code,
+        reason = "the /proc/meminfo parse is the Linux leg's helper; it stays cfg-free so the format \
+                  handling is unit-tested on every OS, which leaves it uncalled in a non-Linux production \
+                  build only"
+    )
+)]
+fn parse_mem_available(meminfo: &str) -> Option<u64> {
+    meminfo
+        .lines()
+        .find_map(|line| line.strip_prefix("MemAvailable:"))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|kb| kb.parse::<u64>().ok())
+        // the field is documented in kB; a would-be overflow saturates rather than panicking (G4/G14)
+        .map(|kb| kb.saturating_mul(1024))
+}
+
+/// Windows leg of [`available_memory_bytes`] — `GlobalMemoryStatusEx` → `ullAvailPhys`. See the Linux leg's
+/// doc for the full contract. [Build-Session-Entscheidung: P4.20]
+#[cfg(windows)]
+pub(crate) fn available_memory_bytes() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    // Built field-by-field in SAFE Rust rather than `mem::zeroed()` — every field is an integer the API
+    // overwrites, so an explicit zero literal costs nothing and keeps one `unsafe` block out of the module.
+    // `dwLength` MUST be the struct size before the call: the API uses it to version the struct.
+    let mut status = MEMORYSTATUSEX {
+        dwLength: u32::try_from(std::mem::size_of::<MEMORYSTATUSEX>()).ok()?,
+        dwMemoryLoad: 0,
+        ullTotalPhys: 0,
+        ullAvailPhys: 0,
+        ullTotalPageFile: 0,
+        ullAvailPageFile: 0,
+        ullTotalVirtual: 0,
+        ullAvailVirtual: 0,
+        ullAvailExtendedVirtual: 0,
+    };
+    // SAFETY: `status` is a live, correctly-sized `MEMORYSTATUSEX` whose `dwLength` is set as the API
+    // requires; `GlobalMemoryStatusEx` writes only through that out-pointer and reads no other memory.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
+    (ok != 0).then_some(status.ullAvailPhys)
+}
+
+/// macOS leg of [`available_memory_bytes`] — the Mach `host_statistics64(HOST_VM_INFO64)` page counts times
+/// the page size. See the Linux leg's doc for the contract and for why this combination of page counts is
+/// the chosen definition of "available". [Build-Session-Entscheidung: P4.20]
+#[cfg(target_os = "macos")]
+pub(crate) fn available_memory_bytes() -> Option<u64> {
+    let page_size = mach_page_size()?;
+    let stats = mach_vm_statistics()?;
+    let pages = u64::from(stats.free_count).saturating_add(u64::from(stats.inactive_count));
+    Some(pages.saturating_mul(page_size))
+}
+
+/// The host's VM page size (macOS) — `sysconf(_SC_PAGESIZE)`. `None` on the documented `-1` error return.
+/// [Build-Session-Entscheidung: P4.20]
+#[cfg(target_os = "macos")]
+fn mach_page_size() -> Option<u64> {
+    // SAFETY: `sysconf` takes a plain `c_int` name and returns a `c_long`; it touches no caller memory and
+    // has no failure mode beyond the documented `-1` return, which the `try_from` below rejects.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    u64::try_from(size).ok().filter(|&size| size > 0)
+}
+
+/// One `host_statistics64(HOST_VM_INFO64)` sample (macOS). The host port is acquired ONCE per process and
+/// cached: `mach_host_self` hands out a send RIGHT, and `libc` 0.2.186 exposes no `mach_port_deallocate` to
+/// return it, so acquiring one per sample would leak a right on every poll. [Build-Session-Entscheidung: P4.20]
+#[cfg(target_os = "macos")]
+fn mach_vm_statistics() -> Option<libc::vm_statistics64> {
+    use std::sync::OnceLock;
+    static HOST_PORT: OnceLock<libc::mach_port_t> = OnceLock::new();
+    let host = *HOST_PORT.get_or_init(|| {
+        // `mach_host_self` is `#[deprecated]` in libc 0.2.186 in favour of the `mach2` crate; the symbol
+        // itself is current and correct, and taking a whole new dependency for one host-port read would be
+        // the heavier choice, so the deprecation is allowed at exactly this call site. The returned send
+        // right is cached for the process lifetime (see the fn doc). [Build-Session-Entscheidung: P4.20]
+        #[allow(deprecated)]
+        // SAFETY: it takes no arguments and returns a port name by value, touching no caller memory.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+        let port = unsafe { libc::mach_host_self() };
+        port
+    });
+    let mut stats = std::mem::MaybeUninit::<libc::vm_statistics64>::uninit();
+    let mut count = libc::HOST_VM_INFO64_COUNT;
+    // `HOST_VM_INFO64` selects exactly the `vm_statistics64` flavour `stats` is sized for, and `count` is
+    // that struct's own element count, so the kernel fills `stats` and never writes past it.
+    // SAFETY: `host` is a valid host port and the out-buffer/count pair matches the requested flavour.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let kr = unsafe {
+        libc::host_statistics64(
+            host,
+            libc::HOST_VM_INFO64,
+            stats.as_mut_ptr().cast(),
+            &mut count,
+        )
+    };
+    // `count` is an IN/OUT parameter: the kernel may return KERN_SUCCESS having written FEWER elements than
+    // we asked for (its `vm_statistics64` can be smaller than the SDK's). Reading `assume_init` then would
+    // be UB, so the whole-struct write is REQUIRED, not assumed — a short write reads as unknown ⇒ no cap.
+    // SAFETY: the kernel returned KERN_SUCCESS AND wrote all `HOST_VM_INFO64_COUNT` elements, so the struct
+    // is fully initialised on this path — the only path that reaches the read.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    (kr == 0 && count == libc::HOST_VM_INFO64_COUNT).then(|| unsafe { stats.assume_init() })
+}
+
+/// The fallback leg of [`available_memory_bytes`] for a target ConvertIA does not ship (§1 is Windows /
+/// macOS / Linux): no probe, hence `None` — unknown ⇒ no memory cap. [Build-Session-Entscheidung: P4.20]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+pub(crate) fn available_memory_bytes() -> Option<u64> {
+    None
 }
 
 /// §2.1.2/§2.7.2 the FAT/exFAT-class "no atomic-publish primitive" detector (Unix; a Windows no-op) — the
@@ -2536,6 +2712,79 @@ mod available_bytes_tests {
             available_bytes(&missing).is_err(),
             "§2.8: a missing path is a clean Err (the §2.8 caller maps it), never a panic"
         );
+    }
+}
+
+// §1.10 available-MEMORY probe (P4.20) — the free-DISK sibling above reads a real volume; this reads real
+// host memory. The Linux `/proc/meminfo` PARSE is pure and cfg-free, so its format handling (including the
+// shapes that must yield the never-break `None`) is exercised on all three CI legs, while the live probe is
+// smoke-tested for plausibility on whichever OS is running.
+#[cfg(test)]
+mod available_memory_tests {
+    use super::{available_memory_bytes, parse_mem_available};
+
+    // §1.10 (G15): the real per-OS probe returns a plausible reading on a running host. Every shipped OS
+    // (§1: Windows / macOS / Linux) has a live arm, so `None` here would mean the arm is broken or absent —
+    // and a 0 would mean the page-count/field read is mis-assembled. The upper bound catches a units error
+    // (e.g. forgetting that `/proc/meminfo` is kB, or multiplying by the page size twice): no supported
+    // desktop has a petabyte of free RAM.
+    #[test]
+    fn the_live_probe_reads_a_plausible_available_figure() {
+        let available = available_memory_bytes()
+            .expect("§1: every shipped platform has a live available-memory arm");
+        assert!(
+            available > 0,
+            "§1.10: a running host always has SOME available memory; 0 signals a broken read"
+        );
+        assert!(
+            available < 1024 * 1024 * 1024 * 1024 * 1024,
+            "§1.10: a petabyte reading signals a units error (kB vs bytes, or a double page-size multiply); \
+             got {available}"
+        );
+    }
+
+    // §1.10 (G15): the `/proc/meminfo` parse takes the MemAvailable field, converts kB → bytes, and is not
+    // confused by the neighbouring fields (MemTotal/MemFree precede it, and `MemAvailable` must not match a
+    // longer field name). Cfg-free, so this runs on every OS.
+    #[test]
+    fn the_meminfo_parse_reads_mem_available_in_bytes() {
+        let meminfo = "MemTotal:       16316716 kB\n\
+                       MemFree:          204104 kB\n\
+                       MemAvailable:    8123456 kB\n\
+                       Buffers:          123456 kB\n";
+        assert_eq!(
+            parse_mem_available(meminfo),
+            Some(8_123_456 * 1024),
+            "§1.10: MemAvailable is read in kB and returned in bytes"
+        );
+    }
+
+    // §1.10 (G15): every malformed / absent shape yields the never-break `None` (unknown ⇒ no memory cap),
+    // never a panic and never a wrong number. The pre-3.14-kernel case (no MemAvailable line) is the first
+    // row — the honest unknown arm the probe's doc chose over a MemFree guess.
+    #[test]
+    fn the_meminfo_parse_is_none_on_every_unusable_shape() {
+        let cases = [
+            (
+                "MemTotal: 16316716 kB\nMemFree: 204104 kB\n",
+                "no MemAvailable line (pre-3.14 kernel)",
+            ),
+            ("", "an empty file"),
+            ("MemAvailable:\n", "the field with no value"),
+            ("MemAvailable:    not-a-number kB\n", "an unparseable value"),
+            ("MemAvailable:    -1 kB\n", "a negative value"),
+            (
+                "NotMemAvailable:    123 kB\n",
+                "a different field ending in the name",
+            ),
+        ];
+        for (meminfo, why) in cases {
+            assert_eq!(
+                parse_mem_available(meminfo),
+                None,
+                "§1.10: {why} must read as unknown (⇒ no memory cap), never a guess"
+            );
+        }
     }
 }
 
