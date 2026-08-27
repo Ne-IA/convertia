@@ -182,6 +182,27 @@ pub trait Engine: Send + Sync {
     /// registry). Pure, const-ish (a static fact per engine).
     fn descriptor(&self) -> EngineDescriptor;
 
+    /// The §0.9 per-engine parallelism ROW for ONE job `[DECIDED §0.9 — P4.21]` — how
+    /// many of THIS engine's jobs the §0.9 pool may run at once, as the §0.9-owned
+    /// `crate::pool::EngineParallelism` (`UpToGlobalDegree` | `VideoReencode`) that §1.7
+    /// dispatch carries down to the §0.9 pool lane, which projects it onto the pool's
+    /// `per_engine_cap` term inside its weighted acquire. Pure (no I/O, no spawn), like
+    /// `descriptor()`. Params are the job's tier-3 projection — the same one `plan()`
+    /// takes minus the paths.
+    /// It is a PER-JOB method and NOT a `descriptor()` field, because §0.9's table is
+    /// keyed (engine × operation): FFmpeg has two rows (video re-encode 1–2 vs audio /
+    /// extract-audio / remux up to the degree), which one static per-engine value cannot
+    /// express — the same argument that refused `progress_model()` below, resolved one
+    /// granularity coarser because the §3.2.1 two-step probe+encode shares ONE pool slot.
+    /// Only the engine knows which row a pair is on (remux-vs-re-encode is §3.5.1's
+    /// call); where that is unknowable before the probe, it returns the WORST-CASE row
+    /// (§0.4.2's `willReencode` posture). NOT the `serialised_only` path: a serialised
+    /// engine still takes one global permit and serialises through its own single-permit
+    /// semaphore, so its row here is `UpToGlobalDegree` (§0.9 states the full argument).
+    /// REQUIRED, not defaulted — a silent default is how the one engine that needs a cap
+    /// would ship without one.
+    fn parallelism(&self, item: &DroppedItem, target: TargetId) -> EngineParallelism;
+
     /// What this engine can do, *on this platform*, given the §3.4 patent
     /// disposition resolved at build time. Used to populate the registry and to
     /// decide per-platform availability (honest "unavailable here").
@@ -269,6 +290,10 @@ pub trait Engine: Send + Sync {
     // (FFmpeg `-progress` k=v, LibreOffice coarse, image-worker libvips eval-progress
     // marshalled to stdout k=v across the worker boundary — all set per-invocation on
     // `Invocation.progress` by `plan()`/`plan_encode()`.)
+    // Contrast `parallelism()` above, which answers the SAME "one static value per engine
+    // cannot express this" objection one granularity coarser: the §0.9 cap is per-JOB (a
+    // method taking the job projection), not per-INVOCATION (a field on `Invocation`),
+    // because a probe and its encode share ONE §0.9 pool slot.
 
     /// Map this engine's exit code + stderr into the §2.8 error taxonomy.
     /// Returns the §2.8-owned `ConversionErrorKind` (NOT a separate "FailureKind" —

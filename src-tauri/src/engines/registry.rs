@@ -14,6 +14,7 @@ use std::sync::{Arc, LazyLock};
 
 use crate::domain::{DroppedItem, TargetId};
 use crate::outcome::ConversionErrorKind;
+use crate::pool::EngineParallelism;
 
 use super::{
     current_platform, CodecPosture, Direction, EngineCapability, EngineDescriptor, EngineId,
@@ -24,11 +25,14 @@ use super::{
 /// A bundled conversion engine (§3.2.2) — one impl per engine binary/lib. The registry seam: §3.2.3
 /// selection resolves a job's `(source, target)` pair to one `Engine`, and §1.7 calls `plan()` to get the
 /// dispatch-ready [`Invocation`]. The full §3.2.2 surface (P4.1): `id` / `descriptor` / `capabilities` /
-/// `plan` / `plan_encode` / `classify_failure`. There is deliberately **NO `progress_model()` method**
+/// `plan` / `plan_encode` / `classify_failure`, plus the §0.9 `parallelism` row (P4.21). There is
+/// deliberately **NO `progress_model()` method**
 /// (§3.2.2 `[DECIDED]`): progress is a PER-INVOCATION property, not a per-engine constant — the same video
 /// FFmpeg engine emits a `CoarseSpawnDone` probe `Invocation` and an `FfmpegKeyValue` encode `Invocation`,
 /// which a single static method cannot express; the §1.7 dispatch reads `Invocation.progress` and §1.11
-/// normalises that. `Send + Sync` because the §3.2.3 registry stores engines behind a shared handle and
+/// normalises that. [`Engine::parallelism`] answers the SAME objection one granularity coarser — the §0.9
+/// cap is per-JOB (a method over the job projection), not per-INVOCATION (a field on [`Invocation`]),
+/// because a probe and its encode share ONE §0.9 pool slot. `Send + Sync` because the §3.2.3 registry stores engines behind a shared handle and
 /// §1.7 dispatches them across the §0.9 worker pool.
 pub trait Engine: Send + Sync {
     /// Stable id for logging / SBOM rows / the §3.2.3 registry (§3.2.2) — the §0.6 discriminant
@@ -42,6 +46,55 @@ pub trait Engine: Send + Sync {
     /// get the flag from the §3.2.3 `(SourceFmt,TargetFmt) → EngineId` registry). Pure, const-ish (a
     /// static fact per engine).
     fn descriptor(&self) -> EngineDescriptor;
+
+    /// The §0.9 **per-engine parallelism row** for ONE job — how many of THIS engine's jobs the §0.9 pool
+    /// may run at once, as an [`EngineParallelism`] the §1.7 dispatch CARRIES DOWN to the §0.9 pool lane,
+    /// which is where it is projected onto the `per_engine_cap` term (P4.21 — the projection happens in
+    /// [`crate::pool::Pool::run_in_core`]/[`crate::pool::Pool::run_subprocess`], inside the weighted
+    /// acquire, not in dispatch). **Pure: no I/O, no spawn**, like [`Engine::descriptor`].
+    ///
+    /// **Params are the job's tier-3 projection**, the same one [`Engine::plan`] takes minus the paths:
+    /// the §0.6 [`DroppedItem`] (which carries the detected SOURCE format) + the chosen [`TargetId`].
+    ///
+    /// **Why per-JOB — not per-engine, and not per-invocation** [Build-Session-Entscheidung: P4.21]:
+    ///
+    /// * **Not per-engine** (i.e. not a field on [`EngineDescriptor`], the "static fact per engine" home):
+    ///   §0.9's table gives FFmpeg TWO rows — "video re-encode" at 1–2 and "audio / extract-audio / remux"
+    ///   up to the global degree — which one static value per engine cannot express. This is the identical
+    ///   argument §3.2.2 already `[DECIDED]` for the progress model when it refused a `progress_model()`
+    ///   method; the answer differs only in granularity, for the reason below.
+    /// * **Not per-invocation** (i.e. not a field on [`Invocation`], where the progress model landed): the
+    ///   §3.2.1 two-step engine runs a probe AND an encode inside ONE pool slot, so a per-invocation cap
+    ///   would be ambiguous exactly where it matters — the §1.7 dispatch sees the PROBE invocation at
+    ///   acquire time and would cap the whole video job at the light probe's row. A job is what holds a
+    ///   permit, so a job is what the cap keys on.
+    /// * **On the engine, not in the pool or the registry**: only the engine that performs the operation
+    ///   knows which §0.9 row a pair falls on — for video that is the §3.5.1/`video.md` remux-vs-re-encode
+    ///   decision, which a target-category test in a neutral layer would get wrong (an MP4→MP4 normalise
+    ///   is a video-TARGET job that §0.9 puts on the *remux* row). Same placement as
+    ///   [`Engine::classify_failure`]: per-engine knowledge behind the trait.
+    ///
+    /// **Where a pre-dispatch answer is genuinely unknowable, return the WORST-CASE row.** A permit is
+    /// taken before any probe runs, so a probe-requiring engine cannot yet know whether an item will
+    /// re-encode; §0.4.2 already `[DECIDED]` the conservative posture for exactly this unknowable
+    /// (`RunStarted.willReencode` is a "conservative source-container → target-pair worst-case … re-encode
+    /// *possible* ⇒ `true`"), and the same posture applies here — over-capping costs some parallelism,
+    /// under-capping costs the CPU guarantee §0.9's row exists to give.
+    ///
+    /// **This is NOT the `serialised_only` path.** An engine §0.9 serialises (LibreOffice) still takes one
+    /// global permit like any other job and serialises through its own dedicated single-permit semaphore
+    /// (P4.22), read from [`Engine::descriptor`] — so a serialised engine's row here is
+    /// [`EngineParallelism::UpToGlobalDegree`]. The two axes are orthogonal; see [`EngineParallelism`].
+    ///
+    /// **Required, not defaulted, deliberately.** The majority §0.9 row is "up to global degree", so a
+    /// default would be ergonomic — but the cap is a resource-safety property whose whole point is to stop
+    /// a CPU-bound engine from thrashing the machine, and a silent default is precisely how the one engine
+    /// that NEEDS a cap would ship without one. Requiring it makes the compiler force every future engine
+    /// (P5–P7) to state its §0.9 row, the same no-silent-default discipline the exhaustive-dispatch denies
+    /// give the §0.6 enums (G4/G14). The optional two-phase seams ([`Engine::plan_encode`] /
+    /// [`Engine::parse_probe`]) keep their defaults because a wrong default there fails loudly; a wrong
+    /// default here would fail silently.
+    fn parallelism(&self, item: &DroppedItem, target: TargetId) -> EngineParallelism;
 
     /// What this engine can do *on this platform*, given the §3.4 patent disposition resolved at build
     /// time (§3.2.2) — the rows the §3.2.3 registry is populated from, and the source of the honest
@@ -369,7 +422,9 @@ pub fn engine_registry() -> Result<&'static EngineRegistry, &'static RegistryBui
 #[cfg(test)]
 mod registry_tests {
     use super::*;
-    use crate::domain::{CrossCatOp, FormatId, UserFacingFormat};
+    use crate::domain::{
+        Confidence, CrossCatOp, DetectionOutcome, FormatId, ItemId, UserFacingFormat,
+    };
     use crate::engines::EngineKind;
 
     // A test-only rival claiming the native engine's (Csv → Tsv) cell — the §3.2.1 duplicate-owner leg.
@@ -385,6 +440,10 @@ mod registry_tests {
                 serialised_only: false,
                 kind: EngineKind::Subprocess,
             }
+        }
+        // §0.9: "poppler / pandoc | up to global degree | light, short-lived".
+        fn parallelism(&self, _item: &DroppedItem, _target: TargetId) -> EngineParallelism {
+            EngineParallelism::UpToGlobalDegree
         }
         fn capabilities(
             &self,
@@ -427,6 +486,11 @@ mod registry_tests {
                 kind: EngineKind::Subprocess,
             }
         }
+        // Its one declared row is the §0.6 `Op(ExtractAudio)` cross-category op, which §0.9 puts on the
+        // "FFmpeg (audio / extract-audio / remux) | up to global degree" row — never the video-re-encode one.
+        fn parallelism(&self, _item: &DroppedItem, _target: TargetId) -> EngineParallelism {
+            EngineParallelism::UpToGlobalDegree
+        }
         fn capabilities(
             &self,
             _platform: Platform,
@@ -468,6 +532,13 @@ mod registry_tests {
                 serialised_only: true,
                 kind: EngineKind::Subprocess,
             }
+        }
+        // §0.9: a serialised engine takes exactly ONE global permit like any other job ("non-serialised
+        // engines acquire only the global degree permit" ⇒ a serialised one acquires that AND its own
+        // single permit), so its GLOBAL-degree row is `UpToGlobalDegree`; the "exactly 1" is the dedicated
+        // single-permit semaphore reached from `descriptor().serialised_only` (P4.22), not this axis.
+        fn parallelism(&self, _item: &DroppedItem, _target: TargetId) -> EngineParallelism {
+            EngineParallelism::UpToGlobalDegree
         }
         fn capabilities(
             &self,
@@ -526,6 +597,59 @@ mod registry_tests {
             "§0.9: a serialised_only descriptor flows into the pre-computed flag map"
         );
         assert_eq!(with_office.serialised_flags().len(), 2);
+    }
+
+    // §6.4.1 unit (G15) — P4.21, the §0.9 TWO-AXES ORTHOGONALITY: a `serialised_only` engine takes exactly
+    // ONE global-degree permit like any other job, and serialises through its own dedicated single-permit
+    // semaphore (P4.22) instead. §0.9 states the mechanism as "must ACQUIRE BOTH the global degree
+    // semaphore AND that engine's single-permit semaphore", with "non-serialised engines acquire only the
+    // global degree permit" — so the serialised job's share of the GLOBAL semaphore is one permit, not the
+    // whole pool. Expressing "exactly 1" through the per-engine cap term instead would give it a slot
+    // weight of the entire degree, so a single office conversion would block every other engine — which
+    // §0.9's "a batch mixing engines respects each engine's own cap WITHIN THE SHARED GLOBAL BOUND" does
+    // not allow. This pins that the serialised engine leaves the global degree untouched, so a subsequent
+    // refactor cannot quietly fold the two axes into one.
+    #[test]
+    fn a_serialised_engine_leaves_the_global_degree_untouched() {
+        let office = SerialisedOfficeEngine;
+        let item = office_dropped_item();
+        let row = office.parallelism(&item, TargetId::Format(FormatId::Pdf));
+        assert!(
+            office.descriptor().serialised_only,
+            "§0.9: this stand-in IS the serialised (LibreOffice-shaped) engine — otherwise the assertion \
+             below would pass vacuously"
+        );
+        assert_eq!(
+            row,
+            EngineParallelism::UpToGlobalDegree,
+            "§0.9: a serialised engine's GLOBAL-degree row is uncapped — its 'exactly 1' is the dedicated \
+             single-permit semaphore (P4.22), reached from descriptor().serialised_only"
+        );
+        for degree in 1..=4 {
+            let pool = crate::pool::Pool::with_degree(degree);
+            assert_eq!(
+                pool.effective_degree(row.per_engine_cap()),
+                degree,
+                "§0.9: a serialised engine imposes NO per-engine term, so the other engines in a mixed \
+                 batch keep the full global degree {degree}"
+            );
+        }
+    }
+
+    // A minimal eligible XLSX `DroppedItem` for the office-shaped engine's row assertion — `parallelism()`
+    // is pure over the §0.9 table, so any well-formed item on the engine's own pair serves.
+    fn office_dropped_item() -> DroppedItem {
+        DroppedItem {
+            item: ItemId::from_index(0),
+            display_name: "book.xlsx".to_string(),
+            rel_path_display: None,
+            size_bytes: 4096,
+            detected: DetectionOutcome::Recognized {
+                format: UserFacingFormat::Xlsx,
+                confidence: Confidence::High,
+                dims: None,
+            },
+        }
     }
 
     // §6.4.1 unit (G15): the startup registry builds Ok and resolves BOTH slice orderings to the native

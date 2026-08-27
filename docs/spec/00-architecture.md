@@ -1593,6 +1593,40 @@ pool** governs how many engine processes run at once. **This number lives here;
 | **poppler / pandoc** | up to global degree | light, short-lived. |
 | **native CSV/TSV** (in-Rust, no subprocess) | up to global degree (worker threads) | trivial cost. |
 
+  > **`[DECIDED — P4.21]` how a job GETS its row from this table.** The table's key is
+  > **(engine × operation)**, not engine alone — FFmpeg occupies two rows — so a row is
+  > **not** a static per-engine fact and is deliberately **not** a field on
+  > `EngineDescriptor` (the "static fact per engine" that carries `serialised_only`).
+  > It is a **per-JOB** property the engine itself declares, through the §3.2.2
+  > **`Engine::parallelism(item, target)`** trait method returning the §0.9-owned
+  > `crate::pool::EngineParallelism` row (`UpToGlobalDegree` | `VideoReencode`); the
+  > §1.7 dispatch CARRIES that row down to the §0.9 pool lane, which is where it is
+  > projected onto the `per_engine_cap` term of the bullet below (via
+  > `EngineParallelism::per_engine_cap()`, inside the weighted acquire) — so a call site
+  > can never invent a cap this section does not state. Three reasons for that placement: **(a)** only the engine
+  > performing the operation knows which row a pair falls on — the remux-vs-re-encode
+  > call is §3.5.1/`video.md`'s, and a target-category test in a neutral layer would put
+  > an MP4→MP4 *normalise* (a remux) on the re-encode row; **(b)** per-JOB rather than
+  > per-INVOCATION (where the progress model sits), because the §3.2.1 two-step
+  > probe+encode runs inside ONE pool slot, so a per-invocation cap would be read off the
+  > light probe invocation at acquire time and the video job would go uncapped;
+  > **(c)** where the answer is genuinely unknowable before the probe runs, the engine
+  > returns the **worst-case** row — the same conservative posture §0.4.2 `[DECIDED]`
+  > for `RunStarted.willReencode` ("re-encode *possible* ⇒ `true`"). The method is
+  > **required, not defaulted**, so a future engine cannot ship uncapped by omission.
+  > The band's concrete value is the §0.9-owned `pub const`
+  > **`MAX_VIDEO_REENCODE_CONCURRENCY = 2`** (co-located with `MAX_LO_CONCURRENCY`,
+  > imported by the §6.7.2 harness), matching this section's own worked example
+  > `min(global_degree, 2)` in the bullet below. **LibreOffice's row is deliberately NOT
+  > expressed this way:** its "exactly 1" is the dedicated single-permit semaphore of the
+  > `serialised_only` bullet further down — a serialised job acquires ONE global permit
+  > **plus** its engine's own — so its `per_engine_cap` term is `UpToGlobalDegree`.
+  > Routing it through this term instead would give it a weight of the whole degree under
+  > the weighted enforcement below, i.e. one office conversion would consume every global
+  > permit, which "a batch mixing engines respects each engine's own cap **within the
+  > shared global bound**" does not allow. The two axes are orthogonal: this one caps how
+  > many of an engine's jobs run, `serialised_only` serialises them.
+
 - **Effective parallelism = `min(global_degree, per_engine_cap, memory_based_cap)`.**
   The per-engine caps above **override** the global degree downward, never upward:
   e.g. video re-encode runs at `min(global_degree, 2)`, LibreOffice at exactly 1

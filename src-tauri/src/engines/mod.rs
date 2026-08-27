@@ -64,7 +64,9 @@ use crate::domain::{
     Availability, DroppedItem, FormatId, JobId, Target, TargetId, UserFacingFormat,
 };
 use crate::outcome::ConversionErrorKind;
-use crate::pool::{LaneError, Pool, NATIVE_CSV_TSV_TIMEOUT, WATCHDOG_POLL_INTERVAL};
+use crate::pool::{
+    EngineParallelism, LaneError, Pool, NATIVE_CSV_TSV_TIMEOUT, WATCHDOG_POLL_INTERVAL,
+};
 
 // The §3.2 registry seam file (§0.7: `engines/registry.rs` — "Engine trait + selection", P4.1). Re-exported
 // so the logical tier-2 path `crate::engines::{Engine, PlanOutcome}` its consumers import is unchanged by
@@ -817,9 +819,18 @@ impl ConfinedRun {
 /// the P2.25 unreachable-outcome precedent) until P4.32 wires them through `crate::isolation::run_confined`
 /// (authored at P4.13; the arms route through it only once P4.32 resolves `EngineProgram` → the binary path).
 /// [Build-Session-Entscheidung: P3.4]
+///
+/// **`parallelism`** is the job's §0.9 engine-table row (P4.21), resolved by the tier-1 caller from the
+/// selected engine's `Engine::parallelism(item, target)` and handed down here because dispatch is where a
+/// pool slot is taken. It is a per-JOB value, not a per-invocation one: the §3.2.1 two-step probe+encode
+/// runs inside ONE slot, so both sub-invocations are governed by the single row the job declared (see
+/// `Engine::parallelism` for the full argument). Every lane below acquires by it — the `InProcessNative`
+/// lane today, and the P4.32 subprocess arms when they call [`crate::pool::Pool::run_subprocess`].
+/// [Build-Session-Entscheidung: P4.21]
 pub async fn dispatch(
     invocation: &EngineInvocation,
     pool: &Pool,
+    parallelism: EngineParallelism,
     on_progress: impl Fn(f32) + Send + 'static,
 ) -> InvocationResult {
     // §1.10 (P4.20): a NEW item waits here for memory headroom — BEFORE either lane's §1.7 wall-clock
@@ -856,6 +867,7 @@ pub async fn dispatch(
                 &invocation.plan,
                 &invocation.cancel,
                 pool,
+                parallelism,
                 on_progress,
                 NATIVE_CSV_TSV_TIMEOUT,
             )
@@ -865,7 +877,9 @@ pub async fn dispatch(
         // registered; the registry + engines land at P4.4). P4.13 authors crate::isolation::run_confined; P4.7
         // authors the §1.7 [`run_subprocess`] lane that routes through it; P4.32 rewrites these arms to CALL
         // run_subprocess once the program-path resolution supplies the resolved &Path (no resolvable subprocess
-        // program exists before then); the honest InternalError seam holds meanwhile (§2.13, P2.25).
+        // program exists before then) — wrapping it in `pool.run_subprocess(parallelism, …)`, which is where
+        // this job's §0.9 row (P4.21) bites for a spawned engine; the honest InternalError seam holds
+        // meanwhile (§2.13, P2.25).
         EngineProgram::Sidecar(_) | EngineProgram::ResourceBin { .. } => {
             InvocationResult::Failed(ConversionErrorKind::InternalError)
         }
@@ -1170,6 +1184,7 @@ async fn run_native_csv_tsv(
     plan: &Invocation,
     cancel: &CancellationToken,
     pool: &Pool,
+    parallelism: EngineParallelism,
     on_progress: impl Fn(f32) + Send + 'static,
     timeout: Duration,
 ) -> InvocationResult {
@@ -1207,20 +1222,25 @@ async fn run_native_csv_tsv(
     // Clone + Send + 'static, and the child shares the SAME cancellation state. [Build-Session-Entscheidung: P3.45]
     let deadline_token = cancel.child_token();
     let poll_token = deadline_token.clone();
-    let lane = pool.run_in_core(move || -> Result<TransformStatus, TransformError> {
-        // `create` opens the already-exclusively-created (`O_EXCL`, §2.14.1) publish temp for writing;
-        // the §2.1 atomic publish CONSUMES it on success, so the engine only writes here (§3.2.2 TempPath).
-        let out_file = std::fs::File::create(&out_path).map_err(TransformError::Write)?;
-        // The sync loop self-reports through the bounded channel. A closed receiver (only if the forwarder
-        // ended early) just stops the flow; in the success path the forwarder is live until the transform
-        // drops progress_tx, so every send is delivered.
-        let mut report = |fraction: f32| {
-            let _ = progress_tx.blocking_send(fraction);
-        };
-        // The cooperative cancel/timeout poll (P3.44/P3.45): a `true` at a chunk boundary stops the transform.
-        let mut should_cancel = || poll_token.is_cancelled();
-        csv_tsv_transform(&source, target, out_file, &mut report, &mut should_cancel)
-    });
+    // The lane acquires by the job's §0.9 row (P4.21) — `UpToGlobalDegree` for this engine per §0.9's
+    // native-CSV/TSV table row, but taken from the caller's resolved value, never assumed here.
+    let lane = pool.run_in_core(
+        parallelism,
+        move || -> Result<TransformStatus, TransformError> {
+            // `create` opens the already-exclusively-created (`O_EXCL`, §2.14.1) publish temp for writing;
+            // the §2.1 atomic publish CONSUMES it on success, so the engine only writes here (§3.2.2 TempPath).
+            let out_file = std::fs::File::create(&out_path).map_err(TransformError::Write)?;
+            // The sync loop self-reports through the bounded channel. A closed receiver (only if the forwarder
+            // ended early) just stops the flow; in the success path the forwarder is live until the transform
+            // drops progress_tx, so every send is delivered.
+            let mut report = |fraction: f32| {
+                let _ = progress_tx.blocking_send(fraction);
+            };
+            // The cooperative cancel/timeout poll (P3.44/P3.45): a `true` at a chunk boundary stops the transform.
+            let mut should_cancel = || poll_token.is_cancelled();
+            csv_tsv_transform(&source, target, out_file, &mut report, &mut should_cancel)
+        },
+    );
 
     // Run the lane under the §1.7 wall-clock bound (P3.45): a lane that outruns `timeout` is abandoned (its
     // §0.9 permit freed on drop, the worker detached) → `Failed(EngineHang)`, the run continuing.
@@ -1316,6 +1336,16 @@ impl Engine for NativeCsvTsvEngine {
             serialised_only: false,
             kind: EngineKind::InProcessNative,
         }
+    }
+
+    /// The §0.9 per-engine parallelism row (§3.2.2, P4.21): **"native CSV/TSV (in-Rust, no subprocess) | up
+    /// to global degree (worker threads) | trivial cost"** — no per-engine bound at all, so a native job is
+    /// bounded only by the global degree and the §1.10 memory factor. `item`/`target` are honestly unused:
+    /// the engine owns one pair (`CSV ↔ TSV`) and §0.9 gives that whole pair a single row, so unlike FFmpeg
+    /// there is nothing about a particular job that could move it to another row.
+    /// [Build-Session-Entscheidung: P4.21]
+    fn parallelism(&self, _item: &DroppedItem, _target: TargetId) -> EngineParallelism {
+        EngineParallelism::UpToGlobalDegree
     }
 
     /// The §04/spreadsheets cells this engine owns: exactly `CSV ↔ TSV` (pure text re-delimiting — the
@@ -1910,6 +1940,91 @@ mod tests {
         assert!(!csv.serialised_only);
     }
 
+    // ─── P4.21: the §0.9 per-engine parallelism row (`Engine::parallelism`) ──
+
+    // The COMPILE-TIME §0.9 CLASSIFICATION LOCK: every `EngineId` is mapped to the row(s) §0.9's engine
+    // table allows that engine to declare, so a NEW engine variant cannot be added without deciding its
+    // §0.9 row here — the no-silent-default discipline the REQUIRED (undefaulted) trait method exists for,
+    // and the same dependency-free exhaustive-match pattern as `engine_id_exhaustive` above. FFmpeg is the
+    // one id §0.9 gives TWO rows (video re-encode 1–2 vs audio / extract-audio / remux up to the degree),
+    // which is precisely why the seam is per-JOB rather than a per-engine descriptor field.
+    fn allowed_parallelism_rows(id: EngineId) -> &'static [EngineParallelism] {
+        match id {
+            // §0.9: "FFmpeg (video re-encode) | low — 1–2" AND "FFmpeg (audio / extract-audio / remux) |
+            // up to global degree" — the operation split. A probe-requiring job declares the WORST case.
+            EngineId::FFmpeg => &[
+                EngineParallelism::VideoReencode,
+                EngineParallelism::UpToGlobalDegree,
+            ],
+            // The §3.2.1 probe binary — a light, short-lived `CoarseSpawnDone` sub-invocation; §0.9 lists no
+            // cap for it.
+            EngineId::FFprobe => &[EngineParallelism::UpToGlobalDegree],
+            // §0.9 serialises LibreOffice through its OWN dedicated single-permit semaphore (P4.22), reached
+            // from `descriptor().serialised_only`; on the GLOBAL-degree axis it is an ordinary one-permit
+            // job ("non-serialised engines acquire only the global degree permit" ⇒ a serialised one
+            // acquires that AND its own). The two axes are orthogonal — see `crate::pool::EngineParallelism`.
+            EngineId::LibreOffice => &[EngineParallelism::UpToGlobalDegree],
+            // §0.9: "poppler / pandoc | up to global degree | light, short-lived".
+            EngineId::Poppler | EngineId::Pandoc => &[EngineParallelism::UpToGlobalDegree],
+            // §0.9: "Image core (vips/heif/avif/svg) | up to global degree" — per item, bounded-memory,
+            // one short-lived worker per item. ImageMagick is the NON-TRAIT delegate INSIDE that worker
+            // (§3.5.5), never dispatched on its own, so it inherits the image core's row.
+            EngineId::ImageMagick | EngineId::ImageCore => &[EngineParallelism::UpToGlobalDegree],
+            // §0.9: "native CSV/TSV (in-Rust, no subprocess) | up to global degree (worker threads)".
+            EngineId::NativeCsvTsv => &[EngineParallelism::UpToGlobalDegree],
+        }
+    }
+
+    // §6.4.1 unit (G15): the §0.9 row of the ONE engine registered today — "native CSV/TSV (in-Rust, no
+    // subprocess) | up to global degree (worker threads) | trivial cost", so a native job is bounded only by
+    // the global degree and the §1.10 memory factor. Both orderings of its single `CSV ↔ TSV` pair sit on
+    // that row, and the descriptor leg pins the ORTHOGONALITY of the two §0.9 concurrency axes: this engine
+    // is neither capped (the per-engine term) nor serialised (the dedicated single-permit semaphore).
+    #[test]
+    fn the_native_engine_declares_the_0_9_up_to_global_degree_row() {
+        let item = csv_dropped_item();
+        assert_eq!(
+            NativeCsvTsvEngine.parallelism(&item, TargetId::Format(FormatId::Tsv)),
+            EngineParallelism::UpToGlobalDegree,
+            "§0.9: native CSV/TSV runs up to the global degree — no per-engine cap"
+        );
+        assert_eq!(
+            NativeCsvTsvEngine.parallelism(&item, TargetId::Format(FormatId::Csv)),
+            EngineParallelism::UpToGlobalDegree,
+            "§0.9: both directions of the one owned pair sit on the same row"
+        );
+        assert!(
+            !NativeCsvTsvEngine.descriptor().serialised_only,
+            "§0.9: the per-engine-cap axis and the serialised axis are orthogonal — this engine is on \
+             neither"
+        );
+    }
+
+    // §6.4.1 unit (G15): every engine the §3.2.3 startup registry actually holds declares a row the §0.9
+    // table sanctions for its `EngineId`. Walking the registry (rather than a hand-listed set) means a
+    // future P5–P7 engine is covered the moment it registers, and the exhaustive `allowed_parallelism_rows`
+    // match above is what forces its §0.9 classification to be decided at all.
+    #[test]
+    fn every_registered_engine_declares_a_0_9_sanctioned_parallelism_row() {
+        let registry = engine_registry().expect("§3.2.3: the startup registry builds");
+        let item = csv_dropped_item();
+        let registered: Vec<EngineId> = registry.serialised_flags().keys().copied().collect();
+        assert!(
+            !registered.is_empty(),
+            "§3.2.3: the startup registry holds at least one engine — an empty walk would pass vacuously"
+        );
+        for id in registered {
+            let engine = registry
+                .engine(id)
+                .expect("§3.2.3: a registered id resolves to its engine");
+            let row = engine.parallelism(&item, TargetId::Format(FormatId::Tsv));
+            assert!(
+                allowed_parallelism_rows(id).contains(&row),
+                "§0.9: {id:?} declared {row:?}, which is not a row §0.9's engine table gives it"
+            );
+        }
+    }
+
     // §6.4.1 unit (G15): the §3.2.2 `Platform` WIRE form (P2.132) — the leaf rides `AppInfo.platform` in
     // the C11 `get_app_info` return (§7.2.3). Pinned to its camelCase wire string per variant (the §0.6
     // "camelCase on the wire" default its `AppInfo` embedder carries); the count == 3 + the exhaustive
@@ -2438,7 +2553,7 @@ mod tests {
         ] {
             let invocation = engine_invocation(program);
             assert_eq!(
-                dispatch(&invocation, &pool, |_| {}).await,
+                dispatch(&invocation, &pool, EngineParallelism::UpToGlobalDegree, |_| {}).await,
                 InvocationResult::Failed(ConversionErrorKind::InternalError),
                 "§1.7/§2.13: the unwired subprocess lanes return the honest InternalError seam (P4.32 wires them)"
             );
@@ -2492,7 +2607,13 @@ mod tests {
         // item for the full ceiling.
         let pool = Pool::with_degree_and_memory_for_test(1, crate::pool::below_watermark_for_test);
         let start = tokio::time::Instant::now();
-        let result = dispatch(&invocation, &pool, |_| {}).await;
+        let result = dispatch(
+            &invocation,
+            &pool,
+            EngineParallelism::UpToGlobalDegree,
+            |_| {},
+        )
+        .await;
         let waited = start.elapsed();
 
         assert_eq!(
@@ -2543,7 +2664,13 @@ mod tests {
             invocation.cancel.cancel();
             // `with_degree` wires the no-cap probe, so the headroom gate is Ready on its first poll — the
             // exact condition under which an unbiased select would start coin-flipping.
-            let result = dispatch(&invocation, &Pool::with_degree(1), |_| {}).await;
+            let result = dispatch(
+                &invocation,
+                &Pool::with_degree(1),
+                EngineParallelism::UpToGlobalDegree,
+                |_| {},
+            )
+            .await;
             assert_eq!(
                 result,
                 InvocationResult::Succeeded,
@@ -2573,9 +2700,21 @@ mod tests {
 
         let ticks = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&ticks);
-        let result = dispatch(&invocation, &Pool::with_degree(1), move |fraction| {
-            sink.lock().expect("tick lock").push(fraction);
-        })
+        // [Test-Change: P4.21 — old-obsolete+new-correct, §0.9] the OLD call shape is obsolete (`dispatch`
+        // now takes the job's §0.9 `EngineParallelism` row) and the NEW one is correct (`UpToGlobalDegree`
+        // is §0.9's own native-CSV/TSV row, pinned by `the_native_engine_declares_the_0_9_up_to_global_
+        // degree_row`). rustfmt then re-indented the progress-sink closure body, so the tick-recording line
+        // reads as removed-and-re-added in the diff: it is IDENTICAL apart from that re-indentation, and no
+        // assertion was removed, relaxed, skipped or flipped red→green here (the P3.43 G70 over-flag
+        // precedent).
+        let result = dispatch(
+            &invocation,
+            &Pool::with_degree(1),
+            EngineParallelism::UpToGlobalDegree,
+            move |fraction| {
+                sink.lock().expect("tick lock").push(fraction);
+            },
+        )
         .await;
 
         assert_eq!(
@@ -2614,7 +2753,7 @@ mod tests {
         );
         no_out_tmp.plan.out_tmp = None;
         assert_eq!(
-            dispatch(&no_out_tmp, &Pool::with_degree(1), |_| {}).await,
+            dispatch(&no_out_tmp, &Pool::with_degree(1), EngineParallelism::UpToGlobalDegree, |_| {}).await,
             InvocationResult::Failed(ConversionErrorKind::InternalError),
             "§1.7: a native encode invocation with no out_tmp is a mis-wired lifecycle → InternalError"
         );
@@ -2629,7 +2768,13 @@ mod tests {
                 .into_temp_path(),
         );
         assert_eq!(
-            dispatch(&bad_token, &Pool::with_degree(1), |_| {}).await,
+            dispatch(
+                &bad_token,
+                &Pool::with_degree(1),
+                EngineParallelism::UpToGlobalDegree,
+                |_| {}
+            )
+            .await,
             InvocationResult::Failed(ConversionErrorKind::InternalError),
             "§1.7: a non-CSV/TSV target token is a mis-routed selection → InternalError"
         );
@@ -2645,7 +2790,13 @@ mod tests {
         );
         no_source.plan.args.clear();
         assert_eq!(
-            dispatch(&no_source, &Pool::with_degree(1), |_| {}).await,
+            dispatch(
+                &no_source,
+                &Pool::with_degree(1),
+                EngineParallelism::UpToGlobalDegree,
+                |_| {}
+            )
+            .await,
             InvocationResult::Failed(ConversionErrorKind::InternalError),
             "§1.7: a plan with no source arg is mis-built → InternalError (index-free, no panic)"
         );
@@ -2669,7 +2820,7 @@ mod tests {
                 .into_temp_path(),
         );
         assert_eq!(
-            dispatch(&invocation, &Pool::with_degree(1), |_| {}).await,
+            dispatch(&invocation, &Pool::with_degree(1), EngineParallelism::UpToGlobalDegree, |_| {}).await,
             InvocationResult::Failed(ConversionErrorKind::Corrupt),
             "§1.7/§2.8: an ambiguous-delimiter source fails the transform → Failed(Corrupt), never a panic"
         );
@@ -2699,7 +2850,13 @@ mod tests {
         // Cancel BEFORE dispatch: the token is already tripped, so the first chunk-boundary poll observes it.
         invocation.cancel.cancel();
         assert_eq!(
-            dispatch(&invocation, &Pool::with_degree(1), |_| {}).await,
+            dispatch(
+                &invocation,
+                &Pool::with_degree(1),
+                EngineParallelism::UpToGlobalDegree,
+                |_| {}
+            )
+            .await,
             InvocationResult::Cancelled,
             "§1.7: a cancelled token stops the native lane cooperatively → Cancelled"
         );
@@ -2727,7 +2884,13 @@ mod tests {
         let invocation = native_lane_invocation(&source, "tsv", out_temp);
         invocation.cancel.cancel();
 
-        let result = dispatch(&invocation, &Pool::with_degree(1), |_| {}).await;
+        let result = dispatch(
+            &invocation,
+            &Pool::with_degree(1),
+            EngineParallelism::UpToGlobalDegree,
+            |_| {},
+        )
+        .await;
         assert_eq!(
             result,
             InvocationResult::Cancelled,
@@ -2793,22 +2956,25 @@ mod tests {
         // The structural stall: `recv()` parks until this test drops `stall_tx`. Held across the whole await,
         // so the lane cannot finish inside the bound no matter how fast the machine is.
         let (stall_tx, stall_rx) = std::sync::mpsc::channel::<()>();
-        let lane = pool.run_in_core(move || -> Result<TransformStatus, TransformError> {
-            let out_file = std::fs::File::create(&out_path).map_err(TransformError::Write)?;
-            let mut report = |_fraction: f32| {};
-            let mut should_cancel = || {
-                // Parks at the fixture's first chunk boundary — which its size guarantees is reached.
-                let _ = stall_rx.recv();
-                false
-            };
-            csv_tsv_transform(
-                &source,
-                CsvTsvTarget::Tsv,
-                out_file,
-                &mut report,
-                &mut should_cancel,
-            )
-        });
+        let lane = pool.run_in_core(
+            EngineParallelism::UpToGlobalDegree,
+            move || -> Result<TransformStatus, TransformError> {
+                let out_file = std::fs::File::create(&out_path).map_err(TransformError::Write)?;
+                let mut report = |_fraction: f32| {};
+                let mut should_cancel = || {
+                    // Parks at the fixture's first chunk boundary — which its size guarantees is reached.
+                    let _ = stall_rx.recv();
+                    false
+                };
+                csv_tsv_transform(
+                    &source,
+                    CsvTsvTarget::Tsv,
+                    out_file,
+                    &mut report,
+                    &mut should_cancel,
+                )
+            },
+        );
         let forwarder = tokio::spawn(async {});
 
         let result = bounded_lane(lane, forwarder, deadline_token, Duration::from_millis(50)).await;
@@ -2840,21 +3006,24 @@ mod tests {
         let deadline_token = job.child_token();
 
         let (stall_tx, stall_rx) = std::sync::mpsc::channel::<()>();
-        let lane = pool.run_in_core(move || -> Result<TransformStatus, TransformError> {
-            let out_file = std::fs::File::create(&out_path).map_err(TransformError::Write)?;
-            let mut report = |_fraction: f32| {};
-            let mut should_cancel = || {
-                let _ = stall_rx.recv();
-                false
-            };
-            csv_tsv_transform(
-                &source,
-                CsvTsvTarget::Tsv,
-                out_file,
-                &mut report,
-                &mut should_cancel,
-            )
-        });
+        let lane = pool.run_in_core(
+            EngineParallelism::UpToGlobalDegree,
+            move || -> Result<TransformStatus, TransformError> {
+                let out_file = std::fs::File::create(&out_path).map_err(TransformError::Write)?;
+                let mut report = |_fraction: f32| {};
+                let mut should_cancel = || {
+                    let _ = stall_rx.recv();
+                    false
+                };
+                csv_tsv_transform(
+                    &source,
+                    CsvTsvTarget::Tsv,
+                    out_file,
+                    &mut report,
+                    &mut should_cancel,
+                )
+            },
+        );
         let forwarder = tokio::spawn(async {});
 
         // A generous bound: the point is that the lane finishes, not that it races.
@@ -2959,7 +3128,7 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         // A lane whose worker blocks on a never-sent channel until teardown (models a wedged read holding the
         // single degree-1 permit's worker slot).
-        let wedged = pool.run_in_core(move || {
+        let wedged = pool.run_in_core(EngineParallelism::UpToGlobalDegree, move || {
             let _ = release_rx.recv();
         });
         let timed_out = tokio::time::timeout(Duration::from_millis(50), wedged).await;
@@ -2972,7 +3141,7 @@ mod tests {
         // so a permit-free-on-drop REGRESSION fails FAST (a clean red) instead of hanging CI forever on a lane
         // that can never acquire the starved permit — the generous bound never bites on the passing path (the
         // trivial closure finishes in microseconds).
-        let recovered = tokio::time::timeout(Duration::from_secs(30), pool.run_in_core(|| 7_u32))
+        let recovered = tokio::time::timeout(Duration::from_secs(30), pool.run_in_core(EngineParallelism::UpToGlobalDegree, || 7_u32))
             .await
             .expect("§1.7/§0.9: a fresh lane must acquire the freed permit within the bound — a permit-free regression would otherwise hang here")
             .expect("§1.7/§0.9: the abandoned lane freed its permit — the pool is not starved, the run continues");
@@ -3437,6 +3606,10 @@ mod tests {
                 serialised_only: false,
                 kind: EngineKind::Subprocess,
             }
+        }
+        // §0.9: "poppler / pandoc | up to global degree | light, short-lived".
+        fn parallelism(&self, _item: &DroppedItem, _target: TargetId) -> EngineParallelism {
+            EngineParallelism::UpToGlobalDegree
         }
         fn capabilities(
             &self,
@@ -3965,6 +4138,12 @@ mod tests {
                 serialised_only: false,
                 kind: EngineKind::Subprocess,
             }
+        }
+        // The §3.2.1 two-step shape this stand-in models is the video FFmpeg one, whose §0.9 row is
+        // "FFmpeg (video re-encode) | low — 1–2" — the WORST-CASE row a probe-requiring engine must
+        // declare, since the permit is taken before the probe can say whether the item re-encodes.
+        fn parallelism(&self, _item: &DroppedItem, _target: TargetId) -> EngineParallelism {
+            EngineParallelism::VideoReencode
         }
         fn capabilities(
             &self,

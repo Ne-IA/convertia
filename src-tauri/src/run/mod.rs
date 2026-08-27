@@ -2691,7 +2691,7 @@ mod parallel_scratch_binding_tests {
             let minted = std::sync::Arc::clone(&minted);
             let dest_dir = dest.path().to_path_buf();
             handles.push(tokio::spawn(async move {
-                pool.run_subprocess(None, async {
+                pool.run_subprocess(crate::pool::EngineParallelism::UpToGlobalDegree, async {
                     let temp = scratch
                         .publish_temp(&dest_dir, JobId::from_index(SHARED_JOB))
                         .expect("§2.1.1 the per-item publish temp is created");

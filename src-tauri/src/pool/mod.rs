@@ -1,6 +1,7 @@
 //! `crate::pool` — the §0.9 bounded engine-subprocess pool: the single owner of the global concurrency
-//! degree and (from P4) the per-engine parallelism rules (LibreOffice serialised via a dedicated
-//! single-permit semaphore) + the timeout / no-progress-watchdog parameters. A §0.7 **tier-3 leaf** — it
+//! degree, of the per-engine parallelism rules ([`EngineParallelism`] + its cap consts since P4.21;
+//! LibreOffice serialised via a dedicated single-permit semaphore at P4.22) and of the timeout /
+//! no-progress-watchdog parameters. A §0.7 **tier-3 leaf** — it
 //! depends DOWN only, on `std`, the `tokio` runtime primitives and (since P4.20) the tier-3 SIBLING
 //! `crate::platform` for the §1.10 available-memory read; it names **no** tier-2 type. A sibling edge is not
 //! an upward one — §0.7 puts `pool`, `platform` and `domain` on the same tier as "the leaves: they depend on
@@ -70,9 +71,21 @@
 //!  - The reading comes from `crate::platform::available_memory_bytes`, injected as a fn pointer so
 //!    [`Pool::with_degree`] stays deterministic for the §6.7.2 harness and the tests drive exact values.
 //!
+//! ## LIVE in P4.21 (the §0.9 per-engine caps)
+//!  - [`EngineParallelism`] is the §0.9 engine table as a closed enum — the vocabulary a job's engine
+//!    declares through the §3.2.2 `Engine::parallelism` seam, and the only way a caller obtains a
+//!    `per_engine_cap`. [`EngineParallelism::per_engine_cap`] is the ONE place a §0.9 row becomes a number
+//!    ([`MAX_VIDEO_REENCODE_CONCURRENCY`]), so no call site can invent a cap.
+//!  - BOTH lanes now take the row and acquire by it: the per-engine term rides the SAME
+//!    [`Pool::slot_weight`] mechanism the §1.10 memory term uses, so a capped job takes proportionally more
+//!    of the fixed semaphore and proportionally fewer of its kind are admitted. It is ENFORCED, not merely
+//!    computed.
+//!  - LibreOffice's "serialised — exactly 1" row is deliberately NOT in this vocabulary: §0.9 gives the
+//!    serialised engine its own BOTH-permits mechanism (P4.22) and says non-serialised jobs take only the
+//!    global permit, so a serialised job takes ONE global permit — see [`EngineParallelism`] for the full
+//!    argument.
+//!
 //! ## SHELLED — a doc-only contract map P4 EXPANDS (never rebuilds)
-//!  - **P4.21** adds the per-engine caps (LibreOffice 1, video re-encode 1–2, the rest up to the degree) —
-//!    it passes them to [`Pool::effective_degree`]'s `per_engine_cap` term rather than re-deriving it.
 //!  - **P4.22** adds the `serialised_only` enforcement — a dedicated single-permit `Semaphore` per
 //!    serialised engine, allocated at registry-build time; a serialised job acquires BOTH the global permit
 //!    AND that engine's single-permit before spawn, releasing both on exit — and authors `MAX_LO_CONCURRENCY
@@ -99,8 +112,10 @@
 //! consumer); this module names no `crate::engines` type, keeping §0.7's downward-only tiering intact.
 //! P4.20 kept that intact for the subprocess half too: the lane is generic in the caller's return type, so
 //! `ConfinedRun`/`InvocationResult`/`EngineInvocation` are instantiated BY the tier-2 caller and named
-//! nowhere here — and the per-engine cap enters as a plain `Option<usize>`, needing no `EngineId` key until
-//! P4.22 decides the map's tier-legal form.
+//! nowhere here. P4.21 keeps it intact for the per-engine caps as well: [`EngineParallelism`] is keyed by
+//! nothing at all — it is a plain §0.9 ROW the tier-2 engine declares per job and hands DOWN, so the cap
+//! needs no `EngineId` key and this leaf still names no `crate::engines` type. The `EngineId`-keyed map
+//! question therefore remains P4.22's alone (the serialised-flag path).
 
 // [Build-Session-Entscheidung: P3.3] dead_code expect — the §0.9 Pool + the §1.7 in-core spawn_blocking
 // lane are authored ahead of their production consumers. P3.43 WIRED run_in_core + LaneError into the dispatch
@@ -112,7 +127,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "Items authored ahead of their production consumers, each named with the box that makes it live. DEAD TODAY: Pool::with_degree + no_memory_cap (the deterministic pinned-degree constructor path, used by the §6.7.2 harness and by tests only); Pool::run_subprocess, whose production consumers are the P4.32 subprocess dispatch arms (the §1.7 lane calls it once the program-path resolution supplies a resolved binary); and the §0.9 subprocess-watchdog consts WATCHDOG_POLL_INTERVAL / NO_PROGRESS_TIMEOUT / SUBPROCESS_WALL_CLOCK_DEFAULT / VIDEO_WALL_CLOCK (P4.12) plus GROUP_CONFIRM_WAIT (P4.11), whose consumers (crate::engines::run_subprocess, crate::isolation::run_confined) are themselves dead until P4.32. LIVE, hence deliberately NOT listed: Pool::new and the with_degree_and_memory it calls one hop down; Pool::run_in_core (the native CSV/TSV lane runs through the live §1.7 dispatch) and, through it, Pool::slot_weight and Pool::effective_degree — the weighted acquire enforces the §1.10 effective degree on every live acquire — plus the MEMORY_PER_SLOT_BYTES those read; LaneError, whose variants run_in_core constructs and the live crate::engines::bounded_lane matches; Pool::await_dispatch_headroom and HIGH_MEMORY_WATERMARK_BYTES / MEMORY_WATERMARK_POLL / MEMORY_PAUSE_MAX, called by crate::engines::dispatch at the §1.7 dispatch entry; NATIVE_CSV_TSV_TIMEOUT; and the clamp_global_degree/resolve_global_degree degree helpers Pool::new resolves through. The cfg(test) tests below construct every pool shape and exercise both lanes, so the test build is dead-code-clean. `expect` (not `allow`) auto-flags the moment the last consumer lands."
+        reason = "Items authored ahead of their production consumers, each named with the box that makes it live. DEAD TODAY: Pool::with_degree + no_memory_cap (the deterministic pinned-degree constructor path, used by the §6.7.2 harness and by tests only); Pool::run_subprocess, whose production consumers are the P4.32 subprocess dispatch arms (the §1.7 lane calls it once the program-path resolution supplies a resolved binary); the EngineParallelism::VideoReencode VARIANT (P4.21), which is the §0.9 'FFmpeg (video re-encode)' table row and is therefore first CONSTRUCTED by the P6 FFmpeg engine's Engine::parallelism impl — the enum itself, its per_engine_cap projection and MAX_VIDEO_REENCODE_CONCURRENCY are LIVE (the native lane acquires by row on every live dispatch, and the projection's match arm reads the const), only that one variant has no production constructor yet; and the §0.9 subprocess-watchdog consts WATCHDOG_POLL_INTERVAL / NO_PROGRESS_TIMEOUT / SUBPROCESS_WALL_CLOCK_DEFAULT / VIDEO_WALL_CLOCK (P4.12) plus GROUP_CONFIRM_WAIT (P4.11), whose consumers (crate::engines::run_subprocess, crate::isolation::run_confined) are themselves dead until P4.32. LIVE, hence deliberately NOT listed: Pool::new and the with_degree_and_memory it calls one hop down; Pool::run_in_core (the native CSV/TSV lane runs through the live §1.7 dispatch) and, through it, Pool::slot_weight and Pool::effective_degree — the weighted acquire enforces the §1.10 effective degree on every live acquire — plus the MEMORY_PER_SLOT_BYTES those read; LaneError, whose variants run_in_core constructs and the live crate::engines::bounded_lane matches; Pool::await_dispatch_headroom and HIGH_MEMORY_WATERMARK_BYTES / MEMORY_WATERMARK_POLL / MEMORY_PAUSE_MAX, called by crate::engines::dispatch at the §1.7 dispatch entry; NATIVE_CSV_TSV_TIMEOUT; and the clamp_global_degree/resolve_global_degree degree helpers Pool::new resolves through. The cfg(test) tests below construct every pool shape and exercise both lanes, so the test build is dead-code-clean. `expect` (not `allow`) auto-flags the moment the last consumer lands."
     )
 )]
 
@@ -290,6 +305,80 @@ pub const MEMORY_PAUSE_MAX: Duration = Duration::from_secs(30);
 const _: () = assert!(HIGH_MEMORY_WATERMARK_BYTES < MEMORY_PER_SLOT_BYTES);
 const _: () = assert!(MEMORY_PER_SLOT_BYTES > 0);
 
+/// The §0.9-owned **video re-encode** parallelism cap — the concrete number behind the §0.9 engine table's
+/// "**FFmpeg** (video re-encode) | **low — 1–2**" row, and the single source of it: a named `pub const` in
+/// this §0.9 pool module, co-located with the timeout / watchdog / memory set, so the §6.7.2 test harness
+/// imports the same number production uses rather than hard-coding a literal (the `MAX_LO_CONCURRENCY`
+/// "single source … never hard-coded" convention §0.9 states for the serialised degree).
+///
+/// **Why `2` and not `1`** [Build-Session-Entscheidung: P4.21] — §0.9 states the band as "low — 1–2" and
+/// then works the example itself one bullet down: "video re-encode runs at `min(global_degree, 2)`". So `2`
+/// is §0.9's own resolution of its band, not a free pick. The rationale is §0.9's too: a video re-encode is
+/// "already the slowest op" and libx264/libvpx saturate most cores from INSIDE one process, so one or two
+/// of them already is the machine — "video re-encode is effectively serial-ish on typical machines, by
+/// design — not a bug". On a small host the global degree caps it further; every term of
+/// [`Pool::effective_degree`] only ever caps downward.
+pub const MAX_VIDEO_REENCODE_CONCURRENCY: usize = 2;
+
+/// The §0.9 **per-engine parallelism rule** for one job — the engine-table row the job's engine declares
+/// for it (the §3.2.2 `Engine::parallelism` seam), and the ONLY way a caller obtains a `per_engine_cap` for
+/// [`Pool::effective_degree`]. Modelling §0.9's rows as a closed enum instead of a bare number is what
+/// keeps §0.9 the single source: a lane cannot be handed an invented cap, and a new row is a §0.9 edit plus
+/// a variant here, never a literal at a call site.
+///
+/// **The §0.9 engine table, in full, and where each row is realised**
+/// [Build-Session-Entscheidung: P4.21]:
+///
+/// | §0.9 table row | realised as |
+/// |---|---|
+/// | FFmpeg (video re-encode) — "low — 1–2" | [`EngineParallelism::VideoReencode`] → [`MAX_VIDEO_REENCODE_CONCURRENCY`] |
+/// | FFmpeg (audio / extract-audio / remux) — "up to global degree" | [`EngineParallelism::UpToGlobalDegree`] |
+/// | image core (§3.5.5) — "up to global degree" | [`EngineParallelism::UpToGlobalDegree`] |
+/// | poppler / pandoc — "up to global degree" | [`EngineParallelism::UpToGlobalDegree`] |
+/// | native CSV/TSV (§3.5.6) — "up to global degree (worker threads)" | [`EngineParallelism::UpToGlobalDegree`] |
+/// | LibreOffice — "serialised — exactly 1" | **deliberately NOT a variant here** — see below |
+///
+/// **Why LibreOffice's row is deliberately absent.** §0.9 gives the serialised engine its own `[DECIDED]`
+/// enforcement mechanism — a dedicated single-permit semaphore per serialised engine, where such a job
+/// "must **acquire BOTH** the global degree semaphore **and** that engine's single-permit semaphore",
+/// while "non-serialised engines acquire only the global degree permit". A serialised job therefore takes
+/// exactly ONE global permit like any other job, and its serialisation is the second, engine-private
+/// semaphore (built at P4.22) reached through `EngineDescriptor.serialised_only` (the P4.5 data path).
+/// Routing it through THIS term instead would give it `per_engine_cap = Some(1)`, hence a
+/// [`Pool::slot_weight`] of the whole degree — one office conversion would consume every global permit and
+/// nothing else could run beside it. That is neither what §0.9's mechanism says nor what §0.9's "a batch
+/// mixing engines respects each engine's own cap **within the shared global bound**" allows. So LibreOffice
+/// is `UpToGlobalDegree` on THIS axis and serialised on THAT one — two orthogonal axes, one source each.
+///
+/// INTERNAL — never on the IPC wire (no `serde`/`specta`), mirroring the sibling fieldless engine-seam
+/// enums (`crate::engines::EngineKind`); `Copy` is free for a fieldless enum, `PartialEq`/`Eq` for the
+/// dispatch + test assertions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineParallelism {
+    /// §0.9 "up to global degree" — the table's majority row: FFmpeg audio / extract-audio / remux, the
+    /// image worker, poppler, pandoc and the native CSV/TSV engine. Imposes NO per-engine term, so the job
+    /// is bounded by the global degree and the §1.10 memory factor alone. Also the row of a light
+    /// sub-invocation of an otherwise-capped engine (the §3.2.1 `ffprobe` probe).
+    UpToGlobalDegree,
+    /// §0.9 "low — 1–2" — a CPU-bound video RE-ENCODE (never a remux, which §0.9 puts on the row above).
+    /// Caps the job at [`MAX_VIDEO_REENCODE_CONCURRENCY`] concurrent runs.
+    VideoReencode,
+}
+
+impl EngineParallelism {
+    /// Project the §0.9 row onto [`Pool::effective_degree`]'s `per_engine_cap` term — `None` for "up to
+    /// global degree" (no per-engine bound at all, so the `min` is decided by the global degree and the
+    /// §1.10 memory cap), a concrete cap otherwise. This is the ONE place a §0.9 row becomes a number.
+    /// [Build-Session-Entscheidung: P4.21]
+    #[must_use]
+    pub const fn per_engine_cap(self) -> Option<usize> {
+        match self {
+            EngineParallelism::UpToGlobalDegree => None,
+            EngineParallelism::VideoReencode => Some(MAX_VIDEO_REENCODE_CONCURRENCY),
+        }
+    }
+}
+
 /// The failure modes of the §0.9 in-core `spawn_blocking` lane. INTERNAL — never on the IPC wire (no
 /// `serde`/`specta`); the §1.7/§2.8 caller (P3.46) maps it onto a per-item `Failed`, so a lane failure is
 /// always ONE item's failure, never a pool-wide fault. [Build-Session-Entscheidung: P3.3] `Debug` + the
@@ -390,8 +479,11 @@ impl Pool {
     /// the result is floored at 1 (a zero degree would dispatch nothing at all).
     ///
     /// * `global_degree` — this pool's configured §0.9 degree.
-    /// * `per_engine_cap` — `None` today; the §0.9 per-engine caps (LibreOffice 1, video re-encode 1–2)
-    ///   are wired by P4.21, which passes them here rather than re-deriving the formula.
+    /// * `per_engine_cap` — the §0.9 per-engine term, LIVE since P4.21: it arrives as an
+    ///   [`EngineParallelism`] row (the §0.9 engine table) projected through
+    ///   [`EngineParallelism::per_engine_cap`], so the number always comes from §0.9 and never from a call
+    ///   site. `None` is "up to global degree" — no per-engine bound. (LibreOffice's "serialised — exactly
+    ///   1" row is NOT this term; see [`EngineParallelism`] for why.)
     /// * `memory_based_cap` — `available_memory / MEMORY_PER_SLOT_BYTES`, or NO cap when the probe cannot
     ///   read a value (the never-break bias).
     ///
@@ -424,6 +516,18 @@ impl Pool {
     /// multiple of `effective` the integer weight admits slightly FEWER than the cap (degree 4, effective 3
     /// ⇒ weight 2 ⇒ 2 concurrent): under-admitting is the safe direction for a memory gate, and the
     /// alternative — a resizable permit pool — would buy one extra slot at the price of a race.
+    ///
+    /// **The same weight now carries the §0.9 PER-ENGINE term (P4.21), and its two side effects are
+    /// deliberate** [Build-Session-Entscheidung: P4.21]. (1) A capped job takes MORE than one permit, so a
+    /// video re-encode at degree 4 holds 2 of them and leaves 2 for everything else. That is not a
+    /// distortion of §0.9 but its own rationale made mechanical: the 1–2 cap exists "*because* one or two
+    /// FFmpeg processes already use most cores", so charging such a job ~half the machine's slot budget is
+    /// exactly the pressure §0.9 describes. No cap is ever exceeded (`min` is downward-only, and
+    /// `floor(degree / weight) ≤ effective` holds term-independently) — only the total in-flight count is
+    /// conservative, the safe direction for a CPU gate as much as for a memory one. (2) At a degree that is
+    /// not a multiple of the cap the same rounding bites: degree 3 with a cap of 2 ⇒ weight 2 ⇒ ONE
+    /// concurrent re-encode. Under-admitting again, and squarely inside §0.9's stated intent that "video
+    /// re-encode is effectively serial-ish on typical machines, by design — not a bug".
     ///
     /// Never zero and never above `degree`: `effective_degree` is floored at 1, so the weight is in
     /// `1..=degree` and the semaphore can always satisfy it (a weight above the total would deadlock).
@@ -465,13 +569,25 @@ impl Pool {
 
     /// The §0.9 native-CSV/TSV / §1.7 InProcessNative in-core permit lane. Acquire a slot — `slot_weight`
     /// global-degree permits, which is ONE at full effective degree and more under §1.10 memory pressure
-    /// (P4.20) — run `task` on a dedicated `spawn_blocking` worker thread (so the synchronous loop never
-    /// blocks the Tokio runtime that drives the subprocess engines + IPC), and release the permit on
-    /// completion, on a worker panic, AND on abandonment. A caught worker panic → `Err(LaneError::Panicked)`
+    /// (P4.20) or the job's §0.9 per-engine cap (P4.21) — run `task` on a dedicated `spawn_blocking` worker
+    /// thread (so the synchronous loop never blocks the Tokio runtime that drives the subprocess engines +
+    /// IPC), and release the permit on completion, on a worker panic, AND on abandonment. A caught worker
+    /// panic → `Err(LaneError::Panicked)`
     /// (never re-raised: re-raising would panic the pool-driver task and violate §0.9 panic isolation). The
     /// caller captures its own `progress_tx` (P3.43) + `CancellationToken` (P3.44) inside `task`, and P3.45
     /// wraps this future in `tokio::time::timeout` (§1.7). [Build-Session-Entscheidung: P3.3]
-    pub async fn run_in_core<F, R>(&self, task: F) -> Result<R, LaneError>
+    ///
+    /// **`parallelism`** is the job's §0.9 engine-table row (P4.21), taken as an [`EngineParallelism`]
+    /// rather than a bare `Option<usize>` so a caller cannot invent a cap §0.9 does not state. The sole
+    /// engine that reaches this lane — native CSV/TSV (§3.5.6) — is `UpToGlobalDegree` per §0.9, but the
+    /// parameter is not hard-coded here: the §1.7 dispatch passes what the job's `Engine::parallelism`
+    /// declared, so this lane never has to know which engine it is running.
+    /// [Build-Session-Entscheidung: P4.21]
+    pub async fn run_in_core<F, R>(
+        &self,
+        parallelism: EngineParallelism,
+        task: F,
+    ) -> Result<R, LaneError>
     where
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static,
@@ -481,13 +597,14 @@ impl Pool {
         // wedged-uninterruptible-read design (the abandoned thread must not hold a global-degree permit, or
         // a handful of wedges would starve the pool). Moving it into the closure would keep a wedged
         // thread's permit held until that thread finishes. [Build-Session-Entscheidung: P3.3]
-        // The §1.10 effective degree is enforced by WEIGHT (see `slot_weight`): under memory pressure one
-        // slot takes several global permits, so fewer run at once. The native engine carries no §0.9
-        // per-engine cap ("native CSV/TSV … up to global degree"), hence `None`.
+        // The §1.10 effective degree AND the §0.9 per-engine cap are enforced by WEIGHT (see
+        // `slot_weight`): under memory pressure — or for a capped engine — one slot takes several global
+        // permits, so fewer run at once. The row comes from the caller's `Engine::parallelism` (P4.21),
+        // never from a literal here.
         let _permit = self
             .global
             .clone()
-            .acquire_many_owned(self.slot_weight(None))
+            .acquire_many_owned(self.slot_weight(parallelism.per_engine_cap()))
             .await
             .map_err(|_closed| LaneError::PoolClosed)?;
         // spawn_blocking gives the §2.13 catch_unwind boundary for free: a panic → JoinError (never
@@ -500,9 +617,10 @@ impl Pool {
             .map_err(|_join_err| LaneError::Panicked)
     }
 
-    /// The §0.9 **subprocess** permit lane — the half of the pool P3.3 shelled and this box fills. Acquire
+    /// The §0.9 **subprocess** permit lane — the half of the pool P3.3 shelled and P4.20 filled. Acquire
     /// a slot — `slot_weight` permits, which is ONE at full effective degree and more under §1.10 memory
-    /// pressure — await the caller's engine run, and release on EVERY exit path. It is the bound behind
+    /// pressure or the job's §0.9 per-engine cap (P4.21) — await the caller's engine run, and release on
+    /// EVERY exit path. It is the bound behind
     /// §0.9's "a bounded engine-subprocess pool governs how many engine processes run at once".
     ///
     /// **The §1.10 watermark pause is NOT here**, and a P4.32 caller must not add it: it lives at the §1.7
@@ -528,20 +646,25 @@ impl Pool {
     /// it denotes a `spawn_blocking` `JoinError`, and an awaited future has no `catch_unwind` boundary — a
     /// panic inside `task` propagates to the caller's own §2.13 per-item boundary. The only error this lane
     /// produces is `PoolClosed`. [Build-Session-Entscheidung: P4.20]
+    ///
+    /// **`parallelism`** is the job's §0.9 engine-table row (P4.21) — an [`EngineParallelism`] rather than
+    /// the raw `Option<usize>` P4.20 shipped, so §0.9 stays the only place a cap number exists. A P4.32
+    /// caller passes what the job's `Engine::parallelism` declared; the LibreOffice "serialised — exactly
+    /// 1" row is NOT expressed through this argument (its dedicated single-permit semaphore is P4.22 — see
+    /// [`EngineParallelism`]). [Build-Session-Entscheidung: P4.21]
     pub async fn run_subprocess<F, R>(
         &self,
-        per_engine_cap: Option<usize>,
+        parallelism: EngineParallelism,
         task: F,
     ) -> Result<R, LaneError>
     where
         F: std::future::Future<Output = R>,
     {
-        // The §1.10 effective degree is enforced by WEIGHT (see `slot_weight`), and `per_engine_cap` is the
-        // §0.9 per-engine term P4.21 fills — `None` until then, which leaves the global degree and the
-        // memory cap as the only bounds.
+        // The §1.10 effective degree AND the §0.9 per-engine cap are enforced by WEIGHT (see
+        // `slot_weight`); the row arrives from the caller's `Engine::parallelism`, never a literal here.
         let _permit = self
             .global
-            .acquire_many(self.slot_weight(per_engine_cap))
+            .acquire_many(self.slot_weight(parallelism.per_engine_cap()))
             .await
             .map_err(|_closed| LaneError::PoolClosed)?;
         Ok(task.await)
@@ -684,7 +807,7 @@ mod tests {
             let concurrent = Arc::clone(&concurrent);
             let peak = Arc::clone(&peak);
             handles.push(tokio::spawn(async move {
-                pool.run_in_core(move || {
+                pool.run_in_core(EngineParallelism::UpToGlobalDegree, move || {
                     let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
                     peak.fetch_max(now, Ordering::SeqCst);
                     barrier.wait(); // permit-bounded: exactly DEGREE can be here at once
@@ -723,7 +846,9 @@ mod tests {
         let pool = Pool::with_degree(2);
         let runtime_thread = std::thread::current().id();
         let worker_thread = pool
-            .run_in_core(|| std::thread::current().id())
+            .run_in_core(EngineParallelism::UpToGlobalDegree, || {
+                std::thread::current().id()
+            })
             .await
             .expect("§0.9: the in-core lane returns the closure's value");
         assert_ne!(
@@ -744,16 +869,29 @@ mod tests {
     async fn a_panicking_closure_releases_its_permit_and_does_not_poison_the_pool() {
         let pool = Pool::with_degree(1);
         let panicked: Result<u32, LaneError> = pool
-            .run_in_core(|| std::hint::black_box(Option::<u32>::None).unwrap())
+            .run_in_core(EngineParallelism::UpToGlobalDegree, || {
+                std::hint::black_box(Option::<u32>::None).unwrap()
+            })
             .await;
         assert_eq!(
             panicked,
             Err(LaneError::Panicked),
             "§0.9/§2.13: a worker panic surfaces as a clean LaneError::Panicked, never a re-raised pool-path panic"
         );
-        let recovered = pool.run_in_core(|| 42_u32).await.expect(
-            "§0.9: the single permit was released despite the panic — the pool is not poisoned",
-        );
+        // [Test-Change: P4.21 — old-obsolete+new-correct, §0.9] the OLD call shape is obsolete (both pool
+        // lanes now take the job's §0.9 `EngineParallelism` row) and the NEW one is correct (this lane
+        // carries no per-engine cap, §0.9's native-CSV/TSV row); rustfmt then split the chain, so what G70
+        // sees as removed is the chain OPENER line, not an assertion — and the message argument below is
+        // replaced too, its TEXT unchanged with only its indentation shifted by the reflow (verified
+        // byte-exactly against HEAD, not assumed). Nothing was removed, relaxed, skipped or flipped
+        // red→green (the P3.43 G70 over-flag precedent) — the permit-release property this test proves is
+        // untouched.
+        let recovered = pool
+            .run_in_core(EngineParallelism::UpToGlobalDegree, || 42_u32)
+            .await
+            .expect(
+                "§0.9: the single permit was released despite the panic — the pool is not poisoned",
+            );
         assert_eq!(recovered, 42);
     }
 
@@ -763,7 +901,7 @@ mod tests {
         let pool = Pool::with_degree(2);
         pool.close();
         assert_eq!(
-            pool.run_in_core(|| 1_u32).await,
+            pool.run_in_core(EngineParallelism::UpToGlobalDegree, || 1_u32).await,
             Err(LaneError::PoolClosed),
             "§0.9: acquiring on a closed semaphore maps to PoolClosed, never an unwrap/panic on the no-panic pool path"
         );
@@ -985,7 +1123,10 @@ mod tests {
     #[tokio::test]
     async fn under_memory_pressure_a_degree_four_pool_admits_one_lane_at_a_time() {
         let pool = Pool::with_degree_and_memory(4, mem_quarter_slot);
-        let mut first = Box::pin(pool.run_subprocess(None, std::future::pending::<u32>()));
+        let mut first = Box::pin(pool.run_subprocess(
+            EngineParallelism::UpToGlobalDegree,
+            std::future::pending::<u32>(),
+        ));
         assert!(
             tokio::time::timeout(Duration::from_millis(50), &mut first)
                 .await
@@ -999,7 +1140,8 @@ mod tests {
         );
         // The second lane's engine future completes INSTANTLY, so "still pending" can only mean it is
         // blocked acquiring — that is what distinguishes "not admitted" from "admitted and running".
-        let mut second = Box::pin(pool.run_subprocess(None, async { 7_u32 }));
+        let mut second =
+            Box::pin(pool.run_subprocess(EngineParallelism::UpToGlobalDegree, async { 7_u32 }));
         assert!(
             tokio::time::timeout(Duration::from_millis(50), &mut second)
                 .await
@@ -1088,7 +1230,7 @@ mod tests {
             let concurrent = Arc::clone(&concurrent);
             let peak = Arc::clone(&peak);
             handles.push(tokio::spawn(async move {
-                pool.run_subprocess(None, async {
+                pool.run_subprocess(EngineParallelism::UpToGlobalDegree, async {
                     let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
                     peak.fetch_max(now, Ordering::SeqCst);
                     barrier.wait().await; // permit-bounded: exactly DEGREE can be here at once
@@ -1127,7 +1269,7 @@ mod tests {
         let pool = Pool::with_degree(1);
 
         // (1) clean completion
-        pool.run_subprocess(None, async { 1_u32 })
+        pool.run_subprocess(EngineParallelism::UpToGlobalDegree, async { 1_u32 })
             .await
             .expect("a clean engine run completes");
         assert_eq!(
@@ -1140,7 +1282,9 @@ mod tests {
         // boundary they are all "the future resolved to a failure value", which must not change the permit
         // accounting one bit.
         let failed: Result<Result<u32, &str>, LaneError> = pool
-            .run_subprocess(None, async { Err("engine killed at its memory cap") })
+            .run_subprocess(EngineParallelism::UpToGlobalDegree, async {
+                Err("engine killed at its memory cap")
+            })
             .await;
         assert_eq!(
             failed.expect("the lane itself succeeded — the ENGINE failed"),
@@ -1157,7 +1301,10 @@ mod tests {
         // save the pool. `Box::pin` (not `tokio::pin!`) because the drop must destroy the FUTURE: `pin!`
         // yields a `Pin<&mut _>`, and dropping a reference leaves the referent — and its permit — alive
         // until end of scope, which would make this leg silently vacuous.
-        let mut abandoned = Box::pin(pool.run_subprocess(None, std::future::pending::<u32>()));
+        let mut abandoned = Box::pin(pool.run_subprocess(
+            EngineParallelism::UpToGlobalDegree,
+            std::future::pending::<u32>(),
+        ));
         assert!(
             tokio::time::timeout(Duration::from_millis(50), &mut abandoned)
                 .await
@@ -1179,7 +1326,7 @@ mod tests {
         // The load-bearing proof: on a DEGREE-1 pool the next item can only run if every shape above
         // genuinely returned its permit.
         let recovered = pool
-            .run_subprocess(None, async { 42_u32 })
+            .run_subprocess(EngineParallelism::UpToGlobalDegree, async { 42_u32 })
             .await
             .expect("§0.9: the single permit survived every failure shape");
         assert_eq!(recovered, 42);
@@ -1192,7 +1339,8 @@ mod tests {
         let pool = Pool::with_degree(2);
         pool.close();
         assert_eq!(
-            pool.run_subprocess(None, async { 1_u32 }).await,
+            pool.run_subprocess(EngineParallelism::UpToGlobalDegree, async { 1_u32 })
+                .await,
             Err(LaneError::PoolClosed),
             "§0.9: acquiring on a closed semaphore maps to PoolClosed on both lanes"
         );
@@ -1217,5 +1365,210 @@ mod tests {
             MEMORY_WATERMARK_POLL > Duration::ZERO && MEMORY_PAUSE_MAX > Duration::ZERO,
             "§1.10: a zero poll would busy-spin the gate; a zero ceiling would disable the pause"
         );
+    }
+
+    // ─── P4.21: the §0.9 per-engine parallelism caps ──
+    //
+    // The rows are pure data over the same `effective_degree`/`slot_weight` frame P4.20 built, so the
+    // arithmetic legs are exact unit pins and the behavioural leg reuses the established Barrier shape
+    // (a Barrier sized to the expected peak proves liveness, the permit bound proves safety) — no sleep
+    // window to race on.
+
+    // §6.4.1 (G15): the §0.9 engine table transcribed — each [`EngineParallelism`] row projects onto exactly
+    // the `per_engine_cap` term of §0.9's `min(global_degree, per_engine_cap, memory_based_cap)`, and
+    // MAX_VIDEO_REENCODE_CONCURRENCY is pinned to the number §0.9 works out itself one bullet below its
+    // table ("video re-encode runs at `min(global_degree, 2)`") — so a recalibration of the band has to
+    // change §0.9 and this pin together, never silently drift from the spec's own worked example.
+    #[test]
+    fn the_engine_parallelism_rows_project_onto_the_per_engine_cap_term() {
+        assert_eq!(
+            MAX_VIDEO_REENCODE_CONCURRENCY, 2,
+            "§0.9: the 'low — 1–2' band is resolved by §0.9's own worked example, min(global_degree, 2)"
+        );
+        assert_eq!(
+            EngineParallelism::UpToGlobalDegree.per_engine_cap(),
+            None,
+            "§0.9: 'up to global degree' imposes NO per-engine term — the min is left to the global degree \
+             and the §1.10 memory cap"
+        );
+        assert_eq!(
+            EngineParallelism::VideoReencode.per_engine_cap(),
+            Some(MAX_VIDEO_REENCODE_CONCURRENCY),
+            "§0.9: the video-re-encode row is the one row carrying a number, and it carries the §0.9-owned \
+             const rather than a literal (the MAX_LO_CONCURRENCY 'never hard-coded' convention)"
+        );
+    }
+
+    // The COMPILE-TIME variant lock (the established dependency-free exhaustive-match pattern, cf.
+    // `crate::engines`' `engine_id_exhaustive`): adding a §0.9 table row without deciding its
+    // `per_engine_cap` projection in the test above fails to compile here.
+    fn engine_parallelism_exhaustive(row: &EngineParallelism) {
+        match row {
+            EngineParallelism::UpToGlobalDegree | EngineParallelism::VideoReencode => {}
+        }
+    }
+
+    #[test]
+    fn engine_parallelism_exhaustive_match_is_exercised() {
+        engine_parallelism_exhaustive(&EngineParallelism::VideoReencode);
+    }
+
+    // §6.4.1 (G15): the §0.9 per-engine cap enters `effective_degree` as a DOWNWARD-only term, exactly like
+    // the other two ("the per-engine caps above OVERRIDE the global degree downward, never upward"). Pinned
+    // across the whole §0.9 degree range 1..=4 plus the cases where the §1.10 memory term is the smaller
+    // one — a per-engine cap never RAISES a degree the memory factor lowered.
+    #[test]
+    fn the_video_reencode_cap_bounds_the_effective_degree_downward_only() {
+        // (degree, probe, expected effective degree for the capped row, why)
+        type CapCase = (usize, fn() -> Option<u64>, usize, &'static str);
+        let cases: [CapCase; 6] = [
+            (
+                1,
+                mem_unknown,
+                1,
+                "a degree-1 host is already serial — a cap can never raise it",
+            ),
+            (
+                2,
+                mem_unknown,
+                2,
+                "at degree 2 the cap equals the degree, so nothing changes",
+            ),
+            (
+                3,
+                mem_unknown,
+                2,
+                "at degree 3 the cap is the smallest term",
+            ),
+            (
+                4,
+                mem_unknown,
+                2,
+                "§0.9's own example: video re-encode runs at min(global_degree, 2)",
+            ),
+            (4, mem_1gib, 2, "cap and memory term agree at 2"),
+            (
+                4,
+                mem_quarter_slot,
+                1,
+                "§1.10: under one slot's budget the memory term is smaller still — serial",
+            ),
+        ];
+        for (degree, probe, want, why) in cases {
+            let pool = Pool::with_degree_and_memory(degree, probe);
+            let capped = pool.effective_degree(EngineParallelism::VideoReencode.per_engine_cap());
+            let uncapped =
+                pool.effective_degree(EngineParallelism::UpToGlobalDegree.per_engine_cap());
+            assert_eq!(capped, want, "§0.9/§1.10: {why} (degree {degree})");
+            assert!(
+                capped <= uncapped,
+                "§0.9: a per-engine cap overrides the global degree DOWNWARD, never upward (degree \
+                 {degree}: capped {capped}, uncapped {uncapped})"
+            );
+        }
+    }
+
+    // §6.4.1 (G15): the §0.9 per-engine cap is ENFORCED by the same `slot_weight` mechanism the §1.10 memory
+    // term uses — a capped job takes `ceil(degree / cap)` global permits, so `floor(degree / weight)` of them
+    // are admitted, never more than the cap. The degree-3 row pins the DOCUMENTED under-admission (weight 2
+    // ⇒ ONE concurrent re-encode where the cap says 2), which is the safe direction and squarely inside
+    // §0.9's own intent that "video re-encode is effectively serial-ish on typical machines, by design — not
+    // a bug". The uncapped assertion in the same loop proves the WEIGHT is what the cap changed, not the
+    // mechanism.
+    #[test]
+    fn the_video_reencode_cap_is_enforced_by_the_slot_weight() {
+        // (degree, expected capped slot weight, expected admitted concurrent re-encodes)
+        type WeightCase = (usize, u32, usize);
+        let cases: [WeightCase; 4] = [(1, 1, 1), (2, 1, 2), (3, 2, 1), (4, 2, 2)];
+        for (degree, weight, admitted) in cases {
+            let pool = Pool::with_degree(degree);
+            let capped = EngineParallelism::VideoReencode.per_engine_cap();
+            assert_eq!(
+                pool.slot_weight(capped),
+                weight,
+                "degree {degree}: the capped slot weight"
+            );
+            assert_eq!(
+                degree / weight as usize,
+                admitted,
+                "§0.9: degree {degree} admits {admitted} concurrent video re-encode(s)"
+            );
+            assert!(
+                admitted <= MAX_VIDEO_REENCODE_CONCURRENCY,
+                "§0.9: never MORE than the video-re-encode cap (degree {degree})"
+            );
+            assert_eq!(
+                pool.slot_weight(EngineParallelism::UpToGlobalDegree.per_engine_cap()),
+                1,
+                "§0.9: an uncapped row still takes exactly ONE permit at degree {degree} — the §0.9 row is \
+                 what changed the weight, not the pool"
+            );
+        }
+    }
+
+    // §6.4.x (G15) THE CAP AS OBSERVABLE BEHAVIOUR, on a real semaphore: at the §0.9 clamp ceiling of 4 a
+    // `VideoReencode` row admits exactly MAX_VIDEO_REENCODE_CONCURRENCY lanes at once, while an
+    // `UpToGlobalDegree` row on an identical pool reaches the full degree — so the difference is provably
+    // the §0.9 row and not the pool. Driven on the SUBPROCESS lane, the one §0.9's capped engine (FFmpeg
+    // video re-encode) will run on; that choice costs the LIVE lane nothing, because BOTH lanes make the
+    // IDENTICAL `slot_weight(parallelism.per_engine_cap())` call — an in-core cap leg would be synthetic
+    // (§0.9 puts the sole in-core engine on the uncapped row), and the shared call is what carries this
+    // behavioural proof across to `run_in_core`, on top of the `slot_weight` unit pins above.
+    // Deterministic in the established shape: a Barrier sized to the expected
+    // peak forces that many holders to rendezvous (liveness) while the permit bound caps the peak (safety),
+    // and the lane count is a multiple of the barrier size so no partial final group can strand.
+    #[tokio::test]
+    async fn a_capped_row_admits_only_its_cap_while_an_uncapped_row_reaches_the_degree() {
+        const DEGREE: usize = 4;
+        for (row, expected_peak) in [
+            (
+                EngineParallelism::VideoReencode,
+                MAX_VIDEO_REENCODE_CONCURRENCY,
+            ),
+            (EngineParallelism::UpToGlobalDegree, DEGREE),
+        ] {
+            let pool = Pool::with_degree(DEGREE);
+            let barrier = Arc::new(tokio::sync::Barrier::new(expected_peak));
+            let concurrent = Arc::new(AtomicUsize::new(0));
+            let peak = Arc::new(AtomicUsize::new(0));
+
+            let mut handles = Vec::new();
+            for _ in 0..(2 * expected_peak) {
+                let pool = pool.clone();
+                let barrier = Arc::clone(&barrier);
+                let concurrent = Arc::clone(&concurrent);
+                let peak = Arc::clone(&peak);
+                handles.push(tokio::spawn(async move {
+                    pool.run_subprocess(row, async {
+                        let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(now, Ordering::SeqCst);
+                        barrier.wait().await; // permit-bounded: exactly `expected_peak` can be here
+                        concurrent.fetch_sub(1, Ordering::SeqCst);
+                    })
+                    .await
+                    .expect("§0.9: the subprocess lane runs the engine future to completion");
+                }));
+            }
+            for handle in handles {
+                handle.await.expect("each spawned lane task joins");
+            }
+
+            assert_eq!(
+                peak.load(Ordering::SeqCst),
+                expected_peak,
+                "§0.9: the {row:?} row admits exactly {expected_peak} concurrent engine future(s) at \
+                 global degree {DEGREE}"
+            );
+            assert_eq!(
+                concurrent.load(Ordering::SeqCst),
+                0,
+                "every permit's critical section exited ({row:?})"
+            );
+            assert_eq!(
+                pool.global.available_permits(),
+                DEGREE,
+                "§0.9: every weighted acquisition returned all its permits ({row:?})"
+            );
+        }
     }
 }

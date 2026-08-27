@@ -588,6 +588,14 @@ _Legend — **A** Architecture & app shell · **B** Core engine & guarantees · 
 - **`serialised_only` access path** — `trait Engine` gains `fn descriptor() ->
   EngineDescriptor`; the §0.9 pool reads `registry.engine(id).descriptor().serialised_only`
   before dispatch. Owner: §3.2 / §0.9.
+- **§0.9 per-engine-CAP access path `[P4.21]`** — the sibling of the entry above, and a
+  *different* method for a *different* axis: `trait Engine` gains `fn parallelism(item,
+  target) -> EngineParallelism`, a **per-JOB** row (not a `descriptor()` field) because
+  §0.9's table is keyed (engine × operation) — FFmpeg has two rows. §1.7 projects the row
+  onto the pool's `per_engine_cap` term. `serialised_only` = serialise this engine's jobs;
+  `parallelism` = cap how many run at once. A serialised engine's `parallelism` row is
+  `UpToGlobalDegree` (it takes ONE global permit plus its own single permit).
+  Owner: §3.2.2 / §0.9.
 - **Pre-flight SkippedItems ARE in `RunResult.items`** (projected as `ItemResult { state:
   Skipped(reason), output: None, reason: Some(OutcomeMsg::Skipped{..}) }`, counted in
   `Totals.skipped`). The reason rides the skip-shaped `OutcomeMsg::Skipped` variant (§2.8),

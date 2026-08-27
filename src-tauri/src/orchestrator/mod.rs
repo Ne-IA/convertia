@@ -2139,6 +2139,13 @@ async fn convert_item(
         Ok(invocation) => invocation,
         Err(outcome) => return write_outcome_to_run(outcome),
     };
+    // §0.9 (P4.21): the job's per-engine parallelism row, declared by the SELECTED engine over the same
+    // tier-3 job projection `plan()` took (`&DroppedItem` + `TargetId`). It is resolved HERE — the tier-1
+    // conductor is the layer that holds both the engine handle and the job — and handed to `dispatch`,
+    // which is where a §0.9 pool slot is actually taken. Deliberately NOT carried on the `EngineInvocation`
+    // envelope: §1.7 `[DECIDED]`s that the envelope "adds nothing the §3.2 `Invocation` already carries".
+    // [Build-Session-Entscheidung: P4.21]
+    let parallelism = engine.parallelism(dropped, target);
     let mut envelope = EngineInvocation {
         job: item,
         engine: engine_id,
@@ -2162,7 +2169,7 @@ async fn convert_item(
             }))
             .ok();
     };
-    let result = dispatch(&envelope, pool, on_fraction).await;
+    let result = dispatch(&envelope, pool, parallelism, on_fraction).await;
 
     match result {
         // §1.7 verified success → reclaim the written temp (dispatch BORROWED the envelope, so the conductor
