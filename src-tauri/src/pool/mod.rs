@@ -394,8 +394,14 @@ pub struct SerialisedLanes<K> {
 }
 
 /// Manual `Debug` — a `Semaphore` renders as an opaque blob, so the lanes render as their key set (the
-/// question a reader ever has is *which* engines are serialised). Mirrors [`EngineRegistry`]'s own manual
-/// `Debug` over its engine map. [Build-Session-Entscheidung: P4.22]
+/// question a reader ever has is *which* engines are serialised). Mirrors the `EngineRegistry`'s own manual
+/// `Debug` over its engine map — named as a plain code span, NOT an intra-doc link, on this module's own
+/// convention: it mentions tier-2 items in prose two dozen times (`crate::engines::dispatch`,
+/// `crate::isolation::run_confined`, `crate::engines::EngineKind`, …) and links to NONE of them, because
+/// what the module header's "names **no** tier-2 type" contract forbids is a dependency in CODE, which
+/// prose cannot create — so an unlinked span carries the reference at zero cost while a path-qualified link
+/// would be this file's only exception. The bare name additionally cannot resolve from a tier-3 leaf, which
+/// is what the CI-only G74 rustdoc leg reported. [Build-Session-Entscheidung: P4.22]
 impl<K: std::fmt::Debug> std::fmt::Debug for SerialisedLanes<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SerialisedLanes")
