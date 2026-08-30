@@ -1,21 +1,34 @@
 #!/usr/bin/env python3
-"""run-gate-selftests - the L4 continuous-armed-canary self-test prelude (P0.2.13).
+"""run-gate-selftests - the G24/G10 continuous-armed-canary self-test runner (P0.2.13).
 
-Discovers and runs EVERY gate-script self-test under scripts/gate-selftests/ on every CI run, so a
-pinned-tool bump that breaks a stable gate-script's parsing - OR a new gate whose self-test was
-never manually wired into ci.yml - is caught as a prelude (the continuous-armed-canary pattern,
+Discovers and runs EVERY gate-script self-test under scripts/gate-selftests/, so a pinned-tool
+bump that breaks a stable gate-script's parsing - OR a new gate whose self-test was never
+manually wired into ci.yml - is caught as a prelude (the continuous-armed-canary pattern,
 complementing plan-lint check 16's planted-positive registry). A self-test is the planted-positive
-canary for its gate; running ALL of them every run means none can silently rot.
+canary for its gate; running ALL of them means none can silently rot.
+
+TWO CALL SITES (2026-08-30 - the L2 slot the G24 row declared from P0 but never wired):
+  L4 (ci.yml):       the full set with --require-network on every run - the clean-checkout proof.
+  L2 (lefthook.yml): the full set --changed-gated - it runs ONLY when the unpushed range touches
+                     the GATE PLANE: scripts/** (gate scripts, self-tests, rule corpora,
+                     gate-config TOMLs - deliberately no fragile per-script mapping) plus the
+                     plane/toolchain files lefthook.yml, .github/workflows/** and
+                     requirements-ci.txt (so a wiring-only push arms the cross-plane pins at L2,
+                     not first at L4). SKIPS with a notice otherwise, so a normal push pays ~0 s.
+                     FAIL-SAFE toward RUN: an unresolvable base (first push) or an unreadable
+                     range diff runs the full canary - a canary may over-run, never under-run;
+                     paths are read with core.quotepath=false + a quote-strip so a non-ASCII path
+                     cannot dodge the scope (the under-run direction is closed).
 
 Discovery: every `scripts/gate-selftests/*.py` (the `g24-*`/`g54-*` planted-positive self-tests +
 the `test-*-fastpath-pattern` G10 fastpath smoke tests). `--require-network` is forwarded ONLY to
 the install-gate-tools self-test - the one leg that needs the network to exercise the pinned-
 download/verify path; all other self-tests are deterministic + offline.
 
-stdlib-only. Exit 0 iff EVERY discovered self-test passes; 1 if any fails (or none are found).
-L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+stdlib-only. Exit 0 iff EVERY discovered (non-skipped) self-test passes; 1 if any fails (or none
+are found). L(-1) security-critical (scripts/l-neg1-files.toml, G71).
 
-Usage: run-gate-selftests [--require-network]
+Usage: run-gate-selftests [--require-network] [--changed]
 """
 from __future__ import annotations
 
@@ -24,11 +37,70 @@ import sys
 from pathlib import Path
 
 SELFTEST_DIR = Path(__file__).resolve().parent / "gate-selftests"
+ROOT = Path(__file__).resolve().parents[1]
+# The --changed trigger scope: ANY committed change under these prefixes in the unpushed range
+# arms the full canary. Wholesale on purpose - a per-script selftest mapping would be a fragile
+# second registry; the expensive run lands exactly on the pushes that edit the gate plane. The
+# plane/toolchain files are in scope so a wiring-only push (deleting a slot, re-flagging a CI
+# step) arms the cross-plane pins at L2, not first at L4.
+CHANGED_PREFIXES = ("scripts/", "lefthook.yml", ".github/workflows/", "requirements-ci.txt")
+
+
+def _git(*args: str) -> tuple[int, str]:
+    # core.quotepath=false: a non-ASCII path must arrive raw, never octal-quoted, or it could
+    # dodge the CHANGED_PREFIXES match (the one under-run the fail-safe design forbids).
+    try:
+        p = subprocess.run(["git", "-c", "core.quotepath=false", *args], cwd=str(ROOT),
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+    except OSError:
+        return 127, ""
+    return p.returncode, p.stdout.strip()
+
+
+def _resolves(ref: str) -> bool:
+    return _git("rev-parse", "--verify", "--quiet", ref)[0] == 0
+
+
+def _resolve_base() -> str | None:
+    """The L2 range base per the run-gitleaks fallback chain; None => first push / no git."""
+    cands = ["@{u}"]
+    rc, b = _git("rev-parse", "--abbrev-ref", "HEAD")
+    if rc == 0 and b and b != "HEAD":
+        cands.append(f"origin/{b}")
+    cands += ["origin/main", "origin/HEAD"]
+    return next((c for c in cands if _resolves(c)), None)
+
+
+def fastpath_decision(base_resolved: bool, changed: list[str] | None) -> tuple[str, str]:
+    """(pure) the --changed verdict: ('run' | 'skip', reason). FAIL-SAFE toward RUN - no
+    resolvable base and an unreadable diff both run the full canary."""
+    if not base_resolved:
+        return "run", "no diff base resolves (first push / no git) - fail-safe: full canary"
+    if changed is None:
+        return "run", "the range diff was unreadable - fail-safe: full canary"
+    # strip('"') is belt-and-suspenders beside the _git quotepath pin: a quoted path shape must
+    # still match the scope rather than silently skip.
+    hits = [p for p in changed if p.replace("\\", "/").strip('"').startswith(CHANGED_PREFIXES)]
+    if hits:
+        return "run", f"{len(hits)} gate-plane file(s) in the push range (e.g. {hits[0]})"
+    return "skip", "no gate-plane change in the push range"
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     require_network = "--require-network" in argv
+
+    if "--changed" in argv:
+        base = _resolve_base()
+        changed: list[str] | None = None
+        if base is not None:
+            rc, out = _git("diff", "--name-only", f"{base}..HEAD")
+            changed = out.splitlines() if rc == 0 else None
+        verdict, reason = fastpath_decision(base is not None, changed)
+        if verdict == "skip":
+            print(f"[canary] --changed: SKIP - {reason} (the L4 prelude runs the full set on every push)")
+            return 0
+        print(f"[canary] --changed: RUN - {reason}")
 
     tests = sorted(p for p in SELFTEST_DIR.glob("*.py") if not p.name.startswith("_"))
     if not tests:
