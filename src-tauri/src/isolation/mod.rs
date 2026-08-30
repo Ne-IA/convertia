@@ -117,6 +117,14 @@ use crate::engines::{ConfinedRun, EngineInvocation, InvocationResult, ProgressMo
 use crate::outcome::ConversionErrorKind;
 use crate::pool::GROUP_CONFIRM_WAIT;
 
+// The §3.5.0 / §7.2.6 macOS TCC source-staging slice. Declared UNCONDITIONALLY on purpose: a
+// `#[cfg(target_os = "macos")]` here would itself be a mac-cfg in the isolation tree OUTSIDE
+// `isolation/macos.rs`, which is exactly what check-sast's `misplaced_macos_cfg` leg forbids (it exists so
+// the `paths:`-scoped G29 rule (d) can see every mac-conditional isolation slice). The per-item `#[cfg]`
+// lives inside that file instead — the established `crate::platform` pattern.
+// [Build-Session-Entscheidung: P4.24]
+pub(crate) mod macos;
+
 /// The §3.5/§2.12.3 dynamic-loader INJECTION variables the §2.12.3 minimal env strips (P4.14) so a hostile
 /// input cannot coerce a side-load (§0.11 T3a): the OS run-time loader honours these to PRELOAD a shared
 /// object or PREPEND a library search path, so an engine handed one could be steered to load an

@@ -537,12 +537,19 @@ impl RunScratch {
 
     /// The per-run scratch dir `…/run-<RunId>/` (the §2.14.2 kind-2 engine-working-file root; the §2.6.2
     /// run-end `cleanup_run` removes it). [Build-Session-Entscheidung: P3.21]
+    // [Test-Change: P4.24 — old-obsolete+new-correct, §2.14.2] a lint-LEVEL flip on a production accessor,
+    // not a test edit: the old `expect` went unfulfilled (a hard error under `-D warnings`) the moment
+    // P4.24's staging read this, because rustc roots an item bearing a dead_code attribute. Full reasoning
+    // in the `reason` below; no test assertion exists here to change.
     #[cfg_attr(
         not(test),
-        expect(
+        allow(
             dead_code,
-            reason = "P3.21 — the kind-2 scratch-dir accessor; read by §2.14.2 engine working-file placement \
-                      + the §2.6.2 run-end cleanup (P3.22) — unused in production until then."
+            reason = "P3.21/P4.24 — the kind-2 scratch-dir accessor. Read by the §2.14.2 engine \
+                      working-file placement (P4.24's §3.5.0 staging is the first such reader) and by the \
+                      §2.6.2 run-end cleanup; the staging reader is itself dead until P4.25 wires it, but \
+                      it carries `allow(dead_code)`, which roots it — so this accessor no longer registers \
+                      as dead and cannot carry an `expect`."
         )
     )]
     #[must_use]
@@ -2025,6 +2032,71 @@ mod sweep_tests {
             "§2.6.3: a non-`run-` entry is never swept"
         );
         assert!(removed.is_empty(), "nothing reclaimed, got {removed:?}");
+    }
+
+    // §6.4.2 property (G31) / §2.14.2 THE KILL FENCE, verbatim from the spec: *"kill the app between the
+    // staged source copy and the engine spawn; on next launch assert the staged copy (and its `run-<RunId>/`
+    // dir) is reclaimed by the startup sweep"* — enumerated there "alongside the kind-1 `.part` crash cases
+    // so the staged SOURCE copy is not an untested residue path". P4.24 argued this holds "free by
+    // construction" because the copy lands inside the run dir; this is the empirical confirmation the spec
+    // asks for instead of the argument (the P4.23 lesson: replace an argument with a fact).
+    //
+    // The crash is modelled the way §2.6.3 defines death — by DROPPING the `RunScratch`, which closes the
+    // lock handle and leaves the run dir behind exactly as a killed process does (`RunScratch` has no `Drop`
+    // impl, so nothing is cleaned on the way out). `sweep_stale_within(_, ZERO)` is the same grace bypass
+    // this module's own free-lock sweep tests use: the HELD LOCK, not the age, is the delete gate, and
+    // zeroing the grace proves it rather than sleeping out the 10 s `LOCKLESS_GRACE`.
+    // [Build-Session-Entscheidung: P4.24]
+    #[test]
+    fn a_staged_source_left_by_a_crash_is_reclaimed_by_the_next_launch_sweep() {
+        let base = tempfile::tempdir().expect("a real scratch base dir");
+        let src_dir = tempfile::tempdir().expect("a real source dir");
+        let source = src_dir.path().join("dropped.csv");
+        std::fs::write(&source, b"a,b\n").expect("write the source the user dropped");
+
+        let scratch = RunScratch::acquire(
+            base.path(),
+            InstanceId::mint(),
+            std::process::id(),
+            RunId::mint(),
+        )
+        .expect("§2.6: the per-run scratch acquires its lock");
+        let run_dir = scratch.dir().to_path_buf();
+        let staged = crate::isolation::macos::stage_source_into_scratch_for_tests(
+            &scratch,
+            JobId::from_index(0),
+            &source,
+        )
+        .expect("§3.5.0: the source stages into kind-2 scratch");
+        assert!(
+            staged.exists(),
+            "precondition: the staged copy exists at the moment of the crash"
+        );
+
+        // The kill: the process dies between staging and spawn. Nothing runs — no cleanup_run, no Drop.
+        drop(scratch);
+
+        let removed = sweep_stale_within(base.path(), Duration::ZERO);
+
+        assert!(
+            !staged.exists(),
+            "§6.4.2/§2.14.2: the staged SOURCE copy left by a crash is reclaimed by the next-launch sweep — \
+             it is not an untested residue path"
+        );
+        assert!(
+            !run_dir.exists(),
+            "§2.6.3: … together with the whole `run-<RunId>/` dir that contained it (absent lock ⇒ dead ⇒ \
+             reclaimable)"
+        );
+        assert_eq!(
+            removed,
+            vec![run_dir],
+            "§2.6.3: and the reclaimed dir is REPORTED, so the sweep is honest about what it removed"
+        );
+        assert!(
+            source.exists(),
+            "§2.0 never-harm-the-original: the sweep reclaims only the app's own scratch, never the user's file"
+        );
     }
 }
 
