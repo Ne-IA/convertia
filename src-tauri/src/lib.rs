@@ -1020,8 +1020,9 @@ pub(crate) mod launch_intake {
     /// `PendingIntake` buffer — and the §2.4 frozen set is never mutated mid-run. AppHandle-coupled boot-glue
     /// (§1.1a; G28 signature-exempt; the source-scan pins the RunRegistry query). `app.state::<RunRegistry>()`
     /// is infallible by construction (registered in run()'s Builder chain). The runs are POPULATED by the
-    /// P3.46 conductor (register-at-C6 / finish-at-RunFinished), so until P3 the registry is empty → not busy →
-    /// the funnel's idle-flow is open (the buffer P2.58 made real catches an idle-and-not-ready set) — the
+    /// P3.48 conductor (register-at-C6 / finish-at-RunFinished), which has landed — so a live run reports busy;
+    /// before P3 the registry was always empty → not busy → the funnel's idle-flow was always open
+    /// ([Corrected by P4.23], which read "until P3" in the present tense and named P3.46 for P3.48; the buffer P2.58 made real catches an idle-and-not-ready set) — the
     /// owner-confirmed P2.58-before-P2.55 order in effect.
     ///
     /// [Build-Session-Entscheidung: P2.79] Widened to `pub(super)` so the crate-root §7.3.2
@@ -1749,8 +1750,8 @@ pub fn run() -> tauri::Result<()> {
         .manage(crate::orchestrator::PendingIntake::default())
         // [Build-Session-Entscheidung: P2.55] §7.1.1 refuse-busy run-state — register the RunRegistry (the
         // §0.4.4 run-cancellation-token store, P2.42) so converter_is_busy can read it (the SAME registry the
-        // P3.46 conductor populates at C6 / drains at RunFinished — this box owns the .manage, P3 wires the
-        // register/finish calls). Builder chain (compile-time Default, before the event loop) → the busy-gate
+        // P3.48 conductor populates at C6 / drains at RunFinished — this box owns the .manage, and P3.48 has
+        // since wired the register/finish calls — [Corrected by P4.23]). Builder chain (compile-time Default, before the event loop) → the busy-gate
         // resolve is infallible by construction.
         .manage(crate::orchestrator::RunRegistry::default())
         // [Build-Session-Entscheidung: P2.59] §7.8.1 WebView-ready flag — register the State<FrontendReady>

@@ -328,8 +328,9 @@ pub async fn cancel_run(app: AppHandle, run_id: RunId) -> Result<(), IpcError> {
 /// residue `PathBuf`s stay in the store's off-wire `RunResultPaths` (C9 resolves its `OpenTarget` there, P3.79).
 /// `kind` stays the CONCRETE `ConversionErrorKind` (the P2.19 convention). The store is `.manage`d in `main()`'s
 /// Builder chain (added with this box), mirroring the sibling `RunRegistry`; the retain-at-`RunFinished` /
-/// evict-at-C6 lifecycle that POPULATES it is the P3.48 conductor — until then the store is empty and C8
-/// honestly returns `Err`, the walking-skeleton state.
+/// evict-at-C6 lifecycle that POPULATES it is the P3.48 conductor, which has landed — so C8 serves a real
+/// retained `RunResult` after a run finishes; the empty-store/`Err` shape it describes was the pre-P3.48
+/// walking-skeleton state. [Corrected by P4.23]
 #[tauri::command(rename_all = "camelCase")]
 #[specta::specta]
 pub async fn get_run_summary(

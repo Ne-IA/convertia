@@ -200,9 +200,15 @@ pub enum JobState {
 // [Build-Session-Entscheidung: P3.46] The §1.9 conducting BEHAVIOUR the module doc names: the pure transition
 // graph over `JobState` + the deterministic §1.9 queue order (P3.46.1), and the §2.8 Running→Failed projection
 // (P3.46.2) mapping a §1.7 `InvocationResult` onto the terminal event + its §2.8.2 message. Both are PURE (no
-// I/O, no spawn) — the P3.48 conductor composes them: `queue_order` → `advance(_, Started)` → dispatch →
-// `project_outcome` → `advance(_, event)` — so they stay dead in the production build until that conductor makes
-// them a live root (the module dead_code expect). Homed in `crate::orchestrator` per §0.7 (the tier-1 §1.9
+// I/O, no spawn). The P3.48 conductor is a live root, and it drives `queue_order` → `advance(_, Started)`
+// → dispatch → `advance(_, event)`, so `queue_order` and `advance` ARE live in the production build — but
+// `project_outcome` is NOT: the conductor maps its own `ItemRunOutcome` onto the terminal `JobEvent`
+// INLINE, so this `InvocationResult` projection still has no production caller (the module `reason =`
+// string above says exactly that; its only callers are in `mod tests`). [Corrected by P4.23 — twice: the
+// clause first read "they stay dead … until that conductor makes them a live root", which had been false
+// since P3.48; the first correction then over-shot to "all three are live", which is false for
+// `project_outcome`. A multi-subject liveness clause has to be checked SUBJECT BY SUBJECT against the
+// module's own reason string.] Homed in `crate::orchestrator` per §0.7 (the tier-1 §1.9
 // lifecycle owner) — the 2026-07-11 reconciliation of §1.9's "crate::run" mis-attribution (the P3.46 [Decision]
 // note); the projection composes `InvocationResult` (tier-2 `engines`), `JobState` (tier-1) and `crate::outcome`
 // (tier-2), a legal downward fan the tier-2 scratch/cleanup `run` leaf could not host. No taxonomy in the FSM:
@@ -2728,8 +2734,9 @@ impl RunRegistry {
     /// `RunFinished`, INCLUDING while a C7 cancel winds it down ([`cancel`](RunRegistry::cancel) trips the
     /// token but leaves it until [`finish`](RunRegistry::finish)), so a cancelling-but-not-finished run still
     /// reports busy — correct for refuse-busy (the §2.4 frozen set must not take new intake until the run is
-    /// fully terminal). The runs are POPULATED by the P3.48 conductor; until then the registry is empty, so
-    /// this is `false` (not busy) and the funnel's idle-flow is open. [Build-Session-Entscheidung: P2.55]
+    /// fully terminal). The runs are POPULATED by the P3.48 conductor, which has landed — so a live run really
+    /// does make this report busy; before P3.48 the registry was always empty and this was constantly `false`.
+    /// [Corrected by P4.23] [Build-Session-Entscheidung: P2.55]
     pub fn has_active_run(&self) -> bool {
         !self.lock().is_empty()
     }

@@ -100,8 +100,19 @@
 //!    office-heavy batch cannot fill the §0.9 degree with waiters — the ordering argument lives on
 //!    [`SerialisedLanes`].
 //!
+//! ## VERIFIED in P4.23 (the in-core lane on the EXPANDED pool)
+//!  - P4.23 re-homed nothing and rebuilt nothing — the P3.3 lane already acquired from the app-managed
+//!    `Pool` in production (P3.48), so the box's whole deliverable was to PROVE that the P4.20/P4.21
+//!    expansions govern it too. Until then the §1.10 memory factor and the §0.9 per-engine cap were
+//!    exercised on [`Pool::run_subprocess`] only, and the in-core half rested on the ARGUMENT that both
+//!    lanes make the identical [`Pool::slot_weight`] call.
+//!  - Three regressions now carry it: the §1.10 memory factor bounding the in-core lane (the mirror of
+//!    the subprocess leg), a §0.9 per-engine cap applied by that lane when its caller hands one down,
+//!    and the proof that BOTH lanes draw on ONE global budget rather than a semaphore each.
+//!  - §1.7's "it holds a global-degree permit like any other job; it has **no** `serialised_only` lane"
+//!    is asserted over the live data paths in `crate::engines`.
+//!
 //! ## SHELLED — a doc-only contract map P4 EXPANDS (never rebuilds)
-//!  - **P4.23** re-homes the native lane P3.3 built onto the now-real pool, unchanged.
 //!  - The §0.9 per-engine timeout / watchdog-poll / no-progress `pub const`s are authored with their
 //!    consumers: the §1.7 native wall-clock timeout [`NATIVE_CSV_TSV_TIMEOUT`] is now LIVE (authored P3.45,
 //!    consumed by the §1.7 `bounded_lane` wrapper); the subprocess watchdog set — [`WATCHDOG_POLL_INTERVAL`] /
@@ -135,8 +146,10 @@
 
 // [Build-Session-Entscheidung: P3.3] dead_code expect — the §0.9 Pool + the §1.7 in-core spawn_blocking
 // lane are authored ahead of their production consumers. P3.43 WIRED run_in_core + LaneError into the dispatch
-// InProcessNative arm, but they stay dead until the P3.46 conductor makes dispatch a live root; Pool
-// construction + the degree helpers stay dead until the P4 pool wiring. `expect` (not `allow`) auto-flags the
+// InProcessNative arm, and P3.48 then made dispatch a live root, so BOTH are live today (the reason string
+// below says so); Pool construction + the degree helpers went live with it. [Corrected by P4.23]: this
+// comment forecast P3.46 in the present tense long after P3.48 landed — the same stale-liveness class the
+// box's own sibling fix in crate::engines closes, found by sweeping the class rather than the instance. `expect` (not `allow`) auto-flags the
 // moment the last of these consumers lands, matching crate::engines / crate::domain / crate::outcome.
 // [Test-Change: P3.43 — old-obsolete+new-correct, §0.9] reason-string accuracy edit (the &Pool dispatch means P3.43 constructs no Pool, so "until P3.43" is obsolete); the removed line quotes the lint keyword before a paren — a production-.rs G70 --diff over-flag (P3.7/P3.8 precedent), no test assertion changed.
 #![cfg_attr(
@@ -1675,10 +1688,13 @@ mod tests {
     // `VideoReencode` row admits exactly MAX_VIDEO_REENCODE_CONCURRENCY lanes at once, while an
     // `UpToGlobalDegree` row on an identical pool reaches the full degree — so the difference is provably
     // the §0.9 row and not the pool. Driven on the SUBPROCESS lane, the one §0.9's capped engine (FFmpeg
-    // video re-encode) will run on; that choice costs the LIVE lane nothing, because BOTH lanes make the
-    // IDENTICAL `slot_weight(parallelism.per_engine_cap())` call — an in-core cap leg would be synthetic
-    // (§0.9 puts the sole in-core engine on the uncapped row), and the shared call is what carries this
-    // behavioural proof across to `run_in_core`, on top of the `slot_weight` unit pins above.
+    // video re-encode) will run on. **P4.23 SUPERSEDED this leg's coverage argument with a fact:** P4.21
+    // could only reason that the in-core lane is covered too, because both lanes make the IDENTICAL
+    // `slot_weight(parallelism.per_engine_cap())` call and an in-core cap leg looked synthetic (§0.9 puts
+    // the sole in-core engine on the uncapped row). `the_in_core_lane_applies_a_per_engine_cap_it_is_handed`
+    // now drives that synthetic row through `run_in_core` directly, so the shared call is CORROBORATED
+    // rather than relied upon — and a future divergence between the two lanes would redden a test instead
+    // of quietly invalidating a comment.
     // Deterministic in the established shape: a Barrier sized to the expected
     // peak forces that many holders to rendezvous (liveness) while the permit bound caps the peak (safety),
     // and the lane count is a multiple of the barrier size so no partial final group can strand.
@@ -1735,6 +1751,207 @@ mod tests {
                 "§0.9: every weighted acquisition returned all its permits ({row:?})"
             );
         }
+    }
+
+    // ─── P4.23: the IN-CORE lane under the expanded pool ──
+    //
+    // Ordering note: this block sits BEFORE the P4.22 `SerialisedLanes` one deliberately, not by
+    // accident — it belongs beside the P4.20/P4.21 weighted-permit legs it mirrors, whereas P4.22's
+    // dedicated lanes are a different subject (the other §0.9 concurrency axis entirely).
+    //
+    // P3.3 proved the in-core lane obeys the plain GLOBAL degree; P4.20 and P4.21 then added the §1.10
+    // memory factor and the §0.9 per-engine cap, but their behavioural legs drive `run_subprocess` only —
+    // the in-core half rested on the ARGUMENT that both lanes make the identical
+    // `slot_weight(parallelism.per_engine_cap())` call. This box turns that argument into a proof, which is
+    // §1.7's "it runs on the §0.9 pool up to the global degree … it holds a global-degree permit like any
+    // other job" made executable against the EXPANDED pool rather than the P3 shell.
+    //
+    // Shape: the in-core lane takes a `'static` CLOSURE on a `spawn_blocking` worker, so a lane is held by
+    // parking its worker on a `std::sync::mpsc` receive the test controls — the same device the P3.45
+    // wedged-read regression uses. Every such lane is released at the end of its test, so no worker leaks.
+
+    /// Park an in-core lane's worker until the returned sender drops, so the test can hold its permits open.
+    /// Returns the still-running lane future and the release handle. [Build-Session-Entscheidung: P4.23]
+    fn parked_in_core_lane(
+        pool: &Pool,
+        row: EngineParallelism,
+    ) -> (
+        impl std::future::Future<Output = Result<(), LaneError>> + use<'_>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let lane = pool.run_in_core(row, move || {
+            let _ = release_rx.recv();
+        });
+        (lane, release_tx)
+    }
+
+    // §6.4.x (G15): the §1.10 memory-adaptive factor bounds the IN-CORE lane exactly as it bounds the
+    // subprocess one — the mirror of `under_memory_pressure_a_degree_four_pool_admits_one_lane_at_a_time`,
+    // which drives the OTHER lane. Under a reading that allows one slot, a degree-4 pool admits ONE in-core
+    // lane: the first takes all four permits (that IS the enforcement) and a second cannot enter until it
+    // releases. Deterministic — permit accounting plus a pending second lane, never a sleep race.
+    #[tokio::test]
+    async fn the_in_core_lane_is_bounded_by_the_memory_factor_like_the_subprocess_one() {
+        const DEGREE: usize = 4;
+        let pool = Pool::with_degree_and_memory(DEGREE, mem_quarter_slot);
+        let (first, release_first) =
+            parked_in_core_lane(&pool, EngineParallelism::UpToGlobalDegree);
+        let mut first = Box::pin(first);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut first)
+                .await
+                .is_err(),
+            "the first in-core lane is running (its worker is parked)"
+        );
+        assert_eq!(
+            pool.global.available_permits(),
+            0,
+            "§1.10: at effective degree 1 ONE in-core slot consumes the whole degree — the same weighted \
+             enforcement the subprocess lane gets, not a second mechanism"
+        );
+        // The second lane's closure returns instantly, so "still pending" can ONLY mean it is blocked
+        // acquiring — which is what distinguishes "not admitted" from "admitted and running".
+        let mut second = Box::pin(pool.run_in_core(EngineParallelism::UpToGlobalDegree, || 7_u32));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut second)
+                .await
+                .is_err(),
+            "§1.10: a second in-core lane cannot be admitted while the first holds the whole degree"
+        );
+        drop(release_first);
+        first.await.expect("§0.9: the released lane completes");
+        assert_eq!(
+            second
+                .await
+                .expect("§0.9: the second in-core lane runs once the first releases"),
+            7,
+            "§1.10: releasing the weighted permits admits the next item — a throttle, never a wedge"
+        );
+        assert_eq!(
+            pool.global.available_permits(),
+            DEGREE,
+            "§0.9: both weighted in-core acquisitions returned every permit"
+        );
+    }
+
+    // §6.4.x (G15): the §0.9 PER-ENGINE cap bounds the in-core lane too. Deliberately SYNTHETIC in its row
+    // — §0.9 puts the sole in-core engine (native CSV/TSV) on the uncapped row, so no production job takes
+    // this path — but that is exactly what makes it the right assertion: it proves the LANE applies whatever
+    // row its caller declares, rather than the pool inferring anything from which lane it is. Without this
+    // leg, P4.21's in-core coverage would remain an argument about a shared call rather than a fact.
+    #[tokio::test]
+    async fn the_in_core_lane_applies_a_per_engine_cap_it_is_handed() {
+        const DEGREE: usize = 4;
+        let pool = Pool::with_degree(DEGREE);
+        let mut held = Vec::new();
+        let mut releases = Vec::new();
+        for _ in 0..MAX_VIDEO_REENCODE_CONCURRENCY {
+            let (lane, release) = parked_in_core_lane(&pool, EngineParallelism::VideoReencode);
+            held.push(Box::pin(lane));
+            releases.push(release);
+        }
+        for lane in &mut held {
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), lane)
+                    .await
+                    .is_err(),
+                "each capped in-core lane is running (its worker is parked)"
+            );
+        }
+        // An INDEPENDENT expected weight, deliberately not derived from `slot_weight` — deriving it from
+        // the code under test would make the assertion tautological. It is therefore pinned to this exact
+        // (degree, cap) pair, so a recalibration inside §0.9's stated "low — 1–2" band reds THIS line: the
+        // intended signal, not a bug. [Build-Session-Entscheidung: P4.23]
+        const WEIGHT_AT_DEGREE_4: usize = 2; // = ceil(DEGREE / MAX_VIDEO_REENCODE_CONCURRENCY)
+        assert_eq!(
+            pool.global.available_permits(),
+            DEGREE - MAX_VIDEO_REENCODE_CONCURRENCY * WEIGHT_AT_DEGREE_4,
+            "§0.9: at degree {DEGREE} a capped row weighs {WEIGHT_AT_DEGREE_4} permits per slot, so the \
+             cap's worth of lanes holds the whole degree"
+        );
+        let mut over_cap = Box::pin(pool.run_in_core(EngineParallelism::VideoReencode, || 7_u32));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut over_cap)
+                .await
+                .is_err(),
+            "§0.9: the cap+1-th in-core lane waits — the per-engine term bites on THIS lane, not only on \
+             the subprocess one"
+        );
+        drop(releases);
+        for lane in held {
+            lane.await.expect("§0.9: each released lane completes");
+        }
+        assert_eq!(
+            over_cap.await.expect("§0.9: the queued lane is admitted"),
+            7
+        );
+    }
+
+    // §6.4.x (G15): the two lanes draw on ONE `Arc<Semaphore>`, not two. Scope, stated precisely: this leg
+    // proves the lanes SHARE a budget — it does NOT check the weighted accounting within it, which is what
+    // the two legs above cover for the in-core lane (both rows here weigh 1, so a weight regression would
+    // survive this test by construction). Its own falsifier is the private-semaphore refactor, and that
+    // bites at two independent points: the permit count reading 0 rather than 1 once both lanes hold, and
+    // the queued in-core lane being admitted only when the SUBPROCESS lane drops — with a private in-core
+    // semaphore it would never have been pending at all.
+    #[tokio::test]
+    async fn the_in_core_and_subprocess_lanes_share_one_global_budget() {
+        const DEGREE: usize = 2;
+        let pool = Pool::with_degree(DEGREE);
+
+        // A subprocess lane takes one of the two permits...
+        let mut spawned = Box::pin(pool.run_subprocess(
+            EngineParallelism::UpToGlobalDegree,
+            std::future::pending::<u32>(),
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut spawned)
+                .await
+                .is_err(),
+            "the subprocess lane is running"
+        );
+        assert_eq!(pool.global.available_permits(), DEGREE - 1);
+
+        // ...and the in-core lane takes the OTHER, proving they draw from the same pool rather than each
+        // having a private one (with private semaphores the count would still read DEGREE - 1 here).
+        let (parked, release_parked) =
+            parked_in_core_lane(&pool, EngineParallelism::UpToGlobalDegree);
+        let mut parked = Box::pin(parked);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut parked)
+                .await
+                .is_err(),
+            "the in-core lane is running"
+        );
+        assert_eq!(
+            pool.global.available_permits(),
+            0,
+            "§0.9: one subprocess lane + one in-core lane exhaust a degree-2 pool — ONE shared budget"
+        );
+
+        // With the budget spent, a further in-core lane waits on the SUBPROCESS lane's permit.
+        let mut queued = Box::pin(pool.run_in_core(EngineParallelism::UpToGlobalDegree, || 9_u32));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut queued)
+                .await
+                .is_err(),
+            "§0.9: no permit is left, so the third lane waits whichever lane freed it"
+        );
+        drop(spawned);
+        assert_eq!(
+            queued.await.expect(
+                "§0.9: dropping the SUBPROCESS lane admits an IN-CORE one — one budget, both lanes"
+            ),
+            9
+        );
+        drop(release_parked);
+        parked.await.expect("§0.9: the parked lane completes");
+        assert_eq!(
+            pool.global.available_permits(),
+            DEGREE,
+            "§0.9: every permit returned, whichever lane held it"
+        );
     }
 
     // ─── P4.22: the §0.9 `serialised_only` dedicated single-permit lanes ──

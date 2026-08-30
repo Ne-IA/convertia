@@ -115,8 +115,8 @@ pub(crate) fn ensure_executable(_path: &Path) -> io::Result<()> {
     allow(
         dead_code,
         reason = "§2.6.3 run-start exclusive advisory-lock acquire; its only caller is the P3.21 \
-                  run-lifecycle RunScratch::acquire — itself dead in the production build until its \
-                  C6-accept run-start wiring lands (P3.46 / §2.1.1 write sequence P3.38) — and rustc walks \
+                  run-lifecycle RunScratch::acquire — which was itself dead in the production build until its \
+                  C6-accept run-start wiring landed (P3.48 / §2.1.1 write sequence P3.38) — and rustc walks \
                   that dead-but-present caller, marking this callee USED, so a dead_code EXPECTATION would \
                   be unfulfilled; `allow` (permissive) covers the transitive dead-ness through the P3 \
                   wiring window (the platform WindowsRenameOutcome pattern). The §2.6.3 sweep's non-blocking \
@@ -176,8 +176,8 @@ pub(crate) fn try_acquire_exclusive_lock(file: &std::fs::File) -> io::Result<boo
     allow(
         dead_code,
         reason = "§2.6.3 run-start exclusive advisory-lock acquire (Windows); its only caller is the P3.21 \
-                  run-lifecycle RunScratch::acquire — itself dead in the production build until its \
-                  C6-accept run-start wiring lands (P3.46 / §2.1.1 write sequence P3.38) — and rustc walks \
+                  run-lifecycle RunScratch::acquire — which was itself dead in the production build until its \
+                  C6-accept run-start wiring landed (P3.48 / §2.1.1 write sequence P3.38) — and rustc walks \
                   that dead-but-present caller, marking this callee USED, so a dead_code EXPECTATION would \
                   be unfulfilled; `allow` (permissive) covers the transitive dead-ness through the P3 \
                   wiring window (the platform WindowsRenameOutcome pattern). The §2.6.3 sweep's non-blocking \
