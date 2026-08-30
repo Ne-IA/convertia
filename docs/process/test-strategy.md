@@ -905,6 +905,21 @@ Determinism is also why the §2 round-trip work bans embedded timestamps via the
 `diffoscope` empty-diff check — a flaky *output* and a flaky *test* have the same
 root cause and the same fix: remove the nondeterminism, do not retry around it.
 
+### 7.1 The flake ledger — observed nondeterminism debt (added 2026-08-30)
+
+> The committed record of every observed **non-infra** flake on a NEVER-auto-retry
+> level (unit / property / integration / fuzz). §7 treats such a flake as a
+> determinism bug to engineer out, so an **OPEN** row is debt owed an
+> engineering-out, not a tolerance: a row is added with its evidence when the flake
+> is observed (the observing box's commit records the analysis), and is marked
+> **CLOSED** by the commit that removes the nondeterminism — rows are never deleted
+> (append-only history, the gate-status.md discipline). The ledger was raised as the
+> fourth P4.23 L(-1) hand-off (the Loop may not edit `docs/process/**`, G71).
+
+| Test | Level | First observed | Evidence | Suspected mechanism | Status |
+|---|---|---|---|---|---|
+| `engines::tests::the_watchdog_reap_leaves_no_orphaned_descendant` (P4.12) | integration (real subprocesses) | 2026-08-30, during the P4.23 review | failed once immediately after a `cargo fmt` + full rebuild; passed in isolation and in 8 consecutive full-suite runs; the P4.23 diff removed no executable production line (a `-U0` comments-stripped pass), so that box provably cannot have altered the behaviour under test | a real `Duration::from_secs(10)` wall-clock watchdog trigger under CPU contention (three sibling tests park `spawn_blocking` workers ~150 ms) — the "freeze any clock the assertion reads" debt this §7 names | **OPEN** — owed: re-engineer the trigger onto an injected/frozen clock; falls to the P4.12-owner surface via the §11 phase-end sweep, or immediately on recurrence |
+
 ---
 
 ## 8. Test changes under failure (no green-by-rewrite)

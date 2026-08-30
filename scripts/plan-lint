@@ -7,7 +7,7 @@ docs/process/, docs/plan/). It enforces TWO families of checks:
   * FORMAT checks (_format.md §7) — the plan-box grammar: marker validity, sub-box consistency,
     header well-formedness, tag validity, reference resolution, needs:-targets exist + acyclic,
     annotation pairing, numbering gap-freeness.
-  * DOC checks 1..28 (build-gates.md §6) — doc-wide consistency: cross-reference validity, heading
+  * DOC checks 1..29 (build-gates.md §6) — doc-wide consistency: cross-reference validity, heading
     hierarchy, gate-catalogue integrity, forbidden tokens, §0.11<->§5 threat parity, inventory
     parity, the G68 doc-graph leg, the G69 struct-map leg, the check-27 gate-posture-transition leg, etc.
 
@@ -17,7 +17,7 @@ stay target-absent until their phase fills the §04 handlers; G24a made exactly 
 when `tests/corpus/manifest.toml` landed. This file is L(-1) security-critical (G71).
 
 Build status: foundation + the 8 FORMAT checks are implemented + self-tested. The doc-wide checks
-1..28 are added incrementally by P0.3.5 (each with its G24 negative fixture); until a doc check is
+1..29 are added incrementally (P0.3.5 onward, each with its G24 negative fixture); until a doc check is
 implemented it is listed in CHECKS as a NotImplemented placeholder that the meta-self-test asserts.
 
 Usage: plan-lint [--check <id>] [--json] [--quiet] [--max-per-check N] [--root <dir>]
@@ -348,7 +348,7 @@ def fmt_numbering_gap_free(ctx: Ctx) -> list[Finding]:
 
 
 # =============================================================================================
-#  DOC checks (build-gates.md §6, checks 1..28) — added incrementally; active-now ones first.
+#  DOC checks (build-gates.md §6, checks 1..29) — added incrementally; active-now ones first.
 # =============================================================================================
 _GATE_ROW_RE = re.compile(r"^\| \*\*G(\d+)\*\* \|", re.M)
 # the canonical §0.11 / §5 threat-class set (security-concept §5 table + the canonical list) — 19 classes
@@ -1711,8 +1711,162 @@ def doc27_gate_posture_transition(ctx: Ctx) -> list[Finding]:
                                               _completed_phases(ctx.boxes), plane_texts)]
 
 
+# --- check 29: stale liveness/futurity claims in .rs comments (the P4.23 L(-1) hand-off) ---------
+# A .rs comment or lint-`reason` string asserting present-tense DEADNESS bounded by a plan box
+# ("stays dead until P4.32 wires it", "no production caller until P6.10", "once P2.34 lands") goes
+# flat-false the moment that box lands, and THREE protections miss it: expect(dead_code) stays
+# fulfilled while one clause of a long reason rots (other items are still dead), G68 is .md-only, and
+# a line-based grep cannot see a claim spanning two comment lines. The Loop-memory entry
+# `stale-liveness-futurity-claims` records the class + the sweep method; this check is its mechanical
+# form (steps 1-3): JOIN each contiguous //-family comment run (and each reason = "..." string) into
+# one string, match the DEADNESS-UNTIL-BOUND constructions, capture the BOUND box-id directly from
+# the construction, and fail iff that id is [x] in docs/plan/P*.md.
+#
+# Calibrated against the live tree (2026-08-30: 21 raw candidates -> 14 genuinely stale constructions,
+# 15 sites corrected in the arming commit). Deliberate narrowings, each a recorded residual, so the
+# check stays fail-closed-green with ZERO escape markers:
+#   * the bound id is read from a 45-char window after the until/once/lands-at keyword, truncated at
+#     the first of ; ) ! ? ( or a '.' NOT followed by a digit (a box-id's own dot survives - see
+#     _FUT_WINDOW_STOP) - an id in a trailing parenthetical (a `needs:` cite) or the next
+#     sentence is NOT the bound;
+#   * a PAST-tense narration ("stayed/remained/was/were dead until X made it live") is history;
+#   * text inside double quotes and inside the repo's bracket tags ([Corrected by ...],
+#     [Build-Session-Entscheidung: ...], [Test-Change: ...], [Raised by ...]) is mention/attribution,
+#     stripped before matching (a SINGLE-quoted mention is NOT stripped - apostrophes make that
+#     unsafe: quote old claims with double quotes or paraphrase them);
+#   * boundless futurity ("until then", "until those land", "until consumed") names no id and cannot
+#     be mechanically bound - the test-strategy §11.4 surface-(e) audit + the sweep memory own it.
+_RS_COMMENT_LINE = re.compile(r"^\s*//[/!]?(.*)$")
+_RS_REASON_OPEN = re.compile(r'reason\s*=\s*(r#*"|")')
+_FUT_TAG_SPAN = re.compile(
+    r"\[(?:Corrected by|Build-Session-Entscheidung:?|Test-Change:?|Raised by|Derived-Assumption:?"
+    r"|DECIDED)[^\]]*\]")
+_FUT_QUOTE_SPAN = re.compile(r'"[^"]{0,300}?"')
+_FUT_PID = r"P\d+\.\d+(?:\.\d+)?"
+_FUT_DEAD = r"(?:dead|dormant|empty|unread|unreachable|unwired|absent|inert|unregistered)"
+_FUT_CONSTRUCTS = (
+    ("state-until", re.compile(
+        r"\b(?:stays?|remains?|is|are|kept|left)\s+(?:\w+[\s-]+){0,4}?" + _FUT_DEAD
+        + r"\b[^.;!?]{0,100}?\b(?:until|before)\s+", re.IGNORECASE)),
+    ("dead-until", re.compile(
+        r"(?<!stayed )(?<!remained )(?<!was )(?<!were )\b" + _FUT_DEAD
+        + r"\s+(?:in\s+the\s+\w+\s+build\s+)?(?:until|before)\s+", re.IGNORECASE)),
+    ("no-caller-until", re.compile(
+        r"\b(?:no|without|zero)\s+(?:production\s+)?(?:callers?|calls?|readers?|consumers?|uses?)\b"
+        r"[^.;!?]{0,60}?\b(?:until|before)\s+", re.IGNORECASE)),
+    ("not-live-until", re.compile(
+        r"\bnot\s+(?:wired|live|called|registered|reachable|spawned|consumed|built)\b"
+        r"[^.;!?]{0,60}?\b(?:until|before)\s+", re.IGNORECASE)),
+    ("lands-at", re.compile(r"\blands?\s+(?:at|in|with)\s+(?:the\s+)?(?=" + _FUT_PID + ")",
+                            re.IGNORECASE)),
+    # once-P guards the POST-id verb: "once P4.4 lands" is a claim, "once P4.4 landed" is history
+    # (the past marker follows the id here, so a lookbehind cannot carry it - the R1 opus P2).
+    ("once-P", re.compile(
+        r"\bonce\s+(?:the\s+)?(?=" + _FUT_PID
+        + r"\b(?!\s+(?:landed|wired|had|was|made|added|delivered|closed|did|shipped|arrived|went"
+        + r"|completed|became)\b))", re.IGNORECASE)),
+)
+_FUT_PID_RE = re.compile(_FUT_PID)
+# A '.' between digits is a box-id dot (P3.48), NOT a sentence stop — the g24 positive legs caught
+# the naive [.;)!?(] class truncating EVERY bound id to "P3" and leaving the check green-but-blind.
+_FUT_WINDOW_STOP = re.compile(r"[;)!?(]|\.(?!\d)")
+
+
+def _rs_comment_blocks(text: str) -> list[tuple[int, str]]:
+    """(start_lineno, joined) for each contiguous //-family comment run (step 1 of the sweep method:
+    JOIN first, match second — the claim routinely spans two comment lines) plus each lint
+    reason = "…" attribute string (the other rot carrier P4.23 found), newline-flattened."""
+    blocks: list[tuple[int, str]] = []
+    cur: list[str] = []
+    start = 0
+    for i, line in enumerate(text.splitlines(), 1):
+        m = _RS_COMMENT_LINE.match(line)
+        if m:
+            if not cur:
+                start = i
+            cur.append(m.group(1).strip())
+        else:
+            if cur:
+                blocks.append((start, " ".join(cur)))
+                cur = []
+    if cur:
+        blocks.append((start, " ".join(cur)))
+    for m in _RS_REASON_OPEN.finditer(text):
+        opener, s = m.group(1), m.end()
+        if opener == '"':
+            j, buf = s, []
+            while j < len(text):
+                c = text[j]
+                if c == "\\" and j + 1 < len(text):
+                    buf.append(text[j + 1])
+                    j += 2
+                    continue
+                if c == '"':
+                    break
+                buf.append(c)
+                j += 1
+            content = "".join(buf)
+        else:
+            closer = '"' + "#" * opener.count("#")
+            j = text.find(closer, s)
+            content = text[s:j] if j != -1 else text[s:]
+        blocks.append((text.count("\n", 0, m.start()) + 1, content.replace("\n", " ")))
+    return blocks
+
+
+def _stale_liveness_problems(files: dict[str, str], done: set[str]) -> list[tuple[str, int, str]]:
+    """(pure) the check-29 core over {relpath -> rust source}: every deadness-until-bound construction
+    whose captured bound id is in `done` (the [x] set). Deduped per (file, block, bound-id set)."""
+    problems: list[tuple[str, int, str]] = []
+    seen: set[tuple[str, int, str]] = set()
+    for rel in sorted(files):
+        for lineno, joined in _rs_comment_blocks(files[rel]):
+            s = _FUT_QUOTE_SPAN.sub(" ", _FUT_TAG_SPAN.sub(" ", joined))
+            for name, rx in _FUT_CONSTRUCTS:
+                for m in rx.finditer(s):
+                    window = s[m.end():m.end() + 45]
+                    stop = _FUT_WINDOW_STOP.search(window)
+                    if stop:
+                        window = window[:stop.start()]
+                    landed = sorted(set(_FUT_PID_RE.findall(window)) & done)
+                    if not landed:
+                        continue
+                    key = (rel, lineno, ",".join(landed))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    problems.append((rel, lineno,
+                                     f"a {name} futurity construction is bounded by "
+                                     f"{'/'.join(landed)}, which is [x] — the comment asserts a "
+                                     f"dead-ness that box ended; reword it to the live truth, verifying "
+                                     f"every subject against its real call sites (Loop-memory "
+                                     f"`stale-liveness-futurity-claims`) near: "
+                                     f"…{s[max(0, m.start() - 40):m.end() + 45]}…"))
+    return problems
+
+
+def doc29_stale_liveness(ctx: Ctx) -> list[Finding]:
+    """Check 29: stale liveness/futurity claims in .rs comments + lint-reason strings (the P4.23
+    L(-1) hand-off; build-gates §6 check 29). A present-tense dead-ness assertion bounded by a LANDED
+    plan box fails — the bound id is captured from the construction itself, never a whole-block
+    intersect. Scope: src-tauri/src + crates + xtask/src (first-party Rust; the planted
+    tests/g53-fixture tree and the fuzz harness are deliberately out). Skips while src-tauri/src is
+    absent, fail-closed once it lands."""
+    if not (ctx.root / "src-tauri" / "src").is_dir():
+        return []                          # the core src lands in P1
+    files: dict[str, str] = {}
+    for root in (ctx.root / "src-tauri" / "src", ctx.root / "crates", ctx.root / "xtask" / "src"):
+        if root.is_dir():
+            for f in root.rglob("*.rs"):
+                files[str(f.relative_to(ctx.root)).replace("\\", "/")] = f.read_text(
+                    encoding="utf-8", errors="replace")
+    done = {b.box_id for b in ctx.boxes if b.marker == "x"}
+    return [Finding("29:stale-liveness", rel, ln, msg)
+            for rel, ln, msg in _stale_liveness_problems(files, done)]
+
+
 # =============================================================================================
-#  Check registry — FORMAT checks live; doc checks 1..28 added incrementally (P0.3.5 + P1.66).
+#  Check registry — FORMAT checks live; doc checks 1..29 added incrementally (P0.3.5 + P1.66).
 # =============================================================================================
 FORMAT_CHECKS = {
     "format:box-parse-completeness": fmt_box_parse_completeness,
@@ -1755,8 +1909,9 @@ DOC_CHECKS = {
     "24:p0-completion-record": doc24_p0_completion,
     "26:struct-map": doc26_struct_map,
     "27:gate-posture-transition": doc27_gate_posture_transition,
+    "29:stale-liveness": doc29_stale_liveness,
 }
-CHECKS = {**FORMAT_CHECKS, **DOC_CHECKS}   # remaining doc checks 1..28 inserted as built
+CHECKS = {**FORMAT_CHECKS, **DOC_CHECKS}   # remaining doc checks 1..29 inserted as built
 
 
 def run(ctx: Ctx, only: str | None = None, max_per_check: int | None = None) -> list[Finding]:

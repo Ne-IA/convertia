@@ -90,6 +90,26 @@ record("diff: a newly COMMENTED-OUT assertion with no tag -> violation", len(hun
 D_CLEAN = "@@ -1,1 +1,2 @@\n fn t() {\n+    let helper = 1;\n"
 record("diff: a clean test change (no marker/removed-assertion) -> no violation", hunk(D_CLEAN) == [])
 
+# --- string/comment-blanked `-` lines (2026-08-30, the check-29-calibration commit): prose is not
+#     an assertion — a reworded reason/message naming expect(/assert( must not demand a tag no test
+#     change could honestly carry; a real removed assertion survives the blanking -----------------
+D_RM_STRING = ('@@ -1,3 +1,3 @@\n fn t() {\n'
+               '-    reason = "the expect(dead_code) lint could not catch the rot"\n'
+               '+    reason = "the module dead_code expectation could not catch the rot"\n }\n')
+record("diff: a REMOVED line whose only expect( lives in a STRING literal -> prose, no violation",
+       hunk(D_RM_STRING) == [])
+D_RM_COMMENT = "@@ -1,3 +1,2 @@\n fn t() {\n-    // the old assert!(x) shape was retired at P3.86\n }\n"
+record("diff: a REMOVED `//` comment line naming assert!( -> prose, no violation",
+       hunk(D_RM_COMMENT) == [])
+record("diff: a REAL removed assertion still flags after the blanking (tokens live outside literals)",
+       len(hunk('@@ -1,3 +1,2 @@\n fn t() {\n-    assert_eq!(mangle("expect("), b);\n }\n')) == 1)
+record("diff: a Rust LIFETIME tick does not hide a removed assertion (tick=False for .rs)",
+       len(hunk("@@ -1,3 +1,2 @@\n fn t() {\n-    check::<'a>(v); assert!(v.ok());\n }\n")) == 1)
+record("_string_blanked: literal bodies blanked, code preserved, unterminated quote blanks to EOL",
+       m._string_blanked('assert_eq!(f("expect("), \'assert(\')')
+       == "assert_eq!(f(\"_______\"), '_______')"
+       and "expect(" not in m._string_blanked('x = "expect( unterminated'))
+
 # --- the whole-deletion-run window (the 2026-07-12 P3.86 refinement): a REMOVED assertion is
 #     justified by ONE tag within ±WINDOW of its contiguous `-`-run's BOUNDARIES — git emits every
 #     `-` before any `+`, so a buried assert in an atomically-deleted test unit can never carry a

@@ -104,6 +104,25 @@ UNSAFE_IMPL_RE = re.compile(r"\bunsafe\s+impl\s*(?:<(?:[^<>]|<[^<>]*>)*>)?\s*(?:
 LOCALHOST_RE = re.compile(r"\b127\.0\.0\.1\b|\blocalhost\b", re.IGNORECASE)
 VET_MUTATOR_RE = re.compile(r"\bcargo\s+vet\s+(?:update|sync|import)\b")
 FC_GEN_RE = re.compile(r"\bfc\.gen\s*\(")
+# (g) a qualified intra-doc LINK from a lower spec-§0.7 tier to a higher one (2026-08-30, the P4.22
+# hand-off - the G74-leg-(b) sibling): rustdoc happily RESOLVES the path-qualified form written inside a
+# tier-3 module, so G74's rustdoc leg only catches the UNQUALIFIED spelling - this invariant closes the
+# qualified escape. A link creates no dependency edge, but it documents an upward coupling §0.7 forbids
+# the code to have; the honest form is a plain code span (naming is legal - LINKING upward is the
+# violation; the f9a8887 design ruling). Two rustdoc link spellings are matched: the backtick form
+# [`crate::mod::X`] and the markdown-target form [text](crate::mod::X); the rare link-reference-
+# definition form (`[label]: crate::mod::X`) is a recorded residual.
+DOC_LINK_BACKTICK_RE = re.compile(r"\[`(?:crate|super(?:::super)*)::([A-Za-z_][A-Za-z0-9_]*)\b[^`\]]*`\]")
+DOC_LINK_TARGET_RE = re.compile(r"\]\((?:crate|super(?:::super)*)::([A-Za-z_][A-Za-z0-9_]*)\b")
+# The §0.7 tier map (00-architecture §0.7 "logical modules"; lower number = higher tier - it may be
+# linked TO from below the dependency order, never FROM below): upward iff tier(target) < tier(source).
+# A §0.7 re-home edits this map in the same commit (the §0.7 fingerprint, plan-lint check 25, guards it).
+SPEC07_TIERS = {
+    "ipc": 0,
+    "orchestrator": 1,
+    "detection": 2, "engines": 2, "fs_guard": 2, "isolation": 2, "outcome": 2, "run": 2,
+    "pool": 3, "domain": 3, "platform": 3,
+}
 
 # (f) the ONE allowed home of `fc.gen(` - the approved shrink-wrapper [Build-Session-Entscheidung:
 # P0.3.10; the concrete path is confirmed when the P0.5/P1 test-support helper lands].
@@ -519,6 +538,41 @@ def _f_in_scope(p: str) -> bool:
     return re.search(r"(?:^|/)__tests__/.*\.tsx?$", p) is not None
 
 
+# (g) qualified upward intra-doc link across §0.7 tiers (doc comments in src-tauri/src)
+def _g_module_of(p: str) -> str | None:
+    m = re.match(r"src-tauri/src/([a-z_]+)(?:/|\.rs$)", _norm(p))
+    return m.group(1) if m else None
+
+
+def _g_in_scope(p: str) -> bool:
+    p = _norm(p)
+    if Path(p).suffix != ".rs" or TEST_PAT.search(p):
+        return False
+    mod = _g_module_of(p)
+    return mod is not None and mod in SPEC07_TIERS
+
+
+def _g_scan(relpath: str, text: str) -> list[tuple[int, str]]:
+    mod = _g_module_of(relpath)
+    src_tier = SPEC07_TIERS[mod] if mod in SPEC07_TIERS else None
+    if src_tier is None:
+        return []
+    out: list[tuple[int, str]] = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        stripped = line.lstrip()
+        if not (stripped.startswith("///") or stripped.startswith("//!")):
+            continue                      # intra-doc links live only in doc comments
+        for rx in (DOC_LINK_BACKTICK_RE, DOC_LINK_TARGET_RE):
+            for hit in rx.finditer(stripped):
+                target = hit.group(1)
+                tgt_tier = SPEC07_TIERS.get(target)
+                if tgt_tier is not None and tgt_tier < src_tier:
+                    out.append((lineno,
+                                f"upward doc link to crate::{target} (tier {src_tier} -> {tgt_tier}); "
+                                f"use a plain code span - linking upward documents a coupling spec-0.7 forbids"))
+    return out
+
+
 # `live` is the human-facing status hint (main() scans EVERY invariant regardless). a-d,f flipped
 # True at P1.67 — their target source classes (Rust / TS test / CSS) all landed in P1, so the gate
 # IS armed over real files; the old `live=False` made the status line falsely claim "target-absent
@@ -534,6 +588,8 @@ INVARIANTS = [
     Invariant("e", "cargo vet update/sync/import in CI or scripts/", True, _e_in_scope, _e_scan),
     Invariant("f", "fc.gen( outside the approved shrink-wrapper in TS test files", True, _f_in_scope,
               lambda rel, t: _line_hits(_code_no_comments(rel, t), FC_GEN_RE)),
+    Invariant("g", "qualified upward intra-doc link across the spec-0.7 tiers (doc comments)", True,
+              _g_in_scope, _g_scan),
 ]
 
 

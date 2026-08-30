@@ -27,10 +27,15 @@
         dead_code,
         reason = "P3.26 — the §1.2 dispatcher skeleton (`read_header`/`detect`/`sniff_magic` + the \
                   `MAGIC_SIGNATURES` registry) is the layered-detection FRAMEWORK, authored before its \
-                  consumers: the orchestrator drop→detect→group caller is P3.49, the per-step bodies are \
-                  P3.27 (text encoding) / P3.28 (delimiter) / P3.29 (outcome rules) / P5–P7 (magic + \
-                  container + structural signatures) — so the skeleton is dead in the production build \
-                  until P3.49 wires it."
+                  consumers, and is LIVE since P3.49: the orchestrator drop→detect caller wires \
+                  `read_header` + `detect` (and through it `sniff_magic`/`MAGIC_SIGNATURES`) plus the \
+                  P3.27/P3.28 classify steps on the C1 drain. What still fulfils this expectation \
+                  (enumerated by compiling with the expectation dropped, 2026-08-30): \
+                  `Delimiter::as_char`, `ExtensionDelimiterHint` (its Comma/Tab construction + \
+                  `from_extension`) and `DelimiterClass::user_facing_format` — P3.28/P3.29-authored \
+                  step residue the live spine does not reach. [Corrected by the G7 check-29 calibration \
+                  (Co-Pilot, 2026-08-30): the tail asserted present-tense skeleton-deadness bounded by \
+                  P3.49 long after P3.49 landed.]"
     )
 )]
 

@@ -924,14 +924,14 @@ fn ephemeral_roots() -> Vec<PathBuf> {
 /// tests (a Landlock failure does not imply a seccomp / net-ns failure, so each leg reports
 /// independently — the P4.15 box's per-leg-independence contract) and, since **P4.18**, by
 /// [`SpawnTier`] — the achieved-tier record every confined spawn hands out on
-/// [`crate::engines::ConfinedRun::tier`]. That is the shaping choice P4.15 left to P4.18: the record
+/// `crate::engines::ConfinedRun::tier`. That is the shaping choice P4.15 left to P4.18: the record
 /// keeps the PER-LEG verdicts rather than collapsing them to one tier value, because the two Windows
 /// legs degrade independently (a FAT/exFAT or SMB destination can leave Leg B applied while Leg A
 /// degrades) and a collapsed value would hide exactly that.
 ///
 /// `allow(dead_code)` (non-test), NOT `expect`: the reporter fn BODIES compile in the non-test build and
 /// CONSTRUCT these variants, so an `expect` would flip to unfulfilled (the fs_guard forward-declared-item
-/// precedent). The P4.18 production reader ([`crate::isolation::run_confined`] assembling the [`SpawnTier`])
+/// precedent). The P4.18 production reader (`crate::isolation::run_confined` assembling the [`SpawnTier`])
 /// exists, but rustc does not propagate liveness through a DEAD caller and that whole confined-spawn lane
 /// stays dead until **P4.32** wires the subprocess dispatch arms — the same phenomenon the module-level
 /// dead-code expectation in `crate::engines` records for `ConfinedRun` itself. The annotation therefore
@@ -1106,7 +1106,7 @@ pub(crate) struct LegVerdict {
 }
 
 /// The §2.12.3 achieved privilege-drop tier of ONE confined spawn (P4.18) — the per-leg record
-/// [`crate::isolation::run_confined`] assembles and hands out on [`crate::engines::ConfinedRun::tier`],
+/// `crate::isolation::run_confined` assembles and hands out on `crate::engines::ConfinedRun::tier`,
 /// and the value the P4.18.1 per-spawn tier-APPLIED regression asserts against the platform's
 /// `privilege-drop-coverage.toml` row.
 ///

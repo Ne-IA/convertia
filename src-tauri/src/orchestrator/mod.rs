@@ -3269,8 +3269,9 @@ impl Drop for IngestGuard<'_> {
 // the app-managed State to orchestrator; the P2.43/P2.44/P2.45/P2.58 precedent). `compute_equiv_key` is now
 // LIVE — the P3.48 C6 conductor resolves the managed `State<EquivKeyComputer>` and folds each item's re-run
 // key in the §2.5 applier (`has_seen`) + the per-success `RerunLedger::record`; its sibling
-// `compute_rerun_verdict` (the C4 `plan_output` VERDICT) is the SECOND consumer, still dead until the P3.49 C4
-// wiring (the module-level dead_code expect stays fulfilled while it is unwired).
+// `compute_rerun_verdict` (the C4 `plan_output` VERDICT) is the SECOND consumer, LIVE since the P3.49 C4
+// wiring — the module reason already lists it as live via the C4 plan_output_preview re-run verdict; this
+// sentence had lagged that update. [Corrected by the G7 check-29 calibration (Co-Pilot, 2026-08-30)]
 
 /// The §2.5.1 re-run equivalence-key computer — holds the ONE process-lifetime `BuildHasher` so two computes
 /// of the same `(source, target, effective settings)` in a session agree on the resulting `u64` (§2.5.2: the

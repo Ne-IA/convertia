@@ -124,12 +124,15 @@ use crate::domain::{DivertReason, ItemId, OutputPlan};
 /// `fs_guard::resolve_identity` — the IO/FFI canonicalize + per-OS metadata read, authored in P3.
 // [Test-Change: P3.8 — old-obsolete+new-correct, §2.3.3] `expect`→`allow`: P3.8's `is_safe_output` field-reads
 // `FileIdentity` and P3.7's `resolve_and_dedup` moves it, so the P2.74 DEAD assertion would error as
-// unfulfilled under -D warnings — both consumers unwired until P3.38/P3.49; `allow` fits (cf. P2.63).
+// unfulfilled under -D warnings — both consumers were unwired through the P3 window and are LIVE since
+// P3.38/P3.49 (the write sequence + the C1/C4 spine); the permissive `allow` below is inert on a live type
+// and kept as the recorded P3.8 decision (cf. P2.63). [Corrected by the G7 check-29 calibration
+// (Co-Pilot, 2026-08-30)]
 #[cfg_attr(
     not(test),
     allow(
         dead_code,
-        reason = "§2.3.1 FileIdentity is forward-declared at P2.74 (the pure de-dup-key type); its production producer `resolve_identity` (IO/FFI) and its first consumer (the P2.76 de-dup fold, wired into the P3.49 spine) are P3, so it is dead in the production build until those land."
+        reason = "§2.3.1 FileIdentity is forward-declared at P2.74 (the pure de-dup-key type); its production producer `resolve_identity` (IO/FFI) and its first consumer (the P2.76 de-dup fold, wired into the P3.49 spine) LANDED with the P3 wiring (live since P3.38/P3.49), so the type runs in production; the permissive allow is inert on a live type, kept as the recorded P3.8 decision (corrected by the G7 check-29 calibration, Co-Pilot 2026-08-30)."
     )
 )]
 #[derive(Debug, Clone)]
@@ -206,15 +209,19 @@ impl Hash for FileIdentity {
 /// either way, and reading `path` mirrors what the §6.4.1 per-OS mutant-killer tests read directly.
 // [Test-Change: P3.7 — old-obsolete+new-correct, §2.4.1] `expect`→`allow` (a production lint change, NOT a
 // test suppression; cf. P2.63): P3.7's `crate::orchestrator::resolve_and_dedup` now references this fn, so the
-// P3.6 assertion that it is DEAD would error as unfulfilled under -D warnings — but that consumer is itself
-// unwired until P3.49, so the fn's dead-ness is ambiguous and `allow` (permissive) is the correct attribute.
+// P3.6 assertion that it is DEAD would error as unfulfilled under -D warnings — that consumer was unwired
+// through the P3 window and is LIVE since P3.49 (the C1 drain spine), so the fn runs in production; the
+// permissive `allow` below is inert on a live fn and kept as the recorded P3.7 decision. [Corrected by the
+// G7 check-29 calibration (Co-Pilot, 2026-08-30)]
 #[cfg_attr(
     not(test),
     allow(
         dead_code,
-        reason = "§2.3.1 resolve_identity (the IO/FFI producer of FileIdentity, P3.6). Referenced by P3.7's \
-                  `resolve_and_dedup` (still unwired until the P3.49 spine), so it is dead-at-runtime but no \
-                  longer statically unused; the cfg(test) real-FS tests below exercise it."
+        reason = "§2.3.1 resolve_identity (the IO/FFI producer of FileIdentity, P3.6). Called by P3.7's \
+                  `resolve_and_dedup`, wired into the live spine at P3.49 — the fn runs in production and \
+                  the permissive allow is inert, kept as the recorded P3.7 decision (corrected by the G7 \
+                  check-29 calibration, Co-Pilot 2026-08-30); the cfg(test) real-FS tests below exercise \
+                  it directly."
     )
 )]
 pub fn resolve_identity(path: &Path) -> io::Result<FileIdentity> {
@@ -1145,7 +1152,7 @@ pub enum PublishOutcome {
 }
 
 /// The hard-failure verdict of the §2.2.2 numbering ↔ no-clobber publish loop ([`publish_numbered`], P3.15). A
-/// §0.7 tier-2 LEAF verdict — the P3.48 conductor's §2.1.1 publish legs ([`crate::orchestrator`], tier 1) map it
+/// §0.7 tier-2 LEAF verdict — the P3.48 conductor's §2.1.1 publish legs (`crate::orchestrator`, tier 1) map it
 /// to §2.8 `ConversionErrorKind` (`PathTooLong` / `TooManyCollisions` / `WriteFailed`); `crate::fs_guard` never
 /// depends up on `crate::outcome`, so it returns its own verdict here. Not `PartialEq` (it carries an
 /// `io::Error`) — callers `match` on it.
@@ -1708,9 +1715,11 @@ pub enum DestinationMode<'a> {
     not(test),
     allow(
         dead_code,
-        reason = "P3.34 — the create-only ancestor helper, called only by `prepare_output_dir` (itself unwired \
-                  until the §1.8/C4 planning, P3.37); dead-at-runtime through the P3 wiring window, exercised by \
-                  prepare_output_dir_tests. `allow` (permissive) covers the transitive dead-ness."
+        reason = "P3.34 — the create-only ancestor helper, called only by `prepare_output_dir`, which is LIVE \
+                  since P3.37/P3.49 (compute_output_plan calls it on the orchestrator's C4/C6 planning path), \
+                  so this fn runs in production; the permissive allow is inert on a live fn, kept as the \
+                  recorded P3.34 decision (corrected by the G7 check-29 calibration, Co-Pilot 2026-08-30). \
+                  Exercised directly by prepare_output_dir_tests."
     )
 )]
 fn create_subtree_dir(dir: &Path) -> io::Result<()> {
@@ -1858,10 +1867,11 @@ pub fn prepare_output_dir(
     not(test),
     allow(
         dead_code,
-        reason = "P3.35 — resolve_divert_target's verdict type; constructed only by that fn (itself unwired \
-                  until the late-divert P3.36 / the §1.8 OutputPlan divert leg P3.37), so it is dead-at-runtime \
-                  through the P3 wiring window; `allow` (permissive) covers the ambiguous dead-ness (cf. \
-                  OutputSafety). Exercised by resolve_divert_target_tests."
+        reason = "P3.35 — resolve_divert_target's verdict type; constructed only by that fn, which is LIVE \
+                  since the late-divert P3.36/P3.38 wiring (the orchestrator imports + calls it on the \
+                  publish path), so the type runs in production; the permissive allow is inert on a live \
+                  type, kept as the recorded P3.35 decision (corrected by the G7 check-29 calibration, \
+                  Co-Pilot 2026-08-30; cf. OutputSafety). Exercised directly by resolve_divert_target_tests."
     )
 )]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2077,10 +2087,11 @@ pub fn publish_to_divert(
     not(test),
     allow(
         dead_code,
-        reason = "P3.37 — compute_output_plan's failure verdict; constructed only by that fn (itself unwired \
-                  until the §1.8/C4 plan_output body P3.49 / the §2.1.1 write sequence P3.38), so it is \
-                  dead-at-runtime through the P3 wiring window; `allow` (permissive) covers the ambiguous \
-                  dead-ness (cf. OutputSafety). Exercised by compute_output_plan_tests."
+        reason = "P3.37 — compute_output_plan's failure verdict; constructed only by that fn, which is LIVE \
+                  since the §1.8/C4 wiring (P3.49: the orchestrator calls compute_output_plan on the C4/C6 \
+                  planning path), so the type runs in production; the permissive allow is inert on a live \
+                  type, kept as the recorded P3.37 decision (corrected by the G7 check-29 calibration, \
+                  Co-Pilot 2026-08-30; cf. OutputSafety). Exercised directly by compute_output_plan_tests."
     )
 )]
 #[derive(Debug)]

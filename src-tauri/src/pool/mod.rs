@@ -119,8 +119,8 @@
 //!    [`NO_PROGRESS_TIMEOUT`] / [`SUBPROCESS_WALL_CLOCK_DEFAULT`] / [`VIDEO_WALL_CLOCK`] — is authored **at
 //!    P4.12** with its consumer, the §1.7 `crate::engines::run_subprocess` no-progress/wall-clock watchdog
 //!    (the §0.9 "authored with their consumers" principle; this reconciles the prior "authored with P4.20"
-//!    forecast — the watchdog MECHANISM lands at P4.12, so its parameters do too, while P4.20 expands the pool
-//!    *structure*). They stay dead in the production build until P4.32 wires `run_subprocess` live, exactly
+//!    forecast — the watchdog MECHANISM landed at P4.12, so its parameters did too, while P4.20 expanded
+//!    the pool *structure*). They stay dead in the production build until P4.32 wires `run_subprocess` live, exactly
 //!    like [`GROUP_CONFIRM_WAIT`]. **P3.3 authored no `pub const`** (no P3.3 consumer imported one; P3.45 adds
 //!    the first). P4.20's own §1.10 memory `pub const`s follow the same rule and ARE live: their consumers
 //!    ([`Pool::effective_degree`] and the watermark gate) are in this module.

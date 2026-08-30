@@ -161,11 +161,10 @@ jobs:
       - name: 'G74: .rs comment-attachment integrity over the push range (the splice-hijack class; an empty/zero before-SHA - pull_request/schedule/first push - skips with notice)'
         run: python3 scripts/check-doc-splice --range --base "${{ github.event.before }}"
       - name: 'G74: rustdoc intra-doc-link integrity (deny broken + private links, private items documented - a rename that strands a doc link fails here; per-OS builds catch the cfg-gated dangles)'
-        env:
-          # the env-BLOCK form, never a POSIX inline VAR=x prefix: the Windows leg's default
-          # shell is pwsh, where an inline prefix is parsed as a command name (the 4723967 red)
-          RUSTDOCFLAGS: '-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links'
-        run: cargo doc --workspace --no-deps --document-private-items --locked
+        # ONE driver everywhere: scripts/check-doc-links pins RUSTDOCFLAGS on the child env IN-PROCESS
+        # (immune to the pwsh inline-prefix trap - the 4723967 red - on every OS leg) and is the same
+        # command the L2 pre-push slot runs, so the local plane cannot fork from CI (the P4.22 gap).
+        run: python3 scripts/check-doc-links
       - name: 'G29: unsafe-policy gate (#![deny(unsafe_code)] + one allow-listed FFI module; cross-platform, live deny/allow scan in P1)'
         run: python3 scripts/check-unsafe-policy --full
       - name: 'G48/G16: in-core fuzz-harness + per-numeric-IPC-arg overflow contract (frozen target/bounds/fixture set + date-pinned nightly; live harness in P3)'

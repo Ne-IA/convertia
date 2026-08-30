@@ -3,7 +3,7 @@
 
 FORMAT-check coverage: for each of the 8 format checks, a CLEAN box yields no finding and a VIOLATING
 box IS flagged (so no check is green-by-vacuity). Plus the base-case golden invariant: the real plan
-passes (exit 0) and a deliberately-broken synthetic box-set exits non-empty. The doc-wide checks 1..28
+passes (exit 0) and a deliberately-broken synthetic box-set exits non-empty. The doc-wide checks 1..29
 get their own legs as they are built. stdlib-only. Exit 0 = all held; 1 = a self-test failed.
 """
 import hashlib
@@ -192,6 +192,69 @@ record("28 app-event: a dynamic format!(\"app://{}\") name -> caught (value not 
        any("no fourth" in p for p in m._app_event_surface_drift({"src-tauri/src/x.rs": 'format!("app://{}", k)\n'})))
 record("28 app-event: the REAL committed src-tauri/src passes (the 6 literals are all const-homed + valid)",
        m.doc28_app_event_surface_drift(m.build_ctx(ROOT)) == [])
+
+# --- check 29: stale liveness/futurity claims in .rs comments (the P4.23 L(-1) hand-off) -------
+_done29 = {"P3.48", "P4.4"}
+record("29 stale-liveness: dead-until bounded by a LANDED box -> caught (claim JOINED across two lines)",
+       len(m._stale_liveness_problems(
+           {"src-tauri/src/x/mod.rs":
+            "// the whole hull\n// stays dead until P3.48 wires the\n// conductor\nfn f() {}\n"},
+           _done29)) == 1)
+record("29 stale-liveness: the same construction bounded by an OPEN box -> clean (the claim is still true)",
+       m._stale_liveness_problems(
+           {"src-tauri/src/x/mod.rs": "// stays dead until P9.99 wires it\n"}, _done29) == [])
+record("29 stale-liveness: a lint reason = string is scanned too (the other rot carrier P4.23 found)",
+       len(m._stale_liveness_problems(
+           {"src-tauri/src/x/mod.rs":
+            '#[cfg_attr(not(test), expect(dead_code, reason = "dead in the production build '
+            'until P4.4 lands"))]\n'},
+           _done29)) == 1)
+record("29 stale-liveness: PAST-tense narration (stayed dead until X made it live) -> history, clean",
+       m._stale_liveness_problems(
+           {"src-tauri/src/x.rs":
+            "// this graph stayed dead until the P3.48 conductor made it reachable\n"},
+           _done29) == [])
+record("29 stale-liveness: an id in a trailing parenthetical is NOT the bound (window stops at '(')",
+       m._stale_liveness_problems(
+           {"src-tauri/src/x.rs":
+            "// has no production caller until P9.99 (`needs: P4.4`) wires it\n"},
+           _done29) == [])
+record("29 stale-liveness: a double-quoted MENTION of an old claim is stripped, not asserted",
+       m._stale_liveness_problems(
+           {"src-tauri/src/x.rs":
+            '// the clause read "stays dead until P3.48 wires it" and was reworded\n'},
+           _done29) == [])
+record("29 stale-liveness: a bracket-tag span is attribution, not assertion (stripped before matching)",
+       m._stale_liveness_problems(
+           {"src-tauri/src/x.rs":
+            "// [Corrected by P4.23: previously dead until P4.4 wires it] now live\n"},
+           _done29) == [])
+record("29 stale-liveness: 'once P<id> lands' with the id landed -> caught",
+       len(m._stale_liveness_problems(
+           {"src-tauri/src/x.rs": "// registered transitively once P4.4 lands\n"}, _done29)) == 1)
+record("29 stale-liveness: 'once P<id> landed' (a PAST-tense post-id verb) -> history, clean",
+       m._stale_liveness_problems(
+           {"src-tauri/src/x.rs": "// the guard was added once P4.4 landed, closing the class\n"},
+           _done29) == [])
+record("29 stale-liveness: 'once P<id> shipped' (the R2 review's probe verb) -> history, clean",
+       m._stale_liveness_problems(
+           {"src-tauri/src/x.rs": "// the flag flips once P4.4 shipped the spawn\n"},
+           _done29) == [])
+record("29 stale-liveness: the REAL tree is clean today (the 15 calibration sites were fixed in the arming commit)",
+       m.doc29_stale_liveness(m.build_ctx(ROOT)) == [])
+# the real-entry planted positive (the g24-hermetic rule: the clean real-tree leg above would stay
+# green if file DISCOVERY or the [x] parse broke, so the FIRING path is proven end-to-end through
+# doc29_stale_liveness + build_ctx over a scratch root - never only through the pure helper)
+with tempfile.TemporaryDirectory() as _d29:
+    _root29 = Path(_d29)
+    (_root29 / "docs" / "plan").mkdir(parents=True)
+    (_root29 / "docs" / "plan" / "P0-x.md").write_text(
+        "- [x] **P0.1** [GATE] Done thing · G7\n", encoding="utf-8")
+    (_root29 / "src-tauri" / "src").mkdir(parents=True)
+    (_root29 / "src-tauri" / "src" / "planted.rs").write_text(
+        "// the hull stays dead until P0.1 wires it\n", encoding="utf-8")
+    record("29 stale-liveness: the REAL entry point fires on a planted scratch root (discovery + [x] parse proven)",
+           len(m.doc29_stale_liveness(m.build_ctx(_root29))) == 1)
 
 # --- check 23: the owner-decidable / informational-then-ratcheted gate-status ledger (P0.4.5) --
 _GS = "docs/process/gate-status.md"

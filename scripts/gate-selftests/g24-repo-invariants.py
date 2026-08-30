@@ -292,8 +292,34 @@ record("(e/P2-r4) shell: an EVEN (2) trailing-backslash does NOT fold (escaped l
 record("(e/P2-r4) shell: a single (odd) trailing backslash STILL folds `cargo vet \\<nl>update`",
        len(scan("e", "scripts/r.sh", "cargo vet \\\n    update\n")) == 1)
 
+# === (g) qualified upward intra-doc link across the §0.7 tiers (2026-08-30, the P4.22 hand-off) ===
+G = inv("g")
+record("(g) tier-3 pool/platform/domain module files in scope; tests + unmapped roots + TS are NOT",
+       G.in_scope("src-tauri/src/pool/mod.rs") and G.in_scope("src-tauri/src/platform/mod.rs")
+       and not G.in_scope("src-tauri/tests/x.rs") and not G.in_scope("src-tauri/src/lib.rs")
+       and not G.in_scope("src/x.ts"))
+record("(g) an upward [`crate::engines::...`] backtick link written in tier-3 platform/ FLAGGED",
+       len(scan("g", "src-tauri/src/platform/mod.rs",
+                "/// see [`crate::engines::ConfinedRun::tier`] for the record\n")) == 1)
+record("(g) the markdown-target form `[x](crate::ipc::Y)` written in tier-1 orchestrator/ FLAGGED",
+       len(scan("g", "src-tauri/src/orchestrator/mod.rs",
+                "/// consumed by [the door](crate::ipc::events)\n")) == 1)
+record("(g) the DOWNWARD [`crate::pool::...`] link from tier-2 engines/ NOT flagged (legal direction)",
+       len(scan("g", "src-tauri/src/engines/registry.rs",
+                "/// ([`crate::pool::SerialisedLanes`] + the permit count)\n")) == 0)
+record("(g) a SAME-tier link (engines -> isolation, both tier 2) NOT flagged",
+       len(scan("g", "src-tauri/src/engines/mod.rs", "/// via [`crate::isolation::run_confined`]\n")) == 0)
+record("(g) a plain CODE SPAN naming the upper tier NOT flagged (naming is legal; linking is not)",
+       len(scan("g", "src-tauri/src/platform/mod.rs",
+                "/// assembled by `crate::isolation::run_confined` on every spawn\n")) == 0)
+record("(g) the [`super::engines::...`] spelling of the same upward edge FLAGGED",
+       len(scan("g", "src-tauri/src/pool/mod.rs", "//! cf. [`super::engines::EngineRegistry`]\n")) == 1)
+record("(g) an upward path in a PLAIN `//` comment or in code NOT flagged (doc-comment-scoped)",
+       len(scan("g", "src-tauri/src/pool/mod.rs",
+                "// [`crate::engines::X`] in a plain comment\nlet x = 1; // [`crate::ipc::Y`]\n")) == 0)
+
 # === live: the real repo is clean today =======================================================
-record("main() exits 0 today (all invariants a-f live over the real repo source; clean)", m.main() == 0)
+record("main() exits 0 today (all invariants a-g live over the real repo source; clean)", m.main() == 0)
 
 failed = [n for n, ok in results if not ok]
 print(f"\n[g24-repo-invariants] {len(results) - len(failed)}/{len(results)} assertions passed.")

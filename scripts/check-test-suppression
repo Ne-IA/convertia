@@ -91,6 +91,39 @@ TAG_RE = re.compile(r"\[Test-Change:\s*P\d[\w.]*[^\]]*?(?:old-obsolete\+new-corr
 WINDOW = 6
 
 
+def _string_blanked(line: str, tick: bool = True) -> str:
+    """The line with every "…" / `…` (and, with tick=True, '…') string-literal BODY blanked
+    (escape-aware), so an assertion-shaped token inside a string (a lint `reason = "… expect(dead_code)
+    …"`, a message naming `assert(`) is prose and cannot trip the removed-assertion scan. A real
+    assertion's tokens live OUTSIDE string literals and survive. tick=False for Rust, where a bare `'`
+    is usually a LIFETIME tick and pairing on it could over-blank real code between two lifetimes
+    (Rust's own prose carrier is the `"` reason/message string, which is always blanked). An
+    unterminated quote blanks to end-of-line."""
+    quotes = "\"'`" if tick else '"`'
+    out: list[str] = []
+    i, n = 0, len(line)
+    while i < n:
+        c = line[i]
+        out.append(c)
+        if c in quotes:
+            j = i + 1
+            while j < n:
+                if line[j] == "\\":
+                    out.append("__")
+                    j += 2
+                    continue
+                if line[j] == c:
+                    break
+                out.append("_")
+                j += 1
+            if j < n:
+                out.append(c)
+            i = j + 1
+            continue
+        i += 1
+    return "".join(out)
+
+
 def _line_comment_stripped(line: str) -> str:
     """The line with a trailing `//` line-comment removed (string-aware, so a `//` inside a "…"/'…'
     literal — e.g. a URL — does NOT start a comment). A Rust `#[ignore]` attribute is NOT a comment and
@@ -353,7 +386,17 @@ def _scan_hunks(diff_text: str, relpath: str) -> list[str]:
                     flagged.append((k, "added marker " + ", ".join(hits)))
                 elif COMMENTED_ASSERT_RE.search(content):
                     flagged.append((k, "commented-out assertion"))
-            elif sign == "-" and ASSERT_RE.search(content):
+            elif sign == "-" and ASSERT_RE.search(
+                    _string_blanked(_line_comment_stripped(content), tick=not rust)):
+                # String+comment-blanked FIRST (2026-08-30, the check-29-calibration commit's finding):
+                # a removed line whose only `expect(`/`assert(` lives inside a STRING LITERAL (a lint
+                # `reason = "... expect(dead_code) ..."` being reworded) or a `//` comment is prose,
+                # not an assertion - the doc-comment-FP class (Loop-memory
+                # `g70-doc-comment-assert-token-fp`) on the `-` side, where rewording the ADDED line
+                # cannot silence the already-committed REMOVED one. A real removed assertion is code
+                # and survives the blanking; over-flagging is no longer the safe direction here,
+                # because the only escape would be a [Test-Change] tag asserting a test change that
+                # never happened.
                 flagged.append((k, "removed assertion"))
         for k, label in flagged:
             lo, hi = max(0, k - WINDOW), min(len(body), k + WINDOW + 1)

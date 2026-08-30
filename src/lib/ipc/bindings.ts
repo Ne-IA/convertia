@@ -535,7 +535,7 @@ export type AppFault = {
  *  "camelCase")]` (cf. `PreflightVerdict`/`OutputPlanPreview`/`RunResult` in `crate::orchestrator`). NOT
  *  `Copy` (it owns `String` fields). OUTBOUND-ONLY — C11 takes `{}` and no command takes an `AppInfo` arg,
  *  so NO `Deserialize` (mirroring the outbound-only orchestrator result types). Registered into
- *  `bindings.ts` TRANSITIVELY via the C11 return once P2.34 lands, with NO standalone `collect_types![]` —
+ *  `bindings.ts` TRANSITIVELY via the C11 return since P2.34 (the C11 handler), with NO standalone `collect_types![]` —
  *  the defer-to-consumer pattern its `Platform` field also rides.
  */
 export type AppInfo = {

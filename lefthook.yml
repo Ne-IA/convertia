@@ -83,6 +83,9 @@ pre-commit:        # L1 - soft budget < 10 s; diff-scoped gates added per-box
     # L1 gate slots: the P0.4 contract set is wired; later phases add their own gate slots.
     # NOTE: the G29 Semgrep + shellcheck SAST gate (check-sast) is L4-only (the CI `sast` job) -
     # Semgrep is a CI-tier pip tool (requirements-ci.txt --require-hashes), not a locally pinned binary.
+    # NOTE: the G24/G10 gate-script self-test canary (run-gate-selftests) is ALSO L4-only - no lefthook
+    # slot (the full run costs 1-3 min); before pushing a gate-script edit, run
+    # `python3 scripts/run-gate-selftests` locally (memory: ci-only-gate-legs-run-locally-before-push).
 
 commit-msg:        # L3 - fires at `git commit` (after pre-commit, before pre-push)
   commands:
@@ -132,6 +135,8 @@ pre-push:          # L2 - budget < 3 min; range / full-tree gates added per-box
       run: python3 scripts/check-lockfile-integrity --deep
     doc-splice:      # G74 - .rs doc-comment attachment integrity over the unpushed range (the L2 mirror of the L1 staged-diff leg)
       run: python3 scripts/check-doc-splice --range
+    doc-links:       # G74 - rustdoc intra-doc-link integrity (leg (b), the ONE driver CI also runs; host-OS leg - the per-OS L4 matrix stays the 3-OS proof)
+      run: python3 scripts/check-doc-links
     build-matrix:    # G30 - build-matrix contract: native-OS set freeze + macOS-universal fat-Mach-O both-slice assertion (target-absent until a universal sidecar is staged)
       run: python3 scripts/check-build-matrix
     completeness:    # G22/G23 - schema/membership-parity bijection logic + the conversion-command(start_conversion)->test git walk (G23 LIVE since P3.63; G22 target-absent until P4.60)

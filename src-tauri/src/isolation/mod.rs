@@ -252,7 +252,9 @@ pub async fn run_confined(
     // split would redden the SAST. G29 rule (d) (macOS stage_for_tcc-before-spawn) does NOT reach this
     // cross-platform floor: its P4.85-refined form is `paths:`-scoped to the macOS isolation module
     // (`isolation/macos.rs` / `isolation/macos/**`), and this floor embeds no macOS-TCC path (the §3.5.0
-    // staging fn + its macOS-scoped spawn land at P4.24) — so no (d) suppression is needed or present.
+    // staging fn landed at P4.24 in `isolation/macos.rs`; the macOS-scoped spawn that consumes it is
+    // P4.25's deliverable) — so no (d) suppression is needed or present. [Corrected by the G7 check-29
+    // calibration (Co-Pilot, 2026-08-30): the parenthetical read both deliverables as landing at P4.24.]
     // [Build-Session-Entscheidung: P4.13] [Build-Session-Entscheidung: P4.10]
     let mut command = Command::new(program);
     command.env_clear();

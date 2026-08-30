@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""check-doc-links - the G74 leg-(b) rustdoc intra-doc-link integrity driver (the P4.22 gate-plane gap).
+
+THE CLASS (G74 leg (b), the P4.18 round-2 P1): a rename/re-home strands every intra-doc link
+that names the old path - every form still compiles, so only a rustdoc build with the two link
+lints DENIED catches it. Until 2026-08-30 this leg existed ONLY as a raw CI step, so a fully
+green local pre-push proved nothing about it and a broken link reddened `main` AFTER the push
+(the P4.22 incident, `a21e547` -> `f9a8887`). This script is the ONE implementation everywhere:
+the L2 pre-push slot (lefthook.yml) and the L4 gate-tooling matrix step both invoke it, so the
+local plane matches CI and the command cannot fork.
+
+WHY A PYTHON WRAPPER, NOT A SHELL LINE: the flags are set on the child env IN-PROCESS, which is
+immune to the per-OS shell-form trap - the Windows CI leg's default shell is pwsh, where a POSIX
+inline `VAR=x cmd` prefix is parsed as a command NAME (the `4723967` red, fixed by `64e8529`'s
+env-block; this wrapper closes the whole class). The pinned flag string and argv are asserted by
+`scripts/gate-selftests/g24-doc-links.py`.
+
+SCOPE HONESTY: locally this builds the HOST OS's docs only. A link from a cross-platform doc
+comment to a `#[cfg]`-gated item dangles only on the OTHER OS's doc build, so the per-OS L4
+matrix stays the real 3-OS proof; this leg is the edit-time catch for the overwhelmingly common
+cross-platform case (~47 s on a warm target dir, well inside the L2 budget). The cfg-proof
+convention stands: a plain code span for any cfg-gated/private/future target, a real intra-doc
+link only for cross-platform in-scope items.
+
+DESIGN LESSON (carried from the P4.22 fix): **a broken cross-tier intra-doc link is a design
+signal, not a typo.** If a link does not resolve from a tier-3 leaf, the fix is a plain code
+span - never a path-qualified upward link, which would resolve while quietly documenting a
+dependency direction spec 0.7 forbids (the qualified upward form rustdoc cannot see is G9
+invariant (g)'s job, `scripts/check-repo-invariants`).
+
+Exit: 0 = links resolve (or toolchain-absent skip); 1 = a denied rustdoc link lint fired.
+This file is L(-1) security-critical (scripts/l-neg1-files.toml, G71).
+"""
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+# The pinned leg-(b) contract (build-gates G74): both link lints DENIED; --document-private-items is
+# load-bearing (most doc comments sit on private/pub(crate) items a public-surface doc build never
+# checks); --locked so the doc build can never mutate the lockfile.
+RUSTDOCFLAGS = "-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links"
+CARGO_DOC = ["cargo", "doc", "--workspace", "--no-deps", "--document-private-items", "--locked"]
+
+
+def main() -> int:
+    if not shutil.which("cargo"):
+        # The run_live_tools posture (check-rust-lint-contract): a toolchain-light plane skips with a
+        # notice - the L4 gate-tooling matrix (cargo present on every GitHub runner) is the real proof.
+        print("[G74] cargo not installed in this plane - the rustdoc intra-doc-link leg is skipped "
+              "(target-present, toolchain-absent); the L4 per-OS matrix enforces it")
+        return 0
+    env = dict(os.environ)
+    env["RUSTDOCFLAGS"] = RUSTDOCFLAGS
+    r = subprocess.run(CARGO_DOC, cwd=str(ROOT), env=env, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        sys.stderr.write(r.stdout)
+        sys.stderr.write(r.stderr)
+        print("[G74] FAIL - rustdoc intra-doc-link integrity: a denied link lint fired (broken or "
+              "private intra-doc link). If the target is cfg-gated/private/renamed, use a plain code "
+              "span; if the link crosses a spec-0.7 tier UPWARD, that is a design signal - do not "
+              "path-qualify it (G9 invariant (g) rejects the qualified form).", file=sys.stderr)
+        return 1
+    print("[G74] rustdoc intra-doc-link integrity OK (broken+private links denied, private items "
+          "documented, --locked)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
