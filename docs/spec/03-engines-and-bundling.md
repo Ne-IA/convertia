@@ -943,7 +943,11 @@ On **macOS**, the source file the user dropped frequently sits in a TCC-protecte
 location (Desktop / Documents / Downloads / a removable volume). To guarantee a
 spawned engine never has to be the process that *first* touches such a path (which a
 TCC responsible-process chain-break could deny — §7.2.6), the Rust core **stages the
-source into per-job scratch before spawning**:
+source into per-job scratch before spawning**. *Spawned* names the engine class the
+guarantee is FOR; it does not scope which items are staged — staging is per macOS
+item regardless of the engine that will run it (step 2's `[DECIDED — clarified at
+P4.25]` bullet, and §2.14.4's per-in-flight-item accounting), so for the one in-core
+engine "before spawning" simply means before the engine runs. The steps:
 
 1. The **core** (which holds the TCC grant, having been the process that read the
    protected path during §1.1 freeze / detection) **copies the source** into a
@@ -955,6 +959,32 @@ source into per-job scratch before spawning**:
    - **pandoc**: where applicable, bytes are piped on stdin (`StdinPlan::PipeBytes`,
      §3.2) so no path is opened by the child at all; otherwise the scratch path.
    - **libvips (in-process / image-worker)**: loads from the scratch path.
+   - **The list above is illustrative of the engine families, not an exclusion list
+     `[DECIDED — clarified at P4.25]`.** Staging is scoped by **platform, not by
+     engine**, so the **in-core native CSV/TSV engine (§3.5.6,
+     `EngineProgram::InProcessNative`) is staged too** — even though it is the one
+     engine that gains no TCC benefit from it, since running inside the core process
+     it *is* the grant holder and §7.2.6's `[REC]` chain-break rationale does not
+     reach it.
+     **The evidence on both sides, since this was read the other way and may be
+     revisited.** *Against* an engine scope: §2.14.4 `[DECIDED]` computes the macOS
+     kind-2 estimate as staged input sizes **per in-flight item, with no per-engine
+     term at all** — a carve-out would make that accounting model false, not merely
+     conservative — and the Cost line below budgets *"one extra source-sized copy
+     per macOS item"*. *For* one: §2.14.2's clause reads in full *"copies **every
+     beside-source input into kind-2 scratch before spawning** any engine"*, and
+     "before spawning" is inside its bolded span, so it can be read as scoping the
+     rule to engines that ARE spawned; §7.2.6 fact 2's mitigation, likewise, is
+     framed around a separately-spawned sidecar. **Resolved for "before spawning" as
+     the general temporal frame, not an engine scope** — it says *when* the copy
+     happens relative to the spawn that usually follows, and the §2.14.4 per-item
+     accounting is what has no engine axis to carve on. The step-1 wording above is
+     aligned to that reading in the same act, and a §3.2.2 `input` seam every engine
+     takes is one a P5–P7 engine cannot forget to honour. (§3.5.6's own `[DECIDED]`
+     uniformity posture — *"Like every other engine …"* — is a supporting ANALOGY
+     from its `out_tmp` placement bullet, a different clause on a different subject,
+     not evidence about input staging.) Recorded here because the enumeration above
+     predates the in-core engine and would otherwise read as excluding it.
 3. The output is written to `out_tmp` and published per §2.1; the staged scratch
    source is reclaimed with the run (§2.6).
 

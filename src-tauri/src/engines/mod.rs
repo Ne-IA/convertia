@@ -1194,7 +1194,9 @@ async fn run_native_csv_tsv(
     timeout: Duration,
 ) -> InvocationResult {
     // The transform's two runtime params come from the plan's argv (§3.2.2 / NativeCsvTsvEngine::plan):
-    // args[0] = the §2.3-resolved source path, args[1] = the output-format token. Index-free (`first`/`get`) —
+    // args[0] = the §3.5.0-resolved engine INPUT path — the §2.3-resolved source off macOS, the core-staged
+    // kind-2 scratch copy on macOS (P4.25; staging is scoped by platform, not by engine, §3.5.0 step 2) —
+    // and args[1] = the output-format token. Index-free (`first`/`get`) —
     // a mis-built plan is an InternalError, never a panic (the in-core no-index/no-panic path, G4/G14).
     let Some(source) = plan.args.first().map(PathBuf::from) else {
         return InvocationResult::Failed(ConversionErrorKind::InternalError);
@@ -1379,7 +1381,9 @@ impl Engine for NativeCsvTsvEngine {
     ///
     /// **`args` carries the transform's two runtime parameters** [Build-Session-Entscheidung: P3.5]: the
     /// effective read `input` path (`args[0]`, embedded per the §3.2.2 ownership contract — the transform reads
-    /// THIS path, never one derived from `item`) and the **target format token** (`args[1]` ∈ {`csv`, `tsv`},
+    /// THIS path, never one derived from `item`; since P4.25 that path is the §3.5.0 core-staged scratch copy
+    /// on macOS, this engine included — §3.5.0 step 2 scopes staging by platform, not by engine) and the
+    /// **target format token** (`args[1]` ∈ {`csv`, `tsv`},
     /// the canonical §0.6 lowercase name). The P3.41 streamed transform reads `args[0]` as the source path and
     /// `args[1]` as the output format, applying that format's RFC-4180 delimiter + re-quoting rules; the
     /// P3.43-P3.45 executor forwards the same `Invocation`. [Derived-Assumption: P3.5 — the in-core engine

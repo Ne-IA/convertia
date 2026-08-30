@@ -24,7 +24,9 @@
 //! `stage_for_tcc` delegation. The alternative — a module-level `#![cfg(target_os = "macos")]` — would
 //! have made the whole slice invisible to every non-mac build, i.e. unverifiable by the Build-Loop host and
 //! by two of the three gate-tooling legs. Correctness that only one CI leg can check is worth less than the
-//! same correctness three legs check.
+//! same correctness three legs check. [`engine_input`] (P4.25) extends the same split to §3.5.0 **step 2**:
+//! it is the portable seam the §1.7 conductor calls to learn which path an engine is handed — the staged
+//! copy on macOS, the §2.3-resolved source everywhere else — so the conductor itself carries no `cfg`.
 //!
 //! (`stage_for_tcc` is named throughout as a plain code span, never an intra-doc link: it is cfg-gated OFF
 //! every non-macOS doc build, so a link would be unresolvable there and would redden the CI-only G74
@@ -40,6 +42,7 @@
 //! `run-<RunId>/.lock` is held — makes §2.14.2's "created AFTER the run-lock" ordering STRUCTURAL rather
 //! than a convention, exactly as `RunScratch::publish_temp` does for the kind-1 `.part`.
 
+use std::borrow::Cow;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -76,14 +79,14 @@ const STAGED_SOURCE_PREFIX: &str = "src-";
 /// layer's (the same division `RunScratch::publish_temp` keeps).
 #[allow(
     dead_code,
-    reason = "P4.24 — the §3.5.0 staging mechanism, authored with its macOS entry point. Its production \
-              caller is P4.25 (hand engines the staged scratch path), so on Windows/Linux — where \
-              `stage_for_tcc` does not exist at all — it is dead in every production build. On macOS it is \
-              LIVE even before P4.25, because `stage_for_tcc` below bears a dead_code lint-level attribute \
-              and rustc ROOTS such an item, propagating liveness to what it calls. That target-dependent \
-              split is exactly why this is `allow` and never `expect`: an `expect` would go UNFULFILLED on \
-              macOS, the one target this Windows host cannot compile. The crate::platform precedent \
-              (platform/mod.rs:948) uses `allow` for the same cross-target reason."
+    reason = "P4.24/P4.25 — the §3.5.0 staging mechanism, authored with its macOS entry point. On macOS it \
+              is LIVE: P4.25's `engine_input` seam below calls `stage_for_tcc`, which calls this. On \
+              Windows/Linux `stage_for_tcc` does not exist at all and that seam takes its borrow-the-source \
+              arm, so this mechanism has no production caller there and is dead in every production build \
+              of those two targets. That target-dependent split is exactly why this is `allow` and never \
+              `expect`: an `expect` would go UNFULFILLED on macOS, the one target this Windows host cannot \
+              compile. The crate::platform precedent (platform/mod.rs:948) uses `allow` for the same \
+              cross-target reason."
 )]
 fn stage_source_into_scratch(
     scratch: &RunScratch,
@@ -141,26 +144,61 @@ pub(crate) fn stage_source_into_scratch_for_tests(
 /// It deliberately adds no mechanism of its own — the whole point of the split is that the mechanism is
 /// portable and tested everywhere ([`stage_source_into_scratch`]), so what is macOS-gated is only §3.5.0's
 /// POLICY: *on this platform, the engine must never be the first process to touch the source*.
+/// P4.25 dropped the `allow(dead_code)` P4.24 authored here: [`engine_input`] below is a production caller
+/// on macOS, reachable from the §1.7 conductor, so the item is no longer dead on the one target it exists
+/// on and an allowance would document a fact that stopped being true. [Build-Session-Entscheidung: P4.25]
 #[cfg(target_os = "macos")]
-#[allow(
-    dead_code,
-    reason = "P4.24 — the §3.5.0 macOS staging entry, authored ahead of its P4.25 caller (which hands \
-              engines the staged path in place of the raw protected one). The allowance is UNCONDITIONAL, \
-              not `cfg_attr(not(test), …)`: this item exists ONLY on macOS, and `cargo clippy --all-targets` \
-              on the macos-14 CI leg builds the lib TEST target, where a `not(test)` allowance expands to \
-              nothing — `pub(crate)` is not a dead_code root in a lib crate, so the `not(test)` form would \
-              have reddened the one leg this Windows host cannot compile (probed: `cargo check --target \
-              aarch64-apple-darwin` needs an Apple `cc` this host has none of). `allow` rather than `expect` \
-              for the same host reason and per the crate::platform cross-target precedent \
-              (platform/mod.rs:948), whose `any(not(test), target_os = …)` guard is the same idea: allow \
-              unconditionally on the target where the item is dead under BOTH cfgs."
-)]
 pub(crate) fn stage_for_tcc(
     scratch: &RunScratch,
     job: JobId,
     source: &Path,
 ) -> io::Result<PathBuf> {
     stage_source_into_scratch(scratch, job, source)
+}
+
+/// **The §3.5.0 step-2 seam (P4.25): the path an engine is handed as its `input`.** Returns the staged
+/// scratch copy where §3.5.0 stages, and the §2.3-resolved source where it does not — so the §1.7 conductor
+/// resolves *one* value and every engine, present and future, reads it through the §3.2.2 `input` parameter
+/// ("argv embeds `input`, NEVER a path derived from `item` — the §3.5.0 plumbing contract expressed at the
+/// type seam", §3.2.2). That is the whole per-engine plumbing: §3.5.0 step 2 enumerates FFmpeg / poppler /
+/// LibreOffice taking it as `<input>`, pandoc as its path (or `StdinPlan::PipeBytes`, whose byte feed is the
+/// §3.5.4 adapter's) and the image-worker loading from it — one contract, honoured at one site, so a P5–P7
+/// engine cannot forget it.
+///
+/// **PORTABLE, with only the POLICY gated** — the P4.24 split extended to the seam. §3.5.0's *Scope* makes
+/// staging macOS-only (Windows/Linux have no TCC; an ACL denial there is the §2.8 `Unreadable` kind and
+/// needs no copy), and §2.14.4 puts the kind-2 staged-source term at 0 off macOS. So the non-macOS arm is
+/// the identity — it BORROWS the caller's path and creates nothing — which is why the return is a [`Cow`]:
+/// the platform that stages pays for an owned `PathBuf`, the platforms that do not pay nothing at all.
+///
+/// **Why the conductor and not the spawn.** §3.5.0 makes the CORE stage "before spawning", and §3.2.2 puts
+/// the engine's read path in `plan()`'s `input` argument — which `crate::engines` receives and `crate::
+/// isolation` only ever sees as opaque argv. The §1.7 conductor is therefore the one layer holding both the
+/// `&RunScratch` and the source at the moment the plan is built. It calls this seam; nothing else does.
+///
+/// Returns the plain `io::Result` for the same reason [`stage_source_into_scratch`] does: projecting a
+/// failure onto the §2.8 taxonomy is the §1.7 caller's job, not this layer's.
+pub(crate) fn engine_input<'a>(
+    scratch: &RunScratch,
+    job: JobId,
+    source: &'a Path,
+) -> io::Result<Cow<'a, Path>> {
+    #[cfg(target_os = "macos")]
+    {
+        // §3.5.0 step 1+2 / §7.2.6 fact 2: the core — which holds the TCC grant from the §1.1 freeze — is the
+        // process that first reads the protected path, and the engine is handed the copy. The literal
+        // standalone `stage_for_tcc` call is the load-bearing shape build-gates G29 rule (d) keys on.
+        stage_for_tcc(scratch, job, source).map(Cow::Owned)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // §3.5.0 *Scope*: no TCC off macOS, so there is nothing to stage and the engine reads the §2.3-resolved
+        // source directly — the §2.14.4 kind-2 staged-source term is 0 on these targets, and an identity that
+        // COPIED would make it non-zero behind the §1.10 preflight's back. The discard keeps the two arms on
+        // one signature (the conductor stays platform-agnostic) without a per-target parameter list.
+        let _ = (scratch, job);
+        Ok(Cow::Borrowed(source))
+    }
 }
 
 #[cfg(test)]
@@ -390,6 +428,79 @@ mod macos_staging_tests {
         assert!(
             source.exists(),
             "§2.0: … and the TCC-protected original is untouched"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §3.5.0 *Scope* / §2.14.4, Windows+Linux: the step-2 seam is the IDENTITY off macOS
+    // — it hands the engine the §2.3-resolved source it was given and creates NOTHING. That second half is
+    // the load-bearing one: §2.14.4 puts the kind-2 staged-source term at 0 on these targets, so a seam that
+    // quietly copied would add a real footprint the §1.10 preflight does not model. Asserting `Borrowed`
+    // (not merely path equality) is what pins the no-copy: an owned staged path that happened to equal the
+    // source would pass an equality-only assertion. [Build-Session-Entscheidung: P4.25]
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn off_macos_the_engine_input_is_the_source_itself_and_nothing_is_staged() {
+        let base = tempfile::tempdir().expect("a scratch base");
+        let src_dir = tempfile::tempdir().expect("a source dir");
+        let source = src_dir.path().join("holiday.csv");
+        std::fs::write(&source, b"a,b\n1,2\n").expect("write the source");
+        let scratch = scratch(base.path());
+
+        let input = engine_input(&scratch, JobId::from_index(9), &source)
+            .expect("§3.5.0: the off-macOS seam is infallible");
+
+        assert!(
+            matches!(input, Cow::Borrowed(borrowed) if borrowed == source),
+            "§3.5.0 Scope: off macOS the engine reads the §2.3-resolved source itself — the seam borrows it"
+        );
+        let staged: Vec<_> = std::fs::read_dir(scratch.dir())
+            .expect("the run dir is readable")
+            .filter_map(|entry| Some(entry.ok()?.file_name().to_string_lossy().into_owned()))
+            .filter(|name| name.starts_with(STAGED_SOURCE_PREFIX))
+            .collect();
+        assert!(
+            staged.is_empty(),
+            "§2.14.4: the kind-2 staged-source term is 0 on Windows/Linux — the seam stages nothing; found \
+             {staged:?}"
+        );
+    }
+
+    // §6.4.1 unit (G15), macOS-only: the step-2 seam DOES stage on the one platform §3.5.0 scopes it to, and
+    // it routes through `stage_for_tcc` — the load-bearing name G29 rule (d), the test-strategy macOS-T11
+    // first-accessor row and P7.16/P7.21/P7.28 all key on. Asserting the seam's path EQUALS the entry's own
+    // `src-<jobId>[.<ext>]` product is what pins that routing without a spy: no other producer in this module
+    // mints that name. Like its P4.24 sibling above, this cannot run on the Build-Loop's Windows host, so its
+    // first macos-14 CI execution is its validation. [Build-Session-Entscheidung: P4.25]
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn on_macos_the_engine_input_is_the_staged_copy_and_the_original_is_untouched() {
+        let base = tempfile::tempdir().expect("a scratch base");
+        let src_dir = tempfile::tempdir().expect("a source dir");
+        let source = src_dir.path().join("protected.csv");
+        std::fs::write(&source, b"x,y\n8,9\n").expect("write the source");
+        let scratch = scratch(base.path());
+
+        let input = engine_input(&scratch, JobId::from_index(5), &source)
+            .expect("§3.5.0: the macOS seam stages the source");
+
+        assert_eq!(
+            input.as_ref(),
+            scratch.dir().join("src-5.csv").as_path(),
+            "§3.5.0 step 2: the engine is handed the `stage_for_tcc` scratch copy, never the raw protected \
+             path"
+        );
+        assert!(
+            matches!(input, Cow::Owned(_)),
+            "§3.5.0: … an OWNED staged path, not a borrow of the source"
+        );
+        assert_eq!(
+            std::fs::read(input.as_ref()).expect("read the staged copy"),
+            b"x,y\n8,9\n",
+            "§3.5.0: … byte-identical to the source"
+        );
+        assert!(
+            source.exists(),
+            "§2.0 never-harm-the-original: … and the protected original is untouched"
         );
     }
 }

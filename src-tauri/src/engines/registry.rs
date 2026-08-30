@@ -114,8 +114,9 @@ pub trait Engine: Send + Sync {
     /// **Params are the job's tier-3 projection (the 2026-07-07 plan-seam ruling):** the §0.6
     /// [`DroppedItem`] (detection + size) + [`TargetId`] + the effective read `input` path §1.7 hands in —
     /// NOT the tier-1 orchestrator-homed `ConversionJob` (§0.7: `crate::engines` is tier 2 and cannot
-    /// reference it). `input` is the §2.3-resolved source (or the §3.5.0 core-staged scratch copy from P4
-    /// on); argv embeds `input`, NEVER a path derived from `item`. `out_tmp` is BORROWED only so argv can
+    /// reference it). `input` is the §2.3-resolved source, or — since P4.25, on macOS, for EVERY engine —
+    /// the §3.5.0 core-staged scratch copy the conductor resolves through
+    /// `crate::isolation::macos::engine_input`; argv embeds `input`, NEVER a path derived from `item`. `out_tmp` is BORROWED only so argv can
     /// embed its path — `plan()` constructs the returned [`Invocation`] with `out_tmp: None`; §1.7 owns
     /// the temp and populates `Some(temp)` on the ENCODE invocation after this call returns (a by-value
     /// param would be dropped — file deleted — by a probe engine's `plan()` before `plan_encode` needs

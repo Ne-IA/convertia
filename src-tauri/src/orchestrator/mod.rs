@@ -79,7 +79,10 @@ use crate::fs_guard::{
     DestinationMode, DivertTarget, FileIdentity, LocationCache, LocationStatus, OutputPlanError,
     ParentDirVerdict, PublishError, PublishOutcome,
 };
-use crate::outcome::{conversion_failure, ConversionErrorKind, IpcError, OutcomeMsg};
+use crate::isolation::macos::engine_input;
+use crate::outcome::{
+    conversion_failure, read_failure_to_error_kind, ConversionErrorKind, IpcError, OutcomeMsg,
+};
 use crate::pool::Pool;
 use crate::prefs::LastDestinationMode;
 use crate::run::{cleanup_item, cleanup_run, EquivKey, PublishTemp, RerunLedger, RunScratch};
@@ -1991,13 +1994,55 @@ fn encode_invocation_from_plan(
     }
 }
 
+/// Project a §3.5.0 staging failure onto the §2.8 taxonomy (P4.25) — the §1.7 caller's job, which is exactly
+/// why `crate::isolation::macos` hands back a plain `io::Error` (its own contract note).
+///
+/// Staging is a COPY of an untrusted source into the run's kind-2 scratch, and `fs::copy` returns ONE
+/// `io::Error` for both ends, so the projection is deliberately asymmetric — it separates exactly the one
+/// end-specific condition the §2.8 taxonomy can name, and no more:
+///
+/// * **disk-full is separated** — `StorageFull` / `QuotaExceeded` can only come from the scratch write (a
+///   read never exhausts a volume), and §2.8 `OutOfDisk` names it. Reporting it as `Unreadable` would blame
+///   the user's source for an app-scratch condition, the opposite of §2.8's fail-clearly bar. It is the one
+///   kind the §1.1 read projection structurally cannot express — its range is exactly `{Gone, Unreadable}`
+///   (`read_failure_to_error_kind`) — so it is handled ahead of that reuse, never through it.
+/// * **everything else takes the §1.1 turn-time READ projection** — [`classify_read_failure`] →
+///   [`read_failure_to_error_kind`] (`NotFound` → `Gone`, else `Unreadable`), the same split
+///   `TransformError`'s §2.8 mapping makes for the in-core transform's reads. That covers the realistic
+///   cases (a source moved, deleted, permission-flipped, or swapped for a non-regular file — the §2.12.4
+///   pre-open refusal) between the §2.4 freeze and this item's turn.
+///
+/// **Accepted residual, stated rather than papered over:** a NON-space failure of the scratch WRITE — an ACL
+/// change on the run dir (`PermissionDenied`), or the run dir removed mid-run (`NotFound`) — is
+/// indistinguishable from the same `io::ErrorKind` on the source read, so it projects onto
+/// `Unreadable` / `Gone` and reads to the user as a source problem. §2.8 offers no scratch-side non-space
+/// kind to route it to (`WriteFailed` is scoped to the DESTINATION write, §2.8), and `fs::copy` surfaces no
+/// side discriminator, so the mis-blame is unavoidable at this seam rather than merely unhandled. Both
+/// conditions require the app's own locked scratch root to be tampered with mid-run.
+///
+/// An if-chain rather than a `match`, because `io::ErrorKind` is `#[non_exhaustive]` and a `_`-wildcard arm
+/// trips the crate-root `clippy::wildcard_enum_match_arm` deny — the [`classify_read_failure`] convention.
+/// [Build-Session-Entscheidung: P4.25]
+fn staging_failure_kind(error: &std::io::Error) -> ConversionErrorKind {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded
+    ) {
+        ConversionErrorKind::OutOfDisk
+    } else {
+        read_failure_to_error_kind(classify_read_failure(error))
+    }
+}
+
 /// The per-item async convert (§2.1.1 — the P3.48 ruling option ②: pick-temp → await dispatch → publish legs).
 /// Computes the §1.8 [`OutputPlan`], picks the publish temp (§2.14.1), resolves the pair's single owner
 /// through the §3.2.3 registry (`engine_registry().select` — P4.4; a miss is the §3.4 honest gap →
-/// `PlatformUnavailable`), builds the §1.7 invocation (the selected engine's `plan` + the §1.7-owned
-/// `out_tmp`), AWAITs `engines::dispatch` (the step-2 write, with
-/// the §1.11 progress ticks + the §0.4.4 cancel token), and on `Succeeded` runs the §1.7 non-empty exit
-/// verification + the §2.1.1 publish legs ([`publish_written_temp`]); a `Failed`/`Cancelled` invocation drops
+/// `PlatformUnavailable`), resolves the §3.5.0 engine input (`isolation::macos::engine_input` — P4.25: the
+/// core-staged kind-2 scratch copy on macOS, the §2.3-resolved source elsewhere), builds the §1.7 invocation
+/// (the selected engine's `plan` over that input + the §1.7-owned `out_tmp`), AWAITs `engines::dispatch`
+/// (the step-2 write, with the §1.11 progress ticks + the §0.4.4 cancel token), and on `Succeeded` runs the
+/// §1.7 non-empty exit verification + the §2.1.1 publish legs ([`publish_written_temp`]); a
+/// `Failed`/`Cancelled` invocation drops
 /// the temp (§3.2.2) and projects directly. No panic (the crate no-panic deny) — every failure is a structured
 /// [`ItemRunOutcome`]; the source bytes are never touched (the no-harm G32(a) invariant).
 /// [Build-Session-Entscheidung: P3.48]
@@ -2129,11 +2174,52 @@ async fn convert_item(
         ));
     };
 
+    // §3.5.0 step 1+2 / §7.2.6 (P4.25): resolve the path the engine reads. On macOS that is the core-staged
+    // kind-2 scratch copy — the core, holding the TCC grant from the §1.1 freeze, is the process that first
+    // touches the protected source, so no spawned engine ever has to be (T11); everywhere else it is the
+    // §2.3-resolved source itself and nothing is staged (§3.5.0 *Scope*, §2.14.4's 0 term). The whole
+    // per-engine plumbing is this ONE value: §3.2.2 fixes `input` as the path argv embeds, so every engine
+    // — the subprocess ones of §3.5.1–§3.5.5 and the in-core §3.5.6 transform reading `args[0]` alike —
+    // reads what this resolves, and a P5–P7 engine cannot opt out of it.
+    //
+    // THE REGRESSION GUARD IS THE COMPILER, on all three legs: off macOS this seam is the identity, so no
+    // test anywhere can tell "the conductor stages and passes" from "the conductor passes the source" — a
+    // silent revert would be green everywhere except macOS. What catches it instead is `clippy
+    // --all-targets -- -D warnings` (G4/G14), verified BOTH WAYS by patching the two reverts and reading
+    // the failure back: handing `plan()` `source` again makes `input` an unused variable, and dropping the
+    // seam call makes this module's `engine_input` import unused (and, without the import, the `pub(crate)`
+    // fn itself dead — it is no root in a lib crate). The macOS-only half — that the seam really stages —
+    // is the `isolation::macos` unit test on the macos-14 leg. [Build-Session-Entscheidung: P4.25]
+    //
+    // CALL-SITE CONSTRAINT FOR P4.86 (the concurrent conductor), recorded because THIS box chose the site:
+    // this runs BEFORE any §0.9 permit — the serialised-engine lane is acquired below and the global-degree
+    // one inside `dispatch`'s pool lane — so the number of staged copies that coexist is bounded by the
+    // conductor's in-flight ITEM count, not by the pool degree. §2.14.2 `[DECIDED]` bounds them to "at most
+    // §0.9 concurrency-degree of them coexist" and §2.14.4/§1.10 compute the macOS estimate from that, so a
+    // P4.86 that runs more items concurrently than the effective degree would make §1.10 UNDER-count and
+    // pass a preflight that then exhausts the scratch volume. Sequential today, so the bound holds; P4.86
+    // must either keep its in-flight set at the degree or move this call inside the permit.
+    // [Derived-Assumption: P4.25 — staging is engine-AGNOSTIC (the in-core §3.5.6 engine included), derived
+    // from the two `[DECIDED]` engine-agnostic literals: §2.14.2's "copies every beside-source input" and
+    // §3.5.0's "one extra source-sized copy per macOS item". §7.2.6's spawned-sidecar framing, which would
+    // scope it to spawned engines only, is tagged `[REC]` and is the rationale, not the behaviour clause;
+    // §3.5.0 step 2's engine list predates the in-core engine and is clarified in the same commit to say so.]
+    let input = match engine_input(scratch, item, source) {
+        Ok(input) => input,
+        // Staging reads the untrusted source and writes into the run's kind-2 scratch, so both failure
+        // shapes are real; [`staging_failure_kind`] projects them onto §2.8 and the item fails clearly with
+        // the just-picked temp cleaned. Any partial staged copy stays inside `run-<RunId>/`, which the
+        // §2.6.2 run-scope cleanup removes unconditionally (§2.14.2) — no leak, no residue path of its own.
+        Err(error) => {
+            return write_outcome_to_run(fail_cleanup(item, [tmp], staging_failure_kind(&error)))
+        }
+    };
+
     // Build the §1.7 invocation: the selected engine's `plan()` is PURE (§3.2.2) and returns
     // `out_tmp: None`; §1.7 (this tier-1 conductor) OWNS + populates `out_tmp = Some(tmp)` on the ENCODE
     // invocation (the 2026-07-07 plan-seam ruling). A pure PlanError → its §2.8 kind, cleaning the
     // just-picked temp.
-    let plan_outcome = match engine.plan(dropped, target, source, &tmp) {
+    let plan_outcome = match engine.plan(dropped, target, &input, &tmp) {
         Ok(plan_outcome) => plan_outcome,
         Err(err) => return write_outcome_to_run(fail_cleanup(item, [tmp], err.kind)),
     };
@@ -11648,6 +11734,191 @@ mod run_conversion_tests {
             ),
             "§2.13: the mis-routed Probe fails the item InternalError until P6.10 wires the real sequencing"
         );
+    }
+
+    // §6.4.3 integration (G31), macOS-only: the BEHAVIOURAL half of the pin above — the conductor really
+    // does stage on the live convert path, through the real §3.5.6 engine and a real FS. It drives
+    // `convert_item` directly (the sibling cancel test's harness) so the test OWNS the `RunScratch` and can
+    // read it back afterwards; the run-scope `cleanup_run` never fires here. Off macOS there is nothing to
+    // observe — the seam is the identity — so this leg is `cfg`'d to the one target where staging exists
+    // and its first macos-14 CI execution is its validation (`test-subprocess-validate-on-ci-runtime`).
+    //
+    // NOTE FOR P4.88, which is scheduled to change what this asserts: the staged copy survives its item's
+    // terminal transition ONLY because no per-item reclaim exists yet — §2.14.2 `[DECIDED]` requires one,
+    // and P4.88 builds it. When it lands, this assertion inverts (the copy must be GONE after
+    // `convert_item` returns) and the edit is a legitimate `[Test-Change: P4.88 — old-obsolete+new-correct,
+    // §2.14.2]`, not a suppression: P4.88 is the box the spec licenses to end this residue. Until then the
+    // residue IS the current spec-correct state and asserting it is what proves the wiring.
+    // [Build-Session-Entscheidung: P4.25]
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn on_macos_the_conductor_stages_the_source_into_the_run_scratch_before_planning() {
+        let Some(src_dir) = non_ephemeral_source_dir() else {
+            return;
+        };
+        let (dropped, paths, _identity) = eligible(
+            src_dir.path(),
+            "holiday.csv",
+            0,
+            b"a,b
+1,2
+",
+        );
+        let source = paths.resolved_path.clone();
+        let scratch_base = tempfile::tempdir().expect("scratch base dir");
+        let instance = InstanceId::mint();
+        let run_id = RunId::mint();
+        let scratch =
+            RunScratch::acquire(scratch_base.path(), instance, std::process::id(), run_id)
+                .expect("acquire the run scratch");
+        let mut cache = LocationCache::new();
+        let pool = Pool::new();
+        let (channel, _events) = capture_channel();
+        let probe_name = move || crate::run::PublishTemp::probe_name(instance);
+        let item = dropped.item;
+
+        let outcome = convert_item(
+            &dropped,
+            &source,
+            tsv_target().id,
+            &[],
+            None,
+            &ResolvedDestination::BesideSource,
+            src_dir.path(),
+            &scratch,
+            &mut cache,
+            probe_name,
+            &pool,
+            CancellationToken::new(),
+            run_id,
+            item,
+            &channel,
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, ItemRunOutcome::Published { .. }),
+            "§6.4.3: the staged path is a WORKING conversion input, not merely a file that got created"
+        );
+        let staged = scratch.dir().join("src-0.csv");
+        assert!(
+            staged.exists(),
+            "§3.5.0 step 1: the conductor staged the source into the run's kind-2 scratch before planning"
+        );
+        assert_eq!(
+            std::fs::read(&staged).expect("the staged copy is readable"),
+            b"a,b
+1,2
+",
+            "§3.5.0: … byte-identical to the source the engine was meant to read"
+        );
+        assert!(
+            src_dir.path().join("holiday.tsv").exists(),
+            "§2.1: … and the conversion published its output from that staged read"
+        );
+        assert_eq!(
+            std::fs::read(&source).expect("the original is readable"),
+            b"a,b
+1,2
+",
+            "§2.0 never-harm-the-original: staging COPIED the source, it never moved or altered it"
+        );
+    }
+
+    /// Everything before this file's first `#[cfg(test)]` — the PRODUCTION source of the conductor, so a
+    /// scan needle can never match a test's own text (this module included). `concat!`-split so the literal
+    /// marker is absent from the scanning site itself; the `crate::ipc::c_surface_scan::production_prefix`
+    /// pattern, which cannot be reused directly (it is `pub(super)` to `crate::ipc`).
+    /// [Build-Session-Entscheidung: P4.25]
+    fn production_conductor_source() -> &'static str {
+        include_str!("mod.rs")
+            .split_once(concat!("#[cfg", "(test)]"))
+            .map_or("", |(prefix, _)| prefix)
+    }
+
+    // §6.4.1 (G15) / §3.5.0 step 2 / §0.11 T11 — the STRUCTURAL pin on the one thing this box exists to do:
+    // the conductor hands `plan()` the §3.5.0-resolved input, never the raw source. It is a source scan
+    // (test-strategy §1.1a's blessed answer where execution structurally cannot reach the behaviour)
+    // because off macOS the seam is the IDENTITY: no behavioural test on the Windows or Linux leg can tell
+    // "the conductor stages and passes" from "the conductor passes the source", and the macOS behavioural
+    // leg below runs on one leg only. The compiler catches a TOTAL revert (an unused binding / unused
+    // import), but that guard rests on `input` having exactly one use site — the moment P6.10 wires
+    // `plan_encode`'s own `input`, a PARTIAL revert of just this call would compile silently. §0.11 T11
+    // names precisely that failure ("a P4/P5 refactor that drops the pre-copy passes CI yet fails for real
+    // users"), so it gets a catcher that does not depend on the arity. Raised as a P1 by the P4.25 opus
+    // review. [Build-Session-Entscheidung: P4.25]
+    #[test]
+    fn the_conductor_plans_over_the_resolved_engine_input_and_never_the_raw_source() {
+        let src = production_conductor_source();
+        // Non-vacuity FIRST: a slicing bug that returned an empty or truncated prefix would make every
+        // `matches(..) == 0` assertion below pass for the wrong reason (the `ref-resolver-gate-strip-defs`
+        // lesson — prove the corpus is the real one before asserting over it).
+        assert!(
+            src.contains("async fn convert_item("),
+            "the scanned prefix must really contain the conductor, or every scan below is vacuous"
+        );
+        assert_eq!(
+            src.matches("engine.plan(").count(),
+            1,
+            "§3.2.2: exactly ONE engine-plan call site in the conductor — a second, unpinned one \
+             would escape this scan"
+        );
+        assert!(
+            src.contains("engine.plan(dropped, target, &input, &tmp)"),
+            "§3.5.0 step 2: that call site takes the `engine_input`-resolved path (re-pin this \
+             needle if the call is reformatted — it is the T11 plumbing, not incidental formatting)"
+        );
+        assert_eq!(
+            src.matches(concat!("engine.plan(dropped, target, ", "source")).count(),
+            0,
+            "§3.5.0/§7.2.6 T11: the engine is NEVER handed the raw (on macOS, TCC-protected) source path"
+        );
+    }
+
+    // §6.4.1 unit (G15) / §2.8 / §3.5.0 (P4.25): the staging-failure projection. Staging COPIES, so the
+    // two ends of the copy must not collapse onto one kind — a source that vanished or locked between the
+    // §2.4 freeze and its turn is the §1.1 turn-time read failure (`Gone` / `Unreadable`, the projection
+    // `read_failure_to_error_kind` owns), while a scratch volume that filled mid-run is `OutOfDisk`. The
+    // `StorageFull` leg is the load-bearing one: it is the ONLY kind the §1.1 read projection cannot
+    // express (its range is exactly `{Gone, Unreadable}`), so without the arm ahead of it an exhausted
+    // disk would be reported to the user as an unreadable source. `InvalidInput` pins the §2.12.4
+    // pre-open refusal (a source swapped for a FIFO / device / directory) onto `Unreadable` rather than
+    // leaving it to a default nobody chose. [Build-Session-Entscheidung: P4.25]
+    #[test]
+    fn a_staging_failure_projects_onto_the_read_or_the_disk_side_of_the_2_8_taxonomy() {
+        for (io_kind, expected, why) in [
+            (
+                std::io::ErrorKind::NotFound,
+                ConversionErrorKind::Gone,
+                "§1.1/§2.8: a source present at the freeze and missing at its turn is Gone",
+            ),
+            (
+                std::io::ErrorKind::PermissionDenied,
+                ConversionErrorKind::Unreadable,
+                "§1.1/§2.8: a denied read of a frozen source is Unreadable",
+            ),
+            (
+                std::io::ErrorKind::InvalidInput,
+                ConversionErrorKind::Unreadable,
+                "§2.12.4/§2.8: the pre-open non-regular-source refusal is Unreadable, not a silent default",
+            ),
+            (
+                std::io::ErrorKind::StorageFull,
+                ConversionErrorKind::OutOfDisk,
+                "§2.14.4/§2.8: a scratch volume filled by the staged copy is OutOfDisk, never Unreadable",
+            ),
+            (
+                std::io::ErrorKind::QuotaExceeded,
+                ConversionErrorKind::OutOfDisk,
+                "§2.14.4/§2.8: a quota-exhausted scratch volume is the same OutOfDisk condition",
+            ),
+        ] {
+            assert_eq!(
+                staging_failure_kind(&std::io::Error::new(io_kind, "staging")),
+                expected,
+                "{why}"
+            );
+        }
     }
 }
 

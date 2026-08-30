@@ -545,11 +545,12 @@ impl RunScratch {
         not(test),
         allow(
             dead_code,
-            reason = "P3.21/P4.24 — the kind-2 scratch-dir accessor. Read by the §2.14.2 engine \
+            reason = "P3.21/P4.24/P4.25 — the kind-2 scratch-dir accessor. Read by the §2.14.2 engine \
                       working-file placement (P4.24's §3.5.0 staging is the first such reader) and by the \
-                      §2.6.2 run-end cleanup; the staging reader is itself dead until P4.25 wires it, but \
-                      it carries `allow(dead_code)`, which roots it — so this accessor no longer registers \
-                      as dead and cannot carry an `expect`."
+                      §2.6.2 run-end cleanup. P4.25 gave that staging reader a production caller on macOS \
+                      (the `engine_input` seam the §1.7 conductor calls); on Windows/Linux the reader has \
+                      none and stays dead, but it carries `allow(dead_code)`, which roots it — so on every \
+                      target this accessor registers as read and cannot carry an `expect`."
         )
     )]
     #[must_use]

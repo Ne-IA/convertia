@@ -251,10 +251,25 @@ pub async fn run_confined(
     // L(-1) refinement authored FOR this crate ("the owned-Command shape `process-wrap` forces") — a gapped
     // split would redden the SAST. G29 rule (d) (macOS stage_for_tcc-before-spawn) does NOT reach this
     // cross-platform floor: its P4.85-refined form is `paths:`-scoped to the macOS isolation module
-    // (`isolation/macos.rs` / `isolation/macos/**`), and this floor embeds no macOS-TCC path (the §3.5.0
-    // staging fn landed at P4.24 in `isolation/macos.rs`; the macOS-scoped spawn that consumes it is
-    // P4.25's deliverable) — so no (d) suppression is needed or present. [Corrected by the G7 check-29
-    // calibration (Co-Pilot, 2026-08-30): the parenthetical read both deliverables as landing at P4.24.]
+    // (`isolation/macos.rs` / `isolation/macos/**`), and this floor embeds no macOS-TCC path — the §3.5.0
+    // staging fn landed at P4.24 in `isolation/macos.rs`, and P4.25 put its CALLER in the tier-1 conductor
+    // (§3.2.2 makes the staged path the `plan()` `input`, which reaches this floor only as opaque argv), so
+    // no (d) suppression is needed or present.
+    //
+    // OPEN QUESTION FOR P4.26, deliberately NOT decided here. Both P4.25 reviewers reached it from opposite
+    // ends and neither could see the other's review: one concluded P4.26 must give rule (d) its OWN
+    // `stage_for_tcc` call site immediately before its spawn (re-staging to satisfy the adjacency), the
+    // other that rule (d) may have no in-scope call site left at all. Those are the two horns of one
+    // question: rule (d)'s `paths:` scope only ever fires on a `Command::new` inside the macOS isolation module,
+    // and the P4.25 architecture puts every spawn on this cross-platform floor instead. So either P4.26
+    // introduces a macOS-scoped spawn site (which, per rule (d)'s adjacency shapes, would have to re-derive
+    // or re-stage the same deterministic `src-<jobId>[.<ext>]` path immediately before it), or rule (d) has
+    // no in-scope call site at all and §0.11 T11's declared two-leg gate is carried by its G31 leg alone.
+    // Which of those is right is P4.26's scope + an L(-1) build-gates question, so it is a Co-Pilot item,
+    // not a working-tree fix here. [Corrected by the G7 check-29 calibration (Co-Pilot, 2026-08-30): the
+    // parenthetical read both deliverables as landing at P4.24.] [Corrected by P4.25: it then asserted a
+    // macOS-scoped spawn as P4.26's deliverable, which over-committed a box that may instead find rule (d)
+    // vacuous — the claim is now stated as the open question it is.]
     // [Build-Session-Entscheidung: P4.13] [Build-Session-Entscheidung: P4.10]
     let mut command = Command::new(program);
     command.env_clear();
