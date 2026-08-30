@@ -861,7 +861,11 @@ property/integration tests on **G31** / **G15** / **G16**:
 - **macOS T11 first-accessor (§3.5.0/§7.2.6 · G31):** the **Rust core PID** (not the
   engine PID) is the first process to access a TCC-protected source path, and the
   engine receives a per-job **kind-2 scratch** path — pairs with the **G29** macOS
-  Semgrep `stage_for_tcc`-before-spawn rule.
+  Semgrep `stage_for_tcc`-before-spawn rule (per the 2026-08-30 P4.26 adjudication the
+  paths-scoped door tripwire with deliberately zero in-scope spawn sites — staging
+  sits upstream at the §3.2.2 `engine_input` seam) plus the non-vacuous check-sast
+  `t11_seam_pin` on that seam's macOS arm; the behavioural burden sits on this G31
+  leg.
 
 > **Scoped mutation-testing (owner-decidable, build-gates §8 / homed P0.5):**
 > `cargo-mutants`

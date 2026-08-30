@@ -34,10 +34,16 @@
 # owned-builder construction (the split-builder shape; per-path unification is structurally
 # unreachable across a split builder without a gapped fail-OPEN region, so this arm enforces
 # stage-then-build ADJACENCY and the SAME-path half rides the behavioural G31 macOS
-# first-accessor leg + P4.26's tests). The cross-platform spawn path (isolation outside the
-# macos module) is (d)-silent by design — the refined scope is what lets the P4.13–P4.25 spawns
-# stay green until P4.24 lands `stage_for_tcc` (the fn NAME is load-bearing: these patterns key
-# on the literal standalone call — build-gates G29 (d), P4.26).
+# first-accessor leg — P4.26's re-cut scope). The cross-platform spawn path (isolation
+# outside the macos module) is (d)-silent by design; since P4.25 the staging call sits
+# UPSTREAM of every spawn (the §3.2.2 engine_input seam at the tier-1 conductor), so the
+# rule's in-scope production call-site set is EMPTY BY DESIGN and the rule stands as the
+# armed tripwire on the module any future mac-conditional spawn is homed into via the
+# misplaced_macos_cfg literal spellings (a literal-free OS predicate or an audited nosemgrep
+# rides the G31 leg). check-sast's t11_seam_pin is the non-vacuous sibling: the POSITIVE
+# macOS-cfg arm of engine_input MUST itself call the literal standalone stage_for_tcc — the
+# fn NAME is load-bearing for BOTH legs, since these patterns key on the literal standalone
+# call (build-gates G29 (d), the 2026-08-30 P4.26 adjudication).
 # A Command::new nested in a macro arg is invisible to the matcher → backstopped by the grep in
 # scripts/check-sast (macro_nested_commands) AND the text↔matcher command CENSUS (any textual
 # Command::new the Semgrep matcher did not see fails the gate — this closes the formerly-open
@@ -142,9 +148,11 @@ rules:
     #     followed by `let mut $C = Command::new(..);` (the split-builder shape — per-path
     #     unification cannot span a split builder without a gapped region, so this arm enforces
     #     stage-then-build ADJACENCY; the SAME-path half is carried by the G31 macOS
-    #     first-accessor leg + P4.26's tests). Everything else reddens: fails-SAFE over-strict.
+    #     first-accessor leg, P4.26's re-cut scope). Everything else reddens: fails-SAFE
+    #     over-strict.
     # (3) The suppression patterns key on the LITERAL standalone `stage_for_tcc` call — the fn
-    #     name is load-bearing (build-gates G29 (d), test-strategy's macOS-T11 row, P4.26).
+    #     name is load-bearing (build-gates G29 (d), test-strategy's macOS-T11 row, the
+    #     2026-08-30 P4.26 adjudication).
     metadata:
       convertia-rule: "d"
       threat: [T11]

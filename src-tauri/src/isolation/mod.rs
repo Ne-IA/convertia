@@ -256,20 +256,27 @@ pub async fn run_confined(
     // (§3.2.2 makes the staged path the `plan()` `input`, which reaches this floor only as opaque argv), so
     // no (d) suppression is needed or present.
     //
-    // OPEN QUESTION FOR P4.26, deliberately NOT decided here. Both P4.25 reviewers reached it from opposite
-    // ends and neither could see the other's review: one concluded P4.26 must give rule (d) its OWN
-    // `stage_for_tcc` call site immediately before its spawn (re-staging to satisfy the adjacency), the
-    // other that rule (d) may have no in-scope call site left at all. Those are the two horns of one
-    // question: rule (d)'s `paths:` scope only ever fires on a `Command::new` inside the macOS isolation module,
-    // and the P4.25 architecture puts every spawn on this cross-platform floor instead. So either P4.26
-    // introduces a macOS-scoped spawn site (which, per rule (d)'s adjacency shapes, would have to re-derive
-    // or re-stage the same deterministic `src-<jobId>[.<ext>]` path immediately before it), or rule (d) has
-    // no in-scope call site at all and §0.11 T11's declared two-leg gate is carried by its G31 leg alone.
-    // Which of those is right is P4.26's scope + an L(-1) build-gates question, so it is a Co-Pilot item,
-    // not a working-tree fix here. [Corrected by the G7 check-29 calibration (Co-Pilot, 2026-08-30): the
-    // parenthetical read both deliverables as landing at P4.24.] [Corrected by P4.25: it then asserted a
-    // macOS-scoped spawn as P4.26's deliverable, which over-committed a box that may instead find rule (d)
-    // vacuous — the claim is now stated as the open question it is.]
+    // ADJUDICATED (Co-Pilot ruling, 2026-08-30 — closes the P4.25 obligation-(a) escalation; the full
+    // ruling is recorded on the P4.26 box + the build-gates G29 row): rule (d) keeps its refined form
+    // UNCHANGED and deliberately has ZERO in-scope production call sites — it is the armed tripwire on
+    // the one module any future macOS-conditional spawn is homed into (rule (c) routes every spawn into
+    // `crate::isolation`; check-sast's `misplaced_macos_cfg` routes every mac-conditional isolation
+    // slice carrying its literal `target_os`/`consts::OS` "macos" spellings into `isolation/macos.rs`
+    // — a literal-free OS predicate or an audited `nosemgrep` sits outside that net and is the G31
+    // leg's to catch — and rule (d) judges whatever `Command::new` appears there; its fixture +
+    // per-line both-direction pins keep it mechanically firing), NOT the judge of this live floor.
+    // No macOS-scoped spawn site is introduced to feed it:
+    // that would fork this §2.12.3 hardening floor per platform and re-stage an already-staged path
+    // solely to satisfy an adjacency lint. §0.11 T11 therefore stays two-legged with honest roles —
+    // the G29 leg as the vacuously-satisfied, mechanically-armed door guard, and the G31 macOS
+    // first-accessor leg as the behavioural proof over a real spawn, which is P4.26's re-cut scope
+    // (P9.40 carries the runtime arm). The check-sast `t11_seam_pin` leg pins the LIVE half
+    // structurally and ARM-scoped: the POSITIVE macOS-cfg arm of `engine_input` in `isolation/macos.rs`
+    // must itself call the literal standalone `stage_for_tcc`, so a dropped call, a vanished or
+    // not()-only arm, a call in the wrong arm, or a rename of either load-bearing name fails the
+    // `sast` job. Both P4.25 reviewers had reached the underlying question from
+    // opposite ends (one horn: give rule (d) its own re-staged spawn site; the other: declare T11
+    // G31-alone) — the ruling rejects both horns' remedies and re-trues the describing docs instead.
     // [Build-Session-Entscheidung: P4.13] [Build-Session-Entscheidung: P4.10]
     let mut command = Command::new(program);
     command.env_clear();

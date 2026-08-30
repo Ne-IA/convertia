@@ -598,6 +598,80 @@ def shellcheck_scan() -> int:
     return 0
 
 
+_T11_SEAM_FILE = "src-tauri/src/isolation/macos.rs"
+
+
+def t11_seam_pin(text: str | None = None) -> list[str]:
+    """T11 seam pin (the 2026-08-30 P4.26 adjudication; build-gates G29 (d)) - the NON-VACUOUS half of
+    the G29 T11 leg. Rule (d) is the paths-scoped door tripwire with deliberately ZERO in-scope spawn
+    sites (staging sits upstream of every spawn at the spec-3.2.2 engine_input seam), so this scan pins
+    the seam itself: isolation/macos.rs must define `fn stage_for_tcc` and `fn engine_input`, and
+    engine_input must carry a POSITIVE macOS-cfg arm (the _MACOS_CFG_RE spellings; a not()-gated arm
+    does not count - an 8-char lookbehind skips `not(` forms, and a positive gate the lookbehind
+    misreads fails the call check, over-strict) whose OWN brace span calls the literal standalone
+    `stage_for_tcc(` - the R2 opus probe showed a body-scoped check passed both the vanished-arm and
+    the call-in-the-wrong-arm reverts, since the surviving not()-arm carries the same literal.
+    Arity-independent (no signature text pinned); comment-blanked so a comment mention cannot
+    satisfy it. Closes the rename class rule (d) alone cannot see (a
+    coordinated fn+caller rename compiles and matches nothing). Residuals, both documented: brace
+    matching is not string-aware, so a string literal containing a brace inside the fn could shift the
+    computed body end - that direction is over-strict (a pin miss FAILS), never fail-open; and a kept
+    string literal naming `stage_for_tcc(` inside the seam body could satisfy the call pin - contrived
+    (the body holds no strings; the g24 live-file leg pins the real shape). `text=None` reads the real
+    file; a missing file FAILS (the seam is load-bearing production since P4.25)."""
+    problems: list[str] = []
+    if text is None:
+        f = ROOT / _T11_SEAM_FILE
+        if not f.is_file():
+            return [f"{_T11_SEAM_FILE} is missing - the T11 staging-seam home (spec 3.5.0 / 0.7)"]
+        text = f.read_text(encoding="utf-8", errors="replace")
+    code = _blank_rs_comments(text)
+    if "fn stage_for_tcc" not in code:
+        problems.append(f"{_T11_SEAM_FILE}: `fn stage_for_tcc` is absent/renamed - the load-bearing "
+                        "T11 staging name (build-gates G29 (d), spec 3.5.0)")
+    m_fn = re.search(r"\bfn\s+engine_input\b", code)
+    if m_fn is None:
+        problems.append(f"{_T11_SEAM_FILE}: `fn engine_input` is absent/renamed - the spec-3.2.2 "
+                        "step-2 seam the spec-1.7 conductor calls (spec 3.5.0)")
+        return problems
+    open_i = code.find("{", m_fn.end())
+    depth, end_i = 0, -1
+    if open_i != -1:
+        for i in range(open_i, len(code)):
+            if code[i] == "{":
+                depth += 1
+            elif code[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end_i = i
+                    break
+    body = code[open_i:end_i + 1] if (open_i != -1 and end_i != -1) else ""
+    arm = None
+    for mm in _MACOS_CFG_RE.finditer(body):
+        if "not(" in body[max(0, mm.start() - 8):mm.start()]:
+            continue                     # a not(target_os = "macos") arm is NOT the macOS arm
+        ob = body.find("{", mm.end())
+        depth2, ce = 0, -1
+        if ob != -1:
+            for j in range(ob, len(body)):
+                if body[j] == "{":
+                    depth2 += 1
+                elif body[j] == "}":
+                    depth2 -= 1
+                    if depth2 == 0:
+                        ce = j
+                        break
+        arm = body[ob:ce + 1] if (ob != -1 and ce != -1) else ""
+        break
+    if arm is None:
+        problems.append(f"{_T11_SEAM_FILE}: engine_input carries no POSITIVE macOS-cfg arm - the "
+                        "spec-3.5.0 staging policy vanished from the seam (a not()-arm does not count)")
+    elif not re.search(r"\bstage_for_tcc\s*\(", arm):
+        problems.append(f"{_T11_SEAM_FILE}: engine_input's macOS arm never calls `stage_for_tcc(` - "
+                        "the T11 staging is disconnected from the seam (the P4.25 plumbing, G29 (d))")
+    return problems
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Semgrep + shellcheck SAST gate (G29, P0.4.2)")
     ap.add_argument("--full", action="store_true", help="accepted for wiring parity")
@@ -658,13 +732,24 @@ def main(argv: list[str] | None = None) -> int:
                  f"the paths-scoped G29 rule (d) can see it")
         problems += 1
 
+    # T11 seam pin (the 2026-08-30 P4.26 adjudication): the non-vacuous half of the G29 T11 leg -
+    # the macOS arm of the spec-3.2.2 engine_input seam must call the literal standalone
+    # stage_for_tcc (rule (d) is the door tripwire with deliberately zero in-scope spawn sites;
+    # this pins the LIVE plumbing + the rename class). Target-absent discipline: runs once the
+    # core crate exists; the seam file itself missing then FAILS (load-bearing since P4.25).
+    if (ROOT / "src-tauri" / "src").exists():
+        seam = t11_seam_pin()
+        for p in seam:
+            fail(p)
+        problems += 1 if seam else 0
+
     problems += shellcheck_scan()
 
     if problems:
         print(f"[G29] {problems} SAST gate problem(s)", file=sys.stderr)
         return 1
     print("[G29] SAST gate OK (validate + armed-canary/suppression-pins + scan + census + "
-          "single-store + macos-homing + shellcheck)")
+          "single-store + macos-homing + t11-seam-pin + shellcheck)")
     return 0
 
 

@@ -139,9 +139,9 @@ clusters and `needs:` their cluster's pair boxes.
 - [ ] **P7.15** [TEST] Add the per-engine LibreOffice §7.2.3 availability/integrity rows + the in-bundle hash-manifest entries · §7.2.3 · G46 G37
   needs: P7.3, P4.43
   > populate the LibreOffice launcher + program-tree + bundled-font rows in the build-time in-bundle hash manifest and the `EngineHealth` availability table (the per-engine variant of the P4 startup-verifier framework) so a missing/corrupt LibreOffice escalates to a §2.13 app-fault not a crash, and feeds C12 `get_engine_health` (§5.2 disables the office targets if LO is unavailable — all three categories depend on it).
-- [ ] **P7.16** [RUST] Verify LibreOffice receives the macOS kind-2 scratch-staged source + the staged `--outdir` rule · §3.5.0 §7.2.6 §2.14.2 · G31 G29
+- [ ] **P7.16** [RUST] Verify LibreOffice receives the macOS kind-2 scratch-staged source + the staged `--outdir` rule · §3.5.0 §7.2.6 §2.14.2 · G31
   needs: P7.4, P4.24
-  > assert (macOS only) the core stages the dropped source into per-job kind-2 scratch BEFORE spawning LO and hands LO the SCRATCH path as `<input>` (with `--outdir` already at scratch), so a spawned engine is never the first process to touch a TCC-protected Desktop/Documents/Downloads/removable path (T11); composes with §2.14 cross-volume + the §1.10 macOS staged-input preflight. The `stage_for_tcc`-before-spawn invariant (G29 Semgrep rule) holds for the LO `Command::new`.
+  > assert (macOS only) the core stages the dropped source into per-job kind-2 scratch BEFORE spawning LO and hands LO the SCRATCH path as `<input>` (with `--outdir` already at scratch), so a spawned engine is never the first process to touch a TCC-protected Desktop/Documents/Downloads/removable path (T11); composes with §2.14 cross-volume + the §1.10 macOS staged-input preflight. The staging rides the §3.2.2 `engine_input` → `stage_for_tcc` seam (P4.25); no LO-specific macOS `Command::new` exists for G29 rule (d) to judge (the 2026-08-30 P4.26 adjudication — the deliberately-vacuous door-guard posture), so this box's assert is the per-engine behavioural leg.
 
 ---
 
@@ -166,9 +166,9 @@ clusters and `needs:` their cluster's pair boxes.
 - [ ] **P7.20** [RUST] Wire the poppler exit/stderr → §2.8 mapping (encrypted/empty-extraction/unrecoverable) + `classify_failure` · §3.5.3 §2.8 · G31
   needs: P7.19
   > map `pdftotext` outcomes: non-zero / "Command Line Error: Incorrect password" on an encrypted no-user-password PDF → the §2.8 "password-protected" kind (no password ever prompted/cracked); **empty extraction** (scanned/image PDF, no OCR in v1) → a valid-but-near-empty `.txt` reported honestly, **not** an error and **not** a misleading success of an empty file; an unrecoverable PDF → fail clearly (§2.8), batch continues (no GS repair backstop in v1). PDF forms/tagged structure/layers flattened to visible text on `→TXT`.
-- [ ] **P7.21** [RUST] Verify poppler receives the macOS kind-2 scratch-staged source path · §3.5.0 §7.2.6 §2.14.2 · G31 G29
+- [ ] **P7.21** [RUST] Verify poppler receives the macOS kind-2 scratch-staged source path · §3.5.0 §7.2.6 §2.14.2 · G31
   needs: P7.19, P4.24
-  > assert (macOS only) the core stages the dropped PDF into per-job kind-2 scratch before spawning `pdftotext` and hands it the scratch path as `<input>` (T11 — engine never the first to touch a protected path); the `stage_for_tcc`-before-spawn G29 invariant holds for the poppler `Command::new`.
+  > assert (macOS only) the core stages the dropped PDF into per-job kind-2 scratch before spawning `pdftotext` and hands it the scratch path as `<input>` (T11 — engine never the first to touch a protected path); the staging rides the §3.2.2 `engine_input` → `stage_for_tcc` seam (P4.25); no poppler-specific macOS `Command::new` exists for G29 rule (d) to judge (the 2026-08-30 P4.26 adjudication) — this box's assert is the per-engine behavioural leg.
 - [ ] **P7.22** [TEST] Add the poppler §7.2.3 availability/integrity row + the in-bundle hash-manifest entry · §7.2.3 · G46 G37
   needs: P7.17, P4.43
   > populate the `pdftotext` row in the in-bundle hash manifest + the `EngineHealth` availability table so a missing/corrupt poppler degrades the `PDF→TXT` target to unavailable-with-reason (§5.2) rather than crashing, and feeds C12 `get_engine_health`.
@@ -198,9 +198,9 @@ clusters and `needs:` their cluster's pair boxes.
 - [ ] **P7.27** [TEST] Verify pandoc runs cleanly under `--sandbox` for every assigned pair (no blocked on-disk data file) · §3.5.4 §6.4 · G31
   needs: P7.24
   > the `[DEFER: corpus]` data-file check: confirm every pair ConvertIA assigns pandoc (markup↔markup, `*→HTML --standalone --embed-resources`, the office→markup down-conversions) runs cleanly under `--sandbox` on the §6.4 corpus — none needs a blocked on-disk pandoc data file (templates, reference docs, syntax-highlight definitions). If a pair turns out to need one, the recorded fix is to **bundle that data file and pass it explicitly on the argv** (a named input the sandbox permits), NEVER to drop `--sandbox`. Records the resolution against real corpus files.
-- [ ] **P7.28** [RUST] Verify pandoc receives the macOS kind-2 scratch-staged source (path or stdin) · §3.5.0 §7.2.6 §2.14.2 · G31 G29
+- [ ] **P7.28** [RUST] Verify pandoc receives the macOS kind-2 scratch-staged source (path or stdin) · §3.5.0 §7.2.6 §2.14.2 · G31
   needs: P7.24, P4.24
-  > assert (macOS only) the core stages the source into per-job kind-2 scratch before spawning pandoc and feeds it the scratch path as `<input>` OR pipes bytes on stdin (`StdinPlan::PipeBytes`) — engine never the first to touch a protected path (T11); the `stage_for_tcc`-before-spawn G29 invariant holds for the pandoc `Command::new`.
+  > assert (macOS only) the core stages the source into per-job kind-2 scratch before spawning pandoc and feeds it the scratch path as `<input>` OR pipes bytes on stdin (`StdinPlan::PipeBytes`) — engine never the first to touch a protected path (T11); the staging rides the §3.2.2 `engine_input` → `stage_for_tcc` seam (P4.25); no pandoc-specific macOS `Command::new` exists for G29 rule (d) to judge (the 2026-08-30 P4.26 adjudication) — this box's assert is the per-engine behavioural leg.
 - [ ] **P7.29** [TEST] Add the pandoc §7.2.3 availability/integrity row + the in-bundle hash-manifest entry · §7.2.3 · G46 G37
   needs: P7.23, P4.43
   > populate the `pandoc` row in the in-bundle hash manifest + the `EngineHealth` table so a missing/corrupt pandoc degrades the pandoc-owned markup targets to unavailable-with-reason rather than crashing, and feeds C12 `get_engine_health`.

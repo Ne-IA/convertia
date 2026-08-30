@@ -10,8 +10,11 @@ parser ignores comments/blanks; (5) the net-ban allow-list FILTER drops only all
 detectors (broken_suppressions / missing_must_fires), the text<->matcher command-census
 counter/comparator, the macOS homing scan (cfg + runtime consts::OS forms), and the structural
 pins on the refined (b1)/(d) rule text (paths scope + fixture binding + the adjacent suppression
-forms). The REAL semgrep-over-fixtures armed canary runs inside check-sast in the CI `sast` job
-(semgrep present). stdlib-only. Exit 0 = all held.
+forms); (7, the 2026-08-30 P4.26 adjudication) the T11 seam pin `t11_seam_pin` (the engine_input
+macOS arm's own span calls the literal standalone stage_for_tcc; a dropped call, a vanished or
+not()-only arm, a call in the wrong arm, or a rename of either load-bearing name is flagged).
+The REAL semgrep-over-fixtures armed canary
+runs inside check-sast in the CI `sast` job (semgrep present). stdlib-only. Exit 0 = all held.
 """
 import importlib.machinery
 import importlib.util
@@ -296,6 +299,47 @@ record("yaml-pin: rule (d) carries the stage-then-build adjacency arm (the split
        "let mut $C = Command::new(...);" in _d_block)
 record("yaml-pin: rule (b1) carries the split-builder scrub-FIRST adjacent suppression",
        "let mut $C = Command::new(...);" in _b1_block and "$C.env_clear();" in _b1_block)
+
+
+# --- 12. the T11 seam pin (the 2026-08-30 P4.26 adjudication) -----------------------------------
+_seam_ok = (
+    'pub(crate) fn stage_for_tcc(a: &P) -> R { s(a) }\n'
+    'pub(crate) fn engine_input(a: &P) -> R {\n'
+    '    #[cfg(target_os = "macos")]\n'
+    '    { stage_for_tcc(a).map(C) }\n'
+    '    #[cfg(not(target_os = "macos"))]\n'
+    '    { Ok(b(a)) }\n'
+    '}\n'
+)
+record("t11-seam-pin: the LIVE isolation/macos.rs satisfies the pin (the real-file leg)",
+       m.t11_seam_pin() == [])
+record("t11-seam-pin: a well-formed seam (macOS arm + standalone call) passes",
+       m.t11_seam_pin(_seam_ok) == [])
+record("t11-seam-pin: engine_input WITHOUT the stage_for_tcc call is flagged (the dropped-plumbing revert)",
+       any("never calls" in p for p in m.t11_seam_pin(_seam_ok.replace("stage_for_tcc(a).map(C)", "Ok(b(a))"))))
+record("t11-seam-pin: a renamed engine_input is flagged (the seam-rename class)",
+       any("engine_input" in p for p in m.t11_seam_pin(_seam_ok.replace("fn engine_input", "fn engine_source"))))
+record("t11-seam-pin: a renamed stage_for_tcc is flagged (the load-bearing-name class)",
+       any("absent/renamed" in p for p in m.t11_seam_pin(_seam_ok.replace("stage_for_tcc", "stage_tcc"))))
+record("t11-seam-pin: a macOS arm + call living only in a COMMENT does not satisfy (comment-blanked)",
+       any("no POSITIVE macOS-cfg arm" in p
+           for p in m.t11_seam_pin('fn stage_for_tcc(a: &P) -> R { s(a) }\n'
+                                   'fn engine_input(a: &P) -> R {\n'
+                                   '    // #[cfg(target_os = "macos")] stage_for_tcc(a)\n'
+                                   '    Ok(b(a))\n'
+                                   '}\n')))
+record("t11-seam-pin: a VANISHED macOS arm with a surviving not()-arm is flagged (the R2 opus probe 1)",
+       any("no POSITIVE macOS-cfg arm" in p
+           for p in m.t11_seam_pin(_seam_ok.replace('#[cfg(target_os = "macos")]', '#[cfg(feature = "x")]'))))
+record("t11-seam-pin: the call sitting ONLY in the not()-arm is flagged (the R2 opus probe 2, arm-scoped)",
+       any("macOS arm never calls" in p
+           for p in m.t11_seam_pin('pub(crate) fn stage_for_tcc(a: &P) -> R { s(a) }\n'
+                                   'pub(crate) fn engine_input(a: &P) -> R {\n'
+                                   '    #[cfg(target_os = "macos")]\n'
+                                   '    { Ok(o(a)) }\n'
+                                   '    #[cfg(not(target_os = "macos"))]\n'
+                                   '    { let _x = stage_for_tcc(a); Ok(b(a)) }\n'
+                                   '}\n')))
 
 failed = [n for n, ok in results if not ok]
 print(f"\n{len(results) - len(failed)}/{len(results)} legs passed")

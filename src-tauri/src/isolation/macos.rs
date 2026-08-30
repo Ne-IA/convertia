@@ -11,7 +11,10 @@
 //! ## Why this file exists at all — the P4.85 homing contract
 //! `check-sast`'s `misplaced_macos_cfg` leg requires every `target_os = "macos"`-conditional slice of the
 //! isolation tree to live HERE, so the `paths:`-scoped G29 rule (d) — which keys on the literal standalone
-//! `stage_for_tcc` call preceding a `Command::new` — can see it. The module is therefore declared
+//! `stage_for_tcc` call preceding a `Command::new` — can see it. (Per the 2026-08-30 P4.26
+//! adjudication rule (d) is the deliberately-vacuous door tripwire — no `Command::new` lives here —
+//! and the same driver's `t11_seam_pin` leg is its non-vacuous sibling, pinning [`engine_input`]'s
+//! macOS arm to the literal `stage_for_tcc` call.) The module is therefore declared
 //! UNCONDITIONALLY in `isolation/mod.rs`: a `#[cfg(target_os = "macos")] mod macos;` there would itself be a
 //! mac-cfg outside this file and would fail that very check. The per-item `#[cfg]` below is the established
 //! `crate::platform` pattern (per-item attributes, never a module-level `#![cfg]`).
@@ -137,9 +140,11 @@ pub(crate) fn stage_source_into_scratch_for_tests(
 /// The §3.5.0 / §7.2.6 **macOS** TCC staging entry — the load-bearing name.
 ///
 /// `stage_for_tcc` is not a free naming choice: build-gates G29 rule (d), test-strategy's macOS-T11
-/// first-accessor row and the P7.16 / P7.21 / P7.28 boxes all name this exact function, and the P4.85
-/// refinement keys its `paths:`-scoped Semgrep rule on the literal standalone call. Renaming it silently
-/// voids the T11 control (§0.11).
+/// first-accessor row and the P7.16 / P7.21 / P7.28 boxes all name this exact function, the P4.85
+/// refinement keys its `paths:`-scoped Semgrep rule on the literal standalone call, and check-sast's
+/// `t11_seam_pin` leg (the 2026-08-30 P4.26 adjudication) FAILS the `sast` job when this fn or
+/// [`engine_input`]'s macOS arm stops carrying this literal name — the mechanical catcher for the
+/// rename class, which rule (d) alone (zero in-scope spawn sites) could not see.
 ///
 /// It deliberately adds no mechanism of its own — the whole point of the split is that the mechanism is
 /// portable and tested everywhere ([`stage_source_into_scratch`]), so what is macOS-gated is only §3.5.0's
@@ -187,7 +192,8 @@ pub(crate) fn engine_input<'a>(
     {
         // §3.5.0 step 1+2 / §7.2.6 fact 2: the core — which holds the TCC grant from the §1.1 freeze — is the
         // process that first reads the protected path, and the engine is handed the copy. The literal
-        // standalone `stage_for_tcc` call is the load-bearing shape build-gates G29 rule (d) keys on.
+        // standalone `stage_for_tcc` call is the load-bearing shape build-gates G29 rule (d) keys on and
+        // what check-sast's `t11_seam_pin` asserts of this arm (the 2026-08-30 P4.26 adjudication).
         stage_for_tcc(scratch, job, source).map(Cow::Owned)
     }
     #[cfg(not(target_os = "macos"))]
