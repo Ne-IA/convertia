@@ -177,7 +177,7 @@
 
 ## macOS TCC source staging (§3.5.0 / §7.2.6)
 
-- [ ] **P4.24** [RUST] Build the macOS TCC source-staging copy (core copies source into per-job kind-2 scratch before spawn) · §3.5.0 §7.2.6 §0.11 · G29 G31
+- [x] **P4.24** [RUST] Build the macOS TCC source-staging copy (core copies source into per-job kind-2 scratch before spawn) · §3.5.0 §7.2.6 §0.11 · G29 G31
   needs: P4.13, P3.21
   > the §3.5.0/§7.2.6 read-side staging (macOS-only, `cfg(target_os="macos")`): the core (which holds the TCC grant from the §1.1 freeze) copies the source into a per-job §2.14.2 kind-2 scratch path **before** spawning, so the engine is never the first process to touch a protected Desktop/Documents/Downloads/removable path (T11); composes with the §2.14 cross-volume strategy. (Build-order: the §2.14.2 kind-2 scratch-ROOT primitive is the P3 `crate::run` run-lifecycle layer P3.21 — `needs: P3.21`, the cross-phase edge wired here per the P4.77 reconciliation obligation.) (P4.85 homing contract: the mac-cfg'd staging slice homes in `isolation/macos.rs` (or `isolation/macos/`) — check-sast's `misplaced_macos_cfg` + the `paths:`-scoped G29 rule (d) bind there; `stage_for_tcc` is the load-bearing fn name the refined rule keys on.)
   > **[Forward note from P4.16, 2026-07-25]** the `isolation/macos.rs` this box creates is AUTO-COVERED by the P4.16 `no_seatbelt_apply_callsite_in_the_core` source-scan (it walks `src/isolation/**` recursively, not a hardcoded file list), so a `sandbox_init`/`sandbox_apply`/`sandbox_compile` apply callsite added there fails that test — this box builds the `stage_for_tcc` TCC-staging fn, NOT a macOS Seatbelt apply leg (decided cheap-tier only, spec §2.12.3).
