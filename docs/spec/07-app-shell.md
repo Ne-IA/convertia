@@ -203,7 +203,16 @@ section only fixes the *identity* embedded in it.)
    off and this process exits before doing anything else.
 2. **Establish `InstanceId`** (§7.1.2) and resolve base paths via the Tauri path
    API (`app.path()`): config dir, local-data/scratch dir (§2.14), log dir
-   (§7.5). No directory is *created* yet.
+   (§7.5). Resolve **the two §3.3.3 program roots** in the same step — the
+   app-executable dir every `externalBin` sidecar resolves beside (from
+   `current_exe()?.parent()`, **not** `app.path()` — §3.3.3 is explicit that
+   `BaseDirectory::Resource` is wrong for a sidecar) and the
+   `BaseDirectory::Resource` root the resource-tree binaries hang off (from
+   `app.path()`). Both are resolved ONCE and published for the rest of the run,
+   so step 3's presence/integrity check and the §1.7 spawn path read the SAME
+   paths and cannot diverge; an unresolvable root means the portable folder is not
+   intact and is a `BundleDamaged` app-level fault (§2.13), reported through the
+   same readiness path as steps 3–5. No directory is *created* yet.
 3. **Engine presence + integrity verification** (§7.2.3) — the bundled sidecars
    must exist and be runnable; a failure here is an **app-level fault** (§2.13),
    not a per-item failure.

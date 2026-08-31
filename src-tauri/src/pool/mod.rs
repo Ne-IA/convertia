@@ -67,7 +67,7 @@
 //!    lanes, because §1.7 wraps each lane in a wall-clock timeout and a pause spent inside one would come
 //!    out of the ENGINE's budget (§2.12.3 never-break). That placement also gives "in-flight items finish"
 //!    for free, and makes the gate live in production today via the in-core CSV/TSV lane rather than staged
-//!    for P4.32.
+//!    behind the subprocess lane.
 //!  - The reading comes from `crate::platform::available_memory_bytes`, injected as a fn pointer so
 //!    [`Pool::with_degree`] stays deterministic for the §6.7.2 harness and the tests drive exact values.
 //!
@@ -120,8 +120,10 @@
 //!    P4.12** with its consumer, the §1.7 `crate::engines::run_subprocess` no-progress/wall-clock watchdog
 //!    (the §0.9 "authored with their consumers" principle; this reconciles the prior "authored with P4.20"
 //!    forecast — the watchdog MECHANISM landed at P4.12, so its parameters did too, while P4.20 expanded
-//!    the pool *structure*). They stay dead in the production build until P4.32 wires `run_subprocess` live, exactly
-//!    like [`GROUP_CONFIRM_WAIT`]. **P3.3 authored no `pub const`** (no P3.3 consumer imported one; P3.45 adds
+//!    the pool *structure*). [Corrected by P4.32] They are LIVE in the production build since P4.32 wired
+//!    `run_subprocess` into `dispatch`'s subprocess arms — the arm selects the wall-clock from the job's own
+//!    §0.9 parallelism row and passes [`NO_PROGRESS_TIMEOUT`] with it; [`GROUP_CONFIRM_WAIT`] follows the
+//!    same chain through `crate::isolation`. **P3.3 authored no `pub const`** (no P3.3 consumer imported one; P3.45 adds
 //!    the first). P4.20's own §1.10 memory `pub const`s follow the same rule and ARE live: their consumers
 //!    ([`Pool::effective_degree`] and the watermark gate) are in this module.
 //!
@@ -156,7 +158,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "Items authored ahead of their production consumers, each named with the box that makes it live. DEAD TODAY: Pool::with_degree + no_memory_cap (the deterministic pinned-degree constructor path, used by the §6.7.2 harness and by tests only); Pool::run_subprocess, whose production consumers are the P4.32 subprocess dispatch arms (the §1.7 lane calls it once the program-path resolution supplies a resolved binary); the EngineParallelism::VideoReencode VARIANT (P4.21), which is the §0.9 'FFmpeg (video re-encode)' table row and is therefore first CONSTRUCTED by the P6 FFmpeg engine's Engine::parallelism impl — the enum itself, its per_engine_cap projection and MAX_VIDEO_REENCODE_CONCURRENCY are LIVE (the native lane acquires by row on every live dispatch, and the projection's match arm reads the const), only that one variant has no production constructor yet; and the §0.9 subprocess-watchdog consts WATCHDOG_POLL_INTERVAL / NO_PROGRESS_TIMEOUT / SUBPROCESS_WALL_CLOCK_DEFAULT / VIDEO_WALL_CLOCK (P4.12) plus GROUP_CONFIRM_WAIT (P4.11), whose consumers (crate::engines::run_subprocess, crate::isolation::run_confined) are themselves dead until P4.32. LIVE, hence deliberately NOT listed: Pool::new and the with_degree_and_memory it calls one hop down; Pool::run_in_core (the native CSV/TSV lane runs through the live §1.7 dispatch) and, through it, Pool::slot_weight and Pool::effective_degree — the weighted acquire enforces the §1.10 effective degree on every live acquire — plus the MEMORY_PER_SLOT_BYTES those read; LaneError, whose variants run_in_core constructs and the live crate::engines::bounded_lane matches; Pool::await_dispatch_headroom and HIGH_MEMORY_WATERMARK_BYTES / MEMORY_WATERMARK_POLL / MEMORY_PAUSE_MAX, called by crate::engines::dispatch at the §1.7 dispatch entry; NATIVE_CSV_TSV_TIMEOUT; and the clamp_global_degree/resolve_global_degree degree helpers Pool::new resolves through. The cfg(test) tests below construct every pool shape and exercise both lanes, so the test build is dead-code-clean. `expect` (not `allow`) auto-flags the moment the last consumer lands."
+        reason = "Items authored ahead of their production consumers, each named with the box that makes it live. DEAD TODAY: Pool::with_degree + no_memory_cap (the deterministic pinned-degree constructor path, used by the §6.7.2 harness and by tests only); the EngineParallelism::VideoReencode VARIANT (P4.21), which is the §0.9 'FFmpeg (video re-encode)' table row and is therefore first CONSTRUCTED by the P6 FFmpeg engine's Engine::parallelism impl — the enum itself, its per_engine_cap projection and MAX_VIDEO_REENCODE_CONCURRENCY are LIVE (the native lane acquires by row on every live dispatch, and the projection's match arm reads the const), only that one variant has no production constructor yet. [Corrected by P4.32] MOVED OUT of the dead list by P4.32, which wired dispatch's subprocess arms onto the §3.3.3 resolved path: Pool::run_subprocess (those arms are its production consumers) and the §0.9 subprocess-watchdog consts WATCHDOG_POLL_INTERVAL / NO_PROGRESS_TIMEOUT / SUBPROCESS_WALL_CLOCK_DEFAULT / VIDEO_WALL_CLOCK (P4.12) plus GROUP_CONFIRM_WAIT (P4.11) — the arm selects the wall-clock from the job's own §0.9 parallelism row, and their consumers (crate::engines::run_subprocess, crate::isolation::run_confined) are now live roots. LIVE, hence deliberately NOT listed: Pool::new and the with_degree_and_memory it calls one hop down; Pool::run_in_core (the native CSV/TSV lane runs through the live §1.7 dispatch) and, through it, Pool::slot_weight and Pool::effective_degree — the weighted acquire enforces the §1.10 effective degree on every live acquire — plus the MEMORY_PER_SLOT_BYTES those read; LaneError, whose variants run_in_core constructs and the live crate::engines::bounded_lane matches; Pool::await_dispatch_headroom and HIGH_MEMORY_WATERMARK_BYTES / MEMORY_WATERMARK_POLL / MEMORY_PAUSE_MAX, called by crate::engines::dispatch at the §1.7 dispatch entry; NATIVE_CSV_TSV_TIMEOUT; and the clamp_global_degree/resolve_global_degree degree helpers Pool::new resolves through. The cfg(test) tests below construct every pool shape and exercise both lanes, so the test build is dead-code-clean. `expect` (not `allow`) auto-flags the moment the last consumer lands."
     )
 )]
 
@@ -254,10 +256,15 @@ pub const NO_PROGRESS_TIMEOUT: Duration = Duration::from_secs(90);
 /// (P4.12): the maximum total runtime for a light/short-lived subprocess engine (poppler / pandoc / the
 /// image-worker / LibreOffice) before it is killed → `Failed(EngineHang)` (§1.7), independent of whether it is
 /// still emitting progress. The §0.9 per-engine wall-clock is "**tight for the light engines**"; the generous
-/// video budget is [`VIDEO_WALL_CLOCK`]. The `EngineId → which wall-clock` selection is the caller's (the P4.32
-/// dispatch-arm wiring / the P5–P7 engine adapters, which pass the chosen bound into `run_subprocess` the way
-/// `dispatch` passes [`NATIVE_CSV_TSV_TIMEOUT`] to the native lane); this const is the §0.9-owned value they
-/// select, single-sourced here so the §6.7.2 harness imports it rather than hard-coding.
+/// video budget is [`VIDEO_WALL_CLOCK`]. [Corrected by P4.32] The selection is the caller's and keys off the
+/// job's §0.9 PARALLELISM ROW, not off an `EngineId`: `crate::engines::subprocess_wall_clock` maps
+/// `UpToGlobalDegree` to this const and `VideoReencode` to [`VIDEO_WALL_CLOCK`], and `dispatch` passes the
+/// result into `run_subprocess` the way it passes [`NATIVE_CSV_TSV_TIMEOUT`] to the native lane. So a P5–P7
+/// engine inherits its budget from the concurrency row it declares — ONE knob, deliberately: §0.9's
+/// video-vs-light split treats "CPU-bound enough to cap" and "slow enough to need a long budget" as the
+/// same axis, so an engine wanting a long budget at full parallelism is a §0.9 question, not a caller one.
+/// This const is the §0.9-owned value they select, single-sourced here so the §6.7.2 harness imports it
+/// rather than hard-coding.
 ///
 /// **Baseline (pre-calibration).** [Build-Session-Entscheidung: P4.12] `300s` (5 min) — comfortably above any
 /// legitimate light conversion (a document export, a PDF text extract, an image transcode finish in seconds),
@@ -269,8 +276,9 @@ pub const SUBPROCESS_WALL_CLOCK_DEFAULT: Duration = Duration::from_secs(300);
 /// (P4.12): the maximum total runtime for an FFmpeg video re-encode before it is killed → `Failed(EngineHang)`.
 /// The §0.9 per-engine wall-clock is "**generous for video — a long film legitimately takes minutes**", so a
 /// video re-encode gets this longer budget instead of [`SUBPROCESS_WALL_CLOCK_DEFAULT`]; the no-progress leg
-/// ([`NO_PROGRESS_TIMEOUT`]) still catches a *stalled* re-encode long before this. The `EngineId → wall-clock`
-/// selection is the caller's (P4.32 / P6 FFmpeg staging), the same seam as [`SUBPROCESS_WALL_CLOCK_DEFAULT`].
+/// ([`NO_PROGRESS_TIMEOUT`]) still catches a *stalled* re-encode long before this. [Corrected by P4.32] The
+/// selection keys off the §0.9 parallelism row (`VideoReencode` → this budget) via
+/// `crate::engines::subprocess_wall_clock`, the same seam as [`SUBPROCESS_WALL_CLOCK_DEFAULT`].
 ///
 /// **Baseline (pre-calibration).** [Build-Session-Entscheidung: P4.12] `3600s` (60 min) — generous enough that a
 /// long, still-progressing film re-encode is never wall-clock-reaped (the no-progress leg handles a genuine

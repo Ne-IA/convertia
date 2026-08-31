@@ -97,8 +97,9 @@
 //! (subprocess-class) arms are unreachable-by-construction in P3 — the walking skeleton wires only the
 //! in-core engine, so no subprocess `Invocation` is ever produced (the subprocess engines land P5–P7; the
 //! registry landed at P4.4) — and return the honest §2.13 `ConversionErrorKind::InternalError` outcome;
-//! they route through this module's [`run_confined`] entry once the P4.32 program-path resolution supplies
-//! the resolved binary path the entry takes (no resolvable subprocess program exists before then).
+//! [Corrected by P4.32] they NOW route through this module's [`run_confined`] entry: P4.32's program-path
+//! resolution supplies the resolved binary path the entry takes, so the WIRING is live and only the engine
+//! REGISTRATION (P5-P7) is left before the arms are reachable at runtime.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -189,15 +190,15 @@ fn is_loader_injection_var(name: &OsStr) -> bool {
 /// `InternalError` seam (the P2.25 precedent), matched exhaustively so the arm cannot be silently
 /// dropped. [Build-Session-Entscheidung: P4.13]
 // [Test-Change: P4.7 — old-obsolete+new-correct, §1.7 §2.12.3] the P4.13 dead-code lint level assumed this
-// entry had no caller; the §1.7 `engines::run_subprocess` seam (below) now references `run_confined`, so
-// relaxing the level is correct — the entry stays unreachable until P4.32 yet is no longer reported unused.
-// Mechanism: `run_subprocess` counts as a dead-code-analysis root (via the `engines` module-level dead-code
-// lint attribute), so its body marks `run_confined` used even though `run_subprocess` is ITSELF dead until
-// P4.32, leaving `run_confined` unreachable but no longer reported unused. dispatch's
-// `Sidecar`/`ResourceBin` arms call `run_subprocess` when P4.32's program-path resolution supplies the resolved
-// `&Path` (no resolvable subprocess program before then); the cfg(test) real-subprocess suite below exercises
-// every arm.
-#[cfg_attr(not(test), allow(dead_code))]
+// entry had no caller; the §1.7 `engines::run_subprocess` seam (below) then referenced `run_confined`, so
+// relaxing the level was correct.
+// [Test-Change: P4.32 — old-obsolete+new-correct, §3.3.3] the suppression ATTRIBUTE is now REMOVED, not
+// merely relaxed. OLD (obsolete): `run_confined` was only "used by a dead caller" — `run_subprocess` was
+// itself dead, so the entry needed the non-test `allow(dead_code)`. NEW (verified by `cargo clippy
+// --all-targets -D warnings` on the production build): `dispatch`'s `Sidecar`/`ResourceBin` arms call
+// `run_subprocess` on the §3.3.3 resolved path, so this entry is reachable from a LIVE root and the
+// suppression would now hide nothing. It stays unreachable at RUNTIME until P5–P7 register the first
+// subprocess engine; the cfg(test) real-subprocess suite below exercises every arm.
 pub async fn run_confined(
     invocation: &EngineInvocation,
     program: &Path,

@@ -1560,8 +1560,9 @@ fn cleanup_leftovers(
 /// so the §2.6.2 run-end cleanup sees the dir and the §1.12 projection folds the record into
 /// `RunResult.cleanup_incomplete` (→ the §2.8.2 "With residue" tail). A `None` residue — the common clean case,
 /// and every in-core cancel — is a no-op. Shared by the [`run_conversion`] terminal-mapping Cancelled arm; the
-/// `Some` path is dead-until-P4.32 in that arm (a wedged cancel needs a subprocess) but is directly
-/// unit-tested here so the §2.6.4 seam is proven. [Build-Session-Entscheidung: P4.11]
+/// `Some` path remains RUNTIME-unreachable in that arm while no subprocess engine is registered
+/// (a wedged cancel needs one; P4.32 wired the lane, P5-P7 register the first engine on it) but is
+/// directly unit-tested here so the §2.6.4 seam is proven. [Build-Session-Entscheidung: P4.11]
 fn thread_residue(
     residue: Option<ResidueRecord>,
     residues: &mut Vec<ResidueRecord>,
@@ -1879,7 +1880,7 @@ fn slice_extension(target: TargetId) -> Option<&'static str> {
 /// re-implemented there but delivered HERE, and this fn is already **lane-agnostic** — it runs on the
 /// conductor's single `InvocationResult::Succeeded` arm over the reclaimed publish `tmp`, checking `metadata`
 /// on the RESULT FILE, with no knowledge of whether the native in-core lane or a confined subprocess produced
-/// it. So when P4.32 wires a subprocess `Succeeded` through `dispatch`, the same `Succeeded` arm runs THIS
+/// it. P4.32 wired a subprocess `Succeeded` through `dispatch`, and the same `Succeeded` arm runs THIS
 /// verification over the subprocess-written temp — no code change, only this confirmation (DoD item (b)). The
 /// §1.7 "exit-0-but-empty/zero-output" guard is thus honored identically for every engine class.
 fn verify_encode_output(item: ItemId, tmp: TempPath) -> Result<TempPath, WriteOutcome> {
@@ -2682,10 +2683,11 @@ pub(crate) async fn run_conversion(
             // into `residues` (→ `RunResult.cleanup_incomplete` → the §2.8.2 "With residue" tail) +
             // `recorded_final_dirs`; the wire `ItemOutcome::Cancelled` STAYS payload-free (§2.8.2 case 3 has no
             // per-item row — the structural `cleanup_incomplete` entry + the batch tail carry it; no `bindings.ts`
-            // change). A `Some` residue here is DEAD-UNTIL-P4.32 (a wedged cancel needs a SUBPROCESS engine; the
+            // change). A `Some` residue here needs a REGISTERED subprocess engine (a wedged cancel needs one; the
             // in-core lane's cancel always removes its temp cleanly → `residue: None`, proven by the
             // dispatched-cancel test), so the threading rides the shared helper whose `Some` body is directly
-            // unit-tested — the §2.6.4 seam is proven now, ready when P4.32 makes the subprocess lane live. The
+            // unit-tested — the §2.6.4 seam is proven now, and P4.32 made the subprocess lane live (only the
+            // REGISTRATION of an engine on it is left, P5-P7). The
             // reached path (`residue: None` → the arm's terminal tuple) is covered by the dispatched-cancel test.
             // [Build-Session-Entscheidung: P4.11]
             ItemRunOutcome::Cancelled { residue } => {
@@ -9652,7 +9654,8 @@ mod cleanup_honesty_tests {
     // §6.4.1 (G15) / §2.6.4 (P4.11): `thread_residue` folds a per-item cleanup residue into the run's
     // `residues` list + `recorded_final_dirs` (a `Some` residue — the §2.6.4-case-3 wedged-cancel path the
     // run_conversion Cancelled arm rides); a `None` residue is a no-op (every clean/in-core cancel). Directly
-    // covers the `Some` body the mapping arm cannot reach until the P4.32 subprocess lane is live.
+    // covers the `Some` body the mapping arm cannot reach while no subprocess engine is REGISTERED
+    // (P4.32 made the lane live; P5-P7 register the first engine on it).
     #[test]
     fn thread_residue_folds_a_residue_into_the_run_collections_and_no_ops_on_none() {
         let mut residues: Vec<ResidueRecord> = Vec::new();

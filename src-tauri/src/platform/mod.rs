@@ -915,8 +915,9 @@ fn ephemeral_roots() -> Vec<PathBuf> {
 // output — but NOT yet a per-item INPUT-file grant: `run_confined` has no structured input
 // path (it is flattened into `plan.args`), and NO real subprocess engine reads a real input
 // through this seam before P4.37 (the imgworker wire) — so the `{input ro}` half is the
-// real-engine consumer's additive grant, consistent with `run_subprocess` being production-
-// dead until P4.32. Until then the leg is exercised by the `/bin/sh` integration tests below.
+// real-engine consumer's additive grant, arriving with that consumer at P4.37 ([Corrected by
+// P4.32] `run_subprocess` itself went live at P4.32; what is still absent is a real ENGINE, not
+// the wiring). The leg is exercised meanwhile by the `/bin/sh` integration tests below.
 // ============================================================================
 
 /// The applied-vs-degraded outcome of ONE §2.12.3 privilege-drop leg (P4.15) — INTERNAL
@@ -932,10 +933,11 @@ fn ephemeral_roots() -> Vec<PathBuf> {
 /// `allow(dead_code)` (non-test), NOT `expect`: the reporter fn BODIES compile in the non-test build and
 /// CONSTRUCT these variants, so an `expect` would flip to unfulfilled (the fs_guard forward-declared-item
 /// precedent). The P4.18 production reader (`crate::isolation::run_confined` assembling the [`SpawnTier`])
-/// exists, but rustc does not propagate liveness through a DEAD caller and that whole confined-spawn lane
-/// stays dead until **P4.32** wires the subprocess dispatch arms — the same phenomenon the module-level
-/// dead-code expectation in `crate::engines` records for `ConfinedRun` itself. The annotation therefore
-/// stands until P4.32, then drops with its siblings.
+/// is now a LIVE root — [Corrected by P4.32] P4.32 wired the subprocess dispatch arms, so the reader no
+/// longer hangs off a dead caller. The annotation nonetheless STAYS, and its remaining reason is the macOS
+/// arm spelled out below: macOS is DECIDED cheap-tier only (P4.16) and constructs no verdict there.
+/// Narrowing a cross-target `allow` to the platforms one can check locally is the trap the Loop-memory
+/// entry `cross-target-gated-item-needs-unconditional-allow` records — it reds the leg you cannot run.
 ///
 /// Shared with the §2.12.3 WINDOWS tier (P4.17), whose Leg-A `lower_child_to` reports the same
 /// three outcomes over the same grant-IS-the-enforcement model — one per-leg vocabulary across both
@@ -1390,9 +1392,10 @@ pub(crate) fn install_confinement(
 /// the P4.18 record via [`spawn_leg_verdicts`]; the production apply in [`install_confinement`] needs no
 /// probe — `BestEffort` self-degrades. [Build-Session-Entscheidung: P4.15]
 ///
-/// `allow(dead_code)` (non-test): the P4.18 production consumer is [`spawn_leg_verdicts`], itself dead until
-/// the confined-spawn lane becomes a live root at P4.32 — see [`LegOutcome`]. `allow` not `expect`: the body
-/// constructs the enum in the non-test build, so `expect` would flip unfulfilled.
+/// `allow(dead_code)` (non-test): the P4.18 production consumer is [`spawn_leg_verdicts`]; [Corrected by
+/// P4.32] the confined-spawn lane became a live root at P4.32 — see [`LegOutcome`] for why the annotation
+/// still stands. `allow` not `expect`: the body constructs the enum in the non-test build, so `expect`
+/// would flip unfulfilled.
 #[cfg(target_os = "linux")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn landlock_probe() -> LegOutcome {
@@ -1422,9 +1425,9 @@ pub(crate) fn landlock_probe() -> LegOutcome {
 /// thread): a clean install ⇒ `Applied`; a compile miss (unsupported arch) or a kernel that rejects
 /// `seccomp(SET_MODE_FILTER)` ⇒ `Degraded(Unavailable)`. [Build-Session-Entscheidung: P4.15]
 ///
-/// `allow(dead_code)` (non-test): the P4.18 production consumer is [`spawn_leg_verdicts`], itself dead
-/// until the confined-spawn lane becomes a live root at P4.32 — see [`LegOutcome`]. `allow` not `expect`
-/// (the reporter body constructs the enum in the non-test build).
+/// `allow(dead_code)` (non-test): the P4.18 production consumer is [`spawn_leg_verdicts`]; [Corrected by
+/// P4.32] the confined-spawn lane became a live root at P4.32 — see [`LegOutcome`] for why the annotation
+/// still stands. `allow` not `expect` (the reporter body constructs the enum in the non-test build).
 #[cfg(target_os = "linux")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn seccomp_probe() -> LegOutcome {

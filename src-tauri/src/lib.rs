@@ -582,20 +582,27 @@ fn verbose_opt_in(pref_verbose: bool, argv_verbose: bool) -> bool {
     pref_verbose || argv_verbose
 }
 
-// ── §7.2.1 ordered startup spine (steps 3–6 + the §2.13.3 fault presentation, P2.106) ──────────────────────
+// ── §7.2.1 ordered startup spine (the step-2 program-root tail + steps 3–6 + the §2.13.3 fault
+// presentation, P2.106 / P4.32) ──────────────────────────────────────────────────────────────────────────
 // These are the AppHandle-coupled boot-glue fns the `run()` `setup` closure sequences into the §7.2.1 order.
-// The three readiness SLOTs (steps 3–5) return Ok now — their bodies are the P4 engine + §2.6 layer — so the
-// window is revealed (step 6) on the ready path; when the bodies land, a failing step yields an app-level
-// `AppFault` the setup match routes to `present_startup_fault` (§2.13.3), leaving the window hidden. Every fn
+// [Corrected by P4.32] `publish_program_roots` is a REAL fallible action, not a slot: it resolves the §3.3.3
+// program roots once and publishes them for steps 3–5 and every §1.7 spawn. The three readiness SLOTs
+// (steps 3–5) still return Ok — their bodies are the P4.42+ engine + §2.6 layer — so the window is revealed
+// (step 6) on the ready path; when the bodies land, a failing step yields an app-level `AppFault` the setup
+// match routes to `present_startup_fault` (§2.13.3), leaving the window hidden. Every fn
 // here carries an `AppHandle` in its signature (the P2.135 G28 boot-glue exemption is signature-based) and is
 // covered by the boot-stage pattern (source-scan + signature pins, not `tauri::test` execution — §1.1a),
 // because this crate ships no `tauri::test` mock harness.
 
 /// [Build-Session-Entscheidung: P2.106.3] §7.2.1 step 3 — the §7.2.3 engine presence + integrity verification
 /// SLOT. The verifier BODY — iterate the §3.3.1 externalBin binary list (`ffmpeg`/`ffprobe`/`soffice`/
-/// `pdftotext`/`pandoc`/`convertia-imgworker`, the bare runtime names + `.exe` on Windows), resolve each under
-/// the resource dir, and hash-on-first-launch against the bundled manifest with the cheap size/magic warm
-/// check (§7.2.3) — lands with the P4 engine layer; a missing/corrupt REQUIRED engine becomes an
+/// `pdftotext`/`pandoc`/`convertia-imgworker`, the bare runtime names + `.exe` on Windows), resolve each
+/// **through `crate::engines`'s §3.3.3 resolver over the roots [`publish_program_roots`] published**
+/// — [Corrected by P4.32] this used to say "under the resource dir", which §3.3.3 `[DECIDED]` forbids for an
+/// externalBin sidecar: a sidecar resolves BESIDE THE APP EXE, and only a resources-tree binary hangs off
+/// `BaseDirectory::Resource`. Reusing that one resolver is also what keeps the path the verifier checks and
+/// the path the §1.7 spawn uses identical — and hash-on-first-launch against the bundled manifest with the
+/// cheap size/magic warm check (§7.2.3) — lands with the P4 engine layer; a missing/corrupt REQUIRED engine becomes an
 /// `EngineMissing`/`BundleDamaged` `AppFault` (§2.13) routed to `present_startup_fault`. Returning `Ok(())`
 /// wires the readiness gate structurally without asserting engines P2 has not staged. AppHandle-coupled
 /// boot-glue (§1.1a; signature-pinned + G28-exempt).
@@ -623,14 +630,70 @@ fn prepare_scratch_and_log(_app: &AppHandle) -> Result<(), AppFault> {
     Ok(())
 }
 
-/// [Build-Session-Entscheidung: P2.106] §7.2.1 the readiness gate — steps 3 → 4 → 5 in order, short-circuiting
-/// on the first `AppFault` via `?`: engine presence + integrity (3), executable-permission setup (4), scratch +
-/// log creation + orphan reclaim (5). The `main` window is revealed (step 6) ONLY when this returns `Ok` — the
-/// §7.2.1 "the window is only shown once they succeed" contract — so a hard startup fault is presented as a
-/// clean §2.13 screen, never a half-broken UI. Each step is a SLOT returning `Ok` now (bodies P3/P4), so the
-/// gate passes; when the bodies land, a failing step yields the app-level fault the `setup` match presents.
-/// AppHandle-coupled boot-glue (§1.1a; signature-pinned + G28-exempt).
+/// [Build-Session-Entscheidung: P4.32] §7.2.1 the step-2 path-resolution TAIL that steps 3–5 consume — the
+/// §3.3.3 program roots, resolved ONCE here (the only layer holding an `AppHandle`) and published into
+/// `crate::engines` as plain paths, so that tier-2 module never names a Tauri path API. TWO readers share
+/// that one home: the `dispatch` subprocess arms (which carry no handle) and, from P4.42,
+/// [`verify_engine_presence`] below — so the path the §7.2.3 verifier checks and the path the §2.12 wrapper
+/// spawns cannot diverge. Resolution is fallible and NEVER panics: no exe parent, or an unresolvable
+/// resource dir, means the portable folder is not intact, which is the §2.13 app-level `BundleDamaged` fault
+/// the readiness gate routes to `present_startup_fault`. AppHandle-coupled boot-glue (§1.1a;
+/// signature-pinned + G28-exempt).
+fn publish_program_roots(app: &AppHandle) -> Result<(), AppFault> {
+    // [Build-Session-Entscheidung: P4.32] G29/SAST per-finding suppression — the vendored rule
+    // `rust.lang.security.current-exe.current-exe` ("`current_exe` must not be trusted for security
+    // decisions: a user who can run the exe can change its output") does NOT apply here. Nothing is
+    // AUTHORISED by this value: §3.3.3 `[DECIDED]` makes `current_exe().parent()` the sidecar location
+    // BY CONSTRUCTION (Tauri places externalBin beside the app exe and strips the staged triple suffix,
+    // so no other base can name the shipped file), and the integrity decision is made elsewhere — G37
+    // hashes every staged binary against `engines.lock` before it ships and §7.2.3 re-verifies at launch.
+    // An attacker who can relocate our exe already owns the portable folder the engines sit in, so the
+    // rule's threat is subsumed by T3a, not introduced here. The bare marker carries only the rule-id
+    // (semgrep parses the rest of a `nosemgrep:` line as comma-separated rule-ids), so the rationale
+    // stays on these separate lines.
+    // nosemgrep: rust.lang.security.current-exe.current-exe
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(PathBuf::from));
+    let (Some(exe_dir), Ok(resource_root)) = (exe_dir, app.path().resource_dir()) else {
+        return Err(bundle_damaged_fault());
+    };
+    // `AlreadyInitialised` now means only a RE-POINT — different roots after a first publication (an
+    // identical re-publish is idempotent, so a benign re-entry never reaches the user). A re-point is a
+    // boot-ordering defect, and it takes the calm §2.13 screen rather than silently redirecting every
+    // subsequent spawn at a second set of roots.
+    crate::engines::init_program_roots(crate::engines::ProgramRoots::new(exe_dir, resource_root))
+        .map_err(|_already| bundle_damaged_fault())
+}
+
+/// The §2.13.3 `BundleDamaged` fault — a pre-localised, plain-English, trace-free calm line carrying no path
+/// and no OS error text (§7.5 redaction), mirroring [`webview_init_fault`]'s shape.
+/// [Build-Session-Entscheidung: P4.32]
+fn bundle_damaged_fault() -> AppFault {
+    AppFault {
+        kind: ConversionErrorKind::BundleDamaged,
+        message: "ConvertIA couldn't find its own program files. The app folder looks incomplete — please extract the download again and run ConvertIA from the extracted folder."
+            .to_owned(),
+    }
+}
+
+/// [Build-Session-Entscheidung: P2.106] §7.2.1 the readiness gate — the §7.2.1 step-2 program-root
+/// publication, then steps 3 → 4 → 5 in order, short-circuiting on the first `AppFault` via `?`: engine
+/// presence + integrity (3), executable-permission setup (4), scratch + log creation + orphan reclaim (5).
+/// The `main` window is revealed (step 6) ONLY when this returns `Ok` — the §7.2.1 "the window is only shown
+/// once they succeed" contract — so a hard startup fault is presented as a clean §2.13 screen, never a
+/// half-broken UI.
+///
+/// [Corrected by P4.32] The gate is no longer all-SLOTs: [`publish_program_roots`] is a REAL, fallible first
+/// action (the §3.3.3 roots steps 3–5 and every §1.7 spawn read), so this gate can now genuinely fail. Steps
+/// 3–5 remain slots returning `Ok` (bodies P4.42+); when those bodies land, a failing step yields the
+/// app-level fault the `setup` match presents. AppHandle-coupled boot-glue (§1.1a; signature-pinned +
+/// G28-exempt).
 fn readiness_checks(app: &AppHandle) -> Result<(), AppFault> {
+    // The §7.2.1 step-2 path tail FIRST: steps 3–5 (and every later spawn) read the §3.3.3 roots it
+    // publishes, so an unresolvable bundle fails here rather than surfacing later as a per-item mystery.
+    // [Build-Session-Entscheidung: P4.32]
+    publish_program_roots(app)?;
     verify_engine_presence(app)?;
     ensure_engine_permissions(app)?;
     prepare_scratch_and_log(app)?;
@@ -703,10 +766,11 @@ fn webview_init_fault() -> AppFault {
 /// would lose it); a `WebviewFault` (step 6, the WebView itself failed to init) makes an `app://fault`→WebView
 /// emit impossible, so it presents on a NATIVE surface. BOTH presentation bodies are P4 — this shell records to
 /// the log only; `_app` is the handle they emit/buffer/native-present through. Reached from TWO routes: the
-/// readiness-gate `Err` arm (steps 3–5, runtime-dead until P4 fills those SLOT bodies — they return `Ok`) AND
-/// `reveal_main_window`'s `None` arm (the `WebviewFault` path, P2.109 — the sole `AppFault` CONSTRUCTED in
-/// production, fired only when the OS WebView runtime genuinely fails to init, which is not reproducible under
-/// `cargo test`). AppHandle-coupled boot-glue (§1.1a; signature-pinned + G28-exempt).
+/// readiness-gate `Err` arm — [Corrected by P4.32] now genuinely REACHABLE: `publish_program_roots` fails to a
+/// `BundleDamaged` fault when the §3.3.3 roots cannot be resolved, so this route no longer waits on the P4.42+
+/// slot bodies (steps 3–5 still return `Ok`) — AND `reveal_main_window`'s `None` arm (the `WebviewFault` path,
+/// P2.109). Neither is reproducible under `cargo test`: an unresolvable exe/resource dir and a failed OS
+/// WebView init both need a real runtime, so both fault VALUES are pinned by their own unit tests instead. AppHandle-coupled boot-glue (§1.1a; signature-pinned + G28-exempt).
 fn present_startup_fault(_app: &AppHandle, fault: AppFault) {
     tauri_plugin_log::log::error!(
         "§2.13 app-level startup fault [{:?}]: {}",
@@ -1849,11 +1913,13 @@ pub fn run() -> tauri::Result<()> {
             };
             app.manage(startup);
 
-            // §7.2.1 steps 3–7 — the readiness gate, the window reveal, and the launch-intake feed, in order.
-            // The three readiness SLOTs (engine presence + integrity 3 / exec-perm 4 / scratch + log + orphan
-            // reclaim 5) return `Ok` now (bodies P3/P4), so the ready path is taken; when P4 fills them a
-            // failing step yields an app-level `AppFault` the `Err` arm presents (§2.13.3) with the window
-            // still hidden. [Build-Session-Entscheidung: P2.106]
+            // §7.2.1 steps 2(tail)–7 — the program-root publication, the readiness gate, the window reveal and
+            // the launch-intake feed, in order. [Corrected by P4.32] the gate's first action
+            // (`publish_program_roots`) is REAL and can fail, so the `Err` arm below is reachable today; the
+            // three readiness SLOTs (engine presence + integrity 3 / exec-perm 4 / scratch + log + orphan
+            // reclaim 5) still return `Ok` (bodies P4.42+), and when those land a failing step yields the same
+            // app-level `AppFault` the `Err` arm presents (§2.13.3) with the window still hidden.
+            // [Build-Session-Entscheidung: P2.106]
             match readiness_checks(app.handle()) {
                 // §7.2.1 steps 3–5 passed → step 6: reveal the config-declared single `main` window (created
                 // HIDDEN via `visible: false`, P1.16/P1.19) — the "shown only after 3–5 succeed" rule (§7.2.1),
@@ -3566,8 +3632,9 @@ mod log_redaction_gate {
 
 #[cfg(test)]
 mod startup_spine {
-    //! §7.2.1 ordered startup sequence — the app-shell spine (P2.106). Steps 3–5 are readiness SLOTs
-    //! (`Result<(), AppFault>`, `Ok` now — bodies P3/P4), step 6 reveals the config-declared window ONLY after
+    //! §7.2.1 ordered startup sequence — the app-shell spine (P2.106). [Corrected by P4.32] The gate's FIRST
+    //! action is the real, fallible step-2 tail `publish_program_roots` (the §3.3.3 roots); steps 3–5 are
+    //! readiness SLOTs (`Result<(), AppFault>`, `Ok` now — bodies P4.42+), step 6 reveals the config-declared window ONLY after
     //! 3–5 succeed, step 7 feeds the launch intake, step 8 hands to the §5.2 Idle UI. AppHandle-coupled
     //! boot-glue: this crate ships no `tauri::test` mock harness (the boot-stage pattern, test-strategy §1.1a),
     //! so the spine is pinned by SIGNATURE coercion (a drift fails to compile) + a SOURCE SCAN of the
@@ -3584,6 +3651,7 @@ mod startup_spine {
     // `tauri::test`-executed). [Build-Session-Entscheidung: P2.106]
     #[test]
     fn startup_spine_fns_have_their_spec_signatures() {
+        let _roots: fn(&AppHandle) -> Result<(), AppFault> = super::publish_program_roots;
         let _verify: fn(&AppHandle) -> Result<(), AppFault> = super::verify_engine_presence;
         let _perm: fn(&AppHandle) -> Result<(), AppFault> = super::ensure_engine_permissions;
         let _scratch: fn(&AppHandle) -> Result<(), AppFault> = super::prepare_scratch_and_log;
@@ -3592,12 +3660,21 @@ mod startup_spine {
         let _present: fn(&AppHandle, AppFault) = super::present_startup_fault;
     }
 
-    // §6.4.1 unit (G15): the §7.2.1 readiness gate chains steps 3 → 4 → 5 in order (short-circuiting on the
-    // first `AppFault` via `?`). Scans `all_production_source()` (prefix + main body, every `cfg(test)` module
-    // excluded so these needles can never self-match). Needles `concat!`-assembled (self-match avoidance).
+    // §6.4.1 unit (G15): the §7.2.1 readiness gate chains the step-2 program-root publication → 3 → 4 → 5 in
+    // order (short-circuiting on the first `AppFault` via `?`). Scans `all_production_source()` (prefix +
+    // main body, every `cfg(test)` module excluded so these needles can never self-match). Needles
+    // `concat!`-assembled (self-match avoidance).
+    // [Build-Session-Entscheidung: P4.32] the roots leg is pinned FIRST because everything after it reads
+    // what it publishes — step 3's §7.2.3 verifier (P4.42) and every §1.7 spawn — and this source scan is
+    // the ONLY thing that can pin that ordering: the spine is AppHandle-coupled, so no `cargo test` can
+    // execute it (test-strategy §1.1a) and a silent reorder would otherwise surface as an unexplained
+    // per-item failure much later.
     #[test]
     fn readiness_gate_chains_steps_3_4_5_in_order() {
         let src = crate::boot_invariants::all_production_source();
+        let roots = src
+            .find(concat!("publish_program_", "roots(app)?"))
+            .expect("§7.2.1: the readiness gate must publish the §3.3.3 program roots first");
         let step3 = src
             .find(concat!("verify_engine_", "presence(app)?"))
             .expect("§7.2.1: the readiness gate must run step 3 (engine presence + integrity)");
@@ -3610,8 +3687,8 @@ mod startup_spine {
             "§7.2.1: the readiness gate must run step 5 (scratch + log creation + orphan reclaim)",
         );
         assert!(
-            step3 < step4 && step4 < step5,
-            "§7.2.1: the readiness gate must chain steps 3 → 4 → 5 in that order"
+            roots < step3 && step3 < step4 && step4 < step5,
+            "§7.2.1: the readiness gate must publish the §3.3.3 roots, then chain steps 3 → 4 → 5"
         );
     }
 
@@ -3725,6 +3802,37 @@ mod startup_spine {
                 "§7.2.1 step 6: reveal_main_window must show the config-declared `main` window (missing `{needle}`)"
             );
         }
+    }
+
+    // §6.4.1 unit (G15): the §2.13.3 `BundleDamaged` ctor that `publish_program_roots` raises when the
+    // §3.3.3 roots cannot be resolved — the PURE sibling of the WebView-init fault above (no `AppHandle`,
+    // so it IS executed here and its lines count in the G28 diff floor, unlike the boot glue that calls
+    // it). It must carry the right app-level kind, a calm non-empty line, and NO path / OS error text: a
+    // §7.5-redaction leak here would put the user's install path on the fault screen.
+    // [Build-Session-Entscheidung: P4.32]
+    #[test]
+    fn bundle_damaged_fault_is_a_trace_free_pathless_bundledamaged() {
+        let fault = super::bundle_damaged_fault();
+        assert_eq!(
+            fault.kind,
+            ConversionErrorKind::BundleDamaged,
+            "§2.13/§7.2.1 step 2: an unresolvable §3.3.3 root means the bundle is not intact"
+        );
+        assert!(
+            !fault.message.is_empty(),
+            "§2.13.3: the app-level fault carries a calm, plain user message"
+        );
+        // §7.5 redaction: no path separators, no drive letter, no OS error text.
+        for leak in ["/", "\\", ":\\", "os error", "No such file"] {
+            assert!(
+                !fault.message.contains(leak),
+                "§7.5/§2.13.3: the fault line must not leak `{leak}`"
+            );
+        }
+        assert!(
+            !fault.message.contains("panic") && !fault.message.contains(concat!("thread", " '")),
+            "§2.13.3: the app-level fault message is trace-free"
+        );
     }
 
     // §6.4.1 unit (G15): §7.2.1 step 6 / §0.3.1 — the WebView-init fault constructor builds the §2.13 app-level
